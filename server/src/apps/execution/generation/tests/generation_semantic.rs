@@ -8,6 +8,7 @@ use common::{TestEnvironment, test_environment};
 use aidash_server::{federation::Federation, harness::Harness, semantic};
 use axum::{Json, Router, http::StatusCode, response::IntoResponse, routing::post};
 use common::{bootstrap, cleanup, request, setup};
+use reinhardt::query::ExprTrait as _;
 use serde_json::{Value, json};
 use std::sync::{
 	Arc,
@@ -28,8 +29,11 @@ struct Fixture {
 	inference: Arc<AtomicUsize>,
 	response_mode: Arc<AtomicUsize>,
 	remember: Arc<AtomicUsize>,
+	derivations: Arc<AtomicUsize>,
+	maintenance_origins: Arc<AtomicUsize>,
 	embedding_started: Arc<tokio::sync::Notify>,
 	server: tokio::task::JoinHandle<()>,
+	memory_recovery_directory: tempfile::TempDir,
 }
 impl Fixture {
 	async fn new(
@@ -37,7 +41,31 @@ impl Fixture {
 		allowance: Option<i64>,
 		usage: Option<u64>,
 	) -> Self {
-		let (f, url, schema) = setup(environment).await;
+		Self::new_with_maintenance(environment, allowance, usage, false).await
+	}
+	async fn new_with_maintenance(
+		environment: &TestEnvironment,
+		allowance: Option<i64>,
+		usage: Option<u64>,
+		maintenance: bool,
+	) -> Self {
+		Self::new_with_policy(environment, allowance, usage, maintenance, false).await
+	}
+	async fn new_with_policy(
+		environment: &TestEnvironment,
+		allowance: Option<i64>,
+		usage: Option<u64>,
+		maintenance: bool,
+		learning: bool,
+	) -> Self {
+		let (mut f, url, schema) = setup(environment).await;
+		let memory_recovery_directory = tempfile::tempdir().unwrap();
+		f.store = aidash_server::semantic::services::memory_recovery::initialize(
+			&f.store,
+			memory_recovery_directory.path().to_owned(),
+		)
+		.await
+		.unwrap();
 		let embeddings = Arc::new(AtomicUsize::new(0));
 		let inference = Arc::new(AtomicUsize::new(0));
 		let embedding_calls = embeddings.clone();
@@ -46,6 +74,12 @@ impl Fixture {
 		let embedding_mode = response_mode.clone();
 		let remember = Arc::new(AtomicUsize::new(0));
 		let model_mode = remember.clone();
+		let derivations = Arc::new(AtomicUsize::new(0));
+		let derived_calls = derivations.clone();
+		let maintenance_origins = Arc::new(AtomicUsize::new(1));
+		let expected_origins = maintenance_origins.clone();
+		let derivation_mode = response_mode.clone();
+		let model_pool = f.store.pool.driver().clone();
 		let embedding_started = Arc::new(tokio::sync::Notify::new());
 		let started = embedding_started.clone();
 		let pool = f.store.pool.driver().clone();
@@ -72,20 +106,49 @@ impl Fixture {
                         started.notify_one();
                         std::future::pending::<()>().await;
                     }
-                    Json(json!({"model":"fixture-embedding","data":[{"index":0,"embedding":[1.0,0.0,0.0]}],"usage":usage.map(|tokens| json!({"prompt_tokens":tokens,"total_tokens":tokens}))})).into_response()
+                    Json(json!({"model":"fixture-embedding","data":[{"index":0,"embedding":[1.0,0.0,0.0]}],"usage":(if before == 0 { Some(1) } else { usage }).map(|tokens| json!({"prompt_tokens":tokens,"total_tokens":tokens}))})).into_response()
                 }
             }),
         )
         .route(
             "/v1/chat/completions",
-            post(move || {
+            post(move |Json(input): Json<Value>| {
                 let calls = model_calls.clone();
                 let remember = model_mode.clone();
+                let derived = derived_calls.clone();
+                let mode = derivation_mode.clone();
+                let pool = model_pool.clone();
+                let expected_origins = expected_origins.clone();
                 async move {
+                    if let Some(context) = input["messages"][1]["content"].as_str().and_then(|value| serde_json::from_str::<Value>(value).ok())
+                        && context.get("units").is_some() {
+                        use aidash_domain::memory::{Content, Unit, Verification};
+                        use reinhardt::query::{Alias, Expr, ExprTrait, Func, PostgresQueryBuilder, Query, QueryStatementBuilder};
+                        let attempts = Query::select().column(Alias::new("id")).from(Alias::new("memory_model_attempts")).and_where(Expr::col("state").eq("pending")).to_owned();
+                        let reservations: i64 = sqlx::query_scalar(&Query::select().expr(Func::count(Expr::col("attempt_id").into())).from(Alias::new("generation_usage")).and_where(Expr::col("attempt_id").in_subquery(attempts)).and_where(Expr::col("reported_tokens").is_null()).and_where(Expr::col("reserved_tokens").gt(0)).to_string(PostgresQueryBuilder)).fetch_one(&pool).await.unwrap();
+                        assert_eq!(reservations, expected_origins.load(Ordering::SeqCst) as i64, "maintenance must retain every durable origin reservation before HTTP");
+                        derived.fetch_add(1, Ordering::SeqCst);
+                        if mode.load(Ordering::SeqCst) == 3 {
+                            sqlx::query(&Query::update().table(Alias::new("generation_requests")).value(Alias::new("expires_at"),chrono::Utc::now()-chrono::Duration::seconds(1)).to_string(PostgresQueryBuilder)).execute(&pool).await.unwrap();
+                        }
+
+                        let units: Vec<Unit> = serde_json::from_value(context["units"].clone()).unwrap();
+                        let mut result: Content = units[0].content.clone();
+                        result.kind = serde_json::from_value(context["kind"].clone()).unwrap();
+                        result.verification = Verification::Unverified;
+                        result.evidence = units.iter().map(Unit::evidence).collect();
+                        result.text = "Derived generated vehicle findings / 生成された車両の知見".into();
+                        return Json(json!({"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":serde_json::to_string(&result).unwrap()}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}));
+                    }
                     calls.fetch_add(1, Ordering::SeqCst);
-                    let (name, arguments) = if remember.load(Ordering::SeqCst) == 1 {
-                        ("memory_write", "{\"note\":\"Generated vehicle findings\"}")
-                    } else { ("workspace_observe", "{}") };
+                    let mode = remember.load(Ordering::SeqCst);
+                    if mode == usize::MAX {
+                        return Json(json!({"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"Vehicle research complete."}}],"usage":{"prompt_tokens":10,"completion_tokens":2}}));
+                    }
+                    let (name, arguments) = if mode > 0 {
+                        let id = remembered_id(mode);
+                        ("memory_mutate", serde_json::to_string(&json!({"changes":[{"operation":"add","id":id,"content":{"text":"Generated vehicle findings","kind":"experience","learning":"fact","verification":"unverified","occurred":null,"entities":[],"evidence":[],"links":[]}}]})).unwrap())
+                    } else { ("workspace_observe", "{}".to_owned()) };
                     Json(json!({"choices":[{"index":0,"finish_reason":"tool_calls","message":{"role":"assistant","content":null,"tool_calls":[{"id":"observe","type":"function","function":{"name":name,"arguments":arguments}}]}}],"usage":{"prompt_tokens":10,"completion_tokens":2}}))
                 }
             }),
@@ -106,7 +169,7 @@ impl Fixture {
 		.await;
 		template["id"] = json!("semantic-template");
 		template["capabilities"] = json!(["semantic.research"]);
-		if allowance.is_some() {
+		{
 			let (status, response) = request(&app, &f.config.api_token, "POST", "/api/registry", json!({"id":"embedding","version":"1.0.0","kind":"embedding","name":{"en":"Approved embedding"},"description":{"en":"Local embedding fixture"},"config":{"provider":"openai","endpoint":format!("{endpoint}/v1"),"credential_env":null,"model":"fixture-embedding","model_version":"1","dimensions":3}})).await;
 			assert_eq!(status, 200, "{response}");
 			assert_eq!(
@@ -122,6 +185,50 @@ impl Fixture {
 				200
 			);
 		}
+		for (kind, id, config) in [
+			("reranker", "memory-reranker", json!({"provider":"rrf"})),
+			(
+				"tokenizer",
+				"memory-tokenizer",
+				json!({"provider":"utf8_upper_bound"}),
+			),
+			(
+				"memory",
+				"memory",
+				json!({"engine":"hindsight_rust","policy":{
+					"extraction":template["config"]["model"],"derivation":template["config"]["model"],"reflection":template["config"]["model"],
+					"embedding":{"id":"embedding","version":"1.0.0"},"reranker":{"id":"memory-reranker","version":"1.0.0"},"tokenizer":{"id":"memory-tokenizer","version":"1.0.0"},
+					"prices":{"extraction":{"input_per_million":0,"output_per_million":0},"derivation":{"input_per_million":0,"output_per_million":0},"reflection":{"input_per_million":0,"output_per_million":0},"embedding":{"input_per_million":0,"output_per_million":0},"reranker":{"input_per_million":0,"output_per_million":0}},
+					"retention":{"unit_max_age_days":null,"candidate_days":7,"history_days":30,"history_versions":16,"model_result_days":7,"backup_days":7,"purge_after_seconds":60,"purge_batch":32,"max_unit_records":128,"max_model_operations":1024},
+					"bounds":{"max_unit_bytes":8192,"max_input_bytes":8192,"max_units":16,"max_candidates":8,"max_entities":8,"max_evidence":8,"max_links":8,"max_graph_hops":3,"max_graph_visits":32,"max_results":4,"max_context_tokens":8192,"max_model_calls":4,"max_model_tokens":8192,"max_cost_micros":10000,"max_retries":2,"max_call_seconds":30},"semantic_link_min_similarity_millionths":700000,"learn_from_runs":learning,"maintain_observations":maintenance,"refresh_mental_models":false
+				}}),
+			),
+			(
+				"source",
+				"shared-memory",
+				json!({"scope":"workspace","memory":{"id":"memory","version":"1.0.0"},"max_tokens":4096}),
+			),
+		] {
+			let (status, response) = request(&app, &f.config.api_token, "POST", "/api/registry", json!({"id":id,"version":"1.0.0","kind":kind,"name":{"en":id,"ja":id},"description":{"en":"Native memory fixture"},"config":config})).await;
+			assert_eq!(status, 200, "{response}");
+			assert_eq!(
+				request(
+					&app,
+					&f.config.api_token,
+					"POST",
+					"/api/authorization/acme/catalog",
+					json!({"entry":{"id":id,"version":"1.0.0"},"expected_revision":0,"enabled":true})
+				)
+				.await
+				.0,
+				200
+			);
+		}
+		template["config"]["memory"] = json!({"id":"memory","version":"1.0.0"});
+		template["config"]["allow_memory_write"] = json!(true);
+		if !maintenance {
+			template["config"]["sources"] = json!([{"id":"shared-memory","version":"1.0.0"}]);
+		}
 		let spec = json!({"enabled":true,"template":template,"permissions":{"roles":[],"groups":[],"attributes":{}},"approval_required":false,"limits":{"max_agents":2,"max_concurrent":2,"max_depth":2,"token_budget":1000000,"tokens_per_agent":400000,"lifetime_seconds":3600},"embedding":allowance.map(|calls| json!({"provider":{"id":"embedding","version":"1.0.0"},"calls_per_agent":calls,"call_budget":calls*2}))});
 		let (status, response) = request(
 			&app,
@@ -132,11 +239,43 @@ impl Fixture {
 		)
 		.await;
 		assert_eq!(status, 200, "{response}");
-		let (status, index) = request(&app,&f.config.api_token,"POST",&format!("/api/workspaces/{workspace}/semantic/index"),json!({"expected_revision":0,"spec":{"embedding":{"provider":"openai","endpoint":format!("{endpoint}/v1"),"credential_env":null,"model":"fixture-embedding","model_version":"1","dimensions":3},"vector":{"provider":"qdrant","endpoint":environment.qdrant_url,"credential_env":"AIDASH_SECRET_TEST_QDRANT"},"enabled":true,"auto_context":true,"max_sources":64,"max_results":10,"max_result_tokens":4096,"max_input_bytes":8192}})).await;
+		let (status, index) = request(&app,&f.config.api_token,"POST",&format!("/api/workspaces/{workspace}/semantic/index"),json!({"expected_revision":0,"spec":{"embedding":{"provider":"openai","endpoint":format!("{endpoint}/v1"),"credential_env":null,"model":"fixture-embedding","model_version":"1","dimensions":3},"vector":{"provider":"postgres","endpoint":"local","credential_env":null},"enabled":true,"auto_context":true,"max_sources":64,"max_results":10,"max_result_tokens":4096,"max_input_bytes":8192}})).await;
 		assert_eq!(status, 200, "{index}");
-		assert_eq!(request(&app,&token,"POST",&format!("/api/workspaces/{workspace}/semantic/entries"),json!({"key":"reference","expected_revision":0,"source":{"kind":"memory","text":"A car carries passengers."},"metadata":{}})).await.0,200);
+
+		if maintenance {
+			assert_eq!(request(&app,&token,"POST",&format!("/api/workspaces/{workspace}/semantic/entries"),json!({"key":"reference","expected_revision":0,"source":{"kind":"memory","text":"A car carries passengers."},"metadata":{}})).await.0,200);
+		} else {
+			let bank = json!({"home":f.store.node_id,"tenant":"acme","workspace":workspace,"participant":null});
+			let (status,response)=request(&app,&f.config.api_token,"POST",&format!("/api/workspaces/{workspace}/memory/operate"),json!({"operation_id":Uuid::now_v7(),"provider":{"id":"memory","version":"1.0.0"},"bank":bank,"action":{"action":"configure_bank","expected_revision":0}})).await;
+			assert_eq!(status, 200, "{response}");
+			let (status,response)=request(&app,&f.config.api_token,"POST",&format!("/api/workspaces/{workspace}/memory/units/mutate"),json!({"operation_id":Uuid::now_v7(),"provider":{"id":"memory","version":"1.0.0"},"bank":bank,"changes":[{"operation":"add","id":Uuid::now_v7(),"content":{"text":"A car carries passengers.","kind":"world","learning":"fact","verification":"unverified","occurred":null,"entities":[],"evidence":[],"links":[]}}]})).await;
+			assert_eq!(status, 200, "{response}");
+		}
+
 		semantic::worker::sweep(&f.store).await.unwrap();
-		assert_eq!(embeddings.load(Ordering::SeqCst), 1);
+		let projections = aidash_server::database::native::query(
+			&reinhardt::query::Query::select()
+				.columns(["state", "last_error"].map(reinhardt::query::Alias::new))
+				.from(reinhardt::query::Alias::new("semantic_entries"))
+				.to_string(reinhardt::query::PostgresQueryBuilder),
+		)
+		.fetch_all(&f.store.pool)
+		.await
+		.unwrap();
+		let projections: Vec<_> = projections
+			.iter()
+			.map(|row| {
+				(
+					row.try_get::<String>("state").unwrap(),
+					row.try_get::<Option<String>>("last_error").unwrap(),
+				)
+			})
+			.collect();
+		assert_eq!(
+			embeddings.load(Ordering::SeqCst),
+			1,
+			"initial index status: {projections:?}"
+		);
 		let (status, task) = request(&app,&token,"POST",&format!("/api/workspaces/{workspace}/tasks"),json!({"title":"Vehicle research","description":"Use related memory","requirements":{"capability":"semantic.research"}})).await;
 		assert_eq!(status, 200, "{task}");
 		let task = Uuid::parse_str(task["id"].as_str().unwrap()).unwrap();
@@ -172,8 +311,11 @@ impl Fixture {
 			inference,
 			response_mode,
 			remember,
+			derivations,
+			maintenance_origins,
 			embedding_started,
 			server,
+			memory_recovery_directory,
 		}
 	}
 	async fn drive(&self) {
@@ -224,8 +366,13 @@ impl Fixture {
 		}
 	}
 	async fn remember(&self) -> Uuid {
-		self.remember.store(1, Ordering::SeqCst);
-		tokio::time::timeout(std::time::Duration::from_secs(5), async {
+		self.remember_source(1).await
+	}
+	async fn remember_source(&self, ordinal: usize) -> Uuid {
+		self.remember.store(ordinal, Ordering::SeqCst);
+		// Match drive's coverage allowance: native context and generated-origin
+		// checks span multiple worker turns and real database/provider boundaries.
+		tokio::time::timeout(std::time::Duration::from_secs(20), async {
 			let worker = Harness {
 				federation: self.f.clone(),
 			};
@@ -234,9 +381,14 @@ impl Fixture {
 				let entry: Option<Uuid> = sqlx::query_scalar(
 					&reinhardt::query::Query::select()
 						.expr(reinhardt::query::SimpleExpr::from(
-							reinhardt::query::Expr::col(reinhardt::query::Alias::new("entry_id")),
+							reinhardt::query::Expr::col(reinhardt::query::Alias::new("id")),
 						))
-						.from(reinhardt::query::Alias::new("semantic_agent_memory"))
+						.from(reinhardt::query::Alias::new("memory_units"))
+						.and_where(reinhardt::query::Expr::col("kind").eq("experience"))
+						.and_where(
+							reinhardt::query::Expr::col("id")
+								.eq(reinhardt::query::Expr::value(remembered_id(ordinal))),
+						)
 						.limit(1)
 						.to_string(reinhardt::query::PostgresQueryBuilder),
 				)
@@ -250,7 +402,7 @@ impl Fixture {
 			}
 		})
 		.await
-		.expect("memory_write must persist the generated authority without deadlock")
+		.unwrap_or_else(|_| panic!("memory_mutate did not persist source {ordinal} within 20s; embedding calls={}, inference calls={}", self.embeddings.load(Ordering::SeqCst), self.inference.load(Ordering::SeqCst)))
 	}
 	async fn usage(&self) -> Value {
 		let (status, value) = request(
@@ -284,7 +436,7 @@ impl Fixture {
 		.unwrap();
 		for (collection, config) in collections {
 			semantic::backend::delete_collection(
-				&self.f.store.semantic_client,
+				&self.f.store,
 				&serde_json::from_value(config).unwrap(),
 				&collection,
 			)
@@ -293,6 +445,14 @@ impl Fixture {
 		}
 		self.server.abort();
 		cleanup(self.f, &self.url, &self.schema).await;
+	}
+}
+
+fn remembered_id(ordinal: usize) -> Uuid {
+	match ordinal {
+		1 => Uuid::parse_str("fed375fe-6450-4768-8fa7-cc1af172b333").unwrap(),
+		2 => Uuid::parse_str("fed375fe-6450-4768-8fa7-cc1af172b334").unwrap(),
+		_ => panic!("unknown generated memory fixture ordinal"),
 	}
 }
 
@@ -424,7 +584,7 @@ async fn generated_embedding_catalog_policy_and_provider_changes_cannot_increase
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
 	for reason in ["catalog", "policy", "index"] {
-		let mut fixture = Fixture::new(&_test_environment, Some(2), Some(2)).await;
+		let fixture = Fixture::new(&_test_environment, Some(2), Some(2)).await;
 		if reason == "catalog" {
 			assert_eq!(
 				request(
@@ -465,9 +625,23 @@ async fn generated_embedding_catalog_policy_and_provider_changes_cannot_increase
 				json!({"expected_revision":1,"spec":spec}),
 			)
 			.await;
-			assert_eq!(status, 200, "{index}");
-			fixture.index = index;
-			semantic::worker::sweep(&fixture.f.store).await.unwrap();
+			assert_eq!(status, 409, "{index}");
+			assert_eq!(
+				index["error"],
+				"Workspace index embedding differs from a pinned memory bank policy"
+			);
+			let (_, unchanged) = request(
+				&fixture.app,
+				&fixture.f.config.api_token,
+				"GET",
+				&format!("/api/workspaces/{}/semantic/index", fixture.workspace),
+				Value::Null,
+			)
+			.await;
+			assert_eq!(unchanged["revision"], fixture.index["revision"]);
+			assert_eq!(unchanged["spec"], fixture.index["spec"]);
+			fixture.dispose().await;
+			continue;
 		}
 		let before = fixture.embeddings.load(Ordering::SeqCst);
 		fixture.drive().await;
@@ -493,7 +667,10 @@ async fn background_indexing_retains_failed_charges_across_recovery_and_cannot_o
 	let entry = fixture.remember().await;
 	assert_eq!(fixture.usage().await["embedding_calls"], 1);
 	fixture.response_mode.store(1, Ordering::SeqCst);
-	tokio::time::timeout(std::time::Duration::from_secs(5), async {
+	// sweep also performs native retention, purge, and durable engine maintenance.
+	// Allow coverage instrumentation of all maintenance passes while retaining
+	// a finite bound that catches lock cycles across the concurrent workers.
+	tokio::time::timeout(std::time::Duration::from_secs(60), async {
 		let (first, second) = tokio::join!(
 			semantic::worker::sweep(&fixture.f.store),
 			semantic::worker::sweep(&fixture.f.store)
@@ -862,16 +1039,43 @@ async fn killed_embedding_worker_retains_uncertain_usage_and_restart_reserves_a_
 ) {
 	let fixture = Fixture::new(&_test_environment, Some(2), Some(2)).await;
 	fixture.response_mode.store(2, Ordering::SeqCst);
-	let mut worker = WorkerProcess::start(&fixture.f, &fixture.url, &fixture.schema);
+	let mut worker = WorkerProcess::start_with_memory(
+		&fixture.f,
+		&fixture.url,
+		&fixture.schema,
+		fixture.memory_recovery_directory.path(),
+	);
 	let reached = tokio::time::timeout(
-		std::time::Duration::from_secs(20),
+		std::time::Duration::from_secs(45),
 		fixture.embedding_started.notified(),
 	)
 	.await;
+	let states = fixture.f.store.runs().await.unwrap();
+	let activity: Vec<(String, Option<String>, Option<String>, String)> = sqlx::query_as(
+		&reinhardt::query::Query::select()
+			.columns(
+				["state", "wait_event_type", "wait_event", "application_name"]
+					.map(reinhardt::query::Alias::new),
+			)
+			.from(reinhardt::query::Alias::new("pg_stat_activity"))
+			.and_where(
+				reinhardt::query::Expr::col("datname")
+					.eq(reinhardt::query::Expr::cust("CURRENT_DATABASE()")),
+			)
+			.to_string(reinhardt::query::PostgresQueryBuilder),
+	)
+	.fetch_all(fixture.f.store.pool.driver())
+	.await
+	.unwrap();
 	assert!(
 		reached.is_ok(),
-		"embedding provider not reached; worker status {:?}",
-		worker.process.try_wait()
+		"embedding provider not reached; worker status {:?}; phases={:?}; database activity={activity:?}; log={}",
+		worker.process.try_wait(),
+		states
+			.iter()
+			.map(|run| (run.phase().as_str(), run.step))
+			.collect::<Vec<_>>(),
+		worker.log()
 	);
 	drop(worker); // Real SIGKILL, before the provider returns usage or a vector.
 	let reserved: i64 = sqlx::query_scalar(
@@ -900,7 +1104,12 @@ async fn killed_embedding_worker_retains_uncertain_usage_and_restart_reserves_a_
 	.execute(fixture.f.store.pool.driver())
 	.await
 	.unwrap();
-	let worker = WorkerProcess::start(&fixture.f, &fixture.url, &fixture.schema);
+	let worker = WorkerProcess::start_with_memory(
+		&fixture.f,
+		&fixture.url,
+		&fixture.schema,
+		fixture.memory_recovery_directory.path(),
+	);
 	tokio::time::timeout(std::time::Duration::from_secs(20), async {
 		loop {
 			let run = fixture.f.store.runs().await.unwrap().remove(0);
@@ -933,3 +1142,831 @@ async fn killed_embedding_worker_retains_uncertain_usage_and_restart_reserves_a_
 }
 
 use reinhardt::query::QueryStatementBuilder as _;
+
+#[rstest::rstest]
+#[tokio::test]
+async fn native_maintenance_retains_generated_origin_budgets_and_rechecks_expiry(
+	#[future(awt)]
+	#[from(test_environment)]
+	environment: std::sync::Arc<TestEnvironment>,
+) {
+	use reinhardt::query::{
+		Alias, Expr, ExprTrait, PostgresQueryBuilder, Query, QueryStatementBuilder,
+	};
+	for mode in ["current", "expired", "exhausted", "expires_during_call"] {
+		let fixture = Fixture::new_with_maintenance(&environment, Some(4), Some(2), true).await;
+		let _source = fixture.remember().await;
+		if mode == "expires_during_call" {
+			fixture.response_mode.store(3, Ordering::SeqCst);
+		}
+		let before = fixture.usage().await["used_tokens"].as_i64().unwrap();
+		if mode == "expired" {
+			sqlx::query(
+				&Query::update()
+					.table(Alias::new("generation_requests"))
+					.value(
+						Alias::new("expires_at"),
+						chrono::Utc::now() - chrono::Duration::seconds(1),
+					)
+					.to_string(PostgresQueryBuilder),
+			)
+			.execute(fixture.f.store.pool.driver())
+			.await
+			.unwrap();
+		}
+		if mode == "exhausted" {
+			sqlx::query(
+				&Query::update()
+					.table(Alias::new("generation_budgets"))
+					.value_expr(Alias::new("used_tokens"), Expr::col("token_limit"))
+					.to_string(PostgresQueryBuilder),
+			)
+			.execute(fixture.f.store.pool.driver())
+			.await
+			.unwrap();
+		}
+		tokio::time::timeout(
+			std::time::Duration::from_secs(10),
+			semantic::worker::sweep(&fixture.f.store),
+		)
+		.await
+		.expect("maintenance must not deadlock its origin authority")
+		.unwrap();
+		assert_eq!(
+			fixture.derivations.load(Ordering::SeqCst),
+			usize::from(matches!(mode, "current" | "expires_during_call")),
+			"{mode}"
+		);
+		let state: String = sqlx::query_scalar(
+			&Query::select()
+				.column(Alias::new("state"))
+				.from(Alias::new("memory_engine_jobs"))
+				.and_where(Expr::col("kind").eq("observation"))
+				.to_string(PostgresQueryBuilder),
+		)
+		.fetch_one(fixture.f.store.pool.driver())
+		.await
+		.unwrap();
+		if mode == "current" {
+			assert_eq!(state, "complete");
+			let after = fixture.usage().await["used_tokens"].as_i64().unwrap();
+			assert_eq!(
+				after,
+				before + 4,
+				"source embedding and derivation each settle two reported tokens"
+			);
+			semantic::worker::sweep(&fixture.f.store).await.unwrap();
+			assert_eq!(
+				fixture.derivations.load(Ordering::SeqCst),
+				1,
+				"completed work is idempotent"
+			);
+		} else {
+			assert!(
+				matches!(state.as_str(), "blocked" | "failed"),
+				"{mode}: {state}"
+			);
+		}
+		fixture.dispose().await;
+	}
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn native_shared_synthesis_preserves_published_origins_and_unions_nested_budgets(
+	#[future(awt)]
+	#[from(test_environment)]
+	environment: std::sync::Arc<TestEnvironment>,
+) {
+	use aidash_domain::{memory::*, registry::EntityRef};
+	use aidash_server::{
+		authorization::identity::Actor, semantic::services::native_memory as memory,
+	};
+	use reinhardt::query::{
+		Alias, Expr, ExprTrait, PostgresQueryBuilder, Query, QueryStatementBuilder,
+	};
+	for mode in ["current", "expired", "exhausted"] {
+		let mut fixture = Fixture::new(&environment, Some(8), Some(2)).await;
+		let first = fixture.remember().await;
+		let parent = fixture.f.store.runs().await.unwrap().remove(0);
+		let parent_request: Uuid = fixture.job["id"].as_str().unwrap().parse().unwrap();
+		fixture
+			.f
+			.store
+			.control(parent.id, aidash_server::domain::RunControlAction::Pause)
+			.await
+			.unwrap();
+		let (status, task) = request(&fixture.app, &fixture.token, "POST",
+			&format!("/api/workspaces/{}/tasks", fixture.workspace),
+			json!({"title":"Nested memory author / 入れ子の記憶作成者","description":"Keep origin lineage","requirements":{"capability":"semantic.research"}})).await;
+		assert_eq!(status, 200, "{task}");
+		let task: Uuid = task["id"].as_str().unwrap().parse().unwrap();
+		let chain = [
+			"alice".to_owned(),
+			aidash_server::domain::qualified_agent(
+				&fixture.f.store.node_id,
+				&parent.agent_id,
+				&parent.agent_version,
+			),
+		];
+		// Trusted task_create origin; its worker transport has separate coverage.
+		sqlx::query(
+			&Query::insert()
+				.into_table(Alias::new("authorization_task_origins"))
+				.columns(
+					[
+						"task_id",
+						"source_run_id",
+						"tenant",
+						"root_subject",
+						"subject_chain",
+					]
+					.map(Alias::new),
+				)
+				.from_subquery(
+					Query::select()
+						.expr(Expr::value(task))
+						.expr(Expr::value(parent.id))
+						.expr(Expr::value("acme"))
+						.expr(Expr::value("alice"))
+						.expr(reinhardt::query::SimpleExpr::CustomWithExpr(
+							"ARRAY[?,?]::text[]".into(),
+							chain
+								.iter()
+								.cloned()
+								.map(|value| Expr::value(value).into())
+								.collect(),
+						))
+						.to_owned(),
+				)
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(fixture.f.store.pool.driver())
+		.await
+		.unwrap();
+		let (status, child) = request(
+			&fixture.app,
+			&fixture.token,
+			"POST",
+			&format!("/api/generation/acme/tasks/{task}/assign"),
+			json!({"policy_id":"semantic","reason":"nested memory"}),
+		)
+		.await;
+		assert_eq!(status, 200, "{child}");
+		fixture.job = child["generation"].clone();
+		let child_request: Uuid = fixture.job["id"].as_str().unwrap().parse().unwrap();
+		aidash_server::generation::provision::reconcile(&fixture.f)
+			.await
+			.unwrap();
+		let second = fixture.remember_source(2).await;
+		let child_run = fixture
+			.f
+			.store
+			.runs()
+			.await
+			.unwrap()
+			.into_iter()
+			.find(|run| run.id != parent.id)
+			.unwrap();
+		fixture
+			.f
+			.store
+			.control(child_run.id, aidash_server::domain::RunControlAction::Pause)
+			.await
+			.unwrap();
+		let provider = EntityRef {
+			id: "memory".into(),
+			version: "1.0.0".into(),
+		};
+		let shared = Bank {
+			home: fixture.f.store.node_id.clone(),
+			tenant: "acme".into(),
+			workspace: fixture.workspace,
+			participant: None,
+		};
+		let mut published = vec![];
+		for (source, run) in [(first, parent.id), (second, child_run.id)] {
+			let participant: Uuid = sqlx::query_scalar(
+				&Query::select()
+					.column(Alias::new("participant_id"))
+					.from(Alias::new("memory_run_bindings"))
+					.and_where(Expr::col("run_id").eq(Expr::value(run)))
+					.to_string(PostgresQueryBuilder),
+			)
+			.fetch_one(fixture.f.store.pool.driver())
+			.await
+			.unwrap();
+			let private = Bank {
+				participant: Some(participant),
+				..shared.clone()
+			};
+			let unit = memory::list(
+				&fixture.f.store,
+				&Actor::Operator,
+				memory::ReadBank {
+					provider: provider.clone(),
+					bank: private,
+				},
+			)
+			.await
+			.unwrap()
+			.into_iter()
+			.find(|unit| unit.id == source)
+			.unwrap();
+			let operation = Uuid::now_v7();
+			let destination = Uuid::now_v7();
+			let (status, result) = request(
+				&fixture.app,
+				&fixture.token,
+				"POST",
+				&format!("/api/workspaces/{}/memory/operate", fixture.workspace),
+				serde_json::to_value(memory::Operation {
+					operation_id: operation,
+					provider: provider.clone(),
+					bank: shared.clone(),
+					action: memory::Action::Publish {
+						source: unit.evidence(),
+						mutation: Mutation {
+							operation_id: operation,
+							provider: provider.clone(),
+							bank: shared.clone(),
+							changes: vec![Change::Add {
+								id: destination,
+								content: unit.content,
+							}],
+						},
+					},
+				})
+				.unwrap(),
+			)
+			.await;
+			assert_eq!(status, 200, "{mode}: {result}");
+			let memory::Outcome::Units(mut result) = serde_json::from_value(result).unwrap() else {
+				panic!("publication")
+			};
+			let result = result.remove(0);
+			let origins: Vec<Uuid> = sqlx::query_scalar(
+				&Query::select()
+					.column(Alias::new("run_id"))
+					.from(Alias::new("memory_unit_run_origins"))
+					.and_where(Expr::col("unit_id").eq(Expr::value(destination)))
+					.to_string(PostgresQueryBuilder),
+			)
+			.fetch_all(fixture.f.store.pool.driver())
+			.await
+			.unwrap();
+			assert_eq!(
+				origins,
+				vec![run],
+				"explicit publication preserves its generated origin"
+			);
+			published.push(result);
+		}
+		let budget_query = || {
+			Query::select()
+				.columns(["request_id", "used_tokens"].map(Alias::new))
+				.from(Alias::new("generation_budgets"))
+				.order_by(Alias::new("request_id"), reinhardt::query::Order::Asc)
+				.to_string(PostgresQueryBuilder)
+		};
+		if mode == "expired" {
+			sqlx::query(
+				&Query::update()
+					.table(Alias::new("generation_requests"))
+					.value(
+						Alias::new("expires_at"),
+						chrono::Utc::now() - chrono::Duration::seconds(1),
+					)
+					.and_where(Expr::col("id").eq(Expr::value(child_request)))
+					.to_string(PostgresQueryBuilder),
+			)
+			.execute(fixture.f.store.pool.driver())
+			.await
+			.unwrap();
+		}
+		if mode == "exhausted" {
+			sqlx::query(
+				&Query::update()
+					.table(Alias::new("generation_budgets"))
+					.value_expr(Alias::new("used_tokens"), Expr::col("token_limit"))
+					.and_where(Expr::col("request_id").eq(Expr::value(child_request)))
+					.to_string(PostgresQueryBuilder),
+			)
+			.execute(fixture.f.store.pool.driver())
+			.await
+			.unwrap();
+		}
+		let before: Vec<(Uuid, i64)> = sqlx::query_as(&budget_query())
+			.fetch_all(fixture.f.store.pool.driver())
+			.await
+			.unwrap();
+		fixture.maintenance_origins.store(2, Ordering::SeqCst);
+		let operation = Uuid::now_v7();
+		let target = Uuid::now_v7();
+		let input = memory::Operation {
+			operation_id: operation,
+			provider: provider.clone(),
+			bank: shared.clone(),
+			action: memory::Action::Derive {
+				mutation: Mutation {
+					operation_id: operation,
+					provider: provider.clone(),
+					bank: shared.clone(),
+					changes: vec![Change::Add {
+						id: target,
+						content: Content {
+							mental_model: None,
+							text: String::new(),
+							kind: Kind::Observation,
+							learning: Learning::Fact,
+							verification: Verification::Unverified,
+							occurred: None,
+							entities: vec![],
+							evidence: vec![],
+							links: vec![],
+						},
+					}],
+				},
+				kind: Kind::Observation,
+				sources: published.iter().map(Unit::evidence).collect(),
+			},
+		};
+		let (status, result) = request(
+			&fixture.app,
+			&fixture.token,
+			"POST",
+			&format!("/api/workspaces/{}/memory/operate", fixture.workspace),
+			serde_json::to_value(input).unwrap(),
+		)
+		.await;
+		let after: Vec<(Uuid, i64)> = sqlx::query_as(&budget_query())
+			.fetch_all(fixture.f.store.pool.driver())
+			.await
+			.unwrap();
+		if mode == "current" {
+			assert_eq!(status, 200, "{result}");
+			let memory::Outcome::Units(result) = serde_json::from_value(result).unwrap() else {
+				panic!("synthesis")
+			};
+			assert_eq!(result.len(), 1);
+			assert_eq!(
+				result[0].content.evidence,
+				published.iter().map(Unit::evidence).collect::<Vec<_>>()
+			);
+			let mut origins: Vec<Uuid> = sqlx::query_scalar(
+				&Query::select()
+					.column(Alias::new("run_id"))
+					.from(Alias::new("memory_unit_run_origins"))
+					.and_where(Expr::col("unit_id").eq(Expr::value(target)))
+					.to_string(PostgresQueryBuilder),
+			)
+			.fetch_all(fixture.f.store.pool.driver())
+			.await
+			.unwrap();
+			origins.sort_unstable();
+			let mut expected = vec![parent.id, child_run.id];
+			expected.sort_unstable();
+			assert_eq!(origins, expected);
+			assert_eq!(before.len(), 2);
+			assert_eq!(after.len(), 2);
+			for ((id, before), (after_id, after)) in before.iter().zip(&after) {
+				assert_eq!(id, after_id);
+				assert_eq!(*after - *before, 2, "the common ancestor is charged once");
+			}
+			let attempts = Query::select()
+				.column(Alias::new("id"))
+				.from(Alias::new("memory_model_attempts"))
+				.and_where(Expr::col("operation_id").eq(Expr::value(operation)))
+				.to_owned();
+			let mut charged: Vec<Uuid> = sqlx::query_scalar(
+				&Query::select()
+					.column(Alias::new("request_id"))
+					.from(Alias::new("generation_usage"))
+					.and_where(Expr::col("attempt_id").in_subquery(attempts))
+					.to_string(PostgresQueryBuilder),
+			)
+			.fetch_all(fixture.f.store.pool.driver())
+			.await
+			.unwrap();
+			charged.sort_unstable();
+			let mut expected = vec![parent_request, child_request];
+			expected.sort_unstable();
+			assert_eq!(charged, expected);
+		} else {
+			assert_ne!(status, 200, "{mode}: {result}");
+			assert_eq!(
+				fixture.derivations.load(Ordering::SeqCst),
+				0,
+				"no provider call after a contributing origin loses allowance"
+			);
+			assert_eq!(
+				before, after,
+				"a failed late reservation never partially charges an ancestor"
+			);
+			let units: Vec<Uuid> = sqlx::query_scalar(
+				&Query::select()
+					.column(Alias::new("id"))
+					.from(Alias::new("memory_units"))
+					.and_where(Expr::col("id").eq(Expr::value(target)))
+					.to_string(PostgresQueryBuilder),
+			)
+			.fetch_all(fixture.f.store.pool.driver())
+			.await
+			.unwrap();
+			assert!(units.is_empty());
+		}
+		fixture.dispose().await;
+	}
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn model_memory_mutations_preserve_existing_human_verification(
+	#[future(awt)]
+	#[from(test_environment)]
+	environment: Arc<TestEnvironment>,
+) {
+	use aidash_domain::memory::{Bank, Change, Content, Kind, Learning, Mutation, Verification};
+	use aidash_server::{
+		authorization::identity::Actor, database::native, semantic::native_memory as memory,
+	};
+	use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query, QueryStatementBuilder};
+	let fixture = Fixture::new(&environment, Some(2), Some(2)).await;
+	let run = fixture.f.store.runs().await.unwrap().remove(0);
+	let participant: Uuid = native::query_scalar(
+		&Query::select()
+			.column(Alias::new("participant_id"))
+			.from(Alias::new("memory_run_bindings"))
+			.and_where(Expr::col("run_id").eq(Expr::value(run.id)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.scalar_one(&fixture.f.store.pool)
+	.await
+	.unwrap();
+	let bank = Bank {
+		home: run.home_node.clone(),
+		tenant: "acme".into(),
+		workspace: run.workspace_id,
+		participant: Some(participant),
+	};
+	let context = aidash_server::tool::ToolContext {
+		home: aidash_server::federation::Home::new(fixture.f.clone(), run.clone()),
+		store: fixture.f.store.clone(),
+		run,
+	};
+	let tools = aidash_server::tool::builtins();
+	let tool = &tools["memory_mutate"];
+	for kind in [Kind::World, Kind::Experience] {
+		for verification in [
+			Verification::Supported,
+			Verification::Contradicted,
+			Verification::Unverified,
+		] {
+			let id = Uuid::now_v7();
+			let original = Content {
+				text: "Human-reviewed knowledge".into(),
+				kind,
+				learning: Learning::Fact,
+				verification,
+				mental_model: None,
+				occurred: None,
+				entities: vec![],
+				evidence: vec![],
+				links: vec![],
+			};
+			memory::mutate(
+				&fixture.f.store,
+				&Actor::Operator,
+				Mutation {
+					operation_id: Uuid::now_v7(),
+					provider: aidash_server::registry::EntityRef {
+						id: "memory".into(),
+						version: "1.0.0".into(),
+					},
+					bank: bank.clone(),
+					changes: vec![Change::Add {
+						id,
+						content: original.clone(),
+					}],
+				},
+			)
+			.await
+			.unwrap();
+			let mut replacement = original.clone();
+			replacement.text = "Model replacement".into();
+			replacement.verification = Verification::Unverified;
+			let result = tool
+				.invoke(
+					&context,
+					json!({"changes":[Change::Correct { id, expected_revision: 1, content: replacement }]}),
+					&format!("correct-{id}"),
+				)
+				.await;
+			if verification == Verification::Unverified {
+				result.unwrap();
+			} else {
+				assert!(matches!(result, Err(aidash_server::Error::Forbidden)));
+			}
+			let expected_revision = if verification == Verification::Unverified {
+				2
+			} else {
+				1
+			};
+			let result = tool
+				.invoke(
+					&context,
+					json!({"changes":[Change::Delete { id, expected_revision }]}),
+					&format!("delete-{id}"),
+				)
+				.await;
+			if verification == Verification::Unverified {
+				result.unwrap();
+			} else {
+				assert!(matches!(result, Err(aidash_server::Error::Forbidden)));
+			}
+			let row = native::query(
+				&Query::select()
+					.columns(["revision", "deleted", "verification", "text"].map(Alias::new))
+					.from(Alias::new("memory_units"))
+					.and_where(Expr::col("id").eq(Expr::value(id)))
+					.to_string(PostgresQueryBuilder),
+			)
+			.fetch_one(&fixture.f.store.pool)
+			.await
+			.unwrap();
+			assert_eq!(
+				row.try_get::<bool>("deleted").unwrap(),
+				verification == Verification::Unverified
+			);
+			if verification != Verification::Unverified {
+				assert_eq!(row.try_get::<i64>("revision").unwrap(), 1);
+				assert_eq!(row.try_get::<String>("text").unwrap(), original.text);
+				assert_eq!(
+					row.try_get::<String>("verification").unwrap(),
+					serde_json::to_value(verification)
+						.unwrap()
+						.as_str()
+						.unwrap()
+				);
+			}
+		}
+	}
+	fixture.dispose().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn completed_learning_origin_remains_live_through_failed_index_retry(
+	#[future(awt)]
+	#[from(test_environment)]
+	environment: Arc<TestEnvironment>,
+) {
+	use aidash_server::database::native;
+	use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query, QueryStatementBuilder};
+	let fixture = Fixture::new_with_policy(&environment, Some(8), Some(2), false, true).await;
+	let entry = fixture.remember().await;
+	semantic::worker::sweep(&fixture.f.store).await.unwrap();
+	fixture.remember.store(usize::MAX, Ordering::SeqCst);
+	fixture.drive().await;
+	let run = fixture.f.store.runs().await.unwrap().remove(0);
+	assert_eq!(run.phase().as_str(), "COMPLETED");
+	// Reindex an admitted generated unit after its Run completes, then fail one
+	// provider attempt. Completion must preserve the scheduled retry's authority.
+	let metadata: Value = native::query_scalar(
+		&Query::select()
+			.column(Alias::new("metadata"))
+			.from(Alias::new("semantic_entries"))
+			.and_where(Expr::col("id").eq(Expr::value(entry)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.scalar_one(&fixture.f.store.pool)
+	.await
+	.unwrap();
+	let (code, response) = request(
+		&fixture.app,
+		&fixture.f.config.api_token,
+		"POST",
+		&format!("/api/workspaces/{}/memory/operate", fixture.workspace),
+		json!({"operation_id":Uuid::now_v7(),"provider":metadata["provider"],"bank":metadata["bank"],"action":{"action":"reindex","expected_index_revision":fixture.index["revision"]}}),
+	)
+	.await;
+	assert_eq!(code, 200, "{response}");
+	fixture.response_mode.store(1, Ordering::SeqCst);
+	semantic::worker::sweep(&fixture.f.store).await.unwrap();
+	let indexed = || async {
+		native::query_scalar::<String>(
+			&Query::select()
+				.column(Alias::new("state"))
+				.from(Alias::new("semantic_entries"))
+				.and_where(Expr::col("id").eq(Expr::value(entry)))
+				.to_string(PostgresQueryBuilder),
+		)
+		.scalar_one(&fixture.f.store.pool)
+		.await
+	};
+	assert_eq!(indexed().await.unwrap(), "ERROR");
+	let bank: Uuid = native::query_scalar(
+		&Query::select()
+			.column(Alias::new("bank_id"))
+			.from(Alias::new("memory_units"))
+			.and_where(Expr::col("id").eq(Expr::value(entry)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.scalar_one(&fixture.f.store.pool)
+	.await
+	.unwrap();
+	// Pin an already-completed learning disposition so the test isolates the
+	// admitted-unit index retry rather than another model learning invocation.
+	let mut tx = native::begin(&fixture.f.store.pool).await.unwrap();
+	native::query(
+		&Query::insert()
+			.into_table(Alias::new("memory_engine_jobs"))
+			.columns(
+				[
+					"id",
+					"bank_id",
+					"provider_id",
+					"provider_version",
+					"kind",
+					"input",
+					"authority",
+					"state",
+					"attempts",
+					"next_attempt",
+					"created_at",
+					"updated_at",
+				]
+				.map(Alias::new),
+			)
+			.from_subquery(
+				Query::select()
+					.expr(Expr::value(run.id))
+					.expr(Expr::value(bank))
+					.expr(Expr::value("memory"))
+					.expr(Expr::value("1.0.0"))
+					.expr(Expr::value("learn"))
+					.expr(Expr::value(
+						json!({"kind":"learn","run":run.id,"revision":run.revision}),
+					))
+					.expr(Expr::value(json!({"kind":"operator"})))
+					.expr(Expr::value("complete"))
+					.expr(Expr::value(1_i32))
+					.expr(Expr::value(chrono::Utc::now()))
+					.expr(Expr::value(chrono::Utc::now()))
+					.expr(Expr::value(chrono::Utc::now()))
+					.to_owned(),
+			)
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(&mut *tx)
+	.await
+	.unwrap();
+	tx.commit().await.unwrap();
+	aidash_server::generation::provision::reconcile(&fixture.f)
+		.await
+		.unwrap();
+	let request_id: Uuid = fixture.job["id"].as_str().unwrap().parse().unwrap();
+	let status = || async {
+		native::query_scalar::<String>(
+			&Query::select()
+				.column(Alias::new("status"))
+				.from(Alias::new("generation_requests"))
+				.and_where(Expr::col("id").eq(Expr::value(request_id)))
+				.to_string(PostgresQueryBuilder),
+		)
+		.scalar_one(&fixture.f.store.pool)
+		.await
+	};
+	assert_eq!(
+		status().await.unwrap(),
+		"ACTIVE",
+		"a transient index failure must retain the origin until retry"
+	);
+	fixture.response_mode.store(0, Ordering::SeqCst);
+	let mut tx = native::begin(&fixture.f.store.pool).await.unwrap();
+	// Advance the failed model attempt beyond its durable single-call window;
+	// it remains charged while the semantic retry receives a fresh reservation.
+	native::query(
+		&Query::update()
+			.table(Alias::new("memory_model_attempts"))
+			.value(
+				Alias::new("created_at"),
+				chrono::Utc::now() - chrono::Duration::seconds(32),
+			)
+			.and_where(Expr::col("state").eq("pending"))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(&mut *tx)
+	.await
+	.unwrap();
+	native::query(
+		&Query::update()
+			.table(Alias::new("semantic_entries"))
+			.value(Alias::new("next_attempt"), chrono::Utc::now())
+			.and_where(Expr::col("id").eq(Expr::value(entry)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(&mut *tx)
+	.await
+	.unwrap();
+	tx.commit().await.unwrap();
+	semantic::worker::sweep(&fixture.f.store).await.unwrap();
+	assert_eq!(
+		indexed().await.unwrap(),
+		"READY",
+		"the retained origin must authorize the successful retry"
+	);
+	let bank_identity: aidash_domain::memory::Bank =
+		serde_json::from_value(metadata["bank"].clone()).unwrap();
+	let provider: aidash_domain::registry::EntityRef =
+		serde_json::from_value(metadata["provider"].clone()).unwrap();
+	let read = aidash_server::semantic::native_memory::ReadBank {
+		bank: bank_identity.clone(),
+		provider: provider.clone(),
+	};
+	let learned = aidash_server::semantic::native_memory::list(
+		&fixture.f.store,
+		&aidash_server::authorization::identity::Actor::Operator,
+		read,
+	)
+	.await
+	.unwrap();
+	let source = learned
+		.iter()
+		.find(|unit| unit.id == entry)
+		.unwrap()
+		.clone();
+	let mut unrelated = source.content.clone();
+	unrelated.text = "Unrelated prior knowledge".into();
+	unrelated.evidence.clear();
+	unrelated.links.clear();
+	let other = aidash_server::semantic::native_memory::mutate(
+		&fixture.f.store,
+		&aidash_server::authorization::identity::Actor::Operator,
+		aidash_domain::memory::Mutation {
+			operation_id: Uuid::now_v7(),
+			provider: provider.clone(),
+			bank: bank_identity.clone(),
+			changes: vec![aidash_domain::memory::Change::Add {
+				id: Uuid::now_v7(),
+				content: unrelated,
+			}],
+		},
+	)
+	.await
+	.unwrap()
+	.remove(0);
+	let mut tx = native::begin(&fixture.f.store.pool).await.unwrap();
+	native::query(
+		&Query::update()
+			.table(Alias::new("semantic_entries"))
+			.value(Alias::new("state"), "ERROR")
+			.and_where(Expr::col("id").eq(Expr::value(other.id)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(&mut *tx)
+	.await
+	.unwrap();
+	tx.commit().await.unwrap();
+	aidash_server::generation::provision::reconcile(&fixture.f)
+		.await
+		.unwrap();
+	assert_eq!(status().await.unwrap(), "COMPLETED");
+	aidash_server::semantic::native_memory::mutate(
+		&fixture.f.store,
+		&aidash_server::authorization::identity::Actor::Operator,
+		aidash_domain::memory::Mutation {
+			operation_id: Uuid::now_v7(),
+			provider: provider.clone(),
+			bank: bank_identity.clone(),
+			changes: vec![aidash_domain::memory::Change::Delete {
+				id: other.id,
+				expected_revision: other.revision,
+			}],
+		},
+	)
+	.await
+	.unwrap();
+	let calls = fixture.inference.load(Ordering::SeqCst);
+	let operation_id = Uuid::now_v7();
+	let mut derived = source.content.clone();
+	derived.kind = aidash_domain::memory::Kind::Observation;
+	derived.evidence = vec![source.evidence()];
+	let (code, response) = request(
+		&fixture.app,
+		&fixture.f.config.api_token,
+		"POST",
+		&format!("/api/workspaces/{}/memory/operate", fixture.workspace),
+		json!({"operation_id":operation_id,"provider":provider,"bank":bank_identity,
+            "action":{"action":"derive","kind":"observation","sources":[source.evidence()],
+                "mutation":{"operation_id":operation_id,"provider":provider,"bank":bank_identity,
+                    "changes":[{"operation":"add","id":Uuid::now_v7(),"content":derived}]}}}),
+	)
+	.await;
+	assert_eq!(
+		code, 403,
+		"retired source origins must deny model work: {response}"
+	);
+	assert_eq!(fixture.inference.load(Ordering::SeqCst), calls);
+	fixture.dispose().await;
+}

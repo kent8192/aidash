@@ -37,6 +37,14 @@ class HostTests(unittest.TestCase):
             completed_transfers=[],
         )
 
+    def test_memory_recovery_directory_follows_the_retained_home_identity(self):
+        secret = {"payload": {"data": host.base64.b64encode(json.dumps({"AIDASH_OIDC_CLIENT_ID": "fixture-client", "AIDASH_OIDC_CLIENT_SECRET": "fixture-secret"}).encode()).decode()}}
+        with patch.object(host, "request", return_value=json.dumps(secret).encode()), patch.object(host, "cloud_token", return_value="fixture"):
+            host.configuration({"project": "fixture", "secret": "home-a", "hostname": "example.invalid"})
+        values = dict(line.split("=", 1) for line in (host.RUN / "app.env").read_text().splitlines())
+        self.assertEqual(values["AIDASH_MEMORY_RECOVERY_DIR"], str(host.ROOT / "memory-recovery"))
+        self.assertEqual(values["AIDASH_NODE_ID"], "aidash://home-a")
+
     def record_previous(self, observed_at, busy):
         (self.directory / "last-active").write_text("100")
         (self.directory / "activity.json").write_text(

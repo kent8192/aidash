@@ -22,6 +22,7 @@ pub async fn sweep(
 		}
 	}
 	cleanup(repository, vector).await?;
+	repository.maintenance().await?;
 	Ok(processed)
 }
 

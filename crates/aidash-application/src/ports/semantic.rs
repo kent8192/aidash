@@ -66,6 +66,10 @@ pub trait SemanticCleanupSession: Send {
 
 #[async_trait]
 pub trait SemanticIndexingRepository: Send + Sync {
+	/// Native adapters can run bounded maintenance alongside index cleanup.
+	async fn maintenance(&self) -> Result<()> {
+		Ok(())
+	}
 	async fn begin_visibility(&self) -> Result<Box<dyn SemanticVisibility>>;
 	/// Return at most 32 entries ordered by the original due time and ID.
 	async fn due(&self) -> Result<Vec<Uuid>>;

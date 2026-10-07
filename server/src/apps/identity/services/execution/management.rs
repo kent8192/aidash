@@ -18,6 +18,9 @@ pub struct RunManagement {
 	pub phase: RunPhase,
 	pub control: RunControl,
 	pub semantic_reason: Option<crate::semantic::remote::Failure>,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub memory_cleanup:
+		Option<crate::apps::knowledge::repositories::receiver_caches::CleanupStatus>,
 }
 impl From<RunInspection> for RunManagement {
 	fn from(run: RunInspection) -> Self {
@@ -26,6 +29,7 @@ impl From<RunInspection> for RunManagement {
 			phase: run.phase,
 			control: run.control,
 			semantic_reason: run.recovery.as_ref().and_then(|r| r.semantic_reason),
+			memory_cleanup: None,
 		}
 	}
 }
@@ -104,12 +108,23 @@ async fn authorized(access: &mut Access, id: Uuid, node: &str) -> Result<RunInsp
 
 pub(crate) async fn get(f: Federation, actor: Actor, id: Uuid) -> Result<RunManagement> {
 	let Actor::Subject(identity) = actor else {
-		return Ok(f.store.inspect_run(id).await?.into());
+		let mut result: RunManagement = f.store.inspect_run(id).await?.into();
+		let mut tx = crate::database::native::begin(&f.store.control_pool).await?;
+		result.memory_cleanup =
+			crate::apps::knowledge::repositories::receiver_caches::status(&mut tx, id).await?;
+		tx.rollback().await?;
+		return Ok(result);
 	};
 	let mut access = Access::begin(&f.store, &identity).await?;
-	let result = authorized(&mut access, id, &f.config.node_id)
-		.await
-		.map(|r| r.into());
+	let result = async {
+		let mut result: RunManagement =
+			authorized(&mut access, id, &f.config.node_id).await?.into();
+		result.memory_cleanup =
+			crate::apps::knowledge::repositories::receiver_caches::status(&mut access.tx, id)
+				.await?;
+		Ok(result)
+	}
+	.await;
 	access.finish(result).await
 }
 

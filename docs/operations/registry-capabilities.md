@@ -10,7 +10,7 @@ Bundle member IDs must be unique within each bundle, including across versions a
 
 Until the native Agent cutover, Registry and Marketplace retain strict validation of existing transport-tagged Tool definitions. These definitions keep their original execution path and are not converted into Provider descriptors or admitted by the new Binding resolver.
 
-Node startup seeds the 15 required/default builtin declarations at exact immutable versions. Seeding verifies existing bytes and fails the entire transaction on a reserved-name conflict. System catalog visibility does not add tenant resource grants. Builtins cannot be published, installed or mutated through Marketplace.
+Node startup seeds the 17 required/default builtin declarations at exact immutable versions. Seeding verifies existing bytes and fails the entire transaction on a reserved-name conflict. System catalog visibility does not add tenant resource grants. Builtins cannot be published, installed or mutated through Marketplace.
 
 ## Pending Host packages
 
@@ -48,3 +48,9 @@ Every digest, revision, provider, dependency kind and lifecycle member is checke
 Complete new-schema registration, templates, Dashboard and workbench changes. Connect native admission to immutable Run snapshots before activation, and connect execution to those snapshots with current authority and provider checks. Add native context observations and Home-backed remote `workspace_read`/`human_request` admission. Verify source revocation and explicit same-snapshot resumption.
 
 Drain existing work before fleet cutover. Existing Agent configurations, aliases and `builtin:*` grants are not migrated, and no active installation is manufactured from their old flags. Retain historical definitions, receipts and journals. Deploy only after the new Agent contract has native acceptance evidence; the current local work is not that evidence.
+
+Native memory roles use `memory_mutate`, `memory_recall`, and `memory_reflect`.
+Memory Provider admission bounds worst-case semantic graph scoring to 32 Mi scalar
+comparisons using `max_units * max_units * embedding.dimensions`. Reduce `max_units`
+when selecting larger embedding vectors; an oversized policy is rejected before a
+bank is pinned. Vector norms are computed once per snapshot.

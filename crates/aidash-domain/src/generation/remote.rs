@@ -27,6 +27,10 @@ pub struct Approvals {
 	pub compaction: Option<Allowance>,
 	#[serde(default, skip_serializing_if = "Vec::is_empty")]
 	pub inference: Vec<Provider>,
+	/// Home-owned native memory model roles. The ancestor's total token budget
+	/// and the pinned memory workflow's call/token/cost caps both apply.
+	#[serde(default, skip_serializing_if = "Vec::is_empty")]
+	pub memory: Vec<Provider>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -70,6 +74,7 @@ pub enum Purpose {
 	Embedding,
 	Inference,
 	Compaction,
+	Memory,
 }
 
 fn valid_digest(s: &str) -> bool {
@@ -79,7 +84,7 @@ fn valid_digest(s: &str) -> bool {
 
 impl Approvals {
 	pub fn validate(&self) -> crate::Result<()> {
-		if self.inference.len() > 32 {
+		if self.inference.len() > 32 || self.memory.len() > 32 {
 			return Err(crate::Error::Invalid(
 				"too many remote inference approvals".into(),
 			));
@@ -96,6 +101,7 @@ impl Approvals {
 		for provider in self
 			.inference
 			.iter()
+			.chain(self.memory.iter())
 			.chain(self.embedding.iter().map(|a| &a.provider))
 			.chain(self.compaction.iter().map(|a| &a.provider))
 		{
@@ -122,6 +128,7 @@ impl Purpose {
 			Self::Embedding => "embedding",
 			Self::Inference => "inference",
 			Self::Compaction => "compaction",
+			Self::Memory => "memory",
 		}
 	}
 	pub fn action(self) -> &'static str {
@@ -129,6 +136,7 @@ impl Purpose {
 			Self::Embedding => "embedding.invoke",
 			Self::Inference => "model.infer",
 			Self::Compaction => "compaction.invoke",
+			Self::Memory => "memory.invoke",
 		}
 	}
 }

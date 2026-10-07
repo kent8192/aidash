@@ -16,7 +16,7 @@ fn spec() -> IndexingSpec {
 			dimensions: 2,
 		},
 		vector: VectorConfig {
-			provider: "qdrant".into(),
+			provider: "postgres".into(),
 			endpoint: "https://vectors.invalid".into(),
 			credential_env: None,
 		},
@@ -79,7 +79,6 @@ struct Scope {
 	count: i64,
 	text: Option<String>,
 	replay: bool,
-	managed: bool,
 	pages: VecDeque<Vec<History>>,
 }
 impl Default for Scope {
@@ -95,7 +94,6 @@ impl Default for Scope {
 			count: 0,
 			text: Some("content".into()),
 			replay: false,
-			managed: false,
 			pages: VecDeque::new(),
 		}
 	}
@@ -171,18 +169,6 @@ impl SemanticEntriesSession for Scope {
 	async fn reindex_replay(&mut self, _: Uuid, _: i64) -> Result<bool> {
 		self.touch("reindex_replay")?;
 		Ok(self.replay)
-	}
-	async fn managed_memory(&mut self, _: Uuid) -> Result<Option<(String, String, String)>> {
-		self.touch("managed")?;
-		Ok(self
-			.managed
-			.then(|| ("agent".into(), "1".into(), "home".into())))
-	}
-	async fn require_memory_write(&mut self, _: Uuid, _: &str, _: &str) -> Result<()> {
-		self.touch("memory_write")
-	}
-	async fn delete_memory(&mut self, _: Uuid, _: String, _: String, _: String) -> Result<()> {
-		self.touch("delete_memory")
 	}
 	async fn change(
 		&mut self,
@@ -392,11 +378,10 @@ async fn changed_memory_preserves_creator_and_replaces_point_identity() {
 #[case::delete(true)]
 #[case::reindex(false)]
 #[tokio::test]
-async fn managed_deletion_and_reindex_keep_separate_authority_paths(#[case] delete: bool) {
+async fn deletion_and_reindex_keep_separate_source_authority_paths(#[case] delete: bool) {
 	let old = entry();
 	let mut scope = Scope {
 		old: Some(old.clone()),
-		managed: true,
 		..Default::default()
 	};
 	let result = change(&mut scope, old.workspace_id, old.id, 1, delete)
@@ -406,8 +391,6 @@ async fn managed_deletion_and_reindex_keep_separate_authority_paths(#[case] dele
 	assert_eq!(result.deleted, delete);
 	assert_ne!(result.point_id, old.point_id);
 	assert_eq!(scope.calls.contains(&"source"), !delete);
-	assert_eq!(scope.calls.contains(&"memory_write"), delete);
-	assert_eq!(scope.calls.contains(&"delete_memory"), delete);
 	assert_eq!(scope.calls.last(), Some(&"history"));
 }
 #[rstest]
@@ -430,26 +413,6 @@ async fn mutation_replays_check_read_authority_and_skip_new_effects(#[case] dele
 	assert!(scope.calls.contains(&"read"));
 	assert!(!scope.calls.contains(&"change"));
 	assert!(!scope.calls.contains(&"source"));
-}
-#[rstest]
-#[tokio::test]
-async fn managed_memory_denial_prevents_memory_and_semantic_deletion() {
-	let old = entry();
-	let mut scope = Scope {
-		old: Some(old.clone()),
-		managed: true,
-		fail: Some("memory_write"),
-		..Default::default()
-	};
-	assert_eq!(
-		change(&mut scope, old.workspace_id, old.id, 1, true)
-			.await
-			.unwrap_err()
-			.to_string(),
-		"memory_write"
-	);
-	assert!(!scope.calls.contains(&"delete_memory"));
-	assert!(!scope.calls.contains(&"change"));
 }
 #[rstest]
 #[tokio::test]

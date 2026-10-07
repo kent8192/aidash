@@ -40,6 +40,16 @@ pub trait ToolOperations: Send + Sync {
 		offset: usize,
 		maximum: usize,
 	) -> Result<Value>;
-	async fn remember(&self, input: &Value) -> Result<()>;
+	async fn memory_mutate(
+		&self,
+		key: &str,
+		changes: &[aidash_domain::memory::Change],
+	) -> Result<Vec<aidash_domain::memory::Unit>>;
+	async fn memory_recall(
+		&self,
+		key: &str,
+		query: &aidash_domain::memory::RecallQuery,
+		reflect: bool,
+	) -> Result<Value>;
 	async fn human_request(&self, kind: &str, prompt: &str, key: &str) -> Result<HumanRequest>;
 }

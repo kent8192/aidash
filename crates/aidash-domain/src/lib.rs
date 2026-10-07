@@ -5,6 +5,7 @@ pub mod deployment;
 pub mod entities;
 pub mod identity;
 pub mod media;
+pub mod memory;
 pub mod model;
 pub mod policy;
 pub mod provider;

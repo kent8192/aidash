@@ -7,16 +7,11 @@ use chrono::{Duration, Utc};
 use reinhardt::db::orm::Model;
 use rstest::{fixture, rstest};
 use serde_json::{Value, json};
-use std::sync::atomic::Ordering;
 use uuid::Uuid;
-
-#[path = "support/cleanup_backend.rs"]
-mod cleanup_fixture;
-use cleanup_fixture::{CleanupBackend, cleanup_backend};
 
 #[fixture]
 fn index_spec() -> Value {
-	json!({"embedding":{"provider":"openai","endpoint":"http://localhost:9","credential_env":null,"model":"fixture","model_version":"1","dimensions":8},"vector":{"provider":"qdrant","endpoint":"http://localhost:9","credential_env":null},"enabled":true,"auto_context":false,"max_sources":10,"max_results":5,"max_result_tokens":128,"max_input_bytes":256})
+	json!({"embedding":{"provider":"openai","endpoint":"http://localhost:9","credential_env":null,"model":"fixture","model_version":"1","dimensions":8},"vector":{"provider":"postgres","endpoint":"local","credential_env":null},"enabled":true,"auto_context":false,"max_sources":10,"max_results":5,"max_result_tokens":128,"max_input_bytes":256})
 }
 
 #[rstest]
@@ -328,14 +323,15 @@ async fn malformed_sources_and_client_authority_cannot_create_semantic_entries(
 #[tokio::test]
 async fn index_generation_replay_and_cleanup_retries_keep_durable_tombstones(
 	#[future] endpoint: EndpointFixture,
-	#[future] cleanup_backend: CleanupBackend,
 	mut index_spec: Value,
 ) {
+	use aidash_server::database::native;
+	use reinhardt::query::{
+		Alias, Expr, PostgresQueryBuilder, Query, QueryStatementBuilder,
+		types::{ColumnDef, ColumnType},
+	};
 	// Arrange two generations, including a superseded point in the active collection.
 	let app = endpoint.await;
-	let backend = cleanup_backend.await;
-	index_spec["vector"]["endpoint"] = json!(backend.server.url);
-	index_spec["embedding"]["endpoint"] = json!(backend.server.url);
 	let workspace = workspace(&app.operator, "Generation cleanup").await;
 	let base = format!(
 		"/api/workspaces/{}/semantic",
@@ -387,6 +383,70 @@ async fn index_generation_replay_and_cleanup_retries_keep_durable_tombstones(
 	assert_eq!(reconfigured[0]["revision"], 1);
 	assert_eq!(reconfigured[0]["index_revision"], 2);
 	assert_ne!(original["point_id"], reconfigured[0]["point_id"]);
+	let point_id: Uuid = serde_json::from_value(reconfigured[0]["point_id"].clone()).unwrap();
+	let vector: aidash_server::semantic::VectorConfig =
+		serde_json::from_value(index_spec["vector"].clone()).unwrap();
+	let store = &app.runtime.store;
+	let first_collection = first["collection"].as_str().unwrap();
+	let second_collection = second["collection"].as_str().unwrap();
+	aidash_server::semantic::backend::ensure_collection(store, &vector, first_collection, 8)
+		.await
+		.unwrap();
+	aidash_server::semantic::backend::ensure_collection(store, &vector, second_collection, 8)
+		.await
+		.unwrap();
+	aidash_server::semantic::backend::upsert(
+		store,
+		&vector,
+		second_collection,
+		point_id,
+		&[1., 0., 0., 0., 0., 0., 0., 0.],
+		json!({"workspace_id":workspace["id"],"tenant":""}),
+	)
+	.await
+	.unwrap();
+	// Real FK holds inject deletion failures in the current PostgreSQL adapter.
+	let mut tx = native::begin(&store.pool).await.unwrap();
+	for (table, column, parent, parent_column, kind, value) in [
+		(
+			"fixture_point_hold",
+			"point_id",
+			"semantic_vectors",
+			"id",
+			ColumnType::Uuid,
+			Expr::value(point_id),
+		),
+		(
+			"fixture_collection_hold",
+			"collection",
+			"semantic_vector_collections",
+			"collection",
+			ColumnType::Text,
+			Expr::value(first_collection),
+		),
+	] {
+		native::query(
+			&Query::create_table()
+				.table(Alias::new(table))
+				.col(ColumnDef::new(column).column_type(kind))
+				.foreign_key([column], Alias::new(parent), [parent_column], None, None)
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(&mut *tx)
+		.await
+		.unwrap();
+		native::query(
+			&Query::insert()
+				.into_table(Alias::new(table))
+				.columns([Alias::new(column)])
+				.from_subquery(Query::select().expr(value).to_owned())
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(&mut *tx)
+		.await
+		.unwrap();
+	}
+	tx.commit().await.unwrap();
 	let updated = assert_json(app.operator.post(&entries_path,
 		&json!({"key":"memory","expected_revision":1,"source":{"kind":"memory","text":"second"},"metadata":{}}), "json").await.unwrap(), 200);
 	let pending = json!({"points":{"retired":1,"pending":1,"failed":0},"collections":{"retired":1,"pending":1,"failed":0}});
@@ -402,22 +462,56 @@ async fn index_generation_replay_and_cleanup_retries_keep_durable_tombstones(
 		assert_json(app.operator.get(&cleanup_path).await.unwrap(), 200),
 		failed
 	);
-	let expected_requests = vec![
-		format!(
-			"point:{}:{}",
-			second["collection"].as_str().unwrap(),
-			reconfigured[0]["point_id"].as_str().unwrap()
-		),
-		format!("collection:{}", first["collection"].as_str().unwrap()),
-	];
-	assert_eq!(*backend.state.requests.lock().unwrap(), expected_requests);
+	let mut db = app.database.lease.handle();
+	let first_point_retry = SemanticPoint::objects()
+		.get(point_id)
+		.get_with_db(&mut db)
+		.await
+		.unwrap()
+		.next_attempt;
+	let first_collection_retry = SemanticCollection::objects()
+		.get(first_collection.to_owned())
+		.get_with_db(&mut db)
+		.await
+		.unwrap()
+		.next_attempt;
 	worker::sweep(&app.runtime.store).await.unwrap();
-	assert_eq!(*backend.state.requests.lock().unwrap(), expected_requests);
+	assert_eq!(
+		assert_json(app.operator.get(&cleanup_path).await.unwrap(), 200),
+		failed
+	);
+	assert_eq!(
+		SemanticPoint::objects()
+			.get(point_id)
+			.get_with_db(&mut db)
+			.await
+			.unwrap()
+			.next_attempt,
+		first_point_retry
+	);
+	assert_eq!(
+		SemanticCollection::objects()
+			.get(first_collection.to_owned())
+			.get_with_db(&mut db)
+			.await
+			.unwrap()
+			.next_attempt,
+		first_collection_retry
+	);
 
 	// Advance only the persisted retry deadline, then acknowledge absent identities.
-	backend.state.available.store(true, Ordering::SeqCst);
-	let mut db = app.database.lease.handle();
-	let point_id: Uuid = serde_json::from_value(reconfigured[0]["point_id"].clone()).unwrap();
+	let mut released = native::begin(&store.pool).await.unwrap();
+	for table in ["fixture_point_hold", "fixture_collection_hold"] {
+		native::query(
+			&Query::delete()
+				.from_table(Alias::new(table))
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(&mut *released)
+		.await
+		.unwrap();
+	}
+	released.commit().await.unwrap();
 	let mut point = SemanticPoint::objects()
 		.get(point_id)
 		.get_with_db(&mut db)
@@ -449,10 +543,6 @@ async fn index_generation_replay_and_cleanup_retries_keep_durable_tombstones(
 	assert_eq!(
 		assert_json(app.operator.get(&cleanup_path).await.unwrap(), 200),
 		cleaned
-	);
-	assert_eq!(
-		*backend.state.requests.lock().unwrap(),
-		[expected_requests.clone(), expected_requests].concat()
 	);
 	let points = SemanticPoint::objects()
 		.all()

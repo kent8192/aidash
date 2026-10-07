@@ -296,7 +296,7 @@ async fn remote_defaults_have_durable_exclusion_reasons_and_explicit_inputs_fail
 	let saved = resolve(
 		&mut catalog,
 		&Providers {
-			unavailable: Some("memory_write".into()),
+			unavailable: Some("memory_mutate".into()),
 		},
 		reference("agent"),
 		&agent_entry(&config),
@@ -307,7 +307,7 @@ async fn remote_defaults_have_durable_exclusion_reasons_and_explicit_inputs_fail
 	let memory = saved
 		.bindings
 		.iter()
-		.find(|binding| binding.identity.id == "aidash.memory_write")
+		.find(|binding| binding.identity.id == "aidash.memory_mutate")
 		.unwrap();
 	assert!(memory.excluded_reason.is_some());
 	assert!(memory.provider_implementation.is_none());
@@ -320,7 +320,7 @@ async fn remote_defaults_have_durable_exclusion_reasons_and_explicit_inputs_fail
 	);
 	config
 		.bindings
-		.push(Binding::tool(QualifiedRef::builtin(NODE, "memory_write")));
+		.push(Binding::tool(QualifiedRef::builtin(NODE, "memory_mutate")));
 	assert!(snapshot(&mut catalog, &config, true).await.is_err());
 }
 
@@ -346,7 +346,7 @@ async fn recovered_remote_snapshots_preserve_exclusions_and_provider_evidence_at
 		authority: live.clone(),
 	};
 	let tools = resolver.tools(&run).await.unwrap();
-	assert!(!tools.contains_key("memory_write"));
+	assert!(!tools.contains_key("memory_mutate"));
 	assert!(tools.contains_key("workspace_read"));
 	assert!(tools.contains_key("human_request"));
 
@@ -355,7 +355,7 @@ async fn recovered_remote_snapshots_preserve_exclusions_and_provider_evidence_at
 		let memory = altered
 			.bindings
 			.iter_mut()
-			.find(|binding| binding.alias.as_deref() == Some("memory_write"))
+			.find(|binding| binding.alias.as_deref() == Some("memory_mutate"))
 			.unwrap();
 		match mutation {
 			0 => {
@@ -393,7 +393,7 @@ async fn recovered_remote_snapshots_preserve_exclusions_and_provider_evidence_at
 	let memory = local
 		.bindings
 		.iter_mut()
-		.find(|binding| binding.alias.as_deref() == Some("memory_write"))
+		.find(|binding| binding.alias.as_deref() == Some("memory_mutate"))
 		.unwrap();
 	memory.excluded_reason = Some("provider contract is ineligible for remote execution".into());
 	memory.provider_implementation = None;
@@ -935,7 +935,7 @@ async fn another_nodes_valid_snapshot_cannot_be_admitted_or_dispatch_for_the_sam
 async fn recovered_snapshots_must_match_the_agent_binding_closure_before_run_admission() {
 	let mut catalog = Catalog::new();
 	let mut config = agent_config();
-	config.remove_default.push("memory_write".into());
+	config.remove_default.push("memory_mutate".into());
 	let mut get = Binding::tool(catalog.core("outbound_get"));
 	get.alias = Some("lookup".into());
 	get.narrow.allowed_hosts = Some(BTreeSet::from(["example.com".into()]));

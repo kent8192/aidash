@@ -1,6 +1,6 @@
 # Protocol and recovery contracts
 
-This document describes implemented runtime and recovery contracts. Cross-node transaction coordination, semantic vector memory, Kubernetes/k3s orchestration and scoped remote execution have implementation paths. Their complete integrated release acceptance remains open; full A2A interoperability is also open. See [transactions](transactions.md), [authorization](authorization.md), [semantic memory](semantic-memory.md) and [orchestration](orchestration.md) for their separate contracts and limits.
+This document describes implemented runtime and recovery contracts. Cross-node transaction coordination, semantic vector memory, Kubernetes/k3s orchestration and scoped remote execution have implementation paths. Their complete integrated release acceptance remains open; full A2A interoperability is also open. See [transactions](transactions.md), [authorization](authorization.md) and [orchestration](orchestration.md) for their separate contracts and limits.
 
 ## Trust and identity
 

@@ -1008,24 +1008,24 @@ pub(super) fn migration() -> Migration {
             name: "memory".to_string(),
             columns: vec![
                 ColumnDefinition::new("agent_id", FieldType::Text).with_not_null(true)
-                .with_unique(false).with_primary_key(true).with_auto_increment(false)
+                .with_unique(false).with_primary_key(false).with_auto_increment(false)
                 .with_default(None).with_generated(None).with_domain_option(None),
                 ColumnDefinition::new("agent_version", FieldType::Text)
-                .with_not_null(true).with_unique(false).with_primary_key(true)
+                .with_not_null(true).with_unique(false).with_primary_key(false)
                 .with_auto_increment(false).with_default(None).with_generated(None)
                 .with_domain_option(None), ColumnDefinition::new("data",
                 FieldType::Jsonb).with_not_null(true).with_unique(false)
                 .with_primary_key(false).with_auto_increment(false).with_default(None)
                 .with_generated(None).with_domain_option(None),
                 ColumnDefinition::new("home_node", FieldType::Text).with_not_null(true)
-                .with_unique(false).with_primary_key(true).with_auto_increment(false)
+                .with_unique(false).with_primary_key(false).with_auto_increment(false)
                 .with_default(None).with_generated(None).with_domain_option(None),
                 ColumnDefinition::new("workspace_id", FieldType::Uuid)
-                .with_not_null(true).with_unique(false).with_primary_key(true)
+                .with_not_null(true).with_unique(false).with_primary_key(false)
                 .with_auto_increment(false).with_default(None).with_generated(None)
                 .with_domain_option(None)
             ],
-            constraints: vec![],
+			constraints: vec![Constraint::PrimaryKey { name: "memory_next_pkey".into(), columns: vec!["agent_id".into(), "agent_version".into(), "workspace_id".into(), "home_node".into()] }],
             without_rowid: None,
             interleave_in_parent: None,
             partition: None,

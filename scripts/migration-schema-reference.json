@@ -1,0 +1,285 @@
+{
+  "source_revision": "cd29635a9937133d2e81cca44857bea331446cc5",
+  "migrations": [
+    {
+      "app": "execution",
+      "name": "0001_functions"
+    },
+    {
+      "app": "execution",
+      "name": "0002_tables"
+    },
+    {
+      "app": "execution",
+      "name": "0003_keys_indexes"
+    },
+    {
+      "app": "execution",
+      "name": "0004_references"
+    },
+    {
+      "app": "execution",
+      "name": "0006_triggers"
+    },
+    {
+      "app": "execution",
+      "name": "0007_model_state"
+    },
+    {
+      "app": "execution",
+      "name": "0008_native_memory_usage"
+    },
+    {
+      "app": "execution",
+      "name": "0009_run_task_snapshots"
+    },
+    {
+      "app": "execution",
+      "name": "0010_native_memory_model_state"
+    },
+    {
+      "app": "federation",
+      "name": "0001_functions"
+    },
+    {
+      "app": "federation",
+      "name": "0002_tables"
+    },
+    {
+      "app": "federation",
+      "name": "0003_keys_indexes"
+    },
+    {
+      "app": "federation",
+      "name": "0004_references"
+    },
+    {
+      "app": "federation",
+      "name": "0005_seed"
+    },
+    {
+      "app": "federation",
+      "name": "0006_triggers"
+    },
+    {
+      "app": "federation",
+      "name": "0007_model_state"
+    },
+    {
+      "app": "identity",
+      "name": "0002_tables"
+    },
+    {
+      "app": "identity",
+      "name": "0003_keys_indexes"
+    },
+    {
+      "app": "identity",
+      "name": "0004_references"
+    },
+    {
+      "app": "identity",
+      "name": "0006_triggers"
+    },
+    {
+      "app": "identity",
+      "name": "0007_model_state"
+    },
+    {
+      "app": "identity",
+      "name": "0008_desktop_schema"
+    },
+    {
+      "app": "identity",
+      "name": "0009_desktop_sessions"
+    },
+    {
+      "app": "knowledge",
+      "name": "0001_functions"
+    },
+    {
+      "app": "knowledge",
+      "name": "0002_tables"
+    },
+    {
+      "app": "knowledge",
+      "name": "0003_keys_indexes"
+    },
+    {
+      "app": "knowledge",
+      "name": "0004_references"
+    },
+    {
+      "app": "knowledge",
+      "name": "0006_triggers"
+    },
+    {
+      "app": "knowledge",
+      "name": "0007_model_state"
+    },
+    {
+      "app": "knowledge",
+      "name": "0008_postgres_vectors"
+    },
+    {
+      "app": "knowledge",
+      "name": "0009_native_memory"
+    },
+    {
+      "app": "knowledge",
+      "name": "0010_native_search_contract"
+    },
+    {
+      "app": "knowledge",
+      "name": "0011_memory_jobs"
+    },
+    {
+      "app": "knowledge",
+      "name": "0012_discard_json_banks"
+    },
+    {
+      "app": "knowledge",
+      "name": "0013_memory_reads"
+    },
+    {
+      "app": "knowledge",
+      "name": "0014_memory_review_audit"
+    },
+    {
+      "app": "knowledge",
+      "name": "0015_memory_purge"
+    },
+    {
+      "app": "knowledge",
+      "name": "0016_memory_bank_settings"
+    },
+    {
+      "app": "knowledge",
+      "name": "0017_memory_engine_jobs"
+    },
+    {
+      "app": "knowledge",
+      "name": "0018_memory_control_receipts"
+    },
+    {
+      "app": "knowledge",
+      "name": "0019_remote_memory_reads"
+    },
+    {
+      "app": "knowledge",
+      "name": "0020_memory_unit_origins"
+    },
+    {
+      "app": "knowledge",
+      "name": "0021_memory_unit_run_origins"
+    },
+    {
+      "app": "knowledge",
+      "name": "0022_memory_receiver_caches"
+    },
+    {
+      "app": "knowledge",
+      "name": "0023_native_memory_model_state"
+    },
+    {
+      "app": "knowledge",
+      "name": "0023_openrouter_embeddings"
+    },
+    {
+      "app": "marketplace",
+      "name": "0002_tables"
+    },
+    {
+      "app": "marketplace",
+      "name": "0003_keys_indexes"
+    },
+    {
+      "app": "marketplace",
+      "name": "0004_references"
+    },
+    {
+      "app": "marketplace",
+      "name": "0005_seed"
+    },
+    {
+      "app": "marketplace",
+      "name": "0006_triggers"
+    },
+    {
+      "app": "marketplace",
+      "name": "0007_model_state"
+    },
+    {
+      "app": "operations",
+      "name": "0000_environment"
+    },
+    {
+      "app": "operations",
+      "name": "0007_model_state"
+    },
+    {
+      "app": "registry",
+      "name": "0001_functions"
+    },
+    {
+      "app": "registry",
+      "name": "0002_tables"
+    },
+    {
+      "app": "registry",
+      "name": "0003_keys_indexes"
+    },
+    {
+      "app": "registry",
+      "name": "0004_references"
+    },
+    {
+      "app": "registry",
+      "name": "0006_triggers"
+    },
+    {
+      "app": "registry",
+      "name": "0007_model_state"
+    },
+    {
+      "app": "registry",
+      "name": "0008_memory_roles"
+    },
+    {
+      "app": "registry",
+      "name": "0009_memory_role_references"
+    },
+    {
+      "app": "registry",
+      "name": "0010_native_memory_model_state"
+    },
+    {
+      "app": "registry",
+      "name": "0011_openrouter_embeddings"
+    },
+    {
+      "app": "workspaces",
+      "name": "0001_functions"
+    },
+    {
+      "app": "workspaces",
+      "name": "0002_tables"
+    },
+    {
+      "app": "workspaces",
+      "name": "0003_keys_indexes"
+    },
+    {
+      "app": "workspaces",
+      "name": "0004_references"
+    },
+    {
+      "app": "workspaces",
+      "name": "0006_triggers"
+    },
+    {
+      "app": "workspaces",
+      "name": "0007_model_state"
+    }
+  ]
+}

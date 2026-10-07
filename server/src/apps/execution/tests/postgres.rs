@@ -2628,58 +2628,6 @@ async fn agent_tools_attach_children_and_clusters_require_existing_agents(
 
 #[rstest::rstest]
 #[tokio::test]
-async fn agent_memory_is_isolated_by_home_even_for_colliding_workspace_ids(
-	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
-) {
-	let (store, url, schema) = setup(&_test_environment).await;
-	let agent = seed(&Registry::new(store.pool.clone(), &store.node_id).unwrap()).await;
-	let workspace = store
-		.create_workspace("Memory", "Separate homes")
-		.await
-		.unwrap();
-	let task = store
-		.create_task(workspace.id, &new_task(), "human", None)
-		.await
-		.unwrap();
-	let local = store
-		.accept_run(&task, &store.node_id, &agent.id, &agent.version)
-		.await
-		.unwrap();
-	store
-		.remember(&local, &json!({"secret":"local"}))
-		.await
-		.unwrap();
-	// The fresh-schema contract is home isolation; migration replay is covered
-	// by the native management-command suite.
-	assert_eq!(
-		store.memory(&local).await.unwrap(),
-		json!({"secret":"local"})
-	);
-	let mut remote = local.clone();
-	remote.home_node = "aidash://peer-a".into();
-	assert_eq!(store.memory(&remote).await.unwrap(), json!({}));
-	store
-		.remember(&remote, &json!({"secret":"peer-a"}))
-		.await
-		.unwrap();
-	assert_eq!(
-		store.memory(&local).await.unwrap(),
-		json!({"secret":"local"})
-	);
-	remote.home_node = "aidash://peer-b".into();
-	assert_eq!(store.memory(&remote).await.unwrap(), json!({}));
-	remote.home_node = "aidash://peer-a".into();
-	assert_eq!(
-		store.memory(&remote).await.unwrap(),
-		json!({"secret":"peer-a"})
-	);
-	cleanup(store, &url, &schema).await;
-}
-
-#[rstest::rstest]
-#[tokio::test]
 async fn terminal_dependencies_fail_dependents_instead_of_polling_forever(
 	#[future(awt)]
 	#[from(test_environment)]

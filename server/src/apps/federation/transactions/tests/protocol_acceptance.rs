@@ -26,9 +26,7 @@ use worker_process::WorkerProcess;
 struct Node {
 	f: Federation,
 	server: Option<tokio::task::JoinHandle<()>>,
-	database: String,
 	listen: std::net::SocketAddr,
-	admin: String,
 	_capacity: Option<tokio::sync::OwnedSemaphorePermit>,
 }
 impl Node {
@@ -81,8 +79,6 @@ impl Node {
 			f,
 			listen,
 			server,
-			database,
-			admin,
 			_capacity: None,
 		}
 	}
@@ -139,15 +135,10 @@ impl Node {
 		self.stop().await;
 		self.f.store.pool.close().await;
 		self.f.store.control_pool.close().await;
-		PgConnection::connect(&self.admin)
-			.await
-			.unwrap()
-			.execute(
-				// SeaQuery has no DROP DATABASE WITH FORCE builder.
-				format!("DROP DATABASE {} WITH (FORCE)", self.database).as_str(),
-			)
-			.await
-			.unwrap();
+		// TestEnvironment owns the disposable postmaster and all isolated
+		// databases. Match the shared fixture cleanup: DROP DATABASE emits a
+		// global process barrier and can block another test's PGroonga index
+		// initialization. The final environment owner removes the container.
 	}
 }
 impl Drop for Node {

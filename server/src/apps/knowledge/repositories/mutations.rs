@@ -22,7 +22,7 @@ use reinhardt::query::{
 	Alias, ColumnRef, Expr, ExprTrait as _, LockType, OnConflict, Order, PostgresQueryBuilder,
 	Query, QueryStatementBuilder as _, SimpleExpr,
 };
-use serde_json::{Value, json};
+use serde_json::Value;
 use uuid::Uuid;
 
 pub(crate) struct NativeConfiguration {
@@ -82,6 +82,75 @@ impl SemanticConfigurationSession for Configuration {
 		spec: Value,
 		collection: &str,
 	) -> Result<Index> {
+		// The Workspace lock serializes index generations with bank policy pins.
+		// Include empty banks: their next projection and recall must remain usable.
+		let proposed: IndexingSpec = serde_json::from_value(spec.clone())?;
+		let mut after = Uuid::nil();
+		let mut checked = std::collections::BTreeSet::new();
+		loop {
+			let rows = crate::database::native::query(
+				&Query::select()
+					.columns([
+						("s", "bank_id"),
+						("s", "provider_id"),
+						("s", "provider_version"),
+					])
+					.from_as(Alias::new("memory_bank_settings"), Alias::new("s"))
+					.inner_join(
+						Alias::new("memory_banks"),
+						Expr::col(("s", "bank_id")).equals(("memory_banks", "id")),
+					)
+					.and_where(
+						Expr::col(("memory_banks", "workspace_id")).eq(Expr::value(workspace)),
+					)
+					.and_where(Expr::col(("s", "bank_id")).gt(Expr::value(after)))
+					.order_by(("s", "bank_id"), Order::Asc)
+					.limit(256)
+					.to_string(PostgresQueryBuilder),
+			)
+			.fetch_all(self.transaction.as_mut())
+			.await?;
+			if rows.is_empty() {
+				break;
+			}
+			for row in rows {
+				if !proposed.enabled {
+					return Err(aidash_application::Error::Conflict(
+						"Workspace index must remain enabled for pinned memory banks".into(),
+					));
+				}
+				after = row.try_get("bank_id")?;
+				let reference = (
+					row.try_get::<String>("provider_id")?,
+					row.try_get::<String>("provider_version")?,
+				);
+				if !checked.insert(reference.clone()) {
+					continue;
+				}
+				let provider = crate::apps::registry::models::Definition::read_in(
+					self.transaction.as_mut(),
+					&reference.0,
+					&reference.1,
+				)
+				.await?;
+				let config: aidash_domain::memory::ProviderConfig =
+					serde_json::from_value(provider.config)?;
+				let role = &config.policy.embedding;
+				let embedding = crate::apps::registry::models::Definition::read_in(
+					self.transaction.as_mut(),
+					&role.id,
+					&role.version,
+				)
+				.await?;
+				let embedding: aidash_domain::semantic::EmbeddingConfig =
+					serde_json::from_value(embedding.config)?;
+				if proposed.embedding != embedding {
+					return Err(aidash_application::Error::Conflict(
+						"Workspace index embedding differs from a pinned memory bank policy".into(),
+					));
+				}
+			}
+		}
 		Ok(SemanticIndexe::replace_generation(
 			self.transaction.as_mut(),
 			workspace,
@@ -462,80 +531,6 @@ impl SemanticEntriesSession for Entries<'_, '_> {
 		let lease = &mut *self.lease;
 
 		let result: NativeResult<bool>=async { let value: bool={ let query_bind_1 = id; let query_bind_2 = revision; crate::database::native::query_scalar(&Query::select().expr(SimpleExpr::CustomWithExpr("(EXISTS(SELECT 1 FROM semantic_history WHERE entry_id = ? AND revision = ? AND state = 'PENDING' AND detail = 'reindex requested'))".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into()])).to_string(PostgresQueryBuilder)).scalar_one(&mut **lease.tx()).await? }; Ok(value) }.await;
-		result.map_err(Into::into)
-	}
-
-	async fn managed_memory(&mut self, id: Uuid) -> Result<Option<(String, String, String)>> {
-		let lease = &mut *self.lease;
-
-		let result: NativeResult<Option<(String, String, String)>> = async {
-			let value: Option<(String, String, String)> = {
-				let query_bind_1 = id;
-				crate::database::native::query_as(
-					&Query::select()
-						.expr(SimpleExpr::from(Expr::col(Alias::new("agent_id"))))
-						.expr(SimpleExpr::from(Expr::col(Alias::new("agent_version"))))
-						.expr(SimpleExpr::from(Expr::col(Alias::new("home_node"))))
-						.from(Alias::new("semantic_agent_memory"))
-						.and_where(SimpleExpr::CustomWithExpr(
-							"(entry_id = ?)".to_owned(),
-							vec![Expr::value(query_bind_1.to_owned()).into()],
-						))
-						.to_string(PostgresQueryBuilder),
-				)
-				.columns(&["agent_id", "agent_version", "home_node"])
-				.fetch_optional(&mut **lease.tx())
-				.await?
-			};
-			Ok(value)
-		}
-		.await;
-		result.map_err(Into::into)
-	}
-
-	async fn require_memory_write(
-		&mut self,
-		workspace: Uuid,
-		agent: &str,
-		version: &str,
-	) -> Result<()> {
-		let result: NativeResult<()> = async {
-			if let Some(access) = self.lease.access() {
-				let workspace = access.workspace(workspace).await?;
-				let mut attributes = workspace.attributes;
-				attributes["created_by"] = json!(crate::domain::qualified_agent(
-					&access.node_id,
-					agent,
-					version
-				));
-				attributes["version"] = json!(version);
-				let resource = access.resource("memory", agent, attributes);
-				access.require(&resource, "memory.write").await?;
-			}
-			Ok(())
-		}
-		.await;
-		result.map_err(Into::into)
-	}
-
-	async fn delete_memory(
-		&mut self,
-		workspace: Uuid,
-		agent: String,
-		version: String,
-		home: String,
-	) -> Result<()> {
-		let lease = &mut *self.lease;
-		let agent_id = agent;
-		let agent_version = version;
-		let result: NativeResult<()> = async {
-			let query_bind_1 = workspace;
-			let query_bind_2 = agent_id;
-			let query_bind_3 = agent_version;
-			let query_bind_4 = home;
-			crate::database::native::query(&Query::delete().from_table(Alias::new("memory")).and_where(SimpleExpr::CustomWithExpr("(workspace_id = ? AND agent_id = ? AND agent_version = ? AND home_node = ?)".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into(), Expr::value(query_bind_3.to_owned()).into(), Expr::value(query_bind_4.to_owned()).into()])).to_string(PostgresQueryBuilder)).execute(&mut **lease.tx()).await?;
-			Ok(())
-		}.await;
 		result.map_err(Into::into)
 	}
 

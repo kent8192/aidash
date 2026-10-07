@@ -12,7 +12,7 @@ command = "docker"
 args = ["compose", "--profile", "dev", "down"]
 
 [tasks.k8s-up]
-description = "Build and start Aidash with PostgreSQL, NATS, and Qdrant in a local kind cluster"
+description = "Build and start Aidash with PostgreSQL and NATS in a local kind cluster"
 dependencies = [
   "k8s-prepare",
   "k8s-apply-config",
@@ -22,10 +22,9 @@ dependencies = [
   "k8s-load",
   "k8s-apply-infra",
   "k8s-restart-postgres",
-  "k8s-restart-qdrant",
   "k8s-wait-postgres",
   "k8s-wait-nats",
-  "k8s-wait-qdrant",
+  "k8s-memory-recovery",
   "k8s-helm",
   "k8s-restart-server",
   "k8s-restart-worker",
@@ -125,19 +124,6 @@ args = [
   "statefulset/postgres",
 ]
 
-[tasks.k8s-restart-qdrant]
-private = true
-command = "kubectl"
-args = [
-  "--kubeconfig",
-  ".ignore/local-k8s/kubeconfig",
-  "-n",
-  "aidash-local",
-  "rollout",
-  "restart",
-  "statefulset/qdrant",
-]
-
 [tasks.k8s-wait-postgres]
 private = true
 command = "kubectl"
@@ -166,19 +152,15 @@ args = [
   "--timeout=300s",
 ]
 
-[tasks.k8s-wait-qdrant]
+[tasks.k8s-memory-recovery]
 private = true
-command = "kubectl"
-args = [
-  "--kubeconfig",
-  ".ignore/local-k8s/kubeconfig",
-  "-n",
-  "aidash-local",
-  "rollout",
-  "status",
-  "statefulset/qdrant",
-  "--timeout=300s",
-]
+script_runner = "sh"
+script = '''
+set -eu
+kubectl --kubeconfig .ignore/local-k8s/kubeconfig -n aidash-local delete job aidash-memory-recovery-init --ignore-not-found
+kubectl --kubeconfig .ignore/local-k8s/kubeconfig -n aidash-local apply -f deploy/local-k8s/memory-recovery.yaml
+kubectl --kubeconfig .ignore/local-k8s/kubeconfig -n aidash-local wait --for=condition=complete job/aidash-memory-recovery-init --timeout=300s
+'''
 
 [tasks.k8s-helm]
 private = true
@@ -196,6 +178,12 @@ args = [
   "node.id=aidash://node-a",
   "--set-string",
   "existingSecret=aidash-local-app",
+  "--set-string",
+  "memoryRecovery.existingClaim=aidash-memory-recovery",
+  "--set-string",
+  "memoryRecovery.directory=/var/lib/aidash/memory-recovery/home",
+  "--set-string",
+  "memoryRecovery.subPath=home",
   "--set-string",
   "image.repository=aidash",
   "--set-string",

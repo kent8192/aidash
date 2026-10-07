@@ -52,9 +52,9 @@ fn http_and_mcp_publisher_claims_do_not_manufacture_replay_guarantees() {
 }
 #[test]
 fn only_implicit_defaults_can_be_excluded_remotely() {
-	let descriptor = core_descriptor("aidash://node-a", "memory_write").unwrap();
+	let descriptor = core_descriptor("aidash://node-a", "memory_mutate").unwrap();
 	let contract = descriptor
-		.declared_contract(QualifiedRef::builtin("aidash://node-a", "memory_write"))
+		.declared_contract(QualifiedRef::builtin("aidash://node-a", "memory_mutate"))
 		.unwrap();
 	assert!(
 		remote_exclusion(BindingOrigin::Default, &contract)

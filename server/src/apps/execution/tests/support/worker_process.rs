@@ -20,7 +20,25 @@ impl WorkerProcess {
 		std::fs::read_to_string(self._directory.path().join("worker.log")).unwrap()
 	}
 
+	#[allow(dead_code)] // This shared fixture is compiled by suites with different startup paths.
 	pub fn start(runtime: &Federation, url: &str, schema: &str) -> Self {
+		Self::start_configured(runtime, url, schema, None)
+	}
+	#[allow(dead_code)] // Native-memory suites additionally require the independent Home ledger.
+	pub fn start_with_memory(
+		runtime: &Federation,
+		url: &str,
+		schema: &str,
+		memory: &std::path::Path,
+	) -> Self {
+		Self::start_configured(runtime, url, schema, Some(memory))
+	}
+	fn start_configured(
+		runtime: &Federation,
+		url: &str,
+		schema: &str,
+		memory: Option<&std::path::Path>,
+	) -> Self {
 		let directory = temp_dir();
 		let mut settings = settings_for(url);
 		settings.node.node_id = runtime.config.node_id.clone();
@@ -43,8 +61,12 @@ impl WorkerProcess {
 		)
 		.unwrap();
 		let log = File::create(directory.path().join("worker.log")).unwrap();
-		let process = Command::new(env!("CARGO_BIN_EXE_aidash"))
-			.args(["worker"])
+		let mut command = Command::new(env!("CARGO_BIN_EXE_aidash"));
+		command
+			// Fixtures have already applied the native migration graph. Exercise
+			// the worker lifecycle directly; deployment migration is tested by
+			// the command suites and must not consume the provider-cut deadline.
+			.args(["runworker"])
 			.env_clear()
 			.env("PATH", std::env::var_os("PATH").unwrap_or_default())
 			.env("REINHARDT_SETTINGS_DIR", directory.path())
@@ -53,17 +75,15 @@ impl WorkerProcess {
 				"AIDASH_SECRET_TEST_PEER",
 				"local-peer-regression-test-token-0123456789",
 			)
-			.env(
-				"AIDASH_SECRET_TEST_QDRANT",
-				"local-semantic-vector-fixture-key-0123456789",
-			)
 			.env("RUST_BACKTRACE", "0")
 			.current_dir(env!("CARGO_MANIFEST_DIR"))
 			.stdin(Stdio::null())
 			.stdout(log.try_clone().unwrap())
-			.stderr(log)
-			.spawn()
-			.unwrap();
+			.stderr(log);
+		if let Some(memory) = memory {
+			command.env("AIDASH_MEMORY_RECOVERY_DIR", memory);
+		}
+		let process = command.spawn().unwrap();
 		Self {
 			process,
 			_directory: directory,

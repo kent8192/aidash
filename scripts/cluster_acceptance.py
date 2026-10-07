@@ -68,16 +68,15 @@ def main():
         apply({"apiVersion": "v1", "kind": "ConfigMap", "metadata": {"name": "fixture-code"}, "data": {name: (ROOT / "scripts" / name).read_text() for name in ["golden_path.py", "cluster_fixture.py"]}})
         database = stateful("postgres", args.postgres_image, 5432, {"args": ["-c", "max_connections=400"], "env": [{"name": "POSTGRES_USER", "value": "aidash"}, {"name": "POSTGRES_PASSWORD", "value": "acceptance-local-password"}, {"name": "POSTGRES_DB", "value": "aidash_a"}], "readinessProbe": {"exec": {"command": ["pg_isready", "-h", "127.0.0.1", "-U", "aidash", "-d", "aidash_a"]}, "periodSeconds": 2}}, "/var/lib/postgresql/data")
         nats = stateful("nats", "nats:2.12-alpine", 4222, {"args": ["-js", "-sd", "/data"], "readinessProbe": {"tcpSocket": {"port": 4222}, "periodSeconds": 2}}, "/data")
-        qdrant = stateful("qdrant", "qdrant/qdrant:v1.19.1", 6333, {"readinessProbe": {"tcpSocket": {"port": 6333}, "periodSeconds": 2}}, "/qdrant/storage")
         fixture = {"apiVersion": "apps/v1", "kind": "Deployment", "metadata": {"name": "fixture"}, "spec": {"replicas": 1, "selector": {"matchLabels": {"app": "fixture"}}, "template": {"metadata": {"labels": {"app": "fixture"}}, "spec": {"automountServiceAccountToken": False, "containers": [{"name": "fixture", "image": "python:3.13-alpine", "command": ["python3", "/scripts/cluster_fixture.py"], "ports": [{"containerPort": 8000}], "volumeMounts": [{"name": "code", "mountPath": "/scripts", "readOnly": True}], "readinessProbe": {"httpGet": {"path": "/status", "port": 8000}}, "resources": {"requests": {"cpu": "50m", "memory": "64Mi"}, "limits": {"cpu": "1", "memory": "256Mi"}}}], "volumes": [{"name": "code", "configMap": {"name": "fixture-code"}}]}}}}
-        apply({"apiVersion": "v1", "kind": "List", "items": [database, nats, qdrant, fixture, service("postgres", 5432), service("nats", 4222), service("qdrant", 6333), service("fixture", 8000)]})
+        apply({"apiVersion": "v1", "kind": "List", "items": [database, nats, fixture, service("postgres", 5432), service("nats", 4222), service("fixture", 8000)]})
         kube("rollout", "status", "statefulset/postgres", "--timeout=180s")
         for node in ["a", "b"]:
             apply({"apiVersion": "v1", "kind": "Secret", "metadata": {"name": f"aidash-{node}"}, "stringData": {"DATABASE_URL": f"postgres://aidash:acceptance-local-password@postgres:5432/aidash_{node}", "NATS_URL": "nats://nats:4222", "AIDASH_API_TOKEN": TOKEN, "AIDASH_SECRET_PEER": PEER_TOKEN}})
             repo, tag = args.image.rsplit(":", 1)
             frontend_repo, frontend_tag = args.frontend_image.rsplit(":", 1)
             subprocess.run(["helm", "upgrade", "--install", f"ops-{node}", str(ROOT / "deploy/helm/aidash"), "--namespace", namespace, "--set", f"node.id=aidash://ops-{node}", "--set", f"existingSecret=aidash-{node}", "--set", f"image.repository={repo}", "--set", f"image.tag={tag}", "--set", f"frontend.image.repository={frontend_repo}", "--set", f"frontend.image.tag={frontend_tag}", "--wait", "--timeout", "5m"], check=True, env=env, stdout=subprocess.DEVNULL)
-        for service_name in ["nats", "qdrant"]:
+        for service_name in ["nats"]:
             kube("rollout", "status", f"statefulset/{service_name}", "--timeout=180s")
         # The fixture operator provisions once; runtime bootstrapping stays off.
         activation_scopes = {}

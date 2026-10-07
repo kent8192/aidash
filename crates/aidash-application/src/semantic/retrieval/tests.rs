@@ -21,7 +21,7 @@ fn spec() -> IndexingSpec {
 			dimensions: 2,
 		},
 		vector: VectorConfig {
-			provider: "qdrant".into(),
+			provider: "postgres".into(),
 			endpoint: "https://vectors.invalid".into(),
 			credential_env: None,
 		},
@@ -197,7 +197,7 @@ impl VectorIndex for Vector {
 	}
 	async fn present(&self, config: &VectorConfig, collection: &str, ids: &[Uuid]) -> Result<bool> {
 		self.calls.lock().unwrap().push("present");
-		assert_eq!(config.provider, "qdrant");
+		assert_eq!(config.provider, "postgres");
 		assert_eq!(collection, "collection");
 		assert_eq!(ids, &[entry().point_id]);
 		self.available
@@ -212,7 +212,7 @@ impl VectorIndex for Vector {
 		limit: usize,
 	) -> Result<Vec<Point>> {
 		self.calls.lock().unwrap().push("query");
-		assert_eq!(config.provider, "qdrant");
+		assert_eq!(config.provider, "postgres");
 		assert_eq!(collection, "collection");
 		assert_eq!(embedding, [0.25, 0.75]);
 		assert_eq!(filter.allowed, &[entry().point_id]);
@@ -357,6 +357,29 @@ async fn agent_controls_filter_before_reading_source_content(
 	.await
 	.unwrap();
 	assert_eq!(result.matches.len(), 0);
+	assert_eq!(scope.embedded, None);
+	assert_eq!(*calls.lock().unwrap(), ["workspace", "index", "candidates"]);
+}
+#[tokio::test]
+async fn native_agent_never_unions_unconfigured_legacy_memory_sources() {
+	let (calls, mut scope, vector) = fixture();
+	scope.rows[0].source = json!({"kind":"memory","text":"unconfigured memory"});
+	let mut agent = controls(true, true);
+	agent.memory = Some(aidash_domain::registry::EntityRef {
+		id: "native".into(),
+		version: "1.0.0".into(),
+	});
+	let result = search(
+		&mut scope,
+		&vector,
+		index().workspace_id,
+		&input(),
+		None,
+		Some(&agent),
+	)
+	.await
+	.unwrap();
+	assert!(result.matches.is_empty());
 	assert_eq!(scope.embedded, None);
 	assert_eq!(*calls.lock().unwrap(), ["workspace", "index", "candidates"]);
 }
@@ -828,4 +851,30 @@ async fn malformed_automatic_context_configuration_retains_storage_error_identit
 		Err(Error::Json(_))
 	));
 	assert_eq!(*calls.lock().unwrap(), ["configured"]);
+}
+
+#[tokio::test]
+async fn disabled_auto_context_does_not_read_or_embed_ordinary_candidates() {
+	let (calls, mut scope, vector) = fixture();
+	let mut configuration = spec();
+	configuration.auto_context = false;
+	scope.index.spec = json!(configuration);
+	let mut agent = controls(true, true);
+	agent.memory = Some(aidash_domain::registry::EntityRef {
+		id: "native".into(),
+		version: "1.0.0".into(),
+	});
+	let result = search(
+		&mut scope,
+		&vector,
+		index().workspace_id,
+		&input(),
+		None,
+		Some(&agent),
+	)
+	.await
+	.unwrap();
+	assert!(result.matches.is_empty());
+	assert_eq!(scope.embedded, None);
+	assert_eq!(*calls.lock().unwrap(), ["workspace", "index"]);
 }

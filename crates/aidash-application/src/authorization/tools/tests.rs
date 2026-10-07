@@ -193,7 +193,7 @@ fn run() -> RunMetadata {
 #[fixture]
 fn agent() -> AgentConfig {
 	serde_json::from_value(
-		json!({"model":{"id":"model","version":"1"},"tools":[reference()],"skills":[reference()]}),
+		json!({"model":{"id":"model","version":"1"},"tools":[reference()],"skills":[reference()],"memory":reference(),"allow_memory_write":true}),
 	)
 	.unwrap()
 }
@@ -437,7 +437,7 @@ fn assert_fault(error: Error, message: &str) {
 #[rstest]
 #[case::create("task_create")]
 #[case::delegate("task_delegate")]
-#[case::memory("memory_write")]
+#[case::memory("memory_mutate")]
 #[case::retrieval("workspace_read")]
 #[tokio::test]
 async fn disabled_local_tool_flags_precede_acquiring_authority(
@@ -757,7 +757,7 @@ async fn core_skill_operations_use_the_skill_flag_even_for_a_null_skill_id(
 #[case::message("workspace_message", "workspace", "message.create")]
 #[case::human("human_request", "run", "human.request")]
 #[case::generation("task_assign", "generation_policy", "generation.request")]
-#[case::memory("memory_write", "memory", "memory.write")]
+#[case::memory("memory_mutate", "memory", "memory.write")]
 #[tokio::test]
 async fn protected_builtins_use_the_saved_resource_and_exact_action(
 	repository: Repository,
@@ -1006,7 +1006,7 @@ async fn a_remote_delegate_cannot_address_a_task_other_than_its_admitted_task(
 	assert_eq!(repository.decisions().len(), 1);
 }
 #[rstest]
-#[case::memory("memory_write")]
+#[case::memory("memory_mutate")]
 #[case::human("human_request")]
 #[case::generation("task_assign")]
 #[tokio::test]
@@ -1180,7 +1180,7 @@ async fn remote_filtering_happens_before_lease_failure_and_does_not_refresh(
 	repository.remote = true;
 	repository.fault = Some("lease");
 	let mut tools = BTreeMap::from([
-		("memory_write".into(), 1),
+		("memory_mutate".into(), 1),
 		("task_create".into(), 2),
 		("task_delegate".into(), 3),
 		("plugin_bad".into(), 4),

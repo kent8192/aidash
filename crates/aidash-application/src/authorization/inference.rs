@@ -34,7 +34,7 @@ pub async fn authorize(
 	for skill in &agent.skills {
 		scope.catalog(skill, "skill.use").await?;
 	}
-	if agent.allow_cross_conversation_memory == Some(false) {
+	if agent.memory.is_none() || agent.allow_cross_conversation_memory == Some(false) {
 		return Ok(());
 	}
 	let resource = scope.memory_resource(run).await?;

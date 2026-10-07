@@ -5,6 +5,7 @@ pub mod deployment;
 pub mod execution;
 pub mod federation;
 pub mod lifecycle;
+pub mod memory;
 pub mod ports;
 pub mod recovery;
 

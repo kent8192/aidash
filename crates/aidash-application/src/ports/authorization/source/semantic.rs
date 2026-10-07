@@ -15,4 +15,14 @@ pub trait SemanticBindingScope: SourceAuthorityScope {
 	async fn semantic_index(&mut self, workspace: Uuid) -> Result<(Index, IndexingSpec)>;
 	async fn embedding_entry(&mut self, entry: &EntityRef, action: &str) -> Result<Entry>;
 	async fn binding_lineage(&mut self) -> Result<Vec<Ancestor>>;
+	async fn native_binding(
+		&mut self,
+		_: Uuid,
+		_: &aidash_domain::semantic::remote::NativeRequest,
+		_: Option<&aidash_domain::semantic::remote::NativeOrigin>,
+	) -> Result<aidash_domain::semantic::remote::NativeBinding> {
+		Err(crate::Error::RemoteSemantic(
+			aidash_domain::semantic::Failure::Configuration,
+		))
+	}
 }

@@ -122,6 +122,11 @@ impl Search {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AgentConfig {
+	/// Exact native memory provider version; absence disables durable private memory.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub memory: Option<EntityRef>,
+	#[serde(default, skip_serializing_if = "Vec::is_empty")]
+	pub sources: Vec<EntityRef>,
 	#[serde(default)]
 	pub core_capabilities: crate::capabilities::CoreCapabilities,
 	#[serde(default, skip_serializing_if = "Vec::is_empty")]

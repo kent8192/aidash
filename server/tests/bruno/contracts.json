@@ -25818,6 +25818,86 @@
   },
   {
     "method": "POST",
+    "path": "/api/workspaces/{workspace}/memory/operate",
+    "name": "memory-operate",
+    "source": "server/src/apps/knowledge/views/memory.rs",
+    "json": true,
+    "uuid_parameters": ["workspace"],
+    "query_parameters": [],
+    "response": null
+  },
+  {
+    "method": "POST",
+    "path": "/api/workspaces/{workspace}/memory/participants/{participant}/upgrade",
+    "name": "memory-participant-upgrade",
+    "source": "server/src/apps/knowledge/views/memory.rs",
+    "json": true,
+    "uuid_parameters": ["workspace", "participant"],
+    "query_parameters": [],
+    "response": null
+  },
+  {
+    "method": "POST",
+    "path": "/api/workspaces/{workspace}/memory/units/query",
+    "name": "memory-units",
+    "source": "server/src/apps/knowledge/views/memory.rs",
+    "json": true,
+    "uuid_parameters": ["workspace"],
+    "query_parameters": [],
+    "response": null
+  },
+  {
+    "method": "POST",
+    "path": "/api/workspaces/{workspace}/memory/units/mutate",
+    "name": "memory-mutate",
+    "source": "server/src/apps/knowledge/views/memory.rs",
+    "json": true,
+    "uuid_parameters": ["workspace"],
+    "query_parameters": [],
+    "response": null
+  },
+  {
+    "method": "POST",
+    "path": "/api/workspaces/{workspace}/memory/participants",
+    "name": "memory-participant",
+    "source": "server/src/apps/knowledge/views/memory.rs",
+    "json": true,
+    "uuid_parameters": ["workspace"],
+    "query_parameters": [],
+    "response": null
+  },
+  {
+    "method": "GET",
+    "path": "/api/workspaces/{workspace}/memory/participants",
+    "name": "memory-participants",
+    "source": "server/src/apps/knowledge/views/memory.rs",
+    "json": false,
+    "uuid_parameters": ["workspace"],
+    "query_parameters": ["after"],
+    "response": null
+  },
+  {
+    "method": "POST",
+    "path": "/api/workspaces/{workspace}/tasks/{task}/memory-participant",
+    "name": "memory-participant-assignment",
+    "source": "server/src/apps/knowledge/views/memory.rs",
+    "json": true,
+    "uuid_parameters": ["workspace", "task"],
+    "query_parameters": [],
+    "response": null
+  },
+  {
+    "method": "GET",
+    "path": "/api/workspaces/{workspace}/tasks/{task}/memory-participant",
+    "name": "memory-participant-current",
+    "source": "server/src/apps/knowledge/views/memory.rs",
+    "json": false,
+    "uuid_parameters": ["workspace", "task"],
+    "query_parameters": [],
+    "response": null
+  },
+  {
+    "method": "POST",
     "path": "/api/marketplace/approval-sets",
     "name": "marketplace-approve-set",
     "source": "server/src/apps/marketplace/views/management.rs",

@@ -1,16 +1,22 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")/.."
-distribution="${1:?Usage: scripts/test-cluster.sh kubernetes|k3s [platform|transactions|remote-memory] [coordinator|participant|lifecycle]}"
+distribution="${1:?Usage: scripts/test-cluster.sh kubernetes|k3s [platform|transactions|remote-memory|native-memory] [coordinator|participant|lifecycle]}"
 case "$distribution" in kubernetes|k3s) ;; *) exit 2 ;; esac
 profile="${2:-platform}"
-case "$profile" in platform|transactions|remote-memory) ;; *) exit 2 ;; esac
+case "$profile" in platform|transactions|remote-memory|native-memory) ;; *) exit 2 ;; esac
 partition="${3:-}"
 if [[ -n "$partition" ]]; then
-  [[ "$profile" == transactions ]] || exit 2
-  case "$partition" in coordinator|participant|lifecycle) ;; *) exit 2 ;; esac
+  case "$profile" in
+    transactions) case "$partition" in coordinator|participant|lifecycle) ;; *) exit 2 ;; esac ;;
+    native-memory) case "$partition" in remote|evaluation|learning|learning-ui|all-ui) ;; *) exit 2 ;; esac ;;
+    *) exit 2 ;;
+  esac
 fi
-tools_dir="$PWD/.ignore/platform/cluster-tools"
+cluster="aidash-ci-$(date +%s)-$$"
+# Parallel profiles must never replace a running, code-signed tool binary or
+# share partially downloaded archives and diagnostic files.
+tools_dir="$PWD/.ignore/platform/$cluster-tools"
 mkdir -p "$tools_dir"
 export PATH="$tools_dir:$PATH"
 os=$(uname -s | tr '[:upper:]' '[:lower:]')
@@ -33,7 +39,6 @@ assert hashlib.sha256(pathlib.Path(sys.argv[1]).read_bytes()).hexdigest() == pat
 PY
 chmod +x "$tools_dir/kubectl"
 
-cluster="aidash-ci-$(date +%s)-$$"
 export KUBECONFIG="$PWD/.ignore/platform/$cluster.kubeconfig"
 created=false
 cleanup() {
@@ -76,15 +81,16 @@ manifest={'git_sha':subprocess.check_output(['git','rev-parse','HEAD']).decode()
 manifest['source_digest']=hashlib.sha256(json.dumps(files,sort_keys=True).encode()).hexdigest()
 pathlib.Path(os.environ['AIDASH_CLUSTER_SOURCE_MANIFEST']).write_text(json.dumps(manifest,indent=2)+'\n')
 SOURCE_MANIFEST
-images=(aidash:cluster-acceptance)
-if [[ "$profile" == transactions || "$profile" == remote-memory ]]; then
-  docker build --build-arg CARGO_PROFILE=dev --target dev-backend -t aidash:cluster-acceptance .
+backend_image="${AIDASH_CLUSTER_IMAGE:-aidash:cluster-acceptance}"
+images=("$backend_image")
+if [[ "$profile" == transactions || "$profile" == remote-memory || "$profile" == native-memory ]]; then
+  docker build --build-arg CARGO_PROFILE=dev --target dev-backend -t "$backend_image" .
 else
-  docker build --build-arg CARGO_PROFILE=dev -t aidash:cluster-acceptance .
+  docker build --build-arg CARGO_PROFILE=dev -t "$backend_image" .
   docker build --build-arg CARGO_PROFILE=dev --target frontend -t aidash-frontend:cluster-acceptance .
   images+=(aidash-frontend:cluster-acceptance)
 fi
-postgres_image=aidash-postgres:17-pg-jsonschema-0.3.4
+postgres_image="${AIDASH_CLUSTER_POSTGRES_IMAGE:-aidash-postgres:17-pg-jsonschema-0.3.4}"
 docker build -f deploy/postgres/Dockerfile -t "$postgres_image" .
 if [[ "$distribution" == kubernetes ]]; then
   kind load docker-image "${images[@]}" --name "$cluster"
@@ -92,14 +98,22 @@ if [[ "$distribution" == kubernetes ]]; then
 else
   scripts/import-cluster-images.sh "k3d-$cluster-server-0" "${images[@]}" "$postgres_image"
 fi
-if [[ "$profile" == remote-memory ]]; then
-  docker run --rm --network none --entrypoint manage aidash:cluster-acceptance diagnostics remote-memory > "$tools_dir/remote-memory-queries.json"
-  python3 scripts/remote_memory_cluster_acceptance.py --kubeconfig "$KUBECONFIG" --distribution "$distribution" --image aidash:cluster-acceptance --postgres-image "$postgres_image" --queries "$tools_dir/remote-memory-queries.json"
+if [[ "$profile" == remote-memory || "$profile" == native-memory ]]; then
+  docker run --rm --network none --entrypoint manage "$backend_image" diagnostics remote-memory > "$tools_dir/remote-memory-queries.json"
+  if [[ "$profile" == native-memory ]]; then runner=scripts/native_memory_cluster_acceptance.py;
+  else runner=scripts/remote_memory_cluster_acceptance.py; fi
+  native_selection=()
+  if [[ "$profile" == native-memory && -n "$partition" ]]; then
+    if [[ "$partition" == learning-ui ]]; then native_selection=(--phase learning --live-ui);
+    elif [[ "$partition" == all-ui ]]; then native_selection=(--phase all --live-ui);
+    else native_selection=(--phase "$partition"); fi
+  fi
+  python3 "$runner" --kubeconfig "$KUBECONFIG" --distribution "$distribution" --image "$backend_image" --postgres-image "$postgres_image" --queries "$tools_dir/remote-memory-queries.json" "${native_selection[@]}"
 elif [[ "$profile" == transactions ]]; then
-  docker run --rm --network none --entrypoint manage aidash:cluster-acceptance diagnostics acceptance > "$tools_dir/transaction-queries.json"
+  docker run --rm --network none --entrypoint manage "$backend_image" diagnostics acceptance > "$tools_dir/transaction-queries.json"
   selection=()
   if [[ -n "$partition" ]]; then selection+=(--partition "$partition"); fi
-  python3 scripts/transaction_cluster_acceptance.py --kubeconfig "$KUBECONFIG" --distribution "$distribution" --image aidash:cluster-acceptance --postgres-image "$postgres_image" --queries "$tools_dir/transaction-queries.json" "${selection[@]}"
+  python3 scripts/transaction_cluster_acceptance.py --kubeconfig "$KUBECONFIG" --distribution "$distribution" --image "$backend_image" --postgres-image "$postgres_image" --queries "$tools_dir/transaction-queries.json" "${selection[@]}"
 else
-  python3 scripts/cluster_acceptance.py --kubeconfig "$KUBECONFIG" --distribution "$distribution" --image aidash:cluster-acceptance --frontend-image aidash-frontend:cluster-acceptance --postgres-image "$postgres_image" --dashboard
+  python3 scripts/cluster_acceptance.py --kubeconfig "$KUBECONFIG" --distribution "$distribution" --image "$backend_image" --frontend-image aidash-frontend:cluster-acceptance --postgres-image "$postgres_image" --dashboard
 fi

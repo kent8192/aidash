@@ -187,6 +187,7 @@ export function OperationsDialog({
               task &&
               data.access.kind === "subject" && (
                 <GenerationAssignForm
+                  data={data}
                   tenant={data.access.tenant}
                   task={task}
                   submit={submit}

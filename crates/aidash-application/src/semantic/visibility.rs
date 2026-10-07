@@ -22,24 +22,6 @@ pub async fn permits(
 		if !scope.decide(&resource, action).await? {
 			return Ok(false);
 		}
-		if let Some((id, version)) = scope.managed_memory(entry.id).await? {
-			attributes["created_by"] = json!(entry.agent);
-			attributes["version"] = json!(version);
-			let original = scope.resource("memory", &id, attributes);
-			if !scope
-				.decide(
-					&original,
-					if action == "semantic.read" {
-						"memory.read"
-					} else {
-						"memory.write"
-					},
-				)
-				.await?
-			{
-				return Ok(false);
-			}
-		}
 	}
 	if scoped && action == "semantic.read" && !entry.deleted {
 		let decoded = serde_json::from_value(entry.source.clone())?;
@@ -60,6 +42,7 @@ pub async fn source(
 		return Ok(None);
 	}
 	match source {
+		Source::Unit { id } => scope.unit(*id, workspace).await,
 		Source::Memory { text } => Ok(Some(text.clone())),
 		Source::Artifact { id } => {
 			let Some(row) = scope.artifact(*id, workspace).await? else {

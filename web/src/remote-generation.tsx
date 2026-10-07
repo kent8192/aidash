@@ -6,8 +6,13 @@ import type {
   EntityRef,
 } from "./generated/models";
 import type { Submit } from "./forms";
-import { apiFetch } from "./transport";
+import { ApiError, apiFetch } from "./transport";
 import { Field, useI18n } from "./ui";
+import type { Entry } from "./types";
+import {
+  HomeNativeMemoryFields,
+  nativeMemoryRequest,
+} from "./remote-native-memory";
 
 function reference(value: string): EntityRef {
   const at = value.lastIndexOf("@");
@@ -16,9 +21,13 @@ function reference(value: string): EntityRef {
 
 export function RemoteGenerationAssignForm({
   task,
+  workspace,
+  entries,
   submit,
 }: {
   task: string;
+  workspace: string;
+  entries: Entry[];
   submit: Submit;
 }) {
   const { locale } = useI18n();
@@ -31,6 +40,7 @@ export function RemoteGenerationAssignForm({
   const [error, setError] = useState("");
   const grant = useRef<{ binding: string; id: string } | null>(null);
   const [memory, setMemory] = useState(true);
+  const [grantPending, setGrantPending] = useState(false);
   const terminalPrepared =
     prepared &&
     !["PENDING_APPROVAL", "QUEUED", "ACTIVE"].includes(prepared.status);
@@ -146,7 +156,7 @@ export function RemoteGenerationAssignForm({
         <Button
           variant="outline"
           type="button"
-          disabled={busy}
+          disabled={busy || grantPending}
           onClick={() => {
             setDraft(null);
             setPrepared(null);
@@ -160,7 +170,7 @@ export function RemoteGenerationAssignForm({
         <Button
           variant="outline"
           type="button"
-          disabled={busy}
+          disabled={busy || grantPending}
           onClick={() => void cancel()}
         >
           {ja ? "準備を中止" : "Cancel preparation"}
@@ -201,36 +211,55 @@ export function RemoteGenerationAssignForm({
             const compactor = String(fields.get("compactor") ?? "").trim();
             setBusy(true);
             void submit(async () => {
-              const input = {
-                node_id: prepared.node_id,
-                agent: prepared.agent,
-                ttl_seconds: Number(fields.get("lifetime")),
-                semantic: memory
-                  ? {
-                      mode: "required_home",
-                      embedding: reference(String(fields.get("embedding"))),
-                      ...(compactor ? { compactor: reference(compactor) } : {}),
-                    }
-                  : { mode: "disabled" },
-              };
+              const input = grant.current
+                ? JSON.parse(grant.current.binding)
+                : {
+                    node_id: prepared.node_id,
+                    agent: prepared.agent,
+                    ttl_seconds: Number(fields.get("lifetime")),
+                    semantic: memory
+                      ? {
+                          mode: "required_home",
+                          embedding: reference(String(fields.get("embedding"))),
+                          ...(nativeMemoryRequest(fields)
+                            ? { native: nativeMemoryRequest(fields) }
+                            : {}),
+                          ...(compactor
+                            ? { compactor: reference(compactor) }
+                            : {}),
+                        }
+                      : { mode: "disabled" },
+                  };
               // Keep the initial lifetime and exact body across an uncertain activation.
               const key = JSON.stringify(input);
               if (grant.current?.binding !== key)
                 grant.current = { binding: key, id: crypto.randomUUID() };
               const id = grant.current.id;
-              await apiFetch(`/api/tasks/${task}/remote-grants`, {
-                method: "POST",
-                headers: { "content-type": "application/json" },
-                body: JSON.stringify({ id, ...input }),
-              });
-              return apiFetch(
-                `/api/tasks/${task}/remote-grants/${id}/activate`,
-                {
+              setGrantPending(true);
+              try {
+                await apiFetch(`/api/tasks/${task}/remote-grants`, {
                   method: "POST",
                   headers: { "content-type": "application/json" },
-                  body: "{}",
-                },
-              );
+                  body: JSON.stringify({ id, ...input }),
+                });
+                const result = await apiFetch(
+                  `/api/tasks/${task}/remote-grants/${id}/activate`,
+                  {
+                    method: "POST",
+                    headers: { "content-type": "application/json" },
+                    body: "{}",
+                  },
+                );
+                grant.current = null;
+                setGrantPending(false);
+                return result;
+              } catch (cause) {
+                if (cause instanceof ApiError && cause.responseReceived) {
+                  grant.current = null;
+                  setGrantPending(false);
+                }
+                throw cause;
+              }
             }).finally(() => setBusy(false));
           }}
         >
@@ -239,63 +268,83 @@ export function RemoteGenerationAssignForm({
               {prepared.agent.id}@{prepared.agent.version}
             </code>
           </p>
-          <Field
-            label={
-              ja
-                ? "実行許可の有効期間（秒）"
-                : "Execution grant lifetime (seconds)"
-            }
-          >
-            <input
-              name="lifetime"
-              type="number"
-              min={1}
-              max={3600}
-              defaultValue={600}
-              required
-            />
-          </Field>
-          <label>
-            <input
-              type="checkbox"
-              checked={memory}
-              onChange={(event) => setMemory(event.target.checked)}
-            />
-            {ja
-              ? "Home の記憶を毎回参照"
-              : "Require Home memory for each inference"}
-          </label>
-          {memory && (
-            <>
-              <Field
-                label={
-                  ja ? "Home の embedding 定義" : "Home embedding definition"
-                }
-              >
-                <input
-                  name="embedding"
-                  placeholder="embedding-id@1.0.0"
-                  pattern=".+@[0-9]+\.[0-9]+\.[0-9]+.*"
-                  required
+          <fieldset disabled={busy || grantPending}>
+            <Field
+              label={
+                ja
+                  ? "実行許可の有効期間（秒）"
+                  : "Execution grant lifetime (seconds)"
+              }
+            >
+              <input
+                name="lifetime"
+                type="number"
+                min={1}
+                max={3600}
+                defaultValue={600}
+                required
+              />
+            </Field>
+            <label>
+              <input
+                type="checkbox"
+                checked={memory}
+                onChange={(event) => setMemory(event.target.checked)}
+              />
+              {ja
+                ? "Home の記憶を毎回参照"
+                : "Require Home memory for each inference"}
+            </label>
+            {memory && (
+              <>
+                <Field
+                  label={
+                    ja ? "Home の embedding 定義" : "Home embedding definition"
+                  }
+                >
+                  <input
+                    name="embedding"
+                    placeholder="embedding-id@1.0.0"
+                    pattern=".+@[0-9]+\.[0-9]+\.[0-9]+.*"
+                    required
+                  />
+                </Field>
+                <HomeNativeMemoryFields
+                  workspace={workspace}
+                  entries={entries}
+                  generated
                 />
-              </Field>
-              <Field
-                label={
-                  ja
-                    ? "任意: 承認済み compactor"
-                    : "Optional: approved compactor"
-                }
-              >
-                <input
-                  name="compactor"
-                  placeholder="compactor-id@1.0.0"
-                  pattern=".+@[0-9]+\.[0-9]+\.[0-9]+.*"
-                />
-              </Field>
-            </>
+                <Field
+                  label={
+                    ja
+                      ? "任意: 承認済み compactor"
+                      : "Optional: approved compactor"
+                  }
+                >
+                  <input
+                    name="compactor"
+                    placeholder="compactor-id@1.0.0"
+                    pattern=".+@[0-9]+\.[0-9]+\.[0-9]+.*"
+                  />
+                </Field>
+              </>
+            )}
+          </fieldset>
+          {grantPending && (
+            <p role="status">
+              {ja
+                ? "結果が確定するまで、同じ実行許可を再試行します。"
+                : "Retry the same execution grant until its outcome is confirmed."}
+            </p>
           )}
           <Button variant="outline" className="primary" disabled={busy}>
-            {ja ? "許可して実行" : "Authorize and execute"}
+            {grantPending
+              ? ja
+                ? "同じ実行許可を再試行"
+                : "Retry the same execution grant"
+              : ja
+                ? "許可して実行"
+                : "Authorize and execute"}
           </Button>
         </form>
       )}

@@ -1,4 +1,5 @@
 import { Button } from "./components/ui/button";
+import { AgentMemoryFields } from "./memory-registry";
 import { RemoteGenerationAssignForm } from "./remote-generation";
 import { RecordView } from "./record-view";
 import { disambiguateLabels } from "./display-labels";
@@ -545,6 +546,13 @@ function PolicyEditor({
           skills: form.getAll("skills").map((v) => entityRef(String(v))),
           cluster: text("cluster") ? entityRef(text("cluster")) : null,
           max_steps: Number(text("max_steps")),
+          memory: text("memory_provider")
+            ? entityRef(text("memory_provider"))
+            : null,
+          allow_memory_write: form.has("allow_memory_write"),
+          sources: form
+            .getAll("memory_sources")
+            .map((v) => entityRef(String(v))),
         },
       };
       void save(id, {
@@ -668,6 +676,7 @@ function PolicyEditor({
           />
         </Field>
       </div>
+      <AgentMemoryFields entries={entries} initial={initial?.template.config} />
       <Field label={t("model")}>
         <select
           required
@@ -1157,10 +1166,12 @@ function RequestDetail({
 }
 
 export function GenerationAssignForm({
+  data,
   tenant,
   task,
   submit,
 }: {
+  data: State;
   tenant: string;
   task: Task;
   submit: Submit;
@@ -1221,7 +1232,12 @@ export function GenerationAssignForm({
           {t("generationAssign")}
         </Button>
       </form>
-      <RemoteGenerationAssignForm task={task.id} submit={submit} />
+      <RemoteGenerationAssignForm
+        task={task.id}
+        workspace={task.workspace_id}
+        entries={data.registry}
+        submit={submit}
+      />
     </>
   );
 }

@@ -30,8 +30,21 @@ def main():
     ).strip()
     try:
         for _ in range(50):
+            # The image's temporary initialization server only accepts Unix
+            # sockets. Wait for the TCP listener used by the observer instead.
             probe = subprocess.run(
-                ["docker", "exec", container, "pg_isready", "-U", "postgres"],
+                [
+                    "docker",
+                    "exec",
+                    container,
+                    "pg_isready",
+                    "-h",
+                    "127.0.0.1",
+                    "-U",
+                    "postgres",
+                    "-d",
+                    "aidash_observer_test",
+                ],
                 capture_output=True,
             )
             if probe.returncode == 0:

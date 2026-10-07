@@ -30,6 +30,7 @@ fn owner(node: &str, tenant: &str, id: u128) -> Ancestor {
 #[fixture]
 fn receipt() -> Value {
 	json!(Receipt {
+		memory: None,
 		operation_id: Uuid::from_u128(20),
 		operation_digest: "operation-digest".into(),
 		home_node: "home".into(),
@@ -39,6 +40,7 @@ fn receipt() -> Value {
 		admission_id: Uuid::from_u128(23),
 		executor: "executor".into(),
 		binding: Binding::RequiredHome {
+			native: None,
 			home_lineage: vec![
 				owner("remote", "tenant", 1),
 				owner("local", "other-tenant", 2),

@@ -10,6 +10,13 @@ node:
 # Provision separately: DATABASE_URL, NATS_URL, AIDASH_API_TOKEN and provider/
 # pair-specific AIDASH_SECRET_* variables. No secret values belong in Helm values.
 existingSecret: ""
+# Native memory requires an independently retained, pre-initialized Home ledger.
+# Server and workers share this claim; do not restore it from a PostgreSQL backup.
+memoryRecovery:
+  existingClaim: ""
+  directory: /var/lib/aidash/memory-recovery
+  # Select the initialized Home directory when it is a child of the claim root.
+  subPath: ""
 server:
   # Optional role-scoped override of existingSecret.
   existingSecret: ""

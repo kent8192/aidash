@@ -5,6 +5,7 @@
 pub mod context_rules;
 pub(crate) mod human_interaction;
 pub(crate) mod input_ledger;
+pub(crate) mod task_evidence;
 
 pub use super::models::states;
 

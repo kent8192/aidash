@@ -1,5 +1,14 @@
 import { Button } from "./components/ui/button";
-import { apiFetch } from "./transport";
+import {
+  AgentMemoryFields,
+  MemoryRegistryFields,
+  memoryConfiguration,
+} from "./memory-registry";
+import { ApiError, apiFetch } from "./transport";
+import {
+  HomeNativeMemoryFields,
+  nativeMemoryRequest,
+} from "./remote-native-memory";
 import {
   CapabilityConfiguration,
   emptyCore,
@@ -328,6 +337,13 @@ export function EntityForm({
                   skills: d.getAll("skills").map((v) => ref(String(v))),
                   cluster: s("cluster") ? ref(s("cluster")) : null,
                   max_steps: 64,
+                  memory: s("memory_provider")
+                    ? ref(s("memory_provider"))
+                    : null,
+                  allow_memory_write: d.has("allow_memory_write"),
+                  sources: d
+                    .getAll("memory_sources")
+                    .map((v) => ref(String(v))),
                   ...core,
                 }
               : kind === "model"
@@ -345,10 +361,12 @@ export function EntityForm({
                   }
                 : kind === "embedding"
                   ? {
-                      provider: "openai",
+                      provider: s("embedding_provider"),
                       endpoint: s("endpoint"),
                       credential_env: d.has("embedding_credentials")
-                        ? "AIDASH_SECRET_EMBEDDING"
+                        ? s("embedding_provider") === "openrouter"
+                          ? "AIDASH_SECRET_OPENROUTER"
+                          : "AIDASH_SECRET_EMBEDDING"
                         : null,
                       model: s("model_id"),
                       model_version: s("model_version"),
@@ -364,7 +382,7 @@ export function EntityForm({
                         max_questions: Number(s("max_questions")),
                         max_response_bytes: Number(s("max_response_bytes")),
                       }
-                    : JSON.parse(s("config"));
+                    : (memoryConfiguration(kind, d) ?? JSON.parse(s("config")));
           const entry = {
             id: "",
             version: s("version"),
@@ -425,6 +443,10 @@ export function EntityForm({
             "node",
             "compactor",
             "embedding",
+            "memory",
+            "source",
+            "reranker",
+            "tokenizer",
           ].map((k) => (
             <option key={k}>{k}</option>
           ))}
@@ -511,6 +533,7 @@ export function EntityForm({
                 placeholder={t("additionalInstructionsHelp")}
               />
             </Field>
+            <AgentMemoryFields entries={data.registry} />
             <CapabilityConfiguration value={core} change={setCore} />
             <AgentDocuments
               documents={documents}
@@ -554,19 +577,29 @@ export function EntityForm({
         ) : kind === "embedding" ? (
           <>
             <p className="muted">{t("embeddingRegistryHelp")}</p>
+            <Field label={t("provider")}>
+              <select name="embedding_provider" defaultValue="openrouter">
+                <option value="openrouter">OpenRouter</option>
+                <option value="openai">{t("openaiCompatible")}</option>
+              </select>
+            </Field>
             <Field label={t("endpoint")}>
               <input
                 name="endpoint"
                 type="url"
                 required
-                placeholder="https://provider.example/v1"
+                defaultValue="https://openrouter.ai/api/v1"
               />
             </Field>
             <Field label={t("modelId")}>
-              <input name="model_id" required />
+              <input
+                name="model_id"
+                required
+                defaultValue="google/gemini-embedding-2"
+              />
             </Field>
             <Field label={t("embeddingModelVersion")}>
-              <input name="model_version" required />
+              <input name="model_version" required defaultValue="1.0.0" />
             </Field>
             <Field label={t("embeddingDimensions")}>
               <input
@@ -575,10 +608,15 @@ export function EntityForm({
                 required
                 min={1}
                 max={8192}
+                defaultValue={3072}
               />
             </Field>
             <label className="check">
-              <input type="checkbox" name="embedding_credentials" />
+              <input
+                type="checkbox"
+                name="embedding_credentials"
+                defaultChecked
+              />
               {t("configuredCredentials")}
             </label>
           </>
@@ -633,6 +671,8 @@ export function EntityForm({
               />
             </Field>
           </>
+        ) : ["memory", "source", "reranker", "tokenizer"].includes(kind) ? (
+          <MemoryRegistryFields kind={kind} entries={data.registry} />
         ) : (
           <EntityConfiguration kind={kind} data={data} />
         )}
@@ -705,6 +745,8 @@ export function AssignForm({
   const ja = locale === "ja-JP";
   const [selected, setSelected] = useState("");
   const [memory, setMemory] = useState(false);
+  const [grantPending, setGrantPending] = useState(false);
+  const [grantBusy, setGrantBusy] = useState(false);
   const request = useRef<{ binding: string; id: string } | null>(null);
   const agentLabel = useAgentLabel(data, discovery);
   const agents = discovery.agents;
@@ -714,6 +756,9 @@ export function AssignForm({
   );
   const scopedRemote =
     data.access.kind === "subject" && chosen && chosen.node_id !== data.node.id;
+  const nativeRequired =
+    !!chosen?.entity.config.memory &&
+    chosen.entity.config.allow_cross_conversation_memory !== false;
   return (
     <form
       onSubmit={(e) => {
@@ -725,9 +770,10 @@ export function AssignForm({
               agent.node_id,
               agent.entity.id,
               agent.entity.version,
-            ]) === d.get("agent"),
+            ]) === (d.get("agent") ?? selected),
         );
         if (!a) return;
+        setGrantBusy(true);
         void submit(async () => {
           if (data.access.kind !== "subject" || a.node_id === data.node.id) {
             return taskDelegate(task.id, {
@@ -736,113 +782,166 @@ export function AssignForm({
             });
           }
           const compactor = String(d.get("compactor") ?? "").trim();
-          const input = {
-            node_id: a.node_id,
-            agent: { id: a.entity.id, version: a.entity.version },
-            ttl_seconds: 3600,
-            semantic: memory
-              ? {
-                  mode: "required_home",
-                  embedding: ref(String(d.get("embedding"))),
-                  ...(compactor ? { compactor: ref(compactor) } : {}),
-                }
-              : { mode: "disabled" },
-          };
+          const input = request.current
+            ? JSON.parse(request.current.binding)
+            : {
+                node_id: a.node_id,
+                agent: { id: a.entity.id, version: a.entity.version },
+                ttl_seconds: 3600,
+                semantic: memory
+                  ? {
+                      mode: "required_home",
+                      embedding: ref(String(d.get("embedding"))),
+                      ...(nativeMemoryRequest(d)
+                        ? { native: nativeMemoryRequest(d) }
+                        : {}),
+                      ...(compactor ? { compactor: ref(compactor) } : {}),
+                    }
+                  : { mode: "disabled" },
+              };
           const binding = JSON.stringify(input);
           if (request.current?.binding !== binding)
             request.current = { binding, id: crypto.randomUUID() };
           const id = request.current.id;
-          await apiFetch(`/api/tasks/${task.id}/remote-grants`, {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({ id, ...input }),
-          });
-          const result = await apiFetch(
-            `/api/tasks/${task.id}/remote-grants/${id}/activate`,
-            {
+          setGrantPending(true);
+          try {
+            await apiFetch(`/api/tasks/${task.id}/remote-grants`, {
               method: "POST",
               headers: { "content-type": "application/json" },
-              body: "{}",
-            },
-          );
-          request.current = null;
-          return result;
-        });
+              body: JSON.stringify({ id, ...input }),
+            });
+            const result = await apiFetch(
+              `/api/tasks/${task.id}/remote-grants/${id}/activate`,
+              {
+                method: "POST",
+                headers: { "content-type": "application/json" },
+                body: "{}",
+              },
+            );
+            request.current = null;
+            setGrantPending(false);
+            return result;
+          } catch (cause) {
+            if (cause instanceof ApiError && cause.responseReceived) {
+              request.current = null;
+              setGrantPending(false);
+            }
+            throw cause;
+          }
+        }).finally(() => setGrantBusy(false));
       }}
     >
-      <Field label={t("agent")}>
-        <select
-          name="agent"
-          required
-          value={selected}
-          onChange={(e) => setSelected(e.target.value)}
-        >
-          <option value="">{t("choose")}</option>
-          {agents.map((a) => (
-            <option
-              value={JSON.stringify([a.node_id, a.entity.id, a.entity.version])}
-              key={`${a.node_id}/${a.entity.id}@${a.entity.version}`}
-            >
-              {agentLabel(a.node_id, a.entity)} ·{" "}
-              <ReferenceName id={a.node_id} />
-            </option>
-          ))}
-        </select>
-      </Field>
-      {scopedRemote && (
-        <fieldset>
-          <legend>
-            {ja ? "遠隔実行で参照する記憶" : "Memory for remote execution"}
-          </legend>
-          <label>
-            <input
-              type="checkbox"
-              checked={memory}
-              onChange={(e) => setMemory(e.target.checked)}
-            />
-            {ja
-              ? "各推論の前に Home の記憶を検索する"
-              : "Require Home memory before each inference"}
-          </label>
-          {memory && (
-            <>
-              <label>
-                {ja ? "Home の embedding 定義" : "Home embedding definition"}
-                <select name="embedding" required defaultValue="">
-                  <option value="">{t("choose")}</option>
-                  {data.registry
-                    .filter((entry) => entry.kind === "embedding")
-                    .map((entry) => (
-                      <option
-                        key={`${entry.id}@${entry.version}`}
-                        value={`${entry.id}@${entry.version}`}
-                      >
-                        {entry.id}@{entry.version}
-                      </option>
-                    ))}
-                </select>
-              </label>
-              <label>
-                {ja
-                  ? "任意: 実行 Node の承認済み compactor"
-                  : "Optional: approved compactor at the execution node"}
-                <input
-                  name="compactor"
-                  placeholder="compactor-id@1.0.0"
-                  pattern=".+@[0-9]+\.[0-9]+\.[0-9]+.*"
+      <fieldset disabled={grantPending || grantBusy}>
+        <Field label={t("agent")}>
+          <select
+            name="agent"
+            required
+            value={selected}
+            onChange={(e) => {
+              setSelected(e.target.value);
+              const agent = agents.find(
+                (agent) =>
+                  JSON.stringify([
+                    agent.node_id,
+                    agent.entity.id,
+                    agent.entity.version,
+                  ]) === e.target.value,
+              );
+              if (
+                agent?.entity.config.memory &&
+                agent.entity.config.allow_cross_conversation_memory !== false
+              )
+                setMemory(true);
+            }}
+          >
+            <option value="">{t("choose")}</option>
+            {agents.map((a) => (
+              <option
+                value={JSON.stringify([
+                  a.node_id,
+                  a.entity.id,
+                  a.entity.version,
+                ])}
+                key={`${a.node_id}/${a.entity.id}@${a.entity.version}`}
+              >
+                {agentLabel(a.node_id, a.entity)} ·{" "}
+                <ReferenceName id={a.node_id} />
+              </option>
+            ))}
+          </select>
+        </Field>
+        {scopedRemote && (
+          <fieldset>
+            <legend>
+              {ja ? "遠隔実行で参照する記憶" : "Memory for remote execution"}
+            </legend>
+            <label>
+              <input
+                type="checkbox"
+                checked={memory}
+                disabled={nativeRequired}
+                onChange={(e) => setMemory(e.target.checked)}
+              />
+              {ja
+                ? "各推論の前に Home の記憶を検索する"
+                : "Require Home memory before each inference"}
+            </label>
+            {memory && (
+              <>
+                <label>
+                  {ja ? "Home の embedding 定義" : "Home embedding definition"}
+                  <select name="embedding" required defaultValue="">
+                    <option value="">{t("choose")}</option>
+                    {data.registry
+                      .filter((entry) => entry.kind === "embedding")
+                      .map((entry) => (
+                        <option
+                          key={`${entry.id}@${entry.version}`}
+                          value={`${entry.id}@${entry.version}`}
+                        >
+                          {entry.id}@{entry.version}
+                        </option>
+                      ))}
+                  </select>
+                </label>
+                <label>
+                  {ja
+                    ? "任意: 実行 Node の承認済み compactor"
+                    : "Optional: approved compactor at the execution node"}
+                  <input
+                    name="compactor"
+                    placeholder="compactor-id@1.0.0"
+                    pattern=".+@[0-9]+\.[0-9]+\.[0-9]+.*"
+                  />
+                </label>
+                <p>
+                  {ja
+                    ? "検索結果を選択した Agent のモデルへ開示します。予算や権限が不足すると実行は一時停止します。"
+                    : "Retrieval results are disclosed to the selected agent's model. Execution pauses when authority or budget is insufficient."}
+                </p>
+                <HomeNativeMemoryFields
+                  workspace={task.workspace_id}
+                  entries={data.registry}
+                  required={nativeRequired}
                 />
-              </label>
-              <p>
-                {ja
-                  ? "検索結果を選択した Agent のモデルへ開示します。予算や権限が不足すると実行は一時停止します。"
-                  : "Retrieval results are disclosed to the selected agent's model. Execution pauses when authority or budget is insufficient."}
-              </p>
-            </>
-          )}
-        </fieldset>
+              </>
+            )}
+          </fieldset>
+        )}
+      </fieldset>
+      {grantPending && (
+        <p role="status">
+          {ja
+            ? "同じ実行許可を再確認します。結果が確定するまで設定を変更できません。"
+            : "Recheck the same execution grant. Its settings stay fixed until the outcome is confirmed."}
+        </p>
       )}
-      <Button variant="outline" className="primary">
-        {t("delegate")}
+      <Button variant="outline" className="primary" disabled={grantBusy}>
+        {grantPending
+          ? ja
+            ? "同じ実行許可を再試行"
+            : "Retry the same execution grant"
+          : t("delegate")}
       </Button>
     </form>
   );

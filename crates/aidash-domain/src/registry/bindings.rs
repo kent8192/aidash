@@ -24,7 +24,9 @@ pub const DEFAULT_TOOLS: &[&str] = &[
 	"agent_discover",
 	"artifact_publish",
 	"workspace_message",
-	"memory_write",
+	"memory_mutate",
+	"memory_recall",
+	"memory_reflect",
 ];
 pub const SKILL_TOOLS: &[&str] = &["skill_list", "skill_load", "skill_read"];
 pub const COORDINATOR_TOOLS: &[&str] = &["task_create", "task_delegate", "agent_discover"];

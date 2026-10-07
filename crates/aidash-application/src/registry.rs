@@ -177,6 +177,8 @@ pub async fn validate_references(
 			.chain(config.tools.iter().map(|r| (r, "tool")))
 			.chain(config.skills.iter().map(|r| (r, "skill")))
 			.chain(config.cluster.iter().map(|r| (r, "cluster")))
+			.chain(config.memory.iter().map(|r| (r, "memory")))
+			.chain(config.sources.iter().map(|r| (r, "source")))
 		{
 			let referenced = effective(scope, &reference.id, &reference.version).await?;
 			if referenced.kind != kind {
@@ -187,7 +189,119 @@ pub async fn validate_references(
 			}
 			references.push(referenced);
 		}
+		if config.memory.is_none() && !config.sources.is_empty() {
+			return Err(Error::Invalid(
+				"Agent Sources require a primary memory provider".into(),
+			));
+		}
+		let mut workspace_provider = None;
+		let mut providers: Vec<_> = config.memory.iter().cloned().collect();
+		for source in references.iter().filter(|entry| entry.kind == "source") {
+			let source: aidash_domain::memory::SourceConfig =
+				serde_json::from_value(source.config.clone())?;
+			if source.scope == aidash_domain::memory::SourceScope::Participant
+				&& config.memory.as_ref() != Some(&source.memory)
+			{
+				return Err(Error::Invalid(
+					"participant Sources require the Agent's exact primary memory provider".into(),
+				));
+			}
+			if source.scope == aidash_domain::memory::SourceScope::Workspace {
+				if workspace_provider
+					.as_ref()
+					.is_some_and(|provider| provider != &source.memory)
+				{
+					return Err(Error::Invalid(
+						"workspace Sources require one exact memory provider version".into(),
+					));
+				}
+				workspace_provider = Some(source.memory.clone());
+			}
+			providers.push(source.memory);
+		}
+		let mut embedding = None;
+		for provider in providers {
+			let provider = scope.definition(&provider.id, &provider.version).await?;
+			let provider: aidash_domain::memory::ProviderConfig =
+				serde_json::from_value(provider.config)?;
+			let role = scope
+				.definition(
+					&provider.policy.embedding.id,
+					&provider.policy.embedding.version,
+				)
+				.await?;
+			let configuration: aidash_domain::semantic::EmbeddingConfig =
+				serde_json::from_value(role.config)?;
+			if embedding
+				.as_ref()
+				.is_some_and(|previous| previous != &configuration)
+			{
+				return Err(Error::Invalid(
+					"an Agent's memory providers require compatible embedding configurations"
+						.into(),
+				));
+			}
+			embedding = Some(configuration);
+		}
 		validation.agent_prompt_headroom(&config, &references, &Value::Null)?;
+	}
+	let memory_references = match entry.kind.as_str() {
+		"memory" | "source" if entry.config.get("schema_version").is_some() => vec![],
+		"memory" => {
+			let config: aidash_domain::memory::ProviderConfig =
+				serde_json::from_value(entry.config.clone())?;
+			vec![
+				(config.policy.extraction, "model"),
+				(config.policy.derivation, "model"),
+				(config.policy.reflection, "model"),
+				(config.policy.embedding, "embedding"),
+				(config.policy.reranker, "reranker"),
+				(config.policy.tokenizer, "tokenizer"),
+			]
+		}
+		"source" => {
+			let config: aidash_domain::memory::SourceConfig =
+				serde_json::from_value(entry.config.clone())?;
+			vec![(config.memory, "memory")]
+		}
+		"reranker" => match serde_json::from_value::<aidash_domain::memory::RerankerConfig>(
+			entry.config.clone(),
+		)? {
+			aidash_domain::memory::RerankerConfig::Model { model } => vec![(model, "model")],
+			aidash_domain::memory::RerankerConfig::Rrf => vec![],
+		},
+		_ => vec![],
+	};
+	for (reference, kind) in memory_references {
+		let referenced = scope.definition(&reference.id, &reference.version).await?;
+		if referenced.kind != kind || referenced.installation.is_some() {
+			return Err(Error::Invalid(format!(
+				"memory role {} requires an immutable local {kind} definition",
+				reference.id
+			)));
+		}
+		validation.validate_in(&referenced, true)?;
+		if entry.kind == "memory" && kind == "embedding" {
+			let provider: aidash_domain::memory::ProviderConfig =
+				serde_json::from_value(entry.config.clone())?;
+			let embedding: aidash_domain::semantic::EmbeddingConfig =
+				serde_json::from_value(referenced.config.clone())?;
+			aidash_domain::memory::graph::validate_capacity(
+				&provider.policy.bounds,
+				embedding.dimensions,
+			)?;
+		}
+		if entry.kind == "source" {
+			let source: aidash_domain::memory::SourceConfig =
+				serde_json::from_value(entry.config.clone())?;
+			let provider: aidash_domain::memory::ProviderConfig =
+				serde_json::from_value(referenced.config)?;
+			if source.max_tokens > provider.policy.bounds.max_context_tokens {
+				return Err(Error::Invalid(
+					"source context cap exceeds its memory provider cap".into(),
+				));
+			}
+		}
 	}
 	let transport = if entry.kind == "tool" {
 		match aidash_domain::tool::legacy_config(&entry.config)? {

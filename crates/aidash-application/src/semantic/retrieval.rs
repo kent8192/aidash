@@ -69,7 +69,13 @@ pub async fn prepare(
 		return Err(Error::Conflict("semantic index is disabled".into()));
 	}
 	input.validate(&spec)?;
-	let rows = scope.candidates(workspace).await?;
+	// Agent context follows the index's ordinary disclosure switch.
+	// Native memory is retrieved separately under its bank policy.
+	let rows = if agent_controls.is_some() && !spec.auto_context {
+		Vec::new()
+	} else {
+		scope.candidates(workspace).await?
+	};
 	if rows.len() > spec.max_sources {
 		return Err(Error::Conflict("semantic source quota exceeded".into()));
 	}
@@ -78,7 +84,10 @@ pub async fn prepare(
 	for entry in rows {
 		let source: Source = serde_json::from_value(entry.source.clone())?;
 		if agent_controls.is_some_and(|agent| match &source {
-			Source::Memory { .. } => agent.allow_cross_conversation_memory == Some(false),
+			Source::Unit { .. } => true,
+			Source::Memory { .. } => {
+				agent.memory.is_some() || agent.allow_cross_conversation_memory == Some(false)
+			}
 			Source::Artifact { .. } | Source::Message { .. } => {
 				agent.allow_workspace_retrieval == Some(false)
 			}

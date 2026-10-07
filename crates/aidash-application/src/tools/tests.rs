@@ -82,8 +82,20 @@ impl ToolOperations for Operations {
 	) -> Result<Value> {
 		panic!("unexpected tool effect: read_record_chunk")
 	}
-	async fn remember(&self, _input: &Value) -> Result<()> {
-		panic!("unexpected tool effect: remember")
+	async fn memory_mutate(
+		&self,
+		_key: &str,
+		_changes: &[aidash_domain::memory::Change],
+	) -> Result<Vec<aidash_domain::memory::Unit>> {
+		panic!("unexpected native mutation");
+	}
+	async fn memory_recall(
+		&self,
+		_key: &str,
+		_query: &aidash_domain::memory::RecallQuery,
+		_reflect: bool,
+	) -> Result<Value> {
+		panic!("unexpected native recall");
 	}
 	async fn human_request(&self, _kind: &str, _prompt: &str, _key: &str) -> Result<HumanRequest> {
 		panic!("unexpected tool effect: human_request")
@@ -369,4 +381,55 @@ async fn legacy_skill_pages_reconstruct_with_scalar_positions(
 		offset = next as usize;
 	}
 	assert_eq!(combined, text);
+}
+
+#[rstest::rstest]
+#[case("add", None)]
+#[case("correct", Some(1))]
+#[case("delete", Some(1))]
+fn native_memory_tool_schema_resolves_nested_content_at_the_root(
+	#[case] operation: &str,
+	#[case] revision: Option<i64>,
+) {
+	let mut change = json!({"operation":operation,"id":uuid::Uuid::new_v4()});
+	if let Some(revision) = revision {
+		change["expected_revision"] = json!(revision);
+	}
+	if operation != "delete" {
+		change["content"] = json!({"text":"東京 Tokyo", "kind":"world","learning":"fact","verification":"unverified","occurred":null,"entities":[],"evidence":[],"links":[]});
+	}
+	let schema = &super::builtins()["memory_mutate"].schema;
+	super::validate_arguments(schema, &json!({"changes":[change]})).unwrap();
+}
+
+#[rstest]
+#[case("add", "supported")]
+#[case("add", "contradicted")]
+#[case("correct", "supported")]
+#[case("correct", "contradicted")]
+#[tokio::test]
+async fn native_memory_model_tool_cannot_attest_claim_verification(
+	fixture: Fixture,
+	#[case] operation: &str,
+	#[case] verification: &str,
+) {
+	let mut change = json!({"operation":operation,"id":Uuid::new_v4(),"content":{"text":"Unverified model claim / 未検証のモデル出力","kind":"world","learning":"fact","verification":verification,"occurred":null,"entities":[],"evidence":[],"links":[]}});
+	if operation == "correct" {
+		change["expected_revision"] = json!(1);
+	}
+	let result = super::builtins()["memory_mutate"]
+		.invoke(
+			&ToolContext {
+				operations: &fixture.operations,
+				run: &fixture.run,
+			},
+			json!({"changes":[change]}),
+			"model-verification",
+		)
+		.await;
+	assert!(matches!(result, Err(Error::Invalid(_))));
+	assert!(
+		fixture.operations.calls.lock().unwrap().is_empty(),
+		"reject before canonical mutation or admission"
+	);
 }

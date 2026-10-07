@@ -58,10 +58,6 @@ impl ExecutionStore for Backend {
 		let _ = run;
 		Ok(vec![])
 	}
-	async fn memory(&self, run: &RunMetadata) -> Result<Value> {
-		let _ = run;
-		Ok(json!({}))
-	}
 	async fn begin_final_completion(&self, run: &Run, token: Uuid) -> Result<bool> {
 		let _ = run;
 		assert_eq!(token, self.0.token);

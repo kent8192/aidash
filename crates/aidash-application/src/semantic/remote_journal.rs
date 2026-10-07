@@ -131,6 +131,7 @@ pub async fn complete(
 	for source in &receipt.sources {
 		scope.record_source(receipt, source).await?
 	}
+	scope.record_native(receipt).await?;
 	scope.complete_operation(receipt).await?;
 	scope.complete_attempt(attempt).await?;
 	scope.commit().await

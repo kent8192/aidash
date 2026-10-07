@@ -24,7 +24,7 @@ async fn grant(store: &Store, run: &crate::domain::RunMetadata) -> Result<Option
 	.map_err(Into::into)
 }
 
-pub(in crate::apps::identity) async fn access_for_run(
+pub(crate) async fn access_for_run(
 	store: &Store,
 	run: &crate::domain::RunMetadata,
 	durable_audit: bool,
@@ -180,12 +180,49 @@ impl WorkerAuthority {
 		}
 	}
 
-	pub async fn remember(&self, store: &Store, run: &Run, data: &Value) -> Result<()> {
-		let outer = self.access.lock().await;
-		let access = Access::under_lease(&outer).await?;
+	pub async fn memory_mutate(
+		&self,
+		store: &Store,
+		run: &Run,
+		key: &str,
+		changes: &[aidash_domain::memory::Change],
+	) -> Result<Vec<aidash_domain::memory::Unit>> {
+		let mut outer = self.access.lock().await;
+		if outer.tx.is_active() {
+			outer.suspend().await?;
+		}
+		let mut access = access_for_run(store, &run.metadata(), true)
+			.await?
+			.ok_or(Error::Forbidden)?;
+		if !access.run_visible(run.metadata()).await? {
+			return Err(Error::RemoteSemantic(
+				crate::semantic::remote::Failure::Invalidated,
+			));
+		}
 		let mut lease = crate::semantic::service::Lease::Scoped(Box::new(access));
-		let result = crate::semantic::service::remember_in(store, &mut lease, run, data).await;
-		lease.finish(result).await
+		let result =
+			crate::semantic::native_memory::run_mutate(store, &mut lease, run, key, changes).await;
+		let result = lease.finish(result).await;
+		refresh_access_for_run(&mut outer, store, run).await?;
+		if !outer.run_visible(run.metadata()).await? {
+			return Err(Error::RemoteSemantic(
+				crate::semantic::remote::Failure::Invalidated,
+			));
+		}
+		result
+	}
+	pub async fn memory_recall(
+		&self,
+		store: &Store,
+		run: &Run,
+		key: &str,
+		query: aidash_domain::memory::RecallQuery,
+		reflect: bool,
+	) -> Result<crate::semantic::native_memory::Outcome> {
+		let mut outer = self.access.lock().await;
+		let mut lease = crate::semantic::service::Lease::Inherited(&mut outer);
+		crate::semantic::native_memory::run_recall(store, &mut lease, run, key, query, reflect)
+			.await
 	}
 
 	pub async fn assign(
@@ -420,7 +457,12 @@ impl Guard {
 		inputs: &[(crate::semantic::remote::InputRead, String)],
 		budget: usize,
 	) -> Result<Option<Value>> {
-		aidash_application::execution::semantic_context::retrieve(
+		let workspace_budget = if self.remote.is_some() {
+			budget
+		} else {
+			crate::semantic::services::memory_context::workspace_budget(budget)?
+		};
+		let semantic = aidash_application::execution::semantic_context::retrieve(
 			&crate::bootstrap::run_semantic_repository(
 				store,
 				self.remote.as_ref(),
@@ -430,10 +472,35 @@ impl Guard {
 			),
 			task,
 			inputs,
+			workspace_budget,
+		)
+		.await
+		.map_err(Error::from)?;
+		if self.remote.is_some() {
+			return Ok(semantic);
+		}
+		let reserved =
+			serde_json::to_vec(&serde_json::json!({"workspace":semantic,"memory":null}))?.len();
+		let available = budget.saturating_sub(reserved);
+		let mut access = self.access.lock().await;
+		let memory = crate::semantic::services::memory_context::retrieve(
+			store,
+			&mut crate::semantic::service::Lease::Inherited(&mut access),
+			&self.run,
+			task,
+			inputs,
+			available,
+			&self.agent,
+		)
+		.await?;
+		crate::semantic::services::memory_context::complete(
+			&mut crate::semantic::service::Lease::Inherited(&mut access),
+			&self.run,
+			semantic,
+			memory,
 			budget,
 		)
 		.await
-		.map_err(Into::into)
 	}
 
 	pub async fn human_read(&self, id: Uuid) -> Result<()> {

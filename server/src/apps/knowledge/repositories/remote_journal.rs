@@ -527,6 +527,21 @@ impl JournalScope for Scope<'_> {
 		.await;
 		result.map_err(Into::into)
 	}
+	async fn record_native(&mut self, receipt: &Receipt) -> Result<()> {
+		let Some(context) = &receipt.memory else {
+			return Ok(());
+		};
+		let binding = receipt.binding.native().ok_or(Error::Forbidden)?;
+		let tx = self.connection();
+		let capacity = super::remote_memory_reads::capacity(
+			&mut super::access::Lease::BorrowedOperator(&mut *tx),
+			binding,
+		)
+		.await?;
+		super::remote_memory_reads::record(tx, receipt.grant_id, binding, context, capacity)
+			.await
+			.map_err(Into::into)
+	}
 	async fn complete_operation(&mut self, receipt: &Receipt) -> Result<()> {
 		let result: NativeResult<()> = async {
 			let tx = self.connection();

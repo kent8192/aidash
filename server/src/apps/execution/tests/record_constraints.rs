@@ -1395,6 +1395,12 @@ async fn compactor_and_embedding_configs_reject_undecodable_shapes(
 		"dimensions":1536
 	});
 	insert_entry(f.store.pool.driver(), &entry).await.unwrap();
+	entry["id"] = json!("openrouter-embedding");
+	entry["config"]["provider"] = json!("openrouter");
+	entry["config"]["endpoint"] = json!("https://openrouter.ai/api/v1");
+	entry["config"]["model"] = json!("google/gemini-embedding-2");
+	entry["config"]["dimensions"] = json!(3072);
+	insert_entry(f.store.pool.driver(), &entry).await.unwrap();
 	cleanup(f, &url, &schema).await;
 }
 
@@ -1762,7 +1768,7 @@ async fn requirements_constraints_and_strict_run_codec_reject_wrong_shapes(
 
 fn index_spec() -> Value {
 	json!({"embedding":{"provider":"openai","endpoint":"http://localhost:9999/v1","model":"embedding","model_version":"1","dimensions":3},
-        "vector":{"provider":"qdrant","endpoint":"http://localhost:6333"},
+        "vector":{"provider":"postgres","endpoint":"local"},
         "enabled":true,"auto_context":false,"max_sources":64,"max_results":10,"max_result_tokens":4096,"max_input_bytes":8192})
 }
 

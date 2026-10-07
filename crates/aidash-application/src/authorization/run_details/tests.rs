@@ -6,7 +6,7 @@ use aidash_domain::{
 use async_trait::async_trait;
 use chrono::Utc;
 use rstest::{fixture, rstest};
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
 fn id(value: u128) -> Uuid {
 	Uuid::from_u128(value)
@@ -14,7 +14,7 @@ fn id(value: u128) -> Uuid {
 struct State {
 	raw: Option<RawRun>,
 	visible: bool,
-	memory: Option<Value>,
+	memory: Option<aidash_domain::memory::Binding>,
 	calls: Vec<String>,
 	fail: Option<&'static str>,
 	deny: bool,
@@ -71,7 +71,7 @@ fn repository() -> Repository {
 			pending: json!({"state_version":1,"data":{},"recovery":{"retry":null,"lease_recovered":false}}),
 		}),
 		visible: true,
-		memory: Some(json!({"saved":null})),
+		memory: None,
 		calls: vec![],
 		fail: None,
 		deny: false,
@@ -155,7 +155,10 @@ impl RunDetailsScope for Scope {
 			})
 			.to_vec())
 	}
-	async fn memory(&mut self, run: &RunMetadata) -> Result<Option<Value>> {
+	async fn memory(
+		&mut self,
+		run: &RunMetadata,
+	) -> Result<Option<aidash_domain::memory::Binding>> {
 		assert_eq!(run.agent_id, "producer");
 		assert_eq!(run.agent_version, "1");
 		assert_eq!(run.workspace_id, id(3));
@@ -206,7 +209,7 @@ async fn authorized_inspection_preserves_the_native_page_and_projection(
 	let details = inspect(&repository, id(1), offset).await.unwrap();
 	assert_eq!(details.run.id, id(1));
 	assert_eq!(details.run.revision, 8);
-	assert_eq!(details.memory, json!({"saved":null}));
+	assert_eq!(details.memory, None);
 	assert_eq!(
 		details
 			.invocations
@@ -288,18 +291,14 @@ async fn revoked_workspace_read_stops_before_run_disclosure(repository: Reposito
 	);
 }
 #[rstest]
-#[case::missing(None,json!({}))]
-#[case::explicit_null(Some(Value::Null), Value::Null)]
 #[tokio::test]
-async fn only_an_absent_memory_row_defaults_to_an_empty_object(
-	repository: Repository,
-	#[case] memory: Option<Value>,
-	#[case] expected: Value,
-) {
-	repository.0.lock().unwrap().memory = memory;
-	assert_eq!(
-		inspect(&repository, id(1), 0).await.unwrap().memory,
-		expected
+async fn absent_participant_binding_is_explicitly_disabled(repository: Repository) {
+	assert!(
+		inspect(&repository, id(1), 0)
+			.await
+			.unwrap()
+			.memory
+			.is_none()
 	);
 }
 #[rstest]

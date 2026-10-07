@@ -94,6 +94,15 @@ pub async fn terminal(
 	status: &str,
 	reason: &str,
 ) -> Result<()> {
+	// Do not release reserved quotas or retire the subject while bounded,
+	// explicitly opted-in completion work still uses that exact live origin.
+	// This occurs before acquiring authority/request locks used by retirement.
+	if requested.status == "ACTIVE"
+		&& requested.expires_at > repository.now()
+		&& !repository.completion_ready(requested).await?
+	{
+		return Ok(());
+	}
 	let mut scope = repository.begin_terminal(requested).await?;
 	let result = async {
 		let job = scope.load(&requested.tenant, requested.id).await?;

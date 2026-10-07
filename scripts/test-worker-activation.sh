@@ -5,7 +5,6 @@ scripts/build-test-postgres.sh
 export RUSTC_WRAPPER=
 export RUST_MIN_STACK="${RUST_MIN_STACK:-8388608}"
 export AIDASH_SECRET_TEST_PEER=local-peer-regression-test-token-0123456789
-export AIDASH_SECRET_TEST_QDRANT=local-semantic-vector-fixture-key-0123456789
 export AIDASH_ACTIVATION_EVIDENCE_DIR="${AIDASH_ACTIVATION_EVIDENCE_DIR:-$PWD/target/activation-evidence}"
 mkdir -p "$AIDASH_ACTIVATION_EVIDENCE_DIR"
 python3 - <<'PY'

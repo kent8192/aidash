@@ -5,7 +5,6 @@ scripts/build-test-postgres.sh
 export RUSTC_WRAPPER=
 export RUST_MIN_STACK="${RUST_MIN_STACK:-8388608}"
 export AIDASH_SECRET_TEST_PEER=local-peer-regression-test-token-0123456789
-export AIDASH_SECRET_TEST_QDRANT=local-semantic-vector-fixture-key-0123456789
 export AIDASH_SSE_EVIDENCE_DIR="${AIDASH_SSE_EVIDENCE_DIR:-$PWD/target/sse-evidence/$(date -u +%Y%m%dT%H%M%SZ)}"
 mkdir -p "$AIDASH_SSE_EVIDENCE_DIR"
 if [[ "${1:-}" != "" && "${1:-}" != "--benchmark" ]]; then
@@ -34,7 +33,7 @@ record = {'git_sha':subprocess.check_output(['git','rev-parse','HEAD']).decode()
           'utc':datetime.datetime.now(datetime.timezone.utc).isoformat(),'platform':platform.platform(),
           'rustc':subprocess.check_output(['rustc','--version']).decode().strip(),
           'settings':{'api_processes':3,'connections':100,'filtered_connections':90,'global_connections':10,'workspaces':10,'active_seconds':30,'events_per_second':10,'active_repetitions':3,'idle_seconds':60,'idle_repetitions':3,'active_reconcile_ms':60000,'idle_reconcile_ms':5000},
-          'service_images':['aidash-orm-test-postgres:17-pg-jsonschema-0.3.4','nats:2.12-alpine','qdrant/qdrant:v1.19.1'],
+          'service_images':['aidash-orm-test-postgres:17-pg-jsonschema-0.3.4','nats:2.12-alpine'],
           'resource_limits':'No per-process limits; API processes on host, services in local Docker engine.',
           'timing':'Controller monotonic clock, release of writer event/commit advisory barrier through complete frame parsing; nearest-rank percentiles of slowest eligible client per event.'}
 (root/'invocation.json').write_text(json.dumps(record,indent=2)+'\n')

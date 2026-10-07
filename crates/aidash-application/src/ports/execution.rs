@@ -45,7 +45,6 @@ pub trait ExecutionStore: Send + Sync {
 	async fn save_run(&self, run: &Run, token: Uuid, event: &str) -> Result<()>;
 	async fn emit(&self, workspace: Option<Uuid>, kind: &str, data: Value) -> Result<Event>;
 	async fn run_inputs(&self, run: Uuid) -> Result<Vec<aidash_domain::run_input::RunInput>>;
-	async fn memory(&self, run: &RunMetadata) -> Result<Value>;
 	async fn begin_final_completion(&self, run: &Run, token: Uuid) -> Result<bool>;
 	async fn human_request(
 		&self,
