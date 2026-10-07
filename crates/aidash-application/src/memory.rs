@@ -505,16 +505,25 @@ impl Engine<'_> {
 				.await?;
 			return Ok(Recall::Empty);
 		}
+		let uses_model = self.models.reranker_uses_model(&self.policy.reranker)?;
+		let allowance = if uses_model {
+			budget.allowance()?
+		} else {
+			Allowance {
+				calls: 0,
+				tokens: 0,
+				cost_micros: 0,
+			}
+		};
 		let ranked = self
 			.models
-			.rerank(
-				&self.policy.reranker,
-				&query.text,
-				&candidates,
-				budget.allowance()?,
-			)
+			.rerank(&self.policy.reranker, &query.text, &candidates, allowance)
 			.await?;
-		budget.charge(ranked.usage)?;
+		if uses_model {
+			budget.charge(ranked.usage)?;
+		} else if ranked.usage.tokens != 0 || ranked.usage.cost_micros != 0 {
+			return Err(Error::Invalid("local reranker reported model usage".into()));
+		}
 		let mut scores = ranked.output;
 		let ranked_ids: BTreeSet<_> = scores.iter().map(|(id, _)| *id).collect();
 		if scores.len() != candidates.len()

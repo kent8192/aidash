@@ -771,6 +771,11 @@ impl Models {
 
 #[async_trait]
 impl MemoryModels for Models {
+	fn reranker_uses_model(&self, reference: &EntityRef) -> aidash_application::Result<bool> {
+		let config: RerankerConfig =
+			serde_json::from_value(self.role(reference, "reranker")?.config.clone())?;
+		Ok(matches!(config, RerankerConfig::Model { .. }))
+	}
 	async fn consolidate(
 		&self,
 		model: &EntityRef,

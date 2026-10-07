@@ -182,6 +182,9 @@ struct Models {
 }
 #[async_trait]
 impl MemoryModels for Models {
+	fn reranker_uses_model(&self, model: &EntityRef) -> Result<bool> {
+		Ok(model.id != "local-rrf")
+	}
 	async fn consolidate(
 		&self,
 		_: &EntityRef,
@@ -247,16 +250,18 @@ impl MemoryModels for Models {
 	}
 	async fn rerank(
 		&self,
-		_: &EntityRef,
+		model: &EntityRef,
 		_: &str,
 		units: &[Unit],
-		_: Allowance,
+		allowance: Allowance,
 	) -> Result<Produced<Vec<(Uuid, f64)>>> {
+		let uses_model = self.reranker_uses_model(model)?;
+		assert_eq!(allowance.calls > 0, uses_model);
 		Ok(Produced {
 			output: units.iter().map(|u| (u.id, 1.0)).collect(),
 			usage: Usage {
-				tokens: 1,
-				cost_micros: 1,
+				tokens: usize::from(uses_model || self.invented),
+				cost_micros: u64::from(uses_model || self.invented),
 			},
 		})
 	}
@@ -306,6 +311,74 @@ fn query(tokens: usize) -> RecallQuery {
 		kinds: vec![],
 		max_tokens: tokens,
 	}
+}
+
+#[tokio::test]
+async fn local_rrf_leaves_calls_for_embedding_and_reflection() {
+	let models = Models {
+		invented: false,
+		followup: None,
+	};
+	for local in [false, true] {
+		for reflection in [false, true] {
+			let mut p = policy();
+			p.bounds.max_model_calls = if reflection { 2 } else { 1 };
+			if local {
+				p.reranker.id = "local-rrf".into();
+			}
+			let engine = Engine {
+				provider: &p.extraction,
+				policy: &p,
+				models: &models,
+			};
+			let mut scope = Scope {
+				stale: false,
+				foreign: false,
+				delivered: false,
+			};
+			let result = if reflection {
+				engine
+					.reflect(&mut scope, &unit().bank, &query(4096))
+					.await
+					.map(|_| ())
+			} else {
+				engine
+					.recall(&mut scope, &unit().bank, &query(4096))
+					.await
+					.map(|_| ())
+			};
+			assert_eq!(
+				result.is_ok(),
+				local,
+				"local={local}, reflection={reflection}: {result:?}"
+			);
+		}
+	}
+}
+
+#[tokio::test]
+async fn a_local_reranker_cannot_report_unreserved_model_usage() {
+	let mut p = policy();
+	p.reranker.id = "local-rrf".into();
+	let models = Models {
+		invented: true,
+		followup: None,
+	};
+	let engine = Engine {
+		provider: &p.extraction,
+		policy: &p,
+		models: &models,
+	};
+	let mut scope = Scope {
+		stale: false,
+		foreign: false,
+		delivered: false,
+	};
+	assert!(
+		matches!(engine.recall(&mut scope, &unit().bank, &query(4096)).await,
+		Err(Error::Invalid(message)) if message == "local reranker reported model usage")
+	);
+	assert!(!scope.delivered);
 }
 
 #[tokio::test]

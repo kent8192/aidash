@@ -149,21 +149,18 @@ pub async fn cleanup(f: Federation, url: &str, database: &str) {
 }
 
 #[allow(dead_code)] // The persistence-only suite shares the same database lifecycle.
-pub async fn cleanup_database(url: &str, database: &str) {
+pub async fn cleanup_database(_url: &str, database: &str) {
 	assert!(database.starts_with("execution_"));
 	assert!(
 		database
 			.bytes()
 			.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
 	);
-	let mut admin_url = reqwest::Url::parse(url).unwrap();
-	admin_url.set_path("postgres");
-	PgConnection::connect(admin_url.as_str())
-		.await
-		.unwrap()
-		.execute(format!("DROP DATABASE {database} WITH (FORCE)").as_str())
-		.await
-		.unwrap();
+	// TestEnvironment owns the entire disposable postmaster. Retain isolated
+	// databases until its container is dropped: DROP DATABASE broadcasts a
+	// process barrier even to other databases and can block behind concurrent
+	// PGroonga index initialization. Callers close their process-owned pools;
+	// container teardown removes every fixture database together.
 }
 
 #[allow(dead_code)]

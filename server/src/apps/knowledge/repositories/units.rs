@@ -1,7 +1,7 @@
 //! Native memory unit projections borrow the caller's authority transaction.
 use super::access::Lease;
 use crate::{Error, Result, database::native};
-use aidash_domain::memory::{Bank, Content, TimeRange, Unit};
+use aidash_domain::memory::{Bank, Content, Policy, TimeRange, Unit};
 use reinhardt::query::{
 	Alias, ColumnRef, Expr, ExprTrait as _, LockType, PostgresQueryBuilder, Query,
 	QueryStatementBuilder as _,
@@ -163,14 +163,20 @@ pub(crate) async fn text(
 		return Ok(None);
 	}
 	authorize(lease, &unit.bank, "memory.read").await?;
-	unexpired(lease, &unit).await?;
-	current(lease, workspace, &unit.content.evidence, 1024).await?;
+	let policy = unexpired(lease, &unit).await?;
+	current(
+		lease,
+		workspace,
+		&unit.content.evidence,
+		policy.bounds.max_graph_visits,
+	)
+	.await?;
 	Ok(Some(unit.content.text))
 }
 
 /// TTL is a disclosure fence even before the bounded maintenance worker runs.
 /// Keep raw loading available to deletion/restore paths so they can clean up.
-pub(crate) async fn unexpired(lease: &mut Lease<'_>, unit: &Unit) -> Result<()> {
+pub(crate) async fn unexpired(lease: &mut Lease<'_>, unit: &Unit) -> Result<Policy> {
 	let settings = super::bank_settings::get(lease, &unit.bank)
 		.await?
 		.ok_or(Error::Forbidden)?;
@@ -181,7 +187,7 @@ pub(crate) async fn unexpired(lease: &mut Lease<'_>, unit: &Unit) -> Result<()> 
 	{
 		return Err(Error::Conflict("memory unit retention expired".into()));
 	}
-	Ok(())
+	Ok(policy)
 }
 
 /// Traverse exact support revisions under the same policy/source locks. Cycles and

@@ -114,6 +114,9 @@ pub enum ReflectStep {
 /// Before external calls, reserve the supplied bounded allowance through the origin budget ledger.
 #[async_trait]
 pub trait MemoryModels: Send + Sync {
+	/// Resolve the exact reranker binding before reserving a provider call.
+	/// Local rerankers receive zero allowance and must report zero usage.
+	fn reranker_uses_model(&self, model: &EntityRef) -> Result<bool>;
 	/// Select semantically equivalent/related support without dropping mandatory
 	/// facts or conflicts. Return only supplied exact Unit evidence identities.
 	async fn consolidate(

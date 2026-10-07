@@ -67,6 +67,31 @@ async fn service_failure_stops_and_drains_workers() {
 	assert!(drained.load(Ordering::SeqCst));
 }
 
+#[tokio::test]
+async fn requested_shutdown_wins_over_a_service_observing_the_same_signal() {
+	for _ in 0..32 {
+		let mut supervisor = Supervisor::new(Duration::from_secs(20));
+		let mut token = supervisor.stop_token();
+		let drained = Arc::new(AtomicBool::new(false));
+		let completed = drained.clone();
+		supervisor.spawn_worker(async move {
+			token.stopped().await;
+			completed.store(true, Ordering::SeqCst);
+			Ok(())
+		});
+		let (exited, observed) = oneshot::channel();
+		supervisor.spawn_service(async move {
+			exited.send(()).unwrap();
+			Ok(())
+		});
+		observed.await.unwrap();
+		tokio::task::yield_now().await;
+		// Both the coordinator's signal and its exiting metrics task are ready.
+		supervisor.run(async {}).await.unwrap();
+		assert!(drained.load(Ordering::SeqCst));
+	}
+}
+
 #[rstest::rstest]
 #[tokio::test(start_paused = true)]
 async fn drain_timeout_aborts_uncooperative_workers() {

@@ -68,7 +68,7 @@ pub(crate) async fn sweep(store: &Store) -> Result<()> {
 								.lte(Expr::value(now - Duration::days(i64::from(age)))),
 						)
 						.order_by(Alias::new("id"), Order::Asc)
-						.limit(retention.purge_batch as u64)
+						.limit(retention.purge_batch.min(policy.bounds.max_candidates) as u64)
 						.to_string(PostgresQueryBuilder),
 				)
 				.fetch_all(&mut **lease.tx())

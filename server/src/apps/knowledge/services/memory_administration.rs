@@ -339,7 +339,7 @@ pub(crate) async fn history(
 		.fetch_all(&mut **lease.tx())
 		.await?;
 	let expired = match units::unexpired(lease, &unit).await {
-		Ok(()) => false,
+		Ok(_) => false,
 		Err(Error::Conflict(_) | Error::Forbidden) => true,
 		Err(error) => return Err(error),
 	};

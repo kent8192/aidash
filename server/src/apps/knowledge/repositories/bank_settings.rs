@@ -3,7 +3,8 @@ use super::{access::Lease, native_memory::bank_id};
 use crate::{Error, Result, database::native};
 use aidash_domain::{memory::Bank, registry::EntityRef};
 use reinhardt::query::{
-	Alias, ColumnRef, Expr, ExprTrait, LockType, PostgresQueryBuilder, Query, QueryStatementBuilder,
+	Alias, ColumnRef, Expr, ExprTrait, Func, LockType, PostgresQueryBuilder, Query,
+	QueryStatementBuilder,
 };
 use serde::{Deserialize, Serialize};
 
@@ -67,6 +68,31 @@ pub(crate) async fn set(
 		return Err(Error::Conflict(
 			"observed memory bank policy revision changed".into(),
 		));
+	}
+	// Workspace mutation locks also cover policy replacement. Tombstones count
+	// toward record capacity; every non-deleted row counts toward live capacity.
+	// Rejection rolls back both settings and any participant update in this lease.
+	let policy = crate::semantic::native_memory::policy(lease, provider).await?;
+	for (live_only, cap) in [
+		(false, policy.retention.max_unit_records),
+		(true, policy.bounds.max_units),
+	] {
+		let mut query = Query::select();
+		query
+			.expr(Func::count(Expr::col(ColumnRef::Asterisk).into()))
+			.from(Alias::new("memory_units"))
+			.and_where(Expr::col("bank_id").eq(Expr::value(id)));
+		if live_only {
+			query.and_where(Expr::col("deleted").eq(false));
+		}
+		let count: i64 = native::query_scalar(&query.to_string(PostgresQueryBuilder))
+			.scalar_one(&mut **lease.tx())
+			.await?;
+		if usize::try_from(count).ok().is_none_or(|count| count > cap) {
+			return Err(Error::Conflict(
+				"replacement memory policy is below existing bank storage".into(),
+			));
+		}
 	}
 	let revision = expected
 		.checked_add(1)

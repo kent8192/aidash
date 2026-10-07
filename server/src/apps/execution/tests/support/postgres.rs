@@ -69,14 +69,15 @@ pub async fn apply_migrations(
 	migrations: &[reinhardt::db::migrations::Migration],
 ) {
 	// Extension creation commits before the first PGroonga feature starts its
-	// per-database recovery worker. Warm that worker before index DDL, following
+	// per-database recovery worker. Flush its initial catalog before another
+	// backend opens the database for index DDL, following
 	// https://pgroonga.github.io/reference/modules/pgroonga-crash-safer.html.
 	// CREATE EXTENSION is administrative fixture DDL unsupported by SeaQuery.
 	let pool = connection.clone().into_postgres().unwrap();
 	let probe = reinhardt::query::Query::select()
 		.expr(reinhardt::query::SimpleExpr::FunctionCall(
 			reinhardt::query::IntoIden::into_iden("pgroonga_command"),
-			vec![reinhardt::query::Expr::value("status").into()],
+			vec![reinhardt::query::Expr::value("io_flush").into()],
 		))
 		.to_string(reinhardt::query::PostgresQueryBuilder);
 	let started = std::time::Instant::now();

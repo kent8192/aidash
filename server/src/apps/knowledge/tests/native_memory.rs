@@ -19,6 +19,8 @@ use reinhardt::{
 use rstest::{fixture, rstest};
 use serde_json::json;
 use uuid::Uuid;
+#[path = "native_memory/policy_bounds.rs"]
+mod policy_bounds;
 #[path = "native_memory/precision.rs"]
 mod precision;
 #[path = "native_memory/purge.rs"]
@@ -3458,6 +3460,13 @@ async fn listing_enforces_the_provenance_budget_separately_from_bank_unit_count(
 		memory::list(&store, &Actor::Operator, read.clone()).await,
 		Err(aidash_server::Error::Invalid(message)) if message == "memory evidence traversal exceeds its bound"
 	));
+	assert!(
+		matches!(
+			aidash_server::semantic::worker::sweep(&store).await,
+			Err(aidash_server::Error::Invalid(message)) if message == "memory evidence traversal exceeds its bound"
+		),
+		"semantic indexing must enforce the same reduced provenance cap"
+	);
 	provider.metadata.0["config"]["policy"]["bounds"]["max_graph_visits"] = json!(8);
 	Definition::objects()
 		.update_with_conn(&mut db, &provider)

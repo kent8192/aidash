@@ -3,6 +3,14 @@
 use reinhardt::query::{
 	Alias, ColumnRef, Expr, ExprTrait, IntoIden, PostgresQueryBuilder, Query, SimpleExpr,
 };
+pub(super) fn pgroonga_ready() -> String {
+	Query::select()
+		.expr(SimpleExpr::FunctionCall(
+			"pgroonga_command".into_iden(),
+			vec![Expr::value("io_flush").into()],
+		))
+		.to_string(PostgresQueryBuilder)
+}
 fn evidence(table: &str, columns: &[&str], predicate: &str) -> String {
 	let mut row = Query::select();
 	row.columns(columns.iter().map(|c| Alias::new(*c)))
@@ -39,7 +47,7 @@ pub(super) fn document() -> serde_json::Value {
 			.to_string(PostgresQueryBuilder)
 	};
 	serde_json::json!({"pending_events":pending,"inbox":inbox,
-			"pgroonga_ready":Query::select().expr(SimpleExpr::FunctionCall("pgroonga_command".into_iden(), vec![Expr::value("status").into()])).to_string(PostgresQueryBuilder),
+			"pgroonga_ready":pgroonga_ready(),
 			"tx_authority_control":Query::select().expr(Expr::cust("set_config('aidash.transaction_control','authority',true)")).to_string(PostgresQueryBuilder),
 			"tx_disable_peer":Query::update().table(Alias::new("peers")).value(Alias::new("enabled"),false).and_where(Expr::col(Alias::new("node_id")).eq("aidash://tx-01")).to_string(PostgresQueryBuilder),
 			"tx_peer":evidence("peers", &["node_id","enabled"], "node_id='aidash://tx-01'"),

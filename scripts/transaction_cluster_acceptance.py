@@ -96,8 +96,8 @@ class Cluster:
                               capture_output=True, text=True, env=self.env, check=check)
 
     def install_extensions(self, database):
-        # Commit extension creation, then warm the crash-safe worker before index
-        # DDL. Each psql attempt is a fresh backend; only preparing is retryable.
+        # Commit extension creation, then flush the initial crash-safe catalog
+        # before a different backend performs index DDL. Each psql attempt is a fresh backend; only preparing is retryable.
         statements = [
             "CREATE EXTENSION IF NOT EXISTS pg_jsonschema WITH SCHEMA public; CREATE EXTENSION IF NOT EXISTS vector; CREATE EXTENSION IF NOT EXISTS pgroonga;",
             self.queries["pgroonga_ready"],
