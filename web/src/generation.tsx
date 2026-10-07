@@ -1,5 +1,6 @@
 import {
   AgentBindings,
+  hasInstructionalBinding,
   type Binding,
   type BindingConfiguration,
 } from "./agent-bindings";
@@ -471,7 +472,7 @@ function PolicyEditor({
     const text = (name: string) => String(form.get(name) ?? "");
     if (
       !text("instructions").trim() &&
-      !bindings.bindings.some((b) => b.kind === "skill" || b.kind === "source")
+      !hasInstructionalBinding(bindings.bindings, entries, node)
     ) {
       setError(t("agentNeedsSkill"));
       return;

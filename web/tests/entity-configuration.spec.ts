@@ -593,3 +593,32 @@ test("bundle members allow one version per ID and reenable siblings on removal",
     { registry_node: "aidash://test", id: "shared-tool", version: "2.0.0" },
   ]);
 });
+
+test("changing Source adapter clears unsupported settings and prior validation", async ({
+  page,
+}) => {
+  const dialog = page.getByRole("dialog");
+  await dialog.getByLabel("Entity type").selectOption("source");
+  await dialog
+    .getByLabel("Context source")
+    .selectOption("reference_attachments");
+  await dialog.getByLabel("Source settings (JSON)").fill('{"references":[]}');
+  await dialog.getByLabel("Context source").selectOption("workspace_retrieval");
+  await expect(dialog.getByLabel("Source settings (JSON)")).toHaveValue("{}");
+  await dialog.getByLabel("Source settings (JSON)").fill("{");
+  await dialog
+    .getByLabel("Context source")
+    .selectOption("reference_attachments");
+  await dialog.getByLabel("Context source").selectOption("workspace_retrieval");
+  const posted = page.waitForRequest(
+    (request) =>
+      request.url().endsWith("/api/registry") && request.method() === "POST",
+  );
+  await dialog
+    .getByRole("button", { name: "Register entity", exact: true })
+    .click();
+  expect((await posted).postDataJSON().config).toEqual({
+    schema_version: 1,
+    source: { adapter: "workspace_retrieval" },
+  });
+});

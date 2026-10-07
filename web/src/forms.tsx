@@ -1,3 +1,4 @@
+import { hasInstructionalBinding } from "./agent-bindings";
 import { Button } from "./components/ui/button";
 import { apiFetch } from "./transport";
 import {
@@ -380,9 +381,7 @@ export function EntityForm({
           if (
             kind === "agent" &&
             !s("instructions").trim() &&
-            !core.bindings.some(
-              (b) => b.kind === "skill" || b.kind === "source",
-            )
+            !hasInstructionalBinding(core.bindings, data.registry, data.node.id)
           )
             throw new Error(t("agentNeedsSkill"));
           if (readingDocuments) return;

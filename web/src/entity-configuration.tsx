@@ -415,7 +415,10 @@ export function EntityConfiguration({
           <Field label="Context source">
             <select
               value={sourceAdapter}
-              onChange={(e) => setAdapter(e.target.value)}
+              onChange={(e) => {
+                setAdapter(e.target.value);
+                setSourceValue("{}");
+              }}
             >
               {(kind === "memory"
                 ? ["conversation_memory", "semantic_memory"]
@@ -432,6 +435,7 @@ export function EntityConfiguration({
           </Field>
           <Field label="Source settings (JSON)">
             <textarea
+              key={sourceAdapter}
               value={sourceValue}
               onChange={(e) => {
                 setSourceValue(e.target.value);

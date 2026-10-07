@@ -17,6 +17,33 @@ export type BindingConfiguration = {
   bindings: Binding[];
   remove_default: string[];
 };
+export function hasInstructionalBinding(
+  bindings: Binding[],
+  entries: {
+    id: string;
+    version: string;
+    kind: string;
+    config: Record<string, unknown>;
+  }[],
+  node: string,
+): boolean {
+  return bindings.some((binding) => {
+    if (binding.target.registry_node !== node) return false;
+    const entry = entries.find(
+      (entry) =>
+        entry.id === binding.target.id &&
+        entry.version === binding.target.version &&
+        entry.kind === binding.kind,
+    );
+    if (!entry) return false;
+    if (binding.kind === "skill") return true;
+    const source = entry.config.source as { adapter?: string } | undefined;
+    return (
+      binding.kind === "source" &&
+      ["skill_attachments", "skill_roots"].includes(source?.adapter ?? "")
+    );
+  });
+}
 export const defaults = [
   "workspace_observe",
   "workspace_wait",
