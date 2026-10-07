@@ -1212,6 +1212,12 @@ impl<'a> Executor<'a> {
 						guard.human_read(id).await?;
 					}
                     let h = home.human_request_by_id(id).await?;
+					if !home.local() && h.response.is_none() {
+						// A remote scheduler polls Home; an unanswered continuation
+						// remains waiting and advances the next polling deadline.
+						store.save_run(run, token, "run.waiting").await?;
+						return Ok(());
+					}
 					let response = if home.local() && matches!(&waiting, WaitingState::ExternalApproval {expires_at,..} if *expires_at <= chrono::Utc::now()) {store.expire_workbench_approval(id).await?.response} else {h.response}.ok_or_else(||Error::Conflict("human request has not been answered".into()))?;
 					match &mut waiting {
 						WaitingState::ExternalApproval {

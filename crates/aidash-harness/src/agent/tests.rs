@@ -24,6 +24,8 @@ struct State {
 	permit_completion: bool,
 	provider_status: Option<u16>,
 	dependency_status: Option<TaskStatus>,
+	remote_home: bool,
+	human: Mutex<Option<HumanRequest>>,
 }
 impl Backend {
 	fn record(&self, name: &'static str) {
@@ -147,6 +149,12 @@ impl ExecutionCatalog for Backend {
 
 #[async_trait]
 impl ExecutionHome for Backend {
+	async fn human_request_by_id(&self, id: Uuid) -> Result<HumanRequest> {
+		self.record("home.human_read");
+		let request = self.0.human.lock().unwrap().clone().expect("Home request");
+		assert_eq!(request.id, id);
+		Ok(request)
+	}
 	async fn task(&self) -> Result<Task> {
 		self.record("home.task");
 		Ok(self.task_value())
@@ -223,7 +231,7 @@ impl ExecutionHome for Backend {
 	}
 
 	fn local(&self) -> bool {
-		true
+		!self.0.remote_home
 	}
 	fn has_local_authority(&self) -> bool {
 		false
@@ -255,7 +263,8 @@ impl ExecutionAuthority for Backend {
 	}
 	async fn human_read(&self, id: Uuid) -> Result<()> {
 		let _ = id;
-		unexpected("ExecutionAuthority.human_read")
+		self.record("authority.human_read");
+		Ok(())
 	}
 	async fn model_media(&self, selections: &[Selection]) -> Result<Vec<ContentPart>> {
 		let _ = selections;
@@ -515,8 +524,87 @@ fn fixture() -> Fixture {
 		permit_completion: true,
 		provider_status: None,
 		dependency_status: None,
+		remote_home: false,
+		human: Mutex::new(None),
 	}));
 	Fixture { backend, run }
+}
+
+#[rstest]
+#[tokio::test]
+async fn remote_human_poll_preserves_waiting_until_home_answers(mut fixture: Fixture) {
+	let id = Uuid::new_v4();
+	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	state.remote_home = true;
+	state.scoped = true;
+	*state.human.lock().unwrap() = Some(HumanRequest {
+		id,
+		workspace_id: fixture.run.workspace_id,
+		run_id: fixture.run.id,
+		kind: "QUESTION".into(),
+		prompt: "Continue?".into(),
+		response: None,
+		created_at: fixture.run.updated_at,
+		answered_by: None,
+	});
+	fixture.run.state = RunState::Waiting(Box::new(WaitingState::Human {
+		request_id: id,
+		resume: ResumeState::Ready(ReadyState::default()),
+	}));
+	for _ in 0..2 {
+		Executor::new(&fixture.backend)
+			.advance(
+				&mut fixture.run,
+				fixture.backend.0.token,
+				&mut fixture.backend.clone(),
+			)
+			.await
+			.unwrap();
+		assert!(
+			matches!(&fixture.run.state, RunState::Waiting(wait) if wait.request_id() == Some(id))
+		);
+	}
+	assert!(
+		fixture
+			.backend
+			.0
+			.writes
+			.lock()
+			.unwrap()
+			.iter()
+			.all(|(event, run)| event == "run.waiting" && run.phase() == RunPhase::Waiting)
+	);
+	fixture
+		.backend
+		.0
+		.human
+		.lock()
+		.unwrap()
+		.as_mut()
+		.unwrap()
+		.response = Some(json!({"answer":"Continue"}));
+	Executor::new(&fixture.backend)
+		.advance(
+			&mut fixture.run,
+			fixture.backend.0.token,
+			&mut fixture.backend.clone(),
+		)
+		.await
+		.unwrap();
+	assert_eq!(fixture.run.phase(), RunPhase::Ready);
+	assert_eq!(
+		fixture.backend.0.writes.lock().unwrap().last().unwrap().0,
+		"run.resumed"
+	);
+	let calls = fixture.backend.0.calls.lock().unwrap();
+	assert_eq!(
+		calls
+			.iter()
+			.filter(|call| **call == "authority.human_read")
+			.count(),
+		3
+	);
+	assert!(!calls.contains(&"provider.infer"));
 }
 #[rstest]
 #[case(TaskStatus::Completed, RunPhase::Completed)]

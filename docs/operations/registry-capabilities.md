@@ -112,6 +112,11 @@ Operator delegations keep their bounded journal on the existing task delegation,
 and mirror each request under the receiver's real Run for Mesh inspection and
 answer controls. Receiver answers are first committed at Home. Neither route
 creates a shadow Run at Home. Lost replies replay the same request only for identical input.
+Remote waiting Runs retain the Home request ID without a receiver-local foreign
+key. Their Worker polls the Home journal at most once per second through the
+current admission authority; local waiting Runs retain their ownership foreign
+key. Apply both the physical and model-state continuation migrations before
+restarting Workers.
 The requester can inspect them in remote execution status and answer through
 `POST /api/tasks/{task}/remote-grants/{grant}/human-requests/answer` with
 `{ "id": "request-uuid", "response": { "answer": "Continue" } }`.
