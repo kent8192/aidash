@@ -214,9 +214,12 @@ native revision `cd29635a9937133d2e81cca44857bea331446cc5`. This reference inclu
 native memory, vector, and PGroonga additions. Prepare it with `aidash migrate`
 using binaries, settings, and migration sources from that exact revision in an
 isolated deployment directory; do not rebuild the reference from the working tree.
-The reference and target must each have exactly the `(app, name)` identities
-registered in their respective source histories, with no retired ledger. New
-migration files are included automatically without a hard-coded record count.
+The frozen reference identities are checked into
+`scripts/migration-schema-reference.json`; verification does not need the original
+Git object, so shallow clones and squash merges retain the reference ledger.
+The reference must match that manifest, and the target must have exactly the
+`(app, name)` identities registered in its current sources, with no retired ledger.
+New migration files are included automatically without a hard-coded record count.
 
 ```bash
 python3 scripts/test-migration-schema.py \

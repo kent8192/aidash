@@ -247,6 +247,8 @@ pub(crate) async fn retrieve(
 	budget: usize,
 ) -> Result<NativeContext> {
 	stamp(&runtime.store, lease, binding).await?;
+	let capacity =
+		super::super::repositories::remote_memory_reads::capacity(lease, binding).await?;
 	let mut context = NativeContext { banks: vec![] };
 	for declared in &binding.banks {
 		let policy = memory::policy(lease, &declared.provider.entry).await?;
@@ -331,6 +333,7 @@ pub(crate) async fn retrieve(
 		operation.grant_id,
 		binding,
 		&context,
+		capacity,
 	)
 	.await?;
 	Ok(context)

@@ -144,6 +144,13 @@ pub async fn validate_references(
 		for source in references.iter().filter(|entry| entry.kind == "source") {
 			let source: aidash_domain::memory::SourceConfig =
 				serde_json::from_value(source.config.clone())?;
+			if source.scope == aidash_domain::memory::SourceScope::Participant
+				&& config.memory.as_ref() != Some(&source.memory)
+			{
+				return Err(Error::Invalid(
+					"participant Sources require the Agent's exact primary memory provider".into(),
+				));
+			}
 			providers.push(source.memory);
 		}
 		let mut embedding = None;

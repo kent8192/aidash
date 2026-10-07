@@ -20,7 +20,7 @@ from urllib.parse import quote
 import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
-REFERENCE_REVISION = "cd29635a9937133d2e81cca44857bea331446cc5"
+REFERENCE_MANIFEST = Path(__file__).with_name("migration-schema-reference.json")
 
 QUERIES = {
     "tables": "SELECT c.relname AS name, c.relkind, c.relpersistence, c.relreplident, c.relrowsecurity, c.relforcerowsecurity FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relkind IN ('r','p') AND c.relname NOT IN ('seaql_migrations','reinhardt_migrations') ORDER BY c.relname",
@@ -35,26 +35,12 @@ QUERIES = {
 }
 
 
-def migration_identities(revision=None):
+def migration_identities():
     """Read every native source; refuse missing or duplicate migration headers."""
-    if revision is None:
-        sources = {
-            str(path): path.read_text()
-            for path in sorted((ROOT / "server/migrations").glob("*/*.rs"))
-        }
-    else:
-        paths = subprocess.check_output(
-            ["git", "ls-tree", "-r", "--name-only", revision, "server/migrations"],
-            cwd=ROOT,
-            text=True,
-        ).splitlines()
-        sources = {
-            path: subprocess.check_output(
-                ["git", "show", revision + ":" + path], cwd=ROOT, text=True
-            )
-            for path in paths
-            if re.fullmatch(r"server/migrations/[^/]+/[^/]+\.rs", path)
-        }
+    sources = {
+        str(path): path.read_text()
+        for path in sorted((ROOT / "server/migrations").glob("*/*.rs"))
+    }
     identities = set()
     for path, source in sources.items():
         headers = re.findall(
@@ -75,6 +61,16 @@ def migration_identities(revision=None):
 def validate_ledger(records, expected):
     actual = [(record["app"], record["name"]) for record in records]
     return len(actual) == len(set(actual)) and set(actual) == expected
+
+
+def reference_history():
+    """The frozen reference survives shallow clones and squash merges."""
+    manifest = json.loads(REFERENCE_MANIFEST.read_text())
+    records = manifest["migrations"]
+    expected = {(record["app"], record["name"]) for record in records}
+    if not expected or not validate_ledger(records, expected):
+        raise RuntimeError("invalid frozen native migration identities")
+    return manifest["source_revision"], expected
 
 
 def main():
@@ -102,10 +98,7 @@ def main():
     target = "aidash_schema_" + uuid.uuid4().hex
     evidence = args.evidence_dir.resolve() / target
     evidence.mkdir(parents=True, mode=0o700)
-    reference_revision = subprocess.check_output(
-        ["git", "rev-parse", REFERENCE_REVISION], cwd=ROOT, text=True
-    ).strip()
-    reference_identities = migration_identities(reference_revision)
+    reference_revision, reference_identities = reference_history()
     target_identities = migration_identities()
 
     def psql(database, sql):

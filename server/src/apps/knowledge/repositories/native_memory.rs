@@ -854,6 +854,16 @@ async fn fence_dependents(
 				.ok_or(Error::Forbidden)?;
 			save(lease, bank, &unit, operation, actor, None).await?;
 			bump_bank(lease, bank).await?;
+			// Wake bounded retention for ordinary stale units without a repair job.
+			native::query(
+				&Query::update()
+					.table(Alias::new("memory_bank_settings"))
+					.value(Alias::new("next_maintenance"), Utc::now())
+					.and_where(Expr::col("bank_id").eq(Expr::value(bank)))
+					.to_string(PostgresQueryBuilder),
+			)
+			.execute(&mut **lease.tx())
+			.await?;
 			pending.push_back(unit.id);
 		}
 	}

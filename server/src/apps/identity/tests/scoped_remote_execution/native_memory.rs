@@ -408,7 +408,7 @@ async fn generated_native_remote_context_has_fresh_home_identity_and_committed_o
 #[tokio::test]
 async fn native_remote_run_reads_use_the_pinned_provenance_limit_above_1024(
 	#[future(awt)]
-	#[with(true, false, false, false, true, true)]
+	#[with(true, false, false, false, true, (true, false))]
 	scoped_pair: Pair,
 ) {
 	use aidash_domain::memory::{
@@ -519,6 +519,132 @@ async fn native_remote_run_reads_use_the_pinned_provenance_limit_above_1024(
 	assert_eq!(
 		body["visible"], true,
 		"a valid graph above 1024 must remain disclosable at the Home boundary: {body}"
+	);
+	p.close().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn native_remote_journal_validates_admitted_reads_above_1024_and_checks_later_pages(
+	#[future(awt)]
+	#[with(true, false, false, false, true, (false, true))]
+	scoped_pair: Pair,
+) {
+	use aidash_domain::memory::{Bank, Change, Content, Mutation, Unit};
+	use aidash_server::apps::knowledge::services::native_memory as memory;
+	let p = scoped_pair;
+	// Isolate the lifetime read bound from the ordinary HTTP/peer deadlines,
+	// including under coverage instrumentation, as in the large graph case.
+	let deadline = std::time::Duration::from_secs(180);
+	p.aa.context
+		.set_singleton(reinhardt::di::KeyedFactoryOutput::<
+			reinhardt::di::SelfKey<aidash_server::http::Protection>,
+			aidash_server::http::Protection,
+		>::new(aidash_server::http::Protection::new(
+			aidash_server::http::Settings {
+				timeout: deadline,
+				..Default::default()
+			},
+		)));
+	let actor = aidash_server::authorization::Authorization {
+		pool: p.a.store.pool.clone(),
+	}
+	.authenticate(&p.token)
+	.await
+	.unwrap();
+	let fixture = p.native.as_ref().unwrap();
+	let bank: Bank = serde_json::from_value(fixture["bank"].clone()).unwrap();
+	let provider: aidash_domain::registry::EntityRef =
+		serde_json::from_value(fixture["provider"].clone()).unwrap();
+	let selected: Vec<_> = memory::list(
+		&p.a.store,
+		&actor,
+		memory::ReadBank {
+			provider: provider.clone(),
+			bank: bank.clone(),
+		},
+	)
+	.await
+	.unwrap()
+	.into_iter()
+	.filter(|unit| (1000..2025).contains(&unit.id.as_u128()))
+	.collect();
+	assert_eq!(selected.len(), 1025);
+	// Model a grant's previous Runs through the same durable dependency schema.
+	let mut tx = aidash_server::database::native::begin(&p.a.store.pool)
+		.await
+		.unwrap();
+	let mut insert = Query::insert();
+	insert
+		.into_table(Alias::new("memory_remote_reads"))
+		.columns(["grant_id", "unit_id", "revision"].map(Alias::new));
+	for unit in &selected {
+		insert.values_panic([
+			reinhardt::query::IntoValue::into_value(p.grant),
+			reinhardt::query::IntoValue::into_value(unit.id),
+			reinhardt::query::IntoValue::into_value(unit.revision),
+		]);
+	}
+	aidash_server::database::native::query(&insert.to_string(PostgresQueryBuilder))
+		.execute(&mut *tx)
+		.await
+		.unwrap();
+	tx.commit().await.unwrap();
+
+	let count: i64 = sqlx::query_scalar(
+		&Query::select()
+			.expr(reinhardt::query::Func::count(Expr::col("unit_id").into()))
+			.from(Alias::new("memory_remote_reads"))
+			.and_where(Expr::col("grant_id").eq(Expr::value(p.grant)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(p.a.store.pool.driver())
+	.await
+	.unwrap();
+	assert!(
+		count > 1024,
+		"the policy admits more dependencies than the old fixed ceiling"
+	);
+	let verify = || {
+		reqwest::Client::new()
+			.post(format!(
+				"{}/federation/v0.1/scoped/dependencies/verify",
+				p.a.config.endpoint
+			))
+			.timeout(deadline)
+			.bearer_auth(std::env::var("AIDASH_SECRET_TEST_PEER").unwrap())
+			.header("x-aidash-node", &p.b.config.node_id)
+			.header("x-aidash-protocol", "0.1")
+			.json(&json!({"tenant":"acme","subject":"alice","reference":{
+            "kind":"grant","node_id":p.a.config.node_id,"execution_node":p.b.config.node_id,
+            "grant_id":p.grant,"admission_id":p.admission}}))
+	};
+	let body: Value = verify().send().await.unwrap().json().await.unwrap();
+	assert_eq!(body["visible"], true, "{body}");
+	let last: &Unit = selected.last().unwrap();
+	memory::mutate(
+		&p.a.store,
+		&actor,
+		Mutation {
+			operation_id: Uuid::now_v7(),
+			provider,
+			bank,
+			changes: vec![Change::Correct {
+				id: last.id,
+				expected_revision: last.revision,
+				content: Content {
+					text: "Corrected late-page dependency".into(),
+					..last.content.clone()
+				},
+			}],
+		},
+	)
+	.await
+	.unwrap();
+	let body: Value = verify().send().await.unwrap().json().await.unwrap();
+	assert_eq!(
+		body["visible"], false,
+		"a corrected later-page revision invalidates the grant: {body}"
 	);
 	p.close().await;
 }

@@ -1,6 +1,7 @@
 """The schema verifier must reject incomplete or substituted native ledgers."""
 
 import importlib.util
+import json
 from pathlib import Path
 import tempfile
 import unittest
@@ -15,6 +16,24 @@ spec.loader.exec_module(schema)
 
 
 class MigrationSchemaTest(unittest.TestCase):
+    def test_frozen_history_requires_no_git_objects(self):
+        with patch.object(schema.subprocess, "check_output", side_effect=AssertionError("Git history is unavailable")):
+            revision, expected = schema.reference_history()
+        self.assertEqual(len(revision), 40)
+        self.assertTrue(expected)
+        self.assertTrue(schema.validate_ledger([
+            {"app": app, "name": name} for app, name in expected
+        ], expected))
+
+    def test_duplicate_frozen_identities_are_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            manifest = Path(directory) / "reference.json"
+            record = {"app": "knowledge", "name": "0001_initial"}
+            manifest.write_text(json.dumps({"source_revision": "fixture", "migrations": [record, record]}))
+            with patch.object(schema, "REFERENCE_MANIFEST", manifest):
+                with self.assertRaisesRegex(RuntimeError, "invalid frozen native"):
+                    schema.reference_history()
+
     def test_new_sources_extend_the_required_ledger_without_a_fixed_count(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

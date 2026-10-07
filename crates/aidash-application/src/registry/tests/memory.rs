@@ -3,6 +3,9 @@ use super::*;
 
 #[rstest]
 #[case("same", true)]
+#[case("participant_same", true)]
+#[case("participant_foreign", true)]
+#[case("participant_foreign", false)]
 #[case("same", false)]
 #[case("dimensions", true)]
 #[case("dimensions", false)]
@@ -22,7 +25,7 @@ async fn agent_memory_sources_require_the_same_embedding_configuration(
 	scope.put(definition("model", "model", json!({"provider":"openai","model_id":"fixture","endpoint":"https://model.example.test","credential_env":null,"context_window":32768,"modalities":["text"],"cost":{}})));
 	let embedding = json!({"provider":"openai","endpoint":"https://embedding.example.test","credential_env":null,"model":"text","model_version":"1","dimensions":3});
 	let mut other = embedding.clone();
-	if changed != "same" {
+	if !changed.starts_with("participant_") && changed != "same" {
 		other[changed] = match changed {
 			"dimensions" => json!(4),
 			"credential_env" => json!("AIDASH_SECRET_OTHER"),
@@ -44,18 +47,23 @@ async fn agent_memory_sources_require_the_same_embedding_configuration(
 		scope.put(definition(
 			&format!("source-{name}"),
 			"source",
-			json!({"scope":"workspace","memory":reference(name),"max_tokens":512}),
+			json!({"scope":if changed.starts_with("participant_") {"participant"} else {"workspace"},"memory":reference(name),"max_tokens":512}),
 		));
 	}
 	let agent = definition(
 		"agent",
 		"agent",
-		json!({"model":reference("model"),"instructions":"Use current memory","memory":private.then(||reference("memory-a")),"sources":if private {vec![reference("source-memory-b")]} else {vec![reference("source-memory-a"),reference("source-memory-b")]}}),
+		json!({"model":reference("model"),"instructions":"Use current memory","memory":private.then(||reference("memory-a")),"sources":if private {vec![reference(if changed == "participant_same" {"source-memory-a"} else {"source-memory-b"})]} else {vec![reference("source-memory-a"),reference("source-memory-b")]}}),
 	);
 	let result = register_definition(&mut scope, &validation, &agent, "aidash://home").await;
-	if changed == "same" {
+	if changed == "same" || changed == "participant_same" {
 		assert!(result.unwrap());
 		assert!(scope.entries.contains_key("agent@1.0.0"));
+	} else if changed == "participant_foreign" {
+		assert!(
+			matches!(result, Err(Error::Invalid(message)) if message == "participant Sources require the Agent's exact primary memory provider")
+		);
+		assert!(!scope.entries.contains_key("agent@1.0.0"));
 	} else {
 		assert!(
 			matches!(result, Err(Error::Invalid(message)) if message == "an Agent's memory providers require compatible embedding configurations")

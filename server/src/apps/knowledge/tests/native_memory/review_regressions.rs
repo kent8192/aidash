@@ -543,3 +543,147 @@ async fn candidate_expiry_erases_occurrence_dates_without_repeating_cas(
 		);
 	}
 }
+
+#[rstest]
+#[case(Kind::World)]
+#[case(Kind::Experience)]
+#[tokio::test]
+async fn stale_ordinary_dependents_retire_without_ttl_and_release_live_capacity(
+	#[future] database: DatabaseFixture,
+	mut bounds: Bounds,
+	#[case] kind: Kind,
+) {
+	bounds.max_units = 2;
+	bounds.max_candidates = 2;
+	bounds.max_results = 2;
+	let database = database.await;
+	let (store, _, workspace) = setup(&database, bounds).await;
+	let bank = memory::create_participant(
+		&store,
+		&Actor::Operator,
+		workspace,
+		memory::CreateParticipant {
+			agent: reference("a"),
+		},
+	)
+	.await
+	.unwrap()
+	.bank;
+	let root = memory::mutate(
+		&store,
+		&Actor::Operator,
+		mutation(
+			&bank,
+			Change::Add {
+				id: Uuid::now_v7(),
+				content: content("Original source"),
+			},
+		),
+	)
+	.await
+	.unwrap()
+	.remove(0);
+	let mut dependent = content("Obsolete supported conclusion");
+	dependent.kind = kind;
+	dependent.evidence = vec![root.evidence()];
+	let dependent = memory::mutate(
+		&store,
+		&Actor::Operator,
+		mutation(
+			&bank,
+			Change::Add {
+				id: Uuid::now_v7(),
+				content: dependent,
+			},
+		),
+	)
+	.await
+	.unwrap()
+	.remove(0);
+	memory::mutate(
+		&store,
+		&Actor::Operator,
+		mutation(
+			&bank,
+			Change::Correct {
+				id: root.id,
+				expected_revision: 1,
+				content: content("Corrected source"),
+			},
+		),
+	)
+	.await
+	.unwrap();
+	aidash_server::semantic::worker::sweep(&store)
+		.await
+		.unwrap();
+	let row = native::query(
+		&Query::select()
+			.columns(["deleted", "text"].map(Alias::new))
+			.from(Alias::new("memory_units"))
+			.and_where(Expr::col("id").eq(Expr::value(dependent.id)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(&store.pool)
+	.await
+	.unwrap();
+	assert!(row.try_get::<bool>("deleted").unwrap());
+	assert_eq!(row.try_get::<String>("text").unwrap(), "");
+	let mut tx = native::begin(&store.pool).await.unwrap();
+	native::query(
+		&Query::update()
+			.table(Alias::new("memory_purge_jobs"))
+			.value(
+				Alias::new("purge_after"),
+				chrono::Utc::now() - chrono::Duration::seconds(1),
+			)
+			.and_where(Expr::col("unit_id").eq(Expr::value(dependent.id)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(&mut *tx)
+	.await
+	.unwrap();
+	tx.commit().await.unwrap();
+	aidash_server::semantic::worker::sweep(&store)
+		.await
+		.unwrap();
+	let state: String = native::query_scalar(
+		&Query::select()
+			.column(Alias::new("state"))
+			.from(Alias::new("memory_purge_jobs"))
+			.and_where(Expr::col("unit_id").eq(Expr::value(dependent.id)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.scalar_one(&store.pool)
+	.await
+	.unwrap();
+	assert_eq!(state, "purged");
+	let replaced = memory::mutate(
+		&store,
+		&Actor::Operator,
+		mutation(
+			&bank,
+			Change::Add {
+				id: Uuid::now_v7(),
+				content: content("New current knowledge"),
+			},
+		),
+	)
+	.await
+	.unwrap();
+	assert_eq!(replaced.len(), 1);
+	assert_eq!(
+		memory::list(
+			&store,
+			&Actor::Operator,
+			memory::ReadBank {
+				provider: reference("p"),
+				bank
+			}
+		)
+		.await
+		.unwrap()
+		.len(),
+		2
+	);
+}

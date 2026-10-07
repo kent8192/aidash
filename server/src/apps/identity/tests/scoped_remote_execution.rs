@@ -255,9 +255,10 @@ async fn scoped_pair(
 	#[default(false)] approval: bool,
 	#[default(false)] compactor: bool,
 	#[default(false)] native: bool,
-	#[default(false)] large_native_graph: bool,
+	#[default((false, false))] large_native: (bool, bool),
 	#[future(awt)] test_environment: Arc<TestEnvironment>,
 ) -> Pair {
+	let (large_native_graph, large_native_journal) = large_native;
 	let _ = tracing_subscriber::fmt()
 		.with_env_filter("aidash=debug")
 		.with_test_writer()
@@ -416,8 +417,16 @@ async fn scoped_pair(
 	let mut servers = vec![model_server, aserver, bserver];
 	let semantic = if semantic {
 		let workspace = a.store.task(task).await.unwrap().workspace_id;
-		let (fixture, server) =
-			semantic_fixture(&a, &aa, &token, workspace, &b.config.node_id, native).await;
+		let (fixture, server) = semantic_fixture(
+			&a,
+			&aa,
+			&token,
+			workspace,
+			&b.config.node_id,
+			native,
+			large_native_journal,
+		)
+		.await;
 		servers.push(server);
 		Some(fixture)
 	} else {
@@ -426,8 +435,16 @@ async fn scoped_pair(
 	let native = if native {
 		assert!(semantic.is_some());
 		let workspace = a.store.task(task).await.unwrap().workspace_id;
-		let data =
-			native_remote_fixture(&a, &b, &aa, &ba, &token, workspace, large_native_graph).await;
+		let data = native_remote_fixture(
+			&a,
+			&b,
+			&aa,
+			&ba,
+			&token,
+			workspace,
+			(large_native_graph, large_native_journal),
+		)
+		.await;
 		source_policy["subjects"][qualified_agent(&b.config.node_id, "research-native", "1.0.0")] =
 			json!({"kind":"agent"});
 		let (status, body) = request(
@@ -483,7 +500,7 @@ async fn scoped_pair(
 			&token,
 			"POST",
 			&format!("/api/tasks/{task}/remote-grants"),
-			json!({"id":grant,"node_id":b.config.node_id,"agent":agent,"ttl_seconds":300,"semantic":mode}),
+			json!({"id":grant,"node_id":b.config.node_id,"agent":agent,"ttl_seconds":if large_native_journal {3600} else {300},"semantic":mode}),
 		)
 		.await;
 		assert_eq!(status, 200, "{prepared}");
@@ -533,7 +550,7 @@ async fn native_remote_fixture(
 	ba: &common::TestApplication,
 	token: &str,
 	workspace: Uuid,
-	large_graph: bool,
+	(large_graph, large_journal): (bool, bool),
 ) -> Value {
 	let (_, home_agent) = request(
 		aa,
@@ -563,6 +580,11 @@ async fn native_remote_fixture(
         "semantic_link_min_similarity_millionths":700000,"learn_from_runs":false,"maintain_observations":false,"refresh_mental_models":false}});
 	if large_graph {
 		policy["policy"]["bounds"]["max_graph_visits"] = json!(4096);
+	}
+	if large_journal {
+		policy["policy"]["bounds"]["max_units"] = json!(2048);
+		policy["policy"]["bounds"]["max_candidates"] = json!(256);
+		policy["policy"]["retention"]["max_unit_records"] = json!(2048);
 	}
 	for (runtime, app) in [(a, aa), (b, ba)] {
 		let mut roles = vec![
@@ -685,27 +707,81 @@ async fn native_remote_fixture(
 		let (status,body)=request(aa,token,"POST",&format!("/api/workspaces/{workspace}/memory/units/mutate"),json!({"operation_id":Uuid::new_v4(),"provider":provider,"bank":bank,"changes":[{"operation":"add","id":id,"content":{"text":text,"kind":"world","learning":"fact","verification":"unverified","occurred":null,"entities":[],"evidence":[],"links":[]}}]})).await;
 		assert_eq!(status, 200, "{body}");
 	}
-	let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(15);
-	loop {
-		aidash_server::semantic::worker::sweep(&a.store)
-			.await
-			.unwrap();
-		let ready: Vec<String> = sqlx::query_scalar(
-			&Query::select()
-				.column(Alias::new("state"))
-				.from(Alias::new("semantic_entries"))
-				.and_where(Expr::col("id").is_in([private, shared].map(Expr::value)))
-				.to_string(PostgresQueryBuilder),
-		)
-		.fetch_all(a.store.pool.driver())
+	if large_journal {
+		use aidash_domain::memory::{
+			Bank, Change, Content, Kind, Learning, Mutation, Verification,
+		};
+		use aidash_server::apps::knowledge::services::native_memory as memory;
+		let actor = aidash_server::authorization::Authorization {
+			pool: a.store.pool.clone(),
+		}
+		.authenticate(token)
 		.await
 		.unwrap();
-		if ready == vec!["READY".to_string(); 2] {
-			break;
+		let bank: Bank = serde_json::from_value(participant["bank"].clone()).unwrap();
+		let provider: aidash_domain::registry::EntityRef =
+			serde_json::from_value(provider.clone()).unwrap();
+		// Admit canonical units before adding the separate disposable index.
+		for batch in 0..5 {
+			let changes = (0..if batch == 4 { 1 } else { 256 })
+				.map(|offset| Change::Add {
+					id: Uuid::from_u128(1000 + batch * 256 + offset),
+					content: Content {
+						text: "Admitted long-lived grant dependency".into(),
+						kind: Kind::World,
+						learning: Learning::Fact,
+						verification: Verification::Unverified,
+						occurred: None,
+						mental_model: None,
+						entities: vec![],
+						evidence: vec![],
+						links: vec![],
+					},
+				})
+				.collect();
+			memory::mutate(
+				&a.store,
+				&actor,
+				Mutation {
+					operation_id: Uuid::now_v7(),
+					provider: provider.clone(),
+					bank: bank.clone(),
+					changes,
+				},
+			)
+			.await
+			.unwrap();
 		}
-		assert!(tokio::time::Instant::now() < deadline, "{ready:?}");
-		tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+		let (status, body) = request(aa, &a.config.api_token, "POST", &format!("/api/workspaces/{workspace}/semantic/index"), json!({"expected_revision":0,"spec":{
+			"embedding":embedding["config"],"vector":{"provider":"postgres","endpoint":"local","credential_env":null},
+			"enabled":true,"auto_context":false,"max_sources":100,"max_results":10,"max_result_tokens":32768,"max_input_bytes":32768
+		}})).await;
+		assert_eq!(status, 200, "{body}");
 	}
+	if !large_journal {
+		let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(15);
+		loop {
+			aidash_server::semantic::worker::sweep(&a.store)
+				.await
+				.unwrap();
+			let ready: Vec<String> = sqlx::query_scalar(
+				&Query::select()
+					.column(Alias::new("state"))
+					.from(Alias::new("semantic_entries"))
+					.and_where(Expr::col("id").is_in([private, shared].map(Expr::value)))
+					.to_string(PostgresQueryBuilder),
+			)
+			.fetch_all(a.store.pool.driver())
+			.await
+			.unwrap();
+			if ready == vec!["READY".to_string(); 2] {
+				break;
+			}
+			assert!(tokio::time::Instant::now() < deadline, "{ready:?}");
+			tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+		}
+	}
+
 	json!({"selection":{"participant":participant["id"],"expected_revision":participant["revision"],"provider":provider},"bank":participant["bank"],"provider":provider,"private":private,"shared":shared})
 }
 
@@ -716,6 +792,7 @@ async fn semantic_fixture(
 	workspace: Uuid,
 	executor: &str,
 	native: bool,
+	large_journal: bool,
 ) -> (SemanticFixture, tokio::task::JoinHandle<()>) {
 	let requests = Arc::new(Mutex::new(Vec::<Value>::new()));
 	let failing = Arc::new(AtomicBool::new(false));
@@ -753,39 +830,47 @@ async fn semantic_fixture(
 	)
 	.await;
 	assert_eq!(status, 200, "{body}");
-	let (status, body) = request(app, &a.config.api_token, "POST", &format!("/api/workspaces/{workspace}/semantic/index"), json!({"expected_revision":0,"spec":{
+	if !large_journal {
+		let (status, body) = request(app, &a.config.api_token, "POST", &format!("/api/workspaces/{workspace}/semantic/index"), json!({"expected_revision":0,"spec":{
 		"embedding":embedding,"vector":{"provider":"postgres","endpoint":"local","credential_env":null},
 		"enabled":true,"auto_context":!native,"max_sources":100,"max_results":10,"max_result_tokens":if native {32768} else {4096},"max_input_bytes":32768
 	}})).await;
-	assert_eq!(status, 200, "{body}");
-	let mut first = Uuid::nil();
-	for (key, owner, text) in [
-		("shared", None, "Iridium archive marker: ochre falcon."),
-		(
-			"exact",
-			Some(qualified_agent(executor, "research", "1.0.0")),
-			"Exact executor marker: silver fern.",
-		),
-		(
-			"other-node",
-			Some(qualified_agent(&a.config.node_id, "research", "1.0.0")),
-			"DO NOT DISCLOSE: same name at Home.",
-		),
-		(
-			"other-version",
-			Some(qualified_agent(executor, "research", "1.0.1")),
-			"DO NOT DISCLOSE: other definition version.",
-		),
-	] {
-		let (status, body) = request(app, token, "POST", &format!("/api/workspaces/{workspace}/semantic/entries"), json!({"key":key,"expected_revision":0,"source":{"kind":"memory","text":text},"agent":owner,"metadata":{}})).await;
 		assert_eq!(status, 200, "{body}");
-		if key == "shared" {
-			first = serde_json::from_value(body["id"].clone()).unwrap();
-		}
 	}
-	aidash_server::semantic::worker::sweep(&a.store)
-		.await
-		.unwrap();
+
+	let mut first = Uuid::nil();
+	// The journal fixture admits its canonical bank before configuring the
+	// disposable index. Ordinary context tests create their index first.
+	if !large_journal {
+		for (key, owner, text) in [
+			("shared", None, "Iridium archive marker: ochre falcon."),
+			(
+				"exact",
+				Some(qualified_agent(executor, "research", "1.0.0")),
+				"Exact executor marker: silver fern.",
+			),
+			(
+				"other-node",
+				Some(qualified_agent(&a.config.node_id, "research", "1.0.0")),
+				"DO NOT DISCLOSE: same name at Home.",
+			),
+			(
+				"other-version",
+				Some(qualified_agent(executor, "research", "1.0.1")),
+				"DO NOT DISCLOSE: other definition version.",
+			),
+		] {
+			let (status, body) = request(app, token, "POST", &format!("/api/workspaces/{workspace}/semantic/entries"), json!({"key":key,"expected_revision":0,"source":{"kind":"memory","text":text},"agent":owner,"metadata":{}})).await;
+			assert_eq!(status, 200, "{body}");
+			if key == "shared" {
+				first = serde_json::from_value(body["id"].clone()).unwrap();
+			}
+		}
+		aidash_server::semantic::worker::sweep(&a.store)
+			.await
+			.unwrap();
+	}
+
 	(
 		SemanticFixture {
 			response,

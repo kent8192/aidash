@@ -56,17 +56,26 @@ pub(crate) async fn sweep(store: &Store) -> Result<()> {
 			let policy = crate::semantic::native_memory::policy(&mut lease, &provider).await?;
 			let now = Utc::now();
 			let retention = &policy.retention;
+			// Ordinary stale units have no automatic repair job. Retire them even
+			// when age-based expiry is disabled; derived units remain repairable.
+			let mut retired = reinhardt::query::Condition::any().add(
+				reinhardt::query::Condition::all()
+					.add(Expr::col("stale").eq(true))
+					.add(Expr::col("kind").is_in(["world", "experience"])),
+			);
 			if let Some(age) = retention.unit_max_age_days {
+				retired = retired.add(
+					Expr::col("learned_at").lte(Expr::value(now - Duration::days(i64::from(age)))),
+				);
+			}
+			{
 				let expired = native::query(
 					&Query::select()
 						.column(Alias::new("id"))
 						.from(Alias::new("memory_units"))
 						.and_where(Expr::col("bank_id").eq(Expr::value(id)))
 						.and_where(Expr::col("deleted").eq(false))
-						.and_where(
-							Expr::col("learned_at")
-								.lte(Expr::value(now - Duration::days(i64::from(age)))),
-						)
+						.cond_where(retired)
 						.order_by(Alias::new("id"), Order::Asc)
 						.limit(retention.purge_batch.min(policy.bounds.max_candidates) as u64)
 						.to_string(PostgresQueryBuilder),

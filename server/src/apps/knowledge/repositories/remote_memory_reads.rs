@@ -2,18 +2,37 @@
 use super::{access::Lease, units};
 use crate::{Error, Result, authorization::access::Access, database::native, store::Store};
 use aidash_domain::{
-	memory::{Evidence, Recall},
+	memory::Recall,
 	semantic::{
 		Failure,
 		remote::{Binding, NativeBinding, NativeContext},
 	},
 };
 use reinhardt::query::{
-	Alias, Expr, ExprTrait, LockType, OnConflict, Order, PostgresQueryBuilder, Query,
-	QueryStatementBuilder,
+	Alias, ColumnRef, Condition, Expr, ExprTrait, Func, LockType, OnConflict, Order,
+	PostgresQueryBuilder, Query, QueryStatementBuilder,
 };
 use uuid::Uuid;
-const MAX_READS: usize = 1024;
+/// A grant can span Runs. Every admitted recall contributes at most max_results
+/// reads and consumes a durable model operation in each declared bank.
+pub(crate) async fn capacity(lease: &mut Lease<'_>, binding: &NativeBinding) -> Result<usize> {
+	let mut capacity = 0_usize;
+	for declared in &binding.banks {
+		let policy =
+			crate::semantic::native_memory::policy(lease, &declared.provider.entry).await?;
+		// PostgreSQL COUNT cannot exceed i64::MAX. Saturation preserves otherwise
+		// valid extreme policies without overflowing the aggregate allowance.
+		capacity = capacity
+			.saturating_add(
+				policy
+					.retention
+					.max_model_operations
+					.saturating_mul(policy.bounds.max_results),
+			)
+			.min(i64::MAX as usize);
+	}
+	Ok(capacity)
+}
 
 /// Receiver cache bodies are disposable; permanent operation identities and
 /// budget/attempt receipts remain. Primary execution journals are separate.
@@ -138,6 +157,7 @@ pub(crate) async fn record(
 	grant: Uuid,
 	binding: &NativeBinding,
 	context: &NativeContext,
+	capacity: usize,
 ) -> Result<()> {
 	let mut tx = native::begin(&store.control_pool).await?;
 	native::query(
@@ -202,18 +222,19 @@ pub(crate) async fn record(
 			}
 		}
 	}
-	let count = native::query(
+	let count: i64 = native::query_scalar(
 		&Query::select()
-			.column(Alias::new("unit_id"))
+			.expr(Func::count(Expr::col(ColumnRef::Asterisk).into()))
 			.from(Alias::new("memory_remote_reads"))
 			.and_where(Expr::col("grant_id").eq(Expr::value(grant)))
-			.limit(MAX_READS as u64 + 1)
 			.to_string(PostgresQueryBuilder),
 	)
-	.fetch_all(&mut *tx)
-	.await?
-	.len();
-	if count > MAX_READS {
+	.scalar_one(&mut *tx)
+	.await?;
+	if usize::try_from(count)
+		.ok()
+		.is_none_or(|count| count > capacity)
+	{
 		return Err(Error::Conflict(
 			"remote memory dependency limit reached".into(),
 		));
@@ -238,24 +259,24 @@ pub(crate) async fn visible(access: &mut Access, grant: Uuid) -> Result<()> {
 	let semantic: Binding = serde_json::from_value(semantic.ok_or(Error::Forbidden)?)?;
 	let home = access.node_id.clone();
 	let mut lease = Lease::Inherited(access);
-	let reads = native::query(
-		&Query::select()
-			.columns(["unit_id", "revision"].map(Alias::new))
-			.from(Alias::new("memory_remote_reads"))
-			.and_where(Expr::col("grant_id").eq(Expr::value(grant)))
-			.order_by(Alias::new("unit_id"), Order::Asc)
-			.order_by(Alias::new("revision"), Order::Asc)
-			.limit(MAX_READS as u64 + 1)
-			.to_string(PostgresQueryBuilder),
-	)
-	.fetch_all(&mut **lease.tx())
-	.await?;
 	let Some(binding) = semantic.native() else {
-		if reads.is_empty() {
-			return Ok(());
-		}
-		return Err(Error::RemoteSemantic(Failure::Invalidated));
+		let read = native::query(
+			&Query::select()
+				.column(Alias::new("unit_id"))
+				.from(Alias::new("memory_remote_reads"))
+				.and_where(Expr::col("grant_id").eq(Expr::value(grant)))
+				.limit(1)
+				.to_string(PostgresQueryBuilder),
+		)
+		.fetch_optional(&mut **lease.tx())
+		.await?;
+		return if read.is_none() {
+			Ok(())
+		} else {
+			Err(Error::RemoteSemantic(Failure::Invalidated))
+		};
 	};
+	let capacity = capacity(&mut lease, binding).await?;
 
 	if crate::apps::knowledge::services::remote_memory::bind(
 		&home,
@@ -265,35 +286,90 @@ pub(crate) async fn visible(access: &mut Access, grant: Uuid) -> Result<()> {
 		binding.generation.as_ref(),
 	)
 	.await? != *binding
-		|| reads.len() > MAX_READS
 	{
 		return Err(Error::RemoteSemantic(Failure::Invalidated));
 	}
-	for read in reads {
-		let unit = units::load(&mut lease, read.try_get("unit_id")?, false)
-			.await?
-			.ok_or(Error::RemoteSemantic(Failure::Invalidated))?;
-		if !unit.visible()
-			|| unit.revision != read.try_get::<i64>("revision")?
-			|| !binding
-				.banks
-				.iter()
-				.any(|declared| declared.bank == unit.bank)
-		{
+	// Binding validation holds the current bank/provider/catalog locks for this
+	// lease. Read each pinned policy once instead of repeating role admission for
+	// every lifetime read; per-unit authority, TTL and support checks remain live.
+	let mut policies = Vec::new();
+	for declared in &binding.banks {
+		// Unconfigured empty banks are valid declarations, but they cannot
+		// supply a Unit dependency without their canonical policy settings.
+		let Some(settings) = super::bank_settings::get(&mut lease, &declared.bank).await? else {
+			continue;
+		};
+		if settings.provider != declared.provider.entry {
 			return Err(Error::RemoteSemantic(Failure::Invalidated));
 		}
-		let policy = units::unexpired(&mut lease, &unit).await?;
-		units::current(
-			&mut lease,
-			unit.bank.workspace,
-			&[Evidence::Unit {
-				bank: unit.bank.clone(),
-				id: unit.id,
-				revision: unit.revision,
-			}],
-			policy.bounds.max_graph_visits,
-		)
-		.await?;
+		policies.push((
+			declared.bank.clone(),
+			crate::semantic::native_memory::policy(&mut lease, &declared.provider.entry).await?,
+		));
 	}
-	Ok(())
+	// Check every accumulated revision in bounded pages, including later Runs.
+	let mut cursor: Option<(Uuid, i64)> = None;
+	let mut count = 0_usize;
+	loop {
+		let mut query = Query::select();
+		query
+			.columns(["unit_id", "revision"].map(Alias::new))
+			.from(Alias::new("memory_remote_reads"))
+			.and_where(Expr::col("grant_id").eq(Expr::value(grant)))
+			.order_by(Alias::new("unit_id"), Order::Asc)
+			.order_by(Alias::new("revision"), Order::Asc)
+			.limit(256);
+		if let Some((id, revision)) = cursor {
+			query.cond_where(
+				Condition::any()
+					.add(Expr::col("unit_id").gt(Expr::value(id)))
+					.add(
+						Condition::all()
+							.add(Expr::col("unit_id").eq(Expr::value(id)))
+							.add(Expr::col("revision").gt(Expr::value(revision))),
+					),
+			);
+		}
+		let reads = native::query(&query.to_string(PostgresQueryBuilder))
+			.fetch_all(&mut **lease.tx())
+			.await?;
+		if reads.is_empty() {
+			return Ok(());
+		}
+		for read in reads {
+			let id: Uuid = read.try_get("unit_id")?;
+			let revision: i64 = read.try_get("revision")?;
+			cursor = Some((id, revision));
+			count += 1;
+			if count > capacity {
+				return Err(Error::RemoteSemantic(Failure::Invalidated));
+			}
+			let unit = units::load(&mut lease, id, false)
+				.await?
+				.ok_or(Error::RemoteSemantic(Failure::Invalidated))?;
+			if !unit.visible() || unit.revision != revision {
+				return Err(Error::RemoteSemantic(Failure::Invalidated));
+			}
+			let (_, policy) = policies
+				.iter()
+				.find(|(bank, _)| bank == &unit.bank)
+				.ok_or(Error::RemoteSemantic(Failure::Invalidated))?;
+			units::authorize(&mut lease, &unit.bank, "memory.read").await?;
+			if policy
+				.retention
+				.unit_expired(unit.learned_at, chrono::Utc::now())
+			{
+				return Err(Error::Conflict("memory unit retention expired".into()));
+			}
+			// The root revision is already loaded and checked above. Reserve its
+			// visit while validating all transitive support with the same bound.
+			units::current(
+				&mut lease,
+				unit.bank.workspace,
+				&unit.content.evidence,
+				policy.bounds.max_graph_visits.saturating_sub(1),
+			)
+			.await?;
+		}
+	}
 }

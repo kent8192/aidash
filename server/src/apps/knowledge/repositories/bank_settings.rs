@@ -105,6 +105,27 @@ pub(crate) async fn set(
 			));
 		}
 	}
+	let rows = native::query(
+		&Query::select()
+			.column(ColumnRef::Asterisk)
+			.from(Alias::new("memory_units"))
+			.and_where(Expr::col("bank_id").eq(Expr::value(id)))
+			.and_where(Expr::col("deleted").eq(false))
+			.limit(policy.bounds.max_units as u64 + 1)
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_all(&mut **lease.tx())
+	.await?;
+	for row in rows {
+		if super::units::content(&row)?
+			.validate(&policy.bounds)
+			.is_err()
+		{
+			return Err(Error::Conflict(
+				"replacement memory policy is below existing unit content bounds".into(),
+			));
+		}
+	}
 	if let Some(current) = current.as_ref() {
 		let previous = crate::semantic::native_memory::policy(lease, &current.provider).await?;
 		if policy.bounds.max_graph_visits < previous.bounds.max_graph_visits {

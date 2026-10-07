@@ -269,11 +269,9 @@ impl VectorIndex for Transport {
 		if filter.allowed.is_empty() || limit == 0 {
 			return Ok(vec![]);
 		}
-		if filter.allowed.len() > 1024 || limit > 1024 {
-			return Err(aidash_application::Error::Invalid(
-				"vector search exceeds authorized candidate bounds".into(),
-			));
-		}
+		// The caller supplies the policy-bounded authorized set. A larger result
+		// allowance cannot produce more rows than that set contains.
+		let limit = limit.min(filter.allowed.len());
 		let distance = SimpleExpr::CustomWithExpr(
 			"(? <=> ?)".into(),
 			vec![Expr::col(Alias::new("embedding")).into(), vector(values)?],

@@ -1900,7 +1900,7 @@ async fn pgvector_filters_scope_and_preserves_immutable_point_generations(
 		allowed: &ids,
 	};
 	let results = index
-		.query(&config, "fixture", &[0.9, 0.1, 0.], filter, 3)
+		.query(&config, "fixture", &[0.9, 0.1, 0.], filter, 2048)
 		.await
 		.unwrap();
 	assert_eq!(results.iter().map(|p| p.id).collect::<Vec<_>>(), ids[..2]);

@@ -869,3 +869,209 @@ pub(super) async fn run_visible(
 		.unwrap();
 	state.runs.iter().any(|inspection| inspection.id == run)
 }
+
+#[rstest]
+#[case(false, "max_unit_bytes")]
+#[case(true, "max_unit_bytes")]
+#[case(false, "max_entities")]
+#[case(true, "max_entities")]
+#[case(false, "max_evidence")]
+#[case(true, "max_evidence")]
+#[case(false, "max_links")]
+#[case(true, "max_links")]
+#[tokio::test]
+async fn smaller_content_policy_rejects_existing_units_atomically(
+	#[future] database: DatabaseFixture,
+	bounds: Bounds,
+	#[case] participant: bool,
+	#[case] limit: &str,
+) {
+	let database = database.await;
+	let (store, registry, workspace) = setup(&database, bounds).await;
+	let bank = if participant {
+		memory::create_participant(
+			&store,
+			&Actor::Operator,
+			workspace,
+			memory::CreateParticipant {
+				agent: reference("a"),
+			},
+		)
+		.await
+		.unwrap()
+		.bank
+	} else {
+		Bank {
+			home: store.node_id.clone(),
+			tenant: "acme".into(),
+			workspace,
+			participant: None,
+		}
+	};
+	let mut parents = Vec::new();
+	for _ in 0..2 {
+		parents.push(
+			memory::mutate(
+				&store,
+				&Actor::Operator,
+				mutation(
+					&bank,
+					Change::Add {
+						id: Uuid::now_v7(),
+						content: content("Supporting unit"),
+					},
+				),
+			)
+			.await
+			.unwrap()
+			.remove(0),
+		);
+	}
+	let mut body = content("Content exceeding a replacement policy");
+	match limit {
+		"max_entities" => {
+			body.entities = ["Alice", "Bob"]
+				.into_iter()
+				.map(|name| Entity {
+					name: name.into(),
+					category: "person".into(),
+					aliases: vec![],
+				})
+				.collect()
+		}
+		"max_evidence" => body.evidence = parents.iter().map(Unit::evidence).collect(),
+		"max_links" => {
+			body.links = parents
+				.iter()
+				.map(|unit| Link {
+					target: unit.id,
+					revision: unit.revision,
+					kind: LinkKind::Causes,
+					weight: 1.0,
+				})
+				.collect()
+		}
+		_ => {}
+	}
+	memory::mutate(
+		&store,
+		&Actor::Operator,
+		mutation(
+			&bank,
+			Change::Add {
+				id: Uuid::now_v7(),
+				content: body,
+			},
+		),
+	)
+	.await
+	.unwrap();
+	let before = memory::list(
+		&store,
+		&Actor::Operator,
+		memory::ReadBank {
+			provider: reference("p"),
+			bank: bank.clone(),
+		},
+	)
+	.await
+	.unwrap();
+	let mut replacement = config(&database).await;
+	replacement["policy"]["bounds"][limit] = json!(if limit == "max_unit_bytes" { 32 } else { 1 });
+	registry
+		.register(entry("memory", "small-content", replacement))
+		.await
+		.unwrap();
+	let settings = || memory::Operation {
+		operation_id: Uuid::now_v7(),
+		provider: reference("p"),
+		bank: bank.clone(),
+		action: memory::Action::Settings,
+	};
+	let memory::Outcome::Settings(Some(original)) =
+		memory::operate(&store, &Actor::Operator, settings())
+			.await
+			.unwrap()
+	else {
+		panic!("settings");
+	};
+	let result = if participant {
+		let mut agent = entry(
+			"agent",
+			"a",
+			json!({"model":reference("m"),"instructions":"Use bounded memory","memory":reference("small-content"),"allow_memory_write":true}),
+		);
+		agent.version = "1.1.0".into();
+		registry.register(agent).await.unwrap();
+		memory::upgrade_participant(
+			&store,
+			&Actor::Operator,
+			bank.clone(),
+			memory::UpgradeParticipant {
+				agent: EntityRef {
+					id: "a".into(),
+					version: "1.1.0".into(),
+				},
+				expected_revision: 1,
+			},
+		)
+		.await
+		.map(|_| ())
+	} else {
+		memory::operate(
+			&store,
+			&Actor::Operator,
+			memory::Operation {
+				operation_id: Uuid::now_v7(),
+				provider: reference("small-content"),
+				bank: bank.clone(),
+				action: memory::Action::ConfigureBank {
+					expected_revision: original.revision,
+				},
+			},
+		)
+		.await
+		.map(|_| ())
+	};
+	assert!(
+		matches!(result, Err(aidash_server::Error::Conflict(message)) if message == "replacement memory policy is below existing unit content bounds")
+	);
+	let memory::Outcome::Settings(Some(after)) =
+		memory::operate(&store, &Actor::Operator, settings())
+			.await
+			.unwrap()
+	else {
+		panic!("settings");
+	};
+	assert_eq!(
+		(after.provider, after.revision),
+		(original.provider, original.revision)
+	);
+	assert_eq!(
+		memory::list(
+			&store,
+			&Actor::Operator,
+			memory::ReadBank {
+				provider: reference("p"),
+				bank: bank.clone()
+			}
+		)
+		.await
+		.unwrap(),
+		before
+	);
+	if participant {
+		let unchanged = memory::upgrade_participant(
+			&store,
+			&Actor::Operator,
+			bank,
+			memory::UpgradeParticipant {
+				agent: reference("a"),
+				expected_revision: 1,
+			},
+		)
+		.await
+		.unwrap();
+		assert_eq!(unchanged.agent, reference("a"));
+	}
+}

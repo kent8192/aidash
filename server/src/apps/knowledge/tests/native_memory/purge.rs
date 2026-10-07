@@ -107,7 +107,7 @@ async fn purge_erases_transitive_quotes_after_history_retention_expires(
 		.unwrap();
 	let bodies = native::query(
 		&Query::select()
-			.columns(["id", "text", "stale"].map(Alias::new))
+			.columns(["id", "text", "deleted"].map(Alias::new))
 			.from(Alias::new("memory_units"))
 			.to_string(PostgresQueryBuilder),
 	)
@@ -123,9 +123,10 @@ async fn purge_erases_transitive_quotes_after_history_retention_expires(
 			row.try_get::<String>("text").unwrap().is_empty(),
 			"expired history must not strand a quoted body"
 		);
-		if unit.id != chain[0].id {
-			assert!(row.try_get::<bool>("stale").unwrap());
-		}
+		assert!(
+			row.try_get::<bool>("deleted").unwrap(),
+			"stale ordinary dependents are retired by retention"
+		);
 	}
 	assert_eq!(
 		bodies
