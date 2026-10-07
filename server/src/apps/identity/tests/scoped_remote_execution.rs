@@ -1,11 +1,5 @@
-include!(concat!(
-	env!("CARGO_MANIFEST_DIR"),
-	"/src/apps/execution/tests/support/app_test_path.rs"
-));
-
-mod common {
-	include!(app_test_path!("execution/tests/support/legacy.rs"));
-}
+#[path = "../../execution/tests/support/legacy.rs"]
+mod common;
 #[path = "scoped_remote_execution/native_memory.rs"]
 mod native_memory;
 use aidash_server::{

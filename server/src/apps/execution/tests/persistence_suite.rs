@@ -1,26 +1,18 @@
-include!("support/app_test_path.rs");
-
 #[path = "support/native_database.rs"]
 mod native_database;
 use native_database::{DatabaseFixture, database};
 
-mod semantic_limits {
-	include!(app_test_path!("knowledge/tests/database_limits.rs"));
-}
+#[path = "../../knowledge/tests/database_limits.rs"]
+mod semantic_limits;
 
-mod native_memory {
-	include!(app_test_path!("knowledge/tests/native_memory.rs"));
-}
+#[path = "../../knowledge/tests/native_memory.rs"]
+mod native_memory;
 
-mod decisions {
-	include!(app_test_path!(
-		"federation/transactions/tests/database_decisions.rs"
-	));
-}
+#[path = "../../federation/transactions/tests/database_decisions.rs"]
+mod decisions;
 
-mod task_graph {
-	include!(app_test_path!("workspaces/tests/database_task_graph.rs"));
-}
+#[path = "../../workspaces/tests/database_task_graph.rs"]
+mod task_graph;
 
 #[path = "database_delivery.rs"]
 mod delivery;

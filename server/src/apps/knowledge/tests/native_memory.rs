@@ -1,4 +1,4 @@
-// Real PostgreSQL tests: unit concurrency, provenance fences and native vector scopes.
+//! Real PostgreSQL tests: unit concurrency, provenance fences and native vector scopes.
 use crate::native_database::{DatabaseFixture, database};
 use aidash_application::ports::VectorIndex;
 use aidash_domain::{memory::*, registry::EntityRef};
@@ -25,9 +25,8 @@ mod policy_bounds;
 mod precision;
 #[path = "native_memory/purge.rs"]
 mod purge;
-mod recovery_deployment {
-	include!(app_test_path!("execution/tests/support/deployment.rs"));
-}
+#[path = "../../execution/tests/support/deployment.rs"]
+mod recovery_deployment;
 
 #[rstest]
 #[tokio::test]

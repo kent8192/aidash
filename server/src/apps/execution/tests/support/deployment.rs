@@ -1,4 +1,4 @@
-// Use the shipped settings and migrations from an isolated deployment directory.
+//! Use the shipped settings and migrations from an isolated deployment directory.
 use std::{fs, path::Path};
 use tokio::process::Command;
 
