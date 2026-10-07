@@ -14,9 +14,8 @@ these local results and must be checked against that head.
 
 ## Coverage and ownership
 
-The [memory operation contract](semantic-memory.md) and
-[pinned upstream mapping](../crates/aidash-domain/src/memory/UPSTREAM.md)
-describe the semantic Rust translation. Python HTTP/API compatibility, Oracle,
+The [memory operation contract](semantic-memory.md) describes the semantic Rust
+translation. Python HTTP/API compatibility, Oracle,
 SDKs, upstream UI and multimodal parity are outside this accepted core.
 
 | Contract                 | Implementation and evidence                                                                                                                                                                                                                                                                                                                                         |
@@ -95,13 +94,6 @@ and a screenshot. Later verification-document updates change no runtime input.
 Both runners exited zero; both disposable namespaces/clusters were removed.
 The user's default Kubernetes context remains `orbstack`.
 
-Actual synthetic-fixture browser screenshots are preserved in
-[English](screenshots/native-memory-en-US.png) and
-[Japanese](screenshots/native-memory-ja-JP.png). These capture the immediate
-post-review screen while query refresh may still be in progress. The recorded
-API responses and subsequent index-ready assertions establish completed
-admission independently of the screenshots.
-
 The browser profile uses an authentication-presentation shim with an actual
 subject bearer. State, Registry and memory endpoints reach the live Home; no
 memory endpoint is fulfilled by a fixture. This proves real human admission,
@@ -167,3 +159,13 @@ Japanese quality approval remain release inputs. Issue #73 service/retention/
 RPO/RTO targets and Issue #122 production quality/cost thresholds are unapproved.
 Synthetic zero-price fixtures do not approve them. No live user database was
 reset by this task; native schema application discards legacy JSON banks.
+
+## Native Memory presentation
+
+The Workspace view presents memory bodies as readable cards with separate kind,
+learning and verification labels, entity names and aliases, revision dates and
+cited-source connections. Source links only navigate to an already disclosed
+unit in the same exact bank and revision. History, Recall/Reflect results,
+inspection, cleanup jobs and model usage use labeled records instead of raw JSON.
+The en-US and ja-JP browser regressions cover source navigation, history paging,
+disclosure withdrawal, model usage and a 390-pixel viewport.

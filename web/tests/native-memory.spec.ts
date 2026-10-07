@@ -21,7 +21,12 @@ type FixtureBody = {
     };
   }[];
 };
-async function fixture(page: Page, locale: "en-US" | "ja-JP", paged = false) {
+async function fixture(
+  page: Page,
+  locale: "en-US" | "ja-JP",
+  paged = false,
+  visual = false,
+) {
   await installBearerDashboard(page, "fixture-token");
   await page.addInitScript(
     (locale) => localStorage.setItem("aidash-locale", locale),
@@ -146,6 +151,29 @@ async function fixture(page: Page, locale: "en-US" | "ja-JP", paged = false) {
       return route.fulfill({
         json: paged
           ? [
+              ...(visual
+                ? [
+                    {
+                      id: "019c0000-0000-7000-8000-000000000005",
+                      bank,
+                      revision: 1,
+                      content: {
+                        text: "The team prefers PostgreSQL for durable memory.",
+                        kind: "experience",
+                        learning: "preference",
+                        verification: "unverified",
+                        occurred: null,
+                        entities: [],
+                        evidence: [],
+                        links: [],
+                      },
+                      learned_at: "2026-10-06T00:00:00Z",
+                      updated_at: "2026-10-06T00:00:00Z",
+                      deleted: false,
+                      stale: false,
+                    },
+                  ]
+                : []),
               {
                 id: source,
                 bank,
@@ -155,10 +183,41 @@ async function fixture(page: Page, locale: "en-US" | "ja-JP", paged = false) {
                   kind: "world",
                   learning: "fact",
                   verification: "unverified",
-                  occurred: null,
-                  entities: [],
-                  evidence: [],
-                  links: [],
+                  occurred: visual
+                    ? {
+                        start: "2026-10-05T08:00:00Z",
+                        end: "2026-10-05T09:00:00Z",
+                      }
+                    : null,
+                  entities: visual
+                    ? [
+                        {
+                          name: "PostgreSQL",
+                          category: "Database",
+                          aliases: ["Postgres", "ポストグレス"],
+                        },
+                      ]
+                    : [],
+                  evidence: visual
+                    ? [
+                        {
+                          kind: "unit",
+                          bank,
+                          id: "019c0000-0000-7000-8000-000000000005",
+                          revision: 1,
+                        },
+                      ]
+                    : [],
+                  links: visual
+                    ? [
+                        {
+                          kind: "causes",
+                          target: "019c0000-0000-7000-8000-000000000005",
+                          revision: 1,
+                          weight: 0.8,
+                        },
+                      ]
+                    : [],
                 },
                 learned_at: "2026-10-06T00:00:00Z",
                 updated_at: "2026-10-06T00:00:00Z",
@@ -203,6 +262,61 @@ async function fixture(page: Page, locale: "en-US" | "ja-JP", paged = false) {
         });
       }
 
+      if (action === "recall")
+        return route.fulfill({
+          json: {
+            result: "recall",
+            value: {
+              status: "ready",
+              units: [
+                {
+                  id: source,
+                  revision: 40,
+                  content: {
+                    text: "Recalled memory with readable evidence",
+                    evidence: [],
+                  },
+                },
+              ],
+            },
+          },
+        });
+      if (action === "reflect")
+        return route.fulfill({
+          json: {
+            result: "reflection",
+            value: {
+              text: "A readable reflection with cited evidence",
+              evidence: [
+                {
+                  kind: "run",
+                  id: task,
+                  revision: 7,
+                  digest: "sha256:observed-run",
+                },
+              ],
+            },
+          },
+        });
+      if (action === "usage")
+        return route.fulfill({
+          json: {
+            result: "usage",
+            value: {
+              items: [
+                {
+                  id: task,
+                  provider: ref("model"),
+                  calls: 2,
+                  tokens: 345,
+                  cost_micros: 1200,
+                  created_at: "2026-10-06T00:00:00Z",
+                },
+              ],
+              next: null,
+            },
+          },
+        });
       if (action === "settings")
         return route.fulfill({
           json: {
@@ -504,7 +618,8 @@ for (const locale of ["en-US", "ja-JP"] as const) {
         { exact: true },
       ),
     });
-    await expect(impact).toContainText(/dependent_runs[^]*23/);
+    await expect(impact).toContainText(ja ? "影響する Run" : "Affected Runs");
+    await expect(impact).toContainText("23");
     expect(f.inspections.map((action) => action.after)).toEqual([null, source]);
     await page
       .getByRole("button", { name: ja ? "履歴" : "History", exact: true })
@@ -534,5 +649,91 @@ for (const locale of ["en-US", "ja-JP"] as const) {
     await expect(
       page.getByText("A history-bearing memory unit", { exact: true }),
     ).toHaveCount(0);
+  });
+}
+
+for (const locale of ["en-US", "ja-JP"] as const) {
+  test(`native memory visualizes content, provenance and model usage (${locale})`, async ({
+    page,
+  }) => {
+    await fixture(page, locale, true, true);
+    const ja = locale === "ja-JP";
+    const unit = page.locator(`[id="memory-unit-${source}"]`);
+    await expect(
+      page.getByLabel(ja ? "記憶の概要" : "Memory overview"),
+    ).toContainText("2");
+    await expect(unit).toContainText(ja ? "未検証" : "Unverified");
+    await expect(
+      unit.getByRole("list", { name: ja ? "エンティティ" : "Entities" }),
+    ).toContainText("Postgres · ポストグレス");
+    await unit.locator("summary").click();
+    const proof = unit.getByLabel(
+      ja ? "根拠のつながり" : "Evidence connections",
+    );
+    await expect(proof).toContainText(
+      ja ? "この記憶が引用" : "Cited by this memory",
+    );
+    await proof
+      .getByRole("button", {
+        name: "The team prefers PostgreSQL for durable memory.",
+      })
+      .click();
+    await expect(
+      page.locator("#memory-unit-019c0000-0000-7000-8000-000000000005"),
+    ).toBeFocused();
+    await expect(unit.locator("pre")).toHaveCount(0);
+    if (process.env.AIDASH_MEMORY_SCREENSHOT)
+      await page.screenshot({
+        path: `/tmp/aidash-pr130-repair/native-memory-${locale}.png`,
+        fullPage: true,
+      });
+    await page
+      .getByLabel(ja ? "記憶の検索・考察" : "Recall or reflect")
+      .fill("What do we know?");
+    await page
+      .getByRole("button", {
+        name: ja ? "根拠付きで考察" : "Reflect with cited evidence",
+        exact: true,
+      })
+      .click();
+    const result = page.locator("details").filter({
+      has: page.getByText(ja ? "操作結果" : "Operation result", {
+        exact: true,
+      }),
+    });
+    await expect(result).toContainText(
+      "A readable reflection with cited evidence",
+    );
+    await result.locator("summary").last().click();
+    await expect(result).toContainText("sha256:observed-run");
+    await expect(result.locator("pre")).toHaveCount(0);
+    await page
+      .getByRole("button", {
+        name: ja ? "モデル使用量・計上コスト" : "Model usage and charged cost",
+        exact: true,
+      })
+      .click();
+    await expect(result).toContainText(ja ? "トークン数" : "Tokens");
+    await expect(result).toContainText("345");
+    await expect(result).toContainText(
+      ja ? "計上コスト（µUSD）" : "Charged cost (µUSD)",
+    );
+    await expect(result.locator("pre")).toHaveCount(0);
+    await page
+      .getByRole("button", { name: ja ? "検索" : "Recall", exact: true })
+      .click();
+    await expect(result).toContainText(
+      "Recalled memory with readable evidence",
+    );
+    await page.setViewportSize({ width: 390, height: 844 });
+    await expect
+      .poll(() =>
+        unit.evaluate((element) => element.scrollWidth <= element.clientWidth),
+      )
+      .toBe(true);
+    if (process.env.AIDASH_MEMORY_SCREENSHOT)
+      await unit.screenshot({
+        path: `/tmp/aidash-pr130-repair/native-memory-mobile-${locale}.png`,
+      });
   });
 }

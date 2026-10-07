@@ -5,7 +5,7 @@ import type {
   EntityRef,
 } from "./generated/models";
 import type { Submit } from "./forms";
-import { apiFetch } from "./transport";
+import { ApiError, apiFetch } from "./transport";
 import { Field, useI18n } from "./ui";
 import type { Entry } from "./types";
 import {
@@ -233,22 +233,30 @@ export function RemoteGenerationAssignForm({
                 grant.current = { binding: key, id: crypto.randomUUID() };
               const id = grant.current.id;
               setGrantPending(true);
-              await apiFetch(`/api/tasks/${task}/remote-grants`, {
-                method: "POST",
-                headers: { "content-type": "application/json" },
-                body: JSON.stringify({ id, ...input }),
-              });
-              const result = await apiFetch(
-                `/api/tasks/${task}/remote-grants/${id}/activate`,
-                {
+              try {
+                await apiFetch(`/api/tasks/${task}/remote-grants`, {
                   method: "POST",
                   headers: { "content-type": "application/json" },
-                  body: "{}",
-                },
-              );
-              grant.current = null;
-              setGrantPending(false);
-              return result;
+                  body: JSON.stringify({ id, ...input }),
+                });
+                const result = await apiFetch(
+                  `/api/tasks/${task}/remote-grants/${id}/activate`,
+                  {
+                    method: "POST",
+                    headers: { "content-type": "application/json" },
+                    body: "{}",
+                  },
+                );
+                grant.current = null;
+                setGrantPending(false);
+                return result;
+              } catch (cause) {
+                if (cause instanceof ApiError && cause.responseReceived) {
+                  grant.current = null;
+                  setGrantPending(false);
+                }
+                throw cause;
+              }
             }).finally(() => setBusy(false));
           }}
         >

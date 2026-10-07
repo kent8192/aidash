@@ -119,12 +119,12 @@ pub(crate) async fn bind(
 		if source.scope == SourceScope::Workspace {
 			selected.participant = None;
 		}
-		if !declared
-			.iter()
-			.any(|(b, p, _)| b == &selected && p == &source.memory)
-		{
-			declared.push((selected, source.memory, source.max_tokens));
-		}
+		super::memory_context::declare_bank(
+			&mut declared,
+			selected,
+			source.memory,
+			source.max_tokens,
+		);
 	}
 	let mut banks = Vec::new();
 	for (bank, provider, tokens) in declared {

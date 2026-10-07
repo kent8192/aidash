@@ -282,6 +282,7 @@ pub(crate) async fn visible(access: &mut Access, grant: Uuid) -> Result<()> {
 		{
 			return Err(Error::RemoteSemantic(Failure::Invalidated));
 		}
+		let policy = units::unexpired(&mut lease, &unit).await?;
 		units::current(
 			&mut lease,
 			unit.bank.workspace,
@@ -290,7 +291,7 @@ pub(crate) async fn visible(access: &mut Access, grant: Uuid) -> Result<()> {
 				id: unit.id,
 				revision: unit.revision,
 			}],
-			MAX_READS,
+			policy.bounds.max_graph_visits,
 		)
 		.await?;
 	}

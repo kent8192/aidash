@@ -7,8 +7,26 @@ use crate::{
 	registry::AgentConfig,
 	store::Store,
 };
+use aidash_domain::registry::EntityRef;
 use aidash_domain::{memory::*, semantic::InputRead};
 use serde_json::{Value, json};
+
+/// Every declaration for the same exact bank/provider contributes its cap.
+pub(super) fn declare_bank(
+	declared: &mut Vec<(Bank, EntityRef, usize)>,
+	bank: Bank,
+	provider: EntityRef,
+	tokens: usize,
+) {
+	if let Some((_, _, limit)) = declared
+		.iter_mut()
+		.find(|(other, bound, _)| other == &bank && bound == &provider)
+	{
+		*limit = (*limit).min(tokens);
+	} else {
+		declared.push((bank, provider, tokens));
+	}
+}
 
 /// Leave enough room for the combined envelope and a complete minimal status.
 /// Reserve both null placeholders conservatively before ordinary retrieval.
@@ -42,7 +60,7 @@ pub(crate) async fn retrieve(
 	if agent.memory.as_ref() != Some(&binding.provider) {
 		return Err(Error::Conflict("Run memory definition changed".into()));
 	}
-	let mut declared = vec![(binding.provider.clone(), binding.bank.clone(), budget)];
+	let mut declared = vec![(binding.bank.clone(), binding.provider.clone(), budget)];
 	for reference in &agent.sources {
 		let entry = memory::definition(lease, reference, "source").await?;
 		let source: SourceConfig = serde_json::from_value(entry.config.clone())?;
@@ -58,12 +76,7 @@ pub(crate) async fn retrieve(
 		if source.scope == SourceScope::Workspace {
 			bank.participant = None;
 		}
-		if !declared
-			.iter()
-			.any(|(provider, other, _)| provider == &source.memory && other == &bank)
-		{
-			declared.push((source.memory, bank, source.max_tokens));
-		}
+		declare_bank(&mut declared, bank, source.memory, source.max_tokens);
 	}
 	let mut query = format!("{}\n{}", task.title, task.description);
 	for (_, text) in inputs {
@@ -75,7 +88,7 @@ pub(crate) async fn retrieve(
 		json!({"home":store.node_id,"binding":binding,"boundary":boundary,"banks":[]});
 	// UTF-8 bytes are the declared conservative tokenizer's token upper bound.
 	// Count wrappers, identity, roles and complete source envelopes as well.
-	for (ordinal, (provider, bank, declared_tokens)) in declared.into_iter().enumerate() {
+	for (ordinal, (bank, provider, declared_tokens)) in declared.into_iter().enumerate() {
 		memory::scope(store, lease, &bank, "memory.read").await?;
 		memory::bank_provider(lease, &bank, &provider).await?;
 		let policy = memory::policy(lease, &provider).await?;

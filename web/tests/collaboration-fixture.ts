@@ -244,6 +244,7 @@ export async function setup(
     foreignRun?: boolean;
     remoteAssignment?: boolean;
     nativeMemory?: boolean;
+    nativeMemoryDisabled?: boolean;
   } = {},
 ) {
   let data = fixture(options.referenceLayout);
@@ -277,6 +278,9 @@ export async function setup(
     data.registry[0].config = {
       ...data.registry[0].config,
       memory: { id: "native-memory", version: "1.0.0" },
+      ...(options.nativeMemoryDisabled
+        ? { allow_cross_conversation_memory: false }
+        : {}),
     };
     data.registry.push({
       ...data.registry[1],

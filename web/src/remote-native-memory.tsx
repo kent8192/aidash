@@ -62,7 +62,7 @@ export function HomeNativeMemoryFields({
           const provider = agent?.config.memory as EntityRef | null | undefined;
           return agent &&
             provider &&
-            agent?.config.allowCrossConversationMemory !== false &&
+            agent.config.allow_cross_conversation_memory !== false &&
             entries.some(
               (entry) =>
                 entry.kind === "memory" &&

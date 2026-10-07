@@ -3,7 +3,7 @@ import {
   MemoryRegistryFields,
   memoryConfiguration,
 } from "./memory-registry";
-import { apiFetch } from "./transport";
+import { ApiError, apiFetch } from "./transport";
 import {
   HomeNativeMemoryFields,
   nativeMemoryRequest,
@@ -733,7 +733,7 @@ export function AssignForm({
     data.access.kind === "subject" && chosen && chosen.node_id !== data.node.id;
   const nativeRequired =
     !!chosen?.entity.config.memory &&
-    chosen.entity.config.allowCrossConversationMemory !== false;
+    chosen.entity.config.allow_cross_conversation_memory !== false;
   return (
     <form
       onSubmit={(e) => {
@@ -779,22 +779,30 @@ export function AssignForm({
             request.current = { binding, id: crypto.randomUUID() };
           const id = request.current.id;
           setGrantPending(true);
-          await apiFetch(`/api/tasks/${task.id}/remote-grants`, {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({ id, ...input }),
-          });
-          const result = await apiFetch(
-            `/api/tasks/${task.id}/remote-grants/${id}/activate`,
-            {
+          try {
+            await apiFetch(`/api/tasks/${task.id}/remote-grants`, {
               method: "POST",
               headers: { "content-type": "application/json" },
-              body: "{}",
-            },
-          );
-          request.current = null;
-          setGrantPending(false);
-          return result;
+              body: JSON.stringify({ id, ...input }),
+            });
+            const result = await apiFetch(
+              `/api/tasks/${task.id}/remote-grants/${id}/activate`,
+              {
+                method: "POST",
+                headers: { "content-type": "application/json" },
+                body: "{}",
+              },
+            );
+            request.current = null;
+            setGrantPending(false);
+            return result;
+          } catch (cause) {
+            if (cause instanceof ApiError && cause.responseReceived) {
+              request.current = null;
+              setGrantPending(false);
+            }
+            throw cause;
+          }
         }).finally(() => setGrantBusy(false));
       }}
     >
@@ -816,7 +824,7 @@ export function AssignForm({
               );
               if (
                 agent?.entity.config.memory &&
-                agent.entity.config.allowCrossConversationMemory !== false
+                agent.entity.config.allow_cross_conversation_memory !== false
               )
                 setMemory(true);
             }}

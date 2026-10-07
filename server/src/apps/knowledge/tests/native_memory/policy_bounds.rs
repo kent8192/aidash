@@ -367,5 +367,269 @@ async fn semantic_sources_allow_the_pinned_provenance_limit_above_1024(
 		entries.iter().find(|entry| entry.id == last).unwrap().state,
 		"READY"
 	);
+	assert_large_graph_run_is_readable(&store, &bank, last).await;
 	server.abort();
+}
+
+#[rstest]
+#[tokio::test]
+async fn deleting_an_unprojected_unit_does_not_consume_full_search_capacity(
+	#[future] database: DatabaseFixture,
+	bounds: Bounds,
+) {
+	let database = database.await;
+	let (store, _, indexed) = setup(&database, bounds).await;
+	let workspace = store
+		.create_workspace("Late index", "Deletion must remain usable")
+		.await
+		.unwrap()
+		.id;
+	AuthorizationWorkspace::objects()
+		.create_with_conn(
+			&mut database.lease.handle(),
+			&AuthorizationWorkspace::build()
+				.workspace_id(workspace)
+				.tenant("acme")
+				.owner_subject("operator")
+				.finish(),
+		)
+		.await
+		.unwrap();
+	let bank = memory::create_participant(
+		&store,
+		&Actor::Operator,
+		workspace,
+		memory::CreateParticipant {
+			agent: reference("a"),
+		},
+	)
+	.await
+	.unwrap()
+	.bank;
+	let old = Uuid::now_v7();
+	memory::mutate(
+		&store,
+		&Actor::Operator,
+		mutation(
+			&bank,
+			Change::Add {
+				id: old,
+				content: content("Admitted before search existed"),
+			},
+		),
+	)
+	.await
+	.unwrap();
+	let configured = aidash_server::semantic::service::get_index(&store, &Actor::Operator, indexed)
+		.await
+		.unwrap();
+	let mut spec = configured.configuration().unwrap();
+	spec.max_sources = 1;
+	aidash_server::semantic::service::configure(
+		&store,
+		workspace,
+		aidash_server::semantic::ConfigureIndex {
+			expected_revision: 0,
+			spec,
+		},
+	)
+	.await
+	.unwrap();
+	let current = Uuid::now_v7();
+	memory::mutate(
+		&store,
+		&Actor::Operator,
+		mutation(
+			&bank,
+			Change::Add {
+				id: current,
+				content: content("The only visible search source"),
+			},
+		),
+	)
+	.await
+	.unwrap();
+	let deleted = memory::mutate(
+		&store,
+		&Actor::Operator,
+		mutation(
+			&bank,
+			Change::Delete {
+				id: old,
+				expected_revision: 1,
+			},
+		),
+	)
+	.await
+	.unwrap();
+	assert!(deleted[0].deleted);
+	let entries = aidash_server::semantic::service::entries(&store, &Actor::Operator, workspace)
+		.await
+		.unwrap();
+	assert_eq!(entries.iter().filter(|entry| !entry.deleted).count(), 1);
+	let tombstone = aidash_server::apps::knowledge::models::SemanticEntry::objects()
+		.get(old)
+		.get_with_db(&mut database.lease.handle())
+		.await
+		.unwrap();
+	assert!(tombstone.deleted);
+	assert_eq!(
+		tombstone.state,
+		aidash_server::apps::knowledge::models::states::SemanticEntryState::Deleted
+	);
+	let jobs: i64 = native::query_scalar(
+		&Query::select()
+			.expr(reinhardt::query::Func::count(
+				Expr::col(reinhardt::query::ColumnRef::Asterisk).into(),
+			))
+			.from(Alias::new("memory_purge_jobs"))
+			.and_where(Expr::col("unit_id").eq(Expr::value(old)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.scalar_one(&store.pool)
+	.await
+	.unwrap();
+	assert_eq!(jobs, 1);
+	let denied = memory::mutate(
+		&store,
+		&Actor::Operator,
+		mutation(
+			&bank,
+			Change::Add {
+				id: Uuid::now_v7(),
+				content: content("Still over the visible source quota"),
+			},
+		),
+	)
+	.await;
+	assert!(
+		matches!(denied, Err(aidash_server::Error::Conflict(message)) if message == "Workspace search source limit reached")
+	);
+}
+
+async fn assert_large_graph_run_is_readable(store: &Store, bank: &Bank, unit: Uuid) {
+	let authorization = aidash_server::authorization::Authorization {
+		pool: store.pool.clone(),
+	};
+	let owner = aidash_domain::qualified_agent(&store.node_id, "a", "1.0.0");
+	authorization.replace("acme", 1, serde_json::from_value(json!({"tenant":"acme","subjects":{"alice":{"kind":"user"},owner:{"kind":"agent"}},"policies":[{"id":"read","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}}]})).unwrap(), "operator").await.unwrap();
+	for id in ["m", "e", "r", "t", "p", "a"] {
+		authorization
+			.set_catalog("acme", &reference(id), 0, true, "operator")
+			.await
+			.unwrap();
+	}
+	let credential = authorization
+		.issue_credential("acme", "alice", 3600, "operator")
+		.await
+		.unwrap();
+	let Actor::Subject(identity) = authorization.authenticate(&credential.token).await.unwrap()
+	else {
+		panic!("subject");
+	};
+	let task = store
+		.create_task(
+			bank.workspace,
+			&aidash_domain::NewTask {
+				title: "Large provenance Run".into(),
+				description: "Read the admitted graph".into(),
+				requirements: json!({}),
+				dependencies: vec![],
+				parent_id: None,
+			},
+			"operator",
+			None,
+		)
+		.await
+		.unwrap();
+	let run = Uuid::now_v7();
+	let pending = aidash_domain::run_state::encode(
+		&aidash_domain::run_state::RunState::Completed(aidash_domain::run_state::TerminalState {}),
+		&aidash_domain::run_state::RecoveryState::default(),
+	)
+	.unwrap();
+	let mut tx = native::begin(&store.pool).await.unwrap();
+	for (table, columns, values) in [
+		(
+			"runs",
+			vec![
+				"id",
+				"task_id",
+				"workspace_id",
+				"home_node",
+				"agent_id",
+				"agent_version",
+				"phase",
+				"pending",
+				"revision",
+			],
+			vec![
+				Expr::value(run),
+				Expr::value(task.id),
+				Expr::value(bank.workspace),
+				Expr::value(&store.node_id),
+				Expr::value("a"),
+				Expr::value("1.0.0"),
+				Expr::value("COMPLETED"),
+				Expr::value(pending),
+				Expr::value(1_i64),
+			],
+		),
+		(
+			"memory_run_bindings",
+			vec![
+				"run_id",
+				"participant_id",
+				"participant_revision",
+				"provider_id",
+				"provider_version",
+			],
+			vec![
+				Expr::value(run),
+				Expr::value(bank.participant.unwrap()),
+				Expr::value(1_i64),
+				Expr::value("p"),
+				Expr::value("1.0.0"),
+			],
+		),
+		(
+			"memory_run_reads",
+			vec!["run_id", "unit_id", "revision"],
+			vec![Expr::value(run), Expr::value(unit), Expr::value(1_i64)],
+		),
+	] {
+		let mut row = Query::select();
+		for value in values {
+			row.expr(value);
+		}
+		native::query(
+			&Query::insert()
+				.into_table(Alias::new(table))
+				.columns(columns.into_iter().map(Alias::new))
+				.from_subquery(row)
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(&mut *tx)
+		.await
+		.unwrap();
+	}
+	tx.commit().await.unwrap();
+	let scope = aidash_server::authorization::workspace::Workspaces {
+		store: store.clone(),
+		identity,
+	};
+	let state = scope
+		.state(aidash_server::config::NodeIdentity {
+			id: store.node_id.clone(),
+			endpoint: "http://127.0.0.1:9".into(),
+			capabilities: vec![],
+			clusters: vec![],
+			protocol_version: "0.1".into(),
+		})
+		.await
+		.unwrap();
+	assert!(
+		state.runs.iter().any(|inspection| inspection.id == run),
+		"valid memory with more than 1024 provenance visits must preserve Run readability"
+	);
 }

@@ -1,6 +1,6 @@
 //! Native Hindsight contracts. Memory content is a typed unit, never an arbitrary JSON bank.
 //!
-//! Algorithm provenance and the upstream MIT notice are in `memory/UPSTREAM.md`.
+//! The upstream MIT notice is in `memory/LICENSE.hindsight`.
 use crate::{Error, Result, registry::EntityRef};
 use chrono::{DateTime, Utc};
 use schemars::JsonSchema;

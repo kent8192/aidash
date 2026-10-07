@@ -3,9 +3,9 @@
 Aidash stores memory and its search projections in PostgreSQL 17, using pgvector
 for semantic ranking and PGroonga for English/Japanese keyword retrieval. There
 is no Qdrant process or Python Hindsight sidecar. The Rust implementation adapts
-[Hindsight](https://github.com/vectorize-io/hindsight) at the revision recorded in
-[`memory/UPSTREAM.md`](../crates/aidash-domain/src/memory/UPSTREAM.md), retaining
-its MIT attribution. Accepted requirements and outstanding release gates are in
+[Hindsight](https://github.com/vectorize-io/hindsight) at revision
+`b89ce287464fe10790d67ba86bfabe29d8926253`, retaining its
+[MIT attribution](../crates/aidash-domain/src/memory/LICENSE.hindsight). Accepted requirements and outstanding release gates are in
 [the design contract](design/2026-10-06-hindsight-memory-requirements.md).
 
 ## Canonical memory and identity

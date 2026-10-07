@@ -403,3 +403,109 @@ async fn generated_native_remote_context_has_fresh_home_identity_and_committed_o
 	assert_receiver_native_cache_erased(&p).await;
 	p.close().await;
 }
+
+#[rstest::rstest]
+#[tokio::test]
+async fn native_remote_run_reads_use_the_pinned_provenance_limit_above_1024(
+	#[future(awt)]
+	#[with(true, false, false, false, true, true)]
+	scoped_pair: Pair,
+) {
+	use aidash_domain::memory::{
+		Bank, Change, Content, Evidence, Kind, Learning, Mutation, Unit, Verification,
+	};
+	let p = scoped_pair;
+	first_native_context(&p).await;
+	let fixture = p.native.as_ref().unwrap();
+	let mut bank: Bank = serde_json::from_value(fixture["bank"].clone()).unwrap();
+	bank.participant = None;
+	let provider: aidash_domain::registry::EntityRef =
+		serde_json::from_value(fixture["provider"].clone()).unwrap();
+	let original = Evidence::Unit {
+		bank: bank.clone(),
+		id: serde_json::from_value(fixture["shared"].clone()).unwrap(),
+		revision: 1,
+	};
+	let mut support = vec![original];
+	let mut last = Uuid::nil();
+	// A Fibonacci DAG stays within the 16-unit bank while requiring 1596 visits.
+	for _ in 0..14 {
+		last = Uuid::now_v7();
+		let mutation = Mutation {
+			operation_id: Uuid::now_v7(),
+			provider: provider.clone(),
+			bank: bank.clone(),
+			changes: vec![Change::Add {
+				id: last,
+				content: Content {
+					text: "Current bounded Run provenance".into(),
+					kind: Kind::Observation,
+					learning: Learning::Fact,
+					verification: Verification::Unverified,
+					mental_model: None,
+					occurred: None,
+					entities: vec![],
+					evidence: support.clone(),
+					links: vec![],
+				},
+			}],
+		};
+		let (status, body) = request(
+			&p.aa,
+			&p.token,
+			"POST",
+			&format!("/api/workspaces/{}/memory/units/mutate", bank.workspace),
+			serde_json::to_value(mutation).unwrap(),
+		)
+		.await;
+		assert_eq!(status, 200, "{body}");
+		let saved: Vec<Unit> = serde_json::from_value(body).unwrap();
+		support.push(saved[0].evidence());
+		if support.len() > 2 {
+			support.remove(0);
+		}
+	}
+	// The fixture journal records the exact admitted unit consumed by the Run.
+	sqlx::query(
+		&Query::insert()
+			.into_table(Alias::new("memory_remote_reads"))
+			.columns(["grant_id", "unit_id", "revision"].map(Alias::new))
+			.from_subquery(
+				Query::select()
+					.expr(Expr::value(p.grant))
+					.expr(Expr::value(last))
+					.expr(Expr::value(1_i64))
+					.to_owned(),
+			)
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(p.a.store.pool.driver())
+	.await
+	.unwrap();
+	// Exercise the Home peer verifier directly: a deliberate >1024-visit DAG
+	// isolates the policy boundary from the receiver's ten-second transport cap.
+	let response = reqwest::Client::new()
+		.post(format!(
+			"{}/federation/v0.1/scoped/dependencies/verify",
+			p.a.config.endpoint
+		))
+		.timeout(std::time::Duration::from_secs(90))
+		.bearer_auth(std::env::var("AIDASH_SECRET_TEST_PEER").unwrap())
+		.header("x-aidash-node", &p.b.config.node_id)
+		.header("x-aidash-protocol", "0.1")
+		.json(&json!({"tenant":"acme","subject":"alice","reference":{
+			"kind":"grant","node_id":p.a.config.node_id,"execution_node":p.b.config.node_id,
+			"grant_id":p.grant,"admission_id":p.admission,
+		}}))
+		.send()
+		.await
+		.unwrap();
+	let status = response.status();
+	let body: Value = response.json().await.unwrap();
+	assert_eq!(status.as_u16(), 200, "{body}");
+	assert_eq!(
+		body["visible"], true,
+		"a valid graph above 1024 must remain disclosable at the Home boundary: {body}"
+	);
+	p.close().await;
+}

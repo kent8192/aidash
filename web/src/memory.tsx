@@ -7,7 +7,12 @@ import {
 import type { State, EntityRef } from "./types";
 import { apiFetch, ApiError } from "./transport";
 import { Badge, Empty, Field, Panel, Modal, useI18n } from "./ui";
-import { RecordView } from "./record-view";
+import {
+  MemoryContent,
+  MemoryOverview,
+  MemoryRecord,
+  unitAnchor,
+} from "./memory-view";
 
 type Bank = {
   home: string;
@@ -15,14 +20,14 @@ type Bank = {
   workspace: string;
   participant: string | null;
 };
-type Evidence = {
+export type Evidence = {
   kind: string;
   id: string;
   revision: number;
   bank?: Bank;
   digest?: string;
 };
-type Content = {
+export type Content = {
   mental_model?: { question: string; automatic_refresh: boolean } | null;
   text: string;
   kind: "world" | "experience" | "observation" | "mental_model";
@@ -33,7 +38,7 @@ type Content = {
   evidence: Evidence[];
   links: { target: string; revision: number; kind: string; weight: number }[];
 };
-type Unit = {
+export type Unit = {
   id: string;
   bank: Bank;
   revision: number;
@@ -707,21 +712,21 @@ export function MemoryWorkspace({
         </>
       )}
       {units.data?.length === 0 && <Empty />}
-      <div className="cards">
+      {!units.error && units.data && <MemoryOverview units={units.data} />}
+      <div className="memory-unit-list">
         {!units.error &&
           units.data?.map((unit) => (
-            <article className="entity-card" key={unit.id}>
-              <Badge value={unit.content.kind} />
-              <Badge value={unit.content.verification} />
-              {unit.content.mental_model && (
-                <p>
-                  <strong>{unit.content.mental_model.question}</strong> ·{" "}
-                  {unit.content.mental_model.automatic_refresh
-                    ? text("Automatic refresh", "自動更新")
-                    : text("Manual refresh", "手動更新")}
-                </p>
-              )}
-              <p>{unit.content.text}</p>
+            <article
+              className="memory-unit"
+              id={unitAnchor(unit.id)}
+              tabIndex={-1}
+              key={unit.id}
+            >
+              <MemoryContent
+                content={unit.content}
+                unit={unit}
+                units={units.error ? [] : (units.data ?? [])}
+              />
               <button
                 type="button"
                 disabled={blocked}
@@ -758,27 +763,6 @@ export function MemoryWorkspace({
                   )}
                 </button>
               )}
-              <small>
-                r{unit.revision} · {unit.id} ·{" "}
-                {new Date(unit.updated_at).toLocaleString(locale)}
-              </small>
-              <details>
-                <summary>
-                  {text(
-                    "Sources, entities and time",
-                    "出典・エンティティ・時刻",
-                  )}
-                </summary>
-                <RecordView
-                  value={{
-                    evidence: unit.content.evidence,
-                    entities: unit.content.entities,
-                    occurred: unit.content.occurred,
-                    learned_at: unit.learned_at,
-                    links: unit.content.links,
-                  }}
-                />
-              </details>
               <button
                 type="button"
                 disabled={blocked}
@@ -861,7 +845,7 @@ export function MemoryWorkspace({
             </article>
           ))}
       </div>
-      {candidates.data && (
+      {candidates.data && !candidates.error && (
         <Panel
           title={text("Run learning review", "Runからの学習候補のレビュー")}
         >
@@ -874,8 +858,11 @@ export function MemoryWorkspace({
           {candidates.data.value.map((candidate) => (
             <article key={candidate.id}>
               <Badge value={candidate.state} />
-              <p>{candidate.content.text}</p>
-              <RecordView
+              <MemoryContent
+                content={candidate.content}
+                units={units.error ? [] : (units.data ?? [])}
+              />
+              <MemoryRecord
                 value={{
                   source: candidate.run,
                   evidence: candidate.content.evidence,
@@ -923,7 +910,7 @@ export function MemoryWorkspace({
               "鮮度・履歴・影響するRun・消去状況",
             )}
           </summary>
-          <RecordView
+          <MemoryRecord
             value={{
               ...inspection.data.pages[0].value,
               items: inspection.data.pages.flatMap((page) => page.value.items),
@@ -948,12 +935,12 @@ export function MemoryWorkspace({
           )}
         </p>
       )}
-      {jobs.data && (
+      {jobs.data && !jobs.error && (
         <details>
           <summary>
             {text("Engine jobs and retries", "メモリ処理・再試行")}
           </summary>
-          <RecordView
+          <MemoryRecord
             value={jobs.data.pages.flatMap((page) => page.value.items)}
           />
           {jobs.hasNextPage && (
@@ -1094,7 +1081,7 @@ export function MemoryWorkspace({
         >
           {historyCurrent && !history.error ? (
             <>
-              <RecordView
+              <MemoryRecord
                 value={history.data?.pages.flatMap((page) => page.value) ?? []}
               />
               {history.hasNextPage && (
@@ -1120,7 +1107,7 @@ export function MemoryWorkspace({
       {result && failures.length === 0 && !inspection.error && (
         <details open>
           <summary>{text("Operation result", "操作結果")}</summary>
-          <RecordView value={result} />
+          <MemoryRecord value={result} />
         </details>
       )}
       {reviewing && (

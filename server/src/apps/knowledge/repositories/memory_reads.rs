@@ -131,6 +131,10 @@ pub(crate) async fn visible(lease: &mut Lease<'_>, run_id: Uuid) -> Result<bool>
 		{
 			return Ok(false);
 		}
+		let policy = match units::unexpired(lease, &unit).await {
+			Err(Error::Conflict(_) | Error::Forbidden) => return Ok(false),
+			result => result?,
+		};
 		match units::current(
 			lease,
 			run.workspace_id,
@@ -139,7 +143,7 @@ pub(crate) async fn visible(lease: &mut Lease<'_>, run_id: Uuid) -> Result<bool>
 				id: unit.id,
 				revision: unit.revision,
 			}],
-			MAX_READS,
+			policy.bounds.max_graph_visits,
 		)
 		.await
 		{
