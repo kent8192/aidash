@@ -2,17 +2,33 @@
 mod native_database;
 use native_database::{DatabaseFixture, database};
 
-#[path = "../../knowledge/tests/database_limits.rs"]
-mod semantic_limits;
+mod semantic_limits {
+	include!(concat!(
+		env!("CARGO_MANIFEST_DIR"),
+		"/src/apps/knowledge/tests/database_limits.rs"
+	));
+}
 
-#[path = "../../knowledge/tests/native_memory.rs"]
-mod native_memory;
+mod native_memory {
+	include!(concat!(
+		env!("CARGO_MANIFEST_DIR"),
+		"/src/apps/knowledge/tests/native_memory.rs"
+	));
+}
 
-#[path = "../../federation/transactions/tests/database_decisions.rs"]
-mod decisions;
+mod decisions {
+	include!(concat!(
+		env!("CARGO_MANIFEST_DIR"),
+		"/src/apps/federation/transactions/tests/database_decisions.rs"
+	));
+}
 
-#[path = "../../workspaces/tests/database_task_graph.rs"]
-mod task_graph;
+mod task_graph {
+	include!(concat!(
+		env!("CARGO_MANIFEST_DIR"),
+		"/src/apps/workspaces/tests/database_task_graph.rs"
+	));
+}
 
 #[path = "database_delivery.rs"]
 mod delivery;
