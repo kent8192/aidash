@@ -323,6 +323,82 @@ async fn remote_defaults_have_durable_exclusion_reasons_and_explicit_inputs_fail
 		.push(Binding::tool(QualifiedRef::builtin(NODE, "memory_write")));
 	assert!(snapshot(&mut catalog, &config, true).await.is_err());
 }
+
+#[tokio::test]
+async fn recovered_remote_snapshots_preserve_exclusions_and_provider_evidence_at_run_boundaries() {
+	let saved = snapshot(&mut Catalog::new(), &agent_config(), true)
+		.await
+		.unwrap();
+	assert!(saved.remote);
+	let encoded = serde_json::to_value(&saved).unwrap();
+	let recovered: BindingSnapshot = serde_json::from_value(encoded.clone()).unwrap();
+	recovered.validate().unwrap();
+	let mut missing_placement = encoded;
+	missing_placement.as_object_mut().unwrap().remove("remote");
+	assert!(serde_json::from_value::<BindingSnapshot>(missing_placement).is_err());
+
+	let mut run = admitted_run().await;
+	run.context.binding_snapshot = None;
+	run.bind(recovered).unwrap();
+	let live = Arc::new(Live::new());
+	let resolver = execution::PinnedResolver {
+		providers: live.clone(),
+		authority: live.clone(),
+	};
+	let tools = resolver.tools(&run).await.unwrap();
+	assert!(!tools.contains_key("memory_write"));
+	assert!(tools.contains_key("workspace_read"));
+	assert!(tools.contains_key("human_request"));
+
+	for mutation in 0..6 {
+		let mut altered = saved.clone();
+		let memory = altered
+			.bindings
+			.iter_mut()
+			.find(|binding| binding.alias.as_deref() == Some("memory_write"))
+			.unwrap();
+		match mutation {
+			0 => {
+				memory.excluded_reason = None;
+				memory.provider_implementation = Some("injected-implementation".into());
+			}
+			1 => memory.excluded_reason = Some("different reason".into()),
+			2 => memory.provider_implementation = Some("injected-implementation".into()),
+			3 => memory.provider_contract_digest = Some("changed-contract".into()),
+			4 => altered.remote = false,
+			5 => {
+				let read = altered
+					.bindings
+					.iter_mut()
+					.find(|binding| binding.alias.as_deref() == Some("workspace_read"))
+					.unwrap();
+				read.provider_implementation = None;
+			}
+			_ => unreachable!(),
+		}
+		let altered: BindingSnapshot =
+			serde_json::from_value(serde_json::to_value(altered).unwrap()).unwrap();
+		assert!(altered.validate().is_err(), "mutation {mutation}");
+		run.context.binding_snapshot = None;
+		assert!(run.bind(altered.clone()).is_err(), "mutation {mutation}");
+		assert!(run.context.binding_snapshot.is_none());
+		run.context.binding_snapshot = Some(Box::new(altered));
+		assert!(resolver.tools(&run).await.is_err(), "mutation {mutation}");
+	}
+
+	let mut local = snapshot(&mut Catalog::new(), &agent_config(), false)
+		.await
+		.unwrap();
+	assert!(!local.remote);
+	let memory = local
+		.bindings
+		.iter_mut()
+		.find(|binding| binding.alias.as_deref() == Some("memory_write"))
+		.unwrap();
+	memory.excluded_reason = Some("provider contract is ineligible for remote execution".into());
+	memory.provider_implementation = None;
+	assert!(local.validate().is_err());
+}
 #[tokio::test]
 async fn installed_exact_revisions_and_current_provider_availability_are_required() {
 	let mut catalog = Catalog::new();
@@ -378,6 +454,67 @@ async fn coordinator_requirements_follow_operation_semantics() {
 	replacement.alias = Some("create_child".into());
 	config.bindings.push(replacement);
 	snapshot(&mut catalog, &config, false).await.unwrap();
+}
+
+#[tokio::test]
+async fn coordinator_bundle_selections_reject_undeclared_ids_even_with_complete_defaults() {
+	for nested in [false, true] {
+		let mut catalog = Catalog::new();
+		let get = catalog.core("outbound_get");
+		let selected = if nested {
+			catalog.bundle("inner", vec![get])
+		} else {
+			get
+		};
+		let bundle = catalog.bundle("coordinator-tools", vec![selected.clone()]);
+		let mut coordinator = agent_config();
+		coordinator.bindings.push(Binding {
+			kind: BindingKind::Bundle,
+			target: bundle,
+			alias: None,
+			narrow: Default::default(),
+			members: vec![selected.id.clone()],
+		});
+		catalog.insert(entry(
+			"cluster",
+			"cluster",
+			json!({"coordinator":reference("coordinator").local()}),
+		));
+		let mut config = agent_config();
+		config.cluster = Some(reference("cluster").local());
+		catalog.insert(entry(
+			"coordinator",
+			"agent",
+			serde_json::to_value(&coordinator).unwrap(),
+		));
+		snapshot(&mut catalog, &config, false).await.unwrap();
+		for members in [
+			vec!["absent".into()],
+			vec![selected.id.clone(), "absent".into()],
+		] {
+			coordinator.bindings[0].members = members;
+			let coordinator_entry = entry(
+				"coordinator",
+				"agent",
+				serde_json::to_value(&coordinator).unwrap(),
+			);
+			catalog.insert(coordinator_entry.clone());
+			let cluster_error = snapshot(&mut catalog, &config, false).await.unwrap_err();
+			assert!(
+				matches!(&cluster_error, Error::Invalid(message) if message.contains("undeclared"))
+			);
+			let root_error = resolve(
+				&mut catalog,
+				&providers(),
+				reference("coordinator"),
+				&coordinator_entry,
+				false,
+			)
+			.await
+			.unwrap_err();
+			assert_eq!(cluster_error.to_string(), root_error.to_string());
+		}
+	}
 }
 
 use crate::ports::{

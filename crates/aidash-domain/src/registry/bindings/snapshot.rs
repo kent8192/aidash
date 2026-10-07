@@ -1,6 +1,8 @@
 //! Rebuild the Agent's capability closure from pinned definitions at durable boundaries.
 use super::*;
-use crate::tool::providers::{ToolDescriptor, reserved_aliases, validate_restrictions};
+use crate::tool::providers::{
+	ToolDescriptor, remote_exclusion, reserved_aliases, validate_restrictions,
+};
 
 impl BindingSnapshot {
 	pub(super) fn validate_closure(
@@ -172,18 +174,43 @@ impl BindingSnapshot {
 			}
 		}
 		let mut seen = BTreeSet::new();
-		if self.bindings.len() != expected.len()
-			|| self.bindings.iter().any(|saved| {
-				!seen.insert(&saved.identity)
-					|| expected.get(&saved.identity).is_none_or(|expected| {
-						saved.origin != expected.origin
-							|| saved.alias != expected.binding.alias
-							|| saved.narrow != expected.binding.narrow
-					})
-			}) {
+		if self.bindings.len() != expected.len() {
 			return Err(Error::Invalid(
 				"Run Bindings differ from the normalized Agent closure".into(),
 			));
+		}
+		for saved in &self.bindings {
+			let expected = expected.get(&saved.identity).ok_or_else(|| {
+				Error::Invalid("Run Binding is absent from the normalized Agent closure".into())
+			})?;
+			if !seen.insert(&saved.identity)
+				|| saved.origin != expected.origin
+				|| saved.alias != expected.binding.alias
+				|| saved.narrow != expected.binding.narrow
+			{
+				return Err(Error::Invalid(
+					"Run Bindings differ from the normalized Agent closure".into(),
+				));
+			}
+			if expected.binding.kind == BindingKind::Tool {
+				let descriptor: ToolDescriptor =
+					serde_json::from_value(definitions[&saved.identity].definition.config.clone())?;
+				let contract = descriptor.declared_contract(saved.identity.clone())?;
+				let excluded_reason = if self.remote {
+					remote_exclusion(expected.origin, &contract)?
+				} else {
+					None
+				};
+				let contract_digest = super::super::rules::digest(&serde_json::to_value(contract)?);
+				if saved.excluded_reason != excluded_reason
+					|| saved.provider_contract_digest.as_deref() != Some(&contract_digest)
+					|| excluded_reason.is_some() && saved.provider_implementation.is_some()
+				{
+					return Err(Error::Invalid(
+						"Tool snapshot differs from its placement or Provider contract".into(),
+					));
+				}
+			}
 		}
 		Ok(())
 	}

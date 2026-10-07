@@ -392,6 +392,16 @@ pub async fn resolve(
 				match binding.kind {
 					BindingKind::Bundle => {
 						let bundle: BundleConfig = serde_json::from_value(entry.config.clone())?;
+						bundle.validate()?;
+						if binding
+							.members
+							.iter()
+							.any(|id| !bundle.members.iter().any(|member| &member.id == id))
+						{
+							return Err(Error::Invalid(
+								"bundle member selection names an undeclared operation".into(),
+							));
+						}
 						for member in bundle.members.into_iter().filter(|r| {
 							binding.members.is_empty() || binding.members.contains(&r.id)
 						}) {
@@ -435,6 +445,7 @@ pub async fn resolve(
 	let snapshot = BindingSnapshot {
 		schema_version: BINDING_SCHEMA,
 		agent,
+		remote,
 		bindings: resolved.into_values().collect(),
 		definitions,
 	};

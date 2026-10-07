@@ -499,6 +499,8 @@ pub struct ResolvedBinding {
 pub struct BindingSnapshot {
 	pub schema_version: u8,
 	pub agent: QualifiedRef,
+	/// Admission placement determines which implicit defaults must remain excluded.
+	pub remote: bool,
 	pub bindings: Vec<ResolvedBinding>,
 	pub definitions: Vec<ResolvedDefinition>,
 }

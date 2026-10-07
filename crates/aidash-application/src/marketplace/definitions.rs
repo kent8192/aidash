@@ -138,6 +138,7 @@ pub async fn publication_graph(
 	let mut result = vec![];
 	while let Some((r, kind)) = queue.pop() {
 		let entry = scope.catalog(&r, "registry.read").await?;
+		crate::registry::system::reject_distribution(&entry)?;
 		scope.require_export(&entry).await?;
 		if !kind.is_empty() && entry.kind != kind {
 			return Err(Error::Forbidden);
