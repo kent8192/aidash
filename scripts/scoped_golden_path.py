@@ -10,6 +10,7 @@ import http.server
 import json
 import signal
 import threading
+import time
 import urllib.error
 import urllib.request
 import uuid
@@ -35,6 +36,7 @@ class PeerProxy:
         self.errors = []
         self.paths = collections.Counter()
         self.commands = collections.defaultdict(list)
+        self.timings = collections.defaultdict(list)
         self.unavailable = threading.Event()
         self.blocked = threading.Event()
         self.release = threading.Event()
@@ -64,6 +66,7 @@ class PeerProxy:
                     assert self.headers.get("Authorization") == f"Bearer {PEER_TOKEN}", "Peer transport must use its own credential"
                     assert not any(token in text or token in str(self.headers) for token in proxy.forbidden_tokens), "Subject credential forwarded to a peer"
                     body = json.loads(raw)
+                    started = time.monotonic()
                     with proxy.lock:
                         proxy.paths[self.path] += 1
                         command = (body.get("grant_id"), body.get("operation"))
@@ -82,6 +85,8 @@ class PeerProxy:
                                 code, payload = response.status, response.read()
                         except urllib.error.HTTPError as error:
                             code, payload = error.code, error.read()
+                        with proxy.lock:
+                            proxy.timings[command].append(round(time.monotonic() - started, 3))
                         if hold:
                             assert code == 200, f"Home command failed before crash boundary: {code}"
                             # Aidash has committed the real transaction; the Worker
@@ -196,7 +201,7 @@ def verify(base_a, base_b, node_a, node_b, worker, launch_worker, counts):
     owned_grants = []
 
     def approve_fixture_calls():
-        while not approval_stop.wait(0.25):
+        while not approval_stop.wait(1):
             for task_id, grant_id in list(owned_grants):
                 try:
                     statuses = api_request(base_a, f"/api/tasks/{task_id}/remote-executions", token=token)
@@ -278,7 +283,8 @@ def verify(base_a, base_b, node_a, node_b, worker, launch_worker, counts):
             if not home.blocked.wait(90):
                 stalled = api_request(base_b, f"/api/runs/{run_id}")["run"]
                 commands = {name: len(attempts) for (owner, name), attempts in home.commands.items() if owner == grant}
-                raise AssertionError(f"Did not reach committed {operation}: phase={stalled['phase']}, step={stalled['step']}, error={stalled.get('error')}, model_calls={fixture.model_calls[scenario]}, Home commands={commands}, peer_errors={home.errors}, provider_errors={fixture.errors}")
+                timings = {name: {"total": round(sum(values), 3), "max": max(values)} for (owner, name), values in home.timings.items() if owner == grant}
+                raise AssertionError(f"Did not reach committed {operation}: phase={stalled['phase']}, step={stalled['step']}, error={stalled.get('error')}, model_calls={fixture.model_calls[scenario]}, Home commands={commands}, RPC seconds={timings}, peer_errors={home.errors}, provider_errors={fixture.errors}")
 
             def run(run_id=run_id):
                 return api_request(base_b, f"/api/runs/{run_id}")["run"]
@@ -337,6 +343,9 @@ def verify(base_a, base_b, node_a, node_b, worker, launch_worker, counts):
             assert len(statuses) == 1 and statuses[0]["execution"]["run_id"] == run_id
             assert statuses[0]["execution"]["phase"] == run()["phase"]
             assert not any(secret in json.dumps(statuses) for secret in tokens), "Execution status exposed a credential"
+            # Terminal scenarios no longer need an approval poller. Keep the
+            # fixture workload bounded to the one execution under observation.
+            owned_grants.remove((task["id"], grant))
             scenarios.append({"scenario": scenario, "task_id": task["id"], "workspace_id": workspace["id"], "grant_id": grant, "admission_id": activated["admission_id"], "run_id": run_id, "worker_pid_before": old_pid, "worker_pid_after": worker.pid, "exit_signal": "SIGKILL", "phase": run()["phase"], "home_command_attempts": len(home.commands[(grant, operation)]), "passed": True})
             print(f"Scoped Golden Path passed: {scenario} (same Run {run_id}, Worker {old_pid} -> {worker.pid})", flush=True)
 

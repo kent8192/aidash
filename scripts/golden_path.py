@@ -340,10 +340,14 @@ def main():
     nats_proxy = NatsProxy()
 
     approval_stop = threading.Event()
+    local_approvals = threading.Event()
+    local_approvals.set()
     approval_errors = []
 
     def approve_fixture_calls():
         while not approval_stop.wait(0.25):
+            if not local_approvals.is_set():
+                continue
             for base in (base_a, base_b):
                 try:
                     approve_fixture_external_requests(base)
@@ -493,12 +497,16 @@ def main():
         # This branch is mandatory: legacy recovery alone cannot establish
         # subject-scoped authority or the remote grant/admission contract.
         from scoped_golden_path import verify
+        # Scoped scenarios own their exact Home approval poller; completed local
+        # fixtures do not need a second full-state poller during fault injection.
+        local_approvals.clear()
         scoped = verify(base_a, base_b, node_a, node_b, remote_worker,
                         lambda: launch(node_b, db_b, port_b, "worker"),
                         lambda: {"admissions": int(psql(db_b, queries["remote_admissions"])),
                                  "bindings": int(psql(db_a, queries["remote_bindings"]))})
         report = {"node_a": base_a, "node_b": base_b, "node_ids": [node_a, node_b], "workspace_id": workspace, "tasks": len(snapshot["tasks"]), "artifacts": len(snapshot["artifacts"]), "external_effects": len(fixture.effects), "tool_requests": dict(fixture.requests), "provider_calls": dict(fixture.provider_calls), "recovered_run_id": recovered["id"], "sse_events": len(stream_events), "database_a": db_a, "database_b": db_b, "goal_entry": "dashboard" if args.dashboard else "api", "remote_human_controls": "passed", "nats_outage_startup_and_recovery": "passed", "events_queued_during_outage": pending_events, "additional_plugins": plugin_runs}
         report.update(source=source, binary_sha256=binary_sha256, scoped_remote_execution=scoped, foreign_agent_binding_snapshot="passed")
+        local_approvals.set()
         if args.dashboard:
             browser_report = logs / "browser-report.json"
             subprocess.run(["npm", "test", "--prefix", "web", "--", "--reporter=list,json"], cwd=ROOT, check=True, env={**os.environ, "PLAYWRIGHT_JSON_OUTPUT_FILE": str(browser_report), "AIDASH_E2E_URL": base_a, "AIDASH_E2E_REMOTE_URL": base_b})
