@@ -33,7 +33,7 @@ fn native_routes_match_the_committed_http_contract() {
 			"duplicate catalog endpoint"
 		);
 	}
-	assert_eq!(expected.len(), 272);
+	assert_eq!(expected.len(), 273);
 	assert_eq!(registered, expected);
 }
 
