@@ -130,9 +130,9 @@ test("generation dashboard manages policy, approval, completion and retained his
       expected_revision: 0,
       enabled: true,
     });
-    const memory = `${id}-memory`;
+    const memoryDescriptor = `${id}-memory`;
     await api("/api/registry", {
-      id: memory,
+      id: memoryDescriptor,
       version: "1.0.0",
       kind: "memory",
       name: { en: "Approved semantic memory", ja: "承認済みメモリ" },
@@ -142,7 +142,7 @@ test("generation dashboard manages policy, approval, completion and retained his
       config: { schema_version: 1, source: { adapter: "semantic_memory" } },
     });
     await api(`/api/authorization/${tenant}/catalog`, {
-      entry: { id: memory, version: "1.0.0" },
+      entry: { id: memoryDescriptor, version: "1.0.0" },
       expected_revision: 0,
       enabled: true,
     });
@@ -243,7 +243,7 @@ test("generation dashboard manages policy, approval, completion and retained his
       .selectOption(`${id}@1.0.0`);
     await dialog
       .getByLabel("追加する定義", { exact: true })
-      .selectOption(`memory:${memory}@1.0.0`);
+      .selectOption(`memory:${memoryDescriptor}@1.0.0`);
     await dialog
       .getByRole("button", { name: "Bindingを追加", exact: true })
       .click();
