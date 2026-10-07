@@ -1,3 +1,5 @@
+import { observeGraphTheme } from "./graph-theme";
+import { Button } from "../components/ui/button";
 import { useEffect, useId, useRef } from "react";
 import cytoscape, { type Core } from "cytoscape";
 import type { AgentGraph, GraphNode } from "../agent-graph/model";
@@ -116,11 +118,13 @@ export function CytoscapeCanvas({
       ],
     });
     instance.current = cy;
+    const stopTheme = observeGraphTheme(cy);
     cy.on("tap", "node", (event) => onSelect.current(event.target.id()));
     const observer = new ResizeObserver(() => cy.resize());
     observer.observe(container.current);
     return () => {
       observer.disconnect();
+      stopTheme();
       cy.destroy();
       instance.current = null;
     };
@@ -154,7 +158,8 @@ export function CytoscapeCanvas({
         role="group"
         aria-label={copy.graph}
       >
-        <button
+        <Button
+          variant="outline"
           type="button"
           onClick={() => {
             fit.cancel();
@@ -165,8 +170,9 @@ export function CytoscapeCanvas({
           aria-label={copy.zoomIn}
         >
           +
-        </button>
-        <button
+        </Button>
+        <Button
+          variant="outline"
           type="button"
           onClick={() => {
             fit.cancel();
@@ -177,8 +183,9 @@ export function CytoscapeCanvas({
           aria-label={copy.zoomOut}
         >
           −
-        </button>
-        <button
+        </Button>
+        <Button
+          variant="outline"
           type="button"
           className="graph-fit-button"
           aria-label={copy.fit}
@@ -191,8 +198,9 @@ export function CytoscapeCanvas({
         >
           <Scan size={16} aria-hidden="true" />
           <span>{copy.fit}</span>
-        </button>
-        <button
+        </Button>
+        <Button
+          variant="outline"
           type="button"
           onClick={() => {
             fit.cancel();
@@ -202,7 +210,7 @@ export function CytoscapeCanvas({
           }}
         >
           {copy.focus}
-        </button>
+        </Button>
       </div>
       <span id={fitDescription} className="graph-fit-status" role="status">
         {fit.available ? "" : copy.fitUnavailable}

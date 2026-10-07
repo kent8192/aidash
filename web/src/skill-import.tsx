@@ -1,3 +1,4 @@
+import { Button } from "./components/ui/button";
 import { useRef, useState } from "react";
 import { parseDocument } from "yaml";
 import { apiFetch } from "./transport";
@@ -133,13 +134,14 @@ export function SkillImport({
           }}
         />
       </Field>
-      <button
+      <Button
+        variant="outline"
         type="button"
         disabled={busy || !url.trim()}
         onClick={() => void load()}
       >
         {busy ? t("loading") : t("skillImportFromUrl")}
-      </button>
+      </Button>
       {choices.length > 1 && (
         <>
           <Field label={t("skillImportChoose")}>
@@ -154,13 +156,14 @@ export function SkillImport({
               ))}
             </select>
           </Field>
-          <button
+          <Button
+            variant="outline"
             type="button"
             disabled={busy || !choice}
             onClick={() => void load(choice)}
           >
             {t("skillImportSelected")}
-          </button>
+          </Button>
         </>
       )}
       <Field label="SKILL.md">

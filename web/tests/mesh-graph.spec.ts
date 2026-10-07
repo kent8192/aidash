@@ -149,9 +149,9 @@ test("renders mesh groups and navigates node details, tasks and the existing rel
 });
 test("search, type and relation filters, neighborhood focus, list view and reset work", async ({
   page,
-}) => {
+}, testInfo) => {
   const { errors } = await setup(page);
-  const search = page.getByRole("searchbox");
+  const search = page.getByRole("banner").getByRole("searchbox");
   await search.fill("nothing-matches");
   await expect(
     page.getByRole("heading", { name: "No matching nodes" }),
@@ -172,6 +172,14 @@ test("search, type and relation filters, neighborhood focus, list view and reset
   await expect(
     page.locator(".mesh-node-label").filter({ hasText: "Web Search" }),
   ).toHaveCount(0);
+  await page.locator(".mesh-filters").screenshot({
+    path: testInfo.outputPath("filters-light.png"),
+    animations: "disabled",
+  });
+  await page.screenshot({
+    path: testInfo.outputPath("graph-light.png"),
+    animations: "disabled",
+  });
   await page.getByRole("checkbox", { name: "Clusters", exact: true }).uncheck();
   await page.getByRole("checkbox", { name: "Clusters", exact: true }).check();
   await expect(
@@ -191,6 +199,20 @@ test("search, type and relation filters, neighborhood focus, list view and reset
   await page.getByText("Relation types", { exact: true }).first().click();
   await page.getByRole("checkbox", { name: "executes", exact: true }).uncheck();
   await expect(table).not.toContainText("→ executes →");
+  await page.locator(".account-popover > summary").click();
+  await page.getByRole("button", { name: "Dark theme", exact: true }).click();
+  await page.locator(".account-popover > summary").click();
+  await expect(page.locator(".intent-app")).toHaveAttribute(
+    "data-theme",
+    "dark",
+  );
+  await expect(
+    page.getByRole("checkbox", { name: "Tools", exact: true }),
+  ).not.toBeChecked();
+  await page.locator(".mesh-filters").screenshot({
+    path: testInfo.outputPath("filters-dark.png"),
+    animations: "disabled",
+  });
   expect(errors).toEqual([]);
 });
 test("connected local node opens topology and relationship controls only show active options", async ({
@@ -207,7 +229,7 @@ test("connected local node opens topology and relationship controls only show ac
     "aidash://product-lab",
   );
   await page.getByLabel("Graph perspective").selectOption("neighborhood");
-  await expect(page.getByRole("searchbox")).toHaveCount(0);
+  await expect(page.getByRole("banner").getByRole("searchbox")).toHaveCount(0);
   await expect(page.getByLabel("Activity window")).toHaveCount(0);
   await expect(page.getByLabel("Layout", { exact: true })).toHaveCount(0);
   await page
@@ -363,7 +385,7 @@ for (const viewport of [
 ]) {
   test(`graph controls, inspector and navigation fit ${viewport.width}x${viewport.height}`, async ({
     page,
-  }) => {
+  }, testInfo) => {
     await page.setViewportSize(viewport);
     const { errors } = await setup(page);
     await page
@@ -371,6 +393,10 @@ for (const viewport of [
       .click();
     await page.getByRole("button", { name: "Filters", exact: true }).click();
     await page.getByRole("checkbox", { name: "Tools", exact: true }).uncheck();
+    await page.screenshot({
+      path: testInfo.outputPath("filters-mobile.png"),
+      animations: "disabled",
+    });
     await page.getByRole("button", { name: "Filters", exact: true }).click();
     await page
       .getByRole("button", { name: "Relationship list", exact: true })
@@ -493,7 +519,7 @@ test("empty filters and viewport changes preserve the camera until explicit fit"
   });
   await page.getByRole("button", { name: "Zoom in", exact: true }).click();
   const before = await cytoscapeCamera(canvas);
-  await page.getByRole("searchbox").fill("nothing-matches");
+  await page.getByRole("banner").getByRole("searchbox").fill("nothing-matches");
   await expect(
     page.getByRole("heading", { name: "No matching nodes" }),
   ).toBeVisible();
@@ -510,7 +536,7 @@ test("empty filters and viewport changes preserve the camera until explicit fit"
     )
     .toBe(true);
   expect((await cytoscapeCamera(canvas)).zoom).toEqual(before.zoom);
-  await page.getByRole("searchbox").fill("");
+  await page.getByRole("banner").getByRole("searchbox").fill("");
   await expect(fit).toBeEnabled();
   expect((await cytoscapeCamera(canvas)).pan).toEqual(before.pan);
   await page

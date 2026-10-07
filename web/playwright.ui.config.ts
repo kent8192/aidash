@@ -6,6 +6,7 @@ const baseURL = `http://127.0.0.1:${port}`;
 export default defineConfig({
   testDir: "./tests",
   testMatch: [
+    "precision-light.spec.ts",
     "marketplace.spec.ts",
     "transaction-authority.spec.ts",
     "google-auth.spec.ts",

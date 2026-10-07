@@ -1,3 +1,4 @@
+import { Button } from "./components/ui/button";
 import { apiFetch } from "./transport";
 import {
   CapabilityConfiguration,
@@ -109,13 +110,14 @@ export function GoalForm({ data, submit }: { data: State; submit: Submit }) {
       </form.Field>
       <form.Subscribe selector={(s) => s.isSubmitting}>
         {(pending) => (
-          <button
+          <Button
+            variant="outline"
             disabled={pending || targets.length === 0}
             className="primary"
             type="submit"
           >
             {t("newGoal")}
-          </button>
+          </Button>
         )}
       </form.Subscribe>
     </form>
@@ -142,7 +144,9 @@ export function WorkspaceForm({ submit }: { submit: Submit }) {
       <Field label={t("goal")}>
         <textarea name="goal" rows={4} required />
       </Field>
-      <button className="primary">{t("create")}</button>
+      <Button variant="outline" className="primary">
+        {t("create")}
+      </Button>
     </form>
   );
 }
@@ -252,7 +256,9 @@ export function TaskForm({
           onChange={(e) => e.currentTarget.setCustomValidity("")}
         />
       </Field>
-      <button className="primary">{t("create")}</button>
+      <Button variant="outline" className="primary">
+        {t("create")}
+      </Button>
     </form>
   );
 }
@@ -636,9 +642,9 @@ export function EntityForm({
           {error}
         </p>
       )}
-      <button className="primary" disabled={readingDocuments}>
+      <Button variant="outline" className="primary" disabled={readingDocuments}>
         {t("register")}
-      </button>
+      </Button>
     </form>
   );
 }
@@ -678,7 +684,9 @@ export function PeerForm({ submit }: { submit: Submit }) {
           required
         />
       </Field>
-      <button className="primary">{t("addPeer")}</button>
+      <Button variant="outline" className="primary">
+        {t("addPeer")}
+      </Button>
     </form>
   );
 }
@@ -833,7 +841,9 @@ export function AssignForm({
           )}
         </fieldset>
       )}
-      <button className="primary">{t("delegate")}</button>
+      <Button variant="outline" className="primary">
+        {t("delegate")}
+      </Button>
     </form>
   );
 }
@@ -899,7 +909,9 @@ export function PublishForm({ data, submit }: { data: State; submit: Submit }) {
       <Field label={t("permissions")}>
         <input name="permissions" placeholder={t("commaSeparated")} />
       </Field>
-      <button className="primary">{t("publish")}</button>
+      <Button variant="outline" className="primary">
+        {t("publish")}
+      </Button>
     </form>
   );
 }

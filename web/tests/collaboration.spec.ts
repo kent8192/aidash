@@ -541,7 +541,7 @@ for (const viewport of [
   });
 }
 
-test("collaboration is the landing view, with two primary destinations and secondary settings", async ({
+test("conversation is the landing view, with contextual progress and account settings", async ({
   page,
 }) => {
   const { errors } = await setup(page);
@@ -549,16 +549,18 @@ test("collaboration is the landing view, with two primary destinations and secon
   await expect(
     page.getByRole("heading", { name: "# Research", exact: true }),
   ).toBeVisible();
-  const primary = page.locator(".collab-rail nav").first();
-  await expect(primary.getByRole("link")).toHaveCount(2);
+  await expect(page.locator(".collab-rail")).toHaveCount(0);
   await expect(
-    primary.getByRole("link", { name: "Collaboration", exact: true }),
+    page.getByRole("button", { name: "New request", exact: true }),
   ).toBeVisible();
   await expect(
-    primary.getByRole("link", { name: "Graph View", exact: true }),
+    page.getByRole("button", { name: "View in graph", exact: true }),
   ).toBeVisible();
+  await page.getByLabel("Account settings", { exact: true }).click();
   await expect(
-    page.locator(".collab-secondary").getByRole("link", { name: "Settings" }),
+    page
+      .locator(".intent-account-links")
+      .getByRole("button", { name: "Settings", exact: true }),
   ).toBeVisible();
   expect(errors).toEqual([]);
 });
@@ -619,6 +621,7 @@ test("preparing a channel does not invoke agent execution", async ({
 }) => {
   const { submissions, errors } = await setup(page);
   await page.goto("/");
+  await page.getByLabel("Account settings", { exact: true }).click();
   await page
     .getByRole("button", { name: "Prepare a channel", exact: true })
     .click();
@@ -659,7 +662,7 @@ test("graph renders with Cytoscape and offers current related channel first", as
   expect(errors).toEqual([]);
 });
 
-test("graph focus survives selection, links, reload, and history", async ({
+test("graph focus survives contextual selection, reload, and history", async ({
   page,
 }) => {
   const { errors } = await setup(page, { extraGraphAgent: true });
@@ -691,12 +694,6 @@ test("graph focus survives selection, links, reload, and history", async ({
   await expect(selector).toHaveValue(focused);
   await expect(page.locator(".collab-cytoscape canvas").first()).toBeVisible();
   expect(new URL(page.url()).searchParams.get("focus")).toBe(focused);
-  const graphLink = await page
-    .getByRole("link", { name: "Graph View", exact: true })
-    .getAttribute("href");
-  expect(new URL(graphLink!, page.url()).searchParams.get("focus")).toBe(
-    focused,
-  );
 
   await page.reload();
   await expect(selector).toHaveValue(focused);
@@ -927,7 +924,7 @@ test("local run details retain execution memory", async ({ page }) => {
   await page.locator(".collab-channel .collab-task").click();
   await page.getByText("Memory", { exact: true }).click();
   await expect(
-    page.locator("dialog details").filter({ hasText: "Memory" }),
+    page.getByRole("dialog").locator("details").filter({ hasText: "Memory" }),
   ).toContainText("Retained execution memory.");
   expect(errors).toEqual([]);
 });
@@ -1022,19 +1019,22 @@ test("run media picker follows the effective model route before uploads", async 
   expect(errors).toEqual([]);
 });
 
-test("the mobile channel toggle is absent outside Collaboration", async ({
+test("mobile history remains reachable from graph and settings", async ({
   page,
 }) => {
   await setup(page);
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.goto("/graph");
-  await expect(
-    page.getByRole("button", { name: "Channels", exact: true }),
-  ).toHaveCount(0);
-  await page.goto("/settings?view=agents");
-  await expect(
-    page.getByRole("button", { name: "Channels", exact: true }),
-  ).toHaveCount(0);
+  for (const url of ["/graph", "/settings?view=agents"]) {
+    await page.goto(url);
+    await page.getByRole("button", { name: "Channels", exact: true }).click();
+    await expect(
+      page.getByRole("link", { name: "# Research", exact: true }),
+    ).toBeVisible();
+    await page
+      .getByRole("button", { name: "Close history", exact: true })
+      .click();
+    await expect(page.locator(".intent-sidebar")).toBeHidden();
+  }
 });
 
 test("a same-length refreshed page follows a new latest message", async ({
@@ -1172,6 +1172,9 @@ test("channel controls scope run changes and persist approval responses", async 
   const { submissions, errors } = await setup(page, { approval: true });
   await page.goto("/");
   await page
+    .getByRole("button", { name: "Show channel status", exact: true })
+    .click();
+  await page
     .getByRole("button", { name: "Pause runs in this channel", exact: true })
     .click();
   await expect(
@@ -1188,6 +1191,7 @@ test("channel controls scope run changes and persist approval responses", async 
   await expect(
     page.getByRole("button", { name: "Pause runs in this channel" }),
   ).toBeEnabled();
+  await page.getByRole("button", { name: "Close", exact: true }).click();
   await page.getByRole("button", { name: "Approve", exact: true }).click();
   await expect(page.locator(".workspace-approval")).toHaveCount(0);
   expect(
@@ -1202,15 +1206,13 @@ test("search, notifications, thread navigation and persisted theme work", async 
   const { errors } = await setup(page);
   await page.goto("/");
   await page
-    .getByRole("searchbox", { name: "Search channels" })
+    .getByRole("searchbox", { name: "Search history" })
     .fill("next release");
   await expect(
-    page
-      .locator(".collab-channel-sidebar")
-      .getByRole("link", { name: "# Research" }),
+    page.locator(".intent-sidebar").getByRole("link", { name: "# Research" }),
   ).toHaveCount(0);
   await expect(page.getByRole("link", { name: "# Planning" })).toBeVisible();
-  await page.getByRole("searchbox", { name: "Search channels" }).fill("");
+  await page.getByRole("searchbox", { name: "Search history" }).fill("");
   await page
     .getByLabel("Requests awaiting your input", { exact: true })
     .click();
@@ -1232,11 +1234,17 @@ test("search, notifications, thread navigation and persisted theme work", async 
     "dark",
   );
   await page
-    .getByRole("button", { name: "Threads in this channel", exact: true })
+    .getByRole("button", { name: "Request actions", exact: true })
+    .click();
+  await page
+    .getByRole("menuitem", { name: "Threads in this channel", exact: true })
     .click();
   await expect(
     page.getByText("No threads in the loaded history."),
   ).toBeVisible();
+  await page
+    .getByRole("button", { name: "Show channel status", exact: true })
+    .click();
   await page
     .getByRole("button", { name: "Tasks and results", exact: true })
     .click();
@@ -1316,6 +1324,7 @@ test("workspace reference renders light, dark and thread layouts", async ({
   });
   await page.goto("/");
   await expect(page.locator(".workspace-approval")).toBeVisible();
+  await page.getByRole("button", { name: "状況を表示", exact: true }).click();
   await expect(
     page.locator(".workspace-mini-graph canvas").first(),
   ).toBeVisible();
@@ -1323,13 +1332,17 @@ test("workspace reference renders light, dark and thread layouts", async ({
   await page.locator(".workspace-status").screenshot({
     path: testInfo.outputPath("workspace-status.png"),
   });
+  await page.keyboard.press("Escape");
   await page.locator(".collab-composer").screenshot({
     path: testInfo.outputPath("workspace-composer.png"),
   });
   await page.getByLabel("アカウント設定", { exact: true }).click();
   await page.getByRole("button", { name: "ダークテーマ", exact: true }).click();
   await page.getByLabel("アカウント設定", { exact: true }).click();
-  await page.screenshot({ path: testInfo.outputPath("workspace-dark.png") });
+  await page.screenshot({
+    path: testInfo.outputPath("workspace-dark.png"),
+    animations: "disabled",
+  });
   await page
     .locator("#message-message-one")
     .getByRole("button", { name: "スレッドで返信" })
@@ -1350,7 +1363,7 @@ test("shared files can be inspected without leaving the workspace", async ({
 }) => {
   const { errors } = await setup(page, { messageAttachment: true });
   await page.goto("/");
-  await page.getByRole("button", { name: "Artifacts", exact: true }).click();
+  await page.getByRole("button", { name: "Files", exact: true }).click();
   const files = page.locator(".workspace-file-gallery");
   await expect(
     files.getByRole("button", { name: "Download attachment: evidence.txt" }),
@@ -1361,6 +1374,8 @@ test("shared files can be inspected without leaving the workspace", async ({
     dialog.getByRole("heading", { name: "evidence.txt" }),
   ).toBeVisible();
   await expect(dialog.locator("pre")).toHaveText("Source evidence");
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(1);
   await page.keyboard.press("Escape");
   await expect(dialog).toHaveCount(0);
   expect(errors).toEqual([]);
@@ -1559,6 +1574,9 @@ test("channel controls resume a validated failure delivery with an invalid Conte
     failureDeliveryRun: true,
   });
   await page.goto("/collaboration?channel=workspace-one");
+  await page
+    .getByRole("button", { name: "Show channel status", exact: true })
+    .click();
   const resume = page.getByRole("button", {
     name: "Resume runs in this channel",
     exact: true,

@@ -1,3 +1,4 @@
+import { Button } from "./components/ui/button";
 import { ReferenceName, PeerSelect } from "./record-view";
 import { disambiguateLabels } from "./display-labels";
 import { RecordView } from "./record-view";
@@ -88,14 +89,15 @@ export function PeerMappings({
       <Panel
         title={t("authPeerMappings")}
         action={
-          <button
+          <Button
+            variant="outline"
             onClick={() => {
               setError("");
               setEditing("new");
             }}
           >
             {t("authAddPeerMapping")}
-          </button>
+          </Button>
         }
       >
         <p className="auth-padding">{t("authPeerMappingHelp")}</p>
@@ -140,7 +142,8 @@ export function PeerMappings({
               </small>
             </div>
             <Badge value={mapping.enabled ? "authApproved" : "authDisabled"} />
-            <button
+            <Button
+              variant="outline"
               disabled={busy}
               onClick={() => {
                 setError("");
@@ -148,8 +151,9 @@ export function PeerMappings({
               }}
             >
               {t("authEditPeerMapping")}
-            </button>
-            <button
+            </Button>
+            <Button
+              variant="outline"
               disabled={busy}
               onClick={() =>
                 void save({
@@ -163,25 +167,27 @@ export function PeerMappings({
               }
             >
               {t(mapping.enabled ? "authDisableApproval" : "authApprove")}
-            </button>
+            </Button>
           </div>
         ))}
         <div className="auth-pagination">
-          <button
+          <Button
+            variant="outline"
             disabled={offset === 0 || mappings.isFetching}
             onClick={() => setOffset(Math.max(0, offset - PAGE_SIZE))}
           >
             {t("authPrevious")}
-          </button>
+          </Button>
           <span>
             {t("authPage")} {offset / PAGE_SIZE + 1}
           </span>
-          <button
+          <Button
+            variant="outline"
             disabled={!rows || rows.length < PAGE_SIZE || mappings.isFetching}
             onClick={() => setOffset(offset + PAGE_SIZE)}
           >
             {t("authNext")}
-          </button>
+          </Button>
         </div>
       </Panel>
       <Panel title={t("authPeerMappingHistory")}>
@@ -215,16 +221,18 @@ export function PeerMappings({
           </details>
         ))}
         <div className="auth-pagination">
-          <button
+          <Button
+            variant="outline"
             disabled={cursors.length === 1 || history.isFetching}
             onClick={() => setCursors(cursors.slice(0, -1))}
           >
             {t("authPrevious")}
-          </button>
+          </Button>
           <span>
             {t("authPage")} {cursors.length}
           </span>
-          <button
+          <Button
+            variant="outline"
             disabled={
               !revisions || revisions.length < PAGE_SIZE || history.isFetching
             }
@@ -234,7 +242,7 @@ export function PeerMappings({
             }}
           >
             {t("authNext")}
-          </button>
+          </Button>
         </div>
       </Panel>
       {editing && (
@@ -321,7 +329,9 @@ export function PeerMappings({
                 {t(error)}
               </p>
             )}
-            <button disabled={busy}>{t("authSavePeerMapping")}</button>
+            <Button variant="outline" disabled={busy}>
+              {t("authSavePeerMapping")}
+            </Button>
           </form>
         </Modal>
       )}

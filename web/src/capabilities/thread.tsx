@@ -1,3 +1,4 @@
+import { Button } from "../components/ui/button";
 import { useRef, useState } from "react";
 import {
   useInfiniteQuery,
@@ -92,14 +93,19 @@ function OperationCard({
       )}
       <div className="core-inline">
         {value.next_offset !== null && value.next_offset !== undefined && (
-          <button type="button" onClick={() => setOffset(value.next_offset!)}>
+          <Button
+            variant="outline"
+            type="button"
+            onClick={() => setOffset(value.next_offset!)}
+          >
             {ja ? "出力の続き" : "More output"}
-          </button>
+          </Button>
         )}
         {["prepared", "submitted", "running", "cancelling"].includes(
           value.status,
         ) && (
-          <button
+          <Button
+            variant="outline"
             type="button"
             onClick={async () => {
               try {
@@ -116,12 +122,16 @@ function OperationCard({
             }}
           >
             {ja ? "実行を停止" : "Stop execution"}
-          </button>
+          </Button>
         )}
         {value.session_id && (
-          <button type="button" onClick={() => onSession(value.session_id!)}>
+          <Button
+            variant="outline"
+            type="button"
+            onClick={() => onSession(value.session_id!)}
+          >
             {ja ? "この Python セッションを使用" : "Use this Python session"}
-          </button>
+          </Button>
         )}
       </div>
       {value.termination_confirmed && (
@@ -304,7 +314,8 @@ function FileOperations({
             value={query}
             onChange={(e) => setQuery(e.target.value)}
           />
-          <button
+          <Button
+            variant="outline"
             type="button"
             disabled={busy}
             onClick={() =>
@@ -320,7 +331,7 @@ function FileOperations({
             }
           >
             {ja ? "検索" : "Search"}
-          </button>
+          </Button>
         </div>
         {search && (
           <div>
@@ -341,7 +352,8 @@ function FileOperations({
               </p>
             ))}
             {search.next_cursor && (
-              <button
+              <Button
+                variant="outline"
                 type="button"
                 onClick={() =>
                   void act(async () =>
@@ -357,7 +369,7 @@ function FileOperations({
                 }
               >
                 {ja ? "検索の続き" : "More matches"}
-              </button>
+              </Button>
             )}
           </div>
         )}
@@ -394,13 +406,15 @@ function FileOperations({
                     </small>
                   </td>
                   <td>
-                    <button
+                    <Button
+                      variant="outline"
                       type="button"
                       onClick={() => void act(() => readFile(f))}
                     >
                       {ja ? "読む" : "Read"}
-                    </button>
-                    <button
+                    </Button>
+                    <Button
+                      variant="outline"
                       type="button"
                       onClick={() =>
                         void act(() =>
@@ -411,9 +425,10 @@ function FileOperations({
                       }
                     >
                       {ja ? "保存" : "Download"}
-                    </button>
+                    </Button>
                     {f.scope !== "working" && (
-                      <button
+                      <Button
+                        variant="outline"
                         type="button"
                         onClick={() =>
                           void act(() =>
@@ -430,7 +445,7 @@ function FileOperations({
                         }
                       >
                         {ja ? "作業用にコピー" : "Copy to working files"}
-                      </button>
+                      </Button>
                     )}
                   </td>
                 </tr>
@@ -442,14 +457,15 @@ function FileOperations({
           <>
             <pre>{read.content}</pre>
             {read.next_offset != null && read.file && (
-              <button
+              <Button
+                variant="outline"
                 type="button"
                 onClick={() =>
                   void act(() => readFile(read.file!, read.next_offset))
                 }
               >
                 {ja ? "本文の続き" : "Read more"}
-              </button>
+              </Button>
             )}
           </>
         )}
@@ -520,14 +536,16 @@ function FileOperations({
               </select>
             </Field>
             {recipients.hasNextPage && (
-              <button
+              <Button
+                variant="outline"
                 type="button"
                 onClick={() => void recipients.fetchNextPage()}
               >
                 {ja ? "共有先をさらに表示" : "More recipients"}
-              </button>
+              </Button>
             )}
-            <button
+            <Button
+              variant="outline"
               type="button"
               disabled={!recipient || busy}
               onClick={() =>
@@ -548,7 +566,7 @@ function FileOperations({
               }
             >
               {ja ? "この内容を送信" : "Send this snapshot"}
-            </button>
+            </Button>
           </fieldset>
         )}
         {transfer && (
@@ -572,7 +590,8 @@ function FileOperations({
               <p role="alert">{transferQuery.error.message}</p>
             )}
             {!transfer.receipt && shareNode !== data.node.id && (
-              <button
+              <Button
+                variant="outline"
                 type="button"
                 onClick={() =>
                   void act(async () => {
@@ -586,7 +605,7 @@ function FileOperations({
                 }
               >
                 {ja ? "同じ転送を照会・再開" : "Reconcile this transfer"}
-              </button>
+              </Button>
             )}
           </article>
         )}
@@ -606,13 +625,14 @@ function FileOperations({
             spellCheck={false}
           />
         </Field>
-        <button
+        <Button
+          variant="outline"
           type="button"
           disabled={busy || !code.trim()}
           onClick={() => void act(() => runCode())}
         >
           {ja ? "実行" : "Execute"}
-        </button>
+        </Button>
         {reset && (
           <article>
             <p className="core-warning">
@@ -621,7 +641,8 @@ function FileOperations({
                 : "Python memory was reset. Variables were not restored. Review the saved files before running again."}
             </p>
             <small>{reset.reset_reason}</small>
-            <button
+            <Button
+              variant="outline"
               type="button"
               disabled={busy}
               onClick={() => void act(() => runCode(reset.session_id))}
@@ -629,7 +650,7 @@ function FileOperations({
               {ja
                 ? "リセットを確認してこのコードを実行"
                 : "Acknowledge reset and execute this code"}
-            </button>
+            </Button>
           </article>
         )}
         {history.isError && <p role="alert">{history.error.message}</p>}
@@ -644,9 +665,13 @@ function FileOperations({
             />
           ))}
         {history.hasNextPage && (
-          <button type="button" onClick={() => void history.fetchNextPage()}>
+          <Button
+            variant="outline"
+            type="button"
+            onClick={() => void history.fetchNextPage()}
+          >
             {ja ? "さらに表示" : "Load more"}
-          </button>
+          </Button>
         )}
       </details>
       <details className="core-panel">
@@ -663,7 +688,8 @@ function FileOperations({
             spellCheck={false}
           />
         </Field>
-        <button
+        <Button
+          variant="outline"
           type="button"
           disabled={!patch.trim()}
           onClick={() => {
@@ -683,7 +709,7 @@ function FileOperations({
           }}
         >
           {ja ? "対象と変更を確認" : "Review affected files"}
-        </button>
+        </Button>
         {patchPreview && (
           <>
             <p>
@@ -703,7 +729,8 @@ function FileOperations({
                 ),
               )}
             </ul>
-            <button
+            <Button
+              variant="outline"
               type="button"
               disabled={busy || patchPreview.revision !== area.revision}
               onClick={() =>
@@ -717,7 +744,7 @@ function FileOperations({
               }
             >
               {ja ? "この変更を適用" : "Apply these changes"}
-            </button>
+            </Button>
           </>
         )}
       </details>
@@ -871,7 +898,8 @@ export function ThreadCapabilities({
         />
       </Field>
       <div className="core-inline">
-        <button
+        <Button
+          variant="outline"
           type="button"
           disabled={busy || !prompt.trim() || !target}
           onClick={() =>
@@ -905,10 +933,11 @@ export function ThreadCapabilities({
             : ja
               ? "作業を開始"
               : "Start work"}
-        </button>
+        </Button>
         {area && session.data?.active_run_id && (
           <>
-            <button
+            <Button
+              variant="outline"
               type="button"
               disabled={busy || !prompt.trim()}
               onClick={() =>
@@ -935,8 +964,9 @@ export function ThreadCapabilities({
               }
             >
               {ja ? "実行中の Run に指示" : "Steer active Run"}
-            </button>
-            <button
+            </Button>
+            <Button
+              variant="outline"
               type="button"
               onClick={() =>
                 void act(() =>
@@ -947,7 +977,7 @@ export function ThreadCapabilities({
               }
             >
               {ja ? "Run を停止" : "Stop Run"}
-            </button>
+            </Button>
           </>
         )}
       </div>
@@ -1066,7 +1096,8 @@ function ThreadDeletion({
         </select>
       </Field>
       {choice === "irreversible" && !confirmed && areas.length > 0 ? (
-        <button
+        <Button
+          variant="outline"
           type="button"
           disabled={busy || !loaded}
           onClick={async () => {
@@ -1088,7 +1119,7 @@ function ThreadDeletion({
           }}
         >
           {ja ? "完全削除の対象を確認" : "Review irreversible deletion"}
-        </button>
+        </Button>
       ) : (
         <>
           <p className="core-warning">
@@ -1100,7 +1131,8 @@ function ThreadDeletion({
                 ? "このスレッドを閉じて削除します。"
                 : "This thread will be closed and deleted."}
           </p>
-          <button
+          <Button
+            variant="outline"
             type="button"
             disabled={busy || !loaded}
             onClick={async () => {
@@ -1133,7 +1165,7 @@ function ThreadDeletion({
             {ja
               ? "この選択でスレッドを削除"
               : "Delete thread with these choices"}
-          </button>
+          </Button>
         </>
       )}
       {error && <p role="alert">{error}</p>}

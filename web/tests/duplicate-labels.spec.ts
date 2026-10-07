@@ -99,12 +99,14 @@ test("transaction composer keeps the coordinator and uses peer references separa
             id: "task-a",
             workspace_id: "local-workspace",
             title: "Review",
+            status: "RUNNING",
             revision: 1,
           },
           {
             id: "task-b",
             workspace_id: "local-workspace",
             title: "Review",
+            status: "RUNNING",
             revision: 2,
           },
         ],
@@ -117,7 +119,10 @@ test("transaction composer keeps the coordinator and uses peer references separa
   );
   await page.goto("/transactions");
   await page.getByRole("button", { name: "Create transaction" }).click();
-  const dialog = page.getByRole("dialog");
+  const dialog = page.getByRole("dialog", {
+    name: "Create transaction",
+    exact: true,
+  });
   await expect(dialog.getByLabel("Node", { exact: true })).toBeDisabled();
   await dialog
     .getByLabel("Operation", { exact: true })

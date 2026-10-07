@@ -1,3 +1,5 @@
+import { observeGraphTheme } from "./graph-theme";
+import { Button } from "../components/ui/button";
 import { useEffect, useId, useRef, useState } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import cytoscape, {
@@ -347,6 +349,7 @@ export function MeshCanvas({
       ],
     });
     instance.current = cy;
+    const stopTheme = observeGraphTheme(cy, true);
     let frame = 0;
     const update = () => {
       if (frame) return;
@@ -442,6 +445,7 @@ export function MeshCanvas({
       cancelAnimationFrame(frame);
       observer.disconnect();
       runningLayout.current?.stop();
+      stopTheme();
       cy.destroy();
       instance.current = null;
     };
@@ -572,7 +576,8 @@ export function MeshCanvas({
                 ? `${copy.sharedData} · ${workspace ? label(workspace) : region.workspaceId} · ${copy.homeNode}: ${region.nodeId}`
                 : `${copy.configurationReferences} · ${region.nodeId}`;
           return region.kind === "execution" ? (
-            <button
+            <Button
+              variant="outline"
               type="button"
               className="mesh-region-label mesh-region-execution-label"
               data-mesh-region={region.id}
@@ -584,7 +589,7 @@ export function MeshCanvas({
               title={heading}
             >
               {heading}
-            </button>
+            </Button>
           ) : (
             <span
               className="mesh-region-label"
@@ -601,7 +606,8 @@ export function MeshCanvas({
           const point = camera.points[node.id];
           if (!point) return null;
           return (
-            <button
+            <Button
+              variant="outline"
               type="button"
               key={node.id}
               data-mesh-node={node.id}
@@ -633,11 +639,12 @@ export function MeshCanvas({
               {!node.available && (
                 <span className="mesh-node-kind">{copy.missing}</span>
               )}
-            </button>
+            </Button>
           );
         })}
       </div>
-      <button
+      <Button
+        variant="outline"
         type="button"
         className="mesh-minimap"
         aria-label={copy.minimap}
@@ -672,25 +679,28 @@ export function MeshCanvas({
         }}
       >
         <canvas ref={mini} width={132} height={92} />
-      </button>
+      </Button>
       <div className="mesh-camera" role="group" aria-label={copy.camera}>
-        <button
+        <Button
+          variant="outline"
           type="button"
           aria-label={copy.zoomIn}
           title={copy.zoomIn}
           onClick={() => zoom(1.25)}
         >
           <Plus size={16} />
-        </button>
-        <button
+        </Button>
+        <Button
+          variant="outline"
           type="button"
           aria-label={copy.zoomOut}
           title={copy.zoomOut}
           onClick={() => zoom(0.8)}
         >
           <Minus size={16} />
-        </button>
-        <button
+        </Button>
+        <Button
+          variant="outline"
           type="button"
           aria-label={copy.fit}
           className="graph-fit-button"
@@ -703,8 +713,9 @@ export function MeshCanvas({
         >
           <Scan size={16} aria-hidden="true" />
           <span>{copy.fit}</span>
-        </button>
-        <button
+        </Button>
+        <Button
+          variant="outline"
           type="button"
           aria-label={copy.center}
           title={copy.center}
@@ -717,8 +728,9 @@ export function MeshCanvas({
           }}
         >
           <Crosshair size={16} />
-        </button>
-        <button
+        </Button>
+        <Button
+          variant="outline"
           type="button"
           aria-label={copy.fullscreen}
           title={copy.fullscreen}
@@ -733,7 +745,7 @@ export function MeshCanvas({
           }}
         >
           <Maximize size={16} />
-        </button>
+        </Button>
       </div>
       <span id={fitDescription} className="graph-fit-status" role="status">
         {fit.available ? "" : copy.fitUnavailable}

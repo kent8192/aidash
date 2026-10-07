@@ -1,3 +1,4 @@
+import { Button } from "../components/ui/button";
 import { useState } from "react";
 import { useInfiniteQuery, useQueryClient } from "@tanstack/react-query";
 import { apiFetch } from "../transport";
@@ -68,7 +69,8 @@ export function AreaLifecycle({ area }: { area: Managed }) {
       )}
       {["recoverable", "retained"].includes(area.state) && area.snapshot_id ? (
         <>
-          <button
+          <Button
+            variant="outline"
             type="button"
             disabled={busy}
             onClick={() =>
@@ -89,11 +91,12 @@ export function AreaLifecycle({ area }: { area: Managed }) {
             }
           >
             {ja ? "新しいスレッドへ復元" : "Restore into a new thread"}
-          </button>
+          </Button>
           <Field label={ja ? "復元先スレッド ID" : "Destination thread ID"}>
             <input value={thread} onChange={(e) => setThread(e.target.value)} />
           </Field>
-          <button
+          <Button
+            variant="outline"
             type="button"
             disabled={busy || !thread.trim()}
             onClick={() =>
@@ -108,7 +111,7 @@ export function AreaLifecycle({ area }: { area: Managed }) {
             }
           >
             {ja ? "ファイルを復元" : "Restore files"}
-          </button>
+          </Button>
         </>
       ) : null}
       {["active", "retained", "recoverable"].includes(area.state) && (
@@ -135,7 +138,8 @@ export function AreaLifecycle({ area }: { area: Managed }) {
           </Field>
           {choice === "irreversible" &&
           (!confirmation || confirmation.revision !== area.revision) ? (
-            <button
+            <Button
+              variant="outline"
               type="button"
               disabled={busy}
               onClick={() =>
@@ -151,7 +155,7 @@ export function AreaLifecycle({ area }: { area: Managed }) {
               }
             >
               {ja ? "削除内容を確認" : "Review deletion"}
-            </button>
+            </Button>
           ) : (
             <>
               {choice === "irreversible" && (
@@ -161,7 +165,8 @@ export function AreaLifecycle({ area }: { area: Managed }) {
                     : `Permanently delete ${area.files} files for ${area.agent_id}. No recovery copy will remain.`}
                 </p>
               )}
-              <button
+              <Button
+                variant="outline"
                 type="button"
                 disabled={busy}
                 onClick={() =>
@@ -182,7 +187,7 @@ export function AreaLifecycle({ area }: { area: Managed }) {
                   : ja
                     ? "この選択で整理"
                     : "Apply retention choice"}
-              </button>
+              </Button>
             </>
           )}
         </fieldset>
@@ -195,7 +200,8 @@ export function AreaLifecycle({ area }: { area: Managed }) {
               : "Cleanup is being reconciled. Files remain unavailable until it completes."}
           </p>
           {area.cleanup_operation_id && (
-            <button
+            <Button
+              variant="outline"
               type="button"
               disabled={busy}
               onClick={() =>
@@ -205,7 +211,7 @@ export function AreaLifecycle({ area }: { area: Managed }) {
               }
             >
               {ja ? "整理処理を再確認" : "Reconcile cleanup"}
-            </button>
+            </Button>
           )}
         </>
       )}
@@ -213,9 +219,12 @@ export function AreaLifecycle({ area }: { area: Managed }) {
     </article>
   );
 }
-export function WorkingFileSettings() {
+export function WorkingFileSettings({
+  workspace,
+}: { workspace?: string } = {}) {
   const { locale } = useI18n();
   const ja = locale === "ja-JP";
+  const [allWorkspaces, setAllWorkspaces] = useState(false);
   const query = useInfiniteQuery({
     queryKey: ["core-managed"],
     initialPageParam: "",
@@ -237,19 +246,39 @@ export function WorkingFileSettings() {
             ? "作業の完了やスレッドの削除だけではファイルは消えません。ここで保存、復元可能な整理、完全削除を選べます。"
             : "Files remain after work ends or a thread is deleted. Choose retention, recoverable cleanup or irreversible deletion here."}
         </p>
+        {workspace && (
+          <label className="field">
+            <input
+              type="checkbox"
+              checked={allWorkspaces}
+              onChange={(event) => setAllWorkspaces(event.target.checked)}
+            />
+            {ja
+              ? "すべての依頼の作業ファイルを表示"
+              : "Show working files from all requests"}
+          </label>
+        )}
         {query.isError && <p role="alert">{query.error.message}</p>}
         {query.isPending && (
           <p role="status">{ja ? "読み込み中…" : "Loading…"}</p>
         )}
         {query.data?.pages
           .flatMap((p) => p.items)
+          .filter(
+            (area) =>
+              allWorkspaces || !workspace || area.workspace_id === workspace,
+          )
           .map((area) => (
             <AreaLifecycle key={area.area_id} area={area} />
           ))}
         {query.hasNextPage && (
-          <button type="button" onClick={() => void query.fetchNextPage()}>
+          <Button
+            variant="outline"
+            type="button"
+            onClick={() => void query.fetchNextPage()}
+          >
             {ja ? "さらに表示" : "Load more"}
-          </button>
+          </Button>
         )}
       </section>
       <AgentCapabilities />

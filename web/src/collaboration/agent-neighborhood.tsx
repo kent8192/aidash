@@ -1,3 +1,4 @@
+import { Button } from "../components/ui/button";
 import { ReferenceName } from "../record-view";
 import { lazy, Suspense, useState } from "react";
 import type { State, Discovery, Run } from "../types";
@@ -124,27 +125,33 @@ export function Graph({
       <header className="collab-channel-heading">
         <h1>{copy.graph}</h1>
         {channel && (
-          <button type="button" onClick={() => visitChannel(channel)}>
+          <Button
+            variant="outline"
+            type="button"
+            onClick={() => visitChannel(channel)}
+          >
             {copy.home}
-          </button>
+          </Button>
         )}
       </header>
       <div className="collab-tabs" role="group" aria-label={copy.graphMode}>
-        <button
+        <Button
+          variant="outline"
           type="button"
           aria-pressed={mode === "relationships"}
           onClick={() => setMode("relationships")}
         >
           {copy.relationships}
-        </button>
+        </Button>
         {data.access.kind === "operator" && (
-          <button
+          <Button
+            variant="outline"
             type="button"
             aria-pressed={mode === "topology"}
             onClick={() => setMode("topology")}
           >
             {copy.topology}
-          </button>
+          </Button>
         )}
       </div>
       {mode === "topology" && data.access.kind === "operator" ? (
@@ -152,7 +159,8 @@ export function Graph({
           <MeshView data={data} discovery={discovery} runs={runs} />
           <div className="collab-run-grid">
             {runs.map((item) => (
-              <button
+              <Button
+                variant="outline"
                 type="button"
                 className="collab-task"
                 key={`${item.node}:${item.run.id}`}
@@ -170,7 +178,7 @@ export function Graph({
                 <small>
                   <ReferenceName id={item.node} />
                 </small>
-              </button>
+              </Button>
             ))}
           </div>
         </>
@@ -205,20 +213,22 @@ export function Graph({
           ) : (
             <>
               <div className="collab-tabs" role="group" aria-label={copy.graph}>
-                <button
+                <Button
+                  variant="outline"
                   type="button"
                   aria-pressed={view === "graph"}
                   onClick={() => setView("graph")}
                 >
                   {copy.graphCanvas}
-                </button>
-                <button
+                </Button>
+                <Button
+                  variant="outline"
                   type="button"
                   aria-pressed={view === "list"}
                   onClick={() => setView("list")}
                 >
                   {copy.graphList}
-                </button>
+                </Button>
               </div>
               <fieldset className="agent-graph-filters">
                 <legend>{copy.filters}</legend>
@@ -278,12 +288,13 @@ export function Graph({
                           {graph.nodes.map((node) => (
                             <tr key={node.id}>
                               <th scope="row">
-                                <button
+                                <Button
+                                  variant="outline"
                                   type="button"
                                   onClick={() => setSelectedId(node.id)}
                                 >
                                   {label(node)}
-                                </button>
+                                </Button>
                                 {!node.available && (
                                   <small>{copy.unavailable}</small>
                                 )}
@@ -326,14 +337,16 @@ export function Graph({
                   <Badge value={selected.kind} />
                   {selected.status && <Badge value={selected.status} />}
                   <div className="button-row">
-                    <button
+                    <Button
+                      variant="outline"
                       type="button"
                       disabled={!selected.available}
                       onClick={() => inspect(selected)}
                     >
                       {copy.details}
-                    </button>
-                    <button
+                    </Button>
+                    <Button
+                      variant="outline"
                       type="button"
                       disabled={
                         !selected.available ||
@@ -345,21 +358,22 @@ export function Graph({
                       }
                     >
                       {copy.expand}
-                    </button>
+                    </Button>
                   </div>
                   <h3>{copy.relatedChannels}</h3>
                   {related.length === 0 ? (
                     <p>{copy.noRelated}</p>
                   ) : (
                     related.map((workspace) => (
-                      <button
+                      <Button
+                        variant="outline"
                         type="button"
                         className="collab-channel-link"
                         key={workspace.id}
                         onClick={() => visitChannel(workspace.id)}
                       >
                         # {workspace.title}
-                      </button>
+                      </Button>
                     ))
                   )}
                 </aside>

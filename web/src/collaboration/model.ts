@@ -13,6 +13,21 @@ export const settingsSections = [
   "marketplace",
   "node",
 ] as const;
+/** Destinations with their own documented surface; other views live in context. */
+export const visibleSettingsSections = [
+  "node",
+  "agents",
+  "registry",
+  "clusters",
+  "deployment",
+  "marketplace",
+] as const;
+export type IntegratedView =
+  | "files"
+  | "progress"
+  | "generation"
+  | "authorization"
+  | "semantic";
 export type Destination =
   | "collaboration"
   | "graph"
@@ -26,6 +41,7 @@ export type Location = {
   channel: string;
   focus: string;
   legacy: boolean;
+  integration?: IntegratedView;
 };
 export function parseQuery(search: string): Record<string, string> {
   return Object.fromEntries(new URLSearchParams(search));
@@ -50,6 +66,38 @@ export function resolveLocation(pathname: string, search = ""): Location {
     focus: params.focus || "",
     legacy: false,
   };
+  const previous = name === "settings" ? params.view : name;
+  const integrations: Record<
+    string,
+    { section: Destination; integration: IntegratedView }
+  > = {
+    workingFiles: { section: "collaboration", integration: "files" },
+    generation: { section: "creator", integration: "generation" },
+    authorization: { section: "trust", integration: "authorization" },
+    semantic: { section: "settings", integration: "semantic" },
+    transactions: { section: "collaboration", integration: "progress" },
+  };
+  if (previous && integrations[previous]) {
+    const target = integrations[previous];
+    // Already canonical Creator/Trust URLs use the same contextual view value.
+    return {
+      ...common,
+      ...target,
+      settings: target.integration === "semantic" ? "registry" : "node",
+      legacy: true,
+    };
+  }
+  const integration =
+    (name === "collaboration" && ["files", "progress"].includes(params.view)) ||
+    (name === "creator" && params.view === "generation") ||
+    (name === "trust" && params.view === "authorization") ||
+    (name === "settings" &&
+      params.view === "registry" &&
+      params.focus === "semantic")
+      ? ((params.focus === "semantic"
+          ? "semantic"
+          : params.view) as IntegratedView)
+      : undefined;
   if (
     name === "collaboration" ||
     name === "graph" ||
@@ -57,7 +105,7 @@ export function resolveLocation(pathname: string, search = ""): Location {
     name === "trust" ||
     name === "settings"
   ) {
-    return { ...common, section: name };
+    return { ...common, section: name, integration };
   }
   if (name === "mesh") return { ...common, section: "graph", legacy: true };
   if (settingsSections.includes(name as SettingsSection)) {
@@ -72,19 +120,29 @@ export function resolveLocation(pathname: string, search = ""): Location {
 }
 export function destination(
   section: Destination,
-  context: { channel?: string; focus?: string; settings?: string } = {},
+  context: {
+    channel?: string;
+    focus?: string;
+    settings?: string;
+    integration?: IntegratedView;
+  } = {},
 ): string {
   return `/${section}${stringifyQuery({
     channel: context.channel,
     focus:
-      section === "graph" || section === "creator" || section === "trust"
+      section === "graph" ||
+      section === "creator" ||
+      section === "trust" ||
+      context.integration === "semantic"
         ? context.focus
         : undefined,
     view:
-      section === "settings" &&
-      settingsSections.includes(context.settings as SettingsSection)
-        ? context.settings
-        : undefined,
+      context.integration && context.integration !== "semantic"
+        ? context.integration
+        : section === "settings" &&
+            settingsSections.includes(context.settings as SettingsSection)
+          ? context.settings
+          : undefined,
   })}`;
 }
 export type WorkspaceRef = { id: string; title: string };

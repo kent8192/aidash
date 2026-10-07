@@ -1,3 +1,4 @@
+import { Button } from "../components/ui/button";
 import { useEffect, useState } from "react";
 import { useInfiniteQuery } from "@tanstack/react-query";
 import { Download, Eye, FileText } from "lucide-react";
@@ -120,7 +121,8 @@ export function AttachmentCard({
   return (
     <>
       <div className="workspace-file-card">
-        <button
+        <Button
+          variant="outline"
           type="button"
           aria-label={`${copy.downloadAttachment}: ${attachment.filename}`}
           disabled={downloading}
@@ -135,15 +137,16 @@ export function AttachmentCard({
             </small>
           </span>
           <Download size={13} />
-        </button>
+        </Button>
         {previewable && (
-          <button
+          <Button
+            variant="outline"
             type="button"
             aria-label={`${locale === "ja-JP" ? "プレビュー" : "Preview"}: ${attachment.filename}`}
             onClick={() => setPreview(true)}
           >
             <Eye size={14} />
-          </button>
+          </Button>
         )}
       </div>
       {error && (
@@ -212,13 +215,14 @@ export function ChannelFiles({ workspace }: { workspace: string }) {
             <p className="muted">{copy.empty}</p>
           )}
           {query.hasNextPage && (
-            <button
+            <Button
+              variant="outline"
               type="button"
               disabled={query.isFetchingNextPage}
               onClick={() => void query.fetchNextPage()}
             >
               {threadCopy[locale].older}
-            </button>
+            </Button>
           )}
         </>
       )}

@@ -1,3 +1,4 @@
+import { Button } from "../components/ui/button";
 import { useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Check, ShieldCheck, X } from "lucide-react";
@@ -70,7 +71,8 @@ export function ChannelRequests({
                 <small>{words.approval}</small>
               </div>
               <div className="workspace-approval-actions">
-                <button
+                <Button
+                  variant="outline"
                   type="button"
                   disabled={busy !== null}
                   className="approval-confirm"
@@ -78,27 +80,30 @@ export function ChannelRequests({
                 >
                   <Check size={13} />
                   {words.approve}
-                </button>
-                <button
+                </Button>
+                <Button
+                  variant="outline"
                   type="button"
                   disabled={busy !== null}
                   onClick={() => open({ kind: "human", ...item })}
                 >
                   {words.answer}
-                </button>
-                <button
+                </Button>
+                <Button
+                  variant="outline"
                   type="button"
                   disabled={busy !== null}
                   onClick={() => void answer(item, false)}
                 >
                   <X size={12} />
                   {words.reject}
-                </button>
+                </Button>
               </div>
             </div>
           </article>
         ) : (
-          <button
+          <Button
+            variant="outline"
             key={`${item.node}:${item.request.id}`}
             type="button"
             className="request-card"
@@ -109,7 +114,7 @@ export function ChannelRequests({
               <strong>{item.request.prompt}</strong>
               <small>{copy.answer}</small>
             </span>
-          </button>
+          </Button>
         ),
       )}
       {error && (

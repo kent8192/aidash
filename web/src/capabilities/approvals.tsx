@@ -1,3 +1,4 @@
+import { Button } from "../components/ui/button";
 import { useState } from "react";
 import { useInfiniteQuery, useQueryClient } from "@tanstack/react-query";
 import { apiFetch } from "../transport";
@@ -89,7 +90,8 @@ function Card({ item }: { item: Approval }) {
             </Field>
           )}
           <div className="core-inline">
-            <button
+            <Button
+              variant="outline"
               type="button"
               disabled={busy}
               onClick={() => void action(runGrant ? "allow_run" : "allow_once")}
@@ -101,25 +103,27 @@ function Card({ item }: { item: Approval }) {
                 : ja
                   ? "今回だけ許可"
                   : "Allow once"}
-            </button>
-            <button
+            </Button>
+            <Button
+              variant="outline"
               type="button"
               disabled={busy}
               onClick={() => void action("deny")}
             >
               {ja ? "拒否" : "Deny"}
-            </button>
+            </Button>
           </div>
         </>
       )}
       {["active", "approved", "pending", "attempted"].includes(item.state) && (
-        <button
+        <Button
+          variant="outline"
           type="button"
           disabled={busy}
           onClick={() => void action("revoke")}
         >
           {ja ? "許可を取り消す" : "Revoke"}
-        </button>
+        </Button>
       )}
       {error && <p role="alert">{error}</p>}
     </article>
@@ -157,9 +161,13 @@ export function CapabilityApprovals({ area }: { area?: string }) {
         <Card key={item.id} item={item} />
       ))}
       {query.hasNextPage && (
-        <button type="button" onClick={() => void query.fetchNextPage()}>
+        <Button
+          variant="outline"
+          type="button"
+          onClick={() => void query.fetchNextPage()}
+        >
           {ja ? "さらに表示" : "Load more"}
-        </button>
+        </Button>
       )}
     </details>
   );

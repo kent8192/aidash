@@ -1,3 +1,4 @@
+import { Button } from "../components/ui/button";
 import { RemoteMemoryProvenance, RemoteRunManagement } from "./remote-memory";
 import { RemoteExecutions } from "./remote-executions";
 import { ReferenceName } from "../record-view";
@@ -240,7 +241,9 @@ export function OperationsDialog({
                   <Field label={t("answer")}>
                     <textarea name="answer" rows={5} required />
                   </Field>
-                  <button className="primary">{copy.send}</button>
+                  <Button variant="outline" className="primary">
+                    {copy.send}
+                  </Button>
                 </form>
               ) : (
                 <p role="status">{copy.unavailable}</p>
@@ -260,27 +263,30 @@ export function OperationsDialog({
                     <dt>{t("revision")}</dt>
                     <dd>{task.revision}</dd>
                   </dl>
-                  <button
+                  <Button
+                    variant="outline"
                     type="button"
                     onClick={() => visitChannel(task.workspace_id)}
                   >
                     {copy.channelLink}
-                  </button>
+                  </Button>
                   {task.status === "OPEN" && (
                     <div className="button-row">
-                      <button
+                      <Button
+                        variant="outline"
                         type="button"
                         onClick={() => open({ kind: "assign", task })}
                       >
                         {t("delegate")}
-                      </button>
+                      </Button>
                       {data.access.kind === "subject" && (
-                        <button
+                        <Button
+                          variant="outline"
                           type="button"
                           onClick={() => open({ kind: "generate", task })}
                         >
                           {t("generationAssign")}
-                        </button>
+                        </Button>
                       )}
                     </div>
                   )}
@@ -302,7 +308,9 @@ export function OperationsDialog({
                       <Field label={t("abandonReason")}>
                         <textarea required name="reason" />
                       </Field>
-                      <button className="danger">{t("abandonTask")}</button>
+                      <Button variant="outline" className="danger">
+                        {t("abandonTask")}
+                      </Button>
                       <p className="muted">{t("abandonHelp")}</p>
                     </form>
                   )}
@@ -313,7 +321,8 @@ export function OperationsDialog({
                         run.home_node === data.node.id,
                     )
                     .map((run) => (
-                      <button
+                      <Button
+                        variant="outline"
                         type="button"
                         className="collab-task"
                         key={run.id}
@@ -326,7 +335,7 @@ export function OperationsDialog({
                           id: run.agent_id,
                           version: run.agent_version,
                         })}
-                      </button>
+                      </Button>
                     ))}
                   {(mesh?.nodes ?? []).flatMap((node) =>
                     node.runs
@@ -336,7 +345,8 @@ export function OperationsDialog({
                           run.home_node === data.node.id,
                       )
                       .map((run) => (
-                        <button
+                        <Button
+                          variant="outline"
                           type="button"
                           className="collab-task"
                           key={`${node.node_id}:${run.id}`}
@@ -350,7 +360,7 @@ export function OperationsDialog({
                             version: run.agent_version,
                           })}{" "}
                           · <ReferenceName id={node.node_id} />
-                        </button>
+                        </Button>
                       )),
                   )}
                   <details>
@@ -373,7 +383,8 @@ export function OperationsDialog({
                 <h2>{local(d.package.manifest.entity.name)}</h2>
                 <p>{local(d.package.manifest.entity.description)}</p>
                 <RecordView value={d.package.manifest} />
-                <button
+                <Button
+                  variant="outline"
                   type="button"
                   className="primary"
                   onClick={() =>
@@ -386,7 +397,7 @@ export function OperationsDialog({
                   }
                 >
                   {t("install")}
-                </button>
+                </Button>
               </>
             )}
           </>
@@ -489,9 +500,13 @@ function RunPanel({
           <RemoteMemoryProvenance url={`/api/runs/${id}/semantic`} />
         )}
       {run.home_node === data.node.id && (
-        <button type="button" onClick={() => visitChannel(run.workspace_id)}>
+        <Button
+          variant="outline"
+          type="button"
+          onClick={() => visitChannel(run.workspace_id)}
+        >
           {copy.channelLink}
-        </button>
+        </Button>
       )}
       {local &&
         run.home_node !== data.node.id &&
@@ -504,7 +519,8 @@ function RunPanel({
         ) && (
           <>
             <div className="button-row">
-              <button
+              <Button
+                variant="outline"
                 type="button"
                 disabled={run.control === "PAUSED" && !resumableRun(run)}
                 onClick={() =>
@@ -512,14 +528,15 @@ function RunPanel({
                 }
               >
                 {t(run.control === "PAUSED" ? "resume" : "pause")}
-              </button>
-              <button
+              </Button>
+              <Button
+                variant="outline"
                 type="button"
                 className="danger"
                 onClick={() => control("cancel")}
               >
                 {t("cancel")}
-              </button>
+              </Button>
             </div>
             <form
               onSubmit={(event) => {
@@ -679,7 +696,8 @@ function RunPanel({
                   {files.map((entry) => (
                     <li key={entry.key}>
                       {entry.file.name}
-                      <button
+                      <Button
+                        variant="outline"
                         type="button"
                         aria-label={`${fileCopy.removeAttachment}: ${entry.file.name}`}
                         disabled={sendingMessage}
@@ -692,7 +710,7 @@ function RunPanel({
                         }}
                       >
                         ×
-                      </button>
+                      </Button>
                     </li>
                   ))}
                 </ul>
@@ -702,12 +720,13 @@ function RunPanel({
                   {fileError}
                 </p>
               )}
-              <button
+              <Button
+                variant="outline"
                 className="primary"
                 disabled={sendingMessage || uploading}
               >
                 {uploading ? fileCopy.uploading : copy.send}
-              </button>
+              </Button>
             </form>
           </>
         )}
@@ -731,13 +750,14 @@ function RunPanel({
         </details>
       ))}
       {local && query.hasNextPage && (
-        <button
+        <Button
+          variant="outline"
           type="button"
           disabled={query.isFetchingNextPage}
           onClick={() => void query.fetchNextPage()}
         >
           {t("loadMore")}
-        </button>
+        </Button>
       )}
       <details>
         <summary>{t("context")}</summary>

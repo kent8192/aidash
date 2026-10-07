@@ -1,3 +1,4 @@
+import { Button } from "../components/ui/button";
 import { useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiFetch } from "../transport";
@@ -91,7 +92,8 @@ export function AgentCapabilities() {
               ? "変更にはこの Agent の設定権限が必要です。保存後も新バージョンの利用承認が必要で、機能を有効にするだけでは実行権限は増えません。"
               : "Configuring this Agent requires permission. The new version still needs catalog approval; enabling a feature creates no execution grant."}
           </p>
-          <button
+          <Button
+            variant="outline"
             type="button"
             disabled={busy || !version || version === agent.version}
             onClick={async () => {
@@ -129,7 +131,7 @@ export function AgentCapabilities() {
             }}
           >
             {ja ? "新しいバージョンとして保存" : "Save a new version"}
-          </button>
+          </Button>
         </>
       )}
       {saved && <p role="status">{saved}</p>}
