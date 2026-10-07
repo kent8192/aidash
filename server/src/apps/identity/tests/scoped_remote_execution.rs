@@ -4727,6 +4727,80 @@ async fn remote_human_continuations_survive_retries_and_restart_without_a_shadow
 			.response,
 		Some(response)
 	);
+	let denial = home
+		.human_request(
+			"APPROVAL_REQUIRED",
+			"Deny the other saved operation?",
+			"binding-denial",
+		)
+		.await
+		.unwrap();
+	let denied = request(
+		&p.aa,
+		&p.token,
+		"POST",
+		&answer_path,
+		json!({"id":denial.id,"response":{"approved":false}}),
+	)
+	.await;
+	assert_eq!(denied.0, 200, "{}", denied.1);
+	let unanswered = home
+		.human_request(
+			"APPROVAL_REQUIRED",
+			"Expire an unanswered operation",
+			"binding-unanswered",
+		)
+		.await
+		.unwrap();
+	// Advance only the Home journal's request deadlines. The answers above
+	// were durably accepted in time; later polling must retain both decisions.
+	let mut journal: Value = sqlx::query_scalar(
+		&Query::select()
+			.column(Alias::new("human_requests"))
+			.from(Alias::new("authorization_remote_execution"))
+			.and_where(Expr::col(Alias::new("grant_id")).eq(Expr::value(p.grant)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(p.a.store.pool.driver())
+	.await
+	.unwrap();
+	for record in journal.as_array_mut().unwrap() {
+		record["request"]["created_at"] = json!(chrono::Utc::now() - chrono::Duration::minutes(16));
+	}
+	sqlx::query(
+		&Query::update()
+			.table(Alias::new("authorization_remote_execution"))
+			.value(Alias::new("human_requests"), journal)
+			.and_where(Expr::col(Alias::new("grant_id")).eq(Expr::value(p.grant)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(p.a.store.pool.driver())
+	.await
+	.unwrap();
+	for (id, expected, actor) in [
+		(
+			approval.id,
+			json!({"approved":true}),
+			first.1["answered_by"].clone(),
+		),
+		(
+			denial.id,
+			json!({"approved":false}),
+			denied.1["answered_by"].clone(),
+		),
+	] {
+		for _ in 0..2 {
+			let retained = home.human_request_by_id(id).await.unwrap();
+			assert_eq!(retained.response, Some(expected.clone()));
+			assert_eq!(json!(retained.answered_by), actor);
+		}
+	}
+	let expired = home.human_request_by_id(unanswered.id).await.unwrap();
+	assert_eq!(
+		expired.response,
+		Some(json!({"approved":false,"expired":true}))
+	);
+	assert_eq!(expired.answered_by.as_deref(), Some("system"));
 	let (status, wrong) = request(
 		&p.aa,
 		&p.token,

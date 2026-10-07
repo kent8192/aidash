@@ -864,15 +864,17 @@ async fn killed_embedding_worker_retains_uncertain_usage_and_restart_reserves_a_
 	let fixture = Fixture::new(&_test_environment, Some(2), Some(2)).await;
 	fixture.response_mode.store(2, Ordering::SeqCst);
 	let mut worker = WorkerProcess::start(&fixture.f, &fixture.url, &fixture.schema);
+	// This includes cold native process startup, not the runtime recovery SLO.
 	let reached = tokio::time::timeout(
-		std::time::Duration::from_secs(20),
+		std::time::Duration::from_secs(60),
 		fixture.embedding_started.notified(),
 	)
 	.await;
 	assert!(
 		reached.is_ok(),
-		"embedding provider not reached; worker status {:?}",
-		worker.process.try_wait()
+		"embedding provider not reached; worker status {:?}; log:\n{}",
+		worker.process.try_wait(),
+		worker.log()
 	);
 	drop(worker); // Real SIGKILL, before the provider returns usage or a vector.
 	let reserved: i64 = sqlx::query_scalar(

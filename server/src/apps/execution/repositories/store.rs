@@ -2359,6 +2359,27 @@ impl Store {
 		agent_id: &str,
 		agent_version: &str,
 	) -> Result<Run> {
+		self.accept_run_pinned(task, home_node, agent_id, agent_version, None)
+			.await
+	}
+	pub(crate) async fn accept_run_pinned(
+		&self,
+		task: &Task,
+		home_node: &str,
+		agent_id: &str,
+		agent_version: &str,
+		pinned: Option<&aidash_domain::registry::bindings::ForeignAgentSnapshot>,
+	) -> Result<Run> {
+		if let Some(pinned) = pinned {
+			pinned.validate()?;
+			if pinned.agent.registry_node != self.node_id
+				|| pinned.agent.id != agent_id
+				|| pinned.agent.version != agent_version
+				|| home_node == self.node_id
+			{
+				return Err(Error::Forbidden);
+			}
+		}
 		self.require_legacy_execution(task.workspace_id).await?;
 		let mut tx = crate::database::native::begin(&self.pool).await?;
 		// Serialize legacy admission against scoped receiver admission. Neither
@@ -2398,7 +2419,9 @@ impl Store {
 			if run.agent_id != agent_id
 				|| run.agent_version != agent_version
 				|| run.workspace_id != task.workspace_id
-			{
+				|| pinned.is_some_and(|snapshot| {
+					run.context.binding_snapshot.as_deref() != Some(&snapshot.snapshot())
+				}) {
 				return Err(Error::Conflict(
 					"task already has a different executor".into(),
 				));
@@ -2420,6 +2443,11 @@ impl Store {
 			home_node != self.node_id,
 		)
 		.await?;
+		if pinned.is_some_and(|pinned| pinned.snapshot() != snapshot) {
+			return Err(Error::Conflict(
+				"offered Agent closure differs from receiver admission".into(),
+			));
+		}
 		let context = crate::context::Context {
 			binding_snapshot: Some(Box::new(snapshot)),
 			..Default::default()

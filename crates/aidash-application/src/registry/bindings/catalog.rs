@@ -15,6 +15,12 @@ pub struct LookupCatalog<'a> {
 }
 #[async_trait]
 impl BindingCatalog for LookupCatalog<'_> {
+	async fn foreign_agent(
+		&mut self,
+		reference: &QualifiedRef,
+	) -> Result<aidash_domain::registry::bindings::ForeignAgentSnapshot> {
+		self.definitions.foreign_agent(self.node, reference).await
+	}
 	async fn definition(&mut self, reference: &QualifiedRef) -> Result<Entry> {
 		if reference.registry_node != self.node {
 			return Err(Error::Invalid(
@@ -35,5 +41,21 @@ impl BindingCatalog for LookupCatalog<'_> {
 		let source: NativeContext = serde_json::from_value(definition.config.clone())?;
 		source.validate(&definition.kind)?;
 		Ok(())
+	}
+}
+
+/// Tenant and receiver-export paths cannot borrow the operator peer credential
+/// to import another Node's definitions.
+pub struct LocalCatalog<'a>(pub LookupCatalog<'a>);
+#[async_trait]
+impl BindingCatalog for LocalCatalog<'_> {
+	async fn definition(&mut self, reference: &QualifiedRef) -> Result<Entry> {
+		self.0.definition(reference).await
+	}
+	async fn installation(&mut self, projection: &Projection) -> Result<()> {
+		self.0.installation(projection).await
+	}
+	async fn source(&mut self, definition: &Entry) -> Result<()> {
+		self.0.source(definition).await
 	}
 }

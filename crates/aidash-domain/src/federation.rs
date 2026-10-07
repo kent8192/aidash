@@ -41,6 +41,8 @@ pub struct Discovery {
 pub struct Offer {
 	pub task: Task,
 	pub agent: EntityRef,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub binding_snapshot: Option<crate::registry::bindings::ForeignAgentSnapshot>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct PeerError {

@@ -416,6 +416,7 @@ async fn registry_workspace_task_execution_and_artifact_commit_together_once(
 		.agent_version(&agent.version)
 		.delivered(true)
 		.human_requests(json!([]).into())
+		.binding_snapshot(None)
 		.finish();
 	Delegation::objects()
 		.create_with_conn(&mut a.database.lease.handle(), &delegation)

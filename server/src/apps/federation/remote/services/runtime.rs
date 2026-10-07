@@ -233,6 +233,18 @@ impl Federation {
 			.await
 			.map_err(Into::into)
 	}
+	pub(crate) async fn delegate_pinned(
+		&self,
+		task_id: Uuid,
+		node: &str,
+		agent: &EntityRef,
+		snapshot: &aidash_domain::registry::bindings::ForeignAgentSnapshot,
+	) -> Result<Delegation> {
+		crate::bootstrap::federation(self)
+			.delegate_pinned(task_id, node, agent, snapshot)
+			.await
+			.map_err(Into::into)
+	}
 	pub(crate) async fn delegate_in(
 		&self,
 		tx: &mut dyn TransactionExecutor,
@@ -767,7 +779,21 @@ impl Home {
 			if t.workspace_id != self.run.workspace_id {
 				return Err(Error::Unauthorized);
 			}
-			self.federation.delegate(task_id, node, agent).await
+			if let Some(snapshot) = self
+				.execution
+				.as_ref()
+				.and_then(|run| run.context.binding_snapshot.as_ref())
+				.and_then(|snapshot| {
+					snapshot.foreign_agents.iter().find(|snapshot| {
+						snapshot.agent.registry_node == node && snapshot.agent.local() == *agent
+					})
+				}) {
+				self.federation
+					.delegate_pinned(task_id, node, agent, snapshot)
+					.await
+			} else {
+				self.federation.delegate(task_id, node, agent).await
+			}
 		} else {
 			self.command(
 				"delegate",

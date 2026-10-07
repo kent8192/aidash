@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "endpoint_count": 272,
+  "endpoint_count": 273,
   "requests": [
     {
       "name": "Health reports the configured node",
@@ -10848,6 +10848,51 @@
       "required_checks": [
         "Rejected input preserves committed workspace state",
         "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1008 peer-agent-bindings - Reject unsupported federation protocol",
+      "file": "contracts/1008-peer-agent-bindings.bru",
+      "endpoint": "GET /federation/v0.1/discover/{id}/{version}/bindings",
+      "scenario": "Reject unsupported federation protocol",
+      "status": 400,
+      "required_checks": [
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials",
+        "Reject unsupported federation protocol contract"
+      ]
+    },
+    {
+      "name": "1009 peer-agent-bindings - Require the peer node identity",
+      "file": "contracts/1009-peer-agent-bindings.bru",
+      "endpoint": "GET /federation/v0.1/discover/{id}/{version}/bindings",
+      "scenario": "Require the peer node identity",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1010 peer-agent-bindings - Require the peer bearer credential",
+      "file": "contracts/1010-peer-agent-bindings.bru",
+      "endpoint": "GET /federation/v0.1/discover/{id}/{version}/bindings",
+      "scenario": "Require the peer bearer credential",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1011 peer-agent-bindings - Unknown legacy agent has no discovery record",
+      "file": "contracts/1011-peer-agent-bindings.bru",
+      "endpoint": "GET /federation/v0.1/discover/{id}/{version}/bindings",
+      "scenario": "Unknown legacy agent has no discovery record",
+      "status": 404,
+      "required_checks": [
+        "Exact HTTP 404",
         "Rejection is diagnostic and does not disclose SQL or credentials"
       ]
     }

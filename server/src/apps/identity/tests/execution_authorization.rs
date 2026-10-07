@@ -1146,24 +1146,29 @@ async fn worker_effect_boundary_serializes_revocation_and_persists_audit_before_
 		f.store.run(run.id).await.unwrap().state,
 		aidash_domain::RunState::ToolCall(_)
 	));
-	let worker = tokio::spawn(async move { harness.worker_once().await });
-	tokio::time::timeout(Duration::from_secs(5), entered.notified())
-		.await
-		.unwrap();
-	let audited: i64 = sqlx::query_scalar(
-		&reinhardt::query::Query::select()
+	let audit_query =
+		reinhardt::query::Query::select()
 			.expr(reinhardt::query::Expr::cust("COUNT(*)"))
 			.from(reinhardt::query::Alias::new("authorization_decisions"))
 			.and_where(reinhardt::query::Expr::cust(
 				"action = 'tool.invoke' AND resource_id = 'aidash://execution-test/tools/http@1.0.0' AND decision ->> 'allowed' = 'true'",
 			))
-			.to_string(reinhardt::query::PostgresQueryBuilder),
-	)
-	.fetch_one(f.store.pool.driver())
-	.await
-	.unwrap();
+			.to_string(reinhardt::query::PostgresQueryBuilder);
+	let before_effect: i64 = sqlx::query_scalar(&audit_query)
+		.fetch_one(f.store.pool.driver())
+		.await
+		.unwrap();
+	let worker = tokio::spawn(async move { harness.worker_once().await });
+	tokio::time::timeout(Duration::from_secs(5), entered.notified())
+		.await
+		.unwrap();
+	let audited: i64 = sqlx::query_scalar(&audit_query)
+		.fetch_one(f.store.pool.driver())
+		.await
+		.unwrap();
 	assert_eq!(
-		audited, 2,
+		audited - before_effect,
+		2,
 		"root and agent authorization must be durable before the HTTP effect starts"
 	);
 	let (_, credentials) = request(

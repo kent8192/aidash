@@ -113,6 +113,35 @@ pub(crate) struct OperatorAuthority {
 }
 #[async_trait]
 impl BindingAuthority for OperatorAuthority {
+	async fn refresh(&self, run: &Run) -> Result<()> {
+		let snapshot = run
+			.context
+			.binding_snapshot
+			.as_ref()
+			.ok_or_else(|| Error::Invalid("Run has no Binding snapshot".into()))?;
+		snapshot.validate()?;
+		for pinned in &snapshot.foreign_agents {
+			let current: aidash_domain::registry::bindings::ForeignAgentSnapshot = self
+				.federation
+				.request(
+					&pinned.agent.registry_node,
+					reqwest::Method::GET,
+					&format!(
+						"/discover/{}/{}/bindings",
+						pinned.agent.id, pinned.agent.version
+					),
+					None,
+				)
+				.await?;
+			current.validate()?;
+			if current != *pinned {
+				return Err(Error::Conflict(
+					"admitted foreign Agent closure changed".into(),
+				));
+			}
+		}
+		Ok(())
+	}
 	async fn check(&self, _: &Run, binding: &ResolvedBinding) -> Result<()> {
 		if binding.identity.registry_node != self.federation.config.node_id
 			|| binding.installation.is_some()

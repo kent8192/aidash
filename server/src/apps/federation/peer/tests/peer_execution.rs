@@ -217,3 +217,138 @@ async fn receiver_preflight_intersects_executor_and_mapping_without_admitting_a_
 		"inspection must not create an executable run"
 	);
 }
+
+#[rstest::rstest]
+#[tokio::test]
+async fn public_agent_closures_are_authenticated_and_offers_pin_exact_receiver_definitions(
+	#[future]
+	#[from(endpoint::endpoint)]
+	endpoint: EndpointFixture,
+) {
+	if !isolated::isolated_process(&[(PEER_ENV, PEER_SECRET)]).await {
+		return;
+	}
+	let app = endpoint.await;
+	endpoint::register_fixture_agent(&app, "public-child").await;
+	let record = Peer::build()
+		.node_id("aidash://source")
+		.endpoint("http://127.0.0.1:1")
+		.credential_env(PEER_ENV)
+		.protocol_version("0.2")
+		.enabled(true)
+		.finish();
+	Peer::objects()
+		.create_with_conn(&mut app.database.lease.handle(), &record)
+		.await
+		.unwrap();
+	let client = peer_client(&app, PEER_SECRET).await;
+	let path = "/federation/v0.1/discover/public-child/1.0.0/bindings";
+	assert_eq!(app.anonymous.get(path).await.unwrap().status_code(), 400);
+	assert_eq!(app.operator.get(path).await.unwrap().status_code(), 400);
+	let (status, body) = decoded(client.get(path).await.unwrap());
+	assert_eq!(status, 200, "{body}");
+	let pinned: aidash_domain::registry::bindings::ForeignAgentSnapshot =
+		serde_json::from_value(body).unwrap();
+	pinned.validate().unwrap();
+	assert_eq!(pinned.agent.registry_node, app.runtime.config.node_id);
+	assert!(
+		pinned
+			.bindings
+			.iter()
+			.any(|binding| binding.alias.as_deref() == Some("task_delegate")
+				&& binding.excluded_reason.is_some())
+	);
+	let workspace = endpoint::workspace(&app.operator, "pinned public child").await;
+	let (status, task) = operator(
+		&app,
+		&format!(
+			"/api/workspaces/{}/tasks",
+			workspace["id"].as_str().unwrap()
+		),
+		json!({"title":"pinned offer","description":"Execute the pinned public child","requirements":{},"dependencies":[],"parent_id":null}),
+	)
+	.await;
+	assert_eq!(status, 200, "{task}");
+	let offer = json!({"task":task,"agent":pinned.agent.local(),"binding_snapshot":pinned});
+	let mut changed = pinned.clone();
+	let root = changed
+		.definitions
+		.iter_mut()
+		.find(|definition| definition.identity == changed.agent)
+		.unwrap();
+	root.definition
+		.name
+		.insert("en".into(), "different public definition".into());
+	*root = aidash_domain::registry::bindings::ResolvedDefinition::new(
+		root.identity.clone(),
+		root.definition.clone(),
+	)
+	.unwrap();
+	changed.validate().unwrap();
+	let mut mismatch = offer.clone();
+	mismatch["binding_snapshot"] = serde_json::to_value(changed).unwrap();
+	assert_eq!(
+		decoded(
+			client
+				.post("/federation/v0.1/offers", &mismatch, "json")
+				.await
+				.unwrap()
+		)
+		.0,
+		409
+	);
+	assert_eq!(
+		Run::objects()
+			.count_with_conn(&mut app.database.lease.handle())
+			.await
+			.unwrap(),
+		0
+	);
+	let first = decoded(
+		client
+			.post("/federation/v0.1/offers", &offer, "json")
+			.await
+			.unwrap(),
+	);
+	assert_eq!(first.0, 200, "{}", first.1);
+	let admitted: aidash_domain::Run = serde_json::from_value(first.1.clone()).unwrap();
+	assert_eq!(
+		admitted.context.binding_snapshot.as_deref(),
+		Some(&pinned.snapshot())
+	);
+	assert_eq!(
+		decoded(
+			client
+				.post("/federation/v0.1/offers", &offer, "json")
+				.await
+				.unwrap()
+		),
+		first
+	);
+	assert_eq!(
+		decoded(
+			client
+				.post("/federation/v0.1/offers", &mismatch, "json")
+				.await
+				.unwrap()
+		)
+		.0,
+		409
+	);
+	assert_eq!(
+		Run::objects()
+			.count_with_conn(&mut app.database.lease.handle())
+			.await
+			.unwrap(),
+		1
+	);
+	Peer::objects()
+		.filter(Peer::field_node_id().eq("aidash://source"))
+		.update_fields_with_conn(
+			&mut app.database.lease.handle(),
+			[(Peer::field_enabled(), false)],
+		)
+		.await
+		.unwrap();
+	assert_eq!(client.get(path).await.unwrap().status_code(), 401);
+}

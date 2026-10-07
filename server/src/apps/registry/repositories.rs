@@ -17,6 +17,7 @@ use reinhardt::db::orm::{
 use serde_json::Value;
 use uuid::Uuid;
 pub(crate) mod bindings;
+pub(crate) mod foreign;
 pub(crate) mod sql;
 
 #[derive(Clone)]
@@ -204,6 +205,18 @@ pub(crate) struct OrmScope<'a, E: OrmExecutor> {
 }
 #[async_trait]
 impl<E: OrmExecutor> DefinitionLookup for OrmScope<'_, E> {
+	async fn foreign_agent(
+		&mut self,
+		node: &str,
+		reference: &aidash_domain::registry::bindings::QualifiedRef,
+	) -> aidash_application::Result<aidash_domain::registry::bindings::ForeignAgentSnapshot> {
+		if node != self.node {
+			return Err(aidash_application::Error::Forbidden);
+		}
+		foreign::orm(self.db, node, reference)
+			.await
+			.map_err(Into::into)
+	}
 	async fn definition(&mut self, id: &str, version: &str) -> aidash_application::Result<Entry> {
 		Ok(serde_json::from_value(
 			records::definition(self.db, id, version).await?.metadata.0,
@@ -316,6 +329,15 @@ impl PackageScope for OrmScope<'_, AtomicTransaction> {
 pub(crate) struct NativeScope<'a>(pub(crate) &'a mut dyn TransactionExecutor);
 #[async_trait]
 impl DefinitionLookup for NativeScope<'_> {
+	async fn foreign_agent(
+		&mut self,
+		node: &str,
+		reference: &aidash_domain::registry::bindings::QualifiedRef,
+	) -> aidash_application::Result<aidash_domain::registry::bindings::ForeignAgentSnapshot> {
+		foreign::native(self.0, node, reference)
+			.await
+			.map_err(Into::into)
+	}
 	async fn binding_installation(
 		&mut self,
 		p: &aidash_domain::registry::Projection,

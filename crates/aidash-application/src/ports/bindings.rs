@@ -15,6 +15,12 @@ use std::sync::Arc;
 #[async_trait]
 pub trait BindingCatalog: Send {
 	async fn definition(&mut self, reference: &QualifiedRef) -> Result<Entry>;
+	async fn foreign_agent(
+		&mut self,
+		_: &QualifiedRef,
+	) -> Result<aidash_domain::registry::bindings::ForeignAgentSnapshot> {
+		Err(crate::Error::Forbidden)
+	}
 	/// New execution admission requires this revision to be active and approved.
 	/// A structural staging preview may check a readable pending revision, but
 	/// that preview cannot authorize activation or execution.

@@ -33,6 +33,7 @@ struct State {
 	cancelled: Option<(i64, String, Vec<String>)>,
 	revision: Option<i64>,
 	output_hidden: bool,
+	human_requests: Vec<aidash_domain::HumanRequest>,
 }
 #[derive(Clone, Default)]
 struct Repository {
@@ -218,7 +219,8 @@ impl HomeScope for Scope {
 		_: Uuid,
 		_: Uuid,
 	) -> Result<Vec<aidash_domain::HumanRequest>> {
-		Ok(vec![])
+		self.repository.call("human_requests");
+		Ok(self.repository.state.lock().unwrap().human_requests.clone())
 	}
 	async fn answer_human(
 		&mut self,
@@ -568,6 +570,44 @@ async fn status_fanout_is_bounded_and_preserves_grant_order() {
 	assert!(statuses.iter().all(|s| s.unavailable));
 	assert_eq!(repository.state.lock().unwrap().max_rpcs, 4);
 	assert_eq!(repository.state.lock().unwrap().rpcs, 0);
+}
+#[rstest]
+#[tokio::test(start_paused = true)]
+async fn slow_peer_status_preserves_home_owned_human_continuations() {
+	let repository = Repository::default();
+	let request = aidash_domain::HumanRequest {
+		id: Uuid::from_u128(8),
+		run_id: Uuid::from_u128(5),
+		workspace_id: task().workspace_id,
+		kind: "APPROVAL_REQUIRED".into(),
+		prompt: "Approve the saved effect".into(),
+		response: None,
+		answered_by: None,
+		created_at: Utc.timestamp_opt(1, 0).unwrap(),
+	};
+	{
+		let mut state = repository.state.lock().unwrap();
+		state.delay_status = true;
+		state.human_requests = vec![request.clone()];
+	}
+	let start = tokio::time::Instant::now();
+	let statuses = list(&repository, task().id).await.unwrap();
+	assert_eq!(start.elapsed(), std::time::Duration::from_secs(2));
+	assert!(statuses[0].unavailable);
+	assert_eq!(statuses[0].human_requests.len(), 1);
+	assert_eq!(statuses[0].human_requests[0].id, request.id);
+	assert!(statuses[0].human_requests[0].response.is_none());
+	let calls = repository.calls();
+	assert!(
+		calls
+			.iter()
+			.position(|call| call == "human_requests")
+			.unwrap() < calls
+			.iter()
+			.position(|call| call == "rpc:/scoped/execution/status")
+			.unwrap()
+	);
+	assert_eq!(repository.state.lock().unwrap().scopes, 0);
 }
 #[rstest]
 #[tokio::test(start_paused = true)]

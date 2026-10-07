@@ -178,12 +178,11 @@ pub(crate) async fn read_in(
 	let mut changed = false;
 	for record in &mut requests {
 		let request = &mut record.request;
-		if crate::apps::execution::services::human_interaction::approval_expired(
-			request,
-			chrono::Utc::now(),
-		) && request.response.as_ref()
-			!= Some(&serde_json::json!({"approved":false,"expired":true}))
-		{
+		if request.response.is_none()
+			&& crate::apps::execution::services::human_interaction::approval_expired(
+				request,
+				chrono::Utc::now(),
+			) {
 			request.response = Some(serde_json::json!({"approved":false,"expired":true}));
 			request.answered_by = Some("system".into());
 			changed = true;

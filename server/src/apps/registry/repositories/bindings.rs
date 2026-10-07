@@ -18,10 +18,27 @@ pub(crate) async fn snapshot(
 	agent: &aidash_domain::registry::Entry,
 	remote: bool,
 ) -> Result<aidash_domain::registry::bindings::BindingSnapshot> {
-	Ok(aidash_application::registry::bindings::resolve(
-		&mut aidash_application::registry::bindings::catalog::LookupCatalog {
-			definitions: &mut super::sql::SqlScope(tx),
+	snapshot_mode(tx, node, agent, remote, true).await
+}
+async fn snapshot_mode(
+	tx: &mut crate::database::native::Transaction,
+	node: &str,
+	agent: &aidash_domain::registry::Entry,
+	remote: bool,
+	foreign: bool,
+) -> Result<aidash_domain::registry::bindings::BindingSnapshot> {
+	let mut definitions = super::sql::SqlScope(tx);
+	let mut catalog = aidash_application::registry::bindings::catalog::LocalCatalog(
+		aidash_application::registry::bindings::catalog::LookupCatalog {
+			definitions: &mut definitions,
 			node,
+		},
+	);
+	Ok(aidash_application::registry::bindings::resolve(
+		if foreign {
+			&mut catalog.0
+		} else {
+			&mut catalog
 		},
 		&crate::bootstrap::registry_validation(),
 		aidash_domain::registry::bindings::QualifiedRef {
@@ -94,7 +111,11 @@ pub(crate) async fn installation_executor(
 ) -> Result<()> {
 	use reinhardt::{
 		core::exception::Error as FrameworkError,
-		query::{Expr, PostgresQueryBuilder, Query, QueryStatementBuilder},
+		db::orm::{QueryRow, execution::convert_values},
+		query::{
+			Alias, ColumnRef, Expr, ExprTrait, LockType, PostgresQueryBuilder, Query,
+			QueryStatementBuilder,
+		},
 	};
 	let (sql, _) = Query::select()
 		.expr(Expr::cust("pg_advisory_xact_lock_shared(74003201)"))
@@ -103,14 +124,23 @@ pub(crate) async fn installation_executor(
 	if projection.contract != 1 {
 		return Err(Error::Forbidden);
 	}
-	let row = InstalledPackage::objects()
-		.filter(InstalledPackage::field_key().eq(projection.installation.clone()))
-		.select_for_update()
-		.all_with_executor(tx)
-		.await
-		.map_err(FrameworkError::from)?
-		.pop()
-		.ok_or(Error::Forbidden)?;
+	// Validation is read-only. Shared row leases fence activation changes while
+	// allowing a Host operation's inherited transaction to recheck the same
+	// installed definition without waiting on its own outer authority lease.
+	let (sql, values) = Query::select()
+		.column(ColumnRef::Asterisk)
+		.from(Alias::new(InstalledPackage::table_name()))
+		.and_where(Expr::col("key").eq(Expr::value(&projection.installation)))
+		.lock(LockType::Share)
+		.build(PostgresQueryBuilder);
+	let row: InstalledPackage = serde_json::from_value(
+		QueryRow::from_backend_row(
+			tx.fetch_optional(&sql, convert_values(values))
+				.await?
+				.ok_or(Error::Forbidden)?,
+		)
+		.data,
+	)?;
 	let installed: Installation = serde_json::from_value(row.document.0)?;
 	if installed.tenant != projection.tenant
 		|| installed.active_revision != Some(projection.revision)
@@ -128,16 +158,20 @@ pub(crate) async fn installation_executor(
 		.pop()
 		.ok_or(Error::Forbidden)?;
 	let revision: Revision = serde_json::from_value(row.document.0)?;
-	let approved = AuthorizationCatalog::objects()
-		.filter(AuthorizationCatalog::field_tenant().eq(projection.tenant.clone()))
-		.filter(AuthorizationCatalog::field_entry_key().eq(revision.entry.id))
-		.filter(AuthorizationCatalog::field_entry_version().eq(revision.entry.version))
-		.filter(AuthorizationCatalog::field_enabled().eq(true))
-		.select_for_update()
-		.all_with_executor(tx)
-		.await
-		.map_err(FrameworkError::from)?;
-	if approved.is_empty() {
+	let (sql, values) = Query::select()
+		.column(ColumnRef::Asterisk)
+		.from(Alias::new(AuthorizationCatalog::table_name()))
+		.and_where(Expr::col("tenant").eq(Expr::value(&projection.tenant)))
+		.and_where(Expr::col("entry_id").eq(Expr::value(&revision.entry.id)))
+		.and_where(Expr::col("entry_version").eq(Expr::value(&revision.entry.version)))
+		.and_where(Expr::col("enabled").eq(true))
+		.lock(LockType::Share)
+		.build(PostgresQueryBuilder);
+	if tx
+		.fetch_optional(&sql, convert_values(values))
+		.await?
+		.is_none()
+	{
 		return Err(Error::Forbidden);
 	}
 	Ok(())
@@ -149,7 +183,7 @@ pub(crate) async fn authorized(
 	remote: bool,
 ) -> Result<aidash_domain::registry::bindings::BindingSnapshot> {
 	let node = access.node_id.clone();
-	let snapshot = snapshot(&mut access.tx, &node, entry, remote).await?;
+	let snapshot = snapshot_mode(&mut access.tx, &node, entry, remote, false).await?;
 	for definition in &snapshot.definitions {
 		if definition.identity.registry_node != node {
 			return Err(Error::Forbidden);
@@ -177,11 +211,28 @@ pub(crate) async fn preview(
 	node: &str,
 	entry: &aidash_domain::registry::Entry,
 ) -> aidash_application::Result<aidash_domain::registry::bindings::BindingSnapshot> {
+	preview_mode(tx, node, entry, false).await
+}
+pub(crate) async fn preview_remote(
+	tx: &mut dyn reinhardt::db::backends::TransactionExecutor,
+	node: &str,
+	entry: &aidash_domain::registry::Entry,
+) -> aidash_application::Result<aidash_domain::registry::bindings::BindingSnapshot> {
+	preview_mode(tx, node, entry, true).await
+}
+async fn preview_mode(
+	tx: &mut dyn reinhardt::db::backends::TransactionExecutor,
+	node: &str,
+	entry: &aidash_domain::registry::Entry,
+	remote: bool,
+) -> aidash_application::Result<aidash_domain::registry::bindings::BindingSnapshot> {
 	aidash_application::registry::bindings::resolve(
-		&mut aidash_application::registry::bindings::catalog::LookupCatalog {
-			definitions: &mut super::NativeScope(tx),
-			node,
-		},
+		&mut aidash_application::registry::bindings::catalog::LocalCatalog(
+			aidash_application::registry::bindings::catalog::LookupCatalog {
+				definitions: &mut super::NativeScope(tx),
+				node,
+			},
+		),
 		&crate::bootstrap::registry_validation(),
 		aidash_domain::registry::bindings::QualifiedRef {
 			registry_node: node.into(),
@@ -189,7 +240,7 @@ pub(crate) async fn preview(
 			version: entry.version.clone(),
 		},
 		entry,
-		false,
+		remote,
 	)
 	.await
 }

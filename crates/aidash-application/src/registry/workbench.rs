@@ -158,11 +158,12 @@ pub async fn validate_content(
 	validation.bound_prompt_headroom(&snapshot, &json!({"reference_documents":draft.documents}))?;
 	if let Principal::Subject { subject, .. } = scope.principal() {
 		for dependency in &snapshot.definitions {
-			if dependency.identity.id == entry.id
-				|| source
-					.as_ref()
-					.is_some_and(|s| s.id == dependency.identity.id)
-			{
+			if dependency.identity == snapshot.agent
+				|| source.as_ref().is_some_and(|s| {
+					dependency.identity.registry_node == node
+						&& s.id == dependency.identity.id
+						&& s.version == dependency.identity.version
+				}) {
 				continue;
 			}
 			let reference = dependency.identity.local();

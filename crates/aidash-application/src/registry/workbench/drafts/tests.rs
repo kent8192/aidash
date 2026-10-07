@@ -65,6 +65,7 @@ impl Repository {
 }
 struct Scope {
 	definitions: std::collections::BTreeMap<(String, String), Entry>,
+	denied_dependency: Option<String>,
 	draft: Draft,
 	log: Arc<Mutex<Vec<String>>>,
 	deny: bool,
@@ -109,6 +110,7 @@ impl DraftRepository for Repository {
 	async fn begin(&self) -> Result<Scope> {
 		self.log.lock().unwrap().push("begin".into());
 		Ok(Scope {
+			denied_dependency: None,
 			definitions: crate::test_support::builtin_entries("aidash://node")
 				.into_iter()
 				.map(|entry| ((entry.id.clone(), entry.version.clone()), entry))
@@ -172,7 +174,8 @@ impl DraftAuthority for Scope {
 	async fn evaluate(&mut self, _: &str, evaluation: &Evaluation) -> Result<Decision> {
 		self.record(&evaluation.action);
 		Ok(Decision {
-			allowed: true,
+			allowed: !(evaluation.action == "agent_dependency.read"
+				&& self.denied_dependency.as_ref() == Some(&evaluation.resource.id)),
 			reason: "fixture".into(),
 			matched_policies: Vec::new(),
 			effective_roles: Default::default(),
@@ -368,6 +371,50 @@ async fn edit_uses_locked_revision_and_commits_content(draft: Draft, entry: Entr
 			"commit"
 		]
 	);
+}
+#[rstest]
+#[tokio::test]
+async fn same_agent_id_at_another_version_still_requires_dependency_authority(
+	mut draft: Draft,
+	mut entry: Entry,
+) {
+	let repository = Repository::new(draft.clone());
+	let mut scope = repository.begin().await.unwrap();
+	let mut model = scope.definition("model", "2.0.0").await.unwrap();
+	model.id = entry.id.clone();
+	let reference = aidash_domain::registry::EntityRef {
+		id: model.id.clone(),
+		version: model.version.clone(),
+	};
+	scope
+		.definitions
+		.insert((model.id.clone(), model.version.clone()), model);
+	scope.denied_dependency = Some(crate::registry::workbench::ref_key(&reference));
+	entry.config["model"] = json!(reference);
+	draft.entry = json!(entry);
+	let result = crate::registry::workbench::validate_content(
+		&mut scope,
+		&validation(),
+		&draft,
+		"aidash://node",
+	)
+	.await;
+	assert!(matches!(result, Err(Error::Forbidden)));
+	assert!(
+		repository
+			.logs()
+			.iter()
+			.any(|call| call == "agent_dependency.read")
+	);
+	scope.denied_dependency = None;
+	crate::registry::workbench::validate_content(
+		&mut scope,
+		&validation(),
+		&draft,
+		"aidash://node",
+	)
+	.await
+	.unwrap();
 }
 #[rstest]
 #[case::revision(false, 2, "draft revision changed; local edits were not saved")]

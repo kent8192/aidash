@@ -119,6 +119,31 @@ Current task/Human authority and a live grant are required; expiry, revocation,
 foreign IDs and changed replay input fail. Unsafe-effect reconciliation uses
 this same durable continuation and requires an explicit reconciled result.
 
+## Public foreign Agent Tools
+
+An operator's `integration.agent@1` descriptor may target an enabled protocol
+`0.2` peer. Registration and admission authenticate
+`GET /federation/v0.1/discover/{id}/{version}/bindings` and retain the receiver's
+complete immutable Agent, model, cluster, bundle and Tool definitions. The parent
+keeps its declared Tool alias; the child's Tools are not added to the parent's
+model request. Live peer and receiver authority is checked again before model
+assembly and each Tool effect. Missing peers, unavailable Providers and changed
+closures fail without replacing any qualified reference.
+
+This public protocol exports one receiver's operator-owned closure. Tenant
+installations, generated Agents, Memory/Source/Skill context and nested foreign
+references cannot be exported through it. Tenant admission never borrows an
+operator peer credential; scoped federation continues to require its retained
+subject and mapping grants. Explicit unsupported dependencies are rejected.
+
+Agent Tool delegation stores `delegations.binding_snapshot` in the same
+transaction as its target reservation. Retries send that original closure.
+A receiver accepts a new Run only when its current admission snapshot matches
+exactly; an idempotent replay must match the original Run snapshot. Updating a
+catalog or retrying delivery cannot silently add a dependency or substitute a
+same-named local Agent. The nullable forward migration preserves historical
+unscoped reservations without importing legacy capability fields.
+
 ## Workbench test connections
 
 External HTTP/MCP test connections require an operator-owned profile whose

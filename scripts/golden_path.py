@@ -475,6 +475,17 @@ def main():
             result = wait_for(lambda base=base, plugin_workspace=plugin_workspace, task_id=plugin_conversation["task"]["id"]: next((t for t in api_request(base, f"/api/workspaces/{plugin_workspace}")["tasks"] if t["id"] == task_id and t["status"] == "COMPLETED"), None), label=agent_id)
             assert result["status"] == "COMPLETED"
             plugin_runs.append(agent_id)
+        pinned_delegations = [json.loads(row) for row in psql(db_a, queries["pinned_delegations"]).splitlines() if row]
+        assert len(pinned_delegations) == 1, "Agent Tool must durably retain its receiver closure"
+        pinned = pinned_delegations[0]
+        assert pinned["node_id"] == node_b and pinned["agent_id"] == "http-runner"
+        receiver_closure = pinned["binding_snapshot"]
+        assert receiver_closure["agent"] == {"registry_node": node_b, "id": "http-runner", "version": "1.0.0"}
+        assert all(definition["identity"]["registry_node"] == node_b for definition in receiver_closure["definitions"])
+        remote_runs = api_request(base_b, "/api/state")["runs"]
+        admitted_child = next(run for run in remote_runs if run["task_id"] == pinned["task_id"])
+        received = api_request(base_b, f"/api/runs/{admitted_child['id']}")["run"]["context"]["binding_snapshot"]
+        assert received == {**receiver_closure, "remote": True}, "Receiver must execute the original pinned closure"
         # This branch is mandatory: legacy recovery alone cannot establish
         # subject-scoped authority or the remote grant/admission contract.
         from scoped_golden_path import verify
@@ -483,7 +494,7 @@ def main():
                         lambda: {"admissions": int(psql(db_b, queries["remote_admissions"])),
                                  "bindings": int(psql(db_a, queries["remote_bindings"]))})
         report = {"node_a": base_a, "node_b": base_b, "node_ids": [node_a, node_b], "workspace_id": workspace, "tasks": len(snapshot["tasks"]), "artifacts": len(snapshot["artifacts"]), "external_effects": len(fixture.effects), "tool_requests": dict(fixture.requests), "provider_calls": dict(fixture.provider_calls), "recovered_run_id": recovered["id"], "sse_events": len(stream_events), "database_a": db_a, "database_b": db_b, "goal_entry": "dashboard" if args.dashboard else "api", "remote_human_controls": "passed", "nats_outage_startup_and_recovery": "passed", "events_queued_during_outage": pending_events, "additional_plugins": plugin_runs}
-        report.update(source=source, binary_sha256=binary_sha256, scoped_remote_execution=scoped)
+        report.update(source=source, binary_sha256=binary_sha256, scoped_remote_execution=scoped, foreign_agent_binding_snapshot="passed")
         if args.dashboard:
             browser_report = logs / "browser-report.json"
             subprocess.run(["npm", "test", "--prefix", "web", "--", "--reporter=list,json"], cwd=ROOT, check=True, env={**os.environ, "PLAYWRIGHT_JSON_OUTPUT_FILE": str(browser_report), "AIDASH_E2E_URL": base_a, "AIDASH_E2E_REMOTE_URL": base_b})

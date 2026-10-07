@@ -764,6 +764,7 @@ async fn notification_deferral_waits_for_its_authoritative_unblock(
 			&Query::update()
 				.table(a("core_runs"))
 				.value(a("sequence"), 1_i64)
+				.value(a("initialized"), false)
 				.and_where(Expr::col(a("run_id")).eq(Expr::value(run)))
 				.to_string(PostgresQueryBuilder),
 		)
@@ -772,14 +773,25 @@ async fn notification_deferral_waits_for_its_authoritative_unblock(
 		.unwrap();
 		if blocker == "ordering" {
 			let previous = unblock::insert_run(&f, "PAUSED").await;
+			let generation: i64 = sqlx::query_scalar(
+				&Query::select()
+					.column(a("generation"))
+					.from(a("core_runs"))
+					.and_where(Expr::col(a("run_id")).eq(Expr::value(run)))
+					.to_string(PostgresQueryBuilder),
+			)
+			.fetch_one(f.store.pool.driver())
+			.await
+			.unwrap();
 			sqlx::query(
 				&Query::insert()
 					.into_table(a("core_runs"))
-					.columns(["run_id", "area_id", "sequence"].map(a))
+					.columns(["run_id", "area_id", "sequence", "generation"].map(a))
 					.values_panic([
 						reinhardt::query::IntoValue::into_value(previous),
 						reinhardt::query::IntoValue::into_value(area),
 						reinhardt::query::IntoValue::into_value(0_i64),
+						reinhardt::query::IntoValue::into_value(generation),
 					])
 					.to_string(PostgresQueryBuilder),
 			)

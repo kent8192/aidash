@@ -1587,12 +1587,20 @@ async fn real_dispatch_rejects_effective_tool_isolation_changes(
 	#[case] change: &str,
 ) {
 	let (wb, started, digest) = installed_tool_waiting_for_dispatch;
-	let overlay = match change {
-		"endpoint" => json!({"transport":{"endpoint":format!("{}/test-effect",wb.endpoint)}}),
-		"replay" => json!({"transport":{"replay":"unsafe"}}),
-		"credential" => json!({"transport":{"credential_env":"AIDASH_SECRET_TEST_PEER"}}),
+	let mut transport =
+		wb.f.registry
+			.get("fixture-tool", "1.0.0")
+			.await
+			.unwrap()
+			.config["transport"]
+			.clone();
+	match change {
+		"endpoint" => transport["endpoint"] = json!(format!("{}/test-effect", wb.endpoint)),
+		"replay" => transport["replay"] = json!("unsafe"),
+		"credential" => transport["credential_env"] = json!("AIDASH_SECRET_TEST_PEER"),
 		_ => unreachable!(),
-	};
+	}
+	let overlay = json!({"transport":transport});
 	wb.f.registry
 		.install("fixture-tool", "1.0.0", &digest, overlay)
 		.await

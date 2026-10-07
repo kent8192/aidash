@@ -234,7 +234,7 @@ jobs:
         if: always()
         run: docker compose down
   bruno:
-    name: Bruno API contracts (272 endpoints)
+    name: Bruno API contracts (273 endpoints)
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -254,7 +254,7 @@ jobs:
           python3 scripts/test_bruno_contracts.py
       - name: Start real PostgreSQL and JetStream fixtures
         run: docker compose up --build -d --wait postgres nats
-      - name: Run all 944 HTTP scenarios through the native management server
+      - name: Run all 948 HTTP scenarios through the native management server
         run: npm exec --yes --package=@usebruno/cli@3.1.3 -- scripts/test-bruno-api.sh
         env:
           AIDASH_BRUNO_POSTGRES_PASSWORD: aidash-local

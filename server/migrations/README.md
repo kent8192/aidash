@@ -41,7 +41,7 @@ the pinned revision incorporates
 [#6638](https://github.com/kent8192/reinhardt-web/issues/6638). The final snapshot
 records the registered model metadata. These migrations extend the original table definitions and preserve their SQL
 assets. The environment migration additionally records conditional extension
-ownership before this new native history is published. The complete native graph contains 46
+ownership before this new native history is published. The complete native graph contains 54
 records and describes 117 models.
 
 The original baseline has 36 migrations for physical schema creation and eight
@@ -232,3 +232,10 @@ ownership/settings are compared. The only normalization is the three visible
 defaults and constraints must still match. Counts alone never establish parity.
 The script removes only its own target database and writes catalog differences,
 command exit codes, source state and executable hashes under `.ignore/schema-parity/`.
+
+The native Binding cutover adds append-only Registry schema operations and model
+state. `federation/0008_pinned_delegations` and its state snapshot retain an
+optional public receiver closure in `delegations.binding_snapshot`. Existing
+rows keep `NULL`; an Agent Tool reservation writes its complete validated closure
+atomically. No historical Agent capability configuration is translated. The
+current graph has 42 physical migrations and 12 state snapshots.

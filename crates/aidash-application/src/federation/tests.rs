@@ -18,6 +18,7 @@ struct Repository {
 	scoped: bool,
 	reserve_conflict: bool,
 	reservations: AtomicUsize,
+	pinned: Mutex<Option<aidash_domain::registry::bindings::ForeignAgentSnapshot>>,
 	held: Arc<AtomicBool>,
 	pending: Vec<Delegation>,
 }
@@ -76,6 +77,28 @@ impl FederationRepository for Repository {
 			Ok(self.pending[0].clone())
 		}
 	}
+	async fn reserve_pinned_delegation(
+		&self,
+		expected: &Task,
+		node: &str,
+		agent: &EntityRef,
+		snapshot: &aidash_domain::registry::bindings::ForeignAgentSnapshot,
+	) -> Result<Delegation> {
+		{
+			let mut saved = self.pinned.lock().unwrap();
+			if saved.as_ref().is_some_and(|original| original != snapshot) {
+				return Err(Error::Conflict("original receiver closure changed".into()));
+			}
+			*saved = Some(snapshot.clone());
+		}
+		self.reserve_delegation(expected, node, agent).await
+	}
+	async fn delegation_snapshot(
+		&self,
+		_: Uuid,
+	) -> Result<Option<aidash_domain::registry::bindings::ForeignAgentSnapshot>> {
+		Ok(self.pinned.lock().unwrap().clone())
+	}
 	async fn accept_local_run(&self, _task: &Task, _agent: &EntityRef) -> Result<Run> {
 		Err(Error::Invalid("unexpected local delivery".into()))
 	}
@@ -96,6 +119,7 @@ struct Transport {
 	run_message_pending: bool,
 	pages: BTreeMap<(String, String), Value>,
 	calls: Mutex<Vec<(String, String)>>,
+	offers: Mutex<Vec<Value>>,
 	pending: bool,
 	held: Option<Arc<AtomicBool>>,
 }
@@ -106,7 +130,7 @@ impl PeerTransport for Transport {
 		peer: &Peer,
 		_method: &str,
 		path: &str,
-		_body: Option<&Value>,
+		body: Option<&Value>,
 	) -> Result<PeerReply> {
 		if let Some(held) = &self.held {
 			assert!(
@@ -118,6 +142,9 @@ impl PeerTransport for Transport {
 			.lock()
 			.unwrap()
 			.push((peer.node_id.clone(), path.into()));
+		if path == "/offers" {
+			self.offers.lock().unwrap().push(body.unwrap().clone());
+		}
 		if self.pending && path == "/offers" {
 			return std::future::pending().await;
 		}
@@ -179,6 +206,7 @@ fn repository() -> Repository {
 		scoped: false,
 		reserve_conflict: false,
 		reservations: AtomicUsize::new(0),
+		pinned: Mutex::new(None),
 		held: Arc::new(AtomicBool::new(false)),
 		pending: vec![delegation],
 	}
@@ -191,6 +219,7 @@ fn transport() -> Transport {
 		run_message_pending: false,
 		pages: BTreeMap::new(),
 		calls: Mutex::new(vec![]),
+		offers: Mutex::new(vec![]),
 		pending: false,
 		held: None,
 	}
@@ -425,4 +454,150 @@ async fn malformed_peer_success_is_an_external_failure(
 	assert!(
 		matches!(result,Err(Error::External(message)) if message.starts_with("invalid response JSON:"))
 	);
+}
+
+async fn receiver_closure() -> aidash_domain::registry::bindings::ForeignAgentSnapshot {
+	use crate::ports::bindings::{BindingCatalog, ProviderCatalog};
+	use aidash_domain::{
+		registry::bindings::*,
+		tool::{ToolContract, providers::*},
+	};
+	struct Catalog(Vec<Entry>);
+	#[async_trait]
+	impl BindingCatalog for Catalog {
+		async fn definition(&mut self, reference: &QualifiedRef) -> Result<Entry> {
+			self.0
+				.iter()
+				.find(|entry| entry.id == reference.id && entry.version == reference.version)
+				.cloned()
+				.ok_or(Error::Forbidden)
+		}
+		async fn installation(&mut self, _: &aidash_domain::registry::Projection) -> Result<()> {
+			Err(Error::Forbidden)
+		}
+		async fn source(&mut self, _: &Entry) -> Result<()> {
+			Err(Error::Forbidden)
+		}
+	}
+	struct Providers;
+	impl ProviderCatalog for Providers {
+		fn contract(
+			&self,
+			descriptor: &ToolDescriptor,
+			identity: &QualifiedRef,
+		) -> Result<ToolContract> {
+			Ok(descriptor.declared_contract(identity.clone())?)
+		}
+		fn implementation(&self, _: &ToolDescriptor) -> Result<String> {
+			Ok("fixture-implementation".into())
+		}
+	}
+	let node = "aidash://remote";
+	let mut root = entry("remote");
+	root.config["schema_version"] = json!(1);
+	root.config["instructions"] = json!("Pinned public delegation");
+	let mut model = entry("model");
+	model.kind = "model".into();
+	model.config = json!({});
+	let mut catalog = Catalog(vec![model]);
+	for operation in REQUIRED_TOOLS.iter().chain(DEFAULT_TOOLS) {
+		let descriptor = core_descriptor(node, operation).unwrap();
+		let mut tool = entry(&QualifiedRef::builtin(node, operation).id);
+		tool.kind = "tool".into();
+		tool.config = serde_json::to_value(descriptor).unwrap();
+		catalog.0.push(tool);
+	}
+	let snapshot = crate::registry::bindings::resolve(
+		&mut catalog,
+		&Providers,
+		QualifiedRef {
+			registry_node: node.into(),
+			id: root.id.clone(),
+			version: root.version.clone(),
+		},
+		&root,
+		true,
+	)
+	.await
+	.unwrap();
+	ForeignAgentSnapshot::from_snapshot(snapshot).unwrap()
+}
+
+#[rstest]
+#[tokio::test]
+async fn failed_agent_tool_delivery_and_restarted_retries_keep_the_original_receiver_closure(
+	repository: Repository,
+	mut transport: Transport,
+) {
+	transport.status = 503;
+	transport.transaction_pending = true;
+	let repository = Arc::new(repository);
+	let transport = Arc::new(transport);
+	let snapshot = receiver_closure().await;
+	let task = repository.task.id;
+	let federation = federation(repository.clone(), transport.clone());
+	let reserved = federation
+		.delegate_pinned(
+			task,
+			&snapshot.agent.registry_node,
+			&snapshot.agent.local(),
+			&snapshot,
+		)
+		.await
+		.unwrap();
+	assert!(!reserved.delivered);
+	let restarted = Federation::new(
+		"aidash://local".into(),
+		repository.clone(),
+		transport.clone(),
+	);
+	restarted.retry_deliveries().await.unwrap();
+	let offers = transport.offers.lock().unwrap().clone();
+	assert_eq!(offers.len(), 2);
+	assert_eq!(offers[0], offers[1]);
+	assert_eq!(
+		offers[1]["binding_snapshot"],
+		serde_json::to_value(&snapshot).unwrap()
+	);
+	assert!(
+		transport
+			.calls
+			.lock()
+			.unwrap()
+			.iter()
+			.all(|(_, path)| path == "/offers"),
+		"retry must not discover another closure"
+	);
+	assert!(matches!(
+		federation
+			.delegate_pinned(task, "aidash://other", &snapshot.agent.local(), &snapshot)
+			.await,
+		Err(Error::Forbidden)
+	));
+	assert_eq!(repository.reservations.load(Ordering::SeqCst), 1);
+	let mut changed = snapshot;
+	let root = changed
+		.definitions
+		.iter_mut()
+		.find(|definition| definition.identity == changed.agent)
+		.unwrap();
+	root.definition.name.insert("en".into(), "changed".into());
+	*root = aidash_domain::registry::bindings::ResolvedDefinition::new(
+		root.identity.clone(),
+		root.definition.clone(),
+	)
+	.unwrap();
+	changed.validate().unwrap();
+	assert!(matches!(
+		federation
+			.delegate_pinned(
+				task,
+				&changed.agent.registry_node,
+				&changed.agent.local(),
+				&changed
+			)
+			.await,
+		Err(Error::Conflict(_))
+	));
+	assert_eq!(transport.offers.lock().unwrap().len(), 2);
 }

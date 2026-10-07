@@ -14,6 +14,15 @@ use serde_json::Value;
 pub(crate) struct SqlScope<'a>(pub(crate) &'a mut crate::database::native::Transaction);
 #[async_trait]
 impl DefinitionLookup for SqlScope<'_> {
+	async fn foreign_agent(
+		&mut self,
+		node: &str,
+		reference: &aidash_domain::registry::bindings::QualifiedRef,
+	) -> Result<aidash_domain::registry::bindings::ForeignAgentSnapshot> {
+		super::foreign::native(&mut **self.0, node, reference)
+			.await
+			.map_err(Into::into)
+	}
 	async fn definition(&mut self, id: &str, version: &str) -> Result<Entry> {
 		let query = Query::select()
 			.column(Alias::new("metadata"))

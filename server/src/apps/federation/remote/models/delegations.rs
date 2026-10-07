@@ -21,6 +21,9 @@ pub struct Delegation {
 	pub delivered: bool,
 	#[field]
 	pub human_requests: reinhardt::db::orm::Json<serde_json::Value>,
+	#[field]
+	pub binding_snapshot:
+		Option<reinhardt::db::orm::Json<aidash_domain::registry::bindings::ForeignAgentSnapshot>>,
 	#[field(auto_now_add = true)]
 	pub created_at: DateTime<Utc>,
 	#[field(auto_now_add = true)]
@@ -65,6 +68,25 @@ impl Delegation {
 		node: &str,
 		agent: &EntityRef,
 	) -> Result<(TaskContract, DelegationContract)> {
+		Self::reserve_with_snapshot(tx, local_node, expected, node, agent, None).await
+	}
+	pub(crate) async fn reserve_with_snapshot(
+		tx: &mut dyn TransactionExecutor,
+		local_node: &str,
+		expected: &TaskContract,
+		node: &str,
+		agent: &EntityRef,
+		snapshot: Option<&aidash_domain::registry::bindings::ForeignAgentSnapshot>,
+	) -> Result<(TaskContract, DelegationContract)> {
+		if let Some(snapshot) = snapshot {
+			snapshot.validate()?;
+			if snapshot.agent.registry_node != node
+				|| snapshot.agent.local() != *agent
+				|| node == local_node
+			{
+				return Err(Error::Forbidden);
+			}
+		}
 		let mut task = Task::objects()
 			.filter(Task::field_id().eq(expected.id))
 			.select_for_update()
@@ -84,12 +106,22 @@ impl Delegation {
 		}
 		let (sql, values) = Query::insert()
 			.into_table(Alias::new(Self::table_name()))
-			.columns(["task_id", "node_id", "agent_id", "agent_version"].map(Alias::new))
+			.columns(
+				[
+					"task_id",
+					"node_id",
+					"agent_id",
+					"agent_version",
+					"binding_snapshot",
+				]
+				.map(Alias::new),
+			)
 			.values_panic([
 				IntoValue::into_value(task.id),
 				IntoValue::into_value(node),
 				IntoValue::into_value(&agent.id),
 				IntoValue::into_value(&agent.version),
+				IntoValue::into_value(snapshot.map(serde_json::to_value).transpose()?),
 			])
 			.on_conflict(OnConflict::columns(["task_id"]).do_nothing().to_owned())
 			.build(PostgresQueryBuilder);
@@ -119,6 +151,7 @@ impl Delegation {
 		if delegation.node_id != node
 			|| delegation.agent_id != agent.id
 			|| delegation.agent_version != agent.version
+			|| delegation.binding_snapshot.as_ref().map(|value| &value.0) != snapshot
 		{
 			return Err(Error::Conflict(
 				"task already delegated to a different agent".into(),
@@ -136,6 +169,16 @@ impl Delegation {
 			.await?;
 		}
 		Ok((task.into(), delegation))
+	}
+	pub(crate) async fn snapshot<E: OrmExecutor>(
+		db: &mut E,
+		task: Uuid,
+	) -> Result<Option<aidash_domain::registry::bindings::ForeignAgentSnapshot>> {
+		Ok(Self::objects()
+			.filter(Self::field_task_id().eq(task))
+			.first_with_db(db)
+			.await?
+			.and_then(|row| row.binding_snapshot.map(|snapshot| snapshot.0)))
 	}
 
 	pub(crate) async fn mark_delivered<E: OrmExecutor>(db: &mut E, task: Uuid) -> Result<()> {

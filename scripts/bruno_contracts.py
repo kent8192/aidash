@@ -54,8 +54,8 @@ def load_manifest():
     routes = json.loads(CATALOG.read_text())
     manifest = json.loads(MANIFEST.read_text())
     expected = Counter(key(route) for route in routes)
-    if len(expected) != 272 or any(count != 1 for count in expected.values()):
-        raise ValueError("the catalog must contain 272 distinct method/path endpoints")
+    if len(expected) != 273 or any(count != 1 for count in expected.values()):
+        raise ValueError("the catalog must contain 273 distinct method/path endpoints")
     requests = manifest["requests"]
     names = Counter(request["name"] for request in requests)
     if any(count != 1 for count in names.values()):
@@ -867,7 +867,7 @@ def render():
             raise ValueError("each scenario must contain contract assertions")
     MANIFEST.write_text(
         json.dumps(
-            {"version": 1, "endpoint_count": 272, "requests": requests}, indent=2
+            {"version": 1, "endpoint_count": 273, "requests": requests}, indent=2
         )
         + "\n"
     )

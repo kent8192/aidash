@@ -25904,5 +25904,14 @@
       },
       "definitions": {}
     }
+  },
+  {
+    "method": "GET",
+    "path": "/federation/v0.1/discover/{id}/{version}/bindings",
+    "name": "peer-agent-bindings",
+    "source": "server/src/apps/federation/peer/views/management.rs",
+    "json": false,
+    "uuid_parameters": [],
+    "query_parameters": []
   }
 ]

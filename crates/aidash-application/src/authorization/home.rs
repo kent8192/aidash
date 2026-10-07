@@ -205,6 +205,24 @@ pub async fn list<R: HomeRepository>(repository: &R, task: Uuid) -> Result<Vec<S
 	.await;
 	let grants = finish(scope, result).await?;
 	let results: Vec<Result<Status>> = stream::iter(grants.into_iter().map(|grant| async move {
+		// Home-owned continuations have their own bounded read, completed before
+		// peer RPC so a slow receiver cannot hide an already durable request.
+		let requests = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+			let mut scope = repository.begin().await?;
+			let result = async {
+				scope
+					.requester_grant(task, grant.id)
+					.await?
+					.ok_or(Error::Forbidden)?;
+				match scope.binding(grant.id).await? {
+					Some(bound) => scope.human_requests(grant.id, bound.admission_id).await,
+					None => Ok(vec![]),
+				}
+			}
+			.await;
+			finish(scope, result).await
+		})
+		.await;
 		// RPC and authority recheck share the original total two-second per-grant budget.
 		let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
 		let mut status: Result<Option<Activation>> = tokio::time::timeout_at(
@@ -248,22 +266,6 @@ pub async fn list<R: HomeRepository>(repository: &R, task: Uuid) -> Result<Vec<S
 				}
 			}
 		}
-		let requests = tokio::time::timeout_at(deadline, async {
-			let mut scope = repository.begin().await?;
-			let result = async {
-				scope
-					.requester_grant(task, grant.id)
-					.await?
-					.ok_or(Error::Forbidden)?;
-				match scope.binding(grant.id).await? {
-					Some(bound) => scope.human_requests(grant.id, bound.admission_id).await,
-					None => Ok(vec![]),
-				}
-			}
-			.await;
-			finish(scope, result).await
-		})
-		.await;
 		let human_requests = match requests {
 			Ok(result) => result?,
 			Err(_) => {

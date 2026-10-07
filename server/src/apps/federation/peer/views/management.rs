@@ -70,6 +70,18 @@ pub async fn peer_agent(
 	crate::http::json(service.peer_agent((id, version)).await)
 }
 
+#[get(
+	"/federation/v0.1/discover/{id}/{version}/bindings",
+	name = "peer-agent-bindings",
+	auth = "protected"
+)]
+pub async fn peer_agent_bindings(
+	#[inject] service: Depends<PeerManagement>,
+	Path((id, version)): Path<(String, String)>,
+) -> ViewResult<Response> {
+	crate::http::json(service.peer_agent_bindings((id, version)).await)
+}
+
 #[post("/federation/v0.1/offers", name = "peer-offer", auth = "protected")]
 pub async fn peer_offer(
 	#[inject] service: Depends<PeerManagement>,

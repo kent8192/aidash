@@ -127,10 +127,59 @@ impl PeerManagement {
 		}
 		let run = f
 			.store
-			.accept_run(&offer.task, node, &offer.agent.id, &offer.agent.version)
+			.accept_run_pinned(
+				&offer.task,
+				node,
+				&offer.agent.id,
+				&offer.agent.version,
+				offer.binding_snapshot.as_ref(),
+			)
 			.await?;
 		f.notify.notify_waiters();
 		Ok(run)
+	}
+	pub(crate) async fn peer_agent_bindings(
+		&self,
+		(id, version): (String, String),
+	) -> Result<aidash_domain::registry::bindings::ForeignAgentSnapshot> {
+		let f = &self.runtime;
+		f.store.require_legacy_agent(&id, &version).await?;
+		let lease = f.store.orm_connection()?;
+		lease
+			.handle()
+			.atomic(async |tx| {
+				let entry =
+					crate::apps::registry::services::admission::effective(tx, &id, &version)
+						.await?;
+				let snapshot = crate::apps::registry::repositories::bindings::preview_remote(
+					tx,
+					&f.config.node_id,
+					&entry,
+				)
+				.await?;
+				let snapshot =
+					aidash_domain::registry::bindings::ForeignAgentSnapshot::from_snapshot(
+						snapshot,
+					)?;
+				for definition in &snapshot.definitions {
+					if definition.definition.kind == "agent" {
+						f.store
+							.require_legacy_agent(
+								&definition.identity.id,
+								&definition.identity.version,
+							)
+							.await?;
+						crate::apps::registry::repositories::bindings::preview_remote(
+							tx,
+							&f.config.node_id,
+							&definition.definition,
+						)
+						.await?;
+					}
+				}
+				Ok(snapshot)
+			})
+			.await
 	}
 	pub(crate) async fn peer_workspace(
 		&self,
