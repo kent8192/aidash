@@ -191,7 +191,7 @@ pub async fn provision(
 	for (identity, original) in &entries {
 		let source = &sources[identity];
 		let mut entry = original.clone();
-		aidash_domain::marketplace::definitions::rewrite(&mut entry, &substitutions)?;
+		aidash_domain::marketplace::definitions::rewrite(&mut entry, &substitutions, node)?;
 		let dependencies = source
 			.dependencies
 			.iter()

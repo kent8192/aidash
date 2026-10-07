@@ -132,3 +132,35 @@ fn bound_skills_require_support_tools() {
 	agent.remove_default.push("skill_read".into());
 	assert!(agent.normalize("aidash://node-a").is_err());
 }
+
+#[test]
+fn bundle_member_ids_are_unique_across_versions_and_nodes() {
+	let member = QualifiedRef::builtin("aidash://node-a", "file_read");
+	for duplicate in [
+		QualifiedRef {
+			version: "2.0.0".into(),
+			..member.clone()
+		},
+		QualifiedRef {
+			registry_node: "aidash://node-b".into(),
+			..member.clone()
+		},
+		member.clone(),
+	] {
+		assert!(
+			BundleConfig {
+				members: vec![member.clone(), duplicate]
+			}
+			.validate()
+			.is_err()
+		);
+	}
+	BundleConfig {
+		members: vec![
+			member,
+			QualifiedRef::builtin("aidash://node-b", "file_search"),
+		],
+	}
+	.validate()
+	.unwrap();
+}

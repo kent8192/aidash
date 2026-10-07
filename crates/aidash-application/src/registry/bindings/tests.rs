@@ -739,3 +739,145 @@ async fn activation_cannot_add_or_replace_a_binding_graph_after_execution_starts
 	};
 	assert!(resolver.tools(&run).await.is_err());
 }
+
+#[tokio::test]
+async fn recovered_snapshots_must_match_the_agent_binding_closure_before_run_admission() {
+	let mut catalog = Catalog::new();
+	let mut config = agent_config();
+	config.remove_default.push("memory_write".into());
+	let mut get = Binding::tool(catalog.core("outbound_get"));
+	get.alias = Some("lookup".into());
+	get.narrow.allowed_hosts = Some(BTreeSet::from(["example.com".into()]));
+	config.bindings.push(get);
+	for (id, kind, source) in [
+		("skill", BindingKind::Skill, json!({"instructions":"Work"})),
+		(
+			"skills-root",
+			BindingKind::Source,
+			json!({"schema_version":1,"source":{"adapter":"skill_roots","roots":[".agents/skills"]}}),
+		),
+	] {
+		catalog.insert(entry(
+			id,
+			if kind == BindingKind::Skill {
+				"skill"
+			} else {
+				"source"
+			},
+			source,
+		));
+		config.bindings.push(Binding {
+			kind,
+			target: reference(id),
+			alias: None,
+			narrow: Default::default(),
+			members: vec![],
+		});
+	}
+	let code = catalog.core("code_interpreter");
+	let install = catalog.core("python_install");
+	catalog.core("python_poll");
+	catalog.core("python_cancel");
+	let bundle = catalog.bundle("python", vec![code.clone(), install.clone()]);
+	config.bindings.push(Binding {
+		kind: BindingKind::Bundle,
+		target: bundle,
+		alias: None,
+		narrow: Default::default(),
+		members: vec![code.id.clone()],
+	});
+	let saved = snapshot(&mut catalog, &config, false).await.unwrap();
+	let recovered: BindingSnapshot =
+		serde_json::from_value(serde_json::to_value(&saved).unwrap()).unwrap();
+	recovered.validate().unwrap();
+
+	let mut altered = vec![];
+	for id in [
+		"aidash.outbound_get",
+		"skill",
+		"skills-root",
+		"aidash.code_interpreter",
+		"aidash.python_poll",
+		"aidash.file_read",
+	] {
+		let mut missing = recovered.clone();
+		missing.bindings.retain(|binding| binding.identity.id != id);
+		altered.push(missing);
+	}
+	for field in ["alias", "origin", "narrow"] {
+		let mut changed = recovered.clone();
+		let get = changed
+			.bindings
+			.iter_mut()
+			.find(|binding| binding.identity.id == "aidash.outbound_get")
+			.unwrap();
+		match field {
+			"alias" => get.alias = Some("different".into()),
+			"origin" => get.origin = BindingOrigin::Default,
+			_ => get.narrow = Default::default(),
+		}
+		altered.push(changed);
+	}
+	let mut duplicate = recovered.clone();
+	duplicate.bindings.push(duplicate.bindings[0].clone());
+	altered.push(duplicate);
+	let mut expanded_config = config.clone();
+	expanded_config.bindings.last_mut().unwrap().members.clear();
+	expanded_config
+		.bindings
+		.push(Binding::tool(catalog.core("apply_patch")));
+	let expanded = snapshot(&mut catalog, &expanded_config, false)
+		.await
+		.unwrap();
+	for identity in [install, QualifiedRef::builtin(NODE, "apply_patch")] {
+		let mut added = recovered.clone();
+		added.bindings.push(
+			expanded
+				.bindings
+				.iter()
+				.find(|b| b.identity == identity)
+				.unwrap()
+				.clone(),
+		);
+		if !added.definitions.iter().any(|d| d.identity == identity) {
+			added.definitions.push(
+				expanded
+					.definitions
+					.iter()
+					.find(|d| d.identity == identity)
+					.unwrap()
+					.clone(),
+			);
+		}
+		altered.push(added);
+	}
+	let mut run = admitted_run().await;
+	run.context.binding_snapshot = None;
+	for changed in altered {
+		assert!(changed.validate().is_err());
+		assert!(run.bind(changed).is_err());
+		assert!(run.context.binding_snapshot.is_none());
+	}
+	run.bind(recovered).unwrap();
+}
+
+#[tokio::test]
+async fn bundle_selection_rejects_same_id_on_different_nodes_or_versions() {
+	for (node, version) in [(NODE, "2.0.0"), ("aidash://node-b", "1.0.0")] {
+		let mut catalog = Catalog::new();
+		let member = catalog.core("outbound_get");
+		let mut other = member.clone();
+		other.registry_node = node.into();
+		other.version = version.into();
+		let bundle = catalog.bundle("ambiguous", vec![member.clone(), other]);
+		let mut config = agent_config();
+		config.bindings.push(Binding {
+			kind: BindingKind::Bundle,
+			target: bundle,
+			alias: None,
+			narrow: Default::default(),
+			members: vec![member.id],
+		});
+		assert!(snapshot(&mut catalog, &config, false).await.is_err());
+	}
+}

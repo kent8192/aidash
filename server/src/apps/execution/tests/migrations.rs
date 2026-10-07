@@ -35,7 +35,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 	// Act: load every external SQL asset through the native filesystem source.
 	let migrations = FilesystemSource::new(&root).all_migrations().await.unwrap();
 	// Assert: retain the physical graph, model snapshots, and all supported tables.
-	assert_eq!(migrations.len(), 48);
+	assert_eq!(migrations.len(), 49);
 	assert_eq!(
 		migrations
 			.iter()
@@ -258,7 +258,7 @@ async fn nonempty_generation_reads_sql_assets_and_replays_only_logical_state(
 	);
 	std::fs::write(&history, &edited).unwrap();
 	let before = FilesystemSource::new(&root).all_migrations().await.unwrap();
-	assert_eq!(before.len(), 48);
+	assert_eq!(before.len(), 49);
 	let predecessor = build_state_from_files(&FilesystemSource::new(&root))
 		.await
 		.unwrap();
@@ -604,7 +604,7 @@ async fn preprovisioned_extension_allows_database_scoped_migrations(
 		.fetch_one(&admin)
 		.await
 		.unwrap();
-	assert_eq!(count, 48);
+	assert_eq!(count, 49);
 	let owner: String = sqlx::query_scalar(
 		"SELECT tableowner FROM pg_tables WHERE schemaname='public' AND tablename='workspaces'",
 	)
@@ -643,7 +643,7 @@ async fn preprovisioned_extension_allows_database_scoped_migrations(
 	aidash_server::bootstrap::migrations::run(&context)
 		.await
 		.unwrap();
-	assert_eq!(recorded_keys(&fixture.connection).await.len(), 48);
+	assert_eq!(recorded_keys(&fixture.connection).await.len(), 49);
 }
 
 #[rstest]
@@ -743,7 +743,7 @@ async fn baseline_preserves_a_preinstalled_extension_during_reversal(
 	aidash_server::bootstrap::migrations::run(&migration_context(&fixture.url))
 		.await
 		.unwrap();
-	assert_eq!(recorded_keys(&fixture.connection).await.len(), 48);
+	assert_eq!(recorded_keys(&fixture.connection).await.len(), 49);
 	let mut command = deployment_command(&fixture.url, fixture.directory.path());
 	command.args(["migrate", "operations", "zero"]);
 	let output = tokio::time::timeout(Duration::from_secs(35), command.output())
@@ -810,7 +810,7 @@ async fn local_database_preparation_uses_and_replays_the_native_history(
 	let stdout = String::from_utf8_lossy(&output.stdout);
 	assert!(stdout.contains("Prepared local Aidash database 1."));
 	assert!(stdout.contains("Prepared local Aidash database 2."));
-	assert_eq!(recorded_keys(&fixture.connection).await.len(), 48);
+	assert_eq!(recorded_keys(&fixture.connection).await.len(), 49);
 }
 
 #[rstest]

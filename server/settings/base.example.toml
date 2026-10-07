@@ -59,6 +59,8 @@ worker_count = 4
 # Worker probe listeners are disabled unless this address is configured.
 # probe_listen = "127.0.0.1:8081"
 background_enabled = true
+# Stage these Host groups for new tenants; approval and activation remain explicit.
+default_host_packages = []
 
 # Omit this table to disable dashboard OIDC.
 # [dashboard.oidc]

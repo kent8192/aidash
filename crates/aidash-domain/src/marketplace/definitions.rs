@@ -25,11 +25,13 @@ pub fn content(entry: &Entry) -> String {
 	entry.installation = None;
 	key(&entry)
 }
-pub fn rewrite(entry: &mut Entry, bindings: &[DependencyBinding]) -> Result<()> {
-	fn bind(reference: &mut EntityRef, bindings: &[DependencyBinding]) {
+pub fn rewrite(entry: &mut Entry, bindings: &[DependencyBinding], node: &str) -> Result<()> {
+	fn bind(reference: &mut EntityRef, bindings: &[DependencyBinding]) -> bool {
 		if let Some(binding) = bindings.iter().find(|b| b.source == *reference) {
 			*reference = binding.target.clone();
+			return true;
 		}
+		false
 	}
 	match entry.kind.as_str() {
 		"agent" => {
@@ -69,13 +71,16 @@ pub fn rewrite(entry: &mut Entry, bindings: &[DependencyBinding]) -> Result<()> 
 			entry.config = serde_json::to_value(c)?;
 		}
 		"bundle" => {
+			crate::configuration::validate_node_id(node)?;
 			let mut c: crate::registry::bindings::BundleConfig =
 				serde_json::from_value(entry.config.clone())?;
 			for reference in &mut c.members {
 				let mut local = reference.local();
-				bind(&mut local, bindings);
-				reference.id = local.id;
-				reference.version = local.version;
+				if bind(&mut local, bindings) {
+					reference.registry_node = node.into();
+					reference.id = local.id;
+					reference.version = local.version;
+				}
 			}
 			entry.config = serde_json::to_value(c)?;
 		}

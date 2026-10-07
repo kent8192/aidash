@@ -214,7 +214,16 @@ pub async fn resolve(
 		));
 	}
 	overlay_config(&mut entry.config, config)?;
-	let direct = refs(&entry, node)?;
+	// Frozen bundle qualifiers name the publishing Node. Inspect them there;
+	// only verified dependency substitutions become receiving-Node references.
+	let direct = refs(
+		&entry,
+		if entry.kind == "bundle" {
+			&source.repository
+		} else {
+			node
+		},
+	)?;
 	let mut bindings = vec![];
 	let mut seen = BTreeSet::new();
 	for binding in submitted {
@@ -283,7 +292,7 @@ pub async fn resolve(
 			target,
 		});
 	}
-	rewrite(&mut entry, &bindings)?;
+	rewrite(&mut entry, &bindings, node)?;
 	let mut roots = refs(&entry, node).map_err(|_| Error::Forbidden)?;
 	roots.extend(bindings.iter().map(|b| (b.target.clone(), String::new())));
 	let graph = local_graph(scope, roots, node).await?;

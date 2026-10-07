@@ -7,6 +7,7 @@ use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
 pub const BINDING_SCHEMA: u8 = 1;
+mod snapshot;
 pub mod sources;
 pub const MAX_BINDINGS: usize = 128;
 pub const REQUIRED_TOOLS: &[&str] = &["workspace_read", "human_request"];
@@ -387,7 +388,7 @@ pub struct Binding {
 	pub alias: Option<String>,
 	#[serde(default)]
 	pub narrow: Narrowing,
-	/// An empty member list binds the entire bundle. Member IDs are exact.
+	/// An empty member list binds the entire bundle. IDs are unique within a bundle.
 	#[serde(default, skip_serializing_if = "Vec::is_empty")]
 	pub members: Vec<String>,
 }
@@ -460,10 +461,15 @@ impl BundleConfig {
 	pub fn validate(&self) -> Result<()> {
 		if self.members.is_empty()
 			|| self.members.len() > MAX_BINDINGS
-			|| self.members.iter().collect::<BTreeSet<_>>().len() != self.members.len()
+			|| self
+				.members
+				.iter()
+				.map(|member| &member.id)
+				.collect::<BTreeSet<_>>()
+				.len() != self.members.len()
 		{
 			return Err(Error::Invalid(
-				"bundle requires 1..128 unique exact members".into(),
+				"bundle requires 1..128 members with unique IDs".into(),
 			));
 		}
 		for member in &self.members {
@@ -575,6 +581,7 @@ impl BindingSnapshot {
 		let config: AgentBindings =
 			serde_json::from_value(agent_definition.definition.config.clone())?;
 		config.validate()?;
+		self.validate_closure(&config, &definitions)?;
 		if config.instructions.trim().is_empty()
 			&& !config.bindings.iter().any(|binding| {
 				binding.kind == BindingKind::Skill

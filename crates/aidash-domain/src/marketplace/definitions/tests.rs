@@ -75,6 +75,7 @@ fn executable_reference_rewrite_preserves_other_configuration() {
 				version: "4.0.0".into(),
 			},
 		}],
+		"aidash://local",
 	)
 	.unwrap();
 	assert_eq!(
@@ -82,4 +83,36 @@ fn executable_reference_rewrite_preserves_other_configuration() {
 		json!({"id":"installed-agent","version":"4.0.0"})
 	);
 	assert_eq!(entity.config["transport"]["node_id"], original_node);
+}
+
+#[test]
+fn bundle_substitutions_requalify_only_verified_members_to_the_receiving_node() {
+	let mut bundle = entry();
+	bundle.kind = "bundle".into();
+	bundle.config = json!({"members":[
+		{"registry_node":"aidash://publisher","id":"shell","version":"1.0.0"},
+		{"registry_node":"aidash://publisher","id":"unbound","version":"1.0.0"}
+	]});
+	rewrite(
+		&mut bundle,
+		&[DependencyBinding {
+			source: EntityRef {
+				id: "shell".into(),
+				version: "1.0.0".into(),
+			},
+			target: EntityRef {
+				id: "installed-shell".into(),
+				version: "2.0.0".into(),
+			},
+		}],
+		"aidash://receiver",
+	)
+	.unwrap();
+	assert_eq!(
+		bundle.config["members"],
+		json!([
+			{"registry_node":"aidash://receiver","id":"installed-shell","version":"2.0.0"},
+			{"registry_node":"aidash://publisher","id":"unbound","version":"1.0.0"}
+		])
+	);
 }

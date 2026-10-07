@@ -105,6 +105,44 @@ async fn bundle_members_must_exist_and_database_accepts_the_new_kind(
 
 #[rstest]
 #[tokio::test]
+async fn bundle_member_id_ambiguity_is_rejected_by_registration_and_database(
+	#[future] database: DatabaseFixture,
+) {
+	let database = database.await;
+	let registry = registry(&database).await;
+	registry.seed_system().await.unwrap();
+	let member = QualifiedRef::builtin("aidash://node", "workspace_read");
+	for (index, (node, version)) in [("aidash://node", "2.0.0"), ("aidash://foreign", "1.0.0")]
+		.into_iter()
+		.enumerate()
+	{
+		let duplicate = QualifiedRef {
+			registry_node: node.into(),
+			version: version.into(),
+			..member.clone()
+		};
+		let bundle: Entry = serde_json::from_value(json!({"id":format!("ambiguous-{index}"),"version":"1.0.0","kind":"bundle","name":{"en":"Test"},"description":{"en":"Test"},"config":{"members":[member,duplicate]}})).unwrap();
+		assert!(registry.register(bundle.clone()).await.is_err());
+		let definition = Definition::build()
+			.id(&bundle.id)
+			.version(&bundle.version)
+			.kind(DefinitionKind::Bundle)
+			.metadata(serde_json::to_value(&bundle).unwrap().into())
+			.finish();
+		let mut connection = database.lease.handle();
+		let error = Definition::objects()
+			.create_with_conn(&mut connection, &definition)
+			.await
+			.unwrap_err();
+		assert!(
+			error.to_string().contains("registry_bundle_config"),
+			"{error}"
+		);
+	}
+}
+
+#[rstest]
+#[tokio::test]
 async fn restart_seed_retains_definitions_during_pending_transaction_recovery(
 	#[future] database: DatabaseFixture,
 ) {
