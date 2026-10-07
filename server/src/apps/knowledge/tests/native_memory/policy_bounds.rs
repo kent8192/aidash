@@ -605,6 +605,21 @@ async fn deleting_an_unprojected_unit_does_not_consume_full_search_capacity(
 		)
 		.await
 		.unwrap();
+	let configured = aidash_server::semantic::service::get_index(&store, &Actor::Operator, indexed)
+		.await
+		.unwrap();
+	let mut spec = configured.configuration().unwrap();
+	spec.max_sources = 1;
+	aidash_server::semantic::service::configure(
+		&store,
+		workspace,
+		aidash_server::semantic::ConfigureIndex {
+			expected_revision: 0,
+			spec,
+		},
+	)
+	.await
+	.unwrap();
 	let bank = memory::create_participant(
 		&store,
 		&Actor::Operator,
@@ -624,27 +639,34 @@ async fn deleting_an_unprojected_unit_does_not_consume_full_search_capacity(
 			&bank,
 			Change::Add {
 				id: old,
-				content: content("Admitted before search existed"),
+				content: content("Admitted before its projection was lost"),
 			},
 		),
 	)
 	.await
 	.unwrap();
-	let configured = aidash_server::semantic::service::get_index(&store, &Actor::Operator, indexed)
-		.await
-		.unwrap();
-	let mut spec = configured.configuration().unwrap();
-	spec.max_sources = 1;
-	aidash_server::semantic::service::configure(
-		&store,
-		workspace,
-		aidash_server::semantic::ConfigureIndex {
-			expected_revision: 0,
-			spec,
-		},
+	// Simulate a missing projection after valid bank admission. New banks now
+	// require an enabled matching index, while deletion must still repair gaps.
+	let mut tx = native::begin(&store.pool).await.unwrap();
+	native::query(
+		&Query::delete()
+			.from_table(Alias::new("semantic_points"))
+			.and_where(Expr::col("entry_id").eq(Expr::value(old)))
+			.to_string(PostgresQueryBuilder),
 	)
+	.execute(&mut *tx)
 	.await
 	.unwrap();
+	native::query(
+		&Query::delete()
+			.from_table(Alias::new("semantic_entries"))
+			.and_where(Expr::col("id").eq(Expr::value(old)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(&mut *tx)
+	.await
+	.unwrap();
+	tx.commit().await.unwrap();
 	let current = Uuid::now_v7();
 	memory::mutate(
 		&store,

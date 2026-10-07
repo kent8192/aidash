@@ -3,6 +3,7 @@ use super::{access::Lease, native_memory as repository, units};
 use crate::{Error, Result, database::native, store::Store};
 use aidash_domain::{memory::*, registry::EntityRef};
 use chrono::{Duration, Utc};
+mod repairs;
 use reinhardt::query::{
 	Alias, ColumnRef, Expr, ExprTrait, Order, PostgresQueryBuilder, Query, QueryStatementBuilder,
 };
@@ -56,13 +57,10 @@ pub(crate) async fn sweep(store: &Store) -> Result<()> {
 			let policy = crate::semantic::native_memory::policy(&mut lease, &provider).await?;
 			let now = Utc::now();
 			let retention = &policy.retention;
-			// Ordinary stale units have no automatic repair job. Retire them even
-			// when age-based expiry is disabled; derived units remain repairable.
-			let mut retired = reinhardt::query::Condition::any().add(
-				reinhardt::query::Condition::all()
-					.add(Expr::col("stale").eq(true))
-					.add(Expr::col("kind").is_in(["world", "experience"])),
-			);
+			// Staleness also retires derived rows when no viable automatic repair
+			// remains. Preserve queued refreshes, but never let hidden rows without
+			// work consume live capacity forever when age-based expiry is disabled.
+			let mut retired = reinhardt::query::Condition::any().add(Expr::col("stale").eq(true));
 			if let Some(age) = retention.unit_max_age_days {
 				retired = retired.add(
 					Expr::col("learned_at").lte(Expr::value(now - Duration::days(i64::from(age)))),
@@ -77,20 +75,30 @@ pub(crate) async fn sweep(store: &Store) -> Result<()> {
 						.and_where(Expr::col("deleted").eq(false))
 						.cond_where(retired)
 						.order_by(Alias::new("id"), Order::Asc)
-						.limit(retention.purge_batch.min(policy.bounds.max_candidates) as u64)
+						.limit(policy.bounds.max_units as u64 + 1)
 						.to_string(PostgresQueryBuilder),
 				)
 				.fetch_all(&mut **lease.tx())
 				.await?;
+				let jobs = repairs::pending(&mut lease, id, &provider, &policy).await?;
 				let mut changes = Vec::new();
 				for item in expired {
 					let unit = units::load(&mut lease, item.try_get("id")?, false)
 						.await?
 						.ok_or(Error::Forbidden)?;
+					let aged = retention
+						.unit_max_age_days
+						.is_some_and(|age| unit.learned_at <= now - Duration::days(i64::from(age)));
+					if !aged && repairs::viable(&mut lease, &unit, &policy, &jobs).await? {
+						continue;
+					}
 					changes.push(Change::Delete {
 						id: unit.id,
 						expected_revision: unit.revision,
 					});
+					if changes.len() >= retention.purge_batch.min(policy.bounds.max_candidates) {
+						break;
+					}
 				}
 				if !changes.is_empty() {
 					repository::mutate(

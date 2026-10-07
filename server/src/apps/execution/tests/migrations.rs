@@ -107,8 +107,23 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 					migration.name
 				);
 				if sql.starts_with("ALTER TABLE") {
+					// These PostgreSQL JSONB CHECK replacements use reversible SQL
+					// assets because the filesystem loader resolves assets in RunSQL.
+					let check = match (migration.app_label.as_str(), migration.name.as_str()) {
+						("knowledge", "0024_openrouter_embeddings") => {
+							Some("semantic_indexes_revision")
+						}
+						("registry", "0011_openrouter_embeddings") => {
+							Some("registry_embedding_config")
+						}
+						_ => None,
+					};
 					assert!(
-						sql.contains("ADD GENERATED ALWAYS AS IDENTITY"),
+						sql.contains("ADD GENERATED ALWAYS AS IDENTITY")
+							|| check.is_some_and(|name| {
+								sql.contains(&format!("DROP CONSTRAINT {name};"))
+									&& sql.contains(&format!("ADD CONSTRAINT {name} CHECK ("))
+							}),
 						"{}: {sql}",
 						migration.name
 					);

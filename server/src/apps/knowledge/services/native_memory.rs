@@ -477,6 +477,26 @@ pub(crate) async fn run_mutate(
 	scope(store, lease, &mutation.bank, "memory.write").await?;
 	bank_provider(lease, &mutation.bank, &mutation.provider).await?;
 	let policy = policy(lease, &mutation.provider).await?;
+	// Model tools may only change unverified content. Check targets under the
+	// same Workspace mutation lock as CAS; supplied replacement content cannot
+	// downgrade an existing human verification or bypass it through deletion.
+	for change in &mutation.changes {
+		if let Change::Add { content, .. } | Change::Correct { content, .. } = change
+			&& content.verification != Verification::Unverified
+		{
+			return Err(Error::Forbidden);
+		}
+		if let Change::Correct { id, .. } | Change::Delete { id, .. } = change {
+			let existing = units::load(lease, *id, false)
+				.await?
+				.ok_or(Error::Forbidden)?;
+			if existing.bank != mutation.bank
+				|| existing.content.verification != Verification::Unverified
+			{
+				return Err(Error::Forbidden);
+			}
+		}
+	}
 	validate_direct_mutation(lease, &mutation, &policy).await?;
 	repository::mutate(lease, &mutation, &policy.bounds).await
 }

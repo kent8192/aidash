@@ -181,9 +181,9 @@ async fn run_journal_above_1024_checks_revisions_on_later_pages(
 	bounds.max_units = 2048;
 	bounds.max_candidates = 32;
 	let database = database.await;
-	let (store, _, _) = setup(&database, bounds).await;
-	// No disposable search index: its independent source quota is not the
-	// canonical memory bank's capacity or the Run's lifetime read budget.
+	let (store, _, indexed) = setup(&database, bounds).await;
+	// Admit the bank against a valid index, then remove the disposable search
+	// service. Its source quota is independent of the Run lifetime read journal.
 	let workspace = store
 		.create_workspace("Long Run", "Accumulate admitted recall pages")
 		.await
@@ -200,6 +200,21 @@ async fn run_journal_above_1024_checks_revisions_on_later_pages(
 		)
 		.await
 		.unwrap();
+	let configured = aidash_server::semantic::service::get_index(&store, &Actor::Operator, indexed)
+		.await
+		.unwrap();
+	let mut spec = configured.configuration().unwrap();
+	spec.max_sources = 64;
+	aidash_server::semantic::service::configure(
+		&store,
+		workspace,
+		aidash_server::semantic::ConfigureIndex {
+			expected_revision: 0,
+			spec,
+		},
+	)
+	.await
+	.unwrap();
 	let bank = memory::create_participant(
 		&store,
 		&Actor::Operator,
@@ -211,6 +226,19 @@ async fn run_journal_above_1024_checks_revisions_on_later_pages(
 	.await
 	.unwrap()
 	.bank;
+	let mut tx = native::begin(&store.pool).await.unwrap();
+	for table in ["semantic_collections", "semantic_indexes"] {
+		native::query(
+			&Query::delete()
+				.from_table(Alias::new(table))
+				.and_where(Expr::col("workspace_id").eq(Expr::value(workspace)))
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(&mut *tx)
+		.await
+		.unwrap();
+	}
+	tx.commit().await.unwrap();
 	let mut ids: Vec<_> = (0..1025).map(|_| Uuid::now_v7()).collect();
 	ids.sort();
 	for batch in ids.chunks(32) {

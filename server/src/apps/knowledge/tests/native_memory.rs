@@ -33,6 +33,8 @@ mod recovery_deployment;
 mod review_capacity;
 #[path = "native_memory/review_delivery.rs"]
 mod review_delivery;
+#[path = "native_memory/review_lifecycle.rs"]
+mod review_lifecycle;
 #[path = "native_memory/review_regressions.rs"]
 mod review_regressions;
 

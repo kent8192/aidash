@@ -76,7 +76,7 @@ pub(crate) async fn completion_ready(store: &Store, job: &Request) -> Result<boo
 			.column(Alias::new("id"))
 			.from(Alias::new("semantic_entries"))
 			.and_where(Expr::col("id").in_subquery(units))
-			.and_where(Expr::col("state").eq("PENDING"))
+			.and_where(Expr::col("state").is_in(["PENDING", "ERROR"]))
 			.limit(1)
 			.to_string(PostgresQueryBuilder),
 	)

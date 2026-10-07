@@ -49,6 +49,15 @@ impl Fixture {
 		usage: Option<u64>,
 		maintenance: bool,
 	) -> Self {
+		Self::new_with_policy(environment, allowance, usage, maintenance, false).await
+	}
+	async fn new_with_policy(
+		environment: &TestEnvironment,
+		allowance: Option<i64>,
+		usage: Option<u64>,
+		maintenance: bool,
+		learning: bool,
+	) -> Self {
 		let (mut f, url, schema) = setup(environment).await;
 		let memory_recovery_directory = tempfile::tempdir().unwrap();
 		f.store = aidash_server::semantic::services::memory_recovery::initialize(
@@ -133,6 +142,9 @@ impl Fixture {
                     }
                     calls.fetch_add(1, Ordering::SeqCst);
                     let mode = remember.load(Ordering::SeqCst);
+                    if mode == usize::MAX {
+                        return Json(json!({"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"Vehicle research complete."}}],"usage":{"prompt_tokens":10,"completion_tokens":2}}));
+                    }
                     let (name, arguments) = if mode > 0 {
                         let id = remembered_id(mode);
                         ("memory_mutate", serde_json::to_string(&json!({"changes":[{"operation":"add","id":id,"content":{"text":"Generated vehicle findings","kind":"experience","learning":"fact","verification":"unverified","occurred":null,"entities":[],"evidence":[],"links":[]}}]})).unwrap())
@@ -188,7 +200,7 @@ impl Fixture {
 					"embedding":{"id":"embedding","version":"1.0.0"},"reranker":{"id":"memory-reranker","version":"1.0.0"},"tokenizer":{"id":"memory-tokenizer","version":"1.0.0"},
 					"prices":{"extraction":{"input_per_million":0,"output_per_million":0},"derivation":{"input_per_million":0,"output_per_million":0},"reflection":{"input_per_million":0,"output_per_million":0},"embedding":{"input_per_million":0,"output_per_million":0},"reranker":{"input_per_million":0,"output_per_million":0}},
 					"retention":{"unit_max_age_days":null,"candidate_days":7,"history_days":30,"history_versions":16,"model_result_days":7,"backup_days":7,"purge_after_seconds":60,"purge_batch":32,"max_unit_records":128,"max_model_operations":1024},
-					"bounds":{"max_unit_bytes":8192,"max_input_bytes":8192,"max_units":16,"max_candidates":8,"max_entities":8,"max_evidence":8,"max_links":8,"max_graph_hops":3,"max_graph_visits":32,"max_results":4,"max_context_tokens":8192,"max_model_calls":4,"max_model_tokens":8192,"max_cost_micros":10000,"max_retries":2,"max_call_seconds":30},"semantic_link_min_similarity_millionths":700000,"learn_from_runs":false,"maintain_observations":maintenance,"refresh_mental_models":false
+					"bounds":{"max_unit_bytes":8192,"max_input_bytes":8192,"max_units":16,"max_candidates":8,"max_entities":8,"max_evidence":8,"max_links":8,"max_graph_hops":3,"max_graph_visits":32,"max_results":4,"max_context_tokens":8192,"max_model_calls":4,"max_model_tokens":8192,"max_cost_micros":10000,"max_retries":2,"max_call_seconds":30},"semantic_link_min_similarity_millionths":700000,"learn_from_runs":learning,"maintain_observations":maintenance,"refresh_mental_models":false
 				}}),
 			),
 			(
@@ -633,7 +645,10 @@ async fn background_indexing_retains_failed_charges_across_recovery_and_cannot_o
 	let entry = fixture.remember().await;
 	assert_eq!(fixture.usage().await["embedding_calls"], 1);
 	fixture.response_mode.store(1, Ordering::SeqCst);
-	tokio::time::timeout(std::time::Duration::from_secs(5), async {
+	// sweep also performs native retention, purge, and durable engine maintenance.
+	// Match the other coverage-backed fixture deadlines while retaining a finite
+	// bound that catches lock cycles across the two concurrent workers.
+	tokio::time::timeout(std::time::Duration::from_secs(20), async {
 		let (first, second) = tokio::join!(
 			semantic::worker::sweep(&fixture.f.store),
 			semantic::worker::sweep(&fixture.f.store)
@@ -1540,4 +1555,308 @@ async fn native_shared_synthesis_preserves_published_origins_and_unions_nested_b
 		}
 		fixture.dispose().await;
 	}
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn model_memory_mutations_preserve_existing_human_verification(
+	#[future(awt)]
+	#[from(test_environment)]
+	environment: Arc<TestEnvironment>,
+) {
+	use aidash_domain::memory::{Bank, Change, Content, Kind, Learning, Mutation, Verification};
+	use aidash_server::{
+		authorization::identity::Actor, database::native, semantic::native_memory as memory,
+	};
+	use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query, QueryStatementBuilder};
+	let fixture = Fixture::new(&environment, Some(2), Some(2)).await;
+	let run = fixture.f.store.runs().await.unwrap().remove(0);
+	let participant: Uuid = native::query_scalar(
+		&Query::select()
+			.column(Alias::new("participant_id"))
+			.from(Alias::new("memory_run_bindings"))
+			.and_where(Expr::col("run_id").eq(Expr::value(run.id)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.scalar_one(&fixture.f.store.pool)
+	.await
+	.unwrap();
+	let bank = Bank {
+		home: run.home_node.clone(),
+		tenant: "acme".into(),
+		workspace: run.workspace_id,
+		participant: Some(participant),
+	};
+	let context = aidash_server::tool::ToolContext {
+		home: aidash_server::federation::Home::new(fixture.f.clone(), run.clone()),
+		store: fixture.f.store.clone(),
+		run,
+	};
+	let tools = aidash_server::tool::builtins();
+	let tool = &tools["memory_mutate"];
+	for kind in [Kind::World, Kind::Experience] {
+		for verification in [
+			Verification::Supported,
+			Verification::Contradicted,
+			Verification::Unverified,
+		] {
+			let id = Uuid::now_v7();
+			let original = Content {
+				text: "Human-reviewed knowledge".into(),
+				kind,
+				learning: Learning::Fact,
+				verification,
+				mental_model: None,
+				occurred: None,
+				entities: vec![],
+				evidence: vec![],
+				links: vec![],
+			};
+			memory::mutate(
+				&fixture.f.store,
+				&Actor::Operator,
+				Mutation {
+					operation_id: Uuid::now_v7(),
+					provider: aidash_server::registry::EntityRef {
+						id: "memory".into(),
+						version: "1.0.0".into(),
+					},
+					bank: bank.clone(),
+					changes: vec![Change::Add {
+						id,
+						content: original.clone(),
+					}],
+				},
+			)
+			.await
+			.unwrap();
+			let mut replacement = original.clone();
+			replacement.text = "Model replacement".into();
+			replacement.verification = Verification::Unverified;
+			let result = tool
+				.invoke(
+					&context,
+					json!({"changes":[Change::Correct { id, expected_revision: 1, content: replacement }]}),
+					&format!("correct-{id}"),
+				)
+				.await;
+			if verification == Verification::Unverified {
+				result.unwrap();
+			} else {
+				assert!(matches!(result, Err(aidash_server::Error::Forbidden)));
+			}
+			let expected_revision = if verification == Verification::Unverified {
+				2
+			} else {
+				1
+			};
+			let result = tool
+				.invoke(
+					&context,
+					json!({"changes":[Change::Delete { id, expected_revision }]}),
+					&format!("delete-{id}"),
+				)
+				.await;
+			if verification == Verification::Unverified {
+				result.unwrap();
+			} else {
+				assert!(matches!(result, Err(aidash_server::Error::Forbidden)));
+			}
+			let row = native::query(
+				&Query::select()
+					.columns(["revision", "deleted", "verification", "text"].map(Alias::new))
+					.from(Alias::new("memory_units"))
+					.and_where(Expr::col("id").eq(Expr::value(id)))
+					.to_string(PostgresQueryBuilder),
+			)
+			.fetch_one(&fixture.f.store.pool)
+			.await
+			.unwrap();
+			assert_eq!(
+				row.try_get::<bool>("deleted").unwrap(),
+				verification == Verification::Unverified
+			);
+			if verification != Verification::Unverified {
+				assert_eq!(row.try_get::<i64>("revision").unwrap(), 1);
+				assert_eq!(row.try_get::<String>("text").unwrap(), original.text);
+				assert_eq!(
+					row.try_get::<String>("verification").unwrap(),
+					serde_json::to_value(verification)
+						.unwrap()
+						.as_str()
+						.unwrap()
+				);
+			}
+		}
+	}
+	fixture.dispose().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn completed_learning_origin_remains_live_through_failed_index_retry(
+	#[future(awt)]
+	#[from(test_environment)]
+	environment: Arc<TestEnvironment>,
+) {
+	use aidash_server::database::native;
+	use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query, QueryStatementBuilder};
+	let fixture = Fixture::new_with_policy(&environment, Some(8), Some(2), false, true).await;
+	let entry = fixture.remember().await;
+	semantic::worker::sweep(&fixture.f.store).await.unwrap();
+	fixture.remember.store(usize::MAX, Ordering::SeqCst);
+	fixture.drive().await;
+	let run = fixture.f.store.runs().await.unwrap().remove(0);
+	assert_eq!(run.phase().as_str(), "COMPLETED");
+	// Reindex an admitted generated unit after its Run completes, then fail one
+	// provider attempt. Completion must preserve the scheduled retry's authority.
+	let metadata: Value = native::query_scalar(
+		&Query::select()
+			.column(Alias::new("metadata"))
+			.from(Alias::new("semantic_entries"))
+			.and_where(Expr::col("id").eq(Expr::value(entry)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.scalar_one(&fixture.f.store.pool)
+	.await
+	.unwrap();
+	let (code, response) = request(
+		&fixture.app,
+		&fixture.f.config.api_token,
+		"POST",
+		&format!("/api/workspaces/{}/memory/operate", fixture.workspace),
+		json!({"operation_id":Uuid::now_v7(),"provider":metadata["provider"],"bank":metadata["bank"],"action":{"action":"reindex","expected_index_revision":fixture.index["revision"]}}),
+	)
+	.await;
+	assert_eq!(code, 200, "{response}");
+	fixture.response_mode.store(1, Ordering::SeqCst);
+	semantic::worker::sweep(&fixture.f.store).await.unwrap();
+	let indexed = || async {
+		native::query_scalar::<String>(
+			&Query::select()
+				.column(Alias::new("state"))
+				.from(Alias::new("semantic_entries"))
+				.and_where(Expr::col("id").eq(Expr::value(entry)))
+				.to_string(PostgresQueryBuilder),
+		)
+		.scalar_one(&fixture.f.store.pool)
+		.await
+	};
+	assert_eq!(indexed().await.unwrap(), "ERROR");
+	let bank: Uuid = native::query_scalar(
+		&Query::select()
+			.column(Alias::new("bank_id"))
+			.from(Alias::new("memory_units"))
+			.and_where(Expr::col("id").eq(Expr::value(entry)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.scalar_one(&fixture.f.store.pool)
+	.await
+	.unwrap();
+	// Pin an already-completed learning disposition so the test isolates the
+	// admitted-unit index retry rather than another model learning invocation.
+	let mut tx = native::begin(&fixture.f.store.pool).await.unwrap();
+	native::query(
+		&Query::insert()
+			.into_table(Alias::new("memory_engine_jobs"))
+			.columns(
+				[
+					"id",
+					"bank_id",
+					"provider_id",
+					"provider_version",
+					"kind",
+					"input",
+					"authority",
+					"state",
+					"attempts",
+					"next_attempt",
+					"created_at",
+					"updated_at",
+				]
+				.map(Alias::new),
+			)
+			.from_subquery(
+				Query::select()
+					.expr(Expr::value(run.id))
+					.expr(Expr::value(bank))
+					.expr(Expr::value("memory"))
+					.expr(Expr::value("1.0.0"))
+					.expr(Expr::value("learn"))
+					.expr(Expr::value(
+						json!({"kind":"learn","run":run.id,"revision":run.revision}),
+					))
+					.expr(Expr::value(json!({"kind":"operator"})))
+					.expr(Expr::value("complete"))
+					.expr(Expr::value(1_i32))
+					.expr(Expr::value(chrono::Utc::now()))
+					.expr(Expr::value(chrono::Utc::now()))
+					.expr(Expr::value(chrono::Utc::now()))
+					.to_owned(),
+			)
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(&mut *tx)
+	.await
+	.unwrap();
+	tx.commit().await.unwrap();
+	aidash_server::generation::provision::reconcile(&fixture.f)
+		.await
+		.unwrap();
+	let request_id: Uuid = fixture.job["id"].as_str().unwrap().parse().unwrap();
+	let status = || async {
+		native::query_scalar::<String>(
+			&Query::select()
+				.column(Alias::new("status"))
+				.from(Alias::new("generation_requests"))
+				.and_where(Expr::col("id").eq(Expr::value(request_id)))
+				.to_string(PostgresQueryBuilder),
+		)
+		.scalar_one(&fixture.f.store.pool)
+		.await
+	};
+	assert_eq!(
+		status().await.unwrap(),
+		"ACTIVE",
+		"a transient index failure must retain the origin until retry"
+	);
+	fixture.response_mode.store(0, Ordering::SeqCst);
+	let mut tx = native::begin(&fixture.f.store.pool).await.unwrap();
+	// Advance the failed model attempt beyond its durable single-call window;
+	// it remains charged while the semantic retry receives a fresh reservation.
+	native::query(
+		&Query::update()
+			.table(Alias::new("memory_model_attempts"))
+			.value(
+				Alias::new("created_at"),
+				chrono::Utc::now() - chrono::Duration::seconds(32),
+			)
+			.and_where(Expr::col("state").eq("pending"))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(&mut *tx)
+	.await
+	.unwrap();
+	native::query(
+		&Query::update()
+			.table(Alias::new("semantic_entries"))
+			.value(Alias::new("next_attempt"), chrono::Utc::now())
+			.and_where(Expr::col("id").eq(Expr::value(entry)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(&mut *tx)
+	.await
+	.unwrap();
+	tx.commit().await.unwrap();
+	semantic::worker::sweep(&fixture.f.store).await.unwrap();
+	assert_eq!(
+		indexed().await.unwrap(),
+		"READY",
+		"the retained origin must authorize the successful retry"
+	);
+	aidash_server::generation::provision::reconcile(&fixture.f)
+		.await
+		.unwrap();
+	assert_eq!(status().await.unwrap(), "COMPLETED");
+	fixture.dispose().await;
 }

@@ -1,39 +1,15 @@
 // reinhardt-migration-source: 1
-// Keep applied definitions immutable; widen only the embedding provider allowlist.
+// Preserve applied definitions; widen only the embedding provider allowlist.
 use reinhardt::db::migrations::prelude::*;
 
 pub(super) fn migration() -> Migration {
 	Migration::new("0011_openrouter_embeddings", "registry")
         .add_dependency("registry", "0010_native_memory_model_state")
-        .add_operation(Operation::DropConstraintDefinition {
-            table: "registry".into(),
-            constraint: Constraint::Check {
-                name: "registry_embedding_config".into(),
-                expression: r#"COALESCE((true AND ((kind <> 'embedding'::text) OR (
-						CASE
-						WHEN (jsonb_typeof((metadata -> 'config'::text)) = 'object'::text) THEN (((metadata -> 'config'::text) - ARRAY['provider'::text, 'endpoint'::text, 'credential_env'::text, 'model'::text, 'model_version'::text, 'dimensions'::text]) = '{}'::jsonb)
-						ELSE false
-						END AND (jsonb_typeof(((metadata -> 'config'::text) -> 'provider'::text)) = 'string'::text) AND (((metadata -> 'config'::text) ->> 'provider'::text) = 'openai'::text) AND (jsonb_typeof(((metadata -> 'config'::text) -> 'endpoint'::text)) = 'string'::text) AND (((metadata -> 'config'::text) ->> 'endpoint'::text) ~ '^https?://[^/@?#[:space:]]+'::text) AND (jsonb_typeof(COALESCE(((metadata -> 'config'::text) -> 'credential_env'::text), 'null'::jsonb)) = ANY (ARRAY['string'::text, 'null'::text])) AND ((jsonb_typeof(COALESCE(((metadata -> 'config'::text) -> 'credential_env'::text), 'null'::jsonb)) <> 'string'::text) OR (((metadata -> 'config'::text) ->> 'credential_env'::text) ~ '^AIDASH_SECRET_[A-Z0-9_]*$'::text)) AND (jsonb_typeof(((metadata -> 'config'::text) -> 'model'::text)) = 'string'::text) AND (length(btrim(((metadata -> 'config'::text) ->> 'model'::text), E'\u0009\u000a\u000b\u000c\u000d \u0085\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000'::text)) > 0) AND (octet_length(((metadata -> 'config'::text) ->> 'model'::text)) <= 256) AND (jsonb_typeof(((metadata -> 'config'::text) -> 'model_version'::text)) = 'string'::text) AND (length(btrim(((metadata -> 'config'::text) ->> 'model_version'::text), E'\u0009\u000a\u000b\u000c\u000d \u0085\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000'::text)) > 0) AND (octet_length(((metadata -> 'config'::text) ->> 'model_version'::text)) <= 128) AND
-						CASE
-						WHEN ((jsonb_typeof(((metadata -> 'config'::text) -> 'dimensions'::text)) = 'number'::text) AND ((((metadata -> 'config'::text) -> 'dimensions'::text))::text ~ '^(0|[1-9][0-9]*)$'::text)) THEN ((((((metadata -> 'config'::text) -> 'dimensions'::text))::text)::numeric >= (1)::numeric) AND (((((metadata -> 'config'::text) -> 'dimensions'::text))::text)::numeric <= (8192)::numeric))
-						ELSE false
-						END))), false)"#.to_owned(),
-            },
-        })
-        .add_operation(Operation::AddConstraintDefinition {
-            table: "registry".into(),
-            constraint: Constraint::Check {
-                name: "registry_embedding_config".into(),
-                expression: r#"COALESCE((true AND ((kind <> 'embedding'::text) OR (
-						CASE
-						WHEN (jsonb_typeof((metadata -> 'config'::text)) = 'object'::text) THEN (((metadata -> 'config'::text) - ARRAY['provider'::text, 'endpoint'::text, 'credential_env'::text, 'model'::text, 'model_version'::text, 'dimensions'::text]) = '{}'::jsonb)
-						ELSE false
-						END AND (jsonb_typeof(((metadata -> 'config'::text) -> 'provider'::text)) = 'string'::text) AND (((metadata -> 'config'::text) ->> 'provider'::text) IN ('openai'::text, 'openrouter'::text)) AND (jsonb_typeof(((metadata -> 'config'::text) -> 'endpoint'::text)) = 'string'::text) AND (((metadata -> 'config'::text) ->> 'endpoint'::text) ~ '^https?://[^/@?#[:space:]]+'::text) AND (jsonb_typeof(COALESCE(((metadata -> 'config'::text) -> 'credential_env'::text), 'null'::jsonb)) = ANY (ARRAY['string'::text, 'null'::text])) AND ((jsonb_typeof(COALESCE(((metadata -> 'config'::text) -> 'credential_env'::text), 'null'::jsonb)) <> 'string'::text) OR (((metadata -> 'config'::text) ->> 'credential_env'::text) ~ '^AIDASH_SECRET_[A-Z0-9_]*$'::text)) AND (jsonb_typeof(((metadata -> 'config'::text) -> 'model'::text)) = 'string'::text) AND (length(btrim(((metadata -> 'config'::text) ->> 'model'::text), E'\u0009\u000a\u000b\u000c\u000d \u0085\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000'::text)) > 0) AND (octet_length(((metadata -> 'config'::text) ->> 'model'::text)) <= 256) AND (jsonb_typeof(((metadata -> 'config'::text) -> 'model_version'::text)) = 'string'::text) AND (length(btrim(((metadata -> 'config'::text) ->> 'model_version'::text), E'\u0009\u000a\u000b\u000c\u000d \u0085\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000'::text)) > 0) AND (octet_length(((metadata -> 'config'::text) ->> 'model_version'::text)) <= 128) AND
-						CASE
-						WHEN ((jsonb_typeof(((metadata -> 'config'::text) -> 'dimensions'::text)) = 'number'::text) AND ((((metadata -> 'config'::text) -> 'dimensions'::text))::text ~ '^(0|[1-9][0-9]*)$'::text)) THEN ((((((metadata -> 'config'::text) -> 'dimensions'::text))::text)::numeric >= (1)::numeric) AND (((((metadata -> 'config'::text) -> 'dimensions'::text))::text)::numeric <= (8192)::numeric))
-						ELSE false
-						END))), false)"#.to_owned(),
-            },
+        // PostgreSQL JSONB CHECK expressions live in SQL assets. The filesystem
+        // migration loader supports external assets through RunSQL only.
+        .add_operation(Operation::RunSQL {
+            sql: include_str!("sql/forward/0011_openrouter_embeddings.sql").into(),
+            reverse_sql: Some(include_str!("sql/backward/0011_openrouter_embeddings.sql").into()),
         })
         .atomic(true)
         .database_only(true)
