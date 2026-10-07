@@ -47,6 +47,9 @@ pub(crate) struct CredentialRevocation {
 
 #[derive(serde::Serialize, JsonSchema)]
 pub(crate) struct PolicyReplacement {
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub(crate) pending_host_packages:
+		Option<aidash_application::marketplace::operations::host_packages::PendingHostPackages>,
 	#[serde(flatten)]
 	pub(crate) snapshot: crate::apps::identity::serializers::contracts::Snapshot,
 	pub(crate) pending_transactions: Vec<uuid::Uuid>,

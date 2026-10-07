@@ -26,6 +26,9 @@ pub struct NodeSettings {
 	#[setting(default = "30")]
 	#[validate(range(min = 3, max = 3600))]
 	pub lease_seconds: i32,
+	/// Pending operator packages for newly created tenants; never an approval.
+	#[setting(default = "Vec::new()", leaf)]
+	pub default_host_packages: Vec<String>,
 	#[setting(default = "4")]
 	#[validate(range(min = 0, max = 64))]
 	pub worker_count: usize,
@@ -54,6 +57,18 @@ impl SettingsValidation for NodeSettings {
 			.map_err(|error| ValidationError::Constraint(error.to_string()))?;
 		validate_endpoint(&self.endpoint)
 			.map_err(|error| ValidationError::Constraint(error.to_string()))?;
+		let mut names = std::collections::BTreeSet::new();
+		for name in &self.default_host_packages {
+			if !names.insert(name)
+				|| !aidash_application::registry::system::packages::HOST_GROUPS
+					.iter()
+					.any(|(group, _)| name == group)
+			{
+				return Err(ValidationError::Constraint(
+					"node.default_host_packages must contain unique known host groups".into(),
+				));
+			}
+		}
 		let url = reqwest::Url::parse(&self.nats_url)
 			.map_err(|_| ValidationError::Constraint("node.nats_url must be a NATS URL".into()))?;
 		if !matches!(url.scheme(), "nats" | "tls" | "ws" | "wss") || url.host_str().is_none() {

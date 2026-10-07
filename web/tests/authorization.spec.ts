@@ -292,7 +292,7 @@ test("authorization dashboard manages revisions, RBAC/ABAC decisions, catalog an
     .getByRole("button", { name: "次のページ", exact: true })
     .click();
   await expect(history.locator(".auth-history")).toHaveCount(
-    auditRecords.length - 25,
+    Math.min(25, auditRecords.length - 25),
   );
   await history
     .getByRole("button", { name: "前のページ", exact: true })

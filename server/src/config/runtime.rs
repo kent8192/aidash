@@ -11,6 +11,7 @@ pub struct Config {
 	pub api_token: String,
 	pub web_dir: String,
 	pub lease_seconds: i32,
+	pub default_host_packages: Vec<String>,
 	pub oidc: Option<OidcConfig>,
 }
 
@@ -45,6 +46,7 @@ impl Config {
 			api_token: node.api_token.clone(),
 			web_dir: web_dir.to_string_lossy().into_owned(),
 			lease_seconds: node.lease_seconds,
+			default_host_packages: node.default_host_packages.clone(),
 			oidc: settings
 				.dashboard
 				.oidc

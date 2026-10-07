@@ -14,8 +14,8 @@ use aidash_domain::{
 };
 use async_trait::async_trait;
 use reinhardt::query::{
-	Alias, Expr, ExprTrait, JoinType, Order, PostgresQueryBuilder, Query, QueryStatementBuilder,
-	SimpleExpr, TableRef,
+	Alias, Expr, ExprTrait, JoinType, LockType, Order, PostgresQueryBuilder, Query,
+	QueryStatementBuilder, SimpleExpr, TableRef,
 };
 use serde_json::Value;
 use std::collections::BTreeSet;
@@ -151,6 +151,25 @@ impl OperatorScope for NativeOperator<'_> {
 		.await
 		.map(|_| ())
 		.map_err(Into::into)
+	}
+	async fn catalog_revision(
+		&mut self,
+		tenant: &str,
+		reference: &EntityRef,
+	) -> aidash_application::Result<i64> {
+		Ok(crate::database::native::query_scalar(
+			&Query::select()
+				.column(Alias::new("revision"))
+				.from(Alias::new("authorization_catalog"))
+				.and_where(Expr::col("tenant").eq(Expr::value(tenant)))
+				.and_where(Expr::col("entry_id").eq(Expr::value(&reference.id)))
+				.and_where(Expr::col("entry_version").eq(Expr::value(&reference.version)))
+				.lock(LockType::Share)
+				.to_string(PostgresQueryBuilder),
+		)
+		.scalar_optional(&mut **self.staging.tx)
+		.await?
+		.unwrap_or(0))
 	}
 	async fn save_installation(
 		&mut self,

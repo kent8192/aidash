@@ -242,6 +242,34 @@ pub async fn adopt(
 	crate::http::json(service.adopt(actor, browser, input).await)
 }
 
+#[post(
+	"/api/marketplace/approval-sets",
+	name = "marketplace-approve-set",
+	auth = "protected"
+)]
+pub async fn approve_set(
+	#[inject] service: Depends<MarketplaceManagement>,
+	#[inject] actor: Actor,
+	#[inject] browser: Option<BrowserOrigin>,
+	Json(input): Json<aidash_application::marketplace::operations::approval_set::ApprovalSet>,
+) -> ViewResult<Response> {
+	crate::http::json(service.approve_set(actor, browser, input).await)
+}
+
+#[post(
+	"/api/marketplace/host-packages",
+	name = "marketplace-host-packages",
+	auth = "protected"
+)]
+pub async fn host_packages(
+	#[inject] service: Depends<MarketplaceManagement>,
+	#[inject] actor: Actor,
+	#[inject] browser: Option<BrowserOrigin>,
+	Json(input): Json<aidash_application::marketplace::operations::host_packages::HostPackages>,
+) -> ViewResult<Response> {
+	crate::http::json(service.host_packages(actor, browser, input).await)
+}
+
 #[get(
 	"/api/marketplace/administration",
 	name = "marketplace-administration",

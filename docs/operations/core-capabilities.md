@@ -1,8 +1,15 @@
-# Harness-managed capabilities
+# Node capability implementations
 
-Core capabilities are independently enabled on an immutable Agent version. They
-are subject-authorized operations of the Harness, not Registry tools. External
-Registry integrations retain their `plugin_N` identities and credentials.
+Core capabilities are Node-provided operations declared through immutable
+Registry descriptors. The Node owns their provider contracts and implementation;
+the declarations are distributed as system Builtins or operator Host packages.
+See the [capability glossary](registry-capability-glossary.md) and
+[Registry capability operations](registry-capabilities.md).
+
+The native Agent registration and executor still use `CoreCapabilities`,
+`allow_*` flags and `plugin_N` aliases while Binding integration is unfinished.
+The runtime gate below verifies the existing implementations. Registry
+declarations and catalog approvals do not grant authority over target resources.
 
 ## Supported execution boundary
 

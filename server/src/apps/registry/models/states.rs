@@ -16,6 +16,15 @@ pub enum DefinitionKind {
 	#[model_enum(value = "tool")]
 	#[serde(rename = "tool")]
 	Tool,
+	#[model_enum(value = "bundle")]
+	#[serde(rename = "bundle")]
+	Bundle,
+	#[model_enum(value = "memory")]
+	#[serde(rename = "memory")]
+	Memory,
+	#[model_enum(value = "source")]
+	#[serde(rename = "source")]
+	Source,
 	#[model_enum(value = "skill")]
 	#[serde(rename = "skill")]
 	Skill,

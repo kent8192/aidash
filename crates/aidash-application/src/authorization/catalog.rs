@@ -6,7 +6,10 @@ pub async fn entry(
 	reference: &EntityRef,
 	action: &str,
 ) -> Result<Entry> {
-	if scope.inherited_lease() && !scope.approved(reference) {
+	if scope.inherited_lease()
+		&& !scope.approved(reference)
+		&& !crate::registry::system::builtin_reference(reference)
+	{
 		return Err(Error::Forbidden);
 	}
 	if !scope.inherited_lease() {
@@ -35,7 +38,9 @@ pub async fn list(scope: &mut dyn CatalogScope, search: &Search) -> Result<Vec<E
 			id: entry.id.clone(),
 			version: entry.version.clone(),
 		};
-		if (!scope.inherited_lease() || scope.approved(&reference))
+		if (!scope.inherited_lease()
+			|| scope.approved(&reference)
+			|| crate::registry::system::is_builtin(&entry))
 			&& scope.active(&entry).await?
 			&& search.matches(&entry)
 			&& scope

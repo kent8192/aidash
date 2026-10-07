@@ -64,6 +64,8 @@ impl Supervisor {
 		close_admission: impl FnOnce(),
 	) -> Result<()> {
 		let failure = tokio::select! {
+			// A service may finish as the external coordinator announces shutdown.
+			biased;
 			_ = shutdown => None,
 			result = self.workers.join_next(), if !self.workers.is_empty() => {
 				Some(Error::External(format!("worker stopped: {result:?}")))

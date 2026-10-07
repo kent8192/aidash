@@ -44,6 +44,7 @@ async fn registry_server_ids_survive_retries_and_concurrent_requests(
 ) {
 	let (f, url, schema) = setup(&_test_environment).await;
 	let app = common::application(f.clone()).await;
+	let seeded_definitions = f.registry.list(&Default::default()).await.unwrap().len();
 	let mut entry = tool("");
 	entry.name.insert("en".into(), "calm-otter".into());
 	let key = Uuid::new_v4().to_string();
@@ -80,7 +81,10 @@ async fn registry_server_ids_survive_retries_and_concurrent_requests(
 			.0,
 		409
 	);
-	assert_eq!(f.registry.list(&Default::default()).await.unwrap().len(), 1);
+	assert_eq!(
+		f.registry.list(&Default::default()).await.unwrap().len(),
+		seeded_definitions + 1
+	);
 	assert_eq!(
 		f.store
 			.events(0, None, 100)

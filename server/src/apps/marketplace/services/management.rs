@@ -352,6 +352,56 @@ impl MarketplaceManagement {
 		Ok(result)
 	}
 
+	pub(crate) async fn approve_set(
+		&self,
+		actor: Actor,
+		browser: Option<BrowserOrigin>,
+		input: aidash_application::marketplace::operations::approval_set::ApprovalSet,
+	) -> Result<Vec<Installation>> {
+		operator(&actor)?;
+		let origin = browser.as_ref();
+		let mut tx = operator_begin(&self.runtime.store, origin).await?;
+		let result =
+			aidash_application::marketplace::operations::approval_set::approve_and_activate(
+				&mut crate::bootstrap::marketplace_operator_scope(
+					&self.runtime.store,
+					&mut tx,
+					principal(&actor),
+				),
+				&crate::bootstrap::registry_validation(),
+				&input,
+				&self.runtime.store.node_id,
+			)
+			.await?;
+		operator_commit(tx, origin).await?;
+		Ok(result)
+	}
+	pub(crate) async fn host_packages(
+		&self,
+		actor: Actor,
+		browser: Option<BrowserOrigin>,
+		input: aidash_application::marketplace::operations::host_packages::HostPackages,
+	) -> Result<aidash_application::marketplace::operations::host_packages::PendingHostPackages> {
+		operator(&actor)?;
+		let origin = browser.as_ref();
+		let mut tx = operator_begin(&self.runtime.store, origin).await?;
+		let validation = crate::bootstrap::registry_validation();
+		let result = aidash_application::marketplace::operations::host_packages::provision(
+			&mut crate::bootstrap::marketplace_operator_scope(
+				&self.runtime.store,
+				&mut tx,
+				principal(&actor),
+			),
+			&validation,
+			&validation,
+			&input,
+			&self.runtime.store.node_id,
+		)
+		.await?;
+		operator_commit(tx, origin).await?;
+		Ok(result)
+	}
+
 	pub(crate) async fn administration(
 		&self,
 		actor: Actor,

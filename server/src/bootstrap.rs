@@ -64,6 +64,7 @@ pub async fn initialize(
 		.ok_or_else(|| Error::Invalid("Aidash requires PostgreSQL".into()))?;
 	let store = Store::from_pool(pool, config.node_id.clone()).await?;
 	let registry = Registry::new(store.pool.clone(), &store.node_id)?;
+	registry.seed_system().await?;
 	let client = reqwest::Client::builder()
 		.timeout(Duration::from_secs(120))
 		.connect_timeout(Duration::from_secs(10))
@@ -435,6 +436,25 @@ pub fn registry_validation() -> aidash_application::registry::DefinitionValidati
 }
 struct NativeCoreToolCatalog;
 impl aidash_application::ports::registry::CoreToolCatalog for NativeCoreToolCatalog {
+	fn provider_available(
+		&self,
+		descriptor: &aidash_domain::tool::providers::ToolDescriptor,
+	) -> aidash_application::Result<()> {
+		use aidash_domain::tool::providers::{ToolTier, requires_runner};
+		if descriptor.tier != ToolTier::Host || descriptor.operation == "task_assign" {
+			return Ok(());
+		}
+		let runtime = crate::capabilities::Runtime::from_env()?;
+		if !runtime.0.admission
+			|| requires_runner(&descriptor.operation) && runtime.0.runner.is_none()
+		{
+			return Err(aidash_application::Error::Invalid(format!(
+				"PROVIDER_UNAVAILABLE: {} requires an admitted capability deployment",
+				descriptor.provider
+			)));
+		}
+		Ok(())
+	}
 	fn specifications(
 		&self,
 		config: &aidash_domain::capabilities::CoreCapabilities,

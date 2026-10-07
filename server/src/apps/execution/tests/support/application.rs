@@ -40,6 +40,8 @@ pub async fn application_with(
 	runtime: Federation,
 	router: impl FnOnce(ServerRouter) -> ServerRouter,
 ) -> TestApplication {
+	// Production startup admits immutable system declarations before serving routes.
+	runtime.registry.seed_system().await.unwrap();
 	let _ = tracing_subscriber::fmt()
 		.with_test_writer()
 		.with_env_filter(

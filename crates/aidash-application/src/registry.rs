@@ -13,11 +13,18 @@ use aidash_domain::{
 };
 use serde_json::{Value, json};
 use uuid::Uuid;
+pub mod bindings;
+pub mod system;
 pub mod validation;
 pub use validation::DefinitionValidation;
 
 pub async fn overlay(scope: &mut dyn DefinitionLookup, mut entry: Entry) -> Result<Entry> {
 	if let Some(config) = scope.overrides(&entry.id, &entry.version).await? {
+		if system::is_builtin(&entry) {
+			return Err(Error::Conflict(
+				"system builtin has an unauthorized configuration overlay".into(),
+			));
+		}
 		overlay_config(&mut entry.config, &config)?;
 	}
 	Ok(entry)
@@ -121,6 +128,48 @@ pub async fn validate_references(
 	node: &str,
 ) -> Result<()> {
 	validation.validate_in(entry, true)?;
+	if entry.kind == "bundle" {
+		let bundle: aidash_domain::registry::bindings::BundleConfig =
+			serde_json::from_value(entry.config.clone())?;
+		for member in bundle.members {
+			if member.registry_node != node {
+				return Err(Error::Forbidden);
+			}
+			let definition = scope.definition(&member.id, &member.version).await?;
+			if !matches!(definition.kind.as_str(), "tool" | "bundle") {
+				return Err(Error::Invalid(
+					"bundle member must be a Tool or bundle".into(),
+				));
+			}
+		}
+	}
+	if entry.kind == "tool" && aidash_domain::tool::legacy_config(&entry.config)?.is_none() {
+		let descriptor: aidash_domain::tool::providers::ToolDescriptor =
+			serde_json::from_value(entry.config.clone())?;
+		if descriptor.registry_node != node {
+			return Err(Error::Forbidden);
+		}
+		if let Some(lifecycle) = descriptor.lifecycle {
+			for (reference, suffix) in [(lifecycle.poll, "poll"), (lifecycle.cancel, "cancel")] {
+				let companion = scope.definition(&reference.id, &reference.version).await?;
+				let companion: aidash_domain::tool::providers::ToolDescriptor =
+					serde_json::from_value(companion.config)?;
+				let operation = if descriptor.operation == "shell" {
+					format!("shell_{suffix}")
+				} else {
+					format!("python_{suffix}")
+				};
+				if companion.provider != descriptor.provider
+					|| companion.operation != operation
+					|| companion.lifecycle.is_some()
+				{
+					return Err(Error::Invalid(
+						"lifecycle companion differs from the provider operation".into(),
+					));
+				}
+			}
+		}
+	}
 	if entry.kind == "agent" {
 		let config: AgentConfig = serde_json::from_value(entry.config.clone())?;
 		let mut references = Vec::new();
@@ -140,8 +189,21 @@ pub async fn validate_references(
 		}
 		validation.agent_prompt_headroom(&config, &references, &Value::Null)?;
 	}
-	if entry.kind == "tool"
-		&& let ToolConfig::Agent { node_id, agent } = serde_json::from_value(entry.config.clone())?
+	let transport = if entry.kind == "tool" {
+		match aidash_domain::tool::legacy_config(&entry.config)? {
+			Some(transport) => Some(transport),
+			None => {
+				serde_json::from_value::<aidash_domain::tool::providers::ToolDescriptor>(
+					entry.config.clone(),
+				)
+				.map_err(|error| Error::Invalid(error.to_string()))?
+				.transport
+			}
+		}
+	} else {
+		None
+	};
+	if let Some(ToolConfig::Agent { node_id, agent }) = transport
 		&& node_id == node
 		&& scope
 			.executor_kind(&agent.id, &agent.version)
@@ -177,6 +239,7 @@ pub async fn register(
 	tracked: bool,
 	node: &str,
 ) -> Result<Entry> {
+	system::reject_owner_definition(&entry)?;
 	if tracked {
 		scope.assign_id(&mut entry, key).await?;
 	}
@@ -198,6 +261,7 @@ pub async fn register_definition(
 	entry: &Entry,
 	node: &str,
 ) -> Result<bool> {
+	system::reject_owner_definition(entry)?;
 	validate_references(scope, validation, entry, node).await?;
 	scope.insert_definition(entry).await
 }
@@ -207,9 +271,13 @@ pub async fn publish(
 	validation: &DefinitionValidation,
 	package: Package,
 ) -> Result<PackageRecord> {
+	system::reject_distribution(&package.entity)?;
+	system::reject_owner_definition(&package.entity)?;
 	validation.validate_in(&package.entity, true)?;
-	if !matches!(package.entity.kind.as_str(), "agent" | "tool" | "skill")
-		|| package.author.trim().is_empty()
+	if !matches!(
+		package.entity.kind.as_str(),
+		"agent" | "tool" | "skill" | "bundle"
+	) || package.author.trim().is_empty()
 	{
 		return Err(Error::Invalid(
 			"packages require an author and an agent, tool or skill".into(),
@@ -256,6 +324,7 @@ pub fn prepare_install(
 		return Err(Error::Conflict("package digest changed".into()));
 	}
 	let package: Package = serde_json::from_value(source)?;
+	system::reject_distribution(&package.entity)?;
 	validate_override_keys(&package.entity.kind, &config)?;
 	let mut effective = package.entity.clone();
 	overlay_config(&mut effective.config, &config)?;

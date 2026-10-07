@@ -24,6 +24,8 @@ async fn worker_remote_discovery_dependencies_survive_restart_and_hide_revoked_j
 	let (mut b, b_url, b_schema) = setup(&_test_environment).await;
 	b.config.node_id = "aidash://remote-journal".into();
 	b.store.node_id = b.config.node_id.clone();
+	b.registry =
+		aidash_server::registry::Registry::new(b.store.pool.clone(), &b.config.node_id).unwrap();
 
 	let calls = Arc::new(AtomicUsize::new(0));
 	let observed = calls.clone();

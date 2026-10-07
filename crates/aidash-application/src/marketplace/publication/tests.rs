@@ -266,6 +266,82 @@ async fn publication_keeps_immutable_bytes_and_orders_version_event_and_replay()
 	assert_eq!(scope.replay.as_ref().unwrap().fingerprint, key(&command));
 	assert_eq!(scope.replay.as_ref().unwrap().result, result);
 }
+
+#[rstest]
+#[case("direct")]
+#[case("nested")]
+#[case("extra")]
+#[tokio::test]
+async fn bundle_publication_rejects_builtin_dependencies_before_any_writes(#[case] path: &str) {
+	use aidash_domain::{registry::bindings::QualifiedRef, tool::providers::core_descriptor};
+	let node = "aidash://publisher";
+	let mut scope = Fixture::new();
+	let mut builtin = entry("aidash.workspace_read");
+	builtin.kind = "tool".into();
+	builtin.config =
+		serde_json::to_value(core_descriptor(node, "workspace_read").unwrap()).unwrap();
+	scope.entries.insert(builtin.id.clone(), builtin);
+	let mut host = entry("host-get");
+	host.kind = "tool".into();
+	host.config = serde_json::to_value(core_descriptor(node, "outbound_get").unwrap()).unwrap();
+	scope.entries.insert(host.id.clone(), host);
+	let qualified = |id: &str| QualifiedRef {
+		registry_node: node.into(),
+		id: id.into(),
+		version: "1.0.0".into(),
+	};
+	let member = match path {
+		"nested" => {
+			let mut inner = entry("inner");
+			inner.kind = "bundle".into();
+			inner.config = json!({"members":[qualified("aidash.workspace_read")]});
+			scope.entries.insert(inner.id.clone(), inner);
+			qualified("inner")
+		}
+		"extra" => qualified("host-get"),
+		_ => qualified("aidash.workspace_read"),
+	};
+	let root = scope.entries.get_mut("source").unwrap();
+	root.kind = "bundle".into();
+	root.config = json!({"members":[member]});
+	let mut command = command();
+	if path == "extra" {
+		command.dependencies.push(EntityRef {
+			id: "aidash.workspace_read".into(),
+			version: "1.0.0".into(),
+		});
+	}
+	assert!(matches!(
+		publish(&mut scope, &validation(), &command, node).await,
+		Err(Error::Invalid(message)) if message.contains("system builtin")
+	));
+	assert!(scope.writes().is_empty());
+	assert!(scope.versions.is_empty());
+	assert!(scope.replay.is_none());
+}
+
+#[tokio::test]
+async fn bundle_publication_accepts_portable_host_descriptors() {
+	let node = "aidash://publisher";
+	let mut scope = Fixture::new();
+	let mut host = entry("host-get");
+	host.kind = "tool".into();
+	host.config = serde_json::to_value(
+		aidash_domain::tool::providers::core_descriptor(node, "outbound_get").unwrap(),
+	)
+	.unwrap();
+	scope.entries.insert(host.id.clone(), host);
+	let root = scope.entries.get_mut("source").unwrap();
+	root.kind = "bundle".into();
+	root.config = json!({"members":[{"registry_node":node,"id":"host-get","version":"1.0.0"}]});
+	let result = publish(&mut scope, &validation(), &command(), node)
+		.await
+		.unwrap();
+	let version = &scope.versions[result["key"].as_str().unwrap()];
+	assert_eq!(version.kind, "bundle");
+	assert_eq!(version.dependencies.len(), 1);
+	assert_eq!(version.dependencies[0].reference.id, "host-get");
+}
 #[rstest]
 #[tokio::test]
 async fn publication_event_failure_never_records_a_successful_replay() {

@@ -105,7 +105,7 @@ fn graph() -> Fixture {
 				entry(
 					"tool",
 					"tool",
-					json!({"transport":"agent","node_id":"local","agent":r("agent")}),
+					json!({"registry_node":"aidash://local","provider":"integration.agent@1","operation":"invoke","default_alias":"delegate","tier":"integration","transport":{"transport":"agent","node_id":"local","agent":r("agent")}}),
 				),
 			),
 			("model".into(), entry("model", "model", json!({}))),
@@ -200,7 +200,135 @@ fn remote_agent_tool_is_not_resolved_from_same_named_local_content() {
 	let tool = entry(
 		"remote-tool",
 		"tool",
-		json!({"transport":"agent","node_id":"remote","agent":r("agent")}),
+		json!({"registry_node":"aidash://remote","provider":"integration.agent@1","operation":"invoke","default_alias":"delegate","tier":"integration","transport":{"transport":"agent","node_id":"remote","agent":r("agent")}}),
 	);
 	assert!(matches!(refs(&tool, "local"), Err(Error::Forbidden)));
+}
+
+#[tokio::test]
+async fn cross_node_bundle_installation_uses_verified_receiving_node_dependencies() {
+	use aidash_domain::registry::Package;
+	use sha2::{Digest, Sha256};
+	let receiving = "aidash://receiver";
+	let publishing = "aidash://publisher";
+	let original = r("published-tool");
+	let mut installed = entry(
+		"installed-tool",
+		"tool",
+		json!({"transport":"http","endpoint":"https://example.com/tool","replay":"read_only"}),
+	);
+	installed.version = "4.0.0".into();
+	let target = reference(&installed);
+	let bundle = entry(
+		"bundle",
+		"bundle",
+		json!({"members":[{"registry_node":publishing,"id":original.id,"version":original.version}]}),
+	);
+	let manifest_source = serde_json::to_string(&Package {
+		entity: bundle,
+		author: "fixture".into(),
+		permissions: vec![],
+		dependencies: vec![original.clone()],
+	})
+	.unwrap();
+	let source = Version {
+		key: "bundle-package".into(),
+		repository: publishing.into(),
+		owner_tenant: "publisher".into(),
+		package_id: "bundle".into(),
+		version: "1.0.0".into(),
+		kind: "bundle".into(),
+		publisher: "fixture".into(),
+		source: r("bundle"),
+		digest: format!("sha256:{:x}", Sha256::digest(manifest_source.as_bytes())),
+		manifest_source,
+		dependencies: vec![Dependency {
+			reference: original.clone(),
+			kind: "tool".into(),
+			digest: content(&installed),
+			package: None,
+		}],
+		lineage: BTreeSet::new(),
+	};
+	let submitted = vec![DependencyBinding {
+		source: original,
+		target: target.clone(),
+	}];
+	let mut scope = Fixture {
+		entries: BTreeMap::from([(installed.id.clone(), installed)]),
+		..Default::default()
+	};
+	let validation = crate::marketplace::installations::tests::validation();
+	let (resolved, dependencies, bindings) = resolve(
+		&mut scope,
+		&validation,
+		&source,
+		&json!({}),
+		&submitted,
+		receiving,
+	)
+	.await
+	.unwrap();
+	assert_eq!(
+		resolved.config["members"],
+		json!([{"registry_node":receiving,"id":target.id,"version":target.version}])
+	);
+	assert_eq!(dependencies, vec![target]);
+	assert_eq!(
+		serde_json::to_value(bindings).unwrap(),
+		serde_json::to_value(&submitted).unwrap()
+	);
+	assert!(
+		scope
+			.calls
+			.iter()
+			.any(|call| call == "registry.read:installed-tool")
+	);
+	assert_eq!(
+		manifest(&source).unwrap().entity.config["members"][0]["registry_node"],
+		publishing
+	);
+
+	scope.denied = Some("registry.read:installed-tool".into());
+	assert!(matches!(
+		resolve(
+			&mut scope,
+			&validation,
+			&source,
+			&json!({}),
+			&submitted,
+			receiving
+		)
+		.await,
+		Err(Error::Forbidden)
+	));
+	scope.denied = None;
+	let mut changed = source.clone();
+	changed.dependencies[0].digest = "changed".into();
+	assert!(matches!(
+		resolve(
+			&mut scope,
+			&validation,
+			&changed,
+			&json!({}),
+			&submitted,
+			receiving
+		)
+		.await,
+		Err(Error::Forbidden)
+	));
+	let mut undeclared = source;
+	undeclared.dependencies.clear();
+	assert!(matches!(
+		resolve(
+			&mut scope,
+			&validation,
+			&undeclared,
+			&json!({}),
+			&submitted,
+			receiving
+		)
+		.await,
+		Err(Error::Forbidden)
+	));
 }
