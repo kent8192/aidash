@@ -311,7 +311,9 @@ async fn discover(
 			.await
 			{
 				Ok(()) => continue,
-				Err(Error::Forbidden | Error::Conflict(_)) => {}
+				// A replacement policy can make a pending candidate's old Run
+				// support oversized or otherwise unprovable. Erase its quotation.
+				Err(Error::Forbidden | Error::Conflict(_) | Error::Invalid(_)) => {}
 				Err(error) => return Err(error),
 			}
 			impact.banks.insert(row.try_get("bank_id")?);

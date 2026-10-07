@@ -204,11 +204,6 @@ pub async fn search<R: SemanticSearchRepository + ?Sized>(
 					.await?;
 			}
 			receipt.fit_budget(max_tokens)?;
-			if let Some(context) = &receipt.memory {
-				access
-					.record_native_context(&description.semantic, &operation, context)
-					.await?;
-			}
 			journal::complete(repository.journal(), &attempt, &receipt).await?;
 			Ok(receipt)
 		}

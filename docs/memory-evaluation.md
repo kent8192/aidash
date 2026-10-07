@@ -64,7 +64,12 @@ Local reads are staged across every declared bank and reflection step, then
 committed together only after the complete tool result or combined inference
 context succeeds and fits its delivery budget. Failed later-bank retrieval or
 reflection must leave no journal entries for the abandoned operation.
-Remote journals record only native Units
-retained in the final budget-fitted receipt. A full candidate review queue leaves
+Retention skips Workspaces with active readers and leaves them due for the next
+sweep, so maintenance cannot block an indexer's nested origin authority check.
+Remote journals record only native Units retained in the final budget-fitted
+receipt, in the same transaction as the completed attempt and receipt. Failed
+finalization or commit leaves neither the receipt nor its native dependencies.
+Purge invalidates and erases pending candidate quotations whose old Run support
+exceeds a replacement policy's graph bound. A full candidate review queue leaves
 learning pending for retry after review frees capacity; this wait preserves the
 charged model receipt and does not consume a model failure attempt.

@@ -71,17 +71,6 @@ pub trait SemanticSearchScope: Send {
 		}
 		Ok(None)
 	}
-	/// Persist only the native dependencies retained after fitting the full receipt.
-	async fn record_native_context(
-		&mut self,
-		_: &aidash_domain::semantic::remote::Binding,
-		_: &Operation,
-		_: &aidash_domain::semantic::remote::NativeContext,
-	) -> Result<()> {
-		Err(crate::Error::RemoteSemantic(
-			aidash_domain::semantic::Failure::Configuration,
-		))
-	}
 	/// Finish the original credential transaction and durable audit before a fresh authority lease.
 	async fn finish(self, result: Result<Receipt>) -> Result<Receipt>;
 }

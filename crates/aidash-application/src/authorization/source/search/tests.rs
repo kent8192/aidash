@@ -309,6 +309,7 @@ impl SemanticRetrievalSession for EmptyRetrieval {
 	}
 }
 struct Journal {
+	native: Option<NativeFixture>,
 	trace: Trace,
 	record: Arc<Mutex<JournalRecord>>,
 }
@@ -317,6 +318,7 @@ impl Journal {
 		let op = operation();
 		let operation_digest = op.digest().unwrap();
 		Self {
+			native: None,
 			trace,
 			record: Arc::new(Mutex::new(JournalRecord {
 				id: op.id,
@@ -339,6 +341,9 @@ impl Journal {
 	}
 }
 struct JournalLease {
+	native: Option<NativeFixture>,
+	pending: Option<aidash_domain::semantic::remote::NativeContext>,
+	working: JournalRecord,
 	trace: Trace,
 	record: Arc<Mutex<JournalRecord>>,
 }
@@ -347,6 +352,9 @@ impl JournalRepository for Journal {
 	async fn begin(&self) -> Result<Box<dyn JournalScope + '_>> {
 		self.trace.lock().unwrap().push("journal");
 		Ok(Box::new(JournalLease {
+			native: self.native.clone(),
+			pending: None,
+			working: self.record.lock().unwrap().clone(),
 			trace: self.trace.clone(),
 			record: self.record.clone(),
 		}))
@@ -367,15 +375,15 @@ impl JournalRepository for Journal {
 impl JournalScope for JournalLease {
 	async fn insert_binding(&mut self, op: &Operation, digest: &str, value: &Value) -> Result<()> {
 		assert_eq!(op.id, operation().id);
-		assert_eq!(digest, self.record.lock().unwrap().digest);
-		assert_eq!(*value, self.record.lock().unwrap().binding);
+		assert_eq!(digest, self.working.digest);
+		assert_eq!(*value, self.working.binding);
 		Ok(())
 	}
 	async fn shared(&mut self, _: Uuid) -> Result<JournalRecord> {
-		Ok(self.record.lock().unwrap().clone())
+		Ok(self.working.clone())
 	}
 	async fn locked(&mut self, _: Uuid) -> Result<JournalRecord> {
-		Ok(self.record.lock().unwrap().clone())
+		Ok(self.working.clone())
 	}
 	async fn clock(&mut self) -> Result<DateTime<Utc>> {
 		Ok(Utc.timestamp_opt(0, 0).unwrap())
@@ -395,14 +403,14 @@ impl JournalScope for JournalLease {
 	}
 	async fn activate(&mut self, _: Uuid, attempt: &Attempt, _: &JournalRecord) -> Result<()> {
 		self.trace.lock().unwrap().push("claim");
-		let mut r = self.record.lock().unwrap();
+		let r = &mut self.working;
 		r.state = "ACTIVE".into();
 		r.attempt_id = Some(attempt.id);
 		r.fence = attempt.fence;
 		Ok(())
 	}
 	async fn current(&mut self, attempt: &Attempt) -> Result<JournalRecord> {
-		let r = self.record.lock().unwrap().clone();
+		let r = self.working.clone();
 		assert_eq!(r.attempt_id, Some(attempt.id));
 		assert_eq!(r.fence, attempt.fence);
 		Ok(r)
@@ -420,14 +428,27 @@ impl JournalScope for JournalLease {
 		);
 		Ok(())
 	}
+	async fn record_native(&mut self, receipt: &Receipt) -> Result<()> {
+		self.pending = receipt.memory.clone();
+		Ok(())
+	}
 	async fn complete_operation(&mut self, receipt: &Receipt) -> Result<()> {
 		self.trace.lock().unwrap().push("complete");
-		let mut r = self.record.lock().unwrap();
+		let r = &mut self.working;
 		r.state = "READY".into();
 		r.receipt = Some(json!(receipt));
 		Ok(())
 	}
 	async fn complete_attempt(&mut self, _: &Attempt) -> Result<()> {
+		if self
+			.native
+			.as_ref()
+			.is_some_and(|native| native.fault == "attempt")
+		{
+			return Err(Error::External(
+				"injected attempt finalization failure".into(),
+			));
+		}
 		Ok(())
 	}
 	async fn fail_operation(
@@ -438,13 +459,17 @@ impl JournalScope for JournalLease {
 		state: &str,
 		error: &str,
 	) -> Result<()> {
-		assert_eq!(state, "PAUSED");
-		assert_eq!(error, "context_budget");
-		self.record.lock().unwrap().state = state.into();
+		if error == "context_budget" {
+			assert_eq!(state, "PAUSED");
+		} else {
+			assert_eq!(error, "unavailable");
+			assert_eq!(state, "WAITING");
+		}
+		self.working.state = state.into();
 		Ok(())
 	}
 	async fn fail_attempt(&mut self, _: &Attempt, error: &str) -> Result<()> {
-		assert_eq!(error, "context_budget");
+		assert!(["context_budget", "unavailable"].contains(&error));
 		Ok(())
 	}
 	async fn resume_records(&mut self, _: Uuid, _: Uuid) -> Result<Vec<JournalRecord>> {
@@ -457,6 +482,14 @@ impl JournalScope for JournalLease {
 		panic!("unexpected event effect in disclosure scenario")
 	}
 	async fn commit(self: Box<Self>) -> Result<()> {
+		if let Some(context) = self.pending {
+			let native = self.native.as_ref().unwrap();
+			if native.fault == "commit" {
+				return Err(Error::External("injected commit failure".into()));
+			}
+			native.recorded.lock().unwrap().push(context);
+		}
+		*self.record.lock().unwrap() = self.working;
 		Ok(())
 	}
 }
@@ -668,25 +701,11 @@ impl SemanticSearchScope for Scope {
 		);
 		Ok(Some(context))
 	}
-	async fn record_native_context(
-		&mut self,
-		_: &Binding,
-		_: &Operation,
-		context: &aidash_domain::semantic::remote::NativeContext,
-	) -> Result<()> {
-		self.native
-			.as_ref()
-			.unwrap()
-			.recorded
-			.lock()
-			.unwrap()
-			.push(context.clone());
-		Ok(())
-	}
 }
 
 #[derive(Clone)]
 struct NativeFixture {
+	fault: &'static str,
 	binding: Binding,
 	context: aidash_domain::semantic::remote::NativeContext,
 	ordinary: aidash_domain::semantic::results::Match,
@@ -742,6 +761,7 @@ impl NativeFixture {
 			"learned_at":Utc.timestamp_opt(0,0).unwrap(),"updated_at":Utc.timestamp_opt(0,0).unwrap(),"deleted":false,"stale":false
 		})).unwrap()).collect();
 		Self {
+			fault: "",
 			binding: bound,
 			context: NativeContext {
 				banks: vec![NativeRecall {
@@ -784,6 +804,7 @@ async fn native_dependencies_follow_final_budget_fitting_and_failed_receipts_rec
 	op.max_tokens = reference.estimated_tokens - 1;
 	let mut repo = Repository::new();
 	repo.native = Some(native.clone());
+	repo.journal.native = Some(native.clone());
 	{
 		let mut record = repo.journal.record.lock().unwrap();
 		record.digest = op.digest().unwrap();
@@ -815,6 +836,39 @@ async fn native_dependencies_follow_final_budget_fitting_and_failed_receipts_rec
 		);
 	}
 }
+#[rstest]
+#[case("attempt")]
+#[case("commit")]
+#[tokio::test]
+async fn native_finalization_failures_rollback_dependencies_and_receipt(
+	#[case] fault: &'static str,
+) {
+	let mut native = NativeFixture::new();
+	native.fault = fault;
+	let mut op = operation();
+	op.max_tokens = 16_384;
+	let mut repo = Repository::new();
+	repo.native = Some(native.clone());
+	repo.journal.native = Some(native.clone());
+	{
+		let mut record = repo.journal.record.lock().unwrap();
+		record.digest = op.digest().unwrap();
+		record.binding = json!({"operation":op,"semantic":native.binding});
+	}
+	let result = search(&repo, "aidash://receiver", op).await;
+	assert!(
+		matches!(result, Err(Error::RemoteSemantic(Failure::Unavailable))),
+		"{result:?}"
+	);
+	assert!(
+		native.recorded.lock().unwrap().is_empty(),
+		"abandoned native dependencies must roll back"
+	);
+	let record = repo.journal.record.lock().unwrap();
+	assert!(record.receipt.is_none());
+	assert_eq!(record.state, "WAITING");
+}
+
 #[rstest]
 #[case("disabled")]
 #[case("binding")]

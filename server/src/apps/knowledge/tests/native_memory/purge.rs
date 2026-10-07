@@ -411,3 +411,172 @@ async fn physical_purge_failure_is_bounded_fair_and_survives_adapter_recreation(
 	.unwrap();
 	assert!(bodies.iter().all(String::is_empty));
 }
+
+#[rstest]
+#[tokio::test]
+async fn purge_erases_run_candidates_after_a_shared_policy_shrinks_provenance(
+	#[future] database: DatabaseFixture,
+	bounds: Bounds,
+) {
+	let database = database.await;
+	let (store, registry, workspace) = setup(&database, bounds).await;
+	let private = memory::create_participant(
+		&store,
+		&Actor::Operator,
+		workspace,
+		memory::CreateParticipant {
+			agent: reference("a"),
+		},
+	)
+	.await
+	.unwrap()
+	.bank;
+	let shared = Bank {
+		participant: None,
+		..private.clone()
+	};
+	memory::operate(
+		&store,
+		&Actor::Operator,
+		memory::Operation {
+			operation_id: Uuid::now_v7(),
+			provider: reference("p"),
+			bank: shared.clone(),
+			action: memory::Action::ConfigureBank {
+				expected_revision: 0,
+			},
+		},
+	)
+	.await
+	.unwrap();
+	let mut ids = Vec::new();
+	for _ in 0..3 {
+		let id = Uuid::now_v7();
+		memory::mutate(
+			&store,
+			&Actor::Operator,
+			mutation(
+				&shared,
+				Change::Add {
+					id,
+					content: content("Primary source extracted into a pending Run candidate"),
+				},
+			),
+		)
+		.await
+		.unwrap();
+		ids.push(id);
+	}
+	let (_, run_id) = policy_bounds::recorded_run(&store, &private, &ids).await;
+	let run = store.run(run_id).await.unwrap();
+	let proof = Evidence::Run {
+		id: run_id,
+		revision: run.revision,
+		digest: aidash_domain::semantic::indexing::content_digest(
+			&serde_json::to_string(&run).unwrap(),
+		),
+	};
+	let candidate = review_delivery::candidate(&store, &private).await;
+	let mut tx = native::begin(&store.pool).await.unwrap();
+	native::query(
+		&Query::update()
+			.table(Alias::new("memory_candidates"))
+			.value(Alias::new("run"), json!(proof))
+			.value(Alias::new("evidence"), json!([proof]))
+			.and_where(Expr::col("id").eq(Expr::value(candidate)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(&mut *tx)
+	.await
+	.unwrap();
+	tx.commit().await.unwrap();
+	let memory::Outcome::Candidates(before) = memory::operate(
+		&store,
+		&Actor::Operator,
+		memory::Operation {
+			operation_id: Uuid::now_v7(),
+			provider: reference("p"),
+			bank: private,
+			action: memory::Action::Candidates,
+		},
+	)
+	.await
+	.unwrap() else {
+		panic!("candidate list")
+	};
+	assert_eq!(before[0].state, CandidateState::Pending);
+	let mut replacement = registry.get("p", "1.0.0").await.unwrap();
+	replacement.id = "small-purge-graph".into();
+	replacement.config["policy"]["bounds"]["max_graph_visits"] = json!(2);
+	registry.register(replacement).await.unwrap();
+	memory::operate(
+		&store,
+		&Actor::Operator,
+		memory::Operation {
+			operation_id: Uuid::now_v7(),
+			provider: reference("small-purge-graph"),
+			bank: shared.clone(),
+			action: memory::Action::ConfigureBank {
+				expected_revision: 1,
+			},
+		},
+	)
+	.await
+	.unwrap();
+	let mut deletion = mutation(
+		&shared,
+		Change::Delete {
+			id: ids[2],
+			expected_revision: 1,
+		},
+	);
+	deletion.provider = reference("small-purge-graph");
+	memory::mutate(&store, &Actor::Operator, deletion)
+		.await
+		.unwrap();
+	let mut tx = native::begin(&store.pool).await.unwrap();
+	native::query(
+		&Query::update()
+			.table(Alias::new("memory_purge_jobs"))
+			.value(
+				Alias::new("purge_after"),
+				chrono::Utc::now() - chrono::Duration::seconds(1),
+			)
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(&mut *tx)
+	.await
+	.unwrap();
+	tx.commit().await.unwrap();
+	aidash_server::semantic::worker::sweep(&store)
+		.await
+		.unwrap();
+	let row = native::query(
+		&Query::select()
+			.columns(["text", "state", "revision"].map(Alias::new))
+			.from(Alias::new("memory_candidates"))
+			.and_where(Expr::col("id").eq(Expr::value(candidate)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(&store.pool)
+	.await
+	.unwrap();
+	assert!(
+		row.try_get::<String>("text").unwrap().is_empty(),
+		"oversized candidate quotation is physically erased"
+	);
+	assert_eq!(row.try_get::<String>("state").unwrap(), "invalidated");
+	assert_eq!(row.try_get::<i64>("revision").unwrap(), 2);
+	let row = native::query(
+		&Query::select()
+			.columns(["state", "attempts"].map(Alias::new))
+			.from(Alias::new("memory_purge_jobs"))
+			.and_where(Expr::col("unit_id").eq(Expr::value(ids[2])))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(&store.pool)
+	.await
+	.unwrap();
+	assert_eq!(row.try_get::<String>("state").unwrap(), "purged");
+	assert_eq!(row.try_get::<i32>("attempts").unwrap(), 1);
+}

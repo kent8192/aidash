@@ -5,7 +5,8 @@ use aidash_domain::{memory::*, registry::EntityRef};
 use chrono::{Duration, Utc};
 mod repairs;
 use reinhardt::query::{
-	Alias, ColumnRef, Expr, ExprTrait, Order, PostgresQueryBuilder, Query, QueryStatementBuilder,
+	Alias, ColumnRef, Expr, ExprTrait, LockBehavior, LockType, Order, PostgresQueryBuilder, Query,
+	QueryStatementBuilder,
 };
 
 pub(crate) async fn sweep(store: &Store) -> Result<()> {
@@ -47,7 +48,25 @@ pub(crate) async fn sweep(store: &Store) -> Result<()> {
 			if bank.home != store.node_id {
 				return Err(Error::Forbidden);
 			}
-			repository::lock_workspace(&mut lease, bank.workspace, true).await?;
+			// An indexer can retain a workspace reader while opening another
+			// current-origin reader. Queuing a writer behind it blocks that reader
+			// and creates a lock cycle across the indexer's independent scopes.
+			// Leave busy banks due for a later sweep without consuming a retry.
+			if native::query(
+				&Query::select()
+					.column(Alias::new("id"))
+					.from(Alias::new("workspaces"))
+					.and_where(Expr::col("id").eq(Expr::value(bank.workspace)))
+					.lock(LockType::Update)
+					.lock_behavior(LockBehavior::SkipLocked)
+					.to_string(PostgresQueryBuilder),
+			)
+			.fetch_optional(&mut **lease.tx())
+			.await?
+			.is_none()
+			{
+				return Ok(());
+			}
 			let current = super::bank_settings::get(&mut lease, &bank)
 				.await?
 				.ok_or(Error::Forbidden)?;

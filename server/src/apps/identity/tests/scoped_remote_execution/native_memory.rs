@@ -110,6 +110,83 @@ async fn remote_native_provenance_at_exact_admitted_bound_keeps_the_grant_visibl
 	p.close().await;
 }
 
+#[rstest::rstest]
+#[tokio::test]
+async fn native_receipt_finalization_failure_rolls_back_all_grant_dependencies(
+	#[future(awt)]
+	#[with(true, false, false, false, true)]
+	scoped_pair: Pair,
+) {
+	use reinhardt::query::{TableConstraint, types::IntoIden};
+	let p = scoped_pair;
+	let pool = p.a.store.pool.driver();
+	// A real database CHECK fails only the final COMPLETED attempt update,
+	// after native dependencies have been inserted into the completion transaction.
+	let statement = Query::alter_table()
+		.table(Alias::new("semantic_remote_attempts"))
+		.add_constraint(TableConstraint::Check {
+			name: Some(Alias::new("fixture_completion_failure").into_iden()),
+			expr: Expr::col("state").ne("COMPLETED"),
+		})
+		.to_string(PostgresQueryBuilder);
+	sqlx::query(&statement).execute(pool).await.unwrap();
+	for _ in 0..4 {
+		p.step().await;
+	}
+	assert!(
+		p.requests.lock().await.is_empty(),
+		"failed finalization must not deliver context to inference"
+	);
+	let reads: i64 = sqlx::query_scalar(
+		&Query::select()
+			.expr(reinhardt::query::Func::count(Expr::col("unit_id").into()))
+			.from(Alias::new("memory_remote_reads"))
+			.and_where(Expr::col("grant_id").eq(Expr::value(p.grant)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(pool)
+	.await
+	.unwrap();
+	assert_eq!(
+		reads, 0,
+		"abandoned native reads roll back with receipt completion"
+	);
+	let operations: Vec<(String, Option<Value>, Option<String>)> = sqlx::query_as(
+		&Query::select()
+			.columns(["state", "receipt", "error"].map(Alias::new))
+			.from(Alias::new("semantic_remote_operations"))
+			.and_where(Expr::col("grant_id").eq(Expr::value(p.grant)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_all(pool)
+	.await
+	.unwrap();
+	assert!(!operations.is_empty());
+	assert!(
+		operations
+			.iter()
+			.all(|(state, receipt, error)| state == "WAITING"
+				&& receipt.is_none()
+				&& error.as_deref() == Some("unavailable")),
+		"{operations:?}"
+	);
+	let aborted: i64 = sqlx::query_scalar(
+		&Query::select()
+			.expr(reinhardt::query::Func::count(Expr::col("id").into()))
+			.from(Alias::new("semantic_remote_attempts"))
+			.and_where(Expr::col("state").eq("ABORTED"))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(pool)
+	.await
+	.unwrap();
+	assert!(
+		aborted > 0,
+		"the real completion error was recorded for retry"
+	);
+	p.close().await;
+}
+
 async fn assert_receiver_native_cache_erased(p: &Pair) {
 	let receipts: i64 = sqlx::query_scalar(
 		&Query::select()

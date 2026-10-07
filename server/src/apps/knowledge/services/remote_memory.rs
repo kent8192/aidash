@@ -328,18 +328,3 @@ pub(crate) async fn retrieve(
 	}
 	Ok(context)
 }
-
-pub(crate) async fn record(
-	store: &Store,
-	lease: &mut Lease<'_>,
-	binding: &NativeBinding,
-	grant: Uuid,
-	context: &NativeContext,
-) -> Result<()> {
-	let capacity =
-		super::super::repositories::remote_memory_reads::capacity(lease, binding).await?;
-	super::super::repositories::remote_memory_reads::record(
-		store, grant, binding, context, capacity,
-	)
-	.await
-}

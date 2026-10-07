@@ -153,13 +153,12 @@ pub(crate) async fn erase_receipts(
 }
 
 pub(crate) async fn record(
-	store: &Store,
+	tx: &mut native::Transaction,
 	grant: Uuid,
 	binding: &NativeBinding,
 	context: &NativeContext,
 	capacity: usize,
 ) -> Result<()> {
-	let mut tx = native::begin(&store.control_pool).await?;
 	native::query(
 		&Query::insert()
 			.into_table(Alias::new("memory_remote_read_gates"))
@@ -172,7 +171,7 @@ pub(crate) async fn record(
 			)
 			.to_string(PostgresQueryBuilder),
 	)
-	.execute(&mut *tx)
+	.execute(&mut **tx)
 	.await?;
 	native::query(
 		&Query::select()
@@ -182,7 +181,7 @@ pub(crate) async fn record(
 			.lock(LockType::Update)
 			.to_string(PostgresQueryBuilder),
 	)
-	.fetch_one(&mut *tx)
+	.fetch_one(&mut **tx)
 	.await?;
 	for item in &context.banks {
 		if !binding
@@ -217,7 +216,7 @@ pub(crate) async fn record(
 						)
 						.to_string(PostgresQueryBuilder),
 				)
-				.execute(&mut *tx)
+				.execute(&mut **tx)
 				.await?;
 			}
 		}
@@ -229,7 +228,7 @@ pub(crate) async fn record(
 			.and_where(Expr::col("grant_id").eq(Expr::value(grant)))
 			.to_string(PostgresQueryBuilder),
 	)
-	.scalar_one(&mut *tx)
+	.scalar_one(&mut **tx)
 	.await?;
 	if usize::try_from(count)
 		.ok()
@@ -239,7 +238,7 @@ pub(crate) async fn record(
 			"remote memory dependency limit reached".into(),
 		));
 	}
-	tx.commit().await
+	Ok(())
 }
 
 pub(crate) async fn visible(access: &mut Access, grant: Uuid) -> Result<()> {
