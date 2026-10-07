@@ -136,7 +136,7 @@ Japanese; native Kubernetes diagnostic messages retain their original text.
 An observation failure hides old successful observations and shows an error.
 The page remains available while an atomic transaction blocks ordinary reads.
 
-Atomic-manifest recovery has a separate acceptance profile: `scripts/test-cluster.sh kubernetes transactions` and `scripts/test-cluster.sh k3s transactions`. It uses independent Node databases, real Pod replacement at durable cuts, worker scaling and same-version rolling replacement, retaining case traces and durable diagnostics in `.ignore/transaction-acceptance/`. The CI matrix runs the platform, transaction and remote-memory profiles. See the [transaction evidence register](operations/transaction-acceptance.md); these functional fixtures do not establish mixed-version compatibility, availability or restore targets.
+Atomic-manifest recovery has a separate acceptance profile: `scripts/test-cluster.sh kubernetes transactions` and `scripts/test-cluster.sh k3s transactions`. It uses independent Node databases, real Pod replacement at durable cuts, worker scaling and same-version rolling replacement, retaining case traces and durable diagnostics in `.ignore/transaction-acceptance/`. The platform, transaction and remote-memory profiles are available for manual execution outside CI. See the [transaction evidence register](operations/transaction-acceptance.md); these functional fixtures do not establish mixed-version compatibility, availability or restore targets.
 
 The remote-memory profile is `scripts/test-cluster.sh kubernetes remote-memory`
 or `scripts/test-cluster.sh k3s remote-memory`. It provisions two HTTP Nodes with
@@ -148,7 +148,7 @@ retry, restarts both servers/worker and Qdrant, and verifies lineage, receipts,
 unknown charges and source-invalidation controls. Production leases expire
 naturally. Only this run's namespace and cluster are removed. `remote-memory.json`,
 provider requests, source/image identities and server logs are retained under
-`.ignore/transaction-acceptance/` and uploaded by the matching CI jobs. These are
+`.ignore/transaction-acceptance/` for the manual run. These are
 semantic execution recovery cases; the other section-12 acceptance gates remain
 separate.
 
@@ -165,7 +165,7 @@ configured Kubernetes namespace. Tokens are reread on each request for rotation.
 For a complete disposable run, use `bash scripts/test-cluster.sh kubernetes` or
 `bash scripts/test-cluster.sh k3s`. These commands verify pinned tool checksums,
 create a private kubeconfig, build/import the image, run browser checks and remove
-the cluster. CI requires both distributions. They need Docker, Python, curl,
+the cluster. These manual acceptance runs need Docker, Python, curl,
 Node dependencies and an installed Playwright Chromium.
 
 To use a cluster you have already created, build and import the image, then run:

@@ -44,9 +44,9 @@ scripts/test-capability-cluster.sh
 ```
 
 Logs are under `.ignore/core-runtime/<cluster>/evidence/`. Only that directory is
-uploaded by CI. Its sibling `private/` contains the runner credential and
-kubeconfig and must not be published. `CI Success` requires the runtime gate in
-addition to Rust, browser, federation and orchestration checks.
+suitable for sharing. Its sibling `private/` contains the runner credential and
+kubeconfig and must not be published. This runtime gate runs manually outside
+CI and is not a prerequisite of `CI Success`.
 
 For an interactive acceptance installation with existing Docker/kind/kubectl/Helm:
 
