@@ -26,10 +26,7 @@ mod precision;
 #[path = "native_memory/purge.rs"]
 mod purge;
 mod recovery_deployment {
-	include!(concat!(
-		env!("CARGO_MANIFEST_DIR"),
-		"/src/apps/execution/tests/support/deployment.rs"
-	));
+	include!(app_test_path!("execution/tests/support/deployment.rs"));
 }
 
 #[rstest]

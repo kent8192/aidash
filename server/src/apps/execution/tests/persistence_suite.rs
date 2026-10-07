@@ -1,33 +1,25 @@
+include!("support/app_test_path.rs");
+
 #[path = "support/native_database.rs"]
 mod native_database;
 use native_database::{DatabaseFixture, database};
 
 mod semantic_limits {
-	include!(concat!(
-		env!("CARGO_MANIFEST_DIR"),
-		"/src/apps/knowledge/tests/database_limits.rs"
-	));
+	include!(app_test_path!("knowledge/tests/database_limits.rs"));
 }
 
 mod native_memory {
-	include!(concat!(
-		env!("CARGO_MANIFEST_DIR"),
-		"/src/apps/knowledge/tests/native_memory.rs"
-	));
+	include!(app_test_path!("knowledge/tests/native_memory.rs"));
 }
 
 mod decisions {
-	include!(concat!(
-		env!("CARGO_MANIFEST_DIR"),
-		"/src/apps/federation/transactions/tests/database_decisions.rs"
+	include!(app_test_path!(
+		"federation/transactions/tests/database_decisions.rs"
 	));
 }
 
 mod task_graph {
-	include!(concat!(
-		env!("CARGO_MANIFEST_DIR"),
-		"/src/apps/workspaces/tests/database_task_graph.rs"
-	));
+	include!(app_test_path!("workspaces/tests/database_task_graph.rs"));
 }
 
 #[path = "database_delivery.rs"]
