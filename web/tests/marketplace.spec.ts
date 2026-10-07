@@ -153,14 +153,9 @@ for (const locale of ["en-US", "ja-JP"] as const) {
         exact: true,
       }),
     });
-    const screenshots = process.env.AIDASH_PR_SCREENSHOTS;
     await expect(
       host.getByLabel("mkt-task@1.0.0", { exact: true }),
     ).toBeEnabled();
-    if (screenshots && !ja)
-      await host.screenshot({
-        path: `${screenshots}/host-packages-pending.png`,
-      });
     await host.getByLabel("shell", { exact: true }).check();
     await host.getByLabel("task_assign", { exact: true }).check();
     await host
@@ -188,10 +183,6 @@ for (const locale of ["en-US", "ja-JP"] as const) {
     await expect(host.locator(".host-package-selection")).toContainText(
       '"id": "mkt-task"',
     );
-    if (screenshots && !ja)
-      await host.screenshot({
-        path: `${screenshots}/host-packages-reviewed.png`,
-      });
     await approve.click();
     await expect.poll(() => selections.length).toBe(1);
     expect(selections[0]).toEqual({

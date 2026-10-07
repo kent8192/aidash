@@ -1,6 +1,10 @@
 //! Native descriptor admission and immutable system seeding on disposable PostgreSQL.
-#[path = "../../execution/tests/support/native_database.rs"]
-mod native_database;
+mod native_database {
+	include!(concat!(
+		env!("CARGO_MANIFEST_DIR"),
+		"/src/apps/execution/tests/support/native_database.rs"
+	));
+}
 use aidash_domain::{
 	registry::bindings::{DEFAULT_TOOLS, QualifiedRef, REQUIRED_TOOLS},
 	tool::providers::ToolDescriptor,
