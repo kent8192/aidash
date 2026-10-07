@@ -114,8 +114,7 @@ export function AgentBindings({
   const { locale, entityLabel, t } = useI18n();
   const ja = locale === "ja-JP";
   const [target, setTarget] = useState("");
-  const [selectedOrigin, setOrigin] = useState<string>();
-  const origin = selectedOrigin ?? node;
+  const origin = node;
   const available = entries.filter((e) =>
     ["tool", "bundle", "skill", "memory", "source"].includes(e.kind),
   );
@@ -148,7 +147,7 @@ export function AgentBindings({
           : "workspace_read and human_request are always included. Current permissions and providers are required. Add a Memory or Source explicitly to read memory."}
       </p>
       <Field label={ja ? "登録Node" : "Registering Node"}>
-        <input value={origin} onChange={(e) => setOrigin(e.target.value)} />
+        <input value={origin} readOnly />
       </Field>
       <Field label={ja ? "追加する定義" : "Definition to bind"}>
         <select value={target} onChange={(e) => setTarget(e.target.value)}>

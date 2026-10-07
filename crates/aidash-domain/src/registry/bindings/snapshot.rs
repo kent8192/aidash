@@ -215,6 +215,18 @@ impl BindingSnapshot {
 				}
 			}
 		}
+		let contexts = self
+			.bindings
+			.iter()
+			.filter(|binding| {
+				binding.excluded_reason.is_none()
+					&& matches!(binding.definition.kind.as_str(), "memory" | "source")
+			})
+			.map(|binding| {
+				serde_json::from_value::<sources::NativeContext>(binding.definition.config.clone())
+			})
+			.collect::<std::result::Result<Vec<_>, _>>()?;
+		sources::validate_mounts(contexts)?;
 		Ok(())
 	}
 }

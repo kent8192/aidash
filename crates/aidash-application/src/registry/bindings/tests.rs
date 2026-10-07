@@ -131,6 +131,69 @@ async fn snapshot(
 	.await
 }
 
+#[rstest::rstest]
+#[case("reference_attachments", 1, 1, false, true)]
+#[case("reference_attachments", 1, 1, true, false)]
+#[case("reference_attachments", 5, 4, false, false)]
+#[case("skill_attachments", 1, 1, false, true)]
+#[case("skill_attachments", 1, 1, true, false)]
+#[case("skill_attachments", 9, 8, false, false)]
+#[case("skill_roots", 1, 1, false, true)]
+#[case("skill_roots", 1, 1, true, false)]
+#[case("skill_roots", 5, 4, false, false)]
+#[tokio::test]
+async fn mounted_source_aggregation_rejects_ambiguous_ids_and_shared_limits(
+	#[case] adapter: &str,
+	#[case] first_count: usize,
+	#[case] second_count: usize,
+	#[case] duplicate: bool,
+	#[case] accepted: bool,
+) {
+	fn source(adapter: &str, count: usize, offset: usize) -> Value {
+		let ids = (offset..offset + count).map(|id| uuid::Uuid::from_u128(id as u128));
+		match adapter {
+			"reference_attachments" => {
+				json!({"adapter":adapter,"references":ids.map(|id|json!({"reference_id":id,"digest":"a".repeat(64)})).collect::<Vec<_>>()})
+			}
+			"skill_attachments" => json!({"adapter":adapter,"attachments":ids.map(|id| {
+				let mut skill: aidash_domain::capabilities::SkillAttachment = serde_json::from_value(json!({"skill_id":id,"origin":"fixture","digest":"","instructions":"---\nname: test\ndescription: Fixture\n---\nRead this.","files":[]})).unwrap();
+				skill.digest = aidash_domain::capabilities::skills::content_digest(&skill);
+				skill
+			}).collect::<Vec<_>>()}),
+			_ => {
+				json!({"adapter":adapter,"roots":(offset..offset+count).map(|id|format!("root-{id}/.agents/skills")).collect::<Vec<_>>()})
+			}
+		}
+	}
+	let mut catalog = Catalog::new();
+	let mut config = agent_config();
+	for (id, count, offset) in [
+		("first", first_count, 1),
+		("second", second_count, if duplicate { 1 } else { 21 }),
+	] {
+		catalog.insert(entry(
+			id,
+			"source",
+			json!({"schema_version":1,"source":source(adapter,count,offset)}),
+		));
+		config.bindings.push(Binding {
+			kind: BindingKind::Source,
+			target: reference(id),
+			alias: None,
+			narrow: Default::default(),
+			members: vec![],
+		});
+	}
+	let result = snapshot(&mut catalog, &config, false).await;
+	assert_eq!(result.is_ok(), accepted, "{adapter}: {result:?}");
+	if let Ok(snapshot) = result {
+		snapshot.validate().unwrap();
+		aidash_domain::registry::AgentConfig::from_snapshot(&snapshot).unwrap();
+	} else {
+		assert!(result.unwrap_err().to_string().contains("aggregate"));
+	}
+}
+
 #[tokio::test]
 async fn defaults_are_exact_and_a_saved_snapshot_is_immutable() {
 	let mut catalog = Catalog::new();

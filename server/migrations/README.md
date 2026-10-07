@@ -238,4 +238,10 @@ state. `federation/0008_pinned_delegations` and its state snapshot retain an
 optional public receiver closure in `delegations.binding_snapshot`. Existing
 rows keep `NULL`; an Agent Tool reservation writes its complete validated closure
 atomically. No historical Agent capability configuration is translated. The
-current graph has 42 physical migrations and 12 state snapshots.
+`execution/0008_home_waiting_references` and its state snapshot keep Home-owned
+Human continuations out of the receiver's local foreign key while retaining that
+key for local Runs. Remote waiting advances a bounded polling deadline until Home
+answers. `registry/0012_host_lifecycle_expression` corrects JSON operator precedence
+in the descriptor function without changing its strict poll/cancel identities or
+historical descriptors. The current graph has 44 physical migrations and 13 state
+snapshots (57 migrations total).

@@ -111,6 +111,50 @@ impl NativeContext {
 	}
 }
 
+/// Native adapters mount one combined set, even when several immutable Source
+/// declarations contribute content. Validate aggregate identities before a Run
+/// is admitted rather than failing at its first mount.
+pub(super) fn validate_mounts(contexts: impl IntoIterator<Item = NativeContext>) -> Result<()> {
+	let mut references = BTreeSet::new();
+	let mut skills = BTreeSet::new();
+	let mut roots = BTreeSet::new();
+	for context in contexts {
+		match context.source {
+			NativeSource::ReferenceAttachments {
+				references: attachments,
+			} => {
+				for attachment in attachments {
+					if !references.insert(attachment.reference_id) || references.len() > 8 {
+						return Err(Error::Invalid(
+							"ambiguous or excessive aggregate reference Sources".into(),
+						));
+					}
+				}
+			}
+			NativeSource::SkillAttachments { attachments } => {
+				for attachment in attachments {
+					if !skills.insert(attachment.skill_id) || skills.len() > 16 {
+						return Err(Error::Invalid(
+							"ambiguous or excessive aggregate Skill Sources".into(),
+						));
+					}
+				}
+			}
+			NativeSource::SkillRoots { roots: paths } => {
+				for root in paths {
+					if !roots.insert(root) || roots.len() > 8 {
+						return Err(Error::Invalid(
+							"ambiguous or excessive aggregate Skill root Sources".into(),
+						));
+					}
+				}
+			}
+			_ => {}
+		}
+	}
+	Ok(())
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;

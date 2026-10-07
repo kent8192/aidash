@@ -366,6 +366,7 @@ test("Binding setup saves explicit Sources, Memory and Host packages in a new im
   await expect(config.getByLabel("Registering Node")).toHaveValue(
     "aidash://home",
   );
+  await expect(config.getByLabel("Registering Node")).not.toBeEditable();
   await expect(
     config.getByText("workspace_read and human_request are always included.", {
       exact: false,

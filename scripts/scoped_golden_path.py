@@ -275,7 +275,10 @@ def verify(base_a, base_b, node_a, node_b, worker, launch_worker, counts):
             peer_headers = {"x-aidash-node": node_a, "x-aidash-protocol": "0.2"}
             denied(base_b, "/federation/v0.1/offers", {"task": task, "agent": agent}, token=PEER_TOKEN, headers=peer_headers)
             denied(base_a, "/federation/v0.1/scoped/execution/commands", {"grant_id": grant, "admission_id": run_id, "operation": "workspace_record", "data": {"kind": "task", "id": rejected_task["id"]}}, token=PEER_TOKEN, headers={"x-aidash-node": node_b, "x-aidash-protocol": "0.2"})
-            assert home.blocked.wait(90), f"Did not reach committed {operation}: {home.errors} {fixture.errors}"
+            if not home.blocked.wait(90):
+                stalled = api_request(base_b, f"/api/runs/{run_id}")["run"]
+                commands = {name: len(attempts) for (owner, name), attempts in home.commands.items() if owner == grant}
+                raise AssertionError(f"Did not reach committed {operation}: phase={stalled['phase']}, step={stalled['step']}, error={stalled.get('error')}, model_calls={fixture.model_calls[scenario]}, Home commands={commands}, peer_errors={home.errors}, provider_errors={fixture.errors}")
 
             def run(run_id=run_id):
                 return api_request(base_b, f"/api/runs/{run_id}")["run"]
