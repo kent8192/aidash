@@ -183,6 +183,8 @@ args = [
   "--set-string",
   "memoryRecovery.directory=/var/lib/aidash/memory-recovery/home",
   "--set-string",
+  "memoryRecovery.subPath=home",
+  "--set-string",
   "image.repository=aidash",
   "--set-string",
   "image.tag=local",

@@ -55,9 +55,10 @@ RUN set -eux; \
     apt-get purge -y --auto-remove curl; \
     rm -rf /var/lib/apt/lists/*
 
-# The supported single-primary profile uses Groonga WAL recovery. This is not
-# a claim of PGroonga streaming-replication/HA acceptance.
-RUN printf "\nshared_preload_libraries = 'pgroonga_crash_safer'\npgroonga.enable_crash_safe = on\nmax_worker_processes = 96\n" >> /usr/share/postgresql/postgresql.conf.sample
+# Apply the supported recovery profile on every start, including retained PGDATA.
+COPY --chmod=0755 deploy/postgres/entrypoint.sh /usr/local/bin/aidash-postgres-entrypoint
+ENTRYPOINT ["aidash-postgres-entrypoint"]
+CMD ["postgres"]
 
 # Integration fixtures create their own databases and execute the migration graph.
 FROM extensions AS test

@@ -13,6 +13,7 @@ import unittest
 from unittest.mock import Mock, patch
 from urllib.parse import urlsplit
 
+from native_memory_cluster_acceptance import NativeMemory
 from remote_memory_cluster_acceptance import RemoteMemory
 from transaction_cluster_acceptance import Cluster, main, transaction_cases
 
@@ -334,6 +335,80 @@ class VisibilityOracleTests(unittest.TestCase):
         cluster.inspect.return_value = [{"revision": 0}]
         with self.assertRaisesRegex(AssertionError, "partial visibility"):
             cluster.observe(2, "transaction", ["a", "b"], [])
+
+
+class NativeEvaluationOracleTests(unittest.TestCase):
+    def evaluate(self, useful_recall):
+        cluster = object.__new__(NativeMemory)
+        cluster.workspace = Mock(return_value=("workspace", None))
+        cluster.scale = Mock()
+        cluster.entries = [{"research": {"id": "research", "version": "1.0.0"}, "native-memory": {}}]
+        cluster.args = Mock(image="test-image")
+        cluster.memory = {}
+        cluster.evidence = {}
+
+        def report_evaluation(*arguments, report):
+            report["cases"] = [{"language": language, "metrics": {
+                "useful_recall": recall, "extraction_label_recall": 1,
+                "missing_support": 0, "duplicate_labels": 0,
+                "stale_units_after_correction": 0, "charged_calls": 1, "charged_tokens": 100,
+            }} for language, recall in (("en-US", 0.75), ("ja-JP", useful_recall))]
+
+        module = Mock()
+        module.evaluate.side_effect = report_evaluation
+        with patch("native_memory_cluster_acceptance.importlib.util.spec_from_file_location"), patch(
+            "native_memory_cluster_acceptance.importlib.util.module_from_spec", return_value=module
+        ):
+            cluster.evaluation()
+        return cluster
+
+    def test_empty_or_incomplete_retrieval_rejects_otherwise_successful_evaluation(self):
+        for recall in (0, 0.5):
+            with self.subTest(recall=recall), self.assertRaisesRegex(AssertionError, "ja-JP"):
+                self.evaluate(recall)
+
+    def test_frozen_retrieval_target_and_better_results_pass_in_both_languages(self):
+        for recall in (0.75, 1):
+            with self.subTest(recall=recall):
+                cluster = self.evaluate(recall)
+                self.assertEqual(cluster.scale.call_args.args, (0, "worker", 0))
+
+
+class PostgresEntrypointTests(unittest.TestCase):
+    def invocation(self, arguments):
+        source = pathlib.Path(__file__).resolve().parents[1] / "deploy/postgres/entrypoint.sh"
+        with tempfile.TemporaryDirectory() as directory:
+            official = pathlib.Path(directory) / "official-entrypoint"
+            official.write_text('#!/usr/bin/env bash\nprintf "%s\\0" "$@"\n')
+            official.chmod(0o755)
+            wrapper = pathlib.Path(directory) / "entrypoint.sh"
+            wrapper.write_text(source.read_text().replace("/usr/local/bin/docker-entrypoint.sh", str(official)))
+            result = subprocess.run(["bash", str(wrapper), *arguments], check=True, capture_output=True)
+        return result.stdout.decode().removesuffix("\0").split("\0")
+
+    @staticmethod
+    def settings(arguments):
+        return dict(argument.split("=", 1) for index, argument in enumerate(arguments)
+                    if index and arguments[index - 1] == "-c")
+
+    def test_server_always_applies_recovery_profile_with_default_worker_capacity(self):
+        arguments = self.invocation(["postgres"])
+        self.assertEqual(arguments[0], "postgres")
+        self.assertEqual(self.settings(arguments), {
+            "max_worker_processes": "96", "shared_preload_libraries": "pgroonga_crash_safer",
+            "pgroonga.enable_crash_safe": "on",
+        })
+
+    def test_explicit_worker_and_network_settings_survive_flags_only_start(self):
+        arguments = self.invocation(["-c", "listen_addresses=127.0.0.1", "-c", "max_worker_processes=256"])
+        self.assertEqual(arguments[0], "postgres")
+        self.assertEqual(self.settings(arguments)["max_worker_processes"], "256")
+        self.assertEqual(self.settings(arguments)["listen_addresses"], "127.0.0.1")
+        self.assertEqual(self.settings(arguments)["pgroonga.enable_crash_safe"], "on")
+
+    def test_administrative_commands_are_forwarded_unchanged(self):
+        arguments = ["psql", "--version"]
+        self.assertEqual(self.invocation(arguments), arguments)
 
 
 class EmbeddingOracleTests(unittest.TestCase):

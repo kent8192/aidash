@@ -87,6 +87,13 @@ existing local volume, a server administrator must create the extension in
 The Helm chart uses externally managed databases, so provision this prerequisite
 on those databases separately.
 
+The bundled PostgreSQL image applies `pgroonga_crash_safer` preloading and
+`pgroonga.enable_crash_safe=on` on every server start, including retained data
+directories. It defaults to 96 worker processes; an explicit PostgreSQL
+`max_worker_processes` argument can increase this for larger test topologies.
+These settings support the single-primary recovery profile described in
+[native memory recovery](memory-recovery.md).
+
 NATS must enable JetStream and persist its storage directory. Its connection URL
 comes from the Secret. A broker outage leaves a durable PostgreSQL outbox;
 readiness depends on PostgreSQL so agents can continue durable work during that

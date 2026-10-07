@@ -43,8 +43,12 @@ Do not repair a missing volume by running `init` again.
 For Helm, provision one Home-owned claim and initialize its directory with the
 application UID/GID 10001. Set `memoryRecovery.existingClaim` to this claim and
 `memoryRecovery.directory` to the absolute mounted directory. The chart mounts
-the same claim in the server and worker; it never initializes or replaces an
-epoch. Run the one-time command in an operator Job with the same image, database
+the same claim in the server and worker. If the initialized Home is a child of
+the claim root, set `memoryRecovery.subPath` to that relative directory. The
+local Kubernetes initializer creates `home/`, and `cargo make k8s-up` mounts
+that child at `/var/lib/aidash/memory-recovery/home` for both roles. The chart
+never initializes or replaces an epoch. Run the one-time command in an operator
+Job with the same image, database
 credentials, Home identity and volume. A newly mounted volume root may be owned
 by root: create/chown the Home directory before running `init`, rather than
 depending on `fsGroup` to grant permission to chmod the volume root. Separate

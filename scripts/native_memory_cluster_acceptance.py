@@ -245,6 +245,7 @@ class NativeMemory(RemoteMemory):
             report=self.evidence["fixed_label_evaluation"])
         for case in self.evidence["fixed_label_evaluation"]["cases"]:
             metrics = case["metrics"]
+            assert metrics["useful_recall"] >= 0.75, case
             assert metrics["extraction_label_recall"] == 1 and metrics["missing_support"] == 0 and metrics["duplicate_labels"] == 0, case
             assert metrics["stale_units_after_correction"] == 0 and metrics["charged_calls"] > 0 and metrics["charged_tokens"] > 0, case
         self.scale(0, "worker", 0)
