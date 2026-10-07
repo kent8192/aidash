@@ -9,6 +9,16 @@ body-digest and deletion ledger are independent from the database. The initial
 profile requires local filesystem locking, atomic rename and file/directory
 fsync; a different shared filesystem needs its own acceptance evidence.
 
+`epoch.cbor` anchors the Home identity and `ledger.cbor` stores its serving
+gate. Permanent unit fences live in `units/<unit-uuid>.cbor`, each bound to
+that epoch and protected by a checksum. A write validates the entire batch,
+then atomically replaces and fsyncs each affected fence before the database
+commit. Partial filesystem failures retain conservative floors and withhold
+uncertain bodies. Normal reads inspect only the selected unit's fence;
+recovery and status combine the shards. The 64 MiB per-file guard therefore
+does not impose an aggregate Home unit capacity. Retain the whole directory,
+including every unit shard, independently of database snapshots.
+
 Initialize once after native schema creation, before creating native memory
 participants or banks. Initialization requires empty new-format memory and
 does not import existing units or JSON memory:

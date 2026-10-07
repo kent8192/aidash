@@ -446,18 +446,21 @@ async fn expiry_drains_in_batches_no_larger_than_mutation_capacity(
 		);
 	}
 	// Inject the fixture clock into both canonical bodies and independent fences.
-	let ledger_path = database.recovery_directory.path().join("ledger.cbor");
-	let bytes = std::fs::read(&ledger_path).unwrap();
-	let mut ledger: aidash_domain::memory::recovery::Ledger =
-		ciborium::de::from_reader(&bytes[40..]).unwrap();
 	let mut tx = native::begin(&store.pool).await.unwrap();
 	for unit in &mut units {
 		unit.learned_at = chrono::DateTime::from_timestamp_micros(
 			(chrono::Utc::now() - chrono::Duration::days(2)).timestamp_micros(),
 		)
 		.unwrap();
-		ledger.units.get_mut(&unit.id).unwrap().digest =
-			aidash_domain::memory::recovery::digest(unit).unwrap();
+		let fence_path = database
+			.recovery_directory
+			.path()
+			.join("units")
+			.join(format!("{}.cbor", unit.id));
+		let bytes = std::fs::read(&fence_path).unwrap();
+		let mut record: RecoveryFence = ciborium::de::from_reader(&bytes[40..]).unwrap();
+		record.fence.digest = aidash_domain::memory::recovery::digest(unit).unwrap();
+		write_fixture_archive(&fence_path, &record);
 		native::query(
 			&Query::update()
 				.table(Alias::new("memory_units"))
@@ -470,7 +473,6 @@ async fn expiry_drains_in_batches_no_larger_than_mutation_capacity(
 		.unwrap();
 	}
 	tx.commit().await.unwrap();
-	write_fixture_archive(&ledger_path, &ledger);
 	for expected in [2, 4, 5] {
 		let mut tx = native::begin(&store.pool).await.unwrap();
 		native::query(

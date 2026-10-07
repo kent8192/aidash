@@ -1,8 +1,11 @@
 //! Fsynced, independently retained CBOR fences and a persistent restore serving gate.
 use crate::{Error, Result};
 use aidash_application::ports::memory::MemoryRecovery;
-use aidash_domain::memory::{Unit, recovery::Ledger};
-use serde::{Serialize, de::DeserializeOwned};
+use aidash_domain::memory::{
+	Unit,
+	recovery::{Fence, Ledger},
+};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
 use std::{
 	fs::{File, OpenOptions},
@@ -12,6 +15,13 @@ use std::{
 
 const MAGIC: &[u8; 8] = b"AIDMEM01";
 pub(crate) const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct UnitFence {
+	epoch: uuid::Uuid,
+	id: uuid::Uuid,
+	fence: Fence,
+}
 pub(crate) struct FileRecovery {
 	pub directory: PathBuf,
 	pub home: String,
@@ -43,7 +53,62 @@ impl FileRecovery {
 	}
 	pub fn load(&self) -> Result<Ledger> {
 		let _guard = self.lock()?;
-		self.load_locked()
+		self.load_units_locked(self.load_locked()?)
+	}
+	fn load_units_locked(&self, mut ledger: Ledger) -> Result<Ledger> {
+		for entry in std::fs::read_dir(self.directory.join("units")).map_err(storage_error)? {
+			let path = entry.map_err(storage_error)?.path();
+			if path.extension().is_none_or(|extension| extension != "cbor") {
+				continue;
+			}
+			let record: UnitFence = read(&path)?;
+			if record.epoch != ledger.epoch || self.unit_path(record.id) != path {
+				return Err(Error::Forbidden);
+			}
+			ledger.units.insert(record.id, record.fence);
+		}
+		ledger.validate(&self.home)?;
+		Ok(ledger)
+	}
+	fn unit_path(&self, id: uuid::Uuid) -> PathBuf {
+		self.directory.join("units").join(format!("{id}.cbor"))
+	}
+	fn unit_locked(&self, ledger: &Ledger, id: uuid::Uuid) -> Result<Option<Fence>> {
+		let path = self.unit_path(id);
+		if !path.try_exists().map_err(storage_error)? {
+			return Ok(None);
+		}
+		let record: UnitFence = read(&path)?;
+		if record.id != id || record.epoch != ledger.epoch {
+			return Err(Error::Forbidden);
+		}
+		let mut selected = Ledger::new(self.home.clone());
+		selected.units.insert(id, record.fence.clone());
+		selected.validate(&self.home)?;
+		Ok(Some(record.fence))
+	}
+	fn observe_locked(&self, metadata: &Ledger, units: &[Unit]) -> Result<()> {
+		let mut selected = Ledger::new(self.home.clone());
+		selected.epoch = metadata.epoch;
+		for unit in units {
+			if let Some(fence) = self.unit_locked(metadata, unit.id)? {
+				selected.units.insert(unit.id, fence);
+			}
+			selected.observe(unit)?;
+		}
+		// Validate the whole batch first. Every shard is fsynced before SQL commit;
+		// a partial filesystem failure can only leave conservative revision floors.
+		for (id, fence) in selected.units {
+			atomic_write(
+				&self.unit_path(id),
+				&UnitFence {
+					epoch: metadata.epoch,
+					id,
+					fence,
+				},
+			)?;
+		}
+		Ok(())
 	}
 	fn load_locked(&self) -> Result<Ledger> {
 		let ledger: Ledger = read(&self.directory.join("ledger.cbor"))?;
@@ -52,6 +117,12 @@ impl FileRecovery {
 			return Err(Error::Forbidden);
 		}
 		ledger.validate(&self.home)?;
+		if !ledger.units.is_empty() {
+			return Err(Error::SemanticUnavailable);
+		}
+		if !self.directory.join("units").is_dir() {
+			return Err(Error::SemanticUnavailable);
+		}
 		Ok(ledger)
 	}
 	pub fn initialize(&self, units: &[Unit]) -> Result<()> {
@@ -69,14 +140,13 @@ impl FileRecovery {
 				"external memory ledger already exists; never replace its epoch".into(),
 			));
 		}
-		let mut ledger = Ledger::new(self.home.clone());
-		for unit in units {
-			ledger.observe(unit)?;
-		}
+		let ledger = Ledger::new(self.home.clone());
+		std::fs::create_dir_all(self.directory.join("units")).map_err(storage_error)?;
 		// A crash after this permanent anchor leaves a closed gate. Initialization
 		// can never replace a prior epoch when its ledger file is missing.
 		atomic_write(&self.directory.join("epoch.cbor"), &ledger.epoch)?;
-		atomic_write(&self.directory.join("ledger.cbor"), &ledger)
+		atomic_write(&self.directory.join("ledger.cbor"), &ledger)?;
+		self.observe_locked(&ledger, units)
 	}
 	pub fn gate(&self, restoring: bool, epoch: uuid::Uuid) -> Result<Ledger> {
 		let _guard = self.lock()?;
@@ -86,22 +156,24 @@ impl FileRecovery {
 		}
 		ledger.restoring = restoring;
 		atomic_write(&self.directory.join("ledger.cbor"), &ledger)?;
-		Ok(ledger)
+		self.load_units_locked(ledger)
 	}
 	pub fn advance_restore(&self, epoch: uuid::Uuid, unit: &Unit) -> Result<()> {
 		let _guard = self.lock()?;
-		let mut ledger = self.load_locked()?;
+		let ledger = self.load_locked()?;
 		if !ledger.restoring || ledger.epoch != epoch {
 			return Err(Error::Forbidden);
 		}
-		ledger.observe(unit)?;
-		atomic_write(&self.directory.join("ledger.cbor"), &ledger)
+		self.observe_locked(&ledger, std::slice::from_ref(unit))
 	}
 }
 impl MemoryRecovery for FileRecovery {
 	fn require_serving(&self) -> aidash_application::Result<()> {
+		let _guard = self
+			.lock()
+			.map_err(|_| aidash_application::Error::SemanticUnavailable)?;
 		let ledger = self
-			.load()
+			.load_locked()
 			.map_err(|_| aidash_application::Error::SemanticUnavailable)?;
 		if ledger.restoring {
 			return Err(aidash_application::Error::SemanticUnavailable);
@@ -109,13 +181,24 @@ impl MemoryRecovery for FileRecovery {
 		Ok(())
 	}
 	fn epoch(&self) -> aidash_application::Result<uuid::Uuid> {
-		Ok(self.load()?.epoch)
+		let _guard = self.lock()?;
+		Ok(self.load_locked()?.epoch)
 	}
 	fn require_current(&self, unit: &Unit) -> aidash_application::Result<()> {
-		let ledger = self
-			.load()
+		let _guard = self
+			.lock()
 			.map_err(|_| aidash_application::Error::SemanticUnavailable)?;
-		if ledger.restoring || !ledger.matches(unit)? {
+		let ledger = self
+			.load_locked()
+			.map_err(|_| aidash_application::Error::SemanticUnavailable)?;
+		let mut selected = Ledger::new(self.home.clone());
+		if let Some(fence) = self
+			.unit_locked(&ledger, unit.id)
+			.map_err(|_| aidash_application::Error::SemanticUnavailable)?
+		{
+			selected.units.insert(unit.id, fence);
+		}
+		if ledger.restoring || !selected.matches(unit)? {
 			return Err(aidash_application::Error::SemanticUnavailable);
 		}
 		Ok(())
@@ -123,14 +206,11 @@ impl MemoryRecovery for FileRecovery {
 	fn observe_many(&self, units: &[Unit]) -> aidash_application::Result<()> {
 		let result = (|| {
 			let _guard = self.lock()?;
-			let mut ledger = self.load_locked()?;
+			let ledger = self.load_locked()?;
 			if ledger.restoring {
 				return Err(Error::SemanticUnavailable);
 			}
-			for unit in units {
-				ledger.observe(unit)?;
-			}
-			atomic_write(&self.directory.join("ledger.cbor"), &ledger)
+			self.observe_locked(&ledger, units)
 		})();
 		result.map_err(Into::into)
 	}

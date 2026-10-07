@@ -767,7 +767,8 @@ pub async fn create_participant(
 		lease
 			.workspace(workspace, "memory.participant.manage")
 			.await?;
-		definition(&mut lease, &input.agent, "agent").await?;
+		let accepted = definition(&mut lease, &input.agent, "agent").await?;
+		let configuration: crate::registry::AgentConfig = serde_json::from_value(accepted.config)?;
 		let tenant: String = native::query_scalar(
 			&Query::select()
 				.column(Alias::new("tenant"))
@@ -824,6 +825,9 @@ pub async fn create_participant(
 		.execute(&mut **lease.tx())
 		.await?;
 		repository::bank_id(&mut lease, &bank, true).await?;
+		if let Some(provider) = &configuration.memory {
+			super::super::repositories::bank_settings::set(&mut lease, &bank, provider, 0).await?;
+		}
 		Ok(Participant {
 			id,
 			bank,

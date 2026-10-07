@@ -29,8 +29,17 @@ mod precision;
 mod purge;
 #[path = "../../execution/tests/support/deployment.rs"]
 mod recovery_deployment;
+#[path = "native_memory/review_capacity.rs"]
+mod review_capacity;
 #[path = "native_memory/review_regressions.rs"]
 mod review_regressions;
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct RecoveryFence {
+	epoch: Uuid,
+	id: Uuid,
+	fence: recovery::Fence,
+}
 
 #[rstest]
 #[tokio::test]
@@ -98,14 +107,12 @@ async fn memory_ttl_withholds_units_and_dependents_before_cleanup_and_after_rest
 		(chrono::Utc::now() - chrono::Duration::days(2)).timestamp_micros(),
 	)
 	.unwrap();
-	let ledger_path = directory.join("ledger.cbor");
-	let bytes = std::fs::read(&ledger_path).unwrap();
-	let mut ledger: aidash_domain::memory::recovery::Ledger =
-		ciborium::de::from_reader(&bytes[40..]).unwrap();
+	let fence_path = directory.join("units").join(format!("{}.cbor", aged.id));
+	let bytes = std::fs::read(&fence_path).unwrap();
+	let mut record: RecoveryFence = ciborium::de::from_reader(&bytes[40..]).unwrap();
 	// Fixture clock injection cannot use production's same-revision guard.
-	ledger.units.get_mut(&aged.id).unwrap().digest =
-		aidash_domain::memory::recovery::digest(&aged).unwrap();
-	write_fixture_archive(&ledger_path, &ledger);
+	record.fence.digest = aidash_domain::memory::recovery::digest(&aged).unwrap();
+	write_fixture_archive(&fence_path, &record);
 	let mut tx = native::begin(&store.pool).await.unwrap();
 	native::query(
 		&Query::update()

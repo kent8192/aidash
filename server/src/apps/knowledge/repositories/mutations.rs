@@ -82,6 +82,70 @@ impl SemanticConfigurationSession for Configuration {
 		spec: Value,
 		collection: &str,
 	) -> Result<Index> {
+		// The Workspace lock serializes index generations with bank policy pins.
+		// Include empty banks: their next projection and recall must remain usable.
+		let proposed: IndexingSpec = serde_json::from_value(spec.clone())?;
+		let mut after = Uuid::nil();
+		let mut checked = std::collections::BTreeSet::new();
+		loop {
+			let rows = crate::database::native::query(
+				&Query::select()
+					.columns([
+						("s", "bank_id"),
+						("s", "provider_id"),
+						("s", "provider_version"),
+					])
+					.from_as(Alias::new("memory_bank_settings"), Alias::new("s"))
+					.inner_join(
+						Alias::new("memory_banks"),
+						Expr::col(("s", "bank_id")).equals(("memory_banks", "id")),
+					)
+					.and_where(
+						Expr::col(("memory_banks", "workspace_id")).eq(Expr::value(workspace)),
+					)
+					.and_where(Expr::col(("s", "bank_id")).gt(Expr::value(after)))
+					.order_by(("s", "bank_id"), Order::Asc)
+					.limit(256)
+					.to_string(PostgresQueryBuilder),
+			)
+			.fetch_all(self.transaction.as_mut())
+			.await?;
+			if rows.is_empty() {
+				break;
+			}
+			for row in rows {
+				after = row.try_get("bank_id")?;
+				let reference = (
+					row.try_get::<String>("provider_id")?,
+					row.try_get::<String>("provider_version")?,
+				);
+				if !checked.insert(reference.clone()) {
+					continue;
+				}
+				let provider = crate::apps::registry::models::Definition::read_in(
+					self.transaction.as_mut(),
+					&reference.0,
+					&reference.1,
+				)
+				.await?;
+				let config: aidash_domain::memory::ProviderConfig =
+					serde_json::from_value(provider.config)?;
+				let role = &config.policy.embedding;
+				let embedding = crate::apps::registry::models::Definition::read_in(
+					self.transaction.as_mut(),
+					&role.id,
+					&role.version,
+				)
+				.await?;
+				let embedding: aidash_domain::semantic::EmbeddingConfig =
+					serde_json::from_value(embedding.config)?;
+				if proposed.embedding != embedding {
+					return Err(aidash_application::Error::Conflict(
+						"Workspace index embedding differs from a pinned memory bank policy".into(),
+					));
+				}
+			}
+		}
 		Ok(SemanticIndexe::replace_generation(
 			self.transaction.as_mut(),
 			workspace,

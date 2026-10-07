@@ -74,6 +74,21 @@ pub(crate) async fn set(
 	// Mutation receipts and model operations remain durable after body retention.
 	// Rejection rolls back both settings and any participant update in this lease.
 	let policy = crate::semantic::native_memory::policy(lease, provider).await?;
+	if let Some(index) =
+		crate::semantic::models::SemanticIndexe::locked(&mut **lease.tx(), bank.workspace, false)
+			.await?
+	{
+		let embedding =
+			crate::semantic::native_memory::definition(lease, &policy.embedding, "embedding")
+				.await?;
+		let embedding: aidash_domain::semantic::EmbeddingConfig =
+			serde_json::from_value(embedding.config)?;
+		if index.configuration()?.embedding != embedding {
+			return Err(Error::Conflict(
+				"memory bank embedding differs from its Workspace index".into(),
+			));
+		}
+	}
 	for (table, live_only, cap) in [
 		("memory_units", false, policy.retention.max_unit_records),
 		("memory_units", true, policy.bounds.max_units),
@@ -116,6 +131,7 @@ pub(crate) async fn set(
 	)
 	.fetch_all(&mut **lease.tx())
 	.await?;
+	let mut unit_ids = Vec::with_capacity(rows.len());
 	for row in rows {
 		if super::units::content(&row)?
 			.validate(&policy.bounds)
@@ -125,6 +141,7 @@ pub(crate) async fn set(
 				"replacement memory policy is below existing unit content bounds".into(),
 			));
 		}
+		unit_ids.push(row.try_get::<uuid::Uuid>("id")?);
 	}
 	if let Some(current) = current.as_ref() {
 		let previous = crate::semantic::native_memory::policy(lease, &current.provider).await?;
@@ -161,6 +178,10 @@ pub(crate) async fn set(
 				}
 			}
 		}
+	}
+	// Preserve the existing forward-provenance rejection before checking impact.
+	for unit in unit_ids {
+		super::native_memory::validate_impact(lease, unit, policy.bounds.max_graph_visits).await?;
 	}
 	let revision = expected
 		.checked_add(1)

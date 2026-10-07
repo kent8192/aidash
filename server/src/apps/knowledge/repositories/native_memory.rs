@@ -8,6 +8,9 @@ use reinhardt::query::{
 	Query, QueryStatementBuilder, SimpleExpr,
 };
 use std::collections::{BTreeSet, VecDeque};
+
+mod dependencies;
+pub(crate) use dependencies::validate_impact;
 use uuid::Uuid;
 
 pub(crate) async fn lock_workspace(
@@ -352,6 +355,10 @@ pub(crate) async fn mutate_origin(
 	// Capacity applies to the atomic final state, including batched replacements.
 	if retained > bounds.max_units {
 		return Err(Error::Conflict("memory bank storage limit reached".into()));
+	}
+	// Admission must leave every source correctable within its pinned impact cap.
+	for unit in result.iter().filter(|unit| !unit.deleted) {
+		dependencies::validate_admission(lease, unit, bounds).await?;
 	}
 	// Impact discovery is bounded and complete before any result may leave the transaction.
 	fence_dependents(
@@ -801,70 +808,62 @@ async fn fence_dependents(
 	actor: &str,
 	bounds: &Bounds,
 ) -> Result<()> {
-	let mut pending: VecDeque<_> = changed.iter().map(|unit| unit.id).collect();
-	let mut seen: BTreeSet<_> = pending.iter().copied().collect();
-	while let Some(id) = pending.pop_front() {
-		let rows = native::query(
-			&Query::select()
-				.columns(["unit_id", "source_revision"].map(Alias::new))
-				.from(Alias::new("memory_dependencies"))
-				.and_where(Expr::col("source_kind").eq("unit"))
-				.and_where(Expr::col("source_id").eq(Expr::value(id)))
-				.order_by(Alias::new("unit_id"), Order::Asc)
-				.limit(bounds.max_graph_visits as u64 + 1)
-				.to_string(PostgresQueryBuilder),
-		)
-		.fetch_all(&mut **lease.tx())
-		.await?;
-		if rows.len() > bounds.max_graph_visits {
-			return Err(Error::Conflict(
-				"memory change impact exceeds its declared bound".into(),
-			));
-		}
-		let source = units::load(lease, id, false)
-			.await?
-			.ok_or(Error::Forbidden)?;
-		for row in rows {
-			if row.try_get::<i64>("source_revision")? == source.revision && source.visible() {
-				continue;
-			}
-			let dependent: Uuid = row.try_get("unit_id")?;
-			if !seen.insert(dependent) {
-				continue;
-			}
-			if seen.len() > bounds.max_graph_visits {
-				return Err(Error::Conflict(
-					"memory change impact exceeds its declared bound".into(),
-				));
-			}
-			let mut unit = units::load(lease, dependent, true)
+	// Each changed root gets its declared traversal budget; a batch is bounded
+	// by max_candidates * max_graph_visits rather than consuming one shared cap.
+	let mut fenced: BTreeSet<_> = changed.iter().map(|unit| unit.id).collect();
+	for root in changed {
+		let mut pending = VecDeque::from([root.id]);
+		let mut seen = BTreeSet::from([root.id]);
+		while let Some(id) = pending.pop_front() {
+			let rows = dependencies::dependents(lease, id, bounds.max_graph_visits).await?;
+			let source = units::load(lease, id, false)
 				.await?
 				.ok_or(Error::Forbidden)?;
-			if unit.bank.workspace != workspace {
-				return Err(Error::Forbidden);
+			for row in rows {
+				if row.try_get::<i64>("source_revision")? == source.revision && source.visible() {
+					continue;
+				}
+				let dependent: Uuid = row.try_get("unit_id")?;
+				if !seen.insert(dependent) {
+					continue;
+				}
+				if seen.len() > bounds.max_graph_visits {
+					return Err(Error::Conflict(
+						"memory change impact exceeds its declared bound".into(),
+					));
+				}
+				if !fenced.insert(dependent) {
+					continue;
+				}
+				let mut unit = units::load(lease, dependent, true)
+					.await?
+					.ok_or(Error::Forbidden)?;
+				if unit.bank.workspace != workspace {
+					return Err(Error::Forbidden);
+				}
+				unit.stale = true;
+				unit.revision = unit
+					.revision
+					.checked_add(1)
+					.filter(|revision| *revision < i64::MAX)
+					.ok_or(Error::Forbidden)?;
+				unit.updated_at = Utc::now();
+				let bank = bank_id(lease, &unit.bank, false)
+					.await?
+					.ok_or(Error::Forbidden)?;
+				save(lease, bank, &unit, operation, actor, None).await?;
+				bump_bank(lease, bank).await?;
+				native::query(
+					&Query::update()
+						.table(Alias::new("memory_bank_settings"))
+						.value(Alias::new("next_maintenance"), Utc::now())
+						.and_where(Expr::col("bank_id").eq(Expr::value(bank)))
+						.to_string(PostgresQueryBuilder),
+				)
+				.execute(&mut **lease.tx())
+				.await?;
+				pending.push_back(unit.id);
 			}
-			if unit.deleted || unit.stale {
-				continue;
-			}
-			unit.stale = true;
-			unit.revision += 1;
-			unit.updated_at = Utc::now();
-			let bank = bank_id(lease, &unit.bank, false)
-				.await?
-				.ok_or(Error::Forbidden)?;
-			save(lease, bank, &unit, operation, actor, None).await?;
-			bump_bank(lease, bank).await?;
-			// Wake bounded retention for ordinary stale units without a repair job.
-			native::query(
-				&Query::update()
-					.table(Alias::new("memory_bank_settings"))
-					.value(Alias::new("next_maintenance"), Utc::now())
-					.and_where(Expr::col("bank_id").eq(Expr::value(bank)))
-					.to_string(PostgresQueryBuilder),
-			)
-			.execute(&mut **lease.tx())
-			.await?;
-			pending.push_back(unit.id);
 		}
 	}
 	Ok(())
