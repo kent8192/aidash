@@ -1,3 +1,4 @@
+import { Button } from "../components/ui/button";
 import { useEffect, useId, useRef, useState } from "react";
 import {
   clampZoom,
@@ -173,41 +174,56 @@ export function GraphCanvas({
         role="group"
         aria-label={copy.graph}
       >
-        <button
+        <Button
+          variant="outline"
           type="button"
           onClick={() => zoom(1.25)}
           aria-label={copy.zoomIn}
         >
           +
-        </button>
-        <button
+        </Button>
+        <Button
+          variant="outline"
           type="button"
           onClick={() => zoom(0.8)}
           aria-label={copy.zoomOut}
         >
           −
-        </button>
-        <button type="button" onClick={() => pan(60, 0)} aria-label={copy.left}>
+        </Button>
+        <Button
+          variant="outline"
+          type="button"
+          onClick={() => pan(60, 0)}
+          aria-label={copy.left}
+        >
           ←
-        </button>
-        <button
+        </Button>
+        <Button
+          variant="outline"
           type="button"
           onClick={() => pan(-60, 0)}
           aria-label={copy.right}
         >
           →
-        </button>
-        <button type="button" onClick={() => pan(0, 60)} aria-label={copy.up}>
+        </Button>
+        <Button
+          variant="outline"
+          type="button"
+          onClick={() => pan(0, 60)}
+          aria-label={copy.up}
+        >
           ↑
-        </button>
-        <button
+        </Button>
+        <Button
+          variant="outline"
           type="button"
           onClick={() => pan(0, -60)}
           aria-label={copy.down}
         >
           ↓
-        </button>
-        <button
+        </Button>
+        <Button
+          variant="outline"
           type="button"
           className="graph-fit-button"
           aria-label={copy.fit}
@@ -220,8 +236,9 @@ export function GraphCanvas({
         >
           <Scan size={16} aria-hidden="true" />
           <span>{copy.fit}</span>
-        </button>
-        <button
+        </Button>
+        <Button
+          variant="outline"
           type="button"
           onClick={() => {
             fit.cancel();
@@ -235,7 +252,7 @@ export function GraphCanvas({
           }}
         >
           {copy.focus}
-        </button>
+        </Button>
       </div>
       <span id={fitDescription} className="graph-fit-status" role="status">
         {fit.available ? "" : copy.fitUnavailable}

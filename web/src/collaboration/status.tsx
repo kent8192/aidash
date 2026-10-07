@@ -1,3 +1,4 @@
+import { Button } from "../components/ui/button";
 import { lazy, Suspense, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import {
@@ -112,14 +113,15 @@ export function ChannelStatus({
           <ShieldCheck size={13} />
           {words.status}
         </span>
-        <button
+        <Button
+          variant="outline"
           type="button"
           className="workspace-status-close"
           aria-label={words.close}
           onClick={close}
         >
           <X size={16} />
-        </button>
+        </Button>
       </header>
       <div className="workspace-status-content">
         <section className="workspace-goal-summary">
@@ -150,9 +152,9 @@ export function ChannelStatus({
               <CheckCircle2 size={13} />
               {words.currentTasks}
             </h3>
-            <button type="button" onClick={showTasks}>
+            <Button variant="outline" type="button" onClick={showTasks}>
               {words.showAll}
-            </button>
+            </Button>
           </div>
           {tasks.length === 0 && (
             <p className="muted">
@@ -169,7 +171,8 @@ export function ChannelStatus({
             )
             .slice(0, 3)
             .map((task) => (
-              <button
+              <Button
+                variant="outline"
                 className="workspace-task-row"
                 key={task.id}
                 type="button"
@@ -182,16 +185,17 @@ export function ChannelStatus({
                 )}
                 <span>{task.title}</span>
                 <Badge value={task.status} />
-              </button>
+              </Button>
             ))}
           {tasks.length > 3 && (
-            <button
+            <Button
+              variant="outline"
               className="workspace-more-tasks"
               type="button"
               onClick={showTasks}
             >
               + {tasks.length - 3} {words.task}
-            </button>
+            </Button>
           )}
         </section>
         <section>
@@ -201,18 +205,20 @@ export function ChannelStatus({
               {words.participants}
               <span className="workspace-count">{agents.length}</span>
             </h3>
-            <button
+            <Button
+              variant="outline"
               type="button"
               onClick={() => open({ kind: "task", workspace })}
             >
               {words.manage}
-            </button>
+            </Button>
           </div>
           {agents.length === 0 && (
             <p className="muted">{words.noParticipants}</p>
           )}
           {agents.map((item) => (
-            <button
+            <Button
+              variant="outline"
               className="workspace-participant"
               type="button"
               key={`${item.node}:${item.run.agent_id}:${item.run.agent_version}`}
@@ -230,7 +236,7 @@ export function ChannelStatus({
                   item.run.control === "PAUSED" ? "PAUSED" : item.run.phase
                 }
               />
-            </button>
+            </Button>
           ))}
         </section>
         <section>
@@ -239,9 +245,9 @@ export function ChannelStatus({
               <Network size={13} />
               {words.connections}
             </h3>
-            <button type="button" onClick={graph}>
+            <Button variant="outline" type="button" onClick={graph}>
               Graph View
-            </button>
+            </Button>
           </div>
           <div className="workspace-mini-map">
             <Suspense fallback={<div className="workspace-mini-graph" />}>
@@ -268,7 +274,8 @@ export function ChannelStatus({
             {error}
           </p>
         )}
-        <button
+        <Button
+          variant="outline"
           type="button"
           disabled={
             busy ||
@@ -279,7 +286,7 @@ export function ChannelStatus({
         >
           {paused ? <Play size={13} /> : <Pause size={13} />}
           {paused ? words.resume : words.pause}
-        </button>
+        </Button>
       </div>
     </aside>
   );

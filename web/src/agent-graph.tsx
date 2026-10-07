@@ -1,3 +1,4 @@
+import { Button } from "./components/ui/button";
 import { useMemo, useState } from "react";
 import type { Entry, State } from "./types";
 import { Badge, useI18n } from "./ui";
@@ -73,21 +74,24 @@ export function AgentRelationshipGraph({
       <h4>{copy.title}</h4>
       <p className="muted">{copy.help}</p>
       <div className="agent-graph-controls">
-        <button
+        <Button
+          variant="outline"
           type="button"
           aria-pressed={view === "graph"}
           onClick={() => setView("graph")}
         >
           {copy.graph}
-        </button>
-        <button
+        </Button>
+        <Button
+          variant="outline"
           type="button"
           aria-pressed={view === "list"}
           onClick={() => setView("list")}
         >
           {copy.list}
-        </button>
-        <button
+        </Button>
+        <Button
+          variant="outline"
           type="button"
           onClick={() => {
             setExpanded([]);
@@ -95,7 +99,7 @@ export function AgentRelationshipGraph({
           }}
         >
           {copy.collapse}
-        </button>
+        </Button>
       </div>
       <fieldset className="agent-graph-filters">
         <legend>{copy.filters}</legend>
@@ -144,7 +148,8 @@ export function AgentRelationshipGraph({
         <Badge value={selected.kind} />
         {selected.status && <Badge value={selected.status} />}
         {!selected.available && <span>{copy.missing}</span>}
-        <button
+        <Button
+          variant="outline"
           type="button"
           disabled={
             !selected.available ||
@@ -154,14 +159,15 @@ export function AgentRelationshipGraph({
           onClick={() => expand(selected)}
         >
           {copy.expand}
-        </button>
-        <button
+        </Button>
+        <Button
+          variant="outline"
           type="button"
           disabled={!selected.available}
           onClick={() => openNode(selected)}
         >
           {copy.open}
-        </button>
+        </Button>
       </div>
       {view === "graph" ? (
         <GraphCanvas
@@ -225,7 +231,8 @@ export function AgentRelationshipGraph({
                   </td>
                   <td>
                     <div className="agent-graph-row-actions">
-                      <button
+                      <Button
+                        variant="outline"
                         type="button"
                         onClick={() => {
                           setSelectedId(node.id);
@@ -233,8 +240,9 @@ export function AgentRelationshipGraph({
                         }}
                       >
                         {copy.selection}
-                      </button>
-                      <button
+                      </Button>
+                      <Button
+                        variant="outline"
                         type="button"
                         disabled={
                           !node.available ||
@@ -244,15 +252,16 @@ export function AgentRelationshipGraph({
                         onClick={() => expand(node)}
                       >
                         {copy.expand}
-                      </button>
-                      <button
+                      </Button>
+                      <Button
+                        variant="outline"
                         type="button"
                         disabled={!node.available}
                         aria-label={`${copy.open}: ${label(node)}`}
                         onClick={() => openNode(node)}
                       >
                         {copy.open}
-                      </button>
+                      </Button>
                     </div>
                   </td>
                 </tr>

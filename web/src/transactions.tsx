@@ -1,3 +1,4 @@
+import { Button } from "./components/ui/button";
 import { TransactionComposer } from "./transaction-composer";
 import { disambiguateLabels } from "./display-labels";
 import {
@@ -139,9 +140,9 @@ export function TransactionsPage({
       <Panel
         title={t("transactions")}
         action={
-          <button className="primary" onClick={create}>
+          <Button variant="outline" className="primary" onClick={create}>
             {t("transactionCreate")}
-          </button>
+          </Button>
         }
       >
         {list.isPending && <p className="generation-padding">{t("loading")}</p>}
@@ -150,12 +151,13 @@ export function TransactionsPage({
           list.data?.map((transaction) => (
             <div className="generation-request" key={transaction.id}>
               <div>
-                <button
+                <Button
+                  variant="outline"
                   className="transaction-id"
                   onClick={() => setSelected(transaction.id)}
                 >
                   {transactionLabels.get(transaction.id)}
-                </button>
+                </Button>
                 <small>
                   {t("transactionDeadline")}:{" "}
                   {new Date(transaction.manifest.deadline).toLocaleString()}
@@ -215,7 +217,8 @@ export function TransactionsPage({
                     ))}
                   </select>
                 </Field>
-                <button
+                <Button
+                  variant="outline"
                   disabled={
                     busy ||
                     !!trust.data?.find((grant) => grant.node_id === peer.trim())
@@ -223,7 +226,7 @@ export function TransactionsPage({
                   }
                 >
                   {t("transactionGrant")}
-                </button>
+                </Button>
               </form>
             </div>
             {!trust.isError &&
@@ -249,7 +252,8 @@ export function TransactionsPage({
                       </p>
                     )}
                   </div>
-                  <button
+                  <Button
+                    variant="outline"
                     disabled={busy}
                     onClick={() =>
                       void mutate(() =>
@@ -269,7 +273,7 @@ export function TransactionsPage({
                           ? "transactionRevoke"
                           : "transactionGrant",
                     )}
-                  </button>
+                  </Button>
                 </div>
               ))}
           </Panel>
@@ -325,14 +329,15 @@ export function TransactionsPage({
                   <p className="notice">{t("transactionRecoveryHelp")}</p>
                 )}
               {!current.transaction.decision && (
-                <button
+                <Button
+                  variant="outline"
                   disabled={busy}
                   onClick={() =>
                     void mutate(() => transactionAbort(current.transaction.id))
                   }
                 >
                   {t("transactionAbort")}
-                </button>
+                </Button>
               )}
               <h3>{t("transactionParticipantVotes")}</h3>
               {current.participants.map((vote) => (
@@ -407,9 +412,13 @@ export function TransactionsPage({
                   </ul>
                 )}
                 <RecordView value={review} />
-                <button type="button" onClick={() => setReview(null)}>
+                <Button
+                  variant="outline"
+                  type="button"
+                  onClick={() => setReview(null)}
+                >
                   {t("edit")}
-                </button>
+                </Button>
               </>
             ) : (
               <TransactionComposer
@@ -418,9 +427,9 @@ export function TransactionsPage({
                 operator={operator}
               />
             )}
-            <button className="primary" disabled={busy}>
+            <Button variant="outline" className="primary" disabled={busy}>
               {t(review ? "transactionSubmit" : "transactionReview")}
-            </button>
+            </Button>
           </form>
         </Modal>
       )}

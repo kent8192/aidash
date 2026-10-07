@@ -1,3 +1,4 @@
+import { Button } from "./components/ui/button";
 import { useEffect, useState, type ReactNode } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { desktop, desktopAvailable, type DesktopSettings } from "./desktop";
@@ -87,9 +88,13 @@ export function ConnectionGate({
           </select>
         </label>
         {active && (
-          <button disabled={busy} onClick={() => void change(active)}>
+          <Button
+            variant="outline"
+            disabled={busy}
+            onClick={() => void change(active)}
+          >
             {english ? "Reconnect" : "再接続"}
-          </button>
+          </Button>
         )}
       </div>
       {error && (
@@ -143,18 +148,23 @@ export function ConnectionGate({
                   onChange={(e) => setOrigin(e.target.value)}
                 />
               </label>
-              <button disabled={busy}>
+              <Button variant="outline" disabled={busy}>
                 {english ? "Save and connect" : "保存して接続"}
-              </button>
+              </Button>
             </form>
             {settings?.profiles.map((p) => (
               <div className="card" key={p.id}>
                 <strong>{p.name}</strong>
                 <p>{p.origin}</p>
-                <button disabled={busy} onClick={() => void change(p.id)}>
+                <Button
+                  variant="outline"
+                  disabled={busy}
+                  onClick={() => void change(p.id)}
+                >
                   {english ? "Connect" : "接続"}
-                </button>
-                <button
+                </Button>
+                <Button
+                  variant="outline"
                   disabled={busy}
                   onClick={() => {
                     setBusy(true);
@@ -168,7 +178,7 @@ export function ConnectionGate({
                   }}
                 >
                   {english ? "Remove saved connection" : "保存した接続先を削除"}
-                </button>
+                </Button>
               </div>
             ))}
           </div>

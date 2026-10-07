@@ -1,3 +1,4 @@
+import { Button } from "./components/ui/button";
 import { useContext, useState, useRef, useEffect } from "react";
 import type {
   TransactionManifest,
@@ -452,7 +453,8 @@ export function TransactionComposer({
                     />
                   </Field>
                 )}
-                <button
+                <Button
+                  variant="outline"
                   type="button"
                   onClick={() =>
                     update(index, {
@@ -464,11 +466,12 @@ export function TransactionComposer({
                   }
                 >
                   {t("delete")}
-                </button>
+                </Button>
               </fieldset>
             );
           })}
-          <button
+          <Button
+            variant="outline"
             type="button"
             onClick={() =>
               update(index, {
@@ -486,8 +489,9 @@ export function TransactionComposer({
             }
           >
             {t("transactionAddOperation")}
-          </button>
-          <button
+          </Button>
+          <Button
+            variant="outline"
             type="button"
             disabled={
               value.participants.length === 1 ||
@@ -501,10 +505,11 @@ export function TransactionComposer({
             }
           >
             {t("delete")}
-          </button>
+          </Button>
         </fieldset>
       ))}
-      <button
+      <Button
+        variant="outline"
         type="button"
         disabled={
           value.participants.length >=
@@ -530,7 +535,7 @@ export function TransactionComposer({
         }
       >
         {t("transactionAddParticipant")}
-      </button>
+      </Button>
     </>
   );
 }

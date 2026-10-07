@@ -1,3 +1,4 @@
+import { Button } from "./components/ui/button";
 import { useRef, useState } from "react";
 import { Field, useI18n } from "./ui";
 import type { ReferenceDocument } from "./generated/models";
@@ -137,13 +138,14 @@ export function AgentDocuments({
               {document.text}
             </pre>
           </details>
-          <button
+          <Button
+            variant="outline"
             type="button"
             disabled={busy}
             onClick={() => change(documents.filter((_, i) => i !== index))}
           >
             {t("remove")} · {document.name}
-          </button>
+          </Button>
         </div>
       ))}
     </fieldset>

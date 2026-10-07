@@ -1,11 +1,10 @@
 .graph-shell {
-  --mesh-bg: #041c17;
-  --mesh-panel: #09241e;
-  --mesh-line: #24443a;
-  --mesh-text: #e0eee8;
-  --mesh-muted: #92aca2;
+  --mesh-bg: var(--background);
+  --mesh-panel: var(--card);
+  --mesh-line: var(--border);
+  --mesh-text: var(--foreground);
+  --mesh-muted: var(--muted-foreground);
   --line: var(--mesh-line);
-  --muted: var(--mesh-muted);
   grid-template:
     "header header" 42px
     "rail shell" minmax(0, 1fr) / 172px minmax(0, 1fr);
@@ -14,7 +13,7 @@
   font-size: 12px;
 }
 .graph-shell .collab-rail {
-  background: #08271f;
+  background: var(--card);
   padding: 13px 9px;
   gap: 18px;
   border-right: 1px solid var(--mesh-line);
@@ -50,7 +49,7 @@
   height: 16px;
 }
 .graph-shell .collab-nav.selected {
-  background: #184a3b;
+  background: var(--card);
 }
 .graph-shell .collab-rail nav {
   gap: 3px;
@@ -63,7 +62,7 @@
   height: 42px;
   padding: 6px 16px;
   gap: 15px;
-  background: #08271f;
+  background: var(--card);
   border-color: var(--mesh-line);
 }
 .graph-shell .collab-topbar .stream-status {
@@ -101,7 +100,7 @@
   color: var(--mesh-muted);
   border: 1px solid var(--mesh-line);
   border-radius: 5px;
-  background: #123128;
+  background: var(--card);
   padding: 4px 9px;
 }
 .graph-shell:has(.mesh-neighborhood) .graph-search {
@@ -119,10 +118,10 @@
   box-shadow: none;
 }
 .graph-search:focus-within {
-  outline: 2px solid #76caaa;
+  outline: 2px solid var(--ring);
 }
 .graph-search input::placeholder {
-  color: #87a69a;
+  color: var(--muted-foreground);
 }
 .graph-workspace-picker {
   display: flex;
@@ -130,12 +129,12 @@
   gap: 9px;
   padding: 0 1px 15px;
   border-bottom: 1px solid var(--mesh-line);
-  color: #e0eee8;
+  color: var(--foreground);
 }
 .graph-workspace-picker svg {
   padding: 6px;
   border-radius: 6px;
-  background: #1d5f49;
+  background: var(--card);
   flex-shrink: 0;
   width: 31px;
   height: 31px;
@@ -193,24 +192,23 @@
   box-shadow: 0 10px 40px #0008;
 }
 .graph-shell .collab-account-controls :is(button, select) {
-  background: #103b2e;
+  background: var(--card);
   border: 1px solid var(--mesh-line);
   color: var(--mesh-text);
   width: 100%;
 }
 .graph-shell option {
-  background: #0d3026;
-  color: #e0eee8;
+  background: var(--card);
+  color: var(--foreground);
 }
 .mesh-graph {
   height: 100%;
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  background: #041c17;
-  color: #e0eee8;
+  background: var(--card);
+  color: var(--foreground);
   min-height: 0;
-  --line: #24443a;
-  --muted: #92aca2;
+  --line: var(--border);
 }
 .mesh-graph.has-inspector {
   grid-template-columns: minmax(0, 1fr) 272px;
@@ -224,21 +222,21 @@
 }
 .mesh-graph button {
   color: inherit;
-  background: #0a281f;
-  border: 1px solid #294b3d;
+  background: var(--card);
+  border: 1px solid var(--border);
   border-radius: 5px;
   padding: 6px 9px;
 }
 .mesh-graph button:hover {
-  background: #173e31;
-  border-color: #729e8a;
+  background: var(--card);
+  border-color: var(--border);
 }
 .mesh-graph button[aria-pressed="true"] {
-  background: #1d4435;
-  color: #99e6c8;
+  background: var(--card);
+  color: var(--foreground);
 }
 .mesh-graph :focus-visible {
-  outline: 2px solid #9eedcd;
+  outline: 2px solid var(--ring);
   outline-offset: 3px;
 }
 .mesh-main {
@@ -264,7 +262,7 @@
   white-space: nowrap;
 }
 .mesh-heading p {
-  color: #98b1a7;
+  color: var(--muted-foreground);
   font-size: 10px;
   margin: 0;
   line-height: 1.5;
@@ -281,12 +279,12 @@
   display: flex;
   gap: 6px;
   align-items: center;
-  border: 1px solid #29473c;
+  border: 1px solid var(--border);
   border-radius: 5px;
   padding: 5px 7px;
-  background: #0b281f;
+  background: var(--card);
   max-width: 160px;
-  color: #c5d9d0;
+  color: var(--foreground);
 }
 .mesh-select > svg {
   flex-shrink: 0;
@@ -309,11 +307,11 @@
   gap: 12px;
   padding: 1px 17px 6px;
   font-size: 9px;
-  color: #8ead9f;
+  color: var(--muted-foreground);
   flex-shrink: 0;
 }
 .mesh-counter-divider {
-  color: #416c58;
+  color: var(--foreground);
   margin: 0 8px;
 }
 .mesh-view-actions {
@@ -384,13 +382,14 @@
   width: 144px;
   max-height: calc(100% - 136px);
   overflow: auto;
-  background: #09251feb;
-  border: 1px solid #2b4b3e;
+  background: var(--popover);
+  color: var(--popover-foreground);
+  border: 1px solid var(--border);
   border-radius: 7px;
   padding: 9px 10px;
-  box-shadow: 0 3px 18px #00120b40;
+  box-shadow: 0 3px 18px color-mix(in srgb, var(--foreground) 10%, transparent);
   scrollbar-width: thin;
-  scrollbar-color: #395e4c transparent;
+  scrollbar-color: var(--muted-foreground) transparent;
 }
 .mesh-filters fieldset {
   border: 0;
@@ -401,7 +400,7 @@
 .mesh-filters legend {
   font-size: 10px;
   margin: 0 0 9px;
-  color: #cddcd5;
+  color: var(--foreground);
 }
 .mesh-filters label {
   display: flex;
@@ -409,11 +408,12 @@
   gap: 7px;
   font-size: 10px;
   padding: 4px 0;
-  color: #c0d2c8;
+  color: var(--foreground);
 }
 .mesh-filters label > span:first-child {
   display: flex;
   align-items: center;
+  color: var(--muted-foreground);
 }
 .mesh-filters input[type="checkbox"] {
   appearance: none;
@@ -421,8 +421,8 @@
   min-width: 23px;
   height: 13px;
   border-radius: 8px;
-  background: #304e42;
-  border: 1px solid #597467;
+  background: var(--muted);
+  border: 1px solid var(--input);
   margin: 0 0 0 auto;
   padding: 2px;
   display: grid;
@@ -433,23 +433,27 @@
   content: "";
   width: 7px;
   height: 7px;
-  background: #92a79c;
+  background: var(--muted-foreground);
   border-radius: 50%;
 }
 .mesh-filters input[type="checkbox"]:checked {
-  background: #9fe6c5;
-  border-color: #9fe6c5;
+  background: var(--primary);
+  border-color: var(--primary);
 }
 .mesh-filters input[type="checkbox"]:checked::before {
-  background: #175b43;
+  background: var(--primary-foreground);
   justify-self: end;
+}
+.mesh-filters input[type="checkbox"]:focus {
+  outline-color: var(--ring);
+  outline-offset: 3px;
 }
 .mesh-filters summary {
   cursor: pointer;
-  color: #a4c6b7;
+  color: var(--foreground);
   font-size: 10px;
   padding: 10px 0 2px;
-  border-top: 1px solid #2b493b;
+  border-top: 1px solid var(--border);
   margin-top: 7px;
 }
 .mesh-canvas-wrap {
@@ -480,8 +484,8 @@
   padding: 4px 8px;
   border: 0;
   border-radius: 5px;
-  color: #b9d5ce;
-  background: #0b2525e8;
+  color: var(--foreground);
+  background: color-mix(in srgb, var(--card) 94%, transparent);
   font:
     600 11px/1.25 "DM Sans",
     "Noto Sans JP",
@@ -520,10 +524,10 @@
 }
 .mesh-graph .mesh-node-label:hover,
 .mesh-graph .mesh-node-label.selected {
-  background: #0c3029d9;
+  background: color-mix(in srgb, var(--card) 94%, transparent);
 }
 .mesh-node-label strong {
-  color: #e1eae5;
+  color: var(--foreground);
   font-weight: 550;
   max-width: 150px;
   overflow: hidden;
@@ -532,7 +536,7 @@
   font-size: 12px;
 }
 .mesh-node-kind {
-  color: #91b0a3;
+  color: var(--muted-foreground);
   font-size: 10px;
 }
 .mesh-status {
@@ -540,9 +544,9 @@
   align-items: center;
   gap: 4px;
   padding: 2px 7px;
-  border: 1px solid #345b4a;
-  color: #a8c6b7;
-  background: #18382c;
+  border: 1px solid var(--border);
+  color: var(--foreground);
+  background: var(--card);
   border-radius: 10px;
   font-size: 9px;
   font-weight: 400;
@@ -553,8 +557,8 @@
 .mesh-status.status-thinking,
 .mesh-status.status-ready,
 .mesh-status.status-completed {
-  color: #a4e8c5;
-  border-color: #276d50;
+  color: var(--foreground);
+  border-color: var(--border);
   background: #12563880;
 }
 .mesh-status.status-tool_call,
@@ -580,8 +584,8 @@
   display: flex;
   flex-wrap: wrap;
   max-width: calc(100% - 28px);
-  background: #0a271f;
-  border: 1px solid #325143;
+  background: var(--card);
+  border: 1px solid var(--border);
   border-radius: 6px;
   overflow: hidden;
 }
@@ -589,7 +593,7 @@
   padding: 8px;
   border: 0;
   border-radius: 0;
-  border-right: 1px solid #254938;
+  border-right: 1px solid var(--border);
 }
 .mesh-camera button:last-child {
   border-right: 0;
@@ -601,8 +605,8 @@
   width: 134px;
   height: 94px;
   padding: 0;
-  border: 1px solid #345443;
-  background: #09251feb;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--card) 94%, transparent);
   z-index: 6;
 }
 .mesh-minimap canvas {
@@ -616,9 +620,9 @@
   justify-content: space-between;
   gap: 12px;
   padding: 5px 17px;
-  border-top: 1px solid #173b2c;
+  border-top: 1px solid var(--border);
   font-size: 9px;
-  color: #769b86;
+  color: var(--muted-foreground);
   flex-shrink: 0;
 }
 .mesh-footnote > span {
@@ -638,7 +642,7 @@
   inset: 25% 30px auto 190px;
   z-index: 2;
   text-align: center;
-  color: #a2c3b2;
+  color: var(--muted-foreground);
 }
 .mesh-empty h2 {
   margin: 15px 0 8px;
@@ -653,9 +657,9 @@
   min-height: 0;
   padding: 0;
   border: 0;
-  border-left: 1px solid #2a473a;
+  border-left: 1px solid var(--border);
   border-radius: 0;
-  background: #09251f;
+  background: var(--card);
   overflow: hidden;
 }
 .mesh-inspector-top {
@@ -669,13 +673,13 @@
   gap: 5px;
   align-items: center;
   font-size: 9px;
-  color: #b7cbbe;
+  color: var(--foreground);
 }
 .mesh-inspector-top button {
   border: 0;
   padding: 2px;
   background: transparent;
-  color: #9db8a8;
+  color: var(--muted-foreground);
 }
 .mesh-inspector-title {
   padding: 0 15px 9px;
@@ -701,7 +705,7 @@
   color: var(--node-color);
   border: 1px solid var(--node-color);
   border-radius: 10px;
-  background: #15372c;
+  background: var(--card);
   flex-shrink: 0;
 }
 .mesh-inspector > .mesh-description {
@@ -711,7 +715,7 @@
 }
 .mesh-description {
   font-size: 10px;
-  color: #aac0b3;
+  color: var(--foreground);
   line-height: 1.65;
   margin: 7px 0;
   white-space: pre-wrap;
@@ -720,7 +724,7 @@
 .mesh-inspector-tabs {
   display: flex;
   gap: 1px;
-  border-bottom: 1px solid #2c4b3c;
+  border-bottom: 1px solid var(--border);
   padding: 0 10px;
   flex-shrink: 0;
 }
@@ -733,7 +737,7 @@
   border-bottom: 2px solid transparent;
   border-radius: 0;
   background: transparent;
-  color: #8fad9c;
+  color: var(--muted-foreground);
 }
 .mesh-inspector-tabs button[aria-pressed="true"] {
   background: transparent;
@@ -742,14 +746,14 @@
 }
 .mesh-inspector-tabs small {
   font-size: 8px;
-  background: #1a4030;
+  background: var(--card);
   padding: 1px 3px;
   border-radius: 3px;
 }
 .mesh-inspector-content {
   overflow: auto;
   scrollbar-width: thin;
-  scrollbar-color: #365b48 transparent;
+  scrollbar-color: var(--foreground) transparent;
   padding: 13px 15px 8px;
   min-height: 0;
   flex: 1;
@@ -768,7 +772,7 @@
   border: 0;
   padding: 0;
   background: transparent;
-  color: #a0bdac;
+  color: var(--muted-foreground);
 }
 .mesh-metadata {
   display: grid;
@@ -779,11 +783,11 @@
   line-height: 1.4;
 }
 .mesh-metadata dt {
-  color: #8fab9b;
+  color: var(--muted-foreground);
 }
 .mesh-metadata dd {
   margin: 0;
-  color: #d0e1d5;
+  color: var(--foreground);
   overflow-wrap: anywhere;
 }
 .mesh-tags {
@@ -793,15 +797,15 @@
 }
 .mesh-tags span {
   padding: 3px 6px;
-  border: 1px solid #30543f;
+  border: 1px solid var(--border);
   border-radius: 6px;
   font-size: 9px;
-  color: #b4c9ba;
-  background: #173d2d;
+  color: var(--foreground);
+  background: var(--card);
 }
 .mesh-muted {
   font-size: 10px;
-  color: #8da998;
+  color: var(--muted-foreground);
   line-height: 1.6;
   margin: 5px 0;
 }
@@ -819,7 +823,7 @@
   font-weight: 500;
 }
 .mesh-activity small {
-  color: #93af9d;
+  color: var(--muted-foreground);
   font-size: 9px;
 }
 .mesh-histogram {
@@ -828,7 +832,7 @@
   gap: 3px;
   height: 54px;
   flex: 1;
-  border-bottom: 1px solid #375a43;
+  border-bottom: 1px solid var(--border);
   padding: 0 3px 3px;
 }
 .mesh-histogram span {
@@ -867,7 +871,7 @@
   display: block;
   margin-top: 2px;
   font-size: 9px;
-  color: #87a28f;
+  color: var(--muted-foreground);
 }
 .mesh-graph .mesh-connected-node {
   width: 100%;
@@ -893,7 +897,7 @@
   white-space: nowrap;
 }
 .mesh-connected-node > small {
-  color: #8daa98;
+  color: var(--muted-foreground);
   font-size: 8px;
 }
 .mesh-connected-node .mesh-status {
@@ -903,23 +907,23 @@
 }
 .mesh-inspector .collab-channel-link {
   background: transparent;
-  border-color: #345c44;
+  border-color: var(--border);
   font-size: 11px;
   padding: 7px 9px;
 }
 .mesh-inspector-footer {
   padding: 10px 14px;
-  border-top: 1px solid #254b34;
+  border-top: 1px solid var(--border);
 }
 .mesh-inspector-footer button {
   width: 100%;
   justify-content: space-between;
-  color: #afd6ba;
+  color: var(--foreground);
 }
 .mesh-relations-list {
   padding-left: 15px;
   font-size: 10px;
-  color: #99b6a3;
+  color: var(--muted-foreground);
   line-height: 1.7;
   overflow-wrap: anywhere;
 }
@@ -931,9 +935,9 @@
   padding: 7px 0;
 }
 .mesh-artifact .json {
-  background: #061a12;
-  color: #b8d7c2;
-  border-color: #315d3e;
+  background: var(--card);
+  color: var(--foreground);
+  border-color: var(--border);
   font-size: 10px;
   max-height: 280px;
 }
@@ -949,12 +953,12 @@
   font-size: 11px;
 }
 .mesh-list tbody tr:hover {
-  background: #12372b;
+  background: var(--card);
 }
 .mesh-list th,
 .mesh-list td {
-  border-bottom: 1px solid #254c35;
-  color: #bdd4c4;
+  border-bottom: 1px solid var(--border);
+  color: var(--foreground);
   padding: 10px 6px;
   background: transparent;
   text-align: left;
@@ -979,19 +983,19 @@
   display: flex;
   flex-direction: column;
   padding: 11px 13px;
-  border: 1px solid #2b523d;
+  border: 1px solid var(--border);
   border-radius: 7px;
   gap: 5px;
-  background: #08261b;
+  background: var(--card);
 }
 .mesh-statistics span {
   font-size: 10px;
-  color: #9cb8a3;
+  color: var(--muted-foreground);
 }
 .mesh-statistics strong {
   font-weight: 500;
   font-size: 24px;
-  color: #92e9b4;
+  color: var(--foreground);
 }
 .mesh-statistics .blocked strong {
   color: #e4a56d;
@@ -1002,7 +1006,7 @@
 .mesh-timeline {
   margin: 0 17px 9px;
   padding: 10px 13px;
-  border: 1px solid #2a5039;
+  border: 1px solid var(--border);
   border-radius: 7px;
   flex-shrink: 0;
 }
@@ -1013,14 +1017,14 @@
   font-weight: 500;
 }
 .mesh-timeline > strong span {
-  color: #a5c4ad;
+  color: var(--foreground);
   font-weight: 400;
 }
 .mesh-timeline-track {
   margin-top: 5px;
   height: 36px;
   position: relative;
-  border-bottom: 1px solid #365e42;
+  border-bottom: 1px solid var(--border);
 }
 .mesh-timeline-track button {
   position: absolute;
@@ -1052,22 +1056,21 @@
 }
 .mesh-timeline p {
   font-size: 10px;
-  color: #98b49f;
+  color: var(--muted-foreground);
   margin: 8px 0 0;
 }
 .mesh-neighborhood {
-  background: #f8faf7;
-  color: #193526;
+  background: var(--secondary);
+  color: var(--foreground);
   overflow: auto;
   padding: 0 20px;
   flex: 1;
   --line: #dde5dc;
-  --muted: #6c8872;
 }
 .mesh-neighborhood button {
   background: white;
-  color: #21482e;
-  border-color: #bdd1c1;
+  color: var(--foreground);
+  border-color: var(--border);
 }
 @media (min-width: 1600px) {
   .mesh-graph.has-inspector {
@@ -1234,7 +1237,7 @@
     z-index: 12;
     inset: auto 0 0 48px;
     height: min(57dvh, 460px);
-    border: 1px solid #355c41;
+    border: 1px solid var(--border);
     border-radius: 12px 12px 0 0;
     box-shadow: 0 -10px 35px #00120970;
   }
@@ -1411,7 +1414,7 @@
 
 /* WebKitGTK's native light menu face can hide the graph's light text. */
 .graph-shell select {
-  color-scheme: dark;
+  color-scheme: light dark;
   appearance: none;
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='5'%3E%3Cpath d='M0 0h8L4 5z' fill='%23c5d9d0'/%3E%3C/svg%3E");
   background-repeat: no-repeat;

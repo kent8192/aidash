@@ -72,6 +72,10 @@ test("authorization dashboard manages revisions, RBAC/ABAC decisions, catalog an
     localStorage.setItem("aidash-locale", "ja-JP");
   });
   await page.goto("/authorization");
+  await expect(page).toHaveURL(/\/trust\?view=authorization$/);
+  await expect(
+    page.getByRole("heading", { name: "Trust Workbench", exact: true }),
+  ).toBeVisible();
   await page.getByLabel("テナント", { exact: true }).fill(tenant);
   await page.getByRole("button", { name: "開く", exact: true }).click();
   await page
@@ -352,6 +356,10 @@ test("peer identity mappings preserve revisions, credential rotation and bilingu
     localStorage.setItem("aidash-locale", "en-US");
   });
   await page.goto("/authorization");
+  await expect(page).toHaveURL(/\/trust\?view=authorization$/);
+  await expect(
+    page.getByRole("heading", { name: "Trust Workbench", exact: true }),
+  ).toBeVisible();
   await page.getByLabel("Tenant", { exact: true }).fill(tenant);
   await page.getByRole("button", { name: "Open", exact: true }).click();
   const panel = page.locator(".panel").filter({

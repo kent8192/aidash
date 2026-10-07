@@ -1,3 +1,4 @@
+import { Button } from "../components/ui/button";
 import { useRef, useState } from "react";
 import { useInfiniteQuery, useQueryClient } from "@tanstack/react-query";
 import { Field, useI18n } from "../ui";
@@ -80,7 +81,8 @@ export function OutboundFiles({
           onChange={(e) => setUrl(e.target.value)}
         />
       </Field>
-      <button
+      <Button
+        variant="outline"
         type="button"
         disabled={busy || !url}
         onClick={() =>
@@ -96,7 +98,7 @@ export function OutboundFiles({
         }
       >
         {ja ? "取得を要求" : "Request fetch"}
-      </button>
+      </Button>
       {items.map((item) => (
         <article key={item.operation_id}>
           <strong>{item.url}</strong>
@@ -109,7 +111,8 @@ export function OutboundFiles({
             <>
               <small>SHA-256: {item.output_file.digest}</small>
               <div className="core-inline">
-                <button
+                <Button
+                  variant="outline"
                   type="button"
                   onClick={() =>
                     void act(() =>
@@ -120,8 +123,9 @@ export function OutboundFiles({
                   }
                 >
                   {ja ? "ダウンロード" : "Download"}
-                </button>
-                <button
+                </Button>
+                <Button
+                  variant="outline"
                   type="button"
                   disabled={busy}
                   onClick={() =>
@@ -141,7 +145,7 @@ export function OutboundFiles({
                   }
                 >
                   {ja ? "作業ファイルへコピー" : "Copy to working files"}
-                </button>
+                </Button>
               </div>
               {item.status === "completed" &&
                 item.http_status === 200 &&
@@ -174,7 +178,8 @@ export function OutboundFiles({
               ? "選択した wheel で追加パッケージ一式を置き換えます。必要な依存 wheel も選択してください。Python のメモリはリセットされ、次の実行前に確認が必要です。"
               : "Replace the package overlay with these wheels. Select required dependency wheels too. Python memory resets and requires acknowledgement before the next execution."}
           </p>
-          <button
+          <Button
+            variant="outline"
             type="button"
             disabled={busy || selected.length > 16}
             onClick={() =>
@@ -194,13 +199,17 @@ export function OutboundFiles({
             }
           >
             {ja ? "選択したパッケージを導入" : "Install selected packages"}
-          </button>
+          </Button>
         </>
       )}
       {query.hasNextPage && (
-        <button type="button" onClick={() => void query.fetchNextPage()}>
+        <Button
+          variant="outline"
+          type="button"
+          onClick={() => void query.fetchNextPage()}
+        >
           {ja ? "さらに表示" : "Load more"}
-        </button>
+        </Button>
       )}
       {(error || query.isError) && (
         <p role="alert">{error || query.error?.message}</p>

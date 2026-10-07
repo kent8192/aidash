@@ -3,17 +3,14 @@ import { useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import {
-  MessageSquare,
   CheckCircle2,
   FileText,
   Zap,
   Network,
-  ArrowUpRight,
-  Target,
-  ChevronRight,
   Plus,
   PanelRight,
-  Hash,
+  ChevronDown,
+  MoreHorizontal,
 } from "lucide-react";
 import { workspaceGet } from "../generated/aidash";
 import type {
@@ -35,8 +32,27 @@ import { ChannelConversation } from "./conversation";
 import { ChannelStatus } from "./status";
 import { channelAgents, terminalRun } from "./workspace-model";
 import { ChannelRequests } from "./requests";
-import { Avatar } from "./avatar";
+
+import { Button } from "../components/ui/button";
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "../components/ui/collapsible";
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+} from "../components/ui/sheet";
 import { ChannelFiles } from "./attachments";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "../components/ui/dropdown-menu";
 
 export function ArtifactList({ artifacts }: { artifacts: Artifact[] }) {
   const { locale } = useI18n();
@@ -69,6 +85,7 @@ export function Channel({
   open,
   graph,
   threadList = false,
+  tools,
 }: {
   discovery?: Discovery;
   workspace: Workspace;
@@ -78,6 +95,7 @@ export function Channel({
   open: (selection: Selection) => void;
   graph: (focus?: string) => void;
   threadList?: boolean;
+  tools: (view: "files" | "progress") => void;
 }) {
   const { locale } = useI18n();
   const agentLabel = useAgentLabel(data, discovery);
@@ -130,6 +148,7 @@ export function Channel({
   const shownTab = threadList ? "conversation" : tab;
   const selectTab = (value: typeof tab) => {
     setTab(value);
+    setStatusOpen(value !== "conversation");
     setThread(null);
     if (threadList)
       void navigate({
@@ -137,6 +156,10 @@ export function Channel({
         params: { section: "collaboration" },
         search: { channel: workspace.id },
       });
+  };
+  const inspect = (selection: Selection) => {
+    setStatusOpen(false);
+    open(selection);
   };
   return (
     <section
@@ -147,122 +170,173 @@ export function Channel({
         <header className="collab-channel-heading">
           <div>
             <div className="workspace-title-line">
-              <Hash size={23} />
               <h1 aria-label={`# ${workspace.title}`}>{workspace.title}</h1>
               <span className="workspace-channel-state">{status}</span>
             </div>
             <p>{workspace.goal}</p>
           </div>
           <div className="workspace-heading-actions">
-            <div
-              className="workspace-avatar-stack"
-              aria-label={`${words.participants}: ${agents.length}`}
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  aria-label={
+                    locale === "ja-JP" ? "依頼の操作" : "Request actions"
+                  }
+                >
+                  <MoreHorizontal />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem
+                  onSelect={() => {
+                    void navigate({
+                      to: "/$section",
+                      params: { section: "collaboration" },
+                      search: {
+                        channel: workspace.id,
+                        view: threadList ? undefined : "threads",
+                      },
+                    });
+                  }}
+                >
+                  {threadList ? copy.conversation : words.threads}
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onSelect={() => open({ kind: "task", workspace })}
+                >
+                  {copy.newTask}
+                </DropdownMenuItem>
+                <DropdownMenuItem onSelect={() => graph()}>
+                  {copy.graphLink}
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+            <Button
+              variant="ghost"
+              aria-label={locale === "ja-JP" ? "ファイル" : "Files"}
+              onClick={() => tools("files")}
             >
-              {agents.slice(0, 4).map((item) => (
-                <Avatar
-                  key={`${item.node}:${item.run.agent_id}:${item.run.agent_version}`}
-                  name={participantLabel(item)}
-                  small
-                />
-              ))}
-              <small>{agents.length}</small>
-            </div>
-            <button
-              type="button"
-              onClick={() => open({ kind: "task", workspace })}
-            >
-              <Plus size={14} />
-              <span>{words.manage}</span>
-            </button>
-            <button
-              type="button"
-              className="workspace-status-toggle"
+              <FileText size={16} />
+              <span>{locale === "ja-JP" ? "ファイル" : "Files"}</span>
+            </Button>
+            <Button
+              variant="outline"
               aria-label={words.details}
               aria-expanded={statusOpen}
-              onClick={() => setStatusOpen((value) => !value)}
+              onClick={() => {
+                setTab("conversation");
+                setStatusOpen(true);
+              }}
             >
-              <PanelRight size={17} />
-            </button>
+              <PanelRight size={16} />
+              <span>{locale === "ja-JP" ? "進捗を見る" : "View progress"}</span>
+            </Button>
           </div>
         </header>
-        <div className="workspace-tabbar">
-          <div
-            className="collab-tabs"
-            role="group"
-            aria-label={workspace.title}
-          >
-            {(
-              [
-                ["conversation", MessageSquare, words.messages, undefined],
-                ["work", CheckCircle2, words.task, tasks.length],
-                ["results", FileText, copy.results, artifacts.length],
-                ["activity", Zap, words.events, undefined],
-              ] as const
-            ).map(([value, Icon, title, count]) => (
-              <button
-                type="button"
-                key={value}
-                aria-label={
-                  value === "work"
-                    ? copy.work
-                    : value === "activity"
-                      ? copy.activity
-                      : title
-                }
-                aria-pressed={shownTab === value}
-                onClick={() => selectTab(value)}
-              >
-                <Icon size={13} />
-                {title}
-                {count !== undefined && (
-                  <span className="workspace-count">{count}</span>
-                )}
-              </button>
-            ))}
-          </div>
-          <button
-            type="button"
-            className="workspace-graph-link"
-            onClick={() => graph()}
-            aria-label={copy.graphLink}
-          >
-            <Network size={13} />
-            <span>{copy.graphLink}</span>
-            <ArrowUpRight size={12} />
-          </button>
-        </div>
         {query.isError ? (
           <div className="error" role="alert">
             <p>{copy.unavailable}</p>
             <p>{query.error.message}</p>
-            <button type="button" onClick={() => void query.refetch()}>
+            <Button
+              variant="outline"
+              type="button"
+              onClick={() => void query.refetch()}
+            >
               {copy.retry}
-            </button>
+            </Button>
           </div>
         ) : (
           <>
-            <details className="collab-goal">
-              <summary>
-                <Target size={16} />
-                <span>
-                  <small>{words.sharedGoal}</small>
-                  <span>{workspace.goal}</span>
-                </span>
-                <ChevronRight size={14} />
-              </summary>
-              <p>{workspace.goal}</p>
-            </details>
             <ChannelConversation
               key={workspace.id}
               workspace={workspace.id}
               title={workspace.title}
               data={data}
               discovery={discovery}
-              visible={shownTab === "conversation"}
+              visible={true}
               threadList={threadList}
               thread={thread}
               selectThread={setThread}
               threadContainer={threadContainer}
+              progress={
+                <div className="intent-context">
+                  {tasks.length > 0 && (
+                    <Collapsible defaultOpen className="intent-inline-progress">
+                      <CollapsibleTrigger asChild>
+                        <Button variant="ghost" className="intent-tool-trigger">
+                          <span>
+                            <CheckCircle2 size={16} />
+                            {locale === "ja-JP" ? "進捗" : "Progress"} ·{" "}
+                            {progress.completed} / {progress.total}
+                          </span>
+                          <ChevronDown size={16} />
+                        </Button>
+                      </CollapsibleTrigger>
+                      <CollapsibleContent>
+                        {[...tasks]
+                          .sort(
+                            (a, b) =>
+                              Number(a.status === "COMPLETED") -
+                              Number(b.status === "COMPLETED"),
+                          )
+                          .slice(0, 3)
+                          .map((task) => (
+                            <Button
+                              variant="outline"
+                              type="button"
+                              className="intent-task-row"
+                              key={task.id}
+                              onClick={() => open({ kind: "taskDetail", task })}
+                            >
+                              <Badge value={task.status} />
+                              <span>{task.title}</span>
+                              <small>
+                                {task.owner ? (
+                                  <ReferenceName id={task.owner} />
+                                ) : (
+                                  copy.noAgent
+                                )}
+                              </small>
+                            </Button>
+                          ))}
+                      </CollapsibleContent>
+                    </Collapsible>
+                  )}
+                  <div className="intent-context-actions">
+                    <Button
+                      variant="ghost"
+                      onClick={() => selectTab("work")}
+                      aria-label={copy.work}
+                    >
+                      <CheckCircle2 size={15} />
+                      {locale === "ja-JP"
+                        ? "担当とタスクを見る"
+                        : "Tasks and owners"}
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      onClick={() => selectTab("activity")}
+                      aria-label={copy.activity}
+                    >
+                      <Zap size={15} />
+                      {copy.activity}
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      onClick={() => graph()}
+                      aria-label={copy.graphLink}
+                    >
+                      <Network size={15} />
+                      {copy.graphLink}
+                    </Button>
+                  </div>
+                  {artifacts.length > 0 && (
+                    <ArtifactList artifacts={artifacts} />
+                  )}
+                </div>
+              }
               requests={
                 <ChannelRequests
                   requests={scopedRequests}
@@ -271,119 +345,6 @@ export function Channel({
                 />
               }
             />
-            {shownTab === "work" && (
-              <div className="workspace-tab-content">
-                <div className="collab-progress" aria-label={copy.taskProgress}>
-                  <span>
-                    {copy.completed}: {progress.completed} / {progress.total}
-                  </span>
-                  <span>
-                    {copy.active}: {progress.active}
-                  </span>
-                  <span>
-                    {copy.attention}: {progress.attention}
-                  </span>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => open({ kind: "task", workspace })}
-                >
-                  <Plus size={14} />
-                  {copy.newTask}
-                </button>
-                {tasks.length === 0 && (
-                  <p className="collab-empty">{copy.noTasks}</p>
-                )}
-                {tasks.map((task) => (
-                  <button
-                    type="button"
-                    className="collab-task"
-                    key={task.id}
-                    onClick={() => open({ kind: "taskDetail", task })}
-                  >
-                    <Badge value={task.status} />
-                    <span>
-                      <strong>{task.title}</strong>
-                      <small>{task.description}</small>
-                    </span>
-                  </button>
-                ))}
-                <h3>{copy.participants}</h3>
-                {agents.map((item) => {
-                  const ref = {
-                    id: item.run.agent_id,
-                    version: item.run.agent_version,
-                  };
-                  const label = (
-                    <>
-                      {participantLabel(item)}
-                      <small>
-                        <ReferenceName id={item.node} />
-                      </small>
-                    </>
-                  );
-                  return item.node === data.node.id ? (
-                    <button
-                      className="collab-agent"
-                      type="button"
-                      key={`${item.node}:${JSON.stringify(ref)}`}
-                      onClick={() => graph(entityKey(item.node, "agent", ref))}
-                    >
-                      {label}
-                    </button>
-                  ) : (
-                    <div
-                      className="collab-agent"
-                      key={`${item.node}:${JSON.stringify(ref)}`}
-                    >
-                      {label}
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-            {shownTab === "results" && (
-              <div className="workspace-tab-content">
-                <ArtifactList artifacts={artifacts} />
-                <ChannelFiles workspace={workspace.id} />
-              </div>
-            )}
-            {shownTab === "activity" && (
-              <div className="workspace-tab-content">
-                <p className="muted">{copy.limitedHistory}</p>
-                {scopedRuns.map((item) => (
-                  <button
-                    type="button"
-                    className="collab-task"
-                    key={`${item.node}:${item.run.id}`}
-                    onClick={() => open({ kind: "run", ...item })}
-                  >
-                    <Badge
-                      value={
-                        item.run.control === "PAUSED"
-                          ? "PAUSED"
-                          : item.run.phase
-                      }
-                    />
-                    <span>
-                      {participantLabel(item)}
-                      <small>
-                        <ReferenceName id={item.node} />
-                      </small>
-                    </span>
-                  </button>
-                ))}
-                {[...(query.data?.events ?? [])].reverse().map((event) => (
-                  <details className="call-detail" key={event.id}>
-                    <summary>
-                      {event.kind} ·{" "}
-                      {new Date(event.created_at).toLocaleString(locale)}
-                    </summary>
-                    <RecordView value={event.data} />
-                  </details>
-                ))}
-              </div>
-            )}
           </>
         )}
       </div>
@@ -393,21 +354,189 @@ export function Channel({
         className="workspace-thread-panel"
         hidden={!thread || query.isError || shownTab !== "conversation"}
       />
-      {!query.isError && !thread && (
-        <ChannelStatus
-          workspace={workspace}
-          data={data}
-          tasks={tasks}
-          runs={scopedRuns}
-          waiting={scopedRequests.length}
-          discovery={discovery}
-          open={open}
-          graph={() => graph()}
-          showTasks={() => selectTab("work")}
-          expanded={statusOpen}
-          close={() => setStatusOpen(false)}
-        />
-      )}
+      <Sheet open={statusOpen} onOpenChange={setStatusOpen}>
+        <SheetContent
+          className="intent-progress-sheet collab-channel"
+          data-theme={document.documentElement.dataset.theme}
+          closeLabel={locale === "ja-JP" ? "閉じる" : "Close"}
+        >
+          <SheetHeader>
+            <SheetTitle>
+              {locale === "ja-JP" ? "依頼の進捗" : "Request progress"}
+            </SheetTitle>
+            <SheetDescription>{workspace.title}</SheetDescription>
+          </SheetHeader>
+          <nav className="intent-progress-nav" aria-label={workspace.title}>
+            <Button
+              variant="ghost"
+              onClick={() => setTab("conversation")}
+              aria-pressed={tab === "conversation"}
+            >
+              {locale === "ja-JP" ? "概要" : "Overview"}
+            </Button>
+            <Button
+              variant="ghost"
+              onClick={() => setTab("work")}
+              aria-pressed={tab === "work"}
+            >
+              {copy.work}
+            </Button>
+            <Button
+              variant="ghost"
+              onClick={() => setTab("results")}
+              aria-pressed={tab === "results"}
+            >
+              {copy.results}
+            </Button>
+            <Button
+              variant="ghost"
+              onClick={() => setTab("activity")}
+              aria-pressed={tab === "activity"}
+            >
+              {copy.activity}
+            </Button>
+            <Button
+              variant="ghost"
+              onClick={() => {
+                setStatusOpen(false);
+                tools("progress");
+              }}
+            >
+              {locale === "ja-JP" ? "整合性と復旧" : "Consistency and recovery"}
+            </Button>
+          </nav>
+          {tab === "conversation" && (
+            <ChannelStatus
+              workspace={workspace}
+              data={data}
+              tasks={tasks}
+              runs={scopedRuns}
+              waiting={scopedRequests.length}
+              discovery={discovery}
+              open={inspect}
+              graph={() => graph()}
+              showTasks={() => setTab("work")}
+              expanded={true}
+              close={() => setStatusOpen(false)}
+            />
+          )}
+          {tab === "work" && (
+            <div className="workspace-tab-content">
+              <div className="collab-progress" aria-label={copy.taskProgress}>
+                <span>
+                  {copy.completed}: {progress.completed} / {progress.total}
+                </span>
+                <span>
+                  {copy.active}: {progress.active}
+                </span>
+                <span>
+                  {copy.attention}: {progress.attention}
+                </span>
+              </div>
+              <Button
+                variant="outline"
+                type="button"
+                onClick={() => inspect({ kind: "task", workspace })}
+              >
+                <Plus size={14} />
+                {copy.newTask}
+              </Button>
+              {tasks.length === 0 && (
+                <p className="collab-empty">{copy.noTasks}</p>
+              )}
+              {tasks.map((task) => (
+                <Button
+                  variant="outline"
+                  type="button"
+                  className="collab-task"
+                  key={task.id}
+                  onClick={() => inspect({ kind: "taskDetail", task })}
+                >
+                  <Badge value={task.status} />
+                  <span>
+                    <strong>{task.title}</strong>
+                    <small>{task.description}</small>
+                  </span>
+                </Button>
+              ))}
+              <h3>{copy.participants}</h3>
+              {agents.map((item) => {
+                const ref = {
+                  id: item.run.agent_id,
+                  version: item.run.agent_version,
+                };
+                const label = (
+                  <>
+                    {participantLabel(item)}
+                    <small>
+                      <ReferenceName id={item.node} />
+                    </small>
+                  </>
+                );
+                return item.node === data.node.id ? (
+                  <Button
+                    variant="outline"
+                    className="collab-agent"
+                    type="button"
+                    key={`${item.node}:${JSON.stringify(ref)}`}
+                    onClick={() => graph(entityKey(item.node, "agent", ref))}
+                  >
+                    {label}
+                  </Button>
+                ) : (
+                  <div
+                    className="collab-agent"
+                    key={`${item.node}:${JSON.stringify(ref)}`}
+                  >
+                    {label}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          {tab === "results" && (
+            <div className="workspace-tab-content">
+              <ArtifactList artifacts={artifacts} />
+              <ChannelFiles workspace={workspace.id} />
+            </div>
+          )}
+          {tab === "activity" && (
+            <div className="workspace-tab-content">
+              <p className="muted">{copy.limitedHistory}</p>
+              {scopedRuns.map((item) => (
+                <Button
+                  variant="outline"
+                  type="button"
+                  className="collab-task"
+                  key={`${item.node}:${item.run.id}`}
+                  onClick={() => inspect({ kind: "run", ...item })}
+                >
+                  <Badge
+                    value={
+                      item.run.control === "PAUSED" ? "PAUSED" : item.run.phase
+                    }
+                  />
+                  <span>
+                    {participantLabel(item)}
+                    <small>
+                      <ReferenceName id={item.node} />
+                    </small>
+                  </span>
+                </Button>
+              ))}
+              {[...(query.data?.events ?? [])].reverse().map((event) => (
+                <details className="call-detail" key={event.id}>
+                  <summary>
+                    {event.kind} ·{" "}
+                    {new Date(event.created_at).toLocaleString(locale)}
+                  </summary>
+                  <RecordView value={event.data} />
+                </details>
+              ))}
+            </div>
+          )}
+        </SheetContent>
+      </Sheet>
     </section>
   );
 }

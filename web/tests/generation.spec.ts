@@ -272,6 +272,7 @@ test("generation dashboard manages policy, approval, completion and retained his
     await dialog.getByRole("button", { name: "保存", exact: true }).click();
     await expect(dialog).toHaveCount(0);
     await navigate("ワークスペース");
+    await page.getByLabel("アカウント設定", { exact: true }).click();
     await page
       .getByRole("button", { name: "準備用チャンネル", exact: true })
       .click();
@@ -337,8 +338,8 @@ test("generation dashboard manages policy, approval, completion and retained his
         .getByLabel("タスクの要件", { exact: true })
         .fill(JSON.stringify({ capability: id }));
       await dialog.getByRole("button", { name: "作成", exact: true }).click();
-      await expect(dialog).toHaveCount(0);
-      await page.locator(".collab-task").filter({ hasText: title }).click();
+      await expect(dialog).toHaveCount(0, { timeout: 15000 });
+      await page.locator(".intent-task-row").filter({ hasText: title }).click();
       await dialog
         .getByRole("button", { name: "ポリシーで割り当て", exact: true })
         .click();
@@ -411,10 +412,8 @@ test("generation dashboard manages policy, approval, completion and retained his
     );
     await dialog.getByRole("button", { name: "閉じる", exact: true }).click();
     await selectDashboardLanguage(page, "en-US");
-    await expect(page.locator(".collab-settings h1")).toHaveText("Settings");
-    await expect(page.locator(".collab-settings-select select")).toHaveValue(
-      "generation",
-    );
+    await expect(page).toHaveURL(/\/creator\?.*view=generation/);
+    await expect(page.locator(".generation-page")).toBeVisible();
     await page
       .locator(".generation-request")
       .filter({ hasText: "Generated research" })

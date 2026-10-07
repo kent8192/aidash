@@ -1,3 +1,4 @@
+import { Button } from "../components/ui/button";
 import {
   lazy,
   Suspense,
@@ -22,7 +23,7 @@ import {
 } from "./federated-graph";
 import { mergeGraphTimeline } from "./graph-timeline";
 import { meshCopy } from "./mesh-copy";
-import { meshColors, MeshIcon } from "./mesh-icons";
+import { MeshIcon } from "./mesh-icons";
 import {
   buildMeshGraph,
   eventReferences,
@@ -570,7 +571,7 @@ export function Graph({
     });
   const kindFilter = (kind: MeshKind) => (
     <label key={kind}>
-      <span style={{ color: meshColors[kind] }}>
+      <span>
         <MeshIcon kind={kind} size={16} />
       </span>
       <span>{copy.kinds[kind]}</span>
@@ -696,7 +697,8 @@ export function Graph({
         ) : (
           <>
             <div className="mesh-view-controls">
-              <button
+              <Button
+                variant="outline"
                 type="button"
                 className="mesh-filter-toggle"
                 aria-expanded={filtersOpen}
@@ -704,14 +706,15 @@ export function Graph({
               >
                 <Filter size={14} />
                 {copy.filters}
-              </button>
+              </Button>
               <span>
                 {graph.nodes.length} {copy.counts}
                 <span className="mesh-counter-divider">/</span>
                 {graph.edges.length} {copy.links}
               </span>
               <div className="mesh-view-actions">
-                <button
+                <Button
+                  variant="outline"
                   type="button"
                   title={focused ? copy.unfocus : copy.focus}
                   aria-label={focused ? copy.unfocus : copy.focus}
@@ -722,8 +725,9 @@ export function Graph({
                   }
                 >
                   <Focus size={15} />
-                </button>
-                <button
+                </Button>
+                <Button
+                  variant="outline"
                   type="button"
                   title={list ? copy.canvas : copy.list}
                   aria-label={list ? copy.canvas : copy.list}
@@ -731,15 +735,16 @@ export function Graph({
                   onClick={() => setList((v) => !v)}
                 >
                   <List size={15} />
-                </button>
-                <button
+                </Button>
+                <Button
+                  variant="outline"
                   type="button"
                   aria-label={copy.clear}
                   title={copy.clear}
                   onClick={reset}
                 >
                   <RotateCcw size={14} />
-                </button>
+                </Button>
               </div>
             </div>
             {peerIds.length > 0 && (
@@ -793,7 +798,8 @@ export function Graph({
                   return (
                     <div className="mesh-peer" key={peer}>
                       <span>{peer}</span>
-                      <button
+                      <Button
+                        variant="outline"
                         type="button"
                         onClick={() => togglePeer(peer)}
                         disabled={
@@ -802,18 +808,20 @@ export function Graph({
                         }
                       >
                         {expansion ? copy.collapsePeer : copy.expandPeer}
-                      </button>
+                      </Button>
                       {expansion && (
-                        <button
+                        <Button
+                          variant="outline"
                           type="button"
                           onClick={() => void requestPeer(peer, null, scope)}
                         >
                           {copy.refreshPeer}
-                        </button>
+                        </Button>
                       )}
                       {expansion?.page?.next_cursor &&
                         expansion.scope === scope && (
-                          <button
+                          <Button
+                            variant="outline"
                             type="button"
                             onClick={() =>
                               void requestPeer(
@@ -824,7 +832,7 @@ export function Graph({
                             }
                           >
                             {copy.loadMorePeer}
-                          </button>
+                          </Button>
                         )}
                       {stateLabel && <small role="status">{stateLabel}</small>}
                     </div>
@@ -920,9 +928,9 @@ export function Graph({
                   <Network size={36} />
                   <h2>{copy.noResults}</h2>
                   <p>{full.nodes.length ? copy.snapshot : copy.empty}</p>
-                  <button type="button" onClick={reset}>
+                  <Button variant="outline" type="button" onClick={reset}>
                     {copy.clear}
-                  </button>
+                  </Button>
                 </div>
               )}
               {list ? (
@@ -939,10 +947,14 @@ export function Graph({
                       {graph.nodes.map((n) => (
                         <tr key={n.id}>
                           <th scope="row">
-                            <button type="button" onClick={() => select(n.id)}>
+                            <Button
+                              variant="outline"
+                              type="button"
+                              onClick={() => select(n.id)}
+                            >
                               <MeshIcon kind={n.kind} size={16} />
                               {label(n)}
-                            </button>
+                            </Button>
                           </th>
                           <td>{copy.kinds[n.kind]}</td>
                           <td>
@@ -1004,7 +1016,8 @@ export function Graph({
                           : (Date.parse(event.created_at) - timelineStart) /
                             (timelineEnd - timelineStart);
                       return (
-                        <button
+                        <Button
+                          variant="outline"
                           type="button"
                           key={event.id}
                           disabled={!target}
@@ -1021,7 +1034,7 @@ export function Graph({
                               /fail|block/i.test(event.kind) ? "warning" : ""
                             }
                           />
-                        </button>
+                        </Button>
                       );
                     })}
                   </div>

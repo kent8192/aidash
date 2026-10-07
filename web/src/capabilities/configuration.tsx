@@ -1,3 +1,4 @@
+import { Button } from "../components/ui/button";
 import { useInfiniteQuery } from "@tanstack/react-query";
 import { useRef, useState } from "react";
 import { Field, useI18n } from "../ui";
@@ -125,7 +126,8 @@ export function CapabilityConfiguration({
       {value.core_capabilities.skills && (
         <>
           <SkillImport change={setSkill} />
-          <button
+          <Button
+            variant="outline"
             type="button"
             disabled={
               pending ||
@@ -170,13 +172,14 @@ export function CapabilityConfiguration({
             }}
           >
             {ja ? "この Skill を追加" : "Attach this Skill"}
-          </button>
+          </Button>
           <ul>
             {value.skill_attachments.map((a) => (
               <li key={a.skill_id}>
                 <strong>{a.origin}</strong>
                 <small>{a.digest}</small>
-                <button
+                <Button
+                  variant="outline"
                   type="button"
                   onClick={() =>
                     change({
@@ -188,7 +191,7 @@ export function CapabilityConfiguration({
                   }
                 >
                   {ja ? "取り外す" : "Detach"}
-                </button>
+                </Button>
               </li>
             ))}
           </ul>
@@ -367,9 +370,13 @@ export function OriginalReferences({
       {error && <p role="alert">{error}</p>}
       {query.isError && <p role="alert">{query.error.message}</p>}
       {query.hasNextPage && (
-        <button type="button" onClick={() => void query.fetchNextPage()}>
+        <Button
+          variant="outline"
+          type="button"
+          onClick={() => void query.fetchNextPage()}
+        >
           {ja ? "さらに表示" : "Load more"}
-        </button>
+        </Button>
       )}
       {references.map((r) => (
         <article key={r.reference_id}>
@@ -386,14 +393,16 @@ export function OriginalReferences({
           <div className="core-inline">
             {onAttach &&
               (attached.some((a) => a.reference_id === r.reference_id) ? (
-                <button
+                <Button
+                  variant="outline"
                   type="button"
                   onClick={() => onDetach?.(r.reference_id)}
                 >
                   {ja ? "この Agent から取り外す" : "Detach from this Agent"}
-                </button>
+                </Button>
               ) : (
-                <button
+                <Button
+                  variant="outline"
                   type="button"
                   disabled={r.state !== "ready" || attached.length >= 8}
                   onClick={() =>
@@ -401,15 +410,17 @@ export function OriginalReferences({
                   }
                 >
                   {ja ? "この Agent に追加" : "Attach to this Agent"}
-                </button>
+                </Button>
               ))}
-            <button
+            <Button
+              variant="outline"
               type="button"
               onClick={() => void refresh().catch((e) => setError(String(e)))}
             >
               {ja ? "抽出状態を更新" : "Refresh extraction"}
-            </button>
-            <button
+            </Button>
+            <Button
+              variant="outline"
               type="button"
               onClick={() =>
                 void saveFile(`/references/${r.reference_id}/download`).catch(
@@ -418,8 +429,9 @@ export function OriginalReferences({
               }
             >
               {ja ? "原本をダウンロード" : "Download original"}
-            </button>
-            <button
+            </Button>
+            <Button
+              variant="outline"
               type="button"
               onClick={async () => {
                 try {
@@ -433,7 +445,7 @@ export function OriginalReferences({
               }}
             >
               {ja ? "利用を取り消して原本を削除" : "Revoke and delete original"}
-            </button>
+            </Button>
           </div>
         </article>
       ))}
