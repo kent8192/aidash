@@ -2172,16 +2172,18 @@ async fn four_arm_recall_is_native_bounded_and_model_calls_are_memoized(
 }
 
 #[rstest]
-#[case(false)]
-#[case(true)]
+#[case(false, false)]
+#[case(true, false)]
+#[case(true, true)]
 #[tokio::test]
 async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own_correction(
 	#[future] database: DatabaseFixture,
 	mut bounds: Bounds,
 	#[case] journal_bound: bool,
+	#[case] learning_enabled: bool,
 ) {
 	if journal_bound {
-		bounds.max_graph_visits = 2;
+		bounds.max_graph_visits = if learning_enabled { 9 } else { 2 };
 		bounds.max_results = 2;
 	}
 	use aidash_domain::{NewTask, qualified_agent};
@@ -2223,7 +2225,13 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
         }))).await.unwrap();
 	});
 	let database = database.await;
-	let (store, registry, workspace) = setup_endpoint(&database, bounds, &endpoint).await;
+	let (store, registry, workspace) = setup_endpoint_flags(
+		&database,
+		bounds,
+		&endpoint,
+		(learning_enabled, false, false),
+	)
+	.await;
 	let authorization = Authorization {
 		pool: store.pool.clone(),
 	};
@@ -2362,21 +2370,17 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 		json!(id)
 	);
 	if journal_bound {
-		let next = content("東京の追加根拠。 Another subway source.");
-		let extra = Uuid::now_v7();
-		memory::mutate(
-			&f.store,
-			&actor,
-			mutation(
-				&participant.bank,
-				Change::Add {
-					id: extra,
-					content: next,
-				},
-			),
-		)
-		.await
-		.unwrap();
+		// Automatic learning may combine the Run proof with up to seven input/
+		// output sources: two Unit roots fit a Run-only proof at nine visits but
+		// leave too little space for that complete canonical evidence envelope.
+		let addition = mutation(
+			&participant.bank,
+			Change::Add {
+				id: Uuid::now_v7(),
+				content: content("東京の追加根拠。 Another subway source."),
+			},
+		);
+		memory::mutate(&f.store, &actor, addition).await.unwrap();
 		aidash_server::semantic::worker::sweep(&f.store)
 			.await
 			.unwrap();

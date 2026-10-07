@@ -82,8 +82,19 @@ pub(crate) async fn record(
 		.execute(&mut *tx)
 		.await?;
 	}
-	// A future Run proof also visits the Run itself. Admit only a cumulative
-	// journal whose complete unit graphs fit the remaining provenance allowance.
+	// A future Run proof also visits the Run itself. Automatic learning validates
+	// that proof together with all canonical input/output evidence, whose finite
+	// envelope includes the Run root. Reserve the entire admitted envelope so a
+	// full journal cannot make an otherwise bounded learning input unprovable.
+	let reserved = if policy.learn_from_runs {
+		policy
+			.bounds
+			.max_evidence
+			.min(policy.bounds.max_graph_visits)
+	} else {
+		1
+	};
+	let journal_visits = policy.bounds.max_graph_visits - reserved;
 	let reads = native::query(
 		&Query::select()
 			.columns(["unit_id", "revision"].map(Alias::new))
@@ -91,12 +102,12 @@ pub(crate) async fn record(
 			.and_where(Expr::col("run_id").eq(Expr::value(run)))
 			.order_by(Alias::new("unit_id"), Order::Asc)
 			.order_by(Alias::new("revision"), Order::Asc)
-			.limit(policy.bounds.max_graph_visits as u64)
+			.limit(journal_visits as u64 + 1)
 			.to_string(PostgresQueryBuilder),
 	)
 	.fetch_all(&mut *tx)
 	.await?;
-	if reads.len() >= policy.bounds.max_graph_visits {
+	if reads.len() > journal_visits {
 		return Err(Error::Conflict(
 			"Run memory read journal exceeds its provenance bound".into(),
 		));
@@ -112,14 +123,7 @@ pub(crate) async fn record(
 			revision: read.try_get("revision")?,
 		});
 	}
-	match units::current(
-		lease,
-		metadata.workspace_id,
-		&evidence,
-		policy.bounds.max_graph_visits - 1,
-	)
-	.await
-	{
+	match units::current(lease, metadata.workspace_id, &evidence, journal_visits).await {
 		Err(Error::Invalid(message))
 			if message == "memory evidence traversal exceeds its bound" =>
 		{

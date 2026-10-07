@@ -57,8 +57,10 @@ exercises the same canonical Run/evidence/accounting without a browser.
 
 A Home Run's cumulative native read journal must fit its pinned provider's
 `max_graph_visits`, including the Run root and the complete support graphs of
-all delivered Unit revisions. Recall that would exceed that allowance fails
-atomically before adding dependencies. Remote journals record only native Units
+all delivered Unit revisions. Automatic learning also reserves its complete
+`max_evidence` input/output envelope, which includes the Run root. Recall that
+would exceed that allowance fails atomically before adding dependencies.
+Remote journals record only native Units
 retained in the final budget-fitted receipt. A full candidate review queue leaves
 learning pending for retry after review frees capacity; this wait preserves the
 charged model receipt and does not consume a model failure attempt.
