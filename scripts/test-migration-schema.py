@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
-"""Compare an actual empty-database migration with the frozen legacy PostgreSQL schema.
+"""Compare a fresh native bootstrap with an independently frozen native schema.
 
-The reference database is read-only and must have exactly the migration history
-at the immutable pre-workspace revision. The target is owned by an RAII context.
-Only the known dropped runs column slot is normalized; every definition and
-constraint property is otherwise compared verbatim on the same database server.
+Both ledgers must match their complete source identities. Every catalog definition
+is compared verbatim on the same PostgreSQL server; the reference stays read-only
+and the disposable target belongs exclusively to this invocation.
 """
 
 import argparse
@@ -21,7 +20,7 @@ from urllib.parse import quote
 import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
-LEGACY_REVISION = "d75d1c0453a6e8bd267e428cf2303dd7c6ff8639"
+REFERENCE_REVISION = "cd29635a9937133d2e81cca44857bea331446cc5"
 
 QUERIES = {
     "tables": "SELECT c.relname AS name, c.relkind, c.relpersistence, c.relreplident, c.relrowsecurity, c.relforcerowsecurity FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relkind IN ('r','p') AND c.relname NOT IN ('seaql_migrations','reinhardt_migrations') ORDER BY c.relname",
@@ -29,10 +28,53 @@ QUERIES = {
     "constraints": "SELECT c.relname AS table_name, x.conname AS name, x.contype, pg_get_constraintdef(x.oid,true) AS definition, x.condeferrable, x.condeferred, x.convalidated FROM pg_constraint x JOIN pg_class c ON c.oid=x.conrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relname NOT IN ('seaql_migrations','reinhardt_migrations') ORDER BY c.relname,x.conname",
     "indexes": "SELECT t.relname AS table_name, i.relname AS name, pg_get_indexdef(i.oid) AS definition, x.indisvalid, x.indisready, x.indisreplident FROM pg_index x JOIN pg_class i ON i.oid=x.indexrelid JOIN pg_class t ON t.oid=x.indrelid JOIN pg_namespace n ON n.oid=t.relnamespace WHERE n.nspname='public' AND t.relname NOT IN ('seaql_migrations','reinhardt_migrations') ORDER BY t.relname,i.relname",
     "triggers": "SELECT c.relname AS table_name, t.tgname AS name, pg_get_triggerdef(t.oid,true) AS definition, t.tgenabled FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND NOT t.tgisinternal AND c.relname NOT IN ('seaql_migrations','reinhardt_migrations') ORDER BY c.relname,t.tgname",
-    "functions": "SELECT p.proname AS name, pg_get_function_identity_arguments(p.oid) AS arguments, pg_get_functiondef(p.oid) AS definition FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' ORDER BY p.proname,pg_get_function_identity_arguments(p.oid)",
+    "functions": "SELECT p.proname AS name, pg_get_function_identity_arguments(p.oid) AS arguments, pg_get_functiondef(p.oid) AS definition FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' AND p.prokind <> 'a' ORDER BY p.proname,pg_get_function_identity_arguments(p.oid)",
+    "aggregates": "SELECT p.proname AS name, pg_get_function_identity_arguments(p.oid) AS arguments, format_type(p.prorettype,NULL) AS return_type, p.proparallel, a.aggkind, a.aggnumdirectargs, a.aggtransfn::regprocedure::text AS transition, a.aggfinalfn::regprocedure::text AS final, a.aggcombinefn::regprocedure::text AS combine, a.aggserialfn::regprocedure::text AS serial, a.aggdeserialfn::regprocedure::text AS deserial, a.aggmtransfn::regprocedure::text AS moving_transition, a.aggminvtransfn::regprocedure::text AS moving_inverse, a.aggmfinalfn::regprocedure::text AS moving_final, a.aggfinalextra, a.aggmfinalextra, a.aggfinalmodify, a.aggmfinalmodify, a.aggsortop::regoperator::text AS sort_operator, format_type(a.aggtranstype,NULL) AS transition_type, a.aggtransspace, format_type(a.aggmtranstype,NULL) AS moving_transition_type, a.aggmtransspace, a.agginitval, a.aggminitval FROM pg_aggregate a JOIN pg_proc p ON p.oid=a.aggfnoid JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' ORDER BY p.proname,pg_get_function_identity_arguments(p.oid)",
     "sequences": "SELECT s.relname AS name, format_type(q.seqtypid,NULL) AS type, q.seqstart, q.seqincrement, q.seqmax, q.seqmin, q.seqcache, q.seqcycle, t.relname AS owned_table, a.attname AS owned_column, d.deptype FROM pg_sequence q JOIN pg_class s ON s.oid=q.seqrelid JOIN pg_namespace n ON n.oid=s.relnamespace LEFT JOIN pg_depend d ON d.classid='pg_class'::regclass AND d.objid=s.oid AND d.refclassid='pg_class'::regclass AND d.deptype IN ('a','i') LEFT JOIN pg_class t ON t.oid=d.refobjid LEFT JOIN pg_attribute a ON a.attrelid=t.oid AND a.attnum=d.refobjsubid WHERE n.nspname='public' AND coalesce(t.relname,'') NOT IN ('seaql_migrations','reinhardt_migrations') ORDER BY s.relname",
-    "extensions": "SELECT e.extname AS name, e.extversion, e.extrelocatable, n.nspname AS schema FROM pg_extension e JOIN pg_namespace n ON n.oid=e.extnamespace WHERE e.extname='pg_jsonschema' ORDER BY e.extname",
+    "extensions": "SELECT e.extname AS name, e.extversion, e.extrelocatable, n.nspname AS schema FROM pg_extension e JOIN pg_namespace n ON n.oid=e.extnamespace WHERE e.extname IN ('pg_jsonschema', 'vector', 'pgroonga') ORDER BY e.extname",
 }
+
+
+def migration_identities(revision=None):
+    """Read every native source; refuse missing or duplicate migration headers."""
+    if revision is None:
+        sources = {
+            str(path): path.read_text()
+            for path in sorted((ROOT / "server/migrations").glob("*/*.rs"))
+        }
+    else:
+        paths = subprocess.check_output(
+            ["git", "ls-tree", "-r", "--name-only", revision, "server/migrations"],
+            cwd=ROOT,
+            text=True,
+        ).splitlines()
+        sources = {
+            path: subprocess.check_output(
+                ["git", "show", revision + ":" + path], cwd=ROOT, text=True
+            )
+            for path in paths
+            if re.fullmatch(r"server/migrations/[^/]+/[^/]+\.rs", path)
+        }
+    identities = set()
+    for path, source in sources.items():
+        headers = re.findall(
+            r'Migration::new\(\s*"([^"\n]+)"\s*,\s*"([^"\n]+)"\s*\)', source
+        )
+        if len(headers) != 1 or "// reinhardt-migration-source: 1" not in source:
+            raise RuntimeError("invalid native migration header: " + path)
+        name, app = headers[0]
+        identity = (app, name)
+        if identity in identities:
+            raise RuntimeError("duplicate native migration identity: " + repr(identity))
+        identities.add(identity)
+    if not identities:
+        raise RuntimeError("native migration history is empty")
+    return identities
+
+
+def validate_ledger(records, expected):
+    actual = [(record["app"], record["name"]) for record in records]
+    return len(actual) == len(set(actual)) and set(actual) == expected
 
 
 def main():
@@ -60,19 +102,11 @@ def main():
     target = "aidash_schema_" + uuid.uuid4().hex
     evidence = args.evidence_dir.resolve() / target
     evidence.mkdir(parents=True, mode=0o700)
-    legacy_revision = subprocess.check_output(
-        ["git", "rev-parse", LEGACY_REVISION], cwd=ROOT, text=True
+    reference_revision = subprocess.check_output(
+        ["git", "rev-parse", REFERENCE_REVISION], cwd=ROOT, text=True
     ).strip()
-    legacy_source = subprocess.check_output(
-        ["git", "show", legacy_revision + ":migration/src/lib.rs"], cwd=ROOT, text=True
-    )
-    legacy_versions = set(
-        re.findall(r"Box::new\((m[0-9_a-z]+)::Migration\)", legacy_source)
-    )
-    if len(legacy_versions) != 55:
-        raise RuntimeError(
-            "the independent legacy revision must register exactly 55 migrations"
-        )
+    reference_identities = migration_identities(reference_revision)
+    target_identities = migration_identities()
 
     def psql(database, sql):
         result = subprocess.run(
@@ -115,16 +149,20 @@ def main():
         finally:
             psql("postgres", 'DROP DATABASE "' + target + '" WITH (FORCE);')
 
-    versions = set(
+    ledger_query = "SELECT app, name FROM reinhardt_migrations ORDER BY app, name"
+    reference_records = rows(args.reference_database, ledger_query)
+    if not validate_ledger(reference_records, reference_identities):
+        raise RuntimeError(
+            "reference ledger differs from the frozen native source identities"
+        )
+    if (
         psql(
             args.reference_database,
-            "SELECT version FROM seaql_migrations ORDER BY version;",
-        ).splitlines()
-    )
-    if versions != legacy_versions:
-        raise RuntimeError(
-            "the reference database does not match the frozen legacy migration history"
+            "SELECT to_regclass('public.seaql_migrations') IS NULL;",
         )
+        != "t"
+    ):
+        raise RuntimeError("reference retains the retired migration ledger")
     expected = {
         name: rows(args.reference_database, query) for name, query in QUERIES.items()
     }
@@ -135,8 +173,9 @@ def main():
         "dirty": bool(
             subprocess.check_output(["git", "status", "--porcelain"], cwd=ROOT)
         ),
-        "legacy_revision": legacy_revision,
-        "reference_legacy_migrations": len(versions),
+        "reference_revision": reference_revision,
+        "reference_native_migrations": len(reference_records),
+        "expected_native_migrations": len(target_identities),
         "binary_sha256": {
             name: hashlib.sha256(binary.read_bytes()).hexdigest()
             for name, binary in binaries.items()
@@ -152,7 +191,11 @@ def main():
         settings = Path(private) / "settings"
         settings.mkdir()
         (settings / "base.toml").write_text(
-            (ROOT / "server/settings/base.example.toml").read_text()
+            (ROOT / "server/settings/base.example.toml")
+            .read_text()
+            .replace(
+                "[core]", "[core]\nbase_dir = " + json.dumps(str(ROOT / "server")), 1
+            )
         )
         (settings / "local.toml").write_text("")
         environment = {
@@ -203,8 +246,16 @@ def main():
                 )
                 if result.returncode:
                     raise RuntimeError(name + " " + arguments[0] + " failed")
-            report["native_ledger_records"] = int(
-                psql(target, "SELECT count(*) FROM reinhardt_migrations;")
+            target_records = rows(target, ledger_query)
+            report["native_ledger_records"] = len(target_records)
+            report["native_ledger_matches_sources"] = validate_ledger(
+                target_records, target_identities
+            )
+            (evidence / "ledger-native.json").write_text(
+                json.dumps(target_records, indent=2) + "\n"
+            )
+            (evidence / "ledger-reference.json").write_text(
+                json.dumps(reference_records, indent=2) + "\n"
             )
             report["legacy_ledger_absent"] = (
                 psql(target, "SELECT to_regclass('public.seaql_migrations') IS NULL;")
@@ -218,44 +269,14 @@ def main():
                 (evidence / (name + "-native.json")).write_text(
                     json.dumps(actual, indent=2) + "\n"
                 )
-                normalized = actual
-                if name == "columns" and actual != expected[name]:
-                    known = {
-                        "observed_input_seq": (18, 17),
-                        "ledger_worker_ready": (19, 18),
-                        "pending_human_request_id": (20, 19),
-                    }
-                    normalized = []
-                    offsets = []
-                    for left, right in zip(expected[name], actual):
-                        value = right.copy()
-                        if left["attnum"] != right["attnum"]:
-                            if (
-                                left["table_name"] != "runs"
-                                or right["table_name"] != "runs"
-                                or left["attname"] != right["attname"]
-                                or known.get(left["attname"])
-                                != (left["attnum"], right["attnum"])
-                            ):
-                                raise RuntimeError(
-                                    "unexpected physical column ordering difference"
-                                )
-                            value["attnum"] = left["attnum"]
-                            offsets.append(left["attname"])
-                        normalized.append(value)
-                    report["legacy_dropped_column_slot"] = {
-                        "table": "runs",
-                        "slot": 17,
-                        "following_columns": offsets,
-                    }
                 report["catalog"][name] = {
                     "expected": len(expected[name]),
                     "actual": len(actual),
                     "equal": len(actual) == len(expected[name])
-                    and normalized == expected[name],
+                    and actual == expected[name],
                 }
             report["passed"] = (
-                report["native_ledger_records"] == 46
+                report["native_ledger_matches_sources"]
                 and report["legacy_ledger_absent"]
                 and all(value["equal"] for value in report["catalog"].values())
             )

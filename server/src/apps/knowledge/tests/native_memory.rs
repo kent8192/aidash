@@ -29,6 +29,8 @@ mod precision;
 mod purge;
 #[path = "../../execution/tests/support/deployment.rs"]
 mod recovery_deployment;
+#[path = "native_memory/review_regressions.rs"]
+mod review_regressions;
 
 #[rstest]
 #[tokio::test]
@@ -641,7 +643,7 @@ async fn setup_endpoint_retention(
 						backup_days: 7,
 						purge_after_seconds: 60,
 						purge_batch: 32,
-						max_unit_records: 128,
+						max_unit_records: 128.max(bounds.max_units),
 						max_model_operations: 1024,
 					},
 					prices: Prices {

@@ -400,7 +400,7 @@ async fn finish(
 	};
 	// Invalid support is cleared before each next pass. A dependent visited
 	// earlier must be reconsidered after its source was withheld later.
-	for pass in 0..=policy.bounds.max_graph_hops {
+	for pass in 0..=policy.bounds.max_graph_visits {
 		let mut lease =
 			Lease::begin(store, &crate::authorization::identity::Actor::Operator).await?;
 		let contents = selected(&mut lease, bank, policy.retention.max_unit_records).await?;
@@ -449,7 +449,7 @@ async fn finish(
 		if !changed {
 			break;
 		}
-		if pass == policy.bounds.max_graph_hops {
+		if pass == policy.bounds.max_graph_visits {
 			return Err(Error::Conflict(
 				"restore invalidation exceeds its declared traversal bound".into(),
 			));

@@ -716,6 +716,15 @@ async fn deleting_an_unprojected_unit_does_not_consume_full_search_capacity(
 }
 
 async fn assert_large_graph_run_is_readable(store: &Store, bank: &Bank, unit: Uuid) {
+	let (scope, run) = recorded_run(store, bank, &[unit]).await;
+	assert!(run_visible(&scope, store, run).await);
+}
+
+pub(super) async fn recorded_run(
+	store: &Store,
+	bank: &Bank,
+	units: &[Uuid],
+) -> (aidash_server::authorization::workspace::Workspaces, Uuid) {
 	let authorization = aidash_server::authorization::Authorization {
 		pool: store.pool.clone(),
 	};
@@ -800,11 +809,6 @@ async fn assert_large_graph_run_is_readable(store: &Store, bank: &Bank, unit: Uu
 				Expr::value("1.0.0"),
 			],
 		),
-		(
-			"memory_run_reads",
-			vec!["run_id", "unit_id", "revision"],
-			vec![Expr::value(run), Expr::value(unit), Expr::value(1_i64)],
-		),
 	] {
 		let mut row = Query::select();
 		for value in values {
@@ -821,11 +825,38 @@ async fn assert_large_graph_run_is_readable(store: &Store, bank: &Bank, unit: Uu
 		.await
 		.unwrap();
 	}
+	for unit in units {
+		native::query(
+			&Query::insert()
+				.into_table(Alias::new("memory_run_reads"))
+				.columns(["run_id", "unit_id", "revision"].map(Alias::new))
+				.from_subquery(
+					Query::select()
+						.expr(Expr::value(run))
+						.expr(Expr::value(*unit))
+						.expr(Expr::value(1_i64))
+						.to_owned(),
+				)
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(&mut *tx)
+		.await
+		.unwrap();
+	}
+
 	tx.commit().await.unwrap();
 	let scope = aidash_server::authorization::workspace::Workspaces {
 		store: store.clone(),
 		identity,
 	};
+	(scope, run)
+}
+
+pub(super) async fn run_visible(
+	scope: &aidash_server::authorization::workspace::Workspaces,
+	store: &Store,
+	run: Uuid,
+) -> bool {
 	let state = scope
 		.state(aidash_server::config::NodeIdentity {
 			id: store.node_id.clone(),
@@ -836,8 +867,5 @@ async fn assert_large_graph_run_is_readable(store: &Store, bank: &Bank, unit: Uu
 		})
 		.await
 		.unwrap();
-	assert!(
-		state.runs.iter().any(|inspection| inspection.id == run),
-		"valid memory with more than 1024 provenance visits must preserve Run readability"
-	);
+	state.runs.iter().any(|inspection| inspection.id == run)
 }

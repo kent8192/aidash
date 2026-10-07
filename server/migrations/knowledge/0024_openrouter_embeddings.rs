@@ -3,8 +3,8 @@
 use reinhardt::db::migrations::prelude::*;
 
 pub(super) fn migration() -> Migration {
-	Migration::new("0023_openrouter_embeddings", "knowledge")
-        .add_dependency("knowledge", "0022_memory_receiver_caches")
+	Migration::new("0024_openrouter_embeddings", "knowledge")
+        .add_dependency("knowledge", "0023_native_memory_model_state")
         .add_operation(Operation::DropConstraintDefinition {
             table: "semantic_indexes".into(),
             constraint: Constraint::Check {

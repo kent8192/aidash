@@ -42,6 +42,26 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 	let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations");
 	// Act: load every external SQL asset through the native filesystem source.
 	let migrations = FilesystemSource::new(&root).all_migrations().await.unwrap();
+	// A new migration must extend its app's single head, including state-only
+	// checkpoints; migrate alone can otherwise accept a forked graph.
+	let mut graph = reinhardt::db::migrations::MigrationGraph::new();
+	for migration in &migrations {
+		graph.add_migration(
+			reinhardt::db::migrations::MigrationKey::new(&migration.app_label, &migration.name),
+			migration
+				.dependencies
+				.iter()
+				.map(|(app, name)| reinhardt::db::migrations::MigrationKey::new(app, name))
+				.collect(),
+		);
+	}
+	assert!(
+		graph.detect_conflicts().is_empty(),
+		"every app must have at most one global leaf"
+	);
+	let knowledge = graph.get_leaf_nodes_for_app("knowledge");
+	assert_eq!(knowledge.len(), 1);
+	assert_eq!(knowledge[0].name, "0024_openrouter_embeddings");
 	// Assert: retain the physical graph, model snapshots, and all supported tables.
 	assert!(
 		migrations

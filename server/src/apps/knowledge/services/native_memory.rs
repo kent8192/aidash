@@ -635,12 +635,15 @@ async fn validate_direct_mutation(
 					"create derived memory through the derive operation".into(),
 				));
 			}
-			Change::Correct { id, content, .. } if content.kind.derived() => {
+			Change::Correct { id, content, .. } => {
 				let existing = units::load(lease, *id, false)
 					.await?
 					.ok_or(Error::Forbidden)?;
 				if existing.bank != mutation.bank {
 					return Err(Error::Forbidden);
+				}
+				if !existing.content.kind.derived() && !content.kind.derived() {
+					continue;
 				}
 				if existing.content.kind != content.kind
 					|| existing.content.mental_model != content.mental_model

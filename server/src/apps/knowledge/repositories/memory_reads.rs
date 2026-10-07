@@ -6,11 +6,10 @@ use aidash_domain::{
 	memory::{Evidence, Unit},
 };
 use reinhardt::query::{
-	Alias, ColumnRef, Expr, ExprTrait, LockType, OnConflict, Order, PostgresQueryBuilder, Query,
-	QueryStatementBuilder,
+	Alias, ColumnRef, Condition, Expr, ExprTrait, LockType, OnConflict, Order,
+	PostgresQueryBuilder, Query, QueryStatementBuilder,
 };
 use uuid::Uuid;
-const MAX_READS: usize = 1024;
 
 pub(crate) async fn record(store: &Store, run: Uuid, selected: &[Unit]) -> Result<()> {
 	let mut tx = native::begin(&store.control_pool).await?;
@@ -65,21 +64,6 @@ pub(crate) async fn record(store: &Store, run: Uuid, selected: &[Unit]) -> Resul
 		.execute(&mut *tx)
 		.await?;
 	}
-	let rows = native::query(
-		&Query::select()
-			.column(Alias::new("unit_id"))
-			.from(Alias::new("memory_run_reads"))
-			.and_where(Expr::col("run_id").eq(Expr::value(run)))
-			.limit(MAX_READS as u64 + 1)
-			.to_string(PostgresQueryBuilder),
-	)
-	.fetch_all(&mut *tx)
-	.await?;
-	if rows.len() > MAX_READS {
-		return Err(Error::Conflict(
-			"Run memory dependency limit reached".into(),
-		));
-	}
 	tx.commit().await
 }
 
@@ -100,56 +84,92 @@ pub(crate) async fn visible(lease: &mut Lease<'_>, run_id: Uuid) -> Result<bool>
 		Err(Error::Conflict(_) | Error::Forbidden) => return Ok(false),
 		result => result?,
 	};
-	let reads = native::query(
-		&Query::select()
+	let Some(binding) = binding else {
+		let read = native::query(
+			&Query::select()
+				.column(Alias::new("unit_id"))
+				.from(Alias::new("memory_run_reads"))
+				.and_where(Expr::col("run_id").eq(Expr::value(run_id)))
+				.limit(1)
+				.to_string(PostgresQueryBuilder),
+		)
+		.fetch_optional(&mut **lease.tx())
+		.await?;
+		return Ok(read.is_none());
+	};
+	match units::authorize(lease, &binding.bank, "memory.read").await {
+		Err(Error::Forbidden | Error::Conflict(_)) => return Ok(false),
+		result => result?,
+	}
+	let policy =
+		match crate::apps::knowledge::services::native_memory::policy(lease, &binding.provider)
+			.await
+		{
+			Err(Error::Conflict(_) | Error::Forbidden) => return Ok(false),
+			result => result?,
+		};
+	// The journal spans the whole Run. Each bounded page still validates every
+	// delivered revision; accumulated dependencies must never be sampled away.
+	let page_size = policy.bounds.max_graph_visits.min(256) as u64;
+	let mut cursor: Option<(Uuid, i64)> = None;
+	loop {
+		let mut query = Query::select();
+		query
 			.columns(["unit_id", "revision"].map(Alias::new))
 			.from(Alias::new("memory_run_reads"))
 			.and_where(Expr::col("run_id").eq(Expr::value(run_id)))
 			.order_by(Alias::new("unit_id"), Order::Asc)
 			.order_by(Alias::new("revision"), Order::Asc)
-			.limit(MAX_READS as u64 + 1)
-			.to_string(PostgresQueryBuilder),
-	)
-	.fetch_all(&mut **lease.tx())
-	.await?;
-	if reads.len() > MAX_READS || (!reads.is_empty() && binding.is_none()) {
-		return Ok(false);
-	}
-	if let Some(binding) = binding {
-		match units::authorize(lease, &binding.bank, "memory.read").await {
-			Err(Error::Forbidden | Error::Conflict(_)) => return Ok(false),
-			result => result?,
+			.limit(page_size);
+		if let Some((unit, revision)) = cursor {
+			query.cond_where(
+				Condition::any()
+					.add(Expr::col("unit_id").gt(Expr::value(unit)))
+					.add(
+						Condition::all()
+							.add(Expr::col("unit_id").eq(Expr::value(unit)))
+							.add(Expr::col("revision").gt(Expr::value(revision))),
+					),
+			);
+		}
+		let reads = native::query(&query.to_string(PostgresQueryBuilder))
+			.fetch_all(&mut **lease.tx())
+			.await?;
+		if reads.is_empty() {
+			return Ok(true);
+		}
+		for read in reads {
+			let id: Uuid = read.try_get("unit_id")?;
+			let revision: i64 = read.try_get("revision")?;
+			cursor = Some((id, revision));
+			let Some(unit) = units::load(lease, id, false).await? else {
+				return Ok(false);
+			};
+			if !unit.visible()
+				|| unit.revision != revision
+				|| unit.bank.workspace != run.workspace_id
+			{
+				return Ok(false);
+			}
+			let policy = match units::unexpired(lease, &unit).await {
+				Err(Error::Conflict(_) | Error::Forbidden) => return Ok(false),
+				result => result?,
+			};
+			match units::current(
+				lease,
+				run.workspace_id,
+				&[Evidence::Unit {
+					bank: unit.bank.clone(),
+					id: unit.id,
+					revision: unit.revision,
+				}],
+				policy.bounds.max_graph_visits,
+			)
+			.await
+			{
+				Err(Error::Conflict(_) | Error::Forbidden) => return Ok(false),
+				result => result?,
+			}
 		}
 	}
-	for read in reads {
-		let Some(unit) = units::load(lease, read.try_get("unit_id")?, false).await? else {
-			return Ok(false);
-		};
-		if !unit.visible()
-			|| unit.revision != read.try_get::<i64>("revision")?
-			|| unit.bank.workspace != run.workspace_id
-		{
-			return Ok(false);
-		}
-		let policy = match units::unexpired(lease, &unit).await {
-			Err(Error::Conflict(_) | Error::Forbidden) => return Ok(false),
-			result => result?,
-		};
-		match units::current(
-			lease,
-			run.workspace_id,
-			&[Evidence::Unit {
-				bank: unit.bank.clone(),
-				id: unit.id,
-				revision: unit.revision,
-			}],
-			policy.bounds.max_graph_visits,
-		)
-		.await
-		{
-			Err(Error::Conflict(_) | Error::Forbidden) => return Ok(false),
-			result => result?,
-		}
-	}
-	Ok(true)
 }

@@ -115,6 +115,14 @@ pub(crate) async fn sweep(store: &Store) -> Result<()> {
 					.table(Alias::new("memory_candidates"))
 					.value_expr(Alias::new("text"), Expr::value(""))
 					.value_expr(
+						Alias::new("occurred_start"),
+						Expr::value(None::<chrono::DateTime<Utc>>),
+					)
+					.value_expr(
+						Alias::new("occurred_end"),
+						Expr::value(None::<chrono::DateTime<Utc>>),
+					)
+					.value_expr(
 						Alias::new("mental_model"),
 						Expr::value(None::<serde_json::Value>),
 					)
@@ -128,7 +136,12 @@ pub(crate) async fn sweep(store: &Store) -> Result<()> {
 					.and_where(Expr::col("created_at").lt(Expr::value(
 						now - Duration::days(i64::from(retention.candidate_days)),
 					)))
-					.and_where(Expr::col("text").ne(""))
+					.and_where(
+						Expr::col("text")
+							.ne("")
+							.or(Expr::col("occurred_start").is_not_null())
+							.or(Expr::col("occurred_end").is_not_null()),
+					)
 					.to_string(PostgresQueryBuilder),
 			)
 			.execute(&mut **lease.tx())
