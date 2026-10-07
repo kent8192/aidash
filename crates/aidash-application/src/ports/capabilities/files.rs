@@ -37,6 +37,11 @@ pub trait VerifiedFile: Send {
 }
 #[async_trait]
 pub trait FileScopePort: Send {
+	fn binding_snapshot(&self) -> Result<&aidash_domain::registry::bindings::BindingSnapshot> {
+		Err(crate::Error::Invalid(
+			"Run has no admitted Binding snapshot".into(),
+		))
+	}
 	fn limits(&self) -> Result<Limits>;
 	fn policy_revision(&self) -> i64;
 	fn resource(&self, kind: &str, id: &str, attributes: Value) -> Resource;

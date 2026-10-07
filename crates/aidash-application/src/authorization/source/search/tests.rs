@@ -197,7 +197,19 @@ fn binding() -> Binding {
 	}
 }
 fn description() -> Description {
-	let inspection:Inspection=serde_json::from_value(json!({"node_id":"aidash://receiver","authority_digest":"authority","agent":{"id":"agent","version":"1","kind":"agent","name":{},"description":{},"config":{"model":{"id":"model","version":"1"}}},"definitions":[]})).unwrap();
+	let mut agent = crate::test_support::agent("agent");
+	agent.config["model"] = json!({"id":"model","version":"1.0.0"});
+	let inspection = Inspection {
+		node_id: "aidash://receiver".into(),
+		authority_digest: "authority".into(),
+		binding_snapshot: crate::test_support::resolve("aidash://receiver", &agent, true, vec![]),
+		agent,
+		definitions: vec![],
+		generation: None,
+		lineage: vec![],
+		semantic_memory: 0,
+		compactor: None,
+	};
 	Description {
 		grant_id: operation().grant_id,
 		source_node: "aidash://home".into(),
@@ -252,7 +264,7 @@ fn cached_receipt(candidate_digest: &str) -> Receipt {
 		workspace_id: task().workspace_id,
 		grant_id: operation().grant_id,
 		admission_id: operation().admission_id,
-		executor: "aidash://receiver/agent@1".into(),
+		executor: "aidash://receiver/agents/agent@1.0.0".into(),
 		binding: binding(),
 		retrieved_at: Utc.timestamp_opt(0, 0).unwrap(),
 		query_truncated: false,
@@ -602,7 +614,7 @@ impl SemanticSearchScope for Scope {
 	) -> Result<retrieval::PreparedSearch> {
 		assert_eq!(
 			input.agent.as_deref(),
-			Some(qualified_agent("aidash://receiver", "agent", "1").as_str())
+			Some(qualified_agent("aidash://receiver", "agent", "1.0.0").as_str())
 		);
 		assert_eq!(controls.model.id, "model");
 		self.trace.lock().unwrap().push("candidates");

@@ -357,7 +357,63 @@ pub(in crate::apps::identity) async fn authorize_guard(
 	.map_err(Into::into)
 }
 
+struct SnapshotAuthority {
+	remote: Option<Federation>,
+	access: Arc<Mutex<Access>>,
+	run: Run,
+}
+#[async_trait::async_trait]
+impl aidash_application::ports::bindings::BindingAuthority for SnapshotAuthority {
+	async fn refresh(&self, run: &Run) -> aidash_application::Result<()> {
+		if run.id != self.run.id {
+			return Err(aidash_application::Error::Forbidden);
+		}
+
+		aidash_application::authorization::tools::refresh(
+			&crate::bootstrap::agent_tool_repository(self.remote.as_ref(), &self.access, run),
+		)
+		.await?;
+		Ok(())
+	}
+
+	async fn check(
+		&self,
+		run: &Run,
+		binding: &aidash_domain::registry::bindings::ResolvedBinding,
+	) -> aidash_application::Result<()> {
+		if run.id != self.run.id {
+			return Err(aidash_application::Error::Forbidden);
+		}
+		let mut access = self.access.lock().await;
+		if binding.identity.registry_node != access.node_id {
+			return Err(aidash_application::Error::Forbidden);
+		}
+		let current =
+			catalog::entry(&mut access, &binding.identity.local(), "registry.read").await?;
+		if aidash_domain::registry::rules::digest(&serde_json::to_value(&current)?)
+			!= binding.digest
+		{
+			return Err(aidash_application::Error::Conflict(
+				"admitted Binding definition changed".into(),
+			));
+		}
+		crate::marketplace::check_pinned(&mut access, &current).await?;
+
+		Ok(())
+	}
+}
+
 impl Guard {
+	pub(crate) fn binding_authority(
+		&self,
+	) -> Arc<dyn aidash_application::ports::bindings::BindingAuthority> {
+		Arc::new(SnapshotAuthority {
+			remote: self.remote.clone(),
+			access: self.access.clone(),
+			run: self.run.clone(),
+		})
+	}
+
 	pub async fn begin(f: &Federation, run: &Run) -> Result<Option<Self>> {
 		let entry = aidash_application::authorization::worker_entry::execution(
 			&crate::bootstrap::worker_entry_repository(f),
@@ -436,7 +492,46 @@ impl Guard {
 		.map_err(Into::into)
 	}
 
+	pub(crate) async fn recheck_source_observation(
+		&self,
+		store: &Store,
+		content: &Value,
+	) -> Result<()> {
+		self.inference().await?;
+		if let Some(semantic) = content.get("semantic_memory").filter(|v| !v.is_null()) {
+			if self.remote.is_some() {
+				// Remote refresh verifies the retained source-disclosure journal on Home.
+				aidash_application::authorization::tools::refresh(
+					&crate::bootstrap::agent_tool_repository(
+						self.remote.as_ref(),
+						&self.access,
+						&self.run,
+					),
+				)
+				.await?;
+			} else {
+				let mut access = self.access.lock().await;
+				let mut lease = crate::semantic::service::Lease::Inherited(&mut access);
+				aidash_application::semantic::retrieval::recheck(
+					&mut crate::bootstrap::semantic_retrieval_scope(store, &mut lease),
+					&serde_json::from_value(semantic.clone())?,
+				)
+				.await?;
+			}
+		}
+		Ok(())
+	}
+
 	pub async fn human_read(&self, id: Uuid) -> Result<()> {
+		if let Some(remote) = &self.remote {
+			let home = crate::federation::Home::new(remote.clone(), self.run.clone());
+			let request = home.human_request_by_id(id).await?;
+			if request.run_id != self.run.id || request.workspace_id != self.run.workspace_id {
+				return Err(Error::Forbidden);
+			}
+			return Ok(());
+		}
+
 		aidash_application::authorization::tools::human_read(
 			&crate::bootstrap::agent_tool_repository(self.remote.as_ref(), &self.access, &self.run),
 			&self.run.metadata(),
@@ -553,20 +648,6 @@ impl Guard {
 			&self.agent,
 			call,
 			contract,
-		)
-		.await
-		.map_err(Into::into)
-	}
-
-	pub async fn filter_core_tools(
-		&self,
-		tools: &mut std::collections::BTreeMap<String, Arc<dyn crate::tool::Tool>>,
-	) -> Result<()> {
-		aidash_application::authorization::tools::filter(
-			&crate::bootstrap::agent_tool_repository(self.remote.as_ref(), &self.access, &self.run),
-			&self.agent,
-			tools,
-			|tool| tool.contract(),
 		)
 		.await
 		.map_err(Into::into)

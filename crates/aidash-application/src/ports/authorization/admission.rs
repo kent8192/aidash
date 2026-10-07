@@ -19,6 +19,15 @@ pub trait ExecutionAdmissionSession: ExecutionGrantSession {
 	async fn executable_entry(&mut self, agent: &EntityRef) -> Result<Entry>;
 	async fn active_installation(&mut self, entry: &Entry) -> Result<bool>;
 	async fn check_pinned_installation(&mut self, entry: &Entry) -> Result<()>;
+	async fn bindings(
+		&mut self,
+		entry: &Entry,
+	) -> Result<aidash_domain::registry::bindings::BindingSnapshot> {
+		let _ = entry;
+		Err(crate::Error::Invalid(
+			"Binding admission adapter is required".into(),
+		))
+	}
 	async fn prepare_thread(
 		&mut self,
 		task: &Task,
@@ -31,6 +40,7 @@ pub trait ExecutionAdmissionSession: ExecutionGrantSession {
 		revision: i64,
 		subject: &str,
 		entry: &Entry,
+		snapshot: &aidash_domain::registry::bindings::BindingSnapshot,
 	) -> Result<Task>;
 	async fn claimed_run(&mut self, task: Uuid) -> Result<Uuid>;
 	async fn persist_grant(&mut self, grant: &ExecutionGrant) -> Result<()>;

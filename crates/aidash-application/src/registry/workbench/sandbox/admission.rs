@@ -43,7 +43,8 @@ pub async fn admit(admission: &Admission<'_>, id: Uuid, input: TestInput) -> Res
 		));
 	}
 	let entry = scope.validate_content(&draft).await?;
-	let config: AgentConfig = serde_json::from_value(entry.config.clone())?;
+	let snapshot = scope.bindings(&draft, &entry).await?;
+	let config = AgentConfig::from_snapshot(&snapshot)?;
 	let model = scope.effective(&config.model).await?;
 	let model_config: ModelConfig = serde_json::from_value(model.config)?;
 	let model_credential = model_config
@@ -104,11 +105,15 @@ pub async fn admit(admission: &Admission<'_>, id: Uuid, input: TestInput) -> Res
 		Vec::new()
 	};
 	conversation.push(json!({"role":"user","content":input.message}));
-	let tool_references = config
-		.tools
+	let tool_references = snapshot
+		.bindings
 		.iter()
-		.enumerate()
-		.map(|(index, reference)| (format!("plugin_{index}"), reference.clone()))
+		.filter(|b| b.excluded_reason.is_none())
+		.filter_map(|b| {
+			b.alias
+				.as_ref()
+				.map(|alias| (alias.clone(), b.identity.local()))
+		})
 		.collect();
 	let mut instructions = aidash_domain::context::agent_instructions("");
 	if input.mode == "real" {
@@ -123,25 +128,16 @@ pub async fn admit(admission: &Admission<'_>, id: Uuid, input: TestInput) -> Res
 	}
 	instructions.push_str("\nAdditional instructions:\n");
 	instructions.push_str(&config.instructions);
-	let mut tool_specs = crate::tools::builtins()
-		.into_iter()
-		.filter(|(name, _)| config.permits_builtin(name))
-		.map(|(_, tool)| tool.specification())
-		.collect::<Vec<_>>();
-	for (index, reference) in config.tools.iter().enumerate() {
-		let tool = scope.effective(reference).await?;
-		if config.allow_task_delegation == Some(false)
-			&& matches!(
-				serde_json::from_value::<aidash_domain::tool::ToolConfig>(tool.config.clone())?,
-				aidash_domain::tool::ToolConfig::Agent { .. }
-			) {
-			continue;
-		}
-		tool_specs.push(crate::tools::plugin_specification(
-			&tool,
-			&format!("plugin_{index}"),
-		));
-	}
+	let tool_specs = snapshot
+		.bindings
+		.iter()
+		.filter(|b| b.excluded_reason.is_none())
+		.filter_map(|b| {
+			b.alias
+				.as_deref()
+				.map(|alias| crate::tools::plugin_specification(&b.definition, alias))
+		})
+		.collect();
 	let mut request = ModelRequest {
 		content_parts: Vec::new(),
 		instructions,
@@ -169,7 +165,7 @@ pub async fn admit(admission: &Admission<'_>, id: Uuid, input: TestInput) -> Res
 	}
 	// Keep draft, policy, credential, and tenant-concurrency locks until admission commits.
 	let session = scope.admit(&draft,&limits,
-			json!({"mode":input.mode,"profile_id":input.profile_id,"profile_revision":profile.as_ref().map(|value|value.revision),"continue_from":input.continue_from,"fixtures":fixtures}),
+			json!({"mode":input.mode,"profile_id":input.profile_id,"profile_revision":profile.as_ref().map(|value|value.revision),"continue_from":input.continue_from,"fixtures":fixtures,"binding_snapshot":snapshot}),
 			json!(conversation)).await?;
 	scope.commit().await?;
 

@@ -24,7 +24,7 @@ async fn finished_test(app: &common::TestApplication, token: &str, path: &str, i
 }
 
 fn agent() -> Value {
-	json!({"id":"","version":"1.0.0","kind":"agent","name":{"en":"Test agent"},"description":{"en":"Authoring fixture"},"capabilities":["summarize"],"tags":[],"languages":["en"],"skills":[],"schema":{},"config":{"model":{"id":"fixture-model","version":"1.0.0"},"instructions":"Summarize carefully","tools":[],"skills":[],"cluster":null,"max_steps":8}})
+	json!({"id":"","version":"1.0.0","kind":"agent","name":{"en":"Test agent"},"description":{"en":"Authoring fixture"},"capabilities":["summarize"],"tags":[],"languages":["en"],"skills":[],"schema":{},"config":{"model":{"id":"fixture-model","version":"1.0.0"},"instructions":"Summarize carefully","schema_version":1,"bindings":[],"remove_default":[],"cluster":null,"max_steps":8}})
 }
 
 #[rstest::rstest]
@@ -66,7 +66,7 @@ async fn simulated_test_never_invokes_the_registered_external_tool(
 		(
 			"fixture-tool",
 			"tool",
-			json!({"transport":"http","endpoint":format!("{endpoint}/effect"),"credential_env":null,"replay":"read_only"}),
+			json!({"registry_node":f.config.node_id,"provider":"integration.http@1","operation":"invoke","default_alias":"plugin_0","tier":"integration","narrow":{},"transport":{"transport":"http","endpoint":format!("{endpoint}/effect"),"credential_env":null,"replay":"read_only"}}),
 		),
 	] {
 		let entry = json!({"id":id,"version":"1.0.0","kind":kind,"name":{"en":id},"description":{"en":"fixture"},"capabilities":[],"tags":[],"languages":["en"],"skills":[],"schema":{},"config":config});
@@ -96,7 +96,7 @@ async fn simulated_test_never_invokes_the_registered_external_tool(
 	.await;
 	let token = credential["token"].as_str().unwrap();
 	let mut entry = agent();
-	entry["config"]["tools"] = json!([{"id":"fixture-tool","version":"1.0.0"}]);
+	entry["config"]["bindings"] = json!([{"kind":"tool","target":{"registry_node":f.config.node_id,"id":"fixture-tool","version":"1.0.0"},"alias":"plugin_0","narrow":{}}]);
 	let (status, draft) = request(
 		&app,
 		token,
@@ -150,7 +150,7 @@ async fn simulated_test_never_invokes_the_registered_external_tool(
 		0,
 		"simulation reached a real tool endpoint"
 	);
-	let (status, profile) = request(&app, &operator, "PUT", "/api/workbench/test-profiles/acme/sandbox", json!({"expected_revision":0,"enabled":true,"rules":[{"tool":{"id":"fixture-tool","version":"1.0.0"},"endpoint":format!("{endpoint}/test-effect"),"credential_env":null,"allowed_actions":["read"],"allowed_resources":["sandbox"]}]})).await;
+	let (status, profile) = request(&app, &operator, "PUT", "/api/workbench/test-profiles/acme/sandbox", json!({"expected_revision":0,"enabled":true,"rules":[{"tool":{"id":"fixture-tool","version":"1.0.0"},"endpoint":format!("{endpoint}/test-effect"),"credential_env":null,"read_only_verified":true,"allowed_actions":["read"],"allowed_resources":["sandbox"]}]})).await;
 	assert_eq!(status, 200, "profile: {profile}");
 	let (status, visible) = request(
 		&app,
@@ -212,7 +212,7 @@ async fn simulated_test_never_invokes_the_registered_external_tool(
 	let reset = finished_test(&app, token, &path, reset["id"].as_str().unwrap()).await;
 	assert_eq!(reset["status"], "completed", "reset session: {reset}");
 	assert_eq!(real_hits.load(Ordering::SeqCst), 2);
-	let (status, revised) = request(&app, &operator, "PUT", "/api/workbench/test-profiles/acme/sandbox", json!({"expected_revision":1,"enabled":true,"rules":[{"tool":{"id":"fixture-tool","version":"1.0.0"},"endpoint":format!("{endpoint}/test-effect"),"credential_env":null,"allowed_actions":["read"],"allowed_resources":["other"]}]})).await;
+	let (status, revised) = request(&app, &operator, "PUT", "/api/workbench/test-profiles/acme/sandbox", json!({"expected_revision":1,"enabled":true,"rules":[{"tool":{"id":"fixture-tool","version":"1.0.0"},"endpoint":format!("{endpoint}/test-effect"),"credential_env":null,"read_only_verified":true,"allowed_actions":["read"],"allowed_resources":["other"]}]})).await;
 	assert_eq!(status, 200, "revised profile: {revised}");
 	let (status, denied) = request(&app, token, "POST", &path, json!({"expected_revision":1,"message":"Try outside the test resource","mode":"real","profile_id":"sandbox"})).await;
 	assert_eq!(status, 200, "denied test: {denied}");
@@ -287,7 +287,12 @@ async fn draft_conflict_register_and_factual_inspection(
 	assert_eq!(status, 200, "draft: {draft}");
 	let draft_id = draft["id"].as_str().unwrap();
 	let agent_id = draft["entry"]["id"].as_str().unwrap();
-	assert_eq!(draft["entry"]["config"]["allow_task_creation"], false);
+	assert_eq!(draft["entry"]["config"]["schema_version"], 1);
+	assert!(
+		draft["entry"]["config"]
+			.get("allow_task_creation")
+			.is_none()
+	);
 	let mut invalid = draft["entry"].clone();
 	invalid["config"]["allow_task_creation"] = Value::Null;
 	assert_eq!(

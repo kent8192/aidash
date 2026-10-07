@@ -31,6 +31,18 @@ pub trait HomeScope: Send + Sized {
 	async fn task_resource(&mut self, task: &Task) -> Result<Resource>;
 	async fn workspace(&mut self, id: Uuid) -> Result<Resource>;
 	async fn require(&mut self, resource: &Resource, action: &str) -> Result<()>;
+	async fn human_requests(
+		&mut self,
+		grant: Uuid,
+		admission: Uuid,
+	) -> Result<Vec<aidash_domain::HumanRequest>>;
+	async fn answer_human(
+		&mut self,
+		grant: Uuid,
+		admission: Uuid,
+		id: Uuid,
+		response: Value,
+	) -> Result<aidash_domain::HumanRequest>;
 	async fn requester_grant(&mut self, task: Uuid, grant: Uuid) -> Result<Option<Grant>>;
 	async fn binding(&mut self, grant: Uuid) -> Result<Option<HomeBinding>>;
 	async fn grants(&mut self, task: Uuid) -> Result<Vec<Grant>>;

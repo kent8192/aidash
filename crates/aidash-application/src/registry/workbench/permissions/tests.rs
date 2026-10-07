@@ -55,7 +55,7 @@ impl Drop for Scope<'_> {
 fn reference(id: &str) -> EntityRef {
 	EntityRef {
 		id: id.into(),
-		version: "1".into(),
+		version: "1.0.0".into(),
 	}
 }
 fn input() -> PermissionInput {
@@ -72,7 +72,7 @@ impl PermissionRepository for Repository {
 		self.principal.clone()
 	}
 	fn node_id(&self) -> &str {
-		"node"
+		"aidash://local"
 	}
 	async fn begin(&self) -> Result<Box<dyn PermissionScope + '_>> {
 		let mut s = self.state.lock().unwrap();
@@ -84,6 +84,30 @@ impl PermissionRepository for Repository {
 
 #[async_trait]
 impl PermissionScope for Scope<'_> {
+	async fn bindings(
+		&mut self,
+		entry: &aidash_domain::registry::Entry,
+	) -> Result<aidash_domain::registry::bindings::BindingSnapshot> {
+		Ok(crate::test_support::resolve(
+			"aidash://local",
+			entry,
+			false,
+			vec![
+				crate::test_support::http_tool("aidash://local", "tool", "lookup"),
+				crate::test_support::entry(
+					"skill",
+					"skill",
+					json!({"instructions":"Fixture skill"}),
+				),
+				crate::test_support::entry(
+					"cluster",
+					"cluster",
+					json!({"coordinator":reference("agent")}),
+				),
+			],
+		))
+	}
+
 	async fn require_inspection(&mut self, entry: &EntityRef) -> Result<()> {
 		assert_eq!(*entry, reference("agent"));
 		self.0.state.lock().unwrap().calls.push("inspection".into());
@@ -103,10 +127,14 @@ impl PermissionScope for Scope<'_> {
 		let kind = if entry.id == "agent" {
 			self.0.agent_kind
 		} else {
-			entry.id.as_str()
+			if entry.id.starts_with("aidash.") {
+				"tool"
+			} else {
+				entry.id.as_str()
+			}
 		};
 		let config = if entry.id == "agent" {
-			json!({"model":reference("model"),"skills":[reference("skill")],"tools":[reference("tool")],"cluster":reference("cluster")})
+			json!({"schema_version":1,"instructions":"Fixture","model":reference("model"),"bindings":[crate::test_support::binding("skill","aidash://local","skill"),crate::test_support::binding("tool","aidash://local","tool")],"remove_default":[],"cluster":reference("cluster")})
 		} else {
 			json!({"fixture": entry.id})
 		};
@@ -118,7 +146,7 @@ impl PermissionScope for Scope<'_> {
 
 	async fn catalog_enabled(&mut self, tenant: &str, entry: &EntityRef) -> Result<Option<bool>> {
 		assert_eq!(tenant, "tenant");
-		assert_eq!(entry.version, "1");
+		assert_eq!(entry.version, "1.0.0");
 		self.0
 			.state
 			.lock()
@@ -231,49 +259,62 @@ async fn component_actions_use_exact_pinned_metadata_and_worker_context() {
 	let result = inspect(&repository, reference("agent"), input())
 		.await
 		.unwrap();
-	assert_eq!(
+	let component = |id: &str| {
 		result
 			.rows
 			.iter()
-			.map(|r| r.action.as_str())
-			.collect::<Vec<_>>(),
-		vec![
-			"agent.execute",
-			"model.infer",
-			"skill.use",
-			"tool.invoke",
-			"cluster.execute"
-		]
-	);
-	assert_eq!(result.rows[0].registry_read_allowed, None);
+			.find(|row| row.reference.id == id)
+			.unwrap()
+	};
+	for (id, action) in [
+		("agent", "agent.execute"),
+		("model", "model.infer"),
+		("skill", "skill.use"),
+		("tool", "tool.invoke"),
+		("cluster", "cluster.execute"),
+	] {
+		assert_eq!(component(id).action, action);
+	}
+	for operation in aidash_domain::registry::bindings::REQUIRED_TOOLS
+		.iter()
+		.chain(aidash_domain::registry::bindings::DEFAULT_TOOLS)
+	{
+		assert_eq!(
+			component(&format!("aidash.{operation}")).action,
+			"tool.invoke"
+		);
+	}
+	assert_eq!(component("agent").registry_read_allowed, None);
 	assert!(
-		result.rows[1..]
+		result
+			.rows
 			.iter()
-			.all(|r| r.registry_read_allowed == Some(true))
+			.filter(|row| row.reference.id != "agent")
+			.all(|row| row.registry_read_allowed == Some(true))
 	);
-	assert!(result.rows.iter().all(|r| r.effective_for_component));
+	assert!(result.rows.iter().all(|row| row.effective_for_component));
 	assert_eq!(result.requested_capabilities, vec!["capability"]);
 	assert_eq!(result.policy_revision, 3);
 	assert_eq!(result.workspace_read, None);
 	let s = repository.state.lock().unwrap();
 	assert!(!s.active && s.committed);
 	assert_eq!(s.calls.last().map(String::as_str), Some("commit"));
-	assert_eq!(s.evaluations.len(), 9);
+	assert_eq!(s.evaluations.len(), result.rows.len() * 2 - 1);
 	for e in &s.evaluations {
 		assert_eq!(e.subject, "reader");
 		assert_eq!(e.resource.tenant, "tenant");
-		assert_eq!(e.resource.attributes["version"], "1");
+		assert_eq!(e.resource.attributes["version"], "1.0.0");
 		assert_eq!(e.resource.attributes["capabilities"], json!(["capability"]));
 		assert_eq!(e.resource.attributes["tags"], json!(["tag"]));
 		assert_eq!(e.resource.attributes["languages"], json!(["en"]));
 		assert_eq!(
 			e.environment,
-			json!({"workspace_id":null,"node_id":"node","transport":"worker"})
+			json!({"workspace_id":null,"node_id":"aidash://local","transport":"worker"})
 		);
 		if e.resource.id != "agent" {
 			assert_eq!(
 				e.resource.attributes["config"],
-				json!({"fixture":e.resource.id})
+				json!({"fixture":e.resource.id.rsplit("/tools/").next().unwrap().split("@").next().unwrap()})
 			);
 		}
 	}
@@ -336,7 +377,7 @@ async fn workspace_permission_uses_current_owner_and_the_final_action_revision(
 		);
 		assert_eq!(
 			e.environment,
-			json!({"workspace_id":Uuid::from_u128(1),"node_id":"node","transport":"worker"})
+			json!({"workspace_id":Uuid::from_u128(1),"node_id":"aidash://local","transport":"worker"})
 		);
 	}
 }

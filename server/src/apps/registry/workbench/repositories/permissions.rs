@@ -21,6 +21,7 @@ pub(crate) struct Repository<'a> {
 	pub(crate) actor: Actor,
 }
 struct Scope {
+	node: String,
 	tx: Box<dyn TransactionExecutor>,
 	actor: Actor,
 }
@@ -34,6 +35,7 @@ impl PermissionRepository for Repository<'_> {
 	}
 	async fn begin(&self) -> Result<Box<dyn PermissionScope + '_>> {
 		Ok(Box::new(Scope {
+			node: self.runtime.config.node_id.clone(),
 			tx: Box::new(crate::database::native::begin(&self.runtime.store.pool).await?),
 			actor: self.actor.clone(),
 		}))
@@ -41,6 +43,13 @@ impl PermissionRepository for Repository<'_> {
 }
 #[async_trait]
 impl PermissionScope for Scope {
+	async fn bindings(
+		&mut self,
+		entry: &aidash_domain::registry::Entry,
+	) -> aidash_application::Result<aidash_domain::registry::bindings::BindingSnapshot> {
+		let node = self.node.clone();
+		crate::apps::registry::repositories::bindings::preview(&mut *self.tx, &node, entry).await
+	}
 	async fn require_inspection(&mut self, entry: &EntityRef) -> Result<()> {
 		aidash_application::registry::workbench::inspection::require(
 			&mut crate::bootstrap::draft_authority_scope(self.tx.as_mut(), &self.actor),
@@ -58,6 +67,15 @@ impl PermissionScope for Scope {
 		.map_err(Into::into)
 	}
 	async fn catalog_enabled(&mut self, tenant: &str, entry: &EntityRef) -> Result<Option<bool>> {
+		if aidash_application::registry::system::builtin_reference(entry) {
+			crate::apps::registry::repositories::bindings::system_definition(
+				&mut *self.tx,
+				&self.node,
+				entry,
+			)
+			.await?;
+			return Ok(Some(true));
+		}
 		AuthorizationCatalog::enabled_in(self.tx.as_mut(), tenant, entry, true)
 			.await
 			.map_err(Into::into)

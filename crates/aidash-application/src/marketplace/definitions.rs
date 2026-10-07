@@ -12,11 +12,31 @@ pub fn refs(entry: &Entry, node: &str) -> Result<Vec<(EntityRef, String)>> {
 	let mut refs = vec![];
 	match entry.kind.as_str() {
 		"agent" => {
-			let config: AgentConfig = serde_json::from_value(entry.config.clone())?;
+			let config: aidash_domain::registry::bindings::AgentBindings =
+				serde_json::from_value(entry.config.clone())?;
+			config.validate()?;
 			refs.push((config.model, "model".into()));
-			refs.extend(config.tools.into_iter().map(|r| (r, "tool".into())));
-			refs.extend(config.skills.into_iter().map(|r| (r, "skill".into())));
-			refs.extend(config.cluster.into_iter().map(|r| (r, "cluster".into())));
+			refs.extend(
+				config
+					.cluster
+					.into_iter()
+					.map(|reference| (reference, "cluster".into())),
+			);
+			// Only authored edges travel. The receiving Node materializes its
+			// own required/default declarations during registration.
+			for binding in config.bindings {
+				if binding.target.registry_node != node {
+					return Err(Error::Forbidden);
+				}
+				let kind = match binding.kind {
+					aidash_domain::registry::bindings::BindingKind::Tool => "tool",
+					aidash_domain::registry::bindings::BindingKind::Bundle => "bundle",
+					aidash_domain::registry::bindings::BindingKind::Skill => "skill",
+					aidash_domain::registry::bindings::BindingKind::Memory => "memory",
+					aidash_domain::registry::bindings::BindingKind::Source => "source",
+				};
+				refs.push((binding.target.local(), kind.into()));
+			}
 		}
 		"tool" if aidash_domain::tool::legacy_config(&entry.config)?.is_some() => {
 			if let Some(aidash_domain::tool::ToolConfig::Agent { node_id, agent }) =
@@ -194,7 +214,13 @@ pub async fn resolve(
 	// Configuration may tune local behavior, but executable references must
 	// pass through the exact dependency bindings below (including tool kind).
 	let protected: &[&str] = match entry.kind.as_str() {
-		"agent" => &["model", "tools", "skills", "cluster"],
+		"agent" => &[
+			"model",
+			"bindings",
+			"remove_default",
+			"cluster",
+			"schema_version",
+		],
 		"tool" if aidash_domain::tool::legacy_config(&entry.config)?.is_some() => {
 			&["transport", "node_id", "agent"]
 		}
@@ -202,7 +228,8 @@ pub async fn resolve(
 			"registry_node",
 			"provider",
 			"operation",
-			"transport",
+			"tier",
+			"default_alias",
 			"lifecycle",
 		],
 		"bundle" => &["members"],
@@ -214,12 +241,27 @@ pub async fn resolve(
 			"dependency references require bindings, not configuration overrides".into(),
 		));
 	}
+	if entry.kind == "tool"
+		&& aidash_domain::tool::legacy_config(&entry.config)?.is_none()
+		&& let Some(transport) = config.get("transport")
+	{
+		let original = entry.config.get("transport").ok_or(Error::Forbidden)?;
+		// Transport parameters may be configured, while executor edges require
+		// verified dependency substitution and the Provider kind stays pinned.
+		if original.get("transport") != transport.get("transport")
+			|| original.get("transport").and_then(Value::as_str) == Some("agent")
+		{
+			return Err(Error::Invalid(
+				"executor references require dependency bindings".into(),
+			));
+		}
+	}
 	overlay_config(&mut entry.config, config)?;
 	// Frozen bundle qualifiers name the publishing Node. Inspect them there;
 	// only verified dependency substitutions become receiving-Node references.
 	let direct = refs(
 		&entry,
-		if entry.kind == "bundle" {
+		if matches!(entry.kind.as_str(), "bundle" | "agent") {
 			&source.repository
 		} else {
 			node
@@ -300,11 +342,19 @@ pub async fn resolve(
 	// Structural validation never resolves node-local secret references.
 	validation.validate_in(&entry, false)?;
 	if entry.kind == "agent" {
-		validation.agent_prompt_headroom(
-			&serde_json::from_value(entry.config.clone())?,
-			&graph,
-			&Value::Null,
-		)?;
+		let snapshot = crate::registry::bindings::resolve(
+			&mut Bindings { scope, node },
+			validation,
+			aidash_domain::registry::bindings::QualifiedRef {
+				registry_node: node.into(),
+				id: entry.id.clone(),
+				version: entry.version.clone(),
+			},
+			&entry,
+			false,
+		)
+		.await?;
+		validation.bound_prompt_headroom(&snapshot, &Value::Null)?;
 	}
 	Ok((entry, graph.iter().map(reference).collect(), bindings))
 }
@@ -313,18 +363,92 @@ pub async fn private_context(scope: &mut dyn DefinitionScope, entry: &Entry) -> 
 		return Ok(());
 	}
 	let config: AgentConfig = serde_json::from_value(entry.config.clone())?;
-	if config.knowledge_digest.is_some() && entry.installation.is_none() {
-		// Node-local knowledge is not embedded in a package. Its source remains
-		// a separate exact catalog dependency, even when the summary is shared.
-		scope.catalog(&reference(entry), "registry.read").await?;
-	}
-	for attachment in config.reference_attachments {
-		scope
-			.require_reference_read(attachment.reference_id)
+	for binding in config.bindings.iter().filter(|b| {
+		matches!(
+			b.kind,
+			aidash_domain::registry::bindings::BindingKind::Source
+				| aidash_domain::registry::bindings::BindingKind::Memory
+		)
+	}) {
+		let source = scope
+			.catalog(&binding.target.local(), "registry.read")
 			.await?;
+		let context: aidash_domain::registry::bindings::sources::NativeContext =
+			serde_json::from_value(source.config)?;
+		context.validate(&source.kind)?;
+		if let aidash_domain::registry::bindings::sources::NativeSource::ReferenceAttachments {
+			references,
+		} = context.source
+		{
+			for attachment in references {
+				scope
+					.require_reference_read(attachment.reference_id)
+					.await?;
+			}
+		}
 	}
 	Ok(())
 }
 
 #[cfg(test)]
 mod tests;
+
+struct Bindings<'a> {
+	scope: &'a mut dyn DefinitionScope,
+	node: &'a str,
+}
+#[async_trait::async_trait]
+impl crate::ports::bindings::BindingCatalog for Bindings<'_> {
+	async fn definition(
+		&mut self,
+		reference: &aidash_domain::registry::bindings::QualifiedRef,
+	) -> Result<Entry> {
+		if reference.registry_node != self.node {
+			return Err(Error::Forbidden);
+		}
+		local(self.scope, &reference.local()).await
+	}
+	async fn installation(
+		&mut self,
+		projection: &aidash_domain::registry::Projection,
+	) -> Result<()> {
+		if projection.tenant != self.scope.tenant() || projection.contract != 1 {
+			return Err(Error::Forbidden);
+		}
+		let installation = self
+			.scope
+			.installation(&projection.installation)
+			.await?
+			.ok_or(Error::Forbidden)?;
+		if installation.active_revision != Some(projection.revision) {
+			return Err(Error::Forbidden);
+		}
+		let revision = self
+			.scope
+			.revision(&installation.id, projection.revision)
+			.await?;
+		self.scope
+			.catalog(&reference(&revision.entry), "registry.read")
+			.await?;
+		Ok(())
+	}
+	async fn source(&mut self, entry: &Entry) -> Result<()> {
+		if entry.kind == "skill" {
+			return Ok(());
+		}
+		let source: aidash_domain::registry::bindings::sources::NativeContext =
+			serde_json::from_value(entry.config.clone())?;
+		source.validate(&entry.kind)?;
+		if let aidash_domain::registry::bindings::sources::NativeSource::ReferenceAttachments {
+			references,
+		} = source.source
+		{
+			for reference in references {
+				self.scope
+					.require_reference_read(reference.reference_id)
+					.await?;
+			}
+		}
+		Ok(())
+	}
+}

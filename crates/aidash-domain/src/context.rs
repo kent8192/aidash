@@ -14,6 +14,8 @@ pub struct MessageReadCoverage {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Context {
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub source_observation: Option<sources::SourceObservation>,
 	/// Installed before activation and retained through every execution boundary.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub binding_snapshot: Option<Box<crate::registry::bindings::BindingSnapshot>>,
@@ -267,3 +269,5 @@ impl std::fmt::Display for Context {
 use serde::{Deserialize, Serialize};
 
 pub mod observation;
+
+pub mod sources;

@@ -78,10 +78,8 @@ pub async fn prepare(
 	for entry in rows {
 		let source: Source = serde_json::from_value(entry.source.clone())?;
 		if agent_controls.is_some_and(|agent| match &source {
-			Source::Memory { .. } => agent.allow_cross_conversation_memory == Some(false),
-			Source::Artifact { .. } | Source::Message { .. } => {
-				agent.allow_workspace_retrieval == Some(false)
-			}
+			Source::Memory { .. } => !agent.semantic_memory,
+			Source::Artifact { .. } | Source::Message { .. } => !agent.workspace_context,
 		}) {
 			continue;
 		}
@@ -263,9 +261,7 @@ pub async fn context(
 	budget: usize,
 	agent: &AgentConfig,
 ) -> Result<Option<SearchResult>> {
-	if agent.allow_cross_conversation_memory == Some(false)
-		&& agent.allow_workspace_retrieval == Some(false)
-	{
+	if !agent.semantic_memory && !agent.workspace_context {
 		return Ok(None);
 	}
 	let configured = scope.configured(run.workspace_id).await?;
@@ -320,3 +316,43 @@ pub async fn context(
 
 #[cfg(test)]
 mod tests;
+
+/// Reusing observed text still requires its current entry, source and index authority.
+pub async fn recheck(
+	scope: &mut dyn SemanticRetrievalSession,
+	result: &SearchResult,
+) -> Result<()> {
+	scope
+		.workspace(result.workspace_id, "semantic.search")
+		.await?;
+	let index = scope.index(result.workspace_id).await?;
+	if index.revision != result.index_revision {
+		return Err(Error::Conflict("observed semantic index changed".into()));
+	}
+	let entries = scope.candidates(result.workspace_id).await?;
+	for matched in &result.matches {
+		let entry = entries
+			.iter()
+			.find(|entry| {
+				entry.id == matched.entry_id
+					&& entry.revision == matched.revision
+					&& provenance(&entry.source) == matched.source
+			})
+			.ok_or(Error::Forbidden)?;
+		if !scope.permits(entry, "semantic.read").await? {
+			return Err(Error::Forbidden);
+		}
+		if scope
+			.source(
+				result.workspace_id,
+				&serde_json::from_value(entry.source.clone())?,
+			)
+			.await?
+			.as_deref()
+			!= Some(matched.text.as_str())
+		{
+			return Err(Error::Forbidden);
+		}
+	}
+	Ok(())
+}

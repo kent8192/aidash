@@ -158,7 +158,8 @@ class RemoteMemory(Cluster):
             self.tokens.append(credential["token"])
             self.ok(self.api(node, "/api/authorization/acme/peer-mappings", {"source_node": f"aidash://tx-{1-node:02}", "source_tenant": "acme", "source_subject": "alice", "credential_id": credential["credential"]["id"], "enabled": True, "expected_revision": 0}))
             self.register(node, "model", "model", {"provider": "openrouter", "model_id": "fixture", "endpoint": "http://provider:8080/v1", "context_window": 128000, "max_output_tokens": 4096, "modalities": ["text"], "cost": {}})
-            self.register(node, "agent", "research", {"model": {"id": "model", "version": "1.0.0"}, "instructions": "Use approved Home memory", "tools": [], "skills": []})
+            self.register(node, "memory", "home-memory", {"schema_version": 1, "source": {"adapter": "semantic_memory"}})
+            self.register(node, "agent", "research", {"model": {"id": "model", "version": "1.0.0"}, "instructions": "Use approved Home memory", "schema_version": 1, "bindings": [{"kind": "memory", "target": {"registry_node": f"aidash://tx-{node:02}", "id": "home-memory", "version": "1.0.0"}, "narrow": {}}], "remove_default": []})
         self.embedding = {"provider": "openai", "endpoint": "http://provider:8080/v1", "credential_env": "AIDASH_SECRET_TEST_REMOTE_EMBEDDING", "model": "home-vector", "model_version": "1", "dimensions": 3}
         self.register(0, "embedding", "home-embedding", self.embedding)
 

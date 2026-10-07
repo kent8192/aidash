@@ -8,8 +8,7 @@ use aidash_domain::{
 	identity::{Principal, authority::enabled},
 	policy::{Evaluation, Resource},
 	registry::{
-		AgentConfig, EntityRef, Entry, ReferenceDocument,
-		knowledge::digest,
+		EntityRef, Entry, ReferenceDocument,
 		workbench::{Draft, check_content, current_share},
 	},
 };
@@ -111,56 +110,69 @@ pub async fn validate_content(
 	let mut entry: Entry = serde_json::from_value(draft.entry.clone())?;
 	let documents: Vec<ReferenceDocument> = serde_json::from_value(draft.documents.clone())?;
 	check_content(&entry, &documents, &draft.release_notes)?;
-	if !documents.is_empty() {
-		entry.config["knowledge_digest"] = json!(digest(&draft.documents))
-	} else if let Some(config) = entry.config.as_object_mut() {
-		config.remove("knowledge_digest");
-	}
+	let source = if documents.is_empty() {
+		None
+	} else {
+		Some(registry::bindings::private::attach(
+			&mut entry,
+			node,
+			&draft.documents,
+		)?)
+	};
+	let snapshot = if let Some(source) = &source {
+		let mut preview = registry::bindings::private::Preview { scope, source };
+		let mut catalog = registry::bindings::catalog::LookupCatalog {
+			definitions: &mut preview,
+			node,
+		};
+		registry::bindings::resolve(
+			&mut catalog,
+			validation,
+			aidash_domain::registry::bindings::QualifiedRef {
+				registry_node: node.into(),
+				id: entry.id.clone(),
+				version: entry.version.clone(),
+			},
+			&entry,
+			false,
+		)
+		.await?
+	} else {
+		let mut catalog = registry::bindings::catalog::LookupCatalog {
+			definitions: scope,
+			node,
+		};
+		registry::bindings::resolve(
+			&mut catalog,
+			validation,
+			aidash_domain::registry::bindings::QualifiedRef {
+				registry_node: node.into(),
+				id: entry.id.clone(),
+				version: entry.version.clone(),
+			},
+			&entry,
+			false,
+		)
+		.await?
+	};
+	validation.bound_prompt_headroom(&snapshot, &json!({"reference_documents":draft.documents}))?;
 	if let Principal::Subject { subject, .. } = scope.principal() {
-		let config: AgentConfig = serde_json::from_value(entry.config.clone())?;
-		for reference in std::iter::once(&config.model)
-			.chain(config.tools.iter())
-			.chain(config.skills.iter())
-			.chain(config.cluster.iter())
-		{
-			let decision = scope
-				.evaluate(
-					&draft.tenant,
-					&Evaluation {
-						subject: subject.clone(),
-						action: "agent_dependency.read".into(),
-						resource: Resource {
-							tenant: draft.tenant.clone(),
-							kind: "registry_entry".into(),
-							id: ref_key(reference),
-							attributes: json!({"id":reference.id,"version":reference.version}),
-						},
-						environment: json!({}),
-					},
-				)
-				.await?;
+		for dependency in &snapshot.definitions {
+			if dependency.identity.id == entry.id
+				|| source
+					.as_ref()
+					.is_some_and(|s| s.id == dependency.identity.id)
+			{
+				continue;
+			}
+			let reference = dependency.identity.local();
+			let decision = scope.evaluate(&draft.tenant, &Evaluation { subject: subject.clone(), action: "agent_dependency.read".into(), resource: Resource { tenant: draft.tenant.clone(), kind: "registry_entry".into(), id: ref_key(&reference), attributes: json!({"id":reference.id,"version":reference.version,"registry_node":dependency.identity.registry_node}) }, environment: json!({}) }).await?;
 			if !decision.allowed {
 				return Err(Error::Forbidden);
 			}
 		}
 	}
-	registry::validate_references(scope, validation, &entry, node).await?;
-	if !documents.is_empty() {
-		let config: AgentConfig = serde_json::from_value(entry.config.clone())?;
-		let mut references = Vec::new();
-		for reference in std::iter::once(&config.model)
-			.chain(config.tools.iter())
-			.chain(config.skills.iter())
-			.chain(config.cluster.iter())
-		{
-			references.push(registry::effective(scope, &reference.id, &reference.version).await?);
-		}
-		validation.agent_prompt_headroom(
-			&config,
-			&references,
-			&json!({"reference_documents":draft.documents}),
-		)?;
-	}
+	entry.normalize_agent(node)?;
 	Ok(entry)
 }
 #[cfg(test)]

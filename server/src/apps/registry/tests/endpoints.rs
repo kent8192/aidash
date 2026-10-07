@@ -234,7 +234,7 @@ async fn personal_documents_commit_once_and_remain_private_on_public_registry_re
 		.set_header("Idempotency-Key", &Uuid::new_v4().to_string())
 		.await
 		.unwrap();
-	let input = json!({"entry":{"id":"","version":"1.0.0","kind":"agent","name":{"en":"Personal"},"description":{"en":"Private reference test"},"config":{"model":{"id":"personal-model","version":"1.0.0"},"instructions":"Use the attached reference documents."}},"documents":[{"name":"private.txt","media_type":"text/plain","text":"PRIVATE-REFERENCE-ONLY"}]});
+	let input = json!({"entry":{"id":"","version":"1.0.0","kind":"agent","name":{"en":"Personal"},"description":{"en":"Private reference test"},"config":{"model":{"id":"personal-model","version":"1.0.0"},"instructions":"Use the attached reference documents.","schema_version":1,"bindings":[],"remove_default":[]}},"documents":[{"name":"private.txt","media_type":"text/plain","text":"PRIVATE-REFERENCE-ONLY"}]});
 	// Act
 	let created = assert_json(
 		app.operator

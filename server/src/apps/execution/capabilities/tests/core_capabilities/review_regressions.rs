@@ -299,10 +299,11 @@ async fn stale_extraction_credentials_do_not_starve_later_uploads(
 }
 
 #[rstest::fixture]
+#[cfg(feature = "capability-runtime-tests")]
 async fn full_mount_fixture(
-	#[future] capability_fixture: CoreFixture,
+	#[future] runtime_fixture: CoreFixture,
 ) -> (CoreFixture, aidash_server::domain::Run) {
-	let mut c = Box::pin(capability_fixture).await;
+	let mut c = Box::pin(runtime_fixture).await;
 	let run = admit(&c).await;
 	let skills: Value = {
 		let query_bind_1 = run.id;
@@ -333,12 +334,16 @@ async fn full_mount_fixture(
 		.map(|file| file["size"].as_u64().unwrap())
 		.sum();
 	assert!(profile.working_bytes > 1);
+	// The admitted Binding remains exact when runtime availability changes.
+	// These calls must enforce writable capacity before leaving a dispatch intent.
+	profile.runner = None;
 	c.f.store.capabilities = Runtime::new(profile).unwrap();
 	c.app = common::application(c.f.clone()).await;
 	(c, run)
 }
 
 #[rstest::rstest]
+#[cfg(feature = "capability-runtime-tests")]
 #[case(0, "WORKING_QUOTA_EXCEEDED")]
 #[case(1, "RUNTIME_UNAVAILABLE")]
 #[tokio::test]

@@ -26,7 +26,7 @@ async fn grant_request(
 		)
 		.header("authorization", format!("Bearer {token}"))
 		.header("x-aidash-node", node)
-		.header("x-aidash-protocol", "0.1")
+		.header("x-aidash-protocol", "0.2")
 		.header("content-type", "application/json")
 		.body(json!({"grant_id":grant}).to_string())
 		.send()
@@ -89,7 +89,7 @@ async fn durable_grants_bind_both_nodes_and_revalidate_after_restarts_and_revoca
 						))
 						.expr(reinhardt::query::Expr::cust("'http://localhost:1'"))
 						.expr(reinhardt::query::Expr::cust("'AIDASH_SECRET_TEST_PEER'"))
-						.expr(reinhardt::query::Expr::cust("'0.1'"))
+						.expr(reinhardt::query::Expr::cust("'0.2'"))
 						.expr(reinhardt::query::Expr::cust("TRUE"))
 						.to_owned(),
 				)
@@ -104,7 +104,7 @@ async fn durable_grants_bind_both_nodes_and_revalidate_after_restarts_and_revoca
 		node_id: b.config.node_id.clone(),
 		endpoint: b.config.endpoint.clone(),
 		credential_env: "AIDASH_SECRET_TEST_PEER".into(),
-		protocol_version: "0.1".into(),
+		protocol_version: "0.2".into(),
 		enabled: true,
 	})
 	.await
@@ -458,7 +458,7 @@ async fn durable_grants_bind_both_nodes_and_revalidate_after_restarts_and_revoca
 					.expr(reinhardt::query::Expr::cust("'aidash://unrelated'"))
 					.expr(reinhardt::query::Expr::cust("'http://localhost:1'"))
 					.expr(reinhardt::query::Expr::cust("'AIDASH_SECRET_TEST_PEER'"))
-					.expr(reinhardt::query::Expr::cust("'0.1'"))
+					.expr(reinhardt::query::Expr::cust("'0.2'"))
 					.expr(reinhardt::query::Expr::cust("TRUE"))
 					.to_owned(),
 			)

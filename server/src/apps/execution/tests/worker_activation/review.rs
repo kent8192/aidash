@@ -474,7 +474,7 @@ async fn terminal_delivery_drains_a_burst_without_per_run_sleep(
 				"aidash://delivery-home".into(),
 				endpoint.into(),
 				"AIDASH_SECRET_TEST_PEER".into(),
-				"0.1".into(),
+				"0.2".into(),
 				true.into(),
 			])
 			.to_string(PostgresQueryBuilder),

@@ -1341,7 +1341,11 @@ pub(crate) fn remote_command_scope<'a>(
 	runtime: &'a Federation,
 	access: &'a mut crate::authorization::access::Access,
 ) -> crate::apps::identity::repositories::remote_commands::Scope<'a> {
-	crate::apps::identity::repositories::remote_commands::Scope { access, runtime }
+	crate::apps::identity::repositories::remote_commands::Scope {
+		access,
+		runtime,
+		bindings: None,
+	}
 }
 
 pub(crate) fn operation_runner(store: &Store) -> Result<aidash_integrations::runner::RunnerHttp> {

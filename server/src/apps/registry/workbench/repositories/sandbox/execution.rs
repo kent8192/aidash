@@ -69,6 +69,55 @@ impl ExecutionRepository for Repository {
 }
 #[async_trait]
 impl ExecutionScope for Scope {
+	async fn bindings(
+		&mut self,
+		draft: &Draft,
+		entry: &Entry,
+	) -> Result<aidash_domain::registry::bindings::BindingSnapshot> {
+		let mut lookup = super::super::authority::Scope {
+			tx: &mut *self.tx,
+			actor: &self.actor,
+		};
+		let source = if draft
+			.documents
+			.as_array()
+			.is_some_and(|docs| !docs.is_empty())
+		{
+			let mut raw: Entry = serde_json::from_value(draft.entry.clone())?;
+			Some(aidash_application::registry::bindings::private::attach(
+				&mut raw,
+				&self.node_id,
+				&draft.documents,
+			)?)
+		} else {
+			None
+		};
+		let definitions: &mut dyn aidash_application::ports::registry::DefinitionLookup =
+			if let Some(source) = &source {
+				&mut aidash_application::registry::bindings::private::Preview {
+					scope: &mut lookup,
+					source,
+				}
+			} else {
+				&mut lookup
+			};
+		aidash_application::registry::bindings::resolve(
+			&mut aidash_application::registry::bindings::catalog::LookupCatalog {
+				definitions,
+				node: &self.node_id,
+			},
+			&crate::bootstrap::registry_validation(),
+			aidash_domain::registry::bindings::QualifiedRef {
+				registry_node: self.node_id.clone(),
+				id: entry.id.clone(),
+				version: entry.version.clone(),
+			},
+			entry,
+			false,
+		)
+		.await
+	}
+
 	async fn validate_content(&mut self, draft: &Draft) -> Result<Entry> {
 		aidash_application::registry::workbench::validate_content(
 			&mut crate::bootstrap::draft_authority_scope(&mut self.tx, &self.actor),

@@ -79,10 +79,32 @@ let created_by_grant: bool = { let query_bind_1 = grant; let query_bind_2 = chil
 		let result: NativeResult<Applied> = async {
 			let store = &self.runtime.store;
 			let (value, output_id) = match effect {
+				Effect::HumanRequest { kind, prompt } => {
+					let grant = self.access.read_grant.ok_or(crate::Error::Forbidden)?;
+					let request = super::humans::create(
+						&mut **self.access.tx,
+						grant,
+						admission,
+						task.workspace_id,
+						kind,
+						prompt,
+						key,
+					)
+					.await?;
+					store
+						.event(
+							&mut self.access.tx,
+							Some(task.workspace_id),
+							"task.remote_human_requested",
+							json!({"task_id":task.id,"grant_id":grant,"request_id":request.id,"execution_node":owner}),
+						)
+						.await?;
+					(json!(request), None)
+				}
 				Effect::Claim { revision, agent } => (
 					json!(
 						store
-							.claim_in(&mut self.access.tx, task, revision, owner, agent)
+							.claim_in(&mut self.access.tx, task, revision, owner, agent, None)
 							.await?
 					),
 					None,
@@ -326,6 +348,34 @@ let created_by_grant: bool = { let query_bind_1 = grant; let query_bind_2 = chil
 		}
 		.await;
 		result.map_err(Into::into)
+	}
+	async fn human_read(
+		&mut self,
+		grant: Uuid,
+		admission: Uuid,
+		id: Uuid,
+	) -> Result<aidash_domain::HumanRequest> {
+		let requests = super::humans::read(&mut **self.access.tx, grant, false).await?;
+		let request = requests
+			.into_iter()
+			.find(|r| r.id == id && r.run_id == admission)
+			.ok_or(aidash_application::Error::Forbidden)?;
+		let binding = crate::authorization::remote::execution::binding(self.access, grant)
+			.await?
+			.ok_or(aidash_application::Error::Forbidden)?;
+		let task = self.access.task_read(binding.task_id).await?;
+		let resource = self.access.task_resource(&task).await?;
+		self.access
+			.require(
+				&self.access.resource(
+					"human_request",
+					format!("{}/human_requests/{id}", self.access.node_id),
+					resource.attributes,
+				),
+				"human.read",
+			)
+			.await?;
+		Ok(request)
 	}
 	async fn history(
 		&mut self,

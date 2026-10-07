@@ -376,7 +376,7 @@ async fn registry_workspace_task_execution_and_artifact_commit_together_once(
 	let Some((a, b, mut manifest, wa, _wb)) = Box::pin(pair).await else {
 		return;
 	};
-	let agent:Entry=serde_json::from_value(json!({"id":"executor","version":"1.0.0","kind":"agent","name":{"en":"Executor"},"description":{"en":"Atomic fixture"},"config":{"model":{"id":"fixture","version":"1.0.0"},"instructions":"Atomic execution","tools":[],"skills":[]}})).unwrap();
+	let agent:Entry=serde_json::from_value(json!({"id":"executor","version":"1.0.0","kind":"agent","name":{"en":"Executor"},"description":{"en":"Atomic fixture"},"config":{"model":{"id":"fixture","version":"1.0.0"},"instructions":"Atomic execution","schema_version":1,"bindings":[],"remove_default":[]}})).unwrap();
 	let owner = qualified_agent(&b.f.config.node_id, &agent.id, &agent.version);
 	let task =
 		a.f.store
@@ -411,6 +411,7 @@ async fn registry_workspace_task_execution_and_artifact_commit_together_once(
 		.agent_id(&agent.id)
 		.agent_version(&agent.version)
 		.delivered(true)
+		.human_requests(json!([]).into())
 		.finish();
 	Delegation::objects()
 		.create_with_conn(&mut a.database.lease.handle(), &delegation)

@@ -18,6 +18,8 @@ pub struct AuthorizationRemoteExecution {
 	pub task_revision: i64,
 	#[field]
 	pub initial_task: Json<Value>,
+	#[field]
+	pub human_requests: Json<Value>,
 	#[field(auto_now_add = true)]
 	pub created_at: DateTime<Utc>,
 }

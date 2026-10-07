@@ -62,7 +62,7 @@ pub async fn persist_peer(app: &EndpointFixture, node: &str, url: &str) {
 		.node_id(node)
 		.endpoint(url)
 		.credential_env(PEER_ENV)
-		.protocol_version("0.1")
+		.protocol_version("0.2")
 		.enabled(true)
 		.finish();
 	Peer::objects()

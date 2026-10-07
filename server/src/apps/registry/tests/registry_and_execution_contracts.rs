@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 use uuid::Uuid;
 
 fn tool(id: &str) -> Entry {
-	serde_json::from_value(json!({"id":id,"version":"1.0.0","kind":"tool","name":{"en":id},"description":{"en":"review regression"},"config":{"transport":"http","endpoint":"http://127.0.0.1:9/original","credential_env":null,"replay":"read_only"}})).unwrap()
+	serde_json::from_value(json!({"id":id,"version":"1.0.0","kind":"tool","name":{"en":id},"description":{"en":"review regression"},"config":{"registry_node":"aidash://execution-test","provider":"integration.http@1","operation":"invoke","default_alias":"plugin_0","tier":"integration","transport":{"transport":"http","endpoint":"http://127.0.0.1:9/original","credential_env":null,"replay":"read_only"}}})).unwrap()
 }
 
 async fn register_keyed(
@@ -333,7 +333,7 @@ async fn ancestor_dependencies_and_invalid_local_executor_are_rejected(
 		json!({"id":"missing","version":"latest"}),
 		json!({"id":"missing","version":"1.0.0"}),
 	] {
-		entry.config = json!({"transport":"agent","node_id":f.config.node_id,"agent":agent});
+		entry.config = json!({"registry_node":f.config.node_id,"provider":"integration.agent@1","operation":"invoke","default_alias":"delegate","tier":"integration","transport":{"transport":"agent","node_id":f.config.node_id,"agent":agent}});
 		assert_ne!(
 			request(
 				&app,
@@ -601,7 +601,7 @@ async fn scoped_run_details_keep_memory_home_namespace(
 fn agent_versions_fit_the_authorization_identity_limit() {
 	let mut entry = tool(&"a".repeat(100));
 	entry.kind = "agent".into();
-	entry.config = json!({"model":{"id":"model","version":"1.0.0"},"instructions":"test"});
+	entry.config = json!({"model":{"id":"model","version":"1.0.0"},"instructions":"test","schema_version":1,"bindings":[],"remove_default":[]});
 	entry.version = format!("1.0.0+{}", "x".repeat(33));
 	aidash_server::registry::validate(&entry).unwrap();
 	entry.version.push('x');
@@ -651,7 +651,7 @@ async fn mesh_rejects_a_peer_substituting_another_node_identity(
 				IntoValue::into_value("aidash://expected"),
 				IntoValue::into_value(endpoint),
 				IntoValue::into_value("AIDASH_SECRET_TEST_PEER"),
-				IntoValue::into_value("0.1"),
+				IntoValue::into_value("0.2"),
 				IntoValue::into_value(true),
 			])
 			.to_string(PostgresQueryBuilder),
@@ -703,14 +703,17 @@ async fn oversized_agent_instructions_skills_and_tools_are_rejected_at_registrat
 	for source in ["instructions", "skills", "tools"] {
 		let mut agent = f.registry.get("research", "1.0.0").await.unwrap();
 		agent.id = format!("oversized-{source}");
-		agent.config[source] = match source {
-			"instructions" => json!("x".repeat(128000)),
-			"skills" => json!([
-				{"id":"large-skill","version":"1.0.0"},
-				{"id":"large-skill-second","version":"1.0.0"}
-			]),
-			_ => json!([{"id":"large-schema","version":"1.0.0"}]),
-		};
+		agent.binding_normalization = None;
+		if source == "instructions" {
+			agent.config["instructions"] = json!("x".repeat(128000));
+		} else {
+			let (kind, ids) = if source == "skills" {
+				("skill", vec!["large-skill", "large-skill-second"])
+			} else {
+				("tool", vec!["large-schema"])
+			};
+			agent.config["bindings"] = json!(ids.into_iter().map(|id| json!({"kind":kind,"target":{"registry_node":f.config.node_id,"id":id,"version":"1.0.0"},"narrow":{}})).collect::<Vec<_>>());
+		}
 		assert!(f.registry.register(agent.clone()).await.is_err());
 		assert_eq!(
 			request(
@@ -851,7 +854,7 @@ async fn registry_replays_emit_once_and_disabled_peers_can_lose_trust(
 				IntoValue::into_value("aidash://disabled"),
 				IntoValue::into_value("http://127.0.0.1:9"),
 				IntoValue::into_value("AIDASH_SECRET_TEST_PEER"),
-				IntoValue::into_value("0.1"),
+				IntoValue::into_value("0.2"),
 				IntoValue::into_value(false),
 			])
 			.to_string(PostgresQueryBuilder),

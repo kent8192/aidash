@@ -273,6 +273,56 @@ pub struct Home {
 }
 
 impl Home {
+	pub async fn human_request(&self, kind: &str, prompt: &str, key: &str) -> Result<HumanRequest> {
+		if self.local() {
+			let run = self.execution.as_ref().ok_or(Error::Forbidden)?;
+			self.federation
+				.store
+				.human_request(run, kind, prompt, key)
+				.await
+		} else {
+			let request: HumanRequest = self
+				.command(
+					"human_request",
+					json!({"run_id":self.run.id,"kind":kind,"prompt":prompt,"key":key}),
+				)
+				.await?;
+			if crate::authorization::peer::admission::run_grant(&self.federation.store, &self.run)
+				.await?
+				.is_none()
+			{
+				self.federation
+					.store
+					.cache_home_human(
+						self.execution.as_ref().ok_or(Error::Forbidden)?,
+						&request,
+						key,
+					)
+					.await?;
+			}
+			Ok(request)
+		}
+	}
+	pub async fn human_request_by_id(&self, id: Uuid) -> Result<HumanRequest> {
+		if self.local() {
+			self.federation.store.human_request_by_id(id).await
+		} else {
+			self.command("human_read", json!({"run_id":self.run.id,"id":id}))
+				.await
+		}
+	}
+	pub(crate) async fn answer_home_human(
+		&self,
+		id: Uuid,
+		response: Value,
+	) -> Result<HumanRequest> {
+		self.command(
+			"human_answer",
+			json!({"run_id":self.run.id,"id":id,"response":response}),
+		)
+		.await
+	}
+
 	pub fn new(federation: Federation, run: Run) -> Self {
 		Self {
 			federation,

@@ -269,6 +269,22 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 			"application/json",
 		)?;
 	contracts.path(document, views::remote_execution::list, &["Uuid"])?;
+	contracts.response::<_, aidash_domain::HumanRequest>(
+		document,
+		views::remote_execution::answer_human,
+		200,
+		"application/json",
+	)?;
+	contracts
+		.request::<_, crate::apps::identity::serializers::remote_execution::RemoteHumanAnswer>(
+			document,
+			views::remote_execution::answer_human,
+		)?;
+	contracts.path(
+		document,
+		views::remote_execution::answer_human,
+		&["Uuid", "Uuid"],
+	)?;
 	contracts
 		.response::<_, crate::apps::identity::serializers::remote_execution::RemoteExecutionActivation>(
 			document,

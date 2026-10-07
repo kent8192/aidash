@@ -1,6 +1,7 @@
 use super::*;
 use crate::ports::registry::DefinitionLookup;
 use aidash_domain::policy::{Decision, PolicyBundle};
+use aidash_domain::registry::knowledge::digest;
 use async_trait::async_trait;
 use rstest::{fixture, rstest};
 use serde_json::Value;

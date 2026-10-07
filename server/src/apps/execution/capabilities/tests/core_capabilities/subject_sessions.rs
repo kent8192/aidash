@@ -230,6 +230,7 @@ async fn delegated_thread_child(#[future] shared_thread: SharedThread) -> (Share
 	let mut f = Box::pin(shared_thread).await;
 	let mut entry = f.c.f.registry.get("research", "1.1.0").await.unwrap();
 	entry.id = "reviewer".into();
+	entry.binding_normalization = None;
 	assert_eq!(
 		request(
 			&f.c.app,

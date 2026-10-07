@@ -13,6 +13,7 @@ fn reference(id: &str) -> QualifiedRef {
 }
 fn entry(id: &str, kind: &str, config: Value) -> Entry {
 	Entry {
+		binding_normalization: None,
 		installation: None,
 		id: id.into(),
 		version: "1.0.0".into(),
@@ -339,6 +340,7 @@ async fn recovered_remote_snapshots_preserve_exclusions_and_provider_evidence_at
 
 	let mut run = admitted_run().await;
 	run.context.binding_snapshot = None;
+	run.home_node = "aidash://home".into();
 	run.bind(recovered).unwrap();
 	let live = Arc::new(Live::new());
 	let resolver = execution::PinnedResolver {
@@ -1071,4 +1073,29 @@ async fn bundle_selection_rejects_same_id_on_different_nodes_or_versions() {
 		});
 		assert!(snapshot(&mut catalog, &config, false).await.is_err());
 	}
+}
+
+#[tokio::test]
+async fn remote_registry_skill_reader_does_not_require_a_native_working_area() {
+	let mut catalog = Catalog::new();
+	let mut config = agent_config();
+	catalog.insert(entry(
+		"memory",
+		"memory",
+		json!({"schema_version":1,"source":{"adapter":"semantic_memory"}}),
+	));
+	config.bindings.push(Binding {
+		kind: BindingKind::Memory,
+		target: reference("memory"),
+		alias: None,
+		narrow: Default::default(),
+		members: vec![],
+	});
+	let admitted = snapshot(&mut catalog, &config, true).await.unwrap();
+	assert!(admitted.operation("skill_read").is_ok());
+	let settings = aidash_domain::registry::AgentConfig::from_snapshot(&admitted).unwrap();
+	assert!(settings.semantic_memory);
+	assert!(!settings.needs_context_authority());
+	assert!(!settings.core_capabilities.files);
+	assert!(!settings.core_capabilities.skills);
 }

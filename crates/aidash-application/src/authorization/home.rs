@@ -248,10 +248,37 @@ pub async fn list<R: HomeRepository>(repository: &R, task: Uuid) -> Result<Vec<S
 				}
 			}
 		}
+		let requests = tokio::time::timeout_at(deadline, async {
+			let mut scope = repository.begin().await?;
+			let result = async {
+				scope
+					.requester_grant(task, grant.id)
+					.await?
+					.ok_or(Error::Forbidden)?;
+				match scope.binding(grant.id).await? {
+					Some(bound) => scope.human_requests(grant.id, bound.admission_id).await,
+					None => Ok(vec![]),
+				}
+			}
+			.await;
+			finish(scope, result).await
+		})
+		.await;
+		let human_requests = match requests {
+			Ok(result) => result?,
+			Err(_) => {
+				status = Err(Error::External("remote status unavailable".into()));
+				if !binding.disabled() {
+					reason = Some(Failure::Unavailable);
+				}
+				vec![]
+			}
+		};
 		let semantic = repository
 			.semantic_status(grant.id, &binding, reason)
 			.await?;
 		Ok(Status {
+			human_requests,
 			semantic,
 			grant: grant.prepared()?,
 			unavailable: status.is_err(),
@@ -431,3 +458,30 @@ pub async fn provenance<R: HomeRepository>(
 }
 #[cfg(test)]
 mod tests;
+
+pub async fn answer_human<R: HomeRepository>(
+	repository: &R,
+	task: Uuid,
+	grant: Uuid,
+	id: Uuid,
+	response: serde_json::Value,
+) -> Result<aidash_domain::HumanRequest> {
+	subject(repository)?;
+	let mut scope = repository.begin().await?;
+	let result = async {
+		managed_task(&mut scope, task, true).await?;
+		let current = scope
+			.requester_grant(task, grant)
+			.await?
+			.ok_or(Error::Forbidden)?;
+		if current.revoked || current.expires_at <= chrono::Utc::now() {
+			return Err(Error::Forbidden);
+		}
+		let bound = scope.binding(grant).await?.ok_or(Error::Forbidden)?;
+		scope
+			.answer_human(grant, bound.admission_id, id, response)
+			.await
+	}
+	.await;
+	finish(scope, result).await
+}

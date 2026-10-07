@@ -32,7 +32,7 @@ pub async fn settings(scope: &mut dyn FileScopePort, run: &RunMetadata) -> Resul
 		)
 		.await?;
 	scope.check_pinned(&entry).await?;
-	Ok(serde_json::from_value(entry.config)?)
+	Ok(AgentConfig::from_snapshot(scope.binding_snapshot()?)?)
 }
 pub async fn output_file(
 	scope: &mut dyn FileScopePort,
@@ -63,13 +63,19 @@ pub async fn invoke(
 	input: Value,
 	key: &str,
 ) -> Result<Envelope> {
-	let config = settings(scope, run).await?;
-	if !config.core_capabilities.permits(name) {
-		return Err(Error::Forbidden);
-	}
+	settings(scope, run).await?;
+	scope.binding_snapshot()?.operation(name)?;
 	scope
 		.require(
-			&scope.resource("tool", &format!("builtin:{name}"), json!({})),
+			&scope.resource(
+				"tool",
+				&scope
+					.binding_snapshot()?
+					.operation(name)?
+					.identity
+					.resource_id(),
+				json!({}),
+			),
 			"tool.invoke",
 		)
 		.await?;

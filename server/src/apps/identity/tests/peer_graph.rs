@@ -45,7 +45,7 @@ async fn graph_custom(
 				.uri("/federation/v0.1/scoped/graph")
 				.header("authorization", format!("Bearer {token}"))
 				.header("x-aidash-node", SOURCE)
-				.header("x-aidash-protocol", "0.1")
+				.header("x-aidash-protocol", "0.2")
 				.header("content-type", "application/json")
 				.body(Body::from(payload.to_string()))
 				.unwrap(),
@@ -91,7 +91,7 @@ async fn add_peer(f: &aidash_server::federation::Federation, node: &str) {
 							"(?)".to_owned(),
 							vec![Expr::value(query_bind_2.to_owned()).into()],
 						))
-						.expr(reinhardt::query::Expr::cust("'0.1'"))
+						.expr(reinhardt::query::Expr::cust("'0.2'"))
 						.expr(reinhardt::query::Expr::cust("TRUE"))
 						.to_owned(),
 				)

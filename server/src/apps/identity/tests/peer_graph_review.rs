@@ -30,7 +30,7 @@ async fn project(app: &common::TestApplication, viewer: Value, options: Value) -
 				.uri("/federation/v0.1/scoped/graph")
 				.header("authorization", format!("Bearer {token}"))
 				.header("x-aidash-node", SOURCE)
-				.header("x-aidash-protocol", "0.1")
+				.header("x-aidash-protocol", "0.2")
 				.header("content-type", "application/json")
 				.body(Body::from(input.to_string()))
 				.unwrap(),
@@ -85,7 +85,7 @@ async fn viewer(f: &Federation, app: &common::TestApplication) -> (Value, Uuid) 
 						))
 						.expr(Expr::cust("'http://localhost:1'"))
 						.expr(Expr::cust("'AIDASH_SECRET_TEST_PEER'"))
-						.expr(Expr::cust("'0.1'"))
+						.expr(Expr::cust("'0.2'"))
 						.expr(Expr::cust("TRUE"))
 						.to_owned(),
 				)

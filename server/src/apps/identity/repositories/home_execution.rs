@@ -120,6 +120,75 @@ impl HomeScope for Scope {
 		.await;
 		result.map_err(Into::into)
 	}
+	async fn human_requests(
+		&mut self,
+		grant: Uuid,
+		admission: Uuid,
+	) -> Result<Vec<aidash_domain::HumanRequest>> {
+		let binding = binding(&mut self.access, grant)
+			.await?
+			.ok_or(aidash_application::Error::Forbidden)?;
+		if binding.admission_id != admission {
+			return Err(aidash_application::Error::Forbidden);
+		}
+		let task = self.access.task_read(binding.task_id).await?;
+		let resource = self.access.task_resource(&task).await?;
+		let mut visible = vec![];
+		for request in
+			super::remote_commands::humans::read(&mut **self.access.tx, grant, false).await?
+		{
+			if request.run_id != admission || request.workspace_id != task.workspace_id {
+				return Err(aidash_application::Error::Forbidden);
+			}
+			let human = self.access.resource(
+				"human_request",
+				format!("{}/human_requests/{}", self.access.node_id, request.id),
+				resource.attributes.clone(),
+			);
+			if self.access.decide(&human, "human.read").await? {
+				visible.push(request);
+			}
+		}
+		Ok(visible)
+	}
+	async fn answer_human(
+		&mut self,
+		grant: Uuid,
+		admission: Uuid,
+		id: Uuid,
+		response: Value,
+	) -> Result<aidash_domain::HumanRequest> {
+		let requests = self.human_requests(grant, admission).await?;
+		let request = requests
+			.into_iter()
+			.find(|r| r.id == id)
+			.ok_or(aidash_application::Error::Forbidden)?;
+		let bound = binding(&mut self.access, grant)
+			.await?
+			.ok_or(aidash_application::Error::Forbidden)?;
+		let task = self.access.task_read(bound.task_id).await?;
+		let resource = self.access.task_resource(&task).await?;
+		self.access
+			.require(
+				&self.access.resource(
+					"human_request",
+					format!("{}/human_requests/{}", self.access.node_id, request.id),
+					resource.attributes,
+				),
+				"human.answer",
+			)
+			.await?;
+		super::remote_commands::humans::answer(
+			&mut **self.access.tx,
+			grant,
+			admission,
+			id,
+			response,
+			&self.access.identity.subject,
+		)
+		.await
+		.map_err(Into::into)
+	}
 	async fn requester_grant(&mut self, task: Uuid, id: Uuid) -> Result<Option<Grant>> {
 		let result: NativeResult<Option<GrantRow>> = async {
 			let identity = self.access.identity.clone();

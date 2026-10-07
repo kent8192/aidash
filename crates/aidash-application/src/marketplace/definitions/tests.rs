@@ -20,7 +20,7 @@ fn agent(id: &str) -> Entry {
 	entry(
 		id,
 		"agent",
-		json!({"model":r("model"),"instructions":"Fixture","tools":[r("tool")],"cluster":null}),
+		json!({"schema_version":1,"model":r("model"),"instructions":"Fixture","bindings":[crate::test_support::binding("tool","aidash://local","tool")],"remove_default":aidash_domain::registry::bindings::DEFAULT_TOOLS,"cluster":null}),
 	)
 }
 #[derive(Default)]
@@ -105,10 +105,24 @@ fn graph() -> Fixture {
 				entry(
 					"tool",
 					"tool",
-					json!({"registry_node":"aidash://local","provider":"integration.agent@1","operation":"invoke","default_alias":"delegate","tier":"integration","transport":{"transport":"agent","node_id":"local","agent":r("agent")}}),
+					json!({"registry_node":"aidash://local","provider":"integration.agent@1","operation":"invoke","default_alias":"delegate","tier":"integration","transport":{"transport":"agent","node_id":"aidash://local","agent":r("agent")}}),
 				),
 			),
 			("model".into(), entry("model", "model", json!({}))),
+			(
+				"aidash.workspace_read".into(),
+				crate::test_support::builtin_entries("aidash://local")
+					.into_iter()
+					.find(|e| e.id == "aidash.workspace_read")
+					.unwrap(),
+			),
+			(
+				"aidash.human_request".into(),
+				crate::test_support::builtin_entries("aidash://local")
+					.into_iter()
+					.find(|e| e.id == "aidash.human_request")
+					.unwrap(),
+			),
 		]),
 		..Default::default()
 	}
@@ -117,9 +131,13 @@ fn graph() -> Fixture {
 #[tokio::test]
 async fn cycle_traversal_rechecks_authority_but_returns_each_definition_once() {
 	let mut scope = graph();
-	let entries = local_graph(&mut scope, vec![(r("agent"), "agent".into())], "local")
-		.await
-		.unwrap();
+	let entries = local_graph(
+		&mut scope,
+		vec![(r("agent"), "agent".into())],
+		"aidash://local",
+	)
+	.await
+	.unwrap();
 	assert_eq!(
 		entries.iter().map(|e| e.id.as_str()).collect::<Vec<_>>(),
 		vec!["agent", "tool", "model"]
@@ -144,7 +162,12 @@ async fn hidden_transitive_dependency_prevents_a_partial_graph() {
 	let mut scope = graph();
 	scope.denied = Some("registry.read:tool".into());
 	assert!(matches!(
-		local_graph(&mut scope, vec![(r("agent"), "agent".into())], "local").await,
+		local_graph(
+			&mut scope,
+			vec![(r("agent"), "agent".into())],
+			"aidash://local"
+		)
+		.await,
 		Err(Error::Forbidden)
 	));
 	assert_eq!(
@@ -164,7 +187,7 @@ async fn publication_checks_export_before_disclosing_dependency_content() {
 	scope.denied = Some("registry.export:tool".into());
 	let root = entry("root", "cluster", json!({"coordinator":r("agent")}));
 	assert!(matches!(
-		publication_graph(&mut scope, &root, &[], "local").await,
+		publication_graph(&mut scope, &root, &[], "aidash://local").await,
 		Err(Error::Forbidden)
 	));
 	assert_eq!(

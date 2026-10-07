@@ -51,5 +51,9 @@ pub trait BindingResolver: Send + Sync {
 /// revision or revokes it by itself.
 #[async_trait]
 pub trait BindingAuthority: Send + Sync {
+	/// Acquire current authority once per assembly or invocation boundary.
+	async fn refresh(&self, _run: &Run) -> Result<()> {
+		Ok(())
+	}
 	async fn check(&self, run: &Run, binding: &ResolvedBinding) -> Result<()>;
 }

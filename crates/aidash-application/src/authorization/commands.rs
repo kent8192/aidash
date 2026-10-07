@@ -44,6 +44,9 @@ pub async fn prepare(scope: &mut dyn RemoteCommandScope, input: Command<'_>) -> 
 	let task = scope.task(bound.task_id).await?;
 	let owner = qualified_agent(input.node, input.agent, input.version);
 	let metadata = commands::prepare(input.operation, input.data)?;
+	if let Some(tool) = commands::builtin(input.operation) {
+		scope.require_builtin(tool).await?;
+	}
 	if metadata.mutation {
 		if let Some((old, result)) = scope
 			.previous(input.grant_id, &metadata.request_key)
@@ -71,9 +74,6 @@ pub async fn prepare(scope: &mut dyn RemoteCommandScope, input: Command<'_>) -> 
 	}
 	let key = format!("scoped:{}:{}", input.grant_id, metadata.request_key);
 	let task_resource = scope.task_resource(&task).await?;
-	if let Some(tool) = commands::builtin(input.operation) {
-		scope.require_builtin(tool).await?;
-	}
 	Ok(Admission::Ready(Box::new(Prepared {
 		task,
 		owner,

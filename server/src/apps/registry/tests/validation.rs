@@ -311,8 +311,7 @@ async fn installed_agent_overrides_require_live_model_references(
 	);
 	skill["id"] = json!("installed-agent");
 	skill["kind"] = json!("agent");
-	skill["config"] =
-		json!({"model":{"id":"validation-model","version":"1.0.0"},"instructions":"Work"});
+	skill["config"] = json!({"model":{"id":"validation-model","version":"1.0.0"},"instructions":"Work","schema_version":1,"bindings":[],"remove_default":[]});
 	let package = json!({"entity":skill,"author":"Fixture","permissions":[],"dependencies":[]});
 	let published = assert_json(
 		app.operator

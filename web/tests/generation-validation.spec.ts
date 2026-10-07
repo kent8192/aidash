@@ -127,7 +127,12 @@ test("generation policy requires instructions unless a Skill is selected", async
   );
   expect(savedPolicy).toBeUndefined();
 
-  await dialog.locator('[name="skills"]').selectOption("fixture-skill@1.0.0");
+  await dialog
+    .getByLabel("追加する定義")
+    .selectOption("skill:fixture-skill@1.0.0");
+  await dialog
+    .getByRole("button", { name: "Bindingを追加", exact: true })
+    .click();
   await dialog.getByLabel("追加の指示（任意）", { exact: true }).fill("");
   await dialog.getByRole("button", { name: "保存", exact: true }).click();
   await expect(dialog).toHaveCount(0);
@@ -136,7 +141,18 @@ test("generation policy requires instructions unless a Skill is selected", async
       template: {
         config: {
           instructions: "",
-          skills: [{ id: "fixture-skill", version: "1.0.0" }],
+          schema_version: 1,
+          bindings: [
+            {
+              kind: "skill",
+              target: {
+                registry_node: "aidash://test",
+                id: "fixture-skill",
+                version: "1.0.0",
+              },
+              narrow: {},
+            },
+          ],
         },
       },
     },

@@ -11,6 +11,10 @@ use uuid::Uuid;
 
 #[async_trait]
 pub trait GenerationActivationScope: GenerationPublication {
+	async fn bindings(
+		&mut self,
+		entry: &aidash_domain::registry::Entry,
+	) -> Result<aidash_domain::registry::bindings::BindingSnapshot>;
 	fn now(&self) -> DateTime<Utc>;
 	fn replace_subjects(&mut self, subjects: Vec<String>);
 	async fn load(&mut self, tenant: &str, id: Uuid) -> Result<Request>;

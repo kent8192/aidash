@@ -5,7 +5,6 @@ use crate::{
 	registry::AgentConfig,
 	registry::Registry,
 	store::Store,
-	tool::{PluginTool, Tool, ToolConfig, ToolContext, builtins},
 };
 use aidash_application::{
 	Result,
@@ -14,18 +13,22 @@ use aidash_application::{
 use aidash_domain::{
 	media::Selection,
 	model::ModelConfig,
-	provider::{ContentPart, ModelRequest, ModelResponse, ToolCall, ToolSpec},
+	provider::{ContentPart, ModelRequest, ModelResponse, ToolCall},
 	registry::Entry,
 	semantic::InputRead,
 	*,
 };
 use async_trait::async_trait;
 use serde_json::Value;
-use std::{collections::BTreeMap, sync::Arc};
+use std::sync::Arc;
 use uuid::Uuid;
 
 #[async_trait]
 impl ExecutionStore for Store {
+	async fn observe_sources(&self, run: &mut Run, token: Uuid) -> Result<()> {
+		*run = Store::save_run(self, run, token, "run.sources_observed").await?;
+		Ok(())
+	}
 	async fn save_run(&self, run: &Run, token: Uuid, event: &str) -> Result<()> {
 		Store::save_run(self, run, token, event)
 			.await
@@ -117,9 +120,23 @@ impl ExecutionStore for Store {
 #[async_trait]
 impl ExecutionCatalog for Registry {
 	async fn get_for_run(&self, run: &Run, id: &str, version: &str) -> Result<Entry> {
-		Registry::get_for_run(self, run, id, version)
-			.await
-			.map_err(Into::into)
+		let snapshot = run.context.binding_snapshot.as_ref().ok_or_else(|| {
+			aidash_application::Error::Invalid("Run has no admitted Binding snapshot".into())
+		})?;
+		snapshot
+			.definitions
+			.iter()
+			.find(|d| {
+				d.identity.id == id
+					&& d.identity.version == version
+					&& d.identity.registry_node == snapshot.agent.registry_node
+			})
+			.map(|d| d.definition.clone())
+			.ok_or_else(|| {
+				aidash_application::Error::Invalid(
+					"definition is outside the admitted Run closure".into(),
+				)
+			})
 	}
 	fn skill_instructions(&self, entry: &Entry) -> Result<String> {
 		crate::registry::skill_instructions(entry).map_err(Into::into)
@@ -133,6 +150,22 @@ struct NativeHome(Home);
 
 #[async_trait]
 impl ExecutionHome for NativeHome {
+	async fn human_request(
+		&self,
+		_: &Run,
+		kind: &str,
+		prompt: &str,
+		key: &str,
+	) -> Result<HumanRequest> {
+		self.0
+			.human_request(kind, prompt, key)
+			.await
+			.map_err(Into::into)
+	}
+	async fn human_request_by_id(&self, id: Uuid) -> Result<HumanRequest> {
+		self.0.human_request_by_id(id).await.map_err(Into::into)
+	}
+
 	async fn task(&self) -> Result<Task> {
 		Home::task(&self.0).await.map_err(Into::into)
 	}
@@ -210,37 +243,6 @@ impl ExecutionHome for NativeHome {
 	}
 }
 
-struct NativeTool {
-	tool: Arc<dyn Tool>,
-	home: Home,
-	store: Store,
-}
-#[async_trait]
-impl ExecutionTool for NativeTool {
-	fn contract(&self) -> aidash_domain::tool::ToolContract {
-		self.tool.contract()
-	}
-	fn specification(&self) -> ToolSpec {
-		self.tool.specification()
-	}
-	fn replay_safe(&self) -> bool {
-		self.tool.replay_safe()
-	}
-	async fn invoke(&self, run: &Run, input: Value, key: &str) -> Result<Value> {
-		self.tool
-			.invoke(
-				&ToolContext {
-					home: self.home.clone(),
-					store: self.store.clone(),
-					run: run.clone(),
-				},
-				input,
-				key,
-			)
-			.await
-			.map_err(Into::into)
-	}
-}
 struct Reservation(crate::generation::budget::InferenceReservation);
 #[async_trait]
 impl InferenceReservation for Reservation {
@@ -362,54 +364,6 @@ impl<'a> Environment<'a> {
 				.and_then(|authority| authority.guard.local_authority()),
 		)
 	}
-	fn wrap_tools(&self, tools: BTreeMap<String, Arc<dyn Tool>>) -> Tools {
-		tools
-			.into_iter()
-			.map(|(name, tool)| {
-				(
-					name,
-					Arc::new(NativeTool {
-						tool,
-						home: self.native_home(),
-						store: self.federation.store.clone(),
-					}) as Arc<dyn ExecutionTool>,
-				)
-			})
-			.collect()
-	}
-	async fn native_tools(
-		&self,
-		run: &Run,
-		config: &AgentConfig,
-	) -> Result<BTreeMap<String, Arc<dyn Tool>>> {
-		let mut tools = builtins();
-		crate::capabilities::tools::add(&mut tools, &config.core_capabilities);
-		tools.retain(|name, _| config.permits_builtin(name));
-		for (index, reference) in config.tools.iter().enumerate() {
-			let entry = self
-				.federation
-				.registry
-				.get_for_run(run, &reference.id, &reference.version)
-				.await?;
-			let cfg: ToolConfig = serde_json::from_value(entry.config.clone())?;
-			if matches!(cfg, ToolConfig::Agent { .. })
-				&& config.allow_task_delegation == Some(false)
-			{
-				continue;
-			}
-			let alias = format!("plugin_{index}");
-			tools.insert(
-				alias.clone(),
-				Arc::new(PluginTool {
-					entry,
-					alias,
-					config: cfg,
-					client: self.federation.client.clone(),
-				}),
-			);
-		}
-		Ok(tools)
-	}
 }
 
 #[async_trait]
@@ -432,7 +386,16 @@ impl ExecutionEnvironment for Environment<'_> {
 		Box::new(NativeHome(self.native_home()))
 	}
 	fn agent(&self, entry: &Entry) -> Result<ExecutionAgent> {
-		let config: AgentConfig = serde_json::from_value(entry.config.clone())?;
+		let _ = entry;
+		let snapshot = self
+			.step_run
+			.context
+			.binding_snapshot
+			.as_ref()
+			.ok_or_else(|| {
+				aidash_application::Error::Invalid("Run has no admitted Binding snapshot".into())
+			})?;
+		let config = AgentConfig::from_snapshot(snapshot)?;
 		Ok(ExecutionAgent {
 			model: config.model,
 			instructions: config.instructions,
@@ -441,7 +404,7 @@ impl ExecutionEnvironment for Environment<'_> {
 			skills: config.skills,
 			max_steps: config.max_steps,
 			allow_task_creation: config.allow_task_creation,
-			allow_cross_conversation_memory: config.allow_cross_conversation_memory,
+			conversation_memory: config.conversation_memory,
 		})
 	}
 	fn provider(&self, model: ModelConfig) -> Result<Arc<dyn ModelProvider>> {
@@ -458,22 +421,73 @@ impl ExecutionEnvironment for Environment<'_> {
 			};
 		Ok(Box::new(Classifier(classifier)))
 	}
-	async fn tools(&self, run: &Run, entry: &Entry) -> Result<Tools> {
-		let agent = serde_json::from_value(entry.config.clone())?;
-		let mut tools = self.native_tools(run, &agent).await?;
-		if let Some(authority) = &self.authority {
-			authority.guard.filter_core_tools(&mut tools).await?;
+	fn binding_resolver(&self) -> &dyn aidash_application::ports::bindings::BindingResolver {
+		self
+	}
+
+	async fn documents(&self, _entry: &Entry) -> Result<Value> {
+		let snapshot = self
+			.step_run
+			.context
+			.binding_snapshot
+			.as_ref()
+			.ok_or_else(|| {
+				aidash_application::Error::Invalid("Run has no admitted Binding snapshot".into())
+			})?;
+		let mut documents = vec![];
+		for binding in &snapshot.bindings {
+			if binding.excluded_reason.is_some() || binding.definition.kind != "source" {
+				continue;
+			}
+			let context: aidash_domain::registry::bindings::sources::NativeContext =
+				serde_json::from_value(binding.definition.config.clone())?;
+			if matches!(
+				context.source,
+				aidash_domain::registry::bindings::sources::NativeSource::PrivateReferences { .. }
+			) {
+				let value =
+					crate::knowledge::load(&self.federation.registry.db, &binding.definition)
+						.await?;
+				documents.extend(
+					value
+						.as_array()
+						.ok_or_else(|| {
+							aidash_application::Error::Invalid(
+								"private source is not a document list".into(),
+							)
+						})?
+						.iter()
+						.cloned(),
+				);
+			}
 		}
-		Ok(self.wrap_tools(tools))
+		Ok(serde_json::json!(documents))
 	}
-	async fn builtins(&self, _run: &Run) -> Result<Tools> {
-		Ok(self.wrap_tools(builtins()))
-	}
-	async fn documents(&self, entry: &Entry) -> Result<Value> {
-		crate::knowledge::load(&self.federation.registry.db, entry)
+
+	async fn recheck_source_observation(&self, run: &Run, content: &Value) -> Result<()> {
+		if let Some(authority) = &self.authority {
+			authority
+				.guard
+				.recheck_source_observation(&self.federation.store, content)
+				.await?;
+		} else if let Some(semantic) = content.get("semantic_memory").filter(|v| !v.is_null()) {
+			let mut lease = crate::semantic::service::Lease::begin(
+				&self.federation.store,
+				&crate::authorization::identity::Actor::Operator,
+			)
+			.await?;
+			let result = aidash_application::semantic::retrieval::recheck(
+				&mut crate::bootstrap::semantic_retrieval_scope(&self.federation.store, &mut lease),
+				&serde_json::from_value(semantic.clone())?,
+			)
 			.await
-			.map_err(Into::into)
+			.map_err(crate::Error::from);
+			lease.finish(result).await?;
+		}
+		let _ = run;
+		Ok(())
 	}
+
 	async fn skill_context(&self, run: &Run) -> Result<String> {
 		if let Some(authority) = self
 			.authority
@@ -496,6 +510,13 @@ impl ExecutionEnvironment for Environment<'_> {
 		budget: usize,
 		entry: &Entry,
 	) -> Result<Option<Value>> {
+		let settings =
+			AgentConfig::from_snapshot(run.context.binding_snapshot.as_ref().ok_or_else(
+				|| aidash_application::Error::Invalid("Run has no Binding snapshot".into()),
+			)?)?;
+		if !settings.semantic_memory && !settings.workspace_context {
+			return Ok(None);
+		}
 		if let Some(authority) = &self.authority {
 			return authority
 				.guard
@@ -503,7 +524,10 @@ impl ExecutionEnvironment for Environment<'_> {
 				.await
 				.map_err(Into::into);
 		}
-		let agent = serde_json::from_value(entry.config.clone())?;
+		let _ = entry;
+		let agent = AgentConfig::from_snapshot(run.context.binding_snapshot.as_ref().ok_or_else(
+			|| aidash_application::Error::Invalid("Run has no Binding snapshot".into()),
+		)?)?;
 		let mut lease = crate::semantic::service::Lease::begin(
 			&self.federation.store,
 			&crate::authorization::identity::Actor::Operator,
@@ -585,5 +609,28 @@ impl ExecutionEnvironment for Environment<'_> {
 		)
 		.await
 		.map_err(Into::into)
+	}
+}
+
+#[async_trait]
+impl aidash_application::ports::bindings::BindingResolver for Environment<'_> {
+	async fn tools(&self, run: &Run) -> Result<Tools> {
+		let providers = Arc::new(super::bindings::Providers {
+			federation: self.federation.clone(),
+			home: self.native_home(),
+		});
+		let authority = if let Some(authority) = &self.authority {
+			authority.guard.binding_authority()
+		} else {
+			Arc::new(super::bindings::OperatorAuthority {
+				federation: self.federation.clone(),
+			}) as Arc<dyn aidash_application::ports::bindings::BindingAuthority>
+		};
+		aidash_application::registry::bindings::execution::PinnedResolver {
+			providers,
+			authority,
+		}
+		.tools(run)
+		.await
 	}
 }

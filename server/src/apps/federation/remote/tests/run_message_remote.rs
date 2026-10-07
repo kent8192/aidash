@@ -26,7 +26,7 @@ async fn peer_control(app: &common::TestApplication, node: &str, body: Value) ->
 		.request(Method::POST, app.url("/federation/v0.1/control"))
 		.header("authorization", format!("Bearer {secret}"))
 		.header("x-aidash-node", node)
-		.header("x-aidash-protocol", "0.1")
+		.header("x-aidash-protocol", "0.2")
 		.header("content-type", "application/json")
 		.body(body.to_string())
 		.send()
@@ -65,7 +65,7 @@ async fn add_peer(f: &Federation, node: &str, endpoint: &str) {
 							vec![Expr::value(query_bind_2.to_owned()).into()],
 						))
 						.expr(Expr::cust("'AIDASH_SECRET_TEST_PEER'"))
-						.expr(Expr::cust("'0.1'"))
+						.expr(Expr::cust("'0.2'"))
 						.expr(Expr::cust("TRUE"))
 						.to_owned(),
 				)
@@ -686,7 +686,7 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects(
 			),
 		)
 		.header("x-aidash-node", &home.config.node_id)
-		.header("x-aidash-protocol", "0.1")
+		.header("x-aidash-protocol", "0.2")
 		.send()
 		.await
 		.unwrap();

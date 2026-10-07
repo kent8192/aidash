@@ -402,6 +402,15 @@ impl ExecutionAdmissionSession for Admission<'_> {
 			.await
 			.map_err(Into::into)
 	}
+	async fn bindings(
+		&mut self,
+		entry: &Entry,
+	) -> Result<aidash_domain::registry::bindings::BindingSnapshot> {
+		crate::apps::registry::repositories::bindings::authorized(self.access, entry, false)
+			.await
+			.map_err(Into::into)
+	}
+
 	async fn prepare_thread(
 		&mut self,
 		task: &Task,
@@ -424,10 +433,18 @@ impl ExecutionAdmissionSession for Admission<'_> {
 		revision: i64,
 		subject: &str,
 		entry: &Entry,
+		snapshot: &aidash_domain::registry::bindings::BindingSnapshot,
 	) -> Result<Task> {
 		self.f
 			.store
-			.claim_in(&mut self.access.tx, task, revision, subject, entry)
+			.claim_in(
+				&mut self.access.tx,
+				task,
+				revision,
+				subject,
+				entry,
+				Some(snapshot),
+			)
 			.await
 			.map_err(Into::into)
 	}

@@ -83,6 +83,13 @@ impl DraftRepository for Repository {
 }
 #[async_trait]
 impl DefinitionLookup for Scope {
+	async fn binding_installation(
+		&mut self,
+		p: &aidash_domain::registry::Projection,
+	) -> Result<()> {
+		NativeScope(&mut *self.tx).binding_installation(p).await
+	}
+
 	async fn definition(&mut self, id: &str, version: &str) -> Result<Entry> {
 		NativeScope(&mut self.tx).definition(id, version).await
 	}

@@ -92,7 +92,7 @@ fn grant(required: bool) -> Grant {
 		credential_id: principal().credential_id,
 		root_subject: "requester".into(),
 		subject_chain: vec!["requester".into()],
-		inspection: json!({"node_id":"aidash://receiver","authority_digest":"authority","agent":{"id":"agent","version":"1","kind":"agent","name":{},"description":{},"config":{"model":{"id":"model","version":"1"}}},"definitions":[]}),
+		inspection: json!({"node_id":"aidash://receiver","authority_digest":"authority","agent":crate::test_support::agent("agent"),"definitions":[],"binding_snapshot":crate::test_support::snapshot("aidash://receiver","agent")}),
 		expires_at: Utc.timestamp_opt(3600, 0).unwrap(),
 		revoked: false,
 		semantic: serde_json::to_value(binding).unwrap(),
@@ -213,6 +213,23 @@ impl HomeRepository for Repository {
 }
 #[async_trait]
 impl HomeScope for Scope {
+	async fn human_requests(
+		&mut self,
+		_: Uuid,
+		_: Uuid,
+	) -> Result<Vec<aidash_domain::HumanRequest>> {
+		Ok(vec![])
+	}
+	async fn answer_human(
+		&mut self,
+		_: Uuid,
+		_: Uuid,
+		_: Uuid,
+		_: Value,
+	) -> Result<aidash_domain::HumanRequest> {
+		Err(Error::Forbidden)
+	}
+
 	fn identity(&self) -> ExecutionPrincipal {
 		principal()
 	}
@@ -432,7 +449,7 @@ async fn cancellation_fences_delivered_messages_and_task_revision_after_receiver
 		state.cancelled,
 		Some((
 			7,
-			qualified_agent("aidash://receiver", "agent", "1"),
+			qualified_agent("aidash://receiver", "agent", "1.0.0"),
 			vec!["delivered-key".into()]
 		))
 	);

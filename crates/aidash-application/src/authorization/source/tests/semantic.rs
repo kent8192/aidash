@@ -106,7 +106,21 @@ impl SemanticBindingScope for BindingScope {
 }
 fn remote_inspection() -> Inspection {
 	let mut value = inspection("model");
-	value.agent.config = json!({"model":{"id":"model","version":"1.0.0"}});
+	let mut agent = crate::test_support::agent("agent");
+	agent.config["model"] = json!({"id":"model","version":"1.0.0"});
+	agent.config["bindings"] = json!([crate::test_support::binding(
+		"memory",
+		"aidash://receiver",
+		"semantic-memory"
+	)]);
+	let source = crate::test_support::entry(
+		"semantic-memory",
+		"memory",
+		json!({"schema_version":1,"source":{"adapter":"semantic_memory"}}),
+	);
+	value.binding_snapshot =
+		crate::test_support::resolve("aidash://receiver", &agent, true, vec![source]);
+	value.agent = agent;
 	value.semantic_memory = VERSION;
 	value
 }
@@ -157,8 +171,8 @@ async fn unsupported_inspection_or_agent_memory_is_rejected_before_source_reads(
 			})
 		}
 		"disabled_agent_memory" => {
-			inspection.agent.config["allow_cross_conversation_memory"] = json!(false);
-			inspection.agent.config["allow_workspace_retrieval"] = json!(false);
+			inspection.binding_snapshot =
+				crate::test_support::snapshot("aidash://receiver", "agent");
 		}
 		_ => panic!("unknown contract"),
 	}

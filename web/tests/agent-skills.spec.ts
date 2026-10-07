@@ -99,10 +99,17 @@ test("registers an agent with selected versioned skills", async ({ page }) => {
     "required",
     "",
   );
-  await dialog.locator('[name="skills"][value="research-skill@2.0.0"]').check();
+  await dialog
+    .getByLabel("追加する定義")
+    .selectOption("skill:research-skill@2.0.0");
+  await dialog
+    .getByRole("button", { name: "Bindingを追加", exact: true })
+    .click();
   await expect(
-    dialog.locator('[name="skills"][value="research-skill@1.0.0"]'),
-  ).not.toBeChecked();
+    dialog.getByText("skill: aidash://test/research-skill@1.0.0", {
+      exact: true,
+    }),
+  ).toHaveCount(0);
   const submitted = page.waitForRequest(
     (request) =>
       new URL(request.url()).pathname === "/api/registry" &&
@@ -113,7 +120,19 @@ test("registers an agent with selected versioned skills", async ({ page }) => {
     .click();
   expect((await submitted).postDataJSON().config).toMatchObject({
     model: { id: "model", version: "1.0.0" },
-    skills: [{ id: "research-skill", version: "2.0.0" }],
+    schema_version: 1,
+    bindings: [
+      {
+        kind: "skill",
+        target: {
+          registry_node: "aidash://test",
+          id: "research-skill",
+          version: "2.0.0",
+        },
+        narrow: {},
+      },
+    ],
+    remove_default: [],
     instructions: "",
   });
   await expect(dialog).not.toBeVisible();
@@ -161,7 +180,12 @@ test("uploads real PDF and Excel reference text separately from registry metadat
   await dialog.getByLabel("名前").fill("Personal agent");
   await dialog.getByLabel("説明").fill("Personal documents");
   await dialog.locator('[name="model"]').selectOption("model@1.0.0");
-  await dialog.locator('[name="skills"][value="research-skill@2.0.0"]').check();
+  await dialog
+    .getByLabel("追加する定義")
+    .selectOption("skill:research-skill@2.0.0");
+  await dialog
+    .getByRole("button", { name: "Bindingを追加", exact: true })
+    .click();
   await dialog.getByLabel("参考資料を追加").setInputFiles([
     { name: "private.pdf", mimeType: "application/pdf", buffer: pdfFixture() },
     {

@@ -319,20 +319,20 @@ pub async fn stage(
 		.persist_revision(&staged.installation, &staged.revision)
 		.await?;
 	let entry = &staged.revision.entry;
-	if entry.kind == "agent"
-		&& entry
-			.config
-			.get("knowledge_digest")
-			.is_some_and(|d| !d.is_null())
-	{
-		let original = manifest(source)?.entity;
-		let documents = scope.documents(&original).await?.ok_or(Error::Forbidden)?;
-		if entry.config["knowledge_digest"].as_str()
-			!= Some(aidash_domain::registry::knowledge::digest(&documents).as_str())
+	if matches!(entry.kind.as_str(), "source" | "memory") {
+		let context: aidash_domain::registry::bindings::sources::NativeContext =
+			serde_json::from_value(entry.config.clone())?;
+		if let aidash_domain::registry::bindings::sources::NativeSource::PrivateReferences {
+			digest,
+		} = context.source
 		{
-			return Err(Error::Forbidden);
+			let original = manifest(source)?.entity;
+			let documents = scope.documents(&original).await?.ok_or(Error::Forbidden)?;
+			if digest != aidash_domain::registry::knowledge::digest(&documents) {
+				return Err(Error::Forbidden);
+			}
+			scope.insert_documents(entry, documents).await?;
 		}
-		scope.insert_documents(entry, documents).await?;
 	}
 	scope.save_provenance(entry, &staged.provenance).await?;
 	let mut copies = scope

@@ -7,11 +7,14 @@ use crate::tool::providers::{
 impl BindingSnapshot {
 	pub(super) fn validate_closure(
 		&self,
-		config: &AgentBindings,
+		_config: &AgentBindings,
 		definitions: &BTreeMap<&QualifiedRef, &ResolvedDefinition>,
 	) -> Result<()> {
-		let mut pending = config
-			.normalize(&self.agent.registry_node)?
+		let mut pending = definitions
+			.get(&self.agent)
+			.ok_or_else(|| Error::Invalid("snapshot lacks Agent".into()))?
+			.definition
+			.normalized_bindings(&self.agent.registry_node)?
 			.into_iter()
 			.map(|binding| (binding, BTreeSet::new(), None::<(String, String)>))
 			.collect::<Vec<_>>();

@@ -30,7 +30,7 @@ fn draft() -> Draft {
 }
 #[fixture]
 fn entry() -> Entry {
-	serde_json::from_value(json!({"id":"managed","version":"1.0.0","kind":"agent","name":{"en":"Managed agent"},"description":{"en":"Publication fixture"},"config":{"model":{"id":"model","version":"1.0.0"},"instructions":"Follow the fixture request.","max_steps":8,"tools":[],"skills":[],"cluster":null}})).unwrap()
+	serde_json::from_value(json!({"id":"managed","version":"1.0.0","kind":"agent","name":{"en":"Managed agent"},"description":{"en":"Publication fixture"},"config":{"schema_version":1,"bindings":[],"remove_default":[],"model":{"id":"model","version":"1.0.0"},"instructions":"Follow the fixture request.","max_steps":8,"cluster":null}})).unwrap()
 }
 struct Repository {
 	draft: Draft,
@@ -64,6 +64,7 @@ impl Repository {
 	}
 }
 struct Scope {
+	definitions: std::collections::BTreeMap<(String, String), Entry>,
 	draft: Draft,
 	log: Arc<Mutex<Vec<String>>>,
 	deny: bool,
@@ -108,6 +109,10 @@ impl DraftRepository for Repository {
 	async fn begin(&self) -> Result<Scope> {
 		self.log.lock().unwrap().push("begin".into());
 		Ok(Scope {
+			definitions: crate::test_support::builtin_entries("aidash://node")
+				.into_iter()
+				.map(|entry| ((entry.id.clone(), entry.version.clone()), entry))
+				.collect(),
 			draft: self.draft.clone(),
 			log: self.log.clone(),
 			deny: self.deny,
@@ -125,6 +130,9 @@ impl DraftRepository for Repository {
 impl DefinitionLookup for Scope {
 	async fn definition(&mut self, id: &str, version: &str) -> Result<Entry> {
 		self.record(format!("definition:{id}@{version}"));
+		if let Some(entry) = self.definitions.get(&(id.into(), version.into())) {
+			return Ok(entry.clone());
+		}
 		if id == "model" {
 			return Ok(serde_json::from_value(
 				json!({"id":id,"version":version,"kind":"model","name":{"en":"Fixture model"},"description":{"en":"Publication model"},"config":{"provider":"openrouter","model_id":"model","endpoint":"https://openrouter.ai/api/v1","credential_env":null,"context_window":32768,"max_output_tokens":1024,"modalities":["text"],"cost":{}}}),
@@ -299,7 +307,7 @@ async fn create_authorizes_enabled_owner_before_insert(draft: Draft, mut entry: 
 	.await
 	.unwrap();
 	assert_eq!(saved.entry["id"], saved.id.to_string());
-	assert_eq!(saved.entry["config"]["allow_task_delegation"], json!(false));
+	assert_eq!(saved.entry["config"]["schema_version"], json!(1));
 	assert_eq!(
 		repository.logs(),
 		[
@@ -910,6 +918,8 @@ async fn stale_archive_does_not_write_or_commit(draft: Draft) {
 impl DefinitionWriter for Scope {
 	async fn insert_definition(&mut self, entry: &Entry) -> Result<bool> {
 		self.record(format!("definition-insert:{}@{}", entry.id, entry.version));
+		self.definitions
+			.insert((entry.id.clone(), entry.version.clone()), entry.clone());
 		Ok(self.inserted)
 	}
 }

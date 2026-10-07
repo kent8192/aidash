@@ -79,3 +79,6 @@ pub mod capabilities;
 pub mod transactions;
 
 pub mod activation;
+
+#[cfg(test)]
+pub(crate) mod test_support;

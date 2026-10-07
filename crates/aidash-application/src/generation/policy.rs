@@ -180,15 +180,24 @@ async fn write_in(
 		false
 	};
 	if !disabling {
-		let cfg = validate(validation, spec, &serde_json::from_value(document)?)?;
-		for (reference, kind) in std::iter::once((&cfg.model, "model"))
-			.chain(cfg.tools.iter().map(|r| (r, "tool")))
-			.chain(cfg.skills.iter().map(|r| (r, "skill")))
-			.chain(cfg.cluster.iter().map(|r| (r, "cluster")))
-			.chain(spec.compaction.iter().map(|c| (&c.provider, "compactor")))
-			.chain(spec.embedding.iter().map(|c| (&c.provider, "embedding")))
-		{
-			let metadata = scope.approved(tenant, reference).await?;
+		let _cfg = validate(validation, spec, &serde_json::from_value(document)?)?;
+		let snapshot = scope.bindings(&spec.template).await?;
+		for (reference, kind) in snapshot
+			.definitions
+			.iter()
+			.filter(|d| d.identity != snapshot.agent)
+			.map(|d| (d.identity.local(), d.definition.kind.as_str()))
+			.chain(
+				spec.compaction
+					.iter()
+					.map(|c| (c.provider.clone(), "compactor")),
+			)
+			.chain(
+				spec.embedding
+					.iter()
+					.map(|c| (c.provider.clone(), "embedding")),
+			) {
+			let metadata = scope.approved(tenant, &reference).await?;
 			let entry: aidash_domain::registry::Entry =
 				serde_json::from_value(metadata.ok_or_else(|| {
 					Error::Invalid("generation components require tenant catalog approval".into())

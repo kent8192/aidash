@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 // Serializable configuration contracts.
-use crate::apps::execution::capabilities::services::core::{CoreCapabilities, references, skills};
+use aidash_domain::registry::bindings::Binding;
 
 #[derive(Clone, Serialize, Deserialize, schemars::JsonSchema, reinhardt::Validate)]
 #[serde(deny_unknown_fields)]
@@ -10,10 +10,8 @@ pub struct Configure {
 	pub source_version: String,
 	#[validate(length(min = 1, max = 128))]
 	pub new_version: String,
-	pub core_capabilities: CoreCapabilities,
-	pub skill_attachments: Vec<skills::SkillAttachment>,
-	pub skill_roots: Vec<String>,
-	pub reference_attachments: Vec<references::Attachment>,
+	pub bindings: Vec<Binding>,
+	pub remove_default: Vec<String>,
 }
 
 use uuid::Uuid;

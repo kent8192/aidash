@@ -303,8 +303,6 @@ export function EntityForm({
   });
   const [error, setError] = useState("");
   const models = data.registry.filter((e) => e.kind === "model");
-  const toolEntries = data.registry.filter((e) => e.kind === "tool");
-  const skillEntries = data.registry.filter((e) => e.kind === "skill");
   const [documents, setDocuments] = useState<ReferenceDocument[]>([]);
   const [core, setCore] = useState(emptyCore);
   const [readingDocuments, setReadingDocuments] = useState(false);
@@ -324,8 +322,7 @@ export function EntityForm({
               ? {
                   model: ref(s("model")),
                   instructions: s("instructions"),
-                  tools: d.getAll("tools").map((v) => ref(String(v))),
-                  skills: d.getAll("skills").map((v) => ref(String(v))),
+                  schema_version: 1,
                   cluster: s("cluster") ? ref(s("cluster")) : null,
                   max_steps: 64,
                   ...core,
@@ -383,8 +380,9 @@ export function EntityForm({
           if (
             kind === "agent" &&
             !s("instructions").trim() &&
-            !d.getAll("skills").length &&
-            !core.skill_attachments.length
+            !core.bindings.some(
+              (b) => b.kind === "skill" || b.kind === "source",
+            )
           )
             throw new Error(t("agentNeedsSkill"));
           if (readingDocuments) return;
@@ -421,6 +419,9 @@ export function EntityForm({
             "model",
             "tool",
             "skill",
+            "memory",
+            "source",
+            "bundle",
             "cluster",
             "node",
             "compactor",
@@ -487,23 +488,7 @@ export function EntityForm({
               </select>
             </Field>
             {models.length === 0 && <p className="notice">{t("noModel")}</p>}
-            <fieldset>
-              <legend>{t("skill")}</legend>
-              <p className="muted">{t("agentSkillsHelp")}</p>
-              {skillEntries.length === 0 && (
-                <p className="notice">{t("agentNoSkills")}</p>
-              )}
-              {skillEntries.map((e) => (
-                <label className="check" key={`${e.id}@${e.version}`}>
-                  <input
-                    type="checkbox"
-                    name="skills"
-                    value={`${e.id}@${e.version}`}
-                  />
-                  {entityLabel(e)}
-                </label>
-              ))}
-            </fieldset>
+
             <Field label={t("additionalInstructions")}>
               <textarea
                 name="instructions"
@@ -511,7 +496,12 @@ export function EntityForm({
                 placeholder={t("additionalInstructionsHelp")}
               />
             </Field>
-            <CapabilityConfiguration value={core} change={setCore} />
+            <CapabilityConfiguration
+              value={core}
+              change={setCore}
+              node={data.node.id}
+              entries={data.registry}
+            />
             <AgentDocuments
               documents={documents}
               change={setDocuments}
@@ -532,19 +522,6 @@ export function EntityForm({
                   ))}
               </select>
             </Field>
-            <fieldset>
-              <legend>{t("tools")}</legend>
-              {toolEntries.map((e) => (
-                <label className="check" key={`${e.id}@${e.version}`}>
-                  <input
-                    type="checkbox"
-                    name="tools"
-                    value={`${e.id}@${e.version}`}
-                  />
-                  {entityLabel(e)}
-                </label>
-              ))}
-            </fieldset>
           </>
         ) : kind === "model" ? (
           <>
@@ -660,7 +637,7 @@ export function PeerForm({ submit }: { submit: Submit }) {
             node_id: String(d.get("node_id")),
             endpoint: String(d.get("endpoint")),
             credential_env: String(d.get("credential_env")),
-            protocol_version: "0.1",
+            protocol_version: "0.2",
             enabled: true,
           }),
         );

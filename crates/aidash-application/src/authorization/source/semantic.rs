@@ -28,10 +28,8 @@ pub async fn binding<S: SemanticBindingScope + ?Sized>(
 	{
 		return Err(Error::RemoteSemantic(Failure::Configuration));
 	}
-	let agent: AgentConfig = serde_json::from_value(inspection.agent.config.clone())?;
-	if agent.allow_cross_conversation_memory == Some(false)
-		&& agent.allow_workspace_retrieval == Some(false)
-	{
+	let agent: AgentConfig = AgentConfig::from_snapshot(&inspection.binding_snapshot)?;
+	if !agent.semantic_memory && !agent.workspace_context {
 		return Err(Error::RemoteSemantic(Failure::Configuration));
 	}
 	super::authorize(access, task, node, inspection).await?;

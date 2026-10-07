@@ -28,6 +28,15 @@ impl DefinitionLookup for SqlScope<'_> {
 			value.ok_or_else(|| Error::NotFound(id.into()))?,
 		)?)
 	}
+	async fn binding_installation(
+		&mut self,
+		projection: &aidash_domain::registry::Projection,
+	) -> Result<()> {
+		super::bindings::installation_native(self.0, projection)
+			.await
+			.map_err(Into::into)
+	}
+
 	async fn overrides(&mut self, id: &str, version: &str) -> Result<Option<Value>> {
 		let query = Query::select()
 			.column(Alias::new("config"))

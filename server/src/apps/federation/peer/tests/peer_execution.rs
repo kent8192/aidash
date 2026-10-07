@@ -48,7 +48,7 @@ async fn peer_client(app: &EndpointFixture, token: &str) -> APIClient {
 		.set_header("x-aidash-node", "aidash://source")
 		.await
 		.unwrap();
-	client.set_header("x-aidash-protocol", "0.1").await.unwrap();
+	client.set_header("x-aidash-protocol", "0.2").await.unwrap();
 	client
 }
 async fn inspect(client: &APIClient, input: Value) -> (u16, Value) {
@@ -76,7 +76,7 @@ async fn receiver_preflight_intersects_executor_and_mapping_without_admitting_a_
 		.node_id("aidash://source")
 		.endpoint("http://127.0.0.1:1")
 		.credential_env(PEER_ENV)
-		.protocol_version("0.1")
+		.protocol_version("0.2")
 		.enabled(true)
 		.finish();
 	Peer::objects()

@@ -1,5 +1,5 @@
 //! Private registration keeps document admission and publication atomic.
-use super::{DefinitionValidation, effective, register_definition};
+use super::{DefinitionValidation, register_definition};
 use crate::{
 	Error, Result,
 	ports::registry::{DefinitionLookup, PrivateKnowledgeRead, PrivateKnowledgeScope},
@@ -15,10 +15,14 @@ pub struct PersonalDraft {
 pub struct PersonalRegistration {
 	pub entry: Entry,
 	pub documents: Value,
+	pub source: Entry,
 }
 
 /// Shape validation precedes transport-level idempotency-key parsing.
 pub fn validate_input(entry: Entry, documents: Vec<ReferenceDocument>) -> Result<PersonalDraft> {
+	if entry.binding_normalization.is_some() {
+		return Err(Error::Invalid("Binding normalization is read-only".into()));
+	}
 	if entry.kind != "agent" {
 		return Err(Error::Invalid(
 			"personal registration requires an agent".into(),
@@ -35,21 +39,45 @@ pub async fn prepare(
 	scope: &mut dyn DefinitionLookup,
 	validation: &DefinitionValidation,
 	draft: PersonalDraft,
+	node: &str,
 ) -> Result<PersonalRegistration> {
 	let documents = serde_json::to_value(draft.documents)?;
 	let mut entry = draft.entry;
-	entry.config["knowledge_digest"] = json!(knowledge::digest(&documents));
+	let source = super::bindings::private::attach(&mut entry, node, &documents)?;
 	let context = json!({"reference_documents":documents.clone()});
-	let config: AgentConfig = serde_json::from_value(entry.config.clone())?;
-	let mut references = Vec::new();
-	for reference in std::iter::once(&config.model)
-		.chain(config.skills.iter())
-		.chain(config.tools.iter())
-	{
-		references.push(effective(scope, &reference.id, &reference.version).await?);
+
+	let mut preview = super::bindings::private::Preview {
+		scope,
+		source: &source,
+	};
+	let mut catalog = super::bindings::catalog::LookupCatalog {
+		definitions: &mut preview,
+		node,
+	};
+	// Admission below repeats resolution after reserving the real identity.
+	let mut preview_entry = entry.clone();
+	if preview_entry.id.is_empty() {
+		preview_entry.id = "pending-personal-agent".into();
 	}
-	validation.agent_prompt_headroom(&config, &references, &context)?;
-	Ok(PersonalRegistration { entry, documents })
+	let snapshot = super::bindings::resolve(
+		&mut catalog,
+		validation,
+		aidash_domain::registry::bindings::QualifiedRef {
+			registry_node: node.into(),
+			id: preview_entry.id.clone(),
+			version: entry.version.clone(),
+		},
+		&preview_entry,
+		false,
+	)
+	.await?;
+	validation.bound_prompt_headroom(&snapshot, &context)?;
+	entry.normalize_agent(node)?;
+	Ok(PersonalRegistration {
+		entry,
+		documents,
+		source,
+	})
 }
 
 /// Reservation, protected references, definition, private text and outbox share one scope.
@@ -61,9 +89,18 @@ pub async fn register(
 	node: &str,
 ) -> Result<Entry> {
 	scope.assign_id(&mut registration.entry, Some(key)).await?;
+	let preview_source = registration.source.id.clone();
+	let mut input: aidash_domain::registry::bindings::AgentBindings =
+		serde_json::from_value(registration.entry.config.clone())?;
+	input.bindings.retain(|b| b.target.id != preview_source);
+	registration.entry.config = serde_json::to_value(input)?;
+	registration.source =
+		super::bindings::private::attach(&mut registration.entry, node, &registration.documents)?;
+	registration.entry.normalize_agent(node)?;
+	register_definition(scope, validation, &registration.source, node).await?;
 	let inserted = register_definition(scope, validation, &registration.entry, node).await?;
 	scope
-		.insert_documents(&registration.entry, registration.documents)
+		.insert_documents(&registration.source, registration.documents)
 		.await?;
 	if inserted {
 		scope
@@ -78,8 +115,12 @@ pub async fn register(
 
 /// Private context is available only on its owning node, with the original digest.
 pub async fn load(scope: &mut dyn PrivateKnowledgeRead, entry: &Entry) -> Result<Value> {
-	let config: AgentConfig = serde_json::from_value(entry.config.clone())?;
-	let Some(expected) = config.knowledge_digest else {
+	let descriptor: aidash_domain::registry::bindings::sources::NativeContext =
+		serde_json::from_value(entry.config.clone())?;
+	let aidash_domain::registry::bindings::sources::NativeSource::PrivateReferences {
+		digest: expected,
+	} = descriptor.source
+	else {
 		return Ok(json!([]));
 	};
 	let documents = scope.documents(entry).await?.ok_or_else(|| Error::Invalid("private documents are unavailable on this node; run the original agent on its owning node".into()))?;

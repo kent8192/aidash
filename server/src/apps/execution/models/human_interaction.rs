@@ -34,6 +34,29 @@ impl HumanRequest {
 		prompt: &str,
 		key: &str,
 	) -> Result<(Contract, bool)> {
+		let request = Contract {
+			id: Uuid::new_v4(),
+			workspace_id: workspace,
+			run_id: run,
+			kind: kind.into(),
+			prompt: prompt.into(),
+			response: None,
+			created_at: chrono::Utc::now(),
+			answered_by: None,
+		};
+		Self::admit_home(tx, &request, key).await
+	}
+
+	/// Mirror a Home-owned request only under its real execution Run.
+	pub(crate) async fn admit_home(
+		tx: &mut dyn TransactionExecutor,
+		request: &Contract,
+		key: &str,
+	) -> Result<(Contract, bool)> {
+		let workspace = request.workspace_id;
+		let run = request.run_id;
+		let kind = request.kind.as_str();
+		let prompt = request.prompt.as_str();
 		let (sql, values) = Query::insert()
 			.into_table(Alias::new(Self::table_name()))
 			.columns(
@@ -44,16 +67,18 @@ impl HumanRequest {
 					"kind",
 					"prompt",
 					"request_key",
+					"created_at",
 				]
 				.map(Alias::new),
 			)
 			.values_panic([
-				IntoValue::into_value(Uuid::new_v4()),
+				IntoValue::into_value(request.id),
 				IntoValue::into_value(workspace),
 				IntoValue::into_value(run),
 				IntoValue::into_value(kind),
 				IntoValue::into_value(prompt),
 				IntoValue::into_value(key),
+				IntoValue::into_value(request.created_at),
 			])
 			.on_conflict(OnConflict::columns(["request_key"]).do_nothing())
 			.returning_all()

@@ -64,8 +64,8 @@ pub async fn simulate(execution: &Execution, session_id: Uuid, job: &Job) -> Res
 	let mut status = "blocked";
 	let mut error = None;
 	for _ in 0..limits.max_steps.min(*agent_max_steps) {
-		let still_running =
-			execution.repository.read_session(session_id).await?.status == "running";
+		let admitted_session = execution.repository.read_session(session_id).await?;
+		let still_running = admitted_session.status == "running";
 		if !still_running {
 			status = "stopped";
 			break;
@@ -84,7 +84,19 @@ pub async fn simulate(execution: &Execution, session_id: Uuid, job: &Job) -> Res
 		authority
 			.authorize_draft(&current_draft, "agent_draft.test", true)
 			.await?;
-		authority.validate_content(&job.pinned_draft).await?;
+		if current_draft.archived || current_draft.revision != job.pinned_draft.revision {
+			return Err(Error::Conflict(
+				"draft revision changed during session".into(),
+			));
+		}
+		let entry = authority.validate_content(&job.pinned_draft).await?;
+		let snapshot = authority.bindings(&job.pinned_draft, &entry).await?;
+		let saved = admitted_session.scenario["binding_snapshot"].clone();
+		if saved != serde_json::to_value(snapshot)? {
+			return Err(Error::Conflict(
+				"admitted test Binding graph changed".into(),
+			));
+		}
 		if let Some(pin) = profile {
 			let current = authority.profile(&pin.tenant, &pin.id).await?;
 			if !current.enabled

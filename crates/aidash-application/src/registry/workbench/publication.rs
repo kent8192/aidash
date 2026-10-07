@@ -76,9 +76,13 @@ where
 		.map(|_| digest(&draft.documents));
 	let mut versions = Vec::new();
 	for row in rows {
+		let entry = registry::effective(&mut scope, managed_id, &row.version).await?;
+		let registered_knowledge_digest =
+			private_digest(&mut scope, &entry, repository.node_id()).await?;
 		versions.push(RegisteredVersion {
+			registered_knowledge_digest,
 			draft_knowledge_digest: draft_knowledge_digest.clone(),
-			entry: registry::effective(&mut scope, managed_id, &row.version).await?,
+			entry,
 			draft_revision: Some(row.revision),
 			registered_by: Some(row.actor),
 			registered_at: Some(row.registered_at),
@@ -94,9 +98,13 @@ where
 			.iter()
 			.any(|item| &item.entry.version == source_version)
 	{
+		let entry = registry::effective(&mut scope, managed_id, source_version).await?;
+		let registered_knowledge_digest =
+			private_digest(&mut scope, &entry, repository.node_id()).await?;
 		versions.push(RegisteredVersion {
+			registered_knowledge_digest,
 			draft_knowledge_digest: draft_knowledge_digest.clone(),
-			entry: registry::effective(&mut scope, managed_id, source_version).await?,
+			entry,
 			draft_revision: None,
 			registered_by: None,
 			registered_at: None,
@@ -131,14 +139,19 @@ where
 	let entry = validate_content(&mut scope, validation, &draft, repository.node_id()).await?;
 
 	let behavioral_tested = behavioral_evidence(&mut scope, &draft, &entry).await?;
-	let inserted =
-		registry::register_definition(&mut scope, validation, &entry, repository.node_id()).await?;
 	let documents: Vec<ReferenceDocument> = serde_json::from_value(draft.documents.clone())?;
 	if !documents.is_empty() {
+		let mut raw: Entry = serde_json::from_value(draft.entry.clone())?;
+		let source =
+			registry::bindings::private::attach(&mut raw, repository.node_id(), &draft.documents)?;
+		registry::register_definition(&mut scope, validation, &source, repository.node_id())
+			.await?;
 		scope
-			.insert_documents(&entry, draft.documents.clone())
+			.insert_documents(&source, draft.documents.clone())
 			.await?;
 	}
+	let inserted =
+		registry::register_definition(&mut scope, validation, &entry, repository.node_id()).await?;
 	let registered_by = match &actor {
 		Principal::Operator => "operator",
 		Principal::Subject { subject, .. } => subject,
@@ -156,4 +169,30 @@ where
 		entry,
 		behavioral_tested,
 	})
+}
+
+async fn private_digest(
+	scope: &mut impl crate::ports::registry::DefinitionLookup,
+	entry: &Entry,
+	node: &str,
+) -> Result<Option<String>> {
+	let config: aidash_domain::registry::bindings::AgentBindings =
+		serde_json::from_value(entry.config.clone())?;
+	for binding in config.bindings.iter().filter(|b| {
+		b.kind == aidash_domain::registry::bindings::BindingKind::Source
+			&& b.target.registry_node == node
+	}) {
+		let source = scope
+			.definition(&binding.target.id, &binding.target.version)
+			.await?;
+		let context: aidash_domain::registry::bindings::sources::NativeContext =
+			serde_json::from_value(source.config)?;
+		if let aidash_domain::registry::bindings::sources::NativeSource::PrivateReferences {
+			digest,
+		} = context.source
+		{
+			return Ok(Some(digest));
+		}
+	}
+	Ok(None)
 }

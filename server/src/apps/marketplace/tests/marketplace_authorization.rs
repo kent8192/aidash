@@ -23,7 +23,7 @@ fn reference(id: &str) -> EntityRef {
 	}
 }
 fn tool(id: &str) -> Entry {
-	serde_json::from_value(json!({"id":id,"version":"1.0.0","kind":"tool","name":{"en":id},"description":{"en":"Local tool"},"config":{"transport":"http","endpoint":"http://localhost:9/original","replay":"read_only","credential_env":null}})).unwrap()
+	serde_json::from_value(json!({"id":id,"version":"1.0.0","kind":"tool","name":{"en":id},"description":{"en":"Local tool"},"config":{"registry_node":"aidash://execution-test","provider":"integration.http@1","operation":"invoke","default_alias":"plugin_0","tier":"integration","narrow":{},"transport":{"transport":"http","endpoint":"http://localhost:9/original","replay":"read_only","credential_env":null}}})).unwrap()
 }
 fn bundle(tenant: &str, kind: &str) -> Value {
 	json!({"tenant":tenant,"subjects":{"viewer":{"kind":kind,"roles":["manager"]}},"roles":{"manager":{"inherits":["reader"]},"reader":{}},"policies":[{"id":"all","effect":"allow","subjects":{"roles":["reader"]},"actions":["*"],"resources":{"kinds":["*"]}}]})
@@ -265,7 +265,7 @@ async fn tenant_publication_pending_installation_and_revisions(
 			"projection catalog writes must use activation"
 		);
 	}
-	let change = json!({"expected_revision":1,"config":{"endpoint":"http://localhost:9/reconfigured"},"idempotency_key":Uuid::new_v4()});
+	let change = json!({"expected_revision":1,"config":{"transport":{"transport":"http","endpoint":"http://localhost:9/reconfigured","credential_env":null,"replay":"read_only"}},"idempotency_key":Uuid::new_v4()});
 	let changed = request(
 		&app,
 		&a,
@@ -294,7 +294,7 @@ async fn tenant_publication_pending_installation_and_revisions(
 			.get(&entry.id, &entry.version)
 			.await
 			.unwrap()
-			.config["endpoint"],
+			.config["transport"]["endpoint"],
 		"http://localhost:9/original"
 	);
 	let current = request(&app, &a, "GET", "/api/registry", Value::Null).await;
@@ -360,7 +360,7 @@ async fn tenant_publication_pending_installation_and_revisions(
 			.contains("mkt-")
 	);
 	let mut replay_input = input.clone();
-	replay_input["config"] = json!({"endpoint":"http://localhost:9/other"});
+	replay_input["config"] = json!({"transport":{"transport":"http","endpoint":"http://localhost:9/other","credential_env":null,"replay":"read_only"}});
 	assert_eq!(install(&app, &a, &pa, &replay_input).await.0, 409);
 	policy(
 		&f,
@@ -404,7 +404,7 @@ async fn hidden_typed_dependency_and_denial_leave_no_installation(
 	enable(&app, &f).await;
 	let model:Entry=serde_json::from_value(json!({"id":"hidden-model","version":"1.0.0","kind":"model","name":{"en":"Hidden model"},"description":{"en":"private"},"config":{"provider":"openrouter","model_id":"fixture/model","endpoint":"http://localhost:9","context_window":128000,"max_output_tokens":1024,"modalities":["text"],"cost":{}}})).unwrap();
 	f.registry.register(model).await.unwrap();
-	let agent:Entry=serde_json::from_value(json!({"id":"agent","version":"1.0.0","kind":"agent","name":{"en":"Visible agent"},"description":{"en":"Public summary"},"config":{"model":reference("hidden-model"),"instructions":"hello"}})).unwrap();
+	let agent:Entry=serde_json::from_value(json!({"id":"agent","version":"1.0.0","kind":"agent","name":{"en":"Visible agent"},"description":{"en":"Public summary"},"config":{"model":reference("hidden-model"),"instructions":"hello","schema_version":1,"bindings":[],"remove_default":[]}})).unwrap();
 	f.registry.register(agent).await.unwrap();
 	approve(&f, "a", &reference("hidden-model")).await;
 	approve(&f, "a", &reference("agent")).await;
@@ -654,7 +654,7 @@ async fn live_redistribution_consent_retains_local_copies_and_export_bytes(
 		200
 	);
 	let mut input = install_input(&original);
-	input["config"] = json!({"endpoint":"http://localhost:9/tenant-secret-setting"});
+	input["config"] = json!({"transport":{"transport":"http","endpoint":"http://localhost:9/tenant-secret-setting","credential_env":null,"replay":"read_only"}});
 	let installed = install(&app, &b, &original, &input).await;
 	assert_eq!(installed.0, 200, "{installed:?}");
 	assert_eq!(
@@ -746,7 +746,7 @@ async fn live_redistribution_consent_retains_local_copies_and_export_bytes(
 	.await;
 	assert_eq!(detail.0, 200, "{detail:?}");
 	assert_eq!(
-		detail.1["manifest"]["entity"]["config"]["endpoint"],
+		detail.1["manifest"]["entity"]["config"]["transport"]["endpoint"],
 		"http://localhost:9/original"
 	);
 	assert!(!detail.1.to_string().contains("tenant-secret-setting"));
@@ -840,7 +840,7 @@ async fn live_redistribution_consent_retains_local_copies_and_export_bytes(
 		.0,
 		200
 	);
-	assert_eq!(request(&app,&c,"POST",&format!("/api/marketplace/installations/{local_id}"),json!({"expected_revision":1,"config":{"endpoint":"http://localhost:9/retained"},"idempotency_key":Uuid::new_v4()})).await.0,200);
+	assert_eq!(request(&app,&c,"POST",&format!("/api/marketplace/installations/{local_id}"),json!({"expected_revision":1,"config":{"transport":{"transport":"http","endpoint":"http://localhost:9/retained","credential_env":null,"replay":"read_only"}},"idempotency_key":Uuid::new_v4()})).await.0,200);
 	// Legacy paths remain operator-only, and unknown event families leak nothing.
 	assert_eq!(
 		request(&app, &b, "GET", "/api/marketplace", Value::Null)
@@ -878,7 +878,7 @@ async fn explicit_legacy_adoption_and_mixed_writer_fence(
 			"mkt-legacy",
 			"1.0.0",
 			&package.digest,
-			json!({"endpoint":"http://localhost:9/legacy"}),
+			json!({"transport":{"transport":"http","endpoint":"http://localhost:9/legacy","credential_env":null,"replay":"read_only"}}),
 		)
 		.await
 		.unwrap();
@@ -933,7 +933,7 @@ async fn explicit_legacy_adoption_and_mixed_writer_fence(
 	.await;
 	assert_eq!(installed.1["approved"], false);
 	assert_eq!(
-		installed.1["entry"]["config"]["endpoint"],
+		installed.1["entry"]["config"]["transport"]["endpoint"],
 		"http://localhost:9/legacy"
 	);
 	f.registry
@@ -941,7 +941,7 @@ async fn explicit_legacy_adoption_and_mixed_writer_fence(
 			"mkt-legacy",
 			"1.0.0",
 			&package.digest,
-			json!({"endpoint":"http://localhost:9/changed"}),
+			json!({"transport":{"transport":"http","endpoint":"http://localhost:9/changed","credential_env":null,"replay":"read_only"}}),
 		)
 		.await
 		.unwrap();
@@ -954,7 +954,7 @@ async fn explicit_legacy_adoption_and_mixed_writer_fence(
 			Value::Null
 		)
 		.await
-		.1["entry"]["config"]["endpoint"],
+		.1["entry"]["config"]["transport"]["endpoint"],
 		"http://localhost:9/legacy"
 	);
 	let entry = installed.1["entry"]["id"].as_str().unwrap();
@@ -1032,7 +1032,7 @@ async fn adoption_freezes_the_effective_dependency_graph(
 		f.registry.register(model).await.unwrap();
 	}
 	approve(&f, "a", &reference("legacy-model-overlay")).await;
-	let agent: Entry = serde_json::from_value(json!({"id":"legacy-agent","version":"1.0.0","kind":"agent","name":{"en":"Legacy agent"},"description":{"en":"fixture"},"config":{"model":reference("legacy-model-original"),"instructions":"Original","tools":[reference("legacy-tool")]}})).unwrap();
+	let agent: Entry = serde_json::from_value(json!({"id":"legacy-agent","version":"1.0.0","kind":"agent","name":{"en":"Legacy agent"},"description":{"en":"fixture"},"config":{"model":reference("legacy-model-original"),"instructions":"Original","schema_version":1,"bindings":[{"kind":"tool","target":{"registry_node":f.config.node_id,"id":"legacy-tool","version":"1.0.0"},"narrow":{}}],"remove_default":[]}})).unwrap();
 	let legacy = aidash_server::registry::Package {
 		entity: agent,
 		author: "legacy".into(),
@@ -1106,7 +1106,7 @@ async fn adoption_freezes_the_effective_dependency_graph(
 			"legacy-tool",
 			"1.0.0",
 			&published.digest,
-			json!({"endpoint":"http://localhost:9/overlaid"}),
+			json!({"transport":{"transport":"http","endpoint":"http://localhost:9/overlaid","credential_env":null,"replay":"read_only"}}),
 		)
 		.await
 		.unwrap();
@@ -1410,7 +1410,7 @@ async fn new_runs_select_active_revision_and_restarted_runs_keep_exact_old_refer
 	enable(&app, &f).await;
 	let model:Entry=serde_json::from_value(json!({"id":"model","version":"1.0.0","kind":"model","name":{"en":"Model"},"description":{"en":"fixture"},"config":{"provider":"openrouter","model_id":"fixture/model","endpoint":"http://localhost:9","context_window":128000,"max_output_tokens":1024,"modalities":["text"],"cost":{}}})).unwrap();
 	f.registry.register(model).await.unwrap();
-	let agent:Entry=serde_json::from_value(json!({"id":"agent","version":"1.0.0","kind":"agent","name":{"en":"Agent"},"description":{"en":"fixture"},"config":{"model":reference("model"),"instructions":"Original instructions"}})).unwrap();
+	let agent:Entry=serde_json::from_value(json!({"id":"agent","version":"1.0.0","kind":"agent","name":{"en":"Agent"},"description":{"en":"fixture"},"config":{"model":reference("model"),"instructions":"Original instructions","schema_version":1,"bindings":[],"remove_default":[]}})).unwrap();
 	f.registry.register(agent).await.unwrap();
 	approve(&f, "a", &reference("agent")).await;
 	approve(&f, "a", &reference("model")).await;
@@ -1659,7 +1659,7 @@ async fn policy_conditions_delegation_and_denies_apply_to_marketplace_boundaries
 			"marketplace.install" => install(&app, &a, &package, &install_input(&package)).await,
 			"marketplace.share" => request(&app, &a, "PUT", &format!("{path}/audience"), json!({"expected_revision":1,"tenants":["a","b"]})).await,
 			"marketplace.redistribution.manage" => request(&app, &a, "PUT", &format!("{path}/consents/b"), json!({"expected_revision":0,"tenants":["b"]})).await,
-			"installation.configure" => request(&app, &a, "POST", &install_path, json!({"expected_revision":1,"config":{"endpoint":"http://localhost:9/changed"},"idempotency_key":Uuid::new_v4()})).await,
+			"installation.configure" => request(&app, &a, "POST", &install_path, json!({"expected_revision":1,"config":{"transport":{"transport":"http","endpoint":"http://localhost:9/changed","credential_env":null,"replay":"read_only"}},"idempotency_key":Uuid::new_v4()})).await,
 			_ => request(&app, &a, "POST", "/api/marketplace/packages", publication.clone()).await,
 		};
 		assert_eq!(result.0, 403, "deny {action}: {result:?}");
@@ -1731,7 +1731,7 @@ async fn readable_distribution_precedes_dependency_preparation_and_bindings_pin_
 	let model: Entry = serde_json::from_value(json!({"id":"model","version":"1.0.0","kind":"model","name":{"en":"Model"},"description":{"en":"fixture"},"config":{"provider":"openrouter","model_id":"fixture/model","endpoint":"http://localhost:9","context_window":128000,"max_output_tokens":1024,"modalities":["text"],"cost":{}}})).unwrap();
 	f.registry.register(model).await.unwrap();
 	f.registry.register(tool("dependency")).await.unwrap();
-	let agent: Entry = serde_json::from_value(json!({"id":"agent","version":"1.0.0","kind":"agent","name":{"en":"Agent"},"description":{"en":"fixture"},"config":{"model":reference("model"),"tools":[reference("dependency")],"instructions":"Use the exact tool"}})).unwrap();
+	let agent: Entry = serde_json::from_value(json!({"id":"agent","version":"1.0.0","kind":"agent","name":{"en":"Agent"},"description":{"en":"fixture"},"config":{"model":reference("model"),"schema_version":1,"bindings":[{"kind":"tool","target":{"registry_node":f.config.node_id,"id":"dependency","version":"1.0.0"},"narrow":{}}],"remove_default":[],"instructions":"Use the exact tool"}})).unwrap();
 	f.registry.register(agent).await.unwrap();
 	for id in ["model", "dependency", "agent"] {
 		approve(&f, "a", &reference(id)).await;
@@ -1793,7 +1793,7 @@ async fn readable_distribution_precedes_dependency_preparation_and_bindings_pin_
 	let root = install(&app, &b, &agent, &install_input(&agent)).await;
 	assert_eq!(root.0, 200, "{root:?}");
 	assert_eq!(
-		root.1["entry"]["config"]["tools"][0]["id"],
+		root.1["entry"]["config"]["bindings"][0]["target"]["id"],
 		dep_local.1["entry"]["id"]
 	);
 	assert_eq!(activate(&app, &f, "b", &root.1, 1, 0, 0, true).await.0, 403);
@@ -1802,7 +1802,7 @@ async fn readable_distribution_precedes_dependency_preparation_and_bindings_pin_
 		200
 	);
 	assert_eq!(activate(&app, &f, "b", &root.1, 1, 0, 0, true).await.0, 200);
-	let dep_changed = request(&app, &b, "POST", &format!("/api/marketplace/installations/{}",dep_local.1["installation"]["id"].as_str().unwrap()), json!({"expected_revision":1,"config":{"endpoint":"http://localhost:9/new"},"idempotency_key":Uuid::new_v4()})).await;
+	let dep_changed = request(&app, &b, "POST", &format!("/api/marketplace/installations/{}",dep_local.1["installation"]["id"].as_str().unwrap()), json!({"expected_revision":1,"config":{"transport":{"transport":"http","endpoint":"http://localhost:9/new","credential_env":null,"replay":"read_only"}},"idempotency_key":Uuid::new_v4()})).await;
 	assert_eq!(dep_changed.0, 200, "{dep_changed:?}");
 	for config in [
 		json!({"model":reference("model")}),
@@ -1847,7 +1847,7 @@ async fn readable_distribution_precedes_dependency_preparation_and_bindings_pin_
 	assert_eq!(next.1["approved"], false);
 	assert_eq!(next.1["installation"]["active_revision"], 1);
 	assert_eq!(
-		root.1["entry"]["config"]["tools"][0]["id"],
+		root.1["entry"]["config"]["bindings"][0]["target"]["id"],
 		dep_local.1["entry"]["id"]
 	);
 	let wrong_kind = json!([{"source":reference("dependency"),"target":reference("model")}]);
@@ -2656,7 +2656,7 @@ async fn remote_inspection_obeys_the_marketplace_compatibility_gate(
 	let a = token(&f, "a", "user").await;
 	enable(&app, &f).await;
 	let model: Entry = serde_json::from_value(json!({"id":"model","version":"1.0.0","kind":"model","name":{"en":"Model"},"description":{"en":"fixture"},"config":{"provider":"openrouter","model_id":"fixture/model","endpoint":"http://localhost:9","context_window":128000,"max_output_tokens":1024,"modalities":["text"],"cost":{}}})).unwrap();
-	let agent: Entry = serde_json::from_value(json!({"id":"agent","version":"1.0.0","kind":"agent","name":{"en":"Agent"},"description":{"en":"fixture"},"config":{"model":reference("model"),"instructions":"Installed executor"}})).unwrap();
+	let agent: Entry = serde_json::from_value(json!({"id":"agent","version":"1.0.0","kind":"agent","name":{"en":"Agent"},"description":{"en":"fixture"},"config":{"model":reference("model"),"instructions":"Installed executor","schema_version":1,"bindings":[],"remove_default":[]}})).unwrap();
 	for entry in [model, agent] {
 		let reference = EntityRef {
 			id: entry.id.clone(),
@@ -3304,18 +3304,18 @@ async fn transitive_bindings_cannot_claim_to_rewrite_immutable_dependencies(
 	enable(&app, &f).await;
 	let model:Entry=serde_json::from_value(json!({"id":"model","version":"1.0.0","kind":"model","name":{"en":"Model"},"description":{"en":"fixture"},"config":{"provider":"openrouter","model_id":"fixture/model","endpoint":"http://localhost:9","context_window":128000,"max_output_tokens":1024,"modalities":["text"],"cost":{}}})).unwrap();
 	f.registry.register(model).await.unwrap();
-	let agent:Entry=serde_json::from_value(json!({"id":"nested","version":"1.0.0","kind":"agent","name":{"en":"Nested"},"description":{"en":"fixture"},"config":{"model":reference("model"),"instructions":"Nested agent"}})).unwrap();
+	let agent:Entry=serde_json::from_value(json!({"id":"nested","version":"1.0.0","kind":"agent","name":{"en":"Nested"},"description":{"en":"fixture"},"config":{"model":reference("model"),"instructions":"Nested agent","schema_version":1,"bindings":[],"remove_default":[]}})).unwrap();
 	f.registry.register(agent.clone()).await.unwrap();
 	let mut replacement = agent.clone();
 	replacement.id = "replacement".into();
 	f.registry.register(replacement).await.unwrap();
 	let mut bridge = tool("bridge");
-	bridge.config =
-		json!({"transport":"agent","node_id":f.config.node_id,"agent":reference("nested")});
+	bridge.config = json!({"registry_node":f.config.node_id,"provider":"integration.agent@1","operation":"invoke","default_alias":"delegate","tier":"integration","transport":{"transport":"agent","node_id":f.config.node_id,"agent":reference("nested")}});
 	f.registry.register(bridge).await.unwrap();
 	let mut root = agent;
 	root.id = "root".into();
-	root.config["tools"] = json!([reference("bridge")]);
+	root.binding_normalization = None;
+	root.config["bindings"] = json!([{"kind":"tool","target":{"registry_node":f.config.node_id,"id":"bridge","version":"1.0.0"},"narrow":{}}]);
 	f.registry.register(root).await.unwrap();
 	for id in ["model", "nested", "replacement", "bridge", "root"] {
 		approve(&f, "a", &reference(id)).await;
@@ -3334,7 +3334,7 @@ async fn transitive_bindings_cannot_claim_to_rewrite_immutable_dependencies(
 	let bound = install(&app, &a, &bridge_package, &bridge_input).await;
 	assert_eq!(bound.0, 200, "direct bindings must still work: {bound:?}");
 	assert_eq!(
-		bound.1["entry"]["config"]["agent"],
+		bound.1["entry"]["config"]["transport"]["agent"],
 		json!(reference("replacement"))
 	);
 	for config in [
@@ -3370,7 +3370,7 @@ async fn installation_rejects_missing_private_knowledge(
 	f.registry.register(model).await.unwrap();
 	let documents = json!([{"name":"Note","media_type":"text/plain","text":"source"}]);
 	let digest = format!("{:x}", Sha256::digest(documents.to_string().as_bytes()));
-	let agent: Entry = serde_json::from_value(json!({"id":"private-agent","version":"1.0.0","kind":"agent","name":{"en":"Agent"},"description":{"en":"fixture"},"config":{"model":reference("private-model"),"instructions":"Private context","knowledge_digest":digest}})).unwrap();
+	let agent: Entry = serde_json::from_value(json!({"id":"private-agent","version":"1.0.0","kind":"source","name":{"en":"Private Source"},"description":{"en":"fixture"},"config":{"schema_version":1,"source":{"adapter":"private_references","digest":digest}}})).unwrap();
 	f.registry.register(agent).await.unwrap();
 	for id in ["private-model", "private-agent"] {
 		approve(&f, "a", &reference(id)).await;
@@ -3454,7 +3454,7 @@ async fn compatibility_disable_orders_new_run_admission(
 	enable(&app, &f).await;
 	let model:Entry=serde_json::from_value(json!({"id":"model","version":"1.0.0","kind":"model","name":{"en":"Model"},"description":{"en":"fixture"},"config":{"provider":"openrouter","model_id":"fixture/model","endpoint":"http://localhost:9","context_window":128000,"max_output_tokens":1024,"modalities":["text"],"cost":{}}})).unwrap();
 	f.registry.register(model).await.unwrap();
-	let agent:Entry=serde_json::from_value(json!({"id":"agent","version":"1.0.0","kind":"agent","name":{"en":"Agent"},"description":{"en":"fixture"},"config":{"model":reference("model"),"instructions":"Original instructions"}})).unwrap();
+	let agent:Entry=serde_json::from_value(json!({"id":"agent","version":"1.0.0","kind":"agent","name":{"en":"Agent"},"description":{"en":"fixture"},"config":{"model":reference("model"),"instructions":"Original instructions","schema_version":1,"bindings":[],"remove_default":[]}})).unwrap();
 	f.registry.register(agent).await.unwrap();
 	approve(&f, "a", &reference("agent")).await;
 	approve(&f, "a", &reference("model")).await;
@@ -3673,7 +3673,7 @@ async fn source_and_administration_pages_preserve_candidate_progress(
 	let installed = install(&app, &a, &package, &install_input(&package)).await;
 	assert_eq!(installed.0, 200, "{installed:?}");
 	let id = installed.1["installation"]["id"].as_str().unwrap();
-	let staged=request(&app,&a,"POST",&format!("/api/marketplace/installations/{id}"),json!({"expected_revision":1,"config":{"endpoint":"http://localhost:9/new"},"idempotency_key":Uuid::new_v4()})).await;
+	let staged=request(&app,&a,"POST",&format!("/api/marketplace/installations/{id}"),json!({"expected_revision":1,"config":{"transport":{"transport":"http","endpoint":"http://localhost:9/new","credential_env":null,"replay":"read_only"}},"idempotency_key":Uuid::new_v4()})).await;
 	assert_eq!(staged.0, 200, "{staged:?}");
 	let first = request(
 		&app,

@@ -19,6 +19,8 @@ pub struct Limits {
 }
 #[async_trait]
 pub trait SharingScope: FileScopePort {
+	async fn require_bound_operation(&mut self, run: Uuid, operation: &str) -> Result<()>;
+
 	fn node_id(&self) -> &str;
 	fn sharing_limits(&self) -> Result<Limits>;
 	fn subjects(&self) -> &[String];

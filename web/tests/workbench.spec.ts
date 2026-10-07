@@ -16,15 +16,11 @@ const entry = {
   config: {
     model: { id: "model", version: "1.0.0" },
     instructions: "Summarize carefully",
-    tools: [],
-    skills: [],
+    schema_version: 1,
+    bindings: [],
+    remove_default: [],
     cluster: null,
     max_steps: 8,
-    allow_task_creation: false,
-    allow_task_delegation: false,
-    allow_memory_write: false,
-    allow_workspace_retrieval: false,
-    allow_cross_conversation_memory: false,
   },
 };
 
@@ -666,6 +662,7 @@ for (const change of ["add", "replace", "remove", "unchanged", "cluster"]) {
           json: [
             {
               entry: registered,
+              registered_knowledge_digest: digest ?? null,
               draft_knowledge_digest: drafts[0].documents.length
                 ? createHash("sha256")
                     .update(
@@ -1150,41 +1147,47 @@ for (const [width, locale] of [
         ...entry,
         config: {
           ...entry.config,
-          tools:
-            configuration === "mixed"
-              ? [{ id: "source-reader", version: "2.0.0" }]
-              : [],
-          skills:
-            configuration === "defaults"
+          bindings: [
+            ...(configuration === "mixed"
+              ? [
+                  {
+                    kind: "tool",
+                    target: {
+                      registry_node: "aidash://home",
+                      id: "source-reader",
+                      version: "2.0.0",
+                    },
+                    narrow: {},
+                  },
+                ]
+              : []),
+            ...(configuration === "defaults"
               ? []
-              : [
-                  { id: "registered-research-skill", version: "1.0.0" },
-                  { id: "registered-research-skill", version: "2.0.0" },
-                ],
-          allow_task_creation:
-            configuration === "defaults"
-              ? undefined
-              : configuration === "mixed",
-          allow_task_delegation:
-            configuration === "defaults"
-              ? undefined
-              : configuration === "skills-only",
+              : ["1.0.0", "2.0.0"].map((version) => ({
+                  kind: "skill",
+                  target: {
+                    registry_node: "aidash://home",
+                    id: "registered-research-skill",
+                    version,
+                  },
+                  narrow: {},
+                }))),
+          ],
+          remove_default:
+            configuration === "mixed"
+              ? ["task_delegate"]
+              : configuration === "skills-only"
+                ? ["task_create"]
+                : [],
         },
       };
-      const dependencies = [
-        ...configuredEntry.config.tools.map((reference) => ({
-          reference,
-          kind: "tool",
-          action: "tool.call",
-          effective_for_component: true,
-        })),
-        ...configuredEntry.config.skills.map((reference) => ({
-          reference,
-          kind: "skill",
-          action: "skill.use",
-          effective_for_component: reference.version === "2.0.0",
-        })),
-      ];
+      const dependencies = configuredEntry.config.bindings.map((binding) => ({
+        reference: binding.target,
+        kind: binding.kind,
+        action: binding.kind === "tool" ? "tool.invoke" : "skill.use",
+        effective_for_component:
+          binding.kind === "tool" || binding.target.version === "2.0.0",
+      }));
       await page.setViewportSize({ width, height: 960 });
       const { errors } = await setup(page, { locale });
       let permissionRequests = 0;
@@ -1246,15 +1249,10 @@ for (const [width, locale] of [
       });
       await expect(dependencyCard).toBeVisible();
       await expect(autonomyCard).toBeVisible();
-      const expectedAutonomy = [
-        configuredEntry.config.allow_task_creation,
-        configuredEntry.config.allow_task_delegation,
-      ].map((enabled) =>
-        enabled === undefined
-          ? text("Default", "既定")
-          : enabled
-            ? text("Enabled", "有効")
-            : text("Disabled", "無効"),
+      const expectedAutonomy = ["task_create", "task_delegate"].map((name) =>
+        configuredEntry.config.remove_default.includes(name)
+          ? text("Disabled", "無効")
+          : text("Enabled", "有効"),
       );
       await expect(autonomyCard.locator("dt")).toHaveText([
         text("Automatic task creation", "タスクの自動作成"),

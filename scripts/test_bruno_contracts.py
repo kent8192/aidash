@@ -37,7 +37,7 @@ class ContractEvidenceTests(unittest.TestCase):
                 "endpoint": f"GET /endpoint-{endpoint}",
                 "required_checks": ["response contract"],
             }
-            for endpoint in range(271)
+            for endpoint in range(272)
             for scenario in range(3)
         ]
         results = [

@@ -278,17 +278,10 @@ test("cluster chooses an exact agent version", async ({ page }) => {
   });
 });
 
-test("native web tool uses host fields and a URL argument", async ({
-  page,
-}) => {
+test("context sources are explicit immutable definitions", async ({ page }) => {
   const dialog = page.getByRole("dialog");
-  await dialog.getByLabel("Entity type").selectOption("tool");
-  await dialog
-    .getByLabel("Operation", { exact: true })
-    .selectOption("http_get");
-  await dialog
-    .getByLabel("Allowed hostnames")
-    .fill("example.com, docs.example.com");
+  await dialog.getByLabel("Entity type").selectOption("memory");
+  await dialog.getByLabel("Context source").selectOption("conversation_memory");
   const posted = page.waitForRequest(
     (request) =>
       request.url().endsWith("/api/registry") && request.method() === "POST",
@@ -296,16 +289,9 @@ test("native web tool uses host fields and a URL argument", async ({
   await dialog
     .getByRole("button", { name: "Register entity", exact: true })
     .click();
-  expect((await posted).postDataJSON()).toMatchObject({
-    config: {
-      transport: "native",
-      operation: "http_get",
-      allowed_hosts: ["example.com", "docs.example.com"],
-    },
-    schema: {
-      properties: { url: { type: "string", format: "uri" } },
-      required: ["url"],
-    },
+  expect((await posted).postDataJSON().config).toEqual({
+    schema_version: 1,
+    source: { adapter: "conversation_memory" },
   });
 });
 
@@ -320,8 +306,11 @@ test("MCP settings and nested arguments serialize without JSON input", async ({
     .getByLabel("Endpoint", { exact: true })
     .fill("https://example.com/mcp");
   await dialog.getByLabel("MCP tool name").fill("search");
-  await dialog.getByLabel("Retry behavior").selectOption("idempotent");
-  await dialog.getByLabel("Request key argument").fill("request_id");
+  await dialog.getByLabel("Retry behavior").selectOption("unsafe");
+  await expect(dialog.getByLabel("Request key argument")).toHaveCount(0);
+  await expect(
+    dialog.getByLabel("Retry behavior").locator("option"),
+  ).toHaveCount(1);
   await dialog.getByLabel("Use configured credentials").check();
   await dialog
     .getByLabel("Credential reference", { exact: true })
@@ -358,12 +347,20 @@ test("MCP settings and nested arguments serialize without JSON input", async ({
     .click();
   expect((await posted).postDataJSON()).toMatchObject({
     config: {
-      transport: "mcp",
-      endpoint: "https://example.com/mcp",
-      tool_name: "search",
-      credential_env: "AIDASH_SECRET_SEARCH",
-      replay: "idempotent",
-      idempotency_argument: "request_id",
+      registry_node: "aidash://test",
+      provider: "integration.mcp@1",
+      operation: "invoke",
+      default_alias: "integration_invoke",
+      tier: "integration",
+      narrow: {},
+      transport: {
+        transport: "mcp",
+        endpoint: "https://example.com/mcp",
+        tool_name: "search",
+        credential_env: "AIDASH_SECRET_SEARCH",
+        replay: "unsafe",
+        idempotency_argument: null,
+      },
     },
     schema: {
       properties: {
@@ -382,7 +379,7 @@ test("changing tool transport excludes hidden settings", async ({ page }) => {
   const dialog = page.getByRole("dialog");
   await dialog.getByLabel("Entity type").selectOption("tool");
   await dialog.getByLabel("Connection type").selectOption("mcp");
-  await dialog.getByLabel("Retry behavior").selectOption("idempotent");
+  await dialog.getByLabel("Retry behavior").selectOption("unsafe");
   await dialog.getByLabel("Connection type").selectOption("agent");
   await dialog.getByLabel("Executor agent").selectOption("coordinator@2.0.0");
   const posted = page.waitForRequest(
@@ -392,7 +389,7 @@ test("changing tool transport excludes hidden settings", async ({ page }) => {
   await dialog
     .getByRole("button", { name: "Register entity", exact: true })
     .click();
-  expect((await posted).postDataJSON().config).toEqual({
+  expect((await posted).postDataJSON().config.transport).toEqual({
     transport: "agent",
     node_id: "aidash://test",
     agent: { id: "coordinator", version: "2.0.0" },
@@ -433,10 +430,15 @@ test("HTTP tools validate duplicate argument names and support typed lists", asy
     .click();
   expect((await posted).postDataJSON()).toMatchObject({
     config: {
-      transport: "http",
-      endpoint: "https://example.com/tool",
-      credential_env: null,
-      replay: "unsafe",
+      registry_node: "aidash://test",
+      provider: "integration.http@1",
+      operation: "invoke",
+      transport: {
+        transport: "http",
+        endpoint: "https://example.com/tool",
+        credential_env: null,
+        replay: "unsafe",
+      },
     },
     schema: {
       properties: { tags: { type: "array", items: { type: "string" } } },
@@ -508,7 +510,7 @@ test("remote agent tools identify the peer and exact executor", async ({
   await dialog
     .getByRole("button", { name: "Register entity", exact: true })
     .click();
-  expect((await posted).postDataJSON().config).toEqual({
+  expect((await posted).postDataJSON().config.transport).toEqual({
     transport: "agent",
     node_id: "aidash://remote",
     agent: { id: "researcher", version: "3.0.0" },
@@ -545,7 +547,7 @@ test("peer discovery errors allow an explicit remote reference", async ({
   await dialog
     .getByRole("button", { name: "Register entity", exact: true })
     .click();
-  expect((await posted).postDataJSON().config.agent).toEqual({
+  expect((await posted).postDataJSON().config.transport.agent).toEqual({
     id: "researcher",
     version: "3.0.0",
   });

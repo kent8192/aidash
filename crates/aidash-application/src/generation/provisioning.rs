@@ -49,23 +49,31 @@ pub async fn activate_in(
 		return Err(Error::Forbidden);
 	}
 	let spec: Spec = serde_json::from_value(scope.pinned_policy(&job).await?)?;
-	let config = policy::validate(validation, &spec, &scope.snapshot().bundle)?;
-	for (reference, action) in std::iter::once((&config.model, "model.infer"))
-		.chain(config.tools.iter().map(|r| (r, "tool.invoke")))
-		.chain(config.skills.iter().map(|r| (r, "skill.use")))
-		.chain(config.cluster.iter().map(|r| (r, "cluster.execute")))
+	let _config = policy::validate(validation, &spec, &scope.snapshot().bundle)?;
+
+	let snapshot = scope.bindings(&spec.template).await?;
+	for (reference, action) in snapshot
+		.definitions
+		.iter()
+		.filter(|d| d.identity != snapshot.agent)
+		.map(|d| {
+			(
+				d.identity.local(),
+				crate::registry::bindings::component_action(&d.definition.kind),
+			)
+		})
 		.chain(
 			spec.compaction
 				.iter()
-				.map(|c| (&c.provider, "compaction.invoke")),
+				.map(|c| (c.provider.clone(), "compaction.invoke")),
 		)
 		.chain(
 			spec.embedding
 				.iter()
-				.map(|c| (&c.provider, "embedding.invoke")),
+				.map(|c| (c.provider.clone(), "embedding.invoke")),
 		) {
-		scope.catalog_entry(reference, "registry.read").await?;
-		scope.catalog_entry(reference, action).await?;
+		scope.catalog_entry(&reference, "registry.read").await?;
+		scope.catalog_entry(&reference, action).await?;
 	}
 	publication::publish(scope, &job, &spec).await?;
 	let entry: Entry = serde_json::from_value(job.definition.clone())?;

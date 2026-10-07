@@ -38,7 +38,7 @@ async fn add_peer(f: &Federation, node: &str, endpoint: &str) {
 				IntoValue::into_value(node),
 				IntoValue::into_value(endpoint),
 				IntoValue::into_value("AIDASH_SECRET_TEST_PEER"),
-				IntoValue::into_value("0.1"),
+				IntoValue::into_value("0.2"),
 				IntoValue::into_value(true),
 			])
 			.to_string(PostgresQueryBuilder),

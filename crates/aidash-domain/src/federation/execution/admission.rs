@@ -3,7 +3,7 @@ use super::Description;
 use crate::{
 	RunMetadata,
 	identity::execution::ExecutionPrincipal,
-	registry::{AgentConfig, EntityRef, Search},
+	registry::{EntityRef, Search},
 	semantic::Failure,
 };
 use chrono::{DateTime, Utc};
@@ -154,12 +154,6 @@ pub struct MessageReceipt {
 	pub id: Uuid,
 	pub run_id: Uuid,
 	pub accepted: bool,
-}
-pub fn require_workspace_agent(agent: &AgentConfig) -> crate::Result<()> {
-	if agent.core_capabilities.enabled() {
-		return Err(crate::Error::Invalid("remote execution requires a workspace Agent without local core working-area capabilities; transfer files into an explicitly admitted local thread".into()));
-	};
-	Ok(())
 }
 #[cfg(test)]
 mod tests;

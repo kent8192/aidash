@@ -9,6 +9,10 @@ use async_trait::async_trait;
 use uuid::Uuid;
 #[async_trait]
 pub trait PermissionScope: Send {
+	async fn bindings(
+		&mut self,
+		entry: &aidash_domain::registry::Entry,
+	) -> Result<aidash_domain::registry::bindings::BindingSnapshot>;
 	async fn require_inspection(&mut self, entry: &EntityRef) -> Result<()>;
 	async fn effective(&mut self, entry: &EntityRef) -> Result<Entry>;
 	/// Retain the existing shared catalog row lock.

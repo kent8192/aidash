@@ -49,11 +49,18 @@ pub async fn admit(
 	}
 	scope.check_pinned_installation(&entry).await?;
 	scope.require(&task_resource, "task.execute").await?;
-	let config: AgentConfig = serde_json::from_value(entry.config.clone())?;
+	let snapshot = scope.bindings(&entry).await?;
+	let config = AgentConfig::from_snapshot(&snapshot)?;
 	// The existing thread/tombstone lock precedes claim's event lock.
 	let thread = scope.prepare_thread(&task, &config, &agent.id).await?;
 	let claimed = scope
-		.claim(&task, revision.unwrap_or(task.revision), &subject, &entry)
+		.claim(
+			&task,
+			revision.unwrap_or(task.revision),
+			&subject,
+			&entry,
+			&snapshot,
+		)
 		.await?;
 	let run_id = scope.claimed_run(task.id).await?;
 	let identity = scope.identity();

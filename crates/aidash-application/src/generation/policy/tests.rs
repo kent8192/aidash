@@ -31,7 +31,7 @@ fn spec() -> Spec {
 	serde_json::from_value(json!({
         "enabled": true,
         "template": {"id":"template", "version":"1.0.0", "kind":"agent", "name":{"en":"Template"}, "description":{"en":""},
-            "config":{"model":{"id":"model","version":"1.0.0"},"instructions":"Do useful work."}},
+            "config":{"schema_version":1,"bindings":[],"remove_default":[],"model":{"id":"model","version":"1.0.0"},"instructions":"Do useful work."}},
         "permissions":{"roles":["role"], "groups":["group"], "attributes":{"team":"research"}},
         "limits":{"max_agents":5, "max_concurrent":2, "max_depth":2, "token_budget":1000000, "tokens_per_agent":500000, "lifetime_seconds":600},
         "approval_required":true
@@ -82,7 +82,11 @@ impl Repository {
 			principal: Principal::Operator,
 			state: Arc::new(Mutex::new(State {
 				document: bundle(),
-				approved: BTreeMap::from([(("model".into(), "1.0.0".into()), model())]),
+				approved: crate::test_support::builtin_entries("aidash://local")
+					.into_iter()
+					.map(|e| ((e.id.clone(), e.version.clone()), json!(e)))
+					.chain(std::iter::once((("model".into(), "1.0.0".into()), model())))
+					.collect(),
 				..State::default()
 			})),
 		}
@@ -94,7 +98,14 @@ impl Repository {
 		};
 	}
 	fn calls(&self) -> Vec<String> {
-		self.state.lock().unwrap().calls.clone()
+		self.state
+			.lock()
+			.unwrap()
+			.calls
+			.iter()
+			.filter(|call| !call.starts_with("approved:tenant:aidash."))
+			.cloned()
+			.collect()
 	}
 }
 struct Scope {
@@ -177,6 +188,18 @@ impl GenerationPolicies for Repository {
 }
 #[async_trait]
 impl PolicySession for Scope {
+	async fn bindings(
+		&mut self,
+		entry: &aidash_domain::registry::Entry,
+	) -> Result<aidash_domain::registry::bindings::BindingSnapshot> {
+		Ok(crate::test_support::resolve(
+			"aidash://local",
+			entry,
+			false,
+			vec![],
+		))
+	}
+
 	async fn decide(&mut self, id: &str, action: &str) -> Result<bool> {
 		self.call(format!("decide:{id}:{action}"));
 		let allowed = !self.state.lock().unwrap().denied.contains(id);
@@ -610,7 +633,18 @@ fn policy_permissions_and_private_reference_boundary_remain_strict(
 		}
 		"array" => spec.permissions.attributes = json!([]),
 		"large" => spec.permissions.attributes = json!({"large":"a".repeat(16385)}),
-		"private" => spec.template.config["knowledge_digest"] = json!("a".repeat(64)),
+		"private" => {
+			spec.template.config["knowledge_digest"] = json!("a".repeat(64));
+			assert!(
+				validate(
+					&validation,
+					&spec,
+					&serde_json::from_value(bundle()).unwrap()
+				)
+				.is_err()
+			);
+			return;
+		}
 		_ => panic!("unknown fixture mutation"),
 	}
 	assert!(

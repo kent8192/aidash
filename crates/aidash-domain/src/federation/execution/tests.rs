@@ -3,10 +3,10 @@ use rstest::{fixture, rstest};
 use serde_json::json;
 
 #[fixture]
-fn inspection() -> Inspection {
+pub(super) fn inspection() -> Inspection {
 	serde_json::from_value(json!({"node_id":"aidash://receiver","authority_digest":"sha256:pinned",
         "agent":{"id":"agent","version":"1.0.0","kind":"agent","name":{"en":"Agent"},"description":{"en":""}},
-        "definitions":[]})).unwrap()
+        "definitions":[],"binding_snapshot":{"schema_version":1,"agent":{"registry_node":"aidash://receiver","id":"agent","version":"1.0.0"},"remote":true,"bindings":[],"definitions":[]}})).unwrap()
 }
 #[rstest]
 #[case(0, 0, true)]

@@ -154,53 +154,52 @@ Configure a peer on **both** nodes in Settings. Each peer record contains the ot
 
 ## Tools and coordination
 
-Every agent receives these workspace tools: `agent_discover`, `task_create`, `task_delegate`, `artifact_publish`, `workspace_message`, `workspace_observe`, `workspace_wait`, `memory_write`, and `human_request`. The model's final text completes its task and publishes a final artifact. A coordinator must wait for its subtasks and synthesize their artifacts. If a child fails, is blocked, or is cancelled, open its task details and explicitly abandon it with a reason; then answer the parent's human request to resume synthesis. Abandonment is audited and never turns a failed child into a successful result.
+Every Agent retains `workspace_read` and `human_request`. The other Built-in tools are included by default and can be removed through `remove_default`. Cluster coordinators must retain `task_create`, `task_delegate` and `agent_discover`. The model's final text completes its task and publishes a final artifact. A coordinator must wait for its subtasks and synthesize their artifacts. Unresolved children require an explicit, audited abandonment before the parent can finish.
 
-Additional tools are versioned Registry entities. Their JSON Schema validates arguments. Agents reference exact tool versions; provider-safe aliases `plugin_0`, `plugin_1`, etc. follow the order of those references. Supported configurations:
-
-```json
-{ "transport": "native", "operation": "echo" }
-```
+Tools are immutable Registry descriptors with provider-owned behavior and a JSON Schema for arguments. For an HTTP integration, register this configuration on its exact Node:
 
 ```json
 {
-  "transport": "native",
-  "operation": "http_get",
-  "allowed_hosts": ["docs.rs", "github.com"]
+  "registry_node": "aidash://node-a",
+  "provider": "integration.http@1",
+  "operation": "invoke",
+  "default_alias": "research_lookup",
+  "tier": "integration",
+  "transport": {
+    "transport": "http",
+    "endpoint": "https://tools.example.com/research",
+    "credential_env": "AIDASH_SECRET_TOOLS",
+    "replay": "unsafe"
+  }
 }
 ```
+
+Bind its exact registered identity in the Agent configuration:
 
 ```json
 {
-  "transport": "http",
-  "endpoint": "https://tools.example.com/research",
-  "credential_env": "AIDASH_SECRET_TOOLS",
-  "replay": "idempotent"
+  "schema_version": 1,
+  "model": { "id": "model", "version": "1.0.0" },
+  "instructions": "Research and publish findings.",
+  "bindings": [
+    {
+      "kind": "tool",
+      "target": {
+        "registry_node": "aidash://node-a",
+        "id": "research-http",
+        "version": "1.0.0"
+      },
+      "alias": "research_lookup",
+      "narrow": {}
+    }
+  ],
+  "remove_default": []
 }
 ```
 
-```json
-{
-  "transport": "mcp",
-  "endpoint": "https://tools.example.com/mcp",
-  "credential_env": "AIDASH_SECRET_MCP",
-  "tool_name": "search",
-  "replay": "read_only",
-  "idempotency_argument": null
-}
-```
+The alias stays stable across versions. Run admission saves the complete dependency closure; subsequent steps use that snapshot while rechecking current resource authority. Memory and reference context require explicit Memory or Source bindings. Host packages, including shell and Python, require tenant approval and compatible Node providers. See the [Registry capability contract](docs/operations/registry-capabilities.md) for package preparation, atomic approval, lifecycle operations and the drained upgrade procedure.
 
-```json
-{
-  "transport": "agent",
-  "node_id": "aidash://node-b",
-  "agent": { "id": "researcher", "version": "1.0.0" }
-}
-```
-
-The Agent tool creates and delegates a child of the invoking task by default, returning its task ID. Native HTTP retrieval is restricted to configured hosts and does not follow redirects. MCP uses the Rust SDK's streamable HTTP transport, including initialization and session lifecycle. No shell or arbitrary code execution tool is enabled by default.
-
-HTTP tools receive an `Idempotency-Key` header. An idempotent MCP tool must specify an argument name that its server actually supports. `read_only` permits safe repetition. `unsafe` allows one attempt; an interrupted or ambiguous effect pauses for reconciliation instead of being invoked again. See the recovery contract before connecting an effectful tool.
+MCP and Agent integrations use `integration.mcp@1` and `integration.agent@1` with their configuration under `transport`. An Agent integration creates and delegates a child of the invoking task. HTTP tools propagate `Idempotency-Key`, but HTTP/MCP behavior remains `Unsafe` without a verified provider contract: an uncertain effect pauses for reconciliation and is never automatically repeated. Transport replay labels do not weaken that rule. Native echo and native HTTP fetching are unsupported for ordinary new registrations.
 
 ## History compaction
 

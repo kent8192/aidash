@@ -5,7 +5,6 @@ use crate::apps::execution::capabilities::{
 	services::{references, sessions},
 };
 use crate::{
-	Result as NativeResult,
 	authorization::access::Access,
 	registry::{EntityRef, Entry},
 	store::Store,
@@ -16,10 +15,6 @@ use aidash_application::{
 };
 use aidash_domain::capabilities::{configuration::Configure, records::Record};
 use async_trait::async_trait;
-use reinhardt::query::{
-	Alias, Expr, ExprTrait as _, PostgresQueryBuilder, Query, QueryStatementBuilder as _,
-	SimpleExpr,
-};
 use serde_json::Value;
 use uuid::Uuid;
 pub(crate) struct Scope<'a> {
@@ -32,10 +27,8 @@ impl From<NativeConfigure> for Configure {
 			idempotency_key: v.idempotency_key,
 			source_version: v.source_version,
 			new_version: v.new_version,
-			core_capabilities: v.core_capabilities,
-			skill_attachments: v.skill_attachments,
-			skill_roots: v.skill_roots,
-			reference_attachments: v.reference_attachments,
+			bindings: v.bindings,
+			remove_default: v.remove_default,
 		}
 	}
 }
@@ -73,6 +66,35 @@ impl ConfigurationScope for Scope<'_> {
 			.map(domain)
 			.map_err(Into::into)
 	}
+	async fn bindings(
+		&mut self,
+		entry: &Entry,
+	) -> Result<aidash_domain::registry::bindings::BindingSnapshot> {
+		let snapshot = crate::apps::registry::repositories::bindings::snapshot(
+			&mut self.access.tx,
+			&self.store.node_id,
+			entry,
+			false,
+		)
+		.await?;
+		for definition in &snapshot.definitions {
+			if definition.identity == snapshot.agent {
+				continue;
+			}
+			let current = crate::authorization::catalog::entry(
+				self.access,
+				&definition.identity.local(),
+				"registry.read",
+			)
+			.await?;
+			if aidash_domain::registry::rules::digest(&serde_json::to_value(current)?)
+				!= definition.digest
+			{
+				return Err(aidash_application::Error::Forbidden);
+			}
+		}
+		Ok(snapshot)
+	}
 	async fn register(&mut self, entry: &Entry) -> Result<bool> {
 		crate::registry::register_in(&mut self.access.tx, entry, &self.store.node_id)
 			.await
@@ -88,59 +110,7 @@ impl ConfigurationScope for Scope<'_> {
 		.await
 		.map_err(Into::into)
 	}
-	async fn preserve_documents(&mut self, id: &str, version: &str, source: &str) -> Result<()> {
-		let result: NativeResult<()> = async {
-			let access = &mut *self.access;
-			{
-				let query_bind_1 = id;
-				let query_bind_2 = version;
-				let query_bind_3 = source;
-				crate::database::native::query(
-					&Query::insert()
-						.into_table(Alias::new("agent_knowledge"))
-						.columns(["agent_id", "agent_version", "documents"].map(Alias::new))
-						.from_subquery(
-							Query::select()
-								.expr(SimpleExpr::CustomWithExpr(
-									"(?)".to_owned(),
-									vec![Expr::value(query_bind_1.to_owned()).into()],
-								))
-								.expr(SimpleExpr::CustomWithExpr(
-									"(?)".to_owned(),
-									vec![Expr::value(query_bind_2.to_owned()).into()],
-								))
-								.column(Alias::new("documents"))
-								.from(Alias::new("agent_knowledge"))
-								.and_where(
-									reinhardt::query::SimpleExpr::from(Expr::col(Alias::new(
-										"agent_id",
-									)))
-									.eq(SimpleExpr::CustomWithExpr(
-										"(?)".to_owned(),
-										vec![Expr::value(query_bind_1.to_owned()).into()],
-									)),
-								)
-								.and_where(
-									reinhardt::query::SimpleExpr::from(Expr::col(Alias::new(
-										"agent_version",
-									)))
-									.eq(SimpleExpr::CustomWithExpr(
-										"(?)".to_owned(),
-										vec![Expr::value(query_bind_3.to_owned()).into()],
-									)),
-								)
-								.to_owned(),
-						)
-						.to_string(PostgresQueryBuilder),
-				)
-				.execute(&mut **access.tx)
-				.await?
-			};
-			Ok(())
-		}
-		.await;
-		result.map_err(Into::into)
-	}
+
 	async fn event(&mut self, kind: &str, data: Value) -> Result<()> {
 		self.store
 			.event(&mut self.access.tx, None, kind, data)

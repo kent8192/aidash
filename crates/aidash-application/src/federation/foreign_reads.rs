@@ -116,6 +116,7 @@ pub async fn visible(scope: &mut dyn ForeignRunReadScope, run: &RunMetadata) -> 
 			"skill" => "skill.use",
 			"cluster" => "cluster.execute",
 			"compactor" => "compaction.invoke",
+			"bundle" | "memory" | "source" => "registry.read",
 			_ => return Ok(false),
 		};
 		if digest(&serde_json::to_value(&entry)?) != definition.digest

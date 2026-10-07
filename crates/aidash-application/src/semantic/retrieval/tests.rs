@@ -234,9 +234,12 @@ fn fixture() -> (Calls, Scope, Vector) {
 	(calls.clone(), Scope::new(calls.clone()), Vector::new(calls))
 }
 fn controls(memory: bool, workspace: bool) -> AgentConfig {
-	serde_json::from_value(json!({"model":{"id":"model","version":"1"},
-        "allow_cross_conversation_memory":memory,"allow_workspace_retrieval":workspace}))
-	.unwrap()
+	let mut controls: AgentConfig =
+		serde_json::from_value(crate::test_support::agent("fixture").config).unwrap();
+	controls.conversation_memory = memory;
+	controls.semantic_memory = memory;
+	controls.workspace_context = workspace;
+	controls
 }
 
 #[rstest]

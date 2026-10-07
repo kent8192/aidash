@@ -42,6 +42,8 @@ pub fn url_patterns() -> UnifiedRouter {
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(super::views::remote_execution::control)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
+			.endpoint(super::views::remote_execution::answer_human)
+			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(super::views::remote_execution::list)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(super::views::remote_execution::activate)

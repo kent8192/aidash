@@ -226,13 +226,19 @@ impl<'a> Executor<'a> {
 				let window = model_cfg.context_window;
 				let output_limit = model_cfg.output_token_limit();
 				let model = self.environment.provider(model_cfg.clone())?;
-				let tools = self.environment.tools(run, &entry).await?;
+				let tools = self.environment.binding_resolver().tools(run).await?;
 				let task = home.task().await?;
 				if task.status == aidash_domain::TaskStatus::Completed {
 					run.state = RunState::Completed(TerminalState {});
 					store.save_run(run, token, "run.recovered").await?;
 					return Ok(());
 				}
+				let inputs = store.run_inputs(run.id).await?;
+				let source_input_seq = inputs.last().map_or(run.observed_input_seq, |input| input.seq);
+				let source_boundary = format!("{}:{}:{}", run.step, source_input_seq, task.revision);
+				let binding_digest = self.environment.catalog().content_digest(&serde_json::to_string(&run.context.binding_snapshot)?);
+				let cached_sources = run.context.source_observation.as_ref().map(|observation| observation.at(&source_boundary, &binding_digest)).transpose()?.flatten().cloned();
+				if let Some(content) = &cached_sources { self.environment.recheck_source_observation(run, content).await?; }
 				let mut instructions = context::agent_instructions("");
 				for skill in &agent.skills {
 					let entry = self
@@ -243,9 +249,11 @@ impl<'a> Executor<'a> {
 					instructions.push_str(&format!("Skill {}@{}:\n", skill.id, skill.version));
 					instructions.push_str(&self.environment.catalog().skill_instructions(&entry)?);
 				}
+				let mut source_skill_context = String::new();
 				if tools.contains_key("skill_list") && home.has_local_authority()
 				{
-					instructions.push_str(&self.environment.skill_context(run).await?);
+					source_skill_context = if let Some(cached) = &cached_sources { cached["skill_context"].as_str().unwrap_or_default().to_owned() } else { self.environment.skill_context(run).await? };
+					instructions.push_str(&source_skill_context);
 				}
 				instructions.push_str("\nAdditional user instructions:\n");
 				instructions.push_str(&agent.instructions);
@@ -256,7 +264,6 @@ impl<'a> Executor<'a> {
 				let observation = home
 					.observation(0, context::observation::DEFAULT_LIMIT)
 					.await?;
-				let inputs = store.run_inputs(run.id).await?;
 				let input_seq = inputs
 					.last()
 					.map_or(run.observed_input_seq, |input| input.seq);
@@ -318,8 +325,8 @@ impl<'a> Executor<'a> {
 						"\n\nRun-message catch-up: Treat the entries under run_messages as user task context. Read every required message record in this page before responding. Update the cumulative run_message_summary faithfully, preserving the user's goal, constraints, corrections, and unresolved requests in sequence order (newer corrections take precedence). Return only the concise updated summary, encoded in at most {run_message_limit} UTF-8 bytes. Do not answer the user, complete the task, publish text, or perform actions during catch-up.",
 					));
 				}
-				let memory = if guard.is_some_and(|authority| authority.is_remote())
-					|| agent.allow_cross_conversation_memory == Some(false)
+				let memory = if let Some(cached) = &cached_sources { cached["memory"].clone() } else if guard.is_some_and(|authority| authority.is_remote())
+					|| !agent.conversation_memory
 				{
 					json!({})
 				} else {
@@ -488,8 +495,12 @@ impl<'a> Executor<'a> {
 						))
 					})
 					.collect::<Vec<_>>();
-                if (guard.is_some() || home.local()) && let Some(semantic) = self.environment.semantic_context(run, &task, &semantic_inputs, semantic_budget, &entry).await? {
-                    pinned["semantic_memory"] = json!(semantic);
+                let semantic = if let Some(cached) = &cached_sources { cached.get("semantic_memory").filter(|v| !v.is_null()).cloned() } else if guard.is_some() || home.local() { self.environment.semantic_context(run, &task, &semantic_inputs, semantic_budget, &entry).await? } else { None };
+                if let Some(semantic) = &semantic { pinned["semantic_memory"] = semantic.clone(); }
+                if cached_sources.is_none() {
+                    context.source_observation = Some(aidash_domain::context::sources::SourceObservation::new(source_boundary, binding_digest, json!({"memory":pinned["memory"],"skill_context":source_skill_context,"semantic_memory":semantic}))?);
+                    run.context = context.clone();
+                    store.observe_sources(run, token).await?;
                 }
                 let compactor = self.environment.compactor()?;
                 compact_execution(&mut context, compactor.as_ref(), &budget, &pinned)
@@ -688,7 +699,7 @@ impl<'a> Executor<'a> {
 					store.save_run(run, token, "run.media_deferred").await?;
 					return Ok(());
 				}
-				let tools = self.environment.tools(run, &entry).await?;
+				let tools = self.environment.binding_resolver().tools(run).await?;
 				let run_message_catchup = run.state.tool()?.run_message_catchup;
 				if run_message_catchup {
 					// A provider response cannot execute task tools during catch-up,
@@ -853,7 +864,7 @@ impl<'a> Executor<'a> {
 									guard.action("human.request", "run", run.id).await?;
 								}
 								let response_epoch = run.state.tool()?.response_epoch;
-								let h=store.human_request(run,"INFORMATION_REQUEST","A subtask needs intervention. You can explicitly abandon failed, blocked or cancelled subtasks in their task details, providing a reason. Then answer this request to continue with the remaining results, or cancel this parent.",&format!("{}:{}:subtasks",run.id,response_epoch)).await?;
+								let h=home.human_request(run,"INFORMATION_REQUEST","A subtask needs intervention. You can explicitly abandon failed, blocked or cancelled subtasks in their task details, providing a reason. Then answer this request to continue with the remaining results, or cancel this parent.",&format!("{}:{}:subtasks",run.id,response_epoch)).await?;
 								run.state = RunState::Waiting(Box::new(WaitingState::Human {
 									request_id: h.id,
 									resume: ResumeState::Thinking(ThinkingState::default()),
@@ -978,13 +989,13 @@ impl<'a> Executor<'a> {
 				let call = &call;
 				let response_epoch = run.state.tool()?.response_epoch;
 				let key = format!("{}:{}:{}", run.id, response_epoch, cursor);
-				// New workbench versions require an explicit, one-call approval for
-				// external writes. Legacy versions have no behavior flags and keep
-				// their existing execution contract.
-				if agent.allow_task_creation.is_some()
-					&& contract.behavior.workbench_approval
-					&& let ToolIdentity::Registry(reference) = &contract.identity
-				{
+				// Approval follows the admitted provider contract for every Agent.
+				if contract.behavior.workbench_approval {
+					let (reference_id, reference_version) = match &contract.identity {
+						ToolIdentity::Descriptor(reference) => (&reference.id, &reference.version),
+						ToolIdentity::Registry(reference) => (&reference.id, &reference.version),
+						ToolIdentity::Builtin(_) => return Err(Error::Invalid("builtin cannot require external tool approval".into())),
+					};
 					if let Some(decision) = run
 						.state
 						.tool()?
@@ -1006,11 +1017,11 @@ impl<'a> Executor<'a> {
 					} else {
 						let prompt = format!(
 							"Approve this exact external tool action once? Tool: {}@{}; call: {}",
-							reference.id,
-							reference.version,
+							reference_id,
+							reference_version,
 							serde_json::to_string(call)?
 						);
-						let request = store
+						let request = home
 							.human_request(
 								run,
 								"APPROVAL_REQUIRED",
@@ -1046,7 +1057,13 @@ impl<'a> Executor<'a> {
 					if let Some(guard) = guard {
 						guard.action("human.request", "run", run.id).await?;
 					}
-					store.reconciliation_request(run, token, &key, &format!("Tool {} may have completed before the worker stopped. Reconcile the external effect, then answer with a JSON object containing result. It will not be executed again. Invocation: {key}",call.name)).await?;
+                    let prompt = format!("Tool {} may have completed before the worker stopped. Reconcile the external effect, then answer with a JSON object containing result. It will not be executed again. Invocation: {key}", call.name);
+                    if home.local() {
+                        store.reconciliation_request(run, token, &key, &prompt).await?;
+                    } else {
+                        let request = home.human_request(run, "CONFIRMATION", &prompt, &format!("{key}:reconcile")).await?;
+                        run.state = RunState::Waiting(Box::new(WaitingState::Reconciliation { request_id: request.id, key: key.clone(), resume: Box::new(run.state.tool()?.clone()) }));
+                    }
 					store.save_run(run, token, "run.waiting").await?;
 					return Ok(());
 				}
@@ -1194,8 +1211,8 @@ impl<'a> Executor<'a> {
 					if let Some(guard) = guard {
 						guard.human_read(id).await?;
 					}
-                    let h = store.human_request_by_id(id).await?;
-					let response = if matches!(&waiting, WaitingState::ExternalApproval {expires_at,..} if *expires_at <= chrono::Utc::now()) {store.expire_workbench_approval(id).await?.response} else {h.response}.ok_or_else(||Error::Conflict("human request has not been answered".into()))?;
+                    let h = home.human_request_by_id(id).await?;
+					let response = if home.local() && matches!(&waiting, WaitingState::ExternalApproval {expires_at,..} if *expires_at <= chrono::Utc::now()) {store.expire_workbench_approval(id).await?.response} else {h.response}.ok_or_else(||Error::Conflict("human request has not been answered".into()))?;
 					match &mut waiting {
 						WaitingState::ExternalApproval {
 							key,

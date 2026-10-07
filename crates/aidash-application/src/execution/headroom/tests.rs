@@ -70,16 +70,40 @@ impl Definitions for Scope {
 	fn node(&self) -> &str {
 		"local"
 	}
-	async fn definition(&self, _: &RunMetadata, id: &str, version: &str) -> Result<Entry> {
-		self.trace.lock().unwrap().push(format!("definition:{id}"));
-		let config = if id == "agent" {
-			json!({"model":{"id":"model","version":"1"},"core_capabilities":{"skills":self.skills},"knowledge_digest":self.knowledge.then_some("digest")})
-		} else {
-			json!({"provider":"openrouter","model_id":"test","endpoint":"https://example.test","context_window":200_000,"max_output_tokens":1024,"modalities":["text"],"cost":{}})
-		};
-		Ok(serde_json::from_value(
-			json!({"id":id,"version":version,"kind":id,"name":{},"description":{},"config":config}),
-		)?)
+
+	async fn snapshot(
+		&self,
+		_: &RunMetadata,
+	) -> Result<aidash_domain::registry::bindings::BindingSnapshot> {
+		self.trace.lock().unwrap().push("snapshot".into());
+		let node = "aidash://local";
+		let mut root = crate::test_support::agent("agent");
+		if !self.skills {
+			root.config["remove_default"] = json!(["skill_list", "skill_load", "skill_read"]);
+		}
+		let mut extras = vec![];
+		if self.knowledge {
+			let source = crate::test_support::entry(
+				"references",
+				"source",
+				json!({"schema_version":1,"source":{"adapter":"private_references","digest":"a".repeat(64)}}),
+			);
+			root.config["bindings"] = json!([{"kind":"source","target":{"registry_node":node,"id":"references","version":"1.0.0"}}]);
+			extras.push(source);
+		}
+
+		if self.skills {
+			root.config["bindings"].as_array_mut().unwrap().push(json!({"kind":"source","target":{"registry_node":node,"id":"mounted-skills","version":"1.0.0"}}));
+			extras.push(crate::test_support::entry(
+				"mounted-skills",
+				"source",
+				json!({"schema_version":1,"source":{"adapter":"skill_roots","roots":[".agents/skills"]}}),
+			));
+		}
+		Ok(crate::test_support::resolve(node, &root, false, extras))
+	}
+	async fn definition(&self, _: &RunMetadata, _: &str, _: &str) -> Result<Entry> {
+		panic!("headroom reads only the admitted closure")
 	}
 	async fn documents(&self, _: &Entry) -> Result<Value> {
 		self.trace.lock().unwrap().push("documents".into());
@@ -108,13 +132,7 @@ async fn pinned_context_saturates_after_current_definition_and_knowledge_reads(
 	assert_eq!(request(&scope, &run).await.unwrap(), 0);
 	assert_eq!(
 		*scope.trace.lock().unwrap(),
-		[
-			"definition:agent",
-			"definition:model",
-			"documents",
-			"contracts",
-			"pinned"
-		]
+		["snapshot", "documents", "contracts", "pinned"]
 	);
 }
 
@@ -128,12 +146,7 @@ async fn disabled_skills_skip_pinned_contents_and_cap_corrections(
 	assert_eq!(message_limit(&scope, &run).await.unwrap(), 16_384);
 	assert_eq!(
 		*scope.trace.lock().unwrap(),
-		[
-			"definition:agent",
-			"definition:model",
-			"documents",
-			"contracts"
-		]
+		["snapshot", "documents", "contracts"]
 	);
 }
 
@@ -148,10 +161,7 @@ async fn failed_private_read_precedes_capability_profile_resolution(
 		Err(Error::External(message)) => assert_eq!(message, "private contents unavailable"),
 		other => panic!("unexpected private read outcome: {other:?}"),
 	}
-	assert_eq!(
-		*scope.trace.lock().unwrap(),
-		["definition:agent", "definition:model", "documents"]
-	);
+	assert_eq!(*scope.trace.lock().unwrap(), ["snapshot", "documents"]);
 }
 
 #[rstest]

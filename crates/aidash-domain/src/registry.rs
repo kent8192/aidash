@@ -18,6 +18,8 @@ pub struct Projection {
 #[serde(deny_unknown_fields)]
 pub struct Entry {
 	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub binding_normalization: Option<bindings::AgentNormalization>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub installation: Option<Projection>,
 	pub id: String,
 	pub version: String,
@@ -119,42 +121,55 @@ impl Search {
 	}
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
+/// Runtime settings derived exclusively from a Binding definition or its admitted
+/// snapshot. Capability booleans are internal adapter inputs, never writable API
+/// fields, and never select the model-visible tool set.
+#[derive(Debug, Clone)]
 pub struct AgentConfig {
-	#[serde(default)]
-	pub core_capabilities: crate::capabilities::CoreCapabilities,
-	#[serde(default, skip_serializing_if = "Vec::is_empty")]
-	pub skill_attachments: Vec<crate::capabilities::SkillAttachment>,
-	#[serde(default, skip_serializing_if = "Vec::is_empty")]
-	pub skill_roots: Vec<String>,
-	#[serde(default, skip_serializing_if = "Vec::is_empty")]
-	pub reference_attachments: Vec<crate::capabilities::ReferenceAttachment>,
+	pub conversation_memory: bool,
+	pub semantic_memory: bool,
+	pub workspace_context: bool,
+	pub schema_version: u8,
+	pub bindings: Vec<bindings::Binding>,
+	pub remove_default: Vec<String>,
 	pub model: EntityRef,
-	#[serde(default)]
 	pub instructions: String,
-	/// Digest of private, node-local reference documents; never embeds their contents.
-	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub knowledge_digest: Option<String>,
-	#[serde(default)]
-	pub tools: Vec<EntityRef>,
-	#[serde(default)]
-	pub skills: Vec<EntityRef>,
 	pub cluster: Option<EntityRef>,
-	#[serde(default = "max_steps")]
 	pub max_steps: i32,
-	/// Missing fields preserve the behavior of previously registered versions.
-	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub core_capabilities: crate::capabilities::CoreCapabilities,
+	pub skill_attachments: Vec<crate::capabilities::SkillAttachment>,
+	pub skill_roots: Vec<String>,
+	pub reference_attachments: Vec<crate::capabilities::ReferenceAttachment>,
+	pub knowledge_digest: Option<String>,
+	pub tools: Vec<EntityRef>,
+	pub skills: Vec<EntityRef>,
 	pub allow_task_creation: Option<bool>,
-	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub allow_task_delegation: Option<bool>,
-	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub allow_memory_write: Option<bool>,
-	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub allow_workspace_retrieval: Option<bool>,
-	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub allow_cross_conversation_memory: Option<bool>,
 }
+impl<'de> Deserialize<'de> for AgentConfig {
+	fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+		let input = bindings::AgentBindings::deserialize(deserializer)?;
+		input.validate().map_err(serde::de::Error::custom)?;
+		Ok(Self::from_definition(input))
+	}
+}
+impl Serialize for AgentConfig {
+	fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+		self.definition().serialize(serializer)
+	}
+}
+impl JsonSchema for AgentConfig {
+	fn schema_name() -> std::borrow::Cow<'static, str> {
+		"AgentConfig".into()
+	}
+	fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+		<bindings::AgentBindings as JsonSchema>::json_schema(generator)
+	}
+}
+mod agent_settings;
 
 #[derive(Serialize, Deserialize, JsonSchema)]
 pub struct AgentPage {
@@ -164,14 +179,6 @@ pub struct AgentPage {
 
 fn max_steps() -> i32 {
 	64
-}
-
-impl AgentConfig {
-	pub fn permits_builtin(&self, name: &str) -> bool {
-		crate::tool::builtin_contract(name)
-			.and_then(|contract| contract.authorization.flag)
-			.is_none_or(|flag| flag.permitted(self))
-	}
 }
 
 mod contracts;

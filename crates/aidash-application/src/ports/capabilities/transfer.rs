@@ -20,6 +20,8 @@ pub struct Limits {
 }
 #[async_trait]
 pub trait TransferScope: Send {
+	async fn require_bound_operation(&mut self, run: Uuid, operation: &str) -> Result<()>;
+
 	fn limits(&self) -> Result<Limits>;
 	fn node_id(&self) -> &str;
 	fn tenant(&self) -> &str;

@@ -103,6 +103,7 @@ fn world() -> World {
 			created_at: now,
 		},
 		inspection: Inspection {
+			binding_snapshot: crate::test_support::snapshot("aidash://receiver", "agent"),
 			generation: None,
 			lineage: vec![],
 			node_id: "aidash://executor".into(),

@@ -10,6 +10,10 @@ use serde_json::Value;
 
 #[async_trait]
 pub trait PolicySession: Send {
+	async fn bindings(
+		&mut self,
+		entry: &aidash_domain::registry::Entry,
+	) -> Result<aidash_domain::registry::bindings::BindingSnapshot>;
 	async fn decide(&mut self, id: &str, action: &str) -> Result<bool>;
 	async fn bundle(&mut self, tenant: &str) -> Result<Value>;
 	async fn previous(&mut self, tenant: &str, id: &str, revision: i64) -> Result<Option<Value>>;

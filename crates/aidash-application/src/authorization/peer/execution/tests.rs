@@ -19,7 +19,7 @@ struct Scope {
 }
 impl Scope {
 	fn new() -> Self {
-		let executor = qualified_agent("aidash://receiver", "agent", "1");
+		let executor = qualified_agent("aidash://receiver", "agent", "1.0.0");
 		Self {
 			bundle: serde_json::from_value(
 				json!({"tenant":"local","subjects":{executor:{"kind":"agent","delegated_by":null}}}),
@@ -78,15 +78,24 @@ impl PeerInspectionScope for Scope {
 	}
 	async fn entry(&mut self, reference: &EntityRef, action: &str) -> Result<Entry> {
 		self.call(action);
-		let kind = if reference.id == "agent" {
-			"agent"
-		} else {
-			&self.model_kind
-		};
-		Ok(serde_json::from_value(
-			json!({"id":reference.id,"version":reference.version,"kind":kind,"name":{},"description":{},
-            "config":if reference.id=="agent" {json!({"model":{"id":"model","version":"1"}})} else {json!({})}}),
-		)?)
+		let snapshot = crate::test_support::snapshot("aidash://receiver", "agent");
+		let mut entry = snapshot
+			.definitions
+			.iter()
+			.find(|d| d.identity.local() == *reference)
+			.expect("admitted fixture definition")
+			.definition
+			.clone();
+		if entry.kind == "model" {
+			entry.kind = self.model_kind.clone();
+		}
+		Ok(entry)
+	}
+	async fn bindings(
+		&mut self,
+		_: &Entry,
+	) -> Result<aidash_domain::registry::bindings::BindingSnapshot> {
+		Ok(crate::test_support::snapshot("aidash://receiver", "agent"))
 	}
 	fn entry_resource(&self, entry: &Entry) -> Resource {
 		self.resource("registry", &entry.id, json!({}))
@@ -105,7 +114,7 @@ impl PeerInspectionScope for Scope {
 	}
 }
 fn input() -> InspectInput {
-	serde_json::from_value(json!({"tenant":"source","subject":"human","agent":{"id":"agent","version":"1"},"requirements":{}})).unwrap()
+	serde_json::from_value(json!({"tenant":"source","subject":"human","agent":{"id":"agent","version":"1.0.0"},"requirements":{}})).unwrap()
 }
 
 #[rstest]
@@ -115,7 +124,7 @@ async fn preflight_checks_receiver_and_delegated_executor_before_pinning_definit
 	let inspection = inspect(&mut scope, "aidash://home", &input())
 		.await
 		.unwrap();
-	let executor = qualified_agent("aidash://receiver", "agent", "1");
+	let executor = qualified_agent("aidash://receiver", "agent", "1.0.0");
 	assert_eq!(
 		scope.calls[0],
 		("federation.execute".into(), vec!["mapped".into()])
@@ -128,13 +137,12 @@ async fn preflight_checks_receiver_and_delegated_executor_before_pinning_definit
 		)
 	);
 	assert_eq!(
-		inspection
-			.definitions
-			.iter()
-			.map(|d| d.kind.as_str())
-			.collect::<Vec<_>>(),
-		vec!["agent", "model"]
+		inspection.definitions.len(),
+		inspection.binding_snapshot.definitions.len()
 	);
+	assert!(inspection.definitions.iter().any(|d| d.kind == "agent"));
+	assert!(inspection.definitions.iter().any(|d| d.kind == "model"));
+	assert!(inspection.definitions.iter().any(|d| d.kind == "tool"));
 	assert_eq!(
 		inspection.authority_digest,
 		digest(

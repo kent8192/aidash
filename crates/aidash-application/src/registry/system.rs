@@ -21,6 +21,7 @@ pub fn entries(validation: &DefinitionValidation, node: &str) -> Result<Vec<Entr
 				))
 			})?;
 			Ok(Entry {
+				binding_normalization: None,
 				installation: None,
 				id: format!("aidash.{operation}"),
 				version: "1.0.0".into(),

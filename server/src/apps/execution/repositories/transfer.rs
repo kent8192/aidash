@@ -213,6 +213,15 @@ impl TransferRepository for Repository<'_> {
 }
 #[async_trait]
 impl TransferScope for Scope<'_> {
+	async fn require_bound_operation(&mut self, run: Uuid, operation: &str) -> Result<()> {
+		crate::apps::registry::repositories::bindings::require_operation(
+			self.authority.get_mut(),
+			run,
+			operation,
+		)
+		.await
+	}
+
 	fn limits(&self) -> Result<Limits> {
 		Ok(limits(self.store.ok_or_else(missing)?))
 	}

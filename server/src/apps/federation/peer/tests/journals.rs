@@ -29,7 +29,7 @@ async fn peer_journals_bound_previews_and_exclude_other_home_nodes(
 		.node_id("aidash://journal-home")
 		.endpoint("http://127.0.0.1:1")
 		.credential_env(PEER_ENV)
-		.protocol_version("0.1")
+		.protocol_version("0.2")
 		.enabled(true)
 		.finish();
 	Peer::objects()
@@ -111,7 +111,7 @@ async fn peer_journals_bound_previews_and_exclude_other_home_nodes(
 		.await
 		.unwrap();
 	app.anonymous
-		.set_header("x-aidash-protocol", "0.1")
+		.set_header("x-aidash-protocol", "0.2")
 		.await
 		.unwrap();
 	let journal = assert_json(

@@ -2,7 +2,7 @@ use super::*;
 use crate::ports::{Credentials, registry::*};
 use aidash_domain::{
 	model::ModelConfig,
-	registry::{EntityRef, Projection},
+	registry::{AgentConfig, EntityRef, Projection},
 };
 use async_trait::async_trait;
 use rstest::{fixture, rstest};
@@ -152,6 +152,9 @@ impl RegistryRead for Scope {
 }
 #[async_trait]
 impl PackageScope for Scope {
+	fn registry_node(&self) -> &str {
+		"aidash://test"
+	}
 	async fn publish(
 		&mut self,
 		id: &str,
@@ -206,7 +209,7 @@ fn snapshot(package: &Package) -> PackageSnapshot {
 }
 
 #[rstest]
-#[case::legacy(false, "overlaid")]
+#[case::local(false, "original")]
 #[case::installed(true, "original")]
 #[tokio::test]
 async fn installed_run_never_resolves_mutable_overlays(
@@ -252,12 +255,11 @@ async fn installed_run_never_resolves_mutable_overlays(
 		.await
 		.unwrap();
 	assert_eq!(entry.config["instructions"], expected);
-	assert_eq!(
-		scope
+	assert!(
+		!scope
 			.trace
 			.iter()
-			.any(|event| event.starts_with("overlay:")),
-		!installed
+			.any(|event| event.starts_with("overlay:"))
 	);
 }
 
@@ -275,13 +277,13 @@ async fn registration_rejects_wrong_reference_kind_before_any_write(
 	let agent = definition(
 		"agent",
 		"agent",
-		json!({"model":{"id":"model","version":"1.0.0"},"instructions":"execute"}),
+		json!({"schema_version":1,"bindings":[],"remove_default":[],"model":{"id":"model","version":"1.0.0"},"instructions":"execute"}),
 	);
 	let error = register_definition(&mut scope, &validation, &agent, "aidash://home")
 		.await
 		.unwrap_err();
 	assert_eq!(error.to_string(), "model must reference a model");
-	assert_eq!(scope.trace, ["read:model@1.0.0", "overlay:model@1.0.0"]);
+	assert_eq!(scope.trace, ["read:model@1.0.0"]);
 	assert!(scope.events.is_empty());
 }
 
@@ -446,9 +448,9 @@ async fn private_context_requires_the_original_node_content(
 	let documents =
 		json!([{"name":"private.pdf","media_type":"application/pdf","text":"private evidence"}]);
 	let entry = definition(
-		"agent",
-		"agent",
-		json!({"model":{"id":"model","version":"1.0.0"},"knowledge_digest":aidash_domain::registry::knowledge::digest(&documents)}),
+		"private",
+		"source",
+		json!({"schema_version":1,"source":{"adapter":"private_references","digest":aidash_domain::registry::knowledge::digest(&documents)}}),
 	);
 	let mut scope = Scope {
 		documents: match state {
@@ -479,11 +481,14 @@ async fn private_registration_emits_only_after_private_content_is_saved(
 		fail_documents,
 		..Default::default()
 	};
+	for builtin in crate::test_support::builtin_entries("aidash://home") {
+		scope.put(builtin);
+	}
 	scope.put(definition("model", "model", json!({"provider":"openrouter","model_id":"fixture","endpoint":"https://example.test","context_window":131072,"max_output_tokens":1024,"modalities":["text"],"cost":{}})));
 	let entry = definition(
 		"",
 		"agent",
-		json!({"model":{"id":"model","version":"1.0.0"},"instructions":"Use the private evidence"}),
+		json!({"schema_version":1,"bindings":[],"remove_default":[],"model":{"id":"model","version":"1.0.0"},"instructions":"Use the private evidence"}),
 	);
 	let draft = personal::validate_input(
 		entry,
@@ -494,7 +499,7 @@ async fn private_registration_emits_only_after_private_content_is_saved(
 		}],
 	)
 	.unwrap();
-	let prepared = personal::prepare(&mut scope, &validation, draft)
+	let prepared = personal::prepare(&mut scope, &validation, draft, "aidash://home")
 		.await
 		.unwrap();
 	assert!(!json!(prepared.entry).to_string().contains("PRIVATE-TEXT"));
@@ -513,7 +518,7 @@ async fn private_registration_emits_only_after_private_content_is_saved(
 		assert_eq!(scope.events.len(), 0);
 		assert_eq!(scope.trace.last().unwrap(), "private_documents");
 	} else {
-		let entry = result.unwrap();
+		let _entry = result.unwrap();
 		assert_eq!(
 			scope.trace[scope.trace.len() - 3..],
 			["insert", "private_documents", "registry.registered"]
@@ -526,7 +531,12 @@ async fn private_registration_emits_only_after_private_content_is_saved(
 			)]
 		);
 		assert_eq!(
-			entry.config["knowledge_digest"],
+			scope
+				.entries
+				.values()
+				.find(|e| e.kind == "source")
+				.unwrap()
+				.config["source"]["digest"],
 			aidash_domain::registry::knowledge::digest(scope.documents.as_ref().unwrap())
 		);
 	}
@@ -560,7 +570,18 @@ fn behavior_config(
 	#[default(None)] creation: Option<bool>,
 	#[default(None)] delegation: Option<bool>,
 ) -> AgentConfig {
-	serde_json::from_value(json!({"model":{"id":"model","version":"1.0.0"},"allow_task_creation":creation,"allow_task_delegation":delegation})).unwrap()
+	{
+		let mut entry = crate::test_support::agent("fixture");
+		let mut removed = vec![];
+		if creation == Some(false) {
+			removed.push("task_create");
+		}
+		if delegation == Some(false) {
+			removed.push("task_delegate");
+		}
+		entry.config["remove_default"] = json!(removed);
+		serde_json::from_value(entry.config).unwrap()
+	}
 }
 #[rstest::rstest]
 #[case(None, None, true, true)]
@@ -576,7 +597,7 @@ fn task_assignment_obeys_delegation_independently_of_creation(
 ) {
 	assert_eq!(behavior_config.permits_builtin("task_create"), creates);
 	assert_eq!(behavior_config.permits_builtin("task_delegate"), delegates);
-	assert_eq!(behavior_config.permits_builtin("task_assign"), delegates);
+	assert!(!behavior_config.permits_builtin("task_assign"));
 }
 #[rstest::rstest]
 fn conjunctive_search_and_localization() {
@@ -645,9 +666,9 @@ fn bundled_skill_files_have_bounded_safe_paths_and_are_listed_on_demand() {
 fn skills_only_agents_do_not_need_custom_prompts() {
 	let mut e = entry();
 	e.kind = "agent".into();
-	e.config = json!({"model":{"id":"model","version":"1.0.0"},"skills":[{"id":"research","version":"1.0.0"}]});
+	e.config = json!({"schema_version":1,"model":{"id":"model","version":"1.0.0"},"bindings":[crate::test_support::binding("skill","aidash://home","research")],"remove_default":[]});
 	assert!(validate(&e).is_ok());
-	e.config["skills"] = json!([]);
+	e.config["bindings"] = json!([]);
 	assert!(validate(&e).is_err());
 	e.config["instructions"] = json!("Legacy instructions");
 	assert!(validate(&e).is_ok());

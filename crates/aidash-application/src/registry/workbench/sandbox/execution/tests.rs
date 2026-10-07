@@ -85,7 +85,7 @@ fn session() -> TestSession {
 		tenant: "tenant".into(),
 		revision: 7,
 		status: "running".into(),
-		scenario: json!({}),
+		scenario: json!({"binding_snapshot":crate::test_support::resolve("aidash://local", &crate::test_support::agent("agent"), false, vec![])}),
 		conversation: Some(json!([{"role":"user","content":"original"}])),
 		tool_calls: Some(json!([])),
 		usage: json!({"input_tokens":0,"output_tokens":0,"usage_complete":true}),
@@ -159,10 +159,10 @@ impl SandboxScope for Scope<'_> {
 		assert_eq!(id, draft(7).id);
 		assert!(!lock);
 		self.0.state.lock().unwrap().order.push("current_draft");
-		Ok(draft(9))
+		Ok(draft(7))
 	}
 	async fn authorize_draft(&mut self, current: &Draft, action: &str, shares: bool) -> Result<()> {
-		assert_eq!(current.revision, 9);
+		assert_eq!(current.revision, 7);
 		assert_eq!(action, "agent_draft.test");
 		assert!(shares);
 		self.0.state.lock().unwrap().order.push("current_authority");
@@ -232,6 +232,19 @@ impl RealDispatchScope for Scope<'_> {
 }
 #[async_trait]
 impl ExecutionScope for Scope<'_> {
+	async fn bindings(
+		&mut self,
+		_: &Draft,
+		entry: &Entry,
+	) -> Result<aidash_domain::registry::bindings::BindingSnapshot> {
+		Ok(crate::test_support::resolve(
+			"aidash://local",
+			entry,
+			false,
+			vec![],
+		))
+	}
+
 	async fn validate_content(&mut self, pinned: &Draft) -> Result<Entry> {
 		assert_eq!(pinned.revision, 7);
 		self.0
@@ -243,9 +256,7 @@ impl ExecutionScope for Scope<'_> {
 		if self.0.failing("dependencies") {
 			Err(Error::Forbidden)
 		} else {
-			Ok(serde_json::from_value(
-				json!({"id":"agent","version":"1","kind":"agent","name":{},"description":{}}),
-			)?)
+			Ok(crate::test_support::agent("agent"))
 		}
 	}
 }

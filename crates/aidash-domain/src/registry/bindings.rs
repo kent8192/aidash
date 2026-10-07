@@ -47,7 +47,7 @@ pub fn definition_references(
 			config.validate()?;
 			result.push((local(&config.model), "model".into()));
 			result.extend(config.cluster.iter().map(|r| (local(r), "cluster".into())));
-			for normalized in config.normalize(&identity.registry_node)? {
+			for normalized in entry.normalized_bindings(&identity.registry_node)? {
 				let kind = match normalized.binding.kind {
 					BindingKind::Tool => "tool",
 					BindingKind::Bundle => "bundle",
@@ -220,6 +220,50 @@ impl AgentBindings {
 			));
 		}
 		Ok(result)
+	}
+}
+
+/// Read-only registration metadata is compiled by the Node before publication.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AgentNormalization {
+	pub schema_version: u8,
+	pub registry_node: String,
+	pub bindings: Vec<NormalizedBinding>,
+}
+impl Entry {
+	pub fn normalize_agent(&mut self, node: &str) -> Result<()> {
+		if self.kind != "agent" {
+			if self.binding_normalization.is_some() {
+				return Err(Error::Invalid(
+					"normalization is only valid for Agents".into(),
+				));
+			}
+			return Ok(());
+		}
+		let config: AgentBindings = serde_json::from_value(self.config.clone())?;
+		self.binding_normalization = Some(AgentNormalization {
+			schema_version: BINDING_SCHEMA,
+			registry_node: node.into(),
+			bindings: config.normalize(node)?,
+		});
+		Ok(())
+	}
+	pub fn normalized_bindings(&self, node: &str) -> Result<Vec<NormalizedBinding>> {
+		let config: AgentBindings = serde_json::from_value(self.config.clone())?;
+		let expected = config.normalize(node)?;
+		if let Some(saved) = &self.binding_normalization {
+			if saved.schema_version != BINDING_SCHEMA
+				|| saved.registry_node != node
+				|| saved.bindings != expected
+			{
+				return Err(Error::Invalid(
+					"Agent normalization differs from its immutable definition".into(),
+				));
+			}
+			return Ok(saved.bindings.clone());
+		}
+		Ok(expected)
 	}
 }
 

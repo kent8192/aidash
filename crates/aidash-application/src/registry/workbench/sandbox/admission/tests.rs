@@ -66,12 +66,12 @@ impl Drop for Scope<'_> {
 fn reference(id: &str) -> EntityRef {
 	EntityRef {
 		id: id.into(),
-		version: "1".into(),
+		version: "1.0.0".into(),
 	}
 }
 fn entry(id: &str, kind: &str, config: Value) -> Entry {
 	serde_json::from_value(
-		json!({"id":id,"version":"1","kind":kind,"name":{},"description":{},"config":config}),
+		json!({"id":id,"version":"1.0.0","kind":kind,"name":{},"description":{},"config":config}),
 	)
 	.unwrap()
 }
@@ -79,7 +79,7 @@ fn agent() -> Entry {
 	entry(
 		"agent",
 		"agent",
-		json!({"model":reference("model"),"instructions":"private instructions","tools":[reference("tool_0"),reference("tool_1"),reference("tool_2")],"max_steps":5,"allow_task_creation":false,"allow_task_delegation":false,"allow_memory_write":false,"allow_workspace_retrieval":false}),
+		json!({"schema_version":1,"model":reference("model"),"instructions":"private instructions","bindings":(0..3).map(|i| crate::test_support::binding("tool","aidash://fixture",&format!("tool_{i}"))).collect::<Vec<_>>(),"remove_default":aidash_domain::registry::bindings::DEFAULT_TOOLS,"max_steps":5}),
 	)
 }
 fn draft() -> Draft {
@@ -140,6 +140,7 @@ fn input() -> TestInput {
 }
 fn rule() -> RealToolRule {
 	RealToolRule {
+		read_only_verified: true,
 		tool: reference("tool_2"),
 		endpoint: "https://test.example/rpc".into(),
 		credential_env: Some("TEST_TOOL".into()),
@@ -359,6 +360,27 @@ impl RealDispatchScope for Scope<'_> {
 }
 #[async_trait]
 impl ExecutionScope for Scope<'_> {
+	async fn bindings(
+		&mut self,
+		_: &Draft,
+		entry: &Entry,
+	) -> Result<aidash_domain::registry::bindings::BindingSnapshot> {
+		Ok(crate::test_support::resolve(
+			"aidash://fixture",
+			entry,
+			false,
+			(0..3)
+				.map(|i| {
+					crate::test_support::http_tool(
+						"aidash://fixture",
+						&format!("tool_{i}"),
+						&format!("plugin_{i}"),
+					)
+				})
+				.collect(),
+		))
+	}
+
 	async fn validate_content(&mut self, pinned: &Draft) -> Result<Entry> {
 		assert_eq!(pinned.revision, 7);
 		self.repository
@@ -461,9 +483,6 @@ async fn admission_preserves_current_authority_locks_and_exact_plugin_indices() 
 			"model_fingerprint",
 			"tenant_limits_update_lock",
 			"field_validation",
-			"effective_tool",
-			"effective_tool",
-			"effective_tool",
 			"model_factory",
 			"admit",
 			"commit"
@@ -478,13 +497,12 @@ async fn admission_preserves_current_authority_locks_and_exact_plugin_indices() 
 		.collect::<Vec<_>>();
 	assert!(names.contains(&"plugin_0"));
 	assert!(names.contains(&"plugin_2"));
-	assert!(!names.contains(&"plugin_1"));
+	assert!(names.contains(&"plugin_1"));
 	for excluded in [
 		"task_create",
 		"task_delegate",
 		"task_assign",
 		"memory_write",
-		"workspace_read",
 	] {
 		assert!(!names.contains(&excluded));
 	}
@@ -498,7 +516,7 @@ async fn admission_preserves_current_authority_locks_and_exact_plugin_indices() 
 	);
 	assert_eq!(
 		admitted.session.scenario,
-		json!({"mode":"simulated","profile_id":null,"profile_revision":null,"continue_from":null,"fixtures":{}})
+		json!({"mode":"simulated","profile_id":null,"profile_revision":null,"continue_from":null,"fixtures":{},"binding_snapshot":crate::test_support::resolve("aidash://fixture",&agent(),false,(0..3).map(|i|crate::test_support::http_tool("aidash://fixture",&format!("tool_{i}"),&format!("plugin_{i}"))).collect())})
 	);
 	assert!(
 		!admitted

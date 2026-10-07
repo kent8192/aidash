@@ -93,6 +93,21 @@ impl RunGuardScope for RunGuard<'_> {
 			.await
 			.map_err(Into::into)
 	}
+	async fn binding_snapshot(
+		&mut self,
+		run: &RunMetadata,
+	) -> Result<aidash_domain::registry::bindings::BindingSnapshot> {
+		let row = crate::apps::execution::models::Run::read_in(&mut **self.access.tx, run.id, None)
+			.await?
+			.ok_or(aidash_application::Error::Forbidden)?;
+		row.context
+			.binding_snapshot
+			.map(|snapshot| *snapshot)
+			.ok_or_else(|| {
+				aidash_application::Error::Invalid("Run has no admitted Binding snapshot".into())
+			})
+	}
+
 	async fn context_authority(&mut self, run: &RunMetadata) -> Result<()> {
 		crate::capabilities::sessions::context_authority(self.access, run)
 			.await

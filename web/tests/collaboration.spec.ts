@@ -1606,6 +1606,21 @@ for (const width of [1440, 390]) {
       control: "ACTIVE",
       error: null,
     };
+    const humanRequests = [
+      {
+        id: "human-question",
+        kind: "QUESTION",
+        prompt: "Which source should the remote Agent use?",
+        response: null as unknown,
+      },
+      {
+        id: "human-approval",
+        kind: "APPROVAL_REQUIRED",
+        prompt: "Approve the saved remote operation?",
+        response: null as unknown,
+      },
+    ];
+    const answers: { id: string; response: unknown }[] = [];
     let unavailable = false;
     const messages: { id: string; content: string }[] = [];
     await page.route("**/api/tasks/task-0/remote-**", async (route) => {
@@ -1613,9 +1628,26 @@ for (const width of [1440, 390]) {
       if (path.endsWith("/remote-executions"))
         return route.fulfill({
           json: [
-            { grant, execution: unavailable ? null : execution, unavailable },
+            {
+              grant,
+              execution: unavailable ? null : execution,
+              unavailable,
+              human_requests: humanRequests,
+            },
           ],
         });
+      if (path.endsWith("/human-requests/answer")) {
+        const input = route.request().postDataJSON();
+        answers.push(input);
+        const request = humanRequests.find((item) => item.id === input.id)!;
+        request.response = input.response;
+        return answers.length === 1
+          ? route.fulfill({
+              status: 503,
+              json: { error: { message: "Answer receipt unavailable" } },
+            })
+          : route.fulfill({ json: request });
+      }
       if (path.endsWith("/control")) {
         const action = route.request().postDataJSON().action;
         execution.control = {
@@ -1654,6 +1686,29 @@ for (const width of [1440, 390]) {
     await expect(
       panel.getByText("aidash://remote", { exact: true }),
     ).toBeVisible();
+    await expect(panel.getByText(humanRequests[0].prompt)).toBeVisible();
+    await panel
+      .getByLabel("Response", { exact: true })
+      .fill("Use the original source.");
+    await panel
+      .getByRole("button", { name: "Send response", exact: true })
+      .click();
+    await expect(panel.getByRole("alert")).toContainText(
+      "Answer receipt unavailable",
+    );
+    await panel
+      .getByRole("button", { name: "Send response", exact: true })
+      .click();
+    await expect(panel.getByLabel("Response", { exact: true })).toHaveCount(0);
+    expect(answers[1]).toEqual(answers[0]);
+    await panel.getByRole("button", { name: "Approve", exact: true }).click();
+    await expect(
+      panel.getByRole("button", { name: "Approve", exact: true }),
+    ).toHaveCount(0);
+    expect(answers[2]).toEqual({
+      id: "human-approval",
+      response: { approved: true },
+    });
     await panel.getByRole("button", { name: "Pause", exact: true }).click();
     const resume = panel.getByRole("button", {
       name: "Recheck authority and resume",

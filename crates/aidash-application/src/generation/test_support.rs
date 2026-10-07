@@ -33,7 +33,7 @@ pub(super) fn request(id: u128) -> Request {
 	}
 }
 pub(super) fn specification() -> Value {
-	let document = json!({"enabled":true,"template":{"id":"template","version":"1.0.0","kind":"agent","name":{"en":"Template"},"description":{"en":""},"config":{"model":{"id":"model","version":"1.0.0"},"instructions":"Do work."}},"permissions":{"roles":[],"groups":[],"attributes":{}},"limits":{"max_agents":4,"max_concurrent":2,"max_depth":2,"token_budget":800000,"tokens_per_agent":200000,"lifetime_seconds":3600},"approval_required":true});
+	let document = json!({"enabled":true,"template":{"id":"template","version":"1.0.0","kind":"agent","name":{"en":"Template"},"description":{"en":""},"config":{"schema_version":1,"bindings":[],"remove_default":[],"model":{"id":"model","version":"1.0.0"},"instructions":"Do work."}},"permissions":{"roles":[],"groups":[],"attributes":{}},"limits":{"max_agents":4,"max_concurrent":2,"max_depth":2,"token_budget":800000,"tokens_per_agent":200000,"lifetime_seconds":3600},"approval_required":true});
 	serde_json::to_value(
 		serde_json::from_value::<aidash_domain::generation::policy::Spec>(document).unwrap(),
 	)

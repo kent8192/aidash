@@ -294,7 +294,7 @@ class Cluster:
                     f"http://tx-{remote}:8080/.well-known/aidash", check=False).returncode == 0,
                     "peer Service identity readiness")
                 status, response = self.api(local, "/api/peers", {"node_id": f"aidash://tx-{remote:02}", "endpoint": f"http://tx-{remote}:8080",
-                    "credential_env": f"AIDASH_SECRET_TRANSACTION_{max(local, remote):02}", "protocol_version": "0.1", "enabled": True})
+                    "credential_env": f"AIDASH_SECRET_TRANSACTION_{max(local, remote):02}", "protocol_version": "0.2", "enabled": True})
                 assert status == 200, (local, remote, status, response)
                 assert self.api(local, "/api/transactions/trust", {"node_id": f"aidash://tx-{remote:02}", "enabled": True})[0] == 200
 

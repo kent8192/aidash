@@ -46,6 +46,7 @@ impl ExecutionRecoveryStore for RecoveryRepository {
 }
 
 pub(crate) mod agent;
+pub(crate) mod bindings;
 
 pub(crate) mod events;
 

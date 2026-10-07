@@ -66,7 +66,24 @@ async fn prepare(
 			return Err(Error::Conflict("test credential changed".into()));
 		}
 	}
+	let snapshot: aidash_domain::registry::bindings::BindingSnapshot =
+		serde_json::from_value(session.scenario["binding_snapshot"].clone())?;
+	snapshot.validate()?;
+	let binding = snapshot
+		.bindings
+		.iter()
+		.find(|binding| {
+			binding.identity.local() == rule.tool
+				&& binding.alias.as_deref() == Some(&call.name)
+				&& binding.excluded_reason.is_none()
+		})
+		.ok_or(Error::Forbidden)?;
 	let tool = scope.effective(&rule.tool).await?;
+	if aidash_domain::registry::rules::digest(&serde_json::to_value(&tool)?) != binding.digest {
+		return Err(Error::Conflict(
+			"test Tool differs from its admitted Binding".into(),
+		));
+	}
 	super::super::profile::validate_real_rule(dispatch.configuration, rule, &tool)?;
 	jsonschema::validator_for(&tool.schema)
 		.map_err(|e| Error::Invalid(e.to_string()))?

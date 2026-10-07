@@ -10,6 +10,10 @@ use std::sync::{Arc, Mutex};
 #[derive(Clone)]
 struct Backend(Arc<State>);
 struct State {
+	conversation_memory: bool,
+	deny_source: bool,
+	memory_value: Mutex<Value>,
+	requests: Mutex<Vec<ModelRequest>>,
 	token: Uuid,
 	task: Mutex<Task>,
 	calls: Mutex<Vec<&'static str>>,
@@ -60,7 +64,8 @@ impl ExecutionStore for Backend {
 	}
 	async fn memory(&self, run: &RunMetadata) -> Result<Value> {
 		let _ = run;
-		Ok(json!({}))
+		self.record("source.memory");
+		Ok(self.0.memory_value.lock().unwrap().clone())
 	}
 	async fn begin_final_completion(&self, run: &Run, token: Uuid) -> Result<bool> {
 		let _ = run;
@@ -135,8 +140,8 @@ impl ExecutionCatalog for Backend {
 	fn skill_instructions(&self, _entry: &Entry) -> Result<String> {
 		unexpected("skill_instructions")
 	}
-	fn content_digest(&self, _content: &str) -> String {
-		unexpected("content_digest")
+	fn content_digest(&self, content: &str) -> String {
+		aidash_domain::registry::rules::digest(&json!(content))
 	}
 }
 
@@ -295,17 +300,21 @@ impl ExecutionAuthority for Backend {
 
 #[async_trait]
 impl ExecutionEnvironment for Backend {
-	async fn tools(&self, run: &Run, entry: &Entry) -> Result<Tools> {
-		let _ = (run, entry);
-		Ok(Tools::new())
-	}
-	async fn builtins(&self, run: &Run) -> Result<Tools> {
-		let _ = run;
-		Ok(Tools::new())
+	fn binding_resolver(&self) -> &dyn aidash_application::ports::bindings::BindingResolver {
+		self
 	}
 	async fn documents(&self, entry: &Entry) -> Result<Value> {
 		let _ = entry;
 		Ok(json!([]))
+	}
+	async fn recheck_source_observation(&self, _: &Run, _: &Value) -> Result<()> {
+		if self.0.conversation_memory {
+			self.record("source.recheck");
+		}
+		if self.0.deny_source {
+			return Err(Error::Forbidden);
+		}
+		Ok(())
 	}
 	async fn skill_context(&self, run: &Run) -> Result<String> {
 		let _ = run;
@@ -389,7 +398,7 @@ impl ExecutionEnvironment for Backend {
 			skills: vec![],
 			max_steps: 64,
 			allow_task_creation: None,
-			allow_cross_conversation_memory: None,
+			conversation_memory: self.0.conversation_memory,
 		})
 	}
 	fn provider(&self, _model: ModelConfig) -> Result<Arc<dyn ModelProvider>> {
@@ -417,6 +426,7 @@ impl ModelProvider for Backend {
 	async fn infer(&self, request: ModelRequest) -> Result<ModelResponse> {
 		request.ensure_fits(128000).unwrap();
 		self.record("provider.infer");
+		self.0.requests.lock().unwrap().push(request);
 		if let Some(status) = self.0.provider_status {
 			return Err(Error::ProviderRejected {
 				status,
@@ -478,6 +488,10 @@ fn fixture() -> Fixture {
 		updated_at: now,
 	};
 	let backend = Backend(Arc::new(State {
+		conversation_memory: false,
+		deny_source: false,
+		memory_value: Mutex::new(json!({"fact":"observed"})),
+		requests: Mutex::new(vec![]),
 		token,
 		task: Mutex::new(Task {
 			id: task,
@@ -630,6 +644,7 @@ async fn inference_rechecks_authority_and_settles_usage_before_accepting_output(
 		boundary,
 		[
 			"authority.inference",
+			"save",
 			"authority.inference",
 			"reservation.admit",
 			"authority.suspend",
@@ -643,7 +658,7 @@ async fn inference_rechecks_authority_and_settles_usage_before_accepting_output(
 	);
 	assert_eq!(fixture.run.phase(), RunPhase::ToolCall);
 	assert_eq!(
-		fixture.backend.0.writes.lock().unwrap()[0].0,
+		fixture.backend.0.writes.lock().unwrap().last().unwrap().0,
 		"model.completed"
 	);
 }
@@ -673,7 +688,17 @@ async fn rejected_authority_never_accepts_or_persists_provider_output(
 	// Assert
 	assert!(matches!(result, Err(Error::Forbidden)));
 	assert_eq!(fixture.run.phase(), RunPhase::Thinking);
-	assert!(fixture.backend.0.writes.lock().unwrap().is_empty());
+	assert!(
+		fixture
+			.backend
+			.0
+			.writes
+			.lock()
+			.unwrap()
+			.iter()
+			.all(|(event, saved)| event == "run.sources_observed"
+				&& saved.phase() == RunPhase::Thinking)
+	);
 	let calls = fixture.backend.0.calls.lock().unwrap();
 	assert_eq!(calls.contains(&"provider.infer"), resumed);
 	assert_eq!(calls.contains(&"reservation.settle"), resumed);
@@ -738,7 +763,12 @@ async fn ready_inference_and_completion_use_the_same_durable_executor(mut fixtur
 			.iter()
 			.map(|(event, _)| event.as_str())
 			.collect::<Vec<_>>(),
-		["run.started", "model.completed", "run.completed"]
+		[
+			"run.started",
+			"run.sources_observed",
+			"model.completed",
+			"run.completed"
+		]
 	);
 	let calls = fixture.backend.0.calls.lock().unwrap();
 	assert_eq!(
@@ -759,4 +789,108 @@ async fn ready_inference_and_completion_use_the_same_durable_executor(mut fixtur
 			.count(),
 		1
 	);
+}
+
+#[async_trait]
+impl aidash_application::ports::bindings::BindingResolver for Backend {
+	async fn tools(&self, _: &Run) -> Result<Tools> {
+		Ok(Tools::new())
+	}
+}
+
+#[rstest]
+#[tokio::test]
+async fn recovery_reuses_the_observed_memory_then_reloads_at_a_later_boundary(
+	mut fixture: Fixture,
+) {
+	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	state.conversation_memory = true;
+	state.provider_status = Some(503);
+	fixture.run.state = RunState::Thinking(ThinkingState::default());
+
+	// The provider failure leaves the source read durable, before any model output.
+	assert!(advance_sources(&mut fixture).await.is_err());
+	let saved = fixture
+		.backend
+		.0
+		.writes
+		.lock()
+		.unwrap()
+		.last()
+		.unwrap()
+		.1
+		.clone();
+	assert!(saved.context.source_observation.is_some());
+	fixture.run = serde_json::from_slice(&serde_json::to_vec(&saved).unwrap()).unwrap();
+	*fixture.backend.0.memory_value.lock().unwrap() = json!({"fact":"changed"});
+	assert!(advance_sources(&mut fixture).await.is_err());
+	{
+		let requests = fixture.backend.0.requests.lock().unwrap();
+		assert_eq!(requests[0].context, requests[1].context);
+	}
+	assert_eq!(
+		fixture
+			.backend
+			.0
+			.calls
+			.lock()
+			.unwrap()
+			.iter()
+			.filter(|c| **c == "source.memory")
+			.count(),
+		1
+	);
+	fixture.run.step += 1;
+	assert!(advance_sources(&mut fixture).await.is_err());
+	let requests = fixture.backend.0.requests.lock().unwrap();
+	assert_ne!(requests[1].context, requests[2].context);
+	assert_eq!(
+		fixture
+			.backend
+			.0
+			.calls
+			.lock()
+			.unwrap()
+			.iter()
+			.filter(|c| **c == "source.memory")
+			.count(),
+		2
+	);
+}
+#[rstest]
+#[tokio::test]
+async fn source_revocation_stops_recovered_observations_before_inference(mut fixture: Fixture) {
+	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	state.conversation_memory = true;
+	state.provider_status = Some(503);
+	fixture.run.state = RunState::Thinking(ThinkingState::default());
+	assert!(
+		Executor::new(&fixture.backend)
+			.advance(
+				&mut fixture.run,
+				fixture.backend.0.token,
+				&mut fixture.backend.clone()
+			)
+			.await
+			.is_err()
+	);
+	Arc::get_mut(&mut fixture.backend.0).unwrap().deny_source = true;
+	assert!(matches!(
+		Executor::new(&fixture.backend)
+			.advance(
+				&mut fixture.run,
+				fixture.backend.0.token,
+				&mut fixture.backend.clone()
+			)
+			.await,
+		Err(Error::Forbidden)
+	));
+	assert_eq!(fixture.backend.0.requests.lock().unwrap().len(), 1);
+}
+
+async fn advance_sources(fixture: &mut Fixture) -> Result<()> {
+	let backend = fixture.backend.clone();
+	Executor::new(&backend)
+		.advance(&mut fixture.run, backend.0.token, &mut backend.clone())
+		.await
 }

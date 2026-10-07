@@ -179,10 +179,11 @@ async fn journey_fixture(#[future] test_environment: Arc<TestEnvironment>) -> Jo
 	c.app = common::application(c.f.clone()).await;
 	let mut tool = c.f.registry.get("http", "1.0.0").await.unwrap();
 	tool.version = "1.1.0".into();
-	tool.config["credential_env"] = json!("AIDASH_SECRET_TEST_PEER");
+	tool.config["transport"]["credential_env"] = json!("AIDASH_SECRET_TEST_PEER");
 	let mut agent = c.f.registry.get("research", "1.1.0").await.unwrap();
 	agent.version = "1.2.0".into();
-	agent.config["tools"] = json!([{"id":"http","version":"1.1.0"}]);
+	agent.binding_normalization = None;
+	agent.config["bindings"].as_array_mut().unwrap().push(json!({"kind":"tool","target":{"registry_node":c.f.config.node_id,"id":"http","version":"1.1.0"},"alias":"plugin_0","narrow":{}}));
 	agent.config["max_steps"] = json!(200);
 	for entry in [tool, agent] {
 		let (status, result) = request(

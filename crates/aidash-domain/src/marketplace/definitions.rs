@@ -2,7 +2,7 @@
 use super::{DependencyBinding, Installation, Version};
 use crate::{
 	Error, Result,
-	registry::{AgentConfig, ClusterConfig, EntityRef, Entry, Package},
+	registry::{ClusterConfig, EntityRef, Entry, Package},
 	tool::ToolConfig,
 };
 use serde::Serialize;
@@ -23,6 +23,7 @@ pub fn content(entry: &Entry) -> String {
 	entry.id.clear();
 	entry.version.clear();
 	entry.installation = None;
+	entry.binding_normalization = None;
 	key(&entry)
 }
 pub fn rewrite(entry: &mut Entry, bindings: &[DependencyBinding], node: &str) -> Result<()> {
@@ -35,15 +36,19 @@ pub fn rewrite(entry: &mut Entry, bindings: &[DependencyBinding], node: &str) ->
 	}
 	match entry.kind.as_str() {
 		"agent" => {
-			let mut c: AgentConfig = serde_json::from_value(entry.config.clone())?;
+			let mut c: crate::registry::bindings::AgentBindings =
+				serde_json::from_value(entry.config.clone())?;
 			bind(&mut c.model, bindings);
-			for r in c
-				.tools
-				.iter_mut()
-				.chain(c.skills.iter_mut())
-				.chain(c.cluster.iter_mut())
-			{
-				bind(r, bindings);
+			for reference in c.cluster.iter_mut() {
+				bind(reference, bindings);
+			}
+			for bound in &mut c.bindings {
+				let mut local = bound.target.local();
+				if bind(&mut local, bindings) {
+					bound.target.registry_node = node.into();
+					bound.target.id = local.id;
+					bound.target.version = local.version;
+				}
 			}
 			entry.config = serde_json::to_value(c)?;
 		}
@@ -95,6 +100,7 @@ pub fn rewrite(entry: &mut Entry, bindings: &[DependencyBinding], node: &str) ->
 		}
 		_ => {}
 	}
+	entry.normalize_agent(node)?;
 	Ok(())
 }
 

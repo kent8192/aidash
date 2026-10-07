@@ -158,6 +158,14 @@ impl GenerationActivationSession for Activation {
 }
 #[async_trait]
 impl GenerationActivationScope for Activation {
+	async fn bindings(
+		&mut self,
+		entry: &aidash_domain::registry::Entry,
+	) -> aidash_application::Result<aidash_domain::registry::bindings::BindingSnapshot> {
+		let node = self.runtime.config.node_id.clone();
+		crate::apps::registry::repositories::bindings::preview(&mut *self.access.tx, &node, entry)
+			.await
+	}
 	fn now(&self) -> DateTime<Utc> {
 		Utc::now()
 	}

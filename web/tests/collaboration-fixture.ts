@@ -6,7 +6,7 @@ function fixture(reference = false) {
   const node = {
     id: "aidash://home",
     endpoint: "http://localhost",
-    protocol_version: "0.1",
+    protocol_version: "0.2",
     capabilities: [],
     clusters: [],
   };
@@ -21,7 +21,10 @@ function fixture(reference = false) {
     languages: ["en"],
     skills: [],
     schema: {},
-    config,
+    config:
+      kind === "agent"
+        ? { schema_version: 1, bindings: [], remove_default: [], ...config }
+        : config,
   });
   const workspaces = [
     {
@@ -276,14 +279,19 @@ export async function setup(
   if (options.coreCapabilities) {
     data.registry[0].config = {
       ...data.registry[0].config,
-      core_capabilities: {
-        files: true,
-        shell: true,
-        python: true,
-        patch: true,
-        skills: true,
-        sharing: true,
-      },
+      schema_version: 1,
+      bindings: [
+        {
+          kind: "bundle",
+          target: {
+            registry_node: data.node.id,
+            id: "approved-host-tools",
+            version: "1.0.0",
+          },
+          narrow: {},
+        },
+      ],
+      remove_default: [],
     };
   }
   if (options.coreVersion)
@@ -300,7 +308,12 @@ export async function setup(
       languages: ["en"],
       skills: [],
       schema: {},
-      config: { model: { id: "model", version: "1.0.0" } },
+      config: {
+        schema_version: 1,
+        bindings: [],
+        remove_default: [],
+        model: { id: "model", version: "1.0.0" },
+      },
     });
   }
   if (options.approval) data.human_requests[0].kind = "APPROVAL_REQUIRED";

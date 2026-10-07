@@ -1,8 +1,6 @@
 //! Native reference DTO conversion delegates every workflow to application scopes.
 use super::{contracts::Area, records::Record};
-pub use crate::apps::execution::capabilities::serializers::references::{
-	Attachment, Chunk, Reference, Upload,
-};
+pub use crate::apps::execution::capabilities::serializers::references::{Chunk, Reference, Upload};
 use crate::{Result, authorization::access::Access, registry::AgentConfig, store::Store};
 use uuid::Uuid;
 pub(crate) async fn get(access: &mut Access, id: Uuid, action: &str) -> Result<Record> {

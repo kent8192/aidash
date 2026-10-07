@@ -22,7 +22,7 @@ SUBJECT = {"Authorization": "Bearer {{contract_token}}"}
 PEER = {
     "Authorization": "Bearer {{peer_token}}",
     "X-Aidash-Node": "{{peer_node}}",
-    "X-Aidash-Protocol": "0.1",
+    "X-Aidash-Protocol": "0.2",
 }
 COOKIE = {
     "Cookie": "{{session_cookie}}",
@@ -54,8 +54,8 @@ def load_manifest():
     routes = json.loads(CATALOG.read_text())
     manifest = json.loads(MANIFEST.read_text())
     expected = Counter(key(route) for route in routes)
-    if len(expected) != 271 or any(count != 1 for count in expected.values()):
-        raise ValueError("the catalog must contain 271 distinct method/path endpoints")
+    if len(expected) != 272 or any(count != 1 for count in expected.values()):
+        raise ValueError("the catalog must contain 272 distinct method/path endpoints")
     requests = manifest["requests"]
     names = Counter(request["name"] for request in requests)
     if any(count != 1 for count in names.values()):
@@ -289,7 +289,7 @@ def render():
         "Register the authenticated protocol peer",
         200,
         headers=OPERATOR,
-        body='{"node_id":"{{peer_node}}","endpoint":"{{peer_base}}","credential_env":"AIDASH_SECRET_BRUNO_PEER","protocol_version":"0.1","enabled":true}',
+        body='{"node_id":"{{peer_node}}","endpoint":"{{peer_base}}","credential_env":"AIDASH_SECRET_BRUNO_PEER","protocol_version":"0.2","enabled":true}',
         checks='expect(res.getBody().node_id).to.equal(bru.getEnvVar("peer_node"));expect(res.getBody().enabled).to.equal(true);',
         seq=39,
     )
@@ -299,7 +299,7 @@ def render():
         200,
         path="{{peer_base}}/api/peers",
         headers={"Authorization": "Bearer {{peer_operator_token}}"},
-        body='{"node_id":"{{node_id}}","endpoint":"{{base_url}}","credential_env":"AIDASH_SECRET_BRUNO_MAIN","protocol_version":"0.1","enabled":true}',
+        body='{"node_id":"{{node_id}}","endpoint":"{{base_url}}","credential_env":"AIDASH_SECRET_BRUNO_MAIN","protocol_version":"0.2","enabled":true}',
         checks='expect(res.getBody().node_id).to.equal(bru.getEnvVar("node_id"));expect(res.getBody().enabled).to.equal(true);',
         seq=40,
     )
@@ -501,7 +501,7 @@ def render():
                 if path == "/health":
                     checks += 'expect(res.getBody()).to.eql({status:"ok",node_id:bru.getEnvVar("node_id")});'
                 if path == "/.well-known/aidash":
-                    checks += 'expect(res.getBody().id).to.equal(bru.getEnvVar("node_id"));expect(res.getBody().protocol_version).to.equal("0.1");'
+                    checks += 'expect(res.getBody().id).to.equal(bru.getEnvVar("node_id"));expect(res.getBody().protocol_version).to.equal("0.2");'
                 if path == "/auth/config":
                     checks += 'expect(res.getBody()).to.have.all.keys("enabled","provider","login_url","desktop_protocol");expect(res.getBody().enabled).to.equal(true);expect(res.getBody().login_url).to.equal("/auth/login");'
                 if path == "/api/openapi.json":
@@ -867,7 +867,7 @@ def render():
             raise ValueError("each scenario must contain contract assertions")
     MANIFEST.write_text(
         json.dumps(
-            {"version": 1, "endpoint_count": 271, "requests": requests}, indent=2
+            {"version": 1, "endpoint_count": 272, "requests": requests}, indent=2
         )
         + "\n"
     )

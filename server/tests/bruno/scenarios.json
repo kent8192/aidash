@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "endpoint_count": 271,
+  "endpoint_count": 272,
   "requests": [
     {
       "name": "Health reports the configured node",
@@ -10807,6 +10807,42 @@
       "name": "1004 marketplace-host-packages - Malformed JSON cannot reach the use case",
       "file": "contracts/1004-marketplace-host-packages.bru",
       "endpoint": "POST /api/marketplace/host-packages",
+      "scenario": "Malformed JSON cannot reach the use case",
+      "status": 400,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1005 remote-human-answer - Anonymous request is rejected",
+      "file": "contracts/1005-remote-human-answer.bru",
+      "endpoint": "POST /api/tasks/{task}/remote-grants/{grant}/human-requests/answer",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1006 remote-human-answer - Wrong JSON media type is rejected",
+      "file": "contracts/1006-remote-human-answer.bru",
+      "endpoint": "POST /api/tasks/{task}/remote-grants/{grant}/human-requests/answer",
+      "scenario": "Wrong JSON media type is rejected",
+      "status": 415,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 415",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1007 remote-human-answer - Malformed JSON cannot reach the use case",
+      "file": "contracts/1007-remote-human-answer.bru",
+      "endpoint": "POST /api/tasks/{task}/remote-grants/{grant}/human-requests/answer",
       "scenario": "Malformed JSON cannot reach the use case",
       "status": 400,
       "required_checks": [

@@ -55,6 +55,7 @@ pub async fn authorize<S: SourceAuthorityScope + ?Sized>(
 			"skill" => "skill.use",
 			"cluster" => "cluster.execute",
 			"compactor" => "compaction.invoke",
+			"source" | "memory" | "bundle" => continue,
 			_ => return Err(Error::Forbidden),
 		};
 		access.source_require(&resource, action).await?;

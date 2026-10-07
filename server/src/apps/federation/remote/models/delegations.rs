@@ -19,6 +19,8 @@ pub struct Delegation {
 	pub agent_version: String,
 	#[field(default = false)]
 	pub delivered: bool,
+	#[field]
+	pub human_requests: reinhardt::db::orm::Json<serde_json::Value>,
 	#[field(auto_now_add = true)]
 	pub created_at: DateTime<Utc>,
 	#[field(auto_now_add = true)]

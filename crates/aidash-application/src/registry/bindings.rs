@@ -8,6 +8,8 @@ use aidash_domain::{
 	tool::providers::{ToolDescriptor, remote_exclusion, reserved_aliases, validate_restrictions},
 };
 use std::collections::{BTreeMap, BTreeSet};
+pub mod catalog;
+pub mod private;
 
 struct Pending {
 	normalized: NormalizedBinding,
@@ -38,7 +40,11 @@ pub async fn resolve(
 	if let Some(installation) = &agent_definition.installation {
 		catalog.installation(installation).await?;
 	}
-	let normalized = config.normalize(&agent.registry_node)?;
+	let mut agent_definition = agent_definition.clone();
+	if agent_definition.binding_normalization.is_none() {
+		agent_definition.normalize_agent(&agent.registry_node)?;
+	}
+	let normalized = agent_definition.normalized_bindings(&agent.registry_node)?;
 	let mut pending: Vec<_> = normalized
 		.into_iter()
 		.map(|normalized| Pending {
@@ -246,6 +252,17 @@ pub async fn resolve(
 				let descriptor: sources::NativeContext =
 					serde_json::from_value(entry.config.clone())?;
 				descriptor.validate(expected)?;
+				if remote
+					&& matches!(
+						descriptor.source,
+						sources::NativeSource::ReferenceAttachments { .. }
+							| sources::NativeSource::SkillAttachments { .. }
+							| sources::NativeSource::SkillRoots { .. }
+					) {
+					return Err(Error::Invalid(
+						"native mounted Source is unavailable remotely".into(),
+					));
+				}
 				source_skill_support |= descriptor.requires_skill_support();
 			}
 			catalog.source(&entry).await?;
@@ -500,4 +517,17 @@ pub(crate) fn validate_bundle_graph(definitions: &BTreeMap<QualifiedRef, Entry>)
 		visit(identity, definitions, &mut BTreeSet::new(), &mut done)?;
 	}
 	Ok(())
+}
+
+/// Component decisions accompany Registry disclosure; they do not imply resource authority.
+pub fn component_action(kind: &str) -> &'static str {
+	match kind {
+		"agent" => "agent.execute",
+		"model" => "model.infer",
+		"tool" => "tool.invoke",
+		"skill" => "skill.use",
+		"cluster" => "cluster.execute",
+		"memory" | "source" => "registry.read",
+		_ => "registry.read",
+	}
 }

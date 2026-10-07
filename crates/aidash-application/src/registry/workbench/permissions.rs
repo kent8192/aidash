@@ -4,7 +4,7 @@ use aidash_domain::{
 	identity::Principal,
 	policy::{Evaluation, Resource},
 	registry::{
-		AgentConfig, EntityRef,
+		EntityRef,
 		workbench::permissions::{PermissionContext, PermissionInput, PermissionRow},
 	},
 };
@@ -26,13 +26,13 @@ pub async fn inspect(
 	if entry.kind != "agent" {
 		return Err(Error::NotFound("agent version".into()));
 	}
-	let config: AgentConfig = serde_json::from_value(entry.config.clone())?;
-	let mut components = vec![(reference, "agent.execute"), (config.model, "model.infer")];
-	components.extend(config.skills.into_iter().map(|r| (r, "skill.use")));
-	components.extend(config.tools.into_iter().map(|r| (r, "tool.invoke")));
-	if let Some(cluster) = config.cluster {
-		components.push((cluster, "cluster.execute"));
-	}
+	let snapshot = scope.bindings(&entry).await?;
+	let components = snapshot.definitions.iter().map(|d| {
+		(
+			d.identity.local(),
+			crate::registry::bindings::component_action(&d.definition.kind),
+		)
+	});
 	let mut rows = Vec::new();
 	let mut policy_revision = 0;
 	for (reference, action) in components {
@@ -44,7 +44,16 @@ pub async fn inspect(
 			resource: Resource {
 				tenant: input.tenant.clone(),
 				kind: dependency.kind.clone(),
-				id: reference.id.clone(),
+				id: if dependency.kind == "tool" {
+					aidash_domain::registry::bindings::QualifiedRef {
+						registry_node: repository.node_id().into(),
+						id: reference.id.clone(),
+						version: reference.version.clone(),
+					}
+					.resource_id()
+				} else {
+					reference.id.clone()
+				},
 				attributes: json!({"version":reference.version,"capabilities":dependency.capabilities,"tags":dependency.tags,"languages":dependency.languages,"config":dependency.config}),
 			},
 			environment: json!({"workspace_id":input.workspace_id,"node_id":repository.node_id(),"transport":"worker"}),
@@ -54,6 +63,7 @@ pub async fn inspect(
 			None
 		} else {
 			evaluation.action = "registry.read".into();
+			evaluation.resource.id = reference.id.clone();
 			Some(scope.evaluate(&input.tenant, &evaluation).await?.allowed)
 		};
 		policy_revision = decision.revision;

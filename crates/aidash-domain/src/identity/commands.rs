@@ -25,7 +25,7 @@ pub fn prepare(operation: &str, data: &Value) -> Result<Metadata> {
 				| "artifact" | "create_task"
 				| "delegate" | "message"
 				| "run_message_output"
-				| "event"
+				| "event" | "human_request"
 		);
 	let digest = registry::rules::digest(&json!({"operation":operation,"data":data}));
 	let request_key = if let Some(key) = data["key"].as_str() {
@@ -44,6 +44,8 @@ pub fn prepare(operation: &str, data: &Value) -> Result<Metadata> {
 }
 pub fn builtin(operation: &str) -> Option<&'static str> {
 	match operation {
+		"human_request" | "human_read" => Some("human_request"),
+		"workspace_record" | "workspace_record_chunk" => Some("workspace_read"),
 		"artifact" => Some("artifact_publish"),
 		"message" => Some("workspace_message"),
 		"create_task" => Some("task_create"),
