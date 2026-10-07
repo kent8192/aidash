@@ -27,7 +27,7 @@ const emptyView = {
 };
 function notice(entry: NoticeEntry): Notice | undefined {
   return entry.kind
-    ? { ...entry, kind: entry.kind, id: `${entry.key}:${entry.signature}` }
+    ? { ...entry, kind: entry.kind, id: `${entry.key}:${entry.kind}` }
     : undefined;
 }
 
@@ -92,9 +92,10 @@ export class NoticeStore {
     this.announcedInputs = new Map(
       [...this.announcedInputs].filter(([, scope]) => scopes.has(scope)),
     );
-    this.recent = [...fresh.reverse(), ...this.recent]
+    this.recent = [...[...fresh].reverse(), ...this.recent]
       .filter(
         (item, index, all) =>
+          item.target.kind === "task" &&
           current.has(item.id) &&
           all.findIndex((other) => other.id === item.id) === index,
       )

@@ -1017,7 +1017,9 @@ export function ThreadCapabilities({
             {ja
               ? "作業が終了しました。ファイルは保持されています。設定で復元可能な整理を選べます。"
               : "Work has ended. Files are retained; recoverable cleanup is available in settings."}{" "}
-            <a href="/settings?view=workingFiles">
+            <a
+              href={`/settings?view=workingFiles&channel=${encodeURIComponent(workspace)}`}
+            >
               {ja ? "作業ファイルの設定" : "Working file settings"}
             </a>
           </p>

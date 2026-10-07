@@ -338,8 +338,8 @@ test("generation dashboard manages policy, approval, completion and retained his
         .getByLabel("タスクの要件", { exact: true })
         .fill(JSON.stringify({ capability: id }));
       await dialog.getByRole("button", { name: "作成", exact: true }).click();
-      await expect(dialog).toHaveCount(0);
-      await page.locator(".collab-task").filter({ hasText: title }).click();
+      await expect(dialog).toHaveCount(0, { timeout: 15000 });
+      await page.locator(".intent-task-row").filter({ hasText: title }).click();
       await dialog
         .getByRole("button", { name: "ポリシーで割り当て", exact: true })
         .click();

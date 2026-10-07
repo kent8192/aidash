@@ -167,7 +167,7 @@ test("creates a workspace and task and receives live assignment changes", async 
     .getByRole("button", { name: "作成", exact: true })
     .click();
   await expect(page.getByRole("dialog")).not.toBeVisible();
-  await page.locator(".collab-task").filter({ hasText: taskName }).click();
+  await page.locator(".intent-task-row").filter({ hasText: taskName }).click();
   await page
     .getByRole("button", { name: "担当を割り当て", exact: true })
     .click();
@@ -201,7 +201,7 @@ test("creates a workspace and task and receives live assignment changes", async 
     .getByRole("dialog")
     .getByRole("button", { name: "担当を割り当て" })
     .click();
-  const row = page.locator(".collab-task").filter({ hasText: taskName });
+  const row = page.locator(".intent-task-row").filter({ hasText: taskName });
   await expect(row).toContainText("完了", { timeout: 30000 });
 });
 

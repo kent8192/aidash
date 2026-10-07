@@ -174,7 +174,9 @@ test("semantic dashboard configures, searches, migrates and deletes persistent s
     await page
       .getByRole("button", { name: "Semantic search", exact: true })
       .click();
-    await expect(page.locator('[aria-live="polite"]')).toContainText("v2");
+    await expect(
+      page.locator('.semantic-page [aria-live="polite"]'),
+    ).toContainText("v2");
     await page.screenshot({
       path: "../.ignore/dashboard-semantic-desktop.png",
       fullPage: true,

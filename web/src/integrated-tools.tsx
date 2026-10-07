@@ -128,6 +128,7 @@ export function TrustTools({
 export function ConversationTools({
   view,
   data,
+  stateError,
   nodeId,
   operator,
   workspace,
@@ -135,6 +136,7 @@ export function ConversationTools({
 }: {
   view?: "files" | "progress";
   data?: State;
+  stateError?: string;
   nodeId: string;
   operator: boolean;
   workspace?: string;
@@ -191,7 +193,14 @@ export function ConversationTools({
               <WorkingFileSettings workspace={workspace} />
             ))}
           {view === "progress" && (
-            <TransactionsPage nodeId={nodeId} operator={operator} />
+            <>
+              {stateError && (
+                <p className="error" role="alert">
+                  {stateError}
+                </p>
+              )}
+              <TransactionsPage nodeId={nodeId} operator={operator} />
+            </>
           )}
         </Suspense>
         {!data && view === "files" && (

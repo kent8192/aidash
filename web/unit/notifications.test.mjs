@@ -62,6 +62,36 @@ test("only observed terminal transitions announce, including failure recovery", 
   store.observe(frame([entry("task", "completed")]));
   assert.equal(store.takeBatch(NOTICE_INTERVAL)[0].kind, "completed");
 });
+for (const kind of ["completed", "failed"]) {
+  test(`${kind} revisions retain history, queued toast and unread identity`, () => {
+    const store = new NoticeStore();
+    const request = entry("request", "input");
+    store.observe(frame([entry("task")]));
+    store.observe(frame([entry("task"), request]));
+    store.takeBatch(0);
+    store.markRead();
+    store.observe(frame([entry("task", kind, "home:one", "1"), request]));
+    const id = store.getSnapshot().recent[0].id;
+    const updated = {
+      ...entry("task", kind, "home:one", "2"),
+      detail: "Updated task title",
+    };
+    store.observe(frame([updated, request]));
+    assert.equal(store.getSnapshot().recent[0].id, id);
+    assert.equal(store.getSnapshot().recent[0].detail, updated.detail);
+    assert.equal(store.getSnapshot().unread, true);
+    assert.equal(store.getCurrent(id).signature, "2");
+    assert.deepEqual(store.takeBatch(1), []);
+    assert.deepEqual(store.takeBatch(NOTICE_INTERVAL), [store.getCurrent(id)]);
+    store.markRead(id);
+    store.observe(frame([entry("task", kind, "home:one", "3"), request]));
+    assert.equal(store.getSnapshot().unread, false);
+    assert.deepEqual(store.takeBatch(2 * NOTICE_INTERVAL), []);
+    store.observe(frame([request]));
+    assert.equal(store.getSnapshot().recent.length, 0);
+    assert.equal(store.getCurrent(id), undefined);
+  });
+}
 test("bursts are grouped and a second announcement waits for the global interval", () => {
   const store = new NoticeStore();
   store.observe(frame([]));
@@ -156,12 +186,19 @@ test("node identity keeps colliding request IDs distinct", () => {
 });
 test("history is bounded while every pending request remains reachable", () => {
   const store = new NoticeStore();
-  store.observe(frame([]));
-  const entries = Array.from({ length: 75 }, (_, index) =>
+  const tasks = Array.from({ length: 75 }, (_, index) =>
+    entry(`task-${index}`),
+  );
+  store.observe(frame(tasks));
+  const completed = tasks.map((task) => ({ ...task, kind: "completed" }));
+  store.observe(frame(completed));
+  const history = store.getSnapshot().recent;
+  assert.equal(history.length, NOTICE_HISTORY_LIMIT);
+  const requests = Array.from({ length: 75 }, (_, index) =>
     entry(`request-${index}`, "input"),
   );
-  store.observe(frame(entries));
-  assert.equal(store.getSnapshot().recent.length, NOTICE_HISTORY_LIMIT);
+  store.observe(frame([...completed, ...requests]));
+  assert.deepEqual(store.getSnapshot().recent, history);
   assert.equal(store.getSnapshot().pending.length, 75);
-  assert.equal(store.takeBatch(100).length, 75);
+  assert.equal(store.takeBatch(100).length, 150);
 });

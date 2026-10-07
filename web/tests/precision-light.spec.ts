@@ -153,6 +153,9 @@ test("request progress keeps transactions available when ordinary data is blocke
       .getByRole("dialog")
       .getByRole("heading", { name: "Transactions", exact: true }),
   ).toBeVisible();
+  await expect(page.getByRole("dialog").getByRole("alert")).toContainText(
+    "visibility pending",
+  );
   await expect(
     page.getByRole("heading", { name: "Peer transaction trust", exact: true }),
   ).toHaveCount(0);

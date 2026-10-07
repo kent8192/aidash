@@ -503,6 +503,50 @@ async function openThread(page: Page) {
   await expect(page.getByRole("heading", { name: "Agent work" })).toBeVisible();
 }
 
+test("retained-work Files link keeps the originating request instead of the first workspace", async ({
+  page,
+}) => {
+  const { errors } = await core(page);
+  await page.goto("/collaboration?channel=workspace-one");
+  const data = await page.evaluate(() =>
+    fetch("/api/state").then((response) => response.json()),
+  );
+  data.workspaces.reverse();
+  await page.route("**/api/state", (route) => route.fulfill({ json: data }));
+  await page.route("**/api/working-areas/*/session", (route) =>
+    route.fulfill({
+      json: {
+        active_run_id: null,
+        last_run_id: "run-0",
+        last_agent_version: "1.0.0",
+        queue: [],
+      },
+    }),
+  );
+  await openThread(page);
+  const files = page.getByRole("link", {
+    name: "Working file settings",
+    exact: true,
+  });
+  await expect(files).toHaveAttribute(
+    "href",
+    "/settings?view=workingFiles&channel=workspace-one",
+  );
+  await files.click();
+  await expect(page).toHaveURL(
+    /\/collaboration\?channel=workspace-one&view=files$/,
+  );
+  await expect(
+    page.getByRole("dialog", { name: "Files", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page
+      .getByRole("dialog")
+      .getByRole("heading", { name: "researcher", exact: true }),
+  ).toBeVisible();
+  expect(errors).toEqual([]);
+});
+
 test("queue, steer and stop remain usable; stale Python requires explicit acknowledgement", async ({
   page,
 }, info) => {
