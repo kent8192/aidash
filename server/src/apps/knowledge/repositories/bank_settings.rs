@@ -95,6 +95,24 @@ pub(crate) async fn set(
 			"memory bank embedding differs from its Workspace index".into(),
 		));
 	}
+	let pending: i64 = native::query_scalar(
+		&Query::select()
+			.expr(Func::count(Expr::col(ColumnRef::Asterisk).into()))
+			.from(Alias::new("memory_candidates"))
+			.and_where(Expr::col("bank_id").eq(Expr::value(id)))
+			.and_where(Expr::col("state").eq("pending"))
+			.to_string(PostgresQueryBuilder),
+	)
+	.scalar_one(&mut **lease.tx())
+	.await?;
+	if usize::try_from(pending)
+		.ok()
+		.is_none_or(|count| count > policy.bounds.max_candidates)
+	{
+		return Err(Error::Conflict(
+			"replacement memory policy is below the pending candidate queue".into(),
+		));
+	}
 	for (table, live_only, cap) in [
 		("memory_units", false, policy.retention.max_unit_records),
 		("memory_units", true, policy.bounds.max_units),

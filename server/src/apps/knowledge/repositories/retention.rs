@@ -118,9 +118,28 @@ pub(crate) async fn sweep(store: &Store) -> Result<()> {
 				&Query::delete()
 					.from_table(Alias::new("memory_history"))
 					.and_where(Expr::col("bank_id").eq(Expr::value(id)))
-					.and_where(Expr::col("updated_at").lt(Expr::value(
-						now - Duration::days(i64::from(retention.history_days)),
-					)))
+					.cond_where(
+						reinhardt::query::Condition::any()
+							.add(Expr::col("updated_at").lt(Expr::value(
+								now - Duration::days(i64::from(retention.history_days)),
+							)))
+							.add(Expr::exists(
+								Query::select()
+									.expr(Expr::value(1))
+									.from_as(Alias::new("memory_units"), Alias::new("unit"))
+									.and_where(
+										Expr::col(("unit", "id"))
+											.equals(("memory_history", "unit_id")),
+									)
+									.and_where(
+										Expr::col(("memory_history", "revision")).lte(
+											Expr::col(("unit", "revision"))
+												.sub(retention.history_versions as i64),
+										),
+									)
+									.to_owned(),
+							)),
+					)
 					.to_string(PostgresQueryBuilder),
 			)
 			.execute(&mut **lease.tx())

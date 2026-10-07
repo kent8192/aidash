@@ -361,13 +361,12 @@ pub(crate) async fn visible(access: &mut Access, grant: Uuid) -> Result<()> {
 			{
 				return Err(Error::Conflict("memory unit retention expired".into()));
 			}
-			// The root revision is already loaded and checked above. Reserve its
-			// visit while validating all transitive support with the same bound.
+			// Match admission: the checked root is outside its content traversal.
 			units::current(
 				&mut lease,
 				unit.bank.workspace,
 				&unit.content.evidence,
-				policy.bounds.max_graph_visits.saturating_sub(1),
+				policy.bounds.max_graph_visits,
 			)
 			.await?;
 		}

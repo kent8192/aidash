@@ -94,13 +94,16 @@ outage. Configure authentication/TLS for both backends according to your cluster
 boundary. Size PostgreSQL connection capacity for all server/worker replicas and
 their isolated recovery pools; do not assume a fixed total connection budget.
 
-Semantic memory uses Qdrant 1.19.1 with persistent `/qdrant/storage`. Configure
-its endpoint, secret reference and the explicitly selected embedding provider in
-the workspace semantic index. PostgreSQL remains the source of authority and
-holds retry/deletion records; a Qdrant outage is visible and retries are durable.
+Semantic memory stores vectors and keyword indexes in PostgreSQL using pgvector
+and PGroonga. Provision the extensions from `deploy/postgres/Dockerfile`, persist
+the PostgreSQL data directory, and select an exact embedding provider version in
+the workspace semantic index. PostgreSQL also holds canonical content and durable
+retry/deletion records. Native memory's PGroonga crash-safe worker settings are
+included in the database image; recovery and index reconciliation run after a
+database outage.
 The chart intentionally connects to operator-managed dependencies. The acceptance
-runner supplies disposable StatefulSets and PVCs for PostgreSQL, JetStream and
-Qdrant; its fixture passwords and unprotected network are local-test settings.
+runner supplies disposable StatefulSets and PVCs for PostgreSQL and JetStream;
+its fixture passwords and unprotected network are local-test settings.
 
 ## Scale, update and stop
 
@@ -140,11 +143,11 @@ Atomic-manifest recovery has a separate acceptance profile: `scripts/test-cluste
 
 The remote-memory profile is `scripts/test-cluster.sh kubernetes remote-memory`
 or `scripts/test-cluster.sh k3s remote-memory`. It provisions two HTTP Nodes with
-separate PostgreSQL databases, persistent Qdrant and deterministic providers. It
+separate PostgreSQL databases with pgvector/PGroonga and deterministic providers. It
 kills the ordinary executor during inference, then generates a Home ancestor that
 creates a real child Task and prepares the child Agent at B. After approval it
 kills Home during a reserved embedding request, holds the outage until a durable
-retry, restarts both servers/worker and Qdrant, and verifies lineage, receipts,
+retry, restarts both servers/worker and PostgreSQL, and verifies lineage, receipts,
 unknown charges and source-invalidation controls. Production leases expire
 naturally. Only this run's namespace and cluster are removed. `remote-memory.json`,
 provider requests, source/image identities and server logs are retained under

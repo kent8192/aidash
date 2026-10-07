@@ -255,10 +255,10 @@ async fn scoped_pair(
 	#[default(false)] approval: bool,
 	#[default(false)] compactor: bool,
 	#[default(false)] native: bool,
-	#[default((false, false))] large_native: (bool, bool),
+	#[default((false, false, 32))] large_native: (bool, bool, usize),
 	#[future(awt)] test_environment: Arc<TestEnvironment>,
 ) -> Pair {
-	let (large_native_graph, large_native_journal) = large_native;
+	let (large_native_graph, large_native_journal, native_graph_visits) = large_native;
 	let _ = tracing_subscriber::fmt()
 		.with_env_filter("aidash=debug")
 		.with_test_writer()
@@ -444,7 +444,11 @@ async fn scoped_pair(
 			&ba,
 			&token,
 			workspace,
-			(large_native_graph, large_native_journal),
+			(
+				large_native_graph,
+				large_native_journal,
+				native_graph_visits,
+			),
 		)
 		.await;
 		source_policy["subjects"][qualified_agent(&b.config.node_id, "research-native", "1.0.0")] =
@@ -552,7 +556,7 @@ async fn native_remote_fixture(
 	ba: &common::TestApplication,
 	token: &str,
 	workspace: Uuid,
-	(large_graph, large_journal): (bool, bool),
+	(large_graph, large_journal, graph_visits): (bool, bool, usize),
 ) -> Value {
 	let (_, home_agent) = request(
 		aa,
@@ -580,6 +584,7 @@ async fn native_remote_fixture(
         "retention":{"unit_max_age_days":null,"candidate_days":7,"history_days":30,"history_versions":16,"model_result_days":7,"backup_days":7,"purge_after_seconds":60,"purge_batch":32,"max_unit_records":128,"max_model_operations":1024},
         "bounds":{"max_unit_bytes":8192,"max_input_bytes":8192,"max_units":16,"max_candidates":8,"max_entities":8,"max_evidence":8,"max_links":8,"max_graph_hops":3,"max_graph_visits":32,"max_results":4,"max_context_tokens":8192,"max_model_calls":4,"max_model_tokens":8192,"max_cost_micros":10000,"max_retries":2,"max_call_seconds":30},
         "semantic_link_min_similarity_millionths":700000,"learn_from_runs":false,"maintain_observations":false,"refresh_mental_models":false}});
+	policy["policy"]["bounds"]["max_graph_visits"] = json!(graph_visits);
 	if large_graph {
 		policy["policy"]["bounds"]["max_graph_visits"] = json!(4096);
 	}

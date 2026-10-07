@@ -11,7 +11,7 @@ const reference = (value: string) => {
 const bounds = {
   max_unit_bytes: 8192,
   max_input_bytes: 16384,
-  max_units: 1024,
+  max_units: 64,
   max_candidates: 64,
   max_entities: 32,
   max_evidence: 32,

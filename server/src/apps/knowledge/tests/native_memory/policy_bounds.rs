@@ -15,6 +15,329 @@ async fn config(database: &DatabaseFixture) -> serde_json::Value {
 }
 
 #[rstest]
+#[tokio::test]
+async fn smaller_candidate_policy_preserves_review_and_participant_upgrade_atomicity(
+	#[future] database: DatabaseFixture,
+	bounds: Bounds,
+) {
+	let database = database.await;
+	let (store, registry, workspace) = setup(&database, bounds).await;
+	let participant = memory::create_participant(
+		&store,
+		&Actor::Operator,
+		workspace,
+		memory::CreateParticipant {
+			agent: reference("a"),
+		},
+	)
+	.await
+	.unwrap();
+	let bank = participant.bank;
+	let (_, run_id) = recorded_run(&store, &bank, &[]).await;
+	let run = store.run(run_id).await.unwrap();
+	let proof = Evidence::Run {
+		id: run_id,
+		revision: run.revision,
+		digest: aidash_domain::semantic::indexing::content_digest(
+			&serde_json::to_string(&run).unwrap(),
+		),
+	};
+	let bank_id: Uuid = native::query_scalar(
+		&Query::select()
+			.column(Alias::new("id"))
+			.from(Alias::new("memory_banks"))
+			.and_where(Expr::col("participant_id").eq(Expr::value(bank.participant.unwrap())))
+			.to_string(PostgresQueryBuilder),
+	)
+	.scalar_one(&store.pool)
+	.await
+	.unwrap();
+	// Persist pending learning results to isolate replacement from model transport.
+	let mut tx = native::begin(&store.pool).await.unwrap();
+	for name in ["First pending candidate", "Second pending candidate"] {
+		native::query(
+			&Query::insert()
+				.into_table(Alias::new("memory_candidates"))
+				.columns(
+					[
+						"id",
+						"bank_id",
+						"revision",
+						"run",
+						"text",
+						"kind",
+						"learning",
+						"verification",
+						"entities",
+						"evidence",
+						"links",
+						"state",
+						"created_at",
+						"updated_at",
+					]
+					.map(Alias::new),
+				)
+				.from_subquery(
+					Query::select()
+						.expr(Expr::value(Uuid::now_v7()))
+						.expr(Expr::value(bank_id))
+						.expr(Expr::value(1_i64))
+						.expr(Expr::value(serde_json::to_value(&proof).unwrap()))
+						.expr(Expr::value(name))
+						.expr(Expr::value("world"))
+						.expr(Expr::value("fact"))
+						.expr(Expr::value("unverified"))
+						.expr(Expr::value(json!([])))
+						.expr(Expr::value(json!([proof])))
+						.expr(Expr::value(json!([])))
+						.expr(Expr::value("pending"))
+						.expr(Expr::value(chrono::Utc::now()))
+						.expr(Expr::value(chrono::Utc::now()))
+						.to_owned(),
+				)
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(&mut *tx)
+		.await
+		.unwrap();
+	}
+	tx.commit().await.unwrap();
+	let list = |provider| memory::Operation {
+		operation_id: Uuid::now_v7(),
+		provider,
+		bank: bank.clone(),
+		action: memory::Action::Candidates,
+	};
+	let memory::Outcome::Candidates(before) =
+		memory::operate(&store, &Actor::Operator, list(reference("p")))
+			.await
+			.unwrap()
+	else {
+		panic!("candidate list");
+	};
+	assert_eq!(before.len(), 2);
+	assert!(
+		before
+			.iter()
+			.all(|candidate| candidate.state == CandidateState::Pending)
+	);
+	let mut replacement = config(&database).await;
+	replacement["policy"]["bounds"]["max_candidates"] = json!(1);
+	replacement["policy"]["bounds"]["max_results"] = json!(1);
+	registry
+		.register(entry("memory", "small-queue", replacement))
+		.await
+		.unwrap();
+	let mut agent = entry(
+		"agent",
+		"a",
+		json!({"model":reference("m"),
+		"instructions":"Keep learning review accessible","memory":reference("small-queue"),"allow_memory_write":true}),
+	);
+	agent.version = "1.1.0".into();
+	registry.register(agent).await.unwrap();
+	let upgrade = || memory::UpgradeParticipant {
+		agent: EntityRef {
+			id: "a".into(),
+			version: "1.1.0".into(),
+		},
+		expected_revision: 1,
+	};
+	let result =
+		memory::upgrade_participant(&store, &Actor::Operator, bank.clone(), upgrade()).await;
+	assert!(
+		matches!(result, Err(aidash_server::Error::Conflict(message))
+		if message == "replacement memory policy is below the pending candidate queue")
+	);
+	let memory::Outcome::Candidates(after) =
+		memory::operate(&store, &Actor::Operator, list(reference("p")))
+			.await
+			.unwrap()
+	else {
+		panic!("preserved candidate list");
+	};
+	assert_eq!(after, before);
+	memory::operate(
+		&store,
+		&Actor::Operator,
+		memory::Operation {
+			operation_id: Uuid::now_v7(),
+			provider: reference("p"),
+			bank: bank.clone(),
+			action: memory::Action::Review {
+				id: before[0].id,
+				expected_revision: before[0].revision,
+				mutation: None,
+			},
+		},
+	)
+	.await
+	.unwrap();
+	let upgraded = memory::upgrade_participant(&store, &Actor::Operator, bank.clone(), upgrade())
+		.await
+		.unwrap();
+	assert_eq!(
+		upgraded.revision, 2,
+		"the rejected upgrade must preserve the Agent CAS"
+	);
+	let memory::Outcome::Candidates(remaining) =
+		memory::operate(&store, &Actor::Operator, list(reference("small-queue")))
+			.await
+			.unwrap()
+	else {
+		panic!("bounded candidate list");
+	};
+	assert_eq!(remaining.len(), 1);
+}
+
+#[rstest]
+#[case(false)]
+#[case(true)]
+#[tokio::test]
+async fn replacement_history_count_is_enforced_for_unchanged_units_during_maintenance(
+	#[future] database: DatabaseFixture,
+	bounds: Bounds,
+	#[case] participant: bool,
+) {
+	let database = database.await;
+	let (store, registry, workspace) = setup(&database, bounds).await;
+	let bank = if participant {
+		memory::create_participant(
+			&store,
+			&Actor::Operator,
+			workspace,
+			memory::CreateParticipant {
+				agent: reference("a"),
+			},
+		)
+		.await
+		.unwrap()
+		.bank
+	} else {
+		Bank {
+			home: store.node_id.clone(),
+			tenant: "acme".into(),
+			workspace,
+			participant: None,
+		}
+	};
+	let mut units = vec![];
+	for last_revision in [6, 3] {
+		let id = Uuid::now_v7();
+		for revision in 0..last_revision {
+			let content = content("Revision retained until its pinned count expires");
+			let change = if revision == 0 {
+				Change::Add { id, content }
+			} else {
+				Change::Correct {
+					id,
+					expected_revision: revision,
+					content,
+				}
+			};
+			memory::mutate(&store, &Actor::Operator, mutation(&bank, change))
+				.await
+				.unwrap();
+		}
+		units.push((id, last_revision));
+	}
+	let before = memory::list(
+		&store,
+		&Actor::Operator,
+		memory::ReadBank {
+			provider: reference("p"),
+			bank: bank.clone(),
+		},
+	)
+	.await
+	.unwrap();
+	for (id, last) in &units {
+		assert_eq!(
+			history_revisions(&store, *id).await,
+			(1..=*last).collect::<Vec<_>>()
+		);
+	}
+	let mut replacement = config(&database).await;
+	replacement["policy"]["retention"]["history_versions"] = json!(2);
+	registry
+		.register(entry("memory", "short-history", replacement))
+		.await
+		.unwrap();
+	if participant {
+		let mut agent = entry(
+			"agent",
+			"a",
+			json!({"model":reference("m"),"instructions":"Bound history",
+			"memory":reference("short-history"),"allow_memory_write":true}),
+		);
+		agent.version = "1.1.0".into();
+		registry.register(agent).await.unwrap();
+		memory::upgrade_participant(
+			&store,
+			&Actor::Operator,
+			bank.clone(),
+			memory::UpgradeParticipant {
+				agent: EntityRef {
+					id: "a".into(),
+					version: "1.1.0".into(),
+				},
+				expected_revision: 1,
+			},
+		)
+		.await
+		.unwrap();
+	} else {
+		memory::operate(
+			&store,
+			&Actor::Operator,
+			memory::Operation {
+				operation_id: Uuid::now_v7(),
+				provider: reference("short-history"),
+				bank: bank.clone(),
+				action: memory::Action::ConfigureBank {
+					expected_revision: 1,
+				},
+			},
+		)
+		.await
+		.unwrap();
+	}
+	aidash_server::semantic::worker::sweep(&store)
+		.await
+		.unwrap();
+	for (id, last) in units {
+		assert_eq!(history_revisions(&store, id).await, vec![last - 1, last]);
+	}
+	assert_eq!(
+		memory::list(
+			&store,
+			&Actor::Operator,
+			memory::ReadBank {
+				provider: reference("short-history"),
+				bank
+			}
+		)
+		.await
+		.unwrap(),
+		before
+	);
+}
+
+async fn history_revisions(store: &Store, unit: Uuid) -> Vec<i64> {
+	native::query_scalar(
+		&Query::select()
+			.column(Alias::new("revision"))
+			.from(Alias::new("memory_history"))
+			.and_where(Expr::col("unit_id").eq(Expr::value(unit)))
+			.order_by(Alias::new("revision"), reinhardt::query::Order::Asc)
+			.to_string(PostgresQueryBuilder),
+	)
+	.scalar_all(&store.pool)
+	.await
+	.unwrap()
+}
+
+#[rstest]
 #[case(false, false)]
 #[case(false, true)]
 #[case(true, false)]

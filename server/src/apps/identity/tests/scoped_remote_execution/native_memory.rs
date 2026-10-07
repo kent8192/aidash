@@ -21,6 +21,95 @@ async fn first_native_context(p: &Pair) -> Value {
 	input["current"]["semantic_memory"].clone()
 }
 
+#[rstest::rstest]
+#[tokio::test]
+async fn remote_native_provenance_at_exact_admitted_bound_keeps_the_grant_visible(
+	#[future(awt)]
+	#[with(true, false, false, false, true, (false, false, 2))]
+	scoped_pair: Pair,
+) {
+	let p = scoped_pair;
+	let fixture = p.native.as_ref().unwrap();
+	let workspace = p.a.store.task(p.task).await.unwrap().workspace_id;
+	let route = format!("/api/workspaces/{workspace}/memory/units/mutate");
+	let mut evidence = vec![];
+	for name in ["First exact-bound support", "Second exact-bound support"] {
+		let (status, body) = request(
+			&p.aa,
+			&p.token,
+			"POST",
+			&route,
+			json!({
+				"operation_id":Uuid::now_v7(),"provider":fixture["provider"],"bank":fixture["bank"],
+				"changes":[{"operation":"add","id":Uuid::now_v7(),"content":{
+					"text":name,"kind":"world","learning":"fact","verification":"unverified",
+					"occurred":null,"entities":[],"evidence":[],"links":[]
+				}}]
+			}),
+		)
+		.await;
+		assert_eq!(status, 200, "{body}");
+		let unit: aidash_domain::memory::Unit = serde_json::from_value(body[0].clone()).unwrap();
+		evidence.push(unit.evidence());
+	}
+	let (status, body) = request(&p.aa, &p.token, "POST", &route, json!({
+		"operation_id":Uuid::now_v7(),"provider":fixture["provider"],"bank":fixture["bank"],
+		"changes":[{"operation":"correct","id":fixture["private"],"expected_revision":1,"content":{
+			"text":"Native private claim with exactly two provenance visits","kind":"world","learning":"fact",
+			"verification":"unverified","occurred":null,"entities":[],"evidence":evidence,"links":[]
+		}}]
+	})).await;
+	assert_eq!(status, 200, "{body}");
+	let root = &body[0];
+	assert_eq!(root["revision"], 2);
+	for _ in 0..4 {
+		aidash_server::semantic::worker::sweep(&p.a.store)
+			.await
+			.unwrap();
+	}
+	let receipt = first_native_context(&p).await;
+	let units = receipt["memory"]["banks"][0]["recall"]["units"]
+		.as_array()
+		.unwrap();
+	assert!(
+		units
+			.iter()
+			.any(|unit| unit["id"] == root["id"] && unit["revision"] == 2),
+		"{receipt}"
+	);
+	let recorded: i64 = sqlx::query_scalar(
+		&Query::select()
+			.expr(reinhardt::query::Func::count(Expr::col("unit_id").into()))
+			.from(Alias::new("memory_remote_reads"))
+			.and_where(Expr::col("grant_id").eq(Expr::value(p.grant)))
+			.and_where(Expr::col("unit_id").eq(Expr::value(
+				Uuid::parse_str(root["id"].as_str().unwrap()).unwrap(),
+			)))
+			.and_where(Expr::col("revision").eq(2_i64))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(p.a.store.pool.driver())
+	.await
+	.unwrap();
+	assert_eq!(
+		recorded, 1,
+		"the exact-bound root must enter the grant journal"
+	);
+	let (status, body) = request(
+		&p.ba,
+		&p.receiver_token,
+		"GET",
+		&format!("/api/runs/{}", p.admission),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(
+		status, 200,
+		"journal visibility must preserve the admitted provenance bound: {body}"
+	);
+	p.close().await;
+}
+
 async fn assert_receiver_native_cache_erased(p: &Pair) {
 	let receipts: i64 = sqlx::query_scalar(
 		&Query::select()
@@ -408,7 +497,7 @@ async fn generated_native_remote_context_has_fresh_home_identity_and_committed_o
 #[tokio::test]
 async fn native_remote_run_reads_use_the_pinned_provenance_limit_above_1024(
 	#[future(awt)]
-	#[with(true, false, false, false, true, (true, false))]
+	#[with(true, false, false, false, true, (true, false, 32))]
 	scoped_pair: Pair,
 ) {
 	use aidash_domain::memory::{
@@ -527,7 +616,7 @@ async fn native_remote_run_reads_use_the_pinned_provenance_limit_above_1024(
 #[tokio::test]
 async fn native_remote_journal_validates_admitted_reads_above_1024_and_checks_later_pages(
 	#[future(awt)]
-	#[with(true, false, false, false, true, (false, true))]
+	#[with(true, false, false, false, true, (false, true, 32))]
 	scoped_pair: Pair,
 ) {
 	use aidash_domain::memory::{Bank, Change, Content, Mutation, Unit};

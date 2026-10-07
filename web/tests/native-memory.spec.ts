@@ -510,6 +510,9 @@ for (const locale of ["en-US", "ja-JP"] as const) {
       );
     }
     expect(config.policy.bounds.max_model_calls).toBeGreaterThan(0);
+    expect(config.policy.bounds.max_units ** 2 * 3072).toBeLessThanOrEqual(
+      32 * 1024 * 1024,
+    );
     expect(config.policy.retention.backup_days).toBe(7);
   });
 

@@ -370,12 +370,14 @@ async fn visible_messages_and_events_survive_a_denied_burst(
 		)
 		.await
 		.unwrap();
+	// Public tool descriptions may mention privacy; detect the denied body itself.
+	let denied_content = format!("denied-message-private-{}", Uuid::new_v4());
 	for index in 0..110 {
 		f.store
 			.message(
 				workspace,
 				"denied",
-				"private",
+				&denied_content,
 				Some(&format!("denied-message-{index}")),
 			)
 			.await
@@ -416,7 +418,7 @@ async fn visible_messages_and_events_survive_a_denied_burst(
 		if path.contains("workspaces") {
 			assert!(body["messages"].to_string().contains("older-visible"));
 		}
-		assert!(!body.to_string().contains("private"));
+		assert!(!body.to_string().contains(&denied_content), "{body}");
 	}
 	cleanup(f, &url, &schema).await;
 }
