@@ -22,9 +22,10 @@ struct ControlledContext {
 async fn controlled_context(
 	#[default(true)] memory: bool,
 	#[default(true)] workspace_retrieval: bool,
+	#[future(awt)] test_environment: std::sync::Arc<TestEnvironment>,
 ) -> ControlledContext {
 	use aidash_server::domain::{ArtifactInput, qualified_agent};
-	let environment = test_environment().await;
+	let environment = test_environment;
 	let (f, url, schema) = common::setup(&environment).await;
 	let app = common::application(f.clone()).await;
 	let captured = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));

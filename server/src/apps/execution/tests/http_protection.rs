@@ -2,30 +2,36 @@
 mod common;
 
 use aidash_server::http::Settings;
-use axum::{body::Body, http::Request};
-use axum_test::TestServer;
+use bytes::Bytes;
 use futures_util::StreamExt;
+use http::Request;
 use serde_json::json;
 use std::{sync::Arc, time::Duration};
 
 #[rstest::rstest]
 #[tokio::test]
 async fn production_router_enforces_auth_validation_rate_and_sse_resume(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+	#[from(auth_settings)] _auth_settings: Settings,
+	#[from(actor_settings)] _actor_settings: Settings,
+	#[from(stream_settings)] _stream_settings: Settings,
 	#[future(awt)]
-	#[from(common::test_environment)]
-	environment: Arc<common::TestEnvironment>,
+	#[from(common::native_application)]
+	#[with(_auth_settings.clone(), aidash_server::sse::Service::new(aidash_server::sse::Settings::default()), Arc::new(|router| router), runtime.clone())]
+	auth_fixture: common::ApplicationFixture,
+	#[future(awt)]
+	#[from(common::native_application)]
+	#[with(_actor_settings.clone(), aidash_server::sse::Service::new(aidash_server::sse::Settings::default()), Arc::new(|router| router), runtime.clone())]
+	actor_fixture: common::ApplicationFixture,
+	#[future(awt)]
+	#[from(common::native_application)]
+	#[with(_stream_settings.clone(), aidash_server::sse::Service::new(aidash_server::sse::Settings::default()), Arc::new(|router| router), runtime.clone())]
+	stream_fixture: common::ApplicationFixture,
+	#[from(reinhardt::test::fixtures::http_client)] http_client: reqwest::Client,
 ) {
-	let (federation, url, schema) = common::setup(&environment).await;
-	let auth = common::application_with_settings(
-		federation.clone(),
-		Settings {
-			auth_burst: 1,
-			auth_period: Duration::from_secs(60),
-			auth_trusted_proxy_ips: vec!["127.0.0.1".parse().unwrap(), "::1".parse().unwrap()],
-			..Default::default()
-		},
-	)
-	.await;
+	let (federation, url, schema) = runtime.await.parts();
+	let auth = auth_fixture.application;
+	// Synthetic socket peers exercise trusted-proxy policy through the native handler.
 	for (peer, client, expected) in [
 		("127.0.0.1:1", "198.51.100.1", 200),
 		("127.0.0.1:2", "198.51.100.1", 429),
@@ -40,120 +46,102 @@ async fn production_router_enforces_auth_validation_rate_and_sse_resume(
 	] {
 		let response = auth
 			.clone()
-			.oneshot(
+			.native_oneshot(
 				Request::builder()
 					.uri("/auth/config")
-					.extension(axum::extract::ConnectInfo(
-						peer.parse::<std::net::SocketAddr>().unwrap(),
-					))
+					.extension(peer.parse::<std::net::SocketAddr>().unwrap())
 					.header("x-real-ip", client)
-					.body(Body::empty())
+					.body(Bytes::new())
 					.unwrap(),
 			)
 			.await
 			.unwrap();
 		assert_eq!(
-			response.status().as_u16(),
+			response.status.as_u16(),
 			expected,
 			"peer={peer}, client={client}"
 		);
 	}
 	let repeated_header = auth
 		.clone()
-		.oneshot(
+		.native_oneshot(
 			Request::builder()
 				.uri("/auth/config")
-				.extension(axum::extract::ConnectInfo(
-					"127.0.0.1:6".parse::<std::net::SocketAddr>().unwrap(),
-				))
+				.extension("127.0.0.1:6".parse::<std::net::SocketAddr>().unwrap())
 				.header("x-real-ip", "198.51.100.7")
 				.header("x-real-ip", "198.51.100.8")
-				.body(Body::empty())
+				.body(Bytes::new())
 				.unwrap(),
 		)
 		.await
 		.unwrap();
 	assert_eq!(
-		repeated_header.status(),
-		429,
+		repeated_header.status, 429,
 		"repeated headers must use the exhausted peer budget"
 	);
 	drop(auth);
-	let limited = TestServer::new(
-		common::application_with_settings(
-			federation.clone(),
-			Settings {
-				actor_burst: 1,
-				actor_period: Duration::from_secs(60),
-				..Default::default()
-			},
-		)
-		.await
-		.test_transport(),
-	)
-	.unwrap();
-	limited
-		.get("/api/session")
-		.await
-		.assert_status_unauthorized();
-	limited
-		.get("/api/session")
-		.authorization_bearer("operator-execution-fixture")
-		.await
-		.assert_status_ok();
-	let limited_response = limited
-		.get("/api/session")
-		.authorization_bearer("operator-execution-fixture")
-		.await;
-	limited_response.assert_status_too_many_requests();
+
+	let limited_app = actor_fixture.application;
+	let limited = actor_fixture.operator;
+	let limited_anonymous = actor_fixture.anonymous;
+	assert_eq!(
+		limited_anonymous
+			.get("/api/session")
+			.await
+			.unwrap()
+			.status_code(),
+		401
+	);
+	assert_eq!(
+		limited.get("/api/session").await.unwrap().status_code(),
+		200
+	);
+	let limited_response = limited.get("/api/session").await.unwrap();
+	assert_eq!(limited_response.status_code(), 429);
 	assert!(limited_response.headers().contains_key("x-request-id"));
 	assert_eq!(limited_response.headers()["cache-control"], "no-store");
 	// Exhausting the authenticated budget must not change unauthenticated errors.
-	limited
-		.get("/api/session")
-		.await
-		.assert_status_unauthorized();
+	assert_eq!(
+		limited_anonymous
+			.get("/api/session")
+			.await
+			.unwrap()
+			.status_code(),
+		401
+	);
 
-	let app = common::application_with_settings(
-		federation.clone(),
-		Settings {
-			sse_connections: 1,
-			..Default::default()
-		},
-	)
-	.await;
-	let server = TestServer::new(app.test_transport().layer(axum::Extension(
-		axum::extract::ConnectInfo("127.0.0.1:12345".parse::<std::net::SocketAddr>().unwrap()),
-	)))
-	.unwrap();
+	let app = stream_fixture.application;
+	let server = stream_fixture.anonymous;
+	let operator = stream_fixture.operator;
 	for (path, status) in [("/api/session", 401), ("/auth/config", 200)] {
-		let response = server.get(path).await;
-		assert_eq!(response.status_code().as_u16(), status);
+		let response = server.get(path).await.unwrap();
+		assert_eq!(response.status_code(), status);
 		assert_eq!(response.headers()["cache-control"], "no-store");
 		assert_eq!(response.headers()["referrer-policy"], "no-referrer");
 	}
 	let peer_denied = server
-		.post("/federation/v0.1/discover")
-		.add_header("x-aidash-protocol", aidash_server::config::PROTOCOL_VERSION)
-		.json(&json!({}))
-		.await;
-	peer_denied.assert_status_unauthorized();
+		.post_raw_with_headers(
+			"/federation/v0.1/discover",
+			b"{}",
+			"application/json",
+			&[("x-aidash-protocol", aidash_server::config::PROTOCOL_VERSION)],
+		)
+		.await
+		.unwrap();
+	assert_eq!(peer_denied.status_code(), 401);
 	assert_eq!(peer_denied.headers()["cache-control"], "no-store");
 	assert_eq!(peer_denied.headers()["referrer-policy"], "no-referrer");
-	let public = server.get("/api/openapi.json").await;
-	public.assert_status_ok();
+	let public = server.get("/api/openapi.json").await.unwrap();
+	assert_eq!(public.status_code(), 200);
 	assert!(!public.headers().contains_key("cache-control"));
-	let static_response = server.get("/assets/missing.js").await;
+	let static_response = server.get("/assets/missing.js").await.unwrap();
 	assert!(!static_response.headers().contains_key("cache-control"));
-	let session = server
-		.get("/api/session")
-		.authorization_bearer("operator-execution-fixture")
-		.await;
-	session.assert_status_ok();
+	let session = operator.get("/api/session").await.unwrap();
+	assert_eq!(session.status_code(), 200);
 	assert_eq!(session.headers()["cache-control"], "no-store");
 	assert_eq!(session.headers()["referrer-policy"], "no-referrer");
-	// Route composition must preserve the default limit and the larger file
-	// payload limit, including rejections that happen before extraction.
+	// reinhardt-web#6661: APIClient cannot send a GET body or a chunked producer. The raw HTTP
+	// fixture checks transport limits before extraction for both encodings.
 	for (method, path, limit) in [
 		("GET", "/health", 1 << 20),
 		("GET", "/assets/missing.js", 1 << 20),
@@ -164,44 +152,40 @@ async fn production_router_enforces_auth_validation_rate_and_sse_resume(
 		("POST", "/api/workspaces", 1 << 20),
 		("POST", "/api/references/uploads", 6 << 20),
 	] {
-		let response = server
-			.method(method.parse().unwrap(), path)
-			.authorization_bearer("operator-execution-fixture")
-			.add_header(http::header::CONTENT_LENGTH, (limit + 1).to_string())
-			.bytes(vec![b' '; limit + 1].into())
-			.await;
-		assert_eq!(response.status_code(), 413, "{method} {path}");
+		let response = http_client
+			.request(method.parse().unwrap(), app.url(path))
+			.bearer_auth("operator-execution-fixture")
+			.header(http::header::CONTENT_LENGTH, (limit + 1).to_string())
+			.body(vec![b' '; limit + 1])
+			.send()
+			.await
+			.unwrap();
+		assert_eq!(response.status(), 413, "{method} {path}");
 		assert!(response.headers().contains_key("x-request-id"));
 	}
 	for (path, limit) in [
 		("/api/workspaces", 1 << 20),
 		("/api/references/uploads", 6 << 20),
 	] {
-		let body = Body::from_stream(futures_util::stream::iter([
-			Ok::<_, std::io::Error>(axum::body::Bytes::from(vec![b' '; limit])),
-			Ok(axum::body::Bytes::from_static(b"{}")),
+		let body = reqwest::Body::wrap_stream(futures_util::stream::iter([
+			Ok::<_, std::io::Error>(Bytes::from(vec![b' '; limit])),
+			Ok(Bytes::from_static(b"{}")),
 		]));
-		let response = app
-			.clone()
-			.oneshot(
-				Request::builder()
-					.method("POST")
-					.uri(path)
-					.header("authorization", "Bearer operator-execution-fixture")
-					.header("content-type", "application/json")
-					.body(body)
-					.unwrap(),
-			)
+		let response = http_client
+			.post(app.url(path))
+			.bearer_auth("operator-execution-fixture")
+			.header("content-type", "application/json")
+			.body(body)
+			.send()
 			.await
 			.unwrap();
 		assert_eq!(response.status(), 413, "{path}");
 		assert!(response.headers().contains_key("x-request-id"));
 	}
-	let invalid_conversation = server.post("/api/conversations").authorization_bearer("operator-execution-fixture")
-        .json(&json!({"title":" ", "goal":" ", "target":{"id":"missing", "version":"1.0.0"}, "target_kind":"agent"})).await;
-	invalid_conversation.assert_status_bad_request();
+	let invalid_conversation = operator.post("/api/conversations", &json!({"title":" ", "goal":" ", "target":{"id":"missing", "version":"1.0.0"}, "target_kind":"agent"}), "json").await.unwrap();
+	assert_eq!(invalid_conversation.status_code(), 400);
 	assert_eq!(
-		invalid_conversation.json::<serde_json::Value>()["error"],
+		invalid_conversation.json_value().unwrap()["error"],
 		"invalid request fields: goal, title"
 	);
 	for (body, content_type, status) in [
@@ -209,35 +193,41 @@ async fn production_router_enforces_auth_validation_rate_and_sse_resume(
 		("{}", "application/json", 422),
 		("{}", "text/plain", 415),
 	] {
-		let response = server
-			.post("/api/workspaces")
-			.authorization_bearer("operator-execution-fixture")
-			.bytes(body.into())
-			.content_type(content_type)
-			.await;
-		assert_eq!(response.status_code().as_u16(), status);
+		let response = operator
+			.post_raw("/api/workspaces", body.as_bytes(), content_type)
+			.await
+			.unwrap();
+		assert_eq!(response.status_code(), status);
 		assert_eq!(
-			response.json::<serde_json::Value>()["error"],
+			response.json_value().unwrap()["error"],
 			"invalid JSON request"
 		);
 	}
-
-	let invalid = server
-		.post("/api/workspaces")
-		.authorization_bearer("operator-execution-fixture")
-		.json(&json!({"title":"   ","goal":"valid"}))
-		.await;
-	invalid.assert_status_bad_request();
+	let invalid = operator
+		.post(
+			"/api/workspaces",
+			&json!({"title":"   ","goal":"valid"}),
+			"json",
+		)
+		.await
+		.unwrap();
+	assert_eq!(invalid.status_code(), 400);
 	assert_eq!(
-		invalid.json::<serde_json::Value>()["error"],
+		invalid.json_value().unwrap()["error"],
 		"invalid request fields: title"
 	);
-	server
-		.post("/api/workspaces")
-		.authorization_bearer("operator-execution-fixture")
-		.json(&json!({"title":"first","goal":"valid"}))
-		.await
-		.assert_status_ok();
+	assert_eq!(
+		operator
+			.post(
+				"/api/workspaces",
+				&json!({"title":"first","goal":"valid"}),
+				"json"
+			)
+			.await
+			.unwrap()
+			.status_code(),
+		200
+	);
 	let before = federation
 		.store
 		.events(0, None, 500)
@@ -246,32 +236,39 @@ async fn production_router_enforces_auth_validation_rate_and_sse_resume(
 		.last()
 		.unwrap()
 		.sequence;
-	server
-		.post("/api/workspaces")
-		.authorization_bearer("operator-execution-fixture")
-		.json(&json!({"title":"second","goal":"valid"}))
-		.await
-		.assert_status_ok();
+	assert_eq!(
+		operator
+			.post(
+				"/api/workspaces",
+				&json!({"title":"second","goal":"valid"}),
+				"json"
+			)
+			.await
+			.unwrap()
+			.status_code(),
+		200
+	);
 	let after = federation.store.events(before, None, 500).await.unwrap()[0].sequence;
 	let stream_request = || {
 		Request::builder()
 			.uri("/api/events/stream?after=0")
 			.header("authorization", "Bearer operator-execution-fixture")
 			.header("last-event-id", before.to_string())
-			.body(Body::empty())
+			.body(Bytes::new())
 			.unwrap()
 	};
-	let response = app.clone().oneshot(stream_request()).await.unwrap();
-	assert_eq!(response.status(), 200);
+	// Retain the unpolled response to verify stream admission and producer ownership.
+	let mut response = app.clone().native_oneshot(stream_request()).await.unwrap();
+	assert_eq!(response.status, 200);
 	assert_eq!(
 		app.clone()
-			.oneshot(stream_request())
+			.native_oneshot(stream_request())
 			.await
 			.unwrap()
-			.status(),
+			.status,
 		503
 	);
-	let mut body = response.into_body().into_data_stream();
+	let mut body = response.take_stream_body().unwrap();
 	let chunk = tokio::time::timeout(Duration::from_secs(5), body.next())
 		.await
 		.unwrap()
@@ -283,33 +280,18 @@ async fn production_router_enforces_auth_validation_rate_and_sse_resume(
 	drop(body);
 	assert_eq!(
 		app.clone()
-			.oneshot(stream_request())
+			.native_oneshot(stream_request())
 			.await
 			.unwrap()
-			.status(),
+			.status,
 		200
 	);
 	drop(server);
 	drop(limited);
 	drop(app);
+	drop(limited_app);
 	common::cleanup(federation, &url, &schema).await;
 }
-
-#[tokio::test]
-async fn native_json_fixture_reports_malformed_responses() {
-	use reinhardt::{Response, get};
-	#[get("/broken")]
-	async fn broken() -> reinhardt::http::ViewResult<Response> {
-		Ok(Response::ok().with_body("not JSON"))
-	}
-	let server = reinhardt::test::fixtures::server::test_server_guard(
-		reinhardt::ServerRouter::new().endpoint(broken),
-	)
-	.await;
-	let client = reinhardt::test::fixtures::api_client_from_url(&server.url);
-	assert!(client.get("/broken").await.unwrap().json_value().is_err());
-}
-
 struct MalformedJson;
 
 #[async_trait::async_trait]
@@ -323,14 +305,41 @@ impl reinhardt::Handler for MalformedJson {
 #[tokio::test]
 #[should_panic(expected = "JSON endpoint response")]
 async fn json_test_helper_does_not_hide_malformed_responses(
+	#[from(broken_routes)] _routes: common::RouterTransform,
 	#[future(awt)]
-	#[from(common::test_environment)]
-	environment: Arc<common::TestEnvironment>,
+	#[from(common::native_application)]
+	#[with(Settings::default(), aidash_server::sse::Service::new(aidash_server::sse::Settings::default()), _routes.clone())]
+	fixture: common::ApplicationFixture,
 ) {
-	let (federation, _, _) = common::setup(&environment).await;
-	let app = common::application_with(federation, |router| {
-		router.handler("/broken", MalformedJson)
-	})
-	.await;
+	let app = fixture.application;
 	common::request(&app, "fixture", "GET", "/broken", serde_json::Value::Null).await;
+}
+
+#[rstest::fixture]
+fn auth_settings() -> Settings {
+	Settings {
+		auth_burst: 1,
+		auth_period: Duration::from_secs(60),
+		auth_trusted_proxy_ips: vec!["127.0.0.1".parse().unwrap(), "::1".parse().unwrap()],
+		..Default::default()
+	}
+}
+#[rstest::fixture]
+fn actor_settings() -> Settings {
+	Settings {
+		actor_burst: 1,
+		actor_period: Duration::from_secs(60),
+		..Default::default()
+	}
+}
+#[rstest::fixture]
+fn stream_settings() -> Settings {
+	Settings {
+		sse_connections: 1,
+		..Default::default()
+	}
+}
+#[rstest::fixture]
+fn broken_routes() -> common::RouterTransform {
+	Arc::new(|router| router.handler("/broken", MalformedJson))
 }

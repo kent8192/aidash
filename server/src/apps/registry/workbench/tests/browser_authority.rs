@@ -15,8 +15,9 @@ use uuid::Uuid;
 #[rstest::fixture]
 async fn browser_workbench(
 	#[default("https://accounts.google.com")] issuer: &str,
+	#[future(awt)] workbench: Workbench,
 ) -> (Workbench, HeaderMap, DashboardSession) {
-	let mut wb = workbench().await;
+	let mut wb = workbench;
 	wb.f.config.oidc = Some(OidcConfig {
 		issuer: issuer.into(),
 		client_id: "aidash".into(),

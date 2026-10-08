@@ -21,19 +21,10 @@ fn transient_provider_statuses_keep_the_worker_retry_path() {
 #[rstest::rstest]
 #[tokio::test(start_paused = true)]
 
-async fn inference_cancellation_poll_errors_do_not_signal_cancellation() {
-	let pool = sqlx::postgres::PgPoolOptions::new()
-		.connect_lazy("postgres://localhost/unused")
-		.unwrap();
-	pool.close().await;
-	let store = crate::store::Store {
-		capabilities: crate::capabilities::Runtime::new(Default::default()).unwrap(),
-		pool: pool.clone().into(),
-		control_pool: pool.into(),
-		node_id: "cancellation-poll-test".into(),
-		semantic_client: reqwest::Client::new(),
-		recovery_cursors: Default::default(),
-	};
+async fn inference_cancellation_poll_errors_do_not_signal_cancellation(
+	#[future(awt)] cancellation_store: crate::store::Store,
+) {
+	let store = cancellation_store;
 	let cancellation = super::wait_for_inference_cancellation(&store, uuid::Uuid::new_v4());
 	tokio::pin!(cancellation);
 	for _ in 0..3 {
@@ -44,4 +35,25 @@ async fn inference_cancellation_poll_errors_do_not_signal_cancellation() {
 			"a failed control read must not interrupt the in-flight inference"
 		);
 	}
+}
+
+#[rstest::fixture]
+async fn cancellation_store(
+	#[from(reinhardt::test::fixtures::http_client)] http_client: reqwest::Client,
+) -> crate::store::Store {
+	// An intentionally closed pool preserves the control-read failure under test.
+	// A live test_database fixture would change that failure contract.
+	let pool = sqlx::postgres::PgPoolOptions::new()
+		.connect_lazy("postgres://localhost/unused")
+		.unwrap();
+	pool.close().await;
+	let store = crate::store::Store {
+		capabilities: crate::capabilities::Runtime::new(Default::default()).unwrap(),
+		pool: pool.clone().into(),
+		control_pool: pool.into(),
+		node_id: "cancellation-poll-test".into(),
+		semantic_client: http_client.clone(),
+		recovery_cursors: Default::default(),
+	};
+	store
 }

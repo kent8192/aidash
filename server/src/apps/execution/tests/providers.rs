@@ -1,12 +1,16 @@
+#[path = "support/upstream.rs"]
+mod upstream_fixtures;
 use crate::provider_fixtures::{CompletionFixture, completion_server, unavailable_server};
 use aidash_server::{
 	provider::{ContentPart, ModelRequest, ToolSpec, provider},
 	registry::{Entry, MediaRouteEvidence, ModelConfig, validate},
 };
-use axum::{
-	Json, Router,
-	routing::{get, post},
-};
+use http::StatusCode;
+use reinhardt::ServerRouter as Router;
+use reinhardt::test::fixtures::server::TestServerGuard;
+use std::sync::{Arc, Mutex};
+use upstream_fixtures::{handler, upstream};
+
 use reinhardt::test::fixtures::http_client;
 use reqwest::Client;
 use rstest::fixture;
@@ -74,7 +78,7 @@ fn local_model_registration_requires_a_valid_catalog_output_limit() {
 }
 
 #[rstest::rstest]
-fn registry_accepts_openrouter_and_rejects_unknown_providers() {
+fn registry_accepts_openrouter_and_rejects_unknown_providers(http_client: Client) {
 	let mut entry: Entry = serde_json::from_value(json!({
 		"id":"router-model","version":"1.0.0","kind":"model",
 		"name":{"en":"Router model"},"description":{"en":"Test model"},
@@ -87,7 +91,7 @@ fn registry_accepts_openrouter_and_rejects_unknown_providers() {
 		assert!(validate(&entry).is_err());
 		assert!(
 			provider(
-				reqwest::Client::new(),
+				http_client.clone(),
 				config(unsupported, "http://localhost".into())
 			)
 			.is_err()
@@ -190,24 +194,20 @@ async fn openrouter_enforces_zdr_and_preserves_reasoning_tools_and_usage(
 
 #[rstest::rstest]
 #[tokio::test]
-async fn openrouter_sends_ordered_native_image_and_audio_parts() {
-	let (tx, mut received) = tokio::sync::mpsc::unbounded_channel();
-	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-	let endpoint = format!("http://{}/api/v1", listener.local_addr().unwrap());
-	let app = Router::new().route("/api/v1/chat/completions", post(move |Json(body): Json<Value>| {
-		let tx = tx.clone();
-		async move {
-			tx.send(body).unwrap();
-			Json(json!({"choices":[{"finish_reason":"stop","message":{"content":"I saw and heard the input"}}]}))
-		}
-	}))
-	.route("/api/v1/models/vendor/fixture-model/endpoints", get(|| async {
-		Json(json!({"data":{"architecture":{"input_modalities":["text","image","audio"]},"endpoints":[{"tag":"fixture/verified","context_length":128000}]}}))
-	}))
-	.route("/api/v1/endpoints/zdr", get(|| async {
-		Json(json!({"data":[{"model_id":"vendor/fixture-model","tag":"fixture/verified"}]}))
-	}));
-	let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+async fn openrouter_sends_ordered_native_image_and_audio_parts(
+	captured_requests: CapturedRequests,
+	#[from(sends_ordered_native_image_and_audio_parts_router)]
+	#[with(captured_requests.clone())]
+	_router: Arc<Router>,
+	#[future(awt)]
+	#[from(upstream)]
+	#[with(_router.clone())]
+	server: TestServerGuard,
+	http_client: Client,
+) {
+	let mut received = captured_requests.receiver.lock().unwrap().take().unwrap();
+
+	let endpoint = format!("{}/api/v1", server.url);
 	let mut model_config = config("openrouter", endpoint);
 	model_config.modalities = vec!["text".into(), "image".into(), "audio".into()];
 	model_config.media_routes.push(MediaRouteEvidence {
@@ -217,7 +217,7 @@ async fn openrouter_sends_ordered_native_image_and_audio_parts() {
 		verified_at: chrono::Utc::now() - chrono::Duration::hours(1),
 		expires_at: chrono::Utc::now() + chrono::Duration::hours(1),
 	});
-	let model = provider(reqwest::Client::new(), model_config).unwrap();
+	let model = provider(http_client.clone(), model_config).unwrap();
 	let image = b"\x89PNG\r\n\x1a\nimage".to_vec();
 	let audio = b"RIFF\0\0\0\0WAVEaudio".to_vec();
 	let response = model
@@ -261,7 +261,7 @@ async fn openrouter_sends_ordered_native_image_and_audio_parts() {
 	assert_eq!(parts[4]["input_audio"]["data"], "UklGRgAAAABXQVZFYXVkaW8=");
 	assert_eq!(body["provider"]["zdr"], true);
 	assert_eq!(body["provider"]["only"], json!(["fixture/verified"]));
-	server.abort();
+	drop(server);
 }
 
 #[rstest::rstest]
@@ -302,24 +302,15 @@ fn aac_signature_accepts_crc_protected_adts_headers() {
 
 #[rstest::rstest]
 #[tokio::test]
-async fn media_route_lookup_obeys_the_total_inference_deadline() {
-	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-	let endpoint = format!("http://{}/api/v1", listener.local_addr().unwrap());
-	let app = Router::new()
-		.route(
-			"/api/v1/models/vendor/fixture-model/endpoints",
-			get(|| async {
-				tokio::time::sleep(Duration::from_secs(5)).await;
-				Json(
-					json!({"data":{"architecture":{"input_modalities":["text","image"]},"endpoints":[]}}),
-				)
-			}),
-		)
-		.route(
-			"/api/v1/endpoints/zdr",
-			get(|| async { Json(json!({"data":[]})) }),
-		);
-	let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+async fn media_route_lookup_obeys_the_total_inference_deadline(
+	#[from(media_route_lookup_obeys_the_total_inference_deadline_router)] _router: Arc<Router>,
+	#[future(awt)]
+	#[from(upstream)]
+	#[with(_router.clone())]
+	server: TestServerGuard,
+	http_client: Client,
+) {
+	let endpoint = format!("{}/api/v1", server.url);
 	let mut model_config = config("openrouter", endpoint);
 	model_config.request_timeout_secs = Some(1);
 	model_config.modalities.push("image".into());
@@ -330,7 +321,7 @@ async fn media_route_lookup_obeys_the_total_inference_deadline() {
 		verified_at: chrono::Utc::now() - chrono::Duration::hours(1),
 		expires_at: chrono::Utc::now() + chrono::Duration::hours(1),
 	});
-	let model = provider(reqwest::Client::new(), model_config).unwrap();
+	let model = provider(http_client.clone(), model_config).unwrap();
 	let result = tokio::time::timeout(
 		Duration::from_secs(3),
 		model.infer(ModelRequest {
@@ -349,7 +340,7 @@ async fn media_route_lookup_obeys_the_total_inference_deadline() {
 	assert!(
 		matches!(result, Err(aidash_application::Error::External(message)) if message == "model inference timed out")
 	);
-	server.abort();
+	drop(server);
 }
 
 #[rstest::rstest]
@@ -441,21 +432,16 @@ async fn unavailable_zdr_endpoint_does_not_retry_without_zdr(
 
 #[rstest::rstest]
 #[tokio::test]
-async fn upstream_media_rejection_keeps_its_status_and_safe_reason() {
-	use http::StatusCode;
-	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-	let endpoint = format!("http://{}", listener.local_addr().unwrap());
-	let app = Router::new().route(
-		"/chat/completions",
-		post(|| async {
-			(
-				StatusCode::PAYLOAD_TOO_LARGE,
-				Json(json!({"error":{"message":"Audio exceeds the provider limit"}})),
-			)
-		}),
-	);
-	let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-	let model = provider(reqwest::Client::new(), config("openrouter", endpoint)).unwrap();
+async fn upstream_media_rejection_keeps_its_status_and_safe_reason(
+	#[from(media_rejection_keeps_its_status_and_safe_reason_router)] _router: Arc<Router>,
+	#[future(awt)]
+	#[from(upstream)]
+	#[with(_router.clone())]
+	server: TestServerGuard,
+	http_client: Client,
+) {
+	let endpoint = format!("{}", server.url);
+	let model = provider(http_client.clone(), config("openrouter", endpoint)).unwrap();
 	let error = model
 		.infer(ModelRequest {
 			instructions: "test".into(),
@@ -469,28 +455,21 @@ async fn upstream_media_rejection_keeps_its_status_and_safe_reason() {
 	assert!(
 		matches!(error, aidash_application::Error::ProviderRejected { status: 413, reason } if reason == "Audio exceeds the provider limit")
 	);
-	server.abort();
+	drop(server);
 }
 
 #[rstest::rstest]
 #[tokio::test]
-async fn upstream_errors_cannot_echo_unrecognized_media_or_secret_data() {
-	use http::StatusCode;
-	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-	let endpoint = format!("http://{}", listener.local_addr().unwrap());
-	let app = Router::new().route(
-		"/chat/completions",
-		post(|| async {
-			(
-				StatusCode::SERVICE_UNAVAILABLE,
-				Json(
-					json!({"error":{"message":"input_audio.data=U2Vuc2l0aXZlQnl0ZXM=; token=private"}}),
-				),
-			)
-		}),
-	);
-	let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-	let model = provider(reqwest::Client::new(), config("openrouter", endpoint)).unwrap();
+async fn upstream_errors_cannot_echo_unrecognized_media_or_secret_data(
+	#[from(errors_cannot_echo_unrecognized_media_or_secret_data_router)] _router: Arc<Router>,
+	#[future(awt)]
+	#[from(upstream)]
+	#[with(_router.clone())]
+	server: TestServerGuard,
+	http_client: Client,
+) {
+	let endpoint = format!("{}", server.url);
+	let model = provider(http_client.clone(), config("openrouter", endpoint)).unwrap();
 	let error = model
 		.infer(ModelRequest {
 			instructions: "test".into(),
@@ -506,7 +485,93 @@ async fn upstream_errors_cannot_echo_unrecognized_media_or_secret_data() {
 		aidash_application::Error::ProviderRejected { status: 503, reason }
 			if reason == "upstream rejected the request"
 	));
-	server.abort();
+	drop(server);
 }
 
 use std::time::Duration;
+
+#[derive(Clone)]
+struct CapturedRequests {
+	sender: tokio::sync::mpsc::UnboundedSender<Value>,
+	receiver: Arc<Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<Value>>>>,
+}
+#[fixture]
+fn captured_requests() -> CapturedRequests {
+	let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
+	CapturedRequests {
+		sender,
+		receiver: Arc::new(Mutex::new(Some(receiver))),
+	}
+}
+
+#[fixture]
+fn sends_ordered_native_image_and_audio_parts_router(
+	captured_requests: CapturedRequests,
+) -> Arc<Router> {
+	let tx = captured_requests.sender;
+	Arc::new(Router::new().handler("/api/v1/chat/completions", handler(http::Method::POST, move |request: reinhardt::Request| {let body = request.json::<Value>().unwrap();
+		let tx = tx.clone();
+		async move {
+			tx.send(body).unwrap();
+			reinhardt::Response::ok().with_json(&json!({"choices":[{"finish_reason":"stop","message":{"content":"I saw and heard the input"}}]})).unwrap()
+		}
+	}))
+	.handler("/api/v1/models/vendor/fixture-model/endpoints", handler(http::Method::GET, |_request: reinhardt::Request| async {
+		reinhardt::Response::ok().with_json(&json!({"data":{"architecture":{"input_modalities":["text","image","audio"]},"endpoints":[{"tag":"fixture/verified","context_length":128000}]}})).unwrap()
+	}))
+	.handler("/api/v1/endpoints/zdr", handler(http::Method::GET, |_request: reinhardt::Request| async {
+		reinhardt::Response::ok().with_json(&json!({"data":[{"model_id":"vendor/fixture-model","tag":"fixture/verified"}]})).unwrap()
+	})))
+}
+
+#[fixture]
+fn media_route_lookup_obeys_the_total_inference_deadline_router() -> Arc<Router> {
+	Arc::new(
+		Router::new()
+			.handler(
+				"/api/v1/models/vendor/fixture-model/endpoints",
+				handler(http::Method::GET, |_request: reinhardt::Request| async {
+					tokio::time::sleep(Duration::from_secs(5)).await;
+					reinhardt::Response::ok()
+						.with_json(
+							&json!({"data":{"architecture":{"input_modalities":["text","image"]},"endpoints":[]}}),
+						)
+						.unwrap()
+				}),
+			)
+			.handler(
+				"/api/v1/endpoints/zdr",
+				handler(http::Method::GET, |_request: reinhardt::Request| async {
+					reinhardt::Response::ok()
+						.with_json(&json!({"data":[]}))
+						.unwrap()
+				}),
+			),
+	)
+}
+
+#[fixture]
+fn media_rejection_keeps_its_status_and_safe_reason_router() -> Arc<Router> {
+	Arc::new(Router::new().handler(
+		"/chat/completions",
+		handler(http::Method::POST, |_request: reinhardt::Request| async {
+			reinhardt::Response::new(StatusCode::PAYLOAD_TOO_LARGE)
+				.with_json(&json!({"error":{"message":"Audio exceeds the provider limit"}}))
+				.unwrap()
+		}),
+	))
+}
+
+#[fixture]
+fn errors_cannot_echo_unrecognized_media_or_secret_data_router() -> Arc<Router> {
+	Arc::new(Router::new().handler(
+		"/chat/completions",
+		handler(http::Method::POST, |_request: reinhardt::Request| async {
+			reinhardt::Response::new(StatusCode::SERVICE_UNAVAILABLE)
+				.with_json(
+					&json!({"error":{"message":"input_audio.data=U2Vuc2l0aXZlQnl0ZXM=; token=private"}}),
+				)
+				.unwrap()
+		}),
+	))
+}

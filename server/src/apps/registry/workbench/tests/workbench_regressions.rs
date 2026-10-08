@@ -123,8 +123,11 @@ impl Workbench {
 }
 
 #[rstest::fixture]
-async fn workbench() -> Workbench {
-	let environment = test_environment().await;
+async fn workbench(
+	#[future(awt)]
+	#[from(test_environment)]
+	environment: Arc<common::TestEnvironment>,
+) -> Workbench {
 	let (f, url, schema) = setup(&environment).await;
 	let app = common::application(f.clone()).await;
 	let responses = Arc::new(Mutex::new(VecDeque::from([
@@ -237,8 +240,8 @@ async fn workbench() -> Workbench {
 }
 
 #[rstest::fixture]
-async fn crowded_workbench() -> Workbench {
-	let wb = workbench().await;
+async fn crowded_workbench(#[future(awt)] workbench: Workbench) -> Workbench {
+	let wb = workbench;
 	// An older shared draft must also survive the invisible newer batch.
 	let (status, shared) = request(&wb.app, &wb.f.config.api_token, "POST", "/api/workbench/drafts", json!({"tenant":"acme","owner":"bob","entry":{
 		"id":"","version":"1.0.0","kind":"agent","name":{"en":"Shared fixture"},"description":{"en":"Fixture"},"config":wb.draft["entry"]["config"]
@@ -485,8 +488,8 @@ async fn expired_real_tests_keep_profile_and_continuation_metadata_in_trust(
 }
 
 #[rstest::fixture]
-async fn expired_incidents() -> Workbench {
-	let wb = workbench().await;
+async fn expired_incidents(#[future(awt)] workbench: Workbench) -> Workbench {
+	let wb = workbench;
 	wb.register().await;
 	let path = format!(
 		"/api/workbench/versions/{}/1.0.0/incidents",
@@ -638,8 +641,10 @@ async fn registry_reload_preserves_registered_and_packaged_behavior_flags(
 }
 
 #[rstest::fixture]
-async fn revoked_workbench() -> (Workbench, common::TestApplication) {
-	let wb = workbench().await;
+async fn revoked_workbench(
+	#[future(awt)] workbench: Workbench,
+) -> (Workbench, common::TestApplication) {
+	let wb = workbench;
 	let authorization = aidash_server::authorization::Authorization {
 		pool: wb.f.store.pool.clone(),
 	};
@@ -676,8 +681,8 @@ async fn draft_mutation_rechecks_the_authenticated_credential_before_commit(
 }
 
 #[rstest::fixture]
-async fn clustered_workbench() -> Workbench {
-	let mut wb = workbench().await;
+async fn clustered_workbench(#[future(awt)] workbench: Workbench) -> Workbench {
+	let mut wb = workbench;
 	wb.register().await;
 	let (status, cluster) = request(&wb.app, &wb.f.config.api_token, "POST", "/api/registry", json!({"id":"fixture-cluster","version":"1.0.0","kind":"cluster","name":{"en":"Fixture cluster"},"description":{"en":"Fixture"},"config":{"coordinator":{"id":wb.draft["entry"]["id"],"version":"1.0.0"}}})).await;
 	assert_eq!(status, 200, "cluster: {cluster}");
@@ -759,8 +764,11 @@ async fn trust_reports_the_configured_cluster_and_its_execution_dependencies(
 }
 
 #[rstest::fixture]
-async fn hidden_incident_backlog(#[default(false)] other_tenant: bool) -> (Workbench, Value) {
-	let wb = workbench().await;
+async fn hidden_incident_backlog(
+	#[default(false)] other_tenant: bool,
+	#[future(awt)] workbench: Workbench,
+) -> (Workbench, Value) {
+	let wb = workbench;
 	wb.register().await;
 	let path = format!(
 		"/api/workbench/versions/{}/1.0.0/incidents",
@@ -815,8 +823,11 @@ async fn incident_list_reaches_older_authorized_rows(
 }
 
 #[rstest::fixture]
-async fn model_waiting_for_real_tool(#[default(false)] shared: bool) -> (Workbench, Value) {
-	let wb = workbench().await;
+async fn model_waiting_for_real_tool(
+	#[default(false)] shared: bool,
+	#[future(awt)] workbench: Workbench,
+) -> (Workbench, Value) {
+	let wb = workbench;
 	*wb.responses.lock().await = VecDeque::from([
 		json!({"choices":[{"finish_reason":"tool_calls","message":{"content":"","tool_calls":[{"id":"real-call","function":{"name":"plugin_0","arguments":"{\"action\":\"read\",\"resource\":\"sandbox\"}"}}]}}],"usage":{"prompt_tokens":30,"completion_tokens":5}}),
 	]);
@@ -905,8 +916,8 @@ async fn an_unreadable_response_after_dispatch_preserves_the_unknown_external_ou
 }
 
 #[rstest::fixture]
-async fn production_endpoint_workbench() -> Workbench {
-	let wb = workbench().await;
+async fn production_endpoint_workbench(#[future(awt)] workbench: Workbench) -> Workbench {
+	let wb = workbench;
 	assert_eq!(request(&wb.app, &wb.f.config.api_token, "POST", "/api/registry", json!({"id":"production-tool","version":"1.0.0","kind":"tool","name":{"en":"Production"},"description":{"en":"Fixture"},"config":{"transport":"http","endpoint":"https://example.com/api","credential_env":null,"replay":"read_only"}})).await.0, 200);
 	wb
 }
@@ -929,8 +940,8 @@ async fn real_test_profiles_require_a_distinct_canonical_destination(
 }
 
 #[rstest::fixture]
-async fn one_step_workbench() -> Workbench {
-	let mut wb = workbench().await;
+async fn one_step_workbench(#[future(awt)] workbench: Workbench) -> Workbench {
+	let mut wb = workbench;
 	let mut entry = wb.draft["entry"].clone();
 	entry["config"]["max_steps"] = json!(1);
 	wb.draft = wb
@@ -968,8 +979,8 @@ async fn behavioral_evidence_cannot_exceed_the_draft_agents_step_limit(
 }
 
 #[rstest::fixture]
-async fn incident_event_backlog() -> (Workbench, Value) {
-	let wb = workbench().await;
+async fn incident_event_backlog(#[future(awt)] workbench: Workbench) -> (Workbench, Value) {
+	let wb = workbench;
 	wb.register().await;
 	let incident = wb
 		.call(
@@ -1032,8 +1043,11 @@ async fn incident_history_keeps_the_latest_events_in_display_order(
 }
 
 #[rstest::fixture]
-async fn trust_run_backlog(#[default("workspace.read")] denied_action: &str) -> (Workbench, Value) {
-	let wb = workbench().await;
+async fn trust_run_backlog(
+	#[default("workspace.read")] denied_action: &str,
+	#[future(awt)] workbench: Workbench,
+) -> (Workbench, Value) {
+	let wb = workbench;
 	wb.register().await;
 	let visible =
 		wb.f.store
@@ -1168,8 +1182,8 @@ async fn trust_inspection_reaches_older_runs_in_authorized_workspaces(
 }
 
 #[rstest::fixture]
-async fn oversized_agent_tool_workbench() -> Workbench {
-	let wb = workbench().await;
+async fn oversized_agent_tool_workbench(#[future(awt)] workbench: Workbench) -> Workbench {
+	let wb = workbench;
 	wb.register().await;
 	assert_eq!(request(&wb.app,&wb.f.config.api_token,"POST","/api/registry",json!({"id":"oversized-agent-tool","version":"1.0.0","kind":"tool","name":{"en":"Delegate"},"description":{"en":"Fixture"},"schema":{"type":"object","description":"A".repeat(180_000)},"config":{"transport":"agent","node_id":wb.f.config.node_id,"agent":{"id":wb.draft["entry"]["id"],"version":"1.0.0"}}})).await.0,200);
 	wb
@@ -1217,8 +1231,10 @@ async fn creator_prompt_validation_charges_only_enabled_agent_tools(
 }
 
 #[rstest::fixture]
-async fn revoked_incident_workbench() -> (Workbench, common::TestApplication, Value) {
-	let wb = workbench().await;
+async fn revoked_incident_workbench(
+	#[future(awt)] workbench: Workbench,
+) -> (Workbench, common::TestApplication, Value) {
+	let wb = workbench;
 	wb.register().await;
 	let incident = wb
 		.call(
@@ -1284,8 +1300,8 @@ async fn incident_mutations_reject_a_revoked_authenticated_actor(
 }
 
 #[rstest::fixture]
-async fn visible_draft_backlog() -> Workbench {
-	let wb = workbench().await;
+async fn visible_draft_backlog(#[future(awt)] workbench: Workbench) -> Workbench {
+	let wb = workbench;
 	let timestamp: chrono::DateTime<chrono::Utc> =
 		wb.draft["updated_at"].as_str().unwrap().parse().unwrap();
 	let query = Query::insert()
@@ -1398,8 +1414,11 @@ async fn draft_pages_reach_older_visible_rows_without_duplicates(
 }
 
 #[rstest::fixture]
-async fn shared_transfer_workbench(#[default(false)] can_edit: bool) -> (Workbench, String) {
-	let wb = workbench().await;
+async fn shared_transfer_workbench(
+	#[default(false)] can_edit: bool,
+	#[future(awt)] workbench: Workbench,
+) -> (Workbench, String) {
+	let wb = workbench;
 	wb.call(
 		"POST",
 		&format!("{}/shares", wb.path()),
@@ -1552,8 +1571,10 @@ async fn draft_authority_changes_wait_for_a_shared_real_dispatch(
 }
 
 #[rstest::fixture]
-async fn installed_tool_waiting_for_dispatch() -> (Workbench, Value, String) {
-	let (wb, started) = model_waiting_for_real_tool(false).await;
+async fn installed_tool_waiting_for_dispatch(
+	#[future(awt)] model_waiting_for_real_tool: (Workbench, Value),
+) -> (Workbench, Value, String) {
+	let (wb, started) = model_waiting_for_real_tool;
 	let entry = wb.f.registry.get("fixture-tool", "1.0.0").await.unwrap();
 	let package =
 		wb.f.registry
@@ -1606,8 +1627,8 @@ async fn real_dispatch_rejects_effective_tool_isolation_changes(
 }
 
 #[rstest::fixture]
-async fn incident_audit_workbench() -> (Workbench, Value) {
-	let wb = workbench().await;
+async fn incident_audit_workbench(#[future(awt)] workbench: Workbench) -> (Workbench, Value) {
+	let wb = workbench;
 	wb.register().await;
 	let incident = wb
 		.call(
@@ -1692,8 +1713,11 @@ async fn audit_rechecks_incident_visibility_before_returning_event_history(
 }
 
 #[rstest::fixture]
-async fn registered_document_workbench(#[default("replace")] change: &str) -> Workbench {
-	let mut wb = workbench().await;
+async fn registered_document_workbench(
+	#[default("replace")] change: &str,
+	#[future(awt)] workbench: Workbench,
+) -> Workbench {
+	let mut wb = workbench;
 	let documents = if change == "add" {
 		json!([])
 	} else {

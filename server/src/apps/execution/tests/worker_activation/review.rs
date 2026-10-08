@@ -1,4 +1,9 @@
+#[path = "../support/upstream.rs"]
+mod upstream_fixtures;
 use super::*;
+use reinhardt::ServerRouter as Router;
+use reinhardt::test::fixtures::server::TestServerGuard;
+use upstream_fixtures::{handler, upstream};
 
 #[rstest::rstest]
 #[tokio::test]
@@ -135,16 +140,16 @@ async fn stream_limit_covers_maximum_envelope_and_publication_headers(
 #[rstest::rstest]
 #[tokio::test]
 async fn slow_publication_ack_does_not_hold_the_visibility_gate(
-	#[future(awt)]
-	#[from(test_environment)]
-	environment: Arc<TestEnvironment>,
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+	#[with(runtime.clone())] ack_proxy: AckProxyFuture,
 ) {
-	use tokio::io::{AsyncReadExt, AsyncWriteExt};
 	let _ = tracing_subscriber::fmt()
 		.with_test_writer()
 		.with_env_filter("aidash=debug")
 		.try_init();
-	let (mut f, url, schema) = setup(&environment).await;
+	let runtime = runtime.await;
+	let (mut f, url, schema) = runtime.parts();
+	let environment = runtime.environment();
 	let settings = Settings {
 		namespace: schema.clone(),
 		..Default::default()
@@ -152,62 +157,11 @@ async fn slow_publication_ack_does_not_hold_the_visibility_gate(
 	let broker = Broker::provision(&environment.nats_url, &f.config.node_id, &settings)
 		.await
 		.unwrap();
-	let address = reqwest::Url::parse(&environment.nats_url).unwrap();
-	let upstream = format!(
-		"{}:{}",
-		address.host_str().unwrap(),
-		address.port().unwrap()
-	);
-	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-	f.config.nats_url = format!("nats://{}", listener.local_addr().unwrap());
-	let marker = format!("HPUB {} ", broker.subject).into_bytes();
-	let (blocked, _) = tokio::sync::watch::channel(false);
-	let (ack_held, held) = tokio::sync::oneshot::channel();
-	let release = Arc::new(tokio::sync::Notify::new());
-	let resume = release.clone();
-	let proxy = tokio::spawn(async move {
-		let (client, _) = listener.accept().await.unwrap();
-		let server = tokio::net::TcpStream::connect(upstream).await.unwrap();
-		let (mut client_read, mut client_write) = client.into_split();
-		let (mut server_read, mut server_write) = server.into_split();
-		let blocked_read = blocked.subscribe();
-		let upstream = async move {
-			let mut carry = Vec::new();
-			let mut buffer = [0; 8192];
-			loop {
-				let count = client_read.read(&mut buffer).await?;
-				if count == 0 {
-					return std::io::Result::Ok(());
-				}
-				carry.extend_from_slice(&buffer[..count]);
-				if carry.windows(marker.len()).any(|part| part == marker) {
-					blocked.send_replace(true);
-				}
-				if carry.len() > marker.len() {
-					carry.drain(..carry.len() - marker.len());
-				}
-				server_write.write_all(&buffer[..count]).await?;
-			}
-		};
-		let downstream = async move {
-			let mut signal = Some(ack_held);
-			let mut buffer = [0; 8192];
-			loop {
-				let count = server_read.read(&mut buffer).await?;
-				if count == 0 {
-					return std::io::Result::Ok(());
-				}
-				if *blocked_read.borrow()
-					&& let Some(signal) = signal.take()
-				{
-					let _ = signal.send(());
-					resume.notified().await;
-				}
-				client_write.write_all(&buffer[..count]).await?;
-			}
-		};
-		let _ = tokio::try_join!(upstream, downstream);
-	});
+	let proxy = ack_proxy.await;
+	let release = proxy.signals.release.clone();
+	let held = proxy.signals.held.lock().unwrap().take().unwrap();
+	f.config.nats_url = proxy.endpoint.clone();
+
 	let mut insert = Query::insert();
 	insert.into_table(a("runs")).columns([
 		a("id"),
@@ -265,7 +219,7 @@ async fn slow_publication_ack_does_not_hold_the_visibility_gate(
 	release.notify_one();
 	stop.send_replace(true);
 	task.await.unwrap().unwrap();
-	proxy.abort();
+	drop(proxy);
 	broker
 		.context
 		.delete_stream(&broker.stream_name)
@@ -320,12 +274,15 @@ async fn header_only_consumer_requires_operator_repair(
 #[rstest::rstest]
 #[tokio::test]
 async fn completed_dependencies_release_wait_without_expiring_timer(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
 	#[future(awt)]
-	#[from(test_environment)]
-	environment: Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	#[with(Default::default(), aidash_server::sse::Service::new(Default::default()), Arc::new(|router| router), runtime.clone())]
+	fixture: common::ApplicationFixture,
 ) {
-	let (f, url, schema) = setup(&environment).await;
-	let app = common::application(f.clone()).await;
+	let runtime = runtime.await;
+	let (f, url, schema) = runtime.parts();
+	let app = fixture.application.clone();
 	let (_, token, dependency) = bootstrap(&f, &app, "http://localhost:1").await;
 	let parent = f.store.task(dependency).await.unwrap();
 	let (status, task) = request(
@@ -434,29 +391,21 @@ async fn completed_dependencies_release_wait_without_expiring_timer(
 #[rstest::rstest]
 #[tokio::test]
 async fn terminal_delivery_drains_a_burst_without_per_run_sleep(
-	#[future(awt)]
-	#[from(test_environment)]
-	environment: Arc<TestEnvironment>,
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+	#[from(workspace_id)] workspace: Uuid,
+	#[from(terminal_delivery_drains_a_burst_without_per_run_sleep_router)]
+	#[with(runtime.clone(), workspace)]
+	_router: upstream_fixtures::RouterFuture,
+	#[from(upstream_fixtures::async_upstream)]
+	#[with(_router.clone())]
+	server: upstream_fixtures::UpstreamFuture,
 ) {
-	let (f, url, schema) = setup(&environment).await;
-	let workspace = Uuid::new_v4();
-	let node = f.config.node_id.clone();
-	let app = Router::new().route("/federation/v0.1/workspace", post(move |Json(input): Json<Value>| {
-        let node = node.clone();
-        async move {
-            match input["operation"].as_str().unwrap() {
-                "run_message_commit" => Json(json!({"committed":true})),
-                "run_message_delivery" => Json(json!({"id":Uuid::new_v4(),"workspace_id":workspace,
-                    "sender":"human","content":input["data"]["content"],
-                    "idempotency_key":format!("{}:{}:{}",node,input["task_id"].as_str().unwrap(),input["data"]["key"].as_str().unwrap()),
-                    "created_at":chrono::Utc::now()})),
-                other => panic!("unexpected operation {other}"),
-            }
-        }
-    }));
-	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-	let endpoint = format!("http://{}", listener.local_addr().unwrap());
-	let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+	let server = server.await;
+
+	let runtime = runtime.await;
+	let (f, url, schema) = runtime.parts();
+
+	let endpoint = format!("{}", server.url);
 	sqlx::query(
 		&Query::insert()
 			.into_table(a("peers"))
@@ -544,7 +493,7 @@ async fn terminal_delivery_drains_a_burst_without_per_run_sleep(
 				.is_some(),
 		);
 	}
-	server.abort();
+	drop(server);
 	cleanup(f, &url, &schema).await;
 	assert!(
 		drained.is_ok(),
@@ -562,40 +511,36 @@ use reinhardt::query::{ArrayType, Value as SqlValue};
 #[rstest::rstest]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn notification_claim_disposes_invalid_context_without_poisoning_healthy_work(
+	#[from(activation_runtime)] _runtime: common::RuntimeFuture,
+
+	#[from(upstream_fixtures::hits)] calls: Arc<AtomicUsize>,
+	#[from(notification_claim_disposes_invalid_context_without_poisoning_healthy_work_router)]
+	#[with(calls.clone())]
+	_router: Arc<Router>,
+
+	#[from(prepared_activation)]
+	#[with("invalid-state", _runtime.clone(), _router.clone(), None)]
+	prepared: PreparedActivationFuture,
 	#[future(awt)]
-	#[from(test_environment)]
-	environment: Arc<TestEnvironment>,
+	#[from(initial_process)]
+	#[with(prepared.clone(), "server", 0, true, true)]
+	server: Process,
+	#[future(awt)]
+	#[from(initial_process)]
+	#[with(prepared.clone(), "worker", 1, true, true)]
+	worker: Process,
 ) {
-	let _serial = PROCESS_TESTS.lock().await;
-	let (mut f, url, schema) = setup(&environment).await;
-	let address = std::net::TcpListener::bind("127.0.0.1:0")
-		.unwrap()
-		.local_addr()
-		.unwrap();
-	f.config.endpoint = format!("http://{address}");
-	let directory = evidence_directory("invalid-state", &schema);
-	std::fs::create_dir_all(&directory).unwrap();
-	let calls = Arc::new(AtomicUsize::new(0));
-	let counted = calls.clone();
-	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-	let endpoint = format!("http://{}", listener.local_addr().unwrap());
-	let provider = tokio::spawn(async move {
-		axum::serve(listener,Router::new().route("/v1/chat/completions",post(move || {let calls=counted.clone();async move {
-		calls.fetch_add(1,Ordering::SeqCst);Json(json!({"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":"Done"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}))
-	}}))).await.unwrap();
-	});
-	let (_, token, task) = bootstrap(&f, &common::application(f.clone()).await, &endpoint).await;
-	let settings = Settings {
-		namespace: schema.clone(),
-		..Settings::default()
-	};
-	let broker = Broker::provision(&f.config.nats_url, &f.config.node_id, &settings)
-		.await
-		.unwrap();
-	let mut server = Process::start(&f, &url, &schema, "server", &directory, 0, true);
-	server.ready().await;
-	let mut worker = Process::start(&f, &url, &schema, "worker", &directory, 1, true);
-	worker.ready().await;
+	let mut server = server;
+	let mut worker = worker;
+
+	let prepared = prepared.await;
+	let (f, url, schema) = prepared.runtime.parts();
+	let directory = prepared.directory.path.clone();
+	let token = prepared.token.clone();
+	let task = prepared.task;
+	let broker = prepared.broker.clone();
+	let provider = prepared.provider.clone();
+
 	let pause = directory.join("pause-consumers");
 	std::fs::write(&pause, "pause").unwrap();
 	tokio::time::sleep(Duration::from_millis(300)).await;
@@ -645,7 +590,7 @@ async fn notification_claim_disposes_invalid_context_without_poisoning_healthy_w
 	);
 	worker.stop();
 	server.stop();
-	provider.abort();
+	drop(provider);
 	broker
 		.context
 		.delete_stream(&broker.stream_name)
@@ -661,41 +606,31 @@ async fn notification_claim_disposes_invalid_context_without_poisoning_healthy_w
 #[tokio::test]
 async fn notification_deferral_waits_for_its_authoritative_unblock(
 	#[case] blocker: &str,
+	#[from(activation_runtime)] _runtime: common::RuntimeFuture,
+
+	#[from(upstream_fixtures::hits)] calls: Arc<AtomicUsize>,
+	#[from(notification_deferral_waits_for_its_authoritative_unblock_router)]
+	#[with(calls.clone())]
+	_router: Arc<Router>,
+	#[from(activation_binary)] binary: Arc<ActivationBinary>,
+	#[from(prepared_activation)]
+	#[with(blocker, _runtime.clone(), _router.clone(), None)]
+	prepared: PreparedActivationFuture,
 	#[future(awt)]
-	#[from(test_environment)]
-	environment: Arc<TestEnvironment>,
+	#[from(initial_process)]
+	#[with(prepared.clone(), "server", 0, true, true)]
+	server: Process,
 ) {
-	let _serial = PROCESS_TESTS.lock().await;
-	let (mut f, url, schema) = setup(&environment).await;
-	let address = std::net::TcpListener::bind("127.0.0.1:0")
-		.unwrap()
-		.local_addr()
-		.unwrap();
-	f.config.endpoint = format!("http://{address}");
-	let directory = evidence_directory(blocker, &schema);
-	std::fs::create_dir_all(&directory).unwrap();
-	let calls = Arc::new(AtomicUsize::new(0));
-	let counted = calls.clone();
-	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-	let endpoint = format!("http://{}", listener.local_addr().unwrap());
-	let provider = tokio::spawn(async move {
-		axum::serve(listener, Router::new().route("/v1/chat/completions", post(move || {
-			let calls = counted.clone(); async move {
-				calls.fetch_add(1, Ordering::SeqCst);
-				Json(json!({"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":"Done"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}))
-			}
-		}))).await.unwrap();
-	});
-	let (_, token, task) = bootstrap(&f, &common::application(f.clone()).await, &endpoint).await;
-	let settings = Settings {
-		namespace: schema.clone(),
-		..Default::default()
-	};
-	let broker = Broker::provision(&f.config.nats_url, &f.config.node_id, &settings)
-		.await
-		.unwrap();
-	let mut server = Process::start(&f, &url, &schema, "server", &directory, 0, true);
-	server.ready().await;
+	let mut server = server;
+
+	let prepared = prepared.await;
+	let (f, url, schema) = prepared.runtime.parts();
+	let directory = prepared.directory.path.clone();
+	let token = prepared.token.clone();
+	let task = prepared.task;
+	let broker = prepared.broker.clone();
+	let provider = prepared.provider.clone();
+
 	let run = admit(&f, &token, task).await;
 	let metadata = f.store.run(run).await.unwrap();
 	let area = Uuid::new_v4();
@@ -792,7 +727,7 @@ async fn notification_deferral_waits_for_its_authoritative_unblock(
 		.await
 		.unwrap();
 	}
-	let mut worker = Process::start(&f, &url, &schema, "worker", &directory, 1, true);
+	let mut worker = /* Act: launch/relaunch tests worker lifecycle and negative controls. */ Process::start(&f, &url, &schema, "worker", &directory, 1, true, binary.clone());
 	worker.ready().await;
 	let due_predicate = if blocker == "remote_dependencies" {
 		"due_at > CURRENT_TIMESTAMP"
@@ -881,7 +816,7 @@ async fn notification_deferral_waits_for_its_authoritative_unblock(
 	}
 	worker.stop();
 	server.stop();
-	provider.abort();
+	drop(provider);
 	broker
 		.context
 		.delete_stream(&broker.stream_name)
@@ -893,33 +828,25 @@ async fn notification_deferral_waits_for_its_authoritative_unblock(
 #[rstest::rstest]
 #[tokio::test]
 async fn failure_delivery_resumes_after_authority_is_restored_without_replaying_effects(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
 	#[future(awt)]
-	#[from(test_environment)]
-	environment: Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	#[with(Default::default(), aidash_server::sse::Service::new(Default::default()), Arc::new(|router| router), runtime.clone())]
+	fixture: common::ApplicationFixture,
+	#[from(upstream_fixtures::hits)] calls: Arc<AtomicUsize>,
+	#[from(failure_delivery_resumes_after_authority_is_restored_without_replaying_effects_router)]
+	#[with(calls.clone())]
+	_router: Arc<Router>,
+	#[future(awt)]
+	#[from(upstream)]
+	#[with(_router.clone())]
+	effects: TestServerGuard,
 ) {
-	let (f, url, schema) = setup(&environment).await;
-	let calls = Arc::new(AtomicUsize::new(0));
-	let counted = calls.clone();
-	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-	let endpoint = format!("http://{}", listener.local_addr().unwrap());
-	let effects = tokio::spawn(async move {
-		axum::serve(
-			listener,
-			Router::new().fallback(move || {
-				let calls = counted.clone();
-				async move {
-					calls.fetch_add(1, Ordering::SeqCst);
-					(
-						axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-						"unexpected provider/tool replay",
-					)
-				}
-			}),
-		)
-		.await
-		.unwrap();
-	});
-	let app = common::application(f.clone()).await;
+	let runtime = runtime.await;
+	let (f, url, schema) = runtime.parts();
+
+	let endpoint = format!("{}", effects.url);
+	let app = fixture.application.clone();
 	let (_, token, task) = bootstrap(&f, &app, &endpoint).await;
 	let (status, claimed) = common::request(
 		&app,
@@ -1027,6 +954,178 @@ async fn failure_delivery_resumes_after_authority_is_restored_without_replaying_
 	.await
 	.unwrap();
 	assert_eq!(invocations, 0);
-	effects.abort();
+	drop(effects);
 	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::fixture]
+fn terminal_delivery_drains_a_burst_without_per_run_sleep_router(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+	#[from(workspace_id)] workspace: Uuid,
+) -> upstream_fixtures::RouterFuture {
+	use futures_util::FutureExt;
+	async move { let runtime = runtime.await; let node = runtime.federation.config.node_id.clone(); Arc::new(Router::new().handler("/federation/v0.1/workspace", handler(http::Method::POST, move |request: reinhardt::Request| {let input = request.json::<Value>().unwrap();
+        let node = node.clone();
+        async move {
+            match input["operation"].as_str().unwrap() {
+                "run_message_commit" => reinhardt::Response::ok().with_json(&json!({"committed":true})).unwrap(),
+                "run_message_delivery" => reinhardt::Response::ok().with_json(&json!({"id":Uuid::new_v4(),"workspace_id":workspace,
+                    "sender":"human","content":input["data"]["content"],
+                    "idempotency_key":format!("{}:{}:{}",node,input["task_id"].as_str().unwrap(),input["data"]["key"].as_str().unwrap()),
+                    "created_at":chrono::Utc::now()})).unwrap(),
+                other => panic!("unexpected operation {other}"),
+            }
+        }
+    }))) }.boxed().shared()
+}
+#[rstest::fixture]
+fn notification_claim_disposes_invalid_context_without_poisoning_healthy_work_router(
+	#[from(upstream_fixtures::hits)] calls: Arc<AtomicUsize>,
+) -> Arc<Router> {
+	Arc::new(Router::new().handler("/v1/chat/completions",handler(http::Method::POST, move |_request: reinhardt::Request| {let calls=calls.clone();async move {
+		calls.fetch_add(1,Ordering::SeqCst);reinhardt::Response::ok().with_json(&json!({"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":"Done"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}})).unwrap()
+	}})))
+}
+#[rstest::fixture]
+fn notification_deferral_waits_for_its_authoritative_unblock_router(
+	#[from(upstream_fixtures::hits)] calls: Arc<AtomicUsize>,
+) -> Arc<Router> {
+	Arc::new(Router::new().handler("/v1/chat/completions", handler(http::Method::POST, move |_request: reinhardt::Request| {
+			let calls = calls.clone(); async move {
+				calls.fetch_add(1, Ordering::SeqCst);
+				reinhardt::Response::ok().with_json(&json!({"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":"Done"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}})).unwrap()
+			}
+		})))
+}
+#[rstest::fixture]
+fn failure_delivery_resumes_after_authority_is_restored_without_replaying_effects_router(
+	#[from(upstream_fixtures::hits)] calls: Arc<AtomicUsize>,
+) -> Arc<Router> {
+	let reply = Arc::new(upstream_fixtures::any_handler(
+		move |_request: reinhardt::Request| {
+			let calls = calls.clone();
+			async move {
+				calls.fetch_add(1, Ordering::SeqCst);
+				reinhardt::Response::new(http::StatusCode::INTERNAL_SERVER_ERROR)
+					.with_body("unexpected provider/tool replay")
+					.with_header("Content-Type", "text/plain; charset=utf-8")
+			}
+		},
+	));
+	Arc::new(
+		Router::new()
+			.handler_arc("/", reply.clone())
+			.handler_arc("/{*rest}", reply),
+	)
+}
+
+type AckProxyFuture =
+	futures_util::future::Shared<futures_util::future::BoxFuture<'static, Arc<AckProxy>>>;
+struct AckSignals {
+	blocked: tokio::sync::watch::Sender<bool>,
+	ack_held: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+	held: std::sync::Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
+	release: Arc<tokio::sync::Notify>,
+}
+#[rstest::fixture]
+fn ack_signals() -> Arc<AckSignals> {
+	let (ack_held, held) = tokio::sync::oneshot::channel();
+	Arc::new(AckSignals {
+		blocked: tokio::sync::watch::channel(false).0,
+		ack_held: std::sync::Mutex::new(Some(ack_held)),
+		held: std::sync::Mutex::new(Some(held)),
+		release: Arc::new(tokio::sync::Notify::new()),
+	})
+}
+struct AckProxy {
+	_environment: Arc<TestEnvironment>,
+	endpoint: String,
+	signals: Arc<AckSignals>,
+	task: tokio::task::JoinHandle<()>,
+}
+impl Drop for AckProxy {
+	fn drop(&mut self) {
+		self.task.abort();
+	}
+}
+#[rstest::fixture]
+fn ack_proxy(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+	#[from(nats_proxy_listener)] listener: NatsListenerFuture,
+	ack_signals: Arc<AckSignals>,
+) -> AckProxyFuture {
+	use futures_util::FutureExt;
+	async move {
+		use tokio::io::{AsyncReadExt, AsyncWriteExt};
+		let runtime = runtime.await;
+		let environment = runtime.environment();
+		let settings = Settings {
+			namespace: runtime.schema.clone(),
+			..Default::default()
+		};
+		let (_, subject) = Broker::names(&runtime.federation.config.node_id, &settings);
+		let marker = format!("HPUB {subject} ").into_bytes();
+		let address = reqwest::Url::parse(&environment.nats_url).unwrap();
+		let upstream = format!(
+			"{}:{}",
+			address.host_str().unwrap(),
+			address.port().unwrap()
+		);
+		let listener = listener.await;
+		let endpoint = format!("nats://{}", listener.local_addr().unwrap());
+		let blocked = ack_signals.blocked.clone();
+		let ack_held = ack_signals.ack_held.lock().unwrap().take().unwrap();
+		let resume = ack_signals.release.clone();
+		let proxy = tokio::spawn(async move {
+			let (client, _) = listener.accept().await.unwrap();
+			let server = tokio::net::TcpStream::connect(upstream).await.unwrap();
+			let (mut client_read, mut client_write) = client.into_split();
+			let (mut server_read, mut server_write) = server.into_split();
+			let blocked_read = blocked.subscribe();
+			let upstream = async move {
+				let mut carry = Vec::new();
+				let mut buffer = [0; 8192];
+				loop {
+					let count = client_read.read(&mut buffer).await?;
+					if count == 0 {
+						return std::io::Result::Ok(());
+					}
+					carry.extend_from_slice(&buffer[..count]);
+					if carry.windows(marker.len()).any(|part| part == marker) {
+						blocked.send_replace(true);
+					}
+					if carry.len() > marker.len() {
+						carry.drain(..carry.len() - marker.len());
+					}
+					server_write.write_all(&buffer[..count]).await?;
+				}
+			};
+			let downstream = async move {
+				let mut signal = Some(ack_held);
+				let mut buffer = [0; 8192];
+				loop {
+					let count = server_read.read(&mut buffer).await?;
+					if count == 0 {
+						return std::io::Result::Ok(());
+					}
+					if *blocked_read.borrow()
+						&& let Some(signal) = signal.take()
+					{
+						let _ = signal.send(());
+						resume.notified().await;
+					}
+					client_write.write_all(&buffer[..count]).await?;
+				}
+			};
+			let _ = tokio::try_join!(upstream, downstream);
+		});
+		Arc::new(AckProxy {
+			_environment: environment,
+			endpoint,
+			signals: ack_signals,
+			task: proxy,
+		})
+	}
+	.boxed()
+	.shared()
 }

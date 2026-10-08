@@ -24,8 +24,9 @@ pub use environment::{TestEnvironment, test_environment};
 mod application;
 #[allow(unused_imports)] // Each binary uses only its required fixture constructors.
 pub use application::{
-	TestApplication, application, application_with, application_with_event_streams,
-	application_with_settings, peer_application,
+	ApplicationFixture, ApplicationFuture, RouterTransform, TestApplication, application,
+	application_with, application_with_event_streams, application_with_settings,
+	native_application, peer_application,
 };
 #[allow(unused_imports)] // Worker-process fixtures share this settings module.
 pub(crate) use application::{process_settings, settings_for};
@@ -38,37 +39,40 @@ pub async fn request(
 	path: &str,
 	value: Value,
 ) -> (u16, Value) {
-	// APIClient::delete has no body parameter. Revision-checked deletes still
-	// exercise the production server through Reinhardt's raw HTTP fixture.
-	if method == "DELETE" && !value.is_null() {
-		let response = http_client()
-			.delete(app.url(path))
-			.bearer_auth(token)
-			.json(&value)
-			.send()
-			.await
-			.unwrap();
-		let status = response.status().as_u16();
-		let body = response.bytes().await.unwrap();
-		return json_response(method, path, status, &body);
-	}
-	let client = app.client();
-	client
-		.set_header("Authorization", &format!("Bearer {token}"))
-		.await
-		.unwrap();
+	let authorization = format!("Bearer {token}");
+	let headers = [("Authorization", authorization.as_str())];
 	let response = match method {
-		"GET" => client.get(path).await,
-		"POST" => client.post(path, &value, "json").await,
-		"PUT" => client.put(path, &value, "json").await,
-		"PATCH" => client.patch(path, &value, "json").await,
-		"DELETE" => client.delete(path).await,
-		"HEAD" => client.head(path).await,
-		"OPTIONS" => client.options(path).await,
-		_ => panic!("unsupported test HTTP method: {method}"),
+		"GET" => Some(app.api_http.get_with_headers(path, &headers).await.unwrap()),
+		"POST" => Some(
+			app.api_http
+				.post_raw_with_headers(
+					path,
+					value.to_string().as_bytes(),
+					"application/json",
+					&headers,
+				)
+				.await
+				.unwrap(),
+		),
+		_ => None,
+	};
+	if let Some(response) = response {
+		return json_response(method, path, response.status_code(), response.body());
 	}
-	.unwrap();
-	json_response(method, path, response.status_code(), response.body())
+	// The pinned APIClient has per-request headers only for GET and raw POST.
+	// reinhardt-web#6661: a fixture-owned raw client keeps concurrent
+	// PUT/PATCH/DELETE credentials isolated until every verb supports headers.
+	let mut request = app
+		.raw_http
+		.request(method.parse().unwrap(), app.url(path))
+		.bearer_auth(token);
+	if matches!(method, "PUT" | "PATCH") || (method == "DELETE" && !value.is_null()) {
+		request = request.json(&value);
+	}
+	let response = request.send().await.unwrap();
+	let status = response.status().as_u16();
+	let body = response.bytes().await.unwrap();
+	json_response(method, path, status, &body)
 }
 
 fn json_response(method: &str, path: &str, status: u16, body: &[u8]) -> (u16, Value) {
@@ -330,3 +334,128 @@ pub async fn native_store(database_url: &str, node: &str) -> Store {
 mod state;
 #[allow(unused_imports)] // Shared fixture exports vary by integration target.
 pub use state::{context, pending, tool_call, tool_pending};
+
+use environment::EnvironmentFuture;
+use futures_util::{
+	FutureExt,
+	future::{BoxFuture, Shared},
+};
+use rstest::fixture;
+
+pub type DatabaseFuture = Shared<BoxFuture<'static, Arc<ExecutionDatabase>>>;
+pub type RuntimeFuture = Shared<BoxFuture<'static, RuntimeFixture>>;
+
+pub struct ExecutionDatabase {
+	pub pool: sqlx::PgPool,
+	pub url: String,
+	pub schema: String,
+	environment: Arc<TestEnvironment>,
+}
+
+#[derive(Clone)]
+#[allow(dead_code)] // Shared integration binaries independently use each runtime value.
+pub struct RuntimeFixture {
+	pub federation: Federation,
+	pub url: String,
+	pub schema: String,
+	_database: Arc<ExecutionDatabase>,
+}
+
+impl RuntimeFixture {
+	#[allow(dead_code)] // Process and protocol suites inspect the retained broker environment.
+	pub fn environment(&self) -> Arc<TestEnvironment> {
+		self._database.environment.clone()
+	}
+
+	/// Project values while this fixture retains its disposable infrastructure.
+	#[allow(dead_code)] // Database-only and process-only targets do not unpack HTTP runtime state.
+	pub fn parts(&self) -> (Federation, String, String) {
+		(
+			self.federation.clone(),
+			self.url.clone(),
+			self.schema.clone(),
+		)
+	}
+}
+
+#[fixture]
+pub fn execution_database(test_environment: EnvironmentFuture) -> DatabaseFuture {
+	async move {
+		let environment = test_environment.await;
+
+		let database = format!("execution_{}", Uuid::new_v4().simple());
+		// The preserved baseline names public explicitly. Isolate databases, not
+		// search paths. TestEnvironment owns the container and every database, so
+		// unwinding also removes fixtures that never reach explicit cleanup.
+		let mut admin = PgConnection::connect(&environment.database_url)
+			.await
+			.unwrap();
+		admin
+			.execute(format!("CREATE DATABASE {database}").as_str())
+			.await
+			.unwrap();
+		let mut url = reqwest::Url::parse(&environment.database_url).unwrap();
+		url.set_path(&database);
+		let url = url.to_string();
+		let options = PgConnectOptions::from_str(&url)
+			.unwrap()
+			.application_name(&database);
+		let pool = PgPoolOptions::new()
+			.max_connections(12)
+			.connect_with(options)
+			.await
+			.unwrap();
+		let connection = DatabaseConnection::new(Arc::new(PostgresBackend::new(pool.clone())));
+		let migrations =
+			FilesystemSource::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations"))
+				.all_migrations()
+				.await
+				.expect("load the native migration graph");
+		postgres::apply_migrations(connection, &migrations).await;
+		Arc::new(ExecutionDatabase {
+			pool,
+			url,
+			schema: database,
+			environment,
+		})
+	}
+	.boxed()
+	.shared()
+}
+
+#[fixture]
+pub fn runtime(execution_database: DatabaseFuture, http_client: reqwest::Client) -> RuntimeFuture {
+	async move {
+		let database = execution_database.await;
+
+		let store = Store::from_pool(database.pool.clone(), "aidash://execution-test".into())
+			.await
+			.unwrap();
+		let federation = Federation {
+			sandbox: Default::default(),
+			store,
+			registry: Registry::new(database.pool.clone(), "aidash://execution-test").unwrap(),
+			config: Config {
+				node_id: "aidash://execution-test".into(),
+				endpoint: "http://localhost:8080".into(),
+				database_url: database.url.clone(),
+				nats_url: database.environment.nats_url.clone(),
+				api_token: "operator-execution-fixture".into(),
+				web_dir: "web/dist".into(),
+				lease_seconds: 30,
+				default_host_packages: vec![],
+				oidc: None,
+			},
+			client: http_client,
+			notify: Arc::new(tokio::sync::Notify::new()),
+		};
+		RuntimeFixture {
+			federation,
+			url: database.url.clone(),
+			schema: database.schema.clone(),
+			_database: database,
+		}
+	}
+	.boxed()
+	.shared()
+}

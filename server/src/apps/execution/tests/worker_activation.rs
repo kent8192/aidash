@@ -1,3 +1,8 @@
+#[path = "support/upstream.rs"]
+mod upstream_fixtures;
+use reinhardt::ServerRouter as Router;
+use reinhardt::test::fixtures::server::TestServerGuard;
+use upstream_fixtures::handler;
 #[path = "support/legacy.rs"]
 mod common;
 #[path = "worker_activation/review.rs"]
@@ -8,7 +13,7 @@ use aidash_server::{
 	activation::{Broker, Settings},
 	federation::Federation,
 };
-use axum::{Json, Router, routing::post};
+
 use common::*;
 use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
 use serde_json::{Value, json};
@@ -24,20 +29,16 @@ use uuid::Uuid;
 
 static PROCESS_TESTS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-fn evidence_directory(label: &str, schema: &str) -> PathBuf {
-	std::env::var_os("AIDASH_ACTIVATION_EVIDENCE_DIR")
-		.map(|p| PathBuf::from(p).join(label))
-		.unwrap_or_else(|| std::env::temp_dir().join(format!("aidash-activation-{label}-{schema}")))
-}
 fn a(s: &str) -> Alias {
 	Alias::new(s)
 }
 struct Process {
+	_fixture_owner: Option<Arc<PreparedActivation>>,
 	child: std::process::Child,
 	log: PathBuf,
 	consumes: bool,
 	#[cfg(target_os = "macos")]
-	_binary_directory: tempfile::TempDir,
+	_binary_directory: Arc<ActivationBinary>,
 }
 impl Process {
 	fn start(
@@ -48,6 +49,7 @@ impl Process {
 		directory: &std::path::Path,
 		ordinal: usize,
 		delayed: bool,
+		binary: Arc<ActivationBinary>,
 	) -> Self {
 		let mut database = reqwest::Url::parse(url).unwrap();
 		database
@@ -55,22 +57,8 @@ impl Process {
 			.append_pair("options", &format!("-c application_name={schema}"));
 		let log = directory.join(format!("{mode}-{ordinal}.log"));
 		let file = std::fs::File::create(&log).unwrap();
-		let binary = env!("CARGO_BIN_EXE_aidash");
-		// Match the transaction process fixture: macOS can stall in dyld while
-		// opening the large executable from an external build volume. Own the
-		// exact local copy until the child has been killed and reaped.
-		#[cfg(target_os = "macos")]
-		let binary_directory = tempfile::Builder::new()
-			.prefix("aidash-activation-binary-")
-			.tempdir_in("/tmp")
-			.unwrap();
-		#[cfg(target_os = "macos")]
-		let binary = {
-			let snapshot = binary_directory.path().join("aidash");
-			std::fs::copy(binary, &snapshot).expect("snapshot the exact worker test executable");
-			snapshot
-		};
-		let mut cmd = std::process::Command::new(binary);
+		let executable = &binary.executable;
+		let mut cmd = std::process::Command::new(executable);
 		cmd.args(native_process_args(f, mode))
 			.envs(native_process_environment(
 				f,
@@ -112,11 +100,12 @@ impl Process {
 			cmd.env_remove("AIDASH_ACTIVATION_TEST_RECOVERY_MS");
 		}
 		Self {
+			_fixture_owner: None,
 			child: cmd.spawn().unwrap(),
 			log,
 			consumes: mode != "server",
 			#[cfg(target_os = "macos")]
-			_binary_directory: binary_directory,
+			_binary_directory: binary,
 		}
 	}
 	async fn ready(&mut self) {
@@ -172,7 +161,9 @@ async fn count(f: &Federation, predicate: &str) -> i64 {
 	.unwrap()
 }
 async fn admit(f: &Federation, token: &str, task: Uuid) -> Uuid {
-	let response = reqwest::Client::new()
+	let response = f
+		.client
+		.clone()
 		.post(format!("{}/api/tasks/{task}/claim", f.config.endpoint))
 		.bearer_auth(token)
 		.json(&json!({"revision":0,"agent":{"id":"research","version":"1.0.0"}}))
@@ -221,46 +212,37 @@ async fn complete(f: &Federation, id: Uuid) {
 #[rstest::rstest]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn separate_process_notifications_and_negative_control(
-	#[future(awt)]
-	#[from(test_environment)]
-	environment: Arc<TestEnvironment>,
-) {
-	let _serial = PROCESS_TESTS.lock().await;
-	let (mut f, url, schema) = setup(&environment).await;
-	let address = std::net::TcpListener::bind("127.0.0.1:0")
-		.unwrap()
-		.local_addr()
-		.unwrap();
+	#[from(activation_runtime)] _runtime: common::RuntimeFuture,
 
-	f.config.endpoint = format!("http://{address}");
-	let directory = std::env::var_os("AIDASH_ACTIVATION_EVIDENCE_DIR")
-		.map(PathBuf::from)
-		.unwrap_or_else(|| std::env::temp_dir().join(format!("aidash-activation-{schema}")));
-	std::fs::create_dir_all(&directory).unwrap();
-	let calls = Arc::new(AtomicUsize::new(0));
-	let observed = calls.clone();
-	let provider = Router::new().route("/v1/chat/completions",post(move || {
-        let calls = observed.clone(); async move {
-            calls.fetch_add(1,Ordering::SeqCst);
-            Json(json!({"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"Activation fixture completed"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}))
-        }
-    }));
-	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-	let provider_url = format!("http://{}", listener.local_addr().unwrap());
-	let provider_task = tokio::spawn(async move { axum::serve(listener, provider).await.unwrap() });
-	let app = common::application(f.clone()).await;
-	let (_, token, task) = bootstrap(&f, &app, &provider_url).await;
-	let settings = Settings {
-		namespace: schema.clone(),
-		..Default::default()
-	};
-	let provisioned = Broker::provision(&f.config.nats_url, &f.config.node_id, &settings)
-		.await
-		.unwrap();
-	let mut server = Process::start(&f, &url, &schema, "server", &directory, 0, true);
-	server.ready().await;
-	let mut first = Process::start(&f, &url, &schema, "worker", &directory, 0, true);
-	first.ready().await;
+	#[from(upstream_fixtures::hits)] calls: Arc<AtomicUsize>,
+	#[from(separate_process_notifications_and_negative_control_router)]
+	#[with(calls.clone())]
+	_router: Arc<Router>,
+	#[from(activation_binary)] binary: Arc<ActivationBinary>,
+	#[from(prepared_activation)]
+	#[with("main", _runtime.clone(), _router.clone(), None)]
+	prepared: PreparedActivationFuture,
+	#[future(awt)]
+	#[from(initial_process)]
+	#[with(prepared.clone(), "server", 0, true, true)]
+	server: Process,
+	#[future(awt)]
+	#[from(initial_process)]
+	#[with(prepared.clone(), "worker", 0, true, true)]
+	first: Process,
+) {
+	let mut server = server;
+	let mut first = first;
+
+	let prepared = prepared.await;
+	let (f, url, schema) = prepared.runtime.parts();
+	let directory = prepared.directory.path.clone();
+	let token = prepared.token.clone();
+	let task = prepared.task;
+	let broker = prepared.broker.clone();
+	let provisioned = broker.clone();
+	let provider_task = prepared.provider.clone();
+
 	let recovery_negative = count(&f, "claim_source = 'recovery'").await;
 	// Keep a running worker, a live broker, and the publisher; suppress only pulls.
 	std::fs::write(directory.join("pause-consumers"), b"test barrier").unwrap();
@@ -283,7 +265,7 @@ async fn separate_process_notifications_and_negative_control(
 	let mut pids = Vec::new();
 	// Each window has a fresh 60s recovery delay and fewer than 60s of samples.
 	for window in 0..5 {
-		let mut one = Process::start(
+		let mut one = /* Act: launch/relaunch tests worker lifecycle and negative controls. */ Process::start(
 			&f,
 			&url,
 			&schema,
@@ -291,8 +273,8 @@ async fn separate_process_notifications_and_negative_control(
 			&directory,
 			window * 2 + 1,
 			true,
-		);
-		let mut two = Process::start(
+		binary.clone());
+		let mut two = /* Act: launch/relaunch tests worker lifecycle and negative controls. */ Process::start(
 			&f,
 			&url,
 			&schema,
@@ -300,7 +282,7 @@ async fn separate_process_notifications_and_negative_control(
 			&directory,
 			window * 2 + 2,
 			true,
-		);
+		binary.clone());
 		one.ready().await;
 		two.ready().await;
 		pids.extend([one.child.id(), two.child.id()]);
@@ -309,7 +291,9 @@ async fn separate_process_notifications_and_negative_control(
 		for index in 0..20 {
 			// Keep the activation workload constant: historical workspace
 			// observation growth is a different performance dimension.
-			let workspace: Value = reqwest::Client::new()
+			let workspace: Value = f
+				.client
+				.clone()
 				.post(format!("{}/api/workspaces", f.config.endpoint))
 				.bearer_auth(&token)
 				.json(&json!({"title":"Activation sample","goal":"Complete"}))
@@ -322,7 +306,9 @@ async fn separate_process_notifications_and_negative_control(
 				.await
 				.unwrap();
 			let workspace = workspace["id"].as_str().unwrap();
-			let response = reqwest::Client::new()
+			let response = f
+				.client
+				.clone()
 				.post(format!(
 					"{}/api/workspaces/{workspace}/tasks",
 					f.config.endpoint
@@ -377,8 +363,8 @@ async fn separate_process_notifications_and_negative_control(
 	}
 	// A suspended replica cannot hoard prefetched work. The other replica must
 	// drain a batch larger than its two execution slots through notifications.
-	let mut busy = Process::start(&f, &url, &schema, "worker", &directory, 11, true);
-	let mut available = Process::start(&f, &url, &schema, "worker", &directory, 12, true);
+	let mut busy = /* Act: launch/relaunch tests worker lifecycle and negative controls. */ Process::start(&f, &url, &schema, "worker", &directory, 11, true, binary.clone());
+	let mut available = /* Act: launch/relaunch tests worker lifecycle and negative controls. */ Process::start(&f, &url, &schema, "worker", &directory, 12, true, binary.clone());
 	busy.ready().await;
 	available.ready().await;
 	assert!(
@@ -454,7 +440,7 @@ async fn separate_process_notifications_and_negative_control(
 	);
 	server.stop();
 	drop(server);
-	provider_task.abort();
+	drop(provider_task);
 	provisioned
 		.context
 		.delete_stream(&provisioned.stream_name)
@@ -464,7 +450,9 @@ async fn separate_process_notifications_and_negative_control(
 }
 
 async fn post_json(f: &Federation, token: &str, path: &str, body: Value) -> Value {
-	let response = reqwest::Client::new()
+	let response = f
+		.client
+		.clone()
 		.post(format!("{}{path}", f.config.endpoint))
 		.bearer_auth(token)
 		.json(&body)
@@ -510,44 +498,38 @@ async fn wait_count(f: &Federation, predicate: &str, minimum: i64) {
 #[rstest::rstest]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn atomic_deadlines_duplicates_quarantine_and_input_during_active_owner(
-	#[future(awt)]
-	#[from(test_environment)]
-	environment: Arc<TestEnvironment>,
-) {
-	let _serial = PROCESS_TESTS.lock().await;
-	let (mut f, url, schema) = setup(&environment).await;
-	let address = std::net::TcpListener::bind("127.0.0.1:0")
-		.unwrap()
-		.local_addr()
-		.unwrap();
+	#[from(activation_runtime)] _runtime: common::RuntimeFuture,
 
-	f.config.endpoint = format!("http://{address}");
-	let directory = evidence_directory("faults", &schema);
-	std::fs::create_dir_all(&directory).unwrap();
-	let calls = Arc::new(AtomicUsize::new(0));
-	let blocked = Arc::new(std::sync::atomic::AtomicBool::new(false));
-	let permits = Arc::new(tokio::sync::Semaphore::new(0));
-	let provider = Router::new().route("/v1/chat/completions",post({
-        let calls=calls.clone();let blocked=blocked.clone();let permits=permits.clone();
-        move || { let calls=calls.clone();let blocked=blocked.clone();let permits=permits.clone(); async move {
-            calls.fetch_add(1,Ordering::SeqCst);
-            if blocked.load(Ordering::SeqCst) { permits.acquire().await.unwrap().forget(); }
-            Json(json!({"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"Fixture completed"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}))
-        }}
-    }));
-	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-	let endpoint = format!("http://{}", listener.local_addr().unwrap());
-	let provider = tokio::spawn(async move { axum::serve(listener, provider).await.unwrap() });
-	let (_, token, task) = bootstrap(&f, &common::application(f.clone()).await, &endpoint).await;
-	let settings = Settings {
-		namespace: schema.clone(),
-		..Default::default()
-	};
-	let broker = Broker::provision(&f.config.nats_url, &f.config.node_id, &settings)
-		.await
-		.unwrap();
-	let mut combined = Process::start(&f, &url, &schema, "serve", &directory, 0, true);
-	let mut worker = Process::start(&f, &url, &schema, "worker", &directory, 0, true);
+	#[from(upstream_fixtures::hits)] calls: Arc<AtomicUsize>,
+	#[from(upstream_fixtures::available)] blocked: Arc<std::sync::atomic::AtomicBool>,
+	permits: Arc<tokio::sync::Semaphore>,
+	#[from(atomic_deadlines_duplicates_quarantine_and_input_during_active_owner_router)]
+	#[with(calls.clone(), blocked.clone(), permits.clone())]
+	_router: Arc<Router>,
+
+	#[from(prepared_activation)]
+	#[with("faults", _runtime.clone(), _router.clone(), None)]
+	prepared: PreparedActivationFuture,
+	#[future(awt)]
+	#[from(initial_process)]
+	#[with(prepared.clone(), "serve", 0, true, false)]
+	combined: Process,
+	#[future(awt)]
+	#[from(initial_process)]
+	#[with(prepared.clone(), "worker", 0, true, false)]
+	worker: Process,
+) {
+	let mut combined = combined;
+	let mut worker = worker;
+
+	let prepared = prepared.await;
+	let (f, url, schema) = prepared.runtime.parts();
+	let directory = prepared.directory.path.clone();
+	let token = prepared.token.clone();
+	let task = prepared.task;
+	let broker = prepared.broker.clone();
+	let provider = prepared.provider.clone();
+
 	combined.ready().await;
 	worker.ready().await;
 	let pause = directory.join("pause-consumers");
@@ -735,7 +717,7 @@ async fn atomic_deadlines_duplicates_quarantine_and_input_during_active_owner(
 	worker.stop();
 	drop(combined);
 	drop(worker);
-	provider.abort();
+	drop(provider);
 	broker
 		.context
 		.delete_stream(&broker.stream_name)
@@ -747,63 +729,43 @@ async fn atomic_deadlines_duplicates_quarantine_and_input_during_active_owner(
 #[rstest::rstest]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn broker_absence_reconnect_and_empty_storage_preserve_accepted_work(
-	#[future(awt)]
-	#[from(test_environment)]
-	environment: Arc<TestEnvironment>,
-) {
-	let _serial = PROCESS_TESTS.lock().await;
-	let (mut f, url, schema) = setup(&environment).await;
-	let address = std::net::TcpListener::bind("127.0.0.1:0")
-		.unwrap()
-		.local_addr()
-		.unwrap();
+	#[from(activation_runtime)] _runtime: common::RuntimeFuture,
 
-	f.config.endpoint = format!("http://{address}");
-	let directory = evidence_directory("outage", &schema);
-	std::fs::create_dir_all(&directory).unwrap();
-	let calls = Arc::new(AtomicUsize::new(0));
-	let observed = calls.clone();
-	let provider=Router::new().route("/v1/chat/completions",post(move || {let calls=observed.clone();async move {
-        calls.fetch_add(1,Ordering::SeqCst);
-        Json(json!({"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"Recovered"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}))
-    }}));
-	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-	let endpoint = format!("http://{}", listener.local_addr().unwrap());
-	let provider = tokio::spawn(async move { axum::serve(listener, provider).await.unwrap() });
-	let (_, token, task) = bootstrap(&f, &common::application(f.clone()).await, &endpoint).await;
-	let settings = Settings {
-		namespace: schema.clone(),
-		..Default::default()
-	};
-	let broker = Broker::provision(&environment.nats_url, &f.config.node_id, &settings)
-		.await
-		.unwrap();
-	let nats = reqwest::Url::parse(&environment.nats_url).unwrap();
-	let upstream = format!("{}:{}", nats.host_str().unwrap(), nats.port().unwrap());
-	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-	f.config.nats_url = format!("nats://{}", listener.local_addr().unwrap());
-	let (online, mut status) = tokio::sync::watch::channel(false);
-	let proxy = tokio::spawn(async move {
-		loop {
-			let (mut client, _) = listener.accept().await.unwrap();
-			if !*status.borrow_and_update() {
-				continue;
-			}
-			let upstream = upstream.clone();
-			let mut status = status.clone();
-			tokio::spawn(async move {
-				let mut server = tokio::net::TcpStream::connect(upstream).await.unwrap();
-				tokio::select! {
-					_=tokio::io::copy_bidirectional(&mut client,&mut server)=>{},
-					_=status.changed()=>{},
-				}
-			});
-		}
-	});
-	let mut process = Process::start(&f, &url, &schema, "serve", &directory, 0, false);
+	#[from(upstream_fixtures::hits)] calls: Arc<AtomicUsize>,
+	#[from(broker_absence_reconnect_and_empty_storage_preserve_accepted_work_router)]
+	#[with(calls.clone())]
+	_router: Arc<Router>,
+
+	#[from(nats_outage_proxy)]
+	#[with(_runtime.clone())]
+	_proxy: NatsOutageFuture,
+	#[from(activation_binary)] binary: Arc<ActivationBinary>,
+	#[from(prepared_activation)]
+	#[with("outage", _runtime.clone(), _router.clone(), Some(_proxy.clone()))]
+	prepared: PreparedActivationFuture,
+	#[future(awt)]
+	#[from(initial_process)]
+	#[with(prepared.clone(), "serve", 0, false, false)]
+	process: Process,
+) {
+	let mut process = process;
+
+	let prepared = prepared.await;
+	let (f, url, schema) = prepared.runtime.parts();
+	let environment = prepared.runtime.environment();
+	let directory = prepared.directory.path.clone();
+	let token = prepared.token.clone();
+	let task = prepared.task;
+	let settings = prepared.settings.clone();
+	let broker = prepared.broker.clone();
+	let provider = prepared.provider.clone();
+	let online = prepared._proxy.as_ref().unwrap().online.clone();
+
 	let start = Instant::now();
 	loop {
-		if reqwest::get(format!("{}/health", f.config.endpoint))
+		if f.client
+			.get(format!("{}/health", f.config.endpoint))
+			.send()
 			.await
 			.is_ok_and(|r| r.status().is_success())
 		{
@@ -863,7 +825,7 @@ async fn broker_absence_reconnect_and_empty_storage_preserve_accepted_work(
 	// and retention expiry converge through durable publication alone.
 	process.stop();
 	drop(process);
-	let mut process = Process::start(&f, &url, &schema, "serve", &directory, 1, true);
+	let mut process = /* Act: launch/relaunch tests worker lifecycle and negative controls. */ Process::start(&f, &url, &schema, "serve", &directory, 1, true, binary.clone());
 	process.ready().await;
 	std::fs::write(&pause, b"pause").unwrap();
 	tokio::time::sleep(Duration::from_millis(150)).await;
@@ -967,8 +929,8 @@ async fn broker_absence_reconnect_and_empty_storage_preserve_accepted_work(
 	std::fs::write(directory.join("result.json"),serde_json::to_vec_pretty(&json!({"result":"passed","combined_pid":process.child.id(),"broker_absent_at_startup":true,"reconnected":true,"stream_deleted_and_recreated":true,"capacity_refusal_kept_consumer_draining":true,"expired_notification_republished_without_recovery":true,"provider_calls":calls.load(Ordering::SeqCst)})).unwrap()).unwrap();
 	process.stop();
 	drop(process);
-	proxy.abort();
-	provider.abort();
+	prepared._proxy.as_ref().unwrap().task.abort();
+	drop(provider);
 	restored
 		.context
 		.delete_stream(&restored.stream_name)
@@ -980,41 +942,36 @@ async fn broker_absence_reconnect_and_empty_storage_preserve_accepted_work(
 #[rstest::rstest]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn killed_after_ack_recovers_only_after_real_lease_expiry(
-	#[future(awt)]
-	#[from(test_environment)]
-	environment: Arc<TestEnvironment>,
-) {
-	let _serial = PROCESS_TESTS.lock().await;
-	let (mut f, url, schema) = setup(&environment).await;
-	let address = std::net::TcpListener::bind("127.0.0.1:0")
-		.unwrap()
-		.local_addr()
-		.unwrap();
+	#[from(activation_runtime)] _runtime: common::RuntimeFuture,
 
-	f.config.endpoint = format!("http://{address}");
-	let directory = evidence_directory("crash", &schema);
-	std::fs::create_dir_all(&directory).unwrap();
-	let calls = Arc::new(AtomicUsize::new(0));
-	let observed = calls.clone();
-	let provider=Router::new().route("/v1/chat/completions",post(move || {let calls=observed.clone();async move {
-        calls.fetch_add(1,Ordering::SeqCst);
-        Json(json!({"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"Recovered once"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}))
-    }}));
-	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-	let endpoint = format!("http://{}", listener.local_addr().unwrap());
-	let provider = tokio::spawn(async move { axum::serve(listener, provider).await.unwrap() });
-	let (_, token, task) = bootstrap(&f, &common::application(f.clone()).await, &endpoint).await;
-	let settings = Settings {
-		namespace: schema.clone(),
-		..Default::default()
-	};
-	let broker = Broker::provision(&f.config.nats_url, &f.config.node_id, &settings)
-		.await
-		.unwrap();
-	let mut server = Process::start(&f, &url, &schema, "server", &directory, 0, true);
-	server.ready().await;
-	let mut worker = Process::start(&f, &url, &schema, "worker", &directory, 0, true);
-	worker.ready().await;
+	#[from(upstream_fixtures::hits)] calls: Arc<AtomicUsize>,
+	#[from(killed_after_ack_recovers_only_after_real_lease_expiry_router)]
+	#[with(calls.clone())]
+	_router: Arc<Router>,
+	#[from(activation_binary)] binary: Arc<ActivationBinary>,
+	#[from(prepared_activation)]
+	#[with("crash", _runtime.clone(), _router.clone(), None)]
+	prepared: PreparedActivationFuture,
+	#[future(awt)]
+	#[from(initial_process)]
+	#[with(prepared.clone(), "server", 0, true, true)]
+	server: Process,
+	#[future(awt)]
+	#[from(initial_process)]
+	#[with(prepared.clone(), "worker", 0, true, true)]
+	worker: Process,
+) {
+	let mut server = server;
+	let mut worker = worker;
+
+	let prepared = prepared.await;
+	let (f, url, schema) = prepared.runtime.parts();
+	let directory = prepared.directory.path.clone();
+	let token = prepared.token.clone();
+	let task = prepared.task;
+	let broker = prepared.broker.clone();
+	let provider = prepared.provider.clone();
+
 	let barrier = directory.join("pause-after-ack");
 	std::fs::write(&barrier, b"crash checkpoint").unwrap();
 	let id = admit(&f, &token, task).await;
@@ -1038,7 +995,7 @@ async fn killed_after_ack_recovers_only_after_real_lease_expiry(
 	worker.child.wait().unwrap();
 	drop(worker);
 	std::fs::remove_file(&barrier).unwrap();
-	let mut replacement = Process::start(&f, &url, &schema, "worker", &directory, 1, true);
+	let mut replacement = /* Act: launch/relaunch tests worker lifecycle and negative controls. */ Process::start(&f, &url, &schema, "worker", &directory, 1, true, binary.clone());
 	replacement.ready().await;
 	// Keep the real lease duration. No SQL timestamp shortening hides early takeover.
 	loop {
@@ -1071,7 +1028,7 @@ async fn killed_after_ack_recovers_only_after_real_lease_expiry(
 	server.stop();
 	drop(replacement);
 	drop(server);
-	provider.abort();
+	drop(provider);
 	broker
 		.context
 		.delete_stream(&broker.stream_name)
@@ -1090,83 +1047,24 @@ impl Drop for NatsContainer {
 			.status();
 	}
 }
+#[rstest::rstest]
 #[tokio::test]
-async fn scoped_credentials_deny_server_pull_and_validate_without_resetting_consumer() {
+async fn scoped_credentials_deny_server_pull_and_validate_without_resetting_consumer(
+	#[future] scoped_nats: ScopedNats,
+) {
 	use futures_util::StreamExt;
-	let _serial = PROCESS_TESTS.lock().await;
-	let name = format!("aidash-activation-permissions-{}", Uuid::new_v4().simple());
-	let directory = evidence_directory("permissions", &name);
-	std::fs::create_dir_all(&directory).unwrap();
-	let settings = Settings {
-		namespace: name.clone(),
-		..Default::default()
-	};
-	let node = "aidash://permissions";
-	let (stream, subject) = Broker::names(node, &settings);
-	let next = format!("$JS.API.CONSUMER.MSG.NEXT.{stream}.workers-v1");
-	// Public local-only fixture credentials. Permissions are scoped to one exact
-	// activation stream; no wildcard crosses Node scopes or grants provisioning.
-	let config = format!(
-		r#"
-port: 4222
-jetstream {{ store_dir: "/tmp/jetstream" }}
-authorization {{ users: [
- {{ user: "operator", password: "fixture-operator" }},
- {{ user: "server", password: "fixture-server", permissions: {{
-   publish: {{ allow: ["{subject}","$JS.API.STREAM.INFO.{stream}"] }}, subscribe: {{allow:["_INBOX.>"]}}
- }} }},
- {{ user: "worker", password: "fixture-worker", permissions: {{
-   publish: {{ allow: ["{subject}","$JS.API.STREAM.INFO.{stream}","$JS.API.CONSUMER.INFO.{stream}.workers-v1","{next}","$JS.ACK.{stream}.workers-v1.>"] }}, subscribe: {{allow:["_INBOX.>"]}}
- }} }}
-] }}
-"#
-	);
-	let path = directory.join("nats.conf");
-	std::fs::write(&path, config).unwrap();
-	let output = std::process::Command::new("docker")
-		.args([
-			"run",
-			"--detach",
-			"--rm",
-			"--name",
-			&name,
-			"--publish",
-			"127.0.0.1::4222",
-			"--volume",
-			&format!("{}:/etc/nats/auth.conf:ro", path.display()),
-			"nats:2.12-alpine",
-			"--config",
-			"/etc/nats/auth.conf",
-		])
-		.output()
-		.unwrap();
-	assert!(output.status.success(), "start scoped NATS fixture");
-	let _container = NatsContainer(name.clone());
-	let port = std::process::Command::new("docker")
-		.args(["port", &name, "4222/tcp"])
-		.output()
-		.unwrap();
-	let address = String::from_utf8(port.stdout).unwrap().trim().to_owned();
-	let operator_url = format!("nats://operator:fixture-operator@{address}");
-	let server_url = format!("nats://server:fixture-server@{address}");
-	let worker_url = format!("nats://worker:fixture-worker@{address}");
-	let start = Instant::now();
-	let operator = loop {
-		if let Ok(broker) = Broker::provision(&operator_url, node, &settings).await {
-			break broker;
-		}
-		if start.elapsed() >= Duration::from_secs(10) {
-			let logs = std::process::Command::new("docker")
-				.args(["logs", &name])
-				.output()
-				.unwrap();
-			panic!(
-				"scoped NATS setup failed: {}",
-				String::from_utf8_lossy(&logs.stderr)
-			);
-		}
-		tokio::time::sleep(Duration::from_millis(50)).await;
-	};
+	let fixture = scoped_nats.await;
+	let operator = fixture.operator.clone();
+	let operator_url = fixture.operator_url.clone();
+	let server_url = fixture.server_url.clone();
+	let worker_url = fixture.worker_url.clone();
+	let settings = fixture.settings.clone();
+	let node = fixture.node;
+	let stream = fixture.stream.clone();
+	let subject = fixture.subject.clone();
+	let next = fixture.next.clone();
+	let directory = fixture.directory.clone();
+
 	let created = operator.consumer.as_ref().unwrap().cached_info().created;
 	let mut wrong = settings.clone();
 	wrong.max_bytes += 1;
@@ -1244,11 +1142,10 @@ authorization {{ users: [
 #[rstest::rstest]
 #[tokio::test]
 async fn startup_reconciliation_drains_all_batches(
-	#[future(awt)]
-	#[from(test_environment)]
-	environment: Arc<TestEnvironment>,
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
 ) {
-	let (f, url, schema) = setup(&environment).await;
+	let runtime = runtime.await;
+	let (f, url, schema) = runtime.parts();
 	let mut insert = Query::insert();
 	insert.into_table(a("runs")).columns([
 		a("id"),
@@ -1320,11 +1217,10 @@ async fn startup_reconciliation_drains_all_batches(
 #[tokio::test]
 async fn embedded_worker_uses_dedicated_activation_broker(
 	#[case] explicit_shutdown: bool,
-	#[future(awt)]
-	#[from(test_environment)]
-	environment: Arc<TestEnvironment>,
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
 ) {
-	let (f, url, schema) = setup(&environment).await;
+	let runtime = runtime.await;
+	let (f, url, schema) = runtime.parts();
 	let settings = Settings {
 		namespace: schema.clone(),
 		..Default::default()
@@ -1382,31 +1278,8 @@ async fn embedded_worker_uses_dedicated_activation_broker(
 #[rstest::rstest]
 #[tokio::test]
 #[ignore = "subprocess helper: dedicated broker environment must be isolated"]
-async fn embedded_worker_child() {
-	let database = std::env::var("AIDASH_ACTIVATION_CHILD_DATABASE").unwrap();
-	let node = "aidash://execution-test";
-	let pool = sqlx::PgPool::connect(&database).await.unwrap();
-	let store = aidash_server::store::Store::from_pool(pool, node.into())
-		.await
-		.unwrap();
-	let f = Federation {
-		sandbox: Default::default(),
-		registry: aidash_server::registry::Registry::new(store.pool.clone(), node).unwrap(),
-		store,
-		config: aidash_server::config::Config {
-			node_id: node.into(),
-			endpoint: "http://127.0.0.1:8080".into(),
-			database_url: database,
-			nats_url: "nats://127.0.0.1:1".into(),
-			api_token: "fixture".into(),
-			web_dir: "web/dist".into(),
-			lease_seconds: 30,
-			default_host_packages: vec![],
-			oidc: None,
-		},
-		client: reqwest::Client::new(),
-		notify: Arc::new(tokio::sync::Notify::new()),
-	};
+async fn embedded_worker_child(#[future(awt)] child_runtime: Federation) {
+	let f = child_runtime;
 	let harness = aidash_server::harness::Harness {
 		federation: f.clone(),
 	};
@@ -1456,3 +1329,617 @@ async fn embedded_worker_child() {
 }
 
 use reinhardt::query::{ExprTrait as _, QueryStatementBuilder as _};
+
+#[rstest::fixture]
+fn activation_address() -> std::net::SocketAddr {
+	// Real child processes bind this reserved address; restart tests require a stable port.
+	std::net::TcpListener::bind("127.0.0.1:0")
+		.unwrap()
+		.local_addr()
+		.unwrap()
+}
+#[rstest::fixture]
+fn activation_runtime(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+	activation_address: std::net::SocketAddr,
+) -> common::RuntimeFuture {
+	use futures_util::FutureExt;
+	async move {
+		let mut runtime = runtime.await;
+		runtime.federation.config.endpoint = format!("http://{activation_address}");
+		runtime
+	}
+	.boxed()
+	.shared()
+}
+
+#[rstest::fixture]
+async fn child_runtime(
+	#[from(reinhardt::test::fixtures::http_client)] reinhardt_http_client: reqwest::Client,
+) -> Federation {
+	let database = std::env::var("AIDASH_ACTIVATION_CHILD_DATABASE").unwrap();
+	let node = "aidash://execution-test";
+	let pool = sqlx::PgPool::connect(&database).await.unwrap();
+	let store = aidash_server::store::Store::from_pool(pool, node.into())
+		.await
+		.unwrap();
+	let f = Federation {
+		sandbox: Default::default(),
+		registry: aidash_server::registry::Registry::new(store.pool.clone(), node).unwrap(),
+		store,
+		config: aidash_server::config::Config {
+			node_id: node.into(),
+			endpoint: "http://127.0.0.1:8080".into(),
+			database_url: database,
+			nats_url: "nats://127.0.0.1:1".into(),
+			api_token: "fixture".into(),
+			web_dir: "web/dist".into(),
+			lease_seconds: 30,
+			default_host_packages: vec![],
+			oidc: None,
+		},
+		client: reinhardt_http_client,
+		notify: Arc::new(tokio::sync::Notify::new()),
+	};
+	f
+}
+
+#[rstest::fixture]
+fn separate_process_notifications_and_negative_control_router(
+	#[from(upstream_fixtures::hits)] calls: Arc<AtomicUsize>,
+) -> Arc<Router> {
+	Arc::new(Router::new().handler("/v1/chat/completions",handler(http::Method::POST, move |_request: reinhardt::Request| {
+        let calls = calls.clone(); async move {
+            calls.fetch_add(1,Ordering::SeqCst);
+            reinhardt::Response::ok().with_json(&json!({"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"Activation fixture completed"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}})).unwrap()
+        }
+    })))
+}
+#[rstest::fixture]
+fn atomic_deadlines_duplicates_quarantine_and_input_during_active_owner_router(
+	#[from(upstream_fixtures::hits)] calls: Arc<AtomicUsize>,
+	#[from(upstream_fixtures::available)] blocked: Arc<std::sync::atomic::AtomicBool>,
+	permits: Arc<tokio::sync::Semaphore>,
+) -> Arc<Router> {
+	Arc::new(Router::new().handler("/v1/chat/completions",handler(http::Method::POST, {
+        let calls=calls.clone();let blocked=blocked.clone();let permits=permits.clone();
+        move |_request: reinhardt::Request| { let calls=calls.clone();let blocked=blocked.clone();let permits=permits.clone(); async move {
+            calls.fetch_add(1,Ordering::SeqCst);
+            if blocked.load(Ordering::SeqCst) { permits.acquire().await.unwrap().forget(); }
+            reinhardt::Response::ok().with_json(&json!({"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"Fixture completed"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}})).unwrap()
+        }}
+    })))
+}
+#[rstest::fixture]
+fn broker_absence_reconnect_and_empty_storage_preserve_accepted_work_router(
+	#[from(upstream_fixtures::hits)] calls: Arc<AtomicUsize>,
+) -> Arc<Router> {
+	Arc::new(Router::new().handler("/v1/chat/completions",handler(http::Method::POST, move |_request: reinhardt::Request| {let calls=calls.clone();async move {
+        calls.fetch_add(1,Ordering::SeqCst);
+        reinhardt::Response::ok().with_json(&json!({"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"Recovered"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}})).unwrap()
+    }})))
+}
+#[rstest::fixture]
+fn killed_after_ack_recovers_only_after_real_lease_expiry_router(
+	#[from(upstream_fixtures::hits)] calls: Arc<AtomicUsize>,
+) -> Arc<Router> {
+	Arc::new(Router::new().handler("/v1/chat/completions",handler(http::Method::POST, move |_request: reinhardt::Request| {let calls=calls.clone();async move {
+        calls.fetch_add(1,Ordering::SeqCst);
+        reinhardt::Response::ok().with_json(&json!({"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"Recovered once"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}})).unwrap()
+    }})))
+}
+
+#[rstest::fixture]
+fn permits() -> Arc<tokio::sync::Semaphore> {
+	Arc::new(tokio::sync::Semaphore::new(0))
+}
+#[rstest::fixture]
+fn workspace_id() -> Uuid {
+	Uuid::new_v4()
+}
+
+type NatsOutageFuture =
+	futures_util::future::Shared<futures_util::future::BoxFuture<'static, Arc<NatsOutageProxy>>>;
+struct NatsOutageProxy {
+	_environment: Arc<TestEnvironment>,
+	endpoint: String,
+	online: tokio::sync::watch::Sender<bool>,
+	task: tokio::task::JoinHandle<()>,
+}
+impl Drop for NatsOutageProxy {
+	fn drop(&mut self) {
+		self.task.abort();
+	}
+}
+type NatsListenerFuture = futures_util::future::BoxFuture<'static, tokio::net::TcpListener>;
+#[rstest::fixture]
+fn nats_proxy_listener() -> NatsListenerFuture {
+	use futures_util::FutureExt;
+	async move {
+		// Raw NATS frames and disconnects are the test contract; HTTP guards cannot proxy them.
+		tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap()
+	}
+	.boxed()
+}
+#[rstest::fixture]
+fn broker_online() -> tokio::sync::watch::Sender<bool> {
+	tokio::sync::watch::channel(false).0
+}
+#[rstest::fixture]
+fn nats_outage_proxy(
+	#[from(activation_runtime)] runtime: common::RuntimeFuture,
+	nats_proxy_listener: NatsListenerFuture,
+	broker_online: tokio::sync::watch::Sender<bool>,
+) -> NatsOutageFuture {
+	use futures_util::FutureExt;
+	async move {
+		let runtime = runtime.await;
+		let environment = runtime.environment();
+		let nats = reqwest::Url::parse(&environment.nats_url).unwrap();
+		let upstream = format!("{}:{}", nats.host_str().unwrap(), nats.port().unwrap());
+		let listener = nats_proxy_listener.await;
+		let endpoint = format!("nats://{}", listener.local_addr().unwrap());
+		let online = broker_online;
+		let mut status = online.subscribe();
+		let proxy = tokio::spawn(async move {
+			// Aborting the fixture task drops this JoinSet and cancels every live bridge.
+			let mut connections = tokio::task::JoinSet::new();
+			loop {
+				let (mut client, _) = listener.accept().await.unwrap();
+				if !*status.borrow_and_update() {
+					continue;
+				}
+				let upstream = upstream.clone();
+				let mut status = status.clone();
+				connections.spawn(async move {
+					let mut server = tokio::net::TcpStream::connect(upstream).await.unwrap();
+					tokio::select! {
+						_=tokio::io::copy_bidirectional(&mut client,&mut server)=>{},
+						_=status.changed()=>{},
+					}
+				});
+			}
+		});
+		Arc::new(NatsOutageProxy {
+			_environment: environment,
+			endpoint,
+			online,
+			task: proxy,
+		})
+	}
+	.boxed()
+	.shared()
+}
+
+struct ActivationBinary {
+	executable: PathBuf,
+	_directory: tempfile::TempDir,
+}
+#[rstest::fixture]
+fn activation_binary(
+	#[from(reinhardt::test::fixtures::temp_dir)] temp_dir: tempfile::TempDir,
+) -> Arc<ActivationBinary> {
+	#[cfg(target_os = "macos")]
+	let executable = {
+		let path = temp_dir.path().join("aidash");
+		std::fs::copy(env!("CARGO_BIN_EXE_aidash"), &path)
+			.expect("snapshot exact child executable on local storage");
+		path
+	};
+	#[cfg(not(target_os = "macos"))]
+	let executable = PathBuf::from(env!("CARGO_BIN_EXE_aidash"));
+	Arc::new(ActivationBinary {
+		executable,
+		_directory: temp_dir,
+	})
+}
+type PreparedActivationFuture =
+	futures_util::future::Shared<futures_util::future::BoxFuture<'static, Arc<PreparedActivation>>>;
+struct PreparedActivation {
+	runtime: common::RuntimeFixture,
+	_application: common::TestApplication,
+	provider: Arc<TestServerGuard>,
+	token: String,
+	task: Uuid,
+	settings: Settings,
+	broker: Broker,
+	directory: Arc<ActivationDirectory>,
+	_serial: tokio::sync::MutexGuard<'static, ()>,
+	_proxy: Option<Arc<NatsOutageProxy>>,
+}
+struct ActivationDirectory {
+	path: PathBuf,
+	_directory: tempfile::TempDir,
+}
+type ActivationDirectoryFuture = futures_util::future::Shared<
+	futures_util::future::BoxFuture<'static, Arc<ActivationDirectory>>,
+>;
+#[rstest::fixture]
+fn activation_directory(
+	#[default("main")] label: &str,
+	#[from(activation_runtime)] runtime: common::RuntimeFuture,
+	#[from(reinhardt::test::fixtures::temp_dir)] temp_dir: tempfile::TempDir,
+) -> ActivationDirectoryFuture {
+	use futures_util::FutureExt;
+	let label = label.to_owned();
+	async move {
+		let _runtime = runtime.await;
+		let path = std::env::var_os("AIDASH_ACTIVATION_EVIDENCE_DIR")
+			.map(|path| {
+				if label == "main" {
+					PathBuf::from(path)
+				} else {
+					PathBuf::from(path).join(&label)
+				}
+			})
+			.unwrap_or_else(|| temp_dir.path().join(&label));
+		std::fs::create_dir_all(&path).unwrap();
+		Arc::new(ActivationDirectory {
+			path,
+			_directory: temp_dir,
+		})
+	}
+	.boxed()
+	.shared()
+}
+#[rstest::fixture]
+fn process_serial() -> futures_util::future::BoxFuture<'static, tokio::sync::MutexGuard<'static, ()>>
+{
+	use futures_util::FutureExt;
+	PROCESS_TESTS.lock().boxed()
+}
+#[rstest::fixture]
+fn prepared_activation(
+	#[default("main")] label: &str,
+	#[from(activation_runtime)] runtime: common::RuntimeFuture,
+	#[default(Arc::new(Router::new()))] router: Arc<Router>,
+	#[default(None)] proxy: Option<NatsOutageFuture>,
+	#[from(common::native_application)]
+	#[with(Default::default(), aidash_server::sse::Service::new(Default::default()), Arc::new(|router| router), runtime.clone())]
+	application: common::ApplicationFuture,
+	#[from(upstream_fixtures::ready_router)]
+	#[with(router.clone())]
+	router_future: upstream_fixtures::RouterFuture,
+	#[from(upstream_fixtures::async_upstream)]
+	#[with(router_future.clone())]
+	provider: upstream_fixtures::UpstreamFuture,
+	#[from(activation_directory)]
+	#[with(label, runtime.clone())]
+	directory: ActivationDirectoryFuture,
+	process_serial: futures_util::future::BoxFuture<'static, tokio::sync::MutexGuard<'static, ()>>,
+) -> PreparedActivationFuture {
+	let _ = (label, router, router_future);
+	use futures_util::FutureExt;
+	async move {
+		let serial = process_serial.await;
+		let mut runtime = runtime.await;
+		let application = application.await.application;
+		let provider = provider.await;
+		let directory = directory.await;
+		let (_, token, task) = bootstrap(&runtime.federation, &application, &provider.url).await;
+		let settings = Settings {
+			namespace: runtime.schema.clone(),
+			..Default::default()
+		};
+		let broker = Broker::provision(
+			&runtime.federation.config.nats_url,
+			&runtime.federation.config.node_id,
+			&settings,
+		)
+		.await
+		.unwrap();
+		let proxy = if let Some(proxy) = proxy {
+			let proxy = proxy.await;
+			runtime.federation.config.nats_url = proxy.endpoint.clone();
+			Some(proxy)
+		} else {
+			None
+		};
+		Arc::new(PreparedActivation {
+			runtime,
+			_application: application,
+			provider,
+			token,
+			task,
+			settings,
+			broker,
+			directory,
+			_serial: serial,
+			_proxy: proxy,
+		})
+	}
+	.boxed()
+	.shared()
+}
+struct InitialCommand {
+	command: std::process::Command,
+	log: PathBuf,
+	consumes: bool,
+	binary: Arc<ActivationBinary>,
+}
+type InitialCommandFuture = futures_util::future::BoxFuture<'static, InitialCommand>;
+#[rstest::fixture]
+fn initial_command(
+	prepared_activation: PreparedActivationFuture,
+	#[default("server")] mode: &str,
+	#[default(0)] ordinal: usize,
+	#[default(true)] delayed: bool,
+	#[from(activation_binary)] binary: Arc<ActivationBinary>,
+	#[from(initial_environment)]
+	#[with(prepared_activation.clone(), mode)]
+	environment: InitialEnvironmentFuture,
+) -> InitialCommandFuture {
+	use futures_util::FutureExt;
+	let mode = mode.to_owned();
+	async move {
+		let prepared = prepared_activation.await;
+		let f = &prepared.runtime.federation;
+		let url = prepared.runtime.url.as_str();
+		let schema = prepared.runtime.schema.as_str();
+		let directory = prepared.directory.path.as_path();
+		let mode = mode.as_str();
+
+		let mut database = reqwest::Url::parse(url).unwrap();
+		database
+			.query_pairs_mut()
+			.append_pair("options", &format!("-c application_name={schema}"));
+		let log = directory.join(format!("{mode}-{ordinal}.log"));
+		let file = std::fs::File::create(&log).unwrap();
+		let executable = &binary.executable;
+		let mut cmd = std::process::Command::new(executable);
+		cmd.args([mode])
+			.envs(environment.await)
+			.env("DATABASE_URL", database.as_str())
+			.env("AIDASH_NODE_ID", &f.config.node_id)
+			.env("AIDASH_ENDPOINT", &f.config.endpoint)
+			.env(
+				"AIDASH_LISTEN",
+				reqwest::Url::parse(&f.config.endpoint)
+					.unwrap()
+					.socket_addrs(|| None)
+					.unwrap()[0]
+					.to_string(),
+			)
+			.env("AIDASH_API_TOKEN", &f.config.api_token)
+			.env("NATS_URL", &f.config.nats_url)
+			.env("AIDASH_ACTIVATION_NAMESPACE", schema)
+			.env("AIDASH_ACTIVATION_BOOTSTRAP", "false")
+			.env("AIDASH_WORKER_SLOTS", "2")
+			.env("AIDASH_ENV", "test")
+			.env(
+				"AIDASH_ACTIVATION_TEST_AFTER_ACK_PAUSE_FILE",
+				directory.join("pause-after-ack"),
+			)
+			.env(
+				"AIDASH_ACTIVATION_TEST_PAUSE_FILE",
+				directory.join("pause-consumers"),
+			)
+			.env("RUST_LOG", "aidash=info")
+			.stdout(file.try_clone().unwrap())
+			.stderr(file);
+		if delayed {
+			cmd.env("AIDASH_ACTIVATION_TEST_RECOVERY_MS", "60000");
+		} else {
+			cmd.env_remove("AIDASH_ACTIVATION_TEST_RECOVERY_MS");
+		}
+		InitialCommand {
+			command: cmd,
+			log,
+			consumes: mode != "server",
+			binary,
+		}
+	}
+	.boxed()
+}
+#[rstest::fixture]
+async fn initial_process(
+	prepared_activation: PreparedActivationFuture,
+	#[default("server")] mode: &str,
+	#[default(0)] ordinal: usize,
+	#[default(true)] delayed: bool,
+	#[default(true)] wait_for_ready: bool,
+	#[from(initial_command)]
+	#[with(prepared_activation.clone(), mode, ordinal, delayed)]
+	initial_command: InitialCommandFuture,
+) -> Process {
+	let owner = prepared_activation.await;
+	let _ = (mode, ordinal, delayed);
+	let InitialCommand {
+		mut command,
+		log,
+		consumes,
+		binary,
+	} = initial_command.await;
+	let mut process = Process {
+		_fixture_owner: Some(owner),
+		child: command.spawn().unwrap(),
+		log,
+		consumes,
+		#[cfg(target_os = "macos")]
+		_binary_directory: binary,
+	};
+	#[cfg(not(target_os = "macos"))]
+	let _ = binary;
+	if wait_for_ready {
+		process.ready().await;
+	}
+	process
+}
+
+struct ScopedNats {
+	operator: Broker,
+	operator_url: String,
+	server_url: String,
+	worker_url: String,
+	settings: Settings,
+	node: &'static str,
+	stream: String,
+	subject: String,
+	next: String,
+	directory: PathBuf,
+	_directory: tempfile::TempDir,
+	_container: NatsContainer,
+	_serial: tokio::sync::MutexGuard<'static, ()>,
+}
+#[rstest::fixture]
+async fn scoped_nats(
+	#[from(reinhardt::test::fixtures::temp_dir)] temp_dir: tempfile::TempDir,
+	process_serial: futures_util::future::BoxFuture<'static, tokio::sync::MutexGuard<'static, ()>>,
+) -> ScopedNats {
+	// reinhardt-web#6660: no NATS fixture exposes the exact scoped JetStream permissions.
+
+	let serial = process_serial.await;
+	let name = format!("aidash-activation-permissions-{}", Uuid::new_v4().simple());
+	let directory = std::env::var_os("AIDASH_ACTIVATION_EVIDENCE_DIR")
+		.map(|path| PathBuf::from(path).join("permissions"))
+		.unwrap_or_else(|| temp_dir.path().join("permissions"));
+	std::fs::create_dir_all(&directory).unwrap();
+	let settings = Settings {
+		namespace: name.clone(),
+		..Default::default()
+	};
+	let node = "aidash://permissions";
+	let (stream, subject) = Broker::names(node, &settings);
+	let next = format!("$JS.API.CONSUMER.MSG.NEXT.{stream}.workers-v1");
+	// Public local-only fixture credentials. Permissions are scoped to one exact
+	// activation stream; no wildcard crosses Node scopes or grants provisioning.
+	let config = format!(
+		r#"
+port: 4222
+jetstream {{ store_dir: "/tmp/jetstream" }}
+authorization {{ users: [
+ {{ user: "operator", password: "fixture-operator" }},
+ {{ user: "server", password: "fixture-server", permissions: {{
+   publish: {{ allow: ["{subject}","$JS.API.STREAM.INFO.{stream}"] }}, subscribe: {{allow:["_INBOX.>"]}}
+ }} }},
+ {{ user: "worker", password: "fixture-worker", permissions: {{
+   publish: {{ allow: ["{subject}","$JS.API.STREAM.INFO.{stream}","$JS.API.CONSUMER.INFO.{stream}.workers-v1","{next}","$JS.ACK.{stream}.workers-v1.>"] }}, subscribe: {{allow:["_INBOX.>"]}}
+ }} }}
+] }}
+"#
+	);
+	let path = directory.join("nats.conf");
+	std::fs::write(&path, config).unwrap();
+	let output = std::process::Command::new("docker")
+		.args([
+			"run",
+			"--detach",
+			"--rm",
+			"--name",
+			&name,
+			"--publish",
+			"127.0.0.1::4222",
+			"--volume",
+			&format!("{}:/etc/nats/auth.conf:ro", path.display()),
+			"nats:2.12-alpine",
+			"--config",
+			"/etc/nats/auth.conf",
+		])
+		.output()
+		.unwrap();
+	assert!(output.status.success(), "start scoped NATS fixture");
+	let _container = NatsContainer(name.clone());
+	let port = std::process::Command::new("docker")
+		.args(["port", &name, "4222/tcp"])
+		.output()
+		.unwrap();
+	let address = String::from_utf8(port.stdout).unwrap().trim().to_owned();
+	let operator_url = format!("nats://operator:fixture-operator@{address}");
+	let server_url = format!("nats://server:fixture-server@{address}");
+	let worker_url = format!("nats://worker:fixture-worker@{address}");
+	let start = Instant::now();
+	let operator = loop {
+		if let Ok(broker) = Broker::provision(&operator_url, node, &settings).await {
+			break broker;
+		}
+		if start.elapsed() >= Duration::from_secs(10) {
+			let logs = std::process::Command::new("docker")
+				.args(["logs", &name])
+				.output()
+				.unwrap();
+			panic!(
+				"scoped NATS setup failed: {}",
+				String::from_utf8_lossy(&logs.stderr)
+			);
+		}
+		tokio::time::sleep(Duration::from_millis(50)).await;
+	};
+	ScopedNats {
+		operator,
+		operator_url,
+		server_url,
+		worker_url,
+		settings,
+		node,
+		stream,
+		subject,
+		next,
+		directory,
+		_directory: temp_dir,
+		_container,
+		_serial: serial,
+	}
+}
+
+type InitialEnvironmentFuture =
+	futures_util::future::BoxFuture<'static, Vec<(&'static str, String)>>;
+#[rstest::fixture]
+fn initial_environment(
+	prepared_activation: PreparedActivationFuture,
+	#[default("server")] mode: &str,
+) -> InitialEnvironmentFuture {
+	use futures_util::FutureExt;
+	let worker_count = if mode == "server" { 0 } else { 2 };
+	async move {
+		let prepared = prepared_activation.await;
+		let f = &prepared.runtime.federation;
+		let mut database = reqwest::Url::parse(&prepared.runtime.url).unwrap();
+		database.query_pairs_mut().append_pair(
+			"options",
+			&format!("-c application_name={}", prepared.runtime.schema),
+		);
+		let database_url = database.as_str();
+		let directory = prepared.directory.path.as_path();
+
+		let mut settings = settings_for(database_url);
+		let database = reqwest::Url::parse(database_url).unwrap();
+		settings
+			.core
+			.databases
+			.get_mut("default")
+			.unwrap()
+			.options
+			.extend(
+				database
+					.query_pairs()
+					.map(|(key, value)| (key.to_string(), value.to_string())),
+			);
+		settings.node.node_id = f.config.node_id.clone();
+		settings.node.endpoint = f.config.endpoint.clone();
+		settings.node.api_token = f.config.api_token.clone();
+		settings.node.nats_url = f.config.nats_url.clone();
+		settings.node.web_dir = f.config.web_dir.clone();
+		settings.node.background_enabled = true;
+		settings.node.worker_count = worker_count;
+		settings.dashboard.oidc = f.config.oidc.clone();
+		let destination = directory.join(format!("settings-{}", Uuid::new_v4()));
+		std::fs::create_dir_all(&destination).unwrap();
+		std::fs::write(destination.join("base.toml"), process_settings(&settings)).unwrap();
+		let listen = reqwest::Url::parse(&f.config.endpoint)
+			.unwrap()
+			.socket_addrs(|| None)
+			.unwrap();
+		assert_eq!(listen.len(), 1, "fixture must advertise one local listener");
+		vec![
+			// Multi-process fixtures need bounded executors even on high-core hosts.
+			("TOKIO_WORKER_THREADS", "2".into()),
+			(
+				"REINHARDT_SETTINGS_DIR",
+				destination.to_string_lossy().into_owned(),
+			),
+			("REINHARDT_ENV", "container".into()),
+			("AIDASH_LISTEN", listen[0].to_string()),
+		]
+	}
+	.boxed()
+}

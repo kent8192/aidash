@@ -37,11 +37,10 @@ pub(super) async fn insert_run(f: &Federation, control: &str) -> Uuid {
 #[rstest::rstest]
 #[tokio::test]
 async fn ordering_release_only_notifies_the_next_unblocked_run(
-	#[future(awt)]
-	#[from(test_environment)]
-	environment: Arc<TestEnvironment>,
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
 ) {
-	let (f, url, schema) = setup(&environment).await;
+	let runtime = runtime.await;
+	let (f, url, schema) = runtime.parts();
 	let area = Uuid::new_v4();
 	sqlx::query(
 		&Query::insert()
@@ -134,11 +133,11 @@ async fn ordering_release_only_notifies_the_next_unblocked_run(
 #[rstest::rstest]
 #[tokio::test]
 async fn visibility_release_retries_existing_work_without_fanout(
-	#[future(awt)]
-	#[from(test_environment)]
-	environment: Arc<TestEnvironment>,
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
 ) {
-	let (f, url, schema) = setup(&environment).await;
+	let runtime = runtime.await;
+	let (f, url, schema) = runtime.parts();
+	let environment = runtime.environment();
 	for _ in 0..32 {
 		insert_run(&f, "PAUSED").await;
 	}
@@ -210,11 +209,10 @@ async fn visibility_release_retries_existing_work_without_fanout(
 #[rstest::rstest]
 #[tokio::test]
 async fn approval_notifications_target_only_the_bound_run(
-	#[future(awt)]
-	#[from(test_environment)]
-	environment: Arc<TestEnvironment>,
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
 ) {
-	let (f, url, schema) = setup(&environment).await;
+	let runtime = runtime.await;
+	let (f, url, schema) = runtime.parts();
 	let target = insert_run(&f, "ACTIVE").await;
 	let unrelated = insert_run(&f, "ACTIVE").await;
 	let approval = Uuid::new_v4();

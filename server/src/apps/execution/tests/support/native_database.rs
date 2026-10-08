@@ -3,20 +3,27 @@ use reinhardt::db::migrations::{FilesystemSource, MigrationSource};
 use reinhardt::db::orm::connection::DatabaseConnectionLease;
 #[path = "postgres.rs"]
 mod postgres;
-use postgres::postgres_container;
+use futures_util::{
+	FutureExt,
+	future::{BoxFuture, Shared},
+};
+use postgres::{PostgresFuture, postgres_container};
+pub type DatabaseFuture = Shared<BoxFuture<'static, DatabaseFixture>>;
+use reinhardt::test::fixtures::temp_dir;
 use reinhardt::test::testcontainers::{ContainerAsync, GenericImage};
-use sqlx::PgPool;
 use std::path::PathBuf;
 use std::sync::Arc;
+use tempfile::TempDir;
 
 /// A native migration graph on Reinhardt's disposable PostgreSQL fixture.
 #[allow(dead_code)] // Each integration binary consumes a different subset of the shared fixture.
+#[derive(Clone)]
 pub struct DatabaseFixture {
 	pub lease: DatabaseConnectionLease,
 	pub connection: BackendConnection,
 	pub url: String,
-	pub recovery_directory: tempfile::TempDir,
-	_container: ContainerAsync<GenericImage>,
+	pub recovery_directory: Arc<tempfile::TempDir>,
+	_container: Arc<ContainerAsync<GenericImage>>,
 }
 
 #[allow(dead_code)] // Shared by integration binaries without a crash test.
@@ -71,31 +78,33 @@ impl DatabaseFixture {
 }
 
 #[rstest::fixture]
-pub async fn database(
-	#[future] postgres_container: (ContainerAsync<GenericImage>, Arc<PgPool>, u16, String),
-) -> DatabaseFixture {
-	let (container, pool, _port, url) = postgres_container.await;
-	pool.close().await;
-	let owner = BackendConnection::connect_postgres_with_pool_size(&url, Some(12))
-		.await
-		.expect("connect Reinhardt to the isolated test database");
-	let migrations =
-		FilesystemSource::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations"))
-			.all_migrations()
+pub fn database(postgres_container: PostgresFuture, temp_dir: TempDir) -> DatabaseFuture {
+	async move {
+		let (container, pool, _port, url) = postgres_container.await;
+		pool.close().await;
+		let owner = BackendConnection::connect_postgres_with_pool_size(&url, Some(12))
 			.await
-			.expect("load generated migration sources");
-	postgres::apply_migrations(owner.clone(), &migrations).await;
-	let repeated =
-		reinhardt::db::migrations::executor::DatabaseMigrationExecutor::new(owner.clone())
-			.apply_migrations(&migrations)
-			.await
-			.expect("migrations are idempotent");
-	assert!(repeated.applied.is_empty());
-	DatabaseFixture {
-		lease: DatabaseConnectionLease::register(owner.clone()).unwrap(),
-		connection: owner,
-		url,
-		recovery_directory: tempfile::tempdir().unwrap(),
-		_container: container,
+			.expect("connect Reinhardt to the isolated test database");
+		let migrations =
+			FilesystemSource::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations"))
+				.all_migrations()
+				.await
+				.expect("load generated migration sources");
+		postgres::apply_migrations(owner.clone(), &migrations).await;
+		let repeated =
+			reinhardt::db::migrations::executor::DatabaseMigrationExecutor::new(owner.clone())
+				.apply_migrations(&migrations)
+				.await
+				.expect("migrations are idempotent");
+		assert!(repeated.applied.is_empty());
+		DatabaseFixture {
+			lease: DatabaseConnectionLease::register(owner.clone()).unwrap(),
+			connection: owner,
+			url,
+			recovery_directory: Arc::new(temp_dir),
+			_container: Arc::new(container),
+		}
 	}
+	.boxed()
+	.shared()
 }

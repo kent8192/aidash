@@ -1,3 +1,8 @@
+#[path = "support/upstream.rs"]
+mod upstream_fixtures;
+use reinhardt::ServerRouter as Router;
+use reinhardt::test::fixtures::server::TestServerGuard;
+use upstream_fixtures::{handler, upstream};
 #[path = "support/legacy.rs"]
 mod common;
 
@@ -6,8 +11,8 @@ use aidash_server::{
 	federation::Home,
 	harness::Harness,
 };
-use axum::{Json, Router, routing::post};
-use common::{TestEnvironment, bootstrap, cleanup, request, setup, test_environment};
+
+use common::{bootstrap, cleanup, request};
 use serde_json::{Value, json};
 use std::sync::{
 	Arc,
@@ -20,11 +25,11 @@ use uuid::Uuid;
 #[tokio::test]
 async fn old_worker_cannot_lease_after_input_ledger_admission(
 	#[future(awt)]
-	#[from(test_environment)]
-	test_environment: Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
 ) {
-	let (f, url, schema) = setup(&test_environment).await;
-	let app = common::application(f.clone()).await;
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let (status, created) = request(
 		&app,
@@ -242,11 +247,11 @@ async fn old_worker_cannot_lease_after_input_ledger_admission(
 #[tokio::test]
 async fn upgraded_control_updates_remain_available_while_a_legacy_worker_is_fenced(
 	#[future(awt)]
-	#[from(test_environment)]
-	test_environment: Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
 ) {
-	let (f, url, schema) = setup(&test_environment).await;
-	let app = common::application(f.clone()).await;
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let (status, created) = request(
 		&app,
@@ -316,11 +321,11 @@ async fn upgraded_control_updates_remain_available_while_a_legacy_worker_is_fenc
 #[tokio::test]
 async fn old_worker_cannot_start_tool_invocation_after_input_backfill(
 	#[future(awt)]
-	#[from(test_environment)]
-	test_environment: Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
 ) {
-	let (f, url, schema) = setup(&test_environment).await;
-	let app = common::application(f.clone()).await;
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let (status, created) = request(
 		&app,
@@ -483,11 +488,11 @@ async fn old_worker_cannot_start_tool_invocation_after_input_backfill(
 #[tokio::test]
 async fn upgraded_worker_reclaims_an_expired_legacy_lease_after_input_backfill(
 	#[future(awt)]
-	#[from(test_environment)]
-	test_environment: Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
 ) {
-	let (f, url, schema) = setup(&test_environment).await;
-	let app = common::application(f.clone()).await;
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let (status, created) = request(
 		&app,
@@ -553,47 +558,23 @@ async fn upgraded_worker_reclaims_an_expired_legacy_lease_after_input_backfill(
 #[tokio::test]
 async fn messages_accepted_during_and_after_inference_are_seen_before_completion(
 	#[future(awt)]
-	#[from(test_environment)]
-	test_environment: Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+	#[from(notification)] entered: Arc<Notify>,
+	#[from(notification)] release: Arc<Notify>,
+	#[from(upstream_fixtures::hits)] _calls: Arc<AtomicUsize>,
+	requests: Arc<Mutex<Vec<Value>>>,
+	#[from(finalization_router)]
+	#[with(entered.clone(), release.clone(), _calls.clone(), requests.clone())]
+	_router: Arc<Router>,
+	#[future(awt)]
+	#[from(upstream)]
+	#[with(_router.clone())]
+	server: TestServerGuard,
 ) {
-	let entered = Arc::new(Notify::new());
-	let release = Arc::new(Notify::new());
-	let calls = Arc::new(AtomicUsize::new(0));
-	let requests = Arc::new(Mutex::new(Vec::<Value>::new()));
-	let provider = Router::new().route(
-		"/v1/chat/completions",
-		post({
-			let entered = entered.clone();
-			let release = release.clone();
-			let calls = calls.clone();
-			let requests = requests.clone();
-			move |Json(body): Json<Value>| {
-				let entered = entered.clone();
-				let release = release.clone();
-				let calls = calls.clone();
-				let requests = requests.clone();
-				async move {
-					let call = calls.fetch_add(1, Ordering::SeqCst);
-					requests.lock().await.push(body);
-					if call == 0 {
-						entered.notify_one();
-						release.notified().await;
-					}
-					let text = match call {
-						0 => "stale first answer",
-						1 => "stale second answer",
-						_ => "answer with both corrections",
-					};
-					Json(json!({"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":text}}],"usage":{"prompt_tokens":10,"completion_tokens":10}}))
-				}
-			}
-		}),
-	);
-	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-	let endpoint = format!("http://{}", listener.local_addr().unwrap());
-	let server = tokio::spawn(async move { axum::serve(listener, provider).await.unwrap() });
-	let (f, url, schema) = setup(&test_environment).await;
-	let app = common::application(f.clone()).await;
+	let endpoint = format!("{}", server.url);
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
 	let (_, token, _) = bootstrap(&f, &app, &endpoint).await;
 	let (status, created) = request(
 		&app,
@@ -748,7 +729,7 @@ async fn messages_accepted_during_and_after_inference_are_seen_before_completion
 		.0,
 		200
 	);
-	server.abort();
+	drop(server);
 	cleanup(f, &url, &schema).await;
 }
 
@@ -756,11 +737,11 @@ async fn messages_accepted_during_and_after_inference_are_seen_before_completion
 #[tokio::test]
 async fn included_reference_can_reach_tool_calls_without_becoming_finalizable(
 	#[future(awt)]
-	#[from(test_environment)]
-	test_environment: Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
 ) {
-	let (f, url, schema) = setup(&test_environment).await;
-	let app = common::application(f.clone()).await;
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let (status, created) = request(
 		&app,
@@ -821,11 +802,11 @@ async fn included_reference_can_reach_tool_calls_without_becoming_finalizable(
 #[tokio::test]
 async fn a_new_input_discards_pending_tool_calls_without_spending_the_last_inference_step(
 	#[future(awt)]
-	#[from(test_environment)]
-	test_environment: Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
 ) {
-	let (f, url, schema) = setup(&test_environment).await;
-	let app = common::application(f.clone()).await;
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let (status, created) = request(&app, &token, "POST", "/api/conversations", json!({
 		"title":"Stale tool response","goal":"Reply","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"
@@ -955,11 +936,11 @@ async fn rejected_catchup_summary_consumes_the_last_step(
 	#[case] response_text: &str,
 	#[case] oversized: bool,
 	#[future(awt)]
-	#[from(test_environment)]
-	test_environment: Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
 ) {
-	let (f, url, schema) = setup(&test_environment).await;
-	let app = common::application(f.clone()).await;
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let (status, created) = request(
 		&app,
@@ -1051,11 +1032,11 @@ async fn rejected_catchup_summary_consumes_the_last_step(
 #[tokio::test]
 async fn empty_media_observation_consumes_the_last_available_step(
 	#[future(awt)]
-	#[from(test_environment)]
-	test_environment: Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
 ) {
-	let (f, url, schema) = setup(&test_environment).await;
-	let app = common::application(f.clone()).await;
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let (status, created) = request(
 		&app,
@@ -1123,11 +1104,11 @@ async fn empty_media_observation_consumes_the_last_available_step(
 #[tokio::test]
 async fn reference_only_inputs_suppress_uninformed_tool_calls(
 	#[future(awt)]
-	#[from(test_environment)]
-	test_environment: Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
 ) {
-	let (f, url, schema) = setup(&test_environment).await;
-	let app = common::application(f.clone()).await;
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let (status, created) = request(
 		&app,
@@ -1220,11 +1201,11 @@ async fn reference_only_inputs_suppress_uninformed_tool_calls(
 #[tokio::test]
 async fn effects_recheck_input_sequence_under_the_run_lock(
 	#[future(awt)]
-	#[from(test_environment)]
-	test_environment: Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
 ) {
-	let (f, url, schema) = setup(&test_environment).await;
-	let app = common::application(f.clone()).await;
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let (status, created) = request(
 		&app,
@@ -1341,11 +1322,11 @@ async fn effects_recheck_input_sequence_under_the_run_lock(
 #[tokio::test]
 async fn run_message_limit_rejects_oversized_input_before_recording_it(
 	#[future(awt)]
-	#[from(test_environment)]
-	test_environment: Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
 ) {
-	let (f, url, schema) = setup(&test_environment).await;
-	let app = common::application(f.clone()).await;
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let (status, created) = request(&app, &token, "POST", "/api/conversations", json!({
 		"title":"Run message budget","goal":"Respond","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"
@@ -1392,11 +1373,11 @@ async fn run_message_limit_rejects_oversized_input_before_recording_it(
 #[tokio::test]
 async fn scoped_run_never_infers_from_an_unreadable_message(
 	#[future(awt)]
-	#[from(test_environment)]
-	test_environment: Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
 ) {
-	let (f, url, schema) = setup(&test_environment).await;
-	let app = common::application(f.clone()).await;
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
 	let (mut policy, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let (status, created) = request(&app, &token, "POST", "/api/conversations", json!({
 		"title":"Private correction","goal":"Respond","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"
@@ -1457,11 +1438,11 @@ async fn scoped_run_never_infers_from_an_unreadable_message(
 #[tokio::test]
 async fn queued_terminal_transitions_reject_new_run_messages(
 	#[future(awt)]
-	#[from(test_environment)]
-	test_environment: Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
 ) {
-	let (f, url, schema) = setup(&test_environment).await;
-	let app = common::application(f.clone()).await;
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	for (index, terminal) in ["cancel", "failure_pending"].iter().enumerate() {
 		let (status, created) = request(&app, &token, "POST", "/api/conversations", json!({
@@ -1542,11 +1523,11 @@ async fn queued_terminal_transitions_reject_new_run_messages(
 #[tokio::test]
 async fn expired_worker_lease_cannot_begin_final_completion(
 	#[future(awt)]
-	#[from(test_environment)]
-	test_environment: Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
 ) {
-	let (f, url, schema) = setup(&test_environment).await;
-	let app = common::application(f.clone()).await;
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let (status, created) = request(&app, &token, "POST", "/api/conversations", json!({
 		"title":"Expired lease", "goal":"Reply", "target":{"id":"research","version":"1.0.0"},"target_kind":"agent"
@@ -1594,3 +1575,49 @@ use reinhardt::query::QueryStatementBuilder as _;
 use reinhardt::query::SimpleExpr;
 
 use reinhardt::query::Expr;
+
+#[rstest::fixture]
+fn notification() -> Arc<Notify> {
+	Arc::new(Notify::new())
+}
+#[rstest::fixture]
+fn requests() -> Arc<Mutex<Vec<Value>>> {
+	Arc::new(Mutex::new(Vec::new()))
+}
+#[rstest::fixture]
+fn finalization_router(
+	#[from(notification)] entered: Arc<Notify>,
+	#[from(notification)] release: Arc<Notify>,
+	#[from(upstream_fixtures::hits)] calls: Arc<AtomicUsize>,
+	requests: Arc<Mutex<Vec<Value>>>,
+) -> Arc<Router> {
+	Arc::new(Router::new().handler(
+		"/v1/chat/completions",
+		handler(http::Method::POST, {
+			let entered = entered.clone();
+			let release = release.clone();
+			let calls = calls.clone();
+			let requests = requests.clone();
+			move |request: reinhardt::Request| {let body = request.json::<Value>().unwrap();
+				let entered = entered.clone();
+				let release = release.clone();
+				let calls = calls.clone();
+				let requests = requests.clone();
+				async move {
+					let call = calls.fetch_add(1, Ordering::SeqCst);
+					requests.lock().await.push(body);
+					if call == 0 {
+						entered.notify_one();
+						release.notified().await;
+					}
+					let text = match call {
+						0 => "stale first answer",
+						1 => "stale second answer",
+						_ => "answer with both corrections",
+					};
+					reinhardt::Response::ok().with_json(&json!({"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":text}}],"usage":{"prompt_tokens":10,"completion_tokens":10}})).unwrap()
+				}
+			}
+		}),
+	))
+}

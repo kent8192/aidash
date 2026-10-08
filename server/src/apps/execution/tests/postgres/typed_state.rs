@@ -1,7 +1,12 @@
+#[path = "../support/upstream.rs"]
+mod upstream_fixtures;
 use super::*;
+use reinhardt::ServerRouter as Router;
 use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
+use reinhardt::test::fixtures::server::TestServerGuard;
 use serde_json::Value;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::Ordering;
+use upstream_fixtures::{handler, upstream};
 fn a(name: &str) -> Alias {
 	Alias::new(name)
 }
@@ -49,22 +54,23 @@ async fn create(store: &Store, agent: &Entry, workspace: Uuid) -> Run {
 #[rstest::rstest]
 #[tokio::test]
 async fn malformed_rows_fail_without_effect_replay_and_healthy_work_continues(
+	#[from(super::store)] _store_fixture: StoreFuture,
+	#[from(super::federation)]
+	#[with(_store_fixture.clone())]
+	_federation: common::RuntimeFuture,
+	#[from(upstream_fixtures::hits)] calls: Arc<std::sync::atomic::AtomicUsize>,
+	#[from(malformed_rows_fail_without_effect_replay_and_healthy_work_continues_router)]
+	#[with(calls.clone())]
+	_router: Arc<Router>,
 	#[future(awt)]
-	#[from(test_environment)]
-	environment: Arc<TestEnvironment>,
+	#[from(upstream)]
+	#[with(_router.clone())]
+	server: TestServerGuard,
 ) {
-	let (store, url, schema) = setup(&environment).await;
-	let f = federation_for(&store);
-	let calls = Arc::new(AtomicUsize::new(0));
-	let observed = calls.clone();
-	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-	let endpoint = format!("http://{}/v1", listener.local_addr().unwrap());
-	let server = tokio::spawn(async move {
-		axum::serve(listener,axum::Router::new().route("/v1/chat/completions",axum::routing::post(move || {let calls=observed.clone(); async move {
-			calls.fetch_add(1,Ordering::SeqCst);
-			axum::Json(json!({"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":"Done"}}],"usage":{"prompt_tokens":100,"completion_tokens":1}}))
-		}}))).await.unwrap();
-	});
+	let (store, url, schema) = _store_fixture.clone().await.parts();
+	let f = _federation.await.federation;
+
+	let endpoint = format!("{}/v1", server.url);
 	f.registry.register(entry("model","model",json!({"provider":"openrouter","model_id":"fixture","endpoint":endpoint,"credential_env":null,"context_window":128000,"max_output_tokens":4096,"modalities":["text"],"cost":{}}))).await.unwrap();
 	let agent = f
 		.registry
@@ -177,18 +183,19 @@ async fn malformed_rows_fail_without_effect_replay_and_healthy_work_continues(
 	.await
 	.unwrap();
 	assert_eq!(retained, 1);
-	server.abort();
+	drop(server);
 	cleanup(store, &url, &schema).await;
 }
 #[rstest::rstest]
 #[tokio::test]
 async fn malformed_state_respects_pause_live_lease_terminal_and_stop_controls(
-	#[future(awt)]
-	#[from(test_environment)]
-	environment: Arc<TestEnvironment>,
+	#[from(super::store)] _store_fixture: StoreFuture,
+	#[from(super::federation)]
+	#[with(_store_fixture.clone())]
+	_federation: common::RuntimeFuture,
 ) {
-	let (store, url, schema) = setup(&environment).await;
-	let f = federation_for(&store);
+	let (store, url, schema) = _store_fixture.clone().await.parts();
+	let f = _federation.await.federation;
 	let agent = seed(&f.registry).await;
 	let workspace = store
 		.create_workspace("Controls", "Do not execute")
@@ -256,12 +263,13 @@ async fn malformed_state_respects_pause_live_lease_terminal_and_stop_controls(
 #[rstest::rstest]
 #[tokio::test]
 async fn bounded_recovery_advances_past_a_full_page_of_future_waits(
-	#[future(awt)]
-	#[from(test_environment)]
-	environment: Arc<TestEnvironment>,
+	#[from(super::store)] _store_fixture: StoreFuture,
+	#[from(super::federation)]
+	#[with(_store_fixture.clone())]
+	_federation: common::RuntimeFuture,
 ) {
-	let (store, url, schema) = setup(&environment).await;
-	let f = federation_for(&store);
+	let (store, url, schema) = _store_fixture.clone().await.parts();
+	let f = _federation.await.federation;
 	let agent = seed(&f.registry).await;
 	let workspace = store
 		.create_workspace("Paging", "Later work")
@@ -298,12 +306,13 @@ async fn bounded_recovery_advances_past_a_full_page_of_future_waits(
 #[rstest::rstest]
 #[tokio::test]
 async fn dependency_release_uses_only_the_authoritative_home(
-	#[future(awt)]
-	#[from(test_environment)]
-	environment: Arc<TestEnvironment>,
+	#[from(super::store)] _store_fixture: StoreFuture,
+	#[from(super::federation)]
+	#[with(_store_fixture.clone())]
+	_federation: common::RuntimeFuture,
 ) {
-	let (store, url, schema) = setup(&environment).await;
-	let f = federation_for(&store);
+	let (store, url, schema) = _store_fixture.clone().await.parts();
+	let f = _federation.await.federation;
 	let agent = seed(&f.registry).await;
 	let workspace = store
 		.create_workspace("Dependencies", "Home authority")
@@ -401,12 +410,13 @@ async fn dependency_release_uses_only_the_authoritative_home(
 #[rstest::rstest]
 #[tokio::test]
 async fn invalid_context_failure_delivery_can_resume_without_effect_execution(
-	#[future(awt)]
-	#[from(test_environment)]
-	environment: Arc<TestEnvironment>,
+	#[from(super::store)] _store_fixture: StoreFuture,
+	#[from(super::federation)]
+	#[with(_store_fixture.clone())]
+	_federation: common::RuntimeFuture,
 ) {
-	let (store, url, schema) = setup(&environment).await;
-	let f = federation_for(&store);
+	let (store, url, schema) = _store_fixture.clone().await.parts();
+	let f = _federation.await.federation;
 	let agent = seed(&f.registry).await;
 	let workspace = store
 		.create_workspace("Delivery", "Resume disposition only")
@@ -503,3 +513,13 @@ async fn invalid_context_failure_delivery_can_resume_without_effect_execution(
 }
 
 use reinhardt::query::SimpleExpr;
+
+#[rstest::fixture]
+fn malformed_rows_fail_without_effect_replay_and_healthy_work_continues_router(
+	#[from(upstream_fixtures::hits)] calls: Arc<std::sync::atomic::AtomicUsize>,
+) -> Arc<Router> {
+	Arc::new(Router::new().handler("/v1/chat/completions",handler(http::Method::POST, move |_request: reinhardt::Request| {let calls=calls.clone(); async move {
+			calls.fetch_add(1,Ordering::SeqCst);
+			reinhardt::Response::ok().with_json(&json!({"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":"Done"}}],"usage":{"prompt_tokens":100,"completion_tokens":1}})).unwrap()
+		}})))
+}
