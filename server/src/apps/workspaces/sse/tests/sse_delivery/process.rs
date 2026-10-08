@@ -19,6 +19,7 @@ fn directory(label: &str, schema: &str) -> PathBuf {
 	dir
 }
 fn free_port() -> u16 {
+	// Child binaries bind their own HTTP and metrics listeners; reserve a released port for each lifecycle Act.
 	std::net::TcpListener::bind("127.0.0.1:0")
 		.unwrap()
 		.local_addr()
@@ -101,7 +102,7 @@ impl Process {
 	}
 	async fn ready(&mut self, fixture: &Fixture, subscriber: bool) {
 		let began = Instant::now();
-		let client = reqwest::Client::new();
+		let client = fixture.f.client.clone();
 		loop {
 			let log = std::fs::read_to_string(&self.log).unwrap();
 			assert!(
@@ -211,7 +212,10 @@ async fn observe(
 	if let Some(workspace) = workspace {
 		path.push_str(&format!("&workspace_id={workspace}"));
 	}
-	let response = reqwest::Client::new()
+	let response = fixture
+		.f
+		.client
+		.clone()
 		.get(path)
 		.bearer_auth(&fixture.token)
 		.send()
@@ -276,6 +280,7 @@ impl Proxy {
 			destination.host_str().unwrap(),
 			destination.port().unwrap()
 		);
+		// A byte-level NATS outage proxy must control active TCP bridges; HTTP fixtures cannot replace this transport.
 		let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
 		let endpoint = format!("nats://{}", listener.local_addr().unwrap());
 		let (online, changes) = watch::channel(available);
@@ -317,32 +322,28 @@ impl Drop for Proxy {
 #[rstest::rstest]
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn replicas_recover_broker_outages_and_replay_after_shutdown(
-	#[future(awt)] test_environment: Arc<TestEnvironment>,
+	#[from(sse_fixture)]
+	#[with(Duration::from_secs(60), Duration::from_secs(30), 128)]
+	root: SseFuture,
+	#[future(awt)] outage_transport: OutageTransport,
+
+	#[from(evidence_directory)]
+	#[with("replicas".into(),root.clone())]
+	dir_future: DirectoryFuture,
 ) {
-	let mut fixture = Fixture::new(
-		&test_environment,
-		Duration::from_secs(60),
-		Duration::from_secs(30),
-		128,
-	)
-	.await;
-	let dir = directory("replicas", &fixture.schema);
+	let mut fixture = Arc::try_unwrap(root.await).ok().unwrap();
+	let OutageTransport {
+		broker,
+		proxy,
+		broker_url,
+	} = outage_transport;
+	let dir = dir_future.await;
 	// This test restarts its own broker, so parallel cases retain their services.
-	let broker = GenericImage::new("nats", "2.12-alpine")
-		.with_exposed_port(4222.tcp())
-		.with_cmd(["-js"])
-		.start()
-		.await
-		.unwrap();
-	let broker_url = format!(
-		"nats://{}:{}",
-		broker.get_host().await.unwrap(),
-		broker.get_host_port_ipv4(4222.tcp()).await.unwrap()
-	);
-	let proxy = Proxy::new(&broker_url, false).await;
+
 	fixture.f.config.nats_url = proxy.endpoint.clone();
 	let binary = candidate_binary();
 	let mut processes = Vec::new();
+	// Act: launch each replica after applying its broker availability or role configuration.
 	for n in 0..3 {
 		let mut process = Process::start(&fixture, &dir, n, 5000, &binary);
 		process.ready(&fixture, false).await; // Broker absence cannot delay HTTP startup.
@@ -371,7 +372,7 @@ async fn replicas_recover_broker_outages_and_replay_after_shutdown(
 	// Quiesce initial Outbox drain/reconnect before asserting notification-only causality.
 	tokio::time::sleep(Duration::from_secs(1)).await;
 	let before = futures_util::future::join_all(processes.iter().map(Process::metrics)).await;
-	let client = reqwest::Client::new();
+	let client = fixture.f.client.clone();
 	let began = Instant::now();
 	let response = client
 		.patch(format!("{}/api/workspaces/{ws}", processes[0].endpoint))
@@ -389,6 +390,7 @@ async fn replicas_recover_broker_outages_and_replay_after_shutdown(
 		assert_eq!(observation.data["data"]["state"]["number"], 2);
 	}
 	let after = futures_util::future::join_all(processes.iter().map(Process::metrics)).await;
+	// Act: launch each replica after applying its broker availability or role configuration.
 	for n in 0..3 {
 		assert!(cause(&after[n], "notification") > cause(&before[n], "notification"));
 	}
@@ -452,18 +454,21 @@ async fn replicas_recover_broker_outages_and_replay_after_shutdown(
 #[rstest::rstest]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn oversized_reference_notification_replays_canonical_bytes(
-	#[future(awt)] test_environment: Arc<TestEnvironment>,
+	#[from(sse_fixture)]
+	#[with(Duration::from_secs(60), Duration::from_secs(30), 128)]
+	root: SseFuture,
+
+	#[from(evidence_directory)]
+	#[with("oversized".into(),root.clone())]
+	dir_future: DirectoryFuture,
+	#[future(awt)]
+	#[from(initial_process)]
+	#[with(root.clone(),dir_future.clone())]
+	initial: Process,
 ) {
-	let fixture = Fixture::new(
-		&test_environment,
-		Duration::from_secs(60),
-		Duration::from_secs(30),
-		128,
-	)
-	.await;
-	let dir = directory("oversized", &fixture.schema);
-	let mut process = Process::start(&fixture, &dir, 0, 60000, &candidate_binary());
-	process.ready(&fixture, true).await;
+	let fixture = root.await;
+	let dir = dir_future.await;
+	let mut process = initial;
 	let (send, mut received) = mpsc::unbounded_channel();
 	let ws = fixture.workspaces[0];
 	let stream = observe(&process, &fixture, 0, Some(ws), -1, send).await;
@@ -534,37 +539,25 @@ async fn oversized_reference_notification_replays_canonical_bytes(
 #[rstest::rstest]
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
 async fn writer_a_execution_b_and_sse_c_have_independent_delivery(
-	#[future(awt)] test_environment: Arc<TestEnvironment>,
+	#[from(sse_fixture)]
+	#[with(Duration::from_secs(60), Duration::from_secs(30), 128)]
+	root: SseFuture,
+	#[future(awt)] restricted_broker: reinhardt::test::testcontainers::ContainerAsync<GenericImage>,
+
+	#[from(evidence_directory)]
+	#[with("independent-consumer".into(),root.clone())]
+	dir_future: DirectoryFuture,
 ) {
-	let mut fixture = Fixture::new(
-		&test_environment,
-		Duration::from_secs(60),
-		Duration::from_secs(30),
-		128,
-	)
-	.await;
-	let dir = directory("independent-consumer", &fixture.schema);
+	let mut fixture = Arc::try_unwrap(root.await).ok().unwrap();
+	let broker = restricted_broker;
+	let dir = dir_future.await;
 	// A/C may publish and subscribe to UI hints, but only B may pull from the
 	// shared execution consumer. This makes process ownership deterministic.
-	let config = br#"port: 4222
-jetstream: {}
-authorization {
-  users: [
-    {user: observer, password: fixture, permissions: {publish: {allow: [">"], deny: ["$JS.API.CONSUMER.MSG.NEXT.*.execution"]}, subscribe: [">"]}},
-    {user: executor, password: fixture}
-  ]
-}
-"#;
-	let broker = GenericImage::new("nats", "2.12-alpine")
-		.with_exposed_port(4222.tcp())
-		.with_copy_to("/etc/nats/sse-test.conf", config.to_vec())
-		.with_cmd(["--config", "/etc/nats/sse-test.conf"])
-		.start()
-		.await
-		.unwrap();
+
 	let host = broker.get_host().await.unwrap();
 	let port = broker.get_host_port_ipv4(4222.tcp()).await.unwrap();
 	let mut processes = Vec::new();
+	// Act: launch each replica after applying its broker availability or role configuration.
 	for n in 0..3 {
 		let user = if n == 1 { "executor" } else { "observer" };
 		fixture.f.config.nats_url = format!("nats://{user}:fixture@{host}:{port}");
@@ -584,7 +577,10 @@ authorization {
 	}
 	tokio::time::sleep(Duration::from_millis(500)).await;
 	let before = futures_util::future::join_all(processes.iter().map(Process::metrics)).await;
-	let response = reqwest::Client::new()
+	let response = fixture
+		.f
+		.client
+		.clone()
 		.patch(format!("{}/api/workspaces/{ws}", processes[0].endpoint))
 		.bearer_auth(&fixture.token)
 		.json(&json!({"revision":0,"state":{"boundary":"A-to-B-to-C"}}))
@@ -597,6 +593,7 @@ authorization {
 		assert_eq!(frame.data["data"]["state"]["boundary"], "A-to-B-to-C");
 	}
 	let after = futures_util::future::join_all(processes.iter().map(Process::metrics)).await;
+	// Act: launch each replica after applying its broker availability or role configuration.
 	for n in 0..3 {
 		for reason in ["fallback", "initial", "reconnect"] {
 			assert_eq!(cause(&before[n], reason), cause(&after[n], reason));
@@ -636,4 +633,97 @@ authorization {
 	}
 	drop(processes);
 	fixture.finish().await;
+}
+
+#[fixture]
+async fn outage_broker() -> reinhardt::test::testcontainers::ContainerAsync<GenericImage> {
+	// reinhardt-web#6656: these scenarios need JetStream and isolated broker lifecycle or permissions.
+	GenericImage::new("nats", "2.12-alpine")
+		.with_exposed_port(4222.tcp())
+		.with_cmd(["-js"])
+		.start()
+		.await
+		.unwrap()
+}
+
+#[fixture]
+async fn restricted_broker() -> reinhardt::test::testcontainers::ContainerAsync<GenericImage> {
+	// reinhardt-web#6656: these scenarios need JetStream and isolated broker lifecycle or permissions.
+	let config = br#"port: 4222
+jetstream: {}
+authorization {
+  users: [
+    {user: observer, password: fixture, permissions: {publish: {allow: [">"], deny: ["$JS.API.CONSUMER.MSG.NEXT.*.execution"]}, subscribe: [">"]}},
+    {user: executor, password: fixture}
+  ]
+}
+"#;
+	GenericImage::new("nats", "2.12-alpine")
+		.with_exposed_port(4222.tcp())
+		.with_copy_to("/etc/nats/sse-test.conf", config.to_vec())
+		.with_cmd(["--config", "/etc/nats/sse-test.conf"])
+		.start()
+		.await
+		.unwrap()
+}
+
+struct OutageTransport {
+	broker: reinhardt::test::testcontainers::ContainerAsync<GenericImage>,
+	proxy: Proxy,
+	broker_url: String,
+}
+#[fixture]
+async fn outage_transport(
+	#[future(awt)] outage_broker: reinhardt::test::testcontainers::ContainerAsync<GenericImage>,
+) -> OutageTransport {
+	let url = format!(
+		"nats://{}:{}",
+		outage_broker.get_host().await.unwrap(),
+		outage_broker.get_host_port_ipv4(4222.tcp()).await.unwrap()
+	);
+	let proxy = Proxy::new(&url, false).await;
+	OutageTransport {
+		broker: outage_broker,
+		proxy,
+		broker_url: url,
+	}
+}
+
+type DirectoryFuture =
+	futures_util::future::Shared<futures_util::future::BoxFuture<'static, PathBuf>>;
+#[fixture]
+fn evidence_directory(
+	#[default("sse".into())] label: String,
+	#[from(sse_fixture)] root: SseFuture,
+) -> DirectoryFuture {
+	async move {
+		let fixture = root.await;
+		{
+			// Preserve evidence beyond fixture teardown for the process acceptance scripts.
+			let base = std::env::var_os("AIDASH_SSE_EVIDENCE_DIR")
+				.map(PathBuf::from)
+				.unwrap_or_else(|| std::env::temp_dir().join("aidash-sse-evidence"));
+			let dir = base.join(format!("{label}-{}", fixture.schema));
+			std::fs::create_dir_all(&dir).unwrap();
+			dir
+		}
+	}
+	.boxed()
+	.shared()
+}
+#[fixture]
+fn process_binary() -> PathBuf {
+	candidate_binary()
+}
+#[fixture]
+async fn initial_process(
+	#[from(sse_fixture)] root: SseFuture,
+	evidence_directory: DirectoryFuture,
+	process_binary: PathBuf,
+) -> Process {
+	let fixture = root.await;
+	let directory = evidence_directory.await;
+	let mut process = Process::start(&fixture, &directory, 0, 60000, &process_binary);
+	process.ready(&fixture, true).await;
+	process
 }

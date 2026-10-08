@@ -1,3 +1,4 @@
+use futures_util::FutureExt;
 #[path = "../../execution/tests/support/legacy.rs"]
 mod common;
 use aidash_server::{
@@ -6,7 +7,7 @@ use aidash_server::{
 	registry::{EntityRef, Entry},
 };
 use common::TestApplication as Router;
-use common::{TestEnvironment, request, test_environment};
+use common::request;
 use serde_json::{Value, json};
 use std::sync::Arc;
 use uuid::Uuid;
@@ -121,13 +122,13 @@ fn deny(mut value: Value, actions: Value) -> Value {
 #[tokio::test]
 async fn tenant_publication_pending_installation_and_revisions(
 	#[future(awt)]
-	#[from(test_environment)]
-	environment: Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	application_fixture: common::ApplicationFixture,
 	#[case] kind: &str,
 ) {
 	let _fixture = FIXTURE_LOCK.lock().await;
-	let (f, url, schema) = common::setup(&environment).await;
-	let app = common::application(f.clone()).await;
+	let (f, url, schema) = application_fixture.runtime.parts();
+	let app = application_fixture.application.clone();
 	let a = token(&f, "a", kind).await;
 	let b = token(&f, "b", "user").await;
 	assert_eq!(
@@ -172,7 +173,14 @@ async fn tenant_publication_pending_installation_and_revisions(
 	assert_eq!(installed.0, 200, "{installed:?}");
 	assert_eq!(installed.1["approved"], false);
 	assert_eq!(
-		install(&common::application(f.clone()).await, &a, &pa, &input).await,
+		install(
+			// Act: rebuild the application to verify the committed request can be retried.
+			&common::application(f.clone()).await,
+			&a,
+			&pa,
+			&input
+		)
+		.await,
 		installed
 	);
 	let id = installed.1["installation"]["id"].as_str().unwrap();
@@ -393,12 +401,12 @@ async fn tenant_publication_pending_installation_and_revisions(
 #[tokio::test]
 async fn hidden_typed_dependency_and_denial_leave_no_installation(
 	#[future(awt)]
-	#[from(test_environment)]
-	environment: Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	application_fixture: common::ApplicationFixture,
 ) {
 	let _fixture = FIXTURE_LOCK.lock().await;
-	let (f, url, schema) = common::setup(&environment).await;
-	let app = common::application(f.clone()).await;
+	let (f, url, schema) = application_fixture.runtime.parts();
+	let app = application_fixture.application.clone();
 	let a = token(&f, "a", "user").await;
 	let b = token(&f, "b", "user").await;
 	enable(&app, &f).await;
@@ -517,13 +525,13 @@ async fn hidden_typed_dependency_and_denial_leave_no_installation(
 #[tokio::test]
 async fn browse_pages_hidden_versions_before_returning_a_visible_package(
 	#[future(awt)]
-	#[from(test_environment)]
-	environment: Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	application_fixture: common::ApplicationFixture,
 ) {
 	use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
 	let _fixture = FIXTURE_LOCK.lock().await;
-	let (f, url, schema) = common::setup(&environment).await;
-	let app = common::application(f.clone()).await;
+	let (f, url, schema) = application_fixture.runtime.parts();
+	let app = application_fixture.application.clone();
 	let a = token(&f, "a", "user").await;
 	enable(&app, &f).await;
 	f.registry.register(tool("paged-source")).await.unwrap();
@@ -627,12 +635,12 @@ async fn browse_pages_hidden_versions_before_returning_a_visible_package(
 #[tokio::test]
 async fn live_redistribution_consent_retains_local_copies_and_export_bytes(
 	#[future(awt)]
-	#[from(test_environment)]
-	environment: Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	application_fixture: common::ApplicationFixture,
 ) {
 	let _fixture = FIXTURE_LOCK.lock().await;
-	let (f, url, schema) = common::setup(&environment).await;
-	let app = common::application(f.clone()).await;
+	let (f, url, schema) = application_fixture.runtime.parts();
+	let app = application_fixture.application.clone();
 	let a = token(&f, "a", "user").await;
 	let b = token(&f, "b", "user").await;
 	let c = token(&f, "c", "user").await;
@@ -857,13 +865,13 @@ async fn live_redistribution_consent_retains_local_copies_and_export_bytes(
 #[tokio::test]
 async fn explicit_legacy_adoption_and_mixed_writer_fence(
 	#[future(awt)]
-	#[from(test_environment)]
-	environment: Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	application_fixture: common::ApplicationFixture,
 ) {
 	use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
 	let _fixture = FIXTURE_LOCK.lock().await;
-	let (f, url, schema) = common::setup(&environment).await;
-	let app = common::application(f.clone()).await;
+	let (f, url, schema) = application_fixture.runtime.parts();
+	let app = application_fixture.application.clone();
 	let a = token(&f, "a", "user").await;
 	enable(&app, &f).await;
 	let legacy = aidash_server::registry::Package {
@@ -1017,12 +1025,12 @@ async fn explicit_legacy_adoption_and_mixed_writer_fence(
 #[tokio::test]
 async fn adoption_freezes_the_effective_dependency_graph(
 	#[future(awt)]
-	#[from(test_environment)]
-	environment: Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	application_fixture: common::ApplicationFixture,
 ) {
 	let _fixture = FIXTURE_LOCK.lock().await;
-	let (f, url, schema) = common::setup(&environment).await;
-	let app = common::application(f.clone()).await;
+	let (f, url, schema) = application_fixture.runtime.parts();
+	let app = application_fixture.application.clone();
 	let a = token(&f, "a", "user").await;
 	enable(&app, &f).await;
 	f.registry.register(tool("legacy-tool")).await.unwrap();
@@ -1161,13 +1169,13 @@ async fn wait_for_lock(f: &Federation, schema: &str, pattern: &str) {
 #[tokio::test]
 async fn audience_revocation_and_install_commit_have_a_durable_order(
 	#[future(awt)]
-	#[from(test_environment)]
-	environment: Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	application_fixture: common::ApplicationFixture,
 ) {
 	use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
 	let _fixture = FIXTURE_LOCK.lock().await;
-	let (f, url, schema) = common::setup(&environment).await;
-	let app = common::application(f.clone()).await;
+	let (f, url, schema) = application_fixture.runtime.parts();
+	let app = application_fixture.application.clone();
 	let a = token(&f, "a", "user").await;
 	let b = token(&f, "b", "user").await;
 	enable(&app, &f).await;
@@ -1323,14 +1331,14 @@ async fn audience_revocation_and_install_commit_have_a_durable_order(
 #[tokio::test]
 async fn revoked_authority_cannot_commit_a_waiting_installation(
 	#[future(awt)]
-	#[from(test_environment)]
-	environment: Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	application_fixture: common::ApplicationFixture,
 	#[case] authority: &str,
 ) {
 	use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
 	let _fixture = FIXTURE_LOCK.lock().await;
-	let (f, url, schema) = common::setup(&environment).await;
-	let app = common::application(f.clone()).await;
+	let (f, url, schema) = application_fixture.runtime.parts();
+	let app = application_fixture.application.clone();
 	let a = token(&f, "a", "user").await;
 	enable(&app, &f).await;
 	f.registry.register(tool("revocation")).await.unwrap();
@@ -1400,12 +1408,12 @@ async fn revoked_authority_cannot_commit_a_waiting_installation(
 #[tokio::test]
 async fn new_runs_select_active_revision_and_restarted_runs_keep_exact_old_reference(
 	#[future(awt)]
-	#[from(test_environment)]
-	environment: Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	application_fixture: common::ApplicationFixture,
 ) {
 	let _fixture = FIXTURE_LOCK.lock().await;
-	let (f, url, schema) = common::setup(&environment).await;
-	let app = common::application(f.clone()).await;
+	let (f, url, schema) = application_fixture.runtime.parts();
+	let app = application_fixture.application.clone();
 	let a = token(&f, "a", "user").await;
 	enable(&app, &f).await;
 	let model:Entry=serde_json::from_value(json!({"id":"model","version":"1.0.0","kind":"model","name":{"en":"Model"},"description":{"en":"fixture"},"config":{"provider":"openrouter","model_id":"fixture/model","endpoint":"http://localhost:9","context_window":128000,"max_output_tokens":1024,"modalities":["text"],"cost":{}}})).unwrap();
@@ -1608,12 +1616,12 @@ async fn new_runs_select_active_revision_and_restarted_runs_keep_exact_old_refer
 #[tokio::test]
 async fn policy_conditions_delegation_and_denies_apply_to_marketplace_boundaries(
 	#[future(awt)]
-	#[from(test_environment)]
-	environment: Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	application_fixture: common::ApplicationFixture,
 ) {
 	let _fixture = FIXTURE_LOCK.lock().await;
-	let (f, url, schema) = common::setup(&environment).await;
-	let app = common::application(f.clone()).await;
+	let (f, url, schema) = application_fixture.runtime.parts();
+	let app = application_fixture.application.clone();
 	let a = token(&f, "a", "user").await;
 	let b = token(&f, "b", "agent").await;
 	enable(&app, &f).await;
@@ -1702,16 +1710,16 @@ async fn policy_conditions_delegation_and_denies_apply_to_marketplace_boundaries
 
 	let rejected = app
 		.clone()
-		.oneshot(
+		.native_oneshot(
 			http::Request::post("/api/marketplace/packages")
 				.header("authorization", format!("Bearer {a}"))
 				.header("content-type", "application/json")
-				.body(axum::body::Body::from(spoofed.to_string()))
+				.body(bytes::Bytes::from(spoofed.to_string()))
 				.unwrap(),
 		)
 		.await
 		.unwrap();
-	assert_eq!(rejected.status(), 422);
+	assert_eq!(rejected.status, 422);
 	common::cleanup(f, &url, &schema).await;
 }
 
@@ -1719,12 +1727,12 @@ async fn policy_conditions_delegation_and_denies_apply_to_marketplace_boundaries
 #[tokio::test]
 async fn readable_distribution_precedes_dependency_preparation_and_bindings_pin_revisions(
 	#[future(awt)]
-	#[from(test_environment)]
-	environment: Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	application_fixture: common::ApplicationFixture,
 ) {
 	let _fixture = FIXTURE_LOCK.lock().await;
-	let (f, url, schema) = common::setup(&environment).await;
-	let app = common::application(f.clone()).await;
+	let (f, url, schema) = application_fixture.runtime.parts();
+	let app = application_fixture.application.clone();
 	let a = token(&f, "a", "user").await;
 	let b = token(&f, "b", "user").await;
 	enable(&app, &f).await;
@@ -1905,15 +1913,15 @@ async fn readable_distribution_precedes_dependency_preparation_and_bindings_pin_
 #[tokio::test]
 async fn response_handoff_releases_locks_before_body_drain_and_rechecks_event_replay(
 	#[future(awt)]
-	#[from(test_environment)]
-	environment: Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	application_fixture: common::ApplicationFixture,
 ) {
-	use axum::{body::Body, http::Request};
 	use futures_util::StreamExt;
+	use http::Request;
 
 	let _fixture = FIXTURE_LOCK.lock().await;
-	let (f, url, schema) = common::setup(&environment).await;
-	let app = common::application(f.clone()).await;
+	let (f, url, schema) = application_fixture.runtime.parts();
+	let app = application_fixture.application.clone();
 	let a = token(&f, "a", "user").await;
 	let b = token(&f, "b", "user").await;
 	enable(&app, &f).await;
@@ -1947,18 +1955,18 @@ async fn response_handoff_releases_locks_before_body_drain_and_rechecks_event_re
 	let get = |path: &str| {
 		Request::get(path)
 			.header("authorization", format!("Bearer {b}"))
-			.body(Body::empty())
+			.body(bytes::Bytes::new())
 			.unwrap()
 	};
 	// The shared SSE service must include authorized global Marketplace events,
 	// even though this subject has no Workspace events. Audit events stay hidden.
-	let readable = app
+	let mut readable = app
 		.clone()
-		.oneshot(get("/api/events/stream?after=0"))
+		.native_oneshot(get("/api/events/stream?after=0"))
 		.await
 		.unwrap();
-	assert_eq!(readable.status(), 200);
-	let mut readable = readable.into_body().into_data_stream();
+	assert_eq!(readable.status, 200);
+	let mut readable = readable.take_stream_body().unwrap();
 	let frame = tokio::time::timeout(std::time::Duration::from_secs(3), readable.next())
 		.await
 		.expect("authorized Marketplace replay must emit a frame")
@@ -1972,17 +1980,17 @@ async fn response_handoff_releases_locks_before_body_drain_and_rechecks_event_re
 	// Do not poll either body until the distribution has been withdrawn.
 	let response = app
 		.clone()
-		.oneshot(get(&format!("/api/marketplace/packages/{key}")))
+		.native_oneshot(get(&format!("/api/marketplace/packages/{key}")))
 		.await
 		.unwrap();
-	assert_eq!(response.status(), 200);
-	assert_eq!(response.headers()["cache-control"], "no-store");
-	let stream = app
+	assert_eq!(response.status, 200);
+	assert_eq!(response.headers["cache-control"], "no-store");
+	let mut stream = app
 		.clone()
-		.oneshot(get("/api/events/stream?after=0"))
+		.native_oneshot(get("/api/events/stream?after=0"))
 		.await
 		.unwrap();
-	assert_eq!(stream.status(), 200);
+	assert_eq!(stream.status, 200);
 	let withdrawn = tokio::time::timeout(
 		std::time::Duration::from_secs(3),
 		request(
@@ -2003,11 +2011,9 @@ async fn response_handoff_releases_locks_before_body_drain_and_rechecks_event_re
 		"withdrawn package leaked through initial state"
 	);
 
-	let authorized_before_revoke = axum::body::to_bytes(response.into_body(), 2_097_152)
-		.await
-		.unwrap();
+	let authorized_before_revoke = response.body;
 	assert!(String::from_utf8_lossy(&authorized_before_revoke).contains("handoff"));
-	let mut frames = stream.into_body().into_data_stream();
+	let mut frames = stream.take_stream_body().unwrap();
 	assert!(
 		tokio::time::timeout(std::time::Duration::from_millis(650), frames.next())
 			.await
@@ -2054,15 +2060,15 @@ async fn response_handoff_releases_locks_before_body_drain_and_rechecks_event_re
 #[tokio::test]
 async fn live_dependency_and_consent_leases_order_installation_with_revocation(
 	#[future(awt)]
-	#[from(test_environment)]
-	environment: Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	application_fixture: common::ApplicationFixture,
 	#[case] boundary: &str,
 	#[case] installation_wins: bool,
 ) {
 	use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
 	let _fixture = FIXTURE_LOCK.lock().await;
-	let (f, url, schema) = common::setup(&environment).await;
-	let app = common::application(f.clone()).await;
+	let (f, url, schema) = application_fixture.runtime.parts();
+	let app = application_fixture.application.clone();
 	let a = token(&f, "a", "user").await;
 	let b = token(&f, "b", "user").await;
 	let c = token(&f, "c", "user").await;
@@ -2272,13 +2278,13 @@ async fn live_dependency_and_consent_leases_order_installation_with_revocation(
 #[tokio::test]
 async fn immutable_versions_replays_and_recovery_keep_their_authority_boundaries(
 	#[future(awt)]
-	#[from(test_environment)]
-	environment: Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	application_fixture: common::ApplicationFixture,
 ) {
 	use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
 	let _fixture = FIXTURE_LOCK.lock().await;
-	let (f, url, schema) = common::setup(&environment).await;
-	let app = common::application(f.clone()).await;
+	let (f, url, schema) = application_fixture.runtime.parts();
+	let app = application_fixture.application.clone();
 	let a = token(&f, "a", "user").await;
 	let b = token(&f, "b", "user").await;
 	let connection = reinhardt::db::backends::DatabaseConnection::new(Arc::new(
@@ -2313,6 +2319,7 @@ async fn immutable_versions_replays_and_recovery_keep_their_authority_boundaries
 	.token;
 	assert_eq!(
 		request(
+			// Act: rebuild the application to verify the committed request can be retried.
 			&common::application(f.clone()).await,
 			&renewed,
 			"POST",
@@ -2504,12 +2511,12 @@ async fn immutable_versions_replays_and_recovery_keep_their_authority_boundaries
 #[tokio::test]
 async fn marketplace_event_polling_bounds_candidates_and_advances_past_denials(
 	#[future(awt)]
-	#[from(test_environment)]
-	environment: Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	application_fixture: common::ApplicationFixture,
 ) {
 	let _fixture = FIXTURE_LOCK.lock().await;
-	let (f, url, schema) = common::setup(&environment).await;
-	let app = common::application(f.clone()).await;
+	let (f, url, schema) = application_fixture.runtime.parts();
+	let app = application_fixture.application.clone();
 	let a = token(&f, "a", "user").await;
 	enable(&app, &f).await;
 	f.registry.register(tool("events")).await.unwrap();
@@ -2596,22 +2603,20 @@ async fn marketplace_event_polling_bounds_candidates_and_advances_past_denials(
 	tx.commit().await.unwrap();
 	let response = app
 		.clone()
-		.oneshot(
+		.native_oneshot(
 			http::Request::get(format!("/api/events?after={after}"))
 				.header("authorization", format!("Bearer {a}"))
-				.body(axum::body::Body::empty())
+				.body(bytes::Bytes::new())
 				.unwrap(),
 		)
 		.await
 		.unwrap();
-	assert_eq!(response.status(), 200);
+	assert_eq!(response.status, 200);
 	assert_eq!(
-		response.headers()["x-aidash-event-cursor"],
+		response.headers["x-aidash-event-cursor"],
 		denied_cursor.to_string()
 	);
-	let bytes = axum::body::to_bytes(response.into_body(), 2_097_152)
-		.await
-		.unwrap();
+	let bytes = response.body;
 	assert_eq!(serde_json::from_slice::<Value>(&bytes).unwrap(), json!([]));
 	let page = request(
 		&app,
@@ -2645,14 +2650,14 @@ async fn marketplace_event_polling_bounds_candidates_and_advances_past_denials(
 #[tokio::test]
 async fn remote_inspection_obeys_the_marketplace_compatibility_gate(
 	#[future(awt)]
-	#[from(test_environment)]
-	environment: Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	application_fixture: common::ApplicationFixture,
 ) {
 	use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
 
 	let _fixture = FIXTURE_LOCK.lock().await;
-	let (f, url, schema) = common::setup(&environment).await;
-	let app = common::application(f.clone()).await;
+	let (f, url, schema) = application_fixture.runtime.parts();
+	let app = application_fixture.application.clone();
 	let a = token(&f, "a", "user").await;
 	enable(&app, &f).await;
 	let model: Entry = serde_json::from_value(json!({"id":"model","version":"1.0.0","kind":"model","name":{"en":"Model"},"description":{"en":"fixture"},"config":{"provider":"openrouter","model_id":"fixture/model","endpoint":"http://localhost:9","context_window":128000,"max_output_tokens":1024,"modalities":["text"],"cost":{}}})).unwrap();
@@ -2730,13 +2735,16 @@ async fn remote_inspection_obeys_the_marketplace_compatibility_gate(
 			.header("x-aidash-node", peer)
 			.header("x-aidash-protocol", aidash_server::config::PROTOCOL_VERSION)
 			.header("content-type", "application/json")
-			.body(axum::body::Body::from(
+			.body(bytes::Bytes::from(
 				json!({"tenant":"source","subject":"viewer","agent":entry,"requirements":{}})
 					.to_string(),
 			))
 			.unwrap()
 	};
-	assert_eq!(app.clone().oneshot(inspect()).await.unwrap().status(), 200);
+	assert_eq!(
+		app.clone().native_oneshot(inspect()).await.unwrap().status,
+		200
+	);
 	let disabled = request(
 		&app,
 		&f.config.api_token,
@@ -2747,7 +2755,7 @@ async fn remote_inspection_obeys_the_marketplace_compatibility_gate(
 	.await;
 	assert_eq!(disabled.0, 200, "{disabled:?}");
 	assert_eq!(
-		app.clone().oneshot(inspect()).await.unwrap().status(),
+		app.clone().native_oneshot(inspect()).await.unwrap().status,
 		403,
 		"an installed definition must not be disclosed while the gate is off"
 	);
@@ -2774,8 +2782,8 @@ async fn remote_inspection_obeys_the_marketplace_compatibility_gate(
 #[tokio::test]
 async fn browser_authority_is_ordered_with_pending_marketplace_requests(
 	#[future(awt)]
-	#[from(test_environment)]
-	environment: Arc<TestEnvironment>,
+	#[from(browser_oidc_application)]
+	application_fixture: common::ApplicationFixture,
 	#[case] operation: &str,
 	#[case] revocation: &str,
 	#[case] mutation_wins: bool,
@@ -2784,19 +2792,8 @@ async fn browser_authority_is_ordered_with_pending_marketplace_requests(
 	use sha2::{Digest, Sha256};
 
 	let _fixture = FIXTURE_LOCK.lock().await;
-	let (mut f, url, schema) = common::setup(&environment).await;
-	f.config.oidc = Some(aidash_server::config::OidcConfig {
-		issuer: "https://accounts.google.com".into(),
-		client_id: "fixture".into(),
-		client_secret: "fixture".into(),
-		public_origin: "http://127.0.0.1:8080".into(),
-		keycloak_admin_url: String::new(),
-		status_client_id: String::new(),
-		status_client_secret: String::new(),
-		session_absolute_seconds: 3600,
-		session_idle_seconds: 1800,
-	});
-	let app = common::application(f.clone()).await;
+	let (f, url, schema) = application_fixture.runtime.parts();
+	let app = application_fixture.application.clone();
 	let a = token(&f, "a", "user").await;
 	enable(&app, &f).await;
 	f.registry.register(tool("browser-source")).await.unwrap();
@@ -3053,7 +3050,7 @@ async fn browser_authority_is_ordered_with_pending_marketplace_requests(
 				},
 			)
 			.header("content-type", "application/json")
-			.body(axum::body::Body::from(value.to_string()))
+			.body(bytes::Bytes::from(value.to_string()))
 			.unwrap()
 	};
 	let mut barrier = f.store.pool.driver().begin().await.unwrap();
@@ -3097,7 +3094,7 @@ async fn browser_authority_is_ordered_with_pending_marketplace_requests(
 	}
 	let request = cookie_request(method, &path, input);
 	let app2 = app.clone();
-	let installing = tokio::spawn(async move { app2.oneshot(request).await.unwrap() });
+	let installing = tokio::spawn(async move { app2.native_oneshot(request).await.unwrap() });
 	wait_for_lock(
 		&f,
 		&schema,
@@ -3129,7 +3126,7 @@ async fn browser_authority_is_ordered_with_pending_marketplace_requests(
 		} else {
 			let request = cookie_request("POST", "/auth/logout", json!({}));
 			let app2 = app.clone();
-			tokio::spawn(async move { app2.oneshot(request).await.unwrap().status().as_u16() })
+			tokio::spawn(async move { app2.native_oneshot(request).await.unwrap().status.as_u16() })
 		};
 		wait_for_lock(
 			&f,
@@ -3150,7 +3147,7 @@ async fn browser_authority_is_ordered_with_pending_marketplace_requests(
 	}
 	barrier.commit().await.unwrap();
 	assert_eq!(
-		installing.await.unwrap().status().as_u16(),
+		installing.await.unwrap().status.as_u16(),
 		if mutation_wins {
 			200
 		} else if revocation == "operator_grant" {
@@ -3196,15 +3193,15 @@ async fn browser_authority_is_ordered_with_pending_marketplace_requests(
 #[tokio::test]
 async fn global_event_cursors_bound_workspace_and_marketplace_candidates(
 	#[future(awt)]
-	#[from(test_environment)]
-	environment: Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	application_fixture: common::ApplicationFixture,
 ) {
-	use axum::{body::Body, http::Request};
 	use futures_util::StreamExt;
+	use http::Request;
 
 	let _fixture = FIXTURE_LOCK.lock().await;
-	let (f, url, schema) = common::setup(&environment).await;
-	let app = common::application(f.clone()).await;
+	let (f, url, schema) = application_fixture.runtime.parts();
+	let app = application_fixture.application.clone();
 	let a = token(&f, "a", "user").await;
 	let workspace = request(
 		&app,
@@ -3255,18 +3252,18 @@ async fn global_event_cursors_bound_workspace_and_marketplace_candidates(
 	);
 	assert!(events.iter().any(|e| e["data"]["key"] == package["key"]));
 	assert!(events.iter().any(|e| e["sequence"] == newest.sequence));
-	let response = app
+	let mut response = app
 		.clone()
-		.oneshot(
+		.native_oneshot(
 			Request::get(format!("/api/events/stream?after={after}"))
 				.header("authorization", format!("Bearer {a}"))
-				.body(Body::empty())
+				.body(bytes::Bytes::new())
 				.unwrap(),
 		)
 		.await
 		.unwrap();
-	assert_eq!(response.status(), 200);
-	let mut frames = response.into_body().into_data_stream();
+	assert_eq!(response.status, 200);
+	let mut frames = response.take_stream_body().unwrap();
 	let frame = tokio::time::timeout(std::time::Duration::from_secs(5), frames.next())
 		.await
 		.unwrap()
@@ -3294,12 +3291,12 @@ async fn global_event_cursors_bound_workspace_and_marketplace_candidates(
 #[tokio::test]
 async fn transitive_bindings_cannot_claim_to_rewrite_immutable_dependencies(
 	#[future(awt)]
-	#[from(test_environment)]
-	environment: Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	application_fixture: common::ApplicationFixture,
 ) {
 	let _fixture = FIXTURE_LOCK.lock().await;
-	let (f, url, schema) = common::setup(&environment).await;
-	let app = common::application(f.clone()).await;
+	let (f, url, schema) = application_fixture.runtime.parts();
+	let app = application_fixture.application.clone();
 	let a = token(&f, "a", "user").await;
 	enable(&app, &f).await;
 	let model:Entry=serde_json::from_value(json!({"id":"model","version":"1.0.0","kind":"model","name":{"en":"Model"},"description":{"en":"fixture"},"config":{"provider":"openrouter","model_id":"fixture/model","endpoint":"http://localhost:9","context_window":128000,"max_output_tokens":1024,"modalities":["text"],"cost":{}}})).unwrap();
@@ -3356,14 +3353,14 @@ async fn transitive_bindings_cannot_claim_to_rewrite_immutable_dependencies(
 #[tokio::test]
 async fn installation_rejects_missing_private_knowledge(
 	#[future(awt)]
-	#[from(test_environment)]
-	environment: Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	application_fixture: common::ApplicationFixture,
 ) {
 	use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
 	use sha2::{Digest, Sha256};
 	let _fixture = FIXTURE_LOCK.lock().await;
-	let (f, url, schema) = common::setup(&environment).await;
-	let app = common::application(f.clone()).await;
+	let (f, url, schema) = application_fixture.runtime.parts();
+	let app = application_fixture.application.clone();
 	let a = token(&f, "a", "user").await;
 	enable(&app, &f).await;
 	let model: Entry = serde_json::from_value(json!({"id":"private-model","version":"1.0.0","kind":"model","name":{"en":"Model"},"description":{"en":"fixture"},"config":{"provider":"openrouter","model_id":"fixture/model","endpoint":"http://localhost:9","context_window":128000,"max_output_tokens":1024,"modalities":["text"],"cost":{}}})).unwrap();
@@ -3442,14 +3439,14 @@ async fn installation_rejects_missing_private_knowledge(
 #[tokio::test]
 async fn compatibility_disable_orders_new_run_admission(
 	#[future(awt)]
-	#[from(test_environment)]
-	environment: Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	application_fixture: common::ApplicationFixture,
 	#[case] admission_wins: bool,
 ) {
 	use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
 	let _fixture = FIXTURE_LOCK.lock().await;
-	let (f, url, schema) = common::setup(&environment).await;
-	let app = common::application(f.clone()).await;
+	let (f, url, schema) = application_fixture.runtime.parts();
+	let app = application_fixture.application.clone();
 	let a = token(&f, "a", "user").await;
 	enable(&app, &f).await;
 	let model:Entry=serde_json::from_value(json!({"id":"model","version":"1.0.0","kind":"model","name":{"en":"Model"},"description":{"en":"fixture"},"config":{"provider":"openrouter","model_id":"fixture/model","endpoint":"http://localhost:9","context_window":128000,"max_output_tokens":1024,"modalities":["text"],"cost":{}}})).unwrap();
@@ -3617,12 +3614,12 @@ async fn compatibility_disable_orders_new_run_admission(
 #[tokio::test]
 async fn source_and_administration_pages_preserve_candidate_progress(
 	#[future(awt)]
-	#[from(test_environment)]
-	environment: Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	application_fixture: common::ApplicationFixture,
 ) {
 	let _fixture = FIXTURE_LOCK.lock().await;
-	let (f, url, schema) = common::setup(&environment).await;
-	let app = common::application(f.clone()).await;
+	let (f, url, schema) = application_fixture.runtime.parts();
+	let app = application_fixture.application.clone();
 	let a = token(&f, "a", "user").await;
 	enable(&app, &f).await;
 	for i in 0..5 {
@@ -3635,25 +3632,23 @@ async fn source_and_administration_pages_preserve_candidate_progress(
 	policy(&f, "a", 1, authority).await;
 	let response = app
 		.clone()
-		.oneshot(
+		.native_oneshot(
 			http::Request::get("/api/marketplace/sources?limit=2")
 				.header("authorization", format!("Bearer {a}"))
-				.body(axum::body::Body::empty())
+				.body(bytes::Bytes::new())
 				.unwrap(),
 		)
 		.await
 		.unwrap();
-	assert_eq!(response.status(), 200);
+	assert_eq!(response.status, 200);
 	let offset = response
-		.headers()
+		.headers
 		.get("x-aidash-next-offset")
 		.expect("remaining candidates have a cursor")
 		.to_str()
 		.unwrap()
 		.to_owned();
-	let bytes = axum::body::to_bytes(response.into_body(), 2_097_152)
-		.await
-		.unwrap();
+	let bytes = response.body;
 	let first: Value = serde_json::from_slice(&bytes).unwrap();
 	assert_eq!(first.as_array().unwrap().len(), 2);
 	assert_eq!(first[0]["id"], "page-1");
@@ -3704,12 +3699,12 @@ async fn source_and_administration_pages_preserve_candidate_progress(
 #[tokio::test]
 async fn owner_can_reload_and_restore_a_withdrawn_audience(
 	#[future(awt)]
-	#[from(test_environment)]
-	environment: Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	application_fixture: common::ApplicationFixture,
 ) {
 	let _fixture = FIXTURE_LOCK.lock().await;
-	let (f, url, schema) = common::setup(&environment).await;
-	let app = common::application(f.clone()).await;
+	let (f, url, schema) = application_fixture.runtime.parts();
+	let app = application_fixture.application.clone();
 	let a = token(&f, "a", "user").await;
 	let b = token(&f, "b", "user").await;
 	enable(&app, &f).await;
@@ -3753,3 +3748,36 @@ use reinhardt::query::{ExprTrait as _, QueryStatementBuilder as _};
 use reinhardt::db::migrations::MigrationSource;
 
 use reinhardt::query::SimpleExpr;
+
+#[rstest::fixture]
+fn browser_oidc_runtime(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) -> common::RuntimeFuture {
+	async move {
+		let mut r = runtime.await;
+		r.federation.config.oidc = Some(aidash_server::config::OidcConfig {
+			issuer: "https://accounts.google.com".into(),
+			client_id: "fixture".into(),
+			client_secret: "fixture".into(),
+			public_origin: "http://127.0.0.1:8080".into(),
+			keycloak_admin_url: String::new(),
+			status_client_id: String::new(),
+			status_client_secret: String::new(),
+			session_absolute_seconds: 3600,
+			session_idle_seconds: 1800,
+		});
+		r
+	}
+	.boxed()
+	.shared()
+}
+#[rstest::fixture]
+fn browser_oidc_application(
+	#[from(browser_oidc_runtime)] runtime: common::RuntimeFuture,
+	#[from(common::native_application)]
+	#[with(Default::default(),aidash_server::sse::Service::new(Default::default()),std::sync::Arc::new(|r|r),runtime.clone())]
+	application: common::ApplicationFuture,
+) -> common::ApplicationFuture {
+	drop(runtime);
+	application
+}

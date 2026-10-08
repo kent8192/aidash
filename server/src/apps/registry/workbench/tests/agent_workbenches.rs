@@ -1,6 +1,10 @@
+use common::upstream_fixtures as upstream;
+use reinhardt::ServerRouter as Router;
+use rstest::fixture;
+use upstream::handler;
 #[path = "../../../execution/tests/support/legacy.rs"]
 mod common;
-use common::{TestEnvironment, cleanup, request, setup, test_environment};
+use common::{cleanup, request};
 use serde_json::{Value, json};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -31,31 +35,20 @@ fn agent() -> Value {
 #[tokio::test]
 async fn simulated_test_never_invokes_the_registered_external_tool(
 	#[future(awt)]
-	#[from(test_environment)]
-	environment: Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	application_fixture: common::ApplicationFixture,
+
+	#[future(awt)]
+	#[from(simulated_test_never_invokes_the_registered_external_tool_provider)]
+	fixture: SimulatedTestNeverInvokesTheRegisteredExternalToolProvider,
 ) {
-	let tool_hits = Arc::new(AtomicUsize::new(0));
-	let hits = tool_hits.clone();
-	let real_hits = Arc::new(AtomicUsize::new(0));
-	let confined_hits = real_hits.clone();
-	let mock = axum::Router::new()
-		.route("/v1/chat/completions", axum::routing::post(|axum::Json(body): axum::Json<Value>| async move {
-			let context = body["messages"][1]["content"].as_str().unwrap_or("");
-			if context.contains("\"conversation\"") {
-				axum::Json(json!({"choices":[{"finish_reason":"stop","message":{"content":"Simulated result received"}}],"usage":{"prompt_tokens":40,"completion_tokens":6}}))
-			} else {
-			axum::Json(json!({"choices":[{"finish_reason":"tool_calls","message":{"content":"","tool_calls":[{"id":"call-1","function":{"name":"plugin_0","arguments":"{\"action\":\"read\",\"resource\":\"sandbox\",\"input\":\"safe\"}"}}]}}],"usage":{"prompt_tokens":30,"completion_tokens":5}}))
-			}
-		}))
-		.route("/effect", axum::routing::post(move || { let hits = hits.clone(); async move { hits.fetch_add(1, Ordering::SeqCst); axum::Json(json!({"effect":"unexpected"})) } }))
-		.route("/test-effect", axum::routing::post(move || { let hits = confined_hits.clone(); async move { hits.fetch_add(1, Ordering::SeqCst); axum::Json(json!({"effect":"confined"})) } }));
-	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-	let endpoint = format!("http://{}", listener.local_addr().unwrap());
-	let server = tokio::spawn(async move {
-		axum::serve(listener, mock).await.unwrap();
-	});
-	let (f, url, schema) = setup(&environment).await;
-	let app = common::application(f.clone()).await;
+	let tool_hits = fixture.state.tool_hits;
+	let real_hits = fixture.state.real_hits;
+	let server = fixture.server;
+
+	let endpoint = server.url.clone();
+	let (f, url, schema) = application_fixture.runtime.parts();
+	let app = application_fixture.application.clone();
 	let operator = f.config.api_token.clone();
 	for (id, kind, config) in [
 		(
@@ -228,7 +221,7 @@ async fn simulated_test_never_invokes_the_registered_external_tool(
 		2,
 		"out-of-profile call reached the endpoint"
 	);
-	server.abort();
+	drop(server);
 	cleanup(f, &url, &schema).await;
 }
 
@@ -236,11 +229,11 @@ async fn simulated_test_never_invokes_the_registered_external_tool(
 #[tokio::test]
 async fn draft_conflict_register_and_factual_inspection(
 	#[future(awt)]
-	#[from(test_environment)]
-	environment: Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	application_fixture: common::ApplicationFixture,
 ) {
-	let (f, url, schema) = setup(&environment).await;
-	let app = common::application(f.clone()).await;
+	let (f, url, schema) = application_fixture.runtime.parts();
+	let app = application_fixture.application.clone();
 	let operator = f.config.api_token.clone();
 	let model = json!({"id":"fixture-model","version":"1.0.0","kind":"model","name":{"en":"Fixture model"},"description":{"en":"Fixture"},"capabilities":[],"tags":[],"languages":["en"],"skills":[],"schema":{},"config":{"provider":"openrouter","model_id":"fixture","endpoint":"http://127.0.0.1:9999/v1","credential_env":null,"context_window":32768,"max_output_tokens":2048,"modalities":["text"],"cost":{}}});
 	let (status, body) = request(&app, &operator, "POST", "/api/registry", model).await;
@@ -708,3 +701,57 @@ use reinhardt::query::{ExprTrait as _, QueryStatementBuilder as _};
 use reinhardt::query::SimpleExpr;
 
 use reinhardt::query::Expr;
+
+#[derive(Clone)]
+struct SimulatedTestNeverInvokesTheRegisteredExternalToolState {
+	tool_hits: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+	real_hits: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+#[fixture]
+fn simulated_test_never_invokes_the_registered_external_tool_state()
+-> SimulatedTestNeverInvokesTheRegisteredExternalToolState {
+	SimulatedTestNeverInvokesTheRegisteredExternalToolState {
+		tool_hits: Arc::new(AtomicUsize::new(0)),
+		real_hits: Arc::new(AtomicUsize::new(0)),
+	}
+}
+#[fixture]
+fn simulated_test_never_invokes_the_registered_external_tool_router(
+	#[from(simulated_test_never_invokes_the_registered_external_tool_state)]
+	state: SimulatedTestNeverInvokesTheRegisteredExternalToolState,
+) -> std::sync::Arc<Router> {
+	use std::sync::atomic::Ordering;
+	let tool_hits = state.tool_hits.clone();
+	let real_hits = state.real_hits.clone();
+	let hits = tool_hits.clone();
+	let confined_hits = real_hits.clone();
+	std::sync::Arc::new(Router::new()
+		.handler("/v1/chat/completions", handler(http::Method::POST, |request: reinhardt::Request| {let body = request.json::<Value>().unwrap();async move {
+			let context = body["messages"][1]["content"].as_str().unwrap_or("");
+			if context.contains("\"conversation\"") {
+				reinhardt::Response::ok().with_json(&json!({"choices":[{"finish_reason":"stop","message":{"content":"Simulated result received"}}],"usage":{"prompt_tokens":40,"completion_tokens":6}})).unwrap()
+			} else {
+			reinhardt::Response::ok().with_json(&json!({"choices":[{"finish_reason":"tool_calls","message":{"content":"","tool_calls":[{"id":"call-1","function":{"name":"plugin_0","arguments":"{\"action\":\"read\",\"resource\":\"sandbox\",\"input\":\"safe\"}"}}]}}],"usage":{"prompt_tokens":30,"completion_tokens":5}})).unwrap()
+			}
+		}}))
+		.handler("/effect", handler(http::Method::POST, move |_request: reinhardt::Request| { let hits = hits.clone(); async move { hits.fetch_add(1, Ordering::SeqCst); reinhardt::Response::ok().with_json(&json!({"effect":"unexpected"})).unwrap() } }))
+		.handler("/test-effect", handler(http::Method::POST, move |_request: reinhardt::Request| { let hits = confined_hits.clone(); async move { hits.fetch_add(1, Ordering::SeqCst); reinhardt::Response::ok().with_json(&json!({"effect":"confined"})).unwrap() } })))
+}
+struct SimulatedTestNeverInvokesTheRegisteredExternalToolProvider {
+	state: SimulatedTestNeverInvokesTheRegisteredExternalToolState,
+	server: reinhardt::test::fixtures::server::TestServerGuard,
+}
+#[fixture]
+async fn simulated_test_never_invokes_the_registered_external_tool_provider(
+	#[from(simulated_test_never_invokes_the_registered_external_tool_state)]
+	state: SimulatedTestNeverInvokesTheRegisteredExternalToolState,
+	#[from(simulated_test_never_invokes_the_registered_external_tool_router)]
+	#[with(state.clone())]
+	_router: std::sync::Arc<Router>,
+	#[future(awt)]
+	#[from(upstream::upstream)]
+	#[with(_router.clone())]
+	server: reinhardt::test::fixtures::server::TestServerGuard,
+) -> SimulatedTestNeverInvokesTheRegisteredExternalToolProvider {
+	SimulatedTestNeverInvokesTheRegisteredExternalToolProvider { state, server }
+}

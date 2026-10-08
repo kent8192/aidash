@@ -8,9 +8,11 @@ use reinhardt::{Request, Response, ServerRouter};
 mod common;
 
 use aidash_server::federation::Federation;
-use axum::response::IntoResponse;
-use common::{TestEnvironment, cleanup, request, setup, test_environment};
+use common::upstream_fixtures as upstream;
+use common::{cleanup, request};
+use reinhardt::ServerRouter as Router;
 use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
+use rstest::fixture;
 use serde_json::{Value, json};
 use std::{
 	collections::VecDeque,
@@ -21,6 +23,7 @@ use std::{
 	time::Duration,
 };
 use tokio::sync::{Mutex, Notify};
+use upstream::handler;
 
 #[derive(Default)]
 struct ModelGate {
@@ -30,7 +33,7 @@ struct ModelGate {
 }
 
 struct Workbench {
-	_environment: Arc<TestEnvironment>,
+	_fixture: common::ApplicationFixture,
 	f: Federation,
 	app: common::TestApplication,
 	url: String,
@@ -39,7 +42,7 @@ struct Workbench {
 	draft: Value,
 	responses: Arc<Mutex<VecDeque<Value>>>,
 	hits: Arc<AtomicUsize>,
-	server: tokio::task::JoinHandle<()>,
+	server: reinhardt::test::fixtures::server::TestServerGuard,
 	endpoint: String,
 	model_gate: Arc<ModelGate>,
 	effect_gate: Arc<ModelGate>,
@@ -117,7 +120,7 @@ impl Workbench {
 	}
 
 	async fn cleanup(self) {
-		self.server.abort();
+		drop(self.server);
 		cleanup(self.f, &self.url, &self.schema).await;
 	}
 }
@@ -125,74 +128,20 @@ impl Workbench {
 #[rstest::fixture]
 async fn workbench(
 	#[future(awt)]
-	#[from(test_environment)]
-	environment: Arc<common::TestEnvironment>,
+	#[from(common::native_application)]
+	application_fixture: common::ApplicationFixture,
+	#[future(awt)] provider: WorkbenchProvider,
 ) -> Workbench {
-	let (f, url, schema) = setup(&environment).await;
-	let app = common::application(f.clone()).await;
-	let responses = Arc::new(Mutex::new(VecDeque::from([
-		json!({"choices":[{"finish_reason":"stop","message":{"content":"Complete"}}],"usage":{"prompt_tokens":30,"completion_tokens":5}}),
-	])));
-	let hits = Arc::new(AtomicUsize::new(0));
-	let model_gate = Arc::new(ModelGate::default());
-	let gate = model_gate.clone();
-	let effect_gate = Arc::new(ModelGate::default());
-	let dispatch_gate = effect_gate.clone();
-	let effect_hits = Arc::new(AtomicUsize::new(0));
-	let effects = effect_hits.clone();
-	let effect_reply_invalid = Arc::new(AtomicBool::new(false));
-	let corrupt_reply = effect_reply_invalid.clone();
-	let queue = responses.clone();
-	let count = hits.clone();
-	let mock = axum::Router::new()
-		.route(
-			"/v1/chat/completions",
-			axum::routing::post(move || {
-				let queue = queue.clone();
-				let count = count.clone();
-				let gate = gate.clone();
-				async move {
-					count.fetch_add(1, Ordering::SeqCst);
-					let mut queue = queue.lock().await;
-					let result = if queue.len() > 1 {
-						queue.pop_front().unwrap()
-					} else {
-						queue.front().unwrap().clone()
-					};
-					drop(queue);
-					if gate.paused.load(Ordering::SeqCst) {
-						gate.arrived.notify_one();
-						gate.release.notified().await;
-					}
-					axum::Json(result)
-				}
-			}),
-		)
-		.route(
-			"/test-effect",
-			axum::routing::post(move || {
-				let effects = effects.clone();
-				let corrupt_reply = corrupt_reply.clone();
-				let gate = dispatch_gate.clone();
-				async move {
-					effects.fetch_add(1, Ordering::SeqCst);
-					if gate.paused.load(Ordering::SeqCst) {
-						gate.arrived.notify_one();
-						gate.release.notified().await;
-					}
-					if corrupt_reply.load(Ordering::SeqCst) {
-						"{".into_response()
-					} else {
-						axum::Json(json!({"ok":true})).into_response()
-					}
-				}
-			}),
-		);
-	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-	let endpoint = format!("http://{}", listener.local_addr().unwrap());
-	let server = tokio::spawn(async move {
-		axum::serve(listener, mock).await.unwrap();
-	});
+	let (f, url, schema) = application_fixture.runtime.parts();
+	let app = application_fixture.application.clone();
+	let responses = provider.state.responses;
+	let hits = provider.state.hits;
+	let model_gate = provider.state.model_gate;
+	let effect_gate = provider.state.effect_gate;
+	let effect_hits = provider.state.effect_hits;
+	let effect_reply_invalid = provider.state.effect_reply_invalid;
+	let server = provider.server;
+	let endpoint = server.url.clone();
 	for (id, kind, config) in [
 		(
 			"fixture-model",
@@ -221,7 +170,7 @@ async fn workbench(
 	let (status, draft) = request(&app, &token, "POST", "/api/workbench/drafts", json!({"entry":{"id":"","version":"1.0.0","kind":"agent","name":{"en":"Regression fixture"},"description":{"en":"Fixture"},"config":{"model":{"id":"fixture-model","version":"1.0.0"},"instructions":"Summarize","tools":[{"id":"fixture-tool","version":"1.0.0"}],"skills":[],"cluster":null,"max_steps":8}}})).await;
 	assert_eq!(status, 200, "draft: {draft}");
 	Workbench {
-		_environment: environment,
+		_fixture: application_fixture,
 		f,
 		app,
 		url,
@@ -654,6 +603,7 @@ async fn revoked_workbench(
 		.revoke_credential("acme", credential.id)
 		.await
 		.unwrap();
+	// Act: capture this scenario actor after the domain authority mutation.
 	let app = captured_actor_application(&wb.f, actor).await;
 	(wb, app)
 }
@@ -1255,6 +1205,7 @@ async fn revoked_incident_workbench(
 		.revoke_credential("acme", credential.id)
 		.await
 		.unwrap();
+	// Act: capture this scenario actor after the domain authority mutation.
 	let app = captured_actor_application(&wb.f, actor).await;
 	(wb, app, incident)
 }
@@ -1815,3 +1766,111 @@ use reinhardt::query::ExprTrait;
 mod browser_authority;
 
 use reinhardt::query::SimpleExpr;
+
+#[derive(Clone)]
+struct WorkbenchState {
+	responses: Arc<Mutex<VecDeque<Value>>>,
+	hits: Arc<AtomicUsize>,
+	model_gate: Arc<ModelGate>,
+	effect_gate: Arc<ModelGate>,
+	effect_hits: Arc<AtomicUsize>,
+	effect_reply_invalid: Arc<AtomicBool>,
+}
+#[fixture]
+fn workbench_state() -> WorkbenchState {
+	let responses = Arc::new(Mutex::new(VecDeque::from([
+		json!({"choices":[{"finish_reason":"stop","message":{"content":"Complete"}}],"usage":{"prompt_tokens":30,"completion_tokens":5}}),
+	])));
+	let hits = Arc::new(AtomicUsize::new(0));
+	let model_gate = Arc::new(ModelGate::default());
+	let effect_gate = Arc::new(ModelGate::default());
+	let effect_hits = Arc::new(AtomicUsize::new(0));
+	let effect_reply_invalid = Arc::new(AtomicBool::new(false));
+	WorkbenchState {
+		responses,
+		hits,
+		model_gate,
+		effect_gate,
+		effect_hits,
+		effect_reply_invalid,
+	}
+}
+#[fixture]
+fn workbench_router(#[from(workbench_state)] state: WorkbenchState) -> Arc<Router> {
+	let gate = state.model_gate.clone();
+	let dispatch_gate = state.effect_gate.clone();
+	let effects = state.effect_hits.clone();
+	let corrupt_reply = state.effect_reply_invalid.clone();
+	let queue = state.responses.clone();
+	let count = state.hits.clone();
+	Arc::new(
+		Router::new()
+			.handler(
+				"/v1/chat/completions",
+				handler(http::Method::POST, move |_request: reinhardt::Request| {
+					let queue = queue.clone();
+					let count = count.clone();
+					let gate = gate.clone();
+					async move {
+						count.fetch_add(1, Ordering::SeqCst);
+						let mut queue = queue.lock().await;
+						let result = if queue.len() > 1 {
+							queue.pop_front().unwrap()
+						} else {
+							queue.front().unwrap().clone()
+						};
+						drop(queue);
+						if gate.paused.load(Ordering::SeqCst) {
+							gate.arrived.notify_one();
+							gate.release.notified().await;
+						}
+						reinhardt::Response::ok().with_json(&result).unwrap()
+					}
+				}),
+			)
+			.handler(
+				"/test-effect",
+				handler(http::Method::POST, move |_request: reinhardt::Request| {
+					let effects = effects.clone();
+					let corrupt_reply = corrupt_reply.clone();
+					let gate = dispatch_gate.clone();
+					async move {
+						effects.fetch_add(1, Ordering::SeqCst);
+						if gate.paused.load(Ordering::SeqCst) {
+							gate.arrived.notify_one();
+							gate.release.notified().await;
+						}
+						if corrupt_reply.load(Ordering::SeqCst) {
+							reinhardt::Response::ok()
+								.with_body("{")
+								.with_header("Content-Type", "text/plain; charset=utf-8")
+						} else {
+							reinhardt::Response::ok()
+								.with_json(&json!({"ok":true}))
+								.unwrap()
+						}
+					}
+				}),
+			),
+	)
+}
+struct WorkbenchProvider {
+	state: WorkbenchState,
+	server: reinhardt::test::fixtures::server::TestServerGuard,
+}
+#[fixture]
+async fn provider(
+	workbench_state: WorkbenchState,
+	#[from(workbench_router)]
+	#[with(workbench_state.clone())]
+	_router: Arc<Router>,
+	#[future(awt)]
+	#[from(upstream::upstream)]
+	#[with(_router.clone())]
+	server: reinhardt::test::fixtures::server::TestServerGuard,
+) -> WorkbenchProvider {
+	WorkbenchProvider {
+		state: workbench_state,
+		server,
+	}
+}

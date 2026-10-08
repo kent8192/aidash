@@ -5,15 +5,12 @@ use sha2::{Digest, Sha256};
 #[rstest::rstest]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn audited_frames_allocate_sequences_only_after_serialization_lock(
-	#[future(awt)] test_environment: Arc<TestEnvironment>,
+	#[future(awt)]
+	#[from(sse_fixture)]
+	#[with(Duration::from_secs(60), Duration::from_secs(30), 128)]
+	root: Arc<Fixture>,
 ) {
-	let fixture = Fixture::new(
-		&test_environment,
-		Duration::from_secs(60),
-		Duration::from_secs(30),
-		128,
-	)
-	.await;
+	let fixture = root;
 	let ws = fixture.workspaces[0];
 	let event = fixture.emit(ws, 1).await;
 	let mut barrier = fixture.f.store.pool.driver().begin().await.unwrap();
@@ -35,10 +32,10 @@ async fn audited_frames_allocate_sequences_only_after_serialization_lock(
 		.unwrap();
 	let mut observers = Vec::new();
 	for _ in 0..2 {
-		let response = fixture.open(event.sequence - 1, Some(ws), None).await;
-		assert_eq!(response.status(), 200);
+		let mut response = fixture.open(event.sequence - 1, Some(ws), None).await;
+		assert_eq!(response.status, 200);
 		observers.push(tokio::spawn(async move {
-			let mut frames = response.into_body().into_data_stream().boxed();
+			let mut frames = response.take_stream_body().unwrap().boxed();
 			frame(&mut frames).await
 		}));
 	}
@@ -118,15 +115,12 @@ async fn audited_frames_allocate_sequences_only_after_serialization_lock(
 #[rstest::rstest]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn buffered_resource_revocation_filters_without_rewinding(
-	#[future(awt)] test_environment: Arc<TestEnvironment>,
+	#[future(awt)]
+	#[from(sse_fixture)]
+	#[with(Duration::from_millis(250), Duration::from_secs(30), 128)]
+	root: Arc<Fixture>,
 ) {
-	let fixture = Fixture::new(
-		&test_environment,
-		Duration::from_millis(250),
-		Duration::from_secs(30),
-		128,
-	)
-	.await;
+	let fixture = root;
 	let ws = fixture.workspaces[0];
 	fixture
 		.f
@@ -181,16 +175,17 @@ async fn buffered_resource_revocation_filters_without_rewinding(
 #[rstest::rstest]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn duplicate_flood_preserves_fallback_and_idle_revocation(
-	#[future(awt)] test_environment: Arc<TestEnvironment>,
+	#[from(sse_fixture)]
+	#[with(Duration::from_millis(500), Duration::from_secs(30), 128)]
+	root: SseFuture,
+
+	#[future(awt)]
+	#[from(sse_subscription)]
+	#[with(root.clone())]
+	subscription: SseSubscription,
 ) {
-	let fixture = Fixture::new(
-		&test_environment,
-		Duration::from_millis(500),
-		Duration::from_secs(30),
-		128,
-	)
-	.await;
-	let (stop, subscriber) = fixture.subscriber().await;
+	let fixture = root.await;
+	let (stop, subscriber) = subscription;
 	let mut selected = fixture.stream(-1, Some(fixture.workspaces[0]), None).await;
 	let mut unrelated = fixture.stream(-1, Some(fixture.workspaces[1]), None).await;
 	until(|| fixture.service.snapshot().query_causes[0] == 4).await;
@@ -271,16 +266,17 @@ async fn duplicate_flood_preserves_fallback_and_idle_revocation(
 #[rstest::rstest]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn notification_during_initial_authority_read_is_retained(
-	#[future(awt)] test_environment: Arc<TestEnvironment>,
+	#[from(sse_fixture)]
+	#[with(Duration::from_secs(60), Duration::from_secs(30), 128)]
+	root: SseFuture,
+
+	#[future(awt)]
+	#[from(sse_subscription)]
+	#[with(root.clone())]
+	subscription: SseSubscription,
 ) {
-	let fixture = Fixture::new(
-		&test_environment,
-		Duration::from_secs(60),
-		Duration::from_secs(30),
-		128,
-	)
-	.await;
-	let (stop, subscriber) = fixture.subscriber().await;
+	let fixture = root.await;
+	let (stop, subscriber) = subscription;
 	let ws = fixture.workspaces[0];
 	let before = fixture.emit(ws, 1).await;
 	let mut ownership = fixture.f.store.pool.driver().begin().await.unwrap();
@@ -296,8 +292,8 @@ async fn notification_during_initial_authority_read_is_retained(
 	.unwrap();
 	// Initial liveness uses a read-only snapshot, but the canonical page reader
 	// cannot pass the real ownership lease until this transaction releases it.
-	let response = fixture.open(before.sequence, Some(ws), None).await;
-	assert_eq!(response.status(), 200);
+	let mut response = fixture.open(before.sequence, Some(ws), None).await;
+	assert_eq!(response.status, 200);
 	until(|| fixture.service.snapshot().registered_scopes == 1).await;
 	let event = fixture.emit(ws, 2).await;
 	let nats = async_nats::connect(&fixture.f.config.nats_url)
@@ -307,7 +303,7 @@ async fn notification_during_initial_authority_read_is_retained(
 	until(|| fixture.service.snapshot().notifications == 1).await;
 	assert_eq!(fixture.service.snapshot().event_queries, 0);
 	ownership.rollback().await.unwrap();
-	let mut frames = response.into_body().into_data_stream().boxed();
+	let mut frames = response.take_stream_body().unwrap().boxed();
 	assert_eq!(
 		frame(&mut frames).await,
 		(event.sequence, event.cloud_event())
@@ -330,36 +326,12 @@ async fn notification_during_initial_authority_read_is_retained(
 async fn browser_invalidation_closes_idle_and_unpolled_buffered_streams(
 	#[case] change: &str,
 	#[case] column: &str,
-	#[future(awt)] test_environment: Arc<TestEnvironment>,
+	#[future(awt)]
+	#[from(browser_sse_fixture)]
+	root: Arc<Fixture>,
 ) {
-	let mut fixture = Fixture::new(
-		&test_environment,
-		Duration::from_secs(60),
-		Duration::from_secs(30),
-		2,
-	)
-	.await;
+	let fixture = root;
 	let issuer = "https://accounts.google.com";
-	fixture.f.config.oidc = Some(aidash_server::config::OidcConfig {
-		issuer: issuer.into(),
-		client_id: "aidash".into(),
-		client_secret: "fixture".into(),
-		public_origin: "http://127.0.0.1:8080".into(),
-		keycloak_admin_url: String::new(),
-		status_client_id: String::new(),
-		status_client_secret: String::new(),
-		session_absolute_seconds: 43200,
-		session_idle_seconds: 1800,
-	});
-	fixture.app = common::application_with_event_streams(
-		fixture.f.clone(),
-		aidash_server::http::Settings {
-			sse_connections: 2,
-			..Default::default()
-		},
-		fixture.service.clone(),
-	)
-	.await;
 	let identity = Uuid::new_v4();
 	let session = Uuid::new_v4();
 	let mapping = Uuid::new_v4();
@@ -488,23 +460,23 @@ async fn browser_invalidation_closes_idle_and_unpolled_buffered_streams(
 		let response = fixture
 			.app
 			.clone()
-			.oneshot(
+			.native_oneshot(
 				Request::get(format!(
 					"/api/events/stream?after={after}&workspace_id={workspace}"
 				))
 				.header("cookie", "aidash-session=sse-browser-session")
 				.header("x-aidash-context", &selector)
-				.body(Body::empty())
+				.body(bytes::Bytes::new())
 				.unwrap(),
 			)
 			.await
 			.unwrap();
-		assert_eq!(response.status(), 200);
+		assert_eq!(response.status, 200);
 		responses.push(response);
 	}
 	until(|| fixture.service.snapshot().query_causes[0] == 3).await;
 	let reads = fixture.service.snapshot().event_queries;
-	assert_eq!(fixture.open(-1, None, None).await.status(), 503);
+	assert_eq!(fixture.open(-1, None, None).await.status, 503);
 	let (table, key, id) = match change {
 		"session" => ("dashboard_sessions", "id", session),
 		"mapping" => ("dashboard_mappings", "id", mapping),
@@ -540,27 +512,30 @@ async fn browser_invalidation_closes_idle_and_unpolled_buffered_streams(
 	let operator = fixture
 		.app
 		.clone()
-		.oneshot(
+		.native_oneshot(
 			Request::get("/api/events/stream?after=-1")
 				.header(
 					"authorization",
 					format!("Bearer {}", fixture.f.config.api_token),
 				)
-				.body(Body::empty())
+				.body(bytes::Bytes::new())
 				.unwrap(),
 		)
 		.await
 		.unwrap();
 	assert_eq!(
-		operator.status(),
-		200,
+		operator.status, 200,
 		"both stale browser admissions are released"
 	);
-	for response in responses {
-		let body = tokio::time::timeout(
-			Duration::from_secs(1),
-			axum::body::to_bytes(response.into_body(), 1024),
-		)
+	for mut response in responses {
+		let body = tokio::time::timeout(Duration::from_secs(1), async {
+			let mut bytes = bytes::BytesMut::new();
+			let mut stream = response.take_stream_body().unwrap();
+			while let Some(chunk) = stream.next().await {
+				bytes.extend_from_slice(&chunk?);
+			}
+			Ok::<_, Box<dyn std::error::Error + Send + Sync>>(bytes.freeze())
+		})
 		.await
 		.unwrap()
 		.unwrap();
@@ -573,3 +548,35 @@ async fn browser_invalidation_closes_idle_and_unpolled_buffered_streams(
 use reinhardt::query::{ExprTrait as _, QueryStatementBuilder as _};
 
 use reinhardt::query::SimpleExpr;
+
+#[fixture]
+fn browser_sse_runtime(sse_runtime: common::RuntimeFuture) -> common::RuntimeFuture {
+	async move {
+		let mut runtime = sse_runtime.await;
+		runtime.federation.config.oidc = Some(aidash_server::config::OidcConfig {
+			issuer: "https://accounts.google.com".into(),
+			client_id: "aidash".into(),
+			client_secret: "fixture".into(),
+			public_origin: "http://127.0.0.1:8080".into(),
+			keycloak_admin_url: String::new(),
+			status_client_id: String::new(),
+			status_client_secret: String::new(),
+			session_absolute_seconds: 43200,
+			session_idle_seconds: 1800,
+		});
+		runtime
+	}
+	.boxed()
+	.shared()
+}
+#[fixture]
+fn browser_sse_fixture(
+	#[from(sse_service)] service: sse::Service,
+	browser_sse_runtime: common::RuntimeFuture,
+	#[from(sse_fixture)]
+	#[with(Duration::from_secs(60),Duration::from_secs(30),2,service.clone(),browser_sse_runtime.clone())]
+	root: SseFuture,
+) -> SseFuture {
+	drop((service, browser_sse_runtime));
+	root
+}

@@ -1,5 +1,9 @@
+use common::upstream_fixtures as upstream;
 use http::Method;
-use reinhardt::test::fixtures::http_client;
+use reinhardt::ServerRouter as Router;
+use rstest::fixture;
+use upstream::handler;
+
 #[path = "../../execution/tests/support/legacy.rs"]
 mod common;
 use aidash_server::{
@@ -7,7 +11,6 @@ use aidash_server::{
 	registry::{Entry, Package},
 };
 use common::*;
-use common::{TestEnvironment, test_environment};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
@@ -21,7 +24,8 @@ async fn register_keyed(
 	entry: &Entry,
 	key: &str,
 ) -> (u16, Value) {
-	let response = http_client()
+	let response = app
+		.raw_http
 		.request(Method::POST, app.url("/api/registry"))
 		.header("authorization", format!("Bearer {token}"))
 		.header("content-type", "application/json")
@@ -39,11 +43,11 @@ async fn register_keyed(
 #[tokio::test]
 async fn registry_server_ids_survive_retries_and_concurrent_requests(
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	application_fixture: common::ApplicationFixture,
 ) {
-	let (f, url, schema) = setup(&_test_environment).await;
-	let app = common::application(f.clone()).await;
+	let (f, url, schema) = application_fixture.runtime.parts();
+	let app = application_fixture.application.clone();
 	let seeded_definitions = f.registry.list(&Default::default()).await.unwrap().len();
 	let mut entry = tool("");
 	entry.name.insert("en".into(), "calm-otter".into());
@@ -133,11 +137,11 @@ async fn registry_server_ids_survive_retries_and_concurrent_requests(
 #[tokio::test]
 async fn registry_assigns_uuid_v7_to_blank_ids_and_preserves_explicit_ids(
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	application_fixture: common::ApplicationFixture,
 ) {
-	let (f, url, schema) = setup(&_test_environment).await;
-	let app = common::application(f.clone()).await;
+	let (f, url, schema) = application_fixture.runtime.parts();
+	let app = application_fixture.application.clone();
 	let mut generated = Vec::new();
 	for id in ["", "", "explicit-tool"] {
 		let mut entry = tool(id);
@@ -170,11 +174,11 @@ async fn registry_assigns_uuid_v7_to_blank_ids_and_preserves_explicit_ids(
 #[tokio::test]
 async fn installation_reconfiguration_keeps_manifest_and_events_idempotent(
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	application_fixture: common::ApplicationFixture,
 ) {
-	let (f, url, schema) = setup(&_test_environment).await;
-	let app = common::application(f.clone()).await;
+	let (f, url, schema) = application_fixture.runtime.parts();
+	let app = application_fixture.application.clone();
 	let package = Package {
 		entity: tool("installed"),
 		author: "test".into(),
@@ -257,7 +261,8 @@ async fn installation_reconfiguration_keeps_manifest_and_events_idempotent(
 			json!({"digest":published["digest"],"configuration":{}}),
 		),
 	] {
-		let rejected = http_client()
+		let rejected = app
+			.raw_http
 			.post(app.url(endpoint))
 			.bearer_auth(&f.config.api_token)
 			.json(&input)
@@ -284,10 +289,10 @@ async fn installation_reconfiguration_keeps_manifest_and_events_idempotent(
 #[tokio::test]
 async fn ancestor_dependencies_and_invalid_local_executor_are_rejected(
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	application_fixture: common::ApplicationFixture,
 ) {
-	let (f, url, schema) = setup(&_test_environment).await;
+	let (f, url, schema) = application_fixture.runtime.parts();
 	let workspace = f.store.create_workspace("tree", "goal").await.unwrap();
 	let input = NewTask {
 		title: "task".into(),
@@ -325,7 +330,7 @@ async fn ancestor_dependencies_and_invalid_local_executor_are_rejected(
 			.await
 			.is_err()
 	);
-	let app = common::application(f.clone()).await;
+	let app = application_fixture.application.clone();
 	let mut entry = tool("bad-executor");
 	for agent in [
 		json!({"id":"","version":"1.0.0"}),
@@ -354,11 +359,11 @@ async fn ancestor_dependencies_and_invalid_local_executor_are_rejected(
 #[tokio::test]
 async fn visible_messages_and_events_survive_a_denied_burst(
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	application_fixture: common::ApplicationFixture,
 ) {
-	let (f, url, schema) = setup(&_test_environment).await;
-	let app = common::application(f.clone()).await;
+	let (f, url, schema) = application_fixture.runtime.parts();
+	let app = application_fixture.application.clone();
 	let (mut policy, token, task) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let workspace = f.store.task(task).await.unwrap().workspace_id;
 	f.store
@@ -427,11 +432,11 @@ async fn visible_messages_and_events_survive_a_denied_burst(
 #[tokio::test]
 async fn delegation_retry_and_run_message_have_one_durable_effect(
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	application_fixture: common::ApplicationFixture,
 ) {
-	let (f, url, schema) = setup(&_test_environment).await;
-	let app = common::application(f.clone()).await;
+	let (f, url, schema) = application_fixture.runtime.parts();
+	let app = application_fixture.application.clone();
 	bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let workspace = f.store.create_workspace("operator", "goal").await.unwrap();
 	let task = f
@@ -557,11 +562,11 @@ fn remote_manifest_validates_secret_reference_without_resolving_it() {
 #[tokio::test]
 async fn scoped_run_details_keep_memory_home_namespace(
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	application_fixture: common::ApplicationFixture,
 ) {
-	let (f, url, schema) = setup(&_test_environment).await;
-	let app = common::application(f.clone()).await;
+	let (f, url, schema) = application_fixture.runtime.parts();
+	let app = application_fixture.application.clone();
 	let (_, token, task) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	assert_eq!(
 		request(
@@ -607,28 +612,19 @@ fn agent_versions_fit_the_authorization_identity_limit() {
 #[tokio::test]
 async fn mesh_rejects_a_peer_substituting_another_node_identity(
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	application_fixture: common::ApplicationFixture,
+
+	#[future(awt)]
+	#[from(mesh_rejects_a_peer_substituting_another_node_identity_provider)]
+	fixture: MeshRejectsAPeerSubstitutingAnotherNodeIdentityProvider,
 ) {
+	let server = fixture.server;
+
 	use reinhardt::query::{Alias, PostgresQueryBuilder, Query};
-	let (f, url, schema) = setup(&_test_environment).await;
-	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-	let endpoint = format!("http://{}", listener.local_addr().unwrap());
-	let server = tokio::spawn(async move {
-		axum::serve(
-			listener,
-			axum::Router::new().route(
-				"/federation/v0.1/observe",
-				axum::routing::get(|| async {
-					axum::Json(
-						json!({"node_id":"aidash://substituted","runs":[],"human_requests":[],"invocations":[]}),
-					)
-				}),
-			),
-		)
-		.await
-		.unwrap();
-	});
+	let (f, url, schema) = application_fixture.runtime.parts();
+
+	let endpoint = server.url.clone();
 	sqlx::query(
 		&Query::insert()
 			.into_table(Alias::new("peers"))
@@ -655,7 +651,7 @@ async fn mesh_rejects_a_peer_substituting_another_node_identity(
 	.await
 	.unwrap();
 	let (status, mesh) = request(
-		&common::application(f.clone()).await,
+		&application_fixture.application,
 		&f.config.api_token,
 		"GET",
 		"/api/mesh",
@@ -671,8 +667,8 @@ async fn mesh_rejects_a_peer_substituting_another_node_identity(
 			.unwrap()
 			.contains("identity mismatch")
 	);
-	server.abort();
-	let _ = server.await;
+	drop(server);
+
 	cleanup(f, &url, &schema).await;
 }
 
@@ -680,11 +676,11 @@ async fn mesh_rejects_a_peer_substituting_another_node_identity(
 #[tokio::test]
 async fn oversized_agent_instructions_skills_and_tools_are_rejected_at_registration(
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	application_fixture: common::ApplicationFixture,
 ) {
-	let (f, url, schema) = setup(&_test_environment).await;
-	let app = common::application(f.clone()).await;
+	let (f, url, schema) = application_fixture.runtime.parts();
+	let app = application_fixture.application.clone();
 	bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let mut skill = tool("large-skill");
 	skill.kind = "skill".into();
@@ -727,18 +723,15 @@ async fn oversized_agent_instructions_skills_and_tools_are_rejected_at_registrat
 #[rstest::rstest]
 #[tokio::test]
 async fn malformed_broker_messages_do_not_stop_valid_delivery(
+	#[from(common::native_application)] application_future: common::ApplicationFuture,
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(review_bus)]
+	#[with(application_future.clone())]
+	bus: aidash_server::bus::EventBus,
 ) {
 	use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
-	let (f, url, schema) = setup(&_test_environment).await;
-	let bus = aidash_server::bus::EventBus::connect(
-		&_test_environment.nats_url,
-		&format!("aidash://review-{}", Uuid::new_v4().simple()),
-	)
-	.await
-	.unwrap();
+	let application_fixture = application_future.await;
+	let (f, url, schema) = application_fixture.runtime.parts();
 	let id = Uuid::new_v4();
 	for payload in [
 		"not-json".to_owned(),
@@ -753,6 +746,7 @@ async fn malformed_broker_messages_do_not_stop_valid_delivery(
 			.await
 			.unwrap();
 	}
+	// Act: start delivery after publishing the malformed broker inputs.
 	let worker_bus = bus.clone();
 	let worker_f = f.clone();
 	let consumer = tokio::spawn(async move { worker_bus.consumer(worker_f).await });
@@ -802,12 +796,12 @@ async fn malformed_broker_messages_do_not_stop_valid_delivery(
 #[tokio::test]
 async fn registry_replays_emit_once_and_disabled_peers_can_lose_trust(
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	application_fixture: common::ApplicationFixture,
 ) {
 	use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
-	let (f, url, schema) = setup(&_test_environment).await;
-	let app = common::application(f.clone()).await;
+	let (f, url, schema) = application_fixture.runtime.parts();
+	let app = application_fixture.application.clone();
 	for _ in 0..2 {
 		let (status, body) = request(
 			&app,
@@ -906,11 +900,11 @@ async fn registry_replays_emit_once_and_disabled_peers_can_lose_trust(
 #[tokio::test]
 async fn workspace_messages_deduplicate_retries_and_isolate_actor_and_workspace_keys(
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	application_fixture: common::ApplicationFixture,
 ) {
-	let (f, url, schema) = setup(&_test_environment).await;
-	let app = common::application(f.clone()).await;
+	let (f, url, schema) = application_fixture.runtime.parts();
+	let app = application_fixture.application.clone();
 	let (_, token, task) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let workspace = f.store.task(task).await.unwrap().workspace_id;
 	let key = Uuid::new_v4();
@@ -979,11 +973,11 @@ async fn workspace_messages_deduplicate_retries_and_isolate_actor_and_workspace_
 #[tokio::test]
 async fn operator_conversation_returns_the_committed_task_revision(
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	application_fixture: common::ApplicationFixture,
 ) {
-	let (f, url, schema) = setup(&_test_environment).await;
-	let app = common::application(f.clone()).await;
+	let (f, url, schema) = application_fixture.runtime.parts();
+	let app = application_fixture.application.clone();
 	bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let (status, response) = request(&app, &f.config.api_token, "POST", "/api/conversations", json!({"title":"Conversation","goal":"Work","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"})).await;
 	assert_eq!(status, 200, "{response}");
@@ -1001,30 +995,22 @@ async fn operator_conversation_returns_the_committed_task_revision(
 #[tokio::test]
 async fn plugin_control_shaped_data_does_not_suspend_execution(
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	application_fixture: common::ApplicationFixture,
+
+	#[future(awt)]
+	#[from(plugin_control_shaped_data_does_not_suspend_execution_provider)]
+	fixture: PluginControlShapedDataDoesNotSuspendExecutionProvider,
 ) {
+	let output = fixture.state.output;
+	let server = fixture.server;
+
 	use aidash_server::harness::Harness;
-	use axum::{Json, Router, routing::post};
-	let (f, url, schema) = setup(&_test_environment).await;
-	let output = json!({"human_request_id":Uuid::new_v4(),"wait_seconds":60});
-	let result = output.clone();
-	let server = Router::new()
-        .route("/effect", post(move || { let result = result.clone(); async move { Json(result) } }))
-        .route("/v1/chat/completions", post(|Json(body): Json<Value>| async move {
-            let context: Value = serde_json::from_str(body["messages"][1]["content"].as_str().unwrap()).unwrap();
-            let done = context["history"].as_array().unwrap().iter().any(|e| e["kind"] == "tool");
-            let message = if done { json!({"role":"assistant","content":"Completed"}) } else {
-                json!({"role":"assistant","content":null,"tool_calls":[{"id":"call-1","type":"function","function":{"name":"plugin_0","arguments":"{}"}}]})
-            };
-            Json(json!({"choices":[{"index":0,"finish_reason":if done {"stop"} else {"tool_calls"},"message":message}],"usage":{"prompt_tokens":1,"completion_tokens":1}}))
-        }));
-	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-	let endpoint = format!("http://{}", listener.local_addr().unwrap());
-	let server = tokio::spawn(async move {
-		axum::serve(listener, server).await.unwrap();
-	});
-	let app = common::application(f.clone()).await;
+
+	let (f, url, schema) = application_fixture.runtime.parts();
+
+	let endpoint = server.url.clone();
+	let app = application_fixture.application.clone();
 	let (_, token, task) = bootstrap(&f, &app, &endpoint).await;
 	assert_eq!(
 		request(
@@ -1061,8 +1047,8 @@ async fn plugin_control_shaped_data_does_not_suspend_execution(
 			.iter()
 			.any(|e| e["kind"] == "tool" && e["result"] == output)
 	);
-	server.abort();
-	let _ = server.await;
+	drop(server);
+
 	cleanup(f, &url, &schema).await;
 }
 
@@ -1073,3 +1059,93 @@ use reinhardt::query::ExprTrait;
 use reinhardt::query::IntoValue;
 
 use reinhardt::query::SimpleExpr;
+
+#[fixture]
+fn mesh_rejects_a_peer_substituting_another_node_identity_router() -> std::sync::Arc<Router> {
+	std::sync::Arc::new(Router::new().handler(
+		"/federation/v0.1/observe",
+		handler(http::Method::GET, |_request: reinhardt::Request| async {
+			reinhardt::Response::ok()
+				.with_json(
+					&json!({"node_id":"aidash://substituted","runs":[],"human_requests":[],"invocations":[]}),
+				)
+				.unwrap()
+		}),
+	))
+}
+struct MeshRejectsAPeerSubstitutingAnotherNodeIdentityProvider {
+	server: reinhardt::test::fixtures::server::TestServerGuard,
+}
+#[fixture]
+async fn mesh_rejects_a_peer_substituting_another_node_identity_provider(
+	#[from(mesh_rejects_a_peer_substituting_another_node_identity_router)] _router: std::sync::Arc<
+		Router,
+	>,
+	#[future(awt)]
+	#[from(upstream::upstream)]
+	#[with(_router.clone())]
+	server: reinhardt::test::fixtures::server::TestServerGuard,
+) -> MeshRejectsAPeerSubstitutingAnotherNodeIdentityProvider {
+	MeshRejectsAPeerSubstitutingAnotherNodeIdentityProvider { server }
+}
+
+#[derive(Clone)]
+struct PluginControlShapedDataDoesNotSuspendExecutionState {
+	output: Value,
+}
+#[fixture]
+fn plugin_control_shaped_data_does_not_suspend_execution_state()
+-> PluginControlShapedDataDoesNotSuspendExecutionState {
+	PluginControlShapedDataDoesNotSuspendExecutionState {
+		output: json!({"human_request_id":Uuid::new_v4(),"wait_seconds":60}),
+	}
+}
+#[fixture]
+fn plugin_control_shaped_data_does_not_suspend_execution_router(
+	#[from(plugin_control_shaped_data_does_not_suspend_execution_state)]
+	state: PluginControlShapedDataDoesNotSuspendExecutionState,
+) -> std::sync::Arc<Router> {
+	let output = state.output.clone();
+	let result = output.clone();
+	std::sync::Arc::new(Router::new()
+        .handler("/effect", handler(http::Method::POST, move |_request: reinhardt::Request| { let result = result.clone(); async move { reinhardt::Response::ok().with_json(&result).unwrap() } }))
+        .handler("/v1/chat/completions", handler(http::Method::POST, |request: reinhardt::Request| {let body = request.json::<Value>().unwrap();async move {
+            let context: Value = serde_json::from_str(body["messages"][1]["content"].as_str().unwrap()).unwrap();
+            let done = context["history"].as_array().unwrap().iter().any(|e| e["kind"] == "tool");
+            let message = if done { json!({"role":"assistant","content":"Completed"}) } else {
+                json!({"role":"assistant","content":null,"tool_calls":[{"id":"call-1","type":"function","function":{"name":"plugin_0","arguments":"{}"}}]})
+            };
+            reinhardt::Response::ok().with_json(&json!({"choices":[{"index":0,"finish_reason":if done {"stop"} else {"tool_calls"},"message":message}],"usage":{"prompt_tokens":1,"completion_tokens":1}})).unwrap()
+        }})))
+}
+struct PluginControlShapedDataDoesNotSuspendExecutionProvider {
+	state: PluginControlShapedDataDoesNotSuspendExecutionState,
+	server: reinhardt::test::fixtures::server::TestServerGuard,
+}
+#[fixture]
+async fn plugin_control_shaped_data_does_not_suspend_execution_provider(
+	#[from(plugin_control_shaped_data_does_not_suspend_execution_state)]
+	state: PluginControlShapedDataDoesNotSuspendExecutionState,
+	#[from(plugin_control_shaped_data_does_not_suspend_execution_router)]
+	#[with(state.clone())]
+	_router: std::sync::Arc<Router>,
+	#[future(awt)]
+	#[from(upstream::upstream)]
+	#[with(_router.clone())]
+	server: reinhardt::test::fixtures::server::TestServerGuard,
+) -> PluginControlShapedDataDoesNotSuspendExecutionProvider {
+	PluginControlShapedDataDoesNotSuspendExecutionProvider { state, server }
+}
+
+#[fixture]
+async fn review_bus(
+	#[from(common::native_application)] application: common::ApplicationFuture,
+) -> aidash_server::bus::EventBus {
+	let runtime = application.await.runtime;
+	aidash_server::bus::EventBus::connect(
+		&runtime.federation.config.nats_url,
+		&format!("aidash://review-{}", Uuid::new_v4().simple()),
+	)
+	.await
+	.unwrap()
+}

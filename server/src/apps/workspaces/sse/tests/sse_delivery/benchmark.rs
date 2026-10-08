@@ -142,7 +142,9 @@ fn quantile(values: &[f64], fraction: f64) -> f64 {
 #[rstest::rstest]
 #[tokio::test(flavor = "multi_thread", worker_threads = 12)]
 #[ignore = "fixed 3x30s active + 6x60s idle; scripts/test-sse-delivery.sh --benchmark"]
-async fn accepted_load_and_idle_reduction(#[future(awt)] test_environment: Arc<TestEnvironment>) {
+async fn accepted_load_and_idle_reduction(
+	#[from(benchmark_roots)] mut scenarios: std::collections::VecDeque<ScenarioFuture>,
+) {
 	let baseline = PathBuf::from(
 		std::env::var_os("AIDASH_SSE_BASELINE_BINARY")
 			.expect("build the inspected polling baseline first"),
@@ -151,14 +153,8 @@ async fn accepted_load_and_idle_reduction(#[future(awt)] test_environment: Arc<T
 	let mut summaries = Vec::new();
 	// One dedicated Compose stack; no concurrent cases or other fixture writes.
 	for repetition in 0..3 {
-		let fixture = Fixture::new(
-			&test_environment,
-			Duration::from_secs(60),
-			Duration::from_secs(30),
-			128,
-		)
-		.await;
-		let dir = directory(&format!("active-{repetition}"), &fixture.schema);
+		let (fixture, dir) = scenarios.pop_front().unwrap().await;
+
 		// SeaQuery has no CREATE EXTENSION DDL builder. This is fixture-only instrumentation.
 		fixture
 			.f
@@ -168,6 +164,7 @@ async fn accepted_load_and_idle_reduction(#[future(awt)] test_environment: Arc<T
 			.execute("CREATE EXTENSION IF NOT EXISTS pg_stat_statements WITH SCHEMA public")
 			.await
 			.unwrap();
+		// Act: compare per-ordinal child processes after fixture instrumentation or baseline selection.
 		let mut processes = servers(&fixture, &dir, 60000, &candidate, true).await;
 		let (streams, mut received) = observers(&processes, &fixture).await;
 		prime(&fixture, &mut received).await;
@@ -176,7 +173,7 @@ async fn accepted_load_and_idle_reduction(#[future(awt)] test_environment: Arc<T
 		let sql_before = sql_counts(&fixture).await;
 		let resources_before = resources(&processes);
 		let window = Instant::now();
-		let client = reqwest::Client::new();
+		let client = fixture.f.client.clone();
 		let mut starts = Vec::new();
 		let mut commit_responses = Vec::new();
 		let mut resources_during = Vec::new();
@@ -310,14 +307,9 @@ async fn accepted_load_and_idle_reduction(#[future(awt)] test_environment: Arc<T
 			("baseline", baseline.as_path(), false),
 			("candidate", candidate.as_path(), true),
 		] {
-			let fixture = Fixture::new(
-				&test_environment,
-				Duration::from_secs(5),
-				Duration::from_secs(30),
-				128,
-			)
-			.await;
-			let dir = directory(&format!("idle-{label}-{repetition}"), &fixture.schema);
+			let (fixture, dir) = scenarios.pop_front().unwrap().await;
+
+			// Act: compare per-ordinal child processes after fixture instrumentation or baseline selection.
 			let mut processes = servers(&fixture, &dir, 5000, binary, candidate).await;
 			let (streams, mut received) = observers(&processes, &fixture).await;
 			prime(&fixture, &mut received).await;
@@ -358,6 +350,7 @@ async fn accepted_load_and_idle_reduction(#[future(awt)] test_environment: Arc<T
 		);
 		assert!(reduction >= 0.90, "idle query reduction acceptance");
 	}
+	// Act: publish the aggregate measurement evidence after all scenarios finish.
 	let dir = directory("acceptance", "summary");
 	std::fs::write(
 		dir.join("results.json"),
@@ -367,3 +360,73 @@ async fn accepted_load_and_idle_reduction(#[future(awt)] test_environment: Arc<T
 }
 
 use reinhardt::query::{ExprTrait as _, QueryStatementBuilder as _};
+
+type ScenarioFuture =
+	futures_util::future::Shared<futures_util::future::BoxFuture<'static, (Arc<Fixture>, PathBuf)>>;
+#[fixture]
+fn scenario(
+	#[default(String::from("active"))] label: String,
+	#[default(Duration::from_secs(60))] interval: Duration,
+	#[from(sse_fixture)]
+	#[with(interval)]
+	root: SseFuture,
+	#[from(evidence_directory)]
+	#[with(label.clone(),root.clone())]
+	dir_future: DirectoryFuture,
+) -> ScenarioFuture {
+	let _ = (interval, label);
+	async move {
+		let fixture = root.await;
+		let dir = dir_future.await;
+		(fixture, dir)
+	}
+	.boxed()
+	.shared()
+}
+#[fixture]
+fn active_group(
+	#[from(scenario)]
+	#[with(String::from("active-0"))]
+	a: ScenarioFuture,
+	#[from(scenario)]
+	#[with(String::from("active-1"))]
+	b: ScenarioFuture,
+	#[from(scenario)]
+	#[with(String::from("active-2"))]
+	c: ScenarioFuture,
+) -> Vec<ScenarioFuture> {
+	vec![a, b, c]
+}
+#[fixture]
+fn idle_pair(
+	#[default(0)] repetition: usize,
+	#[from(scenario)]
+	#[with(format!("idle-baseline-{repetition}"),Duration::from_secs(5))]
+	baseline: ScenarioFuture,
+	#[from(scenario)]
+	#[with(format!("idle-candidate-{repetition}"),Duration::from_secs(5))]
+	candidate: ScenarioFuture,
+) -> Vec<ScenarioFuture> {
+	let _ = repetition;
+	vec![baseline, candidate]
+}
+#[fixture]
+fn benchmark_roots(
+	active_group: Vec<ScenarioFuture>,
+	#[from(idle_pair)]
+	#[with(0)]
+	a: Vec<ScenarioFuture>,
+	#[from(idle_pair)]
+	#[with(1)]
+	b: Vec<ScenarioFuture>,
+	#[from(idle_pair)]
+	#[with(2)]
+	c: Vec<ScenarioFuture>,
+) -> std::collections::VecDeque<ScenarioFuture> {
+	active_group
+		.into_iter()
+		.chain(a)
+		.chain(b)
+		.chain(c)
+		.collect()
+}
