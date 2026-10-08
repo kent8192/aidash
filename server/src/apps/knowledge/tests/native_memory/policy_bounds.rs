@@ -835,15 +835,14 @@ async fn expiry_drains_in_batches_no_larger_than_mutation_capacity(
 async fn semantic_sources_allow_the_pinned_provenance_limit_above_1024(
 	#[future] database: DatabaseFixture,
 	mut bounds: Bounds,
+
+	#[future(awt)]
+	#[from(semantic_sources_allow_the_pinned_provenance_limit_above_1024_provider)]
+	fixture: SemanticSourcesAllowThePinnedProvenanceLimitAbove1024Provider,
 ) {
-	use axum::{Json, Router, routing::post};
-	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-	let endpoint = format!("http://{}/v1", listener.local_addr().unwrap());
-	let server = tokio::spawn(async move {
-		axum::serve(listener, Router::new().route("/v1/embeddings", post(|Json(input): Json<serde_json::Value>| async move {
-			Json(json!({"model":input["model"],"data":[{"index":0,"embedding":[1.,0.1,0.]}],"usage":{"prompt_tokens":1}}))
-		}))).await.unwrap();
-	});
+	let server = fixture.server;
+
+	let endpoint = format!("{}/v1", server.url);
 	bounds.max_units = 32;
 	bounds.max_graph_visits = 4096;
 	let database = database.await;
@@ -901,7 +900,7 @@ async fn semantic_sources_allow_the_pinned_provenance_limit_above_1024(
 		"READY"
 	);
 	assert_large_graph_run_is_readable(&store, &bank, last).await;
-	server.abort();
+	drop(server);
 }
 
 #[rstest]
@@ -1427,4 +1426,26 @@ async fn smaller_content_policy_rejects_existing_units_atomically(
 		.unwrap();
 		assert_eq!(unchanged.agent, reference("a"));
 	}
+}
+
+#[fixture]
+fn semantic_sources_allow_the_pinned_provenance_limit_above_1024_router() -> std::sync::Arc<Router>
+{
+	std::sync::Arc::new(Router::new().handler("/v1/embeddings", handler(http::Method::POST, |request: reinhardt::Request| {let input = request.json::<serde_json::Value>().unwrap();async move {
+			reinhardt::Response::ok().with_json(&json!({"model":input["model"],"data":[{"index":0,"embedding":[1.,0.1,0.]}],"usage":{"prompt_tokens":1}})).unwrap()
+		}})))
+}
+struct SemanticSourcesAllowThePinnedProvenanceLimitAbove1024Provider {
+	server: reinhardt::test::fixtures::server::TestServerGuard,
+}
+#[fixture]
+async fn semantic_sources_allow_the_pinned_provenance_limit_above_1024_provider(
+	#[from(semantic_sources_allow_the_pinned_provenance_limit_above_1024_router)]
+	_router: std::sync::Arc<Router>,
+	#[future(awt)]
+	#[from(upstream::upstream)]
+	#[with(_router.clone())]
+	server: reinhardt::test::fixtures::server::TestServerGuard,
+) -> SemanticSourcesAllowThePinnedProvenanceLimitAbove1024Provider {
+	SemanticSourcesAllowThePinnedProvenanceLimitAbove1024Provider { server }
 }

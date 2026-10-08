@@ -1,47 +1,49 @@
+use common::upstream_fixtures as upstream;
+use reinhardt::ServerRouter as Router;
+use rstest::fixture;
+use upstream::handler;
 #[path = "../../execution/tests/support/legacy.rs"]
 mod common;
 use aidash_server::semantic::{self, ConfigureIndex, EmbeddingConfig, IndexSpec, VectorConfig};
-use axum::{Json, Router, routing::post};
+
 use common::request;
-use common::{TestEnvironment, test_environment};
 use serde_json::{Value, json};
+use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 
 struct ControlledContext {
-	_environment: std::sync::Arc<TestEnvironment>,
+	_fixture: common::ApplicationFixture,
 	f: aidash_server::federation::Federation,
 	worker: aidash_server::harness::Harness,
 	url: String,
 	schema: String,
 	captured: std::sync::Arc<std::sync::Mutex<Vec<Value>>>,
-	model_server: tokio::task::JoinHandle<()>,
-	embedding_server: tokio::task::JoinHandle<()>,
+	model_server: reinhardt::test::fixtures::server::TestServerGuard,
+	embedding_server: std::sync::Arc<reinhardt::test::fixtures::server::TestServerGuard>,
 }
 
 #[rstest::fixture]
 async fn controlled_context(
 	#[default(true)] memory: bool,
 	#[default(true)] workspace_retrieval: bool,
-	#[future(awt)] test_environment: std::sync::Arc<TestEnvironment>,
+	#[future(awt)]
+	#[from(common::native_application)]
+	application_fixture: common::ApplicationFixture,
+
+	#[future(awt)]
+	#[from(controlled_context_provider)]
+	fixture: ControlledContextProvider,
+
+	#[future(awt)] embeddings: std::sync::Arc<reinhardt::test::fixtures::server::TestServerGuard>,
 ) -> ControlledContext {
+	let captured = fixture.state.captured;
+	let model_server = fixture.server;
+
 	use aidash_server::domain::{ArtifactInput, qualified_agent};
-	let environment = test_environment;
-	let (f, url, schema) = common::setup(&environment).await;
-	let app = common::application(f.clone()).await;
-	let captured = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-	let received = captured.clone();
-	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-	let endpoint = format!("http://{}", listener.local_addr().unwrap());
-	let model_server = tokio::spawn(async move {
-		axum::serve(listener, Router::new().route("/v1/chat/completions", post(move |Json(body): Json<Value>| {
-			let received = received.clone();
-			async move {
-				let context: Value = serde_json::from_str(body["messages"][1]["content"].as_str().unwrap()).unwrap();
-				received.lock().unwrap().push(context);
-				Json(json!({"choices":[{"finish_reason":"stop","message":{"content":"Complete"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}))
-			}
-		}))).await.unwrap();
-	});
+	let (f, url, schema) = application_fixture.runtime.parts();
+	let app = application_fixture.application.clone();
+
+	let endpoint = model_server.url.clone();
 	let (mut policy, token, task) = common::bootstrap(&f, &app, &endpoint).await;
 	let mut agent = f.registry.get("research", "1.0.0").await.unwrap();
 	agent.version = "1.0.1".into();
@@ -75,7 +77,8 @@ async fn controlled_context(
 		200
 	);
 	let workspace = f.store.task(task).await.unwrap().workspace_id;
-	let (embedding_endpoint, embedding_server) = embeddings().await;
+	let embedding_endpoint = embeddings.url.clone();
+	let embedding_server = embeddings;
 	configure(
 		&app,
 		&f.config.api_token,
@@ -144,7 +147,7 @@ async fn controlled_context(
 	}
 	semantic::worker::sweep(&f.store).await.unwrap();
 	ControlledContext {
-		_environment: environment,
+		_fixture: application_fixture,
 		f,
 		worker,
 		url,
@@ -200,25 +203,11 @@ async fn automatic_semantic_context_respects_each_agent_behavior_control(
 	}
 	fixture.worker.federation.store.pool.close().await;
 	fixture.worker.federation.store.control_pool.close().await;
-	fixture.model_server.abort();
-	fixture.embedding_server.abort();
+	drop(fixture.model_server);
+	drop(fixture.embedding_server);
 	dispose(fixture.f, &fixture.url, &fixture.schema).await;
 }
 
-async fn embeddings() -> (String, tokio::task::JoinHandle<()>) {
-	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-	let url = format!("http://{}", listener.local_addr().unwrap());
-	let server = tokio::spawn(async move {
-		axum::serve(listener,Router::new().route("/v1/embeddings",post(|Json(input):Json<Value>| async move {
-            let text=input["input"].as_str().unwrap_or_default().to_lowercase();
-            // Explicit fixture semantics: related concepts share a vector even
-            // when the query and stored text have no common keyword.
-            let vector=if text.contains("car") || text.contains("vehicle") {vec![1.0,0.0,0.0]} else if text.contains("bread") || text.contains("baking") {vec![0.0,1.0,0.0]} else {vec![0.0,0.0,1.0]};
-            Json(json!({"model":input["model"],"data":[{"index":0,"embedding":vector}],"usage":{"prompt_tokens":1,"total_tokens":1}}))
-        }))).await.unwrap();
-	});
-	(url, server)
-}
 fn spec(endpoint: &str) -> IndexSpec {
 	IndexSpec {
 		embedding: EmbeddingConfig {
@@ -320,12 +309,15 @@ async fn dispose(f: aidash_server::federation::Federation, url: &str, schema: &s
 async fn semantic_lifecycle_is_durable_revisioned_and_not_keyword_search(
 	#[case] provider: &str,
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	application_fixture: common::ApplicationFixture,
+
+	#[future(awt)] embeddings: std::sync::Arc<reinhardt::test::fixtures::server::TestServerGuard>,
 ) {
-	let (f, url, schema) = common::setup(&_test_environment).await;
-	let app = common::application(f.clone()).await;
-	let (endpoint, server) = embeddings().await;
+	let (f, url, schema) = application_fixture.runtime.parts();
+	let app = application_fixture.application.clone();
+	let endpoint = embeddings.url.clone();
+	let server = embeddings;
 	let (_, token, task) = common::bootstrap(&f, &app, &endpoint).await;
 	let workspace = f.store.task(task).await.unwrap().workspace_id;
 	let mut config = spec(&endpoint);
@@ -472,7 +464,7 @@ async fn semantic_lifecycle_is_durable_revisioned_and_not_keyword_search(
 			.await
 			.unwrap()
 	);
-	server.abort();
+	drop(server);
 	dispose(f, &url, &schema).await;
 }
 
@@ -480,12 +472,15 @@ async fn semantic_lifecycle_is_durable_revisioned_and_not_keyword_search(
 #[tokio::test]
 async fn semantic_access_is_checked_before_search_and_jobs_retain_revocation(
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	application_fixture: common::ApplicationFixture,
+
+	#[future(awt)] embeddings: std::sync::Arc<reinhardt::test::fixtures::server::TestServerGuard>,
 ) {
-	let (f, url, schema) = common::setup(&_test_environment).await;
-	let app = common::application(f.clone()).await;
-	let (endpoint, server) = embeddings().await;
+	let (f, url, schema) = application_fixture.runtime.parts();
+	let app = application_fixture.application.clone();
+	let endpoint = embeddings.url.clone();
+	let server = embeddings;
 	let (mut policy, token, task) = common::bootstrap(&f, &app, &endpoint).await;
 	let workspace = f.store.task(task).await.unwrap().workspace_id;
 	configure(&app, &f.config.api_token, workspace, &spec(&endpoint), 0).await;
@@ -528,7 +523,7 @@ async fn semantic_access_is_checked_before_search_and_jobs_retain_revocation(
 	);
 	// No allowed candidates means no embedding request is necessary, even when
 	// the embedding backend is down. The caller cannot infer denied sources.
-	server.abort();
+	drop(server);
 	let response = search(&app, &token, workspace).await;
 	assert_eq!(response.0, 200, "{}", response.1);
 	assert_eq!(response.1["matches"], json!([]));
@@ -603,12 +598,15 @@ async fn semantic_access_is_checked_before_search_and_jobs_retain_revocation(
 #[tokio::test]
 async fn semantic_outage_and_input_bounds_are_visible_and_retriable(
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	application_fixture: common::ApplicationFixture,
+
+	#[future(awt)] embeddings: std::sync::Arc<reinhardt::test::fixtures::server::TestServerGuard>,
 ) {
-	let (f, url, schema) = common::setup(&_test_environment).await;
-	let app = common::application(f.clone()).await;
-	let (endpoint, server) = embeddings().await;
+	let (f, url, schema) = application_fixture.runtime.parts();
+	let app = application_fixture.application.clone();
+	let endpoint = embeddings.url.clone();
+	let server = embeddings;
 	let (_, token, task) = common::bootstrap(&f, &app, &endpoint).await;
 	let workspace = f.store.task(task).await.unwrap().workspace_id;
 	let mut config = spec(&endpoint);
@@ -675,7 +673,7 @@ async fn semantic_outage_and_input_bounds_are_visible_and_retriable(
 	assert_eq!(status, 400);
 	let (status,_)=request(&app,&token,"POST",&format!("/api/workspaces/{workspace}/semantic/entries"),json!({"key":"cars","expected_revision":99,"source":{"kind":"memory","text":"changed"},"metadata":{}})).await;
 	assert_eq!(status, 409);
-	server.abort();
+	drop(server);
 	let response = search(&app, &token, workspace).await;
 	assert_eq!(response.0, 503, "embedding outage must fail visibly");
 	assert!(response.1["matches"].is_null());
@@ -688,27 +686,24 @@ async fn semantic_outage_and_input_bounds_are_visible_and_retriable(
 #[tokio::test]
 async fn semantic_context_is_provenanced_and_revocation_hides_run_journals(
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	application_fixture: common::ApplicationFixture,
+
+	#[future(awt)]
+	#[from(semantic_context_is_provenanced_and_revocation_hides_run_journals_provider)]
+	fixture: SemanticContextIsProvenancedAndRevocationHidesRunJournalsProvider,
+
+	#[future(awt)] embeddings: std::sync::Arc<reinhardt::test::fixtures::server::TestServerGuard>,
 ) {
-	use std::sync::{Arc, Mutex};
-	let (f, url, schema) = common::setup(&_test_environment).await;
-	let app = common::application(f.clone()).await;
-	let (embedding_endpoint, embedding_server) = embeddings().await;
-	let captured = Arc::new(Mutex::new(Vec::<Value>::new()));
-	let requests = captured.clone();
-	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-	let endpoint = format!("http://{}", listener.local_addr().unwrap());
-	let server = tokio::spawn(async move {
-		axum::serve(listener,Router::new().route("/v1/chat/completions",post(move |Json(body):Json<Value>| {
-            let requests=requests.clone();
-            async move {
-                let context:Value=serde_json::from_str(body["messages"][1]["content"].as_str().unwrap()).unwrap();
-                requests.lock().unwrap().push(context);
-                Json(json!({"choices":[{"index":0,"finish_reason":"tool_calls","message":{"role":"assistant","content":null,"tool_calls":[{"id":"remember-car","type":"function","function":{"name":"workspace_observe","arguments":"{}"}}]}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}))
-            }
-        }))).await.unwrap();
-	});
+	let captured = fixture.state.captured;
+	let server = fixture.server;
+
+	let (f, url, schema) = application_fixture.runtime.parts();
+	let app = application_fixture.application.clone();
+	let embedding_endpoint = embeddings.url.clone();
+	let embedding_server = embeddings;
+
+	let endpoint = server.url.clone();
 	let (mut policy, token, task) = common::bootstrap(&f, &app, &endpoint).await;
 	let workspace = f.store.task(task).await.unwrap().workspace_id;
 	configure(
@@ -850,8 +845,8 @@ async fn semantic_context_is_provenanced_and_revocation_hides_run_journals(
 	assert_eq!(captured.lock().unwrap().len(), 1);
 	worker.federation.store.pool.close().await;
 	worker.federation.store.control_pool.close().await;
-	server.abort();
-	embedding_server.abort();
+	drop(server);
+	drop(embedding_server);
 	dispose(f, &url, &schema).await;
 }
 
@@ -859,13 +854,16 @@ async fn semantic_context_is_provenanced_and_revocation_hides_run_journals(
 #[tokio::test]
 async fn linked_sources_and_agent_metadata_filters_respect_original_authority(
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	application_fixture: common::ApplicationFixture,
+
+	#[future(awt)] embeddings: std::sync::Arc<reinhardt::test::fixtures::server::TestServerGuard>,
 ) {
 	use aidash_server::domain::{ArtifactInput, qualified_agent};
-	let (f, url, schema) = common::setup(&_test_environment).await;
-	let app = common::application(f.clone()).await;
-	let (endpoint, server) = embeddings().await;
+	let (f, url, schema) = application_fixture.runtime.parts();
+	let app = application_fixture.application.clone();
+	let endpoint = embeddings.url.clone();
+	let server = embeddings;
 	let (mut policy, token, task) = common::bootstrap(&f, &app, &endpoint).await;
 	let workspace = f.store.task(task).await.unwrap().workspace_id;
 	configure(&app, &f.config.api_token, workspace, &spec(&endpoint), 0).await;
@@ -1020,21 +1018,27 @@ async fn linked_sources_and_agent_metadata_filters_respect_original_authority(
 	configure(&app, &f.config.api_token, other.id, &spec(&endpoint), 0).await;
 	assert_eq!(request(&app,&f.config.api_token,"POST",&format!("/api/workspaces/{}/semantic/entries",other.id),json!({"key":"forged","expected_revision":0,"source":{"kind":"artifact","id":artifact.id},"metadata":{}})).await.0,403);
 	assert_eq!(search(&app, &token, other.id).await.0, 403);
-	server.abort();
+	drop(server);
 	dispose(f, &url, &schema).await;
 }
 
 #[rstest::rstest]
 #[tokio::test]
 async fn semantic_postgres_restart_and_lost_points_recover(
+	#[from(common::isolated_test_environment)] environment: futures_util::future::Shared<
+		futures_util::future::BoxFuture<'static, Arc<common::TestEnvironment>>,
+	>,
 	#[future(awt)]
-	#[from(common::isolated_test_environment)]
-	environment: std::sync::Arc<TestEnvironment>,
+	#[from(isolated_application)]
+	#[with(environment.clone())]
+	application_fixture: common::ApplicationFixture,
+	#[future(awt)] embeddings: std::sync::Arc<reinhardt::test::fixtures::server::TestServerGuard>,
 ) {
 	use aidash_application::ports::VectorIndex;
-	let (f, url, schema) = common::setup(&environment).await;
-	let app = common::application(f.clone()).await;
-	let (embedding, server) = embeddings().await;
+	let (f, url, schema) = application_fixture.runtime.parts();
+	let app = application_fixture.application.clone();
+	let embedding = embeddings.url.clone();
+	let server = embeddings;
 	let (_, token, task) = common::bootstrap(&f, &app, &embedding).await;
 	let workspace = f.store.task(task).await.unwrap().workspace_id;
 	let config = spec(&embedding);
@@ -1050,7 +1054,8 @@ async fn semantic_postgres_restart_and_lost_points_recover(
 	.await;
 	semantic::worker::sweep(&f.store).await.unwrap();
 	assert_eq!(search(&app, &token, workspace).await.0, 200);
-	environment.restart_database().await;
+	// Act: restart the exact PostgreSQL instance owned by the application fixture.
+	environment.await.restart_database().await;
 	assert_eq!(
 		search(&app, &token, workspace).await.1["matches"][0]["entry_id"],
 		entry["id"],
@@ -1084,7 +1089,7 @@ async fn semantic_postgres_restart_and_lost_points_recover(
 	.unwrap();
 	semantic::worker::sweep(&f.store).await.unwrap();
 	assert_eq!(search(&app, &token, workspace).await.0, 200);
-	server.abort();
+	drop(server);
 	dispose(f, &url, &schema).await;
 }
 
@@ -1093,3 +1098,132 @@ use reinhardt::query::QueryStatementBuilder as _;
 use reinhardt::query::SimpleExpr;
 
 use reinhardt::query::Expr;
+
+#[rstest::fixture]
+fn embeddings_router() -> std::sync::Arc<Router> {
+	std::sync::Arc::new(Router::new().handler("/v1/embeddings",handler(http::Method::POST, |request: reinhardt::Request| {let input = request.json::<Value>().unwrap();async move {
+            let text=input["input"].as_str().unwrap_or_default().to_lowercase();
+            // Explicit fixture semantics: related concepts share a vector even
+            // when the query and stored text have no common keyword.
+            let vector=if text.contains("car") || text.contains("vehicle") {vec![1.0,0.0,0.0]} else if text.contains("bread") || text.contains("baking") {vec![0.0,1.0,0.0]} else {vec![0.0,0.0,1.0]};
+            reinhardt::Response::ok().with_json(&json!({"model":input["model"],"data":[{"index":0,"embedding":vector}],"usage":{"prompt_tokens":1,"total_tokens":1}})).unwrap()
+        }})))
+}
+#[rstest::fixture]
+async fn embeddings(
+	#[from(embeddings_router)] _embeddings_router: std::sync::Arc<Router>,
+	#[future(awt)]
+	#[from(upstream::upstream)]
+	#[with(_embeddings_router.clone())]
+	server: reinhardt::test::fixtures::server::TestServerGuard,
+) -> std::sync::Arc<reinhardt::test::fixtures::server::TestServerGuard> {
+	std::sync::Arc::new(server)
+}
+
+#[rstest::fixture]
+fn isolated_application(
+	#[from(common::isolated_test_environment)] environment: futures_util::future::Shared<
+		futures_util::future::BoxFuture<'static, std::sync::Arc<common::TestEnvironment>>,
+	>,
+	#[from(common::execution_database)]
+	#[with(environment.clone())]
+	database: common::DatabaseFuture,
+	#[from(common::runtime)]
+	#[with(database.clone())]
+	runtime: common::RuntimeFuture,
+	#[from(common::native_application)]
+	#[with(Default::default(),aidash_server::sse::Service::new(Default::default()),Arc::new(|r|r),runtime.clone())]
+	application: common::ApplicationFuture,
+) -> common::ApplicationFuture {
+	let _ = (environment, database, runtime);
+	application
+}
+
+#[derive(Clone)]
+struct ControlledContextState {
+	captured: std::sync::Arc<std::sync::Mutex<Vec<Value>>>,
+}
+#[fixture]
+fn controlled_context_state() -> ControlledContextState {
+	ControlledContextState {
+		captured: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+	}
+}
+#[fixture]
+fn controlled_context_router(
+	#[from(controlled_context_state)] state: ControlledContextState,
+) -> std::sync::Arc<Router> {
+	let captured = state.captured.clone();
+	let received = captured.clone();
+	std::sync::Arc::new(Router::new().handler("/v1/chat/completions", handler(http::Method::POST, move |request: reinhardt::Request| {let body = request.json::<Value>().unwrap();
+			let received = received.clone();
+			async move {
+				let context: Value = serde_json::from_str(body["messages"][1]["content"].as_str().unwrap()).unwrap();
+				received.lock().unwrap().push(context);
+				reinhardt::Response::ok().with_json(&json!({"choices":[{"finish_reason":"stop","message":{"content":"Complete"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}})).unwrap()
+			}
+		})))
+}
+struct ControlledContextProvider {
+	state: ControlledContextState,
+	server: reinhardt::test::fixtures::server::TestServerGuard,
+}
+#[fixture]
+async fn controlled_context_provider(
+	#[from(controlled_context_state)] state: ControlledContextState,
+	#[from(controlled_context_router)]
+	#[with(state.clone())]
+	_router: std::sync::Arc<Router>,
+	#[future(awt)]
+	#[from(upstream::upstream)]
+	#[with(_router.clone())]
+	server: reinhardt::test::fixtures::server::TestServerGuard,
+) -> ControlledContextProvider {
+	ControlledContextProvider { state, server }
+}
+
+#[derive(Clone)]
+struct SemanticContextIsProvenancedAndRevocationHidesRunJournalsState {
+	captured: std::sync::Arc<std::sync::Mutex<Vec<Value>>>,
+}
+#[fixture]
+fn semantic_context_is_provenanced_and_revocation_hides_run_journals_state()
+-> SemanticContextIsProvenancedAndRevocationHidesRunJournalsState {
+	SemanticContextIsProvenancedAndRevocationHidesRunJournalsState {
+		captured: Arc::new(Mutex::new(Vec::<Value>::new())),
+	}
+}
+#[fixture]
+fn semantic_context_is_provenanced_and_revocation_hides_run_journals_router(
+	#[from(semantic_context_is_provenanced_and_revocation_hides_run_journals_state)]
+	state: SemanticContextIsProvenancedAndRevocationHidesRunJournalsState,
+) -> std::sync::Arc<Router> {
+	let captured = state.captured.clone();
+	let requests = captured.clone();
+	std::sync::Arc::new(Router::new().handler("/v1/chat/completions",handler(http::Method::POST, move |request: reinhardt::Request| {let body = request.json::<Value>().unwrap();
+            let requests=requests.clone();
+            async move {
+                let context:Value=serde_json::from_str(body["messages"][1]["content"].as_str().unwrap()).unwrap();
+                requests.lock().unwrap().push(context);
+                reinhardt::Response::ok().with_json(&json!({"choices":[{"index":0,"finish_reason":"tool_calls","message":{"role":"assistant","content":null,"tool_calls":[{"id":"remember-car","type":"function","function":{"name":"workspace_observe","arguments":"{}"}}]}}],"usage":{"prompt_tokens":1,"completion_tokens":1}})).unwrap()
+            }
+        })))
+}
+struct SemanticContextIsProvenancedAndRevocationHidesRunJournalsProvider {
+	state: SemanticContextIsProvenancedAndRevocationHidesRunJournalsState,
+	server: reinhardt::test::fixtures::server::TestServerGuard,
+}
+#[fixture]
+async fn semantic_context_is_provenanced_and_revocation_hides_run_journals_provider(
+	#[from(semantic_context_is_provenanced_and_revocation_hides_run_journals_state)]
+	state: SemanticContextIsProvenancedAndRevocationHidesRunJournalsState,
+	#[from(semantic_context_is_provenanced_and_revocation_hides_run_journals_router)]
+	#[with(state.clone())]
+	_router: std::sync::Arc<Router>,
+	#[future(awt)]
+	#[from(upstream::upstream)]
+	#[with(_router.clone())]
+	server: reinhardt::test::fixtures::server::TestServerGuard,
+) -> SemanticContextIsProvenancedAndRevocationHidesRunJournalsProvider {
+	SemanticContextIsProvenancedAndRevocationHidesRunJournalsProvider { state, server }
+}

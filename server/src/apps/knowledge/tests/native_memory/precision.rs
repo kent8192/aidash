@@ -7,15 +7,14 @@ use chrono::{DateTime, SubsecRound, Utc};
 async fn nanosecond_occurrence_is_canonical_across_admission_replay_and_restore(
 	#[future] database: DatabaseFixture,
 	bounds: Bounds,
+
+	#[future(awt)]
+	#[from(nanosecond_occurrence_is_canonical_across_admission_replay_and_restore_provider)]
+	fixture: NanosecondOccurrenceIsCanonicalAcrossAdmissionReplayAndRestoreProvider,
 ) {
-	use axum::{Json, Router, routing::post};
-	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-	let endpoint = format!("http://{}/v1", listener.local_addr().unwrap());
-	let server = tokio::spawn(async move {
-		axum::serve(listener, Router::new().route("/v1/embeddings", post(|Json(input): Json<serde_json::Value>| async move {
-			Json(json!({"model":input["model"],"data":[{"index":0,"embedding":[1.,0.1,0.]}],"usage":{"prompt_tokens":1}}))
-		}))).await.unwrap();
-	});
+	let server = fixture.server;
+
+	let endpoint = format!("{}/v1", server.url);
 	let database = database.await;
 	let (store, _, workspace) = setup_endpoint(&database, bounds, &endpoint).await;
 	let bank = memory::create_participant(
@@ -83,5 +82,26 @@ async fn nanosecond_occurrence_is_canonical_across_admission_replay_and_restore(
 	let restored = memory::list(&store, &Actor::Operator, read).await.unwrap();
 	assert_eq!(restored[0].content, unit.content);
 	assert_eq!(restored[0].learned_at, unit.learned_at);
-	server.abort();
+	drop(server);
+}
+
+#[fixture]
+fn nanosecond_occurrence_is_canonical_across_admission_replay_and_restore_router()
+-> std::sync::Arc<Router> {
+	std::sync::Arc::new(Router::new().handler("/v1/embeddings", handler(http::Method::POST, |request: reinhardt::Request| {let input = request.json::<serde_json::Value>().unwrap();async move {
+			reinhardt::Response::ok().with_json(&json!({"model":input["model"],"data":[{"index":0,"embedding":[1.,0.1,0.]}],"usage":{"prompt_tokens":1}})).unwrap()
+		}})))
+}
+struct NanosecondOccurrenceIsCanonicalAcrossAdmissionReplayAndRestoreProvider {
+	server: reinhardt::test::fixtures::server::TestServerGuard,
+}
+#[fixture]
+async fn nanosecond_occurrence_is_canonical_across_admission_replay_and_restore_provider(
+	#[from(nanosecond_occurrence_is_canonical_across_admission_replay_and_restore_router)] _router:std::sync::Arc<Router>,
+	#[future(awt)]
+	#[from(upstream::upstream)]
+	#[with(_router.clone())]
+	server: reinhardt::test::fixtures::server::TestServerGuard,
+) -> NanosecondOccurrenceIsCanonicalAcrossAdmissionReplayAndRestoreProvider {
+	NanosecondOccurrenceIsCanonicalAcrossAdmissionReplayAndRestoreProvider { server }
 }

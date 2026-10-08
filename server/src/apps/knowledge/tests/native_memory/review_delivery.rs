@@ -216,23 +216,16 @@ async fn replacement_preserves_each_durable_operation_table_capacity(
 async fn recall_validates_each_admitted_provenance_without_root_or_duplicate_charges(
 	#[future] database: DatabaseFixture,
 	mut bounds: Bounds,
+
+	#[future(awt)]
+	#[from(recall_validates_each_admitted_provenance_without_root_or_duplicate_charges_provider)]
+	fixture: RecallValidatesEachAdmittedProvenanceWithoutRootOrDuplicateChargesProvider,
 ) {
-	use axum::{Json, Router, routing::post};
+	let _provider = fixture.server;
+
 	bounds.max_graph_visits = 3;
-	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-	let endpoint = format!("http://{}/v1", listener.local_addr().unwrap());
-	let app = Router::new().route("/v1/embeddings", post(|Json(input): Json<serde_json::Value>| async move {
-		Json(json!({"model":input["model"],"data":[{"index":0,"embedding":[1.,0.1,0.]}],"usage":{"prompt_tokens":1}}))
-	}));
-	struct Provider(tokio::task::JoinHandle<()>);
-	impl Drop for Provider {
-		fn drop(&mut self) {
-			self.0.abort();
-		}
-	}
-	let _provider = Provider(tokio::spawn(async move {
-		axum::serve(listener, app).await.unwrap();
-	}));
+
+	let endpoint = format!("{}/v1", _provider.url);
 	let database = database.await;
 	let (store, _, workspace) = setup_endpoint(&database, bounds, &endpoint).await;
 	let bank = memory::create_participant(
@@ -327,4 +320,26 @@ async fn recall_validates_each_admitted_provenance_without_root_or_duplicate_cha
 		"obsolete dependent provenance stays withheld"
 	);
 	assert_eq!((units[0].id, units[0].revision), (admitted[0].id, 2));
+}
+
+#[fixture]
+fn recall_validates_each_admitted_provenance_without_root_or_duplicate_charges_router()
+-> std::sync::Arc<Router> {
+	std::sync::Arc::new(Router::new().handler("/v1/embeddings", handler(http::Method::POST, |request: reinhardt::Request| {let input = request.json::<serde_json::Value>().unwrap();async move {
+		reinhardt::Response::ok().with_json(&json!({"model":input["model"],"data":[{"index":0,"embedding":[1.,0.1,0.]}],"usage":{"prompt_tokens":1}})).unwrap()
+	}})))
+}
+struct RecallValidatesEachAdmittedProvenanceWithoutRootOrDuplicateChargesProvider {
+	server: reinhardt::test::fixtures::server::TestServerGuard,
+}
+#[fixture]
+async fn recall_validates_each_admitted_provenance_without_root_or_duplicate_charges_provider(
+	#[from(recall_validates_each_admitted_provenance_without_root_or_duplicate_charges_router)]
+	_router: std::sync::Arc<Router>,
+	#[future(awt)]
+	#[from(upstream::upstream)]
+	#[with(_router.clone())]
+	server: reinhardt::test::fixtures::server::TestServerGuard,
+) -> RecallValidatesEachAdmittedProvenanceWithoutRootOrDuplicateChargesProvider {
+	RecallValidatesEachAdmittedProvenanceWithoutRootOrDuplicateChargesProvider { server }
 }

@@ -180,22 +180,14 @@ async fn derived_corrections_preserve_kind_and_require_derive_authority(
 	bounds: Bounds,
 	#[case] kind: Kind,
 	#[case] replacement: Kind,
+
+	#[future(awt)]
+	#[from(derived_corrections_preserve_kind_and_require_derive_authority_provider)]
+	fixture: DerivedCorrectionsPreserveKindAndRequireDeriveAuthorityProvider,
 ) {
-	use axum::{Json, Router, routing::post};
-	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-	let endpoint = format!("http://{}/v1", listener.local_addr().unwrap());
-	let app = Router::new().route("/v1/chat/completions", post(|Json(input): Json<serde_json::Value>| async move {
-        let context: serde_json::Value = serde_json::from_str(input["messages"][1]["content"].as_str().unwrap()).unwrap();
-        let units: Vec<Unit> = serde_json::from_value(context["units"].clone()).unwrap();
-        let mut output = content("Derived from admitted evidence");
-        output.kind = serde_json::from_value(context["kind"].clone()).unwrap();
-        output.mental_model = serde_json::from_value(context["mental_model"].clone()).unwrap();
-        output.evidence = units.iter().map(Unit::evidence).collect();
-        Json(json!({"choices":[{"finish_reason":"stop","message":{"content":serde_json::to_string(&output).unwrap()}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}))
-    }));
-	let server = tokio::spawn(async move {
-		axum::serve(listener, app).await.unwrap();
-	});
+	let server = fixture.server;
+
+	let endpoint = format!("{}/v1", server.url);
 	let database = database.await;
 	let (store, _, workspace) = setup_endpoint(&database, bounds, &endpoint).await;
 	let bank = memory::create_participant(
@@ -336,7 +328,7 @@ async fn derived_corrections_preserve_kind_and_require_derive_authority(
 	.await
 	.unwrap();
 	assert_eq!(current.iter().find(|unit| unit.id == id), Some(&derived[0]));
-	server.abort();
+	drop(server);
 }
 
 #[rstest]
@@ -911,4 +903,32 @@ async fn stale_ordinary_dependents_retire_without_ttl_and_release_live_capacity(
 		.len(),
 		2
 	);
+}
+
+#[fixture]
+fn derived_corrections_preserve_kind_and_require_derive_authority_router() -> std::sync::Arc<Router>
+{
+	std::sync::Arc::new(Router::new().handler("/v1/chat/completions", handler(http::Method::POST, |request: reinhardt::Request| {let input = request.json::<serde_json::Value>().unwrap();async move {
+        let context: serde_json::Value = serde_json::from_str(input["messages"][1]["content"].as_str().unwrap()).unwrap();
+        let units: Vec<Unit> = serde_json::from_value(context["units"].clone()).unwrap();
+        let mut output = content("Derived from admitted evidence");
+        output.kind = serde_json::from_value(context["kind"].clone()).unwrap();
+        output.mental_model = serde_json::from_value(context["mental_model"].clone()).unwrap();
+        output.evidence = units.iter().map(Unit::evidence).collect();
+        reinhardt::Response::ok().with_json(&json!({"choices":[{"finish_reason":"stop","message":{"content":serde_json::to_string(&output).unwrap()}}],"usage":{"prompt_tokens":1,"completion_tokens":1}})).unwrap()
+    }})))
+}
+struct DerivedCorrectionsPreserveKindAndRequireDeriveAuthorityProvider {
+	server: reinhardt::test::fixtures::server::TestServerGuard,
+}
+#[fixture]
+async fn derived_corrections_preserve_kind_and_require_derive_authority_provider(
+	#[from(derived_corrections_preserve_kind_and_require_derive_authority_router)]
+	_router: std::sync::Arc<Router>,
+	#[future(awt)]
+	#[from(upstream::upstream)]
+	#[with(_router.clone())]
+	server: reinhardt::test::fixtures::server::TestServerGuard,
+) -> DerivedCorrectionsPreserveKindAndRequireDeriveAuthorityProvider {
+	DerivedCorrectionsPreserveKindAndRequireDeriveAuthorityProvider { server }
 }
