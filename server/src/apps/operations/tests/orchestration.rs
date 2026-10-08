@@ -173,6 +173,7 @@ fn probe_server(probe_context: ProbeContextFuture) -> ProbeServerFuture {
 fn probe_client(probe_server: ProbeServerFuture) -> ProbeClientFuture {
 	async move {
 		let server = probe_server.await;
+		// reinhardt-web#6658: compose the plain client constructor over the owned guard future.
 		Arc::new(api_client_from_url(&server.url))
 	}
 	.boxed()

@@ -10,7 +10,6 @@ use sqlx::{
 	Connection, Executor,
 	postgres::{PgConnectOptions, PgConnection, PgPoolOptions},
 };
-use std::{future::Future, pin::Pin};
 use std::{path::PathBuf, str::FromStr, sync::Arc};
 use uuid::Uuid;
 
@@ -26,7 +25,7 @@ mod application;
 pub use application::{
 	ApplicationFixture, ApplicationFuture, RouterTransform, TestApplication, application,
 	application_with, application_with_event_streams, application_with_settings,
-	direct_application, native_application, peer_application,
+	direct_application, native_application,
 };
 #[path = "peer.rs"]
 mod peer;
@@ -139,66 +138,7 @@ fn json_response(method: &str, path: &str, status: u16, body: &[u8]) -> (u16, Va
 	}
 }
 
-#[allow(dead_code)] // Shared fixtures are used by different integration-test binaries.
-pub fn setup(
-	environment: &TestEnvironment,
-) -> Pin<Box<dyn Future<Output = (Federation, String, String)> + Send + '_>> {
-	Box::pin(async move {
-		let database = format!("execution_{}", Uuid::new_v4().simple());
-		// The preserved baseline names public explicitly. Isolate databases, not
-		// search paths. TestEnvironment owns the container and every database, so
-		// unwinding also removes fixtures that never reach explicit cleanup.
-		let mut admin = PgConnection::connect(&environment.database_url)
-			.await
-			.unwrap();
-		admin
-			.execute(format!("CREATE DATABASE {database}").as_str())
-			.await
-			.unwrap();
-		let mut url = reqwest::Url::parse(&environment.database_url).unwrap();
-		url.set_path(&database);
-		let url = url.to_string();
-		let options = PgConnectOptions::from_str(&url)
-			.unwrap()
-			.application_name(&database);
-		let pool = PgPoolOptions::new()
-			.max_connections(12)
-			.connect_with(options)
-			.await
-			.unwrap();
-		let connection = DatabaseConnection::new(Arc::new(PostgresBackend::new(pool.clone())));
-		let migrations =
-			FilesystemSource::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations"))
-				.all_migrations()
-				.await
-				.expect("load the native migration graph");
-		postgres::apply_migrations(connection, &migrations).await;
-		let store = Store::from_pool(pool.clone(), "aidash://execution-test".into())
-			.await
-			.unwrap();
-		let federation = Federation {
-			sandbox: Default::default(),
-			store,
-			registry: Registry::new(pool, "aidash://execution-test").unwrap(),
-			config: Config {
-				node_id: "aidash://execution-test".into(),
-				endpoint: "http://localhost:8080".into(),
-				database_url: url.clone(),
-				nats_url: environment.nats_url.clone(),
-				api_token: "operator-execution-fixture".into(),
-				web_dir: "web/dist".into(),
-				lease_seconds: 30,
-				default_host_packages: vec![],
-				oidc: None,
-			},
-			client: reqwest::Client::new(),
-			notify: Arc::new(tokio::sync::Notify::new()),
-		};
-		(federation, url, database)
-	})
-}
-
-#[allow(dead_code)] // Paired with setup in the integration-test binaries that use it.
+#[allow(dead_code)] // Explicit teardown Acts close resources before lifecycle assertions.
 pub async fn cleanup(f: Federation, url: &str, database: &str) {
 	f.store.control_pool.close().await;
 	f.store.pool.close().await;
@@ -444,6 +384,7 @@ pub fn execution_database(
 		// The preserved baseline names public explicitly. Isolate databases, not
 		// search paths. TestEnvironment owns the container and every database, so
 		// unwinding also removes fixtures that never reach explicit cleanup.
+		// CREATE DATABASE is administrative fixture DDL outside Reinhardt Query schema operations.
 		let mut admin = PgConnection::connect(&environment.database_url)
 			.await
 			.unwrap();

@@ -23,7 +23,6 @@ use reinhardt::db::orm::{Model, execution::convert_values};
 use reinhardt::query::{
 	Alias, Expr, IntoIden, PostgresQueryBuilder, Query, QueryStatementBuilder, SimpleExpr,
 };
-use reinhardt::test::fixtures::http_client;
 use rstest::rstest;
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -518,15 +517,17 @@ async fn an_existing_sse_stream_waits_for_atomic_visibility_before_emitting_chan
 	let Some((a, b, manifest, wa, _wb)) = Box::pin(pair).await else {
 		return;
 	};
-	let mut response = http_client()
-		.get(format!(
-			"{}/api/events/stream?workspace_id={wa}",
-			a.f.config.endpoint
-		))
-		.bearer_auth(&a.f.config.api_token)
-		.send()
-		.await
-		.unwrap();
+	// reinhardt-web#6661: incremental SSE frames need the fixture-owned raw streaming client.
+	let mut response =
+		a.f.client
+			.get(format!(
+				"{}/api/events/stream?workspace_id={wa}",
+				a.f.config.endpoint
+			))
+			.bearer_auth(&a.f.config.api_token)
+			.send()
+			.await
+			.unwrap();
 	assert_eq!(response.status(), 200);
 	assert_eq!(response.headers()["content-type"], "text/event-stream");
 	let first = next_frame(&mut response).await;

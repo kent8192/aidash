@@ -105,14 +105,6 @@ pub async fn application_with(
 	}
 }
 
-#[allow(dead_code)] // Only federation suites advertise their ephemeral listener.
-pub async fn peer_application(runtime: &mut Federation) -> TestApplication {
-	let app = application(runtime.clone()).await;
-	runtime.config.endpoint = app.server.url.clone();
-	app.context.set_singleton(runtime.clone());
-	app
-}
-
 impl TestApplication {
 	/// Share the native router with fixed-port peer restart fixtures.
 	#[allow(dead_code)] // Only restart and transport fault suites need another listener.
@@ -143,59 +135,6 @@ impl TestApplication {
 			Some(peer),
 		);
 		self.router.handle(request).await
-	}
-	/// Execute Reinhardt itself; preserve producer ownership for unpolled SSE tests.
-	#[allow(dead_code)]
-	pub async fn oneshot(
-		self,
-		request: http::Request<axum::body::Body>,
-	) -> Result<axum::response::Response, Box<dyn std::error::Error + Send + Sync>> {
-		use reinhardt::Handler;
-		let (parts, body) = request.into_parts();
-		let peer = parts
-			.extensions
-			.get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
-			.map(|address| address.0)
-			.unwrap_or(([127, 0, 0, 1], 1).into());
-		let bytes = axum::body::to_bytes(body, 16 * 1024 * 1024).await?;
-		let request = reinhardt::Request::from_hyper_parts(
-			parts.method,
-			parts.uri,
-			parts.version,
-			parts.headers,
-			bytes,
-			false,
-			Some(peer),
-		);
-		let mut response = self.router.handle(request).await?;
-		let body = if let Some(stream) = response.take_stream_body() {
-			axum::body::Body::from_stream(stream)
-		} else if let Some(file) = response.file_body().cloned() {
-			axum::body::Body::from_stream(
-				async_stream::stream! {let mut position=0;while position<file.len() {let source=file.clone();match tokio::task::spawn_blocking(move||source.read_chunk(position,64*1024)).await.map_err(std::io::Error::other).and_then(|result|result) {Ok(bytes)=>{position+=bytes.len() as u64;yield Ok::<_,std::io::Error>(bytes);},Err(error)=>{yield Err(error);break;}}}},
-			)
-		} else {
-			axum::body::Body::from(response.body)
-		};
-		let mut result = axum::response::Response::new(body);
-		*result.status_mut() = response.status;
-		*result.headers_mut() = response.headers;
-		Ok(result)
-	}
-	/// A test-only transport adapter for existing fluent assertions. All routing,
-	/// extraction, authorization, and streaming come from the native handler above.
-	#[allow(dead_code)]
-	pub fn test_transport(&self) -> axum::Router {
-		let application = self.clone();
-		axum::Router::new().fallback(move |request: axum::extract::Request| {
-			let application = application.clone();
-			async move {
-				application
-					.oneshot(request)
-					.await
-					.expect("native test response")
-			}
-		})
 	}
 }
 #[allow(dead_code)]
@@ -334,6 +273,7 @@ fn application_client(
 	application_server: ServerFuture,
 ) -> ClientFuture {
 	async move {
+		// reinhardt-web#6658: the plain client constructor needs a wrapper fixture for this async URL.
 		let client = api_client_from_url(&application_server.await.url);
 		if operator {
 			client
