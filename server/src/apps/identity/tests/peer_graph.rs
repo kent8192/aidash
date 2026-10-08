@@ -46,7 +46,7 @@ async fn graph_custom(
 			&[
 				("authorization", authorization.as_str()),
 				("x-aidash-node", SOURCE),
-				("x-aidash-protocol", "0.1"),
+				("x-aidash-protocol", "0.2"),
 			],
 		)
 		.await
@@ -85,7 +85,7 @@ async fn add_peer(f: &aidash_server::federation::Federation, node: &str) {
 							"(?)".to_owned(),
 							vec![Expr::value(query_bind_2.to_owned()).into()],
 						))
-						.expr(reinhardt::query::Expr::cust("'0.1'"))
+						.expr(reinhardt::query::Expr::cust("'0.2'"))
 						.expr(reinhardt::query::Expr::cust("TRUE"))
 						.to_owned(),
 				)

@@ -6,7 +6,7 @@ function fixture(reference = false) {
   const node = {
     id: "aidash://home",
     endpoint: "http://localhost",
-    protocol_version: "0.1",
+    protocol_version: "0.2",
     capabilities: [],
     clusters: [],
   };
@@ -21,7 +21,10 @@ function fixture(reference = false) {
     languages: ["en"],
     skills: [],
     schema: {},
-    config,
+    config:
+      kind === "agent"
+        ? { schema_version: 1, bindings: [], remove_default: [], ...config }
+        : config,
   });
   const workspaces = [
     {
@@ -245,6 +248,7 @@ export async function setup(
     remoteAssignment?: boolean;
     nativeMemory?: boolean;
     nativeMemoryDisabled?: boolean;
+    remoteNativeCollision?: boolean;
   } = {},
 ) {
   let data = fixture(options.referenceLayout);
@@ -277,29 +281,53 @@ export async function setup(
   if (options.nativeMemory) {
     data.registry[0].config = {
       ...data.registry[0].config,
-      memory: { id: "native-memory", version: "1.0.0" },
+      bindings: [
+        ...(data.registry[0].config.bindings ?? []),
+        {
+          kind: "memory",
+          target: {
+            registry_node: data.node.id,
+            id: "native-memory",
+            version: "1.0.0",
+          },
+          narrow: {},
+        },
+      ],
       ...(options.nativeMemoryDisabled
-        ? { allow_cross_conversation_memory: false }
+        ? { remove_default: ["memory_recall", "memory_reflect"] }
         : {}),
     };
     data.registry.push({
       ...data.registry[1],
       id: "native-memory",
       kind: "memory",
+      config: { engine: "hindsight_rust" },
     });
   }
+  if (options.remoteNativeCollision)
+    data.registry.push({
+      ...data.registry[1],
+      id: "remote-native",
+      kind: "memory",
+      config: { schema_version: 1, source: { adapter: "conversation_memory" } },
+    });
   let runMediaRoutes = options.runMediaRoutes ?? [["image/png", "audio/wav"]];
   if (options.coreCapabilities) {
     data.registry[0].config = {
       ...data.registry[0].config,
-      core_capabilities: {
-        files: true,
-        shell: true,
-        python: true,
-        patch: true,
-        skills: true,
-        sharing: true,
-      },
+      schema_version: 1,
+      bindings: [
+        {
+          kind: "bundle",
+          target: {
+            registry_node: data.node.id,
+            id: "approved-host-tools",
+            version: "1.0.0",
+          },
+          narrow: {},
+        },
+      ],
+      remove_default: [],
     };
   }
   if (options.coreVersion)
@@ -316,7 +344,12 @@ export async function setup(
       languages: ["en"],
       skills: [],
       schema: {},
-      config: { model: { id: "model", version: "1.0.0" } },
+      config: {
+        schema_version: 1,
+        bindings: [],
+        remove_default: [],
+        model: { id: "model", version: "1.0.0" },
+      },
     });
   }
   if (options.approval) data.human_requests[0].kind = "APPROVAL_REQUIRED";
@@ -486,6 +519,14 @@ export async function setup(
             : [],
         },
       });
+    if (path.endsWith("/remote-grants/inspect"))
+      return route.fulfill({
+        json: {
+          native_required:
+            !!options.nativeMemory && !options.nativeMemoryDisabled,
+          memory_available: true,
+        },
+      });
     if (path === "/api/discover")
       return route.fulfill({
         json: {
@@ -495,7 +536,28 @@ export async function setup(
               node_id: options.remoteAssignment
                 ? "aidash://remote"
                 : data.node.id,
-              entity,
+              entity:
+                options.remoteAssignment && options.nativeMemory
+                  ? {
+                      ...entity,
+                      config: {
+                        ...entity.config,
+                        bindings: (entity.config.bindings ?? []).map(
+                          (binding) =>
+                            binding.kind === "memory"
+                              ? {
+                                  ...binding,
+                                  target: {
+                                    ...binding.target,
+                                    registry_node: "aidash://remote",
+                                    id: "remote-native",
+                                  },
+                                }
+                              : binding,
+                        ),
+                      },
+                    }
+                  : entity,
             })),
           errors: [],
         },

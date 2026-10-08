@@ -78,6 +78,21 @@ pub async fn provide_remote_grants(#[inject] runtime: Federation) -> RemoteGrant
 }
 
 impl RemoteGrants {
+	pub async fn agent_inspection(
+		&self,
+		actor: Actor,
+		task_id: Uuid,
+		input: aidash_domain::federation::execution::AgentInspectionInput,
+	) -> Result<aidash_domain::federation::execution::AgentMemoryRequirements> {
+		aidash_application::authorization::source::grants::agent_inspection(
+			&crate::bootstrap::home_execution_repository(&self.runtime, actor),
+			task_id,
+			input,
+		)
+		.await
+		.map_err(Into::into)
+	}
+
 	pub async fn prepare(
 		&self,
 		actor: Actor,

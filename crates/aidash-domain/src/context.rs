@@ -14,6 +14,8 @@ pub struct MessageReadCoverage {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Context {
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub source_observation: Option<sources::SourceObservation>,
 	/// Installed before activation and retained through every execution boundary.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub binding_snapshot: Option<Box<crate::registry::bindings::BindingSnapshot>>,
@@ -33,6 +35,47 @@ pub struct Context {
 	// A tool read is proof only after its content survived compaction and was
 	// sent in a provider request. Keep that separate from completed tool reads.
 	pub message_inference_coverage: BTreeMap<uuid::Uuid, MessageReadCoverage>,
+}
+
+/// Public inspection omits the durable, authority-bound Source cache.
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+pub struct InspectionContext<'a> {
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub binding_snapshot: Option<&'a crate::registry::bindings::BindingSnapshot>,
+	pub summary: &'a str,
+	pub run_message_summary: &'a str,
+	pub run_message_summary_seq: i64,
+	pub media_inferred_seq: i64,
+	pub history: &'a [ContextEvent],
+	pub usage: Option<&'a ContextUsage>,
+	pub compactions: u32,
+	pub message_read_coverage: &'a BTreeMap<uuid::Uuid, MessageReadCoverage>,
+	pub message_inference_coverage: &'a BTreeMap<uuid::Uuid, MessageReadCoverage>,
+}
+impl Context {
+	pub fn inspection(&self) -> InspectionContext<'_> {
+		InspectionContext {
+			binding_snapshot: self.binding_snapshot.as_deref(),
+			summary: &self.summary,
+			run_message_summary: &self.run_message_summary,
+			run_message_summary_seq: self.run_message_summary_seq,
+			media_inferred_seq: self.media_inferred_seq,
+			history: &self.history,
+			usage: self.usage.as_ref(),
+			compactions: self.compactions,
+			message_read_coverage: &self.message_read_coverage,
+			message_inference_coverage: &self.message_inference_coverage,
+		}
+	}
+}
+pub fn serialize_inspection_context<S: serde::Serializer>(
+	context: &Option<Context>,
+	serializer: S,
+) -> std::result::Result<S::Ok, S::Error> {
+	context
+		.as_ref()
+		.map(Context::inspection)
+		.serialize(serializer)
 }
 
 use crate::{Error, Result};
@@ -267,3 +310,5 @@ impl std::fmt::Display for Context {
 use serde::{Deserialize, Serialize};
 
 pub mod observation;
+
+pub mod sources;

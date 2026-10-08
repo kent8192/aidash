@@ -8,6 +8,8 @@ use aidash_domain::{
 	tool::providers::{ToolDescriptor, remote_exclusion, reserved_aliases, validate_restrictions},
 };
 use std::collections::{BTreeMap, BTreeSet};
+pub mod catalog;
+pub mod private;
 
 struct Pending {
 	normalized: NormalizedBinding,
@@ -38,7 +40,11 @@ pub async fn resolve(
 	if let Some(installation) = &agent_definition.installation {
 		catalog.installation(installation).await?;
 	}
-	let normalized = config.normalize(&agent.registry_node)?;
+	let mut agent_definition = agent_definition.clone();
+	if agent_definition.binding_normalization.is_none() {
+		agent_definition.normalize_agent(&agent.registry_node)?;
+	}
+	let normalized = agent_definition.normalized_bindings(&agent.registry_node)?;
 	let mut pending: Vec<_> = normalized
 		.into_iter()
 		.map(|normalized| Pending {
@@ -53,6 +59,7 @@ pub async fn resolve(
 	let mut aliases = BTreeSet::new();
 	let mut operations = BTreeSet::new();
 	let mut source_skill_support = false;
+	let mut decision_hooks = BTreeSet::new();
 	for (reference, kind) in std::iter::once((&config.model, "model"))
 		.chain(config.cluster.iter().map(|r| (r, "cluster")))
 	{
@@ -225,11 +232,36 @@ pub async fn resolve(
 					});
 				}
 			}
+		} else if kind == BindingKind::Decider {
+			if entry.kind != "decider"
+				|| target.registry_node != agent.registry_node
+				|| origin != BindingOrigin::Explicit
+			{
+				return Err(Error::Invalid(
+					"Decider requires an explicit execution-node Binding".into(),
+				));
+			}
+			let config: aidash_domain::decision::DeciderConfig =
+				serde_json::from_value(entry.config.clone())?;
+			config.validate()?;
+			if !decision_hooks.insert(config.hook) {
+				return Err(Error::Invalid(
+					"an Agent must bind at most one Decider per hook".into(),
+				));
+			}
+			effective_narrow
+				.decision
+				.clone()
+				.unwrap_or_default()
+				.validate(&config)?;
+			provider_contract_digest = Some(config.contract_digest()?);
+			provider_implementation = Some(providers.decision_implementation(&config)?);
 		} else {
 			let expected = match kind {
 				BindingKind::Skill => "skill",
 				BindingKind::Memory => "memory",
 				BindingKind::Source => "source",
+				BindingKind::Decider => "decider",
 				_ => unreachable!(),
 			};
 			if entry.kind != expected {
@@ -242,10 +274,20 @@ pub async fn resolve(
 					"native context restriction is not supported by this adapter".into(),
 				));
 			}
-			if matches!(kind, BindingKind::Memory | BindingKind::Source) {
-				let descriptor: sources::NativeContext =
-					serde_json::from_value(entry.config.clone())?;
-				descriptor.validate(expected)?;
+			if matches!(kind, BindingKind::Memory | BindingKind::Source)
+				&& let Some(descriptor) = sources::validate_definition(&entry)?
+			{
+				if remote
+					&& matches!(
+						descriptor.source,
+						sources::NativeSource::ReferenceAttachments { .. }
+							| sources::NativeSource::SkillAttachments { .. }
+							| sources::NativeSource::SkillRoots { .. }
+					) {
+					return Err(Error::Invalid(
+						"native mounted Source is unavailable remotely".into(),
+					));
+				}
 				source_skill_support |= descriptor.requires_skill_support();
 			}
 			catalog.source(&entry).await?;
@@ -297,6 +339,11 @@ pub async fn resolve(
 			let support = resolved.get_mut(&identity).ok_or_else(|| {
 				Error::Invalid("native Skills require all Skill support tools".into())
 			})?;
+			if support.alias.as_deref() != Some(operation) {
+				return Err(Error::Invalid(
+					"native Skill support tools retain their canonical aliases".into(),
+				));
+			}
 			if support.excluded_reason.is_some() {
 				return Err(Error::Invalid(
 					"native Skill support is unavailable at this placement".into(),
@@ -332,11 +379,41 @@ pub async fn resolve(
 		.map(|(r, e)| (r.clone(), e.clone()))
 		.collect::<Vec<_>>();
 	let mut visited = BTreeSet::new();
+	let mut foreign_agents = BTreeMap::new();
 	while let Some((identity, entry)) = queue.pop() {
 		if !visited.insert(identity.clone()) {
 			continue;
 		}
 		for (reference, kind) in definition_references(&identity, &entry)? {
+			if reference.registry_node != identity.registry_node
+				&& kind == "agent"
+				&& !foreign_agents.contains_key(&reference)
+			{
+				let snapshot = catalog.foreign_agent(&reference).await?;
+				snapshot.validate()?;
+				if snapshot.agent != reference {
+					return Err(Error::Invalid(
+						"foreign Agent closure returned a different root".into(),
+					));
+				}
+				for pinned in &snapshot.definitions {
+					if let Some(existing) = definitions.get(&pinned.identity) {
+						if existing != &pinned.definition {
+							return Err(Error::Conflict(
+								"foreign Agent closures disagree on an immutable definition".into(),
+							));
+						}
+					} else {
+						definitions.insert(pinned.identity.clone(), pinned.definition.clone());
+						if definitions.len() > MAX_BINDINGS {
+							return Err(Error::Invalid(
+								"Binding dependency closure exceeds 128 definitions".into(),
+							));
+						}
+					}
+				}
+				foreign_agents.insert(reference.clone(), snapshot);
+			}
 			let dependency = if let Some(entry) = definitions.get(&reference) {
 				entry.clone()
 			} else {
@@ -448,8 +525,11 @@ pub async fn resolve(
 		remote,
 		bindings: resolved.into_values().collect(),
 		definitions,
+		foreign_agents: foreign_agents.into_values().collect(),
 	};
 	snapshot.validate()?;
+	let settings = aidash_domain::registry::AgentConfig::from_snapshot(&snapshot)?;
+	validate_memory_sources(&snapshot, &settings)?;
 	Ok(snapshot)
 }
 
@@ -498,6 +578,100 @@ pub(crate) fn validate_bundle_graph(definitions: &BTreeMap<QualifiedRef, Entry>)
 	let mut done = BTreeSet::new();
 	for identity in definitions.keys() {
 		visit(identity, definitions, &mut BTreeSet::new(), &mut done)?;
+	}
+	Ok(())
+}
+
+/// Component decisions accompany Registry disclosure; they do not imply resource authority.
+pub fn component_action(kind: &str) -> &'static str {
+	match kind {
+		"agent" => "agent.execute",
+		"model" => "model.infer",
+		"tool" => "tool.invoke",
+		"skill" => "skill.use",
+		"cluster" => "cluster.execute",
+		"memory" | "source" => "registry.read",
+		_ => "registry.read",
+	}
+}
+
+fn validate_memory_sources(
+	snapshot: &BindingSnapshot,
+	settings: &aidash_domain::registry::AgentConfig,
+) -> Result<()> {
+	use aidash_domain::memory::{ProviderConfig, SourceConfig, SourceScope};
+	if settings.memory.is_none() && !settings.sources.is_empty() {
+		return Err(Error::Invalid(
+			"Agent Sources require a primary memory provider".into(),
+		));
+	}
+	if settings.sources.len() > 32 {
+		return Err(Error::Invalid(
+			"Agent admits at most 32 memory Sources".into(),
+		));
+	}
+	let lookup = |reference: &aidash_domain::registry::EntityRef| {
+		snapshot
+			.definitions
+			.iter()
+			.find(|d| {
+				d.identity.registry_node == snapshot.agent.registry_node
+					&& d.identity.local() == *reference
+			})
+			.map(|d| &d.definition)
+			.ok_or_else(|| {
+				Error::Invalid("memory dependency is absent from the admitted closure".into())
+			})
+	};
+	let mut workspace_provider = None;
+	let mut providers: Vec<_> = settings.memory.iter().cloned().collect();
+	for reference in &settings.sources {
+		let source: SourceConfig = serde_json::from_value(lookup(reference)?.config.clone())?;
+		if source.scope == SourceScope::Participant
+			&& settings.memory.as_ref() != Some(&source.memory)
+		{
+			return Err(Error::Invalid(
+				"participant Sources require the Agent's exact primary memory provider".into(),
+			));
+		}
+		if source.scope == SourceScope::Workspace {
+			if workspace_provider
+				.as_ref()
+				.is_some_and(|p| p != &source.memory)
+			{
+				return Err(Error::Invalid(
+					"workspace Sources require one exact memory provider version".into(),
+				));
+			}
+			workspace_provider = Some(source.memory.clone());
+		}
+		let provider: ProviderConfig =
+			serde_json::from_value(lookup(&source.memory)?.config.clone())?;
+		if source.max_tokens > provider.policy.bounds.max_context_tokens {
+			return Err(Error::Invalid(
+				"source context cap exceeds its memory provider cap".into(),
+			));
+		}
+		providers.push(source.memory);
+	}
+	let mut embedding = None;
+	for reference in providers {
+		let provider: ProviderConfig = serde_json::from_value(lookup(&reference)?.config.clone())?;
+		let configuration: aidash_domain::semantic::EmbeddingConfig =
+			serde_json::from_value(lookup(&provider.policy.embedding)?.config.clone())?;
+		if embedding
+			.as_ref()
+			.is_some_and(|previous| previous != &configuration)
+		{
+			return Err(Error::Invalid(
+				"an Agent's memory providers require compatible embedding configurations".into(),
+			));
+		}
+		aidash_domain::memory::graph::validate_capacity(
+			&provider.policy.bounds,
+			configuration.dimensions,
+		)?;
+		embedding = Some(configuration);
 	}
 	Ok(())
 }

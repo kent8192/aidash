@@ -182,9 +182,22 @@ impl OperationReconciliationScope for Scope<'_> {
 			.map_err(Into::into)
 	}
 	async fn require_builtin(&mut self, kind: &str) -> Result<()> {
-		let resource = self
-			.access
-			.resource("tool", format!("builtin:{kind}"), json!({}));
+		let run = self.run.as_ref().expect("reconciliation scope loaded");
+		let snapshot = run.context.binding_snapshot.as_ref().ok_or_else(|| {
+			aidash_application::Error::Invalid("Run has no admitted Binding snapshot".into())
+		})?;
+		let resource = self.access.resource(
+			"tool",
+			snapshot
+				.operation(if kind == "python" {
+					"code_interpreter"
+				} else {
+					kind
+				})?
+				.identity
+				.resource_id(),
+			json!({}),
+		);
 		self.access
 			.require(&resource, "tool.invoke")
 			.await

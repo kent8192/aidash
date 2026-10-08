@@ -357,6 +357,17 @@ impl HarnessManagement {
 		if let Actor::Subject(identity) = actor {
 			return interaction::answer(&f, &identity, id, response).await;
 		}
+		let request = f.store.human_request_by_id(id).await?;
+		let run = f.store.run(request.run_id).await?;
+		if run.home_node != f.config.node_id
+			&& crate::authorization::peer::admission::run_grant(&f.store, &run.metadata())
+				.await?
+				.is_none()
+		{
+			crate::federation::Home::new(f.clone(), run)
+				.answer_home_human(id, response.clone())
+				.await?;
+		}
 		let h = f.store.answer(id, response).await?;
 		f.notify.notify_waiters();
 		Ok(h)

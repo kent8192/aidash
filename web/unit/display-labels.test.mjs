@@ -72,12 +72,24 @@ test("typed registry references are named while unrelated configuration stays in
   const labels = new Map([
     ["model-id@1.0.0", "Research model · 1.0.0"],
     ["tool-id@2.0.0", "Search tool · 2.0.0"],
+    ["aidash://home/tool-id@2.0.0", "Search tool · 2.0.0"],
   ]);
   const value = {
     kind: "agent",
     config: {
       model,
-      tools: [tool],
+      bindings: [
+        {
+          kind: "tool",
+          target: { registry_node: "aidash://home", ...tool },
+          narrow: {},
+        },
+        {
+          kind: "tool",
+          target: { registry_node: "aidash://peer", ...tool },
+          narrow: {},
+        },
+      ],
       instructions: "Keep the example",
       knowledge_digest: "opaque",
       example,
@@ -88,7 +100,10 @@ test("typed registry references are named while unrelated configuration stays in
     kind: "agent",
     config: {
       model: "Research model · 1.0.0",
-      tools: ["Search tool · 2.0.0"],
+      bindings: [
+        { kind: "tool", target: "Search tool · 2.0.0", narrow: {} },
+        { kind: "tool", target: "Unavailable · 2.0.0", narrow: {} },
+      ],
       instructions: "Keep the example",
       example,
     },

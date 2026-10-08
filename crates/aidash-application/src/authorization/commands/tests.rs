@@ -101,9 +101,9 @@ async fn fresh_commands_authorize_the_saved_task_and_builtin_in_the_existing_ord
 		vec![
 			"binding",
 			"task",
+			"builtin:workspace_message",
 			"previous",
-			"task_resource",
-			"builtin:workspace_message"
+			"task_resource"
 		]
 	);
 	assert_eq!(prepared.task.id, Uuid::from_u128(2));
@@ -132,7 +132,10 @@ async fn an_exact_replay_survives_terminal_state_and_owner_changes_without_repea
 		panic!("saved command must replay")
 	};
 	assert_eq!(saved, json!({"saved":"result"}));
-	assert_eq!(scope.calls, vec!["binding", "task", "previous"]);
+	assert_eq!(
+		scope.calls,
+		vec!["binding", "task", "builtin:workspace_message", "previous"]
+	);
 }
 #[rstest]
 #[tokio::test]
@@ -147,7 +150,10 @@ async fn a_replay_key_cannot_be_rebound_to_changed_input(mut scope: Scope) {
 	assert!(
 		matches!(prepare(&mut scope,input(&data)).await,Err(Error::Conflict(message)) if message=="remote command key binds different input")
 	);
-	assert_eq!(scope.calls, vec!["binding", "task", "previous"]);
+	assert_eq!(
+		scope.calls,
+		vec!["binding", "task", "builtin:workspace_message", "previous"]
+	);
 }
 #[rstest]
 #[case::missing("missing")]
@@ -190,7 +196,10 @@ async fn fresh_mutations_cannot_replace_an_owner_or_change_terminal_tasks(
 			matches!(result,Err(Error::Conflict(message)) if message=="remote task is terminal")
 		);
 	}
-	assert_eq!(scope.calls, vec!["binding", "task", "previous"]);
+	assert_eq!(
+		scope.calls,
+		vec!["binding", "task", "builtin:workspace_message", "previous"]
+	);
 }
 #[rstest]
 #[case::binding("binding")]
@@ -209,4 +218,23 @@ async fn failed_ports_preserve_the_error_and_stop_admission_at_that_boundary(
 		matches!(prepare(&mut scope,input(&data)).await,Err(Error::External(message)) if message==format!("fault:{failure}"))
 	);
 	assert_eq!(scope.calls.last().unwrap(), failure);
+}
+
+#[rstest]
+#[tokio::test]
+async fn revoked_builtin_stops_durable_replay_before_reading_saved_result(mut scope: Scope) {
+	let data = json!({"key":"id","content":"saved"});
+	scope.previous = Some((
+		commands::prepare("message", &data).unwrap().digest,
+		json!({"saved":"result"}),
+	));
+	scope.failure = Some("builtin:workspace_message".into());
+	assert!(matches!(
+		prepare(&mut scope, input(&data)).await,
+		Err(Error::External(_))
+	));
+	assert_eq!(
+		scope.calls,
+		vec!["binding", "task", "builtin:workspace_message"]
+	);
 }

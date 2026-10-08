@@ -118,7 +118,7 @@ fn pair(
 				node_id: remote.f.config.node_id.clone(),
 				endpoint: remote.f.config.endpoint.clone(),
 				credential_env: "AIDASH_SECRET_TEST_PEER".into(),
-				protocol_version: "0.1".into(),
+				protocol_version: "0.2".into(),
 				enabled: true,
 			})
 			.await
@@ -593,7 +593,11 @@ async fn registry_workspace_task_execution_and_artifact_commit_together_once(
 		registry::Entry,
 	};
 	let (a, b, mut manifest, wa, _wb) = pair;
-	let agent:Entry=serde_json::from_value(json!({"id":"executor","version":"1.0.0","kind":"agent","name":{"en":"Executor"},"description":{"en":"Atomic fixture"},"config":{"model":{"id":"fixture","version":"1.0.0"},"instructions":"Atomic execution","tools":[],"skills":[]}})).unwrap();
+	let agent:Entry=serde_json::from_value(json!({"id":"executor","version":"1.0.0","kind":"agent","name":{"en":"Executor"},"description":{"en":"Atomic fixture"},"config":{"model":{"id":"fixture","version":"1.0.0"},"instructions":"Atomic execution","schema_version":1,"bindings":[],"remove_default":[]}})).unwrap();
+	let model: Entry = serde_json::from_value(json!({"id":"fixture","version":"1.0.0","kind":"model","name":{"en":"Atomic model"},"description":{"en":"Pinned execution fixture"},"config":{"provider":"openrouter","model_id":"fixture","endpoint":"http://localhost:19999/v1","context_window":128000,"max_output_tokens":4096,"modalities":["text"],"cost":{}}})).unwrap();
+	b.f.registry.register(model).await.unwrap();
+	b.f.registry.register(agent.clone()).await.unwrap();
+
 	let owner = qualified_agent(&b.f.config.node_id, &agent.id, &agent.version);
 	let task =
 		a.f.store
@@ -916,7 +920,7 @@ async fn peer_trust_denial_aborts_promptly_and_revocation_preserves_admitted_rec
 			))
 			.bearer_auth(std::env::var("AIDASH_SECRET_TEST_PEER").unwrap())
 			.header("x-aidash-node", &a.f.config.node_id)
-			.header("x-aidash-protocol", "0.1")
+			.header("x-aidash-protocol", "0.2")
 			.json(&forged)
 			.send()
 			.await
@@ -1240,7 +1244,7 @@ async fn mapped_transaction_admission_and_revocation(
 					node_id: remote.f.config.node_id.clone(),
 					endpoint: remote.f.config.endpoint.clone(),
 					credential_env: "AIDASH_SECRET_TRANSACTION_02".into(),
-					protocol_version: "0.1".into(),
+					protocol_version: "0.2".into(),
 					enabled: true,
 				})
 				.await
@@ -1459,7 +1463,7 @@ async fn mapped_transaction_admission_and_revocation(
 						&[
 							("authorization", &format!("Bearer {peer_token}")),
 							("x-aidash-node", &b.f.config.node_id),
-							("x-aidash-protocol", "0.1"),
+							("x-aidash-protocol", "0.2"),
 						],
 					)
 					.await

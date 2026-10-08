@@ -1,6 +1,6 @@
 # Registry capability contract 1
 
-The implementation is in progress. The required cutover work below identifies the native execution and UI work that must finish before deployment. Portable resolver tests and Host staging acceptance cover the foundation; native Agent contract cutover still requires integration evidence. See the [capability glossary](registry-capability-glossary.md) for the terms used here.
+Agent registration, generation templates, Workbench and native execution use Binding contract 1. Admission saves the complete immutable closure before activation; execution reads that closure and checks current authority and Provider compatibility at each protected boundary. See the [capability glossary](registry-capability-glossary.md) for the terms used here.
 
 ## Immutable declarations
 
@@ -8,7 +8,7 @@ Tools declare a registering Node, a versioned provider operation, a stable defau
 
 Bundle member IDs must be unique within each bundle, including across versions and Nodes, so an ID selection identifies one exact member. Root Agents and cluster coordinators reject undeclared member selections. Installing a bundle rewrites verified dependency identities and their qualifiers to the receiving Node. Published dependency graphs cannot contain system Built-ins; their Node-qualified declarations have no portable receiver substitution. Saved Run snapshots must match the Agent's normalized Binding closure, including selected bundle members, lifecycle companions, aliases, restrictions and origins. Snapshots retain the admission's remote/local placement and validate Provider contract digests and placement-derived exclusions when restored. Excluded defaults cannot carry a Provider implementation.
 
-Until the native Agent cutover, Registry and Marketplace retain strict validation of existing transport-tagged Tool definitions. These definitions keep their original execution path and are not converted into Provider descriptors or admitted by the new Binding resolver.
+New Tool registrations require qualified Provider descriptors. Old transport-tagged definitions and old Agent configurations are unsupported for new execution; they remain historical records and are not converted. HTTP/MCP/Agent integration configuration is nested under the descriptor's `transport` field.
 
 Node startup seeds the 17 required/default builtin declarations at exact immutable versions. Seeding verifies existing bytes and fails the entire transaction on a reserved-name conflict. System catalog visibility does not add tenant resource grants. Builtins cannot be published, installed or mutated through Marketplace.
 
@@ -43,14 +43,156 @@ In Marketplace administration, select a tenant and prepare the desired Host grou
 
 Every digest, revision, provider, dependency kind and lifecycle member is checked before approval writes. Conflicting or stale selections fail the entire transaction. Successful activation updates all selected catalog approvals and pointers together. The same request cannot reactivate a set using stale pointer revisions. Individual approval/activation remains available through the existing API.
 
-## Required cutover work
+## Binding-only registration and execution
 
-Complete new-schema registration, templates, Dashboard and workbench changes. Connect native admission to immutable Run snapshots before activation, and connect execution to those snapshots with current authority and provider checks. Add native context observations and Home-backed remote `workspace_read`/`human_request` admission. Verify source revocation and explicit same-snapshot resumption.
+An Agent submits `schema_version: 1`, its exact `model` reference, `instructions`,
+`bindings` and `remove_default`. Each Binding has a typed kind (`tool`, `bundle`,
+`skill`, `memory` or `source`), a Node-qualified exact target and narrowing-only
+restrictions. Tool aliases are stable declaration names; collisions fail after
+bundle expansion. The required `workspace_read` and `human_request` cannot be
+removed. Bound Skills and Skill Sources require all three Skill support tools;
+Skill Sources retain the canonical `skill_list`, `skill_load` and `skill_read`
+aliases at admission and snapshot recovery. Cluster coordinators require all
+three coordination tools.
 
-Drain existing work before fleet cutover. Existing Agent configurations, aliases and `builtin:*` grants are not migrated, and no active installation is manufactured from their old flags. Retain historical definitions, receipts and journals. Deploy only after the new Agent contract has native acceptance evidence; the current local work is not that evidence.
+```json
+{
+  "schema_version": 1,
+  "model": { "id": "model", "version": "1.0.0" },
+  "instructions": "Work within the authorized workspace.",
+  "bindings": [
+    {
+      "kind": "memory",
+      "target": {
+        "registry_node": "aidash://example",
+        "id": "conversation-memory",
+        "version": "1.0.0"
+      },
+      "narrow": {}
+    }
+  ],
+  "remove_default": ["task_delegate"],
+  "max_steps": 64
+}
+```
 
-Native memory roles use `memory_mutate`, `memory_recall`, and `memory_reflect`.
-Memory Provider admission bounds worst-case semantic graph scoring to 32 Mi scalar
-comparisons using `max_units * max_units * embedding.dimensions`. Reduce `max_units`
-when selecting larger embedding vectors; an oversized policy is rejected before a
-bank is pinned. Vector norms are computed once per snapshot.
+Marketplace supports immutable native Memory/Source descriptor packages. Their
+configuration cannot replace the adapter or its pinned references; private
+documents remain separately stored and must be available with the exact digest
+on the installing Node.
+
+Memory reads require a Memory Binding and the admitted recall/reflect operations.
+`memory_mutate` alone does not enable reading. Supported native
+context declarations wrap the existing conversation/semantic memory, workspace
+retrieval, private-reference, original-reference and Skill adapters. Private
+Agent documents become immutable private Source definitions. Their contents
+retain separate knowledge/reference authorization and are never made public by
+Registry visibility. Inference journals a bounded content observation before
+calling the model; recovery at the same boundary reuses that content after
+checking current authority. A later boundary observes current mutable content.
+Run inspection and state responses omit the Source observation cache; durable
+storage retains it for authorized recovery.
+
+Local execution, remote admission and Workbench save the same complete Binding
+snapshot. Updating an active installation does not replace an admitted Run's
+approved retained revision. Revocation or missing Provider support stops the
+Run and retains its snapshot and journals. Restoring availability does not
+resume work automatically; an explicit resume rechecks the saved contracts.
+Direct capability HTTP requests recheck the selected Tool's current catalog
+approval, pinned installation and immutable definition before dispatch.
+
+## Home protocol and Human continuations
+
+Peer execution requires protocol `0.2`; the `/v0.1/` URL namespace remains a path
+name and does not negotiate an old contract. Both Nodes verify the exact protocol
+header and Provider contracts. Remote mandatory workspace and Human operations
+use Home authority under the exact task, grant, admission and Run. Unsupported
+remote defaults have persisted placement exclusions; explicit incompatible
+Bindings fail admission.
+
+The `task_delegate` Provider contract is local-only, so its implicit default is
+excluded on a remote executor. Calling a Home command directly does not restore
+an excluded operation or broaden that contract.
+
+Scoped Home Human requests are stored on the existing remote execution binding.
+Operator delegations keep their bounded journal on the existing task delegation,
+and mirror each request under the receiver's real Run for Mesh inspection and
+answer controls. Receiver answers are first committed at Home. Neither route
+creates a shadow Run at Home. Lost replies replay the same request only for identical input.
+Remote waiting Runs retain the Home request ID without a receiver-local foreign
+key. Their Worker polls the Home journal at most once per second through the
+current admission authority; local waiting Runs retain their ownership foreign
+key. Apply both the physical and model-state continuation migrations before
+restarting Workers.
+The requester can inspect them in remote execution status and answer through
+`POST /api/tasks/{task}/remote-grants/{grant}/human-requests/answer` with
+`{ "id": "request-uuid", "response": { "answer": "Continue" } }`.
+Current task/Human authority and a live grant are required; expiry, revocation,
+foreign IDs and changed replay input fail. Unsafe-effect reconciliation uses
+this same durable continuation and requires an explicit reconciled result.
+
+## Public foreign Agent Tools
+
+An operator's `integration.agent@1` descriptor may target an enabled protocol
+`0.2` peer. Registration and admission authenticate
+`GET /federation/v0.1/discover/{id}/{version}/bindings` and retain the receiver's
+complete immutable Agent, model, cluster, bundle and Tool definitions. The parent
+keeps its declared Tool alias; the child's Tools are not added to the parent's
+model request. Live peer and receiver authority is checked again before model
+assembly and each Tool effect. Missing peers, unavailable Providers and changed
+closures fail without replacing any qualified reference.
+
+This public protocol exports one receiver's operator-owned closure. Tenant
+installations, generated Agents, Memory/Source/Skill context and nested foreign
+references cannot be exported through it. Tenant admission never borrows an
+operator peer credential; scoped federation continues to require its retained
+subject and mapping grants. Explicit unsupported dependencies are rejected.
+
+Agent Tool delegation stores `delegations.binding_snapshot` in the same
+transaction as its target reservation. Retries send that original closure.
+A receiver accepts a new Run only when its current admission snapshot matches
+exactly; an idempotent replay must match the original Run snapshot. Updating a
+catalog or retrying delivery cannot silently add a dependency or substitute a
+same-named local Agent. The nullable forward migration preserves historical
+unscoped reservations without importing legacy capability fields.
+
+## Workbench test connections
+
+External HTTP/MCP test connections require an operator-owned profile whose
+`read_only_verified` field is true. Set it only after independently checking the
+exact connection's supported operations and read-only contract. A publisher's
+`transport.replay` claim does not establish this guarantee. Unattested external
+calls require fixtures. Binding digests, the admitted draft, test profile and
+current permissions are rechecked at every test step.
+
+## Drained fleet rollout and rollback
+
+1. Stop new admissions on every Node. Pause or drain existing Runs and reconcile
+   uncertain effects with the existing software before replacing it.
+2. Preserve historical definitions, grants, receipts, execution journals, private
+   references and working objects. Apply the additive Home Human journal migration.
+3. Deploy the Binding contract and peer protocol `0.2` across the fleet. Verify
+   seeded system definitions and the deployment's admitted isolation profile.
+4. Register fresh descriptors, explicit context definitions and Binding-only
+   Agent versions. Prepare Host groups; review and approve their exact pending
+   set, then approve Agents and grant exact descriptor/resource authority.
+5. Validate selected tenant work through the native runtime acceptance gate and
+   enable new admissions explicitly. Expand scope only after the evidence passes.
+
+Old Agent configurations, `plugin_N` aliases and `builtin:*` grants are not
+migrated. Existing tenants receive no automatic active installations. These
+accepted scope decisions supersede the compatibility proposals in #105–#107.
+They do not authorize deleting records or resetting a database. An old pending
+Run requires re-registration and new admission; it cannot be resumed by silently
+substituting a new graph.
+
+For an operational rollback, disable admission while retaining the controller,
+reconciliation workers and persistent journals/objects. Drain new-contract work
+before rolling back software. Do not down-migrate, rewrite admitted snapshots or
+resume old software against new-contract Runs. Runtime acceptance is per
+architecture and deployment; portable tests and hosted CI do not certify a
+production isolation profile.
+
+## Native Memory providers
+
+A `memory` Binding may target the immutable Rust Hindsight provider. Its exact extraction, derivation, reflection, embedding, reranker and tokenizer dependencies join the admitted closure. Native workspace `source` Bindings must share one exact provider, use compatible embedding configuration and fit its policy bounds; participant Sources must use the Agent's Memory provider. The Agent schema remains Binding-only. The `memory_mutate`, `memory_recall` and `memory_reflect` operations replace the historical `memory_write` operation. Cached native memory observations recheck current visibility before restart recovery uses them.

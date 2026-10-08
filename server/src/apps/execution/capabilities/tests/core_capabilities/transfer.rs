@@ -485,7 +485,7 @@ a.f.config.endpoint = format!("http://{}", al.local_addr().unwrap());
 							.expr(Expr::value(query_bind_1.to_owned()))
 							.expr(Expr::value(query_bind_2.to_owned()))
 							.expr(Expr::val("AIDASH_SECRET_TEST_PEER"))
-							.expr(Expr::val("0.1"))
+							.expr(Expr::val("0.2"))
 							.expr(Expr::val(true))
 							.to_owned(),
 					)
@@ -543,7 +543,7 @@ async fn peer_request(c: &CoreFixture, node: &str, operation: &str, value: Value
 			&[
 				("Authorization", authorization.as_str()),
 				("x-aidash-node", node),
-				("x-aidash-protocol", "0.1"),
+				("x-aidash-protocol", "0.2"),
 			],
 		)
 		.await
@@ -774,15 +774,6 @@ async fn transfer_commit_rechecks_source_and_receiver_and_keeps_chunks_invisible
 
 use reinhardt::query::{ExprTrait as _, QueryStatementBuilder as _};
 async fn marketplace_admit(c: &CoreFixture) -> aidash_server::domain::Run {
-	let (status, gate) = request(
-		&c.app,
-		&c.f.config.api_token,
-		"PUT",
-		"/api/marketplace/compatibility",
-		json!({"enabled":true,"expected_revision":1,"compatible_instances_confirmed":true}),
-	)
-	.await;
-	assert_eq!(status, 200, "{gate}");
 	let entry = c.f.registry.get("research", "1.1.0").await.unwrap();
 	c.f.registry
 		.publish(aidash_server::registry::Package {

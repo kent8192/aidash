@@ -234,9 +234,36 @@ fn fixture() -> (Calls, Scope, Vector) {
 	(calls.clone(), Scope::new(calls.clone()), Vector::new(calls))
 }
 fn controls(memory: bool, workspace: bool) -> AgentConfig {
-	serde_json::from_value(json!({"model":{"id":"model","version":"1"},
-        "allow_cross_conversation_memory":memory,"allow_workspace_retrieval":workspace}))
-	.unwrap()
+	let mut controls: AgentConfig =
+		serde_json::from_value(crate::test_support::agent("fixture").config).unwrap();
+	controls.conversation_memory = memory;
+	controls.semantic_memory = memory;
+	controls.workspace_context = workspace;
+	controls
+}
+
+#[rstest]
+#[case::native_bank_only(false)]
+#[case::explicit_workspace_source(true)]
+#[tokio::test]
+async fn native_memory_does_not_implicitly_enable_ordinary_workspace_search(
+	#[case] workspace: bool,
+) {
+	let (calls, mut scope, vector) = fixture();
+	scope.rows[0].source = json!({"kind":"artifact","id":Uuid::from_u128(90)});
+	let mut agent = controls(true, workspace);
+	agent.memory = Some(aidash_domain::registry::EntityRef {
+		id: "native-memory".into(),
+		version: "1.0.0".into(),
+	});
+	let result = context(&mut scope, &vector, &run(), "query", 1024, &agent)
+		.await
+		.unwrap();
+	assert_eq!(result.is_some(), workspace);
+	assert_eq!(scope.embedded.is_some(), workspace);
+	if !workspace {
+		assert!(calls.lock().unwrap().is_empty());
+	}
 }
 
 #[rstest]

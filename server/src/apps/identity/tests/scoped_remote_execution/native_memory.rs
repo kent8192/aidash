@@ -673,7 +673,7 @@ async fn native_remote_run_reads_use_the_pinned_provenance_limit_above_1024(
 			.timeout(deadline)
 			.bearer_auth(std::env::var("AIDASH_SECRET_TEST_PEER").unwrap())
 			.header("x-aidash-node", &p.b.config.node_id)
-			.header("x-aidash-protocol", "0.1")
+			.header("x-aidash-protocol", "0.2")
 			.json(&json!({"tenant":"acme","subject":"alice","reference":{
 				"kind":"grant","node_id":p.a.config.node_id,"execution_node":p.b.config.node_id,
 				"grant_id":p.grant,"admission_id":p.admission,
@@ -783,7 +783,7 @@ async fn native_remote_journal_validates_admitted_reads_above_1024_and_checks_la
 			.timeout(deadline)
 			.bearer_auth(std::env::var("AIDASH_SECRET_TEST_PEER").unwrap())
 			.header("x-aidash-node", &p.b.config.node_id)
-			.header("x-aidash-protocol", "0.1")
+			.header("x-aidash-protocol", "0.2")
 			.json(&json!({"tenant":"acme","subject":"alice","reference":{
             "kind":"grant","node_id":p.a.config.node_id,"execution_node":p.b.config.node_id,
             "grant_id":p.grant,"admission_id":p.admission}}))

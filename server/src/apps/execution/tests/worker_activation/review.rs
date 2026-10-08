@@ -422,7 +422,7 @@ async fn terminal_delivery_drains_a_burst_without_per_run_sleep(
 				"aidash://delivery-home".into(),
 				endpoint.into(),
 				"AIDASH_SECRET_TEST_PEER".into(),
-				"0.1".into(),
+				"0.2".into(),
 				true.into(),
 			])
 			.to_string(PostgresQueryBuilder),
@@ -631,8 +631,20 @@ async fn notification_deferral_waits_for_its_authoritative_unblock(
 	let provider = prepared.provider.clone();
 
 	let run = admit(&f, &token, task).await;
-	let metadata = f.store.run(run).await.unwrap();
-	let area = Uuid::new_v4();
+	let area = if blocker == "remote_dependencies" {
+		Uuid::new_v4()
+	} else {
+		sqlx::query_scalar::<_, Uuid>(
+			&Query::select()
+				.column(a("area_id"))
+				.from(a("core_runs"))
+				.and_where(Expr::col(a("run_id")).eq(Expr::value(run)))
+				.to_string(PostgresQueryBuilder),
+		)
+		.fetch_one(f.store.pool.driver())
+		.await
+		.unwrap()
+	};
 	let mut predecessor = None;
 	let deadline = chrono::Utc::now() + chrono::Duration::hours(1);
 	if blocker == "remote_dependencies" {
@@ -658,35 +670,29 @@ async fn notification_deferral_waits_for_its_authoritative_unblock(
 		.unwrap();
 	} else {
 		sqlx::query(
-			&Query::insert()
-				.into_table(a("core_areas"))
-				.columns(
-					[
-						"id",
-						"tenant",
-						"home_node",
-						"agent_id",
-						"owner",
-						"workspace_id",
-						"thread_id",
-						"state",
-					]
-					.map(a),
-				)
-				.values_panic([
-					reinhardt::query::IntoValue::into_value(area),
-					reinhardt::query::IntoValue::into_value("default"),
-					reinhardt::query::IntoValue::into_value(f.config.node_id.clone()),
-					reinhardt::query::IntoValue::into_value("research"),
-					reinhardt::query::IntoValue::into_value("fixture"),
-					reinhardt::query::IntoValue::into_value(metadata.workspace_id),
-					reinhardt::query::IntoValue::into_value(Uuid::new_v4()),
-					reinhardt::query::IntoValue::into_value(if blocker == "area" {
+			&Query::update()
+				.table(a("core_areas"))
+				.value(
+					a("state"),
+					if blocker == "area" {
 						"paused"
 					} else {
 						"active"
-					}),
-				])
+					},
+				)
+				.and_where(Expr::col(a("id")).eq(Expr::value(area)))
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(f.store.pool.driver())
+		.await
+		.unwrap();
+		// Reserve zero for the predecessor before inserting it below.
+		sqlx::query(
+			&Query::update()
+				.table(a("core_runs"))
+				.value(a("sequence"), 1_i64)
+				.value(a("initialized"), false)
+				.and_where(Expr::col(a("run_id")).eq(Expr::value(run)))
 				.to_string(PostgresQueryBuilder),
 		)
 		.execute(f.store.pool.driver())
@@ -694,14 +700,25 @@ async fn notification_deferral_waits_for_its_authoritative_unblock(
 		.unwrap();
 		if blocker == "ordering" {
 			let previous = unblock::insert_run(&f, "PAUSED").await;
+			let generation: i64 = sqlx::query_scalar(
+				&Query::select()
+					.column(a("generation"))
+					.from(a("core_runs"))
+					.and_where(Expr::col(a("run_id")).eq(Expr::value(run)))
+					.to_string(PostgresQueryBuilder),
+			)
+			.fetch_one(f.store.pool.driver())
+			.await
+			.unwrap();
 			sqlx::query(
 				&Query::insert()
 					.into_table(a("core_runs"))
-					.columns(["run_id", "area_id", "sequence"].map(a))
+					.columns(["run_id", "area_id", "sequence", "generation"].map(a))
 					.values_panic([
 						reinhardt::query::IntoValue::into_value(previous),
 						reinhardt::query::IntoValue::into_value(area),
 						reinhardt::query::IntoValue::into_value(0_i64),
+						reinhardt::query::IntoValue::into_value(generation),
 					])
 					.to_string(PostgresQueryBuilder),
 			)
@@ -710,21 +727,6 @@ async fn notification_deferral_waits_for_its_authoritative_unblock(
 			.unwrap();
 			predecessor = Some(previous);
 		}
-		sqlx::query(
-			&Query::insert()
-				.into_table(a("core_runs"))
-				.columns(["run_id", "area_id", "sequence", "initialized"].map(a))
-				.values_panic([
-					reinhardt::query::IntoValue::into_value(run),
-					reinhardt::query::IntoValue::into_value(area),
-					reinhardt::query::IntoValue::into_value(1_i64),
-					reinhardt::query::IntoValue::into_value(blocker == "ordering"),
-				])
-				.to_string(PostgresQueryBuilder),
-		)
-		.execute(f.store.pool.driver())
-		.await
-		.unwrap();
 	}
 	let mut worker = /* Act: launch/relaunch tests worker lifecycle and negative controls. */ Process::start(&f, &url, &schema, "worker", &directory, (1, true), binary.clone());
 	worker.ready().await;

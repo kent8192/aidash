@@ -2,6 +2,8 @@ name: ${COMPOSE_PROJECT_NAME:-aidash-dev}
 services:
   postgres:
     image: aidash-postgres:17-pg-jsonschema-0.3.4
+    # Two Nodes run separate server/worker and framework/store pools.
+    command: ["postgres", "-c", "max_connections=400"]
     build:
       context: .
       dockerfile: deploy/postgres/Dockerfile

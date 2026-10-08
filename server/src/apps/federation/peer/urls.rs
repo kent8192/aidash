@@ -18,6 +18,8 @@ pub fn url_patterns() -> UnifiedRouter {
 			.with_route_middleware(AccessBoundary::peer().with_visibility())
 			.endpoint(management::peer_agent)
 			.with_route_middleware(AccessBoundary::peer().with_visibility())
+			.endpoint(management::peer_agent_bindings)
+			.with_route_middleware(AccessBoundary::peer().with_visibility())
 			.endpoint(management::peer_offer)
 			.with_route_middleware(AccessBoundary::peer().with_visibility())
 			.endpoint(management::peer_workspace)

@@ -3,7 +3,7 @@
 use super::*;
 use aidash_server::{
 	context::ContextEvent,
-	domain::{RunControl, RunPhase},
+	domain::{RunControl, RunPhase, RunState, WaitingState},
 };
 use reinhardt::ServerRouter as Router;
 use std::sync::{
@@ -148,7 +148,7 @@ async fn journey_fixture(
 	#[with(_provider.clone())]
 	_endpoint: EndpointFuture,
 	#[from(capability_fixture)]
-	#[with("aidash://journey",_endpoint.clone())]
+	#[with("aidash://journey",_endpoint.clone(),true)]
 	_initial_core: CoreFuture,
 	#[from(journey_core)]
 	#[with(_initial_core.clone())]
@@ -207,6 +207,7 @@ async fn harness_journey_keeps_core_names_state_and_integration_secrets_separate
 		federation: j.c.f.clone(),
 	};
 	let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(120);
+	let mut answered_approval = false;
 	let finished = loop {
 		harness.worker_once().await.unwrap();
 		let run = j.c.f.store.run(j.run.id).await.unwrap();
@@ -225,6 +226,41 @@ async fn harness_journey_keeps_core_names_state_and_integration_secrets_separate
 				assert!(result["error"].is_null(), "{}: {}", call.name, result);
 			}
 		}
+		if let RunState::Waiting(waiting) = &run.state
+			&& let WaitingState::ExternalApproval {
+				request_id, call, ..
+			} = waiting.as_ref()
+		{
+			assert!(
+				!answered_approval,
+				"the exact external action must need only one approval"
+			);
+			assert_eq!(call.name, "plugin_0");
+			assert_eq!(call.arguments, json!({"result":42}));
+			assert_eq!(j.effects.load(Ordering::SeqCst), 0);
+			let human = aidash_application::ports::execution::ExecutionStore::human_request_by_id(
+				&j.c.f.store,
+				*request_id,
+			)
+			.await
+			.unwrap();
+			assert_eq!(human.kind, "APPROVAL_REQUIRED");
+			assert!(
+				human
+					.prompt
+					.starts_with("Approve this exact external tool action once? Tool: http@1.1.0;")
+			);
+			let (status, result) = request(
+				&j.c.app,
+				&j.c.token,
+				"POST",
+				&format!("/api/human-requests/{request_id}/answer"),
+				json!({"approved":true}),
+			)
+			.await;
+			assert_eq!(status, 200, "{result}");
+			answered_approval = true;
+		}
 		if run.phase() == RunPhase::Completed {
 			break run;
 		}
@@ -237,6 +273,7 @@ async fn harness_journey_keeps_core_names_state_and_integration_secrets_separate
 		);
 		tokio::time::sleep(std::time::Duration::from_millis(20)).await;
 	};
+	assert!(answered_approval);
 	assert_eq!(j.effects.load(Ordering::SeqCst), 1);
 	let secret = std::env::var("AIDASH_SECRET_TEST_PEER").unwrap();
 	assert!(!finished.context.to_string().contains(&secret));
@@ -418,16 +455,13 @@ fn journey_router(
 fn journey_core(#[from(capability_fixture)] core: CoreFuture) -> CoreFuture {
 	async move {
 		let mut c = core.await;
-		let mut profile = (*Runtime::from_env().unwrap().0).clone();
-		profile.storage = c.root.clone();
-		c.f.store.capabilities = Runtime::new(profile).unwrap();
-		c.app.context.set_singleton(c.f.clone());
 		let mut tool = c.f.registry.get("http", "1.0.0").await.unwrap();
 		tool.version = "1.1.0".into();
-		tool.config["credential_env"] = json!("AIDASH_SECRET_TEST_PEER");
+		tool.config["transport"]["credential_env"] = json!("AIDASH_SECRET_TEST_PEER");
 		let mut agent = c.f.registry.get("research", "1.1.0").await.unwrap();
 		agent.version = "1.2.0".into();
-		agent.config["tools"] = json!([{"id":"http","version":"1.1.0"}]);
+		agent.binding_normalization = None;
+		agent.config["bindings"].as_array_mut().unwrap().push(json!({"kind":"tool","target":{"registry_node":c.f.config.node_id,"id":"http","version":"1.1.0"},"alias":"plugin_0","narrow":{}}));
 		agent.config["max_steps"] = json!(200);
 		for entry in [tool, agent] {
 			let (status, result) = request(

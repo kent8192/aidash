@@ -58,8 +58,10 @@ export function TrustOverview({
   const title = (ref: { id: string; version: string }) =>
     `${ref.id} @ ${ref.version}`;
   const dependencies = [
-    ...agent.config.tools.map((reference) => ({ kind: "tool", reference })),
-    ...agent.config.skills.map((reference) => ({ kind: "skill", reference })),
+    ...agent.config.bindings.map((binding) => ({
+      kind: binding.kind,
+      reference: binding.target,
+    })),
   ];
   const badge = (value: ReactNode, tone = "neutral") => (
     <span className={`trust-badge ${tone}`}>{value}</span>
@@ -251,7 +253,12 @@ export function TrustOverview({
               </div>
               <div>
                 <dt>{text("Skills", "スキル")}</dt>
-                <dd>{agent.config.skills.length}</dd>
+                <dd>
+                  {
+                    agent.config.bindings.filter((b) => b.kind === "skill")
+                      .length
+                  }
+                </dd>
               </div>
               <div>
                 <dt>{text("Source node", "取得元ノード")}</dt>
@@ -276,16 +283,16 @@ export function TrustOverview({
                 {(
                   [
                     [
-                      text("Workspace retrieval", "ワークスペース検索"),
-                      agent.config.allow_workspace_retrieval,
+                      text("Source bindings", "SourceのBinding"),
+                      agent.config.bindings.some((b) => b.kind === "source"),
                     ],
                     [
                       text("Memory write", "メモリ書き込み"),
-                      agent.config.allow_memory_write,
+                      !agent.config.remove_default.includes("memory_mutate"),
                     ],
                     [
-                      text("Cross-conversation memory", "会話間メモリ"),
-                      agent.config.allow_cross_conversation_memory,
+                      text("Memory bindings", "MemoryのBinding"),
+                      agent.config.bindings.some((b) => b.kind === "memory"),
                     ],
                   ] as const
                 ).map(([name, enabled]) => (
@@ -334,11 +341,11 @@ export function TrustOverview({
                   [
                     [
                       text("Automatic task creation", "タスクの自動作成"),
-                      agent.config.allow_task_creation,
+                      !agent.config.remove_default.includes("task_create"),
                     ],
                     [
                       text("Automatic delegation", "自動委任"),
-                      agent.config.allow_task_delegation,
+                      !agent.config.remove_default.includes("task_delegate"),
                     ],
                   ] as const
                 ).map(([name, enabled]) => (
@@ -384,9 +391,17 @@ export function TrustOverview({
                       >
                         <span>
                           <small>
-                            {kind === "tool"
-                              ? text("Tool", "ツール")
-                              : text("Skill", "スキル")}
+                            {
+                              (
+                                {
+                                  tool: text("Tool", "ツール"),
+                                  skill: text("Skill", "スキル"),
+                                  bundle: text("Bundle", "バンドル"),
+                                  source: "Source",
+                                  memory: "Memory",
+                                } as Record<string, string>
+                              )[kind]
+                            }
                           </small>
                           <br />
                           {title(reference)}

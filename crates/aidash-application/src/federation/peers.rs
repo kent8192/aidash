@@ -26,9 +26,10 @@ impl PeerAuthority {
 		validate_node_id(&peer.node_id)?;
 		validate_endpoint(&peer.endpoint)?;
 		if peer.node_id == self.node || peer.protocol_version != self.protocol {
-			return Err(Error::Invalid(
-				"peer must be another node with protocol_version 0.1".into(),
-			));
+			return Err(Error::Invalid(format!(
+				"peer must be another node with protocol_version {}",
+				self.protocol
+			)));
 		}
 		let mut scope = self.configuration.write_scope().await?;
 		if !peer.enabled {

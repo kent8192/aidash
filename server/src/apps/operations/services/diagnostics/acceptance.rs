@@ -57,7 +57,8 @@ pub(super) fn document() -> serde_json::Value {
 			"tx_workspace":evidence("workspaces",&["id","revision"],"id=:'workspace'::uuid"),
 			"tx_events":evidence("events",&["id","kind"],"workspace_id=:'workspace'::uuid AND kind='workspace.updated'"),
 			"remote_admissions":count("authorization_remote_admissions"),
-			"remote_bindings":count("authorization_remote_execution")})
+			"remote_bindings":count("authorization_remote_execution"),
+			"pinned_delegations":evidence("delegations", &["task_id","node_id","agent_id","agent_version","binding_snapshot"],"binding_snapshot IS NOT NULL")})
 }
 
 use reinhardt::query::QueryStatementBuilder;

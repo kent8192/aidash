@@ -132,6 +132,22 @@ test("generation dashboard manages policy, approval, completion and retained his
       expected_revision: 0,
       enabled: true,
     });
+    const memoryDescriptor = `${id}-memory`;
+    await api("/api/registry", {
+      id: memoryDescriptor,
+      version: "1.0.0",
+      kind: "memory",
+      name: { en: "Approved semantic memory", ja: "承認済みメモリ" },
+      description: {
+        en: "Explicit semantic retrieval for the generated Agent",
+      },
+      config: { schema_version: 1, source: { adapter: "semantic_memory" } },
+    });
+    await api(`/api/authorization/${tenant}/catalog`, {
+      entry: { id: memoryDescriptor, version: "1.0.0" },
+      expected_revision: 0,
+      enabled: true,
+    });
     const credential = await api(`/api/authorization/${tenant}/credentials`, {
       subject: "alice",
     });
@@ -194,18 +210,24 @@ test("generation dashboard manages policy, approval, completion and retained his
     await registryDialog
       .getByLabel("埋め込みの次元数", { exact: true })
       .fill("3");
-    const registration = page
-      .waitForResponse(
-        (response) =>
-          response.url().endsWith("/api/registry") &&
-          response.request().method() === "POST",
-      )
-      .then((response) => response.json());
+    // Buffer the body before releasing it to the UI, whose success handler navigates.
+    // Chromium can discard a page response body as soon as that navigation starts.
+    let embedder = "";
+    await page.route("**/api/registry", async (route) => {
+      if (route.request().method() !== "POST") return route.fallback();
+      const response = await route.fetch({
+        headers: { ...route.request().headers(), ...cleanupHeaders },
+      });
+      expect(response.status(), await response.text()).toBe(200);
+      embedder = (await response.json()).id as string;
+      await route.fulfill({ response });
+    });
     await registryDialog
       .getByRole("button", { name: "エンティティを登録", exact: true })
       .click();
-    const embedder = (await registration).id as string;
     await expect(registryDialog).toHaveCount(0);
+    await page.unroute("**/api/registry");
+    expect(embedder).not.toBe("");
     expect((await api(`/api/registry/${embedder}/1.0.0`)).config).toEqual(
       embeddingConfig,
     );
@@ -233,6 +255,12 @@ test("generation dashboard manages policy, approval, completion and retained his
     await dialog
       .getByLabel("モデル", { exact: true })
       .selectOption(`${id}@1.0.0`);
+    await dialog
+      .getByLabel("追加する定義", { exact: true })
+      .selectOption(`memory:${memoryDescriptor}@1.0.0`);
+    await dialog
+      .getByRole("button", { name: "Bindingを追加", exact: true })
+      .click();
     await dialog
       .getByLabel("追加の指示（任意）", { exact: true })
       .fill("Complete the task using the approved model.");

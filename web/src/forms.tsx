@@ -1,9 +1,6 @@
+import { coordinatorDefaults, hasInstructionalBinding } from "./agent-bindings";
 import { Button } from "./components/ui/button";
-import {
-  AgentMemoryFields,
-  MemoryRegistryFields,
-  memoryConfiguration,
-} from "./memory-registry";
+import { MemoryRegistryFields, memoryConfiguration } from "./memory-registry";
 import { ApiError, apiFetch } from "./transport";
 import {
   HomeNativeMemoryFields,
@@ -17,6 +14,7 @@ import { ReferenceName } from "./record-view";
 import { AgentDocuments } from "./agent-documents";
 import type { ReferenceDocument } from "./generated/models";
 import { Fragment, useRef, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { EntityConfiguration } from "./entity-configuration";
 import { OpenRouterModelPicker } from "./openrouter-model-picker";
 import { useForm } from "@tanstack/react-form";
@@ -312,10 +310,9 @@ export function EntityForm({
   });
   const [error, setError] = useState("");
   const models = data.registry.filter((e) => e.kind === "model");
-  const toolEntries = data.registry.filter((e) => e.kind === "tool");
-  const skillEntries = data.registry.filter((e) => e.kind === "skill");
   const [documents, setDocuments] = useState<ReferenceDocument[]>([]);
   const [core, setCore] = useState(emptyCore);
+  const [cluster, setCluster] = useState("");
   const [readingDocuments, setReadingDocuments] = useState(false);
   return (
     <form
@@ -333,17 +330,9 @@ export function EntityForm({
               ? {
                   model: ref(s("model")),
                   instructions: s("instructions"),
-                  tools: d.getAll("tools").map((v) => ref(String(v))),
-                  skills: d.getAll("skills").map((v) => ref(String(v))),
+                  schema_version: 1,
                   cluster: s("cluster") ? ref(s("cluster")) : null,
                   max_steps: 64,
-                  memory: s("memory_provider")
-                    ? ref(s("memory_provider"))
-                    : null,
-                  allow_memory_write: d.has("allow_memory_write"),
-                  sources: d
-                    .getAll("memory_sources")
-                    .map((v) => ref(String(v))),
                   ...core,
                 }
               : kind === "model"
@@ -401,8 +390,7 @@ export function EntityForm({
           if (
             kind === "agent" &&
             !s("instructions").trim() &&
-            !d.getAll("skills").length &&
-            !core.skill_attachments.length
+            !hasInstructionalBinding(core.bindings, data.registry, data.node.id)
           )
             throw new Error(t("agentNeedsSkill"));
           if (readingDocuments) return;
@@ -439,6 +427,9 @@ export function EntityForm({
             "model",
             "tool",
             "skill",
+            "memory",
+            "source",
+            "bundle",
             "cluster",
             "node",
             "compactor",
@@ -509,23 +500,7 @@ export function EntityForm({
               </select>
             </Field>
             {models.length === 0 && <p className="notice">{t("noModel")}</p>}
-            <fieldset>
-              <legend>{t("skill")}</legend>
-              <p className="muted">{t("agentSkillsHelp")}</p>
-              {skillEntries.length === 0 && (
-                <p className="notice">{t("agentNoSkills")}</p>
-              )}
-              {skillEntries.map((e) => (
-                <label className="check" key={`${e.id}@${e.version}`}>
-                  <input
-                    type="checkbox"
-                    name="skills"
-                    value={`${e.id}@${e.version}`}
-                  />
-                  {entityLabel(e)}
-                </label>
-              ))}
-            </fieldset>
+
             <Field label={t("additionalInstructions")}>
               <textarea
                 name="instructions"
@@ -533,15 +508,34 @@ export function EntityForm({
                 placeholder={t("additionalInstructionsHelp")}
               />
             </Field>
-            <AgentMemoryFields entries={data.registry} />
-            <CapabilityConfiguration value={core} change={setCore} />
+            <CapabilityConfiguration
+              value={core}
+              change={setCore}
+              cluster={Boolean(cluster)}
+              node={data.node.id}
+              entries={data.registry}
+            />
             <AgentDocuments
               documents={documents}
               change={setDocuments}
               busyChange={setReadingDocuments}
             />
             <Field label={t("cluster")}>
-              <select name="cluster" defaultValue="">
+              <select
+                name="cluster"
+                value={cluster}
+                onChange={(e) => {
+                  const selected = e.target.value;
+                  setCluster(selected);
+                  if (selected)
+                    setCore((previous) => ({
+                      ...previous,
+                      remove_default: previous.remove_default.filter(
+                        (name) => !coordinatorDefaults.includes(name),
+                      ),
+                    }));
+                }}
+              >
                 <option value="">{t("noAssignment")}</option>
                 {data.registry
                   .filter((e) => e.kind === "cluster")
@@ -555,19 +549,6 @@ export function EntityForm({
                   ))}
               </select>
             </Field>
-            <fieldset>
-              <legend>{t("tools")}</legend>
-              {toolEntries.map((e) => (
-                <label className="check" key={`${e.id}@${e.version}`}>
-                  <input
-                    type="checkbox"
-                    name="tools"
-                    value={`${e.id}@${e.version}`}
-                  />
-                  {entityLabel(e)}
-                </label>
-              ))}
-            </fieldset>
           </>
         ) : kind === "model" ? (
           <>
@@ -671,7 +652,7 @@ export function EntityForm({
               />
             </Field>
           </>
-        ) : ["memory", "source", "reranker", "tokenizer"].includes(kind) ? (
+        ) : ["reranker", "tokenizer"].includes(kind) ? (
           <MemoryRegistryFields kind={kind} entries={data.registry} />
         ) : (
           <EntityConfiguration kind={kind} data={data} />
@@ -700,7 +681,7 @@ export function PeerForm({ submit }: { submit: Submit }) {
             node_id: String(d.get("node_id")),
             endpoint: String(d.get("endpoint")),
             credential_env: String(d.get("credential_env")),
-            protocol_version: "0.1",
+            protocol_version: "0.2",
             enabled: true,
           }),
         );
@@ -756,9 +737,31 @@ export function AssignForm({
   );
   const scopedRemote =
     data.access.kind === "subject" && chosen && chosen.node_id !== data.node.id;
+  const inspection = useQuery({
+    queryKey: ["remote-agent-inspection", task.id, selected],
+    enabled: !!scopedRemote,
+    staleTime: 0,
+    retry: false,
+    queryFn: () =>
+      apiFetch<{ native_required: boolean; memory_available: boolean }>(
+        `/api/tasks/${task.id}/remote-grants/inspect`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            node_id: chosen!.node_id,
+            agent: { id: chosen!.entity.id, version: chosen!.entity.version },
+          }),
+        },
+      ),
+  });
   const nativeRequired =
-    !!chosen?.entity.config.memory &&
-    chosen.entity.config.allow_cross_conversation_memory !== false;
+    !!scopedRemote && inspection.data?.native_required === true;
+  const memoryAvailable =
+    !!scopedRemote && inspection.data?.memory_available === true;
+  const useMemory = nativeRequired || (memoryAvailable && memory);
+  const inspectionBlocked =
+    !!scopedRemote && (inspection.isPending || inspection.isError);
   return (
     <form
       onSubmit={(e) => {
@@ -772,7 +775,7 @@ export function AssignForm({
               agent.entity.version,
             ]) === (d.get("agent") ?? selected),
         );
-        if (!a) return;
+        if (!a || inspectionBlocked) return;
         setGrantBusy(true);
         void submit(async () => {
           if (data.access.kind !== "subject" || a.node_id === data.node.id) {
@@ -788,7 +791,7 @@ export function AssignForm({
                 node_id: a.node_id,
                 agent: { id: a.entity.id, version: a.entity.version },
                 ttl_seconds: 3600,
-                semantic: memory
+                semantic: useMemory
                   ? {
                       mode: "required_home",
                       embedding: ref(String(d.get("embedding"))),
@@ -839,19 +842,7 @@ export function AssignForm({
             value={selected}
             onChange={(e) => {
               setSelected(e.target.value);
-              const agent = agents.find(
-                (agent) =>
-                  JSON.stringify([
-                    agent.node_id,
-                    agent.entity.id,
-                    agent.entity.version,
-                  ]) === e.target.value,
-              );
-              if (
-                agent?.entity.config.memory &&
-                agent.entity.config.allow_cross_conversation_memory !== false
-              )
-                setMemory(true);
+              setMemory(false);
             }}
           >
             <option value="">{t("choose")}</option>
@@ -878,15 +869,31 @@ export function AssignForm({
             <label>
               <input
                 type="checkbox"
-                checked={memory}
-                disabled={nativeRequired}
+                checked={useMemory}
+                disabled={
+                  nativeRequired || !memoryAvailable || inspectionBlocked
+                }
                 onChange={(e) => setMemory(e.target.checked)}
               />
               {ja
                 ? "各推論の前に Home の記憶を検索する"
                 : "Require Home memory before each inference"}
             </label>
-            {memory && (
+            {inspection.isPending && (
+              <p role="status">
+                {ja
+                  ? "実行先のメモリ要件を確認しています"
+                  : "Checking memory requirements at the execution node"}
+              </p>
+            )}
+            {inspection.isError && (
+              <p role="alert">
+                {ja
+                  ? "実行先のメモリ要件を確認できませんでした"
+                  : "Could not inspect memory requirements at the execution node"}
+              </p>
+            )}
+            {useMemory && (
               <>
                 <label>
                   {ja ? "Home の embedding 定義" : "Home embedding definition"}
@@ -920,6 +927,7 @@ export function AssignForm({
                     : "Retrieval results are disclosed to the selected agent's model. Execution pauses when authority or budget is insufficient."}
                 </p>
                 <HomeNativeMemoryFields
+                  key={selected}
                   workspace={task.workspace_id}
                   entries={data.registry}
                   required={nativeRequired}
@@ -936,7 +944,11 @@ export function AssignForm({
             : "Recheck the same execution grant. Its settings stay fixed until the outcome is confirmed."}
         </p>
       )}
-      <Button variant="outline" className="primary" disabled={grantBusy}>
+      <Button
+        variant="outline"
+        className="primary"
+        disabled={grantBusy || inspectionBlocked}
+      >
         {grantPending
           ? ja
             ? "同じ実行許可を再試行"

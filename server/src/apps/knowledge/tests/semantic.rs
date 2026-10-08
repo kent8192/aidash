@@ -44,11 +44,43 @@ async fn controlled_context(
 	let app = application_fixture.application.clone();
 
 	let endpoint = model_server.url.clone();
-	let (mut policy, token, task) = common::bootstrap(&f, &app, &endpoint).await;
+	let (mut policy, token, task) = common::bootstrap_with_context(&f, &app, &endpoint, true).await;
 	let mut agent = f.registry.get("research", "1.0.0").await.unwrap();
 	agent.version = "1.0.1".into();
-	agent.config["allow_cross_conversation_memory"] = json!(memory);
-	agent.config["allow_workspace_retrieval"] = json!(workspace_retrieval);
+	agent.binding_normalization = None;
+	let mut bindings = vec![];
+	for (enabled, id, kind, adapter) in [
+		(memory, "context-memory", "memory", "semantic_memory"),
+		(
+			workspace_retrieval,
+			"context-workspace",
+			"source",
+			"workspace_retrieval",
+		),
+	] {
+		if !enabled {
+			continue;
+		}
+		let entry = json!({"id":id,"version":"1.0.0","kind":kind,"name":{"en":id},"description":{"en":"Explicit native context"},"config":{"schema_version":1,"source":{"adapter":adapter}}});
+		f.registry
+			.register(serde_json::from_value(entry).unwrap())
+			.await
+			.unwrap();
+		assert_eq!(
+			request(
+				&app,
+				&f.config.api_token,
+				"POST",
+				"/api/authorization/acme/catalog",
+				json!({"entry":{"id":id,"version":"1.0.0"},"expected_revision":0,"enabled":true})
+			)
+			.await
+			.0,
+			200
+		);
+		bindings.push(json!({"kind":kind,"target":{"registry_node":f.config.node_id,"id":id,"version":"1.0.0"},"narrow":{}}));
+	}
+	agent.config["bindings"] = json!(bindings);
 	f.registry.register(agent).await.unwrap();
 	let owner = qualified_agent(&f.config.node_id, "research", "1.0.1");
 	policy["subjects"][&owner] = json!({"kind":"agent"});
@@ -704,7 +736,7 @@ async fn semantic_context_is_provenanced_and_revocation_hides_run_journals(
 	let embedding_server = embeddings;
 
 	let endpoint = server.url.clone();
-	let (mut policy, token, task) = common::bootstrap(&f, &app, &endpoint).await;
+	let (mut policy, token, task) = common::bootstrap_with_context(&f, &app, &endpoint, true).await;
 	let workspace = f.store.task(task).await.unwrap().workspace_id;
 	configure(
 		&app,

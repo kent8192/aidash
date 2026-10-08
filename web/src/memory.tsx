@@ -1,3 +1,4 @@
+import { nativeMemoryProvider } from "./agent-bindings";
 import { useState } from "react";
 import {
   useInfiniteQuery,
@@ -147,7 +148,7 @@ export function MemoryWorkspace({
       entry.id === chosen.agent.id &&
       entry.version === chosen.agent.version,
   );
-  const boundProvider = agent?.config.memory as EntityRef | undefined;
+  const boundProvider = nativeMemoryProvider(agent?.config, data.registry);
   const provider = chosen
     ? boundProvider
     : providers.find((entry) => refKey(entry) === providerKey);

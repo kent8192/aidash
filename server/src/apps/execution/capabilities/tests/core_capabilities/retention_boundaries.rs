@@ -429,6 +429,7 @@ fn sharing_generation_fixture(
 		assert_eq!(status, 200, "{restored}");
 		let mut newer = f.c.f.registry.get("research", "1.1.0").await.unwrap();
 		newer.version = "1.2.0".into();
+		newer.binding_normalization = None;
 		let (status, saved) = request(
 			&f.c.app,
 			&f.c.f.config.api_token,

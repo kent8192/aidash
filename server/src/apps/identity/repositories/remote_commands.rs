@@ -9,6 +9,7 @@ use uuid::Uuid;
 pub(crate) struct Scope<'a> {
 	pub(crate) access: &'a mut Access,
 	pub(crate) runtime: &'a crate::federation::Federation,
+	pub(crate) bindings: Option<&'a aidash_domain::registry::bindings::BindingSnapshot>,
 }
 #[async_trait]
 impl RemoteCommandScope for Scope<'_> {
@@ -55,9 +56,15 @@ impl RemoteCommandScope for Scope<'_> {
 	async fn require_builtin(&mut self, tool: &str) -> Result<()> {
 		self.access
 			.require(
-				&self
-					.access
-					.resource("tool", format!("builtin:{tool}"), json!({})),
+				&self.access.resource(
+					"tool",
+					self.bindings
+						.ok_or(aidash_application::Error::Forbidden)?
+						.operation(tool)?
+						.identity
+						.resource_id(),
+					json!({}),
+				),
 				"tool.invoke",
 			)
 			.await
@@ -68,3 +75,5 @@ impl RemoteCommandScope for Scope<'_> {
 use reinhardt::query::QueryStatementBuilder as _;
 
 mod effects;
+
+pub(crate) mod humans;

@@ -11,22 +11,33 @@ pub(crate) struct Operations(pub(crate) crate::tool::ToolContext);
 #[async_trait]
 impl ToolOperations for Operations {
 	async fn registered_skills(&self) -> Result<Vec<EntityRef>> {
-		let registry =
-			crate::registry::Registry::new(self.0.store.pool.clone(), &self.0.store.node_id)?;
-		let run = &self.0.run;
-		let agent = registry
-			.get_for_run(run, &run.agent_id, &run.agent_version)
-			.await?;
-		let config: crate::registry::AgentConfig = serde_json::from_value(agent.config)?;
-		Ok(config.skills)
+		let snapshot = self
+			.0
+			.run
+			.context
+			.binding_snapshot
+			.as_ref()
+			.ok_or_else(|| {
+				aidash_application::Error::Invalid("Run has no Binding snapshot".into())
+			})?;
+		Ok(aidash_domain::registry::AgentConfig::from_snapshot(snapshot)?.skills)
 	}
 	async fn skill_files(&self, reference: &EntityRef) -> Result<Vec<SkillFile>> {
-		let registry =
-			crate::registry::Registry::new(self.0.store.pool.clone(), &self.0.store.node_id)?;
-		let entry = registry
-			.get_for_run(&self.0.run, &reference.id, &reference.version)
-			.await?;
-		crate::registry::skill_files(&entry).map_err(Into::into)
+		let snapshot = self
+			.0
+			.run
+			.context
+			.binding_snapshot
+			.as_ref()
+			.ok_or_else(|| {
+				aidash_application::Error::Invalid("Run has no Binding snapshot".into())
+			})?;
+		let entry = snapshot
+			.bindings
+			.iter()
+			.find(|b| b.definition.kind == "skill" && b.identity.local() == *reference)
+			.ok_or(aidash_application::Error::Forbidden)?;
+		crate::registry::skill_files(&entry.definition).map_err(Into::into)
 	}
 	async fn discover(&self, input: &Search) -> Result<Value> {
 		Ok(json!(self.0.home.discover(input).await?))
@@ -140,8 +151,8 @@ impl ToolOperations for Operations {
 	}
 	async fn human_request(&self, kind: &str, prompt: &str, key: &str) -> Result<HumanRequest> {
 		self.0
-			.store
-			.human_request(&self.0.run, kind, prompt, key)
+			.home
+			.human_request(kind, prompt, key)
 			.await
 			.map_err(Into::into)
 	}

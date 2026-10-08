@@ -21,9 +21,14 @@ pub fn postgres_container() -> PostgresFuture {
 		// Reinhardt's postgres_container fixes postgres:16-alpine. Aidash needs its
 		// PostgreSQL 17 image with pg_jsonschema, pgvector, and PGroonga extensions.
 		// reinhardt-web#6655 and #6656 track version documentation and image customization.
-		// Keep an explicit mapping across stop/start; Docker may reallocate an
-		// automatically assigned port while live stores still use the old URL.
-		let reservation = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+		// Keep an explicit mapping across stop/start. Avoid the usual ephemeral range:
+		// outbound fixture connections can claim those ports after the reservation drops.
+		let reservation = (0..128)
+			.find_map(|_| {
+				let port = 10_000 + (uuid::Uuid::new_v4().as_u128() % 20_000) as u16;
+				std::net::TcpListener::bind(("0.0.0.0", port)).ok()
+			})
+			.expect("reserve an available PostgreSQL fixture listener port");
 		let host_port = reservation.local_addr().unwrap().port();
 		let image = GenericImage::new("aidash-orm-test-postgres", "17-pg-jsonschema-0.3.4")
 		.with_exposed_port(5432.tcp())

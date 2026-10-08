@@ -30,7 +30,23 @@ pub trait CoreToolCatalog: Send + Sync {
 #[async_trait]
 pub trait DefinitionLookup: Send {
 	async fn definition(&mut self, id: &str, version: &str) -> Result<Entry>;
+	/// Only an explicit operator adapter may import an authenticated public closure.
+	async fn foreign_agent(
+		&mut self,
+		_: &str,
+		_: &aidash_domain::registry::bindings::QualifiedRef,
+	) -> Result<aidash_domain::registry::bindings::ForeignAgentSnapshot> {
+		Err(crate::Error::Forbidden)
+	}
 	async fn overrides(&mut self, id: &str, version: &str) -> Result<Option<Value>>;
+	/// Exact installed references must be active and individually approved for
+	/// new registration/admission. A default adapter never invents that authority.
+	async fn binding_installation(
+		&mut self,
+		_: &aidash_domain::registry::Projection,
+	) -> Result<()> {
+		Err(crate::Error::Forbidden)
+	}
 	async fn executor_kind(&mut self, id: &str, version: &str) -> Result<Option<String>> {
 		Ok(Some(self.definition(id, version).await?.kind))
 	}
@@ -69,6 +85,7 @@ pub trait RegistrationScope: DefinitionWriter {
 /// Implementations must retain definition locks and immutable digest comparisons.
 #[async_trait]
 pub trait PackageScope: DefinitionLookup {
+	fn registry_node(&self) -> &str;
 	async fn publish(
 		&mut self,
 		id: &str,

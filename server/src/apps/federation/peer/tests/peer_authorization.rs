@@ -38,7 +38,7 @@ fn discovery(#[future] execution: ExecutionFixture) -> impl Future<Output = Exec
 			.node_id(SOURCE)
 			.endpoint("http://127.0.0.1:1")
 			.credential_env(PEER_ENV)
-			.protocol_version("0.1")
+			.protocol_version("0.2")
 			.enabled(true)
 			.finish();
 		Peer::objects()
@@ -98,7 +98,7 @@ async fn discover(
 			&[
 				("Authorization", authorization.as_str()),
 				("x-aidash-node", node),
-				("x-aidash-protocol", "0.1"),
+				("x-aidash-protocol", "0.2"),
 			],
 		)
 		.await

@@ -22,6 +22,79 @@ async fn registry(database: &DatabaseFixture) -> Registry {
 		.unwrap();
 	Registry::new(store.pool.clone(), &store.node_id).unwrap()
 }
+
+#[rstest]
+#[tokio::test]
+async fn database_accepts_every_host_operation_and_its_exact_lifecycle(
+	#[future] database: DatabaseFixture,
+) {
+	let database = database.await;
+	let groups = aidash_application::registry::system::packages::declarations(
+		&aidash_domain::identity::Principal::Operator,
+		&aidash_server::bootstrap::registry_validation(),
+		"aidash://node",
+	)
+	.unwrap();
+	let mut operations = groups
+		.into_iter()
+		.flat_map(|group| group.operations)
+		.collect::<Vec<_>>();
+	operations.sort_by_key(|entry| entry.config.get("lifecycle").is_some());
+	let mut connection = database.lease.handle();
+	for entry in operations {
+		let descriptor: ToolDescriptor = serde_json::from_value(entry.config.clone()).unwrap();
+		descriptor.validate().unwrap();
+		let definition = Definition::build()
+			.id(&entry.id)
+			.version(&entry.version)
+			.kind(DefinitionKind::Tool)
+			.metadata(serde_json::to_value(&entry).unwrap().into())
+			.finish();
+		Definition::objects()
+			.create_with_conn(&mut connection, &definition)
+			.await
+			.unwrap_or_else(|error| {
+				panic!(
+					"Host operation {} rejected: {error}; descriptor: {:?}",
+					descriptor.operation, entry.config
+				)
+			});
+		if descriptor.lifecycle.is_some() {
+			for (index, mutation) in ["same-reference", "foreign-origin", "extra-key"]
+				.into_iter()
+				.enumerate()
+			{
+				let mut invalid = entry.clone();
+				invalid.id = format!("invalid-{}-{index}", descriptor.operation);
+				match mutation {
+					"same-reference" => {
+						invalid.config["lifecycle"]["cancel"] =
+							invalid.config["lifecycle"]["poll"].clone()
+					}
+					"foreign-origin" => {
+						invalid.config["lifecycle"]["poll"]["registry_node"] =
+							json!("aidash://foreign")
+					}
+					_ => invalid.config["lifecycle"]["extra"] = json!(true),
+				}
+				let definition = Definition::build()
+					.id(&invalid.id)
+					.version(&invalid.version)
+					.kind(DefinitionKind::Tool)
+					.metadata(serde_json::to_value(&invalid).unwrap().into())
+					.finish();
+				let error = Definition::objects()
+					.create_with_conn(&mut connection, &definition)
+					.await
+					.unwrap_err();
+				assert!(
+					error.to_string().contains("registry_tool_config"),
+					"{mutation}: {error}"
+				);
+			}
+		}
+	}
+}
 #[rstest]
 #[tokio::test]
 async fn context_descriptors_remain_valid_alongside_native_memory_roles(

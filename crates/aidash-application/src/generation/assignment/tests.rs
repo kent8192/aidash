@@ -214,6 +214,18 @@ impl GenerationAssignmentSession for Scope {
 }
 #[async_trait]
 impl GenerationCreationScope for Scope {
+	async fn bindings(
+		&mut self,
+		entry: &aidash_domain::registry::Entry,
+	) -> Result<aidash_domain::registry::bindings::BindingSnapshot> {
+		Ok(crate::test_support::resolve(
+			"aidash://local",
+			entry,
+			false,
+			vec![],
+		))
+	}
+
 	fn tenant(&self) -> &str {
 		"tenant"
 	}

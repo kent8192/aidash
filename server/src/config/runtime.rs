@@ -17,7 +17,7 @@ pub struct Config {
 
 pub use crate::apps::identity::serializers::settings::OidcConfig;
 
-pub const PROTOCOL_VERSION: &str = "0.1";
+pub const PROTOCOL_VERSION: &str = "0.2";
 
 impl Config {
 	pub fn from_settings(settings: &super::settings::ProjectSettings) -> Result<Self> {

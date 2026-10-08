@@ -118,6 +118,8 @@ pub struct RunInspection {
 	pub metadata: RunMetadata,
 	pub state: Option<RunState>,
 	pub recovery: Option<RecoveryState>,
+	#[serde(serialize_with = "crate::context::serialize_inspection_context")]
+	#[schemars(with = "Option<crate::context::InspectionContext<'static>>")]
 	pub context: Option<Context>,
 	pub state_error: Option<String>,
 }

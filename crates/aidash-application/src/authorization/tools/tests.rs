@@ -192,10 +192,14 @@ fn run() -> RunMetadata {
 }
 #[fixture]
 fn agent() -> AgentConfig {
-	serde_json::from_value(
-		json!({"model":{"id":"model","version":"1"},"tools":[reference()],"skills":[reference()],"memory":reference(),"allow_memory_write":true}),
-	)
-	.unwrap()
+	let mut config: AgentConfig =
+		serde_json::from_value(crate::test_support::agent("producer").config).unwrap();
+	// Resource adapter flags are an internal view derived by native admission.
+	config.memory = Some(reference());
+	config.allow_memory_write = Some(true);
+	config.tools = vec![reference()];
+	config.skills = vec![reference()];
+	config
 }
 fn call(name: &str, arguments: Value) -> ToolCall {
 	ToolCall {
@@ -206,6 +210,7 @@ fn call(name: &str, arguments: Value) -> ToolCall {
 }
 fn entry() -> Entry {
 	Entry {
+		binding_normalization: None,
 		installation: None,
 		id: "configured".into(),
 		version: "1".into(),
@@ -717,8 +722,9 @@ async fn core_tools_require_invoke_and_the_declared_capability(
 async fn missing_core_capability_is_denied_after_the_invoke_check(
 	repository: Repository,
 	run: RunMetadata,
-	agent: AgentConfig,
+	mut agent: AgentConfig,
 ) {
+	agent.core_capabilities.files = false;
 	assert!(matches!(
 		authorize(&repository, &run, &agent, &call("file_read", json!({}))).await,
 		Err(Error::Forbidden)
@@ -1007,7 +1013,6 @@ async fn a_remote_delegate_cannot_address_a_task_other_than_its_admitted_task(
 }
 #[rstest]
 #[case::memory("memory_mutate")]
-#[case::human("human_request")]
 #[case::generation("task_assign")]
 #[tokio::test]
 async fn remote_execution_rejects_local_only_resources_after_invoke(
@@ -1225,7 +1230,8 @@ async fn cancellation_releases_the_lease_held_during_tool_authorization(
 #[case::matching_workspace("workspace", 3, true)]
 #[case::foreign_workspace("workspace", 9, false)]
 #[case::memory("memory", 1, false)]
-#[case::run("run", 1, false)]
+#[case::run("run", 1, true)]
+#[case::foreign_run("run", 9, false)]
 #[case::generation("generation_policy", 1, false)]
 fn remote_identifiers_enforce_the_admitted_scope(
 	run: RunMetadata,
@@ -1431,4 +1437,29 @@ async fn cancelling_a_human_read_releases_the_held_authority(
 	assert_ne!(repository.calls().last().unwrap(), "release");
 	drop(pending);
 	assert_eq!(repository.calls().last().unwrap(), "release");
+}
+
+#[rstest]
+#[tokio::test]
+async fn remote_human_request_authorizes_the_exact_home_run(
+	mut repository: Repository,
+	run: RunMetadata,
+	agent: AgentConfig,
+) {
+	repository.remote = true;
+	authorize(
+		&repository,
+		&run,
+		&agent,
+		&call(
+			"human_request",
+			json!({"kind":"question","prompt":"Continue?"}),
+		),
+	)
+	.await
+	.unwrap();
+	assert!(repository.calls().contains(&format!(
+		"require:aidash://home/runs/{}:human.request",
+		run.id
+	)));
 }

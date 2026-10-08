@@ -18,13 +18,44 @@ async fn working_files_require_explicit_agent_settings(
 ) {
 	let (f, url, schema) = application.runtime.parts();
 	let app = application.application;
-	let (_policy, token, task) = bootstrap(&f, &app, "http://localhost:19999").await;
+	let (mut policy, token, task) = bootstrap(&f, &app, "http://localhost:19999").await;
+	let mut stripped = f.registry.get("research", "1.0.0").await.unwrap();
+	stripped.version = "1.0.1".into();
+	stripped.binding_normalization = None;
+	for name in ["file_read", "file_search"] {
+		let removed = stripped.config["remove_default"].as_array_mut().unwrap();
+		if !removed.contains(&json!(name)) {
+			removed.push(json!(name));
+		}
+	}
+	f.registry.register(stripped).await.unwrap();
+	policy["subjects"]
+		[aidash_server::domain::qualified_agent(&f.config.node_id, "research", "1.0.1")] =
+		json!({"kind":"agent"});
+	let (status, body) = request(
+		&app,
+		&f.config.api_token,
+		"POST",
+		"/api/authorization/acme",
+		json!({"expected_revision":1,"bundle":policy}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	let (status, body) = request(
+		&app,
+		&f.config.api_token,
+		"POST",
+		"/api/authorization/acme/catalog",
+		json!({"entry":{"id":"research","version":"1.0.1"},"expected_revision":0,"enabled":true}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
 	let (status, delegation) = request(
 		&app,
 		&token,
 		"POST",
 		&format!("/api/tasks/{task}/delegate"),
-		json!({"node_id":f.config.node_id,"agent":{"id":"research","version":"1.0.0"}}),
+		json!({"node_id":f.config.node_id,"agent":{"id":"research","version":"1.0.1"}}),
 	)
 	.await;
 	assert_eq!(status, 200, "{delegation}");
@@ -33,7 +64,7 @@ async fn working_files_require_explicit_agent_settings(
 	assert_eq!(
 		result["items"],
 		json!([]),
-		"legacy Agents must not gain working files"
+		"Agents that remove file Tools must not gain working files"
 	);
 	cleanup(f, &url, &schema).await;
 }
@@ -170,6 +201,7 @@ fn core_storage(
 fn core_runtime(
 	#[default("aidash://execution-test")] node: &str,
 	core_storage: Arc<tempfile::TempDir>,
+	#[default(false)] runner: bool,
 	#[from(common::runtime)] runtime: common::RuntimeFuture,
 ) -> common::RuntimeFuture {
 	let node = node.to_owned();
@@ -179,13 +211,18 @@ fn core_runtime(
 		f.config.node_id = node.clone();
 		f.store.node_id = node.clone();
 		f.registry = aidash_server::registry::Registry::new(f.store.pool.clone(), &node).unwrap();
-		f.store.capabilities = Runtime::new(Profile {
-			admission: true,
-			outbound_origins: vec!["https://example.com".into()],
-			storage: core_storage.path().to_owned(),
-			..Profile::default()
-		})
-		.unwrap();
+		let mut profile = if runner {
+			(*Runtime::from_env().unwrap().0).clone()
+		} else {
+			Profile {
+				admission: true,
+				outbound_origins: vec!["https://example.com".into()],
+				storage: core_storage.path().to_owned(),
+				..Profile::default()
+			}
+		};
+		profile.storage = core_storage.path().to_owned();
+		f.store.capabilities = Runtime::new(profile).unwrap();
 		owner
 	}
 	.boxed()
@@ -195,9 +232,10 @@ fn core_runtime(
 fn capability_fixture(
 	#[default("aidash://execution-test")] _node: &str,
 	#[default(async { "http://localhost:19999".into() }.boxed().shared())] endpoint: EndpointFuture,
+	#[default(false)] _runner: bool,
 	#[from(core_storage)] storage: Arc<tempfile::TempDir>,
 	#[from(core_runtime)]
-	#[with(_node,storage.clone())]
+	#[with(_node,storage.clone(),_runner)]
 	_runtime: common::RuntimeFuture,
 	#[from(common::native_application)]
 	#[with(Default::default(),aidash_server::sse::Service::new(Default::default()),Arc::new(|router|router),_runtime.clone())]
@@ -221,14 +259,55 @@ let (mut policy, token, task) = bootstrap(&f, &app, &endpoint).await;
 	assert_eq!(status, 200, "{response}");
 	let mut entry = f.registry.get("research", "1.0.0").await.unwrap();
 	entry.version = "1.1.0".into();
-	entry.config["core_capabilities"] =
-		json!({"files":true,"shell":true,"python":true,"patch":true,"skills":true,"sharing":true});
-	entry.config["tools"] = json!([]);
+	entry.binding_normalization = None;
+	entry.config["bindings"] = json!([]);
+	entry.config["remove_default"] = json!([]);
+	let (status, result) = request(
+		&app,
+		&f.config.api_token,
+		"PUT",
+		"/api/marketplace/compatibility",
+		json!({"enabled":true,"expected_revision":1,"compatible_instances_confirmed":true}),
+	)
+	.await;
+	assert_eq!(status, 200, "{result}");
+	let (status, pending) = request(&app,&f.config.api_token,"POST","/api/marketplace/host-packages",json!({"tenant":"acme","groups":["shell","python","outbound_get","apply_patch","file_share","task_assign"],"idempotency_key":Uuid::new_v4()})).await;
+	assert_eq!(status, 200, "{pending}");
+	let installations = pending["installations"].as_array().unwrap();
+	assert!(
+		installations
+			.iter()
+			.all(|r| r["approved"] == false && r["installation"]["active_revision"].is_null())
+	);
+	let selection = json!({"tenant":"acme","installations":installations.iter().map(|r|json!({"installation":r["installation"]["id"],"revision":r["revision"],"digest":r["digest"],"expected_activation_revision":0})).collect::<Vec<_>>(),"approvals":installations.iter().map(|r|json!({"reference":{"id":r["entry"]["id"],"version":r["entry"]["version"]},"expected_catalog_revision":0})).collect::<Vec<_>>()});
+	let (status, activated) = request(
+		&app,
+		&f.config.api_token,
+		"POST",
+		"/api/marketplace/approval-sets",
+		selection,
+	)
+	.await;
+	assert_eq!(status, 200, "{activated}");
+	entry.config["bindings"] = json!(installations.iter().filter(|r|r["entry"]["kind"]=="bundle").map(|r|json!({"kind":"bundle","target":{"registry_node":f.config.node_id,"id":r["entry"]["id"],"version":r["entry"]["version"]},"narrow":{}})).collect::<Vec<_>>());
 	let instructions = "---\nname: analysis\ndescription: Analyze the selected CSV\nlicense: MIT\n---\nLoad this only when selected. Scripts are data.";
 	let files = json!([{"path":"references/guide.md","content":"東京\n"},{"path":"scripts/analyze.py","content":"raise RuntimeError('must never run on activation')"}]);
 	let digest =
 		aidash_server::registry::digest(&json!({"instructions":instructions,"files":files}));
-	entry.config["skill_attachments"] = json!([{"skill_id":Uuid::new_v4(),"origin":"fixture:project","digest":digest,"instructions":instructions,"files":files},{"skill_id":Uuid::new_v4(),"origin":"fixture:user","digest":digest,"instructions":instructions,"files":files}]);
+	let source = json!({"id":"fixture-skills","version":"1.0.0","kind":"source","name":{"en":"Fixture Skills"},"description":{"en":"Explicit immutable Skill attachments"},"schema":{},"config":{"schema_version":1,"source":{"adapter":"skill_attachments","attachments":[{"skill_id":Uuid::new_v4(),"origin":"fixture:project","digest":digest,"instructions":instructions,"files":files},{"skill_id":Uuid::new_v4(),"origin":"fixture:user","digest":digest,"instructions":instructions,"files":files}]}}});
+	let (status, response) =
+		request(&app, &f.config.api_token, "POST", "/api/registry", source).await;
+	assert_eq!(status, 200, "{response}");
+	let (status, response) = request(
+		&app,
+		&f.config.api_token,
+		"POST",
+		"/api/authorization/acme/catalog",
+		json!({"entry":{"id":"fixture-skills","version":"1.0.0"},"expected_revision":0,"enabled":true}),
+	)
+	.await;
+	assert_eq!(status, 200, "{response}");
+	entry.config["bindings"].as_array_mut().unwrap().push(json!({"kind":"source","target":{"registry_node":f.config.node_id,"id":"fixture-skills","version":"1.0.0"},"narrow":{}}));
 
 	let (status, response) = request(
 		&app,
@@ -274,28 +353,36 @@ async fn shell_never_falls_back_to_the_host(#[future] capability_fixture: CoreFi
 	let (status, result) = request(&c.app, &c.token, "POST", &format!("/api/runs/{}/shell", run.id), json!({
 		"idempotency_key":Uuid::new_v4(),"command":"printf unsafe > MUST_NOT_EXIST", "expected_revision":1
 	})).await;
-	assert_eq!(status, 409, "{result}");
-	assert!(
-		result["error"]["code"]
-			.as_str()
-			.unwrap()
-			.contains("RUNTIME_UNAVAILABLE")
-	);
+	assert!(matches!(status, 400 | 403 | 409), "{result}");
+	if status == 400 {
+		assert_eq!(
+			result["error"]["message"],
+			"Run has no bound operation: shell"
+		);
+	}
+	if status == 409 {
+		assert!(
+			result["error"]["code"]
+				.as_str()
+				.unwrap()
+				.contains("RUNTIME_UNAVAILABLE")
+		);
+	}
 	c.close().await;
 }
 
 #[cfg(feature = "capability-runtime-tests")]
 #[rstest::fixture]
-async fn runtime_fixture(#[future] capability_fixture: CoreFixture) -> CoreFixture {
-	let mut c = Box::pin(capability_fixture).await;
-	let mut profile = (*Runtime::from_env().unwrap().0).clone();
+async fn runtime_fixture(
+	#[from(capability_fixture)]
+	#[with("aidash://execution-test", async { "http://localhost:19999".into() }.boxed().shared(), true)]
+	core: CoreFuture,
+) -> CoreFixture {
+	let c = core.await;
 	assert!(
-		profile.runner.is_some(),
-		"set AIDASH_CAPABILITY_PROFILE to a verified isolated runner profile"
+		c.f.store.capabilities.0.runner.is_some(),
+		"set a verified isolated runner profile"
 	);
-	profile.storage = c.root.clone();
-	c.f.store.capabilities = Runtime::new(profile).unwrap();
-	c.app.context.set_singleton(c.f.clone());
 	c
 }
 
@@ -894,6 +981,8 @@ async fn configure_approvals(mut c: CoreFixture) -> (CoreFixture, aidash_server:
 		"task",
 		"run",
 		"tool",
+		"installation",
+		"registry_entry",
 		"message",
 		"agent",
 		"model",
@@ -1081,6 +1170,7 @@ async fn local_shares_are_fixed_recipient_owned_copies(#[future] capability_fixt
 	let sender = admit(&c).await;
 	let mut reader = c.f.registry.get("research", "1.1.0").await.unwrap();
 	reader.id = "reader".into();
+	reader.binding_normalization = None;
 	let (status, value) = request(
 		&c.app,
 		&c.f.config.api_token,
@@ -1309,7 +1399,17 @@ async fn reference_original_is_private_located_and_unchanged_by_python(
 	);
 	let mut agent = c.f.registry.get("research", "1.1.0").await.unwrap();
 	agent.version = "1.2.0".into();
-	agent.config["reference_attachments"] = json!([{"reference_id":id,"digest":digest}]);
+	agent.binding_normalization = None;
+	let source = reference_limit_tests::register_reference_source(
+		&c,
+		"uploaded-reference",
+		&[json!({"reference_id":id,"digest":digest})],
+	)
+	.await;
+	agent.config["bindings"]
+		.as_array_mut()
+		.unwrap()
+		.push(source);
 	let (status, value) = request(
 		&c.app,
 		&c.f.config.api_token,

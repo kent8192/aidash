@@ -31,7 +31,7 @@ fn spec() -> Spec {
 	serde_json::from_value(json!({
         "enabled": true,
         "template": {"id":"template", "version":"1.0.0", "kind":"agent", "name":{"en":"Template"}, "description":{"en":""},
-            "config":{"model":{"id":"model","version":"1.0.0"},"instructions":"Do useful work."}},
+            "config":{"schema_version":1,"bindings":[],"remove_default":[],"model":{"id":"model","version":"1.0.0"},"instructions":"Do useful work."}},
         "permissions":{"roles":["role"], "groups":["group"], "attributes":{"team":"research"}},
         "limits":{"max_agents":5, "max_concurrent":2, "max_depth":2, "token_budget":1000000, "tokens_per_agent":500000, "lifetime_seconds":600},
         "approval_required":true
@@ -82,7 +82,11 @@ impl Repository {
 			principal: Principal::Operator,
 			state: Arc::new(Mutex::new(State {
 				document: bundle(),
-				approved: BTreeMap::from([(("model".into(), "1.0.0".into()), model())]),
+				approved: crate::test_support::builtin_entries("aidash://local")
+					.into_iter()
+					.map(|e| ((e.id.clone(), e.version.clone()), json!(e)))
+					.chain(std::iter::once((("model".into(), "1.0.0".into()), model())))
+					.collect(),
 				..State::default()
 			})),
 		}
@@ -94,7 +98,14 @@ impl Repository {
 		};
 	}
 	fn calls(&self) -> Vec<String> {
-		self.state.lock().unwrap().calls.clone()
+		self.state
+			.lock()
+			.unwrap()
+			.calls
+			.iter()
+			.filter(|call| !call.starts_with("approved:tenant:aidash."))
+			.cloned()
+			.collect()
 	}
 }
 struct Scope {
@@ -177,6 +188,25 @@ impl GenerationPolicies for Repository {
 }
 #[async_trait]
 impl PolicySession for Scope {
+	async fn bindings(
+		&mut self,
+		entry: &aidash_domain::registry::Entry,
+	) -> Result<aidash_domain::registry::bindings::BindingSnapshot> {
+		Ok(crate::test_support::resolve(
+			"aidash://local",
+			entry,
+			false,
+			self.state
+				.lock()
+				.unwrap()
+				.approved
+				.values()
+				.filter(|value| value["kind"] == "source")
+				.filter_map(|v| serde_json::from_value(v.clone()).ok())
+				.collect(),
+		))
+	}
+
 	async fn decide(&mut self, id: &str, action: &str) -> Result<bool> {
 		self.call(format!("decide:{id}:{action}"));
 		let allowed = !self.state.lock().unwrap().denied.contains(id);
@@ -610,7 +640,18 @@ fn policy_permissions_and_private_reference_boundary_remain_strict(
 		}
 		"array" => spec.permissions.attributes = json!([]),
 		"large" => spec.permissions.attributes = json!({"large":"a".repeat(16385)}),
-		"private" => spec.template.config["knowledge_digest"] = json!("a".repeat(64)),
+		"private" => {
+			spec.template.config["knowledge_digest"] = json!("a".repeat(64));
+			assert!(
+				validate(
+					&validation,
+					&spec,
+					&serde_json::from_value(bundle()).unwrap()
+				)
+				.is_err()
+			);
+			return;
+		}
 		_ => panic!("unknown fixture mutation"),
 	}
 	assert!(
@@ -662,4 +703,35 @@ async fn corrupt_saved_metadata_retains_json_error_instead_of_becoming_a_permiss
 		Err(Error::Json(_))
 	));
 	assert!(repo.state.lock().unwrap().persisted.is_empty());
+}
+
+#[rstest]
+#[tokio::test]
+async fn approved_private_source_cannot_escape_through_a_generation_template(
+	mut spec: Spec,
+	validation: DefinitionValidation,
+) {
+	let repo = Repository::new();
+	let source = crate::test_support::entry(
+		"registered-private",
+		"source",
+		json!({"schema_version":1,"source":{"adapter":"private_references","digest":"a".repeat(64)}}),
+	);
+	spec.template.config["bindings"] = json!([crate::test_support::binding(
+		"source",
+		"aidash://local",
+		&source.id
+	)]);
+	repo.state
+		.lock()
+		.unwrap()
+		.approved
+		.insert((source.id.clone(), source.version.clone()), json!(source));
+	assert!(
+		matches!(set(&repo,"tenant","policy",0,&spec,&validation).await, Err(Error::Invalid(message)) if message.contains("private reference documents"))
+	);
+	let state = repo.state.lock().unwrap();
+	assert!(state.persisted.is_empty());
+	assert!(state.history.is_empty());
+	assert!(!state.calls.iter().any(|call| call.starts_with("cas:")));
 }

@@ -52,12 +52,13 @@ pub struct Run {
 	#[field(default = false)]
 	pub ledger_worker_ready: bool,
 
-	/// Project the JSON identity into a real FK, including the owning run.
+	/// Local continuations retain their owning-Run FK; remote continuations live at Home.
 	/// DDL exception: SchemaExpr cannot express JSON extraction and CASE yet.
 	#[field(
 		null = true,
 		generated_sql = "
 CASE
+    WHEN ((context -> 'binding_snapshot'::text) -> 'remote'::text) = 'true'::jsonb THEN NULL::uuid
     WHEN ((((pending -> 'data'::text) ->> 'reason'::text) = ANY (ARRAY['human'::text, 'external_approval'::text, 'reconciliation'::text])) AND (jsonb_typeof(((pending -> 'data'::text) -> 'request_id'::text)) = 'string'::text) AND (((pending -> 'data'::text) ->> 'request_id'::text) ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'::text)) THEN (((pending -> 'data'::text) ->> 'request_id'::text))::uuid
     ELSE NULL::uuid
 END",

@@ -104,7 +104,7 @@ pub fn pair(
 					node_id: remote.f.config.node_id.clone(),
 					endpoint: remote.f.config.endpoint.clone(),
 					credential_env: PEER_ENV.into(),
-					protocol_version: "0.1".into(),
+					protocol_version: "0.2".into(),
 					enabled: true,
 				})
 				.await

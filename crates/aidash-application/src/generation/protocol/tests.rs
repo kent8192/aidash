@@ -135,6 +135,7 @@ fn world() -> World {
 			created_at: now,
 		},
 		inspection: Inspection {
+			binding_snapshot: crate::test_support::snapshot("aidash://receiver", "agent"),
 			generation: None,
 			lineage: vec![],
 			node_id: "aidash://executor".into(),
@@ -142,7 +143,7 @@ fn world() -> World {
 			agent: entry(
 				"agent",
 				"agent",
-				json!({"model":reference("model"),"instructions":"Work"}),
+				json!({"schema_version":1,"bindings":[],"remove_default":[],"model":reference("model"),"instructions":"Work"}),
 			),
 			definitions: [model.clone(), compactor]
 				.into_iter()

@@ -151,7 +151,7 @@ async fn workbench(
 		(
 			"fixture-tool",
 			"tool",
-			json!({"transport":"http","endpoint":format!("{endpoint}/effect"),"credential_env":null,"replay":"read_only"}),
+			json!({"registry_node":f.config.node_id,"provider":"integration.http@1","operation":"invoke","default_alias":"plugin_0","tier":"integration","narrow":{},"transport":{"transport":"http","endpoint":format!("{endpoint}/effect"),"credential_env":null,"replay":"read_only"}}),
 		),
 	] {
 		assert_eq!(request(&app, &f.config.api_token, "POST", "/api/registry", json!({"id":id,"version":"1.0.0","kind":kind,"name":{"en":id},"description":{"en":"Fixture"},"config":config})).await.0, 200);
@@ -167,7 +167,7 @@ async fn workbench(
 	.await;
 	assert_eq!(status, 200);
 	let token = credential["token"].as_str().unwrap().to_owned();
-	let (status, draft) = request(&app, &token, "POST", "/api/workbench/drafts", json!({"entry":{"id":"","version":"1.0.0","kind":"agent","name":{"en":"Regression fixture"},"description":{"en":"Fixture"},"config":{"model":{"id":"fixture-model","version":"1.0.0"},"instructions":"Summarize","tools":[{"id":"fixture-tool","version":"1.0.0"}],"skills":[],"cluster":null,"max_steps":8}}})).await;
+	let (status, draft) = request(&app, &token, "POST", "/api/workbench/drafts", json!({"entry":{"id":"","version":"1.0.0","kind":"agent","name":{"en":"Regression fixture"},"description":{"en":"Fixture"},"config":{"model":{"id":"fixture-model","version":"1.0.0"},"instructions":"Summarize","schema_version":1,"bindings":[{"kind":"tool","target":{"registry_node":f.config.node_id,"id":"fixture-tool","version":"1.0.0"},"alias":"plugin_0","narrow":{}}],"remove_default":["memory_mutate","memory_recall","memory_reflect"],"cluster":null,"max_steps":8}}})).await;
 	assert_eq!(status, 200, "draft: {draft}");
 	Workbench {
 		_fixture: application_fixture,
@@ -312,12 +312,11 @@ async fn duplicate_waits_for_concurrent_source_edit_and_rejects_stale_revision(
 
 #[rstest::rstest]
 #[tokio::test]
-async fn registration_drops_knowledge_digest_after_documents_are_removed(
+async fn registration_omits_private_source_after_documents_are_removed(
 	#[future(awt)] workbench: Workbench,
 ) {
 	let wb = workbench;
-	let mut entry = wb.draft["entry"].clone();
-	entry["config"]["knowledge_digest"] = json!("a".repeat(64));
+	let entry = wb.draft["entry"].clone();
 	let saved = wb.call("PUT", &wb.path(), json!({"expected_revision":1,"entry":entry,"documents":[{"name":"notes.txt","media_type":"text/plain","text":"Private reference"}]})).await;
 	let cleared = wb
 		.call(
@@ -372,7 +371,7 @@ async fn expired_real_tests_keep_profile_and_continuation_metadata_in_trust(
 	#[future(awt)] workbench: Workbench,
 ) {
 	let wb = workbench;
-	assert_eq!(request(&wb.app, &wb.f.config.api_token, "PUT", "/api/workbench/test-profiles/acme/sandbox", json!({"expected_revision":0,"enabled":true,"rules":[{"tool":{"id":"fixture-tool","version":"1.0.0"},"endpoint":format!("{}/test-effect", wb.endpoint),"credential_env":null,"allowed_actions":["read"],"allowed_resources":["sandbox"]}]})).await.0, 200);
+	assert_eq!(request(&wb.app, &wb.f.config.api_token, "PUT", "/api/workbench/test-profiles/acme/sandbox", json!({"expected_revision":0,"enabled":true,"rules":[{"tool":{"id":"fixture-tool","version":"1.0.0"},"endpoint":format!("{}/test-effect", wb.endpoint),"credential_env":null,"read_only_verified":true,"allowed_actions":["read"],"allowed_resources":["sandbox"]}]})).await.0, 200);
 	let first = wb
 		.finished(
 			json!({"expected_revision":1,"message":"First","mode":"real","profile_id":"sandbox"}),
@@ -781,7 +780,7 @@ async fn model_waiting_for_real_tool(
 	*wb.responses.lock().await = VecDeque::from([
 		json!({"choices":[{"finish_reason":"tool_calls","message":{"content":"","tool_calls":[{"id":"real-call","function":{"name":"plugin_0","arguments":"{\"action\":\"read\",\"resource\":\"sandbox\"}"}}]}}],"usage":{"prompt_tokens":30,"completion_tokens":5}}),
 	]);
-	assert_eq!(request(&wb.app, &wb.f.config.api_token, "PUT", "/api/workbench/test-profiles/acme/sandbox", json!({"expected_revision":0,"enabled":true,"rules":[{"tool":{"id":"fixture-tool","version":"1.0.0"},"endpoint":format!("{}/test-effect",wb.endpoint),"credential_env":null,"allowed_actions":["read"],"allowed_resources":["sandbox"]}]})).await.0, 200);
+	assert_eq!(request(&wb.app, &wb.f.config.api_token, "PUT", "/api/workbench/test-profiles/acme/sandbox", json!({"expected_revision":0,"enabled":true,"rules":[{"tool":{"id":"fixture-tool","version":"1.0.0"},"endpoint":format!("{}/test-effect",wb.endpoint),"credential_env":null,"read_only_verified":true,"allowed_actions":["read"],"allowed_resources":["sandbox"]}]})).await.0, 200);
 	let token = if shared {
 		wb.call(
 			"POST",
@@ -868,7 +867,7 @@ async fn an_unreadable_response_after_dispatch_preserves_the_unknown_external_ou
 #[rstest::fixture]
 async fn production_endpoint_workbench(#[future(awt)] workbench: Workbench) -> Workbench {
 	let wb = workbench;
-	assert_eq!(request(&wb.app, &wb.f.config.api_token, "POST", "/api/registry", json!({"id":"production-tool","version":"1.0.0","kind":"tool","name":{"en":"Production"},"description":{"en":"Fixture"},"config":{"transport":"http","endpoint":"https://example.com/api","credential_env":null,"replay":"read_only"}})).await.0, 200);
+	assert_eq!(request(&wb.app, &wb.f.config.api_token, "POST", "/api/registry", json!({"id":"production-tool","version":"1.0.0","kind":"tool","name":{"en":"Production"},"description":{"en":"Fixture"},"config":{"registry_node":wb.f.config.node_id,"provider":"integration.http@1","operation":"invoke","default_alias":"plugin_0","tier":"integration","narrow":{},"transport":{"transport":"http","endpoint":"https://example.com/api","credential_env":null,"replay":"read_only"}}})).await.0, 200);
 	wb
 }
 
@@ -884,7 +883,7 @@ async fn real_test_profiles_require_a_distinct_canonical_destination(
 	#[case] expected: u16,
 ) {
 	let wb = production_endpoint_workbench;
-	let (status, body) = request(&wb.app, &wb.f.config.api_token, "PUT", "/api/workbench/test-profiles/acme/canonical", json!({"expected_revision":0,"enabled":true,"rules":[{"tool":{"id":"production-tool","version":"1.0.0"},"endpoint":endpoint,"credential_env":null,"allowed_actions":["read"],"allowed_resources":["sandbox"]}]})).await;
+	let (status, body) = request(&wb.app, &wb.f.config.api_token, "PUT", "/api/workbench/test-profiles/acme/canonical", json!({"expected_revision":0,"enabled":true,"rules":[{"tool":{"id":"production-tool","version":"1.0.0"},"endpoint":endpoint,"credential_env":null,"read_only_verified":true,"allowed_actions":["read"],"allowed_resources":["sandbox"]}]})).await;
 	assert_eq!(status, expected, "profile: {body}");
 	wb.cleanup().await;
 }
@@ -1135,7 +1134,7 @@ async fn trust_inspection_reaches_older_runs_in_authorized_workspaces(
 async fn oversized_agent_tool_workbench(#[future(awt)] workbench: Workbench) -> Workbench {
 	let wb = workbench;
 	wb.register().await;
-	assert_eq!(request(&wb.app,&wb.f.config.api_token,"POST","/api/registry",json!({"id":"oversized-agent-tool","version":"1.0.0","kind":"tool","name":{"en":"Delegate"},"description":{"en":"Fixture"},"schema":{"type":"object","description":"A".repeat(180_000)},"config":{"transport":"agent","node_id":wb.f.config.node_id,"agent":{"id":wb.draft["entry"]["id"],"version":"1.0.0"}}})).await.0,200);
+	assert_eq!(request(&wb.app,&wb.f.config.api_token,"POST","/api/registry",json!({"id":"oversized-agent-tool","version":"1.0.0","kind":"tool","name":{"en":"Delegate"},"description":{"en":"Fixture"},"schema":{"type":"object","description":"A".repeat(180_000)},"config":{"registry_node":wb.f.config.node_id,"provider":"integration.agent@1","operation":"invoke","default_alias":"plugin_0","tier":"integration","narrow":{},"transport":{"transport":"agent","node_id":wb.f.config.node_id,"agent":{"id":wb.draft["entry"]["id"],"version":"1.0.0"}}}})).await.0,200);
 	wb
 }
 
@@ -1143,15 +1142,21 @@ async fn oversized_agent_tool_workbench(#[future(awt)] workbench: Workbench) -> 
 #[case(false, 200)]
 #[case(true, 400)]
 #[tokio::test]
-async fn creator_prompt_validation_charges_only_enabled_agent_tools(
+async fn creator_prompt_validation_charges_only_bound_agent_tools(
 	#[future(awt)] oversized_agent_tool_workbench: Workbench,
-	#[case] delegation: bool,
+	#[case] bound: bool,
 	#[case] expected: u16,
 ) {
 	let wb = oversized_agent_tool_workbench;
 	let mut entry = wb.draft["entry"].clone();
-	entry["config"]["tools"] = json!([{"id":"oversized-agent-tool","version":"1.0.0"}]);
-	entry["config"]["allow_task_delegation"] = json!(delegation);
+	// Binding availability is independent of the task_delegate default.
+	entry["config"]["bindings"] = if bound {
+		json!([{"kind":"tool","target":{"registry_node":wb.f.config.node_id,"id":"oversized-agent-tool","version":"1.0.0"},"alias":"plugin_0","narrow":{}}])
+	} else {
+		json!([])
+	};
+	entry["config"]["remove_default"] = json!([]);
+
 	entry["version"] = json!("1.0.1");
 	let saved = wb
 		.call(
@@ -1167,7 +1172,7 @@ async fn creator_prompt_validation_charges_only_enabled_agent_tools(
 			json!({"expected_revision":saved["revision"]}),
 		)
 		.await;
-	assert_eq!(validation["valid"], !delegation, "validation: {validation}");
+	assert_eq!(validation["valid"], !bound, "validation: {validation}");
 	let (status, body) = request(
 		&wb.app,
 		&wb.token,
@@ -1554,12 +1559,20 @@ async fn real_dispatch_rejects_effective_tool_isolation_changes(
 	#[case] change: &str,
 ) {
 	let (wb, started, digest) = installed_tool_waiting_for_dispatch;
-	let overlay = match change {
-		"endpoint" => json!({"endpoint":format!("{}/test-effect",wb.endpoint)}),
-		"replay" => json!({"replay":"unsafe"}),
-		"credential" => json!({"credential_env":"AIDASH_SECRET_TEST_PEER"}),
+	let mut transport =
+		wb.f.registry
+			.get("fixture-tool", "1.0.0")
+			.await
+			.unwrap()
+			.config["transport"]
+			.clone();
+	match change {
+		"endpoint" => transport["endpoint"] = json!(format!("{}/test-effect", wb.endpoint)),
+		"replay" => transport["replay"] = json!("unsafe"),
+		"credential" => transport["credential_env"] = json!("AIDASH_SECRET_TEST_PEER"),
 		_ => unreachable!(),
-	};
+	}
+	let overlay = json!({"transport":transport});
 	wb.f.registry
 		.install("fixture-tool", "1.0.0", &digest, overlay)
 		.await
@@ -1731,7 +1744,7 @@ async fn version_history_compares_registered_knowledge_to_current_saved_document
 	};
 	assert_eq!(versions[0]["draft_knowledge_digest"], expected);
 	assert_eq!(
-		versions[0]["entry"]["config"]["knowledge_digest"] == expected,
+		versions[0]["registered_knowledge_digest"] == expected,
 		change == "unchanged"
 	);
 	wb.cleanup().await;

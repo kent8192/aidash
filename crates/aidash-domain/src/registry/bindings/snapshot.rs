@@ -7,16 +7,20 @@ use crate::tool::providers::{
 impl BindingSnapshot {
 	pub(super) fn validate_closure(
 		&self,
-		config: &AgentBindings,
+		_config: &AgentBindings,
 		definitions: &BTreeMap<&QualifiedRef, &ResolvedDefinition>,
 	) -> Result<()> {
-		let mut pending = config
-			.normalize(&self.agent.registry_node)?
+		let mut pending = definitions
+			.get(&self.agent)
+			.ok_or_else(|| Error::Invalid("snapshot lacks Agent".into()))?
+			.definition
+			.normalized_bindings(&self.agent.registry_node)?
 			.into_iter()
 			.map(|binding| (binding, BTreeSet::new(), None::<(String, String)>))
 			.collect::<Vec<_>>();
 		let mut expected = BTreeMap::<QualifiedRef, NormalizedBinding>::new();
 		let mut source_skill_support = false;
+		let mut decision_hooks = BTreeSet::new();
 		while let Some((mut normalized, mut ancestry, lifecycle)) = pending.pop() {
 			let binding = &mut normalized.binding;
 			let entry = &definitions
@@ -29,6 +33,7 @@ impl BindingSnapshot {
 				BindingKind::Skill => "skill",
 				BindingKind::Memory => "memory",
 				BindingKind::Source => "source",
+				BindingKind::Decider => "decider",
 			};
 			if entry.kind != kind {
 				return Err(Error::Invalid(
@@ -129,16 +134,33 @@ impl BindingSnapshot {
 						));
 					}
 				}
+			} else if binding.kind == BindingKind::Decider {
+				let config: crate::decision::DeciderConfig =
+					serde_json::from_value(entry.config.clone())?;
+				config.validate()?;
+				binding.validate()?;
+				if binding.target.registry_node != self.agent.registry_node
+					|| !decision_hooks.insert(config.hook)
+				{
+					return Err(Error::Invalid(
+						"duplicate hook or non-execution-node Decider Binding".into(),
+					));
+				}
+				binding
+					.narrow
+					.decision
+					.clone()
+					.unwrap_or_default()
+					.validate(&config)?;
 			} else {
 				if binding.narrow != Narrowing::default() {
 					return Err(Error::Invalid(
 						"snapshot context restriction is unsupported".into(),
 					));
 				}
-				if matches!(binding.kind, BindingKind::Memory | BindingKind::Source) {
-					let descriptor: sources::NativeContext =
-						serde_json::from_value(entry.config.clone())?;
-					descriptor.validate(kind)?;
+				if matches!(binding.kind, BindingKind::Memory | BindingKind::Source)
+					&& let Some(descriptor) = sources::validate_definition(entry)?
+				{
 					source_skill_support |= descriptor.requires_skill_support();
 				}
 			}
@@ -168,6 +190,11 @@ impl BindingSnapshot {
 				let binding = expected
 					.get_mut(&QualifiedRef::builtin(&self.agent.registry_node, operation))
 					.ok_or_else(|| Error::Invalid("snapshot lacks native Skill support".into()))?;
+				if binding.binding.alias.as_deref() != Some(operation) {
+					return Err(Error::Invalid(
+						"native Skill support tools retain their canonical aliases".into(),
+					));
+				}
 				if binding.origin == BindingOrigin::Default {
 					binding.origin = BindingOrigin::SkillSupport;
 				}
@@ -210,8 +237,35 @@ impl BindingSnapshot {
 						"Tool snapshot differs from its placement or Provider contract".into(),
 					));
 				}
+			} else if expected.binding.kind == BindingKind::Decider {
+				let config: crate::decision::DeciderConfig =
+					serde_json::from_value(saved.definition.config.clone())?;
+				if saved.provider_contract_digest.as_deref() != Some(&config.contract_digest()?)
+					|| saved
+						.provider_implementation
+						.as_deref()
+						.is_none_or(|id| id.trim().is_empty())
+					|| saved.excluded_reason.is_some()
+				{
+					return Err(Error::Invalid(
+						"Decider snapshot differs from its provider/builder contracts".into(),
+					));
+				}
 			}
 		}
+		let contexts = self
+			.bindings
+			.iter()
+			.filter(|binding| {
+				binding.excluded_reason.is_none()
+					&& matches!(binding.definition.kind.as_str(), "memory" | "source")
+					&& binding.definition.config.get("schema_version").is_some()
+			})
+			.map(|binding| {
+				serde_json::from_value::<sources::NativeContext>(binding.definition.config.clone())
+			})
+			.collect::<std::result::Result<Vec<_>, _>>()?;
+		sources::validate_mounts(contexts)?;
 		Ok(())
 	}
 }

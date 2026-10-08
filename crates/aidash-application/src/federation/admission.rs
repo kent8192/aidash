@@ -2,7 +2,7 @@
 use crate::{Error, Result};
 use aidash_domain::{
 	federation::execution::Inspection,
-	registry::{AgentConfig, EntityRef, Search, rules::digest},
+	registry::{EntityRef, Search, rules::digest},
 };
 use std::collections::BTreeMap;
 
@@ -29,22 +29,28 @@ pub fn validate_inspection(
 		));
 	}
 	validation.validate_in(&inspection.agent, true)?;
-	let config: AgentConfig = serde_json::from_value(inspection.agent.config.clone())?;
-	let mut expected = BTreeMap::new();
-	for (reference, kind) in std::iter::once((agent, "agent"))
-		.chain(std::iter::once((&config.model, "model")))
-		.chain(config.tools.iter().map(|r| (r, "tool")))
-		.chain(config.skills.iter().map(|r| (r, "skill")))
-		.chain(config.cluster.iter().map(|r| (r, "cluster")))
-		.chain(inspection.compactor.iter().map(|r| (r, "compactor")))
+	let snapshot = &inspection.binding_snapshot;
+	snapshot.validate()?;
+	if !snapshot.remote || snapshot.agent.registry_node != node || snapshot.agent.local() != *agent
 	{
-		if let Some(previous) = expected.insert((&reference.id, &reference.version), kind)
-			&& previous != kind
-		{
+		return Err(Error::External(
+			"receiver Binding placement mismatch".into(),
+		));
+	}
+	let mut expected = BTreeMap::new();
+	for pinned in &snapshot.definitions {
+		if pinned.identity.registry_node != node {
 			return Err(Error::External(
-				"inconsistent receiver dependency kinds".into(),
+				"unsupported foreign receiver dependency".into(),
 			));
 		}
+		expected.insert(
+			(&pinned.identity.id, &pinned.identity.version),
+			pinned.definition.kind.as_str(),
+		);
+	}
+	if let Some(reference) = &inspection.compactor {
+		expected.insert((&reference.id, &reference.version), "compactor");
 	}
 	if inspection.definitions.len() != expected.len() {
 		return Err(Error::External("incomplete receiver definitions".into()));
@@ -59,6 +65,19 @@ pub fn validate_inspection(
 				"receiver definition metadata mismatch".into(),
 			));
 		}
+		if let Some(pinned) = snapshot
+			.definitions
+			.iter()
+			.find(|p| p.identity.local() == definition.entry)
+			&& (pinned.digest != definition.digest
+				|| serde_json::to_value(&pinned.definition)?
+					!= serde_json::to_value(&definition.metadata)?)
+		{
+			return Err(Error::External(
+				"receiver snapshot definition mismatch".into(),
+			));
+		}
+
 		// Dependencies execute on the receiver. Do not resolve that node's
 		// credential environment or executable paths on this source node.
 		aidash_domain::policy::identifier(&definition.entry.id)?;

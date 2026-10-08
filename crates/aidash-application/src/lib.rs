@@ -1,6 +1,7 @@
 //! Authorized use cases and the external capabilities they require.
 pub mod authorization;
 pub mod context;
+pub mod decision;
 pub mod deployment;
 pub mod execution;
 pub mod federation;
@@ -80,3 +81,6 @@ pub mod capabilities;
 pub mod transactions;
 
 pub mod activation;
+
+#[cfg(test)]
+pub(crate) mod test_support;

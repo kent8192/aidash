@@ -55,8 +55,14 @@ export function presentRecord(
     const record = value as Record<string, unknown>;
     return typeof record.id === "string" &&
       typeof record.version === "string" &&
-      Object.keys(record).every((key) => key === "id" || key === "version")
-      ? label(record.id, record.version)
+      Object.keys(record).every((key) =>
+        ["id", "version", "registry_node"].includes(key),
+      )
+      ? typeof record.registry_node === "string"
+        ? (labels.get(
+            `${record.registry_node}/${record.id}@${record.version}`,
+          ) ?? `${unavailable} · ${record.version}`)
+        : label(record.id, record.version)
       : value;
   };
   const registryConfig = (kind: string, value: unknown): unknown => {
@@ -71,6 +77,21 @@ export function presentRecord(
             return [[key, reference(item)]];
           if ((key === "tools" || key === "skills") && Array.isArray(item))
             return [[key, item.map(reference)]];
+          if (key === "bindings" && Array.isArray(item))
+            return [
+              [
+                key,
+                item.map((binding) => {
+                  if (
+                    !binding ||
+                    typeof binding !== "object" ||
+                    Array.isArray(binding)
+                  )
+                    return binding;
+                  return { ...binding, target: reference(binding.target) };
+                }),
+              ],
+            ];
         }
         if (kind === "cluster" && key === "coordinator")
           return [[key, reference(item)]];

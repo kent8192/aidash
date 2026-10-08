@@ -34,6 +34,20 @@ impl PeerHttp {
 		path: &str,
 		body: Option<&Value>,
 	) -> Result<reqwest::Response> {
+		// Composite authority operations make further bounded peer calls. Native
+		// retrieval also executes separately bounded provider attempts before its
+		// receipt is finalized; the outer request must allow those calls to finish.
+		let timeout = if path == "/scoped/semantic/query" {
+			Duration::from_secs(120)
+		} else if path == "/scoped/execution/commands"
+			|| path.starts_with("/scoped/execution/grants/")
+			|| path.starts_with("/scoped/execution/admissions")
+			|| path.starts_with("/scoped/usage/")
+		{
+			Duration::from_secs(60)
+		} else {
+			Duration::from_secs(10)
+		};
 		let method = reqwest::Method::from_bytes(method.as_bytes())
 			.map_err(|_| Error::Invalid("invalid peer method".into()))?;
 		let mut request = self
@@ -45,7 +59,7 @@ impl PeerHttp {
 					peer.endpoint.trim_end_matches('/')
 				),
 			)
-			.timeout(Duration::from_secs(10))
+			.timeout(timeout)
 			.bearer_auth(self.credentials.resolve(&peer.credential_env)?)
 			.header("x-aidash-node", &self.node_id)
 			.header("x-aidash-protocol", &self.protocol_version);

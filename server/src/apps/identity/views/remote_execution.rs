@@ -84,3 +84,27 @@ pub async fn activation_binding(
 use crate::authorization::identity::Actor;
 
 use crate::apps::identity::serializers::remote::VerifyInput;
+
+#[post(
+	"/api/tasks/{task}/remote-grants/{grant}/human-requests/answer",
+	name = "!remote_human_answer",
+	auth = "protected"
+)]
+pub async fn answer_human(
+	#[inject] service: Depends<RemoteExecutionManagement>,
+	#[inject] actor: Actor,
+	Path((task, grant)): Path<(Uuid, Uuid)>,
+	Json(input): Json<crate::apps::identity::serializers::remote_execution::RemoteHumanAnswer>,
+) -> ViewResult<Response> {
+	crate::http::json(
+		aidash_application::authorization::home::answer_human(
+			&crate::bootstrap::home_execution_repository(&service.runtime, actor),
+			task,
+			grant,
+			input.id,
+			input.response,
+		)
+		.await
+		.map_err(crate::Error::from),
+	)
+}

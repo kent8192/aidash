@@ -101,7 +101,7 @@ async fn discovery_intersects_both_nodes_without_forwarding_subject_tokens(
 			format!("Bearer {}", pair.source.subject_token)
 		);
 		assert_eq!(request.source, a.runtime.config.node_id);
-		assert_eq!(request.protocol, "0.1");
+		assert_eq!(request.protocol, "0.2");
 		let mut keys: Vec<_> = request
 			.body
 			.as_object()

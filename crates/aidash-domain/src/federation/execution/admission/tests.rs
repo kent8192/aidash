@@ -18,8 +18,7 @@ fn binding() -> (Record, ExecutionPrincipal, Description) {
 		revision: 7,
 		created_at: Utc::now(),
 	};
-	let inspection = serde_json::from_value(json!({"node_id":"aidash://receiver","authority_digest":"pinned",
-        "agent":{"id":"agent","version":"1","kind":"agent","name":{},"description":{},"config":{"model":{"id":"model","version":"1"}}},"definitions":[]})).unwrap();
+	let inspection = super::super::tests::inspection();
 	let description = Description {
 		grant_id: Uuid::from_u128(3),
 		source_node: "aidash://home".into(),
@@ -91,19 +90,6 @@ fn a_replayed_id_cannot_change_authority(
 			.matches(&identity, &["mapped".into(), "agent".into()], &description)
 			.unwrap()
 	);
-}
-
-#[rstest]
-#[case(false, true)]
-#[case(true, false)]
-fn a_foreign_grant_cannot_create_private_local_working_areas(
-	#[case] enabled: bool,
-	#[case] accepted: bool,
-) {
-	let mut agent: AgentConfig =
-		serde_json::from_value(json!({"model":{"id":"model","version":"1"}})).unwrap();
-	agent.core_capabilities.files = enabled;
-	assert_eq!(require_workspace_agent(&agent).is_ok(), accepted);
 }
 
 #[rstest]

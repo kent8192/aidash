@@ -76,7 +76,7 @@ async fn malformed_rows_fail_without_effect_replay_and_healthy_work_continues(
 		.register(entry(
 			"agent",
 			"research",
-			json!({"model":{"id":"model","version":"1.0.0"},"instructions":"Finish","tools":[],"skills":[]}),
+			json!({"model":{"id":"model","version":"1.0.0"},"instructions":"Finish","schema_version":1,"bindings":[],"remove_default":[]}),
 		))
 		.await
 		.unwrap();

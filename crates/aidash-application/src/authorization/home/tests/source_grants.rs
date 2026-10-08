@@ -40,7 +40,7 @@ impl Drop for SourceSession {
 }
 impl SourceRepository {
 	fn new() -> Self {
-		let executor = qualified_agent("aidash://receiver", "agent", "1");
+		let executor = qualified_agent("aidash://receiver", "agent", "1.0.0");
 		let mut current = grant(false);
 		current.subject_chain.push(executor.clone());
 		Self {
@@ -115,6 +115,23 @@ impl GrantRepository for SourceRepository {
 }
 #[async_trait]
 impl HomeScope for SourceSession {
+	async fn human_requests(
+		&mut self,
+		_: Uuid,
+		_: Uuid,
+	) -> Result<Vec<aidash_domain::HumanRequest>> {
+		Ok(vec![])
+	}
+	async fn answer_human(
+		&mut self,
+		_: Uuid,
+		_: Uuid,
+		_: Uuid,
+		_: Value,
+	) -> Result<aidash_domain::HumanRequest> {
+		Err(Error::Forbidden)
+	}
+
 	fn identity(&self) -> ExecutionPrincipal {
 		principal()
 	}
@@ -368,7 +385,7 @@ fn input() -> PrepareInput {
 		node_id: "aidash://receiver".into(),
 		agent: EntityRef {
 			id: "agent".into(),
-			version: "1".into(),
+			version: "1.0.0".into(),
 		},
 		ttl_seconds: 3600,
 		semantic: Request::Disabled {},
@@ -576,4 +593,28 @@ async fn hidden_source_reads_are_rejected_before_receiver_callback() {
 			.contains(&"grant_reads_visible".into())
 	);
 	assert!(!repository.repository.calls().contains(&"source_rpc".into()));
+}
+
+#[rstest]
+#[tokio::test]
+async fn selection_inspection_checks_assignment_authority_without_creating_a_grant() {
+	let repository = SourceRepository::new();
+	let input = input();
+	let preview = aidash_domain::federation::execution::AgentInspectionInput {
+		node_id: input.node_id,
+		agent: input.agent,
+	};
+	assert!(matches!(
+		use_case::agent_inspection(&repository, task().id, preview).await,
+		Err(Error::Conflict(_))
+	));
+	assert_eq!(
+		repository.repository.calls(),
+		vec![
+			"source_begin",
+			"inherit_origin",
+			"task.read",
+			"rollback_with_denial_audit"
+		]
+	);
 }

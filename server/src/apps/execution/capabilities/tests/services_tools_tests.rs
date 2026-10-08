@@ -36,6 +36,7 @@ fn executable_contracts_are_derived_and_disabled_by_default() {
 	add(
 		&mut tools,
 		&CoreCapabilities {
+			outbound: false,
 			files: true,
 			shell: true,
 			python: true,

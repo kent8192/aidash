@@ -8,7 +8,7 @@ use crate::{
 };
 use aidash_domain::registry::rules::{digest, overlay_config, validate_override_keys};
 use aidash_domain::{
-	registry::{AgentConfig, AgentPage, ClusterConfig, Entry, Package, PackageRecord, Search},
+	registry::{AgentPage, ClusterConfig, Entry, Package, PackageRecord, Search},
 	tool::ToolConfig,
 };
 use serde_json::{Value, json};
@@ -44,8 +44,8 @@ pub async fn list(scope: &mut dyn RegistryRead, search: &Search) -> Result<Vec<E
 	}
 	Ok(entries)
 }
-/// Installed Runs bind immutable Registry documents. Legacy overlays remain
-/// available only to existing native/legacy execution paths.
+/// Runtime resource adapters read immutable documents. Executable graph
+/// selection is exclusively the persisted Run Binding snapshot.
 pub async fn get_for_run(
 	scope: &mut dyn DefinitionLookup,
 	run: impl Into<aidash_domain::RunMetadata>,
@@ -54,9 +54,7 @@ pub async fn get_for_run(
 ) -> Result<Entry> {
 	let run = run.into();
 	let root = scope.definition(&run.agent_id, &run.agent_version).await?;
-	if root.installation.is_none() {
-		return effective(scope, id, version).await;
-	}
+	let _ = root;
 	scope.definition(id, version).await
 }
 
@@ -171,79 +169,22 @@ pub async fn validate_references(
 		}
 	}
 	if entry.kind == "agent" {
-		let config: AgentConfig = serde_json::from_value(entry.config.clone())?;
-		let mut references = Vec::new();
-		for (reference, kind) in std::iter::once((&config.model, "model"))
-			.chain(config.tools.iter().map(|r| (r, "tool")))
-			.chain(config.skills.iter().map(|r| (r, "skill")))
-			.chain(config.cluster.iter().map(|r| (r, "cluster")))
-			.chain(config.memory.iter().map(|r| (r, "memory")))
-			.chain(config.sources.iter().map(|r| (r, "source")))
-		{
-			let referenced = effective(scope, &reference.id, &reference.version).await?;
-			if referenced.kind != kind {
-				return Err(Error::Invalid(format!(
-					"{} must reference a {kind}",
-					reference.id
-				)));
-			}
-			references.push(referenced);
-		}
-		if config.memory.is_none() && !config.sources.is_empty() {
-			return Err(Error::Invalid(
-				"Agent Sources require a primary memory provider".into(),
-			));
-		}
-		let mut workspace_provider = None;
-		let mut providers: Vec<_> = config.memory.iter().cloned().collect();
-		for source in references.iter().filter(|entry| entry.kind == "source") {
-			let source: aidash_domain::memory::SourceConfig =
-				serde_json::from_value(source.config.clone())?;
-			if source.scope == aidash_domain::memory::SourceScope::Participant
-				&& config.memory.as_ref() != Some(&source.memory)
-			{
-				return Err(Error::Invalid(
-					"participant Sources require the Agent's exact primary memory provider".into(),
-				));
-			}
-			if source.scope == aidash_domain::memory::SourceScope::Workspace {
-				if workspace_provider
-					.as_ref()
-					.is_some_and(|provider| provider != &source.memory)
-				{
-					return Err(Error::Invalid(
-						"workspace Sources require one exact memory provider version".into(),
-					));
-				}
-				workspace_provider = Some(source.memory.clone());
-			}
-			providers.push(source.memory);
-		}
-		let mut embedding = None;
-		for provider in providers {
-			let provider = scope.definition(&provider.id, &provider.version).await?;
-			let provider: aidash_domain::memory::ProviderConfig =
-				serde_json::from_value(provider.config)?;
-			let role = scope
-				.definition(
-					&provider.policy.embedding.id,
-					&provider.policy.embedding.version,
-				)
-				.await?;
-			let configuration: aidash_domain::semantic::EmbeddingConfig =
-				serde_json::from_value(role.config)?;
-			if embedding
-				.as_ref()
-				.is_some_and(|previous| previous != &configuration)
-			{
-				return Err(Error::Invalid(
-					"an Agent's memory providers require compatible embedding configurations"
-						.into(),
-				));
-			}
-			embedding = Some(configuration);
-		}
-		validation.agent_prompt_headroom(&config, &references, &Value::Null)?;
+		let snapshot = bindings::resolve(
+			&mut bindings::catalog::LookupCatalog {
+				definitions: scope,
+				node,
+			},
+			validation,
+			aidash_domain::registry::bindings::QualifiedRef {
+				registry_node: node.into(),
+				id: entry.id.clone(),
+				version: entry.version.clone(),
+			},
+			entry,
+			false,
+		)
+		.await?;
+		validation.bound_prompt_headroom(&snapshot, &Value::Null)?;
 	}
 	let memory_references = match entry.kind.as_str() {
 		"memory" | "source" if entry.config.get("schema_version").is_some() => vec![],
@@ -341,6 +282,27 @@ pub async fn validate_references(
 				"cluster coordinator must reference an agent".into(),
 			));
 		}
+		let coordinator = scope
+			.definition(&config.coordinator.id, &config.coordinator.version)
+			.await?;
+		let snapshot = bindings::resolve(
+			&mut bindings::catalog::LookupCatalog {
+				definitions: scope,
+				node,
+			},
+			validation,
+			aidash_domain::registry::bindings::QualifiedRef {
+				registry_node: node.into(),
+				id: coordinator.id.clone(),
+				version: coordinator.version.clone(),
+			},
+			&coordinator,
+			false,
+		)
+		.await?;
+		for name in ["task_create", "task_delegate", "agent_discover"] {
+			snapshot.operation(name)?;
+		}
 	}
 	Ok(())
 }
@@ -354,6 +316,10 @@ pub async fn register(
 	node: &str,
 ) -> Result<Entry> {
 	system::reject_owner_definition(&entry)?;
+	if entry.binding_normalization.is_some() {
+		return Err(Error::Invalid("Binding normalization is read-only".into()));
+	}
+	entry.normalize_agent(node)?;
 	if tracked {
 		scope.assign_id(&mut entry, key).await?;
 	}
@@ -376,27 +342,56 @@ pub async fn register_definition(
 	node: &str,
 ) -> Result<bool> {
 	system::reject_owner_definition(entry)?;
-	validate_references(scope, validation, entry, node).await?;
-	scope.insert_definition(entry).await
+	let mut entry = entry.clone();
+	entry.normalize_agent(node)?;
+	validate_references(scope, validation, &entry, node).await?;
+	scope.insert_definition(&entry).await
 }
 
 pub async fn publish(
 	scope: &mut dyn PackageScope,
 	validation: &DefinitionValidation,
-	package: Package,
+	mut package: Package,
 ) -> Result<PackageRecord> {
 	system::reject_distribution(&package.entity)?;
 	system::reject_owner_definition(&package.entity)?;
 	validation.validate_in(&package.entity, true)?;
 	if !matches!(
 		package.entity.kind.as_str(),
-		"agent" | "tool" | "skill" | "bundle"
+		"agent" | "tool" | "skill" | "bundle" | "memory" | "source"
 	) || package.author.trim().is_empty()
 	{
 		return Err(Error::Invalid(
-			"packages require an author and an agent, tool or skill".into(),
+			"packages require an author and a distributable capability".into(),
 		));
 	}
+	// Publish authored edges only. Registration provenance and implicit defaults
+	// belong to the receiving Node and are never portable package content.
+	let node = scope.registry_node().to_owned();
+	let mut pending = crate::marketplace::definitions::refs(&package.entity, &node)?;
+	pending.extend(
+		package
+			.dependencies
+			.iter()
+			.cloned()
+			.map(|r| (r, String::new())),
+	);
+	let mut seen = std::collections::BTreeSet::new();
+	while let Some((reference, kind)) = pending.pop() {
+		if !seen.insert((reference.id.clone(), reference.version.clone())) {
+			continue;
+		}
+		if seen.len() > 128 {
+			return Err(Error::Invalid("package closure exceeds 128 entries".into()));
+		}
+		let entry = scope.definition(&reference.id, &reference.version).await?;
+		system::reject_distribution(&entry)?;
+		if !kind.is_empty() && entry.kind != kind {
+			return Err(Error::Invalid("package dependency kind changed".into()));
+		}
+		pending.extend(crate::marketplace::definitions::refs(&entry, &node)?);
+	}
+	package.entity.binding_normalization = None;
 	let value = serde_json::to_value(&package)?;
 	let source = value.to_string();
 	let hash = digest(&value);
@@ -452,11 +447,13 @@ pub fn prepare_install(
 pub async fn install(
 	scope: &mut dyn PackageScope,
 	validation: &DefinitionValidation,
-	plan: InstallPlan,
+	mut plan: InstallPlan,
 	node: &str,
 	id: &str,
 	version: &str,
 ) -> Result<Entry> {
+	plan.package.entity.normalize_agent(node)?;
+	plan.effective.normalize_agent(node)?;
 	validate_references(scope, validation, &plan.effective, node).await?;
 	for dependency in &plan.package.dependencies {
 		scope

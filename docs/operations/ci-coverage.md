@@ -6,17 +6,23 @@ the explicit LCOV input and `fail_ci_if_error: true` remain required.
 
 ## Partitioned execution
 
-Eight independent jobs execute the locked Cargo targets: foundation, server unit
+Sixteen independent jobs execute the locked Cargo targets in eight fields: foundation, server unit
 and binaries, identity, execution, persistence, collaboration, federation, and
 knowledge/marketplace. `scripts/rust-test-partitions.py` inventories the actual
 workspace; new integration targets are assigned by their owning application.
 Unsupported target kinds fail the inventory instead of silently losing coverage.
-`scripts/test-rust.sh --coverage --partition NAME` builds the extension-enabled
-PostgreSQL image when required and writes `coverage/rust-NAME.lcov`.
+Each field has two shards. Cargo's target runner lists each test binary, sorts its
+exact test names and selects alternating names for shards 1 and 2. This splits
+large unit-test binaries as well as integration targets without running each test
+in a separate process. Parameterized cases retain their full identities, and each
+selected binary keeps its ordinary shared service fixtures and concurrency.
+`scripts/test-rust.sh --coverage --partition NAME --shard 1` builds the extension-enabled
+PostgreSQL image when required and writes `coverage/rust-NAME-1.lcov`; shard 2
+writes the corresponding `-2.lcov`. Omitting `--shard` runs the complete field.
 
-The uploader waits for all eight jobs and checks the exact set of nonempty LCOV
+The uploader waits for all sixteen jobs and checks the exact set of nonempty LCOV
 artifacts. It submits all reports together with `flags: rust`; Codecov combines
-execution counts for shared source files. An absent or failed partition prevents
+execution counts for shared source files. An absent or failed shard prevents
 the upload. `CI Success` also requires every partition and the upload separately.
 
 Coverage commands select `--workspace` and restrict execution with
@@ -43,7 +49,7 @@ available, but they are not prerequisites of `CI Success`.
 
 The isolated capability gate prepares the same extension-enabled PostgreSQL
 fixture before running its library and integration targets. Its Cargo cache is
-outside the eight instrumented coverage partitions.
+outside the sixteen instrumented coverage shards.
 
 Before creating the isolated cluster, the gate compiles these exact Cargo targets
 and lists their tests. Every acceptance identifier must resolve to a listed test

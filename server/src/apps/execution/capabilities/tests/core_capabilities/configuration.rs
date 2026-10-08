@@ -6,20 +6,17 @@ async fn subject_configuration_creates_an_immutable_version_without_catalog_gran
 ) {
 	let c = Box::pin(capability_fixture).await;
 	let before = c.f.registry.get("research", "1.1.0").await.unwrap();
-	let input = json!({"idempotency_key":Uuid::new_v4(),"source_version":"1.1.0","new_version":"1.2.0","core_capabilities":{"files":true,"python":true},"skill_attachments":before.config["skill_attachments"],"skill_roots":[],"reference_attachments":[]});
+	let input = json!({"idempotency_key":Uuid::new_v4(),"source_version":"1.1.0","new_version":"1.2.0","bindings":before.config["bindings"],"remove_default":[]});
 	let path = "/api/agents/research/capabilities";
-	// A configuration cannot claim direct Skills while disabling their tool.
+	// A configured Skill Source cannot remove its required support operations.
+	let mut invalid = input.clone();
+	invalid["remove_default"] = json!(["skill_load"]);
 	assert_eq!(
-		request(&c.app, &c.token, "POST", path, input.clone())
-			.await
-			.0,
+		request(&c.app, &c.token, "POST", path, invalid).await.0,
 		400
 	);
-	let mut input = input;
-	input["core_capabilities"]["skills"] = json!(true);
 	let mut missing = input.clone();
-	missing["reference_attachments"] =
-		json!([{"reference_id":Uuid::new_v4(),"digest":"0".repeat(64)}]);
+	missing["bindings"].as_array_mut().unwrap().push(json!({"kind":"source","target":{"registry_node":c.f.config.node_id,"id":"missing-source","version":"1.0.0"},"narrow":{}}));
 	assert_eq!(
 		request(&c.app, &c.token, "POST", path, missing).await.0,
 		404
@@ -34,7 +31,7 @@ async fn subject_configuration_creates_an_immutable_version_without_catalog_gran
 	assert_eq!(c.f.registry.get("research", "1.1.0").await.unwrap(), before);
 	assert_eq!(saved["entry"]["config"]["model"], before.config["model"]);
 	let mut changed = input.clone();
-	changed["core_capabilities"]["shell"] = json!(true);
+	changed["remove_default"] = json!(["file_search"]);
 	assert_eq!(
 		request(&c.app, &c.token, "POST", path, changed).await.0,
 		409

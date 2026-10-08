@@ -68,8 +68,11 @@ impl Drop for Server {
 		let _ = self.process.wait();
 	}
 }
-async fn healthy(node: &Node, server: &mut Server) {
-	let ready = tokio::time::timeout(WallDuration::from_secs(20), async {
+async fn healthy(node: &Node, server: &mut Server, stage: &str) {
+	// Two independent debug executables cold-start together. Their startup can
+	// exceed 20 seconds on macOS while dyld loads their local snapshots; this
+	// allowance does not change the durable-cut or convergence deadlines.
+	let ready = tokio::time::timeout(WallDuration::from_secs(60), async {
 		loop {
 			assert!(
 				server.process.try_wait().unwrap().is_none(),
@@ -91,7 +94,12 @@ async fn healthy(node: &Node, server: &mut Server) {
 		}
 	})
 	.await;
-	assert!(ready.is_ok(), "server startup timed out: {}", server.log());
+	assert!(
+		ready.is_ok(),
+		"server startup timed out at {stage} for {}: {}",
+		node.f.config.node_id,
+		server.log()
+	);
 }
 
 #[rstest::rstest]
@@ -183,7 +191,13 @@ async fn real_server_sigkill_at_durable_cut(
 		}
 	})
 	.await
-	.unwrap_or_else(|_| panic!("unreached cut {point}, repetition {repetition}"));
+	.unwrap_or_else(|_| {
+		panic!(
+			"unreached cut {point}, repetition {repetition}; server A: {}; server B: {}",
+			process_a.as_ref().unwrap().log(),
+			process_b.as_ref().unwrap().log()
+		)
+	});
 	// Observe at the held cut, then kill only the owning OS process. The
 	// independent peer and both databases retain their current state.
 	assert!(observations >= 2);
@@ -196,10 +210,10 @@ async fn real_server_sigkill_at_durable_cut(
 	let _ = submission.await;
 	if participant {
 		process_b = Some(Server::start(&b, None, replacements.1.clone()));
-		healthy(&b, process_b.as_mut().unwrap()).await;
+		healthy(&b, process_b.as_mut().unwrap(), "restored").await;
 	} else {
 		process_a = Some(Server::start(&a, None, replacements.0.clone()));
-		healthy(&a, process_a.as_mut().unwrap()).await;
+		healthy(&a, process_a.as_mut().unwrap(), "restored").await;
 	}
 	let restored = Instant::now();
 	// Submission-before-commit legitimately left no coordinator record.
@@ -351,8 +365,8 @@ async fn cut_fixture(
 		participant.then_some((manifest.id, point.as_str(), directory.path())),
 		directories.second,
 	);
-	healthy(&a, &mut process_a).await;
-	healthy(&b, &mut process_b).await;
+	healthy(&a, &mut process_a, "initial").await;
+	healthy(&b, &mut process_b, "initial").await;
 	CutFixture {
 		pair: (a, b, manifest, wa, wb),
 		directory,

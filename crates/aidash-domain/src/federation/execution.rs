@@ -20,6 +20,7 @@ pub struct Definition {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Inspection {
+	pub binding_snapshot: crate::registry::bindings::BindingSnapshot,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub generation: Option<serde_json::Value>,
 	#[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -36,6 +37,19 @@ pub struct Inspection {
 
 fn zero(value: &u32) -> bool {
 	*value == 0
+}
+
+/// Read-only selection preview. Grant preparation rechecks the current closure.
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AgentInspectionInput {
+	pub node_id: String,
+	pub agent: EntityRef,
+}
+#[derive(Serialize, JsonSchema)]
+pub struct AgentMemoryRequirements {
+	pub native_required: bool,
+	pub memory_available: bool,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -81,7 +95,8 @@ pub struct Description {
 
 impl Inspection {
 	pub fn satisfies(&self, pinned: &Self) -> bool {
-		self.generation == pinned.generation
+		self.binding_snapshot == pinned.binding_snapshot
+			&& self.generation == pinned.generation
 			&& self.lineage == pinned.lineage
 			&& self.node_id == pinned.node_id
 			&& self.authority_digest == pinned.authority_digest

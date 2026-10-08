@@ -207,6 +207,7 @@ fn scope(run: RunMetadata) -> Scope {
 			created_at: now,
 		},
 		inspection: Inspection {
+			binding_snapshot: crate::test_support::snapshot("aidash://receiver", "agent"),
 			generation: None,
 			lineage: vec![],
 			node_id: "aidash://local".into(),
@@ -541,5 +542,49 @@ async fn required_home_semantics_recheck_the_source_workspace_permission(
 	};
 	scope.source_denied = Some("semantic.use");
 	assert!(!visible(&mut scope, &run).await.unwrap());
+	restored(&scope);
+}
+
+#[rstest]
+#[case("bundle", false)]
+#[case("memory", false)]
+#[case("source", false)]
+#[case("embedding", false)]
+#[case("reranker", false)]
+#[case("tokenizer", false)]
+#[case("bundle", true)]
+#[case("memory", true)]
+#[case("source", true)]
+#[case("embedding", true)]
+#[case("reranker", true)]
+#[case("tokenizer", true)]
+#[tokio::test]
+async fn binding_context_definitions_keep_current_reader_authority(
+	mut scope: Scope,
+	run: RunMetadata,
+	#[case] kind: &str,
+	#[case] denied: bool,
+) {
+	scope.entry.kind = kind.into();
+	let definition = &mut scope
+		.record
+		.as_mut()
+		.unwrap()
+		.description
+		.inspection
+		.definitions[0];
+	definition.kind = kind.into();
+	definition.metadata = scope.entry.clone();
+	definition.digest = digest(&serde_json::to_value(&scope.entry).unwrap());
+	if denied {
+		scope.source_denied = Some("registry.read");
+	}
+	assert_eq!(visible(&mut scope, &run).await.unwrap(), !denied);
+	assert!(
+		scope
+			.calls
+			.iter()
+			.any(|call| call == "source:registry.read")
+	);
 	restored(&scope);
 }

@@ -70,6 +70,7 @@ pub fn declarations(
 						return Err(Error::Invalid("host package contains a builtin".into()));
 					}
 					Ok(Entry {
+						binding_normalization: None,
 						installation: None,
 						id: format!("aidash.{operation}"),
 						version: "1.0.0".into(),
@@ -86,6 +87,7 @@ pub fn declarations(
 				})
 				.collect::<Result<Vec<_>>>()?;
 			let bundle = Entry {
+				binding_normalization: None,
 				installation: None,
 				id: format!("aidash.bundle.{name}"),
 				version: "1.0.0".into(),

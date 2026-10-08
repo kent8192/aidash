@@ -150,6 +150,15 @@ where
 			.await
 			.map_err(Into::into)
 	}
+	async fn bindings(
+		&mut self,
+		entry: &aidash_domain::registry::Entry,
+	) -> Result<aidash_domain::registry::bindings::BindingSnapshot> {
+		crate::apps::registry::repositories::bindings::authorized(&mut self.access, entry, true)
+			.await
+			.map_err(Into::into)
+	}
+
 	async fn lineage(&mut self) -> Result<Vec<Ancestor>> {
 		let f = self.runtime.borrow();
 		crate::generation::remote::lineage(&mut self.access, &f.config.node_id)
@@ -484,6 +493,16 @@ impl PeerAdmissionScope for Owned {
 		let result: NativeResult<()> = async {
 			let access = &mut *self.access;
 			let d = description;
+			let node = access.node_id.clone();
+			let snapshot = d.inspection.binding_snapshot.clone();
+			snapshot.validate()?;
+			if snapshot.agent.registry_node != node || !snapshot.remote {
+				return Err(crate::Error::Forbidden);
+			}
+			let context = crate::context::Context {
+				binding_snapshot: Some(Box::new(snapshot)),
+				..Default::default()
+			};
 			crate::database::native::query(&format!(
 				"{} ON CONFLICT DO NOTHING",
 				Query::insert()
@@ -496,6 +515,7 @@ impl PeerAdmissionScope for Owned {
 							"home_node",
 							"agent_id",
 							"agent_version",
+							"context",
 						]
 						.map(Alias::new),
 					)
@@ -507,6 +527,7 @@ impl PeerAdmissionScope for Owned {
 							.expr(Expr::cust("$4"))
 							.expr(Expr::cust("$5"))
 							.expr(Expr::cust("$6"))
+							.expr(Expr::cust("$7"))
 							.to_owned()
 					)
 					.to_owned()
@@ -518,6 +539,7 @@ impl PeerAdmissionScope for Owned {
 			.bind(source)
 			.bind(&d.inspection.agent.id)
 			.bind(&d.inspection.agent.version)
+			.bind(serde_json::to_value(context)?)
 			.execute(&mut **access.tx)
 			.await?;
 			Ok(())

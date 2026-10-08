@@ -375,7 +375,11 @@ async fn registry_workspace_task_execution_and_artifact_commit_together_once(
 	let Some((a, b, mut manifest, wa, _wb)) = Box::pin(pair).await else {
 		return;
 	};
-	let agent:Entry=serde_json::from_value(json!({"id":"executor","version":"1.0.0","kind":"agent","name":{"en":"Executor"},"description":{"en":"Atomic fixture"},"config":{"model":{"id":"fixture","version":"1.0.0"},"instructions":"Atomic execution","tools":[],"skills":[]}})).unwrap();
+	let agent:Entry=serde_json::from_value(json!({"id":"executor","version":"1.0.0","kind":"agent","name":{"en":"Executor"},"description":{"en":"Atomic fixture"},"config":{"model":{"id":"fixture","version":"1.0.0"},"instructions":"Atomic execution","schema_version":1,"bindings":[],"remove_default":[]}})).unwrap();
+	let model: Entry = serde_json::from_value(json!({"id":"fixture","version":"1.0.0","kind":"model","name":{"en":"Atomic model"},"description":{"en":"Pinned execution fixture"},"config":{"provider":"openrouter","model_id":"fixture","endpoint":"http://localhost:19999/v1","context_window":128000,"max_output_tokens":4096,"modalities":["text"],"cost":{}}})).unwrap();
+	b.f.registry.register(model).await.unwrap();
+	b.f.registry.register(agent.clone()).await.unwrap();
+
 	let owner = qualified_agent(&b.f.config.node_id, &agent.id, &agent.version);
 	let task =
 		a.f.store
@@ -410,6 +414,8 @@ async fn registry_workspace_task_execution_and_artifact_commit_together_once(
 		.agent_id(&agent.id)
 		.agent_version(&agent.version)
 		.delivered(true)
+		.human_requests(json!([]).into())
+		.binding_snapshot(None)
 		.finish();
 	Delegation::objects()
 		.create_with_conn(&mut a.database.lease.handle(), &delegation)
@@ -587,7 +593,7 @@ async fn peer_trust_denial_aborts_promptly_and_revocation_preserves_admitted_rec
 			format!("Bearer {}", crate::fixtures::PEER_SECRET),
 		),
 		("x-aidash-node", a.f.config.node_id.clone()),
-		("x-aidash-protocol", "0.1".into()),
+		("x-aidash-protocol", "0.2".into()),
 	];
 	let peer_headers: Vec<_> = peer_headers.iter().map(|(k, v)| (*k, v.as_str())).collect();
 	let response = client

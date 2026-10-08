@@ -150,6 +150,33 @@ pub fn validate(
 	Ok(config)
 }
 
+/// Private documents remain owned by their registered Agent, including when a
+/// portable template resolves the Source through a current catalog approval.
+pub fn validate_template_snapshot(
+	snapshot: &aidash_domain::registry::bindings::BindingSnapshot,
+) -> Result<()> {
+	snapshot.validate()?;
+	for binding in snapshot
+		.bindings
+		.iter()
+		.filter(|b| b.excluded_reason.is_none())
+	{
+		if binding.definition.kind == "source"
+			&& binding.definition.config.get("schema_version").is_some()
+		{
+			let context: aidash_domain::registry::bindings::sources::NativeContext =
+				serde_json::from_value(binding.definition.config.clone())?;
+			if matches!(
+				context.source,
+				aidash_domain::registry::bindings::sources::NativeSource::PrivateReferences { .. }
+			) {
+				return Err(Error::Invalid("private reference documents belong to a registered agent, not a generation template".into()));
+			}
+		}
+	}
+	Ok(())
+}
+
 async fn write_in(
 	scope: &mut dyn PolicySession,
 	tenant: &str,
@@ -180,15 +207,25 @@ async fn write_in(
 		false
 	};
 	if !disabling {
-		let cfg = validate(validation, spec, &serde_json::from_value(document)?)?;
-		for (reference, kind) in std::iter::once((&cfg.model, "model"))
-			.chain(cfg.tools.iter().map(|r| (r, "tool")))
-			.chain(cfg.skills.iter().map(|r| (r, "skill")))
-			.chain(cfg.cluster.iter().map(|r| (r, "cluster")))
-			.chain(spec.compaction.iter().map(|c| (&c.provider, "compactor")))
-			.chain(spec.embedding.iter().map(|c| (&c.provider, "embedding")))
-		{
-			let metadata = scope.approved(tenant, reference).await?;
+		let _cfg = validate(validation, spec, &serde_json::from_value(document)?)?;
+		let snapshot = scope.bindings(&spec.template).await?;
+		validate_template_snapshot(&snapshot)?;
+		for (reference, kind) in snapshot
+			.definitions
+			.iter()
+			.filter(|d| d.identity != snapshot.agent)
+			.map(|d| (d.identity.local(), d.definition.kind.as_str()))
+			.chain(
+				spec.compaction
+					.iter()
+					.map(|c| (c.provider.clone(), "compactor")),
+			)
+			.chain(
+				spec.embedding
+					.iter()
+					.map(|c| (c.provider.clone(), "embedding")),
+			) {
+			let metadata = scope.approved(tenant, &reference).await?;
 			let entry: aidash_domain::registry::Entry =
 				serde_json::from_value(metadata.ok_or_else(|| {
 					Error::Invalid("generation components require tenant catalog approval".into())

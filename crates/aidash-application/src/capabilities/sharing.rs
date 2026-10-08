@@ -11,7 +11,7 @@ use aidash_domain::{
 		sessions::Area,
 		sharing::{Selection, Share},
 	},
-	registry::{AgentConfig, EntityRef},
+	registry::EntityRef,
 };
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -105,7 +105,7 @@ pub async fn share(
 	let received_authority = async {
 		let workspace = scope.workspace(recipient.workspace_id).await?;
 		scope.require(&workspace, "workspace.read").await?;
-		let entry = scope
+		let _entry = scope
 			.entry(
 				&EntityRef {
 					id: input.recipient.agent_id.clone(),
@@ -114,10 +114,9 @@ pub async fn share(
 				"agent.execute",
 			)
 			.await?;
-		let config: AgentConfig = serde_json::from_value(entry.config)?;
-		if !config.core_capabilities.sharing {
-			return Err(Error::Forbidden);
-		}
+		scope
+			.require_bound_operation(admitted.expect("checked admitted recipient"), "file_share")
+			.await?;
 		let resource = scope.resource(
 			"working_area",
 			&recipient.id.to_string(),

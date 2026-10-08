@@ -12,7 +12,7 @@ use aidash_domain::{
 		sharing::Share,
 		transfer::{Chunk, Description, Identity, Requester, receipt_matches},
 	},
-	registry::{AgentConfig, EntityRef},
+	registry::EntityRef,
 };
 use base64::Engine;
 use chrono::{Duration, Utc};
@@ -196,12 +196,7 @@ pub async fn authority<'a>(
 			.await?;
 		let entry = scope.entry( &description.source_agent, "agent.execute").await?;
 		scope.check_pinned( &entry).await?;
-		if !serde_json::from_value::<AgentConfig>(entry.config)?
-			.core_capabilities
-			.sharing
-		{
-			return Err(Error::Forbidden);
-		}
+        scope.require_bound_operation(run.id, "file_share").await?;
 		let mut delegated=scope.subjects().to_vec();delegated.push(aidash_domain::qualified_agent(
 			&description.target.node_id,
 			&description.target.agent_id,

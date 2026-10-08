@@ -34,6 +34,7 @@ async fn selected_file_media_preserves_order_and_duplicate_bytes_through_worker_
 	model.config["media_routes"] = json!([{"tag":"fixture/selected","formats":["image/png"],"source":"local provider contract","verified_at":chrono::Utc::now()-chrono::Duration::hours(1),"expires_at":chrono::Utc::now()+chrono::Duration::hours(1)}]);
 	let mut agent = c.f.registry.get("research", "1.1.0").await.unwrap();
 	agent.version = "1.1.1".into();
+	agent.binding_normalization = None;
 	agent.config["model"]["version"] = json!("1.1.0");
 	c.policy["subjects"]
 		[aidash_server::domain::qualified_agent(&c.f.config.node_id, "research", "1.1.1")] =
@@ -151,7 +152,9 @@ async fn selected_file_media_preserves_order_and_duplicate_bytes_through_worker_
 	{
 		let requests = requests.lock().unwrap();
 		assert_eq!(requests.len(), 2, "{requests:?}");
-		let parts = requests[1]["messages"][1]["content"].as_array().unwrap();
+		let parts = requests[1]["messages"][1]["content"]
+			.as_array()
+			.unwrap_or_else(|| panic!("selected media missing from inference: {:?}", requests[1]));
 		let actual_images = parts
 			.iter()
 			.filter_map(|part| part["image_url"]["url"].as_str())

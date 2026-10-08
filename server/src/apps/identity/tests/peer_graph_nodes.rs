@@ -109,7 +109,7 @@ async fn connect(local: &Node, remote: &Node) {
 						.expr(Expr::value(query_bind_1.to_owned()))
 						.expr(Expr::value(query_bind_2.to_owned()))
 						.expr(Expr::value(query_bind_3.to_owned()))
-						.expr(Expr::val("0.1"))
+						.expr(Expr::val("0.2"))
 						.expr(Expr::val(true))
 						.to_owned(),
 				)
@@ -246,7 +246,7 @@ async fn three_databases_enforce_two_subjects_and_no_transitive_graph(
 	}
 	let hidden = json!({"id":"hidden","version":"1.0.0","kind":"agent","name":{"en":"Hidden B Agent"},
 		"description":{"en":"private"},"capabilities":[],"languages":["en"],"schema":{"type":"object"},
-		"config":{"model":{"id":"model","version":"1.0.0"},"instructions":"private","tools":[],"skills":[]}});
+		"config":{"model":{"id":"model","version":"1.0.0"},"instructions":"private","schema_version":1,"bindings":[],"remove_default":[]}});
 	assert_eq!(
 		request(
 			&b.app,
@@ -405,7 +405,7 @@ async fn three_databases_enforce_two_subjects_and_no_transitive_graph(
 		node_id: b.f.config.node_id.clone(),
 		endpoint: b.f.config.endpoint.clone(),
 		credential_env: "AIDASH_SECRET_TEST_PEER".into(),
-		protocol_version: "0.1".into(),
+		protocol_version: "0.2".into(),
 		enabled: false,
 	};
 	a.f.register_peer(source_peer.clone()).await.unwrap();
@@ -420,7 +420,7 @@ async fn three_databases_enforce_two_subjects_and_no_transitive_graph(
 		node_id: a.f.config.node_id.clone(),
 		endpoint: a.f.config.endpoint.clone(),
 		credential_env: "AIDASH_SECRET_TEST_PEER".into(),
-		protocol_version: "0.1".into(),
+		protocol_version: "0.2".into(),
 		enabled: false,
 	};
 	b.f.register_peer(receiver_peer.clone()).await.unwrap();

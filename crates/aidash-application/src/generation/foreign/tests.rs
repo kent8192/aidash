@@ -81,6 +81,7 @@ fn scope() -> Scope {
 		source_subject: intent.source_subject.clone(),
 		task: task.clone(),
 		inspection: Inspection {
+			binding_snapshot: crate::test_support::snapshot("aidash://receiver", "agent"),
 			generation: Some(json!(intent)),
 			lineage: vec![],
 			node_id: intent.target_node.clone(),

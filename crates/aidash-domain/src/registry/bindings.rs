@@ -49,13 +49,14 @@ pub fn definition_references(
 			config.validate()?;
 			result.push((local(&config.model), "model".into()));
 			result.extend(config.cluster.iter().map(|r| (local(r), "cluster".into())));
-			for normalized in config.normalize(&identity.registry_node)? {
+			for normalized in entry.normalized_bindings(&identity.registry_node)? {
 				let kind = match normalized.binding.kind {
 					BindingKind::Tool => "tool",
 					BindingKind::Bundle => "bundle",
 					BindingKind::Skill => "skill",
 					BindingKind::Memory => "memory",
 					BindingKind::Source => "source",
+					BindingKind::Decider => "decider",
 				};
 				result.push((normalized.binding.target, kind.into()));
 			}
@@ -100,9 +101,35 @@ pub fn definition_references(
 				));
 			}
 		}
-		"memory" | "source" => {
-			let descriptor: sources::NativeContext = serde_json::from_value(entry.config.clone())?;
-			descriptor.validate(&entry.kind)?;
+		"memory" | "source" if entry.config.get("schema_version").is_some() => {
+			sources::validate_definition(entry)?;
+		}
+		"memory" => {
+			let provider: crate::memory::ProviderConfig =
+				serde_json::from_value(entry.config.clone())?;
+			result.extend(
+				[
+					(provider.policy.extraction, "model"),
+					(provider.policy.derivation, "model"),
+					(provider.policy.reflection, "model"),
+					(provider.policy.embedding, "embedding"),
+					(provider.policy.reranker, "reranker"),
+					(provider.policy.tokenizer, "tokenizer"),
+				]
+				.into_iter()
+				.map(|(r, k)| (local(&r), k.into())),
+			);
+		}
+		"source" => {
+			let source: crate::memory::SourceConfig = serde_json::from_value(entry.config.clone())?;
+			result.push((local(&source.memory), "memory".into()));
+		}
+		"reranker" => {
+			if let crate::memory::RerankerConfig::Model { model } =
+				serde_json::from_value(entry.config.clone())?
+			{
+				result.push((local(&model), "model".into()));
+			}
 		}
 		_ => {}
 	}
@@ -225,6 +252,50 @@ impl AgentBindings {
 	}
 }
 
+/// Read-only registration metadata is compiled by the Node before publication.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AgentNormalization {
+	pub schema_version: u8,
+	pub registry_node: String,
+	pub bindings: Vec<NormalizedBinding>,
+}
+impl Entry {
+	pub fn normalize_agent(&mut self, node: &str) -> Result<()> {
+		if self.kind != "agent" {
+			if self.binding_normalization.is_some() {
+				return Err(Error::Invalid(
+					"normalization is only valid for Agents".into(),
+				));
+			}
+			return Ok(());
+		}
+		let config: AgentBindings = serde_json::from_value(self.config.clone())?;
+		self.binding_normalization = Some(AgentNormalization {
+			schema_version: BINDING_SCHEMA,
+			registry_node: node.into(),
+			bindings: config.normalize(node)?,
+		});
+		Ok(())
+	}
+	pub fn normalized_bindings(&self, node: &str) -> Result<Vec<NormalizedBinding>> {
+		let config: AgentBindings = serde_json::from_value(self.config.clone())?;
+		let expected = config.normalize(node)?;
+		if let Some(saved) = &self.binding_normalization {
+			if saved.schema_version != BINDING_SCHEMA
+				|| saved.registry_node != node
+				|| saved.bindings != expected
+			{
+				return Err(Error::Invalid(
+					"Agent normalization differs from its immutable definition".into(),
+				));
+			}
+			return Ok(saved.bindings.clone());
+		}
+		Ok(expected)
+	}
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct QualifiedRef {
@@ -277,6 +348,8 @@ impl QualifiedRef {
 #[serde(default, deny_unknown_fields)]
 pub struct Narrowing {
 	#[serde(skip_serializing_if = "Option::is_none")]
+	pub decision: Option<crate::decision::Restrictions>,
+	#[serde(skip_serializing_if = "Option::is_none")]
 	pub allowed_hosts: Option<BTreeSet<String>>,
 	#[serde(skip_serializing_if = "BTreeMap::is_empty")]
 	pub scope: BTreeMap<String, BTreeSet<String>>,
@@ -305,6 +378,19 @@ impl Narrowing {
 				.or_insert(*ceiling);
 		}
 		let result = Self {
+			decision: match (&self.decision, &other.decision) {
+				(Some(a), Some(b)) => Some(crate::decision::Restrictions {
+					keep_threshold: if a.keep_threshold.value() <= b.keep_threshold.value() {
+						a.keep_threshold
+					} else {
+						b.keep_threshold
+					},
+					preserve_recent: a.preserve_recent.max(b.preserve_recent),
+					forbid_apply: a.forbid_apply || b.forbid_apply,
+				}),
+				(Some(a), None) | (None, Some(a)) => Some(a.clone()),
+				(None, None) => None,
+			},
 			allowed_hosts,
 			scope,
 			limits,
@@ -379,6 +465,7 @@ pub enum BindingKind {
 	Skill,
 	Memory,
 	Source,
+	Decider,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -406,6 +493,25 @@ impl Binding {
 	}
 	pub fn validate(&self) -> Result<()> {
 		self.target.validate()?;
+		if self.kind == BindingKind::Decider {
+			if self.narrow.allowed_hosts.is_some()
+				|| !self.narrow.scope.is_empty()
+				|| !self.narrow.limits.is_empty()
+				|| self
+					.narrow
+					.decision
+					.as_ref()
+					.is_some_and(|r| r.keep_threshold.value() > 0.5 || r.preserve_recent < 6)
+			{
+				return Err(Error::Invalid(
+					"invalid Decider Binding restrictions".into(),
+				));
+			}
+		} else if self.narrow.decision.is_some() {
+			return Err(Error::Invalid(
+				"decision restrictions require a Decider Binding".into(),
+			));
+		}
 		if let Some(alias) = &self.alias {
 			validate_alias(alias)?;
 		}
@@ -505,6 +611,63 @@ pub struct BindingSnapshot {
 	pub remote: bool,
 	pub bindings: Vec<ResolvedBinding>,
 	pub definitions: Vec<ResolvedDefinition>,
+	/// Public operator Agent transports retain the receiver's complete admitted closure.
+	#[serde(default, skip_serializing_if = "Vec::is_empty")]
+	pub foreign_agents: Vec<ForeignAgentSnapshot>,
+}
+
+/// One authenticated receiver's public closure. Nested foreign or private
+/// dependencies require their own supported disclosure/admission protocol.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ForeignAgentSnapshot {
+	pub schema_version: u8,
+	pub agent: QualifiedRef,
+	pub bindings: Vec<ResolvedBinding>,
+	pub definitions: Vec<ResolvedDefinition>,
+}
+
+impl ForeignAgentSnapshot {
+	pub fn snapshot(&self) -> BindingSnapshot {
+		BindingSnapshot {
+			schema_version: self.schema_version,
+			agent: self.agent.clone(),
+			remote: true,
+			bindings: self.bindings.clone(),
+			definitions: self.definitions.clone(),
+			foreign_agents: vec![],
+		}
+	}
+	pub fn from_snapshot(snapshot: BindingSnapshot) -> Result<Self> {
+		if !snapshot.remote || !snapshot.foreign_agents.is_empty() {
+			return Err(Error::Invalid(
+				"foreign Agent requires a single receiver closure".into(),
+			));
+		}
+		let result = Self {
+			schema_version: snapshot.schema_version,
+			agent: snapshot.agent,
+			bindings: snapshot.bindings,
+			definitions: snapshot.definitions,
+		};
+		result.validate()?;
+		Ok(result)
+	}
+	pub fn validate(&self) -> Result<()> {
+		if self.definitions.iter().any(|definition| {
+			definition.identity.registry_node != self.agent.registry_node
+				|| definition.definition.installation.is_some()
+				|| matches!(
+					definition.definition.kind.as_str(),
+					"memory" | "source" | "skill"
+				)
+		}) {
+			return Err(Error::Invalid(
+				"foreign Agent has an unsupported private or cross-Node dependency".into(),
+			));
+		}
+		self.snapshot().validate()
+	}
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -539,6 +702,44 @@ impl ResolvedDefinition {
 	}
 }
 impl BindingSnapshot {
+	/// Reconstruct an explicit exact Decider from the retained admission closure.
+	pub fn decider(&self, hook: crate::decision::Hook) -> Result<crate::decision::BoundDecider> {
+		self.validate()?;
+		let mut found = None;
+		for binding in self
+			.bindings
+			.iter()
+			.filter(|b| b.definition.kind == "decider")
+		{
+			let config: crate::decision::DeciderConfig =
+				serde_json::from_value(binding.definition.config.clone())?;
+			if config.hook != hook {
+				continue;
+			}
+			let pin = crate::decision::DeciderPin {
+				identity: binding.identity.clone(),
+				definition_digest: binding.digest.clone(),
+				configuration_digest: config.digest()?,
+				provider_implementation: binding.provider_implementation.clone().ok_or_else(
+					|| {
+						Error::Invalid(
+							"Decider snapshot lacks a Node Provider implementation".into(),
+						)
+					},
+				)?,
+			};
+			pin.check(&binding.definition)?;
+			let bound = crate::decision::BoundDecider {
+				pin,
+				config,
+				restrictions: binding.narrow.decision.clone().unwrap_or_default(),
+			};
+			if found.replace(bound).is_some() {
+				return Err(Error::Invalid("duplicate retained Decider hook".into()));
+			}
+		}
+		found.ok_or_else(|| Error::Invalid("Run has no explicit Decider for this hook".into()))
+	}
 	pub fn validate(&self) -> Result<()> {
 		self.agent.validate()?;
 		if self.schema_version != BINDING_SCHEMA
@@ -586,6 +787,47 @@ impl BindingSnapshot {
 			serde_json::from_value(agent_definition.definition.config.clone())?;
 		config.validate()?;
 		self.validate_closure(&config, &definitions)?;
+		let expected_foreign =
+			self.definitions
+				.iter()
+				.try_fold(BTreeSet::new(), |mut roots, definition| {
+					for (reference, kind) in
+						definition_references(&definition.identity, &definition.definition)?
+					{
+						if kind == "agent"
+							&& reference.registry_node != definition.identity.registry_node
+						{
+							roots.insert(reference);
+						}
+					}
+					Ok::<_, Error>(roots)
+				})?;
+		let mut foreign = BTreeSet::new();
+		for snapshot in &self.foreign_agents {
+			snapshot.validate()?;
+			if !expected_foreign.contains(&snapshot.agent)
+				|| !foreign.insert(snapshot.agent.clone())
+			{
+				return Err(Error::Invalid(
+					"foreign Agent snapshot has an unrelated or duplicate root".into(),
+				));
+			}
+			for definition in &snapshot.definitions {
+				if definitions
+					.get(&definition.identity)
+					.is_none_or(|saved| **saved != *definition)
+				{
+					return Err(Error::Invalid(
+						"foreign Agent closure differs from the pinned definitions".into(),
+					));
+				}
+			}
+		}
+		if foreign != expected_foreign {
+			return Err(Error::Invalid(
+				"snapshot lacks an exact foreign Agent closure".into(),
+			));
+		}
 		if config.instructions.trim().is_empty()
 			&& !config.bindings.iter().any(|binding| {
 				binding.kind == BindingKind::Skill
@@ -644,6 +886,16 @@ impl BindingSnapshot {
 				{
 					return Err(Error::Invalid(
 						"Tool snapshot lacks alias or Provider evidence".into(),
+					));
+				}
+			} else if binding.definition.kind == "decider" {
+				if binding.alias.is_some()
+					|| binding.excluded_reason.is_some()
+					|| binding.provider_contract_digest.is_none()
+					|| binding.provider_implementation.is_none()
+				{
+					return Err(Error::Invalid(
+						"Decider snapshot lacks exact Provider evidence".into(),
 					));
 				}
 			} else if binding.alias.is_some()

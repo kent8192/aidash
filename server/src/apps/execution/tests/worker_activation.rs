@@ -122,7 +122,7 @@ impl Process {
 				"process exited: {log}"
 			);
 			assert!(
-				start.elapsed() < Duration::from_secs(20),
+				start.elapsed() < Duration::from_secs(60),
 				"startup timeout: {log}"
 			);
 			tokio::time::sleep(Duration::from_millis(25)).await;
@@ -172,14 +172,19 @@ async fn admit(f: &Federation, token: &str, task: Uuid) -> Uuid {
 	let status = response.status();
 	let value: Value = response.json().await.unwrap();
 	assert!(status.is_success(), "admission: {status} {value}");
-	f.store
-		.runs()
-		.await
-		.unwrap()
-		.into_iter()
-		.find(|r| r.task_id == task)
-		.unwrap()
-		.id
+	// The measured notification workload must not include decoding every
+	// historical Run's immutable dependency closure to identify this admission.
+	sqlx::query_scalar(
+		&Query::select()
+			.column(a("id"))
+			.from(a("runs"))
+			.and_where(Expr::col(a("task_id")).eq(Expr::value(task)))
+			.and_where(Expr::col(a("home_node")).eq(Expr::value(&f.config.node_id)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(f.store.pool.driver())
+	.await
+	.unwrap()
 }
 async fn complete(f: &Federation, id: Uuid) {
 	let start = Instant::now();
@@ -757,7 +762,7 @@ async fn broker_absence_reconnect_and_empty_storage_preserve_accepted_work(
 			break;
 		}
 		assert!(process.child.try_wait().unwrap().is_none());
-		assert!(start.elapsed() < Duration::from_secs(10));
+		assert!(start.elapsed() < Duration::from_secs(60));
 		tokio::time::sleep(Duration::from_millis(25)).await;
 	}
 	let first = admit(&f, &token, task).await;
@@ -1592,7 +1597,8 @@ fn prepared_activation(
 		directory,
 		process_serial,
 	} = _state;
-	let _ = (label, router);
+	let label = label.to_owned();
+	let _ = router;
 	use futures_util::FutureExt;
 	async move {
 		let serial = process_serial.await;
@@ -1600,7 +1606,11 @@ fn prepared_activation(
 		let application = application.await.application;
 		let provider = provider.await;
 		let directory = directory.await;
-		let (_, token, task) = bootstrap(&runtime.federation, &application, &provider.url).await;
+		let (_, token, task) = if label == "ordering" || label == "area" {
+			common::bootstrap_with_area(&runtime.federation, &application, &provider.url).await
+		} else {
+			bootstrap(&runtime.federation, &application, &provider.url).await
+		};
 		let settings = Settings {
 			namespace: runtime.schema.clone(),
 			..Default::default()

@@ -8,7 +8,7 @@ A node publishes `/.well-known/aidash` with its `aidash://` identity, endpoint, 
 
 The operator token retains privileged bootstrap, legacy operation and recovery access. Revocable subject tokens apply the current tenant policy to workspace and conversation APIs, human interaction, approved Registry discovery, local execution, state collections and event delivery. Local runs persist the root credential and delegated agent chain, rechecking their intersected authority at each durable boundary. Scoped remote execution uses a durable source grant, receiver admission, explicit activation and scoped Home commands; each node rechecks its own authority at durable boundaries. Subject bearer tokens are not forwarded. Legacy `/offers` cannot admit work into scoped workspaces. See [authorization](authorization.md) for the exact admission path, actions, catalog approvals, revocation and credential rotation. The full cross-node acceptance in #38 remains open.
 
-Federation uses `/federation/v0.1`. Each request must include `Authorization: Bearer <peer credential>`, `X-Aidash-Node`, and `X-Aidash-Protocol: 0.1`. A peer must already be enabled in the receiving node's database. Peer credentials must have at least 32 printable ASCII characters and eight distinct characters, checked during registration and use. Generate a random token for each trust relationship. Each node has its own credential references; no central identity or message broker is required across nodes. In deployment, use HTTPS and trusted operator-managed tools. This version is not a hostile multi-tenant sandbox.
+Federation retains the `/federation/v0.1` path namespace and requires protocol `0.2` for Binding contract 1. Earlier peers cannot admit new execution; drain in-flight work before upgrading. Each request must include `Authorization: Bearer <peer credential>`, `X-Aidash-Node`, and `X-Aidash-Protocol: 0.2`. A peer must already be enabled in the receiving node's database. Peer credentials must have at least 32 printable ASCII characters and eight distinct characters, checked during registration and use. Generate a random token for each trust relationship. Each node has its own credential references; no central identity or message broker is required across nodes. In deployment, use HTTPS and trusted operator-managed tools. This version is not a hostile multi-tenant sandbox.
 
 | Endpoint             | Purpose                                                                           |
 | -------------------- | --------------------------------------------------------------------------------- |
@@ -64,6 +64,10 @@ Transient execution errors have a bounded retry budget per persisted operation. 
 A coordinator's final response remains gated while a child is unresolved. An operator can call `POST /api/tasks/{id}/abandon` with the current revision and a nonempty reason for a failed, blocked, or cancelled child. Nested children must be completed or abandoned first. The home records `ABANDONED` with the prior status and reason; a resumed parent can finish with remaining artifacts. Dependencies still require actual completion: abandonment does not satisfy a task dependency.
 
 ### Context compaction
+
+The [portable decision gate foundation](decision-gate.md) defines explicit
+Decider pins and historical replay contracts for #108. Native execution still
+uses the compaction path described below until its separate integration lands.
 
 The compaction trigger, post-compaction fit check and final preflight use the
 same complete-request estimate: UTF-8 bytes of the serialized model-visible

@@ -40,6 +40,67 @@ fn raw(now: DateTime<Utc>) -> RawRun {
 	}
 }
 
+#[rstest]
+#[tokio::test]
+async fn home_owned_human_waits_poll_without_querying_local_requests(
+	now: DateTime<Utc>,
+	repository: Repository,
+) {
+	let mut row = raw(now);
+	row.metadata.phase = RunPhase::Waiting;
+	row.context["binding_snapshot"] = serde_json::json!({"schema_version":1,"agent":{"registry_node":"aidash://receiver","id":"fixture","version":"1.0.0"},"remote":true,"bindings":[],"definitions":[]});
+	row.pending = aidash_domain::run_state::encode(
+		&RunState::Waiting(Box::new(WaitingState::Human {
+			request_id: Uuid::new_v4(),
+			resume: aidash_domain::ResumeState::Ready(ReadyState {}),
+		})),
+		&Default::default(),
+	)
+	.unwrap();
+	let mut scope = Scope {
+		state: repository.0.clone(),
+		committed: false,
+	};
+	let polling = now + chrono::Duration::seconds(1);
+	assert_eq!(
+		due(&mut scope, &row, now, repository.node_id())
+			.await
+			.unwrap(),
+		Some(polling)
+	);
+	assert_eq!(
+		due(&mut scope, &row, polling, repository.node_id())
+			.await
+			.unwrap(),
+		Some(polling)
+	);
+	assert!(
+		!repository
+			.0
+			.events
+			.lock()
+			.unwrap()
+			.iter()
+			.any(|event| event == "answered")
+	);
+	row.context["binding_snapshot"]["remote"] = serde_json::json!(false);
+	assert_eq!(
+		due(&mut scope, &row, now, repository.node_id())
+			.await
+			.unwrap(),
+		None
+	);
+	assert!(
+		repository
+			.0
+			.events
+			.lock()
+			.unwrap()
+			.iter()
+			.any(|event| event == "answered")
+	);
+}
+
 struct State {
 	now: DateTime<Utc>,
 	run: Mutex<Option<RawRun>>,

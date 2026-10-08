@@ -80,8 +80,8 @@ pub fn validate_override_keys(kind: &str, overrides: &Value) -> Result<()> {
 		"agent" => &[
 			"model",
 			"instructions",
-			"tools",
-			"skills",
+			"bindings",
+			"remove_default",
 			"cluster",
 			"max_steps",
 		],
@@ -97,11 +97,11 @@ pub fn validate_override_keys(kind: &str, overrides: &Value) -> Result<()> {
 			"request_timeout_secs",
 		],
 		"cluster" => &["coordinator"],
-		"bundle" => &[],
+		"bundle" | "memory" | "source" => &[],
 		"skill" => &["instructions"],
 		// ToolConfig uses a tagged, deny_unknown_fields contract. The merged
 		// effective configuration is validated by Registry before any write.
-		"tool" => return Ok(()),
+		"tool" => &["transport", "narrow"],
 		_ => return Err(Error::Invalid("unsupported installation kind".into())),
 	};
 	if let Some(key) = object.keys().find(|key| !allowed.contains(&key.as_str())) {
@@ -121,7 +121,7 @@ pub fn validate_metadata(e: &Entry, local: bool) -> Result<()> {
 	let schema = json!({"type":"object","required":["id","version","kind","name","description","capabilities","tags","languages","schema","config"],
         "properties":{
             "id":{"type":"string","pattern":"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,99}$"},
-            "version":{"type":"string"}, "kind":{"enum":["agent","model","tool","skill","cluster","node","compactor","embedding","bundle","memory","source","reranker","tokenizer"]},
+            "version":{"type":"string"}, "kind":{"enum":["agent","model","tool","skill","cluster","node","compactor","decider","embedding","bundle","memory","source","reranker","tokenizer"]},
             "name":{"type":"object","minProperties":1,"additionalProperties":{"type":"string","minLength":1}},
             "description":{"type":"object","minProperties":1,"additionalProperties":{"type":"string"}},
             "capabilities":{"type":"array","items":{"type":"string"},"uniqueItems":true},

@@ -52,7 +52,7 @@ async fn upload(
 
 struct AudioBatchCase<'a> {
 	first_audio: &'a [u8],
-	message_text: &'a str,
+	with_text: bool,
 	leading_text: Option<&'a str>,
 }
 
@@ -82,7 +82,27 @@ async fn verify_audio_batches(
 		.into_iter()
 		.find(|run| run.workspace_id.to_string() == audio_workspace)
 		.unwrap();
-	if let Some(content) = case.leading_text {
+	// Both messages must fit the admitted Binding's ledger budget. The audio
+	// still forces separate provider requests; tool declarations determine the
+	// remaining window, so a fixed text length is not a stable fixture boundary.
+	let message_limit = f.run_message_limit(&audio_run).await.unwrap();
+	let message_text = if case.with_text {
+		"a".repeat(message_limit / 3)
+	} else {
+		String::new()
+	};
+	let leading_text = case
+		.leading_text
+		.map(|text| text.chars().take(message_limit / 2).collect::<String>());
+	// Reserve space for media framing and intake context while keeping this
+	// clip near the actual window. The leading instruction then needs its own
+	// request, even when Binding declarations reduce the available headroom.
+	let audio_limit = message_limit
+		.saturating_mul(4)
+		.saturating_sub(3_072)
+		.saturating_mul(16);
+	let first_audio = &case.first_audio[..case.first_audio.len().min(audio_limit)];
+	if let Some(content) = &leading_text {
 		let (status, sent) = request(
 			app,
 			operator,
@@ -93,7 +113,7 @@ async fn verify_audio_batches(
 		.await;
 		assert_eq!(status, 200, "{sent}");
 	}
-	let mut second_audio = case.first_audio.to_vec();
+	let mut second_audio = first_audio.to_vec();
 	*second_audio.last_mut().unwrap() = 1;
 	let first = upload(
 		app,
@@ -101,7 +121,7 @@ async fn verify_audio_batches(
 		audio_workspace,
 		"first.wav",
 		"audio/wav",
-		case.first_audio,
+		first_audio,
 	)
 	.await;
 	let second = upload(
@@ -119,7 +139,7 @@ async fn verify_audio_batches(
 			operator,
 			"POST",
 			&format!("/api/runs/{}/message", audio_run.id),
-			json!({"content":case.message_text, "idempotency_key":Uuid::new_v4(), "attachment_ids":[attachment["id"]]}),
+			json!({"content":message_text, "idempotency_key":Uuid::new_v4(), "attachment_ids":[attachment["id"]]}),
 		)
 		.await;
 		assert_eq!(status, 200, "{sent}");
@@ -130,10 +150,10 @@ async fn verify_audio_batches(
 		assert!(worker.worker_once().await.unwrap());
 		while let Ok(body) = received.try_recv() {
 			let Some(parts) = body["messages"][1]["content"].as_array() else {
-				if let Some(prefix) = case.leading_text
+				if let Some(prefix) = &leading_text
 					&& body["messages"][1]["content"]
 						.as_str()
-						.is_some_and(|content| content.contains(prefix))
+						.is_some_and(|content| content.contains(prefix.as_str()))
 				{
 					assert!(body.get("tools").is_none());
 					saw_prefix_batch = true;
@@ -146,6 +166,13 @@ async fn verify_audio_batches(
 				.collect();
 			if !audio.is_empty() {
 				assert_eq!(audio.len(), 1, "audio messages must fit individually");
+				if case.with_text {
+					assert!(parts.iter().any(|part| {
+						part["text"]
+							.as_str()
+							.is_some_and(|text| text.contains(&message_text))
+					}));
+				}
 				audio_batches.push(audio[0].clone());
 			}
 		}
@@ -156,11 +183,11 @@ async fn verify_audio_batches(
 	assert_eq!(
 		audio_batches,
 		vec![
-			base64::engine::general_purpose::STANDARD.encode(case.first_audio),
+			base64::engine::general_purpose::STANDARD.encode(first_audio),
 			base64::engine::general_purpose::STANDARD.encode(&second_audio),
 		]
 	);
-	if case.leading_text.is_some() {
+	if leading_text.is_some() {
 		assert!(
 			saw_prefix_batch,
 			"the leading text must be deferred separately"
@@ -268,6 +295,7 @@ async fn verify_expired_route_retry(
 	assert_eq!(status, 200, "{body}");
 	let mut agent = f.registry.get("research", "1.0.1").await.unwrap();
 	agent.version = "1.0.2".into();
+	agent.binding_normalization = None;
 	agent.config["model"]["version"] = json!("1.0.2");
 	let (status, body) = request(app, operator, "POST", "/api/registry", json!(agent)).await;
 	assert_eq!(status, 200, "{body}");
@@ -355,6 +383,7 @@ async fn verify_separate_format_routes(
 	assert_eq!(status, 200, "{body}");
 	let mut agent = f.registry.get("research", "1.0.1").await.unwrap();
 	agent.version = "1.0.3".into();
+	agent.binding_normalization = None;
 	agent.config["model"]["version"] = json!("1.0.3");
 	let (status, body) = request(app, operator, "POST", "/api/registry", json!(agent)).await;
 	assert_eq!(status, 200, "{body}");
@@ -519,6 +548,7 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 	assert_eq!(status, 200, "{body}");
 	let mut agent = f.registry.get("research", "1.0.0").await.unwrap();
 	agent.version = "1.0.1".into();
+	agent.binding_normalization = None;
 	agent.config["model"]["version"] = json!("1.0.1");
 	let (status, body) = request(
 		&app,
@@ -854,12 +884,11 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 		&operator,
 		AudioBatchCase {
 			first_audio: &large_audio,
-			message_text: "",
+			with_text: false,
 			leading_text: None,
 		},
 	))
 	.await;
-	let text = "a".repeat(5_500);
 	Box::pin(verify_audio_batches(
 		&app,
 		&f,
@@ -868,7 +897,7 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 		&operator,
 		AudioBatchCase {
 			first_audio: &large_audio[..380 * 1024],
-			message_text: &text,
+			with_text: true,
 			leading_text: None,
 		},
 	))
@@ -884,7 +913,7 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 		&operator,
 		AudioBatchCase {
 			first_audio: &near_window_audio,
-			message_text: "",
+			with_text: false,
 			leading_text: Some(&leading_text),
 		},
 	))

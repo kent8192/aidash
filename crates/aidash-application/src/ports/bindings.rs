@@ -15,13 +15,30 @@ use std::sync::Arc;
 #[async_trait]
 pub trait BindingCatalog: Send {
 	async fn definition(&mut self, reference: &QualifiedRef) -> Result<Entry>;
-	/// New admission requires this exact revision to be active and approved.
+	async fn foreign_agent(
+		&mut self,
+		_: &QualifiedRef,
+	) -> Result<aidash_domain::registry::bindings::ForeignAgentSnapshot> {
+		Err(crate::Error::Forbidden)
+	}
+	/// New execution admission requires this revision to be active and approved.
+	/// A structural staging preview may check a readable pending revision, but
+	/// that preview cannot authorize activation or execution.
 	async fn installation(&mut self, projection: &Projection) -> Result<()>;
 	async fn source(&mut self, definition: &Entry) -> Result<()>;
 }
 
 /// The Node admits implementations and their factual contracts, independently of publishers.
 pub trait ProviderCatalog: Send + Sync {
+	/// Availability is Node-owned; a declaration cannot manufacture a dispatch adapter.
+	fn decision_implementation(
+		&self,
+		_config: &aidash_domain::decision::DeciderConfig,
+	) -> Result<String> {
+		Err(crate::Error::Invalid(
+			"Node has no supported Decision Provider".into(),
+		))
+	}
 	fn contract(
 		&self,
 		descriptor: &ToolDescriptor,
@@ -51,5 +68,9 @@ pub trait BindingResolver: Send + Sync {
 /// revision or revokes it by itself.
 #[async_trait]
 pub trait BindingAuthority: Send + Sync {
+	/// Acquire current authority once per assembly or invocation boundary.
+	async fn refresh(&self, _run: &Run) -> Result<()> {
+		Ok(())
+	}
 	async fn check(&self, run: &Run, binding: &ResolvedBinding) -> Result<()>;
 }

@@ -7,7 +7,7 @@ use aidash_domain::registry::rules::skill_instructions;
 use aidash_domain::{
 	configuration::{validate_endpoint, validate_node_id, validate_secret_reference},
 	model::ModelConfig,
-	registry::{AgentConfig, ClusterConfig, CompactorConfig, EntityRef, Entry},
+	registry::{AgentConfig, ClusterConfig, CompactorConfig, Entry},
 	tool::ToolConfig,
 };
 use serde_json::Value;
@@ -34,6 +34,7 @@ impl DefinitionValidation {
 			.collect::<std::collections::BTreeMap<_, _>>();
 		specifications.extend(self.core_tools.specifications(
 			&aidash_domain::capabilities::CoreCapabilities {
+				outbound: false,
 				files: true,
 				shell: true,
 				python: true,
@@ -47,6 +48,22 @@ impl DefinitionValidation {
 	pub fn validate_in(&self, e: &Entry, local: bool) -> Result<()> {
 		aidash_domain::registry::rules::validate_metadata(e, local)?;
 		match e.kind.as_str() {
+			"decider" => {
+				let config: aidash_domain::decision::DeciderConfig =
+					serde_json::from_value(e.config.clone())?;
+				config.validate()?;
+				if local {
+					let credential = self
+						.credentials
+						.resolve(&config.credential_env)
+						.map_err(|_| Error::Invalid("Decider credential unavailable".into()))?;
+					if credential.trim().is_empty() {
+						return Err(Error::Invalid(
+							"Decider credential must not be empty".into(),
+						));
+					}
+				}
+			}
 			"memory" | "source" if e.config.get("schema_version").is_some() => {
 				let descriptor: aidash_domain::registry::bindings::sources::NativeContext =
 					serde_json::from_value(e.config.clone())?;
@@ -144,22 +161,9 @@ impl DefinitionValidation {
 				}
 			}
 			"agent" => {
-				let a: AgentConfig = serde_json::from_value(e.config.clone())
-					.map_err(|e| Error::Invalid(e.to_string()))?;
-				aidash_domain::capabilities::skills::validate_config(&a)?;
-				aidash_domain::capabilities::references::validate_config(&a)?;
-				if (a.instructions.trim().is_empty()
-					&& a.skills.is_empty()
-					&& a.skill_attachments.is_empty()
-					&& a.skill_roots.is_empty())
-					|| a.sources.len() > 32
-					|| !(1..=1000).contains(&a.max_steps)
-				{
-					return Err(Error::Invalid(
-						"agent requires skills or additional instructions and max_steps in 1..1000"
-							.into(),
-					));
-				}
+				let input: aidash_domain::registry::bindings::AgentBindings =
+					serde_json::from_value(e.config.clone())?;
+				input.validate()?;
 			}
 			"cluster" => {
 				let cluster: ClusterConfig =
@@ -175,11 +179,15 @@ impl DefinitionValidation {
 				}
 			}
 			"tool" if aidash_domain::tool::legacy_config(&e.config)?.is_some() => {
-				self.validate_tool(&e.config, local)?;
+				return Err(Error::Invalid(
+					"Tool registration requires a versioned Provider descriptor".into(),
+				));
 			}
 			"tool" => {
 				let descriptor: aidash_domain::tool::providers::ToolDescriptor =
-					serde_json::from_value(e.config.clone())?;
+					serde_json::from_value(e.config.clone()).map_err(|error| {
+						Error::Invalid(format!("invalid Tool descriptor: {error}"))
+					})?;
 				self.contract(
 					&descriptor,
 					&aidash_domain::registry::bindings::QualifiedRef {
@@ -328,51 +336,46 @@ impl DefinitionValidation {
 		Ok(())
 	}
 
-	pub fn agent_prompt_headroom(
+	pub fn bound_prompt_headroom(
 		&self,
-		config: &AgentConfig,
-		references: &[Entry],
+		snapshot: &aidash_domain::registry::bindings::BindingSnapshot,
 		private_context: &Value,
 	) -> Result<usize> {
-		let get = |reference: &EntityRef| {
-			references
-				.iter()
-				.find(|e| e.id == reference.id && e.version == reference.version)
-				.ok_or_else(|| Error::NotFound(reference.id.clone()))
-		};
-		let model: ModelConfig = serde_json::from_value(get(&config.model)?.config.clone())?;
+		snapshot.validate()?;
+		let config = AgentConfig::from_snapshot(snapshot)?;
+		let model = snapshot
+			.definitions
+			.iter()
+			.find(|d| {
+				d.identity.registry_node == snapshot.agent.registry_node
+					&& d.identity.local() == config.model
+			})
+			.ok_or_else(|| Error::NotFound(config.model.id.clone()))?;
+		let model: ModelConfig = serde_json::from_value(model.definition.config.clone())?;
 		let mut instructions = aidash_domain::context::agent_instructions("");
-		for skill in &config.skills {
-			instructions.push('\n');
-			instructions.push_str(&format!("Skill {}@{}:\n", skill.id, skill.version));
-			instructions.push_str(&skill_instructions(get(skill)?)?);
+		let mut specifications = vec![];
+		for binding in &snapshot.bindings {
+			if binding.excluded_reason.is_some() {
+				continue;
+			}
+			if binding.definition.kind == "skill" {
+				instructions.push_str(&format!(
+					"\nSkill {}@{}:\n{}",
+					binding.identity.id,
+					binding.identity.version,
+					skill_instructions(&binding.definition)?
+				));
+			} else if binding.definition.kind == "tool" {
+				let alias = binding
+					.alias
+					.as_deref()
+					.ok_or_else(|| Error::Invalid("Tool has no alias".into()))?;
+				let spec = crate::tools::plugin_specification(&binding.definition, alias);
+				specifications.push(spec);
+			}
 		}
 		instructions.push_str("\nAdditional user instructions:\n");
 		instructions.push_str(&config.instructions);
-		let mut builtins = crate::tools::builtins()
-			.into_iter()
-			.map(|(name, tool)| (name, tool.specification()))
-			.collect::<std::collections::BTreeMap<_, _>>();
-		builtins.extend(self.core_tools.specifications(&config.core_capabilities));
-		let mut specifications = builtins
-			.into_iter()
-			.filter(|(name, _)| config.permits_builtin(name))
-			.map(|(_, tool)| tool)
-			.collect::<Vec<_>>();
-		for (index, tool) in config.tools.iter().enumerate() {
-			let entry = get(tool)?;
-			if config.allow_task_delegation == Some(false)
-				&& matches!(
-					serde_json::from_value::<ToolConfig>(entry.config.clone())?,
-					ToolConfig::Agent { .. }
-				) {
-				continue;
-			}
-			specifications.push(crate::tools::plugin_specification(
-				entry,
-				&format!("plugin_{index}"),
-			));
-		}
 		aidash_domain::context::request_context_budget(
 			model.context_window,
 			model.output_token_limit(),

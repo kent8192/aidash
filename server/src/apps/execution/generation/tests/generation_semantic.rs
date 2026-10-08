@@ -13,7 +13,7 @@ mod common;
 
 use aidash_server::{federation::Federation, harness::Harness, semantic};
 
-use common::{bootstrap, cleanup, request};
+use common::{cleanup, request};
 use reinhardt::query::ExprTrait as _;
 use serde_json::{Value, json};
 use std::sync::{
@@ -44,9 +44,10 @@ struct Fixture {
 }
 impl Fixture {
 	async fn drive(&self) {
-		// Several real database/provider boundaries run concurrently under
-		// coverage in CI. This fixture deadline is not a runtime latency SLO.
-		let settled = tokio::time::timeout(std::time::Duration::from_secs(20), async {
+		// Native Bank retrieval and generated-origin accounting span several real
+		// database/provider turns, also under parallel coverage. This bounded
+		// fixture deadline is not a runtime latency SLO.
+		let settled = tokio::time::timeout(std::time::Duration::from_secs(90), async {
 			let worker = Harness {
 				federation: self.f.clone(),
 			};
@@ -84,7 +85,7 @@ impl Fixture {
 				})
 				.collect();
 			panic!(
-				"generated execution did not settle in 20s: {states:?}; embedding calls={}, inference calls={}",
+				"generated execution did not settle in 90s: {states:?}; embedding calls={}, inference calls={}",
 				self.embeddings.load(Ordering::SeqCst),
 				self.inference.load(Ordering::SeqCst)
 			);
@@ -97,7 +98,7 @@ impl Fixture {
 		self.remember.store(ordinal, Ordering::SeqCst);
 		// Match drive's coverage allowance: native context and generated-origin
 		// checks span multiple worker turns and real database/provider boundaries.
-		tokio::time::timeout(std::time::Duration::from_secs(20), async {
+		let persisted = tokio::time::timeout(std::time::Duration::from_secs(90), async {
 			let worker = Harness {
 				federation: self.f.clone(),
 			};
@@ -126,8 +127,27 @@ impl Fixture {
 				tokio::time::sleep(std::time::Duration::from_millis(10)).await;
 			}
 		})
-		.await
-		.unwrap_or_else(|_| panic!("memory_mutate did not persist source {ordinal} within 20s; embedding calls={}, inference calls={}", self.embeddings.load(Ordering::SeqCst), self.inference.load(Ordering::SeqCst)))
+		.await;
+		if persisted.is_err() {
+			let states: Vec<_> = self
+				.f
+				.store
+				.runs()
+				.await
+				.unwrap()
+				.into_iter()
+				.map(|run| {
+					let phase = run.phase();
+					(run.agent_id, phase, run.control, run.error)
+				})
+				.collect();
+			panic!(
+				"memory_mutate did not persist source {ordinal} within 90s; runs={states:?}; embedding calls={}, inference calls={}",
+				self.embeddings.load(Ordering::SeqCst),
+				self.inference.load(Ordering::SeqCst)
+			);
+		}
+		persisted.unwrap()
 	}
 	async fn usage(&self) -> Value {
 		let (status, value) = request(
@@ -399,20 +419,98 @@ async fn background_indexing_retains_failed_charges_across_recovery_and_cannot_o
 	#[with(Some(2), Some(2), false, false)]
 	semantic_fixture_1: Fixture,
 ) {
+	use reinhardt::query::{
+		Alias, Expr, IntoIden, LockBehavior, LockType, PostgresQueryBuilder, Query, SimpleExpr,
+	};
 	let fixture = semantic_fixture_1;
 	let entry = fixture.remember().await;
 	assert_eq!(fixture.usage().await["embedding_calls"], 1);
 	fixture.response_mode.store(1, Ordering::SeqCst);
+	// Stop the independent durable reservation after the indexer has read its
+	// source. Maintenance must not acquire the workspace writer in this window:
+	// it could wait for those source locks while the reservation waits for the
+	// workspace foreign-key lock held by maintenance.
+	let pool = fixture.f.store.pool.driver();
+	let request: Uuid = fixture.job["id"].as_str().unwrap().parse().unwrap();
+	let mut budget_barrier = pool.begin().await.unwrap();
+	sqlx::query(
+		&Query::select()
+			.column(Alias::new("request_id"))
+			.from(Alias::new("generation_budgets"))
+			.and_where(Expr::col("request_id").eq(Expr::value(request)))
+			.lock(LockType::Update)
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(&mut *budget_barrier)
+	.await
+	.unwrap();
+	let barrier_pid: i32 = sqlx::query_scalar(
+		&Query::select()
+			.expr(SimpleExpr::FunctionCall(
+				Alias::new("pg_backend_pid").into_iden(),
+				vec![],
+			))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(&mut *budget_barrier)
+	.await
+	.unwrap();
 	// sweep also performs native retention, purge, and durable engine maintenance.
 	// Allow coverage instrumentation of all maintenance passes while retaining
 	// a finite bound that catches lock cycles across the concurrent workers.
 	tokio::time::timeout(std::time::Duration::from_secs(60), async {
-		let (first, second) = tokio::join!(
+		let (first, (second, writer)) = tokio::join!(
 			semantic::worker::sweep(&fixture.f.store),
-			semantic::worker::sweep(&fixture.f.store)
+			async {
+				let blocked_query = Query::select()
+					.column(Alias::new("pid"))
+					.from(Alias::new("pg_stat_activity"))
+					.and_where(Expr::value(barrier_pid).eq(SimpleExpr::FunctionCall(
+						Alias::new("ANY").into_iden(),
+						vec![SimpleExpr::FunctionCall(
+							Alias::new("pg_blocking_pids").into_iden(),
+							vec![Expr::col("pid").into()],
+						)],
+					)))
+					.to_string(PostgresQueryBuilder);
+				let blocked = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+					loop {
+						if sqlx::query(&blocked_query)
+							.fetch_optional(pool)
+							.await
+							.unwrap()
+							.is_some()
+						{
+							break;
+						}
+						tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+					}
+				})
+				.await;
+				let mut maintenance = pool.begin().await.unwrap();
+				let writer = sqlx::query(
+					&Query::select()
+						.column(Alias::new("id"))
+						.from(Alias::new("workspaces"))
+						.and_where(Expr::col("id").eq(Expr::value(fixture.workspace)))
+						.lock(LockType::Update)
+						.lock_behavior(LockBehavior::Nowait)
+						.to_string(PostgresQueryBuilder),
+				)
+				.fetch_one(&mut *maintenance)
+				.await;
+				maintenance.rollback().await.unwrap();
+				budget_barrier.rollback().await.unwrap();
+				blocked.expect("indexing must reach the independent durable reservation");
+				(semantic::worker::sweep(&fixture.f.store).await, writer)
+			}
 		);
 		first.unwrap();
 		second.unwrap();
+		assert!(
+			matches!(writer, Err(sqlx::Error::Database(ref error)) if error.code().as_deref() == Some("55P03")),
+			"maintenance must not acquire the workspace writer while indexing reserves its charge"
+		);
 	})
 	.await
 	.expect("concurrent indexers must not deadlock the durable reservation");
@@ -822,7 +920,7 @@ async fn killed_embedding_worker_retains_uncertain_usage_and_restart_reserves_a_
 	let fixture = uncertain_embedding.await;
 	let mut worker = initial_worker;
 	let reached = tokio::time::timeout(
-		std::time::Duration::from_secs(45),
+		std::time::Duration::from_secs(90),
 		fixture.embedding_started.notified(),
 	)
 	.await;
@@ -882,7 +980,8 @@ async fn killed_embedding_worker_retains_uncertain_usage_and_restart_reserves_a_
 	.unwrap();
 	// Restart after the killed provider call is the behavior under test.
 	let worker = WorkerProcess::spawn(restart);
-	tokio::time::timeout(std::time::Duration::from_secs(20), async {
+	// Recovery repeats native retrieval and durable reservation boundaries.
+	tokio::time::timeout(std::time::Duration::from_secs(90), async {
 		loop {
 			let run = fixture.f.store.runs().await.unwrap().remove(0);
 			if run.phase().as_str() == "FAILED" {
@@ -1959,7 +2058,7 @@ mod semantic_fixture_composition {
 			embedding_started,
 		} = _state;
 		async move {let application=application.await;let (f,url,schema)=application.runtime.parts();let app=application.application;let server=server.await;let endpoint=server.url.clone();let memory_recovery_directory=recovery_directory;
-		let (_, token, original_task) = bootstrap(&f, &app, &endpoint).await;
+		let (_, token, original_task) = common::bootstrap_with_context(&f, &app, &endpoint, true).await;
 		let workspace = f.store.task(original_task).await.unwrap().workspace_id;
 		let (_, mut template) = request(
 			&app,
@@ -1969,6 +2068,7 @@ mod semantic_fixture_composition {
 			Value::Null,
 		)
 		.await;
+		template.as_object_mut().unwrap().remove("binding_normalization");
 		template["id"] = json!("semantic-template");
 		template["capabilities"] = json!(["semantic.research"]);
 		{
@@ -2026,10 +2126,9 @@ mod semantic_fixture_composition {
 				200
 			);
 		}
-		template["config"]["memory"] = json!({"id":"memory","version":"1.0.0"});
-		template["config"]["allow_memory_write"] = json!(true);
+		template["config"]["bindings"] = json!([{"kind":"memory","target":{"registry_node":f.config.node_id,"id":"memory","version":"1.0.0"},"narrow":{}}]);
 		if !maintenance {
-			template["config"]["sources"] = json!([{"id":"shared-memory","version":"1.0.0"}]);
+			template["config"]["bindings"].as_array_mut().unwrap().push(json!({"kind":"source","target":{"registry_node":f.config.node_id,"id":"shared-memory","version":"1.0.0"},"narrow":{}}));
 		}
 		let spec = json!({"enabled":true,"template":template,"permissions":{"roles":[],"groups":[],"attributes":{}},"approval_required":false,"limits":{"max_agents":2,"max_concurrent":2,"max_depth":2,"token_budget":1000000,"tokens_per_agent":400000,"lifetime_seconds":3600},"embedding":allowance.map(|calls| json!({"provider":{"id":"embedding","version":"1.0.0"},"calls_per_agent":calls,"call_budget":calls*2}))});
 		let (status, response) = request(

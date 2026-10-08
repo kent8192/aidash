@@ -203,6 +203,10 @@ impl SemanticIndexingSession for Session {
 			.map_err(Into::into)
 	}
 	async fn plan(&mut self, workspace: Uuid) -> Result<IndexingPlan> {
+		// Fence maintenance before source/settings reads: its workspace writer
+		// would otherwise block the independent reservation's foreign-key lock
+		// while waiting for those reads to finish.
+		super::native_memory::lock_workspace(&mut self.lease, workspace, false).await?;
 		let index = service::index(self.lease.tx(), workspace, false).await?;
 		Ok(IndexingPlan {
 			collection: index.collection,

@@ -175,7 +175,7 @@ async fn replacement_preserves_each_durable_operation_table_capacity(
 	registry.register(replacement).await.unwrap();
 	let mut agent = registry.get("a", "1.0.0").await.unwrap();
 	agent.version = "1.1.0".into();
-	agent.config["memory"] = json!(reference("smaller-capacity"));
+	replace_memory_binding(&mut agent, reference("smaller-capacity"));
 	registry.register(agent).await.unwrap();
 	let result = memory::upgrade_participant(
 		&store,

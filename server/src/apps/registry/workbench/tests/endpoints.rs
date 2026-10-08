@@ -8,7 +8,7 @@ use uuid::Uuid;
 
 #[fixture]
 fn draft_entry() -> Value {
-	json!({"id":"","version":"1.0.0","kind":"agent","name":{"en":"Draft"},"description":{"en":"Editable draft"},"schema":{},"config":{"model":{"id":"model","version":"1.0.0"},"instructions":"Work on the task","tools":[],"skills":[]}})
+	json!({"id":"","version":"1.0.0","kind":"agent","name":{"en":"Draft"},"description":{"en":"Editable draft"},"schema":{},"config":{"model":{"id":"model","version":"1.0.0"},"instructions":"Work on the task","schema_version":1,"bindings":[],"remove_default":[]}})
 }
 
 #[rstest]

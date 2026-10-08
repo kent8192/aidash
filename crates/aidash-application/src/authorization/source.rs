@@ -55,6 +55,9 @@ pub async fn authorize<S: SourceAuthorityScope + ?Sized>(
 			"skill" => "skill.use",
 			"cluster" => "cluster.execute",
 			"compactor" => "compaction.invoke",
+			// Native provider roles are pinned configuration dependencies. Their
+			// model/effect calls retain the separate runtime authorization checks.
+			"source" | "memory" | "bundle" | "embedding" | "reranker" | "tokenizer" => continue,
 			_ => return Err(Error::Forbidden),
 		};
 		access.source_require(&resource, action).await?;
