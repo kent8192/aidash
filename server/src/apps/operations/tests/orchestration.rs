@@ -22,7 +22,9 @@ async fn simultaneous_replica_startup_reuses_the_preapplied_native_schema(
 	#[future(awt)] migrations: Vec<reinhardt::db::migrations::Migration>,
 ) {
 	// Arrange: deployment runs `manage migrate` before starting application replicas.
-	let (f, url, schema) = runtime_fixture.await.parts();
+	// Retain the disposable environment through all simultaneous startup Acts.
+	let runtime_owner = runtime_fixture.await;
+	let (f, url, schema) = runtime_owner.parts();
 	// Act: simultaneous startup is the lifecycle operation under test.
 	let (a, b, c) = tokio::join!(
 		common::application(f.clone()),

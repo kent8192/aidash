@@ -38,6 +38,8 @@ const PEM: &str = include_str!(concat!(
 ));
 
 struct Fixture {
+	// Retain disposable infrastructure when an Act replaces the application.
+	_owner: common::RuntimeFixture,
 	f: Federation,
 	url: String,
 	schema: String,
@@ -807,6 +809,7 @@ async fn review_fixture(
 	let application = application.await;
 	let (f, url, schema) = application.runtime.parts();
 	Fixture {
+		_owner: application.runtime,
 		f,
 		url,
 		schema,

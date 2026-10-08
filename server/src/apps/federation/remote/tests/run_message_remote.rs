@@ -273,7 +273,9 @@ async fn committed_fence_survives_delayed_release_and_terminal_transition_is_ato
 async fn peer_prefixed_legacy_output_checks_remote_fence_without_a_local_run(
 	#[from(common::runtime)] runtime: common::RuntimeFuture,
 ) {
-	let (f, url, schema) = runtime.await.parts();
+	// Retain the disposable environment through the remote fence assertions.
+	let runtime_owner = runtime.await;
+	let (f, url, schema) = runtime_owner.parts();
 	let workspace = f
 		.store
 		.create_workspace("Remote output fence", "No executor run exists at home")

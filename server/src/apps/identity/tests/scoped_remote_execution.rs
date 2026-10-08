@@ -99,6 +99,8 @@ impl ReservationCheck {
 	}
 }
 struct Pair {
+	// Rebuilt applications must not release both node environments.
+	_owners: Vec<common::RuntimeFixture>,
 	model: ModelScript,
 	drop_reply: Arc<Mutex<Option<String>>>,
 	a: Federation,
@@ -281,6 +283,7 @@ async fn scoped_pair(
 	let receiver = _ba;
 	let (a, au, aschema) = source.runtime.parts();
 	let (b, bu, bschema) = receiver.runtime.parts();
+	let owners = vec![source.runtime, receiver.runtime];
 	let aa = source.application;
 	let ba = receiver.application;
 	let memory_recovery_directories = if native {
@@ -496,6 +499,7 @@ async fn scoped_pair(
 		serde_json::from_value(activated["admission_id"].clone()).unwrap()
 	};
 	Pair {
+		_owners: owners,
 		model: model_state,
 		drop_reply,
 		a,
