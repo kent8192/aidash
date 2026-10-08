@@ -18,6 +18,7 @@ import select
 import socket
 import socketserver
 import subprocess
+import tempfile
 import threading
 import time
 import urllib.error
@@ -69,6 +70,18 @@ def reconcile_uncertain_http(base, run_id, effects):
     return key
 
 
+def approve_fixture_external_requests(base):
+    """Approve only the owned fixture's exact external-call continuations."""
+    allowed = ("research-http@", "http-runner-tool@", "mcp-runner-tool@")
+    for request in api_request(base, "/api/state")["human_requests"]:
+        prompt = request["prompt"]
+        if request.get("response") is None and request["kind"] == "APPROVAL_REQUIRED" and any(
+            prompt.startswith("Approve this exact external tool action once? Tool: " + tool)
+            for tool in allowed
+        ):
+            api_request(base, f"/api/human-requests/{request['id']}/answer", {"approved": True})
+
+
 def entity(kind, identifier, config, capability="web.search"):
     return {
         "id": identifier, "version": "1.0.0", "kind": kind,
@@ -106,6 +119,17 @@ def artifact_read_state(history, artifact_id):
     return None, offset
 
 
+def tool_descriptor(node, transport, alias="research_lookup"):
+    """Declare an integration without asserting provider behavior from its config."""
+    return {"registry_node": node, "provider": "integration." + transport["transport"] + "@1",
+            "operation": "invoke", "default_alias": alias, "tier": "integration", "transport": transport}
+
+
+def tool_binding(node, name, alias="research_lookup"):
+    return {"kind": "tool", "target": {"registry_node": node, "id": name, "version": "1.0.0"},
+            "alias": alias, "narrow": {}}
+
+
 class Fixture:
     def __init__(self, node_a, node_b):
         self.node_a = node_a
@@ -131,14 +155,14 @@ class Fixture:
         def call(name, arguments):
             calls.append({"id": f"call-{len(calls)}", "name": name, "arguments": arguments})
 
-        if current["identity"]["agent_id"] in ["native-runner", "mcp-runner", "agent-runner"]:
-            if not any(name == "plugin_0" for name, _ in tools):
+        if current["identity"]["agent_id"] in ["http-runner", "mcp-runner", "agent-runner"]:
+            if not any(name == "research_lookup" for name, _ in tools):
                 arguments = {"message": "plugin roundtrip"}
                 if current["identity"]["agent_id"] == "agent-runner":
                     arguments = {"title": "Nested native task", "description": "Verify Agent tool delegation", "requirements": {}, "dependencies": [], "parent_id": None}
-                call("plugin_0", arguments)
+                call("research_lookup", arguments)
             else:
-                text = "Plugin completed: " + json.dumps(next(result for name, result in tools if name == "plugin_0"))
+                text = "Plugin completed: " + json.dumps(next(result for name, result in tools if name == "research_lookup"))
         elif task["title"] == "Human approval acceptance":
             answers = [event for event in history if event.get("kind") == "human"]
             if not answers:
@@ -171,10 +195,10 @@ class Fixture:
                         contents.append(str(content))
                 if not waiting_for_reads:
                     text = "Axum・Actix・Rocketの調査が完了しました。各エージェントの成果物を統合しました。\n\n" + "\n".join(contents)
-        elif not any(name == "plugin_0" for name, _ in tools):
-            call("plugin_0", {"topic": task["title"]})
+        elif not any(name == "research_lookup" for name, _ in tools):
+            call("research_lookup", {"topic": task["title"]})
         else:
-            text = f"{task['title']}: " + str(next(result for name, result in tools if name == "plugin_0"))
+            text = f"{task['title']}: " + str(next(result for name, result in tools if name == "research_lookup"))
         if "system" in body:
             content = ([{"type": "text", "text": text}] if text else []) + [{"type": "tool_use", "id": c["id"], "name": c["name"], "input": c["arguments"]} for c in calls]
             return {"id": "fixture-message", "type": "message", "role": "assistant", "model": body["model"], "content": content, "stop_reason": "tool_use" if calls else "end_turn", "usage": {"input_tokens": 120, "output_tokens": 50}}
@@ -215,7 +239,9 @@ class Fixture:
                     self.end_headers()
                     self.wfile.write(response)
                     return
-                if self.path == "/research":
+                if self.path == "/echo":
+                    result = body
+                elif self.path == "/research":
                     key = self.headers.get("Idempotency-Key")
                     assert key, "Tool adapter must propagate an idempotency key"
                     with fixture.lock:
@@ -307,6 +333,11 @@ def main():
     (logs / "source.json").write_text(json.dumps({"source": source, "binary_sha256": binary_sha256}, indent=2) + "\n")
     children = []
     files = []
+    # Binding defaults include File Tools. Enable only disposable fixture
+    # storage; command runners remain disabled in the operator profile.
+    profile_directory = tempfile.TemporaryDirectory(prefix="aidash-golden-profile-")
+    profile = pathlib.Path(profile_directory.name) / "profile.json"
+    profile.write_text(json.dumps({"admission": True, "storage": str(profile.parent / "storage")}))
     fixture = Fixture(node_a, node_b)
     fixture_server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), fixture.handler())
     threading.Thread(target=fixture_server.serve_forever, daemon=True).start()
@@ -314,10 +345,33 @@ def main():
     stream_events = []
     nats_proxy = NatsProxy()
 
+    approval_stop = threading.Event()
+    local_approvals = threading.Event()
+    local_approvals.set()
+    approval_errors = []
+
+    def approve_fixture_calls():
+        while not approval_stop.wait(0.25):
+            if not local_approvals.is_set():
+                continue
+            for base in (base_a, base_b):
+                try:
+                    approve_fixture_external_requests(base)
+                except OSError:
+                    # A deliberately unavailable/restarting Node has no approval authority.
+                    pass
+                except Exception as error:
+                    approval_errors.append(str(error))
+
     def launch(node, database, port, mode):
         env = {**os.environ, "DATABASE_URL": f"postgres://aidash:aidash-local@127.0.0.1:{os.environ.get('AIDASH_POSTGRES_PORT', '54370')}/{database}", "NATS_URL": f"nats://127.0.0.1:{nats_proxy.server_address[1]}", "AIDASH_NODE_ID": node, "AIDASH_ENDPOINT": f"http://127.0.0.1:{port}", "AIDASH_LISTEN": f"127.0.0.1:{port}", "AIDASH_API_TOKEN": TOKEN, "AIDASH_SECRET_PEER": PEER_TOKEN, "AIDASH_SECRET_COMPACTION_FIXTURE": "local-compaction-fixture-key", "AIDASH_SECRET_TRANSACTION_FIXTURE": "local-transaction-fixture-key-0123456789", "AIDASH_WEB_DIR": str(ROOT / "web/dist")}
         # Browser fixtures create audit/history pages in bursts alongside UI polling.
         env["AIDASH_API_RATE_BURST"] = os.environ.get("AIDASH_API_RATE_BURST", "1000")
+        env["AIDASH_CAPABILITY_PROFILE"] = str(profile)
+        # These disposable Node IDs own their JetStream streams and consumers.
+        # When the outage proxy opens, recover real activation delivery as well
+        # as event publication instead of retaining fallback for the whole run.
+        env["AIDASH_ACTIVATION_BOOTSTRAP"] = "true"
         log = open(logs / f"{database}-{mode}-{len(children)}.log", "w")
         files.append(log)
         child = subprocess.Popen([args.binary, mode], cwd=ROOT, env=env, stdout=log, stderr=log)
@@ -344,24 +398,25 @@ def main():
         wait_for(lambda: api_request(base_a, "/health"), label="Node A")
         wait_for(lambda: api_request(base_b, "/health"), label="Node B")
         for base, other, endpoint in [(base_a, node_b, base_b), (base_b, node_a, base_a)]:
-            api_request(base, "/api/peers", {"node_id": other, "endpoint": endpoint, "credential_env": "AIDASH_SECRET_PEER", "protocol_version": "0.1", "enabled": True})
+            api_request(base, "/api/peers", {"node_id": other, "endpoint": endpoint, "credential_env": "AIDASH_SECRET_PEER", "protocol_version": "0.2", "enabled": True})
             model = entity("model", "fixture-model", {"provider": "openrouter", "model_id": "protocol-fixture", "endpoint": fixture_url + "/v1", "context_window": 256000, "max_output_tokens": 4096, "modalities": ["text"], "cost": {"currency": "USD", "input_per_million": 0}, "credential_env": None})
             api_request(base, "/api/registry", model)
-            tool = entity("tool", "research-http", {"transport": "http", "endpoint": fixture_url + "/research", "credential_env": None, "replay": "idempotent"})
+            tool = entity("tool", "research-http", tool_descriptor(node_a if base == base_a else node_b, {"transport": "http", "endpoint": fixture_url + "/research", "credential_env": None, "replay": "unsafe"}))
             tool["schema"] = {"type": "object", "required": ["topic"], "properties": {"topic": {"type": "string"}}, "additionalProperties": False}
             api_request(base, "/api/registry", tool)
             coordinator = "coordinator" if base == base_a else "researcher"
             instructions = "Discover researchers, decompose the goal, delegate across nodes, wait and synthesize." if base == base_a else "Research one framework and publish your findings."
             tools = [] if base == base_a else [{"id": "research-http", "version": "1.0.0"}]
-            api_request(base, "/api/registry", entity("agent", coordinator, {"model": {"id": "fixture-model", "version": "1.0.0"}, "instructions": instructions, "tools": tools, "skills": [], "cluster": None, "max_steps": 128}, capability="task.coordinate" if base == base_a else "web.search"))
+            api_request(base, "/api/registry", entity("agent", coordinator, {"model": {"id": "fixture-model", "version": "1.0.0"}, "instructions": instructions, "schema_version": 1, "bindings": [tool_binding(node_a if base == base_a else node_b, ref["id"]) for ref in tools], "remove_default": [], "cluster": None, "max_steps": 128}, capability="task.coordinate" if base == base_a else "web.search"))
             api_request(base, "/api/registry", entity("cluster", "research-cluster", {"coordinator": {"id": coordinator, "version": "1.0.0"}}))
             if base == base_a:
-                api_request(base, "/api/registry", entity("agent", "researcher", {"model": {"id": "fixture-model", "version": "1.0.0"}, "instructions": "Research one framework and publish your findings.", "tools": [{"id": "research-http", "version": "1.0.0"}], "skills": [], "cluster": {"id": "research-cluster", "version": "1.0.0"}, "max_steps": 64}))
+                api_request(base, "/api/registry", entity("agent", "researcher", {"model": {"id": "fixture-model", "version": "1.0.0"}, "instructions": "Research one framework and publish your findings.", "schema_version": 1, "bindings": [tool_binding(node_a, "research-http")], "remove_default": [], "cluster": {"id": "research-cluster", "version": "1.0.0"}, "max_steps": 64}))
         discovered = api_request(base_a, "/api/discover", {"capability": "web.search", "language": "ja"})
         assert {a["node_id"] for a in discovered["agents"]} == {node_a, node_b}
         threading.Thread(target=sse, daemon=True).start()
         launch(node_a, db_a, port_a, "worker")
         remote_worker = launch(node_b, db_b, port_b, "worker")
+        threading.Thread(target=approve_fixture_calls, daemon=True).start()
         if args.dashboard:
             created = json.loads(subprocess.check_output(["node", "web/scripts/start-goal.mjs"], cwd=ROOT, text=True, env={**os.environ, "AIDASH_E2E_URL": base_a}))
         else:
@@ -423,31 +478,47 @@ def main():
         wait_for(lambda: any(e["type"] == "task.completed" and e["subject"] == human_workspace["id"] for e in stream_events), label="human-controlled result SSE")
         plugin_runs = []
         for base, agent_id, tool_config in [
-            (base_b, "native-runner", {"transport": "native", "operation": "echo"}),
+            (base_b, "http-runner", {"transport": "http", "endpoint": fixture_url + "/echo", "credential_env": None, "replay": "unsafe"}),
             (base_a, "mcp-runner", {"transport": "mcp", "endpoint": fixture_url + "/mcp", "tool_name": "echo", "replay": "read_only", "credential_env": None, "idempotency_argument": None}),
-            (base_a, "agent-runner", {"transport": "agent", "node_id": node_b, "agent": {"id": "native-runner", "version": "1.0.0"}}),
+            (base_a, "agent-runner", {"transport": "agent", "node_id": node_b, "agent": {"id": "http-runner", "version": "1.0.0"}}),
         ]:
             tool_id = agent_id + "-tool"
-            api_request(base, "/api/registry", entity("tool", tool_id, tool_config))
-            api_request(base, "/api/registry", entity("agent", agent_id, {"model": {"id": "fixture-model", "version": "1.0.0"}, "instructions": "Verify the registered plugin, then return its result.", "tools": [{"id": tool_id, "version": "1.0.0"}], "skills": [], "max_steps": 32}))
+            api_request(base, "/api/registry", entity("tool", tool_id, tool_descriptor(node_a if base == base_a else node_b, tool_config)))
+            api_request(base, "/api/registry", entity("agent", agent_id, {"model": {"id": "fixture-model", "version": "1.0.0"}, "instructions": "Verify the registered plugin, then return its result.", "schema_version": 1, "bindings": [tool_binding(node_a if base == base_a else node_b, tool_id)], "remove_default": [], "max_steps": 32}))
             plugin_conversation = api_request(base, "/api/conversations", {"title": agent_id, "goal": "Execute the configured plugin", "target": {"id": agent_id, "version": "1.0.0"}, "target_kind": "agent"})
             plugin_workspace = plugin_conversation["workspace"]["id"]
             result = wait_for(lambda base=base, plugin_workspace=plugin_workspace, task_id=plugin_conversation["task"]["id"]: next((t for t in api_request(base, f"/api/workspaces/{plugin_workspace}")["tasks"] if t["id"] == task_id and t["status"] == "COMPLETED"), None), label=agent_id)
             assert result["status"] == "COMPLETED"
             plugin_runs.append(agent_id)
+        pinned_delegations = [json.loads(row) for row in psql(db_a, queries["pinned_delegations"]).splitlines() if row]
+        assert len(pinned_delegations) == 1, "Agent Tool must durably retain its receiver closure"
+        pinned = pinned_delegations[0]
+        assert pinned["node_id"] == node_b and pinned["agent_id"] == "http-runner"
+        receiver_closure = pinned["binding_snapshot"]
+        assert receiver_closure["agent"] == {"registry_node": node_b, "id": "http-runner", "version": "1.0.0"}
+        assert all(definition["identity"]["registry_node"] == node_b for definition in receiver_closure["definitions"])
+        remote_runs = api_request(base_b, "/api/state")["runs"]
+        admitted_child = next(run for run in remote_runs if run["task_id"] == pinned["task_id"])
+        received = api_request(base_b, f"/api/runs/{admitted_child['id']}")["run"]["context"]["binding_snapshot"]
+        assert received == {**receiver_closure, "remote": True}, "Receiver must execute the original pinned closure"
         # This branch is mandatory: legacy recovery alone cannot establish
         # subject-scoped authority or the remote grant/admission contract.
         from scoped_golden_path import verify
+        # Scoped scenarios own their exact Home approval poller; completed local
+        # fixtures do not need a second full-state poller during fault injection.
+        local_approvals.clear()
         scoped = verify(base_a, base_b, node_a, node_b, remote_worker,
                         lambda: launch(node_b, db_b, port_b, "worker"),
                         lambda: {"admissions": int(psql(db_b, queries["remote_admissions"])),
                                  "bindings": int(psql(db_a, queries["remote_bindings"]))})
         report = {"node_a": base_a, "node_b": base_b, "node_ids": [node_a, node_b], "workspace_id": workspace, "tasks": len(snapshot["tasks"]), "artifacts": len(snapshot["artifacts"]), "external_effects": len(fixture.effects), "tool_requests": dict(fixture.requests), "provider_calls": dict(fixture.provider_calls), "recovered_run_id": recovered["id"], "sse_events": len(stream_events), "database_a": db_a, "database_b": db_b, "goal_entry": "dashboard" if args.dashboard else "api", "remote_human_controls": "passed", "nats_outage_startup_and_recovery": "passed", "events_queued_during_outage": pending_events, "additional_plugins": plugin_runs}
-        report.update(source=source, binary_sha256=binary_sha256, scoped_remote_execution=scoped)
+        report.update(source=source, binary_sha256=binary_sha256, scoped_remote_execution=scoped, foreign_agent_binding_snapshot="passed")
+        local_approvals.set()
         if args.dashboard:
             browser_report = logs / "browser-report.json"
             subprocess.run(["npm", "test", "--prefix", "web", "--", "--reporter=list,json"], cwd=ROOT, check=True, env={**os.environ, "PLAYWRIGHT_JSON_OUTPUT_FILE": str(browser_report), "AIDASH_E2E_URL": base_a, "AIDASH_E2E_REMOTE_URL": base_b})
             report["browser_scenarios"] = json.loads(browser_report.read_text())["stats"]["expected"]
+        assert not approval_errors, approval_errors
         assert source == revision(), "Source changed while Golden Path was running"
         assert binary_sha256 == hashlib.sha256(pathlib.Path(args.binary).read_bytes()).hexdigest(), "Binary changed while Golden Path was running"
         (logs / "report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2))
@@ -457,6 +528,7 @@ def main():
             while True:
                 time.sleep(1)
     finally:
+        approval_stop.set()
         for child in children:
             if child.poll() is None:
                 child.send_signal(signal.SIGTERM)
@@ -472,6 +544,7 @@ def main():
         for db in [db_a, db_b]:
             psql("aidash_a", f"DROP DATABASE IF EXISTS {db} WITH (FORCE)")
         (ROOT / ".ignore/e2e-ready.json").unlink(missing_ok=True)
+        profile_directory.cleanup()
 
 
 if __name__ == "__main__":

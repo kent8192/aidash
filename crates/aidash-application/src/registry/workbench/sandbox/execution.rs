@@ -64,8 +64,8 @@ pub async fn simulate(execution: &Execution, session_id: Uuid, job: &Job) -> Res
 	let mut status = "blocked";
 	let mut error = None;
 	for _ in 0..limits.max_steps.min(*agent_max_steps) {
-		let still_running =
-			execution.repository.read_session(session_id).await?.status == "running";
+		let admitted_session = execution.repository.read_session(session_id).await?;
+		let still_running = admitted_session.status == "running";
 		if !still_running {
 			status = "stopped";
 			break;
@@ -84,7 +84,19 @@ pub async fn simulate(execution: &Execution, session_id: Uuid, job: &Job) -> Res
 		authority
 			.authorize_draft(&current_draft, "agent_draft.test", true)
 			.await?;
-		authority.validate_content(&job.pinned_draft).await?;
+		if current_draft.archived || current_draft.revision != job.pinned_draft.revision {
+			return Err(Error::Conflict(
+				"draft revision changed during session".into(),
+			));
+		}
+		let entry = authority.validate_content(&job.pinned_draft).await?;
+		let snapshot = authority.bindings(&job.pinned_draft, &entry).await?;
+		let saved = admitted_session.scenario["binding_snapshot"].clone();
+		if saved != serde_json::to_value(&snapshot)? {
+			return Err(Error::Conflict(
+				"admitted test Binding graph changed".into(),
+			));
+		}
 		if let Some(pin) = profile {
 			let current = authority.profile(&pin.tenant, &pin.id).await?;
 			if !current.enabled
@@ -132,7 +144,7 @@ pub async fn simulate(execution: &Execution, session_id: Uuid, job: &Job) -> Res
 			break;
 		}
 		let mut missing = false;
-		for call in response.tool_calls {
+		for mut call in response.tool_calls {
 			if calls.len() >= limits.max_steps as usize {
 				error = Some("test step limit reached".into());
 				missing = true;
@@ -145,7 +157,25 @@ pub async fn simulate(execution: &Execution, session_id: Uuid, job: &Job) -> Res
 					.and_then(|selected| pin.rules.iter().find(|rule| selected == &rule.tool))
 			});
 			let fixture = input.fixtures.get(&call.name);
-			let result = if let Some(rule) = real_rule {
+			let admitted = snapshot
+				.bindings
+				.iter()
+				.find(|binding| {
+					binding.alias.as_deref() == Some(&call.name)
+						&& binding.excluded_reason.is_none()
+				})
+				.ok_or(Error::Forbidden)
+				.and_then(|binding| {
+					binding
+						.narrow
+						.apply(&mut call.arguments)
+						.map_err(Error::from)
+				});
+			let result = if let Err(reason) = admitted {
+				missing = true;
+				error = Some(reason.to_string());
+				json!({"id":call.id,"name":call.name,"arguments":call.arguments,"outcome":"denied","error":reason.to_string()})
+			} else if let Some(rule) = real_rule {
 				match dispatch::invoke(
 					&dispatch::Dispatch {
 						repository: execution.repository.as_ref(),

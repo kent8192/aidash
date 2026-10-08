@@ -99,6 +99,7 @@ fn conversation(value: u128, visible: bool) -> Conversation {
 }
 fn entry() -> Entry {
 	Entry {
+		binding_normalization: None,
 		id: "saved-agent".into(),
 		version: "1".into(),
 		kind: "agent".into(),

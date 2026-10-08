@@ -152,7 +152,7 @@ async fn smaller_provenance_policy_rolls_back_shared_and_participant_changes(
 	let result = if participant {
 		let mut agent = registry.get("a", "1.0.0").await.unwrap();
 		agent.version = "1.1.0".into();
-		agent.config["memory"] = json!(reference("small-graph"));
+		replace_memory_binding(&mut agent, reference("small-graph"));
 		registry.register(agent).await.unwrap();
 		memory::upgrade_participant(
 			&store,

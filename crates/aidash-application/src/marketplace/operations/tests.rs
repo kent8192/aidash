@@ -569,6 +569,7 @@ async fn transitive_legacy_overlay_is_rejected_instead_of_freezing_different_exe
 	scope.overlays.insert(
 		"dependency".into(),
 		Entry {
+			binding_normalization: None,
 			config: json!({"instructions":"Different"}),
 			..dependency
 		},

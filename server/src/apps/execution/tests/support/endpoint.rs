@@ -134,3 +134,23 @@ pub async fn subject(fixture: &EndpointFixture, name: &str) -> APIClient {
 		.unwrap();
 	client
 }
+
+/// Positive native Run fixtures use an admitted graph, including Node defaults.
+#[allow(dead_code)]
+pub async fn register_fixture_agent(fixture: &EndpointFixture, id: &str) {
+	let model = format!("{id}-fixture-model");
+	for (kind, key, config) in [
+		(
+			"model",
+			model.as_str(),
+			json!({"provider":"openrouter","model_id":"fixture","endpoint":"http://127.0.0.1:1/v1","credential_env":null,"context_window":128000,"max_output_tokens":4096,"modalities":["text"],"cost":{}}),
+		),
+		(
+			"agent",
+			id,
+			json!({"schema_version":1,"model":{"id":model,"version":"1.0.0"},"instructions":"Native Run fixture","bindings":[],"remove_default":[]}),
+		),
+	] {
+		fixture.runtime.registry.register(serde_json::from_value(json!({"id":key,"version":"1.0.0","kind":kind,"name":{"en":key},"description":{"en":"Native Run fixture"},"schema":{},"config":config})).unwrap()).await.unwrap();
+	}
+}

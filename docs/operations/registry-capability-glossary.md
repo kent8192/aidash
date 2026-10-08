@@ -1,6 +1,6 @@
 # Registry capability glossary
 
-Aidash coordinates Agents and their durable work across independently operated Nodes. This glossary defines the capability contract vocabulary. See [Registry capability operations](registry-capabilities.md) for the current implementation boundary and remaining cutover work.
+Aidash coordinates Agents and their durable work across independently operated Nodes. This glossary defines the capability contract vocabulary. See [Registry capability operations](registry-capabilities.md) for the registration, execution and drained fleet rollout.
 
 ## Language
 

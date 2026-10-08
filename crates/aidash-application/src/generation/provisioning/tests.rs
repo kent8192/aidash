@@ -322,6 +322,26 @@ impl GenerationActivationSession for Session {
 }
 #[async_trait]
 impl GenerationActivationScope for Session {
+	async fn bindings(
+		&mut self,
+		entry: &aidash_domain::registry::Entry,
+	) -> Result<aidash_domain::registry::bindings::BindingSnapshot> {
+		Ok(crate::test_support::resolve(
+			"aidash://local",
+			entry,
+			false,
+			vec![
+				crate::test_support::http_tool("aidash://local", "tool", "lookup"),
+				crate::test_support::entry("skill", "skill", json!({"instructions":"Skill"})),
+				crate::test_support::entry(
+					"cluster",
+					"cluster",
+					json!({"coordinator":{"id":entry.id,"version":entry.version}}),
+				),
+			],
+		))
+	}
+
 	fn now(&self) -> DateTime<Utc> {
 		self.state.lock().unwrap().now
 	}
@@ -422,7 +442,12 @@ async fn activation_rechecks_authority_and_publishes_the_pinned_spec_in_one_scop
 	// Assert
 	let state = repository.0.lock().unwrap();
 	assert_eq!(
-		state.calls,
+		state
+			.calls
+			.iter()
+			.filter(|call| !call.starts_with("catalog:aidash."))
+			.map(String::as_str)
+			.collect::<Vec<_>>(),
 		[
 			"activation_begin",
 			"activation_load",
@@ -458,8 +483,10 @@ async fn activation_checks_read_and_use_authority_for_every_pinned_component(
 	// Arrange: each optional component must receive both current catalog checks.
 	{
 		let mut state = repository.0.lock().unwrap();
-		state.spec.template.config["tools"] = json!([{"id":"tool","version":"1.0.0"}]);
-		state.spec.template.config["skills"] = json!([{"id":"skill","version":"1.0.0"}]);
+		state.spec.template.config["bindings"] = json!([
+			crate::test_support::binding("tool", "aidash://local", "tool"),
+			crate::test_support::binding("skill", "aidash://local", "skill")
+		]);
 		state.spec.template.config["cluster"] = json!({"id":"cluster","version":"1.0.0"});
 		state.spec.compaction = Some(aidash_domain::generation::policy::Compaction {
 			provider: EntityRef {
@@ -486,20 +513,20 @@ async fn activation_checks_read_and_use_authority_for_every_pinned_component(
 	let calls: Vec<&str> = state
 		.calls
 		.iter()
-		.filter(|call| call.starts_with("catalog:"))
+		.filter(|call| call.starts_with("catalog:") && !call.starts_with("catalog:aidash."))
 		.map(String::as_str)
 		.collect();
 	assert_eq!(
 		calls,
 		[
-			"catalog:model:registry.read",
-			"catalog:model:model.infer",
-			"catalog:tool:registry.read",
-			"catalog:tool:tool.invoke",
-			"catalog:skill:registry.read",
-			"catalog:skill:skill.use",
 			"catalog:cluster:registry.read",
 			"catalog:cluster:cluster.execute",
+			"catalog:model:registry.read",
+			"catalog:model:model.infer",
+			"catalog:skill:registry.read",
+			"catalog:skill:skill.use",
+			"catalog:tool:registry.read",
+			"catalog:tool:tool.invoke",
 			"catalog:compact:registry.read",
 			"catalog:compact:compaction.invoke",
 			"catalog:embed:registry.read",

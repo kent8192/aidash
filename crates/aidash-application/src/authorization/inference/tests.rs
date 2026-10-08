@@ -16,12 +16,18 @@ fn reference(key: &str) -> EntityRef {
 }
 #[fixture]
 fn agent() -> AgentConfig {
-	serde_json::from_value(
-		json!({"model":reference("model"),"skills":[reference("first"),reference("second")],
-        "tools":[],"memory":reference("memory"),"core_capabilities":{"files":true},"allow_cross_conversation_memory":true}),
-	)
-	.unwrap()
+	let mut config: AgentConfig =
+		serde_json::from_value(crate::test_support::agent("fixture").config).unwrap();
+	config.model = reference("model");
+	config.core_capabilities = Default::default();
+	config.core_capabilities.files = true;
+	config.skills = vec![reference("first"), reference("second")];
+	config.conversation_memory = true;
+	config.memory = Some(reference("memory"));
+	config.allow_cross_conversation_memory = Some(true);
+	config
 }
+
 #[fixture]
 fn run() -> RunMetadata {
 	RunMetadata {
@@ -148,17 +154,17 @@ async fn current_local_inference_checks_core_lineage_model_skills_and_saved_memo
 #[case::allowed(Some(true))]
 #[case::denied(Some(false))]
 #[tokio::test]
-async fn only_explicit_cross_conversation_memory_disable_skips_its_read_decision(
+async fn memory_reads_require_explicit_opt_in(
 	mut scope: Scope,
 	run: RunMetadata,
 	mut agent: AgentConfig,
 	#[case] setting: Option<bool>,
 ) {
-	agent.allow_cross_conversation_memory = setting;
+	agent.conversation_memory = setting == Some(true);
 	authorize(&mut scope, &run, &agent).await.unwrap();
 	assert_eq!(
 		scope.calls,
-		if setting == Some(false) {
+		if setting != Some(true) {
 			expected()[..5].to_vec()
 		} else {
 			expected()
@@ -173,6 +179,7 @@ async fn disabled_core_capabilities_skip_only_context_authority(
 	mut agent: AgentConfig,
 ) {
 	agent.core_capabilities.files = false;
+
 	authorize(&mut scope, &run, &agent).await.unwrap();
 	assert_eq!(scope.calls, expected()[1..]);
 }
@@ -188,6 +195,7 @@ async fn missing_current_node_denies_local_inference_before_lineage_or_provider_
 ) {
 	scope.node = None;
 	agent.core_capabilities.files = core;
+	agent.conversation_memory = false;
 	assert!(matches!(
 		authorize(&mut scope, &run, &agent).await,
 		Err(Error::Forbidden)
@@ -207,7 +215,7 @@ async fn remote_inference_checks_model_and_skills_without_local_context_lineage_
 ) {
 	scope.remote = true;
 	scope.node = None;
-	agent.allow_cross_conversation_memory = memory;
+	agent.conversation_memory = memory != Some(false);
 	authorize(&mut scope, &run, &agent).await.unwrap();
 	assert_eq!(scope.calls, expected()[2..5]);
 }

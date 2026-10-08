@@ -1,3 +1,4 @@
+import { nativeMemoryProvider } from "./agent-bindings";
 import { useState } from "react";
 import { useInfiniteQuery } from "@tanstack/react-query";
 import type { Entry, EntityRef } from "./types";
@@ -59,10 +60,9 @@ export function HomeNativeMemoryFields({
               entry.id === participant.agent.id &&
               entry.version === participant.agent.version,
           );
-          const provider = agent?.config.memory as EntityRef | null | undefined;
+          const provider = nativeMemoryProvider(agent?.config, entries, true);
           return agent &&
             provider &&
-            agent.config.allow_cross_conversation_memory !== false &&
             entries.some(
               (entry) =>
                 entry.kind === "memory" &&

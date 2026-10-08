@@ -16,7 +16,7 @@ use axum::{
 	response::{IntoResponse, Response},
 	routing::post,
 };
-use common::{TestEnvironment, bootstrap, cleanup, request, setup, test_environment};
+use common::{TestEnvironment, cleanup, request, setup, test_environment};
 use futures_util::StreamExt;
 use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
 use serde_json::{Value, json};
@@ -194,7 +194,20 @@ async fn lose_command_reply(
 ) -> Response {
 	let semantic = request.uri().path().ends_with("/scoped/semantic/query");
 	if !semantic && !request.uri().path().ends_with("/scoped/execution/commands") {
-		return next.run(request).await;
+		let path = request.uri().path().to_owned();
+		let response = next.run(request).await;
+		if response.status().is_client_error() || response.status().is_server_error() {
+			let (parts, body) = response.into_parts();
+			let bytes = to_bytes(body, 64 * 1024).await.unwrap();
+			eprintln!(
+				"Peer response {} {}: {}",
+				parts.status,
+				path,
+				String::from_utf8_lossy(&bytes)
+			);
+			return Response::from_parts(parts, Body::from(bytes));
+		}
+		return response;
 	}
 	let (parts, body) = request.into_parts();
 	let bytes = to_bytes(body, 4 * 1024 * 1024).await.unwrap();
@@ -314,8 +327,10 @@ async fn scoped_pair(
 	let drop_reply = Arc::new(Mutex::new(None));
 	let aa = common::application(a.clone()).await;
 	let ba = common::application(b.clone()).await;
-	let (mut source_policy, token, mut task) = bootstrap(&a, &aa, &endpoint).await;
-	let (receiver_policy, _, _) = bootstrap(&b, &ba, &endpoint).await;
+	let (mut source_policy, token, mut task) =
+		common::bootstrap_with_context(&a, &aa, &endpoint, semantic).await;
+	let (receiver_policy, _, _) =
+		common::bootstrap_with_context(&b, &ba, &endpoint, semantic).await;
 	let compactor_definition = json!({"id":"remote-compactor","version":"1.0.0","kind":"compactor","name":{"en":"Approved remote compactor"},"description":{"en":"Local fixture"},"config":{"provider":"typesafe-system-one","endpoint":format!("{endpoint}/systemone"),"model":"fixture-jev","credential_env":"AIDASH_SECRET_TEST_PEER","max_request_bytes":400000,"max_questions":200,"max_response_bytes":16000}});
 	let (status, body) = request(
 		&ba,
@@ -380,7 +395,7 @@ async fn scoped_pair(
 								vec![Expr::value(query_bind_2.to_owned()).into()],
 							))
 							.expr(Expr::cust("'AIDASH_SECRET_TEST_PEER'"))
-							.expr(Expr::cust("'0.1'"))
+							.expr(Expr::cust("'0.2'"))
 							.expr(Expr::cust("TRUE"))
 							.to_owned(),
 					)
@@ -413,7 +428,7 @@ async fn scoped_pair(
 		assert_eq!(status, 200, "{body}");
 	}
 	let aapp = source_router(&aa, drop_reply.clone());
-	let bapp = ba.test_transport();
+	let bapp = source_router(&ba, drop_reply.clone());
 	let aserver = tokio::spawn(async move { axum::serve(al, aapp).await.unwrap() });
 	let bserver = tokio::spawn(async move { axum::serve(bl, bapp).await.unwrap() });
 	let mut servers = vec![model_server, aserver, bserver];
@@ -635,13 +650,21 @@ async fn native_remote_fixture(
 			Value::Null,
 		)
 		.await;
+		// This is a new authored version, not a copy of server-derived normalization.
+		agent
+			.as_object_mut()
+			.unwrap()
+			.remove("binding_normalization");
 		agent["id"] = json!(if runtime.config.node_id == a.config.node_id {
 			"home-native"
 		} else {
 			"research-native"
 		});
-		agent["config"]["memory"] = provider.clone();
-		agent["config"]["sources"] = json!([reference("native-shared")]);
+		let bindings = agent["config"]["bindings"].as_array_mut().unwrap();
+		bindings.retain(|binding| binding["kind"] != "memory");
+		for (kind, id) in [("memory", "native-memory"), ("source", "native-shared")] {
+			bindings.push(json!({"kind":kind,"target":{"registry_node":runtime.config.node_id,"id":id,"version":"1.0.0"},"narrow":{}}));
+		}
 		let id = agent["id"].as_str().unwrap().to_owned();
 		let (status, body) = request(
 			app,
@@ -1736,18 +1759,31 @@ async fn transaction_finalization_uses_the_actual_home_and_executor_admission(
 
 #[rstest::rstest]
 #[tokio::test]
-async fn scoped_remote_agent_can_delegate_its_created_child_to_the_home_node(
+async fn scoped_remote_agent_cannot_delegate_through_an_excluded_default_operation(
 	#[future(awt)] scoped_pair: Pair,
 ) {
 	let p = scoped_pair;
 	let run = p.run().await;
+	let excluded = run
+		.context
+		.binding_snapshot
+		.as_ref()
+		.unwrap()
+		.bindings
+		.iter()
+		.find(|binding| binding.definition.config["operation"] == "task_delegate")
+		.unwrap();
+	assert!(
+		excluded.excluded_reason.is_some(),
+		"the factual Provider contract is local-only"
+	);
 	let home = Home::new(p.b.clone(), run);
 	let child = home
 		.create_task(
 			"scoped-child-create",
 			&NewTask {
 				title: "Scoped delegated child".into(),
-				description: "Created under a remote run and delegated home".into(),
+				description: "Created under a remote run".into(),
 				requirements: json!({}),
 				dependencies: vec![],
 				parent_id: Some(p.task),
@@ -1759,67 +1795,29 @@ async fn scoped_remote_agent_can_delegate_its_created_child_to_the_home_node(
 		id: "research".into(),
 		version: "1.0.0".into(),
 	};
-	let delegation = home
-		.delegate_with_key(
-			"scoped-child-delegate",
-			child.id,
-			&p.a.config.node_id,
-			&agent,
-		)
-		.await
-		.unwrap();
-	assert_eq!(delegation.task_id, child.id);
-	assert_eq!(delegation.node_id, p.a.config.node_id);
-	assert_eq!(delegation.agent_id, agent.id);
-	assert_eq!(delegation.agent_version, agent.version);
-	assert!(delegation.delivered);
-
-	let rows: i64 = {
-		let query_bind_1 = child.id;
-		let query_bind_2 = &p.a.config.node_id;
-		sqlx::query_scalar(
-			&Query::select()
-				.expr(Expr::cust("COUNT(*)"))
-				.from(Alias::new("runs"))
-				.and_where(
-					Expr::col(Alias::new("task_id")).eq(SimpleExpr::CustomWithExpr(
-						"(?)".to_owned(),
-						vec![Expr::value(query_bind_1.to_owned()).into()],
-					)),
-				)
-				.and_where(
-					Expr::col(Alias::new("home_node")).eq(SimpleExpr::CustomWithExpr(
-						"(?)".to_owned(),
-						vec![Expr::value(query_bind_2.to_owned()).into()],
-					)),
-				)
-				.to_string(PostgresQueryBuilder),
-		)
-		.fetch_one(p.a.store.pool.driver())
-		.await
+	// Calling Home directly cannot recover an operation deliberately excluded
+	// under Q23 or turn its descriptor into a broader remote contract.
+	for _ in 0..2 {
+		assert!(
+			home.delegate_with_key(
+				"scoped-child-delegate",
+				child.id,
+				&p.a.config.node_id,
+				&agent
+			)
+			.await
+			.is_err()
+		);
 	}
-	.unwrap();
-	assert_eq!(rows, 1, "a retry must not create a second delegated Run");
-	let replay = home
-		.delegate_with_key(
-			"scoped-child-delegate",
-			child.id,
-			&p.a.config.node_id,
-			&agent,
-		)
-		.await
-		.unwrap();
-	assert_eq!(replay.task_id, child.id);
-	assert_eq!(
-		p.a.store
+	assert!(
+		!p.a.store
 			.runs()
 			.await
 			.unwrap()
-			.into_iter()
-			.filter(|run| run.task_id == child.id && run.home_node == p.a.config.node_id)
-			.count(),
-		1
+			.iter()
+			.any(|run| run.task_id == child.id)
 	);
+	assert!(p.a.store.task(child.id).await.unwrap().owner.is_none());
 	p.close().await;
 }
 
@@ -3011,7 +3009,7 @@ async fn generated_foreign_executor_and_home_ancestor_share_durable_provider_all
 					))
 					.bearer_auth(std::env::var("AIDASH_SECRET_TEST_PEER").unwrap())
 					.header("x-aidash-node", &dispatcher.config.node_id)
-					.header("x-aidash-protocol", "0.1")
+					.header("x-aidash-protocol", "0.2")
 					.json(&json!({"usage":usage,"result":finalization}))
 					.send()
 					.await
@@ -3159,7 +3157,7 @@ async fn embedding_callback_rejects_a_nonexact_reservation(
 		))
 		.bearer_auth(std::env::var("AIDASH_SECRET_TEST_PEER").unwrap())
 		.header("x-aidash-node", &p.a.config.node_id)
-		.header("x-aidash-protocol", "0.1")
+		.header("x-aidash-protocol", "0.2")
 		.json(&json!({"usage":usage,"boundary":boundary}))
 		.send()
 		.await
@@ -4197,7 +4195,9 @@ async fn seed_remote_history(p: &Pair) {
 	}
 	{
 		let query_bind_1 = p.admission;
-		let query_bind_2 = common::context(json!({"history":history}));
+		let mut context = serde_json::to_value(p.run().await.context).unwrap();
+		context["history"] = json!(history);
+		let query_bind_2 = context;
 		let query_bind_3 = common::pending(aidash_server::domain::RunState::Thinking(
 			aidash_server::domain::ThinkingState::default(),
 		));
@@ -4337,7 +4337,7 @@ async fn remote_compaction_rejects_a_peer_claimed_small_reservation(
 		))
 		.bearer_auth(std::env::var("AIDASH_SECRET_TEST_PEER").unwrap())
 		.header("x-aidash-node", &p.b.config.node_id)
-		.header("x-aidash-protocol", "0.1")
+		.header("x-aidash-protocol", "0.2")
 		.json(&json!({"usage":usage,"boundary":boundary}))
 		.send()
 		.await
@@ -4543,7 +4543,7 @@ impl ScopedWorkerProcess {
 		let binary = env!("CARGO_BIN_EXE_aidash");
 		// Own the exact local executable until the child is reaped. macOS dyld
 		// can stall on the external build volume before the worker starts; the
-		// 30-second provider-arrival deadline must measure worker behavior.
+		// provider-arrival deadline must measure worker behavior.
 		#[cfg(target_os = "macos")]
 		let binary_directory = tempfile::Builder::new()
 			.prefix("aidash-scoped-worker-binary-")
@@ -4556,7 +4556,9 @@ impl ScopedWorkerProcess {
 			snapshot
 		};
 		let child = std::process::Command::new(binary)
-			.args(common::native_process_args(&p.b, "worker"))
+			// The fixture has already migrated both databases. Starting only the
+			// worker keeps crash recovery independent of another migration pass.
+			.args(common::native_process_args(&p.b, "runworker"))
 			.envs(common::native_process_environment(
 				&p.b,
 				database.as_str(),
@@ -4595,8 +4597,11 @@ async fn process_sigkill_preserves_remote_receipt_and_uncertain_origin_charges(
 	let p = scoped_pair;
 	p.model.hold.store(true, Ordering::Release);
 	let mut worker = ScopedWorkerProcess::start(&p);
+	// Process startup and the full retained remote Binding closure perform real
+	// database and peer checks before inference; allow the same cold-start
+	// budget as the native generation process fixtures.
 	let arrived = tokio::time::timeout(
-		std::time::Duration::from_secs(30),
+		std::time::Duration::from_secs(60),
 		p.model.entered.notified(),
 	)
 	.await;
@@ -4682,8 +4687,8 @@ async fn process_sigkill_preserves_remote_receipt_and_uncertain_origin_charges(
 		.await
 	}
 	.unwrap();
-	let worker = ScopedWorkerProcess::start(&p);
-	tokio::time::timeout(std::time::Duration::from_secs(30), async {
+	let mut worker = ScopedWorkerProcess::start(&p);
+	let recovered = tokio::time::timeout(std::time::Duration::from_secs(60), async {
 		loop {
 			let run = p.run().await;
 			if run.phase().as_str() == "COMPLETED" {
@@ -4693,8 +4698,18 @@ async fn process_sigkill_preserves_remote_receipt_and_uncertain_origin_charges(
 			tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 		}
 	})
-	.await
-	.expect("same remote Run must recover under its original admission");
+	.await;
+	let state = p.run().await;
+	assert!(
+		recovered.is_ok(),
+		"same remote Run must recover under its original admission: worker={:?}, phase={}, step={}, revision={}, error={:?}, retry={:?}",
+		worker.child.try_wait(),
+		state.phase().as_str(),
+		state.step,
+		state.revision,
+		state.error,
+		state.recovery.retry
+	);
 	drop(worker);
 	let after = p.run().await;
 	assert_eq!(after.id, before.id);
@@ -4948,3 +4963,243 @@ impl Drop for Pair {
 }
 
 use reinhardt::query::{ExprTrait as _, QueryStatementBuilder as _, SimpleExpr};
+
+#[rstest::rstest]
+#[tokio::test]
+async fn remote_human_continuations_survive_retries_and_restart_without_a_shadow_run(
+	#[future(awt)] scoped_pair: Pair,
+) {
+	let mut p = scoped_pair;
+	p.step().await;
+	let home = Home::new(p.b.clone(), p.run().await);
+	let key = format!("{}:binding-human", p.admission);
+	*p.drop_reply.lock().await = Some("human_request".into());
+	assert!(
+		home.human_request("QUESTION", "Proceed with the saved task?", &key)
+			.await
+			.is_err()
+	);
+	let saved = home
+		.human_request("QUESTION", "Proceed with the saved task?", &key)
+		.await
+		.unwrap();
+	assert_eq!(saved.run_id, p.admission);
+	assert_eq!(
+		saved.workspace_id,
+		p.a.store.task(p.task).await.unwrap().workspace_id
+	);
+	assert_eq!(
+		home.human_request("QUESTION", "Proceed with the saved task?", &key)
+			.await
+			.unwrap()
+			.id,
+		saved.id
+	);
+	assert!(
+		home.human_request("QUESTION", "Changed input", &key)
+			.await
+			.is_err()
+	);
+	assert!(
+		p.a.store.run(p.admission).await.is_err(),
+		"Home must not create a shadow execution Run"
+	);
+	for server in p.servers.drain(1..) {
+		server.abort();
+		let _ = server.await;
+	}
+	reconnect(&mut p.a).await;
+	reconnect(&mut p.b).await;
+	p.aa = common::application(p.a.clone()).await;
+	p.ba = common::application(p.b.clone()).await;
+	for (f, application) in [(&p.a, p.aa.clone()), (&p.b, p.ba.clone())] {
+		let app = source_router(&application, p.drop_reply.clone());
+		let endpoint = reqwest::Url::parse(&f.config.endpoint).unwrap();
+		let listener = tokio::net::TcpListener::bind(("127.0.0.1", endpoint.port().unwrap()))
+			.await
+			.unwrap();
+		p.servers.push(tokio::spawn(async move {
+			axum::serve(listener, app).await.unwrap()
+		}));
+	}
+	let home = Home::new(p.b.clone(), p.run().await);
+	assert_eq!(
+		home.human_request_by_id(saved.id).await.unwrap().id,
+		saved.id
+	);
+	let projection = request(
+		&p.aa,
+		&p.token,
+		"GET",
+		&format!("/api/tasks/{}/remote-executions", p.task),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(projection.0, 200, "{}", projection.1);
+	assert_eq!(projection.1[0]["human_requests"][0]["id"], json!(saved.id));
+	let events: Vec<Value> = sqlx::query_scalar(
+		&Query::select()
+			.column(Alias::new("data"))
+			.from(Alias::new("events"))
+			.and_where(Expr::col(Alias::new("kind")).eq("task.remote_human_requested"))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_all(p.a.store.pool.driver())
+	.await
+	.unwrap();
+	assert_eq!(
+		events.len(),
+		1,
+		"idempotent retries must not duplicate notifications"
+	);
+	assert_eq!(events[0]["task_id"], json!(p.task));
+	assert_eq!(events[0]["request_id"], json!(saved.id));
+	let answer_path = format!(
+		"/api/tasks/{}/remote-grants/{}/human-requests/answer",
+		p.task, p.grant
+	);
+	let (status, answered) = request(
+		&p.aa,
+		&p.token,
+		"POST",
+		&answer_path,
+		json!({"id":saved.id,"response":{"answer":"Continue"}}),
+	)
+	.await;
+	assert_eq!(status, 200, "{answered}");
+	assert_eq!(
+		home.human_request_by_id(saved.id).await.unwrap().response,
+		Some(json!({"answer":"Continue"}))
+	);
+	let approval = home
+		.human_request(
+			"APPROVAL_REQUIRED",
+			"Approve this exact saved operation?",
+			"binding-approval",
+		)
+		.await
+		.unwrap();
+	let response = json!({"approved":true});
+	let input = json!({"id":approval.id,"response":response});
+	let first = request(&p.aa, &p.token, "POST", &answer_path, input.clone()).await;
+	assert_eq!(first.0, 200, "{}", first.1);
+	assert_eq!(
+		request(&p.aa, &p.token, "POST", &answer_path, input).await,
+		first
+	);
+	assert_eq!(
+		home.human_request_by_id(approval.id)
+			.await
+			.unwrap()
+			.response,
+		Some(response)
+	);
+	let denial = home
+		.human_request(
+			"APPROVAL_REQUIRED",
+			"Deny the other saved operation?",
+			"binding-denial",
+		)
+		.await
+		.unwrap();
+	let denied = request(
+		&p.aa,
+		&p.token,
+		"POST",
+		&answer_path,
+		json!({"id":denial.id,"response":{"approved":false}}),
+	)
+	.await;
+	assert_eq!(denied.0, 200, "{}", denied.1);
+	let unanswered = home
+		.human_request(
+			"APPROVAL_REQUIRED",
+			"Expire an unanswered operation",
+			"binding-unanswered",
+		)
+		.await
+		.unwrap();
+	// Advance only the Home journal's request deadlines. The answers above
+	// were durably accepted in time; later polling must retain both decisions.
+	let mut journal: Value = sqlx::query_scalar(
+		&Query::select()
+			.column(Alias::new("human_requests"))
+			.from(Alias::new("authorization_remote_execution"))
+			.and_where(Expr::col(Alias::new("grant_id")).eq(Expr::value(p.grant)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(p.a.store.pool.driver())
+	.await
+	.unwrap();
+	for record in journal.as_array_mut().unwrap() {
+		record["request"]["created_at"] = json!(chrono::Utc::now() - chrono::Duration::minutes(16));
+	}
+	sqlx::query(
+		&Query::update()
+			.table(Alias::new("authorization_remote_execution"))
+			.value(Alias::new("human_requests"), journal)
+			.and_where(Expr::col(Alias::new("grant_id")).eq(Expr::value(p.grant)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(p.a.store.pool.driver())
+	.await
+	.unwrap();
+	for (id, expected, actor) in [
+		(
+			approval.id,
+			json!({"approved":true}),
+			first.1["answered_by"].clone(),
+		),
+		(
+			denial.id,
+			json!({"approved":false}),
+			denied.1["answered_by"].clone(),
+		),
+	] {
+		for _ in 0..2 {
+			let retained = home.human_request_by_id(id).await.unwrap();
+			assert_eq!(retained.response, Some(expected.clone()));
+			assert_eq!(json!(retained.answered_by), actor);
+		}
+	}
+	let expired = home.human_request_by_id(unanswered.id).await.unwrap();
+	assert_eq!(
+		expired.response,
+		Some(json!({"approved":false,"expired":true}))
+	);
+	assert_eq!(expired.answered_by.as_deref(), Some("system"));
+	let (status, wrong) = request(
+		&p.aa,
+		&p.token,
+		"POST",
+		&answer_path,
+		json!({"id":Uuid::new_v4(),"response":{"answer":"Wrong request"}}),
+	)
+	.await;
+	assert_eq!(status, 403, "{wrong}");
+	let (status, revoked) = request(
+		&p.aa,
+		&p.token,
+		"POST",
+		&format!("/api/tasks/{}/remote-grants/{}/revoke", p.task, p.grant),
+		json!({}),
+	)
+	.await;
+	assert_eq!(status, 200, "{revoked}");
+	let (status, denied) = request(
+		&p.aa,
+		&p.token,
+		"POST",
+		&answer_path,
+		json!({"id":saved.id,"response":{"answer":"Continue"}}),
+	)
+	.await;
+	assert_eq!(status, 403, "{denied}");
+	assert!(home.human_request_by_id(saved.id).await.is_err());
+	assert!(
+		home.human_request("QUESTION", "After revocation", "revoked")
+			.await
+			.is_err()
+	);
+	p.close().await;
+}

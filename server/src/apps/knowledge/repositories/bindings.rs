@@ -99,7 +99,7 @@ pub(crate) async fn admit(
 	run: &RunMetadata,
 	agent: &Entry,
 ) -> Result<Option<Binding>> {
-	let config: AgentConfig = serde_json::from_value(agent.config.clone())?;
+	let config = configuration(lease, agent, &store.node_id).await?;
 	let Some(provider) = config.memory else {
 		return Ok(None);
 	};
@@ -251,4 +251,42 @@ pub(crate) async fn admit(
 	.execute(&mut **lease.tx())
 	.await?;
 	Ok(Some(binding))
+}
+
+/// Resolve only the explicitly bound immutable memory roles for participant APIs.
+/// Execution admission independently pins and validates the complete Tool closure.
+pub(crate) async fn configuration(
+	lease: &mut Lease<'_>,
+	agent: &Entry,
+	node: &str,
+) -> Result<AgentConfig> {
+	use aidash_domain::registry::bindings::BindingKind;
+	let mut settings: AgentConfig = serde_json::from_value(agent.config.clone())?;
+	settings.memory = None;
+	for binding in &settings.bindings {
+		let kind = match binding.kind {
+			BindingKind::Memory => "memory",
+			BindingKind::Source => "source",
+			_ => continue,
+		};
+		if binding.target.registry_node != node {
+			return Err(Error::Forbidden);
+		}
+		let entry =
+			crate::semantic::native_memory::definition(lease, &binding.target.local(), kind)
+				.await?;
+		if entry.config.get("schema_version").is_some() {
+			continue;
+		}
+		if kind == "memory" {
+			if settings.memory.replace(binding.target.local()).is_some() {
+				return Err(Error::Invalid(
+					"Agent requires one primary memory provider".into(),
+				));
+			}
+		} else {
+			settings.sources.push(binding.target.local());
+		}
+	}
+	Ok(settings)
 }

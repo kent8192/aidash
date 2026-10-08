@@ -79,15 +79,43 @@ async function core(page: Page) {
       return send({ items: [area], next_cursor: null });
     if (path === "/api/working-files")
       return send({ items: [managed], next_cursor: null });
-    if (path === "/api/registry")
-      return send([
+    if (path === "/api/registry") {
+      const entries = [
         {
           id: "researcher",
           version: "1.0.0",
+          kind: "agent",
           name: { en: "Researcher" },
+          config: { schema_version: 1, bindings: [], remove_default: [] },
+        },
+        {
+          id: "skill-source",
+          version: "1.0.0",
+          kind: "source",
+          name: { en: "Reviewed Skills" },
           config: {},
         },
-      ]);
+        {
+          id: "conversation-memory",
+          version: "1.0.0",
+          kind: "memory",
+          name: { en: "Conversation memory" },
+          config: {},
+        },
+        {
+          id: "approved-shell",
+          version: "1.0.0",
+          kind: "bundle",
+          name: { en: "Approved Shell package" },
+          config: {},
+        },
+      ];
+      return send(
+        new URL(request.url()).searchParams.get("kind") === "agent"
+          ? entries.filter((e) => e.kind === "agent")
+          : entries,
+      );
+    }
     if (path === "/api/references")
       return send({
         items: [
@@ -316,53 +344,14 @@ for (const outcome of ["match", "exhausted", "failed"] as const) {
   });
 }
 
-test("capability setup attaches a direct Skill and failed-extraction original to a new immutable version", async ({
+test("Binding setup saves explicit Sources, Memory and Host packages in a new immutable version", async ({
   page,
 }, info) => {
   const { errors } = await core(page);
-  const writes: { path: string; body: Record<string, unknown> }[] = [];
-  let uploaded = false;
   let saved: Record<string, unknown> | undefined;
-  await page.route("**/api/**", async (route) => {
-    const path = new URL(route.request().url()).pathname;
-    if (
-      route.request().method() === "POST" &&
-      (path.startsWith("/api/references/") || path.endsWith("/capabilities"))
-    ) {
-      const body = route.request().postDataJSON() ?? {};
-      writes.push({ path, body });
-      if (path.endsWith("/capabilities")) {
-        saved = body;
-        return route.fulfill({ json: { catalog_approval_required: true } });
-      }
-      if (path.endsWith("/commit")) uploaded = true;
-      return route.fulfill({
-        json: {
-          reference_id: "uploaded-original",
-          state: "uploading",
-          uploaded_bytes: 0,
-        },
-      });
-    }
-    if (path === "/api/references")
-      return route.fulfill({
-        json: {
-          items: uploaded
-            ? [
-                {
-                  reference_id: "uploaded-original",
-                  revision: 2,
-                  state: "ready",
-                  name: "broken.pdf",
-                  extraction_state: "malformed",
-                  digest: "b".repeat(64),
-                },
-              ]
-            : [],
-          next_cursor: null,
-        },
-      });
-    return route.fallback();
+  await page.route("**/api/agents/researcher/capabilities", (route) => {
+    saved = route.request().postDataJSON();
+    return route.fulfill({ json: { catalog_approval_required: true } });
   });
   await page.goto("/settings?view=workingFiles");
   const config = page.locator("details", {
@@ -374,122 +363,178 @@ test("capability setup attaches a direct Skill and failed-extraction original to
   await config
     .getByLabel("Source Agent version")
     .selectOption("researcher@1.0.0");
-  for (const name of [
-    "Search and read files",
-    "Shell",
-    "Python",
-    "Apply patches",
-    "Direct Skills",
-    "Share files",
-  ])
-    await expect(
-      config.getByRole("checkbox", { name, exact: true }),
-    ).not.toBeChecked();
-  await config
-    .getByRole("checkbox", { name: "Search and read files", exact: true })
-    .check();
-  await config
-    .getByRole("checkbox", { name: "Direct Skills", exact: true })
-    .check();
-  await config.getByLabel("SKILL.md", { exact: true }).setInputFiles({
-    name: "SKILL.md",
-    mimeType: "text/markdown",
-    buffer: Buffer.from(
-      "---\nname: direct-analysis\ndescription: Analyze authorized files\n---\nRead only the selected files.\n",
-    ),
-  });
-  await config
-    .getByRole("button", { name: "Attach this Skill", exact: true })
-    .click();
-  await config
-    .getByLabel("Add PDF, Excel or text (up to 10 MiB)")
-    .setInputFiles({
-      name: "broken.pdf",
-      mimeType: "application/pdf",
-      buffer: Buffer.from("%PDF-broken"),
-    });
+  await expect(config.getByLabel("Registering Node")).toHaveValue(
+    "aidash://home",
+  );
+  await expect(config.getByLabel("Registering Node")).not.toBeEditable();
   await expect(
-    config.getByText("ready · malformed", { exact: true }),
+    config.getByText("workspace_read and human_request are always included.", {
+      exact: false,
+    }),
   ).toBeVisible();
   await expect(
-    config.getByRole("button", { name: "Download original", exact: true }),
-  ).toBeEnabled();
+    config.getByRole("checkbox", { name: "workspace_read", exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    config.getByRole("checkbox", { name: "human_request", exact: true }),
+  ).toHaveCount(0);
+  for (const operation of [
+    "memory_recall",
+    "memory_reflect",
+    "memory_mutate",
+  ]) {
+    await expect(
+      config.getByRole("checkbox", { name: operation, exact: true }),
+    ).toBeVisible();
+  }
+  await expect(
+    config.getByText("bundle: aidash://home/approved-shell@1.0.0", {
+      exact: true,
+    }),
+  ).toHaveCount(0);
+  for (const target of [
+    "source:skill-source@1.0.0",
+    "memory:conversation-memory@1.0.0",
+    "bundle:approved-shell@1.0.0",
+  ]) {
+    await config.getByLabel("Definition to bind").selectOption(target);
+    await config
+      .getByRole("button", { name: "Add binding", exact: true })
+      .click();
+  }
   await config
-    .getByRole("button", { name: "Attach to this Agent", exact: true })
-    .click();
+    .getByLabel("Member IDs (empty selects all)")
+    .fill("shell_exec, shell_poll, shell_cancel");
+  await config
+    .getByRole("checkbox", { name: "task_delegate", exact: true })
+    .uncheck();
   await config.getByLabel("New immutable version").fill("1.1.0");
   await config
     .getByRole("button", { name: "Save a new version", exact: true })
-    .focus();
-  await page.keyboard.press("Enter");
-  await expect(
-    config.getByText(
-      "Saved 1.1.0. It becomes available after catalog approval.",
-      { exact: true },
-    ),
-  ).toBeVisible();
+    .click();
+  await expect(config.getByRole("status")).toHaveText(
+    "Saved 1.1.0. It becomes available after catalog approval.",
+  );
   expect(saved).toMatchObject({
     source_version: "1.0.0",
     new_version: "1.1.0",
-    core_capabilities: {
-      files: true,
-      skills: true,
-      shell: false,
-      python: false,
-      patch: false,
-      sharing: false,
-    },
-    reference_attachments: [
-      { reference_id: "uploaded-original", digest: "b".repeat(64) },
+    remove_default: ["task_delegate"],
+    bindings: [
+      {
+        kind: "source",
+        target: {
+          registry_node: "aidash://home",
+          id: "skill-source",
+          version: "1.0.0",
+        },
+        narrow: {},
+      },
+      {
+        kind: "memory",
+        target: {
+          registry_node: "aidash://home",
+          id: "conversation-memory",
+          version: "1.0.0",
+        },
+        narrow: {},
+      },
+      {
+        kind: "bundle",
+        target: {
+          registry_node: "aidash://home",
+          id: "approved-shell",
+          version: "1.0.0",
+        },
+        narrow: {},
+        members: ["shell_exec", "shell_poll", "shell_cancel"],
+      },
     ],
   });
-  expect(saved?.skill_attachments as { digest: string }[]).toHaveLength(1);
-  expect((saved?.skill_attachments as { digest: string }[])[0].digest).toMatch(
-    /^sha256:[a-f0-9]{64}$/,
+  for (const field of [
+    "core_capabilities",
+    "tools",
+    "skills",
+    "allow_memory_write",
+    "skill_attachments",
+    "reference_attachments",
+  ])
+    expect(saved).not.toHaveProperty(field);
+  await config
+    .getByRole("button", { name: "Remove binding", exact: true })
+    .nth(0)
+    .click();
+  await config.getByLabel("New immutable version").fill("1.2.0");
+  await config
+    .getByRole("button", { name: "Save a new version", exact: true })
+    .click();
+  await expect(config.getByRole("status")).toHaveText(
+    "Saved 1.2.0. It becomes available after catalog approval.",
   );
+  expect(saved?.bindings).toHaveLength(2);
+  await page.screenshot({
+    path: info.outputPath("binding-setup.png"),
+    fullPage: true,
+  });
+  expect(errors).toEqual([]);
+});
+
+test("failed-extraction originals stay private and downloadable", async ({
+  page,
+}) => {
+  const { errors } = await core(page);
+  const writes: { path: string; body: unknown }[] = [];
+  let uploaded = false;
+  await page.route("**/api/references**", (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (route.request().method() === "POST") {
+      writes.push({ path, body: route.request().postDataJSON() });
+      if (path.endsWith("/commit")) uploaded = true;
+      return route.fulfill({
+        json: {
+          reference_id: "uploaded-original",
+          state: "uploading",
+          uploaded_bytes: 0,
+        },
+      });
+    }
+    return route.fulfill({
+      json: {
+        items: uploaded
+          ? [
+              {
+                reference_id: "uploaded-original",
+                revision: 2,
+                state: "ready",
+                name: "broken.pdf",
+                extraction_state: "malformed",
+                digest: "b".repeat(64),
+              },
+            ]
+          : [],
+        next_cursor: null,
+      },
+    });
+  });
+  await page.goto("/settings?view=workingFiles");
+  await page.getByLabel("Add PDF, Excel or text (up to 10 MiB)").setInputFiles({
+    name: "broken.pdf",
+    mimeType: "application/pdf",
+    buffer: Buffer.from("%PDF-broken"),
+  });
+  await expect(
+    page.getByText("ready · malformed", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Download original", exact: true }),
+  ).toBeEnabled();
   expect(writes.map((w) => w.path)).toEqual([
     "/api/references/uploads",
     "/api/references/uploaded-original/chunks",
     "/api/references/uploaded-original/commit",
-    "/api/agents/researcher/capabilities",
   ]);
   expect(writes[1].body).toEqual({
     offset: 0,
     data: Buffer.from("%PDF-broken").toString("base64"),
-  });
-  await config
-    .getByRole("checkbox", { name: "Direct Skills", exact: true })
-    .uncheck();
-  await config
-    .getByRole("checkbox", { name: "Search and read files", exact: true })
-    .uncheck();
-  await config
-    .getByRole("checkbox", { name: "Direct Skills", exact: true })
-    .check();
-  await config
-    .getByRole("checkbox", { name: "Search and read files", exact: true })
-    .check();
-  await config.getByLabel("New immutable version").fill("1.2.0");
-  await config
-    .getByRole("button", { name: "Save a new version", exact: true })
-    .focus();
-  await page.keyboard.press("Enter");
-  await expect(
-    config.getByText(
-      "Saved 1.2.0. It becomes available after catalog approval.",
-      { exact: true },
-    ),
-  ).toBeVisible();
-  expect(saved).toMatchObject({
-    new_version: "1.2.0",
-    core_capabilities: { files: true, skills: true },
-    skill_attachments: [],
-    skill_roots: [],
-    reference_attachments: [],
-  });
-  await page.screenshot({
-    path: info.outputPath("capability-setup.png"),
-    fullPage: true,
   });
   expect(errors).toEqual([]);
 });

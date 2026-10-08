@@ -11,6 +11,7 @@ PARTITIONS = (
     "foundation", "server-unit", "identity", "execution", "persistence",
     "collaboration", "federation", "knowledge-marketplace",
 )
+SHARDS = (1, 2)
 PERSISTENCE = {
     "migrations", "postgres", "reinhardt_persistence", "record_constraints",
     "composite_keys", "startup", "providers", "provider_timeout_persistence",

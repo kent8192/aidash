@@ -78,9 +78,10 @@ fn call() -> ToolCall {
 }
 fn rule() -> RealToolRule {
 	RealToolRule {
+		read_only_verified: true,
 		tool: EntityRef {
 			id: "tool".into(),
-			version: "1".into(),
+			version: "1.0.0".into(),
 		},
 		endpoint: "https://test.example/rpc".into(),
 		credential_env: Some("TEST_TOOL".into()),
@@ -101,6 +102,21 @@ fn pin(repository: &Repository) -> ProfilePin {
 		.into(),
 	}
 }
+fn bound_tool() -> Entry {
+	let mut tool = crate::test_support::http_tool("aidash://local", "tool", "plugin_0");
+	tool.config["transport"]["credential_env"] = json!("PRODUCTION_TOOL");
+	tool.schema = json!({"type":"object","required":["action","resource"]});
+	tool
+}
+fn admitted_snapshot() -> aidash_domain::registry::bindings::BindingSnapshot {
+	let mut agent = crate::test_support::agent("agent");
+	agent.config["bindings"] = json!([crate::test_support::binding(
+		"tool",
+		"aidash://local",
+		"tool"
+	)]);
+	crate::test_support::resolve("aidash://local", &agent, false, vec![bound_tool()])
+}
 fn session() -> TestSession {
 	TestSession {
 		id: Uuid::from_u128(9),
@@ -108,7 +124,7 @@ fn session() -> TestSession {
 		tenant: "tenant".into(),
 		revision: 7,
 		status: "running".into(),
-		scenario: json!({}),
+		scenario: json!({"binding_snapshot":admitted_snapshot()}),
 		conversation: Some(json!([])),
 		tool_calls: None,
 		usage: json!({}),
@@ -261,11 +277,11 @@ impl RealDispatchScope for Scope<'_> {
 			.unwrap()
 			.order
 			.push("effective_tool".into());
-		Ok(serde_json::from_value(json!({
-			"id":"tool","version":"1","kind":"tool","name":{},"description":{},
-			"schema": if self.repository.failing("schema") { json!({"required":["extra"]}) } else { json!({"type":"object","required":["action","resource"]}) },
-			"config":{"transport":"http","endpoint":"https://production.example/rpc","credential_env":"PRODUCTION_TOOL","replay":"read_only"}
-		}))?)
+		let mut tool = bound_tool();
+		if self.repository.failing("schema") {
+			tool.schema = json!({"required":["extra"]});
+		}
+		Ok(tool)
 	}
 	async fn write_calls(&mut self, id: Uuid, calls: Value, running: bool) -> Result<()> {
 		assert_eq!(id, Uuid::from_u128(9));

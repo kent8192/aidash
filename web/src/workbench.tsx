@@ -1,3 +1,4 @@
+import { AgentBindings, type Binding } from "./agent-bindings";
 import { Button } from "./components/ui/button";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useBlocker } from "@tanstack/react-router";
@@ -8,8 +9,6 @@ import {
   Bot,
   Blocks,
   Boxes,
-  Database,
-  Link2,
   FlaskConical,
   Settings2,
   Send,
@@ -48,16 +47,11 @@ export type AgentEntry = {
   config: {
     model: Ref;
     instructions: string;
-    tools: Ref[];
-    skills: Ref[];
+    schema_version: number;
+    bindings: Binding[];
+    remove_default: string[];
     cluster: Ref | null;
     max_steps: number;
-    knowledge_digest?: string;
-    allow_task_creation?: boolean;
-    allow_task_delegation?: boolean;
-    allow_memory_write?: boolean;
-    allow_workspace_retrieval?: boolean;
-    allow_cross_conversation_memory?: boolean;
   };
 };
 type Document = { name: string; media_type: string; text: string };
@@ -106,6 +100,7 @@ type Registration = {
   behavioral_tested: boolean;
 };
 type RegisteredVersion = {
+  registered_knowledge_digest?: string | null;
   draft_knowledge_digest?: string | null;
   entry: AgentEntry;
   draft_revision: number | null;
@@ -392,6 +387,7 @@ function versionFields(
   draft: AgentEntry,
   registered: AgentEntry,
   draftKnowledgeDigest: string | null,
+  registeredKnowledgeDigest: string | null,
 ): [string, unknown, unknown][] {
   return [
     ["Profile", draft.name, registered.name],
@@ -400,44 +396,30 @@ function versionFields(
     ["Tags", draft.tags, registered.tags],
     ["Schema", draft.schema, registered.schema],
     ["Model", draft.config.model, registered.config.model],
-    ["Skills", draft.config.skills, registered.config.skills],
-    ["Tools", draft.config.tools, registered.config.tools],
+    ["Bindings", draft.config.bindings, registered.config.bindings],
+    [
+      "Removed defaults",
+      draft.config.remove_default,
+      registered.config.remove_default,
+    ],
     ["Cluster", draft.config.cluster, registered.config.cluster],
-    [
-      "Private references",
-      draftKnowledgeDigest,
-      registered.config.knowledge_digest ?? null,
-    ],
+    ["Private references", draftKnowledgeDigest, registeredKnowledgeDigest],
     ["Instructions", draft.config.instructions, registered.config.instructions],
-    [
-      "Workspace behavior",
-      {
-        max_steps: draft.config.max_steps,
-        allow_task_creation: draft.config.allow_task_creation,
-        allow_task_delegation: draft.config.allow_task_delegation,
-        allow_memory_write: draft.config.allow_memory_write,
-        allow_workspace_retrieval: draft.config.allow_workspace_retrieval,
-        allow_cross_conversation_memory:
-          draft.config.allow_cross_conversation_memory,
-      },
-      {
-        max_steps: registered.config.max_steps,
-        allow_task_creation: registered.config.allow_task_creation,
-        allow_task_delegation: registered.config.allow_task_delegation,
-        allow_memory_write: registered.config.allow_memory_write,
-        allow_workspace_retrieval: registered.config.allow_workspace_retrieval,
-        allow_cross_conversation_memory:
-          registered.config.allow_cross_conversation_memory,
-      },
-    ],
+    ["Maximum steps", draft.config.max_steps, registered.config.max_steps],
   ];
 }
 function versionDifferences(
   draft: AgentEntry,
   registered: AgentEntry,
   draftKnowledgeDigest: string | null,
+  registeredKnowledgeDigest: string | null,
 ): string[] {
-  return versionFields(draft, registered, draftKnowledgeDigest)
+  return versionFields(
+    draft,
+    registered,
+    draftKnowledgeDigest,
+    registeredKnowledgeDigest,
+  )
     .filter(
       ([, current, previous]) =>
         JSON.stringify(current) !== JSON.stringify(previous),
@@ -474,15 +456,11 @@ function newEntry(model?: Ref): AgentEntry {
     config: {
       model: model ?? { id: "", version: "" },
       instructions: "",
-      tools: [],
-      skills: [],
+      schema_version: 1,
+      bindings: [],
+      remove_default: [],
       cluster: null,
       max_steps: 64,
-      allow_task_creation: false,
-      allow_task_delegation: false,
-      allow_memory_write: false,
-      allow_workspace_retrieval: false,
-      allow_cross_conversation_memory: false,
     },
   };
 }
@@ -619,8 +597,6 @@ export function Workbench({
     },
   });
   const models = data.registry.filter((entry) => entry.kind === "model");
-  const skills = data.registry.filter((entry) => entry.kind === "skill");
-  const tools = data.registry.filter((entry) => entry.kind === "tool");
   const agents = data.registry.filter((entry) => entry.kind === "agent");
 
   const reload = async () => {
@@ -1853,155 +1829,19 @@ export function Workbench({
             </label>
           </div>
         </section>
-        <section className="wb-card wb-integrations">
-          <h2>
-            <Link2 size={18} />
-            {t.tools} &amp; {t.skills}
-          </h2>
-          <div className="wb-checklist">
-            <fieldset>
-              <legend>{t.skills}</legend>
-              {!skills.length && (
-                <p>
-                  {locale === "ja-JP"
-                    ? "利用可能なSkillがありません。"
-                    : "No available skills."}
-                </p>
-              )}
-              {skills.map((skill) => (
-                <label key={refKey(skill)}>
-                  <input
-                    type="checkbox"
-                    checked={editing.config.skills.some(
-                      (ref) => refKey(ref) === refKey(skill),
-                    )}
-                    onChange={(event) =>
-                      change((value) => {
-                        value.config.skills = event.target.checked
-                          ? [
-                              ...value.config.skills,
-                              { id: skill.id, version: skill.version },
-                            ]
-                          : value.config.skills.filter(
-                              (ref) => refKey(ref) !== refKey(skill),
-                            );
-                      })
-                    }
-                  />
-                  {label(skill, locale)} · {skill.version}
-                </label>
-              ))}
-            </fieldset>
-            <fieldset>
-              <legend>{t.tools}</legend>
-              {!tools.length && (
-                <p>
-                  {locale === "ja-JP"
-                    ? "利用可能なツールがありません。"
-                    : "No available tools."}
-                </p>
-              )}
-              {tools.map((tool) => (
-                <label key={refKey(tool)}>
-                  <input
-                    type="checkbox"
-                    checked={editing.config.tools.some(
-                      (ref) => refKey(ref) === refKey(tool),
-                    )}
-                    onChange={(event) =>
-                      change((value) => {
-                        value.config.tools = event.target.checked
-                          ? [
-                              ...value.config.tools,
-                              { id: tool.id, version: tool.version },
-                            ]
-                          : value.config.tools.filter(
-                              (ref) => refKey(ref) !== refKey(tool),
-                            );
-                      })
-                    }
-                  />
-                  {label(tool, locale)} · {tool.version}
-                </label>
-              ))}
-            </fieldset>
-          </div>
-        </section>
-        <section className="wb-card wb-behavior wb-memory">
-          <h2>
-            <Database size={18} />
-            {locale === "ja-JP" ? "メモリとコンテキスト" : "Memory & context"}
-          </h2>
-          {(
-            [
-              [
-                "allow_memory_write",
-                locale === "ja-JP"
-                  ? "永続メモリへの書き込み"
-                  : "Persistent memory writes",
-              ],
-              [
-                "allow_cross_conversation_memory",
-                locale === "ja-JP"
-                  ? "会話をまたぐメモリ"
-                  : "Cross-conversation memory",
-              ],
-              [
-                "allow_workspace_retrieval",
-                locale === "ja-JP"
-                  ? "ワークスペースの追加取得"
-                  : "Workspace retrieval",
-              ],
-            ] as const
-          ).map(([key, title]) => (
-            <label key={key}>
-              <input
-                type="checkbox"
-                checked={editing.config[key] === true}
-                onChange={(event) =>
-                  change((value) => {
-                    value.config[key] = event.target.checked;
-                  })
-                }
-              />
-              {title}
-            </label>
-          ))}
-        </section>
-        <section className="wb-card wb-behavior wb-span">
-          <h2>
-            <Settings2 size={18} />
-            {locale === "ja-JP"
-              ? "ワークスペースでの動作"
-              : "Workspace behavior"}
-          </h2>
-          {(
-            [
-              [
-                "allow_task_creation",
-                locale === "ja-JP"
-                  ? "タスクの自動作成"
-                  : "Automatic task creation",
-              ],
-              [
-                "allow_task_delegation",
-                locale === "ja-JP" ? "自動委任" : "Automatic delegation",
-              ],
-            ] as const
-          ).map(([key, title]) => (
-            <label key={key}>
-              <input
-                type="checkbox"
-                checked={editing.config[key] === true}
-                onChange={(event) =>
-                  change((value) => {
-                    value.config[key] = event.target.checked;
-                  })
-                }
-              />
-              {title}
-            </label>
-          ))}
+        <section className="wb-card wb-integrations wb-span">
+          <AgentBindings
+            value={editing.config}
+            entries={data.registry}
+            node={data.node.id}
+            cluster={Boolean(editing.config.cluster)}
+            change={(configuration) =>
+              change((value) => {
+                value.config.bindings = configuration.bindings;
+                value.config.remove_default = configuration.remove_default;
+              })
+            }
+          />
           <label>
             {t.maxSteps}
             <input
@@ -3009,6 +2849,8 @@ export function Workbench({
                                     selectedRegisteredVersion.entry,
                                     selectedRegisteredVersion.draft_knowledge_digest ??
                                       null,
+                                    selectedRegisteredVersion.registered_knowledge_digest ??
+                                      null,
                                   ).map(
                                     ([name, draftValue, registeredValue]) => (
                                       <tr
@@ -3110,6 +2952,8 @@ export function Workbench({
                                   current.entry,
                                   selectedRegisteredVersion.entry,
                                   selectedRegisteredVersion.draft_knowledge_digest ??
+                                    null,
+                                  selectedRegisteredVersion.registered_knowledge_digest ??
                                     null,
                                 ).join(", ") ||
                                   (locale === "ja-JP" ? "なし" : "None")}
@@ -3346,7 +3190,9 @@ export function Workbench({
                           <div>
                             <dt>{t.tools}</dt>
                             <dd>
-                              {editing?.config.tools
+                              {editing?.config.bindings
+                                .filter((b) => b.kind === "tool")
+                                .map((b) => b.target)
                                 .map(referenceName)
                                 .join(", ") || "—"}
                             </dd>
@@ -3354,7 +3200,9 @@ export function Workbench({
                           <div>
                             <dt>{t.skills}</dt>
                             <dd>
-                              {editing?.config.skills
+                              {editing?.config.bindings
+                                .filter((b) => b.kind === "skill")
+                                .map((b) => b.target)
                                 .map(referenceName)
                                 .join(", ") || "—"}
                             </dd>
@@ -3443,24 +3291,30 @@ export function Workbench({
                               </span>
                             </li>
                           )}
-                          {editing?.config.tools.map((ref) => (
-                            <li key={`tool-${refKey(ref)}`}>
-                              <Wrench size={18} />
-                              <span>
-                                {referenceName(ref)}
-                                <small>{t.tools}</small>
-                              </span>
-                            </li>
-                          ))}
-                          {editing?.config.skills.map((ref) => (
-                            <li key={`skill-${refKey(ref)}`}>
-                              <BookOpen size={18} />
-                              <span>
-                                {referenceName(ref)}
-                                <small>{t.skills}</small>
-                              </span>
-                            </li>
-                          ))}
+                          {editing?.config.bindings
+                            .filter((b) => b.kind === "tool")
+                            .map((b) => b.target)
+                            .map((ref) => (
+                              <li key={`tool-${refKey(ref)}`}>
+                                <Wrench size={18} />
+                                <span>
+                                  {referenceName(ref)}
+                                  <small>{t.tools}</small>
+                                </span>
+                              </li>
+                            ))}
+                          {editing?.config.bindings
+                            .filter((b) => b.kind === "skill")
+                            .map((b) => b.target)
+                            .map((ref) => (
+                              <li key={`skill-${refKey(ref)}`}>
+                                <BookOpen size={18} />
+                                <span>
+                                  {referenceName(ref)}
+                                  <small>{t.skills}</small>
+                                </span>
+                              </li>
+                            ))}
                         </ul>
                         {!editing?.config.model.id && <p>{t.noModel}</p>}
                       </section>

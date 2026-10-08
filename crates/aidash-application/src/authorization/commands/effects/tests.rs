@@ -109,6 +109,14 @@ impl RemoteCommandScope for Scope {
 }
 #[async_trait]
 impl RemoteCommandEffects for Scope {
+	async fn human_read(
+		&mut self,
+		_: Uuid,
+		_: Uuid,
+		_: Uuid,
+	) -> Result<aidash_domain::HumanRequest> {
+		Err(Error::Forbidden)
+	}
 	fn local_node(&self) -> &str {
 		"aidash://home"
 	}
@@ -155,6 +163,9 @@ impl RemoteCommandEffects for Scope {
 	async fn apply(&mut self, context: WriteContext<'_>, effect: Effect<'_>) -> Result<Applied> {
 		self.call("apply")?;
 		let effect = match effect {
+			Effect::HumanRequest { kind, prompt } => {
+				json!({"kind":"human_request","request_kind":kind,"prompt":prompt})
+			}
 			Effect::Claim { revision, agent } => {
 				json!({"kind":"claim","revision":revision,"agent":agent})
 			}
@@ -263,10 +274,9 @@ async fn message_effect_output_journal_and_final_lease_check_keep_their_order(mu
 		json!({"sent":true})
 	);
 	assert_eq!(
-		&scope.calls[3..],
+		&scope.calls[4..],
 		&[
 			"task_resource",
-			"builtin:workspace_message",
 			"workspace",
 			"require:message.create",
 			"apply",
@@ -297,7 +307,7 @@ async fn exact_durable_replays_repeat_neither_effects_nor_fresh_lease_checks(mut
 		run(&mut scope, "message", &data).await.unwrap(),
 		json!({"saved":"original"})
 	);
-	assert_eq!(scope.calls.len(), 3);
+	assert_eq!(scope.calls.len(), 4);
 	assert!(scope.applied.is_empty());
 	assert!(scope.journal.is_empty());
 }

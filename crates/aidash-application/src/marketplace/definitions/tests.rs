@@ -20,7 +20,7 @@ fn agent(id: &str) -> Entry {
 	entry(
 		id,
 		"agent",
-		json!({"model":r("model"),"instructions":"Fixture","tools":[r("tool")],"cluster":null}),
+		json!({"schema_version":1,"model":r("model"),"instructions":"Fixture","bindings":[crate::test_support::binding("tool","aidash://local","tool")],"remove_default":aidash_domain::registry::bindings::DEFAULT_TOOLS,"cluster":null}),
 	)
 }
 #[derive(Default)]
@@ -105,10 +105,24 @@ fn graph() -> Fixture {
 				entry(
 					"tool",
 					"tool",
-					json!({"registry_node":"aidash://local","provider":"integration.agent@1","operation":"invoke","default_alias":"delegate","tier":"integration","transport":{"transport":"agent","node_id":"local","agent":r("agent")}}),
+					json!({"registry_node":"aidash://local","provider":"integration.agent@1","operation":"invoke","default_alias":"delegate","tier":"integration","transport":{"transport":"agent","node_id":"aidash://local","agent":r("agent")}}),
 				),
 			),
 			("model".into(), entry("model", "model", json!({}))),
+			(
+				"aidash.workspace_read".into(),
+				crate::test_support::builtin_entries("aidash://local")
+					.into_iter()
+					.find(|e| e.id == "aidash.workspace_read")
+					.unwrap(),
+			),
+			(
+				"aidash.human_request".into(),
+				crate::test_support::builtin_entries("aidash://local")
+					.into_iter()
+					.find(|e| e.id == "aidash.human_request")
+					.unwrap(),
+			),
 		]),
 		..Default::default()
 	}
@@ -117,9 +131,13 @@ fn graph() -> Fixture {
 #[tokio::test]
 async fn cycle_traversal_rechecks_authority_but_returns_each_definition_once() {
 	let mut scope = graph();
-	let entries = local_graph(&mut scope, vec![(r("agent"), "agent".into())], "local")
-		.await
-		.unwrap();
+	let entries = local_graph(
+		&mut scope,
+		vec![(r("agent"), "agent".into())],
+		"aidash://local",
+	)
+	.await
+	.unwrap();
 	assert_eq!(
 		entries.iter().map(|e| e.id.as_str()).collect::<Vec<_>>(),
 		vec!["agent", "tool", "model"]
@@ -144,7 +162,12 @@ async fn hidden_transitive_dependency_prevents_a_partial_graph() {
 	let mut scope = graph();
 	scope.denied = Some("registry.read:tool".into());
 	assert!(matches!(
-		local_graph(&mut scope, vec![(r("agent"), "agent".into())], "local").await,
+		local_graph(
+			&mut scope,
+			vec![(r("agent"), "agent".into())],
+			"aidash://local"
+		)
+		.await,
 		Err(Error::Forbidden)
 	));
 	assert_eq!(
@@ -164,7 +187,7 @@ async fn publication_checks_export_before_disclosing_dependency_content() {
 	scope.denied = Some("registry.export:tool".into());
 	let root = entry("root", "cluster", json!({"coordinator":r("agent")}));
 	assert!(matches!(
-		publication_graph(&mut scope, &root, &[], "local").await,
+		publication_graph(&mut scope, &root, &[], "aidash://local").await,
 		Err(Error::Forbidden)
 	));
 	assert_eq!(
@@ -331,4 +354,112 @@ async fn cross_node_bundle_installation_uses_verified_receiving_node_dependencie
 		.await,
 		Err(Error::Forbidden)
 	));
+}
+
+#[rstest]
+#[tokio::test]
+async fn native_source_publication_freezes_the_complete_typed_provider_closure() {
+	let source = entry(
+		"participant-source",
+		"source",
+		json!({"scope":"participant","memory":r("native"),"max_tokens":4096}),
+	);
+	let mut entries = crate::test_support::native_memory_entries();
+	entries.push(crate::test_support::entry(
+		"fixture-model",
+		"model",
+		json!({}),
+	));
+	// A model-backed reranker adds its own exact model edge.
+	entries
+		.iter_mut()
+		.find(|e| e.kind == "reranker")
+		.unwrap()
+		.config = json!({"provider":"model","model":r("rerank-model")});
+	let mut rerank_model = crate::test_support::entry("fixture-model", "model", json!({}));
+	rerank_model.id = "rerank-model".into();
+	entries.push(rerank_model);
+	let mut scope = Fixture {
+		entries: entries.into_iter().map(|e| (e.id.clone(), e)).collect(),
+		..Default::default()
+	};
+	let dependencies = publication_graph(&mut scope, &source, &[], "aidash://local")
+		.await
+		.unwrap();
+	assert_eq!(
+		dependencies
+			.iter()
+			.map(|d| (d.reference.id.as_str(), d.kind.as_str()))
+			.collect::<Vec<_>>(),
+		vec![
+			("fixture-model", "model"),
+			("native", "memory"),
+			("native-embedding", "embedding"),
+			("native-reranker", "reranker"),
+			("native-tokenizer", "tokenizer"),
+			("rerank-model", "model")
+		]
+	);
+	for dependency in dependencies {
+		assert_eq!(
+			dependency.digest,
+			content(&scope.entries[&dependency.reference.id])
+		);
+		assert!(
+			scope
+				.calls
+				.contains(&format!("registry.export:{}", dependency.reference.id))
+		);
+	}
+	scope.entries.remove("native-tokenizer");
+	assert!(
+		publication_graph(&mut scope, &source, &[], "aidash://local")
+			.await
+			.is_err()
+	);
+}
+
+#[rstest]
+fn native_provider_dependency_substitution_rewrites_every_role() {
+	let mut provider = crate::test_support::native_memory_entries()
+		.into_iter()
+		.find(|e| e.kind == "memory")
+		.unwrap();
+	let dependencies = refs(&provider, "aidash://publisher").unwrap();
+	let bindings = dependencies
+		.into_iter()
+		.map(|(source, _)| DependencyBinding {
+			target: r(&format!("installed-{}", source.id)),
+			source,
+		})
+		.collect::<Vec<_>>();
+	rewrite(&mut provider, &bindings, "aidash://receiver").unwrap();
+	for (reference, _) in refs(&provider, "aidash://receiver").unwrap() {
+		assert!(reference.id.starts_with("installed-"));
+	}
+	let mut source = entry(
+		"source",
+		"source",
+		json!({"scope":"workspace","memory":r("native"),"max_tokens":4096}),
+	);
+	rewrite(
+		&mut source,
+		&[DependencyBinding {
+			source: r("native"),
+			target: r("installed-native"),
+		}],
+		"aidash://receiver",
+	)
+	.unwrap();
+	assert_eq!(source.config["memory"], json!(r("installed-native")));
+	let mut reranker = entry(
+		"ranker",
+		"reranker",
+		json!({"provider":"model","model":r("fixture-model")}),
+	);
+	rewrite(&mut reranker, &bindings, "aidash://receiver").unwrap();
+	assert_eq!(
+		reranker.config["model"],
+		json!(r("installed-fixture-model"))
+	);
 }

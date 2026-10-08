@@ -17,6 +17,10 @@ pub trait ProfileConfiguration: Send + Sync {
 }
 #[async_trait]
 pub trait ProfileDraftScope: Send {
+	async fn bindings(
+		&mut self,
+		entry: &aidash_domain::registry::Entry,
+	) -> Result<aidash_domain::registry::bindings::BindingSnapshot>;
 	async fn draft(&mut self, id: Uuid) -> Result<Draft>;
 	async fn authorize(&mut self, draft: &Draft, action: &str, shares: bool) -> Result<()>;
 	async fn commit(self: Box<Self>) -> Result<()>;

@@ -113,6 +113,8 @@ class NativeMemory(RemoteMemory):
                 "max_model_calls": 4, "max_model_tokens": 32768, "max_cost_micros": 10000, "max_retries": 2, "max_call_seconds": 30},
             "semantic_link_min_similarity_millionths": 700000, "learn_from_runs": False, "maintain_observations": False, "refresh_mental_models": False}}
         for node in range(2):
+            def binding(kind, target, origin=node):
+                return {"kind": kind, "target": {"registry_node": f"aidash://tx-{origin:02}", **target}, "narrow": {}}
             subjects = {"alice": {"kind": "user"}, **{f"aidash://tx-{n:02}/agents/research@1.0.0": {"kind": "agent"} for n in range(2)}}
             subjects[f"aidash://tx-{node:02}/agents/learning@1.0.0"] = {"kind": "agent"}
             bundle = {"tenant": "acme", "subjects": subjects, "policies": [{"id": "approved-work", "effect": "allow", "subjects": {"any": True}, "actions": ["*"], "resources": {"kinds": ["*"]}}]}
@@ -125,14 +127,14 @@ class NativeMemory(RemoteMemory):
                 ("embedding", "home-embedding", self.embedding), ("reranker", "native-reranker", {"provider": "rrf"}),
                 ("tokenizer", "native-tokenizer", {"provider": "utf8_upper_bound"}), ("memory", "native-memory", policy),
                 ("source", "native-shared", {"memory": self.memory, "scope": "workspace", "max_tokens": 16384}),
-                ("agent", "research", {"model": reference("model"), "instructions": "Use current Home memory / 現在のHome記憶を参照", "tools": [], "skills": [], "memory": self.memory, "sources": [reference("native-shared")], "allow_memory_write": True}),
+                ("agent", "research", {"model": reference("model"), "instructions": "Use current Home memory / 現在のHome記憶を参照", "schema_version": 1, "bindings": [binding("memory", self.memory), binding("source", reference("native-shared"))], "remove_default": ["file_search", "file_read"]}),
             ]:
                 self.register(node, kind, name, config)
             learning = copy.deepcopy(policy)
             learning["policy"]["learn_from_runs"] = True
             self.register(node, "memory", "native-learning-memory", learning)
             self.register(node, "agent", "learning", {"model": reference("model"), "instructions": "Report fixture failures with their actual verification status / 検証状態を保持する",
-                "tools": [], "skills": [], "memory": self.learning_memory, "sources": [], "allow_memory_write": False}, ["native-learning-ordinary"])
+                "schema_version": 1, "bindings": [binding("memory", self.learning_memory)], "remove_default": ["file_search", "file_read", "memory_mutate"]}, ["native-learning-ordinary"])
 
     def mutate(self, workspace, bank, changes):
         return self.ok(self.user(0, f"/api/workspaces/{workspace}/memory/units/mutate", {

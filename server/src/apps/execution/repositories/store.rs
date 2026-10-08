@@ -721,7 +721,7 @@ impl Store {
 		self.require_legacy_agent(&agent.id, &agent.version).await?;
 		let mut tx = crate::database::native::begin(&self.pool).await?;
 		let claimed = self
-			.claim_in(&mut tx, &task, revision, owner, agent)
+			.claim_in(&mut tx, &task, revision, owner, agent, None)
 			.await?;
 		crate::semantic::repositories::bindings::claimed(
 			self,
@@ -740,6 +740,7 @@ impl Store {
 		revision: i64,
 		owner: &str,
 		agent: &Entry,
+		admitted: Option<&aidash_domain::registry::bindings::BindingSnapshot>,
 	) -> Result<Task> {
 		let id = task.id;
 		let mut requirements: Search = serde_json::from_value(task.requirements.clone())?;
@@ -751,6 +752,22 @@ impl Store {
 		}
 		let claimed: Task = { let query_bind_1 = id; let query_bind_2 = revision; let query_bind_3 = owner; aidash_server::database::query_as(&Query::update().table(Alias::new("tasks")).value_expr(Alias::new("status"), Expr::cust("'CLAIMED'")).value_expr(Alias::new("owner"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_3.to_owned()).into()])).value_expr(Alias::new("revision"), Expr::cust("revision + 1")).and_where(SimpleExpr::CustomWithExpr("(id = ? AND revision = ? AND status = 'OPEN' AND NOT EXISTS(SELECT 1 FROM delegations AS d WHERE d.task_id = tasks.id AND d.node_id || '/agents/' || d.agent_id || '@' || d.agent_version <> ?) AND NOT EXISTS(SELECT 1 FROM tasks AS d WHERE d.id = ANY(tasks.dependencies) AND d.status <> 'COMPLETED'))".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into(), Expr::value(query_bind_3.to_owned()).into()])).returning_all().to_string(PostgresQueryBuilder)).fetch_optional(&mut **tx).await? }.ok_or_else(|| Error::Conflict("task already claimed, revision changed, or dependencies are incomplete".into()))?;
 		if owner == qualified_agent(&self.node_id, &agent.id, &agent.version) {
+			let snapshot = if let Some(snapshot) = admitted {
+				snapshot.clone()
+			} else {
+				crate::apps::registry::repositories::bindings::snapshot(
+					tx,
+					&self.node_id,
+					agent,
+					false,
+				)
+				.await?
+			};
+			snapshot.validate()?;
+			let context = crate::context::Context {
+				binding_snapshot: Some(Box::new(snapshot)),
+				..Default::default()
+			};
 			// Persist the local execution with the claim; no crash can strand a
 			// claimed task between the control API and its worker queue.
 			{
@@ -760,6 +777,7 @@ impl Store {
 				let query_bind_4 = &self.node_id;
 				let query_bind_5 = &agent.id;
 				let query_bind_6 = &agent.version;
+				let query_bind_7 = serde_json::to_value(&context)?;
 				crate::database::native::query(
 					&Query::insert()
 						.into_table(Alias::new("runs"))
@@ -770,6 +788,7 @@ impl Store {
 							Alias::new("home_node"),
 							Alias::new("agent_id"),
 							Alias::new("agent_version"),
+							Alias::new("context"),
 						])
 						.from_subquery(
 							Query::select()
@@ -797,6 +816,7 @@ impl Store {
 									"(?)".to_owned(),
 									vec![Expr::value(query_bind_6.to_owned()).into()],
 								))
+								.expr(Expr::value(query_bind_7))
 								.to_owned(),
 						)
 						.on_conflict(
@@ -2373,6 +2393,27 @@ impl Store {
 		agent_id: &str,
 		agent_version: &str,
 	) -> Result<Run> {
+		self.accept_run_pinned(task, home_node, agent_id, agent_version, None)
+			.await
+	}
+	pub(crate) async fn accept_run_pinned(
+		&self,
+		task: &Task,
+		home_node: &str,
+		agent_id: &str,
+		agent_version: &str,
+		pinned: Option<&aidash_domain::registry::bindings::ForeignAgentSnapshot>,
+	) -> Result<Run> {
+		if let Some(pinned) = pinned {
+			pinned.validate()?;
+			if pinned.agent.registry_node != self.node_id
+				|| pinned.agent.id != agent_id
+				|| pinned.agent.version != agent_version
+				|| home_node == self.node_id
+			{
+				return Err(Error::Forbidden);
+			}
+		}
 		self.require_legacy_execution(task.workspace_id).await?;
 		let mut tx = crate::database::native::begin(&self.pool).await?;
 		// Serialize legacy admission against scoped receiver admission. Neither
@@ -2398,7 +2439,53 @@ impl Store {
 		if admitted {
 			return Err(Error::Forbidden);
 		}
+		let existing: Option<Run> = aidash_server::database::query_as(
+			&Query::select()
+				.column(ColumnRef::Asterisk)
+				.from(Alias::new("runs"))
+				.and_where(Expr::col(Alias::new("home_node")).eq(home_node))
+				.and_where(Expr::col(Alias::new("task_id")).eq(Expr::value(task.id)))
+				.to_string(PostgresQueryBuilder),
+		)
+		.fetch_optional(&mut *tx)
+		.await?;
+		if let Some(run) = existing {
+			if run.agent_id != agent_id
+				|| run.agent_version != agent_version
+				|| run.workspace_id != task.workspace_id
+				|| pinned.is_some_and(|snapshot| {
+					run.context.binding_snapshot.as_deref() != Some(&snapshot.snapshot())
+				}) {
+				return Err(Error::Conflict(
+					"task already has a different executor".into(),
+				));
+			}
+			tx.commit().await?;
+			return Ok(run);
+		}
 		self.require_legacy_agent(agent_id, agent_version).await?;
+		let agent = aidash_application::ports::registry::DefinitionLookup::definition(
+			&mut crate::apps::registry::repositories::sql::SqlScope(&mut tx),
+			agent_id,
+			agent_version,
+		)
+		.await?;
+		let snapshot = crate::apps::registry::repositories::bindings::snapshot(
+			&mut tx,
+			&self.node_id,
+			&agent,
+			home_node != self.node_id,
+		)
+		.await?;
+		if pinned.is_some_and(|pinned| pinned.snapshot() != snapshot) {
+			return Err(Error::Conflict(
+				"offered Agent closure differs from receiver admission".into(),
+			));
+		}
+		let context = crate::context::Context {
+			binding_snapshot: Some(Box::new(snapshot)),
+			..Default::default()
+		};
 		let row: Option<Run> = {
 			let query_bind_1 = Uuid::new_v4();
 			let query_bind_2 = task.id;
@@ -2406,6 +2493,7 @@ impl Store {
 			let query_bind_4 = home_node;
 			let query_bind_5 = agent_id;
 			let query_bind_6 = agent_version;
+			let query_bind_7 = serde_json::to_value(&context)?;
 			aidash_server::database::query_as(
 				&Query::insert()
 					.into_table(Alias::new("runs"))
@@ -2416,6 +2504,7 @@ impl Store {
 						Alias::new("home_node"),
 						Alias::new("agent_id"),
 						Alias::new("agent_version"),
+						Alias::new("context"),
 					])
 					.from_subquery(
 						Query::select()
@@ -2443,6 +2532,7 @@ impl Store {
 								"(?)".to_owned(),
 								vec![Expr::value(query_bind_6.to_owned()).into()],
 							))
+							.expr(Expr::value(query_bind_7))
 							.to_owned(),
 					)
 					.on_conflict(
@@ -2621,7 +2711,7 @@ impl Store {
 			}
 		}
 		let saved: Run = { let query_bind_1 = run.id; let query_bind_2 = worker; let query_bind_3 = run.phase(); let query_bind_4 = &run.context; let query_bind_5 = &pending; let query_bind_6 = run.step; let query_bind_7 = error; let query_bind_8 = kind != "model.completed"; let query_bind_9 = run.observed_input_seq; aidash_server::database::query_as(&reinhardt::query::Query::update()
-				.table(reinhardt::query::Alias::new("runs")).value_expr(reinhardt::query::Alias::new("phase"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_3.as_str()).into()])).value_expr(reinhardt::query::Alias::new("context"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(serde_json::to_value(query_bind_4)?).into()])).value_expr(reinhardt::query::Alias::new("pending"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_5.to_owned()).into()])).value_expr(reinhardt::query::Alias::new("step"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_6.to_owned()).into()])).value_expr(reinhardt::query::Alias::new("error"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_7.to_owned()).into()])).value_expr(reinhardt::query::Alias::new("revision"), reinhardt::query::Expr::cust("revision + 1")).value_expr(reinhardt::query::Alias::new("observed_input_seq"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_9.to_owned()).into()])).value_expr(reinhardt::query::Alias::new("updated_at"), reinhardt::query::Expr::cust("CURRENT_TIMESTAMP")).value_expr(reinhardt::query::Alias::new("lease_owner"), reinhardt::query::Expr::cust("NULL")).value_expr(reinhardt::query::Alias::new("lease_until"), reinhardt::query::Expr::cust("NULL"))
+				.table(reinhardt::query::Alias::new("runs")).value_expr(reinhardt::query::Alias::new("phase"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_3.as_str()).into()])).value_expr(reinhardt::query::Alias::new("context"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(serde_json::to_value(query_bind_4)?).into()])).value_expr(reinhardt::query::Alias::new("pending"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_5.to_owned()).into()])).value_expr(reinhardt::query::Alias::new("step"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_6.to_owned()).into()])).value_expr(reinhardt::query::Alias::new("error"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_7.to_owned()).into()])).value_expr(reinhardt::query::Alias::new("revision"), reinhardt::query::Expr::cust("revision + 1")).value_expr(reinhardt::query::Alias::new("observed_input_seq"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_9.to_owned()).into()])).value_expr(reinhardt::query::Alias::new("updated_at"), reinhardt::query::Expr::cust("CURRENT_TIMESTAMP")).value_expr(reinhardt::query::Alias::new("lease_owner"), reinhardt::query::Expr::cust(if kind == "run.sources_observed" { "lease_owner" } else { "NULL" })).value_expr(reinhardt::query::Alias::new("lease_until"), reinhardt::query::Expr::cust(if kind == "run.sources_observed" { "lease_until" } else { "NULL" }))
 				.and_where(SimpleExpr::CustomWithExpr("(id = ? AND lease_owner = ? AND lease_until > CURRENT_TIMESTAMP AND (? OR control <> 'CANCELLED'))".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into(), Expr::value(query_bind_8.to_owned()).into()]))
 				.returning_all()
 				.to_string(reinhardt::query::PostgresQueryBuilder))
@@ -2877,6 +2967,37 @@ impl Store {
 			.await?;
 		tx.commit().await?;
 		Ok(request)
+	}
+
+	pub(crate) async fn cache_home_human(
+		&self,
+		run: &Run,
+		request: &HumanRequest,
+		key: &str,
+	) -> Result<()> {
+		if request.run_id != run.id || request.workspace_id != run.workspace_id {
+			return Err(Error::Forbidden);
+		}
+		let mut tx = self.database().begin().await?;
+		let (cached, created) = HumanRequestRecord::admit_home(tx.as_mut(), request, key).await?;
+		human_interaction::validate_replay(&cached, run, &request.kind, &request.prompt)?;
+		if cached.id != request.id {
+			return Err(Error::Conflict(
+				"Home human request identity changed".into(),
+			));
+		}
+		if created {
+			event_records::append(
+				tx.as_mut(),
+				&self.node_id,
+				None,
+				"human.requested",
+				json!(request),
+			)
+			.await?;
+		}
+		tx.commit().await?;
+		Ok(())
 	}
 
 	async fn human_request_in(

@@ -28,7 +28,7 @@ fn validation() -> DefinitionValidation {
 fn inspection() -> Inspection {
 	let agent: Entry = serde_json::from_value(
 		json!({"id":"a","version":"1.0.0","kind":"agent","name":{"en":"A"},"description":{"en":""},
-        "config":{"model":{"id":"m","version":"1.0.0"},"instructions":"Do work."}}),
+        "config":{"schema_version":1,"bindings":[],"remove_default":[],"model":{"id":"m","version":"1.0.0"},"instructions":"Do work."}}),
 	)
 	.unwrap();
 	let model: Entry = serde_json::from_value(
@@ -36,14 +36,25 @@ fn inspection() -> Inspection {
         "config":{"credential_env":"RECEIVER_ONLY","endpoint":"https://receiver-only.invalid"}}),
 	)
 	.unwrap();
+	let snapshot = crate::test_support::resolve("aidash://receiver", &agent, true, vec![model]);
+	let agent = snapshot
+		.definitions
+		.iter()
+		.find(|d| d.identity == snapshot.agent)
+		.unwrap()
+		.definition
+		.clone();
 	Inspection {
+		binding_snapshot: snapshot.clone(),
 		generation: None,
 		lineage: vec![],
 		node_id: "aidash://receiver".into(),
 		authority_digest: format!("sha256:{}", "a".repeat(64)),
 		agent: agent.clone(),
-		definitions: [agent, model]
+		definitions: snapshot
+			.definitions
 			.into_iter()
+			.map(|d| d.definition)
 			.map(|entry| aidash_domain::federation::execution::Definition {
 				entry: EntityRef {
 					id: entry.id.clone(),
@@ -98,7 +109,15 @@ fn rebound_or_incomplete_receiver_definitions_are_rejected(
 		"authority_digest" => inspection.authority_digest = "sha256:short".into(),
 		"agent" => inspection.agent.id = "other".into(),
 		"metadata_id" => inspection.definitions[1].metadata.id = "other".into(),
-		"metadata_kind" => inspection.definitions[1].metadata.kind = "tool".into(),
+		"metadata_kind" => {
+			inspection
+				.definitions
+				.iter_mut()
+				.find(|d| d.kind == "model")
+				.unwrap()
+				.metadata
+				.kind = "tool".into()
+		}
 		"definition_digest" => {
 			inspection.definitions[1].digest = format!("sha256:{}", "b".repeat(64))
 		}
@@ -119,7 +138,7 @@ fn rebound_or_incomplete_receiver_definitions_are_rejected(
 			&expected(),
 			&Search::default()
 		),
-		Err(Error::External(_))
+		Err(Error::External(_) | Error::Json(_))
 	));
 }
 #[rstest]

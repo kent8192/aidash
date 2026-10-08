@@ -34,8 +34,20 @@ const registry = [
   {
     ...entry(4, "agent", "Researcher", "調査担当"),
     config: {
+      schema_version: 1,
       model: { id: ids[0], version: "9.0.0" },
-      tools: [{ id: ids[1], version: "1.0.0" }],
+      bindings: [
+        {
+          kind: "tool",
+          target: {
+            registry_node: "aidash://home",
+            id: ids[1],
+            version: "1.0.0",
+          },
+          narrow: {},
+        },
+      ],
+      remove_default: [],
     },
   },
   entry(5, "model", "Fallback model", ""),
@@ -59,7 +71,7 @@ for (const locale of ["en-US", "ja-JP"]) {
           node: {
             id: "aidash://home",
             endpoint: "http://localhost",
-            protocol_version: "0.1",
+            protocol_version: "0.2",
             capabilities: [],
             clusters: [],
           },
@@ -115,16 +127,17 @@ for (const locale of ["en-US", "ja-JP"]) {
     await dialog
       .getByLabel(japanese ? "説明" : "Description", { exact: true })
       .fill("Uses named references");
-    await dialog
-      .getByLabel(`${japanese ? "調査スキル" : "Research skill"} · 1.0.0`, {
-        exact: true,
-      })
-      .check();
-    await dialog
-      .getByLabel(`${japanese ? "検索ツール" : "Search tool"} · 1.0.0`, {
-        exact: true,
-      })
-      .check();
+    const binding = dialog.getByLabel(
+      japanese ? "追加する定義" : "Definition to bind",
+    );
+    const add = dialog.getByRole("button", {
+      name: japanese ? "Bindingを追加" : "Add binding",
+      exact: true,
+    });
+    await binding.selectOption(`skill:${ids[2]}@1.0.0`);
+    await add.click();
+    await binding.selectOption(`tool:${ids[1]}@1.0.0`);
+    await add.click();
     await dialog.locator('select[name="cluster"]').selectOption({
       label: `${japanese ? "調査チーム" : "Research team"} · 1.0.0`,
     });
@@ -134,8 +147,27 @@ for (const locale of ["en-US", "ja-JP"]) {
       .poll(() => submitted?.config)
       .toMatchObject({
         model: { id: ids[0], version: "2.0.0" },
-        tools: [{ id: ids[1], version: "1.0.0" }],
-        skills: [{ id: ids[2], version: "1.0.0" }],
+        schema_version: 1,
+        bindings: [
+          {
+            kind: "skill",
+            target: {
+              registry_node: "aidash://home",
+              id: ids[2],
+              version: "1.0.0",
+            },
+            narrow: {},
+          },
+          {
+            kind: "tool",
+            target: {
+              registry_node: "aidash://home",
+              id: ids[1],
+              version: "1.0.0",
+            },
+            narrow: {},
+          },
+        ],
         cluster: { id: ids[3], version: "1.0.0" },
       });
     await expect(dialog).toHaveCount(0);

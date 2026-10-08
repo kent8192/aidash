@@ -111,6 +111,74 @@ impl NativeContext {
 	}
 }
 
+/// Native adapters mount one combined set, even when several immutable Source
+/// declarations contribute content. Validate aggregate identities before a Run
+/// is admitted rather than failing at its first mount.
+pub(super) fn validate_mounts(contexts: impl IntoIterator<Item = NativeContext>) -> Result<()> {
+	let mut references = BTreeSet::new();
+	let mut skills = BTreeSet::new();
+	let mut roots = BTreeSet::new();
+	for context in contexts {
+		match context.source {
+			NativeSource::ReferenceAttachments {
+				references: attachments,
+			} => {
+				for attachment in attachments {
+					if !references.insert(attachment.reference_id) || references.len() > 8 {
+						return Err(Error::Invalid(
+							"ambiguous or excessive aggregate reference Sources".into(),
+						));
+					}
+				}
+			}
+			NativeSource::SkillAttachments { attachments } => {
+				for attachment in attachments {
+					if !skills.insert(attachment.skill_id) || skills.len() > 16 {
+						return Err(Error::Invalid(
+							"ambiguous or excessive aggregate Skill Sources".into(),
+						));
+					}
+				}
+			}
+			NativeSource::SkillRoots { roots: paths } => {
+				for root in paths {
+					if !roots.insert(root) || roots.len() > 8 {
+						return Err(Error::Invalid(
+							"ambiguous or excessive aggregate Skill root Sources".into(),
+						));
+					}
+				}
+			}
+			_ => {}
+		}
+	}
+	Ok(())
+}
+
+/// Validate either a native memory role or an explicit mounted context descriptor.
+pub fn validate_definition(entry: &crate::registry::Entry) -> Result<Option<NativeContext>> {
+	if entry.config.get("schema_version").is_some() {
+		let descriptor: NativeContext = serde_json::from_value(entry.config.clone())?;
+		descriptor.validate(&entry.kind)?;
+		return Ok(Some(descriptor));
+	}
+	match entry.kind.as_str() {
+		"memory" => serde_json::from_value::<crate::memory::ProviderConfig>(entry.config.clone())?
+			.policy
+			.validate()?,
+		"source" => {
+			let source: crate::memory::SourceConfig = serde_json::from_value(entry.config.clone())?;
+			if source.max_tokens == 0 || source.max_tokens > i32::MAX as usize {
+				return Err(Error::Invalid(
+					"memory Source requires a finite context cap".into(),
+				));
+			}
+		}
+		_ => return Err(Error::Invalid("unsupported context definition".into())),
+	}
+	Ok(None)
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;

@@ -80,7 +80,7 @@ impl CorePermission {
 			Self::Patch => config.patch,
 			Self::Skills => config.skills,
 			Self::Sharing => config.sharing,
-			Self::Outbound => config.shell || config.python,
+			Self::Outbound => config.outbound || config.shell || config.python,
 		}
 	}
 }
@@ -364,7 +364,7 @@ mod tests {
 	#[test]
 	fn native_memory_contracts_require_explicit_policy_and_stay_at_home() {
 		let mut config: AgentConfig = serde_json::from_value(serde_json::json!({
-			"model": {"id":"model", "version":"1"}
+			"schema_version":1, "instructions":"Use native memory", "remove_default":["memory_mutate"], "model": {"id":"model", "version":"1.0.0"}
 		}))
 		.unwrap();
 		assert!(!AgentFlag::MemoryWrite.permitted(&config));

@@ -37,7 +37,7 @@ async fn prepare(
 	pin: &ProfilePin,
 	rule: &RealToolRule,
 	call: &ToolCall,
-) -> Result<(TestSession, Box<dyn PreparedRealRequest>)> {
+) -> Result<(TestSession, Box<dyn PreparedRealRequest>, ToolCall)> {
 	let session = scope.session(session_id, true).await?;
 	if session.status != "running" {
 		return Err(Error::Conflict("test was stopped".into()));
@@ -66,14 +66,33 @@ async fn prepare(
 			return Err(Error::Conflict("test credential changed".into()));
 		}
 	}
+	let snapshot: aidash_domain::registry::bindings::BindingSnapshot =
+		serde_json::from_value(session.scenario["binding_snapshot"].clone())?;
+	snapshot.validate()?;
+	let binding = snapshot
+		.bindings
+		.iter()
+		.find(|binding| {
+			binding.identity.local() == rule.tool
+				&& binding.alias.as_deref() == Some(&call.name)
+				&& binding.excluded_reason.is_none()
+		})
+		.ok_or(Error::Forbidden)?;
 	let tool = scope.effective(&rule.tool).await?;
+	if aidash_domain::registry::rules::digest(&serde_json::to_value(&tool)?) != binding.digest {
+		return Err(Error::Conflict(
+			"test Tool differs from its admitted Binding".into(),
+		));
+	}
+	let mut call = call.clone();
+	binding.narrow.apply(&mut call.arguments)?;
 	super::super::profile::validate_real_rule(dispatch.configuration, rule, &tool)?;
 	jsonschema::validator_for(&tool.schema)
 		.map_err(|e| Error::Invalid(e.to_string()))?
 		.validate(&call.arguments)
 		.map_err(|e| Error::Invalid(e.to_string()))?;
-	let request = dispatch.transport.prepare(session_id, rule, call)?;
-	Ok((session, request))
+	let request = dispatch.transport.prepare(session_id, rule, &call)?;
+	Ok((session, request, call))
 }
 async fn record_pre_dispatch_denial(
 	repository: &dyn RealDispatchRepository,
@@ -117,9 +136,10 @@ pub async fn invoke(
 	{
 		return Err(Error::Forbidden);
 	}
-	let pending = json!({"id":call.id,"name":call.name,"arguments":call.arguments,"outcome":"outcome_unknown","endpoint":rule.endpoint});
 	let mut scope = repository.begin_real().await?;
-	let (session, _) = prepare(scope.as_mut(), dispatch, session_id, pin, rule, call).await?;
+	let (session, _, prepared_call) =
+		prepare(scope.as_mut(), dispatch, session_id, pin, rule, call).await?;
+	let pending = json!({"id":call.id,"name":call.name,"arguments":prepared_call.arguments,"outcome":"outcome_unknown","endpoint":rule.endpoint});
 	let mut calls = session.tool_calls.unwrap_or_else(|| json!([]));
 	calls
 		.as_array_mut()
@@ -128,14 +148,15 @@ pub async fn invoke(
 	scope.write_calls(session_id, calls, true).await?;
 	scope.commit().await?;
 	let mut scope = repository.begin_real().await?;
-	let (_, request) = match prepare(scope.as_mut(), dispatch, session_id, pin, rule, call).await {
-		Ok(prepared) => prepared,
-		Err(error) => {
-			scope.rollback().await?;
-			record_pre_dispatch_denial(repository, session_id, call, &error).await?;
-			return Err(error);
-		}
-	};
+	let (_, request, prepared_call) =
+		match prepare(scope.as_mut(), dispatch, session_id, pin, rule, call).await {
+			Ok(prepared) => prepared,
+			Err(error) => {
+				scope.rollback().await?;
+				record_pre_dispatch_denial(repository, session_id, call, &error).await?;
+				return Err(error);
+			}
+		};
 	let (result, outcome) = request.send().await?;
 	let mut recorded = scope
 		.session(session_id, false)
@@ -149,7 +170,7 @@ pub async fn invoke(
 	if last["id"] != call.id || last["outcome"] != "outcome_unknown" {
 		return Err(Error::Conflict("pending test Tool call changed".into()));
 	}
-	*last = json!({"id":call.id,"name":call.name,"arguments":call.arguments,"outcome":outcome,"result":result,"endpoint":rule.endpoint});
+	*last = json!({"id":call.id,"name":call.name,"arguments":prepared_call.arguments,"outcome":outcome,"result":result,"endpoint":rule.endpoint});
 	scope.write_calls(session_id, recorded, false).await?;
 	scope.commit().await?;
 	Ok((result, outcome))

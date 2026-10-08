@@ -83,3 +83,27 @@ fn a_failure_delivery_can_resume_without_decoding_a_corrupt_diagnostic_context(m
 	);
 	assert!(raw.decode().is_err());
 }
+
+#[rstest]
+fn inspection_omits_source_text_while_storage_preserves_the_retry_cache(mut raw: RawRun) {
+	let mut context = Context::default();
+	context.source_observation = Some(
+		crate::context::sources::SourceObservation::new(
+			"0:0:0".into(),
+			"sha256:fixture".into(),
+			json!({"skill_context":"private-source-text"}),
+		)
+		.unwrap(),
+	);
+	raw.context = serde_json::to_value(&context).unwrap();
+	let restored: Context = serde_json::from_value(raw.context.clone()).unwrap();
+	assert_eq!(
+		restored.source_observation.as_ref().unwrap().content,
+		json!({"skill_context":"private-source-text"})
+	);
+	let inspection = serde_json::to_value(raw.inspect()).unwrap();
+	assert!(inspection["context"].get("source_observation").is_none());
+	assert!(!inspection.to_string().contains("private-source-text"));
+	let schema = serde_json::to_value(schemars::schema_for!(RunInspection)).unwrap();
+	assert!(!schema.to_string().contains("source_observation"));
+}

@@ -27,8 +27,8 @@ struct Scope {
 }
 impl Scope {
 	fn new() -> Self {
-		let subject = qualified_agent("aidash://node", "agent", "1");
-		Self{task:Some(Task{id:Uuid::from_u128(1),workspace_id:Uuid::from_u128(2),title:"task".into(),description:String::new(),status:TaskStatus::Open,requirements:json!({}),owner:None,created_by:"root".into(),dependencies:vec![],parent_id:None,revision:7,created_at:chrono::Utc::now()}),entry:serde_json::from_value(json!({"id":"agent","version":"1","kind":"agent","name":{},"description":{},"config":{"model":{"id":"model","version":"1"}}})).unwrap(),bundle:serde_json::from_value(json!({"tenant":"tenant","subjects":{subject:{"kind":"agent","delegated_by":null}}})).unwrap(),identity:ExecutionPrincipal{tenant:"tenant".into(),subject:"root".into(),credential_id:Uuid::from_u128(4)},subjects:vec!["root".into()],context:json!({}),calls:vec![],fail:None,deny:None,active:true,origin:None,mapping:false,grants:vec![],claim_args:None,bound_origin:None}
+		let subject = qualified_agent("aidash://node", "agent", "1.0.0");
+		Self{task:Some(Task{id:Uuid::from_u128(1),workspace_id:Uuid::from_u128(2),title:"task".into(),description:String::new(),status:TaskStatus::Open,requirements:json!({}),owner:None,created_by:"root".into(),dependencies:vec![],parent_id:None,revision:7,created_at:chrono::Utc::now()}),entry:serde_json::from_value(json!({"id":"agent","version":"1.0.0","kind":"agent","name":{},"description":{},"config":{"schema_version":1,"instructions":"Fixture","bindings":[],"remove_default":[],"model":{"id":"model","version":"1.0.0"}}})).unwrap(),bundle:serde_json::from_value(json!({"tenant":"tenant","subjects":{subject:{"kind":"agent","delegated_by":null}}})).unwrap(),identity:ExecutionPrincipal{tenant:"tenant".into(),subject:"root".into(),credential_id:Uuid::from_u128(4)},subjects:vec!["root".into()],context:json!({}),calls:vec![],fail:None,deny:None,active:true,origin:None,mapping:false,grants:vec![],claim_args:None,bound_origin:None}
 	}
 	fn call(&mut self, name: &str) -> Result<()> {
 		self.calls.push(name.into());
@@ -92,6 +92,19 @@ impl ExecutionGrantSession for Scope {
 }
 #[async_trait]
 impl ExecutionAdmissionSession for Scope {
+	async fn bindings(
+		&mut self,
+		entry: &Entry,
+	) -> Result<aidash_domain::registry::bindings::BindingSnapshot> {
+		let _: aidash_domain::registry::bindings::AgentBindings =
+			serde_json::from_value(entry.config.clone())?;
+		Ok(crate::test_support::resolve(
+			self.node_id(),
+			entry,
+			false,
+			vec![],
+		))
+	}
 	fn node_id(&self) -> &str {
 		"aidash://node"
 	}
@@ -135,6 +148,7 @@ impl ExecutionAdmissionSession for Scope {
 		revision: i64,
 		subject: &str,
 		_: &Entry,
+		_: &aidash_domain::registry::bindings::BindingSnapshot,
 	) -> Result<Task> {
 		self.call("claim")?;
 		self.claim_args = Some((revision, subject.into()));
@@ -199,7 +213,7 @@ impl ExecutionAdmissionSession for Scope {
 fn agent() -> EntityRef {
 	EntityRef {
 		id: "agent".into(),
-		version: "1".into(),
+		version: "1.0.0".into(),
 	}
 }
 #[rstest]
@@ -220,7 +234,7 @@ async fn admitted_task_retains_credential_chain_revision_and_browser_origin(
 	let task = admit(&mut s, Uuid::from_u128(1), revision, &agent(), false)
 		.await
 		.unwrap();
-	let qualified = qualified_agent(s.node_id(), "agent", "1");
+	let qualified = qualified_agent(s.node_id(), "agent", "1.0.0");
 	assert_eq!(task.status, TaskStatus::Claimed);
 	assert_eq!(
 		s.claim_args,

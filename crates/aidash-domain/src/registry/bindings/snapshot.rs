@@ -7,11 +7,14 @@ use crate::tool::providers::{
 impl BindingSnapshot {
 	pub(super) fn validate_closure(
 		&self,
-		config: &AgentBindings,
+		_config: &AgentBindings,
 		definitions: &BTreeMap<&QualifiedRef, &ResolvedDefinition>,
 	) -> Result<()> {
-		let mut pending = config
-			.normalize(&self.agent.registry_node)?
+		let mut pending = definitions
+			.get(&self.agent)
+			.ok_or_else(|| Error::Invalid("snapshot lacks Agent".into()))?
+			.definition
+			.normalized_bindings(&self.agent.registry_node)?
 			.into_iter()
 			.map(|binding| (binding, BTreeSet::new(), None::<(String, String)>))
 			.collect::<Vec<_>>();
@@ -155,10 +158,9 @@ impl BindingSnapshot {
 						"snapshot context restriction is unsupported".into(),
 					));
 				}
-				if matches!(binding.kind, BindingKind::Memory | BindingKind::Source) {
-					let descriptor: sources::NativeContext =
-						serde_json::from_value(entry.config.clone())?;
-					descriptor.validate(kind)?;
+				if matches!(binding.kind, BindingKind::Memory | BindingKind::Source)
+					&& let Some(descriptor) = sources::validate_definition(entry)?
+				{
 					source_skill_support |= descriptor.requires_skill_support();
 				}
 			}
@@ -188,6 +190,11 @@ impl BindingSnapshot {
 				let binding = expected
 					.get_mut(&QualifiedRef::builtin(&self.agent.registry_node, operation))
 					.ok_or_else(|| Error::Invalid("snapshot lacks native Skill support".into()))?;
+				if binding.binding.alias.as_deref() != Some(operation) {
+					return Err(Error::Invalid(
+						"native Skill support tools retain their canonical aliases".into(),
+					));
+				}
 				if binding.origin == BindingOrigin::Default {
 					binding.origin = BindingOrigin::SkillSupport;
 				}
@@ -246,6 +253,19 @@ impl BindingSnapshot {
 				}
 			}
 		}
+		let contexts = self
+			.bindings
+			.iter()
+			.filter(|binding| {
+				binding.excluded_reason.is_none()
+					&& matches!(binding.definition.kind.as_str(), "memory" | "source")
+					&& binding.definition.config.get("schema_version").is_some()
+			})
+			.map(|binding| {
+				serde_json::from_value::<sources::NativeContext>(binding.definition.config.clone())
+			})
+			.collect::<std::result::Result<Vec<_>, _>>()?;
+		sources::validate_mounts(contexts)?;
 		Ok(())
 	}
 }

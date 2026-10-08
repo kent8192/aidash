@@ -40,7 +40,11 @@ pub async fn due(
 	let due = match &state {
 		RunState::Waiting(wait) => {
 			if let Some(id) = wait.request_id() {
-				if scope.human_answered(id).await? {
+				if raw.context["binding_snapshot"]["remote"] == true {
+					// Home journals the answer. Poll it through the authorized worker
+					// step after releasing this local scheduling transaction.
+					Some(m.updated_at + chrono::Duration::seconds(1))
+				} else if scope.human_answered(id).await? {
 					Some(now)
 				} else {
 					wait.deadline()

@@ -30,6 +30,23 @@ pub async fn execute(
 		agent: input.agent,
 		version: input.version,
 	};
+	if input.operation == "human_request" {
+		let bound = scope
+			.binding(input.grant_id)
+			.await?
+			.ok_or(Error::Forbidden)?;
+		if bound.admission_id != input.admission_id {
+			return Err(Error::Forbidden);
+		}
+		let task = scope.task(bound.task_id).await?;
+		let attributes = scope.task_resource(&task).await?.attributes;
+		let resource = scope.resource(
+			"run",
+			&format!("{}/runs/{}", scope.local_node(), input.admission_id),
+			attributes,
+		);
+		scope.require(&resource, "human.request").await?;
+	}
 	let Prepared {
 		task,
 		owner,
@@ -53,6 +70,33 @@ pub async fn execute(
 		admission: input.admission_id,
 	};
 	let result = match input.operation {
+		"human_request" => {
+			let run = scope.resource(
+				"run",
+				&format!("{}/runs/{}", scope.local_node(), input.admission_id),
+				task_resource.attributes.clone(),
+			);
+			scope.require(&run, "human.request").await?;
+			scope
+				.apply(
+					context(),
+					Effect::HumanRequest {
+						kind: field(data, "kind")?,
+						prompt: field(data, "prompt")?,
+					},
+				)
+				.await?
+				.value
+		}
+		"human_read" => json!(
+			scope
+				.human_read(
+					input.grant_id,
+					input.admission_id,
+					serde_json::from_value(data["id"].clone())?
+				)
+				.await?
+		),
 		"task" => json!(task),
 		"snapshot" => scope.snapshot(task.workspace_id).await?,
 		"workspace_record" | "workspace_record_chunk" => {

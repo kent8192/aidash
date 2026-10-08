@@ -32,7 +32,7 @@ pub async fn settings(scope: &mut dyn FileScopePort, run: &RunMetadata) -> Resul
 		)
 		.await?;
 	scope.check_pinned(&entry).await?;
-	Ok(serde_json::from_value(entry.config)?)
+	Ok(AgentConfig::from_snapshot(scope.binding_snapshot()?)?)
 }
 pub async fn output_file(
 	scope: &mut dyn FileScopePort,
@@ -63,13 +63,29 @@ pub async fn invoke(
 	input: Value,
 	key: &str,
 ) -> Result<Envelope> {
-	let config = settings(scope, run).await?;
-	if !config.core_capabilities.permits(name) {
+	settings(scope, run).await?;
+	let binding = scope.binding_snapshot()?.operation(name)?.clone();
+	if binding.identity.registry_node != scope.local_node() {
 		return Err(Error::Forbidden);
 	}
+	let current = scope
+		.entry(&binding.identity.local(), "registry.read")
+		.await?;
+	scope.check_pinned(&current).await?;
+	if aidash_domain::registry::rules::digest(&serde_json::to_value(&current)?) != binding.digest {
+		return Err(Error::Conflict(
+			"admitted Binding definition changed".into(),
+		));
+	}
+	let mut input = input;
+	binding.narrow.apply(&mut input)?;
 	scope
 		.require(
-			&scope.resource("tool", &format!("builtin:{name}"), json!({})),
+			&scope.resource(
+				"tool",
+				&binding.identity.resource_id(),
+				crate::authorization::catalog::attributes(&current),
+			),
 			"tool.invoke",
 		)
 		.await?;

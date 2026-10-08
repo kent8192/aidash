@@ -6,6 +6,7 @@ use uuid::Uuid;
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct CoreCapabilities {
+	pub outbound: bool,
 	pub files: bool,
 	pub shell: bool,
 	pub python: bool,
@@ -16,7 +17,13 @@ pub struct CoreCapabilities {
 
 impl CoreCapabilities {
 	pub fn enabled(&self) -> bool {
-		self.files || self.shell || self.python || self.patch || self.skills || self.sharing
+		self.files
+			|| self.shell
+			|| self.python
+			|| self.patch
+			|| self.skills
+			|| self.sharing
+			|| self.outbound
 	}
 
 	pub fn permits(&self, name: &str) -> bool {

@@ -30,9 +30,10 @@ fn draft() -> Draft {
 }
 #[fixture]
 fn entry() -> Entry {
-	serde_json::from_value(json!({"id":"managed","version":"1.0.0","kind":"agent","name":{"en":"Managed agent"},"description":{"en":"Publication fixture"},"config":{"model":{"id":"model","version":"1.0.0"},"instructions":"Follow the fixture request.","max_steps":8,"tools":[],"skills":[],"cluster":null}})).unwrap()
+	serde_json::from_value(json!({"id":"managed","version":"1.0.0","kind":"agent","name":{"en":"Managed agent"},"description":{"en":"Publication fixture"},"config":{"schema_version":1,"bindings":[],"remove_default":[],"model":{"id":"model","version":"1.0.0"},"instructions":"Follow the fixture request.","max_steps":8,"cluster":null}})).unwrap()
 }
 struct Repository {
+	definitions: Vec<Entry>,
 	draft: Draft,
 	log: Arc<Mutex<Vec<String>>>,
 	deny: bool,
@@ -47,6 +48,7 @@ struct Repository {
 impl Repository {
 	fn new(draft: Draft) -> Self {
 		Self {
+			definitions: vec![],
 			draft,
 			log: Arc::new(Mutex::new(Vec::new())),
 			deny: false,
@@ -64,6 +66,8 @@ impl Repository {
 	}
 }
 struct Scope {
+	definitions: std::collections::BTreeMap<(String, String), Entry>,
+	denied_dependency: Option<String>,
 	draft: Draft,
 	log: Arc<Mutex<Vec<String>>>,
 	deny: bool,
@@ -108,6 +112,12 @@ impl DraftRepository for Repository {
 	async fn begin(&self) -> Result<Scope> {
 		self.log.lock().unwrap().push("begin".into());
 		Ok(Scope {
+			denied_dependency: None,
+			definitions: crate::test_support::builtin_entries("aidash://node")
+				.into_iter()
+				.chain(self.definitions.clone())
+				.map(|entry| ((entry.id.clone(), entry.version.clone()), entry))
+				.collect(),
 			draft: self.draft.clone(),
 			log: self.log.clone(),
 			deny: self.deny,
@@ -125,6 +135,9 @@ impl DraftRepository for Repository {
 impl DefinitionLookup for Scope {
 	async fn definition(&mut self, id: &str, version: &str) -> Result<Entry> {
 		self.record(format!("definition:{id}@{version}"));
+		if let Some(entry) = self.definitions.get(&(id.into(), version.into())) {
+			return Ok(entry.clone());
+		}
 		if id == "model" {
 			return Ok(serde_json::from_value(
 				json!({"id":id,"version":version,"kind":"model","name":{"en":"Fixture model"},"description":{"en":"Publication model"},"config":{"provider":"openrouter","model_id":"model","endpoint":"https://openrouter.ai/api/v1","credential_env":null,"context_window":32768,"max_output_tokens":1024,"modalities":["text"],"cost":{}}}),
@@ -164,7 +177,8 @@ impl DraftAuthority for Scope {
 	async fn evaluate(&mut self, _: &str, evaluation: &Evaluation) -> Result<Decision> {
 		self.record(&evaluation.action);
 		Ok(Decision {
-			allowed: true,
+			allowed: !(evaluation.action == "agent_dependency.read"
+				&& self.denied_dependency.as_ref() == Some(&evaluation.resource.id)),
 			reason: "fixture".into(),
 			matched_policies: Vec::new(),
 			effective_roles: Default::default(),
@@ -299,7 +313,7 @@ async fn create_authorizes_enabled_owner_before_insert(draft: Draft, mut entry: 
 	.await
 	.unwrap();
 	assert_eq!(saved.entry["id"], saved.id.to_string());
-	assert_eq!(saved.entry["config"]["allow_task_delegation"], json!(false));
+	assert_eq!(saved.entry["config"]["schema_version"], json!(1));
 	assert_eq!(
 		repository.logs(),
 		[
@@ -360,6 +374,50 @@ async fn edit_uses_locked_revision_and_commits_content(draft: Draft, entry: Entr
 			"commit"
 		]
 	);
+}
+#[rstest]
+#[tokio::test]
+async fn same_agent_id_at_another_version_still_requires_dependency_authority(
+	mut draft: Draft,
+	mut entry: Entry,
+) {
+	let repository = Repository::new(draft.clone());
+	let mut scope = repository.begin().await.unwrap();
+	let mut model = scope.definition("model", "2.0.0").await.unwrap();
+	model.id = entry.id.clone();
+	let reference = aidash_domain::registry::EntityRef {
+		id: model.id.clone(),
+		version: model.version.clone(),
+	};
+	scope
+		.definitions
+		.insert((model.id.clone(), model.version.clone()), model);
+	scope.denied_dependency = Some(crate::registry::workbench::ref_key(&reference));
+	entry.config["model"] = json!(reference);
+	draft.entry = json!(entry);
+	let result = crate::registry::workbench::validate_content(
+		&mut scope,
+		&validation(),
+		&draft,
+		"aidash://node",
+	)
+	.await;
+	assert!(matches!(result, Err(Error::Forbidden)));
+	assert!(
+		repository
+			.logs()
+			.iter()
+			.any(|call| call == "agent_dependency.read")
+	);
+	scope.denied_dependency = None;
+	crate::registry::workbench::validate_content(
+		&mut scope,
+		&validation(),
+		&draft,
+		"aidash://node",
+	)
+	.await
+	.unwrap();
 }
 #[rstest]
 #[case::revision(false, 2, "draft revision changed; local edits were not saved")]
@@ -910,6 +968,8 @@ async fn stale_archive_does_not_write_or_commit(draft: Draft) {
 impl DefinitionWriter for Scope {
 	async fn insert_definition(&mut self, entry: &Entry) -> Result<bool> {
 		self.record(format!("definition-insert:{}@{}", entry.id, entry.version));
+		self.definitions
+			.insert((entry.id.clone(), entry.version.clone()), entry.clone());
 		Ok(self.inserted)
 	}
 }
@@ -1131,4 +1191,124 @@ async fn version_history_includes_unregistered_adopted_source(mut draft: Draft, 
 	assert_eq!(versions[0].draft_revision, None);
 	assert_eq!(versions[0].behavioral_tested, None);
 	assert_eq!(repository.logs().last().map(String::as_str), Some("commit"));
+}
+
+#[rstest]
+#[case::cleared("cleared", false)]
+#[case::replaced("replaced", false)]
+#[case::unchanged("unchanged", false)]
+#[case::copied_cleared("cleared", true)]
+#[case::copied_replaced("replaced", true)]
+#[case::copied_unchanged("unchanged", true)]
+#[tokio::test]
+async fn generated_document_sources_follow_current_draft_content(
+	mut draft: Draft,
+	mut entry: Entry,
+	#[case] content: &str,
+	#[case] copied_version: bool,
+	#[values("explicit-reference", "private.explicit", "another-agent")] explicit_origin: &str,
+) {
+	let old_documents =
+		json!([{"name":"note","media_type":"text/plain","text":"old private text"}]);
+	let old_source =
+		crate::registry::bindings::private::attach(&mut entry, "aidash://node", &old_documents)
+			.unwrap();
+	// An explicitly mounted private Source must survive document edits.
+	let explicit = if explicit_origin == "another-agent" {
+		let mut another = entry.clone();
+		another.id = "another-agent".into();
+		another.config["bindings"] = json!([]);
+		crate::registry::bindings::private::attach(&mut another, "aidash://node", &old_documents)
+			.unwrap()
+	} else {
+		let mut explicit = old_source.clone();
+		explicit.id = explicit_origin.into();
+		explicit
+	};
+	entry.config["bindings"]
+		.as_array_mut()
+		.unwrap()
+		.push(crate::test_support::binding(
+			"source",
+			"aidash://node",
+			&explicit.id,
+		));
+	if copied_version {
+		draft.source_id = Some(entry.id.clone());
+		draft.source_version = Some(entry.version.clone());
+		entry.version = "1.1.0".into();
+	}
+	draft.entry = json!(entry);
+	draft.documents = match content {
+		"cleared" => json!([]),
+		"replaced" => json!([{"name":"note","media_type":"text/plain","text":"replacement text"}]),
+		_ => old_documents,
+	};
+	let mut repository = Repository::new(draft.clone());
+	repository.operator = true;
+	repository.definitions = vec![old_source.clone(), explicit.clone()];
+	let mut scope = repository.begin().await.unwrap();
+	let validated = crate::registry::workbench::validate_content(
+		&mut scope,
+		&validation(),
+		&draft,
+		"aidash://node",
+	)
+	.await
+	.unwrap();
+	let registered = publication::register(
+		&repository,
+		&validation(),
+		draft.id,
+		RevisionInput {
+			expected_revision: draft.revision,
+		},
+	)
+	.await
+	.unwrap();
+	assert_eq!(registered.entry, validated);
+	let bindings: aidash_domain::registry::bindings::AgentBindings =
+		serde_json::from_value(validated.config).unwrap();
+	assert!(
+		bindings
+			.bindings
+			.iter()
+			.any(|binding| binding.target.id == explicit.id)
+	);
+	let generated: Vec<_> = bindings
+		.bindings
+		.iter()
+		.filter(|binding| binding.target.id != explicit.id)
+		.collect();
+	if content == "cleared" {
+		assert!(generated.is_empty());
+		assert!(
+			!repository
+				.logs()
+				.iter()
+				.any(|step| step == "documents-insert")
+		);
+	} else {
+		let mut expected: Entry = serde_json::from_value(draft.entry.clone()).unwrap();
+		expected.config["bindings"] = json!([]);
+		let source = crate::registry::bindings::private::attach(
+			&mut expected,
+			"aidash://node",
+			&draft.documents,
+		)
+		.unwrap();
+		assert_eq!(generated.len(), 1);
+		assert_eq!(generated[0].target.id, source.id);
+		if content == "replaced" || copied_version {
+			assert_ne!(generated[0].target.id, old_source.id);
+		}
+		assert_eq!(
+			repository
+				.logs()
+				.iter()
+				.filter(|step| *step == "documents-insert")
+				.count(),
+			1
+		);
+	}
 }

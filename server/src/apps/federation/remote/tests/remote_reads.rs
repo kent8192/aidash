@@ -52,6 +52,7 @@ async fn worker_remote_discovery_dependencies_survive_restart_and_hide_revoked_j
 	let (b_policy, _, _) = bootstrap(&b, &b_app, "http://localhost:1").await;
 	let mut entry = b.registry.get("research", "1.0.0").await.unwrap();
 	entry.id = "remote-only".into();
+	entry.binding_normalization = None;
 	entry
 		.description
 		.insert("en".into(), "remote-private-metadata".into());
@@ -88,7 +89,7 @@ async fn worker_remote_discovery_dependencies_survive_restart_and_hide_revoked_j
 						))
 						.expr(reinhardt::query::Expr::cust("'http://localhost:1'"))
 						.expr(reinhardt::query::Expr::cust("'AIDASH_SECRET_TEST_PEER'"))
-						.expr(reinhardt::query::Expr::cust("'0.1'"))
+						.expr(reinhardt::query::Expr::cust("'0.2'"))
 						.expr(reinhardt::query::Expr::cust("TRUE"))
 						.to_owned(),
 				)
@@ -112,7 +113,7 @@ async fn worker_remote_discovery_dependencies_survive_restart_and_hide_revoked_j
 		node_id: b.config.node_id.clone(),
 		endpoint: b.config.endpoint.clone(),
 		credential_env: "AIDASH_SECRET_TEST_PEER".into(),
-		protocol_version: "0.1".into(),
+		protocol_version: "0.2".into(),
 		enabled: true,
 	})
 	.await

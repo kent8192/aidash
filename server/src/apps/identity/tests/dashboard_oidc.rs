@@ -810,6 +810,25 @@ async fn unmapped_identity_stays_denied_until_operator_approves_existing_user(
 		)
 		.await
 		.unwrap();
+	// Browser controls operate on a real admitted Binding graph.
+	for (kind, id, config) in [
+		(
+			"model",
+			"fixture-model",
+			json!({"provider":"openrouter","model_id":"browser-fixture","endpoint":"http://127.0.0.1:1/v1","credential_env":null,"context_window":128000,"max_output_tokens":4096,"modalities":["text"],"cost":{}}),
+		),
+		(
+			"agent",
+			"fixture-agent",
+			json!({"schema_version":1,"model":{"id":"fixture-model","version":"1.0.0"},"instructions":"Browser management fixture","bindings":[],"remove_default":[]}),
+		),
+	] {
+		federation
+			.registry
+			.register(serde_json::from_value(json!({"id":id,"version":"1.0.0","kind":kind,"name":{"en":id},"description":{"en":"Browser management fixture"},"schema":{},"config":config})).unwrap())
+			.await
+			.unwrap();
+	}
 	let run = federation
 		.store
 		.accept_run(&task, &federation.config.node_id, "fixture-agent", "1.0.0")

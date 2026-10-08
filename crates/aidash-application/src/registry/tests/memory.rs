@@ -24,6 +24,24 @@ async fn agent_memory_sources_require_the_same_embedding_configuration(
 	#[case] private: bool,
 ) {
 	let mut scope = Scope::default();
+	for name in aidash_domain::registry::bindings::REQUIRED_TOOLS
+		.iter()
+		.chain(aidash_domain::registry::bindings::DEFAULT_TOOLS)
+	{
+		let descriptor =
+			aidash_domain::tool::providers::core_descriptor("aidash://home", name).unwrap();
+		scope.put(definition(
+			&format!("aidash.{name}"),
+			"tool",
+			serde_json::to_value(descriptor).unwrap(),
+		));
+	}
+	scope.put(definition("rrf", "reranker", json!({"provider":"rrf"})));
+	scope.put(definition(
+		"tokens",
+		"tokenizer",
+		json!({"provider":"utf8_upper_bound"}),
+	));
 	let reference = |id: &str| json!({"id":id,"version":"1.0.0"});
 	scope.put(definition("model", "model", json!({"provider":"openai","model_id":"fixture","endpoint":"https://model.example.test","credential_env":null,"context_window":32768,"modalities":["text"],"cost":{}})));
 	let embedding = json!({"provider":"openai","endpoint":"https://embedding.example.test","credential_env":null,"model":"text","model_version":"1","dimensions":3});
@@ -68,10 +86,30 @@ async fn agent_memory_sources_require_the_same_embedding_configuration(
 		provider.version = "1.0.1".into();
 		scope.put(provider);
 	}
+	let source_ids = if changed.starts_with("workspace_") || !private {
+		vec!["source-memory-a", "source-memory-b"]
+	} else {
+		vec![if changed == "participant_same" {
+			"source-memory-a"
+		} else {
+			"source-memory-b"
+		}]
+	};
+	let mut bindings = source_ids
+		.into_iter()
+		.map(|id| crate::test_support::binding("source", "aidash://home", id))
+		.collect::<Vec<_>>();
+	if private {
+		bindings.push(crate::test_support::binding(
+			"memory",
+			"aidash://home",
+			"memory-a",
+		));
+	}
 	let agent = definition(
 		"agent",
 		"agent",
-		json!({"model":reference("model"),"instructions":"Use current memory","memory":private.then(||reference("memory-a")),"sources":if changed.starts_with("workspace_") {vec![reference("source-memory-a"),reference("source-memory-b")]} else if private {vec![reference(if changed == "participant_same" {"source-memory-a"} else {"source-memory-b"})]} else {vec![reference("source-memory-a"),reference("source-memory-b")]}}),
+		json!({"schema_version":1,"model":reference("model"),"instructions":"Use current memory","bindings":bindings,"remove_default":["file_search","file_read"]}),
 	);
 	let result = register_definition(&mut scope, &validation, &agent, "aidash://home").await;
 	if !private {

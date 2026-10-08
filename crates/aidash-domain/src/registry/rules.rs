@@ -80,8 +80,8 @@ pub fn validate_override_keys(kind: &str, overrides: &Value) -> Result<()> {
 		"agent" => &[
 			"model",
 			"instructions",
-			"tools",
-			"skills",
+			"bindings",
+			"remove_default",
 			"cluster",
 			"max_steps",
 		],
@@ -97,11 +97,11 @@ pub fn validate_override_keys(kind: &str, overrides: &Value) -> Result<()> {
 			"request_timeout_secs",
 		],
 		"cluster" => &["coordinator"],
-		"bundle" => &[],
+		"bundle" | "memory" | "source" => &[],
 		"skill" => &["instructions"],
 		// ToolConfig uses a tagged, deny_unknown_fields contract. The merged
 		// effective configuration is validated by Registry before any write.
-		"tool" => return Ok(()),
+		"tool" => &["transport", "narrow"],
 		_ => return Err(Error::Invalid("unsupported installation kind".into())),
 	};
 	if let Some(key) = object.keys().find(|key| !allowed.contains(&key.as_str())) {

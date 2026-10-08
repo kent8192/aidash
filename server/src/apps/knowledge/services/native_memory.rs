@@ -630,7 +630,8 @@ pub(crate) async fn bank_provider(
 			"agent",
 		)
 		.await?;
-		let config: crate::registry::AgentConfig = serde_json::from_value(agent.config)?;
+		let config =
+			super::super::repositories::bindings::configuration(lease, &agent, &bank.home).await?;
 		if config.memory.as_ref() != Some(provider) {
 			return Err(Error::Conflict(
 				"memory provider differs from the participant's accepted Agent version".into(),
@@ -732,7 +733,12 @@ pub async fn upgrade_participant(
 		repository::lock_workspace(&mut lease, bank.workspace, true).await?;
 		scope(store, &mut lease, &bank, "memory.participant.manage").await?;
 		let accepted = definition(&mut lease, &input.agent, "agent").await?;
-		let configuration: crate::registry::AgentConfig = serde_json::from_value(accepted.config)?;
+		let configuration = super::super::repositories::bindings::configuration(
+			&mut lease,
+			&accepted,
+			&store.node_id,
+		)
+		.await?;
 		if let Some(provider) = &configuration.memory {
 			policy(&mut lease, provider).await?;
 		}
@@ -806,7 +812,12 @@ pub async fn create_participant(
 			.workspace(workspace, "memory.participant.manage")
 			.await?;
 		let accepted = definition(&mut lease, &input.agent, "agent").await?;
-		let configuration: crate::registry::AgentConfig = serde_json::from_value(accepted.config)?;
+		let configuration = super::super::repositories::bindings::configuration(
+			&mut lease,
+			&accepted,
+			&store.node_id,
+		)
+		.await?;
 		let tenant: String = native::query_scalar(
 			&Query::select()
 				.column(Alias::new("tenant"))

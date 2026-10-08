@@ -812,12 +812,7 @@ export function ThreadCapabilities({
   });
   const active = session.data?.active_run_id ?? session.data?.last_run_id;
   const agents = data.registry.filter(
-    (e) =>
-      e.kind === "agent" &&
-      e.config &&
-      Object.values(
-        (e.config.core_capabilities ?? {}) as Record<string, unknown>,
-      ).some(Boolean),
+    (e) => e.kind === "agent" && e.config?.schema_version === 1,
   );
   const refresh = () =>
     Promise.all([query.refetch(), ...(area ? [session.refetch()] : [])]);

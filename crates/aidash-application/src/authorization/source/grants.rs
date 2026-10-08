@@ -78,6 +78,58 @@ fn inspection_input<S: HomeScope>(
 		compactor: compactor.cloned(),
 	}
 }
+/// Inspect under the same task, subject chain and peer authority as preparation,
+/// without creating a grant or disclosing Home memory.
+pub async fn agent_inspection<R: GrantRepository>(
+	repository: &R,
+	task_id: Uuid,
+	input: aidash_domain::federation::execution::AgentInspectionInput,
+) -> Result<aidash_domain::federation::execution::AgentMemoryRequirements> {
+	repository.source_identity().ok_or(Error::Forbidden)?;
+	validate_node_id(&input.node_id)?;
+	if input.node_id == repository.source_node_id() {
+		return Err(Error::Invalid(
+			"inspection requires a remote destination".into(),
+		));
+	}
+	let mut scope = repository.source_begin().await?;
+	let result = async {
+		scope.inherit_task_origin(task_id).await?;
+		let task = scope.task_read(task_id).await?;
+		if task.status != TaskStatus::Open {
+			return Err(Error::Conflict("task is already assigned".into()));
+		}
+		if scope.source_subjects().len() >= 32 {
+			return Err(Error::Invalid(
+				"execution delegation depth exceeds 32".into(),
+			));
+		}
+		let executor = qualified_agent(&input.node_id, &input.agent.id, &input.agent.version);
+		if scope
+			.source_bundle()
+			.subjects
+			.get(&executor)
+			.is_none_or(|subject| subject.kind != SubjectKind::Agent)
+		{
+			return Err(Error::Forbidden);
+		}
+		scope.append_subject(executor);
+		let workspace = scope.workspace(task.workspace_id).await?;
+		scope.source_context(workspace.attributes.clone());
+		let resource = scope.task_resource(&task).await?;
+		scope.require(&resource, "task.delegate").await?;
+		scope.require(&resource, "task.execute").await?;
+		let requirements: Search = serde_json::from_value(task.requirements.clone())?;
+		let request = inspection_input(&scope, task.id, &input.agent, requirements, None);
+		let inspection = inspect(repository, &mut scope, &input.node_id, request).await?;
+		crate::generation::foreign::check_preparation(&task, inspection.generation.as_ref())?;
+		super::authorize(&mut scope, &task, &input.node_id, &inspection).await?;
+		super::semantic::requirements(&inspection)
+	}
+	.await;
+	finish(scope, result).await
+}
+
 pub async fn prepare<R: GrantRepository>(
 	repository: &R,
 	task_id: Uuid,

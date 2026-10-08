@@ -53,6 +53,15 @@ fn schema<T: schemars::JsonSchema>() -> Value {
 }
 
 pub(crate) fn add(tools: &mut BTreeMap<String, Arc<dyn Tool>>, config: &CoreCapabilities) {
+	tools.extend(
+		implementations()
+			.into_iter()
+			.filter(|(name, _)| config.permits(name)),
+	);
+}
+/// Provider implementation inventory; capability availability comes from Bindings.
+pub(crate) fn implementations() -> BTreeMap<String, Arc<dyn Tool>> {
+	let mut tools = BTreeMap::<String, Arc<dyn Tool>>::new();
 	use super::{
 		approvals::Outbound,
 		contracts::*,
@@ -138,9 +147,6 @@ pub(crate) fn add(tools: &mut BTreeMap<String, Arc<dyn Tool>>, config: &CoreCapa
 			schema::<SkillRead>(),
 		),
 	] {
-		if !config.permits(name) {
-			continue;
-		}
 		if name == "skill_read" {
 			let legacy = crate::tool::builtins()
 				.get("skill_read")
@@ -159,6 +165,7 @@ pub(crate) fn add(tools: &mut BTreeMap<String, Arc<dyn Tool>>, config: &CoreCapa
 			}),
 		);
 	}
+	tools
 }
 
 #[cfg(test)]

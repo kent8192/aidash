@@ -16,15 +16,11 @@ const entry = {
   config: {
     model: { id: "model", version: "1.0.0" },
     instructions: "Summarize carefully",
-    tools: [],
-    skills: [],
+    schema_version: 1,
+    bindings: [],
+    remove_default: [],
     cluster: null,
     max_steps: 8,
-    allow_task_creation: false,
-    allow_task_delegation: false,
-    allow_memory_write: false,
-    allow_workspace_retrieval: false,
-    allow_cross_conversation_memory: false,
   },
 };
 
@@ -33,6 +29,7 @@ async function editableDrafts(
   secondRevision = 7,
   paginated = false,
   subject = false,
+  withRestrictions = false,
 ) {
   await setup(page, { locale: "en-US", subject });
   const state = { failRefresh: false };
@@ -49,6 +46,21 @@ async function editableDrafts(
       config: {
         ...entry.config,
         instructions: index ? "Second draft" : "First draft",
+        bindings: withRestrictions
+          ? [
+              {
+                kind: "tool",
+                target: {
+                  registry_node: "aidash://home",
+                  id: "http",
+                  version: "1.0.0",
+                },
+                narrow: {
+                  allowed_hosts: [index ? "second.example" : "first.example"],
+                },
+              },
+            ]
+          : [],
       },
     },
     documents: [] as unknown[],
@@ -189,6 +201,53 @@ test("Creator discards edits and hydrates a selected draft with another revision
   expect(saves[0]).toMatchObject({
     id: "00000000-0000-7000-8000-000000000002",
     expected_revision: 7,
+  });
+});
+
+test("switching drafts keeps the selected Binding restrictions through save", async ({
+  page,
+}) => {
+  const { saves } = await editableDrafts(page, 7, false, false, true);
+  const restrictions = page.getByLabel("Restrictions (JSON)");
+  await expect(restrictions).toHaveValue('{"allowed_hosts":["first.example"]}');
+  await page
+    .locator(".wb-picker select")
+    .first()
+    .selectOption("second-agent@1.0.0");
+  await expect(restrictions).toHaveValue(
+    '{"allowed_hosts":["second.example"]}',
+  );
+  await page
+    .getByLabel("Additional instructions")
+    .fill("Verify the selected restrictions");
+  await restrictions.focus();
+  await page
+    .locator(".wb-actions")
+    .getByRole("button", { name: "Save draft", exact: true })
+    .click();
+  await expect.poll(() => saves.length).toBe(1);
+  expect(saves[0]).toMatchObject({
+    id: "00000000-0000-7000-8000-000000000002",
+    entry: {
+      config: { bindings: [{ narrow: { allowed_hosts: ["second.example"] } }] },
+    },
+  });
+  // Incomplete JSON stays editable without changing the saved restrictions.
+  await restrictions.fill('{"allowed_hosts":');
+  await expect(restrictions).toHaveValue('{"allowed_hosts":');
+  await restrictions.fill('{"allowed_hosts":["changed.example"]}');
+  await page.getByLabel("Additional instructions").focus();
+  await page
+    .locator(".wb-actions")
+    .getByRole("button", { name: "Save draft", exact: true })
+    .click();
+  await expect.poll(() => saves.length).toBe(2);
+  expect(saves[1]).toMatchObject({
+    entry: {
+      config: {
+        bindings: [{ narrow: { allowed_hosts: ["changed.example"] } }],
+      },
+    },
   });
 });
 
@@ -666,6 +725,7 @@ for (const change of ["add", "replace", "remove", "unchanged", "cluster"]) {
           json: [
             {
               entry: registered,
+              registered_knowledge_digest: digest ?? null,
               draft_knowledge_digest: drafts[0].documents.length
                 ? createHash("sha256")
                     .update(
@@ -1150,41 +1210,47 @@ for (const [width, locale] of [
         ...entry,
         config: {
           ...entry.config,
-          tools:
-            configuration === "mixed"
-              ? [{ id: "source-reader", version: "2.0.0" }]
-              : [],
-          skills:
-            configuration === "defaults"
+          bindings: [
+            ...(configuration === "mixed"
+              ? [
+                  {
+                    kind: "tool",
+                    target: {
+                      registry_node: "aidash://home",
+                      id: "source-reader",
+                      version: "2.0.0",
+                    },
+                    narrow: {},
+                  },
+                ]
+              : []),
+            ...(configuration === "defaults"
               ? []
-              : [
-                  { id: "registered-research-skill", version: "1.0.0" },
-                  { id: "registered-research-skill", version: "2.0.0" },
-                ],
-          allow_task_creation:
-            configuration === "defaults"
-              ? undefined
-              : configuration === "mixed",
-          allow_task_delegation:
-            configuration === "defaults"
-              ? undefined
-              : configuration === "skills-only",
+              : ["1.0.0", "2.0.0"].map((version) => ({
+                  kind: "skill",
+                  target: {
+                    registry_node: "aidash://home",
+                    id: "registered-research-skill",
+                    version,
+                  },
+                  narrow: {},
+                }))),
+          ],
+          remove_default:
+            configuration === "mixed"
+              ? ["task_delegate", "memory_mutate"]
+              : configuration === "skills-only"
+                ? ["task_create"]
+                : [],
         },
       };
-      const dependencies = [
-        ...configuredEntry.config.tools.map((reference) => ({
-          reference,
-          kind: "tool",
-          action: "tool.call",
-          effective_for_component: true,
-        })),
-        ...configuredEntry.config.skills.map((reference) => ({
-          reference,
-          kind: "skill",
-          action: "skill.use",
-          effective_for_component: reference.version === "2.0.0",
-        })),
-      ];
+      const dependencies = configuredEntry.config.bindings.map((binding) => ({
+        reference: binding.target,
+        kind: binding.kind,
+        action: binding.kind === "tool" ? "tool.invoke" : "skill.use",
+        effective_for_component:
+          binding.kind === "tool" || binding.target.version === "2.0.0",
+      }));
       await page.setViewportSize({ width, height: 960 });
       const { errors } = await setup(page, { locale });
       let permissionRequests = 0;
@@ -1246,15 +1312,20 @@ for (const [width, locale] of [
       });
       await expect(dependencyCard).toBeVisible();
       await expect(autonomyCard).toBeVisible();
-      const expectedAutonomy = [
-        configuredEntry.config.allow_task_creation,
-        configuredEntry.config.allow_task_delegation,
-      ].map((enabled) =>
-        enabled === undefined
-          ? text("Default", "既定")
-          : enabled
-            ? text("Enabled", "有効")
-            : text("Disabled", "無効"),
+      const memoryWrite = overview.locator(".trust-row").filter({
+        has: page.getByText(text("Memory write", "メモリ書き込み"), {
+          exact: true,
+        }),
+      });
+      await expect(memoryWrite.locator(".trust-badge")).toHaveText(
+        configuration === "mixed"
+          ? text("Disabled", "無効")
+          : text("Requested", "要求あり"),
+      );
+      const expectedAutonomy = ["task_create", "task_delegate"].map((name) =>
+        configuredEntry.config.remove_default.includes(name)
+          ? text("Disabled", "無効")
+          : text("Enabled", "有効"),
       );
       await expect(autonomyCard.locator("dt")).toHaveText([
         text("Automatic task creation", "タスクの自動作成"),

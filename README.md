@@ -156,53 +156,52 @@ Configure a peer on **both** nodes in Settings. Each peer record contains the ot
 
 ## Tools and coordination
 
-Agents receive permitted workspace tools: `agent_discover`, `task_create`, `task_delegate`, `artifact_publish`, `workspace_message`, `workspace_observe`, `workspace_wait`, and `human_request`. Agent Sources require a primary memory provider, and all workspace Sources in one Agent must reference the same exact provider version. Agents with an explicit memory definition can use `memory_recall` and `memory_reflect`; explicit memory write permission additionally enables `memory_mutate`. Memory admission reserves the source root and all live transitive dependents within each pinned policy's `max_graph_visits`; an addition or policy reduction that would prevent later correction/deletion is rejected atomically. A batch gives each changed root its own bounded traversal. The model's final text completes its task and publishes a final artifact. A coordinator must wait for its subtasks and synthesize their artifacts. If a child fails, is blocked, or is cancelled, open its task details and explicitly abandon it with a reason; then answer the parent's human request to resume synthesis. Abandonment is audited and never turns a failed child into a successful result.
+Every Agent retains `workspace_read` and `human_request`. The other Built-in tools are included by default and can be removed through `remove_default`. Cluster coordinators must retain `task_create`, `task_delegate` and `agent_discover`. The model's final text completes its task and publishes a final artifact. A coordinator must wait for its subtasks and synthesize their artifacts. Unresolved children require an explicit, audited abandonment before the parent can finish.
 
-Additional tools are versioned Registry entities. Their JSON Schema validates arguments. Agents reference exact tool versions; provider-safe aliases `plugin_0`, `plugin_1`, etc. follow the order of those references. Supported configurations:
-
-```json
-{ "transport": "native", "operation": "echo" }
-```
+Tools are immutable Registry descriptors with provider-owned behavior and a JSON Schema for arguments. For an HTTP integration, register this configuration on its exact Node:
 
 ```json
 {
-  "transport": "native",
-  "operation": "http_get",
-  "allowed_hosts": ["docs.rs", "github.com"]
+  "registry_node": "aidash://node-a",
+  "provider": "integration.http@1",
+  "operation": "invoke",
+  "default_alias": "research_lookup",
+  "tier": "integration",
+  "transport": {
+    "transport": "http",
+    "endpoint": "https://tools.example.com/research",
+    "credential_env": "AIDASH_SECRET_TOOLS",
+    "replay": "unsafe"
+  }
 }
 ```
+
+Bind its exact registered identity in the Agent configuration:
 
 ```json
 {
-  "transport": "http",
-  "endpoint": "https://tools.example.com/research",
-  "credential_env": "AIDASH_SECRET_TOOLS",
-  "replay": "idempotent"
+  "schema_version": 1,
+  "model": { "id": "model", "version": "1.0.0" },
+  "instructions": "Research and publish findings.",
+  "bindings": [
+    {
+      "kind": "tool",
+      "target": {
+        "registry_node": "aidash://node-a",
+        "id": "research-http",
+        "version": "1.0.0"
+      },
+      "alias": "research_lookup",
+      "narrow": {}
+    }
+  ],
+  "remove_default": []
 }
 ```
 
-```json
-{
-  "transport": "mcp",
-  "endpoint": "https://tools.example.com/mcp",
-  "credential_env": "AIDASH_SECRET_MCP",
-  "tool_name": "search",
-  "replay": "read_only",
-  "idempotency_argument": null
-}
-```
+The alias stays stable across versions. Run admission saves the complete dependency closure; subsequent steps use that snapshot while rechecking current resource authority. Memory and reference context require explicit Memory or Source bindings. Host packages, including shell and Python, require tenant approval and compatible Node providers. See the [Registry capability contract](docs/operations/registry-capabilities.md) for package preparation, atomic approval, lifecycle operations and the drained upgrade procedure.
 
-```json
-{
-  "transport": "agent",
-  "node_id": "aidash://node-b",
-  "agent": { "id": "researcher", "version": "1.0.0" }
-}
-```
-
-The Agent tool creates and delegates a child of the invoking task by default, returning its task ID. Native HTTP retrieval is restricted to configured hosts and does not follow redirects. MCP uses the Rust SDK's streamable HTTP transport, including initialization and session lifecycle. No shell or arbitrary code execution tool is enabled by default.
-
-HTTP tools receive an `Idempotency-Key` header. An idempotent MCP tool must specify an argument name that its server actually supports. `read_only` permits safe repetition. `unsafe` allows one attempt; an interrupted or ambiguous effect pauses for reconciliation instead of being invoked again. See the recovery contract before connecting an effectful tool.
+MCP and Agent integrations use `integration.mcp@1` and `integration.agent@1` with their configuration under `transport`. An Agent integration creates and delegates a child of the invoking task. HTTP tools propagate `Idempotency-Key`, but HTTP/MCP behavior remains `Unsafe` without a verified provider contract: an uncertain effect pauses for reconciliation and is never automatically repeated. Transport replay labels do not weaken that rule. Native echo and native HTTP fetching are unsupported for ordinary new registrations.
 
 ## History compaction
 
@@ -256,6 +255,10 @@ npm test --prefix web
 
 Protocol fixtures verify transport, coordination and recovery. They do not establish live model answer quality or provider-account availability. No commercial model calls are made by these tests.
 
+## Native memory
+
+The Rust Hindsight provider stores memory units, facts and graph edges in PostgreSQL with pgvector and PGroonga. Agents bind the immutable Memory provider and workspace Sources through Binding contract 1. Recovery journals and visibility checks retain the admitted provider identities across restarts. See [memory evaluation](docs/memory-evaluation.md) and [memory recovery](docs/memory-recovery.md).
+
 ## Database migrations
 
 Reinhardt owns the app migration graph under `server/migrations/<app_label>/`. The native baseline supports empty PostgreSQL databases and replay of its own history; existing SeaORM or experimental migration databases are not adopted. Run `cargo run --locked -p aidash-server --bin manage -- migrate` through the native management CLI. See the [migration correspondence and maintenance cutover procedure](server/migrations/README.md) before switching deployments.
@@ -272,7 +275,7 @@ The coverage uploader uses a pinned Codecov CLI from PyPI; see the [download out
 
 Run `scripts/test-rust.sh --partition identity` for one partition, or `python3 scripts/rust-test-partitions.py --check` to inspect the complete inventory. Run `scripts/test-rust.sh --coverage` to produce `coverage/rust.lcov` locally (requires `cargo-llvm-cov` 0.8.7 and `llvm-tools-preview`). `scripts/check.sh` runs the full local suite. Cargo and npm lockfiles remain tracked for reproducible dependency resolution.
 
-Run `npm exec --yes --package=@usebruno/cli@3.1.3 -- scripts/test-bruno-api.sh` with the test PostgreSQL and NATS services running to verify the real HTTP API. The [Bruno collection](server/tests/bruno/README.md) checks all 269 native endpoints with 3–10 scenarios each, including scoped authorization, input rejection, state changes, browser cookies/CSRF, finite SSE replay and frontend caching against a disposable database and the compiled server. Sanitized reports include the source revision and executable hash.
+Run `npm exec --yes --package=@usebruno/cli@3.1.3 -- scripts/test-bruno-api.sh` with the test PostgreSQL and NATS services running to verify the real HTTP API. The [Bruno collection](server/tests/bruno/README.md) checks all 281 native endpoints with 3–10 scenarios each, including scoped authorization, input rejection, state changes, browser cookies/CSRF, finite SSE replay and frontend caching against a disposable database and the compiled server. Sanitized reports include the source revision and executable hash.
 
 Package installation overlays the supplied node-local configuration onto the entity configuration, validates it, and publishes the effective immutable Registry version atomically with the installation record. Changing an installed configuration requires a new version.
 

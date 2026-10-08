@@ -3,10 +3,10 @@ use rstest::{fixture, rstest};
 use serde_json::json;
 
 #[fixture]
-fn inspection() -> Inspection {
+pub(super) fn inspection() -> Inspection {
 	serde_json::from_value(json!({"node_id":"aidash://receiver","authority_digest":"sha256:pinned",
         "agent":{"id":"agent","version":"1.0.0","kind":"agent","name":{"en":"Agent"},"description":{"en":""}},
-        "definitions":[]})).unwrap()
+        "definitions":[],"binding_snapshot":{"schema_version":1,"agent":{"registry_node":"aidash://receiver","id":"agent","version":"1.0.0"},"remote":true,"bindings":[],"definitions":[]}})).unwrap()
 }
 #[rstest]
 #[case(0, 0, true)]
@@ -70,4 +70,19 @@ fn optional_protocol_extensions_keep_their_legacy_omission(inspection: Inspectio
 	let mut changed = wire;
 	changed["caller_authority"] = json!(true);
 	assert!(serde_json::from_value::<Inspection>(changed).is_err());
+}
+
+#[rstest]
+#[case::origin("registry_node", json!("aidash://other"))]
+#[case::version("version", json!("2.0.0"))]
+fn substituted_binding_snapshot_is_rejected_even_when_legacy_inspection_fields_match(
+	inspection: Inspection,
+	#[case] field: &str,
+	#[case] value: serde_json::Value,
+) {
+	let mut changed = inspection.clone();
+	let mut snapshot = serde_json::to_value(&changed.binding_snapshot).unwrap();
+	snapshot["agent"][field] = value;
+	changed.binding_snapshot = serde_json::from_value(snapshot).unwrap();
+	assert!(!changed.satisfies(&inspection));
 }

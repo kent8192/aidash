@@ -10,11 +10,12 @@ import http.server
 import json
 import signal
 import threading
+import time
 import urllib.error
 import urllib.request
 import uuid
 
-from golden_path import PEER_TOKEN, api_request, entity, wait_for
+from golden_path import tool_descriptor, tool_binding, PEER_TOKEN, api_request, entity, wait_for
 
 
 def denied(base, path, body=None, **kwargs):
@@ -35,6 +36,7 @@ class PeerProxy:
         self.errors = []
         self.paths = collections.Counter()
         self.commands = collections.defaultdict(list)
+        self.timings = collections.defaultdict(list)
         self.unavailable = threading.Event()
         self.blocked = threading.Event()
         self.release = threading.Event()
@@ -64,6 +66,7 @@ class PeerProxy:
                     assert self.headers.get("Authorization") == f"Bearer {PEER_TOKEN}", "Peer transport must use its own credential"
                     assert not any(token in text or token in str(self.headers) for token in proxy.forbidden_tokens), "Subject credential forwarded to a peer"
                     body = json.loads(raw)
+                    started = time.monotonic()
                     with proxy.lock:
                         proxy.paths[self.path] += 1
                         command = (body.get("grant_id"), body.get("operation"))
@@ -82,6 +85,8 @@ class PeerProxy:
                                 code, payload = response.status, response.read()
                         except urllib.error.HTTPError as error:
                             code, payload = error.code, error.read()
+                        with proxy.lock:
+                            proxy.timings[command].append(round(time.monotonic() - started, 3))
                         if hold:
                             assert code == 200, f"Home command failed before crash boundary: {code}"
                             # Aidash has committed the real transaction; the Worker
@@ -152,8 +157,8 @@ class Providers:
                         tools = {item.get("call", {}).get("name") for item in context.get("history", []) if item.get("kind") == "tool"}
                         if "workspace_message" not in tools:
                             name, arguments = "workspace_message", {"content": "Scoped progress: " + scenario}
-                        elif "plugin_0" not in tools:
-                            name, arguments = "plugin_0", {"scenario": scenario}
+                        elif "scoped_effect" not in tools:
+                            name, arguments = "scoped_effect", {"scenario": scenario}
                         else:
                             name = None
                         message = {"role": "assistant", "content": "Scoped result: " + scenario}
@@ -192,8 +197,25 @@ def verify(base_a, base_b, node_a, node_b, worker, launch_worker, counts):
     initial_counts = counts()
     scenarios = []
 
+    approval_stop = threading.Event()
+    owned_grants = []
+
+    def approve_fixture_calls():
+        while not approval_stop.wait(1):
+            for task_id, grant_id in list(owned_grants):
+                try:
+                    statuses = api_request(base_a, f"/api/tasks/{task_id}/remote-executions", token=token)
+                    for status in statuses:
+                        for request in status.get("human_requests", []):
+                            if request.get("response") is None and request["kind"] == "APPROVAL_REQUIRED" and request["prompt"].startswith("Approve this exact external tool action once? Tool: scoped-effect@"):
+                                api_request(base_a, f"/api/tasks/{task_id}/remote-grants/{grant_id}/human-requests/answer", {"id": request["id"], "response": {"approved": True}}, token=token)
+                except OSError:
+                    pass  # Outage or revoked authority must not create an effect.
+                except Exception as error:
+                    fixture.errors.append(str(error))
+
     def peer(base, other, endpoint):
-        api_request(base, "/api/peers", {"node_id": other, "endpoint": endpoint, "credential_env": "AIDASH_SECRET_PEER", "protocol_version": "0.1", "enabled": True})
+        api_request(base, "/api/peers", {"node_id": other, "endpoint": endpoint, "credential_env": "AIDASH_SECRET_PEER", "protocol_version": "0.2", "enabled": True})
 
     def policy(base, tenant, subject):
         bundle = {"tenant": tenant, "subjects": {subject: {"kind": "user"}, executor: {"kind": "agent"}}, "policies": [{"id": "fixture-work", "effect": "allow", "subjects": {"any": True}, "actions": ["*"], "resources": {"kinds": ["*"]}}]}
@@ -216,8 +238,8 @@ def verify(base_a, base_b, node_a, node_b, worker, launch_worker, counts):
         api_request(base_b, f"/api/authorization/{receiver_tenant}/peer-mappings", {"source_node": node_a, "source_tenant": source_tenant, "source_subject": "alice", "credential_id": mapped["credential"]["id"], "enabled": True, "expected_revision": 0})
         entries = [
             entity("model", "scoped-model", {"provider": "openrouter", "model_id": "fixture", "endpoint": fixture.url + "/v1", "context_window": 128000, "max_output_tokens": 4096, "modalities": ["text"], "cost": {}}),
-            entity("tool", "scoped-effect", {"transport": "http", "endpoint": fixture.url + "/effect", "credential_env": None, "replay": "idempotent"}),
-            entity("agent", agent["id"], {"model": {"id": "scoped-model", "version": "1.0.0"}, "instructions": "Report progress, invoke the approved tool, then publish the result.", "tools": [{"id": "scoped-effect", "version": "1.0.0"}], "skills": [], "max_steps": 16}),
+            entity("tool", "scoped-effect", tool_descriptor(node_b, {"transport": "http", "endpoint": fixture.url + "/effect", "credential_env": None, "replay": "unsafe"}, "scoped_effect")),
+            entity("agent", agent["id"], {"model": {"id": "scoped-model", "version": "1.0.0"}, "instructions": "Report progress, invoke the approved tool, then publish the result.", "schema_version": 1, "bindings": [tool_binding(node_b, "scoped-effect", "scoped_effect")], "remove_default": [], "max_steps": 16}),
         ]
         entries[1]["schema"] = {"type": "object", "required": ["scenario"], "properties": {"scenario": {"type": "string"}}, "additionalProperties": False}
         for entry in entries:
@@ -228,6 +250,8 @@ def verify(base_a, base_b, node_a, node_b, worker, launch_worker, counts):
             workspace = api_request(base_a, "/api/workspaces", {"title": title, "goal": "Verify scoped remote process recovery"}, token=token)
             task = api_request(base_a, f"/api/workspaces/{workspace['id']}/tasks", {"title": title, "description": "Use the admitted remote Agent"}, token=token)
             return workspace, task
+
+        threading.Thread(target=approve_fixture_calls, daemon=True).start()
 
         # An allowed source cannot override the receiver's exact catalog approval.
         _, rejected_task = create_task("receiver-denies-dependency")
@@ -248,14 +272,22 @@ def verify(base_a, base_b, node_a, node_b, worker, launch_worker, counts):
             home.arm(grant, operation)
             activated = api_request(base_a, f"{path}/{grant}/activate", {}, token=token)
             run_id = activated["run_id"]
+            owned_grants.append((task["id"], grant))
             assert activated["admission_id"] == run_id
             assert api_request(base_a, f"{path}/{grant}/activate", {}, token=token)["run_id"] == run_id
 
             # The legacy path must reject even an authenticated peer.
-            peer_headers = {"x-aidash-node": node_a, "x-aidash-protocol": "0.1"}
+            peer_headers = {"x-aidash-node": node_a, "x-aidash-protocol": "0.2"}
             denied(base_b, "/federation/v0.1/offers", {"task": task, "agent": agent}, token=PEER_TOKEN, headers=peer_headers)
-            denied(base_a, "/federation/v0.1/scoped/execution/commands", {"grant_id": grant, "admission_id": run_id, "operation": "workspace_record", "data": {"kind": "task", "id": rejected_task["id"]}}, token=PEER_TOKEN, headers={"x-aidash-node": node_b, "x-aidash-protocol": "0.1"})
-            assert home.blocked.wait(90), f"Did not reach committed {operation}: {home.errors} {fixture.errors}"
+            denied(base_a, "/federation/v0.1/scoped/execution/commands", {"grant_id": grant, "admission_id": run_id, "operation": "workspace_record", "data": {"kind": "task", "id": rejected_task["id"]}}, token=PEER_TOKEN, headers={"x-aidash-node": node_b, "x-aidash-protocol": "0.2"})
+            # Completion also includes the external-action approval continuation.
+            # Each durable phase performs bounded Home RPCs before the next lease;
+            # use the same total budget as the completed-run assertion below.
+            if not home.blocked.wait(150):
+                stalled = api_request(base_b, f"/api/runs/{run_id}")["run"]
+                commands = {name: len(attempts) for (owner, name), attempts in home.commands.items() if owner == grant}
+                timings = {name: {"total": round(sum(values), 3), "max": max(values)} for (owner, name), values in home.timings.items() if owner == grant}
+                raise AssertionError(f"Did not reach committed {operation}: phase={stalled['phase']}, step={stalled['step']}, error={stalled.get('error')}, model_calls={fixture.model_calls[scenario]}, Home commands={commands}, RPC seconds={timings}, peer_errors={home.errors}, provider_errors={fixture.errors}")
 
             def run(run_id=run_id):
                 return api_request(base_b, f"/api/runs/{run_id}")["run"]
@@ -314,6 +346,9 @@ def verify(base_a, base_b, node_a, node_b, worker, launch_worker, counts):
             assert len(statuses) == 1 and statuses[0]["execution"]["run_id"] == run_id
             assert statuses[0]["execution"]["phase"] == run()["phase"]
             assert not any(secret in json.dumps(statuses) for secret in tokens), "Execution status exposed a credential"
+            # Terminal scenarios no longer need an approval poller. Keep the
+            # fixture workload bounded to the one execution under observation.
+            owned_grants.remove((task["id"], grant))
             scenarios.append({"scenario": scenario, "task_id": task["id"], "workspace_id": workspace["id"], "grant_id": grant, "admission_id": activated["admission_id"], "run_id": run_id, "worker_pid_before": old_pid, "worker_pid_after": worker.pid, "exit_signal": "SIGKILL", "phase": run()["phase"], "home_command_attempts": len(home.commands[(grant, operation)]), "passed": True})
             print(f"Scoped Golden Path passed: {scenario} (same Run {run_id}, Worker {old_pid} -> {worker.pid})", flush=True)
 
@@ -324,6 +359,7 @@ def verify(base_a, base_b, node_a, node_b, worker, launch_worker, counts):
         assert receiver.paths["/federation/v0.1/scoped/execution/admissions"] > 0
         return {"passed": True, "source_tenant": source_tenant, "receiver_tenant": receiver_tenant, "scenarios": scenarios, "admissions": final_counts["admissions"] - initial_counts["admissions"], "home_bindings": final_counts["bindings"] - initial_counts["bindings"], "negative_checks": ["cross_tenant", "cross_workspace", "receiver_dependency_approval", "disabled_agent", "legacy_admission", "revoked_resume"], "subject_credentials_not_forwarded": True}
     finally:
+        approval_stop.set()
         home.release.set()
         home.unavailable.clear()
         peer(base_a, node_b, base_b)

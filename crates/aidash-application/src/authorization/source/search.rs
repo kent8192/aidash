@@ -70,8 +70,7 @@ pub async fn search<R: SemanticSearchRepository + ?Sized>(
 			return Err(Error::Forbidden);
 		}
 		journal::prepare(repository.journal(), &operation, &description.semantic).await?;
-		let agent: AgentConfig =
-			serde_json::from_value(description.inspection.agent.config.clone())?;
+		let agent = AgentConfig::from_snapshot(&description.inspection.binding_snapshot)?;
 		let spec = access.index_spec(task.workspace_id).await?;
 		let transport_truncated = query.len() > 32768;
 		let (query, query_truncated) = bounded_query(&operation.query, spec.max_input_bytes);

@@ -31,7 +31,7 @@ async fn independent_database_tiers_converge_after_partial_partition(
 					node_id: remote.f.config.node_id.clone(),
 					endpoint: remote.f.config.endpoint.clone(),
 					credential_env: format!("AIDASH_SECRET_TRANSACTION_{index:02}"),
-					protocol_version: "0.1".into(),
+					protocol_version: "0.2".into(),
 					enabled: true,
 				})
 				.await

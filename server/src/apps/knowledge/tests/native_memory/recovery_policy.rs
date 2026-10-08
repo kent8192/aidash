@@ -62,10 +62,13 @@ async fn policy_upgrade_retires_full_archive_capacity_and_shorter_retention(
 	registry.register(provider).await.unwrap();
 	let mut agent = registry.get("a", "1.0.0").await.unwrap();
 	agent.version = "1.1.0".into();
-	agent.config["memory"] = json!(EntityRef {
-		id: "p".into(),
-		version: "1.1.0".into()
-	});
+	replace_memory_binding(
+		&mut agent,
+		EntityRef {
+			id: "p".into(),
+			version: "1.1.0".into(),
+		},
+	);
 	registry.register(agent).await.unwrap();
 	memory::upgrade_participant(
 		&store,

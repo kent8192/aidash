@@ -68,31 +68,23 @@ impl FederationRepository for Repository {
 		node: &str,
 		agent: &EntityRef,
 	) -> Result<Delegation> {
+		self.reserve(task, node, agent, None).await
+	}
+	async fn reserve_pinned_delegation(
+		&self,
+		task: &Task,
+		node: &str,
+		agent: &EntityRef,
+		snapshot: &aidash_domain::registry::bindings::ForeignAgentSnapshot,
+	) -> Result<Delegation> {
+		self.reserve(task, node, agent, Some(snapshot)).await
+	}
+	async fn delegation_snapshot(
+		&self,
+		task: uuid::Uuid,
+	) -> Result<Option<aidash_domain::registry::bindings::ForeignAgentSnapshot>> {
 		let lease = self.federation.store.orm_connection()?;
-		lease
-			.handle()
-			.atomic(async |tx| {
-				use reinhardt::db::orm::Model;
-				let scoped = crate::apps::identity::models::AuthorizationWorkspace::objects()
-					.filter(
-						crate::apps::identity::models::AuthorizationWorkspace::field_workspace_id()
-							.eq(task.workspace_id),
-					)
-					.exists_with_db(tx)
-					.await?;
-				if scoped {
-					return Err(crate::Error::Forbidden);
-				}
-				let (_, delegation) = DelegationRecord::reserve(
-					tx,
-					&self.federation.config.node_id,
-					task,
-					node,
-					agent,
-				)
-				.await?;
-				Ok(delegation)
-			})
+		DelegationRecord::snapshot(&mut lease.handle(), task)
 			.await
 			.map_err(Into::into)
 	}
@@ -123,6 +115,44 @@ impl FederationRepository for Repository {
 			pending,
 			_visibility: visibility,
 		}))
+	}
+}
+impl Repository {
+	async fn reserve(
+		&self,
+		task: &Task,
+		node: &str,
+		agent: &EntityRef,
+		snapshot: Option<&aidash_domain::registry::bindings::ForeignAgentSnapshot>,
+	) -> Result<Delegation> {
+		let lease = self.federation.store.orm_connection()?;
+		lease
+			.handle()
+			.atomic(async |tx| {
+				use reinhardt::db::orm::Model;
+				let scoped = crate::apps::identity::models::AuthorizationWorkspace::objects()
+					.filter(
+						crate::apps::identity::models::AuthorizationWorkspace::field_workspace_id()
+							.eq(task.workspace_id),
+					)
+					.exists_with_db(tx)
+					.await?;
+				if scoped {
+					return Err(crate::Error::Forbidden);
+				}
+				let (_, delegation) = DelegationRecord::reserve_with_snapshot(
+					tx,
+					&self.federation.config.node_id,
+					task,
+					node,
+					agent,
+					snapshot,
+				)
+				.await?;
+				Ok(delegation)
+			})
+			.await
+			.map_err(Into::into)
 	}
 }
 

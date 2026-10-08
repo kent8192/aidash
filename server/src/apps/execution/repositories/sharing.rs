@@ -87,6 +87,15 @@ impl From<Share> for NativeShare {
 }
 #[async_trait]
 impl SharingScope for Scope<'_> {
+	async fn require_bound_operation(&mut self, run: Uuid, operation: &str) -> Result<()> {
+		crate::apps::registry::repositories::bindings::require_operation(
+			&mut *self.access,
+			run,
+			operation,
+		)
+		.await
+	}
+
 	fn node_id(&self) -> &str {
 		self.store.map_or("", |store| store.node_id.as_str())
 	}

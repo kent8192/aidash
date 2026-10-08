@@ -65,7 +65,7 @@
       "acceptance": ["AT18", "AT26"]
     },
     "R16": {
-      "description": "Preserve immutable Agent versions, existing references and third-party integrations. Migration must not silently remove a Skill, rewrite a published Agent, or grant new capabilities.",
+      "description": "Retain historical immutable records while new Agent registration and execution use Binding snapshots. Drain historical Runs before fleet cutover; never rewrite old configurations or translate grants.",
       "acceptance": ["AT24", "AT27"]
     },
     "R17": {
@@ -79,7 +79,7 @@
   },
   "acceptance": {
     "AT01": {
-      "description": "An Agent with enabled core capabilities and no Registry tools/Skills can discover, read, run Python, run Shell, patch and load a Skill; core names never become `plugin_N`.",
+      "description": "An Agent with explicit approved Host Bindings and immutable Skill Sources can discover, read, run Python, run Shell, patch and load a Skill through stable descriptor aliases.",
       "tests": [
         {
           "name": "journey_tests::harness_journey_keeps_core_names_state_and_integration_secrets_separate",
@@ -113,6 +113,10 @@
         {
           "name": "configuration_tests::subject_configuration_creates_an_immutable_version_without_catalog_grants",
           "source": "server/src/apps/execution/capabilities/tests/core_capabilities/configuration.rs"
+        },
+        {
+          "name": "working_files_require_explicit_agent_settings",
+          "source": "server/src/apps/execution/capabilities/tests/core_capabilities.rs"
         }
       ]
     },
@@ -597,6 +601,10 @@
         {
           "name": "publication_storage_tests::stale_and_rejected_receipts_cannot_starve_new_terminal_payload_acknowledgement",
           "source": "server/src/apps/execution/capabilities/tests/core_capabilities/publication_storage.rs"
+        },
+        {
+          "name": "remote_human_continuations_survive_retries_and_restart_without_a_shadow_run",
+          "source": "server/src/apps/identity/tests/scoped_remote_execution.rs"
         }
       ]
     },
@@ -640,7 +648,7 @@
       "acceptance": ["AT07", "AT09"]
     },
     {
-      "name": "capability setup attaches a direct Skill and failed-extraction original to a new immutable version",
+      "name": "Binding setup saves explicit Sources, Memory and Host packages in a new immutable version",
       "source": "web/tests/core-capabilities.spec.ts",
       "acceptance": ["AT02", "AT13", "AT23", "AT24"]
     },

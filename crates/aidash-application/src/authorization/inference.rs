@@ -16,7 +16,7 @@ pub async fn authorize(
 		}
 		return Ok(());
 	}
-	if agent.core_capabilities.enabled() {
+	if agent.needs_context_authority() {
 		scope.context_authority(run).await?;
 	}
 	let node = scope.node_id().ok_or(Error::Forbidden)?.to_owned();
@@ -34,7 +34,10 @@ pub async fn authorize(
 	for skill in &agent.skills {
 		scope.catalog(skill, "skill.use").await?;
 	}
-	if agent.memory.is_none() || agent.allow_cross_conversation_memory == Some(false) {
+	if agent.memory.is_none()
+		|| (!agent.conversation_memory && !agent.semantic_memory)
+		|| agent.allow_cross_conversation_memory == Some(false)
+	{
 		return Ok(());
 	}
 	let resource = scope.memory_resource(run).await?;

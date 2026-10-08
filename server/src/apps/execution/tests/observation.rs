@@ -24,6 +24,7 @@ async fn observations_do_not_recursively_embed_the_invocation_journal(
 ) {
 	// Arrange
 	let app = endpoint.await;
+	endpoint_fixtures::register_fixture_agent(&app, "lead").await;
 	let f = &app.runtime;
 	let workspace: Workspace = serde_json::from_value(assert_json(
 		app.operator

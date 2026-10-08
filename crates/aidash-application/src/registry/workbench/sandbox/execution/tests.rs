@@ -32,6 +32,7 @@ struct State {
 	order: Vec<&'static str>,
 }
 struct Repository {
+	entry: Entry,
 	state: Mutex<State>,
 	failure: Option<(usize, &'static str)>,
 	stop_after_progress: bool,
@@ -39,6 +40,7 @@ struct Repository {
 impl Repository {
 	fn new() -> Self {
 		Self {
+			entry: crate::test_support::agent("agent"),
 			state: Mutex::new(State {
 				active: false,
 				commits: 0,
@@ -85,7 +87,7 @@ fn session() -> TestSession {
 		tenant: "tenant".into(),
 		revision: 7,
 		status: "running".into(),
-		scenario: json!({}),
+		scenario: json!({"binding_snapshot":crate::test_support::resolve("aidash://local", &crate::test_support::agent("agent"), false, vec![])}),
 		conversation: Some(json!([{"role":"user","content":"original"}])),
 		tool_calls: Some(json!([])),
 		usage: json!({"input_tokens":0,"output_tokens":0,"usage_complete":true}),
@@ -159,10 +161,10 @@ impl SandboxScope for Scope<'_> {
 		assert_eq!(id, draft(7).id);
 		assert!(!lock);
 		self.0.state.lock().unwrap().order.push("current_draft");
-		Ok(draft(9))
+		Ok(draft(7))
 	}
 	async fn authorize_draft(&mut self, current: &Draft, action: &str, shares: bool) -> Result<()> {
-		assert_eq!(current.revision, 9);
+		assert_eq!(current.revision, 7);
 		assert_eq!(action, "agent_draft.test");
 		assert!(shares);
 		self.0.state.lock().unwrap().order.push("current_authority");
@@ -232,6 +234,19 @@ impl RealDispatchScope for Scope<'_> {
 }
 #[async_trait]
 impl ExecutionScope for Scope<'_> {
+	async fn bindings(
+		&mut self,
+		_: &Draft,
+		entry: &Entry,
+	) -> Result<aidash_domain::registry::bindings::BindingSnapshot> {
+		Ok(crate::test_support::resolve(
+			"aidash://local",
+			entry,
+			false,
+			vec![],
+		))
+	}
+
 	async fn validate_content(&mut self, pinned: &Draft) -> Result<Entry> {
 		assert_eq!(pinned.revision, 7);
 		self.0
@@ -243,9 +258,7 @@ impl ExecutionScope for Scope<'_> {
 		if self.0.failing("dependencies") {
 			Err(Error::Forbidden)
 		} else {
-			Ok(serde_json::from_value(
-				json!({"id":"agent","version":"1","kind":"agent","name":{},"description":{}}),
-			)?)
+			Ok(self.0.entry.clone())
 		}
 	}
 }
@@ -312,8 +325,8 @@ fn response(tool: bool) -> ModelResponse {
 		tool_calls: if tool {
 			vec![ToolCall {
 				id: "call".into(),
-				name: "shell".into(),
-				arguments: json!({"command":"fixture"}),
+				name: "workspace_message".into(),
+				arguments: json!({"content":"fixture"}),
 			}]
 		} else {
 			vec![]
@@ -385,7 +398,7 @@ async fn explicit_fixture_is_recorded_and_reauthorized_before_each_inference() {
 	let model = model(repository.clone(), vec![response(true), response(false)]);
 	let mut job = job(model.clone());
 	job.input.fixtures.insert(
-		"shell".into(),
+		"workspace_message".into(),
 		Fixture {
 			status: FixtureStatus::Success,
 			response: json!({"fixture":true}),
@@ -404,7 +417,7 @@ async fn explicit_fixture_is_recorded_and_reauthorized_before_each_inference() {
 	);
 	assert_eq!(
 		outcome.tool_calls,
-		json!([{"id":"call","name":"shell","arguments":{"command":"fixture"},"fixture":{"status":"success","response":{"fixture":true}},"outcome":"simulated"}])
+		json!([{"id":"call","name":"workspace_message","arguments":{"content":"fixture"},"fixture":{"status":"success","response":{"fixture":true}},"outcome":"simulated"}])
 	);
 	let requests = model.requests.lock().unwrap();
 	assert_eq!(requests.len(), 2);
@@ -470,7 +483,7 @@ async fn fresh_revocation_after_progress_prevents_a_second_inference(
 	let model = model(repository.clone(), vec![response(true), response(false)]);
 	let mut job = job(model.clone());
 	job.input.fixtures.insert(
-		"shell".into(),
+		"workspace_message".into(),
 		Fixture {
 			status: FixtureStatus::Denied,
 			response: json!({"denied":true}),
@@ -717,5 +730,89 @@ async fn cancelled_inference_has_no_completion_or_progress_and_no_held_lease() {
 	assert!(!state.active);
 	assert!(state.finished.is_none());
 	assert_eq!(state.session.tool_calls, Some(json!([])));
+	assert_eq!(model.requests.lock().unwrap().len(), 1);
+}
+
+#[rstest]
+#[case::scope("file_search", json!({"scope":{"scope":["allowed"]}}), json!({"scope":"fixture"}), true)]
+#[case::limit("file_search", json!({"limits":{"limit":4}}), json!({"scope":"fixture","limit":5}), true)]
+#[case::host("outbound_get", json!({"allowed_hosts":["allowed.example"]}), json!({"url":"https://denied.example"}), true)]
+#[case::defaults("file_search", json!({"limits":{"limit":4}}), json!({"scope":"fixture"}), false)]
+#[tokio::test]
+async fn simulated_fixtures_obey_the_admitted_binding(
+	#[case] operation: &str,
+	#[case] narrow: Value,
+	#[case] arguments: Value,
+	#[case] denied: bool,
+) {
+	let mut repository = Repository::new();
+	let mut binding =
+		crate::test_support::binding("tool", "aidash://local", &format!("aidash.{operation}"));
+	binding["narrow"] = narrow;
+	repository.entry.config["bindings"] = json!([binding]);
+	let snapshot = crate::test_support::resolve("aidash://local", &repository.entry, false, vec![]);
+	repository.state.get_mut().unwrap().session.scenario["binding_snapshot"] = json!(snapshot);
+	let repository = Arc::new(repository);
+	let mut answer = response(true);
+	answer.tool_calls[0].name = operation.into();
+	answer.tool_calls[0].arguments = arguments;
+	let model = model(repository.clone(), vec![answer, response(false)]);
+	let mut job = job(model.clone());
+	job.input.fixtures.insert(
+		operation.into(),
+		Fixture {
+			status: FixtureStatus::Success,
+			response: json!({"fixture":true}),
+		},
+	);
+	let outcome = simulate(&execution(repository.clone()), session().id, &job)
+		.await
+		.unwrap();
+	assert_eq!(outcome.status, if denied { "blocked" } else { "completed" });
+	assert_eq!(
+		outcome.tool_calls[0]["outcome"],
+		if denied { "denied" } else { "simulated" }
+	);
+	assert_eq!(
+		model.requests.lock().unwrap().len(),
+		if denied { 1 } else { 2 }
+	);
+	if denied {
+		assert!(outcome.error.as_ref().unwrap().contains("Binding"));
+		assert!(outcome.tool_calls[0].get("fixture").is_none());
+	} else {
+		assert_eq!(outcome.tool_calls[0]["arguments"]["limit"], 4);
+	}
+	assert_eq!(
+		repository
+			.state
+			.lock()
+			.unwrap()
+			.session
+			.tool_calls
+			.as_ref()
+			.unwrap(),
+		&outcome.tool_calls
+	);
+}
+#[tokio::test]
+async fn fixture_cannot_enable_an_unbound_tool_alias() {
+	let repository = Arc::new(Repository::new());
+	let mut answer = response(true);
+	answer.tool_calls[0].name = "unbound".into();
+	let model = model(repository.clone(), vec![answer]);
+	let mut job = job(model.clone());
+	job.input.fixtures.insert(
+		"unbound".into(),
+		Fixture {
+			status: FixtureStatus::Success,
+			response: json!({"fixture":true}),
+		},
+	);
+	let outcome = simulate(&execution(repository), session().id, &job)
+		.await
+		.unwrap();
+	assert_eq!(outcome.status, "blocked");
+	assert_eq!(outcome.tool_calls[0]["outcome"], "denied");
 	assert_eq!(model.requests.lock().unwrap().len(), 1);
 }

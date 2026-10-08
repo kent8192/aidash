@@ -26,8 +26,13 @@ fn run() -> Run {
 	.unwrap()
 }
 fn agent(files: bool) -> AgentConfig {
-	serde_json::from_value(json!({"model":{"id":"model","version":"1"},"skills":[],"tools":[],"core_capabilities":{"files":files}})).unwrap()
+	let mut config: AgentConfig =
+		serde_json::from_value(crate::test_support::agent("fixture").config).unwrap();
+	config.core_capabilities = Default::default();
+	config.core_capabilities.files = files;
+	config
 }
+
 struct State {
 	remote: bool,
 	local: bool,

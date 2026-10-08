@@ -6,9 +6,9 @@ the declarations are distributed as system Builtins or operator Host packages.
 See the [capability glossary](registry-capability-glossary.md) and
 [Registry capability operations](registry-capabilities.md).
 
-The native Agent registration and executor still use `CoreCapabilities`,
-`allow_*` flags and `plugin_N` aliases while Binding integration is unfinished.
-The runtime gate below verifies the existing implementations. Registry
+Native Agent registration and execution use immutable, qualified Bindings and
+Provider descriptors. Required/default Builtins and approved Host Bundles determine
+the exposed tool set. The runtime gate below verifies these implementations. Registry
 declarations and catalog approvals do not grant authority over target resources.
 
 ## Supported execution boundary
@@ -77,9 +77,9 @@ installation, not a production rollout policy.
 
 ## Rollout and rollback
 
-Without `AIDASH_CAPABILITY_PROFILE`, admission defaults to disabled. Every Agent's
-new capability flags also default to false, and core reconciliation workers do
-not allocate database pools. An explicitly configured profile with
+Without `AIDASH_CAPABILITY_PROFILE`, admission defaults to disabled and core
+reconciliation workers do not allocate database pools. Agents receive no implicit
+Host packages; installing and binding an approved package is explicit. An explicitly configured profile with
 `admission: false` keeps reconciliation running for rollback. Production
 operators must provision the trusted controller, persistent private
 journal/object storage and equivalent
@@ -90,14 +90,14 @@ secret bytes belong only in the trusted services' environment.
 1. Deploy the additive database migration while admission is disabled. Preserve
    the existing database, working objects and runner journal through upgrades.
 2. Run admission and the runtime gate against the deployed isolation profile.
-3. Create a new version of a selected test Agent in its existing configuration
-   form. Enable the required capabilities, attach authorized Skill directories
-   or references, and approve that exact Registry version through the catalog.
-   Saving configuration does not grant execution or file permissions.
+3. Prepare and approve the exact Host package set. Register explicit Skill or
+   reference Sources, create a Binding-only version of a selected Agent and
+   approve that exact Registry version. Saving configuration does not grant
+   execution or file permissions. Follow the [drained fleet rollout](registry-capabilities.md#drained-fleet-rollout-and-rollback).
 4. Test with a tenant subject credential. Operator configuration access does not
    become access to users' private working files or originals.
 5. Expand Agent/catalog/policy scope explicitly only after the acceptance and
-   compatibility evidence passes.
+   Binding and isolation evidence passes.
 
 To roll back, restart API and Worker services with the same profile and storage
 paths but `admission: false`. Keep the controller and reconciliation workers
@@ -297,5 +297,5 @@ It has no legacy-offer fallback. The task dialog exposes status, pause/resume,
 cancel and idempotent additional instructions. Remote workspace Agents use the
 workspace tool set; core working-area capabilities require an explicitly
 admitted local thread. Use the scoped file-transfer protocol to exchange files
-between those local threads. Cross-node core flags do not manufacture a local
+between those local threads. Cross-node Bindings do not manufacture a local
 conversation or authorize private working data.

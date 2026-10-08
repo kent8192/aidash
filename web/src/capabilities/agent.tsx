@@ -13,7 +13,7 @@ type Agent = {
   id: string;
   version: string;
   name: Record<string, string>;
-  config: Partial<CoreConfiguration>;
+  config: Partial<CoreConfiguration> & { schema_version?: number };
 };
 export function AgentCapabilities() {
   const { locale } = useI18n();
@@ -23,6 +23,12 @@ export function AgentCapabilities() {
     queryKey: ["core-configurable-agents"],
     queryFn: ({ signal }) =>
       apiFetch<Agent[]>("/api/registry?kind=agent", { signal }),
+    retry: false,
+  });
+  const session = useQuery({
+    queryKey: ["core-binding-node"],
+    queryFn: ({ signal }) =>
+      apiFetch<{ node_id: string }>("/api/session", { signal }),
     retry: false,
   });
   const [agent, setAgent] = useState<Agent>();
@@ -50,13 +56,8 @@ export function AgentCapabilities() {
             setAgent(next);
             setSaved("");
             setConfiguration({
-              core_capabilities: {
-                ...emptyCore.core_capabilities,
-                ...next?.config.core_capabilities,
-              },
-              skill_attachments: next?.config.skill_attachments ?? [],
-              skill_roots: next?.config.skill_roots ?? [],
-              reference_attachments: next?.config.reference_attachments ?? [],
+              bindings: next?.config.bindings ?? [],
+              remove_default: next?.config.remove_default ?? [],
             });
             setVersion(
               next?.version.replace(/(\d+)$/, (n) => String(Number(n) + 1)) ??
@@ -65,11 +66,16 @@ export function AgentCapabilities() {
           }}
         >
           <option value="">{ja ? "Agent を選択" : "Select an Agent"}</option>
-          {query.data?.map((a) => (
-            <option key={`${a.id}@${a.version}`} value={`${a.id}@${a.version}`}>
-              {a.name.ja ?? a.name.en ?? a.id} · {a.version}
-            </option>
-          ))}
+          {query.data
+            ?.filter((a) => a.config.schema_version === 1)
+            .map((a) => (
+              <option
+                key={`${a.id}@${a.version}`}
+                value={`${a.id}@${a.version}`}
+              >
+                {a.name.ja ?? a.name.en ?? a.id} · {a.version}
+              </option>
+            ))}
         </select>
       </Field>
       {agent && (
@@ -83,7 +89,7 @@ export function AgentCapabilities() {
             />
           </Field>
           <CapabilityConfiguration
-            privateReferences
+            node={session.data?.node_id}
             value={configuration}
             change={setConfiguration}
           />

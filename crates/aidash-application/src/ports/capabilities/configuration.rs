@@ -20,8 +20,11 @@ pub trait ConfigurationScope: Send {
 	async fn cached(&mut self, key: Uuid, digest: &str) -> Result<Option<Value>>;
 	async fn cache(&mut self, key: Uuid, digest: &str, result: &Value) -> Result<()>;
 	async fn reference(&mut self, id: Uuid) -> Result<Record>;
+	async fn bindings(
+		&mut self,
+		entry: &Entry,
+	) -> Result<aidash_domain::registry::bindings::BindingSnapshot>;
 	async fn register(&mut self, entry: &Entry) -> Result<bool>;
 	async fn provenance(&mut self, source: &EntityRef, entry: &Entry) -> Result<()>;
-	async fn preserve_documents(&mut self, id: &str, version: &str, source: &str) -> Result<()>;
 	async fn event(&mut self, kind: &str, data: Value) -> Result<()>;
 }

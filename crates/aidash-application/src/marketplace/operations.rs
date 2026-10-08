@@ -159,7 +159,9 @@ pub async fn adopt(
 		.await?
 		.ok_or(Error::Forbidden)?;
 	let mut package: aidash_domain::registry::Package = serde_json::from_str(&manifest_source)?;
-	if package.entity != raw
+	if package.entity.id != raw.id
+		|| package.entity.version != raw.version
+		|| content(&package.entity) != content(&raw)
 		|| format!("sha256:{:x}", Sha256::digest(manifest_source.as_bytes())) != digest
 	{
 		return Err(conflict());

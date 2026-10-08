@@ -132,6 +132,22 @@ test("generation dashboard manages policy, approval, completion and retained his
       expected_revision: 0,
       enabled: true,
     });
+    const memoryDescriptor = `${id}-memory`;
+    await api("/api/registry", {
+      id: memoryDescriptor,
+      version: "1.0.0",
+      kind: "memory",
+      name: { en: "Approved semantic memory", ja: "承認済みメモリ" },
+      description: {
+        en: "Explicit semantic retrieval for the generated Agent",
+      },
+      config: { schema_version: 1, source: { adapter: "semantic_memory" } },
+    });
+    await api(`/api/authorization/${tenant}/catalog`, {
+      entry: { id: memoryDescriptor, version: "1.0.0" },
+      expected_revision: 0,
+      enabled: true,
+    });
     const credential = await api(`/api/authorization/${tenant}/credentials`, {
       subject: "alice",
     });
@@ -239,6 +255,12 @@ test("generation dashboard manages policy, approval, completion and retained his
     await dialog
       .getByLabel("モデル", { exact: true })
       .selectOption(`${id}@1.0.0`);
+    await dialog
+      .getByLabel("追加する定義", { exact: true })
+      .selectOption(`memory:${memoryDescriptor}@1.0.0`);
+    await dialog
+      .getByRole("button", { name: "Bindingを追加", exact: true })
+      .click();
     await dialog
       .getByLabel("追加の指示（任意）", { exact: true })
       .fill("Complete the task using the approved model.");

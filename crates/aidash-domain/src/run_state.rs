@@ -393,7 +393,7 @@ impl Run {
 	/// insertion. An existing graph can only be reused byte-for-byte.
 	pub fn bind(&mut self, snapshot: crate::registry::bindings::BindingSnapshot) -> Result<()> {
 		snapshot.validate()?;
-		if snapshot.agent.registry_node != self.home_node
+		if snapshot.remote != (snapshot.agent.registry_node != self.home_node)
 			|| snapshot.agent.id != self.agent_id
 			|| snapshot.agent.version != self.agent_version
 		{

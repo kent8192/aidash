@@ -22,6 +22,10 @@ export function useRecordLabels() {
   for (const entry of data?.registry ?? []) {
     labels.set(entry.id, entityName(entry));
     labels.set(`${entry.id}@${entry.version}`, entityLabel(entry));
+    labels.set(
+      `${data!.node.id}/${entry.id}@${entry.version}`,
+      entityLabel(entry),
+    );
     if (entry.kind === "agent")
       labels.set(
         `${data!.node.id}/agents/${entry.id}@${entry.version}`,

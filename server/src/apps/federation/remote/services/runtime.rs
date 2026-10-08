@@ -233,6 +233,18 @@ impl Federation {
 			.await
 			.map_err(Into::into)
 	}
+	pub(crate) async fn delegate_pinned(
+		&self,
+		task_id: Uuid,
+		node: &str,
+		agent: &EntityRef,
+		snapshot: &aidash_domain::registry::bindings::ForeignAgentSnapshot,
+	) -> Result<Delegation> {
+		crate::bootstrap::federation(self)
+			.delegate_pinned(task_id, node, agent, snapshot)
+			.await
+			.map_err(Into::into)
+	}
 	pub(crate) async fn delegate_in(
 		&self,
 		tx: &mut dyn TransactionExecutor,
@@ -273,6 +285,56 @@ pub struct Home {
 }
 
 impl Home {
+	pub async fn human_request(&self, kind: &str, prompt: &str, key: &str) -> Result<HumanRequest> {
+		if self.local() {
+			let run = self.execution.as_ref().ok_or(Error::Forbidden)?;
+			self.federation
+				.store
+				.human_request(run, kind, prompt, key)
+				.await
+		} else {
+			let request: HumanRequest = self
+				.command(
+					"human_request",
+					json!({"run_id":self.run.id,"kind":kind,"prompt":prompt,"key":key}),
+				)
+				.await?;
+			if crate::authorization::peer::admission::run_grant(&self.federation.store, &self.run)
+				.await?
+				.is_none()
+			{
+				self.federation
+					.store
+					.cache_home_human(
+						self.execution.as_ref().ok_or(Error::Forbidden)?,
+						&request,
+						key,
+					)
+					.await?;
+			}
+			Ok(request)
+		}
+	}
+	pub async fn human_request_by_id(&self, id: Uuid) -> Result<HumanRequest> {
+		if self.local() {
+			self.federation.store.human_request_by_id(id).await
+		} else {
+			self.command("human_read", json!({"run_id":self.run.id,"id":id}))
+				.await
+		}
+	}
+	pub(crate) async fn answer_home_human(
+		&self,
+		id: Uuid,
+		response: Value,
+	) -> Result<HumanRequest> {
+		self.command(
+			"human_answer",
+			json!({"run_id":self.run.id,"id":id,"response":response}),
+		)
+		.await
+	}
+
 	pub fn new(federation: Federation, run: Run) -> Self {
 		Self {
 			federation,
@@ -717,7 +779,21 @@ impl Home {
 			if t.workspace_id != self.run.workspace_id {
 				return Err(Error::Unauthorized);
 			}
-			self.federation.delegate(task_id, node, agent).await
+			if let Some(snapshot) = self
+				.execution
+				.as_ref()
+				.and_then(|run| run.context.binding_snapshot.as_ref())
+				.and_then(|snapshot| {
+					snapshot.foreign_agents.iter().find(|snapshot| {
+						snapshot.agent.registry_node == node && snapshot.agent.local() == *agent
+					})
+				}) {
+				self.federation
+					.delegate_pinned(task_id, node, agent, snapshot)
+					.await
+			} else {
+				self.federation.delegate(task_id, node, agent).await
+			}
 		} else {
 			self.command(
 				"delegate",

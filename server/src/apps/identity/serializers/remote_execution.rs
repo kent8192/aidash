@@ -16,6 +16,7 @@ pub struct RemoteExecutionActivation {
 
 #[derive(Serialize, schemars::JsonSchema)]
 pub struct RemoteExecutionStatus {
+	pub human_requests: Vec<aidash_domain::HumanRequest>,
 	pub grant: Prepared,
 	pub execution: Option<RemoteExecutionActivation>,
 	pub unavailable: bool,
@@ -92,10 +93,18 @@ impl From<RemoteExecutionMessageInput>
 impl From<aidash_domain::federation::execution::home::Status> for RemoteExecutionStatus {
 	fn from(row: aidash_domain::federation::execution::home::Status) -> Self {
 		Self {
+			human_requests: row.human_requests,
 			grant: row.grant,
 			execution: row.execution.map(Into::into),
 			unavailable: row.unavailable,
 			semantic: row.semantic,
 		}
 	}
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RemoteHumanAnswer {
+	pub id: Uuid,
+	pub response: serde_json::Value,
 }

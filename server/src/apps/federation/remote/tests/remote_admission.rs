@@ -14,7 +14,7 @@ async fn peer(app: &common::TestApplication, node: &str, path: &str, input: Valu
 		.request(Method::POST, app.url(path))
 		.header("authorization", format!("Bearer {token}"))
 		.header("x-aidash-node", node)
-		.header("x-aidash-protocol", "0.1")
+		.header("x-aidash-protocol", "0.2")
 		.header("content-type", "application/json")
 		.body(input.to_string())
 		.send()
@@ -80,7 +80,7 @@ async fn receiver_admission_is_idempotent_scoped_and_revalidated_after_reconnect
 								vec![Expr::value(query_bind_2.to_owned()).into()],
 							))
 							.expr(reinhardt::query::Expr::cust("'AIDASH_SECRET_TEST_PEER'"))
-							.expr(reinhardt::query::Expr::cust("'0.1'"))
+							.expr(reinhardt::query::Expr::cust("'0.2'"))
 							.expr(reinhardt::query::Expr::cust("TRUE"))
 							.to_owned(),
 					)

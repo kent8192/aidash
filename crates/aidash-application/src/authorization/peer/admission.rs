@@ -11,7 +11,7 @@ use aidash_domain::{
 		Description,
 		admission::{
 			Activation, Admission, InspectInput, Message, MessageReceipt, RemoteExecutionControl,
-			RemoteExecutionControlState, RemoteExecutionPhase, require_workspace_agent,
+			RemoteExecutionControlState, RemoteExecutionPhase,
 		},
 	},
 	registry::{AgentConfig, EntityRef},
@@ -60,6 +60,10 @@ pub async fn receiver_lease<R: PeerAdmissionRepository>(
 	source: &str,
 	description: Description,
 ) -> Result<(R::Scope, Description)> {
+	description.inspection.binding_snapshot.validate()?;
+	if !description.inspection.binding_snapshot.remote {
+		return Err(Error::Forbidden);
+	}
 	let mut scope = repository
 		.mapped(
 			source,
@@ -82,7 +86,20 @@ pub async fn receiver_lease<R: PeerAdmissionRepository>(
 			requirements: serde_json::from_value(description.task.requirements.clone())?,
 			compactor: description.semantic.request().compactor().cloned(),
 		};
-		let fresh = super::execution::inspect(&mut scope, source, &input).await?;
+		let retained = if let Some(id) = scope.existing(source, description.grant_id).await? {
+			scope.activation_run(id).await?.is_some_and(|run| {
+				run.context.binding_snapshot.as_deref()
+					== Some(&description.inspection.binding_snapshot)
+			})
+		} else {
+			false
+		};
+		let fresh = if retained {
+			super::execution::inspect_retained(&mut scope, source, &input, &description.inspection)
+				.await?
+		} else {
+			super::execution::inspect(&mut scope, source, &input).await?
+		};
 		if !fresh.satisfies(&description.inspection) {
 			return Err(Error::Forbidden);
 		};
@@ -150,9 +167,6 @@ pub async fn admit<R: PeerAdmissionRepository>(
 ) -> Result<Admission> {
 	let (mut scope, description) = lease(repository, source, grant).await?;
 	let result = async {
-		let agent: AgentConfig =
-			serde_json::from_value(description.inspection.agent.config.clone())?;
-		require_workspace_agent(&agent)?;
 		scope.lock_admission(source, &description).await?;
 		if scope.legacy_conflict(source, &description, grant).await? {
 			return Err(Error::Conflict(
@@ -229,7 +243,7 @@ pub async fn worker_lease<R: PeerAdmissionRepository>(
 			return Err(Error::Forbidden);
 		};
 		scope.require_active(&description, run.id).await?;
-		let agent: AgentConfig = serde_json::from_value(description.inspection.agent.config)?;
+		let agent = AgentConfig::from_snapshot(&description.inspection.binding_snapshot)?;
 		scope.worker(true);
 		Ok(agent)
 	}
@@ -306,9 +320,6 @@ pub async fn activate<R: PeerAdmissionRepository>(
 			return Err(Error::Forbidden);
 		};
 		scope.bind_foreign(&description, id, true).await?;
-		let agent: AgentConfig =
-			serde_json::from_value(description.inspection.agent.config.clone())?;
-		require_workspace_agent(&agent)?;
 		scope.lock_activation(source, &description).await?;
 		scope.insert_run(source, id, &description).await?;
 		let run = scope

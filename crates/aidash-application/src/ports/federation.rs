@@ -53,6 +53,22 @@ pub trait FederationRepository: Send + Sync {
 		node: &str,
 		agent: &EntityRef,
 	) -> Result<Delegation>;
+	async fn reserve_pinned_delegation(
+		&self,
+		_: &Task,
+		_: &str,
+		_: &EntityRef,
+		_: &aidash_domain::registry::bindings::ForeignAgentSnapshot,
+	) -> Result<Delegation> {
+		Err(crate::Error::Forbidden)
+	}
+	/// A retry must read the originally reserved closure, never discover a new one.
+	async fn delegation_snapshot(
+		&self,
+		_: Uuid,
+	) -> Result<Option<aidash_domain::registry::bindings::ForeignAgentSnapshot>> {
+		Ok(None)
+	}
 	async fn accept_local_run(&self, task: &Task, agent: &EntityRef) -> Result<Run>;
 	async fn mark_delivered(&self, task: Uuid) -> Result<()>;
 	/// Claim using the database clock, skip locked rows, retain visibility, and

@@ -13,7 +13,7 @@ import subprocess
 import time
 import uuid
 
-from golden_path import ROOT, TOKEN, PEER_TOKEN, api_request, entity, reconcile_uncertain_http, wait_for
+from golden_path import tool_descriptor, tool_binding, ROOT, TOKEN, PEER_TOKEN, api_request, entity, approve_fixture_external_requests, reconcile_uncertain_http, wait_for
 
 
 def main():
@@ -90,19 +90,23 @@ def main():
             wait_for(lambda base=base: api_request(base, "/health"), label="cluster server")
         base_a, base_b = bases
         for base, other in [(base_a, "b"), (base_b, "a")]:
-            api_request(base, "/api/peers", {"node_id": f"aidash://ops-{other}", "endpoint": f"http://ops-{other}-backend:8080", "credential_env": "AIDASH_SECRET_PEER", "protocol_version": "0.1", "enabled": True})
+            api_request(base, "/api/peers", {"node_id": f"aidash://ops-{other}", "endpoint": f"http://ops-{other}-backend:8080", "credential_env": "AIDASH_SECRET_PEER", "protocol_version": "0.2", "enabled": True})
             api_request(base, "/api/registry", entity("model", "fixture-model", {"provider": "openrouter", "model_id": "protocol-fixture", "endpoint": "http://fixture:8000/v1", "context_window": 256000, "max_output_tokens": 4096, "modalities": ["text"], "cost": {}, "credential_env": None}))
-            tool = entity("tool", "research-http", {"transport": "http", "endpoint": "http://fixture:8000/research", "credential_env": None, "replay": "idempotent"})
+            tool = entity("tool", "research-http", tool_descriptor("aidash://ops-a" if base == base_a else "aidash://ops-b", {"transport": "http", "endpoint": "http://fixture:8000/research", "credential_env": None, "replay": "unsafe"}))
             tool["schema"] = {"type": "object", "required": ["topic"], "properties": {"topic": {"type": "string"}}, "additionalProperties": False}
             api_request(base, "/api/registry", tool)
-            api_request(base, "/api/registry", entity("agent", "researcher", {"model": {"id": "fixture-model", "version": "1.0.0"}, "instructions": "Research and publish findings.", "tools": [{"id": "research-http", "version": "1.0.0"}], "skills": [], "max_steps": 128}))
-        api_request(base_a, "/api/registry", entity("agent", "coordinator", {"model": {"id": "fixture-model", "version": "1.0.0"}, "instructions": "Discover, delegate and synthesize.", "tools": [], "skills": [], "max_steps": 128}, capability="task.coordinate"))
+            api_request(base, "/api/registry", entity("agent", "researcher", {"model": {"id": "fixture-model", "version": "1.0.0"}, "instructions": "Research and publish findings.", "schema_version": 1, "bindings": [tool_binding("aidash://ops-a" if base == base_a else "aidash://ops-b", "research-http")], "remove_default": [], "max_steps": 128}))
+        api_request(base_a, "/api/registry", entity("agent", "coordinator", {"model": {"id": "fixture-model", "version": "1.0.0"}, "instructions": "Discover, delegate and synthesize.", "schema_version": 1, "bindings": [], "remove_default": [], "max_steps": 128}, capability="task.coordinate"))
         api_request(base_a, "/api/registry", entity("cluster", "research-cluster", {"coordinator": {"id": "coordinator", "version": "1.0.0"}}))
         discovered = api_request(base_a, "/api/discover", {"capability": "web.search", "language": "ja"})
         assert {a["node_id"] for a in discovered["agents"]} == {"aidash://ops-a", "aidash://ops-b"}
         goal = api_request(base_a, "/api/conversations", {"title": "Cluster recovery acceptance", "goal": "Compare Rust web frameworks", "target": {"id": "research-cluster", "version": "1.0.0"}, "target_kind": "cluster"})
         workspace = goal["workspace"]["id"]
-        wait_for(lambda: api_request(fixture_url, "/status")["remote_effect_started"], timeout=90, label="remote external effect")
+        def remote_effect_started():
+            for base in (base_a, base_b):
+                approve_fixture_external_requests(base)
+            return api_request(fixture_url, "/status")["remote_effect_started"]
+        wait_for(remote_effect_started, timeout=90, label="remote external effect")
         before = api_request(base_b, "/api/state")["runs"][0]
         pods = json.loads(kube("get", "pods", "-l", "app.kubernetes.io/instance=ops-b,app.kubernetes.io/component=worker", "-o", "json"))["items"]
         assert len(pods) == 1
@@ -113,6 +117,8 @@ def main():
         reconciled_key = reconcile_uncertain_http(base_b, before["id"], lambda: api_request(fixture_url, "/status")["effects"])
 
         def complete():
+            for base in (base_a, base_b):
+                approve_fixture_external_requests(base)
             value = api_request(base_a, f"/api/workspaces/{workspace}")
             return value if len(value["tasks"]) == 4 and all(t["status"] == "COMPLETED" for t in value["tasks"]) else False
 

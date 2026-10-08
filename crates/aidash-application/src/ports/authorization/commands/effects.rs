@@ -16,6 +16,10 @@ pub struct WriteContext<'a> {
 	pub admission: Uuid,
 }
 pub enum Effect<'a> {
+	HumanRequest {
+		kind: &'a str,
+		prompt: &'a str,
+	},
 	Claim {
 		revision: i64,
 		agent: &'a Entry,
@@ -88,6 +92,12 @@ pub trait RemoteCommandEffects: RemoteCommandScope {
 		kind: &str,
 		id: Uuid,
 	) -> Result<()>;
+	async fn human_read(
+		&mut self,
+		grant: Uuid,
+		admission: Uuid,
+		id: Uuid,
+	) -> Result<aidash_domain::HumanRequest>;
 	async fn history(
 		&mut self,
 		workspace: Uuid,

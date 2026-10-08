@@ -78,6 +78,11 @@ export function memoryConfiguration(
   form: FormData,
 ): Record<string, unknown> | undefined {
   const text = (key: string) => String(form.get(key) ?? "");
+  if (
+    ["memory", "source"].includes(kind) &&
+    text("context_adapter") !== "native_memory"
+  )
+    return undefined;
   const number = (key: string) => {
     const value = Number(text(key));
     if (!Number.isSafeInteger(value) || value < 0)

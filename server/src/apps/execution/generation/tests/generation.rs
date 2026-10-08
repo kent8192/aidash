@@ -813,8 +813,53 @@ async fn worker_can_request_nested_generation_without_dropping_parent_authority(
 	let (f, url, schema) = setup(&_test_environment).await;
 	let app = common::application(f.clone()).await;
 	let (_, token, _) = bootstrap(&f, &app, &endpoint).await;
+	assert_eq!(
+		request(
+			&app,
+			&f.config.api_token,
+			"PUT",
+			"/api/marketplace/compatibility",
+			json!({"enabled":true,"expected_revision":1,"compatible_instances_confirmed":true})
+		)
+		.await
+		.0,
+		200
+	);
+	let (status, pending) = request(
+		&app,
+		&f.config.api_token,
+		"POST",
+		"/api/marketplace/host-packages",
+		json!({"tenant":"acme","groups":["task_assign"],"idempotency_key":uuid::Uuid::new_v4()}),
+	)
+	.await;
+	assert_eq!(status, 200, "{pending}");
+	let installations = pending["installations"].as_array().unwrap();
+	let assignment_tool = installations
+		.iter()
+		.find(|row| {
+			row["entry"]["kind"] == "tool" && row["entry"]["config"]["operation"] == "task_assign"
+		})
+		.unwrap()["entry"]
+		.clone();
+	let selection = json!({"tenant":"acme",
+		"installations":installations.iter().map(|row|json!({"installation":row["installation"]["id"],"revision":row["revision"],"digest":row["digest"],"expected_activation_revision":0})).collect::<Vec<_>>(),
+		"approvals":installations.iter().map(|row|json!({"reference":{"id":row["entry"]["id"],"version":row["entry"]["version"]},"expected_catalog_revision":0})).collect::<Vec<_>>()});
+	let (status, active) = request(
+		&app,
+		&f.config.api_token,
+		"POST",
+		"/api/marketplace/approval-sets",
+		selection,
+	)
+	.await;
+	assert_eq!(status, 200, "{active}");
 	let mut spec = definition(&app, &f.config.api_token).await;
 	spec["approval_required"] = json!(false);
+	spec["template"]["binding_normalization"] = Value::Null;
+	spec["template"]["config"]["bindings"].as_array_mut().unwrap().push(json!({
+		"kind":"tool", "target":{"registry_node":f.config.node_id,"id":assignment_tool["id"],"version":assignment_tool["version"]}
+	}));
 	assert_eq!(
 		request(
 			&app,
@@ -1861,8 +1906,23 @@ async fn generated_permission_attributes_deny_tools_without_losing_the_pending_c
 		.0,
 		200
 	);
-	for _ in 0..8 {
+	for _ in 0..12 {
 		worker.worker_once().await.unwrap();
+		let current = f.store.run(run.id).await.unwrap();
+		if let aidash_domain::RunState::Waiting(wait) = &current.state
+			&& let aidash_domain::WaitingState::ExternalApproval {
+				request_id, call, ..
+			} = wait.as_ref()
+		{
+			assert_eq!(call.name, "plugin_0");
+			f.store
+				.answer(*request_id, json!({"approved":true}))
+				.await
+				.unwrap();
+		}
+		if current.phase().as_str() == "COMPLETED" {
+			break;
+		}
 	}
 	assert_eq!(
 		f.store.run(run.id).await.unwrap().phase().as_str(),

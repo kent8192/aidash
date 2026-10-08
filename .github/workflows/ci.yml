@@ -103,7 +103,7 @@ jobs:
           path: web/test-results/
           if-no-files-found: ignore
   rust-tests:
-    name: Rust tests (${{ matrix.partition }})
+    name: Rust tests (${{ matrix.partition }}, ${{ matrix.shard }}/2)
     runs-on: ubuntu-latest
     timeout-minutes: 45
     strategy:
@@ -120,6 +120,7 @@ jobs:
             federation,
             knowledge-marketplace,
           ]
+        shard: [1, 2]
     env:
       CARGO_INCREMENTAL: "0"
       CARGO_PROFILE_DEV_DEBUG: "0"
@@ -133,7 +134,7 @@ jobs:
       - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
         with:
           shared-key: rust-coverage
-          key: ${{ matrix.partition }}
+          key: ${{ matrix.partition }}-${{ matrix.shard }}
           workspaces: ". -> target/llvm-cov"
       - name: Install coverage tool
         run: command -v cargo-llvm-cov || cargo install cargo-llvm-cov --version 0.8.7 --locked
@@ -142,17 +143,17 @@ jobs:
           cargo metadata --locked --format-version 1 | python3 scripts/check-workspace-boundaries.py
           python3 scripts/rust-test-partitions.py --check
       - name: Test portable workspace dependency rules
-        if: matrix.partition == 'foundation'
+        if: matrix.partition == 'foundation' && matrix.shard == 1
         run: python3 scripts/test_workspace_boundaries.py
       - name: Verify cross-crate coverage collection
-        if: matrix.partition == 'foundation'
+        if: matrix.partition == 'foundation' && matrix.shard == 1
         run: python3 scripts/test_rust_test_partitions.py
       - name: Test the selected partition with disposable services and collect LCOV
-        run: scripts/test-rust.sh --coverage --partition '${{ matrix.partition }}'
+        run: scripts/test-rust.sh --coverage --partition '${{ matrix.partition }}' --shard '${{ matrix.shard }}'
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: rust-coverage-${{ matrix.partition }}
-          path: coverage/rust-${{ matrix.partition }}.lcov
+          name: rust-coverage-${{ matrix.partition }}-${{ matrix.shard }}
+          path: coverage/rust-${{ matrix.partition }}-${{ matrix.shard }}.lcov
           if-no-files-found: error
   rust-coverage:
     name: Rust coverage upload
@@ -176,12 +177,16 @@ jobs:
           python3 - <<'PY_CHECK'
           from pathlib import Path
           import runpy
-          partitions = runpy.run_path("scripts/rust-test-partitions.py")["PARTITIONS"]
+          contract = runpy.run_path("scripts/rust-test-partitions.py")
           directory = Path("coverage/parts")
-          expected = {f"rust-{partition}.lcov" for partition in partitions}
+          expected = {f"rust-{partition}-{shard}.lcov" for partition in contract["PARTITIONS"] for shard in contract["SHARDS"]}
           actual = {path.name for path in directory.glob("*.lcov") if path.stat().st_size}
           assert actual == expected, (expected - actual, actual - expected)
+          with open("coverage/files.txt", "w") as output:
+              output.write(",".join(str(directory / name) for name in sorted(expected)))
           PY_CHECK
+          echo "files=$(cat coverage/files.txt)" >> "$GITHUB_OUTPUT"
+        id: coverage-files
       - name: Upload all Rust partitions to Codecov together
         uses: codecov/codecov-action@04b047e8bb82a0c002c8312c1c880fbc6a999d45 # v5
         with:
@@ -189,7 +194,7 @@ jobs:
           # See docs/operations/ci-coverage.md for the CLI download outage and removal condition.
           use_pypi: true
           version: v11.3.1
-          files: coverage/parts/rust-foundation.lcov,coverage/parts/rust-server-unit.lcov,coverage/parts/rust-identity.lcov,coverage/parts/rust-execution.lcov,coverage/parts/rust-persistence.lcov,coverage/parts/rust-collaboration.lcov,coverage/parts/rust-federation.lcov,coverage/parts/rust-knowledge-marketplace.lcov
+          files: ${{ steps.coverage-files.outputs.files }}
           flags: rust
           disable_search: true
           fail_ci_if_error: true

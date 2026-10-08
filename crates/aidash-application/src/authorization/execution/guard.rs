@@ -40,18 +40,34 @@ pub async fn authorize(
 		&qualified_agent(scope.node_id(), &run.agent_id, &run.agent_version),
 	)?;
 	scope.check_pinned(&entry).await?;
-	let agent: AgentConfig = serde_json::from_value(entry.config)?;
-	if read_context && agent.core_capabilities.enabled() {
+	if !read_context {
+		// Failure delivery only closes the Task under current Task, Agent and
+		// installation authority. It cannot infer, read Sources or invoke Tools.
+		// A damaged inference context must not strand that durable obligation.
+		return Ok(AgentConfig::from_definition(serde_json::from_value(
+			entry.config,
+		)?));
+	}
+	let snapshot = scope.binding_snapshot(run).await?;
+	let agent = AgentConfig::from_snapshot(&snapshot)?;
+	if read_context && agent.needs_context_authority() {
 		scope.context_authority(run).await?;
 	}
-	// Immutable versions still require current tenant approval after an external wait.
-	for reference in std::iter::once(&agent.model)
-		.chain(agent.tools.iter())
-		.chain(agent.skills.iter())
-		.chain(agent.cluster.iter())
-	{
-		scope.catalog(reference, "registry.read").await?;
+	// Current local approval applies independently of a newer active pointer.
+	// Foreign Agent closures are refreshed at their owning Node by the Binding
+	// authority; never resolve their unqualified IDs through this local catalog.
+	for saved in &snapshot.definitions {
+		if saved.identity.registry_node != scope.node_id() {
+			continue;
+		}
+		let current = scope
+			.catalog(&saved.identity.local(), "registry.read")
+			.await?;
+		if aidash_domain::registry::rules::digest(&serde_json::to_value(current)?) != saved.digest {
+			return Err(Error::Conflict("admitted definition changed".into()));
+		}
 	}
+
 	Ok(agent)
 }
 #[cfg(test)]

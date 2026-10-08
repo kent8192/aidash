@@ -39,6 +39,14 @@ async function setup(page: Page) {
               tags: [],
               config: {},
             },
+            {
+              id: "fixture-cluster",
+              version: "1.0.0",
+              kind: "cluster",
+              name: { en: "Fixture cluster" },
+              description: { en: "Coordination fixture" },
+              config: {},
+            },
             ...["1.0.0", "2.0.0"].map((version) => ({
               id: "research-skill",
               version,
@@ -99,10 +107,41 @@ test("registers an agent with selected versioned skills", async ({ page }) => {
     "required",
     "",
   );
-  await dialog.locator('[name="skills"][value="research-skill@2.0.0"]').check();
+  for (const name of ["skill_list", "skill_load", "skill_read"])
+    await dialog.getByLabel(name, { exact: true }).uncheck();
+  await dialog
+    .getByLabel("追加する定義")
+    .selectOption("skill:research-skill@2.0.0");
+  await dialog
+    .getByRole("button", { name: "Bindingを追加", exact: true })
+    .click();
   await expect(
-    dialog.locator('[name="skills"][value="research-skill@1.0.0"]'),
-  ).not.toBeChecked();
+    dialog.getByText("skill: aidash://test/research-skill@1.0.0", {
+      exact: true,
+    }),
+  ).toHaveCount(0);
+  for (const name of ["skill_list", "skill_load", "skill_read"]) {
+    await expect(dialog.getByLabel(name, { exact: true })).toBeChecked();
+    await expect(dialog.getByLabel(name, { exact: true })).toBeDisabled();
+  }
+  for (const name of ["task_create", "task_delegate", "agent_discover"])
+    await dialog.getByLabel(name, { exact: true }).uncheck();
+  await dialog
+    .locator('[name="cluster"]')
+    .selectOption("fixture-cluster@1.0.0");
+  for (const name of ["task_create", "task_delegate", "agent_discover"]) {
+    await expect(dialog.getByLabel(name, { exact: true })).toBeChecked();
+    await expect(dialog.getByLabel(name, { exact: true })).toBeDisabled();
+  }
+  await dialog.locator('[name="cluster"]').selectOption("");
+  await expect(
+    dialog.getByLabel("task_delegate", { exact: true }),
+  ).toBeEnabled();
+  await expect(dialog.getByLabel("memory_write", { exact: true })).toHaveCount(
+    0,
+  );
+  for (const name of ["memory_mutate", "memory_recall", "memory_reflect"])
+    await dialog.getByLabel(name, { exact: true }).uncheck();
   const submitted = page.waitForRequest(
     (request) =>
       new URL(request.url()).pathname === "/api/registry" &&
@@ -113,7 +152,19 @@ test("registers an agent with selected versioned skills", async ({ page }) => {
     .click();
   expect((await submitted).postDataJSON().config).toMatchObject({
     model: { id: "model", version: "1.0.0" },
-    skills: [{ id: "research-skill", version: "2.0.0" }],
+    schema_version: 1,
+    bindings: [
+      {
+        kind: "skill",
+        target: {
+          registry_node: "aidash://test",
+          id: "research-skill",
+          version: "2.0.0",
+        },
+        narrow: {},
+      },
+    ],
+    remove_default: ["memory_mutate", "memory_recall", "memory_reflect"],
     instructions: "",
   });
   await expect(dialog).not.toBeVisible();
@@ -161,7 +212,12 @@ test("uploads real PDF and Excel reference text separately from registry metadat
   await dialog.getByLabel("名前").fill("Personal agent");
   await dialog.getByLabel("説明").fill("Personal documents");
   await dialog.locator('[name="model"]').selectOption("model@1.0.0");
-  await dialog.locator('[name="skills"][value="research-skill@2.0.0"]').check();
+  await dialog
+    .getByLabel("追加する定義")
+    .selectOption("skill:research-skill@2.0.0");
+  await dialog
+    .getByRole("button", { name: "Bindingを追加", exact: true })
+    .click();
   await dialog.getByLabel("参考資料を追加").setInputFiles([
     { name: "private.pdf", mimeType: "application/pdf", buffer: pdfFixture() },
     {

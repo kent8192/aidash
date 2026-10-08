@@ -15,6 +15,19 @@ impl Definitions for Context<'_> {
 	fn node(&self) -> &str {
 		&self.0.config.node_id
 	}
+	async fn snapshot(
+		&self,
+		run: &RunMetadata,
+	) -> Result<aidash_domain::registry::bindings::BindingSnapshot> {
+		self.0
+			.store
+			.run(run.id)
+			.await?
+			.context
+			.binding_snapshot
+			.map(|snapshot| *snapshot)
+			.ok_or_else(|| aidash_application::Error::Invalid("Run has no Binding snapshot".into()))
+	}
 	async fn definition(&self, run: &RunMetadata, id: &str, version: &str) -> Result<Entry> {
 		self.0
 			.registry
