@@ -11,6 +11,8 @@ use std::{sync::Arc, time::Duration};
 
 #[fixture]
 pub async fn postgres_container() -> (ContainerAsync<GenericImage>, Arc<PgPool>, u16, String) {
+	// Reinhardt's postgres_container fixes postgres:16-alpine. Aidash needs its
+	// PostgreSQL 17 image with pg_jsonschema, pgvector, and PGroonga extensions.
 	// Keep an explicit mapping across stop/start; Docker may reallocate an
 	// automatically assigned port while live stores still use the old URL.
 	let reservation = std::net::TcpListener::bind("127.0.0.1:0").unwrap();

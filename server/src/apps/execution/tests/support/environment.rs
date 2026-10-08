@@ -56,6 +56,8 @@ impl TestEnvironment {
 		async move {
 			let (postgres, pool, _, database_url) = postgres.await;
 			pool.close().await;
+			// Reinhardt has no NATS fixture; retain this disposable JetStream service
+			// and its explicit readiness probe for broker and worker lifecycle tests.
 			let nats = GenericImage::new("nats", "2.12-alpine")
 				.with_exposed_port(ContainerPort::Tcp(4222))
 				.with_wait_for(WaitFor::message_on_stderr("Server is ready"))
