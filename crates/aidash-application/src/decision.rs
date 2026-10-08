@@ -94,6 +94,7 @@ impl DecisionGate<'_> {
 			decider: input.decider.clone(),
 			provider_contract: config.provider_contract.clone(),
 			model: config.model.clone(),
+			configuration_parameters_digest: config.parameters_digest()?,
 			builder: config.builder.clone(),
 			option_source: config.option_source.clone(),
 			rule: config.rule.clone(),

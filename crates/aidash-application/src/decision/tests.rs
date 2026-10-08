@@ -697,6 +697,14 @@ async fn call_only_branch_keeps_call_and_historical_result_prefix() {
 			.values()
 			.all(|b| *b == Branch::TruncateResult)
 	);
+	for truncated in 0..=3 {
+		let mut recovered = saved.evidence[0].clone();
+		recovered.fit.truncated = truncated;
+		assert_eq!(recovered.replay().unwrap(), recovered.branches);
+	}
+	let mut corrupt = saved.evidence[0].clone();
+	corrupt.fit.truncated = 4;
+	assert!(corrupt.replay().is_err());
 	assert!(
 		!serde_json::to_string(&saved.evidence)
 			.unwrap()
@@ -975,7 +983,7 @@ async fn replay_rejects_impossible_reason_fit_and_mode_combinations() {
 }
 
 #[tokio::test]
-async fn replay_rejects_drop_metrics_that_disagree_with_historical_branches() {
+async fn replay_rejects_change_metrics_that_disagree_with_historical_branches() {
 	let fixture = Fixture::new(Mode::Enforce);
 	evaluate(&fixture, Mode::Enforce, 80_000, disclosure())
 		.await
@@ -994,6 +1002,37 @@ async fn replay_rejects_drop_metrics_that_disagree_with_historical_branches() {
 		);
 		assert!(corrupt.replay().is_err());
 	}
+	let mut corrupt = evidence;
+	corrupt.fit.truncated = 1;
+	assert!(corrupt.replay().is_err());
+}
+
+#[rstest::rstest]
+#[case(Mode::Enforce)]
+#[case(Mode::Shadow)]
+#[tokio::test]
+async fn replay_rejects_models_that_differ_from_the_pinned_configuration(#[case] mode: Mode) {
+	let fixture = Fixture::new(mode);
+	evaluate(&fixture, mode, 80_000, disclosure())
+		.await
+		.0
+		.unwrap();
+	let evidence = fixture.saved.lock().unwrap().evidence[0].clone();
+	let mut recovered: Evidence =
+		serde_json::from_value(serde_json::to_value(evidence).unwrap()).unwrap();
+	assert_eq!(recovered.replay().unwrap(), recovered.branches);
+	recovered.model = "jev-1.14.0".into();
+	validate_model(&recovered.model).unwrap();
+	assert!(
+		recovered.replay().is_err(),
+		"changed model in {mode:?} evidence"
+	);
+	recovered.model = config(mode).model;
+	recovered.configuration_parameters_digest = format!("sha256:{}", "a".repeat(64));
+	assert!(
+		recovered.replay().is_err(),
+		"changed configuration witness in {mode:?} evidence"
+	);
 }
 
 #[tokio::test]

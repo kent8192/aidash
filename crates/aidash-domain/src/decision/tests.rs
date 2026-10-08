@@ -51,6 +51,25 @@ fn declarations_reject_unsupported_contracts_mutable_models_and_legacy_limits() 
 	}
 	config().validate().unwrap();
 }
+#[rstest::rstest]
+#[case("https://api.typesafe.ai/v1/systemone", true)]
+#[case("http://127.0.0.1:8080/v1/systemone", true)]
+#[case("http://127.0.0.2:8080/v1/systemone", true)]
+#[case("http://[::1]:8080/v1/systemone", true)]
+#[case("http://api.typesafe.ai/v1/systemone", false)]
+#[case("http://192.168.1.1/v1/systemone", false)]
+#[case("http://localhost:8080/v1/systemone", false)]
+#[case("http://127.0.0.1.example.com/v1/systemone", false)]
+#[case("http://0.0.0.0:8080/v1/systemone", false)]
+#[case("http://[::]:8080/v1/systemone", false)]
+fn decision_endpoints_require_https_or_a_literal_loopback_address(
+	#[case] endpoint: &str,
+	#[case] accepted: bool,
+) {
+	let mut declaration = config();
+	declaration.endpoint = endpoint.into();
+	assert_eq!(declaration.validate().is_ok(), accepted, "{endpoint}");
+}
 #[test]
 fn binary64_evidence_round_trips_subnormals_negative_zero_and_boundary_neighbors() {
 	for bits in [

@@ -126,6 +126,8 @@ pub struct Evidence {
 	pub decider: DeciderPin,
 	pub provider_contract: String,
 	pub model: String,
+	/// Completes the pinned configuration commitment with the exact model above.
+	pub configuration_parameters_digest: String,
 	pub builder: String,
 	pub option_source: String,
 	pub rule: String,
@@ -156,6 +158,14 @@ impl Evidence {
 		}
 		validate_digest(&self.state_digest)?;
 		validate_model(&self.model)?;
+		validate_digest(&self.configuration_parameters_digest)?;
+		if model_configuration_digest(&self.model, &self.configuration_parameters_digest)
+			!= self.decider.configuration_digest
+		{
+			return Err(Error::Invalid(
+				"historical model differs from the pinned Decider configuration".into(),
+			));
+		}
 		for source in &self.sources {
 			validate_digest(&source.revision_digest)?;
 			if source.resource.trim().is_empty() {
@@ -255,6 +265,11 @@ impl Evidence {
 				!= replay
 					.values()
 					.filter(|branch| **branch == Branch::Drop)
+					.count()
+			|| self.fit.truncated
+				> replay
+					.values()
+					.filter(|branch| **branch == Branch::TruncateResult)
 					.count()
 		{
 			return Err(Error::Invalid(

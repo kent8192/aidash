@@ -61,6 +61,18 @@ pub struct DeciderConfig {
 impl DeciderConfig {
 	pub fn validate(&self) -> Result<()> {
 		crate::configuration::validate_endpoint(&self.endpoint)?;
+		let url = url::Url::parse(&self.endpoint)
+			.map_err(|_| Error::Invalid("invalid decision endpoint URL".into()))?;
+		let loopback = match url.host() {
+			Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+			Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+			_ => false,
+		};
+		if url.scheme() != "https" && !loopback {
+			return Err(Error::Invalid(
+				"decision endpoints require HTTPS except on literal loopback addresses".into(),
+			));
+		}
 		crate::configuration::validate_secret_reference(&self.credential_env)?;
 		if self.description.trim().is_empty()
 			|| self.provider_contract != PROVIDER
@@ -76,7 +88,16 @@ impl DeciderConfig {
 		validate_model(&self.model)
 	}
 	pub fn digest(&self) -> Result<String> {
-		Ok(digest(&serde_json::to_value(self)?))
+		Ok(model_configuration_digest(
+			&self.model,
+			&self.parameters_digest()?,
+		))
+	}
+	/// A replay witness for all non-model fields without disclosing transport references.
+	pub fn parameters_digest(&self) -> Result<String> {
+		let mut parameters = serde_json::to_value(self)?;
+		parameters["model"] = serde_json::Value::Null;
+		Ok(digest(&parameters))
 	}
 	pub fn contract_digest(&self) -> Result<String> {
 		self.validate()?;
@@ -84,6 +105,10 @@ impl DeciderConfig {
 			&serde_json::json!({"provider":self.provider_contract,"builder":self.builder,"options":self.option_source,"rule":self.rule}),
 		))
 	}
+}
+
+fn model_configuration_digest(model: &str, parameters_digest: &str) -> String {
+	digest(&serde_json::json!({"model": model, "parameters_digest": parameters_digest}))
 }
 
 pub fn validate_model(model: &str) -> Result<()> {
