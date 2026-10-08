@@ -4556,7 +4556,9 @@ impl ScopedWorkerProcess {
 			snapshot
 		};
 		let child = std::process::Command::new(binary)
-			.args(common::native_process_args(&p.b, "worker"))
+			// The fixture has already migrated both databases. Starting only the
+			// worker keeps crash recovery independent of another migration pass.
+			.args(common::native_process_args(&p.b, "runworker"))
 			.envs(common::native_process_environment(
 				&p.b,
 				database.as_str(),

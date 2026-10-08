@@ -18,6 +18,7 @@ import select
 import socket
 import socketserver
 import subprocess
+import tempfile
 import threading
 import time
 import urllib.error
@@ -332,6 +333,11 @@ def main():
     (logs / "source.json").write_text(json.dumps({"source": source, "binary_sha256": binary_sha256}, indent=2) + "\n")
     children = []
     files = []
+    # Binding defaults include File Tools. Enable only disposable fixture
+    # storage; command runners remain disabled in the operator profile.
+    profile_directory = tempfile.TemporaryDirectory(prefix="aidash-golden-profile-")
+    profile = pathlib.Path(profile_directory.name) / "profile.json"
+    profile.write_text(json.dumps({"admission": True, "storage": str(profile.parent / "storage")}))
     fixture = Fixture(node_a, node_b)
     fixture_server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), fixture.handler())
     threading.Thread(target=fixture_server.serve_forever, daemon=True).start()
@@ -361,6 +367,7 @@ def main():
         env = {**os.environ, "DATABASE_URL": f"postgres://aidash:aidash-local@127.0.0.1:{os.environ.get('AIDASH_POSTGRES_PORT', '54370')}/{database}", "NATS_URL": f"nats://127.0.0.1:{nats_proxy.server_address[1]}", "AIDASH_NODE_ID": node, "AIDASH_ENDPOINT": f"http://127.0.0.1:{port}", "AIDASH_LISTEN": f"127.0.0.1:{port}", "AIDASH_API_TOKEN": TOKEN, "AIDASH_SECRET_PEER": PEER_TOKEN, "AIDASH_SECRET_COMPACTION_FIXTURE": "local-compaction-fixture-key", "AIDASH_SECRET_TRANSACTION_FIXTURE": "local-transaction-fixture-key-0123456789", "AIDASH_WEB_DIR": str(ROOT / "web/dist")}
         # Browser fixtures create audit/history pages in bursts alongside UI polling.
         env["AIDASH_API_RATE_BURST"] = os.environ.get("AIDASH_API_RATE_BURST", "1000")
+        env["AIDASH_CAPABILITY_PROFILE"] = str(profile)
         # These disposable Node IDs own their JetStream streams and consumers.
         # When the outage proxy opens, recover real activation delivery as well
         # as event publication instead of retaining fallback for the whole run.
@@ -537,6 +544,7 @@ def main():
         for db in [db_a, db_b]:
             psql("aidash_a", f"DROP DATABASE IF EXISTS {db} WITH (FORCE)")
         (ROOT / ".ignore/e2e-ready.json").unlink(missing_ok=True)
+        profile_directory.cleanup()
 
 
 if __name__ == "__main__":
