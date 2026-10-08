@@ -1,5 +1,6 @@
 //! External service adapters implementing application ports.
 pub mod compaction;
+pub mod decision;
 pub mod federation;
 pub mod inference;
 pub mod kubernetes;

@@ -22,6 +22,15 @@ pub trait BindingCatalog: Send {
 
 /// The Node admits implementations and their factual contracts, independently of publishers.
 pub trait ProviderCatalog: Send + Sync {
+	/// Availability is Node-owned; a declaration cannot manufacture a dispatch adapter.
+	fn decision_implementation(
+		&self,
+		_config: &aidash_domain::decision::DeciderConfig,
+	) -> Result<String> {
+		Err(crate::Error::Invalid(
+			"Node has no supported Decision Provider".into(),
+		))
+	}
 	fn contract(
 		&self,
 		descriptor: &ToolDescriptor,

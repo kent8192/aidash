@@ -663,20 +663,99 @@ async fn background_indexing_retains_failed_charges_across_recovery_and_cannot_o
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
+	use reinhardt::query::{
+		Alias, Expr, IntoIden, LockBehavior, LockType, PostgresQueryBuilder, Query, SimpleExpr,
+	};
+
 	let fixture = Fixture::new(&_test_environment, Some(2), Some(2)).await;
 	let entry = fixture.remember().await;
 	assert_eq!(fixture.usage().await["embedding_calls"], 1);
 	fixture.response_mode.store(1, Ordering::SeqCst);
+	// Stop the independent durable reservation after the indexer has read its
+	// source. Maintenance must not acquire the workspace writer in this window:
+	// it could wait for those source locks while the reservation waits for the
+	// workspace foreign-key lock held by maintenance.
+	let pool = fixture.f.store.pool.driver();
+	let request: Uuid = fixture.job["id"].as_str().unwrap().parse().unwrap();
+	let mut budget_barrier = pool.begin().await.unwrap();
+	sqlx::query(
+		&Query::select()
+			.column(Alias::new("request_id"))
+			.from(Alias::new("generation_budgets"))
+			.and_where(Expr::col("request_id").eq(Expr::value(request)))
+			.lock(LockType::Update)
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(&mut *budget_barrier)
+	.await
+	.unwrap();
+	let barrier_pid: i32 = sqlx::query_scalar(
+		&Query::select()
+			.expr(SimpleExpr::FunctionCall(
+				Alias::new("pg_backend_pid").into_iden(),
+				vec![],
+			))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(&mut *budget_barrier)
+	.await
+	.unwrap();
 	// sweep also performs native retention, purge, and durable engine maintenance.
 	// Allow coverage instrumentation of all maintenance passes while retaining
 	// a finite bound that catches lock cycles across the concurrent workers.
 	tokio::time::timeout(std::time::Duration::from_secs(60), async {
-		let (first, second) = tokio::join!(
+		let (first, (second, writer)) = tokio::join!(
 			semantic::worker::sweep(&fixture.f.store),
-			semantic::worker::sweep(&fixture.f.store)
+			async {
+				let blocked_query = Query::select()
+					.column(Alias::new("pid"))
+					.from(Alias::new("pg_stat_activity"))
+					.and_where(Expr::value(barrier_pid).eq(SimpleExpr::FunctionCall(
+						Alias::new("ANY").into_iden(),
+						vec![SimpleExpr::FunctionCall(
+							Alias::new("pg_blocking_pids").into_iden(),
+							vec![Expr::col("pid").into()],
+						)],
+					)))
+					.to_string(PostgresQueryBuilder);
+				let blocked = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+					loop {
+						if sqlx::query(&blocked_query)
+							.fetch_optional(pool)
+							.await
+							.unwrap()
+							.is_some()
+						{
+							break;
+						}
+						tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+					}
+				})
+				.await;
+				let mut maintenance = pool.begin().await.unwrap();
+				let writer = sqlx::query(
+					&Query::select()
+						.column(Alias::new("id"))
+						.from(Alias::new("workspaces"))
+						.and_where(Expr::col("id").eq(Expr::value(fixture.workspace)))
+						.lock(LockType::Update)
+						.lock_behavior(LockBehavior::Nowait)
+						.to_string(PostgresQueryBuilder),
+				)
+				.fetch_one(&mut *maintenance)
+				.await;
+				maintenance.rollback().await.unwrap();
+				budget_barrier.rollback().await.unwrap();
+				blocked.expect("indexing must reach the independent durable reservation");
+				(semantic::worker::sweep(&fixture.f.store).await, writer)
+			}
 		);
 		first.unwrap();
 		second.unwrap();
+		assert!(
+			matches!(writer, Err(sqlx::Error::Database(ref error)) if error.code().as_deref() == Some("55P03")),
+			"maintenance must not acquire the workspace writer while indexing reserves its charge"
+		);
 	})
 	.await
 	.expect("concurrent indexers must not deadlock the durable reservation");
