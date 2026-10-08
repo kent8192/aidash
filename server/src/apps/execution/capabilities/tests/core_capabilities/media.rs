@@ -228,11 +228,8 @@ fn media_fixture(
 	#[from(media_router)]
 	#[with(_calls.clone(),selections.clone(),requests.clone())]
 	_router: Arc<Router>,
-	#[from(upstream_fixtures::ready_router)]
+	#[from(upstream_fixtures::provider_transport)]
 	#[with(_router.clone())]
-	_ready: upstream_fixtures::RouterFuture,
-	#[from(upstream_fixtures::async_upstream)]
-	#[with(_ready.clone())]
 	_provider: upstream_fixtures::UpstreamFuture,
 	#[from(provider_endpoint)]
 	#[with(_provider.clone())]

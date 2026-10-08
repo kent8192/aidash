@@ -1008,13 +1008,10 @@ struct Provider3Fixture {
 
 #[rstest::fixture]
 fn provider_3(
-	#[from(provider_3_first_model)] first_model: Arc<tokio::sync::Notify>,
-	#[from(provider_3_first_compaction)] first_compaction: Arc<tokio::sync::Notify>,
-	#[from(provider_3_model_calls)] model_calls: Arc<std::sync::atomic::AtomicUsize>,
-	#[from(provider_3_compaction_calls)] compaction_calls: Arc<std::sync::atomic::AtomicUsize>,
+	#[from(compaction_provider_state)] _state: CompactionProviderState,
 	#[from(common::runtime)] _runtime: common::RuntimeFuture,
 	#[from(provider_3_router)]
-	#[with(first_model.clone(), first_compaction.clone(), model_calls.clone(), compaction_calls.clone(), _runtime.clone())]
+	#[with(_state.first_model.clone(), _state.first_compaction.clone(), _state.model_calls.clone(), _state.compaction_calls.clone(), _runtime.clone())]
 	_router: upstream_fixtures::RouterFuture,
 	#[from(async_upstream)]
 	#[with(_router.clone())]
@@ -1023,6 +1020,12 @@ fn provider_3(
 	#[with(Default::default(), aidash_server::sse::Service::new(Default::default()), Arc::new(|router| router), _runtime.clone())]
 	application: common::ApplicationFuture,
 ) -> BoxFuture<'static, Provider3Fixture> {
+	let CompactionProviderState {
+		first_model,
+		first_compaction,
+		model_calls,
+		compaction_calls,
+	} = _state;
 	async move {
 		Provider3Fixture {
 			application: application.await,
@@ -1095,4 +1098,26 @@ fn provider_4(
 		}
 	}
 	.boxed()
+}
+
+#[derive(Clone)]
+struct CompactionProviderState {
+	first_model: Arc<tokio::sync::Notify>,
+	first_compaction: Arc<tokio::sync::Notify>,
+	model_calls: Arc<std::sync::atomic::AtomicUsize>,
+	compaction_calls: Arc<std::sync::atomic::AtomicUsize>,
+}
+#[rstest::fixture]
+fn compaction_provider_state(
+	#[from(provider_3_first_model)] first_model: Arc<tokio::sync::Notify>,
+	#[from(provider_3_first_compaction)] first_compaction: Arc<tokio::sync::Notify>,
+	#[from(provider_3_model_calls)] model_calls: Arc<std::sync::atomic::AtomicUsize>,
+	#[from(provider_3_compaction_calls)] compaction_calls: Arc<std::sync::atomic::AtomicUsize>,
+) -> CompactionProviderState {
+	CompactionProviderState {
+		first_model,
+		first_compaction,
+		model_calls,
+		compaction_calls,
+	}
 }

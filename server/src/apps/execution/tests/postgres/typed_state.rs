@@ -1,5 +1,4 @@
-#[path = "../support/upstream.rs"]
-mod upstream_fixtures;
+use super::upstream_fixtures;
 use super::*;
 use reinhardt::ServerRouter as Router;
 use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};

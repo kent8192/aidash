@@ -475,7 +475,7 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 ) {
 	let mut received = media_requests.receiver.lock().unwrap().take().unwrap();
 
-	let endpoint = format!("{}", server.url);
+	let endpoint = server.url.clone();
 	let (f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
 	let (mut policy, token, _) = bootstrap(&f, &app, &endpoint).await;

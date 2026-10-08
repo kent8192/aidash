@@ -1820,14 +1820,17 @@ fn semantic_router(
 	#[default(None)] allowance: Option<i64>,
 	#[default(None)] usage: Option<u64>,
 	#[from(common::runtime)] runtime: common::RuntimeFuture,
-	#[from(semantic_embeddings)] embeddings: Arc<AtomicUsize>,
-	#[from(semantic_inference)] inference: Arc<AtomicUsize>,
-	#[from(semantic_response_mode)] response_mode: Arc<AtomicUsize>,
-	#[from(semantic_remember)] remember: Arc<AtomicUsize>,
-	#[from(semantic_derivations)] derivations: Arc<AtomicUsize>,
-	#[from(semantic_maintenance_origins)] maintenance_origins: Arc<AtomicUsize>,
-	#[from(semantic_embedding_started)] embedding_started: Arc<tokio::sync::Notify>,
+	#[from(semantic_provider_state)] _state: SemanticProviderState,
 ) -> upstream_fixtures::RouterFuture {
+	let SemanticProviderState {
+		embeddings,
+		inference,
+		response_mode,
+		remember,
+		derivations,
+		maintenance_origins,
+		embedding_started,
+	} = _state;
 	async move {let f = runtime.await.federation;
 let embedding_calls = embeddings.clone();
 		let model_calls = inference.clone();
@@ -1921,34 +1924,42 @@ Arc::new(provider)}.boxed().shared()
 }
 
 type SemanticFuture = Shared<BoxFuture<'static, Fixture>>;
-#[rstest::fixture]
-fn semantic_fixture(
-	#[default(None)] allowance: Option<i64>,
-	#[default(None)] _usage: Option<u64>,
-	#[default(false)] maintenance: bool,
-	#[default(false)] learning: bool,
-	#[from(semantic_embeddings)] embeddings: Arc<AtomicUsize>,
-	#[from(semantic_inference)] inference: Arc<AtomicUsize>,
-	#[from(semantic_response_mode)] response_mode: Arc<AtomicUsize>,
-	#[from(semantic_remember)] remember: Arc<AtomicUsize>,
-	#[from(semantic_derivations)] derivations: Arc<AtomicUsize>,
-	#[from(semantic_maintenance_origins)] maintenance_origins: Arc<AtomicUsize>,
-	#[from(semantic_embedding_started)] embedding_started: Arc<tokio::sync::Notify>,
-	recovery_directory: Arc<tempfile::TempDir>,
-	#[from(recovery_runtime)]
-	#[with(recovery_directory.clone())]
-	_runtime: common::RuntimeFuture,
-	#[from(semantic_router)]
-	#[with(allowance, _usage, _runtime.clone(), embeddings.clone(), inference.clone(), response_mode.clone(), remember.clone(), derivations.clone(), maintenance_origins.clone(), embedding_started.clone())]
-	_router: upstream_fixtures::RouterFuture,
-	#[from(async_upstream)]
-	#[with(_router.clone())]
-	server: upstream_fixtures::UpstreamFuture,
-	#[from(common::native_application)]
-	#[with(Default::default(), aidash_server::sse::Service::new(Default::default()), Arc::new(|router|router), _runtime.clone())]
-	application: common::ApplicationFuture,
-) -> SemanticFuture {
-	async move {let application=application.await;let (f,url,schema)=application.runtime.parts();let app=application.application;let server=server.await;let endpoint=server.url.clone();let memory_recovery_directory=recovery_directory;
+mod semantic_fixture_composition {
+	// rstest 0.26.1 does not copy function-level allows onto generated partial_N functions.
+	// Keep the distinct scenario inputs and owned infrastructure visible in this fixture graph.
+	#![allow(clippy::too_many_arguments)]
+	use super::*;
+	#[rstest::fixture]
+	pub(super) fn semantic_fixture(
+		#[default(None)] allowance: Option<i64>,
+		#[default(None)] _usage: Option<u64>,
+		#[default(false)] maintenance: bool,
+		#[default(false)] learning: bool,
+		#[from(semantic_provider_state)] _state: SemanticProviderState,
+		recovery_directory: Arc<tempfile::TempDir>,
+		#[from(recovery_runtime)]
+		#[with(recovery_directory.clone())]
+		_runtime: common::RuntimeFuture,
+		#[from(semantic_router)]
+		#[with(allowance, _usage, _runtime.clone(), _state.clone())]
+		_router: upstream_fixtures::RouterFuture,
+		#[from(async_upstream)]
+		#[with(_router.clone())]
+		server: upstream_fixtures::UpstreamFuture,
+		#[from(common::native_application)]
+		#[with(Default::default(), aidash_server::sse::Service::new(Default::default()), Arc::new(|router|router), _runtime.clone())]
+		application: common::ApplicationFuture,
+	) -> SemanticFuture {
+		let SemanticProviderState {
+			embeddings,
+			inference,
+			response_mode,
+			remember,
+			derivations,
+			maintenance_origins,
+			embedding_started,
+		} = _state;
+		async move {let application=application.await;let (f,url,schema)=application.runtime.parts();let app=application.application;let server=server.await;let endpoint=server.url.clone();let memory_recovery_directory=recovery_directory;
 		let (_, token, original_task) = bootstrap(&f, &app, &endpoint).await;
 		let workspace = f.store.task(original_task).await.unwrap().workspace_id;
 		let (_, mut template) = request(
@@ -2110,4 +2121,37 @@ fn semantic_fixture(
 			memory_recovery_directory,
 		}
 	}.boxed().shared()
+	}
+}
+use semantic_fixture_composition::semantic_fixture;
+
+#[derive(Clone)]
+struct SemanticProviderState {
+	embeddings: Arc<AtomicUsize>,
+	inference: Arc<AtomicUsize>,
+	response_mode: Arc<AtomicUsize>,
+	remember: Arc<AtomicUsize>,
+	derivations: Arc<AtomicUsize>,
+	maintenance_origins: Arc<AtomicUsize>,
+	embedding_started: Arc<tokio::sync::Notify>,
+}
+#[rstest::fixture]
+fn semantic_provider_state(
+	#[from(semantic_embeddings)] embeddings: Arc<AtomicUsize>,
+	#[from(semantic_inference)] inference: Arc<AtomicUsize>,
+	#[from(semantic_response_mode)] response_mode: Arc<AtomicUsize>,
+	#[from(semantic_remember)] remember: Arc<AtomicUsize>,
+	#[from(semantic_derivations)] derivations: Arc<AtomicUsize>,
+	#[from(semantic_maintenance_origins)] maintenance_origins: Arc<AtomicUsize>,
+	#[from(semantic_embedding_started)] embedding_started: Arc<tokio::sync::Notify>,
+) -> SemanticProviderState {
+	SemanticProviderState {
+		embeddings,
+		inference,
+		response_mode,
+		remember,
+		derivations,
+		maintenance_origins,
+		embedding_started,
+	}
 }

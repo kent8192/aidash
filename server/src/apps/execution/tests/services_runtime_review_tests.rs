@@ -47,13 +47,12 @@ async fn cancellation_store(
 		.connect_lazy("postgres://localhost/unused")
 		.unwrap();
 	pool.close().await;
-	let store = crate::store::Store {
+	crate::store::Store {
 		capabilities: crate::capabilities::Runtime::new(Default::default()).unwrap(),
 		pool: pool.clone().into(),
 		control_pool: pool.into(),
 		node_id: "cancellation-poll-test".into(),
 		semantic_client: http_client.clone(),
 		recovery_cursors: Default::default(),
-	};
-	store
+	}
 }

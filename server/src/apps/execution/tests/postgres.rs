@@ -823,7 +823,7 @@ async fn successful_tool_retry_resets_the_next_invocation_budget(
 ) {
 	let (store, url, schema) = _store_fixture.clone().await.parts();
 
-	let endpoint = format!("{}", server.url);
+	let endpoint = server.url.clone();
 	let f = _federation.await.federation;
 	seed(&f.registry).await;
 	f.registry
@@ -954,7 +954,7 @@ async fn write_approval(
 ) -> WriteApproval {
 	let (store, url, schema) = _store_fixture.clone().await.parts();
 
-	let endpoint = format!("{}", server.url);
+	let endpoint = server.url.clone();
 	let f = _federation.await.federation;
 	seed(&f.registry).await;
 	f.registry
@@ -1241,7 +1241,7 @@ async fn rejected_web_sources_reach_the_agent_without_retrying_or_escaping_allow
 
 	let (store, database_url, schema) = _store_fixture.clone().await.parts();
 
-	let endpoint = format!("{}", server.url);
+	let endpoint = server.url.clone();
 	let federation = _federation.await.federation;
 	federation.registry.register(entry("model", "web-model", json!({"provider":"openrouter","model_id":"fixture","endpoint":format!("{endpoint}/v1"),"credential_env":null,"context_window":128000,"max_output_tokens":4096,"modalities":["text"],"cost":{}}))).await.unwrap();
 	federation
@@ -1364,7 +1364,7 @@ async fn failed_home_transition_survives_outage_and_worker_restart(
 	let home_task = scene.task;
 	let task = home_task.lock().unwrap().clone();
 
-	let endpoint = format!("{}", server.url);
+	let endpoint = server.url.clone();
 	add_test_peer(&store, "aidash://home", &endpoint).await;
 	let run = store
 		.accept_run(&task, "aidash://home", &agent.id, &agent.version)
@@ -2350,7 +2350,7 @@ async fn ambiguous_peer_credentials_cannot_impersonate_another_node(
 			.is_err()
 	);
 
-	let endpoint = format!("{}", server.url);
+	let endpoint = server.url.clone();
 	assert!(matches!(
 		f.register_peer(aidash_server::federation::Peer {
 			node_id: "aidash://peer-d".into(),

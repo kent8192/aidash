@@ -439,10 +439,13 @@ pub(super) fn connected_nodes(
 	#[from(capability_fixture)]
 	#[with(_recipient)]
 	b: CoreFuture,
-	#[from(peer_listener)] source_listener: BoxFuture<'static, tokio::net::TcpListener>,
-	#[from(peer_listener)] recipient_listener: BoxFuture<'static, tokio::net::TcpListener>,
+	#[from(peer_listeners)] _state: PeerListeners,
 	#[from(lost_commit_reply)] lose_commit_reply: Arc<AtomicBool>,
 ) -> BoxFuture<'static, ConnectedNodes> {
+	let PeerListeners {
+		source_listener,
+		recipient_listener,
+	} = _state;
 	async move {
  use reinhardt::query::{Alias,Expr,PostgresQueryBuilder,Query};
  let mut a=a.await;let mut b=b.await;let al=source_listener.await;let bl=recipient_listener.await;
@@ -944,4 +947,19 @@ async fn staged_transfer_callbacks_recheck_marketplace_dependency_approvals(
 	.unwrap();
 	assert_eq!(visible, json!([]), "staged files must remain invisible");
 	c.close().await;
+}
+
+struct PeerListeners {
+	source_listener: BoxFuture<'static, tokio::net::TcpListener>,
+	recipient_listener: BoxFuture<'static, tokio::net::TcpListener>,
+}
+#[rstest::fixture]
+fn peer_listeners(
+	#[from(peer_listener)] source_listener: BoxFuture<'static, tokio::net::TcpListener>,
+	#[from(peer_listener)] recipient_listener: BoxFuture<'static, tokio::net::TcpListener>,
+) -> PeerListeners {
+	PeerListeners {
+		source_listener,
+		recipient_listener,
+	}
 }

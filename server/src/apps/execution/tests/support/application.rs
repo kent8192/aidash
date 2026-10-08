@@ -353,8 +353,24 @@ fn application_client(
 	.shared()
 }
 
+#[derive(Clone)]
+pub struct ApplicationTransport {
+	runtime: RuntimeFixture,
+	context: Arc<InjectionContext>,
+	router: Arc<ServerRouter>,
+	server: Arc<TestServerGuard>,
+}
+pub type TransportFuture = Shared<BoxFuture<'static, ApplicationTransport>>;
+#[derive(Clone)]
+pub struct ApplicationClients {
+	anonymous: Arc<APIClient>,
+	operator: Arc<APIClient>,
+	raw: reqwest::Client,
+}
+pub type ClientsFuture = Shared<BoxFuture<'static, ApplicationClients>>;
+
 #[fixture]
-pub fn native_application(
+fn application_transport(
 	#[default(aidash_server::http::Settings::default())] _protection: aidash_server::http::Settings,
 	#[default(aidash_server::sse::Service::new(aidash_server::sse::Settings::default()))] _streams: aidash_server::sse::Service,
 	#[default(Arc::new(|router| router))] _transform: RouterTransform,
@@ -368,30 +384,78 @@ pub fn native_application(
 	#[from(application_server)]
 	#[with(router.clone())]
 	server: ServerFuture,
-	#[from(application_client)]
-	#[with(false, runtime.clone(), server.clone())]
-	client: ClientFuture,
-	#[from(application_client)]
-	#[with(true, runtime.clone(), server.clone())]
-	operator: ClientFuture,
-	http_client: reqwest::Client,
-) -> ApplicationFuture {
+) -> TransportFuture {
 	async move {
-		let owner = runtime.await;
-		let application = TestApplication {
-			server: server.await,
+		ApplicationTransport {
+			runtime: runtime.await,
 			context: context.await,
 			router: router.await,
-			raw_http: http_client,
-			api_http: client.await,
-			_fixture_owner: Some(owner.clone()),
+			server: server.await,
+		}
+	}
+	.boxed()
+	.shared()
+}
+#[fixture]
+fn transport_server(application_transport: TransportFuture) -> ServerFuture {
+	async move { application_transport.await.server }
+		.boxed()
+		.shared()
+}
+#[fixture]
+fn application_clients(
+	#[from(application_transport)] _transport: TransportFuture,
+	#[from(runtime)] _runtime: RuntimeFuture,
+	#[from(transport_server)]
+	#[with(_transport.clone())]
+	_server: ServerFuture,
+	#[from(application_client)]
+	#[with(false, _runtime.clone(), _server.clone())]
+	anonymous: ClientFuture,
+	#[from(application_client)]
+	#[with(true, _runtime.clone(), _server.clone())]
+	operator: ClientFuture,
+	http_client: reqwest::Client,
+) -> ClientsFuture {
+	async move {
+		ApplicationClients {
+			anonymous: anonymous.await,
+			operator: operator.await,
+			raw: http_client,
+		}
+	}
+	.boxed()
+	.shared()
+}
+#[fixture]
+pub fn native_application(
+	#[default(aidash_server::http::Settings::default())] _protection: aidash_server::http::Settings,
+	#[default(aidash_server::sse::Service::new(aidash_server::sse::Settings::default()))] _streams: aidash_server::sse::Service,
+	#[default(Arc::new(|router| router))] _transform: RouterTransform,
+	#[from(runtime)] _runtime: RuntimeFuture,
+	#[from(application_transport)]
+	#[with(_protection.clone(), _streams.clone(), _transform.clone(), _runtime.clone())]
+	_transport: TransportFuture,
+	#[from(application_clients)]
+	#[with(_transport.clone(), _runtime.clone())]
+	_clients: ClientsFuture,
+) -> ApplicationFuture {
+	async move {
+		let transport = _transport.await;
+		let clients = _clients.await;
+		let application = TestApplication {
+			server: transport.server,
+			context: transport.context,
+			router: transport.router,
+			raw_http: clients.raw,
+			api_http: clients.anonymous.clone(),
+			_fixture_owner: Some(transport.runtime.clone()),
 		};
-		let anonymous = application.api_http.clone();
 		ApplicationFixture {
 			application,
-			runtime: owner,
-			operator: operator.await,
-			anonymous,
+			runtime: transport.runtime,
+			operator: clients.operator,
+			anonymous: clients.anonymous,
 		}
 	}
 	.boxed()

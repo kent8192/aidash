@@ -1,5 +1,4 @@
-#[path = "support/upstream.rs"]
-mod upstream_fixtures;
+use crate::provider_fixtures::upstream_fixtures;
 use crate::provider_fixtures::{CompletionFixture, completion_server, unavailable_server};
 use aidash_server::{
 	provider::{ContentPart, ModelRequest, ToolSpec, provider},
@@ -440,7 +439,7 @@ async fn upstream_media_rejection_keeps_its_status_and_safe_reason(
 	server: TestServerGuard,
 	http_client: Client,
 ) {
-	let endpoint = format!("{}", server.url);
+	let endpoint = server.url.clone();
 	let model = provider(http_client.clone(), config("openrouter", endpoint)).unwrap();
 	let error = model
 		.infer(ModelRequest {
@@ -468,7 +467,7 @@ async fn upstream_errors_cannot_echo_unrecognized_media_or_secret_data(
 	server: TestServerGuard,
 	http_client: Client,
 ) {
-	let endpoint = format!("{}", server.url);
+	let endpoint = server.url.clone();
 	let model = provider(http_client.clone(), config("openrouter", endpoint)).unwrap();
 	let error = model
 		.infer(ModelRequest {

@@ -5,7 +5,7 @@ use reinhardt::http::ViewResult;
 use reinhardt::test::fixtures::injection_context;
 use reinhardt::test::fixtures::server::TestServerGuard;
 #[path = "support/upstream.rs"]
-mod upstream_fixtures;
+pub(crate) mod upstream_fixtures;
 use reinhardt::{InjectionContext, Json, Response, ServerRouter, StatusCode, post};
 use rstest::fixture;
 use serde_json::{Value, json};

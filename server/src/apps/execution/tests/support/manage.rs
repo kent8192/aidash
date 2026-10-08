@@ -73,17 +73,16 @@ async fn native_process(
 	#[future] database: DatabaseFixture,
 	temp_dir: TempDir,
 	management_addresses: ManagementAddresses,
-	#[from(manage_client)]
-	#[with(0, management_addresses.clone())]
-	client: APIClient,
-	#[from(manage_client)]
-	#[with(if worker {0} else {1}, management_addresses.clone())]
-	probes: APIClient,
-	#[from(manage_client)]
-	#[with(2, management_addresses.clone())]
-	metrics: APIClient,
+	#[from(management_clients)]
+	#[with(worker, management_addresses.clone())]
+	_state: ManagementClients,
 	http_client: reqwest::Client,
 ) -> ManageFixture {
+	let ManagementClients {
+		client,
+		probes,
+		metrics,
+	} = _state;
 	let database = database.await;
 	let address = management_addresses.listeners[0].local_addr().unwrap();
 	let probe_address = management_addresses.listeners[if worker { 0 } else { 1 }]
@@ -212,5 +211,32 @@ impl ManageFixture {
 		}
 		#[cfg(not(unix))]
 		self.process.kill().await.unwrap();
+	}
+}
+
+struct ManagementClients {
+	client: APIClient,
+	probes: APIClient,
+	metrics: APIClient,
+}
+#[rstest::fixture]
+fn management_clients(
+	#[default(false)] worker: bool,
+	management_addresses: ManagementAddresses,
+	#[from(manage_client)]
+	#[with(0, management_addresses.clone())]
+	client: APIClient,
+	#[from(manage_client)]
+	#[with(if worker {0} else {1}, management_addresses.clone())]
+	probes: APIClient,
+	#[from(manage_client)]
+	#[with(2, management_addresses.clone())]
+	metrics: APIClient,
+) -> ManagementClients {
+	let _ = (worker, management_addresses);
+	ManagementClients {
+		client,
+		probes,
+		metrics,
 	}
 }

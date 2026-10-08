@@ -572,7 +572,7 @@ async fn messages_accepted_during_and_after_inference_are_seen_before_completion
 	#[with(_router.clone())]
 	server: TestServerGuard,
 ) {
-	let endpoint = format!("{}", server.url);
+	let endpoint = server.url.clone();
 	let (f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
 	let (_, token, _) = bootstrap(&f, &app, &endpoint).await;

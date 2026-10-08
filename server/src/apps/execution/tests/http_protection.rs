@@ -12,23 +12,26 @@ use std::{sync::Arc, time::Duration};
 #[tokio::test]
 async fn production_router_enforces_auth_validation_rate_and_sse_resume(
 	#[from(common::runtime)] runtime: common::RuntimeFuture,
-	#[from(auth_settings)] _auth_settings: Settings,
-	#[from(actor_settings)] _actor_settings: Settings,
-	#[from(stream_settings)] _stream_settings: Settings,
+	#[from(protection_settings)] _state: ProtectionSettings,
 	#[future(awt)]
 	#[from(common::native_application)]
-	#[with(_auth_settings.clone(), aidash_server::sse::Service::new(aidash_server::sse::Settings::default()), Arc::new(|router| router), runtime.clone())]
+	#[with(_state._auth_settings.clone(), aidash_server::sse::Service::new(aidash_server::sse::Settings::default()), Arc::new(|router| router), runtime.clone())]
 	auth_fixture: common::ApplicationFixture,
 	#[future(awt)]
 	#[from(common::native_application)]
-	#[with(_actor_settings.clone(), aidash_server::sse::Service::new(aidash_server::sse::Settings::default()), Arc::new(|router| router), runtime.clone())]
+	#[with(_state._actor_settings.clone(), aidash_server::sse::Service::new(aidash_server::sse::Settings::default()), Arc::new(|router| router), runtime.clone())]
 	actor_fixture: common::ApplicationFixture,
 	#[future(awt)]
 	#[from(common::native_application)]
-	#[with(_stream_settings.clone(), aidash_server::sse::Service::new(aidash_server::sse::Settings::default()), Arc::new(|router| router), runtime.clone())]
+	#[with(_state._stream_settings.clone(), aidash_server::sse::Service::new(aidash_server::sse::Settings::default()), Arc::new(|router| router), runtime.clone())]
 	stream_fixture: common::ApplicationFixture,
 	#[from(reinhardt::test::fixtures::http_client)] http_client: reqwest::Client,
 ) {
+	let ProtectionSettings {
+		_auth_settings,
+		_actor_settings,
+		_stream_settings,
+	} = _state;
 	let (federation, url, schema) = runtime.await.parts();
 	let auth = auth_fixture.application;
 	// Synthetic socket peers exercise trusted-proxy policy through the native handler.
@@ -342,4 +345,23 @@ fn stream_settings() -> Settings {
 #[rstest::fixture]
 fn broken_routes() -> common::RouterTransform {
 	Arc::new(|router| router.handler("/broken", MalformedJson))
+}
+
+#[derive(Clone)]
+struct ProtectionSettings {
+	_auth_settings: Settings,
+	_actor_settings: Settings,
+	_stream_settings: Settings,
+}
+#[rstest::fixture]
+fn protection_settings(
+	#[from(auth_settings)] _auth_settings: Settings,
+	#[from(actor_settings)] _actor_settings: Settings,
+	#[from(stream_settings)] _stream_settings: Settings,
+) -> ProtectionSettings {
+	ProtectionSettings {
+		_auth_settings,
+		_actor_settings,
+		_stream_settings,
+	}
 }

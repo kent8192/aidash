@@ -106,3 +106,18 @@ pub fn ready_router(
 ) -> RouterFuture {
 	async move { router }.boxed().shared()
 }
+
+/// Resolve the router and disposable transport as one natural provider dependency.
+#[fixture]
+pub fn provider_transport(
+	#[default(Arc::new(ServerRouter::new()))] router: Arc<ServerRouter>,
+	#[from(ready_router)]
+	#[with(router.clone())]
+	_ready: RouterFuture,
+	#[from(async_upstream)]
+	#[with(_ready.clone())]
+	server: UpstreamFuture,
+) -> UpstreamFuture {
+	let _ = (router, _ready);
+	server
+}

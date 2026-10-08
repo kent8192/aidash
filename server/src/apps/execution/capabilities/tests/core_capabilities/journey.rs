@@ -137,17 +137,12 @@ fn next(context: &Value, recipient: &Value) -> Option<(&'static str, Value)> {
 
 #[rstest::fixture]
 async fn journey_fixture(
-	#[from(journey_recipient)] recipient: Arc<Mutex<Value>>,
-	#[from(journey_requests)] requests: Arc<Mutex<Vec<Value>>>,
-	#[from(journey_effects)] effects: Arc<AtomicUsize>,
+	#[from(journey_state)] _state: JourneyState,
 	#[from(journey_router)]
-	#[with(recipient.clone(),requests.clone(),effects.clone())]
+	#[with(_state.recipient.clone(),_state.requests.clone(),_state.effects.clone())]
 	_router: Arc<Router>,
-	#[from(upstream_fixtures::ready_router)]
+	#[from(upstream_fixtures::provider_transport)]
 	#[with(_router.clone())]
-	_ready: upstream_fixtures::RouterFuture,
-	#[from(upstream_fixtures::async_upstream)]
-	#[with(_ready.clone())]
 	_provider: upstream_fixtures::UpstreamFuture,
 	#[from(provider_endpoint)]
 	#[with(_provider.clone())]
@@ -160,9 +155,14 @@ async fn journey_fixture(
 	_core: CoreFuture,
 	#[future(awt)]
 	#[from(super::transfer_tests::connected_nodes)]
-	#[with(3,"aidash://journey","aidash://journey-recipient",_core.clone())]
+	#[with(3,"aidash://journey","aidash://journey-_state.recipient",_core.clone())]
 	peers: super::transfer_tests::ConnectedNodes,
 ) -> Journey {
+	let JourneyState {
+		recipient,
+		requests,
+		effects,
+	} = _state;
 	let super::transfer_tests::ConnectedNodes {
 		a: c,
 		b: peer,
@@ -488,4 +488,23 @@ async fn running_journey_fixture(
 		)),
 	};
 	(j, worker, transfer)
+}
+
+#[derive(Clone)]
+struct JourneyState {
+	recipient: Arc<Mutex<Value>>,
+	requests: Arc<Mutex<Vec<Value>>>,
+	effects: Arc<AtomicUsize>,
+}
+#[rstest::fixture]
+fn journey_state(
+	#[from(journey_recipient)] recipient: Arc<Mutex<Value>>,
+	#[from(journey_requests)] requests: Arc<Mutex<Vec<Value>>>,
+	#[from(journey_effects)] effects: Arc<AtomicUsize>,
+) -> JourneyState {
+	JourneyState {
+		recipient,
+		requests,
+		effects,
+	}
 }

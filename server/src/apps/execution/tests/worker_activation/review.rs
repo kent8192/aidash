@@ -1,5 +1,4 @@
-#[path = "../support/upstream.rs"]
-mod upstream_fixtures;
+use super::upstream_fixtures;
 use super::*;
 use reinhardt::ServerRouter as Router;
 use reinhardt::test::fixtures::server::TestServerGuard;
@@ -405,7 +404,7 @@ async fn terminal_delivery_drains_a_burst_without_per_run_sleep(
 	let runtime = runtime.await;
 	let (f, url, schema) = runtime.parts();
 
-	let endpoint = format!("{}", server.url);
+	let endpoint = server.url.clone();
 	sqlx::query(
 		&Query::insert()
 			.into_table(a("peers"))
@@ -727,7 +726,7 @@ async fn notification_deferral_waits_for_its_authoritative_unblock(
 		.await
 		.unwrap();
 	}
-	let mut worker = /* Act: launch/relaunch tests worker lifecycle and negative controls. */ Process::start(&f, &url, &schema, "worker", &directory, 1, true, binary.clone());
+	let mut worker = /* Act: launch/relaunch tests worker lifecycle and negative controls. */ Process::start(&f, &url, &schema, "worker", &directory, (1, true), binary.clone());
 	worker.ready().await;
 	let due_predicate = if blocker == "remote_dependencies" {
 		"due_at > CURRENT_TIMESTAMP"
@@ -845,7 +844,7 @@ async fn failure_delivery_resumes_after_authority_is_restored_without_replaying_
 	let runtime = runtime.await;
 	let (f, url, schema) = runtime.parts();
 
-	let endpoint = format!("{}", effects.url);
+	let endpoint = effects.url.clone();
 	let app = fixture.application.clone();
 	let (_, token, task) = bootstrap(&f, &app, &endpoint).await;
 	let (status, claimed) = common::request(

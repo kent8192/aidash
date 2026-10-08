@@ -47,10 +47,10 @@ impl Process {
 		schema: &str,
 		mode: &str,
 		directory: &std::path::Path,
-		ordinal: usize,
-		delayed: bool,
+		mode_settings: (usize, bool),
 		binary: Arc<ActivationBinary>,
 	) -> Self {
+		let (ordinal, delayed) = mode_settings;
 		let mut database = reqwest::Url::parse(url).unwrap();
 		database
 			.query_pairs_mut()
@@ -266,24 +266,8 @@ async fn separate_process_notifications_and_negative_control(
 	let mut pids = Vec::new();
 	// Each window has a fresh 60s recovery delay and fewer than 60s of samples.
 	for window in 0..5 {
-		let mut one = /* Act: launch/relaunch tests worker lifecycle and negative controls. */ Process::start(
-			&f,
-			&url,
-			&schema,
-			"worker",
-			&directory,
-			window * 2 + 1,
-			true,
-		binary.clone());
-		let mut two = /* Act: launch/relaunch tests worker lifecycle and negative controls. */ Process::start(
-			&f,
-			&url,
-			&schema,
-			"worker",
-			&directory,
-			window * 2 + 2,
-			true,
-		binary.clone());
+		let mut one = /* Act: launch/relaunch tests worker lifecycle and negative controls. */ Process::start(&f, &url, &schema, "worker", &directory, (window * 2 + 1, true), binary.clone());
+		let mut two = /* Act: launch/relaunch tests worker lifecycle and negative controls. */ Process::start(&f, &url, &schema, "worker", &directory, (window * 2 + 2, true), binary.clone());
 		one.ready().await;
 		two.ready().await;
 		pids.extend([one.child.id(), two.child.id()]);
@@ -364,8 +348,8 @@ async fn separate_process_notifications_and_negative_control(
 	}
 	// A suspended replica cannot hoard prefetched work. The other replica must
 	// drain a batch larger than its two execution slots through notifications.
-	let mut busy = /* Act: launch/relaunch tests worker lifecycle and negative controls. */ Process::start(&f, &url, &schema, "worker", &directory, 11, true, binary.clone());
-	let mut available = /* Act: launch/relaunch tests worker lifecycle and negative controls. */ Process::start(&f, &url, &schema, "worker", &directory, 12, true, binary.clone());
+	let mut busy = /* Act: launch/relaunch tests worker lifecycle and negative controls. */ Process::start(&f, &url, &schema, "worker", &directory, (11, true), binary.clone());
+	let mut available = /* Act: launch/relaunch tests worker lifecycle and negative controls. */ Process::start(&f, &url, &schema, "worker", &directory, (12, true), binary.clone());
 	busy.ready().await;
 	available.ready().await;
 	assert!(
@@ -500,14 +484,10 @@ async fn wait_count(f: &Federation, predicate: &str, minimum: i64) {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn atomic_deadlines_duplicates_quarantine_and_input_during_active_owner(
 	#[from(activation_runtime)] _runtime: common::RuntimeFuture,
-
-	#[from(upstream_fixtures::hits)] calls: Arc<AtomicUsize>,
-	#[from(upstream_fixtures::available)] blocked: Arc<std::sync::atomic::AtomicBool>,
-	permits: Arc<tokio::sync::Semaphore>,
+	#[from(deadline_state)] _state: DeadlineState,
 	#[from(atomic_deadlines_duplicates_quarantine_and_input_during_active_owner_router)]
-	#[with(calls.clone(), blocked.clone(), permits.clone())]
+	#[with(_state.calls.clone(), _state.blocked.clone(), _state.permits.clone())]
 	_router: Arc<Router>,
-
 	#[from(prepared_activation)]
 	#[with("faults", _runtime.clone(), _router.clone(), None)]
 	prepared: PreparedActivationFuture,
@@ -520,6 +500,11 @@ async fn atomic_deadlines_duplicates_quarantine_and_input_during_active_owner(
 	#[with(prepared.clone(), "worker", 0, true, false)]
 	worker: Process,
 ) {
+	let DeadlineState {
+		calls,
+		blocked,
+		permits,
+	} = _state;
 	let mut combined = combined;
 	let mut worker = worker;
 
@@ -826,7 +811,7 @@ async fn broker_absence_reconnect_and_empty_storage_preserve_accepted_work(
 	// and retention expiry converge through durable publication alone.
 	process.stop();
 	drop(process);
-	let mut process = /* Act: launch/relaunch tests worker lifecycle and negative controls. */ Process::start(&f, &url, &schema, "serve", &directory, 1, true, binary.clone());
+	let mut process = /* Act: launch/relaunch tests worker lifecycle and negative controls. */ Process::start(&f, &url, &schema, "serve", &directory, (1, true), binary.clone());
 	process.ready().await;
 	std::fs::write(&pause, b"pause").unwrap();
 	tokio::time::sleep(Duration::from_millis(150)).await;
@@ -996,7 +981,7 @@ async fn killed_after_ack_recovers_only_after_real_lease_expiry(
 	worker.child.wait().unwrap();
 	drop(worker);
 	std::fs::remove_file(&barrier).unwrap();
-	let mut replacement = /* Act: launch/relaunch tests worker lifecycle and negative controls. */ Process::start(&f, &url, &schema, "worker", &directory, 1, true, binary.clone());
+	let mut replacement = /* Act: launch/relaunch tests worker lifecycle and negative controls. */ Process::start(&f, &url, &schema, "worker", &directory, (1, true), binary.clone());
 	replacement.ready().await;
 	// Keep the real lease duration. No SQL timestamp shortening hides early takeover.
 	loop {
@@ -1364,7 +1349,7 @@ async fn child_runtime(
 	let store = aidash_server::store::Store::from_pool(pool, node.into())
 		.await
 		.unwrap();
-	let f = Federation {
+	Federation {
 		sandbox: Default::default(),
 		registry: aidash_server::registry::Registry::new(store.pool.clone(), node).unwrap(),
 		store,
@@ -1381,8 +1366,7 @@ async fn child_runtime(
 		},
 		client: reinhardt_http_client,
 		notify: Arc::new(tokio::sync::Notify::new()),
-	};
-	f
+	}
 }
 
 #[rstest::fixture]
@@ -1598,18 +1582,18 @@ fn prepared_activation(
 	#[from(common::native_application)]
 	#[with(Default::default(), aidash_server::sse::Service::new(Default::default()), Arc::new(|router| router), runtime.clone())]
 	application: common::ApplicationFuture,
-	#[from(upstream_fixtures::ready_router)]
+	#[from(upstream_fixtures::provider_transport)]
 	#[with(router.clone())]
-	router_future: upstream_fixtures::RouterFuture,
-	#[from(upstream_fixtures::async_upstream)]
-	#[with(router_future.clone())]
 	provider: upstream_fixtures::UpstreamFuture,
-	#[from(activation_directory)]
+	#[from(activation_resources)]
 	#[with(label, runtime.clone())]
-	directory: ActivationDirectoryFuture,
-	process_serial: futures_util::future::BoxFuture<'static, tokio::sync::MutexGuard<'static, ()>>,
+	_state: ActivationResources,
 ) -> PreparedActivationFuture {
-	let _ = (label, router, router_future);
+	let ActivationResources {
+		directory,
+		process_serial,
+	} = _state;
+	let _ = (label, router);
 	use futures_util::FutureExt;
 	async move {
 		let serial = process_serial.await;
@@ -1943,4 +1927,43 @@ fn initial_environment(
 		]
 	}
 	.boxed()
+}
+
+struct ActivationResources {
+	directory: ActivationDirectoryFuture,
+	process_serial: futures_util::future::BoxFuture<'static, tokio::sync::MutexGuard<'static, ()>>,
+}
+#[rstest::fixture]
+fn activation_resources(
+	#[default("main")] label: &str,
+	#[from(activation_runtime)] runtime: common::RuntimeFuture,
+	#[from(activation_directory)]
+	#[with(label, runtime.clone())]
+	directory: ActivationDirectoryFuture,
+	process_serial: futures_util::future::BoxFuture<'static, tokio::sync::MutexGuard<'static, ()>>,
+) -> ActivationResources {
+	let _ = (label, runtime);
+	ActivationResources {
+		directory,
+		process_serial,
+	}
+}
+
+#[derive(Clone)]
+struct DeadlineState {
+	calls: Arc<AtomicUsize>,
+	blocked: Arc<std::sync::atomic::AtomicBool>,
+	permits: Arc<tokio::sync::Semaphore>,
+}
+#[rstest::fixture]
+fn deadline_state(
+	#[from(upstream_fixtures::hits)] calls: Arc<AtomicUsize>,
+	#[from(upstream_fixtures::available)] blocked: Arc<std::sync::atomic::AtomicBool>,
+	permits: Arc<tokio::sync::Semaphore>,
+) -> DeadlineState {
+	DeadlineState {
+		calls,
+		blocked,
+		permits,
+	}
 }
