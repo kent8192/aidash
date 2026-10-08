@@ -1,7 +1,7 @@
 meta {
-  name: 1010 peer-agent-bindings - Require the peer bearer credential
+  name: 1040 peer-agent-bindings - Require the peer node identity
   type: http
-  seq: 1010
+  seq: 1040
 }
 
 get {
@@ -12,7 +12,7 @@ get {
 
 headers {
   Accept: application/json
-  X-Aidash-Node: {{peer_node}}
+  Authorization: Bearer {{peer_token}}
   X-Aidash-Protocol: 0.2
 }
 

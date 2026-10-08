@@ -119,3 +119,84 @@ ALTER TABLE registry ADD CONSTRAINT registry_agent_config CHECK (COALESCE((((kin
 						WHEN (jsonb_typeof((metadata -> 'config'::text)) = 'object'::text) THEN (((metadata -> 'config'::text) - ARRAY['model'::text, 'instructions'::text, 'tools'::text, 'skills'::text, 'cluster'::text, 'max_steps'::text, 'knowledge_digest'::text, 'core_capabilities'::text, 'skill_attachments'::text, 'skill_roots'::text, 'reference_attachments'::text, 'allow_task_creation'::text, 'allow_task_delegation'::text, 'allow_memory_write'::text, 'allow_workspace_retrieval'::text, 'allow_cross_conversation_memory'::text, 'memory'::text, 'sources'::text]) = '{}'::jsonb)
 						ELSE false
 						END AND (jsonb_typeof(COALESCE(((metadata -> 'config'::text) -> 'tools'::text), '[]'::jsonb)) = 'array'::text) AND (NOT jsonb_path_exists(COALESCE(((metadata -> 'config'::text) -> 'tools'::text), '[]'::jsonb), '$[*]?((((@.type() != "object" || !(exists (@."id"))) || @."id".type() != "string") || !(exists (@."version"))) || @."version".type() != "string")'::jsonpath, '{}'::jsonb, true)) AND (jsonb_typeof(COALESCE(((metadata -> 'config'::text) -> 'skills'::text), '[]'::jsonb)) = 'array'::text) AND (NOT jsonb_path_exists(COALESCE(((metadata -> 'config'::text) -> 'skills'::text), '[]'::jsonb), '$[*]?((((@.type() != "object" || !(exists (@."id"))) || @."id".type() != "string") || !(exists (@."version"))) || @."version".type() != "string")'::jsonpath, '{}'::jsonb, true)) AND (jsonb_typeof(COALESCE(((metadata -> 'config'::text) -> 'cluster'::text), 'null'::jsonb)) = ANY (ARRAY['object'::text, 'null'::text])) AND ((jsonb_typeof(COALESCE(((metadata -> 'config'::text) -> 'cluster'::text), 'null'::jsonb)) <> 'object'::text) OR ((jsonb_typeof(((metadata -> 'config'::text) -> 'cluster'::text)) = 'object'::text) AND (jsonb_typeof((((metadata -> 'config'::text) -> 'cluster'::text) -> 'id'::text)) = 'string'::text) AND (jsonb_typeof((((metadata -> 'config'::text) -> 'cluster'::text) -> 'version'::text)) = 'string'::text))))) AND ((kind <> 'agent'::text) OR ((jsonb_typeof((metadata #> '{config,model}'::text[])) = 'object'::text) AND (jsonb_typeof(((metadata #> '{config,model}'::text[]) -> 'id'::text)) = 'string'::text) AND (jsonb_typeof(((metadata #> '{config,model}'::text[]) -> 'version'::text)) = 'string'::text)))), false)) NOT VALID;
+
+-- Restore the exact descriptor contract from the preceding lifecycle migration.
+-- PostgreSQL function bodies have no typed migration operation. DDL only.
+-- Parenthesize JSON extraction before arithmetic-precedence subtraction.
+CREATE OR REPLACE FUNCTION public.aidash_descriptor_is_valid(value jsonb) RETURNS boolean
+LANGUAGE plpgsql IMMUTABLE STRICT AS $$
+DECLARE expected_provider text; expected_tier text; start_operation boolean;
+BEGIN
+ IF jsonb_typeof(value) <> 'object' OR value - ARRAY['registry_node','provider','operation','default_alias','tier','narrow','transport','lifecycle']::text[] <> '{}'::jsonb
+ OR NOT COALESCE(value->>'registry_node' ~ '^aidash://[A-Za-z0-9-]{1,100}$', false)
+ OR NOT COALESCE(value->>'default_alias' ~ '^[A-Za-z0-9_-]{1,64}$', false)
+ OR jsonb_typeof(COALESCE(value->'narrow','{}'::jsonb)) <> 'object' THEN RETURN false; END IF;
+ IF COALESCE(value->'narrow','{}'::jsonb) - ARRAY['allowed_hosts','scope','limits']::text[] <> '{}'::jsonb THEN RETURN false; END IF;
+ expected_provider := CASE value->>'operation'
+  WHEN 'workspace_read' THEN 'core.workspace@1' WHEN 'workspace_observe' THEN 'core.workspace@1'
+  WHEN 'workspace_wait' THEN 'core.workspace@1' WHEN 'workspace_message' THEN 'core.workspace@1'
+  WHEN 'human_request' THEN 'core.human@1'
+  WHEN 'task_create' THEN 'core.tasks@1' WHEN 'task_delegate' THEN 'core.tasks@1'
+  WHEN 'agent_discover' THEN 'core.tasks@1' WHEN 'task_assign' THEN 'core.tasks@1'
+  WHEN 'skill_list' THEN 'core.skills@1' WHEN 'skill_load' THEN 'core.skills@1' WHEN 'skill_read' THEN 'core.skills@1'
+  WHEN 'file_search' THEN 'core.files@1' WHEN 'file_read' THEN 'core.files@1' WHEN 'apply_patch' THEN 'core.files@1'
+  WHEN 'artifact_publish' THEN 'core.artifacts@1' WHEN 'memory_write' THEN 'core.memory@1'
+  WHEN 'shell' THEN 'core.sandbox@1' WHEN 'shell_poll' THEN 'core.sandbox@1' WHEN 'shell_cancel' THEN 'core.sandbox@1'
+  WHEN 'code_interpreter' THEN 'core.sandbox@1' WHEN 'python_install' THEN 'core.sandbox@1'
+  WHEN 'python_poll' THEN 'core.sandbox@1' WHEN 'python_cancel' THEN 'core.sandbox@1'
+  WHEN 'outbound_get' THEN 'core.egress@1' WHEN 'file_share' THEN 'core.sharing@1' END;
+ IF expected_provider IS NOT NULL THEN
+  expected_tier := CASE WHEN value->>'operation' IN ('shell','shell_poll','shell_cancel','code_interpreter','python_install','python_poll','python_cancel','outbound_get','apply_patch','file_share','task_assign') THEN 'host' ELSE 'builtin' END;
+  IF value->>'provider' IS DISTINCT FROM expected_provider OR value->>'tier' IS DISTINCT FROM expected_tier
+  OR COALESCE(value->'transport','null'::jsonb) <> 'null'::jsonb THEN RETURN false; END IF;
+  start_operation := value->>'operation' IN ('shell','code_interpreter','python_install');
+  IF start_operation THEN
+   IF jsonb_typeof(value->'lifecycle') IS DISTINCT FROM 'object'
+   OR (value->'lifecycle') - ARRAY['poll','cancel']::text[] <> '{}'::jsonb
+   OR NOT COALESCE(public.aidash_qualified_ref_is_valid(value #> '{lifecycle,poll}'),false)
+   OR NOT COALESCE(public.aidash_qualified_ref_is_valid(value #> '{lifecycle,cancel}'),false)
+   OR value #> '{lifecycle,poll}' = value #> '{lifecycle,cancel}'
+   OR value #>> '{lifecycle,poll,registry_node}' IS DISTINCT FROM value->>'registry_node'
+   OR value #>> '{lifecycle,cancel,registry_node}' IS DISTINCT FROM value->>'registry_node' THEN RETURN false; END IF;
+  ELSIF COALESCE(value->'lifecycle','null'::jsonb) <> 'null'::jsonb THEN RETURN false; END IF;
+  RETURN true;
+ END IF;
+ RETURN COALESCE(value->>'tier' = 'integration' AND value->>'operation' = 'invoke'
+ AND value->>'provider' = 'integration.' || (value #>> '{transport,transport}') || '@1'
+ AND value #>> '{transport,transport}' IN ('http','mcp','agent')
+ AND COALESCE(value->'lifecycle','null'::jsonb) = 'null'::jsonb
+ AND public.aidash_tool_config_is_valid(value->'transport'),false);
+EXCEPTION WHEN OTHERS THEN RETURN false;
+END
+$$;
+
+-- Restore package validation before dropping native config validation.
+CREATE OR REPLACE FUNCTION public.aidash_binding_package_is_valid(value jsonb, entry_id text, entry_version text) RETURNS boolean
+LANGUAGE plpgsql IMMUTABLE STRICT AS $$
+DECLARE entity jsonb; candidate jsonb;
+BEGIN
+ IF jsonb_typeof(value) <> 'object' OR value - ARRAY['entity','author','permissions','dependencies']::text[] <> '{}'::jsonb
+ OR jsonb_typeof(value->'author') <> 'string' OR length(btrim(value->>'author', U&'\0009\000A\000B\000C\000D\0020\0085\00A0\1680\2000\2001\2002\2003\2004\2005\2006\2007\2008\2009\200A\2028\2029\202F\205F\3000')) = 0
+ OR jsonb_typeof(value->'permissions') <> 'array' OR jsonb_typeof(value->'dependencies') <> 'array'
+ OR jsonb_path_exists(value->'permissions','strict $[*] ? (@.type() != "string")') THEN RETURN false; END IF;
+ entity := value->'entity';
+ IF NOT COALESCE(public.aidash_package_entry_shape_is_valid(entity),false)
+ OR entity ?| ARRAY['installation','binding_normalization']
+ OR jsonb_typeof(entity->'id') IS DISTINCT FROM 'string' OR jsonb_typeof(entity->'version') IS DISTINCT FROM 'string'
+ OR entity->>'id' IS DISTINCT FROM entry_id OR entity->>'version' IS DISTINCT FROM entry_version
+ OR NOT COALESCE(public.aidash_qualified_ref_is_valid(jsonb_build_object('registry_node','aidash://contract','id',entry_id,'version',entry_version)),false) THEN RETURN false; END IF;
+ FOR candidate IN SELECT jsonb_array_elements(value->'dependencies') LOOP
+  IF NOT COALESCE(public.aidash_qualified_ref_is_valid(candidate || '{"registry_node":"aidash://contract"}'::jsonb),false) THEN RETURN false; END IF;
+ END LOOP;
+ RETURN COALESCE(CASE entity->>'kind'
+ WHEN 'agent' THEN public.aidash_agent_bindings_is_valid(entity->'config')
+ WHEN 'tool' THEN public.aidash_descriptor_is_valid(entity->'config') AND entity #>> '{config,tier}' <> 'builtin'
+ WHEN 'bundle' THEN public.aidash_bundle_is_valid(entity->'config')
+ WHEN 'memory' THEN public.aidash_context_is_valid(entity->'config','memory')
+ WHEN 'source' THEN public.aidash_context_is_valid(entity->'config','source')
+ WHEN 'skill' THEN jsonb_typeof(entity #> '{config,instructions}') = 'string' AND length(btrim(entity #>> '{config,instructions}', U&'\0009\000A\000B\000C\000D\0020\0085\00A0\1680\2000\2001\2002\2003\2004\2005\2006\2007\2008\2009\200A\2028\2029\202F\205F\3000')) > 0
+ ELSE false END,false);
+EXCEPTION WHEN OTHERS THEN RETURN false;
+END
+$$;
+DROP FUNCTION public.aidash_native_context_is_valid(jsonb,text);

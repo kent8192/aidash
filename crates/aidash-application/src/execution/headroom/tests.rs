@@ -31,6 +31,7 @@ struct Scope {
 	trace: Mutex<Vec<String>>,
 	skills: bool,
 	knowledge: bool,
+	private_sources: usize,
 	document_error: bool,
 	pinned: usize,
 }
@@ -40,6 +41,7 @@ fn scope() -> Scope {
 		trace: Mutex::new(vec![]),
 		skills: true,
 		knowledge: true,
+		private_sources: 1,
 		document_error: false,
 		pinned: usize::MAX,
 	}
@@ -83,13 +85,13 @@ impl Definitions for Scope {
 		}
 		let mut extras = vec![];
 		if self.knowledge {
-			let source = crate::test_support::entry(
-				"references",
-				"source",
-				json!({"schema_version":1,"source":{"adapter":"private_references","digest":"a".repeat(64)}}),
-			);
-			root.config["bindings"] = json!([{"kind":"source","target":{"registry_node":node,"id":"references","version":"1.0.0"}}]);
-			extras.push(source);
+			for n in 0..self.private_sources {
+				let id = format!("references-{n}");
+				root.config["bindings"].as_array_mut().unwrap().push(
+					json!({"kind":"source","target":{"registry_node":node,"id":id,"version":"1.0.0"}}),
+				);
+				extras.push(crate::test_support::entry(&id, "source", json!({"schema_version":1,"source":{"adapter":"private_references","digest":format!("{n:064x}")}})));
+			}
 		}
 
 		if self.skills {
@@ -105,12 +107,12 @@ impl Definitions for Scope {
 	async fn definition(&self, _: &RunMetadata, _: &str, _: &str) -> Result<Entry> {
 		panic!("headroom reads only the admitted closure")
 	}
-	async fn documents(&self, _: &Entry) -> Result<Value> {
+	async fn documents(&self, entry: &Entry) -> Result<Value> {
 		self.trace.lock().unwrap().push("documents".into());
 		if self.document_error {
 			Err(Error::External("private contents unavailable".into()))
 		} else {
-			Ok(json!(["private instruction"]))
+			Ok(json!([format!("private instruction from {}", entry.id)]))
 		}
 	}
 	fn validation(&self) -> DefinitionValidation {
@@ -173,4 +175,27 @@ async fn remote_media_routes_do_not_read_local_definitions(scope: Scope, mut run
 		Vec::<Vec<String>>::new()
 	);
 	assert_eq!(*scope.trace.lock().unwrap(), Vec::<String>::new());
+}
+
+#[rstest]
+#[tokio::test]
+async fn multiple_private_sources_share_one_flat_prompt_document_list(
+	mut scope: Scope,
+	run: RunMetadata,
+) {
+	scope.skills = false;
+	scope.private_sources = 2;
+	let snapshot = scope.snapshot(&run).await.unwrap();
+	let context = json!({"reference_documents":["private instruction from references-0", "private instruction from references-1"]});
+	let expected = scope
+		.validation()
+		.bound_prompt_headroom(&snapshot, &context)
+		.unwrap()
+		.saturating_sub(MIN_CONTEXT_RESERVE);
+	scope.trace.lock().unwrap().clear();
+	assert_eq!(request(&scope, &run).await.unwrap(), expected);
+	assert_eq!(
+		*scope.trace.lock().unwrap(),
+		["snapshot", "documents", "documents", "contracts"]
+	);
 }

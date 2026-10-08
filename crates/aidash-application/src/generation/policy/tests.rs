@@ -196,7 +196,14 @@ impl PolicySession for Scope {
 			"aidash://local",
 			entry,
 			false,
-			vec![],
+			self.state
+				.lock()
+				.unwrap()
+				.approved
+				.values()
+				.filter(|value| value["kind"] == "source")
+				.filter_map(|v| serde_json::from_value(v.clone()).ok())
+				.collect(),
 		))
 	}
 
@@ -696,4 +703,35 @@ async fn corrupt_saved_metadata_retains_json_error_instead_of_becoming_a_permiss
 		Err(Error::Json(_))
 	));
 	assert!(repo.state.lock().unwrap().persisted.is_empty());
+}
+
+#[rstest]
+#[tokio::test]
+async fn approved_private_source_cannot_escape_through_a_generation_template(
+	mut spec: Spec,
+	validation: DefinitionValidation,
+) {
+	let repo = Repository::new();
+	let source = crate::test_support::entry(
+		"registered-private",
+		"source",
+		json!({"schema_version":1,"source":{"adapter":"private_references","digest":"a".repeat(64)}}),
+	);
+	spec.template.config["bindings"] = json!([crate::test_support::binding(
+		"source",
+		"aidash://local",
+		&source.id
+	)]);
+	repo.state
+		.lock()
+		.unwrap()
+		.approved
+		.insert((source.id.clone(), source.version.clone()), json!(source));
+	assert!(
+		matches!(set(&repo,"tenant","policy",0,&spec,&validation).await, Err(Error::Invalid(message)) if message.contains("private reference documents"))
+	);
+	let state = repo.state.lock().unwrap();
+	assert!(state.persisted.is_empty());
+	assert!(state.history.is_empty());
+	assert!(!state.calls.iter().any(|call| call.starts_with("cas:")));
 }

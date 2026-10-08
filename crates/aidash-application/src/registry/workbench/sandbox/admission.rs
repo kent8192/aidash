@@ -30,6 +30,63 @@ pub struct Admitted {
 	pub session: TestSession,
 	pub job: Job,
 }
+/// Attachment text is already pinned by the admitted Source. Mounted roots have
+/// no live execution area in Workbench: their contents must be explicit fixtures.
+fn skill_source_context(
+	config: &AgentConfig,
+	snapshot: &aidash_domain::registry::bindings::BindingSnapshot,
+	input: &TestInput,
+) -> Result<String> {
+	let mut text = String::new();
+	for attachment in &config.skill_attachments {
+		let metadata = aidash_domain::capabilities::skills::validate(attachment)?;
+		text.push_str("\nPinned Skill Source:\n");
+		text.push_str(&serde_json::to_string(&metadata)?);
+		text.push('\n');
+		text.push_str(&attachment.instructions);
+	}
+	if !config.skill_roots.is_empty() {
+		let missing = || {
+			Error::Invalid("mounted Skill Sources require successful skill_list and skill_load fixtures for sandbox context".into())
+		};
+		let fixture = |operation| -> Result<&aidash_domain::registry::workbench::sandbox::Fixture> {
+			let binding = snapshot.operation(operation)?;
+			let value = input
+				.fixtures
+				.get(binding.alias.as_deref().ok_or_else(missing)?)
+				.ok_or_else(missing)?;
+			if !matches!(value.status, sandbox::FixtureStatus::Success) {
+				return Err(missing());
+			}
+			Ok(value)
+		};
+		let list = fixture("skill_list")?;
+		let load = fixture("skill_load")?;
+		let metadata: aidash_domain::capabilities::skills::SkillMetadata =
+			serde_json::from_value(load.response["skill"].clone()).map_err(|_| missing())?;
+		let listed = list.response["skills"].as_array().ok_or_else(missing)?;
+		if !listed.iter().any(|value| value == &load.response["skill"])
+			|| !config
+				.skill_roots
+				.iter()
+				.any(|root| metadata.origin.contains(&format!(":{root}/")))
+			|| load.response["path"] != "SKILL.md"
+			|| load.response["truncated"] != false
+		{
+			return Err(missing());
+		}
+		let instructions = load.response["content"]
+			.as_str()
+			.filter(|text| !text.trim().is_empty())
+			.ok_or_else(missing)?;
+		text.push_str("\nMounted Skill Source (sandbox fixtures):\n");
+		text.push_str(&serde_json::to_string(&metadata)?);
+		text.push('\n');
+		text.push_str(instructions);
+	}
+	Ok(text)
+}
+
 pub async fn admit(admission: &Admission<'_>, id: Uuid, input: TestInput) -> Result<Admitted> {
 	sandbox::validate_request(&input)?;
 	let mut scope = admission.repository.begin_admission().await?;
@@ -126,6 +183,7 @@ pub async fn admit(admission: &Admission<'_>, id: Uuid, input: TestInput) -> Res
 		instructions.push_str("\nSkill:\n");
 		instructions.push_str(&aidash_domain::registry::rules::skill_instructions(&skill)?);
 	}
+	instructions.push_str(&skill_source_context(&config, &snapshot, &input)?);
 	instructions.push_str("\nAdditional instructions:\n");
 	instructions.push_str(&config.instructions);
 	let tool_specs = snapshot

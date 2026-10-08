@@ -248,6 +248,7 @@ export async function setup(
     remoteAssignment?: boolean;
     nativeMemory?: boolean;
     nativeMemoryDisabled?: boolean;
+    remoteNativeCollision?: boolean;
   } = {},
 ) {
   let data = fixture(options.referenceLayout);
@@ -303,6 +304,13 @@ export async function setup(
       config: { engine: "hindsight_rust" },
     });
   }
+  if (options.remoteNativeCollision)
+    data.registry.push({
+      ...data.registry[1],
+      id: "remote-native",
+      kind: "memory",
+      config: { schema_version: 1, source: { adapter: "conversation_memory" } },
+    });
   let runMediaRoutes = options.runMediaRoutes ?? [["image/png", "audio/wav"]];
   if (options.coreCapabilities) {
     data.registry[0].config = {
@@ -511,6 +519,14 @@ export async function setup(
             : [],
         },
       });
+    if (path.endsWith("/remote-grants/inspect"))
+      return route.fulfill({
+        json: {
+          native_required:
+            !!options.nativeMemory && !options.nativeMemoryDisabled,
+          memory_available: true,
+        },
+      });
     if (path === "/api/discover")
       return route.fulfill({
         json: {
@@ -520,7 +536,28 @@ export async function setup(
               node_id: options.remoteAssignment
                 ? "aidash://remote"
                 : data.node.id,
-              entity,
+              entity:
+                options.remoteAssignment && options.nativeMemory
+                  ? {
+                      ...entity,
+                      config: {
+                        ...entity.config,
+                        bindings: (entity.config.bindings ?? []).map(
+                          (binding) =>
+                            binding.kind === "memory"
+                              ? {
+                                  ...binding,
+                                  target: {
+                                    ...binding.target,
+                                    registry_node: "aidash://remote",
+                                    id: "remote-native",
+                                  },
+                                }
+                              : binding,
+                        ),
+                      },
+                    }
+                  : entity,
             })),
           errors: [],
         },

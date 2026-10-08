@@ -1,7 +1,7 @@
 meta {
-  name: 1008 peer-agent-bindings - Reject unsupported federation protocol
+  name: 1042 peer-agent-bindings - Unknown legacy agent has no discovery record
   type: http
-  seq: 1008
+  seq: 1042
 }
 
 get {
@@ -14,11 +14,10 @@ headers {
   Accept: application/json
   Authorization: Bearer {{peer_token}}
   X-Aidash-Node: {{peer_node}}
-  X-Aidash-Protocol: 9.9
+  X-Aidash-Protocol: 0.2
 }
 
 tests {
-  test("Exact HTTP 400", function () { expect(res.getStatus()).to.equal(400); });
+  test("Exact HTTP 404", function () { expect(res.getStatus()).to.equal(404); });
   test("Rejection is diagnostic and does not disclose SQL or credentials", function () { const value=res.getBody(); const text=typeof value === "string" ? value : JSON.stringify(value); expect(text.length).to.be.greaterThan(0); expect(text).not.to.match(/postgres:\/\/|SELECT .* FROM |operator_token|peer_token/); });
-  test("Reject unsupported federation protocol contract", function () { expect(res.getBody().error).to.equal("unsupported federation protocol"); });
 }

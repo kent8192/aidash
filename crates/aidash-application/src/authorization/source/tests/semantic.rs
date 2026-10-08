@@ -475,3 +475,20 @@ async fn compactor_binding_requires_the_pinned_remote_definition() {
 	));
 	assert_eq!(scope.reads, vec!["index", "entry"]);
 }
+
+#[rstest]
+#[case::native(true)]
+#[case::without_native(false)]
+fn selection_requirements_use_the_remote_closure_without_a_home_catalog(#[case] native: bool) {
+	let mut inspection = remote_inspection();
+	inspection.binding_snapshot = if native {
+		crate::test_support::native_memory_snapshot("aidash://receiver", "agent")
+	} else {
+		crate::test_support::snapshot("aidash://receiver", "agent")
+	};
+	let requirements = use_case::requirements(&inspection).unwrap();
+	assert_eq!(requirements.native_required, native);
+	if native {
+		assert!(requirements.memory_available);
+	}
+}

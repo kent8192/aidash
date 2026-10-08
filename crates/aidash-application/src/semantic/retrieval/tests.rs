@@ -243,6 +243,30 @@ fn controls(memory: bool, workspace: bool) -> AgentConfig {
 }
 
 #[rstest]
+#[case::native_bank_only(false)]
+#[case::explicit_workspace_source(true)]
+#[tokio::test]
+async fn native_memory_does_not_implicitly_enable_ordinary_workspace_search(
+	#[case] workspace: bool,
+) {
+	let (calls, mut scope, vector) = fixture();
+	scope.rows[0].source = json!({"kind":"artifact","id":Uuid::from_u128(90)});
+	let mut agent = controls(true, workspace);
+	agent.memory = Some(aidash_domain::registry::EntityRef {
+		id: "native-memory".into(),
+		version: "1.0.0".into(),
+	});
+	let result = context(&mut scope, &vector, &run(), "query", 1024, &agent)
+		.await
+		.unwrap();
+	assert_eq!(result.is_some(), workspace);
+	assert_eq!(scope.embedded.is_some(), workspace);
+	if !workspace {
+		assert!(calls.lock().unwrap().is_empty());
+	}
+}
+
+#[rstest]
 #[case::blank_query("query", json!("  "))]
 #[case::query_byte_limit("query", json!("é".repeat(65)))]
 #[case::zero_limit("limit", json!(0))]

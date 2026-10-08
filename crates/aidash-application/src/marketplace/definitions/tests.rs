@@ -355,3 +355,111 @@ async fn cross_node_bundle_installation_uses_verified_receiving_node_dependencie
 		Err(Error::Forbidden)
 	));
 }
+
+#[rstest]
+#[tokio::test]
+async fn native_source_publication_freezes_the_complete_typed_provider_closure() {
+	let source = entry(
+		"participant-source",
+		"source",
+		json!({"scope":"participant","memory":r("native"),"max_tokens":4096}),
+	);
+	let mut entries = crate::test_support::native_memory_entries();
+	entries.push(crate::test_support::entry(
+		"fixture-model",
+		"model",
+		json!({}),
+	));
+	// A model-backed reranker adds its own exact model edge.
+	entries
+		.iter_mut()
+		.find(|e| e.kind == "reranker")
+		.unwrap()
+		.config = json!({"provider":"model","model":r("rerank-model")});
+	let mut rerank_model = crate::test_support::entry("fixture-model", "model", json!({}));
+	rerank_model.id = "rerank-model".into();
+	entries.push(rerank_model);
+	let mut scope = Fixture {
+		entries: entries.into_iter().map(|e| (e.id.clone(), e)).collect(),
+		..Default::default()
+	};
+	let dependencies = publication_graph(&mut scope, &source, &[], "aidash://local")
+		.await
+		.unwrap();
+	assert_eq!(
+		dependencies
+			.iter()
+			.map(|d| (d.reference.id.as_str(), d.kind.as_str()))
+			.collect::<Vec<_>>(),
+		vec![
+			("fixture-model", "model"),
+			("native", "memory"),
+			("native-embedding", "embedding"),
+			("native-reranker", "reranker"),
+			("native-tokenizer", "tokenizer"),
+			("rerank-model", "model")
+		]
+	);
+	for dependency in dependencies {
+		assert_eq!(
+			dependency.digest,
+			content(&scope.entries[&dependency.reference.id])
+		);
+		assert!(
+			scope
+				.calls
+				.contains(&format!("registry.export:{}", dependency.reference.id))
+		);
+	}
+	scope.entries.remove("native-tokenizer");
+	assert!(
+		publication_graph(&mut scope, &source, &[], "aidash://local")
+			.await
+			.is_err()
+	);
+}
+
+#[rstest]
+fn native_provider_dependency_substitution_rewrites_every_role() {
+	let mut provider = crate::test_support::native_memory_entries()
+		.into_iter()
+		.find(|e| e.kind == "memory")
+		.unwrap();
+	let dependencies = refs(&provider, "aidash://publisher").unwrap();
+	let bindings = dependencies
+		.into_iter()
+		.map(|(source, _)| DependencyBinding {
+			target: r(&format!("installed-{}", source.id)),
+			source,
+		})
+		.collect::<Vec<_>>();
+	rewrite(&mut provider, &bindings, "aidash://receiver").unwrap();
+	for (reference, _) in refs(&provider, "aidash://receiver").unwrap() {
+		assert!(reference.id.starts_with("installed-"));
+	}
+	let mut source = entry(
+		"source",
+		"source",
+		json!({"scope":"workspace","memory":r("native"),"max_tokens":4096}),
+	);
+	rewrite(
+		&mut source,
+		&[DependencyBinding {
+			source: r("native"),
+			target: r("installed-native"),
+		}],
+		"aidash://receiver",
+	)
+	.unwrap();
+	assert_eq!(source.config["memory"], json!(r("installed-native")));
+	let mut reranker = entry(
+		"ranker",
+		"reranker",
+		json!({"provider":"model","model":r("fixture-model")}),
+	);
+	rewrite(&mut reranker, &bindings, "aidash://receiver").unwrap();
+	assert_eq!(
+		reranker.config["model"],
+		json!(r("installed-fixture-model"))
+	);
+}

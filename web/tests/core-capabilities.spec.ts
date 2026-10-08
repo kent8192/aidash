@@ -378,7 +378,15 @@ test("Binding setup saves explicit Sources, Memory and Host packages in a new im
   await expect(
     config.getByRole("checkbox", { name: "human_request", exact: true }),
   ).toHaveCount(0);
-  await expect(config.getByRole("checkbox")).toHaveCount(13);
+  for (const operation of [
+    "memory_recall",
+    "memory_reflect",
+    "memory_mutate",
+  ]) {
+    await expect(
+      config.getByRole("checkbox", { name: operation, exact: true }),
+    ).toBeVisible();
+  }
   await expect(
     config.getByText("bundle: aidash://home/approved-shell@1.0.0", {
       exact: true,

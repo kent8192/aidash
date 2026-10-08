@@ -93,6 +93,34 @@ pub fn rewrite(entry: &mut Entry, bindings: &[DependencyBinding], node: &str) ->
 			}
 			entry.config = serde_json::to_value(c)?;
 		}
+		"memory" if entry.config.get("schema_version").is_none() => {
+			let mut c: crate::memory::ProviderConfig =
+				serde_json::from_value(entry.config.clone())?;
+			for reference in [
+				&mut c.policy.extraction,
+				&mut c.policy.derivation,
+				&mut c.policy.reflection,
+				&mut c.policy.embedding,
+				&mut c.policy.reranker,
+				&mut c.policy.tokenizer,
+			] {
+				bind(reference, bindings);
+			}
+			entry.config = serde_json::to_value(c)?;
+		}
+		"source" if entry.config.get("schema_version").is_none() => {
+			let mut c: crate::memory::SourceConfig = serde_json::from_value(entry.config.clone())?;
+			bind(&mut c.memory, bindings);
+			entry.config = serde_json::to_value(c)?;
+		}
+		"reranker" => {
+			let mut c: crate::memory::RerankerConfig =
+				serde_json::from_value(entry.config.clone())?;
+			if let crate::memory::RerankerConfig::Model { model } = &mut c {
+				bind(model, bindings);
+			}
+			entry.config = serde_json::to_value(c)?;
+		}
 		"cluster" => {
 			let mut c: ClusterConfig = serde_json::from_value(entry.config.clone())?;
 			bind(&mut c.coordinator, bindings);

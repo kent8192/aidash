@@ -280,7 +280,10 @@ def verify(base_a, base_b, node_a, node_b, worker, launch_worker, counts):
             peer_headers = {"x-aidash-node": node_a, "x-aidash-protocol": "0.2"}
             denied(base_b, "/federation/v0.1/offers", {"task": task, "agent": agent}, token=PEER_TOKEN, headers=peer_headers)
             denied(base_a, "/federation/v0.1/scoped/execution/commands", {"grant_id": grant, "admission_id": run_id, "operation": "workspace_record", "data": {"kind": "task", "id": rejected_task["id"]}}, token=PEER_TOKEN, headers={"x-aidash-node": node_b, "x-aidash-protocol": "0.2"})
-            if not home.blocked.wait(90):
+            # Completion also includes the external-action approval continuation.
+            # Each durable phase performs bounded Home RPCs before the next lease;
+            # use the same total budget as the completed-run assertion below.
+            if not home.blocked.wait(150):
                 stalled = api_request(base_b, f"/api/runs/{run_id}")["run"]
                 commands = {name: len(attempts) for (owner, name), attempts in home.commands.items() if owner == grant}
                 timings = {name: {"total": round(sum(values), 3), "max": max(values)} for (owner, name), values in home.timings.items() if owner == grant}

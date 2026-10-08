@@ -77,3 +77,17 @@ pub async fn snapshot(
 ) -> ViewResult<Response> {
 	crate::http::json(service.snapshot(request.headers, input).await)
 }
+
+#[post(
+	"/api/tasks/{id}/remote-grants/inspect",
+	name = "remote-agent-inspection",
+	auth = "protected"
+)]
+pub async fn agent_inspection(
+	#[inject] service: Depends<RemoteGrants>,
+	#[inject] actor: Actor,
+	Path(task_id): Path<Uuid>,
+	Json(input): Json<aidash_domain::federation::execution::AgentInspectionInput>,
+) -> ViewResult<Response> {
+	crate::http::json(service.agent_inspection(actor, task_id, input).await)
+}

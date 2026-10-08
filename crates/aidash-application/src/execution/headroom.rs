@@ -19,7 +19,18 @@ pub async fn request(scope: &dyn Definitions, run: &RunMetadata) -> Result<usize
 				source.source,
 				aidash_domain::registry::bindings::sources::NativeSource::PrivateReferences { .. }
 			) {
-				documents.push(scope.documents(&binding.definition).await?);
+				let contents = scope.documents(&binding.definition).await?;
+				documents.extend(
+					contents
+						.as_array()
+						.ok_or_else(|| {
+							crate::Error::Invalid(
+								"private Source contents must be a document array".into(),
+							)
+						})?
+						.iter()
+						.cloned(),
+				);
 			}
 		}
 	}

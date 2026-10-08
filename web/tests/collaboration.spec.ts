@@ -23,6 +23,10 @@ for (const locale of ["en-US", "ja-JP"] as const) {
       const grants: Record<string, unknown>[] = [];
       let attempts = 0;
       await page.route("**/api/tasks/task-0/remote-grants**", async (route) => {
+        if (new URL(route.request().url()).pathname.endsWith("/inspect"))
+          return route.fulfill({
+            json: { native_required: native, memory_available: true },
+          });
         if (
           new URL(route.request().url()).pathname.endsWith("/remote-grants")
         ) {
@@ -2092,3 +2096,81 @@ test("channel controls resume a validated failure delivery with an invalid Conte
     .toBe(1);
   expect(errors).toEqual([]);
 });
+
+for (const collision of [false, true]) {
+  test(`remote inspection supplies native requirements despite ${collision ? "a mismatched Home provider" : "an absent Home provider"} and resets them on selection`, async ({
+    page,
+  }) => {
+    const { errors } = await setup(page, {
+      subject: true,
+      openTask: true,
+      remoteAssignment: true,
+      nativeMemory: true,
+      remoteNativeCollision: collision,
+      extraGraphAgent: true,
+    });
+    const grants: Record<string, unknown>[] = [];
+    await page.route("**/api/tasks/task-0/remote-grants**", async (route) => {
+      const path = new URL(route.request().url()).pathname;
+      if (path.endsWith("/inspect")) {
+        const selected = route.request().postDataJSON().agent.id;
+        return route.fulfill({
+          json: {
+            native_required: selected === "researcher",
+            memory_available: selected === "researcher",
+          },
+        });
+      }
+      if (path.endsWith("/remote-grants")) {
+        grants.push(route.request().postDataJSON());
+        return route.fulfill({ json: { id: grants.at(-1)!.id } });
+      }
+      return route.fulfill({
+        json: {
+          admission_id: "remote-run",
+          phase: "RECEIVED",
+          control: "ACTIVE",
+        },
+      });
+    });
+    await page.goto("/collaboration?channel=workspace-one");
+    await page
+      .getByRole("button", { name: "Tasks and results", exact: true })
+      .click();
+    await page
+      .locator(".collab-channel .collab-task")
+      .filter({ hasText: "Collect evidence" })
+      .click();
+    await page
+      .getByRole("button", { name: "Assign agent", exact: true })
+      .click();
+    const dialog = page.getByRole("dialog");
+    const agent = dialog.locator("select[name=agent]");
+    await agent.selectOption(
+      JSON.stringify(["aidash://remote", "researcher", "1.0.0"]),
+    );
+    const memory = dialog.getByLabel(
+      "Require Home memory before each inference",
+    );
+    await expect(memory).toBeChecked();
+    await expect(memory).toBeDisabled();
+    const other = await agent
+      .locator("option")
+      .evaluateAll((options) =>
+        options
+          .map((option) => (option as HTMLOptionElement).value)
+          .find((value) => value && !value.includes('"researcher"')),
+      );
+    expect(other).toBeTruthy();
+    await agent.selectOption(other!);
+    await expect(memory).not.toBeChecked();
+    await expect(memory).toBeDisabled();
+    await expect(dialog.locator("select[name=embedding]")).toHaveCount(0);
+    await dialog
+      .getByRole("button", { name: "Assign agent", exact: true })
+      .click();
+    await expect.poll(() => grants.length).toBe(1);
+    expect(grants[0].semantic).toEqual({ mode: "disabled" });
+    expect(errors).toEqual([]);
+  });
+}

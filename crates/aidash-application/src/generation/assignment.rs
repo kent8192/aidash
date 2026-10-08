@@ -192,6 +192,7 @@ pub async fn create_in(
 	let _config = super::policy::validate(validation, &policy.spec, scope.bundle())?;
 
 	let snapshot = scope.bindings(&policy.spec.template).await?;
+	super::policy::validate_template_snapshot(&snapshot)?;
 	for (reference, action) in snapshot
 		.definitions
 		.iter()

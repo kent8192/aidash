@@ -37,6 +37,7 @@ struct Repository {
 	state: Mutex<State>,
 	failure: Option<&'static str>,
 	pause: bool,
+	skill_source: Option<Value>,
 }
 impl Repository {
 	fn new() -> Self {
@@ -44,7 +45,26 @@ impl Repository {
 			state: Mutex::new(State::default()),
 			failure: None,
 			pause: false,
+			skill_source: None,
 		}
+	}
+	fn agent(&self) -> Entry {
+		let mut entry = agent();
+		if self.skill_source.is_some() {
+			entry.config["instructions"] = json!("");
+			entry.config["bindings"] = json!([crate::test_support::binding(
+				"source",
+				"aidash://fixture",
+				"mounted-source"
+			)]);
+			entry.config["remove_default"] = json!(
+				aidash_domain::registry::bindings::DEFAULT_TOOLS
+					.iter()
+					.filter(|name| !aidash_domain::registry::bindings::SKILL_TOOLS.contains(name))
+					.collect::<Vec<_>>()
+			);
+		}
+		entry
 	}
 	fn admission(&self) -> Admission<'_> {
 		Admission {
@@ -377,6 +397,9 @@ impl ExecutionScope for Scope<'_> {
 						&format!("plugin_{i}"),
 					)
 				})
+				.chain(self.repository.skill_source.iter().map(|source| {
+					crate::test_support::entry("mounted-source", "source", source.clone())
+				}))
 				.collect(),
 		))
 	}
@@ -389,7 +412,7 @@ impl ExecutionScope for Scope<'_> {
 			.unwrap()
 			.order
 			.push("validate_dependencies");
-		Ok(agent())
+		Ok(self.repository.agent())
 	}
 }
 #[async_trait]
@@ -714,4 +737,68 @@ async fn cancellation_during_authorization_releases_the_exclusive_draft_scope() 
 	assert!(!state.active);
 	assert!(!state.committed);
 	assert!(state.admitted.is_none());
+}
+
+#[rstest]
+#[case::attachment(false)]
+#[case::root(true)]
+#[tokio::test]
+async fn sole_skill_source_instructions_are_included_in_the_admitted_request(#[case] root: bool) {
+	let mut repository = Repository::new();
+	let instructions = "---\nname: fixture-skill\ndescription: skill source fixture\n---\nAlways inspect the selected workspace.";
+	let attachment = aidash_domain::capabilities::skills::imported(
+		format!("area:{}:.agents/skills/fixture", Uuid::from_u128(10)),
+		instructions.into(),
+		vec![],
+	)
+	.unwrap();
+	let mut input = input();
+	if root {
+		repository.skill_source = Some(
+			json!({"schema_version":1,"source":{"adapter":"skill_roots","roots":[".agents/skills"]}}),
+		);
+		let metadata = aidash_domain::capabilities::skills::validate(&attachment).unwrap();
+		input.fixtures.insert(
+			"skill_list".into(),
+			Fixture {
+				status: FixtureStatus::Success,
+				response: json!({"skills":[metadata],"next_cursor":null,"truncated":false}),
+			},
+		);
+		input.fixtures.insert(
+			"skill_load".into(),
+			Fixture {
+				status: FixtureStatus::Success,
+				response: json!({"skill":metadata,"path":"SKILL.md","content":instructions,"truncated":false}),
+			},
+		);
+	} else {
+		repository.skill_source = Some(
+			json!({"schema_version":1,"source":{"adapter":"skill_attachments","attachments":[attachment]}}),
+		);
+	}
+	let admitted = admit(&repository.admission(), draft().id, input)
+		.await
+		.unwrap();
+	assert!(
+		admitted
+			.job
+			.request
+			.instructions
+			.contains("Always inspect the selected workspace.")
+	);
+	assert!(admitted.job.request.instructions.contains("fixture-skill"));
+	assert!(repository.state.lock().unwrap().committed);
+}
+
+#[tokio::test]
+async fn unresolved_mounted_skill_context_cannot_produce_behavioral_evidence() {
+	let mut repository = Repository::new();
+	repository.skill_source = Some(
+		json!({"schema_version":1,"source":{"adapter":"skill_roots","roots":[".agents/skills"]}}),
+	);
+	assert!(
+		matches!(admit(&repository.admission(), draft().id, input()).await, Err(Error::Invalid(message)) if message.contains("Skill Sources require"))
+	);
+	assert!(!repository.state.lock().unwrap().committed);
 }

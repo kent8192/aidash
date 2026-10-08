@@ -92,6 +92,8 @@ pub fn url_patterns() -> UnifiedRouter {
 			.with_route_middleware(AccessBoundary::operator())
 			.endpoint(peer_mappings::discover)
 			.with_route_middleware(AccessBoundary::peer().with_visibility())
+			.endpoint(remote_grants::agent_inspection)
+			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(remote_grants::prepare)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(remote_grants::revoke)

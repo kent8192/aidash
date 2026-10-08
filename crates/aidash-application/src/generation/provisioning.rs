@@ -52,6 +52,7 @@ pub async fn activate_in(
 	let _config = policy::validate(validation, &spec, &scope.snapshot().bundle)?;
 
 	let snapshot = scope.bindings(&spec.template).await?;
+	policy::validate_template_snapshot(&snapshot)?;
 	for (reference, action) in snapshot
 		.definitions
 		.iter()

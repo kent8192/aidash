@@ -268,7 +268,9 @@ pub async fn context(
 	budget: usize,
 	agent: &AgentConfig,
 ) -> Result<Option<SearchResult>> {
-	if !agent.semantic_memory && !agent.workspace_context {
+	// A native provider opts into its own Bank retrieval. Ordinary workspace
+	// indexing remains available only through an explicit workspace Source.
+	if (!agent.semantic_memory || agent.memory.is_some()) && !agent.workspace_context {
 		return Ok(None);
 	}
 	let configured = scope.configured(run.workspace_id).await?;

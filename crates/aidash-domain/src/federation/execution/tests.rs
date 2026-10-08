@@ -71,3 +71,18 @@ fn optional_protocol_extensions_keep_their_legacy_omission(inspection: Inspectio
 	changed["caller_authority"] = json!(true);
 	assert!(serde_json::from_value::<Inspection>(changed).is_err());
 }
+
+#[rstest]
+#[case::origin("registry_node", json!("aidash://other"))]
+#[case::version("version", json!("2.0.0"))]
+fn substituted_binding_snapshot_is_rejected_even_when_legacy_inspection_fields_match(
+	inspection: Inspection,
+	#[case] field: &str,
+	#[case] value: serde_json::Value,
+) {
+	let mut changed = inspection.clone();
+	let mut snapshot = serde_json::to_value(&changed.binding_snapshot).unwrap();
+	snapshot["agent"][field] = value;
+	changed.binding_snapshot = serde_json::from_value(snapshot).unwrap();
+	assert!(!changed.satisfies(&inspection));
+}

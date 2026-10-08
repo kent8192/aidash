@@ -25993,5 +25993,33 @@
     "json": false,
     "uuid_parameters": [],
     "query_parameters": []
+  },
+  {
+    "method": "POST",
+    "path": "/api/tasks/{id}/remote-grants/inspect",
+    "name": "remote-agent-inspection",
+    "source": "server/src/apps/identity/views/remote_grants.rs",
+    "json": true,
+    "uuid_parameters": ["id"],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/AgentMemoryRequirements"
+      },
+      "definitions": {
+        "AgentMemoryRequirements": {
+          "type": "object",
+          "required": ["native_required", "memory_available"],
+          "properties": {
+            "native_required": {
+              "type": "boolean"
+            },
+            "memory_available": {
+              "type": "boolean"
+            }
+          }
+        }
+      }
+    }
   }
 ]

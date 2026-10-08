@@ -650,6 +650,11 @@ async fn native_remote_fixture(
 			Value::Null,
 		)
 		.await;
+		// This is a new authored version, not a copy of server-derived normalization.
+		agent
+			.as_object_mut()
+			.unwrap()
+			.remove("binding_normalization");
 		agent["id"] = json!(if runtime.config.node_id == a.config.node_id {
 			"home-native"
 		} else {

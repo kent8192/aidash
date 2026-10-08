@@ -594,3 +594,27 @@ async fn hidden_source_reads_are_rejected_before_receiver_callback() {
 	);
 	assert!(!repository.repository.calls().contains(&"source_rpc".into()));
 }
+
+#[rstest]
+#[tokio::test]
+async fn selection_inspection_checks_assignment_authority_without_creating_a_grant() {
+	let repository = SourceRepository::new();
+	let input = input();
+	let preview = aidash_domain::federation::execution::AgentInspectionInput {
+		node_id: input.node_id,
+		agent: input.agent,
+	};
+	assert!(matches!(
+		use_case::agent_inspection(&repository, task().id, preview).await,
+		Err(Error::Conflict(_))
+	));
+	assert_eq!(
+		repository.repository.calls(),
+		vec![
+			"source_begin",
+			"inherit_origin",
+			"task.read",
+			"rollback_with_denial_audit"
+		]
+	);
+}

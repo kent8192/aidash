@@ -1150,3 +1150,117 @@ pub(super) fn migration() -> Migration {
 		"the reversible migration's table must be removed"
 	);
 }
+
+async fn contract_accepts(pool: &PgPool, function: &str, values: Vec<serde_json::Value>) -> bool {
+	use reinhardt::query::IntoIden;
+	let query = Query::select()
+		.expr(reinhardt::query::SimpleExpr::FunctionCall(
+			Alias::new(function).into_iden(),
+			values
+				.into_iter()
+				.map(|v| match v {
+					serde_json::Value::String(text) => Expr::value(text).into(),
+					value => Expr::value(value).into(),
+				})
+				.collect(),
+		))
+		.to_string(PostgresQueryBuilder);
+	sqlx::query_scalar(&query).fetch_one(pool).await.unwrap()
+}
+
+#[rstest]
+#[tokio::test]
+async fn binding_memory_merge_preserves_native_packages_and_restores_legacy_descriptors(
+	#[future] fresh_database: MigrationFixture,
+) {
+	use aidash_server::apps::registry::models::Package;
+	use sha2::{Digest, Sha256};
+	let fixture = fresh_database.await;
+	fixture.migrate().await;
+	let pool = fixture.connection.clone().into_postgres().unwrap();
+	let reference = |id: &str| json!({"id":id,"version":"1.0.0"});
+	let zero = json!({"input_per_million":0,"output_per_million":0});
+	let provider = json!({"engine":"hindsight_rust","policy":{
+            "extraction":reference("fixture-model"),"derivation":reference("fixture-model"),"reflection":reference("fixture-model"),"embedding":reference("native-embedding"),"reranker":reference("native-reranker"),"tokenizer":reference("native-tokenizer"),
+            "prices":{"extraction":zero,"derivation":zero,"reflection":zero,"embedding":zero,"reranker":zero},
+            "retention":{"unit_max_age_days":null,"candidate_days":7,"history_days":30,"history_versions":16,"model_result_days":7,"backup_days":7,"purge_after_seconds":60,"purge_batch":32,"max_unit_records":128,"max_model_operations":1024},
+            "bounds":{"max_unit_bytes":8192,"max_input_bytes":8192,"max_units":16,"max_candidates":8,"max_entities":8,"max_evidence":8,"max_links":8,"max_graph_hops":3,"max_graph_visits":32,"max_results":4,"max_context_tokens":8192,"max_model_calls":4,"max_model_tokens":8192,"max_cost_micros":10000,"max_retries":2,"max_call_seconds":30},
+            "semantic_link_min_similarity_millionths":700000,"learn_from_runs":false,"maintain_observations":false,"refresh_mental_models":false}});
+	let source = json!({"scope":"participant","memory":reference("native"),"max_tokens":4096});
+	let lease = DatabaseConnectionLease::register(fixture.connection.clone()).unwrap();
+	let mut connection = lease.handle();
+	for (kind, config) in [("memory", provider.clone()), ("source", source.clone())] {
+		let id = format!("native-{kind}-package");
+		let manifest = json!({"entity":{"id":id,"version":"1.0.0","kind":kind,"name":{"en":"Native"},"description":{"en":"Fixture"},"schema":{},"config":config},"author":"fixture","permissions":[],"dependencies":[]});
+		assert!(
+			contract_accepts(
+				&pool,
+				"aidash_binding_package_is_valid",
+				vec![manifest.clone(), json!(id), json!("1.0.0")]
+			)
+			.await
+		);
+		let text = serde_json::to_string(&manifest).unwrap();
+		let package = Package::build()
+			.id(id)
+			.version("1.0.0")
+			.manifest(manifest.into())
+			.digest(format!("sha256:{:x}", Sha256::digest(text.as_bytes())))
+			.manifest_source(text)
+			.finish();
+		Package::objects()
+			.create_with_conn(&mut connection, &package)
+			.await
+			.unwrap();
+	}
+	let mut invalid = provider.clone();
+	invalid["policy"]["unexpected"] = json!(true);
+	assert!(
+		!contract_accepts(
+			&pool,
+			"aidash_native_context_is_valid",
+			vec![invalid, json!("memory")]
+		)
+		.await
+	);
+	let mut invalid = source;
+	invalid["max_tokens"] = json!(0);
+	assert!(
+		!contract_accepts(
+			&pool,
+			"aidash_native_context_is_valid",
+			vec![invalid, json!("source")]
+		)
+		.await
+	);
+	let current = serde_json::to_value(
+		aidash_domain::tool::providers::core_descriptor("aidash://fixture", "memory_mutate")
+			.unwrap(),
+	)
+	.unwrap();
+	let mut legacy = current.clone();
+	legacy["operation"] = json!("memory_write");
+	legacy["default_alias"] = json!("memory_write");
+	assert!(contract_accepts(&pool, "aidash_descriptor_is_valid", vec![current.clone()]).await);
+	assert!(!contract_accepts(&pool, "aidash_descriptor_is_valid", vec![legacy.clone()]).await);
+	let migrations =
+		FilesystemSource::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations"))
+			.all_migrations()
+			.await
+			.unwrap();
+	let migration = migrations
+		.into_iter()
+		.find(|m| m.app_label == "registry" && m.name == "0015_binding_memory_merge")
+		.unwrap();
+	let mut executor =
+		reinhardt::db::migrations::DatabaseMigrationExecutor::new(fixture.connection.clone());
+	executor
+		.rollback_migrations(std::slice::from_ref(&migration))
+		.await
+		.unwrap();
+	assert!(contract_accepts(&pool, "aidash_descriptor_is_valid", vec![legacy.clone()]).await);
+	assert!(!contract_accepts(&pool, "aidash_descriptor_is_valid", vec![current.clone()]).await);
+	executor.apply_migrations(&[migration]).await.unwrap();
+	assert!(contract_accepts(&pool, "aidash_descriptor_is_valid", vec![current]).await);
+	assert!(!contract_accepts(&pool, "aidash_descriptor_is_valid", vec![legacy]).await);
+}

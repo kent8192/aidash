@@ -134,3 +134,52 @@ $$;
 
 ALTER TABLE registry DROP CONSTRAINT registry_agent_config;
 ALTER TABLE registry ADD CONSTRAINT registry_agent_config CHECK (kind <> 'agent' OR COALESCE(public.aidash_agent_bindings_is_valid(metadata->'config'),false)) NOT VALID;
+
+-- Native package schemas are independent of the caller-supplied Entry schema.
+-- PostgreSQL JSON Schema function DDL cannot be represented by SeaQuery.
+CREATE OR REPLACE FUNCTION public.aidash_native_context_is_valid(value jsonb, kind text) RETURNS boolean
+LANGUAGE plpgsql IMMUTABLE STRICT AS $$
+DECLARE policy jsonb; bounds jsonb;
+BEGIN
+ IF kind = 'memory' THEN
+  IF NOT public.jsonb_matches_schema($native_memory${"$schema":"https://json-schema.org/draft/2020-12/schema","$ref":"#/$defs/ProviderConfig","$defs":{"ProviderConfig":{"type":"object","properties":{"engine":{"type":"string","enum":["hindsight_rust"]},"policy":{"$ref":"#/$defs/Policy"}},"required":["engine","policy"],"additionalProperties":false},"SourceConfig":{"type":"object","properties":{"scope":{"type":"string","enum":["participant","workspace"]},"memory":{"$ref":"#/$defs/EntityRef"},"max_tokens":{"type":"integer","minimum":1,"maximum":2147483647}},"required":["scope","memory","max_tokens"],"additionalProperties":false},"Policy":{"type":"object","properties":{"extraction":{"$ref":"#/$defs/EntityRef"},"derivation":{"$ref":"#/$defs/EntityRef"},"reflection":{"$ref":"#/$defs/EntityRef"},"embedding":{"$ref":"#/$defs/EntityRef"},"reranker":{"$ref":"#/$defs/EntityRef"},"tokenizer":{"$ref":"#/$defs/EntityRef"},"semantic_link_min_similarity_millionths":{"type":"integer","minimum":1,"maximum":1000000},"prices":{"$ref":"#/$defs/Prices"},"retention":{"$ref":"#/$defs/Retention"},"bounds":{"$ref":"#/$defs/Bounds"},"learn_from_runs":{"type":"boolean"},"maintain_observations":{"type":"boolean"},"refresh_mental_models":{"type":"boolean"}},"required":["extraction","derivation","reflection","embedding","reranker","tokenizer","semantic_link_min_similarity_millionths","prices","retention","bounds","learn_from_runs","maintain_observations","refresh_mental_models"],"additionalProperties":false},"Retention":{"type":"object","properties":{"unit_max_age_days":{"type":["integer","null"],"minimum":1,"maximum":3650},"candidate_days":{"type":"integer","minimum":1,"maximum":3650},"history_days":{"type":"integer","minimum":1,"maximum":3650},"history_versions":{"type":"integer","minimum":1,"maximum":1024},"model_result_days":{"type":"integer","minimum":1,"maximum":3650},"backup_days":{"type":"integer","minimum":1,"maximum":3650},"purge_after_seconds":{"type":"integer","minimum":1,"maximum":86400},"purge_batch":{"type":"integer","minimum":1,"maximum":1024},"max_unit_records":{"type":"integer","minimum":1,"maximum":2147483647},"max_model_operations":{"type":"integer","minimum":1,"maximum":2147483647}},"required":["candidate_days","history_days","history_versions","model_result_days","backup_days","purge_after_seconds","purge_batch","max_unit_records","max_model_operations"],"additionalProperties":false},"Prices":{"type":"object","properties":{"extraction":{"$ref":"#/$defs/Rate"},"derivation":{"$ref":"#/$defs/Rate"},"reflection":{"$ref":"#/$defs/Rate"},"embedding":{"$ref":"#/$defs/Rate"},"reranker":{"$ref":"#/$defs/Rate"}},"required":["extraction","derivation","reflection","embedding","reranker"],"additionalProperties":false},"Rate":{"type":"object","properties":{"input_per_million":{"type":"integer","minimum":0,"maximum":18446744073709551615},"output_per_million":{"type":"integer","minimum":0,"maximum":18446744073709551615}},"required":["input_per_million","output_per_million"],"additionalProperties":false},"Bounds":{"type":"object","properties":{"max_unit_bytes":{"type":"integer","minimum":1,"maximum":2147483647},"max_input_bytes":{"type":"integer","minimum":1,"maximum":2147483647},"max_units":{"type":"integer","minimum":1,"maximum":2147483647},"max_candidates":{"type":"integer","minimum":1,"maximum":2147483647},"max_entities":{"type":"integer","minimum":1,"maximum":2147483647},"max_evidence":{"type":"integer","minimum":1,"maximum":2147483647},"max_links":{"type":"integer","minimum":1,"maximum":2147483647},"max_graph_hops":{"type":"integer","minimum":1,"maximum":2147483647},"max_graph_visits":{"type":"integer","minimum":1,"maximum":2147483647},"max_results":{"type":"integer","minimum":1,"maximum":2147483647},"max_context_tokens":{"type":"integer","minimum":1,"maximum":2147483647},"max_model_calls":{"type":"integer","minimum":1,"maximum":2147483647},"max_model_tokens":{"type":"integer","minimum":1,"maximum":2147483647},"max_cost_micros":{"type":"integer","minimum":1,"maximum":9223372036854775807},"max_retries":{"type":"integer","minimum":1,"maximum":2147483647},"max_call_seconds":{"type":"integer","minimum":1,"maximum":2147483647}},"required":["max_unit_bytes","max_input_bytes","max_units","max_candidates","max_entities","max_evidence","max_links","max_graph_hops","max_graph_visits","max_results","max_context_tokens","max_model_calls","max_model_tokens","max_cost_micros","max_retries","max_call_seconds"],"additionalProperties":false},"EntityRef":{"type":"object","required":["id","version"],"properties":{"id":{"type":"string","minLength":1},"version":{"type":"string","pattern":"^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:[-+].+)?$"}},"additionalProperties":false}}}$native_memory$::json,value) THEN RETURN false; END IF;
+  policy := value->'policy'; bounds := policy->'bounds';
+  RETURN (bounds->>'max_candidates')::numeric <= (bounds->>'max_units')::numeric
+    AND (bounds->>'max_results')::numeric <= (bounds->>'max_candidates')::numeric
+    AND (policy #>> '{retention,max_unit_records}')::numeric >= (bounds->>'max_units')::numeric;
+ ELSIF kind = 'source' THEN
+  IF NOT public.jsonb_matches_schema($native_source${"$schema":"https://json-schema.org/draft/2020-12/schema","$ref":"#/$defs/SourceConfig","$defs":{"SourceConfig":{"type":"object","properties":{"scope":{"type":"string","enum":["participant","workspace"]},"memory":{"$ref":"#/$defs/EntityRef"},"max_tokens":{"type":"integer","minimum":1,"maximum":2147483647}},"required":["scope","memory","max_tokens"],"additionalProperties":false},"EntityRef":{"type":"object","required":["id","version"],"properties":{"id":{"type":"string","minLength":1},"version":{"type":"string","pattern":"^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:[-+].+)?$"}},"additionalProperties":false}}}$native_source$::json,value) THEN RETURN false; END IF;
+  RETURN true;
+ ELSE RETURN false; END IF;
+EXCEPTION WHEN OTHERS THEN RETURN false;
+END
+$$;
+
+CREATE OR REPLACE FUNCTION public.aidash_binding_package_is_valid(value jsonb, entry_id text, entry_version text) RETURNS boolean
+LANGUAGE plpgsql IMMUTABLE STRICT AS $$
+DECLARE entity jsonb; candidate jsonb;
+BEGIN
+ IF jsonb_typeof(value) <> 'object' OR value - ARRAY['entity','author','permissions','dependencies']::text[] <> '{}'::jsonb
+ OR jsonb_typeof(value->'author') <> 'string' OR length(btrim(value->>'author', U&'\0009\000A\000B\000C\000D\0020\0085\00A0\1680\2000\2001\2002\2003\2004\2005\2006\2007\2008\2009\200A\2028\2029\202F\205F\3000')) = 0
+ OR jsonb_typeof(value->'permissions') <> 'array' OR jsonb_typeof(value->'dependencies') <> 'array'
+ OR jsonb_path_exists(value->'permissions','strict $[*] ? (@.type() != "string")') THEN RETURN false; END IF;
+ entity := value->'entity';
+ IF NOT COALESCE(public.aidash_package_entry_shape_is_valid(entity),false)
+ OR entity ?| ARRAY['installation','binding_normalization']
+ OR jsonb_typeof(entity->'id') IS DISTINCT FROM 'string' OR jsonb_typeof(entity->'version') IS DISTINCT FROM 'string'
+ OR entity->>'id' IS DISTINCT FROM entry_id OR entity->>'version' IS DISTINCT FROM entry_version
+ OR NOT COALESCE(public.aidash_qualified_ref_is_valid(jsonb_build_object('registry_node','aidash://contract','id',entry_id,'version',entry_version)),false) THEN RETURN false; END IF;
+ FOR candidate IN SELECT jsonb_array_elements(value->'dependencies') LOOP
+  IF NOT COALESCE(public.aidash_qualified_ref_is_valid(candidate || '{"registry_node":"aidash://contract"}'::jsonb),false) THEN RETURN false; END IF;
+ END LOOP;
+ RETURN COALESCE(CASE entity->>'kind'
+ WHEN 'agent' THEN public.aidash_agent_bindings_is_valid(entity->'config')
+ WHEN 'tool' THEN public.aidash_descriptor_is_valid(entity->'config') AND entity #>> '{config,tier}' <> 'builtin'
+ WHEN 'bundle' THEN public.aidash_bundle_is_valid(entity->'config')
+ WHEN 'memory' THEN CASE WHEN entity->'config' ? 'schema_version' THEN public.aidash_context_is_valid(entity->'config','memory') ELSE public.aidash_native_context_is_valid(entity->'config','memory') END
+ WHEN 'source' THEN CASE WHEN entity->'config' ? 'schema_version' THEN public.aidash_context_is_valid(entity->'config','source') ELSE public.aidash_native_context_is_valid(entity->'config','source') END
+ WHEN 'skill' THEN jsonb_typeof(entity #> '{config,instructions}') = 'string' AND length(btrim(entity #>> '{config,instructions}', U&'\0009\000A\000B\000C\000D\0020\0085\00A0\1680\2000\2001\2002\2003\2004\2005\2006\2007\2008\2009\200A\2028\2029\202F\205F\3000')) > 0
+ ELSE false END,false);
+EXCEPTION WHEN OTHERS THEN RETURN false;
+END
+$$;

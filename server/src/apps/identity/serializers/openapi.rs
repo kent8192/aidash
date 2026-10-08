@@ -178,6 +178,17 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 	)?;
 	contracts.request::<_, PeerMappingInput>(document, views::peer_mappings::set)?;
 	contracts.path(document, views::peer_mappings::set, &["String"])?;
+	contracts.response::<_, aidash_domain::federation::execution::AgentMemoryRequirements>(
+		document,
+		views::remote_grants::agent_inspection,
+		200,
+		"application/json",
+	)?;
+	contracts.request::<_, aidash_domain::federation::execution::AgentInspectionInput>(
+		document,
+		views::remote_grants::agent_inspection,
+	)?;
+	contracts.path(document, views::remote_grants::agent_inspection, &["Uuid"])?;
 	contracts.response::<_, Prepared>(
 		document,
 		views::remote_grants::prepare,

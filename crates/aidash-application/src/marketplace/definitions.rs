@@ -92,6 +92,21 @@ pub fn refs(entry: &Entry, node: &str) -> Result<Vec<(EntityRef, String)>> {
 					.map(|r| (r.local(), String::new())),
 			);
 		}
+		"memory" | "source" | "reranker" => {
+			let identity = aidash_domain::registry::bindings::QualifiedRef {
+				registry_node: node.into(),
+				id: entry.id.clone(),
+				version: entry.version.clone(),
+			};
+			for (reference, kind) in
+				aidash_domain::registry::bindings::definition_references(&identity, entry)?
+			{
+				if reference.registry_node != node {
+					return Err(Error::Forbidden);
+				}
+				refs.push((reference.local(), kind));
+			}
+		}
 		"cluster" => {
 			let c: ClusterConfig = serde_json::from_value(entry.config.clone())?;
 			refs.push((c.coordinator, "agent".into()));
@@ -238,6 +253,9 @@ pub async fn resolve(
 		],
 		"bundle" => &["members"],
 		"cluster" => &["coordinator"],
+		"memory" if entry.config.get("schema_version").is_none() => &["engine", "policy"],
+		"source" if entry.config.get("schema_version").is_none() => &["memory"],
+		"reranker" => &["provider", "model"],
 		_ => &[],
 	};
 	if protected.iter().any(|field| config.get(*field).is_some()) {

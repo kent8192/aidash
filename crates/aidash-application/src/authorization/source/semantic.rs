@@ -10,6 +10,20 @@ use aidash_domain::{
 	},
 };
 use serde_json::{json, to_value};
+pub fn requirements(
+	inspection: &Inspection,
+) -> Result<aidash_domain::federation::execution::AgentMemoryRequirements> {
+	let agent = AgentConfig::from_snapshot(&inspection.binding_snapshot)?;
+	Ok(
+		aidash_domain::federation::execution::AgentMemoryRequirements {
+			native_required: agent.memory.is_some()
+				&& agent.allow_cross_conversation_memory != Some(false),
+			memory_available: inspection.semantic_memory == VERSION
+				&& (agent.semantic_memory || agent.workspace_context),
+		},
+	)
+}
+
 pub async fn binding<S: SemanticBindingScope + ?Sized>(
 	access: &mut S,
 	task: &Task,
@@ -18,8 +32,7 @@ pub async fn binding<S: SemanticBindingScope + ?Sized>(
 	request: &Request,
 ) -> Result<Binding> {
 	let agent = AgentConfig::from_snapshot(&inspection.binding_snapshot)?;
-	let native_enabled =
-		agent.memory.is_some() && agent.allow_cross_conversation_memory != Some(false);
+	let native_enabled = requirements(inspection)?.native_required;
 	let Request::RequiredHome {
 		embedding,
 		compactor,

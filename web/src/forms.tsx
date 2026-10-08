@@ -1,8 +1,4 @@
-import {
-  coordinatorDefaults,
-  nativeMemoryProvider,
-  hasInstructionalBinding,
-} from "./agent-bindings";
+import { coordinatorDefaults, hasInstructionalBinding } from "./agent-bindings";
 import { Button } from "./components/ui/button";
 import { MemoryRegistryFields, memoryConfiguration } from "./memory-registry";
 import { ApiError, apiFetch } from "./transport";
@@ -18,6 +14,7 @@ import { ReferenceName } from "./record-view";
 import { AgentDocuments } from "./agent-documents";
 import type { ReferenceDocument } from "./generated/models";
 import { Fragment, useRef, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { EntityConfiguration } from "./entity-configuration";
 import { OpenRouterModelPicker } from "./openrouter-model-picker";
 import { useForm } from "@tanstack/react-form";
@@ -740,11 +737,31 @@ export function AssignForm({
   );
   const scopedRemote =
     data.access.kind === "subject" && chosen && chosen.node_id !== data.node.id;
-  const nativeRequired = !!nativeMemoryProvider(
-    chosen?.entity.config,
-    data.registry,
-    true,
-  );
+  const inspection = useQuery({
+    queryKey: ["remote-agent-inspection", task.id, selected],
+    enabled: !!scopedRemote,
+    staleTime: 0,
+    retry: false,
+    queryFn: () =>
+      apiFetch<{ native_required: boolean; memory_available: boolean }>(
+        `/api/tasks/${task.id}/remote-grants/inspect`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            node_id: chosen!.node_id,
+            agent: { id: chosen!.entity.id, version: chosen!.entity.version },
+          }),
+        },
+      ),
+  });
+  const nativeRequired =
+    !!scopedRemote && inspection.data?.native_required === true;
+  const memoryAvailable =
+    !!scopedRemote && inspection.data?.memory_available === true;
+  const useMemory = nativeRequired || (memoryAvailable && memory);
+  const inspectionBlocked =
+    !!scopedRemote && (inspection.isPending || inspection.isError);
   return (
     <form
       onSubmit={(e) => {
@@ -758,7 +775,7 @@ export function AssignForm({
               agent.entity.version,
             ]) === (d.get("agent") ?? selected),
         );
-        if (!a) return;
+        if (!a || inspectionBlocked) return;
         setGrantBusy(true);
         void submit(async () => {
           if (data.access.kind !== "subject" || a.node_id === data.node.id) {
@@ -774,7 +791,7 @@ export function AssignForm({
                 node_id: a.node_id,
                 agent: { id: a.entity.id, version: a.entity.version },
                 ttl_seconds: 3600,
-                semantic: memory
+                semantic: useMemory
                   ? {
                       mode: "required_home",
                       embedding: ref(String(d.get("embedding"))),
@@ -825,18 +842,7 @@ export function AssignForm({
             value={selected}
             onChange={(e) => {
               setSelected(e.target.value);
-              const agent = agents.find(
-                (agent) =>
-                  JSON.stringify([
-                    agent.node_id,
-                    agent.entity.id,
-                    agent.entity.version,
-                  ]) === e.target.value,
-              );
-              if (
-                nativeMemoryProvider(agent?.entity.config, data.registry, true)
-              )
-                setMemory(true);
+              setMemory(false);
             }}
           >
             <option value="">{t("choose")}</option>
@@ -863,15 +869,31 @@ export function AssignForm({
             <label>
               <input
                 type="checkbox"
-                checked={memory}
-                disabled={nativeRequired}
+                checked={useMemory}
+                disabled={
+                  nativeRequired || !memoryAvailable || inspectionBlocked
+                }
                 onChange={(e) => setMemory(e.target.checked)}
               />
               {ja
                 ? "各推論の前に Home の記憶を検索する"
                 : "Require Home memory before each inference"}
             </label>
-            {memory && (
+            {inspection.isPending && (
+              <p role="status">
+                {ja
+                  ? "実行先のメモリ要件を確認しています"
+                  : "Checking memory requirements at the execution node"}
+              </p>
+            )}
+            {inspection.isError && (
+              <p role="alert">
+                {ja
+                  ? "実行先のメモリ要件を確認できませんでした"
+                  : "Could not inspect memory requirements at the execution node"}
+              </p>
+            )}
+            {useMemory && (
               <>
                 <label>
                   {ja ? "Home の embedding 定義" : "Home embedding definition"}
@@ -905,6 +927,7 @@ export function AssignForm({
                     : "Retrieval results are disclosed to the selected agent's model. Execution pauses when authority or budget is insufficient."}
                 </p>
                 <HomeNativeMemoryFields
+                  key={selected}
                   workspace={task.workspace_id}
                   entries={data.registry}
                   required={nativeRequired}
@@ -921,7 +944,11 @@ export function AssignForm({
             : "Recheck the same execution grant. Its settings stay fixed until the outcome is confirmed."}
         </p>
       )}
-      <Button variant="outline" className="primary" disabled={grantBusy}>
+      <Button
+        variant="outline"
+        className="primary"
+        disabled={grantBusy || inspectionBlocked}
+      >
         {grantPending
           ? ja
             ? "同じ実行許可を再試行"
