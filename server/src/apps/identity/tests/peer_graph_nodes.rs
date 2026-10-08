@@ -1,85 +1,84 @@
+#[path = "../../execution/tests/support/upstream.rs"]
+mod upstream_fixtures;
+use futures_util::FutureExt;
 #[path = "../../execution/tests/support/legacy.rs"]
 mod common;
 
 use aidash_server::{
-	config::Config,
 	federation::{Federation, Peer},
 	registry::Registry,
 };
-use common::{TestEnvironment, bootstrap, request, test_environment};
+use common::{bootstrap, request};
 use serde_json::{Value, json};
-use sqlx::{Connection, Executor, postgres::PgConnection};
+
 use std::sync::Arc;
-use uuid::Uuid;
 
 struct Node {
 	f: Federation,
-	database: String,
-	admin: String,
-	server: tokio::task::JoinHandle<()>,
+	app: common::TestApplication,
+	url: String,
+	schema: String,
+	_server: upstream_fixtures::FixedServerGuard,
 }
-
 impl Node {
-	async fn new(environment: &TestEnvironment, suffix: &str) -> Self {
-		let admin = environment.database_url.clone();
-		let database = format!("graph_{}_{}", suffix, Uuid::new_v4().simple());
-		// SeaQuery has no CREATE/DROP DATABASE builder; separate databases are the isolation under test.
-		PgConnection::connect(&admin)
-			.await
-			.unwrap()
-			.execute(format!("CREATE DATABASE {database}").as_str())
-			.await
-			.unwrap();
-		let mut url = reqwest::Url::parse(&admin).unwrap();
-		url.set_path(&format!("/{database}"));
-		let node_id = format!("aidash://graph-{suffix}");
-		let store = common::native_store(url.as_str(), &node_id).await;
-		let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-		let endpoint = format!("http://{}", listener.local_addr().unwrap());
-		let config = Config {
-			node_id,
-			endpoint,
-			database_url: url.to_string(),
-			nats_url: environment.nats_url.clone(),
-			api_token: format!("graph-operator-{suffix}"),
-			web_dir: "web/dist".into(),
-			lease_seconds: 30,
-			default_host_packages: vec![],
-			oidc: None,
-		};
-		let f = Federation {
-			sandbox: Default::default(),
-			registry: Registry::new(store.pool.clone(), &store.node_id).unwrap(),
-			store,
-			config,
-			client: reqwest::Client::new(),
-			notify: Arc::new(tokio::sync::Notify::new()),
-		};
-		let app = common::application(f.clone()).await;
-		let server = tokio::spawn(async move {
-			axum::serve(listener, app.test_transport()).await.unwrap();
-		});
-		Self {
-			f,
-			database,
-			admin,
-			server,
-		}
-	}
-	async fn app(&self) -> common::TestApplication {
-		common::application(self.f.clone()).await
-	}
 	async fn close(self) {
-		self.server.abort();
-		let _ = self.server.await;
-		self.f.store.control_pool.close().await;
-		self.f.store.pool.close().await;
-		PgConnection::connect(&self.admin)
-			.await
-			.unwrap()
-			.execute(format!("DROP DATABASE {} WITH (FORCE)", self.database).as_str())
-			.await
-			.unwrap();
+		common::cleanup(self.f, &self.url, &self.schema).await;
+	}
+}
+#[rstest::fixture]
+fn graph_runtime(
+	#[default("a")] suffix: &str,
+	#[from(upstream_fixtures::fixed_listener)] listener: upstream_fixtures::ListenerFuture,
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) -> common::RuntimeFuture {
+	let suffix = suffix.to_owned();
+	async move {
+		let mut owner = runtime.await;
+		let f = &mut owner.federation;
+		f.config.node_id = format!("aidash://graph-{suffix}");
+		f.store.node_id = f.config.node_id.clone();
+		f.config.endpoint = format!("http://{}", listener.await.local_addr().unwrap());
+		f.config.api_token = format!("graph-operator-{suffix}");
+		f.registry = Registry::new(f.store.pool.clone(), &f.config.node_id).unwrap();
+		owner
+	}
+	.boxed()
+	.shared()
+}
+#[rstest::fixture]
+fn graph_router(
+	#[from(common::native_application)] application: common::ApplicationFuture,
+) -> upstream_fixtures::RouterFuture {
+	async move { Arc::new(application.await.application.native_router()) }
+		.boxed()
+		.shared()
+}
+#[rstest::fixture]
+async fn graph_node(
+	#[default("a")] _suffix: &str,
+	#[from(upstream_fixtures::fixed_listener)] _listener: upstream_fixtures::ListenerFuture,
+	#[from(graph_runtime)]
+	#[with(_suffix,_listener.clone())]
+	_runtime: common::RuntimeFuture,
+	#[from(common::native_application)]
+	#[with(Default::default(),aidash_server::sse::Service::new(Default::default()),Arc::new(|r|r),_runtime.clone())]
+	_application: common::ApplicationFuture,
+	#[from(graph_router)]
+	#[with(_application.clone())]
+	_router: upstream_fixtures::RouterFuture,
+	#[future(awt)]
+	#[from(upstream_fixtures::fixed_upstream)]
+	#[with(None,_listener.clone(),_router.clone())]
+	server: upstream_fixtures::FixedServerGuard,
+) -> Node {
+	let application = _application.await;
+	let (f, url, schema) = application.runtime.parts();
+	Node {
+		f,
+		url,
+		schema,
+		app: application.application,
+		_server: server,
 	}
 }
 
@@ -125,7 +124,7 @@ async fn connect(local: &Node, remote: &Node) {
 
 async fn expand(node: &Node, token: &str, cursor: Option<&str>, kinds: &[&str]) -> (u16, Value) {
 	request(
-		&node.app().await,
+		&node.app,
 		token,
 		"POST",
 		"/api/federation/graph",
@@ -142,15 +141,21 @@ async fn expand(node: &Node, token: &str, cursor: Option<&str>, kinds: &[&str]) 
 #[tokio::test]
 async fn three_databases_enforce_two_subjects_and_no_transitive_graph(
 	#[future(awt)]
-	#[from(test_environment)]
-	environment: Arc<TestEnvironment>,
+	#[from(graph_node)]
+	#[with("a")]
+	a: Node,
+	#[future(awt)]
+	#[from(graph_node)]
+	#[with("b")]
+	b: Node,
+	#[future(awt)]
+	#[from(graph_node)]
+	#[with("c")]
+	c: Node,
 ) {
-	let a = Node::new(&environment, "a").await;
-	let b = Node::new(&environment, "b").await;
-	let c = Node::new(&environment, "c").await;
-	let (mut a_policy, alice_a, _) = bootstrap(&a.f, &a.app().await, "http://localhost:1").await;
-	let (mut b_policy, _, _) = bootstrap(&b.f, &b.app().await, "http://localhost:1").await;
-	let _ = bootstrap(&c.f, &c.app().await, "http://localhost:1").await;
+	let (mut a_policy, alice_a, _) = bootstrap(&a.f, &a.app, "http://localhost:1").await;
+	let (mut b_policy, _, _) = bootstrap(&b.f, &b.app, "http://localhost:1").await;
+	let _ = bootstrap(&c.f, &c.app, "http://localhost:1").await;
 	connect(&a, &b).await;
 	connect(&b, &a).await;
 	connect(&b, &c).await;
@@ -170,7 +175,7 @@ async fn three_databases_enforce_two_subjects_and_no_transitive_graph(
 	}));
 	assert_eq!(
 		request(
-			&a.app().await,
+			&a.app,
 			&a.f.config.api_token,
 			"POST",
 			"/api/authorization/acme",
@@ -181,7 +186,7 @@ async fn three_databases_enforce_two_subjects_and_no_transitive_graph(
 		200
 	);
 	let (status, bob_a) = request(
-		&a.app().await,
+		&a.app,
 		&a.f.config.api_token,
 		"POST",
 		"/api/authorization/acme/credentials",
@@ -198,7 +203,7 @@ async fn three_databases_enforce_two_subjects_and_no_transitive_graph(
 	]);
 	assert_eq!(
 		request(
-			&b.app().await,
+			&b.app,
 			&b.f.config.api_token,
 			"POST",
 			"/api/authorization/acme",
@@ -209,7 +214,7 @@ async fn three_databases_enforce_two_subjects_and_no_transitive_graph(
 		200
 	);
 	let (status, alice_b) = request(
-		&b.app().await,
+		&b.app,
 		&b.f.config.api_token,
 		"POST",
 		"/api/authorization/acme/credentials",
@@ -218,7 +223,7 @@ async fn three_databases_enforce_two_subjects_and_no_transitive_graph(
 	.await;
 	assert_eq!(status, 200, "{alice_b}");
 	let (status, bob_b) = request(
-		&b.app().await,
+		&b.app,
 		&b.f.config.api_token,
 		"POST",
 		"/api/authorization/acme/credentials",
@@ -228,7 +233,7 @@ async fn three_databases_enforce_two_subjects_and_no_transitive_graph(
 	assert_eq!(status, 200, "{bob_b}");
 	for (subject, credential) in [("alice", &alice_b), ("bob", &bob_b)] {
 		let (status, mapping) = request(
-			&b.app().await,
+			&b.app,
 			&b.f.config.api_token,
 			"POST",
 			"/api/authorization/acme/peer-mappings",
@@ -245,7 +250,7 @@ async fn three_databases_enforce_two_subjects_and_no_transitive_graph(
 		"config":{"model":{"id":"model","version":"1.0.0"},"instructions":"private","tools":[],"skills":[]}});
 	assert_eq!(
 		request(
-			&b.app().await,
+			&b.app,
 			&b.f.config.api_token,
 			"POST",
 			"/api/registry",
@@ -257,7 +262,7 @@ async fn three_databases_enforce_two_subjects_and_no_transitive_graph(
 	);
 
 	let peers = request(
-		&a.app().await,
+		&a.app,
 		&alice_a,
 		"GET",
 		"/api/federation/graph/peers",
@@ -351,7 +356,7 @@ async fn three_databases_enforce_two_subjects_and_no_transitive_graph(
 	assert!(bob_nodes.iter().any(|node| node["kind"] == "workspace"));
 	assert!(!bob_nodes.iter().any(|node| node["kind"] == "agent"));
 	let (status, withdrawn) = request(
-		&b.app().await,
+		&b.app,
 		&b.f.config.api_token,
 		"POST",
 		"/api/authorization/acme/catalog",
@@ -373,7 +378,7 @@ async fn three_databases_enforce_two_subjects_and_no_transitive_graph(
 		409
 	);
 	let (status, denied) = request(
-		&b.app().await,
+		&b.app,
 		&b.f.config.api_token,
 		"POST",
 		"/api/authorization/acme/peer-mappings",
@@ -386,7 +391,7 @@ async fn three_databases_enforce_two_subjects_and_no_transitive_graph(
 	assert_eq!(status, 200, "{denied}");
 	assert_eq!(expand(&a, &alice_a, None, &["agent"]).await.0, 403);
 	let (status, _) = request(
-		&b.app().await,
+		&b.app,
 		&b.f.config.api_token,
 		"POST",
 		"/api/authorization/acme/peer-mappings",
@@ -428,7 +433,7 @@ async fn three_databases_enforce_two_subjects_and_no_transitive_graph(
 	.await
 	.unwrap();
 	let (status, _) = request(
-		&b.app().await,
+		&b.app,
 		&b.f.config.api_token,
 		"POST",
 		&format!(

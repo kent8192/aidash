@@ -461,3 +461,38 @@ pub fn native_application(
 	.boxed()
 	.shared()
 }
+
+#[fixture]
+fn direct_client(native_application: ApplicationFuture) -> ClientFuture {
+	async move {
+		let application = native_application.await.application;
+		// reinhardt-web#6670: in-process dispatch preserves redirects without a builder policy.
+		Arc::new(APIClient::from_handler(application.native_router()))
+	}
+	.boxed()
+	.shared()
+}
+
+#[fixture]
+pub fn direct_application(
+	#[default(aidash_server::http::Settings::default())] _protection: aidash_server::http::Settings,
+	#[default(aidash_server::sse::Service::new(Default::default()))]
+	_streams: aidash_server::sse::Service,
+	#[default(Arc::new(|router| router))] _transform: RouterTransform,
+	#[from(runtime)] _runtime: RuntimeFuture,
+	#[from(native_application)]
+	#[with(_protection.clone(), _streams.clone(), _transform.clone(), _runtime.clone())]
+	_application: ApplicationFuture,
+	#[from(direct_client)]
+	#[with(_application.clone())]
+	client: ClientFuture,
+) -> ApplicationFuture {
+	async move {
+		let mut application = _application.await;
+		application.application.api_http = client.await.clone();
+		application.anonymous = application.application.api_http.clone();
+		application
+	}
+	.boxed()
+	.shared()
+}

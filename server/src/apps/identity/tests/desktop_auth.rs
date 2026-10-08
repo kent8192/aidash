@@ -1,46 +1,38 @@
+#[path = "../../execution/tests/support/upstream.rs"]
+mod upstream_fixtures;
+use futures_util::{FutureExt, future::BoxFuture};
+use http::StatusCode;
 #[path = "../../execution/tests/support/legacy.rs"]
 mod common;
-use aidash_server::{config::OidcConfig, federation::Federation};
-use axum::{
-	Router,
-	body::{Body, to_bytes},
-	http::{Request, StatusCode},
-	response::Response,
-};
+use aidash_server::config::OidcConfig;
+
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
-use common::{TestEnvironment, test_environment};
+
 use reinhardt::query::{
 	Alias, Expr, ExprTrait, LockType, PostgresQueryBuilder, Query, QueryStatementBuilder,
 };
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use tower::ServiceExt;
+
 use uuid::Uuid;
 
 const COOKIE: &str = "aidash-session=desktop-browser-fixture; aidash-csrf=desktop-csrf";
 const ORIGIN: &str = "http://127.0.0.1:8080";
-
-struct BrowserServer(tokio::task::JoinHandle<()>);
-impl Drop for BrowserServer {
-	fn drop(&mut self) {
-		self.0.abort();
-	}
-}
 
 #[rstest::rstest]
 #[tokio::test]
 #[ignore = "requires web npm dependencies and Chromium; run scripts/test-desktop-browser.sh"]
 async fn desktop_consent_in_chromium(
 	#[future(awt)]
-	#[from(test_environment)]
-	environment: std::sync::Arc<TestEnvironment>,
+	#[from(browser_fixture)]
+	fixture: (
+		common::ApplicationFixture,
+		upstream_fixtures::FixedServerGuard,
+		String,
+	),
 ) {
-	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-	let origin = format!("http://{}", listener.local_addr().unwrap());
-	let (f, app, url, schema) = setup(&environment, &origin).await;
-	let server = BrowserServer(tokio::spawn(async move {
-		axum::serve(listener, app).await.unwrap();
-	}));
+	let (fixture, server, origin) = fixture;
+	let (f, url, schema) = fixture.runtime.parts();
 	let output = tokio::time::timeout(
 		std::time::Duration::from_secs(90),
 		tokio::process::Command::new("node")
@@ -66,28 +58,25 @@ async fn desktop_consent_in_chromium(
 }
 
 async fn request(
-	app: &Router,
+	app: &common::TestApplication,
 	method: &str,
 	path: &str,
 	headers: &[(&str, &str)],
 	body: String,
-) -> Response {
-	let mut request = Request::builder().method(method).uri(path);
-	for (name, value) in headers {
-		request = request.header(*name, *value);
-	}
-	app.clone()
-		.oneshot(request.body(Body::from(body)).unwrap())
-		.await
-		.unwrap()
+) -> reinhardt::test::TestResponse {
+	common::http_response(app, method, path, headers, body.as_bytes()).await
 }
-async fn json_response(response: Response, expected: u16) -> Value {
+async fn json_response(response: reinhardt::test::TestResponse, expected: u16) -> Value {
 	let status = response.status().as_u16();
-	let bytes = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
-	assert_eq!(status, expected, "{}", String::from_utf8_lossy(&bytes));
-	serde_json::from_slice(&bytes).unwrap()
+	let bytes = response.body();
+	assert_eq!(status, expected, "{}", String::from_utf8_lossy(bytes));
+	serde_json::from_slice(bytes).unwrap()
 }
-async fn post(app: &Router, path: &str, body: Value) -> Response {
+async fn post(
+	app: &common::TestApplication,
+	path: &str,
+	body: Value,
+) -> reinhardt::test::TestResponse {
 	request(
 		app,
 		"POST",
@@ -97,99 +86,149 @@ async fn post(app: &Router, path: &str, body: Value) -> Response {
 	)
 	.await
 }
-async fn setup(
-	environment: &TestEnvironment,
-	origin: &str,
-) -> (Federation, Router, String, String) {
-	let (mut f, url, schema) = common::setup(environment).await;
-	f.config.oidc = Some(OidcConfig {
-		issuer: "https://accounts.google.com".into(),
-		client_id: "fixture".into(),
-		client_secret: "server-only-fixture".into(),
-		public_origin: origin.into(),
-		keycloak_admin_url: String::new(),
-		status_client_id: String::new(),
-		status_client_secret: String::new(),
-		session_absolute_seconds: 43_200,
-		session_idle_seconds: 1_800,
-	});
-	let identity = Uuid::new_v4();
-	let query = Query::insert()
-		.into_table(Alias::new("dashboard_identities"))
-		.columns(["id", "issuer", "subject", "last_valid_at"].map(Alias::new))
-		.from_subquery(
-			Query::select()
-				.expr(Expr::val(identity))
-				.expr(Expr::val("https://accounts.google.com"))
-				.expr(Expr::val("desktop-fixture"))
-				.expr(Expr::cust("clock_timestamp()"))
-				.to_owned(),
-		)
-		.to_string(PostgresQueryBuilder);
-	sqlx::query(&query)
-		.execute(f.store.pool.driver())
-		.await
-		.unwrap();
-	let query = Query::insert()
-		.into_table(Alias::new("dashboard_operator_grants"))
-		.columns([Alias::new("identity_id")])
-		.from_subquery(Query::select().expr(Expr::val(identity)).to_owned())
-		.to_string(PostgresQueryBuilder);
-	sqlx::query(&query)
-		.execute(f.store.pool.driver())
-		.await
-		.unwrap();
-	let query = Query::insert()
-		.into_table(Alias::new("dashboard_sessions"))
-		.columns(
-			[
-				"id",
-				"identity_id",
-				"token_hash",
-				"csrf_hash",
-				"created_at",
-				"last_activity_at",
-				"expires_at",
-			]
-			.map(Alias::new),
-		)
-		.from_subquery(
-			Query::select()
-				.expr(Expr::val(Uuid::new_v4()))
-				.expr(Expr::val(identity))
-				.expr(Expr::val(
-					Sha256::digest(b"desktop-browser-fixture").to_vec(),
-				))
-				.expr(Expr::val(Sha256::digest(b"desktop-csrf").to_vec()))
-				.expr(Expr::cust("clock_timestamp()"))
-				.expr(Expr::cust("clock_timestamp()"))
-				.expr(Expr::cust("clock_timestamp()+interval '12 hours'"))
-				.to_owned(),
-		)
-		.to_string(PostgresQueryBuilder);
-	sqlx::query(&query)
-		.execute(f.store.pool.driver())
-		.await
-		.unwrap();
-	let update = Query::update()
-		.table(Alias::new("dashboard_sessions"))
-		.value_expr(Alias::new("provider_sid"), "fixture-provider-session")
-		.to_string(PostgresQueryBuilder);
-	sqlx::query(&update)
-		.execute(f.store.pool.driver())
-		.await
-		.unwrap();
-	let app = common::application_with_settings(
-		f.clone(),
-		aidash_server::http::Settings {
-			auth_burst: 10000,
-			..Default::default()
-		},
-	)
-	.await
-	.test_transport();
-	(f, app, url, schema)
+type OriginFuture = futures_util::future::Shared<BoxFuture<'static, String>>;
+#[rstest::fixture]
+fn desktop_runtime(
+	#[default(async { ORIGIN.to_owned() }.boxed().shared())] origin: OriginFuture,
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) -> common::RuntimeFuture {
+	async move {
+		let origin = origin.await;
+		let mut owner = runtime.await;
+		let f = &mut owner.federation;
+		f.config.oidc = Some(OidcConfig {
+			issuer: "https://accounts.google.com".into(),
+			client_id: "fixture".into(),
+			client_secret: "server-only-fixture".into(),
+			public_origin: origin.clone(),
+			keycloak_admin_url: String::new(),
+			status_client_id: String::new(),
+			status_client_secret: String::new(),
+			session_absolute_seconds: 43_200,
+			session_idle_seconds: 1_800,
+		});
+		let identity = Uuid::new_v4();
+		let query = Query::insert()
+			.into_table(Alias::new("dashboard_identities"))
+			.columns(["id", "issuer", "subject", "last_valid_at"].map(Alias::new))
+			.from_subquery(
+				Query::select()
+					.expr(Expr::val(identity))
+					.expr(Expr::val("https://accounts.google.com"))
+					.expr(Expr::val("desktop-fixture"))
+					.expr(Expr::cust("clock_timestamp()"))
+					.to_owned(),
+			)
+			.to_string(PostgresQueryBuilder);
+		sqlx::query(&query)
+			.execute(f.store.pool.driver())
+			.await
+			.unwrap();
+		let query = Query::insert()
+			.into_table(Alias::new("dashboard_operator_grants"))
+			.columns([Alias::new("identity_id")])
+			.from_subquery(Query::select().expr(Expr::val(identity)).to_owned())
+			.to_string(PostgresQueryBuilder);
+		sqlx::query(&query)
+			.execute(f.store.pool.driver())
+			.await
+			.unwrap();
+		let query = Query::insert()
+			.into_table(Alias::new("dashboard_sessions"))
+			.columns(
+				[
+					"id",
+					"identity_id",
+					"token_hash",
+					"csrf_hash",
+					"created_at",
+					"last_activity_at",
+					"expires_at",
+				]
+				.map(Alias::new),
+			)
+			.from_subquery(
+				Query::select()
+					.expr(Expr::val(Uuid::new_v4()))
+					.expr(Expr::val(identity))
+					.expr(Expr::val(
+						Sha256::digest(b"desktop-browser-fixture").to_vec(),
+					))
+					.expr(Expr::val(Sha256::digest(b"desktop-csrf").to_vec()))
+					.expr(Expr::cust("clock_timestamp()"))
+					.expr(Expr::cust("clock_timestamp()"))
+					.expr(Expr::cust("clock_timestamp()+interval '12 hours'"))
+					.to_owned(),
+			)
+			.to_string(PostgresQueryBuilder);
+		sqlx::query(&query)
+			.execute(f.store.pool.driver())
+			.await
+			.unwrap();
+		let update = Query::update()
+			.table(Alias::new("dashboard_sessions"))
+			.value_expr(Alias::new("provider_sid"), "fixture-provider-session")
+			.to_string(PostgresQueryBuilder);
+		sqlx::query(&update)
+			.execute(f.store.pool.driver())
+			.await
+			.unwrap();
+
+		owner
+	}
+	.boxed()
+	.shared()
 }
+#[rstest::fixture]
+fn desktop_fixture(
+	#[default(async { ORIGIN.to_owned() }.boxed().shared())] _origin: OriginFuture,
+	#[from(desktop_runtime)]
+	#[with(_origin.clone())]
+	_runtime: common::RuntimeFuture,
+	#[from(common::direct_application)]
+	#[with(aidash_server::http::Settings { auth_burst:10000,..Default::default() }, aidash_server::sse::Service::new(Default::default()), std::sync::Arc::new(|r|r),_runtime.clone())]
+	application: common::ApplicationFuture,
+) -> common::ApplicationFuture {
+	application
+}
+#[rstest::fixture]
+fn browser_origin(
+	#[from(upstream_fixtures::fixed_listener)] listener: upstream_fixtures::ListenerFuture,
+) -> OriginFuture {
+	async move { format!("http://{}", listener.await.local_addr().unwrap()) }
+		.boxed()
+		.shared()
+}
+#[rstest::fixture]
+fn browser_router(desktop_fixture: common::ApplicationFuture) -> upstream_fixtures::RouterFuture {
+	async move { std::sync::Arc::new(desktop_fixture.await.application.native_router()) }
+		.boxed()
+		.shared()
+}
+#[rstest::fixture]
+async fn browser_fixture(
+	#[from(upstream_fixtures::fixed_listener)] _listener: upstream_fixtures::ListenerFuture,
+	#[from(browser_origin)]
+	#[with(_listener.clone())]
+	_origin: OriginFuture,
+	#[from(desktop_fixture)]
+	#[with(_origin.clone())]
+	_application: common::ApplicationFuture,
+	#[from(browser_router)]
+	#[with(_application.clone())]
+	_router: upstream_fixtures::RouterFuture,
+	#[future(awt)]
+	#[from(upstream_fixtures::fixed_upstream)]
+	#[with(None,_listener.clone(),_router.clone())]
+	server: upstream_fixtures::FixedServerGuard,
+) -> (
+	common::ApplicationFixture,
+	upstream_fixtures::FixedServerGuard,
+	String,
+) {
+	(_application.await, server, _origin.await)
+}
+
 fn handoff_input() -> Value {
 	json!({
 		"state": "b".repeat(64),
@@ -197,7 +236,7 @@ fn handoff_input() -> Value {
 		"redirect_uri": "http://127.0.0.1:43217/callback",
 	})
 }
-async fn start_handoff(app: &Router) -> (Uuid, String) {
+async fn start_handoff(app: &common::TestApplication) -> (Uuid, String) {
 	let start = json_response(post(app, "/auth/desktop/start", handoff_input()).await, 200).await;
 	let authorize = start["authorization_url"]
 		.as_str()
@@ -208,7 +247,7 @@ async fn start_handoff(app: &Router) -> (Uuid, String) {
 	let id = Uuid::parse_str(authorize.split("request=").nth(1).unwrap()).unwrap();
 	(id, authorize)
 }
-async fn approved_handoff(app: &Router) -> Value {
+async fn approved_handoff(app: &common::TestApplication) -> Value {
 	let verifier = "a".repeat(64);
 	let state = "b".repeat(64);
 	let redirect = "http://127.0.0.1:43217/callback";
@@ -265,7 +304,7 @@ async fn approved_handoff(app: &Router) -> Value {
 	assert_eq!(pairs["state"], state);
 	json!({"code":pairs["code"],"state":state,"verifier":verifier,"redirect_uri":redirect})
 }
-async fn login(app: &Router) -> Value {
+async fn login(app: &common::TestApplication) -> Value {
 	let body = approved_handoff(app).await;
 	let mut wrong = body.clone();
 	wrong["verifier"] = json!("c".repeat(64));
@@ -282,7 +321,12 @@ async fn login(app: &Router) -> Value {
 	assert_eq!(result["expires_in"], 300);
 	result
 }
-async fn bearer(app: &Router, method: &str, path: &str, token: &Value) -> Response {
+async fn bearer(
+	app: &common::TestApplication,
+	method: &str,
+	path: &str,
+	token: &Value,
+) -> reinhardt::test::TestResponse {
 	request(
 		app,
 		method,
@@ -302,10 +346,11 @@ async fn bearer(app: &Router, method: &str, path: &str, token: &Value) -> Respon
 #[tokio::test]
 async fn desktop_handoff_rotation_recovery_and_revocation_preserve_web_sessions(
 	#[future(awt)]
-	#[from(test_environment)]
-	environment: std::sync::Arc<TestEnvironment>,
+	#[from(desktop_fixture)]
+	fixture: common::ApplicationFixture,
 ) {
-	let (f, app, url, schema) = setup(&environment, ORIGIN).await;
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
 	let tokens = login(&app).await;
 	let session = json_response(
 		bearer(&app, "GET", "/auth/session", &tokens["access_token"]).await,
@@ -485,10 +530,11 @@ async fn desktop_handoff_rotation_recovery_and_revocation_preserve_web_sessions(
 #[tokio::test]
 async fn desktop_expiry_and_cors_boundaries(
 	#[future(awt)]
-	#[from(test_environment)]
-	environment: std::sync::Arc<TestEnvironment>,
+	#[from(desktop_fixture)]
+	fixture: common::ApplicationFixture,
 ) {
-	let (f, app, url, schema) = setup(&environment, ORIGIN).await;
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
 	for origin in [
 		"tauri://localhost",
 		"http://tauri.localhost",
@@ -567,10 +613,11 @@ async fn desktop_expiry_and_cors_boundaries(
 #[tokio::test]
 async fn desktop_invalid_inputs_preserve_handoffs_and_sessions(
 	#[future(awt)]
-	#[from(test_environment)]
-	environment: std::sync::Arc<TestEnvironment>,
+	#[from(desktop_fixture)]
+	fixture: common::ApplicationFixture,
 ) {
-	let (f, app, url, schema) = setup(&environment, ORIGIN).await;
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
 	for (field, value) in [
 		("state", "short".to_owned()),
 		("state", "!".repeat(64)),
@@ -654,12 +701,13 @@ async fn desktop_invalid_inputs_preserve_handoffs_and_sessions(
 #[tokio::test]
 async fn desktop_authorization_rejects_expired_foreign_and_issued_handoffs(
 	#[future(awt)]
-	#[from(test_environment)]
-	environment: std::sync::Arc<TestEnvironment>,
+	#[from(desktop_fixture)]
+	fixture: common::ApplicationFixture,
 	#[case] column: &str,
 	#[case] value: reinhardt::query::SimpleExpr,
 ) {
-	let (f, app, url, schema) = setup(&environment, ORIGIN).await;
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
 	let (id, authorize) = start_handoff(&app).await;
 	let update = Query::update()
 		.table(Alias::new("desktop_handoffs"))
@@ -689,10 +737,11 @@ async fn desktop_authorization_rejects_expired_foreign_and_issued_handoffs(
 #[tokio::test]
 async fn desktop_authorization_rejects_mismatched_csrf_session_and_disabled_identity(
 	#[future(awt)]
-	#[from(test_environment)]
-	environment: std::sync::Arc<TestEnvironment>,
+	#[from(desktop_fixture)]
+	fixture: common::ApplicationFixture,
 ) {
-	let (f, app, url, schema) = setup(&environment, ORIGIN).await;
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
 	let (_, authorize) = start_handoff(&app).await;
 	json_response(
 		request(
@@ -803,10 +852,11 @@ async fn desktop_authorization_rejects_mismatched_csrf_session_and_disabled_iden
 #[tokio::test]
 async fn desktop_start_limits_pending_handoffs_and_prunes_expired_requests(
 	#[future(awt)]
-	#[from(test_environment)]
-	environment: std::sync::Arc<TestEnvironment>,
+	#[from(desktop_fixture)]
+	fixture: common::ApplicationFixture,
 ) {
-	let (f, app, url, schema) = setup(&environment, ORIGIN).await;
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
 	let input = handoff_input();
 	let mut insert = Query::insert();
 	insert.into_table(Alias::new("desktop_handoffs")).columns(
@@ -875,12 +925,13 @@ async fn desktop_start_limits_pending_handoffs_and_prunes_expired_requests(
 #[tokio::test]
 async fn desktop_exchange_rejects_invalid_browser_sessions(
 	#[future(awt)]
-	#[from(test_environment)]
-	environment: std::sync::Arc<TestEnvironment>,
+	#[from(desktop_fixture)]
+	fixture: common::ApplicationFixture,
 	#[case] column: &str,
 	#[case] value: reinhardt::query::SimpleExpr,
 ) {
-	let (f, app, url, schema) = setup(&environment, ORIGIN).await;
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
 	let exchange = approved_handoff(&app).await;
 	let update = Query::update()
 		.table(Alias::new("dashboard_sessions"))
@@ -898,10 +949,11 @@ async fn desktop_exchange_rejects_invalid_browser_sessions(
 #[tokio::test]
 async fn desktop_exchange_rechecks_revocation_after_waiting_for_identity(
 	#[future(awt)]
-	#[from(test_environment)]
-	environment: std::sync::Arc<TestEnvironment>,
+	#[from(desktop_fixture)]
+	fixture: common::ApplicationFixture,
 ) {
-	let (f, app, url, schema) = setup(&environment, ORIGIN).await;
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
 	let exchange = approved_handoff(&app).await;
 	let mut tx = f.store.pool.driver().begin().await.unwrap();
 	let lock = Query::select()
@@ -967,10 +1019,11 @@ async fn desktop_exchange_rechecks_revocation_after_waiting_for_identity(
 #[tokio::test]
 async fn desktop_logout_is_scoped_and_browser_logout_all_revokes_desktop_sessions(
 	#[future(awt)]
-	#[from(test_environment)]
-	environment: std::sync::Arc<TestEnvironment>,
+	#[from(desktop_fixture)]
+	fixture: common::ApplicationFixture,
 ) {
-	let (f, app, url, schema) = setup(&environment, ORIGIN).await;
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
 	let first = login(&app).await;
 	let second = login(&app).await;
 	assert_eq!(

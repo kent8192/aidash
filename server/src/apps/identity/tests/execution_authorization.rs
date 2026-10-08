@@ -1,11 +1,14 @@
+#[path = "../../execution/tests/support/upstream.rs"]
+mod upstream_fixtures;
+use futures_util::{FutureExt, future::BoxFuture};
 use http::Method;
-use reinhardt::test::fixtures::http_client;
+use reinhardt::ServerRouter as Router;
+use upstream_fixtures::{async_upstream, handler};
 #[path = "../../execution/tests/support/legacy.rs"]
 mod common;
 use aidash_server::{domain::qualified_agent, harness::Harness};
-use axum::{Json, Router, routing::post};
+
 use common::*;
-use common::{TestEnvironment, test_environment};
 use serde_json::{Value, json};
 use std::sync::{
 	Arc,
@@ -17,11 +20,11 @@ use uuid::Uuid;
 #[tokio::test]
 async fn scoped_worker_recovers_from_a_missing_skill_path_and_reads_an_approved_file(
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
 ) {
-	let (f, url, schema) = setup(&_test_environment).await;
-	let app = common::application(f.clone()).await;
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
 	let (mut policy, token, task_id) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let operator = &f.config.api_token;
 	let agent_subject = qualified_agent(&f.config.node_id, "skilled", "1.0.0");
@@ -138,28 +141,13 @@ async fn scoped_worker_recovers_from_a_missing_skill_path_and_reads_an_approved_
 #[rstest::rstest]
 #[tokio::test]
 async fn scoped_worker_preserves_pending_tool_across_revocation_and_resumes_with_intersected_authority(
-	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[future(awt)] #[from(scoped_worker_preserves_pending_tool_across_revocation_and_resumes_with_intersected_authority_provider)] fixture: ScopedWorkerPreservesPendingToolAcrossRevocationAndResumesWithIntersectedAuthorityProvider,
 ) {
-	let (f, url, schema) = setup(&_test_environment).await;
-	let effects = Arc::new(AtomicUsize::new(0));
-	let counter = effects.clone();
-	let server=Router::new().route("/effect",post(move || { let counter=counter.clone(); async move {
-        counter.fetch_add(1,Ordering::SeqCst); Json(json!({"saved":true}))
-    }})).route("/v1/chat/completions",post(|Json(body):Json<Value>| async move {
-        let context:Value=serde_json::from_str(body["messages"][1]["content"].as_str().unwrap()).unwrap();
-        let message=if context["history"].as_array().unwrap().iter().any(|e| e["kind"]=="tool") {
-            json!({"role":"assistant","content":"Completed authorized work"})
-        } else { json!({"role":"assistant","content":null,"tool_calls":[{"id":"call-1","type":"function","function":{"name":"plugin_0","arguments":"{}"}}]}) };
-        Json(json!({"choices":[{"index":0,"finish_reason":if message.get("tool_calls").is_some(){"tool_calls"}else{"stop"},"message":message}],"usage":{"prompt_tokens":1,"completion_tokens":1}}))
-    }));
-	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-	let endpoint = format!("http://{}", listener.local_addr().unwrap());
-	let server = tokio::spawn(async move {
-		axum::serve(listener, server).await.unwrap();
-	});
-	let app = common::application(f.clone()).await;
+	let (f, url, schema) = fixture.application.runtime.parts();
+	let app = fixture.application.application;
+	let server = fixture.server;
+	let endpoint = server.url.clone();
+	let effects = fixture.effects;
 	let (mut policy, token, task_id) = bootstrap(&f, &app, &endpoint).await;
 	let (status, _) = request(
 		&app,
@@ -300,8 +288,7 @@ async fn scoped_worker_preserves_pending_tool_across_revocation_and_resumes_with
 			.len(),
 		1
 	);
-	server.abort();
-	let _ = server.await;
+	drop(server);
 	cleanup(f, &url, &schema).await;
 }
 
@@ -309,13 +296,13 @@ async fn scoped_worker_preserves_pending_tool_across_revocation_and_resumes_with
 #[tokio::test]
 async fn catalog_approval_and_run_read_denials_cover_search_collections_and_event_replay(
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
 ) {
 	use futures_util::StreamExt;
 	use std::time::Duration;
-	let (f, url, schema) = setup(&_test_environment).await;
-	let app = common::application(f.clone()).await;
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
 	let (mut policy, token, task_id) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let builtin_count = aidash_domain::registry::bindings::REQUIRED_TOOLS.len()
 		+ aidash_domain::registry::bindings::DEFAULT_TOOLS.len();
@@ -614,7 +601,10 @@ async fn catalog_approval_and_run_read_denials_cover_search_collections_and_even
 			);
 		}
 	}
-	let response = http_client()
+	// Unbounded SSE uses the declared native HTTP client.
+	let response = app
+		.raw_http
+		.clone()
 		.request(
 			Method::GET,
 			app.url(format!(
@@ -729,11 +719,11 @@ async fn catalog_approval_and_run_read_denials_cover_search_collections_and_even
 #[tokio::test]
 async fn child_execution_retains_parent_authority_and_supports_credential_rotation_and_cancellation(
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
 ) {
-	let (f, url, schema) = setup(&_test_environment).await;
-	let app = common::application(f.clone()).await;
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
 	let (mut policy, token, task_id) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let child = qualified_agent(&f.config.node_id, "child", "1.0.0");
 	policy["subjects"][&child] = json!({"kind":"agent"});
@@ -1031,34 +1021,19 @@ async fn child_execution_retains_parent_authority_and_supports_credential_rotati
 #[tokio::test]
 async fn worker_effect_boundary_serializes_revocation_and_persists_audit_before_the_effect(
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(
+		worker_effect_boundary_serializes_revocation_and_persists_audit_before_the_effect_provider
+	)]
+	fixture: WorkerEffectBoundarySerializesRevocationAndPersistsAuditBeforeTheEffectProvider,
 ) {
 	use std::time::Duration;
-	let (f, url, schema) = setup(&_test_environment).await;
-	let worker_federation = f.for_workers().await.unwrap();
-	let entered = Arc::new(tokio::sync::Notify::new());
-	let release = Arc::new(tokio::sync::Notify::new());
-	let handler_entered = entered.clone();
-	let handler_release = release.clone();
-	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-	let endpoint = format!("http://{}", listener.local_addr().unwrap());
-	let fixture = Router::new().route(
-		"/effect",
-		post(move || {
-			let entered = handler_entered.clone();
-			let release = handler_release.clone();
-			async move {
-				entered.notify_one();
-				release.notified().await;
-				Json(json!({"effect":"committed"}))
-			}
-		}),
-	);
-	let server = tokio::spawn(async move {
-		axum::serve(listener, fixture).await.unwrap();
-	});
-	let app = common::application(f.clone()).await;
+	let (f, url, schema) = fixture.application.runtime.parts();
+	let app = fixture.application.application;
+	let server = fixture.server;
+	let endpoint = server.url.clone();
+	let entered = fixture.entered;
+	let release = fixture.release;
+	let worker_federation = fixture.worker_federation;
 	let (mut policy, token, task_id) = bootstrap(&f, &app, &endpoint).await;
 	assert_eq!(
 		request(
@@ -1223,8 +1198,7 @@ async fn worker_effect_boundary_serializes_revocation_and_persists_audit_before_
 		json!(paused.state)["data"]
 	);
 	assert_eq!(json!(paused.state)["data"]["cursor"], 1);
-	server.abort();
-	let _ = server.await;
+	drop(server);
 	worker_federation.store.pool.close().await;
 	cleanup(f, &url, &schema).await;
 }
@@ -1233,11 +1207,11 @@ async fn worker_effect_boundary_serializes_revocation_and_persists_audit_before_
 #[tokio::test]
 async fn scoped_delegation_requires_permission_before_atomic_admission(
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
 ) {
-	let (f, url, schema) = setup(&_test_environment).await;
-	let app = common::application(f.clone()).await;
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
 	let (mut policy, token, task) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	policy["policies"].as_array_mut().unwrap().push(json!({"id":"deny-delegation","effect":"deny","subjects":{"ids":["alice"]},"actions":["task.delegate"],"resources":{"kinds":["task"]}}));
 	assert_eq!(
@@ -1295,12 +1269,12 @@ async fn scoped_delegation_requires_permission_before_atomic_admission(
 #[tokio::test]
 async fn scoped_collections_fill_after_denied_runs_and_stream_cursor_skips_denied_tail(
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
 ) {
 	use aidash_server::authorization::{Authorization, identity::Actor, workspace::Workspaces};
-	let (f, url, schema) = setup(&_test_environment).await;
-	let app = common::application(f.clone()).await;
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
 	let (mut policy, token, task) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	assert_eq!(
 		request(
@@ -1409,11 +1383,11 @@ async fn scoped_collections_fill_after_denied_runs_and_stream_cursor_skips_denie
 #[tokio::test]
 async fn malformed_scoped_delegation_arguments_remain_model_correctable(
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
 ) {
-	let (f, url, schema) = setup(&_test_environment).await;
-	let app = common::application(f.clone()).await;
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
 	let (_, token, task) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	assert_eq!(
 		request(
@@ -1480,12 +1454,12 @@ async fn malformed_scoped_delegation_arguments_remain_model_correctable(
 #[tokio::test]
 async fn decision_cursor_follows_transaction_commit_order(
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
 ) {
 	use aidash_server::authorization::{Authorization, policy::Evaluation};
-	let (f, url, schema) = setup(&_test_environment).await;
-	let app = common::application(f.clone()).await;
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
 	bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let authorization = Authorization {
 		pool: f.store.pool.clone(),
@@ -1539,8 +1513,8 @@ use reinhardt::query::Expr;
 #[tokio::test]
 async fn catalog_history_failure_rolls_back_the_approval_and_preserves_retry(
 	#[future(awt)]
-	#[from(test_environment)]
-	environment: std::sync::Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
 ) {
 	use aidash_server::{authorization::Authorization, registry::EntityRef};
 	use reinhardt::query::{
@@ -1548,8 +1522,8 @@ async fn catalog_history_failure_rolls_back_the_approval_and_preserves_retry(
 	};
 	// Arrange: reserve the future history key in an isolated database to make
 	// history fail after the approval CAS has successfully updated its row.
-	let (f, url, schema) = setup(&environment).await;
-	let app = common::application(f.clone()).await;
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
 	bootstrap(&f, &app, "http://localhost:9").await;
 	let authorization = Authorization {
 		pool: f.store.pool.clone(),
@@ -1659,4 +1633,162 @@ async fn catalog_history_failure_rolls_back_the_approval_and_preserves_retry(
 		]
 	);
 	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::fixture]
+fn scoped_worker_preserves_pending_tool_across_revocation_and_resumes_with_intersected_authority_provider_effects()
+-> Arc<AtomicUsize> {
+	Arc::new(AtomicUsize::new(0))
+}
+
+#[rstest::fixture]
+fn scoped_worker_preserves_pending_tool_across_revocation_and_resumes_with_intersected_authority_provider_router(
+	#[from(scoped_worker_preserves_pending_tool_across_revocation_and_resumes_with_intersected_authority_provider_effects)]
+	effects: Arc<AtomicUsize>,
+) -> upstream_fixtures::RouterFuture {
+	async move {
+
+
+	let counter = effects.clone();
+	let server=Router::new().handler("/effect",handler(http::Method::POST, move |_request: reinhardt::Request| { let counter=counter.clone(); async move {
+        counter.fetch_add(1,Ordering::SeqCst); reinhardt::Response::ok().with_json(&json!({"saved":true})).unwrap()
+    }})).handler("/v1/chat/completions",handler(http::Method::POST, |request: reinhardt::Request| {let body = request.json::<Value>().unwrap();async move {
+        let context:Value=serde_json::from_str(body["messages"][1]["content"].as_str().unwrap()).unwrap();
+        let message=if context["history"].as_array().unwrap().iter().any(|e| e["kind"]=="tool") {
+            json!({"role":"assistant","content":"Completed authorized work"})
+        } else { json!({"role":"assistant","content":null,"tool_calls":[{"id":"call-1","type":"function","function":{"name":"plugin_0","arguments":"{}"}}]}) };
+        reinhardt::Response::ok().with_json(&json!({"choices":[{"index":0,"finish_reason":if message.get("tool_calls").is_some(){"tool_calls"}else{"stop"},"message":message}],"usage":{"prompt_tokens":1,"completion_tokens":1}})).unwrap()
+    }}));
+
+
+
+Arc::new(server)}.boxed().shared()
+}
+
+struct ScopedWorkerPreservesPendingToolAcrossRevocationAndResumesWithIntersectedAuthorityProvider {
+	application: common::ApplicationFixture,
+	server: Arc<reinhardt::test::fixtures::server::TestServerGuard>,
+	effects: Arc<AtomicUsize>,
+}
+
+#[rstest::fixture]
+fn scoped_worker_preserves_pending_tool_across_revocation_and_resumes_with_intersected_authority_provider(
+	#[from(scoped_worker_preserves_pending_tool_across_revocation_and_resumes_with_intersected_authority_provider_effects)]
+	effects: Arc<AtomicUsize>,
+	#[from(common::runtime)] _runtime: common::RuntimeFuture,
+	#[from(scoped_worker_preserves_pending_tool_across_revocation_and_resumes_with_intersected_authority_provider_router)]
+	#[with(effects.clone())]
+	_router: upstream_fixtures::RouterFuture,
+	#[from(async_upstream)]
+	#[with(_router.clone())]
+	_server: upstream_fixtures::UpstreamFuture,
+	#[from(common::native_application)]
+	#[with(Default::default(),aidash_server::sse::Service::new(Default::default()),Arc::new(|r|r),_runtime.clone())]
+	_application: common::ApplicationFuture,
+) -> BoxFuture<
+	'static,
+	ScopedWorkerPreservesPendingToolAcrossRevocationAndResumesWithIntersectedAuthorityProvider,
+> {
+	async move {
+		ScopedWorkerPreservesPendingToolAcrossRevocationAndResumesWithIntersectedAuthorityProvider {
+			application: _application.await,
+			server: _server.await,
+			effects,
+		}
+	}
+	.boxed()
+}
+
+#[rstest::fixture]
+fn worker_effect_boundary_serializes_revocation_and_persists_audit_before_the_effect_provider_entered()
+-> Arc<tokio::sync::Notify> {
+	Arc::new(tokio::sync::Notify::new())
+}
+
+#[rstest::fixture]
+fn worker_effect_boundary_serializes_revocation_and_persists_audit_before_the_effect_provider_release()
+-> Arc<tokio::sync::Notify> {
+	Arc::new(tokio::sync::Notify::new())
+}
+
+#[rstest::fixture]
+fn worker_effect_boundary_serializes_revocation_and_persists_audit_before_the_effect_provider_router(
+	#[from(worker_effect_boundary_serializes_revocation_and_persists_audit_before_the_effect_provider_entered)]
+	entered: Arc<tokio::sync::Notify>,
+	#[from(worker_effect_boundary_serializes_revocation_and_persists_audit_before_the_effect_provider_release)]
+	release: Arc<tokio::sync::Notify>,
+) -> upstream_fixtures::RouterFuture {
+	async move {
+		let handler_entered = entered.clone();
+		let handler_release = release.clone();
+
+		let fixture = Router::new().handler(
+			"/effect",
+			handler(http::Method::POST, move |_request: reinhardt::Request| {
+				let entered = handler_entered.clone();
+				let release = handler_release.clone();
+				async move {
+					entered.notify_one();
+					release.notified().await;
+					reinhardt::Response::ok()
+						.with_json(&json!({"effect":"committed"}))
+						.unwrap()
+				}
+			}),
+		);
+
+		Arc::new(fixture)
+	}
+	.boxed()
+	.shared()
+}
+
+struct WorkerEffectBoundarySerializesRevocationAndPersistsAuditBeforeTheEffectProvider {
+	application: common::ApplicationFixture,
+	worker_federation: aidash_server::federation::Federation,
+	server: Arc<reinhardt::test::fixtures::server::TestServerGuard>,
+	entered: Arc<tokio::sync::Notify>,
+	release: Arc<tokio::sync::Notify>,
+}
+
+#[rstest::fixture]
+fn worker_effect_boundary_serializes_revocation_and_persists_audit_before_the_effect_provider(
+	#[from(worker_effect_boundary_serializes_revocation_and_persists_audit_before_the_effect_provider_entered)]
+	entered: Arc<tokio::sync::Notify>,
+	#[from(worker_effect_boundary_serializes_revocation_and_persists_audit_before_the_effect_provider_release)]
+	release: Arc<tokio::sync::Notify>,
+	#[from(common::runtime)] _runtime: common::RuntimeFuture,
+	#[from(effect_worker_runtime)]
+	#[with(_runtime.clone())]
+	_worker: BoxFuture<'static, aidash_server::federation::Federation>,
+	#[from(worker_effect_boundary_serializes_revocation_and_persists_audit_before_the_effect_provider_router)]
+	#[with(entered.clone(), release.clone())]
+	_router: upstream_fixtures::RouterFuture,
+	#[from(async_upstream)]
+	#[with(_router.clone())]
+	_server: upstream_fixtures::UpstreamFuture,
+	#[from(common::native_application)]
+	#[with(Default::default(),aidash_server::sse::Service::new(Default::default()),Arc::new(|r|r),_runtime.clone())]
+	_application: common::ApplicationFuture,
+) -> BoxFuture<
+	'static,
+	WorkerEffectBoundarySerializesRevocationAndPersistsAuditBeforeTheEffectProvider,
+> {
+	async move {
+		WorkerEffectBoundarySerializesRevocationAndPersistsAuditBeforeTheEffectProvider {
+			application: _application.await,
+			worker_federation: _worker.await,
+			server: _server.await,
+			entered,
+			release,
+		}
+	}
+	.boxed()
+}
+
+#[rstest::fixture]
+fn effect_worker_runtime(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) -> BoxFuture<'static, aidash_server::federation::Federation> {
+	async move { runtime.await.federation.for_workers().await.unwrap() }.boxed()
 }

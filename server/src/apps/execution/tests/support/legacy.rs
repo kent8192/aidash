@@ -26,10 +26,49 @@ mod application;
 pub use application::{
 	ApplicationFixture, ApplicationFuture, RouterTransform, TestApplication, application,
 	application_with, application_with_event_streams, application_with_settings,
-	native_application, peer_application,
+	direct_application, native_application, peer_application,
 };
 #[allow(unused_imports)] // Worker-process fixtures share this settings module.
 pub(crate) use application::{process_settings, settings_for};
+
+#[allow(dead_code)] // Header-sensitive browser and peer tests share this request dispatcher.
+pub async fn http_response(
+	app: &TestApplication,
+	method: &str,
+	path: &str,
+	headers: &[(&str, &str)],
+	body: &[u8],
+) -> reinhardt::test::TestResponse {
+	if method == "GET" {
+		return app.client().get_with_headers(path, headers).await.unwrap();
+	}
+	if method == "POST"
+		&& let Some((_, content_type)) = headers
+			.iter()
+			.find(|(name, _)| name.eq_ignore_ascii_case("content-type"))
+	{
+		return app
+			.client()
+			.post_raw_with_headers(path, body, content_type, headers)
+			.await
+			.unwrap();
+	}
+	// reinhardt-web#6661: other verbs and an intentionally absent Content-Type
+	// need the declared raw client because the native generic dispatcher is private.
+	let mut request = app
+		.raw_http
+		.request(method.parse().unwrap(), app.url(path))
+		.body(body.to_owned());
+	for (name, value) in headers {
+		request = request.header(*name, *value);
+	}
+	let response = request.send().await.unwrap();
+	let status = response.status();
+	let headers = response.headers().clone();
+	let version = response.version();
+	let body = response.bytes().await.unwrap();
+	reinhardt::test::TestResponse::with_body_and_version(status, headers, body, version)
+}
 
 #[allow(dead_code)] // Shared fixtures are used by different integration-test binaries.
 pub async fn request(

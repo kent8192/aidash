@@ -107,6 +107,67 @@ pub fn ready_router(
 	async move { router }.boxed().shared()
 }
 
+pub type ListenerFuture = Shared<BoxFuture<'static, Arc<tokio::net::TcpListener>>>;
+
+#[fixture]
+pub fn fixed_listener() -> ListenerFuture {
+	// Peer restart and origin-bound identity tests require an address before routing setup.
+	async { Arc::new(tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap()) }
+		.boxed()
+		.shared()
+}
+
+pub struct FixedServerGuard {
+	pub url: String,
+	task: tokio::task::JoinHandle<()>,
+}
+
+impl FixedServerGuard {
+	/// Native transport primitive; the owning fixture supplies all setup dependencies.
+	pub fn spawn(
+		listener: Arc<tokio::net::TcpListener>,
+		router: Arc<dyn Handler>,
+		context: Option<Arc<reinhardt::InjectionContext>>,
+	) -> Self {
+		let url = format!("http://{}", listener.local_addr().unwrap());
+		let task = tokio::spawn(async move {
+			let mut connections = tokio::task::JoinSet::new();
+			loop {
+				tokio::select! {
+					accepted = listener.accept() => {
+						let (stream,peer) = accepted.unwrap();
+						let router = router.clone();
+						let context = context.clone();
+						connections.spawn(async move { let _ = reinhardt::server::HttpServer::handle_connection(stream,peer,router,context).await; });
+					}
+					_ = connections.join_next(), if !connections.is_empty() => {}
+				}
+			}
+		});
+		Self { url, task }
+	}
+	pub fn abort(&self) {
+		self.task.abort();
+	}
+	pub async fn stopped(mut self) -> Result<(), tokio::task::JoinError> {
+		(&mut self.task).await
+	}
+}
+impl Drop for FixedServerGuard {
+	fn drop(&mut self) {
+		self.task.abort();
+	}
+}
+
+#[fixture]
+pub fn fixed_upstream(
+	#[default(None)] context: Option<Arc<reinhardt::InjectionContext>>,
+	fixed_listener: ListenerFuture,
+	#[from(ready_router)] router: RouterFuture,
+) -> BoxFuture<'static, FixedServerGuard> {
+	async move { FixedServerGuard::spawn(fixed_listener.await, router.await, context) }.boxed()
+}
+
 /// Resolve the router and disposable transport as one natural provider dependency.
 #[fixture]
 pub fn provider_transport(

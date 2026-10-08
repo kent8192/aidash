@@ -1,3 +1,8 @@
+#[path = "../../execution/tests/support/upstream.rs"]
+mod upstream_fixtures;
+use futures_util::{FutureExt, future::BoxFuture};
+use reinhardt::ServerRouter as Router;
+use upstream_fixtures::handler;
 #[path = "../../execution/tests/support/legacy.rs"]
 mod common;
 #[path = "scoped_remote_execution/native_memory.rs"]
@@ -8,15 +13,7 @@ use aidash_server::{
 	harness::Harness,
 	registry::EntityRef,
 };
-use axum::{
-	Json, Router,
-	body::{Body, to_bytes},
-	extract::{Request, State},
-	middleware::{self, Next},
-	response::{IntoResponse, Response},
-	routing::post,
-};
-use common::{TestEnvironment, bootstrap, cleanup, request, setup, test_environment};
+use common::{bootstrap, cleanup, request};
 use futures_util::StreamExt;
 use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
 use serde_json::{Value, json};
@@ -28,7 +25,7 @@ use tokio::sync::Mutex;
 use tokio::sync::Notify;
 use uuid::Uuid;
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 struct ModelScript {
 	requests: Arc<Mutex<Vec<Value>>>,
 	hold: Arc<AtomicBool>,
@@ -105,7 +102,6 @@ impl ReservationCheck {
 struct Pair {
 	model: ModelScript,
 	drop_reply: Arc<Mutex<Option<String>>>,
-	_environment: Arc<TestEnvironment>,
 	a: Federation,
 	b: Federation,
 	aa: common::TestApplication,
@@ -118,7 +114,8 @@ struct Pair {
 	grant: Uuid,
 	admission: Uuid,
 	requests: Arc<Mutex<Vec<Value>>>,
-	servers: Vec<tokio::task::JoinHandle<()>>,
+	servers: Vec<upstream_fixtures::FixedServerGuard>,
+	providers: Vec<Arc<reinhardt::test::fixtures::server::TestServerGuard>>,
 	au: String,
 	bu: String,
 	aschema: String,
@@ -126,7 +123,7 @@ struct Pair {
 	semantic: Option<SemanticFixture>,
 	native: Option<Value>,
 	generation: Option<(Value, Value)>,
-	_memory_recovery_directories: Vec<tempfile::TempDir>,
+	_memory_recovery_directories: Vec<Arc<tempfile::TempDir>>,
 }
 struct SemanticFixture {
 	requests: Arc<Mutex<Vec<Value>>>,
@@ -137,9 +134,10 @@ struct SemanticFixture {
 }
 impl Pair {
 	async fn close(mut self) {
+		self.providers.clear();
 		for server in self.servers.drain(..) {
 			server.abort();
-			let _ = server.await;
+			let _ = server.stopped().await;
 		}
 		cleanup(self.a.clone(), &self.au, &self.aschema).await;
 		cleanup(self.b.clone(), &self.bu, &self.bschema).await;
@@ -183,51 +181,79 @@ impl Pair {
 	}
 }
 
-fn source_router(app: &common::TestApplication, state: Arc<Mutex<Option<String>>>) -> Router {
-	app.test_transport()
-		.layer(middleware::from_fn_with_state(state, lose_command_reply))
+struct SourceReplyFault {
+	router: Arc<Router>,
+	state: Arc<Mutex<Option<String>>>,
 }
-async fn lose_command_reply(
-	State(state): State<Arc<Mutex<Option<String>>>>,
-	request: Request,
-	next: Next,
-) -> Response {
-	let semantic = request.uri().path().ends_with("/scoped/semantic/query");
-	if !semantic && !request.uri().path().ends_with("/scoped/execution/commands") {
-		return next.run(request).await;
-	}
-	let (parts, body) = request.into_parts();
-	let bytes = to_bytes(body, 4 * 1024 * 1024).await.unwrap();
-	let input: Value = serde_json::from_slice(&bytes).unwrap();
-	let drop = {
-		let mut wanted = state.lock().await;
-		if wanted.as_deref().is_some_and(|value| {
-			if semantic {
-				value == "semantic.query"
-			} else {
-				input["operation"] == value
-			}
-		}) {
-			wanted.take();
-			true
-		} else {
-			false
+#[async_trait::async_trait]
+impl reinhardt::Handler for SourceReplyFault {
+	async fn handle(
+		&self,
+		request: reinhardt::Request,
+	) -> reinhardt::http::ViewResult<reinhardt::Response> {
+		let semantic = request.uri.path().ends_with("/scoped/semantic/query");
+		if !semantic && !request.uri.path().ends_with("/scoped/execution/commands") {
+			return self.router.handle(request).await;
 		}
-	};
-	let response = next
-		.run(Request::from_parts(parts, Body::from(bytes)))
-		.await;
-	if drop && response.status().is_success() {
-		(
-			axum::http::StatusCode::SERVICE_UNAVAILABLE,
-			Json(json!({"error":"fixture lost a committed reply"})),
-		)
-			.into_response()
-	} else {
-		response
+		let input: Value = request.json().unwrap();
+		let state = &self.state;
+		let drop = {
+			let mut wanted = state.lock().await;
+			if wanted.as_deref().is_some_and(|value| {
+				if semantic {
+					value == "semantic.query"
+				} else {
+					input["operation"] == value
+				}
+			}) {
+				wanted.take();
+				true
+			} else {
+				false
+			}
+		};
+
+		let response = self.router.handle(request).await?;
+		if drop && response.status.is_success() {
+			Ok(
+				reinhardt::Response::new(http::StatusCode::SERVICE_UNAVAILABLE)
+					.with_json(&json!({"error":"fixture lost a committed reply"}))
+					.unwrap(),
+			)
+		} else {
+			Ok(response)
+		}
 	}
 }
-async fn reconnect(f: &mut Federation) {
+#[rstest::fixture]
+fn source_router(
+	#[from(common::native_application)] application: common::ApplicationFuture,
+	#[from(reply_state)] state: Arc<Mutex<Option<String>>>,
+) -> upstream_fixtures::RouterFuture {
+	async move {
+		let app = application.await.application;
+		let fault = Arc::new(SourceReplyFault {
+			router: Arc::new(app.native_router()),
+			state,
+		});
+		Arc::new(
+			Router::new()
+				.handler_arc("/", fault.clone())
+				.handler_arc("/{*rest}", fault),
+		)
+	}
+	.boxed()
+	.shared()
+}
+#[rstest::fixture]
+fn receiver_router(
+	#[from(common::native_application)] application: common::ApplicationFuture,
+) -> upstream_fixtures::RouterFuture {
+	async move { Arc::new(application.await.application.native_router()) }
+		.boxed()
+		.shared()
+}
+async fn reconnect(f: &mut Federation, notify: Arc<Notify>) {
 	let pool = f
 		.store
 		.pool
@@ -244,89 +270,97 @@ async fn reconnect(f: &mut Federation) {
 	f.store.pool.close().await;
 	f.store.control_pool.close().await;
 	f.store = store;
-	f.client = reqwest::Client::new();
-	f.notify = Arc::new(Notify::new());
+	// Act: replace notification state after reconnecting the durable runtime.
+	f.notify = notify;
 }
 
-#[rstest::fixture]
-async fn scoped_pair(
-	#[default(false)] semantic: bool,
-	#[default(false)] generated: bool,
-	#[default(false)] approval: bool,
-	#[default(false)] compactor: bool,
-	#[default(false)] native: bool,
-	#[default((false, false, 32))] large_native: (bool, bool, usize),
-	#[future(awt)] test_environment: Arc<TestEnvironment>,
-) -> Pair {
-	let (large_native_graph, large_native_journal, native_graph_visits) = large_native;
-	let _ = tracing_subscriber::fmt()
-		.with_env_filter("aidash=debug")
-		.with_test_writer()
-		.try_init();
-	let (mut a, au, aschema) = setup(&test_environment).await;
-	let (mut b, bu, bschema) = setup(&test_environment).await;
-	b.config.node_id = "aidash://scoped-receiver".into();
-	b.store.node_id = b.config.node_id.clone();
-	let mut memory_recovery_directories = Vec::new();
-	if native {
-		for node in [&mut a, &mut b] {
-			let directory = tempfile::tempdir().unwrap();
-			node.store = aidash_server::semantic::services::memory_recovery::initialize(
-				&node.store,
-				directory.path().to_owned(),
-			)
-			.await
-			.unwrap();
-			memory_recovery_directories.push(directory);
-		}
-	}
-	b.registry =
-		aidash_server::registry::Registry::new(b.store.pool.clone(), &b.config.node_id).unwrap();
-	let model = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-	let endpoint = format!("http://{}", model.local_addr().unwrap());
-	let model_state = ModelScript::default();
-	let requests = model_state.requests.clone();
-	let model_app=Router::new().route("/v1/chat/completions",post(|State(script):State<ModelScript>,Json(input):Json<Value>|async move {
-        let check=script.reservations.lock().await.clone();
-        if let Some(check)=check {check.before_http().await;}
-        let mut calls=script.requests.lock().await;
-        calls.push(input);
-        let count=calls.len(); drop(calls); script.entered.notify_one(); if script.hold.load(Ordering::Acquire) {script.release.notified().await;} let message=if count==1 && script.force_memory_mutate.load(Ordering::Acquire) {json!({"role":"assistant","content":null,"tool_calls":[{"id":"forbidden-write","type":"function","function":{"name":"memory_mutate","arguments":"{\"data\":{\"forbidden\":true}}"}}]})} else if count==1 {json!({"role":"assistant","content":null,"tool_calls":[{"id":"note","type":"function","function":{"name":"workspace_message","arguments":"{\"content\":\"Scoped remote progress\"}"}}]})} else {json!({"role":"assistant","content":"Scoped remote result"})};
-        Json(json!({"choices":[{"index":0,"finish_reason":if message.get("tool_calls").is_some(){"tool_calls"}else{"stop"},"message":message}],"usage":{"prompt_tokens":1,"completion_tokens":1}}))
-    })).route("/systemone", post(|State(script):State<ModelScript>,Json(input):Json<Value>|async move {
-		if let Some(check)=script.compaction_reservations.lock().await.clone() {check.before_http().await;}
-		script.compactions.lock().await.push(input.clone());
-		match script.compaction_status.load(Ordering::Acquire) {
-			503 => (axum::http::StatusCode::SERVICE_UNAVAILABLE,"private compactor response").into_response(),
-			401 => (axum::http::StatusCode::UNAUTHORIZED,"private compactor response").into_response(),
-			1 => Json(json!({"answers":{}})).into_response(),
-			_ => {
-				let answers:serde_json::Map<_,_>=input["questions"].as_object().unwrap().keys().map(|name|(name.clone(),json!({"noul":0.0}))).collect();
-				Json(json!({"answers":answers})).into_response()
-			}
-		}
-	})).with_state(model_state.clone());
-	let model_server = tokio::spawn(async move { axum::serve(model, model_app).await.unwrap() });
-	let al = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-	let bl = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-	a.config.endpoint = format!("http://{}", al.local_addr().unwrap());
-	b.config.endpoint = format!("http://{}", bl.local_addr().unwrap());
-	let drop_reply = Arc::new(Mutex::new(None));
-	let aa = common::application(a.clone()).await;
-	let ba = common::application(b.clone()).await;
-	let (mut source_policy, token, mut task) = bootstrap(&a, &aa, &endpoint).await;
-	let (receiver_policy, _, _) = bootstrap(&b, &ba, &endpoint).await;
-	let compactor_definition = json!({"id":"remote-compactor","version":"1.0.0","kind":"compactor","name":{"en":"Approved remote compactor"},"description":{"en":"Local fixture"},"config":{"provider":"typesafe-system-one","endpoint":format!("{endpoint}/systemone"),"model":"fixture-jev","credential_env":"AIDASH_SECRET_TEST_PEER","max_request_bytes":400000,"max_questions":200,"max_response_bytes":16000}});
-	let (status, body) = request(
-		&ba,
-		&b.config.api_token,
-		"POST",
-		"/api/registry",
-		compactor_definition,
-	)
-	.await;
-	assert_eq!(status, 200, "{body}");
-	assert_eq!(
+mod scoped_pair_composition {
+	// rstest 0.26.1 does not copy function-level allows onto generated partial_N functions.
+	// Keep the distinct scenario inputs and owned infrastructure visible in this fixture graph.
+	#![allow(clippy::too_many_arguments)]
+	use super::*;
+	#[rstest::fixture]
+	pub(super) async fn scoped_pair(
+		#[default(false)] semantic: bool,
+		#[default(false)] generated: bool,
+		#[default(false)] approval: bool,
+		#[default(false)] compactor: bool,
+		#[default(false)] native: bool,
+		#[default((false, false, 32))] large_native: (bool, bool, usize),
+
+		#[from(model_script)] model_state: ModelScript,
+		#[from(model_router)]
+		#[with(model_state.clone())]
+		_model_router: Arc<Router>,
+		#[from(upstream_fixtures::ready_router)]
+		#[with(_model_router.clone())]
+		_model_ready: upstream_fixtures::RouterFuture,
+		#[from(upstream_fixtures::async_upstream)]
+		#[with(_model_ready.clone())]
+		_model_server: upstream_fixtures::UpstreamFuture,
+		#[from(reply_state)] drop_reply: Arc<Mutex<Option<String>>>,
+		#[from(recovery_directory)] source_directory: Arc<tempfile::TempDir>,
+		#[from(recovery_directory)] receiver_directory: Arc<tempfile::TempDir>,
+		#[from(upstream_fixtures::fixed_listener)] _al: upstream_fixtures::ListenerFuture,
+		#[from(upstream_fixtures::fixed_listener)] _bl: upstream_fixtures::ListenerFuture,
+		#[from(scoped_runtime)]
+		#[with(native,"aidash://execution-test",_al.clone(),source_directory.clone())]
+		_a: common::RuntimeFuture,
+		#[from(scoped_runtime)]
+		#[with(native,"aidash://scoped-receiver",_bl.clone(),receiver_directory.clone())]
+		_b: common::RuntimeFuture,
+		#[from(common::native_application)]
+		#[with(Default::default(),aidash_server::sse::Service::new(Default::default()),Arc::new(|r|r),_a.clone())]
+		_aa: common::ApplicationFuture,
+		#[from(common::native_application)]
+		#[with(Default::default(),aidash_server::sse::Service::new(Default::default()),Arc::new(|r|r),_b.clone())]
+		_ba: common::ApplicationFuture,
+		#[from(source_router)]
+		#[with(_aa.clone(),drop_reply.clone())]
+		_source_router: upstream_fixtures::RouterFuture,
+		#[from(receiver_router)]
+		#[with(_ba.clone())]
+		_receiver_router: upstream_fixtures::RouterFuture,
+		#[from(upstream_fixtures::fixed_upstream)]
+		#[with(None,_al.clone(),_source_router.clone())]
+		_aserver: BoxFuture<'static, upstream_fixtures::FixedServerGuard>,
+		#[from(upstream_fixtures::fixed_upstream)]
+		#[with(None,_bl.clone(),_receiver_router.clone())]
+		_bserver: BoxFuture<'static, upstream_fixtures::FixedServerGuard>,
+		embedding_provider: BoxFuture<'static, EmbeddingProvider>,
+	) -> Pair {
+		let (large_native_graph, large_native_journal, native_graph_visits) = large_native;
+		let _ = tracing_subscriber::fmt()
+			.with_env_filter("aidash=debug")
+			.with_test_writer()
+			.try_init();
+		let source = _aa.await;
+		let receiver = _ba.await;
+		let (a, au, aschema) = source.runtime.parts();
+		let (b, bu, bschema) = receiver.runtime.parts();
+		let aa = source.application;
+		let ba = receiver.application;
+		let memory_recovery_directories = if native {
+			vec![source_directory, receiver_directory]
+		} else {
+			vec![]
+		};
+		let requests = model_state.requests.clone();
+		let model_server = _model_server.await;
+		let endpoint = model_server.url.clone();
+		let (mut source_policy, token, mut task) = bootstrap(&a, &aa, &endpoint).await;
+		let (receiver_policy, _, _) = bootstrap(&b, &ba, &endpoint).await;
+		let compactor_definition = json!({"id":"remote-compactor","version":"1.0.0","kind":"compactor","name":{"en":"Approved remote compactor"},"description":{"en":"Local fixture"},"config":{"provider":"typesafe-system-one","endpoint":format!("{endpoint}/systemone"),"model":"fixture-jev","credential_env":"AIDASH_SECRET_TEST_PEER","max_request_bytes":400000,"max_questions":200,"max_response_bytes":16000}});
+		let (status, body) = request(
+			&ba,
+			&b.config.api_token,
+			"POST",
+			"/api/registry",
+			compactor_definition,
+		)
+		.await;
+		assert_eq!(status, 200, "{body}");
+		assert_eq!(
 		request(
 			&ba,
 			&b.config.api_token,
@@ -338,170 +372,167 @@ async fn scoped_pair(
 		.0,
 		200
 	);
-	source_policy["subjects"][qualified_agent(&b.config.node_id, "research", "1.0.0")] =
-		json!({"kind":"agent"});
-	assert_eq!(
-		request(
-			&aa,
-			&a.config.api_token,
-			"POST",
-			"/api/authorization/acme",
-			json!({"expected_revision":1,"bundle":source_policy})
-		)
-		.await
-		.0,
-		200
-	);
-	for (local, other) in [(&a, &b), (&b, &a)] {
-		{
-			let query_bind_1 = &other.config.node_id;
-			let query_bind_2 = &other.config.endpoint;
-			sqlx::query(
-				&Query::insert()
-					.into_table(Alias::new("peers"))
-					.columns(
-						[
-							"node_id",
-							"endpoint",
-							"credential_env",
-							"protocol_version",
-							"enabled",
-						]
-						.map(Alias::new),
-					)
-					.from_subquery(
-						Query::select()
-							.expr(SimpleExpr::CustomWithExpr(
-								"(?)".to_owned(),
-								vec![Expr::value(query_bind_1.to_owned()).into()],
-							))
-							.expr(SimpleExpr::CustomWithExpr(
-								"(?)".to_owned(),
-								vec![Expr::value(query_bind_2.to_owned()).into()],
-							))
-							.expr(Expr::cust("'AIDASH_SECRET_TEST_PEER'"))
-							.expr(Expr::cust("'0.1'"))
-							.expr(Expr::cust("TRUE"))
-							.to_owned(),
-					)
-					.to_string(PostgresQueryBuilder),
+		source_policy["subjects"][qualified_agent(&b.config.node_id, "research", "1.0.0")] =
+			json!({"kind":"agent"});
+		assert_eq!(
+			request(
+				&aa,
+				&a.config.api_token,
+				"POST",
+				"/api/authorization/acme",
+				json!({"expected_revision":1,"bundle":source_policy})
 			)
-			.execute(local.store.pool.driver())
 			.await
+			.0,
+			200
+		);
+		for (local, other) in [(&a, &b), (&b, &a)] {
+			{
+				let query_bind_1 = &other.config.node_id;
+				let query_bind_2 = &other.config.endpoint;
+				sqlx::query(
+					&Query::insert()
+						.into_table(Alias::new("peers"))
+						.columns(
+							[
+								"node_id",
+								"endpoint",
+								"credential_env",
+								"protocol_version",
+								"enabled",
+							]
+							.map(Alias::new),
+						)
+						.from_subquery(
+							Query::select()
+								.expr(SimpleExpr::CustomWithExpr(
+									"(?)".to_owned(),
+									vec![Expr::value(query_bind_1.to_owned()).into()],
+								))
+								.expr(SimpleExpr::CustomWithExpr(
+									"(?)".to_owned(),
+									vec![Expr::value(query_bind_2.to_owned()).into()],
+								))
+								.expr(Expr::cust("'AIDASH_SECRET_TEST_PEER'"))
+								.expr(Expr::cust("'0.1'"))
+								.expr(Expr::cust("TRUE"))
+								.to_owned(),
+						)
+						.to_string(PostgresQueryBuilder),
+				)
+				.execute(local.store.pool.driver())
+				.await
+			}
+			.unwrap();
 		}
-		.unwrap();
-	}
-	let (_, credential) = request(
-		&ba,
-		&b.config.api_token,
-		"POST",
-		"/api/authorization/acme/credentials",
-		json!({"subject":"alice"}),
-	)
-	.await;
-	assert_eq!(request(&ba,&b.config.api_token,"POST","/api/authorization/acme/peer-mappings",json!({"source_node":a.config.node_id,"source_tenant":"acme","source_subject":"alice","credential_id":credential["credential"]["id"],"enabled":true,"expected_revision":0})).await.0,200);
-	if semantic {
-		let (_, home_reader) = request(
-			&aa,
-			&a.config.api_token,
+		let (_, credential) = request(
+			&ba,
+			&b.config.api_token,
 			"POST",
 			"/api/authorization/acme/credentials",
 			json!({"subject":"alice"}),
 		)
 		.await;
-		let (status,body) = request(&aa,&a.config.api_token,"POST","/api/authorization/acme/peer-mappings",json!({"source_node":b.config.node_id,"source_tenant":"acme","source_subject":"alice","credential_id":home_reader["credential"]["id"],"enabled":true,"expected_revision":0})).await;
-		assert_eq!(status, 200, "{body}");
-	}
-	let aapp = source_router(&aa, drop_reply.clone());
-	let bapp = ba.test_transport();
-	let aserver = tokio::spawn(async move { axum::serve(al, aapp).await.unwrap() });
-	let bserver = tokio::spawn(async move { axum::serve(bl, bapp).await.unwrap() });
-	let mut servers = vec![model_server, aserver, bserver];
-	let semantic = if semantic {
-		let workspace = a.store.task(task).await.unwrap().workspace_id;
-		let (fixture, server) = semantic_fixture(
-			&a,
-			&aa,
-			&token,
-			workspace,
-			&b.config.node_id,
-			native,
-			large_native_journal,
-		)
-		.await;
-		servers.push(server);
-		Some(fixture)
-	} else {
-		None
-	};
-	let native = if native {
-		assert!(semantic.is_some());
-		let workspace = a.store.task(task).await.unwrap().workspace_id;
-		let data = native_remote_fixture(
-			&a,
-			&b,
-			&aa,
-			&ba,
-			&token,
-			workspace,
-			(
-				large_native_graph,
-				large_native_journal,
-				native_graph_visits,
-			),
-		)
-		.await;
-		source_policy["subjects"][qualified_agent(&b.config.node_id, "research-native", "1.0.0")] =
-			json!({"kind":"agent"});
-		let (status, body) = request(
-			&aa,
-			&a.config.api_token,
-			"POST",
-			"/api/authorization/acme",
-			json!({"expected_revision":2,"bundle":source_policy}),
-		)
-		.await;
-		assert_eq!(status, 200, "{body}");
-		Some(data)
-	} else {
-		None
-	};
-	let generation = if generated {
-		let (created, input, prepared) = prepare_generated_pair(
-			&a,
-			&b,
-			&aa,
-			&ba,
-			&token,
-			task,
-			(approval, semantic.is_some(), native.is_some()),
-		)
-		.await;
-		task = created;
-		Some((input, prepared))
-	} else {
-		None
-	};
-	let agent = generation.as_ref().map_or_else(
-		|| json!({"id":if native.is_some() { "research-native" } else { "research" },"version":"1.0.0"}),
-		|(_, prepared)| prepared["agent"].clone(),
-	);
-	let grant = Uuid::new_v4();
-	let mut mode = if semantic.is_some() {
-		json!({"mode":"required_home","embedding":{"id":"home-embedding","version":"1.0.0"}})
-	} else {
-		json!({"mode":"disabled"})
-	};
-	if let Some(native) = &native {
-		mode["native"] = native["selection"].clone();
-	}
-	if compactor {
-		mode["compactor"] = json!({"id":"remote-compactor","version":"1.0.0"});
-	}
-	let admission = if approval {
-		Uuid::nil()
-	} else {
-		let (status, prepared) = request(
+		assert_eq!(request(&ba,&b.config.api_token,"POST","/api/authorization/acme/peer-mappings",json!({"source_node":a.config.node_id,"source_tenant":"acme","source_subject":"alice","credential_id":credential["credential"]["id"],"enabled":true,"expected_revision":0})).await.0,200);
+		if semantic {
+			let (_, home_reader) = request(
+				&aa,
+				&a.config.api_token,
+				"POST",
+				"/api/authorization/acme/credentials",
+				json!({"subject":"alice"}),
+			)
+			.await;
+			let (status,body) = request(&aa,&a.config.api_token,"POST","/api/authorization/acme/peer-mappings",json!({"source_node":b.config.node_id,"source_tenant":"acme","source_subject":"alice","credential_id":home_reader["credential"]["id"],"enabled":true,"expected_revision":0})).await;
+			assert_eq!(status, 200, "{body}");
+		}
+		let servers = vec![_aserver.await, _bserver.await];
+		let mut providers = vec![model_server];
+		let semantic = if semantic {
+			let workspace = a.store.task(task).await.unwrap().workspace_id;
+			let (fixture, server) = configure_semantic(
+				&a,
+				&aa,
+				&token,
+				workspace,
+				&b.config.node_id,
+				(native, large_native_journal),
+				embedding_provider.await,
+			)
+			.await;
+			providers.push(server);
+			Some(fixture)
+		} else {
+			None
+		};
+		let native = if native {
+			assert!(semantic.is_some());
+			let workspace = a.store.task(task).await.unwrap().workspace_id;
+			let data = native_remote_fixture(
+				&a,
+				&b,
+				&aa,
+				&ba,
+				&token,
+				workspace,
+				(
+					large_native_graph,
+					large_native_journal,
+					native_graph_visits,
+				),
+			)
+			.await;
+			source_policy["subjects"]
+				[qualified_agent(&b.config.node_id, "research-native", "1.0.0")] = json!({"kind":"agent"});
+			let (status, body) = request(
+				&aa,
+				&a.config.api_token,
+				"POST",
+				"/api/authorization/acme",
+				json!({"expected_revision":2,"bundle":source_policy}),
+			)
+			.await;
+			assert_eq!(status, 200, "{body}");
+			Some(data)
+		} else {
+			None
+		};
+		let generation = if generated {
+			let (created, input, prepared) = prepare_generated_pair(
+				&a,
+				&b,
+				&aa,
+				&ba,
+				&token,
+				task,
+				(approval, semantic.is_some(), native.is_some()),
+			)
+			.await;
+			task = created;
+			Some((input, prepared))
+		} else {
+			None
+		};
+		let agent = generation.as_ref().map_or_else(
+			|| json!({"id":if native.is_some() { "research-native" } else { "research" },"version":"1.0.0"}),
+			|(_, prepared)| prepared["agent"].clone(),
+		);
+		let grant = Uuid::new_v4();
+		let mut mode = if semantic.is_some() {
+			json!({"mode":"required_home","embedding":{"id":"home-embedding","version":"1.0.0"}})
+		} else {
+			json!({"mode":"disabled"})
+		};
+		if let Some(native) = &native {
+			mode["native"] = native["selection"].clone();
+		}
+		if compactor {
+			mode["compactor"] = json!({"id":"remote-compactor","version":"1.0.0"});
+		}
+		let admission = if approval {
+			Uuid::nil()
+		} else {
+			let (status, prepared) = request(
 			&aa,
 			&token,
 			"POST",
@@ -509,45 +540,47 @@ async fn scoped_pair(
 			json!({"id":grant,"node_id":b.config.node_id,"agent":agent,"ttl_seconds":if large_native_journal {3600} else {300},"semantic":mode}),
 		)
 		.await;
-		assert_eq!(status, 200, "{prepared}");
-		let (status, activated) = request(
-			&aa,
-			&token,
-			"POST",
-			&format!("/api/tasks/{task}/remote-grants/{grant}/activate"),
-			json!({}),
-		)
-		.await;
-		assert_eq!(status, 200, "{activated}");
-		serde_json::from_value(activated["admission_id"].clone()).unwrap()
-	};
-	Pair {
-		model: model_state,
-		drop_reply,
-		_environment: test_environment,
-		a,
-		b,
-		aa,
-		ba,
-		source_policy,
-		receiver_policy,
-		token,
-		task,
-		grant,
-		admission,
-		requests,
-		receiver_token: credential["token"].as_str().unwrap().into(),
-		servers,
-		au,
-		bu,
-		aschema,
-		bschema,
-		semantic,
-		native,
-		generation,
-		_memory_recovery_directories: memory_recovery_directories,
+			assert_eq!(status, 200, "{prepared}");
+			let (status, activated) = request(
+				&aa,
+				&token,
+				"POST",
+				&format!("/api/tasks/{task}/remote-grants/{grant}/activate"),
+				json!({}),
+			)
+			.await;
+			assert_eq!(status, 200, "{activated}");
+			serde_json::from_value(activated["admission_id"].clone()).unwrap()
+		};
+		Pair {
+			model: model_state,
+			drop_reply,
+			a,
+			b,
+			aa,
+			ba,
+			source_policy,
+			receiver_policy,
+			token,
+			task,
+			grant,
+			admission,
+			requests,
+			receiver_token: credential["token"].as_str().unwrap().into(),
+			servers,
+			providers,
+			au,
+			bu,
+			aschema,
+			bschema,
+			semantic,
+			native,
+			generation,
+			_memory_recovery_directories: memory_recovery_directories,
+		}
 	}
 }
+use scoped_pair_composition::scoped_pair;
 
 async fn native_remote_fixture(
 	a: &Federation,
@@ -830,39 +863,27 @@ async fn native_remote_fixture(
 	json!({"selection":{"participant":participant["id"],"expected_revision":participant["revision"],"provider":provider},"bank":participant["bank"],"provider":provider,"private":private,"shared":shared})
 }
 
-async fn semantic_fixture(
+async fn configure_semantic(
 	a: &Federation,
 	app: &common::TestApplication,
 	token: &str,
 	workspace: Uuid,
 	executor: &str,
-	native: bool,
-	large_journal: bool,
-) -> (SemanticFixture, tokio::task::JoinHandle<()>) {
-	let requests = Arc::new(Mutex::new(Vec::<Value>::new()));
-	let failing = Arc::new(AtomicBool::new(false));
-	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-	let endpoint = format!("http://{}/v1", listener.local_addr().unwrap());
-	let reservations = Arc::new(Mutex::new(None::<ReservationCheck>));
-	let response = Arc::new(Mutex::new(None::<Value>));
-	type EmbeddingState = (
-		Arc<Mutex<Vec<Value>>>,
-		Arc<AtomicBool>,
-		Arc<Mutex<Option<ReservationCheck>>>,
-		Arc<Mutex<Option<Value>>>,
-	);
-	let embedding_app = Router::new().route("/v1/embeddings", post(|State((requests, failing, reservations, response)): State<EmbeddingState>, headers: axum::http::HeaderMap, Json(body): Json<Value>| async move {
-		assert!(!headers.contains_key(axum::http::header::AUTHORIZATION), "an unsigned provider must not receive the subject or peer bearer");
-        let check=reservations.lock().await.clone();
-        if let Some(check)=check {check.before_http().await;}
-		requests.lock().await.push(body.clone());
-        if failing.load(Ordering::Acquire) {
-            return (axum::http::StatusCode::SERVICE_UNAVAILABLE, Json(json!({"error":"fixture outage"}))).into_response();
-        }
-		if let Some(value) = response.lock().await.clone() { return Json(value).into_response(); }
-        Json(json!({"model":body["model"],"data":[{"index":0,"embedding":[1.0,0.0,0.0]}],"usage":{"prompt_tokens":1,"total_tokens":1}})).into_response()
-	})).with_state((requests.clone(), failing.clone(),reservations.clone(),response.clone()));
-	let server = tokio::spawn(async move { axum::serve(listener, embedding_app).await.unwrap() });
+	memory_mode: (bool, bool),
+	provider: EmbeddingProvider,
+) -> (
+	SemanticFixture,
+	Arc<reinhardt::test::fixtures::server::TestServerGuard>,
+) {
+	let (native, large_journal) = memory_mode;
+	let EmbeddingProvider {
+		requests,
+		failing,
+		reservations,
+		response,
+		server,
+	} = provider;
+	let endpoint = format!("{}/v1", server.url);
 	let embedding = json!({"provider":"openai","endpoint":endpoint,"credential_env":null,"model":"home-vector","model_version":"1","dimensions":3});
 	let (status, body) = request(app, &a.config.api_token, "POST", "/api/registry", json!({"id":"home-embedding","version":"1.0.0","kind":"embedding","name":{"en":"Home embedding"},"description":{"en":"Deterministic semantic fixture"},"config":embedding})).await;
 	assert_eq!(status, 200, "{body}");
@@ -1042,18 +1063,16 @@ async fn semantic_dependencies_hide_both_node_outputs_and_journals_after_source_
 		!receipt.to_string().contains("ochre falcon"),
 		"provenance must not return source text"
 	);
+	// Unbounded SSE uses the fixture-owned native client without buffering the body.
 	let response =
-		p.aa.clone()
-			.oneshot(
-				axum::http::Request::get(format!("/api/events/stream?workspace_id={workspace}"))
-					.header("authorization", format!("Bearer {}", p.token))
-					.body(Body::empty())
-					.unwrap(),
-			)
+		p.aa.raw_http
+			.get(p.aa.url(format!("/api/events/stream?workspace_id={workspace}")))
+			.bearer_auth(&p.token)
+			.send()
 			.await
 			.unwrap();
 	assert_eq!(response.status(), 200);
-	let mut stream = response.into_body().into_data_stream();
+	let mut stream = response.bytes_stream();
 	tokio::time::timeout(std::time::Duration::from_secs(5), stream.next())
 		.await
 		.unwrap()
@@ -2202,12 +2221,14 @@ async fn revocation_during_remote_inference_discards_response_and_cancel_closes_
 #[tokio::test]
 async fn peer_outage_and_both_node_restarts_reconcile_one_scoped_execution(
 	#[future(awt)] scoped_pair: Pair,
+	#[from(signal_state)] source_notify: Arc<Notify>,
+	#[from(signal_state)] receiver_notify: Arc<Notify>,
 ) {
 	let mut p = scoped_pair;
 	p.step().await;
-	for server in p.servers.drain(1..) {
+	for server in p.servers.drain(..) {
 		server.abort();
-		let _ = server.await;
+		let _ = server.stopped().await;
 	}
 	p.step().await;
 	assert!(p.run().await.recovery.retry.is_some());
@@ -2221,19 +2242,26 @@ async fn peer_outage_and_both_node_restarts_reconcile_one_scoped_execution(
 			.artifacts
 			.is_empty()
 	);
-	reconnect(&mut p.a).await;
-	reconnect(&mut p.b).await;
+	reconnect(&mut p.a, source_notify).await;
+	reconnect(&mut p.b, receiver_notify).await;
+	// Act: rebuild both native applications over the reconnected durable stores.
 	p.aa = common::application(p.a.clone()).await;
 	p.ba = common::application(p.b.clone()).await;
 	for (f, application) in [(&p.a, p.aa.clone()), (&p.b, p.ba.clone())] {
-		let app = source_router(&application, p.drop_reply.clone());
+		let app: Arc<dyn reinhardt::Handler> = Arc::new(SourceReplyFault {
+			router: Arc::new(application.native_router()),
+			state: p.drop_reply.clone(),
+		});
 		let endpoint = reqwest::Url::parse(&f.config.endpoint).unwrap();
 		let listener = tokio::net::TcpListener::bind(("127.0.0.1", endpoint.port().unwrap()))
 			.await
 			.unwrap();
-		p.servers.push(tokio::spawn(async move {
-			axum::serve(listener, app).await.unwrap()
-		}));
+		// Act: replace the stopped peer transport at its original address.
+		p.servers.push(upstream_fixtures::FixedServerGuard::spawn(
+			Arc::new(listener),
+			app,
+			Some(application.context.clone()),
+		));
 	}
 	let replay = request(&p.aa, &p.token, "POST", &p.activation(), json!({})).await;
 	assert_eq!(replay.0, 200, "{}", replay.1);
@@ -3002,7 +3030,7 @@ async fn generated_foreign_executor_and_home_ancestor_share_durable_provider_all
 		.unwrap();
 		assert_eq!(records.len(), 1);
 		for (usage, finalization) in records {
-			let client = reqwest::Client::new();
+			let client = dispatcher.client.clone();
 			for _ in 0..3 {
 				let response = client
 					.post(format!(
@@ -3152,18 +3180,20 @@ async fn embedding_callback_rejects_a_nonexact_reservation(
 	assert_eq!(usage["reserved_tokens"], exact);
 	usage["reserved_tokens"] = json!(exact + delta);
 	usage["attempt_id"] = json!(Uuid::new_v4());
-	let response = reqwest::Client::new()
-		.post(format!(
-			"{}/federation/v0.1/scoped/usage/reserve",
-			p.b.config.endpoint
-		))
-		.bearer_auth(std::env::var("AIDASH_SECRET_TEST_PEER").unwrap())
-		.header("x-aidash-node", &p.a.config.node_id)
-		.header("x-aidash-protocol", "0.1")
-		.json(&json!({"usage":usage,"boundary":boundary}))
-		.send()
-		.await
-		.unwrap();
+	let response =
+		p.a.client
+			.clone()
+			.post(format!(
+				"{}/federation/v0.1/scoped/usage/reserve",
+				p.b.config.endpoint
+			))
+			.bearer_auth(std::env::var("AIDASH_SECRET_TEST_PEER").unwrap())
+			.header("x-aidash-node", &p.a.config.node_id)
+			.header("x-aidash-protocol", "0.1")
+			.json(&json!({"usage":usage,"boundary":boundary}))
+			.send()
+			.await
+			.unwrap();
 	assert_eq!(response.status(), 403, "{}", response.text().await.unwrap());
 	let count: i64 = {
 		let query_bind_1 = usage["attempt_id"]
@@ -3277,26 +3307,33 @@ async fn operator_polling_advances_past_hidden_event_pages(
 			.unwrap();
 	}
 	tx.commit().await.unwrap();
-	let server = axum_test::TestServer::new(p.aa.test_transport()).unwrap();
-	let first = server
-		.get(&format!("/api/events?after={cursor}"))
-		.authorization_bearer(&p.a.config.api_token)
-		.await;
-	first.assert_status_ok();
+	let first =
+		p.aa.client()
+			.get_with_headers(
+				&format!("/api/events?after={cursor}"),
+				&[("authorization", &format!("Bearer {}", p.a.config.api_token))],
+			)
+			.await
+			.unwrap();
+	assert_eq!(first.status(), 200);
 	let first_cursor: i64 = first.headers()["x-aidash-event-cursor"]
 		.to_str()
 		.unwrap()
 		.parse()
 		.unwrap();
-	let first_events: Vec<Value> = first.json();
+	let first_events: Vec<Value> = serde_json::from_slice(first.body()).unwrap();
 	assert_eq!(first_events.len(), 500);
 	assert_eq!(first_events.last().unwrap()["sequence"], first_cursor);
-	let second = server
-		.get(&format!("/api/events?after={first_cursor}"))
-		.authorization_bearer(&p.a.config.api_token)
-		.await;
-	second.assert_status_ok();
-	let second_events: Vec<Value> = second.json();
+	let second =
+		p.aa.client()
+			.get_with_headers(
+				&format!("/api/events?after={first_cursor}"),
+				&[("authorization", &format!("Bearer {}", p.a.config.api_token))],
+			)
+			.await
+			.unwrap();
+	assert_eq!(second.status(), 200);
+	let second_events: Vec<Value> = serde_json::from_slice(second.body()).unwrap();
 	let indices: Vec<i64> = first_events
 		.iter()
 		.chain(&second_events)
@@ -3372,18 +3409,16 @@ async fn operator_content_views_cannot_bypass_both_node_subject_authority(
 		)
 		.await;
 		assert_eq!(status, 200, "{body}");
+		// Unbounded SSE uses the fixture-owned native client without buffering the body.
 		let response = app
-			.clone()
-			.oneshot(
-				axum::http::Request::get("/api/events/stream")
-					.header("authorization", format!("Bearer {}", f.config.api_token))
-					.body(Body::empty())
-					.unwrap(),
-			)
+			.raw_http
+			.get(app.url("/api/events/stream"))
+			.bearer_auth(&f.config.api_token)
+			.send()
 			.await
 			.unwrap();
 		assert_eq!(response.status(), 200);
-		let mut stream = response.into_body().into_data_stream();
+		let mut stream = response.bytes_stream();
 		tokio::time::timeout(std::time::Duration::from_secs(20), async {
 			loop {
 				let chunk = stream.next().await.unwrap().unwrap();
@@ -3873,9 +3908,108 @@ async fn generated_home_allowance_failure_releases_only_predispatch_receiver_res
 	pair.close().await;
 }
 
-async fn redirect_peer(f: &Federation, node: &str, app: Router) -> tokio::task::JoinHandle<()> {
-	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-	let endpoint = format!("http://{}", listener.local_addr().unwrap());
+// Act: redirect an existing peer after the test mutates durable reconciliation state.
+type PairFuture = futures_util::future::Shared<BoxFuture<'static, Arc<Mutex<Option<Pair>>>>>;
+#[rstest::fixture]
+fn pair_future(
+	#[default(false)] _generated: bool,
+	#[with(true, _generated)] scoped_pair: impl std::future::Future<Output = Pair> + Send + 'static,
+) -> PairFuture {
+	async move { Arc::new(Mutex::new(Some(scoped_pair.await))) }
+		.boxed()
+		.shared()
+}
+#[rstest::fixture]
+fn status_router(
+	#[default(false)] status_available: bool,
+	#[from(pair_future)] pair: PairFuture,
+	#[from(count_state)] inspections: Arc<AtomicUsize>,
+) -> upstream_fixtures::RouterFuture {
+	async move {
+		let state = pair.await;
+		let pair = state.lock().await;
+		let p = pair.as_ref().unwrap();
+		let activation = json!({"grant_id":p.grant,"admission_id":p.admission,"run_id":p.admission,"phase":"THINKING","control":"ACTIVE","error":null});
+		let reply = Arc::new(upstream_fixtures::any_handler(move |request| {
+			let activation = activation.clone(); let observed = inspections.clone();
+			async move {
+				if request.uri.path().ends_with("/scoped/execution/status") {
+					return if status_available {reinhardt::Response::new(http::StatusCode::OK).with_json(&activation).unwrap()} else {reinhardt::Response::new(http::StatusCode::SERVICE_UNAVAILABLE)};
+				}
+				observed.fetch_add(1, Ordering::AcqRel);
+				tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+				reinhardt::Response::new(http::StatusCode::OK).with_json(&false).unwrap()
+			}
+		}));
+		Arc::new(Router::new().handler_arc("/", reply.clone()).handler_arc("/{*rest}", reply))
+	}.boxed().shared()
+}
+#[rstest::fixture]
+async fn status_scenario(
+	#[default(false)] _status_available: bool,
+	#[from(pair_future)] pair: PairFuture,
+	#[from(count_state)] inspections: Arc<AtomicUsize>,
+	#[from(status_router)]
+	#[with(_status_available, pair.clone(), inspections.clone())]
+	_router: upstream_fixtures::RouterFuture,
+	#[from(upstream_fixtures::async_upstream)]
+	#[with(_router.clone())]
+	#[future(awt)]
+	server: Arc<reinhardt::test::fixtures::server::TestServerGuard>,
+) -> (
+	Pair,
+	Arc<AtomicUsize>,
+	Arc<reinhardt::test::fixtures::server::TestServerGuard>,
+) {
+	let state = pair.await;
+	let p = state.lock().await.take().unwrap();
+	(p, inspections, server)
+}
+#[rstest::fixture]
+fn reconciliation_router(
+	#[from(signal_state)] entered: Arc<Notify>,
+	#[from(signal_state)] release: Arc<Notify>,
+) -> Arc<Router> {
+	let reply = Arc::new(upstream_fixtures::any_handler(move |request| {
+		let wait = release.clone();
+		let reached = entered.clone();
+		async move {
+			assert!(
+				request.uri.path().ends_with("/finalize")
+					|| request.uri.path().ends_with("/cancel")
+			);
+			reached.notify_one();
+			wait.notified().await;
+			reinhardt::Response::new(http::StatusCode::OK)
+				.with_json(&true)
+				.unwrap()
+		}
+	}));
+	Arc::new(
+		Router::new()
+			.handler_arc("/", reply.clone())
+			.handler_arc("/{*rest}", reply),
+	)
+}
+#[rstest::fixture]
+async fn reconciliation_provider(
+	#[from(signal_state)] entered: Arc<Notify>,
+	#[from(signal_state)] release: Arc<Notify>,
+	#[from(reconciliation_router)]
+	#[with(entered.clone(), release.clone())]
+	_router: Arc<Router>,
+	#[from(upstream_fixtures::upstream)]
+	#[with(_router.clone())]
+	#[future(awt)]
+	server: reinhardt::test::fixtures::server::TestServerGuard,
+) -> (
+	Arc<Notify>,
+	Arc<Notify>,
+	Arc<reinhardt::test::fixtures::server::TestServerGuard>,
+) {
+	(entered, release, Arc::new(server))
+}
+async fn redirect_peer(f: &Federation, node: &str, endpoint: &str) {
 	{
 		let query_bind_1 = node;
 		let query_bind_2 = endpoint;
@@ -3899,7 +4033,6 @@ async fn redirect_peer(f: &Federation, node: &str, app: Router) -> tokio::task::
 		.await
 	}
 	.unwrap();
-	tokio::spawn(async move { axum::serve(listener, app).await.unwrap() })
 }
 
 #[rstest::rstest]
@@ -3907,31 +4040,18 @@ async fn redirect_peer(f: &Federation, node: &str, app: Router) -> tokio::task::
 #[case(true)]
 #[tokio::test]
 async fn remote_status_uses_one_deadline_and_skips_unavailable_dependencies(
-	#[future(awt)]
-	#[with(true)]
-	scoped_pair: Pair,
 	#[case] status_available: bool,
+	#[from(status_scenario)]
+	#[with(status_available)]
+	#[future(awt)]
+	status_scenario: (
+		Pair,
+		Arc<AtomicUsize>,
+		Arc<reinhardt::test::fixtures::server::TestServerGuard>,
+	),
 ) {
-	let p = scoped_pair;
-	let inspections = Arc::new(AtomicUsize::new(0));
-	let observed = inspections.clone();
-	let activation = json!({"grant_id":p.grant,"admission_id":p.admission,"run_id":p.admission,"phase":"THINKING","control":"ACTIVE","error":null});
-	let app = Router::new().fallback(move |request: Request| {
-		let observed = observed.clone();
-		let activation = activation.clone();
-		async move {
-			if request.uri().path().ends_with("/scoped/execution/status") {
-				if status_available {
-					return Json(activation).into_response();
-				}
-				return axum::http::StatusCode::SERVICE_UNAVAILABLE.into_response();
-			}
-			observed.fetch_add(1, Ordering::AcqRel);
-			tokio::time::sleep(std::time::Duration::from_secs(10)).await;
-			Json(false).into_response()
-		}
-	});
-	let server = redirect_peer(&p.a, &p.b.config.node_id, app).await;
+	let (p, inspections, server) = status_scenario;
+	redirect_peer(&p.a, &p.b.config.node_id, &server.url).await;
 	let start = tokio::time::Instant::now();
 	let response = tokio::time::timeout(
 		std::time::Duration::from_secs(3),
@@ -3944,7 +4064,7 @@ async fn remote_status_uses_one_deadline_and_skips_unavailable_dependencies(
 		),
 	)
 	.await;
-	server.abort();
+	drop(server);
 	let (status, body) =
 		response.expect("status and dependency checks must share a bounded deadline");
 	assert_eq!(status, 200, "{body}");
@@ -3971,6 +4091,11 @@ async fn remote_reconciliation_releases_atomic_visibility_before_peer_io(
 	#[future(awt)]
 	#[with(true, true)]
 	scoped_pair: Pair,
+	#[future(awt)] reconciliation_provider: (
+		Arc<Notify>,
+		Arc<Notify>,
+		Arc<reinhardt::test::fixtures::server::TestServerGuard>,
+	),
 	#[case] kind: &str,
 ) {
 	use reinhardt::query::{LockBehavior, LockType};
@@ -4029,24 +4154,8 @@ async fn remote_reconciliation_releases_atomic_visibility_before_peer_io(
 		&p.a
 	};
 	let remote = if kind == "finalization" { &p.a } else { &p.b };
-	let entered = Arc::new(Notify::new());
-	let release = Arc::new(Notify::new());
-	let wait = release.clone();
-	let reached = entered.clone();
-	let app = Router::new().fallback(move |request: Request| {
-		let wait = wait.clone();
-		let reached = reached.clone();
-		async move {
-			assert!(
-				request.uri().path().ends_with("/finalize")
-					|| request.uri().path().ends_with("/cancel")
-			);
-			reached.notify_one();
-			wait.notified().await;
-			Json(true)
-		}
-	});
-	let server = redirect_peer(local, &remote.config.node_id, app).await;
+	let (entered, release, server) = reconciliation_provider;
+	redirect_peer(local, &remote.config.node_id, &server.url).await;
 	let f = local.clone();
 	let reconcile =
 		tokio::spawn(async move { aidash_server::generation::provision::reconcile(&f).await });
@@ -4071,7 +4180,7 @@ async fn remote_reconciliation_releases_atomic_visibility_before_peer_io(
 		.await
 		.unwrap()
 		.unwrap();
-	server.abort();
+	drop(server);
 	assert!(
 		exclusive.is_ok(),
 		"peer I/O must not retain the shared atomic gate: {exclusive:?}"
@@ -4330,18 +4439,20 @@ async fn remote_compaction_rejects_a_peer_claimed_small_reservation(
 	.fetch_one(p.a.store.pool.driver())
 	.await
 	.unwrap();
-	let response = reqwest::Client::new()
-		.post(format!(
-			"{}/federation/v0.1/scoped/usage/reserve",
-			p.a.config.endpoint
-		))
-		.bearer_auth(std::env::var("AIDASH_SECRET_TEST_PEER").unwrap())
-		.header("x-aidash-node", &p.b.config.node_id)
-		.header("x-aidash-protocol", "0.1")
-		.json(&json!({"usage":usage,"boundary":boundary}))
-		.send()
-		.await
-		.unwrap();
+	let response =
+		p.a.client
+			.clone()
+			.post(format!(
+				"{}/federation/v0.1/scoped/usage/reserve",
+				p.a.config.endpoint
+			))
+			.bearer_auth(std::env::var("AIDASH_SECRET_TEST_PEER").unwrap())
+			.header("x-aidash-node", &p.b.config.node_id)
+			.header("x-aidash-protocol", "0.1")
+			.json(&json!({"usage":usage,"boundary":boundary}))
+			.send()
+			.await
+			.unwrap();
 	let status = response.status();
 	let body = response.text().await.unwrap();
 	assert_eq!(status, 403, "{body}");
@@ -4527,35 +4638,50 @@ async fn remote_compaction_without_explicit_recipient_pauses_without_environment
 	p.close().await;
 }
 
-struct ScopedWorkerProcess {
-	child: std::process::Child,
+struct ScopedWorkerCommand {
+	command: std::process::Command,
 	_settings_directory: tempfile::TempDir,
-	#[cfg(target_os = "macos")]
-	_binary_directory: tempfile::TempDir,
+	_binary: ScopedWorkerBinary,
 }
-impl ScopedWorkerProcess {
-	fn start(p: &Pair) -> Self {
-		let directory = tempfile::tempdir().unwrap();
+struct ScopedWorkerBinary {
+	path: std::path::PathBuf,
+	_directory: tempfile::TempDir,
+}
+#[rstest::fixture]
+fn scoped_worker_binary(
+	#[from(reinhardt::test::fixtures::temp_dir)] directory: tempfile::TempDir,
+) -> ScopedWorkerBinary {
+	// Own the exact local executable until the child is reaped; preserve the macOS snapshot.
+	#[cfg(target_os = "macos")]
+	let path = {
+		let snapshot = directory.path().join("aidash");
+		std::fs::copy(env!("CARGO_BIN_EXE_aidash"), &snapshot)
+			.expect("snapshot the exact scoped worker executable");
+		snapshot
+	};
+	#[cfg(not(target_os = "macos"))]
+	let path = std::path::PathBuf::from(env!("CARGO_BIN_EXE_aidash"));
+	ScopedWorkerBinary {
+		path,
+		_directory: directory,
+	}
+}
+#[rstest::fixture]
+fn scoped_worker_command(
+	#[from(pair_future)] pair: PairFuture,
+	#[from(reinhardt::test::fixtures::temp_dir)] directory: tempfile::TempDir,
+	scoped_worker_binary: ScopedWorkerBinary,
+) -> BoxFuture<'static, ScopedWorkerCommand> {
+	async move {
+		let state = pair.await;
+		let pair = state.lock().await;
+		let p = pair.as_ref().unwrap();
 		let mut database = reqwest::Url::parse(&p.bu).unwrap();
 		database
 			.query_pairs_mut()
 			.append_pair("options", &format!("-c application_name={}", p.bschema));
-		let binary = env!("CARGO_BIN_EXE_aidash");
-		// Own the exact local executable until the child is reaped. macOS dyld
-		// can stall on the external build volume before the worker starts; the
-		// 30-second provider-arrival deadline must measure worker behavior.
-		#[cfg(target_os = "macos")]
-		let binary_directory = tempfile::Builder::new()
-			.prefix("aidash-scoped-worker-binary-")
-			.tempdir_in("/tmp")
-			.unwrap();
-		#[cfg(target_os = "macos")]
-		let binary = {
-			let snapshot = binary_directory.path().join("aidash");
-			std::fs::copy(binary, &snapshot).expect("snapshot the exact scoped worker executable");
-			snapshot
-		};
-		let child = std::process::Command::new(binary)
+		let mut command = std::process::Command::new(&scoped_worker_binary.path);
+		command
 			.args(common::native_process_args(&p.b, "worker"))
 			.envs(common::native_process_environment(
 				&p.b,
@@ -4567,16 +4693,47 @@ impl ScopedWorkerProcess {
 			.env("AIDASH_ENV", "test")
 			.env("RUST_LOG", "aidash_server=info")
 			.stdout(std::process::Stdio::inherit())
-			.stderr(std::process::Stdio::inherit())
-			.spawn()
-			.unwrap();
-		Self {
-			child,
+			.stderr(std::process::Stdio::inherit());
+		ScopedWorkerCommand {
+			command,
 			_settings_directory: directory,
-			#[cfg(target_os = "macos")]
-			_binary_directory: binary_directory,
+			_binary: scoped_worker_binary,
 		}
 	}
+	.boxed()
+}
+struct ScopedWorkerProcess {
+	child: std::process::Child,
+	_command: ScopedWorkerCommand,
+}
+impl ScopedWorkerProcess {
+	// Process primitive used by the initial fixture and by the explicit restart Act.
+	fn spawn(mut command: ScopedWorkerCommand) -> Self {
+		let child = command.command.spawn().unwrap();
+		Self {
+			child,
+			_command: command,
+		}
+	}
+}
+#[rstest::fixture]
+async fn running_scoped_pair(
+	#[from(pair_future)]
+	#[with(true)]
+	pair: PairFuture,
+	#[from(scoped_worker_command)]
+	#[with(pair.clone())]
+	#[future(awt)]
+	initial: ScopedWorkerCommand,
+	#[from(scoped_worker_command)]
+	#[with(pair.clone())]
+	#[future(awt)]
+	restart: ScopedWorkerCommand,
+) -> (Pair, ScopedWorkerProcess, ScopedWorkerCommand) {
+	let state = pair.await;
+	let p = state.lock().await.take().unwrap();
+	p.model.hold.store(true, Ordering::Release);
+	(p, ScopedWorkerProcess::spawn(initial), restart)
 }
 impl Drop for ScopedWorkerProcess {
 	fn drop(&mut self) {
@@ -4588,13 +4745,9 @@ impl Drop for ScopedWorkerProcess {
 #[rstest::rstest]
 #[tokio::test]
 async fn process_sigkill_preserves_remote_receipt_and_uncertain_origin_charges(
-	#[future(awt)]
-	#[with(true, true)]
-	scoped_pair: Pair,
+	#[future(awt)] running_scoped_pair: (Pair, ScopedWorkerProcess, ScopedWorkerCommand),
 ) {
-	let p = scoped_pair;
-	p.model.hold.store(true, Ordering::Release);
-	let mut worker = ScopedWorkerProcess::start(&p);
+	let (p, mut worker, restart) = running_scoped_pair;
 	let arrived = tokio::time::timeout(
 		std::time::Duration::from_secs(30),
 		p.model.entered.notified(),
@@ -4682,7 +4835,8 @@ async fn process_sigkill_preserves_remote_receipt_and_uncertain_origin_charges(
 		.await
 	}
 	.unwrap();
-	let worker = ScopedWorkerProcess::start(&p);
+	// Act: replace the killed worker after preserving its durable receipt and advancing its lease.
+	let worker = ScopedWorkerProcess::spawn(restart);
 	tokio::time::timeout(std::time::Duration::from_secs(30), async {
 		loop {
 			let run = p.run().await;
@@ -4948,3 +5102,193 @@ impl Drop for Pair {
 }
 
 use reinhardt::query::{ExprTrait as _, QueryStatementBuilder as _, SimpleExpr};
+
+#[rstest::fixture]
+fn values_state() -> Arc<Mutex<Vec<Value>>> {
+	Arc::new(Mutex::new(Vec::new()))
+}
+#[rstest::fixture]
+fn bool_state() -> Arc<AtomicBool> {
+	Arc::new(AtomicBool::new(false))
+}
+#[rstest::fixture]
+fn signal_state() -> Arc<Notify> {
+	Arc::new(Notify::new())
+}
+#[rstest::fixture]
+fn count_state() -> Arc<AtomicUsize> {
+	Arc::new(AtomicUsize::new(0))
+}
+#[rstest::fixture]
+fn reservation_state() -> Arc<Mutex<Option<ReservationCheck>>> {
+	Arc::new(Mutex::new(None))
+}
+#[rstest::fixture]
+fn reply_state() -> Arc<Mutex<Option<String>>> {
+	Arc::new(Mutex::new(None))
+}
+#[rstest::fixture]
+fn response_state() -> Arc<Mutex<Option<Value>>> {
+	Arc::new(Mutex::new(None))
+}
+#[rstest::fixture]
+fn recovery_directory(
+	#[from(reinhardt::test::fixtures::temp_dir)] directory: tempfile::TempDir,
+) -> Arc<tempfile::TempDir> {
+	Arc::new(directory)
+}
+#[rstest::fixture]
+fn model_script(
+	#[from(values_state)] requests: Arc<Mutex<Vec<Value>>>,
+	#[from(bool_state)] hold: Arc<AtomicBool>,
+	#[from(signal_state)] entered: Arc<Notify>,
+	#[from(signal_state)] release: Arc<Notify>,
+	#[from(reservation_state)] reservations: Arc<Mutex<Option<ReservationCheck>>>,
+	#[from(compaction_model_state)] _state: CompactionModelState,
+	#[from(bool_state)] force_memory_mutate: Arc<AtomicBool>,
+) -> ModelScript {
+	let CompactionModelState {
+		compactions,
+		compaction_status,
+		compaction_reservations,
+	} = _state;
+	ModelScript {
+		requests,
+		hold,
+		entered,
+		release,
+		reservations,
+		compactions,
+		compaction_status,
+		compaction_reservations,
+		force_memory_mutate,
+	}
+}
+#[rstest::fixture]
+fn model_router(model_script: ModelScript) -> Arc<Router> {
+	let model_app=Router::new().handler("/v1/chat/completions",handler(http::Method::POST, {let script=model_script.clone();move |request:reinhardt::Request| {let script=script.clone();let input=request.json::<Value>().unwrap();async move {
+        let check=script.reservations.lock().await.clone();
+        if let Some(check)=check {check.before_http().await;}
+        let mut calls=script.requests.lock().await;
+        calls.push(input);
+        let count=calls.len(); drop(calls); script.entered.notify_one(); if script.hold.load(Ordering::Acquire) {script.release.notified().await;} let message=if count==1 && script.force_memory_mutate.load(Ordering::Acquire) {json!({"role":"assistant","content":null,"tool_calls":[{"id":"forbidden-write","type":"function","function":{"name":"memory_mutate","arguments":"{\"data\":{\"forbidden\":true}}"}}]})} else if count==1 {json!({"role":"assistant","content":null,"tool_calls":[{"id":"note","type":"function","function":{"name":"workspace_message","arguments":"{\"content\":\"Scoped remote progress\"}"}}]})} else {json!({"role":"assistant","content":"Scoped remote result"})};
+        reinhardt::Response::ok().with_json(&json!({"choices":[{"index":0,"finish_reason":if message.get("tool_calls").is_some(){"tool_calls"}else{"stop"},"message":message}],"usage":{"prompt_tokens":1,"completion_tokens":1}})).unwrap()
+    }}})).handler("/systemone", handler(http::Method::POST, {let script=model_script.clone();move |request:reinhardt::Request| {let script=script.clone();let input=request.json::<Value>().unwrap();async move {
+		if let Some(check)=script.compaction_reservations.lock().await.clone() {check.before_http().await;}
+		script.compactions.lock().await.push(input.clone());
+		match script.compaction_status.load(Ordering::Acquire) {
+			503 => reinhardt::Response::new(http::StatusCode::SERVICE_UNAVAILABLE).with_body("private compactor response").with_header("Content-Type", "text/plain; charset=utf-8"),
+			401 => reinhardt::Response::new(http::StatusCode::UNAUTHORIZED).with_body("private compactor response").with_header("Content-Type", "text/plain; charset=utf-8"),
+			1 => reinhardt::Response::ok().with_json(&json!({"answers":{}})).unwrap(),
+			_ => {
+				let answers:serde_json::Map<_,_>=input["questions"].as_object().unwrap().keys().map(|name|(name.clone(),json!({"noul":0.0}))).collect();
+				reinhardt::Response::ok().with_json(&json!({"answers":answers})).unwrap()
+			}
+		}
+	}}}));
+	Arc::new(model_app)
+}
+#[rstest::fixture]
+fn scoped_runtime(
+	#[default(false)] native: bool,
+	#[default("aidash://execution-test")] node: &str,
+	#[from(upstream_fixtures::fixed_listener)] listener: upstream_fixtures::ListenerFuture,
+	#[from(recovery_directory)] directory: Arc<tempfile::TempDir>,
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) -> common::RuntimeFuture {
+	let node = node.to_owned();
+	async move {
+		let mut owner = runtime.await;
+		let f = &mut owner.federation;
+		f.config.node_id = node.clone();
+		f.store.node_id = node.clone();
+		f.config.endpoint = format!("http://{}", listener.await.local_addr().unwrap());
+		if native {
+			f.store = aidash_server::semantic::services::memory_recovery::initialize(
+				&f.store,
+				directory.path().to_owned(),
+			)
+			.await
+			.unwrap();
+		}
+		f.registry = aidash_server::registry::Registry::new(f.store.pool.clone(), &node).unwrap();
+		owner
+	}
+	.boxed()
+	.shared()
+}
+
+#[derive(Clone)]
+struct EmbeddingProvider {
+	requests: Arc<Mutex<Vec<Value>>>,
+	failing: Arc<AtomicBool>,
+	reservations: Arc<Mutex<Option<ReservationCheck>>>,
+	response: Arc<Mutex<Option<Value>>>,
+	server: Arc<reinhardt::test::fixtures::server::TestServerGuard>,
+}
+#[rstest::fixture]
+fn embedding_router(
+	#[from(values_state)] requests: Arc<Mutex<Vec<Value>>>,
+	#[from(bool_state)] failing: Arc<AtomicBool>,
+	#[from(reservation_state)] reservations: Arc<Mutex<Option<ReservationCheck>>>,
+	#[from(response_state)] response: Arc<Mutex<Option<Value>>>,
+) -> Arc<Router> {
+	let embedding_app = Router::new().handler("/v1/embeddings", handler(http::Method::POST, move |request:reinhardt::Request| {let requests=requests.clone();let failing=failing.clone();let reservations=reservations.clone();let response=response.clone();let headers=request.headers.clone();let body=request.json::<Value>().unwrap();async move {
+		assert!(!headers.contains_key(http::header::AUTHORIZATION), "an unsigned provider must not receive the subject or peer bearer");
+        let check=reservations.lock().await.clone();
+        if let Some(check)=check {check.before_http().await;}
+		requests.lock().await.push(body.clone());
+        if failing.load(Ordering::Acquire) {
+            return reinhardt::Response::new(http::StatusCode::SERVICE_UNAVAILABLE).with_json(&json!({"error":"fixture outage"})).unwrap();
+        }
+		if let Some(value) = response.lock().await.clone() { return reinhardt::Response::ok().with_json(&value).unwrap(); }
+        reinhardt::Response::ok().with_json(&json!({"model":body["model"],"data":[{"index":0,"embedding":[1.0,0.0,0.0]}],"usage":{"prompt_tokens":1,"total_tokens":1}})).unwrap()
+	}}));
+	Arc::new(embedding_app)
+}
+#[rstest::fixture]
+fn embedding_provider(
+	#[from(values_state)] requests: Arc<Mutex<Vec<Value>>>,
+	#[from(bool_state)] failing: Arc<AtomicBool>,
+	#[from(reservation_state)] reservations: Arc<Mutex<Option<ReservationCheck>>>,
+	#[from(response_state)] response: Arc<Mutex<Option<Value>>>,
+	#[from(embedding_router)]
+	#[with(requests.clone(),failing.clone(),reservations.clone(),response.clone())]
+	_router: Arc<Router>,
+	#[from(upstream_fixtures::ready_router)]
+	#[with(_router.clone())]
+	_ready: upstream_fixtures::RouterFuture,
+	#[from(upstream_fixtures::async_upstream)]
+	#[with(_ready.clone())]
+	server: upstream_fixtures::UpstreamFuture,
+) -> BoxFuture<'static, EmbeddingProvider> {
+	async move {
+		EmbeddingProvider {
+			requests,
+			failing,
+			reservations,
+			response,
+			server: server.await,
+		}
+	}
+	.boxed()
+}
+
+#[derive(Clone)]
+struct CompactionModelState {
+	compactions: Arc<Mutex<Vec<Value>>>,
+	compaction_status: Arc<AtomicUsize>,
+	compaction_reservations: Arc<Mutex<Option<ReservationCheck>>>,
+}
+#[rstest::fixture]
+fn compaction_model_state(
+	#[from(values_state)] compactions: Arc<Mutex<Vec<Value>>>,
+	#[from(count_state)] compaction_status: Arc<AtomicUsize>,
+	#[from(reservation_state)] compaction_reservations: Arc<Mutex<Option<ReservationCheck>>>,
+) -> CompactionModelState {
+	CompactionModelState {
+		compactions,
+		compaction_status,
+		compaction_reservations,
+	}
+}
