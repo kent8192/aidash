@@ -14,6 +14,11 @@ use uuid::Uuid;
 #[async_trait]
 pub trait ExecutionScope: RealDispatchScope {
 	/// Reuse the canonical draft-content/dependency authorization use case on this same scope.
+	async fn bindings(
+		&mut self,
+		draft: &Draft,
+		entry: &Entry,
+	) -> Result<aidash_domain::registry::bindings::BindingSnapshot>;
 	async fn validate_content(&mut self, draft: &Draft) -> Result<Entry>;
 }
 #[async_trait]

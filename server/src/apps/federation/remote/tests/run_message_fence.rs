@@ -38,7 +38,7 @@ async fn add_peer(f: &Federation, node: &str, endpoint: &str) {
 				IntoValue::into_value(node),
 				IntoValue::into_value(endpoint),
 				IntoValue::into_value("AIDASH_SECRET_TEST_PEER"),
-				IntoValue::into_value("0.1"),
+				IntoValue::into_value("0.2"),
 				IntoValue::into_value(true),
 			])
 			.to_string(PostgresQueryBuilder),
@@ -164,6 +164,11 @@ impl RemoteFixture {
 		let (mut executor, executor_url, executor_schema) = setup(environment).await;
 		executor.config.node_id = "aidash://fence-executor".into();
 		executor.store.node_id = executor.config.node_id.clone();
+		executor.registry = aidash_server::registry::Registry::new(
+			executor.store.pool.clone(),
+			&executor.config.node_id,
+		)
+		.unwrap();
 		let outage = Arc::new(AtomicBool::new(false));
 		let home_app = common::application_with(home.clone(), |router| {
 			router.with_middleware(PromotionOutage(outage.clone()))

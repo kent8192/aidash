@@ -4,7 +4,7 @@ use aidash_domain::{
 	federation::execution::{Definition, Inspection, admission::InspectInput},
 	policy::SubjectKind,
 	qualified_agent,
-	registry::{AgentConfig, EntityRef, Entry, rules::digest},
+	registry::{EntityRef, Entry, rules::digest},
 };
 use serde_json::json;
 use std::collections::BTreeMap;
@@ -35,10 +35,11 @@ async fn definition(
 	);
 	Ok(entry)
 }
-pub async fn inspect(
+async fn inspect_in(
 	access: &mut dyn PeerInspectionScope,
 	node: &str,
 	input: &InspectInput,
+	pinned: Option<&Inspection>,
 ) -> Result<Inspection> {
 	// Receiving external execution is separate from advertising metadata.
 	let resource = access.resource("node", access.node_id(), json!({}));
@@ -64,7 +65,7 @@ pub async fn inspect(
 		&mut definitions,
 	)
 	.await?;
-	if !access.active_installation(&entry).await? {
+	if pinned.is_none() && !access.active_installation(&entry).await? {
 		return Err(Error::Forbidden);
 	}
 	access.pinned_installation(&entry).await?;
@@ -73,30 +74,48 @@ pub async fn inspect(
 			"executor does not satisfy task requirements".into(),
 		));
 	}
-	let agent: AgentConfig = serde_json::from_value(entry.config.clone())?;
-	definition(
-		access,
-		&agent.model,
-		"model",
-		"model.infer",
-		&mut definitions,
-	)
-	.await?;
-	for tool in &agent.tools {
-		definition(access, tool, "tool", "tool.invoke", &mut definitions).await?;
+	let snapshot = if let Some(pinned) = pinned {
+		pinned.binding_snapshot.validate()?;
+		pinned.binding_snapshot.clone()
+	} else {
+		access.bindings(&entry).await?
+	};
+	if !snapshot.remote
+		|| snapshot.agent.registry_node != access.node_id()
+		|| snapshot.agent.local() != input.agent
+	{
+		return Err(Error::Forbidden);
 	}
-	for skill in &agent.skills {
-		definition(access, skill, "skill", "skill.use", &mut definitions).await?;
-	}
-	if let Some(cluster) = &agent.cluster {
-		definition(
+	for pinned in &snapshot.definitions {
+		if pinned.identity.registry_node != access.node_id() {
+			return Err(Error::Forbidden);
+		}
+		let action = match pinned.definition.kind.as_str() {
+			"agent" => "agent.execute",
+			"model" => "model.infer",
+			"cluster" => "cluster.execute",
+			"skill" => "skill.use",
+			"tool"
+				if snapshot.bindings.iter().any(|binding| {
+					binding.identity == pinned.identity && binding.excluded_reason.is_none()
+				}) =>
+			{
+				"tool.invoke"
+			}
+			_ => "registry.read",
+		};
+		let current = definition(
 			access,
-			cluster,
-			"cluster",
-			"cluster.execute",
+			&pinned.identity.local(),
+			&pinned.definition.kind,
+			action,
 			&mut definitions,
 		)
 		.await?;
+		access.pinned_installation(&current).await?;
+		if digest(&serde_json::to_value(current)?) != pinned.digest {
+			return Err(Error::Forbidden);
+		}
 	}
 	if let Some(compactor) = &input.compactor {
 		definition(
@@ -109,6 +128,7 @@ pub async fn inspect(
 		.await?;
 	}
 	Ok(Inspection {
+		binding_snapshot: snapshot,
 		generation,
 		lineage: access.lineage().await?,
 		node_id: access.node_id().to_owned(),
@@ -120,6 +140,22 @@ pub async fn inspect(
 		semantic_memory: aidash_domain::semantic::remote::VERSION,
 		compactor: input.compactor.clone(),
 	})
+}
+
+pub async fn inspect(
+	access: &mut dyn PeerInspectionScope,
+	node: &str,
+	input: &InspectInput,
+) -> Result<Inspection> {
+	inspect_in(access, node, input, None).await
+}
+pub async fn inspect_retained(
+	access: &mut dyn PeerInspectionScope,
+	node: &str,
+	input: &InspectInput,
+	pinned: &Inspection,
+) -> Result<Inspection> {
+	inspect_in(access, node, input, Some(pinned)).await
 }
 
 #[cfg(test)]

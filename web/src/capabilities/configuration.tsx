@@ -1,55 +1,17 @@
+import { AgentBindings, type BindingConfiguration } from "../agent-bindings";
 import { Button } from "../components/ui/button";
-import { useInfiniteQuery } from "@tanstack/react-query";
+import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { useRef, useState } from "react";
 import { Field, useI18n } from "../ui";
-import { SkillImport, type SkillPayload } from "../skill-import";
 import { apiFetch } from "../transport";
 import { post, saveFile } from "./client";
 import "./style.css";
-export type Flags = {
-  files: boolean;
-  shell: boolean;
-  python: boolean;
-  patch: boolean;
-  skills: boolean;
-  sharing: boolean;
-};
-export type SkillAttachment = SkillPayload & {
-  skill_id: string;
-  origin: string;
-  digest: string;
-};
 export type ReferenceBinding = { reference_id: string; digest: string };
-export type CoreConfiguration = {
-  core_capabilities: Flags;
-  skill_attachments: SkillAttachment[];
-  skill_roots: string[];
-  reference_attachments: ReferenceBinding[];
-};
+export type CoreConfiguration = BindingConfiguration;
 export const emptyCore: CoreConfiguration = {
-  core_capabilities: {
-    files: false,
-    shell: false,
-    python: false,
-    patch: false,
-    skills: false,
-    sharing: false,
-  },
-  skill_attachments: [],
-  skill_roots: [],
-  reference_attachments: [],
+  bindings: [],
+  remove_default: [],
 };
-function canonical(value: unknown): unknown {
-  return Array.isArray(value)
-    ? value.map(canonical)
-    : value !== null && typeof value === "object"
-      ? Object.fromEntries(
-          Object.entries(value)
-            .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-            .map(([k, v]) => [k, canonical(v)]),
-        )
-      : value;
-}
 async function hash(bytes: ArrayBuffer) {
   return Array.from(
     new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)),
@@ -59,183 +21,35 @@ async function hash(bytes: ArrayBuffer) {
 export function CapabilityConfiguration({
   value,
   change,
-  privateReferences = false,
+  node,
+  entries,
+  cluster = false,
 }: {
   privateReferences?: boolean;
   value: CoreConfiguration;
   change: (v: CoreConfiguration) => void;
+  node?: string;
+  cluster?: boolean;
+  entries?: Parameters<typeof AgentBindings>[0]["entries"];
 }) {
-  const { locale } = useI18n();
-  const ja = locale === "ja-JP";
-  const [skill, setSkill] = useState<SkillPayload>();
-  const [error, setError] = useState("");
-  const [pending, setPending] = useState(false);
-  const labels: Record<keyof Flags, string> = ja
-    ? {
-        files: "ファイル検索・閲覧",
-        shell: "Shell",
-        python: "Python",
-        patch: "パッチ適用",
-        skills: "直接追加する Skills",
-        sharing: "ファイル共有",
-      }
-    : {
-        files: "Search and read files",
-        shell: "Shell",
-        python: "Python",
-        patch: "Apply patches",
-        skills: "Direct Skills",
-        sharing: "Share files",
-      };
+  const query = useQuery({
+    queryKey: ["binding-definitions"],
+    queryFn: ({ signal }) =>
+      apiFetch<NonNullable<Parameters<typeof AgentBindings>[0]["entries"]>>(
+        "/api/registry",
+        { signal },
+      ),
+    enabled: !entries,
+    retry: false,
+  });
   return (
-    <fieldset className="core-config">
-      <legend>{ja ? "実行機能" : "Execution capabilities"}</legend>
-      <p className="muted">
-        {ja
-          ? "初期状態ではすべて無効です。各機能の利用には現在の権限と実行環境の対応も必要です。"
-          : "All capabilities start disabled. Current permissions and a supported runtime are also required."}
-      </p>
-      <div className="core-flags">
-        {Object.entries(labels).map(([key, label]) => (
-          <label className="check" key={key}>
-            <input
-              type="checkbox"
-              checked={value.core_capabilities[key as keyof Flags]}
-              onChange={(e) => {
-                const capability = key as keyof Flags;
-                const enabled = e.target.checked;
-                change({
-                  ...value,
-                  ...(capability === "skills" && !enabled
-                    ? { skill_attachments: [], skill_roots: [] }
-                    : {}),
-                  ...(capability === "files" && !enabled
-                    ? { reference_attachments: [] }
-                    : {}),
-                  core_capabilities: {
-                    ...value.core_capabilities,
-                    [capability]: enabled,
-                  },
-                });
-              }}
-            />
-            {label}
-          </label>
-        ))}
-      </div>
-      {value.core_capabilities.skills && (
-        <>
-          <SkillImport change={setSkill} />
-          <Button
-            variant="outline"
-            type="button"
-            disabled={
-              pending ||
-              !skill?.instructions ||
-              value.skill_attachments.length >= 16
-            }
-            onClick={async () => {
-              if (!skill) return;
-              setPending(true);
-              setError("");
-              try {
-                const files = [...skill.files].sort((a, b) =>
-                  a.path < b.path ? -1 : a.path > b.path ? 1 : 0,
-                );
-                const digest =
-                  "sha256:" +
-                  (await hash(
-                    new TextEncoder().encode(
-                      JSON.stringify(
-                        canonical({ instructions: skill.instructions, files }),
-                      ),
-                    ).buffer,
-                  ));
-                change({
-                  ...value,
-                  skill_attachments: [
-                    ...value.skill_attachments,
-                    {
-                      skill_id: crypto.randomUUID(),
-                      origin: skill.source || "upload:SKILL.md",
-                      digest,
-                      instructions: skill.instructions,
-                      files,
-                    },
-                  ],
-                });
-              } catch (e) {
-                setError(String(e));
-              } finally {
-                setPending(false);
-              }
-            }}
-          >
-            {ja ? "この Skill を追加" : "Attach this Skill"}
-          </Button>
-          <ul>
-            {value.skill_attachments.map((a) => (
-              <li key={a.skill_id}>
-                <strong>{a.origin}</strong>
-                <small>{a.digest}</small>
-                <Button
-                  variant="outline"
-                  type="button"
-                  onClick={() =>
-                    change({
-                      ...value,
-                      skill_attachments: value.skill_attachments.filter(
-                        (s) => s.skill_id !== a.skill_id,
-                      ),
-                    })
-                  }
-                >
-                  {ja ? "取り外す" : "Detach"}
-                </Button>
-              </li>
-            ))}
-          </ul>
-          <label className="check">
-            <input
-              type="checkbox"
-              checked={value.skill_roots.includes(".agents/skills")}
-              onChange={(e) =>
-                change({
-                  ...value,
-                  skill_roots: e.target.checked ? [".agents/skills"] : [],
-                })
-              }
-            />
-            {ja
-              ? "作業ファイル内の .agents/skills を読み込む"
-              : "Discover .agents/skills in working files"}
-          </label>
-        </>
-      )}
-      {error && <p role="alert">{error}</p>}
-      {value.core_capabilities.files && privateReferences && (
-        <OriginalReferences
-          attached={value.reference_attachments}
-          onAttach={(reference) =>
-            change({
-              ...value,
-              reference_attachments: [
-                ...value.reference_attachments,
-                reference,
-              ],
-            })
-          }
-          onDetach={(id) =>
-            change({
-              ...value,
-              reference_attachments: value.reference_attachments.filter(
-                (r) => r.reference_id !== id,
-              ),
-            })
-          }
-        />
-      )}
-    </fieldset>
+    <AgentBindings
+      value={value}
+      change={change}
+      entries={entries ?? query.data}
+      node={node}
+      cluster={cluster}
+    />
   );
 }
 type Reference = ReferenceBinding & {

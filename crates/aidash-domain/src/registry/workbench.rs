@@ -2,7 +2,7 @@
 use crate::{
 	Error, Result,
 	registry::{
-		AgentConfig, Entry, ReferenceDocument,
+		Entry, ReferenceDocument,
 		knowledge::{digest, validate as validate_documents},
 	},
 };
@@ -102,6 +102,7 @@ pub struct Registration {
 }
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct RegisteredVersion {
+	pub registered_knowledge_digest: Option<String>,
 	pub entry: Entry,
 	/// Digest of the currently saved draft documents, independent of Registry state.
 	pub draft_knowledge_digest: Option<String>,
@@ -134,29 +135,23 @@ pub fn check_content(
 	if release_notes.len() > 8192 {
 		return Err(Error::Invalid("release notes exceed 8 KiB".into()));
 	}
-	let _: AgentConfig =
+	let _: super::bindings::AgentBindings =
 		serde_json::from_value(entry.config.clone()).map_err(|e| Error::Invalid(e.to_string()))?;
 	Ok(())
 }
 pub fn new_draft_defaults(entry: &mut Entry) -> Result<()> {
+	entry.binding_normalization = None;
 	let config = entry
 		.config
 		.as_object_mut()
 		.ok_or_else(|| Error::Invalid("agent config must be an object".into()))?;
-	for key in [
-		"allow_task_creation",
-		"allow_task_delegation",
-		"allow_memory_write",
-		"allow_workspace_retrieval",
-		"allow_cross_conversation_memory",
-	] {
-		match config.get(key) {
-			Some(Value::Bool(_)) => {}
-			None => {
-				config.insert(key.into(), json!(false));
-			}
-			Some(_) => return Err(Error::Invalid(format!("{key} must be a boolean"))),
-		}
+	config.entry("schema_version").or_insert(json!(1));
+	config.entry("bindings").or_insert(json!([]));
+	config.entry("remove_default").or_insert(json!([]));
+	let input: super::bindings::AgentBindings =
+		serde_json::from_value(Value::Object(config.clone()))?;
+	if input.schema_version != 1 {
+		return Err(Error::Invalid("unsupported Agent schema version".into()));
 	}
 	Ok(())
 }

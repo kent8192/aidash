@@ -55,6 +55,7 @@ pub struct FollowUpInput {
 	pub requirements: crate::registry::Search,
 }
 pub struct Status {
+	pub human_requests: Vec<crate::HumanRequest>,
 	pub grant: Prepared,
 	pub execution: Option<Activation>,
 	pub unavailable: bool,

@@ -1,32 +1,24 @@
+//! Current authority is rechecked over the complete admitted closure.
 use super::*;
 use aidash_domain::{
 	RunControl, RunPhase, Task, TaskStatus,
-	policy::{PolicyBundle, Resource, SubjectKind},
-	registry::Entry,
+	policy::{PolicyBundle, Resource},
+	registry::{Entry, bindings::BindingSnapshot},
 };
 use async_trait::async_trait;
 use chrono::Utc;
 use rstest::{fixture, rstest};
-use serde_json::{Value, json};
+use serde_json::json;
 use uuid::Uuid;
-fn id(value: u128) -> Uuid {
-	Uuid::from_u128(value)
-}
-fn reference(id: &str) -> EntityRef {
-	EntityRef {
-		id: id.into(),
-		version: "1".into(),
-	}
-}
 #[fixture]
 fn run() -> RunMetadata {
 	RunMetadata {
-		id: id(1),
-		task_id: id(2),
-		workspace_id: id(3),
-		home_node: "aidash://home".into(),
+		id: Uuid::from_u128(1),
+		task_id: Uuid::from_u128(2),
+		workspace_id: Uuid::from_u128(3),
+		home_node: "aidash://local".into(),
 		agent_id: "producer".into(),
-		agent_version: "1".into(),
+		agent_version: "1.0.0".into(),
 		phase: RunPhase::Ready,
 		control: RunControl::Active,
 		step: 0,
@@ -39,38 +31,48 @@ fn run() -> RunMetadata {
 		updated_at: Utc::now(),
 	}
 }
-#[fixture]
-fn agent() -> AgentConfig {
-	serde_json::from_value(json!({"model":reference("model"),"tools":[reference("tool")],"skills":[reference("skill")],"cluster":reference("configured-cluster"),"core_capabilities":{"files":true},"allow_task_creation":false})).unwrap()
-}
 struct Scope {
 	visible: bool,
 	clusters: Vec<String>,
 	bundle: PolicyBundle,
-	entry: Entry,
+	snapshot: BindingSnapshot,
 	calls: Vec<String>,
-	decisions: Vec<(Resource, String)>,
 	fail: Option<String>,
 	deny: Option<String>,
+	changed: Option<String>,
 }
 #[fixture]
-fn scope(agent: AgentConfig) -> Scope {
-	let subject = qualified_agent("aidash://local", "producer", "1");
+fn scope() -> Scope {
+	let node = "aidash://local";
+	let subject = qualified_agent(node, "producer", "1.0.0");
+	let mut agent = crate::test_support::agent("producer");
+	agent.config["remove_default"] = json!(aidash_domain::registry::bindings::DEFAULT_TOOLS);
+	agent.config["bindings"] = json!([
+		{"kind":"memory","target":{"registry_node":node,"id":"memory","version":"1.0.0"}},
+		{"kind":"tool","target":{"registry_node":node,"id":"tool","version":"1.0.0"}}
+	]);
+	let memory = crate::test_support::entry(
+		"memory",
+		"memory",
+		json!({"schema_version":1,"source":{"adapter":"conversation_memory"}}),
+	);
+	let tool = crate::test_support::entry(
+		"tool",
+		"tool",
+		json!({"registry_node":node,"provider":"integration.http@1","operation":"invoke","default_alias":"lookup","tier":"integration","transport":{"transport":"http","endpoint":"https://fixture.invalid","replay":"unsafe","credential_env":null}}),
+	);
 	Scope {
 		visible: true,
-		clusters: vec!["conversation-cluster@1".into()],
+		clusters: vec!["conversation-cluster@1.0.0".into()],
 		bundle: serde_json::from_value(
 			json!({"tenant":"tenant","subjects":{subject:{"kind":"agent","delegated_by":null}}}),
 		)
 		.unwrap(),
-		entry: serde_json::from_value(
-			json!({"id":"producer","version":"1","kind":"agent","name":{},"description":{},"config":agent}),
-		)
-		.unwrap(),
+		snapshot: crate::test_support::resolve(node, &agent, false, vec![memory, tool]),
 		calls: vec![],
-		decisions: vec![],
 		fail: None,
 		deny: None,
+		changed: None,
 	}
 }
 impl Scope {
@@ -78,9 +80,7 @@ impl Scope {
 		let name = name.into();
 		self.calls.push(name.clone());
 		if self.fail.as_ref() == Some(&name) {
-			return Err(Error::Port(Box::new(std::io::Error::other(format!(
-				"{name} fault"
-			)))));
+			return Err(Error::Port(Box::new(std::io::Error::other(name))));
 		}
 		if self.deny.as_ref() == Some(&name) {
 			return Err(Error::Forbidden);
@@ -96,30 +96,36 @@ impl RunGuardScope for Scope {
 	fn bundle(&self) -> &PolicyBundle {
 		&self.bundle
 	}
-	async fn run_visible(&mut self, run: &RunMetadata) -> Result<bool> {
-		assert_eq!(run.id, id(1));
+	async fn run_visible(&mut self, _: &RunMetadata) -> Result<bool> {
 		self.record("visible")?;
 		Ok(self.visible)
 	}
-	async fn cluster_targets(&mut self, workspace: Uuid) -> Result<Vec<String>> {
-		assert_eq!(workspace, id(3));
+	async fn cluster_targets(&mut self, _: Uuid) -> Result<Vec<String>> {
 		self.record("clusters")?;
 		Ok(self.clusters.clone())
 	}
 	async fn catalog(&mut self, reference: &EntityRef, action: &str) -> Result<Entry> {
-		self.record(format!(
-			"catalog:{}@{}:{action}",
-			reference.id, reference.version
-		))?;
-		Ok(self.entry.clone())
+		self.record(format!("catalog:{}:{action}", reference.id))?;
+		let mut entry = self
+			.snapshot
+			.definitions
+			.iter()
+			.find(|d| {
+				d.identity.registry_node == self.node_id() && d.identity.local() == *reference
+			})
+			.map(|d| d.definition.clone())
+			.unwrap_or_else(|| crate::test_support::entry(&reference.id, "cluster", json!({})));
+		if self.changed.as_deref() == Some(&reference.id) {
+			entry.tags.push("changed".into());
+		}
+		Ok(entry)
 	}
-	async fn task_read(&mut self, task: Uuid) -> Result<Task> {
-		assert_eq!(task, id(2));
+	async fn task_read(&mut self, id: Uuid) -> Result<Task> {
 		self.record("task_read")?;
 		Ok(Task {
-			id: task,
-			workspace_id: id(3),
-			title: "saved task".into(),
+			id,
+			workspace_id: Uuid::from_u128(3),
+			title: "Saved task".into(),
 			description: String::new(),
 			status: TaskStatus::Open,
 			requirements: json!({}),
@@ -140,265 +146,280 @@ impl RunGuardScope for Scope {
 			attributes: json!({"creator":task.created_by,"revision":task.revision}),
 		})
 	}
-	async fn require(&mut self, resource: &Resource, action: &str) -> Result<()> {
-		self.decisions.push((resource.clone(), action.into()));
+	async fn require(&mut self, _: &Resource, action: &str) -> Result<()> {
 		self.record(action)
 	}
-	async fn require_live(&mut self, task: Uuid, agent: &EntityRef) -> Result<()> {
-		assert_eq!(task, id(2));
-		assert_eq!(agent, &reference("producer"));
+	async fn require_live(&mut self, _: Uuid, _: &EntityRef) -> Result<()> {
 		self.record("live")
 	}
-	async fn check_pinned(&mut self, entry: &Entry) -> Result<()> {
-		assert_eq!(entry.id, "producer");
+	async fn check_pinned(&mut self, _: &Entry) -> Result<()> {
 		self.record("pinned")
 	}
-	async fn context_authority(&mut self, run: &RunMetadata) -> Result<()> {
-		assert_eq!(run.workspace_id, id(3));
+	async fn context_authority(&mut self, _: &RunMetadata) -> Result<()> {
 		self.record("context")
 	}
-}
-fn expected() -> Vec<&'static str> {
-	vec![
-		"visible",
-		"clusters",
-		"catalog:conversation-cluster@1:cluster.execute",
-		"task_read",
-		"task_resource",
-		"task.execute",
-		"live",
-		"catalog:producer@1:agent.execute",
-		"pinned",
-		"context",
-		"catalog:model@1:registry.read",
-		"catalog:tool@1:registry.read",
-		"catalog:skill@1:registry.read",
-		"catalog:configured-cluster@1:registry.read",
-	]
+	async fn binding_snapshot(&mut self, _: &RunMetadata) -> Result<BindingSnapshot> {
+		self.record("snapshot")?;
+		Ok(self.snapshot.clone())
+	}
 }
 #[rstest]
 #[tokio::test]
-async fn guard_rechecks_execution_and_every_dependency_in_original_order(
+async fn opt_in_memory_keeps_current_source_authority_without_a_native_area(
 	mut scope: Scope,
 	run: RunMetadata,
-	agent: AgentConfig,
 ) {
-	let current = authorize(&mut scope, &run, true).await.unwrap();
-	assert_eq!(scope.calls, expected());
-	assert_eq!(
-		serde_json::to_value(current).unwrap(),
-		serde_json::to_value(agent).unwrap()
-	);
-	assert_eq!(scope.decisions.len(), 1);
-	assert_eq!(scope.decisions[0].1, "task.execute");
-	assert_eq!(
-		scope.decisions[0].0.attributes,
-		json!({"creator":"creator","revision":7})
-	);
+	let config = authorize(&mut scope, &run, true).await.unwrap();
+	assert!(config.conversation_memory);
+	assert!(!config.core_capabilities.enabled());
+	assert!(!scope.calls.contains(&"context".into()));
+	for definition in &scope.snapshot.definitions {
+		assert!(
+			scope
+				.calls
+				.contains(&format!("catalog:{}:registry.read", definition.identity.id))
+		);
+	}
 }
 #[rstest]
-#[case::without_context_read(false, true)]
-#[case::without_core_capabilities(true, false)]
-#[case::both_absent(false, false)]
+#[case("fixture-model")]
+#[case("memory")]
+#[case("tool")]
+#[case("aidash.workspace_read")]
+#[case("aidash.human_request")]
 #[tokio::test]
-async fn guard_skips_context_only_when_unrequested_or_all_core_capabilities_are_disabled(
+async fn revocation_of_any_admitted_dependency_prevents_accepting_output(
 	mut scope: Scope,
 	run: RunMetadata,
-	mut agent: AgentConfig,
-	#[case] read_context: bool,
-	#[case] capabilities: bool,
+	#[case] dependency: &str,
 ) {
-	agent.core_capabilities.files = capabilities;
-	scope.entry.config = serde_json::to_value(agent).unwrap();
-	authorize(&mut scope, &run, read_context).await.unwrap();
-	let mut expected = expected();
-	expected.retain(|name| *name != "context");
-	assert_eq!(scope.calls, expected);
+	scope.deny = Some(format!("catalog:{dependency}:registry.read"));
+	assert!(matches!(
+		authorize(&mut scope, &run, true).await,
+		Err(Error::Forbidden)
+	));
+}
+#[rstest]
+#[case("producer")]
+#[case("fixture-model")]
+#[case("memory")]
+#[case("tool")]
+#[tokio::test]
+async fn a_changed_immutable_definition_cannot_replace_the_admitted_one(
+	mut scope: Scope,
+	run: RunMetadata,
+	#[case] dependency: &str,
+) {
+	scope.changed = Some(dependency.into());
+	assert!(matches!(
+		authorize(&mut scope, &run, true).await,
+		Err(Error::Conflict(_))
+	));
+}
+#[rstest]
+#[case("visible")]
+#[case("clusters")]
+#[case("task_read")]
+#[case("task.execute")]
+#[case("live")]
+#[case("pinned")]
+#[case("snapshot")]
+#[case("context")]
+#[tokio::test]
+async fn adapter_fault_stops_at_the_failing_boundary(
+	mut scope: Scope,
+	run: RunMetadata,
+	#[case] boundary: &str,
+) {
+	if boundary == "context" {
+		let mut root = scope
+			.snapshot
+			.definitions
+			.iter()
+			.find(|d| d.identity == scope.snapshot.agent)
+			.unwrap()
+			.definition
+			.clone();
+		root.binding_normalization = None;
+		root.config["remove_default"]
+			.as_array_mut()
+			.unwrap()
+			.retain(|name| name != "file_read");
+		let extras = scope
+			.snapshot
+			.definitions
+			.iter()
+			.filter(|d| ["memory", "tool"].contains(&d.identity.id.as_str()))
+			.map(|d| d.definition.clone())
+			.collect();
+		scope.snapshot = crate::test_support::resolve("aidash://local", &root, false, extras);
+	}
+	scope.fail = Some(boundary.into());
+	assert!(matches!(
+		authorize(&mut scope, &run, true).await,
+		Err(Error::Port(_))
+	));
+	assert_eq!(scope.calls.last().unwrap(), boundary);
 }
 #[rstest]
 #[tokio::test]
-async fn invisible_run_is_forbidden_before_conversations_or_catalog(
-	mut scope: Scope,
-	run: RunMetadata,
-) {
+async fn hidden_run_stops_before_any_registry_disclosure(mut scope: Scope, run: RunMetadata) {
 	scope.visible = false;
 	assert!(matches!(
 		authorize(&mut scope, &run, true).await,
 		Err(Error::Forbidden)
 	));
-	assert_eq!(scope.calls, vec!["visible"]);
+	assert_eq!(scope.calls, ["visible"]);
 }
 #[rstest]
 #[tokio::test]
-async fn a_conversation_cluster_remains_required_without_a_configured_agent_cluster(
-	mut scope: Scope,
-	run: RunMetadata,
-	mut agent: AgentConfig,
-) {
-	agent.cluster = None;
-	scope.entry.config = serde_json::to_value(agent).unwrap();
-	authorize(&mut scope, &run, true).await.unwrap();
-	assert!(
-		scope
-			.calls
-			.contains(&"catalog:conversation-cluster@1:cluster.execute".into())
-	);
-	assert!(
-		!scope
-			.calls
-			.contains(&"catalog:configured-cluster@1:registry.read".into())
-	);
-}
-#[rstest]
-#[tokio::test]
-async fn cluster_targets_preserve_duplicate_order_and_split_at_the_last_separator(
+async fn conversation_cluster_remains_required_independently_of_agent_config(
 	mut scope: Scope,
 	run: RunMetadata,
 ) {
-	scope.clusters = vec!["org@cluster@2".into(), "same@1".into(), "same@1".into()];
-	authorize(&mut scope, &run, true).await.unwrap();
-	assert_eq!(
-		scope.calls[2..5],
-		vec![
-			"catalog:org@cluster@2:cluster.execute",
-			"catalog:same@1:cluster.execute",
-			"catalog:same@1:cluster.execute"
-		]
-	);
-}
-#[rstest]
-#[case::first(false)]
-#[case::after_valid(true)]
-#[tokio::test]
-async fn malformed_cluster_targets_are_forbidden_before_task_execution(
-	mut scope: Scope,
-	run: RunMetadata,
-	#[case] after_valid: bool,
-) {
-	scope.clusters = if after_valid {
-		vec!["valid@1".into(), "malformed".into()]
-	} else {
-		vec!["malformed".into()]
-	};
+	scope.deny = Some("catalog:conversation-cluster:cluster.execute".into());
 	assert!(matches!(
 		authorize(&mut scope, &run, true).await,
 		Err(Error::Forbidden)
 	));
-	let mut expected = vec!["visible", "clusters"];
-	if after_valid {
-		expected.push("catalog:valid@1:cluster.execute");
-	}
-	assert_eq!(scope.calls, expected);
+	assert!(!scope.calls.contains(&"task_read".into()));
 }
 #[rstest]
-#[case::missing(true)]
-#[case::wrong_kind(false)]
 #[tokio::test]
-async fn a_guard_requires_the_agent_subject_on_the_current_node_before_pinned_installation(
+async fn malformed_conversation_target_and_missing_agent_subject_are_rejected(
 	mut scope: Scope,
 	run: RunMetadata,
-	#[case] missing: bool,
 ) {
-	let subject = qualified_agent("aidash://local", "producer", "1");
-	if missing {
-		scope.bundle.subjects.remove(&subject);
-	} else {
-		scope.bundle.subjects.get_mut(&subject).unwrap().kind = SubjectKind::User;
-	}
+	scope.clusters = vec!["malformed".into()];
 	assert!(matches!(
 		authorize(&mut scope, &run, true).await,
 		Err(Error::Forbidden)
 	));
-	assert_eq!(scope.calls, expected()[..8]);
-	assert!(!scope.calls.contains(&"pinned".into()));
-}
-#[rstest]
-#[tokio::test]
-async fn invalid_agent_configuration_keeps_the_json_error_before_context_or_registry_reads(
-	mut scope: Scope,
-	run: RunMetadata,
-) {
-	scope.entry.config = Value::Null;
-	assert!(matches!(
-		authorize(&mut scope, &run, true).await,
-		Err(Error::Json(_))
-	));
-	assert_eq!(scope.calls, expected()[..9]);
-}
-#[rstest]
-#[case::visibility("visible")]
-#[case::conversation("clusters")]
-#[case::cluster("catalog:conversation-cluster@1:cluster.execute")]
-#[case::task("task_read")]
-#[case::resource("task_resource")]
-#[case::execute("task.execute")]
-#[case::live_generation("live")]
-#[case::agent("catalog:producer@1:agent.execute")]
-#[case::installation("pinned")]
-#[case::context("context")]
-#[case::model("catalog:model@1:registry.read")]
-#[case::tool("catalog:tool@1:registry.read")]
-#[case::skill("catalog:skill@1:registry.read")]
-#[case::configured_cluster("catalog:configured-cluster@1:registry.read")]
-#[tokio::test]
-async fn any_guard_adapter_fault_stops_at_that_boundary_and_preserves_its_identity(
-	mut scope: Scope,
-	run: RunMetadata,
-	#[case] stage: &str,
-) {
-	scope.fail = Some(stage.into());
-	let Error::Port(error) = authorize(&mut scope, &run, true).await.err().unwrap() else {
-		panic!("expected guard fault")
-	};
-	assert_eq!(
-		error.downcast_ref::<std::io::Error>().unwrap().to_string(),
-		format!("{stage} fault")
-	);
-	let expected = expected();
-	let last = expected.iter().position(|name| *name == stage).unwrap();
-	assert_eq!(scope.calls, expected[..=last]);
-}
-#[rstest]
-#[case::conversation_cluster("catalog:conversation-cluster@1:cluster.execute")]
-#[case::task("task.execute")]
-#[case::model("catalog:model@1:registry.read")]
-#[case::tool("catalog:tool@1:registry.read")]
-#[case::skill("catalog:skill@1:registry.read")]
-#[case::cluster("catalog:configured-cluster@1:registry.read")]
-#[tokio::test]
-async fn revoked_current_dependency_approval_prevents_accepting_agent_output(
-	mut scope: Scope,
-	run: RunMetadata,
-	#[case] stage: &str,
-) {
-	scope.deny = Some(stage.into());
+	scope.clusters.clear();
+	scope.bundle.subjects.clear();
 	assert!(matches!(
 		authorize(&mut scope, &run, true).await,
 		Err(Error::Forbidden)
 	));
-	let expected = expected();
-	let last = expected.iter().position(|name| *name == stage).unwrap();
-	assert_eq!(scope.calls, expected[..=last]);
+	assert!(!scope.calls.contains(&"snapshot".into()));
 }
+
 #[rstest]
 #[tokio::test]
-async fn repeated_configured_references_are_rechecked_without_deduplication(
+async fn terminal_delivery_does_not_reopen_the_failed_inference_context(
 	mut scope: Scope,
 	run: RunMetadata,
-	mut agent: AgentConfig,
 ) {
-	agent.tools = vec![agent.model.clone(), agent.model.clone()];
-	agent.skills = vec![agent.model.clone()];
-	agent.cluster = None;
-	scope.entry.config = serde_json::to_value(agent).unwrap();
+	scope.fail = Some("snapshot".into());
 	authorize(&mut scope, &run, false).await.unwrap();
+	assert!(!scope.calls.contains(&"snapshot".into()));
+	assert!(!scope.calls.contains(&"context".into()));
+	assert_eq!(scope.calls.last().unwrap(), "pinned");
+	// The same broken context still prevents execution; delivery is not a
+	// compatibility or reconstruction path for a new model/tool turn.
+	assert!(matches!(
+		authorize(&mut scope, &run, true).await,
+		Err(Error::Port(_))
+	));
+}
+
+#[rstest]
+#[case("task.execute")]
+#[case("catalog:producer:agent.execute")]
+#[case("pinned")]
+#[tokio::test]
+async fn terminal_delivery_retains_current_task_agent_and_installation_authority(
+	mut scope: Scope,
+	run: RunMetadata,
+	#[case] boundary: &str,
+) {
+	scope.deny = Some(boundary.into());
+	assert!(matches!(
+		authorize(&mut scope, &run, false).await,
+		Err(Error::Forbidden)
+	));
+	assert!(!scope.calls.contains(&"snapshot".into()));
+}
+
+#[rstest]
+#[case("foreign-child")]
+#[case("producer")]
+#[tokio::test]
+async fn foreign_closures_do_not_require_local_namesakes_or_match_their_digests(
+	mut scope: Scope,
+	run: RunMetadata,
+	#[case] child_id: &str,
+) {
+	use aidash_domain::registry::{
+		bindings::{ForeignAgentSnapshot, ResolvedDefinition},
+		rules::digest,
+	};
+	let mut child = crate::test_support::agent(child_id);
+	child.config["instructions"] = json!("Instructions owned by the peer.");
+	let foreign = ForeignAgentSnapshot::from_snapshot(crate::test_support::resolve(
+		"aidash://peer",
+		&child,
+		true,
+		vec![],
+	))
+	.unwrap();
+	let saved = scope
+		.snapshot
+		.definitions
+		.iter_mut()
+		.find(|saved| {
+			saved.identity.registry_node == "aidash://local" && saved.identity.id == "tool"
+		})
+		.unwrap();
+	saved.definition.config = json!({
+		"registry_node":"aidash://local","provider":"integration.agent@1","operation":"invoke",
+		"default_alias":"lookup","tier":"integration",
+		"transport":{"transport":"agent","node_id":foreign.agent.registry_node,"agent":foreign.agent.local()}
+	});
+	*saved = ResolvedDefinition::new(saved.identity.clone(), saved.definition.clone()).unwrap();
+	let binding = scope
+		.snapshot
+		.bindings
+		.iter_mut()
+		.find(|binding| binding.identity == saved.identity)
+		.unwrap();
+	binding.definition = saved.definition.clone();
+	binding.digest = saved.digest.clone();
+	let descriptor: aidash_domain::tool::providers::ToolDescriptor =
+		serde_json::from_value(binding.definition.config.clone()).unwrap();
+	binding.provider_contract_digest = Some(digest(
+		&serde_json::to_value(
+			descriptor
+				.declared_contract(binding.identity.clone())
+				.unwrap(),
+		)
+		.unwrap(),
+	));
+	binding.provider_implementation = Some("integration.agent@1:portable-test".into());
+	scope
+		.snapshot
+		.definitions
+		.extend(foreign.definitions.clone());
+	scope.snapshot.foreign_agents.push(foreign);
+	scope.snapshot.validate().unwrap();
+	let local_definitions = scope
+		.snapshot
+		.definitions
+		.iter()
+		.filter(|saved| saved.identity.registry_node == "aidash://local")
+		.count();
+	assert!(authorize(&mut scope, &run, true).await.is_ok());
 	assert_eq!(
 		scope
 			.calls
 			.iter()
-			.filter(|name| name.as_str() == "catalog:model@1:registry.read")
+			.filter(|call| call.ends_with(":registry.read"))
 			.count(),
-		4
+		local_definitions
 	);
-	assert!(!scope.calls.contains(&"context".into()));
+	assert!(
+		!scope
+			.calls
+			.contains(&"catalog:foreign-child:registry.read".into())
+	);
 }

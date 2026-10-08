@@ -6,7 +6,7 @@ use crate::{
 use aidash_domain::{
 	identity::Principal,
 	registry::{
-		AgentConfig, Entry,
+		Entry,
 		workbench::profile::{
 			ProfileInput, ProfileQuery, ProfileSummary, RealToolRule, TestProfile,
 		},
@@ -38,16 +38,20 @@ pub fn validate_real_rule(
 			"test profile references a non-Tool Registry entry".into(),
 		));
 	}
-	let cfg: ToolConfig = serde_json::from_value(tool.config.clone())?;
+	let descriptor: aidash_domain::tool::providers::ToolDescriptor =
+		serde_json::from_value(tool.config.clone())?;
+	let cfg = descriptor
+		.transport
+		.ok_or_else(|| Error::Invalid("real tests require an integration transport".into()))?;
 	let isolated = match cfg {
 		ToolConfig::Http {
 			endpoint,
-			replay,
+			replay: _,
 			credential_env,
 		} => {
 			let production = url::Url::parse(&endpoint)
 				.map_err(|_| Error::Invalid("invalid production endpoint".into()))?;
-			replay == "read_only"
+			rule.read_only_verified
 				&& production != url
 				&& match credential_env {
 					Some(production) => rule
@@ -60,7 +64,7 @@ pub fn validate_real_rule(
 		_ => false,
 	};
 	if !isolated {
-		return Err(Error::Invalid("real tests require an HTTP read-only Tool, a separate test endpoint, and separate test credentials".into()));
+		return Err(Error::Invalid("real tests require an operator-verified read-only HTTP test endpoint and separate test credentials".into()));
 	}
 	Ok(())
 }
@@ -83,8 +87,16 @@ pub async fn list(
 			let mut scope = repository.begin_draft().await?;
 			let draft = scope.draft(draft_id).await?;
 			scope.authorize(&draft, "agent_draft.test", true).await?;
-			let config: AgentConfig = serde_json::from_value(draft.entry["config"].clone())?;
-			draft_tools = Some(config.tools);
+			let entry: Entry = serde_json::from_value(draft.entry.clone())?;
+			let snapshot = scope.bindings(&entry).await?;
+			draft_tools = Some(
+				snapshot
+					.bindings
+					.iter()
+					.filter(|b| b.definition.kind == "tool" && b.excluded_reason.is_none())
+					.map(|b| b.identity.local())
+					.collect::<Vec<_>>(),
+			);
 			scope.commit().await?;
 			tenant
 		}

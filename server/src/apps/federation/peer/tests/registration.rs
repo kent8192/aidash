@@ -17,7 +17,7 @@ const PEER_SECRET: &str = "peer-registration-fixture-0123456789-ABCDEFGHIJKLMNOP
 
 fn input(remote: &EndpointFixture) -> Value {
 	json!({"node_id":remote.runtime.config.node_id,"endpoint":remote.server.url,
-        "credential_env":PEER_ENV,"protocol_version":"0.1","enabled":true})
+        "credential_env":PEER_ENV,"protocol_version":"0.2","enabled":true})
 }
 async fn register(local: &EndpointFixture, input: &Value, status: u16) -> Value {
 	assert_json(

@@ -29,6 +29,14 @@ pub(crate) struct NativeAssignment<'a> {
 }
 #[async_trait]
 impl GenerationCreationScope for NativeAssignment<'_> {
+	async fn bindings(
+		&mut self,
+		entry: &aidash_domain::registry::Entry,
+	) -> aidash_application::Result<aidash_domain::registry::bindings::BindingSnapshot> {
+		let node = self.runtime.config.node_id.clone();
+		crate::apps::registry::repositories::bindings::preview(&mut *self.access.tx, &node, entry)
+			.await
+	}
 	fn tenant(&self) -> &str {
 		&self.access.identity.tenant
 	}
@@ -638,6 +646,14 @@ impl GenerationAssignmentSession for Session {
 }
 #[async_trait]
 impl GenerationCreationScope for Session {
+	async fn bindings(
+		&mut self,
+		entry: &aidash_domain::registry::Entry,
+	) -> aidash_application::Result<aidash_domain::registry::bindings::BindingSnapshot> {
+		let node = self.runtime.config.node_id.clone();
+		crate::apps::registry::repositories::bindings::preview(&mut *self.access.tx, &node, entry)
+			.await
+	}
 	fn tenant(&self) -> &str {
 		&self.access.identity.tenant
 	}

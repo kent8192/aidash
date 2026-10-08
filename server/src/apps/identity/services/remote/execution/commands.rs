@@ -10,8 +10,10 @@ pub(crate) async fn handle(f: Federation, headers: HeaderMap, input: Input) -> R
 	access.worker();
 	access.read_grant = Some(input.grant_id);
 	let agent = &description.inspection.agent;
+	let mut command_scope = crate::bootstrap::remote_command_scope(&f, &mut access);
+	command_scope.bindings = Some(&description.inspection.binding_snapshot);
 	let result = aidash_application::authorization::commands::effects::execute(
-		&mut crate::bootstrap::remote_command_scope(&f, &mut access),
+		&mut command_scope,
 		aidash_application::authorization::commands::Command {
 			grant_id: input.grant_id,
 			admission_id: input.admission_id,

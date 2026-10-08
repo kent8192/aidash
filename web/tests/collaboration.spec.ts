@@ -23,6 +23,10 @@ for (const locale of ["en-US", "ja-JP"] as const) {
       const grants: Record<string, unknown>[] = [];
       let attempts = 0;
       await page.route("**/api/tasks/task-0/remote-grants**", async (route) => {
+        if (new URL(route.request().url()).pathname.endsWith("/inspect"))
+          return route.fulfill({
+            json: { native_required: native, memory_available: true },
+          });
         if (
           new URL(route.request().url()).pathname.endsWith("/remote-grants")
         ) {
@@ -1845,6 +1849,21 @@ for (const width of [1440, 390]) {
       control: "ACTIVE",
       error: null,
     };
+    const humanRequests = [
+      {
+        id: "human-question",
+        kind: "QUESTION",
+        prompt: "Which source should the remote Agent use?",
+        response: null as unknown,
+      },
+      {
+        id: "human-approval",
+        kind: "APPROVAL_REQUIRED",
+        prompt: "Approve the saved remote operation?",
+        response: null as unknown,
+      },
+    ];
+    const answers: { id: string; response: unknown }[] = [];
     let unavailable = false;
     const messages: { id: string; content: string }[] = [];
     await page.route("**/api/tasks/task-0/remote-**", async (route) => {
@@ -1852,9 +1871,26 @@ for (const width of [1440, 390]) {
       if (path.endsWith("/remote-executions"))
         return route.fulfill({
           json: [
-            { grant, execution: unavailable ? null : execution, unavailable },
+            {
+              grant,
+              execution: unavailable ? null : execution,
+              unavailable,
+              human_requests: humanRequests,
+            },
           ],
         });
+      if (path.endsWith("/human-requests/answer")) {
+        const input = route.request().postDataJSON();
+        answers.push(input);
+        const request = humanRequests.find((item) => item.id === input.id)!;
+        request.response = input.response;
+        return answers.length === 1
+          ? route.fulfill({
+              status: 503,
+              json: { error: { message: "Answer receipt unavailable" } },
+            })
+          : route.fulfill({ json: request });
+      }
       if (path.endsWith("/control")) {
         const action = route.request().postDataJSON().action;
         execution.control = {
@@ -1893,6 +1929,29 @@ for (const width of [1440, 390]) {
     await expect(
       panel.getByText("aidash://remote", { exact: true }),
     ).toBeVisible();
+    await expect(panel.getByText(humanRequests[0].prompt)).toBeVisible();
+    await panel
+      .getByLabel("Response", { exact: true })
+      .fill("Use the original source.");
+    await panel
+      .getByRole("button", { name: "Send response", exact: true })
+      .click();
+    await expect(panel.getByRole("alert")).toContainText(
+      "Answer receipt unavailable",
+    );
+    await panel
+      .getByRole("button", { name: "Send response", exact: true })
+      .click();
+    await expect(panel.getByLabel("Response", { exact: true })).toHaveCount(0);
+    expect(answers[1]).toEqual(answers[0]);
+    await panel.getByRole("button", { name: "Approve", exact: true }).click();
+    await expect(
+      panel.getByRole("button", { name: "Approve", exact: true }),
+    ).toHaveCount(0);
+    expect(answers[2]).toEqual({
+      id: "human-approval",
+      response: { approved: true },
+    });
     await panel.getByRole("button", { name: "Pause", exact: true }).click();
     const resume = panel.getByRole("button", {
       name: "Recheck authority and resume",
@@ -2037,3 +2096,81 @@ test("channel controls resume a validated failure delivery with an invalid Conte
     .toBe(1);
   expect(errors).toEqual([]);
 });
+
+for (const collision of [false, true]) {
+  test(`remote inspection supplies native requirements despite ${collision ? "a mismatched Home provider" : "an absent Home provider"} and resets them on selection`, async ({
+    page,
+  }) => {
+    const { errors } = await setup(page, {
+      subject: true,
+      openTask: true,
+      remoteAssignment: true,
+      nativeMemory: true,
+      remoteNativeCollision: collision,
+      extraGraphAgent: true,
+    });
+    const grants: Record<string, unknown>[] = [];
+    await page.route("**/api/tasks/task-0/remote-grants**", async (route) => {
+      const path = new URL(route.request().url()).pathname;
+      if (path.endsWith("/inspect")) {
+        const selected = route.request().postDataJSON().agent.id;
+        return route.fulfill({
+          json: {
+            native_required: selected === "researcher",
+            memory_available: selected === "researcher",
+          },
+        });
+      }
+      if (path.endsWith("/remote-grants")) {
+        grants.push(route.request().postDataJSON());
+        return route.fulfill({ json: { id: grants.at(-1)!.id } });
+      }
+      return route.fulfill({
+        json: {
+          admission_id: "remote-run",
+          phase: "RECEIVED",
+          control: "ACTIVE",
+        },
+      });
+    });
+    await page.goto("/collaboration?channel=workspace-one");
+    await page
+      .getByRole("button", { name: "Tasks and results", exact: true })
+      .click();
+    await page
+      .locator(".collab-channel .collab-task")
+      .filter({ hasText: "Collect evidence" })
+      .click();
+    await page
+      .getByRole("button", { name: "Assign agent", exact: true })
+      .click();
+    const dialog = page.getByRole("dialog");
+    const agent = dialog.locator("select[name=agent]");
+    await agent.selectOption(
+      JSON.stringify(["aidash://remote", "researcher", "1.0.0"]),
+    );
+    const memory = dialog.getByLabel(
+      "Require Home memory before each inference",
+    );
+    await expect(memory).toBeChecked();
+    await expect(memory).toBeDisabled();
+    const other = await agent
+      .locator("option")
+      .evaluateAll((options) =>
+        options
+          .map((option) => (option as HTMLOptionElement).value)
+          .find((value) => value && !value.includes('"researcher"')),
+      );
+    expect(other).toBeTruthy();
+    await agent.selectOption(other!);
+    await expect(memory).not.toBeChecked();
+    await expect(memory).toBeDisabled();
+    await expect(dialog.locator("select[name=embedding]")).toHaveCount(0);
+    await dialog
+      .getByRole("button", { name: "Assign agent", exact: true })
+      .click();
+    await expect.poll(() => grants.length).toBe(1);
+    expect(grants[0].semantic).toEqual({ mode: "disabled" });
+    expect(errors).toEqual([]);
+  });
+}

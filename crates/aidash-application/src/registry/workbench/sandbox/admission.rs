@@ -30,6 +30,63 @@ pub struct Admitted {
 	pub session: TestSession,
 	pub job: Job,
 }
+/// Attachment text is already pinned by the admitted Source. Mounted roots have
+/// no live execution area in Workbench: their contents must be explicit fixtures.
+fn skill_source_context(
+	config: &AgentConfig,
+	snapshot: &aidash_domain::registry::bindings::BindingSnapshot,
+	input: &TestInput,
+) -> Result<String> {
+	let mut text = String::new();
+	for attachment in &config.skill_attachments {
+		let metadata = aidash_domain::capabilities::skills::validate(attachment)?;
+		text.push_str("\nPinned Skill Source:\n");
+		text.push_str(&serde_json::to_string(&metadata)?);
+		text.push('\n');
+		text.push_str(&attachment.instructions);
+	}
+	if !config.skill_roots.is_empty() {
+		let missing = || {
+			Error::Invalid("mounted Skill Sources require successful skill_list and skill_load fixtures for sandbox context".into())
+		};
+		let fixture = |operation| -> Result<&aidash_domain::registry::workbench::sandbox::Fixture> {
+			let binding = snapshot.operation(operation)?;
+			let value = input
+				.fixtures
+				.get(binding.alias.as_deref().ok_or_else(missing)?)
+				.ok_or_else(missing)?;
+			if !matches!(value.status, sandbox::FixtureStatus::Success) {
+				return Err(missing());
+			}
+			Ok(value)
+		};
+		let list = fixture("skill_list")?;
+		let load = fixture("skill_load")?;
+		let metadata: aidash_domain::capabilities::skills::SkillMetadata =
+			serde_json::from_value(load.response["skill"].clone()).map_err(|_| missing())?;
+		let listed = list.response["skills"].as_array().ok_or_else(missing)?;
+		if !listed.iter().any(|value| value == &load.response["skill"])
+			|| !config
+				.skill_roots
+				.iter()
+				.any(|root| metadata.origin.contains(&format!(":{root}/")))
+			|| load.response["path"] != "SKILL.md"
+			|| load.response["truncated"] != false
+		{
+			return Err(missing());
+		}
+		let instructions = load.response["content"]
+			.as_str()
+			.filter(|text| !text.trim().is_empty())
+			.ok_or_else(missing)?;
+		text.push_str("\nMounted Skill Source (sandbox fixtures):\n");
+		text.push_str(&serde_json::to_string(&metadata)?);
+		text.push('\n');
+		text.push_str(instructions);
+	}
+	Ok(text)
+}
+
 pub async fn admit(admission: &Admission<'_>, id: Uuid, input: TestInput) -> Result<Admitted> {
 	sandbox::validate_request(&input)?;
 	let mut scope = admission.repository.begin_admission().await?;
@@ -43,7 +100,8 @@ pub async fn admit(admission: &Admission<'_>, id: Uuid, input: TestInput) -> Res
 		));
 	}
 	let entry = scope.validate_content(&draft).await?;
-	let config: AgentConfig = serde_json::from_value(entry.config.clone())?;
+	let snapshot = scope.bindings(&draft, &entry).await?;
+	let config = AgentConfig::from_snapshot(&snapshot)?;
 	let model = scope.effective(&config.model).await?;
 	let model_config: ModelConfig = serde_json::from_value(model.config)?;
 	let model_credential = model_config
@@ -104,11 +162,15 @@ pub async fn admit(admission: &Admission<'_>, id: Uuid, input: TestInput) -> Res
 		Vec::new()
 	};
 	conversation.push(json!({"role":"user","content":input.message}));
-	let tool_references = config
-		.tools
+	let tool_references = snapshot
+		.bindings
 		.iter()
-		.enumerate()
-		.map(|(index, reference)| (format!("plugin_{index}"), reference.clone()))
+		.filter(|b| b.excluded_reason.is_none())
+		.filter_map(|b| {
+			b.alias
+				.as_ref()
+				.map(|alias| (alias.clone(), b.identity.local()))
+		})
 		.collect();
 	let mut instructions = aidash_domain::context::agent_instructions("");
 	if input.mode == "real" {
@@ -121,27 +183,19 @@ pub async fn admit(admission: &Admission<'_>, id: Uuid, input: TestInput) -> Res
 		instructions.push_str("\nSkill:\n");
 		instructions.push_str(&aidash_domain::registry::rules::skill_instructions(&skill)?);
 	}
+	instructions.push_str(&skill_source_context(&config, &snapshot, &input)?);
 	instructions.push_str("\nAdditional instructions:\n");
 	instructions.push_str(&config.instructions);
-	let mut tool_specs = crate::tools::builtins()
-		.into_iter()
-		.filter(|(name, _)| config.permits_builtin(name))
-		.map(|(_, tool)| tool.specification())
-		.collect::<Vec<_>>();
-	for (index, reference) in config.tools.iter().enumerate() {
-		let tool = scope.effective(reference).await?;
-		if config.allow_task_delegation == Some(false)
-			&& matches!(
-				serde_json::from_value::<aidash_domain::tool::ToolConfig>(tool.config.clone())?,
-				aidash_domain::tool::ToolConfig::Agent { .. }
-			) {
-			continue;
-		}
-		tool_specs.push(crate::tools::plugin_specification(
-			&tool,
-			&format!("plugin_{index}"),
-		));
-	}
+	let tool_specs = snapshot
+		.bindings
+		.iter()
+		.filter(|b| b.excluded_reason.is_none())
+		.filter_map(|b| {
+			b.alias
+				.as_deref()
+				.map(|alias| crate::tools::plugin_specification(&b.definition, alias))
+		})
+		.collect();
 	let mut request = ModelRequest {
 		content_parts: Vec::new(),
 		instructions,
@@ -169,7 +223,7 @@ pub async fn admit(admission: &Admission<'_>, id: Uuid, input: TestInput) -> Res
 	}
 	// Keep draft, policy, credential, and tenant-concurrency locks until admission commits.
 	let session = scope.admit(&draft,&limits,
-			json!({"mode":input.mode,"profile_id":input.profile_id,"profile_revision":profile.as_ref().map(|value|value.revision),"continue_from":input.continue_from,"fixtures":fixtures}),
+			json!({"mode":input.mode,"profile_id":input.profile_id,"profile_revision":profile.as_ref().map(|value|value.revision),"continue_from":input.continue_from,"fixtures":fixtures,"binding_snapshot":snapshot}),
 			json!(conversation)).await?;
 	scope.commit().await?;
 

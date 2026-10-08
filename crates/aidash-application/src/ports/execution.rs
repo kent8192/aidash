@@ -26,7 +26,7 @@ pub struct ExecutionAgent {
 	pub skills: Vec<EntityRef>,
 	pub max_steps: i32,
 	pub allow_task_creation: Option<bool>,
-	pub allow_cross_conversation_memory: Option<bool>,
+	pub conversation_memory: bool,
 }
 pub struct InvocationOutcome {
 	pub status: String,
@@ -43,6 +43,11 @@ pub type ObservationFit<'a> = dyn Fn(usize, &Value) -> Result<bool> + Send + Syn
 #[async_trait]
 pub trait ExecutionStore: Send + Sync {
 	async fn save_run(&self, run: &Run, token: Uuid, event: &str) -> Result<()>;
+	/// Persist inference inputs without ending the worker's current lease. Return
+	/// the updated Run revision so the response uses the same durable boundary.
+	async fn observe_sources(&self, run: &mut Run, token: Uuid) -> Result<()> {
+		self.save_run(run, token, "run.sources_observed").await
+	}
 	async fn emit(&self, workspace: Option<Uuid>, kind: &str, data: Value) -> Result<Event>;
 	async fn run_inputs(&self, run: Uuid) -> Result<Vec<aidash_domain::run_input::RunInput>>;
 	async fn begin_final_completion(&self, run: &Run, token: Uuid) -> Result<bool>;
@@ -88,6 +93,25 @@ pub trait ExecutionCatalog: Send + Sync {
 }
 #[async_trait]
 pub trait ExecutionHome: Send + Sync {
+	async fn human_request(
+		&self,
+		run: &Run,
+		kind: &str,
+		prompt: &str,
+		key: &str,
+	) -> Result<HumanRequest> {
+		let _ = (run, kind, prompt, key);
+		Err(crate::Error::Invalid(
+			"Home human-request route is unavailable".into(),
+		))
+	}
+	async fn human_request_by_id(&self, id: Uuid) -> Result<HumanRequest> {
+		let _ = id;
+		Err(crate::Error::Invalid(
+			"Home human-request route is unavailable".into(),
+		))
+	}
+
 	fn local(&self) -> bool;
 	fn has_local_authority(&self) -> bool;
 	async fn task(&self) -> Result<Task>;
@@ -175,9 +199,9 @@ pub trait ExecutionEnvironment: Send + Sync {
 	fn agent(&self, entry: &Entry) -> Result<ExecutionAgent>;
 	fn provider(&self, model: ModelConfig) -> Result<Arc<dyn ModelProvider>>;
 	fn compactor(&self) -> Result<Box<dyn CompactionClassifier>>;
-	async fn tools(&self, run: &Run, entry: &Entry) -> Result<Tools>;
-	async fn builtins(&self, run: &Run) -> Result<Tools>;
+	fn binding_resolver(&self) -> &dyn super::bindings::BindingResolver;
 	async fn documents(&self, entry: &Entry) -> Result<Value>;
+	async fn recheck_source_observation(&self, run: &Run, content: &Value) -> Result<()>;
 	async fn skill_context(&self, run: &Run) -> Result<String>;
 	async fn semantic_context(
 		&self,

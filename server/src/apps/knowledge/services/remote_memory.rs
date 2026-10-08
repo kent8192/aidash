@@ -3,9 +3,7 @@ use super::{memory_models::Models, native_memory as memory};
 use crate::apps::knowledge::repositories::{
 	access::Lease, memory_scope::Scope, native_memory as repository,
 };
-use crate::{
-	Error, Result, database::native, federation::Federation, registry::AgentConfig, store::Store,
-};
+use crate::{Error, Result, database::native, federation::Federation, store::Store};
 use aidash_domain::{
 	memory::*,
 	registry::{EntityRef, Entry},
@@ -84,7 +82,7 @@ pub(crate) async fn bind(
 		version: row.try_get("agent_version")?,
 	};
 	let agent = memory::definition(lease, &reference, "agent").await?;
-	let config: AgentConfig = serde_json::from_value(agent.config.clone())?;
+	let config = super::super::repositories::bindings::configuration(lease, &agent, home).await?;
 	if config.memory.as_ref() != Some(&selection.provider)
 		|| config.allow_cross_conversation_memory == Some(false)
 	{

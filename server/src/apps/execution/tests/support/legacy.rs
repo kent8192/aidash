@@ -177,6 +177,32 @@ pub async fn bootstrap(
 	app: &TestApplication,
 	endpoint: &str,
 ) -> (Value, String, Uuid) {
+	bootstrap_with_context(f, app, endpoint, false).await
+}
+#[allow(dead_code)]
+pub async fn bootstrap_with_context(
+	f: &Federation,
+	app: &TestApplication,
+	endpoint: &str,
+	semantic: bool,
+) -> (Value, String, Uuid) {
+	bootstrap_with_resources(f, app, endpoint, semantic, false).await
+}
+#[allow(dead_code)]
+pub async fn bootstrap_with_area(
+	f: &Federation,
+	app: &TestApplication,
+	endpoint: &str,
+) -> (Value, String, Uuid) {
+	bootstrap_with_resources(f, app, endpoint, false, true).await
+}
+async fn bootstrap_with_resources(
+	f: &Federation,
+	app: &TestApplication,
+	endpoint: &str,
+	semantic: bool,
+	files: bool,
+) -> (Value, String, Uuid) {
 	let operator = &f.config.api_token;
 	let policy = policy(&f.config.node_id);
 	let (status, snapshot) = request(
@@ -188,6 +214,24 @@ pub async fn bootstrap(
 	)
 	.await;
 	assert_eq!(status, 200, "initial policy: {snapshot}");
+	let mut agent_bindings = vec![
+		json!({"kind":"tool","target":{"registry_node":f.config.node_id,"id":"http","version":"1.0.0"},"alias":"plugin_0","narrow":{}}),
+	];
+	if semantic {
+		let memory = json!({"id":"semantic-memory","version":"1.0.0","kind":"memory","name":{"en":"Semantic Memory"},"description":{"en":"Explicit retrieval opt-in"},"schema":{},"config":{"schema_version":1,"source":{"adapter":"semantic_memory"}}});
+		let (status, result) = request(app, operator, "POST", "/api/registry", memory).await;
+		assert_eq!(status, 200, "{result}");
+		let (status, result) = request(
+			app,
+			operator,
+			"POST",
+			"/api/authorization/acme/catalog",
+			json!({"entry":{"id":"semantic-memory","version":"1.0.0"},"enabled":true,"expected_revision":0}),
+		)
+		.await;
+		assert_eq!(status, 200, "{result}");
+		agent_bindings.push(json!({"kind":"memory","target":{"registry_node":f.config.node_id,"id":"semantic-memory","version":"1.0.0"},"narrow":{}}));
+	}
 	for (kind, id, config) in [
 		(
 			"model",
@@ -197,12 +241,12 @@ pub async fn bootstrap(
 		(
 			"tool",
 			"http",
-			json!({"transport":"http","endpoint":format!("{endpoint}/effect"),"credential_env":null,"replay":"idempotent"}),
+			json!({"registry_node":f.config.node_id,"provider":"integration.http@1","operation":"invoke","default_alias":"plugin_0","tier":"integration","transport":{"transport":"http","endpoint":format!("{endpoint}/effect"),"credential_env":null,"replay":"idempotent"}}),
 		),
 		(
 			"agent",
 			"research",
-			json!({"model":{"id":"model","version":"1.0.0"},"instructions":"Test approved work","tools":[{"id":"http","version":"1.0.0"}],"skills":[]}),
+			json!({"schema_version":1,"model":{"id":"model","version":"1.0.0"},"instructions":"Test approved work","bindings":agent_bindings,"remove_default":if files {json!([])} else {json!(["file_search","file_read"])} }),
 		),
 	] {
 		let entry = json!({"id":id,"version":"1.0.0","kind":kind,"name":{"en":id},"description":{"en":"fixture"},"capabilities":[],"languages":["en"],"schema":{"type":"object"},"config":config});

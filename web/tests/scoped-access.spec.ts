@@ -90,8 +90,9 @@ test("subject dashboard completes a conversation and clears revoked access", asy
         {
           model: { id: `${id}-model`, version: "1.0.0" },
           instructions: "Ask the human once, then complete the task.",
-          tools: [],
-          skills: [],
+          schema_version: 1,
+          bindings: [],
+          remove_default: ["file_search", "file_read"],
           max_steps: 8,
         },
       ],

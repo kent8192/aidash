@@ -27,6 +27,7 @@ enum Mode {
 	Subject(Box<Access>),
 }
 struct Session {
+	node: String,
 	mode: Mode,
 }
 impl Session {
@@ -95,11 +96,21 @@ impl GenerationPolicies for NativePolicies {
 				Access::begin(&self.store, identity).await
 			}?)),
 		};
-		Ok(Box::new(Session { mode }))
+		Ok(Box::new(Session {
+			mode,
+			node: self.store.node_id.clone(),
+		}))
 	}
 }
 #[async_trait]
 impl PolicySession for Session {
+	async fn bindings(
+		&mut self,
+		entry: &aidash_domain::registry::Entry,
+	) -> aidash_application::Result<aidash_domain::registry::bindings::BindingSnapshot> {
+		let node = self.node.clone();
+		crate::apps::registry::repositories::bindings::preview(&mut **self.tx(), &node, entry).await
+	}
 	async fn decide(&mut self, id: &str, action: &str) -> aidash_application::Result<bool> {
 		match &mut self.mode {
 			Mode::Operator(_) => Ok(true),
@@ -167,6 +178,16 @@ impl PolicySession for Session {
 		tenant: &str,
 		reference: &EntityRef,
 	) -> aidash_application::Result<Option<Value>> {
+		if aidash_application::registry::system::builtin_reference(reference) {
+			let node = self.node.clone();
+			let entry = crate::apps::registry::repositories::bindings::system_definition(
+				&mut **self.tx(),
+				&node,
+				reference,
+			)
+			.await?;
+			return Ok(Some(serde_json::to_value(entry)?));
+		}
 		let tx = self.tx();
 		let metadata: Option<Value> = {
 			let query_bind_1 = tenant;

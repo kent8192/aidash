@@ -251,3 +251,26 @@ fn bounded_status(status: &str, budget: usize) -> Result<Option<Value>> {
 #[cfg(test)]
 #[path = "memory_context/tests.rs"]
 mod tests;
+
+/// Recovered source observations retain current authority and canonical revisions.
+pub(crate) async fn recheck(
+	store: &Store,
+	lease: &mut Lease<'_>,
+	run: &Run,
+	observed: &Value,
+) -> Result<()> {
+	let workspace = observed.get("workspace").unwrap_or(observed);
+	if !workspace.is_null() && workspace.get("status").is_none() {
+		aidash_application::semantic::retrieval::recheck(
+			&mut crate::bootstrap::semantic_retrieval_scope(store, lease),
+			&serde_json::from_value(workspace.clone())?,
+		)
+		.await?;
+	}
+	if observed["memory"]["banks"].is_array()
+		&& !super::super::repositories::memory_reads::visible(lease, run.id).await?
+	{
+		return Err(Error::Forbidden);
+	}
+	Ok(())
+}

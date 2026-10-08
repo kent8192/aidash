@@ -103,7 +103,9 @@ async fn seed_history(f: &Federation, run: &aidash_server::domain::Run) {
 	}
 	{
 		let query_bind_1 = run.id;
-		let query_bind_2 = common::context(json!({"history":history}));
+		let mut context = serde_json::to_value(&run.context).unwrap();
+		context["history"] = json!(history);
+		let query_bind_2 = context;
 		sqlx::query(
 			&reinhardt::query::Query::update()
 				.table(reinhardt::query::Alias::new("runs"))

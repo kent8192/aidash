@@ -262,7 +262,7 @@ async fn peer_mapping_writes_work_with_one_control_connection(
 				"aidash://source".into(),
 				"http://localhost:1".into(),
 				"AIDASH_SECRET_TEST_PEER".into(),
-				"0.1".into(),
+				"0.2".into(),
 				true.into(),
 			])
 			.to_string(PostgresQueryBuilder),

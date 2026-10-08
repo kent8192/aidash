@@ -280,7 +280,15 @@ fn text_chunk(
 }
 pub async fn context(scope: &mut dyn SkillScope, run: &RunMetadata) -> Result<String> {
 	scope.context_authority(run).await?;
-	let resource = scope.resource("tool", "builtin:skill_list", json!({}));
+	let resource = scope.resource(
+		"tool",
+		&scope
+			.binding_snapshot()?
+			.operation("skill_list")?
+			.identity
+			.resource_id(),
+		json!({}),
+	);
 	scope.require(&resource, "tool.invoke").await?;
 	let record = scope.skill_record(run.id).await?;
 	let pinned: Vec<Pinned> = serde_json::from_value(record.data)?;

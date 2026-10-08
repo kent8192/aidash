@@ -545,3 +545,27 @@ async fn audience_owner_insertion_cannot_exceed_the_recipient_limit() {
 	);
 	assert!(scope.writes().is_empty());
 }
+
+#[rstest]
+#[case::memory("memory", json!({"adapter":"conversation_memory"}))]
+#[case::source("source", json!({"adapter":"private_references","digest":"a".repeat(64)}))]
+#[tokio::test]
+async fn native_context_descriptors_publish_without_private_content(
+	#[case] kind: &str,
+	#[case] adapter: Value,
+) {
+	let mut scope = Fixture::new();
+	let definition = scope.entries.get_mut("source").unwrap();
+	definition.kind = kind.into();
+	definition.config = json!({"schema_version":1,"source":adapter});
+	let result = publish(&mut scope, &validation(), &command(), "aidash://publisher")
+		.await
+		.unwrap();
+	let frozen = &scope.versions[result["key"].as_str().unwrap()];
+	assert_eq!(frozen.kind, kind);
+	assert_eq!(
+		manifest(frozen).unwrap().entity.config["source"]["adapter"],
+		adapter["adapter"]
+	);
+	assert!(!frozen.manifest_source.contains("reference_documents"));
+}

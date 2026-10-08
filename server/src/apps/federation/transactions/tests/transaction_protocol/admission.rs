@@ -382,7 +382,7 @@ async fn independent_preflights_run_concurrently(
 				node_id: remote.f.config.node_id.clone(),
 				endpoint: remote.f.config.endpoint.clone(),
 				credential_env: "AIDASH_SECRET_TRANSACTION_02".into(),
-				protocol_version: "0.1".into(),
+				protocol_version: "0.2".into(),
 				enabled: true,
 			})
 			.await

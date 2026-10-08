@@ -892,14 +892,19 @@ async fn cyclic_journal_dependencies_terminate_and_propagate_revocation(
 		],
 		..Default::default()
 	};
-	let updated = RunRecord::objects()
-		.filter(RunRecord::field_workspace_id().eq(workspace))
-		.update_fields_with_conn(
-			&mut db,
-			[(RunRecord::field_context(), Json(json!(journal)))],
-		)
-		.await
-		.unwrap();
+	let mut updated = 0;
+	for run in f.store.runs().await.unwrap() {
+		let mut context = run.context.clone();
+		context.history = journal.history.clone();
+		updated += RunRecord::objects()
+			.filter(RunRecord::field_id().eq(run.id))
+			.update_fields_with_conn(
+				&mut db,
+				[(RunRecord::field_context(), Json(json!(context)))],
+			)
+			.await
+			.unwrap();
+	}
 	assert_eq!(
 		updated, 2,
 		"both valid Run contexts retain the cyclic journal fixture"
@@ -1322,6 +1327,7 @@ async fn discovered_registry_entries_remain_live_journal_dependencies(
 	let (mut bundle, token, task) = bootstrap(&f, &app, &endpoint).await;
 	let mut entry = f.registry.get("research", "1.0.0").await.unwrap();
 	entry.id = "discovered-only".into();
+	entry.binding_normalization = None;
 	entry
 		.description
 		.insert("en".into(), "discovered-private-metadata".into());

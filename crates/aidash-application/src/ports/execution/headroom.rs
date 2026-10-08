@@ -8,7 +8,12 @@ use uuid::Uuid;
 #[async_trait]
 pub trait Definitions: Send + Sync {
 	fn node(&self) -> &str;
+	async fn snapshot(
+		&self,
+		run: &RunMetadata,
+	) -> Result<aidash_domain::registry::bindings::BindingSnapshot>;
 	async fn definition(&self, run: &RunMetadata, id: &str, version: &str) -> Result<Entry>;
+	/// Return only the requested private Source's flat document array.
 	async fn documents(&self, agent: &Entry) -> Result<Value>;
 	/// Resolve the current capability profile after definition and knowledge reads.
 	fn validation(&self) -> DefinitionValidation;

@@ -29,6 +29,10 @@ pub struct Creation<'a> {
 }
 #[async_trait]
 pub trait GenerationCreationScope: Send {
+	async fn bindings(
+		&mut self,
+		entry: &aidash_domain::registry::Entry,
+	) -> Result<aidash_domain::registry::bindings::BindingSnapshot>;
 	fn tenant(&self) -> &str;
 	fn subject(&self) -> &str;
 	fn subjects(&self) -> &[String];

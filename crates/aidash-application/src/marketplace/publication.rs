@@ -91,9 +91,12 @@ pub async fn prepare(
 			definitions::publication_graph(scope, &stored, &input.dependencies, node).await?;
 		(stored.clone(), BTreeSet::new(), deps)
 	};
-	if !matches!(entity.kind.as_str(), "agent" | "tool" | "skill" | "bundle") {
+	if !matches!(
+		entity.kind.as_str(),
+		"agent" | "tool" | "skill" | "bundle" | "memory" | "source"
+	) {
 		return Err(Error::Invalid(
-			"only agent, tool and skill packages can be published".into(),
+			"only agent, tool, skill, bundle, memory and source packages can be published".into(),
 		));
 	}
 	// Known copies and supported derivation paths retain the original consent.

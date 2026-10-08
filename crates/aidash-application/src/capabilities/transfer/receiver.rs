@@ -14,7 +14,7 @@ use aidash_domain::{
 			receiver::{ManifestLimits, cap_recipient_versions, chunk_digest, validate, view},
 		},
 	},
-	registry::{AgentConfig, EntityRef},
+	registry::EntityRef,
 };
 use base64::Engine;
 use chrono::Utc;
@@ -88,16 +88,15 @@ async fn mapped<'a>(
 			)
 			.await?;
 		scope.check_pinned(&entry).await?;
-		let config: AgentConfig = serde_json::from_value(entry.config)?;
-		if !config.core_capabilities.sharing {
-			return Err(Error::Forbidden);
-		}
 		let admitted: Option<Uuid> = scope
 			.admitted(&area, &description.target.agent_version)
 			.await?;
 		if admitted.is_none() {
 			return Err(Error::NotFound("recipient version unavailable".into()));
 		}
+		scope
+			.require_bound_operation(admitted.expect("checked admitted recipient"), "file_share")
+			.await?;
 		Ok(area)
 	}
 	.await;
@@ -378,7 +377,7 @@ pub async fn recipient_list(
 			scope.set_subjects(delegated);
 			let allowed = async {
 				scope.authorize(&area, "file.receive").await?;
-				let entry = scope
+				let _entry = scope
 					.entry(
 						&EntityRef {
 							id: area.agent_id.clone(),
@@ -387,12 +386,13 @@ pub async fn recipient_list(
 						"agent.execute",
 					)
 					.await?;
-				if !serde_json::from_value::<AgentConfig>(entry.config)?
-					.core_capabilities
-					.sharing
-				{
-					return Err(Error::Forbidden);
-				}
+				let admitted = scope
+					.admitted(&area, &version)
+					.await?
+					.ok_or(Error::Forbidden)?;
+				scope
+					.require_bound_operation(admitted, "file_share")
+					.await?;
 				Ok(())
 			}
 			.await;

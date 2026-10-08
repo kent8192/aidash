@@ -10,6 +10,42 @@ use uuid::Uuid;
 
 #[rstest]
 #[tokio::test]
+async fn remote_waiting_requests_keep_home_identity_without_a_local_request(
+	#[future] database: DatabaseFixture,
+	mut run: Run,
+) {
+	let database = database.await;
+	let mut db = database.lease.handle();
+	let request = Uuid::new_v4();
+	run.context.0["binding_snapshot"] = serde_json::json!({"schema_version":1,"agent":{"registry_node":"aidash://receiver","id":"fixture","version":"1.0.0"},"remote":true,"bindings":[],"definitions":[]});
+	run.phase = RunPhase::Waiting;
+	run.pending = human_pending(request).into();
+	Run::objects()
+		.create_with_conn(&mut db, &run)
+		.await
+		.unwrap();
+	let saved = Run::objects()
+		.get(run.id)
+		.get_with_db(&mut db)
+		.await
+		.unwrap();
+	assert_eq!(
+		saved.pending.0["data"]["request_id"],
+		serde_json::json!(request)
+	);
+	assert_eq!(saved.pending_human_request_id, None);
+	assert!(
+		HumanRequest::objects()
+			.filter(HumanRequest::field_id().eq(request))
+			.all_with_db(&mut db)
+			.await
+			.unwrap()
+			.is_empty()
+	);
+}
+
+#[rstest]
+#[tokio::test]
 async fn waiting_requests_enforce_identity_ownership_and_reverse_references(
 	#[future] database: DatabaseFixture,
 	run: Run,

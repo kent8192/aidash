@@ -31,6 +31,15 @@ pub trait PeerInspectionScope: Send {
 	fn entry_resource(&self, entry: &Entry) -> Resource;
 	async fn active_installation(&mut self, entry: &Entry) -> Result<bool>;
 	async fn pinned_installation(&mut self, entry: &Entry) -> Result<()>;
+	async fn bindings(
+		&mut self,
+		entry: &Entry,
+	) -> Result<aidash_domain::registry::bindings::BindingSnapshot> {
+		let _ = entry;
+		Err(crate::Error::Invalid(
+			"Receiver Binding admission is required".into(),
+		))
+	}
 	async fn lineage(&mut self) -> Result<Vec<Ancestor>>;
 }
 #[async_trait]

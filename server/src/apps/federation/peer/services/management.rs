@@ -15,11 +15,11 @@ use futures_util::{StreamExt, stream};
 use http::HeaderMap;
 use reinhardt::injectable;
 use reinhardt::query::Alias;
-use reinhardt::query::Expr;
 use reinhardt::query::OnConflict;
 use reinhardt::query::PostgresQueryBuilder;
 use reinhardt::query::Query;
 use reinhardt::query::QueryStatementBuilder as _;
+use reinhardt::query::{Expr, ExprTrait, LockType};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
@@ -127,10 +127,59 @@ impl PeerManagement {
 		}
 		let run = f
 			.store
-			.accept_run(&offer.task, node, &offer.agent.id, &offer.agent.version)
+			.accept_run_pinned(
+				&offer.task,
+				node,
+				&offer.agent.id,
+				&offer.agent.version,
+				offer.binding_snapshot.as_ref(),
+			)
 			.await?;
 		f.notify.notify_waiters();
 		Ok(run)
+	}
+	pub(crate) async fn peer_agent_bindings(
+		&self,
+		(id, version): (String, String),
+	) -> Result<aidash_domain::registry::bindings::ForeignAgentSnapshot> {
+		let f = &self.runtime;
+		f.store.require_legacy_agent(&id, &version).await?;
+		let lease = f.store.orm_connection()?;
+		lease
+			.handle()
+			.atomic(async |tx| {
+				let entry =
+					crate::apps::registry::services::admission::effective(tx, &id, &version)
+						.await?;
+				let snapshot = crate::apps::registry::repositories::bindings::preview_remote(
+					tx,
+					&f.config.node_id,
+					&entry,
+				)
+				.await?;
+				let snapshot =
+					aidash_domain::registry::bindings::ForeignAgentSnapshot::from_snapshot(
+						snapshot,
+					)?;
+				for definition in &snapshot.definitions {
+					if definition.definition.kind == "agent" {
+						f.store
+							.require_legacy_agent(
+								&definition.identity.id,
+								&definition.identity.version,
+							)
+							.await?;
+						crate::apps::registry::repositories::bindings::preview_remote(
+							tx,
+							&f.config.node_id,
+							&definition.definition,
+						)
+						.await?;
+					}
+				}
+				Ok(snapshot)
+			})
+			.await
 	}
 	pub(crate) async fn peer_workspace(
 		&self,
@@ -223,6 +272,64 @@ impl PeerManagement {
 			}
 		}
 		let result = match command.operation.as_str() {
+			"human_request" | "human_read" | "human_answer" => {
+				use crate::apps::identity::repositories::remote_commands::humans::{self, Journal};
+				use reinhardt::db::orm::execution::convert_values;
+				let run_id: Uuid = serde_json::from_value(d["run_id"].clone())?;
+				let mut tx = f.store.database().begin().await?;
+				// Fence ownership and liveness with the same Home task lock as transitions.
+				let (sql, values) = Query::select()
+					.column(Alias::new("id"))
+					.from(Alias::new("tasks"))
+					.and_where(Expr::col("id").eq(Expr::value(task.id)))
+					.and_where(Expr::col("owner").eq(owner.clone()))
+					.and_where(Expr::col("status").eq("RUNNING"))
+					.lock(LockType::Update)
+					.build(PostgresQueryBuilder);
+				if tx
+					.fetch_optional(&sql, convert_values(values))
+					.await?
+					.is_none()
+				{
+					return Err(Error::Forbidden);
+				}
+				let journal = Journal::Delegation(task.id);
+				let request = match command.operation.as_str() {
+					"human_request" => {
+						humans::create_in(
+							tx.as_mut(),
+							journal,
+							run_id,
+							task.workspace_id,
+							required(d, "kind")?,
+							required(d, "prompt")?,
+							&key()?,
+						)
+						.await?
+					}
+					"human_answer" => {
+						humans::answer_in(
+							tx.as_mut(),
+							journal,
+							run_id,
+							serde_json::from_value(d["id"].clone())?,
+							d["response"].clone(),
+							node,
+						)
+						.await?
+					}
+					_ => {
+						let id: Uuid = serde_json::from_value(d["id"].clone())?;
+						humans::read_in(tx.as_mut(), journal, true)
+							.await?
+							.into_iter()
+							.find(|request| request.id == id && request.run_id == run_id)
+							.ok_or(Error::Forbidden)?
+					}
+				};
+				tx.commit().await?;
+				json!(request)
+			}
 			"snapshot" => json!(f.store.snapshot(task.workspace_id).await?),
 			"snapshot_workspace" => json!(f.store.workspace(task.workspace_id).await?),
 			"snapshot_page" => json!(
@@ -714,16 +821,18 @@ impl PeerManagement {
 				if !valid {
 					return Err(Error::Unauthorized);
 				}
-				Ok(json!(
-					f.store
-						.answer(
-							id,
-							input
-								.response
-								.ok_or_else(|| Error::Invalid("response required".into()))?
-						)
-						.await?
-				))
+				let response = input
+					.response
+					.ok_or_else(|| Error::Invalid("response required".into()))?;
+				if crate::authorization::peer::admission::run_grant(&f.store, &run.metadata())
+					.await?
+					.is_none()
+				{
+					crate::federation::Home::new(f.clone(), run.clone())
+						.answer_home_human(id, response.clone())
+						.await?;
+				}
+				Ok(json!(f.store.answer(id, response).await?))
 			}
 			"message" => {
 				let content = input

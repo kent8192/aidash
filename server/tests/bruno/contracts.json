@@ -25913,5 +25913,113 @@
     "json": true,
     "uuid_parameters": [],
     "query_parameters": []
+  },
+  {
+    "method": "POST",
+    "path": "/api/tasks/{task}/remote-grants/{grant}/human-requests/answer",
+    "name": "remote-human-answer",
+    "source": "server/src/apps/identity/views/remote_execution.rs",
+    "json": true,
+    "uuid_parameters": ["task", "grant"],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/HumanRequest"
+      },
+      "definitions": {
+        "HumanRequest": {
+          "type": "object",
+          "required": [
+            "answered_by",
+            "id",
+            "workspace_id",
+            "run_id",
+            "kind",
+            "prompt",
+            "response",
+            "created_at"
+          ],
+          "properties": {
+            "answered_by": {
+              "type": ["string", "null"]
+            },
+            "created_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "kind": {
+              "type": "string"
+            },
+            "prompt": {
+              "type": "string"
+            },
+            "response": {},
+            "run_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "workspace_id": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        }
+      }
+    },
+    "request": {
+      "schema": {
+        "type": "object",
+        "required": ["id", "response"],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "response": {}
+        }
+      },
+      "definitions": {}
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/federation/v0.1/discover/{id}/{version}/bindings",
+    "name": "peer-agent-bindings",
+    "source": "server/src/apps/federation/peer/views/management.rs",
+    "json": false,
+    "uuid_parameters": [],
+    "query_parameters": []
+  },
+  {
+    "method": "POST",
+    "path": "/api/tasks/{id}/remote-grants/inspect",
+    "name": "remote-agent-inspection",
+    "source": "server/src/apps/identity/views/remote_grants.rs",
+    "json": true,
+    "uuid_parameters": ["id"],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/AgentMemoryRequirements"
+      },
+      "definitions": {
+        "AgentMemoryRequirements": {
+          "type": "object",
+          "required": ["native_required", "memory_available"],
+          "properties": {
+            "native_required": {
+              "type": "boolean"
+            },
+            "memory_available": {
+              "type": "boolean"
+            }
+          }
+        }
+      }
+    }
   }
 ]

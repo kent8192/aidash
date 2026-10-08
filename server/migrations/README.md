@@ -41,7 +41,7 @@ the pinned revision incorporates
 [#6638](https://github.com/kent8192/reinhardt-web/issues/6638). The final snapshot
 records the registered model metadata. These migrations extend the original table definitions and preserve their SQL
 assets. The environment migration additionally records conditional extension
-ownership before this new native history is published. The complete native graph contains 46
+ownership before this new native history is published. The complete native graph contains 54
 records and describes 117 models.
 
 The original baseline has 36 migrations for physical schema creation and eight
@@ -245,3 +245,5 @@ The native memory additions end with generated state-only ORM metadata checkpoin
 for execution, knowledge, and registry. These reconcile composite-key and field
 metadata and exclude procedural checks and references from the ORM snapshot, while
 retaining the physical constraints established by the preceding migrations.
+
+Binding and native memory histories converge in `registry/0015_binding_memory_merge` and `execution/0011_binding_memory_merge`. The registry merge preserves strict Agent Bindings, Host lifecycle validation and native memory operations. Agent memory-role references derive from qualified Binding targets. These migrations depend on both histories and leave their existing migration identities unchanged.

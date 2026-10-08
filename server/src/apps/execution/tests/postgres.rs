@@ -18,8 +18,16 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 async fn setup(environment: &TestEnvironment) -> (Store, String, String) {
+	setup_node(environment, "aidash://test").await
+}
+async fn setup_node(environment: &TestEnvironment, node: &str) -> (Store, String, String) {
 	let (mut runtime, url, schema) = common::setup(environment).await;
-	runtime.store.node_id = "aidash://test".into();
+	runtime.store.node_id = node.into();
+	Registry::new(runtime.store.pool.clone(), node)
+		.unwrap()
+		.seed_system()
+		.await
+		.unwrap();
 	(runtime.store, url, schema)
 }
 async fn cleanup(store: Store, url: &str, schema: &str) {
@@ -31,8 +39,9 @@ fn entry(kind: &str, id: &str, config: serde_json::Value) -> Entry {
 	serde_json::from_value(json!({"id":id,"version":"1.0.0","kind":kind,"name":{"en":id,"ja":"調査"},"description":{"en":"test fixture"},"capabilities":["web.search"],"languages":["en","ja"],"config":config})).unwrap()
 }
 async fn seed(registry: &Registry) -> Entry {
+	registry.seed_system().await.unwrap();
 	registry.register(entry("model","model",json!({"provider":"openrouter","model_id":"fixture","endpoint":"http://127.0.0.1:9999/v1","credential_env":null,"context_window":128000,"max_output_tokens":4096,"modalities":["text"],"cost":{}}))).await.unwrap();
-	registry.register(entry("agent","research",json!({"model":{"id":"model","version":"1.0.0"},"instructions":"Research","tools":[],"skills":[]}))).await.unwrap()
+	registry.register(entry("agent","research",json!({"model":{"id":"model","version":"1.0.0"},"instructions":"Research","schema_version":1,"bindings":[],"remove_default":[]}))).await.unwrap()
 }
 fn new_task() -> NewTask {
 	NewTask {
@@ -182,8 +191,38 @@ async fn lease_fencing_and_uncertain_effect_reconciliation(
 		.await
 		.unwrap();
 	let token = Uuid::new_v4();
-	let leased = store.lease_run(token, 30).await.unwrap().unwrap();
+	let mut leased = store.lease_run(token, 30).await.unwrap().unwrap();
 	assert_eq!(leased.id, run.id);
+	leased.state = aidash_domain::run_state::RunState::Thinking(Default::default());
+	leased.context.source_observation = Some(
+		aidash_domain::context::sources::SourceObservation::new(
+			"0:0:0".into(),
+			"sha256:fixture".into(),
+			json!({"memory":{"fact":"observed before inference"}}),
+		)
+		.unwrap(),
+	);
+	let revision = leased.revision;
+	aidash_application::ports::execution::ExecutionStore::observe_sources(
+		&store,
+		&mut leased,
+		token,
+	)
+	.await
+	.unwrap();
+	assert_eq!(leased.revision, revision + 1);
+	assert_eq!(
+		store
+			.run(run.id)
+			.await
+			.unwrap()
+			.context
+			.source_observation
+			.as_ref()
+			.unwrap()
+			.content,
+		leased.context.source_observation.as_ref().unwrap().content
+	);
 	assert!(store.lease_run(Uuid::new_v4(), 30).await.unwrap().is_none());
 	let first = store
 		.invocation_start(
@@ -219,6 +258,24 @@ async fn lease_fencing_and_uncertain_effect_reconciliation(
 	let new_token = Uuid::new_v4();
 	let recovered = store.lease_run(new_token, 30).await.unwrap().unwrap();
 	assert!(recovered.recovery.lease_recovered);
+	assert_eq!(
+		recovered
+			.context
+			.source_observation
+			.as_ref()
+			.unwrap()
+			.content,
+		leased.context.source_observation.as_ref().unwrap().content
+	);
+	assert!(
+		aidash_application::ports::execution::ExecutionStore::observe_sources(
+			&store,
+			&mut leased,
+			token
+		)
+		.await
+		.is_err()
+	);
 	assert!(
 		store
 			.invocation_finish(&leased, token, "effect", &json!("stale"))
@@ -323,6 +380,7 @@ async fn registry_installation_versions_and_authenticated_api(
 	assert_eq!(
 		registry.get(&skill.id, &skill.version).await.unwrap(),
 		Entry {
+			binding_normalization: None,
 			config: json!({"instructions":"Use node-local citations"}),
 			..skill.clone()
 		}
@@ -379,7 +437,7 @@ async fn registry_installation_versions_and_authenticated_api(
 	let peer = http_client()
 		.request(Method::POST, router.url("/federation/v0.1/discover"))
 		.header("x-aidash-node", "aidash://intruder")
-		.header("x-aidash-protocol", "0.1")
+		.header("x-aidash-protocol", "0.2")
 		.header("content-type", "application/json")
 		.body("{}")
 		.send()
@@ -804,11 +862,11 @@ async fn successful_tool_retry_resets_the_next_invocation_budget(
 		.register(entry(
 			"tool",
 			"retry-tool",
-			json!({"transport":"http","endpoint":endpoint,"credential_env":null,"replay":"idempotent"}),
+			json!({"registry_node":f.config.node_id,"provider":"integration.http@1","operation":"invoke","default_alias":"plugin_0","tier":"integration","narrow":{},"transport":{"transport":"http","endpoint":endpoint,"credential_env":null,"replay":"idempotent"}}),
 		))
 		.await
 		.unwrap();
-	let agent = f.registry.register(entry("agent", "retry-agent", json!({"model":{"id":"model","version":"1.0.0"},"instructions":"Test retries","tools":[{"id":"retry-tool","version":"1.0.0"}],"skills":[]}))).await.unwrap();
+	let agent = f.registry.register(entry("agent", "retry-agent", json!({"model":{"id":"model","version":"1.0.0"},"instructions":"Test retries","schema_version":1,"bindings":[{"kind":"tool","target":{"registry_node":f.config.node_id,"id":"retry-tool","version":"1.0.0"},"alias":"plugin_0","narrow":{}}],"remove_default":[]}))).await.unwrap();
 	let workspace = store
 		.create_workspace("Retries", "Independent budgets")
 		.await
@@ -864,6 +922,9 @@ async fn successful_tool_retry_resets_the_next_invocation_budget(
 	.unwrap();
 	let harness = aidash_server::harness::Harness { federation: f };
 	harness.worker_once().await.unwrap();
+	assert!(approve_fixture_call(&store).await);
+	harness.worker_once().await.unwrap();
+	harness.worker_once().await.unwrap();
 	let run: Run = {
 		let query_bind_1 = task.id;
 		aidash_server::database::query_as(
@@ -886,6 +947,9 @@ async fn successful_tool_retry_resets_the_next_invocation_budget(
 	assert!(run.recovery.retry.is_none());
 	assert!(run.error.is_none());
 	harness.worker_once().await.unwrap();
+	assert!(approve_fixture_call(&store).await);
+	harness.worker_once().await.unwrap();
+	harness.worker_once().await.unwrap();
 	let run = store.run(run.id).await.unwrap();
 	assert_eq!(run.phase().as_str(), "TOOL_CALL");
 	assert_eq!(run.recovery.retry.as_ref().unwrap().count, 1);
@@ -895,6 +959,33 @@ async fn successful_tool_retry_resets_the_next_invocation_budget(
 	);
 	server.abort();
 	cleanup(store, &url, &schema).await;
+}
+
+async fn approve_fixture_call(store: &Store) -> bool {
+	let run = store.runs().await.unwrap().remove(0);
+	let RunState::Waiting(waiting) = &run.state else {
+		return false;
+	};
+	let WaitingState::ExternalApproval { request_id, .. } = waiting.as_ref() else {
+		return false;
+	};
+	let human = aidash_application::ports::execution::ExecutionStore::human_request_by_id(
+		store,
+		*request_id,
+	)
+	.await
+	.unwrap();
+	assert_eq!(human.kind, "APPROVAL_REQUIRED");
+	assert!(
+		human
+			.prompt
+			.starts_with("Approve this exact external tool action once?")
+	);
+	store
+		.answer(*request_id, json!({"approved":true}))
+		.await
+		.unwrap();
+	true
 }
 
 struct WriteApproval {
@@ -944,11 +1035,11 @@ async fn write_approval(
 		.register(entry(
 			"tool",
 			"managed-write",
-			json!({"transport":"http","endpoint":endpoint,"credential_env":null,"replay":"unsafe"}),
+			json!({"registry_node":f.config.node_id,"provider":"integration.http@1","operation":"invoke","default_alias":"plugin_0","tier":"integration","narrow":{},"transport":{"transport":"http","endpoint":endpoint,"credential_env":null,"replay":"unsafe"}}),
 		))
 		.await
 		.unwrap();
-	let agent = f.registry.register(entry("agent", "managed-agent", json!({"model":{"id":"model","version":"1.0.0"},"instructions":"Use the selected tool","tools":[{"id":"managed-write","version":"1.0.0"}],"skills":[],"allow_task_creation":false}))).await.unwrap();
+	let agent = f.registry.register(entry("agent", "managed-agent", json!({"model":{"id":"model","version":"1.0.0"},"instructions":"Use the selected tool","schema_version":1,"bindings":[{"kind":"tool","target":{"registry_node":f.config.node_id,"id":"managed-write","version":"1.0.0"},"alias":"plugin_0","narrow":{}}],"remove_default":[]}))).await.unwrap();
 	let workspace = store
 		.create_workspace("Approval", "Check external effects")
 		.await
@@ -1207,17 +1298,13 @@ async fn managed_external_write_requires_exact_one_call_approval(
 
 #[rstest::rstest]
 #[tokio::test]
-async fn rejected_web_sources_reach_the_agent_without_retrying_or_escaping_allowed_hosts(
+async fn integration_failures_reach_the_agent_without_replay_or_schema_escape(
 	#[future(awt)]
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
 	use aidash_server::harness::Harness;
-	use axum::{
-		Json, Router,
-		extract::Path,
-		routing::{get, post},
-	};
+	use axum::{Json, Router, routing::post};
 	use std::sync::atomic::{AtomicUsize, Ordering};
 
 	let (store, database_url, schema) = setup(&_test_environment).await;
@@ -1231,16 +1318,17 @@ async fn rejected_web_sources_reach_the_agent_without_retrying_or_escaping_allow
 	let hits = source_hits.clone();
 	let model_endpoint = endpoint.clone();
 	let server = Router::new()
-		.route("/{source}", get(move |Path(source): Path<String>| {
+		.route("/evidence", post(move |Json(body): Json<serde_json::Value>| {
 			let hits = hits.clone();
 			async move {
 				hits.fetch_add(1, Ordering::SeqCst);
-				match source.as_str() {
-					"blocked" => (StatusCode::FORBIDDEN, "blocked source"),
-					"missing" => (StatusCode::NOT_FOUND, "missing source"),
-					"alternate" => (StatusCode::OK, "Alternate evidence"),
-					_ => (StatusCode::INTERNAL_SERVER_ERROR, "unexpected source"),
-				}
+				let url = reqwest::Url::parse(body["url"].as_str().unwrap()).unwrap();
+				Json(match url.path() {
+					"/blocked" => json!({"ok":false,"error":{"kind":"source_status","status":403}}),
+					"/missing" => json!({"ok":false,"error":{"kind":"source_status","status":404}}),
+					"/alternate" => json!({"ok":true,"text":"Alternate evidence"}),
+					_ => panic!("unexpected source"),
+				})
 			}
 		}))
 		.route("/v1/chat/completions", post(move |Json(body): Json<serde_json::Value>| {
@@ -1250,20 +1338,22 @@ async fn rejected_web_sources_reach_the_agent_without_retrying_or_escaping_allow
 				let context: serde_json::Value = serde_json::from_str(
 					body["messages"][1]["content"].as_str().unwrap()
 				).unwrap();
-				let history = context["history"].as_array().unwrap();
+				let history: Vec<_> = context["history"]
+					.as_array()
+					.unwrap()
+					.iter()
+					.filter(|event| event.get("call").is_some())
+					.collect();
 				let next = match history.len() {
-					0 => Some(format!("{endpoint}/blocked?query={}", "a".repeat(3000))),
+					0 => Some(format!("{endpoint}/blocked")),
 					1 => {
 						assert_eq!(history[0]["result"]["ok"], false);
-						assert_eq!(history[0]["result"]["error"]["kind"], "http_status");
+						assert_eq!(history[0]["result"]["error"]["kind"], "source_status");
 						assert_eq!(history[0]["result"]["error"]["status"], 403);
-						let url = history[0]["result"]["error"]["url"].as_str().unwrap();
-						assert!(url.starts_with(&format!("{endpoint}/blocked?query=")));
-						assert_eq!(url.len(), 2048, "error URL must be bounded");
 						Some(format!("{endpoint}/missing"))
 					}
 					2 => {
-						assert_eq!(history[1]["result"], json!({"ok":false,"error":{"kind":"http_status","url":format!("{endpoint}/missing"),"status":404}}));
+						assert_eq!(history[1]["result"], json!({"ok":false,"error":{"kind":"source_status","status":404}}));
 						Some(format!("{endpoint}/alternate"))
 					}
 					3 => {
@@ -1271,7 +1361,7 @@ async fn rejected_web_sources_reach_the_agent_without_retrying_or_escaping_allow
 						Some(forbidden_host)
 					}
 					4 => {
-						assert!(history[3]["result"]["error"].as_str().unwrap().contains("outside the tool's configured hosts"));
+						assert!(history[3]["result"]["error"].as_str().unwrap().contains("does not match"));
 						None
 					}
 					_ => panic!("unexpected inference after final response"),
@@ -1289,22 +1379,27 @@ async fn rejected_web_sources_reach_the_agent_without_retrying_or_escaping_allow
 	federation.registry.register(entry("model", "web-model", json!({"provider":"openrouter","model_id":"fixture","endpoint":format!("{endpoint}/v1"),"credential_env":null,"context_window":128000,"max_output_tokens":4096,"modalities":["text"],"cost":{}}))).await.unwrap();
 	federation
 		.registry
-		.register(entry(
+		.register({ let mut tool = entry(
 			"tool",
 			"web-fetch",
-			json!({"transport":"native","operation":"http_get","allowed_hosts":["127.0.0.1"]}),
-		))
+			json!({"registry_node":federation.config.node_id,"provider":"integration.http@1","operation":"invoke","default_alias":"plugin_0","tier":"integration","narrow":{},"transport":{"transport":"http","endpoint":format!("{endpoint}/evidence"),"credential_env":null,"replay":"read_only"}}),
+		); tool.schema = json!({"type":"object","properties":{"url":{"type":"string","pattern":"^http://127\\.0\\.0\\.1:"}},"required":["url"],"additionalProperties":false}); tool })
 		.await
 		.unwrap();
-	let agent = federation.registry.register(entry("agent", "web-research", json!({"model":{"id":"web-model","version":"1.0.0"},"instructions":"Use available public evidence","tools":[{"id":"web-fetch","version":"1.0.0"}],"skills":[]}))).await.unwrap();
+	let agent = federation.registry.register(entry("agent", "web-research", json!({"model":{"id":"web-model","version":"1.0.0"},"instructions":"Use available public evidence","schema_version":1,"bindings":[{"kind":"tool","target":{"registry_node":federation.config.node_id,"id":"web-fetch","version":"1.0.0"},"alias":"plugin_0","narrow":{}}],"remove_default":[]}))).await.unwrap();
 	let workspace = store
 		.create_workspace("Web research", "Use available evidence")
 		.await
 		.unwrap();
 	let task = running_task(&store, &agent, workspace.id, None).await;
 	let harness = Harness { federation };
-	for _ in 0..20 {
-		if !harness.worker_once().await.unwrap() {
+	// Four exact external approvals add durable waiting/resume transitions.
+	for _ in 0..40 {
+		let progress = harness.worker_once().await.unwrap();
+		if approve_fixture_call(&store).await {
+			continue;
+		}
+		if !progress {
 			break;
 		}
 		if store.task(task.id).await.unwrap().status == aidash_server::domain::TaskStatus::Completed
@@ -1316,13 +1411,23 @@ async fn rejected_web_sources_reach_the_agent_without_retrying_or_escaping_allow
 	assert_eq!(
 		run.phase().as_str(),
 		"COMPLETED",
-		"error={:?}, pending={}",
+		"error={:?}, pending={}, history={}",
 		run.error,
-		json!(run.state)["data"]
+		json!(run.state)["data"],
+		json!(run.context.history)
 	);
 	assert_eq!(
 		store.task(task.id).await.unwrap().status.as_str(),
 		"COMPLETED"
+	);
+	assert_eq!(
+		run.context
+			.history
+			.iter()
+			.filter(|event| matches!(event, aidash_server::context::ContextEvent::Tool { .. }))
+			.count(),
+		4,
+		"transport and schema errors each reach the next inference exactly once"
 	);
 	assert_eq!(
 		source_hits.load(Ordering::SeqCst),
@@ -1371,7 +1476,7 @@ async fn add_test_peer(store: &Store, node: &str, endpoint: &str) {
 							vec![Expr::value(query_bind_2.to_owned()).into()],
 						))
 						.expr(reinhardt::query::Expr::cust("'AIDASH_SECRET_TEST_PEER'"))
-						.expr(reinhardt::query::Expr::cust("'0.1'"))
+						.expr(reinhardt::query::Expr::cust("'0.2'"))
 						.expr(reinhardt::query::Expr::cust("TRUE"))
 						.to_owned(),
 				)
@@ -1645,7 +1750,7 @@ async fn terminal_delegations_allow_reads_and_exact_completion_replay_only(
 		let response = http_client().request(Method::POST, router.url("/federation/v0.1/workspace"))
 		.header("authorization", format!("Bearer {token}"))
 		.header("x-aidash-node", peer)
-		.header("x-aidash-protocol", "0.1")
+		.header("x-aidash-protocol", "0.2")
 		.header("content-type", "application/json")
 		.body(json!({"task_id":task.id,"agent":{"id":agent.id,"version":agent.version},"operation":operation,"data":data}).to_string())
 		.send().await.unwrap();
@@ -1686,6 +1791,7 @@ async fn queued_executor_conflict_rolls_back_claim_and_dependencies_wait(
 	let agent = seed(&f.registry).await;
 	let mut other = agent.clone();
 	other.id = "other".into();
+	other.binding_normalization = None;
 	f.registry.register(other.clone()).await.unwrap();
 	let workspace = store
 		.create_workspace("Claims", "Do not strand work")
@@ -1894,7 +2000,8 @@ async fn skill_reads_fit_the_pending_request_budget_before_recording(
 		.unwrap();
 	let mut agent = seed(&f.registry).await;
 	agent.id = "skilled-agent".into();
-	agent.config["skills"] = json!([{"id":"bundled-skill","version":"1.0.0"}]);
+	agent.binding_normalization = None;
+	agent.config["bindings"] = json!([{"kind":"skill","target":{"registry_node":f.config.node_id,"id":"bundled-skill","version":"1.0.0"},"narrow":{}}]);
 	f.registry.register(agent.clone()).await.unwrap();
 	let workspace = store
 		.create_workspace("Skill read", "Read a bundled guide")
@@ -2131,7 +2238,7 @@ async fn peer_disable_and_retry_rotation_do_not_require_a_live_peer(
 			node_id: "aidash://offline".into(),
 			endpoint: "http://127.0.0.1:1".into(),
 			credential_env: "AIDASH_SECRET_REMOVED".into(),
-			protocol_version: "0.1".into(),
+			protocol_version: "0.2".into(),
 			enabled: false,
 		})
 		.await
@@ -2296,8 +2403,11 @@ async fn oversized_outbox_payload_publishes_a_reference_without_blocking_later_e
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	let (mut store, url, schema) = setup(&_test_environment).await;
-	store.node_id = format!("aidash://outbox-{}", Uuid::new_v4().simple());
+	let (store, url, schema) = setup_node(
+		&_test_environment,
+		&format!("aidash://outbox-{}", Uuid::new_v4().simple()),
+	)
+	.await;
 	let mut f = federation_for(&store);
 	f.config.nats_url = _test_environment.nats_url.clone();
 	let bus = aidash_server::bus::EventBus::connect(&f.config.nats_url, &store.node_id)
@@ -2406,7 +2516,7 @@ async fn ambiguous_peer_credentials_cannot_impersonate_another_node(
 			axum::Router::new().route(
 				"/.well-known/aidash",
 				axum::routing::get(|| async {
-					axum::Json(json!({"id":"aidash://peer-d","protocol_version":"0.1"}))
+					axum::Json(json!({"id":"aidash://peer-d","protocol_version":"0.2"}))
 				}),
 			),
 		)
@@ -2418,7 +2528,7 @@ async fn ambiguous_peer_credentials_cannot_impersonate_another_node(
 			node_id: "aidash://peer-d".into(),
 			endpoint,
 			credential_env: "AIDASH_SECRET_TEST_PEER".into(),
-			protocol_version: "0.1".into(),
+			protocol_version: "0.2".into(),
 			enabled: true
 		})
 		.await,
@@ -2442,12 +2552,13 @@ async fn recovery_publishes_reconciliation_marker_with_the_request(
 		.register(entry(
 			"tool",
 			"unsafe-http",
-			json!({"transport":"http","endpoint":"http://127.0.0.1:9","replay":"unsafe"}),
+			json!({"registry_node":f.config.node_id,"provider":"integration.http@1","operation":"invoke","default_alias":"plugin_0","tier":"integration","narrow":{},"transport":{"transport":"http","endpoint":"http://127.0.0.1:9","replay":"unsafe"}}),
 		))
 		.await
 		.unwrap();
 	agent.id = "unsafe-agent".into();
-	agent.config["tools"] = json!([{"id":"unsafe-http","version":"1.0.0"}]);
+	agent.binding_normalization = None;
+	agent.config["bindings"] = json!([{"kind":"tool","target":{"registry_node":f.config.node_id,"id":"unsafe-http","version":"1.0.0"},"alias":"plugin_0","narrow":{}}]);
 	f.registry.register(agent.clone()).await.unwrap();
 	let workspace = store
 		.create_workspace("Reconcile", "Never expose an incomplete request")
@@ -2464,7 +2575,16 @@ async fn recovery_publishes_reconciliation_marker_with_the_request(
 	};
 	{
 		let query_bind_1 = task.id;
-		let query_bind_2 = common::tool_pending(json!({"response":response,"cursor":0}));
+		let query_bind_2 = {
+			let run = store.runs().await.unwrap().remove(0);
+			let mut pending = common::tool_pending(json!({"response":response,"cursor":0}));
+			// The crash follows approval and dispatch of this exact unsafe call.
+			pending["data"]["workbench_approval_result"] = json!({
+				"key":format!("{}:0:0", run.id), "call":response.tool_calls[0],
+				"expires_at":chrono::Utc::now()+chrono::Duration::minutes(15), "approved":true
+			});
+			pending
+		};
 		sqlx::query(
 			&reinhardt::query::Query::update()
 				.table(reinhardt::query::Alias::new("runs"))
@@ -2760,8 +2880,9 @@ async fn remote_workspace_snapshot_pages_large_accumulated_artifacts(
 	assert!(serde_json::to_vec(&page).unwrap().len() < 3_145_728);
 	assert_eq!(page.items.len(), 1);
 	assert!(page.next.is_some());
-	let (mut worker_store, worker_url, worker_schema) = setup(&_test_environment).await;
-	worker_store.node_id = "aidash://worker".into();
+	let (worker_store, worker_url, worker_schema) =
+		setup_node(&_test_environment, "aidash://worker").await;
+	seed(&Registry::new(worker_store.pool.clone(), &worker_store.node_id).unwrap()).await;
 	let server = common::application(f).await;
 	let endpoint = server.server.url.clone();
 	add_test_peer(&home, &worker_store.node_id, "http://127.0.0.1:9").await;
@@ -2847,3 +2968,175 @@ fn request_id(run: &Run) -> Uuid {
 
 #[path = "postgres/typed_state.rs"]
 mod typed_state;
+
+#[rstest::rstest]
+#[tokio::test]
+async fn operator_remote_humans_live_on_home_and_survive_receiver_reconstruction(
+	#[future(awt)]
+	#[from(test_environment)]
+	environment: Arc<TestEnvironment>,
+) {
+	let (home_store, home_url, home_schema) = setup_node(&environment, "aidash://human-home").await;
+	let (worker_store, worker_url, worker_schema) =
+		setup_node(&environment, "aidash://human-worker").await;
+	let mut home_f = federation_for(&home_store);
+	let mut worker_f = federation_for(&worker_store);
+	let agent = seed(&worker_f.registry).await;
+	let home_app = common::peer_application(&mut home_f).await;
+	let worker_app = common::peer_application(&mut worker_f).await;
+	add_test_peer(
+		&home_store,
+		&worker_store.node_id,
+		&worker_f.config.endpoint,
+	)
+	.await;
+	add_test_peer(&worker_store, &home_store.node_id, &home_f.config.endpoint).await;
+	let workspace = home_store
+		.create_workspace("Remote decisions", "Keep decisions at Home")
+		.await
+		.unwrap();
+	let task = home_store
+		.create_task(workspace.id, &new_task(), "human", None)
+		.await
+		.unwrap();
+	let insert = Query::insert()
+		.into_table(Alias::new("delegations"))
+		.columns(["task_id", "node_id", "agent_id", "agent_version"].map(Alias::new))
+		.values_panic([
+			reinhardt::query::IntoValue::into_value(task.id),
+			reinhardt::query::IntoValue::into_value(worker_store.node_id.clone()),
+			reinhardt::query::IntoValue::into_value(agent.id.clone()),
+			reinhardt::query::IntoValue::into_value(agent.version.clone()),
+		])
+		.to_string(PostgresQueryBuilder);
+	sqlx::query(&insert)
+		.execute(home_store.pool.driver())
+		.await
+		.unwrap();
+	let owner = qualified_agent(&worker_store.node_id, &agent.id, &agent.version);
+	let task = home_store
+		.claim(task.id, task.revision, &owner, &agent)
+		.await
+		.unwrap();
+	let task = home_store
+		.transition(task.id, task.revision, &owner, TaskStatus::Running)
+		.await
+		.unwrap();
+	let offer = json!({"task":task,"agent":{"id":agent.id,"version":agent.version}});
+	let old = http_client()
+		.post(worker_app.url("/federation/v0.1/offers"))
+		.bearer_auth(std::env::var("AIDASH_SECRET_TEST_PEER").unwrap())
+		.header("x-aidash-node", &home_store.node_id)
+		.header("x-aidash-protocol", "0.1")
+		.json(&offer)
+		.send()
+		.await
+		.unwrap();
+	assert!(
+		!old.status().is_success(),
+		"unsupported Home protocol must not admit a Run"
+	);
+	let run: Run = home_f
+		.request(&worker_store.node_id, Method::POST, "/offers", Some(&offer))
+		.await
+		.unwrap();
+	let home = aidash_server::federation::Home::new(worker_f.clone(), run.clone());
+	assert_eq!(home.snapshot().await.unwrap().workspace.id, workspace.id);
+	let question = home
+		.human_request("QUESTION", "Continue?", "remote:question")
+		.await
+		.unwrap();
+	assert!(
+		home_store.run(run.id).await.is_err(),
+		"Home must not acquire a shadow execution Run"
+	);
+	assert!(
+		aidash_application::ports::execution::ExecutionStore::human_request_by_id(
+			&home_store,
+			question.id
+		)
+		.await
+		.is_err()
+	);
+	let recovered = aidash_server::federation::Home::new(
+		worker_f.clone(),
+		worker_store.run(run.id).await.unwrap(),
+	);
+	assert_eq!(
+		recovered
+			.human_request("QUESTION", "Continue?", "remote:question")
+			.await
+			.unwrap()
+			.id,
+		question.id
+	);
+	assert!(
+		recovered
+			.human_request("QUESTION", "Changed?", "remote:question")
+			.await
+			.is_err()
+	);
+	let answered = common::request(
+		&worker_app,
+		&worker_f.config.api_token,
+		"POST",
+		&format!("/api/human-requests/{}/answer", question.id),
+		json!({"answer":"yes"}),
+	)
+	.await;
+	assert_eq!(answered.0, 200, "{}", answered.1);
+	assert_eq!(
+		recovered
+			.human_request_by_id(question.id)
+			.await
+			.unwrap()
+			.response,
+		Some(json!({"answer":"yes"}))
+	);
+	let next = recovered
+		.human_request("CONFIRMATION", "Again?", "remote:next")
+		.await
+		.unwrap();
+	let answer: HumanRequest = home_f
+		.request(
+			&worker_store.node_id,
+			Method::POST,
+			"/control",
+			Some(&json!({"run_id":run.id,"action":"answer","request_id":next.id,"response":false})),
+		)
+		.await
+		.unwrap();
+	assert_eq!(answer.response, Some(json!(false)));
+	assert_eq!(
+		recovered
+			.human_request_by_id(next.id)
+			.await
+			.unwrap()
+			.response,
+		Some(json!(false))
+	);
+	let mut foreign = run.clone();
+	foreign.id = Uuid::new_v4();
+	let foreign = aidash_server::federation::Home::new(worker_f, foreign);
+	assert!(foreign.human_request_by_id(question.id).await.is_err());
+	assert!(
+		foreign
+			.human_request("QUESTION", "Other Run?", "remote:other")
+			.await
+			.is_err()
+	);
+	let task = home_store.task(task.id).await.unwrap();
+	home_store
+		.transition(task.id, task.revision, &owner, TaskStatus::Cancelled)
+		.await
+		.unwrap();
+	assert!(
+		recovered
+			.human_request("QUESTION", "After cancellation?", "remote:cancelled")
+			.await
+			.is_err()
+	);
+	drop((home_app, worker_app));
+	cleanup(worker_store, &worker_url, &worker_schema).await;
+	cleanup(home_store, &home_url, &home_schema).await;
+}

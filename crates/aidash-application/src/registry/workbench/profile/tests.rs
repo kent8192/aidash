@@ -65,7 +65,7 @@ impl ProfileConfiguration for Configuration {
 fn reference(id: &str) -> EntityRef {
 	EntityRef {
 		id: id.into(),
-		version: "1".into(),
+		version: "1.0.0".into(),
 	}
 }
 fn subject() -> Principal {
@@ -76,6 +76,7 @@ fn subject() -> Principal {
 }
 fn rule() -> RealToolRule {
 	RealToolRule {
+		read_only_verified: true,
 		tool: reference("tool"),
 		endpoint: "https://test.example/rpc".into(),
 		credential_env: Some("AIDASH_SECRET_TEST_TOOL".into()),
@@ -84,8 +85,20 @@ fn rule() -> RealToolRule {
 	}
 }
 fn tool() -> Entry {
-	serde_json::from_value(json!({"id":"tool","version":"1","kind":"tool","name":{},"description":{},"config":{"transport":"http","endpoint":"https://production.example/rpc","credential_env":"AIDASH_SECRET_PRODUCTION_TOOL","replay":"read_only"}})).unwrap()
+	let mut tool = crate::test_support::http_tool("aidash://local", "tool", "lookup");
+	tool.config["transport"]["credential_env"] = json!("AIDASH_SECRET_PRODUCTION_TOOL");
+	tool
 }
+fn draft_entry() -> Entry {
+	let mut entry = crate::test_support::agent("agent");
+	entry.config["bindings"] = json!([crate::test_support::binding(
+		"tool",
+		"aidash://local",
+		"tool"
+	)]);
+	entry
+}
+
 fn input() -> ProfileInput {
 	ProfileInput {
 		expected_revision: 0,
@@ -155,6 +168,18 @@ impl ProfileRepository for Repository {
 }
 #[async_trait]
 impl ProfileDraftScope for Scope<'_> {
+	async fn bindings(
+		&mut self,
+		entry: &aidash_domain::registry::Entry,
+	) -> Result<aidash_domain::registry::bindings::BindingSnapshot> {
+		Ok(crate::test_support::resolve(
+			"aidash://local",
+			entry,
+			false,
+			vec![tool()],
+		))
+	}
+
 	async fn draft(&mut self, id: Uuid) -> Result<Draft> {
 		assert_eq!(id, Uuid::from_u128(1));
 		self.0.state.lock().unwrap().calls.push("draft");
@@ -163,7 +188,7 @@ impl ProfileDraftScope for Scope<'_> {
 			tenant: "tenant".into(),
 			owner: "owner".into(),
 			revision: 5,
-			entry: json!({"config":{"model":reference("model"),"tools":[reference("tool")],"cluster":null}}),
+			entry: json!(draft_entry()),
 			documents: json!([]),
 			release_notes: String::new(),
 			source_id: None,
@@ -337,7 +362,7 @@ fn real_rule_preserves_endpoint_credential_and_replay_isolation(#[case] denial: 
 		"production_credential" => {
 			rule.credential_env = Some("AIDASH_SECRET_PRODUCTION_TOOL".into())
 		}
-		"write_tool" => tool.config["replay"] = json!("idempotent"),
+		"write_tool" => rule.read_only_verified = false,
 		"non_http" => tool.config = json!({"transport":"native","operation":"read"}),
 		"non_tool" => tool.kind = "model".into(),
 		_ => config.present = false,

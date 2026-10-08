@@ -559,7 +559,32 @@ fn reference(id: &str) -> EntityRef {
 		version: "1.0.0".into(),
 	}
 }
-fn entry(kind: &str, id: &str, config: serde_json::Value) -> Entry {
+fn replace_memory_binding(agent: &mut Entry, provider: EntityRef) {
+	agent.binding_normalization = None;
+	let binding = agent.config["bindings"]
+		.as_array_mut()
+		.unwrap()
+		.iter_mut()
+		.find(|binding| binding["kind"] == "memory")
+		.unwrap();
+	binding["target"] = json!({"registry_node":"aidash://native-memory","id":provider.id,"version":provider.version});
+}
+fn entry(kind: &str, id: &str, mut config: serde_json::Value) -> Entry {
+	if kind == "agent" {
+		let mut bindings = vec![];
+		if let Some(provider) = config.get("memory").filter(|value| !value.is_null()) {
+			bindings.push(json!({"kind":"memory","target":{"registry_node":"aidash://native-memory","id":provider["id"],"version":provider["version"]},"narrow":{}}));
+		}
+		for source in config
+			.get("sources")
+			.and_then(|v| v.as_array())
+			.into_iter()
+			.flatten()
+		{
+			bindings.push(json!({"kind":"source","target":{"registry_node":"aidash://native-memory","id":source["id"],"version":source["version"]},"narrow":{}}));
+		}
+		config = json!({"schema_version":1,"model":config["model"],"instructions":config["instructions"],"bindings":bindings,"remove_default":["file_search","file_read"]});
+	}
 	serde_json::from_value(json!({"id":id,"version":"1.0.0","kind":kind,"name":{"en":id,"ja":id},"description":{"en":"fixture"},
 		"capabilities":[],"languages":["en","ja"],"config":config})).unwrap()
 }
@@ -622,6 +647,7 @@ async fn setup_endpoint_retention(
 	.await
 	.unwrap();
 	let registry = Registry::new(store.pool.clone(), &store.node_id).unwrap();
+	registry.seed_system().await.unwrap();
 	for (kind, id, config) in [
 		(
 			"model",
@@ -2281,7 +2307,8 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 		.unwrap();
 		let mut agent = registry.get("a", "1.0.0").await.unwrap();
 		agent.id = "late-agent".into();
-		agent.config["sources"] = json!([reference("shared-source")]);
+		agent.binding_normalization = None;
+		agent.config["bindings"].as_array_mut().unwrap().push(json!({"kind":"source","target":{"registry_node":"aidash://native-memory","id":"shared-source","version":"1.0.0"},"narrow":{}}));
 		registry.register(agent).await.unwrap();
 		reference("late-agent")
 	} else {

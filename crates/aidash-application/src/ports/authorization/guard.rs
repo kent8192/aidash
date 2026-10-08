@@ -20,4 +20,12 @@ pub trait RunGuardScope: Send {
 	async fn require_live(&mut self, task: Uuid, agent: &EntityRef) -> Result<()>;
 	async fn check_pinned(&mut self, entry: &Entry) -> Result<()>;
 	async fn context_authority(&mut self, run: &RunMetadata) -> Result<()>;
+	async fn binding_snapshot(
+		&mut self,
+		_: &RunMetadata,
+	) -> Result<aidash_domain::registry::bindings::BindingSnapshot> {
+		Err(crate::Error::Invalid(
+			"Run has no admitted Binding snapshot".into(),
+		))
+	}
 }

@@ -56,7 +56,7 @@ export function RemoteExecutions({ task }: { task: string }) {
         {ja ? "状態を再読み込み" : "Refresh status"}
       </Button>
       {(!status.isError ? status.data : undefined)?.map(
-        ({ grant, execution, unavailable, semantic }) => {
+        ({ grant, execution, unavailable, semantic, human_requests }) => {
           const expired =
             Date.parse(grant.expires_at) <=
             (clock.data ?? Number.POSITIVE_INFINITY);
@@ -102,6 +102,15 @@ export function RemoteExecutions({ task }: { task: string }) {
                   </>
                 )}
               </dl>
+              {live &&
+                human_requests?.map((request) => (
+                  <RemoteHuman
+                    key={request.id}
+                    task={task}
+                    grant={grant.id}
+                    request={request}
+                  />
+                ))}
               {semantic && (
                 <RemoteMemoryStatus
                   status={semantic}
@@ -258,5 +267,88 @@ function RemoteMessage({ task, grant }: { task: string; grant: string }) {
             : "Send instruction"}
       </Button>
     </form>
+  );
+}
+
+function RemoteHuman({
+  task,
+  grant,
+  request,
+}: {
+  task: string;
+  grant: string;
+  request: { id: string; kind: string; prompt: string; response?: unknown };
+}) {
+  const { locale } = useI18n();
+  const ja = locale === "ja-JP";
+  const client = useQueryClient();
+  const [response, setResponse] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  if (request.response != null) return null;
+  const answer = async (value: unknown) => {
+    setBusy(true);
+    setError("");
+    try {
+      await apiFetch(
+        `/api/tasks/${task}/remote-grants/${grant}/human-requests/answer`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ id: request.id, response: value }),
+        },
+      );
+      await client.invalidateQueries({ queryKey: ["remote-executions", task] });
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <section>
+      <p>{request.prompt}</p>
+      {error && <p role="alert">{error}</p>}
+      {request.kind === "APPROVAL_REQUIRED" ? (
+        <div className="button-row">
+          <Button
+            disabled={busy}
+            onClick={() => void answer({ approved: true })}
+          >
+            {ja ? "承認" : "Approve"}
+          </Button>
+          <Button
+            disabled={busy}
+            variant="outline"
+            onClick={() => void answer({ approved: false })}
+          >
+            {ja ? "拒否" : "Deny"}
+          </Button>
+        </div>
+      ) : (
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            let value: unknown = response;
+            try {
+              value = JSON.parse(response);
+            } catch {
+              /* Plain text is a valid human answer. */
+            }
+            void answer(value);
+          }}
+        >
+          <label>
+            {ja ? "応答" : "Response"}
+            <textarea
+              required
+              value={response}
+              onChange={(e) => setResponse(e.target.value)}
+            />
+          </label>
+          <Button disabled={busy}>{ja ? "応答を送信" : "Send response"}</Button>
+        </form>
+      )}
+    </section>
   );
 }

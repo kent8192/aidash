@@ -102,7 +102,7 @@ pub fn pair(
 					node_id: remote.f.config.node_id.clone(),
 					endpoint: remote.f.config.endpoint.clone(),
 					credential_env: PEER_ENV.into(),
-					protocol_version: "0.1".into(),
+					protocol_version: "0.2".into(),
 					enabled: true,
 				})
 				.await
@@ -258,7 +258,7 @@ impl Node {
 		for (key, value) in [
 			("authorization", format!("Bearer {PEER_SECRET}")),
 			("x-aidash-node", caller.f.config.node_id.clone()),
-			("x-aidash-protocol", "0.1".into()),
+			("x-aidash-protocol", "0.2".into()),
 		] {
 			client.set_header(key, &value).await.unwrap();
 		}

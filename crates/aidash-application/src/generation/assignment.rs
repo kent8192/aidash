@@ -189,27 +189,36 @@ pub async fn create_in(
 	if !policy.spec.enabled {
 		return Err(Error::Forbidden);
 	}
-	let config = super::policy::validate(validation, &policy.spec, scope.bundle())?;
-	for (reference, action) in std::iter::once((&config.model, "model.infer"))
-		.chain(config.tools.iter().map(|r| (r, "tool.invoke")))
-		.chain(config.skills.iter().map(|r| (r, "skill.use")))
-		.chain(config.cluster.iter().map(|r| (r, "cluster.execute")))
+	let _config = super::policy::validate(validation, &policy.spec, scope.bundle())?;
+
+	let snapshot = scope.bindings(&policy.spec.template).await?;
+	super::policy::validate_template_snapshot(&snapshot)?;
+	for (reference, action) in snapshot
+		.definitions
+		.iter()
+		.filter(|d| d.identity != snapshot.agent)
+		.map(|d| {
+			(
+				d.identity.local(),
+				crate::registry::bindings::component_action(&d.definition.kind),
+			)
+		})
 		.chain(
 			policy
 				.spec
 				.compaction
 				.iter()
-				.map(|c| (&c.provider, "compaction.invoke")),
+				.map(|c| (c.provider.clone(), "compaction.invoke")),
 		)
 		.chain(
 			policy
 				.spec
 				.embedding
 				.iter()
-				.map(|c| (&c.provider, "embedding.invoke")),
+				.map(|c| (c.provider.clone(), "embedding.invoke")),
 		) {
-		scope.catalog_entry(reference, "registry.read").await?;
-		scope.catalog_entry(reference, action).await?;
+		scope.catalog_entry(&reference, "registry.read").await?;
+		scope.catalog_entry(&reference, action).await?;
 	}
 	let previous_depth = scope.previous_depth().await?;
 	let depth = previous_depth.unwrap_or(0).max(foreign.map_or(0, |intent| {
@@ -220,9 +229,11 @@ pub async fn create_in(
 	let id = scope.request_id();
 	let mut definition = policy.spec.template.clone();
 	definition.id = format!("generated-{}", id.simple());
+	definition.binding_normalization = None;
 	if !definition.tags.iter().any(|t| t == "generated") {
 		definition.tags.push("generated".into());
 	}
+	definition.normalize_agent(scope.node_id())?;
 	validation.validate_in(&definition, true)?;
 	if !search.matches(&definition) {
 		return Err(Error::Invalid(

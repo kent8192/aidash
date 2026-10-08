@@ -88,8 +88,19 @@ async function fixture(
       },
     ],
     registry: [
-      entry("agent", "agent", { memory: ref("memory"), model: ref("model") }),
+      entry("agent", "agent", {
+        schema_version: 1,
+        bindings: [
+          {
+            kind: "memory",
+            target: { registry_node: "aidash://test", ...ref("memory") },
+            narrow: {},
+          },
+        ],
+        model: ref("model"),
+      }),
       entry("memory", "memory", {
+        engine: "hindsight_rust",
         policy: { bounds: { max_context_tokens: contextTokens } },
       }),
       entry("model", "model"),

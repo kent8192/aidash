@@ -66,7 +66,7 @@ async fn personal_agent_roundtrip(mut execution: ExecutionFixture, large_documen
 			.status_code(),
 		200
 	);
-	let mut input = json!({"entry":{"id":"","version":"1.0.0","kind":"agent","name":{"en":"Personal"},"description":{"en":"Skills first"},"config":{"model":{"id":"model","version":"1.0.0"},"skills":[{"id":"writing","version":"1.0.0"}]}},"documents":[{"name":"private.pdf","media_type":"application/pdf","text":"PRIVATE-REFERENCE-123"}]});
+	let mut input = json!({"entry":{"id":"","version":"1.0.0","kind":"agent","name":{"en":"Personal"},"description":{"en":"Skills first"},"config":{"model":{"id":"model","version":"1.0.0"},"schema_version":1,"bindings":[{"kind":"skill","target":{"registry_node":f.config.node_id,"id":"writing","version":"1.0.0"},"narrow":{}}],"remove_default":[]}},"documents":[{"name":"private.pdf","media_type":"application/pdf","text":"PRIVATE-REFERENCE-123"}]});
 	if large_documents {
 		let mut model = f.registry.get("model", "1.0.0").await.unwrap();
 		model.id = "small-model".into();
@@ -108,9 +108,16 @@ async fn personal_agent_roundtrip(mut execution: ExecutionFixture, large_documen
 	assert!(!first.1.to_string().contains("PRIVATE-REFERENCE"));
 	assert_eq!(first, personal(&app.operator, key, input.clone()).await);
 	let entry: Entry = serde_json::from_value(first.1.clone()).unwrap();
+	let source = entry.config["bindings"]
+		.as_array()
+		.unwrap()
+		.iter()
+		.find(|b| b["kind"] == "source")
+		.unwrap()["target"]
+		.clone();
 	let documents = AgentKnowledge::objects()
-		.filter(AgentKnowledge::field_agent_key().eq(entry.id.clone()))
-		.filter(AgentKnowledge::field_agent_version().eq(entry.version.clone()))
+		.filter(AgentKnowledge::field_agent_key().eq(source["id"].as_str().unwrap()))
+		.filter(AgentKnowledge::field_agent_version().eq(source["version"].as_str().unwrap()))
 		.get_with_db(&mut app.database.lease.handle())
 		.await
 		.unwrap();
@@ -139,8 +146,12 @@ async fn personal_agent_roundtrip(mut execution: ExecutionFixture, large_documen
 		.unwrap();
 	let mut cloned = entry.clone();
 	cloned.id = "cloned-personal".into();
-	f.registry.register(cloned.clone()).await.unwrap();
-	assert!(knowledge::load(&f.registry.db, &cloned).await.is_err());
+	cloned.binding_normalization = None;
+	let cloned = f.registry.register(cloned).await.unwrap();
+	assert_eq!(
+		knowledge::load(&f.registry.db, &cloned).await.unwrap(),
+		knowledge::load(&f.registry.db, &entry).await.unwrap()
+	);
 	let mut invalid = input;
 	invalid["documents"][0]["text"] = json!(" ");
 	assert_eq!(

@@ -141,7 +141,21 @@ impl SemanticBindingScope for BindingScope {
 }
 fn remote_inspection() -> Inspection {
 	let mut value = inspection("model");
-	value.agent.config = json!({"model":{"id":"model","version":"1.0.0"}});
+	let mut agent = crate::test_support::agent("agent");
+	agent.config["model"] = json!({"id":"model","version":"1.0.0"});
+	agent.config["bindings"] = json!([crate::test_support::binding(
+		"memory",
+		"aidash://receiver",
+		"semantic-memory"
+	)]);
+	let source = crate::test_support::entry(
+		"semantic-memory",
+		"memory",
+		json!({"schema_version":1,"source":{"adapter":"semantic_memory"}}),
+	);
+	value.binding_snapshot =
+		crate::test_support::resolve("aidash://receiver", &agent, true, vec![source]);
+	value.agent = agent;
 	value.semantic_memory = VERSION;
 	value
 }
@@ -170,7 +184,16 @@ async fn explicit_native_home_selection_is_independent_of_generic_auto_context(
 	scope.spec.enabled = enabled;
 	scope.index.spec = serde_json::to_value(&scope.spec).unwrap();
 	let mut inspection = remote_inspection();
-	inspection.agent.config["memory"] = json!({"id":"native","version":"1.0.0"});
+	inspection.binding_snapshot =
+		crate::test_support::native_memory_snapshot("aidash://receiver", "agent");
+	inspection.agent = inspection
+		.binding_snapshot
+		.definitions
+		.iter()
+		.find(|d| d.identity == inspection.binding_snapshot.agent)
+		.unwrap()
+		.definition
+		.clone();
 	let mut input = request();
 	if let Request::RequiredHome { native, .. } = &mut input {
 		*native = Some(Box::new(aidash_domain::semantic::remote::NativeRequest {
@@ -217,7 +240,16 @@ async fn explicit_native_home_selection_is_independent_of_generic_auto_context(
 async fn native_memory_cannot_be_silently_disabled_or_mapped_by_name(#[case] required: bool) {
 	let mut scope = BindingScope::new();
 	let mut inspection = remote_inspection();
-	inspection.agent.config["memory"] = json!({"id":"native","version":"1.0.0"});
+	inspection.binding_snapshot =
+		crate::test_support::native_memory_snapshot("aidash://receiver", "agent");
+	inspection.agent = inspection
+		.binding_snapshot
+		.definitions
+		.iter()
+		.find(|d| d.identity == inspection.binding_snapshot.agent)
+		.unwrap()
+		.definition
+		.clone();
 	let input = if required {
 		request()
 	} else {
@@ -277,8 +309,8 @@ async fn unsupported_inspection_or_agent_memory_is_rejected_before_source_reads(
 			})
 		}
 		"disabled_agent_memory" => {
-			inspection.agent.config["allow_cross_conversation_memory"] = json!(false);
-			inspection.agent.config["allow_workspace_retrieval"] = json!(false);
+			inspection.binding_snapshot =
+				crate::test_support::snapshot("aidash://receiver", "agent");
 		}
 		_ => panic!("unknown contract"),
 	}
@@ -442,4 +474,21 @@ async fn compactor_binding_requires_the_pinned_remote_definition() {
 		Err(Error::RemoteSemantic(Failure::Configuration))
 	));
 	assert_eq!(scope.reads, vec!["index", "entry"]);
+}
+
+#[rstest]
+#[case::native(true)]
+#[case::without_native(false)]
+fn selection_requirements_use_the_remote_closure_without_a_home_catalog(#[case] native: bool) {
+	let mut inspection = remote_inspection();
+	inspection.binding_snapshot = if native {
+		crate::test_support::native_memory_snapshot("aidash://receiver", "agent")
+	} else {
+		crate::test_support::snapshot("aidash://receiver", "agent")
+	};
+	let requirements = use_case::requirements(&inspection).unwrap();
+	assert_eq!(requirements.native_required, native);
+	if native {
+		assert!(requirements.memory_available);
+	}
 }

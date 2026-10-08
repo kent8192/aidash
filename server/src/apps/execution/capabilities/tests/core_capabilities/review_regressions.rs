@@ -299,10 +299,11 @@ async fn stale_extraction_credentials_do_not_starve_later_uploads(
 }
 
 #[rstest::fixture]
+#[cfg(feature = "capability-runtime-tests")]
 async fn full_mount_fixture(
-	#[future] capability_fixture: CoreFixture,
+	#[future] runtime_fixture: CoreFixture,
 ) -> (CoreFixture, aidash_server::domain::Run) {
-	let mut c = Box::pin(capability_fixture).await;
+	let mut c = Box::pin(runtime_fixture).await;
 	let run = admit(&c).await;
 	let skills: Value = {
 		let query_bind_1 = run.id;
@@ -333,12 +334,16 @@ async fn full_mount_fixture(
 		.map(|file| file["size"].as_u64().unwrap())
 		.sum();
 	assert!(profile.working_bytes > 1);
+	// The admitted Binding remains exact when runtime availability changes.
+	// These calls must enforce writable capacity before leaving a dispatch intent.
+	profile.runner = None;
 	c.f.store.capabilities = Runtime::new(profile).unwrap();
 	c.app = common::application(c.f.clone()).await;
 	(c, run)
 }
 
 #[rstest::rstest]
+#[cfg(feature = "capability-runtime-tests")]
 #[case(0, "WORKING_QUOTA_EXCEEDED")]
 #[case(1, "RUNTIME_UNAVAILABLE")]
 #[tokio::test]
@@ -398,3 +403,170 @@ async fn mounted_skills_require_writable_capacity_before_operation_commit(
 use reinhardt::query::{ExprTrait as _, QueryStatementBuilder as _};
 
 use reinhardt::query::SimpleExpr;
+
+#[rstest::rstest]
+#[tokio::test]
+async fn cached_skill_context_rechecks_descriptor_authority_before_model_retry(
+	#[future] test_environment: Arc<TestEnvironment>,
+) {
+	use std::sync::atomic::{AtomicUsize, Ordering};
+	let calls = Arc::new(AtomicUsize::new(0));
+	let seen = calls.clone();
+	let model = axum::Router::new().route(
+		"/v1/chat/completions",
+		axum::routing::post(move || {
+			let seen = seen.clone();
+			async move {
+				seen.fetch_add(1, Ordering::SeqCst);
+				(
+					http::StatusCode::INTERNAL_SERVER_ERROR,
+					axum::Json(json!({"error":"retry fixture"})),
+				)
+			}
+		}),
+	);
+	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+	let endpoint = format!("http://{}", listener.local_addr().unwrap());
+	let server = tokio::spawn(async move { axum::serve(listener, model).await.unwrap() });
+	let c =
+		build_core_fixture_at(test_environment.await, "aidash://execution-test", &endpoint).await;
+	let admitted = admit(&c).await;
+	let harness = aidash_server::harness::Harness {
+		federation: c.f.clone(),
+	};
+	harness.worker_once().await.unwrap();
+	harness.worker_once().await.unwrap();
+	assert_eq!(calls.load(Ordering::SeqCst), 1);
+	let retry = c.f.store.run(admitted.id).await.unwrap();
+	let observed = retry
+		.context
+		.source_observation
+		.as_ref()
+		.expect("Source read precedes model HTTP");
+	assert!(
+		!observed.content["skill_context"]
+			.as_str()
+			.unwrap()
+			.is_empty()
+	);
+	let content = observed.content.clone();
+	let mut policy = c.policy.clone();
+	policy["policies"].as_array_mut().unwrap().push(json!({"id":"withdraw-skill-list","effect":"deny","subjects":{"any":true},"actions":["tool.invoke"],"resources":{"kinds":["tool"],"ids":[aidash_domain::registry::bindings::QualifiedRef::builtin(&c.f.config.node_id,"skill_list").resource_id()]}}));
+	let (status, result) = request(
+		&c.app,
+		&c.f.config.api_token,
+		"POST",
+		"/api/authorization/acme",
+		json!({"expected_revision":2,"bundle":policy}),
+	)
+	.await;
+	assert_eq!(status, 200, "{result}");
+	let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+	let blocked = loop {
+		harness.worker_once().await.unwrap();
+		let current = c.f.store.run(admitted.id).await.unwrap();
+		if current.control == aidash_server::domain::RunControl::Paused {
+			break current;
+		}
+		assert!(
+			tokio::time::Instant::now() < deadline,
+			"cached context must not bypass revoked authority: {current:?}"
+		);
+		tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+	};
+	assert_eq!(
+		calls.load(Ordering::SeqCst),
+		1,
+		"revocation must prevent redisclosure to the model"
+	);
+	assert_eq!(blocked.error.as_deref(), Some("execution authority denied"));
+	assert_eq!(
+		blocked.context.source_observation.as_ref().unwrap().content,
+		content,
+		"the retry retains its original observation"
+	);
+	for path in [
+		"/api/state".to_owned(),
+		format!("/api/runs/{}", admitted.id),
+	] {
+		let (status, public) = request(&c.app, &c.token, "GET", &path, Value::Null).await;
+		assert_eq!(status, 200, "{public}");
+		let inspected = if path == "/api/state" {
+			public["runs"]
+				.as_array()
+				.unwrap()
+				.iter()
+				.find(|run| run["id"] == json!(admitted.id))
+				.unwrap()
+		} else {
+			&public["run"]
+		};
+		assert!(inspected["context"].is_object());
+		assert!(
+			inspected["context"].get("source_observation").is_none(),
+			"cached Source text must not be a public inspection field"
+		);
+	}
+	server.abort();
+	c.close().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn direct_host_http_rejects_a_withdrawn_bound_tool_before_creating_an_operation(
+	#[future] capability_fixture: CoreFixture,
+) {
+	let c = capability_fixture.await;
+	let run = admit(&c).await;
+	let identity = &run
+		.context
+		.binding_snapshot
+		.as_ref()
+		.unwrap()
+		.operation("outbound_get")
+		.unwrap()
+		.identity;
+	let mut policy = c.policy.clone();
+	policy["policies"].as_array_mut().unwrap().push(json!({
+		"id":"withdraw-bound-tool-read",
+		"effect":"deny",
+		"subjects":{"any":true},
+		"actions":["registry.read"],
+		"resources":{"kinds":["tool"],"ids":[identity.resource_id()]}
+	}));
+	let (status, result) = request(
+		&c.app,
+		&c.f.config.api_token,
+		"POST",
+		"/api/authorization/acme",
+		json!({"expected_revision":2,"bundle":policy}),
+	)
+	.await;
+	assert_eq!(status, 200, "{result}");
+	let (status, body) = request(
+		&c.app,
+		&c.token,
+		"POST",
+		&format!("/api/runs/{}/outbound", run.id),
+		json!({"idempotency_key":Uuid::new_v4(),"url":"https://example.com/data"}),
+	)
+	.await;
+	assert_eq!(status, 403, "{body}");
+	let count: i64 = sqlx::query_scalar(
+		&Query::select()
+			.expr(reinhardt::query::Func::count(
+				Expr::col(Alias::new("id")).into(),
+			))
+			.from(Alias::new("core_operations"))
+			.and_where(Expr::col(Alias::new("run_id")).eq(Expr::value(run.id)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(c.f.store.pool.driver())
+	.await
+	.unwrap();
+	assert_eq!(
+		count, 0,
+		"withdrawn binding must not create a Host operation"
+	);
+	c.close().await;
+}

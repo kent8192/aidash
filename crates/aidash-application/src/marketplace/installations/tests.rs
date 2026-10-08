@@ -435,11 +435,11 @@ async fn private_document_copy_precedes_provenance_and_requires_the_frozen_diges
 	let documents = json!([{"name":"Private text","media_type":"text/plain","text":"Retained immutable reference"}]);
 	scope.documents.insert("source".into(), documents.clone());
 	let mut agent = entry("source");
-	agent.kind = "agent".into();
-	agent.config = json!({"model":{"id":"model","version":"1.0.0"},"instructions":"Fixture","knowledge_digest":aidash_domain::registry::knowledge::digest(&documents)});
+	agent.kind = "source".into();
+	agent.config = json!({"schema_version":1,"source":{"adapter":"private_references","digest":aidash_domain::registry::knowledge::digest(&documents)}});
 	let mut package = manifest(&source).unwrap();
 	package.entity = agent.clone();
-	source.kind = "agent".into();
+	source.kind = "source".into();
 	source.manifest_source = serde_json::to_string(&package).unwrap();
 	use sha2::{Digest, Sha256};
 	source.digest = format!(
@@ -447,7 +447,7 @@ async fn private_document_copy_precedes_provenance_and_requires_the_frozen_diges
 		Sha256::digest(source.manifest_source.as_bytes())
 	);
 	if !matching {
-		agent.config["knowledge_digest"] = json!("tampered");
+		agent.config["source"]["digest"] = json!("0".repeat(64));
 	}
 	let installation = prospective("owner", "package");
 	// Act

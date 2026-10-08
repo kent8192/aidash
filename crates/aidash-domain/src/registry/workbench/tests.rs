@@ -2,37 +2,28 @@ use super::*;
 use rstest::{fixture, rstest};
 #[fixture]
 fn entry() -> Entry {
-	serde_json::from_value(json!({"id":"managed","version":"1.0.0","kind":"agent","name":{},"description":{},"config":{"model":{"id":"model","version":"1.0.0"},"tools":[],"skills":[],"cluster":null}})).unwrap()
+	serde_json::from_value(json!({"id":"managed","version":"1.0.0","kind":"agent","name":{},"description":{},"config":{"model":{"id":"model","version":"1.0.0"},"schema_version":1,"instructions":"","bindings":[],"remove_default":[],"cluster":null}})).unwrap()
 }
 #[rstest]
-fn new_drafts_disable_unspecified_capabilities(mut entry: Entry) {
+fn new_drafts_record_the_binding_schema_without_legacy_flags(mut entry: Entry) {
+	entry.config = json!({"model":{"id":"model","version":"1.0.0"}});
 	new_draft_defaults(&mut entry).unwrap();
-	for key in [
-		"allow_task_creation",
-		"allow_task_delegation",
-		"allow_memory_write",
-		"allow_workspace_retrieval",
-		"allow_cross_conversation_memory",
-	] {
-		assert_eq!(entry.config[key], json!(false));
-	}
+	assert_eq!(entry.config["schema_version"], 1);
+	assert_eq!(entry.config["bindings"], json!([]));
+	assert_eq!(entry.config["remove_default"], json!([]));
+	assert!(entry.config.get("allow_task_creation").is_none());
 }
 #[rstest]
-fn explicit_capability_choices_survive_defaults(mut entry: Entry) {
-	entry.config["allow_task_delegation"] = json!(true);
+fn authored_bindings_and_removed_defaults_survive_draft_defaults(mut entry: Entry) {
+	entry.config["remove_default"] = json!(["memory_write"]);
+	let before = entry.config.clone();
 	new_draft_defaults(&mut entry).unwrap();
-	assert_eq!(entry.config["allow_task_delegation"], json!(true));
+	assert_eq!(entry.config, before);
 }
 #[rstest]
-#[case::null(json!(null))]
-#[case::string(json!("false"))]
-#[case::number(json!(0))]
-fn invalid_capability_types_are_rejected(mut entry: Entry, #[case] value: Value) {
-	entry.config["allow_task_creation"] = value;
-	assert_eq!(
-		new_draft_defaults(&mut entry).unwrap_err(),
-		Error::Invalid("allow_task_creation must be a boolean".into())
-	);
+fn unsupported_binding_schema_is_rejected(mut entry: Entry) {
+	entry.config["schema_version"] = json!(2);
+	assert!(new_draft_defaults(&mut entry).is_err());
 }
 #[rstest]
 #[case::tool("tool", "managed")]

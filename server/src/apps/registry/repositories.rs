@@ -16,7 +16,9 @@ use reinhardt::db::orm::{
 };
 use serde_json::Value;
 use uuid::Uuid;
-mod sql;
+pub(crate) mod bindings;
+pub(crate) mod foreign;
+pub(crate) mod sql;
 
 #[derive(Clone)]
 pub struct Registry {
@@ -203,11 +205,32 @@ pub(crate) struct OrmScope<'a, E: OrmExecutor> {
 }
 #[async_trait]
 impl<E: OrmExecutor> DefinitionLookup for OrmScope<'_, E> {
+	async fn foreign_agent(
+		&mut self,
+		node: &str,
+		reference: &aidash_domain::registry::bindings::QualifiedRef,
+	) -> aidash_application::Result<aidash_domain::registry::bindings::ForeignAgentSnapshot> {
+		if node != self.node {
+			return Err(aidash_application::Error::Forbidden);
+		}
+		foreign::orm(self.db, node, reference)
+			.await
+			.map_err(Into::into)
+	}
 	async fn definition(&mut self, id: &str, version: &str) -> aidash_application::Result<Entry> {
 		Ok(serde_json::from_value(
 			records::definition(self.db, id, version).await?.metadata.0,
 		)?)
 	}
+	async fn binding_installation(
+		&mut self,
+		projection: &aidash_domain::registry::Projection,
+	) -> aidash_application::Result<()> {
+		bindings::installation(self.db, projection)
+			.await
+			.map_err(Into::into)
+	}
+
 	async fn overrides(
 		&mut self,
 		id: &str,
@@ -270,6 +293,9 @@ impl RegistryRead for OrmScope<'_, DatabaseConnection> {
 }
 #[async_trait]
 impl PackageScope for OrmScope<'_, AtomicTransaction> {
+	fn registry_node(&self) -> &str {
+		self.node
+	}
 	async fn publish(
 		&mut self,
 		id: &str,
@@ -303,6 +329,24 @@ impl PackageScope for OrmScope<'_, AtomicTransaction> {
 pub(crate) struct NativeScope<'a>(pub(crate) &'a mut dyn TransactionExecutor);
 #[async_trait]
 impl DefinitionLookup for NativeScope<'_> {
+	async fn foreign_agent(
+		&mut self,
+		node: &str,
+		reference: &aidash_domain::registry::bindings::QualifiedRef,
+	) -> aidash_application::Result<aidash_domain::registry::bindings::ForeignAgentSnapshot> {
+		foreign::native(self.0, node, reference)
+			.await
+			.map_err(Into::into)
+	}
+	async fn binding_installation(
+		&mut self,
+		p: &aidash_domain::registry::Projection,
+	) -> aidash_application::Result<()> {
+		bindings::installation_executor(self.0, p)
+			.await
+			.map_err(Into::into)
+	}
+
 	async fn definition(&mut self, id: &str, version: &str) -> aidash_application::Result<Entry> {
 		Ok(serde_json::from_value(
 			transaction_records::definition(self.0, id, version)
@@ -401,6 +445,7 @@ impl Registry {
 			},
 			&crate::bootstrap::registry_validation(),
 			draft,
+			&self.node_id,
 		)
 		.await?;
 		self.db
@@ -422,6 +467,61 @@ impl Registry {
 }
 pub(crate) async fn private_documents(db: &DatabaseConnection, entry: &Entry) -> Result<Value> {
 	let mut connection = *db;
+	if entry.kind == "agent" {
+		let input: aidash_domain::registry::bindings::AgentBindings =
+			serde_json::from_value(entry.config.clone())?;
+		let node = entry
+			.binding_normalization
+			.as_ref()
+			.ok_or_else(|| {
+				crate::Error::Invalid("Agent lacks registered Binding provenance".into())
+			})?
+			.registry_node
+			.as_str();
+		let mut documents = vec![];
+		for binding in input
+			.bindings
+			.iter()
+			.filter(|b| b.kind == aidash_domain::registry::bindings::BindingKind::Source)
+		{
+			if binding.target.registry_node != node {
+				return Err(crate::Error::Forbidden);
+			}
+			let source =
+				records::definition(&mut connection, &binding.target.id, &binding.target.version)
+					.await?;
+			let source: Entry = serde_json::from_value(source.metadata.into_inner())?;
+			if source.config.get("schema_version").is_none() {
+				continue;
+			}
+			let context: aidash_domain::registry::bindings::sources::NativeContext =
+				serde_json::from_value(source.config.clone())?;
+			if !matches!(
+				context.source,
+				aidash_domain::registry::bindings::sources::NativeSource::PrivateReferences { .. }
+			) {
+				continue;
+			}
+			let value = aidash_application::registry::personal::load(
+				&mut OrmScope {
+					db: &mut connection,
+					node,
+				},
+				&source,
+			)
+			.await?;
+			documents.extend(
+				value
+					.as_array()
+					.ok_or_else(|| {
+						crate::Error::Invalid("private Source requires a document list".into())
+					})?
+					.iter()
+					.cloned(),
+			);
+		}
+		return Ok(serde_json::json!(documents));
+	}
 	Ok(aidash_application::registry::personal::load(
 		&mut OrmScope {
 			db: &mut connection,

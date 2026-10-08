@@ -27,7 +27,7 @@ pub async fn refresh(repository: &dyn AgentToolRepository) -> Result<()> {
 
 /// Foreign execution can address only its admitted Task and Workspace.
 pub fn remote_identifier(run: &RunMetadata, kind: &str, id: &str) -> Result<String> {
-	if matches!(kind, "memory" | "run" | "generation_policy") {
+	if matches!(kind, "memory" | "generation_policy") || kind == "run" && id != run.id.to_string() {
 		return Err(Error::Forbidden);
 	}
 	if (kind == "task" && id != run.task_id.to_string())

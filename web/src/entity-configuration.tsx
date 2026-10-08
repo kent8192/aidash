@@ -4,6 +4,7 @@ import { discover } from "./generated/aidash";
 import { ReferenceName } from "./record-view";
 import { SkillImport, type SkillPayload } from "./skill-import";
 import { useState } from "react";
+import { MemoryRegistryFields } from "./memory-registry";
 import type { State } from "./types";
 import { Field, useEntityLabel, useI18n } from "./ui";
 
@@ -267,15 +268,17 @@ export function EntityConfiguration({
 }) {
   const { t } = useI18n();
   const entityLabel = useEntityLabel(data.registry);
-  const [transport, setTransport] = useState("native");
-  const [operation, setOperation] = useState("echo");
+  const [adapter, setAdapter] = useState("native_memory");
+  const [sourceValue, setSourceValue] = useState("{}");
+  const [transport, setTransport] = useState("http");
+  const [alias, setAlias] = useState("integration_invoke");
+  const [members, setMembers] = useState<string[]>([]);
   const [endpoint, setEndpoint] = useState("");
   const [authenticated, setAuthenticated] = useState(false);
   const [credentialEnv, setCredentialEnv] = useState("AIDASH_SECRET_TOOL");
   const [replay, setReplay] = useState("unsafe");
   const [toolName, setToolName] = useState("");
   const [idempotency, setIdempotency] = useState("");
-  const [hosts, setHosts] = useState("");
   const [instructions, setInstructions] = useState("");
   const [skillFiles, setSkillFiles] = useState<SkillPayload["files"]>([]);
   const [skillSource, setSkillSource] = useState<string>();
@@ -309,51 +312,84 @@ export function EntityConfiguration({
     : peerError?.error;
   const remoteLabel = useEntityLabel(remoteAgents.map((agent) => agent.entity));
 
-  const config =
-    kind === "skill"
+  let settings: Record<string, unknown> = {};
+  try {
+    settings = JSON.parse(sourceValue || "{}");
+  } catch {
+    /* The input reports invalid JSON before submitting. */
+  }
+  const sourceAdapter = (kind === "memory"
+    ? ["native_memory", "conversation_memory", "semantic_memory"]
+    : [
+        "native_memory",
+        "workspace_retrieval",
+        "reference_attachments",
+        "skill_attachments",
+        "skill_roots",
+      ]
+  ).includes(adapter)
+    ? adapter
+    : kind === "memory"
+      ? "conversation_memory"
+      : "workspace_retrieval";
+  const transportConfig =
+    transport === "agent"
       ? {
-          instructions,
-          files: skillFiles,
-          ...(skillSource ? { source: skillSource } : {}),
+          transport,
+          node_id: node,
+          agent:
+            node === data.node.id
+              ? reference
+              : { id: remoteId, version: remoteVersion },
         }
-      : kind === "cluster"
-        ? { coordinator: reference }
-        : kind === "tool"
-          ? transport === "native"
+      : {
+          transport,
+          endpoint,
+          credential_env: authenticated ? credentialEnv : null,
+          replay,
+          ...(transport === "mcp"
             ? {
-                transport,
-                operation,
-                allowed_hosts:
-                  operation === "http_get"
-                    ? hosts
-                        .split(",")
-                        .map((host) => host.trim())
-                        .filter(Boolean)
-                    : [],
+                tool_name: toolName,
+                idempotency_argument:
+                  replay === "idempotent" ? idempotency : null,
               }
-            : transport === "agent"
+            : {}),
+        };
+  const config =
+    kind === "memory" || kind === "source"
+      ? { schema_version: 1, source: { ...settings, adapter: sourceAdapter } }
+      : kind === "bundle"
+        ? {
+            members: members.map((key) => {
+              const entry = data.registry.find(
+                (e) => `${e.id}@${e.version}` === key,
+              )!;
+              return {
+                registry_node: data.node.id,
+                id: entry.id,
+                version: entry.version,
+              };
+            }),
+          }
+        : kind === "skill"
+          ? {
+              instructions,
+              files: skillFiles,
+              ...(skillSource ? { source: skillSource } : {}),
+            }
+          : kind === "cluster"
+            ? { coordinator: reference }
+            : kind === "tool"
               ? {
-                  transport,
-                  node_id: node,
-                  agent:
-                    node === data.node.id
-                      ? reference
-                      : { id: remoteId, version: remoteVersion },
+                  registry_node: data.node.id,
+                  provider: `integration.${transport}@1`,
+                  operation: "invoke",
+                  default_alias: alias,
+                  tier: "integration",
+                  narrow: {},
+                  transport: transportConfig,
                 }
-              : {
-                  transport,
-                  endpoint,
-                  credential_env: authenticated ? credentialEnv : null,
-                  replay,
-                  ...(transport === "mcp"
-                    ? {
-                        tool_name: toolName,
-                        idempotency_argument:
-                          replay === "idempotent" ? idempotency : null,
-                      }
-                    : {}),
-                }
-          : {};
+              : {};
   const agentSelect = (
     <Field label={t(kind === "cluster" ? "clusterCoordinator" : "toolAgent")}>
       <select
@@ -376,6 +412,64 @@ export function EntityConfiguration({
   return (
     <>
       <input type="hidden" name="config" value={JSON.stringify(config)} />
+      {(kind === "memory" || kind === "source") && (
+        <>
+          <Field label="Context source">
+            <select
+              name="context_adapter"
+              value={sourceAdapter}
+              onChange={(e) => {
+                setAdapter(e.target.value);
+                setSourceValue("{}");
+              }}
+            >
+              {(kind === "memory"
+                ? ["native_memory", "conversation_memory", "semantic_memory"]
+                : [
+                    "native_memory",
+                    "workspace_retrieval",
+                    "reference_attachments",
+                    "skill_attachments",
+                    "skill_roots",
+                  ]
+              ).map((a) => (
+                <option key={a} value={a}>
+                  {a === "native_memory" ? "Native memory" : a}
+                </option>
+              ))}
+            </select>
+          </Field>
+          {sourceAdapter === "native_memory" ? (
+            <MemoryRegistryFields
+              key={kind}
+              kind={kind}
+              entries={data.registry}
+            />
+          ) : (
+            <Field label="Source settings (JSON)">
+              <textarea
+                key={sourceAdapter}
+                value={sourceValue}
+                onChange={(e) => {
+                  setSourceValue(e.target.value);
+                  try {
+                    const value = JSON.parse(e.target.value);
+                    e.target.setCustomValidity(
+                      value &&
+                        !Array.isArray(value) &&
+                        typeof value === "object"
+                        ? ""
+                        : "Enter a JSON object",
+                    );
+                  } catch {
+                    e.target.setCustomValidity("Enter valid JSON");
+                  }
+                }}
+              />
+            </Field>
+          )}
+        </>
+      )}
       {kind === "skill" && (
         <>
           <SkillImport
@@ -395,6 +489,36 @@ export function EntityConfiguration({
           </Field>
         </>
       )}
+      {kind === "bundle" && (
+        <fieldset>
+          <legend>Bundle members</legend>
+          {data.registry
+            .filter((e) => e.kind === "tool" || e.kind === "bundle")
+            .map((entry) => {
+              const key = `${entry.id}@${entry.version}`;
+              return (
+                <label className="check" key={key}>
+                  <input
+                    type="checkbox"
+                    checked={members.includes(key)}
+                    disabled={members.some(
+                      (member) =>
+                        member !== key && member.startsWith(`${entry.id}@`),
+                    )}
+                    onChange={(e) =>
+                      setMembers(
+                        e.target.checked
+                          ? [...members, key]
+                          : members.filter((m) => m !== key),
+                      )
+                    }
+                  />
+                  {entityLabel(entry)} · {entry.version}
+                </label>
+              );
+            })}
+        </fieldset>
+      )}
       {kind === "cluster" && agentSelect}
       {kind === "node" && <p className="muted">{t("nodeNoConfiguration")}</p>}
       {kind === "tool" && (
@@ -404,36 +528,21 @@ export function EntityConfiguration({
               value={transport}
               onChange={(event) => setTransport(event.target.value)}
             >
-              {["native", "http", "mcp", "agent"].map((value) => (
+              {["http", "mcp", "agent"].map((value) => (
                 <option key={value} value={value}>
                   {t(`toolTransport_${value}`)}
                 </option>
               ))}
             </select>
           </Field>
-          {transport === "native" && (
-            <>
-              <Field label={t("toolOperation")}>
-                <select
-                  value={operation}
-                  onChange={(event) => setOperation(event.target.value)}
-                >
-                  <option value="echo">{t("toolEcho")}</option>
-                  <option value="http_get">{t("toolHttpGet")}</option>
-                </select>
-              </Field>
-              {operation === "http_get" && (
-                <Field label={t("toolAllowedHosts")}>
-                  <input
-                    required
-                    value={hosts}
-                    placeholder="example.com, docs.example.com"
-                    onChange={(event) => setHosts(event.target.value)}
-                  />
-                </Field>
-              )}
-            </>
-          )}
+          <Field label="Stable alias">
+            <input
+              required
+              value={alias}
+              pattern="[A-Za-z0-9_-]{1,64}"
+              onChange={(e) => setAlias(e.target.value)}
+            />
+          </Field>
           {(transport === "http" || transport === "mcp") && (
             <>
               <Field label={t("endpoint")}>
@@ -475,7 +584,7 @@ export function EntityConfiguration({
                   value={replay}
                   onChange={(event) => setReplay(event.target.value)}
                 >
-                  {["unsafe", "read_only", "idempotent"].map((value) => (
+                  {["unsafe"].map((value) => (
                     <option key={value} value={value}>
                       {t(`toolReplay_${value}`)}
                     </option>
@@ -634,20 +743,6 @@ export function EntityConfiguration({
                     parent_id: { type: ["string", "null"], format: "uuid" },
                   },
                   required: ["title", "description"],
-                  additionalProperties: false,
-                })}
-              />
-            </>
-          ) : transport === "native" && operation === "http_get" ? (
-            <>
-              <p className="muted">{t("toolUrlArgument")}</p>
-              <input
-                type="hidden"
-                name="schema"
-                value={JSON.stringify({
-                  type: "object",
-                  properties: { url: { type: "string", format: "uri" } },
-                  required: ["url"],
                   additionalProperties: false,
                 })}
               />

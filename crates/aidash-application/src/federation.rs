@@ -135,6 +135,32 @@ impl Federation {
 		node: &str,
 		agent: &EntityRef,
 	) -> Result<Delegation> {
+		self.delegate_mode(task_id, node, agent, None).await
+	}
+	pub async fn delegate_pinned(
+		&self,
+		task_id: Uuid,
+		node: &str,
+		agent: &EntityRef,
+		snapshot: &aidash_domain::registry::bindings::ForeignAgentSnapshot,
+	) -> Result<Delegation> {
+		snapshot.validate()?;
+		if snapshot.agent.registry_node != node
+			|| snapshot.agent.local() != *agent
+			|| node == self.node_id
+		{
+			return Err(Error::Forbidden);
+		}
+		self.delegate_mode(task_id, node, agent, Some(snapshot))
+			.await
+	}
+	async fn delegate_mode(
+		&self,
+		task_id: Uuid,
+		node: &str,
+		agent: &EntityRef,
+		snapshot: Option<&aidash_domain::registry::bindings::ForeignAgentSnapshot>,
+	) -> Result<Delegation> {
 		let task = self.repository.task(task_id).await?;
 		self.repository
 			.require_legacy_workspace(task.workspace_id)
@@ -158,14 +184,23 @@ impl Federation {
 		} else {
 			let mut requirements: Search = serde_json::from_value(task.requirements.clone())?;
 			requirements.kind = Some("agent".into());
-			let entry: Entry = self
-				.request(
+			let entry: Entry = if let Some(snapshot) = snapshot {
+				snapshot
+					.definitions
+					.iter()
+					.find(|definition| definition.identity == snapshot.agent)
+					.ok_or(Error::Forbidden)?
+					.definition
+					.clone()
+			} else {
+				self.request(
 					node,
 					"GET",
 					&format!("/discover/{}/{}", agent.id, agent.version),
 					None,
 				)
-				.await?;
+				.await?
+			};
 			if entry.id != agent.id
 				|| entry.version != agent.version
 				|| !requirements.matches(&entry)
@@ -175,10 +210,15 @@ impl Federation {
 				));
 			}
 		}
-		let mut delegation = self
-			.repository
-			.reserve_delegation(&task, node, agent)
-			.await?;
+		let mut delegation = if let Some(snapshot) = snapshot {
+			self.repository
+				.reserve_pinned_delegation(&task, node, agent, snapshot)
+				.await?
+		} else {
+			self.repository
+				.reserve_delegation(&task, node, agent)
+				.await?
+		};
 		match self.deliver(&delegation).await {
 			Ok(()) => delegation.delivered = true,
 			Err(error) => tracing::warn!(%error,%task_id,"delegation queued for retry"),
@@ -197,11 +237,27 @@ impl Federation {
 		if delegation.node_id == self.node_id {
 			self.repository.accept_local_run(&task, &agent).await?;
 		} else {
+			let binding_snapshot = self
+				.repository
+				.delegation_snapshot(delegation.task_id)
+				.await?;
+			if let Some(snapshot) = &binding_snapshot {
+				snapshot.validate()?;
+				if snapshot.agent.registry_node != delegation.node_id
+					|| snapshot.agent.local() != agent
+				{
+					return Err(Error::Forbidden);
+				}
+			}
 			self.request::<Run>(
 				&delegation.node_id,
 				"POST",
 				"/offers",
-				Some(&json!(Offer { task, agent })),
+				Some(&json!(Offer {
+					task,
+					agent,
+					binding_snapshot
+				})),
 			)
 			.await?;
 		}

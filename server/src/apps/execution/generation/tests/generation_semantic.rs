@@ -7,7 +7,7 @@ use common::{TestEnvironment, test_environment};
 
 use aidash_server::{federation::Federation, harness::Harness, semantic};
 use axum::{Json, Router, http::StatusCode, response::IntoResponse, routing::post};
-use common::{bootstrap, cleanup, request, setup};
+use common::{cleanup, request, setup};
 use reinhardt::query::ExprTrait as _;
 use serde_json::{Value, json};
 use std::sync::{
@@ -157,7 +157,8 @@ impl Fixture {
 		let endpoint = format!("http://{}", listener.local_addr().unwrap());
 		let server = tokio::spawn(async move { axum::serve(listener, provider).await.unwrap() });
 		let app = common::application(f.clone()).await;
-		let (_, token, original_task) = bootstrap(&f, &app, &endpoint).await;
+		let (_, token, original_task) =
+			common::bootstrap_with_context(&f, &app, &endpoint, true).await;
 		let workspace = f.store.task(original_task).await.unwrap().workspace_id;
 		let (_, mut template) = request(
 			&app,
@@ -167,6 +168,11 @@ impl Fixture {
 			Value::Null,
 		)
 		.await;
+		// A new authored template must not retain the registered version's normalization.
+		template
+			.as_object_mut()
+			.unwrap()
+			.remove("binding_normalization");
 		template["id"] = json!("semantic-template");
 		template["capabilities"] = json!(["semantic.research"]);
 		{
@@ -224,10 +230,9 @@ impl Fixture {
 				200
 			);
 		}
-		template["config"]["memory"] = json!({"id":"memory","version":"1.0.0"});
-		template["config"]["allow_memory_write"] = json!(true);
+		template["config"]["bindings"] = json!([{"kind":"memory","target":{"registry_node":f.config.node_id,"id":"memory","version":"1.0.0"},"narrow":{}}]);
 		if !maintenance {
-			template["config"]["sources"] = json!([{"id":"shared-memory","version":"1.0.0"}]);
+			template["config"]["bindings"].as_array_mut().unwrap().push(json!({"kind":"source","target":{"registry_node":f.config.node_id,"id":"shared-memory","version":"1.0.0"},"narrow":{}}));
 		}
 		let spec = json!({"enabled":true,"template":template,"permissions":{"roles":[],"groups":[],"attributes":{}},"approval_required":false,"limits":{"max_agents":2,"max_concurrent":2,"max_depth":2,"token_budget":1000000,"tokens_per_agent":400000,"lifetime_seconds":3600},"embedding":allowance.map(|calls| json!({"provider":{"id":"embedding","version":"1.0.0"},"calls_per_agent":calls,"call_budget":calls*2}))});
 		let (status, response) = request(
@@ -319,9 +324,10 @@ impl Fixture {
 		}
 	}
 	async fn drive(&self) {
-		// Several real database/provider boundaries run concurrently under
-		// coverage in CI. This fixture deadline is not a runtime latency SLO.
-		let settled = tokio::time::timeout(std::time::Duration::from_secs(20), async {
+		// Native Bank retrieval and generated-origin accounting span several real
+		// database/provider turns, also under parallel coverage. This bounded
+		// fixture deadline is not a runtime latency SLO.
+		let settled = tokio::time::timeout(std::time::Duration::from_secs(90), async {
 			let worker = Harness {
 				federation: self.f.clone(),
 			};
@@ -359,7 +365,7 @@ impl Fixture {
 				})
 				.collect();
 			panic!(
-				"generated execution did not settle in 20s: {states:?}; embedding calls={}, inference calls={}",
+				"generated execution did not settle in 90s: {states:?}; embedding calls={}, inference calls={}",
 				self.embeddings.load(Ordering::SeqCst),
 				self.inference.load(Ordering::SeqCst)
 			);
@@ -372,7 +378,7 @@ impl Fixture {
 		self.remember.store(ordinal, Ordering::SeqCst);
 		// Match drive's coverage allowance: native context and generated-origin
 		// checks span multiple worker turns and real database/provider boundaries.
-		tokio::time::timeout(std::time::Duration::from_secs(20), async {
+		let persisted = tokio::time::timeout(std::time::Duration::from_secs(90), async {
 			let worker = Harness {
 				federation: self.f.clone(),
 			};
@@ -401,8 +407,27 @@ impl Fixture {
 				tokio::time::sleep(std::time::Duration::from_millis(10)).await;
 			}
 		})
-		.await
-		.unwrap_or_else(|_| panic!("memory_mutate did not persist source {ordinal} within 20s; embedding calls={}, inference calls={}", self.embeddings.load(Ordering::SeqCst), self.inference.load(Ordering::SeqCst)))
+		.await;
+		if persisted.is_err() {
+			let states: Vec<_> = self
+				.f
+				.store
+				.runs()
+				.await
+				.unwrap()
+				.into_iter()
+				.map(|run| {
+					let phase = run.phase();
+					(run.agent_id, phase, run.control, run.error)
+				})
+				.collect();
+			panic!(
+				"memory_mutate did not persist source {ordinal} within 90s; runs={states:?}; embedding calls={}, inference calls={}",
+				self.embeddings.load(Ordering::SeqCst),
+				self.inference.load(Ordering::SeqCst)
+			);
+		}
+		persisted.unwrap()
 	}
 	async fn usage(&self) -> Value {
 		let (status, value) = request(
@@ -863,7 +888,9 @@ async fn background_indexing_uses_generated_authority_and_checks_expiry_before_h
 			.unwrap();
 		}
 		tokio::time::timeout(
-			std::time::Duration::from_secs(5),
+			// Native origin checks also run against the real database under coverage.
+			// A self-held source lock still cannot settle within this bounded wait.
+			std::time::Duration::from_secs(30),
 			semantic::worker::sweep(&fixture.f.store),
 		)
 		.await
@@ -1125,7 +1152,7 @@ async fn killed_embedding_worker_retains_uncertain_usage_and_restart_reserves_a_
 		fixture.memory_recovery_directory.path(),
 	);
 	let reached = tokio::time::timeout(
-		std::time::Duration::from_secs(45),
+		std::time::Duration::from_secs(90),
 		fixture.embedding_started.notified(),
 	)
 	.await;
@@ -1189,7 +1216,8 @@ async fn killed_embedding_worker_retains_uncertain_usage_and_restart_reserves_a_
 		&fixture.schema,
 		fixture.memory_recovery_directory.path(),
 	);
-	tokio::time::timeout(std::time::Duration::from_secs(20), async {
+	// Recovery repeats native retrieval and durable reservation boundaries.
+	tokio::time::timeout(std::time::Duration::from_secs(90), async {
 		loop {
 			let run = fixture.f.store.runs().await.unwrap().remove(0);
 			if run.phase().as_str() == "FAILED" {

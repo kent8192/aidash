@@ -1,0 +1,22 @@
+meta {
+  name: 1041 peer-agent-bindings - Require the peer bearer credential
+  type: http
+  seq: 1041
+}
+
+get {
+  url: {{base_url}}/federation/v0.1/discover/__bruno_missing__/__bruno_missing__/bindings
+  body: none
+  auth: none
+}
+
+headers {
+  Accept: application/json
+  X-Aidash-Node: {{peer_node}}
+  X-Aidash-Protocol: 0.2
+}
+
+tests {
+  test("Exact HTTP 401", function () { expect(res.getStatus()).to.equal(401); });
+  test("Stable authorization error envelope", function () { expect(res.getHeader("content-type")).to.include("application/json"); expect(res.getBody()).to.eql({error:"unauthorized"}); });
+}

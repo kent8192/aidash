@@ -134,9 +134,7 @@ fn framework_schema_describes_arbitrary_json_and_localized_maps() {
 	assert_eq!(schema["required"], json!(["payload", "translations"]));
 }
 
-#[path = "support/postgres.rs"]
-mod postgres;
-use postgres::postgres_container;
+use reinhardt::test::fixtures::postgres_container;
 use reinhardt::test::testcontainers::{ContainerAsync, GenericImage};
 use sqlx::PgPool;
 use std::sync::Arc;
@@ -151,7 +149,7 @@ async fn inlined_session_bytes_match_native_parameters(
 	#[case] bytes: Vec<u8>,
 	#[values(false, true)] nested: bool,
 ) {
-	// Arrange: use the same PostgreSQL image and Query boundary as session fixtures.
+	// Arrange: Reinhardt's fixture owns this test's isolated PostgreSQL container.
 	let (_container, pool, _, _) = postgres_container.await;
 	let create = Query::create_table()
 		.table("session_bytes")

@@ -27,7 +27,7 @@ test("transaction dashboard survives reload during a partition, aborts safely an
   const peer = createServer(async (req, res) => {
     if (req.url === "/.well-known/aidash") {
       res.writeHead(200, { "content-type": "application/json" });
-      res.end(JSON.stringify({ id: peerId, protocol_version: "0.1" }));
+      res.end(JSON.stringify({ id: peerId, protocol_version: "0.2" }));
       return;
     }
     if (req.url === "/federation/v0.1/transactions/finish") {
@@ -75,7 +75,7 @@ test("transaction dashboard survives reload during a partition, aborts safely an
       node_id: peerId,
       endpoint: `http://${peerAddress}`,
       credential_env: "AIDASH_SECRET_TRANSACTION_FIXTURE",
-      protocol_version: "0.1",
+      protocol_version: "0.2",
       enabled: true,
     });
     await installBearerDashboard(page, "acceptance-access-token");

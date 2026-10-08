@@ -96,6 +96,16 @@ impl VerifiedFile for Reader {
 }
 #[async_trait]
 impl FileScopePort for Scope<'_> {
+	fn local_node(&self) -> &str {
+		&self.access.node_id
+	}
+
+	fn binding_snapshot(&self) -> Result<&aidash_domain::registry::bindings::BindingSnapshot> {
+		self.run
+			.and_then(|run| run.context.binding_snapshot.as_deref())
+			.ok_or_else(|| Error::Invalid("Run has no admitted Binding snapshot".into()))
+	}
+
 	fn limits(&self) -> Result<Limits> {
 		let p = &self.store.ok_or_else(missing)?.capabilities.0;
 		Ok(Limits {

@@ -26,7 +26,7 @@ impl BindingResolver for PinnedResolver {
 			.as_ref()
 			.ok_or_else(|| Error::Invalid("Run has no admitted Binding snapshot".into()))?;
 		snapshot.validate()?;
-		if snapshot.agent.registry_node != run.home_node
+		if snapshot.remote != (snapshot.agent.registry_node != run.home_node)
 			|| snapshot.agent.id != run.agent_id
 			|| snapshot.agent.version != run.agent_version
 		{
@@ -35,6 +35,7 @@ impl BindingResolver for PinnedResolver {
 			));
 		}
 		let snapshot_digest = digest(&serde_json::to_value(snapshot)?);
+		self.authority.refresh(run).await?;
 		let mut tools = Tools::new();
 		for binding in &snapshot.bindings {
 			if binding.excluded_reason.is_some() {
@@ -108,6 +109,7 @@ impl ExecutionTool for BoundTool {
 			));
 		}
 		super::recheck_provider(self.providers.as_ref(), &self.binding)?;
+		self.authority.refresh(run).await?;
 		self.authority.check(run, &self.binding).await?;
 		self.binding.narrow.apply(&mut input)?;
 		self.inner.invoke(run, input, key).await

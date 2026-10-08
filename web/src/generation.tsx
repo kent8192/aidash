@@ -1,5 +1,11 @@
+import {
+  AgentBindings,
+  coordinatorDefaults,
+  hasInstructionalBinding,
+  type Binding,
+  type BindingConfiguration,
+} from "./agent-bindings";
 import { Button } from "./components/ui/button";
-import { AgentMemoryFields } from "./memory-registry";
 import { RemoteGenerationAssignForm } from "./remote-generation";
 import { RecordView } from "./record-view";
 import { disambiguateLabels } from "./display-labels";
@@ -77,8 +83,9 @@ function usePolicyPresentation(policies: readonly GenerationPolicy[]) {
 }
 type AgentFields = {
   model?: EntityRef;
-  tools?: EntityRef[];
-  skills?: EntityRef[];
+  schema_version?: number;
+  bindings?: Binding[];
+  remove_default?: string[];
   cluster?: EntityRef | null;
   instructions?: string;
   max_steps?: number;
@@ -360,6 +367,7 @@ export function GenerationPage({ data }: { data: State }) {
           <fieldset className="generation-fieldset" disabled={busy}>
             <PolicyEditor
               entries={entries}
+              node={data.node.id}
               policy={editing === "new" ? undefined : editing}
               save={(id, spec) =>
                 mutate(() =>
@@ -414,57 +422,13 @@ export function GenerationPage({ data }: { data: State }) {
   );
 }
 
-function RefChoices({
-  label,
-  name,
-  entries,
-  kind,
-  selected = [],
-}: {
-  label: string;
-  name: string;
-  entries: Entry[];
-  kind: string;
-  selected?: EntityRef[];
-}) {
-  const { t } = useI18n();
-  const entityLabel = useEntityLabel(entries);
-  const available = entries.filter((entry) => entry.kind === kind);
-  const choices = [
-    ...available.map((entry) => ({
-      value: key(entry),
-      label: entityLabel(entry),
-    })),
-    ...selected
-      .filter((r) => !available.some((entry) => key(entry) === key(r)))
-      .map((r) => ({
-        value: key(r),
-        label: `${t("generationReferenceUnavailable")} · ${r.version}`,
-      })),
-  ];
-  return (
-    <Field label={label}>
-      <select
-        name={name}
-        multiple
-        defaultValue={selected.map(key)}
-        size={Math.min(4, Math.max(2, choices.length))}
-      >
-        {choices.map((option) => (
-          <option key={option.value} value={option.value}>
-            {option.label}
-          </option>
-        ))}
-      </select>
-    </Field>
-  );
-}
-
 function PolicyEditor({
+  node,
   entries,
   policy,
   save,
 }: {
+  node: string;
   entries: Entry[];
   policy?: GenerationPolicy;
   save: (id: string, spec: GenerationSpec) => Promise<void>;
@@ -474,6 +438,13 @@ function PolicyEditor({
   const [policyId] = useState(() => policy?.id ?? crypto.randomUUID());
   const initial = policy?.spec;
   const config = initial?.template.config as AgentFields | undefined;
+  const [bindings, setBindings] = useState<BindingConfiguration>({
+    bindings: config?.bindings ?? [],
+    remove_default: config?.remove_default ?? [],
+  });
+  const [cluster, setCluster] = useState(
+    config?.cluster ? key(config.cluster) : "",
+  );
   const [model, setModel] = useState(config?.model ? key(config.model) : "");
   const [compactor, setCompactor] = useState(
     initial?.compaction ? key(initial.compaction.provider) : "",
@@ -503,7 +474,10 @@ function PolicyEditor({
     setError("");
     const form = new FormData(event.currentTarget);
     const text = (name: string) => String(form.get(name) ?? "");
-    if (!text("instructions").trim() && !form.getAll("skills").length) {
+    if (
+      !text("instructions").trim() &&
+      !hasInstructionalBinding(bindings.bindings, entries, node)
+    ) {
       setError(t("agentNeedsSkill"));
       return;
     }
@@ -542,17 +516,10 @@ function PolicyEditor({
           ...initial?.template.config,
           model: entityRef(model),
           instructions: text("instructions"),
-          tools: form.getAll("tools").map((v) => entityRef(String(v))),
-          skills: form.getAll("skills").map((v) => entityRef(String(v))),
+          schema_version: 1,
+          ...bindings,
           cluster: text("cluster") ? entityRef(text("cluster")) : null,
           max_steps: Number(text("max_steps")),
-          memory: text("memory_provider")
-            ? entityRef(text("memory_provider"))
-            : null,
-          allow_memory_write: form.has("allow_memory_write"),
-          sources: form
-            .getAll("memory_sources")
-            .map((v) => entityRef(String(v))),
         },
       };
       void save(id, {
@@ -676,7 +643,6 @@ function PolicyEditor({
           />
         </Field>
       </div>
-      <AgentMemoryFields entries={entries} initial={initial?.template.config} />
       <Field label={t("model")}>
         <select
           required
@@ -699,23 +665,13 @@ function PolicyEditor({
         {window > 0 &&
           ` ${t("generationMinReservation")}: ${minTokens.toLocaleString()}`}
       </p>
-      <div className="two-columns">
-        <RefChoices
-          label={t("tools")}
-          name="tools"
-          entries={entries}
-          kind="tool"
-          selected={config?.tools}
-        />
-        <RefChoices
-          label={t("generationSkills")}
-          name="skills"
-          entries={entries}
-          kind="skill"
-          selected={config?.skills}
-        />
-      </div>
-      <p className="muted">{t("generationMultiSelect")}</p>
+      <AgentBindings
+        value={bindings}
+        change={setBindings}
+        cluster={Boolean(cluster)}
+        entries={entries}
+        node={node}
+      />
       <Field label={t("additionalInstructions")}>
         <textarea
           name="instructions"
@@ -727,7 +683,18 @@ function PolicyEditor({
       <Field label={t("cluster")}>
         <select
           name="cluster"
-          defaultValue={config?.cluster ? key(config.cluster) : ""}
+          value={cluster}
+          onChange={(e) => {
+            const selected = e.target.value;
+            setCluster(selected);
+            if (selected)
+              setBindings((previous) => ({
+                ...previous,
+                remove_default: previous.remove_default.filter(
+                  (name) => !coordinatorDefaults.includes(name),
+                ),
+              }));
+          }}
         >
           <option value="">{t("generationNoCluster")}</option>
           {entries
@@ -995,9 +962,19 @@ function RequestDetail({
         <dt>{t("model")}</dt>
         <dd>{config.model && entryLabel(config.model)}</dd>
         <dt>{t("tools")}</dt>
-        <dd>{config.tools?.map(entryLabel).join(", ") || "—"}</dd>
+        <dd>
+          {config.bindings
+            ?.filter((b) => b.kind === "tool" || b.kind === "bundle")
+            .map((b) => entryLabel(b.target))
+            .join(", ") || "—"}
+        </dd>
         <dt>{t("generationSkills")}</dt>
-        <dd>{config.skills?.map(entryLabel).join(", ") || "—"}</dd>
+        <dd>
+          {config.bindings
+            ?.filter((b) => b.kind === "skill")
+            .map((b) => entryLabel(b.target))
+            .join(", ") || "—"}
+        </dd>
         <dt>{t("capabilities")}</dt>
         <dd>{request.definition.capabilities.join(", ") || "—"}</dd>
         <dt>{t("generationPolicy")}</dt>
