@@ -19,6 +19,7 @@ use uuid::Uuid;
 
 type Frames = BoxStream<'static, Result<bytes::Bytes, Box<dyn std::error::Error + Send + Sync>>>;
 
+#[derive(Clone)]
 struct Fixture {
 	_owner: common::ApplicationFixture,
 	f: Federation,

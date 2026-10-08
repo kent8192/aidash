@@ -2011,7 +2011,7 @@ async fn response_handoff_releases_locks_before_body_drain_and_rechecks_event_re
 		"withdrawn package leaked through initial state"
 	);
 
-	let authorized_before_revoke = response.body;
+	let authorized_before_revoke = finite_body(response).await;
 	assert!(String::from_utf8_lossy(&authorized_before_revoke).contains("handoff"));
 	let mut frames = stream.take_stream_body().unwrap();
 	assert!(
@@ -2616,7 +2616,7 @@ async fn marketplace_event_polling_bounds_candidates_and_advances_past_denials(
 		response.headers["x-aidash-event-cursor"],
 		denied_cursor.to_string()
 	);
-	let bytes = response.body;
+	let bytes = finite_body(response).await;
 	assert_eq!(serde_json::from_slice::<Value>(&bytes).unwrap(), json!([]));
 	let page = request(
 		&app,
@@ -3648,7 +3648,7 @@ async fn source_and_administration_pages_preserve_candidate_progress(
 		.to_str()
 		.unwrap()
 		.to_owned();
-	let bytes = response.body;
+	let bytes = finite_body(response).await;
 	let first: Value = serde_json::from_slice(&bytes).unwrap();
 	assert_eq!(first.as_array().unwrap().len(), 2);
 	assert_eq!(first[0]["id"], "page-1");
@@ -3780,4 +3780,19 @@ fn browser_oidc_application(
 ) -> common::ApplicationFuture {
 	drop(runtime);
 	application
+}
+
+/// Drain the finite response only at the original Act boundary. A native JSON
+/// producer can keep its bytes in a stream while the eager body field is empty.
+async fn finite_body(mut response: reinhardt::Response) -> bytes::Bytes {
+	use futures_util::StreamExt;
+	if let Some(mut stream) = response.take_stream_body() {
+		let mut body = bytes::BytesMut::new();
+		while let Some(chunk) = stream.next().await {
+			body.extend_from_slice(&chunk.unwrap());
+		}
+		body.freeze()
+	} else {
+		response.body
+	}
 }

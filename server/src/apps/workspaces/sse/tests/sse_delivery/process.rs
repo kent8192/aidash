@@ -331,7 +331,8 @@ async fn replicas_recover_broker_outages_and_replay_after_shutdown(
 	#[with("replicas".into(),root.clone())]
 	dir_future: DirectoryFuture,
 ) {
-	let mut fixture = Arc::try_unwrap(root.await).ok().unwrap();
+	// The directory dependency shares this root; mutate a scenario-local config copy.
+	let mut fixture = (*root.await).clone();
 	let OutageTransport {
 		broker,
 		proxy,
@@ -548,7 +549,8 @@ async fn writer_a_execution_b_and_sse_c_have_independent_delivery(
 	#[with("independent-consumer".into(),root.clone())]
 	dir_future: DirectoryFuture,
 ) {
-	let mut fixture = Arc::try_unwrap(root.await).ok().unwrap();
+	// The directory dependency shares this root; mutate a scenario-local config copy.
+	let mut fixture = (*root.await).clone();
 	let broker = restricted_broker;
 	let dir = dir_future.await;
 	// A/C may publish and subscribe to UI hints, but only B may pull from the
