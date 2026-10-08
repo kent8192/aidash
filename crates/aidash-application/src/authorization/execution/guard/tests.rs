@@ -110,7 +110,9 @@ impl RunGuardScope for Scope {
 			.snapshot
 			.definitions
 			.iter()
-			.find(|d| d.identity.local() == *reference)
+			.find(|d| {
+				d.identity.registry_node == self.node_id() && d.identity.local() == *reference
+			})
 			.map(|d| d.definition.clone())
 			.unwrap_or_else(|| crate::test_support::entry(&reference.id, "cluster", json!({})));
 		if self.changed.as_deref() == Some(&reference.id) {
@@ -337,4 +339,87 @@ async fn terminal_delivery_retains_current_task_agent_and_installation_authority
 		Err(Error::Forbidden)
 	));
 	assert!(!scope.calls.contains(&"snapshot".into()));
+}
+
+#[rstest]
+#[case("foreign-child")]
+#[case("producer")]
+#[tokio::test]
+async fn foreign_closures_do_not_require_local_namesakes_or_match_their_digests(
+	mut scope: Scope,
+	run: RunMetadata,
+	#[case] child_id: &str,
+) {
+	use aidash_domain::registry::{
+		bindings::{ForeignAgentSnapshot, ResolvedDefinition},
+		rules::digest,
+	};
+	let mut child = crate::test_support::agent(child_id);
+	child.config["instructions"] = json!("Instructions owned by the peer.");
+	let foreign = ForeignAgentSnapshot::from_snapshot(crate::test_support::resolve(
+		"aidash://peer",
+		&child,
+		true,
+		vec![],
+	))
+	.unwrap();
+	let saved = scope
+		.snapshot
+		.definitions
+		.iter_mut()
+		.find(|saved| {
+			saved.identity.registry_node == "aidash://local" && saved.identity.id == "tool"
+		})
+		.unwrap();
+	saved.definition.config = json!({
+		"registry_node":"aidash://local","provider":"integration.agent@1","operation":"invoke",
+		"default_alias":"lookup","tier":"integration",
+		"transport":{"transport":"agent","node_id":foreign.agent.registry_node,"agent":foreign.agent.local()}
+	});
+	*saved = ResolvedDefinition::new(saved.identity.clone(), saved.definition.clone()).unwrap();
+	let binding = scope
+		.snapshot
+		.bindings
+		.iter_mut()
+		.find(|binding| binding.identity == saved.identity)
+		.unwrap();
+	binding.definition = saved.definition.clone();
+	binding.digest = saved.digest.clone();
+	let descriptor: aidash_domain::tool::providers::ToolDescriptor =
+		serde_json::from_value(binding.definition.config.clone()).unwrap();
+	binding.provider_contract_digest = Some(digest(
+		&serde_json::to_value(
+			descriptor
+				.declared_contract(binding.identity.clone())
+				.unwrap(),
+		)
+		.unwrap(),
+	));
+	binding.provider_implementation = Some("integration.agent@1:portable-test".into());
+	scope
+		.snapshot
+		.definitions
+		.extend(foreign.definitions.clone());
+	scope.snapshot.foreign_agents.push(foreign);
+	scope.snapshot.validate().unwrap();
+	let local_definitions = scope
+		.snapshot
+		.definitions
+		.iter()
+		.filter(|saved| saved.identity.registry_node == "aidash://local")
+		.count();
+	assert!(authorize(&mut scope, &run, true).await.is_ok());
+	assert_eq!(
+		scope
+			.calls
+			.iter()
+			.filter(|call| call.ends_with(":registry.read"))
+			.count(),
+		local_definitions
+	);
+	assert!(
+		!scope
+			.calls
+			.contains(&"catalog:foreign-child:registry.read".into())
+	);
 }

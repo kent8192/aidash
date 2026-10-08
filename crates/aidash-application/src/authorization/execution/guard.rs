@@ -53,9 +53,13 @@ pub async fn authorize(
 	if read_context && agent.needs_context_authority() {
 		scope.context_authority(run).await?;
 	}
-	// Current approval applies to every retained definition, independently of
-	// the installation's newer active pointer.
+	// Current local approval applies independently of a newer active pointer.
+	// Foreign Agent closures are refreshed at their owning Node by the Binding
+	// authority; never resolve their unqualified IDs through this local catalog.
 	for saved in &snapshot.definitions {
+		if saved.identity.registry_node != scope.node_id() {
+			continue;
+		}
 		let current = scope
 			.catalog(&saved.identity.local(), "registry.read")
 			.await?;
