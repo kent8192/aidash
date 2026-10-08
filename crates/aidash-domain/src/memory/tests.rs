@@ -700,3 +700,272 @@ fn semantic_graph_admission_bounds_vector_work_before_scoring() {
 	limits.max_units = usize::MAX;
 	assert!(super::graph::validate_capacity(&limits, 8192).is_err());
 }
+
+fn decay_policy() -> Decay {
+	Decay {
+		half_life_days: 30,
+		prior_floor_millionths: 100_000,
+		dormancy: Some(Dormancy {
+			threshold_millionths: 100_000,
+			interval_hours: 24,
+			batch: 16,
+			include_preferences: false,
+			include_procedures: false,
+		}),
+	}
+}
+
+#[test]
+fn retention_score_usage_activation_and_open_bounds() {
+	let start: DateTime<Utc> = "2024-01-01T00:00:00Z".parse().unwrap();
+	let now = start + chrono::Duration::days(30);
+	let decay = decay_policy();
+	assert_eq!(
+		super::decay::retention_score(&decay, start, None, 0, start, None, now),
+		0.5
+	);
+	assert!(super::decay::retention_score(&decay, start, None, 100, start, None, now) > 0.5);
+	assert_eq!(
+		super::decay::retention_score(&decay, start, None, 0, now, None, now),
+		1.0
+	);
+	assert_eq!(
+		super::decay::retention_score(&decay, start, Some(now), 0, start, None, now),
+		1.0
+	);
+	assert_eq!(
+		super::decay::retention_score(&decay, start, None, 0, start, Some(now), now),
+		1.0
+	);
+	assert_eq!(
+		super::decay::retention_score(
+			&decay,
+			start,
+			None,
+			0,
+			start,
+			Some(now),
+			now + chrono::Duration::days(30)
+		),
+		0.5
+	);
+	assert!(
+		super::decay::retention_score(
+			&decay,
+			start,
+			None,
+			0,
+			start,
+			None,
+			start + chrono::Duration::days(1_000_000)
+		) > 0.0
+	);
+	assert_eq!(super::decay::prior(&decay, 0.5), 0.55);
+}
+
+#[test]
+fn prior_only_demotes_hits_and_ties_use_retention_then_id() {
+	let a = Uuid::from_u128(1);
+	let b = Uuid::from_u128(2);
+	let missing = Uuid::from_u128(3);
+	let allowed = BTreeSet::from([a, b, missing]);
+	let ranks = Rankings {
+		semantic: vec![a, b],
+		keyword: vec![b, a],
+		..Default::default()
+	};
+	let scores = std::collections::BTreeMap::from([(a, 0.1), (b, 1.0), (missing, 1.0)]);
+	let baseline = fuse(&ranks, &allowed, 3).unwrap();
+	for invalid in [0.0, -1.0, 1.1, f64::NAN, f64::INFINITY] {
+		let invalid_scores = std::collections::BTreeMap::from([(a, invalid)]);
+		assert!(
+			recall::fuse_with_prior(&ranks, &allowed, 3, Some(&decay_policy()), &invalid_scores)
+				.is_err()
+		);
+		assert_eq!(
+			recall::fuse_with_prior(&ranks, &allowed, 3, None, &invalid_scores).unwrap(),
+			baseline
+		);
+	}
+	assert_eq!(
+		recall::fuse_with_prior(&ranks, &allowed, 3, None, &scores).unwrap(),
+		baseline
+	);
+	let ranked =
+		recall::fuse_with_prior(&ranks, &allowed, 3, Some(&decay_policy()), &scores).unwrap();
+	assert_eq!(ranked.iter().map(|r| r.id).collect::<Vec<_>>(), vec![b, a]);
+	assert_eq!(ranked[0].score, baseline[0].score);
+	assert!(ranked[1].score < baseline[1].score);
+	assert!(recall::compare(a, 0.5, b, 0.5, Some(&scores)).is_gt());
+	assert!(recall::compare(a, 0.5, b, 0.5, None).is_lt());
+	assert!(
+		recall::fuse_with_prior(
+			&Rankings {
+				semantic: vec![missing],
+				..Default::default()
+			},
+			&BTreeSet::from([a]),
+			1,
+			Some(&decay_policy()),
+			&scores
+		)
+		.is_err()
+	);
+}
+
+#[test]
+fn pinned_and_live_support_and_learning_exemptions() {
+	let mut unit = unit(1);
+	let mut decay = decay_policy();
+	assert!(super::decay::exempt(&unit, &decay, false, false));
+	unit.content.learning = Learning::Procedure;
+	assert!(super::decay::exempt(&unit, &decay, false, false));
+	let d = decay.dormancy.as_mut().unwrap();
+	d.include_preferences = true;
+	d.include_procedures = true;
+	assert!(!super::decay::exempt(&unit, &decay, false, false));
+	assert!(super::decay::exempt(&unit, &decay, true, false));
+	assert!(super::decay::exempt(&unit, &decay, false, true));
+}
+
+#[derive(Deserialize)]
+struct DecayEvaluation {
+	decay_cases: Vec<DecayCase>,
+}
+#[derive(Deserialize)]
+struct DecayCase {
+	id: String,
+	as_of: DateTime<Utc>,
+	activated_at: DateTime<Utc>,
+	half_life_days: u32,
+	prior_floor_millionths: u32,
+	semantic: Vec<u128>,
+	keyword: Vec<u128>,
+	expected_without_decay: Vec<u128>,
+	expected_with_decay: Vec<u128>,
+	units: Vec<DecayUnit>,
+}
+#[derive(Deserialize)]
+struct DecayUnit {
+	id: u128,
+	learned_at: DateTime<Utc>,
+	last_delivered_at: Option<DateTime<Utc>>,
+	deliveries: u64,
+	pinned: bool,
+}
+#[test]
+fn fixed_clock_decay_evaluation() {
+	let fixture: DecayEvaluation = toml::from_str(include_str!(
+		"../../../../tests/fixtures/native_memory_evaluation.toml"
+	))
+	.unwrap();
+	for case in fixture.decay_cases {
+		let decay = Decay {
+			half_life_days: case.half_life_days,
+			prior_floor_millionths: case.prior_floor_millionths,
+			dormancy: None,
+		};
+		let scores = case
+			.units
+			.iter()
+			.map(|u| {
+				(
+					Uuid::from_u128(u.id),
+					if u.pinned {
+						1.0
+					} else {
+						super::decay::retention_score(
+							&decay,
+							u.learned_at,
+							u.last_delivered_at,
+							u.deliveries,
+							case.activated_at,
+							None,
+							case.as_of,
+						)
+					},
+				)
+			})
+			.collect();
+		let allowed = case.units.iter().map(|u| Uuid::from_u128(u.id)).collect();
+		let ranks = Rankings {
+			semantic: case.semantic.into_iter().map(Uuid::from_u128).collect(),
+			keyword: case.keyword.into_iter().map(Uuid::from_u128).collect(),
+			..Default::default()
+		};
+		for (variant, expected) in [
+			(None, case.expected_without_decay),
+			(Some(&decay), case.expected_with_decay),
+		] {
+			let actual = recall::fuse_with_prior(&ranks, &allowed, 2, variant, &scores).unwrap();
+			assert_eq!(
+				actual.iter().map(|r| r.id.as_u128()).collect::<Vec<_>>(),
+				expected,
+				"{}",
+				case.id
+			);
+		}
+	}
+}
+
+#[test]
+fn decay_policy_validation_and_legacy_serde_byte_identity() {
+	let baseline =
+		include_str!("../../../../tests/fixtures/native_memory_policy_baseline.json").trim();
+	let mut policy: Policy = serde_json::from_str(baseline).unwrap();
+	assert!(policy.decay.is_none());
+	policy.validate().unwrap();
+	assert_eq!(serde_json::to_string(&policy).unwrap(), baseline);
+	let valid = decay_policy();
+	policy.decay = Some(valid.clone());
+	policy.validate().unwrap();
+	for invalid in [
+		Decay {
+			half_life_days: 0,
+			..valid.clone()
+		},
+		Decay {
+			half_life_days: 3651,
+			..valid.clone()
+		},
+		Decay {
+			prior_floor_millionths: 1_000_001,
+			..valid.clone()
+		},
+	] {
+		policy.decay = Some(invalid);
+		assert!(policy.validate().is_err());
+	}
+	for (threshold, interval, batch) in [
+		(0, 24, 16),
+		(1_000_000, 24, 16),
+		(1, 0, 16),
+		(1, 8761, 16),
+		(1, 1, 0),
+		(1, 1, 1025),
+	] {
+		let mut d = valid.clone();
+		let dormancy = d.dormancy.as_mut().unwrap();
+		dormancy.threshold_millionths = threshold;
+		dormancy.interval_hours = interval;
+		dormancy.batch = batch;
+		policy.decay = Some(d);
+		assert!(policy.validate().is_err());
+	}
+	for (half_life, floor, threshold, interval, batch) in
+		[(1, 0, 1, 1, 1), (3650, 1_000_000, 999_999, 8760, 1024)]
+	{
+		let mut d = valid.clone();
+		d.half_life_days = half_life;
+		d.prior_floor_millionths = floor;
+		let dormancy = d.dormancy.as_mut().unwrap();
+		dormancy.threshold_millionths = threshold;
+		dormancy.interval_hours = interval;
+		dormancy.batch = batch;
+		policy.decay = Some(d);
+		policy.validate().unwrap();
+	}
+	assert!(serde_json::from_value::<Policy>(serde_json::json!({"dormancy": {}})).is_err());
+	policy.decay = None;
+	assert_eq!(serde_json::to_string(&policy).unwrap(), baseline);
+}

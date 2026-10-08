@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 pub mod consolidation;
+pub mod decay;
 pub mod extraction;
 pub mod graph;
 pub mod recall;
@@ -414,11 +415,31 @@ pub struct Policy {
 	/// Explicit rates for the pinned role versions, in microcurrency per million tokens.
 	pub prices: Prices,
 	pub retention: Retention,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub decay: Option<Decay>,
 	pub bounds: Bounds,
 	pub learn_from_runs: bool,
 	/// Automatic work is explicit and pinned to this Registry policy version.
 	pub maintain_observations: bool,
 	pub refresh_mental_models: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Decay {
+	pub half_life_days: u32,
+	pub prior_floor_millionths: u32,
+	pub dormancy: Option<Dormancy>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Dormancy {
+	pub threshold_millionths: u32,
+	pub interval_hours: u32,
+	pub batch: usize,
+	pub include_preferences: bool,
+	pub include_procedures: bool,
 }
 
 /// Explicit finite limits for memory-owned records. Tombstone identities remain
@@ -504,6 +525,18 @@ impl Policy {
 			));
 		}
 		self.retention.validate(&self.bounds)?;
+		if let Some(decay) = &self.decay
+			&& (!(1..=3650).contains(&decay.half_life_days)
+				|| decay.prior_floor_millionths > 1_000_000
+				|| decay.dormancy.as_ref().is_some_and(|d| {
+					!(1..=999_999).contains(&d.threshold_millionths)
+						|| !(1..=8760).contains(&d.interval_hours)
+						|| !(1..=1024).contains(&d.batch)
+				})) {
+			return Err(Error::Invalid(
+				"invalid memory decay or dormancy bounds".into(),
+			));
+		}
 		for role in [
 			&self.extraction,
 			&self.derivation,

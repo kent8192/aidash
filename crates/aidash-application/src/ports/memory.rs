@@ -30,6 +30,25 @@ pub trait MemoryScope: Send {
 	/// Verify the Home, tenant, participant binding, provider version and requested action.
 	async fn authorize(&mut self, bank: &Bank, provider: &EntityRef, action: &str) -> Result<()>;
 	async fn snapshot(&mut self, bank: &Bank, limit: usize) -> Result<Snapshot>;
+	/// Recall-only filtering; maintenance and evidence keep the complete visible snapshot.
+	async fn recall_snapshot(&mut self, bank: &Bank, limit: usize) -> Result<Snapshot> {
+		self.snapshot(bank, limit).await
+	}
+	/// Independently bounded and explicitly authorized dormant-only snapshot.
+	async fn dormant_snapshot(&mut self, _bank: &Bank, _limit: usize) -> Result<Snapshot> {
+		Err(crate::Error::Forbidden)
+	}
+	async fn retention_scores(
+		&mut self,
+		_bank: &Bank,
+		_units: &[Unit],
+	) -> Result<std::collections::BTreeMap<Uuid, f64>> {
+		Ok(std::collections::BTreeMap::new())
+	}
+	/// Successful support selection reactivates recall state in the owning transaction.
+	async fn reactivate_support(&mut self, _bank: &Bank, _units: &[Unit]) -> Result<()> {
+		Ok(())
+	}
 	/// Recheck current source revisions, disclosure and deletion fences, including remote Home receipts.
 	async fn current(&mut self, bank: &Bank, evidence: &[Evidence]) -> Result<()>;
 	/// Must atomically reauthorize, compare revisions, check evidence, fence dependents,

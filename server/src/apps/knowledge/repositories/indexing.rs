@@ -60,6 +60,7 @@ impl SemanticIndexingRepository for NativeIndexing {
 		super::retention::sweep(&self.store).await?;
 		super::purge::sweep(&self.store).await?;
 		super::engine_jobs::sweep(&self.store).await?;
+		super::memory_decay::sweep(&self.store).await?;
 		Ok(())
 	}
 	async fn begin_visibility(&self) -> Result<Box<dyn SemanticVisibility>> {

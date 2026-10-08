@@ -18,6 +18,22 @@ async fn first_native_context(p: &Pair) -> Value {
 				.contains(&tool["function"]["name"].as_str().unwrap())
 		);
 	}
+	let local_deliveries: i64 = aidash_server::database::native::query_scalar(
+		&reinhardt::query::Query::select()
+			.expr(reinhardt::query::Func::count(
+				reinhardt::query::Expr::col(reinhardt::query::ColumnRef::Asterisk).into(),
+			))
+			.from(reinhardt::query::Alias::new("memory_unit_retention"))
+			.and_where(reinhardt::query::Expr::col("deliveries").gt(0_i64))
+			.to_string(reinhardt::query::PostgresQueryBuilder),
+	)
+	.scalar_one(&p.a.store.pool)
+	.await
+	.unwrap();
+	assert_eq!(
+		local_deliveries, 0,
+		"federated Delivery cannot increment local Usage"
+	);
 	input["current"]["semantic_memory"].clone()
 }
 

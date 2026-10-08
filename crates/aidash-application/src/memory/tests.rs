@@ -14,6 +14,7 @@ fn policy() -> Policy {
 		reranker: model.clone(),
 		tokenizer: model,
 		semantic_link_min_similarity_millionths: 700_000,
+		decay: None,
 		retention: Retention {
 			unit_max_age_days: None,
 			candidate_days: 7,
@@ -99,6 +100,7 @@ fn unit() -> Unit {
 	}
 }
 struct Scope {
+	retention_test: bool,
 	stale: bool,
 	foreign: bool,
 	delivered: bool,
@@ -110,10 +112,23 @@ impl MemoryScope for Scope {
 	}
 	async fn snapshot(&mut self, _: &Bank, _: usize) -> Result<Snapshot> {
 		Ok(Snapshot {
-			units: vec![unit()],
+			units: if self.retention_test {
+				let mut second = unit();
+				second.id = Uuid::from_u128(2);
+				vec![unit(), second]
+			} else {
+				vec![unit()]
+			},
 			graph: vec![],
 			authority_revision: "1".into(),
 		})
+	}
+	async fn retention_scores(&mut self, _: &Bank, _: &[Unit]) -> Result<BTreeMap<Uuid, f64>> {
+		assert!(self.retention_test);
+		Ok(BTreeMap::from([
+			(Uuid::from_u128(1), 0.1),
+			(Uuid::from_u128(2), 1.0),
+		]))
 	}
 	async fn current(&mut self, _: &Bank, _: &[Evidence]) -> Result<()> {
 		if self.stale {
@@ -156,11 +171,15 @@ impl MemoryScope for Scope {
 		_: Allowance,
 	) -> Result<Produced<Vec<Uuid>>> {
 		Ok(Produced {
-			output: vec![if self.foreign {
-				Uuid::from_u128(2)
+			output: if self.retention_test {
+				vec![Uuid::from_u128(1), Uuid::from_u128(2)]
 			} else {
-				unit().id
-			}],
+				vec![if self.foreign {
+					Uuid::from_u128(2)
+				} else {
+					unit().id
+				}]
+			},
 			usage: Usage {
 				tokens: 1,
 				cost_micros: 1,
@@ -168,7 +187,11 @@ impl MemoryScope for Scope {
 		})
 	}
 	async fn keyword(&mut self, _: &Bank, _: &str, _: &[Uuid], _: usize) -> Result<Vec<Uuid>> {
-		Ok(vec![])
+		Ok(if self.retention_test {
+			vec![Uuid::from_u128(2), Uuid::from_u128(1)]
+		} else {
+			vec![]
+		})
 	}
 	async fn deliver(&mut self, bank: &Bank, _: &str, evidence: &[Evidence]) -> Result<()> {
 		self.current(bank, evidence).await?;
@@ -335,6 +358,7 @@ async fn local_rrf_leaves_calls_for_embedding_and_reflection() {
 				stale: false,
 				foreign: false,
 				delivered: false,
+				retention_test: false,
 			};
 			let result = if reflection {
 				engine
@@ -373,6 +397,7 @@ async fn a_local_reranker_cannot_report_unreserved_model_usage() {
 		stale: false,
 		foreign: false,
 		delivered: false,
+		retention_test: false,
 	};
 	assert!(
 		matches!(engine.recall(&mut scope, &unit().bank, &query(4096)).await,
@@ -403,6 +428,7 @@ async fn semantic_consolidation_shares_its_synthesis_budget_and_rechecks_sources
 		stale: false,
 		foreign: false,
 		delivered: false,
+		retention_test: false,
 	};
 	let result = engine
 		.consolidate(&mut scope, &trigger, &snapshot)
@@ -465,6 +491,7 @@ async fn recall_refuses_foreign_candidates_and_stale_delivery() {
 		stale: false,
 		foreign: true,
 		delivered: false,
+		retention_test: false,
 	};
 	assert!(
 		engine
@@ -499,6 +526,7 @@ async fn recall_counts_the_complete_envelope_and_distinguishes_no_space() {
 		stale: false,
 		foreign: false,
 		delivered: false,
+		retention_test: false,
 	};
 	assert_eq!(
 		engine
@@ -531,6 +559,7 @@ async fn reflection_rejects_invented_citations() {
 		stale: false,
 		foreign: false,
 		delivered: false,
+		retention_test: false,
 	};
 	assert!(
 		engine
@@ -570,6 +599,7 @@ async fn maintenance_cannot_claim_verification_from_synthesis() {
 			stale: false,
 			foreign: false,
 			delivered: false,
+			retention_test: false,
 		};
 		let result = engine
 			.maintain(
@@ -612,9 +642,55 @@ async fn reflection_followup_cannot_expand_the_callers_context_budget() {
 		stale: false,
 		foreign: false,
 		delivered: false,
+		retention_test: false,
 	};
 	assert!(
 		matches!(engine.reflect(&mut scope, &unit().bank, &query(1024)).await,
 		Err(Error::Invalid(message)) if message == "reflection context budget exhausted")
 	);
+}
+
+#[tokio::test]
+async fn model_reranker_ties_follow_retention_and_disabled_decay_keeps_id_order() {
+	let provider = EntityRef {
+		id: "fixture".into(),
+		version: "1.0.0".into(),
+	};
+	let models = Models {
+		invented: false,
+		followup: None,
+	};
+	for enabled in [false, true] {
+		let mut policy = policy();
+		if enabled {
+			policy.decay = Some(Decay {
+				half_life_days: 30,
+				prior_floor_millionths: 100_000,
+				dormancy: None,
+			});
+		}
+		let engine = Engine {
+			provider: &provider,
+			policy: &policy,
+			models: &models,
+		};
+		let mut scope = Scope {
+			stale: false,
+			foreign: false,
+			delivered: false,
+			retention_test: true,
+		};
+		let Recall::Ready { units } = engine
+			.recall(&mut scope, &unit().bank, &query(4096))
+			.await
+			.unwrap()
+		else {
+			panic!("ready");
+		};
+		assert_eq!(
+			units.iter().map(|u| u.id.as_u128()).collect::<Vec<_>>(),
+			if enabled { vec![2, 1] } else { vec![1, 2] }
+		);
+		assert!(scope.delivered);
+	}
 }

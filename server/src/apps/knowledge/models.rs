@@ -1,6 +1,7 @@
 //! Persistent records owned by the semantic app.
 pub(crate) mod cleanup;
 mod index_configuration;
+mod memory_decay;
 pub(crate) mod memory_records;
 pub(crate) mod memory_units;
 mod read_dependencies;
