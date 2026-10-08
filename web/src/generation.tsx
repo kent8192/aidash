@@ -1,5 +1,6 @@
 import {
   AgentBindings,
+  coordinatorDefaults,
   hasInstructionalBinding,
   type Binding,
   type BindingConfiguration,
@@ -441,6 +442,9 @@ function PolicyEditor({
     bindings: config?.bindings ?? [],
     remove_default: config?.remove_default ?? [],
   });
+  const [cluster, setCluster] = useState(
+    config?.cluster ? key(config.cluster) : "",
+  );
   const [model, setModel] = useState(config?.model ? key(config.model) : "");
   const [compactor, setCompactor] = useState(
     initial?.compaction ? key(initial.compaction.provider) : "",
@@ -664,6 +668,7 @@ function PolicyEditor({
       <AgentBindings
         value={bindings}
         change={setBindings}
+        cluster={Boolean(cluster)}
         entries={entries}
         node={node}
       />
@@ -678,7 +683,18 @@ function PolicyEditor({
       <Field label={t("cluster")}>
         <select
           name="cluster"
-          defaultValue={config?.cluster ? key(config.cluster) : ""}
+          value={cluster}
+          onChange={(e) => {
+            const selected = e.target.value;
+            setCluster(selected);
+            if (selected)
+              setBindings((previous) => ({
+                ...previous,
+                remove_default: previous.remove_default.filter(
+                  (name) => !coordinatorDefaults.includes(name),
+                ),
+              }));
+          }}
         >
           <option value="">{t("generationNoCluster")}</option>
           {entries

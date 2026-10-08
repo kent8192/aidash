@@ -39,6 +39,14 @@ async function setup(page: Page) {
               tags: [],
               config: {},
             },
+            {
+              id: "fixture-cluster",
+              version: "1.0.0",
+              kind: "cluster",
+              name: { en: "Fixture cluster" },
+              description: { en: "Coordination fixture" },
+              config: {},
+            },
             ...["1.0.0", "2.0.0"].map((version) => ({
               id: "research-skill",
               version,
@@ -99,6 +107,8 @@ test("registers an agent with selected versioned skills", async ({ page }) => {
     "required",
     "",
   );
+  for (const name of ["skill_list", "skill_load", "skill_read"])
+    await dialog.getByLabel(name, { exact: true }).uncheck();
   await dialog
     .getByLabel("追加する定義")
     .selectOption("skill:research-skill@2.0.0");
@@ -110,6 +120,28 @@ test("registers an agent with selected versioned skills", async ({ page }) => {
       exact: true,
     }),
   ).toHaveCount(0);
+  for (const name of ["skill_list", "skill_load", "skill_read"]) {
+    await expect(dialog.getByLabel(name, { exact: true })).toBeChecked();
+    await expect(dialog.getByLabel(name, { exact: true })).toBeDisabled();
+  }
+  for (const name of ["task_create", "task_delegate", "agent_discover"])
+    await dialog.getByLabel(name, { exact: true }).uncheck();
+  await dialog
+    .locator('[name="cluster"]')
+    .selectOption("fixture-cluster@1.0.0");
+  for (const name of ["task_create", "task_delegate", "agent_discover"]) {
+    await expect(dialog.getByLabel(name, { exact: true })).toBeChecked();
+    await expect(dialog.getByLabel(name, { exact: true })).toBeDisabled();
+  }
+  await dialog.locator('[name="cluster"]').selectOption("");
+  await expect(
+    dialog.getByLabel("task_delegate", { exact: true }),
+  ).toBeEnabled();
+  await expect(dialog.getByLabel("memory_write", { exact: true })).toHaveCount(
+    0,
+  );
+  for (const name of ["memory_mutate", "memory_recall", "memory_reflect"])
+    await dialog.getByLabel(name, { exact: true }).uncheck();
   const submitted = page.waitForRequest(
     (request) =>
       new URL(request.url()).pathname === "/api/registry" &&
@@ -132,7 +164,7 @@ test("registers an agent with selected versioned skills", async ({ page }) => {
         narrow: {},
       },
     ],
-    remove_default: [],
+    remove_default: ["memory_mutate", "memory_recall", "memory_reflect"],
     instructions: "",
   });
   await expect(dialog).not.toBeVisible();

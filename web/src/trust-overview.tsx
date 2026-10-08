@@ -288,7 +288,7 @@ export function TrustOverview({
                     ],
                     [
                       text("Memory write", "メモリ書き込み"),
-                      !agent.config.remove_default.includes("memory_write"),
+                      !agent.config.remove_default.includes("memory_mutate"),
                     ],
                     [
                       text("Memory bindings", "MemoryのBinding"),

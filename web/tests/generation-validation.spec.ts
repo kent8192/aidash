@@ -71,7 +71,17 @@ for (const context of [
               capabilities: [],
               clusters: [],
             },
-            registry: [model, skill],
+            registry: [
+              model,
+              skill,
+              {
+                id: "fixture-cluster",
+                version: "1.0.0",
+                kind: "cluster",
+                name: { en: "Fixture cluster" },
+                config: {},
+              },
+            ],
             workspaces: [],
             tasks: [],
             artifacts: [],
@@ -89,11 +99,13 @@ for (const context of [
         await route.fulfill({ json: { agents: [], errors: [] } });
       } else if (path === "/api/authorization/fixture-tenant/catalog") {
         await route.fulfill({
-          json: [model, skill].map((entry) => ({
-            entry_id: entry.id,
-            entry_version: entry.version,
-            enabled: true,
-          })),
+          json: [model, skill, { id: "fixture-cluster", version: "1.0.0" }].map(
+            (entry) => ({
+              entry_id: entry.id,
+              entry_version: entry.version,
+              enabled: true,
+            }),
+          ),
         });
       } else if (path === "/api/generation/fixture-tenant/policies") {
         await route.fulfill({ json: [] });
@@ -138,12 +150,37 @@ for (const context of [
     );
     expect(savedPolicy).toBeUndefined();
 
+    for (const name of ["skill_list", "skill_load", "skill_read"])
+      await dialog.getByLabel(name, { exact: true }).uncheck();
     await dialog
       .getByLabel("追加する定義")
       .selectOption(`${context.kind}:fixture-skill@1.0.0`);
     await dialog
       .getByRole("button", { name: "Bindingを追加", exact: true })
       .click();
+    for (const name of ["skill_list", "skill_load", "skill_read"]) {
+      const checkbox = dialog.getByLabel(name, { exact: true });
+      if (context.accepted) {
+        await expect(checkbox).toBeChecked();
+        await expect(checkbox).toBeDisabled();
+      } else {
+        await expect(checkbox).not.toBeChecked();
+        await expect(checkbox).toBeEnabled();
+      }
+    }
+    for (const name of ["task_create", "task_delegate", "agent_discover"])
+      await dialog.getByLabel(name, { exact: true }).uncheck();
+    await dialog
+      .locator('[name="cluster"]')
+      .selectOption("fixture-cluster@1.0.0");
+    for (const name of ["task_create", "task_delegate", "agent_discover"]) {
+      await expect(dialog.getByLabel(name, { exact: true })).toBeChecked();
+      await expect(dialog.getByLabel(name, { exact: true })).toBeDisabled();
+    }
+    await dialog.locator('[name="cluster"]').selectOption("");
+    await expect(
+      dialog.getByLabel("task_delegate", { exact: true }),
+    ).toBeEnabled();
     await dialog.getByLabel("追加の指示（任意）", { exact: true }).fill("");
     await dialog.getByRole("button", { name: "保存", exact: true }).click();
     if (!context.accepted) {
@@ -163,6 +200,9 @@ for (const context of [
           config: {
             instructions: context.accepted ? "" : "Use this context.",
             schema_version: 1,
+            remove_default: context.accepted
+              ? []
+              : ["skill_list", "skill_load", "skill_read"],
             bindings: [
               {
                 kind: context.kind,

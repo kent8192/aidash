@@ -23,11 +23,13 @@ export function CapabilityConfiguration({
   change,
   node,
   entries,
+  cluster = false,
 }: {
   privateReferences?: boolean;
   value: CoreConfiguration;
   change: (v: CoreConfiguration) => void;
   node?: string;
+  cluster?: boolean;
   entries?: Parameters<typeof AgentBindings>[0]["entries"];
 }) {
   const query = useQuery({
@@ -46,6 +48,7 @@ export function CapabilityConfiguration({
       change={change}
       entries={entries ?? query.data}
       node={node}
+      cluster={cluster}
     />
   );
 }

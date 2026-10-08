@@ -1834,6 +1834,7 @@ export function Workbench({
             value={editing.config}
             entries={data.registry}
             node={data.node.id}
+            cluster={Boolean(editing.config.cluster)}
             change={(configuration) =>
               change((value) => {
                 value.config.bindings = configuration.bindings;

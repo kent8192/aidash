@@ -57,7 +57,14 @@ export const defaults = [
   "agent_discover",
   "artifact_publish",
   "workspace_message",
-  "memory_write",
+  "memory_mutate",
+  "memory_recall",
+  "memory_reflect",
+];
+export const coordinatorDefaults = [
+  "task_create",
+  "task_delegate",
+  "agent_discover",
 ];
 function Restrictions({
   id,
@@ -100,15 +107,18 @@ export function AgentBindings({
   change,
   node = "",
   entries = [],
+  cluster = false,
 }: {
   value: BindingConfiguration;
   change: (v: BindingConfiguration) => void;
   node?: string;
+  cluster?: boolean;
   entries?: {
     id: string;
     version: string;
     kind: string;
     name?: Record<string, string>;
+    config?: Record<string, unknown>;
   }[];
 }) {
   const { locale, entityLabel, t } = useI18n();
@@ -131,8 +141,27 @@ export function AgentBindings({
       : undefined) ?? `${t("unavailableEntity")} · ${binding.target.version}`;
   const bindings = value.bindings ?? [];
   const removed = value.remove_default ?? [];
-  const update = (i: number, patch: Partial<Binding>) =>
+  const requiredDefaults = (selected: Binding[]) => [
+    ...(selected.some((binding) => binding.kind === "skill") ||
+    hasInstructionalBinding(
+      selected,
+      entries.map((entry) => ({ ...entry, config: entry.config ?? {} })),
+      node,
+    )
+      ? ["skill_list", "skill_load", "skill_read"]
+      : []),
+    ...(cluster ? coordinatorDefaults : []),
+  ];
+  const required = requiredDefaults(bindings);
+  const save = (next: BindingConfiguration) =>
     change({
+      ...next,
+      remove_default: next.remove_default.filter(
+        (name) => !requiredDefaults(next.bindings).includes(name),
+      ),
+    });
+  const update = (i: number, patch: Partial<Binding>) =>
+    save({
       ...value,
       bindings: bindings.map((b, index) =>
         index === i ? { ...b, ...patch } : b,
@@ -180,7 +209,7 @@ export function AgentBindings({
             )
           )
             return;
-          change({
+          save({
             ...value,
             bindings: [
               ...bindings,
@@ -256,7 +285,7 @@ export function AgentBindings({
             type="button"
             variant="outline"
             onClick={() =>
-              change({
+              save({
                 ...value,
                 bindings: bindings.filter((_, index) => index !== i),
               })
@@ -272,9 +301,10 @@ export function AgentBindings({
           <label className="check" key={name}>
             <input
               type="checkbox"
+              disabled={required.includes(name)}
               checked={!removed.includes(name)}
               onChange={(e) =>
-                change({
+                save({
                   ...value,
                   remove_default: e.target.checked
                     ? removed.filter((n) => n !== name)

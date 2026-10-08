@@ -92,7 +92,7 @@ pub async fn simulate(execution: &Execution, session_id: Uuid, job: &Job) -> Res
 		let entry = authority.validate_content(&job.pinned_draft).await?;
 		let snapshot = authority.bindings(&job.pinned_draft, &entry).await?;
 		let saved = admitted_session.scenario["binding_snapshot"].clone();
-		if saved != serde_json::to_value(snapshot)? {
+		if saved != serde_json::to_value(&snapshot)? {
 			return Err(Error::Conflict(
 				"admitted test Binding graph changed".into(),
 			));
@@ -144,7 +144,7 @@ pub async fn simulate(execution: &Execution, session_id: Uuid, job: &Job) -> Res
 			break;
 		}
 		let mut missing = false;
-		for call in response.tool_calls {
+		for mut call in response.tool_calls {
 			if calls.len() >= limits.max_steps as usize {
 				error = Some("test step limit reached".into());
 				missing = true;
@@ -157,7 +157,25 @@ pub async fn simulate(execution: &Execution, session_id: Uuid, job: &Job) -> Res
 					.and_then(|selected| pin.rules.iter().find(|rule| selected == &rule.tool))
 			});
 			let fixture = input.fixtures.get(&call.name);
-			let result = if let Some(rule) = real_rule {
+			let admitted = snapshot
+				.bindings
+				.iter()
+				.find(|binding| {
+					binding.alias.as_deref() == Some(&call.name)
+						&& binding.excluded_reason.is_none()
+				})
+				.ok_or(Error::Forbidden)
+				.and_then(|binding| {
+					binding
+						.narrow
+						.apply(&mut call.arguments)
+						.map_err(Error::from)
+				});
+			let result = if let Err(reason) = admitted {
+				missing = true;
+				error = Some(reason.to_string());
+				json!({"id":call.id,"name":call.name,"arguments":call.arguments,"outcome":"denied","error":reason.to_string()})
+			} else if let Some(rule) = real_rule {
 				match dispatch::invoke(
 					&dispatch::Dispatch {
 						repository: execution.repository.as_ref(),

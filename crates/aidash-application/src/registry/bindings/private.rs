@@ -11,6 +11,33 @@ use aidash_domain::registry::{
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
+/// Replace generated document bindings while preserving explicitly mounted Sources.
+pub async fn detach(scope: &mut dyn DefinitionLookup, entry: &mut Entry, node: &str) -> Result<()> {
+	let mut input: AgentBindings = serde_json::from_value(entry.config.clone())?;
+	let mut retained = Vec::new();
+	for binding in input.bindings {
+		if binding.kind == BindingKind::Source
+			&& binding.target.registry_node == node
+			&& binding.target.id.starts_with("private.")
+		{
+			let source = scope
+				.definition(&binding.target.id, &binding.target.version)
+				.await?;
+			if aidash_domain::registry::bindings::sources::validate_definition(&source)?
+				.is_some_and(|context| {
+					matches!(context.source, NativeSource::PrivateReferences { .. })
+				}) {
+				continue;
+			}
+		}
+		retained.push(binding);
+	}
+	input.bindings = retained;
+	entry.config = serde_json::to_value(input)?;
+	entry.binding_normalization = None;
+	Ok(())
+}
+
 pub fn attach(entry: &mut Entry, node: &str, documents: &Value) -> Result<Entry> {
 	let digest = knowledge::digest(documents);
 	let hash =

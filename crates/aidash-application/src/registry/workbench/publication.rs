@@ -142,6 +142,7 @@ where
 	let documents: Vec<ReferenceDocument> = serde_json::from_value(draft.documents.clone())?;
 	if !documents.is_empty() {
 		let mut raw: Entry = serde_json::from_value(draft.entry.clone())?;
+		registry::bindings::private::detach(&mut scope, &mut raw, repository.node_id()).await?;
 		let source =
 			registry::bindings::private::attach(&mut raw, repository.node_id(), &draft.documents)?;
 		registry::register_definition(&mut scope, validation, &source, repository.node_id())

@@ -1238,7 +1238,7 @@ for (const [width, locale] of [
           ],
           remove_default:
             configuration === "mixed"
-              ? ["task_delegate"]
+              ? ["task_delegate", "memory_mutate"]
               : configuration === "skills-only"
                 ? ["task_create"]
                 : [],
@@ -1312,6 +1312,16 @@ for (const [width, locale] of [
       });
       await expect(dependencyCard).toBeVisible();
       await expect(autonomyCard).toBeVisible();
+      const memoryWrite = overview.locator(".trust-row").filter({
+        has: page.getByText(text("Memory write", "メモリ書き込み"), {
+          exact: true,
+        }),
+      });
+      await expect(memoryWrite.locator(".trust-badge")).toHaveText(
+        configuration === "mixed"
+          ? text("Disabled", "無効")
+          : text("Requested", "要求あり"),
+      );
       const expectedAutonomy = ["task_create", "task_delegate"].map((name) =>
         configuredEntry.config.remove_default.includes(name)
           ? text("Disabled", "無効")

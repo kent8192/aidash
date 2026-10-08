@@ -1,5 +1,8 @@
-import { nativeMemoryProvider } from "./agent-bindings";
-import { hasInstructionalBinding } from "./agent-bindings";
+import {
+  coordinatorDefaults,
+  nativeMemoryProvider,
+  hasInstructionalBinding,
+} from "./agent-bindings";
 import { Button } from "./components/ui/button";
 import { MemoryRegistryFields, memoryConfiguration } from "./memory-registry";
 import { ApiError, apiFetch } from "./transport";
@@ -312,6 +315,7 @@ export function EntityForm({
   const models = data.registry.filter((e) => e.kind === "model");
   const [documents, setDocuments] = useState<ReferenceDocument[]>([]);
   const [core, setCore] = useState(emptyCore);
+  const [cluster, setCluster] = useState("");
   const [readingDocuments, setReadingDocuments] = useState(false);
   return (
     <form
@@ -510,6 +514,7 @@ export function EntityForm({
             <CapabilityConfiguration
               value={core}
               change={setCore}
+              cluster={Boolean(cluster)}
               node={data.node.id}
               entries={data.registry}
             />
@@ -519,7 +524,21 @@ export function EntityForm({
               busyChange={setReadingDocuments}
             />
             <Field label={t("cluster")}>
-              <select name="cluster" defaultValue="">
+              <select
+                name="cluster"
+                value={cluster}
+                onChange={(e) => {
+                  const selected = e.target.value;
+                  setCluster(selected);
+                  if (selected)
+                    setCore((previous) => ({
+                      ...previous,
+                      remove_default: previous.remove_default.filter(
+                        (name) => !coordinatorDefaults.includes(name),
+                      ),
+                    }));
+                }}
+              >
                 <option value="">{t("noAssignment")}</option>
                 {data.registry
                   .filter((e) => e.kind === "cluster")
