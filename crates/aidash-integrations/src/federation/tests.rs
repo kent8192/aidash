@@ -113,3 +113,42 @@ async fn oversized_peer_success_is_rejected_before_json_decoding() {
 		matches!(result,Err(Error::External(message)) if message == "response exceeds 4194304 bytes")
 	);
 }
+
+#[rstest]
+#[case("/scoped/semantic/query", false)]
+#[case("/scoped/execution/admissions/fixture/activate", false)]
+#[case("/leaf", true)]
+#[tokio::test]
+async fn composite_authority_responses_can_complete_after_the_leaf_deadline(
+	#[case] path: &str,
+	#[case] leaf_timeout: bool,
+) {
+	use std::sync::atomic::{AtomicUsize, Ordering};
+	let entered = Arc::new(AtomicUsize::new(0));
+	let observed = entered.clone();
+	let app = Router::new().route(
+		&format!("/federation/v0.1{path}"),
+		post(move || {
+			let entered = entered.clone();
+			async move {
+				entered.fetch_add(1, Ordering::SeqCst);
+				tokio::time::sleep(Duration::from_secs(11)).await;
+				Json(json!({"completed":true}))
+			}
+		}),
+	);
+	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+	let endpoint = format!("http://{}", listener.local_addr().unwrap());
+	let _server = Server(tokio::spawn(async move {
+		axum::serve(listener, app).await.unwrap();
+	}));
+	let (_fixture, client, mut peer, _keys) = fixture().await;
+	peer.endpoint = endpoint;
+	let result = client.request(&peer, "POST", path, Some(&json!({}))).await;
+	assert_eq!(observed.load(Ordering::SeqCst), 1);
+	if leaf_timeout {
+		assert!(matches!(result, Err(Error::External(_))));
+	} else {
+		assert_eq!(result.unwrap().body, json!({"completed":true}));
+	}
+}
