@@ -58,6 +58,8 @@ pub enum AttemptStatus {
 	Answered,
 	Failed,
 	Uncertain,
+	/// Charged reservation stopped before any physical request.
+	NotDispatched,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -85,6 +87,8 @@ pub enum Reason {
 	Insufficient,
 	Forbidden,
 	ProviderFailure,
+	AuthorityFailure,
+	JournalFailure,
 	InvalidAnswers,
 	NoCandidates,
 }
@@ -103,6 +107,14 @@ pub enum StateReference {
 		digest: String,
 		expired_at: DateTime<Utc>,
 	},
+}
+
+/// Immutable witness preserved when cleanup removes the classification state bytes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
+pub enum StateRetentionWitness {
+	Disabled,
+	Enabled { id: Uuid, expires_at: DateTime<Utc> },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -145,6 +157,7 @@ pub struct Evidence {
 	pub reason: Reason,
 	pub fit: FitMetrics,
 	pub state: StateReference,
+	pub state_retention: StateRetentionWitness,
 }
 impl Evidence {
 	/// No provider, current policy, mutable definition or executable state is consulted.
@@ -172,16 +185,46 @@ impl Evidence {
 				return Err(Error::Invalid("corrupt historical source reference".into()));
 			}
 		}
-		match &self.state {
-			StateReference::Retained { id, digest, .. }
-			| StateReference::Expired { id, digest, .. }
-				if id.is_nil() || digest != &self.state_digest =>
-			{
-				return Err(Error::Invalid(
-					"historical retained-state reference changed".into(),
-				));
+		let valid_state = match (&self.state, &self.state_retention) {
+			(StateReference::Disabled, StateRetentionWitness::Disabled) => true,
+			(
+				StateReference::Retained {
+					id,
+					digest,
+					expires_at,
+				},
+				StateRetentionWitness::Enabled {
+					id: retained_id,
+					expires_at: deadline,
+				},
+			) => {
+				!id.is_nil()
+					&& id == retained_id
+					&& digest == &self.state_digest
+					&& expires_at == deadline
 			}
-			_ => {}
+			(
+				StateReference::Expired {
+					id,
+					digest,
+					expired_at,
+				},
+				StateRetentionWitness::Enabled {
+					id: retained_id,
+					expires_at: deadline,
+				},
+			) => {
+				!id.is_nil()
+					&& id == retained_id
+					&& digest == &self.state_digest
+					&& expired_at == deadline
+			}
+			_ => false,
+		};
+		if !valid_state {
+			return Err(Error::Invalid(
+				"historical retained-state reference changed".into(),
+			));
 		}
 		let proposed_reason = if self.restrictions.forbid_apply {
 			Reason::Forbidden
