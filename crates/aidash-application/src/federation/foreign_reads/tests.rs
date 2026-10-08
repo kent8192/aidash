@@ -549,9 +549,15 @@ async fn required_home_semantics_recheck_the_source_workspace_permission(
 #[case("bundle", false)]
 #[case("memory", false)]
 #[case("source", false)]
+#[case("embedding", false)]
+#[case("reranker", false)]
+#[case("tokenizer", false)]
 #[case("bundle", true)]
 #[case("memory", true)]
 #[case("source", true)]
+#[case("embedding", true)]
+#[case("reranker", true)]
+#[case("tokenizer", true)]
 #[tokio::test]
 async fn binding_context_definitions_keep_current_reader_authority(
 	mut scope: Scope,

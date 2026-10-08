@@ -208,12 +208,38 @@ async fn unsupported_receiver_kind_cannot_gain_execution_authority() {
 			&mut scope,
 			&task(),
 			"aidash://receiver",
-			&inspection("embedding")
+			&inspection("future-provider")
 		)
 		.await,
 		Err(Error::Forbidden)
 	));
 	assert_eq!(scope.calls.last().unwrap().0, "registry.read");
+}
+
+#[rstest]
+#[case("memory")]
+#[case("source")]
+#[case("bundle")]
+#[case("embedding")]
+#[case("reranker")]
+#[case("tokenizer")]
+#[tokio::test]
+async fn pinned_context_dependencies_preserve_source_registry_authority(
+	#[case] kind: &str,
+	#[values(false, true)] denied: bool,
+) {
+	let mut scope = Scope::new();
+	if denied {
+		scope.denied = Some("registry.read");
+	}
+	let result = authorize(&mut scope, &task(), "aidash://receiver", &inspection(kind)).await;
+	if denied {
+		assert!(matches!(result, Err(Error::Forbidden)));
+	} else {
+		result.unwrap();
+	}
+	assert_eq!(scope.calls.last().unwrap().0, "registry.read");
+	assert_eq!(scope.calls.last().unwrap().1.kind, kind);
 }
 
 mod semantic;
