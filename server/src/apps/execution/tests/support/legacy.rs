@@ -53,9 +53,16 @@ pub async fn http_response(
 			.iter()
 			.find(|(name, _)| name.eq_ignore_ascii_case("content-type"))
 	{
+		// reinhardt-web#6672: the dedicated content type argument inserts this
+		// header; do not append the caller header a second time.
+		let extra_headers: Vec<_> = headers
+			.iter()
+			.copied()
+			.filter(|(name, _)| !name.eq_ignore_ascii_case("content-type"))
+			.collect();
 		return app
 			.client()
-			.post_raw_with_headers(path, body, content_type, headers)
+			.post_raw_with_headers(path, body, content_type, &extra_headers)
 			.await
 			.unwrap();
 	}

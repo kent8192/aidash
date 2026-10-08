@@ -464,7 +464,11 @@ fn direct_client(native_application: ApplicationFuture) -> ClientFuture {
 	async move {
 		let application = native_application.await.application;
 		// reinhardt-web#6670: in-process dispatch preserves redirects without a builder policy.
-		Arc::new(APIClient::from_handler(application.native_router()))
+		let client = APIClient::from_handler(application.native_router());
+		// reinhardt-web#6672: from_handler injects a default Origin. Browser cases
+		// must supply their exact per-request Origin, including denied origins.
+		client.cleanup().await;
+		Arc::new(client)
 	}
 	.boxed()
 	.shared()
