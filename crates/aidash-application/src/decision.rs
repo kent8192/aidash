@@ -127,6 +127,9 @@ impl DecisionGate<'_> {
 				Reason::Forbidden
 			};
 			self.journal.commit(&evidence, None, None).await?;
+			if evidence.reason == Reason::Forbidden {
+				return Err(Error::Forbidden);
+			}
 			return Err(Error::Invalid(
 				"decision cannot compact the protected context".into(),
 			));
@@ -144,7 +147,7 @@ impl DecisionGate<'_> {
 		// No arbitrary batch/concurrency ceiling. Every batch receives its own live
 		// authority check and durable reservation. No successful subset is applied.
 		let attempts = futures_util::future::join_all(requests.iter().map(|request| async {
-			self.provider.preflight(request)?;
+			let transport = self.provider.prepare(request)?;
 			let current = self
 				.authority
 				.check(input.boundary, input.decider, &input.disclosure.sources)
@@ -156,9 +159,7 @@ impl DecisionGate<'_> {
 				.state_retention
 				.expires_at(input.now, input.disclosure.source_expiry)?;
 			if current.restrictions.forbid_apply && config.mode == Mode::Enforce {
-				return Err(Error::Invalid(
-					"current authority forbids decision application".into(),
-				));
+				return Err(Error::Forbidden);
 			}
 			let record = DispatchRecord {
 				attempt: Uuid::new_v4(),
@@ -179,7 +180,7 @@ impl DecisionGate<'_> {
 					"decision dispatch lacks exact durable owner receipts".into(),
 				));
 			}
-			let result = self.provider.dispatch(request).await;
+			let result = transport.dispatch().await;
 			let (mut status, mut answers, mut failure) = match result {
 				Ok(answers) if validate_answers(&request.questions, &answers).is_ok() => {
 					(AttemptStatus::Answered, Some(answers), None)
@@ -246,6 +247,9 @@ impl DecisionGate<'_> {
 		if let Some(reason) = failure {
 			evidence.reason = reason;
 			self.journal.commit(&evidence, None, None).await?;
+			if reason == Reason::Forbidden {
+				return Err(Error::Forbidden);
+			}
 			return Err(Error::Invalid(
 				"decision requests did not produce complete durable answers".into(),
 			));

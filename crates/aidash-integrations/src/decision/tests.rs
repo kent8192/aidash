@@ -4,7 +4,10 @@ use axum::{
 	http::{HeaderMap, StatusCode},
 	routing::post,
 };
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{
+	Mutex,
+	atomic::{AtomicBool, AtomicUsize, Ordering},
+};
 
 struct CredentialsFixture;
 impl Credentials for CredentialsFixture {
@@ -66,7 +69,7 @@ fn request_planning_splits_only_under_provider_capacity_and_preserves_all_candid
 	assert_eq!(plan.len(), 4);
 	let mut coverage = BTreeMap::new();
 	for batch in &plan {
-		client.preflight(batch).unwrap();
+		client.prepare(batch).unwrap();
 		let payload: Value = serde_json::from_slice(&batch.body).unwrap();
 		assert_eq!(payload["state"], state);
 		assert_eq!(payload["model"], "jev-1.13.0");
@@ -90,7 +93,7 @@ fn requests_exceed_legacy_size_and_question_caps_without_truncation() {
 	assert_eq!(plan.len(), 1);
 	assert!(plan[0].body.len() > 1_048_576);
 	assert_eq!(plan[0].questions.len(), 1100);
-	client.preflight(&plan[0]).unwrap();
+	client.prepare(&plan[0]).unwrap();
 	let payload: Value = serde_json::from_slice(&plan[0].body).unwrap();
 	assert_eq!(payload["state"], state);
 	assert!(
@@ -163,6 +166,84 @@ async fn server(router: Router) -> (String, Server) {
 	});
 	(endpoint, Server(handle))
 }
+
+struct RotatingCredentials {
+	available: AtomicBool,
+	resolutions: AtomicUsize,
+}
+impl Credentials for RotatingCredentials {
+	fn resolve(&self, _: &str) -> Result<String> {
+		self.resolutions.fetch_add(1, Ordering::SeqCst);
+		if self.available.load(Ordering::SeqCst) {
+			Ok("fixture-secret".into())
+		} else {
+			Err(Error::Invalid("PRIVATE_CREDENTIAL_BACKEND_ERROR".into()))
+		}
+	}
+}
+
+#[tokio::test]
+async fn prepared_batches_reuse_exact_transport_after_credentials_become_unavailable() {
+	let received = Arc::new(Mutex::new(Vec::new()));
+	let collected = received.clone();
+	let router = Router::new().route(
+		"/systemone",
+		post(move |headers: HeaderMap, bytes: axum::body::Bytes| {
+			let received = collected.clone();
+			async move {
+				assert_eq!(headers["authorization"], "Bearer fixture-secret");
+				let body: Value = serde_json::from_slice(&bytes).unwrap();
+				assert_eq!(body["model"], "jev-1.13.0");
+				received.lock().unwrap().push(bytes.to_vec());
+				let answers: BTreeMap<_, _> = body["questions"]
+					.as_object()
+					.unwrap()
+					.keys()
+					.map(|id| (id.clone(), json!({"noul":0.5})))
+					.collect();
+				Json(json!({"model":"jev-1.13.0", "answers":answers}))
+			}
+		}),
+	);
+	let (endpoint, _server) = server(router).await;
+	let credentials = Arc::new(RotatingCredentials {
+		available: AtomicBool::new(true),
+		resolutions: AtomicUsize::new(0),
+	});
+	let client = JevDecisionProvider::new(
+		config(&endpoint),
+		credentials.clone(),
+		Arc::new(CapacityFixture(Some(1))),
+		Duration::from_secs(5),
+	)
+	.unwrap();
+	let requests = client
+		.plan(&json!({"goal":"authorized"}), &questions(3))
+		.unwrap();
+	let transports: Vec<_> = requests
+		.iter()
+		.map(|r| client.prepare(r).unwrap())
+		.collect();
+	assert_eq!(credentials.resolutions.load(Ordering::SeqCst), 3);
+	assert!(received.lock().unwrap().is_empty());
+	// Credentials can rotate while durable owner reservations are awaited.
+	credentials.available.store(false, Ordering::SeqCst);
+	let error = client.prepare(&requests[0]).err().unwrap().to_string();
+	assert_eq!(error, "decision credential unavailable");
+	assert!(!error.contains("PRIVATE_CREDENTIAL_BACKEND_ERROR"));
+	assert!(received.lock().unwrap().is_empty());
+	for (transport, request) in transports.into_iter().zip(&requests) {
+		let answers = transport.dispatch().await.unwrap();
+		assert_eq!(answers.len(), request.questions.len());
+		assert!(answers.values().all(|p| *p == Probability::half()));
+	}
+	assert_eq!(credentials.resolutions.load(Ordering::SeqCst), 4);
+	assert_eq!(
+		*received.lock().unwrap(),
+		requests.iter().map(|r| r.body.clone()).collect::<Vec<_>>()
+	);
+}
+
 #[tokio::test]
 async fn exact_http_bytes_auth_large_response_and_safe_provider_errors() {
 	let router = Router::new().route(
@@ -183,7 +264,7 @@ async fn exact_http_bytes_auth_large_response_and_safe_provider_errors() {
 		.unwrap()
 		.remove(0);
 	assert_eq!(
-		client.dispatch(&request).await.unwrap()["q0"],
+		client.prepare(&request).unwrap().dispatch().await.unwrap()["q0"],
 		Probability::half()
 	);
 	let router = Router::new().route(
@@ -192,7 +273,13 @@ async fn exact_http_bytes_auth_large_response_and_safe_provider_errors() {
 	);
 	let (endpoint, _server) = server(router).await;
 	let client = provider(&endpoint, None);
-	let error = client.dispatch(&request).await.unwrap_err().to_string();
+	let error = client
+		.prepare(&request)
+		.unwrap()
+		.dispatch()
+		.await
+		.unwrap_err()
+		.to_string();
 	assert!(!error.contains("PRIVATE_HISTORY_AND_SECRET"));
 	assert!(error.contains("400"));
 }
@@ -229,7 +316,7 @@ async fn redirects_and_failures_do_not_create_unreserved_requests() {
 	let (endpoint, _server) = server(router).await;
 	let client = provider(&endpoint, None);
 	let request = client.plan(&json!({}), &questions(1)).unwrap().remove(0);
-	assert!(client.dispatch(&request).await.is_err());
+	assert!(client.prepare(&request).unwrap().dispatch().await.is_err());
 	assert_eq!(calls.load(Ordering::SeqCst), 1);
 }
 
@@ -250,7 +337,7 @@ async fn successful_http_with_invalid_answers_is_a_contract_violation() {
 		let client = provider(&endpoint, None);
 		let request = client.plan(&json!({}), &questions(1)).unwrap().remove(0);
 		assert!(matches!(
-			client.dispatch(&request).await,
+			client.prepare(&request).unwrap().dispatch().await,
 			Err(DispatchError::InvalidAnswers)
 		));
 	}
@@ -262,5 +349,5 @@ fn prepared_body_cannot_change_the_model_or_question_map() {
 	let mut body: Value = serde_json::from_slice(&request.body).unwrap();
 	body["model"] = "jev-latest".into();
 	request.body = serde_json::to_vec(&body).unwrap();
-	assert!(client.preflight(&request).is_err());
+	assert!(client.prepare(&request).is_err());
 }

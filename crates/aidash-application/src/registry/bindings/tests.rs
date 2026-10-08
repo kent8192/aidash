@@ -92,7 +92,7 @@ impl ProviderCatalog for Providers {
 		if self.unavailable.as_deref() == Some("decision") {
 			return Err(Error::Invalid("DECISION_PROVIDER_UNAVAILABLE".into()));
 		}
-		Ok(aidash_domain::decision::PROVIDER.into())
+		Ok("node-a/decision-adapter-v2".into())
 	}
 	fn contract(
 		&self,
@@ -1100,6 +1100,30 @@ async fn explicit_decider_snapshot_pins_provider_builder_model_and_narrowing() {
 	config.bindings.push(decider_binding("decider"));
 	let saved = snapshot(&mut catalog, &config, false).await.unwrap();
 	saved.validate().unwrap();
+	let implementation = saved
+		.bindings
+		.iter()
+		.find(|b| b.definition.kind == "decider")
+		.unwrap()
+		.provider_implementation
+		.as_deref()
+		.unwrap();
+	assert_eq!(implementation, "node-a/decision-adapter-v2");
+	assert_ne!(implementation, aidash_domain::decision::PROVIDER);
+	let recovered: BindingSnapshot =
+		serde_json::from_value(serde_json::to_value(&saved).unwrap()).unwrap();
+	recovered.validate().unwrap();
+	assert_eq!(recovered, saved);
+	for implementation in [None, Some(""), Some(" \t ")] {
+		let mut corrupt = saved.clone();
+		corrupt
+			.bindings
+			.iter_mut()
+			.find(|b| b.definition.kind == "decider")
+			.unwrap()
+			.provider_implementation = implementation.map(str::to_owned);
+		assert!(corrupt.validate().is_err());
+	}
 	let bound = saved
 		.decider(aidash_domain::decision::Hook::Compaction)
 		.unwrap();

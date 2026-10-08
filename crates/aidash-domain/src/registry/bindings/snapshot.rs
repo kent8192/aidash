@@ -234,7 +234,10 @@ impl BindingSnapshot {
 				let config: crate::decision::DeciderConfig =
 					serde_json::from_value(saved.definition.config.clone())?;
 				if saved.provider_contract_digest.as_deref() != Some(&config.contract_digest()?)
-					|| saved.provider_implementation.as_deref() != Some(crate::decision::PROVIDER)
+					|| saved
+						.provider_implementation
+						.as_deref()
+						.is_none_or(|id| id.trim().is_empty())
 					|| saved.excluded_reason.is_some()
 				{
 					return Err(Error::Invalid(

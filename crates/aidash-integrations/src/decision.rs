@@ -2,7 +2,7 @@
 use crate::{Error, Result};
 use aidash_application::ports::{
 	Credentials,
-	decision::{DecisionProvider, DispatchError, PreparedRequest},
+	decision::{DecisionProvider, DispatchError, PreparedDispatch, PreparedRequest},
 };
 use aidash_domain::decision::*;
 use async_trait::async_trait;
@@ -88,7 +88,6 @@ impl JevDecisionProvider {
 			.body(prepared.body.clone()))
 	}
 }
-#[async_trait]
 impl DecisionProvider for JevDecisionProvider {
 	fn configuration_digest(&self) -> Result<String> {
 		Ok(self.config.digest()?)
@@ -144,7 +143,7 @@ impl DecisionProvider for JevDecisionProvider {
 		}
 		Ok(batches)
 	}
-	fn preflight(&self, request: &PreparedRequest) -> Result<()> {
+	fn prepare(&self, request: &PreparedRequest) -> Result<Box<dyn PreparedDispatch + '_>> {
 		let body: Value = serde_json::from_slice(&request.body)
 			.map_err(|_| Error::Invalid("invalid prepared decision payload".into()))?;
 		let state = body
@@ -157,19 +156,33 @@ impl DecisionProvider for JevDecisionProvider {
 				"prepared decision payload changed its pinned model or questions".into(),
 			));
 		}
-		self.request(request)?
+		let transport = self
+			.request(request)?
 			.build()
 			.map_err(|_| Error::Invalid("invalid decision HTTP request".into()))?;
-		Ok(())
+		Ok(Box::new(JevDispatch {
+			client: self.client.clone(),
+			request: transport,
+			model: self.config.model.clone(),
+			questions: request.questions.clone(),
+		}))
 	}
+}
+
+struct JevDispatch {
+	client: reqwest::Client,
+	request: reqwest::Request,
+	model: String,
+	questions: Questions,
+}
+#[async_trait]
+impl PreparedDispatch for JevDispatch {
 	async fn dispatch(
-		&self,
-		request: &PreparedRequest,
+		self: Box<Self>,
 	) -> std::result::Result<BTreeMap<String, Probability>, DispatchError> {
-		self.preflight(request)?;
 		let response = self
-			.request(request)?
-			.send()
+			.client
+			.execute(self.request)
 			.await
 			.map_err(|_| Error::External("decision provider transport failed".into()))?;
 		if !response.status().is_success() {
@@ -185,7 +198,7 @@ impl DecisionProvider for JevDecisionProvider {
 			.bytes()
 			.await
 			.map_err(|_| Error::External("decision response unavailable".into()))?;
-		validate_response(&self.config.model, &request.questions, &body)
+		validate_response(&self.model, &self.questions, &body)
 			.map_err(|_| DispatchError::InvalidAnswers)
 	}
 }

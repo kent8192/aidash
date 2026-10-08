@@ -66,6 +66,11 @@ struct Fixture {
 	configuration_digest: String,
 	saved: Mutex<Saved>,
 	budget: usize,
+	fail_prepare: bool,
+	forbid_initial: bool,
+	forbid_after_initial: bool,
+	deny_after_initial: bool,
+	preparations: AtomicUsize,
 	invalid: bool,
 	invalid_response: bool,
 	fail_transport: bool,
@@ -101,6 +106,11 @@ impl Fixture {
 				states: 0,
 			}),
 			budget: usize::MAX,
+			fail_prepare: false,
+			forbid_initial: false,
+			forbid_after_initial: false,
+			deny_after_initial: false,
+			preparations: AtomicUsize::new(0),
 			invalid: false,
 			invalid_response: false,
 			fail_transport: false,
@@ -134,12 +144,13 @@ impl Fixture {
 #[async_trait]
 impl DecisionAuthority for Fixture {
 	async fn check(&self, _: &Boundary, _: &DeciderPin, _: &[SourcePin]) -> Result<Approval> {
-		self.checks.fetch_add(1, Ordering::SeqCst);
-		if self.denied.load(Ordering::SeqCst) {
+		let check = self.checks.fetch_add(1, Ordering::SeqCst);
+		if self.denied.load(Ordering::SeqCst) || self.deny_after_initial && check > 0 {
 			return Err(Error::Forbidden);
 		}
 		Ok(Approval {
 			restrictions: Restrictions {
+				forbid_apply: self.forbid_initial || self.forbid_after_initial && check > 0,
 				preserve_recent: if self.stricter_after_dispatch
 					&& self.calls.load(Ordering::SeqCst) > 0
 				{
@@ -169,6 +180,7 @@ impl DecisionJournal for Fixture {
 		self.commit_time.unwrap_or_else(Utc::now)
 	}
 	async fn reserve(&self, record: &DispatchRecord) -> Result<DispatchPermit> {
+		assert!(self.preparations.load(Ordering::SeqCst) > 0);
 		let mut saved = self.saved.lock().unwrap();
 		if saved.permits.len() >= self.budget {
 			return Err(Error::Forbidden);
@@ -268,7 +280,6 @@ impl DecisionJournal for Fixture {
 		Ok(())
 	}
 }
-#[async_trait]
 impl DecisionProvider for Fixture {
 	fn configuration_digest(&self) -> Result<String> {
 		Ok(self.configuration_digest.clone())
@@ -293,37 +304,53 @@ impl DecisionProvider for Fixture {
 			})
 			.collect())
 	}
-	fn preflight(&self, _: &PreparedRequest) -> Result<()> {
-		Ok(())
+	fn prepare(&self, request: &PreparedRequest) -> Result<Box<dyn PreparedDispatch + '_>> {
+		if self.fail_prepare {
+			return Err(Error::Invalid("credential unavailable".into()));
+		}
+		self.preparations.fetch_add(1, Ordering::SeqCst);
+		Ok(Box::new(FixtureDispatch {
+			fixture: self,
+			request: request.clone(),
+		}))
 	}
+}
+struct FixtureDispatch<'a> {
+	fixture: &'a Fixture,
+	request: PreparedRequest,
+}
+#[async_trait]
+impl PreparedDispatch for FixtureDispatch<'_> {
 	async fn dispatch(
-		&self,
-		request: &PreparedRequest,
+		self: Box<Self>,
 	) -> std::result::Result<BTreeMap<String, Probability>, DispatchError> {
+		let fixture = self.fixture;
+		let request = &self.request;
 		// Assert reservation-before-I/O and exact physical request digest.
 		assert!(
-			self.saved
+			fixture
+				.saved
 				.lock()
 				.unwrap()
 				.permits
 				.iter()
 				.any(|p| p.record.request_digest == request.digest())
 		);
-		self.calls.fetch_add(1, Ordering::SeqCst);
-		let concurrent = self.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
-		self.peak.fetch_max(concurrent, Ordering::SeqCst);
+		fixture.calls.fetch_add(1, Ordering::SeqCst);
+		let concurrent = fixture.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+		fixture.peak.fetch_max(concurrent, Ordering::SeqCst);
 		tokio::task::yield_now().await;
-		self.in_flight.fetch_sub(1, Ordering::SeqCst);
-		if self.revoke_after_dispatch {
-			self.denied.store(true, Ordering::SeqCst);
+		fixture.in_flight.fetch_sub(1, Ordering::SeqCst);
+		if fixture.revoke_after_dispatch {
+			fixture.denied.store(true, Ordering::SeqCst);
 		}
-		if self.fail_transport {
+		if fixture.fail_transport {
 			return Err(Error::External("RAW_PRIVATE_PROVIDER_BODY".into()).into());
 		}
-		if self.invalid_response {
+		if fixture.invalid_response {
 			return Err(DispatchError::InvalidAnswers);
 		}
-		if self.invalid {
+		if fixture.invalid {
 			return Ok(BTreeMap::new());
 		}
 		Ok(request
@@ -333,9 +360,9 @@ impl DecisionProvider for Fixture {
 				(
 					id.clone(),
 					if id.ends_with("_call") {
-						self.keep_call.unwrap_or(self.keep)
+						fixture.keep_call.unwrap_or(fixture.keep)
 					} else {
-						self.keep
+						fixture.keep
 					},
 				)
 			})
@@ -515,6 +542,90 @@ async fn changed_input_or_provider_pin_never_reaches_dispatch() {
 		assert_eq!(context.history, original.history);
 		assert_eq!(fixture.calls.load(Ordering::SeqCst), 0);
 		assert!(fixture.saved.lock().unwrap().permits.is_empty());
+	}
+}
+
+#[tokio::test]
+async fn failed_transport_preparation_never_reserves_a_provider_call() {
+	for mode in [Mode::Enforce, Mode::Shadow] {
+		let fixture = Fixture {
+			fail_prepare: true,
+			..Fixture::new(mode)
+		};
+		let (result, context, original) = evaluate(&fixture, mode, 80_000, disclosure()).await;
+		assert!(matches!(result, Err(Error::Invalid(_))));
+		assert_eq!(context.history, original.history);
+		assert_eq!(fixture.calls.load(Ordering::SeqCst), 0);
+		let saved = fixture.saved.lock().unwrap();
+		assert!(saved.permits.is_empty());
+		assert_eq!(saved.applied, 0);
+		assert_eq!(saved.evidence.len(), 1);
+		assert_eq!(saved.evidence[0].reason, Reason::ProviderFailure);
+		assert!(saved.evidence[0].attempts.is_empty());
+	}
+}
+
+#[tokio::test]
+async fn denied_batch_authority_or_allowance_returns_forbidden_after_evidencing_siblings() {
+	for mode in [Mode::Enforce, Mode::Shadow] {
+		for (deny_after_initial, budget) in [(true, usize::MAX), (false, 0), (false, 2)] {
+			let fixture = Fixture {
+				deny_after_initial,
+				budget,
+				..Fixture::new(mode)
+			};
+			let (result, context, original) = evaluate(&fixture, mode, 80_000, disclosure()).await;
+			assert!(matches!(result, Err(Error::Forbidden)));
+			assert_eq!(context.history, original.history);
+			let saved = fixture.saved.lock().unwrap();
+			let dispatched = if deny_after_initial { 0 } else { budget };
+			assert_eq!(fixture.calls.load(Ordering::SeqCst), dispatched);
+			assert_eq!(saved.permits.len(), dispatched);
+			assert_eq!(saved.applied, 0);
+			assert_eq!(saved.states, 0);
+			assert_eq!(saved.evidence.len(), 1);
+			let evidence = &saved.evidence[0];
+			assert_eq!(evidence.outcome, Outcome::Rejected);
+			assert_eq!(evidence.reason, Reason::Forbidden);
+			assert_eq!(evidence.attempts.len(), dispatched);
+			assert_eq!(evidence.answers.len(), dispatched);
+			for (attempt, permit) in evidence.attempts.iter().zip(&saved.permits) {
+				assert_eq!(attempt.id, permit.record.attempt);
+				assert_eq!(attempt.owner_receipts, permit.owner_receipts);
+			}
+		}
+	}
+}
+
+#[tokio::test]
+async fn forbid_apply_policy_changes_are_forbidden_and_shadow_remains_a_proposal() {
+	for forbid_initial in [false, true] {
+		for mode in [Mode::Enforce, Mode::Shadow] {
+			let fixture = Fixture {
+				forbid_initial,
+				forbid_after_initial: !forbid_initial,
+				..Fixture::new(mode)
+			};
+			let (result, context, original) = evaluate(&fixture, mode, 80_000, disclosure()).await;
+			assert_eq!(context.history, original.history);
+			let saved = fixture.saved.lock().unwrap();
+			assert_eq!(saved.applied, 0);
+			let evidence = &saved.evidence[0];
+			assert_eq!(evidence.reason, Reason::Forbidden);
+			if mode == Mode::Enforce {
+				assert!(matches!(result, Err(Error::Forbidden)));
+				assert_eq!(evidence.outcome, Outcome::Rejected);
+				assert!(saved.permits.is_empty());
+				assert!(evidence.attempts.is_empty());
+				assert_eq!(fixture.calls.load(Ordering::SeqCst), 0);
+			} else {
+				assert!(matches!(result, Ok(CompactionResult::Shadow(_))));
+				assert_eq!(evidence.outcome, Outcome::Shadow);
+				assert_eq!(saved.permits.len(), 6);
+				assert_eq!(evidence.attempts.len(), 6);
+				assert_eq!(evidence.replay().unwrap(), evidence.branches);
+			}
+		}
 	}
 }
 #[tokio::test]
@@ -779,6 +890,59 @@ async fn replay_rejects_impossible_reason_fit_and_mode_combinations() {
 	assert_eq!(forbidden.replay().unwrap(), forbidden.branches);
 	forbidden.reason = Reason::Insufficient;
 	assert!(forbidden.replay().is_err());
+}
+
+#[tokio::test]
+async fn replay_rejects_drop_metrics_that_disagree_with_historical_branches() {
+	let fixture = Fixture::new(Mode::Enforce);
+	evaluate(&fixture, Mode::Enforce, 80_000, disclosure())
+		.await
+		.0
+		.unwrap();
+	let evidence = fixture.saved.lock().unwrap().evidence[0].clone();
+	assert_eq!(evidence.fit.dropped, 3);
+	assert_eq!(evidence.replay().unwrap(), evidence.branches);
+	for dropped in [evidence.fit.dropped - 1, evidence.fit.dropped + 1] {
+		let mut corrupt = evidence.clone();
+		corrupt.fit.dropped = dropped;
+		corrupt.fit.retained = corrupt.history_length - dropped;
+		assert_eq!(
+			corrupt.fit.retained + corrupt.fit.dropped,
+			corrupt.history_length
+		);
+		assert!(corrupt.replay().is_err());
+	}
+}
+
+#[tokio::test]
+async fn replay_rejects_unknown_or_overlapping_questions_for_every_attempt_status() {
+	let fixture = Fixture::new(Mode::Enforce);
+	evaluate(&fixture, Mode::Enforce, 80_000, disclosure())
+		.await
+		.0
+		.unwrap();
+	let evidence = fixture.saved.lock().unwrap().evidence[0].clone();
+	for status in [
+		AttemptStatus::Answered,
+		AttemptStatus::Failed,
+		AttemptStatus::Uncertain,
+	] {
+		for questions in [
+			vec!["unknown-question".to_owned()],
+			evidence.attempts[0].questions.clone(),
+			vec!["unknown-question".to_owned(); 2],
+		] {
+			let mut corrupt = evidence.clone();
+			corrupt.attempts.push(AttemptEvidence {
+				id: Uuid::new_v4(),
+				request_digest: format!("sha256:{}", "c".repeat(64)),
+				questions,
+				status,
+				owner_receipts: BTreeMap::from([("run-owner".into(), Uuid::new_v4())]),
+			});
+			assert!(corrupt.replay().is_err(), "fabricated {status:?} attempt");
+		}
+	}
 }
 #[tokio::test]
 async fn live_stricter_protection_replays_the_actual_preserved_branch() {

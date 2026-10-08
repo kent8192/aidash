@@ -62,19 +62,24 @@ pub enum DispatchError {
 	InvalidAnswers,
 }
 
-#[async_trait]
 pub trait DecisionProvider: Send + Sync {
 	fn configuration_digest(&self) -> Result<String>;
 	/// Split only under factual constraints of the pinned external provider.
 	/// All question IDs must occur exactly once; no state/candidate truncation is allowed.
 	fn plan(&self, state: &Value, questions: &Questions) -> Result<Vec<PreparedRequest>>;
 	/// Credential and request construction failures happen before reserving a physical call.
-	/// Credentials never enter the returned body or error messages.
-	fn preflight(&self, request: &PreparedRequest) -> Result<()>;
+	/// The returned transport retains the resolved credentials and exact request;
+	/// dispatch must not repeat fallible construction or credential resolution.
+	/// Credentials never enter the planned body or error messages.
+	fn prepare(&self, request: &PreparedRequest) -> Result<Box<dyn PreparedDispatch + '_>>;
+}
+
+/// A fully constructed transport consumed by one reserved physical attempt.
+#[async_trait]
+pub trait PreparedDispatch: Send {
 	/// One physical HTTP attempt, with strict model/type/coverage/finite-probability checks.
 	async fn dispatch(
-		&self,
-		request: &PreparedRequest,
+		self: Box<Self>,
 	) -> std::result::Result<BTreeMap<String, Probability>, DispatchError>;
 }
 

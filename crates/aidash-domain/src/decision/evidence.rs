@@ -244,12 +244,20 @@ impl Evidence {
 				));
 			}
 		}
-		if question_ids.len() != self.questions.len() || replay != self.branches {
+		if question_ids.len() != self.questions.len()
+			|| replay != self.branches
+			|| self.fit.dropped
+				!= replay
+					.values()
+					.filter(|branch| **branch == Branch::Drop)
+					.count()
+		{
 			return Err(Error::Invalid(
 				"historical decision branch or question coverage changed".into(),
 			));
 		}
 		let mut coverage = std::collections::BTreeSet::new();
+		let mut attempted_questions = std::collections::BTreeSet::new();
 		let mut attempts = std::collections::BTreeSet::new();
 		for attempt in &self.attempts {
 			validate_digest(&attempt.request_digest)?;
@@ -261,13 +269,14 @@ impl Evidence {
 			{
 				return Err(Error::Invalid("corrupt historical attempt evidence".into()));
 			}
-			if attempt.status == AttemptStatus::Answered {
-				for question in &attempt.questions {
-					if !self.questions.contains_key(question) || !coverage.insert(question) {
-						return Err(Error::Invalid(
-							"historical attempts have conflicting question coverage".into(),
-						));
-					}
+			for question in &attempt.questions {
+				if !self.questions.contains_key(question) || !attempted_questions.insert(question) {
+					return Err(Error::Invalid(
+						"historical attempts have conflicting question coverage".into(),
+					));
+				}
+				if attempt.status == AttemptStatus::Answered {
+					coverage.insert(question);
 				}
 			}
 		}
