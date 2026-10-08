@@ -27,6 +27,7 @@ fn storage_fixture(
 #[tokio::test]
 async fn unchanged_exports_reuse_objects_and_superseded_working_bytes_are_reclaimed(
 	#[future] storage_fixture: (CoreFixture, Uuid, Value),
+	#[from(worker_control)] control_1: WorkerControl,
 ) {
 	let (c, run, initial) = Box::pin(storage_fixture).await;
 	let old: Uuid = serde_json::from_value(initial["manifest"][0]["file_id"].clone()).unwrap();
@@ -40,7 +41,8 @@ async fn unchanged_exports_reuse_objects_and_superseded_working_bytes_are_reclai
 	.fetch_one(c.f.store.pool.driver())
 	.await
 	.unwrap();
-	let (stop, rx) = tokio::sync::watch::channel(false);
+	let WorkerControl { stop, receiver: rx } = control_1;
+	// Act: start collection after capturing the persisted quota baseline.
 	let worker = tokio::spawn(aidash_server::capabilities::operations::run(
 		c.f.store.clone(),
 		rx,
@@ -183,15 +185,13 @@ async fn seed_receipt(c: &CoreFixture, template: Uuid, id: Uuid, instance: &str,
 #[rstest::rstest]
 #[tokio::test]
 async fn stale_and_rejected_receipts_cannot_starve_new_terminal_payload_acknowledgement(
-	#[future] storage_fixture: (CoreFixture, Uuid, Value),
+	#[future]
+	#[from(running_storage_fixture)]
+	storage_fixture: (CoreFixture, Uuid, Value, CapabilityWorker),
 ) {
 	use super::extraction_lifecycle_tests::runner;
-	let (c, run, initial) = Box::pin(storage_fixture).await;
-	let (stop, rx) = tokio::sync::watch::channel(false);
-	let worker = tokio::spawn(aidash_server::capabilities::operations::run(
-		c.f.store.clone(),
-		rx,
-	));
+	let (c, run, initial, worker) = Box::pin(storage_fixture).await;
+	let stop = worker.stop.clone();
 	let (status, operation) = request(
 		&c.app,
 		&c.token,
@@ -252,6 +252,7 @@ async fn stale_and_rejected_receipts_cannot_starve_new_terminal_payload_acknowle
 	}
 	seed_receipt(&c, template, fresh, instance, "fresh-receipt").await;
 	stop.send_replace(false);
+	// Act: start reconciliation after the preceding configuration or fault-state change.
 	let worker = tokio::spawn(aidash_server::capabilities::operations::run(
 		c.f.store.clone(),
 		stop.subscribe(),
@@ -312,3 +313,19 @@ async fn stale_and_rejected_receipts_cannot_starve_new_terminal_payload_acknowle
 use reinhardt::query::{ExprTrait as _, QueryStatementBuilder as _};
 
 use reinhardt::query::SimpleExpr;
+
+#[rstest::fixture]
+async fn running_storage_fixture(
+	#[future] storage_fixture: (CoreFixture, Uuid, Value),
+	worker_control: WorkerControl,
+) -> (CoreFixture, Uuid, Value, CapabilityWorker) {
+	let (c, run, initial) = Box::pin(storage_fixture).await;
+	let worker = CapabilityWorker {
+		stop: worker_control.stop,
+		handle: tokio::spawn(aidash_server::capabilities::operations::run(
+			c.f.store.clone(),
+			worker_control.receiver,
+		)),
+	};
+	(c, run, initial, worker)
+}

@@ -185,13 +185,12 @@ async fn predecessor_run_cannot_read_files_after_its_successor_becomes_active(
 
 #[rstest::fixture]
 async fn approver_fixture(
-	#[future(awt)] test_environment: Arc<TestEnvironment>,
+	#[future(awt)]
+	#[from(capability_fixture)]
+	#[with("aidash://approver-test")]
+	core_1: CoreFixture,
 ) -> (CoreFixture, aidash_server::domain::Run, String) {
-	let c = Box::pin(build_core_fixture(
-		test_environment,
-		"aidash://approver-test",
-	))
-	.await;
+	let c = core_1;
 	let (mut c, run) = Box::pin(configure_approvals(c)).await;
 	c.policy["subjects"]["bob"]["attributes"] = json!({"capability_approver":true});
 	c.policy["policies"].as_array_mut().unwrap().push(json!({"id":"requester-not-an-approver","effect":"deny","subjects":{"ids":["alice"]},"actions":["capability.approve"],"resources":{"kinds":["outbound"]}}));

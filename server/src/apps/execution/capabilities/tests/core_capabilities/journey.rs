@@ -5,11 +5,12 @@ use aidash_server::{
 	context::ContextEvent,
 	domain::{RunControl, RunPhase},
 };
-use axum::{Json, Router, http::HeaderMap, routing::post};
+use reinhardt::ServerRouter as Router;
 use std::sync::{
 	Mutex,
 	atomic::{AtomicUsize, Ordering},
 };
+use upstream_fixtures::handler;
 
 struct Journey {
 	c: CoreFixture,
@@ -17,7 +18,7 @@ struct Journey {
 	receiver: aidash_server::domain::Run,
 	peer_servers: Vec<tokio::task::JoinHandle<()>>,
 	run: aidash_server::domain::Run,
-	server: tokio::task::JoinHandle<()>,
+	server: Arc<reinhardt::test::fixtures::server::TestServerGuard>,
 	requests: Arc<Mutex<Vec<Value>>>,
 	effects: Arc<AtomicUsize>,
 }
@@ -135,89 +136,40 @@ fn next(context: &Value, recipient: &Value) -> Option<(&'static str, Value)> {
 }
 
 #[rstest::fixture]
-async fn journey_fixture(#[future] test_environment: Arc<TestEnvironment>) -> Journey {
-	let env = test_environment.await;
-	let recipient = Arc::new(Mutex::new(Value::Null));
-	let target = recipient.clone();
-	let requests = Arc::new(Mutex::new(Vec::new()));
-	let effects = Arc::new(AtomicUsize::new(0));
-	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-	let endpoint = format!("http://{}", listener.local_addr().unwrap());
-	let capture = requests.clone();
-	let counter = effects.clone();
-	let server = Router::new().route("/v1/chat/completions", post(move |Json(body):Json<Value>| {
-		let capture = capture.clone();
-		let target = target.clone();
-		async move {
-			let context: Value = serde_json::from_str(body["messages"][1]["content"].as_str().unwrap()).unwrap();
-			let count = { let mut requests = capture.lock().unwrap(); requests.push(body); requests.len() };
-			let action = next(&context, &target.lock().unwrap());
-			// Polling is observable work and consumes a model step; let the real
-			// runner progress instead of exhausting the Agent budget in a busy loop.
-			if action.as_ref().is_some_and(|(name,_)| name.ends_with("_poll") || *name == "file_share") { tokio::time::sleep(std::time::Duration::from_millis(300)).await; }
-			let message = match action {
-				Some((name, arguments)) => json!({"role":"assistant","content":null,"tool_calls":[{"id":format!("journey-{count}"),"type":"function","function":{"name":name,"arguments":arguments.to_string()}}]}),
-				None => json!({"role":"assistant","content":"Analyzed the CSV in an isolated persistent Python session. The verified answer is 42."}),
-			};
-			Json(json!({"choices":[{"index":0,"finish_reason":if message.get("tool_calls").is_some(){"tool_calls"}else{"stop"},"message":message}],"usage":{"prompt_tokens":1,"completion_tokens":1}}))
-		}
-	})).route("/effect", post(move |headers:HeaderMap, Json(_body):Json<Value>| {
-		let counter = counter.clone();
-		async move {
-			assert_eq!(headers.get("authorization").unwrap(), &format!("Bearer {}", std::env::var("AIDASH_SECRET_TEST_PEER").unwrap()));
-			counter.fetch_add(1, Ordering::SeqCst);
-			Json(json!({"saved":true}))
-		}
-	}));
-	let server = tokio::spawn(async move {
-		axum::serve(listener, server).await.unwrap();
-	});
-	let mut c = build_core_fixture_at(env.clone(), "aidash://journey", &endpoint).await;
-	let mut profile = (*Runtime::from_env().unwrap().0).clone();
-	profile.storage = c.root.clone();
-	c.f.store.capabilities = Runtime::new(profile).unwrap();
-	c.app = common::application(c.f.clone()).await;
-	let mut tool = c.f.registry.get("http", "1.0.0").await.unwrap();
-	tool.version = "1.1.0".into();
-	tool.config["credential_env"] = json!("AIDASH_SECRET_TEST_PEER");
-	let mut agent = c.f.registry.get("research", "1.1.0").await.unwrap();
-	agent.version = "1.2.0".into();
-	agent.config["tools"] = json!([{"id":"http","version":"1.1.0"}]);
-	agent.config["max_steps"] = json!(200);
-	for entry in [tool, agent] {
-		let (status, result) = request(
-			&c.app,
-			&c.f.config.api_token,
-			"POST",
-			"/api/registry",
-			json!(entry),
-		)
-		.await;
-		assert_eq!(status, 200, "{result}");
-		let (status, result) = request(
-			&c.app,
-			&c.f.config.api_token,
-			"POST",
-			"/api/authorization/acme/catalog",
-			json!({"entry":{"id":entry.id,"version":entry.version},"expected_revision":0,"enabled":true}),
-		)
-		.await;
-		assert_eq!(status, 200, "{result}");
-	}
-	c.policy["subjects"]
-		[aidash_server::domain::qualified_agent(&c.f.config.node_id, "research", "1.2.0")] =
-		json!({"kind":"agent"});
-	let (status, result) = request(
-		&c.app,
-		&c.f.config.api_token,
-		"POST",
-		"/api/authorization/acme",
-		json!({"expected_revision":2,"bundle":c.policy}),
-	)
-	.await;
-	assert_eq!(status, 200, "{result}");
-	let mut peer = build_core_fixture(env, "aidash://journey-recipient").await;
-	let (peer_servers, _) = super::transfer_tests::connect_nodes(&mut c, &mut peer, 3).await;
+async fn journey_fixture(
+	#[from(journey_recipient)] recipient: Arc<Mutex<Value>>,
+	#[from(journey_requests)] requests: Arc<Mutex<Vec<Value>>>,
+	#[from(journey_effects)] effects: Arc<AtomicUsize>,
+	#[from(journey_router)]
+	#[with(recipient.clone(),requests.clone(),effects.clone())]
+	_router: Arc<Router>,
+	#[from(upstream_fixtures::ready_router)]
+	#[with(_router.clone())]
+	_ready: upstream_fixtures::RouterFuture,
+	#[from(upstream_fixtures::async_upstream)]
+	#[with(_ready.clone())]
+	_provider: upstream_fixtures::UpstreamFuture,
+	#[from(provider_endpoint)]
+	#[with(_provider.clone())]
+	_endpoint: EndpointFuture,
+	#[from(capability_fixture)]
+	#[with("aidash://journey",_endpoint.clone())]
+	_initial_core: CoreFuture,
+	#[from(journey_core)]
+	#[with(_initial_core.clone())]
+	_core: CoreFuture,
+	#[future(awt)]
+	#[from(super::transfer_tests::connected_nodes)]
+	#[with(3,"aidash://journey","aidash://journey-recipient",_core.clone())]
+	peers: super::transfer_tests::ConnectedNodes,
+) -> Journey {
+	let super::transfer_tests::ConnectedNodes {
+		a: c,
+		b: peer,
+		servers: peer_servers,
+		..
+	} = peers;
+	let server = _provider.await;
 	let receiver = admit(&peer).await;
 	*recipient.lock().unwrap() = json!({"node_id":peer.f.config.node_id,"agent_id":"research","agent_version":"1.1.0","thread_id":peer.task});
 	let (status, result) = request(
@@ -245,18 +197,12 @@ async fn journey_fixture(#[future] test_environment: Arc<TestEnvironment>) -> Jo
 #[rstest::rstest]
 #[tokio::test]
 async fn harness_journey_keeps_core_names_state_and_integration_secrets_separate(
-	#[future] journey_fixture: Journey,
+	#[future]
+	#[from(running_journey_fixture)]
+	journey_fixture: (Journey, CapabilityWorker, CapabilityWorker),
 ) {
-	let j = Box::pin(journey_fixture).await;
-	let (stop, receiver) = tokio::sync::watch::channel(false);
-	let transfer = tokio::spawn(aidash_server::capabilities::transfer::run(
-		j.c.f.clone(),
-		receiver.clone(),
-	));
-	let worker = tokio::spawn(aidash_server::capabilities::operations::run(
-		j.c.f.store.clone(),
-		receiver,
-	));
+	let (j, worker, transfer) = Box::pin(journey_fixture).await;
+	let stop = worker.stop.clone();
 	let harness = aidash_server::harness::Harness {
 		federation: j.c.f.clone(),
 	};
@@ -417,7 +363,129 @@ async fn harness_journey_keeps_core_names_state_and_integration_secrets_separate
 		let _ = server.await;
 	}
 	j.peer.close().await;
-	j.server.abort();
-	let _ = j.server.await;
+	drop(j.server);
 	j.c.close().await;
+}
+
+#[rstest::fixture]
+fn journey_recipient() -> Arc<Mutex<Value>> {
+	Arc::new(Mutex::new(Value::Null))
+}
+#[rstest::fixture]
+fn journey_requests() -> Arc<Mutex<Vec<Value>>> {
+	Arc::new(Mutex::new(Vec::new()))
+}
+#[rstest::fixture]
+fn journey_effects() -> Arc<AtomicUsize> {
+	Arc::new(AtomicUsize::new(0))
+}
+#[rstest::fixture]
+fn journey_router(
+	#[from(journey_recipient)] recipient: Arc<Mutex<Value>>,
+	#[from(journey_requests)] requests: Arc<Mutex<Vec<Value>>>,
+	#[from(journey_effects)] effects: Arc<AtomicUsize>,
+) -> Arc<Router> {
+	let target = recipient.clone();
+	let capture = requests.clone();
+	let counter = effects.clone();
+	let server = Router::new().handler("/v1/chat/completions", handler(http::Method::POST, move |request: reinhardt::Request| {let body = request.json::<Value>().unwrap();
+		let capture = capture.clone();
+		let target = target.clone();
+		async move {
+			let context: Value = serde_json::from_str(body["messages"][1]["content"].as_str().unwrap()).unwrap();
+			let count = { let mut requests = capture.lock().unwrap(); requests.push(body); requests.len() };
+			let action = next(&context, &target.lock().unwrap());
+			// Polling is observable work and consumes a model step; let the real
+			// runner progress instead of exhausting the Agent budget in a busy loop.
+			if action.as_ref().is_some_and(|(name,_)| name.ends_with("_poll") || *name == "file_share") { tokio::time::sleep(std::time::Duration::from_millis(300)).await; }
+			let message = match action {
+				Some((name, arguments)) => json!({"role":"assistant","content":null,"tool_calls":[{"id":format!("journey-{count}"),"type":"function","function":{"name":name,"arguments":arguments.to_string()}}]}),
+				None => json!({"role":"assistant","content":"Analyzed the CSV in an isolated persistent Python session. The verified answer is 42."}),
+			};
+			reinhardt::Response::ok().with_json(&json!({"choices":[{"index":0,"finish_reason":if message.get("tool_calls").is_some(){"tool_calls"}else{"stop"},"message":message}],"usage":{"prompt_tokens":1,"completion_tokens":1}})).unwrap()
+		}
+	})).handler("/effect", handler(http::Method::POST, move |request: reinhardt::Request| {let headers = request.headers.clone();let _body = request.json::<Value>().unwrap();
+		let counter = counter.clone();
+		async move {
+			assert_eq!(headers.get("authorization").unwrap(), &format!("Bearer {}", std::env::var("AIDASH_SECRET_TEST_PEER").unwrap()));
+			counter.fetch_add(1, Ordering::SeqCst);
+			reinhardt::Response::ok().with_json(&json!({"saved":true})).unwrap()
+		}
+	}));
+	Arc::new(server)
+}
+#[rstest::fixture]
+fn journey_core(#[from(capability_fixture)] core: CoreFuture) -> CoreFuture {
+	async move {
+		let mut c = core.await;
+		let mut profile = (*Runtime::from_env().unwrap().0).clone();
+		profile.storage = c.root.clone();
+		c.f.store.capabilities = Runtime::new(profile).unwrap();
+		c.app.context.set_singleton(c.f.clone());
+		let mut tool = c.f.registry.get("http", "1.0.0").await.unwrap();
+		tool.version = "1.1.0".into();
+		tool.config["credential_env"] = json!("AIDASH_SECRET_TEST_PEER");
+		let mut agent = c.f.registry.get("research", "1.1.0").await.unwrap();
+		agent.version = "1.2.0".into();
+		agent.config["tools"] = json!([{"id":"http","version":"1.1.0"}]);
+		agent.config["max_steps"] = json!(200);
+		for entry in [tool, agent] {
+			let (status, result) = request(
+				&c.app,
+				&c.f.config.api_token,
+				"POST",
+				"/api/registry",
+				json!(entry),
+			)
+			.await;
+			assert_eq!(status, 200, "{result}");
+			let (status, result) = request(
+				&c.app,
+				&c.f.config.api_token,
+				"POST",
+				"/api/authorization/acme/catalog",
+				json!({"entry":{"id":entry.id,"version":entry.version},"expected_revision":0,"enabled":true}),
+			)
+			.await;
+			assert_eq!(status, 200, "{result}");
+		}
+		c.policy["subjects"]
+			[aidash_server::domain::qualified_agent(&c.f.config.node_id, "research", "1.2.0")] =
+			json!({"kind":"agent"});
+		let (status, result) = request(
+			&c.app,
+			&c.f.config.api_token,
+			"POST",
+			"/api/authorization/acme",
+			json!({"expected_revision":2,"bundle":c.policy}),
+		)
+		.await;
+		assert_eq!(status, 200, "{result}");
+		c
+	}
+	.boxed()
+	.shared()
+}
+
+#[rstest::fixture]
+async fn running_journey_fixture(
+	#[future] journey_fixture: Journey,
+	worker_control: WorkerControl,
+) -> (Journey, CapabilityWorker, CapabilityWorker) {
+	let j = Box::pin(journey_fixture).await;
+	let transfer = CapabilityWorker {
+		stop: worker_control.stop.clone(),
+		handle: tokio::spawn(aidash_server::capabilities::transfer::run(
+			j.c.f.clone(),
+			worker_control.receiver.clone(),
+		)),
+	};
+	let worker = CapabilityWorker {
+		stop: worker_control.stop,
+		handle: tokio::spawn(aidash_server::capabilities::operations::run(
+			j.c.f.store.clone(),
+			worker_control.receiver,
+		)),
+	};
+	(j, worker, transfer)
 }

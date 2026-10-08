@@ -1,17 +1,24 @@
 #[path = "../../tests/support/legacy.rs"]
 mod common;
-use common::{TestEnvironment, bootstrap, cleanup, request, setup, test_environment};
+#[path = "../../tests/support/upstream.rs"]
+mod upstream_fixtures;
+use common::{bootstrap, cleanup, request};
+use futures_util::{
+	FutureExt,
+	future::{BoxFuture, Shared},
+};
 use serde_json::json;
 use std::sync::Arc;
 
 #[rstest::rstest]
 #[tokio::test]
 async fn working_files_require_explicit_agent_settings(
-	#[future] test_environment: Arc<TestEnvironment>,
+	#[future(awt)]
+	#[from(common::native_application)]
+	application: common::ApplicationFixture,
 ) {
-	let environment = test_environment.await;
-	let (f, url, schema) = setup(&environment).await;
-	let app = common::application(f.clone()).await;
+	let (f, url, schema) = application.runtime.parts();
+	let app = application.application;
 	let (_policy, token, task) = bootstrap(&f, &app, "http://localhost:19999").await;
 	let (status, delegation) = request(
 		&app,
@@ -39,8 +46,10 @@ use aidash_server::{
 use serde_json::Value;
 use uuid::Uuid;
 
+#[derive(Clone)]
 struct CoreFixture {
-	_environment: Arc<TestEnvironment>,
+	_storage: Arc<tempfile::TempDir>,
+	http_client: reqwest::Client,
 	f: Federation,
 	app: common::TestApplication,
 	token: String,
@@ -69,19 +78,17 @@ impl CoreFixture {
 			.fetch_all(self.f.store.pool.driver())
 			.await
 			.unwrap();
-			let client = reqwest::Client::builder()
-				.no_proxy()
-				.timeout(std::time::Duration::from_secs(60))
-				.build()
-				.unwrap();
+
 			for session in sessions {
 				let sid: Uuid = serde_json::from_value(session["session_id"].clone()).unwrap();
-				let reply: Value = client
+				let reply: Value = self
+					.http_client
 					.post(format!(
 						"{}/v1/sessions/{sid}/stop",
 						runner.endpoint.trim_end_matches('/')
 					))
 					.bearer_auth(std::env::var(&runner.token_env).unwrap())
+					.timeout(std::time::Duration::from_secs(60))
 					.send()
 					.await
 					.unwrap()
@@ -100,32 +107,106 @@ impl CoreFixture {
 		let _ = tokio::fs::remove_dir_all(self.root).await;
 	}
 }
+type CoreFuture = Shared<BoxFuture<'static, CoreFixture>>;
+type EndpointFuture = Shared<BoxFuture<'static, String>>;
+
+struct WorkerControl {
+	stop: tokio::sync::watch::Sender<bool>,
+	receiver: tokio::sync::watch::Receiver<bool>,
+}
+
 #[rstest::fixture]
-async fn capability_fixture(#[future] test_environment: Arc<TestEnvironment>) -> CoreFixture {
-	build_core_fixture(test_environment.await, "aidash://execution-test").await
+fn worker_control() -> WorkerControl {
+	let (stop, receiver) = tokio::sync::watch::channel(false);
+	WorkerControl { stop, receiver }
 }
-async fn build_core_fixture(env: Arc<TestEnvironment>, node: &str) -> CoreFixture {
-	build_core_fixture_at(env, node, "http://localhost:19999").await
+
+struct CapabilityWorker {
+	stop: tokio::sync::watch::Sender<bool>,
+	handle: tokio::task::JoinHandle<aidash_server::Result<()>>,
 }
-async fn build_core_fixture_at(
-	env: Arc<TestEnvironment>,
-	node: &str,
-	endpoint: &str,
-) -> CoreFixture {
-	let (mut f, url, schema) = setup(&env).await;
-	f.config.node_id = node.into();
-	f.store.node_id = node.into();
-	f.registry = aidash_server::registry::Registry::new(f.store.pool.clone(), node).unwrap();
-	let root = std::env::temp_dir().join(format!("aidash-core-{}", Uuid::new_v4()));
-	f.store.capabilities = Runtime::new(Profile {
-		admission: true,
-		outbound_origins: vec!["https://example.com".into()],
-		storage: root.clone(),
-		..Profile::default()
-	})
-	.unwrap();
-	let app = common::application(f.clone()).await;
-	let (mut policy, token, task) = bootstrap(&f, &app, endpoint).await;
+
+impl std::future::Future for CapabilityWorker {
+	type Output = Result<aidash_server::Result<()>, tokio::task::JoinError>;
+	fn poll(
+		mut self: std::pin::Pin<&mut Self>,
+		cx: &mut std::task::Context<'_>,
+	) -> std::task::Poll<Self::Output> {
+		std::pin::Pin::new(&mut self.handle).poll(cx)
+	}
+}
+
+impl Drop for CapabilityWorker {
+	fn drop(&mut self) {
+		let _ = self.stop.send(true);
+		self.handle.abort();
+	}
+}
+
+#[cfg(feature = "capability-runtime-tests")]
+#[rstest::fixture]
+async fn running_runtime(
+	#[future] runtime_fixture: CoreFixture,
+	worker_control: WorkerControl,
+) -> (CoreFixture, aidash_server::domain::Run, CapabilityWorker) {
+	let c = Box::pin(runtime_fixture).await;
+	let run = admit(&c).await;
+	let worker = CapabilityWorker {
+		stop: worker_control.stop,
+		handle: tokio::spawn(aidash_server::capabilities::operations::run(
+			c.f.store.clone(),
+			worker_control.receiver,
+		)),
+	};
+	(c, run, worker)
+}
+
+#[rstest::fixture]
+fn core_storage(
+	#[from(reinhardt::test::fixtures::temp_dir)] directory: tempfile::TempDir,
+) -> Arc<tempfile::TempDir> {
+	Arc::new(directory)
+}
+#[rstest::fixture]
+fn core_runtime(
+	#[default("aidash://execution-test")] node: &str,
+	core_storage: Arc<tempfile::TempDir>,
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) -> common::RuntimeFuture {
+	let node = node.to_owned();
+	async move {
+		let mut owner = runtime.await;
+		let f = &mut owner.federation;
+		f.config.node_id = node.clone();
+		f.store.node_id = node.clone();
+		f.registry = aidash_server::registry::Registry::new(f.store.pool.clone(), &node).unwrap();
+		f.store.capabilities = Runtime::new(Profile {
+			admission: true,
+			outbound_origins: vec!["https://example.com".into()],
+			storage: core_storage.path().to_owned(),
+			..Profile::default()
+		})
+		.unwrap();
+		owner
+	}
+	.boxed()
+	.shared()
+}
+#[rstest::fixture]
+fn capability_fixture(
+	#[default("aidash://execution-test")] _node: &str,
+	#[default(async { "http://localhost:19999".into() }.boxed().shared())] endpoint: EndpointFuture,
+	#[from(core_storage)] storage: Arc<tempfile::TempDir>,
+	#[from(core_runtime)]
+	#[with(_node,storage.clone())]
+	_runtime: common::RuntimeFuture,
+	#[from(common::native_application)]
+	#[with(Default::default(),aidash_server::sse::Service::new(Default::default()),Arc::new(|router|router),_runtime.clone())]
+	application: common::ApplicationFuture,
+	#[from(reinhardt::test::fixtures::http_client)] http_client: reqwest::Client,
+) -> CoreFuture {
+	async move {let application=application.await;let (f,url,schema)=application.runtime.parts();let app=application.application;let root=storage.path().to_owned();let endpoint=endpoint.await;
+let (mut policy, token, task) = bootstrap(&f, &app, &endpoint).await;
 	policy["subjects"]
 		[aidash_server::domain::qualified_agent(&f.config.node_id, "research", "1.1.0")] =
 		json!({"kind":"agent"});
@@ -172,7 +253,8 @@ async fn build_core_fixture_at(
 	// The pool alone does not own the Compose services.
 
 	CoreFixture {
-		_environment: env,
+		_storage: storage,
+http_client,
 		f,
 		app,
 		token,
@@ -182,6 +264,7 @@ async fn build_core_fixture_at(
 		schema,
 		root,
 	}
+} .boxed().shared()
 }
 
 #[rstest::rstest]
@@ -213,7 +296,7 @@ async fn runtime_fixture(#[future] capability_fixture: CoreFixture) -> CoreFixtu
 	);
 	profile.storage = c.root.clone();
 	c.f.store.capabilities = Runtime::new(profile).unwrap();
-	c.app = common::application(c.f.clone()).await;
+	c.app.context.set_singleton(c.f.clone());
 	c
 }
 
@@ -1556,3 +1639,11 @@ use reinhardt::query::SimpleExpr;
 
 #[path = "core_capabilities/media.rs"]
 mod media_tests;
+
+#[rstest::fixture]
+fn provider_endpoint(
+	#[default(async { panic!("provider endpoint must be injected") }.boxed().shared())]
+	provider: upstream_fixtures::UpstreamFuture,
+) -> EndpointFuture {
+	async move { provider.await.url.clone() }.boxed().shared()
+}

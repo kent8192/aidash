@@ -2,13 +2,12 @@ use super::*;
 
 #[rstest::fixture]
 async fn network_fixture(
-	#[future(awt)] test_environment: Arc<TestEnvironment>,
+	#[future(awt)]
+	#[from(capability_fixture)]
+	#[with("aidash://network-test")]
+	core_1: CoreFixture,
 ) -> (CoreFixture, aidash_server::domain::Run) {
-	let c = Box::pin(build_core_fixture(
-		test_environment,
-		"aidash://network-test",
-	))
-	.await;
+	let c = core_1;
 	let (mut c, run) = Box::pin(configure_approvals(c)).await;
 	let mut profile = (*c.f.store.capabilities.0).clone();
 	profile.outbound_origins = vec![
@@ -17,7 +16,7 @@ async fn network_fixture(
 		"https://127.0.0.1.nip.io".into(),
 	];
 	c.f.store.capabilities = Runtime::new(profile).unwrap();
-	c.app = common::application(c.f.clone()).await;
+	c.app.context.set_singleton(c.f.clone());
 	(c, run)
 }
 async fn approve(c: &CoreFixture, run: Uuid, url: &str, reusable: bool) -> (Value, Value) {
@@ -81,21 +80,19 @@ async fn small_network_fixture(
 	let mut profile = (*c.f.store.capabilities.0).clone();
 	profile.output_bytes = 128;
 	c.f.store.capabilities = Runtime::new(profile).unwrap();
-	c.app = common::application(c.f.clone()).await;
+	c.app.context.set_singleton(c.f.clone());
 	(c, run)
 }
 
 #[rstest::rstest]
 #[tokio::test]
 async fn broker_response_budget_uses_the_operator_profile_and_retains_no_partial_artifact(
-	#[future] small_network_fixture: (CoreFixture, aidash_server::domain::Run),
+	#[future]
+	#[from(running_small_network_fixture)]
+	small_network_fixture: (CoreFixture, aidash_server::domain::Run, CapabilityWorker),
 ) {
-	let (c, run) = Box::pin(small_network_fixture).await;
-	let (stop, rx) = tokio::sync::watch::channel(false);
-	let worker = tokio::spawn(aidash_server::capabilities::operations::run(
-		c.f.store.clone(),
-		rx,
-	));
+	let (c, run, worker) = Box::pin(small_network_fixture).await;
+	let stop = worker.stop.clone();
 	let (input, _) = approve(&c, run.id, "https://httpbingo.org/bytes/1024", false).await;
 	let result = outcome(&c, run.id, &input, "uncertain").await;
 	assert_eq!(result["error"]["code"], "OUTBOUND_RESPONSE_LIMIT");
@@ -111,14 +108,12 @@ async fn broker_response_budget_uses_the_operator_profile_and_retains_no_partial
 #[rstest::rstest]
 #[tokio::test]
 async fn real_https_redirects_stay_inside_the_grant_and_private_dns_is_denied(
-	#[future] network_fixture: (CoreFixture, aidash_server::domain::Run),
+	#[future]
+	#[from(running_network_fixture)]
+	network_fixture: (CoreFixture, aidash_server::domain::Run, CapabilityWorker),
 ) {
-	let (c, run) = Box::pin(network_fixture).await;
-	let (stop, rx) = tokio::sync::watch::channel(false);
-	let worker = tokio::spawn(aidash_server::capabilities::operations::run(
-		c.f.store.clone(),
-		rx,
-	));
+	let (c, run, worker) = Box::pin(network_fixture).await;
+	let stop = worker.stop.clone();
 	let (input, _) = approve(
 		&c,
 		run.id,
@@ -169,10 +164,12 @@ async fn real_https_redirects_stay_inside_the_grant_and_private_dns_is_denied(
 #[tokio::test]
 async fn revocation_withdraws_a_real_pending_https_channel_and_does_not_replay_it(
 	#[future] network_fixture: (CoreFixture, aidash_server::domain::Run),
+	#[from(worker_control)] control_1: WorkerControl,
 ) {
 	let (c, run) = Box::pin(network_fixture).await;
 	let (input, allowed) = approve(&c, run.id, "https://httpbingo.org/delay/9", true).await;
-	let (stop, rx) = tokio::sync::watch::channel(false);
+	let WorkerControl { stop, receiver: rx } = control_1;
+	// Act: dispatch only after the reusable outbound grant has been approved.
 	let worker = tokio::spawn(aidash_server::capabilities::operations::run(
 		c.f.store.clone(),
 		rx,
@@ -239,4 +236,36 @@ async fn revocation_withdraws_a_real_pending_https_channel_and_does_not_replay_i
 	stop.send(true).unwrap();
 	worker.await.unwrap().unwrap();
 	c.close().await;
+}
+
+#[rstest::fixture]
+async fn running_network_fixture(
+	#[future] network_fixture: (CoreFixture, aidash_server::domain::Run),
+	worker_control: WorkerControl,
+) -> (CoreFixture, aidash_server::domain::Run, CapabilityWorker) {
+	let (c, run) = Box::pin(network_fixture).await;
+	let worker = CapabilityWorker {
+		stop: worker_control.stop,
+		handle: tokio::spawn(aidash_server::capabilities::operations::run(
+			c.f.store.clone(),
+			worker_control.receiver,
+		)),
+	};
+	(c, run, worker)
+}
+
+#[rstest::fixture]
+async fn running_small_network_fixture(
+	#[future] small_network_fixture: (CoreFixture, aidash_server::domain::Run),
+	worker_control: WorkerControl,
+) -> (CoreFixture, aidash_server::domain::Run, CapabilityWorker) {
+	let (c, run) = Box::pin(small_network_fixture).await;
+	let worker = CapabilityWorker {
+		stop: worker_control.stop,
+		handle: tokio::spawn(aidash_server::capabilities::operations::run(
+			c.f.store.clone(),
+			worker_control.receiver,
+		)),
+	};
+	(c, run, worker)
 }

@@ -1,5 +1,6 @@
 use super::*;
-use axum::{body::Body, extract::Request, middleware::Next, response::Response};
+use reinhardt::http::ViewResult;
+use reinhardt::{Handler, Request, Response, ServerRouter};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 struct TransferFixture {
@@ -17,15 +18,17 @@ impl TransferFixture {
 			let _ = server.await;
 		}
 		for node in [&mut self.a, &mut self.b] {
-			node.app = common::application(node.f.clone()).await;
+			node.app.context.set_singleton(node.f.clone());
 			let listener = tokio::net::TcpListener::bind(
 				node.f.config.endpoint.strip_prefix("http://").unwrap(),
 			)
 			.await
 			.unwrap();
-			let app = node.app.test_transport();
+			let router: Arc<dyn Handler> = Arc::new(node.app.native_router());
+			let context = node.app.context.clone();
+			// Act: replace the stopped transport at its original peer address.
 			self.servers.push(tokio::spawn(async move {
-				axum::serve(listener, app).await.unwrap();
+				let mut connections=tokio::task::JoinSet::new();loop {tokio::select! { accepted=listener.accept()=>{let (stream,peer)=accepted.unwrap();let router=router.clone();let context=context.clone();connections.spawn(async move {let _=reinhardt::server::HttpServer::handle_connection(stream,peer,router,Some(context)).await;});}, _=connections.join_next(),if !connections.is_empty()=>{}, }}
 			}));
 		}
 	}
@@ -163,6 +166,7 @@ async fn chunked_transfer(#[future] two_nodes: TransferFixture) -> ChunkedTransf
 #[tokio::test]
 async fn chunks_resume_out_of_order_after_both_servers_restart_without_duplicate_visibility(
 	#[future] chunked_transfer: ChunkedTransfer,
+	#[from(worker_control)] control_1: WorkerControl,
 ) {
 	use base64::Engine;
 	let mut fixture = Box::pin(chunked_transfer).await;
@@ -244,7 +248,8 @@ async fn chunks_resume_out_of_order_after_both_servers_restart_without_duplicate
 		peer_request(&c.b, &c.a.f.config.node_id, "status", identity.clone()).await,
 		(200, receipt.clone())
 	);
-	let (stop, rx) = tokio::sync::watch::channel(false);
+	let WorkerControl { stop, receiver: rx } = control_1;
+	// Act: reconcile the transfer after the peer restart and lost-acknowledgement sequence.
 	let worker = tokio::spawn(aidash_server::capabilities::transfer::run(
 		c.a.f.clone(),
 		rx,
@@ -373,11 +378,13 @@ async fn corrupted_first_chunk_and_quota_exhaustion_never_publish_files(
 	c.close().await;
 }
 #[rstest::fixture]
-async fn two_nodes(#[future] test_environment: Arc<TestEnvironment>) -> TransferFixture {
-	let env = test_environment.await;
-	let mut a = build_core_fixture(env.clone(), "aidash://file-source").await;
-	let mut b = build_core_fixture(env, "aidash://file-recipient").await;
-	let (servers, lose_commit_reply) = connect_nodes(&mut a, &mut b, 2).await;
+async fn two_nodes(#[future(awt)] connected_nodes: ConnectedNodes) -> TransferFixture {
+	let ConnectedNodes {
+		a,
+		b,
+		servers,
+		lose_commit_reply,
+	} = connected_nodes;
 	let sender = admit(&a).await;
 	let receiver = admit(&b).await;
 	TransferFixture {
@@ -389,15 +396,57 @@ async fn two_nodes(#[future] test_environment: Arc<TestEnvironment>) -> Transfer
 		lose_commit_reply,
 	}
 }
-pub(super) async fn connect_nodes(
-	a: &mut CoreFixture,
-	b: &mut CoreFixture,
-	revision: i64,
-) -> (Vec<tokio::task::JoinHandle<()>>, Arc<AtomicBool>) {
-	use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
-	let al = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-	let bl = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-	a.f.config.endpoint = format!("http://{}", al.local_addr().unwrap());
+pub(super) struct ConnectedNodes {
+	pub(super) a: CoreFixture,
+	pub(super) b: CoreFixture,
+	pub(super) servers: Vec<tokio::task::JoinHandle<()>>,
+	pub(super) lose_commit_reply: Arc<AtomicBool>,
+}
+struct CommitReplyFault {
+	router: Arc<ServerRouter>,
+	fault: Arc<AtomicBool>,
+}
+#[async_trait::async_trait]
+impl Handler for CommitReplyFault {
+	async fn handle(&self, request: Request) -> ViewResult<Response> {
+		let commit = request.uri.path().ends_with("/files/commit");
+		let result = self.router.handle(request).await?;
+		if commit && result.status.is_success() && self.fault.swap(false, Ordering::SeqCst) {
+			Ok(Response::new(http::StatusCode::SERVICE_UNAVAILABLE)
+				.with_body("lost final acknowledgment"))
+		} else {
+			Ok(result)
+		}
+	}
+}
+#[rstest::fixture]
+fn peer_listener() -> BoxFuture<'static, tokio::net::TcpListener> {
+	// Stable peer addresses are required by the transport restart assertions.
+	async { tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap() }.boxed()
+}
+#[rstest::fixture]
+fn lost_commit_reply() -> Arc<AtomicBool> {
+	Arc::new(AtomicBool::new(false))
+}
+#[rstest::fixture]
+pub(super) fn connected_nodes(
+	#[default(2)] revision: i64,
+	#[default("aidash://file-source")] _source: &str,
+	#[default("aidash://file-recipient")] _recipient: &str,
+	#[from(capability_fixture)]
+	#[with(_source)]
+	a: CoreFuture,
+	#[from(capability_fixture)]
+	#[with(_recipient)]
+	b: CoreFuture,
+	#[from(peer_listener)] source_listener: BoxFuture<'static, tokio::net::TcpListener>,
+	#[from(peer_listener)] recipient_listener: BoxFuture<'static, tokio::net::TcpListener>,
+	#[from(lost_commit_reply)] lose_commit_reply: Arc<AtomicBool>,
+) -> BoxFuture<'static, ConnectedNodes> {
+	async move {
+ use reinhardt::query::{Alias,Expr,PostgresQueryBuilder,Query};
+ let mut a=a.await;let mut b=b.await;let al=source_listener.await;let bl=recipient_listener.await;
+a.f.config.endpoint = format!("http://{}", al.local_addr().unwrap());
 	b.f.config.endpoint = format!("http://{}", bl.local_addr().unwrap());
 	a.policy["subjects"]
 		[aidash_server::domain::qualified_agent(&b.f.config.node_id, "research", "1.1.0")] =
@@ -411,7 +460,7 @@ pub(super) async fn connect_nodes(
 	)
 	.await;
 	assert_eq!(status, 200, "{result}");
-	for (home, peer) in [(&*a, &*b), (&*b, &*a)] {
+	for (home, peer) in [(&a, &b), (&b, &a)] {
 		{
 			let query_bind_1 = &peer.f.config.node_id;
 			let query_bind_2 = &peer.f.config.endpoint;
@@ -455,68 +504,50 @@ pub(super) async fn connect_nodes(
 		let (status, result) = request(&home.app, &home.f.config.api_token, "POST", "/api/authorization/acme/peer-mappings", json!({"source_node":peer.f.config.node_id,"source_tenant":"acme","source_subject":"alice","credential_id":credential["credential"]["id"],"expected_revision":0,"enabled":true})).await;
 		assert_eq!(status, 200, "{result}");
 	}
-	a.app = common::application(a.f.clone()).await;
-	b.app = common::application(b.f.clone()).await;
-	let lose_commit_reply = Arc::new(AtomicBool::new(false));
-	let fault = lose_commit_reply.clone();
-	let bapp = b.app.test_transport().layer(axum::middleware::from_fn(
-		move |request: Request, next: Next| {
-			let fault = fault.clone();
-			async move {
-				let commit = request.uri().path().ends_with("/files/commit");
-				let result = next.run(request).await;
-				if commit && result.status().is_success() && fault.swap(false, Ordering::SeqCst) {
-					Response::builder()
-						.status(503)
-						.body(Body::from("lost final acknowledgment"))
-						.unwrap()
-				} else {
-					result
-				}
-			}
-		},
-	));
-	let aapp = a.app.test_transport();
-	let servers = vec![
-		tokio::spawn(async move {
-			axum::serve(al, aapp).await.unwrap();
-		}),
-		tokio::spawn(async move {
-			axum::serve(bl, bapp).await.unwrap();
-		}),
-	];
-	(servers, lose_commit_reply)
+
+ for node in [&a,&b] {node.app.context.set_singleton(node.f.clone());
+  let mut settings=common::settings_for(&node.f.config.database_url);
+  settings.node.node_id=node.f.config.node_id.clone();settings.node.endpoint=node.f.config.endpoint.clone();settings.node.api_token=node.f.config.api_token.clone();settings.node.web_dir=node.f.config.web_dir.clone();settings.node.lease_seconds=node.f.config.lease_seconds;node.app.context.set_singleton(settings);
+ }
+ let a_router:Arc<dyn Handler>=Arc::new(a.app.native_router());
+ let b_router:Arc<dyn Handler>=Arc::new(CommitReplyFault {router:Arc::new(b.app.native_router()),fault:lose_commit_reply.clone()});
+ let mut servers=Vec::new();
+ for (listener,router,context) in [(al,a_router,a.app.context.clone()),(bl,b_router,b.app.context.clone())] {
+  servers.push(tokio::spawn(async move {
+   let mut connections=tokio::task::JoinSet::new();loop {tokio::select! {
+    accepted=listener.accept()=>{let (stream,peer)=accepted.unwrap();let router=router.clone();let context=context.clone();connections.spawn(async move {let _=reinhardt::server::HttpServer::handle_connection(stream,peer,router,Some(context)).await;});},
+    _=connections.join_next(),if !connections.is_empty()=>{},
+   }}
+  }));
+ }
+ ConnectedNodes {a,b,servers,lose_commit_reply}
+}.boxed()
 }
+
 async fn peer_request(c: &CoreFixture, node: &str, operation: &str, value: Value) -> (u16, Value) {
+	let authorization = format!(
+		"Bearer {}",
+		std::env::var("AIDASH_SECRET_TEST_PEER").unwrap()
+	);
+	let path = format!("/federation/v0.1/scoped/files/{operation}");
 	let response = c
 		.app
-		.clone()
-		.oneshot(
-			http::Request::builder()
-				.method("POST")
-				.uri(format!("/federation/v0.1/scoped/files/{operation}"))
-				.header(
-					"authorization",
-					format!(
-						"Bearer {}",
-						std::env::var("AIDASH_SECRET_TEST_PEER").unwrap()
-					),
-				)
-				.header("x-aidash-node", node)
-				.header("x-aidash-protocol", "0.1")
-				.header("content-type", "application/json")
-				.body(Body::from(value.to_string()))
-				.unwrap(),
+		.client()
+		.post_raw_with_headers(
+			&path,
+			value.to_string().as_bytes(),
+			"application/json",
+			&[
+				("Authorization", authorization.as_str()),
+				("x-aidash-node", node),
+				("x-aidash-protocol", "0.1"),
+			],
 		)
 		.await
 		.unwrap();
-	let status = response.status().as_u16();
-	let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
-		.await
-		.unwrap();
 	(
-		status,
-		serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+		response.status_code(),
+		serde_json::from_slice(response.body()).unwrap_or(Value::Null),
 	)
 }
 async fn prepare_file(c: &TransferFixture) -> (Value, Value) {
@@ -570,6 +601,7 @@ async fn until_transfer(c: &TransferFixture, input: &Value, states: &[&str]) -> 
 #[tokio::test]
 async fn remote_snapshot_survives_source_edit_and_lost_final_receipt(
 	#[future] two_nodes: TransferFixture,
+	#[from(worker_control)] control_1: WorkerControl,
 ) {
 	let c = Box::pin(two_nodes).await;
 	let (input, pending) = prepare_file(&c).await;
@@ -584,7 +616,8 @@ async fn remote_snapshot_survives_source_edit_and_lost_final_receipt(
 	let (status, result) = request(&c.a.app, &c.a.token, "POST", &format!("/api/runs/{}/patch", c.sender.id), json!({"idempotency_key":Uuid::new_v4(),"expected_revision":2,"preconditions":{"data.txt":source["manifest"][0]["digest"]},"patch":"*** Begin Patch\n*** Update File: data.txt\n@@\n-immutable 東京\n+changed later\n*** End Patch"})).await;
 	assert_eq!(status, 200, "{result}");
 	c.lose_commit_reply.store(true, Ordering::SeqCst);
-	let (stop, rx) = tokio::sync::watch::channel(false);
+	let WorkerControl { stop, receiver: rx } = control_1;
+	// Act: reconcile only after editing the source and arming the lost-receipt fault.
 	let worker = tokio::spawn(aidash_server::capabilities::transfer::run(
 		c.a.f.clone(),
 		rx,
@@ -803,13 +836,20 @@ async fn marketplace_admit(c: &CoreFixture) -> aidash_server::domain::Run {
 #[case(true)]
 #[tokio::test]
 async fn staged_transfer_callbacks_recheck_marketplace_dependency_approvals(
-	#[future(awt)] test_environment: Arc<TestEnvironment>,
 	#[case] receiver_revoked: bool,
+
+	#[future(awt)]
+	#[from(connected_nodes)]
+	#[with(2, "aidash://installed-source", "aidash://installed-recipient")]
+	peers: ConnectedNodes,
 ) {
 	use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
-	let mut a = build_core_fixture(test_environment.clone(), "aidash://installed-source").await;
-	let mut b = build_core_fixture(test_environment, "aidash://installed-recipient").await;
-	let (servers, lose_commit_reply) = connect_nodes(&mut a, &mut b, 2).await;
+	let ConnectedNodes {
+		a,
+		b,
+		servers,
+		lose_commit_reply,
+	} = peers;
 	let sender = marketplace_admit(&a).await;
 	let receiver = marketplace_admit(&b).await;
 	let auth = aidash_server::authorization::Authorization {

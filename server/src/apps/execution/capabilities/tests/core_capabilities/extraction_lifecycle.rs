@@ -19,17 +19,15 @@ pub(super) async fn runner(
 	body: Option<Value>,
 ) -> Value {
 	let profile = c.f.store.capabilities.0.runner.as_ref().unwrap();
-	let client = reqwest::Client::builder()
-		.no_proxy()
-		.timeout(std::time::Duration::from_secs(60))
-		.build()
-		.unwrap();
-	let mut request = client
+
+	let mut request = c
+		.http_client
 		.request(
 			method,
 			format!("{}{path}", profile.endpoint.trim_end_matches('/')),
 		)
-		.bearer_auth(std::env::var(&profile.token_env).unwrap());
+		.bearer_auth(std::env::var(&profile.token_env).unwrap())
+		.timeout(std::time::Duration::from_secs(60));
 	if let Some(body) = body {
 		request = request.json(&body);
 	}
@@ -217,7 +215,7 @@ fn extraction_lifecycle_fixture(
 			let mut profile = (*c.f.store.capabilities.0).clone();
 			profile.admission = false;
 			c.f.store.capabilities = Runtime::new(profile).unwrap();
-			c.app = common::application(c.f.clone()).await;
+			c.app.context.set_singleton(c.f.clone());
 		}
 		ExtractionFixture {
 			c,
@@ -240,17 +238,14 @@ fn extraction_lifecycle_fixture(
 #[rstest::rstest]
 #[tokio::test]
 async fn revoked_undispatched_extraction_intent_releases_its_original_object(
-	#[with("revoked_intent")]
 	#[future]
-	extraction_lifecycle_fixture: ExtractionFixture,
+	#[from(running_extraction)]
+	#[with("revoked_intent")]
+	extraction_lifecycle_fixture: (ExtractionFixture, CapabilityWorker),
 ) {
 	use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
-	let f = Box::pin(extraction_lifecycle_fixture).await;
-	let (stop, rx) = tokio::sync::watch::channel(false);
-	let worker = tokio::spawn(aidash_server::capabilities::operations::run(
-		f.c.f.store.clone(),
-		rx,
-	));
+	let (f, worker) = Box::pin(extraction_lifecycle_fixture).await;
+	let stop = worker.stop.clone();
 	let query = Query::select()
 		.columns([Alias::new("state"), Alias::new("data")])
 		.from(Alias::new("core_records"))
@@ -322,16 +317,13 @@ async fn revoked_undispatched_extraction_intent_releases_its_original_object(
 #[tokio::test]
 async fn extraction_releases_terminal_runner_payloads_and_rollback_starts_no_new_parser(
 	#[case] case: &'static str,
-	#[with(case)]
 	#[future]
-	extraction_lifecycle_fixture: ExtractionFixture,
+	#[from(running_extraction)]
+	#[with(case)]
+	extraction_lifecycle_fixture: (ExtractionFixture, CapabilityWorker),
 ) {
-	let f = Box::pin(extraction_lifecycle_fixture).await;
-	let (stop, rx) = tokio::sync::watch::channel(false);
-	let worker = tokio::spawn(aidash_server::capabilities::operations::run(
-		f.c.f.store.clone(),
-		rx,
-	));
+	let (f, worker) = Box::pin(extraction_lifecycle_fixture).await;
+	let stop = worker.stop.clone();
 	let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(90);
 	loop {
 		let (status, state) = request(&f.c.app, &f.c.token, "GET", &f.path, Value::Null).await;
@@ -390,3 +382,22 @@ async fn extraction_releases_terminal_runner_payloads_and_rollback_starts_no_new
 use reinhardt::query::{ExprTrait as _, QueryStatementBuilder as _};
 
 use reinhardt::query::SimpleExpr;
+
+#[rstest::fixture]
+async fn running_extraction(
+	#[default("revoked_intent")] _case: &'static str,
+	#[future]
+	#[with(_case)]
+	extraction_lifecycle_fixture: ExtractionFixture,
+	worker_control: WorkerControl,
+) -> (ExtractionFixture, CapabilityWorker) {
+	let f = Box::pin(extraction_lifecycle_fixture).await;
+	let worker = CapabilityWorker {
+		stop: worker_control.stop,
+		handle: tokio::spawn(aidash_server::capabilities::operations::run(
+			f.c.f.store.clone(),
+			worker_control.receiver,
+		)),
+	};
+	(f, worker)
+}

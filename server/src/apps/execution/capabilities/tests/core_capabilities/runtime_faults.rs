@@ -2,15 +2,12 @@ use super::*;
 #[rstest::rstest]
 #[tokio::test]
 async fn sandbox_cpu_and_memory_limits_are_enforced_under_load(
-	#[future] runtime_fixture: CoreFixture,
+	#[future]
+	#[from(running_runtime)]
+	runtime_fixture: (CoreFixture, aidash_server::domain::Run, CapabilityWorker),
 ) {
-	let c = Box::pin(runtime_fixture).await;
-	let run = admit(&c).await;
-	let (stop, rx) = tokio::sync::watch::channel(false);
-	let worker = tokio::spawn(aidash_server::capabilities::operations::run(
-		c.f.store.clone(),
-		rx,
-	));
+	let (c, run, worker) = Box::pin(runtime_fixture).await;
+	let stop = worker.stop.clone();
 	let path = format!("/api/runs/{}/shell", run.id);
 	let command = "python - <<'PY'\nimport os,time,resource,json\nstart=time.monotonic()\npids=[]\nfor i in range(4):\n pid=os.fork()\n if pid==0:\n  while time.monotonic()-start<4: pass\n  os._exit(0)\n pids.append(pid)\nfor pid in pids: os.waitpid(pid,0)\nu=resource.getrusage(resource.RUSAGE_CHILDREN)\ncpu=u.ru_utime+u.ru_stime\nwall=time.monotonic()-start\nassert cpu>0.2 and cpu<=2*wall+1,(cpu,wall)\nprint(json.dumps({'cpu_seconds':cpu,'wall_seconds':wall,'ceiling_cpus':2}))\nPY";
 	let (status,op)=request(&c.app,&c.token,"POST",&path,json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"timeout_seconds":30,"command":command})).await;
@@ -43,16 +40,13 @@ async fn sandbox_cpu_and_memory_limits_are_enforced_under_load(
 #[rstest::rstest]
 #[tokio::test]
 async fn idle_heap_is_physically_stopped_without_deleting_saved_files(
-	#[future] runtime_fixture: CoreFixture,
+	#[future]
+	#[from(running_runtime)]
+	runtime_fixture: (CoreFixture, aidash_server::domain::Run, CapabilityWorker),
 ) {
 	use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
-	let c = Box::pin(runtime_fixture).await;
-	let run = admit(&c).await;
-	let (stop, rx) = tokio::sync::watch::channel(false);
-	let worker = tokio::spawn(aidash_server::capabilities::operations::run(
-		c.f.store.clone(),
-		rx,
-	));
+	let (c, run, worker) = Box::pin(runtime_fixture).await;
+	let stop = worker.stop.clone();
 	let path = format!("/api/runs/{}/python", run.id);
 	let (status,op)=request(&c.app,&c.token,"POST",&path,json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"code":"private_value=91\nfrom pathlib import Path\nPath('kept.txt').write_text('kept')"})).await;
 	assert_eq!(status, 200, "{op}");
@@ -113,15 +107,12 @@ async fn idle_heap_is_physically_stopped_without_deleting_saved_files(
 #[rstest::rstest]
 #[tokio::test]
 async fn python_timeout_exports_prior_files_and_requires_new_memory_ack(
-	#[future] runtime_fixture: CoreFixture,
+	#[future]
+	#[from(running_runtime)]
+	runtime_fixture: (CoreFixture, aidash_server::domain::Run, CapabilityWorker),
 ) {
-	let c = Box::pin(runtime_fixture).await;
-	let run = admit(&c).await;
-	let (stop, rx) = tokio::sync::watch::channel(false);
-	let worker = tokio::spawn(aidash_server::capabilities::operations::run(
-		c.f.store.clone(),
-		rx,
-	));
+	let (c, run, worker) = Box::pin(runtime_fixture).await;
+	let stop = worker.stop.clone();
 	let input = json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"timeout_seconds":5,"code":"from pathlib import Path\nimport time\nsecret_counter=53\nPath('before-timeout.txt').write_text('saved before timeout 東京')\ntime.sleep(40)"});
 	let path = format!("/api/runs/{}/python", run.id);
 	let (status, operation) = request(&c.app, &c.token, "POST", &path, input).await;
@@ -183,15 +174,12 @@ async fn python_timeout_exports_prior_files_and_requires_new_memory_ack(
 #[rstest::rstest]
 #[tokio::test]
 async fn shell_output_saturation_is_bounded_and_control_stays_usable(
-	#[future] runtime_fixture: CoreFixture,
+	#[future]
+	#[from(running_runtime)]
+	runtime_fixture: (CoreFixture, aidash_server::domain::Run, CapabilityWorker),
 ) {
-	let c = Box::pin(runtime_fixture).await;
-	let run = admit(&c).await;
-	let (stop, rx) = tokio::sync::watch::channel(false);
-	let worker = tokio::spawn(aidash_server::capabilities::operations::run(
-		c.f.store.clone(),
-		rx,
-	));
+	let (c, run, worker) = Box::pin(runtime_fixture).await;
+	let stop = worker.stop.clone();
 	let (status,operation)=request(&c.app,&c.token,"POST",&format!("/api/runs/{}/shell",run.id),json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"command":"python -c 'import sys,time; sys.stdout.write(\"x\"*(10*1024*1024)); sys.stdout.flush(); time.sleep(30)'"})).await;
 	assert_eq!(status, 200, "{operation}");
 	let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(45);
@@ -267,16 +255,15 @@ async fn shell_output_saturation_is_bounded_and_control_stays_usable(
 #[rstest::rstest]
 #[tokio::test]
 async fn disabled_admission_stops_live_work_and_keeps_files_for_explicit_restart(
-	#[future] runtime_fixture: CoreFixture,
+	#[future]
+	#[from(running_runtime)]
+	runtime_fixture: (CoreFixture, aidash_server::domain::Run, CapabilityWorker),
+	#[from(worker_control)] control_1: WorkerControl,
+	#[from(worker_control)] control_2: WorkerControl,
 ) {
 	use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
-	let mut c = Box::pin(runtime_fixture).await;
-	let run = admit(&c).await;
-	let (stop, rx) = tokio::sync::watch::channel(false);
-	let worker = tokio::spawn(aidash_server::capabilities::operations::run(
-		c.f.store.clone(),
-		rx,
-	));
+	let (mut c, run, worker) = Box::pin(runtime_fixture).await;
+	let stop = worker.stop.clone();
 	let path = format!("/api/runs/{}/python", run.id);
 	let (status, op) = request(&c.app, &c.token, "POST", &path, json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"code":"from pathlib import Path\nprivate_heap=43\nPath('saved.txt').write_text('preserved 東京')"})).await;
 	assert_eq!(status, 200, "{op}");
@@ -289,8 +276,9 @@ async fn disabled_admission_stops_live_work_and_keeps_files_for_explicit_restart
 	let mut disabled = enabled.clone();
 	disabled.admission = false;
 	c.f.store.capabilities = Runtime::new(disabled).unwrap();
-	c.app = common::application(c.f.clone()).await;
-	let (stop, rx) = tokio::sync::watch::channel(false);
+	c.app.context.set_singleton(c.f.clone());
+	let WorkerControl { stop, receiver: rx } = control_1;
+	// Act: restart reconciliation after changing the admission profile.
 	let worker = tokio::spawn(aidash_server::capabilities::operations::run(
 		c.f.store.clone(),
 		rx,
@@ -326,8 +314,9 @@ async fn disabled_admission_stops_live_work_and_keeps_files_for_explicit_restart
 	stop.send(true).unwrap();
 	worker.await.unwrap().unwrap();
 	c.f.store.capabilities = Runtime::new(enabled).unwrap();
-	c.app = common::application(c.f.clone()).await;
-	let (stop, rx) = tokio::sync::watch::channel(false);
+	c.app.context.set_singleton(c.f.clone());
+	let WorkerControl { stop, receiver: rx } = control_2;
+	// Act: restart reconciliation after changing the admission profile.
 	let worker = tokio::spawn(aidash_server::capabilities::operations::run(
 		c.f.store.clone(),
 		rx,
@@ -347,14 +336,14 @@ async fn disabled_admission_stops_live_work_and_keeps_files_for_explicit_restart
 
 #[rstest::rstest]
 #[tokio::test]
-async fn profile_drift_still_cancels_an_active_operation(#[future] runtime_fixture: CoreFixture) {
-	let mut c = Box::pin(runtime_fixture).await;
-	let run = admit(&c).await;
-	let (stop, rx) = tokio::sync::watch::channel(false);
-	let worker = tokio::spawn(aidash_server::capabilities::operations::run(
-		c.f.store.clone(),
-		rx,
-	));
+async fn profile_drift_still_cancels_an_active_operation(
+	#[future]
+	#[from(running_runtime)]
+	runtime_fixture: (CoreFixture, aidash_server::domain::Run, CapabilityWorker),
+	#[from(worker_control)] control_1: WorkerControl,
+) {
+	let (mut c, run, worker) = Box::pin(runtime_fixture).await;
+	let stop = worker.stop.clone();
 	let (status, operation) = request(
 		&c.app,
 		&c.token,
@@ -379,8 +368,9 @@ async fn profile_drift_still_cancels_an_active_operation(#[future] runtime_fixtu
 	disabled.admission = false;
 	disabled.working_bytes -= 1;
 	c.f.store.capabilities = Runtime::new(disabled).unwrap();
-	c.app = common::application(c.f.clone()).await;
-	let (stop, rx) = tokio::sync::watch::channel(false);
+	c.app.context.set_singleton(c.f.clone());
+	let WorkerControl { stop, receiver: rx } = control_1;
+	// Act: restart reconciliation after publishing the changed capability profile.
 	let worker = tokio::spawn(aidash_server::capabilities::operations::run(
 		c.f.store.clone(),
 		rx,
@@ -402,15 +392,12 @@ async fn profile_drift_still_cancels_an_active_operation(#[future] runtime_fixtu
 #[rstest::rstest]
 #[tokio::test]
 async fn cleanup_waits_for_proven_shell_stop_and_fences_delayed_writes(
-	#[future] runtime_fixture: CoreFixture,
+	#[future]
+	#[from(running_runtime)]
+	runtime_fixture: (CoreFixture, aidash_server::domain::Run, CapabilityWorker),
 ) {
-	let c = Box::pin(runtime_fixture).await;
-	let run = admit(&c).await;
-	let (stop, rx) = tokio::sync::watch::channel(false);
-	let worker = tokio::spawn(aidash_server::capabilities::operations::run(
-		c.f.store.clone(),
-		rx,
-	));
+	let (c, run, worker) = Box::pin(runtime_fixture).await;
+	let stop = worker.stop.clone();
 	let (status,op)=request(&c.app,&c.token,"POST",&format!("/api/runs/{}/shell",run.id),json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"command":"printf saved > live.txt; printf ready; sleep 30; printf forbidden > late.txt"})).await;
 	assert_eq!(status, 200, "{op}");
 	let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(40);

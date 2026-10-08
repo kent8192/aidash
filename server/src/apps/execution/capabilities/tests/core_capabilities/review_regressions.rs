@@ -92,14 +92,18 @@ async fn withdrawn_operation_fixture(
 #[rstest::rstest]
 #[tokio::test]
 async fn authority_withdrawal_before_dispatch_keeps_saved_files_usable(
-	#[future] withdrawn_operation_fixture: (CoreFixture, aidash_server::domain::Run, Value, Uuid),
+	#[future]
+	#[from(running_withdrawn_operation_fixture)]
+	withdrawn_operation_fixture: (
+		CoreFixture,
+		aidash_server::domain::Run,
+		Value,
+		Uuid,
+		CapabilityWorker,
+	),
 ) {
-	let (c, run, area, id) = Box::pin(withdrawn_operation_fixture).await;
-	let (stop, rx) = tokio::sync::watch::channel(false);
-	let worker = tokio::spawn(aidash_server::capabilities::operations::run(
-		c.f.store.clone(),
-		rx,
-	));
+	let (c, run, area, id, worker) = Box::pin(withdrawn_operation_fixture).await;
+	let stop = worker.stop.clone();
 	let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(8);
 	loop {
 		let state: String = {
@@ -251,21 +255,19 @@ async fn extraction_queue_fixture(
 	let mut profile = (*c.f.store.capabilities.0).clone();
 	profile.admission = false;
 	c.f.store.capabilities = Runtime::new(profile).unwrap();
-	c.app = common::application(c.f.clone()).await;
+	c.app.context.set_singleton(c.f.clone());
 	(c, last)
 }
 
 #[rstest::rstest]
 #[tokio::test]
 async fn stale_extraction_credentials_do_not_starve_later_uploads(
-	#[future] extraction_queue_fixture: (CoreFixture, String),
+	#[future]
+	#[from(running_extraction_queue_fixture)]
+	extraction_queue_fixture: (CoreFixture, String, CapabilityWorker),
 ) {
-	let (c, path) = Box::pin(extraction_queue_fixture).await;
-	let (stop, rx) = tokio::sync::watch::channel(false);
-	let worker = tokio::spawn(aidash_server::capabilities::operations::run(
-		c.f.store.clone(),
-		rx,
-	));
+	let (c, path, worker) = Box::pin(extraction_queue_fixture).await;
+	let stop = worker.stop.clone();
 	let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
 	let finished = loop {
 		let (status, state) = request(&c.app, &c.token, "GET", &path, Value::Null).await;
@@ -334,7 +336,7 @@ async fn full_mount_fixture(
 		.sum();
 	assert!(profile.working_bytes > 1);
 	c.f.store.capabilities = Runtime::new(profile).unwrap();
-	c.app = common::application(c.f.clone()).await;
+	c.app.context.set_singleton(c.f.clone());
 	(c, run)
 }
 
@@ -351,7 +353,7 @@ async fn mounted_skills_require_writable_capacity_before_operation_commit(
 	let mut profile = (*c.f.store.capabilities.0).clone();
 	profile.working_bytes += writable_bytes;
 	c.f.store.capabilities = Runtime::new(profile).unwrap();
-	c.app = common::application(c.f.clone()).await;
+	c.app.context.set_singleton(c.f.clone());
 	let (status, denied) = request(
 		&c.app,
 		&c.token,
@@ -398,3 +400,41 @@ async fn mounted_skills_require_writable_capacity_before_operation_commit(
 use reinhardt::query::{ExprTrait as _, QueryStatementBuilder as _};
 
 use reinhardt::query::SimpleExpr;
+
+#[rstest::fixture]
+async fn running_withdrawn_operation_fixture(
+	#[future] withdrawn_operation_fixture: (CoreFixture, aidash_server::domain::Run, Value, Uuid),
+	worker_control: WorkerControl,
+) -> (
+	CoreFixture,
+	aidash_server::domain::Run,
+	Value,
+	Uuid,
+	CapabilityWorker,
+) {
+	let (c, run, area, id) = Box::pin(withdrawn_operation_fixture).await;
+	let worker = CapabilityWorker {
+		stop: worker_control.stop,
+		handle: tokio::spawn(aidash_server::capabilities::operations::run(
+			c.f.store.clone(),
+			worker_control.receiver,
+		)),
+	};
+	(c, run, area, id, worker)
+}
+
+#[rstest::fixture]
+async fn running_extraction_queue_fixture(
+	#[future] extraction_queue_fixture: (CoreFixture, String),
+	worker_control: WorkerControl,
+) -> (CoreFixture, String, CapabilityWorker) {
+	let (c, path) = Box::pin(extraction_queue_fixture).await;
+	let worker = CapabilityWorker {
+		stop: worker_control.stop,
+		handle: tokio::spawn(aidash_server::capabilities::operations::run(
+			c.f.store.clone(),
+			worker_control.receiver,
+		)),
+	};
+	(c, path, worker)
+}

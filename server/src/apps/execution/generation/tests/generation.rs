@@ -1,7 +1,19 @@
+use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
+use std::sync::{
+	Arc,
+	atomic::{AtomicUsize, Ordering},
+};
+use tokio::sync::Notify;
+#[path = "../../tests/support/upstream.rs"]
+mod upstream_fixtures;
+use futures_util::{FutureExt, future::BoxFuture};
+use reinhardt::ServerRouter as Router;
+
+use upstream_fixtures::{async_upstream, handler};
 #[path = "../../tests/support/legacy.rs"]
 mod common;
 use common::*;
-use common::{TestEnvironment, test_environment};
+
 use serde_json::{Value, json};
 
 async fn definition(app: &common::TestApplication, token: &str) -> Value {
@@ -22,11 +34,11 @@ async fn definition(app: &common::TestApplication, token: &str) -> Value {
 #[tokio::test]
 async fn generation_policy_is_revisioned_and_requests_reserve_deduplicated_quota(
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
 ) {
-	let (f, url, schema) = setup(&_test_environment).await;
-	let app = common::application(f.clone()).await;
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let spec = definition(&app, &f.config.api_token).await;
 	let (status, created) = request(
@@ -109,11 +121,11 @@ async fn missing_task(app: &common::TestApplication, token: &str) -> String {
 #[tokio::test]
 async fn approval_activation_and_stop_are_atomic_and_audited(
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
 ) {
-	let (f, url, schema) = setup(&_test_environment).await;
-	let app = common::application(f.clone()).await;
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let spec = definition(&app, &f.config.api_token).await;
 	assert_eq!(
@@ -269,19 +281,14 @@ async fn approval_activation_and_stop_are_atomic_and_audited(
 #[tokio::test]
 async fn generated_agent_completes_with_pinned_definition_and_refunds_unused_allowance(
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(provider_1)]
+	fixture: Provider1Fixture,
 ) {
-	use axum::{Json, Router, routing::post};
-	let server=Router::new().route("/v1/chat/completions",post(|Json(body):Json<Value>|async move {
-        assert_eq!(body["model"],"fixture");
-        Json(json!({"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"Specialist result"}}],"usage":{"prompt_tokens":120,"completion_tokens":20}}))
-    }));
-	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-	let endpoint = format!("http://{}", listener.local_addr().unwrap());
-	let server = tokio::spawn(async move { axum::serve(listener, server).await.unwrap() });
-	let (f, url, schema) = setup(&_test_environment).await;
-	let app = common::application(f.clone()).await;
+	let (f, url, schema) = fixture.application.runtime.parts();
+	let app = fixture.application.application;
+	let server = fixture.server;
+	let endpoint = server.url.clone();
+
 	let (_, token, _) = bootstrap(&f, &app, &endpoint).await;
 	let mut spec = definition(&app, &f.config.api_token).await;
 	spec["approval_required"] = json!(false);
@@ -428,7 +435,7 @@ async fn generated_agent_completes_with_pinned_definition_and_refunds_unused_all
 		.0,
 		200
 	);
-	server.abort();
+	drop(server);
 	cleanup(f, &url, &schema).await;
 }
 
@@ -436,11 +443,11 @@ async fn generated_agent_completes_with_pinned_definition_and_refunds_unused_all
 #[tokio::test]
 async fn concurrent_requests_obey_quota_and_denial_releases_it_once(
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
 ) {
-	let (f, url, schema) = setup(&_test_environment).await;
-	let app = common::application(f.clone()).await;
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let mut spec = definition(&app, &f.config.api_token).await;
 	spec["limits"]["max_concurrent"] = json!(1);
@@ -513,18 +520,14 @@ async fn concurrent_requests_obey_quota_and_denial_releases_it_once(
 #[tokio::test]
 async fn agent_created_tasks_keep_generation_depth_when_requested_by_root(
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(provider_2)]
+	fixture: Provider2Fixture,
 ) {
-	use axum::{Json, Router, routing::post};
-	let server=Router::new().route("/v1/chat/completions",post(||async {
-        Json(json!({"choices":[{"index":0,"finish_reason":"tool_calls","message":{"role":"assistant","content":null,"tool_calls":[{"id":"create-child","type":"function","function":{"name":"task_create","arguments":json!({"title":"Child specialist","description":"Nested generation","requirements":{"capability":"special.research"}}).to_string()}}]}}],"usage":{"prompt_tokens":10,"completion_tokens":10}}))
-    }));
-	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-	let endpoint = format!("http://{}", listener.local_addr().unwrap());
-	let server = tokio::spawn(async move { axum::serve(listener, server).await.unwrap() });
-	let (f, url, schema) = setup(&_test_environment).await;
-	let app = common::application(f.clone()).await;
+	let (f, url, schema) = fixture.application.runtime.parts();
+	let app = fixture.application.application;
+	let server = fixture.server;
+	let endpoint = server.url.clone();
+
 	let (_, token, _) = bootstrap(&f, &app, &endpoint).await;
 	let mut spec = definition(&app, &f.config.api_token).await;
 	spec["approval_required"] = json!(false);
@@ -620,7 +623,7 @@ async fn agent_created_tasks_keep_generation_depth_when_requested_by_root(
 	)
 	.await;
 	assert_eq!(policies[0]["generated_count"], 1);
-	server.abort();
+	drop(server);
 	cleanup(f, &url, &schema).await;
 }
 
@@ -628,11 +631,11 @@ async fn agent_created_tasks_keep_generation_depth_when_requested_by_root(
 #[tokio::test]
 async fn revoked_requester_cannot_activate_and_failed_admission_leaves_no_agent(
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
 ) {
-	let (f, url, schema) = setup(&_test_environment).await;
-	let app = common::application(f.clone()).await;
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let mut spec = definition(&app, &f.config.api_token).await;
 	spec["approval_required"] = json!(false);
@@ -708,25 +711,14 @@ async fn revoked_requester_cannot_activate_and_failed_admission_leaves_no_agent(
 #[tokio::test]
 async fn missing_usage_keeps_reservation_and_stops_before_another_model_call(
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(provider_3)]
+	fixture: Provider3Fixture,
 ) {
-	use axum::{Json, Router, routing::post};
-	use std::sync::{
-		Arc,
-		atomic::{AtomicUsize, Ordering},
-	};
-	let calls = Arc::new(AtomicUsize::new(0));
-	let count = calls.clone();
-	let server=Router::new().route("/v1/chat/completions",post(move ||{let count=count.clone();async move {
-        count.fetch_add(1,Ordering::SeqCst);
-        Json(json!({"choices":[{"index":0,"finish_reason":"tool_calls","message":{"role":"assistant","content":null,"tool_calls":[{"id":"observe","type":"function","function":{"name":"workspace_observe","arguments":"{}"}}]}}],"usage":{"completion_tokens":1}}))
-    }}));
-	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-	let endpoint = format!("http://{}", listener.local_addr().unwrap());
-	let server = tokio::spawn(async move { axum::serve(listener, server).await.unwrap() });
-	let (f, url, schema) = setup(&_test_environment).await;
-	let app = common::application(f.clone()).await;
+	let (f, url, schema) = fixture.application.runtime.parts();
+	let app = fixture.application.application;
+	let server = fixture.server;
+	let endpoint = server.url.clone();
+	let calls = fixture.calls;
 	let (_, token, _) = bootstrap(&f, &app, &endpoint).await;
 	let mut spec = definition(&app, &f.config.api_token).await;
 	spec["approval_required"] = json!(false);
@@ -789,7 +781,7 @@ async fn missing_usage_keeps_reservation_and_stops_before_another_model_call(
 	)
 	.await;
 	assert_eq!(policies[0]["allocated_tokens"], 132096);
-	server.abort();
+	drop(server);
 	cleanup(f, &url, &schema).await;
 }
 
@@ -797,21 +789,14 @@ async fn missing_usage_keeps_reservation_and_stops_before_another_model_call(
 #[tokio::test]
 async fn worker_can_request_nested_generation_without_dropping_parent_authority(
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(provider_4)]
+	fixture: Provider4Fixture,
 ) {
-	use axum::{Json, Router, routing::post};
-	let server=Router::new().route("/v1/chat/completions",post(|Json(body):Json<Value>|async move {
-        let context:Value=serde_json::from_str(body["messages"][1]["content"].as_str().unwrap()).unwrap();
-        let child=context["current"]["workspace"]["tasks"].as_array().unwrap().iter().find(|t|t["parent_id"]==context["current"]["task"]["id"]);
-        let (name,arguments)=if let Some(child)=child {("task_assign",json!({"task_id":child["id"],"policy_id":"research","reason":"nested specialist"}))}else{("task_create",json!({"title":"Child specialist","description":"Nested generation","requirements":{"capability":"special.research"}}))};
-        Json(json!({"choices":[{"index":0,"finish_reason":"tool_calls","message":{"role":"assistant","content":null,"tool_calls":[{"id":name,"type":"function","function":{"name":name,"arguments":arguments.to_string()}}]}}],"usage":{"prompt_tokens":10,"completion_tokens":10}}))
-    }));
-	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-	let endpoint = format!("http://{}", listener.local_addr().unwrap());
-	let server = tokio::spawn(async move { axum::serve(listener, server).await.unwrap() });
-	let (f, url, schema) = setup(&_test_environment).await;
-	let app = common::application(f.clone()).await;
+	let (f, url, schema) = fixture.application.runtime.parts();
+	let app = fixture.application.application;
+	let server = fixture.server;
+	let endpoint = server.url.clone();
+
 	let (_, token, _) = bootstrap(&f, &app, &endpoint).await;
 	let mut spec = definition(&app, &f.config.api_token).await;
 	spec["approval_required"] = json!(false);
@@ -875,7 +860,7 @@ async fn worker_can_request_nested_generation_without_dropping_parent_authority(
 		.unwrap();
 	let runs = f.store.runs().await.unwrap();
 	assert_eq!(runs.len(), 2);
-	server.abort();
+	drop(server);
 	cleanup(f, &url, &schema).await;
 }
 
@@ -883,11 +868,11 @@ async fn worker_can_request_nested_generation_without_dropping_parent_authority(
 #[tokio::test]
 async fn generation_reads_and_events_respect_denial_and_tenant_boundaries(
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
 ) {
-	let (f, url, schema) = setup(&_test_environment).await;
-	let app = common::application(f.clone()).await;
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
 	let (mut policy, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let spec = definition(&app, &f.config.api_token).await;
 	assert_eq!(
@@ -1039,11 +1024,11 @@ async fn generation_reads_and_events_respect_denial_and_tenant_boundaries(
 #[tokio::test]
 async fn expiration_cancels_generated_run_before_any_provider_call(
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
 ) {
-	let (f, url, schema) = setup(&_test_environment).await;
-	let app = common::application(f.clone()).await;
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let mut spec = definition(&app, &f.config.api_token).await;
 	spec["approval_required"] = json!(false);
@@ -1127,25 +1112,15 @@ async fn expiration_cancels_generated_run_before_any_provider_call(
 #[tokio::test]
 async fn stop_commits_during_inflight_inference_and_discards_its_result(
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(provider_5)]
+	fixture: Provider5Fixture,
 ) {
-	use axum::{Json, Router, routing::post};
-	use std::sync::Arc;
-	use tokio::sync::Notify;
-	let entered = Arc::new(Notify::new());
-	let release = Arc::new(Notify::new());
-	let started = entered.clone();
-	let unblock = release.clone();
-	let server=Router::new().route("/v1/chat/completions",post(move ||{let started=started.clone();let unblock=unblock.clone();async move {
-        started.notify_one();unblock.notified().await;
-        Json(json!({"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"Inflight result"}}],"usage":{"prompt_tokens":10,"completion_tokens":10}}))
-    }}));
-	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-	let endpoint = format!("http://{}", listener.local_addr().unwrap());
-	let server = tokio::spawn(async move { axum::serve(listener, server).await.unwrap() });
-	let (f, url, schema) = setup(&_test_environment).await;
-	let app = common::application(f.clone()).await;
+	let (f, url, schema) = fixture.application.runtime.parts();
+	let app = fixture.application.application;
+	let server = fixture.server;
+	let endpoint = server.url.clone();
+	let entered = fixture.entered;
+	let release = fixture.release;
 	let (_, token, _) = bootstrap(&f, &app, &endpoint).await;
 	let mut spec = definition(&app, &f.config.api_token).await;
 	spec["approval_required"] = json!(false);
@@ -1242,7 +1217,7 @@ async fn stop_commits_during_inflight_inference_and_discards_its_result(
 	)
 	.await;
 	assert_eq!(policies[0]["allocated_tokens"], 20);
-	server.abort();
+	drop(server);
 	cleanup(f, &url, &schema).await;
 }
 
@@ -1250,46 +1225,16 @@ async fn stop_commits_during_inflight_inference_and_discards_its_result(
 #[tokio::test]
 async fn atomic_commit_discards_generated_output_but_settles_its_usage(
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(provider_6)]
+	fixture: Provider6Fixture,
 ) {
-	use axum::{Json, Router, routing::post};
-	use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
-	use std::sync::{
-		Arc,
-		atomic::{AtomicUsize, Ordering},
-	};
-	use tokio::sync::Notify;
-
-	let entered = Arc::new(Notify::new());
-	let release = Arc::new(Notify::new());
-	let calls = Arc::new(AtomicUsize::new(0));
-	let provider = Router::new().route(
-		"/v1/chat/completions",
-		post({
-			let entered = entered.clone();
-			let release = release.clone();
-			let calls = calls.clone();
-			move || {
-				let entered = entered.clone();
-				let release = release.clone();
-				let calls = calls.clone();
-				async move {
-					if calls.fetch_add(1, Ordering::SeqCst) == 0 {
-						entered.notify_one();
-						release.notified().await;
-					}
-					Json(json!({"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"Generated result"}}],"usage":{"prompt_tokens":10,"completion_tokens":2}}))
-				}
-			}
-		}),
-	);
-	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-	let endpoint = format!("http://{}", listener.local_addr().unwrap());
-	let server = tokio::spawn(async move { axum::serve(listener, provider).await.unwrap() });
-	let (mut f, url, schema) = setup(&_test_environment).await;
-	f.config.lease_seconds = 300;
-	let app = common::application(f.clone()).await;
+	let (f, url, schema) = fixture.application.runtime.parts();
+	let app = fixture.application.application;
+	let server = fixture.server;
+	let endpoint = server.url.clone();
+	let entered = fixture.entered;
+	let release = fixture.release;
+	let calls = fixture.calls;
 	let (_, token, _) = bootstrap(&f, &app, &endpoint).await;
 	let mut spec = definition(&app, &f.config.api_token).await;
 	spec["approval_required"] = json!(false);
@@ -1389,7 +1334,7 @@ async fn atomic_commit_discards_generated_output_but_settles_its_usage(
 		f.store.run(run.id).await.unwrap().phase().as_str(),
 		"TOOL_CALL"
 	);
-	server.abort();
+	drop(server);
 	cleanup(f, &url, &schema).await;
 }
 
@@ -1397,11 +1342,11 @@ async fn atomic_commit_discards_generated_output_but_settles_its_usage(
 #[tokio::test]
 async fn matching_ordinary_agent_is_reused_without_generation_or_quota(
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
 ) {
-	let (f, url, schema) = setup(&_test_environment).await;
-	let app = common::application(f.clone()).await;
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
 	let (mut bundle, token, task) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	bundle["policies"][0]["resources"]["kinds"] = json!([
 		"workspace",
@@ -1471,11 +1416,11 @@ async fn matching_ordinary_agent_is_reused_without_generation_or_quota(
 #[tokio::test]
 async fn disabling_an_existing_policy_remains_possible_after_component_revocation(
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
 ) {
-	let (f, url, schema) = setup(&_test_environment).await;
-	let app = common::application(f.clone()).await;
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let mut spec = definition(&app, &f.config.api_token).await;
 	assert_eq!(
@@ -1535,8 +1480,8 @@ async fn disabling_an_existing_policy_remains_possible_after_component_revocatio
 #[tokio::test]
 async fn policy_history_constraint_failure_rolls_back_revision_and_preserves_retry(
 	#[future(awt)]
-	#[from(test_environment)]
-	environment: std::sync::Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
 	#[case] subject: bool,
 ) {
 	use reinhardt::query::{
@@ -1544,8 +1489,8 @@ async fn policy_history_constraint_failure_rolls_back_revision_and_preserves_ret
 	};
 	// Arrange: a future history key forces the original database constraint
 	// to reject history after the policy CAS has already updated its row.
-	let (f, url, schema) = setup(&environment).await;
-	let app = common::application(f.clone()).await;
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let actor = if subject { &token } else { &f.config.api_token };
 	let spec = definition(&app, &f.config.api_token).await;
@@ -1652,128 +1597,116 @@ async fn policy_history_constraint_failure_rolls_back_revision_and_preserves_ret
 
 #[rstest::rstest]
 #[tokio::test]
+#[case("max_agents")]
+#[case("max_concurrent")]
+#[case("token_budget")]
 async fn count_concurrency_and_total_token_limits_are_independent(
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+	#[case] limit: &str,
 ) {
-	for limit in ["max_agents", "max_concurrent", "token_budget"] {
-		let (f, url, schema) = setup(&_test_environment).await;
-		let app = common::application(f.clone()).await;
-		let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
-		let mut spec = definition(&app, &f.config.api_token).await;
-		spec["limits"][limit] = json!(if limit == "token_budget" { 200000 } else { 1 });
-		if limit == "max_agents" {
-			spec["limits"]["max_concurrent"] = json!(1);
-		}
-		assert_eq!(
-			request(
-				&app,
-				&f.config.api_token,
-				"POST",
-				"/api/generation/acme/policies/research",
-				json!({"expected_revision":0,"spec":spec})
-			)
-			.await
-			.0,
-			200
-		);
-		let first = missing_task(&app, &token).await;
-		let (status, first) = request(
-			&app,
-			&token,
-			"POST",
-			&format!("/api/generation/acme/tasks/{first}/assign"),
-			json!({"policy_id":"research","reason":"first reservation"}),
-		)
-		.await;
-		assert_eq!(status, 200, "{first}");
-		if limit == "max_agents" {
-			assert_eq!(
-				request(
-					&app,
-					&token,
-					"POST",
-					&format!(
-						"/api/generation/acme/requests/{}/control",
-						first["generation"]["id"].as_str().unwrap()
-					),
-					json!({"action":"deny","reason":"lifetime count must remain"})
-				)
-				.await
-				.0,
-				200
-			);
-		}
-		let second = missing_task(&app, &token).await;
-		let path = format!("/api/generation/acme/tasks/{second}/assign");
-		let body = json!({"policy_id":"research","reason":"second reservation"});
-		assert_eq!(
-			request(&app, &token, "POST", &path, body.clone()).await.0,
-			409,
-			"{limit} must independently reject admission"
-		);
-		let count: i64 = sqlx::query_scalar(
-			&reinhardt::query::Query::select()
-				.expr(reinhardt::query::Expr::cust("COUNT(*)"))
-				.from(reinhardt::query::Alias::new("generation_requests"))
-				.to_string(reinhardt::query::PostgresQueryBuilder),
-		)
-		.fetch_one(f.store.pool.driver())
-		.await
-		.unwrap();
-		assert_eq!(
-			count, 1,
-			"rejected request must leave no partial definition"
-		);
-		spec["limits"][limit] = json!(if limit == "token_budget" { 400000 } else { 2 });
-		assert_eq!(
-			request(
-				&app,
-				&f.config.api_token,
-				"POST",
-				"/api/generation/acme/policies/research",
-				json!({"expected_revision":1,"spec":spec})
-			)
-			.await
-			.0,
-			200
-		);
-		assert_eq!(
-			request(&app, &token, "POST", &path, body).await.0,
-			200,
-			"raising only {limit} must admit the same task"
-		);
-		cleanup(f, &url, &schema).await;
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
+	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let mut spec = definition(&app, &f.config.api_token).await;
+	spec["limits"][limit] = json!(if limit == "token_budget" { 200000 } else { 1 });
+	if limit == "max_agents" {
+		spec["limits"]["max_concurrent"] = json!(1);
 	}
+	assert_eq!(
+		request(
+			&app,
+			&f.config.api_token,
+			"POST",
+			"/api/generation/acme/policies/research",
+			json!({"expected_revision":0,"spec":spec})
+		)
+		.await
+		.0,
+		200
+	);
+	let first = missing_task(&app, &token).await;
+	let (status, first) = request(
+		&app,
+		&token,
+		"POST",
+		&format!("/api/generation/acme/tasks/{first}/assign"),
+		json!({"policy_id":"research","reason":"first reservation"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{first}");
+	if limit == "max_agents" {
+		assert_eq!(
+			request(
+				&app,
+				&token,
+				"POST",
+				&format!(
+					"/api/generation/acme/requests/{}/control",
+					first["generation"]["id"].as_str().unwrap()
+				),
+				json!({"action":"deny","reason":"lifetime count must remain"})
+			)
+			.await
+			.0,
+			200
+		);
+	}
+	let second = missing_task(&app, &token).await;
+	let path = format!("/api/generation/acme/tasks/{second}/assign");
+	let body = json!({"policy_id":"research","reason":"second reservation"});
+	assert_eq!(
+		request(&app, &token, "POST", &path, body.clone()).await.0,
+		409,
+		"{limit} must independently reject admission"
+	);
+	let count: i64 = sqlx::query_scalar(
+		&reinhardt::query::Query::select()
+			.expr(reinhardt::query::Expr::cust("COUNT(*)"))
+			.from(reinhardt::query::Alias::new("generation_requests"))
+			.to_string(reinhardt::query::PostgresQueryBuilder),
+	)
+	.fetch_one(f.store.pool.driver())
+	.await
+	.unwrap();
+	assert_eq!(
+		count, 1,
+		"rejected request must leave no partial definition"
+	);
+	spec["limits"][limit] = json!(if limit == "token_budget" { 400000 } else { 2 });
+	assert_eq!(
+		request(
+			&app,
+			&f.config.api_token,
+			"POST",
+			"/api/generation/acme/policies/research",
+			json!({"expected_revision":1,"spec":spec})
+		)
+		.await
+		.0,
+		200
+	);
+	assert_eq!(
+		request(&app, &token, "POST", &path, body).await.0,
+		200,
+		"raising only {limit} must admit the same task"
+	);
+	cleanup(f, &url, &schema).await;
 }
 
 #[rstest::rstest]
 #[tokio::test]
 async fn generated_permission_attributes_deny_tools_without_losing_the_pending_call(
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(provider_7)]
+	fixture: Provider7Fixture,
 ) {
-	use axum::{Json, Router, routing::post};
-	use std::sync::{
-		Arc,
-		atomic::{AtomicUsize, Ordering},
-	};
-	let effects = Arc::new(AtomicUsize::new(0));
-	let count = effects.clone();
-	let server=Router::new().route("/effect",post(move || {let count=count.clone();async move {count.fetch_add(1,Ordering::SeqCst);Json(json!({"saved":true}))}}))
-        .route("/v1/chat/completions",post(|Json(body):Json<Value>|async move {
-            let context:Value=serde_json::from_str(body["messages"][1]["content"].as_str().unwrap()).unwrap();
-            let message=if context["history"].as_array().unwrap().iter().any(|e|e["kind"]=="tool") {json!({"role":"assistant","content":"Approved tool completed"})}
-            else {json!({"role":"assistant","content":null,"tool_calls":[{"id":"generated-effect","type":"function","function":{"name":"plugin_0","arguments":"{}"}}]})};
-            Json(json!({"choices":[{"index":0,"finish_reason":if message.get("tool_calls").is_some(){"tool_calls"}else{"stop"},"message":message}],"usage":{"prompt_tokens":1,"completion_tokens":1}}))
-        }));
-	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-	let endpoint = format!("http://{}", listener.local_addr().unwrap());
-	let server = tokio::spawn(async move { axum::serve(listener, server).await.unwrap() });
-	let (f, url, schema) = setup(&_test_environment).await;
-	let app = common::application(f.clone()).await;
+	let (f, url, schema) = fixture.application.runtime.parts();
+	let app = fixture.application.application;
+	let server = fixture.server;
+	let endpoint = server.url.clone();
+	let effects = fixture.effects;
 	let (mut bundle, token, _) = bootstrap(&f, &app, &endpoint).await;
 	bundle["policies"].as_array_mut().unwrap().push(json!({"id":"deny-research-tools","effect":"deny","subjects":{"kinds":["agent"]},"actions":["tool.invoke"],"resources":{"kinds":["tool"]},"condition":{"op":"eq","left":{"source":"subject","path":"/team"},"right":{"source":"literal","value":"research"}}}));
 	assert_eq!(
@@ -1869,7 +1802,7 @@ async fn generated_permission_attributes_deny_tools_without_losing_the_pending_c
 		"COMPLETED"
 	);
 	assert_eq!(effects.load(Ordering::SeqCst), 1);
-	server.abort();
+	drop(server);
 	cleanup(f, &url, &schema).await;
 }
 
@@ -1877,11 +1810,11 @@ async fn generated_permission_attributes_deny_tools_without_losing_the_pending_c
 #[tokio::test]
 async fn generation_visibility_paginates_and_cannot_override_later_event_ownership(
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
 ) {
-	let (f, url, schema) = setup(&_test_environment).await;
-	let app = common::application(f.clone()).await;
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
 	let (mut policy, token, other_task) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let spec = definition(&app, &f.config.api_token).await;
 	assert_eq!(
@@ -1910,7 +1843,6 @@ async fn generation_visibility_paginates_and_cannot_override_later_event_ownersh
 	let job_id: uuid::Uuid = job["id"].as_str().unwrap().parse().unwrap();
 	// More than a page of newer denied requests must not hide the older visible one.
 	{
-		use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
 		for n in 1..=201 {
 			let child = uuid::Uuid::new_v4();
 			let source = Query::select()
@@ -2109,3 +2041,401 @@ async fn generation_visibility_paginates_and_cannot_override_later_event_ownersh
 }
 
 use reinhardt::query::{ExprTrait as _, QueryStatementBuilder as _};
+
+#[rstest::fixture]
+fn provider_1_router() -> upstream_fixtures::RouterFuture {
+	async move {
+
+	let server=Router::new().handler("/v1/chat/completions",handler(http::Method::POST, |request: reinhardt::Request| {let body = request.json::<Value>().unwrap();async move {
+        assert_eq!(body["model"],"fixture");
+        reinhardt::Response::ok().with_json(&json!({"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"Specialist result"}}],"usage":{"prompt_tokens":120,"completion_tokens":20}})).unwrap()
+    }}));
+
+
+
+Arc::new(server) }.boxed().shared()
+}
+
+struct Provider1Fixture {
+	application: common::ApplicationFixture,
+	server: Arc<reinhardt::test::fixtures::server::TestServerGuard>,
+}
+
+#[rstest::fixture]
+fn provider_1(
+	#[from(common::runtime)] _runtime: common::RuntimeFuture,
+	#[from(provider_1_router)] _router: upstream_fixtures::RouterFuture,
+	#[from(async_upstream)]
+	#[with(_router.clone())]
+	server: upstream_fixtures::UpstreamFuture,
+	#[from(common::native_application)]
+	#[with(Default::default(), aidash_server::sse::Service::new(Default::default()), Arc::new(|router| router), _runtime.clone())]
+	application: common::ApplicationFuture,
+) -> BoxFuture<'static, Provider1Fixture> {
+	async move {
+		Provider1Fixture {
+			application: application.await,
+			server: server.await,
+		}
+	}
+	.boxed()
+}
+
+#[rstest::fixture]
+fn provider_2_router() -> upstream_fixtures::RouterFuture {
+	async move {
+
+	let server=Router::new().handler("/v1/chat/completions",handler(http::Method::POST, |_request: reinhardt::Request| async {
+        reinhardt::Response::ok().with_json(&json!({"choices":[{"index":0,"finish_reason":"tool_calls","message":{"role":"assistant","content":null,"tool_calls":[{"id":"create-child","type":"function","function":{"name":"task_create","arguments":json!({"title":"Child specialist","description":"Nested generation","requirements":{"capability":"special.research"}}).to_string()}}]}}],"usage":{"prompt_tokens":10,"completion_tokens":10}})).unwrap()
+    }));
+
+
+
+Arc::new(server) }.boxed().shared()
+}
+
+struct Provider2Fixture {
+	application: common::ApplicationFixture,
+	server: Arc<reinhardt::test::fixtures::server::TestServerGuard>,
+}
+
+#[rstest::fixture]
+fn provider_2(
+	#[from(common::runtime)] _runtime: common::RuntimeFuture,
+	#[from(provider_2_router)] _router: upstream_fixtures::RouterFuture,
+	#[from(async_upstream)]
+	#[with(_router.clone())]
+	server: upstream_fixtures::UpstreamFuture,
+	#[from(common::native_application)]
+	#[with(Default::default(), aidash_server::sse::Service::new(Default::default()), Arc::new(|router| router), _runtime.clone())]
+	application: common::ApplicationFuture,
+) -> BoxFuture<'static, Provider2Fixture> {
+	async move {
+		Provider2Fixture {
+			application: application.await,
+			server: server.await,
+		}
+	}
+	.boxed()
+}
+
+#[rstest::fixture]
+fn provider_3_calls() -> Arc<std::sync::atomic::AtomicUsize> {
+	Arc::new(AtomicUsize::new(0))
+}
+
+#[rstest::fixture]
+fn provider_3_router(
+	#[from(provider_3_calls)] calls: Arc<std::sync::atomic::AtomicUsize>,
+) -> upstream_fixtures::RouterFuture {
+	async move {
+
+
+
+	let count = calls.clone();
+	let server=Router::new().handler("/v1/chat/completions",handler(http::Method::POST, move |_request: reinhardt::Request| {let count=count.clone();async move {
+        count.fetch_add(1,Ordering::SeqCst);
+        reinhardt::Response::ok().with_json(&json!({"choices":[{"index":0,"finish_reason":"tool_calls","message":{"role":"assistant","content":null,"tool_calls":[{"id":"observe","type":"function","function":{"name":"workspace_observe","arguments":"{}"}}]}}],"usage":{"completion_tokens":1}})).unwrap()
+    }}));
+
+
+
+Arc::new(server) }.boxed().shared()
+}
+
+struct Provider3Fixture {
+	application: common::ApplicationFixture,
+	server: Arc<reinhardt::test::fixtures::server::TestServerGuard>,
+	calls: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+#[rstest::fixture]
+fn provider_3(
+	#[from(provider_3_calls)] calls: Arc<std::sync::atomic::AtomicUsize>,
+	#[from(common::runtime)] _runtime: common::RuntimeFuture,
+	#[from(provider_3_router)]
+	#[with(calls.clone())]
+	_router: upstream_fixtures::RouterFuture,
+	#[from(async_upstream)]
+	#[with(_router.clone())]
+	server: upstream_fixtures::UpstreamFuture,
+	#[from(common::native_application)]
+	#[with(Default::default(), aidash_server::sse::Service::new(Default::default()), Arc::new(|router| router), _runtime.clone())]
+	application: common::ApplicationFuture,
+) -> BoxFuture<'static, Provider3Fixture> {
+	async move {
+		Provider3Fixture {
+			application: application.await,
+			server: server.await,
+			calls,
+		}
+	}
+	.boxed()
+}
+
+#[rstest::fixture]
+fn provider_4_router() -> upstream_fixtures::RouterFuture {
+	async move {
+
+	let server=Router::new().handler("/v1/chat/completions",handler(http::Method::POST, |request: reinhardt::Request| {let body = request.json::<Value>().unwrap();async move {
+        let context:Value=serde_json::from_str(body["messages"][1]["content"].as_str().unwrap()).unwrap();
+        let child=context["current"]["workspace"]["tasks"].as_array().unwrap().iter().find(|t|t["parent_id"]==context["current"]["task"]["id"]);
+        let (name,arguments)=if let Some(child)=child {("task_assign",json!({"task_id":child["id"],"policy_id":"research","reason":"nested specialist"}))}else{("task_create",json!({"title":"Child specialist","description":"Nested generation","requirements":{"capability":"special.research"}}))};
+        reinhardt::Response::ok().with_json(&json!({"choices":[{"index":0,"finish_reason":"tool_calls","message":{"role":"assistant","content":null,"tool_calls":[{"id":name,"type":"function","function":{"name":name,"arguments":arguments.to_string()}}]}}],"usage":{"prompt_tokens":10,"completion_tokens":10}})).unwrap()
+    }}));
+
+
+
+Arc::new(server) }.boxed().shared()
+}
+
+struct Provider4Fixture {
+	application: common::ApplicationFixture,
+	server: Arc<reinhardt::test::fixtures::server::TestServerGuard>,
+}
+
+#[rstest::fixture]
+fn provider_4(
+	#[from(common::runtime)] _runtime: common::RuntimeFuture,
+	#[from(provider_4_router)] _router: upstream_fixtures::RouterFuture,
+	#[from(async_upstream)]
+	#[with(_router.clone())]
+	server: upstream_fixtures::UpstreamFuture,
+	#[from(common::native_application)]
+	#[with(Default::default(), aidash_server::sse::Service::new(Default::default()), Arc::new(|router| router), _runtime.clone())]
+	application: common::ApplicationFuture,
+) -> BoxFuture<'static, Provider4Fixture> {
+	async move {
+		Provider4Fixture {
+			application: application.await,
+			server: server.await,
+		}
+	}
+	.boxed()
+}
+
+#[rstest::fixture]
+fn provider_5_entered() -> Arc<tokio::sync::Notify> {
+	Arc::new(Notify::new())
+}
+
+#[rstest::fixture]
+fn provider_5_release() -> Arc<tokio::sync::Notify> {
+	Arc::new(Notify::new())
+}
+
+#[rstest::fixture]
+fn provider_5_router(
+	#[from(provider_5_entered)] entered: Arc<tokio::sync::Notify>,
+	#[from(provider_5_release)] release: Arc<tokio::sync::Notify>,
+) -> upstream_fixtures::RouterFuture {
+	async move {
+
+
+
+
+
+	let started = entered.clone();
+	let unblock = release.clone();
+	let server=Router::new().handler("/v1/chat/completions",handler(http::Method::POST, move |_request: reinhardt::Request| {let started=started.clone();let unblock=unblock.clone();async move {
+        started.notify_one();unblock.notified().await;
+        reinhardt::Response::ok().with_json(&json!({"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"Inflight result"}}],"usage":{"prompt_tokens":10,"completion_tokens":10}})).unwrap()
+    }}));
+
+
+
+Arc::new(server) }.boxed().shared()
+}
+
+struct Provider5Fixture {
+	application: common::ApplicationFixture,
+	server: Arc<reinhardt::test::fixtures::server::TestServerGuard>,
+	entered: Arc<tokio::sync::Notify>,
+	release: Arc<tokio::sync::Notify>,
+}
+
+#[rstest::fixture]
+fn provider_5(
+	#[from(provider_5_entered)] entered: Arc<tokio::sync::Notify>,
+	#[from(provider_5_release)] release: Arc<tokio::sync::Notify>,
+	#[from(common::runtime)] _runtime: common::RuntimeFuture,
+	#[from(provider_5_router)]
+	#[with(entered.clone(), release.clone())]
+	_router: upstream_fixtures::RouterFuture,
+	#[from(async_upstream)]
+	#[with(_router.clone())]
+	server: upstream_fixtures::UpstreamFuture,
+	#[from(common::native_application)]
+	#[with(Default::default(), aidash_server::sse::Service::new(Default::default()), Arc::new(|router| router), _runtime.clone())]
+	application: common::ApplicationFuture,
+) -> BoxFuture<'static, Provider5Fixture> {
+	async move {
+		Provider5Fixture {
+			application: application.await,
+			server: server.await,
+			entered,
+			release,
+		}
+	}
+	.boxed()
+}
+
+#[rstest::fixture]
+fn provider_6_entered() -> Arc<tokio::sync::Notify> {
+	Arc::new(Notify::new())
+}
+
+#[rstest::fixture]
+fn provider_6_release() -> Arc<tokio::sync::Notify> {
+	Arc::new(Notify::new())
+}
+
+#[rstest::fixture]
+fn provider_6_calls() -> Arc<std::sync::atomic::AtomicUsize> {
+	Arc::new(AtomicUsize::new(0))
+}
+
+#[rstest::fixture]
+fn provider_6_runtime(runtime: common::RuntimeFuture) -> common::RuntimeFuture {
+	async move {
+		let mut owner = runtime.await;
+		owner.federation.config.lease_seconds = 300;
+		owner
+	}
+	.boxed()
+	.shared()
+}
+
+#[rstest::fixture]
+fn provider_6_router(
+	#[from(provider_6_entered)] entered: Arc<tokio::sync::Notify>,
+	#[from(provider_6_release)] release: Arc<tokio::sync::Notify>,
+	#[from(provider_6_calls)] calls: Arc<std::sync::atomic::AtomicUsize>,
+) -> upstream_fixtures::RouterFuture {
+	async move {
+
+
+
+
+
+
+
+
+	let provider = Router::new().handler(
+		"/v1/chat/completions",
+		handler(http::Method::POST, {
+			let entered = entered.clone();
+			let release = release.clone();
+			let calls = calls.clone();
+			move |_request: reinhardt::Request| {
+				let entered = entered.clone();
+				let release = release.clone();
+				let calls = calls.clone();
+				async move {
+					if calls.fetch_add(1, Ordering::SeqCst) == 0 {
+						entered.notify_one();
+						release.notified().await;
+					}
+					reinhardt::Response::ok().with_json(&json!({"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"Generated result"}}],"usage":{"prompt_tokens":10,"completion_tokens":2}})).unwrap()
+				}
+			}
+		}),
+	);
+
+
+
+Arc::new(provider) }.boxed().shared()
+}
+
+struct Provider6Fixture {
+	application: common::ApplicationFixture,
+	server: Arc<reinhardt::test::fixtures::server::TestServerGuard>,
+	entered: Arc<tokio::sync::Notify>,
+	release: Arc<tokio::sync::Notify>,
+	calls: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+#[rstest::fixture]
+fn provider_6(
+	#[from(provider_6_entered)] entered: Arc<tokio::sync::Notify>,
+	#[from(provider_6_release)] release: Arc<tokio::sync::Notify>,
+	#[from(provider_6_calls)] calls: Arc<std::sync::atomic::AtomicUsize>,
+	#[from(provider_6_runtime)] _runtime: common::RuntimeFuture,
+	#[from(provider_6_router)]
+	#[with(entered.clone(), release.clone(), calls.clone())]
+	_router: upstream_fixtures::RouterFuture,
+	#[from(async_upstream)]
+	#[with(_router.clone())]
+	server: upstream_fixtures::UpstreamFuture,
+	#[from(common::native_application)]
+	#[with(Default::default(), aidash_server::sse::Service::new(Default::default()), Arc::new(|router| router), _runtime.clone())]
+	application: common::ApplicationFuture,
+) -> BoxFuture<'static, Provider6Fixture> {
+	async move {
+		Provider6Fixture {
+			application: application.await,
+			server: server.await,
+			entered,
+			release,
+			calls,
+		}
+	}
+	.boxed()
+}
+
+#[rstest::fixture]
+fn provider_7_effects() -> Arc<std::sync::atomic::AtomicUsize> {
+	Arc::new(AtomicUsize::new(0))
+}
+
+#[rstest::fixture]
+fn provider_7_router(
+	#[from(provider_7_effects)] effects: Arc<std::sync::atomic::AtomicUsize>,
+) -> upstream_fixtures::RouterFuture {
+	async move {
+
+
+
+	let count = effects.clone();
+	let server=Router::new().handler("/effect",handler(http::Method::POST, move |_request: reinhardt::Request| {let count=count.clone();async move {count.fetch_add(1,Ordering::SeqCst);reinhardt::Response::ok().with_json(&json!({"saved":true})).unwrap()}}))
+        .handler("/v1/chat/completions",handler(http::Method::POST, |request: reinhardt::Request| {let body = request.json::<Value>().unwrap();async move {
+            let context:Value=serde_json::from_str(body["messages"][1]["content"].as_str().unwrap()).unwrap();
+            let message=if context["history"].as_array().unwrap().iter().any(|e|e["kind"]=="tool") {json!({"role":"assistant","content":"Approved tool completed"})}
+            else {json!({"role":"assistant","content":null,"tool_calls":[{"id":"generated-effect","type":"function","function":{"name":"plugin_0","arguments":"{}"}}]})};
+            reinhardt::Response::ok().with_json(&json!({"choices":[{"index":0,"finish_reason":if message.get("tool_calls").is_some(){"tool_calls"}else{"stop"},"message":message}],"usage":{"prompt_tokens":1,"completion_tokens":1}})).unwrap()
+        }}));
+
+
+
+Arc::new(server) }.boxed().shared()
+}
+
+struct Provider7Fixture {
+	application: common::ApplicationFixture,
+	server: Arc<reinhardt::test::fixtures::server::TestServerGuard>,
+	effects: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+#[rstest::fixture]
+fn provider_7(
+	#[from(provider_7_effects)] effects: Arc<std::sync::atomic::AtomicUsize>,
+	#[from(common::runtime)] _runtime: common::RuntimeFuture,
+	#[from(provider_7_router)]
+	#[with(effects.clone())]
+	_router: upstream_fixtures::RouterFuture,
+	#[from(async_upstream)]
+	#[with(_router.clone())]
+	server: upstream_fixtures::UpstreamFuture,
+	#[from(common::native_application)]
+	#[with(Default::default(), aidash_server::sse::Service::new(Default::default()), Arc::new(|router| router), _runtime.clone())]
+	application: common::ApplicationFuture,
+) -> BoxFuture<'static, Provider7Fixture> {
+	async move {
+		Provider7Fixture {
+			application: application.await,
+			server: server.await,
+			effects,
+		}
+	}
+	.boxed()
+}

@@ -231,6 +231,7 @@ async fn separate_process_notifications_and_negative_control(
 	#[with(prepared.clone(), "worker", 0, true, true)]
 	first: Process,
 ) {
+	// rstest 0.26.1 loses `from` on mutable awaited parameters; rebind after injection.
 	let mut server = server;
 	let mut first = first;
 
