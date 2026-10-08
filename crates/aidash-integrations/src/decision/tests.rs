@@ -41,6 +41,7 @@ fn config(endpoint: &str) -> DeciderConfig {
 fn provider(endpoint: &str, cap: Option<usize>) -> JevDecisionProvider {
 	JevDecisionProvider::new(
 		config(endpoint),
+		"node-decision-adapter:23".into(),
 		Arc::new(CredentialsFixture),
 		Arc::new(CapacityFixture(cap)),
 		Duration::from_secs(5),
@@ -212,6 +213,7 @@ async fn prepared_batches_reuse_exact_transport_after_credentials_become_unavail
 	});
 	let client = JevDecisionProvider::new(
 		config(&endpoint),
+		"node-decision-adapter:23".into(),
 		credentials.clone(),
 		Arc::new(CapacityFixture(Some(1))),
 		Duration::from_secs(5),

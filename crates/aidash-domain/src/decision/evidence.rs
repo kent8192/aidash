@@ -149,6 +149,11 @@ impl Evidence {
 	pub fn replay(&self) -> Result<BTreeMap<String, Branch>> {
 		self.boundary.validate()?;
 		self.decider.validate()?;
+		if self.decider.identity.registry_node != self.boundary.node {
+			return Err(Error::Invalid(
+				"historical Decider differs from the execution Node".into(),
+			));
+		}
 		validate_digest(&self.state_digest)?;
 		validate_model(&self.model)?;
 		for source in &self.sources {

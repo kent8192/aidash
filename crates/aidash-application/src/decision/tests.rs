@@ -64,6 +64,7 @@ struct Fixture {
 	events: usize,
 	corrupt_boundary: bool,
 	configuration_digest: String,
+	provider_implementation: String,
 	saved: Mutex<Saved>,
 	budget: usize,
 	fail_prepare: bool,
@@ -79,6 +80,7 @@ struct Fixture {
 	fail_commit: bool,
 	wrong_receipt: bool,
 	revoke_after_dispatch: bool,
+	invalid_final_approval: Option<Approval>,
 	denied: AtomicBool,
 	retain_state: bool,
 	commit_time: Option<DateTime<Utc>>,
@@ -98,6 +100,7 @@ impl Fixture {
 			events: 10,
 			corrupt_boundary: false,
 			configuration_digest: config(mode).digest().unwrap(),
+			provider_implementation: "node-decision-adapter:23".into(),
 			saved: Mutex::new(Saved {
 				permits: vec![],
 				answers: 0,
@@ -119,6 +122,7 @@ impl Fixture {
 			fail_commit: false,
 			wrong_receipt: false,
 			revoke_after_dispatch: false,
+			invalid_final_approval: None,
 			denied: AtomicBool::new(false),
 			retain_state: false,
 			commit_time: None,
@@ -147,6 +151,12 @@ impl DecisionAuthority for Fixture {
 		let check = self.checks.fetch_add(1, Ordering::SeqCst);
 		if self.denied.load(Ordering::SeqCst) || self.deny_after_initial && check > 0 {
 			return Err(Error::Forbidden);
+		}
+		if let Some(approval) = &self.invalid_final_approval
+			&& self.calls.load(Ordering::SeqCst) > 0
+			&& self.in_flight.load(Ordering::SeqCst) == 0
+		{
+			return Ok(approval.clone());
 		}
 		Ok(Approval {
 			restrictions: Restrictions {
@@ -281,6 +291,9 @@ impl DecisionJournal for Fixture {
 	}
 }
 impl DecisionProvider for Fixture {
+	fn implementation_id(&self) -> &str {
+		&self.provider_implementation
+	}
 	fn configuration_digest(&self) -> Result<String> {
 		Ok(self.configuration_digest.clone())
 	}
@@ -414,6 +427,7 @@ async fn evaluate(
 		},
 		definition_digest: digest(&serde_json::to_value(&definition).unwrap()),
 		configuration_digest: config(mode).digest().unwrap(),
+		provider_implementation: "node-decision-adapter:23".into(),
 	};
 	let restrictions = Restrictions::default();
 	let input = Evaluation {
@@ -528,20 +542,27 @@ async fn concurrent_workers_share_durable_allowance_without_overspending_or_part
 }
 #[tokio::test]
 async fn changed_input_or_provider_pin_never_reaches_dispatch() {
-	for corrupt in [false, true] {
-		let mut fixture = Fixture {
-			corrupt_boundary: corrupt,
-			..Fixture::new(Mode::Enforce)
-		};
-		if !corrupt {
-			fixture.configuration_digest = format!("sha256:{}", "c".repeat(64));
+	for mode in [Mode::Enforce, Mode::Shadow] {
+		for kind in 0..3 {
+			let mut fixture = Fixture {
+				corrupt_boundary: kind == 0,
+				..Fixture::new(mode)
+			};
+			if kind == 1 {
+				fixture.configuration_digest = format!("sha256:{}", "c".repeat(64));
+			}
+			if kind == 2 {
+				fixture.provider_implementation = "node-decision-adapter:24".into();
+				assert_eq!(fixture.configuration_digest, config(mode).digest().unwrap());
+			}
+			let (result, context, original) = evaluate(&fixture, mode, 80_000, disclosure()).await;
+			assert!(result.is_err(), "changed pin kind {kind} in {mode:?}");
+			assert_eq!(context.history, original.history);
+			assert_eq!(fixture.checks.load(Ordering::SeqCst), 0);
+			assert_eq!(fixture.preparations.load(Ordering::SeqCst), 0);
+			assert_eq!(fixture.calls.load(Ordering::SeqCst), 0);
+			assert!(fixture.saved.lock().unwrap().permits.is_empty());
 		}
-		let (result, context, original) =
-			evaluate(&fixture, Mode::Enforce, 80_000, disclosure()).await;
-		assert!(result.is_err());
-		assert_eq!(context.history, original.history);
-		assert_eq!(fixture.calls.load(Ordering::SeqCst), 0);
-		assert!(fixture.saved.lock().unwrap().permits.is_empty());
 	}
 }
 
@@ -817,6 +838,67 @@ async fn post_dispatch_revocation_commits_rejected_evidence_without_context_or_s
 }
 
 #[tokio::test]
+async fn invalid_final_approval_preserves_completed_attempts_without_context_or_state() {
+	for mode in [Mode::Enforce, Mode::Shadow] {
+		for (restrictions, days) in [
+			(
+				Restrictions {
+					keep_threshold: Probability::new(0.6).unwrap(),
+					..Default::default()
+				},
+				7,
+			),
+			(
+				Restrictions {
+					preserve_recent: 5,
+					..Default::default()
+				},
+				7,
+			),
+			(Restrictions::default(), 0),
+			(Restrictions::default(), 31),
+		] {
+			let fixture = Fixture {
+				retain_state: true,
+				invalid_final_approval: Some(Approval {
+					restrictions,
+					state_retention: policy::StateRetention {
+						enabled: true,
+						days,
+					},
+				}),
+				..Fixture::new(mode)
+			};
+			let (result, context, original) = evaluate(&fixture, mode, 80_000, disclosure()).await;
+			assert!(result.is_err());
+			assert_eq!(
+				serde_json::to_value(context).unwrap(),
+				serde_json::to_value(original).unwrap()
+			);
+			let saved = fixture.saved.lock().unwrap();
+			assert_eq!(saved.applied, 0);
+			assert_eq!(saved.states, 0);
+			assert_eq!(saved.evidence.len(), 1);
+			let evidence = &saved.evidence[0];
+			assert_eq!(evidence.outcome, Outcome::Rejected);
+			assert_eq!(evidence.reason, Reason::Forbidden);
+			assert_eq!(evidence.state, StateReference::Disabled);
+			assert_eq!(fixture.calls.load(Ordering::SeqCst), 6);
+			assert_eq!(saved.answers, 6);
+			assert_eq!(evidence.answers.len(), 6);
+			assert_eq!(evidence.attempts.len(), 6);
+			for (attempt, permit) in evidence.attempts.iter().zip(&saved.permits) {
+				assert_eq!(attempt.id, permit.record.attempt);
+				assert_eq!(attempt.status, AttemptStatus::Answered);
+				assert_eq!(attempt.request_digest, permit.record.request_digest);
+				assert_eq!(attempt.questions, permit.record.questions);
+				assert_eq!(attempt.owner_receipts, permit.owner_receipts);
+			}
+		}
+	}
+}
+
+#[tokio::test]
 async fn elapsed_state_deadlines_leave_only_an_expired_reference() {
 	for mode in [Mode::Enforce, Mode::Shadow] {
 		for during_commit in [false, true] {
@@ -911,6 +993,28 @@ async fn replay_rejects_drop_metrics_that_disagree_with_historical_branches() {
 			corrupt.history_length
 		);
 		assert!(corrupt.replay().is_err());
+	}
+}
+
+#[tokio::test]
+async fn replay_rejects_decider_pins_from_another_execution_node() {
+	for mode in [Mode::Enforce, Mode::Shadow] {
+		let fixture = Fixture::new(mode);
+		evaluate(&fixture, mode, 80_000, disclosure())
+			.await
+			.0
+			.unwrap();
+		let evidence = fixture.saved.lock().unwrap().evidence[0].clone();
+		let mut recovered: Evidence =
+			serde_json::from_value(serde_json::to_value(evidence).unwrap()).unwrap();
+		assert_eq!(recovered.replay().unwrap(), recovered.branches);
+		recovered.decider.identity.registry_node = "aidash://foreign-decider".into();
+		recovered.boundary.validate().unwrap();
+		recovered.decider.validate().unwrap();
+		assert!(
+			recovered.replay().is_err(),
+			"foreign Decider in {mode:?} evidence"
+		);
 	}
 }
 

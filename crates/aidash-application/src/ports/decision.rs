@@ -63,6 +63,9 @@ pub enum DispatchError {
 }
 
 pub trait DecisionProvider: Send + Sync {
+	/// Opaque identity of this concrete adapter in the trusted Node Provider catalog.
+	/// It must match the admitted implementation, independently of the protocol/config.
+	fn implementation_id(&self) -> &str;
 	fn configuration_digest(&self) -> Result<String>;
 	/// Split only under factual constraints of the pinned external provider.
 	/// All question IDs must occur exactly once; no state/candidate truncation is allowed.
@@ -127,10 +130,11 @@ pub trait DecisionJournal: Send + Sync {
 		answers: Option<&BTreeMap<String, Probability>>,
 		status: AttemptStatus,
 	) -> Result<()>;
-	/// Rechecks lease, input/run revisions and exact pins inside the commit boundary.
+	/// Rechecks lease, input/run revisions and exact pins (including the Node Provider
+	/// implementation) inside the commit boundary.
 	/// Applying context or retaining state also requires current source/invocation
-	/// authority. Revocation must still permit recording a fenced rejection without
-	/// context or full state, preserving previously dispatched attempts for recovery.
+	/// authority. Revocation or invalid approval must still permit a fenced rejection
+	/// without context or full state, preserving dispatched attempts for recovery.
 	/// Applied context, evidence and optional state commit atomically; errors must
 	/// leave the authoritative Run unchanged.
 	/// Shadow/rejected records use None and must never replace execution context.

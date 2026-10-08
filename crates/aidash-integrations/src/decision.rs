@@ -23,18 +23,27 @@ pub trait JevCapacity: Send + Sync {
 
 pub struct JevDecisionProvider {
 	config: DeciderConfig,
+	implementation: String,
 	client: reqwest::Client,
 	credentials: Arc<dyn Credentials>,
 	capacity: Arc<dyn JevCapacity>,
 }
 impl JevDecisionProvider {
+	/// The trusted Node catalog supplies this concrete implementation's opaque identity,
+	/// independently of the publisher's configuration or a retained Run's requested pin.
 	pub fn new(
 		config: DeciderConfig,
+		implementation: String,
 		credentials: Arc<dyn Credentials>,
 		capacity: Arc<dyn JevCapacity>,
 		timeout: Duration,
 	) -> Result<Self> {
 		config.validate()?;
+		if implementation.trim().is_empty() {
+			return Err(Error::Invalid(
+				"decision adapter lacks a Node implementation identity".into(),
+			));
+		}
 		if timeout.is_zero() {
 			return Err(Error::Invalid(
 				"decision HTTP timeout must be positive".into(),
@@ -49,6 +58,7 @@ impl JevDecisionProvider {
 			.map_err(|_| Error::Invalid("could not construct decision HTTP client".into()))?;
 		Ok(Self {
 			config,
+			implementation,
 			client,
 			credentials,
 			capacity,
@@ -89,6 +99,9 @@ impl JevDecisionProvider {
 	}
 }
 impl DecisionProvider for JevDecisionProvider {
+	fn implementation_id(&self) -> &str {
+		&self.implementation
+	}
 	fn configuration_digest(&self) -> Result<String> {
 		Ok(self.config.digest()?)
 	}

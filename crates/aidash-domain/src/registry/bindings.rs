@@ -593,6 +593,13 @@ impl BindingSnapshot {
 				identity: binding.identity.clone(),
 				definition_digest: binding.digest.clone(),
 				configuration_digest: config.digest()?,
+				provider_implementation: binding.provider_implementation.clone().ok_or_else(
+					|| {
+						Error::Invalid(
+							"Decider snapshot lacks a Node Provider implementation".into(),
+						)
+					},
+				)?,
 			};
 			pin.check(&binding.definition)?;
 			let bound = crate::decision::BoundDecider {

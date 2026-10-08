@@ -147,6 +147,8 @@ pub struct DeciderPin {
 	pub identity: QualifiedRef,
 	pub definition_digest: String,
 	pub configuration_digest: String,
+	/// Exact opaque Node adapter identity retained from Binding admission.
+	pub provider_implementation: String,
 }
 #[derive(Debug, Clone, PartialEq)]
 pub struct BoundDecider {
@@ -157,6 +159,11 @@ pub struct BoundDecider {
 impl DeciderPin {
 	pub fn validate(&self) -> Result<()> {
 		self.identity.validate()?;
+		if self.provider_implementation.trim().is_empty() {
+			return Err(Error::Invalid(
+				"Decider pin lacks a Node Provider implementation".into(),
+			));
+		}
 		validate_digest(&self.definition_digest)?;
 		validate_digest(&self.configuration_digest)
 	}

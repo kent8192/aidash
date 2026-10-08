@@ -159,6 +159,7 @@ fn explicit_allowances_do_not_reset_after_policy_widening_or_recovery() {
 		identity: QualifiedRef::builtin("aidash://node", "decision"),
 		definition_digest: format!("sha256:{}", "a".repeat(64)),
 		configuration_digest: format!("sha256:{}", "b".repeat(64)),
+		provider_implementation: "node-decision-adapter:23".into(),
 	};
 	let pinned = policy::ExecutionAllowance {
 		decider: pin.clone(),
@@ -172,8 +173,16 @@ fn explicit_allowances_do_not_reset_after_policy_widening_or_recovery() {
 	assert_eq!(pinned.remaining(&current, 4).unwrap(), 0);
 	current.max_calls_per_run = 1;
 	assert_eq!(pinned.remaining(&current, 2).unwrap(), 0);
+	current.decider.provider_implementation = "node-decision-adapter:24".into();
+	assert!(pinned.remaining(&current, 0).is_err());
+	current.decider = pinned.decider.clone();
 	current.decider.configuration_digest = format!("sha256:{}", "c".repeat(64));
 	assert!(pinned.remaining(&current, 0).is_err());
+	for implementation in ["", " \t "] {
+		let mut corrupt = pinned.decider.clone();
+		corrupt.provider_implementation = implementation.into();
+		assert!(corrupt.validate().is_err());
+	}
 }
 #[test]
 fn answer_coverage_rejects_missing_extra_or_undescribed_questions() {

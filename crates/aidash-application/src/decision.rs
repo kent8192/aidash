@@ -65,6 +65,7 @@ impl DecisionGate<'_> {
 		}
 		let config = input.decider.check(input.definition)?;
 		if input.decider.identity.registry_node != input.boundary.node
+			|| self.provider.implementation_id() != input.decider.provider_implementation
 			|| self.provider.configuration_digest()? != input.decider.configuration_digest
 		{
 			return Err(Error::Invalid(
@@ -255,22 +256,27 @@ impl DecisionGate<'_> {
 			));
 		}
 		// Current stricter rules may retain more events, but never change the pin or mode.
-		let current = match self
+		// Invalid final approvals must retain the same fenced evidence as revocation.
+		let final_approval = self
 			.authority
 			.check(input.boundary, input.decider, &input.disclosure.sources)
 			.await
-		{
-			Ok(current) => current,
+			.and_then(|current| {
+				let restrictions = restrictions.intersect(&current.restrictions, &config)?;
+				let expiry = current
+					.state_retention
+					.expires_at(input.now, input.disclosure.source_expiry)?;
+				Ok((restrictions, expiry))
+			});
+		let (current_restrictions, current_expiry) = match final_approval {
+			Ok(approval) => approval,
 			Err(error) => {
 				evidence.reason = Reason::Forbidden;
 				self.journal.commit(&evidence, None, None).await?;
 				return Err(error);
 			}
 		};
-		restrictions = restrictions.intersect(&current.restrictions, &config)?;
-		let current_expiry = current
-			.state_retention
-			.expires_at(input.now, input.disclosure.source_expiry)?;
+		restrictions = current_restrictions;
 		state_expiry = match (state_expiry, current_expiry) {
 			(Some(old), Some(new)) => Some(old.min(new)),
 			_ => None,

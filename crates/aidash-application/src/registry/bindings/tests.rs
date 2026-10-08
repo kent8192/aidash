@@ -1124,10 +1124,14 @@ async fn explicit_decider_snapshot_pins_provider_builder_model_and_narrowing() {
 			.provider_implementation = implementation.map(str::to_owned);
 		assert!(corrupt.validate().is_err());
 	}
-	let bound = saved
+	let bound = recovered
 		.decider(aidash_domain::decision::Hook::Compaction)
 		.unwrap();
 	assert_eq!(bound.pin.identity, reference("decider"));
+	assert_eq!(
+		serde_json::to_value(&bound.pin).unwrap()["provider_implementation"],
+		implementation
+	);
 	assert_eq!(bound.config.model, "jev-1.13.0");
 	assert_eq!(bound.restrictions.preserve_recent, 8);
 	assert_eq!(bound.restrictions.keep_threshold.value(), 0.25);
