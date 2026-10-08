@@ -485,6 +485,88 @@ async fn cached_skill_context_rechecks_descriptor_authority_before_model_retry(
 		content,
 		"the retry retains its original observation"
 	);
+	for path in [
+		"/api/state".to_owned(),
+		format!("/api/runs/{}", admitted.id),
+	] {
+		let (status, public) = request(&c.app, &c.token, "GET", &path, Value::Null).await;
+		assert_eq!(status, 200, "{public}");
+		let inspected = if path == "/api/state" {
+			public["runs"]
+				.as_array()
+				.unwrap()
+				.iter()
+				.find(|run| run["id"] == json!(admitted.id))
+				.unwrap()
+		} else {
+			&public["run"]
+		};
+		assert!(inspected["context"].is_object());
+		assert!(
+			inspected["context"].get("source_observation").is_none(),
+			"cached Source text must not be a public inspection field"
+		);
+	}
 	server.abort();
+	c.close().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn direct_host_http_rejects_a_withdrawn_bound_tool_before_creating_an_operation(
+	#[future] capability_fixture: CoreFixture,
+) {
+	let c = capability_fixture.await;
+	let run = admit(&c).await;
+	let identity = &run
+		.context
+		.binding_snapshot
+		.as_ref()
+		.unwrap()
+		.operation("outbound_get")
+		.unwrap()
+		.identity;
+	let mut policy = c.policy.clone();
+	policy["policies"].as_array_mut().unwrap().push(json!({
+		"id":"withdraw-bound-tool-read",
+		"effect":"deny",
+		"subjects":{"any":true},
+		"actions":["registry.read"],
+		"resources":{"kinds":["tool"],"ids":[identity.resource_id()]}
+	}));
+	let (status, result) = request(
+		&c.app,
+		&c.f.config.api_token,
+		"POST",
+		"/api/authorization/acme",
+		json!({"expected_revision":2,"bundle":policy}),
+	)
+	.await;
+	assert_eq!(status, 200, "{result}");
+	let (status, body) = request(
+		&c.app,
+		&c.token,
+		"POST",
+		&format!("/api/runs/{}/outbound", run.id),
+		json!({"idempotency_key":Uuid::new_v4(),"url":"https://example.com/data"}),
+	)
+	.await;
+	assert_eq!(status, 403, "{body}");
+	let count: i64 = sqlx::query_scalar(
+		&Query::select()
+			.expr(reinhardt::query::Func::count(
+				Expr::col(Alias::new("id")).into(),
+			))
+			.from(Alias::new("core_operations"))
+			.and_where(Expr::col(Alias::new("run_id")).eq(Expr::value(run.id)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(c.f.store.pool.driver())
+	.await
+	.unwrap();
+	assert_eq!(
+		count, 0,
+		"withdrawn binding must not create a Host operation"
+	);
 	c.close().await;
 }

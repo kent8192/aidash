@@ -10,9 +10,15 @@ struct Scope {
 	events: Vec<(String, Value)>,
 	snapshot: Option<aidash_domain::registry::bindings::BindingSnapshot>,
 	area: Option<Area>,
+	deny_entry: Option<String>,
+	deny_pinned: Option<String>,
+	changed: Option<String>,
 }
 #[async_trait::async_trait]
 impl FileScopePort for Scope {
+	fn local_node(&self) -> &str {
+		"aidash://local"
+	}
 	fn binding_snapshot(&self) -> Result<&aidash_domain::registry::bindings::BindingSnapshot> {
 		self.snapshot.as_ref().ok_or(Error::Forbidden)
 	}
@@ -37,19 +43,30 @@ impl FileScopePort for Scope {
 			attributes: _attributes,
 		}
 	}
-	async fn entry(&mut self, _reference: &EntityRef, _action: &str) -> Result<Entry> {
-		let snapshot = self.binding_snapshot()?;
-		assert_eq!(_reference, &snapshot.agent.local());
-		Ok(snapshot
+	async fn entry(&mut self, reference: &EntityRef, _: &str) -> Result<Entry> {
+		if self.deny_entry.as_deref() == Some(reference.id.as_str()) {
+			return Err(Error::Forbidden);
+		}
+		let mut current = self
+			.binding_snapshot()?
 			.definitions
 			.iter()
-			.find(|d| d.identity == snapshot.agent)
+			.find(|saved| {
+				saved.identity.registry_node == self.local_node()
+					&& saved.identity.local() == *reference
+			})
 			.unwrap()
 			.definition
-			.clone())
+			.clone();
+		if self.changed.as_deref() == Some(reference.id.as_str()) {
+			current.tags.push("changed".into());
+		}
+		Ok(current)
 	}
-	async fn check_pinned(&mut self, _entry: &Entry) -> Result<()> {
-		assert!(self.snapshot.is_some());
+	async fn check_pinned(&mut self, entry: &Entry) -> Result<()> {
+		if self.deny_pinned.as_deref() == Some(entry.id.as_str()) {
+			return Err(Error::Forbidden);
+		}
 		Ok(())
 	}
 	async fn effective(&mut self, _reference: &EntityRef) -> Result<Entry> {
@@ -180,6 +197,9 @@ fn fixture(bytes: &[u8]) -> (Scope, Area, FileEntry) {
 			events: vec![],
 			snapshot: None,
 			area: None,
+			deny_entry: None,
+			deny_pinned: None,
+			changed: None,
 		},
 		area,
 		file,
@@ -429,4 +449,42 @@ async fn direct_file_read_applies_the_admitted_limit_when_input_omits_it() {
 	assert_eq!(result.result["content"], "abc");
 	assert_eq!(result.result["next_offset"], 3);
 	assert_eq!(scope.opens, 1);
+}
+
+#[rstest::rstest]
+#[case("shell", "catalog")]
+#[case("shell", "installation")]
+#[case("shell", "digest")]
+#[case("outbound_get", "catalog")]
+#[case("outbound_get", "installation")]
+#[case("outbound_get", "digest")]
+#[tokio::test]
+async fn direct_invocations_recheck_the_bound_definition_before_any_effect(
+	#[case] operation: &str,
+	#[case] withdrawal: &str,
+) {
+	let (mut scope, run, _) = invoke_fixture(operation, json!({}));
+	let id = scope
+		.binding_snapshot()
+		.unwrap()
+		.operation(operation)
+		.unwrap()
+		.identity
+		.id
+		.clone();
+	match withdrawal {
+		"catalog" => scope.deny_entry = Some(id),
+		"installation" => scope.deny_pinned = Some(id),
+		"digest" => scope.changed = Some(id),
+		_ => unreachable!(),
+	}
+	scope.area = None;
+	let result = invoke(&mut scope, &run, operation, json!({}), "request").await;
+	if withdrawal == "digest" {
+		assert!(matches!(result, Err(Error::Conflict(_))));
+	} else {
+		assert!(matches!(result, Err(Error::Forbidden)));
+	}
+	assert_eq!(scope.opens, 0);
+	assert!(scope.events.is_empty());
 }

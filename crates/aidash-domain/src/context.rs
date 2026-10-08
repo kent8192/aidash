@@ -37,6 +37,47 @@ pub struct Context {
 	pub message_inference_coverage: BTreeMap<uuid::Uuid, MessageReadCoverage>,
 }
 
+/// Public inspection omits the durable, authority-bound Source cache.
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+pub struct InspectionContext<'a> {
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub binding_snapshot: Option<&'a crate::registry::bindings::BindingSnapshot>,
+	pub summary: &'a str,
+	pub run_message_summary: &'a str,
+	pub run_message_summary_seq: i64,
+	pub media_inferred_seq: i64,
+	pub history: &'a [ContextEvent],
+	pub usage: Option<&'a ContextUsage>,
+	pub compactions: u32,
+	pub message_read_coverage: &'a BTreeMap<uuid::Uuid, MessageReadCoverage>,
+	pub message_inference_coverage: &'a BTreeMap<uuid::Uuid, MessageReadCoverage>,
+}
+impl Context {
+	pub fn inspection(&self) -> InspectionContext<'_> {
+		InspectionContext {
+			binding_snapshot: self.binding_snapshot.as_deref(),
+			summary: &self.summary,
+			run_message_summary: &self.run_message_summary,
+			run_message_summary_seq: self.run_message_summary_seq,
+			media_inferred_seq: self.media_inferred_seq,
+			history: &self.history,
+			usage: self.usage.as_ref(),
+			compactions: self.compactions,
+			message_read_coverage: &self.message_read_coverage,
+			message_inference_coverage: &self.message_inference_coverage,
+		}
+	}
+}
+pub fn serialize_inspection_context<S: serde::Serializer>(
+	context: &Option<Context>,
+	serializer: S,
+) -> std::result::Result<S::Ok, S::Error> {
+	context
+		.as_ref()
+		.map(Context::inspection)
+		.serialize(serializer)
+}
+
 use crate::{Error, Result};
 use serde_json::{Value, json};
 
