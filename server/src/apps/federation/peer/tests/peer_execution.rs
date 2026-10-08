@@ -19,8 +19,7 @@ use aidash_server::{
 use endpoint::EndpointFixture;
 use execution_fixtures::{ExecutionFixture, execution};
 use reinhardt::db::orm::Model;
-use reinhardt::test::fixtures::api_client_from_url;
-use reinhardt::test::{APIClient, TestResponse};
+use reinhardt::test::TestResponse;
 use serde_json::{Value, json};
 
 const PEER_ENV: &str = "AIDASH_SECRET_PEER_EXECUTION_FIXTURE";
@@ -38,23 +37,21 @@ fn decoded(response: TestResponse) -> (u16, Value) {
 async fn operator(app: &EndpointFixture, path: &str, input: Value) -> (u16, Value) {
 	decoded(app.operator.post(path, &input, "json").await.unwrap())
 }
-async fn peer_client(app: &EndpointFixture, token: &str) -> APIClient {
-	let client = api_client_from_url(&app.server.url);
-	client
-		.set_header("Authorization", &format!("Bearer {token}"))
-		.await
-		.unwrap();
-	client
-		.set_header("x-aidash-node", "aidash://source")
-		.await
-		.unwrap();
-	client.set_header("x-aidash-protocol", "0.1").await.unwrap();
-	client
-}
-async fn inspect(client: &APIClient, input: Value) -> (u16, Value) {
+
+async fn inspect(app: &EndpointFixture, token: &str, input: Value) -> (u16, Value) {
+	let authorization = format!("Bearer {token}");
 	decoded(
-		client
-			.post("/federation/v0.1/scoped/execution/inspect", &input, "json")
+		app.anonymous
+			.post_raw_with_headers(
+				"/federation/v0.1/scoped/execution/inspect",
+				input.to_string().as_bytes(),
+				"application/json",
+				&[
+					("Authorization", authorization.as_str()),
+					("x-aidash-node", "aidash://source"),
+					("x-aidash-protocol", "0.1"),
+				],
+			)
 			.await
 			.unwrap(),
 	)
@@ -83,9 +80,8 @@ async fn receiver_preflight_intersects_executor_and_mapping_without_admitting_a_
 		.create_with_conn(&mut app.database.lease.handle(), &record)
 		.await
 		.unwrap();
-	let peer = peer_client(app, PEER_SECRET).await;
 	let input = json!({"tenant":"remote","subject":"bob","agent":{"id":"research","version":"1.0.0"},"requirements":{}});
-	assert_eq!(inspect(&peer, input.clone()).await.0, 403);
+	assert_eq!(inspect(app, PEER_SECRET, input.clone()).await.0, 403);
 	let (_, issued) = operator(
 		app,
 		"/api/authorization/acme/credentials",
@@ -98,10 +94,9 @@ async fn receiver_preflight_intersects_executor_and_mapping_without_admitting_a_
 		issued["token"].as_str().unwrap(),
 		f.config.api_token.as_str(),
 	] {
-		let client = peer_client(app, rejected).await;
-		assert_eq!(inspect(&client, input.clone()).await.0, 401);
+		assert_eq!(inspect(app, rejected, input.clone()).await.0, 401);
 	}
-	let (status, result) = inspect(&peer, input.clone()).await;
+	let (status, result) = inspect(app, PEER_SECRET, input.clone()).await;
 	assert_eq!(status, 200, "{result}");
 	assert_eq!(result["node_id"], f.config.node_id);
 	assert_eq!(result["agent"]["id"], "research");
@@ -121,7 +116,7 @@ async fn receiver_preflight_intersects_executor_and_mapping_without_admitting_a_
 	}
 	let mut mismatch = input.clone();
 	mismatch["requirements"] = json!({"capability":"missing-capability"});
-	assert_eq!(inspect(&peer, mismatch).await.0, 400);
+	assert_eq!(inspect(app, PEER_SECRET, mismatch).await.0, 400);
 	let executor = qualified_agent(&f.config.node_id, "research", "1.0.0");
 	// Every denied action is tested for both the mapped root and the receiver's
 	// executor. An allow on one must never override the other's explicit deny.
@@ -149,7 +144,7 @@ async fn receiver_preflight_intersects_executor_and_mapping_without_admitting_a_
 			);
 			revision += 1;
 			assert_eq!(
-				inspect(&peer, input.clone()).await.0,
+				inspect(app, PEER_SECRET, input.clone()).await.0,
 				403,
 				"{subject} {action} {kind}"
 			);
@@ -176,7 +171,7 @@ async fn receiver_preflight_intersects_executor_and_mapping_without_admitting_a_
 			.0,
 			200
 		);
-		assert_eq!(inspect(&peer, input.clone()).await.0, 403);
+		assert_eq!(inspect(app, PEER_SECRET, input.clone()).await.0, 403);
 		assert_eq!(
 			operator(
 				app,
@@ -188,7 +183,7 @@ async fn receiver_preflight_intersects_executor_and_mapping_without_admitting_a_
 			200
 		);
 	}
-	assert_eq!(inspect(&peer, input.clone()).await.0, 200);
+	assert_eq!(inspect(app, PEER_SECRET, input.clone()).await.0, 200);
 	assert_eq!(
 		operator(
 			app,
@@ -202,7 +197,7 @@ async fn receiver_preflight_intersects_executor_and_mapping_without_admitting_a_
 		.0,
 		200
 	);
-	assert_eq!(inspect(&peer, input).await.0, 403);
+	assert_eq!(inspect(app, PEER_SECRET, input).await.0, 403);
 	assert!(
 		Run::objects()
 			.all()

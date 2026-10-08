@@ -1,13 +1,12 @@
+use common::upstream_fixtures;
+use futures_util::{FutureExt, future::BoxFuture};
+use reinhardt::ServerRouter as Router;
 use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
 use std::sync::{
 	Arc,
 	atomic::{AtomicUsize, Ordering},
 };
 use tokio::sync::Notify;
-#[path = "../../tests/support/upstream.rs"]
-mod upstream_fixtures;
-use futures_util::{FutureExt, future::BoxFuture};
-use reinhardt::ServerRouter as Router;
 
 use upstream_fixtures::{async_upstream, handler};
 #[path = "../../tests/support/legacy.rs"]

@@ -6,9 +6,10 @@ use aidash_server::{
 	federation::{Federation, Home},
 	harness::Harness,
 };
-use axum::{Json, Router, routing::post};
-use common::{TestEnvironment, bootstrap, cleanup, request, setup, test_environment};
+use common::upstream_fixtures;
+use common::{bootstrap, cleanup, request};
 use http::StatusCode;
+use reinhardt::ServerRouter as Router;
 use reinhardt::http::{Handler, Middleware, ViewResult};
 use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
 use reinhardt::{Request, Response};
@@ -17,6 +18,7 @@ use std::sync::{
 	Arc,
 	atomic::{AtomicBool, Ordering},
 };
+use upstream_fixtures::handler;
 use uuid::Uuid;
 
 fn uuid_expr(id: Uuid) -> reinhardt::query::SimpleExpr {
@@ -69,11 +71,9 @@ impl Middleware for PromotionOutage {
 #[rstest::rstest]
 #[tokio::test]
 async fn failed_admission_with_unavailable_release_expires_at_home(
-	#[future(awt)]
-	#[from(test_environment)]
-	test_environment: Arc<TestEnvironment>,
+	#[future(awt)] remote_fixture: RemoteFixture,
 ) {
-	let fixture = RemoteFixture::new(&test_environment).await;
+	let fixture = remote_fixture;
 	let run = &fixture.run;
 	let key = format!("human:{}:{}", run.id, Uuid::new_v4());
 	fixture.outage.store(true, Ordering::SeqCst);
@@ -156,105 +156,120 @@ struct RemoteFixture {
 	run: Run,
 	outage: Arc<AtomicBool>,
 	server: common::TestApplication,
+	_peer_owners: Vec<common::PeerFixture>,
 }
 
-impl RemoteFixture {
-	async fn new(environment: &TestEnvironment) -> Self {
-		let (mut home, home_url, home_schema) = setup(environment).await;
-		let (mut executor, executor_url, executor_schema) = setup(environment).await;
-		executor.config.node_id = "aidash://fence-executor".into();
-		executor.store.node_id = executor.config.node_id.clone();
-		let outage = Arc::new(AtomicBool::new(false));
-		let home_app = common::application_with(home.clone(), |router| {
-			router.with_middleware(PromotionOutage(outage.clone()))
-		})
-		.await;
-		home.config.endpoint = home_app.server.url.clone();
-		home_app.context.set_singleton(home.clone());
-		let executor_app = common::application(executor.clone()).await;
-		bootstrap(&home, &home_app, "http://127.0.0.1:9").await;
-		bootstrap(&executor, &executor_app, "http://127.0.0.1:9").await;
-		add_peer(&home, &executor.config.node_id, "http://127.0.0.1:9").await;
-		add_peer(&executor, &home.config.node_id, &home.config.endpoint).await;
-		let server = home_app;
-		let workspace = home
-			.store
-			.create_workspace("Remote fences", "Run-message recovery")
-			.await
-			.unwrap();
-		let task = home
-			.store
-			.create_task(
-				workspace.id,
-				&NewTask {
-					title: "Remote correction".into(),
-					description: "Reply".into(),
-					requirements: json!({}),
-					dependencies: vec![],
-					parent_id: None,
-				},
-				"human",
-				None,
-			)
-			.await
-			.unwrap();
-		let agent = home.registry.get("research", "1.0.0").await.unwrap();
-		let owner = qualified_agent(&executor.config.node_id, &agent.id, &agent.version);
-		sqlx::query(
-			&Query::insert()
-				.into_table(Alias::new("delegations"))
-				.columns([
-					Alias::new("task_id"),
-					Alias::new("node_id"),
-					Alias::new("agent_id"),
-					Alias::new("agent_version"),
-				])
-				.from_subquery(
-					reinhardt::query::Query::select()
-						.expr(uuid_expr(task.id))
-						.expr(Expr::value(executor.config.node_id.clone()))
-						.expr(Expr::value(agent.id.clone()))
-						.expr(Expr::value(agent.version.clone()))
-						.to_owned(),
-				)
-				.to_string(PostgresQueryBuilder),
-		)
-		.execute(home.store.pool.driver())
+#[rstest::fixture]
+fn promotion_outage() -> Arc<AtomicBool> {
+	Arc::new(AtomicBool::new(false))
+}
+#[rstest::fixture]
+fn promotion_transform(promotion_outage: Arc<AtomicBool>) -> common::RouterTransform {
+	Arc::new(move |router| router.with_middleware(PromotionOutage(promotion_outage.clone())))
+}
+#[rstest::fixture]
+async fn remote_fixture(
+	#[from(promotion_outage)] outage: Arc<AtomicBool>,
+	#[from(promotion_transform)]
+	#[with(outage.clone())]
+	_transform: common::RouterTransform,
+	#[future(awt)]
+	#[from(common::native_peer)]
+	#[with("aidash://execution-test",_transform.clone())]
+	home_fixture: common::PeerFixture,
+	#[future(awt)]
+	#[from(common::native_peer)]
+	#[with("aidash://fence-executor")]
+	executor_fixture: common::PeerFixture,
+) -> RemoteFixture {
+	let (home, home_url, home_schema) = home_fixture.runtime.parts();
+	let (executor, executor_url, executor_schema) = executor_fixture.runtime.parts();
+	let home_app = home_fixture.application.clone();
+	let executor_app = executor_fixture.application.clone();
+	bootstrap(&home, &home_app, "http://127.0.0.1:9").await;
+	bootstrap(&executor, &executor_app, "http://127.0.0.1:9").await;
+	add_peer(&home, &executor.config.node_id, "http://127.0.0.1:9").await;
+	add_peer(&executor, &home.config.node_id, &home.config.endpoint).await;
+	let server = home_app;
+	let workspace = home
+		.store
+		.create_workspace("Remote fences", "Run-message recovery")
 		.await
 		.unwrap();
-		let task = home
-			.store
-			.claim(task.id, task.revision, &owner, &agent)
-			.await
-			.unwrap();
-		let task = home
-			.store
-			.transition(
-				task.id,
-				task.revision,
-				&owner,
-				aidash_server::domain::TaskStatus::Running,
+	let task = home
+		.store
+		.create_task(
+			workspace.id,
+			&NewTask {
+				title: "Remote correction".into(),
+				description: "Reply".into(),
+				requirements: json!({}),
+				dependencies: vec![],
+				parent_id: None,
+			},
+			"human",
+			None,
+		)
+		.await
+		.unwrap();
+	let agent = home.registry.get("research", "1.0.0").await.unwrap();
+	let owner = qualified_agent(&executor.config.node_id, &agent.id, &agent.version);
+	sqlx::query(
+		&Query::insert()
+			.into_table(Alias::new("delegations"))
+			.columns([
+				Alias::new("task_id"),
+				Alias::new("node_id"),
+				Alias::new("agent_id"),
+				Alias::new("agent_version"),
+			])
+			.from_subquery(
+				reinhardt::query::Query::select()
+					.expr(uuid_expr(task.id))
+					.expr(Expr::value(executor.config.node_id.clone()))
+					.expr(Expr::value(agent.id.clone()))
+					.expr(Expr::value(agent.version.clone()))
+					.to_owned(),
 			)
-			.await
-			.unwrap();
-		let run = executor
-			.store
-			.accept_run(&task, &home.config.node_id, &agent.id, &agent.version)
-			.await
-			.unwrap();
-		Self {
-			home,
-			executor,
-			home_url,
-			home_schema,
-			executor_url,
-			executor_schema,
-			run,
-			outage,
-			server,
-		}
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(home.store.pool.driver())
+	.await
+	.unwrap();
+	let task = home
+		.store
+		.claim(task.id, task.revision, &owner, &agent)
+		.await
+		.unwrap();
+	let task = home
+		.store
+		.transition(
+			task.id,
+			task.revision,
+			&owner,
+			aidash_server::domain::TaskStatus::Running,
+		)
+		.await
+		.unwrap();
+	let run = executor
+		.store
+		.accept_run(&task, &home.config.node_id, &agent.id, &agent.version)
+		.await
+		.unwrap();
+	RemoteFixture {
+		home,
+		executor,
+		home_url,
+		home_schema,
+		executor_url,
+		executor_schema,
+		run,
+		outage,
+		server,
+		_peer_owners: vec![home_fixture, executor_fixture],
 	}
-
+}
+impl RemoteFixture {
 	async fn cleanup(self) {
 		drop(self.server);
 		cleanup(self.home, &self.home_url, &self.home_schema).await;
@@ -265,11 +280,9 @@ impl RemoteFixture {
 #[rstest::rstest]
 #[tokio::test]
 async fn admitted_input_recovers_promotion_after_expiry_and_terminal_home(
-	#[future(awt)]
-	#[from(test_environment)]
-	test_environment: Arc<TestEnvironment>,
+	#[future(awt)] remote_fixture: RemoteFixture,
 ) {
-	let fixture = RemoteFixture::new(&test_environment).await;
+	let fixture = remote_fixture;
 	let run = &fixture.run;
 	let key = format!("human:{}:{}", run.id, Uuid::new_v4());
 	fixture.outage.store(true, Ordering::SeqCst);
@@ -428,59 +441,22 @@ async fn admitted_input_recovers_promotion_after_expiry_and_terminal_home(
 #[rstest::rstest]
 #[tokio::test]
 async fn scoped_remote_admission_imports_history_before_assigning_new_sequence(
+	history: HistoryFuture,
+	#[from(history_router)]
+	#[with(history.clone())]
+	_router: upstream_fixtures::RouterFuture,
 	#[future(awt)]
-	#[from(test_environment)]
-	test_environment: Arc<TestEnvironment>,
+	#[from(upstream_fixtures::async_upstream)]
+	#[with(_router.clone())]
+	server: Arc<reinhardt::test::fixtures::server::TestServerGuard>,
 ) {
-	let (f, url, schema) = setup(&test_environment).await;
-	let app = common::application(f.clone()).await;
-	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
-	let (status, created) = request(&app, &token, "POST", "/api/conversations", json!({
-		"title":"Scoped history", "goal":"Reply", "target":{"id":"research","version":"1.0.0"}, "target_kind":"agent"
-	})).await;
-	assert_eq!(status, 200, "{created}");
-	let run = f.store.runs().await.unwrap().remove(0);
-	let old_message = Message {
-		id: Uuid::new_v4(),
-		workspace_id: run.workspace_id,
-		sender: format!("human@{}", f.config.node_id),
-		content: "older correction".into(),
-		idempotency_key: Some(format!(
-			"{}:{}:human:{}:{}",
-			f.config.node_id,
-			run.task_id,
-			run.id,
-			Uuid::new_v4()
-		)),
-		created_at: chrono::Utc::now() - chrono::Duration::minutes(1),
-	};
-	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-	let endpoint = format!("http://{}", listener.local_addr().unwrap());
-	let remote = Router::new().route(
-		"/federation/v0.1/workspace",
-		post(move |Json(command): Json<Value>| {
-			let old_message = old_message.clone();
-			async move {
-				match command["operation"].as_str().unwrap() {
-					"run_message_delivery_capability" => {
-						(StatusCode::OK, Json(json!({"protocol":2})))
-					}
-					"run_message_history" => (StatusCode::OK, Json(json!([old_message]))),
-					"run_message_reserve" => (StatusCode::OK, Json(json!({"reserved":true}))),
-					"run_message_commit" => (StatusCode::OK, Json(json!({"committed":true}))),
-					"run_message_delivery" => (
-						StatusCode::SERVICE_UNAVAILABLE,
-						Json(json!({"error":"delivery pending"})),
-					),
-					_ => (
-						StatusCode::BAD_REQUEST,
-						Json(json!({"error":"unknown federation operation"})),
-					),
-				}
-			}
-		}),
-	);
-	let server = tokio::spawn(async move { axum::serve(listener, remote).await.unwrap() });
+	let state = history.await;
+	let (f, url, schema) = state.fixture.runtime.parts();
+	let app = state.fixture.application.clone();
+	let token = state.token;
+	let run = state.run;
+	let endpoint = server.url.clone();
+
 	add_peer(&f, "aidash://scoped-history-home", &endpoint).await;
 	sqlx::query(
 		&Query::update()
@@ -513,18 +489,16 @@ async fn scoped_remote_admission_imports_history_before_assigning_new_sequence(
 	assert_eq!(inputs[0].content, "older correction");
 	assert_eq!(inputs[1].content, "newer correction");
 	assert!(inputs[0].seq < inputs[1].seq);
-	server.abort();
+	drop(server);
 	cleanup(f, &url, &schema).await;
 }
 
 #[rstest::rstest]
 #[tokio::test]
 async fn durable_remote_admission_fences_both_human_key_formats(
-	#[future(awt)]
-	#[from(test_environment)]
-	test_environment: Arc<TestEnvironment>,
+	#[future(awt)] remote_fixture: RemoteFixture,
 ) {
-	let fixture = RemoteFixture::new(&test_environment).await;
+	let fixture = remote_fixture;
 	let run = &fixture.run;
 	let home = Home::new(fixture.executor.clone(), run.clone());
 	let limit = fixture.executor.run_message_limit(run).await.unwrap();
@@ -619,11 +593,9 @@ async fn durable_remote_admission_fences_both_human_key_formats(
 #[rstest::rstest]
 #[tokio::test]
 async fn terminal_rpc_is_bounded_for_large_historical_ledgers(
-	#[future(awt)]
-	#[from(test_environment)]
-	test_environment: Arc<TestEnvironment>,
+	#[future(awt)] remote_fixture: RemoteFixture,
 ) {
-	let fixture = RemoteFixture::new(&test_environment).await;
+	let fixture = remote_fixture;
 	let run = &fixture.run;
 	// These are already-imported pageable references, which legitimately do not
 	// share the inline-content quota. Seed in one statement to keep the test fast.
@@ -664,11 +636,9 @@ async fn terminal_rpc_is_bounded_for_large_historical_ledgers(
 #[rstest::rstest]
 #[tokio::test]
 async fn bounded_terminal_transition_keeps_unadmitted_reservations_and_rolls_back_consumption(
-	#[future(awt)]
-	#[from(test_environment)]
-	test_environment: Arc<TestEnvironment>,
+	#[future(awt)] remote_fixture: RemoteFixture,
 ) {
-	let fixture = RemoteFixture::new(&test_environment).await;
+	let fixture = remote_fixture;
 	let run = &fixture.run;
 	let key = format!("human:{}:{}", run.id, Uuid::new_v4());
 	fixture
@@ -755,3 +725,89 @@ use reinhardt::query::{ExprTrait as _, QueryStatementBuilder as _};
 use reinhardt::query::IntoValue;
 
 use reinhardt::query::SimpleExpr;
+
+#[derive(Clone)]
+struct HistoryState {
+	fixture: common::ApplicationFixture,
+	token: String,
+	run: Run,
+	old_message: Message,
+}
+type HistoryFuture =
+	futures_util::future::Shared<futures_util::future::BoxFuture<'static, HistoryState>>;
+#[rstest::fixture]
+fn history(
+	#[from(common::native_application)] application: common::ApplicationFuture,
+) -> HistoryFuture {
+	use futures_util::FutureExt;
+	async move {
+let fixture=application.await;
+
+	let (f,_,_)=fixture.runtime.parts();
+let app=fixture.application.clone();
+	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let (status, created) = request(&app, &token, "POST", "/api/conversations", json!({
+		"title":"Scoped history", "goal":"Reply", "target":{"id":"research","version":"1.0.0"}, "target_kind":"agent"
+	})).await;
+	assert_eq!(status, 200, "{created}");
+	let run = f.store.runs().await.unwrap().remove(0);
+	let old_message = Message {
+		id: Uuid::new_v4(),
+		workspace_id: run.workspace_id,
+		sender: format!("human@{}", f.config.node_id),
+		content: "older correction".into(),
+		idempotency_key: Some(format!(
+			"{}:{}:human:{}:{}",
+			f.config.node_id,
+			run.task_id,
+			run.id,
+			Uuid::new_v4()
+		)),
+		created_at: chrono::Utc::now() - chrono::Duration::minutes(1),
+	};
+
+HistoryState {fixture,token,run,old_message}
+}.boxed().shared()
+}
+#[rstest::fixture]
+fn history_router(history: HistoryFuture) -> upstream_fixtures::RouterFuture {
+	use futures_util::FutureExt;
+	async move {
+		let old_message = history.await.old_message;
+		Arc::new(Router::new().handler(
+			"/federation/v0.1/workspace",
+			handler(http::Method::POST, move |request: reinhardt::Request| {
+				let command = request.json::<Value>().unwrap();
+				let old_message = old_message.clone();
+				async move {
+					match command["operation"].as_str().unwrap() {
+						"run_message_delivery_capability" => {
+							reinhardt::Response::new(StatusCode::OK)
+								.with_json(&json!({"protocol":2}))
+								.unwrap()
+						}
+						"run_message_history" => reinhardt::Response::new(StatusCode::OK)
+							.with_json(&json!([old_message]))
+							.unwrap(),
+						"run_message_reserve" => reinhardt::Response::new(StatusCode::OK)
+							.with_json(&json!({"reserved":true}))
+							.unwrap(),
+						"run_message_commit" => reinhardt::Response::new(StatusCode::OK)
+							.with_json(&json!({"committed":true}))
+							.unwrap(),
+						"run_message_delivery" => {
+							reinhardt::Response::new(StatusCode::SERVICE_UNAVAILABLE)
+								.with_json(&json!({"error":"delivery pending"}))
+								.unwrap()
+						}
+						_ => reinhardt::Response::new(StatusCode::BAD_REQUEST)
+							.with_json(&json!({"error":"unknown federation operation"}))
+							.unwrap(),
+					}
+				}
+			}),
+		))
+	}
+	.boxed()
+	.shared()
+}

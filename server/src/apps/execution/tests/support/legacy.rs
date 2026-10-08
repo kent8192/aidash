@@ -28,8 +28,14 @@ pub use application::{
 	application_with, application_with_event_streams, application_with_settings,
 	direct_application, native_application, peer_application,
 };
+#[path = "peer.rs"]
+mod peer;
+#[path = "upstream.rs"]
+pub mod upstream_fixtures;
 #[allow(unused_imports)] // Worker-process fixtures share this settings module.
 pub(crate) use application::{process_settings, settings_for};
+#[allow(unused_imports)] // Only federation suites consume fixed-origin application fixtures.
+pub use peer::{FixedServerGuard as PeerServerGuard, PeerFixture, PeerFuture, native_peer};
 
 #[allow(dead_code)] // Header-sensitive browser and peer tests share this request dispatcher.
 pub async fn http_response(
@@ -418,11 +424,16 @@ impl RuntimeFixture {
 }
 
 #[fixture]
-pub fn execution_database(test_environment: EnvironmentFuture) -> DatabaseFuture {
+pub fn execution_database(
+	test_environment: EnvironmentFuture,
+	#[default("execution")] prefix: &str,
+	#[default(12)] max_connections: u32,
+) -> DatabaseFuture {
+	let prefix = prefix.to_owned();
 	async move {
 		let environment = test_environment.await;
 
-		let database = format!("execution_{}", Uuid::new_v4().simple());
+		let database = format!("{prefix}_{}", Uuid::new_v4().simple());
 		// The preserved baseline names public explicitly. Isolate databases, not
 		// search paths. TestEnvironment owns the container and every database, so
 		// unwinding also removes fixtures that never reach explicit cleanup.
@@ -440,7 +451,7 @@ pub fn execution_database(test_environment: EnvironmentFuture) -> DatabaseFuture
 			.unwrap()
 			.application_name(&database);
 		let pool = PgPoolOptions::new()
-			.max_connections(12)
+			.max_connections(max_connections)
 			.connect_with(options)
 			.await
 			.unwrap();

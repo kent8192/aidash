@@ -1,5 +1,5 @@
 //! Two native HTTP nodes with disposable databases and controllable network links.
-use crate::native_database::{DatabaseFixture, database};
+use crate::native_database::{DatabaseFixture, DatabaseFuture, database};
 use crate::settings::{process_settings, settings_for};
 use aidash_server::{
 	bootstrap,
@@ -8,13 +8,15 @@ use aidash_server::{
 	transactions::{Manifest, Status},
 };
 use chrono::{Duration, Utc};
+use futures_util::{
+	FutureExt,
+	future::{BoxFuture, Shared},
+};
 use reinhardt::db::backends::DatabaseConnection as BackendConnection;
 use reinhardt::db::orm::DatabaseConnectionLease;
 use reinhardt::test::APIClient;
 use reinhardt::test::fixtures::server::{TestServerGuard, test_server_guard};
-use reinhardt::test::fixtures::{
-	api_client_from_url, injection_context, singleton_scope, temp_dir,
-};
+use reinhardt::test::fixtures::{api_client_from_url, injection_context, singleton_scope};
 use rstest::fixture;
 use serde_json::{Value, json};
 use std::{
@@ -41,6 +43,7 @@ pub type Pair = (Node, Node, Manifest, Uuid, Uuid);
 
 /// Scope environment-backed peer credentials to a fresh test process. No test
 /// changes its parent process environment while HTTP/runtime threads are alive.
+#[fixture]
 async fn isolated_process() -> bool {
 	let name = std::thread::current()
 		.name()
@@ -79,22 +82,21 @@ async fn isolated_process() -> bool {
 
 #[fixture]
 pub fn pair(
-	#[future]
-	#[from(database)]
-	first: DatabaseFixture,
-	#[future]
-	#[from(database)]
-	second: DatabaseFixture,
+	#[future] isolated_process: bool,
+	#[from(node)]
+	#[with("a")]
+	first: BoxFuture<'static, Node>,
+	#[from(node)]
+	#[with("b")]
+	second: BoxFuture<'static, Node>,
 ) -> impl Future<Output = Option<Pair>> {
-	// Keep the framework bootstrap futures off the default libtest thread stack.
-	let first = Box::pin(first);
-	let second = Box::pin(second);
+	let isolated_process = Box::pin(isolated_process);
 	Box::pin(async move {
-		if !isolated_process().await {
+		if !isolated_process.await {
 			return None;
 		}
-		let a = Node::new(first.await, "a").await;
-		let b = Node::new(second.await, "b").await;
+		let a = first.await;
+		let b = second.await;
 		for (local, remote) in [(&a, &b), (&b, &a)] {
 			local
 				.f
@@ -153,43 +155,22 @@ pub fn pair(
 
 pub struct Node {
 	// Drop network guards before releasing the database container.
-	server: Option<TestServerGuard>,
+	server: Option<Arc<TestServerGuard>>,
 	link: Link,
-	pub client: APIClient,
+	pub client: Arc<APIClient>,
+	pub peer_client: Arc<APIClient>,
 	pub f: Federation,
 	settings: ProjectSettings,
 	pub database: DatabaseFixture,
 }
 
 impl Node {
-	async fn new(database: DatabaseFixture, suffix: &str) -> Self {
-		let mut link = Link::new().await;
-		let mut settings = settings_for(&database.url);
-		settings.node.node_id = format!("aidash://atomic-{suffix}");
-		settings.node.endpoint = link.url.clone();
-		settings.node.api_token = "atomic-operator-fixture-token".into();
-		settings.node.nats_url = "nats://127.0.0.1:0".into();
-		let (f, server) = Self::serve(&settings, database.connection.clone(), &mut link).await;
-		let client = api_client_from_url(&link.url);
-		client
-			.set_header("Authorization", &format!("Bearer {}", f.config.api_token))
-			.await
-			.unwrap();
-		Self {
-			f,
-			client,
-			database,
-			settings,
-			server: Some(server),
-			link,
-		}
-	}
-
 	async fn serve(
 		settings: &ProjectSettings,
 		connection: BackendConnection,
 		link: &mut Link,
 	) -> (Federation, TestServerGuard) {
+		// Act: rebuild DI and production routes after closing the participant pools.
 		let context = injection_context(singleton_scope());
 		let f = bootstrap::initialize(&context, settings, connection)
 			.await
@@ -222,7 +203,7 @@ impl Node {
 		self.database.connection = connection.clone();
 		let (f, server) = Self::serve(&self.settings, connection, &mut self.link).await;
 		self.f = f;
-		self.server = Some(server);
+		self.server = Some(Arc::new(server));
 	}
 
 	pub async fn get(&self, path: &str) -> (u16, Value) {
@@ -252,18 +233,6 @@ impl Node {
 		assert_eq!(status, 200, "{body}");
 		serde_json::from_value(body["transaction"].clone()).unwrap()
 	}
-
-	pub async fn peer_client(&self, caller: &Node) -> APIClient {
-		let client = api_client_from_url(&self.link.url);
-		for (key, value) in [
-			("authorization", format!("Bearer {PEER_SECRET}")),
-			("x-aidash-node", caller.f.config.node_id.clone()),
-			("x-aidash-protocol", "0.1".into()),
-		] {
-			client.set_header(key, &value).await.unwrap();
-		}
-		client
-	}
 }
 
 /// A stable ephemeral address fronts the framework server. Partitioning closes
@@ -285,8 +254,7 @@ impl Link {
 		}
 	}
 
-	async fn new() -> Self {
-		let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+	fn from_listener(listener: TcpListener) -> Self {
 		let url = format!("http://{}", listener.local_addr().unwrap());
 		let (target, mut changes) = watch::channel::<Option<SocketAddr>>(None);
 		let (applied_tx, applied) = watch::channel(None);
@@ -336,8 +304,7 @@ pub struct WorkerProcess {
 }
 
 impl WorkerProcess {
-	pub async fn start(node: &Node) -> Self {
-		let directory = temp_dir();
+	pub async fn start(node: &Node, directory: TempDir) -> Self {
 		std::fs::write(
 			directory.path().join("base.toml"),
 			process_settings(&node.settings),
@@ -378,4 +345,133 @@ impl WorkerProcess {
 			"worker must be killed, not exit gracefully"
 		);
 	}
+}
+
+type LinkFuture = Shared<BoxFuture<'static, Arc<tokio::sync::Mutex<Option<Link>>>>>;
+#[fixture]
+fn link() -> LinkFuture {
+	// Raw TCP is required to close existing pooled connections during a partition.
+	async {
+		Arc::new(tokio::sync::Mutex::new(Some(Link::from_listener(
+			TcpListener::bind("127.0.0.1:0").await.unwrap(),
+		))))
+	}
+	.boxed()
+	.shared()
+}
+#[derive(Clone)]
+struct ProtocolRuntime {
+	f: Federation,
+	settings: ProjectSettings,
+	database: DatabaseFixture,
+	context: Arc<reinhardt::InjectionContext>,
+}
+type ProtocolRuntimeFuture = Shared<BoxFuture<'static, ProtocolRuntime>>;
+#[fixture]
+fn protocol_runtime(
+	#[default("a")] suffix: &str,
+	database: DatabaseFuture,
+	link: LinkFuture,
+	injection_context: reinhardt::InjectionContext,
+) -> ProtocolRuntimeFuture {
+	let suffix = suffix.to_owned();
+	async move {
+		let database = database.await;
+		let link = link.await;
+		let guard = link.lock().await;
+		let mut settings = settings_for(&database.url);
+		settings.node.node_id = format!("aidash://atomic-{suffix}");
+		settings.node.endpoint = guard.as_ref().unwrap().url.clone();
+		settings.node.api_token = "atomic-operator-fixture-token".into();
+		settings.node.nats_url = "nats://127.0.0.1:0".into();
+		let f = bootstrap::initialize(&injection_context, &settings, database.connection.clone())
+			.await
+			.unwrap();
+		ProtocolRuntime {
+			f,
+			settings,
+			database,
+			context: Arc::new(injection_context),
+		}
+	}
+	.boxed()
+	.shared()
+}
+type ProtocolServerFuture = Shared<BoxFuture<'static, Arc<TestServerGuard>>>;
+#[fixture]
+fn protocol_server(protocol_runtime: ProtocolRuntimeFuture) -> ProtocolServerFuture {
+	async move {
+		let runtime = protocol_runtime.await;
+		Arc::new(
+			test_server_guard(
+				aidash_server::routes()
+					.with_di_context(runtime.context)
+					.into_server(),
+			)
+			.await,
+		)
+	}
+	.boxed()
+	.shared()
+}
+type ProtocolClientFuture = Shared<BoxFuture<'static, Arc<APIClient>>>;
+#[fixture]
+fn protocol_client(
+	protocol_runtime: ProtocolRuntimeFuture,
+	#[default(true)] operator: bool,
+) -> ProtocolClientFuture {
+	async move {
+		let runtime = protocol_runtime.await;
+		let client = api_client_from_url(&runtime.settings.node.endpoint);
+		if operator {
+			client
+				.set_header(
+					"Authorization",
+					&format!("Bearer {}", runtime.f.config.api_token),
+				)
+				.await
+				.unwrap();
+		}
+		Arc::new(client)
+	}
+	.boxed()
+	.shared()
+}
+#[fixture]
+fn node(
+	#[default("a")] _suffix: &str,
+	#[from(database)] _database: DatabaseFuture,
+	link: LinkFuture,
+	#[from(protocol_runtime)]
+	#[with(_suffix,_database.clone(),link.clone())]
+	runtime: ProtocolRuntimeFuture,
+	#[from(protocol_server)]
+	#[with(runtime.clone())]
+	server: ProtocolServerFuture,
+	#[from(protocol_client)]
+	#[with(runtime.clone())]
+	client: ProtocolClientFuture,
+	#[from(protocol_client)]
+	#[with(runtime.clone(),false)]
+	peer_client: ProtocolClientFuture,
+) -> BoxFuture<'static, Node> {
+	async move {
+		let runtime = runtime.await;
+		let server = server.await;
+		let mut link = link.await.lock().await.take().unwrap();
+		link.route(Some(
+			server.url.strip_prefix("http://").unwrap().parse().unwrap(),
+		))
+		.await;
+		Node {
+			server: Some(server),
+			link,
+			client: client.await,
+			peer_client: peer_client.await,
+			f: runtime.f,
+			settings: runtime.settings,
+			database: runtime.database,
+		}
+	}
+	.boxed()
 }

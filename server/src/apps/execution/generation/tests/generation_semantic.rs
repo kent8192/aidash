@@ -1,5 +1,4 @@
-#[path = "../../tests/support/upstream.rs"]
-mod upstream_fixtures;
+use common::upstream_fixtures;
 use futures_util::{
 	FutureExt,
 	future::{BoxFuture, Shared},

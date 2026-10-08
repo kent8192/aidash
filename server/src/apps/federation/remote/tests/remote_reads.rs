@@ -1,53 +1,42 @@
 use http::Method;
-use reinhardt::test::fixtures::http_client;
 #[path = "../../../execution/tests/support/legacy.rs"]
 mod common;
 use aidash_server::{federation::Peer, harness::Harness};
-use axum::{Json, Router, routing::post};
+use common::upstream_fixtures;
 use common::*;
-use common::{TestEnvironment, test_environment};
 use futures_util::StreamExt;
+use reinhardt::ServerRouter as Router;
 use serde_json::{Value, json};
 use std::sync::{
 	Arc,
 	atomic::{AtomicUsize, Ordering},
 };
+use upstream_fixtures::handler;
 
 #[rstest::rstest]
 #[tokio::test]
 async fn worker_remote_discovery_dependencies_survive_restart_and_hide_revoked_journals(
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	source: common::ApplicationFixture,
+	#[future(awt)]
+	#[from(common::native_peer)]
+	#[with("aidash://remote-journal")]
+	destination: common::PeerFixture,
+	#[from(upstream_fixtures::hits)] calls: Arc<AtomicUsize>,
+	#[from(remote_model)]
+	#[with(calls.clone())]
+	_router: Arc<Router>,
+	#[future(awt)]
+	#[from(upstream_fixtures::upstream)]
+	#[with(_router.clone())]
+	model_server: reinhardt::test::fixtures::server::TestServerGuard,
 ) {
-	let (a, a_url, a_schema) = setup(&_test_environment).await;
-	let (mut b, b_url, b_schema) = setup(&_test_environment).await;
-	b.config.node_id = "aidash://remote-journal".into();
-	b.store.node_id = b.config.node_id.clone();
-	b.registry =
-		aidash_server::registry::Registry::new(b.store.pool.clone(), &b.config.node_id).unwrap();
-
-	let calls = Arc::new(AtomicUsize::new(0));
-	let observed = calls.clone();
-	let model = Router::new().route("/v1/chat/completions",post(move |Json(body): Json<Value>| {
-        let calls=observed.clone(); async move {
-            let message=if calls.fetch_add(1,Ordering::SeqCst)==0 {
-                json!({"role":"assistant","content":null,"tool_calls":[{"id":"discover","type":"function","function":{"name":"agent_discover","arguments":"{}"}}]})
-            } else {
-                assert!(body.to_string().contains("remote-private-metadata"));
-                json!({"role":"assistant","content":"remote-derived-result"})
-            };
-            let reason=if message.get("tool_calls").is_some(){"tool_calls"}else{"stop"};
-            Json(json!({"choices":[{"index":0,"finish_reason":reason,"message":message}],"usage":{"prompt_tokens":1,"completion_tokens":1}}))
-        }
-    }));
-	let model_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-	let endpoint = format!("http://{}", model_listener.local_addr().unwrap());
-	let model_server = tokio::spawn(async move {
-		axum::serve(model_listener, model).await.unwrap();
-	});
-	let a_app = common::application(a.clone()).await;
-	let b_app = common::peer_application(&mut b).await;
+	let (a, a_url, a_schema) = source.runtime.parts();
+	let (b, b_url, b_schema) = destination.runtime.parts();
+	let a_app = source.application;
+	let b_app = destination.application;
+	let endpoint = model_server.url.clone();
 	let (a_policy, token, task) = bootstrap(&a, &a_app, &endpoint).await;
 	let (b_policy, _, _) = bootstrap(&b, &b_app, "http://localhost:1").await;
 	let mut entry = b.registry.get("research", "1.0.0").await.unwrap();
@@ -329,7 +318,9 @@ async fn worker_remote_discovery_dependencies_survive_restart_and_hide_revoked_j
 	let (status, journal) = request(&a_app, &token, "GET", &path, Value::Null).await;
 	assert_eq!(status, 200);
 	assert!(journal.to_string().contains("remote-private-metadata"));
-	let stream_response = http_client()
+	let stream_response = a
+		.client
+		.clone()
 		.request(
 			Method::GET,
 			a_app.url(format!(
@@ -425,8 +416,7 @@ async fn worker_remote_discovery_dependencies_survive_restart_and_hide_revoked_j
 	restarted.federation.store.pool.close().await;
 	restarted.federation.store.control_pool.close().await;
 	drop(b_app);
-	model_server.abort();
-	let _ = model_server.await;
+	drop(model_server);
 	cleanup(a, &a_url, &a_schema).await;
 	cleanup(b, &b_url, &b_schema).await;
 }
@@ -436,3 +426,19 @@ use reinhardt::query::QueryStatementBuilder as _;
 use reinhardt::query::SimpleExpr;
 
 use reinhardt::query::Expr;
+
+#[rstest::fixture]
+fn remote_model(#[from(upstream_fixtures::hits)] calls: Arc<AtomicUsize>) -> Arc<Router> {
+	Arc::new(Router::new().handler("/v1/chat/completions",handler(http::Method::POST, move |request: reinhardt::Request| {let body = request.json::<Value>().unwrap();
+        let calls=calls.clone(); async move {
+            let message=if calls.fetch_add(1,Ordering::SeqCst)==0 {
+                json!({"role":"assistant","content":null,"tool_calls":[{"id":"discover","type":"function","function":{"name":"agent_discover","arguments":"{}"}}]})
+            } else {
+                assert!(body.to_string().contains("remote-private-metadata"));
+                json!({"role":"assistant","content":"remote-derived-result"})
+            };
+            let reason=if message.get("tool_calls").is_some(){"tool_calls"}else{"stop"};
+            reinhardt::Response::ok().with_json(&json!({"choices":[{"index":0,"finish_reason":reason,"message":message}],"usage":{"prompt_tokens":1,"completion_tokens":1}})).unwrap()
+        }
+    })))
+}

@@ -1,5 +1,4 @@
-#[path = "support/upstream.rs"]
-mod upstream_fixtures;
+use common::upstream_fixtures;
 use reinhardt::ServerRouter as Router;
 use reinhardt::test::fixtures::server::TestServerGuard;
 use upstream_fixtures::{handler, upstream};

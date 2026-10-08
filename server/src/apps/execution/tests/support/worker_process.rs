@@ -115,8 +115,8 @@ impl WorkerProcess {
 	}
 
 	#[allow(dead_code)] // This shared fixture is compiled by suites with different startup paths.
-	pub fn start(runtime: &Federation, url: &str, schema: &str) -> Self {
-		Self::start_configured(runtime, url, schema, None)
+	pub fn start(runtime: &Federation, url: &str, schema: &str, directory: TempDir) -> Self {
+		Self::start_configured(runtime, url, schema, None, directory)
 	}
 	#[allow(dead_code)] // Native-memory suites additionally require the independent Home ledger.
 	pub fn start_with_memory(
@@ -124,16 +124,17 @@ impl WorkerProcess {
 		url: &str,
 		schema: &str,
 		memory: &std::path::Path,
+		directory: TempDir,
 	) -> Self {
-		Self::start_configured(runtime, url, schema, Some(memory))
+		Self::start_configured(runtime, url, schema, Some(memory), directory)
 	}
 	fn start_configured(
 		runtime: &Federation,
 		url: &str,
 		schema: &str,
 		memory: Option<&std::path::Path>,
+		directory: TempDir,
 	) -> Self {
-		let directory = temp_dir();
 		let mut settings = settings_for(url);
 		settings.node.node_id = runtime.config.node_id.clone();
 		settings.node.endpoint = runtime.config.endpoint.clone();

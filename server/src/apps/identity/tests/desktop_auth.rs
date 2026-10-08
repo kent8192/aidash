@@ -1,5 +1,4 @@
-#[path = "../../execution/tests/support/upstream.rs"]
-mod upstream_fixtures;
+use common::upstream_fixtures;
 use futures_util::{FutureExt, future::BoxFuture};
 use http::StatusCode;
 #[path = "../../execution/tests/support/legacy.rs"]

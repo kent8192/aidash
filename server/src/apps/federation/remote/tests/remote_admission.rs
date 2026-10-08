@@ -1,44 +1,49 @@
-use http::Method;
-use reinhardt::test::fixtures::http_client;
 #[path = "../../../execution/tests/support/legacy.rs"]
 mod common;
 use aidash_server::{domain::qualified_agent, store::Store};
 use common::*;
-use common::{TestEnvironment, test_environment};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
 async fn peer(app: &common::TestApplication, node: &str, path: &str, input: Value) -> (u16, Value) {
-	let token = std::env::var("AIDASH_SECRET_TEST_PEER").unwrap();
-	let response = http_client()
-		.request(Method::POST, app.url(path))
-		.header("authorization", format!("Bearer {token}"))
-		.header("x-aidash-node", node)
-		.header("x-aidash-protocol", "0.1")
-		.header("content-type", "application/json")
-		.body(input.to_string())
-		.send()
+	let authorization = format!(
+		"Bearer {}",
+		std::env::var("AIDASH_SECRET_TEST_PEER").unwrap()
+	);
+	let response = app
+		.client()
+		.post_raw_with_headers(
+			path,
+			input.to_string().as_bytes(),
+			"application/json",
+			&[
+				("authorization", authorization.as_str()),
+				("x-aidash-node", node),
+				("x-aidash-protocol", "0.1"),
+			],
+		)
 		.await
 		.unwrap();
-	let status = response.status().as_u16();
-	let body = response.bytes().await.unwrap();
-	(status, serde_json::from_slice(&body).unwrap_or(Value::Null))
+	(
+		response.status_code(),
+		serde_json::from_slice(response.body()).unwrap_or(Value::Null),
+	)
 }
 #[rstest::rstest]
 #[tokio::test]
 async fn receiver_admission_is_idempotent_scoped_and_revalidated_after_reconnect(
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(common::native_peer)]
+	first: common::PeerFixture,
+	#[future(awt)]
+	#[from(common::native_peer)]
+	#[with("aidash://admission-host")]
+	second: common::PeerFixture,
 ) {
-	let (mut a, au, aschema) = setup(&_test_environment).await;
-	let (mut b, bu, bschema) = setup(&_test_environment).await;
-	b.config.node_id = "aidash://admission-host".into();
-	b.store.node_id = b.config.node_id.clone();
-	b.registry =
-		aidash_server::registry::Registry::new(b.store.pool.clone(), &b.config.node_id).unwrap();
-	let aa = common::peer_application(&mut a).await;
-	let ba = common::peer_application(&mut b).await;
+	let (a, au, aschema) = first.runtime.parts();
+	let (b, bu, bschema) = second.runtime.parts();
+	let aa = first.application;
+	let ba = second.application;
 	let (mut ap, at, task) = bootstrap(&a, &aa, "http://localhost:1").await;
 	let (bp, bt, _) = bootstrap(&b, &ba, "http://localhost:1").await;
 	ap["subjects"][qualified_agent(&b.config.node_id, "research", "1.0.0")] =
@@ -160,6 +165,7 @@ async fn receiver_admission_is_idempotent_scoped_and_revalidated_after_reconnect
 	)
 	.await
 	.unwrap();
+	// Act: rebuild the application after replacing the durable store connection.
 	let fresh_app = common::application(fresh.clone()).await;
 	assert_eq!(
 		peer(

@@ -149,6 +149,12 @@ impl FixedServerGuard {
 	pub fn abort(&self) {
 		self.task.abort();
 	}
+	pub async fn shutdown(&self) {
+		self.task.abort();
+		while !self.task.is_finished() {
+			tokio::task::yield_now().await;
+		}
+	}
 	pub async fn stopped(mut self) -> Result<(), tokio::task::JoinError> {
 		(&mut self.task).await
 	}

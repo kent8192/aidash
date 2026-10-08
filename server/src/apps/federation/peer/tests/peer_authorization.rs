@@ -20,7 +20,6 @@ use chrono::{Duration, Utc};
 use endpoint::EndpointFixture;
 use execution_fixtures::{ExecutionFixture, execution};
 use reinhardt::db::orm::Model;
-use reinhardt::test::fixtures::api_client_from_url;
 use rstest::{fixture, rstest};
 use serde_json::{Value, json};
 use std::future::Future;
@@ -57,14 +56,24 @@ async fn request(
 	path: &str,
 	value: Value,
 ) -> (u16, Value) {
-	let client = api_client_from_url(&app.server.url);
-	client
-		.set_header("Authorization", &format!("Bearer {token}"))
-		.await
-		.unwrap();
+	let authorization = format!("Bearer {token}");
+	let headers = [("Authorization", authorization.as_str())];
 	let response = match method {
-		"GET" => client.get(path).await.unwrap(),
-		"POST" => client.post(path, &value, "json").await.unwrap(),
+		"GET" => app
+			.anonymous
+			.get_with_headers(path, &headers)
+			.await
+			.unwrap(),
+		"POST" => app
+			.anonymous
+			.post_raw_with_headers(
+				path,
+				value.to_string().as_bytes(),
+				"application/json",
+				&headers,
+			)
+			.await
+			.unwrap(),
 		_ => panic!("unsupported fixture request method: {method}"),
 	};
 	(response.status_code(), response.json_value().unwrap())
@@ -77,19 +86,20 @@ async fn discover(
 	tenant: &str,
 	subject: &str,
 ) -> (u16, Value) {
-	let client = api_client_from_url(&app.server.url);
-	for (name, value) in [
-		("Authorization", format!("Bearer {token}")),
-		("x-aidash-node", node.into()),
-		("x-aidash-protocol", "0.1".into()),
-	] {
-		client.set_header(name, &value).await.unwrap();
-	}
-	let response = client
-		.post(
+	let authorization = format!("Bearer {token}");
+	let response = app
+		.anonymous
+		.post_raw_with_headers(
 			"/federation/v0.1/scoped/discover",
-			&json!({"tenant":tenant,"subject":subject,"search":{}}),
-			"json",
+			json!({"tenant":tenant,"subject":subject,"search":{}})
+				.to_string()
+				.as_bytes(),
+			"application/json",
+			&[
+				("Authorization", authorization.as_str()),
+				("x-aidash-node", node),
+				("x-aidash-protocol", "0.1"),
+			],
 		)
 		.await
 		.unwrap();

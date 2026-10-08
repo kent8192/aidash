@@ -579,9 +579,23 @@ async fn peer_trust_denial_aborts_promptly_and_revocation_preserves_admitted_rec
 	// An authenticated peer cannot claim that a different node coordinates its manifest.
 	let mut forged = admitted.clone();
 	forged.coordinator = b.f.config.node_id.clone();
-	let client = b.peer_client(&a).await;
+	let client = &b.peer_client;
+	let peer_headers = [
+		(
+			"authorization",
+			format!("Bearer {}", crate::fixtures::PEER_SECRET),
+		),
+		("x-aidash-node", a.f.config.node_id.clone()),
+		("x-aidash-protocol", "0.1".into()),
+	];
+	let peer_headers: Vec<_> = peer_headers.iter().map(|(k, v)| (*k, v.as_str())).collect();
 	let response = client
-		.post("/federation/v0.1/transactions/reserve", &forged, "json")
+		.post_raw_with_headers(
+			"/federation/v0.1/transactions/reserve",
+			&serde_json::to_vec(&forged).unwrap(),
+			"application/json",
+			&peer_headers,
+		)
 		.await
 		.unwrap();
 	assert_eq!(response.status_code(), 403, "{}", response.text());
@@ -662,6 +676,9 @@ async fn undecided_deadline_aborts_without_publishing_prepared_mutations(
 #[tokio::test]
 async fn actual_worker_sigkill_after_commit_recovers_without_replaying_effects(
 	#[future] pair: Option<Pair>,
+	#[from(reinhardt::test::fixtures::temp_dir)] worker_directory: tempfile::TempDir,
+	#[from(reinhardt::test::fixtures::temp_dir)] restart_a_directory: tempfile::TempDir,
+	#[from(reinhardt::test::fixtures::temp_dir)] restart_b_directory: tempfile::TempDir,
 ) {
 	let Some((a, mut b, manifest, wa, wb)) = Box::pin(pair).await else {
 		return;
@@ -669,7 +686,8 @@ async fn actual_worker_sigkill_after_commit_recovers_without_replaying_effects(
 	a.submit(&manifest).await;
 	steps(&a, manifest.id, 5).await;
 	b.stop().await;
-	let mut worker = WorkerProcess::start(&a).await;
+	// Act: start recovery after submitting the committed transaction and partitioning its peer.
+	let mut worker = WorkerProcess::start(&a, worker_directory).await;
 	tokio::time::timeout(std::time::Duration::from_secs(15), async {
 		loop {
 			worker.assert_running();
@@ -698,8 +716,9 @@ async fn actual_worker_sigkill_after_commit_recovers_without_replaying_effects(
 	);
 	unavailable(&a, wa).await;
 	b.restart().await;
-	let mut restarted_a = WorkerProcess::start(&a).await;
-	let mut restarted_b = WorkerProcess::start(&b).await;
+	// Act: replace killed workers with fresh declared process directories.
+	let mut restarted_a = WorkerProcess::start(&a, restart_a_directory).await;
+	let mut restarted_b = WorkerProcess::start(&b, restart_b_directory).await;
 	tokio::time::timeout(std::time::Duration::from_secs(15), async {
 		loop {
 			restarted_a.assert_running();

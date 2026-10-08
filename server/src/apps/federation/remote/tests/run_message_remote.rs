@@ -1,5 +1,3 @@
-use http::Method;
-use reinhardt::test::fixtures::http_client;
 #[path = "../../../execution/tests/support/legacy.rs"]
 mod common;
 
@@ -8,7 +6,7 @@ use aidash_server::{
 	federation::{Federation, Home},
 	harness::Harness,
 };
-use common::{TestEnvironment, bootstrap, cleanup, request, setup, test_environment};
+use common::{bootstrap, cleanup, request};
 use http::StatusCode;
 use reinhardt::http::{Handler, Middleware, ViewResult};
 use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
@@ -21,22 +19,27 @@ use std::sync::{
 use uuid::Uuid;
 
 async fn peer_control(app: &common::TestApplication, node: &str, body: Value) -> (u16, Value) {
-	let secret = std::env::var("AIDASH_SECRET_TEST_PEER").unwrap();
-	let response = http_client()
-		.request(Method::POST, app.url("/federation/v0.1/control"))
-		.header("authorization", format!("Bearer {secret}"))
-		.header("x-aidash-node", node)
-		.header("x-aidash-protocol", "0.1")
-		.header("content-type", "application/json")
-		.body(body.to_string())
-		.send()
+	let authorization = format!(
+		"Bearer {}",
+		std::env::var("AIDASH_SECRET_TEST_PEER").unwrap()
+	);
+	let response = app
+		.client()
+		.post_raw_with_headers(
+			"/federation/v0.1/control",
+			body.to_string().as_bytes(),
+			"application/json",
+			&[
+				("authorization", authorization.as_str()),
+				("x-aidash-node", node),
+				("x-aidash-protocol", "0.1"),
+			],
+		)
 		.await
 		.unwrap();
-	let status = response.status().as_u16();
-	let bytes = response.bytes().await.unwrap();
 	(
-		status,
-		serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+		response.status_code(),
+		serde_json::from_slice(response.body()).unwrap_or(Value::Null),
 	)
 }
 
@@ -149,11 +152,11 @@ impl Middleware for PeerFaults {
 #[tokio::test]
 async fn committed_fence_survives_delayed_release_and_terminal_transition_is_atomic(
 	#[future(awt)]
-	#[from(test_environment)]
-	test_environment: Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
 ) {
-	let (f, url, schema) = setup(&test_environment).await;
-	let app = common::application(f.clone()).await;
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let (status, created) = request(
 		&app,
@@ -268,11 +271,9 @@ async fn committed_fence_survives_delayed_release_and_terminal_transition_is_ato
 #[rstest::rstest]
 #[tokio::test]
 async fn peer_prefixed_legacy_output_checks_remote_fence_without_a_local_run(
-	#[future(awt)]
-	#[from(test_environment)]
-	test_environment: Arc<TestEnvironment>,
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
 ) {
-	let (f, url, schema) = setup(&test_environment).await;
+	let (f, url, schema) = runtime.await.parts();
 	let workspace = f
 		.store
 		.create_workspace("Remote output fence", "No executor run exists at home")
@@ -330,11 +331,11 @@ async fn peer_prefixed_legacy_output_checks_remote_fence_without_a_local_run(
 #[tokio::test]
 async fn remote_history_references_can_span_multiple_inference_pages(
 	#[future(awt)]
-	#[from(test_environment)]
-	test_environment: Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
 ) {
-	let (f, url, schema) = setup(&test_environment).await;
-	let app = common::application(f.clone()).await;
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let (status, created) = request(
 		&app,
@@ -379,27 +380,25 @@ async fn remote_history_references_can_span_multiple_inference_pages(
 #[rstest::rstest]
 #[tokio::test]
 async fn remote_admission_recovers_home_history_before_new_input(
+	#[from(peer_mode)] mode: Arc<PeerMode>,
+	#[from(peer_transform)]
+	#[with(mode.clone())]
+	transform: common::RouterTransform,
 	#[future(awt)]
-	#[from(test_environment)]
-	test_environment: Arc<TestEnvironment>,
+	#[from(common::native_peer)]
+	#[with("aidash://execution-test",transform.clone())]
+	home_fixture: common::PeerFixture,
+	#[future(awt)]
+	#[from(common::native_peer)]
+	#[with("aidash://ordered-run-message-executor")]
+	executor_fixture: common::PeerFixture,
 ) {
-	let (mut home, home_url, home_schema) = setup(&test_environment).await;
-	let (mut executor, executor_url, executor_schema) = setup(&test_environment).await;
-	executor.config.node_id = "aidash://ordered-run-message-executor".into();
-	executor.store.node_id = executor.config.node_id.clone();
-
-	let mode = Arc::new(PeerMode {
-		old_peer: AtomicBool::new(false),
-		delivery_outage: AtomicBool::new(false),
-		commit_response_lost: AtomicBool::new(false),
-	});
-	let home_app = common::application_with(home.clone(), |router| {
-		router.with_middleware(PeerFaults(mode.clone()))
-	})
-	.await;
-	home.config.endpoint = home_app.server.url.clone();
-	home_app.context.set_singleton(home.clone());
-	let executor_app = common::application(executor.clone()).await;
+	let _ = &transform;
+	let (home, home_url, home_schema) = home_fixture.runtime.parts();
+	let (executor, executor_url, executor_schema) = executor_fixture.runtime.parts();
+	let _ = &mode;
+	let home_app = home_fixture.application;
+	let executor_app = executor_fixture.application;
 	bootstrap(&home, &home_app, "http://127.0.0.1:9").await;
 	bootstrap(&executor, &executor_app, "http://127.0.0.1:9").await;
 	add_peer(&home, &executor.config.node_id, "http://127.0.0.1:9").await;
@@ -526,27 +525,25 @@ async fn remote_admission_recovers_home_history_before_new_input(
 #[rstest::rstest]
 #[tokio::test]
 async fn remote_control_admits_before_delivery_and_rejects_late_side_effects(
+	#[from(peer_mode)] mode: Arc<PeerMode>,
+	#[from(peer_transform)]
+	#[with(mode.clone())]
+	transform: common::RouterTransform,
 	#[future(awt)]
-	#[from(test_environment)]
-	test_environment: Arc<TestEnvironment>,
+	#[from(common::native_peer)]
+	#[with("aidash://execution-test",transform.clone())]
+	home_fixture: common::PeerFixture,
+	#[future(awt)]
+	#[from(common::native_peer)]
+	#[with("aidash://run-message-executor")]
+	executor_fixture: common::PeerFixture,
 ) {
-	let (mut home, home_url, home_schema) = setup(&test_environment).await;
-	let (mut executor, executor_url, executor_schema) = setup(&test_environment).await;
-	executor.config.node_id = "aidash://run-message-executor".into();
-	executor.store.node_id = executor.config.node_id.clone();
-
-	let mode = Arc::new(PeerMode {
-		old_peer: AtomicBool::new(false),
-		delivery_outage: AtomicBool::new(false),
-		commit_response_lost: AtomicBool::new(false),
-	});
-	let home_app = common::application_with(home.clone(), |router| {
-		router.with_middleware(PeerFaults(mode.clone()))
-	})
-	.await;
-	home.config.endpoint = home_app.server.url.clone();
-	home_app.context.set_singleton(home.clone());
-	let executor_app = common::application(executor.clone()).await;
+	let _ = &transform;
+	let (home, home_url, home_schema) = home_fixture.runtime.parts();
+	let (executor, executor_url, executor_schema) = executor_fixture.runtime.parts();
+	let _ = &mode;
+	let home_app = home_fixture.application;
+	let executor_app = executor_fixture.application;
 	bootstrap(&home, &home_app, "http://127.0.0.1:9").await;
 	bootstrap(&executor, &executor_app, "http://127.0.0.1:9").await;
 	add_peer(&home, &executor.config.node_id, "http://127.0.0.1:9").await;
@@ -676,8 +673,13 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects(
 	}
 	.unwrap();
 	old_lease.commit().await.unwrap();
-	let observation = http_client()
-		.request(Method::GET, executor_app.url("/federation/v0.1/observe"))
+	let observation = executor_app
+		.raw_http
+		.clone()
+		.request(
+			http::Method::GET,
+			executor_app.url("/federation/v0.1/observe"),
+		)
 		.header(
 			"authorization",
 			format!(
@@ -1888,3 +1890,16 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects(
 use reinhardt::query::QueryStatementBuilder as _;
 
 use reinhardt::query::SimpleExpr;
+
+#[rstest::fixture]
+fn peer_mode() -> Arc<PeerMode> {
+	Arc::new(PeerMode {
+		old_peer: AtomicBool::new(false),
+		delivery_outage: AtomicBool::new(false),
+		commit_response_lost: AtomicBool::new(false),
+	})
+}
+#[rstest::fixture]
+fn peer_transform(peer_mode: Arc<PeerMode>) -> common::RouterTransform {
+	Arc::new(move |router| router.with_middleware(PeerFaults(peer_mode.clone())))
+}

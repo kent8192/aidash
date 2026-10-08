@@ -1,7 +1,6 @@
 #[path = "../../tests/support/legacy.rs"]
 mod common;
-#[path = "../../tests/support/upstream.rs"]
-mod upstream_fixtures;
+use common::upstream_fixtures;
 use common::{bootstrap, cleanup, request};
 use futures_util::{
 	FutureExt,
