@@ -17,3 +17,5 @@ pub mod boundary;
 pub(crate) mod dashboard_rules;
 
 pub(crate) mod desktop_cors;
+
+pub mod provider_credentials;

@@ -48,3 +48,12 @@ variable "environments" {
     error_message = "At most one environment of each kind may run. Stop the active PR before starting another."
   }
 }
+
+variable "byok_project_id" {
+  type        = string
+  description = "Existing, billing-enabled dedicated project containing only Provider Credential secrets."
+  validation {
+    condition     = can(regex("^[a-z][a-z0-9-]{4,28}[a-z0-9]$", var.byok_project_id)) && var.byok_project_id != var.project_id
+    error_message = "Use an explicit dedicated BYOK project distinct from the shared environment project."
+  }
+}

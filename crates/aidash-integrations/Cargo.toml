@@ -9,6 +9,7 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+secrecy = "0.10"
 aidash-application.workspace = true
 aidash-domain.workspace = true
 async-trait.workspace = true

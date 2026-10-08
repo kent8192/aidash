@@ -128,7 +128,14 @@ pub async fn read_events(
 	}
 	Ok((result, cursor))
 }
+
 pub async fn can_emit(scope: &mut dyn StreamSession, event: &Event) -> Result<bool> {
+	if event.workspace_id.is_none()
+		&& (event.kind.starts_with("provider_credential.")
+			|| event.kind.starts_with("provider_credential_binding."))
+	{
+		return scope.event_visible(event).await;
+	}
 	let Some(id) = event.workspace_id else {
 		return Ok(false);
 	};

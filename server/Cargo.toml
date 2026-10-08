@@ -26,6 +26,7 @@ name = "local-dev-db"
 path = "src/bin/local-dev-db.rs"
 
 [dependencies]
+secrecy = { version = "0.10", features = ["serde"] }
 aidash-domain.workspace = true
 aidash-application.workspace = true
 aidash-harness.workspace = true
@@ -352,3 +353,7 @@ path = "src/apps/registry/tests/provider_bindings.rs"
 [[test]]
 name = "marketplace_host_packages"
 path = "src/apps/marketplace/tests/host_packages.rs"
+
+[[test]]
+name = "provider_credentials"
+path = "src/apps/identity/tests/provider_credentials.rs"

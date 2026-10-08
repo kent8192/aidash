@@ -1,6 +1,11 @@
-mock_provider "google" {}
+mock_provider "google" {
+  mock_data "google_project" {
+    defaults = { number = "123456789012" }
+  }
+}
 variables {
   project_id             = "aidash-fixture"
+  byok_project_id        = "aidash-byok-fixture"
   release_bucket         = "aidash-fixture-releases"
   deploy_service_account = "deploy@aidash-fixture.iam.gserviceaccount.com"
 }
@@ -37,6 +42,18 @@ run "retained_disks_and_spot_policy" {
     condition     = google_compute_firewall.iap.source_ranges == toset(["35.235.240.0/20"])
     error_message = "SSH must be available through IAP only."
   }
+  assert {
+    condition = (
+      google_project_iam_member.provider_credential_create.project == var.byok_project_id &&
+      google_project_iam_member.provider_credential_create.role == "projects/aidash-byok-fixture/roles/aidashByokCreate" &&
+      length(google_project_iam_member.provider_credential_create.condition) == 0 &&
+      google_project_iam_member.provider_credential_manage.project == var.byok_project_id &&
+      google_project_iam_member.provider_credential_manage.role == "projects/aidash-byok-fixture/roles/aidashByokManage" &&
+      length(google_project_iam_member.provider_credential_manage.condition) == 1 &&
+      google_project_iam_member.provider_credential_manage.condition[0].expression == "resource.name.startsWith('projects/123456789012/secrets/aidash-test-cred-')"
+    )
+    error_message = "Runtime must bind only bootstrap's fixed Create/Manage roles, with management limited to its environment prefix."
+  }
 }
 
 run "preview_uses_shared_tls" {
@@ -64,6 +81,10 @@ run "preview_uses_shared_tls" {
   assert {
     condition     = length([for disk in google_compute_instance.host[0].attached_disk : disk if disk.device_name == "aidash-preview-tls" && disk.source == var.preview_tls_disk]) == 1
     error_message = "A preview must mount the hostname's shared certificate store."
+  }
+  assert {
+    condition     = google_project_iam_member.provider_credential_manage.role == "projects/aidash-byok-fixture/roles/aidashByokManage" && google_project_iam_member.provider_credential_manage.condition[0].expression == "resource.name.startsWith('projects/123456789012/secrets/aidash-pr-2-cred-')"
+    error_message = "Environments share the fixed role but receive distinct secret-prefix conditions."
   }
 }
 

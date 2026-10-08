@@ -36,3 +36,12 @@ variable "release_bucket_name" {
   type        = string
   description = "Globally unique private immutable release bundle bucket name."
 }
+
+variable "byok_project_id" {
+  type        = string
+  description = "Existing, billing-enabled dedicated project containing only Provider Credential secrets."
+  validation {
+    condition     = can(regex("^[a-z][a-z0-9-]{4,28}[a-z0-9]$", var.byok_project_id)) && var.byok_project_id != var.project_id
+    error_message = "Use an explicit dedicated BYOK project distinct from the shared environment project."
+  }
+}

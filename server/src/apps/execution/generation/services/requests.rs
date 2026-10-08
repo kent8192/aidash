@@ -32,7 +32,7 @@ impl GenerationRequests {
 			&id,
 			input.expected_revision,
 			&input.spec,
-			&crate::bootstrap::registry_validation(),
+			&crate::bootstrap::registry_validation_for(&self.runtime.store),
 		)
 		.await
 		.map_err(Into::into)

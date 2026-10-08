@@ -81,3 +81,11 @@ enabled = false
 # endpoint = "https://kubernetes.default.svc"
 # ca_file = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
 # token_file = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+
+# Optional Tenant-owned Provider Credentials (dedicated existing BYOK project).
+# Without a Store, environment-based provider access is unchanged.
+# [provider_credentials.store]
+# byok_project_id = "your-aidash-byok-project"
+# environment_id = "develop"
+# fingerprint_env = "AIDASH_SECRET_PROVIDER_FINGERPRINT"
+# max_per_tenant = 20

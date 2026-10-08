@@ -713,3 +713,44 @@ fn installation_overrides_cannot_clear_a_personal_agent_knowledge_digest() {
 	assert!(overlay_config(&mut config, &json!({"display_name":"Local name"})).is_ok());
 	assert_eq!(config["display_name"], "Local name");
 }
+
+#[rstest]
+#[case("model")]
+#[case("embedding")]
+fn provider_credential_definition_sources_are_portable_and_fail_closed_without_store(
+	#[case] kind: &str,
+) {
+	let config = if kind == "model" {
+		json!({"provider":"openrouter","model_id":"vendor/model","endpoint":"https://openrouter.ai/api/v1","provider_credential":"openrouter","context_window":32768,"max_output_tokens":4096,"modalities":["text"],"cost":{}})
+	} else {
+		json!({"provider":"openrouter","endpoint":"https://openrouter.ai/api/v1","provider_credential":"openrouter","model":"vendor/model","model_version":"1","dimensions":3})
+	};
+	let entry = definition(kind, kind, config);
+	for local in [false, true] {
+		assert!(
+			validation()
+				.validate_in(&entry, local)
+				.unwrap_err()
+				.to_string()
+				.contains("Store is not configured")
+		);
+		let configured = validation().with_provider_credentials(true);
+		configured.validate_in(&entry, local).unwrap();
+		for invalid in [
+			json!(Uuid::now_v7()),
+			json!(format!("credential:{}", Uuid::now_v7())),
+			json!("openai"),
+			json!({"id":Uuid::now_v7()}),
+		] {
+			let mut changed = entry.clone();
+			changed.config["provider_credential"] = invalid;
+			assert!(configured.validate_in(&changed, local).is_err());
+		}
+		let mut changed = entry.clone();
+		changed.config["credential_env"] = json!("AIDASH_SECRET_FALLBACK");
+		assert!(configured.validate_in(&changed, local).is_err());
+		changed = entry.clone();
+		changed.config["endpoint"] = json!("https://attacker.test/api/v1");
+		assert!(configured.validate_in(&changed, local).is_err());
+	}
+}

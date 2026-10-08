@@ -17,8 +17,9 @@ pub(crate) async fn snapshot(
 	node: &str,
 	agent: &aidash_domain::registry::Entry,
 	remote: bool,
+	configured: bool,
 ) -> Result<aidash_domain::registry::bindings::BindingSnapshot> {
-	snapshot_mode(tx, node, agent, remote, true).await
+	snapshot_mode(tx, node, agent, remote, true, configured).await
 }
 async fn snapshot_mode(
 	tx: &mut crate::database::native::Transaction,
@@ -26,6 +27,7 @@ async fn snapshot_mode(
 	agent: &aidash_domain::registry::Entry,
 	remote: bool,
 	foreign: bool,
+	configured: bool,
 ) -> Result<aidash_domain::registry::bindings::BindingSnapshot> {
 	let mut definitions = super::sql::SqlScope(tx);
 	let mut catalog = aidash_application::registry::bindings::catalog::LocalCatalog(
@@ -40,7 +42,7 @@ async fn snapshot_mode(
 		} else {
 			&mut catalog
 		},
-		&crate::bootstrap::registry_validation(),
+		&crate::bootstrap::registry_validation().with_provider_credentials(configured),
 		aidash_domain::registry::bindings::QualifiedRef {
 			registry_node: node.into(),
 			id: agent.id.clone(),
@@ -181,9 +183,10 @@ pub(crate) async fn authorized(
 	access: &mut crate::authorization::access::Access,
 	entry: &aidash_domain::registry::Entry,
 	remote: bool,
+	configured: bool,
 ) -> Result<aidash_domain::registry::bindings::BindingSnapshot> {
 	let node = access.node_id.clone();
-	let snapshot = snapshot_mode(&mut access.tx, &node, entry, remote, false).await?;
+	let snapshot = snapshot_mode(&mut access.tx, &node, entry, remote, false, configured).await?;
 	for definition in &snapshot.definitions {
 		if definition.identity.registry_node != node {
 			return Err(Error::Forbidden);
@@ -210,21 +213,24 @@ pub(crate) async fn preview(
 	tx: &mut dyn reinhardt::db::backends::TransactionExecutor,
 	node: &str,
 	entry: &aidash_domain::registry::Entry,
+	configured: bool,
 ) -> aidash_application::Result<aidash_domain::registry::bindings::BindingSnapshot> {
-	preview_mode(tx, node, entry, false).await
+	preview_mode(tx, node, entry, false, configured).await
 }
 pub(crate) async fn preview_remote(
 	tx: &mut dyn reinhardt::db::backends::TransactionExecutor,
 	node: &str,
 	entry: &aidash_domain::registry::Entry,
+	configured: bool,
 ) -> aidash_application::Result<aidash_domain::registry::bindings::BindingSnapshot> {
-	preview_mode(tx, node, entry, true).await
+	preview_mode(tx, node, entry, true, configured).await
 }
 async fn preview_mode(
 	tx: &mut dyn reinhardt::db::backends::TransactionExecutor,
 	node: &str,
 	entry: &aidash_domain::registry::Entry,
 	remote: bool,
+	configured: bool,
 ) -> aidash_application::Result<aidash_domain::registry::bindings::BindingSnapshot> {
 	aidash_application::registry::bindings::resolve(
 		&mut aidash_application::registry::bindings::catalog::LocalCatalog(
@@ -233,7 +239,7 @@ async fn preview_mode(
 				node,
 			},
 		),
-		&crate::bootstrap::registry_validation(),
+		&crate::bootstrap::registry_validation().with_provider_credentials(configured),
 		aidash_domain::registry::bindings::QualifiedRef {
 			registry_node: node.into(),
 			id: entry.id.clone(),

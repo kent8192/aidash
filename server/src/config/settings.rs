@@ -42,6 +42,7 @@
 //! declared Rust type (e.g. `u16`) without manual parsing.
 
 use crate::apps::federation::remote::serializers::settings::NodeSettings;
+use crate::apps::identity::serializers::provider_credentials::Settings as ProviderCredentialSettings;
 use crate::apps::identity::serializers::settings::DashboardSettings;
 use crate::apps::operations::serializers::settings::KubernetesSettings;
 use reinhardt::conf::settings::PendingSettings;
@@ -53,7 +54,7 @@ use reinhardt::settings;
 use std::env;
 
 // Add fragments to extend settings: e.g. `#[settings(core: CoreSettings | cache: CacheSettings)]`
-#[settings(core: CoreSettings | contacts: ContactSettings | migrations: MigrationSettings | node: NodeSettings | dashboard: DashboardSettings | kubernetes: KubernetesSettings)]
+#[settings(core: CoreSettings | contacts: ContactSettings | migrations: MigrationSettings | node: NodeSettings | dashboard: DashboardSettings | kubernetes: KubernetesSettings | provider_credentials: ProviderCredentialSettings)]
 pub struct ProjectSettings;
 
 /// Get settings based on environment variable
@@ -126,6 +127,7 @@ fn file_settings_builder(
                 // Initialize optional Aidash fragments without enabling OIDC or Kubernetes.
                 .with_value("dashboard", serde_json::json!({}))
                 .with_value("kubernetes", serde_json::json!({}))
+                .with_value("provider_credentials", serde_json::json!({}))
                 .with_value("migrations", serde_json::json!({})),
         )
         // Medium priority: Base TOML file

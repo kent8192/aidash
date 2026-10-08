@@ -6,7 +6,7 @@ use uuid::Uuid;
 pub async fn reconcile(f: &Federation) -> Result<usize> {
 	aidash_application::generation::provisioning::reconcile(
 		&crate::bootstrap::generation_provisioning_repository(f),
-		&crate::bootstrap::registry_validation(),
+		&crate::bootstrap::registry_validation_for(&f.store),
 	)
 	.await
 	.map_err(Into::into)

@@ -1,0 +1,93 @@
+# Provider Credentials
+
+Provider Credentials are Tenant-owned metadata records obtained only through
+Provider Authorization, the provider's OAuth flow, as decided in ADR 0006.
+Key Material passes from the server-side exchange into the write-only Provider
+Credential Store. Aidash exposes no HTTP create/rotate endpoint or dashboard
+form accepting typed or pasted provider keys. OAuth connection and reconnect
+flows are tracked in [#158](https://github.com/kent8192/aidash/issues/158).
+The v1 Provider Catalog contains `openrouter`, with base URL
+`https://openrouter.ai/api/v1`.
+Registry model and embedding configurations use `provider_credential =
+"openrouter"`, mutually exclusive with `credential_env`; they never contain a
+Provider Credential ID. The removal of operator `credential_env` keys and the
+mandatory Store requirement for self-hosted nodes belong to #158's migration.
+
+Configure the optional server settings only for a dedicated BYOK project:
+
+```toml
+[provider_credentials.store]
+byok_project_id = "your-aidash-byok-project"
+environment_id = "develop"
+fingerprint_env = "AIDASH_SECRET_PROVIDER_FINGERPRINT"
+max_per_tenant = 20
+```
+
+Supply an independent random fingerprint root key of at least 32 bytes through
+the named environment variable. Fingerprints use independent derived Tenant
+keys, HMAC-SHA256, and the first eight bytes in hexadecimal. They are metadata,
+not bearer values. Key Material is not written to PostgreSQL, events, responses,
+request logs, or browser persistence.
+
+Tenant metadata endpoints are GET `/api/tenants/{tenant}/provider-credentials`
+and GET `/api/tenants/{tenant}/provider-credentials/{id}`. Revoke and delete remain
+available, alongside `/api/tenants/{tenant}/provider-credential-bindings`.
+Lifecycle operations and
+binding updates require the current `expected_revision`; stale writes return
+409. Sending `provider_credential_id: null` explicitly unbinds a provider and
+retains its revision history; unbind before deleting the last bound record.
+Public policy actions are `provider_credential.read`, `.revoke`, `.delete`, and
+`provider_credential_binding.read`, `.update`. Internal Provider Authorization
+writes retain the `.create` and `.rotate` policy decisions. Resources
+carry the provider attribute and UUID or Provider Catalog ID respectively.
+Authenticated Subjects may operate only within their Tenant; authenticated
+operators retain explicit policy decision audits. Responses use
+`Cache-Control: no-store`.
+
+Tenant settings show metadata, binding selection, revocation and deletion without
+key-entry controls. This example uses test fixture metadata:
+
+![Provider Credential metadata and binding management](images/provider-credentials.png)
+
+The application-layer `Service::create` and `Service::rotate` use cases remain
+internal write paths for #158's server-side OAuth callback. Native management
+composition accepts typed providers and `SecretString` directly and runs policy
+decisions; there is no Key Material HTTP serializer, SDK operation, environment
+variable, or settings input for this write path. Tests seed through it directly.
+Creation persists `pending` before provider verification and secret storage.
+Rotation pins a verified new version before disabling the old one. Revocation
+is irreversible and disables all versions; deletion destroys versions and keeps
+a metadata tombstone, but refuses a bound record. A supervised reconciler scans
+expired PostgreSQL pending records and disables unpinned active versions left
+by interrupted rotations. It never lists Secret Manager secrets.
+
+Admission records a local-only Provider Credential ID per Run and provider.
+Calls check that record's current active state and current version pin; changing
+a binding cannot retarget admitted Runs. Receiving federation admission uses
+the mapped local Tenant. Plaintext reads and broker routing belong to Issue
+#137. Until that broker exists, Tenant access fails with `credential broker not
+configured` after metadata validation and never falls back to environment keys.
+
+Explicitly authorized local maintenance without a Run resolves the current
+Tenant binding and includes its memory indexing, retention, reflection or
+retrieval purpose in the access context. Run calls keep their admission pins.
+Both paths check current metadata before the broker failure.
+
+Terraform requires an existing billing-enabled `byok_project_id` distinct from
+the application project. This project contains only Provider Credential
+secrets. Runtime creation permission exists only there; management is limited
+to `aidash-<environment_id>-cred-` by a project-number-based IAM condition. The
+runtime identity has no BYOK `versions.access` or `setIamPolicy`. Bootstrap
+configures DATA_READ and DATA_WRITE audits and the three fixed custom roles once.
+Deploy can grant only the fixed runtime Create/Manage roles and cannot edit
+BYOK roles. The BrokerRead role is defined but unbound; no broker identity or
+BYOK payload read grant is provisioned here. #137's human-run bootstrap owns
+the broker identity and the prefix-conditioned BrokerRead binding.
+Outputs `byok_project_id` and `secret_prefix` supply the secret namespace. The
+existing shared-project deployment identity could manage a broker service
+account's IAM policy there, and a broker deployment identity could execute code
+with Key Material access. The deploy pipeline remains part of the trust root;
+the IAM deny policy and entry-point hardening are tracked in
+[#151](https://github.com/kent8192/aidash/issues/151). A separate credential
+enclave is deferred. See the residual deployment trust boundary in
+[the infrastructure guide](../infra/gcp/README.md).

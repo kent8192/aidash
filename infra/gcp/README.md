@@ -332,3 +332,40 @@ Implementation references: [K3s containerd templates](https://docs.k3s.io/advanc
 [GitHub workflow events](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows),
 [Google WIF](https://docs.cloud.google.com/iam/docs/workload-identity-federation-with-deployment-pipelines),
 [Cloudflare DNS Terraform](https://developers.cloudflare.com/api/terraform/resources/dns/subresources/records/).
+
+Provider Credential Key Material uses a separate existing, billing-enabled BYOK
+project. Set `byok_project_id` explicitly in bootstrap and deployment configuration;
+it must differ from `project_id` and contain only Provider Credential secrets.
+Bootstrap enables Secret Manager and its DATA_READ/DATA_WRITE audit logs there.
+Human-run bootstrap defines `aidashByokCreate`, `aidashByokManage` and
+`aidashByokBrokerRead` once per deployment. Environment automation binds runtime
+service accounts to the create-only role without a condition and the seven-permission
+manage role with their environment's Secret name prefix using the numeric project
+number. Runtime identities have no BYOK payload access or IAM-setting permission.
+The shared project's existing per-secret runtime configuration read remains in
+place for host startup.
+
+The deploy identity's BYOK role contains only `resourcemanager.projects.get`,
+`getIamPolicy` and `setIamPolicy`. Its binding uses exactly
+`api.getAttribute('iam.googleapis.com/modifiedGrantsByRole', []).hasOnly(['projects/<byok>/roles/aidashByokCreate', 'projects/<byok>/roles/aidashByokManage'])`.
+It has no BYOK `iam.roles.*` permission and cannot directly grant BrokerRead or
+change its own BYOK binding. Google documents this restriction for project
+`setIamPolicy` in [Set limits on granting roles](https://docs.cloud.google.com/iam/docs/setting-limits-on-granting-roles)
+and lists Projects/Resource Manager in the [IAM API attribute reference](https://docs.cloud.google.com/iam/docs/conditions-attribute-reference#iam_api_attributes).
+
+`aidashByokBrokerRead` contains `secretmanager.versions.access`, `versions.get`
+and `secrets.get`, but is unbound. No BYOK payload read grant or broker service
+account is provisioned by this change. Issue #137's human-run bootstrap owns
+the broker identity and prefix-conditioned BrokerRead binding. Outputs `byok_project_id` and
+`secret_prefix` supply the broker's secret namespace.
+
+The existing deployment identity has shared-project
+`roles/iam.serviceAccountAdmin`, allowing it to change the IAM policy of any
+broker service account placed there and grant itself impersonation permission.
+An identity allowed to redeploy a future broker can also execute broker code
+that reads Key Material. The BYOK role-grant restriction does not close these paths.
+The deploy pipeline remains part of the v1 trust root. The human-run IAM deny
+policy to block broker impersonation and deployment entry-point hardening are
+tracked in [#151](https://github.com/kent8192/aidash/issues/151). A separate
+credential enclave is deferred. The existing shared-project deploy grant is
+retained here; no read identity is attached to it by this change.

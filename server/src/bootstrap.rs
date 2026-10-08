@@ -65,8 +65,10 @@ pub async fn initialize(
 	let pool = connection
 		.into_postgres()
 		.ok_or_else(|| Error::Invalid("Aidash requires PostgreSQL".into()))?;
-	let store = Store::from_pool(pool, config.node_id.clone()).await?;
-	let registry = Registry::new(store.pool.clone(), &store.node_id)?;
+	let mut store = Store::from_pool(pool, config.node_id.clone()).await?;
+	configure_provider_credentials(&mut store, &settings.provider_credentials)?;
+	let registry = Registry::new(store.pool.clone(), &store.node_id)?
+		.with_provider_credentials(store.provider_credentials.is_some());
 	registry.seed_system().await?;
 	let client = reqwest::Client::builder()
 		.timeout(Duration::from_secs(120))
@@ -144,13 +146,27 @@ impl RuntimeTasks {
 		));
 		tasks.spawn_service(aidash_runtime::generation::run(
 			Arc::new(generation_provisioning_repository(&worker_runtime)),
-			registry_validation(),
+			registry_validation_for(&worker_runtime.store),
 		));
 		tasks.spawn_service(runtime_task(crate::semantic::worker::run(
 			worker_runtime.clone(),
 		)));
 		if event_streams.is_some() {
 			tasks.spawn_service(runtime_task(EventBus::run(federation.clone())));
+		}
+		if let Some(provider_credentials) = federation.store.provider_credentials.clone() {
+			let mut stopping = receiver.clone();
+			tasks.spawn_service(runtime_task(async move {
+				loop {
+					if *stopping.borrow() {
+						return Ok(());
+					}
+					if let Err(error) = provider_credentials.reconcile().await {
+						tracing::warn!(error=%error,"Provider Credential reconciliation failed");
+					}
+					tokio::select! { _=stopping.changed()=>{}, _=tokio::time::sleep(Duration::from_secs(60))=>{} }
+				}
+			}));
 		}
 		let activation = crate::activation::Runtime::new(
 			worker_runtime.clone(),
@@ -296,8 +312,24 @@ pub fn model_provider(
 	client: reqwest::Client,
 	config: aidash_domain::model::ModelConfig,
 ) -> Result<Arc<dyn aidash_application::ports::ModelProvider>> {
-	aidash_integrations::inference::provider(client, config, Arc::new(EnvironmentCredentials))
-		.map_err(Into::into)
+	aidash_integrations::inference::provider(
+		client,
+		config,
+		environment_provider_access(),
+		Default::default(),
+	)
+	.map_err(Into::into)
+}
+
+pub(crate) fn environment_provider_access()
+-> Arc<dyn aidash_application::provider_access::ProviderAccess> {
+	Arc::new(aidash_application::provider_access::EnvironmentAccess {
+		credentials: Arc::new(EnvironmentCredentials),
+	})
+}
+
+pub(crate) fn environment_credentials() -> Arc<dyn aidash_application::ports::Credentials> {
+	Arc::new(EnvironmentCredentials)
 }
 
 struct EnvironmentCredentials;
@@ -356,7 +388,8 @@ pub fn semantic_transport(
 		pool: store.pool.clone(),
 		embedding: aidash_integrations::semantic::SemanticClient {
 			client: store.semantic_client.clone(),
-			credentials: Arc::new(EnvironmentCredentials),
+			access: environment_provider_access(),
+			context: Default::default(),
 		},
 	}
 }
@@ -439,6 +472,17 @@ pub fn registry_validation() -> aidash_application::registry::DefinitionValidati
 		Arc::new(EnvironmentCredentials),
 		Arc::new(NativeCoreToolCatalog),
 	)
+	.with_provider_credentials(
+		crate::config::settings::get_settings()
+			.ok()
+			.and_then(|s| s.resolve().ok())
+			.is_some_and(|s| s.into_parts().0.provider_credentials.store.is_some()),
+	)
+}
+pub fn registry_validation_for(
+	store: &Store,
+) -> aidash_application::registry::DefinitionValidation {
+	registry_validation().with_provider_credentials(store.provider_credentials.is_some())
 }
 struct NativeCoreToolCatalog;
 impl aidash_application::ports::registry::CoreToolCatalog for NativeCoreToolCatalog {
@@ -1308,7 +1352,7 @@ pub(crate) fn transaction_participant(
 			},
 		),
 		transaction_coordinator(runtime),
-		registry_validation(),
+		registry_validation_for(&runtime.store),
 	)
 }
 
@@ -1834,7 +1878,8 @@ impl aidash_application::ports::registry::workbench::sandbox::admission::Sandbox
 		aidash_integrations::inference::provider(
 			self.client.clone(),
 			model,
-			workbench_sandbox_credentials(),
+			environment_provider_access(),
+			Default::default(),
 		)
 	}
 }
@@ -2025,4 +2070,93 @@ pub(crate) fn desktop_protocol(
 	runtime: &Federation,
 ) -> impl aidash_application::ports::authorization::desktop::DesktopProtocol {
 	crate::apps::identity::repositories::desktop::Repository(runtime.clone())
+}
+
+/// Compose write-only storage at startup; absent settings keep self-hosted access unchanged.
+pub fn configure_provider_credentials(
+	store: &mut Store,
+	settings: &crate::apps::identity::serializers::provider_credentials::Settings,
+) -> Result<()> {
+	use reinhardt::conf::settings::{fragment::SettingsValidation, profile::Profile};
+	settings
+		.validate(&Profile::parse("local"))
+		.map_err(|e| Error::Invalid(e.to_string()))?;
+	let Some(config) = &settings.store else {
+		return Ok(());
+	};
+	let fingerprint_key = crate::config::secret(&config.fingerprint_env)?;
+	if fingerprint_key.len() < 32 {
+		return Err(Error::Invalid(
+			"Provider Credential fingerprint key must be at least 32 bytes".into(),
+		));
+	}
+	let client = aidash_integrations::semantic::client()?;
+	store.provider_credentials = Some(Arc::new(
+		aidash_application::provider_credentials::Service {
+			repository: Arc::new(
+				crate::apps::identity::repositories::provider_credentials::NativeRepository {
+					pool: store.control_pool.clone(),
+					node: store.node_id.clone(),
+				},
+			),
+			store: Arc::new(
+				aidash_integrations::provider_credentials::SecretManager::new(
+					config.byok_project_id.clone(),
+					config.environment_id.clone(),
+				)?,
+			),
+			validator: Arc::new(
+				aidash_integrations::provider_credentials::OpenRouterKeyValidator { client },
+			),
+			fingerprint_key: fingerprint_key.into(),
+			max_per_tenant: config.max_per_tenant,
+		},
+	));
+	Ok(())
+}
+
+/// Worker inference is bound to local admission evidence, never a mutable binding.
+pub(crate) fn admitted_model_provider(
+	store: &Store,
+	config: aidash_domain::model::ModelConfig,
+	run: Option<uuid::Uuid>,
+	tenant: String,
+	maintenance: Option<aidash_application::provider_access::MaintenancePurpose>,
+) -> Result<Arc<dyn aidash_application::ports::ModelProvider>> {
+	aidash_integrations::inference::provider(
+		store.semantic_client.clone(),
+		config,
+		Arc::new(
+			crate::apps::identity::repositories::provider_credentials::AdmittedAccess {
+				store: store.clone(),
+			},
+		),
+		aidash_application::provider_access::Context {
+			tenant,
+			run,
+			maintenance,
+			provider_credential_id: None,
+		},
+	)
+	.map_err(Into::into)
+}
+pub(crate) fn admitted_semantic_transport(
+	store: &Store,
+	run: Option<uuid::Uuid>,
+	tenant: String,
+	maintenance: Option<aidash_application::provider_access::MaintenancePurpose>,
+) -> crate::apps::knowledge::repositories::postgres_vector::Transport {
+	let mut transport = semantic_transport(store);
+	transport.embedding.access = Arc::new(
+		crate::apps::identity::repositories::provider_credentials::AdmittedAccess {
+			store: store.clone(),
+		},
+	);
+	transport.embedding.context = aidash_application::provider_access::Context {
+		tenant,
+		run,
+		maintenance,
+		provider_credential_id: None,
+	};
+	transport
 }

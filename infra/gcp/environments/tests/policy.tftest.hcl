@@ -3,6 +3,7 @@ mock_provider "cloudflare" {}
 
 variables {
   project_id             = "aidash-fixture"
+  byok_project_id        = "aidash-byok-fixture"
   release_bucket         = "aidash-fixture-releases"
   deploy_service_account = "deploy@aidash-fixture.iam.gserviceaccount.com"
   cloudflare_zone_id     = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"

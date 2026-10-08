@@ -14,6 +14,7 @@ module "environment" {
   for_each = var.environments
 
   project_id             = var.project_id
+  byok_project_id        = var.byok_project_id
   environment_id         = each.key
   environment            = each.value
   hostname               = "${each.value.kind == "pr" ? "preview" : each.value.kind}.${var.domain}"
@@ -35,11 +36,13 @@ resource "cloudflare_dns_record" "environment" {
 
 output "environments" {
   value = { for id, m in module.environment : id => {
-    instance       = m.instance
-    zone           = m.zone
-    hostname       = m.hostname
-    external_ip    = m.external_ip
-    runtime_secret = m.runtime_secret
+    instance        = m.instance
+    zone            = m.zone
+    hostname        = m.hostname
+    external_ip     = m.external_ip
+    runtime_secret  = m.runtime_secret
+    byok_project_id = m.byok_project_id
+    secret_prefix   = m.secret_prefix
   } }
 }
 
@@ -47,3 +50,6 @@ output "managed_configuration" {
   description = "Non-secret last applied intent used to recover after a controller interruption."
   value       = var.environments
 }
+
+output "byok_project_id" { value = var.byok_project_id }
+output "secret_prefix" { value = { for id, m in module.environment : id => m.secret_prefix } }

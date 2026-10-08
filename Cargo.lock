@@ -84,11 +84,13 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "futures-util",
+ "hmac 0.12.1",
  "jsonschema",
  "metrics",
  "regex",
  "rstest",
  "schemars 1.2.2",
+ "secrecy",
  "semver",
  "serde",
  "serde_json",
@@ -157,6 +159,7 @@ dependencies = [
  "reqwest 0.13.5",
  "rmcp",
  "rstest",
+ "secrecy",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -223,6 +226,7 @@ dependencies = [
  "rstest",
  "rust_decimal",
  "schemars 1.2.2",
+ "secrecy",
  "semver",
  "serde",
  "serde-saphyr",
@@ -9053,6 +9057,7 @@ version = "0.10.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e891af845473308773346dc847b2c23ee78fe442e0472ac50e22a18a93d3ae5a"
 dependencies = [
+ "serde",
  "zeroize",
 ]
 

@@ -1,18 +1,21 @@
 //! OpenRouter inference transport implementing the application port.
 use crate::{Error, Result};
-use aidash_application::ports::{Credentials, ModelProvider};
+use aidash_application::ports::ModelProvider;
+use aidash_application::provider_access::{Context, ProviderAccess, Source};
 use aidash_domain::{
 	model::ModelConfig,
 	provider::{ContentPart, ModelRequest, ModelResponse, ToolCall},
 };
 use async_trait::async_trait;
+use secrecy::ExposeSecret;
 use serde_json::{Value, json};
 use std::sync::Arc;
 
 pub struct OpenRouterProvider {
 	pub client: reqwest::Client,
 	pub config: ModelConfig,
-	pub credentials: Arc<dyn Credentials>,
+	pub access: Arc<dyn ProviderAccess>,
+	pub context: Context,
 }
 
 impl OpenRouterProvider {
@@ -35,7 +38,18 @@ impl OpenRouterProvider {
 				self.config.model_id
 			)));
 		}
-		let mut url = reqwest::Url::parse(&self.config.endpoint)
+		let access = self
+			.access
+			.resolve(
+				&self.context,
+				&self.config.endpoint,
+				&Source::configured(
+					&self.config.credential_env,
+					&self.config.provider_credential,
+				),
+			)
+			.await?;
+		let mut url = reqwest::Url::parse(&access.endpoint)
 			.map_err(|_| Error::Invalid("invalid OpenRouter endpoint".into()))?;
 		{
 			let mut segments = url
@@ -58,13 +72,12 @@ impl OpenRouterProvider {
 			.client
 			.get(format!(
 				"{}/endpoints/zdr",
-				self.config.endpoint.trim_end_matches('/')
+				access.endpoint.trim_end_matches('/')
 			))
 			.timeout(std::time::Duration::from_secs(15));
-		if let Some(name) = &self.config.credential_env {
-			let credential = self.credentials.resolve(name)?;
-			endpoints = endpoints.bearer_auth(&credential);
-			zdr = zdr.bearer_auth(&credential);
+		if !access.bearer.expose_secret().is_empty() {
+			endpoints = endpoints.bearer_auth(access.bearer.expose_secret());
+			zdr = zdr.bearer_auth(access.bearer.expose_secret());
 		}
 		let (endpoints, zdr) =
 			tokio::try_join!(endpoints.send(), zdr.send()).map_err(crate::http_error)?;
@@ -147,15 +160,23 @@ impl OpenRouterProvider {
 pub fn provider(
 	client: reqwest::Client,
 	config: ModelConfig,
-	credentials: Arc<dyn Credentials>,
+	access: Arc<dyn ProviderAccess>,
+	context: Context,
 ) -> Result<Arc<dyn ModelProvider>> {
+	aidash_domain::provider_credentials::validate_source(
+		&config.endpoint,
+		&config.provider,
+		config.credential_env.as_deref(),
+		config.provider_credential.as_deref(),
+	)?;
 	match config.provider.as_str() {
 		"openrouter" => {
 			config.request_timeout()?;
 			Ok(Arc::new(OpenRouterProvider {
 				client,
 				config,
-				credentials,
+				access,
+				context,
 			}))
 		}
 		_ => Err(Error::Invalid("unsupported model provider".into())),
@@ -199,18 +220,29 @@ impl ModelProvider for OpenRouterProvider {
 			if let Some(effort) = self.config.reasoning_effort {
 				body["reasoning"] = json!({"effort": effort});
 			}
+			let access = self
+				.access
+				.resolve(
+					&self.context,
+					&self.config.endpoint,
+					&Source::configured(
+						&self.config.credential_env,
+						&self.config.provider_credential,
+					),
+				)
+				.await?;
 			let mut call = self
 			.client
 			.post(format!(
 				"{}/chat/completions",
-				self.config.endpoint.trim_end_matches('/')
+				access.endpoint.trim_end_matches('/')
 			))
 			// Override only inference, including response-body reads. Other HTTP
 			// traffic retains the shared client's timeout and connection policy.
 			.timeout(deadline)
 			.json(&body);
-			if let Some(name) = &self.config.credential_env {
-				call = call.bearer_auth(self.credentials.resolve(name)?);
+			if !access.bearer.expose_secret().is_empty() {
+				call = call.bearer_auth(access.bearer.expose_secret());
 			}
 			let started = std::time::Instant::now();
 			let response = call.send().await.map_err(crate::http_error)?;

@@ -203,6 +203,7 @@ class Terraform:
             key: self.configuration[key]
             for key in (
                 "project_id",
+                "byok_project_id",
                 "cloudflare_zone_id",
                 "release_bucket",
                 "deploy_service_account",

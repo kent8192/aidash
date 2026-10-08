@@ -12,6 +12,8 @@ pub struct ModelConfig {
 	pub model_id: String,
 	pub endpoint: String,
 	pub credential_env: Option<String>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub provider_credential: Option<String>,
 	/// Total inference request timeout in seconds, including the response body.
 	/// Omitted or null values use 900 seconds; configured values must be positive.
 	#[serde(default, skip_serializing_if = "Option::is_none")]

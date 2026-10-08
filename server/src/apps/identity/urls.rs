@@ -8,6 +8,20 @@ use reinhardt::UnifiedRouter;
 pub fn url_patterns() -> UnifiedRouter {
 	UnifiedRouter::new().server(|server| {
 		server
+			.endpoint(super::views::provider_credentials::list)
+			.with_route_middleware(AccessBoundary::authenticated())
+			.endpoint(super::views::provider_credentials::get_record)
+			.with_route_middleware(AccessBoundary::authenticated())
+			.endpoint(super::views::provider_credentials::revoke)
+			.with_route_middleware(AccessBoundary::authenticated())
+			.endpoint(super::views::provider_credentials::delete_record)
+			.with_route_middleware(AccessBoundary::authenticated())
+			.endpoint(super::views::provider_credentials::list_bindings)
+			.with_route_middleware(AccessBoundary::authenticated())
+			.endpoint(super::views::provider_credentials::get_binding)
+			.with_route_middleware(AccessBoundary::authenticated())
+			.endpoint(super::views::provider_credentials::update_binding)
+			.with_route_middleware(AccessBoundary::authenticated())
 			.endpoint(super::views::desktop::start)
 			.with_route_middleware(AccessBoundary::public())
 			.endpoint(super::views::desktop::authorize)

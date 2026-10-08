@@ -88,6 +88,7 @@ class PlanTests(unittest.TestCase):
             terraform.configuration = dict.fromkeys(
                 (
                     "project_id",
+                    "byok_project_id",
                     "cloudflare_zone_id",
                     "release_bucket",
                     "deploy_service_account",
