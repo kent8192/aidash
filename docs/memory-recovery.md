@@ -94,6 +94,11 @@ floor is withheld rather than guessed. Current source/authority, retention and
 origin allowances are rechecked before index work and final disclosure. Rebuild
 operations retain conservative charges for uncertain earlier attempts.
 
+Indexing holds a shared workspace lock before reading source rows and through
+the independent durable embedding reservation. Concurrent indexers can share
+that lock; retention maintenance skips its workspace writer while those readers
+are active, avoiding a cycle between source settings and reservation foreign keys.
+
 Inspect the gate and remove expired archives with `memory-recovery status` and
 `memory-recovery prune`, using the same `--directory`. Status reports the epoch,
 serving gate and number of fenced unit identities. Restore reports restored and

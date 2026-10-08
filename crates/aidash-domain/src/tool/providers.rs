@@ -229,7 +229,8 @@ pub fn validate_restrictions(operation: &str, narrow: &Narrowing) -> Result<()> 
 		"skill_read" => (false, &["skill_id", "path"], &["max_chars"]),
 		_ => (false, &[], &[]),
 	};
-	if !hosts && narrow.allowed_hosts.is_some()
+	if narrow.decision.is_some()
+		|| !hosts && narrow.allowed_hosts.is_some()
 		|| narrow
 			.scope
 			.keys()

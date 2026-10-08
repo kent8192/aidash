@@ -48,6 +48,22 @@ impl DefinitionValidation {
 	pub fn validate_in(&self, e: &Entry, local: bool) -> Result<()> {
 		aidash_domain::registry::rules::validate_metadata(e, local)?;
 		match e.kind.as_str() {
+			"decider" => {
+				let config: aidash_domain::decision::DeciderConfig =
+					serde_json::from_value(e.config.clone())?;
+				config.validate()?;
+				if local {
+					let credential = self
+						.credentials
+						.resolve(&config.credential_env)
+						.map_err(|_| Error::Invalid("Decider credential unavailable".into()))?;
+					if credential.trim().is_empty() {
+						return Err(Error::Invalid(
+							"Decider credential must not be empty".into(),
+						));
+					}
+				}
+			}
 			"memory" | "source" if e.config.get("schema_version").is_some() => {
 				let descriptor: aidash_domain::registry::bindings::sources::NativeContext =
 					serde_json::from_value(e.config.clone())?;

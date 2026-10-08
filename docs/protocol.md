@@ -65,6 +65,10 @@ A coordinator's final response remains gated while a child is unresolved. An ope
 
 ### Context compaction
 
+The [portable decision gate foundation](decision-gate.md) defines explicit
+Decider pins and historical replay contracts for #108. Native execution still
+uses the compaction path described below until its separate integration lands.
+
 The compaction trigger, post-compaction fit check and final preflight use the
 same complete-request estimate: UTF-8 bytes of the serialized model-visible
 messages and tool definitions, plus `max_output_tokens`, plus 1,024 framing

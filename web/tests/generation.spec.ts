@@ -210,18 +210,24 @@ test("generation dashboard manages policy, approval, completion and retained his
     await registryDialog
       .getByLabel("埋め込みの次元数", { exact: true })
       .fill("3");
-    const registration = page
-      .waitForResponse(
-        (response) =>
-          response.url().endsWith("/api/registry") &&
-          response.request().method() === "POST",
-      )
-      .then((response) => response.json());
+    // Buffer the body before releasing it to the UI, whose success handler navigates.
+    // Chromium can discard a page response body as soon as that navigation starts.
+    let embedder = "";
+    await page.route("**/api/registry", async (route) => {
+      if (route.request().method() !== "POST") return route.fallback();
+      const response = await route.fetch({
+        headers: { ...route.request().headers(), ...cleanupHeaders },
+      });
+      expect(response.status(), await response.text()).toBe(200);
+      embedder = (await response.json()).id as string;
+      await route.fulfill({ response });
+    });
     await registryDialog
       .getByRole("button", { name: "エンティティを登録", exact: true })
       .click();
-    const embedder = (await registration).id as string;
     await expect(registryDialog).toHaveCount(0);
+    await page.unroute("**/api/registry");
+    expect(embedder).not.toBe("");
     expect((await api(`/api/registry/${embedder}/1.0.0`)).config).toEqual(
       embeddingConfig,
     );
