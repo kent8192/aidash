@@ -753,6 +753,77 @@ async fn native_context_is_explicit_and_skill_sources_cannot_omit_support() {
 	assert!(snapshot(&mut catalog, &config, false).await.is_err());
 }
 
+#[rstest::rstest]
+#[case::roots("skill_roots")]
+#[case::attachments("skill_attachments")]
+#[tokio::test]
+async fn skill_sources_require_canonical_support_aliases_at_admission_and_recovery(
+	#[case] adapter: &str,
+	#[values("skill_list", "skill_load", "skill_read")] operation: &str,
+	#[values("admission", "recovery")] boundary: &str,
+) {
+	let mut catalog = Catalog::new();
+	let source = if adapter == "skill_roots" {
+		json!({"adapter":adapter,"roots":[".agents/skills"]})
+	} else {
+		let mut skill: aidash_domain::capabilities::SkillAttachment = serde_json::from_value(
+			json!({"skill_id":uuid::Uuid::new_v4(),"origin":"fixture","digest":"","instructions":"---\nname: test\ndescription: Fixture\n---\nRead this.","files":[]}),
+		)
+		.unwrap();
+		skill.digest = aidash_domain::capabilities::skills::content_digest(&skill);
+		json!({"adapter":adapter,"attachments":[skill]})
+	};
+	catalog.insert(entry(
+		"skills-source",
+		"source",
+		json!({"schema_version":1,"source":source}),
+	));
+	let mut config = agent_config();
+	config.instructions.clear();
+	config.bindings.push(Binding {
+		kind: BindingKind::Source,
+		target: reference("skills-source"),
+		alias: None,
+		narrow: Default::default(),
+		members: vec![],
+	});
+	let mut support = Binding::tool(QualifiedRef::builtin(NODE, operation));
+	support.alias = Some(operation.into());
+	config.bindings.push(support);
+	let mut saved = snapshot(&mut catalog, &config, false).await.unwrap();
+	saved.validate().unwrap();
+
+	config.bindings.last_mut().unwrap().alias = Some("renamed_skill_support".into());
+	let result = if boundary == "admission" {
+		snapshot(&mut catalog, &config, false)
+			.await
+			.map(|_| ())
+			.map_err(|error| error.to_string())
+	} else {
+		// A restored closure must reject the same alias even when its Agent
+		// normalization and all definition digests are internally consistent.
+		let root = saved
+			.definitions
+			.iter_mut()
+			.find(|definition| definition.identity == saved.agent)
+			.unwrap();
+		root.definition.config = serde_json::to_value(&config).unwrap();
+		root.definition.normalize_agent(NODE).unwrap();
+		root.digest = aidash_domain::registry::rules::digest(
+			&serde_json::to_value(&root.definition).unwrap(),
+		);
+		saved
+			.bindings
+			.iter_mut()
+			.find(|binding| binding.identity == QualifiedRef::builtin(NODE, operation))
+			.unwrap()
+			.alias = Some("renamed_skill_support".into());
+		saved.validate().map_err(|error| error.to_string())
+	};
+	let error = result.expect_err("renamed Skill support must be rejected");
+	assert!(error.contains("canonical"), "{boundary}: {error}");
+}
+
 #[tokio::test]
 async fn full_host_bundles_share_explicit_and_generated_poll_cancel_members() {
 	let mut catalog = Catalog::new();

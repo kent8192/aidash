@@ -170,6 +170,11 @@ impl BindingSnapshot {
 				let binding = expected
 					.get_mut(&QualifiedRef::builtin(&self.agent.registry_node, operation))
 					.ok_or_else(|| Error::Invalid("snapshot lacks native Skill support".into()))?;
+				if binding.binding.alias.as_deref() != Some(operation) {
+					return Err(Error::Invalid(
+						"native Skill support tools retain their canonical aliases".into(),
+					));
+				}
 				if binding.origin == BindingOrigin::Default {
 					binding.origin = BindingOrigin::SkillSupport;
 				}

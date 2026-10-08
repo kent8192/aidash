@@ -313,6 +313,11 @@ pub async fn resolve(
 			let support = resolved.get_mut(&identity).ok_or_else(|| {
 				Error::Invalid("native Skills require all Skill support tools".into())
 			})?;
+			if support.alias.as_deref() != Some(operation) {
+				return Err(Error::Invalid(
+					"native Skill support tools retain their canonical aliases".into(),
+				));
+			}
 			if support.excluded_reason.is_some() {
 				return Err(Error::Invalid(
 					"native Skill support is unavailable at this placement".into(),

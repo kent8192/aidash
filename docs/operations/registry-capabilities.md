@@ -51,7 +51,9 @@ An Agent submits `schema_version: 1`, its exact `model` reference, `instructions
 restrictions. Tool aliases are stable declaration names; collisions fail after
 bundle expansion. The required `workspace_read` and `human_request` cannot be
 removed. Bound Skills and Skill Sources require all three Skill support tools;
-cluster coordinators require all three coordination tools.
+Skill Sources retain the canonical `skill_list`, `skill_load` and `skill_read`
+aliases at admission and snapshot recovery. Cluster coordinators require all
+three coordination tools.
 
 ```json
 {
@@ -88,12 +90,16 @@ retain separate knowledge/reference authorization and are never made public by
 Registry visibility. Inference journals a bounded content observation before
 calling the model; recovery at the same boundary reuses that content after
 checking current authority. A later boundary observes current mutable content.
+Run inspection and state responses omit the Source observation cache; durable
+storage retains it for authorized recovery.
 
 Local execution, remote admission and Workbench save the same complete Binding
 snapshot. Updating an active installation does not replace an admitted Run's
 approved retained revision. Revocation or missing Provider support stops the
 Run and retains its snapshot and journals. Restoring availability does not
 resume work automatically; an explicit resume rechecks the saved contracts.
+Direct capability HTTP requests recheck the selected Tool's current catalog
+approval, pinned installation and immutable definition before dispatch.
 
 ## Home protocol and Human continuations
 
