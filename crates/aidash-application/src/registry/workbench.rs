@@ -110,7 +110,16 @@ pub async fn validate_content(
 	let mut entry: Entry = serde_json::from_value(draft.entry.clone())?;
 	let documents: Vec<ReferenceDocument> = serde_json::from_value(draft.documents.clone())?;
 	check_content(&entry, &documents, &draft.release_notes)?;
-	registry::bindings::private::detach(scope, &mut entry, node).await?;
+	registry::bindings::private::detach(
+		scope,
+		&mut entry,
+		node,
+		draft
+			.source_id
+			.as_deref()
+			.zip(draft.source_version.as_deref()),
+	)
+	.await?;
 	let source = if documents.is_empty() {
 		None
 	} else {

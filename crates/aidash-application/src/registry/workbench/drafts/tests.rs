@@ -1206,6 +1206,7 @@ async fn generated_document_sources_follow_current_draft_content(
 	mut entry: Entry,
 	#[case] content: &str,
 	#[case] copied_version: bool,
+	#[values("explicit-reference", "private.explicit", "another-agent")] explicit_origin: &str,
 ) {
 	let old_documents =
 		json!([{"name":"note","media_type":"text/plain","text":"old private text"}]);
@@ -1213,8 +1214,17 @@ async fn generated_document_sources_follow_current_draft_content(
 		crate::registry::bindings::private::attach(&mut entry, "aidash://node", &old_documents)
 			.unwrap();
 	// An explicitly mounted private Source must survive document edits.
-	let mut explicit = old_source.clone();
-	explicit.id = "explicit-reference".into();
+	let explicit = if explicit_origin == "another-agent" {
+		let mut another = entry.clone();
+		another.id = "another-agent".into();
+		another.config["bindings"] = json!([]);
+		crate::registry::bindings::private::attach(&mut another, "aidash://node", &old_documents)
+			.unwrap()
+	} else {
+		let mut explicit = old_source.clone();
+		explicit.id = explicit_origin.into();
+		explicit
+	};
 	entry.config["bindings"]
 		.as_array_mut()
 		.unwrap()
@@ -1224,6 +1234,8 @@ async fn generated_document_sources_follow_current_draft_content(
 			&explicit.id,
 		));
 	if copied_version {
+		draft.source_id = Some(entry.id.clone());
+		draft.source_version = Some(entry.version.clone());
 		entry.version = "1.1.0".into();
 	}
 	draft.entry = json!(entry);
@@ -1266,7 +1278,7 @@ async fn generated_document_sources_follow_current_draft_content(
 	let generated: Vec<_> = bindings
 		.bindings
 		.iter()
-		.filter(|binding| binding.target.id.starts_with("private."))
+		.filter(|binding| binding.target.id != explicit.id)
 		.collect();
 	if content == "cleared" {
 		assert!(generated.is_empty());
