@@ -1008,9 +1008,9 @@ async fn semantic_dependencies_hide_both_node_outputs_and_journals_after_source_
 		!receipt.to_string().contains("ochre falcon"),
 		"provenance must not return source text"
 	);
-	// Unbounded SSE uses the fixture-owned native client without buffering the body.
+	// Unbounded SSE uses the fixture-owned streaming client without buffering the body.
 	let response =
-		p.aa.raw_http
+		p.aa.streaming_http
 			.get(p.aa.url(format!("/api/events/stream?workspace_id={workspace}")))
 			.bearer_auth(&p.token)
 			.send()
@@ -3354,9 +3354,9 @@ async fn operator_content_views_cannot_bypass_both_node_subject_authority(
 		)
 		.await;
 		assert_eq!(status, 200, "{body}");
-		// Unbounded SSE uses the fixture-owned native client without buffering the body.
+		// Unbounded SSE uses the fixture-owned streaming client without buffering the body.
 		let response = app
-			.raw_http
+			.streaming_http
 			.get(app.url("/api/events/stream"))
 			.bearer_auth(&f.config.api_token)
 			.send()

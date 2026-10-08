@@ -815,16 +815,17 @@ async fn an_existing_sse_stream_waits_for_atomic_visibility_before_emitting_chan
 	use futures_util::StreamExt;
 	let (a, b, manifest, wa, _wb) = pair;
 	// APIClient buffers bodies; the fixture-owned raw client preserves incremental SSE polling (#6661).
-	let response =
-		a.f.client
-			.get(
-				a.application
-					.url(format!("/api/events/stream?workspace_id={wa}")),
-			)
-			.bearer_auth(&a.f.config.api_token)
-			.send()
-			.await
-			.unwrap();
+	let response = a
+		.application
+		.streaming_http
+		.get(
+			a.application
+				.url(format!("/api/events/stream?workspace_id={wa}")),
+		)
+		.bearer_auth(&a.f.config.api_token)
+		.send()
+		.await
+		.unwrap();
 	assert_eq!(response.status(), 200);
 	let mut stream = response.bytes_stream();
 	let first = tokio::time::timeout(std::time::Duration::from_secs(3), stream.next())

@@ -213,9 +213,7 @@ async fn observe(
 		path.push_str(&format!("&workspace_id={workspace}"));
 	}
 	let response = fixture
-		.f
-		.client
-		.clone()
+		.streaming_client
 		.get(path)
 		.bearer_auth(&fixture.token)
 		.send()
@@ -226,8 +224,12 @@ async fn observe(
 		let mut bytes = response.bytes_stream();
 		let mut buffer = Vec::new();
 		while let Some(chunk) = bytes.next().await {
-			let Ok(chunk) = chunk else {
-				return;
+			let chunk = match chunk {
+				Ok(chunk) => chunk,
+				Err(error) => {
+					eprintln!("SSE observer {client_id} ended: {error}");
+					return;
+				}
 			};
 			buffer.extend_from_slice(&chunk);
 			while let Some(end) = buffer.windows(2).position(|w| w == b"\n\n") {
@@ -357,6 +359,7 @@ async fn replicas_recover_broker_outages_and_replay_after_shutdown(
 		streams.push(observe(process, &fixture, n, Some(ws), -1, send.clone()).await);
 	}
 	let lost = fixture.emit(ws, 1).await;
+	eprintln!("SSE outage stage: startup canonical fallback");
 	for receipt in receive(&mut received, 3, 7).await {
 		assert_eq!(receipt.id, lost.sequence);
 	}
@@ -383,6 +386,7 @@ async fn replicas_recover_broker_outages_and_replay_after_shutdown(
 		.await
 		.unwrap();
 	assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
+	eprintln!("SSE outage stage: notification-only delivery");
 	let observations = receive(&mut received, 3, 2).await;
 	assert!(began.elapsed() < Duration::from_secs(2));
 	let id = observations[0].id;
@@ -411,12 +415,14 @@ async fn replicas_recover_broker_outages_and_replay_after_shutdown(
 	broker.stop().await.unwrap();
 	broker.start().await.unwrap();
 	let missed = fixture.emit(ws, 3).await;
+	eprintln!("SSE outage stage: broker outage canonical fallback");
 	for receipt in receive(&mut received, 3, 7).await {
 		assert_eq!(receipt.id, missed.sequence);
 	}
 	// Reconnection must reconcile immediately, even without publishing a new hint.
 	let recovery = fixture.emit(ws, 4).await;
 	proxy.online.send_replace(true);
+	eprintln!("SSE outage stage: broker reconnection");
 	for receipt in receive(&mut received, 3, 7).await {
 		assert_eq!(receipt.id, recovery.sequence);
 	}
@@ -434,6 +440,7 @@ async fn replicas_recover_broker_outages_and_replay_after_shutdown(
 		)
 		.await,
 	);
+	eprintln!("SSE outage stage: graceful shutdown replay");
 	for receipt in receive(&mut received, 3, 7).await {
 		assert_eq!(receipt.id, replay.sequence);
 	}
@@ -442,6 +449,7 @@ async fn replicas_recover_broker_outages_and_replay_after_shutdown(
 	drop(streams.remove(0));
 	let crash_replay = fixture.emit(ws, 6).await;
 	streams.push(observe(&processes[1], &fixture, 0, Some(ws), replay.sequence, send).await);
+	eprintln!("SSE outage stage: crash replay");
 	for receipt in receive(&mut received, 3, 7).await {
 		assert_eq!(receipt.id, crash_replay.sequence);
 	}

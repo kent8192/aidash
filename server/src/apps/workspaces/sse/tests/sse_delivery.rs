@@ -22,6 +22,7 @@ type Frames = BoxStream<'static, Result<bytes::Bytes, Box<dyn std::error::Error 
 #[derive(Clone)]
 struct Fixture {
 	_owner: common::ApplicationFixture,
+	streaming_client: reqwest::Client,
 	f: Federation,
 	url: String,
 	schema: String,
@@ -547,6 +548,7 @@ fn sse_fixture(
 	#[from(common::native_application)]
 	#[with(aidash_server::http::Settings{sse_connections:slots,..Default::default()},service.clone(),Arc::new(|r|r),sse_runtime.clone())]
 	application: common::ApplicationFuture,
+	#[from(common::streaming_http_client)] streaming_client: reqwest::Client,
 ) -> SseFuture {
 	let _ = (interval, timeout, slots, sse_runtime);
 	async move {
@@ -593,6 +595,7 @@ fn sse_fixture(
 		}
 		Fixture {
 			_owner: application_fixture,
+			streaming_client,
 			f,
 			url,
 			schema,

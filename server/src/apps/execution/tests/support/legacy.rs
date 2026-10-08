@@ -25,7 +25,7 @@ mod application;
 pub use application::{
 	ApplicationFixture, ApplicationFuture, RouterTransform, TestApplication, application,
 	application_with, application_with_event_streams, application_with_settings,
-	direct_application, native_application,
+	direct_application, native_application, streaming_http_client,
 };
 #[path = "peer.rs"]
 mod peer;

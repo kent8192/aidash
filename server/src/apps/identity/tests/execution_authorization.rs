@@ -600,9 +600,9 @@ async fn catalog_approval_and_run_read_denials_cover_search_collections_and_even
 			);
 		}
 	}
-	// Unbounded SSE uses the declared native HTTP client.
+	// Unbounded SSE uses the declared streaming HTTP client.
 	let response = app
-		.raw_http
+		.streaming_http
 		.clone()
 		.request(
 			Method::GET,

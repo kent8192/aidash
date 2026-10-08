@@ -318,8 +318,8 @@ async fn worker_remote_discovery_dependencies_survive_restart_and_hide_revoked_j
 	let (status, journal) = request(&a_app, &token, "GET", &path, Value::Null).await;
 	assert_eq!(status, 200);
 	assert!(journal.to_string().contains("remote-private-metadata"));
-	let stream_response = a
-		.client
+	let stream_response = a_app
+		.streaming_http
 		.clone()
 		.request(
 			Method::GET,

@@ -886,7 +886,7 @@ async fn unmapped_identity_stays_denied_until_operator_approves_existing_user(
 		403
 	);
 	let stream_response = app
-		.raw_http
+		.streaming_http
 		.clone()
 		.request(Method::GET, app.url("/api/events/stream?after=-1"))
 		.header("cookie", "aidash-session=fixture-session")

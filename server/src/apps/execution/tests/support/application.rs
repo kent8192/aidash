@@ -27,6 +27,8 @@ pub struct TestApplication {
 	pub context: Arc<InjectionContext>,
 	router: Arc<ServerRouter>,
 	pub(crate) raw_http: reqwest::Client,
+	#[allow(dead_code)] // Only incremental SSE readers consume this transport.
+	pub(crate) streaming_http: reqwest::Client,
 	pub(crate) api_http: Arc<APIClient>,
 	_fixture_owner: Option<RuntimeFixture>,
 }
@@ -97,6 +99,8 @@ pub async fn application_with(
 	let api_http = Arc::new(api_client_from_url(&server.url));
 	TestApplication {
 		raw_http,
+		// Act: lifecycle rebuilds retain the baseline stream transport policy.
+		streaming_http: streaming_http_client::default(),
 		api_http,
 		_fixture_owner: None,
 		server: Arc::new(server),
@@ -303,6 +307,7 @@ pub struct ApplicationClients {
 	anonymous: Arc<APIClient>,
 	operator: Arc<APIClient>,
 	raw: reqwest::Client,
+	streaming: reqwest::Client,
 }
 pub type ClientsFuture = Shared<BoxFuture<'static, ApplicationClients>>;
 
@@ -340,6 +345,12 @@ fn transport_server(application_transport: TransportFuture) -> ServerFuture {
 		.shared()
 }
 #[fixture]
+pub fn streaming_http_client() -> reqwest::Client {
+	// reinhardt-web#6661: the native HTTP client has a 10s total timeout.
+	// Retain the baseline unlimited stream lifetime; delivery Acts have their own deadlines.
+	reqwest::Client::builder().build().unwrap()
+}
+#[fixture]
 fn application_clients(
 	#[from(application_transport)] _transport: TransportFuture,
 	#[from(runtime)] _runtime: RuntimeFuture,
@@ -353,12 +364,14 @@ fn application_clients(
 	#[with(true, _runtime.clone(), _server.clone())]
 	operator: ClientFuture,
 	http_client: reqwest::Client,
+	streaming_http_client: reqwest::Client,
 ) -> ClientsFuture {
 	async move {
 		ApplicationClients {
 			anonymous: anonymous.await,
 			operator: operator.await,
 			raw: http_client,
+			streaming: streaming_http_client,
 		}
 	}
 	.boxed()
@@ -385,6 +398,7 @@ pub fn native_application(
 			context: transport.context,
 			router: transport.router,
 			raw_http: clients.raw,
+			streaming_http: clients.streaming,
 			api_http: clients.anonymous.clone(),
 			_fixture_owner: Some(transport.runtime.clone()),
 		};
