@@ -233,7 +233,7 @@ fn source_router(
 	async move {
 		let app = application.await.application;
 		let fault = Arc::new(SourceReplyFault {
-			router: Arc::new(app.native_router()),
+			router: app.native_router(),
 			state,
 		});
 		Arc::new(
@@ -249,7 +249,7 @@ fn source_router(
 fn receiver_router(
 	#[from(common::native_application)] application: common::ApplicationFuture,
 ) -> upstream_fixtures::RouterFuture {
-	async move { Arc::new(application.await.application.native_router()) }
+	async move { application.await.application.native_router() }
 		.boxed()
 		.shared()
 }
@@ -2249,7 +2249,7 @@ async fn peer_outage_and_both_node_restarts_reconcile_one_scoped_execution(
 	p.ba = common::application(p.b.clone()).await;
 	for (f, application) in [(&p.a, p.aa.clone()), (&p.b, p.ba.clone())] {
 		let app: Arc<dyn reinhardt::Handler> = Arc::new(SourceReplyFault {
-			router: Arc::new(application.native_router()),
+			router: application.native_router(),
 			state: p.drop_reply.clone(),
 		});
 		let endpoint = reqwest::Url::parse(&f.config.endpoint).unwrap();

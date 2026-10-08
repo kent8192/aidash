@@ -24,7 +24,7 @@ impl TransferFixture {
 			)
 			.await
 			.unwrap();
-			let router: Arc<dyn Handler> = Arc::new(node.app.native_router());
+			let router: Arc<dyn Handler> = node.app.native_router();
 			let context = node.app.context.clone();
 			// Act: replace the stopped transport at its original peer address.
 			self.servers.push(tokio::spawn(async move {
@@ -512,8 +512,8 @@ a.f.config.endpoint = format!("http://{}", al.local_addr().unwrap());
   let mut settings=common::settings_for(&node.f.config.database_url);
   settings.node.node_id=node.f.config.node_id.clone();settings.node.endpoint=node.f.config.endpoint.clone();settings.node.api_token=node.f.config.api_token.clone();settings.node.web_dir=node.f.config.web_dir.clone();settings.node.lease_seconds=node.f.config.lease_seconds;node.app.context.set_singleton(settings);
  }
- let a_router:Arc<dyn Handler>=Arc::new(a.app.native_router());
- let b_router:Arc<dyn Handler>=Arc::new(CommitReplyFault {router:Arc::new(b.app.native_router()),fault:lose_commit_reply.clone()});
+ let a_router:Arc<dyn Handler>=a.app.native_router();
+ let b_router:Arc<dyn Handler>=Arc::new(CommitReplyFault {router:b.app.native_router(),fault:lose_commit_reply.clone()});
  let mut servers=Vec::new();
  for (listener,router,context) in [(al,a_router,a.app.context.clone()),(bl,b_router,b.app.context.clone())] {
   servers.push(tokio::spawn(async move {

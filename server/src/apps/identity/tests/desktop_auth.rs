@@ -201,7 +201,7 @@ fn browser_origin(
 }
 #[rstest::fixture]
 fn browser_router(desktop_fixture: common::ApplicationFuture) -> upstream_fixtures::RouterFuture {
-	async move { std::sync::Arc::new(desktop_fixture.await.application.native_router()) }
+	async move { desktop_fixture.await.application.native_router() }
 		.boxed()
 		.shared()
 }

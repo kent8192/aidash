@@ -1803,7 +1803,7 @@ async fn captured_actor_application(runtime: &Federation, actor: Actor) -> commo
 			.endpoint(drafts::save)
 			.endpoint(incident::create)
 			.endpoint(incident::update)
-			.with_middleware(CapturedActor(actor))
+			.with_middleware(CapturedActor(actor.clone()))
 	})
 	.await
 }

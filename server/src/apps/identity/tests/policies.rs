@@ -16,8 +16,7 @@ use reinhardt::query::{
 	Alias, Expr, ExprTrait, IntoIden, PostgresQueryBuilder, Query, QueryStatementBuilder,
 	SimpleExpr,
 };
-use reinhardt::test::fixtures::api_client_from_url;
-use reinhardt::test::{APIClient, TestResponse};
+use reinhardt::test::TestResponse;
 use reinhardt::{Request, Response};
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -54,15 +53,6 @@ async fn get(app: &EndpointFixture, path: &str) -> (u16, Value) {
 	decoded(app.operator.get(path).await.unwrap())
 }
 
-async fn subject_client(app: &EndpointFixture, token: &str) -> APIClient {
-	let client = api_client_from_url(&app.server.url);
-	client
-		.set_header("Authorization", &format!("Bearer {token}"))
-		.await
-		.unwrap();
-	client
-}
-
 async fn scoped_request(
 	app: &EndpointFixture,
 	token: &str,
@@ -70,24 +60,53 @@ async fn scoped_request(
 	path: &str,
 	body: Value,
 ) -> (u16, Value) {
-	let client = subject_client(app, token).await;
+	let authorization = format!("Bearer {token}");
+	let headers = [("Authorization", authorization.as_str())];
+	// reinhardt-web#6672: use per-request credentials only on the declared
+	// anonymous client, preserving the baseline isolation between subjects.
 	let response = match method {
-		"GET" => client.get(path).await,
-		"POST" => client.post(path, &body, "json").await,
-		"PATCH" => client.patch(path, &body, "json").await,
+		"GET" => app
+			.anonymous
+			.get_with_headers(path, &headers)
+			.await
+			.unwrap(),
+		"POST" => app
+			.anonymous
+			.post_raw_with_headers(
+				path,
+				body.to_string().as_bytes(),
+				"application/json",
+				&headers,
+			)
+			.await
+			.unwrap(),
+		"PATCH" => {
+			// reinhardt-web#6661: PATCH lacks public per-request headers. Reuse
+			// the fixture-owned raw client without creating a credential client.
+			let response = app
+				.runtime
+				.client
+				.patch(format!("{}{path}", app.server.url))
+				.bearer_auth(token)
+				.json(&body)
+				.send()
+				.await
+				.unwrap();
+			let status = response.status();
+			let headers = response.headers().clone();
+			let version = response.version();
+			let body = response.bytes().await.unwrap();
+			TestResponse::with_body_and_version(status, headers, body, version)
+		}
 		_ => panic!("unsupported test method: {method}"),
-	}
-	.unwrap();
+	};
 	decoded(response)
 }
 
 async fn stream_response(app: &EndpointFixture, path: &str, token: &str) -> Response {
 	// APIClient buffers complete responses. Dispatch through the same production
-	// routes and DI context to pause exactly between server-side SSE frames.
-	let router = aidash_server::routes()
-		.with_di_context(app.context.clone())
-		.into_server();
-	router
+	// fixture-owned production router to pause exactly between server-side SSE frames.
+	app.router
 		.handle(
 			Request::builder()
 				.uri(path)

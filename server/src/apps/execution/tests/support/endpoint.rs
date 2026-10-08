@@ -21,6 +21,7 @@ use std::sync::Arc;
 pub struct EndpointFixture {
 	#[allow(dead_code)] // Stream revocation tests control polling through the same route context.
 	pub context: Arc<InjectionContext>,
+	pub router: Arc<reinhardt::ServerRouter>,
 	pub operator: Arc<APIClient>,
 	pub anonymous: Arc<APIClient>,
 	pub runtime: Federation,
@@ -83,14 +84,14 @@ fn endpoint_router(endpoint_runtime: RuntimeFuture) -> RouterFuture {
 }
 
 #[fixture]
-fn endpoint_server(endpoint_router: RouterFuture) -> ServerFuture {
+fn endpoint_server(endpoint_runtime: RuntimeFuture) -> ServerFuture {
 	async move {
-		let router = endpoint_router.await;
-		// reinhardt-web#6658: retain shared router ownership in a composable fixture.
-		let transport = reinhardt::ServerRouter::new()
-			.handler_arc("/", router.clone())
-			.handler_arc("/{*rest}", router);
-		Arc::new(test_server_guard(transport).await)
+		// reinhardt-web#6673: raw handler mounts omit HEAD. Serve production
+		// routes directly, sharing DI with the separate in-process router fixture.
+		let router = aidash_server::routes()
+			.with_di_context(endpoint_runtime.await.context.clone())
+			.into_server();
+		Arc::new(test_server_guard(router).await)
 	}
 	.boxed()
 	.shared()
@@ -130,7 +131,7 @@ pub fn endpoint(
 	#[with(runtime.clone())]
 	_router: RouterFuture,
 	#[from(endpoint_server)]
-	#[with(_router.clone())]
+	#[with(runtime.clone())]
 	server: ServerFuture,
 	#[from(endpoint_client)]
 	#[with(true, runtime.clone(), server.clone())]
@@ -143,6 +144,7 @@ pub fn endpoint(
 		let runtime = runtime.await;
 		EndpointFixture {
 			context: runtime.context.clone(),
+			router: _router.await,
 			operator: operator.await,
 			anonymous: anonymous.await,
 			runtime: runtime.runtime.clone(),

@@ -49,7 +49,7 @@ pub fn application(runtime: Federation) -> Pin<Box<dyn Future<Output = TestAppli
 
 pub async fn application_with(
 	runtime: Federation,
-	router: impl FnOnce(ServerRouter) -> ServerRouter,
+	router: impl Fn(ServerRouter) -> ServerRouter,
 ) -> TestApplication {
 	// Production startup admits immutable system declarations before serving routes.
 	runtime.registry.seed_system().await.unwrap();
@@ -87,15 +87,13 @@ pub async fn application_with(
 		aidash_server::sse::Settings::default(),
 	)));
 	let context = Arc::new(context);
+	// reinhardt-web#6673: mounting the shared router as a raw handler rejects HEAD.
+	// Separate route tables share the same DI services and scenario middleware state.
+	let server_router =
+		router(aidash_server::routes().into_server()).with_di_context(context.clone());
 	let router =
 		Arc::new(router(aidash_server::routes().into_server()).with_di_context(context.clone()));
-	// Share the same native router and DI state with the disposable HTTP fixture
-	// and with body-ownership tests that deliberately never poll a response.
-	let transport = ServerRouter::new()
-		.handler_arc("/", router.clone())
-		.handler_arc("/{*rest}", router.clone())
-		.with_di_context(context.clone());
-	let server = test_server_guard(transport).await;
+	let server = test_server_guard(server_router).await;
 	let api_http = Arc::new(api_client_from_url(&server.url));
 	TestApplication {
 		raw_http,
@@ -118,11 +116,8 @@ pub async fn peer_application(runtime: &mut Federation) -> TestApplication {
 impl TestApplication {
 	/// Share the native router with fixed-port peer restart fixtures.
 	#[allow(dead_code)] // Only restart and transport fault suites need another listener.
-	pub fn native_router(&self) -> ServerRouter {
-		ServerRouter::new()
-			.handler_arc("/", self.router.clone())
-			.handler_arc("/{*rest}", self.router.clone())
-			.with_di_context(self.context.clone())
+	pub fn native_router(&self) -> Arc<ServerRouter> {
+		self.router.clone()
 	}
 
 	/// Preserve synthetic socket peers and unpolled response producer ownership.
@@ -317,14 +312,16 @@ fn application_router(
 }
 
 #[fixture]
-fn application_server(application_router: RouterFuture) -> ServerFuture {
+fn application_server(
+	#[default(Arc::new(|router| router))] transform: RouterTransform,
+	application_context: ContextFuture,
+) -> ServerFuture {
 	async move {
-		let router = application_router.await;
-		// reinhardt-web#6658: compose the pinned primitive through a local fixture.
-		let transport = ServerRouter::new()
-			.handler_arc("/", router.clone())
-			.handler_arc("/{*rest}", router);
-		Arc::new(test_server_guard(transport).await)
+		// reinhardt-web#6658/#6673: compose the native guard with direct
+		// production routes; share DI and transform state with the oneshot router.
+		let router = transform(aidash_server::routes().into_server())
+			.with_di_context(application_context.await);
+		Arc::new(test_server_guard(router).await)
 	}
 	.boxed()
 	.shared()
@@ -382,7 +379,7 @@ fn application_transport(
 	#[with(_transform.clone(), context.clone())]
 	router: RouterFuture,
 	#[from(application_server)]
-	#[with(router.clone())]
+	#[with(_transform.clone(), context.clone())]
 	server: ServerFuture,
 ) -> TransportFuture {
 	async move {

@@ -49,7 +49,7 @@ fn graph_runtime(
 fn graph_router(
 	#[from(common::native_application)] application: common::ApplicationFuture,
 ) -> upstream_fixtures::RouterFuture {
-	async move { Arc::new(application.await.application.native_router()) }
+	async move { application.await.application.native_router() }
 		.boxed()
 		.shared()
 }

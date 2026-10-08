@@ -693,16 +693,18 @@ async fn stored_message_author_controls_visibility_and_forged_authorship_is_reje
 	.await;
 	let bob = bob["token"].as_str().unwrap();
 	let path = format!("/api/workspaces/{workspace}/messages");
-	let client = app.client();
-	client
-		.set_header("Authorization", &format!("Bearer {bob}"))
-		.await
-		.unwrap();
-	let rejected = client
-		.post(
+	let authorization = format!("Bearer {bob}");
+	// reinhardt-web#6672: per-request headers append to defaults. Keep the shared
+	// anonymous client free of default credentials so later Alice requests stay isolated.
+	let rejected = app
+		.client()
+		.post_raw_with_headers(
 			&path,
-			&json!({"content":"bob-private","sender":"alice"}),
-			"json",
+			json!({"content":"bob-private","sender":"alice"})
+				.to_string()
+				.as_bytes(),
+			"application/json",
+			&[("Authorization", authorization.as_str())],
 		)
 		.await
 		.unwrap();
