@@ -346,7 +346,7 @@ fn transport_server(application_transport: TransportFuture) -> ServerFuture {
 }
 #[fixture]
 pub fn streaming_http_client() -> reqwest::Client {
-	// reinhardt-web#6661: the native HTTP client has a 10s total timeout.
+	// reinhardt-web#6689: the native HTTP client has a 10s total timeout.
 	// Retain the baseline unlimited stream lifetime; delivery Acts have their own deadlines.
 	reqwest::Client::builder().build().unwrap()
 }
