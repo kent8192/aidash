@@ -101,14 +101,19 @@ let created_by_grant: bool = { let query_bind_1 = grant; let query_bind_2 = chil
 						.await?;
 					(json!(request), None)
 				}
-				Effect::Claim { revision, agent } => (
-					json!(
-						store
-							.claim_in(&mut self.access.tx, task, revision, owner, agent, None)
-							.await?
-					),
-					None,
-				),
+				Effect::Claim { revision, agent } => {
+					let claimed = store
+						.claim_in(&mut self.access.tx, task, revision, owner, agent, None)
+						.await?;
+					crate::apps::knowledge::repositories::bindings::claimed(
+						store,
+						&mut crate::semantic::service::Lease::Inherited(self.access),
+						task.id,
+						agent,
+					)
+					.await?;
+					(json!(claimed), None)
+				}
 				Effect::Transition {
 					revision,
 					next,

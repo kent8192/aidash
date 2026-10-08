@@ -248,10 +248,9 @@ pub async fn resolve(
 					"native context restriction is not supported by this adapter".into(),
 				));
 			}
-			if matches!(kind, BindingKind::Memory | BindingKind::Source) {
-				let descriptor: sources::NativeContext =
-					serde_json::from_value(entry.config.clone())?;
-				descriptor.validate(expected)?;
+			if matches!(kind, BindingKind::Memory | BindingKind::Source)
+				&& let Some(descriptor) = sources::validate_definition(&entry)?
+			{
 				if remote
 					&& matches!(
 						descriptor.source,
@@ -498,6 +497,8 @@ pub async fn resolve(
 		foreign_agents: foreign_agents.into_values().collect(),
 	};
 	snapshot.validate()?;
+	let settings = aidash_domain::registry::AgentConfig::from_snapshot(&snapshot)?;
+	validate_memory_sources(&snapshot, &settings)?;
 	Ok(snapshot)
 }
 
@@ -561,4 +562,85 @@ pub fn component_action(kind: &str) -> &'static str {
 		"memory" | "source" => "registry.read",
 		_ => "registry.read",
 	}
+}
+
+fn validate_memory_sources(
+	snapshot: &BindingSnapshot,
+	settings: &aidash_domain::registry::AgentConfig,
+) -> Result<()> {
+	use aidash_domain::memory::{ProviderConfig, SourceConfig, SourceScope};
+	if settings.memory.is_none() && !settings.sources.is_empty() {
+		return Err(Error::Invalid(
+			"Agent Sources require a primary memory provider".into(),
+		));
+	}
+	if settings.sources.len() > 32 {
+		return Err(Error::Invalid(
+			"Agent admits at most 32 memory Sources".into(),
+		));
+	}
+	let lookup = |reference: &aidash_domain::registry::EntityRef| {
+		snapshot
+			.definitions
+			.iter()
+			.find(|d| {
+				d.identity.registry_node == snapshot.agent.registry_node
+					&& d.identity.local() == *reference
+			})
+			.map(|d| &d.definition)
+			.ok_or_else(|| {
+				Error::Invalid("memory dependency is absent from the admitted closure".into())
+			})
+	};
+	let mut workspace_provider = None;
+	let mut providers: Vec<_> = settings.memory.iter().cloned().collect();
+	for reference in &settings.sources {
+		let source: SourceConfig = serde_json::from_value(lookup(reference)?.config.clone())?;
+		if source.scope == SourceScope::Participant
+			&& settings.memory.as_ref() != Some(&source.memory)
+		{
+			return Err(Error::Invalid(
+				"participant Sources require the Agent's exact primary memory provider".into(),
+			));
+		}
+		if source.scope == SourceScope::Workspace {
+			if workspace_provider
+				.as_ref()
+				.is_some_and(|p| p != &source.memory)
+			{
+				return Err(Error::Invalid(
+					"workspace Sources require one exact memory provider version".into(),
+				));
+			}
+			workspace_provider = Some(source.memory.clone());
+		}
+		let provider: ProviderConfig =
+			serde_json::from_value(lookup(&source.memory)?.config.clone())?;
+		if source.max_tokens > provider.policy.bounds.max_context_tokens {
+			return Err(Error::Invalid(
+				"source context cap exceeds its memory provider cap".into(),
+			));
+		}
+		providers.push(source.memory);
+	}
+	let mut embedding = None;
+	for reference in providers {
+		let provider: ProviderConfig = serde_json::from_value(lookup(&reference)?.config.clone())?;
+		let configuration: aidash_domain::semantic::EmbeddingConfig =
+			serde_json::from_value(lookup(&provider.policy.embedding)?.config.clone())?;
+		if embedding
+			.as_ref()
+			.is_some_and(|previous| previous != &configuration)
+		{
+			return Err(Error::Invalid(
+				"an Agent's memory providers require compatible embedding configurations".into(),
+			));
+		}
+		aidash_domain::memory::graph::validate_capacity(
+			&provider.policy.bounds,
+			configuration.dimensions,
+		)?;
+		embedding = Some(configuration);
+	}
+	Ok(())
 }

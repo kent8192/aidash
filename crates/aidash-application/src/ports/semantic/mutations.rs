@@ -66,20 +66,6 @@ pub trait SemanticEntriesSession: Send {
 	async fn list(&mut self, workspace: Uuid) -> Result<Vec<Entry>>;
 	async fn lock_entry(&mut self, workspace: Uuid, id: Uuid) -> Result<Option<Entry>>;
 	async fn reindex_replay(&mut self, id: Uuid, revision: i64) -> Result<bool>;
-	async fn managed_memory(&mut self, id: Uuid) -> Result<Option<(String, String, String)>>;
-	async fn require_memory_write(
-		&mut self,
-		workspace: Uuid,
-		agent: &str,
-		version: &str,
-	) -> Result<()>;
-	async fn delete_memory(
-		&mut self,
-		workspace: Uuid,
-		agent: String,
-		version: String,
-		home: String,
-	) -> Result<()>;
 	async fn change(
 		&mut self,
 		workspace: Uuid,

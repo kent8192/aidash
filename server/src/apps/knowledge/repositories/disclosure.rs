@@ -12,8 +12,14 @@ pub(crate) struct Disclosure<'a, 'scope> {
 }
 #[async_trait]
 impl SemanticDisclosureScope for Disclosure<'_, '_> {
+	async fn unit(&mut self, id: Uuid, workspace: Uuid) -> Result<Option<String>> {
+		match super::units::text(self.lease, id, workspace).await {
+			Err(Error::Forbidden | Error::Conflict(_)) => Ok(None),
+			result => result.map_err(Into::into),
+		}
+	}
 	fn scoped(&self) -> bool {
-		!matches!(self.lease, Lease::Operator(_))
+		!matches!(self.lease, Lease::Operator(_) | Lease::BorrowedOperator(_))
 	}
 	async fn operator_visible(&mut self, workspace: Uuid) -> Result<bool> {
 		crate::authorization::remote::operator::visible(self.lease.tx(), workspace)
@@ -41,37 +47,6 @@ impl SemanticDisclosureScope for Disclosure<'_, '_> {
 			.decide(resource, action)
 			.await
 			.map_err(Into::into)
-	}
-	async fn managed_memory(&mut self, id: Uuid) -> Result<Option<(String, String)>> {
-		let result: NativeResult<Option<(String, String)>> = async {
-			let entry_id = id;
-			let managed: Option<(String, String)> = {
-				let query_bind_1 = entry_id;
-				crate::database::native::query_as(
-					&reinhardt::query::Query::select()
-						.expr(reinhardt::query::SimpleExpr::from(
-							reinhardt::query::Expr::col(reinhardt::query::Alias::new("agent_id")),
-						))
-						.expr(reinhardt::query::SimpleExpr::from(
-							reinhardt::query::Expr::col(reinhardt::query::Alias::new(
-								"agent_version",
-							)),
-						))
-						.from(reinhardt::query::Alias::new("semantic_agent_memory"))
-						.and_where(SimpleExpr::CustomWithExpr(
-							"(entry_id = ?)".to_owned(),
-							vec![Expr::value(query_bind_1.to_owned()).into()],
-						))
-						.to_string(reinhardt::query::PostgresQueryBuilder),
-				)
-				.columns(&["agent_id", "agent_version"])
-				.fetch_optional(&mut **self.lease.access().expect("scoped semantic authority").tx)
-				.await?
-			};
-			Ok(managed)
-		}
-		.await;
-		result.map_err(Into::into)
 	}
 	async fn artifact(&mut self, id: Uuid, workspace: Uuid) -> Result<Option<Artifact>> {
 		let result: NativeResult<Option<Artifact>> = async {

@@ -1,6 +1,7 @@
 //! Read-only query documents consumed by deployment acceptance runners.
 mod acceptance;
 mod remote_memory;
+
 use async_trait::async_trait;
 use reinhardt::commands::{
 	CapabilityCommand, CapabilityContext, CapabilityRequirement, CommandResult,
@@ -37,5 +38,21 @@ impl CapabilityCommand for Diagnostics {
 		};
 		println!("{document}");
 		Ok(())
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	#[test]
+	fn every_cluster_profile_includes_the_generated_pgroonga_flush_query() {
+		let query = super::acceptance::pgroonga_ready();
+		assert!(query.contains("pgroonga_command"));
+		assert!(query.contains("io_flush"));
+		for document in [
+			super::acceptance::document(),
+			super::remote_memory::document(),
+		] {
+			assert_eq!(document["pgroonga_ready"], query);
+		}
 	}
 }

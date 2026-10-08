@@ -97,6 +97,36 @@ async fn database_accepts_every_host_operation_and_its_exact_lifecycle(
 }
 #[rstest]
 #[tokio::test]
+async fn context_descriptors_remain_valid_alongside_native_memory_roles(
+	#[future] database: DatabaseFixture,
+) {
+	let database = database.await;
+	let registry = registry(&database).await;
+	for (kind, adapter) in [
+		("memory", "conversation_memory"),
+		("source", "workspace_retrieval"),
+	] {
+		let entry: Entry = serde_json::from_value(json!({
+			"id":format!("descriptor-{kind}"),"version":"1.0.0","kind":kind,
+			"name":{"en":"Context descriptor"},"description":{"en":"Context descriptor"},
+			"config":{"schema_version":1,"source":{"adapter":adapter}}
+		}))
+		.unwrap();
+		let saved = registry.register(entry.clone()).await.unwrap();
+		assert_eq!(saved.config, entry.config);
+		assert_eq!(
+			registry.get(&saved.id, &saved.version).await.unwrap(),
+			saved
+		);
+		let mut ambiguous = entry;
+		ambiguous.id = format!("ambiguous-{kind}");
+		ambiguous.config["engine"] = json!("hindsight_rust");
+		assert!(registry.register(ambiguous).await.is_err());
+	}
+}
+
+#[rstest]
+#[tokio::test]
 async fn system_seed_is_discoverable_idempotent_and_rejects_owner_mutation(
 	#[future] database: DatabaseFixture,
 ) {

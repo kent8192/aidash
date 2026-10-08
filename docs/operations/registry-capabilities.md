@@ -10,7 +10,7 @@ Bundle member IDs must be unique within each bundle, including across versions a
 
 New Tool registrations require qualified Provider descriptors. Old transport-tagged definitions and old Agent configurations are unsupported for new execution; they remain historical records and are not converted. HTTP/MCP/Agent integration configuration is nested under the descriptor's `transport` field.
 
-Node startup seeds the 15 required/default builtin declarations at exact immutable versions. Seeding verifies existing bytes and fails the entire transaction on a reserved-name conflict. System catalog visibility does not add tenant resource grants. Builtins cannot be published, installed or mutated through Marketplace.
+Node startup seeds the 17 required/default builtin declarations at exact immutable versions. Seeding verifies existing bytes and fails the entire transaction on a reserved-name conflict. System catalog visibility does not add tenant resource grants. Builtins cannot be published, installed or mutated through Marketplace.
 
 ## Pending Host packages
 
@@ -79,7 +79,8 @@ configuration cannot replace the adapter or its pinned references; private
 documents remain separately stored and must be available with the exact digest
 on the installing Node.
 
-Memory reads are opt-in. `memory_write` does not enable reading. Supported native
+Memory reads require a Memory Binding and the admitted recall/reflect operations.
+`memory_mutate` alone does not enable reading. Supported native
 context declarations wrap the existing conversation/semantic memory, workspace
 retrieval, private-reference, original-reference and Skill adapters. Private
 Agent documents become immutable private Source definitions. Their contents
@@ -185,3 +186,7 @@ before rolling back software. Do not down-migrate, rewrite admitted snapshots or
 resume old software against new-contract Runs. Runtime acceptance is per
 architecture and deployment; portable tests and hosted CI do not certify a
 production isolation profile.
+
+## Native Memory providers
+
+A `memory` Binding may target the immutable Rust Hindsight provider. Its exact extraction, derivation, reflection, embedding, reranker and tokenizer dependencies join the admitted closure. Native workspace `source` Bindings must share one exact provider, use compatible embedding configuration and fit its policy bounds; participant Sources must use the Agent's Memory provider. The Agent schema remains Binding-only. The `memory_mutate`, `memory_recall` and `memory_reflect` operations replace the historical `memory_write` operation. Cached native memory observations recheck current visibility before restart recovery uses them.

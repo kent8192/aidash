@@ -80,6 +80,7 @@ pub(crate) async fn context(
 	.map_err(|error| {
 		Error::RemoteSemantic(crate::authorization::remote::semantic::failure(&error))
 	})?;
+	receipt.validate_native()?;
 	if receipt.operation_id != operation.id
 		|| receipt.operation_digest != operation.digest()?
 		|| receipt.home_node != run.home_node
@@ -99,8 +100,11 @@ pub(crate) async fn context(
 				source.entry_id != m.entry_id
 					|| source.revision != m.revision
 					|| source.content_digest != crate::semantic::service::content_digest(&m.text)
-			}) || crate::context::estimated_tokens(&serde_json::to_string(&receipt)?)
-		> operation.max_tokens
+			}) || (if receipt.binding.native().is_some() {
+		serde_json::to_vec(&receipt)?.len()
+	} else {
+		crate::context::estimated_tokens(&serde_json::to_string(&receipt)?)
+	}) > operation.max_tokens
 	{
 		return Err(Error::RemoteSemantic(Failure::ProviderContract));
 	}
@@ -108,6 +112,8 @@ pub(crate) async fn context(
 	// Persist before this function makes the text available to compaction/model
 	// construction. The Home keeps the accumulated dependencies across replays.
 	let mut tx = crate::database::native::begin(&f.store.pool).await?;
+	crate::apps::knowledge::repositories::receiver_caches::record(&mut tx, run.id, &receipt)
+		.await?;
 	crate::database::native::query(
 		&Query::insert()
 			.into_table(Alias::new("semantic_remote_receipts"))

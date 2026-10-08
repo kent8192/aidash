@@ -128,11 +128,6 @@ impl SemanticDisclosureScope for Scope {
 		self.resources.push((resource.clone(), action.into()));
 		Ok(!self.denied.contains(action))
 	}
-	async fn managed_memory(&mut self, id: Uuid) -> Result<Option<(String, String)>> {
-		assert_eq!(id, Uuid::from_u128(1));
-		self.touch("managed")?;
-		Ok(self.managed.clone())
-	}
 	async fn artifact(&mut self, id: Uuid, workspace: Uuid) -> Result<Option<Artifact>> {
 		self.touch("artifact")?;
 		self.lookups.push((id, workspace));
@@ -156,16 +151,10 @@ impl SemanticDisclosureScope for Scope {
 }
 #[rstest]
 #[tokio::test]
-async fn saved_authorship_metadata_and_managed_agent_select_current_policy(
-	mut scope: Scope,
-	entry: Entry,
-) {
+async fn saved_authorship_metadata_selects_current_semantic_policy(mut scope: Scope, entry: Entry) {
 	scope.managed = Some(("original-agent".into(), "2.0.0".into()));
 	assert!(permits(&mut scope, &entry, "semantic.read").await.unwrap());
-	assert_eq!(
-		scope.calls,
-		vec!["workspace", "semantic_policy", "managed", "memory_policy"]
-	);
+	assert_eq!(scope.calls, vec!["workspace", "semantic_policy"]);
 	let (resource, action) = &scope.resources[0];
 	assert_eq!(resource.id, entry.id.to_string());
 	assert_eq!(action, "semantic.read");
@@ -173,34 +162,9 @@ async fn saved_authorship_metadata_and_managed_agent_select_current_policy(
 		resource.attributes,
 		json!({"owner":"saved-owner","workspace_id":entry.workspace_id,"created_by":"saved-author","agent":"stored-agent","metadata":{"stored":true}})
 	);
-	let (resource, action) = &scope.resources[1];
-	assert_eq!(resource.kind, "memory");
-	assert_eq!(resource.id, "original-agent");
-	assert_eq!(action, "memory.read");
-	assert_eq!(resource.attributes["created_by"], "stored-agent");
-	assert_eq!(resource.attributes["version"], "2.0.0");
-}
-#[rstest]
-#[case::write("semantic.write")]
-#[case::delete("semantic.delete")]
-#[tokio::test]
-async fn managed_mutations_use_memory_write_and_do_not_decode_source(
-	mut scope: Scope,
-	mut entry: Entry,
-	#[case] action: &str,
-) {
-	scope.managed = Some(("managed".into(), "1".into()));
-	entry.source = json!({"malformed":true});
-	assert!(permits(&mut scope, &entry, action).await.unwrap());
-	assert_eq!(scope.resources[1].1, "memory.write");
-	assert_eq!(
-		scope.calls,
-		vec!["workspace", "semantic_policy", "managed", "memory_policy"]
-	);
 }
 #[rstest]
 #[case::semantic("semantic.read",vec!["workspace","semantic_policy"])]
-#[case::memory("memory.read",vec!["workspace","semantic_policy","managed","memory_policy"])]
 #[tokio::test]
 async fn denied_policy_stops_before_reading_any_source(
 	mut scope: Scope,
@@ -224,7 +188,7 @@ async fn deleted_history_retains_policy_and_skips_revoked_source_decode(
 	entry.deleted = true;
 	entry.source = json!({"removed":true});
 	assert!(permits(&mut scope, &entry, "semantic.read").await.unwrap());
-	assert_eq!(scope.calls, vec!["workspace", "semantic_policy", "managed"]);
+	assert_eq!(scope.calls, vec!["workspace", "semantic_policy"]);
 }
 #[rstest]
 #[case::allowed(true)]
@@ -400,18 +364,11 @@ async fn active_semantic_read_rechecks_its_saved_underlying_source(
 			vec![
 				"workspace",
 				"semantic_policy",
-				"managed",
 				"artifact",
 				"artifact_visible",
 			]
 		} else {
-			vec![
-				"workspace",
-				"semantic_policy",
-				"managed",
-				"message",
-				"message_visible",
-			]
+			vec!["workspace", "semantic_policy", "message", "message_visible"]
 		}
 	);
 }
@@ -426,13 +383,11 @@ async fn malformed_active_source_returns_its_decode_error_after_policy(
 		permits(&mut scope, &entry, "semantic.read").await,
 		Err(Error::Json(_))
 	));
-	assert_eq!(scope.calls, vec!["workspace", "semantic_policy", "managed"]);
+	assert_eq!(scope.calls, vec!["workspace", "semantic_policy"]);
 }
 #[rstest]
 #[case::workspace("workspace")]
 #[case::semantic("semantic_policy")]
-#[case::managed("managed")]
-#[case::memory("memory_policy")]
 #[case::artifact("artifact")]
 #[case::artifact_visibility("artifact_visible")]
 #[tokio::test]

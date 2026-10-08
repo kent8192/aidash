@@ -17,18 +17,27 @@ pub async fn binding<S: SemanticBindingScope + ?Sized>(
 	inspection: &Inspection,
 	request: &Request,
 ) -> Result<Binding> {
+	let agent = AgentConfig::from_snapshot(&inspection.binding_snapshot)?;
+	let native_enabled =
+		agent.memory.is_some() && agent.allow_cross_conversation_memory != Some(false);
 	let Request::RequiredHome {
 		embedding,
 		compactor,
+		native,
 	} = request
 	else {
+		if native_enabled {
+			return Err(Error::RemoteSemantic(Failure::Configuration));
+		}
 		return Ok(Binding::Disabled {});
 	};
+	if native_enabled != native.is_some() {
+		return Err(Error::RemoteSemantic(Failure::Configuration));
+	}
 	if inspection.semantic_memory != VERSION || inspection.compactor.as_ref() != compactor.as_ref()
 	{
 		return Err(Error::RemoteSemantic(Failure::Configuration));
 	}
-	let agent: AgentConfig = AgentConfig::from_snapshot(&inspection.binding_snapshot)?;
 	if !agent.semantic_memory && !agent.workspace_context {
 		return Err(Error::RemoteSemantic(Failure::Configuration));
 	}
@@ -53,7 +62,10 @@ pub async fn binding<S: SemanticBindingScope + ?Sized>(
 				error
 			}
 		})?;
-	if index.tenant != access.binding_tenant() || !spec.enabled || !spec.auto_context {
+	if index.tenant != access.binding_tenant()
+		|| !spec.enabled
+		|| (!native_enabled && !spec.auto_context)
+	{
 		return Err(Error::RemoteSemantic(Failure::Configuration));
 	}
 	let entry = access
@@ -90,10 +102,33 @@ pub async fn binding<S: SemanticBindingScope + ?Sized>(
 		None
 	};
 	Ok(Binding::RequiredHome {
+		native: if let Some(native) = native {
+			let generation = inspection
+				.generation
+				.as_ref()
+				.map(|value| -> Result<_> {
+					let intent: aidash_domain::generation::intent::Intent =
+						serde_json::from_value(value.clone())?;
+					Ok(aidash_domain::semantic::remote::NativeOrigin {
+						node_id: node.into(),
+						intent_id: intent.id,
+					})
+				})
+				.transpose()?;
+			Some(Box::new(
+				access
+					.native_binding(task.workspace_id, native, generation.as_ref())
+					.await?,
+			))
+		} else {
+			None
+		},
 		home_lineage: access.binding_lineage().await?,
 		execution_lineage: inspection.lineage.clone(),
 		version: VERSION,
-		index_revision: index.revision,
+		// Native dependencies are canonical Unit revisions. A disposable index
+		// rebuild keeps the approved spec and must not withdraw consumed units.
+		index_revision: if native_enabled { 0 } else { index.revision },
 		index_digest: digest(&index.spec),
 		embedding: Box::new(Provider {
 			node_id: access.home_node_id().to_owned(),

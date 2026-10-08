@@ -1,4 +1,5 @@
 import { Button } from "./components/ui/button";
+import { MemoryWorkspace } from "./memory";
 import { RecordView, useRecordLabels } from "./record-view";
 import { disambiguateLabels } from "./display-labels";
 import { useRef, useState, type FormEvent } from "react";
@@ -58,7 +59,6 @@ const semanticMessages: Record<string, string> = {
   "vector write acknowledged": "semanticWriteAcknowledged",
   "indexing failed; durable retry scheduled": "semanticRetryScheduled",
   "indexing authority unavailable": "semanticCredentialRevoked",
-  "agent memory slots are updated through memory_write": "semanticManagedSlot",
   "deleted semantic keys cannot be reused": "semanticDeletedKey",
   "semantic source revision changed": "semanticRevisionChanged",
   "semantic source revision changed or deleted": "semanticRevisionChanged",
@@ -98,12 +98,19 @@ export function SemanticPage({
         </select>
       </Field>
       {workspace ? (
-        <SemanticWorkspace
-          key={workspace}
-          workspace={workspace}
-          data={data}
-          operator={data.access.kind === "operator"}
-        />
+        <>
+          <MemoryWorkspace
+            key={`memory:${workspace}`}
+            workspace={workspace}
+            data={data}
+          />
+          <SemanticWorkspace
+            key={workspace}
+            workspace={workspace}
+            data={data}
+            operator={data.access.kind === "operator"}
+          />
+        </>
       ) : (
         <Empty />
       )}
@@ -536,7 +543,7 @@ function IndexForm({
         const values = new FormData(e.currentTarget);
         void submit({
           embedding: {
-            provider: "openai",
+            provider: String(values.get("embeddingProvider")),
             endpoint: String(values.get("embedding")),
             credential_env: String(values.get("embeddingSecret")) || null,
             model: String(values.get("model")),
@@ -544,9 +551,9 @@ function IndexForm({
             dimensions: Number(values.get("dimensions")),
           },
           vector: {
-            provider: "qdrant",
-            endpoint: String(values.get("vector")),
-            credential_env: String(values.get("vectorSecret")) || null,
+            provider: "postgres",
+            endpoint: "local",
+            credential_env: null,
           },
           enabled: values.has("enabled"),
           auto_context: values.has("auto"),
@@ -558,34 +565,50 @@ function IndexForm({
       }}
     >
       <p className="muted">{t("semanticConfigHelp")}</p>
+      <Field label={t("provider")}>
+        <select
+          name="embeddingProvider"
+          defaultValue={previous?.embedding.provider ?? "openrouter"}
+        >
+          <option value="openrouter">OpenRouter</option>
+          <option value="openai">{t("openaiCompatible")}</option>
+        </select>
+      </Field>
       <Field label={t("semanticEmbeddingEndpoint")}>
         <input
           name="embedding"
           type="url"
           required
-          defaultValue={previous?.embedding.endpoint ?? ""}
-          placeholder="https://api.openai.com/v1"
+          defaultValue={
+            previous?.embedding.endpoint ?? "https://openrouter.ai/api/v1"
+          }
         />
       </Field>
       <Field label={t("semanticEmbeddingSecret")}>
         <input
           name="embeddingSecret"
-          defaultValue={previous?.embedding.credential_env ?? ""}
-          placeholder="AIDASH_SECRET_EMBEDDING"
+          defaultValue={
+            previous
+              ? (previous.embedding.credential_env ?? "")
+              : "AIDASH_SECRET_OPENROUTER"
+          }
+          placeholder="AIDASH_SECRET_OPENROUTER"
         />
       </Field>
       <Field label={t("semanticModel")}>
         <input
           name="model"
           required
-          defaultValue={previous?.embedding.model ?? ""}
+          defaultValue={
+            previous?.embedding.model ?? "google/gemini-embedding-2"
+          }
         />
       </Field>
       <Field label={t("semanticModelVersion")}>
         <input
           name="version"
           required
-          defaultValue={previous?.embedding.model_version ?? ""}
+          defaultValue={previous?.embedding.model_version ?? "1.0.0"}
         />
       </Field>
       <Field label={t("semanticDimensions")}>
@@ -595,23 +618,7 @@ function IndexForm({
           min={1}
           max={8192}
           required
-          defaultValue={previous?.embedding.dimensions ?? 1536}
-        />
-      </Field>
-      <Field label={t("semanticVectorEndpoint")}>
-        <input
-          name="vector"
-          type="url"
-          required
-          defaultValue={previous?.vector.endpoint ?? "http://127.0.0.1:63370"}
-        />
-      </Field>
-      <Field label={t("semanticVectorSecret")}>
-        <input
-          name="vectorSecret"
-          defaultValue={
-            previous?.vector.credential_env ?? "AIDASH_SECRET_TEST_QDRANT"
-          }
+          defaultValue={previous?.embedding.dimensions ?? 3072}
         />
       </Field>
       <label>

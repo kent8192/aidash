@@ -10,80 +10,80 @@ pub fn client() -> Result<reqwest::Client> {
 	aidash_integrations::semantic::client().map_err(Into::into)
 }
 pub async fn embed(
-	client: &reqwest::Client,
+	store: &crate::store::Store,
 	config: &EmbeddingConfig,
 	text: &str,
 ) -> Result<Embedding> {
-	crate::bootstrap::semantic_transport(client.clone())
+	crate::bootstrap::semantic_transport(store)
 		.embed(config, text)
 		.await
 		.map_err(Into::into)
 }
 pub async fn ensure_collection(
-	client: &reqwest::Client,
+	store: &crate::store::Store,
 	config: &VectorConfig,
 	collection: &str,
 	dimensions: usize,
 ) -> Result<()> {
-	crate::bootstrap::semantic_transport(client.clone())
+	crate::bootstrap::semantic_transport(store)
 		.ensure_collection(config, collection, dimensions)
 		.await
 		.map_err(Into::into)
 }
 pub async fn upsert(
-	client: &reqwest::Client,
+	store: &crate::store::Store,
 	config: &VectorConfig,
 	collection: &str,
 	point: Uuid,
 	vector: &[f32],
 	payload: Value,
 ) -> Result<()> {
-	crate::bootstrap::semantic_transport(client.clone())
+	crate::bootstrap::semantic_transport(store)
 		.upsert(config, collection, point, vector, payload)
 		.await
 		.map_err(Into::into)
 }
 pub async fn delete_point(
-	client: &reqwest::Client,
+	store: &crate::store::Store,
 	config: &VectorConfig,
 	collection: &str,
 	point: Uuid,
 ) -> Result<()> {
-	crate::bootstrap::semantic_transport(client.clone())
+	crate::bootstrap::semantic_transport(store)
 		.delete_point(config, collection, point)
 		.await
 		.map_err(Into::into)
 }
 pub async fn delete_collection(
-	client: &reqwest::Client,
+	store: &crate::store::Store,
 	config: &VectorConfig,
 	collection: &str,
 ) -> Result<()> {
-	crate::bootstrap::semantic_transport(client.clone())
+	crate::bootstrap::semantic_transport(store)
 		.delete_collection(config, collection)
 		.await
 		.map_err(Into::into)
 }
 pub async fn query(
-	client: &reqwest::Client,
+	store: &crate::store::Store,
 	config: &VectorConfig,
 	collection: &str,
 	vector: &[f32],
 	filter: Filter<'_>,
 	limit: usize,
 ) -> Result<Vec<Point>> {
-	crate::bootstrap::semantic_transport(client.clone())
+	crate::bootstrap::semantic_transport(store)
 		.query(config, collection, vector, filter, limit)
 		.await
 		.map_err(Into::into)
 }
 pub async fn present(
-	client: &reqwest::Client,
+	store: &crate::store::Store,
 	config: &VectorConfig,
 	collection: &str,
 	ids: &[Uuid],
 ) -> Result<bool> {
-	crate::bootstrap::semantic_transport(client.clone())
+	crate::bootstrap::semantic_transport(store)
 		.present(config, collection, ids)
 		.await
 		.map_err(Into::into)

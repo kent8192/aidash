@@ -92,7 +92,7 @@ test("subject dashboard completes a conversation and clears revoked access", asy
           instructions: "Ask the human once, then complete the task.",
           schema_version: 1,
           bindings: [],
-          remove_default: [],
+          remove_default: ["file_search", "file_read"],
           max_steps: 8,
         },
       ],

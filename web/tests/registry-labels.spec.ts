@@ -193,6 +193,51 @@ for (const locale of ["en-US", "ja-JP"]) {
   });
 }
 
+test("embedding registration defaults to full-dimensional Gemini through OpenRouter", async ({
+  page,
+}) => {
+  const { errors } = await setup(page);
+  let submitted: Record<string, unknown> | undefined;
+  await page.route("**/api/registry", async (route) => {
+    submitted = route.request().postDataJSON();
+    await route.fulfill({ json: submitted });
+  });
+  await page.goto("/settings?view=registry");
+  await page
+    .getByRole("button", { name: "Register entity", exact: true })
+    .click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByLabel("Entity type").selectOption("embedding");
+  await expect(dialog.locator('[name="embedding_provider"]')).toHaveValue(
+    "openrouter",
+  );
+  await expect(dialog.locator('[name="endpoint"]')).toHaveValue(
+    "https://openrouter.ai/api/v1",
+  );
+  await expect(dialog.locator('[name="model_id"]')).toHaveValue(
+    "google/gemini-embedding-2",
+  );
+  await expect(dialog.locator('[name="dimensions"]')).toHaveValue("3072");
+  await dialog
+    .getByLabel("Description", { exact: true })
+    .fill("Multilingual semantic memory");
+  await dialog
+    .getByRole("button", { name: "Register entity", exact: true })
+    .click();
+  await expect
+    .poll(() => submitted?.config)
+    .toEqual({
+      provider: "openrouter",
+      endpoint: "https://openrouter.ai/api/v1",
+      credential_env: "AIDASH_SECRET_OPENROUTER",
+      model: "google/gemini-embedding-2",
+      model_version: "1.0.0",
+      dimensions: 3072,
+    });
+  await expect(dialog).toHaveCount(0);
+  expect(errors).toEqual([]);
+});
+
 test("package selection uses the exact entity value with a readable label", async ({
   page,
 }) => {

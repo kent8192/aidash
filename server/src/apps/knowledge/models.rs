@@ -1,10 +1,11 @@
 //! Persistent records owned by the semantic app.
 pub(crate) mod cleanup;
 mod index_configuration;
+pub(crate) mod memory_records;
+pub(crate) mod memory_units;
 mod read_dependencies;
+pub(crate) mod unit_origins;
 
-mod semantic_agent_memory;
-pub use semantic_agent_memory::SemanticAgentMemory;
 mod semantic_collections;
 pub use semantic_collections::SemanticCollection;
 mod semantic_entries;

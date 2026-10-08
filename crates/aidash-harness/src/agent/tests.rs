@@ -64,11 +64,6 @@ impl ExecutionStore for Backend {
 		let _ = run;
 		Ok(vec![])
 	}
-	async fn memory(&self, run: &RunMetadata) -> Result<Value> {
-		let _ = run;
-		self.record("source.memory");
-		Ok(self.0.memory_value.lock().unwrap().clone())
-	}
 	async fn begin_final_completion(&self, run: &Run, token: Uuid) -> Result<bool> {
 		let _ = run;
 		assert_eq!(token, self.0.token);
@@ -338,6 +333,10 @@ impl ExecutionEnvironment for Backend {
 		entry: &Entry,
 	) -> Result<Option<Value>> {
 		let _ = (run, task, inputs, budget, entry);
+		if self.0.conversation_memory {
+			self.record("source.memory");
+			return Ok(Some(self.0.memory_value.lock().unwrap().clone()));
+		}
 		Ok(None)
 	}
 	async fn run_message_limit(&self, run: &Run) -> Result<usize> {

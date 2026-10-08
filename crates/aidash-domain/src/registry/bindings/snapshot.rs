@@ -138,10 +138,9 @@ impl BindingSnapshot {
 						"snapshot context restriction is unsupported".into(),
 					));
 				}
-				if matches!(binding.kind, BindingKind::Memory | BindingKind::Source) {
-					let descriptor: sources::NativeContext =
-						serde_json::from_value(entry.config.clone())?;
-					descriptor.validate(kind)?;
+				if matches!(binding.kind, BindingKind::Memory | BindingKind::Source)
+					&& let Some(descriptor) = sources::validate_definition(entry)?
+				{
 					source_skill_support |= descriptor.requires_skill_support();
 				}
 			}
@@ -221,6 +220,7 @@ impl BindingSnapshot {
 			.filter(|binding| {
 				binding.excluded_reason.is_none()
 					&& matches!(binding.definition.kind.as_str(), "memory" | "source")
+					&& binding.definition.config.get("schema_version").is_some()
 			})
 			.map(|binding| {
 				serde_json::from_value::<sources::NativeContext>(binding.definition.config.clone())

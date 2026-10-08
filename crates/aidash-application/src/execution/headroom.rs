@@ -10,7 +10,9 @@ pub async fn request(scope: &dyn Definitions, run: &RunMetadata) -> Result<usize
 	let agent = AgentConfig::from_snapshot(&snapshot)?;
 	let mut documents = vec![];
 	for binding in &snapshot.bindings {
-		if binding.definition.kind == "source" {
+		if binding.definition.kind == "source"
+			&& binding.definition.config.get("schema_version").is_some()
+		{
 			let source: aidash_domain::registry::bindings::sources::NativeContext =
 				serde_json::from_value(binding.definition.config.clone())?;
 			if matches!(

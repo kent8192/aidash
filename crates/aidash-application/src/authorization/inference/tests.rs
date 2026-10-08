@@ -23,6 +23,8 @@ fn agent() -> AgentConfig {
 	config.core_capabilities.files = true;
 	config.skills = vec![reference("first"), reference("second")];
 	config.conversation_memory = true;
+	config.memory = Some(reference("memory"));
+	config.allow_cross_conversation_memory = Some(true);
 	config
 }
 

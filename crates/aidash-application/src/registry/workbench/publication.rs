@@ -185,8 +185,11 @@ async fn private_digest(
 		let source = scope
 			.definition(&binding.target.id, &binding.target.version)
 			.await?;
-		let context: aidash_domain::registry::bindings::sources::NativeContext =
-			serde_json::from_value(source.config)?;
+		let Some(context) =
+			aidash_domain::registry::bindings::sources::validate_definition(&source)?
+		else {
+			continue;
+		};
 		if let aidash_domain::registry::bindings::sources::NativeSource::PrivateReferences {
 			digest,
 		} = context.source

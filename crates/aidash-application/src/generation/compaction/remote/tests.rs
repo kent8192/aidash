@@ -115,6 +115,7 @@ fn world() -> World {
 		},
 		expires_at: DateTime::from_timestamp(2000, 0).unwrap(),
 		semantic: Binding::RequiredHome {
+			native: None,
 			home_lineage: vec![],
 			execution_lineage: vec![],
 			version: 1,

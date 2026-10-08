@@ -135,10 +135,39 @@ pub(crate) async fn worker_lease(
 	f: &Federation,
 	run: &RunMetadata,
 ) -> Result<Option<(Access, AgentConfig)>> {
-	app::worker_lease(&crate::bootstrap::peer_admission_repository(f), run)
+	if !crate::apps::knowledge::repositories::receiver_caches::available(&f.store, run.id).await? {
+		if crate::apps::knowledge::repositories::remote_memory_reads::erase_receiver(&f.store, run)
+			.await
+			.is_err()
+		{
+			tracing::warn!(run = %run.id, "invalidated receiver quotation cleanup remains pending or failed");
+		}
+		return Err(crate::Error::RemoteSemantic(
+			aidash_domain::semantic::Failure::Invalidated,
+		));
+	}
+	let result = app::worker_lease(&crate::bootstrap::peer_admission_repository(f), run)
 		.await
 		.map(|r| r.map(|(scope, agent)| (*scope.access, agent)))
-		.map_err(Into::into)
+		.map_err(crate::Error::from);
+	if matches!(
+		&result,
+		Err(crate::Error::RemoteSemantic(
+			aidash_domain::semantic::Failure::Invalidated
+				| aidash_domain::semantic::Failure::Authority
+				| aidash_domain::semantic::Failure::Configuration
+		))
+	) {
+		// The shared use case has already released/rolled back its authority
+		// scope. Disposable quotations can now be removed without lock inversion.
+		if crate::apps::knowledge::repositories::remote_memory_reads::erase_receiver(&f.store, run)
+			.await
+			.is_err()
+		{
+			tracing::warn!(run = %run.id, "invalidated receiver quotation cleanup remains pending or failed");
+		}
+	}
+	result
 }
 pub(crate) async fn leaf_lease(
 	f: &Federation,

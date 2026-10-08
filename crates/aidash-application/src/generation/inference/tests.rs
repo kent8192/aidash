@@ -56,6 +56,82 @@ async fn point(world: &World, name: String) -> Result<()> {
 	Ok(())
 }
 struct Authority(World);
+struct Origins(Vec<Uuid>);
+#[async_trait]
+impl GenerationInferenceAuthority for Origins {
+	async fn requests(&mut self, node: &str) -> Result<Vec<Uuid>> {
+		assert_eq!(node, "aidash://origin");
+		Ok(self.0.clone())
+	}
+}
+
+#[rstest]
+#[case(false)]
+#[case(true)]
+#[tokio::test]
+async fn overlapping_origins_charge_once_and_rollback_as_one_transaction(
+	world: World,
+	#[case] fail: bool,
+) {
+	let last = Uuid::from_u128(33);
+	{
+		let mut state = world.0.lock().unwrap();
+		state.ledger.balances.insert(last, 0);
+		if fail {
+			state.fail = Some(format!("charge:{last}"));
+		}
+	}
+	let mut a = Origins(vec![Uuid::from_u128(11), Uuid::from_u128(22)]);
+	let mut b = Origins(vec![Uuid::from_u128(22), last]);
+	let result = reserve_many(
+		&mut [&mut a, &mut b],
+		Arc::new(Repository(world.clone())),
+		Uuid::from_u128(77),
+		Uuid::from_u128(88),
+		100,
+		30,
+	)
+	.await;
+	if fail {
+		assert!(result.is_err());
+		let state = world.0.lock().unwrap();
+		assert!(state.ledger.balances.values().all(|value| *value == 0));
+		assert!(state.ledger.reports.is_empty());
+		assert_eq!(state.commits, 0);
+	} else {
+		let receipt = result.unwrap().unwrap();
+		assert_eq!(
+			world
+				.0
+				.lock()
+				.unwrap()
+				.ledger
+				.balances
+				.values()
+				.copied()
+				.collect::<Vec<_>>(),
+			vec![130; 3]
+		);
+		receipt.settle(&response(70, 20, true)).await.unwrap();
+		let state = world.0.lock().unwrap();
+		assert_eq!(
+			state.ledger.balances.values().copied().collect::<Vec<_>>(),
+			vec![90; 3]
+		);
+		assert_eq!(
+			state.ledger.reports.values().copied().collect::<Vec<_>>(),
+			vec![Some(90); 3]
+		);
+		assert_eq!(
+			state
+				.calls
+				.iter()
+				.filter(|call| **call == format!("charge:{}", Uuid::from_u128(22)))
+				.count(),
+			1
+		);
+	}
+}
 #[async_trait]
 impl GenerationInferenceAuthority for Authority {
 	async fn requests(&mut self, node: &str) -> Result<Vec<Uuid>> {

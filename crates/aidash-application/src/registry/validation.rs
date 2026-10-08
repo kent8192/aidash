@@ -34,6 +34,7 @@ impl DefinitionValidation {
 			.collect::<std::collections::BTreeMap<_, _>>();
 		specifications.extend(self.core_tools.specifications(
 			&aidash_domain::capabilities::CoreCapabilities {
+				outbound: false,
 				files: true,
 				shell: true,
 				python: true,
@@ -47,6 +48,45 @@ impl DefinitionValidation {
 	pub fn validate_in(&self, e: &Entry, local: bool) -> Result<()> {
 		aidash_domain::registry::rules::validate_metadata(e, local)?;
 		match e.kind.as_str() {
+			"memory" | "source" if e.config.get("schema_version").is_some() => {
+				let descriptor: aidash_domain::registry::bindings::sources::NativeContext =
+					serde_json::from_value(e.config.clone())?;
+				descriptor.validate(&e.kind)?;
+			}
+
+			"memory" => {
+				serde_json::from_value::<aidash_domain::memory::ProviderConfig>(e.config.clone())?
+					.policy
+					.validate()?
+			}
+			"source" => {
+				let config: aidash_domain::memory::SourceConfig =
+					serde_json::from_value(e.config.clone())?;
+				if config.max_tokens == 0
+					|| config.max_tokens > i32::MAX as usize
+					|| config.memory.id.is_empty()
+					|| semver::Version::parse(&config.memory.version).is_err()
+				{
+					return Err(Error::Invalid(
+						"memory source requires a versioned provider and positive context cap"
+							.into(),
+					));
+				}
+			}
+			"reranker" => {
+				let config: aidash_domain::memory::RerankerConfig =
+					serde_json::from_value(e.config.clone())?;
+				if let aidash_domain::memory::RerankerConfig::Model { model } = config
+					&& (model.id.is_empty() || semver::Version::parse(&model.version).is_err())
+				{
+					return Err(Error::Invalid(
+						"reranker requires an exact model version".into(),
+					));
+				}
+			}
+			"tokenizer" => {
+				serde_json::from_value::<aidash_domain::memory::TokenizerConfig>(e.config.clone())?;
+			}
 			"embedding" => self.validate_embedding(
 				&serde_json::from_value(e.config.clone())
 					.map_err(|e| Error::Invalid(e.to_string()))?,
@@ -153,11 +193,6 @@ impl DefinitionValidation {
 				bundle.validate()?;
 			}
 			"skill" => aidash_domain::registry::rules::validate_skill(e)?,
-			"memory" | "source" => {
-				let descriptor: aidash_domain::registry::bindings::sources::NativeContext =
-					serde_json::from_value(e.config.clone())?;
-				descriptor.validate(&e.kind)?;
-			}
 			_ => {}
 		}
 		Ok(())

@@ -116,7 +116,6 @@ def mount_data():
         "journal",
         "postgres",
         "nats",
-        "qdrant",
         "k3s",
         "docker",
         "kubelet",
@@ -349,7 +348,7 @@ def configuration(host):
             json.dumps(
                 {
                     name: secrets.token_hex(32)
-                    for name in ("database", "api", "runner", "qdrant")
+                    for name in ("database", "api", "runner")
                 }
             ),
         )
@@ -367,8 +366,8 @@ def configuration(host):
         AIDASH_OIDC_ISSUER="https://accounts.google.com",
         AIDASH_OIDC_PUBLIC_ORIGIN="https://" + host["hostname"],
         AIDASH_CAPABILITY_PROFILE=str(ROOT / "profile.json"),
+        AIDASH_MEMORY_RECOVERY_DIR=str(ROOT / "memory-recovery"),
         AIDASH_CORE_RUNNER_TOKEN=identity["runner"],
-        AIDASH_SECRET_QDRANT=identity["qdrant"],
     )
     private(RUN / "app.env", environment_file(result))
     private(
@@ -381,15 +380,6 @@ def configuration(host):
                 "POSTGRES_USER": "aidash",
                 "POSTGRES_DB": "aidash_a",
                 "POSTGRES_PASSWORD": identity["database"],
-            }
-        ),
-    )
-    private(
-        RUN / "qdrant.env",
-        environment_file(
-            {
-                "QDRANT__SERVICE__API_KEY": identity["qdrant"],
-                "QDRANT__SERVICE__HOST": "127.0.0.1",
             }
         ),
     )
@@ -575,12 +565,6 @@ WantedBy=multi-user.target
         ["-v", f"{ROOT}/nats:/data"],
         ["-js", "-sd", "/data", "--addr", "127.0.0.1"],
     )
-    replace_container(
-        "aidash-qdrant",
-        release["images"]["qdrant"],
-        ["--env-file", str(RUN / "qdrant.env"), "-v", f"{ROOT}/qdrant:/qdrant/storage"],
-        [],
-    )
     for _ in range(90):
         if b"accepting connections" in command(
             "docker",
@@ -593,11 +577,16 @@ WantedBy=multi-user.target
         ):
             break
         time.sleep(2)
+    memory = ROOT / "memory-recovery"
+    memory.mkdir(mode=0o700, exist_ok=True)
+    command("chown", "10001:10001", memory)
     mount = [
         "--env-file",
         str(RUN / "app.env"),
         "-v",
         f"{ROOT}/objects:{ROOT}/objects",
+        "-v",
+        f"{memory}:{memory}",
         "-v",
         f"{ROOT}/profile.json:{ROOT}/profile.json:ro",
     ]
@@ -612,6 +601,11 @@ WantedBy=multi-user.target
         release["images"]["app"],
         "migrate",
         timeout=300,
+    )
+    command(
+        "docker", "run", "--rm", "--network", "host", *mount,
+        release["images"]["app"], "memory-recovery", "init-if-missing",
+        "--directory", str(memory), timeout=300,
     )
     replace_container(
         "aidash-app", release["images"]["app"], mount, ["serve"], restart="on-failure:3"

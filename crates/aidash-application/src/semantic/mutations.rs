@@ -57,9 +57,12 @@ pub async fn get_index(scope: &mut dyn SemanticEntriesSession, workspace: Uuid) 
 /// Public writes reserve the managed memory namespace before acquiring source authority.
 pub fn validate_public_put(input: &Put) -> Result<()> {
 	input.validate()?;
-	if input.key.starts_with("agent-memory:") {
+	if input.key.starts_with("agent-memory:")
+		|| input.key.starts_with("memory-unit:")
+		|| matches!(input.source, aidash_domain::semantic::Source::Unit { .. })
+	{
 		return Err(Error::Invalid(
-			"agent memory slots are updated through memory_write".into(),
+			"native memory units are updated through identified memory mutations".into(),
 		));
 	}
 	Ok(())
@@ -192,6 +195,15 @@ pub async fn change(
 		.lock_entry(workspace, id)
 		.await?
 		.ok_or(Error::Forbidden)?;
+	if delete
+		&& matches!(
+			serde_json::from_value::<aidash_domain::semantic::Source>(entry.source.clone())?,
+			aidash_domain::semantic::Source::Unit { .. }
+		) {
+		return Err(Error::Invalid(
+			"delete native memory through a unit mutation with its observed revision".into(),
+		));
+	}
 	if !scope.permits(&entry, action).await? || !scope.permits(&entry, "semantic.read").await? {
 		return Err(Error::Forbidden);
 	}
@@ -216,12 +228,8 @@ pub async fn change(
 			.await?
 			.ok_or(Error::Forbidden)?;
 		validate_text(&text, index.configuration()?.max_input_bytes)?;
-	} else if let Some((agent, version, home)) = scope.managed_memory(id).await? {
-		scope
-			.require_memory_write(workspace, &agent, &version)
-			.await?;
-		scope.delete_memory(workspace, agent, version, home).await?;
 	}
+
 	let saved = scope.saved()?;
 	let entry = scope
 		.change(workspace, id, Uuid::new_v4(), index.revision, delete, saved)

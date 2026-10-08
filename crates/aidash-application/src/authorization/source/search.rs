@@ -89,7 +89,13 @@ pub async fn search<R: SemanticSearchRepository + ?Sized>(
 		let prepared = access
 			.prepare_search(task.workspace_id, &input, &agent)
 			.await?;
-		let candidate_digest = prepared.candidate_digest();
+		let ordinary_digest = prepared.candidate_digest();
+		let candidate_digest =
+			if let Some(native) = access.native_stamp(&description.semantic).await? {
+				digest(&json!({"workspace":ordinary_digest,"memory":native}))
+			} else {
+				ordinary_digest
+			};
 		let claim = journal::claim(repository.journal(), operation.id).await?;
 		let attempt = match claim {
 			Claim::Ready(receipt) if receipt.candidate_digest == candidate_digest => {
@@ -163,6 +169,7 @@ pub async fn search<R: SemanticSearchRepository + ?Sized>(
 				access.finish_search(prepared, &embedding.vector).await?
 			};
 			let mut receipt = Receipt {
+				memory: None,
 				operation_id: operation.id,
 				operation_digest: operation.digest()?,
 				home_node: repository.home_node_id().to_owned(),
@@ -179,6 +186,22 @@ pub async fn search<R: SemanticSearchRepository + ?Sized>(
 				result,
 				estimated_tokens: 0,
 			};
+			if description.semantic.native().is_some() {
+				// Reserve every wrapper, exact binding and ordinary result before
+				// retrieving native units. Native uses conservative UTF-8 byte caps.
+				let overhead = serde_json::to_vec(&receipt)?.len() + 32;
+				if overhead >= max_tokens {
+					return Err(Error::RemoteSemantic(Failure::ContextBudget));
+				}
+				receipt.memory = access
+					.native_context(
+						node,
+						&description.semantic,
+						&operation,
+						max_tokens - overhead,
+					)
+					.await?;
+			}
 			receipt.fit_budget(max_tokens)?;
 			journal::complete(repository.journal(), &attempt, &receipt).await?;
 			Ok(receipt)

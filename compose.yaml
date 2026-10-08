@@ -2,6 +2,8 @@ name: ${COMPOSE_PROJECT_NAME:-aidash-dev}
 services:
   postgres:
     image: aidash-postgres:17-pg-jsonschema-0.3.4
+    # Two Nodes run separate server/worker and framework/store pools.
+    command: ["postgres", "-c", "max_connections=400"]
     build:
       context: .
       dockerfile: deploy/postgres/Dockerfile
@@ -33,14 +35,6 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-  qdrant:
-    image: qdrant/qdrant:v1.19.1
-    environment:
-      QDRANT__SERVICE__API_KEY: ${AIDASH_SECRET_TEST_QDRANT:-local-semantic-vector-fixture-key-0123456789}
-    ports:
-      - "127.0.0.1:${AIDASH_QDRANT_PORT:-63370}:6333"
-    volumes:
-      - qdrant:/qdrant/storage
   nats:
     image: nats:2.12-alpine
     command: ["-js", "-sd", "/data"]
@@ -59,6 +53,28 @@ services:
       - "127.0.0.1:18099:8080"
     volumes:
       - keycloak:/opt/keycloak/data
+  memory-recovery-init:
+    profiles: [dev]
+    build:
+      context: .
+      target: dev-backend
+      args:
+        CARGO_PROFILE: dev
+    environment:
+      DATABASE_URL: postgres://aidash:aidash-local@postgres:5432/aidash_a
+      AIDASH_NODE_ID: ${AIDASH_NODE_ID:-aidash://node-a}
+    command:
+      [
+        "memory-recovery",
+        "init-if-missing",
+        "--directory",
+        "/var/lib/aidash/memory-recovery",
+      ]
+    volumes:
+      - memory-recovery:/var/lib/aidash/memory-recovery
+    depends_on:
+      postgres-extensions:
+        condition: service_completed_successfully
   backend:
     profiles: [dev]
     build:
@@ -78,15 +94,15 @@ services:
       AIDASH_ENDPOINT: ${AIDASH_ENDPOINT:-http://127.0.0.1:${AIDASH_BACKEND_PORT:-18080}}
       AIDASH_LISTEN: 0.0.0.0:8080
       AIDASH_API_TOKEN: ${AIDASH_API_TOKEN:-local-development-token}
-      AIDASH_SECRET_TEST_QDRANT: ${AIDASH_SECRET_TEST_QDRANT:-local-semantic-vector-fixture-key-0123456789}
+      AIDASH_MEMORY_RECOVERY_DIR: /var/lib/aidash/memory-recovery
+    volumes:
+      - memory-recovery:/var/lib/aidash/memory-recovery
     ports:
       - "127.0.0.1:${AIDASH_BACKEND_PORT:-18080}:8080"
     depends_on:
-      postgres-extensions:
+      memory-recovery-init:
         condition: service_completed_successfully
       nats:
-        condition: service_started
-      qdrant:
         condition: service_started
     healthcheck:
       test:
@@ -153,6 +169,6 @@ services:
           path: ./crates
 volumes:
   postgres:
+  memory-recovery:
   nats:
-  qdrant:
   keycloak:

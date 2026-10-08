@@ -4,9 +4,6 @@ use aidash_server::semantic::{self, ConfigureIndex, EmbeddingConfig, IndexSpec, 
 use axum::{Json, Router, routing::post};
 use common::request;
 use common::{TestEnvironment, test_environment};
-use reinhardt::test::testcontainers::{
-	ContainerAsync, GenericImage, ImageExt, core::IntoContainerPort, runners::AsyncRunner,
-};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
@@ -114,7 +111,7 @@ async fn controlled_context(
 		&app,
 		&f.config.api_token,
 		workspace,
-		&spec(&embedding_endpoint, &environment.qdrant_url),
+		&spec(&embedding_endpoint),
 		0,
 	)
 	.await;
@@ -211,7 +208,7 @@ async fn automatic_semantic_context_respects_each_agent_behavior_control(
 		"run: {:?}",
 		fixture.f.store.runs().await.unwrap()[0]
 	);
-	let semantic = &contexts[0]["current"]["semantic_memory"];
+	let semantic = &contexts[0]["current"]["semantic_memory"]["workspace"];
 	if !memory && !workspace_retrieval {
 		assert!(semantic.is_null(), "disabled retrieval: {semantic}");
 	} else {
@@ -239,54 +236,6 @@ async fn automatic_semantic_context_respects_each_agent_behavior_control(
 	dispose(fixture.f, &fixture.url, &fixture.schema).await;
 }
 
-struct RestartableQdrant {
-	container: ContainerAsync<GenericImage>,
-	endpoint: String,
-}
-
-#[rstest::fixture]
-async fn restartable_qdrant() -> RestartableQdrant {
-	use std::time::{Duration, Instant};
-
-	// A restart test needs the endpoint to survive stop/start. Reserve a random
-	// host port, then ask Testcontainers to keep that mapping for this container.
-	let reservation = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-	let host_port = reservation.local_addr().unwrap().port();
-	drop(reservation);
-	let container = GenericImage::new("qdrant/qdrant", "v1.19.1")
-		.with_mapped_port(host_port, 6333.tcp())
-		.start()
-		.await
-		.expect("start restartable Qdrant fixture");
-	let port = container
-		.get_host_port_ipv4(6333)
-		.await
-		.expect("mapped Qdrant fixture port");
-	let endpoint = format!("http://127.0.0.1:{port}");
-	let client = reqwest::Client::builder()
-		.timeout(Duration::from_secs(1))
-		.build()
-		.unwrap();
-	let until = Instant::now() + Duration::from_secs(30);
-	loop {
-		if client
-			.get(format!("{endpoint}/readyz"))
-			.send()
-			.await
-			.is_ok_and(|response| response.status().is_success())
-		{
-			break;
-		}
-		assert!(Instant::now() < until, "test Qdrant startup timed out");
-		tokio::time::sleep(Duration::from_millis(100)).await;
-	}
-
-	RestartableQdrant {
-		container,
-		endpoint,
-	}
-}
-
 async fn embeddings() -> (String, tokio::task::JoinHandle<()>) {
 	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
 	let url = format!("http://{}", listener.local_addr().unwrap());
@@ -301,7 +250,7 @@ async fn embeddings() -> (String, tokio::task::JoinHandle<()>) {
 	});
 	(url, server)
 }
-fn spec(endpoint: &str, qdrant_url: &str) -> IndexSpec {
+fn spec(endpoint: &str) -> IndexSpec {
 	IndexSpec {
 		embedding: EmbeddingConfig {
 			provider: "openai".into(),
@@ -312,9 +261,9 @@ fn spec(endpoint: &str, qdrant_url: &str) -> IndexSpec {
 			dimensions: 3,
 		},
 		vector: VectorConfig {
-			provider: "qdrant".into(),
-			endpoint: qdrant_url.into(),
-			credential_env: Some("AIDASH_SECRET_TEST_QDRANT".into()),
+			provider: "postgres".into(),
+			endpoint: "local".into(),
+			credential_env: None,
 		},
 		enabled: true,
 		auto_context: true,
@@ -385,7 +334,7 @@ async fn dispose(f: aidash_server::federation::Federation, url: &str, schema: &s
 	.unwrap();
 	for (collection, config) in rows {
 		semantic::backend::delete_collection(
-			&f.store.semantic_client,
+			&f.store,
 			&serde_json::from_value(config).unwrap(),
 			&collection,
 		)
@@ -396,8 +345,11 @@ async fn dispose(f: aidash_server::federation::Federation, url: &str, schema: &s
 }
 
 #[rstest::rstest]
+#[case::openai("openai")]
+#[case::openrouter("openrouter")]
 #[tokio::test]
 async fn semantic_lifecycle_is_durable_revisioned_and_not_keyword_search(
+	#[case] provider: &str,
 	#[future(awt)]
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
@@ -407,7 +359,8 @@ async fn semantic_lifecycle_is_durable_revisioned_and_not_keyword_search(
 	let (endpoint, server) = embeddings().await;
 	let (_, token, task) = common::bootstrap(&f, &app, &endpoint).await;
 	let workspace = f.store.task(task).await.unwrap().workspace_id;
-	let mut config = spec(&endpoint, &_test_environment.qdrant_url);
+	let mut config = spec(&endpoint);
+	config.embedding.provider = provider.into();
 	let first = configure(&app, &f.config.api_token, workspace, &config, 0).await;
 	assert_eq!(
 		configure(&app, &f.config.api_token, workspace, &config, 0).await["revision"],
@@ -539,24 +492,17 @@ async fn semantic_lifecycle_is_durable_revisioned_and_not_keyword_search(
 	assert_eq!(after.0, 200, "{}", after.1);
 	assert_ne!(after.1["matches"][0]["entry_id"], cars["id"]);
 	semantic::worker::sweep(&f.store).await.unwrap();
-	let body: Value = reqwest::Client::new()
-		.post(format!(
-			"{}/collections/{}/points",
-			config.vector.endpoint,
-			second["collection"].as_str().unwrap()
-		))
-		.header(
-			"api-key",
-			std::env::var("AIDASH_SECRET_TEST_QDRANT").unwrap(),
-		)
-		.json(&json!({"ids":[current_point],"with_payload":true}))
-		.send()
-		.await
-		.unwrap()
-		.json()
-		.await
-		.unwrap();
-	assert_eq!(body["result"], json!([]));
+	use aidash_application::ports::VectorIndex;
+	assert!(
+		!aidash_server::bootstrap::semantic_transport(&f.store)
+			.present(
+				&config.vector,
+				second["collection"].as_str().unwrap(),
+				&[serde_json::from_value(current_point.clone()).unwrap()]
+			)
+			.await
+			.unwrap()
+	);
 	server.abort();
 	dispose(f, &url, &schema).await;
 }
@@ -573,14 +519,7 @@ async fn semantic_access_is_checked_before_search_and_jobs_retain_revocation(
 	let (endpoint, server) = embeddings().await;
 	let (mut policy, token, task) = common::bootstrap(&f, &app, &endpoint).await;
 	let workspace = f.store.task(task).await.unwrap().workspace_id;
-	configure(
-		&app,
-		&f.config.api_token,
-		workspace,
-		&spec(&endpoint, &_test_environment.qdrant_url),
-		0,
-	)
-	.await;
+	configure(&app, &f.config.api_token, workspace, &spec(&endpoint), 0).await;
 	let cars = put(
 		&app,
 		&token,
@@ -703,7 +642,7 @@ async fn semantic_outage_and_input_bounds_are_visible_and_retriable(
 	let (endpoint, server) = embeddings().await;
 	let (_, token, task) = common::bootstrap(&f, &app, &endpoint).await;
 	let workspace = f.store.task(task).await.unwrap().workspace_id;
-	let mut config = spec(&endpoint, &_test_environment.qdrant_url);
+	let mut config = spec(&endpoint);
 	config.embedding.dimensions = 4; // Provider's actual width is three.
 	configure(&app, &f.config.api_token, workspace, &config, 0).await;
 	let cars = put(
@@ -797,7 +736,7 @@ async fn semantic_context_is_provenanced_and_revocation_hides_run_journals(
             async move {
                 let context:Value=serde_json::from_str(body["messages"][1]["content"].as_str().unwrap()).unwrap();
                 requests.lock().unwrap().push(context);
-                Json(json!({"choices":[{"index":0,"finish_reason":"tool_calls","message":{"role":"assistant","content":null,"tool_calls":[{"id":"remember-car","type":"function","function":{"name":"memory_write","arguments":"{\"note\":\"A car carries passengers safely.\"}"}}]}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}))
+                Json(json!({"choices":[{"index":0,"finish_reason":"tool_calls","message":{"role":"assistant","content":null,"tool_calls":[{"id":"remember-car","type":"function","function":{"name":"workspace_observe","arguments":"{}"}}]}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}))
             }
         }))).await.unwrap();
 	});
@@ -807,7 +746,7 @@ async fn semantic_context_is_provenanced_and_revocation_hides_run_journals(
 		&app,
 		&f.config.api_token,
 		workspace,
-		&spec(&embedding_endpoint, &_test_environment.qdrant_url),
+		&spec(&embedding_endpoint),
 		0,
 	)
 	.await;
@@ -842,10 +781,13 @@ async fn semantic_context_is_provenanced_and_revocation_hides_run_journals(
 	assert_eq!(run.phase().as_str(), "TOOL_CALL", "{:?}", run.error);
 	let context = captured.lock().unwrap()[0].clone();
 	assert_eq!(
-		context["current"]["semantic_memory"]["matches"][0]["entry_id"],
+		context["current"]["semantic_memory"]["workspace"]["matches"][0]["entry_id"],
 		cars["id"]
 	);
-	assert_eq!(context["current"]["semantic_memory"]["model_version"], "1");
+	assert_eq!(
+		context["current"]["semantic_memory"]["workspace"]["model_version"],
+		"1"
+	);
 	let count: i64 = {
 		let query_bind_1 = run.id;
 		sqlx::query_scalar(
@@ -863,40 +805,7 @@ async fn semantic_context_is_provenanced_and_revocation_hides_run_journals(
 	}
 	.unwrap();
 	assert_eq!(count, 1);
-	worker.worker_once().await.unwrap();
-	assert_eq!(
-		f.store.memory(&run).await.unwrap(),
-		json!({"note":"A car carries passengers safely."})
-	);
-	let (agent, authority): (Option<String>, Value) = sqlx::query_as(
-		&reinhardt::query::Query::select()
-			.expr(reinhardt::query::SimpleExpr::from(
-				reinhardt::query::Expr::col(reinhardt::query::Alias::new("agent")),
-			))
-			.expr(reinhardt::query::SimpleExpr::from(
-				reinhardt::query::Expr::col(reinhardt::query::Alias::new("authority")),
-			))
-			.from(reinhardt::query::Alias::new("semantic_entries"))
-			.and_where(reinhardt::query::Expr::cust(
-				"metadata ->> 'origin' = 'agent_memory'",
-			))
-			.to_string(reinhardt::query::PostgresQueryBuilder),
-	)
-	.fetch_one(f.store.pool.driver())
-	.await
-	.unwrap();
-	assert_eq!(
-		agent,
-		Some(aidash_server::domain::qualified_agent(
-			&f.config.node_id,
-			"research",
-			"1.0.0"
-		))
-	);
-	assert!(authority["credential"].is_string());
-	assert_eq!(authority["subjects"].as_array().unwrap().len(), 2);
-	semantic::worker::sweep(&f.store).await.unwrap();
-	policy["policies"].as_array_mut().unwrap().push(json!({"id":"deny-original-memory","effect":"deny","subjects":{"ids":["alice"]},"actions":["memory.read"],"resources":{"kinds":["memory"]}}));
+	policy["policies"].as_array_mut().unwrap().push(json!({"id":"deny-inline-semantic-memory","effect":"deny","subjects":{"ids":["alice"]},"actions":["semantic.read"],"resources":{"kinds":["semantic"]}}));
 	assert_eq!(
 		request(
 			&app,
@@ -920,8 +829,8 @@ async fn semantic_context_is_provenanced_and_revocation_hides_run_journals(
 	.1;
 	assert_eq!(
 		visible.as_array().unwrap().len(),
-		1,
-		"semantic reads retain the original Agent memory permission"
+		0,
+		"inline source reads require the semantic entry permission"
 	);
 	policy["policies"].as_array_mut().unwrap().pop();
 	assert_eq!(
@@ -935,34 +844,6 @@ async fn semantic_context_is_provenanced_and_revocation_hides_run_journals(
 		.await
 		.0,
 		200
-	);
-	let managed: Uuid = sqlx::query_scalar(
-		&reinhardt::query::Query::select()
-			.expr(reinhardt::query::SimpleExpr::from(
-				reinhardt::query::Expr::col(reinhardt::query::Alias::new("entry_id")),
-			))
-			.from(reinhardt::query::Alias::new("semantic_agent_memory"))
-			.to_string(reinhardt::query::PostgresQueryBuilder),
-	)
-	.fetch_one(f.store.pool.driver())
-	.await
-	.unwrap();
-	assert_eq!(
-		request(
-			&app,
-			&token,
-			"DELETE",
-			&format!("/api/workspaces/{workspace}/semantic/entries/{managed}"),
-			json!({"expected_revision":1})
-		)
-		.await
-		.0,
-		200
-	);
-	assert_eq!(
-		f.store.memory(&run).await.unwrap(),
-		json!({}),
-		"deleted Agent memory must not survive through the legacy context slot"
 	);
 	let path = format!(
 		"/api/workspaces/{workspace}/semantic/entries/{}",
@@ -1018,14 +899,7 @@ async fn linked_sources_and_agent_metadata_filters_respect_original_authority(
 	let (endpoint, server) = embeddings().await;
 	let (mut policy, token, task) = common::bootstrap(&f, &app, &endpoint).await;
 	let workspace = f.store.task(task).await.unwrap().workspace_id;
-	configure(
-		&app,
-		&f.config.api_token,
-		workspace,
-		&spec(&endpoint, &_test_environment.qdrant_url),
-		0,
-	)
-	.await;
+	configure(&app, &f.config.api_token, workspace, &spec(&endpoint), 0).await;
 	assert_eq!(
 		request(
 			&app,
@@ -1174,14 +1048,7 @@ async fn linked_sources_and_agent_metadata_filters_respect_original_authority(
 		.create_workspace("Other", "Isolation")
 		.await
 		.unwrap();
-	configure(
-		&app,
-		&f.config.api_token,
-		other.id,
-		&spec(&endpoint, &_test_environment.qdrant_url),
-		0,
-	)
-	.await;
+	configure(&app, &f.config.api_token, other.id, &spec(&endpoint), 0).await;
 	assert_eq!(request(&app,&f.config.api_token,"POST",&format!("/api/workspaces/{}/semantic/entries",other.id),json!({"key":"forged","expected_revision":0,"source":{"kind":"artifact","id":artifact.id},"metadata":{}})).await.0,403);
 	assert_eq!(search(&app, &token, other.id).await.0, 403);
 	server.abort();
@@ -1190,25 +1057,18 @@ async fn linked_sources_and_agent_metadata_filters_respect_original_authority(
 
 #[rstest::rstest]
 #[tokio::test]
-async fn semantic_qdrant_restart_outage_and_lost_points_recover(
+async fn semantic_postgres_restart_and_lost_points_recover(
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
-	#[future(awt)] restartable_qdrant: RestartableQdrant,
+	#[from(common::isolated_test_environment)]
+	environment: std::sync::Arc<TestEnvironment>,
 ) {
-	use std::time::{Duration, Instant};
-	let RestartableQdrant {
-		container,
-		endpoint,
-	} = restartable_qdrant;
-	let (f, url, schema) = common::setup(&_test_environment).await;
+	use aidash_application::ports::VectorIndex;
+	let (f, url, schema) = common::setup(&environment).await;
 	let app = common::application(f.clone()).await;
 	let (embedding, server) = embeddings().await;
 	let (_, token, task) = common::bootstrap(&f, &app, &embedding).await;
 	let workspace = f.store.task(task).await.unwrap().workspace_id;
-	let mut config = spec(&embedding, &_test_environment.qdrant_url);
-	config.vector.endpoint = endpoint.clone();
-	config.vector.credential_env = None;
+	let config = spec(&embedding);
 	let index = configure(&app, &f.config.api_token, workspace, &config, 0).await;
 	let entry = put(
 		&app,
@@ -1221,44 +1081,25 @@ async fn semantic_qdrant_restart_outage_and_lost_points_recover(
 	.await;
 	semantic::worker::sweep(&f.store).await.unwrap();
 	assert_eq!(search(&app, &token, workspace).await.0, 200);
-	container.stop_with_timeout(Some(1)).await.unwrap();
-	container.start().await.unwrap();
-	// Do not retain an HTTP connection pool across a deliberate process restart.
-	let client = reqwest::Client::builder()
-		.timeout(Duration::from_secs(1))
-		.build()
-		.unwrap();
-	let until = Instant::now() + Duration::from_secs(30);
-	loop {
-		if client
-			.get(format!("{endpoint}/readyz"))
-			.send()
-			.await
-			.is_ok_and(|r| r.status().is_success())
-		{
-			break;
-		}
-		assert!(Instant::now() < until);
-		tokio::time::sleep(Duration::from_millis(100)).await;
-	}
+	environment.restart_database().await;
 	assert_eq!(
 		search(&app, &token, workspace).await.1["matches"][0]["entry_id"],
 		entry["id"],
-		"Qdrant must retain the acknowledged point across process restart"
+		"source and acknowledged vector survive the same PostgreSQL restart"
 	);
-	let collection = index["collection"].as_str().unwrap();
-	semantic::backend::delete_point(
-		&f.store.semantic_client,
-		&config.vector,
-		collection,
-		Uuid::parse_str(entry["point_id"].as_str().unwrap()).unwrap(),
-	)
-	.await
-	.unwrap();
+	let transport = aidash_server::bootstrap::semantic_transport(&f.store);
+	transport
+		.delete_point(
+			&config.vector,
+			index["collection"].as_str().unwrap(),
+			Uuid::parse_str(entry["point_id"].as_str().unwrap()).unwrap(),
+		)
+		.await
+		.unwrap();
 	assert_eq!(
 		search(&app, &token, workspace).await.0,
 		503,
-		"missing points must not become successful empty retrieval"
+		"missing vectors cannot masquerade as empty retrieval"
 	);
 	sqlx::query(
 		&reinhardt::query::Query::update()
@@ -1274,58 +1115,6 @@ async fn semantic_qdrant_restart_outage_and_lost_points_recover(
 	.unwrap();
 	semantic::worker::sweep(&f.store).await.unwrap();
 	assert_eq!(search(&app, &token, workspace).await.0, 200);
-	container.stop_with_timeout(Some(1)).await.unwrap();
-	assert_eq!(search(&app, &token, workspace).await.0, 503);
-	put(&app, &token, workspace, "restart", "A car uses roads.", 1).await;
-	semantic::worker::sweep(&f.store).await.unwrap();
-	let state: String = sqlx::query_scalar(
-		&reinhardt::query::Query::select()
-			.expr(reinhardt::query::SimpleExpr::from(
-				reinhardt::query::Expr::col(reinhardt::query::Alias::new("state")),
-			))
-			.from(reinhardt::query::Alias::new("semantic_entries"))
-			.limit(1)
-			.to_string(reinhardt::query::PostgresQueryBuilder),
-	)
-	.fetch_one(f.store.pool.driver())
-	.await
-	.unwrap();
-	assert_eq!(state, "ERROR");
-	container.start().await.unwrap();
-	let client = reqwest::Client::builder()
-		.timeout(Duration::from_secs(1))
-		.build()
-		.unwrap();
-	let until = Instant::now() + Duration::from_secs(30);
-	loop {
-		if client
-			.get(format!("{endpoint}/readyz"))
-			.send()
-			.await
-			.is_ok_and(|r| r.status().is_success())
-		{
-			break;
-		}
-		assert!(Instant::now() < until);
-		tokio::time::sleep(Duration::from_millis(100)).await;
-	}
-	sqlx::query(
-		&reinhardt::query::Query::update()
-			.table(reinhardt::query::Alias::new("semantic_entries"))
-			.value_expr(
-				reinhardt::query::Alias::new("next_attempt"),
-				reinhardt::query::Expr::cust("CLOCK_TIMESTAMP()"),
-			)
-			.to_string(reinhardt::query::PostgresQueryBuilder),
-	)
-	.execute(f.store.pool.driver())
-	.await
-	.unwrap();
-	semantic::worker::sweep(&f.store).await.unwrap();
-	assert_eq!(
-		search(&app, &token, workspace).await.1["matches"][0]["text"],
-		"A car uses roads."
-	);
 	server.abort();
 	dispose(f, &url, &schema).await;
 }

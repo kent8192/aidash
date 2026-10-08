@@ -11,6 +11,8 @@ use std::{
 	sync::{Arc, Mutex},
 };
 
+mod memory;
+
 #[derive(Default)]
 struct Secrets(Mutex<Vec<String>>);
 impl Credentials for Secrets {

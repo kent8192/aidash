@@ -491,6 +491,9 @@ pub(crate) async fn private_documents(db: &DatabaseConnection, entry: &Entry) ->
 				records::definition(&mut connection, &binding.target.id, &binding.target.version)
 					.await?;
 			let source: Entry = serde_json::from_value(source.metadata.into_inner())?;
+			if source.config.get("schema_version").is_none() {
+				continue;
+			}
 			let context: aidash_domain::registry::bindings::sources::NativeContext =
 				serde_json::from_value(source.config.clone())?;
 			if !matches!(

@@ -15,6 +15,9 @@
 {{- if gt (len .Values.activation.namespace) 128 -}}
 {{- fail "activation.namespace must be at most 128 UTF-8 bytes" -}}
 {{- end -}}
+{{- if and .Values.memoryRecovery.existingClaim (not (hasPrefix "/" .Values.memoryRecovery.directory)) -}}
+{{- fail "memoryRecovery.directory must be absolute" -}}
+{{- end -}}
 {{- range $role := list "server" "worker" }}
 {{- $settings := index $.Values $role }}
 {{- $secret := required (printf "%s.existingSecret or existingSecret is required" $role) ($settings.existingSecret | default $.Values.existingSecret) }}
@@ -53,6 +56,9 @@ spec:
         runAsNonRoot: true
         runAsUser: 10001
         runAsGroup: 10001
+        {{- if $.Values.memoryRecovery.existingClaim }}
+        fsGroup: 10001
+        {{- end }}
         seccompProfile: { type: RuntimeDefault }
       {{- with $.Values.image.pullSecrets }}
       imagePullSecrets: {{ toYaml . | nindent 8 }}
@@ -79,6 +85,9 @@ spec:
             - secretRef: { name: {{ $secret | quote }} }
           env:
             - { name: AIDASH_NODE_ID, value: {{ $id | quote }} }
+            {{- if $.Values.memoryRecovery.existingClaim }}
+            - { name: AIDASH_MEMORY_RECOVERY_DIR, value: {{ $.Values.memoryRecovery.directory | quote }} }
+            {{- end }}
             - { name: AIDASH_ACTIVATION_BOOTSTRAP, value: "false" }
             - { name: AIDASH_ACTIVATION_NAMESPACE, value: {{ $.Values.activation.namespace | quote }} }
             - { name: AIDASH_ACTIVATION_MAX_AGE_SECONDS, value: {{ $.Values.activation.maxAgeSeconds | int64 | toString | quote }} }
@@ -117,6 +126,19 @@ spec:
             periodSeconds: 10
             timeoutSeconds: 2
           resources: {{ toYaml $settings.resources | nindent 12 }}
+          {{- if $.Values.memoryRecovery.existingClaim }}
+          volumeMounts:
+            - name: memory-recovery
+              mountPath: {{ $.Values.memoryRecovery.directory | quote }}
+              {{- with $.Values.memoryRecovery.subPath }}
+              subPath: {{ . | quote }}
+              {{- end }}
+          {{- end }}
+      {{- if $.Values.memoryRecovery.existingClaim }}
+      volumes:
+        - name: memory-recovery
+          persistentVolumeClaim: { claimName: {{ $.Values.memoryRecovery.existingClaim | quote }} }
+      {{- end }}
 {{- end }}
 ---
 apiVersion: v1

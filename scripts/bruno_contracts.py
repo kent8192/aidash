@@ -54,8 +54,10 @@ def load_manifest():
     routes = json.loads(CATALOG.read_text())
     manifest = json.loads(MANIFEST.read_text())
     expected = Counter(key(route) for route in routes)
-    if len(expected) != 273 or any(count != 1 for count in expected.values()):
-        raise ValueError("the catalog must contain 273 distinct method/path endpoints")
+    if not expected or any(count != 1 for count in expected.values()):
+        raise ValueError("the catalog must contain distinct method/path endpoints")
+    if manifest["endpoint_count"] != len(routes):
+        raise ValueError("manifest endpoint count differs from the catalog")
     requests = manifest["requests"]
     names = Counter(request["name"] for request in requests)
     if any(count != 1 for count in names.values()):
@@ -659,6 +661,10 @@ def render():
                 body="{",
                 immutable=True,
             )
+            if route["source"] == "server/src/apps/knowledge/views/memory.rs":
+                add(endpoint, "Incomplete native memory envelope is rejected", 422,
+                    headers=OPERATOR, body="{}", immutable=True)
+
             continue
         if route["uuid_parameters"]:
             bad = path
@@ -743,6 +749,7 @@ def render():
         # and Marketplace subject dispatch. Operator credentials cannot replace
         # a subject or browser-bound graph grant.
         denied_reads = {
+            "memory-participant-current",
             "remote-semantic-home-provenance",
             "remote-semantic-run-provenance",
             "remote_execution_list",
@@ -781,6 +788,9 @@ def render():
                 + (".items" if route["name"] == "workbench-version-audit" else "")
                 + ").to.eql([]);"
             )
+        if route["name"] == "memory-participants":
+            status = 200
+            checks += 'expect(res.getBody()).to.eql({items:[],next:null});'
         if path == "/api/session":
             checks += 'expect(res.getBody().access.kind).to.equal("operator");'
         if path == "/api/tasks":
@@ -867,7 +877,7 @@ def render():
             raise ValueError("each scenario must contain contract assertions")
     MANIFEST.write_text(
         json.dumps(
-            {"version": 1, "endpoint_count": 273, "requests": requests}, indent=2
+            {"version": 1, "endpoint_count": len(routes), "requests": requests}, indent=2
         )
         + "\n"
     )

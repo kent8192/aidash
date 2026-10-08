@@ -48,6 +48,20 @@ fn snapshot(entry: &Entry) -> IndexingEntry {
 }
 #[async_trait]
 impl SemanticIndexingRepository for NativeIndexing {
+	async fn maintenance(&self) -> Result<()> {
+		super::receiver_caches::sweep(&self.store).await?;
+		if let Some(directory) = std::env::var_os("AIDASH_MEMORY_RECOVERY_DIR") {
+			crate::semantic::services::memory_recovery::prune_expired(
+				&self.store,
+				std::path::Path::new(&directory),
+			)
+			.await?;
+		}
+		super::retention::sweep(&self.store).await?;
+		super::purge::sweep(&self.store).await?;
+		super::engine_jobs::sweep(&self.store).await?;
+		Ok(())
+	}
 	async fn begin_visibility(&self) -> Result<Box<dyn SemanticVisibility>> {
 		Ok(Box::new(Visibility {
 			_lease: ReadLease::begin(&self.store).await?,
@@ -508,6 +522,66 @@ impl SemanticIndexingSession for Session {
 		text: &str,
 		entry: Uuid,
 	) -> Result<Vec<f32>> {
+		if let Some(row) = &self.entry
+			&& matches!(
+				serde_json::from_value::<Source>(row.source.clone())?,
+				Source::Unit { .. }
+			) {
+			use aidash_application::ports::memory::Allowance;
+			let provider = serde_json::from_value(row.metadata["provider"].clone())?;
+			let bank = serde_json::from_value(row.metadata["bank"].clone())?;
+			let policy = crate::semantic::native_memory::policy(&mut self.lease, &provider).await?;
+			let pinned: EmbeddingConfig = serde_json::from_value(
+				crate::semantic::native_memory::definition(
+					&mut self.lease,
+					&policy.embedding,
+					"embedding",
+				)
+				.await?
+				.config,
+			)?;
+			if serde_json::to_value(config)? != serde_json::to_value(&pinned)? {
+				return Err(Error::Conflict(
+					"memory embedding generation requires explicit reindexing".into(),
+				)
+				.into());
+			}
+			let key = serde_json::to_string(
+				&serde_json::json!({"kind":"memory-index","unit":entry,"unit_revision":row.metadata["unit_revision"],"point":row.point_id,"index_revision":row.index_revision,"provider":provider,"text_digest":aidash_domain::semantic::indexing::content_digest(text)}),
+			)?;
+			let origin = super::unit_origins::load(&mut self.lease, entry)
+				.await?
+				.ok_or(Error::Forbidden)?;
+			if Some(origin.revision) != row.metadata["unit_revision"].as_i64() {
+				return Err(Error::Forbidden.into());
+			}
+			let mut models =
+				crate::semantic::services::memory_models::Models::resolve_index_origin(
+					&self.store,
+					&mut self.lease,
+					provider,
+					bank,
+					policy.clone(),
+					crate::semantic::native_memory::request_id(entry, &key)?,
+					aidash_domain::semantic::indexing::content_digest(&key),
+					&origin.runs,
+				)
+				.await?;
+			models.embedding_origin = Some(crate::generation::embedding::Origin::Index(entry));
+			let produced = models
+				.embed(
+					&policy.embedding,
+					text,
+					Allowance {
+						calls: policy.bounds.max_model_calls,
+						tokens: policy.bounds.max_model_tokens,
+						cost_micros: policy.bounds.max_cost_micros,
+					},
+				)
+				.await?;
+			return Ok(produced.output);
+		}
+
 		service::embed(
 			&self.store,
 			&mut self.lease,

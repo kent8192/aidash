@@ -155,6 +155,30 @@ pub(super) fn validate_mounts(contexts: impl IntoIterator<Item = NativeContext>)
 	Ok(())
 }
 
+/// Validate either a native memory role or an explicit mounted context descriptor.
+pub fn validate_definition(entry: &crate::registry::Entry) -> Result<Option<NativeContext>> {
+	if entry.config.get("schema_version").is_some() {
+		let descriptor: NativeContext = serde_json::from_value(entry.config.clone())?;
+		descriptor.validate(&entry.kind)?;
+		return Ok(Some(descriptor));
+	}
+	match entry.kind.as_str() {
+		"memory" => serde_json::from_value::<crate::memory::ProviderConfig>(entry.config.clone())?
+			.policy
+			.validate()?,
+		"source" => {
+			let source: crate::memory::SourceConfig = serde_json::from_value(entry.config.clone())?;
+			if source.max_tokens == 0 || source.max_tokens > i32::MAX as usize {
+				return Err(Error::Invalid(
+					"memory Source requires a finite context cap".into(),
+				));
+			}
+		}
+		_ => return Err(Error::Invalid("unsupported context definition".into())),
+	}
+	Ok(None)
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;

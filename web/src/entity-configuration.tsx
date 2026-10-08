@@ -4,6 +4,7 @@ import { discover } from "./generated/aidash";
 import { ReferenceName } from "./record-view";
 import { SkillImport, type SkillPayload } from "./skill-import";
 import { useState } from "react";
+import { MemoryRegistryFields } from "./memory-registry";
 import type { State } from "./types";
 import { Field, useEntityLabel, useI18n } from "./ui";
 
@@ -267,7 +268,7 @@ export function EntityConfiguration({
 }) {
   const { t } = useI18n();
   const entityLabel = useEntityLabel(data.registry);
-  const [adapter, setAdapter] = useState("conversation_memory");
+  const [adapter, setAdapter] = useState("native_memory");
   const [sourceValue, setSourceValue] = useState("{}");
   const [transport, setTransport] = useState("http");
   const [alias, setAlias] = useState("integration_invoke");
@@ -318,8 +319,9 @@ export function EntityConfiguration({
     /* The input reports invalid JSON before submitting. */
   }
   const sourceAdapter = (kind === "memory"
-    ? ["conversation_memory", "semantic_memory"]
+    ? ["native_memory", "conversation_memory", "semantic_memory"]
     : [
+        "native_memory",
         "workspace_retrieval",
         "reference_attachments",
         "skill_attachments",
@@ -414,6 +416,7 @@ export function EntityConfiguration({
         <>
           <Field label="Context source">
             <select
+              name="context_adapter"
               value={sourceAdapter}
               onChange={(e) => {
                 setAdapter(e.target.value);
@@ -421,37 +424,50 @@ export function EntityConfiguration({
               }}
             >
               {(kind === "memory"
-                ? ["conversation_memory", "semantic_memory"]
+                ? ["native_memory", "conversation_memory", "semantic_memory"]
                 : [
+                    "native_memory",
                     "workspace_retrieval",
                     "reference_attachments",
                     "skill_attachments",
                     "skill_roots",
                   ]
               ).map((a) => (
-                <option key={a}>{a}</option>
+                <option key={a} value={a}>
+                  {a === "native_memory" ? "Native memory" : a}
+                </option>
               ))}
             </select>
           </Field>
-          <Field label="Source settings (JSON)">
-            <textarea
-              key={sourceAdapter}
-              value={sourceValue}
-              onChange={(e) => {
-                setSourceValue(e.target.value);
-                try {
-                  const value = JSON.parse(e.target.value);
-                  e.target.setCustomValidity(
-                    value && !Array.isArray(value) && typeof value === "object"
-                      ? ""
-                      : "Enter a JSON object",
-                  );
-                } catch {
-                  e.target.setCustomValidity("Enter valid JSON");
-                }
-              }}
+          {sourceAdapter === "native_memory" ? (
+            <MemoryRegistryFields
+              key={kind}
+              kind={kind}
+              entries={data.registry}
             />
-          </Field>
+          ) : (
+            <Field label="Source settings (JSON)">
+              <textarea
+                key={sourceAdapter}
+                value={sourceValue}
+                onChange={(e) => {
+                  setSourceValue(e.target.value);
+                  try {
+                    const value = JSON.parse(e.target.value);
+                    e.target.setCustomValidity(
+                      value &&
+                        !Array.isArray(value) &&
+                        typeof value === "object"
+                        ? ""
+                        : "Enter a JSON object",
+                    );
+                  } catch {
+                    e.target.setCustomValidity("Enter valid JSON");
+                  }
+                }}
+              />
+            </Field>
+          )}
         </>
       )}
       {kind === "skill" && (

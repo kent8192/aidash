@@ -289,3 +289,47 @@ export function AgentBindings({
     </fieldset>
   );
 }
+
+export function nativeMemoryProvider(
+  config: Record<string, unknown> | undefined,
+  entries: {
+    id: string;
+    version: string;
+    kind: string;
+    config: Record<string, unknown>;
+  }[],
+  requireReads = false,
+): { id: string; version: string } | undefined {
+  const bindings = (config?.bindings ?? []) as Binding[];
+  const removed = (config?.remove_default ?? []) as string[];
+  const reads = ["memory_recall", "memory_reflect"];
+  if (
+    requireReads &&
+    reads.every((operation) => removed.includes(operation)) &&
+    !bindings.some(
+      (binding) =>
+        binding.kind === "tool" &&
+        entries.some(
+          (entry) =>
+            entry.id === binding.target.id &&
+            entry.version === binding.target.version &&
+            reads.includes(String(entry.config.operation)),
+        ),
+    )
+  )
+    return undefined;
+  const provider = bindings.find(
+    (binding) =>
+      binding.kind === "memory" &&
+      entries.some(
+        (entry) =>
+          entry.kind === "memory" &&
+          entry.id === binding.target.id &&
+          entry.version === binding.target.version &&
+          entry.config.engine === "hindsight_rust",
+      ),
+  );
+  return provider
+    ? { id: provider.target.id, version: provider.target.version }
+    : undefined;
+}

@@ -46,6 +46,7 @@ COPY --from=rust /out/local-dev-db /usr/local/bin/local-dev-db
 COPY server/migrations /app/server/migrations
 COPY server/settings/base.example.toml /app/server/settings/base.toml
 RUN sed -i '/^\[core\]$/a base_dir = "/app/server"' /app/server/settings/base.toml
+RUN mkdir -p /var/lib/aidash/memory-recovery && chown -R 10001:10001 /var/lib/aidash
 WORKDIR /app/server
 USER 10001:10001
 ENV AIDASH_LISTEN=0.0.0.0:8080 AIDASH_BASE_DIR=/app/server REINHARDT_SETTINGS_DIR=/app/server/settings
@@ -62,6 +63,7 @@ COPY server/migrations /app/server/migrations
 COPY server/settings/base.example.toml /app/server/settings/base.toml
 RUN sed -i '/^\[core\]$/a base_dir = "/app/server"' /app/server/settings/base.toml
 COPY --from=web /build/web/dist /app/web
+RUN mkdir -p /var/lib/aidash/memory-recovery && chown -R 10001:10001 /var/lib/aidash
 WORKDIR /app/server
 USER 10001:10001
 ENV AIDASH_LISTEN=0.0.0.0:8080 AIDASH_WEB_DIR=/app/web AIDASH_BASE_DIR=/app/server REINHARDT_SETTINGS_DIR=/app/server/settings

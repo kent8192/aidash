@@ -136,3 +136,36 @@ pub(crate) fn builtin_entries(node: &str) -> Vec<Entry> {
 pub(crate) fn binding(kind: &str, node: &str, id: &str) -> serde_json::Value {
 	json!({"kind":kind,"target":{"registry_node":node,"id":id,"version":"1.0.0"},"narrow":{}})
 }
+
+pub(crate) fn native_memory_entries() -> Vec<Entry> {
+	let reference = |id: &str| json!({"id":id,"version":"1.0.0"});
+	let zero = json!({"input_per_million":0,"output_per_million":0});
+	vec![
+		entry(
+			"native-embedding",
+			"embedding",
+			json!({"provider":"openai","endpoint":"https://embedding.invalid","credential_env":null,"model":"fixture","model_version":"1","dimensions":3}),
+		),
+		entry("native-reranker", "reranker", json!({"provider":"rrf"})),
+		entry(
+			"native-tokenizer",
+			"tokenizer",
+			json!({"provider":"utf8_upper_bound"}),
+		),
+		entry(
+			"native",
+			"memory",
+			json!({"engine":"hindsight_rust","policy":{
+            "extraction":reference("fixture-model"),"derivation":reference("fixture-model"),"reflection":reference("fixture-model"),"embedding":reference("native-embedding"),"reranker":reference("native-reranker"),"tokenizer":reference("native-tokenizer"),
+            "prices":{"extraction":zero,"derivation":zero,"reflection":zero,"embedding":zero,"reranker":zero},
+            "retention":{"unit_max_age_days":null,"candidate_days":7,"history_days":30,"history_versions":16,"model_result_days":7,"backup_days":7,"purge_after_seconds":60,"purge_batch":32,"max_unit_records":128,"max_model_operations":1024},
+            "bounds":{"max_unit_bytes":8192,"max_input_bytes":8192,"max_units":16,"max_candidates":8,"max_entities":8,"max_evidence":8,"max_links":8,"max_graph_hops":3,"max_graph_visits":32,"max_results":4,"max_context_tokens":8192,"max_model_calls":4,"max_model_tokens":8192,"max_cost_micros":10000,"max_retries":2,"max_call_seconds":30},
+            "semantic_link_min_similarity_millionths":700000,"learn_from_runs":false,"maintain_observations":false,"refresh_mental_models":false}}),
+		),
+	]
+}
+pub(crate) fn native_memory_snapshot(node: &str, id: &str) -> BindingSnapshot {
+	let mut root = agent(id);
+	root.config["bindings"] = json!([binding("memory", node, "native")]);
+	resolve(node, &root, true, native_memory_entries())
+}

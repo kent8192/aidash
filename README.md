@@ -2,7 +2,7 @@
 
 Aidash 0.1 is a self-hosted federated agent mesh. Register an explicitly selected model and an agent, start a goal in the dashboard, and let agents claim work across independently operated nodes. Workspaces retain tasks, artifacts, messages and an ordered event log. Workers persist their execution state and recover after process termination.
 
-The current implementation includes a federated mesh, scoped remote Worker activation and Home commands, scoped authorization, policy-driven local agent generation, a recoverable cross-node transaction protocol, persistent semantic memory, Creator and Trust workbenches, and Kubernetes/k3s deployment. See [architecture](docs/architecture.md), [authorization](docs/authorization.md), [generation](docs/generation.md), [distributed transactions](docs/transactions.md), [semantic memory](docs/semantic-memory.md), [orchestration](docs/orchestration.md), and [protocol and recovery contracts](docs/protocol.md). Source and focused test coverage for these paths do not close the full scoped federation (#38), transaction (#40), A2A (#39), or combined release acceptance gates.
+The current implementation includes a federated mesh, scoped remote Worker activation and Home commands, scoped authorization, policy-driven local agent generation, a recoverable cross-node transaction protocol, persistent semantic memory, Creator and Trust workbenches, and Kubernetes/k3s deployment. See [architecture](docs/architecture.md), [authorization](docs/authorization.md), [generation](docs/generation.md), [distributed transactions](docs/transactions.md), [orchestration](docs/orchestration.md), and [protocol and recovery contracts](docs/protocol.md). Source and focused test coverage for these paths do not close the full scoped federation (#38), transaction (#40), A2A (#39), or combined release acceptance gates.
 
 ## Cargo workspace
 
@@ -27,7 +27,7 @@ the existing executable name and default `serve` behavior. Existing
 | `aidash-application`  | Authorized use cases, shared execution contracts, and external ports.    |
 | `aidash-harness`      | Agent steps, worker activation, leases, cancellation, and recovery.      |
 | `aidash-runtime`      | Background supervision, shutdown, and worker drain.                      |
-| `aidash-integrations` | Inference, HTTP/MCP, NATS, Qdrant, and Kubernetes adapters.              |
+| `aidash-integrations` | Inference, HTTP/MCP, NATS and Kubernetes adapters.                       |
 | `aidash-server`       | Reinhardt HTTP/ORM/settings, app repositories/migrations, and bootstrap. |
 
 `server/src/bootstrap.rs` assembles the concrete adapters for both HTTP and
@@ -54,7 +54,7 @@ cargo make k8s-up
 
 This creates a dedicated `aidash-local` kind cluster, builds and imports the
 Aidash backend, frontend, and PostgreSQL images (including `pg_jsonschema`),
-starts persistent PostgreSQL, JetStream NATS and Qdrant, deploys the server,
+starts persistent PostgreSQL with pgvector/PGroonga and JetStream NATS, deploys the server,
 worker, and frontend with Helm, and exposes the dashboard at
 <http://127.0.0.1:8080>. The frontend Service serves the dashboard and proxies
 API, authentication, federation, and health requests to the internal backend Service.
@@ -83,7 +83,7 @@ PostgreSQL password, recreate it with `cargo make k8s-down` followed by
 
 Prerequisites: `cargo-make` and Docker Compose v2.24 or later. Rust 1.96
 and Node.js 22 run inside the development images. Start PostgreSQL, NATS,
-Qdrant, the backend, and Vite in detached mode:
+the backend and Vite in detached mode:
 
 ```sh
 cargo make dev
@@ -120,7 +120,9 @@ The first external identity has no authority. After its first sign-in, list veri
 
 The **Registry** screen can register models, tools, skills, clusters, agents, compactors and embedding providers. Register a model before an agent. Inference uses OpenRouter `/chat/completions`. Specify the provider's actual model ID, context window, modalities and cost metadata. Credentials are resolved only from `AIDASH_SECRET_*` environment variables. Registry records store the environment variable name, never its value. Model selection is explicit; Aidash does not select fallback models or automatically route between models.
 
-Registration starts with an editable English `adjective-animal` name and one description field. The server assigns a UUID v7 internally; the registration form does not expose an ID field. The form retains a private request key for unchanged retries, and the server saves its assigned ID atomically with registration. API clients can still supply explicit IDs or send an `Idempotency-Key` UUID header; reusing a key with different input returns a conflict. An ID and version together identify the immutable registration. The form stores name and description in `en` and provides editable discovery languages defaulting to `ja`/`en`. Skills can import existing `SKILL.md` instruction files. Agent creation prioritizes selected Skills, optional additional instructions, and personal PDF/Excel/text references; see [Skills-first agents](docs/features/skills-first-agents.md) for supported formats and execution limits. Clusters select an exact coordinator-agent version, and tools have connection-specific fields plus an argument editor for text, numbers, booleans, groups and lists. Argument editors preserve allowed values, patterns and numeric bounds. Native web tools provide the URL argument automatically. Agent tools use fixed task arguments: required title and description, with optional requirements, dependencies and parent task. No configuration JSON is entered. Authenticated HTTP/MCP tools accept a per-entry credential reference, defaulting to `AIDASH_SECRET_TOOL`; embeddings use `AIDASH_SECRET_EMBEDDING` and compactors use `AIDASH_SECRET_JEV`. These variables must be configured on the server and workers. Existing registrations and their explicit credential references remain unchanged.
+Registration starts with an editable English `adjective-animal` name and one description field. The server assigns a UUID v7 internally; the registration form does not expose an ID field. The form retains a private request key for unchanged retries, and the server saves its assigned ID atomically with registration. API clients can still supply explicit IDs or send an `Idempotency-Key` UUID header; reusing a key with different input returns a conflict. An ID and version together identify the immutable registration. The form stores name and description in `en` and provides editable discovery languages defaulting to `ja`/`en`. Skills can import existing `SKILL.md` instruction files. Agent creation prioritizes selected Skills, optional additional instructions, and personal PDF/Excel/text references; see [Skills-first agents](docs/features/skills-first-agents.md) for supported formats and execution limits. Clusters select an exact coordinator-agent version, and tools have connection-specific fields plus an argument editor for text, numbers, booleans, groups and lists. Argument editors preserve allowed values, patterns and numeric bounds. Native web tools provide the URL argument automatically. Agent tools use fixed task arguments: required title and description, with optional requirements, dependencies and parent task. No configuration JSON is entered. Authenticated HTTP/MCP tools accept a per-entry credential reference, defaulting to `AIDASH_SECRET_TOOL`; OpenRouter embeddings use `AIDASH_SECRET_OPENROUTER`, legacy OpenAI-compatible embeddings use `AIDASH_SECRET_EMBEDDING`, and compactors use `AIDASH_SECRET_JEV`. These variables must be configured on the server and workers. Existing registrations and their explicit credential references remain unchanged.
+
+Embedding registration and new semantic indexes default to OpenRouter `https://openrouter.ai/api/v1`, model `google/gemini-embedding-2`, model version `1.0.0`, and **3072 dimensions**. The adapter sends the approved `dimensions`, float encoding, and `provider.zdr = true` to `/embeddings`, and validates the returned model and vector dimensions before accepting the result. Smaller dimensions can reduce database storage and similarity-computation cost, but may reduce retrieval quality and do not reduce API input charges. Workspace index generations and pinned bank policies must use the same embedding configuration. Index updates validate every pinned bank, including empty banks, and bank policy changes validate the existing index. Pinned banks also require the index to stay enabled. Compatible settings updates can rebuild a generation. To adopt a different embedding, register and approve its definitions and configure a fresh Workspace index before creating its banks; existing banks retain their pinned embedding until an atomic migration is supported. Model version is an operator-managed embedding generation label; change it when the upstream model contract changes. The current native memory ingestion and retrieval inputs remain text; selecting a multimodal model does not by itself add image ingestion or image RAG. See [OpenRouter embeddings](https://openrouter.ai/docs/api_reference/embeddings).
 
 For **OpenRouter**, set `AIDASH_SECRET_OPENROUTER` on the server and worker processes. The Registry model form uses OpenRouter: search the live model catalog by name or ID and select a text model with tool calling. Aidash fills the model ID, endpoint, context window, maximum output tokens and indicative per-million-token pricing automatically. Models without a published maximum output limit are not offered. Catalog failures can be retried from the form. No credential reference is entered in the model form; model registration uses `AIDASH_SECRET_OPENROUTER`. Existing registry entries retain their explicit credential references.
 
@@ -253,6 +255,10 @@ npm test --prefix web
 
 Protocol fixtures verify transport, coordination and recovery. They do not establish live model answer quality or provider-account availability. No commercial model calls are made by these tests.
 
+## Native memory
+
+The Rust Hindsight provider stores memory units, facts and graph edges in PostgreSQL with pgvector and PGroonga. Agents bind the immutable Memory provider and workspace Sources through Binding contract 1. Recovery journals and visibility checks retain the admitted provider identities across restarts. See [memory evaluation](docs/memory-evaluation.md) and [memory recovery](docs/memory-recovery.md).
+
 ## Database migrations
 
 Reinhardt owns the app migration graph under `server/migrations/<app_label>/`. The native baseline supports empty PostgreSQL databases and replay of its own history; existing SeaORM or experimental migration databases are not adopted. Run `cargo run --locked -p aidash-server --bin manage -- migrate` through the native management CLI. See the [migration correspondence and maintenance cutover procedure](server/migrations/README.md) before switching deployments.
@@ -269,7 +275,7 @@ The coverage uploader uses a pinned Codecov CLI from PyPI; see the [download out
 
 Run `scripts/test-rust.sh --partition identity` for one partition, or `python3 scripts/rust-test-partitions.py --check` to inspect the complete inventory. Run `scripts/test-rust.sh --coverage` to produce `coverage/rust.lcov` locally (requires `cargo-llvm-cov` 0.8.7 and `llvm-tools-preview`). `scripts/check.sh` runs the full local suite. Cargo and npm lockfiles remain tracked for reproducible dependency resolution.
 
-Run `npm exec --yes --package=@usebruno/cli@3.1.3 -- scripts/test-bruno-api.sh` with the test PostgreSQL and NATS services running to verify the real HTTP API. The [Bruno collection](server/tests/bruno/README.md) checks all 269 native endpoints with 3–10 scenarios each, including scoped authorization, input rejection, state changes, browser cookies/CSRF, finite SSE replay and frontend caching against a disposable database and the compiled server. Sanitized reports include the source revision and executable hash.
+Run `npm exec --yes --package=@usebruno/cli@3.1.3 -- scripts/test-bruno-api.sh` with the test PostgreSQL and NATS services running to verify the real HTTP API. The [Bruno collection](server/tests/bruno/README.md) checks all 281 native endpoints with 3–10 scenarios each, including scoped authorization, input rejection, state changes, browser cookies/CSRF, finite SSE replay and frontend caching against a disposable database and the compiled server. Sanitized reports include the source revision and executable hash.
 
 Package installation overlays the supplied node-local configuration onto the entity configuration, validates it, and publishes the effective immutable Registry version atomically with the installation record. Changing an installed configuration requires a new version.
 

@@ -319,7 +319,9 @@ pub async fn stage(
 		.persist_revision(&staged.installation, &staged.revision)
 		.await?;
 	let entry = &staged.revision.entry;
-	if matches!(entry.kind.as_str(), "source" | "memory") {
+	if matches!(entry.kind.as_str(), "source" | "memory")
+		&& entry.config.get("schema_version").is_some()
+	{
 		let context: aidash_domain::registry::bindings::sources::NativeContext =
 			serde_json::from_value(entry.config.clone())?;
 		if let aidash_domain::registry::bindings::sources::NativeSource::PrivateReferences {

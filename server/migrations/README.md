@@ -209,10 +209,17 @@ Never let old and new migration engines manage the same application schema.
 ## Physical schema verification
 
 `test-migration-schema.py` compares the shared migration bootstrap on a unique empty
-`template0` database with a read-only PostgreSQL reference created by all 55
-legacy migrations at revision `d75d1c0453a6e8bd267e428cf2303dd7c6ff8639`. It then repeats
-`manage migrate` and runs `makemigrations --state-source files --dry-run --check`.
-The native ledger must contain 46 records and the retired ledger must be absent.
+`template0` database with a read-only PostgreSQL reference built from the immutable
+native revision `cd29635a9937133d2e81cca44857bea331446cc5`. This reference includes
+native memory, vector, and PGroonga additions. Prepare it with `aidash migrate`
+using binaries, settings, and migration sources from that exact revision in an
+isolated deployment directory; do not rebuild the reference from the working tree.
+The frozen reference identities are checked into
+`scripts/migration-schema-reference.json`; verification does not need the original
+Git object, so shallow clones and squash merges retain the reference ledger.
+The reference must match that manifest, and the target must have exactly the
+`(app, name)` identities registered in its current sources, with no retired ledger.
+New migration files are included automatically without a hard-coded record count.
 
 ```bash
 python3 scripts/test-migration-schema.py \
@@ -223,25 +230,20 @@ python3 scripts/test-migration-schema.py \
   --reference-database aidash_reference
 ```
 
-The comparison includes 117 tables, 805 columns, 349 constraints, 209 indexes,
-128 triggers, 38 functions, nine sequences and the `pg_jsonschema` extension.
-Names, types, defaults, generated columns, key definitions, deferred/validated
-flags, index predicates, trigger enablement/function bodies and sequence
-ownership/settings are compared. The only normalization is the three visible
-`runs` columns following the legacy dropped column slot 17; their types, order,
-defaults and constraints must still match. Counts alone never establish parity.
-The script removes only its own target database and writes catalog differences,
-command exit codes, source state and executable hashes under `.ignore/schema-parity/`.
+The verifier repeats `manage migrate` and runs
+`makemigrations --state-source files --dry-run --check`. It compares all public
+tables, columns, constraints, indexes, triggers, functions, aggregates, sequences, and the
+`pg_jsonschema`, `vector`, and `pgroonga` extensions. Names, types, defaults,
+generated columns, key definitions, deferred/validated flags, index predicates,
+trigger enablement/function bodies, and sequence ownership/settings must match
+verbatim. Counts alone never establish parity. The script removes only its own
+target database and writes complete catalogs, ledgers, command exit codes, source
+state, and executable hashes under `.ignore/schema-parity/`. Intentional physical
+schema changes require a separately reviewed immutable reference update.
 
-The native Binding cutover adds append-only Registry schema operations and model
-state. `federation/0008_pinned_delegations` and its state snapshot retain an
-optional public receiver closure in `delegations.binding_snapshot`. Existing
-rows keep `NULL`; an Agent Tool reservation writes its complete validated closure
-atomically. No historical Agent capability configuration is translated. The
-`execution/0008_home_waiting_references` and its state snapshot keep Home-owned
-Human continuations out of the receiver's local foreign key while retaining that
-key for local Runs. Remote waiting advances a bounded polling deadline until Home
-answers. `registry/0012_host_lifecycle_expression` corrects JSON operator precedence
-in the descriptor function without changing its strict poll/cancel identities or
-historical descriptors. The current graph has 44 physical migrations and 13 state
-snapshots (57 migrations total).
+The native memory additions end with generated state-only ORM metadata checkpoints
+for execution, knowledge, and registry. These reconcile composite-key and field
+metadata and exclude procedural checks and references from the ORM snapshot, while
+retaining the physical constraints established by the preceding migrations.
+
+Binding and native memory histories converge in `registry/0015_binding_memory_merge` and `execution/0011_binding_memory_merge`. The registry merge preserves strict Agent Bindings, Host lifecycle validation and native memory operations. Agent memory-role references derive from qualified Binding targets. These migrations depend on both histories and leave their existing migration identities unchanged.

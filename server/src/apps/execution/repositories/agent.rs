@@ -43,9 +43,6 @@ impl ExecutionStore for Store {
 	async fn run_inputs(&self, run: Uuid) -> Result<Vec<aidash_domain::run_input::RunInput>> {
 		Store::run_inputs(self, run).await.map_err(Into::into)
 	}
-	async fn memory(&self, run: &RunMetadata) -> Result<Value> {
-		Store::memory(self, run).await.map_err(Into::into)
-	}
 	async fn begin_final_completion(&self, run: &Run, token: Uuid) -> Result<bool> {
 		Store::begin_final_completion(self, run, token)
 			.await
@@ -436,7 +433,10 @@ impl ExecutionEnvironment for Environment<'_> {
 			})?;
 		let mut documents = vec![];
 		for binding in &snapshot.bindings {
-			if binding.excluded_reason.is_some() || binding.definition.kind != "source" {
+			if binding.excluded_reason.is_some()
+				|| binding.definition.kind != "source"
+				|| binding.definition.config.get("schema_version").is_none()
+			{
 				continue;
 			}
 			let context: aidash_domain::registry::bindings::sources::NativeContext =
@@ -476,12 +476,13 @@ impl ExecutionEnvironment for Environment<'_> {
 				&crate::authorization::identity::Actor::Operator,
 			)
 			.await?;
-			let result = aidash_application::semantic::retrieval::recheck(
-				&mut crate::bootstrap::semantic_retrieval_scope(&self.federation.store, &mut lease),
-				&serde_json::from_value(semantic.clone())?,
+			let result = crate::semantic::services::memory_context::recheck(
+				&self.federation.store,
+				&mut lease,
+				run,
+				semantic,
 			)
-			.await
-			.map_err(crate::Error::from);
+			.await;
 			lease.finish(result).await?;
 		}
 		let _ = run;
@@ -541,22 +542,43 @@ impl ExecutionEnvironment for Environment<'_> {
 			&crate::authorization::identity::Actor::Operator,
 		)
 		.await?;
-		let result = crate::semantic::service::context_in(
+		let mut query = format!("{}\n{}", task.title, task.description);
+		for (_, text) in inputs {
+			query.push('\n');
+			query.push_str(text);
+		}
+		let semantic = crate::semantic::service::context_in(
 			&self.federation.store,
 			&mut lease,
 			run,
-			&format!("{}\n{}", task.title, task.description),
-			budget,
+			&query,
+			crate::semantic::services::memory_context::workspace_budget(budget)?,
 			&agent,
 		)
 		.await;
-		lease
-			.finish(result)
-			.await?
-			.map(serde_json::to_value)
-			.transpose()
-			.map_err(Into::into)
+		let result = async {
+			let semantic = semantic?.map(serde_json::to_value).transpose()?;
+			let reserved =
+				serde_json::to_vec(&serde_json::json!({"workspace":semantic,"memory":null}))?.len();
+			let memory = crate::semantic::services::memory_context::retrieve(
+				&self.federation.store,
+				&mut lease,
+				run,
+				task,
+				inputs,
+				budget.saturating_sub(reserved),
+				&agent,
+			)
+			.await?;
+			crate::semantic::services::memory_context::complete(
+				&mut lease, run, semantic, memory, budget,
+			)
+			.await
+		}
+		.await;
+		lease.finish(result).await.map_err(Into::into)
 	}
+
 	async fn run_message_limit(&self, run: &Run) -> Result<usize> {
 		self.federation
 			.run_message_limit(run)

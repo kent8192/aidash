@@ -30,7 +30,7 @@ when merged. Existing thresholds, exclusions and required partitions are unchang
 An instrumented two-crate regression checks that server tests contribute coverage
 to a dependency while its unit tests remain excluded from that partition.
 
-Bruno runs all 269 endpoints and 935 scenarios in its own required job; only
+Bruno runs every endpoint and scenario in the committed contract manifest in its own required job; only
 sanitized source identity, executable hashes and assertion results are archived.
 Both LLVM export and Codecov exclude test directories, `tests.rs`, and sibling
 `*_tests.rs` modules so those test bodies do not contribute to application coverage.

@@ -201,20 +201,10 @@ impl LocalRunVisibilityScope for NativeReads<'_> {
 	async fn workspace(&mut self, id: Uuid) -> Result<Resource> {
 		self.access.workspace(id).await.map_err(Into::into)
 	}
-	async fn memory_resource(
-		&mut self,
-		run: &RunMetadata,
-		workspace: &Resource,
-	) -> Result<Resource> {
-		Ok(self.access.resource(
-			"memory",
-			&run.agent_id,
-			aidash_application::authorization::visibility::memory_attributes(
-				run,
-				workspace.attributes.clone(),
-			),
-		))
+	async fn memory_resource(&mut self, run: &RunMetadata, _: &Resource) -> Result<Resource> {
+		self.access.memory_resource(run).await.map_err(Into::into)
 	}
+
 	async fn task(&mut self, run: &RunMetadata) -> Result<Option<Task>> {
 		crate::apps::workspaces::models::Task::read_in(
 			self.access.tx.as_mut(),

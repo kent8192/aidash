@@ -115,8 +115,10 @@ pub async fn register(
 
 /// Private context is available only on its owning node, with the original digest.
 pub async fn load(scope: &mut dyn PrivateKnowledgeRead, entry: &Entry) -> Result<Value> {
-	let descriptor: aidash_domain::registry::bindings::sources::NativeContext =
-		serde_json::from_value(entry.config.clone())?;
+	let Some(descriptor) = aidash_domain::registry::bindings::sources::validate_definition(entry)?
+	else {
+		return Ok(json!([]));
+	};
 	let aidash_domain::registry::bindings::sources::NativeSource::PrivateReferences {
 		digest: expected,
 	} = descriptor.source

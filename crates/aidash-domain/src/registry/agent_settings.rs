@@ -18,6 +18,12 @@ impl AgentConfig {
 	}
 	pub fn from_definition(input: AgentBindings) -> Self {
 		let mut result = Self {
+			memory: input
+				.bindings
+				.iter()
+				.find(|b| b.kind == BindingKind::Memory)
+				.map(|b| b.target.local()),
+			sources: vec![],
 			conversation_memory: false,
 			semantic_memory: false,
 			workspace_context: false,
@@ -71,6 +77,8 @@ impl AgentConfig {
 		result.allow_memory_write = Some(false);
 		result.allow_workspace_retrieval = Some(false);
 		result.skills.clear();
+		result.memory = None;
+		result.sources.clear();
 		for binding in &snapshot.bindings {
 			if binding.excluded_reason.is_some() {
 				continue;
@@ -84,6 +92,20 @@ impl AgentConfig {
 				}
 				"skill" => result.skills.push(binding.identity.local()),
 				"memory" | "source" => {
+					if binding.definition.config.get("schema_version").is_none() {
+						if binding.definition.kind == "memory" {
+							if result.memory.replace(binding.identity.local()).is_some() {
+								return Err(crate::Error::Invalid(
+									"Agent requires one primary memory provider".into(),
+								));
+							}
+							result.conversation_memory = true;
+							result.semantic_memory = true;
+						} else {
+							result.sources.push(binding.identity.local());
+						}
+						continue;
+					}
 					let context: NativeContext =
 						serde_json::from_value(binding.definition.config.clone())?;
 					match context.source {
@@ -109,6 +131,8 @@ impl AgentConfig {
 				_ => {}
 			}
 		}
+		crate::capabilities::references::validate_config(&result)?;
+		crate::capabilities::skills::validate_config(&result)?;
 		Ok(result)
 	}
 	fn operation(&mut self, name: &str) {
@@ -121,8 +145,10 @@ impl AgentConfig {
 			"apply_patch" => self.core_capabilities.patch = true,
 			"file_share" => self.core_capabilities.sharing = true,
 			"task_create" => self.allow_task_creation = Some(true),
-			"task_delegate" => self.allow_task_delegation = Some(true),
-			"memory_write" => self.allow_memory_write = Some(true),
+			"task_delegate" | "task_assign" => self.allow_task_delegation = Some(true),
+			"memory_mutate" => self.allow_memory_write = Some(true),
+			"memory_recall" | "memory_reflect" => self.allow_cross_conversation_memory = Some(true),
+			"outbound_get" => self.core_capabilities.outbound = true,
 			"workspace_read" => self.allow_workspace_retrieval = Some(true),
 			_ => {}
 		}

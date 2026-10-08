@@ -1,21 +1,14 @@
 //! Agent memory and persisted read dependencies retain the caller's authority scope.
-use super::mutations::SemanticEntriesSession;
 use crate::Result;
-use aidash_domain::{Run, semantic::mutations::Entry};
+use aidash_domain::semantic::mutations::Entry;
 use async_trait::async_trait;
 use uuid::Uuid;
 
 #[async_trait]
-pub trait SemanticMemoryWriteSession: SemanticEntriesSession {
-	async fn configured(&mut self, workspace: Uuid) -> Result<bool>;
-	async fn revision(&mut self, workspace: Uuid, key: &str) -> Result<Option<i64>>;
-	async fn bind_memory(&mut self, entry: &Entry, run: &Run) -> Result<()>;
-	/// Persist ordinary memory after the optional semantic write on this same scope.
-	async fn persist_memory(&mut self, run: &Run, data: &serde_json::Value) -> Result<()>;
-}
-
-#[async_trait]
 pub trait SemanticMemoryReadSession: Send {
+	async fn native_reads_visible(&mut self, _run: Uuid) -> Result<bool> {
+		Ok(true)
+	}
 	async fn permits(&mut self, entry: &Entry, action: &str) -> Result<bool>;
 	async fn source(
 		&mut self,

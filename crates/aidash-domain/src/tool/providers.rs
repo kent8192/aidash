@@ -50,7 +50,7 @@ pub fn core_provider(operation: &str) -> Option<&'static str> {
 		"skill_list" | "skill_load" | "skill_read" => "core.skills@1",
 		"file_search" | "file_read" | "apply_patch" => "core.files@1",
 		"artifact_publish" => "core.artifacts@1",
-		"memory_write" => "core.memory@1",
+		"memory_mutate" | "memory_recall" | "memory_reflect" => "core.memory@1",
 		"shell" | "shell_poll" | "shell_cancel" | "code_interpreter" | "python_install"
 		| "python_poll" | "python_cancel" => "core.sandbox@1",
 		"outbound_get" => "core.egress@1",

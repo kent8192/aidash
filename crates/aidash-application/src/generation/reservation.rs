@@ -41,6 +41,32 @@ async fn approved(
 		return Err(Error::RemoteSemantic(Failure::Authority));
 	}
 	let spec: Spec = serde_json::from_value(scope.pinned_policy(job).await?)?;
+	if usage.purpose == Purpose::Memory {
+		if spec
+			.remote
+			.as_ref()
+			.is_none_or(|approvals| !approvals.memory.contains(&usage.provider))
+		{
+			return Err(Error::RemoteSemantic(Failure::Allowance));
+		}
+		if usage.provider.node_id == node {
+			let catalog = scope.catalog();
+			let entry = catalog::entry(catalog, &usage.provider.entry, "memory.invoke").await?;
+			catalog
+				.require(&catalog.resource(&entry), "registry.read")
+				.await?;
+			if digest(&serde_json::to_value(&entry)?) != usage.provider.digest
+				|| digest(&entry.config) != usage.provider.configuration_digest
+			{
+				return Err(Error::RemoteSemantic(Failure::Configuration));
+			}
+		} else {
+			let resource = scope.remote_resource("registry", &format!("{}/registry/{}@{}", usage.provider.node_id, usage.provider.entry.id, usage.provider.entry.version), json!({"remote_node":usage.provider.node_id,"definition_digest":usage.provider.digest,"purpose":"memory"}));
+			scope.require(&resource, "registry.read").await?;
+			scope.require(&resource, "memory.invoke").await?;
+		}
+		return Ok(());
+	}
 	if usage.provider.node_id == node {
 		let expected = match usage.purpose {
 			Purpose::Embedding => spec.embedding.map(|value| value.provider),
@@ -48,6 +74,7 @@ async fn approved(
 			Purpose::Inference => {
 				Some(serde_json::from_value::<AgentConfig>(spec.template.config)?.model)
 			}
+			Purpose::Memory => unreachable!("handled above"),
 		}
 		.ok_or(Error::RemoteSemantic(Failure::Allowance))?;
 		if expected != usage.provider.entry {
@@ -77,6 +104,7 @@ async fn approved(
 				.as_ref()
 				.is_some_and(|value| value.provider == usage.provider),
 			Purpose::Inference => approvals.inference.contains(&usage.provider),
+			Purpose::Memory => unreachable!("handled above"),
 		};
 		if !permitted {
 			return Err(Error::RemoteSemantic(Failure::Allowance));

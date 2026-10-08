@@ -12,6 +12,12 @@ use aidash_domain::{
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct MemoryMutationInput {
+	changes: Vec<aidash_domain::memory::Change>,
+}
+
 pub struct ToolContext<'a> {
 	pub operations: &'a dyn ToolOperations,
 	pub run: &'a Run,
@@ -240,9 +246,22 @@ impl Builtin {
 			"workspace_wait" => {
 				Ok(json!({"wait_seconds":input["seconds"].as_u64().unwrap_or(2).clamp(1,60)}))
 			}
-			"memory_write" => {
-				ctx.operations.remember(&input).await?;
-				Ok(json!({"saved":true}))
+			"memory_mutate" => {
+				let input: MemoryMutationInput = serde_json::from_value(input)?;
+				if input.changes.iter().any(|change| matches!(change,
+					aidash_domain::memory::Change::Add { content, .. } | aidash_domain::memory::Change::Correct { content, .. }
+					if content.verification != aidash_domain::memory::Verification::Unverified)) {
+					return Err(Error::Invalid("an agent cannot attest memory verification through a model tool".into()));
+				}
+				Ok(json!(
+					ctx.operations.memory_mutate(key, &input.changes).await?
+				))
+			}
+			"memory_recall" | "memory_reflect" => {
+				let query = serde_json::from_value(input)?;
+				ctx.operations
+					.memory_recall(key, &query, self.name == "memory_reflect")
+					.await
 			}
 			"human_request" => {
 				let request = ctx
@@ -335,11 +354,25 @@ pub fn builtins() -> BTreeMap<String, Builtin> {
 			schema: json!({"type":"object","required":["seconds"],"properties":{"seconds":{"type":"integer","minimum":1,"maximum":60}},"additionalProperties":false}),
 		},
 		Builtin {
-			name: "memory_write",
-			contract: aidash_domain::tool::builtin_contract("memory_write")
+			name: "memory_mutate",
+			contract: aidash_domain::tool::builtin_contract("memory_mutate")
 				.expect("declared builtin"),
-			description: "Replace this agent's persistent memory for the current workspace with this JSON object.",
-			schema: json!({"type":"object"}),
+			description: "Explicitly add, correct, or delete individual unverified memory units in the host-bound private bank. Corrections and deletions require the caller-observed expected_revision. Preserve exact evidence. Never replace a bank.",
+			schema: json!(schemars::schema_for!(MemoryMutationInput)),
+		},
+		Builtin {
+			name: "memory_recall",
+			contract: aidash_domain::tool::builtin_contract("memory_recall")
+				.expect("declared builtin"),
+			description: "Recall bounded current memory from the Home's bound participant using semantic, keyword, graph and temporal search. Preserve provenance and uncertainty.",
+			schema: json!(schemars::schema_for!(aidash_domain::memory::RecallQuery)),
+		},
+		Builtin {
+			name: "memory_reflect",
+			contract: aidash_domain::tool::builtin_contract("memory_reflect")
+				.expect("declared builtin"),
+			description: "Explicitly reflect over currently admitted memory with bounded exact-citation reads. This operation does not admit new learning.",
+			schema: json!(schemars::schema_for!(aidash_domain::memory::RecallQuery)),
 		},
 		Builtin {
 			name: "human_request",

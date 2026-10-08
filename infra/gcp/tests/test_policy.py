@@ -80,11 +80,11 @@ class LifecycleTests(unittest.TestCase):
         state = self.apply({}, self.request())
         images = {
             name: f"us-central1-docker.pkg.dev/fixture/aidash/{name}@sha256:{'a' * 64}"
-            for name in ("app", "postgres", "sandbox", "observer", "nats", "qdrant")
+            for name in ("app", "postgres", "sandbox", "observer", "nats")
         }
         release = {"source_sha": "a" * 40, "images": images}
         self.assertTrue(attach_release(state, "test", 1, release)[1])
-        for name in ("nats", "qdrant"):
+        for name in ("nats",):
             for invalid in (None, f"{name}:latest"):
                 with self.subTest(name=name, image=invalid):
                     candidate = dict(images)

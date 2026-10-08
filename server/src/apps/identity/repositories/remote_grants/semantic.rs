@@ -78,4 +78,20 @@ impl SemanticBindingScope for Scope<'_> {
 			.await
 			.map_err(Into::into)
 	}
+	async fn native_binding(
+		&mut self,
+		workspace: Uuid,
+		request: &aidash_domain::semantic::remote::NativeRequest,
+		generation: Option<&aidash_domain::semantic::remote::NativeOrigin>,
+	) -> Result<aidash_domain::semantic::remote::NativeBinding> {
+		crate::apps::knowledge::services::remote_memory::bind(
+			&self.runtime.store.node_id,
+			&mut crate::semantic::service::Lease::Inherited(self.access),
+			workspace,
+			request,
+			generation,
+		)
+		.await
+		.map_err(Into::into)
+	}
 }

@@ -1,4 +1,4 @@
-//! Persistent semantic sources with PostgreSQL authority and Qdrant indexes.
+//! Persistent semantic sources and vector indexes in PostgreSQL.
 #[path = "backend.rs"]
 pub mod backend;
 #[path = "service.rs"]
@@ -28,12 +28,13 @@ impl EmbeddingValidation for EmbeddingConfig {
 impl IndexSpec {
 	pub fn validate(&self) -> Result<()> {
 		self.embedding.validate()?;
-		if self.vector.provider != "qdrant" {
-			return Err(Error::Invalid("supported vector provider is qdrant".into()));
-		}
-		crate::config::validate_endpoint(&self.vector.endpoint)?;
-		if let Some(name) = &self.vector.credential_env {
-			crate::config::secret(name)?;
+		if self.vector.provider != "postgres"
+			|| self.vector.endpoint != "local"
+			|| self.vector.credential_env.is_some()
+		{
+			return Err(Error::Invalid(
+				"vector search requires local PostgreSQL".into(),
+			));
 		}
 		Validate::validate(self).map_err(|error| Error::Invalid(error.to_string()))?;
 		Ok(())

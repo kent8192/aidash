@@ -6,6 +6,22 @@ use reinhardt::UnifiedRouter;
 pub fn url_patterns() -> UnifiedRouter {
 	UnifiedRouter::new().server(|server| {
 		server
+			.endpoint(super::views::memory::participants)
+			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
+			.endpoint(super::views::memory::assign)
+			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
+			.endpoint(super::views::memory::assignment)
+			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
+			.endpoint(super::views::memory::operate)
+			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
+			.endpoint(super::views::memory::upgrade)
+			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
+			.endpoint(super::views::memory::units)
+			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
+			.endpoint(super::views::memory::mutate)
+			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
+			.endpoint(super::views::memory::participant)
+			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(super::views::peer::query)
 			.with_route_middleware(AccessBoundary::peer().with_visibility())
 			.endpoint(super::views::peer::verify)

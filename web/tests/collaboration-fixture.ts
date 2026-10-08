@@ -246,6 +246,8 @@ export async function setup(
     openTask?: boolean;
     foreignRun?: boolean;
     remoteAssignment?: boolean;
+    nativeMemory?: boolean;
+    nativeMemoryDisabled?: boolean;
   } = {},
 ) {
   let data = fixture(options.referenceLayout);
@@ -275,6 +277,32 @@ export async function setup(
       id: "home-embedding",
       kind: "embedding",
     });
+  if (options.nativeMemory) {
+    data.registry[0].config = {
+      ...data.registry[0].config,
+      bindings: [
+        ...(data.registry[0].config.bindings ?? []),
+        {
+          kind: "memory",
+          target: {
+            registry_node: data.node.id,
+            id: "native-memory",
+            version: "1.0.0",
+          },
+          narrow: {},
+        },
+      ],
+      ...(options.nativeMemoryDisabled
+        ? { remove_default: ["memory_recall", "memory_reflect"] }
+        : {}),
+    };
+    data.registry.push({
+      ...data.registry[1],
+      id: "native-memory",
+      kind: "memory",
+      config: { engine: "hindsight_rust" },
+    });
+  }
   let runMediaRoutes = options.runMediaRoutes ?? [["image/png", "audio/wav"]];
   if (options.coreCapabilities) {
     data.registry[0].config = {
@@ -426,6 +454,19 @@ export async function setup(
       return route.fulfill({ json: { access, node_id: data.node.id } });
     if (path === "/api/state")
       return route.fulfill({ json: { ...data, access } });
+    if (path.endsWith("/memory/participants"))
+      return route.fulfill({
+        json: {
+          items: [
+            {
+              id: "home-logical-agent",
+              agent: { id: "researcher", version: "1.0.0" },
+              revision: 7,
+            },
+          ],
+          next: null,
+        },
+      });
     if (path === "/api/mesh")
       return route.fulfill({
         json: {

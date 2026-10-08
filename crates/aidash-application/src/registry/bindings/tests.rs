@@ -365,7 +365,7 @@ async fn remote_defaults_have_durable_exclusion_reasons_and_explicit_inputs_fail
 	let saved = resolve(
 		&mut catalog,
 		&Providers {
-			unavailable: Some("memory_write".into()),
+			unavailable: Some("memory_mutate".into()),
 		},
 		reference("agent"),
 		&agent_entry(&config),
@@ -376,7 +376,7 @@ async fn remote_defaults_have_durable_exclusion_reasons_and_explicit_inputs_fail
 	let memory = saved
 		.bindings
 		.iter()
-		.find(|binding| binding.identity.id == "aidash.memory_write")
+		.find(|binding| binding.identity.id == "aidash.memory_mutate")
 		.unwrap();
 	assert!(memory.excluded_reason.is_some());
 	assert!(memory.provider_implementation.is_none());
@@ -389,7 +389,7 @@ async fn remote_defaults_have_durable_exclusion_reasons_and_explicit_inputs_fail
 	);
 	config
 		.bindings
-		.push(Binding::tool(QualifiedRef::builtin(NODE, "memory_write")));
+		.push(Binding::tool(QualifiedRef::builtin(NODE, "memory_mutate")));
 	assert!(snapshot(&mut catalog, &config, true).await.is_err());
 }
 
@@ -416,7 +416,7 @@ async fn recovered_remote_snapshots_preserve_exclusions_and_provider_evidence_at
 		authority: live.clone(),
 	};
 	let tools = resolver.tools(&run).await.unwrap();
-	assert!(!tools.contains_key("memory_write"));
+	assert!(!tools.contains_key("memory_mutate"));
 	assert!(tools.contains_key("workspace_read"));
 	assert!(tools.contains_key("human_request"));
 
@@ -425,7 +425,7 @@ async fn recovered_remote_snapshots_preserve_exclusions_and_provider_evidence_at
 		let memory = altered
 			.bindings
 			.iter_mut()
-			.find(|binding| binding.alias.as_deref() == Some("memory_write"))
+			.find(|binding| binding.alias.as_deref() == Some("memory_mutate"))
 			.unwrap();
 		match mutation {
 			0 => {
@@ -463,7 +463,7 @@ async fn recovered_remote_snapshots_preserve_exclusions_and_provider_evidence_at
 	let memory = local
 		.bindings
 		.iter_mut()
-		.find(|binding| binding.alias.as_deref() == Some("memory_write"))
+		.find(|binding| binding.alias.as_deref() == Some("memory_mutate"))
 		.unwrap();
 	memory.excluded_reason = Some("provider contract is ineligible for remote execution".into());
 	memory.provider_implementation = None;
@@ -1005,7 +1005,7 @@ async fn another_nodes_valid_snapshot_cannot_be_admitted_or_dispatch_for_the_sam
 async fn recovered_snapshots_must_match_the_agent_binding_closure_before_run_admission() {
 	let mut catalog = Catalog::new();
 	let mut config = agent_config();
-	config.remove_default.push("memory_write".into());
+	config.remove_default.push("memory_mutate".into());
 	let mut get = Binding::tool(catalog.core("outbound_get"));
 	get.alias = Some("lookup".into());
 	get.narrow.allowed_hosts = Some(BTreeSet::from(["example.com".into()]));
@@ -1308,4 +1308,69 @@ async fn foreign_export_rejects_private_installed_and_cross_node_definitions() {
 	let mut recursive = saved.snapshot();
 	recursive.foreign_agents.push(saved);
 	assert!(ForeignAgentSnapshot::from_snapshot(recursive).is_err());
+}
+
+#[tokio::test]
+async fn standalone_host_operations_derive_only_their_resource_authority() {
+	let mut catalog = Catalog::new();
+	let mut config = agent_config();
+	config.remove_default.push("task_delegate".into());
+	config
+		.bindings
+		.push(Binding::tool(catalog.core("outbound_get")));
+	config
+		.bindings
+		.push(Binding::tool(catalog.core("task_assign")));
+	let admitted = snapshot(&mut catalog, &config, false).await.unwrap();
+	let settings = aidash_domain::registry::AgentConfig::from_snapshot(&admitted).unwrap();
+	assert!(aidash_domain::tool::CorePermission::Outbound.permitted(&settings.core_capabilities));
+	assert!(aidash_domain::tool::AgentFlag::Delegation.permitted(&settings));
+	assert!(!settings.core_capabilities.shell);
+	assert!(!settings.core_capabilities.python);
+	assert!(admitted.operation("shell").is_err());
+	assert!(admitted.operation("task_delegate").is_err());
+}
+
+#[tokio::test]
+async fn aggregate_reference_mounts_require_files_and_unique_identities() {
+	let mut catalog = Catalog::new();
+	let mut config = agent_config();
+	let reference_id = uuid::Uuid::new_v4();
+	for name in ["first", "second"] {
+		catalog.insert(entry(name, "source", json!({"schema_version":1,"source":{"adapter":"reference_attachments","references":[{"reference_id":reference_id,"digest":"a".repeat(64)}]}})));
+		config.bindings.push(Binding {
+			kind: BindingKind::Source,
+			target: reference(name),
+			alias: None,
+			narrow: Default::default(),
+			members: vec![],
+		});
+	}
+	assert!(snapshot(&mut catalog, &config, false).await.is_err());
+	config.bindings.pop();
+	assert!(snapshot(&mut catalog, &config, false).await.is_ok());
+	config
+		.remove_default
+		.extend(["file_search".into(), "file_read".into()]);
+	assert!(snapshot(&mut catalog, &config, false).await.is_err());
+	config.bindings.clear();
+	assert!(snapshot(&mut catalog, &config, false).await.is_ok());
+}
+
+#[test]
+fn native_memory_binding_preserves_removed_read_operations() {
+	let mut root = crate::test_support::agent("native-read-disabled");
+	root.config["bindings"] = json!([crate::test_support::binding("memory", NODE, "native")]);
+	root.config["remove_default"] = json!(["memory_recall", "memory_reflect"]);
+	let admitted = crate::test_support::resolve(
+		NODE,
+		&root,
+		true,
+		crate::test_support::native_memory_entries(),
+	);
+	let settings = aidash_domain::registry::AgentConfig::from_snapshot(&admitted).unwrap();
+	assert_eq!(settings.memory.unwrap().id, "native");
+	assert_eq!(settings.allow_cross_conversation_memory, Some(false));
+	assert!(admitted.operation("memory_recall").is_err());
+	assert!(admitted.operation("memory_reflect").is_err());
 }

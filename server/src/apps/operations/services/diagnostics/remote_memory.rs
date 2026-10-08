@@ -28,6 +28,7 @@ pub(super) fn document() -> serde_json::Value {
 			.to_owned(),
 	);
 	serde_json::json!({
+		"pgroonga_ready": super::acceptance::pgroonga_ready(),
 		"runs": rows("runs", &["id", "task_id", "workspace_id", "agent_id", "agent_version", "phase", "control", "pending", "lease_until"], "task_id=:'task'::uuid"),
 		"origins": rows("authorization_task_origins", &["task_id", "source_run_id", "subject_chain"], "task_id=:'task'::uuid"),
 		"receipts": rows("semantic_remote_receipts", &["operation_id", "run_id", "digest", "receipt"], "run_id=:'run'::uuid"),

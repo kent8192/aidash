@@ -32,6 +32,15 @@ pub trait JournalScope: Send {
 	async fn current(&mut self, attempt: &Attempt) -> Result<Record>;
 	async fn dispatched(&mut self, attempt: &Attempt, reservations: &Value) -> Result<u64>;
 	async fn record_source(&mut self, receipt: &Receipt, source: &SourceRead) -> Result<()>;
+	/// Stage native dependencies in the same transaction as operation and attempt completion.
+	async fn record_native(&mut self, receipt: &Receipt) -> Result<()> {
+		if receipt.memory.is_some() {
+			return Err(crate::Error::RemoteSemantic(
+				aidash_domain::semantic::Failure::Configuration,
+			));
+		}
+		Ok(())
+	}
 	async fn complete_operation(&mut self, receipt: &Receipt) -> Result<()>;
 	async fn complete_attempt(&mut self, attempt: &Attempt) -> Result<()>;
 	async fn fail_operation(

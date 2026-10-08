@@ -41,9 +41,11 @@ export function csrfToken(): string | null {
 }
 export class ApiError extends Error {
   status: number;
-  constructor(message: string, status: number) {
+  readonly responseReceived: boolean;
+  constructor(message: string, status: number, responseReceived = false) {
     super(message);
     this.status = status;
+    this.responseReceived = responseReceived;
   }
 }
 function current(generation: number): void {
@@ -182,15 +184,16 @@ export async function authenticatedFetch(
           detail: messages.credentialInvalid,
         }),
       );
-      throw new ApiError(messages.credentialInvalid, response.status);
+      throw new ApiError(messages.credentialInvalid, response.status, true);
     }
     if (response.status === 403)
-      throw new ApiError(messages.accessDenied, response.status);
+      throw new ApiError(messages.accessDenied, response.status, true);
     throw new ApiError(
       typeof data.error === "string"
         ? data.error
         : (data.error?.message ?? response.statusText),
       response.status,
+      true,
     );
   }
   return response;

@@ -92,15 +92,27 @@ impl Access {
 	) -> Result<Resource> {
 		let run = run.into();
 		let workspace = self.workspace(run.workspace_id).await?;
-		Ok(self.resource(
-			"memory",
-			&run.agent_id,
-			aidash_application::authorization::visibility::memory_attributes(
-				&run,
-				workspace.attributes,
-			),
-		))
+		let mut attributes = aidash_application::authorization::visibility::memory_attributes(
+			&run,
+			workspace.attributes,
+		);
+		let id = if let Some(binding) =
+			crate::apps::knowledge::repositories::bindings::load(&mut **self.tx, &run).await?
+		{
+			attributes["participant_id"] = serde_json::json!(binding.bank.participant);
+			attributes["participant_revision"] = serde_json::json!(binding.participant_revision);
+			attributes["shared"] = serde_json::json!(false);
+			binding
+				.bank
+				.participant
+				.ok_or(crate::Error::Forbidden)?
+				.to_string()
+		} else {
+			run.agent_id.clone()
+		};
+		Ok(self.resource("memory", id, attributes))
 	}
+
 	pub(crate) async fn artifact_creation_resource(
 		&mut self,
 		task: Uuid,

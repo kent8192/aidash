@@ -16,16 +16,45 @@ use std::{marker::PhantomData, sync::Arc};
 pub struct Pool {
 	connection: DatabaseConnection,
 	driver: sqlx::PgPool,
+	memory_recovery: Option<Arc<dyn aidash_application::ports::memory::MemoryRecovery>>,
+	memory_recovery_bypass: bool,
 }
 impl From<sqlx::PgPool> for Pool {
 	fn from(driver: sqlx::PgPool) -> Self {
 		Self {
 			connection: DatabaseConnection::new(Arc::new(PostgresBackend::new(driver.clone()))),
 			driver,
+			memory_recovery: None,
+			memory_recovery_bypass: false,
 		}
 	}
 }
 impl Pool {
+	pub(crate) fn with_memory_recovery(
+		mut self,
+		recovery: Option<Arc<dyn aidash_application::ports::memory::MemoryRecovery>>,
+	) -> Self {
+		self.memory_recovery = recovery;
+		self.memory_recovery_bypass = false;
+		self
+	}
+	pub(crate) fn memory_recovery(
+		&self,
+	) -> Option<Arc<dyn aidash_application::ports::memory::MemoryRecovery>> {
+		self.memory_recovery.clone()
+	}
+	pub(crate) fn memory_recovery_internal(mut self) -> Self {
+		self.memory_recovery = None;
+		self.memory_recovery_bypass = true;
+		self
+	}
+	pub(crate) fn require_memory_serving(&self) -> Result<()> {
+		match &self.memory_recovery {
+			Some(recovery) => Ok(recovery.require_serving()?),
+			None if self.memory_recovery_bypass => Ok(()),
+			None => Err(Error::SemanticUnavailable),
+		}
+	}
 	pub fn connection(&self) -> DatabaseConnection {
 		self.connection.clone()
 	}
@@ -33,7 +62,11 @@ impl Pool {
 		&self.driver
 	}
 	pub async fn begin(&self) -> Result<Transaction> {
-		Ok(Transaction(self.connection.begin().await?))
+		Ok(Transaction(
+			Some(self.connection.begin().await?),
+			self.clone(),
+			Default::default(),
+		))
 	}
 	pub async fn close(&self) {
 		self.driver.close().await;
@@ -46,36 +79,111 @@ impl Pool {
 	}
 }
 
-pub struct Transaction(Box<dyn TransactionExecutor>);
+pub struct Transaction(
+	Option<Box<dyn TransactionExecutor>>,
+	Pool,
+	std::collections::BTreeMap<uuid::Uuid, aidash_domain::memory::Unit>,
+);
 impl std::ops::Deref for Transaction {
 	type Target = dyn TransactionExecutor;
 	fn deref(&self) -> &Self::Target {
-		self.0.as_ref()
+		self.0
+			.as_ref()
+			.expect("transaction is lent to an authority scope")
+			.as_ref()
 	}
 }
 impl std::ops::DerefMut for Transaction {
 	fn deref_mut(&mut self) -> &mut Self::Target {
-		self.0.as_mut()
+		self.0
+			.as_mut()
+			.expect("transaction is lent to an authority scope")
+			.as_mut()
 	}
 }
 impl Transaction {
+	pub(crate) fn lend(&mut self) -> Self {
+		Self(
+			Some(self.0.take().expect("active transaction")),
+			self.1.clone(),
+			std::mem::take(&mut self.2),
+		)
+	}
+	pub(crate) fn restore(&mut self, lent: Self) {
+		assert!(self.0.is_none());
+		self.0 = lent.0;
+		assert!(self.2.is_empty());
+		self.2 = lent.2;
+	}
+
+	pub(crate) fn pool(&self) -> &Pool {
+		&self.1
+	}
 	pub async fn commit(self) -> Result<()> {
-		Ok(self.0.commit().await?)
+		self.prepare_memory_commit()?;
+		match self.0 {
+			Some(tx) => Ok(tx.commit().await?),
+			None => Err(Error::Conflict(
+				"transaction is lent to an authority scope".into(),
+			)),
+		}
 	}
 	pub async fn rollback(self) -> Result<()> {
-		Ok(self.0.rollback().await?)
+		match self.0 {
+			Some(tx) => Ok(tx.rollback().await?),
+			None => Err(Error::Conflict(
+				"transaction is lent to an authority scope".into(),
+			)),
+		}
 	}
-	pub fn into_executor(self) -> Box<dyn TransactionExecutor> {
-		self.0
+	pub(crate) fn observe_memory(&mut self, unit: &aidash_domain::memory::Unit) -> Result<()> {
+		self.1.require_memory_serving()?;
+		self.2.insert(unit.id, unit.clone());
+		Ok(())
+	}
+	pub(crate) fn discard_memory_fences(&mut self) {
+		self.2.clear();
+	}
+	pub(crate) fn require_memory_current(&self, unit: &aidash_domain::memory::Unit) -> Result<()> {
+		self.1.require_memory_serving()?;
+		if let Some(pending) = self.2.get(&unit.id) {
+			if aidash_domain::memory::recovery::digest(pending)?
+				!= aidash_domain::memory::recovery::digest(unit)?
+			{
+				return Err(crate::Error::SemanticUnavailable);
+			}
+		} else if let Some(recovery) = self.1.memory_recovery() {
+			recovery.require_current(unit)?;
+		}
+		Ok(())
+	}
+	fn prepare_memory_commit(&self) -> Result<()> {
+		if !self.2.is_empty()
+			&& let Some(recovery) = self.1.memory_recovery()
+		{
+			recovery.observe_many(&self.2.values().cloned().collect::<Vec<_>>())?;
+		}
+		Ok(())
+	}
+	pub fn into_executor(self) -> Result<Box<dyn TransactionExecutor>> {
+		self.prepare_memory_commit()?;
+		Ok(self.0.expect("transaction is lent to an authority scope"))
 	}
 }
 impl AsMut<dyn TransactionExecutor> for Transaction {
 	fn as_mut(&mut self) -> &mut (dyn TransactionExecutor + 'static) {
-		self.0.as_mut()
+		self.0
+			.as_mut()
+			.expect("transaction is lent to an authority scope")
+			.as_mut()
 	}
 }
 pub async fn begin(pool: &Pool) -> Result<Transaction> {
-	Ok(Transaction(pool.connection.begin().await?))
+	Ok(Transaction(
+		Some(pool.connection.begin().await?),
+		pool.clone(),
+		Default::default(),
+	))
 }
 
 pub struct Row(reinhardt::db::backends::Row);
@@ -414,49 +522,77 @@ impl TransactionExecutor for Transaction {
 		sql: &str,
 		params: Vec<QueryValue>,
 	) -> reinhardt::db::backends::error::Result<reinhardt::db::backends::QueryResult> {
-		self.0.execute(sql, params).await
+		self.0
+			.as_mut()
+			.expect("active transaction")
+			.execute(sql, params)
+			.await
 	}
 	async fn fetch_one(
 		&mut self,
 		sql: &str,
 		params: Vec<QueryValue>,
 	) -> reinhardt::db::backends::error::Result<reinhardt::db::backends::Row> {
-		self.0.fetch_one(sql, params).await
+		self.0
+			.as_mut()
+			.expect("active transaction")
+			.fetch_one(sql, params)
+			.await
 	}
 	async fn fetch_all(
 		&mut self,
 		sql: &str,
 		params: Vec<QueryValue>,
 	) -> reinhardt::db::backends::error::Result<Vec<reinhardt::db::backends::Row>> {
-		self.0.fetch_all(sql, params).await
+		self.0
+			.as_mut()
+			.expect("active transaction")
+			.fetch_all(sql, params)
+			.await
 	}
 	async fn fetch_optional(
 		&mut self,
 		sql: &str,
 		params: Vec<QueryValue>,
 	) -> reinhardt::db::backends::error::Result<Option<reinhardt::db::backends::Row>> {
-		self.0.fetch_optional(sql, params).await
+		self.0
+			.as_mut()
+			.expect("active transaction")
+			.fetch_optional(sql, params)
+			.await
 	}
 	async fn commit(self: Box<Self>) -> reinhardt::db::backends::error::Result<()> {
-		self.0.commit().await
+		self.0.expect("active transaction").commit().await
 	}
 	async fn rollback(self: Box<Self>) -> reinhardt::db::backends::error::Result<()> {
-		self.0.rollback().await
+		self.0.expect("active transaction").rollback().await
 	}
 	async fn savepoint(&mut self, name: &str) -> reinhardt::db::backends::error::Result<()> {
-		self.0.savepoint(name).await
+		self.0
+			.as_mut()
+			.expect("active transaction")
+			.savepoint(name)
+			.await
 	}
 	async fn release_savepoint(
 		&mut self,
 		name: &str,
 	) -> reinhardt::db::backends::error::Result<()> {
-		self.0.release_savepoint(name).await
+		self.0
+			.as_mut()
+			.expect("active transaction")
+			.release_savepoint(name)
+			.await
 	}
 	async fn rollback_to_savepoint(
 		&mut self,
 		name: &str,
 	) -> reinhardt::db::backends::error::Result<()> {
-		self.0.rollback_to_savepoint(name).await
+		self.0
+			.as_mut()
+			.expect("active transaction")
+			.rollback_to_savepoint(name)
+			.await
 	}
 }
 

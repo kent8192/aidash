@@ -6,7 +6,7 @@ import re
 SHA = re.compile(r"[0-9a-f]{40}")
 ENVIRONMENT = re.compile(r"(?:develop|test|pr-[1-9][0-9]*)")
 DEVELOP = re.compile(r"develop/[0-9]+\.[0-9]+\.[0-9]+")
-IMAGE_KINDS = ("app", "postgres", "sandbox", "observer", "nats", "qdrant")
+IMAGE_KINDS = ("app", "postgres", "sandbox", "observer", "nats")
 PREVIEW = re.compile(
     r"/preview (up|stop|destroy)(?: (spot|normal))?(?: ([0-9a-f]{40}))?"
 )

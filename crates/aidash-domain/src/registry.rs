@@ -126,6 +126,8 @@ impl Search {
 /// fields, and never select the model-visible tool set.
 #[derive(Debug, Clone)]
 pub struct AgentConfig {
+	pub memory: Option<EntityRef>,
+	pub sources: Vec<EntityRef>,
 	pub conversation_memory: bool,
 	pub semantic_memory: bool,
 	pub workspace_context: bool,

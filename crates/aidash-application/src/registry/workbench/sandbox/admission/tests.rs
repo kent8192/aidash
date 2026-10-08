@@ -502,7 +502,9 @@ async fn admission_preserves_current_authority_locks_and_exact_plugin_indices() 
 		"task_create",
 		"task_delegate",
 		"task_assign",
-		"memory_write",
+		"memory_mutate",
+		"memory_recall",
+		"memory_reflect",
 	] {
 		assert!(!names.contains(&excluded));
 	}

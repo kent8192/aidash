@@ -489,7 +489,7 @@ def summarize(report, expected, scenarios):
             item["passed"] += bool(observed and observed["passed"])
     complete = (
         complete
-        and len(coverage) == 273
+        and len(coverage) == len({scenario["endpoint"] for scenario in scenarios if scenario.get("endpoint")})
         and all(
             3 <= item["expected"] <= 10 and item["expected"] == item["executed"]
             for item in coverage.values()
@@ -669,7 +669,7 @@ def main():
             required = Counter((route["method"], route["path"]) for route in routes)
             if observed != required:
                 raise RuntimeError(
-                    "native showurls inventory differs from the 273-endpoint Bruno catalog"
+                    "native showurls inventory differs from the Bruno catalog"
                 )
             stream_factories = []
             stream_bases = []

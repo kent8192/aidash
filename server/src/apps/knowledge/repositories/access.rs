@@ -14,6 +14,7 @@ use uuid::Uuid;
 
 pub(crate) enum Lease<'a> {
 	Operator(crate::database::native::Transaction),
+	BorrowedOperator(&'a mut crate::database::native::Transaction),
 	Scoped(Box<Access>),
 	Inherited(&'a mut Access),
 }
@@ -61,13 +62,14 @@ impl Lease<'_> {
 	pub(crate) fn tx(&mut self) -> &mut crate::database::native::Transaction {
 		match self {
 			Self::Operator(tx) => tx,
+			Self::BorrowedOperator(tx) => tx,
 			Self::Scoped(a) => &mut a.tx,
 			Self::Inherited(a) => &mut a.tx,
 		}
 	}
 	pub(crate) fn access(&mut self) -> Option<&mut Access> {
 		match self {
-			Self::Operator(_) => None,
+			Self::Operator(_) | Self::BorrowedOperator(_) => None,
 			Self::Scoped(a) => Some(a),
 			Self::Inherited(a) => Some(a),
 		}
@@ -105,7 +107,7 @@ impl Lease<'_> {
 				result
 			}
 			Self::Scoped(a) => a.finish(result).await,
-			Self::Inherited(_) => result,
+			Self::Inherited(_) | Self::BorrowedOperator(_) => result,
 		}
 	}
 	pub(crate) async fn workspace(&mut self, workspace: Uuid, action: &str) -> Result<()> {

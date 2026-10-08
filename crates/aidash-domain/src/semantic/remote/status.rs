@@ -13,6 +13,22 @@ pub struct SourceProvenance {
 	pub agent: Option<String>,
 }
 #[derive(Debug, Serialize, schemars::JsonSchema)]
+pub struct NativeBankProvenance {
+	pub bank: crate::memory::Bank,
+	pub provider: crate::registry::EntityRef,
+	pub state: String,
+	pub units: Vec<NativeUnitProvenance>,
+}
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+pub struct NativeUnitProvenance {
+	pub id: Uuid,
+	pub revision: i64,
+	pub kind: crate::memory::Kind,
+	pub verification: crate::memory::Verification,
+	pub evidence: Vec<crate::memory::Evidence>,
+	pub content_digest: String,
+}
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 #[schemars(rename = "RemoteSemanticProvenance")]
 pub struct Provenance {
 	pub home_node: String,
@@ -24,6 +40,8 @@ pub struct Provenance {
 	pub retrieved_at: DateTime<Utc>,
 	pub truncated: bool,
 	pub sources: Vec<SourceProvenance>,
+	#[serde(skip_serializing_if = "Vec::is_empty")]
+	pub memory: Vec<NativeBankProvenance>,
 	/// Current, authorized counters at the node serving this view. Foreign
 	/// balances are never presented as authoritative cached counters.
 	pub allowance_node: String,
@@ -44,6 +62,9 @@ pub struct Allowance {
 #[schemars(rename = "RemoteSemanticStatus")]
 pub struct Status {
 	pub state: String,
+	/// Physical receiver quotation cleanup, independent of logical exclusion.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub body_cleanup: Option<String>,
 	pub reason: Option<Failure>,
 	pub operation_id: Option<Uuid>,
 	pub retry_count: i32,
@@ -54,7 +75,39 @@ pub struct Status {
 }
 impl From<Receipt> for Provenance {
 	fn from(receipt: Receipt) -> Self {
+		let memory = receipt
+			.memory
+			.into_iter()
+			.flat_map(|memory| memory.banks)
+			.map(|bank| {
+				let (state, units) = match bank.recall {
+					crate::memory::Recall::Ready { units } => ("ready", units),
+					crate::memory::Recall::Empty => ("empty", vec![]),
+					crate::memory::Recall::NoSpace => ("no_space", vec![]),
+					crate::memory::Recall::Disabled => ("disabled", vec![]),
+				};
+				NativeBankProvenance {
+					bank: bank.bank,
+					provider: bank.provider,
+					state: state.into(),
+					units: units
+						.into_iter()
+						.map(|unit| NativeUnitProvenance {
+							id: unit.id,
+							revision: unit.revision,
+							kind: unit.content.kind,
+							verification: unit.content.verification,
+							content_digest: crate::registry::rules::digest(&serde_json::json!(
+								unit.content
+							)),
+							evidence: unit.content.evidence,
+						})
+						.collect(),
+				}
+			})
+			.collect();
 		Self {
+			memory,
 			allowance_node: String::new(),
 			allowances: vec![],
 			home_node: receipt.home_node,
@@ -85,6 +138,7 @@ pub fn project(
 	record: Option<Record>,
 ) -> serde_json::Result<Status> {
 	let mut result = Status {
+		body_cleanup: None,
 		state: if binding.disabled() {
 			"disabled"
 		} else {
@@ -116,12 +170,33 @@ pub fn project(
 			&& let Some(value) = record.receipt
 		{
 			let receipt: Receipt = serde_json::from_value(value)?;
-			result.result_count = Some(receipt.result.matches.len());
+			let native_count = receipt.memory.as_ref().map_or(0, |memory| {
+				memory
+					.banks
+					.iter()
+					.map(|bank| match &bank.recall {
+						crate::memory::Recall::Ready { units } => units.len(),
+						_ => 0,
+					})
+					.sum::<usize>()
+			});
+			let no_space = receipt.memory.as_ref().is_some_and(|memory| {
+				memory
+					.banks
+					.iter()
+					.any(|bank| matches!(bank.recall, crate::memory::Recall::NoSpace))
+			});
+			let count = receipt.result.matches.len() + native_count;
+			result.result_count = Some(count);
 			result.truncated = receipt.result.truncated || receipt.query_truncated;
 			result.retrieved_at = Some(receipt.retrieved_at);
 			result.state = if result.truncated {
 				"truncated"
-			} else if receipt.result.matches.is_empty() {
+			} else if no_space && count == 0 {
+				"no_space"
+			} else if no_space {
+				"truncated"
+			} else if count == 0 {
 				"empty"
 			} else {
 				"ready"

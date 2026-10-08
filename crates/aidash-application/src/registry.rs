@@ -186,7 +186,64 @@ pub async fn validate_references(
 		.await?;
 		validation.bound_prompt_headroom(&snapshot, &Value::Null)?;
 	}
-
+	let memory_references = match entry.kind.as_str() {
+		"memory" | "source" if entry.config.get("schema_version").is_some() => vec![],
+		"memory" => {
+			let config: aidash_domain::memory::ProviderConfig =
+				serde_json::from_value(entry.config.clone())?;
+			vec![
+				(config.policy.extraction, "model"),
+				(config.policy.derivation, "model"),
+				(config.policy.reflection, "model"),
+				(config.policy.embedding, "embedding"),
+				(config.policy.reranker, "reranker"),
+				(config.policy.tokenizer, "tokenizer"),
+			]
+		}
+		"source" => {
+			let config: aidash_domain::memory::SourceConfig =
+				serde_json::from_value(entry.config.clone())?;
+			vec![(config.memory, "memory")]
+		}
+		"reranker" => match serde_json::from_value::<aidash_domain::memory::RerankerConfig>(
+			entry.config.clone(),
+		)? {
+			aidash_domain::memory::RerankerConfig::Model { model } => vec![(model, "model")],
+			aidash_domain::memory::RerankerConfig::Rrf => vec![],
+		},
+		_ => vec![],
+	};
+	for (reference, kind) in memory_references {
+		let referenced = scope.definition(&reference.id, &reference.version).await?;
+		if referenced.kind != kind || referenced.installation.is_some() {
+			return Err(Error::Invalid(format!(
+				"memory role {} requires an immutable local {kind} definition",
+				reference.id
+			)));
+		}
+		validation.validate_in(&referenced, true)?;
+		if entry.kind == "memory" && kind == "embedding" {
+			let provider: aidash_domain::memory::ProviderConfig =
+				serde_json::from_value(entry.config.clone())?;
+			let embedding: aidash_domain::semantic::EmbeddingConfig =
+				serde_json::from_value(referenced.config.clone())?;
+			aidash_domain::memory::graph::validate_capacity(
+				&provider.policy.bounds,
+				embedding.dimensions,
+			)?;
+		}
+		if entry.kind == "source" {
+			let source: aidash_domain::memory::SourceConfig =
+				serde_json::from_value(entry.config.clone())?;
+			let provider: aidash_domain::memory::ProviderConfig =
+				serde_json::from_value(referenced.config)?;
+			if source.max_tokens > provider.policy.bounds.max_context_tokens {
+				return Err(Error::Invalid(
+					"source context cap exceeds its memory provider cap".into(),
+				));
+			}
+		}
+	}
 	let transport = if entry.kind == "tool" {
 		match aidash_domain::tool::legacy_config(&entry.config)? {
 			Some(transport) => Some(transport),

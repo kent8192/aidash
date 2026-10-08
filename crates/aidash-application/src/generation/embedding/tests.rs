@@ -109,6 +109,105 @@ async fn point(world: &World, name: String) -> Result<()> {
 	Ok(())
 }
 struct Authority(World);
+
+#[rstest]
+#[case("success")]
+#[case("late_charge")]
+#[case("expired_origin")]
+#[tokio::test]
+async fn overlapping_origins_validate_every_lease_and_charge_one_ancestor_union(
+	world: World,
+	#[case] failure: &str,
+) {
+	let secondary = World(Arc::new(Mutex::new(State {
+		jobs: vec![],
+		policies: BTreeMap::new(),
+		enabled: BTreeMap::new(),
+		document: None,
+		approved: true,
+		denied: None,
+		ledger: Ledger {
+			balances: BTreeMap::new(),
+			attempts: BTreeMap::new(),
+			reports: BTreeMap::new(),
+		},
+		calls: vec![],
+		fail: None,
+		pause: None,
+		active: 0,
+		commits: 0,
+	})));
+	let last = Uuid::from_u128(33);
+	{
+		let mut primary = world.0.lock().unwrap();
+		let mut other = secondary.0.lock().unwrap();
+		other.jobs = primary.jobs.clone();
+		other.jobs[1].id = last;
+		other.policies = primary.policies.clone();
+		other
+			.policies
+			.insert(last, primary.policies[&Uuid::from_u128(22)].clone());
+		other.document = primary.document.clone();
+		primary.ledger.balances.insert(last, 0);
+		if failure == "late_charge" {
+			primary.fail = Some("charge:33".into());
+		}
+		if failure == "expired_origin" {
+			other.jobs[1].expires_at = DateTime::from_timestamp(1000, 0).unwrap();
+		}
+	}
+	let mut a = Authority(world.clone());
+	let mut b = Authority(secondary.clone());
+	let result = reserve_many(
+		&mut [&mut a, &mut b],
+		Arc::new(Repository(world.clone())),
+		Uuid::from_u128(3),
+		&config(),
+		"日本",
+		Origin::Index(Uuid::from_u128(77)),
+	)
+	.await;
+	if failure != "success" {
+		assert!(result.is_err());
+		let state = world.0.lock().unwrap();
+		assert_eq!((state.active, state.commits), (0, 0));
+		assert!(state.ledger.balances.values().all(|amount| *amount == 0));
+		assert!(state.ledger.attempts.is_empty());
+		drop(state);
+		if failure == "expired_origin" {
+			assert!(!world.0.lock().unwrap().calls.contains(&"begin".into()));
+		}
+	} else {
+		let receipt = result.unwrap().unwrap();
+		assert_eq!(
+			world
+				.0
+				.lock()
+				.unwrap()
+				.ledger
+				.balances
+				.values()
+				.copied()
+				.collect::<Vec<_>>(),
+			vec![1030; 3]
+		);
+		receipt.settle(Some(2)).await.unwrap();
+		let state = world.0.lock().unwrap();
+		assert_eq!(
+			state.ledger.balances.values().copied().collect::<Vec<_>>(),
+			vec![2; 3]
+		);
+		assert_eq!(state.ledger.attempts.len(), 3);
+		assert_eq!(
+			state
+				.calls
+				.iter()
+				.filter(|call| call.as_str() == "charge:11")
+				.count(),
+			1
+		);
+	}
+}
 #[async_trait]
 impl GenerationEmbeddingAuthority for Authority {
 	async fn requests(&mut self, node: &str) -> Result<Vec<Request>> {

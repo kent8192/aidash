@@ -40,7 +40,7 @@ struct State {
 }
 fn vector_config() -> VectorConfig {
 	VectorConfig {
-		provider: "qdrant".into(),
+		provider: "postgres".into(),
 		endpoint: "https://fixture.invalid".into(),
 		credential_env: None,
 	}
@@ -64,7 +64,7 @@ impl Default for Fixture {
 				collection: "physical_collection".into(),
 				tenant: "tenant".into(),
 				revision: 7,
-				spec: json!({"embedding":{"provider":"openai","endpoint":"https://fixture.invalid","credential_env":null,"model":"approved","model_version":"1","dimensions":3},"vector":{"provider":"qdrant","endpoint":"https://fixture.invalid","credential_env":null},"enabled":true,"auto_context":true,"max_sources":32,"max_results":10,"max_result_tokens":1024,"max_input_bytes":4096}),
+				spec: json!({"embedding":{"provider":"openai","endpoint":"https://fixture.invalid","credential_env":null,"model":"approved","model_version":"1","dimensions":3},"vector":{"provider":"postgres","endpoint":"local","credential_env":null},"enabled":true,"auto_context":true,"max_sources":32,"max_results":10,"max_result_tokens":1024,"max_input_bytes":4096}),
 			},
 			entry: IndexingEntry {
 				id: Uuid::from_u128(1),

@@ -377,9 +377,11 @@ pub async fn private_context(scope: &mut dyn DefinitionScope, entry: &Entry) -> 
 		let source = scope
 			.catalog(&binding.target.local(), "registry.read")
 			.await?;
-		let context: aidash_domain::registry::bindings::sources::NativeContext =
-			serde_json::from_value(source.config)?;
-		context.validate(&source.kind)?;
+		let Some(context) =
+			aidash_domain::registry::bindings::sources::validate_definition(&source)?
+		else {
+			continue;
+		};
 		if let aidash_domain::registry::bindings::sources::NativeSource::ReferenceAttachments {
 			references,
 		} = context.source
@@ -448,9 +450,10 @@ impl crate::ports::bindings::BindingCatalog for Bindings<'_> {
 		if entry.kind == "skill" {
 			return Ok(());
 		}
-		let source: aidash_domain::registry::bindings::sources::NativeContext =
-			serde_json::from_value(entry.config.clone())?;
-		source.validate(&entry.kind)?;
+		let Some(source) = aidash_domain::registry::bindings::sources::validate_definition(entry)?
+		else {
+			return Ok(());
+		};
 		if let aidash_domain::registry::bindings::sources::NativeSource::ReferenceAttachments {
 			references,
 		} = source.source

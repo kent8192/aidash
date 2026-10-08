@@ -23,6 +23,43 @@ pub(crate) async fn reserve(
 	.await
 	.map_err(Into::into)
 }
+
+pub(crate) async fn reserve_many(
+	accesses: &mut [&mut Access],
+	store: &Store,
+	run: Uuid,
+	attempt: Uuid,
+	window: usize,
+	output: u32,
+) -> Result<Option<Reservation>> {
+	use aidash_application::ports::generation::inference::GenerationInferenceAuthority;
+	struct Union(Vec<Uuid>);
+	#[async_trait::async_trait]
+	impl GenerationInferenceAuthority for Union {
+		async fn requests(&mut self, _: &str) -> aidash_application::Result<Vec<Uuid>> {
+			Ok(self.0.clone())
+		}
+	}
+	let mut requests = std::collections::BTreeSet::new();
+	for access in accesses {
+		access.resume_inherited().await?;
+		let current = crate::bootstrap::generation_inference_authority_scope(access)
+			.requests(&store.node_id)
+			.await;
+		access.suspend().await?;
+		requests.extend(current?);
+	}
+	aidash_application::generation::inference::reserve(
+		&mut Union(requests.into_iter().collect()),
+		Arc::new(crate::bootstrap::generation_inference_repository(store)),
+		run,
+		attempt,
+		window,
+		output,
+	)
+	.await
+	.map_err(Into::into)
+}
 pub(crate) enum InferenceReservation {
 	Local(Reservation),
 	Remote(Box<super::remote::protocol::Reservation>),

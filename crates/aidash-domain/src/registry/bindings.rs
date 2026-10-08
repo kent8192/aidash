@@ -24,7 +24,9 @@ pub const DEFAULT_TOOLS: &[&str] = &[
 	"agent_discover",
 	"artifact_publish",
 	"workspace_message",
-	"memory_write",
+	"memory_mutate",
+	"memory_recall",
+	"memory_reflect",
 ];
 pub const SKILL_TOOLS: &[&str] = &["skill_list", "skill_load", "skill_read"];
 pub const COORDINATOR_TOOLS: &[&str] = &["task_create", "task_delegate", "agent_discover"];
@@ -98,9 +100,35 @@ pub fn definition_references(
 				));
 			}
 		}
-		"memory" | "source" => {
-			let descriptor: sources::NativeContext = serde_json::from_value(entry.config.clone())?;
-			descriptor.validate(&entry.kind)?;
+		"memory" | "source" if entry.config.get("schema_version").is_some() => {
+			sources::validate_definition(entry)?;
+		}
+		"memory" => {
+			let provider: crate::memory::ProviderConfig =
+				serde_json::from_value(entry.config.clone())?;
+			result.extend(
+				[
+					(provider.policy.extraction, "model"),
+					(provider.policy.derivation, "model"),
+					(provider.policy.reflection, "model"),
+					(provider.policy.embedding, "embedding"),
+					(provider.policy.reranker, "reranker"),
+					(provider.policy.tokenizer, "tokenizer"),
+				]
+				.into_iter()
+				.map(|(r, k)| (local(&r), k.into())),
+			);
+		}
+		"source" => {
+			let source: crate::memory::SourceConfig = serde_json::from_value(entry.config.clone())?;
+			result.push((local(&source.memory), "memory".into()));
+		}
+		"reranker" => {
+			if let crate::memory::RerankerConfig::Model { model } =
+				serde_json::from_value(entry.config.clone())?
+			{
+				result.push((local(&model), "model".into()));
+			}
 		}
 		_ => {}
 	}

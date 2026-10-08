@@ -3,10 +3,7 @@ use crate::{
 	Error, Result,
 	ports::{bindings::BindingCatalog, registry::DefinitionLookup},
 };
-use aidash_domain::registry::{
-	Entry, Projection,
-	bindings::{QualifiedRef, sources::NativeContext},
-};
+use aidash_domain::registry::{Entry, Projection, bindings::QualifiedRef};
 use async_trait::async_trait;
 
 pub struct LookupCatalog<'a> {
@@ -38,8 +35,7 @@ impl BindingCatalog for LookupCatalog<'_> {
 		if definition.kind == "skill" {
 			return Ok(());
 		}
-		let source: NativeContext = serde_json::from_value(definition.config.clone())?;
-		source.validate(&definition.kind)?;
+		aidash_domain::registry::bindings::sources::validate_definition(definition)?;
 		Ok(())
 	}
 }

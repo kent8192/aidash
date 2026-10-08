@@ -29,9 +29,51 @@ pub enum Request {
 	Disabled {},
 	RequiredHome {
 		embedding: EntityRef,
+		/// An explicitly selected Home logical participant. Executor-local banks
+		/// and similarly named Registry entries never substitute for this mapping.
+		#[serde(default, skip_serializing_if = "Option::is_none")]
+		native: Option<Box<NativeRequest>>,
 		#[serde(default, skip_serializing_if = "Option::is_none")]
 		compactor: Option<EntityRef>,
 	},
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct NativeRequest {
+	pub participant: Uuid,
+	pub expected_revision: i64,
+	pub provider: EntityRef,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct NativeBank {
+	pub bank: crate::memory::Bank,
+	pub provider: Provider,
+	pub roles: Vec<Provider>,
+	pub max_model_tokens: usize,
+	pub max_context_tokens: usize,
+	/// Home's pinned retention for disposable receiver quotations.
+	pub cache_max_age_seconds: u64,
+	pub cache_max_attempts: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct NativeBinding {
+	pub selection: NativeRequest,
+	pub generation: Option<NativeOrigin>,
+	pub participant: crate::memory::Binding,
+	pub agent: Provider,
+	pub banks: Vec<NativeBank>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct NativeOrigin {
+	pub node_id: String,
+	pub intent_id: Uuid,
 }
 impl Default for Request {
 	fn default() -> Self {
@@ -68,9 +110,12 @@ pub enum Binding {
 		home_lineage: Vec<crate::generation::remote::Ancestor>,
 		execution_lineage: Vec<crate::generation::remote::Ancestor>,
 		version: u32,
+		/// Zero for native memory: index generations never identify canonical Unit reads.
 		index_revision: i64,
 		index_digest: String,
 		embedding: Box<Provider>,
+		#[serde(default, skip_serializing_if = "Option::is_none")]
+		native: Option<Box<NativeBinding>>,
 		#[serde(default, skip_serializing_if = "Option::is_none")]
 		compactor: Option<Box<Provider>>,
 	},
@@ -90,11 +135,24 @@ impl Binding {
 			Self::RequiredHome {
 				embedding,
 				compactor,
+				native,
 				..
 			} => Request::RequiredHome {
 				embedding: embedding.entry.clone(),
+				native: native
+					.as_ref()
+					.map(|binding| Box::new(binding.selection.clone())),
 				compactor: compactor.as_ref().map(|p| p.entry.clone()),
 			},
+		}
+	}
+}
+
+impl Binding {
+	pub fn native(&self) -> Option<&NativeBinding> {
+		match self {
+			Self::RequiredHome { native, .. } => native.as_deref(),
+			Self::Disabled {} => None,
 		}
 	}
 }
@@ -188,7 +246,22 @@ pub struct Receipt {
 	pub candidate_digest: String,
 	pub sources: Vec<SourceRead>,
 	pub result: super::results::SearchResult,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub memory: Option<NativeContext>,
 	pub estimated_tokens: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeContext {
+	pub banks: Vec<NativeRecall>,
+}
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeRecall {
+	pub bank: crate::memory::Bank,
+	pub provider: EntityRef,
+	pub recall: crate::memory::Recall,
 }
 
 /// Deterministic truncation is applied to the bytes actually sent and charged.

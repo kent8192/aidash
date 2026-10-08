@@ -14,8 +14,8 @@ use aidash_domain::{
 };
 use async_trait::async_trait;
 use reinhardt::query::{
-	Alias, ColumnRef::Asterisk, Condition, Expr, ExprTrait as _, Order, PostgresQueryBuilder,
-	Query, QueryStatementBuilder as _, SimpleExpr,
+	Alias, ColumnRef::Asterisk, Expr, ExprTrait as _, Order, PostgresQueryBuilder, Query,
+	QueryStatementBuilder as _, SimpleExpr,
 };
 use serde_json::Value;
 use uuid::Uuid;
@@ -111,64 +111,13 @@ impl RunDetailsScope for Scope<'_> {
 			.map(|rows| rows.into_iter().map(Into::into).collect())
 			.map_err(Into::into)
 	}
-	async fn memory(&mut self, run: &RunMetadata) -> Result<Option<Value>> {
-		let result: NativeResult<Option<Value>> = async {
-			Ok({
-				let query_bind_1 = &run.agent_id;
-				let query_bind_2 = &run.agent_version;
-				let query_bind_3 = run.workspace_id;
-				let query_bind_4 = self.federation.store.memory_home(run);
-				crate::database::native::query_scalar(
-					&Query::select()
-						.column(Alias::new("data"))
-						.from(Alias::new("memory"))
-						.cond_where(
-							Condition::all()
-								.add(
-									reinhardt::query::SimpleExpr::from(Expr::col(Alias::new(
-										"agent_id",
-									)))
-									.eq(SimpleExpr::CustomWithExpr(
-										"(?)".to_owned(),
-										vec![Expr::value(query_bind_1.to_owned()).into()],
-									)),
-								)
-								.add(
-									reinhardt::query::SimpleExpr::from(Expr::col(Alias::new(
-										"agent_version",
-									)))
-									.eq(SimpleExpr::CustomWithExpr(
-										"(?)".to_owned(),
-										vec![Expr::value(query_bind_2.to_owned()).into()],
-									)),
-								)
-								.add(
-									reinhardt::query::SimpleExpr::from(Expr::col(Alias::new(
-										"workspace_id",
-									)))
-									.eq(SimpleExpr::CustomWithExpr(
-										"(?)".to_owned(),
-										vec![Expr::value(query_bind_3.to_owned()).into()],
-									)),
-								)
-								.add(
-									reinhardt::query::SimpleExpr::from(Expr::col(Alias::new(
-										"home_node",
-									)))
-									.eq(SimpleExpr::CustomWithExpr(
-										"(?)".to_owned(),
-										vec![Expr::value(query_bind_4.to_owned()).into()],
-									)),
-								),
-						)
-						.to_string(PostgresQueryBuilder),
-				)
-				.scalar_optional(&mut **self.access.tx)
-				.await?
-			})
-		}
-		.await;
-		result.map_err(Into::into)
+	async fn memory(
+		&mut self,
+		run: &RunMetadata,
+	) -> Result<Option<aidash_domain::memory::Binding>> {
+		crate::semantic::repositories::bindings::load(&mut **self.access.tx, run)
+			.await
+			.map_err(Into::into)
 	}
 	async fn media_input_routes(&mut self, run: &RunMetadata) -> Result<Vec<Vec<String>>> {
 		self.federation

@@ -36,7 +36,7 @@ fn normalization_records_trusted_origins_and_keeps_required_tools() {
 		"aidash://node-a",
 		"file_read",
 	)));
-	agent.remove_default.push("memory_write".into());
+	agent.remove_default.push("memory_mutate".into());
 	let normalized = agent.normalize("aidash://node-a").unwrap();
 	assert_eq!(
 		normalized
@@ -56,7 +56,7 @@ fn normalization_records_trusted_origins_and_keeps_required_tools() {
 	assert!(
 		!normalized
 			.iter()
-			.any(|b| b.binding.target.id == "aidash.memory_write")
+			.any(|b| b.binding.target.id == "aidash.memory_mutate")
 	);
 	agent.remove_default.push("workspace_read".into());
 	assert!(agent.normalize("aidash://node-a").is_err());
@@ -101,7 +101,7 @@ fn explicit_source_does_not_implicitly_grant_memory_read_or_write() {
 			.count(),
 		1
 	);
-	agent.remove_default.push("memory_write".into());
+	agent.remove_default.push("memory_mutate".into());
 	assert!(
 		agent
 			.normalize("aidash://node-a")

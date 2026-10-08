@@ -154,6 +154,19 @@ impl SubjectIdentity {
 		exclusive: bool,
 	) -> Result<Snapshot> {
 		let snapshot = Authorization::load_with_mode(tx, &self.tenant, exclusive).await?;
+		self.lock_credential(tx).await?;
+		if !enabled(&snapshot, &self.subject) {
+			return Err(Error::Forbidden);
+		}
+		self.session_current(tx, true).await?;
+		Ok(snapshot)
+	}
+
+	/// Check another saved publisher on the already-held policy transaction.
+	pub(crate) async fn lock_credential(
+		&self,
+		tx: &mut crate::database::native::Transaction,
+	) -> Result<()> {
 		let valid: Option<Uuid> = {
 			let query_bind_1 = self.credential_id;
 			let query_bind_2 = &self.tenant;
@@ -254,11 +267,7 @@ impl SubjectIdentity {
 			};
 			validate_dashboard_status(validity)?;
 		}
-		if !enabled(&snapshot, &self.subject) {
-			return Err(Error::Forbidden);
-		}
-		self.session_current(tx, true).await?;
-		Ok(snapshot)
+		Ok(())
 	}
 
 	/// Order logout with an HTTP boundary after credential, mapping and identity

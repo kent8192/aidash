@@ -1,0 +1,80 @@
+# Frozen labels for contract evaluation; these do not approve a production model.
+version = "native-memory-labels-v1"
+
+[[cases]]
+id = "english-preference-negation-failure-date"
+language = "en-US"
+text = "On 2024-01-04, Aiko said she prefers rail travel. Aiko does not travel by car. The rollback check failed on 2024-01-04; it did not prove the release safe. Heavy rain caused the train delay."
+query = "What transportation does Aiko favor, and what happened to the verification?"
+
+[[cases.labels]]
+id = "rail-preference"
+patterns = [
+  "(?i)(Aiko|愛子)",
+  "(?i)(rail|train|鉄道|電車)",
+  "(?i)(prefer|favor|好き|好む|選好)",
+]
+kind = "world"
+learning = "preference"
+
+[[cases.labels]]
+id = "car-negation"
+patterns = [
+  "(?i)(Aiko|愛子)",
+  "(?i)(car|自動車|車)",
+  "(?i)(not|never|no |ない|しない|ません)",
+]
+kind = "world"
+learning = "fact"
+
+[[cases.labels]]
+id = "failed-check"
+patterns = ["(?i)(rollback|ロールバック)", "(?i)(fail|失敗)"]
+forbidden = ["(?i)(check succeeded|verification passed|検証に成功|検証は成功)"]
+kind = "experience"
+learning = "failure"
+
+[[cases.labels]]
+id = "weather-cause"
+patterns = ["(?i)(rain|雨)", "(?i)(delay|遅延|遅れ)"]
+kind = "world"
+learning = "fact"
+
+[[cases]]
+id = "japanese-preference-negation-failure-date"
+language = "ja-JP"
+text = "2024年1月4日、愛子（Aiko）は鉄道での旅行を好むと話した。愛子は車で旅行しない。2024年1月4日のロールバック検証は失敗し、リリースの安全性を証明しなかった。大雨が列車の遅延を引き起こした。"
+query = "愛子の移動手段の好みと、検証の結果を教えてください。"
+
+[[cases.labels]]
+id = "rail-preference"
+patterns = [
+  "(?i)(Aiko|愛子)",
+  "(?i)(rail|train|鉄道|電車)",
+  "(?i)(prefer|favor|好き|好む|選好)",
+]
+kind = "world"
+learning = "preference"
+
+[[cases.labels]]
+id = "car-negation"
+patterns = [
+  "(?i)(Aiko|愛子)",
+  "(?i)(car|自動車|車)",
+  "(?i)(not|never|no |ない|しない|ません)",
+]
+kind = "world"
+learning = "fact"
+
+[[cases.labels]]
+id = "failed-check"
+patterns = ["(?i)(rollback|ロールバック)", "(?i)(fail|失敗)"]
+forbidden = ["(?i)(check succeeded|verification passed|検証に成功|検証は成功)"]
+kind = "experience"
+learning = "failure"
+
+[[cases.labels]]
+id = "weather-cause"
+patterns = ["(?i)(rain|雨)", "(?i)(delay|遅延|遅れ)"]
+kind = "world"
+learning = "fact"

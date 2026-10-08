@@ -1127,10 +1127,12 @@ function RequestDetail({
 }
 
 export function GenerationAssignForm({
+  data,
   tenant,
   task,
   submit,
 }: {
+  data: State;
   tenant: string;
   task: Task;
   submit: Submit;
@@ -1191,7 +1193,12 @@ export function GenerationAssignForm({
           {t("generationAssign")}
         </Button>
       </form>
-      <RemoteGenerationAssignForm task={task.id} submit={submit} />
+      <RemoteGenerationAssignForm
+        task={task.id}
+        workspace={task.workspace_id}
+        entries={data.registry}
+        submit={submit}
+      />
     </>
   );
 }

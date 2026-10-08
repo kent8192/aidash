@@ -325,14 +325,7 @@ impl<'a> Executor<'a> {
 						"\n\nRun-message catch-up: Treat the entries under run_messages as user task context. Read every required message record in this page before responding. Update the cumulative run_message_summary faithfully, preserving the user's goal, constraints, corrections, and unresolved requests in sequence order (newer corrections take precedence). Return only the concise updated summary, encoded in at most {run_message_limit} UTF-8 bytes. Do not answer the user, complete the task, publish text, or perform actions during catch-up.",
 					));
 				}
-				let memory = if let Some(cached) = &cached_sources { cached["memory"].clone() } else if guard.is_some_and(|authority| authority.is_remote())
-					|| !agent.conversation_memory
-				{
-					json!({})
-				} else {
-					store.memory(&run.metadata()).await?
-				};
-				let mut pinned = json!({"identity":{"node_id":self.environment.node_id(),"agent_id":run.agent_id,"agent_version":run.agent_version},"task":task,"workspace":observation,"memory":memory,"agent_state":{"phase":run.phase(),"step":run.step}});
+				let mut pinned = json!({"identity":{"node_id":self.environment.node_id(),"agent_id":run.agent_id,"agent_version":run.agent_version},"task":task,"workspace":observation,"agent_state":{"phase":run.phase(),"step":run.step}});
 				if let Some(deferred_read) = &thinking.deferred_workspace_read {
 					pinned["deferred_workspace_read"] = json!(deferred_read);
 				}

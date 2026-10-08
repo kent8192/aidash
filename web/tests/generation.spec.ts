@@ -14,6 +14,8 @@ test("generation dashboard manages policy, approval, completion and retained his
   test.setTimeout(90000);
   let embeddingCalls = 0;
   const semanticContexts: unknown[] = [];
+  let semanticRoot = "";
+  const cleanupHeaders = { authorization: "Bearer acceptance-access-token" };
   let semanticIndex:
     | { collection: string; spec: { vector: { endpoint: string } } }
     | undefined;
@@ -34,7 +36,7 @@ test("generation dashboard manages policy, approval, completion and retained his
       return;
     }
     semanticContexts.push(
-      JSON.parse(input.messages[1].content).current.semantic_memory,
+      JSON.parse(input.messages[1].content).current.semantic_memory.workspace,
     );
     res.end(
       JSON.stringify({
@@ -189,6 +191,10 @@ test("generation dashboard manages policy, approval, completion and retained his
     await registryDialog
       .getByLabel("エンティティの種類")
       .selectOption("embedding");
+    await registryDialog
+      .locator('[name="embedding_provider"]')
+      .selectOption("openai");
+    await registryDialog.locator('[name="embedding_credentials"]').uncheck();
     await expect(registryDialog.getByLabel("エンティティID")).toHaveCount(0);
     await registryDialog.getByLabel("名前").fill("Approved embedding");
     await registryDialog.getByLabel("説明").fill("Local semantic provider");
@@ -204,15 +210,17 @@ test("generation dashboard manages policy, approval, completion and retained his
     await registryDialog
       .getByLabel("埋め込みの次元数", { exact: true })
       .fill("3");
-    const registration = page.waitForResponse(
-      (response) =>
-        response.url().endsWith("/api/registry") &&
-        response.request().method() === "POST",
-    );
+    const registration = page
+      .waitForResponse(
+        (response) =>
+          response.url().endsWith("/api/registry") &&
+          response.request().method() === "POST",
+      )
+      .then((response) => response.json());
     await registryDialog
       .getByRole("button", { name: "エンティティを登録", exact: true })
       .click();
-    const embedder = (await (await registration).json()).id as string;
+    const embedder = (await registration).id as string;
     await expect(registryDialog).toHaveCount(0);
     expect((await api(`/api/registry/${embedder}/1.0.0`)).config).toEqual(
       embeddingConfig,
@@ -308,16 +316,15 @@ test("generation dashboard manages policy, approval, completion and retained his
     const workspace = workspaces.find(
       (item: { title: string }) => item.title === id,
     );
-    const semanticRoot = `/api/workspaces/${workspace.id}/semantic`;
+    semanticRoot = `/api/workspaces/${workspace.id}/semantic`;
     semanticIndex = await api(`${semanticRoot}/index`, {
       expected_revision: 0,
       spec: {
         embedding: embeddingConfig,
         vector: {
-          provider: "qdrant",
-          endpoint:
-            process.env.AIDASH_TEST_QDRANT_URL ?? "http://127.0.0.1:63370",
-          credential_env: "AIDASH_SECRET_TEST_QDRANT",
+          provider: "postgres",
+          endpoint: "local",
+          credential_env: null,
         },
         enabled: true,
         auto_context: true,
@@ -526,17 +533,20 @@ test("generation dashboard manages policy, approval, completion and retained his
       provider.close((error) => (error ? reject(error) : resolve())),
     );
     if (semanticIndex) {
-      const response = await request.delete(
-        `${semanticIndex.spec.vector.endpoint}/collections/${semanticIndex.collection}`,
-        {
-          headers: {
-            "api-key":
-              process.env.AIDASH_SECRET_TEST_QDRANT ??
-              "local-semantic-vector-fixture-key-0123456789",
+      const current = await request.get(`${semanticRoot}/index`, {
+        headers: cleanupHeaders,
+      });
+      if (current.ok()) {
+        const index = await current.json();
+        const response = await request.post(`${semanticRoot}/index`, {
+          headers: cleanupHeaders,
+          data: {
+            expected_revision: index.revision,
+            spec: { ...index.spec, enabled: false },
           },
-        },
-      );
-      expect(response.ok()).toBe(true);
+        });
+        expect(response.ok()).toBe(true);
+      }
     }
   }
 });

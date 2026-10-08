@@ -435,7 +435,8 @@ impl ExecutionAdmissionSession for Admission<'_> {
 		entry: &Entry,
 		snapshot: &aidash_domain::registry::bindings::BindingSnapshot,
 	) -> Result<Task> {
-		self.f
+		let claimed = self
+			.f
 			.store
 			.claim_in(
 				&mut self.access.tx,
@@ -446,7 +447,15 @@ impl ExecutionAdmissionSession for Admission<'_> {
 				Some(snapshot),
 			)
 			.await
-			.map_err(Into::into)
+			.map_err(aidash_application::Error::from)?;
+		crate::semantic::repositories::bindings::claimed(
+			&self.f.store,
+			&mut crate::semantic::service::Lease::Inherited(self.access),
+			task.id,
+			entry,
+		)
+		.await?;
+		Ok(claimed)
 	}
 	async fn admit_thread(
 		&mut self,
