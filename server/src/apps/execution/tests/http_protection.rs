@@ -365,3 +365,32 @@ fn protection_settings(
 		_stream_settings,
 	}
 }
+
+#[rstest::fixture]
+fn malformed_json_router() -> reinhardt::ServerRouter {
+	reinhardt::ServerRouter::new().handler("/broken", MalformedJson)
+}
+
+#[rstest::fixture]
+async fn malformed_json_server(
+	malformed_json_router: reinhardt::ServerRouter,
+) -> (
+	reinhardt::test::fixtures::server::TestServerGuard,
+	reinhardt::test::APIClient,
+) {
+	let server = reinhardt::test::fixtures::server::test_server_guard(malformed_json_router).await;
+	let client = reinhardt::test::fixtures::api_client_from_url(&server.url);
+	(server, client)
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn native_json_fixture_reports_malformed_responses(
+	#[future(awt)] malformed_json_server: (
+		reinhardt::test::fixtures::server::TestServerGuard,
+		reinhardt::test::APIClient,
+	),
+) {
+	let (_server, client) = malformed_json_server;
+	assert!(client.get("/broken").await.unwrap().json_value().is_err());
+}
