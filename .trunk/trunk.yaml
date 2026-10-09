@@ -21,6 +21,7 @@ lint:
     - linters: [prettier]
       paths:
         - deploy/helm/**/templates/**
+        - infra/gcp/helm/**/templates/**
         # Compact JSON is the byte-exact baseline for legacy policy serialization.
         - tests/fixtures/native_memory_policy_baseline.json
     - linters: [ALL]
