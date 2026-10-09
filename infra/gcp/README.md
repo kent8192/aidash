@@ -339,6 +339,12 @@ to enable BYOK provisioning; it must differ from `project_id` and contain only
 Provider Credential secrets. Omit it or leave it empty for existing deployments
 without the Store: no BYOK API, project lookup, role, audit configuration or runtime
 grant is provisioned. Existing shared-project lifecycle operations remain available.
+Before clearing or replacing an enabled `byok_project_id`, retire all managed
+environments using the applied project. The controller refuses a mismatched
+project before observing hosts or applying Terraform while environment inventory
+remains; cleanup must verify each old prefix is empty before removing its runtime
+identity and disk. Enabling BYOK on a legacy deployment remains supported.
+
 Bootstrap enables Secret Manager and its DATA_READ/DATA_WRITE audit logs there.
 Human-run bootstrap defines `aidashByokCreate`, `aidashByokManage` and
 `aidashByokBrokerRead` once per deployment. Environment automation binds runtime

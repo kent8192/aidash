@@ -61,32 +61,28 @@ impl Repository for NativeRepository {
 			node: self.node.clone(),
 		}))
 	}
-	async fn pending(&self) -> Result<Vec<ProviderCredential>> {
-		let mut db = self
-			.pool
-			.connection()
-			.begin()
-			.await
-			.map_err(crate::Error::from)?;
-		let rows = Record::objects()
-			.filter(Record::field_state().eq("pending"))
-			.order_by(&["created_at", "id"])
-			.limit(200)
-			.all_with_executor(db.as_mut())
-			.await
-			.map_err(reinhardt::core::exception::Error::from)
-			.map_err(crate::Error::from)?;
-		rows.into_iter().map(contract).collect()
-	}
-	async fn active(&self) -> Result<Vec<ProviderCredential>> {
+	async fn reconciliation_candidates(
+		&self,
+		after: Option<Uuid>,
+		limit: usize,
+	) -> Result<Vec<ProviderCredential>> {
 		let mut tx = self
 			.pool
 			.connection()
 			.begin()
 			.await
 			.map_err(crate::Error::from)?;
-		let rows = Record::objects()
-			.filter(Record::field_state().eq("active"))
+		let mut query = Record::objects()
+			.filter(Record::field_state().ne("deleted"))
+			.order_by(&["id"])
+			.limit(limit.clamp(
+				1,
+				aidash_application::provider_credentials::RECONCILIATION_BATCH_SIZE,
+			));
+		if let Some(id) = after {
+			query = query.filter(Record::field_id().gt(id));
+		}
+		let rows = query
 			.all_with_executor(tx.as_mut())
 			.await
 			.map_err(reinhardt::core::exception::Error::from)

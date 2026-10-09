@@ -12,6 +12,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "control"))
 import controller
+from cloud import Terraform as NativeTerraform
 from policy import transition
 
 
@@ -293,6 +294,37 @@ class ReconcileTests(unittest.TestCase):
         self.assertTrue(self.cloud.plans)
         self.assertTrue(all(not plan[0]["pr-1"]["vm_present"] for plan in self.cloud.plans))
         self.assertFalse(any(call[0] in {"start", "stop", "bootstrap"} for call in self.calls))
+
+    def test_project_change_refuses_before_observation_cleanup_or_apply(self):
+        self.request()
+        self.reconcile(byok=True)
+        self.request(action="destroy")
+        self.calls.clear()
+        before = deepcopy(self.store.state)
+        plans = deepcopy(self.cloud.plans)
+        self.cloud.configuration = dict(CONFIG, byok_project_id="")
+        applied = {"outputs": {
+            "managed_configuration": {"value": deepcopy(self.cloud.managed)},
+            "byok_project_id": {"value": "fixture-byok"},
+            "environments": {"value": {"test": {"byok_project_id": "fixture-byok"}}},
+        }}
+        read = self.store.read
+        with (
+            patch.object(self.store, "read", side_effect=lambda key:
+                (deepcopy(applied), "1") if key.endswith("default.tfstate") else read(key)),
+            patch.object(self.cloud, "configuration_in_state", side_effect=lambda store:
+                NativeTerraform.configuration_in_state(self.cloud, store)),
+            patch.object(controller, "observe_interruptions") as observe,
+        ):
+            for configured in ["", "replacement-byok"]:
+                with self.subTest(configured=configured):
+                    self.cloud.configuration["byok_project_id"] = configured
+                    with self.assertRaisesRegex(RuntimeError, "Restore the applied BYOK project"):
+                        controller.reconcile(self.cloud.configuration, self.store)
+            observe.assert_not_called()
+        self.assertEqual(self.calls, [])
+        self.assertEqual(self.cloud.plans, plans)
+        self.assertEqual(self.store.state, before)
 
     def test_byok_retirement_cleans_stopped_and_missing_vms_without_waking_them(self):
         for status in ["TERMINATED", "MISSING"]:

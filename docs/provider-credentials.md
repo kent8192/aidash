@@ -66,15 +66,25 @@ post-commit disable fails, it returns the committed metadata with a cleanup
 warning; the PostgreSQL active-row inventory retains the reconciliation work.
 The supervised reconciler retries unpinned versions. With background tasks
 disabled, cleanup remains pending until reconciliation resumes. Revocation
-is irreversible and disables all versions; deletion destroys versions and keeps
+commits its irreversible metadata state and audit before disabling all versions,
+so effective access closes immediately. A failed database commit leaves external
+versions unchanged; interrupted or failed disables are retried from revoked rows.
+The API returns the committed revoked state while cleanup is pending. Deletion
+destroys versions and keeps
 a metadata tombstone, but refuses a bound record. A supervised reconciler scans
-expired PostgreSQL pending records and disables unpinned active versions left
-by interrupted rotations. It never lists Secret Manager secrets.
+expired PostgreSQL pending records, disables unpinned active versions left
+by interrupted rotations, and disables all versions of revoked records. Each supervised pass processes at most 25 non-deleted
+metadata records in UUID order, retains its cursor across passes, and waits 60
+seconds after completing a page. A failed candidate is retried on the next sweep
+without blocking later Tenants. It never lists Secret Manager secrets.
 
 Admission records a local-only Provider Credential ID per Run and provider.
 This includes the enabled workspace semantic index's embedding provider, even
 when the Agent's Model uses an environment source. Missing embedding bindings
-therefore reject admission before the Run is committed.
+therefore reject admission before the Run is committed. RequiredHome remote
+semantic bindings reject Tenant-backed workspace embeddings before binding or
+dispatch: this path has no approved local Run pin or BYOK maintenance authority.
+Environment-backed remote embeddings remain supported.
 Calls check that record's current active state and current version pin; changing
 a binding cannot retarget admitted Runs. Receiving federation admission uses
 the mapped local Tenant. The configured Credential Broker handles plaintext
