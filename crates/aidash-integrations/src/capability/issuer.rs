@@ -21,6 +21,20 @@ pub struct WorkerConfiguration {
 impl WorkerConfiguration {
 	pub fn validate(&self) -> Result<()> {
 		aidash_domain::configuration::validate_endpoint(&self.endpoint)?;
+		// Minted Capability Tokens are replayable bearer credentials until expiry.
+		let url = reqwest::Url::parse(&self.endpoint)
+			.map_err(|_| Error::Invalid("invalid Credential Broker endpoint URL".into()))?;
+		let loopback = url
+			.host_str()
+			.map(|host| host.trim_start_matches('[').trim_end_matches(']'))
+			.and_then(|host| host.parse::<std::net::IpAddr>().ok())
+			.is_some_and(|ip| ip.is_loopback());
+		if url.scheme() != "https" && !loopback {
+			return Err(Error::Invalid(
+				"Credential Broker endpoints require HTTPS except on literal loopback addresses"
+					.into(),
+			));
+		}
 		if !self.endpoint.ends_with("/api/v1")
 			|| self.issuer.is_empty()
 			|| self.issuer.len() > 256

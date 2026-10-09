@@ -192,6 +192,30 @@ fn worker_audience_fits_the_bootstrap_service_account_name() {
 	assert!(configuration.validate().is_err());
 }
 
+#[test]
+fn worker_endpoint_requires_https_outside_literal_loopback() {
+	let configuration = |endpoint: &str| issuer::WorkerConfiguration {
+		endpoint: endpoint.into(),
+		issuer: "worker".into(),
+		audience: "test".into(),
+		kid: KID.into(),
+	};
+	for endpoint in [
+		"https://broker.example/api/v1",
+		"http://127.0.0.1:8080/api/v1",
+		"http://[::1]:8080/api/v1",
+	] {
+		configuration(endpoint).validate().unwrap();
+	}
+	for endpoint in [
+		"http://broker.example/api/v1",
+		"http://localhost:8080/api/v1",
+		"http://10.0.0.5/api/v1",
+	] {
+		assert!(configuration(endpoint).validate().is_err(), "{endpoint}");
+	}
+}
+
 #[tokio::test]
 async fn metadata_token_is_cached_and_requires_google_response_header() {
 	let s = server().await;
