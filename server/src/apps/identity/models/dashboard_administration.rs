@@ -76,6 +76,8 @@ impl DashboardRegistrationRequest {
 				.filter(Self::field_expires_at().lte(now))
 				.update_fields_with_conn(tx, [(Self::field_status(), "expired".to_owned())])
 				.await?;
+			// A replacement request retains the latest authenticated display
+			// attributes. Expiry without resubmission is erased by the sweeper.
 			if let Some(previous) = Self::latest(tx, identity).await? {
 				let active_mapping = previous.status == "approved"
 					&& DashboardMapping::objects()
@@ -127,18 +129,22 @@ impl DashboardRegistrationRequest {
 		input: Approval,
 		decision_actor: String,
 		token_hash: Vec<u8>,
+		policy: Option<aidash_application::ports::authorization::dashboard::AccountPolicy>,
 	) -> Result<ApprovedMapping> {
 		db.atomic(async |tx| {
-			let mut registration = Self::objects()
+			let preliminary = Self::objects()
 				.filter(Self::field_id().eq(id))
-				.select_for_update()
-				.all_with_executor(tx)
-				.await
-				.map_err(FrameworkError::from)?
+				.all_with_db(tx)
+				.await?
 				.pop()
 				.ok_or_else(|| Error::NotFound("registration".into()))?;
-			let now = database_time(tx).await?;
-			dashboard_rules::require_pending(&registration.status, registration.expires_at, now)?;
+			let candidate = DashboardIdentity::find(tx, preliminary.identity_id()).await?;
+			crate::authorization::identity::require_dashboard_mapping(
+				policy.as_ref(),
+				&candidate.issuer,
+				&candidate.gcip_tenant,
+				&input.tenant,
+			)?;
 			// QuerySet currently exposes FOR UPDATE only. This shared policy lock
 			// allows other admissions while excluding policy replacement.
 			let (sql, values) = Query::select()
@@ -164,6 +170,33 @@ impl DashboardRegistrationRequest {
 						.map_err(FrameworkError::from)?,
 				)?,
 			};
+			let identity = DashboardIdentity::objects()
+				.filter(DashboardIdentity::field_id().eq(preliminary.identity_id()))
+				.select_for_update()
+				.all_with_executor(tx)
+				.await
+				.map_err(FrameworkError::from)?
+				.pop()
+				.ok_or(Error::Forbidden)?;
+			let mut registration = Self::objects()
+				.filter(Self::field_id().eq(id))
+				.select_for_update()
+				.all_with_executor(tx)
+				.await
+				.map_err(FrameworkError::from)?
+				.pop()
+				.ok_or_else(|| Error::NotFound("registration".into()))?;
+			let now = database_time(tx).await?;
+			dashboard_rules::require_pending(&registration.status, registration.expires_at, now)?;
+			if identity.disabled_at.is_some() {
+				return Err(Error::Forbidden);
+			}
+			crate::authorization::identity::require_dashboard_mapping(
+				policy.as_ref(),
+				&identity.issuer,
+				&identity.gcip_tenant,
+				&input.tenant,
+			)?;
 			dashboard_rules::require_user_mapping(&snapshot, &input.subject)?;
 			// The secret never leaves the service; this record anchors a policy
 			// lease and cannot be used as a bearer credential.
@@ -185,10 +218,8 @@ impl DashboardRegistrationRequest {
 				.filter(DashboardMapping::field_identity_id().eq(identity_id))
 				.filter(DashboardMapping::field_tenant().eq(input.tenant.clone()))
 				.filter(DashboardMapping::field_subject().eq(input.subject.clone()))
-				.select_for_update()
-				.all_with_executor(tx)
-				.await
-				.map_err(FrameworkError::from)?
+				.all_with_db(tx)
+				.await?
 				.pop();
 			let mapping_id = if let Some(mapping) = existing {
 				if mapping.enabled {
@@ -258,6 +289,18 @@ impl DashboardRegistrationRequest {
 		actor: String,
 	) -> Result<Registration> {
 		db.atomic(async |tx| {
+			let preliminary = Self::objects()
+				.filter(Self::field_id().eq(id))
+				.all_with_db(tx)
+				.await?
+				.pop()
+				.ok_or_else(|| Error::Conflict("registration is no longer pending".into()))?;
+			DashboardIdentity::objects()
+				.filter(DashboardIdentity::field_id().eq(preliminary.identity_id()))
+				.select_for_update()
+				.all_with_executor(tx)
+				.await
+				.map_err(FrameworkError::from)?;
 			let mut row = Self::objects()
 				.filter(Self::field_id().eq(id))
 				.select_for_update()
@@ -272,6 +315,7 @@ impl DashboardRegistrationRequest {
 			row.decided_at = Some(now);
 			row.decision_actor = Some(actor);
 			Self::objects().update_with_conn(tx, &row).await?;
+			DashboardIdentity::clear_display_if_unmapped(tx, row.identity_id()).await?;
 			Ok(row.contract())
 		})
 		.await
@@ -279,11 +323,77 @@ impl DashboardRegistrationRequest {
 }
 
 impl DashboardIdentity {
+	pub(crate) async fn clear_display_if_unmapped<E: OrmExecutor + TransactionExecutor>(
+		db: &mut E,
+		identity: Uuid,
+	) -> Result<()> {
+		Self::objects()
+			.filter(Self::field_id().eq(identity))
+			.select_for_update()
+			.all_with_executor(db)
+			.await
+			.map_err(FrameworkError::from)?;
+		if !DashboardMapping::objects()
+			.filter(DashboardMapping::field_identity_id().eq(identity))
+			.filter(DashboardMapping::field_enabled().eq(true))
+			.exists_with_db(db)
+			.await?
+		{
+			let assignments: Vec<FieldAssignment> = vec![
+				(Self::field_verified_email(), None::<String>).into(),
+				(Self::field_display_name(), None::<String>).into(),
+			];
+			Self::objects()
+				.filter(Self::field_id().eq(identity))
+				.update_fields_with_conn(db, assignments)
+				.await?;
+		}
+		Ok(())
+	}
+	pub(crate) async fn expire_registrations(db: DatabaseConnection) -> Result<()> {
+		db.atomic(async |tx| {
+			let now = database_time(tx).await?;
+			let expired = DashboardRegistrationRequest::objects()
+				.filter(DashboardRegistrationRequest::field_status().eq("pending"))
+				.filter(DashboardRegistrationRequest::field_expires_at().lte(now))
+				.all_with_db(tx)
+				.await?;
+			for candidate in expired {
+				Self::objects()
+					.filter(Self::field_id().eq(candidate.identity_id()))
+					.select_for_update()
+					.all_with_executor(tx)
+					.await
+					.map_err(FrameworkError::from)?;
+				let Some(mut row) = DashboardRegistrationRequest::objects()
+					.filter(DashboardRegistrationRequest::field_id().eq(candidate.id))
+					.filter(DashboardRegistrationRequest::field_status().eq("pending"))
+					.select_for_update()
+					.all_with_executor(tx)
+					.await
+					.map_err(FrameworkError::from)?
+					.pop()
+				else {
+					continue;
+				};
+				row.status = "expired".into();
+				DashboardRegistrationRequest::objects()
+					.update_with_conn(tx, &row)
+					.await?;
+				Self::clear_display_if_unmapped(tx, row.identity_id()).await?;
+			}
+			Ok(())
+		})
+		.await
+	}
 	pub(crate) fn contract(self) -> IdentityView {
 		IdentityView {
 			id: self.id,
 			issuer: self.issuer,
 			subject: self.subject,
+			gcip_tenant: (!self.gcip_tenant.is_empty()).then_some(self.gcip_tenant),
+			verified_email: self.verified_email,
+			display_name: self.display_name,
 			disabled_at: self.disabled_at,
 		}
 	}

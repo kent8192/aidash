@@ -1,7 +1,10 @@
 //! Browser authentication state and provider-status persistence.
 
 use super::dashboard_administration::database_time;
-use super::{DashboardIdentity, DashboardLoginTransaction, DashboardLogoutToken, DashboardSession};
+use super::{
+	DashboardIdentity, DashboardLoginTransaction, DashboardLogoutToken,
+	DashboardRegistrationRequest, DashboardSession,
+};
 use crate::{Error, Result};
 use chrono::{DateTime, Duration, Utc};
 use reinhardt::core::exception::Error as FrameworkError;
@@ -16,6 +19,35 @@ use std::result::Result as StdResult;
 use uuid::Uuid;
 
 impl DashboardLoginTransaction {
+	pub(crate) async fn consume_bound(
+		db: DatabaseConnection,
+		state: Vec<u8>,
+		browser: Vec<u8>,
+	) -> Result<Self> {
+		db.atomic(async |tx| {
+			let row = Self::objects()
+				.filter(Self::field_state_hash().eq(super::byte_key::ByteKey(state)))
+				.select_for_update()
+				.all_with_executor(tx)
+				.await
+				.map_err(FrameworkError::from)?
+				.pop()
+				.ok_or(Error::Unauthorized)?;
+			if row.browser_hash != browser
+				|| row.expires_at <= database_time(tx).await?
+				|| row.gcip_tenant.is_none()
+			{
+				return Err(Error::Unauthorized);
+			}
+			Self::objects()
+				.filter(Self::field_state_hash().eq(row.state_hash.clone()))
+				.delete_with_conn(tx)
+				.await?;
+			Ok(row)
+		})
+		.await
+	}
+
 	pub(crate) async fn reserve(&self, db: DatabaseConnection) -> Result<()> {
 		db.atomic(async |tx| {
 			// Keep capacity admission short; discovery happens after commit.
@@ -77,33 +109,66 @@ impl DashboardIdentity {
 	pub(crate) async fn register(
 		db: DatabaseConnection,
 		issuer: &str,
-		subject: &str,
+		sign_in: &aidash_domain::identity::dashboard::SignIn,
 	) -> Result<Self> {
 		db.atomic(async |tx| {
 			let now = database_time(tx).await?;
+			let subject = &sign_in.subject;
+			let gcip_tenant = sign_in.gcip_tenant.as_deref().unwrap_or("");
 			let (sql, values) = Query::insert()
 				.into_table(Alias::new(Self::table_name()))
-				.columns(["id", "issuer", "subject", "last_valid_at"].map(Alias::new))
+				.columns(
+					[
+						"id",
+						"issuer",
+						"subject",
+						"last_valid_at",
+						"gcip_tenant",
+						"verified_email",
+						"display_name",
+					]
+					.map(Alias::new),
+				)
 				.values_panic([
 					IntoValue::into_value(Uuid::new_v4()),
 					IntoValue::into_value(issuer),
-					IntoValue::into_value(subject),
+					IntoValue::into_value(subject.clone()),
 					IntoValue::into_value(now),
+					IntoValue::into_value(gcip_tenant),
+					IntoValue::into_value(sign_in.verified_email.clone()),
+					IntoValue::into_value(sign_in.display_name.clone()),
 				])
 				.on_conflict(
-					OnConflict::columns(["issuer", "subject"])
-						.do_nothing()
+					OnConflict::columns(["issuer", "gcip_tenant", "subject"])
+						.update_columns(["verified_email", "display_name"])
 						.to_owned(),
 				)
 				.build(PostgresQueryBuilder);
 			TransactionExecutor::execute(tx, &sql, convert_values(values)).await?;
-			Self::objects()
+			let identity = Self::objects()
 				.filter(Self::field_issuer().eq(issuer))
-				.filter(Self::field_subject().eq(subject))
+				.filter(Self::field_subject().eq(subject.clone()))
+				.filter(Self::field_gcip_tenant().eq(gcip_tenant))
 				.all_with_db(tx)
 				.await?
 				.pop()
-				.ok_or_else(|| Error::NotFound("identity".into()))
+				.ok_or_else(|| Error::NotFound("identity".into()))?;
+			// The upsert holds the same identity lock as expiry erasure. End old
+			// requests before exposing refreshed claims so a later status read or
+			// a sweeper waiting on this lock cannot erase the new sign-in's display.
+			DashboardRegistrationRequest::objects()
+				.filter(DashboardRegistrationRequest::field_identity_id().eq(identity.id))
+				.filter(DashboardRegistrationRequest::field_status().eq("pending"))
+				.filter(DashboardRegistrationRequest::field_expires_at().lte(now))
+				.update_fields_with_conn(
+					tx,
+					[(
+						DashboardRegistrationRequest::field_status(),
+						"expired".to_owned(),
+					)],
+				)
+				.await?;
+			Ok(identity)
 		})
 		.await
 	}
@@ -112,6 +177,7 @@ impl DashboardIdentity {
 		db: DatabaseConnection,
 		id: Uuid,
 		checked_at: DateTime<Utc>,
+		valid_since: Option<DateTime<Utc>>,
 	) -> Result<()> {
 		db.atomic(async |tx| {
 			let mut row = Self::objects()
@@ -129,7 +195,23 @@ impl DashboardIdentity {
 				row.last_valid_at
 					.map_or(checked_at, |last| last.max(checked_at)),
 			);
+			row.valid_since = match (row.valid_since, valid_since) {
+				(Some(previous), Some(current)) => Some(previous.max(current)),
+				(previous, current) => previous.or(current),
+			};
 			Self::objects().update_with_conn(tx, &row).await?;
+			if let Some(since) = row.valid_since {
+				let revoked_at = database_time(tx).await?;
+				DashboardSession::objects()
+					.filter(DashboardSession::field_identity_id().eq(id))
+					.filter(DashboardSession::field_revoked_at().is_null())
+					.filter(DashboardSession::field_auth_time().lt(Some(since)))
+					.update_fields_with_conn(
+						tx,
+						[(DashboardSession::field_revoked_at(), Some(revoked_at))],
+					)
+					.await?;
+			}
 			Ok(())
 		})
 		.await
@@ -259,10 +341,26 @@ impl DashboardSession {
 		identity: Uuid,
 		hashes: (Vec<u8>, Vec<u8>),
 		provider_sid: Option<String>,
+		auth_time: DateTime<Utc>,
 		lifetime: i64,
 		previous: Option<Vec<u8>>,
 	) -> Result<()> {
 		db.atomic(async |tx| {
+			let identity_row = DashboardIdentity::objects()
+				.filter(DashboardIdentity::field_id().eq(identity))
+				.select_for_update()
+				.all_with_executor(tx)
+				.await
+				.map_err(FrameworkError::from)?
+				.pop()
+				.ok_or(Error::Forbidden)?;
+			if identity_row.disabled_at.is_some()
+				|| aidash_domain::identity::dashboard::session_revoked(
+					auth_time,
+					identity_row.valid_since,
+				) {
+				return Err(Error::Forbidden);
+			}
 			let now = database_time(tx).await?;
 			if let Some(previous) = previous {
 				Self::objects()
@@ -278,6 +376,7 @@ impl DashboardSession {
 				.csrf_hash(hashes.1)
 				.provider_sid(provider_sid)
 				.created_at(now)
+				.auth_time(Some(auth_time))
 				.last_activity_at(now)
 				.expires_at(now + Duration::seconds(lifetime))
 				.revoked_at(None)

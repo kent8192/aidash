@@ -228,3 +228,38 @@ pub async fn backchannel_logout(
 ) -> ViewResult<Response> {
 	crate::http::status(service.backchannel_logout(body).await)
 }
+
+#[get(
+	"/auth/gcip/transaction",
+	name = "sessions-gcip-transaction",
+	auth = "public"
+)]
+pub async fn gcip_transaction(
+	#[inject] service: Depends<DashboardSessions>,
+	request: Request,
+	Query(query): Query<crate::apps::identity::services::gcip::TransactionQuery>,
+) -> ViewResult<Response> {
+	crate::http::response(
+		crate::apps::identity::services::gcip::configuration(
+			&service.runtime,
+			request.headers,
+			query.state,
+		)
+		.await,
+	)
+}
+#[post(
+	"/auth/gcip/exchange",
+	name = "sessions-gcip-exchange",
+	auth = "public"
+)]
+pub async fn gcip_exchange(
+	#[inject] service: Depends<DashboardSessions>,
+	request: Request,
+	Json(input): Json<crate::apps::identity::services::gcip::Exchange>,
+) -> ViewResult<Response> {
+	crate::http::response(
+		crate::apps::identity::services::gcip::exchange(&service.runtime, request.headers, input)
+			.await,
+	)
+}

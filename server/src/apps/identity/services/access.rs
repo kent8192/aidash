@@ -169,6 +169,7 @@ impl Access {
 		identity: &SubjectIdentity,
 		exclusive: bool,
 	) -> Result<Self> {
+		identity.check_binding(pool).await?;
 		let mut tx = crate::database::native::begin(pool).await?;
 		let snapshot = identity.lock_with_mode(&mut tx, exclusive).await?;
 		Ok(Self::from_transaction(
@@ -325,6 +326,7 @@ impl Access {
 			return Err(Error::Forbidden);
 		}
 		if !self.tx.is_active() {
+			self.identity.check_binding(&self.pool).await?;
 			self.tx
 				.install(crate::database::native::begin(&self.pool).await?);
 		}

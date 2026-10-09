@@ -15,6 +15,9 @@ type Identity = {
   id: string;
   issuer: string;
   subject: string;
+  gcip_tenant: string | null;
+  verified_email: string | null;
+  display_name: string | null;
   disabled_at: string | null;
 };
 type Mapping = {
@@ -72,6 +75,7 @@ export function DashboardIdentityAdministration() {
     try {
       await action();
       await client.invalidateQueries({ queryKey: ["dashboard-registrations"] });
+      await client.invalidateQueries({ queryKey: ["dashboard-identities"] });
       await client.invalidateQueries({ queryKey: ["dashboard-mappings"] });
       await client.invalidateQueries({
         queryKey: ["dashboard-operator-grants"],
@@ -106,6 +110,15 @@ export function DashboardIdentityAdministration() {
               {identity(request.identity_id)?.subject ?? request.identity_id}
             </strong>
             <p>{identity(request.identity_id)?.issuer}</p>
+            <p>{identity(request.identity_id)?.gcip_tenant}</p>
+            <p>
+              {[
+                identity(request.identity_id)?.display_name,
+                identity(request.identity_id)?.verified_email,
+              ]
+                .filter(Boolean)
+                .join(" · ")}
+            </p>
             <small>
               {english ? "Expires" : "期限"}:{" "}
               {new Date(request.expires_at).toLocaleString(locale)}
@@ -223,7 +236,15 @@ export function DashboardIdentityAdministration() {
           <div className="card" key={item.id}>
             <span>
               {item.subject} ({item.issuer})
+              {item.gcip_tenant && ` / ${item.gcip_tenant}`}
             </span>
+            {(item.display_name || item.verified_email) && (
+              <span>
+                {[item.display_name, item.verified_email]
+                  .filter(Boolean)
+                  .join(" · ")}
+              </span>
+            )}
             {item.disabled_at && (
               <Button
                 variant="outline"
