@@ -247,3 +247,5 @@ metadata and exclude procedural checks and references from the ORM snapshot, whi
 retaining the physical constraints established by the preceding migrations.
 
 Binding and native memory histories converge in `registry/0015_binding_memory_merge` and `execution/0011_binding_memory_merge`. The registry merge preserves strict Agent Bindings, Host lifecycle validation and native memory operations. Agent memory-role references derive from qualified Binding targets. These migrations depend on both histories and leave their existing migration identities unchanged.
+
+`execution/0012_inference_usage` creates the per-attempt Usage Record table with typed operations, including its Run reference, outcome and count checks, `created_at` default and `(run_id, outcome)` lookup index. The generated state-only checkpoint `execution/0013_inference_usage_model_state` removes those from the ORM snapshot without dropping them physically. `projection_version` is `integer` because the pinned ORM model macro has no Rust mapping for `smallint`.

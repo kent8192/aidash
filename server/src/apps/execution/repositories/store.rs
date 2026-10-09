@@ -1,7 +1,7 @@
 //! Native execution repository preserves caller-owned transactions and lease fences.
 use crate::apps::execution::models::{
 	Event as EventRecord, HumanRequest as HumanRequestRecord, Invocation as InvocationRecord,
-	Run as RunRecord, RunInput as InputRecord, event_records,
+	Run as RunRecord, RunInput as InputRecord, event_records, inference_usage::InferenceUsage,
 };
 use crate::apps::execution::serializers::runs::{PeerObservation, RunDetails};
 use crate::apps::execution::services::human_interaction;
@@ -3364,6 +3364,38 @@ impl Store {
 		}
 		tx.commit().await?;
 		Ok(())
+	}
+	/// Durable before provider I/O. Like other worker writes, a lost lease
+	/// cannot dispatch; this lease supersedes every attempt left dispatched.
+	pub async fn record_usage_dispatch(
+		&self,
+		run: &Run,
+		worker: Uuid,
+		dispatch: &aidash_domain::provider::usage::UsageDispatch,
+	) -> Result<()> {
+		let mut tx = self.database().begin().await?;
+		if !RunRecord::hold_worker(tx.as_mut(), run.id, worker).await? {
+			return Err(Error::Conflict(
+				"worker lease lost before dispatching inference".into(),
+			));
+		}
+		InferenceUsage::dispatch(tx.as_mut(), run.id, dispatch).await?;
+		tx.commit().await?;
+		Ok(())
+	}
+	/// Usage observed after a lost lease is still a provider fact, so completion
+	/// is not lease-fenced. It writes only a record that is still dispatched;
+	/// a later dispatch has already made an abandoned record unknown.
+	pub async fn complete_usage_record(
+		&self,
+		run: &Run,
+		attempt: Uuid,
+		outcome: &aidash_domain::provider::usage::UsageOutcome,
+	) -> Result<bool> {
+		let mut tx = self.database().begin().await?;
+		let completed = InferenceUsage::complete(tx.as_mut(), run.id, attempt, outcome).await?;
+		tx.commit().await?;
+		Ok(completed)
 	}
 	// The empty namespace preserves pre-federation local memory. Peer node IDs
 	// are validated nonempty, so no remote home can address this namespace.

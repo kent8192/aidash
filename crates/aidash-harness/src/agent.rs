@@ -4,6 +4,7 @@ use aidash_domain::{
 	context::{self, Context, ContextEvent, ContextUsage},
 	media::Selection,
 	model::ModelConfig,
+	provider::usage::{LEGACY_PROJECTION_VERSION, RequestEstimate, UsageDispatch, UsageOutcome},
 	semantic::{Failure, InputRead},
 	tool::{ResultFitting, ToolIdentity, ToolUseMode},
 	*,
@@ -527,6 +528,24 @@ impl<'a> Executor<'a> {
 				} else {
 					None
 				};
+				// Each provider call is a new Inference Attempt. Its Usage Record is
+				// durable before provider I/O and is keyed apart from the lease.
+				let attempt = Uuid::now_v7();
+				store
+					.record_usage_dispatch(
+						run,
+						token,
+						&UsageDispatch {
+							attempt,
+							lease: token,
+							response_epoch: response_epoch(run.revision, run.step),
+							model_id: agent.model.id.clone(),
+							model_version: agent.model.version.clone(),
+							projection_version: LEGACY_PROJECTION_VERSION,
+							estimate: RequestEstimate::conservative_bytes(request_tokens),
+						},
+					)
+					.await?;
 				// Race only inference, not replay-unsafe tools or durable transitions.
 				// Release node-wide visibility and authorization row locks while the
 				// provider waits; both boundaries are reacquired before accepting output.
@@ -543,6 +562,15 @@ impl<'a> Executor<'a> {
 					result = model.infer(request) => result,
 				};
 				let resumed = visibility.resume().await;
+				// Cancellation, timeouts and unreadable responses leave usage unknown.
+				let outcome = match &result {
+					Ok(response) => UsageOutcome::Completed(response.reported.clone()),
+					Err(Error::ProviderRejected { .. }) => UsageOutcome::Rejected {
+						class: "provider_rejected".into(),
+					},
+					Err(_) => UsageOutcome::Unknown,
+				};
+				let recorded = store.complete_usage_record(run, attempt, &outcome).await;
 				if let (Some(reservation), Ok(response)) = (reservation, result.as_ref()) {
 					// Provider usage is billable even when authorization changed
 					// or a transaction committed while its result was in flight.
@@ -550,6 +578,8 @@ impl<'a> Executor<'a> {
 				}
 				resumed?;
 				let result = result?;
+				// A failed record write never hides the inference error above.
+				recorded?;
 				if let Some(guard) = guard {
 					guard.resume().await?;
 				}

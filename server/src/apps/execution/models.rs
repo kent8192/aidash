@@ -34,3 +34,5 @@ pub mod generation_remote_finalizations;
 pub mod generation_remote_intents;
 
 pub mod generation_remote_usage;
+
+pub mod inference_usage;
