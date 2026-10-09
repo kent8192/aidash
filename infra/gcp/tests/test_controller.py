@@ -327,6 +327,18 @@ class ReconcileTests(unittest.TestCase):
             "after": {"test": {"gcip": {"tenant_ids": ["new-pool"], "tenant_bindings": {"new-pool": "acme"}}}},
         }})
 
+    def test_first_gcip_creation_does_not_query_outputs_before_apply(self):
+        self.request()
+        original = self.cloud.outputs
+
+        def outputs():
+            self.assertTrue(self.cloud.managed, "no environments output exists before the first apply")
+            return original()
+
+        with patch.object(self.cloud, "outputs", outputs):
+            controller.reconcile(dict(CONFIG, gcip_tenants={"company": {"tenant": "acme"}}), self.store)
+        self.assertEqual(self.store.state["environments"]["test"]["status"], "ready")
+
     def exercise_gcip_output_drift(self, resource_changes, output_changes):
         self.context.enter_context(patch.object(controller, "reconcile_environment"))
         config = dict(CONFIG, gcip_tenants={"company": {"tenant": "acme"}})

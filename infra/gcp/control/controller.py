@@ -583,7 +583,7 @@ class GcipTerraform:
         self.failed = set()
 
     def outputs(self):
-        return self.terraform.outputs()
+        return self.terraform.outputs() if self.previous else {}
 
     def apply(self, managed, retiring=(), starting=(), affected=None, allow_failures=False):
         # Include removed environments until their destruction plan is fenced.
