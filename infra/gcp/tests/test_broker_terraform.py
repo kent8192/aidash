@@ -115,6 +115,7 @@ class CredentialBrokerTerraformTests(unittest.TestCase):
             self.assertEqual(template["scaling"][0]["min_instance_count"], 1 if run == "production" else 0)
             self.assertFalse(template["vpc_access"])
             env = {v["name"]: v["value"] for v in template["containers"][0]["env"]}
+            self.assertEqual(env["AIDASH_BROKER_TIMEOUT_SECS"], "3570")
             keys = json.loads(env["AIDASH_CAPABILITY_PUBLIC_KEYS"])
             self.assertEqual(list(keys.values()), ["PUBLIC-KEY-FIXTURE"])
             self.assertTrue(next(iter(keys)).endswith("/cryptoKeyVersions/1"))

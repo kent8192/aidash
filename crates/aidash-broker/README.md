@@ -262,9 +262,13 @@ Env-based deadlines and per-call direct key resolution retain their behavior.
 
 Cloud Run uses internal ingress with its invoker IAM check disabled and default
 egress. Production defaults to 1 minimum instance; other environments use 0.
-Maximum instances default to 10 and timeout to 3600 seconds. These are module
-inputs. Each instance explicitly uses 1 GiB of memory, one CPU and a maximum
-of four concurrent requests to bound buffered media and JSON parsing copies.
+Maximum instances default to 10 and the Cloud Run request timeout to 3600 seconds.
+The module's `timeout_secs` accepts integers from 31 through 3600 and injects a
+broker inference deadline 30 seconds shorter (3570 seconds by default). This
+leaves headroom for upstream cancellation, the response and audit before the
+platform closes the request. Each instance explicitly uses 1 GiB of memory,
+one CPU and a maximum of four concurrent requests to bound buffered media and
+JSON parsing copies.
 Bootstrap rejects overlapping credential prefixes such as `prod` and
 `prod-cred-blue`; environment composition also checks managed environments that
 have no broker. The existing nonproduction environments root remains nonproduction;

@@ -9,6 +9,9 @@ terraform {
 locals {
   enabled = var.enabled && var.environment_kind != "pr"
   name    = "aidash-${var.environment_id}-credential-broker"
+  // Leave time to cancel upstream work, return a response and record the audit
+  // before Cloud Run closes the request at its platform deadline.
+  broker_deadline_secs = var.timeout_secs - 30
 }
 data "google_project" "byok" {
   count      = local.enabled ? 1 : 0
@@ -64,7 +67,7 @@ resource "google_cloud_run_v2_service" "broker" {
           AIDASH_CAPABILITY_PUBLIC_KEYS     = jsonencode({ for v, k in data.google_kms_crypto_key_version.verification : "${var.signing_key_id}/cryptoKeyVersions/${v}" => k.public_key[0].pem })
           AIDASH_BROKER_REQUESTS_PER_SECOND = tostring(var.requests_per_second)
           AIDASH_BROKER_BURST               = tostring(var.burst)
-          AIDASH_BROKER_TIMEOUT_SECS        = tostring(var.timeout_secs)
+          AIDASH_BROKER_TIMEOUT_SECS        = tostring(local.broker_deadline_secs)
         }
         content {
           name  = env.key

@@ -123,11 +123,12 @@ variable "max_instances" {
   }
 }
 variable "timeout_secs" {
-  type    = number
-  default = 3600
+  description = "Cloud Run request timeout; the broker inference deadline is 30 seconds shorter."
+  type        = number
+  default     = 3600
   validation {
-    condition     = var.timeout_secs >= 1 && var.timeout_secs <= 3600 && floor(var.timeout_secs) == var.timeout_secs
-    error_message = "Broker inference deadlines must be within 1..3600 seconds."
+    condition     = var.timeout_secs >= 31 && var.timeout_secs <= 3600 && floor(var.timeout_secs) == var.timeout_secs
+    error_message = "Cloud Run timeouts must be integers within 31..3600 seconds, leaving 30 seconds outside the broker deadline."
   }
 }
 variable "requests_per_second" {

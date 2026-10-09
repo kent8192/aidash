@@ -40,6 +40,10 @@ run "production" {
     error_message = "Production broker defaults must match the admission/streaming contract."
   }
   assert {
+    condition     = one([for value in google_cloud_run_v2_service.broker[0].template[0].containers[0].env : value.value if value.name == "AIDASH_BROKER_TIMEOUT_SECS"]) == "3570"
+    error_message = "The broker must finish 30 seconds before the platform deadline."
+  }
+  assert {
     condition     = google_cloud_run_v2_service.broker[0].template[0].service_account == var.broker_service_account_email && google_kms_crypto_key_iam_member.signer[0].role == "roles/cloudkms.signer" && google_kms_crypto_key_iam_member.signer[0].member == "serviceAccount:${var.runtime_service_account}"
     error_message = "Run as the bootstrap broker SA; the runtime can only sign."
   }
@@ -65,6 +69,22 @@ run "staging" {
   assert {
     condition     = google_cloud_run_v2_service.broker[0].template[0].scaling[0].min_instance_count == 0 && google_cloud_run_v2_service.broker[0].template[0].service_account == var.broker_service_account_email
     error_message = "Nonproduction uses its bootstrap broker SA and may scale to zero."
+  }
+}
+run "no_broker_deadline_headroom_forbidden" {
+  command = plan
+  variables { timeout_secs = 30 }
+  expect_failures = [var.timeout_secs]
+}
+run "minimum_platform_timeout" {
+  command = apply
+  variables {
+    enabled      = true
+    timeout_secs = 31
+  }
+  assert {
+    condition     = google_cloud_run_v2_service.broker[0].template[0].timeout == "31s" && one([for value in google_cloud_run_v2_service.broker[0].template[0].containers[0].env : value.value if value.name == "AIDASH_BROKER_TIMEOUT_SECS"]) == "1"
+    error_message = "The minimum platform timeout must retain a positive broker deadline and 30 seconds of headroom."
   }
 }
 run "disabled" {
