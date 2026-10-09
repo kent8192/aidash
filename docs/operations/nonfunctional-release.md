@@ -4,9 +4,18 @@ Status: **decision draft**, 2026-09-28. The [Notion nonfunctional page](https://
 
 ## Deployment and workload boundary (NFR-PROFILE-001)
 
-The local Compose and kind installations are development profiles. They use fixture credentials, local volumes and disposable data, and have no availability claim. The release candidate profile is two independently identified Aidash Nodes on Kubernetes **and** k3s, with separate PostgreSQL databases, server and worker roles, persistent JetStream and PostgreSQL-native memory with pgvector/PGroonga and an independently retained Home recovery ledger, protected secrets, and reachable TLS peer endpoints. The [orchestration runbook](../orchestration.md) describes the deployed components. The current `scripts/test-cluster.sh` scenario exercises four tasks, four artifacts and three external effects; that is a functional fixture, not a supported workload size or a throughput benchmark.
+The local Compose and kind installations are development profiles. They use fixture credentials, local volumes and disposable data, and have no availability claim. The release candidate profile is two independently identified Aidash Nodes on Kubernetes, with separate PostgreSQL databases, server and worker roles, persistent JetStream and PostgreSQL-native memory with pgvector/PGroonga and an independently retained Home recovery ledger, protected secrets, and reachable TLS peer endpoints. The [orchestration runbook](../orchestration.md) describes the deployed components. The current `scripts/test-cluster.sh` scenario exercises four tasks, four artifacts and three external effects; that is a functional fixture, not a supported workload size or a throughput benchmark.
 
 Before claiming a supported profile, record the exact deployment manifest and resource limits, replica counts, PostgreSQL/JetStream and external memory-ledger topology, region, network, model/embedding fixtures, image digests and tested revision. Approve concurrent human sessions, active Agents, concurrent runs, and the supported Node count. Test those maxima together rather than extrapolating from HTTP rate or worker-slot defaults. Larger scale and other cloud/topology combinations remain unverified until measured. This boundary does not remove the mandatory A2A, authorization, transaction or six-capability release gates.
+
+The GCP profile uses shared GKE Standard and pinned upstream gVisor on Ubuntu
+Cluster Nodes. Its single-attach ledger, PostgreSQL, NATS and Runner journal
+recover through rescheduling and disk reattachment, with a service pause.
+Cluster Node loss and drain leave unproven in-flight operations uncertain.
+The gated idle seal drains server and worker while retaining the Runner for the
+final activity observation; work admitted after the last idle observation can
+be interrupted even without `force`. Real GKE loss/reattachment and full release
+acceptance remain unverified until their approved drills run.
 
 ## Service behavior and performance
 
@@ -52,7 +61,7 @@ Every record must name the tested Git revision and image digest, environment, da
 
 | Requirement     | Command or procedure                                                                                              | Expected evidence                                                                             | Owner                            | Tested revision / status             |
 | --------------- | ----------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- | -------------------------------- | ------------------------------------ |
-| NFR-PROFILE-001 | `bash scripts/test-cluster.sh kubernetes` and `bash scripts/test-cluster.sh k3s`; then approved full-load profile | Both distribution reports, manifest and fixture counts; separate supported-scale proof        | Release engineer                 | None; fixture does not prove scale   |
+| NFR-PROFILE-001 | `bash scripts/test-cluster.sh kubernetes`; then approved full-load profile | Kubernetes reports, manifest and fixture counts; separate supported-scale proof        | Release engineer                 | None; fixture does not prove scale   |
 | NFR-PERF-001    | Approved reproducible load driver against both deployed Nodes, with raw latency/export files                      | Every agreed percentile, throughput and error limit passes each repetition                    | Release engineer                 | None; driver and targets pending     |
 | NFR-AVAIL-001   | Approved availability probe plus dependency fault matrix                                                          | Correct responses, bounded outage, explicit failure and durable recovery, monthly calculation | Release engineer                 | None; target and probe pending       |
 | NFR-DR-001      | Isolated two-Node restore drill above                                                                             | Backup IDs, high-water comparison, elapsed RPO/RTO, authorization and replay checks           | Service operator                 | None; drill not run                  |

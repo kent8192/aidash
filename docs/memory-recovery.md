@@ -108,8 +108,7 @@ or a PostgreSQL replica/failover profile. Full database rewind requires a separa
 authority/control/evidence continuity design and acceptance result.
 
 The disposable cluster runner creates an application-owned child directory under
-each Home volume. Run `scripts/test-cluster.sh kubernetes native-memory` and
-`scripts/test-cluster.sh k3s native-memory` for their respective profiles. These
-commands use an explicit temporary kubeconfig and preserve the current context.
+each Home volume. Run `scripts/test-cluster.sh kubernetes native-memory`. This
+command uses an explicit temporary kubeconfig and preserve the current context.
 Their synthetic provider exercises real native Registry/HTTP/worker paths;
 successful runs establish only the cases recorded in their evidence directory.

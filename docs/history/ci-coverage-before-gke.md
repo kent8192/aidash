@@ -1,10 +1,5 @@
 # CI coverage uploader
 
-Earlier distribution-specific job details are retained in the
-[historical CI register](../history/ci-coverage-before-gke.md). Current manual
-cluster acceptance supports Kubernetes with kind; historical job names and
-results do not validate the GKE migration.
-
 The Rust coverage upload job installs Codecov CLI 11.3.1 from PyPI through the pinned
 `codecov/codecov-action`'s official `use_pypi` input. OIDC authentication,
 the explicit LCOV input and `fail_ci_if_error: true` remain required.
@@ -70,10 +65,16 @@ tests, and three minutes passing all 24 migration tests before reaching scoped
 remote authorization. The former forty-minute limit cancelled that final suite.
 That budget retained every target, isolation assertion, and artifact check.
 
-The Kubernetes gate imports its backend, frontend and PostgreSQL images into
-its owned kind cluster before acceptance starts. Import failures fail the gate;
-the cluster guard owns cleanup. The retired profile's image transport analysis
-is preserved in [the historical coverage guide](../history/ci-coverage-before-gke.md).
+The k3s gate saves images to an owned temporary archive, copies it into the owned
+node, and imports it through containerd's `k8s.io` namespace. Every expected tag
+must then resolve through CRI before acceptance starts. This avoids k3d's Docker
+exec stdin transport, which failed with a closed Docker socket in the
+remote-memory job. [k3d's image import implementation](https://github.com/k3d-io/k3d/blob/v5.9.0/pkg/client/tools.go)
+uses that transport for direct imports; the same error has been reported in
+[k3d issue #1020](https://github.com/k3d-io/k3d/issues/1020). The new path retains
+all import failures and acceptance assertions and cleans its local archive on
+exit; the existing cluster guard owns node cleanup. No new upstream defect is
+inferred from the closed socket alone.
 
 Transaction fault cases wait for the prior server generation to terminate after
 a rollout and forward HTTP to the single current ready Pod. A successful rollout
@@ -98,7 +99,7 @@ boundaries; the separate CI browser gates remain required. Each run records the
 expected cases and selected partition alongside actual results.
 
 At [`3621a96c`](https://github.com/kent8192/aidash/actions/runs/37343926155), the
-single retired cluster profile and Kubernetes transaction jobs reached the ninety-minute deadline
+single k3s and Kubernetes transaction jobs reached the ninety-minute deadline
 after 104 and 98 successful repetitions respectively. No recorded assertion
 failed; remaining repetitions and cleanup could not complete. Driver regression
 tests check the new partition inventory against the complete acceptance contract,
@@ -153,7 +154,7 @@ An authenticated upload still requires a new GitHub Actions run.
 
 ## Independent cluster failure
 
-The same run's `Cluster recovery (retired cluster profile, remote-memory)` job failed before its
+The same run's `Cluster recovery (k3s, remote-memory)` job failed before its
 acceptance tests, while Cargo fetched `web-sys` from crates.io inside the Docker
 build:
 

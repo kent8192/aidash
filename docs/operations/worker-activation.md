@@ -109,7 +109,7 @@ runner records Git SHA, dirty patch hash, new-file hashes, commands, exit status
 PIDs, and per-sample upper-bound admission-to-lease timings under
 `target/activation-evidence/`. This is component evidence, not production scale or
 #70 end-to-end routing evidence. Broader regressions use `scripts/test-rust.sh`;
-cluster deployments use `scripts/test-cluster.sh kubernetes` and `k3s`.
+cluster deployments use `scripts/test-cluster.sh kubernetes`.
 
 Only with `AIDASH_ENV=test`, `AIDASH_ACTIVATION_TEST_RECOVERY_MS` can delay recovery
 up to 60 seconds and `AIDASH_ACTIVATION_TEST_PAUSE_FILE` can suppress consumption
