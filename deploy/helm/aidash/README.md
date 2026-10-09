@@ -59,7 +59,9 @@ no new sandbox starts while the guard keeps watching live ones, then waits up to
 `AIDASH_GVISOR_DRAIN_SECONDS` (3600) for every process running an installed
 `runsc` or `gvisor_sentry` to exit. A running Sentry keeps its old executable
 inode, which the guard's `samefile` check would stop recognizing, so the installer
-fails without replacing anything if sandboxes remain; it retries on restart.
+fails without replacing anything if sandboxes remain; it retries on restart. The
+installer writes the runtime only under `/usr/local/bin`, so the chart rejects a
+custom `execution.paths.runsc` or `gvisorBin` while it is enabled.
 
 The release gets three separate namespaces: the application release namespace,
 `<release>-sandbox` (Pod Security `restricted`), and `<release>-guard` (trusted
@@ -82,7 +84,11 @@ not provision the application's retained object store or change its admission
 configuration; those remain operator-provisioned state.
 
 The profile keeps guest `processes=128` (minimum 8: the admission probe lowers its
-own hard `RLIMIT_NPROC` to 8 and cannot raise it) and separate `host_tasks=512`. The guard
+own hard `RLIMIT_NPROC` to 8 and cannot raise it) and separate `host_tasks=512`, which
+must exceed `processes` because guest processes are host tasks of the Sentry.
+`maximum_seconds` is capped at 600, the node guard's limit for Python cells. With
+the Runner enabled the release name is limited to 46 characters so
+`<release>-execution-runner` fits a 63-character DNS label. The guard
 writes and verifies Sentry `pids.max`; `sandbox.py` enforces guest `RLIMIT_NPROC`.
 Resource evidence includes both. The guard requires host PID access, containerd,
 kubelet emptyDirs with `HostToContainer` propagation, its own retained host state,

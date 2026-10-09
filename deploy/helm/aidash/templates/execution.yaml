@@ -12,6 +12,9 @@
 {{- range $component, $values := dict "installer" $e.installer "guard" $e.guard "runner" $e.runner -}}
 {{- if and $values.enabled (not (regexMatch "@sha256:[0-9a-f]{64}$" (toString $values.image))) -}}{{ fail (printf "execution.%s.image must be pinned by digest: it runs trusted, privileged or cluster-scoped code" $component) }}{{- end -}}
 {{- end -}}
+{{- if and $e.runner.enabled (le (int $e.limits.host_tasks) (int $e.limits.processes)) -}}{{ fail "execution.limits.host_tasks must exceed execution.limits.processes: guest processes are host tasks of the Sentry, and the admission probe forks that many" }}{{- end -}}
+{{- if and $e.runner.enabled (gt (len (printf "%s-runner" $name)) 63) -}}{{ fail "release name is too long: the Runner Service name must fit a 63-character DNS label" }}{{- end -}}
+{{- if and $e.installer.enabled (or (ne $e.paths.runsc "/usr/local/bin/runsc") (ne $e.paths.gvisorBin "/usr/local/bin/gvisor-bin")) -}}{{ fail "execution.installer writes the verified runtime under /usr/local/bin; custom execution.paths.runsc or gvisorBin would leave the guard's mounts pointing at missing files" }}{{- end -}}
 {{- if $e.createNamespaces }}
 {{- range $namespace := list $sandbox $trusted }}
 ---

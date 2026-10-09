@@ -44,6 +44,10 @@ uninstall or a preview switch delete the shared TLS disk. Rebinding belongs to
 the gated lifecycle controller; this chart does not guess ownership or detach a
 live claim.
 
+`activity.observerImage`, `activity.collectorImage` and `edge.admissionImage` hold the
+database credential, the Runner token or the admission gate, so the chart refuses to
+render them unless they end in `@sha256:<digest>`.
+
 `activity.existingSecret` supplies the existing read-only observer `DATABASE_URL`
 and `AIDASH_CORE_RUNNER_TOKEN`. The CronJob reads database work, the private edge
 activity endpoint, and the Runner's authenticated `/v1/activity`; it gets/patches

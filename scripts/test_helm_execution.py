@@ -141,9 +141,49 @@ class ChartsTest(unittest.TestCase):
         # A disabled component is not rendered, so its default tag is not an error.
         render(self.aidash, self.base)
 
+    def test_environment_trusted_images_must_be_pinned_by_digest(self):
+        values = {'postgres': {'existingSecret': 'db'},
+                  'edge': {'hostname': 'fixture.example', 'admissionImage': 'admission' + DIGEST},
+                  'activity': {'existingSecret': 'observer', 'observerImage': 'observer' + DIGEST,
+                               'collectorImage': 'collector' + DIGEST}}
+        render(self.environment, values)
+        for section, key in (('edge', 'admissionImage'), ('activity', 'observerImage'), ('activity', 'collectorImage')):
+            with self.subTest(image=key):
+                mutable = dict(values, **{section: dict(values[section], **{key: 'image:latest'})})
+                with self.assertRaises(subprocess.CalledProcessError):
+                    render(self.environment, mutable)
+
+    def test_execution_limits_names_paths_and_time_are_consistent_with_the_guard(self):
+        runner = {'enabled': True, 'existingSecret': 'runner', 'image': 'runner' + DIGEST}
+        base = {'sandboxImage': 'sandbox' + DIGEST, 'runner': runner}
+
+        def accepted(release='fixture', **execution):
+            render(self.aidash, dict(self.base, execution=dict(base, **execution)), release)
+
+        accepted()
+        # The Runner Service is `<release>-execution-runner`; a DNS label holds 63 characters.
+        accepted(release='r' * 46)
+        with self.assertRaises(subprocess.CalledProcessError):
+            accepted(release='r' * 47)
+        # The guest's processes are host tasks of the Sentry, and the probe forks that many.
+        with self.assertRaises(subprocess.CalledProcessError):
+            accepted(limits={'processes': 128, 'host_tasks': 128})
+        # The node guard rejects Python cells above 600 seconds.
+        with self.assertRaises(subprocess.CalledProcessError):
+            accepted(limits={'maximum_seconds': 601})
+        accepted(limits={'maximum_seconds': 600})
+        # The installer only writes the runtime under /usr/local/bin.
+        installer = {'enabled': True, 'image': 'installer' + DIGEST}
+        values = dict(self.base, environment={'nodeSelector': {'pool': 'execution'}})
+        render(self.aidash, dict(values, execution=dict(base, installer=installer)))
+        with self.assertRaises(subprocess.CalledProcessError):
+            render(self.aidash, dict(values, execution=dict(base, installer=installer, paths={'runsc': '/opt/bin/runsc'})))
+
     def test_gcp_persistence_local_lb_private_admission_and_activity(self):
-        objects = render(self.environment, {'postgres': {'existingSecret': 'db'}, 'edge': {'hostname': 'fixture.example'},
-            'activity': {'existingSecret': 'observer'}, 'storage': {'createClass': True},
+        objects = render(self.environment, {'postgres': {'existingSecret': 'db'},
+            'edge': {'hostname': 'fixture.example', 'admissionImage': 'admission' + DIGEST},
+            'activity': {'existingSecret': 'observer', 'observerImage': 'observer' + DIGEST,
+                         'collectorImage': 'collector' + DIGEST}, 'storage': {'createClass': True},
             'previewTls': {'createVolume': True, 'volumeHandle': 'projects/fixture/zones/us-central1-a/disks/preview'}})
         self.assertEqual(select(objects, 'StorageClass', 'retain')['reclaimPolicy'], 'Retain')
         for role in ('postgres', 'nats'):
