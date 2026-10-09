@@ -126,66 +126,71 @@ impl Workbench {
 }
 
 #[rstest::fixture]
-async fn workbench(
-	#[future(awt)]
+fn workbench(
+	#[future]
 	#[from(common::native_application)]
 	application_fixture: common::ApplicationFixture,
-	#[future(awt)] provider: WorkbenchProvider,
-) -> Workbench {
-	let (f, url, schema) = application_fixture.runtime.parts();
-	let app = application_fixture.application.clone();
-	let responses = provider.state.responses;
-	let hits = provider.state.hits;
-	let model_gate = provider.state.model_gate;
-	let effect_gate = provider.state.effect_gate;
-	let effect_hits = provider.state.effect_hits;
-	let effect_reply_invalid = provider.state.effect_reply_invalid;
-	let server = provider.server;
-	let endpoint = server.url.clone();
-	for (id, kind, config) in [
-		(
-			"fixture-model",
-			"model",
-			json!({"provider":"openrouter","model_id":"fixture","endpoint":format!("{endpoint}/v1"),"credential_env":null,"context_window":32768,"max_output_tokens":2048,"modalities":["text"],"cost":{}}),
-		),
-		(
-			"fixture-tool",
-			"tool",
-			json!({"registry_node":f.config.node_id,"provider":"integration.http@1","operation":"invoke","default_alias":"plugin_0","tier":"integration","narrow":{},"transport":{"transport":"http","endpoint":format!("{endpoint}/effect"),"credential_env":null,"replay":"read_only"}}),
-		),
-	] {
-		assert_eq!(request(&app, &f.config.api_token, "POST", "/api/registry", json!({"id":id,"version":"1.0.0","kind":kind,"name":{"en":id},"description":{"en":"Fixture"},"config":config})).await.0, 200);
-	}
-	assert_eq!(request(&app, &f.config.api_token, "POST", "/api/authorization/acme", json!({"expected_revision":0,"bundle":{"tenant":"acme","subjects":{"alice":{"kind":"user"},"bob":{"kind":"user"}},"policies":[{"id":"fixture","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}}]}})).await.0, 200);
-	let (status, credential) = request(
-		&app,
-		&f.config.api_token,
-		"POST",
-		"/api/authorization/acme/credentials",
-		json!({"subject":"alice"}),
-	)
-	.await;
-	assert_eq!(status, 200);
-	let token = credential["token"].as_str().unwrap().to_owned();
-	let (status, draft) = request(&app, &token, "POST", "/api/workbench/drafts", json!({"entry":{"id":"","version":"1.0.0","kind":"agent","name":{"en":"Regression fixture"},"description":{"en":"Fixture"},"config":{"model":{"id":"fixture-model","version":"1.0.0"},"instructions":"Summarize","schema_version":1,"bindings":[{"kind":"tool","target":{"registry_node":f.config.node_id,"id":"fixture-tool","version":"1.0.0"},"alias":"plugin_0","narrow":{}}],"remove_default":["memory_mutate","memory_recall","memory_reflect"],"cluster":null,"max_steps":8}}})).await;
-	assert_eq!(status, 200, "draft: {draft}");
-	Workbench {
-		_fixture: application_fixture,
-		f,
-		app,
-		url,
-		schema,
-		token,
-		draft,
-		responses,
-		hits,
-		server,
-		endpoint,
-		model_gate,
-		effect_gate,
-		effect_hits,
-		effect_reply_invalid,
-	}
+	#[future] provider: WorkbenchProvider,
+) -> impl std::future::Future<Output = Workbench> {
+	// Heap-own the composed setup future to keep libtest stack use bounded.
+	Box::pin(async move {
+		let application_fixture = application_fixture.await;
+		let provider = provider.await;
+		let (f, url, schema) = application_fixture.runtime.parts();
+		let app = application_fixture.application.clone();
+		let responses = provider.state.responses;
+		let hits = provider.state.hits;
+		let model_gate = provider.state.model_gate;
+		let effect_gate = provider.state.effect_gate;
+		let effect_hits = provider.state.effect_hits;
+		let effect_reply_invalid = provider.state.effect_reply_invalid;
+		let server = provider.server;
+		let endpoint = server.url.clone();
+		for (id, kind, config) in [
+			(
+				"fixture-model",
+				"model",
+				json!({"provider":"openrouter","model_id":"fixture","endpoint":format!("{endpoint}/v1"),"credential_env":null,"context_window":32768,"max_output_tokens":2048,"modalities":["text"],"cost":{}}),
+			),
+			(
+				"fixture-tool",
+				"tool",
+				json!({"registry_node":f.config.node_id,"provider":"integration.http@1","operation":"invoke","default_alias":"plugin_0","tier":"integration","narrow":{},"transport":{"transport":"http","endpoint":format!("{endpoint}/effect"),"credential_env":null,"replay":"read_only"}}),
+			),
+		] {
+			assert_eq!(request(&app, &f.config.api_token, "POST", "/api/registry", json!({"id":id,"version":"1.0.0","kind":kind,"name":{"en":id},"description":{"en":"Fixture"},"config":config})).await.0, 200);
+		}
+		assert_eq!(request(&app, &f.config.api_token, "POST", "/api/authorization/acme", json!({"expected_revision":0,"bundle":{"tenant":"acme","subjects":{"alice":{"kind":"user"},"bob":{"kind":"user"}},"policies":[{"id":"fixture","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}}]}})).await.0, 200);
+		let (status, credential) = request(
+			&app,
+			&f.config.api_token,
+			"POST",
+			"/api/authorization/acme/credentials",
+			json!({"subject":"alice"}),
+		)
+		.await;
+		assert_eq!(status, 200);
+		let token = credential["token"].as_str().unwrap().to_owned();
+		let (status, draft) = request(&app, &token, "POST", "/api/workbench/drafts", json!({"entry":{"id":"","version":"1.0.0","kind":"agent","name":{"en":"Regression fixture"},"description":{"en":"Fixture"},"config":{"model":{"id":"fixture-model","version":"1.0.0"},"instructions":"Summarize","schema_version":1,"bindings":[{"kind":"tool","target":{"registry_node":f.config.node_id,"id":"fixture-tool","version":"1.0.0"},"alias":"plugin_0","narrow":{}}],"remove_default":["memory_mutate","memory_recall","memory_reflect"],"cluster":null,"max_steps":8}}})).await;
+		assert_eq!(status, 200, "draft: {draft}");
+		Workbench {
+			_fixture: application_fixture,
+			f,
+			app,
+			url,
+			schema,
+			token,
+			draft,
+			responses,
+			hits,
+			server,
+			endpoint,
+			model_gate,
+			effect_gate,
+			effect_hits,
+			effect_reply_invalid,
+		}
+	})
 }
 
 #[rstest::fixture]
@@ -772,48 +777,52 @@ async fn incident_list_reaches_older_authorized_rows(
 }
 
 #[rstest::fixture]
-async fn model_waiting_for_real_tool(
+fn model_waiting_for_real_tool(
 	#[default(false)] shared: bool,
-	#[future(awt)] workbench: Workbench,
-) -> (Workbench, Value) {
-	let wb = workbench;
-	*wb.responses.lock().await = VecDeque::from([
-		json!({"choices":[{"finish_reason":"tool_calls","message":{"content":"","tool_calls":[{"id":"real-call","function":{"name":"plugin_0","arguments":"{\"action\":\"read\",\"resource\":\"sandbox\"}"}}]}}],"usage":{"prompt_tokens":30,"completion_tokens":5}}),
-	]);
-	assert_eq!(request(&wb.app, &wb.f.config.api_token, "PUT", "/api/workbench/test-profiles/acme/sandbox", json!({"expected_revision":0,"enabled":true,"rules":[{"tool":{"id":"fixture-tool","version":"1.0.0"},"endpoint":format!("{}/test-effect",wb.endpoint),"credential_env":null,"read_only_verified":true,"allowed_actions":["read"],"allowed_resources":["sandbox"]}]})).await.0, 200);
-	let token = if shared {
-		wb.call(
-			"POST",
-			&format!("{}/shares", wb.path()),
-			json!({"subject":"bob","can_edit":true,"enabled":true,"include_documents":false}),
-		)
-		.await;
-		let (_, credential) = request(
+	#[future] workbench: Workbench,
+) -> impl std::future::Future<Output = (Workbench, Value)> {
+	// Heap-own the composed setup future to keep libtest stack use bounded.
+	Box::pin(async move {
+		let workbench = workbench.await;
+		let wb = workbench;
+		*wb.responses.lock().await = VecDeque::from([
+			json!({"choices":[{"finish_reason":"tool_calls","message":{"content":"","tool_calls":[{"id":"real-call","function":{"name":"plugin_0","arguments":"{\"action\":\"read\",\"resource\":\"sandbox\"}"}}]}}],"usage":{"prompt_tokens":30,"completion_tokens":5}}),
+		]);
+		assert_eq!(request(&wb.app, &wb.f.config.api_token, "PUT", "/api/workbench/test-profiles/acme/sandbox", json!({"expected_revision":0,"enabled":true,"rules":[{"tool":{"id":"fixture-tool","version":"1.0.0"},"endpoint":format!("{}/test-effect",wb.endpoint),"credential_env":null,"read_only_verified":true,"allowed_actions":["read"],"allowed_resources":["sandbox"]}]})).await.0, 200);
+		let token = if shared {
+			wb.call(
+				"POST",
+				&format!("{}/shares", wb.path()),
+				json!({"subject":"bob","can_edit":true,"enabled":true,"include_documents":false}),
+			)
+			.await;
+			let (_, credential) = request(
+				&wb.app,
+				&wb.f.config.api_token,
+				"POST",
+				"/api/authorization/acme/credentials",
+				json!({"subject":"bob"}),
+			)
+			.await;
+			credential["token"].as_str().unwrap().to_owned()
+		} else {
+			wb.token.clone()
+		};
+		wb.model_gate.paused.store(true, Ordering::SeqCst);
+		let (status, session) = request(
 			&wb.app,
-			&wb.f.config.api_token,
+			&token,
 			"POST",
-			"/api/authorization/acme/credentials",
-			json!({"subject":"bob"}),
+			&format!("{}/tests", wb.path()),
+			json!({"expected_revision":1,"message":"Use the tool","mode":"real","profile_id":"sandbox"}),
 		)
 		.await;
-		credential["token"].as_str().unwrap().to_owned()
-	} else {
-		wb.token.clone()
-	};
-	wb.model_gate.paused.store(true, Ordering::SeqCst);
-	let (status, session) = request(
-		&wb.app,
-		&token,
-		"POST",
-		&format!("{}/tests", wb.path()),
-		json!({"expected_revision":1,"message":"Use the tool","mode":"real","profile_id":"sandbox"}),
-	)
-	.await;
-	assert_eq!(status, 200, "session: {session}");
-	tokio::time::timeout(Duration::from_secs(5), wb.model_gate.arrived.notified())
-		.await
-		.expect("model fixture must reach the in-flight boundary");
-	(wb, session)
+		assert_eq!(status, 200, "session: {session}");
+		tokio::time::timeout(Duration::from_secs(5), wb.model_gate.arrived.notified())
+			.await
+			.expect("model fixture must reach the in-flight boundary");
+		(wb, session)
+	})
 }
 
 #[rstest::rstest]
@@ -1527,26 +1536,30 @@ async fn draft_authority_changes_wait_for_a_shared_real_dispatch(
 }
 
 #[rstest::fixture]
-async fn installed_tool_waiting_for_dispatch(
-	#[future(awt)] model_waiting_for_real_tool: (Workbench, Value),
-) -> (Workbench, Value, String) {
-	let (wb, started) = model_waiting_for_real_tool;
-	let entry = wb.f.registry.get("fixture-tool", "1.0.0").await.unwrap();
-	let package =
+fn installed_tool_waiting_for_dispatch(
+	#[future] model_waiting_for_real_tool: (Workbench, Value),
+) -> impl std::future::Future<Output = (Workbench, Value, String)> {
+	// Heap-own the composed setup future to keep libtest stack use bounded.
+	Box::pin(async move {
+		let model_waiting_for_real_tool = model_waiting_for_real_tool.await;
+		let (wb, started) = model_waiting_for_real_tool;
+		let entry = wb.f.registry.get("fixture-tool", "1.0.0").await.unwrap();
+		let package =
+			wb.f.registry
+				.publish(aidash_server::registry::Package {
+					entity: entry,
+					author: "Fixture".into(),
+					permissions: vec![],
+					dependencies: vec![],
+				})
+				.await
+				.unwrap();
 		wb.f.registry
-			.publish(aidash_server::registry::Package {
-				entity: entry,
-				author: "Fixture".into(),
-				permissions: vec![],
-				dependencies: vec![],
-			})
+			.install("fixture-tool", "1.0.0", &package.digest, json!({}))
 			.await
 			.unwrap();
-	wb.f.registry
-		.install("fixture-tool", "1.0.0", &package.digest, json!({}))
-		.await
-		.unwrap();
-	(wb, started, package.digest)
+		(wb, started, package.digest)
+	})
 }
 
 #[rstest::rstest]

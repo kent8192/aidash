@@ -30,6 +30,17 @@ async fn seed_executor(f: &aidash_server::federation::Federation) {
 	})).unwrap()).await.unwrap();
 }
 
+#[rstest::fixture]
+fn executor_runtime(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) -> impl std::future::Future<Output = common::RuntimeFixture> {
+	Box::pin(async move {
+		let runtime = runtime.await;
+		seed_executor(&runtime.federation).await;
+		runtime
+	})
+}
+
 async fn insert_entry(pool: &sqlx::PgPool, entry: &Value) -> Result<(), sqlx::Error> {
 	{
 		let query_bind_1 = entry["id"].as_str().unwrap();
@@ -417,11 +428,10 @@ async fn registry_constraints_reject_invalid_models_without_application_validati
 #[tokio::test]
 async fn workspace_task_and_run_constraints_preserve_local_and_remote_boundaries(
 	#[future(awt)]
-	#[from(common::runtime)]
+	#[from(executor_runtime)]
 	fixture: common::RuntimeFixture,
 ) {
 	let (f, url, schema) = fixture.parts();
-	seed_executor(&f).await;
 	let workspace = f.store.create_workspace("Main", "Goal").await.unwrap();
 	let other = f.store.create_workspace("Other", "Goal").await.unwrap();
 	let input = NewTask {
@@ -1432,7 +1442,7 @@ async fn compactor_and_embedding_configs_reject_undecodable_shapes(
 #[tokio::test]
 async fn requirements_constraints_and_strict_run_codec_reject_wrong_shapes(
 	#[future(awt)]
-	#[from(common::runtime)]
+	#[from(executor_runtime)]
 	fixture: common::RuntimeFixture,
 ) {
 	let (f, url, schema) = fixture.parts();
