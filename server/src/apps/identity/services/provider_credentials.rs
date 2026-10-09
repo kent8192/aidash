@@ -136,28 +136,51 @@ impl Management {
 	pub async fn list(&self, actor: Actor, tenant: String, page: Page) -> Result<Vec<Metadata>> {
 		let service = self.service()?;
 		self.tenant(&actor, &tenant)?;
-		let mut scope = service.repository.begin(&tenant).await?;
-		let rows = scope.list(page.offset, page.limit).await?;
-		scope.commit().await?;
+		let limit = page.limit.clamp(1, 200);
+		let operator = matches!(actor, Actor::Operator);
+		let mut source_offset = if operator { page.offset } else { 0 };
+		let mut visible_offset = if operator { 0 } else { page.offset };
+		let batch_size = if operator { limit } else { 200 };
 		let mut result = Vec::new();
-		for row in rows {
-			match self
-				.authorize(
-					&actor,
-					&tenant,
-					&row.id.to_string(),
-					row.provider,
-					"provider_credential",
-					"read",
-				)
-				.await
-			{
-				Ok(authority) => result.push(authority.finish(Ok(row.into())).await?),
-				Err(Error::Forbidden) => {}
-				Err(error) => return Err(error),
+		loop {
+			let mut scope = service.repository.begin(&tenant).await?;
+			let rows = scope.list(source_offset, batch_size).await?;
+			let exhausted = rows.len() < batch_size;
+			source_offset += rows.len();
+			// Release the Tenant lifecycle lock before opening live policy scopes.
+			scope.commit().await?;
+			for row in rows {
+				match self
+					.authorize(
+						&actor,
+						&tenant,
+						&row.id.to_string(),
+						row.provider,
+						"provider_credential",
+						"read",
+					)
+					.await
+				{
+					Ok(authority) => {
+						let metadata = authority.finish(Ok(row.into())).await?;
+						// Pagination counts only records visible to this actor.
+						if visible_offset > 0 {
+							visible_offset -= 1;
+						} else {
+							result.push(metadata);
+							if result.len() == limit {
+								return Ok(result);
+							}
+						}
+					}
+					Err(Error::Forbidden) => {}
+					Err(error) => return Err(error),
+				}
+			}
+			if exhausted {
+				return Ok(result);
 			}
 		}
-		Ok(result)
 	}
 	pub async fn get(&self, actor: Actor, tenant: String, id: Uuid) -> Result<Metadata> {
 		let service = self.service()?;
