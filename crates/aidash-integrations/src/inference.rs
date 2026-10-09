@@ -3,7 +3,10 @@ use crate::{Error, Result};
 use aidash_application::ports::{Credentials, ModelProvider};
 use aidash_domain::{
 	model::ModelConfig,
-	provider::{ContentPart, ModelRequest, ModelResponse, ToolCall},
+	provider::{
+		ContentPart, ModelRequest, ModelResponse, ToolCall,
+		usage::{ProviderCost, ReportedUsage},
+	},
 };
 use async_trait::async_trait;
 use serde_json::{Value, json};
@@ -235,10 +238,18 @@ impl ModelProvider for OpenRouterProvider {
 				});
 			}
 			let result = parse_openai(crate::response::json(response, 1_048_576).await?)?;
-			metrics::counter!("aidash_model_tokens_total", "direction" => "input")
-				.increment(result.input_tokens);
-			metrics::counter!("aidash_model_tokens_total", "direction" => "output")
-				.increment(result.output_tokens);
+			// Unknown usage is absent, never a zero sample.
+			for (direction, tokens) in [
+				("input", result.reported.input_tokens),
+				("output", result.reported.output_tokens),
+				("input_cached_read", result.reported.cache_read_tokens),
+				("input_cached_write", result.reported.cache_write_tokens),
+			] {
+				if let Some(tokens) = tokens {
+					metrics::counter!("aidash_model_tokens_total", "direction" => direction)
+						.increment(tokens);
+				}
+			}
 			Ok(result)
 		})
 		.await
@@ -275,28 +286,28 @@ pub fn parse_openai(value: Value) -> Result<ModelResponse> {
 		return Err(Error::External("provider refused the request".into()));
 	}
 	let content = message["content"].as_str().unwrap_or_default();
+	let count = |pointer: &str| value.pointer(pointer).and_then(Value::as_u64);
+	let reported = ReportedUsage {
+		input_tokens: count("/usage/prompt_tokens"),
+		output_tokens: count("/usage/completion_tokens"),
+		cache_read_tokens: count("/usage/prompt_tokens_details/cached_tokens"),
+		cache_write_tokens: count("/usage/prompt_tokens_details/cache_write_tokens"),
+		reasoning_tokens: count("/usage/completion_tokens_details/reasoning_tokens"),
+		cost: ProviderCost::from_report(
+			value.pointer("/usage/cost"),
+			value.pointer("/usage/cost_details/upstream_inference_cost"),
+		),
+	};
 	let mut result = ModelResponse {
 		text: if content.trim().is_empty() {
 			String::new()
 		} else {
 			content.to_owned()
 		},
-		usage_complete: value
-			.pointer("/usage/prompt_tokens")
-			.and_then(Value::as_u64)
-			.is_some()
-			&& value
-				.pointer("/usage/completion_tokens")
-				.and_then(Value::as_u64)
-				.is_some(),
-		input_tokens: value
-			.pointer("/usage/prompt_tokens")
-			.and_then(Value::as_u64)
-			.unwrap_or(0),
-		output_tokens: value
-			.pointer("/usage/completion_tokens")
-			.and_then(Value::as_u64)
-			.unwrap_or(0),
+		usage_complete: reported.input_tokens.is_some() && reported.output_tokens.is_some(),
+		input_tokens: reported.input_tokens.unwrap_or(0),
+		output_tokens: reported.output_tokens.unwrap_or(0),
+		reported,
 		..Default::default()
 	};
 	if let Some(calls) = message["tool_calls"].as_array() {

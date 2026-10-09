@@ -183,6 +183,10 @@ pub struct ContextUsage {
 	pub output_tokens: u64,
 	pub context_window: usize,
 	pub compactions: u32,
+	/// The provider omitted part of the usage, so the counts are not known
+	/// values. Complete usage and older rows omit the flag.
+	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
+	pub incomplete: bool,
 }
 
 /// Bound optional snapshot material independently of the durable journal. IDs

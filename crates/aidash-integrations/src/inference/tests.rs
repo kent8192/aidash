@@ -52,3 +52,104 @@ fn truncation_cannot_complete_a_task() {
 		.is_err()
 	);
 }
+
+fn completion(usage: Value) -> Value {
+	json!({"choices":[{"finish_reason":"stop","message":{"content":"done"}}],"usage":usage})
+}
+
+#[rstest::rstest]
+#[case::complete(
+	json!({"prompt_tokens":120,"completion_tokens":30,"total_tokens":150}),
+	ReportedUsage { input_tokens: Some(120), output_tokens: Some(30), ..Default::default() },
+	(120, 30, true)
+)]
+#[case::missing_prompt(
+	json!({"completion_tokens":30}),
+	ReportedUsage { output_tokens: Some(30), ..Default::default() },
+	(0, 30, false)
+)]
+#[case::missing_completion(
+	json!({"prompt_tokens":120}),
+	ReportedUsage { input_tokens: Some(120), ..Default::default() },
+	(120, 0, false)
+)]
+#[case::invalid_counts(
+	json!({"prompt_tokens":-1,"completion_tokens":"30","prompt_tokens_details":{"cached_tokens":1.5}}),
+	ReportedUsage::default(),
+	(0, 0, false)
+)]
+#[case::cache_read_and_write(
+	json!({"prompt_tokens":2000,"completion_tokens":40,"prompt_tokens_details":{"cached_tokens":1500,"cache_write_tokens":400},"completion_tokens_details":{"reasoning_tokens":12}}),
+	ReportedUsage { input_tokens: Some(2000), output_tokens: Some(40), cache_read_tokens: Some(1500), cache_write_tokens: Some(400), reasoning_tokens: Some(12), cost: None },
+	(2000, 40, true)
+)]
+#[case::cache_absent(
+	json!({"prompt_tokens":2000,"completion_tokens":40,"prompt_tokens_details":{},"completion_tokens_details":null}),
+	ReportedUsage { input_tokens: Some(2000), output_tokens: Some(40), ..Default::default() },
+	(2000, 40, true)
+)]
+#[case::cost_present(
+	json!({"prompt_tokens":10,"completion_tokens":5,"cost":0.0001234,"cost_details":{"upstream_inference_cost":0.0001}}),
+	ReportedUsage { input_tokens: Some(10), output_tokens: Some(5), cost: Some(ProviderCost { nanocredits: 123_400, upstream_nanocredits: Some(100_000) }), ..Default::default() },
+	(10, 5, true)
+)]
+#[case::cost_absent(
+	json!({"prompt_tokens":10,"completion_tokens":5,"cost_details":{"upstream_inference_cost":0.0001}}),
+	ReportedUsage { input_tokens: Some(10), output_tokens: Some(5), ..Default::default() },
+	(10, 5, true)
+)]
+#[case::cost_exponent(
+	json!({"prompt_tokens":10,"completion_tokens":5,"cost":1.5e-7,"cost_details":{"upstream_inference_cost":null}}),
+	ReportedUsage { input_tokens: Some(10), output_tokens: Some(5), cost: Some(ProviderCost { nanocredits: 150, upstream_nanocredits: None }), ..Default::default() },
+	(10, 5, true)
+)]
+#[case::cost_invalid(
+	json!({"prompt_tokens":10,"completion_tokens":5,"cost":"0.1"}),
+	ReportedUsage { input_tokens: Some(10), output_tokens: Some(5), ..Default::default() },
+	(10, 5, true)
+)]
+fn openrouter_usage_keeps_unknown_fields_absent(
+	#[case] usage: Value,
+	#[case] reported: ReportedUsage,
+	#[case] legacy: (u64, u64, bool),
+) {
+	let result = parse_openai(completion(usage)).unwrap();
+	assert_eq!(result.reported, reported);
+	assert_eq!(
+		(
+			result.input_tokens,
+			result.output_tokens,
+			result.usage_complete
+		),
+		legacy
+	);
+}
+
+#[rstest::rstest]
+fn missing_usage_object_is_unknown() {
+	let result =
+		parse_openai(json!({"choices":[{"finish_reason":"stop","message":{"content":"done"}}]}))
+			.unwrap();
+	assert_eq!(result.reported, ReportedUsage::default());
+	assert!(!result.usage_complete);
+}
+
+/// Usage shape OpenRouter returns for an explicit `cache_control` request on an
+/// Anthropic route: the cache counts are breakdowns of `prompt_tokens`.
+#[rstest::rstest]
+#[case::cache_write(json!({"prompt_tokens":4120,"completion_tokens":96,"total_tokens":4216,"cost":0.0277,"prompt_tokens_details":{"cached_tokens":0,"cache_write_tokens":4096},"completion_tokens_details":{"reasoning_tokens":0},"cost_details":{"upstream_inference_cost":0.0277}}), 4216)]
+#[case::cache_read(json!({"prompt_tokens":4120,"completion_tokens":88,"total_tokens":4208,"cost":0.00268,"prompt_tokens_details":{"cached_tokens":4096,"cache_write_tokens":0},"completion_tokens_details":{"reasoning_tokens":0},"cost_details":{"upstream_inference_cost":0.00268}}), 4208)]
+fn explicit_cache_settlement_charges_prompt_and_completion_once(
+	#[case] usage: Value,
+	#[case] total: i64,
+) {
+	let response = parse_openai(completion(usage)).unwrap();
+	let accounting = aidash_domain::generation::inference::accounting(8192, &response);
+	assert_eq!(accounting.reported, Some(total));
+	assert_eq!(accounting.refund, 8192 - total);
+	assert!(!accounting.exceeded);
+	assert_eq!(
+		aidash_domain::generation::inference::complete_reported_usage(&response),
+		Some(total)
+	);
+}

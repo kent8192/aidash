@@ -564,6 +564,7 @@ impl<'a> Executor<'a> {
 					output_tokens: result.output_tokens,
 					context_window: window,
 					compactions: context.compactions,
+					incomplete: !result.usage_complete,
 				});
 				run.context = context.clone();
 				let references_read_at_inference = required_run_message_reads

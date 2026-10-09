@@ -334,6 +334,7 @@ fn response(tool: bool) -> ModelResponse {
 		input_tokens: 3,
 		output_tokens: 5,
 		usage_complete: true,
+		..Default::default()
 	}
 }
 fn execution(repository: Arc<Repository>) -> Execution {
