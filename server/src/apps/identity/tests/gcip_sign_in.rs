@@ -248,7 +248,11 @@ async fn provider_allowlist_is_enforced_for_an_existing_uid_before_admin_io(
 	#[from(gcip_runtime)]
 	gcip: GcipFixture,
 ) {
-	let GcipFixture { runtime, status, _admin } = gcip;
+	let GcipFixture {
+		runtime,
+		status,
+		_admin,
+	} = gcip;
 	let (mut f, url, schema) = runtime.parts();
 	let app = common::application(f.clone()).await;
 	sign_in(&app, "acme", "pool-a", "Person").await;
@@ -343,7 +347,9 @@ async fn browser_bound_exchange_rejects_bad_origin_browser_pool_auth_time_expiry
 	#[from(gcip_runtime)]
 	gcip: GcipFixture,
 ) {
-	let GcipFixture { runtime, _admin, .. } = gcip;
+	let GcipFixture {
+		runtime, _admin, ..
+	} = gcip;
 	let (f, url, schema) = runtime.parts();
 	let app = common::application(f.clone()).await;
 	let config: Value = browser()
@@ -459,7 +465,11 @@ async fn tenant_identity_keys_approval_display_and_status_revocation_are_distinc
 	#[from(gcip_runtime)]
 	gcip: GcipFixture,
 ) {
-	let GcipFixture { runtime, status, _admin } = gcip;
+	let GcipFixture {
+		runtime,
+		status,
+		_admin,
+	} = gcip;
 	let (f, url, schema) = runtime.parts();
 	let app = common::application(f.clone()).await;
 	let (cookie, csrf) = sign_in(&app, "acme", "pool-a", "First").await;
@@ -621,7 +631,11 @@ async fn desktop_gcip_handoff_inherits_browser_auth_time_and_revokes_both_sessio
 ) {
 	use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 	use sha2::{Digest, Sha256};
-	let GcipFixture { runtime, status, _admin } = gcip;
+	let GcipFixture {
+		runtime,
+		status,
+		_admin,
+	} = gcip;
 	let (f, url, schema) = runtime.parts();
 	let app = common::application(f.clone()).await;
 	let (cookie, csrf) = sign_in(&app, "acme", "pool-a", "Person").await;
@@ -721,7 +735,9 @@ async fn removing_binding_disables_a_fresh_identity_at_its_next_boundary(
 	#[from(gcip_runtime)]
 	gcip: GcipFixture,
 ) {
-	let GcipFixture { runtime, _admin, .. } = gcip;
+	let GcipFixture {
+		runtime, _admin, ..
+	} = gcip;
 	let (mut f, url, schema) = runtime.parts();
 	let app = common::application(f.clone()).await;
 	let (cookie, _) = sign_in(&app, "acme", "pool-a", "Person").await;
@@ -770,7 +786,11 @@ async fn removed_binding_login_disables_an_inactive_identity_and_its_existing_au
 	gcip: GcipFixture,
 	#[case] boundary: &str,
 ) {
-	let GcipFixture { runtime, status, _admin } = gcip;
+	let GcipFixture {
+		runtime,
+		status,
+		_admin,
+	} = gcip;
 	let (mut f, url, schema) = runtime.parts();
 	let policy = serde_json::from_value(
 		json!({"tenant":"acme","subjects":{"alice":{"kind":"user"}},"policies":[]}),
@@ -978,7 +998,9 @@ async fn approved_mapping_cannot_cross_the_bound_tenant_at_a_request_boundary(
 	#[from(gcip_runtime)]
 	gcip: GcipFixture,
 ) {
-	let GcipFixture { runtime, _admin, .. } = gcip;
+	let GcipFixture {
+		runtime, _admin, ..
+	} = gcip;
 	let (f, url, schema) = runtime.parts();
 	for tenant in ["acme", "other"] {
 		let policy = serde_json::from_value(
@@ -1117,7 +1139,9 @@ async fn replacement_registration_keeps_freshly_authenticated_display_attributes
 	#[from(gcip_runtime)]
 	gcip: GcipFixture,
 ) {
-	let GcipFixture { runtime, _admin, .. } = gcip;
+	let GcipFixture {
+		runtime, _admin, ..
+	} = gcip;
 	let (f, url, schema) = runtime.parts();
 	let app = common::application(f.clone()).await;
 	let (cookie, csrf) = sign_in(&app, "acme", "pool-a", "Original").await;
@@ -1218,7 +1242,9 @@ async fn expired_registration_clears_unmapped_display_attributes(
 	#[from(gcip_runtime)]
 	gcip: GcipFixture,
 ) {
-	let GcipFixture { runtime, _admin, .. } = gcip;
+	let GcipFixture {
+		runtime, _admin, ..
+	} = gcip;
 	let (f, url, schema) = runtime.parts();
 	let app = common::application(f.clone()).await;
 	let (cookie, csrf) = sign_in(&app, "acme", "pool-a", "Person").await;

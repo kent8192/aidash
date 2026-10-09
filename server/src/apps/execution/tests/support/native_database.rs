@@ -13,9 +13,9 @@ pub(super) use postgres::postgres_container;
 pub type DatabaseFuture = Shared<BoxFuture<'static, DatabaseFixture>>;
 use reinhardt::test::fixtures::temp_dir;
 use reinhardt::test::testcontainers::{ContainerAsync, GenericImage};
+use sqlx::PgPool;
 use std::path::PathBuf;
 use std::sync::Arc;
-use sqlx::PgPool;
 use std::time::Duration;
 use tempfile::TempDir;
 
