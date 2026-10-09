@@ -22,31 +22,15 @@ resource "google_service_account_iam_member" "deploy" {
   role               = "roles/iam.serviceAccountUser"
   member             = "serviceAccount:${var.deploy_service_account}"
 }
-resource "google_kms_key_ring" "capability" {
-  count    = local.enabled ? 1 : 0
-  project  = var.project_id
-  location = var.region
-  name     = "aidash-${var.environment_id}-capability"
-}
-resource "google_kms_crypto_key" "capability" {
-  count    = local.enabled ? 1 : 0
-  key_ring = google_kms_key_ring.capability[0].id
-  name     = "capability"
-  purpose  = "ASYMMETRIC_SIGN"
-  version_template {
-    algorithm        = "EC_SIGN_ED25519"
-    protection_level = "SOFTWARE"
-  }
-}
 resource "google_kms_crypto_key_iam_member" "signer" {
   count         = local.enabled && var.bind_runtime_signer ? 1 : 0
-  crypto_key_id = google_kms_crypto_key.capability[0].id
+  crypto_key_id = var.signing_key_id
   role          = "roles/cloudkms.signer"
   member        = "serviceAccount:${var.runtime_service_account}"
 }
 data "google_kms_crypto_key_version" "verification" {
   for_each   = local.enabled ? var.verification_versions : toset([])
-  crypto_key = google_kms_crypto_key.capability[0].id
+  crypto_key = var.signing_key_id
   version    = each.key
 }
 resource "google_cloud_run_v2_service" "broker" {
@@ -77,7 +61,7 @@ resource "google_cloud_run_v2_service" "broker" {
           AIDASH_PROVIDER_CREDENTIAL_PREFIX = var.secret_prefix
           AIDASH_CAPABILITY_ISSUER          = var.issuer
           AIDASH_CAPABILITY_AUDIENCE        = var.environment_id
-          AIDASH_CAPABILITY_PUBLIC_KEYS     = jsonencode({ for v, k in data.google_kms_crypto_key_version.verification : "${google_kms_crypto_key.capability[0].id}/cryptoKeyVersions/${v}" => k.public_key[0].pem })
+          AIDASH_CAPABILITY_PUBLIC_KEYS     = jsonencode({ for v, k in data.google_kms_crypto_key_version.verification : "${var.signing_key_id}/cryptoKeyVersions/${v}" => k.public_key[0].pem })
           AIDASH_BROKER_REQUESTS_PER_SECOND = tostring(var.requests_per_second)
           AIDASH_BROKER_BURST               = tostring(var.burst)
           AIDASH_BROKER_TIMEOUT_SECS        = tostring(var.timeout_secs)
@@ -96,8 +80,8 @@ output "worker_configuration" {
     endpoint = "${google_cloud_run_v2_service.broker[0].uri}/api/v1"
     issuer   = var.issuer
     audience = var.environment_id
-    kid      = "${google_kms_crypto_key.capability[0].id}/cryptoKeyVersions/${var.signing_version}"
+    kid      = "${var.signing_key_id}/cryptoKeyVersions/${var.signing_version}"
   } : null
 }
 output "service_account" { value = local.enabled ? var.broker_service_account_email : null }
-output "signing_key" { value = local.enabled ? google_kms_crypto_key.capability[0].id : null }
+output "signing_key" { value = local.enabled ? var.signing_key_id : null }

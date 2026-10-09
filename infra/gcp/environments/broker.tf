@@ -5,6 +5,7 @@ variable "credential_brokers" {
     byok_project_id              = string
     secret_prefix                = string
     broker_service_account_email = string
+    signing_key_id               = string
     image                        = string
   }))
   default = {}
@@ -35,6 +36,7 @@ module "credential_broker" {
   image                        = each.value.image
   deploy_service_account       = var.deploy_service_account
   broker_service_account_email = each.value.broker_service_account_email
+  signing_key_id               = each.value.signing_key_id
 }
 // Wire IAM after both modules exist: broker -> VM settings must not create a
 // reverse module dependency through the worker's service-account output.

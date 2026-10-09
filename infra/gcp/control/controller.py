@@ -560,8 +560,7 @@ def observe_interruptions(config, store, terraform, managed):
             published=False,
         )
         changed = True
-    if changed:
-        terraform.apply(managed)
+    return changed
 
 
 def reconcile(config, store):
@@ -571,10 +570,36 @@ def reconcile(config, store):
         state, _ = store.read("lifecycle/state.json")
         if not state:
             return
-        observe_interruptions(config, store, terraform, managed)
+        interrupted = observe_interruptions(config, store, terraform, managed)
         # Observe missing/interrupted VMs before any plan, including broker-only
         # changes. The normal apply fence still forbids unauthorized VM creation.
-        if terraform.broker_configuration_changed(store, managed):
+        broker_changed = terraform.broker_configuration_changed(store, managed)
+        presealed = set()
+        if broker_changed:
+            previous_brokers = terraform.broker_configuration_in_state(store)
+            desired_brokers = terraform.broker_configuration(managed)
+            outputs = terraform.outputs() if managed else {}
+            blocked = False
+            # Every apply consumes broker intent, including interruption/lifecycle
+            # plans. Drain before any plan can remove or replace a live broker.
+            for identity, previous in managed.items():
+                prior = (previous_brokers or {}).get(identity, {})
+                if not previous["running"] or (
+                    previous_brokers is not None
+                    and (not prior.get("enabled") or prior == desired_brokers.get(identity))
+                ):
+                    continue
+                state, _ = store.read("lifecycle/state.json")
+                entry = state["environments"][identity]
+                current_entry(store, identity, entry["generation"])
+                if host(config, outputs[identity], "seal")["sealed"]:
+                    presealed.add(identity)
+                else:
+                    update_entry(store, identity, entry["generation"], status="waiting_for_active_work")
+                    blocked = True
+            if blocked:
+                return
+        if interrupted or broker_changed:
             terraform.apply(managed)
         state, _ = store.read("lifecycle/state.json")
         failures = []
@@ -583,7 +608,7 @@ def reconcile(config, store):
             key=lambda pair: (pair[1]["desired"] == "running", pair[1]["sequence"]),
         ):
             deployment_started = False
-            sealed = False
+            sealed = identity in presealed
             try:
                 generation = snapshot["generation"]
                 entry = current_entry(store, identity, generation)
@@ -690,7 +715,7 @@ def reconcile(config, store):
                             generation,
                             keepalive_applied=entry["keepalive_at"],
                         )
-                    if needs_deploy:
+                    if needs_deploy and not sealed:
                         if entry.get("force"):
                             try:
                                 host(config, output, "gate")
@@ -707,7 +732,7 @@ def reconcile(config, store):
                             )
                             continue
                         sealed = True
-                    else:
+                    elif not needs_deploy:
                         observation = host(config, output, "observe")
                         if idle_due(
                             observation, time.time(), entry.get("keepalive_at", 0)
@@ -743,7 +768,7 @@ def reconcile(config, store):
                                 store, identity, generation, status="awaiting_build"
                             )
                             continue
-                        if entry.get("status") != "ready":
+                        if sealed or entry.get("status") != "ready":
                             current_entry(store, identity, generation)
                             host(config, output, "unseal")
                             host(config, output, "health")

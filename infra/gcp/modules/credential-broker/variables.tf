@@ -64,6 +64,15 @@ variable "region" {
   type    = string
   default = "us-central1"
 }
+variable "signing_key_id" {
+  description = "Stable broker_signing_keys[environment_id] from human-run bootstrap. This module never owns or destroys signing keys."
+  type        = string
+  default     = ""
+  validation {
+    condition     = !var.enabled || var.signing_key_id == "projects/${var.project_id}/locations/${var.region}/keyRings/aidash-${var.environment_id}-capability/cryptoKeys/capability"
+    error_message = "Use this environment's bootstrap signing key in the application project and broker region."
+  }
+}
 variable "issuer" {
   type    = string
   default = "aidash-worker"
@@ -133,7 +142,7 @@ variable "burst" {
   type    = number
   default = 20
   validation {
-    condition     = var.burst >= 1 && floor(var.burst) == var.burst
-    error_message = "The Provider Credential burst must be a positive integer."
+    condition     = var.burst >= 3 && floor(var.burst) == var.burst
+    error_message = "The Provider Credential burst must be an integer of at least three for media discovery plus chat."
   }
 }

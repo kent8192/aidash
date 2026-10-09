@@ -12,26 +12,27 @@ MODULE = Path(__file__).resolve().parents[1] / "modules" / "credential-broker"
 class CredentialBrokerTerraformTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        subprocess.run(["terraform", f"-chdir={MODULE}", "init", "-backend=false", "-input=false", "-no-color"], check=True, capture_output=True, timeout=120)
-        result = subprocess.run(["terraform", f"-chdir={MODULE}", "test", "-json", "-verbose", "-no-color"], capture_output=True, text=True, timeout=120)
-        if result.returncode:
-            raise AssertionError(result.stdout + result.stderr)
-        cls.states = {}
-        for line in result.stdout.splitlines():
-            event = json.loads(line)
-            if event.get("type") == "test_state":
-                cls.states[event["@testrun"]] = event["test_state"]["root_module"].get("resources", [])
-        if not cls.states:
-            raise AssertionError("Terraform returned no mock test state")
-        bootstrap = MODULE.parents[1] / "bootstrap"
-        result = subprocess.run(["terraform", f"-chdir={bootstrap}", "test", "-json", "-verbose", "-no-color"], capture_output=True, text=True, timeout=120)
-        if result.returncode:
-            raise AssertionError(result.stdout + result.stderr)
-        cls.bootstrap_states = {}
-        for line in result.stdout.splitlines():
-            event = json.loads(line)
-            if event.get("type") == "test_state":
-                cls.bootstrap_states[event["@testrun"]] = event["test_state"]["root_module"].get("resources", [])
+        def mocked(root, test_filter=None):
+            subprocess.run(["terraform", f"-chdir={root}", "init", "-backend=false", "-input=false", "-no-color"], check=True, capture_output=True, timeout=120)
+            command = ["terraform", f"-chdir={root}", "test", "-json", "-verbose", "-no-color"]
+            if test_filter:
+                command.append("-filter=" + test_filter)
+            result = subprocess.run(command, capture_output=True, text=True, timeout=120)
+            if result.returncode:
+                raise AssertionError(result.stdout + result.stderr)
+            states, plans = {}, {}
+            for line in result.stdout.splitlines():
+                event = json.loads(line)
+                if event.get("type") == "test_state":
+                    states[event["@testrun"]] = event["test_state"]["root_module"].get("resources", [])
+                elif event.get("type") == "test_plan":
+                    plans[event["@testrun"]] = event["test_plan"].get("resource_changes", [])
+            if not states:
+                raise AssertionError("Terraform returned no mock test state")
+            return states, plans
+        cls.states, _ = mocked(MODULE)
+        cls.bootstrap_states, _ = mocked(MODULE.parents[1] / "bootstrap")
+        cls.lifecycle_states, cls.lifecycle_plans = mocked(MODULE.parents[1] / "environments", "tests/key_lifecycle.tftest.hcl")
 
 
     def resources(self, run, kind):
@@ -69,14 +70,29 @@ class CredentialBrokerTerraformTests(unittest.TestCase):
     def test_runtime_has_only_key_scoped_signing_and_no_broker_role(self):
         for run in ("production", "staging"):
             signer, = self.resources(run, "google_kms_crypto_key_iam_member")
-            key, = self.resources(run, "google_kms_crypto_key")
-            self.assertEqual(signer["crypto_key_id"], key["id"])
+            environment = "production" if run == "production" else "test"
+            keys = {r["values"]["id"]: r["values"] for r in self.bootstrap_states["broker_environments"] if r["type"] == "google_kms_crypto_key"}
+            key = keys[signer["crypto_key_id"]]
+            self.assertEqual(signer["crypto_key_id"], f"projects/aidash-fixture/locations/us-central1/keyRings/aidash-{environment}-capability/cryptoKeys/capability")
+            self.assertFalse(self.resources(run, "google_kms_crypto_key"))
+            self.assertFalse(self.resources(run, "google_kms_key_ring"))
             self.assertEqual(signer["role"], "roles/cloudkms.signer")
             self.assertEqual(signer["member"], "serviceAccount:runtime@aidash-fixture.iam.gserviceaccount.com")
             self.assertEqual(key["purpose"], "ASYMMETRIC_SIGN")
             self.assertEqual(key["version_template"][0]["algorithm"], "EC_SIGN_ED25519")
             self.assertFalse(self.resources(run, "google_cloud_run_v2_service_iam_member"))
             self.assertTrue(all("runtime@" not in g["member"] for g in self.resources(run, "google_project_iam_member")))
+
+    def test_disable_reenable_and_retirement_plans_never_destroy_key_material(self):
+        material = {"google_kms_key_ring", "google_kms_crypto_key", "google_kms_crypto_key_version"}
+        for run in ("broker_disabled_plan", "broker_reenabled_plan", "environment_removed_plan"):
+            changes = self.lifecycle_plans[run]
+            self.assertFalse([r for r in changes if r["type"] in material])
+            service, = [r for r in changes if r["type"] == "google_cloud_run_v2_service"]
+            self.assertEqual(service["change"]["actions"], ["create"] if run == "broker_reenabled_plan" else ["delete"])
+        permanent = [r for r in self.lifecycle_plans["bootstrap_after_retirement_plan"] if r["type"] in material]
+        self.assertEqual({r["type"] for r in permanent}, {"google_kms_key_ring", "google_kms_crypto_key"})
+        self.assertTrue(all(r["change"]["actions"] == ["no-op"] for r in permanent))
 
     def test_internal_ingress_uses_capability_auth_and_injected_public_keys(self):
         for run in ("production", "staging"):

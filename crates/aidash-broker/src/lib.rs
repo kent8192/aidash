@@ -92,7 +92,8 @@ impl Broker {
 			|| config.issuer.is_empty()
 			|| config.audience.is_empty()
 			|| !config.requests_per_second.is_finite()
-			|| config.burst == 0
+			// One media inference makes two discovery requests and one chat call.
+			|| config.burst < 3
 			|| config.inference_deadline.is_zero()
 			|| config.inference_deadline > Duration::from_secs(3600)
 			|| config.byok_project_number.is_empty()
@@ -257,7 +258,10 @@ fn body_policy(body: &[u8], claims: &Claims, op: Operation) -> Result<(), Failur
 		};
 	}
 	let value: Value = serde_json::from_slice(body).map_err(|_| Failure::ClaimViolation)?;
-	if value.get("model").and_then(Value::as_str) != Some(&claims.model) {
+	// A capability authorizes one model; OpenRouter's models adds fallback models.
+	if value.get("model").and_then(Value::as_str) != Some(&claims.model)
+		|| value.get("models").is_some()
+	{
 		return Err(Failure::Model);
 	}
 	if op == Operation::Chat

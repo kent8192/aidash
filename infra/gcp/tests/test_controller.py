@@ -72,6 +72,9 @@ class CloudFixture:
     def broker_configuration_changed(self, store, environments):
         return self.brokers != self.broker_configuration(environments)
 
+    def broker_configuration_in_state(self, store):
+        return deepcopy(self.brokers)
+
     def broker_configuration(self, environments):
         return {
             key: dict(value, enabled=value.get("enabled") or False)
@@ -211,6 +214,7 @@ class ReconcileTests(unittest.TestCase):
             None,
         ]:
             with self.subTest(desired=desired):
+                previously_enabled = self.cloud.brokers.get("test", {}).get("enabled", False)
                 self.config["credential_brokers"] = {"retired": broker}
                 expected = {} if desired is None else {"test": desired}
                 self.config["credential_brokers"].update(expected)
@@ -222,13 +226,73 @@ class ReconcileTests(unittest.TestCase):
                 self.assertTrue(self.cloud.managed["test"]["running"])
                 self.assertFalse(
                     any(
-                        call[0] in {"bootstrap", "start", "stop", "seal"}
+                        call[0] in {"bootstrap", "start", "stop"}
                         for call in self.calls
                     )
                 )
+                self.assertEqual(("seal", "test") in self.calls, previously_enabled)
+                self.assertEqual(("unseal", "test") in self.calls, previously_enabled)
                 self.cloud.plans.clear()
                 self.reconcile()
                 self.assertEqual(self.cloud.plans, [])
+
+    def test_live_broker_disable_removal_and_rotation_wait_before_any_apply(self):
+        broker = {"enabled": True, "image": "initial"}
+        self.config["credential_brokers"] = {"test": broker}
+        self.request()
+        self.reconcile()
+        for desired in [{"test": dict(broker, enabled=False)}, {}, {"test": dict(broker, image="rotated")}]:
+            with self.subTest(desired=desired):
+                self.config["credential_brokers"] = {"test": broker}
+                self.reconcile()
+                self.config["credential_brokers"] = desired
+                self.cloud.plans.clear()
+                self.calls.clear()
+                self.busy = True
+                self.reconcile()
+                self.assertEqual(self.cloud.plans, [])
+                self.assertEqual(self.cloud.brokers, {"test": broker})
+                self.assertEqual(self.store.state["environments"]["test"]["status"], "waiting_for_active_work")
+                self.assertEqual(self.calls, [("seal", "test")])
+                self.busy = False
+                self.calls.clear()
+                apply = self.cloud.apply
+                def recorded_apply(managed, apply=apply, **kwargs):
+                    self.calls.append(("broker_apply", "test"))
+                    apply(managed, **kwargs)
+                with patch.object(self.cloud, "apply", side_effect=recorded_apply):
+                    self.reconcile()
+                self.assertLess(self.calls.index(("seal", "test")), self.calls.index(("broker_apply", "test")))
+                self.assertIn(("unseal", "test"), self.calls)
+                self.assertFalse(any(call[0] in {"start", "stop", "bootstrap"} for call in self.calls))
+                self.assertEqual(self.cloud.brokers, desired)
+                self.cloud.plans.clear()
+                self.calls.clear()
+                self.reconcile()
+                self.assertEqual(self.cloud.plans, [])
+
+    def test_interrupted_vm_cannot_apply_a_busy_environments_broker_removal(self):
+        broker = {"enabled": True, "image": "initial"}
+        self.config["credential_brokers"] = {"test": broker}
+        self.request()
+        self.reconcile()
+        self.request("pr-1")
+        self.reconcile()
+        self.cloud.status["pr-1"] = "MISSING"
+        self.config["credential_brokers"] = {}
+        self.cloud.plans.clear()
+        self.calls.clear()
+        self.busy = True
+        self.reconcile()
+        self.assertEqual(self.cloud.plans, [])
+        self.assertEqual(self.cloud.brokers, {"test": broker})
+        self.busy = False
+        self.calls.clear()
+        self.reconcile()
+        self.assertEqual(self.cloud.brokers, {})
+        self.assertTrue(self.cloud.plans)
+        self.assertTrue(all(not plan[0]["pr-1"]["vm_present"] for plan in self.cloud.plans))
+        self.assertFalse(any(call[0] in {"start", "stop", "bootstrap"} for call in self.calls))
 
     def test_byok_retirement_cleans_stopped_and_missing_vms_without_waking_them(self):
         for status in ["TERMINATED", "MISSING"]:

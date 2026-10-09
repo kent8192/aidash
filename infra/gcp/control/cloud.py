@@ -271,11 +271,14 @@ class Terraform:
             if key in environments
         }
 
-    def broker_configuration_changed(self, store, environments):
+    def broker_configuration_in_state(self, store):
         state, _ = store.read("terraform/environments/default.tfstate")
         if state is None:
-            return False
-        previous = state.get("outputs", {}).get("managed_credential_brokers", {}).get("value")
+            return {}
+        return state.get("outputs", {}).get("managed_credential_brokers", {}).get("value")
+
+    def broker_configuration_changed(self, store, environments):
+        previous = self.broker_configuration_in_state(store)
         # Legacy state has no broker-intent output. Apply once to reconcile any
         # old resources and establish the durable comparison for future ticks.
         return previous != self.broker_configuration(environments)
@@ -311,6 +314,13 @@ class Terraform:
                 run("terraform", f"-chdir={self.root}", "show", "-json", plan)
             )
             for change in value.get("resource_changes", []):
+                if (
+                    change["type"] in {"google_kms_key_ring", "google_kms_crypto_key", "google_kms_crypto_key_version"}
+                    and "delete" in change["change"]["actions"]
+                ):
+                    raise RuntimeError(
+                        "plan would destroy signing key material; transfer draft key state to bootstrap first"
+                    )
                 if (
                     change["type"] == "google_compute_instance"
                     and "create" in change["change"]["actions"]

@@ -47,7 +47,7 @@ variable "byok_project_id" {
   }
 }
 variable "byok_broker_environments" {
-  description = "Explicit BYOK-enabled environment IDs. Human bootstrap creates their broker identities and read grants; never PR previews."
+  description = "Retained BYOK broker environment IDs. Human bootstrap owns identities, signing keys and read grants independently of automation enablement; never PR previews."
   type        = set(string)
   default     = []
   validation {
@@ -58,4 +58,9 @@ variable "byok_broker_environments" {
     condition     = alltrue([for left in var.byok_broker_environments : alltrue([for right in var.byok_broker_environments : left == right || !startswith("aidash-${right}-cred-", "aidash-${left}-cred-")])])
     error_message = "Broker environment credential prefixes must not overlap."
   }
+}
+variable "broker_signing_region" {
+  description = "Permanent KMS key-ring location; match the broker module region."
+  type        = string
+  default     = "us-central1"
 }

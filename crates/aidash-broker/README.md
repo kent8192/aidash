@@ -62,7 +62,8 @@ their existing paths unchanged.
 | discovery  | `GET /api/v1/endpoints/zdr`                    | 8 MiB                  |
 | embeddings | `POST /api/v1/embeddings`                      | 1 MiB                  |
 
-Chat bodies must name the exact model, include positive `max_tokens` no greater
+Chat bodies must name the exact model, reject the `models` fallback field,
+include positive `max_tokens` no greater
 than `max_output_tokens`, and set `provider.zdr: true`. OpenRouter embeddings
 must name the exact model and set ZDR. Model discovery paths must match the
 claim; ZDR discovery is an operation-wide catalog. Chat requests are limited to
@@ -70,6 +71,9 @@ claim; ZDR discovery is an operation-wide catalog. Chat requests are limited to
 and JSON framing. Other requests remain limited to 1 MiB. Query strings,
 absolute URIs, percent-encoded paths, empty segments and
 path traversal are rejected. Violations are rejected, never rewritten.
+OpenRouter's [model fallback list](https://openrouter.ai/docs/guides/routing/model-fallbacks)
+would add authority outside the single signed model, so even empty, null or
+same-model fallback lists are rejected before Key Material lookup.
 
 Capability failures use `401` for signature, key, expiry or audience failures,
 and `403` for tenant, credential, operation, model or claim violations:
@@ -91,7 +95,9 @@ Key Material never enter logging. v1 does not write audits back to Aidash.
 
 The in-memory cache uses `(secret, version)` and a 60-second TTL, with
 `SecretString` holding Key Material. The per-instance Provider Credential token
-bucket defaults to 5 requests/second and a burst of 20. Cache and rate-limit
+bucket defaults to 5 requests/second and a burst of 20. The minimum burst is 3:
+one media inference makes two concurrent discovery requests and one chat call.
+Runtime and Terraform reject smaller bursts. Cache and rate-limit
 bookkeeping are bounded to 10,000 entries. Cross-instance rates are approximate.
 
 ## Deployment and verification
@@ -106,10 +112,14 @@ python3 -m unittest discover -s infra/gcp/tests -p test_broker_terraform.py -v
 bash infra/gcp/check.sh
 ```
 
-Human-run bootstrap receives `byok_broker_environments`, a set of enabled
+Human-run bootstrap receives `byok_broker_environments`, a set of retained
 environment IDs. It creates `aidash-<environment_id>-broker` service accounts
 in the shared application project and outputs `broker_service_accounts`, a map
-from environment ID to email. Bootstrap alone grants these accounts the BYOK
+from environment ID to email. It also owns the permanent per-environment KMS
+key ring and Ed25519 signing key and exports their IDs in `broker_signing_keys`.
+Both resources have Terraform destruction protection. Keep this bootstrap set
+when disabling the broker or retiring its VM: automation does not own key lifetime.
+Bootstrap alone grants these accounts the BYOK
 custom role `aidashByokBrokerRead` (`secretmanager.versions.access`,
 `secretmanager.versions.get`, `secretmanager.secrets.get`), conditioned on
 `projects/<project-number>/secrets/aidash-<environment_id>-cred-`. Deploy automation
@@ -118,10 +128,12 @@ numbers, as specified by the
 [official resource-name reference](https://cloud.google.com/iam/docs/conditions-resource-attributes).
 
 `infra/gcp/modules/credential-broker` consumes #136's `byok_project_id`,
-`secret_prefix` and the bootstrap-created `broker_service_account_email`.
-It creates neither a service account nor BYOK-project IAM. In the environment
+`secret_prefix`, bootstrap-created `broker_service_account_email` and stable
+`signing_key_id`. It creates no service account, signing key or BYOK-project IAM.
+In the environment
 controller's `credential_brokers[environment_id]` configuration, set
-`broker_service_account_email` to the corresponding bootstrap map entry before
+`broker_service_account_email` and `signing_key_id` to the corresponding
+bootstrap map entries before
 enabling the broker. Cloud Run uses that account; deploy automation gets
 `roles/iam.serviceAccountUser` on it in the application project. The VM runtime
 holds only `roles/cloudkms.signer` on the signing key and no broker role. Public
@@ -129,6 +141,36 @@ keys come from Terraform's KMS version data sources; the broker never calls KMS
 at runtime. Module tests prove it cannot create a second BYOK read grant;
 bootstrap tests own the proof that its binding is the only `versions.access`
 grant in the BYOK project.
+
+Mock lifecycle plans prove disable, re-enable and environment removal change
+only the service/signing grant; bootstrap key and key-ring plans remain no-ops.
+Automation also refuses any plan that would delete a KMS key, key ring or version.
+Broker changes that remove or replace a live service drain all affected workers
+before any Terraform apply, including applies triggered by another interrupted VM.
+
+### Operators who applied a pre-merge draft
+
+This change has never been applied to a Cloud environment. If an operator applied
+an earlier draft that kept keys in the environments state, pause automation and
+back up both remote Terraform states before switching ownership. Keep the same
+key IDs and `broker_signing_region`; Cloud KMS [key names cannot be reused after
+deletion](https://docs.cloud.google.com/kms/docs/resource-hierarchy).
+For each existing environment (shown as `test`), import the existing resources
+into the initialized bootstrap state, then remove only their old state addresses:
+
+```sh
+terraform -chdir=infra/gcp/bootstrap import 'google_kms_key_ring.capability["test"]' 'projects/PROJECT/locations/us-central1/keyRings/aidash-test-capability'
+terraform -chdir=infra/gcp/bootstrap import 'google_kms_crypto_key.capability["test"]' 'projects/PROJECT/locations/us-central1/keyRings/aidash-test-capability/cryptoKeys/capability'
+terraform -chdir=infra/gcp/environments state rm 'module.credential_broker["test"].google_kms_crypto_key.capability[0]'
+terraform -chdir=infra/gcp/environments state rm 'module.credential_broker["test"].google_kms_key_ring.capability[0]'
+```
+
+Use the imported `broker_signing_keys` output in `credential_brokers`. Review both
+plans and require no key/key-version destruction or replacement before any apply
+or automation resume. These are operator-only state/import steps; no migration
+automation or Cloud mutation runs as part of this implementation.
+
+### Runtime composition
 
 The deploy pipeline is an accepted trust root (ADR 0005). Its shared-project
 `roles/iam.serviceAccountAdmin` and ability to redeploy broker code mean the

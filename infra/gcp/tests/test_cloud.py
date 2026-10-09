@@ -253,6 +253,9 @@ class PlanTests(unittest.TestCase):
             with patch("cloud.run", return_value=json.dumps(plan).encode()) as command:
                 try:
                     terraform.apply({}, **authorization)
+                except RuntimeError:
+                    self.assertFalse(any("apply" in call.args for call in command.call_args_list))
+                    raise
                 finally:
                     self.assertFalse(
                         (terraform.root / "controller.auto.tfvars.json").exists()
@@ -277,6 +280,13 @@ class PlanTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             self.apply("google_compute_disk", ["delete"], retiring={"pr-1"})
         self.apply("google_compute_disk", ["delete"], retiring={"test"})
+
+    def test_environment_automation_never_destroys_signing_keys_or_versions(self):
+        for kind in ["google_kms_key_ring", "google_kms_crypto_key", "google_kms_crypto_key_version"]:
+            for actions in [["delete"], ["delete", "create"]]:
+                with self.subTest(kind=kind, actions=actions):
+                    with self.assertRaisesRegex(RuntimeError, "transfer draft key state to bootstrap"):
+                        self.apply(kind, actions, retiring={"test"})
 
 
 if __name__ == "__main__":

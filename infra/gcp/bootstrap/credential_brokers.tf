@@ -7,6 +7,27 @@ resource "google_service_account" "broker" {
   display_name = "Aidash ${each.key} Credential Broker"
   depends_on   = [google_project_service.required]
 }
+// Immutable signing-key names outlive automation's broker enablement and VM
+// retirement. Bootstrap owns their state; operators must retain this namespace.
+resource "google_kms_key_ring" "capability" {
+  for_each = var.byok_project_id != "" ? var.byok_broker_environments : toset([])
+  project  = var.project_id
+  location = var.broker_signing_region
+  name     = "aidash-${each.key}-capability"
+  lifecycle { prevent_destroy = true }
+  depends_on = [google_project_service.required]
+}
+resource "google_kms_crypto_key" "capability" {
+  for_each = google_kms_key_ring.capability
+  key_ring = each.value.id
+  name     = "capability"
+  purpose  = "ASYMMETRIC_SIGN"
+  version_template {
+    algorithm        = "EC_SIGN_ED25519"
+    protection_level = "SOFTWARE"
+  }
+  lifecycle { prevent_destroy = true }
+}
 resource "google_project_iam_member" "byok_broker_read" {
   for_each = var.byok_project_id != "" ? var.byok_broker_environments : toset([])
   project  = var.byok_project_id
@@ -19,4 +40,7 @@ resource "google_project_iam_member" "byok_broker_read" {
 }
 output "broker_service_accounts" {
   value = { for id, account in google_service_account.broker : id => account.email }
+}
+output "broker_signing_keys" {
+  value = { for id, key in google_kms_crypto_key.capability : id => key.id }
 }

@@ -14,7 +14,8 @@ variables {
   release_bucket_name = "aidash-fixture-releases"
 }
 run "broker_environments" {
-  command = apply
+  command   = apply
+  state_key = "broker-environments"
   variables { byok_broker_environments = ["production", "test"] }
   override_resource {
     target = google_service_account.broker["production"]
@@ -24,6 +25,22 @@ run "broker_environments" {
     target = google_service_account.broker["test"]
     values = { email = "aidash-test-broker@aidash-fixture.iam.gserviceaccount.com" }
   }
+  override_resource {
+    target = google_kms_key_ring.capability["production"]
+    values = { id = "projects/aidash-fixture/locations/us-central1/keyRings/aidash-production-capability" }
+  }
+  override_resource {
+    target = google_kms_crypto_key.capability["production"]
+    values = { id = "projects/aidash-fixture/locations/us-central1/keyRings/aidash-production-capability/cryptoKeys/capability" }
+  }
+  override_resource {
+    target = google_kms_key_ring.capability["test"]
+    values = { id = "projects/aidash-fixture/locations/us-central1/keyRings/aidash-test-capability" }
+  }
+  override_resource {
+    target = google_kms_crypto_key.capability["test"]
+    values = { id = "projects/aidash-fixture/locations/us-central1/keyRings/aidash-test-capability/cryptoKeys/capability" }
+  }
   assert {
     condition     = alltrue([for id, account in google_service_account.broker : account.project == var.project_id && account.account_id == "aidash-${id}-broker" && google_project_iam_member.byok_broker_read[id].project == var.byok_project_id && google_project_iam_member.byok_broker_read[id].role == google_project_iam_custom_role.byok_broker_read[0].name && google_project_iam_member.byok_broker_read[id].member == "serviceAccount:${account.email}" && google_project_iam_member.byok_broker_read[id].condition[0].expression == "resource.name.startsWith(\"projects/123456789012/secrets/aidash-${id}-cred-\")"])
     error_message = "Only dedicated broker SAs may receive prefix-conditioned BYOK read access."
@@ -32,11 +49,15 @@ run "broker_environments" {
     condition     = output.broker_service_accounts == { production = "aidash-production-broker@aidash-fixture.iam.gserviceaccount.com", test = "aidash-test-broker@aidash-fixture.iam.gserviceaccount.com" }
     error_message = "Export the per-environment broker identities for deployment."
   }
+  assert {
+    condition     = alltrue([for id, key in google_kms_crypto_key.capability : key.purpose == "ASYMMETRIC_SIGN" && key.name == "capability" && key.key_ring == google_kms_key_ring.capability[id].id && key.version_template[0].algorithm == "EC_SIGN_ED25519" && google_kms_key_ring.capability[id].name == "aidash-${id}-capability" && google_kms_key_ring.capability[id].project == var.project_id]) && keys(output.broker_signing_keys) == ["production", "test"]
+    error_message = "Bootstrap alone owns and exports the permanent per-environment Ed25519 signing keys."
+  }
 }
 run "brokers_opt_in_only" {
   command = apply
   assert {
-    condition     = length(google_service_account.broker) == 0 && length(google_project_iam_member.byok_broker_read) == 0
+    condition     = length(google_service_account.broker) == 0 && length(google_project_iam_member.byok_broker_read) == 0 && length(google_kms_crypto_key.capability) == 0
     error_message = "No broker identity or read grant without explicit opt-in."
   }
 }
@@ -47,7 +68,7 @@ run "without_provider_store" {
     byok_broker_environments = ["test"]
   }
   assert {
-    condition     = length(google_service_account.broker) == 0 && length(google_project_iam_member.byok_broker_read) == 0 && output.broker_service_accounts == {}
+    condition     = length(google_service_account.broker) == 0 && length(google_project_iam_member.byok_broker_read) == 0 && output.broker_service_accounts == {} && output.broker_signing_keys == {}
     error_message = "Disabled BYOK must create no broker identities or payload-access grants even with an environment opt-in."
   }
 }

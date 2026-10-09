@@ -302,6 +302,10 @@ async fn deterministic_capability_and_body_rejections_never_call_provider() {
 	}
 	for (field, value, reason) in [
 		("model", json!("other/model"), "model"),
+		("models", json!(["author/model", "other/model"]), "model"),
+		("models", json!(["author/model"]), "model"),
+		("models", json!([]), "model"),
+		("models", Value::Null, "model"),
 		("max_tokens", json!(11), "claim_violation"),
 		("max_tokens", Value::Null, "claim_violation"),
 		("provider", json!({"zdr":false}), "claim_violation"),
@@ -551,7 +555,7 @@ async fn cache_expiry_and_token_bucket_refill_are_bounded() {
 	keys.insert(signer.kid().into(), signer.public_key());
 	let source = Arc::new(Source::default());
 	let mut cfg = config();
-	cfg.burst = 1;
+	cfg.burst = 3;
 	cfg.requests_per_second = 1.0;
 	let broker = Broker::new(cfg, keys, source.clone(), Arc::new(Logs::default())).unwrap();
 	let c = Claims {
@@ -578,10 +582,29 @@ async fn cache_expiry_and_token_bucket_refill_are_bounded() {
 	assert!(broker.key(&c).await.is_ok());
 	assert_eq!(source.reads.load(Ordering::SeqCst), 1);
 	assert!(broker.rate_limit(c.credential));
+	assert!(broker.rate_limit(c.credential));
+	assert!(broker.rate_limit(c.credential));
 	assert!(!broker.rate_limit(c.credential));
 	tokio::time::advance(Duration::from_secs(1)).await;
 	assert!(broker.rate_limit(c.credential));
 	tokio::time::advance(Duration::from_secs(59)).await;
 	assert!(broker.key(&c).await.is_err());
 	assert_eq!(source.reads.load(Ordering::SeqCst), 2);
+}
+
+#[test]
+fn configuration_rejects_bursts_that_cannot_admit_one_media_flow() {
+	for burst in 0..3 {
+		let mut cfg = config();
+		cfg.burst = burst;
+		assert!(
+			Broker::new(
+				cfg,
+				PublicKeys::default(),
+				Arc::new(Source::default()),
+				Arc::new(Logs::default()),
+			)
+			.is_err()
+		);
+	}
 }

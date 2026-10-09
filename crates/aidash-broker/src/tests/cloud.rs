@@ -144,6 +144,14 @@ impl Cloud {
 		Self::with_deadline(expired_broker, Duration::from_secs(5)).await
 	}
 	async fn with_deadline(expired_broker: bool, deadline: Duration) -> Self {
+		Self::with_limits(expired_broker, deadline, 100, 100.0).await
+	}
+	async fn with_limits(
+		expired_broker: bool,
+		deadline: Duration,
+		burst: u32,
+		requests_per_second: f64,
+	) -> Self {
 		let fixture = Fixture::new().await;
 		let signer = Arc::new(Signer {
 			inner: InMemorySigner::new("kms/1".into(), [7; 32]),
@@ -155,6 +163,8 @@ impl Cloud {
 		let mut configuration = config();
 		configuration.secret_prefix = "aidash-environment-cred-".into();
 		configuration.inference_deadline = deadline;
+		configuration.burst = burst;
+		configuration.requests_per_second = requests_per_second;
 		let mut broker = Broker::new(
 			configuration,
 			keys,
@@ -270,7 +280,8 @@ impl Cloud {
 #[tokio::test]
 async fn cloud_chat_accepts_the_full_raw_media_allowance_after_base64_encoding() {
 	// Debug builds must serialize and parse the full 8 MiB allowance several times.
-	let c = Cloud::with_deadline(false, Duration::from_secs(60)).await;
+	// The two concurrent discovery requests and chat must fit without a refill.
+	let c = Cloud::with_limits(false, Duration::from_secs(60), 3, 0.001).await;
 	let mut config = c.config();
 	config.context_window = 131_072;
 	config.request_timeout_secs = Some(60);
@@ -303,6 +314,7 @@ async fn cloud_chat_accepts_the_full_raw_media_allowance_after_base64_encoding()
 	let size = request.input_body().to_string().len();
 	assert!(size > REQUEST_LIMIT && size < CHAT_REQUEST_LIMIT);
 	assert_eq!(provider.infer(request).await.unwrap().text, "ok");
+	assert_eq!(c.broker_calls.load(Ordering::SeqCst), 3);
 	assert!(
 		c.fixture
 			.provider

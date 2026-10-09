@@ -58,6 +58,7 @@ run "no_broker_in_preview" {
         byok_project_id              = "aidash-byok-fixture"
         secret_prefix                = "aidash-pr-137-cred-"
         broker_service_account_email = "aidash-pr-137-broker@aidash-fixture.iam.gserviceaccount.com"
+        signing_key_id               = "projects/aidash-fixture/locations/us-central1/keyRings/aidash-pr-137-capability/cryptoKeys/capability"
         image                        = "broker@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
       }
     }
@@ -87,6 +88,7 @@ run "staging_uses_bootstrap_broker_sa" {
         byok_project_id              = "aidash-byok-fixture"
         secret_prefix                = "aidash-test-cred-"
         broker_service_account_email = "aidash-test-broker@aidash-fixture.iam.gserviceaccount.com"
+        signing_key_id               = "projects/aidash-fixture/locations/us-central1/keyRings/aidash-test-capability/cryptoKeys/capability"
         image                        = "broker@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
       }
     }
@@ -125,6 +127,7 @@ run "broker_must_use_the_environment_store_project" {
         byok_project_id              = "aidash-byok-other"
         secret_prefix                = "aidash-test-cred-"
         broker_service_account_email = "aidash-test-broker@aidash-fixture.iam.gserviceaccount.com"
+        signing_key_id               = "projects/aidash-fixture/locations/us-central1/keyRings/aidash-test-capability/cryptoKeys/capability"
         image                        = "broker@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
       }
     }
