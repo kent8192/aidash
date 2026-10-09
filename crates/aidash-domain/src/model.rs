@@ -1,5 +1,5 @@
 //! Model configuration and accepted media-route invariants.
-use crate::{Error, Result};
+use crate::{Error, Result, context::projection::ProjectionVersion};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -29,6 +29,12 @@ pub struct ModelConfig {
 	#[serde(default)]
 	pub media_routes: Vec<MediaRouteEvidence>,
 	pub cost: Value,
+	/// Projection Versions an Agent on this model may pin (ADR 0015).
+	#[serde(
+		default = "ProjectionVersion::legacy_only",
+		skip_serializing_if = "ProjectionVersion::is_legacy_only"
+	)]
+	pub projection_versions: Vec<ProjectionVersion>,
 }
 
 /// OpenRouter's normalized reasoning levels; omission retains the model default.
@@ -56,6 +62,21 @@ pub struct MediaRouteEvidence {
 }
 
 impl ModelConfig {
+	pub fn supports_projection(&self, version: ProjectionVersion) -> bool {
+		self.projection_versions.contains(&version)
+	}
+
+	/// Supported Projection Versions are a non-empty set.
+	pub fn validate_projection_versions(&self) -> Result<()> {
+		let unique: std::collections::BTreeSet<_> = self.projection_versions.iter().collect();
+		if unique.is_empty() || unique.len() != self.projection_versions.len() {
+			return Err(Error::Invalid(
+				"model projection_versions must be a non-empty list without duplicates".into(),
+			));
+		}
+		Ok(())
+	}
+
 	pub fn require_media_types<'a>(
 		&self,
 		media_types: impl IntoIterator<Item = &'a str>,

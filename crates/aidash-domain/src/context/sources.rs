@@ -1,7 +1,18 @@
 //! Bounded source reads survive recovery of one inference boundary.
-use crate::{Error, Result, registry::rules::digest};
+use crate::{Error, Result, registry::rules::digest, semantic::InputRead};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Value, json};
+
+/// The `ProjectionVersion::Ordered` boundary of a Run's `semantic_memory`: the
+/// query inputs and task revision only. Neither the step, the budget nor the
+/// Run revision is part of it, so repeated steps reuse one value while its
+/// dependencies stay current. It never matches a Legacy `step:seq:revision`.
+pub fn ordered_semantic_boundary(inputs: &[&InputRead], task_revision: i64) -> String {
+	format!(
+		"ordered:{}",
+		digest(&json!({"inputs":inputs,"task_revision":task_revision}))
+	)
+}
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SourceObservation {
@@ -74,5 +85,22 @@ mod tests {
 			)
 			.is_err()
 		);
+	}
+	#[test]
+	fn ordered_semantic_boundary_follows_inputs_and_task_revision_only() {
+		let read = |sequence: i64, text: &str| InputRead {
+			id: uuid::Uuid::from_u128(sequence as u128),
+			sequence,
+			digest: digest(&json!(text)),
+		};
+		let first = read(1, "first");
+		let second = read(2, "second");
+		let base = ordered_semantic_boundary(&[&first], 3);
+		assert!(base.starts_with("ordered:"));
+		assert_eq!(base, ordered_semantic_boundary(&[&first], 3));
+		assert_ne!(base, ordered_semantic_boundary(&[&first, &second], 3));
+		assert_ne!(base, ordered_semantic_boundary(&[&first], 4));
+		assert_ne!(base, ordered_semantic_boundary(&[&read(1, "edited")], 3));
+		assert_ne!(base, ordered_semantic_boundary(&[], 3));
 	}
 }

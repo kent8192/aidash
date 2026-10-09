@@ -208,6 +208,26 @@ export function OpenRouterModelPicker({
           />
         </details>
       )}
+      <fieldset>
+        <legend>
+          {locale === "ja-JP"
+            ? "対応する投影バージョン"
+            : "Supported projection versions"}
+        </legend>
+        <label>
+          <input
+            type="checkbox"
+            name="projection_versions"
+            value="legacy"
+            defaultChecked
+          />{" "}
+          legacy
+        </label>
+        <label>
+          <input type="checkbox" name="projection_versions" value="ordered" />{" "}
+          ordered
+        </label>
+      </fieldset>
       <input
         type="hidden"
         name="endpoint"

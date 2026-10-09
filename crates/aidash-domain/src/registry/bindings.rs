@@ -158,6 +158,12 @@ pub struct AgentBindings {
 	pub cluster: Option<EntityRef>,
 	#[serde(default = "super::max_steps")]
 	pub max_steps: i32,
+	/// Projection Version pinned by every Run of this Agent (ADR 0015).
+	#[serde(
+		default,
+		skip_serializing_if = "crate::context::projection::ProjectionVersion::is_legacy"
+	)]
+	pub projection_version: crate::context::projection::ProjectionVersion,
 }
 impl AgentBindings {
 	pub fn validate(&self) -> Result<()> {

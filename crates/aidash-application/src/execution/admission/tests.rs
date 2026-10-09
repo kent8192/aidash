@@ -28,6 +28,7 @@ fn request() -> ModelRequest {
 		context: json!({"text":"東京"}),
 		tools: vec![],
 		max_output_tokens: 4096,
+		projection: Default::default(),
 		content_parts: vec![],
 	}
 }

@@ -7,8 +7,10 @@ node:
   id: ""
   # Stable federation URL; defaults to the internal backend Service.
   endpoint: ""
-# Provision separately: DATABASE_URL, NATS_URL, AIDASH_API_TOKEN and provider/
-# pair-specific AIDASH_SECRET_* variables. No secret values belong in Helm values.
+# Provision separately: DATABASE_URL, NATS_URL, AIDASH_API_TOKEN,
+# AIDASH_PROMPT_CACHE_KEY (optional AIDASH_PROMPT_CACHE_KEY_VERSION) and
+# provider/pair-specific AIDASH_SECRET_* variables. No secret values belong in
+# Helm values.
 existingSecret: ""
 # Native memory requires an independently retained, pre-initialized Home ledger.
 # Server and workers share this claim; do not restore it from a PostgreSQL backup.

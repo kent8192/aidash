@@ -6,7 +6,9 @@ pub mod settings;
 pub mod shell;
 pub mod urls;
 
+pub mod prompt_cache;
 pub mod runtime;
+pub use prompt_cache::{PromptCacheKey, PromptCacheScope, validate_prompt_cache_key};
 pub(crate) use runtime::same_secret;
 pub use runtime::{
 	Config, GcipConfig, NodeIdentity, OidcConfig, PROTOCOL_VERSION, SessionConfig, peer_secret,

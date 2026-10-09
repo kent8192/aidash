@@ -402,6 +402,7 @@ impl ExecutionEnvironment for Environment<'_> {
 			max_steps: config.max_steps,
 			allow_task_creation: config.allow_task_creation,
 			conversation_memory: config.conversation_memory,
+			projection: config.projection_version,
 		})
 	}
 	fn provider(&self, model: ModelConfig) -> Result<Arc<dyn ModelProvider>> {
@@ -511,6 +512,20 @@ impl ExecutionEnvironment for Environment<'_> {
 			Ok(String::new())
 		}
 	}
+	async fn prompt_cache_salt(&self, run: &Run) -> Result<String> {
+		// The Guard's Tenant belongs to the Run this Environment was built for.
+		if run.id != self.step_run.id {
+			return Err(aidash_application::Error::Forbidden);
+		}
+		// A Run without a Guard has no execution grant, no remote admission and
+		// an unscoped Workspace (`Guard::begin`), so no Tenant owns it.
+		let scope = match &self.authority {
+			Some(authority) => crate::config::PromptCacheScope::Tenant(authority.guard.tenant()),
+			None => crate::config::PromptCacheScope::Operator(&self.federation.config.node_id),
+		};
+		crate::config::prompt_cache::salt(self.federation.config.prompt_cache.as_ref(), scope)
+			.map_err(Into::into)
+	}
 	async fn semantic_context(
 		&self,
 		run: &Run,
@@ -518,18 +533,26 @@ impl ExecutionEnvironment for Environment<'_> {
 		inputs: &[(InputRead, String)],
 		budget: usize,
 		entry: &Entry,
-	) -> Result<Option<Value>> {
+		projection: aidash_domain::context::projection::ProjectionVersion,
+	) -> Result<aidash_application::ports::execution::SemanticRetrieval> {
 		let settings =
 			AgentConfig::from_snapshot(run.context.binding_snapshot.as_ref().ok_or_else(
 				|| aidash_application::Error::Invalid("Run has no Binding snapshot".into()),
 			)?)?;
 		if !settings.semantic_memory && !settings.workspace_context {
-			return Ok(None);
+			// Nothing is retrieved; the absence depends only on the Binding snapshot.
+			let dependencies = (!projection.is_legacy())
+				.then(|| crate::semantic::services::memory_context::dependencies(None, None))
+				.transpose()?;
+			return Ok(aidash_application::ports::execution::SemanticRetrieval {
+				value: None,
+				dependencies,
+			});
 		}
 		if let Some(authority) = &self.authority {
 			return authority
 				.guard
-				.semantic_context(&self.federation.store, task, inputs, budget)
+				.semantic_context(&self.federation.store, task, inputs, budget, projection)
 				.await
 				.map_err(Into::into);
 		}
@@ -547,17 +570,29 @@ impl ExecutionEnvironment for Environment<'_> {
 			query.push('\n');
 			query.push_str(text);
 		}
-		let semantic = crate::semantic::service::context_in(
-			&self.federation.store,
-			&mut lease,
-			run,
-			&query,
-			crate::semantic::services::memory_context::workspace_budget(budget)?,
-			&agent,
-		)
-		.await;
 		let result = async {
-			let semantic = semantic?.map(serde_json::to_value).transpose()?;
+			let workspace_index = if projection.is_legacy() {
+				None
+			} else {
+				crate::semantic::services::memory_context::workspace_index(
+					&self.federation.store,
+					&mut lease,
+					run,
+					&agent,
+				)
+				.await?
+			};
+			let semantic = crate::semantic::service::context_in(
+				&self.federation.store,
+				&mut lease,
+				run,
+				&query,
+				crate::semantic::services::memory_context::workspace_budget(budget)?,
+				&agent,
+			)
+			.await?
+			.map(serde_json::to_value)
+			.transpose()?;
 			let reserved =
 				serde_json::to_vec(&serde_json::json!({"workspace":semantic,"memory":null}))?.len();
 			let memory = crate::semantic::services::memory_context::retrieve(
@@ -568,13 +603,54 @@ impl ExecutionEnvironment for Environment<'_> {
 				inputs,
 				budget.saturating_sub(reserved),
 				&agent,
+				projection,
 			)
 			.await?;
-			crate::semantic::services::memory_context::complete(
+			let dependencies = (!projection.is_legacy())
+				.then(|| {
+					crate::semantic::services::memory_context::dependencies(
+						workspace_index,
+						Some(&memory),
+					)
+				})
+				.transpose()?;
+			let value = crate::semantic::services::memory_context::complete(
 				&mut lease, run, semantic, memory, budget,
 			)
-			.await
+			.await?;
+			Ok::<_, crate::Error>(aidash_application::ports::execution::SemanticRetrieval {
+				value,
+				dependencies,
+			})
 		}
+		.await;
+		lease.finish(result).await.map_err(Into::into)
+	}
+	async fn semantic_observation_current(
+		&self,
+		run: &Run,
+		semantic: &Value,
+		dependencies: &Value,
+	) -> Result<bool> {
+		if let Some(authority) = &self.authority {
+			return authority
+				.guard
+				.semantic_observation_current(&self.federation.store, semantic, dependencies)
+				.await
+				.map_err(Into::into);
+		}
+		let mut lease = crate::semantic::service::Lease::begin(
+			&self.federation.store,
+			&crate::authorization::identity::Actor::Operator,
+		)
+		.await?;
+		let result = crate::semantic::services::memory_context::current(
+			&self.federation.store,
+			&mut lease,
+			run,
+			semantic,
+			dependencies,
+		)
 		.await;
 		lease.finish(result).await.map_err(Into::into)
 	}

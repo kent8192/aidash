@@ -36,6 +36,15 @@ pub struct NodeSettings {
 	pub background_enabled: bool,
 	#[setting(default = "None", leaf)]
 	pub probe_listen: Option<SocketAddr>,
+	/// HMAC key that salts `Ordered` system prompts per Tenant (ADR 0016).
+	/// Node configuration only; never logged, returned or Debug-printed.
+	#[setting(default = "None", leaf)]
+	pub prompt_cache_key: Option<String>,
+	/// Shown in diagnostics instead of the key. Rotating the key, with or
+	/// without a new version, only causes provider cache misses.
+	#[setting(default = "1")]
+	#[validate(range(min = 1))]
+	pub prompt_cache_key_version: u32,
 }
 
 impl fmt::Debug for NodeSettings {
@@ -45,6 +54,13 @@ impl fmt::Debug for NodeSettings {
 			.field("endpoint", &self.endpoint)
 			.field("worker_count", &self.worker_count)
 			.field("background_enabled", &self.background_enabled)
+			.field(
+				"prompt_cache_key_version",
+				&self
+					.prompt_cache_key
+					.as_ref()
+					.map(|_| self.prompt_cache_key_version),
+			)
 			.finish_non_exhaustive()
 	}
 }
@@ -57,6 +73,10 @@ impl SettingsValidation for NodeSettings {
 			.map_err(|error| ValidationError::Constraint(error.to_string()))?;
 		validate_endpoint(&self.endpoint)
 			.map_err(|error| ValidationError::Constraint(error.to_string()))?;
+		if let Some(key) = &self.prompt_cache_key {
+			crate::config::validate_prompt_cache_key(key)
+				.map_err(|error| ValidationError::Constraint(error.to_string()))?;
+		}
 		let mut names = std::collections::BTreeSet::new();
 		for name in &self.default_host_packages {
 			if !names.insert(name)

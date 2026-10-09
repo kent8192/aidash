@@ -26,6 +26,12 @@ struct State {
 	dependency_status: Option<TaskStatus>,
 	remote_home: bool,
 	human: Mutex<Option<HumanRequest>>,
+	projection: aidash_domain::context::projection::ProjectionVersion,
+	context_window: Mutex<usize>,
+	/// The Bank revision an Ordered `semantic_memory` value depends on.
+	memory_revision: Mutex<i64>,
+	/// Whether the source reports dependency revisions (a local Home does).
+	memory_dependencies: bool,
 }
 impl Backend {
 	fn record(&self, name: &'static str) {
@@ -35,8 +41,9 @@ impl Backend {
 		self.0.task.lock().unwrap().clone()
 	}
 	fn entry(&self, id: &str) -> Entry {
+		let window = *self.0.context_window.lock().unwrap();
 		serde_json::from_value(json!({"id":id,"version":"1.0.0","kind":"agent","name":{"en":id},"description":{"en":"Fixture"},"config":{
-        "provider":"openrouter","model_id":"fixture","endpoint":"http://fixture.invalid/v1","credential_env":null,"context_window":128000,"max_output_tokens":4096,"modalities":["text"],"cost":{}
+        "provider":"openrouter","model_id":"fixture","endpoint":"http://fixture.invalid/v1","credential_env":null,"context_window":window,"max_output_tokens":4096,"modalities":["text"],"cost":{},"projection_versions":["legacy","ordered"]
     }})).unwrap()
 	}
 }
@@ -324,6 +331,18 @@ impl ExecutionEnvironment for Backend {
 		let _ = run;
 		unexpected("ExecutionEnvironment.skill_context")
 	}
+	async fn prompt_cache_salt(&self, run: &Run) -> Result<String> {
+		// A fixed fake key mixed with the Workspace standing in for the Tenant:
+		// deterministic, fixed width and distinct per scope.
+		const FAKE_KEY: [u8; aidash_domain::context::projection::CACHE_SALT_MAC_BYTES] =
+			*b"aidash-harness-fixture-cache-key";
+		let scope = run.workspace_id.as_bytes();
+		let mut mac = FAKE_KEY;
+		for (index, byte) in mac.iter_mut().enumerate() {
+			*byte ^= scope[index % scope.len()];
+		}
+		Ok(aidash_domain::context::projection::cache_salt_line(1, &mac))
+	}
 	async fn semantic_context(
 		&self,
 		run: &Run,
@@ -331,13 +350,34 @@ impl ExecutionEnvironment for Backend {
 		inputs: &[(InputRead, String)],
 		budget: usize,
 		entry: &Entry,
-	) -> Result<Option<Value>> {
+		projection: aidash_domain::context::projection::ProjectionVersion,
+	) -> Result<SemanticRetrieval> {
 		let _ = (run, task, inputs, budget, entry);
 		if self.0.conversation_memory {
 			self.record("source.memory");
-			return Ok(Some(self.0.memory_value.lock().unwrap().clone()));
+			// A real retrieval re-authorizes, so a revoked source fails here.
+			if self.0.deny_source {
+				return Err(Error::Forbidden);
+			}
+			let revision = *self.0.memory_revision.lock().unwrap();
+			return Ok(SemanticRetrieval {
+				value: Some(self.0.memory_value.lock().unwrap().clone()),
+				dependencies: (!projection.is_legacy() && self.0.memory_dependencies)
+					.then(|| json!({"bank":revision})),
+			});
 		}
-		Ok(None)
+		Ok(SemanticRetrieval::default())
+	}
+	async fn semantic_observation_current(
+		&self,
+		run: &Run,
+		semantic: &Value,
+		dependencies: &Value,
+	) -> Result<bool> {
+		let _ = (run, semantic);
+		self.record("source.current");
+		let revision = *self.0.memory_revision.lock().unwrap();
+		Ok(!self.0.deny_source && *dependencies == json!({"bank":revision}))
 	}
 	async fn run_message_limit(&self, run: &Run) -> Result<usize> {
 		let _ = run;
@@ -407,6 +447,7 @@ impl ExecutionEnvironment for Backend {
 			max_steps: 64,
 			allow_task_creation: None,
 			conversation_memory: self.0.conversation_memory,
+			projection: self.0.projection,
 		})
 	}
 	fn provider(&self, _model: ModelConfig) -> Result<Arc<dyn ModelProvider>> {
@@ -525,6 +566,10 @@ fn fixture() -> Fixture {
 		dependency_status: None,
 		remote_home: false,
 		human: Mutex::new(None),
+		projection: Default::default(),
+		context_window: Mutex::new(128000),
+		memory_revision: Mutex::new(1),
+		memory_dependencies: true,
 	}));
 	Fixture { backend, run }
 }
@@ -980,4 +1025,174 @@ async fn advance_sources(fixture: &mut Fixture) -> Result<()> {
 	Executor::new(&backend)
 		.advance(&mut fixture.run, backend.0.token, &mut backend.clone())
 		.await
+}
+
+/// An Ordered Run whose every inference reads semantic memory and then fails at
+/// the provider, so each `advance` is one inference boundary.
+fn ordered_memory(mut fixture: Fixture) -> Fixture {
+	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	state.conversation_memory = true;
+	state.provider_status = Some(503);
+	state.projection = aidash_domain::context::projection::ProjectionVersion::Ordered;
+	fixture.run.state = RunState::Thinking(ThinkingState::default());
+	fixture
+}
+fn calls_named(fixture: &Fixture, name: &str) -> usize {
+	fixture
+		.backend
+		.0
+		.calls
+		.lock()
+		.unwrap()
+		.iter()
+		.filter(|call| **call == name)
+		.count()
+}
+fn sent_semantic_memory(fixture: &Fixture, request: usize) -> Value {
+	fixture.backend.0.requests.lock().unwrap()[request].context["current"]["semantic_memory"]
+		.clone()
+}
+
+#[rstest]
+#[tokio::test]
+async fn ordered_semantic_memory_is_reused_byte_identically_at_later_steps(fixture: Fixture) {
+	// Arrange
+	let mut fixture = ordered_memory(fixture);
+	assert!(advance_sources(&mut fixture).await.is_err());
+	// A retrieval at a later step would observe this value instead.
+	*fixture.backend.0.memory_value.lock().unwrap() = json!({"fact":"changed"});
+	fixture.run = serde_json::from_slice(&serde_json::to_vec(&fixture.run).unwrap()).unwrap();
+
+	// Act
+	for _ in 0..2 {
+		fixture.run.step += 1;
+		assert!(advance_sources(&mut fixture).await.is_err());
+	}
+
+	// Assert
+	assert_eq!(calls_named(&fixture, "source.memory"), 1);
+	assert_eq!(calls_named(&fixture, "source.current"), 2);
+	let first = serde_json::to_vec(&sent_semantic_memory(&fixture, 0)).unwrap();
+	assert_eq!(
+		sent_semantic_memory(&fixture, 0),
+		json!({"fact":"observed"})
+	);
+	for request in 1..3 {
+		assert_eq!(
+			serde_json::to_vec(&sent_semantic_memory(&fixture, request)).unwrap(),
+			first
+		);
+	}
+	assert_eq!(
+		fixture
+			.backend
+			.0
+			.writes
+			.lock()
+			.unwrap()
+			.iter()
+			.filter(|(event, _)| event == "run.sources_observed")
+			.count(),
+		1
+	);
+}
+
+#[rstest]
+#[case::bank_revision("bank_revision")]
+#[case::task_revision("task_revision")]
+#[case::budget_too_small("budget")]
+#[tokio::test]
+async fn ordered_semantic_memory_is_retrieved_again_when_a_dependency_or_the_budget_changes(
+	fixture: Fixture,
+	#[case] change: &str,
+) {
+	// Arrange: 18 000 bytes fit a 128 000-token window's semantic budget but
+	// exceed the one of a 36 000-token window, while the request still fits.
+	let mut fixture = ordered_memory(fixture);
+	*fixture.backend.0.memory_value.lock().unwrap() = json!("x".repeat(18_000));
+	assert!(advance_sources(&mut fixture).await.is_err());
+	match change {
+		"bank_revision" => *fixture.backend.0.memory_revision.lock().unwrap() += 1,
+		"task_revision" => fixture.backend.0.task.lock().unwrap().revision += 1,
+		_ => *fixture.backend.0.context_window.lock().unwrap() = 36_000,
+	}
+	*fixture.backend.0.memory_value.lock().unwrap() = json!("y".repeat(18_000));
+
+	// Act
+	fixture.run.step += 1;
+	assert!(advance_sources(&mut fixture).await.is_err());
+
+	// Assert
+	assert_eq!(calls_named(&fixture, "source.memory"), 2);
+	assert_eq!(
+		calls_named(&fixture, "source.current"),
+		usize::from(change == "bank_revision")
+	);
+	assert_eq!(sent_semantic_memory(&fixture, 1), json!("y".repeat(18_000)));
+}
+
+#[rstest]
+#[case::same_step(0)]
+#[case::later_step(1)]
+#[tokio::test]
+async fn ordered_revocation_never_serves_the_cached_semantic_memory(
+	fixture: Fixture,
+	#[case] steps: i32,
+) {
+	// Arrange
+	let mut fixture = ordered_memory(fixture);
+	assert!(advance_sources(&mut fixture).await.is_err());
+	Arc::get_mut(&mut fixture.backend.0).unwrap().deny_source = true;
+	fixture.run.step += steps;
+
+	// Act
+	let result = advance_sources(&mut fixture).await;
+
+	// Assert: the cached value is discarded and the fresh retrieval is denied.
+	assert!(matches!(result, Err(Error::Forbidden)));
+	assert_eq!(calls_named(&fixture, "source.current"), 1);
+	assert_eq!(calls_named(&fixture, "source.memory"), 2);
+	assert_eq!(fixture.backend.0.requests.lock().unwrap().len(), 1);
+}
+
+#[rstest]
+#[tokio::test]
+async fn ordered_source_without_dependencies_is_retrieved_at_every_step(fixture: Fixture) {
+	// Arrange: a remote Home reports no dependency revisions.
+	let mut fixture = ordered_memory(fixture);
+	Arc::get_mut(&mut fixture.backend.0)
+		.unwrap()
+		.memory_dependencies = false;
+
+	// Act: recover the same inference boundary, then advance one step.
+	assert!(advance_sources(&mut fixture).await.is_err());
+	assert!(advance_sources(&mut fixture).await.is_err());
+	fixture.run.step += 1;
+	assert!(advance_sources(&mut fixture).await.is_err());
+
+	// Assert
+	assert_eq!(calls_named(&fixture, "source.recheck"), 1);
+	assert_eq!(calls_named(&fixture, "source.memory"), 2);
+	assert_eq!(calls_named(&fixture, "source.current"), 0);
+}
+
+#[rstest]
+#[tokio::test]
+async fn legacy_semantic_memory_stays_keyed_by_step(mut fixture: Fixture) {
+	// Arrange
+	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	state.conversation_memory = true;
+	state.provider_status = Some(503);
+	fixture.run.state = RunState::Thinking(ThinkingState::default());
+
+	// Act
+	assert!(advance_sources(&mut fixture).await.is_err());
+	fixture.run.step += 1;
+	assert!(advance_sources(&mut fixture).await.is_err());
+
+	// Assert
+	assert_eq!(calls_named(&fixture, "source.memory"), 2);
+	assert_eq!(calls_named(&fixture, "source.current"), 0);
+	let saved = fixture.run.context.source_observation.as_ref().unwrap();
+	assert_eq!(saved.boundary, format!("{}:0:0", fixture.run.step));
 }

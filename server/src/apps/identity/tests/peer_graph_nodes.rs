@@ -47,6 +47,7 @@ impl Node {
 			default_host_packages: vec![],
 			oidc: None,
 			gcip: None,
+			prompt_cache: None,
 		};
 		let f = Federation {
 			sandbox: Default::default(),

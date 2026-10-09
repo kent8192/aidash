@@ -20,6 +20,7 @@ impl<'a> Executor<'a> {
 	}
 	async fn tool_error(
 		&self,
+		projection: context::projection::ProjectionVersion,
 		run: &mut Run,
 		token: Uuid,
 		call: &aidash_domain::provider::ToolCall,
@@ -28,7 +29,7 @@ impl<'a> Executor<'a> {
 	) -> Result<()> {
 		let mut context = run.context.clone();
 		let event = ContextEvent::tool(call.clone(), json!({"error":message}));
-		let growth = context::tool_event_growth(&context, &event);
+		let growth = context::tool_event_growth(&context, &event, projection);
 		context.history.push(event);
 		run.state.tool_mut()?.request_tokens =
 			run.state.tool()?.request_tokens.saturating_add(growth);
@@ -40,8 +41,10 @@ impl<'a> Executor<'a> {
 			.await?;
 		Ok(())
 	}
+	#[allow(clippy::too_many_arguments)]
 	async fn tool_invocation_error(
 		&self,
+		projection: context::projection::ProjectionVersion,
 		run: &mut Run,
 		token: Uuid,
 		call: &aidash_domain::provider::ToolCall,
@@ -55,7 +58,8 @@ impl<'a> Executor<'a> {
 				.invocation_finish(run, token, key, &json!({"error":message}))
 				.await?;
 		}
-		self.tool_error(run, token, call, cursor, message).await
+		self.tool_error(projection, run, token, call, cursor, message)
+			.await
 	}
 	async fn publish_model_text(
 		&self,
@@ -223,6 +227,14 @@ impl<'a> Executor<'a> {
 					.catalog().get_for_run(&*run, &agent.model.id, &agent.model.version)
 					.await?;
 				let model_cfg: ModelConfig = serde_json::from_value(model_entry.config)?;
+				// Registration rejects unsupported pairings; check again before
+				// rendering, and never fall back to Legacy (ADR 0015).
+				if !model_cfg.supports_projection(agent.projection) {
+					return Err(Error::Invalid(format!(
+						"model {} does not support the Agent's {:?} projection version",
+						model_cfg.model_id, agent.projection
+					)));
+				}
 				let window = model_cfg.context_window;
 				let output_limit = model_cfg.output_token_limit();
 				let model = self.environment.provider(model_cfg.clone())?;
@@ -237,9 +249,17 @@ impl<'a> Executor<'a> {
 				let source_input_seq = inputs.last().map_or(run.observed_input_seq, |input| input.seq);
 				let source_boundary = format!("{}:{}:{}", run.step, source_input_seq, task.revision);
 				let binding_digest = self.environment.catalog().content_digest(&serde_json::to_string(&run.context.binding_snapshot)?);
-				let cached_sources = run.context.source_observation.as_ref().map(|observation| observation.at(&source_boundary, &binding_digest)).transpose()?.flatten().cloned();
+				// Ordered Runs reuse only semantic_memory, keyed by its own inputs
+				// below; their skill context is read live at every step.
+				let cached_sources = if agent.projection.is_legacy() { run.context.source_observation.as_ref().map(|observation| observation.at(&source_boundary, &binding_digest)).transpose()?.flatten().cloned() } else { None };
 				if let Some(content) = &cached_sources { self.environment.recheck_source_observation(run, content).await?; }
-				let mut instructions = context::agent_instructions("");
+				let salt = match agent.projection {
+					context::projection::ProjectionVersion::Legacy => String::new(),
+					context::projection::ProjectionVersion::Ordered => {
+						self.environment.prompt_cache_salt(run).await?
+					}
+				};
+				let mut instructions = context::agent_instructions(&salt, agent.projection);
 				for skill in &agent.skills {
 					let entry = self
 						.environment
@@ -411,12 +431,14 @@ impl<'a> Executor<'a> {
 					&instructions,
 					&specifications,
 					&private_context,
+					agent.projection,
 				)?;
 				let mut budget = context::RequestBudget {
 					window: context_window,
 					instructions: &instructions,
 					tools: &specifications,
 					max_output_tokens: output,
+					projection: agent.projection,
 				};
 				let minimum_request = budget
 					.request(&Context::default(), &private_context)
@@ -488,13 +510,61 @@ impl<'a> Executor<'a> {
 						))
 					})
 					.collect::<Vec<_>>();
-                let semantic = if let Some(cached) = &cached_sources { cached.get("semantic_memory").filter(|v| !v.is_null()).cloned() } else if guard.is_some() || home.local() { self.environment.semantic_context(run, &task, &semantic_inputs, semantic_budget, &entry).await? } else { None };
+                // Ordered: one value per Run, keyed by the query inputs and task
+                // revision (the binding digest is checked by `at`). Neither the step
+                // nor the budget is part of the key, so repeated steps send the same
+                // bytes while the dependencies stay current and the value still fits.
+                let ordered_key = (!agent.projection.is_legacy()).then(|| {
+                    let reads = semantic_inputs.iter().map(|(read, _)| read).collect::<Vec<_>>();
+                    aidash_domain::context::sources::ordered_semantic_boundary(&reads, task.revision)
+                });
+                let semantic = if let Some(key) = ordered_key {
+                    let cached = run.context.source_observation.as_ref().map(|observation| observation.at(&key, &binding_digest)).transpose()?.flatten().cloned();
+                    let mut reused = None;
+                    if let Some(cached) = cached {
+                        let value = &cached["semantic_memory"];
+                        let dependencies = &cached["dependencies"];
+                        let fits = value.is_null() || serde_json::to_vec(value)?.len() <= semantic_budget;
+                        let current = if !fits {
+                            false
+                        } else if !dependencies.is_null() {
+                            self.environment.semantic_observation_current(run, value, dependencies).await?
+                        } else {
+                            // A source without dependency revisions (remote Home) is
+                            // retrieved at every step; its value only survives recovery
+                            // of the same inference boundary, rechecked as in Legacy.
+                            cached["step"] == json!(run.step) && {
+                                self.environment.recheck_source_observation(run, &cached).await?;
+                                true
+                            }
+                        };
+                        if current {
+                            reused = Some((!value.is_null()).then(|| value.clone()));
+                        }
+                    }
+                    if let Some(semantic) = reused {
+                        semantic
+                    } else {
+                        let retrieved = if guard.is_some() || home.local() {
+                            self.environment.semantic_context(run, &task, &semantic_inputs, semantic_budget, &entry, agent.projection).await?
+                        } else {
+                            SemanticRetrieval::default()
+                        };
+                        context.source_observation = Some(aidash_domain::context::sources::SourceObservation::new(key, binding_digest, json!({"semantic_memory":retrieved.value,"dependencies":retrieved.dependencies,"step":run.step}))?);
+                        run.context = context.clone();
+                        store.observe_sources(run, token).await?;
+                        retrieved.value
+                    }
+                } else {
+                    let semantic = if let Some(cached) = &cached_sources { cached.get("semantic_memory").filter(|v| !v.is_null()).cloned() } else if guard.is_some() || home.local() { self.environment.semantic_context(run, &task, &semantic_inputs, semantic_budget, &entry, agent.projection).await?.value } else { None };
+                    if cached_sources.is_none() {
+                        context.source_observation = Some(aidash_domain::context::sources::SourceObservation::new(source_boundary, binding_digest, json!({"memory":pinned["memory"],"skill_context":source_skill_context,"semantic_memory":semantic}))?);
+                        run.context = context.clone();
+                        store.observe_sources(run, token).await?;
+                    }
+                    semantic
+                };
                 if let Some(semantic) = &semantic { pinned["semantic_memory"] = semantic.clone(); }
-                if cached_sources.is_none() {
-                    context.source_observation = Some(aidash_domain::context::sources::SourceObservation::new(source_boundary, binding_digest, json!({"memory":pinned["memory"],"skill_context":source_skill_context,"semantic_memory":semantic}))?);
-                    run.context = context.clone();
-                    store.observe_sources(run, token).await?;
-                }
                 let compactor = self.environment.compactor()?;
                 compact_execution(&mut context, compactor.as_ref(), &budget, &pinned)
                     .await.map_err(|error| {
@@ -926,17 +996,17 @@ impl<'a> Executor<'a> {
 				capture_declared_coverage(&mut context, &tools, false);
 				let mut call = result.tool_calls[cursor].clone();
 				let Some(tool) = tools.get(&call.name) else {
-					return self.tool_error(run, token, &call, cursor, format!("unavailable tool {}", call.name)).await;
+					return self.tool_error(agent.projection, run, token, &call, cursor, format!("unavailable tool {}", call.name)).await;
 				};
 				let contract = tool.contract();
 				if !pending_selected_media(run.state.tool()?).is_empty() && !contract.behavior.permits(ToolUseMode::MediaPending) {
-					return self.tool_error(run, token, &call, cursor, "selected model media must be inferred before this tool call; retry it after the next model response".into()).await;
+					return self.tool_error(agent.projection, run, token, &call, cursor, "selected model media must be inferred before this tool call; retry it after the next model response".into()).await;
 				}
 				// Retrieval must have current authority before any resource is fetched.
 				if let Some(guard) = guard {
 					match guard.tool(&call, &contract).await {
 						Ok(()) => {},
-						Err(Error::Invalid(message) | Error::Domain(aidash_domain::Error::Invalid(message))) => return self.tool_error(run, token, &call, cursor, message).await,
+						Err(Error::Invalid(message) | Error::Domain(aidash_domain::Error::Invalid(message))) => return self.tool_error(agent.projection, run, token, &call, cursor, message).await,
 						Err(error) => return Err(error),
 					}
 				}
@@ -944,7 +1014,7 @@ impl<'a> Executor<'a> {
 				if let Some(fitting) = contract.behavior.fitting_for(&call.arguments) {
 					let (range, saved) = match tool_result_plan(run.state.tool()?, fitting, &call, run.step, cursor) {
 						Ok(plan) => plan,
-						Err(Error::Invalid(message) | Error::Domain(aidash_domain::Error::Invalid(message))) => return self.tool_error(run, token, &call, cursor, message).await,
+						Err(Error::Invalid(message) | Error::Domain(aidash_domain::Error::Invalid(message))) => return self.tool_error(agent.projection, run, token, &call, cursor, message).await,
 						Err(error) => return Err(error),
 					};
 					if let Some(output) = saved { prepared_result = Some(output); }
@@ -955,6 +1025,7 @@ impl<'a> Executor<'a> {
 							request_tokens: run.state.tool()?.request_tokens,
 							request_window: run.state.tool()?.request_window,
 							remaining_calls: result.tool_calls.len().saturating_sub(cursor + 1),
+							projection: agent.projection,
 						};
 						let fitted = prepare_tool_result(home.as_ref(), tool.as_ref(), run, &context, &call, fitting, budget).await;
 						match fitted {
@@ -974,7 +1045,7 @@ impl<'a> Executor<'a> {
 								*result_plan_mut(run.state.tool_mut()?, fitting) = Some(plan);
 								prepared_result = Some(output);
 							},
-							Err(Error::Invalid(message) | Error::Domain(aidash_domain::Error::Invalid(message))) => return self.tool_error(run, token, &call, cursor, message).await,
+							Err(Error::Invalid(message) | Error::Domain(aidash_domain::Error::Invalid(message))) => return self.tool_error(agent.projection, run, token, &call, cursor, message).await,
 							Err(error) => return Err(error),
 						}
 					}
@@ -997,14 +1068,7 @@ impl<'a> Executor<'a> {
 						.filter(|d| d.key == key && d.call == *call)
 					{
 						if !decision.approved || decision.expires_at <= chrono::Utc::now() {
-							return self
-								.tool_error(
-									run,
-									token,
-									call,
-									cursor,
-									"external write approval was denied or expired".into(),
-								)
+							return self.tool_error(agent.projection, run, token, call, cursor, "external write approval was denied or expired".into())
 								.await;
 						}
 					} else {
@@ -1083,30 +1147,14 @@ impl<'a> Executor<'a> {
 					let mut selected = run.state.tool()?.selected_media.clone();
 					let deferred_count = run.state.tool()?.deferred_selected_media.len();
 					if selected.len() + deferred_count >= 8 {
-						return self
-							.tool_invocation_error(
-								run,
-								token,
-								call,
-								cursor,
-								unfinished_key,
-								"model media input exceeds count limit".into(),
-							)
+						return self.tool_invocation_error(agent.projection, run, token, call, cursor, unfinished_key, "model media input exceeds count limit".into())
 							.await;
 					}
 					selected.push(selection);
 					let mut selections = run.state.tool()?.deferred_selected_media.clone();
 					selections.extend(selected.iter().cloned());
 					let Some(guard) = guard else {
-						return self
-							.tool_invocation_error(
-								run,
-								token,
-								call,
-								cursor,
-								unfinished_key,
-								"model media input requires scoped file access".into(),
-							)
+						return self.tool_invocation_error(agent.projection, run, token, call, cursor, unfinished_key, "model media input requires scoped file access".into())
 							.await;
 					};
 					match Box::pin(guard.model_media(&selections)).await {
@@ -1120,30 +1168,14 @@ impl<'a> Executor<'a> {
 							match check_model_media_headroom(headroom, parts, &model) {
 								Ok(()) => {}
 								Err(Error::Invalid(message) | Error::Domain(aidash_domain::Error::Invalid(message))) => {
-									return self
-										.tool_invocation_error(
-											run,
-											token,
-											call,
-											cursor,
-											unfinished_key,
-											message,
-										)
+									return self.tool_invocation_error(agent.projection, run, token, call, cursor, unfinished_key, message)
 										.await;
 								}
 								Err(error) => return Err(error),
 							}
 						}
 						Err(Error::Invalid(message) | Error::Domain(aidash_domain::Error::Invalid(message))) => {
-							return self
-								.tool_invocation_error(
-									run,
-									token,
-									call,
-									cursor,
-									unfinished_key,
-									message,
-								)
+							return self.tool_invocation_error(agent.projection, run, token, call, cursor, unfinished_key, message)
 								.await;
 						}
 						Err(error) => return Err(error),
@@ -1155,7 +1187,7 @@ impl<'a> Executor<'a> {
 				}
 				let event = ContextEvent::tool(call.clone(), output.clone());
 				record_message_read_for(&mut context.message_read_coverage, &contract, &event);
-				let growth = context::tool_event_growth(&context, &event);
+				let growth = context::tool_event_growth(&context, &event, agent.projection);
 				context.history.push(event);
 				run.state.tool_mut()?.request_tokens =
 					run.state.tool()?.request_tokens.saturating_add(growth);

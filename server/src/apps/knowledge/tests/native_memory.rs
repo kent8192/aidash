@@ -2248,6 +2248,7 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 			lease_seconds: 30,
 			oidc: None,
 			gcip: None,
+			prompt_cache: None,
 		},
 		store,
 		client: reqwest::Client::new(),

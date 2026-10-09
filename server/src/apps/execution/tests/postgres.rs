@@ -412,6 +412,7 @@ async fn registry_installation_versions_and_authenticated_api(
 		default_host_packages: vec![],
 		oidc: None,
 		gcip: None,
+		prompt_cache: None,
 	};
 	let f = Federation {
 		sandbox: Default::default(),
@@ -488,6 +489,7 @@ async fn human_requests_controls_and_cancellation_before_dependencies_finish(
 		default_host_packages: vec![],
 		oidc: None,
 		gcip: None,
+		prompt_cache: None,
 	};
 	let federation = Federation {
 		sandbox: Default::default(),
@@ -624,6 +626,7 @@ fn federation_for(store: &Store) -> Federation {
 			default_host_packages: vec![],
 			oidc: None,
 			gcip: None,
+			prompt_cache: None,
 		},
 		client: reqwest::Client::builder()
 			.timeout(std::time::Duration::from_secs(2))

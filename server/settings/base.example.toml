@@ -61,6 +61,11 @@ worker_count = 4
 background_enabled = true
 # Stage these Host groups for new tenants; approval and activation remain explicit.
 default_host_packages = []
+# Tenant prompt cache salt key for `ordered` agents: at least 32 printable ASCII
+# characters with 8 distinct characters. Diagnostics show only the version;
+# rotating either only causes provider prompt cache misses.
+# prompt_cache_key = "replace-with-a-random-key-of-at-least-32-characters"
+# prompt_cache_key_version = 1
 
 # Omit this table to disable dashboard OIDC.
 # [dashboard.oidc]

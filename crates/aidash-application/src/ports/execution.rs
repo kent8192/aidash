@@ -27,6 +27,8 @@ pub struct ExecutionAgent {
 	pub max_steps: i32,
 	pub allow_task_creation: Option<bool>,
 	pub conversation_memory: bool,
+	/// Pinned through the Run's Binding snapshot (ADR 0015).
+	pub projection: aidash_domain::context::projection::ProjectionVersion,
 }
 pub struct InvocationOutcome {
 	pub status: String,
@@ -36,6 +38,16 @@ pub struct HumanMediaBatch {
 	pub parts: Vec<ContentPart>,
 	pub through_seq: Option<i64>,
 	pub has_more: bool,
+}
+/// One `semantic_memory` retrieval for an inference.
+#[derive(Debug, Clone, Default)]
+pub struct SemanticRetrieval {
+	/// The model-visible value; `None` sends no `semantic_memory`.
+	pub value: Option<Value>,
+	/// Opaque revisions `value` depends on beyond the ones it carries itself,
+	/// captured only for `ProjectionVersion::Ordered`. `None` when the source
+	/// cannot report them, so the value is never reused at a later step.
+	pub dependencies: Option<Value>,
 }
 pub type Tools = BTreeMap<String, Arc<dyn ExecutionTool>>;
 pub type ObservationFit<'a> = dyn Fn(usize, &Value) -> Result<bool> + Send + Sync + 'a;
@@ -203,6 +215,12 @@ pub trait ExecutionEnvironment: Send + Sync {
 	async fn documents(&self, entry: &Entry) -> Result<Value>;
 	async fn recheck_source_observation(&self, run: &Run, content: &Value) -> Result<()>;
 	async fn skill_context(&self, run: &Run) -> Result<String>;
+	/// The Tenant cache salt line for the Run's requests (ADR 0016), from
+	/// `context::projection::cache_salt_line`. Fails when the node has no
+	/// prompt cache key, because `Ordered` requests never go out unsalted.
+	async fn prompt_cache_salt(&self, run: &Run) -> Result<String>;
+	/// `projection` selects the model-visible envelope: `Ordered` omits the
+	/// step and Run revision and reports `SemanticRetrieval::dependencies`.
 	async fn semantic_context(
 		&self,
 		run: &Run,
@@ -210,7 +228,18 @@ pub trait ExecutionEnvironment: Send + Sync {
 		inputs: &[(InputRead, String)],
 		budget: usize,
 		entry: &Entry,
-	) -> Result<Option<Value>>;
+		projection: aidash_domain::context::projection::ProjectionVersion,
+	) -> Result<SemanticRetrieval>;
+	/// `ProjectionVersion::Ordered` only: whether `semantic`, retrieved at an
+	/// earlier inference of this Run with `dependencies`, may be sent again.
+	/// Re-authorizes its content and compares every dependency revision.
+	/// `Ok(false)` means changed, narrowed or revoked: retrieve again.
+	async fn semantic_observation_current(
+		&self,
+		run: &Run,
+		semantic: &Value,
+		dependencies: &Value,
+	) -> Result<bool>;
 	async fn run_message_limit(&self, run: &Run) -> Result<usize>;
 	async fn run_request_headroom(&self, run: &Run) -> Result<usize>;
 	async fn deliver_run_messages(&self, run: &Run) -> Result<()>;

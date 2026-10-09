@@ -199,3 +199,76 @@ async fn multiple_private_sources_share_one_flat_prompt_document_list(
 		["snapshot", "documents", "documents", "contracts"]
 	);
 }
+
+fn projection_snapshot(
+	agent_version: Option<&str>,
+	model_versions: Option<Value>,
+) -> aidash_domain::registry::bindings::BindingSnapshot {
+	let mut root = crate::test_support::agent("agent");
+	if let Some(version) = agent_version {
+		root.config["projection_version"] = json!(version);
+	}
+	let mut config = json!({"provider":"openrouter","model_id":"fixture","endpoint":"https://fixture.invalid","context_window":200000,"max_output_tokens":1024,"modalities":["text"],"cost":{}});
+	if let Some(versions) = model_versions {
+		config["projection_versions"] = versions;
+	}
+	let model = crate::test_support::entry("fixture-model", "model", config);
+	crate::test_support::resolve("aidash://local", &root, false, vec![model])
+}
+
+#[rstest]
+fn registration_rejects_a_projection_version_the_model_does_not_support() {
+	// Arrange
+	let validation = DefinitionValidation::new(Arc::new(Contracts), Arc::new(Contracts));
+	let snapshot = projection_snapshot(Some("ordered"), None);
+	// Act
+	let result = validation.bound_prompt_headroom(&snapshot, &Value::Null);
+	// Assert
+	match result {
+		Err(Error::Invalid(message)) => assert_eq!(
+			message,
+			"Agent projection_version ordered is not supported by model fixture-model@1.0.0"
+		),
+		other => panic!("unexpected admission outcome: {other:?}"),
+	}
+}
+
+#[rstest]
+fn registration_accepts_a_supported_ordered_version_and_reserves_the_salt_line() {
+	// Arrange
+	let validation = DefinitionValidation::new(Arc::new(Contracts), Arc::new(Contracts));
+	let ordered = projection_snapshot(Some("ordered"), Some(json!(["legacy", "ordered"])));
+	let legacy = projection_snapshot(None, Some(json!(["legacy", "ordered"])));
+	// Act
+	let ordered = validation
+		.bound_prompt_headroom(&ordered, &Value::Null)
+		.unwrap();
+	let legacy = validation
+		.bound_prompt_headroom(&legacy, &Value::Null)
+		.unwrap();
+	// Assert
+	assert!(ordered < legacy, "{ordered} >= {legacy}");
+}
+
+#[rstest]
+#[case(json!([]))]
+#[case(json!(["ordered", "ordered"]))]
+fn model_registration_rejects_invalid_projection_version_sets(#[case] versions: Value) {
+	// Arrange
+	let validation = DefinitionValidation::new(Arc::new(Contracts), Arc::new(Contracts));
+	let model = crate::test_support::entry(
+		"fixture-model",
+		"model",
+		json!({"provider":"openrouter","model_id":"fixture","endpoint":"https://fixture.invalid","context_window":200000,"max_output_tokens":1024,"modalities":["text"],"cost":{},"projection_versions":versions}),
+	);
+	// Act
+	let result = validation.validate_in(&model, false);
+	// Assert
+	assert!(
+		matches!(
+			result,
+			Err(Error::Invalid(_) | Error::Domain(aidash_domain::Error::Invalid(_)))
+		),
+		"{result:?}"
+	);
+}

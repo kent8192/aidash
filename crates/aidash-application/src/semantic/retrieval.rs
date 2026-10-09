@@ -260,6 +260,13 @@ pub async fn search(
 	finish(vector, scope, prepared, &embedding, false).await
 }
 
+/// Whether automatic context reads the Workspace index for this agent. A native
+/// provider opts into its own Bank retrieval. Ordinary workspace indexing
+/// remains available only through an explicit workspace Source.
+pub fn consults_workspace_index(agent: &AgentConfig) -> bool {
+	(agent.semantic_memory && agent.memory.is_none()) || agent.workspace_context
+}
+
 pub async fn context(
 	scope: &mut dyn SemanticRetrievalSession,
 	vector: &dyn VectorIndex,
@@ -268,9 +275,7 @@ pub async fn context(
 	budget: usize,
 	agent: &AgentConfig,
 ) -> Result<Option<SearchResult>> {
-	// A native provider opts into its own Bank retrieval. Ordinary workspace
-	// indexing remains available only through an explicit workspace Source.
-	if (!agent.semantic_memory || agent.memory.is_some()) && !agent.workspace_context {
+	if !consults_workspace_index(agent) {
 		return Ok(None);
 	}
 	let configured = scope.configured(run.workspace_id).await?;

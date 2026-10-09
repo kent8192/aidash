@@ -376,11 +376,13 @@ fn skill_read_fits_utf8_chunks_to_the_remaining_request_budget() {
 	let full_event = typed_event(
 		serde_json::json!({"kind":"tool","call":call,"result":super::skill_read_result(&output, 16000)}),
 	);
-	let full_growth = aidash_domain::context::tool_event_growth(&context, &full_event);
+	let full_growth =
+		aidash_domain::context::tool_event_growth(&context, &full_event, Default::default());
 	let minimum_event = typed_event(
 		serde_json::json!({"kind":"tool","call":call,"result":super::skill_read_result(&output, 0)}),
 	);
-	let minimum_growth = aidash_domain::context::tool_event_growth(&context, &minimum_event);
+	let minimum_growth =
+		aidash_domain::context::tool_event_growth(&context, &minimum_event, Default::default());
 	assert!(full_growth > minimum_growth);
 	let request_window = 100_000;
 	let request_tokens = request_window - (full_growth + minimum_growth) / 2;
@@ -390,6 +392,7 @@ fn skill_read_fits_utf8_chunks_to_the_remaining_request_budget() {
 		request_tokens,
 		request_window,
 		remaining_calls: 0,
+		projection: Default::default(),
 	};
 	let chars = super::fit_skill_read_chars(&context, &call, &output, budget).unwrap();
 	assert!(chars > 0 && chars < 5000);
@@ -401,7 +404,8 @@ fn skill_read_fits_utf8_chunks_to_the_remaining_request_budget() {
 	bounded_call.arguments["max_chars"] = serde_json::json!(chars);
 	let event = typed_event(serde_json::json!({"kind":"tool","call":bounded_call,"result":result}));
 	assert!(
-		request_tokens + aidash_domain::context::tool_event_growth(&context, &event)
+		request_tokens
+			+ aidash_domain::context::tool_event_growth(&context, &event, Default::default())
 			<= request_window
 	);
 	assert!(
@@ -437,7 +441,7 @@ fn skill_read_can_fit_one_character_when_the_deferred_envelope_cannot_fit() {
 			"call":bounded_call,
 			"result":super::skill_read_result(&output, chars)
 		}));
-		aidash_domain::context::tool_event_growth(&context, &event)
+		aidash_domain::context::tool_event_growth(&context, &event, Default::default())
 	};
 	let deferred_growth = event_growth(0);
 	let one_character_growth = event_growth(1);
@@ -457,6 +461,7 @@ fn skill_read_can_fit_one_character_when_the_deferred_envelope_cannot_fit() {
 			request_tokens,
 			request_window,
 			remaining_calls: 0,
+			projection: Default::default(),
 		},
 	)
 	.unwrap();
@@ -501,6 +506,7 @@ fn workspace_read_chunks_fit_remaining_complete_request_budget() {
 			request_tokens,
 			request_window,
 			remaining_calls: 2,
+			projection: Default::default(),
 		},
 	)
 	.unwrap()
@@ -511,7 +517,9 @@ fn workspace_read_chunks_fit_remaining_complete_request_budget() {
 	let result = super::workspace_read_result(&output, 16000, 0, chars);
 	let event = typed_event(serde_json::json!({"kind":"tool","call":bounded_call,"result":result}));
 	assert!(
-		request_tokens + aidash_domain::context::tool_event_growth(&context, &event) <= allowed
+		request_tokens
+			+ aidash_domain::context::tool_event_growth(&context, &event, Default::default())
+			<= allowed
 	);
 	let mut old_quota_call = call.clone();
 	old_quota_call.arguments["max_chars"] = serde_json::json!(chars + 1);
@@ -522,18 +530,30 @@ fn workspace_read_chunks_fit_remaining_complete_request_budget() {
 	let old_hard_window_quota =
 		window - super::POST_TOOL_CONTEXT_RESERVE - 2 * super::TOOL_EVENT_RESERVE;
 	assert!(
-		request_tokens + aidash_domain::context::tool_event_growth(&context, &old_quota_event)
-			<= old_hard_window_quota
+		request_tokens
+			+ aidash_domain::context::tool_event_growth(
+				&context,
+				&old_quota_event,
+				Default::default()
+			) <= old_hard_window_quota
 	);
 	assert!(
-		request_tokens + aidash_domain::context::tool_event_growth(&context, &old_quota_event)
-			> allowed
+		request_tokens
+			+ aidash_domain::context::tool_event_growth(
+				&context,
+				&old_quota_event,
+				Default::default()
+			) > allowed
 	);
 	let mut too_large = call;
 	too_large.arguments["max_chars"] = serde_json::json!(chars + 1);
 	let result = super::workspace_read_result(&output, 16000, 0, chars + 1);
 	let event = typed_event(serde_json::json!({"kind":"tool","call":too_large,"result":result}));
-	assert!(request_tokens + aidash_domain::context::tool_event_growth(&context, &event) > allowed);
+	assert!(
+		request_tokens
+			+ aidash_domain::context::tool_event_growth(&context, &event, Default::default())
+			> allowed
+	);
 }
 
 #[rstest::rstest]
@@ -571,6 +591,7 @@ fn workspace_read_fit_uses_the_persisted_request_window() {
 			request_tokens,
 			request_window,
 			remaining_calls: 0,
+			projection: Default::default(),
 		},
 	)
 	.unwrap()
@@ -602,24 +623,27 @@ fn workspace_observation_fit_includes_the_adjusted_call_and_following_events() {
 			"call":{"id":"observe-1","name":"workspace_observe","arguments":{"offset":0,"limit":1}},
 			"result":output
 		})),
+		Default::default(),
 	);
+	let budget = |request_tokens| super::WorkspaceReadFitBudget {
+		requested: 1,
+		offset: 0,
+		request_tokens,
+		request_window,
+		remaining_calls,
+		projection: Default::default(),
+	};
 	assert!(super::workspace_observation_event_fits(
 		&context,
 		&call,
-		1,
 		&output,
-		target - growth,
-		request_window,
-		remaining_calls
+		budget(target - growth),
 	));
 	assert!(!super::workspace_observation_event_fits(
 		&context,
 		&call,
-		1,
 		&output,
-		target - growth + 1,
-		request_window,
-		remaining_calls
+		budget(target - growth + 1),
 	));
 }
 
@@ -777,6 +801,7 @@ fn zero_length_envelope_is_checked_before_deferring_a_read() {
 				request_tokens: 0,
 				request_window: 1,
 				remaining_calls: 0,
+				projection: Default::default(),
 			},
 		)
 		.unwrap()

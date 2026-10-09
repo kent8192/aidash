@@ -22,6 +22,7 @@ pub struct WorkspaceReadFitBudget {
 	pub request_tokens: usize,
 	pub request_window: usize,
 	pub remaining_calls: usize,
+	pub projection: aidash_domain::context::projection::ProjectionVersion,
 }
 
 #[derive(Clone, Copy)]
@@ -332,8 +333,11 @@ pub fn tool_result_fits(
 		.saturating_sub(budget.remaining_calls.saturating_mul(TOOL_EVENT_RESERVE));
 	budget
 		.request_tokens
-		.saturating_add(context::tool_event_growth(context, &event))
-		<= maximum
+		.saturating_add(context::tool_event_growth(
+			context,
+			&event,
+			budget.projection,
+		)) <= maximum
 }
 
 /// Shared quota search preserves each adapter's minimum viable result size.
@@ -548,28 +552,20 @@ pub fn defer_result(
 	(state, event)
 }
 
+/// `budget.requested` is the observation page limit being tested.
 pub fn workspace_observation_event_fits(
 	context: &Context,
 	call: &aidash_domain::provider::ToolCall,
-	limit: usize,
 	output: &Value,
-	request_tokens: usize,
-	request_window: usize,
-	remaining_calls: usize,
+	budget: WorkspaceReadFitBudget,
 ) -> bool {
 	tool_result_fits(
 		context,
 		call,
 		"limit",
-		limit,
+		budget.requested,
 		output.clone(),
-		WorkspaceReadFitBudget {
-			requested: limit,
-			offset: 0,
-			request_tokens,
-			request_window,
-			remaining_calls,
-		},
+		budget,
 	)
 }
 
@@ -614,6 +610,7 @@ pub fn media_request_headroom(
 		context: json!({}),
 		tools: Vec::new(),
 		max_output_tokens: 0,
+		projection: Default::default(),
 		content_parts: Vec::new(),
 	};
 	request
@@ -621,6 +618,9 @@ pub fn media_request_headroom(
 		.map_err(Into::into)
 }
 
+/// Space that `run_messages` adds to the current step state. The delta is the
+/// same under every Projection Version: both encode the state as one escaped
+/// JSON object inside user-message text.
 pub fn encoded_run_message_reservation(messages: &[Value]) -> usize {
 	if messages.is_empty() {
 		return 0;
@@ -636,6 +636,7 @@ pub fn encoded_run_message_reservation(messages: &[Value]) -> usize {
 			}),
 			tools: Vec::new(),
 			max_output_tokens: 0,
+			projection: Default::default(),
 			content_parts: Vec::new(),
 		}
 		.estimated_total_tokens()
@@ -662,6 +663,7 @@ pub fn check_model_media_headroom(
 		context: json!({}),
 		tools: Vec::new(),
 		max_output_tokens: 0,
+		projection: Default::default(),
 		content_parts: parts,
 	};
 	request.validate()?;

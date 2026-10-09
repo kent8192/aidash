@@ -5,6 +5,8 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use crate::context::projection::ProjectionVersion;
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ToolSpec {
 	pub name: String,
@@ -27,6 +29,10 @@ pub struct ModelRequest {
 	pub context: Value,
 	pub tools: Vec<ToolSpec>,
 	pub max_output_tokens: u32,
+	/// How `context` becomes user-message text. Omitted for `Legacy`, so legacy
+	/// request metadata and digests keep their exact bytes.
+	#[serde(default, skip_serializing_if = "ProjectionVersion::is_legacy")]
+	pub projection: ProjectionVersion,
 	/// Resolved, authorized input for this inference only. Never persist bytes
 	/// in the durable context or serialize them with the request metadata.
 	#[serde(skip)]
@@ -206,18 +212,30 @@ impl ModelRequest {
 		count <= 8 && bytes <= 8 * 1024 * 1024
 	}
 
-	/// Model-visible payload, shared by transport and context accounting. The
-	/// context is encoded as message text, including its JSON escaping.
-	pub fn input_body(&self) -> Value {
-		let content = if self.content_parts.is_empty() {
-			Value::String(self.context.to_string())
-		} else {
-			Value::Array(
+	/// User-message content: the rendered context followed by `extra` parts.
+	/// `Legacy` sends one context string, or one text part when media follows;
+	/// `Ordered` always sends its text parts (ADR 0015).
+	fn user_content(&self, extra: Vec<Value>) -> Value {
+		match self.projection {
+			ProjectionVersion::Legacy if extra.is_empty() => {
+				Value::String(self.context.to_string())
+			}
+			ProjectionVersion::Legacy => Value::Array(
 				std::iter::once(json!({"type":"text","text":self.context.to_string()}))
-					.chain(self.content_parts.iter().map(ContentPart::openrouter))
+					.chain(extra)
 					.collect(),
-			)
-		};
+			),
+			ProjectionVersion::Ordered => Value::Array(
+				crate::context::projection::ordered_texts(&self.context)
+					.into_iter()
+					.map(|text| json!({"type":"text","text":text}))
+					.chain(extra)
+					.collect(),
+			),
+		}
+	}
+
+	fn body(&self, content: Value) -> Value {
 		let mut body = json!({"messages":[
 			{"role":"system","content":self.instructions},
 			{"role":"user","content":content}]});
@@ -225,6 +243,19 @@ impl ModelRequest {
 			body["tools"] = Value::Array(self.tools.iter().map(|t| json!({"type":"function","function":{"name":t.name,"description":t.description,"parameters":t.parameters}})).collect());
 		}
 		body
+	}
+
+	/// Model-visible payload, shared by transport and context accounting. The
+	/// context is encoded as message text, including its JSON escaping.
+	pub fn input_body(&self) -> Value {
+		self.body(
+			self.user_content(
+				self.content_parts
+					.iter()
+					.map(ContentPart::openrouter)
+					.collect(),
+			),
+		)
 	}
 
 	/// Conservative UTF-8 byte estimate, not a provider tokenizer. Reserve
@@ -236,25 +267,24 @@ impl ModelRequest {
 	pub fn estimated_total_tokens_with_parts(&self, parts: &[ContentPart]) -> usize {
 		// Base64 is a transport encoding, not text for the model tokenizer.
 		// Keep the ordinary text estimate and reserve a bounded media estimate.
-		let content = if parts.is_empty() {
-			Value::String(self.context.to_string())
+		let text_parts = parts
+			.iter()
+			.filter_map(|part| match part {
+				ContentPart::Text(_) => Some(part.openrouter()),
+				_ => None,
+			})
+			.collect();
+		// Legacy switches to array framing for any part, including media.
+		let content = if parts.is_empty() || !self.projection.is_legacy() {
+			self.user_content(text_parts)
 		} else {
-			Value::Array(
-				std::iter::once(json!({"type":"text","text":self.context.to_string()}))
-					.chain(parts.iter().filter_map(|part| match part {
-						ContentPart::Text(_) => Some(part.openrouter()),
-						_ => None,
-					}))
-					.collect(),
-			)
+			match self.user_content(text_parts) {
+				Value::String(text) => Value::Array(vec![json!({"type":"text","text":text})]),
+				content => content,
+			}
 		};
-		let mut body = json!({"messages":[
-			{"role":"system","content":self.instructions},
-			{"role":"user","content":content}]});
-		if !self.tools.is_empty() {
-			body["tools"] = Value::Array(self.tools.iter().map(|t| json!({"type":"function","function":{"name":t.name,"description":t.description,"parameters":t.parameters}})).collect());
-		}
-		body.to_string()
+		self.body(content)
+			.to_string()
 			.len()
 			.saturating_add(Self::media_tokens(parts))
 			.saturating_add(self.max_output_tokens as usize)

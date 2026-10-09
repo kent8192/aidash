@@ -164,3 +164,44 @@ fn bundle_member_ids_are_unique_across_versions_and_nodes() {
 	.validate()
 	.unwrap();
 }
+
+#[test]
+fn definitions_without_projection_fields_round_trip_byte_identically() {
+	// Arrange
+	let agent = r#"{"schema_version":1,"model":{"id":"model","version":"1.0.0"},"instructions":"Work on the Task.","bindings":[],"remove_default":[],"cluster":null,"max_steps":64}"#;
+	let model = r#"{"provider":"openrouter","model_id":"m","endpoint":"https://e.invalid","credential_env":null,"reasoning_effort":null,"context_window":4096,"max_output_tokens":null,"modalities":["text"],"media_routes":[],"cost":{}}"#;
+	// Act
+	let decoded: AgentBindings = serde_json::from_str(agent).unwrap();
+	let decoded_model: crate::model::ModelConfig = serde_json::from_str(model).unwrap();
+	// Assert
+	assert_eq!(
+		decoded.projection_version,
+		crate::context::projection::ProjectionVersion::Legacy
+	);
+	assert_eq!(
+		decoded_model.projection_versions,
+		crate::context::projection::ProjectionVersion::legacy_only()
+	);
+	assert_eq!(serde_json::to_string(&decoded).unwrap(), agent);
+	assert_eq!(serde_json::to_string(&decoded_model).unwrap(), model);
+	let pinned = crate::registry::AgentConfig::from_definition(decoded).definition();
+	assert_eq!(serde_json::to_string(&pinned).unwrap(), agent);
+}
+
+#[test]
+fn declared_projection_versions_survive_the_agent_settings_view() {
+	// Arrange
+	let mut input = serde_json::to_value(agent()).unwrap();
+	input["projection_version"] = json!("ordered");
+	// Act
+	let decoded: AgentBindings = serde_json::from_value(input.clone()).unwrap();
+	let pinned = crate::registry::AgentConfig::from_definition(decoded).definition();
+	// Assert
+	assert_eq!(
+		pinned.projection_version,
+		crate::context::projection::ProjectionVersion::Ordered
+	);
+	assert_eq!(serde_json::to_value(&pinned).unwrap(), input);
+	input["projection_version"] = json!("v2");
+	assert!(serde_json::from_value::<AgentBindings>(input).is_err());
+}

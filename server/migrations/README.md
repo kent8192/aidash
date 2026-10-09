@@ -247,3 +247,5 @@ metadata and exclude procedural checks and references from the ORM snapshot, whi
 retaining the physical constraints established by the preceding migrations.
 
 Binding and native memory histories converge in `registry/0015_binding_memory_merge` and `execution/0011_binding_memory_merge`. The registry merge preserves strict Agent Bindings, Host lifecycle validation and native memory operations. Agent memory-role references derive from qualified Binding targets. These migrations depend on both histories and leave their existing migration identities unchanged.
+
+`registry/0016_projection_versions` admits the Agent `projection_version` key (`legacy` or `ordered`) in the Agent Binding contract and the model `projection_versions` key (a non-empty, duplicate-free list of those values) in `registry_model_config`. Neither key is installation-overridable. The reverse migration restores the 0015 Agent contract and the previous model key allowlist.

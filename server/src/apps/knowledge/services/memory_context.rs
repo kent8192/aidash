@@ -1,14 +1,19 @@
 //! Every inference receives bounded Home memory with exact role and source provenance.
 use super::native_memory::{self as memory, Action, Operation, Outcome};
-use crate::apps::knowledge::repositories::{access::Lease, bindings, native_memory as repository};
+use crate::apps::knowledge::repositories::{
+	access::Lease, bindings, memory_scope, native_memory as repository,
+};
 use crate::{
 	Error, Result,
 	domain::{Run, Task},
 	registry::AgentConfig,
 	store::Store,
 };
+use aidash_application::ports::semantic::retrieval::SemanticRetrievalSession as _;
+use aidash_domain::context::projection::ProjectionVersion;
 use aidash_domain::registry::EntityRef;
 use aidash_domain::{memory::*, semantic::InputRead};
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 /// Every declaration for the same exact bank/provider contributes its cap.
@@ -39,16 +44,98 @@ pub(crate) fn workspace_budget(budget: usize) -> Result<usize> {
 pub(crate) struct Context {
 	value: Option<Value>,
 	delivered: Vec<Unit>,
+	/// `ProjectionVersion::Ordered` only: every Bank consulted.
+	banks: Vec<BankAuthority>,
 }
 impl Context {
 	fn status(value: Option<Value>) -> Self {
 		Self {
 			value,
 			delivered: Vec::new(),
+			banks: Vec::new(),
 		}
 	}
 }
 
+/// Revisions an `Ordered` `semantic_memory` value depends on beyond the ones
+/// it carries itself. Workspace results carry their index and entry revisions,
+/// which [`recheck`] compares; Bank recalls depend on the Bank authority stamp.
+#[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct Dependencies {
+	/// `None` when the agent never consults the Workspace index.
+	workspace_index: Option<IndexRevision>,
+	memory_banks: Vec<BankAuthority>,
+}
+/// The auto-context index revision; `None` while no index is configured.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct IndexRevision {
+	revision: Option<i64>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BankAuthority {
+	bank: Bank,
+	/// [`memory_scope::authority_stamp`]; `None` while the Bank does not exist.
+	authority: Option<String>,
+}
+
+/// The `Ordered` dependencies of one retrieval. `memory` is `None` when no Bank
+/// was consulted; read it before [`complete`] consumes the context.
+pub(crate) fn dependencies(
+	workspace_index: Option<IndexRevision>,
+	memory: Option<&Context>,
+) -> Result<Value> {
+	Ok(serde_json::to_value(Dependencies {
+		workspace_index,
+		memory_banks: memory
+			.map(|memory| memory.banks.clone())
+			.unwrap_or_default(),
+	})?)
+}
+
+/// Read the index revision behind Workspace auto-context before retrieval, so a
+/// concurrent change can only invalidate the value, never validate a stale one.
+pub(crate) async fn workspace_index(
+	store: &Store,
+	lease: &mut Lease<'_>,
+	run: &Run,
+	agent: &AgentConfig,
+) -> Result<Option<IndexRevision>> {
+	if !aidash_application::semantic::retrieval::consults_workspace_index(agent) {
+		return Ok(None);
+	}
+	let configured = crate::bootstrap::semantic_retrieval_scope(store, lease)
+		.configured(run.workspace_id)
+		.await?;
+	Ok(Some(IndexRevision {
+		revision: configured.map(|index| index.revision),
+	}))
+}
+
+/// The recall operation boundary and the model-visible envelope boundary. The
+/// operation keeps the step and Run revision, so every fresh retrieval is a new
+/// operation. An Ordered envelope omits both, so repeated steps that reuse the
+/// value send identical bytes.
+fn boundaries(
+	task_revision: i64,
+	inputs: &[(InputRead, String)],
+	step: i32,
+	run_revision: i64,
+	projection: ProjectionVersion,
+) -> (Value, Value) {
+	let reads = inputs.iter().map(|(read, _)| read).collect::<Vec<_>>();
+	let operation = json!({"task_revision":task_revision,"inputs":reads,"step":step,"run_revision":run_revision});
+	let visible = if projection.is_legacy() {
+		operation.clone()
+	} else {
+		json!({"task_revision":task_revision,"inputs":reads})
+	};
+	(operation, visible)
+}
+
+#[allow(clippy::too_many_arguments)] // The pinned projection selects the visible envelope.
 pub(crate) async fn retrieve(
 	store: &Store,
 	lease: &mut Lease<'_>,
@@ -57,6 +144,7 @@ pub(crate) async fn retrieve(
 	inputs: &[(InputRead, String)],
 	budget: usize,
 	agent: &AgentConfig,
+	projection: ProjectionVersion,
 ) -> Result<Context> {
 	if run.home_node != store.node_id {
 		return Err(Error::Forbidden);
@@ -96,14 +184,21 @@ pub(crate) async fn retrieve(
 		query.push('\n');
 		query.push_str(text);
 	}
-	let boundary = json!({"task_revision":task.revision,"inputs":inputs.iter().map(|(read,_)|read).collect::<Vec<_>>(),"step":run.step,"run_revision":run.revision});
+	let (boundary, visible) = boundaries(task.revision, inputs, run.step, run.revision, projection);
 	let mut delivered = Vec::new();
+	let mut banks = Vec::new();
 	let mut envelope =
-		json!({"home":store.node_id,"binding":binding,"boundary":boundary,"banks":[]});
+		json!({"home":store.node_id,"binding":binding,"boundary":visible,"banks":[]});
 	// UTF-8 bytes are the declared conservative tokenizer's token upper bound.
 	// Count wrappers, identity, roles and complete source envelopes as well.
 	for (ordinal, (bank, provider, declared_tokens)) in declared.into_iter().enumerate() {
 		memory::scope(store, lease, &bank, "memory.read").await?;
+		if !projection.is_legacy() {
+			banks.push(BankAuthority {
+				authority: memory_scope::authority_stamp(lease, &bank).await?,
+				bank: bank.clone(),
+			});
+		}
 		memory::bank_provider(lease, &bank, &provider).await?;
 		let policy = memory::policy(lease, &provider).await?;
 		let roles = json!({"extraction":policy.extraction,"derivation":policy.derivation,"reflection":policy.reflection,"embedding":policy.embedding,"reranker":policy.reranker,"tokenizer":policy.tokenizer});
@@ -190,6 +285,7 @@ pub(crate) async fn retrieve(
 	Ok(Context {
 		value: Some(envelope),
 		delivered,
+		banks,
 	})
 }
 
@@ -273,4 +369,41 @@ pub(crate) async fn recheck(
 		return Err(Error::Forbidden);
 	}
 	Ok(())
+}
+
+/// `Ordered` only: a value retrieved at an earlier step of this Run stays
+/// current while its content passes [`recheck`], every consulted Bank still
+/// authorizes `memory.read`, and every dependency revision is unchanged.
+/// Changed, narrowed or revoked sources return `false`, so the caller retrieves
+/// again and a revoked source never serves the cached value.
+pub(crate) async fn current(
+	store: &Store,
+	lease: &mut Lease<'_>,
+	run: &Run,
+	observed: &Value,
+	dependencies: &Value,
+) -> Result<bool> {
+	let dependencies: Dependencies = serde_json::from_value(dependencies.clone())?;
+	match recheck(store, lease, run, observed).await {
+		Err(Error::Forbidden | Error::Conflict(_)) => return Ok(false),
+		result => result?,
+	}
+	if let Some(expected) = dependencies.workspace_index {
+		let configured = crate::bootstrap::semantic_retrieval_scope(store, lease)
+			.configured(run.workspace_id)
+			.await?;
+		if configured.map(|index| index.revision) != expected.revision {
+			return Ok(false);
+		}
+	}
+	for expected in &dependencies.memory_banks {
+		match memory::scope(store, lease, &expected.bank, "memory.read").await {
+			Err(Error::Forbidden | Error::Conflict(_)) => return Ok(false),
+			result => result?,
+		}
+		if memory_scope::authority_stamp(lease, &expected.bank).await? != expected.authority {
+			return Ok(false);
+		}
+	}
+	Ok(true)
 }

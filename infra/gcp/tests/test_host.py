@@ -50,6 +50,19 @@ class HostTests(unittest.TestCase):
         self.assertEqual(values["AIDASH_MEMORY_RECOVERY_DIR"], str(host.ROOT / "memory-recovery"))
         self.assertEqual(values["AIDASH_NODE_ID"], "aidash://home-a")
 
+    def test_prompt_cache_key_is_added_to_an_existing_identity_without_rotation(self):
+        (self.directory / "identity.json").write_text(json.dumps({"database": "d", "api": "a", "runner": "r"}))
+        secret = {"payload": {"data": host.base64.b64encode(json.dumps({"AIDASH_OIDC_CLIENT_ID": "fixture-client", "AIDASH_OIDC_CLIENT_SECRET": "fixture-secret"}).encode()).decode()}}
+        keys = []
+        for _ in range(2):
+            with patch.object(host, "request", return_value=json.dumps(secret).encode()), patch.object(host, "cloud_token", return_value="fixture"):
+                host.configuration({"project": "fixture", "secret": "home-a", "hostname": "example.invalid"})
+            values = dict(line.split("=", 1) for line in (host.RUN / "app.env").read_text().splitlines())
+            self.assertEqual(values["AIDASH_API_TOKEN"], "a")
+            keys.append(values["AIDASH_PROMPT_CACHE_KEY"])
+        self.assertEqual(keys[0], keys[1])
+        self.assertEqual(len(keys[0]), 64)
+
     def record_previous(self, observed_at, busy):
         (self.directory / "last-active").write_text("100")
         (self.directory / "activity.json").write_text(

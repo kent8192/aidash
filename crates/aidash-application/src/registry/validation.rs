@@ -6,6 +6,7 @@ use crate::{
 use aidash_domain::registry::rules::skill_instructions;
 use aidash_domain::{
 	configuration::{validate_endpoint, validate_node_id, validate_secret_reference},
+	context::projection::{ProjectionVersion, cache_salt_placeholder},
 	model::ModelConfig,
 	registry::{AgentConfig, ClusterConfig, CompactorConfig, Entry},
 	tool::ToolConfig,
@@ -130,6 +131,7 @@ impl DefinitionValidation {
 				));
 				}
 				m.request_timeout()?;
+				m.validate_projection_versions()?;
 				for route in &m.media_routes {
 					if route.tag.is_empty()
 						|| !route
@@ -352,7 +354,23 @@ impl DefinitionValidation {
 			})
 			.ok_or_else(|| Error::NotFound(config.model.id.clone()))?;
 		let model: ModelConfig = serde_json::from_value(model.definition.config.clone())?;
-		let mut instructions = aidash_domain::context::agent_instructions("");
+		let projection = config.projection_version;
+		if !model.supports_projection(projection) {
+			let name = match projection {
+				ProjectionVersion::Legacy => "legacy",
+				ProjectionVersion::Ordered => "ordered",
+			};
+			return Err(Error::Invalid(format!(
+				"Agent projection_version {name} is not supported by model {}@{}",
+				config.model.id, config.model.version
+			)));
+		}
+		// Reserve the fixed-width cache salt line the Ordered prefix carries.
+		let prefix = match projection {
+			ProjectionVersion::Legacy => String::new(),
+			ProjectionVersion::Ordered => cache_salt_placeholder(),
+		};
+		let mut instructions = aidash_domain::context::agent_instructions(&prefix, projection);
 		let mut specifications = vec![];
 		for binding in &snapshot.bindings {
 			if binding.excluded_reason.is_some() {
@@ -382,6 +400,7 @@ impl DefinitionValidation {
 			&instructions,
 			&specifications,
 			private_context,
+			projection,
 		)
 		.map_err(Into::into)
 	}

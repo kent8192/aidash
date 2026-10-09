@@ -1267,6 +1267,131 @@ async fn binding_memory_merge_preserves_native_packages_and_restores_legacy_desc
 
 #[rstest]
 #[tokio::test]
+async fn projection_versions_migration_admits_new_keys_and_reverses(
+	#[future] fresh_database: MigrationFixture,
+) {
+	use aidash_server::apps::registry::models::{Definition, states::DefinitionKind};
+	// Arrange
+	let fixture = fresh_database.await;
+	fixture.migrate().await;
+	let pool = fixture.connection.clone().into_postgres().unwrap();
+	let agent = |projection: Option<&str>| {
+		let mut config = json!({"schema_version":1,"model":{"id":"model","version":"1.0.0"},"instructions":"Work"});
+		if let Some(version) = projection {
+			config["projection_version"] = json!(version);
+		}
+		config
+	};
+	let versions = |value: serde_json::Value| json!({"projection_versions": value});
+	// Act / Assert: the Agent contract and model allowlist admit the new keys.
+	assert!(contract_accepts(&pool, "aidash_agent_bindings_is_valid", vec![agent(None)]).await);
+	assert!(
+		contract_accepts(
+			&pool,
+			"aidash_agent_bindings_is_valid",
+			vec![agent(Some("ordered"))]
+		)
+		.await
+	);
+	assert!(
+		contract_accepts(
+			&pool,
+			"aidash_agent_bindings_is_valid",
+			vec![agent(Some("legacy"))]
+		)
+		.await
+	);
+	assert!(
+		!contract_accepts(
+			&pool,
+			"aidash_agent_bindings_is_valid",
+			vec![agent(Some("v2"))]
+		)
+		.await
+	);
+	for (config, accepted) in [
+		(json!({}), true),
+		(versions(json!(["legacy"])), true),
+		(versions(json!(["ordered", "legacy"])), true),
+		(versions(json!([])), false),
+		(versions(json!(["ordered", "ordered"])), false),
+		(versions(json!(["v2"])), false),
+		(versions(json!("ordered")), false),
+	] {
+		assert_eq!(
+			contract_accepts(
+				&pool,
+				"aidash_projection_versions_is_valid",
+				vec![config.clone()]
+			)
+			.await,
+			accepted,
+			"{config}"
+		);
+	}
+	let migrations =
+		FilesystemSource::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations"))
+			.all_migrations()
+			.await
+			.unwrap();
+	let migration = migrations
+		.into_iter()
+		.find(|m| m.app_label == "registry" && m.name == "0016_projection_versions")
+		.unwrap();
+	let mut executor =
+		reinhardt::db::migrations::DatabaseMigrationExecutor::new(fixture.connection.clone());
+	executor
+		.rollback_migrations(std::slice::from_ref(&migration))
+		.await
+		.unwrap();
+	assert!(
+		!contract_accepts(
+			&pool,
+			"aidash_agent_bindings_is_valid",
+			vec![agent(Some("ordered"))]
+		)
+		.await
+	);
+	assert!(contract_accepts(&pool, "aidash_agent_bindings_is_valid", vec![agent(None)]).await);
+	executor.apply_migrations(&[migration]).await.unwrap();
+	// Act / Assert: the registry_model_config CHECK accepts declared versions.
+	let lease = DatabaseConnectionLease::register(fixture.connection.clone()).unwrap();
+	let mut connection = lease.handle();
+	let model = |id: &str, versions: serde_json::Value| {
+		let metadata = json!({"id":id,"version":"1.0.0","kind":"model",
+			"name":{"en":"Projection fixture"},"description":{"en":"Migration test"},
+			"config":{"provider":"openrouter","model_id":"vendor/model",
+				"endpoint":"http://127.0.0.1:1/v1","credential_env":null,
+				"context_window":32768,"max_output_tokens":4096,
+				"modalities":["text"],"cost":{},"projection_versions":versions}});
+		Definition::build()
+			.id(id)
+			.version("1.0.0")
+			.kind(DefinitionKind::Model)
+			.metadata(metadata.into())
+			.finish()
+	};
+	Definition::objects()
+		.create_with_conn(
+			&mut connection,
+			&model("ordered-model", json!(["legacy", "ordered"])),
+		)
+		.await
+		.unwrap();
+	let error = Definition::objects()
+		.create_with_conn(&mut connection, &model("empty-model", json!([])))
+		.await
+		.unwrap_err();
+	let database = error.database_error().expect("database constraint error");
+	assert_eq!(
+		database.constraint(),
+		Some("registry_model_config"),
+		"{error}"
+	);
+}
+
+#[rstest]
+#[tokio::test]
 async fn memory_retention_lookup_index_upgrades_and_reverses_without_rewriting_tables(
 	#[future] fresh_database: MigrationFixture,
 ) {

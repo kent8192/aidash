@@ -172,7 +172,7 @@ pub async fn admit(admission: &Admission<'_>, id: Uuid, input: TestInput) -> Res
 				.map(|alias| (alias.clone(), b.identity.local()))
 		})
 		.collect();
-	let mut instructions = aidash_domain::context::agent_instructions("");
+	let mut instructions = aidash_domain::context::agent_instructions("", Default::default());
 	if input.mode == "real" {
 		instructions.push_str("\n\nSandbox: only tools in the selected test connection profile can reach its isolated endpoint. Other tools need an explicit fixture; never claim an unprovided result.\n");
 	} else {
@@ -202,6 +202,7 @@ pub async fn admit(admission: &Admission<'_>, id: Uuid, input: TestInput) -> Res
 		context: json!({"test_message":input.message,"private_references":draft.documents,"test_mode":input.mode,"profile_id":input.profile_id}),
 		tools: tool_specs,
 		max_output_tokens: (limits.max_output_tokens as u32).min(model_config.output_token_limit()),
+		projection: Default::default(),
 	};
 	if input.continue_from.is_some() {
 		request.context["conversation"] = json!(conversation);

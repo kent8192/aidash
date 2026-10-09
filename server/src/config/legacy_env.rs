@@ -47,6 +47,11 @@ fn values_with_oidc(
 		("nats_url", "NATS_URL"),
 		("worker_count", "AIDASH_WORKER_SLOTS"),
 		("probe_listen", "AIDASH_PROBE_LISTEN"),
+		("prompt_cache_key", "AIDASH_PROMPT_CACHE_KEY"),
+		(
+			"prompt_cache_key_version",
+			"AIDASH_PROMPT_CACHE_KEY_VERSION",
+		),
 	] {
 		if let Some(value) = read(name) {
 			node.insert(key.into(), Value::String(value));
@@ -318,6 +323,23 @@ mod tests {
 		assert_eq!(db["options"]["application_name"], "worker");
 		assert_eq!(data["node"]["worker_count"], "2");
 		assert!(!data.contains_key("dashboard"));
+	}
+
+	#[rstest::rstest]
+	fn prompt_cache_variables_configure_the_node_and_stay_out_of_core() {
+		// Arrange
+		let key = "test-only-prompt-cache-key-0123456789abcdef";
+		// Act
+		let data = values(|name| match name {
+			"AIDASH_PROMPT_CACHE_KEY" => Some(key.into()),
+			"AIDASH_PROMPT_CACHE_KEY_VERSION" => Some("2".into()),
+			_ => None,
+		})
+		.unwrap();
+		// Assert
+		assert_eq!(data["node"]["prompt_cache_key"], key);
+		assert_eq!(data["node"]["prompt_cache_key_version"], "2");
+		assert!(!data.contains_key("core"));
 	}
 
 	#[rstest::rstest]
