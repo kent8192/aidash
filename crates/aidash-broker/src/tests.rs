@@ -250,6 +250,21 @@ async fn discovery_accepts_validated_model_paths_and_rejects_other_signed_models
 }
 
 #[tokio::test]
+async fn discovery_without_a_model_fails_closed_before_key_lookup() {
+	let f = Fixture::new().await;
+	let response = f
+		.request(&f.claims(), "GET", "/api/v1/models/endpoints", Value::Null)
+		.await;
+	assert_eq!(response.status(), 403);
+	assert_eq!(
+		json_body(response).await["error"]["code"],
+		"capability_model"
+	);
+	assert_eq!(f.source.reads.load(Ordering::SeqCst), 0);
+	assert_eq!(f.provider.calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
 async fn chat_rejects_provider_executed_tools_and_plugins_but_preserves_function_tools() {
 	let f = Fixture::new().await;
 	for (field, value) in [

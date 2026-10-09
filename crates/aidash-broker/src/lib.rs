@@ -236,7 +236,10 @@ fn route(request: &Request, claims: &Claims) -> Result<(Operation, String, usize
 		("POST", "embeddings") => (Operation::Embeddings, 1024 * 1024),
 		("GET", "endpoints/zdr") => (Operation::Discovery, 8 * 1024 * 1024),
 		("GET", p) if p.starts_with("models/") && p.ends_with("/endpoints") => {
-			let model = &p[7..p.len() - 10];
+			let model = p
+				.strip_prefix("models/")
+				.and_then(|path| path.strip_suffix("/endpoints"))
+				.ok_or(Failure::Model)?;
 			if aidash_domain::provider_credentials::validate_model_id(model).is_err()
 				|| model != claims.model
 			{
