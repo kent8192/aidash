@@ -20,6 +20,16 @@ run "fixed_roles_and_limited_deploy" {
   }
   override_resource {
     override_during = plan
+    target          = google_project_iam_custom_role.byok_retire[0]
+    values          = { name = "projects/aidash-byok-fixture/roles/aidashByokRetire" }
+  }
+  override_resource {
+    override_during = plan
+    target          = google_project_iam_custom_role.byok_retire_inventory[0]
+    values          = { name = "projects/aidash-byok-fixture/roles/aidashByokRetireInventory" }
+  }
+  override_resource {
+    override_during = plan
     target          = google_service_account.automation["deploy"]
     values = {
       email = "aidash-deploy@aidash-fixture.iam.gserviceaccount.com"
@@ -39,9 +49,26 @@ run "fixed_roles_and_limited_deploy" {
       google_project_iam_custom_role.byok_broker_read[0].role_id == "aidashByokBrokerRead" &&
       google_project_iam_custom_role.byok_broker_read[0].permissions == toset([
         "secretmanager.versions.access", "secretmanager.versions.get", "secretmanager.secrets.get",
-      ])
+      ]) &&
+      google_project_iam_custom_role.byok_retire[0].role_id == "aidashByokRetire" &&
+      google_project_iam_custom_role.byok_retire[0].permissions == toset(["secretmanager.secrets.delete"]) &&
+      google_project_iam_custom_role.byok_retire_inventory[0].role_id == "aidashByokRetireInventory" &&
+      google_project_iam_custom_role.byok_retire_inventory[0].permissions == toset(["secretmanager.secrets.list"])
     )
-    error_message = "Bootstrap must own the three fixed, least-privilege BYOK roles."
+    error_message = "Bootstrap must own the fixed BYOK roles; retirement must have no payload or IAM permissions."
+  }
+  assert {
+    condition = (
+      google_project_iam_member.byok_retire[0].project == var.byok_project_id &&
+      google_project_iam_member.byok_retire[0].role == "projects/aidash-byok-fixture/roles/aidashByokRetire" &&
+      google_project_iam_member.byok_retire[0].member == "serviceAccount:aidash-deploy@aidash-fixture.iam.gserviceaccount.com" &&
+      google_project_iam_member.byok_retire[0].condition[0].expression == "resource.name.startsWith('projects/123456789012/secrets/aidash-')" &&
+      google_project_iam_member.byok_retire_inventory[0].project == var.byok_project_id &&
+      google_project_iam_member.byok_retire_inventory[0].role == "projects/aidash-byok-fixture/roles/aidashByokRetireInventory" &&
+      google_project_iam_member.byok_retire_inventory[0].member == "serviceAccount:aidash-deploy@aidash-fixture.iam.gserviceaccount.com" &&
+      length(google_project_iam_member.byok_retire_inventory[0].condition) == 0
+    )
+    error_message = "Only bootstrap grants deploy prefix delete and unconditioned project list; payload reads remain broker-only."
   }
   assert {
     condition = (

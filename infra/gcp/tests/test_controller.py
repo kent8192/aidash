@@ -101,6 +101,7 @@ class ReconcileTests(unittest.TestCase):
         self.busy = False
         self.idle = False
         self.closed = set()
+        self.retirement_failure = False
         self.context = ExitStack()
         self.addCleanup(self.context.close)
         replacements = {
@@ -118,6 +119,7 @@ class ReconcileTests(unittest.TestCase):
             ),
             "public_health": lambda *args: None,
             "github": self.github,
+            "retire_provider_credentials": self.retire_credentials,
         }
         for key, value in replacements.items():
             self.context.enter_context(patch.object(controller, key, value))
@@ -136,7 +138,7 @@ class ReconcileTests(unittest.TestCase):
     def host(self, config, output, action, force=False):
         self.calls.append((action, output["instance"]))
         if action.startswith("seal"):
-            return {"sealed": not self.busy}
+            return {"sealed": force or not self.busy}
         if action == "health":
             return {"source_sha": self.cloud.managed[output["instance"]]["release_sha"]}
         return dict(
@@ -169,8 +171,70 @@ class ReconcileTests(unittest.TestCase):
             entry["release"] = {"source_sha": entry["sha"], "images": {}}
         return entry
 
-    def reconcile(self):
-        controller.reconcile(CONFIG, self.store)
+    def retire_credentials(self, config, identity):
+        if config.get("byok_project_id"):
+            self.calls.append(("retire_secrets", identity))
+            if self.retirement_failure:
+                raise RuntimeError("retirement inventory unavailable")
+
+    def reconcile(self, byok=False):
+        config = dict(CONFIG, byok_project_id="fixture-byok") if byok else CONFIG
+        controller.reconcile(config, self.store)
+
+    def test_byok_retirement_cleans_stopped_and_missing_vms_without_waking_them(self):
+        for status in ["TERMINATED", "MISSING"]:
+            with self.subTest(status=status):
+                self.request()
+                self.reconcile()
+                self.cloud.managed["test"]["running"] = False
+                self.cloud.status["test"] = status
+                self.request(action="destroy")
+                self.calls.clear()
+                apply = self.cloud.apply
+
+                def recorded_apply(managed, apply=apply, status=status, **kwargs):
+                    self.calls.append(("apply", bool(kwargs.get("retiring"))))
+                    if kwargs.get("retiring") or "test" not in managed:
+                        self.assertIn(("retire_secrets", "test"), self.calls)
+                    if "test" in managed and status == "MISSING":
+                        self.assertFalse(managed["test"]["vm_present"])
+                    apply(managed, **kwargs)
+
+                with patch.object(self.cloud, "apply", side_effect=recorded_apply):
+                    self.reconcile(byok=True)
+                self.assertNotIn("test", self.cloud.managed)
+                self.assertNotIn(("start", "test"), self.calls)
+                self.assertNotIn(("seal", "test"), self.calls)
+                self.assertFalse(any(call[0] == "bootstrap" for call in self.calls))
+                self.assertLess(self.calls.index(("retire_secrets", "test")), self.calls.index(("apply", True)))
+
+    def test_byok_cleanup_failure_preserves_identity_and_disk_then_retries(self):
+        self.request()
+        self.reconcile()
+        self.request(action="destroy")
+        self.calls.clear()
+        self.retirement_failure = True
+        plans = len(self.cloud.plans)
+        with self.assertRaises(RuntimeError):
+            self.reconcile(byok=True)
+        self.assertIn("test", self.cloud.managed)
+        self.assertEqual(self.store.state["environments"]["test"]["status"], "failed")
+        self.assertFalse(any(retiring for _, retiring in self.cloud.plans[plans:]))
+        self.assertLess(self.calls.index(("seal", "test")), self.calls.index(("retire_secrets", "test")))
+        self.assertNotIn(("unseal", "test"), self.calls)
+        self.retirement_failure = False
+        self.reconcile(byok=True)
+        self.assertNotIn("test", self.cloud.managed)
+
+    def test_partial_byok_retirement_still_cleans_without_a_managed_vm(self):
+        self.request()
+        self.reconcile()
+        self.request(action="destroy")
+        del self.cloud.managed["test"]
+        self.calls.clear()
+        self.reconcile(byok=True)
+        self.assertEqual(self.calls, [("retire_secrets", "test")])
+        self.assertEqual(self.store.state["environments"]["test"]["status"], "destroyed")
 
     def test_resume_of_running_host_does_not_authorize_a_future_spot_restart(self):
         self.request()

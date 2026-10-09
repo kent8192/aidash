@@ -356,6 +356,27 @@ change its own BYOK binding. Google documents this restriction for project
 `setIamPolicy` in [Set limits on granting roles](https://docs.cloud.google.com/iam/docs/setting-limits-on-granting-roles)
 and lists Projects/Resource Manager in the [IAM API attribute reference](https://docs.cloud.google.com/iam/docs/conditions-attribute-reference#iam_api_attributes).
 
+Environment retirement uses two additional fixed roles bound only by human-run
+bootstrap. `aidashByokRetire` contains `secretmanager.secrets.delete` and has the
+condition `resource.name.startsWith('projects/<byok-number>/secrets/aidash-')`.
+`aidashByokRetireInventory` contains only `secretmanager.secrets.list`, with an
+unconditioned project binding because [listing is authorized on the parent
+project](https://docs.cloud.google.com/secret-manager/docs/reference/rest/v1/projects.secrets.list).
+Neither role contains payload, version-read or IAM permissions, and neither is
+in deployment's Create/Manage role-grant allowlist. Residual: deploy can see
+BYOK secret names through project-level listing. The application still uses its
+PostgreSQL inventory and never lists Secret Manager secrets.
+
+Before deleting an environment's retained disk, identity or runtime IAM,
+retirement collects every inventory page and deletes only names starting with
+`aidash-<environment_id>-cred-`, then confirms that prefix is empty. Already
+deleted secrets are skipped on retry. Existing running app writers are sealed
+first; stopped or missing VMs are cleaned without a wake or recreation. Failure
+keeps the retained disk and identity for retry. This does not add effective
+delete power: deployment already controls bindings of Manage, which includes
+delete. Deployment remains the trust root under #151; bootstrap owns these
+fixed retirement grants and deployment cannot re-grant them or any read role.
+
 `aidashByokBrokerRead` contains `secretmanager.versions.access`, `versions.get`
 and `secrets.get`, but is unbound. No BYOK payload read grant or broker service
 account is provisioned by this change. Issue #137's human-run bootstrap owns
