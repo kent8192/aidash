@@ -77,6 +77,10 @@ metadata-only cleanup event without changing the deletion revision. Interrupted
 cleanup is retried from that tombstone and never restores effective access.
 Subject writes preserve their committed result if the separate authorization
 audit cannot finalize, and report that audit failure through static telemetry.
+Authorized mutation attempts finalize their allow audit independently of the
+operation result, including failed creates that leave pending or deleted metadata;
+the original operation error is preserved. Cleanup completion events use the same
+Tenant and Provider Credential read-policy checks in state, polling, and SSE.
 A supervised reconciler scans
 expired PostgreSQL pending records, disables unpinned active versions left
 by interrupted rotations, disables all versions of revoked records, and completes
