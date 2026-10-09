@@ -112,6 +112,215 @@ async fn deliveries(store: &Store, id: Uuid) -> Option<i64> {
 }
 
 #[rstest]
+#[case(true)]
+#[case(false)]
+#[tokio::test]
+async fn concurrent_control_receipt_collision_respects_the_winning_transaction(
+	#[future] database: DatabaseFixture,
+	bounds: Bounds,
+	#[case] commit_winner: bool,
+) {
+	use crate::apps::identity::models::AuthorizationWorkspace;
+	use reinhardt::query::SimpleExpr;
+	use reinhardt::query::prelude::IntoIden;
+	let database = database.await;
+	let (store, _, workspace) = setup(&database, bounds).await;
+	let other = store
+		.create_workspace("Other", "Independent workspace lock")
+		.await
+		.unwrap();
+	AuthorizationWorkspace::objects()
+		.create_with_conn(
+			&mut database.lease.handle(),
+			&AuthorizationWorkspace::build()
+				.workspace_id(other.id)
+				.tenant("acme")
+				.owner_subject("operator")
+				.finish(),
+		)
+		.await
+		.unwrap();
+	let index = crate::semantic::service::get_index(&store, &Actor::Operator, workspace)
+		.await
+		.unwrap();
+	crate::semantic::service::configure(
+		&store,
+		other.id,
+		crate::semantic::ConfigureIndex {
+			expected_revision: 0,
+			spec: serde_json::from_value(index.spec).unwrap(),
+		},
+	)
+	.await
+	.unwrap();
+	let operation_id = Uuid::now_v7();
+	let mut requests = Vec::new();
+	for workspace in [workspace, other.id] {
+		let bank = memory::create_participant(
+			&store,
+			&Actor::Operator,
+			workspace,
+			memory::CreateParticipant {
+				agent: reference("a"),
+			},
+		)
+		.await
+		.unwrap()
+		.bank;
+		let id = Uuid::now_v7();
+		memory::mutate(
+			&store,
+			&Actor::Operator,
+			mutation(
+				&bank,
+				Change::Add {
+					id,
+					content: content("Concurrent receipt reservation"),
+				},
+			),
+		)
+		.await
+		.unwrap();
+		requests.push(memory::Operation {
+			operation_id,
+			provider: reference("p"),
+			bank,
+			action: memory::Action::Pin { id },
+		});
+	}
+	let memory::Action::Pin { id: losing_id } = requests[1].action else {
+		unreachable!()
+	};
+	let retention = || {
+		Query::select()
+			.columns(["pinned", "reactivated_at"].map(Alias::new))
+			.from(Alias::new("memory_unit_retention"))
+			.and_where(Expr::col("unit_id").eq(Expr::value(losing_id)))
+			.to_string(PostgresQueryBuilder)
+	};
+	let before: Option<(bool, Option<DateTime<Utc>>)> = native::query_as(&retention())
+		.columns(&["pinned", "reactivated_at"])
+		.fetch_optional(&store.pool)
+		.await
+		.unwrap();
+	assert!(before.is_none());
+	let mut winner = Lease::begin(&store, &Actor::Operator).await.unwrap();
+	memory::operate_staged(
+		&store,
+		&mut winner,
+		requests[0].clone(),
+		None,
+		&mut Vec::new(),
+	)
+	.await
+	.unwrap();
+	let (send, receive) = tokio::sync::oneshot::channel();
+	let contender = async {
+		let mut lease = Lease::begin(&store, &Actor::Operator).await.unwrap();
+		let pid: i32 = native::query_scalar(
+			&Query::select()
+				.expr(SimpleExpr::FunctionCall(
+					Alias::new("pg_backend_pid").into_iden(),
+					vec![],
+				))
+				.to_string(PostgresQueryBuilder),
+		)
+		.scalar_one(&mut **lease.tx())
+		.await
+		.unwrap();
+		send.send(pid).unwrap();
+		let result = memory::operate_staged(
+			&store,
+			&mut lease,
+			requests[1].clone(),
+			None,
+			&mut Vec::new(),
+		)
+		.await;
+		lease.finish(result).await
+	};
+	let release = async {
+		let pid = receive.await.unwrap();
+		tokio::time::timeout(std::time::Duration::from_secs(30), async {
+			loop {
+				let row = native::query(
+					&Query::select()
+						.columns(["wait_event_type", "query"].map(Alias::new))
+						.from(Alias::new("pg_stat_activity"))
+						.and_where(Expr::col("pid").eq(pid))
+						.to_string(PostgresQueryBuilder),
+				)
+				.fetch_one(&store.pool)
+				.await
+				.unwrap();
+				if row
+					.try_get::<Option<String>>("wait_event_type")
+					.unwrap()
+					.as_deref() == Some("Lock")
+					&& row
+						.try_get::<String>("query")
+						.unwrap()
+						.contains("INSERT INTO \"memory_receipts\"")
+				{
+					break;
+				}
+				tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+			}
+		})
+		.await
+		.expect("contender must pass the empty receipt read and wait on the reservation");
+		if commit_winner {
+			winner.finish(Ok(())).await.unwrap();
+		} else {
+			let result: Result<()> = winner
+				.finish(Err(Error::Conflict("abandoned control".into())))
+				.await;
+			assert!(matches!(result, Err(Error::Conflict(_))));
+		}
+	};
+	let (result, ()) = tokio::join!(contender, release);
+	let after: Option<(bool, Option<DateTime<Utc>>)> = native::query_as(&retention())
+		.columns(&["pinned", "reactivated_at"])
+		.fetch_optional(&store.pool)
+		.await
+		.unwrap();
+	if commit_winner {
+		assert!(matches!(result, Err(Error::Conflict(_))), "{result:?}");
+		assert_eq!(
+			after, before,
+			"a losing reservation must not change retention"
+		);
+	} else {
+		assert!(
+			matches!(result, Ok(memory::Outcome::Units(_))),
+			"{result:?}"
+		);
+		assert!(after.is_some_and(|(pinned, anchor)| pinned && anchor.is_some()));
+	}
+	let mut lease = Lease::begin(&store, &Actor::Operator).await.unwrap();
+	let expected_bank = repository::bank_id(
+		&mut lease,
+		&requests[usize::from(!commit_winner)].bank,
+		false,
+	)
+	.await
+	.unwrap()
+	.unwrap();
+	let actual_bank: Uuid = native::query_scalar(
+		&Query::select()
+			.column(Alias::new("bank_id"))
+			.from(Alias::new("memory_receipts"))
+			.and_where(Expr::col("operation_id").eq(Expr::value(operation_id)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.scalar_one(&mut **lease.tx())
+	.await
+	.unwrap();
+	assert_eq!(actual_bank, expected_bank);
+	lease.finish(Ok(())).await.unwrap();
+}
+
+#[rstest]
 #[tokio::test]
 async fn local_usage_deduplicates_runs_across_revisions_and_rolls_back_with_failed_journal(
 	#[future] database: DatabaseFixture,
