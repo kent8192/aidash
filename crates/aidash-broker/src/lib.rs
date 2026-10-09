@@ -289,6 +289,16 @@ fn body_policy(body: &[u8], claims: &Claims, op: Operation) -> Result<(), Failur
 			})) {
 		return Err(Failure::ClaimViolation);
 	}
+	// The signed completion-token bound authorizes text output only.
+	if op == Operation::Chat
+		&& (value
+			.get("modalities")
+			.is_some_and(|modalities| modalities != &json!(["text"]))
+			|| value.get("image_config").is_some()
+			|| value.get("audio").is_some())
+	{
+		return Err(Failure::ClaimViolation);
+	}
 	if value.pointer("/provider/zdr") != Some(&Value::Bool(true)) {
 		return Err(Failure::ClaimViolation);
 	}

@@ -296,6 +296,46 @@ async fn chat_rejects_provider_executed_tools_and_plugins_but_preserves_function
 }
 
 #[tokio::test]
+async fn chat_rejects_non_text_output_and_media_configuration_before_key_lookup() {
+	let f = Fixture::new().await;
+	for (field, value) in [
+		("modalities", json!(["image"])),
+		("modalities", json!(["text", "image"])),
+		("modalities", json!(["audio"])),
+		("modalities", json!(["text", "audio"])),
+		("modalities", json!(["unknown"])),
+		("modalities", json!([])),
+		("modalities", json!("text")),
+		("modalities", Value::Null),
+		("image_config", json!({"aspect_ratio":"1:1"})),
+		("image_config", Value::Null),
+		("audio", json!({"voice":"alloy","format":"wav"})),
+		("audio", Value::Null),
+	] {
+		let mut body = chat();
+		body[field] = value;
+		let response = f
+			.request(&f.claims(), "POST", "/api/v1/chat/completions", body)
+			.await;
+		assert_eq!(response.status(), 403, "unauthorized {field}");
+		assert_eq!(
+			json_body(response).await["error"]["code"],
+			"capability_claim_violation"
+		);
+		assert_eq!(f.provider.calls.load(Ordering::SeqCst), 0);
+		assert_eq!(f.source.reads.load(Ordering::SeqCst), 0);
+	}
+	let mut body = chat();
+	body["modalities"] = json!(["text"]);
+	let response = f
+		.request(&f.claims(), "POST", "/api/v1/chat/completions", body)
+		.await;
+	assert_eq!(response.status(), 200);
+	json_body(response).await;
+	assert_eq!(f.provider.calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
 async fn maintenance_purposes_authorize_only_the_explicit_operation() {
 	let f = Fixture::new().await;
 	for purpose in [

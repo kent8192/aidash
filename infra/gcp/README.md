@@ -401,7 +401,12 @@ listed in `byok_broker_environments`, with each environment's Secret name prefix
 Deployment and runtime identities receive no BYOK payload read grant. Outputs
 `byok_project_id` and `secret_prefix` supply the broker's secret namespace.
 The same human-run bootstrap owns permanent signing keys and exports
-`broker_signing_keys`. Environment automation consumes their IDs and removes
+`broker_signing_keys`. It grants the deploy service account
+`roles/cloudkms.publicKeyViewer` on each signing CryptoKey so deployment plans
+can fetch verification PEMs; this grant does not authorize signing. Cloud KMS
+Admin does not provide the required
+[`cloudkms.cryptoKeyVersions.viewPublicKey`](https://docs.cloud.google.com/kms/docs/reference/rest/v1/projects.locations.keyRings.cryptoKeys.cryptoKeyVersions/getPublicKey)
+permission. Environment automation consumes their IDs and removes
 only service/signing bindings on disable or retirement. Keep the bootstrap
 environment set to preserve immutable KMS names. See the
 [broker deployment guide](../../crates/aidash-broker/README.md) for the input

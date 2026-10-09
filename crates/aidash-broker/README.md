@@ -86,6 +86,9 @@ field are rejected before Key Material lookup. OpenRouter's
 [server tools](https://openrouter.ai/docs/guides/features/server-tools/web-search)
 can execute external searches and add charges beyond model tokens, which the
 signed inference capability does not authorize.
+Chat output is text-only: omit `modalities` or use exactly `["text"]`. Non-text
+or malformed modalities and any `image_config` or `audio` field are rejected
+before Key Material lookup. Image and audio input in `messages` remains supported.
 
 Capability failures use `401` for signature, key, expiry or audience failures,
 and `403` for tenant, credential, operation, model or claim violations:
@@ -167,6 +170,8 @@ only the service/signing grant; bootstrap key and key-ring plans remain no-ops.
 Automation also refuses any plan that would delete a KMS key, key ring or version.
 Broker changes that remove or replace a live service drain all affected workers
 before any Terraform apply, including applies triggered by another interrupted VM.
+If preflight or Terraform fails, the controller attempts to restore admission on
+every successfully sealed host and reports restoration failures for reconciliation.
 
 ### Operators who applied a pre-merge draft
 

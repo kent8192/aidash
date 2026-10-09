@@ -38,6 +38,13 @@ resource "google_project_iam_member" "byok_broker_read" {
     expression = "resource.name.startsWith(\"projects/${data.google_project.byok[0].number}/secrets/aidash-${each.key}-cred-\")"
   }
 }
+// Deploy plans read verification PEMs without receiving signing authority.
+resource "google_kms_crypto_key_iam_member" "deploy_capability_public_key" {
+  for_each      = google_kms_crypto_key.capability
+  crypto_key_id = each.value.id
+  role          = "roles/cloudkms.publicKeyViewer"
+  member        = "serviceAccount:${google_service_account.automation["deploy"].email}"
+}
 output "broker_service_accounts" {
   value = { for id, account in google_service_account.broker : id => account.email }
 }

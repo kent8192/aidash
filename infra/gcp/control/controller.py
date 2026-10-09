@@ -564,8 +564,8 @@ def observe_interruptions(config, store, terraform, managed):
 
 
 def restore_broker_admission(config, outputs, sealed):
-    # No plan has run: restore every successful preflight seal, even if an
-    # earlier unseal fails. Keep failures explicit so reconciliation retries.
+    # Restore every successful preflight seal when reconciliation cannot reach
+    # host cleanup, even if an earlier unseal fails. Keep failures explicit.
     failed = False
     for identity in sorted(sealed):
         try:
@@ -618,7 +618,12 @@ def reconcile(config, store):
                 restore_broker_admission(config, outputs, presealed)
                 return
         if interrupted or broker_changed:
-            terraform.apply(managed)
+            try:
+                terraform.apply(managed)
+            except Exception:
+                if presealed:
+                    restore_broker_admission(config, outputs, presealed)
+                raise
         state, _ = store.read("lifecycle/state.json")
         failures = []
         for identity, snapshot in sorted(

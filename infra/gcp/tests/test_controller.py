@@ -372,6 +372,61 @@ class ReconcileTests(unittest.TestCase):
         self.assertEqual(self.cloud.plans, [])
         self.assertEqual(self.cloud.brokers, brokers)
 
+    def test_broker_apply_failure_restores_all_presealed_hosts_and_can_retry(self):
+        brokers = {identity: {"enabled": True, "image": "initial"} for identity in ["develop", "test"]}
+        self.config["develop_branch"] = "develop/0.1.0"
+        self.config["credential_brokers"] = brokers
+        for identity in brokers:
+            self.request(identity, source_ref="develop/0.1.0" if identity == "develop" else "main")
+            self.reconcile()
+        for desired in [{key: dict(value, enabled=False) for key, value in brokers.items()}, {}, {key: dict(value, image="rotated") for key, value in brokers.items()}]:
+            with self.subTest(desired=desired):
+                self.config["credential_brokers"] = brokers
+                self.reconcile()
+                self.config["credential_brokers"] = desired
+                self.calls.clear()
+                managed = deepcopy(self.cloud.managed)
+                def failed_apply(*args, **kwargs):
+                    self.calls.append(("apply", "all"))
+                    raise RuntimeError("plan/apply unavailable")
+                with patch.object(self.cloud, "apply", side_effect=failed_apply), self.assertRaisesRegex(RuntimeError, "plan/apply unavailable"):
+                    self.reconcile()
+                self.assertEqual(self.calls, [("seal", "develop"), ("seal", "test"), ("apply", "all"), ("unseal", "develop"), ("unseal", "test")])
+                self.assertEqual(self.cloud.managed, managed)
+                self.assertEqual(self.cloud.brokers, brokers)
+                self.calls.clear()
+                self.reconcile()
+                self.assertEqual(self.cloud.brokers, desired)
+                self.assertFalse(any(call[0] in {"start", "stop", "bootstrap"} for call in self.calls))
+
+    def test_failed_broker_apply_restoration_still_attempts_every_host(self):
+        brokers = {identity: {"enabled": True, "image": "initial"} for identity in ["develop", "test"]}
+        self.config["develop_branch"] = "develop/0.1.0"
+        self.config["credential_brokers"] = brokers
+        for identity in brokers:
+            self.request(identity, source_ref="develop/0.1.0" if identity == "develop" else "main")
+            self.reconcile()
+        self.config["credential_brokers"] = {}
+        self.calls.clear()
+        def failed_restore(config, output, action, force=False):
+            result = self.host(config, output, action, force)
+            if action == "unseal" and output["instance"] == "develop":
+                raise RuntimeError("unseal unavailable")
+            return result
+        with patch.object(self.cloud, "apply", side_effect=RuntimeError("apply unavailable")), patch.object(controller, "host", side_effect=failed_restore), self.assertRaisesRegex(RuntimeError, "admission restoration failed") as failure:
+            self.reconcile()
+        self.assertEqual(self.calls, [("seal", "develop"), ("seal", "test"), ("unseal", "develop"), ("unseal", "test")])
+        self.assertIn("apply unavailable", str(failure.exception.__context__))
+
+    def test_interruption_apply_failure_without_broker_seals_preserves_original_error(self):
+        self.request()
+        self.reconcile()
+        self.cloud.status["test"] = "TERMINATED"
+        self.calls.clear()
+        with patch.object(self.cloud, "apply", side_effect=RuntimeError("apply unavailable")), self.assertRaisesRegex(RuntimeError, "apply unavailable"):
+            self.reconcile()
+        self.assertEqual(self.calls, [])
+
     def test_broker_admission_restoration_attempts_all_hosts_after_a_failure(self):
         calls = []
         def restore(config, output, action):

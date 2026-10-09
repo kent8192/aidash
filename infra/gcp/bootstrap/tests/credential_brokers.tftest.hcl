@@ -18,6 +18,13 @@ run "broker_environments" {
   state_key = "broker-environments"
   variables { byok_broker_environments = ["production", "test"] }
   override_resource {
+    target = google_service_account.automation["deploy"]
+    values = {
+      email = "aidash-deploy@aidash-fixture.iam.gserviceaccount.com"
+      name  = "projects/aidash-fixture/serviceAccounts/aidash-deploy@aidash-fixture.iam.gserviceaccount.com"
+    }
+  }
+  override_resource {
     target = google_service_account.broker["production"]
     values = { email = "aidash-production-broker@aidash-fixture.iam.gserviceaccount.com" }
   }
@@ -53,11 +60,15 @@ run "broker_environments" {
     condition     = alltrue([for id, key in google_kms_crypto_key.capability : key.purpose == "ASYMMETRIC_SIGN" && key.name == "capability" && key.key_ring == google_kms_key_ring.capability[id].id && key.version_template[0].algorithm == "EC_SIGN_ED25519" && google_kms_key_ring.capability[id].name == "aidash-${id}-capability" && google_kms_key_ring.capability[id].project == var.project_id]) && keys(output.broker_signing_keys) == ["production", "test"]
     error_message = "Bootstrap alone owns and exports the permanent per-environment Ed25519 signing keys."
   }
+  assert {
+    condition     = keys(google_kms_crypto_key_iam_member.deploy_capability_public_key) == ["production", "test"] && alltrue([for id, grant in google_kms_crypto_key_iam_member.deploy_capability_public_key : grant.crypto_key_id == google_kms_crypto_key.capability[id].id && grant.role == "roles/cloudkms.publicKeyViewer" && grant.member == "serviceAccount:aidash-deploy@aidash-fixture.iam.gserviceaccount.com"])
+    error_message = "Bootstrap grants deploy only key-scoped public-key reads on each permanent signing key."
+  }
 }
 run "brokers_opt_in_only" {
   command = apply
   assert {
-    condition     = length(google_service_account.broker) == 0 && length(google_project_iam_member.byok_broker_read) == 0 && length(google_kms_crypto_key.capability) == 0
+    condition     = length(google_service_account.broker) == 0 && length(google_project_iam_member.byok_broker_read) == 0 && length(google_kms_crypto_key.capability) == 0 && length(google_kms_crypto_key_iam_member.deploy_capability_public_key) == 0
     error_message = "No broker identity or read grant without explicit opt-in."
   }
 }
@@ -68,7 +79,7 @@ run "without_provider_store" {
     byok_broker_environments = ["test"]
   }
   assert {
-    condition     = length(google_service_account.broker) == 0 && length(google_project_iam_member.byok_broker_read) == 0 && output.broker_service_accounts == {} && output.broker_signing_keys == {}
+    condition     = length(google_service_account.broker) == 0 && length(google_project_iam_member.byok_broker_read) == 0 && length(google_kms_crypto_key_iam_member.deploy_capability_public_key) == 0 && output.broker_service_accounts == {} && output.broker_signing_keys == {}
     error_message = "Disabled BYOK must create no broker identities or payload-access grants even with an environment opt-in."
   }
 }

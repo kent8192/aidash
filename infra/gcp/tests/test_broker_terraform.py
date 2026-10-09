@@ -67,6 +67,16 @@ class CredentialBrokerTerraformTests(unittest.TestCase):
         disabled = self.bootstrap_states["brokers_opt_in_only"]
         self.assertFalse([r for r in disabled if r["address"].startswith("google_service_account.broker[") or r["address"].startswith("google_project_iam_member.byok_broker_read[")])
 
+    def test_bootstrap_deploy_can_read_public_keys_without_a_signing_grant(self):
+        resources = self.bootstrap_states["broker_environments"]
+        keys = {r["values"]["id"] for r in resources if r["type"] == "google_kms_crypto_key"}
+        grants = [r["values"] for r in resources if r["type"] == "google_kms_crypto_key_iam_member"]
+        self.assertEqual(len(grants), 2)
+        self.assertEqual({grant["crypto_key_id"] for grant in grants}, keys)
+        self.assertTrue(all(grant["role"] == "roles/cloudkms.publicKeyViewer" and grant["member"] == "serviceAccount:aidash-deploy@aidash-fixture.iam.gserviceaccount.com" for grant in grants))
+        disabled = self.bootstrap_states["brokers_opt_in_only"]
+        self.assertFalse([r for r in disabled if r["type"] == "google_kms_crypto_key_iam_member"])
+
     def test_runtime_has_only_key_scoped_signing_and_no_broker_role(self):
         for run in ("production", "staging"):
             signer, = self.resources(run, "google_kms_crypto_key_iam_member")
