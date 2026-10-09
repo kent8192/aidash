@@ -143,7 +143,7 @@ resource "google_compute_instance" "host" {
     enable_vtpm                 = true
     enable_integrity_monitoring = true
   }
-  metadata = {
+  metadata = merge({
     enable-oslogin         = "TRUE"
     block-project-ssh-keys = "TRUE"
     serial-port-enable     = "FALSE"
@@ -156,7 +156,16 @@ resource "google_compute_instance" "host" {
       secret   = google_secret_manager_secret.runtime.secret_id
       preview  = var.environment.kind == "pr"
     })
-  }
+    }, var.byok_project_id != "" ? {
+    aidash-provider-credentials = jsonencode({
+      store = {
+        byok_project_id = var.byok_project_id
+        environment_id  = var.environment_id
+        fingerprint_env = "AIDASH_SECRET_PROVIDER_FINGERPRINT"
+      }
+      broker = null
+    })
+  } : {})
   depends_on = [
     google_service_account_iam_member.deploy, google_storage_bucket_iam_member.bundle,
     google_artifact_registry_repository_iam_member.pull, google_secret_manager_secret_iam_member.runtime,

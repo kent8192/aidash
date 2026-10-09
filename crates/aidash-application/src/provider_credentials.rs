@@ -229,10 +229,20 @@ impl Service {
 			let _cleanup = self.store.disable(&version).await;
 			return Err(error);
 		}
-		self.store.disable(&old).await?;
+		// The pin and revision are already committed. PostgreSQL's active row
+		// remains the durable inventory for retrying every unpinned version, so
+		// report cleanup separately instead of turning a successful rotation into
+		// an error that the caller cannot safely retry at its original revision.
+		let mut warnings = validation.warnings;
+		if self.store.disable(&old).await.is_err() {
+			warnings.push(
+				"Provider Credential rotation committed; previous version cleanup is pending"
+					.into(),
+			);
+		}
 		Ok(Validated {
 			provider_credential: row.into(),
-			warnings: validation.warnings,
+			warnings,
 		})
 	}
 	pub async fn revoke(

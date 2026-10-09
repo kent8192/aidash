@@ -29,6 +29,13 @@ keys, HMAC-SHA256, and the first eight bytes in hexadecimal. They are metadata,
 not bearer values. Key Material is not written to PostgreSQL, events, responses,
 request logs, or browser persistence.
 
+GCP deployment renders this non-secret Store descriptor from the
+`aidash-provider-credentials` VM metadata into a read-only Reinhardt settings
+source for migrations and the server. BYOK-enabled runtime secrets must contain
+the stable `AIDASH_SECRET_PROVIDER_FINGERPRINT` value; a missing or short value
+blocks startup. The key is never generated or changed during deployment. When
+BYOK is omitted, the managed Store remains unset and no fingerprint is required.
+
 Tenant metadata endpoints are GET `/api/tenants/{tenant}/provider-credentials`
 and GET `/api/tenants/{tenant}/provider-credentials/{id}`. Revoke and delete remain
 available, alongside `/api/tenants/{tenant}/provider-credential-bindings`.
@@ -54,7 +61,11 @@ composition accepts typed providers and `SecretString` directly and runs policy
 decisions; there is no Key Material HTTP serializer, SDK operation, environment
 variable, or settings input for this write path. Tests seed through it directly.
 Creation persists `pending` before provider verification and secret storage.
-Rotation pins a verified new version before disabling the old one. Revocation
+Rotation pins a verified new version before disabling the old one. If that
+post-commit disable fails, it returns the committed metadata with a cleanup
+warning; the PostgreSQL active-row inventory retains the reconciliation work.
+The supervised reconciler retries unpinned versions. With background tasks
+disabled, cleanup remains pending until reconciliation resumes. Revocation
 is irreversible and disables all versions; deletion destroys versions and keeps
 a metadata tombstone, but refuses a bound record. A supervised reconciler scans
 expired PostgreSQL pending records and disables unpinned active versions left

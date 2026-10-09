@@ -109,6 +109,7 @@ impl Scope for Lease {
 #[derive(Clone, Default)]
 struct FakeStore {
 	state: Arc<Mutex<StoredSecrets>>,
+	disable_failure: Arc<Mutex<Option<String>>>,
 }
 type StoredSecrets = BTreeMap<String, BTreeMap<String, (SecretString, &'static str)>>;
 #[async_trait]
@@ -140,6 +141,9 @@ impl Store for FakeStore {
 			.unwrap_or_default())
 	}
 	async fn disable(&self, version: &str) -> Result<()> {
+		if let Some(error) = self.disable_failure.lock().await.as_ref() {
+			return Err(Error::External(error.clone()));
+		}
 		let mut state = self.state.lock().await;
 		for versions in state.values_mut() {
 			if let Some(v) = versions.get_mut(version) {
@@ -496,5 +500,56 @@ async fn reconciler_disables_unpinned_versions_left_by_a_rotation_crash() {
 	assert_eq!(
 		states[&metadata.secret_resource][metadata.pinned_version.as_ref().unwrap()].1,
 		"enabled"
+	);
+}
+
+#[tokio::test]
+async fn committed_rotation_returns_metadata_and_reconciles_failed_old_version_cleanup() {
+	let (s, repo, store) = service();
+	let first = create(&s, "alpha").await.provider_credential;
+	let original = repo.0.lock().await.rows[&first.id].clone();
+	*store.disable_failure.lock().await = Some("rotation-cleanup-error-canary".into());
+	let rotated = s
+		.rotate(
+			"alpha",
+			first.id,
+			first.revision,
+			"replacement-key-5678".into(),
+			"actor",
+		)
+		.await
+		.unwrap();
+	assert_eq!(rotated.provider_credential.revision, first.revision + 1);
+	assert_eq!(rotated.provider_credential.last4, "5678");
+	assert_eq!(rotated.provider_credential.state, State::Active);
+	assert_eq!(
+		rotated.warnings,
+		[
+			"No spending limit is configured",
+			"Provider Credential rotation committed; previous version cleanup is pending",
+		]
+	);
+	let serialized = serde_json::to_string(&rotated).unwrap();
+	assert!(!serialized.contains("rotation-cleanup-error-canary"));
+	assert!(!serialized.contains("replacement-key"));
+	let committed = repo.0.lock().await.rows[&first.id].clone();
+	assert_eq!(committed.revision, rotated.provider_credential.revision);
+	assert_ne!(committed.pinned_version, original.pinned_version);
+	let old = original.pinned_version.unwrap();
+	let new = committed.pinned_version.unwrap();
+	assert!(s.reconcile().await.is_err());
+	{
+		let versions = store.state.lock().await;
+		assert_eq!(versions[&committed.secret_resource][&old].1, "enabled");
+		assert_eq!(versions[&committed.secret_resource][&new].1, "enabled");
+	}
+	*store.disable_failure.lock().await = None;
+	s.reconcile().await.unwrap();
+	let versions = store.state.lock().await;
+	assert_eq!(versions[&committed.secret_resource][&old].1, "disabled");
+	assert_eq!(versions[&committed.secret_resource][&new].1, "enabled");
+	assert_eq!(
+		repo.0.lock().await.rows[&first.id].revision,
+		committed.revision
 	);
 }
