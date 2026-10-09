@@ -1014,22 +1014,21 @@ async fn batch_scores_preserve_exact_live_support_dormancy_and_missing_usage_row
 		let mut body = content("Live observation support");
 		body.kind = Kind::Observation;
 		body.evidence = vec![source.evidence()];
-		supports.push(
-			memory::mutate(
-				&store,
-				&Actor::Operator,
-				mutation(
-					&bank,
-					Change::Add {
-						id: Uuid::now_v7(),
-						content: body,
-					},
-				),
-			)
-			.await
-			.unwrap()
-			.remove(0),
-		);
+		// Derived Units enter through the trusted engine repository boundary.
+		let mut lease = Lease::begin(&store, &Actor::Operator).await.unwrap();
+		let result = repository::mutate(
+			&mut lease,
+			&mutation(
+				&bank,
+				Change::Add {
+					id: Uuid::now_v7(),
+					content: body,
+				},
+			),
+			&bounds,
+		)
+		.await;
+		supports.push(lease.finish(result).await.unwrap().remove(0));
 	}
 	sources[2] = memory::mutate(
 		&store,
@@ -1107,8 +1106,8 @@ async fn batch_scores_preserve_exact_live_support_dormancy_and_missing_usage_row
 	for bound in ["max_units", "max_candidates", "max_results"] {
 		definition.metadata.0["config"]["policy"]["bounds"][bound] = json!(1);
 	}
-	definition
-		.update_with_db(&mut database.lease.handle())
+	Definition::objects()
+		.update_with_conn(&mut database.lease.handle(), &definition)
 		.await
 		.unwrap();
 	let mut lease = Lease::begin(&store, &Actor::Operator).await.unwrap();
@@ -1133,7 +1132,8 @@ async fn inclusive_snapshot_keeps_both_units_when_retention_changes_during_hydra
 	#[future] database: DatabaseFixture,
 	bounds: Bounds,
 ) {
-	use reinhardt::query::{ColumnRef, Func, LockType};
+	use reinhardt::query::prelude::IntoIden;
+	use reinhardt::query::{ColumnRef, LockType, SimpleExpr};
 	let database = database.await;
 	let d = Decay {
 		half_life_days: 1,
@@ -1227,7 +1227,10 @@ async fn inclusive_snapshot_keeps_both_units_when_retention_changes_during_hydra
 		let mut lease = Lease::begin(&store, &Actor::Operator).await.unwrap();
 		let pid: i32 = native::query_scalar(
 			&Query::select()
-				.expr(Func::cust(Alias::new("pg_backend_pid")))
+				.expr(SimpleExpr::FunctionCall(
+					Alias::new("pg_backend_pid").into_iden(),
+					vec![],
+				))
 				.to_string(PostgresQueryBuilder),
 		)
 		.scalar_one(&mut **lease.tx())
@@ -1293,6 +1296,18 @@ async fn inclusive_snapshot_keeps_both_units_when_retention_changes_during_hydra
 	assert_eq!(dormant, vec![admitted[0].clone()]);
 	lease.finish(Ok(())).await.unwrap();
 }
+
+#[reinhardt::post("/v1/embeddings")]
+async fn graph_embedding(
+	reinhardt::Json(input): reinhardt::Json<serde_json::Value>,
+) -> reinhardt::http::ViewResult<reinhardt::Response> {
+	reinhardt::Response::ok().with_json(&json!({
+		"model": input["model"],
+		"data": [{"index": 0, "embedding": [1.0, 0.1, 0.0]}],
+		"usage": {"prompt_tokens": 1}
+	}))
+}
+
 #[rstest]
 #[tokio::test]
 async fn inclusive_semantic_graph_links_active_seeds_to_dormant_neighbors(
@@ -1302,13 +1317,9 @@ async fn inclusive_semantic_graph_links_active_seeds_to_dormant_neighbors(
 	use crate::apps::knowledge::repositories::memory_scope::Scope;
 	use crate::apps::knowledge::services::memory_models::Models;
 	use aidash_application::ports::memory::MemoryScope;
-	use axum::{Json, Router, routing::post};
+	use reinhardt::ServerRouter;
 	use reinhardt::test::fixtures::server::test_server_guard;
-	let model = test_server_guard(Router::new().route("/v1/embeddings", post(
-        |Json(input): Json<serde_json::Value>| async move {
-            Json(json!({"model":input["model"],"data":[{"index":0,"embedding":[1.,0.1,0.]}],"usage":{"prompt_tokens":1}}))
-        }
-    ))).await;
+	let model = test_server_guard(ServerRouter::new().endpoint(graph_embedding)).await;
 	let database = database.await;
 	let d = Decay {
 		half_life_days: 1,
@@ -1382,6 +1393,21 @@ async fn inclusive_semantic_graph_links_active_seeds_to_dormant_neighbors(
 	.execute(&mut **lease.tx())
 	.await
 	.unwrap();
+	lease.finish(Ok(())).await.unwrap();
+	let mut definition = Definition::objects()
+		.filter(Definition::field_id().eq("p".to_string()))
+		.filter(Definition::field_version().eq("1.0.0".to_string()))
+		.get_with_db(&mut database.lease.handle())
+		.await
+		.unwrap();
+	for bound in ["max_units", "max_candidates", "max_results"] {
+		definition.metadata.0["config"]["policy"]["bounds"][bound] = json!(1);
+	}
+	Definition::objects()
+		.update_with_conn(&mut database.lease.handle(), &definition)
+		.await
+		.unwrap();
+	let mut lease = Lease::begin(&store, &Actor::Operator).await.unwrap();
 	let policy = memory::policy(&mut lease, &reference("p")).await.unwrap();
 	let models = Models::resolve(
 		&store,
@@ -1405,6 +1431,12 @@ async fn inclusive_semantic_graph_links_active_seeds_to_dormant_neighbors(
 	.recall_including_dormant_snapshot(&bank, 1)
 	.await
 	.unwrap();
+	assert_eq!(policy.bounds.max_units, 1);
+	assert_eq!(
+		snapshot.units.len(),
+		2,
+		"inclusive bounds apply independently"
+	);
 	assert_eq!(snapshot.units, admitted);
 	assert!(
 		snapshot
