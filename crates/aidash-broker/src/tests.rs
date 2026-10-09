@@ -217,6 +217,39 @@ async fn json_body(response: Response) -> Value {
 }
 
 #[tokio::test]
+async fn discovery_accepts_validated_model_paths_and_rejects_other_signed_models() {
+	let f = Fixture::new().await;
+	for model in ["single-model", "author/model", "organization/family/model"] {
+		aidash_domain::provider_credentials::validate_model_id(model).unwrap();
+		let mut claims = f.claims();
+		claims.model = model.into();
+		let uri = format!("/api/v1/models/{model}/endpoints");
+		let response = f.request(&claims, "GET", &uri, Value::Null).await;
+		assert_eq!(response.status(), 200, "validated model {model}");
+		json_body(response).await;
+		assert_eq!(f.provider.paths.lock().unwrap().last(), Some(&uri));
+
+		let calls = f.provider.calls.load(Ordering::SeqCst);
+		let reads = f.source.reads.load(Ordering::SeqCst);
+		let response = f
+			.request(
+				&claims,
+				"GET",
+				"/api/v1/models/other/model/endpoints",
+				Value::Null,
+			)
+			.await;
+		assert_eq!(response.status(), 403);
+		assert_eq!(
+			json_body(response).await["error"]["code"],
+			"capability_model"
+		);
+		assert_eq!(f.provider.calls.load(Ordering::SeqCst), calls);
+		assert_eq!(f.source.reads.load(Ordering::SeqCst), reads);
+	}
+}
+
+#[tokio::test]
 async fn maintenance_purposes_authorize_only_the_explicit_operation() {
 	let f = Fixture::new().await;
 	for purpose in [

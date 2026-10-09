@@ -55,18 +55,20 @@ and other headers are never copied upstream.
 The endpoint returned to workers ends with `/api/v1`; integrations append
 their existing paths unchanged.
 
-| Operation  | Method and broker path                         | Success response limit |
-| ---------- | ---------------------------------------------- | ---------------------- |
-| chat       | `POST /api/v1/chat/completions`                | 1 MiB                  |
-| discovery  | `GET /api/v1/models/{author}/{slug}/endpoints` | 2 MiB                  |
-| discovery  | `GET /api/v1/endpoints/zdr`                    | 8 MiB                  |
-| embeddings | `POST /api/v1/embeddings`                      | 1 MiB                  |
+| Operation  | Method and broker path                 | Success response limit |
+| ---------- | -------------------------------------- | ---------------------- |
+| chat       | `POST /api/v1/chat/completions`        | 1 MiB                  |
+| discovery  | `GET /api/v1/models/{model}/endpoints` | 2 MiB                  |
+| discovery  | `GET /api/v1/endpoints/zdr`            | 8 MiB                  |
+| embeddings | `POST /api/v1/embeddings`              | 1 MiB                  |
 
 Chat bodies must name the exact model, reject the `models` fallback field,
 include positive `max_tokens` no greater
 than `max_output_tokens`, and set `provider.zdr: true`. OpenRouter embeddings
-must name the exact model and set ZDR. Model discovery paths must match the
-claim; ZDR discovery is an operation-wide catalog. Chat requests are limited to
+must name the exact model and set ZDR. Model discovery paths use the shared
+Provider Credential model-ID validator, including single-segment and multiple-
+segment IDs, and must exactly match the signed claim; ZDR discovery is an
+operation-wide catalog. Chat requests are limited to
 16 MiB so the application's 8 MiB raw-media allowance fits after base64 encoding
 and JSON framing. Other requests remain limited to 1 MiB. Query strings,
 absolute URIs, percent-encoded paths, empty segments and
