@@ -13,12 +13,12 @@ use crate::{
 use aidash_application::{Result, ports::execution::admission::InferenceAdmissionRepository};
 use async_trait::async_trait;
 use std::sync::Arc;
-use tokio::sync::Mutex;
+use tokio::sync::RwLock;
 use uuid::Uuid;
 pub(crate) struct Admissions<'a> {
 	pub(crate) store: &'a Store,
 	pub(crate) remote: Option<&'a Federation>,
-	pub(crate) access: &'a Arc<Mutex<Access>>,
+	pub(crate) access: &'a Arc<RwLock<Access>>,
 	pub(crate) run: &'a Run,
 }
 #[async_trait]
@@ -28,7 +28,7 @@ impl InferenceAdmissionRepository<InferenceReservation> for Admissions<'_> {
 	}
 	async fn suspend(&self) -> Result<()> {
 		let result: NativeResult<()> = async {
-			let mut access = self.access.lock().await;
+			let mut access = self.access.write().await;
 			if access.tx.is_active() {
 				access.suspend().await?;
 			}
@@ -62,7 +62,7 @@ impl InferenceAdmissionRepository<InferenceReservation> for Admissions<'_> {
 		window: usize,
 		output: u32,
 	) -> Result<Option<InferenceReservation>> {
-		let mut access = self.access.lock().await;
+		let mut access = self.access.write().await;
 		crate::generation::budget::reserve(
 			&mut access,
 			self.store,

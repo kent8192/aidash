@@ -39,6 +39,35 @@ pub struct Store {
 	pub node_id: String,
 	pub semantic_client: reqwest::Client,
 	pub(crate) recovery_cursors: std::sync::Arc<run_state::RecoveryCursors>,
+	/// The process Tool Parallelism ceiling, shared by every clone of this Store.
+	pub tool_slots: aidash_application::ports::execution::ToolSlots,
+}
+
+/// Data connections of each runtime worker pool.
+const WORKER_POOL_CONNECTIONS: usize = 8;
+/// Worker slots are capped at four, each holding an outer authority transaction.
+const MAX_WORKER_SLOTS: usize = 4;
+/// Each concurrent call holds one data connection for its inner transaction,
+/// beside the worker slots' outer transactions, so the worker pool bounds it.
+const MAX_TOOL_PARALLELISM: usize = WORKER_POOL_CONNECTIONS - MAX_WORKER_SLOTS;
+
+/// The process Tool Parallelism ceiling from `AIDASH_TOOL_PARALLELISM`; a pool
+/// of `pool_connections` must leave the same headroom beside the worker slots.
+pub(crate) fn tool_parallelism(value: Option<&str>, pool_connections: usize) -> Result<usize> {
+	let ceiling = match value {
+		Some(value) => value
+			.parse::<usize>()
+			.ok()
+			.filter(|value| (1..=MAX_TOOL_PARALLELISM).contains(value))
+			.ok_or_else(|| Error::Invalid("invalid AIDASH_TOOL_PARALLELISM".into()))?,
+		None => 1,
+	};
+	if ceiling > 1 && ceiling + MAX_WORKER_SLOTS > pool_connections {
+		return Err(Error::Invalid(
+			"AIDASH_TOOL_PARALLELISM leaves no database pool headroom for worker slots".into(),
+		));
+	}
+	Ok(ceiling)
 }
 
 pub use crate::apps::execution::serializers::run_inputs::RunInput;
@@ -163,6 +192,10 @@ impl Store {
 	}
 
 	pub async fn from_pool(pool: sqlx::PgPool, node_id: String) -> Result<Self> {
+		let tool_slots = aidash_application::ports::execution::ToolSlots::new(tool_parallelism(
+			std::env::var("AIDASH_TOOL_PARALLELISM").ok().as_deref(),
+			pool.options().get_max_connections() as usize,
+		)?);
 		let data_pool: Pool = pool.clone().into();
 		crate::semantic::repositories::discard::legacy(&data_pool).await?;
 		let control_pool = pool
@@ -189,6 +222,7 @@ impl Store {
 			node_id,
 			semantic_client: crate::semantic::backend::client()?,
 			recovery_cursors: Default::default(),
+			tool_slots,
 			capabilities: crate::capabilities::Runtime::from_env()?,
 		}
 		.with_memory_recovery(memory_recovery))
@@ -238,7 +272,7 @@ impl Store {
 			.pool
 			.options()
 			.clone()
-			.max_connections(8)
+			.max_connections(WORKER_POOL_CONNECTIONS as u32)
 			.idle_timeout(std::time::Duration::from_secs(10))
 			.connect_with(self.pool.connect_options().as_ref().clone())
 			.await?;
@@ -250,6 +284,7 @@ impl Store {
 			node_id: self.node_id.clone(),
 			semantic_client: self.semantic_client.clone(),
 			recovery_cursors: self.recovery_cursors.clone(),
+			tool_slots: self.tool_slots.clone(),
 			capabilities: self.capabilities.clone(),
 		})
 	}
@@ -285,6 +320,7 @@ impl Store {
 			node_id: self.node_id.clone(),
 			semantic_client: self.semantic_client.clone(),
 			recovery_cursors: self.recovery_cursors.clone(),
+			tool_slots: self.tool_slots.clone(),
 			capabilities: self.capabilities.clone(),
 		})
 	}
@@ -3180,6 +3216,41 @@ impl Store {
 		let mut tx = crate::database::native::begin(&self.pool).await?;
 		self.ensure_run_response_current_in(&mut tx, run.id, worker, run.included_input_seq())
 			.await?;
+		self.persist_tool_input_in(&mut tx, run, worker).await?;
+		let invocation = self
+			.start_invocation_in(&mut tx, run, key, tool, input, replay_safe)
+			.await?;
+		tx.commit().await?;
+		Ok(invocation)
+	}
+	/// Admit a Tool Batch in one transaction: the Run, whose ToolCall state
+	/// records the batch end, and a STARTED row for every replay-safe call.
+	pub async fn invocation_start_batch(
+		&self,
+		run: &Run,
+		worker: Uuid,
+		calls: &[(&str, &str, &Value)],
+	) -> Result<Vec<Invocation>> {
+		let mut tx = crate::database::native::begin(&self.pool).await?;
+		self.ensure_run_response_current_in(&mut tx, run.id, worker, run.included_input_seq())
+			.await?;
+		self.persist_tool_input_in(&mut tx, run, worker).await?;
+		let mut invocations = Vec::with_capacity(calls.len());
+		for (key, tool, input) in calls {
+			invocations.push(
+				self.start_invocation_in(&mut tx, run, key, tool, input, true)
+					.await?,
+			);
+		}
+		tx.commit().await?;
+		Ok(invocations)
+	}
+	async fn persist_tool_input_in(
+		&self,
+		tx: &mut crate::database::native::Transaction,
+		run: &Run,
+		worker: Uuid,
+	) -> Result<()> {
 		// The bounded call and any prepared workspace-read chunk must survive a
 		// worker crash once the idempotency key becomes durable. Keep this update
 		// and its derived phase in the same transaction as invocation creation.
@@ -3233,6 +3304,17 @@ impl Store {
 				"worker lease lost before persisting tool input".into(),
 			));
 		}
+		Ok(())
+	}
+	async fn start_invocation_in(
+		&self,
+		tx: &mut crate::database::native::Transaction,
+		run: &Run,
+		key: &str,
+		tool: &str,
+		input: &Value,
+		replay_safe: bool,
+	) -> Result<Invocation> {
 		let created = {
 			let query_bind_1 = key;
 			let query_bind_2 = run.id;
@@ -3329,14 +3411,13 @@ impl Store {
 		}
 		if created {
 			self.event(
-				&mut tx,
+				tx,
 				(run.home_node == self.node_id).then_some(run.workspace_id),
 				"tool.started",
 				json!({"run_id":run.id,"tool":tool,"idempotency_key":key,"input":input}),
 			)
 			.await?;
 		}
-		tx.commit().await?;
 		Ok(invocation)
 	}
 	pub async fn invocation_finish(
@@ -4372,3 +4453,7 @@ impl Store {
 #[cfg(test)]
 #[path = "../tests/targeted_leases.rs"]
 mod targeted_leases;
+
+#[cfg(test)]
+#[path = "../tests/store_tool_parallelism.rs"]
+mod store_tool_parallelism;

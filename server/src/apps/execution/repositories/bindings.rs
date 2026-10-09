@@ -18,7 +18,11 @@ use aidash_domain::{
 		bindings::{QualifiedRef, ResolvedBinding},
 		rules::digest,
 	},
-	tool::{ToolContract, providers::ToolDescriptor},
+	tool::{
+		ToolContract,
+		concurrency::{ConcurrentCall, ReadCeilings, batchable, core_call},
+		providers::ToolDescriptor,
+	},
 };
 use async_trait::async_trait;
 use serde_json::Value;
@@ -46,6 +50,10 @@ impl ProviderSet for Providers {
 		let descriptor: ToolDescriptor = serde_json::from_value(binding.definition.config.clone())?;
 		self.implementation(&descriptor)?;
 		let contract = self.contract(&descriptor, &binding.identity)?;
+		let operation = descriptor
+			.transport
+			.is_none()
+			.then(|| descriptor.operation.clone());
 		let tool: Arc<dyn Tool> = if let Some(transport) = descriptor.transport {
 			Arc::new(PluginTool {
 				entry: binding.definition.clone(),
@@ -68,6 +76,7 @@ impl ProviderSet for Providers {
 		Ok(Arc::new(ProviderTool {
 			tool,
 			contract,
+			operation,
 			store: self.federation.store.clone(),
 			home: self.home.clone(),
 		}))
@@ -76,6 +85,8 @@ impl ProviderSet for Providers {
 struct ProviderTool {
 	tool: Arc<dyn Tool>,
 	contract: ToolContract,
+	/// The core provider operation; integrations carry a transport instead.
+	operation: Option<String>,
 	store: Store,
 	home: Home,
 }
@@ -103,6 +114,20 @@ impl ExecutionTool for ProviderTool {
 			)
 			.await
 			.map_err(Into::into)
+	}
+	fn concurrent_call(&self, input: &Value) -> Option<ConcurrentCall> {
+		if !batchable(&self.contract.behavior) {
+			return None;
+		}
+		let limits = &self.store.capabilities.0.limits;
+		core_call(
+			self.operation.as_deref()?,
+			input,
+			ReadCeilings {
+				read_bytes: limits.read_bytes,
+				search_bytes: limits.search_bytes,
+			},
+		)
 	}
 }
 
