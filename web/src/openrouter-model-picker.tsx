@@ -214,17 +214,17 @@ export function OpenRouterModelPicker({
             ? "対応する投影バージョン"
             : "Supported projection versions"}
         </legend>
-        <label>
+        <label className="check">
           <input
             type="checkbox"
             name="projection_versions"
             value="legacy"
             defaultChecked
-          />{" "}
+          />
           legacy
         </label>
-        <label>
-          <input type="checkbox" name="projection_versions" value="ordered" />{" "}
+        <label className="check">
+          <input type="checkbox" name="projection_versions" value="ordered" />
           ordered
         </label>
       </fieldset>
