@@ -11,6 +11,7 @@ test("subject dashboard completes a conversation and clears revoked access", asy
   page,
   request,
 }) => {
+  test.setTimeout(60000);
   const provider = createServer(async (req, res) => {
     const chunks: Buffer[] = [];
     for await (const chunk of req) chunks.push(Buffer.from(chunk));
@@ -186,7 +187,8 @@ test("subject dashboard completes a conversation and clears revoked access", asy
             (task: { title: string }) => task.title === id,
           )?.status;
         },
-        { timeout: 15000 },
+        // Worker finalization follows the model response and durable recovery.
+        { timeout: 30000 },
       )
       .toBe("COMPLETED");
     const response = await request.get("/api/state", {

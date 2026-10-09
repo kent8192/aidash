@@ -1,13 +1,11 @@
 //! Repository tests verify the real Delivery savepoint, rather than a Usage-only mock.
 use super::*;
+use crate::apps::execution::test_database::{DatabaseFixture, database};
 use crate::apps::knowledge::services::native_memory as memory;
 use crate::authorization::identity::Actor;
 use reinhardt::query::QueryStatementBuilder;
 use rstest::rstest;
 use serde_json::json;
-#[path = "../../../execution/tests/support/native_database.rs"]
-mod native_database;
-use native_database::{DatabaseFixture, database};
 #[allow(dead_code)] // Shared fixture includes helpers used only by the integration binary.
 #[path = "../../tests/native_memory/fixture.rs"]
 mod fixture;

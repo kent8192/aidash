@@ -88,8 +88,8 @@ pure retention and RRF functions without credentials or live models:
 cargo test -p aidash-domain memory::tests::fixed_clock_decay_evaluation
 ```
 
-| #122 scenario | Required observation | Deterministic evidence |
-| --- | --- | --- |
+| #122 scenario                                   | Required observation                                                                  | Deterministic evidence                                              |
+| ----------------------------------------------- | ------------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
 | #140 stale relevant support versus recent noise | Matched decay on/off preserves relevant support; recency cannot manufacture relevance | Fixed-clock paired TOML fixture and retention/prior/tie regressions |
 
 Memory policies may opt into integer `decay` parameters. Without that field,
