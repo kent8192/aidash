@@ -561,21 +561,18 @@ impl<'a> Executor<'a> {
 				} else {
 					None
 				};
-				let attempt = InferenceAttemptId::new();
-				store.start_inference(run, token, attempt).await?;
 				// Race only inference, not replay-unsafe tools or durable transitions.
 				// Release node-wide visibility and authorization row locks while the
 				// provider waits; both boundaries are reacquired before accepting output.
-				let suspended = match guard {
-					Some(guard) => guard.suspend().await,
-					None => Ok(()),
-				};
-				if let Err(error) = match suspended {
-					Ok(()) => visibility.suspend().await,
-					Err(error) => Err(error),
-				} {
-					self.interrupt_inference(run, token, attempt, InterruptionReason::StreamError)
-						.await;
+				if let Some(guard) = guard {
+					guard.suspend().await?;
+				}
+				visibility.suspend().await?;
+				// Recording the attempt locks the Run row, which the authority scope
+				// can hold until it is suspended.
+				let attempt = InferenceAttemptId::new();
+				if let Err(error) = store.start_inference(run, token, attempt).await {
+					visibility.resume().await?;
 					return Err(error);
 				}
 				let started = tokio::time::Instant::now();
@@ -614,6 +611,14 @@ impl<'a> Executor<'a> {
 						Err(error) => Inference::Interrupted(InterruptionReason::StreamError, error),
 					},
 				};
+				// A recheck dropped by another branch can stop after reacquiring the
+				// authority scope; release it before outcome writes lock the Run row.
+				if let Some(guard) = guard
+					&& let Err(error) = guard.suspend().await
+				{
+					visibility.resume().await?;
+					return Err(error);
+				}
 				let resumed = visibility.resume().await;
 				let result = match inference {
 					Inference::Response(response) => response,
