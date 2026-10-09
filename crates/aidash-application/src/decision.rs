@@ -10,6 +10,7 @@ use chrono::{DateTime, Utc};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
+mod dispatch;
 mod state;
 pub use state::{BuiltState, build_compaction_state};
 
@@ -31,9 +32,8 @@ pub struct DecisionGate<'a> {
 }
 pub struct Evaluation<'a> {
 	pub boundary: &'a Boundary,
-	pub decider: &'a DeciderPin,
+	pub decider: &'a BoundDecider,
 	pub definition: &'a aidash_domain::registry::Entry,
-	pub restrictions: &'a Restrictions,
 	pub disclosure: &'a Disclosure,
 	pub now: DateTime<Utc>,
 }
@@ -63,35 +63,38 @@ impl DecisionGate<'_> {
 				"decision input differs from its admitted revision".into(),
 			));
 		}
-		let config = input.decider.check(input.definition)?;
-		if input.decider.identity.registry_node != input.boundary.node
-			|| self.provider.implementation_id() != input.decider.provider_implementation
-			|| self.provider.configuration_digest()? != input.decider.configuration_digest
+		let config = input.decider.pin.check(input.definition)?;
+		if config != input.decider.config {
+			return Err(Error::Invalid(
+				"bound Decider configuration differs from its admitted pin".into(),
+			));
+		}
+		if input.decider.pin.identity.registry_node != input.boundary.node
+			|| self.provider.implementation_id() != input.decider.pin.provider_implementation
+			|| self.provider.configuration_digest()? != input.decider.pin.configuration_digest
 		{
 			return Err(Error::Invalid(
 				"decision provider differs from the executing Run pin".into(),
 			));
 		}
-		let approval = self
-			.authority
-			.check(input.boundary, input.decider, &input.disclosure.sources)
-			.await?;
-		let mut restrictions = input
-			.restrictions
-			.intersect(&approval.restrictions, &config)?;
-		let mut state_expiry = approval
-			.state_retention
-			.expires_at(input.now, input.disclosure.source_expiry)?;
-		let built =
-			build_compaction_state(context, input.boundary, input.disclosure, &restrictions)?;
+		input.decider.restrictions.validate(&config)?;
+		let mut restrictions = input.decider.restrictions.clone();
+		let mut state_expiry = None;
+		let built = build_compaction_state(
+			context,
+			input.boundary,
+			input.disclosure,
+			&input.decider.restrictions,
+		)?;
 		let state_digest = digest(&built.state);
-		let id = Uuid::new_v4();
+		let id = dispatch::decision_id(input, &state_digest, budget.window);
+		let recovered = self.journal.recover(id, input.boundary).await?;
 		let mut evidence = Evidence {
 			version: EVIDENCE_VERSION,
 			id,
 			boundary: input.boundary.clone(),
 			hook: config.hook,
-			decider: input.decider.clone(),
+			decider: input.decider.pin.clone(),
 			provider_contract: config.provider_contract.clone(),
 			model: config.model.clone(),
 			configuration_parameters_digest: config.parameters_digest()?,
@@ -119,7 +122,45 @@ impl DecisionGate<'_> {
 				truncated: 0,
 			},
 			state: StateReference::Disabled,
+			state_retention: StateRetentionWitness::Disabled,
 		};
+		dispatch::validate_recovered_identity(
+			input,
+			id,
+			&state_digest,
+			&evidence.questions,
+			&recovered,
+		)?;
+		for prior in &recovered {
+			evidence
+				.attempts
+				.push(dispatch::attempt_evidence(&prior.permit, prior.status));
+			if let Some(answers) = &prior.answers {
+				evidence.answers.extend(answers.clone());
+			}
+		}
+		let initial_approval = self
+			.authority
+			.check(
+				input.boundary,
+				&input.decider.pin,
+				&input.disclosure.sources,
+			)
+			.await
+			.and_then(|approval| {
+				restrictions = restrictions.intersect(&approval.restrictions, &config)?;
+				evidence.restrictions = restrictions.clone();
+				state_expiry = approval
+					.state_retention
+					.expires_at(input.now, input.disclosure.source_expiry)?;
+				Ok(())
+			});
+		if let Err(error) = initial_approval {
+			evidence.reason = dispatch::error_reason(&error, Reason::AuthorityFailure);
+			self.journal.commit(&evidence, None, None).await?;
+			return Err(error);
+		}
+
 		if evidence.questions.is_empty()
 			|| restrictions.forbid_apply && config.mode == Mode::Enforce
 		{
@@ -146,124 +187,68 @@ impl DecisionGate<'_> {
 				));
 			}
 		};
-		// No arbitrary batch/concurrency ceiling. Every batch receives its own live
-		// authority check and durable reservation. No successful subset is applied.
-		let attempts = futures_util::future::join_all(requests.iter().map(|request| async {
-			let transport = self.provider.prepare(request)?;
-			let current = self
-				.authority
-				.check(input.boundary, input.decider, &input.disclosure.sources)
-				.await?;
-			input
-				.restrictions
-				.intersect(&current.restrictions, &config)?;
-			current
-				.state_retention
-				.expires_at(input.now, input.disclosure.source_expiry)?;
-			if current.restrictions.forbid_apply && config.mode == Mode::Enforce {
-				return Err(Error::Forbidden);
-			}
-			let record = DispatchRecord {
-				attempt: Uuid::new_v4(),
-				decision: id,
-				boundary: input.boundary.clone(),
-				decider: input.decider.clone(),
-				request_digest: request.digest(),
-				state_digest: state_digest.clone(),
-				questions: request.questions.keys().cloned().collect(),
-				mode: config.mode,
-			};
-			let permit = self.journal.reserve(&record).await?;
-			if permit.record != record
-				|| permit.owner_receipts.is_empty()
-				|| permit.owner_receipts.values().any(Uuid::is_nil)
-			{
-				return Err(Error::Invalid(
-					"decision dispatch lacks exact durable owner receipts".into(),
-				));
-			}
-			let result = transport.dispatch().await;
-			let (mut status, mut answers, mut failure) = match result {
-				Ok(answers) if validate_answers(&request.questions, &answers).is_ok() => {
-					(AttemptStatus::Answered, Some(answers), None)
-				}
-				Ok(_) | Err(DispatchError::InvalidAnswers) => {
-					(AttemptStatus::Failed, None, Some(Reason::InvalidAnswers))
-				}
-				Err(DispatchError::ProviderFailure(_)) => (
-					AttemptStatus::Uncertain,
-					None,
-					Some(Reason::ProviderFailure),
-				),
-			};
-			if self
-				.journal
-				.finish_attempt(&permit, answers.as_ref(), status)
-				.await
-				.is_err()
-			{
-				// The call remains charged, but its answer is not a durable recovery source.
-				status = AttemptStatus::Uncertain;
-				answers = None;
-				failure = Some(Reason::ProviderFailure);
-			}
-			Ok::<_, Error>((
-				AttemptEvidence {
-					id: record.attempt,
-					request_digest: record.request_digest,
-					questions: record.questions,
-					status,
-					owner_receipts: permit.owner_receipts,
-				},
-				answers,
-				current,
-				failure,
-			))
-		}))
+		let records: Vec<_> = requests
+			.iter()
+			.map(|request| dispatch::record(input, id, &state_digest, request))
+			.collect();
+		if let Err(error) = dispatch::validate_recovered_plan(&records, &requests, &recovered) {
+			evidence.reason = Reason::JournalFailure;
+			self.journal.commit(&evidence, None, None).await?;
+			return Err(error);
+		}
+		// Every fresh batch rechecks authority after reservation. Recovered attempts
+		// reuse only durable answers; uncertain charges never authorize another I/O.
+		let attempts = futures_util::future::join_all(requests.iter().zip(&records).map(
+			|(request, record)| self.dispatch_batch(request, record, &recovered, input, &config),
+		))
 		.await;
 		let mut failure = None;
 		for attempt in attempts {
-			match attempt {
-				Ok((record, answers, current, reason)) => {
+			if let Some(record) = attempt.evidence {
+				if let Some(saved) = evidence.attempts.iter_mut().find(|a| a.id == record.id) {
+					*saved = record;
+				} else {
 					evidence.attempts.push(record);
-					restrictions = restrictions.intersect(&current.restrictions, &config)?;
-					let expiry = current
-						.state_retention
-						.expires_at(input.now, input.disclosure.source_expiry)?;
-					state_expiry = match (state_expiry, expiry) {
-						(Some(old), Some(new)) => Some(old.min(new)),
-						_ => None,
-					};
-					if let Some(answers) = answers {
-						evidence.answers.extend(answers);
-					}
-					failure = failure.or(reason);
 				}
-				Err(Error::Forbidden) => failure = Some(Reason::Forbidden),
-				Err(_) => failure = failure.or(Some(Reason::ProviderFailure)),
+			}
+			evidence.answers.extend(attempt.answers);
+			if let Some(current) = attempt.restrictions {
+				restrictions = restrictions.intersect(&current, &config)?;
+			}
+			if let Some(expiry) = attempt.state_expiry {
+				state_expiry = dispatch::intersect_expiry(state_expiry, expiry);
+			}
+			if let Some((reason, error)) = attempt.failure
+				&& (failure.is_none() || reason == Reason::Forbidden)
+			{
+				failure = Some((reason, error));
 			}
 		}
+		evidence.restrictions = restrictions.clone();
 		if failure.is_none() && validate_answers(&evidence.questions, &evidence.answers).is_err() {
-			failure = Some(Reason::InvalidAnswers);
+			failure = Some((
+				Reason::InvalidAnswers,
+				Error::Invalid("incomplete durable decision answers".into()),
+			));
 		}
-		if let Some(reason) = failure {
+		if let Some((reason, error)) = failure {
 			evidence.reason = reason;
 			self.journal.commit(&evidence, None, None).await?;
-			if reason == Reason::Forbidden {
-				return Err(Error::Forbidden);
-			}
-			return Err(Error::Invalid(
-				"decision requests did not produce complete durable answers".into(),
-			));
+			return Err(error);
 		}
 		// Current stricter rules may retain more events, but never change the pin or mode.
 		// Invalid final approvals must retain the same fenced evidence as revocation.
 		let final_approval = self
 			.authority
-			.check(input.boundary, input.decider, &input.disclosure.sources)
+			.check(
+				input.boundary,
+				&input.decider.pin,
+				&input.disclosure.sources,
+			)
 			.await
 			.and_then(|current| {
 				let restrictions = restrictions.intersect(&current.restrictions, &config)?;
+				evidence.restrictions = restrictions.clone();
 				let expiry = current
 					.state_retention
 					.expires_at(input.now, input.disclosure.source_expiry)?;
@@ -272,7 +257,7 @@ impl DecisionGate<'_> {
 		let (current_restrictions, current_expiry) = match final_approval {
 			Ok(approval) => approval,
 			Err(error) => {
-				evidence.reason = Reason::Forbidden;
+				evidence.reason = dispatch::error_reason(&error, Reason::AuthorityFailure);
 				self.journal.commit(&evidence, None, None).await?;
 				return Err(error);
 			}
@@ -339,6 +324,10 @@ impl DecisionGate<'_> {
 		};
 		let retained = state_expiry.and_then(|expires_at| {
 			let state_id = Uuid::new_v4();
+			evidence.state_retention = StateRetentionWitness::Enabled {
+				id: state_id,
+				expires_at,
+			};
 			if expires_at <= self.journal.now() {
 				evidence.state = StateReference::Expired {
 					id: state_id,
