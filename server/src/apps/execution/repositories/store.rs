@@ -3374,7 +3374,7 @@ impl Store {
 		dispatch: &aidash_domain::provider::usage::UsageDispatch,
 	) -> Result<()> {
 		let mut tx = self.database().begin().await?;
-		if !RunRecord::hold_worker(tx.as_mut(), run.id, worker).await? {
+		if !RunRecord::hold_worker_lease(tx.as_mut(), run.id, worker).await? {
 			return Err(Error::Conflict(
 				"worker lease lost before dispatching inference".into(),
 			));

@@ -589,12 +589,14 @@ impl<'a> Executor<'a> {
 				if let Some(seq) = media.through_seq {
 					context.media_inferred_seq = context.media_inferred_seq.max(seq);
 				}
+				// Unreported counts are known only through the Usage Record. The
+				// durable context keeps the shape older workers' strict decoders
+				// accept, so a Run stays leasable across a rolling deployment.
 				context.usage = Some(ContextUsage {
 					input_tokens: result.input_tokens,
 					output_tokens: result.output_tokens,
 					context_window: window,
 					compactions: context.compactions,
-					incomplete: !result.usage_complete,
 				});
 				run.context = context.clone();
 				let references_read_at_inference = required_run_message_reads

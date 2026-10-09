@@ -1,6 +1,5 @@
 //! Per-attempt inference usage. Reported counts, provider cost and Aidash's
 //! request estimate stay separate; an absent value is unknown, never zero.
-use serde_json::Value;
 use uuid::Uuid;
 
 /// Usage exactly as the provider reported it. Each field is `None` when the
@@ -26,28 +25,23 @@ pub struct ProviderCost {
 }
 
 impl ProviderCost {
-	/// Read `cost` and the optional upstream cost. The cost is `None` unless
-	/// `cost` is a valid non-negative JSON number.
-	pub fn from_report(cost: Option<&Value>, upstream: Option<&Value>) -> Option<Self> {
+	/// Read `cost` and the optional upstream cost from the provider's raw JSON
+	/// text. Parsing through `f64` first would round digits away before the
+	/// conversion. The cost is `None` unless `cost` is a valid non-negative JSON
+	/// number.
+	pub fn from_report(cost: Option<&str>, upstream: Option<&str>) -> Option<Self> {
 		Some(Self {
-			nanocredits: cost.and_then(nanocredits)?,
-			upstream_nanocredits: upstream.and_then(nanocredits),
+			nanocredits: cost.and_then(parse_nanocredits)?,
+			upstream_nanocredits: upstream.and_then(parse_nanocredits),
 		})
 	}
 }
 
-/// Convert a JSON number of credits to nanocredits from its decimal text, without
-/// binary floating-point arithmetic. Digits past nine decimals round up, so a
-/// recorded cost never understates the report.
-pub fn nanocredits(value: &Value) -> Option<i64> {
-	match value {
-		Value::Number(number) => parse_nanocredits(&number.to_string()),
-		_ => None,
-	}
-}
-
-/// Parse `-?digits(.digits)?([eE][+-]?digits)?` as nanocredits. Negative and
-/// out-of-range amounts are rejected.
+/// Convert raw JSON number text in credits to nanocredits without binary
+/// floating-point arithmetic. Digits past nine decimals round up, so a recorded
+/// cost never understates the report. Parse
+/// `-?digits(.digits)?([eE][+-]?digits)?`; negative and out-of-range amounts
+/// and any other JSON value are rejected.
 pub fn parse_nanocredits(text: &str) -> Option<i64> {
 	const SCALE: i64 = 9;
 	const MAX_DIGITS: i64 = 19;
@@ -239,29 +233,25 @@ mod tests {
 	}
 
 	#[rstest]
-	#[case::float(json!(0.0001234), Some(123_400))]
-	#[case::exponent_float(json!(1.5e-7), Some(150))]
-	#[case::integer(json!(3), Some(3_000_000_000))]
-	#[case::string(json!("0.1"), None)]
-	#[case::null(json!(null), None)]
-	fn json_costs_use_number_text(#[case] value: Value, #[case] expected: Option<i64>) {
-		assert_eq!(nanocredits(&value), expected);
+	#[case::string("\"0.1\"")]
+	#[case::null("null")]
+	#[case::boolean("true")]
+	fn non_number_json_text_is_not_a_cost(#[case] text: &str) {
+		assert_eq!(parse_nanocredits(text), None);
 	}
 
 	#[rstest]
-	#[case::both(Some(json!(0.002)), Some(json!(0.0015)), Some(ProviderCost { nanocredits: 2_000_000, upstream_nanocredits: Some(1_500_000) }))]
-	#[case::cost_only(Some(json!(0.002)), None, Some(ProviderCost { nanocredits: 2_000_000, upstream_nanocredits: None }))]
-	#[case::upstream_only(None, Some(json!(0.0015)), None)]
-	#[case::invalid_cost(Some(json!("free")), Some(json!(0.0015)), None)]
+	#[case::both(Some("0.002"), Some("0.0015"), Some(ProviderCost { nanocredits: 2_000_000, upstream_nanocredits: Some(1_500_000) }))]
+	#[case::cost_only(Some("0.002"), None, Some(ProviderCost { nanocredits: 2_000_000, upstream_nanocredits: None }))]
+	#[case::upstream_only(None, Some("0.0015"), None)]
+	#[case::invalid_cost(Some("\"free\""), Some("0.0015"), None)]
+	#[case::beyond_f64_precision(Some("0.1234567890000000000000000001"), None, Some(ProviderCost { nanocredits: 123_456_790, upstream_nanocredits: None }))]
 	fn provider_cost_requires_a_valid_cost(
-		#[case] cost: Option<Value>,
-		#[case] upstream: Option<Value>,
+		#[case] cost: Option<&str>,
+		#[case] upstream: Option<&str>,
 		#[case] expected: Option<ProviderCost>,
 	) {
-		assert_eq!(
-			ProviderCost::from_report(cost.as_ref(), upstream.as_ref()),
-			expected
-		);
+		assert_eq!(ProviderCost::from_report(cost, upstream), expected);
 	}
 
 	#[rstest]
@@ -292,26 +282,5 @@ mod tests {
 		assert_eq!(serde_json::to_value(&response).unwrap(), previous);
 		let restored: crate::provider::ModelResponse = serde_json::from_value(previous).unwrap();
 		assert_eq!(restored.reported, ReportedUsage::default());
-	}
-
-	#[rstest]
-	#[case::complete(false, json!({"input_tokens":3,"output_tokens":5,"context_window":100,"compactions":0}))]
-	#[case::incomplete(true, json!({"input_tokens":3,"output_tokens":5,"context_window":100,"compactions":0,"incomplete":true}))]
-	fn context_usage_marks_only_incomplete_usage(
-		#[case] incomplete: bool,
-		#[case] expected: Value,
-	) {
-		let usage = crate::context::ContextUsage {
-			input_tokens: 3,
-			output_tokens: 5,
-			context_window: 100,
-			compactions: 0,
-			incomplete,
-		};
-		assert_eq!(serde_json::to_value(&usage).unwrap(), expected);
-		assert_eq!(
-			serde_json::from_value::<crate::context::ContextUsage>(expected).unwrap(),
-			usage
-		);
 	}
 }

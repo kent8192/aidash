@@ -35,6 +35,7 @@ struct State {
 	cancel_inference: bool,
 	usage: Mutex<Vec<(UsageDispatch, Option<UsageOutcome>)>>,
 	stall_provider: AtomicBool,
+	omit_output_usage: bool,
 }
 impl Backend {
 	fn record(&self, name: &'static str) {
@@ -495,11 +496,11 @@ impl ModelProvider for Backend {
 		Ok(ModelResponse {
 			text: "Completed task".into(),
 			input_tokens: 200,
-			output_tokens: 10,
-			usage_complete: true,
+			output_tokens: if self.0.omit_output_usage { 0 } else { 10 },
+			usage_complete: !self.0.omit_output_usage,
 			reported: ReportedUsage {
 				input_tokens: Some(200),
-				output_tokens: Some(10),
+				output_tokens: (!self.0.omit_output_usage).then_some(10),
 				cache_read_tokens: Some(150),
 				..Default::default()
 			},
@@ -516,7 +517,7 @@ impl CompactionClassifier for Backend {
 #[async_trait]
 impl InferenceReservation for Backend {
 	async fn settle(self: Box<Self>, response: &ModelResponse) -> Result<()> {
-		assert!(response.usage_complete);
+		assert_eq!(response.usage_complete, !self.0.omit_output_usage);
 		self.record("reservation.settle");
 		Ok(())
 	}
@@ -585,6 +586,7 @@ fn fixture() -> Fixture {
 		cancel_inference: false,
 		usage: Mutex::new(vec![]),
 		stall_provider: AtomicBool::new(false),
+		omit_output_usage: false,
 	}));
 	Fixture { backend, run }
 }
@@ -850,14 +852,40 @@ async fn successful_inference_completes_its_usage_record(mut fixture: Fixture) {
 			..Default::default()
 		}))
 	);
-	assert!(
-		!fixture
-			.run
-			.context
-			.usage
-			.as_ref()
-			.is_some_and(|usage| usage.incomplete)
-	);
+}
+/// The durable context written after incomplete usage must stay readable by
+/// workers whose `ContextUsage` decoder rejects unknown fields.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+#[allow(dead_code)]
+struct PreviousContextUsage {
+	input_tokens: u64,
+	output_tokens: u64,
+	context_window: usize,
+	compactions: u32,
+}
+#[rstest]
+#[tokio::test]
+async fn incomplete_usage_keeps_the_durable_context_readable_by_older_workers(
+	mut fixture: Fixture,
+) {
+	// Arrange
+	Arc::get_mut(&mut fixture.backend.0)
+		.unwrap()
+		.omit_output_usage = true;
+	fixture.run.state = RunState::Thinking(ThinkingState::default());
+	// Act
+	advance_sources(&mut fixture).await.unwrap();
+	// Assert
+	let writes = fixture.backend.0.writes.lock().unwrap();
+	let usage = serde_json::to_value(&writes.last().unwrap().1.context).unwrap()["usage"].clone();
+	serde_json::from_value::<PreviousContextUsage>(usage)
+		.expect("older workers decode the context usage");
+	let recorded = fixture.backend.0.usage.lock().unwrap();
+	let [(_, Some(UsageOutcome::Completed(reported)))] = recorded.as_slice() else {
+		panic!("one completed Usage Record")
+	};
+	assert_eq!(reported.output_tokens, None);
 }
 #[rstest]
 #[case::cancelled(true, None, UsageOutcome::Unknown)]

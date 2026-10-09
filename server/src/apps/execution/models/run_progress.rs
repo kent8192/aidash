@@ -95,6 +95,27 @@ impl Run {
 			.is_some())
 	}
 
+	/// Fence the worker lease without waiting for rows that merely reference the
+	/// Run. The worker's own retained authority transaction holds such key-share
+	/// locks until provider I/O, so `FOR UPDATE` would wait on itself. Lease
+	/// changes still conflict with this lock.
+	pub(crate) async fn hold_worker_lease(
+		tx: &mut dyn TransactionExecutor,
+		id: Uuid,
+		worker: Uuid,
+	) -> Result<bool> {
+		let (sql, values) = Query::select()
+			.column(Alias::new("id"))
+			.from(Alias::new(Self::table_name()))
+			.and_where(worker_lease(id, worker))
+			.lock(LockType::NoKeyUpdate)
+			.build(PostgresQueryBuilder);
+		Ok(tx
+			.fetch_optional(&sql, convert_values(values))
+			.await?
+			.is_some())
+	}
+
 	pub(crate) async fn ensure_response_current(
 		tx: &mut dyn TransactionExecutor,
 		id: Uuid,

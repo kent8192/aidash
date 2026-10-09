@@ -46,7 +46,6 @@ fn run() -> RawRun {
 			output_tokens: 4,
 			context_window: 128000,
 			compactions: 2,
-			incomplete: false,
 		}),
 		..Default::default()
 	};

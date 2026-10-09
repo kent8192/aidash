@@ -30,27 +30,29 @@ fn media_reservation_covers_complete_request_growth() {
 
 #[rstest::rstest]
 fn parses_openrouter_tool_calls() {
-	let result = parse_openai(json!({"choices":[{"finish_reason":"tool_calls","message":{"tool_calls":[{"id":"one","function":{"name":"search","arguments":"{\"q\":\"Rust\"}"}}]}}]})).unwrap();
+	let result = parse(json!({"choices":[{"finish_reason":"tool_calls","message":{"tool_calls":[{"id":"one","function":{"name":"search","arguments":"{\"q\":\"Rust\"}"}}]}}]})).unwrap();
 	assert_eq!(result.tool_calls[0].arguments, json!({"q":"Rust"}));
 }
 #[rstest::rstest]
 fn whitespace_only_tool_call_content_is_not_a_workspace_message() {
-	let result = parse_openai(json!({"choices":[{"finish_reason":"tool_calls","message":{"content":" \n\t ","tool_calls":[{"id":"one","function":{"name":"search","arguments":"{}"}}]}}]})).unwrap();
+	let result = parse(json!({"choices":[{"finish_reason":"tool_calls","message":{"content":" \n\t ","tool_calls":[{"id":"one","function":{"name":"search","arguments":"{}"}}]}}]})).unwrap();
 	assert!(result.text.is_empty());
 	assert_eq!(result.tool_calls.len(), 1);
 	assert!(
-		parse_openai(json!({"choices":[{"finish_reason":"stop","message":{"content":" \n\t "}}]}))
+		parse(json!({"choices":[{"finish_reason":"stop","message":{"content":" \n\t "}}]}))
 			.is_err()
 	);
 }
 #[rstest::rstest]
 fn truncation_cannot_complete_a_task() {
 	assert!(
-		parse_openai(
-			json!({"choices":[{"finish_reason":"length","message":{"content":"partial"}}]})
-		)
-		.is_err()
+		parse(json!({"choices":[{"finish_reason":"length","message":{"content":"partial"}}]}))
+			.is_err()
 	);
+}
+
+fn parse(value: Value) -> Result<ModelResponse> {
+	parse_openai(value.to_string().as_bytes())
 }
 
 fn completion(usage: Value) -> Value {
@@ -113,7 +115,7 @@ fn openrouter_usage_keeps_unknown_fields_absent(
 	#[case] reported: ReportedUsage,
 	#[case] legacy: (u64, u64, bool),
 ) {
-	let result = parse_openai(completion(usage)).unwrap();
+	let result = parse(completion(usage)).unwrap();
 	assert_eq!(result.reported, reported);
 	assert_eq!(
 		(
@@ -128,10 +130,26 @@ fn openrouter_usage_keeps_unknown_fields_absent(
 #[rstest::rstest]
 fn missing_usage_object_is_unknown() {
 	let result =
-		parse_openai(json!({"choices":[{"finish_reason":"stop","message":{"content":"done"}}]}))
-			.unwrap();
+		parse(json!({"choices":[{"finish_reason":"stop","message":{"content":"done"}}]})).unwrap();
 	assert_eq!(result.reported, ReportedUsage::default());
 	assert!(!result.usage_complete);
+}
+
+/// Costs keep their raw decimal text: rounding through `f64` first would turn
+/// `0.1234567890000000000000000001` into `0.123456789` and understate the cost.
+#[rstest::rstest]
+#[case::cost_beyond_f64_precision(
+	r#"{"choices":[{"finish_reason":"stop","message":{"content":"done"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"cost":0.1234567890000000000000000001,"cost_details":{"upstream_inference_cost":1.0000000000000000000000000001e-9}}}"#,
+	Some(ProviderCost { nanocredits: 123_456_790, upstream_nanocredits: Some(2) })
+)]
+#[case::unexpected_cost_shape(
+	r#"{"choices":[{"finish_reason":"stop","message":{"content":"done"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"cost":{"total":1},"cost_details":"none"}}"#,
+	None
+)]
+fn openrouter_cost_uses_the_raw_decimal(#[case] body: &str, #[case] cost: Option<ProviderCost>) {
+	let result = parse_openai(body.as_bytes()).unwrap();
+	assert_eq!(result.reported.cost, cost);
+	assert!(result.usage_complete);
 }
 
 /// Usage shape OpenRouter returns for an explicit `cache_control` request on an
@@ -143,7 +161,7 @@ fn explicit_cache_settlement_charges_prompt_and_completion_once(
 	#[case] usage: Value,
 	#[case] total: i64,
 ) {
-	let response = parse_openai(completion(usage)).unwrap();
+	let response = parse(completion(usage)).unwrap();
 	let accounting = aidash_domain::generation::inference::accounting(8192, &response);
 	assert_eq!(accounting.reported, Some(total));
 	assert_eq!(accounting.refund, 8192 - total);

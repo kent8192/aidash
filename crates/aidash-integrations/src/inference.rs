@@ -9,7 +9,8 @@ use aidash_domain::{
 	},
 };
 use async_trait::async_trait;
-use serde_json::{Value, json};
+use serde::Deserialize;
+use serde_json::{Value, json, value::RawValue};
 use std::sync::Arc;
 
 pub struct OpenRouterProvider {
@@ -237,7 +238,7 @@ impl ModelProvider for OpenRouterProvider {
 					reason: safe_upstream_reason(&detail),
 				});
 			}
-			let result = parse_openai(crate::response::json(response, 1_048_576).await?)?;
+			let result = parse_openai(&crate::response::bytes(response, 1_048_576).await?)?;
 			// Unknown usage is absent, never a zero sample.
 			for (direction, tokens) in [
 				("input", result.reported.input_tokens),
@@ -269,7 +270,42 @@ fn safe_upstream_reason(detail: &str) -> String {
 	"upstream rejected the request".into()
 }
 
-pub fn parse_openai(value: Value) -> Result<ModelResponse> {
+/// Only the cost fields OpenRouter reports in credits, kept as raw JSON text.
+/// Without `serde_json`'s `arbitrary_precision`, a parsed `Value` would already
+/// have rounded each decimal to the nearest `f64`.
+#[derive(Deserialize)]
+struct RawCosts<'a> {
+	#[serde(borrow)]
+	usage: Option<RawUsageCosts<'a>>,
+}
+#[derive(Deserialize)]
+struct RawUsageCosts<'a> {
+	#[serde(borrow)]
+	cost: Option<&'a RawValue>,
+	#[serde(borrow)]
+	cost_details: Option<RawCostDetails<'a>>,
+}
+#[derive(Deserialize)]
+struct RawCostDetails<'a> {
+	#[serde(borrow)]
+	upstream_inference_cost: Option<&'a RawValue>,
+}
+
+fn provider_cost(body: &[u8]) -> Option<ProviderCost> {
+	// A cost field with an unexpected shape is unknown, not a parse failure.
+	let usage = serde_json::from_slice::<RawCosts>(body).ok()?.usage?;
+	ProviderCost::from_report(
+		usage.cost.map(RawValue::get),
+		usage
+			.cost_details
+			.and_then(|details| details.upstream_inference_cost)
+			.map(RawValue::get),
+	)
+}
+
+pub fn parse_openai(body: &[u8]) -> Result<ModelResponse> {
+	let value: Value = serde_json::from_slice(body)
+		.map_err(|error| Error::External(format!("invalid response JSON: {error}")))?;
 	let choice = value
 		.pointer("/choices/0")
 		.ok_or_else(|| Error::External("provider returned no completion choice".into()))?;
@@ -293,10 +329,7 @@ pub fn parse_openai(value: Value) -> Result<ModelResponse> {
 		cache_read_tokens: count("/usage/prompt_tokens_details/cached_tokens"),
 		cache_write_tokens: count("/usage/prompt_tokens_details/cache_write_tokens"),
 		reasoning_tokens: count("/usage/completion_tokens_details/reasoning_tokens"),
-		cost: ProviderCost::from_report(
-			value.pointer("/usage/cost"),
-			value.pointer("/usage/cost_details/upstream_inference_cost"),
-		),
+		cost: provider_cost(body),
 	};
 	let mut result = ModelResponse {
 		text: if content.trim().is_empty() {

@@ -80,17 +80,7 @@ impl InferenceUsage {
 		run: Uuid,
 		dispatch: &UsageDispatch,
 	) -> Result<()> {
-		let (sql, values) = Query::update()
-			.table(Alias::new(Self::table_name()))
-			.value_expr(
-				Alias::new("outcome"),
-				Expr::value(UsageOutcome::Unknown.as_str()),
-			)
-			.value_expr(Alias::new("completed_at"), Expr::current_timestamp())
-			.and_where(Expr::col("run_id").eq(Expr::value(run)))
-			.and_where(Expr::col("outcome").eq(Expr::value(DISPATCHED)))
-			.build(PostgresQueryBuilder);
-		tx.execute(&sql, convert_values(values)).await?;
+		Self::abandon(tx, run, None).await?;
 		let record = Self::build()
 			.attempt_id(dispatch.attempt)
 			.run_id(run)
@@ -119,6 +109,41 @@ impl InferenceUsage {
 			.insert_with_executor(tx, &record)
 			.await
 			.map_err(FrameworkError::from)?;
+		Ok(())
+	}
+
+	/// A new lease claim supersedes every other lease's dispatched attempt: its
+	/// worker crashed or lost the lease, so the attempt becomes unknown even if
+	/// the Run never infers again. A late completion is then no longer written.
+	pub(crate) async fn abandon_superseded(
+		tx: &mut dyn TransactionExecutor,
+		run: Uuid,
+		lease: Uuid,
+	) -> Result<()> {
+		Self::abandon(tx, run, Some(lease)).await
+	}
+
+	/// Make the Run's dispatched attempts unknown, except those of `kept`.
+	async fn abandon(
+		tx: &mut dyn TransactionExecutor,
+		run: Uuid,
+		kept: Option<Uuid>,
+	) -> Result<()> {
+		let mut update = Query::update();
+		update
+			.table(Alias::new(Self::table_name()))
+			.value_expr(
+				Alias::new("outcome"),
+				Expr::value(UsageOutcome::Unknown.as_str()),
+			)
+			.value_expr(Alias::new("completed_at"), Expr::current_timestamp())
+			.and_where(Expr::col("run_id").eq(Expr::value(run)))
+			.and_where(Expr::col("outcome").eq(Expr::value(DISPATCHED)));
+		if let Some(kept) = kept {
+			update.and_where(Expr::col("lease_token").ne(Expr::value(kept)));
+		}
+		let (sql, values) = update.build(PostgresQueryBuilder);
+		tx.execute(&sql, convert_values(values)).await?;
 		Ok(())
 	}
 
