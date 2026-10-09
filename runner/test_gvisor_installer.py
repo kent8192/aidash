@@ -90,19 +90,29 @@ class InstallerTest(unittest.TestCase):
     def test_replacement_is_refused_while_a_sandbox_uses_the_installed_runtime(self):
         self.install()
         sentry = self.root / 'usr/local/bin/gvisor-bin/gvisor_sentry'
+        shim = self.root / 'usr/local/bin/containerd-shim-runsc-v1'
         replacement = archive(content=b'newer!')
         sha = hashlib.sha256(replacement).hexdigest()
+        modes = []
 
         def blocked(root):
+            modes.append(shim.stat().st_mode & 0o777)
             raise RuntimeError('live gVisor sandboxes')
 
         with self.assertRaisesRegex(RuntimeError, 'live gVisor'):
             installer.install(self.root, 'next', sha, 'x86_64', Mock(return_value=replacement),
                               self.restart, drain=blocked)
+        # Already-bound Pods cannot start a sandbox while the drain observes.
+        self.assertEqual(modes, [0o644])
         self.assertEqual(sentry.read_bytes(), b'binary')
+        self.assertEqual(sentry.stat().st_mode & 0o777, 0o755)
+        self.assertEqual(shim.stat().st_mode & 0o777, 0o644)
+        # A failed drain stays fenced and is not mistaken for an installed runtime.
+        self.assertFalse(installer.installed(self.root, installer.GVISOR_VERSION, self.sha))
         installer.install(self.root, 'next', sha, 'x86_64', Mock(return_value=replacement),
                           self.restart, drain=lambda root: None)
         self.assertEqual(sentry.read_bytes(), b'newer!')
+        self.assertEqual(shim.stat().st_mode & 0o777, 0o755)
 
     def test_live_sentries_use_the_guards_executable_identity(self):
         self.install()
@@ -115,17 +125,22 @@ class InstallerTest(unittest.TestCase):
             (proc / pid / 'exe').symlink_to(self.root / target)
         (proc / '104').mkdir()  # exited: no readable executable
         self.assertEqual(sorted(installer.live_sentries(self.root, proc)), [101, 102])
+        # The drain also waits for shims: one started before the fence can still launch a Sentry.
+        self.assertEqual(sorted(installer.live_sandboxes(self.root, proc)), [101, 102, 103])
 
-    def test_drain_waits_then_fails_closed_after_its_deadline(self):
+    def test_drain_waits_confirms_then_fails_closed_after_its_deadline(self):
         now, sleeps = [0.0], []
 
         def sleep(seconds):
             sleeps.append(seconds)
             now[0] += seconds
 
-        waiting = iter([[7], [7], []])
+        # An empty scan is confirmed by a second one; a late launch restarts the wait.
+        waiting = iter([[7], [], [8], [], []])
         installer.drain(self.root, 60, sleep=sleep, clock=lambda: now[0], live=lambda root: next(waiting))
-        self.assertEqual(sleeps, [5, 5])
+        self.assertEqual(sleeps, [5, 5, 5, 5])
+        with self.assertRaises(StopIteration):
+            next(waiting)
         with self.assertRaisesRegex(RuntimeError, r'\[7\]'):
             installer.drain(self.root, 12, sleep=sleep, clock=lambda: now[0], live=lambda root: [7])
 

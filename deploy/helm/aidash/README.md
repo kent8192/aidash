@@ -55,11 +55,16 @@ once a runtime has been verified. Its ServiceAccount has only cluster-wide `get`
 The installer is privileged and rewrites host binaries, so the chart refuses to
 render it without a global or Environment `nodeSelector`; select only the dedicated
 execution pool. Before replacing a runtime it withdraws only the admission label, so
-no new sandbox starts while the guard keeps watching live ones, then waits up to
-`AIDASH_GVISOR_DRAIN_SECONDS` (3600) for every process running an installed
-`runsc` or `gvisor_sentry` to exit. A running Sentry keeps its old executable
+no new sandbox is scheduled while the guard keeps watching live ones. Kubelet does
+not recheck that label for a Pod already bound to the Cluster Node, so the installer
+also clears the execute bits of `containerd-shim-runsc-v1`, which every sandbox
+start executes; such a Pod fails to start until the verified runtime restores them.
+It then waits up to `AIDASH_GVISOR_DRAIN_SECONDS` (3600) for every process running
+an installed `runsc`, `gvisor_sentry` or shim to exit, confirming an empty scan once
+more after a pause. A running Sentry keeps its old executable
 inode, which the guard's `samefile` check would stop recognizing, so the installer
-fails without replacing anything if sandboxes remain; it retries on restart. The
+fails without replacing anything if sandboxes remain; it stays fenced and retries
+on restart. The
 installer writes the runtime only under `/usr/local/bin`, so the chart rejects a
 custom `execution.paths.runsc` or `gvisorBin` while it is enabled.
 

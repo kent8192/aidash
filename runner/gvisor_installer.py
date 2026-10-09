@@ -19,6 +19,8 @@ ARCHIVE_HASHES = {'x86_64': GVISOR_SHA,
 REQUIRED = {'runsc', 'containerd-shim-runsc-v1', 'gvisor-bin/gvisor_sentry'}
 # Executables the node guard identifies a live sandbox by (`samefile` on /proc/<pid>/exe).
 SENTRY_BINARIES = ('usr/local/bin/runsc', 'usr/local/bin/gvisor-bin/gvisor_sentry')
+# containerd starts this per sandbox Pod; a running shim can still launch a Sentry.
+SHIM_BINARY = 'usr/local/bin/containerd-shim-runsc-v1'
 
 
 def relative(name):
@@ -120,9 +122,9 @@ def configure(root, runsc_root='/run/containerd/runsc'):
     return changed
 
 
-def live_sentries(root, proc='/proc'):
+def live_sentries(root, proc='/proc', binaries=SENTRY_BINARIES):
     """PIDs running an installed Sentry executable, judged as the node guard does."""
-    targets = [root / name for name in SENTRY_BINARIES if (root / name).exists()]
+    targets = [root / name for name in binaries if (root / name).exists()]
     pids = []
     for entry in Path(proc).iterdir():
         if not entry.name.isdigit():
@@ -135,16 +137,44 @@ def live_sentries(root, proc='/proc'):
     return pids
 
 
-def drain(root, seconds, sleep=time.sleep, clock=time.monotonic, live=live_sentries):
+def live_sandboxes(root, proc='/proc'):
+    """Sentries, plus shims that started before the fence and may still launch one."""
+    return live_sentries(root, proc, SENTRY_BINARIES + (SHIM_BINARY,))
+
+
+def fence(root):
+    """Stop containerd from starting any new sandbox before the drain's scans.
+
+    Withdrawing the admission label only stops scheduling: kubelet does not
+    recheck RuntimeClass scheduling for a Pod already bound to this node. Every
+    sandbox starts by executing the shim, and execve needs an execute bit even
+    for root, so clearing them refuses such Pods until the replacement restores
+    0755. The guard's runsc and Sentry identities are left untouched.
+    """
+    shim = destination(root, SHIM_BINARY)
+    if shim.is_file():
+        os.chmod(shim, 0o644)
+
+
+def drain(root, seconds, sleep=time.sleep, clock=time.monotonic, live=live_sandboxes):
     """Wait for live sandboxes to exit; refuse to proceed while any remain.
 
     A running Sentry keeps its old executable inode. Replacing the file would
     leave the node guard unable to recognize, and so unable to kill, that process.
+    One empty scan is confirmed by another after a pause, so a launch already
+    past execve's permission check when the fence landed is also observed.
     """
     end = clock() + seconds
-    while pids := live(root):
-        if clock() >= end:
-            raise RuntimeError(f'live gVisor sandboxes still use the installed runtime: {sorted(pids)[:8]}')
+    confirmed = False
+    while True:
+        if pids := live(root):
+            confirmed = False
+            if clock() >= end:
+                raise RuntimeError(f'live gVisor sandboxes still use the installed runtime: {sorted(pids)[:8]}')
+        elif confirmed:
+            return
+        else:
+            confirmed = True
         sleep(5)
 
 
@@ -155,6 +185,9 @@ def install(root, version, checksum, arch, download, restart, runsc_root='/run/c
         files = archive_files(download(url), checksum)
         # Validate every destination before changing any executable.
         paths = {name: destination(root / 'usr/local/bin', name) for name in files}
+        # The fence persists if the drain fails: `installed` then requires a
+        # retry, and only writing the verified runtime makes the shim executable.
+        fence(root)
         drain(root)
         for name, data in files.items():
             write(paths[name], data, 0o755)
