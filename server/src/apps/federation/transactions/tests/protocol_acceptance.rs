@@ -34,7 +34,13 @@ type PairFuture = BoxFuture<'static, Pair>;
 #[fixture]
 fn atomic_runtime(
 	#[default("a")] suffix: &str,
-	#[from(common::runtime)] runtime: common::RuntimeFuture,
+	#[from(test_environment)] _environment: EnvironmentFuture,
+	#[from(common::execution_database)]
+	#[with(_environment.clone(), &format!("atomic_{}",suffix.replace('-',"_")), 10)]
+	_database: common::DatabaseFuture,
+	#[from(common::runtime)]
+	#[with(_database.clone())]
+	runtime: common::RuntimeFuture,
 ) -> common::RuntimeFuture {
 	let suffix = suffix.to_owned();
 	async move {
@@ -49,25 +55,48 @@ fn atomic_runtime(
 	.boxed()
 	.shared()
 }
+type Reservation = Option<Arc<std::net::TcpListener>>;
+/// Real-process cases keep this socket owned across stop, SIGKILL and exec.
+#[fixture]
+fn node_listener(
+	#[default(false)] reserve_port: bool,
+) -> (common::upstream_fixtures::ListenerFuture, Reservation) {
+	let reservation = reserve_port.then(|| {
+		let reservation = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+		reservation.set_nonblocking(true).unwrap();
+		Arc::new(reservation)
+	});
+	let owned = reservation.clone();
+	let listener = async move {
+		Arc::new(match owned {
+			Some(reservation) => {
+				tokio::net::TcpListener::from_std(reservation.try_clone().unwrap()).unwrap()
+			}
+			None => tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap(),
+		})
+	}
+	.boxed()
+	.shared();
+	(listener, reservation)
+}
 #[fixture]
 fn node(
 	#[default("a")] _suffix: &str,
 	#[from(test_environment)] _environment: EnvironmentFuture,
+	#[default(false)] _reserve_port: bool,
 	#[default(aidash_server::sse::Service::new(Default::default()))]
 	_streams: aidash_server::sse::Service,
-	#[from(common::execution_database)]
-	#[with(_environment.clone(), &format!("atomic_{}",_suffix.replace('-',"_")), 10)]
-	_database: common::DatabaseFuture,
-	#[from(common::runtime)]
-	#[with(_database.clone())]
-	_runtime: common::RuntimeFuture,
+	#[from(node_listener)]
+	#[with(_reserve_port)]
+	listener: (common::upstream_fixtures::ListenerFuture, Reservation),
 	#[from(atomic_runtime)]
-	#[with(_suffix,_runtime.clone())]
+	#[with(_suffix,_environment.clone())]
 	_atomic: common::RuntimeFuture,
 	#[from(common::native_peer)]
-	#[with(&format!("aidash://atomic-{_suffix}"),Arc::new(|router|router),_atomic.clone(),_streams.clone())]
+	#[with(&format!("aidash://atomic-{_suffix}"),Arc::new(|router|router),_atomic.clone(),_streams.clone(),listener.0.clone())]
 	peer: common::PeerFuture,
 ) -> BoxFuture<'static, Node> {
+	let reservation = listener.1;
 	async move {
 		let peer = peer.await;
 		let f = peer.runtime.federation.clone();
@@ -81,6 +110,7 @@ fn node(
 		Node {
 			f,
 			listen,
+			reservation,
 			server: Some(peer.server),
 			client: peer.client,
 			application: peer.application,
@@ -99,14 +129,15 @@ fn pair_capacity() -> BoxFuture<'static, tokio::sync::OwnedSemaphorePermit> {
 #[fixture]
 fn pair(
 	#[from(test_environment)] _environment: EnvironmentFuture,
+	#[default(false)] _reserve_ports: bool,
 	#[default(aidash_server::sse::Service::new(Default::default()))]
 	_streams: aidash_server::sse::Service,
 	pair_capacity: BoxFuture<'static, tokio::sync::OwnedSemaphorePermit>,
 	#[from(node)]
-	#[with("a",_environment.clone(),_streams.clone())]
+	#[with("a",_environment.clone(),_reserve_ports,_streams.clone())]
 	first: BoxFuture<'static, Node>,
 	#[from(node)]
-	#[with("b",_environment.clone())]
+	#[with("b",_environment.clone(),_reserve_ports)]
 	second: BoxFuture<'static, Node>,
 ) -> PairFuture {
 	let capacity = Box::pin(pair_capacity);
@@ -154,6 +185,8 @@ struct Node {
 	server: Option<Arc<common::PeerServerGuard>>,
 	client: Arc<reinhardt::test::APIClient>,
 	listen: std::net::SocketAddr,
+	// Real-process cases keep this socket owned across stop, SIGKILL and exec.
+	reservation: Reservation,
 	application: common::TestApplication,
 	_runtime: common::RuntimeFixture,
 	_capacity: Option<tokio::sync::OwnedSemaphorePermit>,
@@ -162,6 +195,17 @@ impl Node {
 	async fn stop(&mut self) {
 		if let Some(server) = self.server.take() {
 			server.shutdown().await;
+		}
+		if self.reservation.is_some() {
+			// Child readiness must use a fresh connection to the inherited socket,
+			// rather than an idle keep-alive connection to the previous server.
+			self.f.client = reqwest::Client::new();
+			self.client = Arc::new(
+				reinhardt::test::APIClient::builder()
+					.base_url(&self.f.config.endpoint)
+					.timeout(std::time::Duration::from_secs(5))
+					.build(),
+			);
 		}
 	}
 	async fn restart(&mut self) {
@@ -182,10 +226,25 @@ impl Node {
 	async fn serve(&mut self, router: Arc<reinhardt::ServerRouter>) {
 		// Act: replace the live participant routes while preserving its advertised port.
 		self.stop().await;
-		let listener = Arc::new(tokio::net::TcpListener::bind(self.listen).await.unwrap());
+		let listener = Arc::new(self.listener().await);
 		self.server = Some(Arc::new(common::PeerServerGuard::spawn(
 			listener, router, None,
 		)));
+	}
+	async fn listener(&self) -> tokio::net::TcpListener {
+		match &self.reservation {
+			Some(listener) => {
+				tokio::net::TcpListener::from_std(listener.try_clone().unwrap()).unwrap()
+			}
+			None => tokio::net::TcpListener::bind(self.listen)
+				.await
+				.unwrap_or_else(|error| {
+					panic!(
+						"fixture {} bind {}: {error}",
+						self.f.config.node_id, self.listen
+					)
+				}),
+		}
 	}
 	async fn request(
 		&self,
@@ -798,7 +857,7 @@ async fn an_existing_sse_stream_waits_for_atomic_visibility_before_emitting_chan
 	#[from(test_environment)] _environment: EnvironmentFuture,
 	#[future(awt)]
 	#[from(pair)]
-	#[with(_environment.clone(),event_streams.clone())]
+	#[with(_environment.clone(),false,event_streams.clone())]
 	pair: Pair,
 ) {
 	use futures_util::StreamExt;

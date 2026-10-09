@@ -38,6 +38,16 @@ pub trait MemoryScope: Send {
 	async fn dormant_snapshot(&mut self, _bank: &Bank, _limit: usize) -> Result<Snapshot> {
 		Err(crate::Error::Forbidden)
 	}
+	/// Capture active and Dormant membership in one retention snapshot. Each
+	/// partition is independently bounded by limit; the graph covers the union.
+	/// Adapters without explicit Dormant authority must fail closed.
+	async fn recall_including_dormant_snapshot(
+		&mut self,
+		_bank: &Bank,
+		_limit: usize,
+	) -> Result<Snapshot> {
+		Err(crate::Error::Forbidden)
+	}
 	async fn retention_scores(
 		&mut self,
 		_bank: &Bank,

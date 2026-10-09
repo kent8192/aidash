@@ -23,6 +23,18 @@ The migration is additive and chronological. Its trigger-function DDL is documen
 
 The actual remote finalization case uses the existing scoped-execution fixture with isolated PostgreSQL schemas and real peer HTTP. It is component authorization evidence; the transaction protocol/tier suites and cluster driver use separate databases for each Node. The existing operator dashboard end-to-end scenario remains in `web/tests/transactions.spec.ts`; the new UI fixtures do not claim to have rerun that real-backend browser scenario.
 
+The local real-server durable-cut fixture retains each HTTP listener in its
+parent across in-process handover, SIGKILL and restart. On Unix the launcher
+passes that socket through `AIDASH_LISTEN_FD`, an open listening TCP descriptor
+above 2 whose ownership transfers to the child. The native `server` / `serve`
+launcher checks that its bound address matches `AIDASH_LISTEN`, restores
+close-on-exec, and serves it through Reinhardt without rebinding. Invalid
+descriptors and address mismatches fail startup; without `AIDASH_LISTEN_FD`,
+the launcher binds `AIDASH_LISTEN` normally and reports bind errors with the
+address. Protocol fixtures that intentionally disconnect a peer retain their
+existing stop behavior. The concurrent handover regression competes for both
+reserved ports throughout three child launches and native rebuilds.
+
 ## Cluster procedure and identity
 
 Run `scripts/test-cluster.sh kubernetes transactions` and `scripts/test-cluster.sh k3s transactions` manually for the complete inventory. Each distribution can be partitioned into `coordinator`, `participant`, and `lifecycle`, passed as an optional third argument to the script. These disjoint partitions retain all 105 repetitions and provision the same sixteen-Node topology. Transaction cluster acceptance runs outside CI. The standalone Python driver accepts only an explicit kubeconfig, image and Reinhardt Query diagnostic queries from the tested image, creates a disposable namespace and removes it afterward. It never changes the user's current context. Fixture credential values are not part of its evidence output. `expected-cases.json` identifies the selected inventory, and `cases.jsonl` records actual outcomes.

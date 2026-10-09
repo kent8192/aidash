@@ -507,7 +507,6 @@ async fn human_requests_controls_and_cancellation_before_dependencies_finish(
 		.await
 		.unwrap();
 	let federation = _api_runtime.await.federation;
-
 	let harness = aidash_server::harness::Harness {
 		federation: federation.clone(),
 	};
@@ -635,6 +634,7 @@ fn federation(
 		let store = &store_fixture.store;
 		let federation = Federation {
 			sandbox: Default::default(),
+			gcip: None,
 			store: store.clone(),
 			registry: Registry::new(store.pool.clone(), &store.node_id).unwrap(),
 			config: Config {
@@ -647,6 +647,7 @@ fn federation(
 				lease_seconds: 30,
 				default_host_packages: vec![],
 				oidc: None,
+				gcip: None,
 			},
 			client: peer_client,
 			notify: Arc::new(tokio::sync::Notify::new()),
@@ -3145,6 +3146,7 @@ fn authenticated_runtime(
 			lease_seconds: 30,
 			default_host_packages: vec![],
 			oidc: None,
+			gcip: None,
 		};
 		runtime.federation.client = http_client;
 		runtime

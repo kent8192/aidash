@@ -194,6 +194,7 @@ jobs:
       AIDASH_RUNTIME_DEVELOP: ${{ secrets.GCP_DEVELOP_RUNTIME_CONFIG }}
       AIDASH_RUNTIME_TEST: ${{ secrets.GCP_TEST_RUNTIME_CONFIG }}
       AIDASH_RUNTIME_PR: ${{ secrets.GCP_PR_RUNTIME_CONFIG }}
+      AIDASH_GCIP_IDP_SECRETS: ${{ secrets.GCP_GCIP_IDP_SECRETS }}
       TF_IN_AUTOMATION: "true"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

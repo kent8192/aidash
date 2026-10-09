@@ -22,7 +22,7 @@ fn table(name: &str) -> Alias {
 }
 const MAX_PENDING_LOGIN_TRANSACTIONS: i64 = 10_000;
 
-const SESSION_COLUMNS: [&str; 12] = [
+const SESSION_COLUMNS: [&str; 13] = [
 	"id",
 	"identity_id",
 	"csrf_hash",
@@ -34,6 +34,7 @@ const SESSION_COLUMNS: [&str; 12] = [
 	"access_expires_at",
 	"created_at",
 	"provider_sid",
+	"auth_time",
 	"token_hash",
 ];
 
@@ -149,7 +150,7 @@ pub(crate) async fn start(f: &Federation, input: Start) -> Result<Started> {
 		.bind(input.state)
 		.bind(input.code_challenge)
 		.bind(input.redirect_uri)
-		.bind(&config.public_origin)
+		.bind(config.public_origin)
 		.execute(&mut *tx)
 		.await?;
 	tx.commit().await?;
@@ -247,7 +248,7 @@ pub(crate) async fn authorize(
 	// Only server-generated UUID/CSRF and an HTML-escaped origin are interpolated.
 	let html = format!(
 		"<!doctype html><html lang=\"en\"><meta charset=\"utf-8\"><meta name=\"referrer\" content=\"same-origin\"><title>Aidash Desktop sign-in</title><h1>Sign in to Aidash Desktop</h1><p>Allow the desktop app on this computer to access {} using your current Aidash identity?</p><form method=\"post\" action=\"/auth/desktop/authorize\"><input type=\"hidden\" name=\"request\" value=\"{}\"><input type=\"hidden\" name=\"csrf\" value=\"{}\"><button type=\"submit\">Continue to Aidash Desktop</button></form><p>Close this page to cancel.</p></html>",
-		escape(&config.public_origin),
+		escape(config.public_origin),
 		handoff.id,
 		escape(csrf)
 	);
@@ -271,8 +272,7 @@ pub(crate) async fn consent(
 ) -> Result<Response> {
 	let config = required_config(f)?;
 	let session = oidc::browser_session_from_headers(f, &headers).await?;
-	if headers.get(header::ORIGIN).and_then(|v| v.to_str().ok())
-		!= Some(config.public_origin.as_str())
+	if headers.get(header::ORIGIN).and_then(|v| v.to_str().ok()) != Some(config.public_origin)
 		|| digest(&input.csrf) != session.csrf_hash
 	{
 		return Err(Error::Forbidden);
@@ -290,7 +290,7 @@ pub(crate) async fn consent(
 		.and_where(Expr::col(table("browser_session_id")).eq(Expr::value(session.id)))
 		.and_where(Expr::col(table("code_hash")).is_null())
 		.and_where(Expr::col(table("expires_at")).gt(Expr::cust("clock_timestamp()")))
-		.and_where(Expr::col(table("origin")).eq(Expr::value(config.public_origin.as_str())))
+		.and_where(Expr::col(table("origin")).eq(Expr::value(config.public_origin)))
 		.returning_all()
 		.to_string(PostgresQueryBuilder);
 	let handoff: Handoff = query_as(&update)
@@ -316,7 +316,7 @@ pub(crate) async fn exchange(f: &Federation, input: Exchange) -> Result<Tokens> 
 			URL_SAFE_NO_PAD.encode(Sha256::digest(&input.verifier)),
 		)))
 		.add(Expr::col(table("redirect_uri")).eq(Expr::value(input.redirect_uri.as_str())))
-		.add(Expr::col(table("origin")).eq(Expr::value(config.public_origin.as_str())))
+		.add(Expr::col(table("origin")).eq(Expr::value(config.public_origin)))
 		.add(Expr::col(table("expires_at")).gt(Expr::cust("clock_timestamp()")));
 	let lookup = Query::select()
 		.column(table("browser_session_id"))
@@ -403,6 +403,7 @@ pub(crate) async fn exchange(f: &Federation, input: Exchange) -> Result<Tokens> 
 				"desktop_idle_seconds",
 				"access_expires_at",
 				"provider_sid",
+				"auth_time",
 			]
 			.map(table),
 		)
@@ -419,6 +420,7 @@ pub(crate) async fn exchange(f: &Federation, input: Exchange) -> Result<Tokens> 
 				.expr(Expr::cust("$6"))
 				.expr(Expr::cust("clock_timestamp()+make_interval(secs => $7)"))
 				.expr(Expr::val(browser.provider_sid.clone()))
+				.expr(Expr::val(browser.auth_time))
 				.to_owned(),
 		)
 		.to_string(PostgresQueryBuilder);
@@ -440,16 +442,22 @@ pub(crate) async fn exchange(f: &Federation, input: Exchange) -> Result<Tokens> 
 // all-device logout must finish after a concurrent handoff or prevent its issue.
 pub(super) async fn lock_identity(tx: &mut Transaction, id: Uuid, lock: LockType) -> Result<()> {
 	let query = Query::select()
-		.columns(["issuer", "last_valid_at", "disabled_at"].map(table))
+		.columns(["issuer", "gcip_tenant", "last_valid_at", "disabled_at"].map(table))
 		.from(table("dashboard_identities"))
 		.and_where(Expr::col(table("id")).eq(Expr::value(id)))
 		.lock(lock)
 		.to_string(PostgresQueryBuilder);
-	let validity = query_as(&query)
-		.columns(&["issuer", "last_valid_at", "disabled_at"])
+	let validity: Option<identity::PoolIdentityValidity> = query_as(&query)
+		.columns(&["issuer", "gcip_tenant", "last_valid_at", "disabled_at"])
 		.fetch_optional(&mut **tx)
 		.await?;
-	identity::validate_dashboard_status(validity)
+	let (issuer, pool, valid, disabled) = validity.ok_or(Error::Forbidden)?;
+	if let Some(policy) = tx.pool().dashboard_policy() {
+		policy.require_identity(&issuer, (!pool.is_empty()).then_some(pool.as_str()))?;
+	} else if !pool.is_empty() {
+		return Err(Error::Forbidden);
+	}
+	identity::validate_dashboard_status(Some((issuer, valid, disabled)))
 }
 async fn insert_refresh(tx: &mut Transaction, session: Uuid, token: &str) -> Result<()> {
 	let insert = Query::insert()

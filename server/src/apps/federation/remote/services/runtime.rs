@@ -20,6 +20,7 @@ use uuid::Uuid;
 #[derive(Clone)]
 pub struct Federation {
 	pub sandbox: aidash_runtime::sandbox::Sessions,
+	pub gcip: Option<std::sync::Arc<aidash_integrations::gcip::Services>>,
 	pub store: Store,
 	pub registry: Registry,
 	pub config: Config,

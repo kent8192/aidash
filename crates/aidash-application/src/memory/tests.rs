@@ -100,6 +100,7 @@ fn unit() -> Unit {
 	}
 }
 struct Scope {
+	inclusive_reads: usize,
 	retention_test: bool,
 	stale: bool,
 	foreign: bool,
@@ -111,6 +112,10 @@ impl MemoryScope for Scope {
 		Ok(())
 	}
 	async fn snapshot(&mut self, _: &Bank, _: usize) -> Result<Snapshot> {
+		assert_eq!(
+			self.inclusive_reads, 0,
+			"inclusive recall must use its atomic port"
+		);
 		Ok(Snapshot {
 			units: if self.retention_test {
 				let mut second = unit();
@@ -119,6 +124,17 @@ impl MemoryScope for Scope {
 			} else {
 				vec![unit()]
 			},
+			graph: vec![],
+			authority_revision: "1".into(),
+		})
+	}
+	async fn recall_including_dormant_snapshot(&mut self, _: &Bank, _: usize) -> Result<Snapshot> {
+		self.inclusive_reads += 1;
+		let first = unit();
+		let mut second = first.clone();
+		second.id = Uuid::from_u128(2);
+		Ok(Snapshot {
+			units: vec![first, second],
 			graph: vec![],
 			authority_revision: "1".into(),
 		})
@@ -359,6 +375,7 @@ async fn local_rrf_leaves_calls_for_embedding_and_reflection() {
 				foreign: false,
 				delivered: false,
 				retention_test: false,
+				inclusive_reads: 0,
 			};
 			let result = if reflection {
 				engine
@@ -398,6 +415,7 @@ async fn a_local_reranker_cannot_report_unreserved_model_usage() {
 		foreign: false,
 		delivered: false,
 		retention_test: false,
+		inclusive_reads: 0,
 	};
 	assert!(
 		matches!(engine.recall(&mut scope, &unit().bank, &query(4096)).await,
@@ -429,6 +447,7 @@ async fn semantic_consolidation_shares_its_synthesis_budget_and_rechecks_sources
 		foreign: false,
 		delivered: false,
 		retention_test: false,
+		inclusive_reads: 0,
 	};
 	let result = engine
 		.consolidate(&mut scope, &trigger, &snapshot)
@@ -492,6 +511,7 @@ async fn recall_refuses_foreign_candidates_and_stale_delivery() {
 		foreign: true,
 		delivered: false,
 		retention_test: false,
+		inclusive_reads: 0,
 	};
 	assert!(
 		engine
@@ -527,6 +547,7 @@ async fn recall_counts_the_complete_envelope_and_distinguishes_no_space() {
 		foreign: false,
 		delivered: false,
 		retention_test: false,
+		inclusive_reads: 0,
 	};
 	assert_eq!(
 		engine
@@ -560,6 +581,7 @@ async fn reflection_rejects_invented_citations() {
 		foreign: false,
 		delivered: false,
 		retention_test: false,
+		inclusive_reads: 0,
 	};
 	assert!(
 		engine
@@ -600,6 +622,7 @@ async fn maintenance_cannot_claim_verification_from_synthesis() {
 			foreign: false,
 			delivered: false,
 			retention_test: false,
+			inclusive_reads: 0,
 		};
 		let result = engine
 			.maintain(
@@ -643,6 +666,7 @@ async fn reflection_followup_cannot_expand_the_callers_context_budget() {
 		foreign: false,
 		delivered: false,
 		retention_test: false,
+		inclusive_reads: 0,
 	};
 	assert!(
 		matches!(engine.reflect(&mut scope, &unit().bank, &query(1024)).await,
@@ -679,6 +703,7 @@ async fn model_reranker_ties_follow_retention_and_disabled_decay_keeps_id_order(
 			foreign: false,
 			delivered: false,
 			retention_test: true,
+			inclusive_reads: 0,
 		};
 		let Recall::Ready { units } = engine
 			.recall(&mut scope, &unit().bank, &query(4096))
@@ -693,4 +718,36 @@ async fn model_reranker_ties_follow_retention_and_disabled_decay_keeps_id_order(
 		);
 		assert!(scope.delivered);
 	}
+}
+
+#[tokio::test]
+async fn inclusive_recall_uses_one_atomic_snapshot_instead_of_two_retention_reads() {
+	let provider = EntityRef {
+		id: "fixture".into(),
+		version: "1.0.0".into(),
+	};
+	let policy = policy();
+	let models = Models {
+		invented: false,
+		followup: None,
+	};
+	let engine = Engine {
+		provider: &provider,
+		policy: &policy,
+		models: &models,
+	};
+	let mut scope = Scope {
+		retention_test: false,
+		inclusive_reads: 0,
+		stale: false,
+		foreign: false,
+		delivered: false,
+	};
+	let result = engine
+		.recall_including_dormant(&mut scope, &unit().bank, &query(4096))
+		.await
+		.unwrap();
+	assert!(matches!(result, Recall::Ready { .. }));
+	assert_eq!(scope.inclusive_reads, 1);
+	assert!(scope.delivered);
 }

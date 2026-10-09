@@ -105,16 +105,25 @@ fn peer_server(
 	let server = Box::pin(server);
 	async move { Arc::new(server.await) }.boxed().shared()
 }
-type PeerClientFuture = Shared<BoxFuture<'static, Arc<reinhardt::test::APIClient>>>;
+type PeerTransportFuture =
+	Shared<BoxFuture<'static, (Arc<FixedServerGuard>, Arc<reinhardt::test::APIClient>)>>;
+/// Serve the peer and declare its client as one natural transport dependency.
 #[fixture]
-fn peer_client(peer_server: PeerServerFuture) -> PeerClientFuture {
+fn peer_transport(
+	#[from(peer_application)] _application: PeerApplicationFuture,
+	#[from(peer_server)]
+	#[with(_application.clone())]
+	server: PeerServerFuture,
+) -> PeerTransportFuture {
 	async move {
-		Arc::new(
+		let server = server.await;
+		let client = Arc::new(
 			reinhardt::test::APIClient::builder()
-				.base_url(&peer_server.await.url)
+				.base_url(&server.url)
 				.timeout(std::time::Duration::from_secs(5))
 				.build(),
-		)
+		);
+		(server, client)
 	}
 	.boxed()
 	.shared()
@@ -126,23 +135,23 @@ pub fn native_peer(
 	#[from(runtime)] _base: RuntimeFuture,
 	#[default(aidash_server::sse::Service::new(Default::default()))]
 	_streams: aidash_server::sse::Service,
+	// Callers that hand the socket to child processes own its reservation.
+	#[from(fixed_listener)] _listener: ListenerFuture,
 	#[from(peer_application)]
-	#[with(_node_id,_transform.clone(),_base.clone(),_streams.clone())]
+	#[with(_node_id,_transform.clone(),_base.clone(),_streams.clone(),_listener.clone())]
 	_application: PeerApplicationFuture,
-	#[from(peer_server)]
+	#[from(peer_transport)]
 	#[with(_application.clone())]
-	server: PeerServerFuture,
-	#[from(peer_client)]
-	#[with(server.clone())]
-	client: PeerClientFuture,
+	transport: PeerTransportFuture,
 ) -> PeerFuture {
 	async move {
 		let application = _application.await;
+		let (server, client) = transport.await;
 		PeerFixture {
 			runtime: application.runtime,
 			application: application.application,
-			server: server.await,
-			client: client.await,
+			server,
+			client,
 		}
 	}
 	.boxed()

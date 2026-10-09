@@ -1,19 +1,71 @@
 use reinhardt::db::backends::DatabaseConnection as BackendConnection;
 use reinhardt::db::migrations::{FilesystemSource, MigrationSource};
 use reinhardt::db::orm::connection::DatabaseConnectionLease;
+use reinhardt::query::QueryStatementBuilder as _;
 #[path = "postgres.rs"]
 mod postgres;
 use futures_util::{
 	FutureExt,
 	future::{BoxFuture, Shared},
 };
-use postgres::{PostgresFuture, postgres_container};
+use postgres::PostgresFuture;
+pub(super) use postgres::postgres_container;
 pub type DatabaseFuture = Shared<BoxFuture<'static, DatabaseFixture>>;
 use reinhardt::test::fixtures::temp_dir;
 use reinhardt::test::testcontainers::{ContainerAsync, GenericImage};
 use std::path::PathBuf;
 use std::sync::Arc;
+use sqlx::PgPool;
+use std::time::Duration;
 use tempfile::TempDir;
+
+/// Trigger per-database crash recovery before a restarted Store uses PGroonga.
+/// PostgreSQL's TCP readiness does not start this worker; see
+/// https://pgroonga.github.io/reference/modules/pgroonga-crash-safer.html.
+pub(super) async fn wait_for_pgroonga(pool: &PgPool, timeout: Duration) -> Result<(), String> {
+	let probe = reinhardt::query::Query::select()
+		.expr(reinhardt::query::SimpleExpr::FunctionCall(
+			reinhardt::query::IntoIden::into_iden("pgroonga_command"),
+			vec![reinhardt::query::Expr::value("status").into()],
+		))
+		.to_string(reinhardt::query::PostgresQueryBuilder);
+	let mut last_error = None;
+	let result = tokio::time::timeout(timeout, async {
+		loop {
+			// A failed initialization poisons that backend. Detach before probing
+			// so even cancellation drops it rather than returning it to the pool.
+			let mut session = pool.acquire().await?.detach();
+			let result = sqlx::query(&probe).execute(&mut session).await;
+			drop(session);
+			match result {
+				Ok(_) => break Ok(()),
+				Err(sqlx::Error::Database(error))
+					if error.code().as_deref() == Some("57P03")
+						&& error
+							.message()
+							.contains("pgroonga_crash_safer is preparing") =>
+				{
+					last_error = Some(format!("SQLSTATE 57P03: {}", error.message()));
+					tokio::time::sleep(Duration::from_millis(100)).await;
+				}
+				Err(error) => break Err(error),
+			}
+		}
+	})
+	.await;
+	match result {
+		Ok(Ok(())) => Ok(()),
+		Ok(Err(error)) => Err(format!(
+			"fixture PGroonga readiness probe failed: {error:?}"
+		)),
+		Err(_) => Err(format!(
+			"fixture PGroonga did not become ready within {timeout:?}; last transient error: {}",
+			last_error
+				.as_deref()
+				.unwrap_or("none (probe did not complete)")
+		)),
+	}
+}
 
 /// A native migration graph on Reinhardt's disposable PostgreSQL fixture.
 #[allow(dead_code)] // Each integration binary consumes a different subset of the shared fixture.
@@ -66,6 +118,9 @@ impl DatabaseFixture {
 		})
 		.await
 		.expect("crashed PostgreSQL must finish recovery");
+		wait_for_pgroonga(&pool, Duration::from_secs(30))
+			.await
+			.unwrap_or_else(|error| panic!("{error}"));
 		let restarted = aidash_server::store::Store::from_pool(pool, store.node_id.clone())
 			.await
 			.unwrap();

@@ -42,6 +42,7 @@
 //! declared Rust type (e.g. `u16`) without manual parsing.
 
 use crate::apps::federation::remote::serializers::settings::NodeSettings;
+use crate::apps::identity::serializers::managed_settings::ManagedGcipSource;
 use crate::apps::identity::serializers::settings::DashboardSettings;
 use crate::apps::operations::serializers::settings::KubernetesSettings;
 use reinhardt::conf::settings::PendingSettings;
@@ -92,11 +93,13 @@ fn settings_builder() -> Result<SettingsBuilder, BuildError> {
 
 	// Presence inspection does not interpolate unselected runtime credentials.
 	let configured = file_settings_builder(&profile_str, &base_dir, &settings_dir)
+		.add_source(ManagedGcipSource::from_env())
 		.add_source(HighPriorityEnvSource::new().with_prefix("REINHARDT_"))
 		.build_scoped()?
 		.has_path(&["dashboard", "oidc"]);
 	Ok(
 		file_settings_builder(&profile_str, &base_dir, &settings_dir)
+			.add_source(ManagedGcipSource::from_env())
 			.add_source(super::legacy_env::LegacyEnvironment::new(configured))
 			.add_source(HighPriorityEnvSource::new().with_prefix("REINHARDT_")),
 	)
@@ -247,5 +250,52 @@ mod tests {
 		)
 		.unwrap();
 		directory
+	}
+
+	#[rstest::rstest]
+	fn managed_gcip_settings_preserve_tenant_ids_and_apply_typed_defaults() {
+		let directory = tempfile::tempdir().unwrap();
+		let base = include_str!("../../settings/base.example.toml")
+			.replace(
+				"[core]\n",
+				"[core]\nsecret_key = 'isolated-settings-test-secret-0123456789'\n",
+			)
+			.replace(
+				"[node]\n",
+				"[node]\napi_token = 'isolated-settings-test-operator-0123456789'\n",
+			);
+		std::fs::write(directory.path().join("base.toml"), base).unwrap();
+		let path = directory.path().join("dashboard.json");
+		std::fs::write(
+			&path,
+			serde_json::to_vec(&serde_json::json!({"dashboard": {"gcip": {
+				"project_id": "fixture-project",
+				"public_origin": "https://test.aidash.run",
+				"web_api_key": "public-fixture-key",
+				"tenant_bindings": {"Pool-X": "acme"},
+				"providers": {"Pool-X": ["google.com"]},
+				"password_sign_up": []
+			}}}))
+			.unwrap(),
+		)
+		.unwrap();
+		let settings = file_settings_builder("local", directory.path(), directory.path())
+			.add_source(ManagedGcipSource { path: Some(path) })
+			.build_pending_composed::<ProjectSettings>()
+			.unwrap()
+			.resolve()
+			.unwrap();
+		let dashboard = &settings.settings().dashboard;
+		assert!(dashboard.oidc.is_none());
+		let gcip = dashboard.gcip.as_ref().unwrap();
+		assert_eq!(
+			gcip.issuer(),
+			"https://securetoken.google.com/fixture-project"
+		);
+		assert_eq!(gcip.tenant_bindings["Pool-X"], "acme");
+		assert_eq!(gcip.providers["Pool-X"], ["google.com"]);
+		assert!(gcip.password_sign_up.is_empty());
+		assert_eq!(gcip.session_absolute_seconds, 43200);
+		assert_eq!(gcip.session_idle_seconds, 1800);
 	}
 }

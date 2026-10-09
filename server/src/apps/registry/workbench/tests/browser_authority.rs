@@ -35,6 +35,10 @@ async fn browser_workbench(
 		.id(Uuid::new_v4())
 		.issuer(issuer)
 		.subject("browser-fixture")
+		.gcip_tenant("")
+		.valid_since(None)
+		.verified_email(None)
+		.display_name(None)
 		.last_valid_at(Some(now))
 		.disabled_at(None)
 		.finish();
@@ -49,6 +53,7 @@ async fn browser_workbench(
 		.identity_id(identity.id)
 		.provider_sid(None)
 		.created_at(now)
+		.auth_time(None)
 		.last_activity_at(now)
 		.expires_at(now + Duration::hours(12))
 		.revoked_at(None)

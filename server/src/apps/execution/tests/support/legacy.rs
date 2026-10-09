@@ -422,6 +422,7 @@ pub fn runtime(execution_database: DatabaseFuture, http_client: reqwest::Client)
 			.unwrap();
 		let federation = Federation {
 			sandbox: Default::default(),
+			gcip: None,
 			store,
 			registry: Registry::new(database.pool.clone(), "aidash://execution-test").unwrap(),
 			config: Config {
@@ -434,6 +435,7 @@ pub fn runtime(execution_database: DatabaseFuture, http_client: reqwest::Client)
 				lease_seconds: 30,
 				default_host_packages: vec![],
 				oidc: None,
+				gcip: None,
 			},
 			client: http_client,
 			notify: Arc::new(tokio::sync::Notify::new()),
