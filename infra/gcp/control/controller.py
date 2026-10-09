@@ -729,10 +729,19 @@ def reconcile(config, store):
                     continue
                 previous = managed.get(identity)
                 if (
-                    identity in presealed
-                    and previous and previous["running"] and previous["published"]
+                    previous and previous["running"] and previous["published"]
                     and entry.get("provider_credentials") != output.get("provider_credentials")
+                    and (identity in presealed or not entry.get("release"))
                 ):
+                    if not sealed:
+                        # Recover a prior successful apply whose controller
+                        # stopped before updating the durable settings receipt.
+                        current_entry(store, identity, generation)
+                        if not host(config, output, "seal")["sealed"]:
+                            update_entry(store, identity, generation, status="waiting_for_active_work")
+                            continue
+                        sealed = True
+                        presealed.add(identity)
                     # Broker intent has already changed VM metadata. Reload the
                     # existing authorized bundle even if a newer build is pending.
                     # Failure must take the deployment gate path, not unseal stale settings.

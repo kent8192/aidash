@@ -683,6 +683,37 @@ class ReconcileTests(unittest.TestCase):
                     self.assertFalse(any(call[0] in {"bootstrap", "start", "stop"} for call in self.calls))
                     self.assertEqual(self.cloud.plans, [])
 
+    def test_pending_build_recovers_a_broker_apply_completed_by_an_interrupted_controller(self):
+        self.config["develop_branch"] = "develop/0.1.0"
+        self.config["credential_brokers"] = {"develop": {"enabled": True, "image": "initial"}}
+        outputs = self.cloud.outputs
+        def managed_outputs():
+            values = outputs()
+            for identity, output in values.items():
+                output["provider_credentials"] = {
+                    "store": {"environment_id": identity},
+                    "broker": {"endpoint": "https://broker.run.app/api/v1", "kid": "version-1"} if self.cloud.brokers.get(identity, {}).get("enabled") else None,
+                }
+            return values
+        with patch.object(self.cloud, "outputs", side_effect=managed_outputs):
+            self.request("develop", source_ref="develop/0.1.0")
+            self.reconcile()
+            self.request("develop", action="update", sha="b" * 40, source_ref="develop/0.1.0")["release"] = None
+            self.config["credential_brokers"] = {}
+            # The prior controller applied broker metadata, then exited before
+            # reloading the old release. Terraform already matches desired intent.
+            self.cloud.apply(self.cloud.managed)
+            self.calls.clear()
+            self.cloud.plans.clear()
+            self.reconcile()
+            self.assertEqual([call for call in self.calls if call[0] in {"seal", "bootstrap", "health", "unseal"}], [("seal", "develop"), ("bootstrap", "develop", False), ("health", "develop"), ("unseal", "develop")])
+            entry = self.store.state["environments"]["develop"]
+            self.assertEqual(entry["status"], "awaiting_build")
+            self.assertIsNone(entry["provider_credentials"]["broker"])
+            self.assertEqual(self.cloud.managed["develop"]["release_sha"], SHA)
+            self.assertEqual(self.cloud.plans, [])
+            self.assertFalse(any(call[0] in {"start", "stop"} for call in self.calls))
+
     def test_pending_build_broker_settings_reload_failure_keeps_admission_gated(self):
         self.config["develop_branch"] = "develop/0.1.0"
         self.config["credential_brokers"] = {"develop": {"enabled": True, "image": "initial"}}

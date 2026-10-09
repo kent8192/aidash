@@ -200,7 +200,9 @@ Non-deployment early exits, including pending builds, restore broker-presealed
 admission for a still-running, published release. When broker intent changes
 the managed settings descriptor, reload the existing release and verify its
 original source SHA before restoring admission, even while a new build is
-pending. Record the descriptor so reconciliation does not repeat the reload;
+pending. Reconcile descriptor differences even after an earlier broker apply
+completed and its controller exited before reloading the application.
+Record the descriptor so reconciliation does not repeat the reload;
 reload failure keeps the release gated. Failed deployments that were
 deliberately gated, stopped hosts and retired hosts remain gated.
 
