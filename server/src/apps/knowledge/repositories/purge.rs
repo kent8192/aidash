@@ -147,6 +147,14 @@ pub(crate) async fn sweep(store: &Store) -> Result<usize> {
 			let policy =
 				crate::semantic::native_memory::policy(&mut lease, &settings.provider).await?;
 			max_retries = Some(policy.bounds.max_retries);
+			native::query(
+				&Query::delete()
+					.from_table(Alias::new("memory_unit_retention"))
+					.and_where(Expr::col("unit_id").eq(Expr::value(id)))
+					.to_string(PostgresQueryBuilder),
+			)
+			.execute(&mut **lease.tx())
+			.await?;
 			let affected_banks =
 				dependencies::erase(&mut lease, &unit, bank, &policy.bounds).await?;
 			// A model result can quote several units. Clearing the bank's result

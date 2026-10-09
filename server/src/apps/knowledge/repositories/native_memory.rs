@@ -346,6 +346,16 @@ pub(crate) async fn mutate_origin(
 			origin,
 		)
 		.await?;
+		if matches!(change, Change::Correct { .. }) {
+			super::memory_decay::reactivate(lease, unit.id).await?;
+		}
+		if unit.content.kind.derived() && !unit.deleted {
+			for source in &unit.content.evidence {
+				if let Evidence::Unit { id, .. } = source {
+					super::memory_decay::reactivate(lease, *id).await?;
+				}
+			}
+		}
 		if unit.deleted {
 			super::purge::schedule(lease, bank_id, &unit, &policy.retention).await?;
 		}
@@ -875,25 +885,60 @@ pub(crate) async fn list(
 	limit: usize,
 	max_graph_visits: usize,
 ) -> Result<Vec<Unit>> {
+	list_mode(lease, bank, limit, max_graph_visits, ListMode::All).await
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum ListMode {
+	All,
+	Recall,
+	Dormant,
+}
+
+pub(crate) async fn list_mode(
+	lease: &mut Lease<'_>,
+	bank: &Bank,
+	limit: usize,
+	max_graph_visits: usize,
+	mode: ListMode,
+) -> Result<Vec<Unit>> {
 	lock_workspace(lease, bank.workspace, false).await?;
 	units::authorize(lease, bank, "memory.read").await?;
+	if matches!(mode, ListMode::Dormant) {
+		units::authorize(lease, bank, "memory.read_dormant").await?;
+	}
 	let Some(bank_id) = bank_id(lease, bank, false).await? else {
 		return Ok(Vec::new());
 	};
-	let ids: Vec<Uuid> = native::query_scalar(
-		&Query::select()
-			.column(Alias::new("id"))
-			.from(Alias::new("memory_units"))
-			.and_where(Expr::col("bank_id").eq(Expr::value(bank_id)))
-			.and_where(Expr::col("deleted").eq(false))
-			.and_where(Expr::col("stale").eq(false))
-			.and_where(Expr::col("verification").ne("contradicted"))
-			.order_by(Alias::new("id"), Order::Asc)
-			.limit(limit as u64 + 1)
-			.to_string(PostgresQueryBuilder),
-	)
-	.scalar_all(&mut **lease.tx())
-	.await?;
+	let mut query = Query::select();
+	query
+		.column(Alias::new("id"))
+		.from(Alias::new("memory_units"))
+		.and_where(Expr::col("bank_id").eq(Expr::value(bank_id)))
+		.and_where(Expr::col("deleted").eq(false))
+		.and_where(Expr::col("stale").eq(false))
+		.and_where(Expr::col("verification").ne("contradicted"))
+		.order_by(Alias::new("id"), Order::Asc)
+		.limit(limit as u64 + 1);
+	if !matches!(mode, ListMode::All) {
+		let settings = super::bank_settings::get(lease, bank)
+			.await?
+			.ok_or(Error::Forbidden)?;
+		let policy = crate::semantic::native_memory::policy(lease, &settings.provider).await?;
+		if policy.decay.as_ref().is_some_and(|d| d.dormancy.is_some()) {
+			let dormant = super::memory_decay::dormant_filter(bank_id, &settings.provider)?;
+			if matches!(mode, ListMode::Dormant) {
+				query.and_where(Expr::col("id").in_subquery(dormant));
+			} else {
+				query.and_where(Expr::col("id").not_in_subquery(dormant));
+			}
+		} else if matches!(mode, ListMode::Dormant) {
+			return Ok(Vec::new());
+		}
+	}
+	let ids: Vec<Uuid> = native::query_scalar(&query.to_string(PostgresQueryBuilder))
+		.scalar_all(&mut **lease.tx())
+		.await?;
 	if ids.len() > limit {
 		return Err(Error::Conflict(
 			"memory snapshot exceeds its declared bound".into(),
