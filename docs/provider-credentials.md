@@ -70,10 +70,17 @@ commits its irreversible metadata state and audit before disabling all versions,
 so effective access closes immediately. A failed database commit leaves external
 versions unchanged; interrupted or failed disables are retried from revoked rows.
 The API returns the committed revoked state while cleanup is pending. Deletion
-destroys versions and keeps
-a metadata tombstone, but refuses a bound record. A supervised reconciler scans
+refuses a bound record, then commits a `deleted` tombstone before destroying any
+versions or deleting the secret. The private version pin marks unfinished
+cleanup until the idempotent external effects complete; clearing it records a
+metadata-only cleanup event without changing the deletion revision. Interrupted
+cleanup is retried from that tombstone and never restores effective access.
+Subject writes preserve their committed result if the separate authorization
+audit cannot finalize, and report that audit failure through static telemetry.
+A supervised reconciler scans
 expired PostgreSQL pending records, disables unpinned active versions left
-by interrupted rotations, and disables all versions of revoked records. Each supervised pass processes at most 25 non-deleted
+by interrupted rotations, disables all versions of revoked records, and completes
+deleted tombstones with unfinished cleanup. Each supervised pass processes at most 25 eligible
 metadata records in UUID order, retains its cursor across passes, and waits 60
 seconds after completing a page. A failed candidate is retried on the next sweep
 without blocking later Tenants. It never lists Secret Manager secrets.

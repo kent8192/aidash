@@ -73,7 +73,11 @@ impl Repository for NativeRepository {
 			.await
 			.map_err(crate::Error::from)?;
 		let mut query = Record::objects()
-			.filter(Record::field_state().ne("deleted"))
+			.filter(
+				Record::field_state()
+					.ne("deleted")
+					.or(Record::field_pinned_version().is_not_null()),
+			)
 			.order_by(&["id"])
 			.limit(limit.clamp(
 				1,

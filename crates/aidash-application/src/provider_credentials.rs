@@ -43,7 +43,8 @@ pub trait Scope: Send {
 #[async_trait]
 pub trait Repository: Send + Sync {
 	async fn begin(&self, tenant: &str) -> Result<Box<dyn Scope>>;
-	/// A bounded UUID keyset page of non-deleted metadata. PostgreSQL is the
+	/// A bounded UUID keyset page of live metadata and deleted tombstones whose
+	/// private version pin still marks unfinished cleanup. PostgreSQL is the
 	/// cleanup inventory; Secret Manager secrets are never listed.
 	async fn reconciliation_candidates(
 		&self,
@@ -305,16 +306,18 @@ impl Service {
 		{
 			return Err(Error::Conflict("Provider Credential is bound".into()));
 		}
-		for version in self.store.versions(&row.secret_resource).await? {
-			self.store.destroy(&version).await?;
-		}
-		self.store.delete(&row.secret_resource).await?;
+		// Deleted is the durable, irreversible intent. Retain the private pin as
+		// a cleanup marker until every external effect has succeeded, so a crash
+		// or partial destruction never leaves apparently usable metadata behind.
 		row.state = State::Deleted;
 		row.revision += 1;
 		scope
 			.save(&row, "provider_credential.deleted", actor)
 			.await?;
 		scope.commit().await?;
+		if self.reconcile_candidate(row.clone()).await.is_err() {
+			tracing::warn!("Provider Credential deletion committed; secret cleanup is pending");
+		}
 		Ok(row.into())
 	}
 	pub async fn bind(
@@ -422,6 +425,21 @@ impl Service {
 				for version in self.store.versions(&row.secret_resource).await? {
 					self.store.disable(&version).await?;
 				}
+			}
+			State::Deleted if row.pinned_version.is_some() => {
+				for version in self.store.versions(&row.secret_resource).await? {
+					self.store.destroy(&version).await?;
+				}
+				self.store.delete(&row.secret_resource).await?;
+				row.pinned_version = None;
+				scope
+					.save(
+						&row,
+						"provider_credential.cleanup_completed",
+						"provider-credential-reconciler",
+					)
+					.await?;
+				cleaned = true;
 			}
 			State::Pending | State::Deleted => {}
 		}
