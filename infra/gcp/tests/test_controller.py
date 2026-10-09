@@ -47,6 +47,7 @@ class CloudFixture:
         self.managed = {}
         self.status = {}
         self.plans = []
+        self.gcip = {}
 
     def configuration_in_state(self, store):
         return deepcopy(self.managed)
@@ -68,6 +69,7 @@ class CloudFixture:
                 zone="us-central1-a",
                 hostname="test.aidash.run",
                 runtime_secret=key,
+                gcip=deepcopy(self.gcip),
             )
             for key in self.managed
         }
@@ -164,6 +166,128 @@ class ReconcileTests(unittest.TestCase):
         self.assertEqual(self.store.state["environments"]["test"]["desired"], "stopped")
         self.assertNotIn(("start", "test"), self.calls)
         self.assertFalse(self.cloud.managed["test"]["published"])
+
+    def test_gcip_changes_refresh_all_running_and_retained_stopped_environments(self):
+        self.request()
+        self.reconcile()
+        self.request("pr-1")
+        self.reconcile()
+        self.request("develop", source_ref="develop/0.1.0")
+        self.reconcile()
+        self.request(action="stop")
+        self.reconcile()
+        pending = self.request(
+            "develop", "update", sha="b" * 40, source_ref="develop/0.1.0"
+        )
+        pending["release"] = None
+        config = dict(CONFIG, gcip_tenants={"company": {"tenant": "old"}})
+        secrets = {}
+        original_apply = self.cloud.apply
+
+        def apply(*args, **kwargs):
+            # Every published host must be fenced before the shared input is
+            # applied, including one processed later in the environment loop.
+            for identity in ("pr-1", "develop"):
+                self.assertIn(("gate", identity), self.calls)
+            original_apply(*args, **kwargs)
+            self.cloud.gcip = {
+                "tenant_ids": ["pool"] if config["gcip_tenants"] else [],
+                "tenant_bindings": {
+                    "pool": config["gcip_tenants"]["company"]["tenant"]
+                } if config["gcip_tenants"] else {},
+            }
+
+        def provision(config, output, kind):
+            secrets[output["instance"]] = deepcopy(output["gcip"])
+
+        with (
+            patch.object(self.cloud, "apply", apply),
+            patch.object(controller, "provision_secret", provision),
+            patch.object(controller, "reconcile_environment") as iam,
+            patch.dict(os.environ, {"AIDASH_GCIP_IDP_SECRETS": "{}"}),
+        ):
+            for change in ("enable", "remap", "rotate", "remove"):
+                with self.subTest(change=change):
+                    if change == "remap":
+                        config["gcip_tenants"]["company"]["tenant"] = "new"
+                    elif change == "rotate":
+                        os.environ["AIDASH_GCIP_IDP_SECRETS"] = '{"company/oidc.sso":"rotated-private"}'
+                    elif change == "remove":
+                        config["gcip_tenants"] = {}
+                    self.calls.clear()
+                    secrets.clear()
+                    controller.reconcile(config, self.store)
+                    self.assertEqual(set(secrets), {"test", "pr-1", "develop"})
+                    for identity in ("pr-1", "develop"):
+                        self.assertIn(("bootstrap", identity, False), self.calls)
+                        self.assertIn(("unseal", identity), self.calls)
+                    self.assertFalse(any(call[0] == "start" for call in self.calls))
+                    self.assertNotIn(("bootstrap", "test", False), self.calls)
+                    self.assertEqual(self.cloud.status["test"], "TERMINATED")
+                    self.assertEqual(self.cloud.managed["develop"]["release_sha"], SHA)
+                    self.assertEqual(
+                        self.store.state["environments"]["develop"]["status"],
+                        "awaiting_build",
+                    )
+                    revision = controller.gcip_revision(config)
+                    for entry in self.store.state["environments"].values():
+                        self.assertEqual(entry["gcip_revision"], revision)
+                        self.assertFalse(entry["gcip_pending"])
+                    self.assertNotIn("rotated-private", json.dumps(self.store.state))
+                    self.assertEqual(secrets["pr-1"], self.cloud.gcip)
+                    self.assertTrue(iam.called)
+                    self.calls.clear()
+                    secrets.clear()
+                    plans = len(self.cloud.plans)
+                    controller.reconcile(config, self.store)
+                    self.assertEqual(len(self.cloud.plans), plans)
+                    self.assertFalse(secrets)
+                    self.assertFalse(any(call[0] == "bootstrap" for call in self.calls))
+
+    def test_failed_gcip_refresh_stays_gated_and_retries_without_restarting_successes(self):
+        self.request()
+        self.reconcile()
+        self.request("pr-1")
+        self.reconcile()
+        config = dict(CONFIG, gcip_tenants={"company": {"tenant": "new"}})
+
+        def restart(config, output, fresh_boot):
+            self.calls.append(("bootstrap", output["instance"], fresh_boot))
+            if output["instance"] == "test":
+                raise RuntimeError("fixture reload failure")
+
+        self.calls.clear()
+        with patch.object(controller, "restart_bootstrap", restart):
+            with self.assertRaisesRegex(RuntimeError, "Reconciliation incomplete"):
+                controller.reconcile(config, self.store)
+        self.assertNotIn(("unseal", "test"), self.calls)
+        self.assertIn(("unseal", "pr-1"), self.calls)
+        self.assertTrue(self.store.state["environments"]["test"]["gcip_pending"])
+        self.assertFalse(self.store.state["environments"]["pr-1"]["gcip_pending"])
+        self.calls.clear()
+        controller.reconcile(config, self.store)
+        self.assertIn(("bootstrap", "test", False), self.calls)
+        self.assertNotIn(("bootstrap", "pr-1", False), self.calls)
+        self.assertFalse(self.store.state["environments"]["test"]["gcip_pending"])
+
+    def test_failed_gcip_refresh_does_not_block_closed_pr_retirement(self):
+        self.request()
+        self.reconcile()
+        self.request("pr-1")
+        self.reconcile()
+        self.closed.add("pr-1")
+        config = dict(CONFIG, gcip_tenants={"company": {"tenant": "new"}})
+
+        def restart(config, output, fresh_boot):
+            if output["instance"] == "test":
+                raise RuntimeError("fixture reload failure")
+
+        with patch.object(controller, "restart_bootstrap", restart):
+            with self.assertRaisesRegex(RuntimeError, "Reconciliation incomplete"):
+                controller.reconcile(config, self.store)
+        self.assertNotIn("pr-1", self.cloud.managed)
+        self.assertEqual(self.store.state["environments"]["pr-1"]["status"], "destroyed")
+        self.assertTrue(self.store.state["environments"]["test"]["gcip_pending"])
 
     def test_resumed_and_replaced_hosts_wait_for_their_boot_script(self):
         self.request()

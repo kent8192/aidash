@@ -1,6 +1,7 @@
 """Plan review must enforce authorization even for drift after preflight."""
 
 import json
+import os
 from pathlib import Path
 import sys
 from tempfile import TemporaryDirectory
@@ -127,6 +128,10 @@ class PlanTests(unittest.TestCase):
                 "google_compute_instance", ["delete", "create"], starting={"pr-1"}
             )
         self.apply("google_compute_instance", ["create"], starting={"test"})
+
+    def test_unconfigured_workflow_secret_is_an_empty_gcip_input(self):
+        with patch.dict(os.environ, {"AIDASH_GCIP_IDP_SECRETS": ""}):
+            self.apply("google_compute_instance", ["no-op"])
 
     def test_disk_replacement_requires_explicit_retirement_for_that_owner(self):
         with self.assertRaisesRegex(RuntimeError, "retained disk"):

@@ -177,6 +177,18 @@ class RuntimeConfigTests(unittest.TestCase):
                 {"project_id": "aidash-fixture"}, OUTPUT, "test"
             )
             self.assertFalse(any("add" in args for args, _ in calls))
+            calls.clear()
+            controller.provision_secret(
+                {"project_id": "aidash-fixture", "gcip_web_api_key": "rotated"},
+                OUTPUT,
+                "test",
+            )
+            additions = [kwargs for args, kwargs in calls if "add" in args]
+            self.assertEqual(len(additions), 1)
+            self.assertEqual(
+                json.loads(additions[0]["data"])["dashboard"]["gcip"]["web_api_key"],
+                "rotated",
+            )
 
     def test_oidc_and_gcip_runtime_configuration_cannot_coexist(self):
         with patch(

@@ -211,7 +211,7 @@ class Terraform:
         }
         variables["environments"] = environments
         variables["gcip_tenants"] = self.configuration.get("gcip_tenants", {})
-        variables["gcip_idp_secrets"] = json.loads(os.environ.get("AIDASH_GCIP_IDP_SECRETS", "{}"))
+        variables["gcip_idp_secrets"] = json.loads(os.environ.get("AIDASH_GCIP_IDP_SECRETS") or "{}")
         path = self.root / "controller.auto.tfvars.json"
         plan = self.root / "controller.tfplan"
         private_json(path, variables)

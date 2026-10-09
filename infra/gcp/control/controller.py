@@ -403,7 +403,7 @@ def provision_secret(config, output, kind):
         if dashboard.get("oidc"):
             raise Refused("Remove dashboard.oidc before enabling the sole GCIP issuer")
         settings = dashboard.setdefault("gcip", {})
-        api_key = settings.get("web_api_key") or config.get("gcip_web_api_key")
+        api_key = config.get("gcip_web_api_key") or settings.get("web_api_key")
         if not api_key:
             raise Refused("Configure the GCIP web API key from the bootstrap output")
         settings.update({key: gcip[key] for key in ("project_id", "public_origin", "tenant_bindings", "providers", "password_sign_up")})
@@ -530,6 +530,84 @@ def verify_source(config, identity, entry):
     ci_success(config, entry["sha"])
 
 
+def gcip_revision(config):
+    """Persist only a digest of shared inputs, including private IdP rotation."""
+    value = {
+        "tenants": config.get("gcip_tenants", {}),
+        "idp_secrets": json.loads(os.environ.get("AIDASH_GCIP_IDP_SECRETS") or "{}"),
+        "web_api_key": config.get("gcip_web_api_key"),
+    }
+    return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
+
+
+def gate_gcip_changes(config, store, terraform, managed):
+    """Fence every old binding before any apply can change the shared pools."""
+    outputs = terraform.outputs() if managed else {}
+    state, _ = store.read("lifecycle/state.json")
+    revision = gcip_revision(config)
+    affected = {}
+    for identity, previous in managed.items():
+        entry = state["environments"][identity]
+        if not (
+            config.get("gcip_tenants")
+            or outputs[identity].get("gcip", {}).get("tenant_ids")
+            or entry.get("gcip_revision")
+            or entry.get("gcip_pending")
+        ):
+            continue
+        if entry.get("gcip_revision") == revision and not entry.get("gcip_pending"):
+            continue
+        update_entry(store, identity, entry["generation"], gcip_pending=True)
+        if previous["running"] and previous["published"]:
+            if instance_status(config, outputs[identity]) == "RUNNING":
+                host(config, outputs[identity], "gate")
+        if entry["desired"] != "destroyed":
+            affected[identity] = entry["generation"]
+    return revision, affected
+
+
+def refresh_gcip_environments(config, store, terraform, managed, revision, affected):
+    if not affected:
+        return []
+    terraform.apply(managed)
+    outputs = terraform.outputs()
+    failures = []
+    for identity, generation in affected.items():
+        try:
+            entry = current_entry(store, identity, generation)
+            output = outputs[identity]
+            reconcile_environment(output)
+            provision_secret(config, output, entry["kind"])
+            previous = managed[identity]
+            if previous["running"] and previous["published"]:
+                # Reload the existing authorized release, even if a newer source
+                # is awaiting a build. This does not authorize a stopped VM start.
+                restart_bootstrap(config, output, False)
+                health = host(config, output, "health")
+                if health["source_sha"] != previous["release_sha"]:
+                    raise Refused("GCIP refresh changed the authorized running source")
+                current_entry(store, identity, generation)
+                host(config, output, "unseal")
+                public_health(output)
+            update_entry(
+                store, identity, generation, gcip_revision=revision, gcip_pending=False
+            )
+        except (Exception, OperationDeadline) as error:
+            # The digest advances only after successful reload. Keep failures
+            # gated and retry them on the next scheduled reconciliation.
+            failures.append(identity)
+            if managed[identity]["running"] and managed[identity]["published"]:
+                with operation_budget(90):
+                    try:
+                        host(config, outputs[identity], "gate")
+                    except Exception:
+                        pass
+            if isinstance(error, OperationDeadline):
+                raise
+            bounded_timeout(1)
+    return failures
+
+
 def observe_interruptions(config, store, terraform, managed):
     # Observe *all* hosts before any plan. Otherwise refreshing one environment
     # could recreate a missing VM belonging to an environment processed later.
@@ -569,9 +647,13 @@ def reconcile(config, store):
         state, _ = store.read("lifecycle/state.json")
         if not state:
             return
+        revision, affected = gate_gcip_changes(config, store, terraform, managed)
         observe_interruptions(config, store, terraform, managed)
+        gcip_failures = refresh_gcip_environments(
+            config, store, terraform, managed, revision, affected
+        )
         state, _ = store.read("lifecycle/state.json")
-        failures = []
+        failures = list(gcip_failures)
         for identity, snapshot in sorted(
             state["environments"].items(),
             key=lambda pair: (pair[1]["desired"] == "running", pair[1]["sequence"]),
@@ -636,6 +718,10 @@ def reconcile(config, store):
                         applied=managed.get(identity),
                         published=False,
                     )
+                    continue
+                if identity in gcip_failures:
+                    # GCIP failures stay gated, but must not prevent unrelated
+                    # environment retirement or an accepted stop.
                     continue
                 if entry["kind"] == "pr" and any(
                     value["kind"] == "pr" and value["running"]
@@ -827,6 +913,8 @@ def reconcile(config, store):
                     applied=managed[identity],
                     published=True,
                     status="ready",
+                    gcip_revision=revision,
+                    gcip_pending=False,
                     keepalive_applied=entry.get("keepalive_at", 0),
                 )
                 print(
