@@ -1,6 +1,9 @@
 import { defineConfig } from "@playwright/test";
 export default defineConfig({
   testDir: "./tests",
+  // The GCIP SDK fixture intercepts source modules served by its own Vite server.
+  // Hosted CI runs that suite with playwright.gcip.config.ts.
+  testIgnore: "gcip-sign-in.spec.ts",
   fullyParallel: false,
   workers: 1,
   retries: 0,

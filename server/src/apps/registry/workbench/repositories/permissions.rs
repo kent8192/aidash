@@ -21,6 +21,7 @@ pub(crate) struct Repository<'a> {
 	pub(crate) actor: Actor,
 }
 struct Scope {
+	policy: Option<aidash_application::ports::authorization::dashboard::AccountPolicy>,
 	node: String,
 	tx: Box<dyn TransactionExecutor>,
 	actor: Actor,
@@ -35,6 +36,7 @@ impl PermissionRepository for Repository<'_> {
 	}
 	async fn begin(&self) -> Result<Box<dyn PermissionScope + '_>> {
 		Ok(Box::new(Scope {
+			policy: self.runtime.config.dashboard_policy(),
 			node: self.runtime.config.node_id.clone(),
 			tx: Box::new(crate::database::native::begin(&self.runtime.store.pool).await?),
 			actor: self.actor.clone(),
@@ -53,6 +55,7 @@ impl PermissionScope for Scope {
 				definitions: &mut super::authority::Scope {
 					tx: &mut *self.tx,
 					actor: &self.actor,
+					policy: self.policy.clone(),
 				},
 				node: &node,
 			},
@@ -69,7 +72,11 @@ impl PermissionScope for Scope {
 	}
 	async fn require_inspection(&mut self, entry: &EntityRef) -> Result<()> {
 		aidash_application::registry::workbench::inspection::require(
-			&mut crate::bootstrap::draft_authority_scope(self.tx.as_mut(), &self.actor),
+			&mut crate::bootstrap::draft_authority_scope(
+				self.tx.as_mut(),
+				&self.actor,
+				self.policy.clone(),
+			),
 			entry,
 		)
 		.await

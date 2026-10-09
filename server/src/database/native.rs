@@ -18,6 +18,7 @@ pub struct Pool {
 	driver: sqlx::PgPool,
 	memory_recovery: Option<Arc<dyn aidash_application::ports::memory::MemoryRecovery>>,
 	memory_recovery_bypass: bool,
+	dashboard_policy: Option<aidash_application::ports::authorization::dashboard::AccountPolicy>,
 }
 impl From<sqlx::PgPool> for Pool {
 	fn from(driver: sqlx::PgPool) -> Self {
@@ -26,10 +27,24 @@ impl From<sqlx::PgPool> for Pool {
 			driver,
 			memory_recovery: None,
 			memory_recovery_bypass: false,
+			dashboard_policy: None,
 		}
 	}
 }
 impl Pool {
+	pub(crate) fn with_dashboard_policy(
+		mut self,
+		policy: Option<aidash_application::ports::authorization::dashboard::AccountPolicy>,
+	) -> Self {
+		self.dashboard_policy = policy;
+		self
+	}
+	pub(crate) fn dashboard_policy(
+		&self,
+	) -> Option<aidash_application::ports::authorization::dashboard::AccountPolicy> {
+		self.dashboard_policy.clone()
+	}
+
 	pub(crate) fn with_memory_recovery(
 		mut self,
 		recovery: Option<Arc<dyn aidash_application::ports::memory::MemoryRecovery>>,

@@ -81,6 +81,47 @@ import { Button } from "./components/ui/button";
 import { Input } from "./components/ui/input";
 import { NotificationBell, NotificationProvider } from "./notifications";
 
+const GcipSignIn = lazy(() => import("./gcip-sign-in"));
+
+function SignInEntry({
+  locale,
+  setLocale,
+}: {
+  locale: Locale;
+  setLocale: (locale: Locale) => void;
+}) {
+  const configuration = useQuery({
+    queryKey: ["sign-in-configuration"],
+    queryFn: async () => {
+      const response = await fetch("/auth/config", { cache: "no-store" });
+      if (!response.ok) throw new Error();
+      return response.json() as Promise<{
+        enabled: boolean;
+        provider?: string;
+      }>;
+    },
+  });
+  if (configuration.data?.enabled && configuration.data.provider === "gcip")
+    return (
+      <Suspense
+        fallback={
+          <p role="status">{locale === "ja-JP" ? "読み込み中…" : "Loading…"}</p>
+        }
+      >
+        <GcipSignIn locale={locale} setLocale={setLocale} />
+      </Suspense>
+    );
+  return (
+    <p role="status">
+      {configuration.isLoading
+        ? locale === "ja-JP"
+          ? "読み込み中…"
+          : "Loading…"
+        : authCopy[locale].setup}
+    </p>
+  );
+}
+
 const queryClient = new QueryClient({
   defaultOptions: { queries: { retry: 1, staleTime: 1000 } },
 });
@@ -129,9 +170,13 @@ function App() {
   }, [locale]);
   return (
     <LocaleContext value={locale}>
-      <ConnectionGate english={locale === "en-US"}>
-        <Dashboard locale={locale} setLocale={setLocale} />
-      </ConnectionGate>
+      {window.location.pathname === "/sign-in" ? (
+        <SignInEntry locale={locale} setLocale={setLocale} />
+      ) : (
+        <ConnectionGate english={locale === "en-US"}>
+          <Dashboard locale={locale} setLocale={setLocale} />
+        </ConnectionGate>
+      )}
     </LocaleContext>
   );
 }
@@ -558,9 +603,13 @@ function Dashboard({
                   .finally(() => setAuthLoading(false));
               }}
             >
-              {oidcProvider === "keycloak"
-                ? auth.signIn.replace("Google", "Keycloak")
-                : auth.signIn}
+              {oidcProvider === "gcip"
+                ? locale === "ja-JP"
+                  ? "サインイン"
+                  : "Sign in"
+                : oidcProvider === "keycloak"
+                  ? auth.signIn.replace("Google", "Keycloak")
+                  : auth.signIn}
             </Button>
           ) : (
             <>

@@ -53,7 +53,10 @@ impl IncidentScope for Scope {
 	}
 	async fn lock_identity(&mut self) -> Result<()> {
 		if let Actor::Subject(identity) = &self.actor {
-			identity.lock_native(&mut self.tx, false).await?;
+			let policy = self.tx.pool().dashboard_policy();
+			identity
+				.lock_native(&mut self.tx, false, policy.as_ref())
+				.await?;
 		}
 		Ok(())
 	}
@@ -63,8 +66,9 @@ impl IncidentScope for Scope {
 			.map_err(Into::into)
 	}
 	async fn require_inspection(&mut self, reference: &EntityRef) -> Result<()> {
+		let policy = self.tx.pool().dashboard_policy();
 		aidash_application::registry::workbench::inspection::require(
-			&mut crate::bootstrap::draft_authority_scope(&mut self.tx, &self.actor),
+			&mut crate::bootstrap::draft_authority_scope(&mut self.tx, &self.actor, policy),
 			reference,
 		)
 		.await
@@ -79,8 +83,9 @@ impl IncidentScope for Scope {
 		.map_err(Into::into)
 	}
 	async fn target_enabled(&mut self, tenant: &str, subject: &str) -> Result<()> {
+		let policy = self.tx.pool().dashboard_policy();
 		aidash_application::registry::workbench::target_enabled(
-			&mut crate::bootstrap::draft_authority_scope(&mut self.tx, &Actor::Operator),
+			&mut crate::bootstrap::draft_authority_scope(&mut self.tx, &Actor::Operator, policy),
 			tenant,
 			subject,
 		)

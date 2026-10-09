@@ -7,7 +7,7 @@ use reinhardt::query::{
 	Alias, ColumnRef, Expr, ExprTrait, LockType, OnConflict, Order, PostgresQueryBuilder, Query,
 	QueryStatementBuilder,
 };
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
 
 pub(crate) async fn configure(
@@ -193,8 +193,15 @@ pub(crate) async fn control(
 	bank: &Bank,
 	id: Uuid,
 	pinned: Option<bool>,
+	operation: Uuid,
+	digest: &str,
 ) -> Result<Unit> {
 	super::candidates::human(lease)?;
+	if operation.is_nil() {
+		return Err(Error::Invalid(
+			"memory control operation ID is required".into(),
+		));
+	}
 	if let Some(access) = lease.access() {
 		let participant: Option<String> = if let Some(id) = bank.participant {
 			native::query_scalar(
@@ -217,11 +224,43 @@ pub(crate) async fn control(
 			access.require(&workspace, "workspace.update").await?;
 		}
 	}
-	let unit = units::load(lease, id, false)
+	let bank_id = repository::bank_id(lease, bank, false)
 		.await?
 		.ok_or(Error::Forbidden)?;
-	if unit.bank != *bank || !unit.visible() {
+	let receipt = native::query(
+		&Query::select()
+			.column(ColumnRef::Asterisk)
+			.from(Alias::new("memory_receipts"))
+			.and_where(Expr::col("operation_id").eq(Expr::value(operation)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_optional(&mut **lease.tx())
+	.await?;
+	if let Some(receipt) = &receipt
+		&& (receipt.try_get::<Uuid>("bank_id")? != bank_id
+			|| receipt.try_get::<String>("digest")? != digest)
+	{
+		return Err(Error::Conflict(
+			"memory operation ID was reused with a different request".into(),
+		));
+	}
+	// Authority was checked above. An exact completed request whose result is
+	// no longer available is a changed outcome; new requests remain forbidden.
+	let unavailable = || {
+		if receipt.is_some() {
+			Error::Conflict("memory operation completed; its result has since changed".into())
+		} else {
+			Error::Forbidden
+		}
+	};
+	let unit = units::load(lease, id, false)
+		.await?
+		.ok_or_else(unavailable)?;
+	if unit.bank != *bank {
 		return Err(Error::Forbidden);
+	}
+	if !unit.visible() {
+		return Err(unavailable());
 	}
 	let policy = units::unexpired(lease, &unit).await?;
 	units::current(
@@ -231,9 +270,36 @@ pub(crate) async fn control(
 		policy.bounds.max_graph_visits,
 	)
 	.await?;
-	let bank_id = repository::bank_id(lease, bank, false)
-		.await?
-		.ok_or(Error::Forbidden)?;
+	if let Some(receipt) = receipt {
+		let outcome: Vec<Evidence> = receipt.try_get("outcome")?;
+		if outcome != vec![unit.evidence()] {
+			return Err(Error::Conflict(
+				"memory operation completed; its result has since changed".into(),
+			));
+		}
+		return Ok(unit);
+	}
+	repository::record_capacity(
+		lease,
+		bank_id,
+		"memory_receipts",
+		policy.retention.max_model_operations,
+	)
+	.await?;
+	// Reserve the exact request before changing the ranking state. Both writes
+	// share this authority transaction, so a failed control leaves no receipt.
+	if !super::memory_receipts::reserve(
+		lease,
+		operation,
+		bank_id,
+		digest,
+		&[unit.evidence()],
+		Utc::now(),
+	)
+	.await?
+	{
+		return Ok(unit);
+	}
 	ensure(lease, bank_id, id).await?;
 	if let Some(value) = pinned {
 		native::query(
@@ -265,45 +331,98 @@ pub(crate) fn dormant_filter(
 		.to_owned())
 }
 
-async fn live_support(lease: &mut Lease<'_>, unit: &Unit) -> Result<bool> {
-	let settings = bank_settings::get(lease, &unit.bank)
+async fn live_supported_evidence(
+	lease: &mut Lease<'_>,
+	bank_scope: &Bank,
+	evidence: Option<Evidence>,
+	wanted: &BTreeSet<(Uuid, i64)>,
+) -> Result<BTreeSet<(Uuid, i64)>> {
+	let settings = bank_settings::get(lease, bank_scope)
 		.await?
 		.ok_or(Error::Forbidden)?;
 	let policy = crate::semantic::native_memory::policy(lease, &settings.provider).await?;
-	let bank = repository::bank_id(lease, &unit.bank, false)
+	let bank = repository::bank_id(lease, bank_scope, false)
 		.await?
 		.ok_or(Error::Forbidden)?;
-	// JSON containment is a typed PostgreSQL expression, not raw SQL.
-	// Canonical Unit evidence retains the existing same-Bank admission boundary.
-	let evidence = serde_json::to_value(vec![unit.evidence()])?;
-	let ids: Vec<Uuid> = native::query_scalar(
-		&Query::select()
-			.column(Alias::new("id"))
-			.from(Alias::new("memory_units"))
-			.and_where(Expr::col("bank_id").eq(Expr::value(bank)))
-			.and_where(Expr::col("kind").is_in(["observation", "mental_model"]))
-			.and_where(Expr::col("deleted").eq(false))
-			.and_where(Expr::col("stale").eq(false))
-			.and_where(Expr::col("verification").ne("contradicted"))
-			.and_where(reinhardt::query::SimpleExpr::CustomWithExpr(
-				"? @> ?".into(),
-				vec![Expr::col("evidence").into(), Expr::value(evidence).into()],
-			))
-			.order_by(Alias::new("id"), Order::Asc)
-			.limit(policy.bounds.max_units as u64 + 1)
-			.to_string(PostgresQueryBuilder),
-	)
-	.scalar_all(&mut **lease.tx())
-	.await?;
-	if ids.len() > policy.bounds.max_units {
-		return Err(Error::Conflict(
-			"memory live support exceeds its Bank snapshot bound".into(),
+	let targeted = evidence.is_some();
+	let row_limit = if targeted {
+		policy.bounds.max_units
+	} else {
+		policy.retention.max_unit_records
+	};
+	// Read direct proofs once for the Bank, including Dormant support. Hydrate
+	// only relevant derived Units and retain the existing per-source bound.
+	let mut query = Query::select();
+	query
+		.columns(["id", "evidence"].map(Alias::new))
+		.from(Alias::new("memory_units"))
+		.and_where(Expr::col("bank_id").eq(Expr::value(bank)))
+		.and_where(Expr::col("kind").is_in(["observation", "mental_model"]))
+		.and_where(Expr::col("deleted").eq(false))
+		.and_where(Expr::col("stale").eq(false))
+		.and_where(Expr::col("verification").ne("contradicted"))
+		.order_by(Alias::new("id"), Order::Asc)
+		.limit(row_limit as u64 + 1);
+	if let Some(evidence) = evidence {
+		query.and_where(reinhardt::query::SimpleExpr::CustomWithExpr(
+			"? @> ?".into(),
+			vec![
+				Expr::col("evidence").into(),
+				Expr::value(serde_json::to_value(vec![evidence])?).into(),
+			],
 		));
 	}
-	for id in ids {
+	let rows = native::query(&query.to_string(PostgresQueryBuilder))
+		.fetch_all(&mut **lease.tx())
+		.await?;
+	if rows.len() > row_limit {
+		return Err(Error::Conflict(
+			"memory live support exceeds its Bank record bound".into(),
+		));
+	}
+	let matching = |proofs: &[Evidence]| -> BTreeSet<(Uuid, i64)> {
+		proofs
+			.iter()
+			.filter_map(|proof| {
+				if let Evidence::Unit { bank, id, revision } = proof
+					&& bank == bank_scope
+					&& wanted.contains(&(*id, *revision))
+				{
+					Some((*id, *revision))
+				} else {
+					None
+				}
+			})
+			.collect()
+	};
+	let mut relevant = Vec::new();
+	let mut counts = BTreeMap::<(Uuid, i64), usize>::new();
+	for row in rows {
+		let proofs: Vec<Evidence> = serde_json::from_value(row.try_get("evidence")?)?;
+		let matches = matching(&proofs);
+		for proof in &matches {
+			let count = counts.entry(*proof).or_default();
+			*count += 1;
+			if *count > policy.bounds.max_units {
+				return Err(Error::Conflict(
+					"memory live support exceeds its Bank snapshot bound".into(),
+				));
+			}
+		}
+		if !matches.is_empty() {
+			relevant.push(row.try_get::<Uuid>("id")?);
+		}
+	}
+	let mut supported = BTreeSet::new();
+	for id in relevant {
 		let Some(support) = units::load(lease, id, false).await? else {
 			continue;
 		};
+		let matches = matching(&support.content.evidence);
+		if matches.is_empty() {
+			continue;
+		}
+
 		let policy = match units::unexpired(lease, &support).await {
 			Err(Error::Conflict(_) | Error::Forbidden) => continue,
 			result => result?,
@@ -316,12 +435,28 @@ async fn live_support(lease: &mut Lease<'_>, unit: &Unit) -> Result<bool> {
 		)
 		.await
 		{
-			Ok(()) => return Ok(true),
+			Ok(()) => {
+				supported.extend(matches);
+				if targeted {
+					return Ok(supported);
+				}
+			}
 			Err(Error::Conflict(_) | Error::Forbidden) => continue,
 			Err(error) => return Err(error),
 		}
 	}
-	Ok(false)
+	Ok(supported)
+}
+
+async fn live_support(lease: &mut Lease<'_>, unit: &Unit) -> Result<bool> {
+	Ok(live_supported_evidence(
+		lease,
+		&unit.bank,
+		Some(unit.evidence()),
+		&BTreeSet::from([(unit.id, unit.revision)]),
+	)
+	.await?
+	.contains(&(unit.id, unit.revision)))
 }
 
 pub(crate) async fn scores(
@@ -349,18 +484,28 @@ pub(crate) async fn scores(
 	.flatten();
 	let activated =
 		activation.ok_or_else(|| Error::Conflict("decay activation is missing".into()))?;
+	if units.is_empty() {
+		return Ok(BTreeMap::new());
+	}
+	let wanted = units.iter().map(|unit| (unit.id, unit.revision)).collect();
+	let supported = live_supported_evidence(lease, bank, None, &wanted).await?;
+	let rows = native::query(
+		&Query::select()
+			.column(ColumnRef::Asterisk)
+			.from(Alias::new("memory_unit_retention"))
+			.and_where(Expr::col("bank_id").eq(Expr::value(bank_id)))
+			.and_where(Expr::col("unit_id").is_in(units.iter().map(|unit| Expr::value(unit.id))))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_all(&mut **lease.tx())
+	.await?;
+	let retained: BTreeMap<Uuid, _> = rows
+		.into_iter()
+		.map(|row| Ok((row.try_get("unit_id")?, row)))
+		.collect::<Result<_>>()?;
 	let mut result = BTreeMap::new();
 	for unit in units {
-		let row = native::query(
-			&Query::select()
-				.column(ColumnRef::Asterisk)
-				.from(Alias::new("memory_unit_retention"))
-				.and_where(Expr::col("bank_id").eq(Expr::value(bank_id)))
-				.and_where(Expr::col("unit_id").eq(Expr::value(unit.id)))
-				.to_string(PostgresQueryBuilder),
-		)
-		.fetch_optional(&mut **lease.tx())
-		.await?;
+		let row = retained.get(&unit.id);
 		let pinned = row
 			.as_ref()
 			.map(|r| r.try_get::<bool>("pinned"))
@@ -381,7 +526,12 @@ pub(crate) async fn scores(
 			.map(|r| r.try_get("reactivated_at"))
 			.transpose()?
 			.flatten();
-		let score = if decay::exempt(unit, decay, pinned, live_support(lease, unit).await?) {
+		let score = if decay::exempt(
+			unit,
+			decay,
+			pinned,
+			supported.contains(&(unit.id, unit.revision)),
+		) {
 			1.0
 		} else {
 			decay::retention_score(
