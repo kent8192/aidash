@@ -89,13 +89,19 @@ field are rejected before Key Material lookup. OpenRouter's
 [server tools](https://openrouter.ai/docs/guides/features/server-tools/web-search)
 can execute external searches and add charges beyond model tokens, which the
 signed inference capability does not authorize.
-The legacy `x_search_filter` activation field is also rejected, as is any
+Top-level `web_search_options` is also rejected: OpenRouter can activate
+[native search](https://github.com/OpenRouterTeam/docs/blob/main/guides/features/plugins/web-search.mdx)
+with a separate provider charge without a plugin or function tool.
+The legacy `x_search_filter` activation field is rejected, as is any
 `preset` field: [server-side presets](https://openrouter.ai/blog/tutorials/presets/)
 can merge additional tools and options after admission checks.
 Chat output is text-only: omit `modalities` or use exactly `["text"]`. Non-text
 or malformed modalities and any `image_config` or `audio` field are rejected
 before Key Material lookup. Image and audio input in `messages` remains supported.
-Chat `service_tier` must be absent or exactly `"default"`. Other tiers, aliases
+Inference `service_tier` must be absent or exactly `"default"`. Any `speed`
+field is rejected, including null or malformed forms; OpenRouter treats
+[`speed: "fast"` as a premium tier alias](https://openrouter.ai/docs/cookbook/coding-agents/claude-code-integration#fast-mode).
+Other tiers, aliases
 and malformed values are rejected before Key Material lookup because the
 capability does not authorize a separate [pricing tier](https://openrouter.ai/docs/guides/features/service-tiers).
 Embeddings require one string `input` within the existing 1 MiB request bound;

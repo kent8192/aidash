@@ -280,8 +280,9 @@ fn body_policy(body: &[u8], claims: &Claims, op: Operation) -> Result<(), Failur
 	if op == Operation::Embeddings && value.get("input").and_then(Value::as_str).is_none() {
 		return Err(Failure::ClaimViolation);
 	}
-	if op == Operation::Chat
-		&& value
+	// Premium aliases are outside the signed inference authority on every API.
+	if value.get("speed").is_some()
+		|| value
 			.get("service_tier")
 			.is_some_and(|tier| tier.as_str() != Some("default"))
 	{
@@ -301,6 +302,7 @@ fn body_policy(body: &[u8], claims: &Claims, op: Operation) -> Result<(), Failur
 	// Provider tools/plugins can add external data processing and unbounded fees.
 	if op == Operation::Chat
 		&& (value.get("plugins").is_some()
+			|| value.get("web_search_options").is_some()
 			|| value.get("x_search_filter").is_some()
 			// Presets merge additional provider-side authority after admission.
 			|| value.get("preset").is_some()

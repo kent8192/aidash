@@ -465,6 +465,66 @@ async fn chat_allows_only_the_default_service_tier_before_key_lookup() {
 }
 
 #[tokio::test]
+async fn inference_rejects_speed_aliases_before_key_lookup() {
+	let f = Fixture::new().await;
+	for (path, base) in [
+		("/api/v1/chat/completions", chat()),
+		(
+			"/api/v1/embeddings",
+			json!({"model":"author/model", "input":"one", "provider":{"zdr":true}}),
+		),
+	] {
+		for speed in [json!("fast"), json!("standard"), Value::Null, json!(true)] {
+			let mut body = base.clone();
+			body["speed"] = speed;
+			let response = f.request(&f.claims(), "POST", path, body).await;
+			assert_eq!(response.status(), 403);
+			assert_eq!(
+				json_body(response).await["error"]["code"],
+				"capability_claim_violation"
+			);
+			assert_eq!(f.source.reads.load(Ordering::SeqCst), 0);
+			assert_eq!(f.provider.calls.load(Ordering::SeqCst), 0);
+		}
+		let mut body = base;
+		body["service_tier"] = json!("priority");
+		let response = f.request(&f.claims(), "POST", path, body).await;
+		assert_eq!(response.status(), 403);
+		assert_eq!(
+			json_body(response).await["error"]["code"],
+			"capability_claim_violation"
+		);
+		assert_eq!(f.source.reads.load(Ordering::SeqCst), 0);
+		assert_eq!(f.provider.calls.load(Ordering::SeqCst), 0);
+	}
+}
+
+#[tokio::test]
+async fn chat_rejects_native_web_search_before_key_lookup() {
+	let f = Fixture::new().await;
+	for options in [
+		json!({}),
+		json!({"search_context_size":"high"}),
+		Value::Null,
+		json!([]),
+		json!(true),
+	] {
+		let mut body = chat();
+		body["web_search_options"] = options;
+		let response = f
+			.request(&f.claims(), "POST", "/api/v1/chat/completions", body)
+			.await;
+		assert_eq!(response.status(), 403);
+		assert_eq!(
+			json_body(response).await["error"]["code"],
+			"capability_claim_violation"
+		);
+		assert_eq!(f.source.reads.load(Ordering::SeqCst), 0);
+		assert_eq!(f.provider.calls.load(Ordering::SeqCst), 0);
+	}
+}
+
+#[tokio::test]
 async fn embeddings_authorize_one_string_input_before_key_lookup() {
 	let f = Fixture::new().await;
 	for input in [
