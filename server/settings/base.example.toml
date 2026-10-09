@@ -81,3 +81,12 @@ enabled = false
 # endpoint = "https://kubernetes.default.svc"
 # ca_file = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
 # token_file = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+
+# Tenant Cache Salt Keys for salted Projection Versions (ADR 0016). Without
+# keys this node creates only Legacy Runs. Rotate by adding a key version and
+# changing `current`.
+# [cache_salt]
+# current = 1
+# [[cache_salt.keys]]
+# version = 1
+# secret = "${AIDASH_CACHE_SALT_KEY_V1}"

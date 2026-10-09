@@ -130,6 +130,7 @@ impl DefinitionValidation {
 				));
 				}
 				m.request_timeout()?;
+				m.validate_projection_versions()?;
 				for route in &m.media_routes {
 					if route.tag.is_empty()
 						|| !route
@@ -352,6 +353,8 @@ impl DefinitionValidation {
 			})
 			.ok_or_else(|| Error::NotFound(config.model.id.clone()))?;
 		let model: ModelConfig = serde_json::from_value(model.definition.config.clone())?;
+		let version = config.projection_version.unwrap_or_default();
+		model.require_projection(version)?;
 		let mut instructions = aidash_domain::context::agent_instructions("");
 		let mut specifications = vec![];
 		for binding in &snapshot.bindings {
@@ -382,9 +385,24 @@ impl DefinitionValidation {
 			&instructions,
 			&specifications,
 			private_context,
-			&aidash_domain::context::RequestProjection::Legacy,
+			&registration_projection(version),
 		)
 		.map_err(Into::into)
+	}
+}
+
+/// The request shape Run creation will use for `version`. The Cache Scope's
+/// values do not affect the estimate; only its presence reserves the salt line.
+fn registration_projection(
+	version: aidash_domain::projection::ProjectionVersion,
+) -> aidash_domain::context::RequestProjection {
+	if version.salted() {
+		aidash_domain::context::RequestProjection::Ordered(aidash_domain::projection::CacheScope {
+			tenant: String::new(),
+			key_version: 0,
+		})
+	} else {
+		aidash_domain::context::RequestProjection::Legacy
 	}
 }
 

@@ -39,6 +39,8 @@ pub struct Store {
 	pub node_id: String,
 	pub semantic_client: reqwest::Client,
 	pub(crate) recovery_cursors: std::sync::Arc<run_state::RecoveryCursors>,
+	/// This node's Cache Salt Keys (ADR 0016); `None` admits only Legacy Runs.
+	pub cache_salt: Option<aidash_integrations::inference::CacheSaltKeys>,
 }
 
 pub use crate::apps::execution::serializers::run_inputs::RunInput;
@@ -152,6 +154,30 @@ impl Store {
 		Ok(())
 	}
 
+	/// The Tenant that owns a local workspace; unscoped workspaces have none.
+	pub(crate) async fn workspace_tenant(&self, workspace: Uuid) -> Result<Option<String>> {
+		crate::database::native::query_scalar(
+			&Query::select()
+				.column(Alias::new("tenant"))
+				.from(Alias::new("authorization_workspaces"))
+				.and_where(Expr::col(Alias::new("workspace_id")).eq(Expr::value(workspace)))
+				.to_string(PostgresQueryBuilder),
+		)
+		.scalar_optional(&self.pool)
+		.await
+	}
+
+	/// Run creation re-checks the Projection Version pinned by the Binding
+	/// snapshot (ADR 0015/0016): it must be implemented, declared by the
+	/// pinned model and, when salted, backed by this node's Cache Salt Key.
+	/// Legacy Runs are never affected; nothing falls back to Legacy.
+	pub(crate) fn require_projection(
+		&self,
+		snapshot: &aidash_domain::registry::bindings::BindingSnapshot,
+	) -> Result<()> {
+		require_projection(snapshot, self.cache_salt.is_some())
+	}
+
 	/// Share this store's existing data pool with native persistence operations.
 	pub(crate) fn database(&self) -> BackendConnection {
 		self.pool.connection()
@@ -189,6 +215,7 @@ impl Store {
 			node_id,
 			semantic_client: crate::semantic::backend::client()?,
 			recovery_cursors: Default::default(),
+			cache_salt: None,
 			capabilities: crate::capabilities::Runtime::from_env()?,
 		}
 		.with_memory_recovery(memory_recovery))
@@ -201,6 +228,14 @@ impl Store {
 	) -> Self {
 		self.pool = self.pool.with_dashboard_policy(policy.clone());
 		self.control_pool = self.control_pool.with_dashboard_policy(policy);
+		self
+	}
+	/// Attach this node's Cache Salt Keys for salted Run creation and inference.
+	pub fn with_cache_salt(
+		mut self,
+		keys: Option<aidash_integrations::inference::CacheSaltKeys>,
+	) -> Self {
+		self.cache_salt = keys;
 		self
 	}
 	pub(crate) fn with_memory_recovery(
@@ -250,6 +285,7 @@ impl Store {
 			node_id: self.node_id.clone(),
 			semantic_client: self.semantic_client.clone(),
 			recovery_cursors: self.recovery_cursors.clone(),
+			cache_salt: self.cache_salt.clone(),
 			capabilities: self.capabilities.clone(),
 		})
 	}
@@ -285,6 +321,7 @@ impl Store {
 			node_id: self.node_id.clone(),
 			semantic_client: self.semantic_client.clone(),
 			recovery_cursors: self.recovery_cursors.clone(),
+			cache_salt: self.cache_salt.clone(),
 			capabilities: self.capabilities.clone(),
 		})
 	}
@@ -780,6 +817,7 @@ impl Store {
 				.await?
 			};
 			snapshot.validate()?;
+			self.require_projection(&snapshot)?;
 			let context = crate::context::Context {
 				binding_snapshot: Some(Box::new(snapshot)),
 				..Default::default()
@@ -2498,6 +2536,7 @@ impl Store {
 				"offered Agent closure differs from receiver admission".into(),
 			));
 		}
+		self.require_projection(&snapshot)?;
 		let context = crate::context::Context {
 			binding_snapshot: Some(Box::new(snapshot)),
 			..Default::default()
@@ -4367,6 +4406,45 @@ impl Store {
 		}
 		Ok(h)
 	}
+}
+
+fn require_projection(
+	snapshot: &aidash_domain::registry::bindings::BindingSnapshot,
+	cache_salt: bool,
+) -> Result<()> {
+	let agent = crate::registry::AgentConfig::from_snapshot(snapshot)?;
+	let version = agent.projection_version.unwrap_or_default();
+	if version.is_legacy() {
+		return Ok(());
+	}
+	if !version.is_implemented() {
+		return Err(Error::Invalid(format!(
+			"Projection Version {version} is not implemented"
+		)));
+	}
+	let model = snapshot
+		.definitions
+		.iter()
+		.find(|d| {
+			d.identity.id == agent.model.id
+				&& d.identity.version == agent.model.version
+				&& d.identity.registry_node == snapshot.agent.registry_node
+		})
+		.ok_or_else(|| Error::Invalid("pinned model is outside the Binding snapshot".into()))?;
+	let model: aidash_domain::model::ModelConfig =
+		serde_json::from_value(model.definition.config.clone())?;
+	if !model.supports_projection(version) {
+		return Err(Error::Invalid(format!(
+			"model {} does not support Projection Version {version}",
+			model.model_id
+		)));
+	}
+	if version.salted() && !cache_salt {
+		return Err(Error::Invalid(format!(
+			"this node has no Cache Salt Key for Projection Version {version}"
+		)));
+	}
+	Ok(())
 }
 
 #[cfg(test)]

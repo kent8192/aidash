@@ -152,6 +152,7 @@ dependencies = [
  "chrono",
  "futures-util",
  "gcp_auth",
+ "hmac 0.12.1",
  "jsonwebtoken 11.1.0",
  "metrics",
  "openidconnect",

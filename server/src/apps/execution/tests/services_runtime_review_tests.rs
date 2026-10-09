@@ -33,6 +33,7 @@ async fn inference_cancellation_poll_errors_do_not_signal_cancellation() {
 		node_id: "cancellation-poll-test".into(),
 		semantic_client: reqwest::Client::new(),
 		recovery_cursors: Default::default(),
+		cache_salt: None,
 	};
 	let cancellation = super::wait_for_inference_cancellation(&store, uuid::Uuid::new_v4());
 	tokio::pin!(cancellation);

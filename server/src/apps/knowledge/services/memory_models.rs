@@ -648,8 +648,9 @@ impl Models {
 			None
 		};
 
+		// Memory role requests are Legacy (`cache_scope: None`); no salt applies.
 		let provider =
-			crate::bootstrap::model_provider(self.store.semantic_client.clone(), config)?;
+			crate::bootstrap::model_provider(self.store.semantic_client.clone(), config, None)?;
 		let response = tokio::time::timeout(
 			std::time::Duration::from_secs(u64::from(self.policy.bounds.max_call_seconds)),
 			provider.infer(request),

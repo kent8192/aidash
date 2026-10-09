@@ -53,3 +53,286 @@ fn truncation_cannot_complete_a_task() {
 		.is_err()
 	);
 }
+
+mod cache_salt {
+	use super::*;
+	use aidash_domain::{
+		projection::CacheScope,
+		provider::{ModelContext, OrderedContext},
+	};
+	use axum::{Json, Router, routing::post};
+
+	const SECRET_ONE: &str = "fixture-cache-salt-secret-one";
+	const SECRET_TWO: &str = "fixture-cache-salt-secret-two";
+
+	struct NoCredentials;
+	impl Credentials for NoCredentials {
+		fn resolve(&self, _: &str) -> Result<String> {
+			Err(Error::Invalid("fixture models have no credential".into()))
+		}
+	}
+
+	struct TestServer(tokio::task::JoinHandle<()>);
+	impl Drop for TestServer {
+		fn drop(&mut self) {
+			self.0.abort();
+		}
+	}
+
+	/// An OpenRouter stand-in that records every completion body it receives.
+	struct Upstream {
+		endpoint: String,
+		bodies: tokio::sync::mpsc::UnboundedReceiver<Value>,
+		_server: TestServer,
+	}
+
+	impl Upstream {
+		async fn start() -> Self {
+			let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+			let endpoint = format!("http://{}/v1", listener.local_addr().unwrap());
+			let (seen, bodies) = tokio::sync::mpsc::unbounded_channel();
+			let app = Router::new().route(
+				"/v1/chat/completions",
+				post(move |Json(body): Json<Value>| {
+					let seen = seen.clone();
+					async move {
+						seen.send(body).unwrap();
+						Json(json!({"choices":[{"finish_reason":"stop","message":{"content":"done"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}))
+					}
+				}),
+			);
+			let server = TestServer(tokio::spawn(async move {
+				axum::serve(listener, app).await.unwrap()
+			}));
+			Self {
+				endpoint,
+				bodies,
+				_server: server,
+			}
+		}
+
+		fn provider(&self, keys: Option<CacheSaltKeys>) -> Arc<dyn ModelProvider> {
+			let config: ModelConfig = serde_json::from_value(json!({
+				"provider": "openrouter",
+				"model_id": "fixture",
+				"endpoint": self.endpoint,
+				"credential_env": null,
+				"context_window": 100_000,
+				"modalities": ["text"],
+				"cost": {}
+			}))
+			.unwrap();
+			provider(
+				reqwest::Client::new(),
+				config,
+				Arc::new(NoCredentials),
+				keys,
+			)
+			.unwrap()
+		}
+
+		/// Every body received so far, in arrival order.
+		fn bodies(&mut self) -> Vec<Value> {
+			let mut bodies = Vec::new();
+			while let Ok(body) = self.bodies.try_recv() {
+				bodies.push(body);
+			}
+			bodies
+		}
+	}
+
+	fn keys() -> CacheSaltKeys {
+		CacheSaltKeys::new(
+			&[
+				CacheSaltKey {
+					version: 1,
+					secret: SECRET_ONE.into(),
+				},
+				CacheSaltKey {
+					version: 2,
+					secret: SECRET_TWO.into(),
+				},
+			],
+			2,
+		)
+		.unwrap()
+	}
+
+	fn scope(tenant: &str, key_version: u32) -> CacheScope {
+		CacheScope {
+			tenant: tenant.into(),
+			key_version,
+		}
+	}
+
+	fn legacy() -> ModelRequest {
+		ModelRequest {
+			instructions: "Shared instructions".into(),
+			context: json!({"task":{"title":"Summarize"}}).into(),
+			tools: vec![],
+			max_output_tokens: 64,
+			content_parts: vec![],
+			cache_scope: None,
+		}
+	}
+
+	fn ordered(scope: CacheScope) -> ModelRequest {
+		ModelRequest {
+			context: ModelContext::Ordered(OrderedContext {
+				stable: r#"{"identity":"fixture"}"#.into(),
+				volatile: r#"{"workspace":{}}"#.into(),
+			}),
+			cache_scope: Some(scope),
+			..legacy()
+		}
+	}
+
+	fn system(body: &Value) -> &str {
+		body["messages"][0]["content"].as_str().unwrap()
+	}
+
+	fn first_line(body: &Value) -> &str {
+		system(body).split_inclusive('\n').next().unwrap()
+	}
+
+	#[rstest::rstest]
+	#[tokio::test]
+	async fn legacy_requests_are_sent_without_a_salt() {
+		let mut upstream = Upstream::start().await;
+		let request = legacy();
+		for keys in [Some(keys()), None] {
+			upstream
+				.provider(keys)
+				.infer(request.clone())
+				.await
+				.unwrap();
+		}
+		let bodies = upstream.bodies();
+		assert_eq!(bodies.len(), 2);
+		for body in &bodies {
+			assert_eq!(body["messages"], request.input_body()["messages"]);
+			assert_eq!(system(body), "Shared instructions");
+		}
+	}
+
+	#[rstest::rstest]
+	#[tokio::test]
+	async fn ordered_requests_start_system_with_the_tenant_salt() {
+		let mut upstream = Upstream::start().await;
+		let request = ordered(scope("tenant-a", 1));
+		upstream
+			.provider(Some(keys()))
+			.infer(request.clone())
+			.await
+			.unwrap();
+		let bodies = upstream.bodies();
+		let body = &bodies[0];
+		// The ADR 0016 derivation: HMAC-SHA256(key secret, Tenant id), 128 bits.
+		use hmac::Mac as _;
+		let mut mac = hmac::Hmac::<sha2::Sha256>::new_from_slice(SECRET_ONE.as_bytes()).unwrap();
+		mac.update(b"tenant-a");
+		let digest = mac.finalize().into_bytes();
+		let hex: String = digest[..16].iter().map(|b| format!("{b:02x}")).collect();
+		assert_eq!(
+			system(body),
+			format!("aidash-cache-scope:v1:{hex}\nShared instructions")
+		);
+		let line = first_line(body);
+		let digest = line
+			.strip_prefix("aidash-cache-scope:v1:")
+			.and_then(|rest| rest.strip_suffix('\n'))
+			.unwrap();
+		assert_eq!(digest.len(), 32);
+		assert!(
+			digest
+				.bytes()
+				.all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+		);
+		// Only `system` changes; the user parts and tools are the request's own.
+		assert_eq!(body["messages"][1], request.input_body()["messages"][1]);
+	}
+
+	#[rstest::rstest]
+	#[tokio::test]
+	async fn salts_separate_tenants_and_key_versions_but_repeat_for_the_same_scope() {
+		let mut upstream = Upstream::start().await;
+		let provider = upstream.provider(Some(keys()));
+		for scope in [
+			scope("tenant-a", 2),
+			scope("tenant-b", 2),
+			scope("tenant-a", 2),
+			scope("tenant-a", 1),
+		] {
+			provider.infer(ordered(scope)).await.unwrap();
+		}
+		let bodies = upstream.bodies();
+		let lines: Vec<&str> = bodies.iter().map(first_line).collect();
+		assert_ne!(
+			lines[0], lines[1],
+			"identical instructions, different Tenants"
+		);
+		assert_eq!(lines[0], lines[2], "same Tenant and key");
+		assert_ne!(lines[0], lines[3], "rotated key version");
+		assert!(lines[0].starts_with("aidash-cache-scope:v2:"));
+		assert!(lines[3].starts_with("aidash-cache-scope:v1:"));
+	}
+
+	#[rstest::rstest]
+	#[case::unknown_version(Some(keys()), 3)]
+	#[case::node_without_keys(None, 1)]
+	#[tokio::test]
+	async fn a_missing_key_version_fails_before_any_request(
+		#[case] keys: Option<CacheSaltKeys>,
+		#[case] version: u32,
+	) {
+		let mut upstream = Upstream::start().await;
+		let error = upstream
+			.provider(keys)
+			.infer(ordered(scope("tenant-a", version)))
+			.await
+			.unwrap_err();
+		assert!(matches!(error, Error::Invalid(_)), "{error:?}");
+		assert!(upstream.bodies().is_empty());
+	}
+
+	#[rstest::rstest]
+	fn debug_output_never_reveals_the_secret_or_the_salt() {
+		let keys = keys();
+		let line = keys.line(&scope("tenant-a", 2)).unwrap();
+		let digest = line.trim_end().rsplit(':').next().unwrap().to_owned();
+		let request = ordered(scope("tenant-a", 2));
+		let rendered = [
+			format!("{keys:?}"),
+			format!(
+				"{:?}",
+				CacheSaltKey {
+					version: 2,
+					secret: SECRET_TWO.into()
+				}
+			),
+			format!("{request:?}"),
+			format!("{:?}", keys.line(&scope("tenant-a", 9)).unwrap_err()),
+		];
+		for text in rendered {
+			for hidden in [SECRET_ONE, SECRET_TWO, digest.as_str()] {
+				assert!(!text.contains(hidden), "{text}");
+			}
+		}
+	}
+
+	#[rstest::rstest]
+	#[case::empty_secret(&[(1, "  ")], 1)]
+	#[case::current_not_configured(&[(1, SECRET_ONE)], 2)]
+	#[case::duplicate_version(&[(1, SECRET_ONE), (1, SECRET_TWO)], 1)]
+	fn invalid_key_settings_are_rejected(#[case] keys: &[(u32, &str)], #[case] current: u32) {
+		let keys: Vec<CacheSaltKey> = keys
+			.iter()
+			.map(|(version, secret)| CacheSaltKey {
+				version: *version,
+				secret: (*secret).into(),
+			})
+			.collect();
+		let error = CacheSaltKeys::new(&keys, current).unwrap_err();
+		assert!(!format!("{error:?}").contains(SECRET_ONE));
+	}
+}

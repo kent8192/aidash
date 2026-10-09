@@ -185,6 +185,13 @@ impl AgentBindings {
 				"invalid Binding schema, defaults or Agent instructions".into(),
 			));
 		}
+		if let Some(version) = self.projection_version
+			&& !version.is_implemented()
+		{
+			return Err(Error::Invalid(format!(
+				"Projection Version {version} is not implemented"
+			)));
+		}
 		let mut targets = BTreeSet::new();
 		for binding in &self.bindings {
 			binding.validate()?;

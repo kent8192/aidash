@@ -61,13 +61,25 @@ pub async fn initialize(
 		.with_ansi(false)
 		.try_init();
 	let config = Config::from_settings(settings)?;
+	let cache_salt = settings.cache_salt.keys()?;
+	// Only availability and the current key version; never key material.
+	match &cache_salt {
+		Some(keys) => tracing::info!(
+			current_key_version = keys.current(),
+			"Tenant Cache Salt available"
+		),
+		None => tracing::warn!(
+			"no Cache Salt Key configured; Runs of salted Projection Versions will be rejected"
+		),
+	}
 	crate::apps::execution::services::metrics::initialize_recorder()?;
 	let pool = connection
 		.into_postgres()
 		.ok_or_else(|| Error::Invalid("Aidash requires PostgreSQL".into()))?;
 	let store = Store::from_pool(pool, config.node_id.clone())
 		.await?
-		.with_dashboard_policy(config.dashboard_policy());
+		.with_dashboard_policy(config.dashboard_policy())
+		.with_cache_salt(cache_salt);
 	let registry = Registry::new(store.pool.clone(), &store.node_id)?;
 	registry.seed_system().await?;
 	let client = reqwest::Client::builder()
@@ -304,12 +316,20 @@ mod listener;
 pub use compatibility::{migrate, serve};
 
 /// All inference paths use the same credential resolver and application port.
+/// Only Run inference passes this node's Cache Salt Keys; Legacy-only callers
+/// pass `None`, which rejects any salted request.
 pub fn model_provider(
 	client: reqwest::Client,
 	config: aidash_domain::model::ModelConfig,
+	cache_salt: Option<aidash_integrations::inference::CacheSaltKeys>,
 ) -> Result<Arc<dyn aidash_application::ports::ModelProvider>> {
-	aidash_integrations::inference::provider(client, config, Arc::new(EnvironmentCredentials))
-		.map_err(Into::into)
+	aidash_integrations::inference::provider(
+		client,
+		config,
+		Arc::new(EnvironmentCredentials),
+		cache_salt,
+	)
+	.map_err(Into::into)
 }
 
 struct EnvironmentCredentials;
@@ -1844,10 +1864,12 @@ impl aidash_application::ports::registry::workbench::sandbox::admission::Sandbox
 		&self,
 		model: aidash_domain::model::ModelConfig,
 	) -> aidash_application::Result<Arc<dyn aidash_application::ports::ModelProvider>> {
+		// Sandbox requests are always Legacy, so they never need a salt.
 		aidash_integrations::inference::provider(
 			self.client.clone(),
 			model,
 			workbench_sandbox_credentials(),
+			None,
 		)
 	}
 }

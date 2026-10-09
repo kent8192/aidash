@@ -204,10 +204,10 @@ pub async fn admit(admission: &Admission<'_>, id: Uuid, input: TestInput) -> Res
 		max_output_tokens: (limits.max_output_tokens as u32).min(model_config.output_token_limit()),
 		cache_scope: None,
 	};
-	if input.continue_from.is_some() {
-		if let Some(context) = request.context.legacy_mut() {
-			context["conversation"] = json!(conversation);
-		}
+	if input.continue_from.is_some()
+		&& let Some(context) = request.context.legacy_mut()
+	{
+		context["conversation"] = json!(conversation);
 	}
 	let serialized_bytes = serde_json::to_vec(&request)?.len();
 	if serialized_bytes > limits.max_input_bytes as usize

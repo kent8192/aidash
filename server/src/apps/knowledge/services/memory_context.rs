@@ -8,7 +8,7 @@ use crate::{
 	store::Store,
 };
 use aidash_domain::registry::EntityRef;
-use aidash_domain::{memory::*, semantic::InputRead};
+use aidash_domain::{context::sources::RetrievalKey, memory::*, semantic::InputRead};
 use serde_json::{Value, json};
 
 /// Every declaration for the same exact bank/provider contributes its cap.
@@ -49,6 +49,10 @@ impl Context {
 	}
 }
 
+/// `key` is present for an Ordered Run. Its boundary is then the Retrieval Key
+/// itself, without step or Run revision, so a re-retrieval under the same key
+/// replays the same recall operation and envelope bytes.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn retrieve(
 	store: &Store,
 	lease: &mut Lease<'_>,
@@ -57,6 +61,7 @@ pub(crate) async fn retrieve(
 	inputs: &[(InputRead, String)],
 	budget: usize,
 	agent: &AgentConfig,
+	key: Option<&RetrievalKey>,
 ) -> Result<Context> {
 	if run.home_node != store.node_id {
 		return Err(Error::Forbidden);
@@ -96,7 +101,12 @@ pub(crate) async fn retrieve(
 		query.push('\n');
 		query.push_str(text);
 	}
-	let boundary = json!({"task_revision":task.revision,"inputs":inputs.iter().map(|(read,_)|read).collect::<Vec<_>>(),"step":run.step,"run_revision":run.revision});
+	let boundary = match key {
+		Some(key) => serde_json::to_value(key)?,
+		None => {
+			json!({"task_revision":task.revision,"inputs":inputs.iter().map(|(read,_)|read).collect::<Vec<_>>(),"step":run.step,"run_revision":run.revision})
+		}
+	};
 	let mut delivered = Vec::new();
 	let mut envelope =
 		json!({"home":store.node_id,"binding":binding,"boundary":boundary,"banks":[]});
@@ -246,6 +256,36 @@ fn bounded_status(status: &str, budget: usize) -> Result<Option<Value>> {
 		));
 	}
 	Ok(Some(value))
+}
+
+/// Semantic index and memory participant revisions an Ordered Retrieval Key
+/// pins. Plain reads: the recheck before every reuse enforces authority.
+pub(crate) async fn source_revisions(
+	store: &Store,
+	run: &Run,
+) -> Result<(Option<i64>, Option<i64>)> {
+	use reinhardt::query::{
+		Alias, Expr, ExprTrait as _, PostgresQueryBuilder, Query, QueryStatementBuilder as _,
+	};
+	let index: Option<i64> = crate::database::native::query_scalar(
+		&Query::select()
+			.column(Alias::new("revision"))
+			.from(Alias::new("semantic_indexes"))
+			.and_where(Expr::col(Alias::new("workspace_id")).eq(Expr::value(run.workspace_id)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.scalar_optional(&store.pool)
+	.await?;
+	let participant: Option<i64> = crate::database::native::query_scalar(
+		&Query::select()
+			.column(Alias::new("participant_revision"))
+			.from(Alias::new("memory_run_bindings"))
+			.and_where(Expr::col(Alias::new("run_id")).eq(Expr::value(run.id)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.scalar_optional(&store.pool)
+	.await?;
+	Ok((index, participant))
 }
 
 #[cfg(test)]

@@ -6,7 +6,18 @@ use serde::{Deserialize, Serialize};
 /// Named by an Agent definition and fixed for a Run through its Binding
 /// snapshot. Each value is a complete, frozen rendering.
 #[derive(
-	Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema,
+	Debug,
+	Clone,
+	Copy,
+	Default,
+	PartialEq,
+	Eq,
+	PartialOrd,
+	Ord,
+	Hash,
+	Serialize,
+	Deserialize,
+	JsonSchema,
 )]
 #[serde(rename_all = "snake_case")]
 pub enum ProjectionVersion {
@@ -59,8 +70,8 @@ pub struct CacheScope {
 }
 
 /// Upper bound, in estimate units, for the salt line the adapter prepends:
-/// `aidash-cache-scope:v{u32}:{32 hex}\n` plus JSON escaping.
-pub const CACHE_SALT_LINE_RESERVE: usize = 64;
+/// `aidash-cache-scope:v{u32}:{32 hex}\n` with JSON escaping (67 bytes at most).
+pub const CACHE_SALT_LINE_RESERVE: usize = 80;
 
 /// The first line of `system` for a salted request. `digest_hex` is the
 /// truncated HMAC computed by the adapter.
@@ -76,7 +87,11 @@ mod tests {
 	fn salt_line_fits_its_estimate_reserve() {
 		let line = cache_salt_line(u32::MAX, &"f".repeat(32));
 		let encoded = serde_json::to_string(&line).unwrap();
-		assert!(encoded.len() <= CACHE_SALT_LINE_RESERVE, "{}", encoded.len());
+		assert!(
+			encoded.len() <= CACHE_SALT_LINE_RESERVE,
+			"{}",
+			encoded.len()
+		);
 	}
 
 	#[test]

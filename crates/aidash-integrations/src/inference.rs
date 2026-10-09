@@ -9,10 +9,15 @@ use async_trait::async_trait;
 use serde_json::{Value, json};
 use std::sync::Arc;
 
+pub mod cache_salt;
+pub use cache_salt::{CacheSaltKey, CacheSaltKeys};
+
 pub struct OpenRouterProvider {
 	pub client: reqwest::Client,
 	pub config: ModelConfig,
 	pub credentials: Arc<dyn Credentials>,
+	/// This node's Cache Salt Keys; `None` rejects every salted request.
+	pub cache_salt: Option<CacheSaltKeys>,
 }
 
 impl OpenRouterProvider {
@@ -148,6 +153,7 @@ pub fn provider(
 	client: reqwest::Client,
 	config: ModelConfig,
 	credentials: Arc<dyn Credentials>,
+	cache_salt: Option<CacheSaltKeys>,
 ) -> Result<Arc<dyn ModelProvider>> {
 	match config.provider.as_str() {
 		"openrouter" => {
@@ -156,6 +162,7 @@ pub fn provider(
 				client,
 				config,
 				credentials,
+				cache_salt,
 			}))
 		}
 		_ => Err(Error::Invalid("unsupported model provider".into())),
@@ -168,6 +175,23 @@ impl ModelProvider for OpenRouterProvider {
 		let deadline = self.config.request_timeout()?;
 		tokio::time::timeout(deadline, async {
 			request.validate()?;
+			// Derive the salt before any provider traffic: a node without the
+			// requested key version sends nothing rather than an unsalted request.
+			let salt = request
+				.cache_scope
+				.as_ref()
+				.map(|scope| {
+					self.cache_salt
+						.as_ref()
+						.ok_or_else(|| {
+							Error::Invalid(format!(
+								"Cache Salt Key v{} is not configured on this node",
+								scope.key_version
+							))
+						})?
+						.line(scope)
+				})
+				.transpose()?;
 			for modality in request.content_parts.iter().filter_map(|part| match part {
 				ContentPart::Image { .. } => Some("image"),
 				ContentPart::Audio { .. } => Some("audio"),
@@ -187,6 +211,11 @@ impl ModelProvider for OpenRouterProvider {
 			}
 			let media_routes = self.verified_media_routes(&request).await?;
 			let mut body = request.input_body();
+			if let Some(salt) = salt {
+				let system = &mut body["messages"][0]["content"];
+				let salted = format!("{salt}{}", system.as_str().unwrap_or_default());
+				*system = Value::String(salted);
+			}
 			body["model"] = json!(self.config.model_id);
 			body["max_tokens"] = json!(request.max_output_tokens);
 			// Enforce ZDR on every call, including existing registered models. Never

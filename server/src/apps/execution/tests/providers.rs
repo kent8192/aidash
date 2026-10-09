@@ -29,6 +29,7 @@ fn config(
 		modalities: vec!["text".into()],
 		media_routes: vec![],
 		cost: json!({}),
+		projection_versions: vec![],
 	}
 }
 

@@ -82,6 +82,109 @@ impl<'a> Executor<'a> {
 		)
 		.await
 	}
+	/// Reuse an Ordered Run's Skill context while its Skill record revision is
+	/// unchanged and its authority still holds.
+	async fn ordered_skill_context(
+		&self,
+		run: &Run,
+		bindings: &str,
+	) -> Result<(String, OrderedSkill)> {
+		let revision = self.environment.skill_revision(run).await?;
+		let cached = match (revision, &run.context.source_observation) {
+			(Some(revision), Some(observation)) => {
+				observation.skill_at(revision, bindings)?.map(str::to_owned)
+			}
+			_ => None,
+		};
+		if let Some(text) = cached {
+			// Semantic content has its own key; recheck only the Skill authority.
+			match self
+				.environment
+				.recheck_source_observation(run, &json!({}))
+				.await
+			{
+				Ok(()) => return Ok((text, OrderedSkill::Reused)),
+				// A changed source invalidates only the cache: read it once again.
+				Err(Error::Conflict(_)) => {}
+				Err(error) => return Err(error),
+			}
+		}
+		let text = self.environment.skill_context(run).await?;
+		let observation = revision
+			.map(|revision| context::sources::SkillObservation::new(revision, text.clone()))
+			.transpose()?;
+		Ok((text, OrderedSkill::Retrieved(observation)))
+	}
+	/// Reuse an Ordered Run's semantic read while its Retrieval Key is unchanged
+	/// and the recheck passes; otherwise retrieve once under the new key.
+	#[allow(clippy::too_many_arguments)]
+	async fn ordered_semantic_context(
+		&self,
+		run: &Run,
+		task: &Task,
+		inputs: &[(InputRead, String)],
+		budget: usize,
+		entry: &aidash_domain::registry::Entry,
+		bindings: &str,
+		retrieves: bool,
+	) -> Result<OrderedSemantic> {
+		let key = if retrieves {
+			let scope = self.environment.retrieval_scope(run).await?;
+			Some(context::sources::RetrievalKey::new(
+				run.id,
+				task,
+				inputs.iter().map(|(read, _)| read.clone()).collect(),
+				budget,
+				bindings.to_owned(),
+				scope,
+			))
+		} else {
+			None
+		};
+		let boundary = key.as_ref().map_or_else(String::new, |key| key.digest());
+		let cached = run
+			.context
+			.source_observation
+			.as_ref()
+			.map(|observation| observation.at(&boundary, bindings))
+			.transpose()?
+			.flatten()
+			.cloned();
+		if let Some(content) = cached {
+			match self
+				.environment
+				.recheck_source_observation(run, &content)
+				.await
+			{
+				Ok(()) => {
+					return Ok(OrderedSemantic {
+						value: content
+							.get("semantic_memory")
+							.filter(|v| !v.is_null())
+							.cloned(),
+						boundary,
+						retrieved: false,
+					});
+				}
+				// A changed source invalidates only the cache: retrieve it once below.
+				Err(Error::Conflict(_)) => {}
+				Err(error) => return Err(error),
+			}
+		}
+		let value = match &key {
+			Some(key) => {
+				self.environment
+					.semantic_context(run, task, inputs, budget, entry, Some(key))
+					.await?
+			}
+			None => None,
+		};
+		Ok(OrderedSemantic {
+			value,
+			boundary,
+			retrieved: true,
+		})
+	}
 	pub async fn advance(
 		&self,
 		run: &mut Run,
@@ -235,10 +338,24 @@ impl<'a> Executor<'a> {
 					return Ok(());
 				}
 				let inputs = store.run_inputs(run.id).await?;
+				let projection = match agent.projection_version {
+					ProjectionVersion::Legacy => context::RequestProjection::Legacy,
+					ProjectionVersion::Ordered => {
+						context::RequestProjection::Ordered(self.environment.cache_scope(run).await?)
+					}
+					// Never fall back to Legacy for a pinned version this build cannot render.
+					ProjectionVersion::Native => {
+						return Err(Error::Invalid(
+							"the Native Projection Version is not supported by this node".into(),
+						));
+					}
+				};
+				let ordered = matches!(projection, context::RequestProjection::Ordered(_));
 				let source_input_seq = inputs.last().map_or(run.observed_input_seq, |input| input.seq);
 				let source_boundary = format!("{}:{}:{}", run.step, source_input_seq, task.revision);
 				let binding_digest = self.environment.catalog().content_digest(&serde_json::to_string(&run.context.binding_snapshot)?);
-				let cached_sources = run.context.source_observation.as_ref().map(|observation| observation.at(&source_boundary, &binding_digest)).transpose()?.flatten().cloned();
+				// Ordered Runs key their sources by Retrieval Key and Skill revision below.
+				let cached_sources = if ordered { None } else { run.context.source_observation.as_ref().map(|observation| observation.at(&source_boundary, &binding_digest)).transpose()?.flatten().cloned() };
 				if let Some(content) = &cached_sources { self.environment.recheck_source_observation(run, content).await?; }
 				let mut instructions = context::agent_instructions("");
 				for skill in &agent.skills {
@@ -251,9 +368,14 @@ impl<'a> Executor<'a> {
 					instructions.push_str(&self.environment.catalog().skill_instructions(&entry)?);
 				}
 				let mut source_skill_context = String::new();
+				let mut ordered_skill = OrderedSkill::Absent;
 				if tools.contains_key("skill_list") && home.has_local_authority()
 				{
-					source_skill_context = if let Some(cached) = &cached_sources { cached["skill_context"].as_str().unwrap_or_default().to_owned() } else { self.environment.skill_context(run).await? };
+					source_skill_context = if ordered {
+						let (text, skill) = self.ordered_skill_context(run, &binding_digest).await?;
+						ordered_skill = skill;
+						text
+					} else if let Some(cached) = &cached_sources { cached["skill_context"].as_str().unwrap_or_default().to_owned() } else { self.environment.skill_context(run).await? };
 					instructions.push_str(&source_skill_context);
 				}
 				instructions.push_str("\nAdditional user instructions:\n");
@@ -321,8 +443,10 @@ impl<'a> Executor<'a> {
 				} else {
 					output_limit
 				};
+				// Ordered keeps per-turn paragraphs out of the cached system prompt.
+				let mut turn_instructions = String::new();
 				if run_message_catchup {
-					instructions.push_str(&format!(
+					(if ordered { &mut turn_instructions } else { &mut instructions }).push_str(&format!(
 						"\n\nRun-message catch-up: Treat the entries under run_messages as user task context. Read every required message record in this page before responding. Update the cumulative run_message_summary faithfully, preserving the user's goal, constraints, corrections, and unresolved requests in sequence order (newer corrections take precedence). Return only the concise updated summary, encoded in at most {run_message_limit} UTF-8 bytes. Do not answer the user, complete the task, publish text, or perform actions during catch-up.",
 					));
 				}
@@ -396,7 +520,7 @@ impl<'a> Executor<'a> {
 				let has_run_message_references = !required_run_message_reads.is_empty();
 				if media.defer_human || media.defer_selected {
 					specifications.clear();
-					instructions.push_str("\nMedia intake is continuing. For this interim turn, postpone required workspace reads and the cumulative run-message summary. Preserve the user goals, constraints, and corrections in these run messages and describe the media in this request as plain text. Do not call tools or complete the task; deferred media will be provided in the next request.");
+					(if ordered { &mut turn_instructions } else { &mut instructions }).push_str("\nMedia intake is continuing. For this interim turn, postpone required workspace reads and the cumulative run-message summary. Preserve the user goals, constraints, and corrections in these run messages and describe the media in this request as plain text. Do not call tools or complete the task; deferred media will be provided in the next request.");
 				}
 				let context_window = window.saturating_sub(
 					aidash_domain::provider::ModelRequest::content_parts_reservation(&media.parts),
@@ -406,24 +530,19 @@ impl<'a> Executor<'a> {
 				} else {
 					serde_json::Value::Null
 				};
-				let projection = match agent.projection_version {
-					ProjectionVersion::Legacy => context::RequestProjection::Legacy,
-					ProjectionVersion::Ordered => {
-						context::RequestProjection::Ordered(self.environment.cache_scope(run).await?)
-					}
-					// Never fall back to Legacy for a pinned version this build cannot render.
-					ProjectionVersion::Native => {
-						return Err(Error::Invalid(
-							"the Native Projection Version is not supported by this node".into(),
-						));
-					}
-				};
+				// Ordered per-turn paragraphs are request content the fixed
+				// reservations must count, exactly as Legacy counts them in system.
+				let turn_instructions = turn_instructions.trim_start().to_owned();
+				let mut fixed_context = private_context.clone();
+				if !turn_instructions.is_empty() {
+					fixed_context["turn_instructions"] = json!(turn_instructions);
+				}
 				context::request_context_budget(
 					window,
 					output,
 					&instructions,
 					&specifications,
-					&private_context,
+					&fixed_context,
 					&projection,
 				)?;
 				let mut budget = context::RequestBudget {
@@ -434,7 +553,7 @@ impl<'a> Executor<'a> {
 					projection: &projection,
 				};
 				let minimum_request = budget
-					.request(&Context::default(), &private_context)
+					.request(&Context::default(), &fixed_context)
 					.estimated_total_tokens();
 				budget.window = request_context_window(context_window, minimum_request);
 				if force_read_compaction {
@@ -443,12 +562,20 @@ impl<'a> Executor<'a> {
 				}
 				// Keep room for history and JSON message escaping. The final fitting
 				// decision below measures the complete provider input, not this quota.
-				let available = budget.remaining(&Context::default(), &private_context);
+				let available = budget.remaining(&Context::default(), &fixed_context);
 				let message_size = context::estimated_tokens(&json!(run_messages).to_string());
-				let snapshot_fit = context::bound_snapshot(
-					&mut pinned,
-					available.saturating_sub(message_size) / 4,
-				);
+				let volatile_budget = available.saturating_sub(message_size) / 4;
+				let snapshot_fit = if ordered {
+					// Stable fields use a Run-stable quota so every step renders the
+					// same Stable Prefix bytes for the same task.
+					context::bound_ordered_snapshot(
+						&mut pinned,
+						context::ordered_stable_quota(window, output_limit),
+						volatile_budget,
+					)
+				} else {
+					context::bound_snapshot(&mut pinned, volatile_budget)
+				};
 				if agent.knowledge_digest.is_some() {
 					pinned["reference_documents"] = documents;
 				}
@@ -479,6 +606,9 @@ impl<'a> Executor<'a> {
 						)
 					};
 				}
+				if !turn_instructions.is_empty() {
+					pinned["turn_instructions"] = json!(turn_instructions);
+				}
 				if let Err(error) = snapshot_fit
 					&& budget
 						.request(&Context::default(), &pinned)
@@ -487,7 +617,11 @@ impl<'a> Executor<'a> {
 				{
 					return Err(error.into());
 				}
-				let semantic_budget = budget.remaining(&Context::default(), &pinned) / 2;
+				let semantic_budget = if ordered {
+					context::sources::ordered_semantic_budget(window, output_limit)
+				} else {
+					budget.remaining(&Context::default(), &pinned) / 2
+				};
 				let semantic_inputs = inputs
 					.iter()
 					.filter_map(|input| {
@@ -503,12 +637,23 @@ impl<'a> Executor<'a> {
 						))
 					})
 					.collect::<Vec<_>>();
-                let semantic = if let Some(cached) = &cached_sources { cached.get("semantic_memory").filter(|v| !v.is_null()).cloned() } else if guard.is_some() || home.local() { self.environment.semantic_context(run, &task, &semantic_inputs, semantic_budget, &entry).await? } else { None };
+                if ordered {
+                    let retrieves = guard.is_some() || home.local();
+                    let semantic = self.ordered_semantic_context(run, &task, &semantic_inputs, semantic_budget, &entry, &binding_digest, retrieves).await?;
+                    if let Some(value) = &semantic.value { pinned["semantic_memory"] = value.clone(); }
+                    if let Some(observation) = semantic.observation(&pinned, &binding_digest, ordered_skill, context.source_observation.as_ref())? {
+                        context.source_observation = Some(observation);
+                        run.context = context.clone();
+                        store.observe_sources(run, token).await?;
+                    }
+                } else {
+                let semantic = if let Some(cached) = &cached_sources { cached.get("semantic_memory").filter(|v| !v.is_null()).cloned() } else if guard.is_some() || home.local() { self.environment.semantic_context(run, &task, &semantic_inputs, semantic_budget, &entry, None).await? } else { None };
                 if let Some(semantic) = &semantic { pinned["semantic_memory"] = semantic.clone(); }
                 if cached_sources.is_none() {
                     context.source_observation = Some(aidash_domain::context::sources::SourceObservation::new(source_boundary, binding_digest, json!({"memory":pinned["memory"],"skill_context":source_skill_context,"semantic_memory":semantic}))?);
                     run.context = context.clone();
                     store.observe_sources(run, token).await?;
+                }
                 }
                 let compactor = self.environment.compactor()?;
                 compact_execution(&mut context, compactor.as_ref(), &budget, &pinned)
@@ -1471,6 +1616,59 @@ fn is_invalid(error: &Error) -> bool {
 		Error::Invalid(_) | Error::Domain(aidash_domain::Error::Invalid(_))
 	)
 }
+/// How this step obtained an Ordered Run's Skill context.
+enum OrderedSkill {
+	/// This request carries no Skill context.
+	Absent,
+	/// The cached entry is still current.
+	Reused,
+	/// Read now; cacheable once the Skill record has a revision.
+	Retrieved(Option<context::sources::SkillObservation>),
+}
+
+/// An Ordered Run's semantic read for this step.
+struct OrderedSemantic {
+	value: Option<Value>,
+	boundary: String,
+	retrieved: bool,
+}
+impl OrderedSemantic {
+	/// The observation to persist, or `None` when every cached entry was reused.
+	/// Reused entries keep their original bytes and need no new journal.
+	fn observation(
+		&self,
+		pinned: &Value,
+		bindings: &str,
+		skill: OrderedSkill,
+		previous: Option<&context::sources::SourceObservation>,
+	) -> Result<Option<context::sources::SourceObservation>> {
+		let previous_skill = previous.and_then(|observation| observation.skill.clone());
+		let (skill, skill_changed) = match skill {
+			OrderedSkill::Absent => (None, previous_skill.is_some()),
+			OrderedSkill::Reused => (previous_skill, false),
+			OrderedSkill::Retrieved(skill) => (skill, true),
+		};
+		if !self.retrieved && !skill_changed {
+			return Ok(None);
+		}
+		let content = if self.retrieved {
+			json!({"memory":pinned["memory"],"semantic_memory":self.value})
+		} else {
+			previous
+				.ok_or_else(|| Error::Invalid("reused source observation is missing".into()))?
+				.content
+				.clone()
+		};
+		let mut observation = context::sources::SourceObservation::new(
+			self.boundary.clone(),
+			bindings.to_owned(),
+			content,
+		)?;
+		observation.skill = skill;
+		Ok(Some(observation))
+	}
+}
+
 async fn compact_execution(
 	context: &mut Context,
 	classifier: &dyn aidash_application::ports::CompactionClassifier,

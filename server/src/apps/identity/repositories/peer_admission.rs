@@ -499,6 +499,8 @@ impl PeerAdmissionScope for Owned {
 			if snapshot.agent.registry_node != node || !snapshot.remote {
 				return Err(crate::Error::Forbidden);
 			}
+			// The receiver executes the Run, so its own Cache Salt Key decides.
+			self.runtime.store.require_projection(&snapshot)?;
 			let context = crate::context::Context {
 				binding_snapshot: Some(Box::new(snapshot)),
 				..Default::default()

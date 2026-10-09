@@ -213,7 +213,10 @@ pub fn ordered_context(context: &Context, pinned: &Value) -> crate::provider::Or
 	}
 	struct Volatile<'a>(Vec<(&'a str, &'a Value)>);
 	impl Serialize for Volatile<'_> {
-		fn serialize<S: serde::Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+		fn serialize<S: serde::Serializer>(
+			&self,
+			serializer: S,
+		) -> std::result::Result<S::Ok, S::Error> {
 			use serde::ser::SerializeMap;
 			let mut map = serializer.serialize_map(Some(self.0.len()))?;
 			for (key, value) in &self.0 {
@@ -259,7 +262,11 @@ pub fn ordered_stable_quota(window: usize, max_output_tokens: u32) -> usize {
 /// Bound an Ordered snapshot: Stable Prefix fields with the Run-stable quota,
 /// volatile fields with this step's budget. Reference documents are added by
 /// the caller afterwards and are never shrunk, as in Legacy.
-pub fn bound_ordered_snapshot(pinned: &mut Value, stable_quota: usize, volatile_budget: usize) -> Result<()> {
+pub fn bound_ordered_snapshot(
+	pinned: &mut Value,
+	stable_quota: usize,
+	volatile_budget: usize,
+) -> Result<()> {
 	let Some(fields) = pinned.as_object_mut() else {
 		return bound_snapshot(pinned, volatile_budget);
 	};
