@@ -756,6 +756,96 @@ async fn approved_mapping_cannot_cross_the_bound_tenant_at_a_request_boundary(
 
 #[rstest::rstest]
 #[tokio::test]
+async fn replacement_registration_keeps_freshly_authenticated_display_attributes(
+	#[future(awt)]
+	#[from(test_environment)]
+	environment: Arc<TestEnvironment>,
+) {
+	let (mut f, url, schema) = common::setup(&environment).await;
+	let (_status, _admin) = configure(&mut f).await;
+	let app = common::application(f.clone()).await;
+	let (cookie, csrf) = sign_in(&app, "acme", "pool-a", "Original").await;
+	let previous: Value = browser()
+		.post(app.url("/auth/registration"))
+		.header("cookie", cookie)
+		.header("origin", "http://127.0.0.1:8080")
+		.header("x-aidash-csrf", csrf)
+		.send()
+		.await
+		.unwrap()
+		.json()
+		.await
+		.unwrap();
+	let expire = Query::update()
+		.table(Alias::new("dashboard_registration_requests"))
+		.value_expr(
+			Alias::new("expires_at"),
+			Expr::val(Utc::now() - chrono::Duration::seconds(1)),
+		)
+		.to_string(PostgresQueryBuilder);
+	sqlx::query(&expire)
+		.execute(f.store.pool.driver())
+		.await
+		.unwrap();
+	let (cookie, csrf) = sign_in(&app, "acme", "pool-a", "Freshly authenticated").await;
+	let replacement = browser()
+		.post(app.url("/auth/registration"))
+		.header("cookie", &cookie)
+		.header("origin", "http://127.0.0.1:8080")
+		.header("x-aidash-csrf", csrf)
+		.send()
+		.await
+		.unwrap();
+	assert_eq!(replacement.status(), 200);
+	let replacement: Value = replacement.json().await.unwrap();
+	assert_eq!(replacement["status"], "pending");
+	assert_ne!(replacement["id"], previous["id"]);
+	assert_eq!(replacement["identity_id"], previous["identity_id"]);
+	let path = format!(
+		"/api/dashboard/identities/{}",
+		replacement["identity_id"].as_str().unwrap()
+	);
+	let view: Value = browser()
+		.get(app.url(&path))
+		.bearer_auth(&f.config.api_token)
+		.send()
+		.await
+		.unwrap()
+		.json()
+		.await
+		.unwrap();
+	assert_eq!(view["display_name"], "Freshly authenticated");
+	assert_eq!(view["verified_email"], "person@example.test");
+	// Expiry without another replacement still erases unmapped display data.
+	sqlx::query(&expire)
+		.execute(f.store.pool.driver())
+		.await
+		.unwrap();
+	let expired: Value = browser()
+		.get(app.url("/auth/registration"))
+		.header("cookie", cookie)
+		.send()
+		.await
+		.unwrap()
+		.json()
+		.await
+		.unwrap();
+	assert_eq!(expired["status"], "expired");
+	let view: Value = browser()
+		.get(app.url(path))
+		.bearer_auth(&f.config.api_token)
+		.send()
+		.await
+		.unwrap()
+		.json()
+		.await
+		.unwrap();
+	assert!(view["display_name"].is_null() && view["verified_email"].is_null());
+	common::cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
 async fn expired_registration_clears_unmapped_display_attributes(
 	#[future(awt)]
 	#[from(test_environment)]

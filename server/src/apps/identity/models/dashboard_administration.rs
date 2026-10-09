@@ -70,15 +70,14 @@ impl DashboardRegistrationRequest {
 				return Err(Error::Unauthorized);
 			}
 			let now = database_time(tx).await?;
-			let expired = Self::objects()
+			Self::objects()
 				.filter(Self::field_identity_id().eq(identity))
 				.filter(Self::field_status().eq("pending"))
 				.filter(Self::field_expires_at().lte(now))
 				.update_fields_with_conn(tx, [(Self::field_status(), "expired".to_owned())])
 				.await?;
-			if expired > 0 {
-				DashboardIdentity::clear_display_if_unmapped(tx, identity).await?;
-			}
+			// A replacement request retains the latest authenticated display
+			// attributes. Expiry without resubmission is erased by the sweeper.
 			if let Some(previous) = Self::latest(tx, identity).await? {
 				let active_mapping = previous.status == "approved"
 					&& DashboardMapping::objects()
