@@ -44,6 +44,7 @@ import { EntityDetails } from "../entity-details";
 import { ArtifactList } from "./channel";
 import { collaborationCopy } from "./copy";
 import { workspaceCopy } from "./workspace-copy";
+import { InferenceProgress } from "./inference-progress";
 import { resumableRun } from "./workspace-model";
 import {
   runMediaAccept,
@@ -737,6 +738,7 @@ function RunPanel({
         </p>
       )}
       {run.error && <p className="error">{run.error}</p>}
+      {local && <InferenceProgress run={id} node={node} active={!terminal} />}
       <h3>{t("toolCalls")}</h3>
       {invocations.map((call) => (
         <details className="call-detail" key={call.idempotency_key}>
