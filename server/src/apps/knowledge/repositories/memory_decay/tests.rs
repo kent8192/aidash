@@ -2,7 +2,9 @@
 use super::*;
 use crate::apps::execution::test_database::{DatabaseFixture, database};
 use crate::apps::knowledge::services::native_memory as memory;
+use crate::apps::registry::models::Definition;
 use crate::authorization::identity::Actor;
+use reinhardt::db::orm::Model;
 use reinhardt::query::QueryStatementBuilder;
 use rstest::rstest;
 use serde_json::json;
@@ -921,4 +923,184 @@ async fn first_dormancy_page_and_replay_share_database_clock_precision(
 		lease.finish(Ok(())).await.unwrap();
 	}
 	assert_eq!(deliveries(&store, id).await, Some(0));
+}
+
+#[rstest]
+#[tokio::test]
+async fn batch_scores_preserve_exact_live_support_dormancy_and_missing_usage_rows(
+	#[future] database: DatabaseFixture,
+	bounds: Bounds,
+) {
+	let database = database.await;
+	let d = Decay {
+		half_life_days: 1,
+		prior_floor_millionths: 0,
+		dormancy: Some(Dormancy {
+			threshold_millionths: 500_000,
+			interval_hours: 1,
+			batch: 1,
+			include_preferences: true,
+			include_procedures: true,
+		}),
+	};
+	let (store, _, workspace) = setup_endpoint_decay(
+		&database,
+		bounds.clone(),
+		"http://127.0.0.1:9/v1",
+		(false, false, false),
+		None,
+		Some(d),
+	)
+	.await;
+	let bank = memory::create_participant(
+		&store,
+		&Actor::Operator,
+		workspace,
+		memory::CreateParticipant {
+			agent: reference("a"),
+		},
+	)
+	.await
+	.unwrap()
+	.bank;
+	let mut sources = Vec::new();
+	for text in [
+		"Supported fact A",
+		"Supported fact B",
+		"An obsolete source",
+		"Pinned independent fact",
+	] {
+		sources.push(
+			memory::mutate(
+				&store,
+				&Actor::Operator,
+				mutation(
+					&bank,
+					Change::Add {
+						id: Uuid::now_v7(),
+						content: content(text),
+					},
+				),
+			)
+			.await
+			.unwrap()
+			.remove(0),
+		);
+	}
+	let mut supports = Vec::new();
+	for source in &sources[..3] {
+		let mut body = content("Live observation support");
+		body.kind = Kind::Observation;
+		body.evidence = vec![source.evidence()];
+		supports.push(
+			memory::mutate(
+				&store,
+				&Actor::Operator,
+				mutation(
+					&bank,
+					Change::Add {
+						id: Uuid::now_v7(),
+						content: body,
+					},
+				),
+			)
+			.await
+			.unwrap()
+			.remove(0),
+		);
+	}
+	sources[2] = memory::mutate(
+		&store,
+		&Actor::Operator,
+		mutation(
+			&bank,
+			Change::Correct {
+				id: sources[2].id,
+				expected_revision: 1,
+				content: content("The current source has no current Observation"),
+			},
+		),
+	)
+	.await
+	.unwrap()
+	.remove(0);
+	let mut lease = Lease::begin(&store, &Actor::Operator).await.unwrap();
+	let bank_id = repository::bank_id(&mut lease, &bank, false)
+		.await
+		.unwrap()
+		.unwrap();
+	for id in [sources[0].id, supports[0].id, sources[3].id] {
+		super::ensure(&mut lease, bank_id, id).await.unwrap();
+		native::query(
+			&Query::update()
+				.table(Alias::new("memory_unit_retention"))
+				.value(
+					Alias::new("dormant_policy"),
+					serde_json::to_value(reference("p")).unwrap(),
+				)
+				.value(Alias::new("pinned"), id == sources[3].id)
+				.and_where(Expr::col("unit_id").eq(Expr::value(id)))
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(&mut **lease.tx())
+		.await
+		.unwrap();
+	}
+	let policy = memory::policy(&mut lease, &reference("p")).await.unwrap();
+	let scores = super::scores(
+		&mut lease,
+		&bank,
+		&policy,
+		&sources,
+		Utc::now() + Duration::days(365),
+	)
+	.await
+	.unwrap();
+	assert_eq!(scores.len(), sources.len());
+	assert_eq!(
+		scores[&sources[0].id], 1.0,
+		"Dormant support remains live evidence"
+	);
+	assert_eq!(
+		scores[&sources[1].id], 1.0,
+		"a never-delivered source can have live support"
+	);
+	assert!(
+		scores[&sources[2].id] < 0.01,
+		"an old-revision Observation cannot exempt its corrected source"
+	);
+	assert_eq!(
+		scores[&sources[3].id], 1.0,
+		"Pinned is independent from derived support"
+	);
+	lease.finish(Ok(())).await.unwrap();
+	// A smaller replacement snapshot bound still applies to each source, not
+	// the union of distinct supports needed by one inclusive recall.
+	let mut definition = Definition::objects()
+		.filter(Definition::field_id().eq("p".to_string()))
+		.filter(Definition::field_version().eq("1.0.0".to_string()))
+		.get_with_db(&mut database.lease.handle())
+		.await
+		.unwrap();
+	for bound in ["max_units", "max_candidates", "max_results"] {
+		definition.metadata.0["config"]["policy"]["bounds"][bound] = json!(1);
+	}
+	definition
+		.update_with_db(&mut database.lease.handle())
+		.await
+		.unwrap();
+	let mut lease = Lease::begin(&store, &Actor::Operator).await.unwrap();
+	let policy = memory::policy(&mut lease, &reference("p")).await.unwrap();
+	let scores = super::scores(
+		&mut lease,
+		&bank,
+		&policy,
+		&sources[..2],
+		Utc::now() + Duration::days(365),
+	)
+	.await
+	.unwrap();
+	assert_eq!(scores.len(), 2);
+	assert!(scores.values().all(|score| *score == 1.0));
+	lease.finish(Ok(())).await.unwrap();
 }
