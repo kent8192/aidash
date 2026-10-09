@@ -30,6 +30,7 @@ pub(crate) fn event_scope(
 						"provider_credential.rotated",
 						"provider_credential.revoked",
 						"provider_credential.deleted",
+						"provider_credential.cleanup_completed",
 						"provider_credential_binding.updated",
 					]))
 					.add(Expr::cust("data->>'tenant'").eq(Expr::value(tenant))),
