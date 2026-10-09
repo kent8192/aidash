@@ -89,6 +89,12 @@ signed inference capability does not authorize.
 Chat output is text-only: omit `modalities` or use exactly `["text"]`. Non-text
 or malformed modalities and any `image_config` or `audio` field are rejected
 before Key Material lookup. Image and audio input in `messages` remains supported.
+Chat `service_tier` must be absent or exactly `"default"`. Other tiers, aliases
+and malformed values are rejected before Key Material lookup because the
+capability does not authorize a separate [pricing tier](https://openrouter.ai/docs/guides/features/service-tiers).
+Embeddings require one string `input` within the existing 1 MiB request bound;
+batch arrays, token arrays, missing and malformed inputs are rejected before
+Key Material lookup, matching the application's single-vector contract.
 
 Capability failures use `401` for signature, key, expiry or audience failures,
 and `403` for tenant, credential, operation, model or claim violations:
@@ -172,6 +178,9 @@ Broker changes that remove or replace a live service drain all affected workers
 before any Terraform apply, including applies triggered by another interrupted VM.
 If preflight or Terraform fails, the controller attempts to restore admission on
 every successfully sealed host and reports restoration failures for reconciliation.
+Non-deployment early exits, including pending builds, restore broker-presealed
+admission for a still-running, published release. Failed deployments that were
+deliberately gated, stopped hosts and retired hosts remain gated.
 
 ### Operators who applied a pre-merge draft
 

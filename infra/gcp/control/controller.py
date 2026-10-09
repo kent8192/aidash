@@ -576,6 +576,14 @@ def restore_broker_admission(config, outputs, sealed):
         raise RuntimeError("Broker drain admission restoration failed")
 
 
+def restore_presealed_running_host(config, output, identity, presealed, managed):
+    previous = managed.get(identity, {})
+    if identity in presealed and previous.get("running") and previous.get("published"):
+        # Early exits keep the prior healthy release serving. Deliberately
+        # gated failed deployments and stopped/retired VMs must stay gated.
+        restore_broker_admission(config, {identity: output}, {identity})
+
+
 def reconcile(config, store):
     with store.lock():
         terraform = Terraform(ROOT / "infra/gcp/environments", config)
@@ -713,10 +721,12 @@ def reconcile(config, store):
                     update_entry(
                         store, identity, generation, status="waiting_for_pr_slot"
                     )
+                    restore_presealed_running_host(config, output, identity, presealed, managed)
                     continue
                 if entry.get(
                     "failed_deployment_generation"
                 ) == generation and not entry.get("start_pending"):
+                    restore_presealed_running_host(config, output, identity, presealed, managed)
                     continue
                 previous = managed.get(identity)
                 needs_deploy = bool(entry.get("release")) and (
@@ -785,11 +795,13 @@ def reconcile(config, store):
                                     published=False,
                                     status="stopped",
                                 )
+                            restore_presealed_running_host(config, output, identity, presealed, managed)
                             continue
                         if not entry.get("release"):
                             update_entry(
                                 store, identity, generation, status="awaiting_build"
                             )
+                            restore_presealed_running_host(config, output, identity, presealed, managed)
                             continue
                         if sealed or entry.get("status") != "ready":
                             current_entry(store, identity, generation)
@@ -806,6 +818,7 @@ def reconcile(config, store):
                         continue
                 if not entry.get("release"):
                     update_entry(store, identity, generation, status="awaiting_build")
+                    restore_presealed_running_host(config, output, identity, presealed, managed)
                     continue
                 # Revalidate source identity at the effect boundary, not just at intake.
                 current_entry(store, identity, generation)
@@ -820,6 +833,7 @@ def reconcile(config, store):
                         desired="stopped",
                         status="interrupted",
                     )
+                    restore_presealed_running_host(config, output, identity, presealed, managed)
                     continue
                 # A manual resume is a single power authorization, not permission
                 # to restart forever after a later Spot interruption.

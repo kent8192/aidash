@@ -351,6 +351,86 @@ async fn chat_rejects_non_text_output_and_media_configuration_before_key_lookup(
 }
 
 #[tokio::test]
+async fn chat_allows_only_the_default_service_tier_before_key_lookup() {
+	let f = Fixture::new().await;
+	for tier in [
+		json!("priority"),
+		json!("scale"),
+		json!("fast"),
+		json!("ultrafast"),
+		json!("flex"),
+		json!("auto"),
+		Value::Null,
+		json!(5),
+	] {
+		let mut body = chat();
+		body["service_tier"] = tier;
+		let response = f
+			.request(&f.claims(), "POST", "/api/v1/chat/completions", body)
+			.await;
+		assert_eq!(response.status(), 403);
+		assert_eq!(
+			json_body(response).await["error"]["code"],
+			"capability_claim_violation"
+		);
+		assert_eq!(f.source.reads.load(Ordering::SeqCst), 0);
+		assert_eq!(f.provider.calls.load(Ordering::SeqCst), 0);
+	}
+	let mut body = chat();
+	body["service_tier"] = json!("default");
+	let response = f
+		.request(&f.claims(), "POST", "/api/v1/chat/completions", body)
+		.await;
+	assert_eq!(response.status(), 200);
+	json_body(response).await;
+}
+
+#[tokio::test]
+async fn embeddings_authorize_one_string_input_before_key_lookup() {
+	let f = Fixture::new().await;
+	for input in [
+		json!(["one", "two"]),
+		json!(["one"]),
+		json!([]),
+		json!([1, 2]),
+		json!(5),
+		Value::Null,
+	] {
+		let body = json!({"model":"author/model", "provider":{"zdr":true}, "input":input});
+		let response = f
+			.request(&f.claims(), "POST", "/api/v1/embeddings", body)
+			.await;
+		assert_eq!(response.status(), 403);
+		assert_eq!(
+			json_body(response).await["error"]["code"],
+			"capability_claim_violation"
+		);
+		assert_eq!(f.source.reads.load(Ordering::SeqCst), 0);
+		assert_eq!(f.provider.calls.load(Ordering::SeqCst), 0);
+	}
+	let body = json!({"model":"author/model", "provider":{"zdr":true}});
+	let response = f
+		.request(&f.claims(), "POST", "/api/v1/embeddings", body)
+		.await;
+	assert_eq!(response.status(), 403);
+	assert_eq!(
+		json_body(response).await["error"]["code"],
+		"capability_claim_violation"
+	);
+	assert_eq!(f.source.reads.load(Ordering::SeqCst), 0);
+	assert_eq!(f.provider.calls.load(Ordering::SeqCst), 0);
+	let body = json!({"model":"author/model", "provider":{"zdr":true}, "input":"one"});
+	let response = f
+		.request(&f.claims(), "POST", "/api/v1/embeddings", body)
+		.await;
+	assert_eq!(response.status(), 200);
+	assert_eq!(
+		json_body(response).await["data"].as_array().unwrap().len(),
+		1
+	);
+}
+
+#[tokio::test]
 async fn maintenance_purposes_authorize_only_the_explicit_operation() {
 	let f = Fixture::new().await;
 	for purpose in [

@@ -580,6 +580,54 @@ class ReconcileTests(unittest.TestCase):
         self.assertIn(("bootstrap", "pr-1", True), self.calls)
         self.assertEqual(self.calls.count(("bootstrap", "pr-1", False)), 1)
 
+    def test_pending_build_restores_broker_presealed_healthy_release(self):
+        self.config["develop_branch"] = "develop/0.1.0"
+        self.config["credential_brokers"] = {"develop": {"enabled": True, "image": "initial"}}
+        self.request("develop", source_ref="develop/0.1.0")
+        self.reconcile()
+        self.request("develop", action="update", sha="b" * 40, source_ref="develop/0.1.0")["release"] = None
+        self.assertEqual(self.store.state["environments"]["develop"]["sha"], "b" * 40)
+        self.config["credential_brokers"]["develop"]["image"] = "rotated"
+        self.calls.clear()
+        self.reconcile()
+        self.assertEqual(self.store.state["environments"]["develop"]["status"], "awaiting_build")
+        self.assertLess(self.calls.index(("seal", "develop")), self.calls.index(("unseal", "develop")))
+        self.assertTrue(self.cloud.managed["develop"]["running"])
+        self.assertTrue(self.cloud.managed["develop"]["published"])
+        self.assertEqual(self.cloud.managed["develop"]["release_sha"], SHA)
+        self.assertFalse(any(call[0] in {"bootstrap", "start", "stop"} for call in self.calls))
+
+    def test_declined_idle_stop_restores_broker_presealed_healthy_release(self):
+        self.config["credential_brokers"] = {"test": {"enabled": True, "image": "initial"}}
+        self.request()
+        self.reconcile()
+        self.config["credential_brokers"]["test"]["image"] = "rotated"
+        self.idle = True
+        self.calls.clear()
+        def declined_idle_seal(config, output, action, force=False):
+            result = self.host(config, output, action, force)
+            return {"sealed": False} if action == "seal-idle" else result
+        with patch.object(controller, "host", side_effect=declined_idle_seal):
+            self.reconcile()
+        self.assertEqual(self.calls, [("seal", "test"), ("observe", "test"), ("seal-idle", "test"), ("unseal", "test")])
+        self.assertTrue(self.cloud.managed["test"]["running"])
+        self.assertTrue(self.cloud.managed["test"]["published"])
+
+    def test_broker_change_does_not_unseal_a_deliberately_failed_release(self):
+        self.config["credential_brokers"] = {"test": {"enabled": True, "image": "initial"}}
+        self.request()
+        self.reconcile()
+        self.request(action="resume", force=True)
+        with patch.object(controller, "bundle", side_effect=RuntimeError("bundle unavailable")), self.assertRaises(RuntimeError):
+            self.reconcile()
+        self.assertFalse(self.cloud.managed["test"]["published"])
+        self.config["credential_brokers"]["test"]["image"] = "rotated"
+        self.calls.clear()
+        self.reconcile()
+        self.assertNotIn(("unseal", "test"), self.calls)
+        self.assertFalse(self.cloud.managed["test"]["published"])
+        self.assertFalse(any(call[0] in {"bootstrap", "start", "stop"} for call in self.calls))
+
     def test_pending_build_keeps_observing_old_release_and_stops_when_idle(self):
         self.request("pr-1")
         self.reconcile()

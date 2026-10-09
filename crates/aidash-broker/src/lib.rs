@@ -269,6 +269,16 @@ fn body_policy(body: &[u8], claims: &Claims, op: Operation) -> Result<(), Failur
 	{
 		return Err(Failure::Model);
 	}
+	if op == Operation::Embeddings && value.get("input").and_then(Value::as_str).is_none() {
+		return Err(Failure::ClaimViolation);
+	}
+	if op == Operation::Chat
+		&& value
+			.get("service_tier")
+			.is_some_and(|tier| tier.as_str() != Some("default"))
+	{
+		return Err(Failure::ClaimViolation);
+	}
 	if op == Operation::Chat
 		// Keep one completion limit; the provider also accepts an alternate name.
 		&& (value.get("max_completion_tokens").is_some()
