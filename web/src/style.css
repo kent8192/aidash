@@ -1802,3 +1802,22 @@ details > summary {
   min-height: 0;
   flex: 1;
 }
+
+.gcip-sign-in {
+  max-width: 28rem;
+  margin: 10vh auto;
+  padding: 1.5rem;
+}
+.gcip-sign-in form {
+  display: grid;
+  gap: 1rem;
+  margin: 1rem 0;
+}
+.gcip-sign-in label {
+  display: grid;
+  gap: 0.4rem;
+}
+.gcip-sign-in > button {
+  display: block;
+  margin: 0.75rem 0;
+}

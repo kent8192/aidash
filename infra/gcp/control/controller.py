@@ -2,6 +2,7 @@
 """GitHub-authorized nonproduction lifecycle control. Infrastructure only."""
 
 import argparse
+from copy import deepcopy
 from datetime import datetime
 import hashlib
 import io
@@ -14,6 +15,8 @@ import tarfile
 import time
 import urllib.parse
 import urllib.request
+
+from gcip import reconcile_environment
 
 from cloud import (
     Store,
@@ -304,11 +307,22 @@ def host(config, output, action, force=False):
         "keepalive",
         "install",
         "gate",
+        "quiesce",
     }:
         raise Refused("Invalid host action")
     cmd = "sudo python3 /opt/aidash/bootstrap/host.py " + (
         "seal --idle-only" if action == "seal-idle" else action
     )
+    if action == "quiesce":
+        # Carry the trusted GCIP fence to retained hosts before updating their
+        # bootstrap bundle; older host CLIs do not know this new action yet.
+        helper = (ROOT / "infra/gcp/runtime/gcip_quiesce.py").read_text()
+        cmd = (
+            "sudo python3 - <<'AIDASH_GCIP_QUIESCE'\n"
+            "import sys\nsys.path.insert(0, '/opt/aidash/bootstrap')\nimport host\n"
+            + helper
+            + "\nprint(json.dumps(quiesce(host)))\nAIDASH_GCIP_QUIESCE"
+        )
     if force:
         cmd += " --force"
     return json.loads(
@@ -386,37 +400,41 @@ def instance_status(config, output):
 
 def provision_secret(config, output, kind):
     secret = output["runtime_secret"]
-    versions = json.loads(
-        run(
-            "gcloud",
-            "secrets",
-            "versions",
-            "list",
-            secret,
-            "--project",
-            config["project_id"],
-            "--filter=state=ENABLED",
-            "--format=json(name)",
-        )
-    )
-    if not versions:
-        value = os.environ.get("AIDASH_RUNTIME_" + kind.upper())
-        if not value:
-            raise Refused(
-                f"Set the {kind} runtime configuration secret before resuming this environment"
-            )
-        json.loads(value)
-        run(
-            "gcloud",
-            "secrets",
-            "versions",
-            "add",
-            secret,
-            "--project",
-            config["project_id"],
-            "--data-file=-",
-            data=value.encode(),
-        )
+    all_versions = json.loads(run("gcloud", "secrets", "versions", "list", secret,
+        "--project", config["project_id"], "--format=json(name,state)"))
+    versions = [item for item in all_versions if item["state"] == "ENABLED"]
+    latest_enabled = False
+    if versions:
+        # Version IDs increase with creation; latest can point at a disabled rollback version.
+        version = max(int(item["name"].rsplit("/", 1)[-1]) for item in versions)
+        latest_enabled = version == max(int(item["name"].rsplit("/", 1)[-1]) for item in all_versions)
+        raw = run("gcloud", "secrets", "versions", "access", str(version), "--secret", secret, "--project", config["project_id"])
+    else:
+        raw = os.environ.get("AIDASH_RUNTIME_" + kind.upper())
+        if not raw:
+            raise Refused(f"Set the {kind} runtime configuration secret before resuming this environment")
+    value = json.loads(raw)
+    previous = json.dumps(value, sort_keys=True)
+    gcip = output.get("gcip", {})
+    if gcip.get("tenant_ids"):
+        dashboard = value.setdefault("dashboard", {})
+        if dashboard.get("oidc") or any(key.startswith("AIDASH_OIDC_") for key in value):
+            raise Refused("Remove OIDC runtime configuration before enabling the sole GCIP issuer")
+        settings = dashboard.setdefault("gcip", {})
+        api_key = config.get("gcip_web_api_key") or settings.get("web_api_key")
+        if not api_key:
+            raise Refused("Configure the GCIP web API key from the bootstrap output")
+        settings.update({key: gcip[key] for key in ("project_id", "public_origin", "tenant_bindings", "providers", "password_sign_up")})
+        settings["web_api_key"] = api_key
+    elif value.get("dashboard", {}).get("gcip"):
+        # Binding removal must reach the retained server before any subsequent
+        # boundary; disabling infrastructure cannot leave an old pool admitted.
+        value["dashboard"]["gcip"].update(tenant_bindings={}, providers={}, password_sign_up=[])
+    encoded = json.dumps(value, sort_keys=True)
+    # The VM reads latest with accessor-only IAM. Restore an enabled latest
+    # version after rollback even when the selected configuration is unchanged.
+    if not versions or encoded != previous or not latest_enabled:
+        run("gcloud", "secrets", "versions", "add", secret, "--project", config["project_id"], "--data-file=-", data=encoded.encode())
 
 
 def restart_bootstrap(config, output, fresh_boot=False):
@@ -532,6 +550,169 @@ def verify_source(config, identity, entry):
     ci_success(config, entry["sha"])
 
 
+def gcip_revision(config):
+    """Persist only a digest of shared inputs, including private IdP rotation."""
+    value = {
+        "tenants": config.get("gcip_tenants", {}),
+        "idp_secrets": json.loads(os.environ.get("AIDASH_GCIP_IDP_SECRETS") or "{}"),
+        "web_api_key": config.get("gcip_web_api_key"),
+    }
+    return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
+
+
+def quiesce_gcip_host(config, output):
+    result = host(config, output, "quiesce")
+    if not isinstance(result, dict) or result.get("quiesced") is not True:
+        raise Refused("GCIP application/runner quiescence was not confirmed")
+
+
+def gcip_output_revision(output):
+    value = (output or {}).get("gcip", {})
+    if not value.get("tenant_ids"):
+        value = {}
+    return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
+
+
+class GcipTerraform:
+    """Fence plan changes and reconcile actual outputs at every apply boundary."""
+
+    def __init__(self, terraform, config, store, managed):
+        self.terraform = terraform
+        self.config = config
+        self.store = store
+        self.previous = deepcopy(managed)
+        self.failed = set()
+
+    def outputs(self):
+        return self.terraform.outputs() if self.previous else {}
+
+    def broker_configuration(self, environments):
+        return self.terraform.broker_configuration(environments)
+
+    def broker_configuration_in_state(self, store):
+        return self.terraform.broker_configuration_in_state(store)
+
+    def broker_configuration_changed(self, store, environments):
+        return self.terraform.broker_configuration_changed(store, environments)
+
+    def apply(self, managed, retiring=(), starting=(), affected=None, allow_failures=False):
+        # Include removed environments until their destruction plan is fenced.
+        protected = self.previous | managed
+        if affected is None:
+            revision, affected = gate_gcip_changes(self.config, self.store, self, protected)
+        else:
+            revision, affected = gcip_revision(self.config), dict(affected)
+
+        def fence_plan(plan):
+            output = plan.get("output_changes", {}).get("environments", {})
+            before, after = output.get("before") or {}, output.get("after") or {}
+            if any(
+                change["type"].startswith("google_identity_platform_tenant")
+                and set(change["change"]["actions"]) - {"no-op", "read"}
+                for change in plan.get("resource_changes", [])
+            ) or any(gcip_output_revision(before.get(identity)) != gcip_output_revision(after.get(identity)) for identity in before.keys() | after.keys()):
+                _, planned = gate_gcip_changes(
+                    self.config, self.store, self, protected, force=True, fenced=affected
+                )
+                affected.update(planned)
+
+        self.terraform.apply(managed, retiring=retiring, starting=starting, before_apply=fence_plan)
+        self.previous = deepcopy(managed)
+        # Desired inputs can be unchanged when Terraform regenerates a pool ID.
+        # Re-read actual outputs after every apply, including unrelated lifecycle work.
+        _, changed = gate_gcip_changes(self.config, self.store, self, managed, fenced=affected)
+        affected.update(changed)
+        targets = {identity: generation for identity, generation in affected.items() if identity in managed and identity not in self.failed}
+        failures = refresh_gcip_environments(self.config, self.store, self, managed, revision, targets)
+        self.failed.update(failures)
+        if failures and not allow_failures:
+            raise Refused("GCIP refresh incomplete: " + ", ".join(failures))
+        return failures
+
+
+def gate_gcip_changes(config, store, terraform, managed, force=False, fenced=()):
+    """Fence every old binding before any apply can change the shared pools."""
+    outputs = terraform.outputs() if managed else {}
+    state, _ = store.read("lifecycle/state.json")
+    revision = gcip_revision(config)
+    affected = {}
+    for identity in managed:
+        entry = state["environments"][identity]
+        output = outputs.get(identity, {})
+        if not (
+            config.get("gcip_tenants")
+            or output.get("gcip", {}).get("tenant_ids")
+            or entry.get("gcip_output_revision") not in (None, gcip_output_revision(None))
+            or entry.get("gcip_pending")
+        ):
+            continue
+        if not force and entry.get("gcip_revision") == revision and entry.get("gcip_output_revision") == gcip_output_revision(output) and not entry.get("gcip_pending"):
+            continue
+        if entry["kind"] == "pr" and entry["desired"] != "destroyed":
+            pr = github(f"repos/{config['repository']}/pulls/{identity[3:]}")
+            if pr["state"] != "open":
+                entry["desired"] = "destroyed"
+                update_entry(
+                    store,
+                    identity,
+                    entry["generation"],
+                    desired="destroyed",
+                    status="retiring",
+                )
+        update_entry(store, identity, entry["generation"], gcip_pending=True)
+        if identity not in fenced and output and instance_status(config, output) == "RUNNING":
+            quiesce_gcip_host(config, output)
+            update_entry(store, identity, entry["generation"], gcip_quiesced=True)
+        if entry["desired"] != "destroyed":
+            affected[identity] = entry["generation"]
+    return revision, affected
+
+
+def refresh_gcip_environments(config, store, terraform, managed, revision, affected):
+    if not affected:
+        return []
+    outputs = terraform.outputs()
+    failures = []
+    for identity, generation in affected.items():
+        try:
+            entry = current_entry(store, identity, generation)
+            output = outputs[identity]
+            reconcile_environment(output)
+            provision_secret(config, output, entry["kind"])
+            previous = managed[identity]
+            quiesced = bool(entry.get("gcip_quiesced"))
+            if previous["running"] and previous["published"]:
+                # Reload the existing authorized release, even if a newer source
+                # is awaiting a build. This does not authorize a stopped VM start.
+                restart_bootstrap(config, output, False)
+                health = host(config, output, "health")
+                if health["source_sha"] != previous["release_sha"]:
+                    raise Refused("GCIP refresh changed the authorized running source")
+                current_entry(store, identity, generation)
+                host(config, output, "unseal")
+                public_health(output)
+                quiesced = False
+            update_entry(
+                store, identity, generation, gcip_revision=revision,
+                gcip_output_revision=gcip_output_revision(output), gcip_pending=False,
+                gcip_quiesced=quiesced
+            )
+        except (Exception, OperationDeadline) as error:
+            # The digest advances only after successful reload. Keep failures
+            # gated and retry them on the next scheduled reconciliation.
+            failures.append(identity)
+            if managed[identity]["running"]:
+                with operation_budget(90):
+                    try:
+                        quiesce_gcip_host(config, outputs[identity])
+                    except Exception:
+                        pass
+            if isinstance(error, OperationDeadline):
+                raise
+            bounded_timeout(1)
+    return failures
+
+
 def observe_interruptions(config, store, terraform, managed):
     # Observe *all* hosts before any plan. Otherwise refreshing one environment
     # could recreate a missing VM belonging to an environment processed later.
@@ -591,9 +772,12 @@ def reconcile(config, store):
     with store.lock():
         terraform = Terraform(ROOT / "infra/gcp/environments", config)
         managed = terraform.configuration_in_state(store)
+        terraform = GcipTerraform(terraform, config, store, managed)
         state, _ = store.read("lifecycle/state.json")
         if not state:
             return
+        # Fence every old GCIP binding before any apply can change the shared pools.
+        revision, affected = gate_gcip_changes(config, store, terraform, managed)
         interrupted = observe_interruptions(config, store, terraform, managed)
         # Observe missing/interrupted VMs before any plan, including broker-only
         # changes. The normal apply fence still forbids unauthorized VM creation.
@@ -629,15 +813,18 @@ def reconcile(config, store):
             if blocked:
                 restore_broker_admission(config, outputs, presealed)
                 return
-        if interrupted or broker_changed:
+        # One apply serves interruption recovery, broker intent and GCIP fencing, after
+        # brokers are drained so no plan can replace a live broker first.
+        gcip_failures = []
+        if interrupted or broker_changed or affected:
             try:
-                terraform.apply(managed)
+                gcip_failures = terraform.apply(managed, affected=affected, allow_failures=True)
             except (Exception, OperationDeadline):
                 if presealed:
                     restore_broker_admission(config, outputs, presealed)
                 raise
         state, _ = store.read("lifecycle/state.json")
-        failures = []
+        failures = list(gcip_failures)
         for identity, snapshot in sorted(
             state["environments"].items(),
             key=lambda pair: (pair[1]["desired"] == "running", pair[1]["sequence"]),
@@ -648,6 +835,8 @@ def reconcile(config, store):
                 generation = snapshot["generation"]
                 entry = current_entry(store, identity, generation)
                 output = terraform.outputs().get(identity) if managed else None
+                if output and entry["desired"] != "destroyed":
+                    reconcile_environment(output)
                 # Close/merge cleanup is reconciled regardless of CI, builds, or fork approval.
                 if entry["kind"] == "pr" and entry["desired"] != "destroyed":
                     pr = github(f"repos/{config['repository']}/pulls/{identity[3:]}")
@@ -679,6 +868,7 @@ def reconcile(config, store):
                         retire_provider_credentials(config, identity)
                         current_entry(store, identity, generation)
                         terraform.apply(managed)
+                        reconcile_environment(output, enabled=False)
                         del managed[identity]
                         terraform.apply(managed, retiring={identity})
                     else:
@@ -691,9 +881,16 @@ def reconcile(config, store):
                         status="destroyed",
                         applied=None,
                         published=False,
+                        gcip_pending=False,
+                        gcip_quiesced=False,
                     )
                     continue
                 if entry["desired"] == "stopped":
+                    if entry.get("gcip_quiesced") and not entry.get("force"):
+                        # seal rolls back with unseal if a paused app cannot answer.
+                        # A failed GCIP refresh must never reopen its old policy.
+                        update_entry(store, identity, generation, status="waiting_for_gcip_refresh")
+                        continue
                     if identity in managed and managed[identity]["running"]:
                         if (
                             not entry.get("force")
@@ -715,7 +912,12 @@ def reconcile(config, store):
                         status="stopped",
                         applied=managed.get(identity),
                         published=False,
+                        gcip_quiesced=False,
                     )
+                    continue
+                if identity in terraform.failed:
+                    # GCIP failures stay gated, but must not prevent unrelated
+                    # environment retirement or an accepted stop.
                     continue
                 if entry["kind"] == "pr" and any(
                     value["kind"] == "pr" and value["running"]
@@ -773,6 +975,9 @@ def reconcile(config, store):
                     or entry.get("provider_credentials") != (output or {}).get("provider_credentials")
                 )
                 if previous and previous["running"]:
+                    if entry.get("gcip_quiesced") and not (needs_deploy and entry.get("force")):
+                        update_entry(store, identity, generation, status="waiting_for_gcip_refresh")
+                        continue
                     if entry.get("keepalive_at", 0) > entry.get("keepalive_applied", 0):
                         host(config, output, "keepalive")
                         update_entry(
@@ -913,6 +1118,7 @@ def reconcile(config, store):
                     current_entry(store, identity, generation)
                     power(config, output, "start")
                     fresh_boot = True
+                reconcile_environment(output)
                 provision_secret(config, output, entry["kind"])
                 current_entry(store, identity, generation)
                 restart_bootstrap(config, output, fresh_boot)
@@ -943,6 +1149,10 @@ def reconcile(config, store):
                     applied=managed[identity],
                     published=True,
                     status="ready",
+                    gcip_revision=revision,
+                    gcip_output_revision=gcip_output_revision(terraform.outputs()[identity]),
+                    gcip_pending=False,
+                    gcip_quiesced=False,
                     keepalive_applied=entry.get("keepalive_at", 0),
                     provider_credentials=output.get("provider_credentials"),
                 )
@@ -973,7 +1183,9 @@ def reconcile(config, store):
                                 pass
                     elif sealed:
                         try:
-                            host(config, output, "unseal")
+                            current = current_entry(store, identity, snapshot["generation"])
+                            if not (current.get("gcip_quiesced") or current.get("gcip_pending")):
+                                host(config, output, "unseal")
                         except Exception:
                             pass
                     update_entry(
@@ -990,6 +1202,7 @@ def reconcile(config, store):
                 # A normal failure's cleanup may have consumed the remaining
                 # operation budget. Do not start another environment/cleanup.
                 bounded_timeout(1)
+        failures = sorted(set(failures) | terraform.failed)
         if failures:
             raise RuntimeError("Reconciliation incomplete: " + ", ".join(failures))
 

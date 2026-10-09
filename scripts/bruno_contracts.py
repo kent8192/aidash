@@ -545,6 +545,32 @@ def render():
                 headers={"Cookie": "aidash-login=tampered"},
             )
             continue
+        if path == "/auth/gcip/transaction":
+            add(endpoint, "Transaction requires its state query", 400)
+            add(
+                endpoint,
+                "OIDC deployment cannot expose GCIP configuration",
+                401,
+                path=path + "?state=invalid",
+            )
+            add(
+                endpoint,
+                "Tampered browser cookie cannot expose GCIP configuration",
+                401,
+                path=path + "?state=invalid",
+                headers={"Cookie": "aidash-login=tampered"},
+            )
+            continue
+        if path == "/auth/gcip/exchange":
+            add(endpoint, "Exchange requires its typed token envelope", 422, body="{}")
+            add(endpoint, "Malformed token envelope is rejected", 400, body="{")
+            add(
+                endpoint,
+                "OIDC deployment cannot accept a GCIP token",
+                401,
+                body=json.dumps({"state": "invalid", "id_token": "invalid"}),
+            )
+            continue
         if path == "/auth/backchannel-logout":
             add(
                 endpoint,

@@ -32,4 +32,6 @@ pub mod activation;
 
 pub mod oidc;
 
+pub mod gcip;
+
 pub mod provider_credentials;

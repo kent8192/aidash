@@ -4,7 +4,7 @@
 use reinhardt::db::migrations::FieldType;
 use reinhardt::db::migrations::prelude::*;
 pub(super) fn migration() -> Migration {
-	Migration::new("0012_provider_credentials", "identity")
+	Migration::new("0013_provider_credentials", "identity")
 		.add_operation(Operation::CreateTable {
 			name: "provider_credential_bindings".to_string(),
 			columns: vec![
@@ -216,7 +216,7 @@ pub(super) fn migration() -> Migration {
 			interleave_in_parent: None,
 			partition: None,
 		})
-		.add_dependency("identity", "0011_home_human_requests_state")
+		.add_dependency("identity", "0012_gcip_sign_in")
 		.atomic(true)
 		.with_initial(None)
 		.state_only(false)

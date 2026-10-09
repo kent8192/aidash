@@ -1386,7 +1386,7 @@ async fn registry_migration_preserves_current_constraints_in_both_directions(
 	apply_asset(
 		tx.as_mut(),
 		&f.database.connection,
-		include_str!("../../../../migrations/knowledge/sql/backward/0027_provider_credentials.sql"),
+		include_str!("../../../../migrations/knowledge/sql/backward/0028_provider_credentials.sql"),
 	)
 	.await;
 	assert_eq!(
@@ -1396,7 +1396,7 @@ async fn registry_migration_preserves_current_constraints_in_both_directions(
 	apply_asset(
 		tx.as_mut(),
 		&f.database.connection,
-		include_str!("../../../../migrations/knowledge/sql/forward/0027_provider_credentials.sql"),
+		include_str!("../../../../migrations/knowledge/sql/forward/0028_provider_credentials.sql"),
 	)
 	.await;
 	assert_eq!(

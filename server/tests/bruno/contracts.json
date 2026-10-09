@@ -26489,5 +26489,23 @@
         }
       }
     }
+  },
+  {
+    "method": "GET",
+    "path": "/auth/gcip/transaction",
+    "name": "sessions-gcip-transaction",
+    "source": "server/src/apps/identity/views/sessions.rs",
+    "json": false,
+    "uuid_parameters": [],
+    "query_parameters": ["state"]
+  },
+  {
+    "method": "POST",
+    "path": "/auth/gcip/exchange",
+    "name": "sessions-gcip-exchange",
+    "source": "server/src/apps/identity/views/sessions.rs",
+    "json": true,
+    "uuid_parameters": [],
+    "query_parameters": []
   }
 ]

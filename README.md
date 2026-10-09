@@ -21,6 +21,11 @@ The `aidash` binary delegates to the same command registry and only preserves
 the existing executable name and default `serve` behavior. Existing
 `cargo run --locked -- serve`, `server`, and `worker` invocations remain valid.
 
+On Unix, `server` and `serve` can receive an owned listening socket through
+`AIDASH_LISTEN_FD`, validated against `AIDASH_LISTEN`. The
+[transaction process fixture](docs/operations/transaction-acceptance.md) uses
+this handover to keep its endpoints reserved across process restarts.
+
 | Package               | Responsibility                                                           |
 | --------------------- | ------------------------------------------------------------------------ |
 | `aidash-domain`       | Business models, typed state, and pure invariants.                       |
@@ -82,7 +87,7 @@ PostgreSQL password, recreate it with `cargo make k8s-down` followed by
 ### Docker Compose development
 
 Prerequisites: `cargo-make` and Docker Compose v2.24 or later. Rust 1.96
-and Node.js 22 run inside the development images. Start PostgreSQL, NATS,
+and Node.js 24.12.0 run inside the development images. Start PostgreSQL, NATS,
 the backend and Vite in detached mode:
 
 ```sh
@@ -100,9 +105,33 @@ and an HTTPS endpoint for a deployed node.
 
 The [authorization API](docs/authorization.md) issues revocable subject tokens for tenant-scoped workspaces, approved Registry discovery, local agent execution and event streams. Workers recheck the root and delegated agents at every durable boundary. The dashboard signs in with Google and requires an explicit mapping to an existing user subject or a separate operator grant. Its selected authority is local to each tab. Existing API Bearer credentials remain available. Operators use **Access policies / アクセス制御** to edit role/attribute policies, simulate decisions, approve registration requests, manage mappings and operator grants, and issue or revoke subject credentials. Scoped remote federation remains under implementation.
 
+### Aidash Cloud GCIP sign-in
+
+Cloud deployments can select GCIP as the sole dashboard issuer. `[dashboard.gcip]` and `[dashboard.oidc]` are mutually exclusive. Self-hosted OIDC stays optional and unchanged. Add this section to the selected server settings file:
+
+```toml
+[dashboard.gcip]
+project_id = "aidash-cloud-project"
+web_api_key = "PUBLIC_FIREBASE_WEB_API_KEY"
+public_origin = "https://develop.aidash.run"
+session_absolute_seconds = 43200
+session_idle_seconds = 1800
+password_sign_up = ["acme-pool-id"]
+
+[dashboard.gcip.tenant_bindings]
+acme-pool-id = "acme"
+
+[dashboard.gcip.providers]
+acme-pool-id = ["google.com", "password"]
+```
+
+The GCIP Tenant ID maps one-to-one to an Aidash Tenant name. Terraform supplies these IDs, provider choices and signup settings to the environment runtime secret. The runtime uses Application Default Credentials for tenant-scoped `accounts:lookup`; it never uses the public web API key as an administrative credential. See [GCIP infrastructure setup](infra/gcp/README.md#gcip-sign-in) and [authorization](docs/authorization.md#gcip-sign-in).
+
+`GET /auth/login?org=acme` creates a browser-bound ten-minute transaction and opens the lazy `/sign-in` page. Without `org`, the browser asks for the organization. The npm Firebase Auth SDK uses memory persistence, popup federation and an email/password form; signup waits for verified email. The backend verifies signed ID tokens and live Account Status, then exchanges them for the existing opaque HttpOnly Aidash session. GCIP tokens are discarded and are never put in browser storage. Registration approval, Mappings and Operator grants remain Aidash authority.
+
 ### Dashboard OIDC setup
 
-Aidash signs in directly with Google using OAuth 2.0 / OpenID Connect Authorization Code with PKCE. The backend verifies the ID token's signature, issuer, audience, expiry and nonce before creating an HttpOnly session; it never exposes Google tokens or the client secret to the browser. Identity is keyed by issuer and `sub`, never by email.
+Self-hosted Aidash can sign in directly with Google using OAuth 2.0 / OpenID Connect Authorization Code with PKCE. The backend verifies the ID token's signature, issuer, audience, expiry and nonce before creating an HttpOnly session; it never exposes Google tokens or the client secret to the browser. Identity is keyed by issuer and `sub`, never by email.
 
 1. In [Google Auth Platform](https://console.cloud.google.com/auth/overview), configure your application's branding and audience. Add permitted test users while the app is in testing.
 2. Create an OAuth client of type **Web application**. Register the exact authorized redirect URI `<origin>/auth/callback`, for example `http://127.0.0.1:5173/auth/callback` for Vite or `http://127.0.0.1:8080/auth/callback` for local Kubernetes.

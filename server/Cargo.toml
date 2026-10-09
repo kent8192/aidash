@@ -117,6 +117,10 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 cfg_aliases = "0.2"
 
 [dev-dependencies]
+jsonwebtoken = { version = "11.1", default-features = false, features = [
+  "aws_lc_rs",
+  "use_pem",
+] }
 tower = { version = "0.5", features = ["util"] }
 axum-test = "18.7"
 axum = { version = "0.8", features = ["json", "query", "macros"] }
@@ -353,6 +357,10 @@ path = "src/apps/registry/tests/provider_bindings.rs"
 [[test]]
 name = "marketplace_host_packages"
 path = "src/apps/marketplace/tests/host_packages.rs"
+
+[[test]]
+name = "gcip_sign_in"
+path = "src/apps/identity/tests/gcip_sign_in.rs"
 
 [[test]]
 name = "provider_credentials"
