@@ -298,8 +298,15 @@ pub(crate) async fn operate_staged(
 				_ => None,
 			};
 			return Ok(Outcome::Units(vec![
-				super::super::repositories::memory_decay::control(lease, &input.bank, *id, pinned)
-					.await?,
+				super::super::repositories::memory_decay::control(
+					lease,
+					&input.bank,
+					*id,
+					pinned,
+					input.operation_id,
+					&digest,
+				)
+				.await?,
 			]));
 		}
 		Action::Dormant => {
