@@ -235,6 +235,38 @@ impl MemoryScope for Scope<'_, '_> {
 		self.snapshot_mode(bank, limit, repository::ListMode::Dormant)
 			.await
 	}
+	async fn recall_including_dormant_snapshot(
+		&mut self,
+		bank: &Bank,
+		limit: usize,
+	) -> aidash_application::Result<Snapshot> {
+		let (mut units, dormant) = repository::recall_including_dormant(
+			self.lease,
+			bank,
+			limit,
+			self.models.policy.bounds.max_graph_visits,
+		)
+		.await?;
+		let embedding: EmbeddingConfig = serde_json::from_value(
+			self.models
+				.role(&self.models.policy.embedding, "embedding")?
+				.config
+				.clone(),
+		)?;
+		let mut graph =
+			super::memory_graph::current(self.lease, &units, &self.models.policy, &embedding)
+				.await?;
+		graph.extend(
+			super::memory_graph::current(self.lease, &dormant, &self.models.policy, &embedding)
+				.await?,
+		);
+		units.extend(dormant);
+		Ok(Snapshot {
+			units,
+			graph,
+			authority_revision: self.stamp(bank).await?,
+		})
+	}
 	async fn retention_scores(
 		&mut self,
 		bank: &Bank,

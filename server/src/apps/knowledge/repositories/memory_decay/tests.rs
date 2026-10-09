@@ -615,6 +615,28 @@ async fn default_and_dormant_snapshots_have_separate_fail_closed_bounds_and_disa
 		repository::list(&mut lease, &bank, 1, bounds.max_graph_visits).await,
 		Err(Error::Conflict(_))
 	));
+	assert!(matches!(
+		repository::recall_including_dormant(&mut lease, &bank, 1, bounds.max_graph_visits).await,
+		Err(Error::Conflict(_))
+	));
+	let (inclusive_active, inclusive_dormant) =
+		repository::recall_including_dormant(&mut lease, &bank, 2, bounds.max_graph_visits)
+			.await
+			.unwrap();
+	assert_eq!(
+		inclusive_active
+			.iter()
+			.map(|unit| unit.id)
+			.collect::<Vec<_>>(),
+		vec![ids[2]]
+	);
+	assert_eq!(
+		inclusive_dormant
+			.iter()
+			.map(|unit| unit.id)
+			.collect::<Vec<_>>(),
+		ids[..2]
+	);
 	lease.finish(Ok(())).await.unwrap();
 	let mut disabled = registry.get("p", "1.0.0").await.unwrap();
 	disabled.id = "disabled".into();
@@ -1102,5 +1124,172 @@ async fn batch_scores_preserve_exact_live_support_dormancy_and_missing_usage_row
 	.unwrap();
 	assert_eq!(scores.len(), 2);
 	assert!(scores.values().all(|score| *score == 1.0));
+	lease.finish(Ok(())).await.unwrap();
+}
+
+#[rstest]
+#[tokio::test]
+async fn inclusive_snapshot_keeps_both_units_when_retention_changes_during_hydration(
+	#[future] database: DatabaseFixture,
+	bounds: Bounds,
+) {
+	use reinhardt::query::{ColumnRef, Func, LockType};
+	let database = database.await;
+	let d = Decay {
+		half_life_days: 1,
+		prior_floor_millionths: 0,
+		dormancy: Some(Dormancy {
+			threshold_millionths: 500_000,
+			interval_hours: 1,
+			batch: 1,
+			include_preferences: true,
+			include_procedures: true,
+		}),
+	};
+	let (store, _, workspace) = setup_endpoint_decay(
+		&database,
+		bounds.clone(),
+		"http://127.0.0.1:9/v1",
+		(false, false, false),
+		None,
+		Some(d),
+	)
+	.await;
+	let bank = memory::create_participant(
+		&store,
+		&Actor::Operator,
+		workspace,
+		memory::CreateParticipant {
+			agent: reference("a"),
+		},
+	)
+	.await
+	.unwrap()
+	.bank;
+	let ids = [Uuid::now_v7(), Uuid::now_v7()];
+	let mut admitted = Vec::new();
+	for id in ids {
+		admitted.push(
+			memory::mutate(
+				&store,
+				&Actor::Operator,
+				mutation(
+					&bank,
+					Change::Add {
+						id,
+						content: content("Atomic inclusive membership"),
+					},
+				),
+			)
+			.await
+			.unwrap()
+			.remove(0),
+		);
+	}
+	let mut setup = Lease::begin(&store, &Actor::Operator).await.unwrap();
+	let bank_id = repository::bank_id(&mut setup, &bank, false)
+		.await
+		.unwrap()
+		.unwrap();
+	for id in ids {
+		super::ensure(&mut setup, bank_id, id).await.unwrap();
+	}
+	native::query(
+		&Query::update()
+			.table(Alias::new("memory_unit_retention"))
+			.value(Alias::new("dormant_policy"), json!(reference("p")))
+			.and_where(Expr::col("unit_id").eq(Expr::value(ids[1])))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(&mut **setup.tx())
+	.await
+	.unwrap();
+	setup.finish(Ok(())).await.unwrap();
+
+	// Hold canonical hydration after the membership statement has completed.
+	let mut writer = native::begin(&store.pool).await.unwrap();
+	for id in ids {
+		native::query(
+			&Query::select()
+				.column(Alias::new("id"))
+				.from(Alias::new("memory_units"))
+				.and_where(Expr::col("id").eq(Expr::value(id)))
+				.lock(LockType::Update)
+				.to_string(PostgresQueryBuilder),
+		)
+		.fetch_one(&mut *writer)
+		.await
+		.unwrap();
+	}
+	let (send, receive) = tokio::sync::oneshot::channel();
+	let max_graph_visits = bounds.max_graph_visits;
+	let reader = async {
+		let mut lease = Lease::begin(&store, &Actor::Operator).await.unwrap();
+		let pid: i32 = native::query_scalar(
+			&Query::select()
+				.expr(Func::cust(Alias::new("pg_backend_pid")))
+				.to_string(PostgresQueryBuilder),
+		)
+		.scalar_one(&mut **lease.tx())
+		.await
+		.unwrap();
+		send.send(pid).unwrap();
+		let result =
+			repository::recall_including_dormant(&mut lease, &bank, 1, max_graph_visits).await;
+		lease.finish(result).await.unwrap()
+	};
+	let mutation = async {
+		let pid = receive.await.unwrap();
+		tokio::time::timeout(std::time::Duration::from_secs(30), async {
+			loop {
+				let row = native::query(
+					&Query::select()
+						.column(ColumnRef::Asterisk)
+						.from(Alias::new("pg_stat_activity"))
+						.and_where(Expr::col("pid").eq(pid))
+						.to_string(PostgresQueryBuilder),
+				)
+				.fetch_one(&store.pool)
+				.await
+				.unwrap();
+				if row
+					.try_get::<Option<String>>("wait_event_type")
+					.unwrap()
+					.as_deref() == Some("Lock")
+				{
+					break;
+				}
+				tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+			}
+		})
+		.await
+		.expect("reader must reach the held Unit hydration lock");
+		for (id, dormant) in [(ids[0], true), (ids[1], false)] {
+			native::query(
+				&Query::update()
+					.table(Alias::new("memory_unit_retention"))
+					.value(
+						Alias::new("dormant_policy"),
+						dormant.then(|| json!(reference("p"))),
+					)
+					.and_where(Expr::col("unit_id").eq(Expr::value(id)))
+					.to_string(PostgresQueryBuilder),
+			)
+			.execute(&mut *writer)
+			.await
+			.unwrap();
+		}
+		writer.commit().await.unwrap();
+	};
+	let ((active, dormant), ()) = tokio::join!(reader, mutation);
+	assert_eq!(active, vec![admitted[0].clone()]);
+	assert_eq!(dormant, vec![admitted[1].clone()]);
+	let mut lease = Lease::begin(&store, &Actor::Operator).await.unwrap();
+	let (active, dormant) =
+		repository::recall_including_dormant(&mut lease, &bank, 1, max_graph_visits)
+			.await
+			.unwrap();
+	assert_eq!(active, vec![admitted[1].clone()]);
+	assert_eq!(dormant, vec![admitted[0].clone()]);
 	lease.finish(Ok(())).await.unwrap();
 }
