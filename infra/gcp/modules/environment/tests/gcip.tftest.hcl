@@ -21,8 +21,8 @@ run "password_and_sso_tenants_are_separate" {
     gcip_idp_secrets = { "password/google.com" = "fixture-google", "sso/oidc.company" = "fixture-oidc" }
   }
   assert {
-    condition     = google_identity_platform_tenant.aidash["password"].allow_password_signup && !google_identity_platform_tenant.aidash["sso"].allow_password_signup && google_identity_platform_tenant.aidash["sso"].client[0].permissions[0].disabled_user_signup
-    error_message = "Password signup is per pool and must be disabled for SSO pools."
+    condition     = google_identity_platform_tenant.aidash["password"].allow_password_signup && !google_identity_platform_tenant.aidash["sso"].allow_password_signup && !google_identity_platform_tenant.aidash["sso"].client[0].permissions[0].disabled_user_signup && !google_identity_platform_tenant.aidash["password"].client[0].permissions[0].disabled_user_signup
+    error_message = "SSO pools must disable passwords while allowing federated first sign-in to create an account."
   }
   assert {
     condition     = length(google_identity_platform_tenant_default_supported_idp_config.google) == 1 && length(google_identity_platform_tenant_oauth_idp_config.oidc) == 1 && length(google_identity_platform_tenant_inbound_saml_config.saml) == 1

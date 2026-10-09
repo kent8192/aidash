@@ -9,7 +9,8 @@ resource "google_identity_platform_tenant" "aidash" {
   display_name          = "${local.name}-${each.key}"
   allow_password_signup = each.value.password_sign_up
   client {
-    permissions { disabled_user_signup = !each.value.password_sign_up }
+    # Federated first sign-in must create its tenant account even when passwords are disabled.
+    permissions { disabled_user_signup = false }
   }
   deletion_policy = "DELETE"
 }

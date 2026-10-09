@@ -390,7 +390,9 @@ def provision_secret(config, output, kind):
     versions = json.loads(run("gcloud", "secrets", "versions", "list", secret,
         "--project", config["project_id"], "--filter=state=ENABLED", "--format=json(name)"))
     if versions:
-        raw = run("gcloud", "secrets", "versions", "access", "latest", "--secret", secret, "--project", config["project_id"])
+        # Version IDs increase with creation; latest can point at a disabled rollback version.
+        version = max(int(item["name"].rsplit("/", 1)[-1]) for item in versions)
+        raw = run("gcloud", "secrets", "versions", "access", str(version), "--secret", secret, "--project", config["project_id"])
     else:
         raw = os.environ.get("AIDASH_RUNTIME_" + kind.upper())
         if not raw:

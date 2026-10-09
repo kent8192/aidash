@@ -154,7 +154,7 @@ class RuntimeConfigTests(unittest.TestCase):
         def command(*args, **kwargs):
             calls.append((args, kwargs))
             if "list" in args:
-                return b'[{"name":"version"}]'
+                return b'[{"name":"projects/aidash-fixture/secrets/runtime/versions/1"}]'
             if "access" in args:
                 return json.dumps(raw).encode()
             return b""
@@ -194,7 +194,7 @@ class RuntimeConfigTests(unittest.TestCase):
         with patch(
             "controller.run",
             side_effect=[
-                b'[{"name":"v"}]',
+                b'[{"name":"projects/aidash-fixture/secrets/runtime/versions/1"}]',
                 b'{"dashboard":{"oidc":{"issuer":"issuer"}}}',
             ],
         ):
@@ -202,3 +202,53 @@ class RuntimeConfigTests(unittest.TestCase):
                 controller.provision_secret(
                     {"project_id": "aidash-fixture"}, OUTPUT, "test"
                 )
+
+    def test_refresh_uses_newest_enabled_version_after_a_rollback(self):
+        versions = [
+            {
+                "name": f"projects/aidash-fixture/secrets/runtime/versions/{number}",
+                "state": state,
+            }
+            for number, state in [
+                (9, "ENABLED"),
+                (12, "DESTROYED"),
+                (10, "ENABLED"),
+                (11, "DISABLED"),
+            ]
+        ]
+        raw = {
+            "node": {"api_token": "private"},
+            "dashboard": {"gcip": {"web_api_key": "public"}},
+        }
+        published = []
+        accessed = []
+
+        def command(*args, **kwargs):
+            if "list" in args:
+                self.assertIn("--filter=state=ENABLED", args)
+                return json.dumps(
+                    [
+                        {"name": item["name"]}
+                        for item in versions
+                        if item["state"] == "ENABLED"
+                    ]
+                ).encode()
+            if "access" in args:
+                version = args[args.index("access") + 1]
+                self.assertEqual(version, "10")
+                accessed.append(version)
+                return json.dumps(raw).encode()
+            if "add" in args:
+                published.append(json.loads(kwargs["data"]))
+            return b""
+
+        with patch("controller.run", side_effect=command):
+            controller.provision_secret(
+                {"project_id": "aidash-fixture"}, OUTPUT, "test"
+            )
+        self.assertEqual(accessed, ["10"])
+        self.assertEqual(len(published), 1)
+        self.assertEqual(published[0]["node"]["api_token"], "private")
+        self.assertEqual(
+            published[0]["dashboard"]["gcip"]["tenant_bindings"], {"pool-a": "acme"}
+        )
