@@ -52,6 +52,35 @@ impl Scope<'_, '_> {
 			self.lease.saved()?,
 		))?)
 	}
+	async fn snapshot_mode(
+		&mut self,
+		bank: &Bank,
+		limit: usize,
+		mode: repository::ListMode,
+	) -> aidash_application::Result<Snapshot> {
+		let units = repository::list_mode(
+			self.lease,
+			bank,
+			limit,
+			self.models.policy.bounds.max_graph_visits,
+			mode,
+		)
+		.await?;
+		let embedding: EmbeddingConfig = serde_json::from_value(
+			self.models
+				.role(&self.models.policy.embedding, "embedding")?
+				.config
+				.clone(),
+		)?;
+		let graph =
+			super::memory_graph::current(self.lease, &units, &self.models.policy, &embedding)
+				.await?;
+		Ok(Snapshot {
+			units,
+			graph,
+			authority_revision: self.stamp(bank).await?,
+		})
+	}
 	async fn search(
 		&mut self,
 		bank: &Bank,
@@ -187,27 +216,55 @@ impl MemoryScope for Scope<'_, '_> {
 		bank: &Bank,
 		limit: usize,
 	) -> aidash_application::Result<Snapshot> {
-		let units = repository::list(
+		self.snapshot_mode(bank, limit, repository::ListMode::All)
+			.await
+	}
+	async fn recall_snapshot(
+		&mut self,
+		bank: &Bank,
+		limit: usize,
+	) -> aidash_application::Result<Snapshot> {
+		self.snapshot_mode(bank, limit, repository::ListMode::Recall)
+			.await
+	}
+	async fn dormant_snapshot(
+		&mut self,
+		bank: &Bank,
+		limit: usize,
+	) -> aidash_application::Result<Snapshot> {
+		self.snapshot_mode(bank, limit, repository::ListMode::Dormant)
+			.await
+	}
+	async fn retention_scores(
+		&mut self,
+		bank: &Bank,
+		units: &[Unit],
+	) -> aidash_application::Result<std::collections::BTreeMap<Uuid, f64>> {
+		super::memory_decay::scores(
 			self.lease,
 			bank,
-			limit,
-			self.models.policy.bounds.max_graph_visits,
-		)
-		.await?;
-		let embedding: EmbeddingConfig = serde_json::from_value(
-			self.models
-				.role(&self.models.policy.embedding, "embedding")?
-				.config
-				.clone(),
-		)?;
-		let graph =
-			super::memory_graph::current(self.lease, &units, &self.models.policy, &embedding)
-				.await?;
-		Ok(Snapshot {
+			&self.models.policy,
 			units,
-			graph,
-			authority_revision: self.stamp(bank).await?,
-		})
+			chrono::Utc::now(),
+		)
+		.await
+		.map_err(Into::into)
+	}
+
+	async fn reactivate_support(
+		&mut self,
+		bank: &Bank,
+		units: &[Unit],
+	) -> aidash_application::Result<()> {
+		let mut ordered: Vec<_> = units.iter().collect();
+		ordered.sort_by_key(|unit| unit.id);
+		for unit in ordered {
+			if unit.bank != *bank {
+				return Err(aidash_application::Error::Forbidden);
+			}
+			super::memory_decay::reactivate(self.lease, unit.id).await?;
+		}
+		Ok(())
 	}
 	async fn current(
 		&mut self,

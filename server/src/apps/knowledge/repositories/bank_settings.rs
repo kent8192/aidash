@@ -264,6 +264,7 @@ pub(crate) async fn set(
 	)
 	.execute(&mut **lease.tx())
 	.await?;
+	super::memory_decay::configure(lease, id, provider, &policy).await?;
 	Ok(Settings {
 		provider: provider.clone(),
 		revision,

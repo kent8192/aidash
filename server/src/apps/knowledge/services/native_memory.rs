@@ -60,6 +60,19 @@ pub struct Operation {
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Action {
+	Pin {
+		id: Uuid,
+	},
+	Unpin {
+		id: Uuid,
+	},
+	Reactivate {
+		id: Uuid,
+	},
+	Dormant,
+	RecallIncludingDormant {
+		query: RecallQuery,
+	},
 	Recall {
 		query: RecallQuery,
 	},
@@ -127,6 +140,9 @@ pub enum Outcome {
 impl Action {
 	fn permission(&self) -> &'static str {
 		match self {
+			Self::Pin { .. } | Self::Unpin { .. } => "memory.pin",
+			Self::Reactivate { .. } => "memory.reactivate",
+			Self::Dormant | Self::RecallIncludingDormant { .. } => "memory.read_dormant",
 			Self::Recall { .. } => "memory.read",
 			Self::Reflect { .. } => "memory.reflect",
 			Self::Retain { .. } => "memory.write",
@@ -148,6 +164,8 @@ impl Action {
 		!matches!(
 			self,
 			Self::Recall { .. }
+				| Self::Dormant
+				| Self::RecallIncludingDormant { .. }
 				| Self::Reflect { .. }
 				| Self::Candidates
 				| Self::Settings
@@ -176,6 +194,12 @@ pub async fn operate(store: &Store, actor: &Actor, input: Operation) -> Result<O
 	// can reference it. No source knowledge is admitted by this initialization.
 	let mut initialization = Lease::begin(store, actor).await?;
 	let initialized = async {
+		if matches!(
+			input.action,
+			Action::Pin { .. } | Action::Unpin { .. } | Action::Reactivate { .. }
+		) {
+			super::super::repositories::candidates::human(&mut initialization)?;
+		}
 		repository::lock_workspace(&mut initialization, input.bank.workspace, true).await?;
 		scope(
 			store,
@@ -224,6 +248,13 @@ pub(crate) async fn operate_in(
 		&& !delivered.is_empty()
 	{
 		super::super::repositories::memory_reads::record(lease, run, &delivered).await?;
+	} else if run.is_none() {
+		// Direct local API Deliveries have no Run journal and therefore no Usage
+		// count, but still reactivate successfully delivered Dormant Units.
+		delivered.sort_by_key(|unit| unit.id);
+		for unit in &delivered {
+			super::super::repositories::memory_decay::reactivate(lease, unit.id).await?;
+		}
 	}
 	Ok(outcome)
 }
@@ -260,6 +291,29 @@ pub(crate) async fn operate_staged(
 		Ok(())
 	};
 	match &input.action {
+		Action::Pin { id } | Action::Unpin { id } | Action::Reactivate { id } => {
+			let pinned = match input.action {
+				Action::Pin { .. } => Some(true),
+				Action::Unpin { .. } => Some(false),
+				_ => None,
+			};
+			return Ok(Outcome::Units(vec![
+				super::super::repositories::memory_decay::control(lease, &input.bank, *id, pinned)
+					.await?,
+			]));
+		}
+		Action::Dormant => {
+			return Ok(Outcome::Units(
+				repository::list_mode(
+					lease,
+					&input.bank,
+					policy.bounds.max_units,
+					policy.bounds.max_graph_visits,
+					repository::ListMode::Dormant,
+				)
+				.await?,
+			));
+		}
 		Action::ConfigureBank { expected_revision } => {
 			candidates::human(lease)?;
 			// Private policies follow the explicit Agent version upgrade; shared
@@ -405,6 +459,11 @@ pub(crate) async fn operate_staged(
 		delivered,
 	};
 	match &input.action {
+		Action::RecallIncludingDormant { query } => Ok(Outcome::Recall(
+			engine
+				.recall_including_dormant(&mut authority, &input.bank, query)
+				.await?,
+		)),
 		Action::Recall { query } => Ok(Outcome::Recall(
 			engine.recall(&mut authority, &input.bank, query).await?,
 		)),

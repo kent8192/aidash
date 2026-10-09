@@ -4,6 +4,7 @@ pub(crate) mod bindings;
 pub(crate) mod candidates;
 pub(crate) mod discard;
 pub(crate) mod indexing;
+pub(crate) mod memory_decay;
 pub(crate) mod memory_graph;
 pub(crate) mod memory_reads;
 pub(crate) mod memory_scope;
