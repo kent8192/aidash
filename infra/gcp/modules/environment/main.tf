@@ -143,11 +143,10 @@ resource "google_compute_instance" "host" {
     enable_vtpm                 = true
     enable_integrity_monitoring = true
   }
-  metadata = {
-    aidash-provider-credentials = jsonencode(local.provider_credentials)
-    enable-oslogin              = "TRUE"
-    block-project-ssh-keys      = "TRUE"
-    serial-port-enable          = "FALSE"
+  metadata = merge({
+    enable-oslogin         = "TRUE"
+    block-project-ssh-keys = "TRUE"
+    serial-port-enable     = "FALSE"
     startup-script = templatefile("${path.module}/startup.sh.tftpl", {
       project  = var.project_id
       bucket   = var.release_bucket
@@ -157,7 +156,9 @@ resource "google_compute_instance" "host" {
       secret   = google_secret_manager_secret.runtime.secret_id
       preview  = var.environment.kind == "pr"
     })
-  }
+    }, local.provider_credentials != null ? {
+    aidash-provider-credentials = jsonencode(local.provider_credentials)
+  } : {})
   depends_on = [
     google_service_account_iam_member.deploy, google_storage_bucket_iam_member.bundle,
     google_artifact_registry_repository_iam_member.pull, google_secret_manager_secret_iam_member.runtime,
@@ -177,7 +178,7 @@ output "instance" { value = local.name }
 output "zone" { value = local.zone }
 output "hostname" { value = var.hostname }
 locals {
-  provider_credentials = var.broker != null && var.byok_project_id != "" ? {
+  provider_credentials = var.byok_project_id != "" ? {
     store = {
       byok_project_id = var.byok_project_id
       environment_id  = var.environment_id

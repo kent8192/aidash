@@ -14,10 +14,14 @@
 //!
 //! Settings are merged with the following priority (highest to lowest):
 //! 1. Environment variables with `REINHARDT_` prefix
-//! 2. Non-secret managed Provider Credential settings, when configured
+//! 2. Managed non-secret Provider Credential JSON, when configured
 //! 3. Environment-specific TOML file (e.g., `production.toml`)
 //! 4. Base TOML file (`base.toml`)
 //! 5. Default values
+//!
+//! GCP startup supplies `AIDASH_PROVIDER_CREDENTIAL_SETTINGS` as the path to a
+//! read-only descriptor file containing only the Provider Credential section.
+//! The fingerprint key stays in its referenced environment variable.
 //!
 //! ## Environment Selection
 //!
@@ -286,6 +290,75 @@ mod tests {
 				.unwrap();
 		assert!(scoped.has_path(&["provider_credentials", "broker"]));
 		assert!(scoped.has_path(&["dashboard", "oidc"]));
+	}
+
+	#[rstest::rstest]
+	#[case::enabled(true)]
+	#[case::disabled(false)]
+	fn managed_provider_store_settings_are_loaded_without_secret_material(#[case] enabled: bool) {
+		let directory = tempfile::tempdir().unwrap();
+		let source = include_str!("../../settings/base.example.toml")
+			.replace(
+				"[core]\n",
+				"[core]\nsecret_key = 'isolated-settings-test-secret-0123456789'\n",
+			)
+			.replace(
+				"[node]\n",
+				"[node]\napi_token = 'isolated-settings-test-operator-0123456789'\n",
+			);
+		std::fs::write(directory.path().join("base.toml"), source).unwrap();
+		let path = directory.path().join("settings.json");
+		let store = enabled.then(|| {
+			serde_json::json!({
+				"byok_project_id":"aidash-byok-fixture","environment_id":"pr-42",
+				"fingerprint_env":"AIDASH_SECRET_PROVIDER_FINGERPRINT"
+			})
+		});
+		std::fs::write(
+			&path,
+			serde_json::to_vec(
+				&serde_json::json!({"provider_credentials":{"store":store,"broker":null}}),
+			)
+			.unwrap(),
+		)
+		.unwrap();
+		let resolved =
+			managed_settings_builder("local", directory.path(), directory.path(), Some(&path))
+				.build_pending_composed::<ProjectSettings>()
+				.unwrap()
+				.resolve()
+				.unwrap();
+		let config = &resolved.settings().provider_credentials.store;
+		if enabled {
+			let config = config.as_ref().unwrap();
+			assert_eq!(config.byok_project_id, "aidash-byok-fixture");
+			assert_eq!(config.environment_id, "pr-42");
+			assert_eq!(config.fingerprint_env, "AIDASH_SECRET_PROVIDER_FINGERPRINT");
+			assert_eq!(config.max_per_tenant, 20);
+		} else {
+			assert!(config.is_none());
+		}
+	}
+
+	#[rstest::rstest]
+	fn managed_provider_settings_reject_other_sections_and_missing_sources() {
+		let directory = tempfile::tempdir().unwrap();
+		let path = directory.path().join("settings.json");
+		assert!(
+			managed_settings_builder("local", directory.path(), directory.path(), Some(&path))
+				.build_scoped()
+				.is_err()
+		);
+		std::fs::write(
+			&path,
+			r#"{"provider_credentials":{"store":null},"core":{"secret_key":"forbidden"}}"#,
+		)
+		.unwrap();
+		assert!(
+			managed_settings_builder("local", directory.path(), directory.path(), Some(&path))
+				.build_scoped()
+				.is_err()
+		);
 	}
 
 	#[rstest::rstest]

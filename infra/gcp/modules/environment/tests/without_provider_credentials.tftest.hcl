@@ -31,6 +31,7 @@ run "legacy_environment_has_no_byok_grants" {
       length(google_project_iam_member.provider_credential_create) == 0 &&
       length(google_project_iam_member.provider_credential_manage) == 0 &&
       output.byok_project_id == "" && output.secret_prefix == "" &&
+      !contains(keys(google_compute_instance.host[0].metadata), "aidash-provider-credentials") &&
       google_compute_disk.data.size == 20
     )
     error_message = "Omitting BYOK must preserve retained infrastructure without project lookups or IAM grants."

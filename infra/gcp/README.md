@@ -348,6 +348,18 @@ number. Runtime identities have no BYOK payload access or IAM-setting permission
 The shared project's existing per-secret runtime configuration read remains in
 place for host startup.
 
+BYOK-enabled VM metadata supplies the non-secret Store descriptor through
+`aidash-provider-credentials`. Host startup mounts a descriptor-only JSON source
+read-only into migrations and the app; Reinhardt loads it via
+`AIDASH_PROVIDER_CREDENTIAL_SETTINGS`. The runtime configuration secret must also
+include a stable independent `AIDASH_SECRET_PROVIDER_FINGERPRINT` of at least 32
+bytes. Startup refuses a missing or short key; deployments never regenerate it.
+Keep that key unchanged across upgrades and restarts. It stays in restrictive
+`app.env`, never in VM metadata or the public descriptor. Disabled BYOK omits the
+metadata attribute, renders no Store, and needs no fingerprint key. Store-only
+environments use a null broker descriptor; enabled brokers add their non-secret
+endpoint, issuer, audience and signing-key version to the same settings source.
+
 The deploy identity's BYOK role contains only `resourcemanager.projects.get`,
 `getIamPolicy` and `setIamPolicy`. Its binding uses exactly
 `api.getAttribute('iam.googleapis.com/modifiedGrantsByRole', []).hasOnly(['projects/<byok>/roles/aidashByokCreate', 'projects/<byok>/roles/aidashByokManage'])`.
