@@ -28,6 +28,8 @@ pub fn bound_tenant<'a>(
 pub struct SignIn {
 	pub subject: String,
 	pub gcip_tenant: Option<String>,
+	/// The sign-in method from a verified GCIP token, independent of UI choices.
+	pub gcip_provider: Option<String>,
 	pub auth_time: DateTime<Utc>,
 	pub verified_email: Option<String>,
 	pub display_name: Option<String>,

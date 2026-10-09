@@ -301,6 +301,7 @@ pub async fn exchange_identity(
 		aidash_domain::identity::dashboard::SignIn {
 			subject,
 			gcip_tenant: None,
+			gcip_provider: None,
 			auth_time: chrono::Utc::now(),
 			verified_email,
 			display_name,
@@ -366,6 +367,7 @@ async fn exchange_google_identity(
 		aidash_domain::identity::dashboard::SignIn {
 			subject: claims.sub,
 			gcip_tenant: None,
+			gcip_provider: None,
 			auth_time: chrono::Utc::now(),
 			verified_email: claims
 				.email

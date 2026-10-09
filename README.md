@@ -82,7 +82,7 @@ PostgreSQL password, recreate it with `cargo make k8s-down` followed by
 ### Docker Compose development
 
 Prerequisites: `cargo-make` and Docker Compose v2.24 or later. Rust 1.96
-and Node.js 22 run inside the development images. Start PostgreSQL, NATS,
+and Node.js 24.12.0 run inside the development images. Start PostgreSQL, NATS,
 the backend and Vite in detached mode:
 
 ```sh

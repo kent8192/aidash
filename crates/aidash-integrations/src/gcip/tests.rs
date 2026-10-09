@@ -36,6 +36,7 @@ fn claims() -> Value {
 #[case::future_authentication("auth_time", json!(9_000_000_000_i64))]
 #[case::unverified_password("email_verified", json!(false))]
 #[case::missing_authentication("auth_time", Value::Null)]
+#[case::missing_provider("firebase", json!({"tenant":"pool-a"}))]
 #[case::empty_uid("sub", json!(""))]
 #[tokio::test]
 async fn signed_tokens_with_invalid_claims_are_rejected(#[case] field: &str, #[case] value: Value) {
@@ -59,6 +60,7 @@ async fn signed_token_is_scoped_to_transaction_tenant_and_ignores_authority_clai
 	let token = token(&claims());
 	let sign_in = verifier.verify(&token, "pool-a", Utc::now()).await.unwrap();
 	assert_eq!(sign_in.gcip_tenant.as_deref(), Some("pool-a"));
+	assert_eq!(sign_in.gcip_provider.as_deref(), Some("password"));
 	assert_eq!(sign_in.subject, "person");
 	assert_eq!(
 		sign_in.verified_email.as_deref(),

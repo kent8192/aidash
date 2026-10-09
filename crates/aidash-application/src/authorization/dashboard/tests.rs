@@ -26,6 +26,7 @@ struct Scope {
 	configured: bool,
 	google: bool,
 	tenant_bindings: Option<std::collections::BTreeMap<String, String>>,
+	gcip_providers: std::collections::BTreeMap<String, Vec<String>>,
 	result: ProviderResult,
 	newer_validity: bool,
 	delay_seconds: i64,
@@ -56,6 +57,7 @@ fn scope() -> Scope {
 		configured: true,
 		google: false,
 		tenant_bindings: None,
+		gcip_providers: Default::default(),
 		result: ProviderResult::Enabled,
 		newer_validity: false,
 		delay_seconds: 0,
@@ -97,6 +99,7 @@ impl Accounts for Scope {
 			issuer: "issuer".into(),
 			google: self.google,
 			tenant_bindings: self.tenant_bindings.clone(),
+			gcip_providers: self.gcip_providers.clone(),
 		})
 	}
 	fn now(&self) -> DateTime<Utc> {
@@ -330,11 +333,33 @@ impl crate::ports::authorization::dashboard::LoginAccounts for ExistingLogin {
 
 #[rstest]
 #[tokio::test]
+async fn gcip_login_rejects_a_signed_provider_outside_the_pool_allowlist(mut scope: Scope) {
+	scope.tenant_bindings = Some([("pool-a".into(), "acme".into())].into());
+	scope.gcip_providers = [("pool-a".into(), vec!["google.com".into()])].into();
+	scope.state.lock().unwrap().account.gcip_tenant = Some("pool-a".into());
+	let sign_in = SignIn {
+		gcip_tenant: Some("pool-a".into()),
+		gcip_provider: Some("password".into()),
+		..sign_in()
+	};
+	let mut login = ExistingLogin(scope.state.clone());
+	assert!(matches!(
+		authority(Arc::new(scope.clone()))
+			.admit_login(&mut login, &sign_in)
+			.await,
+		Err(Error::Forbidden)
+	));
+	assert!(scope.state.lock().unwrap().trace.is_empty());
+}
+
+#[rstest]
+#[tokio::test]
 async fn removed_binding_login_persists_disable_across_binding_restoration(mut scope: Scope) {
 	scope.tenant_bindings = Some(Default::default());
 	scope.state.lock().unwrap().account.gcip_tenant = Some("pool-a".into());
 	let sign_in = SignIn {
 		gcip_tenant: Some("pool-a".into()),
+		gcip_provider: Some("oidc.company".into()),
 		..sign_in()
 	};
 	let mut login = ExistingLogin(scope.state.clone());
@@ -350,6 +375,7 @@ async fn removed_binding_login_persists_disable_across_binding_restoration(mut s
 		assert_eq!(state.trace, ["find", "disable-current", "mark-disabled"]);
 	}
 	scope.tenant_bindings = Some([("pool-a".into(), "acme".into())].into());
+	scope.gcip_providers = [("pool-a".into(), vec!["oidc.company".into()])].into();
 	assert!(matches!(
 		authority(Arc::new(scope))
 			.admit_login(&mut login, &sign_in)
@@ -442,6 +468,7 @@ fn sign_in() -> SignIn {
 	SignIn {
 		subject: "subject".into(),
 		gcip_tenant: None,
+		gcip_provider: None,
 		auth_time: DateTime::from_timestamp(1_800_000_000, 0).unwrap(),
 		verified_email: None,
 		display_name: None,
@@ -525,6 +552,7 @@ fn mapping_requires_the_exact_bound_tenant(
 		issuer: "issuer".into(),
 		google: false,
 		tenant_bindings: Some([("pool-a".into(), "acme".into())].into()),
+		gcip_providers: Default::default(),
 	};
 	assert_eq!(
 		policy.require_mapping("issuer", Some(pool), tenant).is_ok(),

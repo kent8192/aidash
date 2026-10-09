@@ -37,6 +37,7 @@ impl Config {
 					issuer: gcip.issuer(),
 					google: false,
 					tenant_bindings: Some(gcip.tenant_bindings.clone()),
+					gcip_providers: gcip.providers.clone(),
 				},
 			)
 			.or_else(|| {
@@ -45,6 +46,7 @@ impl Config {
 						issuer: oidc.issuer.clone(),
 						google: oidc.is_google(),
 						tenant_bindings: None,
+						gcip_providers: Default::default(),
 					}
 				})
 			})

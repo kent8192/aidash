@@ -120,6 +120,8 @@ class ReconcileTests(unittest.TestCase):
         self.calls.append((action, output["instance"]))
         if action.startswith("seal"):
             return {"sealed": not self.busy}
+        if action == "quiesce":
+            return {"quiesced": True}
         if action == "health":
             return {"source_sha": self.cloud.managed[output["instance"]]["release_sha"]}
         return dict(
@@ -188,7 +190,7 @@ class ReconcileTests(unittest.TestCase):
             # Every published host must be fenced before the shared input is
             # applied, including one processed later in the environment loop.
             for identity in ("pr-1", "develop"):
-                self.assertIn(("gate", identity), self.calls)
+                self.assertIn(("quiesce", identity), self.calls)
             original_apply(*args, **kwargs)
             self.cloud.gcip = {
                 "tenant_ids": ["pool"] if config["gcip_tenants"] else [],
@@ -261,6 +263,9 @@ class ReconcileTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "Reconciliation incomplete"):
                 controller.reconcile(config, self.store)
         self.assertNotIn(("unseal", "test"), self.calls)
+        failed_host_calls = [call for call in self.calls if call[1] == "test"]
+        self.assertEqual(failed_host_calls[-1], ("quiesce", "test"))
+        self.assertEqual(failed_host_calls.count(("quiesce", "test")), 2)
         self.assertIn(("unseal", "pr-1"), self.calls)
         self.assertTrue(self.store.state["environments"]["test"]["gcip_pending"])
         self.assertFalse(self.store.state["environments"]["pr-1"]["gcip_pending"])
@@ -269,6 +274,25 @@ class ReconcileTests(unittest.TestCase):
         self.assertIn(("bootstrap", "test", False), self.calls)
         self.assertNotIn(("bootstrap", "pr-1", False), self.calls)
         self.assertFalse(self.store.state["environments"]["test"]["gcip_pending"])
+
+    def test_unconfirmed_gcip_quiescence_aborts_before_shared_apply(self):
+        self.request()
+        self.reconcile()
+        config = dict(CONFIG, gcip_tenants={"company": {"tenant": "new"}})
+        plans = len(self.cloud.plans)
+        original = self.host
+
+        def unconfirmed(config, output, action, force=False):
+            if action == "quiesce":
+                self.calls.append((action, output["instance"]))
+                return {"quiesced": False}
+            return original(config, output, action, force)
+
+        with patch.object(controller, "host", unconfirmed):
+            with self.assertRaisesRegex(controller.Refused, "quiescence was not confirmed"):
+                controller.reconcile(config, self.store)
+        self.assertEqual(len(self.cloud.plans), plans)
+        self.assertTrue(self.store.state["environments"]["test"]["gcip_pending"])
 
     def test_failed_gcip_refresh_does_not_block_closed_pr_retirement(self):
         self.request()

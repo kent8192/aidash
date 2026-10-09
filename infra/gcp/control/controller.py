@@ -305,11 +305,22 @@ def host(config, output, action, force=False):
         "keepalive",
         "install",
         "gate",
+        "quiesce",
     }:
         raise Refused("Invalid host action")
     cmd = "sudo python3 /opt/aidash/bootstrap/host.py " + (
         "seal --idle-only" if action == "seal-idle" else action
     )
+    if action == "quiesce":
+        # Carry the trusted GCIP fence to retained hosts before updating their
+        # bootstrap bundle; older host CLIs do not know this new action yet.
+        helper = (ROOT / "infra/gcp/runtime/gcip_quiesce.py").read_text()
+        cmd = (
+            "sudo python3 - <<'AIDASH_GCIP_QUIESCE'\n"
+            "import sys\nsys.path.insert(0, '/opt/aidash/bootstrap')\nimport host\n"
+            + helper
+            + "\nprint(json.dumps(quiesce(host)))\nAIDASH_GCIP_QUIESCE"
+        )
     if force:
         cmd += " --force"
     return json.loads(
@@ -547,6 +558,12 @@ def gcip_revision(config):
     return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
 
 
+def quiesce_gcip_host(config, output):
+    result = host(config, output, "quiesce")
+    if not isinstance(result, dict) or result.get("quiesced") is not True:
+        raise Refused("GCIP application/runner quiescence was not confirmed")
+
+
 def gate_gcip_changes(config, store, terraform, managed):
     """Fence every old binding before any apply can change the shared pools."""
     outputs = terraform.outputs() if managed else {}
@@ -578,7 +595,7 @@ def gate_gcip_changes(config, store, terraform, managed):
         update_entry(store, identity, entry["generation"], gcip_pending=True)
         if previous["running"] and previous["published"]:
             if instance_status(config, outputs[identity]) == "RUNNING":
-                host(config, outputs[identity], "gate")
+                quiesce_gcip_host(config, outputs[identity])
         if entry["desired"] != "destroyed":
             affected[identity] = entry["generation"]
     return revision, affected
@@ -617,7 +634,7 @@ def refresh_gcip_environments(config, store, terraform, managed, revision, affec
             if managed[identity]["running"] and managed[identity]["published"]:
                 with operation_budget(90):
                     try:
-                        host(config, outputs[identity], "gate")
+                        quiesce_gcip_host(config, outputs[identity])
                     except Exception:
                         pass
             if isinstance(error, OperationDeadline):

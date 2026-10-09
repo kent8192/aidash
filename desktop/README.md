@@ -8,7 +8,7 @@ business API.
 ## Run and build
 
 Install the [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/), the
-repository's Rust toolchain and Node 22. From the repository root:
+repository's Rust toolchain and Node 24.12 or later. From the repository root:
 
 ```sh
 npm ci --prefix web

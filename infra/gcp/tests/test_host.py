@@ -1,6 +1,6 @@
 """Activity/admission races using private temporary host state."""
 
-from contextlib import ExitStack
+from contextlib import ExitStack, redirect_stdout
 import bz2
 import hashlib
 import io
@@ -15,6 +15,8 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "control"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "runtime"))
 import host
+import gcip_quiesce
+import controller
 
 
 class HostTests(unittest.TestCase):
@@ -106,6 +108,94 @@ class HostTests(unittest.TestCase):
                 json.dumps({"status": "completed", "writer_frozen": True})
             )
             self.assertFalse(host.snapshot()["busy"])
+
+    def test_gcip_quiescence_freezes_application_before_stopping_runner(self):
+        calls = []
+
+        def command(*args, **kwargs):
+            calls.append(args)
+            if args[:2] == ("docker", "ps"):
+                return b"owned-app\n"
+            if args[:2] == ("docker", "inspect"):
+                return b'{"Running": true, "Paused": false}'
+            return b""
+
+        with patch.object(host, "command", command):
+            self.assertEqual(gcip_quiesce.quiesce(host), {"quiesced": True})
+        self.assertLess(
+            calls.index(("docker", "pause", "aidash-app")),
+            calls.index(("systemctl", "stop", "aidash-runner")),
+        )
+        self.assertTrue((self.directory / "run/draining").exists())
+        self.assertFalse((self.directory / "run/serving").exists())
+        self.assertNotIn(("docker", "unpause", "aidash-app"), calls)
+
+    def test_gcip_quiescence_failure_never_reopens_old_authority(self):
+        calls = []
+
+        def command(*args, **kwargs):
+            calls.append(args)
+            if args[:2] == ("docker", "ps"):
+                return b"owned-app\n"
+            if args[:2] == ("docker", "inspect"):
+                return b'{"Running": true, "Paused": false}'
+            if args[:2] == ("systemctl", "stop"):
+                raise RuntimeError("runner stop failed")
+            return b""
+
+        with patch.object(host, "command", command):
+            with self.assertRaisesRegex(RuntimeError, "runner stop failed"):
+                gcip_quiesce.quiesce(host)
+        self.assertIn(("docker", "pause", "aidash-app"), calls)
+        self.assertNotIn(("docker", "unpause", "aidash-app"), calls)
+        self.assertTrue((self.directory / "run/draining").exists())
+
+    def test_gcip_ssh_fence_executes_on_the_retained_host_api(self):
+        calls = []
+
+        def command(*args, **kwargs):
+            calls.append(args)
+            if args[:2] == ("docker", "ps"):
+                return b"owned-app\n"
+            if args[:2] == ("docker", "inspect"):
+                return b'{"Running": true, "Paused": false}'
+            return b""
+
+        with patch.object(controller, "run", return_value=b'{"quiesced":true}') as ssh:
+            controller.host(
+                {"project_id": "fixture"},
+                {"instance": "retained", "zone": "fixture-zone"},
+                "quiesce",
+            )
+        args = ssh.call_args.args
+        cmd = args[args.index("--command") + 1]
+        source = cmd.split("<<'AIDASH_GCIP_QUIESCE'\n", 1)[1].rsplit("\nAIDASH_GCIP_QUIESCE", 1)[0]
+        output = io.StringIO()
+        with patch.object(host, "command", command), patch.object(sys, "path", list(sys.path)), redirect_stdout(output):
+            # The retained host has only gate/command; no new CLI action or
+            # updated bundle is required to freeze its old policy first.
+            exec(source, {"__name__": "quiesce_fixture"})
+        self.assertEqual(json.loads(output.getvalue()), {"quiesced": True})
+        self.assertIn(("docker", "pause", "aidash-app"), calls)
+        self.assertIn(("systemctl", "stop", "aidash-runner"), calls)
+
+    def test_gcip_quiescence_accepts_an_already_paused_or_removed_application(self):
+        for container in (b"owned-app\n", b""):
+            with self.subTest(container=bool(container)):
+                calls = []
+
+                def command(*args, calls=calls, container=container, **kwargs):
+                    calls.append(args)
+                    if args[:2] == ("docker", "ps"):
+                        return container
+                    if args[:2] == ("docker", "inspect"):
+                        return b'{"Running": true, "Paused": true}'
+                    return b""
+
+                with patch.object(host, "command", command):
+                    self.assertEqual(gcip_quiesce.quiesce(host), {"quiesced": True})
+                self.assertNotIn(("docker", "pause", "aidash-app"), calls)
+                self.assertIn(("systemctl", "stop", "aidash-runner"), calls)
 
     def test_pause_failure_restores_admission_and_never_claims_sealed(self):
         calls = []

@@ -187,6 +187,7 @@ impl TokenVerifier {
 		Ok(SignIn {
 			subject: claims.sub,
 			gcip_tenant: Some(tenant.to_owned()),
+			gcip_provider: Some(claims.firebase.sign_in_provider),
 			auth_time,
 			verified_email,
 			display_name,

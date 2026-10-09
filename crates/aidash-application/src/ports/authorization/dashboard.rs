@@ -11,9 +11,32 @@ pub struct AccountPolicy {
 	pub issuer: String,
 	pub google: bool,
 	pub tenant_bindings: Option<BTreeMap<String, String>>,
+	pub gcip_providers: BTreeMap<String, Vec<String>>,
 }
 
 impl AccountPolicy {
+	pub fn providers_for(&self, tenant: &str) -> Vec<String> {
+		self.gcip_providers
+			.get(tenant)
+			.cloned()
+			.unwrap_or_else(|| vec!["google.com".into(), "password".into()])
+	}
+	pub fn require_sign_in_provider(&self, sign_in: &SignIn) -> Result<()> {
+		if self.tenant_bindings.is_some() {
+			let pool = sign_in
+				.gcip_tenant
+				.as_deref()
+				.ok_or(crate::Error::Forbidden)?;
+			let provider = sign_in
+				.gcip_provider
+				.as_ref()
+				.ok_or(crate::Error::Forbidden)?;
+			if !self.providers_for(pool).contains(provider) {
+				return Err(crate::Error::Forbidden);
+			}
+		}
+		Ok(())
+	}
 	pub fn require_identity(&self, issuer: &str, gcip_tenant: Option<&str>) -> Result<()> {
 		if issuer != self.issuer {
 			return Err(crate::Error::Forbidden);

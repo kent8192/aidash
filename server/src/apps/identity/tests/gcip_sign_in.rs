@@ -108,10 +108,13 @@ fn browser() -> reqwest::Client {
 		.unwrap()
 }
 fn token(pool: &str, name: &str, auth_time: i64) -> String {
+	token_with_provider(pool, name, auth_time, "password")
+}
+fn token_with_provider(pool: &str, name: &str, auth_time: i64, provider: &str) -> String {
 	let now = Utc::now().timestamp();
 	let mut header = Header::new(Algorithm::RS256);
 	header.kid = Some("fixture".into());
-	encode(&header, &json!({"iss":"https://securetoken.google.com/fixture-project","aud":"fixture-project","sub":"person","iat":now,"exp":now+3600,"auth_time":auth_time,"firebase":{"tenant":pool,"sign_in_provider":"password"},"email_verified":true,"email":"person@example.test","name":name,"operator":true}), &EncodingKey::from_rsa_pem(include_bytes!("../../execution/tests/fixtures/oidc/signing-test-only.pem")).unwrap()).unwrap()
+	encode(&header, &json!({"iss":"https://securetoken.google.com/fixture-project","aud":"fixture-project","sub":"person","iat":now,"exp":now+3600,"auth_time":auth_time,"firebase":{"tenant":pool,"sign_in_provider":provider},"email_verified":true,"email":"person@example.test","name":name,"operator":true}), &EncodingKey::from_rsa_pem(include_bytes!("../../execution/tests/fixtures/oidc/signing-test-only.pem")).unwrap()).unwrap()
 }
 async fn transaction(app: &common::TestApplication, org: &str) -> (String, String) {
 	let response = browser()
@@ -190,6 +193,101 @@ async fn sign_in(
 		.unwrap()
 		.to_owned();
 	(session, csrf)
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn provider_allowlist_is_enforced_for_an_existing_uid_before_admin_io(
+	#[future(awt)]
+	#[from(test_environment)]
+	environment: Arc<TestEnvironment>,
+) {
+	let (mut f, url, schema) = common::setup(&environment).await;
+	let (status, _admin) = configure(&mut f).await;
+	let app = common::application(f.clone()).await;
+	sign_in(&app, "acme", "pool-a", "Person").await;
+	f.config.gcip.as_mut().unwrap().providers.insert(
+		"pool-a".into(),
+		vec!["oidc.company".into(), "saml.company".into()],
+	);
+	f.store = f
+		.store
+		.clone()
+		.with_dashboard_policy(f.config.dashboard_policy());
+	let changed = common::application(f.clone()).await;
+	status.outage.store(true, Ordering::SeqCst);
+	for provider in ["password", "google.com", "custom"] {
+		let (state, cookie) = transaction(&changed, "acme").await;
+		let configuration: Value = browser()
+			.get(changed.url(format!("/auth/gcip/transaction?state={state}")))
+			.header("cookie", &cookie)
+			.send()
+			.await
+			.unwrap()
+			.json()
+			.await
+			.unwrap();
+		assert_eq!(
+			configuration["providers"],
+			json!(["oidc.company", "saml.company"])
+		);
+		assert_eq!(
+			exchange(
+				&changed,
+				&state,
+				&cookie,
+				&token_with_provider("pool-a", "Person", Utc::now().timestamp(), provider),
+				"http://127.0.0.1:8080"
+			)
+			.await
+			.status(),
+			403,
+			"{provider}"
+		);
+	}
+	status.outage.store(false, Ordering::SeqCst);
+	for provider in ["oidc.company", "saml.company"] {
+		let (state, cookie) = transaction(&changed, "acme").await;
+		assert_eq!(
+			exchange(
+				&changed,
+				&state,
+				&cookie,
+				&token_with_provider("pool-a", "Person", Utc::now().timestamp(), provider),
+				"http://127.0.0.1:8080"
+			)
+			.await
+			.status(),
+			200,
+			"{provider}"
+		);
+	}
+	// An explicitly empty list disables every method rather than selecting defaults.
+	f.config
+		.gcip
+		.as_mut()
+		.unwrap()
+		.providers
+		.insert("pool-a".into(), vec![]);
+	f.store = f
+		.store
+		.clone()
+		.with_dashboard_policy(f.config.dashboard_policy());
+	let disabled = common::application(f.clone()).await;
+	let (state, cookie) = transaction(&disabled, "acme").await;
+	assert_eq!(
+		exchange(
+			&disabled,
+			&state,
+			&cookie,
+			&token_with_provider("pool-a", "Person", Utc::now().timestamp(), "saml.company"),
+			"http://127.0.0.1:8080"
+		)
+		.await
+		.status(),
+		403
+	);
+	common::cleanup(f, &url, &schema).await;
 }
 
 #[rstest::rstest]

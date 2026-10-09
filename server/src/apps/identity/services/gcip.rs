@@ -136,11 +136,11 @@ pub(crate) async fn configuration(
 		api_key: &config.web_api_key,
 		auth_domain: format!("{}.firebaseapp.com", config.project_id),
 		tenant_id: tenant,
-		providers: config
-			.providers
-			.get(tenant)
-			.cloned()
-			.unwrap_or_else(|| vec!["google.com".into(), "password".into()]),
+		providers: f
+			.config
+			.dashboard_policy()
+			.ok_or(Error::Unauthorized)?
+			.providers_for(tenant),
 		password_sign_up: config.password_sign_up.contains(tenant),
 	};
 	let mut response = Response::ok().with_json(&client)?;

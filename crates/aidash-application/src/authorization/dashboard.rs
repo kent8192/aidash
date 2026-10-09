@@ -39,6 +39,7 @@ impl DashboardAuthority {
 			}
 			return Err(error);
 		}
+		policy.require_sign_in_provider(sign_in)?;
 		let started = self.accounts.now();
 		let status = if policy.google {
 			None
