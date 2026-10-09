@@ -6,7 +6,7 @@ from pathlib import Path
 import sys
 from tempfile import TemporaryDirectory
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from urllib.error import HTTPError
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "control"))
@@ -152,6 +152,41 @@ class ProviderCredentialRetirementTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 retire_provider_credentials({"byok_project_id": "fixture-byok"}, "pr-12/../../other")
         cli.assert_not_called()
+
+
+class AppliedProviderProjectTests(unittest.TestCase):
+    def configuration(self, applied, configured, managed=True, environment_project=None):
+        terraform = Terraform.__new__(Terraform)
+        terraform.configuration = {"byok_project_id": configured}
+        state = {"outputs": {
+            "managed_configuration": {"value": {"test": {}} if managed else {}},
+            "byok_project_id": {"value": applied},
+            "environments": {"value": {
+                "test": {"byok_project_id": applied if environment_project is None else environment_project}
+            } if managed else {}},
+        }}
+        store = Mock()
+        store.read.return_value = (state, "1")
+        return terraform.configuration_in_state(store)
+
+    def test_applied_project_cannot_be_removed_or_replaced_before_retirement(self):
+        for configured in ["", "new-byok"]:
+            with self.subTest(configured=configured):
+                with self.assertRaisesRegex(RuntimeError, "Restore the applied BYOK project"):
+                    self.configuration("old-byok", configured)
+
+    def test_per_environment_output_preserves_project_when_root_output_is_missing(self):
+        with self.assertRaisesRegex(RuntimeError, "Restore the applied BYOK project"):
+            self.configuration("", "new-byok", environment_project="old-byok")
+
+    def test_same_project_and_legacy_enablement_remain_supported(self):
+        self.assertEqual(self.configuration("old-byok", "old-byok"), {"test": {}})
+        self.assertEqual(self.configuration("", "new-byok"), {"test": {}})
+
+    def test_project_may_change_after_all_environment_prefixes_are_retired(self):
+        for configured in ["", "new-byok"]:
+            with self.subTest(configured=configured):
+                self.assertEqual(self.configuration("old-byok", configured, managed=False), {})
 
 
 class PlanTests(unittest.TestCase):

@@ -261,6 +261,22 @@ class Terraform:
             raise RuntimeError(
                 "Terraform state lacks managed_configuration; inspect partial apply before continuing"
             )
+        # Keep the applied BYOK project authoritative until every environment
+        # has retired its exact prefix. Changing this input earlier would make
+        # cleanup target another project, or skip it, before removing IAM.
+        outputs = state.get("outputs", {})
+        environments = outputs.get("environments", {}).get("value") or {}
+        applied_projects = {
+            item.get("byok_project_id", "") for item in environments.values()
+        }
+        if value or environments:
+            applied_projects.add(outputs.get("byok_project_id", {}).get("value", ""))
+        configured_project = self.configuration.get("byok_project_id", "")
+        if any(project and project != configured_project for project in applied_projects):
+            raise RuntimeError(
+                "Restore the applied BYOK project and retire all managed environments "
+                "before changing byok_project_id"
+            )
         return value or {}
 
     def apply(self, environments, retiring=(), starting=()):

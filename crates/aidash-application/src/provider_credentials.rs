@@ -43,11 +43,13 @@ pub trait Scope: Send {
 #[async_trait]
 pub trait Repository: Send + Sync {
 	async fn begin(&self, tenant: &str) -> Result<Box<dyn Scope>>;
-	/// PostgreSQL is the orphan inventory; Secret Manager secrets are never listed.
-	async fn pending(&self) -> Result<Vec<ProviderCredential>>;
-	async fn active(&self) -> Result<Vec<ProviderCredential>> {
-		Ok(Vec::new())
-	}
+	/// A bounded UUID keyset page of non-deleted metadata. PostgreSQL is the
+	/// cleanup inventory; Secret Manager secrets are never listed.
+	async fn reconciliation_candidates(
+		&self,
+		after: Option<Uuid>,
+		limit: usize,
+	) -> Result<Vec<ProviderCredential>>;
 }
 pub struct Service {
 	pub repository: Arc<dyn Repository>,
@@ -94,6 +96,15 @@ pub struct Validated {
 	pub provider_credential: Metadata,
 	pub warnings: Vec<String>,
 }
+/// Each supervised pass advances even when one candidate's external cleanup fails.
+#[derive(Debug)]
+pub struct Reconciliation {
+	pub cleaned: usize,
+	pub failed: usize,
+	pub next: Option<Uuid>,
+}
+pub const RECONCILIATION_BATCH_SIZE: usize = 25;
+
 impl Service {
 	fn validate_key(key: &SecretString) -> Result<()> {
 		if !(8..=4096).contains(&key.expose_secret().len())
@@ -256,9 +267,9 @@ impl Service {
 		let mut row = scope.get(id).await?;
 		row.check_revision(expected)?;
 		row.require_active()?;
-		for version in self.store.versions(&row.secret_resource).await? {
-			self.store.disable(&version).await?;
-		}
+		// Close effective access durably before external effects. A failed commit
+		// leaves both the active pin and its versions usable; a crash afterwards
+		// leaves revoked metadata as the inventory for retrying every disable.
 		row.state = State::Revoked;
 		row.revoked_at = Some(Utc::now());
 		row.revision += 1;
@@ -266,6 +277,9 @@ impl Service {
 			.save(&row, "provider_credential.revoked", actor)
 			.await?;
 		scope.commit().await?;
+		if self.reconcile_candidate(row.clone()).await.is_err() {
+			tracing::warn!("Provider Credential revocation committed; version cleanup is pending");
+		}
 		Ok(row.into())
 	}
 	pub async fn delete(
@@ -343,34 +357,60 @@ impl Service {
 		Ok(binding)
 	}
 	pub async fn reconcile(&self) -> Result<usize> {
-		let mut cleaned = 0;
-		for pending in self.repository.pending().await? {
-			if pending.created_at > Utc::now() - Duration::minutes(5) {
-				continue;
-			}
-			let mut scope = self.repository.begin(&pending.tenant).await?;
-			let mut row = scope.get(pending.id).await?;
-			if row.state != State::Pending {
-				continue;
-			}
-			// Delete is idempotent, covering crashes both before and after Secret creation.
-			self.store.delete(&row.secret_resource).await?;
-			row.state = State::Deleted;
-			row.revision += 1;
-			scope
-				.save(
-					&row,
-					"provider_credential.deleted",
-					"provider-credential-reconciler",
-				)
-				.await?;
-			scope.commit().await?;
-			cleaned += 1;
+		let result = self.reconcile_page(None).await?;
+		if result.failed != 0 {
+			return Err(Error::External(
+				"Provider Credential cleanup is pending".into(),
+			));
 		}
-		for candidate in self.repository.active().await? {
-			let mut scope = self.repository.begin(&candidate.tenant).await?;
-			let row = scope.get(candidate.id).await?;
-			if row.state == State::Active {
+		Ok(result.cleaned)
+	}
+	/// Run one bounded page. Callers retain `next` and delay before the next
+	/// pass, including failures, so one outage cannot starve later Tenants.
+	pub async fn reconcile_page(&self, after: Option<Uuid>) -> Result<Reconciliation> {
+		let candidates = self
+			.repository
+			.reconciliation_candidates(after, RECONCILIATION_BATCH_SIZE)
+			.await?;
+		let next = if candidates.len() == RECONCILIATION_BATCH_SIZE {
+			candidates.last().map(|row| row.id)
+		} else {
+			None
+		};
+		let mut result = Reconciliation {
+			cleaned: 0,
+			failed: 0,
+			next,
+		};
+		for candidate in candidates {
+			match self.reconcile_candidate(candidate).await {
+				Ok(true) => result.cleaned += 1,
+				Ok(false) => {}
+				Err(_) => result.failed += 1,
+			}
+		}
+		Ok(result)
+	}
+	async fn reconcile_candidate(&self, candidate: ProviderCredential) -> Result<bool> {
+		let mut scope = self.repository.begin(&candidate.tenant).await?;
+		let mut row = scope.get(candidate.id).await?;
+		let mut cleaned = false;
+		match row.state {
+			State::Pending if row.created_at <= Utc::now() - Duration::minutes(5) => {
+				// Delete is idempotent across crashes before/after Secret creation.
+				self.store.delete(&row.secret_resource).await?;
+				row.state = State::Deleted;
+				row.revision += 1;
+				scope
+					.save(
+						&row,
+						"provider_credential.deleted",
+						"provider-credential-reconciler",
+					)
+					.await?;
+				cleaned = true;
+			}
+			State::Active => {
 				let pinned = row.require_active()?;
 				for version in self.store.versions(&row.secret_resource).await? {
 					if version != pinned {
@@ -378,8 +418,14 @@ impl Service {
 					}
 				}
 			}
-			scope.commit().await?;
+			State::Revoked => {
+				for version in self.store.versions(&row.secret_resource).await? {
+					self.store.disable(&version).await?;
+				}
+			}
+			State::Pending | State::Deleted => {}
 		}
+		scope.commit().await?;
 		Ok(cleaned)
 	}
 }

@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 use tokio::sync::{Mutex, OwnedMutexGuard};
 #[derive(Clone, Default)]
 struct Data {
+	commit_failure: bool,
 	rows: BTreeMap<Uuid, ProviderCredential>,
 	bindings: BTreeMap<String, Binding>,
 }
@@ -24,25 +25,19 @@ impl Repository for Repo {
 			tenant: tenant.into(),
 		}))
 	}
-	async fn pending(&self) -> Result<Vec<ProviderCredential>> {
+	async fn reconciliation_candidates(
+		&self,
+		after: Option<Uuid>,
+		limit: usize,
+	) -> Result<Vec<ProviderCredential>> {
 		Ok(self
 			.0
 			.lock()
 			.await
 			.rows
 			.values()
-			.filter(|r| r.state == State::Pending)
-			.cloned()
-			.collect())
-	}
-	async fn active(&self) -> Result<Vec<ProviderCredential>> {
-		Ok(self
-			.0
-			.lock()
-			.await
-			.rows
-			.values()
-			.filter(|r| r.state == State::Active)
+			.filter(|row| row.state != State::Deleted && after.is_none_or(|id| row.id > id))
+			.take(limit.clamp(1, RECONCILIATION_BATCH_SIZE))
 			.cloned()
 			.collect())
 	}
@@ -102,6 +97,9 @@ impl Scope for Lease {
 		Ok(())
 	}
 	async fn commit(mut self: Box<Self>) -> Result<()> {
+		if self.guard.commit_failure {
+			return Err(Error::External("database commit failed".into()));
+		}
 		*self.guard = self.data.clone();
 		Ok(())
 	}
@@ -110,6 +108,7 @@ impl Scope for Lease {
 struct FakeStore {
 	state: Arc<Mutex<StoredSecrets>>,
 	disable_failure: Arc<Mutex<Option<String>>>,
+	version_lists: Arc<Mutex<Vec<String>>>,
 }
 type StoredSecrets = BTreeMap<String, BTreeMap<String, (SecretString, &'static str)>>;
 #[async_trait]
@@ -132,6 +131,7 @@ impl Store for FakeStore {
 		Ok(name)
 	}
 	async fn versions(&self, resource: &str) -> Result<Vec<String>> {
+		self.version_lists.lock().await.push(resource.into());
 		Ok(self
 			.state
 			.lock()
@@ -551,5 +551,130 @@ async fn committed_rotation_returns_metadata_and_reconciles_failed_old_version_c
 	assert_eq!(
 		repo.0.lock().await.rows[&first.id].revision,
 		committed.revision
+	);
+}
+
+#[tokio::test]
+async fn reconciliation_pages_bound_work_and_reach_later_tenants_after_failures() {
+	let (mut s, repo, store) = service();
+	s.max_per_tenant = 100;
+	let mut rows = Vec::new();
+	for tenant in ["tenant-a", "tenant-b"] {
+		for _ in 0..16 {
+			rows.push(create(&s, tenant).await.provider_credential.id);
+		}
+	}
+	rows.sort();
+	// Leave an unpinned version on the first candidate, and simulate an outage.
+	let first = repo.0.lock().await.rows[&rows[0]].clone();
+	store
+		.add_version(&first.secret_resource, &"uncommitted-version-key".into())
+		.await
+		.unwrap();
+	*store.disable_failure.lock().await = Some("external outage".into());
+	let first_page = s.reconcile_page(None).await.unwrap();
+	assert_eq!(first_page.cleaned, 0);
+	assert_eq!(first_page.failed, 1);
+	assert_eq!(first_page.next, Some(rows[24]));
+	assert_eq!(store.version_lists.lock().await.len(), 25);
+	let second_page = s.reconcile_page(first_page.next).await.unwrap();
+	assert_eq!(second_page.failed, 0);
+	assert_eq!(second_page.next, None);
+	let visited = store.version_lists.lock().await.clone();
+	assert_eq!(visited.len(), 32);
+	assert_eq!(
+		visited
+			.iter()
+			.collect::<std::collections::BTreeSet<_>>()
+			.len(),
+		32
+	);
+	*store.disable_failure.lock().await = None;
+	assert_eq!(s.reconcile_page(None).await.unwrap().failed, 0);
+}
+
+#[tokio::test]
+async fn revocation_commit_failure_has_no_external_effect_and_committed_cleanup_is_recoverable() {
+	use crate::provider_access::{
+		Context, EnvironmentAccess, ProviderAccess, Source, TenantAccess,
+	};
+	struct Env;
+	impl crate::ports::Credentials for Env {
+		fn resolve(&self, _: &str) -> Result<String> {
+			panic!("revoked Tenant access cannot fall back to environment")
+		}
+	}
+	let (s, repo, store) = service();
+	let first = create(&s, "alpha").await.provider_credential;
+	let original = repo.0.lock().await.rows[&first.id].clone();
+	store
+		.add_version(&original.secret_resource, &"unpinned-key-5678".into())
+		.await
+		.unwrap();
+	repo.0.lock().await.commit_failure = true;
+	assert!(
+		s.revoke("alpha", first.id, first.revision, "actor")
+			.await
+			.is_err()
+	);
+	assert!(store.version_lists.lock().await.is_empty());
+	{
+		let data = repo.0.lock().await;
+		assert_eq!(data.rows[&first.id].state, State::Active);
+		assert_eq!(data.rows[&first.id].revision, first.revision);
+		let versions = store.state.lock().await;
+		assert!(
+			versions[&original.secret_resource]
+				.values()
+				.all(|v| v.1 == "enabled")
+		);
+	}
+	repo.0.lock().await.commit_failure = false;
+	*store.disable_failure.lock().await = Some("cleanup-error-canary".into());
+	let revoked = s
+		.revoke("alpha", first.id, first.revision, "actor")
+		.await
+		.unwrap();
+	assert_eq!(revoked.state, State::Revoked);
+	assert_eq!(revoked.revision, first.revision + 1);
+	assert_eq!(repo.0.lock().await.rows[&first.id].state, State::Revoked);
+	assert!(
+		!serde_json::to_string(&revoked)
+			.unwrap()
+			.contains("cleanup-error-canary")
+	);
+	let access = TenantAccess {
+		environment: EnvironmentAccess {
+			credentials: Arc::new(Env),
+		},
+		repository: Arc::new(repo.clone()),
+	};
+	let error = access
+		.resolve(
+			&Context {
+				tenant: "alpha".into(),
+				run: Some(Uuid::now_v7()),
+				provider_credential_id: Some(first.id),
+				maintenance: None,
+			},
+			Provider::Openrouter.base_url(),
+			&Source::Tenant {
+				provider: "openrouter".into(),
+			},
+		)
+		.await
+		.unwrap_err();
+	assert!(error.to_string().contains("not active"));
+	assert_eq!(s.reconcile_page(None).await.unwrap().failed, 1);
+	*store.disable_failure.lock().await = None;
+	assert_eq!(s.reconcile_page(None).await.unwrap().failed, 0);
+	assert!(
+		store.state.lock().await[&original.secret_resource]
+			.values()
+			.all(|v| v.1 == "disabled")
+	);
+	assert_eq!(
+		repo.0.lock().await.rows[&first.id].revision,
+		revoked.revision
 	);
 }
