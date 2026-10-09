@@ -20,6 +20,8 @@ use std::{
 
 use tokio::time::Instant;
 
+mod policy;
+
 const REQUEST_LIMIT: usize = 1024 * 1024;
 // The application's 8 MiB raw-media allowance expands to about 11 MiB in base64.
 // Leave bounded room for JSON framing and the approved text context as well.
@@ -68,7 +70,13 @@ pub struct CloudLogging;
 impl AuditSink for CloudLogging {
 	fn record(&self, a: &Audit) {
 		// Cloud Run collects this structured JSON stdout event as Cloud Logging.
-		tracing::info!(jti = %a.jti, subject = ?a.subject, tenant = %a.tenant, credential = %a.credential, version = %a.version, provider = %a.provider, model = %a.model, operation = ?a.operation, status = a.status, latency_ms = a.latency_ms as u64, usage = ?a.usage, "provider_call");
+		let count = |field| {
+			a.usage
+				.as_ref()
+				.and_then(|usage| usage.get(field))
+				.and_then(Value::as_u64)
+		};
+		tracing::info!(jti = %a.jti, subject = ?a.subject, tenant = %a.tenant, credential = %a.credential, version = %a.version, provider = %a.provider, model = %a.model, operation = ?a.operation, status = a.status, latency_ms = a.latency_ms as u64, prompt_tokens = count("prompt_tokens"), completion_tokens = count("completion_tokens"), total_tokens = count("total_tokens"), "provider_call");
 	}
 }
 pub struct Broker {
@@ -314,6 +322,9 @@ fn body_policy(body: &[u8], claims: &Claims, op: Operation) -> Result<(), Failur
 	}
 	if value.pointer("/provider/zdr") != Some(&Value::Bool(true)) {
 		return Err(Failure::ClaimViolation);
+	}
+	if op == Operation::Chat {
+		policy::chat_input(&value)?;
 	}
 	Ok(())
 }

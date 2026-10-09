@@ -201,7 +201,7 @@ async fn worker_mint_and_broker_audit_are_correlated_and_never_log_secrets() {
 	let claims = signer.claims.lock().unwrap().clone();
 	assert_eq!(claims.len(), 1);
 	let claim = &claims[0];
-	CloudLogging.record(&Audit {
+	let mut audit = Audit {
 		jti: claim.jti,
 		subject: claim.sub.clone(),
 		tenant: claim.tenant.clone(),
@@ -212,8 +212,11 @@ async fn worker_mint_and_broker_audit_are_correlated_and_never_log_secrets() {
 		operation: Operation::Chat,
 		status: 401,
 		latency_ms: 1,
-		usage: Some(json!({"total_tokens":6})),
-	});
+		usage: Some(
+			json!({"prompt_tokens":4,"completion_tokens":2,"total_tokens":6,"untrusted":CANARY}),
+		),
+	};
+	CloudLogging.record(&audit);
 	server.abort();
 	let text = String::from_utf8(output.lock().unwrap().clone()).unwrap();
 	let entries: Vec<Value> = text
@@ -238,6 +241,17 @@ async fn worker_mint_and_broker_audit_are_correlated_and_never_log_secrets() {
 				.contains("Run")
 		);
 	}
+	let provider_event = entries
+		.iter()
+		.find(|entry| entry["fields"]["message"] == "provider_call")
+		.unwrap();
+	assert_eq!(provider_event["fields"]["prompt_tokens"].as_u64(), Some(4));
+	assert_eq!(
+		provider_event["fields"]["completion_tokens"].as_u64(),
+		Some(2)
+	);
+	assert_eq!(provider_event["fields"]["total_tokens"].as_u64(), Some(6));
+	assert!(provider_event["fields"].get("usage").is_none());
 	assert!(!text.contains(CANARY));
 	assert!(!text.contains("Bearer "));
 	assert!(
@@ -251,4 +265,23 @@ async fn worker_mint_and_broker_audit_are_correlated_and_never_log_secrets() {
 				.expose_secret()
 		)
 	);
+	audit.usage = None;
+	CloudLogging.record(&audit);
+	let output = output.lock().unwrap();
+	let last: Value = serde_json::from_str(
+		std::str::from_utf8(&output)
+			.unwrap()
+			.lines()
+			.last()
+			.unwrap(),
+	)
+	.unwrap();
+	for field in [
+		"usage",
+		"prompt_tokens",
+		"completion_tokens",
+		"total_tokens",
+	] {
+		assert!(last["fields"].get(field).is_none());
+	}
 }

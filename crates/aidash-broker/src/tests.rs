@@ -431,6 +431,112 @@ async fn embeddings_authorize_one_string_input_before_key_lookup() {
 }
 
 #[tokio::test]
+async fn chat_rejects_prompt_cache_directives_recursively_before_key_lookup() {
+	let f = Fixture::new().await;
+	for extra in [
+		json!({"cache_control":{"type":"ephemeral"}}),
+		json!({"cache_control":null}),
+		json!({"messages":[{"role":"user","content":[{"type":"text","text":"test","cache_control":{"type":"ephemeral","ttl":"1h"}}]}]}),
+		json!({"tools":[{"type":"function","function":{"name":"test","cache_control":{"type":"ephemeral"}}}]}),
+		json!({"provider":{"zdr":true,"nested":[{"cache_control":{"type":"ephemeral"}}]}}),
+	] {
+		let mut body = chat();
+		body.as_object_mut()
+			.unwrap()
+			.extend(extra.as_object().unwrap().clone());
+		let response = f
+			.request(&f.claims(), "POST", "/api/v1/chat/completions", body)
+			.await;
+		assert_eq!(response.status(), 403);
+		assert_eq!(
+			json_body(response).await["error"]["code"],
+			"capability_claim_violation"
+		);
+		assert_eq!(f.source.reads.load(Ordering::SeqCst), 0);
+		assert_eq!(f.provider.calls.load(Ordering::SeqCst), 0);
+	}
+	let mut body = chat();
+	body["messages"] =
+		json!([{"role":"user","content":"A literal cache_control name is ordinary text"}]);
+	let response = f
+		.request(&f.claims(), "POST", "/api/v1/chat/completions", body)
+		.await;
+	assert_eq!(response.status(), 200);
+	json_body(response).await;
+}
+
+#[tokio::test]
+async fn chat_rejects_remote_invalid_and_oversized_media_before_key_lookup() {
+	use base64::Engine;
+	let f = Fixture::new().await;
+	let encoded = |bytes: &[u8]| base64::engine::general_purpose::STANDARD.encode(bytes);
+	let image = |url: String| json!({"type":"image_url","image_url":{"url":url}});
+	let png = b"\x89PNG\r\n\x1a\n";
+	let mut too_large = png.to_vec();
+	too_large.resize(8 * 1024 * 1024 + 1, 0);
+	let mut half = png.to_vec();
+	half.resize(4 * 1024 * 1024 + 1, 0);
+	let half = image(format!("data:image/png;base64,{}", encoded(&half)));
+	let valid_image = image(format!("data:image/png;base64,{}", encoded(png)));
+	for parts in [
+		vec![image("https://example.invalid/large.png".into())],
+		vec![image("http://example.invalid/large.png".into())],
+		vec![image("//example.invalid/large.png".into())],
+		vec![image("data:image/png;base64,!!".into())],
+		vec![image(format!(
+			"data:image/png;base64,{}",
+			encoded(b"wrong signature")
+		))],
+		vec![image(format!(
+			"data:image/svg+xml;base64,{}",
+			encoded(b"<svg/>")
+		))],
+		vec![image(format!(
+			"data:image/png;base64,{}",
+			encoded(&too_large)
+		))],
+		vec![half.clone(), half],
+		vec![valid_image.clone(); 9],
+		vec![
+			json!({"type":"input_audio","input_audio":{"data":"https://example.invalid/audio.wav","format":"wav"}}),
+		],
+		vec![
+			json!({"type":"input_audio","input_audio":{"data":encoded(b"not wav"),"format":"wav"}}),
+		],
+		vec![json!({"type":"video_url","video_url":{"url":"https://example.invalid/clip"}})],
+	] {
+		let separate_messages: Vec<_> = parts
+			.iter()
+			.map(|part| json!({"role":"user","content":[part]}))
+			.collect();
+		for messages in [
+			json!([{"role":"user","content":parts}]),
+			json!(separate_messages),
+		] {
+			let mut body = chat();
+			body["messages"] = messages;
+			let response = f
+				.request(&f.claims(), "POST", "/api/v1/chat/completions", body)
+				.await;
+			assert_eq!(response.status(), 403);
+			assert_eq!(
+				json_body(response).await["error"]["code"],
+				"capability_claim_violation"
+			);
+			assert_eq!(f.source.reads.load(Ordering::SeqCst), 0);
+			assert_eq!(f.provider.calls.load(Ordering::SeqCst), 0);
+		}
+	}
+	let mut body = chat();
+	body["messages"] = json!([{"role":"user","content":[valid_image,{"type":"input_audio","input_audio":{"data":encoded(b"RIFF\x00\x00\x00\x00WAVE"),"format":"wav"}}]}]);
+	let response = f
+		.request(&f.claims(), "POST", "/api/v1/chat/completions", body)
+		.await;
+	assert_eq!(response.status(), 200);
+	json_body(response).await;
+}
+
+#[tokio::test]
 async fn maintenance_purposes_authorize_only_the_explicit_operation() {
 	let f = Fixture::new().await;
 	for purpose in [

@@ -95,6 +95,15 @@ capability does not authorize a separate [pricing tier](https://openrouter.ai/do
 Embeddings require one string `input` within the existing 1 MiB request bound;
 batch arrays, token arrays, missing and malformed inputs are rejected before
 Key Material lookup, matching the application's single-vector contract.
+Any `cache_control` key, including nested message blocks and tool definitions,
+is rejected before Key Material lookup. Explicit
+[prompt-cache writes](https://openrouter.ai/docs/guides/best-practices/prompt-caching)
+have separate pricing outside the signed capability.
+Message content supports text, inline base64 image data URLs and base64
+`input_audio`. Remote URLs and unsupported media content types are rejected
+before Key Material lookup. MIME/format and file signatures use the domain's
+media validation; decoded media across all messages must fit the application's
+8 MiB aggregate and eight-part limits. The separate 16 MiB wire limit remains.
 
 Capability failures use `401` for signature, key, expiry or audience failures,
 and `403` for tenant, credential, operation, model or claim violations:
@@ -110,7 +119,8 @@ Their total-byte limit equals the non-streaming limit. The total inference
 deadline includes request reads, Key Material lookup, upstream admission and
 response reads. It is at most 3600 seconds. Disconnects and truncated streams
 are audited. Audit entries contain `jti`, subject, Tenant, Provider Credential,
-version, provider, model, operation, status, latency and numeric token usage;
+version, provider, model, operation, status, latency and numeric `prompt_tokens`,
+`completion_tokens` and `total_tokens` fields (omitted when unavailable);
 SSE usage is read from final chunks. Bodies, tokens, arbitrary usage fields and
 Key Material never enter logging. v1 does not write audits back to Aidash.
 

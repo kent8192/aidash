@@ -15,6 +15,7 @@ aidash-capability = { path = "../aidash-capability" }
 aidash-integrations.workspace = true
 async-stream = "0.3"
 axum = "0.8"
+base64 = "0.22"
 futures-util.workspace = true
 reqwest = { version = "0.13", default-features = false, features = [
   "json",
@@ -31,7 +32,6 @@ tracing-subscriber = { version = "0.3", features = ["json"] }
 uuid.workspace = true
 
 [dev-dependencies]
-base64 = "0.22"
 chrono.workspace = true
 aidash-application.workspace = true
 async-trait.workspace = true
