@@ -24,6 +24,7 @@ from cloud import (
     OperationDeadline,
     operation_budget,
     bounded_timeout,
+    retire_provider_credentials,
 )
 from policy import (
     Refused,
@@ -603,9 +604,26 @@ def reconcile(config, store):
                     current_entry(store, identity, generation)
                     if identity in managed:
                         managed[identity]["published"] = False
+                        if config.get("byok_project_id"):
+                            status = instance_status(config, output)
+                            if status == "RUNNING":
+                                # Freeze the only app writer before inventorying
+                                # dynamic secrets. Failure keeps the host gated;
+                                # retirement never wakes or recreates a VM.
+                                if not host(config, output, "seal", force=True)["sealed"]:
+                                    raise Refused("Provider Credential writer is not sealed")
+                            elif status not in {"MISSING", "TERMINATED", "SUSPENDED"}:
+                                raise Refused("Provider Credential writer state is unknown")
+                            if status == "MISSING":
+                                managed[identity]["vm_present"] = False
+                        retire_provider_credentials(config, identity)
+                        current_entry(store, identity, generation)
                         terraform.apply(managed)
                         del managed[identity]
                         terraform.apply(managed, retiring={identity})
+                    else:
+                        # Also recover a partial earlier Terraform retirement.
+                        retire_provider_credentials(config, identity)
                     update_entry(
                         store,
                         identity,

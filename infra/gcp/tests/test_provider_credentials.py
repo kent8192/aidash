@@ -74,6 +74,22 @@ class ProviderCredentialIamTests(unittest.TestCase):
             "['projects/${var.byok_project_id}/roles/aidashByokCreate', "
             "'projects/${var.byok_project_id}/roles/aidashByokManage'])")
 
+    def test_retirement_is_bootstrap_only_delete_and_project_inventory(self):
+        for name, permission in [("byok_retire", "secretmanager.secrets.delete"),
+                                 ("byok_retire_inventory", "secretmanager.secrets.list")]:
+            role = resource(self.bootstrap, "google_project_iam_custom_role", name)
+            self.assertEqual(set(re.findall(r'"((?:iam|resourcemanager|secretmanager)\.[^"]+)"', role)), {permission})
+            self.assertNotIn("versions.", role)
+            grant = resource(self.bootstrap, "google_project_iam_member", name)
+            self.assertIn('google_service_account.automation["deploy"].email', grant)
+            self.assertRegex(grant, r'project\s*=\s*var\.byok_project_id')
+            self.assertIn(f'google_project_iam_custom_role.{name}[0].name', grant)
+            self.assertNotIn(name, self.byok)
+        deletion = resource(self.bootstrap, "google_project_iam_member", "byok_retire")
+        self.assertIn("resource.name.startsWith('projects/${data.google_project.byok[0].number}/secrets/aidash-')", deletion)
+        inventory = resource(self.bootstrap, "google_project_iam_member", "byok_retire_inventory")
+        self.assertNotIn("condition {", inventory)
+
     def test_only_bootstrap_broker_has_byok_payload_read_grant(self):
         role = resource(self.bootstrap, "google_project_iam_custom_role", "byok_broker_read")
         self.assertIn('"aidashByokBrokerRead"', role)
@@ -107,6 +123,8 @@ class ProviderCredentialIamTests(unittest.TestCase):
         self.assertEqual(set(byok_grants), {
             ("bootstrap/provider_credentials.tf", "byok_deploy"),
             ("bootstrap/credential_brokers.tf", "byok_broker_read"),
+            ("bootstrap/provider_credentials.tf", "byok_retire"),
+            ("bootstrap/provider_credentials.tf", "byok_retire_inventory"),
             ("modules/environment/provider_credentials.tf", "provider_credential_create"),
             ("modules/environment/provider_credentials.tf", "provider_credential_manage"),
         })

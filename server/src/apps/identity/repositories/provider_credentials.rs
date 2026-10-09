@@ -204,8 +204,13 @@ pub async fn admit(
 	snapshot: &aidash_domain::registry::bindings::BindingSnapshot,
 	configured: bool,
 ) -> crate::Result<()> {
+	admit_providers(tx, run, tenant, selected_providers(snapshot)?, configured).await
+}
+
+fn selected_providers(
+	snapshot: &aidash_domain::registry::bindings::BindingSnapshot,
+) -> crate::Result<std::collections::BTreeSet<String>> {
 	use aidash_domain::registry::AgentConfig;
-	use reinhardt::query::{Alias, IntoValue, OnConflict};
 	let config = AgentConfig::from_snapshot(snapshot)?;
 	// Resolve only the selected local closure that was already admitted. Live
 	// Registry overrides and excluded or foreign Bindings cannot retarget a Run.
@@ -272,6 +277,17 @@ pub async fn admit(
 			providers.insert(provider.to_owned());
 		}
 	}
+	Ok(providers)
+}
+
+async fn admit_providers(
+	tx: &mut dyn TransactionExecutor,
+	run: Uuid,
+	tenant: &str,
+	providers: std::collections::BTreeSet<String>,
+	configured: bool,
+) -> crate::Result<()> {
+	use reinhardt::query::{Alias, IntoValue, OnConflict};
 	if !providers.is_empty() && !configured {
 		return Err(crate::Error::Invalid(
 			"Provider Credential Store is not configured".into(),
@@ -457,5 +473,28 @@ pub(crate) async fn admit_workspace(
 			.map_err(reinhardt::core::exception::Error::from)?,
 		None => String::new(),
 	};
-	admit(tx, run, &tenant, snapshot, configured).await
+	let mut providers = selected_providers(snapshot)?;
+	// Workspace retrieval is another admitted provider consumer, even when the
+	// Agent's own Model uses an environment source. Lock the index generation
+	// with the Run admission so configuration cannot change while pins are made.
+	if let Some(index) =
+		crate::apps::knowledge::models::SemanticIndexe::locked(tx, workspace, false).await?
+	{
+		let spec = index.configuration()?;
+		if spec.enabled
+			&& let Some(provider) = spec.embedding.provider_credential
+		{
+			if index.tenant != tenant {
+				return Err(crate::Error::Forbidden);
+			}
+			aidash_domain::provider_credentials::validate_source(
+				&spec.embedding.endpoint,
+				&spec.embedding.provider,
+				spec.embedding.credential_env.as_deref(),
+				Some(&provider),
+			)?;
+			providers.insert(provider);
+		}
+	}
+	admit_providers(tx, run, &tenant, providers, configured).await
 }

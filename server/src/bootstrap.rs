@@ -1864,7 +1864,7 @@ pub(crate) fn workbench_sandbox_execution(
 	}
 }
 
-/// Sandbox model construction uses the same live credential resolver as worker inference.
+/// Sandbox models retain environment access until they have Tenant admission authority.
 pub(crate) struct WorkbenchSandboxModels {
 	client: reqwest::Client,
 }
@@ -1875,6 +1875,11 @@ impl aidash_application::ports::registry::workbench::sandbox::admission::Sandbox
 		&self,
 		model: aidash_domain::model::ModelConfig,
 	) -> aidash_application::Result<Arc<dyn aidash_application::ports::ModelProvider>> {
+		if model.provider_credential.is_some() {
+			return Err(aidash_application::Error::Invalid(
+				"Workbench tests do not support Tenant Provider Credentials".into(),
+			));
+		}
 		aidash_integrations::inference::provider(
 			self.client.clone(),
 			model,
