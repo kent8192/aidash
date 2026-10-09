@@ -36,8 +36,12 @@ spec:
   minReadySeconds: 2
   progressDeadlineSeconds: 300
   strategy:
+    {{- if $.Values.memoryRecovery.existingClaim }}
+    type: Recreate
+    {{- else }}
     type: RollingUpdate
     rollingUpdate: { maxUnavailable: 0, maxSurge: 1 }
+    {{- end }}
   selector:
     matchLabels:
       app.kubernetes.io/instance: {{ $.Release.Name }}
@@ -48,8 +52,12 @@ spec:
         app.kubernetes.io/name: aidash
         app.kubernetes.io/instance: {{ $.Release.Name }}
         app.kubernetes.io/component: {{ $role }}
+        {{- if $.Values.memoryRecovery.existingClaim }}
+        aidash.run/home-ledger: "true"
+        {{- end }}
     spec:
-      serviceAccountName: {{ $name }}
+      hostNetwork: false
+      serviceAccountName: {{ $name }}-{{ $role }}
       automountServiceAccountToken: {{ and $.Values.observability.enabled (eq $role "server") }}
       terminationGracePeriodSeconds: {{ $.Values.terminationGracePeriodSeconds }}
       securityContext:
@@ -63,15 +71,13 @@ spec:
       {{- with $.Values.image.pullSecrets }}
       imagePullSecrets: {{ toYaml . | nindent 8 }}
       {{- end }}
-      {{- with $.Values.nodeSelector }}
+      {{- with mergeOverwrite (deepCopy $.Values.nodeSelector) $.Values.environment.nodeSelector }}
       nodeSelector: {{ toYaml . | nindent 8 }}
       {{- end }}
-      {{- with $.Values.tolerations }}
+      {{- with concat $.Values.tolerations $.Values.environment.tolerations }}
       tolerations: {{ toYaml . | nindent 8 }}
       {{- end }}
-      {{- with $.Values.affinity }}
-      affinity: {{ toYaml . | nindent 8 }}
-      {{- end }}
+      affinity: {{ include "aidash.affinity" $ | nindent 8 }}
       containers:
         - name: aidash
           image: {{ printf "%s:%s" $.Values.image.repository $.Values.image.tag | quote }}
@@ -192,6 +198,7 @@ spec:
         app.kubernetes.io/instance: {{ .Release.Name }}
         app.kubernetes.io/component: frontend
     spec:
+      hostNetwork: false
       automountServiceAccountToken: false
       securityContext:
         runAsNonRoot: true
@@ -202,10 +209,10 @@ spec:
       {{- with .Values.image.pullSecrets }}
       imagePullSecrets: {{ toYaml . | nindent 8 }}
       {{- end }}
-      {{- with .Values.nodeSelector }}
+      {{- with mergeOverwrite (deepCopy .Values.nodeSelector) .Values.environment.nodeSelector }}
       nodeSelector: {{ toYaml . | nindent 8 }}
       {{- end }}
-      {{- with .Values.tolerations }}
+      {{- with concat .Values.tolerations .Values.environment.tolerations }}
       tolerations: {{ toYaml . | nindent 8 }}
       {{- end }}
       {{- with .Values.affinity }}
@@ -261,11 +268,17 @@ spec:
       nodePort: {{ . }}
       {{- end }}
 ---
+{{- range $role := list "server" "worker" }}
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: {{ $name }}
+  name: {{ $name }}-{{ $role }}
+  {{- with (index $.Values $role).serviceAccount.annotations }}
+  annotations: {{ toYaml . | nindent 4 }}
+  {{- end }}
 automountServiceAccountToken: false
+---
+{{- end }}
 {{- if .Values.observability.enabled }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
@@ -285,7 +298,7 @@ kind: RoleBinding
 metadata:
   name: {{ $name }}-observe
 subjects:
-  - { kind: ServiceAccount, name: {{ $name }}, namespace: {{ .Release.Namespace }} }
+  - { kind: ServiceAccount, name: {{ $name }}-server, namespace: {{ .Release.Namespace }} }
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role

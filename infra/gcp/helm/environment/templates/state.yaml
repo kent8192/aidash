@@ -1,0 +1,113 @@
+{{- $name := printf "%s-environment" .Release.Name -}}
+{{- $secret := required "postgres.existingSecret is required" .Values.postgres.existingSecret -}}
+{{- if .Values.storage.createClass }}
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: {{ .Values.storage.className }}
+  annotations: { helm.sh/resource-policy: keep }
+provisioner: {{ .Values.storage.provisioner }}
+parameters: { type: {{ .Values.storage.type }} }
+reclaimPolicy: Retain
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: true
+{{- end }}
+{{- range $role := list "postgres" "nats" }}
+{{- $settings := index $.Values $role }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}-{{ $role }}
+spec:
+  clusterIP: None
+  selector: { aidash.run/dependency: {{ $role }}, app.kubernetes.io/instance: {{ $.Release.Name }} }
+  ports:
+    - { name: client, port: {{ ternary 5432 4222 (eq $role "postgres") }}, targetPort: client }
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ $name }}-{{ $role }}
+spec:
+  replicas: 1
+  serviceName: {{ $name }}-{{ $role }}
+  persistentVolumeClaimRetentionPolicy: { whenDeleted: Retain, whenScaled: Retain }
+  selector: { matchLabels: { aidash.run/dependency: {{ $role }}, app.kubernetes.io/instance: {{ $.Release.Name }} } }
+  template:
+    metadata:
+      labels: { aidash.run/dependency: {{ $role }}, app.kubernetes.io/instance: {{ $.Release.Name }} }
+    spec:
+      hostNetwork: false
+      automountServiceAccountToken: false
+      nodeSelector: {{ toYaml $.Values.nodeSelector | nindent 8 }}
+      tolerations: {{ toYaml $.Values.tolerations | nindent 8 }}
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: {{ $role }}
+          image: {{ $settings.image | quote }}
+          ports: [{ name: client, containerPort: {{ ternary 5432 4222 (eq $role "postgres") }} }]
+          resources: {{ toYaml $settings.resources | nindent 12 }}
+          {{- if eq $role "postgres" }}
+          envFrom: [{ secretRef: { name: {{ $secret }} } }]
+          env: [{ name: PGDATA, value: /var/lib/postgresql/data/pgdata }]
+          readinessProbe:
+            exec: { command: [sh, -ec, 'pg_isready -h 127.0.0.1 -U "$POSTGRES_USER" -d "$POSTGRES_DB"'] }
+            periodSeconds: 5
+          volumeMounts: [{ name: data, mountPath: /var/lib/postgresql/data }]
+          {{- else }}
+          args: [-js, -sd, /data]
+          readinessProbe: { tcpSocket: { port: client }, periodSeconds: 5 }
+          volumeMounts: [{ name: data, mountPath: /data }]
+          {{- end }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        annotations: { helm.sh/resource-policy: keep }
+      spec:
+        accessModes: [ReadWriteOnce]
+        storageClassName: {{ $.Values.storage.className }}
+        resources: { requests: { storage: {{ $settings.size }} } }
+{{- end }}
+---
+# Namespace isolation for the retained dependencies; no cross-Environment ingress.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $name }}-dependencies
+spec:
+  podSelector: { matchExpressions: [{ key: aidash.run/dependency, operator: Exists }] }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector: { matchExpressions: [{ key: app.kubernetes.io/component, operator: In, values: [server, worker] }] }
+        - podSelector: { matchLabels: { aidash.run/activity: {{ .Release.Name }} } }
+      ports:
+        - { protocol: TCP, port: 5432 }
+        - { protocol: TCP, port: 4222 }
+{{- if .Values.previewTls.createVolume }}
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: {{ .Values.previewTls.volumeName }}
+  annotations: { helm.sh/resource-policy: keep }
+spec:
+  capacity: { storage: {{ .Values.previewTls.size }} }
+  accessModes: [ReadWriteOnce]
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ""
+  claimRef:
+    name: {{ .Values.previewTls.claimName }}
+    namespace: {{ .Values.previewTls.claimNamespace | default .Release.Namespace }}
+  csi:
+    driver: pd.csi.storage.gke.io
+    volumeHandle: {{ required "previewTls.volumeHandle is required" .Values.previewTls.volumeHandle | quote }}
+    fsType: ext4
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - { key: topology.gke.io/zone, operator: In, values: [{{ .Values.previewTls.zone }}] }
+{{- end }}

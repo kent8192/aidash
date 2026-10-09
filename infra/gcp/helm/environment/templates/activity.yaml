@@ -1,0 +1,106 @@
+{{- if .Values.activity.enabled -}}
+{{- $name := printf "%s-environment" .Release.Name -}}
+{{- $secret := required "activity.existingSecret is required" .Values.activity.existingSecret -}}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name }}-activity
+data:
+  snapshot.json: '{"protocol":"aidash-infra-activity/1","busy":true,"observation_gap":true}'
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name }}-activity-code
+data:
+  activity.py: |
+{{ .Files.Get "files/activity.py" | indent 4 }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $name }}-activity
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $name }}-activity
+rules:
+  - apiGroups: [""]
+    resources: [configmaps]
+    resourceNames: [{{ $name }}-activity]
+    verbs: [get, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $name }}-activity
+subjects:
+  - { kind: ServiceAccount, name: {{ $name }}-activity, namespace: {{ .Release.Namespace }} }
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: {{ $name }}-activity }
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ $name }}-activity
+spec:
+  schedule: "* * * * *"
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 30
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 1
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 55
+      template:
+        metadata:
+          labels: { aidash.run/activity: {{ .Release.Name | quote }} }
+        spec:
+          hostNetwork: false
+          serviceAccountName: {{ $name }}-activity
+          restartPolicy: Never
+          nodeSelector: {{ toYaml .Values.nodeSelector | nindent 12 }}
+          tolerations: {{ toYaml .Values.tolerations | nindent 12 }}
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10001
+            runAsGroup: 10001
+            fsGroup: 10001
+            seccompProfile: { type: RuntimeDefault }
+          initContainers:
+            - name: observer
+              image: {{ .Values.activity.observerImage | quote }}
+              command: [sh, -ec, 'aidash-infra-observer > /snapshot/database.json']
+              env:
+                - name: DATABASE_URL
+                  valueFrom: { secretKeyRef: { name: {{ $secret }}, key: DATABASE_URL } }
+              resources: {{ toYaml .Values.activity.resources | nindent 16 }}
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities: { drop: [ALL] }
+              volumeMounts: [{ name: snapshot, mountPath: /snapshot }]
+          containers:
+            - name: collector
+              image: {{ .Values.activity.collectorImage | quote }}
+              command: [python3, -I, /opt/activity/activity.py]
+              env:
+                - { name: ACTIVITY_CONFIGMAP, value: {{ $name }}-activity }
+                - { name: EDGE_ACTIVITY_ENDPOINT, value: "http://{{ $name }}-activity:8089" }
+                - { name: RUNNER_ENDPOINT, value: {{ .Values.activity.runnerEndpoint | quote }} }
+                - name: AIDASH_CORE_RUNNER_TOKEN
+                  valueFrom: { secretKeyRef: { name: {{ $secret }}, key: AIDASH_CORE_RUNNER_TOKEN } }
+              resources: {{ toYaml .Values.activity.resources | nindent 16 }}
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities: { drop: [ALL] }
+              volumeMounts:
+                - { name: snapshot, mountPath: /snapshot, readOnly: true }
+                - { name: code, mountPath: /opt/activity, readOnly: true }
+          volumes:
+            - { name: snapshot, emptyDir: { sizeLimit: 16Mi } }
+            - { name: code, configMap: { name: {{ $name }}-activity-code } }
+{{- end }}

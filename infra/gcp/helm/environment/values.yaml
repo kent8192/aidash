@@ -1,0 +1,56 @@
+nodeSelector: {}
+tolerations:
+  - { key: node.kubernetes.io/not-ready, operator: Exists, effect: NoExecute, tolerationSeconds: 30 }
+  - { key: node.kubernetes.io/unreachable, operator: Exists, effect: NoExecute, tolerationSeconds: 30 }
+storage:
+  # Install once per shared cluster; later releases reference the same class.
+  createClass: false
+  className: aidash-retain
+  provisioner: pd.csi.storage.gke.io
+  type: pd-balanced
+postgres:
+  # Build deploy/postgres/Dockerfile (runtime target); includes all three extensions.
+  image: aidash-postgres:17-pg-jsonschema-0.3.4
+  existingSecret: ""
+  size: 10Gi
+  resources:
+    requests: { cpu: 100m, memory: 256Mi }
+    limits: { cpu: "2", memory: 2Gi }
+nats:
+  image: nats:2.12.4
+  size: 2Gi
+  resources:
+    requests: { cpu: 100m, memory: 64Mi }
+    limits: { cpu: "1", memory: 512Mi }
+edge:
+  hostname: ""
+  backend: aidash-backend
+  caddyImage: caddy:2.10.2
+  # Build edge.Dockerfile from the trusted ref (Nginx + Lua + cjson).
+  admissionImage: aidash-edge-admission:0.1.0
+  tlsSize: 2Gi
+  # Existing claim is for the retained static preview TLS PV.
+  existingTlsClaim: ""
+  loadBalancer: true
+  resources:
+    requests: { cpu: 50m, memory: 64Mi }
+    limits: { cpu: "1", memory: 256Mi }
+previewTls:
+  createVolume: false
+  # One cluster-scoped PV; never delete it on a release uninstall.
+  volumeName: aidash-preview-tls
+  volumeHandle: ""
+  claimName: preview-tls
+  claimNamespace: ""
+  zone: us-central1-a
+  size: 2Gi
+activity:
+  enabled: true
+  observerImage: aidash-infra-observer:0.1.0
+  collectorImage: aidash-runner:0.1.0
+  # Secret contains the read-only observer DATABASE_URL and Runner token.
+  existingSecret: ""
+  runnerEndpoint: http://aidash-execution-runner:8949
+  resources:
+    requests: { cpu: 50m, memory: 64Mi }
+    limits: { cpu: "1", memory: 256Mi }

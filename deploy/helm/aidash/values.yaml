@@ -18,6 +18,8 @@ memoryRecovery:
   # Select the initialized Home directory when it is a child of the claim root.
   subPath: ""
 server:
+  serviceAccount:
+    annotations: {}
   # Optional role-scoped override of existingSecret.
   existingSecret: ""
   replicas: 1
@@ -28,6 +30,8 @@ sse:
   reconcileIntervalMs: 5000
   backpressureTimeoutSeconds: 30
 worker:
+  serviceAccount:
+    annotations: {}
   existingSecret: ""
   slots: 4
   replicas: 1
@@ -54,6 +58,69 @@ terminationGracePeriodSeconds: 30
 nodeSelector: {}
 tolerations: []
 affinity: {}
+
+# Per-Environment scheduling (e.g. cloud.google.com/gke-nodepool: develop).
+environment:
+  nodeSelector: {}
+  tolerations:
+    - { key: node.kubernetes.io/not-ready, operator: Exists, effect: NoExecute, tolerationSeconds: 30 }
+    - { key: node.kubernetes.io/unreachable, operator: Exists, effect: NoExecute, tolerationSeconds: 30 }
+
+# Only GKE Standard Ubuntu/containerd N2 pools have been verified on GCP.
+# Each component is opt-in. Names are unique per Environment/release.
+execution:
+  sandboxNamespace: ""
+  trustedNamespace: ""
+  createNamespaces: false
+  podSecurityVersion: v1.34
+  imagePullPolicy: IfNotPresent
+  sandboxImage: ""
+  runtimeClass:
+    create: false
+    name: ""
+  gvisor:
+    version: "20260921.0"
+    sha256: "3dd478770dd751d09c257ba14d739b179348a36c5f2d9e954b773f5f90bff646"
+    label: aidash.run/gvisor
+  paths:
+    runscRoot: /run/containerd/runsc
+    runsc: /usr/local/bin/runsc
+    gvisorBin: /usr/local/bin/gvisor-bin
+    ctr: /usr/bin/ctr
+    cgroupRoot: /sys/fs/cgroup
+    guardState: /var/lib/aidash-node-guard
+    sentryBinaries: [/usr/local/bin/runsc, /usr/local/bin/gvisor-bin/gvisor_sentry]
+  installer:
+    enabled: false
+    # Build from the trusted ref, never the deployed PR source.
+    image: aidash-runner:0.1.0
+  guard:
+    enabled: false
+    # Build from the trusted ref, never the deployed PR source.
+    image: aidash-runner:0.1.0
+  runner:
+    enabled: false
+    # Build from the trusted ref, never the deployed PR source.
+    image: aidash-runner:0.1.0
+    existingSecret: ""
+    tokenKey: AIDASH_CORE_RUNNER_TOKEN
+    journal:
+      existingClaim: ""
+      storageClassName: ""
+      size: 10Gi
+    resources:
+      requests: { cpu: 100m, memory: 128Mi }
+      limits: { cpu: "1", memory: 512Mi }
+  limits:
+    cpu: 2
+    memory_bytes: 2147483648
+    processes: 128
+    host_tasks: 512
+    working_bytes: 1073741824
+    temporary_bytes: 268435456
+    output_bytes: 8388608
+    maximum_seconds: 600
+    idle_seconds: 1800
 
 # Stable across Pod replacements. Provision once with `aidash activation-provision`
 # using operator credentials and these same values; runtime does not create objects.

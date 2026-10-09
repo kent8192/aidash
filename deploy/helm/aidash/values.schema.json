@@ -13,6 +13,155 @@
     "sse"
   ],
   "properties": {
+    "environment": {
+      "type": "object",
+      "properties": {
+        "nodeSelector": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "tolerations": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        }
+      }
+    },
+    "execution": {
+      "type": "object",
+      "properties": {
+        "paths": {
+          "type": "object",
+          "properties": {
+            "runscRoot": {
+              "type": "string",
+              "pattern": "^/[A-Za-z0-9_./-]+$"
+            },
+            "runsc": {
+              "type": "string",
+              "pattern": "^/[A-Za-z0-9_./-]+$"
+            },
+            "gvisorBin": {
+              "type": "string",
+              "pattern": "^/[A-Za-z0-9_./-]+$"
+            },
+            "ctr": {
+              "type": "string",
+              "pattern": "^/[A-Za-z0-9_./-]+$"
+            },
+            "cgroupRoot": {
+              "type": "string",
+              "pattern": "^/[A-Za-z0-9_./-]+$"
+            },
+            "guardState": {
+              "type": "string",
+              "pattern": "^/[A-Za-z0-9_./-]+$"
+            },
+            "sentryBinaries": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "pattern": "^/[A-Za-z0-9_./-]+$"
+              },
+              "minItems": 1
+            }
+          }
+        },
+        "gvisor": {
+          "type": "object",
+          "properties": {
+            "version": {
+              "type": "string",
+              "pattern": "^[0-9]{8}\\.[0-9]+$"
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          }
+        },
+        "runner": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "image": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "guard": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "image": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "installer": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "image": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "limits": {
+          "type": "object",
+          "properties": {
+            "cpu": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "memory_bytes": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "processes": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "host_tasks": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "working_bytes": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "temporary_bytes": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "maximum_seconds": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "output_bytes": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "idle_seconds": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        }
+      }
+    },
     "sse": {
       "type": "object",
       "required": ["reconcileIntervalMs", "backpressureTimeoutSeconds"],
@@ -122,6 +271,17 @@
       "type": "object",
       "required": ["replicas", "resources"],
       "properties": {
+        "serviceAccount": {
+          "type": "object",
+          "properties": {
+            "annotations": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            }
+          }
+        },
         "existingSecret": { "type": "string" },
         "replicas": { "type": "integer", "minimum": 0 },
         "resources": { "type": "object", "required": ["requests", "limits"] }
