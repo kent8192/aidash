@@ -324,6 +324,10 @@ impl ExecutionEnvironment for Backend {
 		let _ = run;
 		unexpected("ExecutionEnvironment.skill_context")
 	}
+	async fn cache_scope(&self, run: &Run) -> Result<aidash_domain::projection::CacheScope> {
+		let _ = run;
+		unexpected("ExecutionEnvironment.cache_scope")
+	}
 	async fn semantic_context(
 		&self,
 		run: &Run,
@@ -407,6 +411,7 @@ impl ExecutionEnvironment for Backend {
 			max_steps: 64,
 			allow_task_creation: None,
 			conversation_memory: self.0.conversation_memory,
+			projection_version: Default::default(),
 		})
 	}
 	fn provider(&self, _model: ModelConfig) -> Result<Arc<dyn ModelProvider>> {
@@ -913,7 +918,10 @@ async fn recovery_reuses_the_observed_memory_then_reloads_at_a_later_boundary(
 	assert!(advance_sources(&mut fixture).await.is_err());
 	{
 		let requests = fixture.backend.0.requests.lock().unwrap();
-		assert_eq!(requests[0].context, requests[1].context);
+		assert_eq!(
+			serde_json::to_value(&requests[0].context).unwrap(),
+			serde_json::to_value(&requests[1].context).unwrap()
+		);
 	}
 	assert_eq!(
 		fixture
@@ -930,7 +938,10 @@ async fn recovery_reuses_the_observed_memory_then_reloads_at_a_later_boundary(
 	fixture.run.step += 1;
 	assert!(advance_sources(&mut fixture).await.is_err());
 	let requests = fixture.backend.0.requests.lock().unwrap();
-	assert_ne!(requests[1].context, requests[2].context);
+	assert_ne!(
+		serde_json::to_value(&requests[1].context).unwrap(),
+		serde_json::to_value(&requests[2].context).unwrap()
+	);
 	assert_eq!(
 		fixture
 			.backend

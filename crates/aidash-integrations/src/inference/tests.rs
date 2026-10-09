@@ -3,10 +3,11 @@ use super::*;
 fn media_reservation_covers_complete_request_growth() {
 	let mut request = ModelRequest {
 		instructions: "Inspect the media".into(),
-		context: json!({"history":"quoted \\\"text\\\" and 日本語"}),
+		context: json!({"history":"quoted \\\"text\\\" and 日本語"}).into(),
 		tools: vec![],
 		max_output_tokens: 512,
 		content_parts: vec![],
+		cache_scope: None,
 	};
 	let without_media = request.estimated_total_tokens();
 	request.content_parts = vec![

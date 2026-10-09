@@ -402,6 +402,7 @@ impl ExecutionEnvironment for Environment<'_> {
 			max_steps: config.max_steps,
 			allow_task_creation: config.allow_task_creation,
 			conversation_memory: config.conversation_memory,
+			projection_version: config.projection_version.unwrap_or_default(),
 		})
 	}
 	fn provider(&self, model: ModelConfig) -> Result<Arc<dyn ModelProvider>> {
@@ -510,6 +511,11 @@ impl ExecutionEnvironment for Environment<'_> {
 		} else {
 			Ok(String::new())
 		}
+	}
+	async fn cache_scope(&self, _run: &Run) -> Result<aidash_domain::projection::CacheScope> {
+		Err(aidash_application::Error::Invalid(
+			"this node has no Cache Salt Key for salted Projection Versions".into(),
+		))
 	}
 	async fn semantic_context(
 		&self,

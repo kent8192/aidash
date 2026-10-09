@@ -4,7 +4,7 @@ use rstest::{fixture, rstest};
 fn request() -> ModelRequest {
 	ModelRequest {
 		instructions: "system".into(),
-		context: json!({"text":"東京"}),
+		context: json!({"text":"東京"}).into(),
 		tools: vec![],
 		max_output_tokens: 12,
 		content_parts: vec![
@@ -18,6 +18,7 @@ fn request() -> ModelRequest {
 				bytes: b"abc".to_vec(),
 			},
 		],
+		cache_scope: None,
 	}
 }
 #[rstest]
@@ -53,7 +54,12 @@ fn every_admitted_request_or_media_change_has_a_distinct_identity(
 	let before = request.inference_digest();
 	match change {
 		"instructions" => request.instructions.push('!'),
-		"context" => request.context["text"] = json!("changed"),
+		"context" => {
+			request
+				.context
+				.legacy_mut()
+				.expect("Legacy request context")["text"] = json!("changed")
+		}
 		"output" => request.max_output_tokens += 1,
 		"bytes" => request.content_parts[0] = ContentPart::Text("abcd".into()),
 		"order" => request.content_parts.swap(0, 1),

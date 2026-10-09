@@ -382,6 +382,7 @@ impl DefinitionValidation {
 			&instructions,
 			&specifications,
 			private_context,
+			&aidash_domain::context::RequestProjection::Legacy,
 		)
 		.map_err(Into::into)
 	}

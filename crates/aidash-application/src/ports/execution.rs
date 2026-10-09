@@ -27,6 +27,9 @@ pub struct ExecutionAgent {
 	pub max_steps: i32,
 	pub allow_task_creation: Option<bool>,
 	pub conversation_memory: bool,
+	/// Pinned through the Run's Binding snapshot; Legacy when the definition
+	/// names none.
+	pub projection_version: aidash_domain::projection::ProjectionVersion,
 }
 pub struct InvocationOutcome {
 	pub status: String,
@@ -203,6 +206,10 @@ pub trait ExecutionEnvironment: Send + Sync {
 	async fn documents(&self, entry: &Entry) -> Result<Value>;
 	async fn recheck_source_observation(&self, run: &Run, content: &Value) -> Result<()>;
 	async fn skill_context(&self, run: &Run) -> Result<String>;
+	/// Cache Scope for a salted Projection Version: the Tenant whose provider
+	/// cache the request may share and the current Cache Salt Key version. Fails
+	/// with a typed error when the node has no Cache Salt Key; never unsalted.
+	async fn cache_scope(&self, run: &Run) -> Result<aidash_domain::projection::CacheScope>;
 	async fn semantic_context(
 		&self,
 		run: &Run,

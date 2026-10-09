@@ -4,6 +4,7 @@ use aidash_domain::{
 	context::{self, Context, ContextEvent, ContextUsage},
 	media::Selection,
 	model::ModelConfig,
+	projection::ProjectionVersion,
 	semantic::{Failure, InputRead},
 	tool::{ResultFitting, ToolIdentity, ToolUseMode},
 	*,
@@ -405,18 +406,32 @@ impl<'a> Executor<'a> {
 				} else {
 					serde_json::Value::Null
 				};
+				let projection = match agent.projection_version {
+					ProjectionVersion::Legacy => context::RequestProjection::Legacy,
+					ProjectionVersion::Ordered => {
+						context::RequestProjection::Ordered(self.environment.cache_scope(run).await?)
+					}
+					// Never fall back to Legacy for a pinned version this build cannot render.
+					ProjectionVersion::Native => {
+						return Err(Error::Invalid(
+							"the Native Projection Version is not supported by this node".into(),
+						));
+					}
+				};
 				context::request_context_budget(
 					window,
 					output,
 					&instructions,
 					&specifications,
 					&private_context,
+					&projection,
 				)?;
 				let mut budget = context::RequestBudget {
 					window: context_window,
 					instructions: &instructions,
 					tools: &specifications,
 					max_output_tokens: output,
+					projection: &projection,
 				};
 				let minimum_request = budget
 					.request(&Context::default(), &private_context)
