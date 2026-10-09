@@ -60,7 +60,11 @@ variable "byok_broker_environments" {
   }
 }
 variable "broker_signing_region" {
-  description = "Permanent KMS key-ring location; match the broker module region."
+  description = "Permanent KMS key-ring location; managed broker environments support us-central1."
   type        = string
   default     = "us-central1"
+  validation {
+    condition     = var.broker_signing_region == "us-central1"
+    error_message = "Broker signing region must be us-central1 to match the managed environments root."
+  }
 }

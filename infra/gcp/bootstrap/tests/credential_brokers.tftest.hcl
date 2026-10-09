@@ -114,3 +114,11 @@ run "distinct_credential_prefixes_with_shared_id_prefix" {
     error_message = "Only credential-prefix overlap is forbidden; a shared ID prefix is safe."
   }
 }
+run "unsupported_broker_signing_region_forbidden" {
+  command = plan
+  variables {
+    byok_broker_environments = ["test"]
+    broker_signing_region    = "us-west1"
+  }
+  expect_failures = [var.broker_signing_region]
+}

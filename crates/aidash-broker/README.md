@@ -156,6 +156,9 @@ from environment ID to email. It also owns the permanent per-environment KMS
 key ring and Ed25519 signing key and exports their IDs in `broker_signing_keys`.
 Both resources have Terraform destruction protection. Keep this bootstrap set
 when disabling the broker or retiring its VM: automation does not own key lifetime.
+`broker_signing_region` is restricted to `us-central1`, matching the managed
+environments root, so bootstrap cannot create permanent keys that the root
+cannot consume.
 Bootstrap alone grants these accounts the BYOK
 custom role `aidashByokBrokerRead` (`secretmanager.versions.access`,
 `secretmanager.versions.get`, `secretmanager.secrets.get`), conditioned on
