@@ -1,7 +1,7 @@
 use common::upstream_fixtures as upstream;
 use reinhardt::ServerRouter as Router;
 use rstest::fixture;
-use upstream::handler;
+use upstream::reply;
 #[path = "../../../execution/tests/support/legacy.rs"]
 mod common;
 use common::{cleanup, request};
@@ -731,8 +731,8 @@ fn simulated_test_never_invokes_the_registered_external_tool_router(
 	let real_hits = state.real_hits.clone();
 	let hits = tool_hits.clone();
 	let confined_hits = real_hits.clone();
-	std::sync::Arc::new(Router::new()
-		.handler("/v1/chat/completions", handler(http::Method::POST, |request: reinhardt::Request| {let body = request.json::<Value>().unwrap();async move {
+	std::sync::Arc::new(reinhardt::test::stub::StubRouter::new()
+.route("/v1/chat/completions", http::Method::POST, reply(|request: reinhardt::Request| {let body = request.json::<Value>().unwrap();async move {
 			let context = body["messages"][1]["content"].as_str().unwrap_or("");
 			if context.contains("\"conversation\"") {
 				reinhardt::Response::ok().with_json(&json!({"choices":[{"finish_reason":"stop","message":{"content":"Simulated result received"}}],"usage":{"prompt_tokens":40,"completion_tokens":6}})).unwrap()
@@ -740,8 +740,8 @@ fn simulated_test_never_invokes_the_registered_external_tool_router(
 			reinhardt::Response::ok().with_json(&json!({"choices":[{"finish_reason":"tool_calls","message":{"content":"","tool_calls":[{"id":"call-1","function":{"name":"plugin_0","arguments":"{\"action\":\"read\",\"resource\":\"sandbox\",\"input\":\"safe\"}"}}]}}],"usage":{"prompt_tokens":30,"completion_tokens":5}})).unwrap()
 			}
 		}}))
-		.handler("/effect", handler(http::Method::POST, move |_request: reinhardt::Request| { let hits = hits.clone(); async move { hits.fetch_add(1, Ordering::SeqCst); reinhardt::Response::ok().with_json(&json!({"effect":"unexpected"})).unwrap() } }))
-		.handler("/test-effect", handler(http::Method::POST, move |_request: reinhardt::Request| { let hits = confined_hits.clone(); async move { hits.fetch_add(1, Ordering::SeqCst); reinhardt::Response::ok().with_json(&json!({"effect":"confined"})).unwrap() } })))
+.route("/effect", http::Method::POST, reply(move |_request: reinhardt::Request| { let hits = hits.clone(); async move { hits.fetch_add(1, Ordering::SeqCst); reinhardt::Response::ok().with_json(&json!({"effect":"unexpected"})).unwrap() } }))
+.route("/test-effect", http::Method::POST, reply(move |_request: reinhardt::Request| { let hits = confined_hits.clone(); async move { hits.fetch_add(1, Ordering::SeqCst); reinhardt::Response::ok().with_json(&json!({"effect":"confined"})).unwrap() } })).into_server_router())
 }
 struct SimulatedTestNeverInvokesTheRegisteredExternalToolProvider {
 	state: SimulatedTestNeverInvokesTheRegisteredExternalToolState,

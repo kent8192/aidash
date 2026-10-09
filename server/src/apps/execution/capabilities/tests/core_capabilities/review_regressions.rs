@@ -611,16 +611,21 @@ fn retry_calls() -> Arc<std::sync::atomic::AtomicUsize> {
 }
 #[rstest::fixture]
 fn retry_router(retry_calls: Arc<std::sync::atomic::AtomicUsize>) -> Arc<reinhardt::ServerRouter> {
-	Arc::new(reinhardt::ServerRouter::new().handler(
-		"/v1/chat/completions",
-		upstream_fixtures::handler(http::Method::POST, move |_| {
-			let calls = retry_calls.clone();
-			async move {
-				calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-				reinhardt::Response::new(http::StatusCode::INTERNAL_SERVER_ERROR)
-					.with_json(&json!({"error":"retry fixture"}))
-					.unwrap()
-			}
-		}),
-	))
+	Arc::new(
+		reinhardt::test::stub::StubRouter::new()
+			.route(
+				"/v1/chat/completions",
+				http::Method::POST,
+				upstream_fixtures::reply(move |_| {
+					let calls = retry_calls.clone();
+					async move {
+						calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+						reinhardt::Response::new(http::StatusCode::INTERNAL_SERVER_ERROR)
+							.with_json(&json!({"error":"retry fixture"}))
+							.unwrap()
+					}
+				}),
+			)
+			.into_server_router(),
+	)
 }

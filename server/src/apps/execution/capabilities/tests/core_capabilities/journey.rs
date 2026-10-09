@@ -10,7 +10,7 @@ use std::sync::{
 	Mutex,
 	atomic::{AtomicUsize, Ordering},
 };
-use upstream_fixtures::handler;
+use upstream_fixtures::reply;
 
 struct Journey {
 	c: CoreFixture,
@@ -425,7 +425,8 @@ fn journey_router(
 	let target = recipient.clone();
 	let capture = requests.clone();
 	let counter = effects.clone();
-	let server = Router::new().handler("/v1/chat/completions", handler(http::Method::POST, move |request: reinhardt::Request| {let body = request.json::<Value>().unwrap();
+	let server = reinhardt::test::stub::StubRouter::new()
+.route("/v1/chat/completions", http::Method::POST, reply(move |request: reinhardt::Request| {let body = request.json::<Value>().unwrap();
 		let capture = capture.clone();
 		let target = target.clone();
 		async move {
@@ -441,14 +442,15 @@ fn journey_router(
 			};
 			reinhardt::Response::ok().with_json(&json!({"choices":[{"index":0,"finish_reason":if message.get("tool_calls").is_some(){"tool_calls"}else{"stop"},"message":message}],"usage":{"prompt_tokens":1,"completion_tokens":1}})).unwrap()
 		}
-	})).handler("/effect", handler(http::Method::POST, move |request: reinhardt::Request| {let headers = request.headers.clone();let _body = request.json::<Value>().unwrap();
+	}))
+.route("/effect", http::Method::POST, reply(move |request: reinhardt::Request| {let headers = request.headers.clone();let _body = request.json::<Value>().unwrap();
 		let counter = counter.clone();
 		async move {
 			assert_eq!(headers.get("authorization").unwrap(), &format!("Bearer {}", std::env::var("AIDASH_SECRET_TEST_PEER").unwrap()));
 			counter.fetch_add(1, Ordering::SeqCst);
 			reinhardt::Response::ok().with_json(&json!({"saved":true})).unwrap()
 		}
-	}));
+	})).into_server_router();
 	Arc::new(server)
 }
 #[rstest::fixture]

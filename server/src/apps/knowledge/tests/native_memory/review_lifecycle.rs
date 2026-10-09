@@ -562,7 +562,8 @@ async fn registry_rejects_a_memory_policy_above_the_semantic_compute_allowance(
 
 #[fixture]
 fn stale_manual_derivations_retire_without_age_expiry_router() -> std::sync::Arc<Router> {
-	std::sync::Arc::new(Router::new().handler("/v1/chat/completions", handler(http::Method::POST, |request: reinhardt::Request| {let input = request.json::<serde_json::Value>().unwrap();async move {
+	std::sync::Arc::new(reinhardt::test::stub::StubRouter::new()
+.route("/v1/chat/completions", http::Method::POST, reply(|request: reinhardt::Request| {let input = request.json::<serde_json::Value>().unwrap();async move {
         let context: serde_json::Value = serde_json::from_str(input["messages"][1]["content"].as_str().unwrap()).unwrap();
         let units: Vec<Unit> = serde_json::from_value(context["units"].clone()).unwrap();
         let mut output = content("Derived from admitted evidence");
@@ -570,7 +571,7 @@ fn stale_manual_derivations_retire_without_age_expiry_router() -> std::sync::Arc
         output.mental_model = serde_json::from_value(context["mental_model"].clone()).unwrap();
         output.evidence = units.iter().map(Unit::evidence).collect();
         reinhardt::Response::ok().with_json(&json!({"choices":[{"finish_reason":"stop","message":{"content":serde_json::to_string(&output).unwrap()}}],"usage":{"prompt_tokens":1,"completion_tokens":1}})).unwrap()
-    }})))
+    }})).into_server_router())
 }
 struct StaleManualDerivationsRetireWithoutAgeExpiryProvider {
 	server: reinhardt::test::fixtures::server::TestServerGuard,

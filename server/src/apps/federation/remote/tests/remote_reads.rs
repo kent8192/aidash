@@ -11,7 +11,7 @@ use std::sync::{
 	Arc,
 	atomic::{AtomicUsize, Ordering},
 };
-use upstream_fixtures::handler;
+use upstream_fixtures::reply;
 
 #[rstest::rstest]
 #[tokio::test]
@@ -430,7 +430,8 @@ use reinhardt::query::Expr;
 
 #[rstest::fixture]
 fn remote_model(#[from(upstream_fixtures::hits)] calls: Arc<AtomicUsize>) -> Arc<Router> {
-	Arc::new(Router::new().handler("/v1/chat/completions",handler(http::Method::POST, move |request: reinhardt::Request| {let body = request.json::<Value>().unwrap();
+	Arc::new(reinhardt::test::stub::StubRouter::new()
+.route("/v1/chat/completions", http::Method::POST, reply(move |request: reinhardt::Request| {let body = request.json::<Value>().unwrap();
         let calls=calls.clone(); async move {
             let message=if calls.fetch_add(1,Ordering::SeqCst)==0 {
                 json!({"role":"assistant","content":null,"tool_calls":[{"id":"discover","type":"function","function":{"name":"agent_discover","arguments":"{}"}}]})
@@ -441,5 +442,5 @@ fn remote_model(#[from(upstream_fixtures::hits)] calls: Arc<AtomicUsize>) -> Arc
             let reason=if message.get("tool_calls").is_some(){"tool_calls"}else{"stop"};
             reinhardt::Response::ok().with_json(&json!({"choices":[{"index":0,"finish_reason":reason,"message":message}],"usage":{"prompt_tokens":1,"completion_tokens":1}})).unwrap()
         }
-    })))
+    })).into_server_router())
 }

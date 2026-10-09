@@ -17,13 +17,13 @@ use reinhardt::{
 	db::orm::Model,
 	query::{Alias, Expr, ExprTrait, PostgresQueryBuilder, Query, QueryStatementBuilder},
 };
-use rstest::rstest;
+use rstest::{fixture, rstest};
 use serde_json::json;
 use std::sync::{
 	Arc, Mutex,
 	atomic::{AtomicBool, AtomicUsize},
 };
-use upstream::handler;
+use upstream::reply;
 use uuid::Uuid;
 #[path = "native_memory/admission.rs"]
 mod admission;
@@ -3754,9 +3754,10 @@ async fn participant_memory_requires_an_enabled_provider_initially_and_after_upg
 #[fixture]
 fn memory_restore_process_sigkill_keeps_the_external_gate_closed_until_validation_router()
 -> std::sync::Arc<Router> {
-	std::sync::Arc::new(Router::new().handler("/v1/embeddings", handler(http::Method::POST, |request: reinhardt::Request| {let input = request.json::<serde_json::Value>().unwrap();async move {
+	std::sync::Arc::new(reinhardt::test::stub::StubRouter::new()
+.route("/v1/embeddings", http::Method::POST, reply(|request: reinhardt::Request| {let input = request.json::<serde_json::Value>().unwrap();async move {
 			reinhardt::Response::ok().with_json(&json!({"model":input["model"],"data":[{"index":0,"embedding":[1.,0.1,0.]}],"usage":{"prompt_tokens":1}})).unwrap()
-		}})))
+		}})).into_server_router())
 }
 struct MemoryRestoreProcessSigkillKeepsTheExternalGateClosedUntilValidationProvider {
 	server: reinhardt::test::fixtures::server::TestServerGuard,
@@ -3776,9 +3777,10 @@ async fn memory_restore_process_sigkill_keeps_the_external_gate_closed_until_val
 #[fixture]
 fn memory_restore_rebuilds_missing_vectors_and_checks_open_epoch_reads_router()
 -> std::sync::Arc<Router> {
-	std::sync::Arc::new(Router::new().handler("/v1/embeddings", handler(http::Method::POST, |request: reinhardt::Request| {let input = request.json::<serde_json::Value>().unwrap();async move {
+	std::sync::Arc::new(reinhardt::test::stub::StubRouter::new()
+.route("/v1/embeddings", http::Method::POST, reply(|request: reinhardt::Request| {let input = request.json::<serde_json::Value>().unwrap();async move {
 			reinhardt::Response::ok().with_json(&json!({"model":input["model"],"data":[{"index":0,"embedding":[1.,0.1,0.]}],"usage":{"prompt_tokens":1}})).unwrap()
-		}})))
+		}})).into_server_router())
 }
 struct MemoryRestoreRebuildsMissingVectorsAndChecksOpenEpochReadsProvider {
 	server: reinhardt::test::fixtures::server::TestServerGuard,
@@ -3814,7 +3816,8 @@ fn extracted_causal_batch_is_atomic_and_replays_stable_admitted_identities_route
 	use std::sync::atomic::Ordering;
 	let calls = state.calls.clone();
 	let served = calls.clone();
-	std::sync::Arc::new(Router::new().handler("/v1/chat/completions", handler(http::Method::POST, move |request: reinhardt::Request| {let input = request.json::<serde_json::Value>().unwrap();
+	std::sync::Arc::new(reinhardt::test::stub::StubRouter::new()
+.route("/v1/chat/completions", http::Method::POST, reply(move |request: reinhardt::Request| {let input = request.json::<serde_json::Value>().unwrap();
 		let served = served.clone();
 		async move {
 			served.fetch_add(1, Ordering::SeqCst);
@@ -3828,7 +3831,7 @@ fn extracted_causal_batch_is_atomic_and_replays_stable_admitted_identities_route
 			let output = extraction::Extraction { facts: vec![rain, delay], causal: vec![extraction::CausalRelation { cause: 0, effect: 1, weight: 0.9 }] };
 			reinhardt::Response::ok().with_json(&json!({"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":serde_json::to_string(&output).unwrap()}}],"usage":{"prompt_tokens":1,"completion_tokens":1}})).unwrap()
 		}
-	})))
+	})).into_server_router())
 }
 struct ExtractedCausalBatchIsAtomicAndReplaysStableAdmittedIdentitiesProvider {
 	state: ExtractedCausalBatchIsAtomicAndReplaysStableAdmittedIdentitiesState,
@@ -3868,10 +3871,11 @@ fn four_arm_recall_is_native_bounded_and_model_calls_are_memoized_router(
 	use std::sync::atomic::Ordering;
 	let calls = state.calls.clone();
 	let served = calls.clone();
-	std::sync::Arc::new(Router::new().handler("/v1/embeddings",handler(http::Method::POST, move |request: reinhardt::Request| {let input = request.json::<serde_json::Value>().unwrap();
+	std::sync::Arc::new(reinhardt::test::stub::StubRouter::new()
+.route("/v1/embeddings", http::Method::POST, reply(move |request: reinhardt::Request| {let input = request.json::<serde_json::Value>().unwrap();
         let served = served.clone();
         async move { served.fetch_add(1,Ordering::SeqCst); reinhardt::Response::ok().with_json(&json!({"model":input["model"],"data":[{"index":0,"embedding":[1.0,0.1,0.0]}],"usage":{"prompt_tokens":1,"total_tokens":1}})).unwrap() }
-    })))
+    })).into_server_router())
 }
 struct FourArmRecallIsNativeBoundedAndModelCallsAreMemoizedProvider {
 	state: FourArmRecallIsNativeBoundedAndModelCallsAreMemoizedState,
@@ -3920,7 +3924,7 @@ fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own_corre
 	let captured = state.captured.clone();
 	let received = captured.clone();
 	std::sync::Arc::new({
-		let model = handler(http::Method::POST, move |request: reinhardt::Request| {
+		let model = reply(move |request: reinhardt::Request| {
 			let input = request.json::<serde_json::Value>().unwrap();
 			let received = received.clone();
 			async move {
@@ -3947,9 +3951,9 @@ fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own_corre
 				reinhardt::Response::ok().with_json(&json!({"choices":[{"index":0,"finish_reason":"tool_calls","message":{"role":"assistant","content":null,"tool_calls":[{"id":format!("native-{}",calls.len()),"type":"function","function":{"name":name,"arguments":serde_json::to_string(&arguments).unwrap()}}]}}],"usage":{"prompt_tokens":1,"completion_tokens":1}})).unwrap()
 			}
 		});
-		Router::new().handler("/v1/chat/completions",model).handler("/v1/embeddings", handler(http::Method::POST, |request: reinhardt::Request| {let input = request.json::<serde_json::Value>().unwrap();async move {
+		reinhardt::test::stub::StubRouter::new().route("/v1/chat/completions", http::Method::POST, model).route("/v1/embeddings", http::Method::POST, reply( |request: reinhardt::Request| {let input = request.json::<serde_json::Value>().unwrap();async move {
             reinhardt::Response::ok().with_json(&json!({"model":input["model"],"data":[{"index":0,"embedding":[1.,0.1,0.]}],"usage":{"prompt_tokens":1}})).unwrap()
-        }}))
+        }})).into_server_router()
 	})
 }
 struct HomeRunReadsSurviveReindexButTheWriterIsInvalidatedByItsOwnCorrectionProvider {
@@ -3996,7 +4000,8 @@ fn durable_derived_jobs_refresh_questions_and_never_revive_deleted_sources_route
 	use std::sync::atomic::Ordering;
 	let calls = state.calls.clone();
 	let served = calls.clone();
-	std::sync::Arc::new(Router::new().handler("/v1/chat/completions",handler(http::Method::POST, move |request: reinhardt::Request| {let input = request.json::<serde_json::Value>().unwrap();let calls=served.clone();async move {
+	std::sync::Arc::new(reinhardt::test::stub::StubRouter::new()
+.route("/v1/chat/completions", http::Method::POST, reply(move |request: reinhardt::Request| {let input = request.json::<serde_json::Value>().unwrap();let calls=served.clone();async move {
   calls.fetch_add(1,Ordering::SeqCst);
   let context:serde_json::Value=serde_json::from_str(input["messages"][1]["content"].as_str().unwrap()).unwrap();
   let units:Vec<Unit>=serde_json::from_value(context["units"].clone()).unwrap();
@@ -4005,7 +4010,8 @@ fn durable_derived_jobs_refresh_questions_and_never_revive_deleted_sources_route
   result.mental_model=serde_json::from_value(context["mental_model"].clone()).unwrap();
   result.evidence=units.iter().map(Unit::evidence).collect();
   reinhardt::Response::ok().with_json(&json!({"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":serde_json::to_string(&result).unwrap()}}],"usage":{"prompt_tokens":1,"completion_tokens":1}})).unwrap()
- }})).handler("/v1/embeddings",handler(http::Method::POST, |request: reinhardt::Request| {let input = request.json::<serde_json::Value>().unwrap();async move {reinhardt::Response::ok().with_json(&json!({"model":input["model"],"data":[{"index":0,"embedding":[1.,0.1,0.]}],"usage":{"prompt_tokens":1}})).unwrap()}})))
+ }}))
+.route("/v1/embeddings", http::Method::POST, reply(|request: reinhardt::Request| {let input = request.json::<serde_json::Value>().unwrap();async move {reinhardt::Response::ok().with_json(&json!({"model":input["model"],"data":[{"index":0,"embedding":[1.,0.1,0.]}],"usage":{"prompt_tokens":1}})).unwrap()}})).into_server_router())
 }
 struct DurableDerivedJobsRefreshQuestionsAndNeverReviveDeletedSourcesProvider {
 	state: DurableDerivedJobsRefreshQuestionsAndNeverReviveDeletedSourcesState,
@@ -4044,7 +4050,8 @@ fn learning_rejects_uncertain_effects_and_reads_complete_canonical_results_route
 ) -> std::sync::Arc<Router> {
 	let captured = state.captured.clone();
 	let capture = captured.clone();
-	std::sync::Arc::new(Router::new().handler("/v1/chat/completions", handler(http::Method::POST, move |request: reinhardt::Request| {let input = request.json::<serde_json::Value>().unwrap();
+	std::sync::Arc::new(reinhardt::test::stub::StubRouter::new()
+.route("/v1/chat/completions", http::Method::POST, reply(move |request: reinhardt::Request| {let input = request.json::<serde_json::Value>().unwrap();
         let capture = capture.clone();
         async move {
             let input: serde_json::Value = serde_json::from_str(input["messages"][1]["content"].as_str().unwrap()).unwrap();
@@ -4057,9 +4064,10 @@ fn learning_rejects_uncertain_effects_and_reads_complete_canonical_results_route
             capture.lock().unwrap().push(input);
             reinhardt::Response::ok().with_json(&json!({"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":serde_json::to_string(&json!({"facts":[result,pending],"causal":[]})).unwrap()}}],"usage":{"prompt_tokens":1,"completion_tokens":1}})).unwrap()
         }
-    })).handler("/v1/embeddings", handler(http::Method::POST, |request: reinhardt::Request| {let input = request.json::<serde_json::Value>().unwrap();async move {
+    }))
+.route("/v1/embeddings", http::Method::POST, reply(|request: reinhardt::Request| {let input = request.json::<serde_json::Value>().unwrap();async move {
         reinhardt::Response::ok().with_json(&json!({"model":input["model"],"data":[{"index":0,"embedding":[1.,0.1,0.]}],"usage":{"prompt_tokens":1}})).unwrap()
-    }})))
+    }})).into_server_router())
 }
 struct LearningRejectsUncertainEffectsAndReadsCompleteCanonicalResultsProvider {
 	state: LearningRejectsUncertainEffectsAndReadsCompleteCanonicalResultsState,
@@ -4103,7 +4111,8 @@ fn observation_consolidation_keeps_conflicts_and_recomputes_surviving_evidence_r
 	let supported = state.supported.clone();
 	let capture = requests.clone();
 	let claim = supported.clone();
-	std::sync::Arc::new(Router::new().handler("/v1/chat/completions",handler(http::Method::POST, move |request: reinhardt::Request| {let input = request.json::<serde_json::Value>().unwrap();
+	std::sync::Arc::new(reinhardt::test::stub::StubRouter::new()
+.route("/v1/chat/completions", http::Method::POST, reply(move |request: reinhardt::Request| {let input = request.json::<serde_json::Value>().unwrap();
         let capture=capture.clone(); let claim=claim.clone(); async move {
             let input:serde_json::Value=serde_json::from_str(input["messages"][1]["content"].as_str().unwrap()).unwrap();
             if input.get("mandatory").is_some() {
@@ -4119,7 +4128,8 @@ fn observation_consolidation_keeps_conflicts_and_recomputes_surviving_evidence_r
             capture.lock().unwrap().push(units);
             reinhardt::Response::ok().with_json(&json!({"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":serde_json::to_string(&result).unwrap()}}],"usage":{"prompt_tokens":1,"completion_tokens":1}})).unwrap()
         }
-    })).handler("/v1/embeddings",handler(http::Method::POST, |request: reinhardt::Request| {let input = request.json::<serde_json::Value>().unwrap();async move {reinhardt::Response::ok().with_json(&json!({"model":input["model"],"data":[{"index":0,"embedding":[1.,0.1,0.]}],"usage":{"prompt_tokens":1}})).unwrap()}})))
+    }))
+.route("/v1/embeddings", http::Method::POST, reply(|request: reinhardt::Request| {let input = request.json::<serde_json::Value>().unwrap();async move {reinhardt::Response::ok().with_json(&json!({"model":input["model"],"data":[{"index":0,"embedding":[1.,0.1,0.]}],"usage":{"prompt_tokens":1}})).unwrap()}})).into_server_router())
 }
 struct ObservationConsolidationKeepsConflictsAndRecomputesSurvivingEvidenceProvider {
 	state: ObservationConsolidationKeepsConflictsAndRecomputesSurvivingEvidenceState,

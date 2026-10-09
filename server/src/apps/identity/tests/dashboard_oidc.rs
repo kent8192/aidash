@@ -1,8 +1,7 @@
 use common::upstream_fixtures;
 use futures_util::FutureExt;
 use http::Method;
-use reinhardt::ServerRouter as Router;
-use upstream_fixtures::handler;
+use upstream_fixtures::reply;
 #[path = "../../execution/tests/support/legacy.rs"]
 mod common;
 
@@ -72,9 +71,8 @@ async fn login_prunes_expired_transactions_and_bounds_pending_browser_logins(
 	let first_app = app.clone();
 	let first_request = tokio::spawn(async move {
 		first_app
-			.raw_http
-			.clone()
-			.request(Method::GET, first_app.url("/auth/login"))
+			.api_http
+			.request(Method::GET, &first_app.url("/auth/login"))
 			.send()
 			.await
 			.unwrap()
@@ -105,9 +103,8 @@ async fn login_prunes_expired_transactions_and_bounds_pending_browser_logins(
 		let app = app.clone();
 		let cookie = cookie.clone();
 		async move {
-			app.raw_http
-				.clone()
-				.request(Method::GET, app.url("/auth/login"))
+			app.api_http
+				.request(Method::GET, &app.url("/auth/login"))
 				.header("cookie", cookie)
 				.send()
 				.await
@@ -143,9 +140,8 @@ async fn login_prunes_expired_transactions_and_bounds_pending_browser_logins(
 	let token = format!("{header}.{payload}.signature");
 	for _ in 0..3 {
 		let response = app
-			.raw_http
-			.clone()
-			.request(Method::POST, app.url("/auth/backchannel-logout"))
+			.api_http
+			.request(Method::POST, &app.url("/auth/backchannel-logout"))
 			.header("content-type", "application/x-www-form-urlencoded")
 			.body(format!("logout_token={token}"))
 			.send()
@@ -161,9 +157,8 @@ async fn login_prunes_expired_transactions_and_bounds_pending_browser_logins(
 	// Act: rebuild only after changing the advertised issuer.
 	let unavailable = common::application(federation.clone()).await;
 	let denied = app
-		.raw_http
-		.clone()
-		.request(Method::GET, unavailable.url("/auth/login"))
+		.api_http
+		.request(Method::GET, &unavailable.url("/auth/login"))
 		.header("cookie", cookie)
 		.send()
 		.await
@@ -186,17 +181,16 @@ async fn call(
 	body: Value,
 ) -> (u16, Value) {
 	let mut request = app
-		.raw_http
-		.clone()
+		.api_http
 		.request(
 			Method::from_bytes(method.as_bytes()).unwrap(),
-			app.url(path),
+			&app.url(path),
 		)
 		.header("content-type", "application/json");
 	if cookie {
 		request = request
 			.header("cookie", "unrelated=first")
-			.header("cookie", "aidash-session=fixture-session");
+			.append_header("cookie", "aidash-session=fixture-session");
 	}
 	if csrf {
 		request = request
@@ -211,11 +205,8 @@ async fn call(
 	}
 	let response = request.json(&body).send().await.unwrap();
 	let status = response.status().as_u16();
-	let bytes = response.bytes().await.unwrap();
-	(
-		status,
-		serde_json::from_slice(&bytes).unwrap_or(Value::Null),
-	)
+	let bytes = response.body();
+	(status, serde_json::from_slice(bytes).unwrap_or(Value::Null))
 }
 
 #[rstest::rstest]
@@ -438,9 +429,8 @@ async fn unmapped_identity_stays_denied_until_operator_approves_existing_user(
 	.await;
 	assert_eq!(expired["status"], "expired");
 	let registration_response = app
-		.raw_http
-		.clone()
-		.request(Method::GET, app.url("/auth/registration"))
+		.api_http
+		.request(Method::GET, &app.url("/auth/registration"))
 		.header("cookie", "aidash-session=fixture-session")
 		.send()
 		.await
@@ -1406,13 +1396,8 @@ async fn older_negative_status_cannot_revoke_a_newer_valid_session(
 
 // Redirect responses are the contract under test; following them contacts the issuer.
 #[rstest::fixture]
-fn browser_client() -> reqwest::Client {
-	// reinhardt-web#6670: APIClientBuilder cannot disable redirects for browser status assertions.
-	// Redirect suppression is required to assert browser protocol status and Location headers.
-	reqwest::Client::builder()
-		.redirect(reqwest::redirect::Policy::none())
-		.build()
-		.unwrap()
+fn browser_client() -> reinhardt::test::APIClientBuilder {
+	reinhardt::test::APIClient::builder().redirect_policy(reinhardt::test::RedirectPolicy::Never)
 }
 
 use reinhardt::query::QueryStatementBuilder;
@@ -1469,10 +1454,11 @@ fn login_prunes_expired_transactions_and_bounds_pending_browser_logins_fixture_r
 		let release = discovery_release.clone();
 
 		let key_counter = key_fetches.clone();
-		let fixture = Router::new()
-			.handler(
+		let fixture = reinhardt::test::stub::StubRouter::new()
+			.route(
 				"/realms/test/.well-known/openid-configuration",
-				handler(http::Method::GET, move |_request: reinhardt::Request| {
+				http::Method::GET,
+				reply(move |_request: reinhardt::Request| {
 					let issuer = metadata_issuer.clone();
 					discovery_counter.fetch_add(1, Ordering::SeqCst);
 					let started = started.clone();
@@ -1494,9 +1480,10 @@ fn login_prunes_expired_transactions_and_bounds_pending_browser_logins_fixture_r
 					}
 				}),
 			)
-			.handler(
+			.route(
 				"/realms/test/protocol/openid-connect/certs",
-				handler(http::Method::GET, move |_request: reinhardt::Request| {
+				http::Method::GET,
+				reply(move |_request: reinhardt::Request| {
 					key_counter.fetch_add(1, Ordering::SeqCst);
 					async {
 						reinhardt::Response::ok()
@@ -1504,7 +1491,8 @@ fn login_prunes_expired_transactions_and_bounds_pending_browser_logins_fixture_r
 							.unwrap()
 					}
 				}),
-			);
+			)
+			.into_server_router();
 		Arc::new(fixture)
 	}
 	.boxed()
@@ -1564,7 +1552,7 @@ async fn login_prunes_expired_transactions_and_bounds_pending_browser_logins_fix
 	#[from(upstream_fixtures::fixed_upstream)]
 	#[with(None,_listener.clone(),_router.clone())]
 	server: upstream_fixtures::FixedServerGuard,
-	browser_client: reqwest::Client,
+	browser_client: reinhardt::test::APIClientBuilder,
 ) -> LoginPrunesExpiredTransactionsAndBoundsPendingBrowserLoginsFixture {
 	let LoginState {
 		discoveries,
@@ -1573,7 +1561,11 @@ async fn login_prunes_expired_transactions_and_bounds_pending_browser_logins_fix
 		key_fetches,
 	} = _state;
 	let mut application = application.await;
-	application.application.raw_http = browser_client;
+	application.application.api_http = Arc::new(
+		browser_client
+			.base_url(&application.application.server.url)
+			.build(),
+	);
 	LoginPrunesExpiredTransactionsAndBoundsPendingBrowserLoginsFixture {
 		application,
 		server,
@@ -1618,10 +1610,14 @@ async fn unmapped_identity_stays_denied_until_operator_approves_existing_user_fi
 	#[from(common::native_application)]
 	#[with(Default::default(),aidash_server::sse::Service::new(Default::default()),Arc::new(|r|r),_runtime.clone())]
 	application: common::ApplicationFuture,
-	browser_client: reqwest::Client,
+	browser_client: reinhardt::test::APIClientBuilder,
 ) -> common::ApplicationFixture {
 	let mut application = application.await;
-	application.application.raw_http = browser_client;
+	application.application.api_http = Arc::new(
+		browser_client
+			.base_url(&application.application.server.url)
+			.build(),
+	);
 	application
 }
 
@@ -1647,18 +1643,20 @@ fn older_negative_status_cannot_revoke_a_newer_valid_session_fixture_router(
 		let count = checks.clone();
 
 		let released = release.clone();
-		let fixture = Router::new()
-			.handler(
+		let fixture = reinhardt::test::stub::StubRouter::new()
+			.route(
 				"/realms/test/protocol/openid-connect/token",
-				handler(http::Method::POST, |_request: reinhardt::Request| async {
+				http::Method::POST,
+				reply(|_request: reinhardt::Request| async {
 					reinhardt::Response::ok()
 						.with_json(&json!({"access_token":"fixture"}))
 						.unwrap()
 				}),
 			)
-			.handler(
+			.route(
 				"/realms/test/admin/users/stale-user",
-				handler(http::Method::GET, move |_request: reinhardt::Request| {
+				http::Method::GET,
+				reply(move |_request: reinhardt::Request| {
 					let index = count.fetch_add(1, Ordering::SeqCst);
 					let released = released.clone();
 					async move {
@@ -1670,7 +1668,8 @@ fn older_negative_status_cannot_revoke_a_newer_valid_session_fixture_router(
 							.unwrap()
 					}
 				}),
-			);
+			)
+			.into_server_router();
 		Arc::new(fixture)
 	}
 	.boxed()
@@ -1728,11 +1727,15 @@ async fn older_negative_status_cannot_revoke_a_newer_valid_session_fixture(
 	#[from(upstream_fixtures::fixed_upstream)]
 	#[with(None,_listener.clone(),_router.clone())]
 	server: upstream_fixtures::FixedServerGuard,
-	browser_client: reqwest::Client,
+	browser_client: reinhardt::test::APIClientBuilder,
 ) -> OlderNegativeStatusCannotRevokeANewerValidSessionFixture {
 	let NegativeStatusState { checks, release } = _state;
 	let mut application = application.await;
-	application.application.raw_http = browser_client;
+	application.application.api_http = Arc::new(
+		browser_client
+			.base_url(&application.application.server.url)
+			.build(),
+	);
 	OlderNegativeStatusCannotRevokeANewerValidSessionFixture {
 		application,
 		server,

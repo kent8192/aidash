@@ -26,6 +26,8 @@ pub struct TestApplication {
 	#[allow(dead_code)] // Lifecycle tests register their shutdown coordinator here.
 	pub context: Arc<InjectionContext>,
 	router: Arc<ServerRouter>,
+	#[allow(dead_code)]
+	// Only streaming request producers and raw transport cases use this client.
 	pub(crate) raw_http: reqwest::Client,
 	#[allow(dead_code)] // Only incremental SSE readers consume this transport.
 	pub(crate) streaming_http: reqwest::Client,
@@ -89,7 +91,7 @@ pub async fn application_with(
 		aidash_server::sse::Settings::default(),
 	)));
 	let context = Arc::new(context);
-	// reinhardt-web#6673: mounting the shared router as a raw handler rejects HEAD.
+	// Serve production routes directly to preserve their method dispatch and DI.
 	// Separate route tables share the same DI services and scenario middleware state.
 	let server_router =
 		router(aidash_server::routes().into_server()).with_di_context(context.clone());
@@ -260,7 +262,7 @@ fn application_server(
 	application_context: ContextFuture,
 ) -> ServerFuture {
 	async move {
-		// reinhardt-web#6658/#6673: compose the native guard with direct
+		// Compose the shared native guard with direct
 		// production routes; share DI and transform state with the oneshot router.
 		let router = transform(aidash_server::routes().into_server())
 			.with_di_context(application_context.await);
@@ -277,7 +279,7 @@ fn application_client(
 	application_server: ServerFuture,
 ) -> ClientFuture {
 	async move {
-		// reinhardt-web#6658: the plain client constructor needs a wrapper fixture for this async URL.
+		// Share the client after resolving the owned asynchronous server URL.
 		let client = api_client_from_url(&application_server.await.url);
 		if operator {
 			client
@@ -417,7 +419,7 @@ pub fn native_application(
 fn direct_client(native_application: ApplicationFuture) -> ClientFuture {
 	async move {
 		let application = native_application.await.application;
-		// reinhardt-web#6670: in-process dispatch preserves redirects without a builder policy.
+		// In-process dispatch also preserves unpolled producer ownership.
 		let client = APIClient::from_handler(application.native_router());
 		// reinhardt-web#6672: from_handler injects a default Origin. Browser cases
 		// must supply their exact per-request Origin, including denied origins.

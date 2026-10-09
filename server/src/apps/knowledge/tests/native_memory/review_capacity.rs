@@ -451,9 +451,10 @@ async fn recovery_shards_keep_home_ledgers_above_64_mib_writable(
 
 #[fixture]
 fn recovery_shards_keep_home_ledgers_above_64_mib_writable_router() -> std::sync::Arc<Router> {
-	std::sync::Arc::new(Router::new().handler("/v1/embeddings", handler(http::Method::POST, |request: reinhardt::Request| {let input = request.json::<serde_json::Value>().unwrap();async move {
+	std::sync::Arc::new(reinhardt::test::stub::StubRouter::new()
+.route("/v1/embeddings", http::Method::POST, reply(|request: reinhardt::Request| {let input = request.json::<serde_json::Value>().unwrap();async move {
 			reinhardt::Response::ok().with_json(&json!({"model":input["model"],"data":[{"index":0,"embedding":[1.,0.1,0.]}],"usage":{"prompt_tokens":1}})).unwrap()
-		}})))
+		}})).into_server_router())
 }
 struct RecoveryShardsKeepHomeLedgersAbove64MibWritableProvider {
 	server: reinhardt::test::fixtures::server::TestServerGuard,

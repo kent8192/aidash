@@ -2,7 +2,7 @@ use super::upstream_fixtures;
 use super::*;
 use reinhardt::ServerRouter as Router;
 use reinhardt::test::fixtures::server::TestServerGuard;
-use upstream_fixtures::{handler, upstream};
+use upstream_fixtures::{reply, upstream};
 
 #[rstest::rstest]
 #[tokio::test]
@@ -965,7 +965,8 @@ fn terminal_delivery_drains_a_burst_without_per_run_sleep_router(
 	#[from(workspace_id)] workspace: Uuid,
 ) -> upstream_fixtures::RouterFuture {
 	use futures_util::FutureExt;
-	async move { let runtime = runtime.await; let node = runtime.federation.config.node_id.clone(); Arc::new(Router::new().handler("/federation/v0.1/workspace", handler(http::Method::POST, move |request: reinhardt::Request| {let input = request.json::<Value>().unwrap();
+	async move { let runtime = runtime.await; let node = runtime.federation.config.node_id.clone(); Arc::new(reinhardt::test::stub::StubRouter::new()
+.route("/federation/v0.1/workspace", http::Method::POST, reply(move |request: reinhardt::Request| {let input = request.json::<Value>().unwrap();
         let node = node.clone();
         async move {
             match input["operation"].as_str().unwrap() {
@@ -977,26 +978,28 @@ fn terminal_delivery_drains_a_burst_without_per_run_sleep_router(
                 other => panic!("unexpected operation {other}"),
             }
         }
-    }))) }.boxed().shared()
+    })).into_server_router()) }.boxed().shared()
 }
 #[rstest::fixture]
 fn notification_claim_disposes_invalid_context_without_poisoning_healthy_work_router(
 	#[from(upstream_fixtures::hits)] calls: Arc<AtomicUsize>,
 ) -> Arc<Router> {
-	Arc::new(Router::new().handler("/v1/chat/completions",handler(http::Method::POST, move |_request: reinhardt::Request| {let calls=calls.clone();async move {
+	Arc::new(reinhardt::test::stub::StubRouter::new()
+.route("/v1/chat/completions", http::Method::POST, reply(move |_request: reinhardt::Request| {let calls=calls.clone();async move {
 		calls.fetch_add(1,Ordering::SeqCst);reinhardt::Response::ok().with_json(&json!({"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":"Done"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}})).unwrap()
-	}})))
+	}})).into_server_router())
 }
 #[rstest::fixture]
 fn notification_deferral_waits_for_its_authoritative_unblock_router(
 	#[from(upstream_fixtures::hits)] calls: Arc<AtomicUsize>,
 ) -> Arc<Router> {
-	Arc::new(Router::new().handler("/v1/chat/completions", handler(http::Method::POST, move |_request: reinhardt::Request| {
+	Arc::new(reinhardt::test::stub::StubRouter::new()
+.route("/v1/chat/completions", http::Method::POST, reply(move |_request: reinhardt::Request| {
 			let calls = calls.clone(); async move {
 				calls.fetch_add(1, Ordering::SeqCst);
 				reinhardt::Response::ok().with_json(&json!({"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":"Done"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}})).unwrap()
 			}
-		})))
+		})).into_server_router())
 }
 #[rstest::fixture]
 fn failure_delivery_resumes_after_authority_is_restored_without_replaying_effects_router(

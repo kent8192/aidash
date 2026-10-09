@@ -60,47 +60,18 @@ async fn scoped_request(
 	path: &str,
 	body: Value,
 ) -> (u16, Value) {
-	let authorization = format!("Bearer {token}");
-	let headers = [("Authorization", authorization.as_str())];
-	// reinhardt-web#6672: use per-request credentials only on the declared
-	// anonymous client, preserving the baseline isolation between subjects.
-	let response = match method {
-		"GET" => app
-			.anonymous
-			.get_with_headers(path, &headers)
-			.await
-			.unwrap(),
-		"POST" => app
-			.anonymous
-			.post_raw_with_headers(
-				path,
-				body.to_string().as_bytes(),
-				"application/json",
-				&headers,
-			)
-			.await
-			.unwrap(),
-		"PATCH" => {
-			// reinhardt-web#6661: PATCH lacks public per-request headers. Reuse
-			// the fixture-owned raw client without creating a credential client.
-			let response = app
-				.runtime
-				.client
-				.patch(format!("{}{path}", app.server.url))
-				.bearer_auth(token)
-				.json(&body)
-				.send()
-				.await
-				.unwrap();
-			let status = response.status();
-			let headers = response.headers().clone();
-			let version = response.version();
-			let body = response.bytes().await.unwrap();
-			TestResponse::with_body_and_version(status, headers, body, version)
-		}
-		_ => panic!("unsupported test method: {method}"),
-	};
-	decoded(response)
+	assert!(
+		matches!(method, "GET" | "POST" | "PATCH"),
+		"unsupported test method: {method}"
+	);
+	let mut request = app
+		.anonymous
+		.request(method.parse().unwrap(), path)
+		.header("Authorization", format!("Bearer {token}"));
+	if method != "GET" {
+		request = request.json(&body);
+	}
+	decoded(request.send().await.unwrap())
 }
 
 async fn stream_response(app: &EndpointFixture, path: &str, token: &str) -> Response {

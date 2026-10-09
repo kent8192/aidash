@@ -1,6 +1,5 @@
 use common::upstream_fixtures;
 use futures_util::{FutureExt, future::BoxFuture};
-use reinhardt::ServerRouter as Router;
 use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
 use std::sync::{
 	Arc,
@@ -8,7 +7,7 @@ use std::sync::{
 };
 use tokio::sync::Notify;
 
-use upstream_fixtures::{async_upstream, handler};
+use upstream_fixtures::{async_upstream, reply};
 #[path = "../../tests/support/legacy.rs"]
 mod common;
 use common::*;
@@ -2105,10 +2104,11 @@ use reinhardt::query::{ExprTrait as _, QueryStatementBuilder as _};
 fn provider_1_router() -> upstream_fixtures::RouterFuture {
 	async move {
 
-	let server=Router::new().handler("/v1/chat/completions",handler(http::Method::POST, |request: reinhardt::Request| {let body = request.json::<Value>().unwrap();async move {
+	let server=reinhardt::test::stub::StubRouter::new()
+.route("/v1/chat/completions", http::Method::POST, reply(|request: reinhardt::Request| {let body = request.json::<Value>().unwrap();async move {
         assert_eq!(body["model"],"fixture");
         reinhardt::Response::ok().with_json(&json!({"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"Specialist result"}}],"usage":{"prompt_tokens":120,"completion_tokens":20}})).unwrap()
-    }}));
+    }})).into_server_router();
 
 
 
@@ -2144,9 +2144,10 @@ fn provider_1(
 fn provider_2_router() -> upstream_fixtures::RouterFuture {
 	async move {
 
-	let server=Router::new().handler("/v1/chat/completions",handler(http::Method::POST, |_request: reinhardt::Request| async {
+	let server=reinhardt::test::stub::StubRouter::new()
+.route("/v1/chat/completions", http::Method::POST, reply(|_request: reinhardt::Request| async {
         reinhardt::Response::ok().with_json(&json!({"choices":[{"index":0,"finish_reason":"tool_calls","message":{"role":"assistant","content":null,"tool_calls":[{"id":"create-child","type":"function","function":{"name":"task_create","arguments":json!({"title":"Child specialist","description":"Nested generation","requirements":{"capability":"special.research"}}).to_string()}}]}}],"usage":{"prompt_tokens":10,"completion_tokens":10}})).unwrap()
-    }));
+    })).into_server_router();
 
 
 
@@ -2192,10 +2193,11 @@ fn provider_3_router(
 
 
 	let count = calls.clone();
-	let server=Router::new().handler("/v1/chat/completions",handler(http::Method::POST, move |_request: reinhardt::Request| {let count=count.clone();async move {
+	let server=reinhardt::test::stub::StubRouter::new()
+.route("/v1/chat/completions", http::Method::POST, reply(move |_request: reinhardt::Request| {let count=count.clone();async move {
         count.fetch_add(1,Ordering::SeqCst);
         reinhardt::Response::ok().with_json(&json!({"choices":[{"index":0,"finish_reason":"tool_calls","message":{"role":"assistant","content":null,"tool_calls":[{"id":"observe","type":"function","function":{"name":"workspace_observe","arguments":"{}"}}]}}],"usage":{"completion_tokens":1}})).unwrap()
-    }}));
+    }})).into_server_router();
 
 
 
@@ -2236,12 +2238,13 @@ fn provider_3(
 fn provider_4_router() -> upstream_fixtures::RouterFuture {
 	async move {
 
-	let server=Router::new().handler("/v1/chat/completions",handler(http::Method::POST, |request: reinhardt::Request| {let body = request.json::<Value>().unwrap();async move {
+	let server=reinhardt::test::stub::StubRouter::new()
+.route("/v1/chat/completions", http::Method::POST, reply(|request: reinhardt::Request| {let body = request.json::<Value>().unwrap();async move {
         let context:Value=serde_json::from_str(body["messages"][1]["content"].as_str().unwrap()).unwrap();
         let child=context["current"]["workspace"]["tasks"].as_array().unwrap().iter().find(|t|t["parent_id"]==context["current"]["task"]["id"]);
         let (name,arguments)=if let Some(child)=child {("task_assign",json!({"task_id":child["id"],"policy_id":"research","reason":"nested specialist"}))}else{("task_create",json!({"title":"Child specialist","description":"Nested generation","requirements":{"capability":"special.research"}}))};
         reinhardt::Response::ok().with_json(&json!({"choices":[{"index":0,"finish_reason":"tool_calls","message":{"role":"assistant","content":null,"tool_calls":[{"id":name,"type":"function","function":{"name":name,"arguments":arguments.to_string()}}]}}],"usage":{"prompt_tokens":10,"completion_tokens":10}})).unwrap()
-    }}));
+    }})).into_server_router();
 
 
 
@@ -2296,10 +2299,11 @@ fn provider_5_router(
 
 	let started = entered.clone();
 	let unblock = release.clone();
-	let server=Router::new().handler("/v1/chat/completions",handler(http::Method::POST, move |_request: reinhardt::Request| {let started=started.clone();let unblock=unblock.clone();async move {
+	let server=reinhardt::test::stub::StubRouter::new()
+.route("/v1/chat/completions", http::Method::POST, reply(move |_request: reinhardt::Request| {let started=started.clone();let unblock=unblock.clone();async move {
         started.notify_one();unblock.notified().await;
         reinhardt::Response::ok().with_json(&json!({"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"Inflight result"}}],"usage":{"prompt_tokens":10,"completion_tokens":10}})).unwrap()
-    }}));
+    }})).into_server_router();
 
 
 
@@ -2380,9 +2384,8 @@ fn provider_6_router(
 
 
 
-	let provider = Router::new().handler(
-		"/v1/chat/completions",
-		handler(http::Method::POST, {
+	let provider = reinhardt::test::stub::StubRouter::new()
+.route("/v1/chat/completions", http::Method::POST, reply({
 			let entered = entered.clone();
 			let release = release.clone();
 			let calls = calls.clone();
@@ -2398,8 +2401,7 @@ fn provider_6_router(
 					reinhardt::Response::ok().with_json(&json!({"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"Generated result"}}],"usage":{"prompt_tokens":10,"completion_tokens":2}})).unwrap()
 				}
 			}
-		}),
-	);
+		})).into_server_router();
 
 
 
@@ -2456,13 +2458,14 @@ fn provider_7_router(
 
 
 	let count = effects.clone();
-	let server=Router::new().handler("/effect",handler(http::Method::POST, move |_request: reinhardt::Request| {let count=count.clone();async move {count.fetch_add(1,Ordering::SeqCst);reinhardt::Response::ok().with_json(&json!({"saved":true})).unwrap()}}))
-        .handler("/v1/chat/completions",handler(http::Method::POST, |request: reinhardt::Request| {let body = request.json::<Value>().unwrap();async move {
+	let server=reinhardt::test::stub::StubRouter::new()
+.route("/effect", http::Method::POST, reply(move |_request: reinhardt::Request| {let count=count.clone();async move {count.fetch_add(1,Ordering::SeqCst);reinhardt::Response::ok().with_json(&json!({"saved":true})).unwrap()}}))
+.route("/v1/chat/completions", http::Method::POST, reply(|request: reinhardt::Request| {let body = request.json::<Value>().unwrap();async move {
             let context:Value=serde_json::from_str(body["messages"][1]["content"].as_str().unwrap()).unwrap();
             let message=if context["history"].as_array().unwrap().iter().any(|e|e["kind"]=="tool") {json!({"role":"assistant","content":"Approved tool completed"})}
             else {json!({"role":"assistant","content":null,"tool_calls":[{"id":"generated-effect","type":"function","function":{"name":"plugin_0","arguments":"{}"}}]})};
             reinhardt::Response::ok().with_json(&json!({"choices":[{"index":0,"finish_reason":if message.get("tool_calls").is_some(){"tool_calls"}else{"stop"},"message":message}],"usage":{"prompt_tokens":1,"completion_tokens":1}})).unwrap()
-        }}));
+        }})).into_server_router();
 
 
 

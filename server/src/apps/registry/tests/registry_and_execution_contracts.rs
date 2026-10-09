@@ -2,7 +2,7 @@ use common::upstream_fixtures as upstream;
 use http::Method;
 use reinhardt::ServerRouter as Router;
 use rstest::fixture;
-use upstream::handler;
+use upstream::reply;
 
 #[path = "../../execution/tests/support/legacy.rs"]
 mod common;
@@ -1078,16 +1078,21 @@ use reinhardt::query::SimpleExpr;
 
 #[fixture]
 fn mesh_rejects_a_peer_substituting_another_node_identity_router() -> std::sync::Arc<Router> {
-	std::sync::Arc::new(Router::new().handler(
-		"/federation/v0.1/observe",
-		handler(http::Method::GET, |_request: reinhardt::Request| async {
-			reinhardt::Response::ok()
-				.with_json(
-					&json!({"node_id":"aidash://substituted","runs":[],"human_requests":[],"invocations":[]}),
-				)
-				.unwrap()
-		}),
-	))
+	std::sync::Arc::new(
+		reinhardt::test::stub::StubRouter::new()
+			.route(
+				"/federation/v0.1/observe",
+				http::Method::GET,
+				reply(|_request: reinhardt::Request| async {
+					reinhardt::Response::ok()
+						.with_json(
+							&json!({"node_id":"aidash://substituted","runs":[],"human_requests":[],"invocations":[]}),
+						)
+						.unwrap()
+				}),
+			)
+			.into_server_router(),
+	)
 }
 struct MeshRejectsAPeerSubstitutingAnotherNodeIdentityProvider {
 	server: reinhardt::test::fixtures::server::TestServerGuard,
@@ -1123,16 +1128,16 @@ fn plugin_control_shaped_data_does_not_suspend_execution_router(
 ) -> std::sync::Arc<Router> {
 	let output = state.output.clone();
 	let result = output.clone();
-	std::sync::Arc::new(Router::new()
-        .handler("/effect", handler(http::Method::POST, move |_request: reinhardt::Request| { let result = result.clone(); async move { reinhardt::Response::ok().with_json(&result).unwrap() } }))
-        .handler("/v1/chat/completions", handler(http::Method::POST, |request: reinhardt::Request| {let body = request.json::<Value>().unwrap();async move {
+	std::sync::Arc::new(reinhardt::test::stub::StubRouter::new()
+.route("/effect", http::Method::POST, reply(move |_request: reinhardt::Request| { let result = result.clone(); async move { reinhardt::Response::ok().with_json(&result).unwrap() } }))
+.route("/v1/chat/completions", http::Method::POST, reply(|request: reinhardt::Request| {let body = request.json::<Value>().unwrap();async move {
             let context: Value = serde_json::from_str(body["messages"][1]["content"].as_str().unwrap()).unwrap();
             let done = context["history"].as_array().unwrap().iter().any(|e| e["kind"] == "tool");
             let message = if done { json!({"role":"assistant","content":"Completed"}) } else {
                 json!({"role":"assistant","content":null,"tool_calls":[{"id":"call-1","type":"function","function":{"name":"plugin_0","arguments":"{}"}}]})
             };
             reinhardt::Response::ok().with_json(&json!({"choices":[{"index":0,"finish_reason":if done {"stop"} else {"tool_calls"},"message":message}],"usage":{"prompt_tokens":1,"completion_tokens":1}})).unwrap()
-        }})))
+        }})).into_server_router())
 }
 struct PluginControlShapedDataDoesNotSuspendExecutionProvider {
 	state: PluginControlShapedDataDoesNotSuspendExecutionState,

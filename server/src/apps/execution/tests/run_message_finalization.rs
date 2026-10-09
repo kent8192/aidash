@@ -1,7 +1,7 @@
 use common::upstream_fixtures;
 use reinhardt::ServerRouter as Router;
 use reinhardt::test::fixtures::server::TestServerGuard;
-use upstream_fixtures::{handler, upstream};
+use upstream_fixtures::{reply, upstream};
 #[path = "support/legacy.rs"]
 mod common;
 
@@ -1590,9 +1590,8 @@ fn finalization_router(
 	#[from(upstream_fixtures::hits)] calls: Arc<AtomicUsize>,
 	requests: Arc<Mutex<Vec<Value>>>,
 ) -> Arc<Router> {
-	Arc::new(Router::new().handler(
-		"/v1/chat/completions",
-		handler(http::Method::POST, {
+	Arc::new(reinhardt::test::stub::StubRouter::new()
+.route("/v1/chat/completions", http::Method::POST, reply({
 			let entered = entered.clone();
 			let release = release.clone();
 			let calls = calls.clone();
@@ -1617,6 +1616,5 @@ fn finalization_router(
 					reinhardt::Response::ok().with_json(&json!({"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":text}}],"usage":{"prompt_tokens":10,"completion_tokens":10}})).unwrap()
 				}
 			}
-		}),
-	))
+		})).into_server_router())
 }

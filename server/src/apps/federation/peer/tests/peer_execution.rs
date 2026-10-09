@@ -41,19 +41,26 @@ async fn operator(app: &EndpointFixture, path: &str, input: Value) -> (u16, Valu
 async fn inspect(app: &EndpointFixture, token: &str, input: Value) -> (u16, Value) {
 	let authorization = format!("Bearer {token}");
 	decoded(
-		app.anonymous
-			.post_raw_with_headers(
-				"/federation/v0.1/scoped/execution/inspect",
-				input.to_string().as_bytes(),
-				"application/json",
-				&[
-					("Authorization", authorization.as_str()),
-					("x-aidash-node", "aidash://source"),
-					("x-aidash-protocol", "0.2"),
-				],
-			)
-			.await
-			.unwrap(),
+		async {
+			let client = &(app.anonymous);
+			let mut request = client
+				.request(
+					http::Method::POST,
+					"/federation/v0.1/scoped/execution/inspect",
+				)
+				.body(bytes::Bytes::copy_from_slice(input.to_string().as_bytes()))
+				.header(http::header::CONTENT_TYPE, "application/json");
+			for (name, value) in &[
+				("Authorization", authorization.as_str()),
+				("x-aidash-node", "aidash://source"),
+				("x-aidash-protocol", "0.2"),
+			] {
+				request = request.header(*name, *value);
+			}
+			request.send().await
+		}
+		.await
+		.unwrap(),
 	)
 }
 

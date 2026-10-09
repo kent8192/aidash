@@ -1,7 +1,7 @@
 use common::upstream_fixtures;
 use futures_util::{FutureExt, future::BoxFuture};
 use reinhardt::ServerRouter as Router;
-use upstream_fixtures::handler;
+use upstream_fixtures::reply;
 #[path = "../../execution/tests/support/legacy.rs"]
 mod common;
 #[path = "scoped_remote_execution/native_memory.rs"]
@@ -3197,14 +3197,14 @@ async fn operator_polling_advances_past_hidden_event_pages(
 			.unwrap();
 	}
 	tx.commit().await.unwrap();
-	let first =
-		p.aa.client()
-			.get_with_headers(
-				&format!("/api/events?after={cursor}"),
-				&[("authorization", &format!("Bearer {}", p.a.config.api_token))],
-			)
-			.await
-			.unwrap();
+	let first = async {
+		let client = &(p.aa.client());
+		let mut request = client.request(http::Method::GET, &format!("/api/events?after={cursor}"));
+		request = request.header("authorization", format!("Bearer {}", p.a.config.api_token));
+		request.send().await
+	}
+	.await
+	.unwrap();
 	assert_eq!(first.status(), 200);
 	let first_cursor: i64 = first.headers()["x-aidash-event-cursor"]
 		.to_str()
@@ -3214,14 +3214,17 @@ async fn operator_polling_advances_past_hidden_event_pages(
 	let first_events: Vec<Value> = serde_json::from_slice(first.body()).unwrap();
 	assert_eq!(first_events.len(), 500);
 	assert_eq!(first_events.last().unwrap()["sequence"], first_cursor);
-	let second =
-		p.aa.client()
-			.get_with_headers(
-				&format!("/api/events?after={first_cursor}"),
-				&[("authorization", &format!("Bearer {}", p.a.config.api_token))],
-			)
-			.await
-			.unwrap();
+	let second = async {
+		let client = &(p.aa.client());
+		let mut request = client.request(
+			http::Method::GET,
+			&format!("/api/events?after={first_cursor}"),
+		);
+		request = request.header("authorization", format!("Bearer {}", p.a.config.api_token));
+		request.send().await
+	}
+	.await
+	.unwrap();
 	assert_eq!(second.status(), 200);
 	let second_events: Vec<Value> = serde_json::from_slice(second.body()).unwrap();
 	let indices: Vec<i64> = first_events
@@ -5070,14 +5073,16 @@ fn model_script(
 }
 #[rstest::fixture]
 fn model_router(model_script: ModelScript) -> Arc<Router> {
-	let model_app=Router::new().handler("/v1/chat/completions",handler(http::Method::POST, {let script=model_script.clone();move |request:reinhardt::Request| {let script=script.clone();let input=request.json::<Value>().unwrap();async move {
+	let model_app=reinhardt::test::stub::StubRouter::new()
+.route("/v1/chat/completions", http::Method::POST, reply({let script=model_script.clone();move |request:reinhardt::Request| {let script=script.clone();let input=request.json::<Value>().unwrap();async move {
         let check=script.reservations.lock().await.clone();
         if let Some(check)=check {check.before_http().await;}
         let mut calls=script.requests.lock().await;
         calls.push(input);
         let count=calls.len(); drop(calls); script.entered.notify_one(); if script.hold.load(Ordering::Acquire) {script.release.notified().await;} let message=if count==1 && script.force_memory_mutate.load(Ordering::Acquire) {json!({"role":"assistant","content":null,"tool_calls":[{"id":"forbidden-write","type":"function","function":{"name":"memory_mutate","arguments":"{\"data\":{\"forbidden\":true}}"}}]})} else if count==1 {json!({"role":"assistant","content":null,"tool_calls":[{"id":"note","type":"function","function":{"name":"workspace_message","arguments":"{\"content\":\"Scoped remote progress\"}"}}]})} else {json!({"role":"assistant","content":"Scoped remote result"})};
         reinhardt::Response::ok().with_json(&json!({"choices":[{"index":0,"finish_reason":if message.get("tool_calls").is_some(){"tool_calls"}else{"stop"},"message":message}],"usage":{"prompt_tokens":1,"completion_tokens":1}})).unwrap()
-    }}})).handler("/systemone", handler(http::Method::POST, {let script=model_script.clone();move |request:reinhardt::Request| {let script=script.clone();let input=request.json::<Value>().unwrap();async move {
+    }}}))
+.route("/systemone", http::Method::POST, reply({let script=model_script.clone();move |request:reinhardt::Request| {let script=script.clone();let input=request.json::<Value>().unwrap();async move {
 		if let Some(check)=script.compaction_reservations.lock().await.clone() {check.before_http().await;}
 		script.compactions.lock().await.push(input.clone());
 		match script.compaction_status.load(Ordering::Acquire) {
@@ -5089,7 +5094,7 @@ fn model_router(model_script: ModelScript) -> Arc<Router> {
 				reinhardt::Response::ok().with_json(&json!({"answers":answers})).unwrap()
 			}
 		}
-	}}}));
+	}}})).into_server_router();
 	Arc::new(model_app)
 }
 #[rstest::fixture]
@@ -5137,7 +5142,8 @@ fn embedding_router(
 	#[from(reservation_state)] reservations: Arc<Mutex<Option<ReservationCheck>>>,
 	#[from(response_state)] response: Arc<Mutex<Option<Value>>>,
 ) -> Arc<Router> {
-	let embedding_app = Router::new().handler("/v1/embeddings", handler(http::Method::POST, move |request:reinhardt::Request| {let requests=requests.clone();let failing=failing.clone();let reservations=reservations.clone();let response=response.clone();let headers=request.headers.clone();let body=request.json::<Value>().unwrap();async move {
+	let embedding_app = reinhardt::test::stub::StubRouter::new()
+.route("/v1/embeddings", http::Method::POST, reply(move |request:reinhardt::Request| {let requests=requests.clone();let failing=failing.clone();let reservations=reservations.clone();let response=response.clone();let headers=request.headers.clone();let body=request.json::<Value>().unwrap();async move {
 		assert!(!headers.contains_key(http::header::AUTHORIZATION), "an unsigned provider must not receive the subject or peer bearer");
         let check=reservations.lock().await.clone();
         if let Some(check)=check {check.before_http().await;}
@@ -5147,7 +5153,7 @@ fn embedding_router(
         }
 		if let Some(value) = response.lock().await.clone() { return reinhardt::Response::ok().with_json(&value).unwrap(); }
         reinhardt::Response::ok().with_json(&json!({"model":body["model"],"data":[{"index":0,"embedding":[1.0,0.0,0.0]}],"usage":{"prompt_tokens":1,"total_tokens":1}})).unwrap()
-	}}));
+	}})).into_server_router();
 	Arc::new(embedding_app)
 }
 #[rstest::fixture]

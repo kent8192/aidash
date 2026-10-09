@@ -596,15 +596,21 @@ async fn peer_trust_denial_aborts_promptly_and_revocation_preserves_admitted_rec
 		("x-aidash-protocol", "0.2".into()),
 	];
 	let peer_headers: Vec<_> = peer_headers.iter().map(|(k, v)| (*k, v.as_str())).collect();
-	let response = client
-		.post_raw_with_headers(
-			"/federation/v0.1/transactions/reserve",
-			&serde_json::to_vec(&forged).unwrap(),
-			"application/json",
-			&peer_headers,
-		)
-		.await
-		.unwrap();
+	let response = async {
+		let client = &(client);
+		let mut request = client
+			.request(http::Method::POST, "/federation/v0.1/transactions/reserve")
+			.body(bytes::Bytes::copy_from_slice(
+				&serde_json::to_vec(&forged).unwrap(),
+			))
+			.header(http::header::CONTENT_TYPE, "application/json");
+		for (name, value) in &peer_headers {
+			request = request.header(*name, *value);
+		}
+		request.send().await
+	}
+	.await
+	.unwrap();
 	assert_eq!(response.status_code(), 403, "{}", response.text());
 	assert_eq!(b.get(&format!("/api/workspaces/{wb}")).await.0, 200);
 	a.submit(&admitted).await;

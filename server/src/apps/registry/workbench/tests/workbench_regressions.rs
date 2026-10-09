@@ -23,7 +23,7 @@ use std::{
 	time::Duration,
 };
 use tokio::sync::{Mutex, Notify};
-use upstream::handler;
+use upstream::reply;
 
 #[derive(Default)]
 struct ModelGate {
@@ -1830,10 +1830,11 @@ fn workbench_router(#[from(workbench_state)] state: WorkbenchState) -> Arc<Route
 	let queue = state.responses.clone();
 	let count = state.hits.clone();
 	Arc::new(
-		Router::new()
-			.handler(
+		reinhardt::test::stub::StubRouter::new()
+			.route(
 				"/v1/chat/completions",
-				handler(http::Method::POST, move |_request: reinhardt::Request| {
+				http::Method::POST,
+				reply(move |_request: reinhardt::Request| {
 					let queue = queue.clone();
 					let count = count.clone();
 					let gate = gate.clone();
@@ -1854,9 +1855,10 @@ fn workbench_router(#[from(workbench_state)] state: WorkbenchState) -> Arc<Route
 					}
 				}),
 			)
-			.handler(
+			.route(
 				"/test-effect",
-				handler(http::Method::POST, move |_request: reinhardt::Request| {
+				http::Method::POST,
+				reply(move |_request: reinhardt::Request| {
 					let effects = effects.clone();
 					let corrupt_reply = corrupt_reply.clone();
 					let gate = dispatch_gate.clone();
@@ -1877,7 +1879,8 @@ fn workbench_router(#[from(workbench_state)] state: WorkbenchState) -> Arc<Route
 						}
 					}
 				}),
-			),
+			)
+			.into_server_router(),
 	)
 }
 struct WorkbenchProvider {

@@ -81,21 +81,27 @@ async fn sweep(store: &Store) {
 	aidash_server::semantic::worker::sweep(store).await.unwrap();
 }
 
+#[rstest::fixture]
+async fn decay_embedding_provider() -> reinhardt::test::fixtures::TestServerGuard {
+	let router = reinhardt::test::stub::StubRouter::new()
+        .route("/v1/embeddings", http::Method::POST, |request| async move {
+            let input = request.json::<serde_json::Value>().unwrap();
+            Ok(reinhardt::Response::ok().with_json(&json!({"model":input["model"],"data":[{"index":0,"embedding":[1.,0.1,0.]}],"usage":{"prompt_tokens":1}})).unwrap())
+        })
+        .into_server_router();
+	reinhardt::test::fixtures::test_server_guard(router).await
+}
+
 #[rstest]
 #[tokio::test]
 async fn dormant_is_recall_only_and_pin_correction_and_manual_reactivation_preserve_content(
+	#[future] decay_embedding_provider: reinhardt::test::fixtures::TestServerGuard,
 	#[future] database: DatabaseFixture,
 	bounds: Bounds,
 ) {
 	let database = database.await;
-	use axum::{Json, Router, routing::post};
-	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-	let endpoint = format!("http://{}/v1", listener.local_addr().unwrap());
-	let model = tokio::spawn(async move {
-		axum::serve(listener, Router::new().route("/v1/embeddings", post(|Json(input): Json<serde_json::Value>| async move {
-			Json(json!({"model":input["model"],"data":[{"index":0,"embedding":[1.,0.1,0.]}],"usage":{"prompt_tokens":1}}))
-		}))).await.unwrap();
-	});
+	let model = decay_embedding_provider.await;
+	let endpoint = format!("{}/v1", model.url);
 	let (store, _, workspace) = setup_endpoint_decay(
 		&database,
 		bounds,
@@ -232,7 +238,7 @@ async fn dormant_is_recall_only_and_pin_correction_and_manual_reactivation_prese
 			.unwrap()
 			.is_empty()
 	);
-	model.abort();
+	drop(model);
 }
 
 #[rstest]

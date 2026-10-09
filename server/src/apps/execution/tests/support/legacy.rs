@@ -44,42 +44,14 @@ pub async fn http_response(
 	headers: &[(&str, &str)],
 	body: &[u8],
 ) -> reinhardt::test::TestResponse {
-	if method == "GET" {
-		return app.client().get_with_headers(path, headers).await.unwrap();
-	}
-	if method == "POST"
-		&& let Some((_, content_type)) = headers
-			.iter()
-			.find(|(name, _)| name.eq_ignore_ascii_case("content-type"))
-	{
-		// reinhardt-web#6672: the dedicated content type argument inserts this
-		// header; do not append the caller header a second time.
-		let extra_headers: Vec<_> = headers
-			.iter()
-			.copied()
-			.filter(|(name, _)| !name.eq_ignore_ascii_case("content-type"))
-			.collect();
-		return app
-			.client()
-			.post_raw_with_headers(path, body, content_type, &extra_headers)
-			.await
-			.unwrap();
-	}
-	// reinhardt-web#6661: other verbs and an intentionally absent Content-Type
-	// need the declared raw client because the native generic dispatcher is private.
-	let mut request = app
-		.raw_http
-		.request(method.parse().unwrap(), app.url(path))
-		.body(body.to_owned());
+	let client = &(app.client());
+	let mut request = client
+		.request(method.parse().unwrap(), path)
+		.body(bytes::Bytes::copy_from_slice(body));
 	for (name, value) in headers {
 		request = request.header(*name, *value);
 	}
-	let response = request.send().await.unwrap();
-	let status = response.status();
-	let headers = response.headers().clone();
-	let version = response.version();
-	let body = response.bytes().await.unwrap();
-	reinhardt::test::TestResponse::with_body_and_version(status, headers, body, version)
+	request.send().await.unwrap()
 }
 
 #[allow(dead_code)] // Shared fixtures are used by different integration-test binaries.
@@ -90,40 +62,15 @@ pub async fn request(
 	path: &str,
 	value: Value,
 ) -> (u16, Value) {
-	let authorization = format!("Bearer {token}");
-	let headers = [("Authorization", authorization.as_str())];
-	let response = match method {
-		"GET" => Some(app.api_http.get_with_headers(path, &headers).await.unwrap()),
-		"POST" => Some(
-			app.api_http
-				.post_raw_with_headers(
-					path,
-					value.to_string().as_bytes(),
-					"application/json",
-					&headers,
-				)
-				.await
-				.unwrap(),
-		),
-		_ => None,
-	};
-	if let Some(response) = response {
-		return json_response(method, path, response.status_code(), response.body());
-	}
-	// The pinned APIClient has per-request headers only for GET and raw POST.
-	// reinhardt-web#6661: a fixture-owned raw client keeps concurrent
-	// PUT/PATCH/DELETE credentials isolated until every verb supports headers.
 	let mut request = app
-		.raw_http
-		.request(method.parse().unwrap(), app.url(path))
-		.bearer_auth(token);
-	if matches!(method, "PUT" | "PATCH") || (method == "DELETE" && !value.is_null()) {
+		.api_http
+		.request(method.parse().unwrap(), path)
+		.header("Authorization", format!("Bearer {token}"));
+	if matches!(method, "POST" | "PUT" | "PATCH") || (method == "DELETE" && !value.is_null()) {
 		request = request.json(&value);
 	}
 	let response = request.send().await.unwrap();
-	let status = response.status().as_u16();
-	let body = response.bytes().await.unwrap();
-	json_response(method, path, status, &body)
+	json_response(method, path, response.status_code(), response.body())
 }
 
 fn json_response(method: &str, path: &str, status: u16, body: &[u8]) -> (u16, Value) {

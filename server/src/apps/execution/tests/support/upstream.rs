@@ -16,23 +16,22 @@ use std::{future::Future, sync::Arc};
 pub async fn upstream(
 	#[default(Arc::new(ServerRouter::new()))] router: Arc<ServerRouter>,
 ) -> TestServerGuard {
-	// reinhardt-web#6658: the pinned guard is not a composable rstest fixture.
+	// Shared router ownership needs an outer native route table.
 	let transport = ServerRouter::new()
 		.handler_arc("/", router.clone())
 		.handler_arc("/{*rest}", router);
 	test_server_guard(transport).await
 }
 
-// reinhardt-web#6657: adapt closure types until method-aware closure routes exist.
-pub fn handler<F, Fut>(method: http::Method, reply: F) -> impl Handler
+type StubReply<Fut> = futures_util::future::Map<Fut, fn(Response) -> ViewResult<Response>>;
+
+/// Adapt existing response-producing closures to native StubRouter results.
+pub fn reply<F, Fut>(reply: F) -> impl Fn(Request) -> StubReply<Fut>
 where
 	F: Fn(Request) -> Fut + Send + Sync + 'static,
 	Fut: Future<Output = Response> + Send,
 {
-	StubHandler {
-		method: Some(method),
-		reply,
-	}
+	move |request| reply(request).map(Ok as fn(Response) -> ViewResult<Response>)
 }
 
 // A fallback must accept every method while retaining the same closure adapter.
@@ -41,14 +40,10 @@ where
 	F: Fn(Request) -> Fut + Send + Sync + 'static,
 	Fut: Future<Output = Response> + Send,
 {
-	StubHandler {
-		method: None,
-		reply,
-	}
+	StubHandler { reply }
 }
 
 struct StubHandler<F> {
-	method: Option<http::Method>,
 	reply: F,
 }
 
@@ -59,13 +54,6 @@ where
 	Fut: Future<Output = Response> + Send,
 {
 	async fn handle(&self, request: Request) -> ViewResult<Response> {
-		if self
-			.method
-			.as_ref()
-			.is_some_and(|method| request.method != *method)
-		{
-			return Ok(Response::new(http::StatusCode::METHOD_NOT_ALLOWED));
-		}
 		Ok((self.reply)(request).await)
 	}
 }
@@ -80,7 +68,7 @@ pub fn async_upstream(
 ) -> UpstreamFuture {
 	async move {
 		let router = router.await;
-		// reinhardt-web#6658: the pinned guard has no fixture dependency resolution.
+		// Resolve the shared asynchronous router before starting its owned transport.
 		let transport = ServerRouter::new()
 			.handler_arc("/", router.clone())
 			.handler_arc("/{*rest}", router);

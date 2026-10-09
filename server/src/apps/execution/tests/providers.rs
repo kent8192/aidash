@@ -8,7 +8,7 @@ use http::StatusCode;
 use reinhardt::ServerRouter as Router;
 use reinhardt::test::fixtures::server::TestServerGuard;
 use std::sync::{Arc, Mutex};
-use upstream_fixtures::{handler, upstream};
+use upstream_fixtures::{reply, upstream};
 
 use reinhardt::test::fixtures::http_client;
 use reqwest::Client;
@@ -508,28 +508,30 @@ fn sends_ordered_native_image_and_audio_parts_router(
 	captured_requests: CapturedRequests,
 ) -> Arc<Router> {
 	let tx = captured_requests.sender;
-	Arc::new(Router::new().handler("/api/v1/chat/completions", handler(http::Method::POST, move |request: reinhardt::Request| {let body = request.json::<Value>().unwrap();
+	Arc::new(reinhardt::test::stub::StubRouter::new()
+.route("/api/v1/chat/completions", http::Method::POST, reply(move |request: reinhardt::Request| {let body = request.json::<Value>().unwrap();
 		let tx = tx.clone();
 		async move {
 			tx.send(body).unwrap();
 			reinhardt::Response::ok().with_json(&json!({"choices":[{"finish_reason":"stop","message":{"content":"I saw and heard the input"}}]})).unwrap()
 		}
 	}))
-	.handler("/api/v1/models/vendor/fixture-model/endpoints", handler(http::Method::GET, |_request: reinhardt::Request| async {
+.route("/api/v1/models/vendor/fixture-model/endpoints", http::Method::GET, reply(|_request: reinhardt::Request| async {
 		reinhardt::Response::ok().with_json(&json!({"data":{"architecture":{"input_modalities":["text","image","audio"]},"endpoints":[{"tag":"fixture/verified","context_length":128000}]}})).unwrap()
 	}))
-	.handler("/api/v1/endpoints/zdr", handler(http::Method::GET, |_request: reinhardt::Request| async {
+.route("/api/v1/endpoints/zdr", http::Method::GET, reply(|_request: reinhardt::Request| async {
 		reinhardt::Response::ok().with_json(&json!({"data":[{"model_id":"vendor/fixture-model","tag":"fixture/verified"}]})).unwrap()
-	})))
+	})).into_server_router())
 }
 
 #[fixture]
 fn media_route_lookup_obeys_the_total_inference_deadline_router() -> Arc<Router> {
 	Arc::new(
-		Router::new()
-			.handler(
+		reinhardt::test::stub::StubRouter::new()
+			.route(
 				"/api/v1/models/vendor/fixture-model/endpoints",
-				handler(http::Method::GET, |_request: reinhardt::Request| async {
+				http::Method::GET,
+				reply(|_request: reinhardt::Request| async {
 					tokio::time::sleep(Duration::from_secs(5)).await;
 					reinhardt::Response::ok()
 						.with_json(
@@ -538,39 +540,51 @@ fn media_route_lookup_obeys_the_total_inference_deadline_router() -> Arc<Router>
 						.unwrap()
 				}),
 			)
-			.handler(
+			.route(
 				"/api/v1/endpoints/zdr",
-				handler(http::Method::GET, |_request: reinhardt::Request| async {
+				http::Method::GET,
+				reply(|_request: reinhardt::Request| async {
 					reinhardt::Response::ok()
 						.with_json(&json!({"data":[]}))
 						.unwrap()
 				}),
-			),
+			)
+			.into_server_router(),
 	)
 }
 
 #[fixture]
 fn media_rejection_keeps_its_status_and_safe_reason_router() -> Arc<Router> {
-	Arc::new(Router::new().handler(
-		"/chat/completions",
-		handler(http::Method::POST, |_request: reinhardt::Request| async {
-			reinhardt::Response::new(StatusCode::PAYLOAD_TOO_LARGE)
-				.with_json(&json!({"error":{"message":"Audio exceeds the provider limit"}}))
-				.unwrap()
-		}),
-	))
+	Arc::new(
+		reinhardt::test::stub::StubRouter::new()
+			.route(
+				"/chat/completions",
+				http::Method::POST,
+				reply(|_request: reinhardt::Request| async {
+					reinhardt::Response::new(StatusCode::PAYLOAD_TOO_LARGE)
+						.with_json(&json!({"error":{"message":"Audio exceeds the provider limit"}}))
+						.unwrap()
+				}),
+			)
+			.into_server_router(),
+	)
 }
 
 #[fixture]
 fn errors_cannot_echo_unrecognized_media_or_secret_data_router() -> Arc<Router> {
-	Arc::new(Router::new().handler(
-		"/chat/completions",
-		handler(http::Method::POST, |_request: reinhardt::Request| async {
-			reinhardt::Response::new(StatusCode::SERVICE_UNAVAILABLE)
-				.with_json(
-					&json!({"error":{"message":"input_audio.data=U2Vuc2l0aXZlQnl0ZXM=; token=private"}}),
-				)
-				.unwrap()
-		}),
-	))
+	Arc::new(
+		reinhardt::test::stub::StubRouter::new()
+			.route(
+				"/chat/completions",
+				http::Method::POST,
+				reply(|_request: reinhardt::Request| async {
+					reinhardt::Response::new(StatusCode::SERVICE_UNAVAILABLE)
+						.with_json(
+							&json!({"error":{"message":"input_audio.data=U2Vuc2l0aXZlQnl0ZXM=; token=private"}}),
+						)
+						.unwrap()
+				}),
+			)
+			.into_server_router(),
+	)
 }

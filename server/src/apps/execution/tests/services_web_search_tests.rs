@@ -9,7 +9,7 @@ use std::sync::{
 	Arc,
 	atomic::{AtomicUsize, Ordering},
 };
-use upstream_fixtures::{handler, upstream};
+use upstream_fixtures::{reply, upstream};
 
 #[fixture]
 fn account_profile_json() -> Value {
@@ -361,22 +361,27 @@ fn brave_client(
 }
 #[fixture]
 fn _error_router(#[from(upstream_fixtures::hits)] calls: Arc<AtomicUsize>) -> Arc<ServerRouter> {
-	Arc::new(ServerRouter::new().handler(
-		"/res/v1/web/search",
-		handler(http::Method::POST, move |request: Request| {
-			let calls = calls.clone();
-			async move {
-				assert_eq!(request.uri.path(), "/res/v1/web/search");
-				assert_eq!(
-					request.headers.get("x-subscription-token").unwrap(),
-					"sentinel-token"
-				);
-				calls.fetch_add(1, Ordering::SeqCst);
-				Response::new(http::StatusCode::SERVICE_UNAVAILABLE)
-					.with_body("sentinel-token: upstream diagnostic")
-			}
-		}),
-	))
+	Arc::new(
+		reinhardt::test::stub::StubRouter::new()
+			.route(
+				"/res/v1/web/search",
+				http::Method::POST,
+				reply(move |request: Request| {
+					let calls = calls.clone();
+					async move {
+						assert_eq!(request.uri.path(), "/res/v1/web/search");
+						assert_eq!(
+							request.headers.get("x-subscription-token").unwrap(),
+							"sentinel-token"
+						);
+						calls.fetch_add(1, Ordering::SeqCst);
+						Response::new(http::StatusCode::SERVICE_UNAVAILABLE)
+							.with_body("sentinel-token: upstream diagnostic")
+					}
+				}),
+			)
+			.into_server_router(),
+	)
 }
 
 struct BraveErrorEnvironment {

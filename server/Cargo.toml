@@ -34,8 +34,6 @@ aidash-integrations.workspace = true
 reinhardt = { workspace = true, features = [
   "api-only",
   "uuid",
-  # Work around facade gating until reinhardt-web#6635 exposes middleware-cors.
-  "middleware",
   "middleware-cors",
   "database",
   "db-postgres",

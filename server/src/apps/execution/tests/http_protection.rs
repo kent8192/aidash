@@ -122,15 +122,17 @@ async fn production_router_enforces_auth_validation_rate_and_sse_resume(
 		assert_eq!(response.headers()["cache-control"], "no-store");
 		assert_eq!(response.headers()["referrer-policy"], "no-referrer");
 	}
-	let peer_denied = server
-		.post_raw_with_headers(
-			"/federation/v0.1/discover",
-			b"{}",
-			"application/json",
-			&[("x-aidash-protocol", aidash_server::config::PROTOCOL_VERSION)],
-		)
-		.await
-		.unwrap();
+	let peer_denied = async {
+		let client = &(server);
+		let mut request = client
+			.request(http::Method::POST, "/federation/v0.1/discover")
+			.body(bytes::Bytes::copy_from_slice(b"{}"))
+			.header(http::header::CONTENT_TYPE, "application/json");
+		request = request.header("x-aidash-protocol", aidash_server::config::PROTOCOL_VERSION);
+		request.send().await
+	}
+	.await
+	.unwrap();
 	assert_eq!(peer_denied.status_code(), 401);
 	assert_eq!(peer_denied.headers()["cache-control"], "no-store");
 	assert_eq!(peer_denied.headers()["referrer-policy"], "no-referrer");
@@ -143,7 +145,7 @@ async fn production_router_enforces_auth_validation_rate_and_sse_resume(
 	assert_eq!(session.status_code(), 200);
 	assert_eq!(session.headers()["cache-control"], "no-store");
 	assert_eq!(session.headers()["referrer-policy"], "no-referrer");
-	// reinhardt-web#6661: APIClient cannot send a GET body or a chunked producer. The raw HTTP
+	// APIClient buffers request bodies. The raw HTTP
 	// fixture checks transport limits before extraction for both encodings.
 	for (method, path, limit) in [
 		("GET", "/health", 1 << 20),

@@ -5,7 +5,7 @@ use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
 use reinhardt::test::fixtures::server::TestServerGuard;
 use serde_json::Value;
 use std::sync::atomic::Ordering;
-use upstream_fixtures::{handler, upstream};
+use upstream_fixtures::{reply, upstream};
 fn a(name: &str) -> Alias {
 	Alias::new(name)
 }
@@ -517,8 +517,9 @@ use reinhardt::query::SimpleExpr;
 fn malformed_rows_fail_without_effect_replay_and_healthy_work_continues_router(
 	#[from(upstream_fixtures::hits)] calls: Arc<std::sync::atomic::AtomicUsize>,
 ) -> Arc<Router> {
-	Arc::new(Router::new().handler("/v1/chat/completions",handler(http::Method::POST, move |_request: reinhardt::Request| {let calls=calls.clone(); async move {
+	Arc::new(reinhardt::test::stub::StubRouter::new()
+.route("/v1/chat/completions", http::Method::POST, reply(move |_request: reinhardt::Request| {let calls=calls.clone(); async move {
 			calls.fetch_add(1,Ordering::SeqCst);
 			reinhardt::Response::ok().with_json(&json!({"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":"Done"}}],"usage":{"prompt_tokens":100,"completion_tokens":1}})).unwrap()
-		}})))
+		}})).into_server_router())
 }

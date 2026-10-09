@@ -146,7 +146,7 @@ fn discovery_server(
 	#[with(_destination.clone(),_observation.clone())]
 	router: LocalBoxFuture<'static, ServerRouter>,
 ) -> LocalBoxFuture<'static, Arc<TestServerGuard>> {
-	// reinhardt-web#6658/#6673: own the native guard and serve production routes directly.
+	// Own the native guard and serve production routes directly.
 	async move { Arc::new(test_server_guard(router.await).await) }.boxed_local()
 }
 #[fixture]

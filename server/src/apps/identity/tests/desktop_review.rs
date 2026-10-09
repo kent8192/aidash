@@ -1,8 +1,7 @@
 use common::upstream_fixtures;
 use futures_util::FutureExt;
 use http::StatusCode;
-use reinhardt::ServerRouter as Router;
-use upstream_fixtures::handler;
+use upstream_fixtures::reply;
 #[path = "../../execution/tests/support/legacy.rs"]
 mod common;
 
@@ -664,32 +663,36 @@ fn review_router(
 				.unwrap();
 
 		let unavailable = outage.clone();
-		let provider = Router::new()
-			.handler(
+		let provider = reinhardt::test::stub::StubRouter::new()
+			.route(
 				"/issuer/.well-known/openid-configuration",
-				handler(http::Method::GET, move |_request: reinhardt::Request| {
+				http::Method::GET,
+				reply(move |_request: reinhardt::Request| {
 					let metadata = metadata.clone();
 					async move { reinhardt::Response::ok().with_json(&metadata).unwrap() }
 				}),
 			)
-			.handler(
+			.route(
 				"/issuer/jwks",
-				handler(http::Method::GET, move |_request: reinhardt::Request| {
+				http::Method::GET,
+				reply(move |_request: reinhardt::Request| {
 					let keys = keys.clone();
 					async move { reinhardt::Response::ok().with_json(&keys).unwrap() }
 				}),
 			)
-			.handler(
+			.route(
 				"/issuer/protocol/openid-connect/token",
-				handler(http::Method::POST, |_request: reinhardt::Request| async {
+				http::Method::POST,
+				reply(|_request: reinhardt::Request| async {
 					reinhardt::Response::ok()
 						.with_json(&json!({"access_token": "status-fixture"}))
 						.unwrap()
 				}),
 			)
-			.handler(
+			.route(
 				"/issuer/admin/users/desktop-review-user",
-				handler(http::Method::GET, move |_request: reinhardt::Request| {
+				http::Method::GET,
+				reply(move |_request: reinhardt::Request| {
 					let unavailable = unavailable.clone();
 					async move {
 						let status = if unavailable.load(Ordering::SeqCst) {
@@ -702,7 +705,8 @@ fn review_router(
 							.unwrap()
 					}
 				}),
-			);
+			)
+			.into_server_router();
 
 		Arc::new(provider)
 	}

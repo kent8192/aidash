@@ -37,20 +37,25 @@ async fn graph_custom(
 		.unwrap()
 		.extend(overrides.as_object().unwrap().clone());
 	let authorization = format!("Bearer {token}");
-	let response = app
-		.client()
-		.post_raw_with_headers(
-			"/federation/v0.1/scoped/graph",
-			payload.to_string().as_bytes(),
-			"application/json",
-			&[
-				("authorization", authorization.as_str()),
-				("x-aidash-node", SOURCE),
-				("x-aidash-protocol", "0.2"),
-			],
-		)
-		.await
-		.unwrap();
+	let response = async {
+		let client = &(app.client());
+		let mut request = client
+			.request(http::Method::POST, "/federation/v0.1/scoped/graph")
+			.body(bytes::Bytes::copy_from_slice(
+				payload.to_string().as_bytes(),
+			))
+			.header(http::header::CONTENT_TYPE, "application/json");
+		for (name, value) in &[
+			("authorization", authorization.as_str()),
+			("x-aidash-node", SOURCE),
+			("x-aidash-protocol", "0.2"),
+		] {
+			request = request.header(*name, *value);
+		}
+		request.send().await
+	}
+	.await
+	.unwrap();
 	let status = response.status().as_u16();
 	let bytes = response.body();
 	(status, serde_json::from_slice(bytes).unwrap_or(Value::Null))

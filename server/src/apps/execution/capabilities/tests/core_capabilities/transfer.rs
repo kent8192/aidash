@@ -533,21 +533,23 @@ async fn peer_request(c: &CoreFixture, node: &str, operation: &str, value: Value
 		std::env::var("AIDASH_SECRET_TEST_PEER").unwrap()
 	);
 	let path = format!("/federation/v0.1/scoped/files/{operation}");
-	let response = c
-		.app
-		.client()
-		.post_raw_with_headers(
-			&path,
-			value.to_string().as_bytes(),
-			"application/json",
-			&[
-				("Authorization", authorization.as_str()),
-				("x-aidash-node", node),
-				("x-aidash-protocol", "0.2"),
-			],
-		)
-		.await
-		.unwrap();
+	let response = async {
+		let client = &(c.app.client());
+		let mut request = client
+			.request(http::Method::POST, &path)
+			.body(bytes::Bytes::copy_from_slice(value.to_string().as_bytes()))
+			.header(http::header::CONTENT_TYPE, "application/json");
+		for (name, value) in &[
+			("Authorization", authorization.as_str()),
+			("x-aidash-node", node),
+			("x-aidash-protocol", "0.2"),
+		] {
+			request = request.header(*name, *value);
+		}
+		request.send().await
+	}
+	.await
+	.unwrap();
 	(
 		response.status_code(),
 		serde_json::from_slice(response.body()).unwrap_or(Value::Null),

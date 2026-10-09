@@ -7,7 +7,7 @@ use std::sync::{
 	Mutex,
 	atomic::{AtomicUsize, Ordering},
 };
-use upstream_fixtures::handler;
+use upstream_fixtures::reply;
 
 #[rstest::rstest]
 #[tokio::test]
@@ -201,10 +201,10 @@ fn media_router(
 	let provider_calls = calls.clone();
 	let provider_selections = selections.clone();
 	let provider_requests = requests.clone();
-	let provider=Router::new()
-        .handler("/v1/models/fixture/endpoints",handler(http::Method::GET, |_request: reinhardt::Request| async{reinhardt::Response::ok().with_json(&json!({"data":{"architecture":{"input_modalities":["text","image"]},"endpoints":[{"tag":"fixture/selected","context_length":128000}]}})).unwrap()}))
-        .handler("/v1/endpoints/zdr",handler(http::Method::GET, |_request: reinhardt::Request| async{reinhardt::Response::ok().with_json(&json!({"data":[{"model_id":"fixture","tag":"fixture/selected"}]})).unwrap()}))
-        .handler("/v1/chat/completions",handler(http::Method::POST, move |request: reinhardt::Request| {let body = request.json::<Value>().unwrap();
+	let provider=reinhardt::test::stub::StubRouter::new()
+.route("/v1/models/fixture/endpoints", http::Method::GET, reply(|_request: reinhardt::Request| async{reinhardt::Response::ok().with_json(&json!({"data":{"architecture":{"input_modalities":["text","image"]},"endpoints":[{"tag":"fixture/selected","context_length":128000}]}})).unwrap()}))
+.route("/v1/endpoints/zdr", http::Method::GET, reply(|_request: reinhardt::Request| async{reinhardt::Response::ok().with_json(&json!({"data":[{"model_id":"fixture","tag":"fixture/selected"}]})).unwrap()}))
+.route("/v1/chat/completions", http::Method::POST, reply(move |request: reinhardt::Request| {let body = request.json::<Value>().unwrap();
             let first=provider_calls.fetch_add(1,Ordering::SeqCst)==0;
             provider_requests.lock().unwrap().push(body);
             let selections=provider_selections.lock().unwrap().clone();
@@ -214,7 +214,7 @@ fn media_router(
                     reinhardt::Response::ok().with_json(&json!({"choices":[{"finish_reason":"tool_calls","message":{"content":null,"tool_calls":tool_calls}}],"usage":{"prompt_tokens":10,"completion_tokens":2}})).unwrap()
                 } else {reinhardt::Response::ok().with_json(&json!({"choices":[{"finish_reason":"stop","message":{"content":"Done"}}],"usage":{"prompt_tokens":10,"completion_tokens":2}})).unwrap()}
             }
-        }));
+        })).into_server_router();
 	Arc::new(provider)
 }
 struct MediaFixture {

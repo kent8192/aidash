@@ -76,7 +76,8 @@ pub type NatsFuture = BoxFuture<'static, (ContainerAsync<GenericImage>, String)>
 #[rstest::fixture]
 pub fn nats_container() -> NatsFuture {
 	Box::pin(async move {
-		// reinhardt-web#6660: the framework has no NATS JetStream fixture.
+		// reinhardt-web#6702: the native JetStream fixture future is not Send,
+		// so shared multi-threaded fixture composition retains this owned startup.
 		let nats = GenericImage::new("nats", "2.12-alpine")
 			.with_exposed_port(ContainerPort::Tcp(4222))
 			.with_wait_for(WaitFor::message_on_stderr("Server is ready"))

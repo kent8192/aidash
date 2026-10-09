@@ -1,7 +1,7 @@
 use common::upstream_fixtures as upstream;
 use reinhardt::ServerRouter as Router;
 use rstest::fixture;
-use upstream::handler;
+use upstream::reply;
 #[path = "../../execution/tests/support/legacy.rs"]
 mod common;
 use aidash_server::semantic::{self, ConfigureIndex, EmbeddingConfig, IndexSpec, VectorConfig};
@@ -1133,13 +1133,14 @@ use reinhardt::query::Expr;
 
 #[rstest::fixture]
 fn embeddings_router() -> std::sync::Arc<Router> {
-	std::sync::Arc::new(Router::new().handler("/v1/embeddings",handler(http::Method::POST, |request: reinhardt::Request| {let input = request.json::<Value>().unwrap();async move {
+	std::sync::Arc::new(reinhardt::test::stub::StubRouter::new()
+.route("/v1/embeddings", http::Method::POST, reply(|request: reinhardt::Request| {let input = request.json::<Value>().unwrap();async move {
             let text=input["input"].as_str().unwrap_or_default().to_lowercase();
             // Explicit fixture semantics: related concepts share a vector even
             // when the query and stored text have no common keyword.
             let vector=if text.contains("car") || text.contains("vehicle") {vec![1.0,0.0,0.0]} else if text.contains("bread") || text.contains("baking") {vec![0.0,1.0,0.0]} else {vec![0.0,0.0,1.0]};
             reinhardt::Response::ok().with_json(&json!({"model":input["model"],"data":[{"index":0,"embedding":vector}],"usage":{"prompt_tokens":1,"total_tokens":1}})).unwrap()
-        }})))
+        }})).into_server_router())
 }
 #[rstest::fixture]
 async fn embeddings(
@@ -1187,14 +1188,15 @@ fn controlled_context_router(
 ) -> std::sync::Arc<Router> {
 	let captured = state.captured.clone();
 	let received = captured.clone();
-	std::sync::Arc::new(Router::new().handler("/v1/chat/completions", handler(http::Method::POST, move |request: reinhardt::Request| {let body = request.json::<Value>().unwrap();
+	std::sync::Arc::new(reinhardt::test::stub::StubRouter::new()
+.route("/v1/chat/completions", http::Method::POST, reply(move |request: reinhardt::Request| {let body = request.json::<Value>().unwrap();
 			let received = received.clone();
 			async move {
 				let context: Value = serde_json::from_str(body["messages"][1]["content"].as_str().unwrap()).unwrap();
 				received.lock().unwrap().push(context);
 				reinhardt::Response::ok().with_json(&json!({"choices":[{"finish_reason":"stop","message":{"content":"Complete"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}})).unwrap()
 			}
-		})))
+		})).into_server_router())
 }
 struct ControlledContextProvider {
 	state: ControlledContextState,
@@ -1232,14 +1234,15 @@ fn semantic_context_is_provenanced_and_revocation_hides_run_journals_router(
 ) -> std::sync::Arc<Router> {
 	let captured = state.captured.clone();
 	let requests = captured.clone();
-	std::sync::Arc::new(Router::new().handler("/v1/chat/completions",handler(http::Method::POST, move |request: reinhardt::Request| {let body = request.json::<Value>().unwrap();
+	std::sync::Arc::new(reinhardt::test::stub::StubRouter::new()
+.route("/v1/chat/completions", http::Method::POST, reply(move |request: reinhardt::Request| {let body = request.json::<Value>().unwrap();
             let requests=requests.clone();
             async move {
                 let context:Value=serde_json::from_str(body["messages"][1]["content"].as_str().unwrap()).unwrap();
                 requests.lock().unwrap().push(context);
                 reinhardt::Response::ok().with_json(&json!({"choices":[{"index":0,"finish_reason":"tool_calls","message":{"role":"assistant","content":null,"tool_calls":[{"id":"remember-car","type":"function","function":{"name":"workspace_observe","arguments":"{}"}}]}}],"usage":{"prompt_tokens":1,"completion_tokens":1}})).unwrap()
             }
-        })))
+        })).into_server_router())
 }
 struct SemanticContextIsProvenancedAndRevocationHidesRunJournalsProvider {
 	state: SemanticContextIsProvenancedAndRevocationHidesRunJournalsState,

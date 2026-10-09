@@ -290,16 +290,19 @@ async fn atomic_submission_validates_the_entire_manifest_before_creating_work(
 	// Native Json extraction rejects unknown mutations before transaction admission.
 	let authorization = format!("Bearer {}", f.config.api_token);
 	// reinhardt-web#6672: do not mix shared default and per-request credentials.
-	let rejected = app
-		.client()
-		.post_raw_with_headers(
-			"/api/transactions",
-			external.to_string().as_bytes(),
-			"application/json",
-			&[("Authorization", authorization.as_str())],
-		)
-		.await
-		.unwrap();
+	let rejected = async {
+		let client = &(app.client());
+		let mut request = client
+			.request(http::Method::POST, "/api/transactions")
+			.body(bytes::Bytes::copy_from_slice(
+				external.to_string().as_bytes(),
+			))
+			.header(http::header::CONTENT_TYPE, "application/json");
+		request = request.header("Authorization", authorization.as_str());
+		request.send().await
+	}
+	.await
+	.unwrap();
 	assert_eq!(rejected.status_code(), 422, "{}", rejected.text());
 	assert_eq!(rejected.content_type(), Some("text/plain; charset=utf-8"));
 	assert!(

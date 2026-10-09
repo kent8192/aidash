@@ -1,8 +1,7 @@
 use common::upstream_fixtures;
 use futures_util::{FutureExt, future::BoxFuture};
-use reinhardt::ServerRouter as Router;
 
-use upstream_fixtures::{async_upstream, handler};
+use upstream_fixtures::{async_upstream, reply};
 #[path = "../../tests/support/worker_process.rs"]
 mod worker_process;
 use worker_process::WorkerProcess;
@@ -832,7 +831,8 @@ fn provider_1_router(
 	let pool = f.store.pool.driver().clone();
 
 	let seen = calls.clone();
-	let app = Router::new().handler("/systemone", handler(http::Method::POST, move |request: reinhardt::Request| {let body = request.json::<Value>().unwrap();
+	let app = reinhardt::test::stub::StubRouter::new()
+.route("/systemone", http::Method::POST, reply(move |request: reinhardt::Request| {let body = request.json::<Value>().unwrap();
         let seen = seen.clone(); let pool = pool.clone(); async move {
             seen.fetch_add(1, Ordering::SeqCst);
             let attempts: i64 = sqlx::query_scalar(&reinhardt::query::Query::select().expr(reinhardt::query::Expr::cust("COUNT(*)")).from(reinhardt::query::Alias::new("generation_compaction_usage")).to_string(reinhardt::query::PostgresQueryBuilder)).fetch_one(&pool).await.unwrap();
@@ -841,7 +841,8 @@ fn provider_1_router(
             let answers: serde_json::Map<_,_> = body["questions"].as_object().unwrap().keys().map(|key| (key.clone(), json!({"noul":0.0}))).collect();
             reinhardt::Response::ok().with_json(&json!({"answers":answers})).unwrap()
         }
-    })).handler("/v1/chat/completions", handler(http::Method::POST, |_request: reinhardt::Request| async { reinhardt::Response::ok().with_json(&json!({"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"Compacted result"}}],"usage":{"prompt_tokens":100,"completion_tokens":10}})).unwrap() }));
+    }))
+.route("/v1/chat/completions", http::Method::POST, reply(|_request: reinhardt::Request| async { reinhardt::Response::ok().with_json(&json!({"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"Compacted result"}}],"usage":{"prompt_tokens":100,"completion_tokens":10}})).unwrap() })).into_server_router();
 
 
 
@@ -889,16 +890,19 @@ fn provider_2_router(
 ) -> upstream_fixtures::RouterFuture {
 	async move {
 		let seen = calls.clone();
-		let server = Router::new().handler(
-			"/systemone",
-			handler(http::Method::POST, move |_request: reinhardt::Request| {
-				let seen = seen.clone();
-				async move {
-					seen.fetch_add(1, Ordering::SeqCst);
-					reinhardt::Response::new(http::StatusCode::TOO_MANY_REQUESTS)
-				}
-			}),
-		);
+		let server = reinhardt::test::stub::StubRouter::new()
+			.route(
+				"/systemone",
+				http::Method::POST,
+				reply(move |_request: reinhardt::Request| {
+					let seen = seen.clone();
+					async move {
+						seen.fetch_add(1, Ordering::SeqCst);
+						reinhardt::Response::new(http::StatusCode::TOO_MANY_REQUESTS)
+					}
+				}),
+			)
+			.into_server_router();
 
 		Arc::new(server)
 	}
@@ -970,8 +974,8 @@ fn provider_3_router(
 
 
 
-	let server = Router::new()
-        .handler("/v1/chat/completions", handler(http::Method::POST, {
+	let server = reinhardt::test::stub::StubRouter::new()
+.route("/v1/chat/completions", http::Method::POST, reply({
             let started = first_model.clone(); let calls = model_calls.clone();
             move |_request: reinhardt::Request| { let started=started.clone(); let calls=calls.clone(); async move {
                 if calls.fetch_add(1, Ordering::SeqCst) == 0 {
@@ -980,7 +984,7 @@ fn provider_3_router(
                 reinhardt::Response::ok().with_json(&json!({"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"Recovered result"}}],"usage":{"prompt_tokens":100,"completion_tokens":10}})).unwrap()
             }}
         }))
-        .handler("/systemone", handler(http::Method::POST, {
+.route("/systemone", http::Method::POST, reply({
             let started=first_compaction.clone(); let calls=compaction_calls.clone(); let pool=f.store.pool.driver().clone();
             move |request: reinhardt::Request| {let body = request.json::<Value>().unwrap(); let started=started.clone(); let calls=calls.clone(); let pool=pool.clone(); async move {
                 let number=calls.fetch_add(1, Ordering::SeqCst)+1;
@@ -990,7 +994,7 @@ fn provider_3_router(
                 let answers:serde_json::Map<_,_>=body["questions"].as_object().unwrap().keys().map(|k|(k.clone(),json!({"noul":0.0}))).collect();
                 reinhardt::Response::ok().with_json(&json!({"answers":answers})).unwrap()
             }}
-        }));
+        })).into_server_router();
 
 
 
@@ -1056,7 +1060,8 @@ fn provider_4_router(
 
 		let seen = calls.clone();
 		let pool = f.store.pool.driver().clone();
-		let server=Router::new().handler("/systemone",handler(http::Method::POST, move |request: reinhardt::Request| {let body = request.json::<Value>().unwrap();
+		let server=reinhardt::test::stub::StubRouter::new()
+.route("/systemone", http::Method::POST, reply(move |request: reinhardt::Request| {let body = request.json::<Value>().unwrap();
             let seen=seen.clone(); let pool=pool.clone(); async move {
                 seen.fetch_add(1,Ordering::SeqCst);
                 let charges:i64=sqlx::query_scalar(&reinhardt::query::Query::select().expr(reinhardt::query::Expr::cust("COUNT(*)")).from(reinhardt::query::Alias::new("generation_compaction_usage")).to_string(reinhardt::query::PostgresQueryBuilder)).fetch_one(&pool).await.unwrap();
@@ -1064,7 +1069,8 @@ fn provider_4_router(
                 let answers:serde_json::Map<_,_>=body["questions"].as_object().unwrap().keys().map(|k|(k.clone(),json!({"noul":0.0}))).collect();
                 reinhardt::Response::ok().with_json(&json!({"answers":answers})).unwrap()
             }
-        })).handler("/v1/chat/completions",handler(http::Method::POST, |_request: reinhardt::Request| async{reinhardt::Response::ok().with_json(&json!({"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"Nested result"}}],"usage":{"prompt_tokens":100,"completion_tokens":10}})).unwrap()}));
+        }))
+.route("/v1/chat/completions", http::Method::POST, reply(|_request: reinhardt::Request| async{reinhardt::Response::ok().with_json(&json!({"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"Nested result"}}],"usage":{"prompt_tokens":100,"completion_tokens":10}})).unwrap()})).into_server_router();
 
 
 

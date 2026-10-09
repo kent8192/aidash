@@ -1,10 +1,7 @@
 //! PostgreSQL fixture with the same JSON Schema extension as production.
 use reinhardt::query::QueryStatementBuilder as _;
-use reinhardt::test::testcontainers::{
-	ContainerAsync, GenericImage, ImageExt,
-	core::{IntoContainerPort, WaitFor},
-	runners::AsyncRunner,
-};
+use reinhardt::test::fixtures::{PostgresContainerConfig, postgres_container_with};
+use reinhardt::test::testcontainers::{ContainerAsync, GenericImage, core::WaitFor};
 use rstest::fixture;
 use sqlx::{Connection, PgPool};
 use std::{sync::Arc, time::Duration};
@@ -16,68 +13,40 @@ pub type PostgresFuture = std::pin::Pin<
 >;
 
 #[fixture]
-pub fn postgres_container() -> PostgresFuture {
-	Box::pin(async move {
-		// Reinhardt's postgres_container fixes postgres:16-alpine. Aidash needs its
-		// PostgreSQL 17 image with pg_jsonschema, pgvector, and PGroonga extensions.
-		// reinhardt-web#6655 and #6656 track version documentation and image customization.
-		// Keep an explicit mapping across stop/start. Avoid the usual ephemeral range:
-		// outbound fixture connections can claim those ports after the reservation drops.
-		let reservation = (0..128)
-			.find_map(|_| {
-				let port = 10_000 + (uuid::Uuid::new_v4().as_u128() % 20_000) as u16;
-				std::net::TcpListener::bind(("0.0.0.0", port)).ok()
-			})
-			.expect("reserve an available PostgreSQL fixture listener port");
-		let host_port = reservation.local_addr().unwrap().port();
-		let image = GenericImage::new("aidash-orm-test-postgres", "17-pg-jsonschema-0.3.4")
-		.with_exposed_port(5432.tcp())
-		// The initialization server only accepts Unix sockets. Wait for the final
-		// TCP listener, then verify readiness with an actual pool connection below.
-		.with_wait_for(WaitFor::message_on_stderr(
-			"listening on IPv4 address \"0.0.0.0\", port 5432",
-		))
-		.with_env_var("POSTGRES_USER", "aidash")
-		.with_env_var("POSTGRES_PASSWORD", "fixture-password")
-		.with_env_var("POSTGRES_DB", "aidash")
-		.with_mapped_port(host_port, 5432.tcp())
-		.with_cmd([
-			"postgres",
-			"-c",
-			"max_connections=400",
-			"-c",
-			"max_worker_processes=256",
-		])
-		.with_startup_timeout(Duration::from_secs(120));
-		drop(reservation);
-		let container = image.start().await.expect("build the test target of deploy/postgres/Dockerfile as aidash-orm-test-postgres:17-pg-jsonschema-0.3.4 before database tests");
-		let port = container.get_host_port_ipv4(5432).await.unwrap();
-		// The fixture has no TLS listener; avoid negotiating through an initializing
-		// Docker port proxy before its PostgreSQL backend becomes available.
-		let url =
-			format!("postgres://aidash:fixture-password@127.0.0.1:{port}/aidash?sslmode=disable");
-		let pool = tokio::time::timeout(Duration::from_secs(30), async {
-			loop {
-				match sqlx::postgres::PgPoolOptions::new()
-					.max_connections(2)
-					.acquire_timeout(Duration::from_secs(1))
-					.connect(&url)
-					.await
-				{
-					Ok(pool) => break pool,
-					Err(
-						sqlx::Error::Io(_) | sqlx::Error::PoolTimedOut | sqlx::Error::Protocol(_),
-					) => {}
-					Err(sqlx::Error::Database(error))
-						if error.code().as_deref() == Some("57P03") => {}
-					Err(error) => panic!("fixture PostgreSQL connection failed: {error}"),
-				}
-				tokio::time::sleep(Duration::from_millis(50)).await;
-			}
+fn postgres_config() -> (PostgresContainerConfig, std::net::TcpListener) {
+	// Preserve the restart mapping outside the ephemeral outbound connection range.
+	let reservation = (0..128)
+		.find_map(|_| {
+			let port = 10_000 + (uuid::Uuid::new_v4().as_u128() % 20_000) as u16;
+			std::net::TcpListener::bind(("0.0.0.0", port)).ok()
 		})
-		.await
-		.expect("fixture PostgreSQL must accept TCP connections within 30 seconds");
-		(container, Arc::new(pool), port, url)
+		.expect("reserve an available PostgreSQL fixture listener port");
+	let host_port = reservation.local_addr().unwrap().port();
+	let config = PostgresContainerConfig::default()
+        .image("aidash-orm-test-postgres", "17-pg-jsonschema-0.3.4")
+        .user("aidash")
+        .password("fixture-password")
+        .database("aidash")
+        .host_port(host_port)
+        // Ignore the temporary Unix-only initialization server.
+        .wait_for(WaitFor::message_on_stderr(
+            "listening on IPv4 address \"0.0.0.0\", port 5432",
+        ))
+        .args(["postgres", "-c", "max_connections=400", "-c", "max_worker_processes=256"])
+        .startup_timeout(Duration::from_secs(120));
+	(config, reservation)
+}
+
+#[fixture]
+pub fn postgres_container(
+	postgres_config: (PostgresContainerConfig, std::net::TcpListener),
+) -> PostgresFuture {
+	Box::pin(async move {
+		let (config, reservation) = postgres_config;
+		drop(reservation);
+		// The native configurable fixture retains the custom PostgreSQL 17 image.
+		let (container, pool, port, url) = postgres_container_with(config).await;
+		(container, pool, port, url)
 	})
 }
 

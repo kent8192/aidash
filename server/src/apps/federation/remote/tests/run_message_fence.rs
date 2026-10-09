@@ -9,7 +9,6 @@ use aidash_server::{
 use common::upstream_fixtures;
 use common::{bootstrap, cleanup, request};
 use http::StatusCode;
-use reinhardt::ServerRouter as Router;
 use reinhardt::http::{Handler, Middleware, ViewResult};
 use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
 use reinhardt::{Request, Response};
@@ -18,7 +17,7 @@ use std::sync::{
 	Arc,
 	atomic::{AtomicBool, Ordering},
 };
-use upstream_fixtures::handler;
+use upstream_fixtures::reply;
 use uuid::Uuid;
 
 fn uuid_expr(id: Uuid) -> reinhardt::query::SimpleExpr {
@@ -774,39 +773,44 @@ fn history_router(history: HistoryFuture) -> upstream_fixtures::RouterFuture {
 	use futures_util::FutureExt;
 	async move {
 		let old_message = history.await.old_message;
-		Arc::new(Router::new().handler(
-			"/federation/v0.1/workspace",
-			handler(http::Method::POST, move |request: reinhardt::Request| {
-				let command = request.json::<Value>().unwrap();
-				let old_message = old_message.clone();
-				async move {
-					match command["operation"].as_str().unwrap() {
-						"run_message_delivery_capability" => {
-							reinhardt::Response::new(StatusCode::OK)
-								.with_json(&json!({"protocol":2}))
-								.unwrap()
+		Arc::new(
+			reinhardt::test::stub::StubRouter::new()
+				.route(
+					"/federation/v0.1/workspace",
+					http::Method::POST,
+					reply(move |request: reinhardt::Request| {
+						let command = request.json::<Value>().unwrap();
+						let old_message = old_message.clone();
+						async move {
+							match command["operation"].as_str().unwrap() {
+								"run_message_delivery_capability" => {
+									reinhardt::Response::new(StatusCode::OK)
+										.with_json(&json!({"protocol":2}))
+										.unwrap()
+								}
+								"run_message_history" => reinhardt::Response::new(StatusCode::OK)
+									.with_json(&json!([old_message]))
+									.unwrap(),
+								"run_message_reserve" => reinhardt::Response::new(StatusCode::OK)
+									.with_json(&json!({"reserved":true}))
+									.unwrap(),
+								"run_message_commit" => reinhardt::Response::new(StatusCode::OK)
+									.with_json(&json!({"committed":true}))
+									.unwrap(),
+								"run_message_delivery" => {
+									reinhardt::Response::new(StatusCode::SERVICE_UNAVAILABLE)
+										.with_json(&json!({"error":"delivery pending"}))
+										.unwrap()
+								}
+								_ => reinhardt::Response::new(StatusCode::BAD_REQUEST)
+									.with_json(&json!({"error":"unknown federation operation"}))
+									.unwrap(),
+							}
 						}
-						"run_message_history" => reinhardt::Response::new(StatusCode::OK)
-							.with_json(&json!([old_message]))
-							.unwrap(),
-						"run_message_reserve" => reinhardt::Response::new(StatusCode::OK)
-							.with_json(&json!({"reserved":true}))
-							.unwrap(),
-						"run_message_commit" => reinhardt::Response::new(StatusCode::OK)
-							.with_json(&json!({"committed":true}))
-							.unwrap(),
-						"run_message_delivery" => {
-							reinhardt::Response::new(StatusCode::SERVICE_UNAVAILABLE)
-								.with_json(&json!({"error":"delivery pending"}))
-								.unwrap()
-						}
-						_ => reinhardt::Response::new(StatusCode::BAD_REQUEST)
-							.with_json(&json!({"error":"unknown federation operation"}))
-							.unwrap(),
-					}
-				}
-			}),
-		))
+					}),
+				)
+				.into_server_router(),
+		)
 	}
 	.boxed()
 	.shared()

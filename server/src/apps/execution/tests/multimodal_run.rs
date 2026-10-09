@@ -1,7 +1,7 @@
 use common::upstream_fixtures;
 use reinhardt::ServerRouter as Router;
 use reinhardt::test::fixtures::server::TestServerGuard;
-use upstream_fixtures::{handler, upstream};
+use upstream_fixtures::{reply, upstream};
 #[path = "support/legacy.rs"]
 mod common;
 
@@ -33,16 +33,17 @@ async fn upload(
 	);
 
 	let authorization = format!("Bearer {token}");
-	let response = app
-		.api_http
-		.post_raw_with_headers(
-			&path,
-			bytes,
-			"application/octet-stream",
-			&[("authorization", authorization.as_str())],
-		)
-		.await
-		.unwrap();
+	let response = async {
+		let client = &(app.api_http);
+		let mut request = client
+			.request(http::Method::POST, &path)
+			.body(bytes::Bytes::copy_from_slice(bytes))
+			.header(http::header::CONTENT_TYPE, "application/octet-stream");
+		request = request.header("authorization", authorization.as_str());
+		request.send().await
+	}
+	.await
+	.unwrap();
 	let status = response.status_code();
 	let body = response.json_value().unwrap();
 	assert_eq!(status, 200, "{body}");
@@ -958,10 +959,10 @@ fn media_router(
 	empty_media_observation: Arc<AtomicBool>,
 ) -> Arc<Router> {
 	let sent = media_requests.sender;
-	Arc::new(Router::new()
-		.handler("/v1/models/fixture/endpoints", handler(http::Method::GET, |_request: reinhardt::Request| async { reinhardt::Response::ok().with_json(&json!({"data":{"architecture":{"input_modalities":["text","image","audio"]},"endpoints":[{"tag":"fixture/verified","context_length":128000},{"tag":"fixture/png","context_length":128000},{"tag":"fixture/jpeg","context_length":128000}]}})).unwrap() }))
-		.handler("/v1/endpoints/zdr", handler(http::Method::GET, |_request: reinhardt::Request| async { reinhardt::Response::ok().with_json(&json!({"data":[{"model_id":"fixture","tag":"fixture/verified"},{"model_id":"fixture","tag":"fixture/png"},{"model_id":"fixture","tag":"fixture/jpeg"}]})).unwrap() }))
-		.handler("/v1/chat/completions", handler(http::Method::POST, move |request: reinhardt::Request| {let body = request.json::<Value>().unwrap();
+	Arc::new(reinhardt::test::stub::StubRouter::new()
+.route("/v1/models/fixture/endpoints", http::Method::GET, reply(|_request: reinhardt::Request| async { reinhardt::Response::ok().with_json(&json!({"data":{"architecture":{"input_modalities":["text","image","audio"]},"endpoints":[{"tag":"fixture/verified","context_length":128000},{"tag":"fixture/png","context_length":128000},{"tag":"fixture/jpeg","context_length":128000}]}})).unwrap() }))
+.route("/v1/endpoints/zdr", http::Method::GET, reply(|_request: reinhardt::Request| async { reinhardt::Response::ok().with_json(&json!({"data":[{"model_id":"fixture","tag":"fixture/verified"},{"model_id":"fixture","tag":"fixture/png"},{"model_id":"fixture","tag":"fixture/jpeg"}]})).unwrap() }))
+.route("/v1/chat/completions", http::Method::POST, reply(move |request: reinhardt::Request| {let body = request.json::<Value>().unwrap();
 			let sent = sent.clone();
 			let empty_media_observation = empty_media_observation.clone();
 			async move {
@@ -977,5 +978,5 @@ fn media_router(
 				}
 				reinhardt::Response::ok().with_json(&json!({"choices":[{"finish_reason":"stop","message":{"content":"Done"}}],"usage":{"prompt_tokens":10,"completion_tokens":2}})).unwrap()
 			}
-		})))
+		})).into_server_router())
 }

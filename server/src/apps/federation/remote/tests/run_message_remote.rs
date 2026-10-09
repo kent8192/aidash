@@ -23,20 +23,23 @@ async fn peer_control(app: &common::TestApplication, node: &str, body: Value) ->
 		"Bearer {}",
 		std::env::var("AIDASH_SECRET_TEST_PEER").unwrap()
 	);
-	let response = app
-		.client()
-		.post_raw_with_headers(
-			"/federation/v0.1/control",
-			body.to_string().as_bytes(),
-			"application/json",
-			&[
-				("authorization", authorization.as_str()),
-				("x-aidash-node", node),
-				("x-aidash-protocol", "0.2"),
-			],
-		)
-		.await
-		.unwrap();
+	let response = async {
+		let client = &(app.client());
+		let mut request = client
+			.request(http::Method::POST, "/federation/v0.1/control")
+			.body(bytes::Bytes::copy_from_slice(body.to_string().as_bytes()))
+			.header(http::header::CONTENT_TYPE, "application/json");
+		for (name, value) in &[
+			("authorization", authorization.as_str()),
+			("x-aidash-node", node),
+			("x-aidash-protocol", "0.2"),
+		] {
+			request = request.header(*name, *value);
+		}
+		request.send().await
+	}
+	.await
+	.unwrap();
 	(
 		response.status_code(),
 		serde_json::from_slice(response.body()).unwrap_or(Value::Null),

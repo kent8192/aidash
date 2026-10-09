@@ -193,38 +193,23 @@ impl Node {
 		path: &str,
 		body: Option<Value>,
 	) -> (u16, Value) {
-		let authorization = format!("Bearer {}", self.f.config.api_token);
-		let headers = [("Authorization", authorization.as_str())];
-		let client = self.client.clone();
-		let response = match method {
-			reqwest::Method::GET => client.get_with_headers(path, &headers).await.unwrap(),
-			reqwest::Method::POST => client
-				.post_raw_with_headers(
-					path,
-					&serde_json::to_vec(&body.unwrap_or(Value::Null)).unwrap(),
-					"application/json",
-					&headers,
-				)
+		let mut request = self.client.request(method.clone(), path).header(
+			"Authorization",
+			format!("Bearer {}", self.f.config.api_token),
+		);
+		if method == reqwest::Method::POST {
+			request = request.json(&body.unwrap_or(Value::Null));
+		} else if let Some(body) = body {
+			request = request.json(&body);
+		}
+		let response = if matches!(method, reqwest::Method::GET | reqwest::Method::POST) {
+			request.send().await.unwrap()
+		} else {
+			// Preserve the existing five-second bound on other protocol methods.
+			tokio::time::timeout(std::time::Duration::from_secs(5), request.send())
 				.await
-				.unwrap(),
-			_ => {
-				// reinhardt-web#6661: the native generic request dispatcher is private.
-				let mut request = self
-					.f
-					.client
-					.request(method, format!("{}{path}", self.f.config.endpoint))
-					.bearer_auth(&self.f.config.api_token)
-					.timeout(std::time::Duration::from_secs(5));
-				if let Some(body) = body {
-					request = request.json(&body);
-				}
-				let response = request.send().await.unwrap();
-				let status = response.status();
-				let headers = response.headers().clone();
-				let version = response.version();
-				let body = response.bytes().await.unwrap();
-				reinhardt::test::TestResponse::with_body_and_version(status, headers, body, version)
-			}
+				.unwrap()
+				.unwrap()
 		};
 		(
 			response.status_code(),
@@ -1456,18 +1441,23 @@ async fn mapped_transaction_admission_and_revocation(
 			let peer_token = std::env::var("AIDASH_SECRET_TEST_PEER").unwrap();
 			// Act: rebuild after constraining the durable control pool to one slot.
 			for _ in 0..2 {
-				let response = ticket_app
-					.client()
-					.get_with_headers(
+				let response = async {
+					let client = &(ticket_app.client());
+					let mut request = client.request(
+						http::Method::GET,
 						&format!("/federation/v0.1/transactions/{}/authority", manifest.id),
-						&[
-							("authorization", &format!("Bearer {peer_token}")),
-							("x-aidash-node", &b.f.config.node_id),
-							("x-aidash-protocol", "0.2"),
-						],
-					)
-					.await
-					.unwrap();
+					);
+					for (name, value) in &[
+						("authorization", format!("Bearer {peer_token}").as_str()),
+						("x-aidash-node", b.f.config.node_id.as_str()),
+						("x-aidash-protocol", "0.2"),
+					] {
+						request = request.header(*name, *value);
+					}
+					request.send().await
+				}
+				.await
+				.unwrap();
 				let status = response.status_code();
 				let bytes = response.body();
 				assert_eq!(

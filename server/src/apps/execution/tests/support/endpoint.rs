@@ -86,7 +86,7 @@ fn endpoint_router(endpoint_runtime: RuntimeFuture) -> RouterFuture {
 #[fixture]
 fn endpoint_server(endpoint_runtime: RuntimeFuture) -> ServerFuture {
 	async move {
-		// reinhardt-web#6673: raw handler mounts omit HEAD. Serve production
+		// Serve production
 		// routes directly, sharing DI with the separate in-process router fixture.
 		let router = aidash_server::routes()
 			.with_di_context(endpoint_runtime.await.context.clone())

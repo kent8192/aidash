@@ -1,8 +1,7 @@
 use common::upstream_fixtures;
 use futures_util::{FutureExt, future::BoxFuture};
 use http::Method;
-use reinhardt::ServerRouter as Router;
-use upstream_fixtures::{async_upstream, handler};
+use upstream_fixtures::{async_upstream, reply};
 #[path = "../../execution/tests/support/legacy.rs"]
 mod common;
 use aidash_server::{domain::qualified_agent, harness::Harness};
@@ -1695,15 +1694,17 @@ fn scoped_worker_preserves_pending_tool_across_revocation_and_resumes_with_inter
 
 
 	let counter = effects.clone();
-	let server=Router::new().handler("/effect",handler(http::Method::POST, move |_request: reinhardt::Request| { let counter=counter.clone(); async move {
+	let server=reinhardt::test::stub::StubRouter::new()
+.route("/effect", http::Method::POST, reply(move |_request: reinhardt::Request| { let counter=counter.clone(); async move {
         counter.fetch_add(1,Ordering::SeqCst); reinhardt::Response::ok().with_json(&json!({"saved":true})).unwrap()
-    }})).handler("/v1/chat/completions",handler(http::Method::POST, |request: reinhardt::Request| {let body = request.json::<Value>().unwrap();async move {
+    }}))
+.route("/v1/chat/completions", http::Method::POST, reply(|request: reinhardt::Request| {let body = request.json::<Value>().unwrap();async move {
         let context:Value=serde_json::from_str(body["messages"][1]["content"].as_str().unwrap()).unwrap();
         let message=if context["history"].as_array().unwrap().iter().any(|e| e["kind"]=="tool") {
             json!({"role":"assistant","content":"Completed authorized work"})
         } else { json!({"role":"assistant","content":null,"tool_calls":[{"id":"call-1","type":"function","function":{"name":"plugin_0","arguments":"{}"}}]}) };
         reinhardt::Response::ok().with_json(&json!({"choices":[{"index":0,"finish_reason":if message.get("tool_calls").is_some(){"tool_calls"}else{"stop"},"message":message}],"usage":{"prompt_tokens":1,"completion_tokens":1}})).unwrap()
-    }}));
+    }})).into_server_router();
 
 
 
@@ -1767,20 +1768,23 @@ fn worker_effect_boundary_serializes_revocation_and_persists_audit_before_the_ef
 		let handler_entered = entered.clone();
 		let handler_release = release.clone();
 
-		let fixture = Router::new().handler(
-			"/effect",
-			handler(http::Method::POST, move |_request: reinhardt::Request| {
-				let entered = handler_entered.clone();
-				let release = handler_release.clone();
-				async move {
-					entered.notify_one();
-					release.notified().await;
-					reinhardt::Response::ok()
-						.with_json(&json!({"effect":"committed"}))
-						.unwrap()
-				}
-			}),
-		);
+		let fixture = reinhardt::test::stub::StubRouter::new()
+			.route(
+				"/effect",
+				http::Method::POST,
+				reply(move |_request: reinhardt::Request| {
+					let entered = handler_entered.clone();
+					let release = handler_release.clone();
+					async move {
+						entered.notify_one();
+						release.notified().await;
+						reinhardt::Response::ok()
+							.with_json(&json!({"effect":"committed"}))
+							.unwrap()
+					}
+				}),
+			)
+			.into_server_router();
 
 		Arc::new(fixture)
 	}

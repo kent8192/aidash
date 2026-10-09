@@ -1,7 +1,7 @@
 use common::upstream_fixtures;
 use reinhardt::ServerRouter as Router;
 use reinhardt::test::fixtures::server::TestServerGuard;
-use upstream_fixtures::handler;
+use upstream_fixtures::reply;
 #[path = "support/legacy.rs"]
 mod common;
 #[path = "worker_activation/review.rs"]
@@ -1377,12 +1377,13 @@ async fn child_runtime(
 fn separate_process_notifications_and_negative_control_router(
 	#[from(upstream_fixtures::hits)] calls: Arc<AtomicUsize>,
 ) -> Arc<Router> {
-	Arc::new(Router::new().handler("/v1/chat/completions",handler(http::Method::POST, move |_request: reinhardt::Request| {
+	Arc::new(reinhardt::test::stub::StubRouter::new()
+.route("/v1/chat/completions", http::Method::POST, reply(move |_request: reinhardt::Request| {
         let calls = calls.clone(); async move {
             calls.fetch_add(1,Ordering::SeqCst);
             reinhardt::Response::ok().with_json(&json!({"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"Activation fixture completed"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}})).unwrap()
         }
-    })))
+    })).into_server_router())
 }
 #[rstest::fixture]
 fn atomic_deadlines_duplicates_quarantine_and_input_during_active_owner_router(
@@ -1390,32 +1391,35 @@ fn atomic_deadlines_duplicates_quarantine_and_input_during_active_owner_router(
 	#[from(upstream_fixtures::available)] blocked: Arc<std::sync::atomic::AtomicBool>,
 	permits: Arc<tokio::sync::Semaphore>,
 ) -> Arc<Router> {
-	Arc::new(Router::new().handler("/v1/chat/completions",handler(http::Method::POST, {
+	Arc::new(reinhardt::test::stub::StubRouter::new()
+.route("/v1/chat/completions", http::Method::POST, reply({
         let calls=calls.clone();let blocked=blocked.clone();let permits=permits.clone();
         move |_request: reinhardt::Request| { let calls=calls.clone();let blocked=blocked.clone();let permits=permits.clone(); async move {
             calls.fetch_add(1,Ordering::SeqCst);
             if blocked.load(Ordering::SeqCst) { permits.acquire().await.unwrap().forget(); }
             reinhardt::Response::ok().with_json(&json!({"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"Fixture completed"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}})).unwrap()
         }}
-    })))
+    })).into_server_router())
 }
 #[rstest::fixture]
 fn broker_absence_reconnect_and_empty_storage_preserve_accepted_work_router(
 	#[from(upstream_fixtures::hits)] calls: Arc<AtomicUsize>,
 ) -> Arc<Router> {
-	Arc::new(Router::new().handler("/v1/chat/completions",handler(http::Method::POST, move |_request: reinhardt::Request| {let calls=calls.clone();async move {
+	Arc::new(reinhardt::test::stub::StubRouter::new()
+.route("/v1/chat/completions", http::Method::POST, reply(move |_request: reinhardt::Request| {let calls=calls.clone();async move {
         calls.fetch_add(1,Ordering::SeqCst);
         reinhardt::Response::ok().with_json(&json!({"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"Recovered"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}})).unwrap()
-    }})))
+    }})).into_server_router())
 }
 #[rstest::fixture]
 fn killed_after_ack_recovers_only_after_real_lease_expiry_router(
 	#[from(upstream_fixtures::hits)] calls: Arc<AtomicUsize>,
 ) -> Arc<Router> {
-	Arc::new(Router::new().handler("/v1/chat/completions",handler(http::Method::POST, move |_request: reinhardt::Request| {let calls=calls.clone();async move {
+	Arc::new(reinhardt::test::stub::StubRouter::new()
+.route("/v1/chat/completions", http::Method::POST, reply(move |_request: reinhardt::Request| {let calls=calls.clone();async move {
         calls.fetch_add(1,Ordering::SeqCst);
         reinhardt::Response::ok().with_json(&json!({"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"Recovered once"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}})).unwrap()
-    }})))
+    }})).into_server_router())
 }
 
 #[rstest::fixture]

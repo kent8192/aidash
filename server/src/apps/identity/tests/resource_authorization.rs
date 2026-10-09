@@ -1,11 +1,10 @@
 use common::upstream_fixtures;
 use futures_util::{FutureExt, future::BoxFuture};
-use reinhardt::ServerRouter as Router;
 use std::sync::{
 	Arc,
 	atomic::{AtomicUsize, Ordering},
 };
-use upstream_fixtures::{async_upstream, handler};
+use upstream_fixtures::{async_upstream, reply};
 #[path = "../../execution/tests/support/legacy.rs"]
 mod common;
 use aidash_server::{
@@ -693,20 +692,23 @@ async fn stored_message_author_controls_visibility_and_forged_authorship_is_reje
 	let bob = bob["token"].as_str().unwrap();
 	let path = format!("/api/workspaces/{workspace}/messages");
 	let authorization = format!("Bearer {bob}");
-	// reinhardt-web#6672: per-request headers append to defaults. Keep the shared
+	// Keep the shared
 	// anonymous client free of default credentials so later Alice requests stay isolated.
-	let rejected = app
-		.client()
-		.post_raw_with_headers(
-			&path,
-			json!({"content":"bob-private","sender":"alice"})
-				.to_string()
-				.as_bytes(),
-			"application/json",
-			&[("Authorization", authorization.as_str())],
-		)
-		.await
-		.unwrap();
+	let rejected = async {
+		let client = &(app.client());
+		let mut request = client
+			.request(http::Method::POST, &path)
+			.body(bytes::Bytes::copy_from_slice(
+				json!({"content":"bob-private","sender":"alice"})
+					.to_string()
+					.as_bytes(),
+			))
+			.header(http::header::CONTENT_TYPE, "application/json");
+		request = request.header("Authorization", authorization.as_str());
+		request.send().await
+	}
+	.await
+	.unwrap();
 	assert_eq!(rejected.status_code(), 422);
 	assert!(
 		std::str::from_utf8(rejected.body())
@@ -1416,7 +1418,8 @@ fn retained_snapshot_revocation_provider_router(
 
 	let seen = calls.clone();
 	let pool = f.store.pool.driver().clone();
-	let server=Router::new().handler("/v1/chat/completions",handler(http::Method::POST, move |request: reinhardt::Request| {let body = request.json::<Value>().unwrap();
+	let server=reinhardt::test::stub::StubRouter::new()
+.route("/v1/chat/completions", http::Method::POST, reply(move |request: reinhardt::Request| {let body = request.json::<Value>().unwrap();
         let seen=seen.clone();let pool=pool.clone();async move {
             seen.fetch_add(1,Ordering::SeqCst);
             let context: Value = serde_json::from_str(body["messages"][1]["content"].as_str().unwrap()).unwrap();
@@ -1427,7 +1430,7 @@ fn retained_snapshot_revocation_provider_router(
             assert_eq!(sources,20,"only records exposed by the bounded observation page are tracked before provider I/O");
             reinhardt::Response::ok().with_json(&json!({"choices":[{"index":0,"finish_reason":"tool_calls","message":{"role":"assistant","content":null,"tool_calls":[{"id":"read","type":"function","function":{"name":"workspace_read","arguments":json!({"kind":"artifact","id":artifact_id}).to_string()}}]}}],"usage":{"prompt_tokens":1,"completion_tokens":1}})).unwrap()
         }
-    }));
+    })).into_server_router();
 
 
 
@@ -1481,16 +1484,14 @@ fn opened_thread_events_retain_their_root_message_read_dependency_provider_route
 
 
 	let seen = calls.clone();
-	let server = Router::new().handler(
-		"/v1/chat/completions",
-		handler(http::Method::POST, move |request: reinhardt::Request| {let _body = request.json::<Value>().unwrap();
+	let server = reinhardt::test::stub::StubRouter::new()
+.route("/v1/chat/completions", http::Method::POST, reply(move |request: reinhardt::Request| {let _body = request.json::<Value>().unwrap();
 			let seen = seen.clone();
 			async move {
 				seen.fetch_add(1, Ordering::SeqCst);
 				reinhardt::Response::ok().with_json(&json!({"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"Noted the discussion."}}],"usage":{"prompt_tokens":1,"completion_tokens":1}})).unwrap()
 			}
-		}),
-	);
+		})).into_server_router();
 
 
 
@@ -1544,12 +1545,13 @@ fn worker_continues_with_visible_subset_and_never_sends_denied_records_provider_
 
 
 	let seen = calls.clone();
-	let server=Router::new().handler("/v1/chat/completions",handler(http::Method::POST, move |request: reinhardt::Request| {let body = request.json::<Value>().unwrap();let seen=seen.clone();async move {
+	let server=reinhardt::test::stub::StubRouter::new()
+.route("/v1/chat/completions", http::Method::POST, reply(move |request: reinhardt::Request| {let body = request.json::<Value>().unwrap();let seen=seen.clone();async move {
         seen.fetch_add(1,Ordering::SeqCst);
         assert!(!body.to_string().contains("hidden-provider-source"));assert!(!body.to_string().contains("hidden-message"));
         assert!(body.to_string().contains("Use approved tools"));
         reinhardt::Response::ok().with_json(&json!({"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"Visible work completed"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}})).unwrap()
-    }}));
+    }})).into_server_router();
 
 
 
@@ -1603,13 +1605,14 @@ fn discovered_registry_entries_remain_live_journal_dependencies_provider_router(
 
 
 
-	let server=Router::new().handler("/v1/chat/completions",handler(http::Method::POST, move |_request: reinhardt::Request| {let calls=calls.clone(); async move {
+	let server=reinhardt::test::stub::StubRouter::new()
+.route("/v1/chat/completions", http::Method::POST, reply(move |_request: reinhardt::Request| {let calls=calls.clone(); async move {
         let message=if calls.fetch_add(1,Ordering::SeqCst)==0 {
             json!({"role":"assistant","content":null,"tool_calls":[{"id":"discover","type":"function","function":{"name":"agent_discover","arguments":"{}"}}]})
         } else { json!({"role":"assistant","content":"Completed discovery"}) };
         let reason=if message.get("tool_calls").is_some(){"tool_calls"}else{"stop"};
         reinhardt::Response::ok().with_json(&json!({"choices":[{"index":0,"finish_reason":reason,"message":message}],"usage":{"prompt_tokens":1,"completion_tokens":1}})).unwrap()
-    }}));
+    }})).into_server_router();
 
 
 

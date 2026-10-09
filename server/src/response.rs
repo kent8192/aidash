@@ -56,15 +56,13 @@ mod tests {
 			.endpoint(invalid)
 			.endpoint(valid)
 	}
-	#[fixture]
-	async fn bounded_responses(bounded_router: ServerRouter) -> TestServerGuard {
-		// reinhardt-web#6658: the pinned guard is a primitive, without rstest dependency resolution.
-		test_server_guard(bounded_router).await
-	}
 	#[rstest]
 	#[tokio::test]
 	async fn rejects_oversized_chunked_bodies_and_malformed_json(
-		#[future] bounded_responses: TestServerGuard,
+		#[future]
+		#[from(test_server_guard)]
+		#[with(bounded_router::default())]
+		bounded_responses: TestServerGuard,
 		http_client: reqwest::Client,
 	) {
 		let server = bounded_responses.await;

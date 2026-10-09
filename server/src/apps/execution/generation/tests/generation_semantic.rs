@@ -3,8 +3,7 @@ use futures_util::{
 	FutureExt,
 	future::{BoxFuture, Shared},
 };
-use reinhardt::ServerRouter as Router;
-use upstream_fixtures::{async_upstream, handler};
+use upstream_fixtures::{async_upstream, reply};
 #[path = "../../tests/support/worker_process.rs"]
 mod worker_process;
 use worker_process::WorkerProcess;
@@ -1945,10 +1944,8 @@ let embedding_calls = embeddings.clone();
 
 		let started = embedding_started.clone();
 		let pool = f.store.pool.driver().clone();
-		let provider = Router::new()
-        .handler(
-            "/v1/embeddings",
-            handler(http::Method::POST, move |request: reinhardt::Request| {let input = request.json::<Value>().unwrap();
+		let provider = reinhardt::test::stub::StubRouter::new()
+.route("/v1/embeddings", http::Method::POST, reply(move |request: reinhardt::Request| {let input = request.json::<Value>().unwrap();
                 let calls = embedding_calls.clone();
                 let pool = pool.clone();
                 let mode = embedding_mode.clone();
@@ -1970,11 +1967,8 @@ let embedding_calls = embeddings.clone();
                     }
                     reinhardt::Response::ok().with_json(&json!({"model":"fixture-embedding","data":[{"index":0,"embedding":[1.0,0.0,0.0]}],"usage":(if before == 0 { Some(1) } else { usage }).map(|tokens| json!({"prompt_tokens":tokens,"total_tokens":tokens}))})).unwrap()
                 }
-            }),
-        )
-        .handler(
-            "/v1/chat/completions",
-            handler(http::Method::POST, move |request: reinhardt::Request| {let input = request.json::<Value>().unwrap();
+            }))
+.route("/v1/chat/completions", http::Method::POST, reply(move |request: reinhardt::Request| {let input = request.json::<Value>().unwrap();
                 let calls = model_calls.clone();
                 let remember = model_mode.clone();
                 let derived = derived_calls.clone();
@@ -2013,8 +2007,7 @@ let embedding_calls = embeddings.clone();
                     } else { ("workspace_observe", "{}".to_owned()) };
                     reinhardt::Response::ok().with_json(&json!({"choices":[{"index":0,"finish_reason":"tool_calls","message":{"role":"assistant","content":null,"tool_calls":[{"id":"observe","type":"function","function":{"name":name,"arguments":arguments}}]}}],"usage":{"prompt_tokens":10,"completion_tokens":2}})).unwrap()
                 }
-            }),
-        );
+            })).into_server_router();
 
 
 

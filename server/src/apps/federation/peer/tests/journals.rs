@@ -105,17 +105,20 @@ async fn peer_journals_bound_previews_and_exclude_other_home_nodes(
 	}
 	let authorization = format!("Bearer {PEER_SECRET}");
 	let journal = assert_json(
-		app.anonymous
-			.get_with_headers(
-				"/federation/v0.1/observe",
-				&[
-					("Authorization", authorization.as_str()),
-					("x-aidash-node", "aidash://journal-home"),
-					("x-aidash-protocol", "0.2"),
-				],
-			)
-			.await
-			.unwrap(),
+		async {
+			let client = &(app.anonymous);
+			let mut request = client.request(http::Method::GET, "/federation/v0.1/observe");
+			for (name, value) in &[
+				("Authorization", authorization.as_str()),
+				("x-aidash-node", "aidash://journal-home"),
+				("x-aidash-protocol", "0.2"),
+			] {
+				request = request.header(*name, *value);
+			}
+			request.send().await
+		}
+		.await
+		.unwrap(),
 		200,
 	);
 	assert_eq!(journal["node_id"], app.runtime.config.node_id);

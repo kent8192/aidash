@@ -158,8 +158,8 @@ fn probe_context(
 fn probe_server(probe_context: ProbeContextFuture) -> ProbeServerFuture {
 	async move {
 		let (application, _) = probe_context.await;
-		// reinhardt-web#6658: the owning fixture bridges the pinned guard API.
-		// reinhardt-web#6673: serve production probe routes directly to preserve HEAD.
+		// Share the native guard across dependent asynchronous fixtures.
+		// Serve production probe routes directly to preserve their method dispatch.
 		Arc::new(
 			reinhardt::test::fixtures::server::test_server_guard(
 				aidash_server::apps::execution::urls::probe_url_patterns()
@@ -175,7 +175,7 @@ fn probe_server(probe_context: ProbeContextFuture) -> ProbeServerFuture {
 fn probe_client(probe_server: ProbeServerFuture) -> ProbeClientFuture {
 	async move {
 		let server = probe_server.await;
-		// reinhardt-web#6658: compose the plain client constructor over the owned guard future.
+		// Resolve the owned guard before constructing its URL client.
 		Arc::new(api_client_from_url(&server.url))
 	}
 	.boxed()

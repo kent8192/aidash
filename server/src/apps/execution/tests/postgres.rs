@@ -4,7 +4,7 @@ use reinhardt::ServerRouter as Router;
 use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
 use reinhardt::test::fixtures::http_client;
 use reinhardt::test::fixtures::server::TestServerGuard;
-use upstream_fixtures::{handler, upstream};
+use upstream_fixtures::{reply, upstream};
 #[path = "support/legacy.rs"]
 mod common;
 use aidash_server::{
@@ -2916,61 +2916,76 @@ mod typed_state;
 
 #[rstest::fixture]
 fn successful_tool_retry_resets_the_next_invocation_budget_router() -> Arc<Router> {
-	Arc::new(Router::new().handler(
-		"/",
-		handler(http::Method::POST, |request: reinhardt::Request| {
-			let input = request.json::<serde_json::Value>().unwrap();
-			async move {
-				if input["call"] == 1 {
-					reinhardt::Response::new(StatusCode::OK)
-						.with_json(&json!({"saved":true}))
-						.unwrap()
-				} else {
-					reinhardt::Response::new(StatusCode::SERVICE_UNAVAILABLE)
-						.with_json(&json!({"error":"temporary failure"}))
-						.unwrap()
-				}
-			}
-		}),
-	))
+	Arc::new(
+		reinhardt::test::stub::StubRouter::new()
+			.route(
+				"/",
+				http::Method::POST,
+				reply(|request: reinhardt::Request| {
+					let input = request.json::<serde_json::Value>().unwrap();
+					async move {
+						if input["call"] == 1 {
+							reinhardt::Response::new(StatusCode::OK)
+								.with_json(&json!({"saved":true}))
+								.unwrap()
+						} else {
+							reinhardt::Response::new(StatusCode::SERVICE_UNAVAILABLE)
+								.with_json(&json!({"error":"temporary failure"}))
+								.unwrap()
+						}
+					}
+				}),
+			)
+			.into_server_router(),
+	)
 }
 
 #[rstest::fixture]
 fn write_approval_router(
 	#[from(upstream_fixtures::hits)] effects: Arc<std::sync::atomic::AtomicUsize>,
 ) -> Arc<Router> {
-	Arc::new(Router::new().handler(
-		"/",
-		handler(http::Method::POST, move |_request: reinhardt::Request| {
-			let counter = effects.clone();
-			async move {
-				counter.fetch_add(1, Ordering::SeqCst);
-				reinhardt::Response::ok()
-					.with_json(&json!({"ok":true}))
-					.unwrap()
-			}
-		}),
-	))
+	Arc::new(
+		reinhardt::test::stub::StubRouter::new()
+			.route(
+				"/",
+				http::Method::POST,
+				reply(move |_request: reinhardt::Request| {
+					let counter = effects.clone();
+					async move {
+						counter.fetch_add(1, Ordering::SeqCst);
+						reinhardt::Response::ok()
+							.with_json(&json!({"ok":true}))
+							.unwrap()
+					}
+				}),
+			)
+			.into_server_router(),
+	)
 }
 
 #[rstest::fixture]
 fn ambiguous_peer_credentials_cannot_impersonate_another_node_router() -> Arc<Router> {
-	Arc::new(Router::new().handler(
-		"/.well-known/aidash",
-		handler(http::Method::GET, |_request: reinhardt::Request| async {
-			reinhardt::Response::ok()
-				.with_json(&json!({"id":"aidash://peer-d","protocol_version":"0.2"}))
-				.unwrap()
-		}),
-	))
+	Arc::new(
+		reinhardt::test::stub::StubRouter::new()
+			.route(
+				"/.well-known/aidash",
+				http::Method::GET,
+				reply(|_request: reinhardt::Request| async {
+					reinhardt::Response::ok()
+						.with_json(&json!({"id":"aidash://peer-d","protocol_version":"0.2"}))
+						.unwrap()
+				}),
+			)
+			.into_server_router(),
+	)
 }
 
 #[fixture]
 fn rejected_sources_router(
 	#[from(upstream_fixtures::hits)] source_hits: Arc<std::sync::atomic::AtomicUsize>,
 ) -> Arc<Router> {
-	Arc::new(Router::new()
-        .handler("/evidence", handler(http::Method::POST, move |request: reinhardt::Request| {
+	Arc::new(reinhardt::test::stub::StubRouter::new()
+.route("/evidence", http::Method::POST, reply(move |request: reinhardt::Request| {
             let body = request.json::<serde_json::Value>().unwrap();
             let hits = source_hits.clone();
             async move {
@@ -2985,7 +3000,7 @@ fn rejected_sources_router(
                 reinhardt::Response::ok().with_json(&result).unwrap()
             }
         }))
-		.handler("/v1/chat/completions", handler(http::Method::POST, move |request: reinhardt::Request| {let body = request.json::<serde_json::Value>().unwrap();
+.route("/v1/chat/completions", http::Method::POST, reply(move |request: reinhardt::Request| {let body = request.json::<serde_json::Value>().unwrap();
 			let endpoint = format!("http://{}", request.headers["host"].to_str().unwrap());
 let forbidden_host = format!("http://localhost:{}/blocked", reqwest::Url::parse(&endpoint).unwrap().port().unwrap());
 			async move {
@@ -3022,7 +3037,7 @@ let forbidden_host = format!("http://localhost:{}/blocked", reqwest::Url::parse(
 				};
 				reinhardt::Response::ok().with_json(&json!({"choices":[{"index":0,"finish_reason":if message.get("tool_calls").is_some() {"tool_calls"} else {"stop"},"message":message}],"usage":{"prompt_tokens":1,"completion_tokens":1}})).unwrap()
 			}
-		})))
+		})).into_server_router())
 }
 
 type HomeSceneFuture = Shared<BoxFuture<'static, HomeScene>>;
@@ -3067,37 +3082,43 @@ fn failed_home_router(
 	async move {
 		let remote_task = home_scene.await.task;
 		let available = online;
-		Arc::new(Router::new().handler(
-			"/federation/v0.1/workspace",
-			handler(http::Method::POST, move |request: reinhardt::Request| {
-				let body = request.json::<serde_json::Value>().unwrap();
-				let task = remote_task.clone();
-				let available = available.clone();
-				async move {
-					if !available.load(std::sync::atomic::Ordering::SeqCst) {
-						return reinhardt::Response::new(StatusCode::SERVICE_UNAVAILABLE)
-							.with_json(&json!({"error":"home unavailable"}))
-							.unwrap();
-					}
-					let mut task = task.lock().unwrap();
-					match body["operation"].as_str() {
-						Some("task") => {}
-						Some("run_message_terminal_transition") => {
-							task.status =
-								serde_json::from_value(body["data"]["status"].clone()).unwrap();
+		Arc::new(
+			reinhardt::test::stub::StubRouter::new()
+				.route(
+					"/federation/v0.1/workspace",
+					http::Method::POST,
+					reply(move |request: reinhardt::Request| {
+						let body = request.json::<serde_json::Value>().unwrap();
+						let task = remote_task.clone();
+						let available = available.clone();
+						async move {
+							if !available.load(std::sync::atomic::Ordering::SeqCst) {
+								return reinhardt::Response::new(StatusCode::SERVICE_UNAVAILABLE)
+									.with_json(&json!({"error":"home unavailable"}))
+									.unwrap();
+							}
+							let mut task = task.lock().unwrap();
+							match body["operation"].as_str() {
+								Some("task") => {}
+								Some("run_message_terminal_transition") => {
+									task.status =
+										serde_json::from_value(body["data"]["status"].clone())
+											.unwrap();
+								}
+								_ => {
+									return reinhardt::Response::new(StatusCode::BAD_REQUEST)
+										.with_json(&json!({"error":"unknown federation operation"}))
+										.unwrap();
+								}
+							}
+							reinhardt::Response::new(StatusCode::OK)
+								.with_json(&json!(*task))
+								.unwrap()
 						}
-						_ => {
-							return reinhardt::Response::new(StatusCode::BAD_REQUEST)
-								.with_json(&json!({"error":"unknown federation operation"}))
-								.unwrap();
-						}
-					}
-					reinhardt::Response::new(StatusCode::OK)
-						.with_json(&json!(*task))
-						.unwrap()
-				}
-			}),
-		))
+					}),
+				)
+				.into_server_router(),
+		)
 	}
 	.boxed()
 	.shared()
