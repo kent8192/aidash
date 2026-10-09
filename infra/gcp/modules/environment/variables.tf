@@ -35,3 +35,13 @@ variable "byok_project_id" {
     error_message = "Use an explicit dedicated BYOK project distinct from the shared environment project."
   }
 }
+variable "broker" {
+  description = "Non-secret worker settings from the environment's Credential Broker."
+  type = object({
+    endpoint = string
+    issuer   = string
+    audience = string
+    kid      = string
+  })
+  default = null
+}

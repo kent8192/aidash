@@ -406,6 +406,7 @@ async fn access_uses_the_admitted_tenant_id_and_never_falls_back_to_environment(
 			credentials: Arc::new(Env),
 		},
 		repository: Arc::new(repo),
+		issuer: None,
 	};
 	let source = Source::Tenant {
 		provider: "openrouter".into(),
@@ -415,6 +416,7 @@ async fn access_uses_the_admitted_tenant_id_and_never_falls_back_to_environment(
 		run: Some(Uuid::now_v7()),
 		maintenance: None,
 		provider_credential_id: Some(a.provider_credential.id),
+		inference: None,
 	};
 	assert!(matches!(
 		access
@@ -671,6 +673,7 @@ async fn revocation_commit_failure_has_no_external_effect_and_committed_cleanup_
 			credentials: Arc::new(Env),
 		},
 		repository: Arc::new(repo.clone()),
+		issuer: None,
 	};
 	let error = access
 		.resolve(
@@ -679,6 +682,7 @@ async fn revocation_commit_failure_has_no_external_effect_and_committed_cleanup_
 				run: Some(Uuid::now_v7()),
 				provider_credential_id: Some(first.id),
 				maintenance: None,
+				inference: None,
 			},
 			Provider::Openrouter.base_url(),
 			&Source::Tenant {

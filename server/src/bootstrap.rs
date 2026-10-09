@@ -2101,6 +2101,23 @@ pub fn configure_provider_credentials(
 	let Some(config) = &settings.store else {
 		return Ok(());
 	};
+	if let Some(broker) = &settings.broker {
+		use aidash_integrations::capability::{
+			KmsTokenSigner, MetadataTokenSource, issuer::CapabilityIssuer,
+		};
+		let tokens = Arc::new(MetadataTokenSource::new().map_err(|_| {
+			Error::Invalid("Capability Token metadata configuration unavailable".into())
+		})?);
+		let signer = Arc::new(
+			KmsTokenSigner::new(broker.kid.clone(), tokens)
+				.map_err(|_| Error::Invalid("invalid Capability Token KMS key version".into()))?,
+		);
+		store.capability_issuer = Some(Arc::new(CapabilityIssuer::new(
+			broker.clone(),
+			config.byok_project_id.clone(),
+			signer,
+		)?));
+	}
 	let fingerprint_key = crate::config::secret(&config.fingerprint_env)?;
 	if fingerprint_key.len() < 32 {
 		return Err(Error::Invalid(
@@ -2153,6 +2170,7 @@ pub(crate) fn admitted_model_provider(
 			run,
 			maintenance,
 			provider_credential_id: None,
+			inference: None,
 		},
 	)
 	.map_err(Into::into)
@@ -2174,6 +2192,7 @@ pub(crate) fn admitted_semantic_transport(
 		run,
 		maintenance,
 		provider_credential_id: None,
+		inference: None,
 	};
 	transport
 }

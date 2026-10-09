@@ -1,4 +1,5 @@
 //! External service adapters implementing application ports.
+pub mod capability;
 pub mod compaction;
 pub mod decision;
 pub mod federation;

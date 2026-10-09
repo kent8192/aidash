@@ -89,3 +89,9 @@ enabled = false
 # environment_id = "develop"
 # fingerprint_env = "AIDASH_SECRET_PROVIDER_FINGERPRINT"
 # max_per_tenant = 20
+# Worker-local signing uses the broker module's non-secret worker_configuration.
+# [provider_credentials.broker]
+# endpoint = "https://your-broker.run.app/api/v1"
+# issuer = "aidash-worker"
+# audience = "develop"
+# kid = "projects/your-aidash-project/locations/us-central1/keyRings/aidash-develop-capability/cryptoKeys/capability/cryptoKeyVersions/1"

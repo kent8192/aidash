@@ -362,8 +362,9 @@ include a stable independent `AIDASH_SECRET_PROVIDER_FINGERPRINT` of at least 32
 bytes. Startup refuses a missing or short key; deployments never regenerate it.
 Keep that key unchanged across upgrades and restarts. It stays in restrictive
 `app.env`, never in VM metadata or the public descriptor. Disabled BYOK omits the
-metadata attribute, renders no Store, and needs no fingerprint key. The broker
-descriptor remains null until #137 supplies it.
+metadata attribute, renders no Store, and needs no fingerprint key. Store-only
+environments use a null broker descriptor; enabled brokers add their non-secret
+endpoint, issuer, audience and signing-key version to the same settings source.
 
 The deploy identity's BYOK role contains only `resourcemanager.projects.get`,
 `getIamPolicy` and `setIamPolicy`. Its binding uses exactly
@@ -395,10 +396,21 @@ delete. Deployment remains the trust root under #151; bootstrap owns these
 fixed retirement grants and deployment cannot re-grant them or any read role.
 
 `aidashByokBrokerRead` contains `secretmanager.versions.access`, `versions.get`
-and `secrets.get`, but is unbound. No BYOK payload read grant or broker service
-account is provisioned by this change. Issue #137's human-run bootstrap owns
-the broker identity and prefix-conditioned BrokerRead binding. Outputs `byok_project_id` and
-`secret_prefix` supply the broker's secret namespace.
+and `secrets.get`. Human-run bootstrap alone binds it to the broker identities
+listed in `byok_broker_environments`, with each environment's Secret name prefix.
+Deployment and runtime identities receive no BYOK payload read grant. Outputs
+`byok_project_id` and `secret_prefix` supply the broker's secret namespace.
+The same human-run bootstrap owns permanent signing keys and exports
+`broker_signing_keys`. It grants the deploy service account
+`roles/cloudkms.publicKeyViewer` on each signing CryptoKey so deployment plans
+can fetch verification PEMs; this grant does not authorize signing. Cloud KMS
+Admin does not provide the required
+[`cloudkms.cryptoKeyVersions.viewPublicKey`](https://docs.cloud.google.com/kms/docs/reference/rest/v1/projects.locations.keyRings.cryptoKeys.cryptoKeyVersions/getPublicKey)
+permission. Environment automation consumes their IDs and removes
+only service/signing bindings on disable or retirement. Keep the bootstrap
+environment set to preserve immutable KMS names. See the
+[broker deployment guide](../../crates/aidash-broker/README.md) for the input
+contract and operator-only import steps for any pre-merge draft deployment.
 
 The existing deployment identity has shared-project
 `roles/iam.serviceAccountAdmin`, allowing it to change the IAM policy of any

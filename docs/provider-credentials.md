@@ -98,14 +98,15 @@ dispatch: this path has no approved local Run pin or BYOK maintenance authority.
 Environment-backed remote embeddings remain supported.
 Calls check that record's current active state and current version pin; changing
 a binding cannot retarget admitted Runs. Receiving federation admission uses
-the mapped local Tenant. Plaintext reads and broker routing belong to Issue
-#137. Until that broker exists, Tenant access fails with `credential broker not
-configured` after metadata validation and never falls back to environment keys.
+the mapped local Tenant. The configured Credential Broker handles plaintext
+reads and provider routing after metadata validation. Without that broker,
+Tenant access fails with `credential broker not configured` and never falls
+back to environment keys.
 
 Explicitly authorized local maintenance without a Run resolves the current
 Tenant binding and includes its memory indexing, retention, reflection or
 retrieval purpose in the access context. Run calls keep their admission pins.
-Both paths check current metadata before the broker failure.
+Both paths check current metadata before issuing a broker capability token.
 
 Workbench tests currently support environment-backed Models only. A Model using
 Tenant Provider Credentials is rejected before a sandbox session is admitted;
@@ -118,9 +119,10 @@ to `aidash-<environment_id>-cred-` by a project-number-based IAM condition. The
 runtime identity has no BYOK `versions.access` or `setIamPolicy`. Bootstrap
 configures DATA_READ and DATA_WRITE audits and the fixed custom roles once.
 Deploy can grant only the fixed runtime Create/Manage roles and cannot edit
-BYOK roles. The BrokerRead role is defined but unbound; no broker identity or
-BYOK payload read grant is provisioned here. #137's human-run bootstrap owns
-the broker identity and the prefix-conditioned BrokerRead binding.
+BYOK roles. Human-run bootstrap creates the broker identities listed in
+`byok_broker_environments` and binds the fixed BrokerRead role to each
+environment's Secret name prefix. Only these broker bindings grant BYOK
+payload access; runtime and deployment identities have no payload read grant.
 Human-run bootstrap also binds deploy to a prefix-conditioned delete-only
 `aidashByokRetire` role and an unconditioned project list-only
 `aidashByokRetireInventory` role. Deployment cannot grant either role through

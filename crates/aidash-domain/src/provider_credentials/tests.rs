@@ -1,5 +1,17 @@
 use super::*;
 use rstest::rstest;
+#[test]
+fn model_ids_match_capability_bounds_and_catalog_paths() {
+	assert!(validate_model_id(&"a".repeat(256)).is_ok());
+	for invalid in [
+		"a".repeat(257),
+		"vendor/../model".into(),
+		"vendor//model".into(),
+		"vendor/model?key=secret".into(),
+	] {
+		assert!(validate_model_id(&invalid).is_err());
+	}
+}
 #[rstest]
 #[case("https://openrouter.ai/api/v1", "openrouter", None, true)]
 #[case("https://openrouter.ai/api/v1/", "openrouter", None, false)]

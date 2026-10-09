@@ -1,4 +1,4 @@
-//! Non-secret managed Store settings layered above operator TOML defaults.
+//! Non-secret managed Store/broker settings layered above operator TOML defaults.
 use reinhardt::conf::settings::sources::{ConfigSource, ScopedSource, SourceError};
 use std::path::PathBuf;
 

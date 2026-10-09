@@ -1,8 +1,8 @@
 //! Provider Credential metadata management contracts; no public Key Material input.
-mod settings;
 use serde::{Deserialize, Serialize};
-pub(crate) use settings::ManagedSource;
 use uuid::Uuid;
+mod settings;
+pub(crate) use settings::ManagedSource;
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 #[schemars(rename = "ProviderCredentialRevision")]
@@ -64,9 +64,23 @@ use reinhardt::{
 pub struct Settings {
 	#[setting(default = "None", leaf)]
 	pub store: Option<StoreConfig>,
+	#[setting(default = "None", leaf)]
+	pub broker: Option<aidash_integrations::capability::issuer::WorkerConfiguration>,
 }
 impl SettingsValidation for Settings {
 	fn validate(&self, _: &Profile) -> ValidationResult {
+		if let Some(broker) = &self.broker {
+			broker
+				.validate()
+				.map_err(|e| ValidationError::Constraint(e.to_string()))?;
+			if self
+				.store
+				.as_ref()
+				.is_none_or(|store| store.environment_id != broker.audience)
+			{
+				return Err(ValidationError::Constraint("Credential Broker audience must match the configured Provider Credential Store environment".into()));
+			}
+		}
 		if let Some(store) = &self.store {
 			aidash_domain::configuration::validate_secret_reference(&store.fingerprint_env)
 				.map_err(|e| ValidationError::Constraint(e.to_string()))?;

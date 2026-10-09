@@ -317,7 +317,7 @@ def environment_file(values):
 
 
 def provider_settings(external):
-    """Render only the managed non-secret Store descriptor, never its key."""
+    """Render managed Store/broker descriptors, never their key material."""
     try:
         descriptor = json.loads(request(
             "http://metadata.google.internal/computeMetadata/v1/instance/attributes/aidash-provider-credentials"
@@ -326,7 +326,9 @@ def provider_settings(external):
         if error.code != 404:
             raise
         descriptor = {"store": None, "broker": None}
-    if not isinstance(descriptor, dict) or set(descriptor) != {"store", "broker"} or descriptor["broker"] is not None:
+    if descriptor is None:
+        descriptor = {"store": None, "broker": None}
+    if not isinstance(descriptor, dict) or set(descriptor) != {"store", "broker"}:
         raise ValueError("invalid managed Provider Credential configuration")
     store = descriptor["store"]
     if store is not None:
@@ -343,6 +345,15 @@ def provider_settings(external):
         fingerprint = external.get("AIDASH_SECRET_PROVIDER_FINGERPRINT")
         if not isinstance(fingerprint, str) or len(fingerprint.encode()) < 32:
             raise ValueError("BYOK requires a stable Provider Credential fingerprint key of at least 32 bytes")
+    broker = descriptor["broker"]
+    if broker is not None and (
+        store is None
+        or not isinstance(broker, dict)
+        or set(broker) != {"endpoint", "issuer", "audience", "kid"}
+        or any(not isinstance(value, str) or not value for value in broker.values())
+        or broker["audience"] != store["environment_id"]
+    ):
+        raise ValueError("invalid managed Provider Credential broker")
     path = RUN / "provider-settings" / "settings.json"
     # Descriptor only; UID 10001 must traverse/read this directory bind mount.
     path.parent.mkdir(parents=True, exist_ok=True)

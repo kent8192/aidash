@@ -855,6 +855,7 @@ async fn workspace_embedding_credential_is_pinned_with_environment_model_admissi
 		run: Some(run.id),
 		maintenance: None,
 		provider_credential_id: None,
+		inference: None,
 	};
 	// Resolution reaches the deliberately unbound broker, proving it found the
 	// admitted embedding pin rather than failing at the Env-only Agent closure.
@@ -927,7 +928,21 @@ async fn admission_pins_local_tenant_id_and_reloads_state_without_environment_fa
 	);
 	f.runtime.store.provider_credentials = Some(service.clone());
 	f.runtime.registry = f.runtime.registry.clone().with_provider_credentials(true);
-	f.runtime.registry.register(model).await.unwrap();
+	f.runtime.registry.register(model.clone()).await.unwrap();
+	for seconds in [3601_u32, u32::MAX] {
+		let mut invalid = model.clone();
+		invalid.id = format!("byok-too-long-{seconds}");
+		invalid.config["request_timeout_secs"] = json!(seconds);
+		assert!(
+			f.runtime
+				.registry
+				.register(invalid)
+				.await
+				.unwrap_err()
+				.to_string()
+				.contains("at most 3600")
+		);
+	}
 	f.context.set_singleton(f.runtime.clone());
 	let draft = assert_json(f.operator.post("/api/workbench/drafts", &json!({
 		"tenant":"beta","owner":"actor","entry":{
@@ -1058,6 +1073,7 @@ async fn admission_pins_local_tenant_id_and_reloads_state_without_environment_fa
 		run: Some(run),
 		maintenance: None,
 		provider_credential_id: None,
+		inference: None,
 	};
 	let mut maintenance = Context {
 		tenant: "beta".into(),
@@ -1065,6 +1081,7 @@ async fn admission_pins_local_tenant_id_and_reloads_state_without_environment_fa
 		maintenance: None,
 		// Supplied IDs cannot select another Tenant's record for maintenance.
 		provider_credential_id: Some(a.id),
+		inference: None,
 	};
 	assert!(
 		access
@@ -1147,6 +1164,73 @@ async fn admission_pins_local_tenant_id_and_reloads_state_without_environment_fa
 	assert_eq!(pins[0].tenant, "beta");
 	assert_eq!(pins[0].provider_credential_id, b.id);
 	tx.commit().await.unwrap();
+	// Native admission feeds the worker-local issuer, retaining the Run pin and
+	// selecting the current mapped-local binding for Run-less maintenance.
+	struct Issuer(Arc<Mutex<Vec<(Context, Uuid, String)>>>);
+	#[async_trait]
+	impl aidash_application::provider_access::TokenIssuer for Issuer {
+		async fn mint(
+			&self,
+			context: &Context,
+			row: &aidash_domain::provider_credentials::ProviderCredential,
+		) -> Result<aidash_application::provider_access::Access> {
+			self.0
+				.lock()
+				.unwrap()
+				.push((context.clone(), row.id, row.require_active()?.into()));
+			Ok(aidash_application::provider_access::Access {
+				endpoint: "https://broker.test/api/v1".into(),
+				bearer: "fixture-token".into(),
+			})
+		}
+	}
+	let mints = Arc::new(Mutex::new(Vec::new()));
+	f.runtime.store.capability_issuer = Some(Arc::new(Issuer(mints.clone())));
+	let enabled = AdmittedAccess {
+		store: f.runtime.store.clone(),
+	};
+	let mut scoped = context.clone();
+	scoped.inference = Some(aidash_application::provider_access::Inference {
+		model: "test/model".into(),
+		operations: vec![aidash_application::provider_access::Operation::Chat],
+		max_output_tokens: 1024,
+	});
+	assert_eq!(
+		enabled
+			.resolve(&scoped, Provider::Openrouter.base_url(), &source)
+			.await
+			.unwrap()
+			.endpoint,
+		"https://broker.test/api/v1"
+	);
+	let mut scoped_maintenance = maintenance.clone();
+	scoped_maintenance.inference = scoped.inference.clone();
+	enabled
+		.resolve(
+			&scoped_maintenance,
+			Provider::Openrouter.base_url(),
+			&source,
+		)
+		.await
+		.unwrap();
+	let mut metadata = service.repository.begin("beta").await.unwrap();
+	let current = metadata.get(b.id).await.unwrap();
+	let current_pin = current.require_active().unwrap().to_owned();
+	metadata.commit().await.unwrap();
+	{
+		let captured = mints.lock().unwrap();
+		assert_eq!(captured.len(), 2);
+		assert_eq!(captured[0].0.tenant, "beta");
+		assert_eq!(captured[0].0.run, Some(run));
+		assert_eq!(
+			captured[0].0.inference.as_ref().unwrap().model,
+			"test/model"
+		);
+		assert_eq!(captured[0].1, b.id);
+		assert_eq!(captured[0].2, current_pin);
+		assert_eq!(captured[1].0.run, None);
+		assert_eq!(captured[1].1, replacement.id);
+	}
 	service
 		.revoke("beta", b.id, rotated.revision, "actor")
 		.await

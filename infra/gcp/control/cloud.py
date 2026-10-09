@@ -279,6 +279,39 @@ class Terraform:
             )
         return value or {}
 
+    def broker_configuration(self, environments):
+        # Match Terraform's optional defaults and set ordering in persisted intent.
+        return {
+            key: self.normalized_broker(value)
+            for key, value in self.configuration.get("credential_brokers", {}).items()
+            if key in environments
+        }
+
+    @staticmethod
+    def normalized_broker(value):
+        signing = value.get("signing_version")
+        versions = value.get("verification_versions")
+        if versions is None:
+            versions = ["1"]
+        if not isinstance(versions, (list, tuple, set)):
+            raise RuntimeError("Broker verification versions must be a collection")
+        return dict(value, enabled=value.get("enabled") or False,
+                    signing_version="1" if signing is None else str(signing),
+                    verification_versions=sorted({str(version) for version in versions}))
+
+    def broker_configuration_in_state(self, store):
+        state, _ = store.read("terraform/environments/default.tfstate")
+        if state is None:
+            return {}
+        value = state.get("outputs", {}).get("managed_credential_brokers", {}).get("value")
+        return None if value is None else {key: self.normalized_broker(broker) for key, broker in value.items()}
+
+    def broker_configuration_changed(self, store, environments):
+        previous = self.broker_configuration_in_state(store)
+        # Legacy state has no broker-intent output. Apply once to reconcile any
+        # old resources and establish the durable comparison for future ticks.
+        return previous != self.broker_configuration(environments)
+
     def apply(self, environments, retiring=(), starting=()):
         variables = {
             key: self.configuration[key]
@@ -292,6 +325,7 @@ class Terraform:
         }
         variables["byok_project_id"] = self.configuration.get("byok_project_id", "")
         variables["environments"] = environments
+        variables["credential_brokers"] = self.broker_configuration(environments)
         path = self.root / "controller.auto.tfvars.json"
         plan = self.root / "controller.tfplan"
         private_json(path, variables)
@@ -309,6 +343,13 @@ class Terraform:
                 run("terraform", f"-chdir={self.root}", "show", "-json", plan)
             )
             for change in value.get("resource_changes", []):
+                if (
+                    change["type"] in {"google_kms_key_ring", "google_kms_crypto_key", "google_kms_crypto_key_version"}
+                    and "delete" in change["change"]["actions"]
+                ):
+                    raise RuntimeError(
+                        "plan would destroy signing key material; transfer draft key state to bootstrap first"
+                    )
                 if (
                     change["type"] == "google_compute_instance"
                     and "create" in change["change"]["actions"]

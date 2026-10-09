@@ -190,6 +190,68 @@ class AppliedProviderProjectTests(unittest.TestCase):
 
 
 class PlanTests(unittest.TestCase):
+    def test_persisted_broker_intent_detects_rotation_disable_and_legacy_state(self):
+        terraform = Terraform.__new__(Terraform)
+        broker = {"image": "digest", "enabled": True}
+        terraform.configuration = {
+            "credential_brokers": {"test": broker, "retired": broker}
+        }
+        environments = {"test": {"kind": "test"}}
+        state = {"outputs": {"managed_credential_brokers": {"value": {"test": broker}}}}
+        store = Mock()
+        store.read.return_value = (state, "1")
+        self.assertFalse(terraform.broker_configuration_changed(store, environments))
+        terraform.configuration["credential_brokers"]["test"] = dict(
+            broker, image="new-digest"
+        )
+        self.assertTrue(terraform.broker_configuration_changed(store, environments))
+        terraform.configuration["credential_brokers"] = {}
+        self.assertTrue(terraform.broker_configuration_changed(store, environments))
+        state["outputs"]["managed_credential_brokers"]["value"] = {}
+        self.assertFalse(terraform.broker_configuration_changed(store, environments))
+        del state["outputs"]["managed_credential_brokers"]
+        self.assertTrue(terraform.broker_configuration_changed(store, environments))
+        terraform.configuration["credential_brokers"] = {"test": {"image": "digest"}}
+        state["outputs"]["managed_credential_brokers"] = {
+            "value": {"test": {"image": "digest", "enabled": False}}
+        }
+        self.assertFalse(terraform.broker_configuration_changed(store, environments))
+
+    def test_broker_opt_in_is_forwarded_only_for_environments_in_current_intent(self):
+        with TemporaryDirectory() as directory:
+            terraform = Terraform.__new__(Terraform)
+            terraform.root = Path(directory)
+            terraform.configuration = dict.fromkeys(
+                ("project_id", "byok_project_id", "cloudflare_zone_id", "release_bucket", "deploy_service_account", "domain"), "fixture"
+            )
+            broker = {"enabled": True, "byok_project_id": "byok", "secret_prefix": "aidash-test-cred-", "broker_service_account_email": "aidash-test-broker@fixture.iam.gserviceaccount.com", "image": "digest"}
+            terraform.configuration["credential_brokers"] = {"test": broker, "retired": broker}
+            variables = []
+
+            def command(*args, **kwargs):
+                if "plan" in args:
+                    variables.append(json.loads((terraform.root / "controller.auto.tfvars.json").read_text()))
+                return b'{"resource_changes":[]}'
+
+            with patch("cloud.run", side_effect=command):
+                terraform.apply({"test": {"kind": "test"}})
+            self.assertEqual(variables[0]["credential_brokers"], {"test": dict(broker, signing_version="1", verification_versions=["1"])})
+
+    def test_persisted_version_sets_and_defaults_do_not_cause_repeated_apply(self):
+        terraform = Terraform.__new__(Terraform)
+        terraform.configuration = {"credential_brokers": {"test": {
+            "enabled": True, "image": "digest", "signing_version": "2",
+            "verification_versions": ["2", "1", "2"],
+        }}}
+        store = Mock()
+        store.read.return_value = ({"outputs": {"managed_credential_brokers": {"value": {"test": {
+            "enabled": True, "image": "digest", "signing_version": "2",
+            "verification_versions": ["1", "2"],
+        }}}}}, "1")
+        self.assertFalse(terraform.broker_configuration_changed(store, {"test": {}}))
+        terraform.configuration["credential_brokers"]["test"]["signing_version"] = "1"
+        self.assertTrue(terraform.broker_configuration_changed(store, {"test": {}}))
+
     def test_legacy_configuration_applies_without_byok_resources(self):
         with TemporaryDirectory() as directory:
             terraform = Terraform.__new__(Terraform)
@@ -241,6 +303,9 @@ class PlanTests(unittest.TestCase):
             with patch("cloud.run", return_value=json.dumps(plan).encode()) as command:
                 try:
                     terraform.apply({}, **authorization)
+                except RuntimeError:
+                    self.assertFalse(any("apply" in call.args for call in command.call_args_list))
+                    raise
                 finally:
                     self.assertFalse(
                         (terraform.root / "controller.auto.tfvars.json").exists()
@@ -265,6 +330,13 @@ class PlanTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             self.apply("google_compute_disk", ["delete"], retiring={"pr-1"})
         self.apply("google_compute_disk", ["delete"], retiring={"test"})
+
+    def test_environment_automation_never_destroys_signing_keys_or_versions(self):
+        for kind in ["google_kms_key_ring", "google_kms_crypto_key", "google_kms_crypto_key_version"]:
+            for actions in [["delete"], ["delete", "create"]]:
+                with self.subTest(kind=kind, actions=actions):
+                    with self.assertRaisesRegex(RuntimeError, "transfer draft key state to bootstrap"):
+                        self.apply(kind, actions, retiring={"test"})
 
 
 if __name__ == "__main__":

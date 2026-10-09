@@ -14,6 +14,12 @@ run "retained_disks_and_spot_policy" {
   variables {
     environment_id = "test"
     hostname       = "test.aidash.run"
+    broker = {
+      endpoint = "https://broker.run.app/api/v1"
+      issuer   = "aidash"
+      audience = "test"
+      kid      = "kms-version"
+    }
     environment = {
       kind          = "test"
       incarnation   = "aaaaaaaaaaaa"
@@ -43,6 +49,10 @@ run "retained_disks_and_spot_policy" {
     error_message = "SSH must be available through IAP only."
   }
   assert {
+    condition     = jsondecode(google_compute_instance.host[0].metadata["aidash-provider-credentials"]).broker == var.broker && jsondecode(google_compute_instance.host[0].metadata["aidash-provider-credentials"]).store.environment_id == var.environment_id && output.provider_credentials.store.fingerprint_env == "AIDASH_SECRET_PROVIDER_FINGERPRINT"
+    error_message = "The managed host must receive Store/broker settings through non-secret metadata."
+  }
+  assert {
     condition = (
       google_project_iam_member.provider_credential_create[0].project == var.byok_project_id &&
       google_project_iam_member.provider_credential_create[0].role == "projects/aidash-byok-fixture/roles/aidashByokCreate" &&
@@ -61,7 +71,7 @@ run "retained_disks_and_spot_policy" {
         environment_id  = "test"
         fingerprint_env = "AIDASH_SECRET_PROVIDER_FINGERPRINT"
       }
-      broker = null
+      broker = var.broker
     }
     error_message = "BYOK must deliver the Store descriptor and a fingerprint reference, never the secret value, to server startup."
   }
@@ -96,6 +106,10 @@ run "preview_uses_shared_tls" {
   assert {
     condition     = google_project_iam_member.provider_credential_manage[0].role == "projects/aidash-byok-fixture/roles/aidashByokManage" && google_project_iam_member.provider_credential_manage[0].condition[0].expression == "resource.name.startsWith('projects/123456789012/secrets/aidash-pr-2-cred-')"
     error_message = "Environments share the fixed role but receive distinct secret-prefix conditions."
+  }
+  assert {
+    condition     = jsondecode(google_compute_instance.host[0].metadata["aidash-provider-credentials"]).broker == null && jsondecode(google_compute_instance.host[0].metadata["aidash-provider-credentials"]).store.environment_id == "pr-2"
+    error_message = "Store-only environments must receive their own descriptor without enabling a broker."
   }
 }
 
