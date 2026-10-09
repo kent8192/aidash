@@ -138,6 +138,8 @@ pub struct AgentConfig {
 	pub instructions: String,
 	pub cluster: Option<EntityRef>,
 	pub max_steps: i32,
+	/// Absent means `legacy@1`; see [`AgentConfig::exposure_policy`].
+	pub exposure: Option<crate::exposure::ExposurePolicy>,
 	pub core_capabilities: crate::capabilities::CoreCapabilities,
 	pub skill_attachments: Vec<crate::capabilities::SkillAttachment>,
 	pub skill_roots: Vec<String>,
