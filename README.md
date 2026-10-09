@@ -39,12 +39,14 @@ The React dashboard remains in
 `web/` and uses the existing URL, JSON, authentication, and SSE contracts.
 
 Reinhardt is pinned to development revision
-`8b7855da0717183f29119353d0371d0fff8349ed` in the manifests and lockfile. The initial
+`19928e83b46c130a3a40320e5c9b71aa9f84e322` in the manifests and lockfile. The initial
 project and app scaffolds were generated with the Reinhardt CLI. Server tests use
 its composable guard, method-aware stub router, configurable PostgreSQL fixture,
 and request builder with per-request headers and redirect policy. The PostgreSQL
-17 extension image remains project-specific. Shared JetStream setup retains its
-owned fixture while the native future is non-Send (reinhardt-web#6702); streaming
+17 extension image remains project-specific. Shared JetStream setup uses the native
+Send fixture after reinhardt-web#6705 fixes #6702. Native ORM timestamp bindings
+include the #6703 repair from #6704; both issues remain open until closed by the
+maintainer because their fixes merged into the development branch. Streaming
 clients retain no total timeout while reinhardt-web#6689 remains open.
 
 ## Run locally

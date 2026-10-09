@@ -5,11 +5,8 @@ use futures_util::{
 	future::{BoxFuture, Shared},
 };
 use postgres::{PostgresFuture, postgres_container};
-use reinhardt::test::testcontainers::{
-	ContainerAsync, GenericImage, ImageExt,
-	core::{ContainerPort, WaitFor},
-	runners::AsyncRunner,
-};
+use reinhardt::test::fixtures::nats_container as native_nats_container;
+use reinhardt::test::testcontainers::{ContainerAsync, GenericImage};
 pub type EnvironmentFuture = Shared<BoxFuture<'static, Arc<TestEnvironment>>>;
 use std::{
 	sync::{Arc, LazyLock, Weak},
@@ -58,39 +55,18 @@ impl TestEnvironment {
 	}
 }
 
-async fn wait_for_nats(url: &str) {
-	for _ in 0..120 {
-		if let Ok(Ok(client)) =
-			tokio::time::timeout(Duration::from_secs(1), async_nats::connect(url)).await
-			&& client.flush().await.is_ok()
-		{
-			return;
-		}
-		tokio::time::sleep(Duration::from_millis(250)).await;
-	}
-	panic!("NATS test container did not accept connections");
-}
-
-/// Keep JetStream's image, command, readiness wait, and disposable ownership.
+/// Adapt the native Send JetStream fixture to the shared environment tuple.
 pub type NatsFuture = BoxFuture<'static, (ContainerAsync<GenericImage>, String)>;
 #[rstest::fixture]
-pub fn nats_container() -> NatsFuture {
+pub fn nats_container(
+	#[from(native_nats_container)] native_nats: impl std::future::Future<
+		Output = (ContainerAsync<GenericImage>, u16, String),
+	> + Send
+	+ 'static,
+) -> NatsFuture {
+	// reinhardt-web#6705 fixes the native future Send contract tracked in #6702.
 	Box::pin(async move {
-		// reinhardt-web#6702: the native JetStream fixture future is not Send,
-		// so shared multi-threaded fixture composition retains this owned startup.
-		let nats = GenericImage::new("nats", "2.12-alpine")
-			.with_exposed_port(ContainerPort::Tcp(4222))
-			.with_wait_for(WaitFor::message_on_stderr("Server is ready"))
-			.with_cmd(["-js"])
-			.start()
-			.await
-			.expect("start disposable NATS");
-		let nats_url = format!(
-			"nats://{}:{}",
-			nats.get_host().await.unwrap(),
-			nats.get_host_port_ipv4(4222).await.unwrap()
-		);
-		wait_for_nats(&nats_url).await;
+		let (nats, _port, nats_url) = native_nats.await;
 		(nats, nats_url)
 	})
 }
