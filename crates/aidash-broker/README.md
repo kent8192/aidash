@@ -74,6 +74,10 @@ path traversal are rejected. Violations are rejected, never rewritten.
 OpenRouter's [model fallback list](https://openrouter.ai/docs/guides/routing/model-fallbacks)
 would add authority outside the single signed model, so even empty, null or
 same-model fallback lists are rejected before Key Material lookup.
+Chat uses only `max_tokens` for the signed completion limit. OpenRouter also
+documents [`max_completion_tokens`](https://openrouter.ai/docs/api/api-reference/chat/send-chat-completion-request);
+the broker rejects that alternate field, including equal or null values, before
+Key Material lookup so two limit names cannot have different interpretations.
 
 Capability failures use `401` for signature, key, expiry or audience failures,
 and `403` for tenant, credential, operation, model or claim violations:

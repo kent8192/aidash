@@ -265,10 +265,12 @@ fn body_policy(body: &[u8], claims: &Claims, op: Operation) -> Result<(), Failur
 		return Err(Failure::Model);
 	}
 	if op == Operation::Chat
-		&& value
-			.get("max_tokens")
-			.and_then(Value::as_u64)
-			.is_none_or(|max| max == 0 || max > claims.max_output_tokens)
+		// Keep one completion limit; the provider also accepts an alternate name.
+		&& (value.get("max_completion_tokens").is_some()
+			|| value
+				.get("max_tokens")
+				.and_then(Value::as_u64)
+				.is_none_or(|max| max == 0 || max > claims.max_output_tokens))
 	{
 		return Err(Failure::ClaimViolation);
 	}

@@ -308,6 +308,9 @@ async fn deterministic_capability_and_body_rejections_never_call_provider() {
 		("models", Value::Null, "model"),
 		("max_tokens", json!(11), "claim_violation"),
 		("max_tokens", Value::Null, "claim_violation"),
+		("max_completion_tokens", json!(11), "claim_violation"),
+		("max_completion_tokens", json!(10), "claim_violation"),
+		("max_completion_tokens", Value::Null, "claim_violation"),
 		("provider", json!({"zdr":false}), "claim_violation"),
 	] {
 		let mut body = chat();
