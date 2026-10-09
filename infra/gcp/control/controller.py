@@ -557,6 +557,17 @@ def gate_gcip_changes(config, store, terraform, managed):
             continue
         if entry.get("gcip_revision") == revision and not entry.get("gcip_pending"):
             continue
+        if entry["kind"] == "pr" and entry["desired"] != "destroyed":
+            pr = github(f"repos/{config['repository']}/pulls/{identity[3:]}")
+            if pr["state"] != "open":
+                entry["desired"] = "destroyed"
+                update_entry(
+                    store,
+                    identity,
+                    entry["generation"],
+                    desired="destroyed",
+                    status="retiring",
+                )
         update_entry(store, identity, entry["generation"], gcip_pending=True)
         if previous["running"] and previous["published"]:
             if instance_status(config, outputs[identity]) == "RUNNING":
@@ -693,6 +704,7 @@ def reconcile(config, store):
                         status="destroyed",
                         applied=None,
                         published=False,
+                        gcip_pending=False,
                     )
                     continue
                 if entry["desired"] == "stopped":

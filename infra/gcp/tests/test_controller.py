@@ -276,6 +276,7 @@ class ReconcileTests(unittest.TestCase):
         self.request("pr-1")
         self.reconcile()
         self.closed.add("pr-1")
+        self.calls.clear()
         config = dict(CONFIG, gcip_tenants={"company": {"tenant": "new"}})
 
         def restart(config, output, fresh_boot):
@@ -287,6 +288,8 @@ class ReconcileTests(unittest.TestCase):
                 controller.reconcile(config, self.store)
         self.assertNotIn("pr-1", self.cloud.managed)
         self.assertEqual(self.store.state["environments"]["pr-1"]["status"], "destroyed")
+        self.assertNotIn(("bootstrap", "pr-1", False), self.calls)
+        self.assertNotIn(("unseal", "pr-1"), self.calls)
         self.assertTrue(self.store.state["environments"]["test"]["gcip_pending"])
 
     def test_resumed_and_replaced_hosts_wait_for_their_boot_script(self):
