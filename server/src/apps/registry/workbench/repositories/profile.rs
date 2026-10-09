@@ -84,8 +84,9 @@ impl ProfileDraftScope for Scope {
 		Ok(AgentDraft::read(&mut self.tx, id, false).await?.into())
 	}
 	async fn authorize(&mut self, draft: &Draft, action: &str, shares: bool) -> Result<()> {
+		let policy = self.tx.pool().dashboard_policy();
 		aidash_application::registry::workbench::authorize(
-			&mut crate::bootstrap::draft_authority_scope(&mut self.tx, &self.actor),
+			&mut crate::bootstrap::draft_authority_scope(&mut self.tx, &self.actor, policy),
 			draft,
 			action,
 			shares,

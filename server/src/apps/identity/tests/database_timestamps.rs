@@ -26,6 +26,10 @@ async fn identity_restore_accepts_host_clock_precision_at_the_orm_boundary(
 	let identity = DashboardIdentity::build()
 		.issuer("fixture")
 		.subject("nanosecond-clock")
+		.gcip_tenant("")
+		.valid_since(None)
+		.verified_email(None)
+		.display_name(None)
 		.last_valid_at(None)
 		.disabled_at(Some(expected))
 		.finish();

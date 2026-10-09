@@ -26,7 +26,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: "22"
+          node-version: "24.12.0"
           cache: npm
           cache-dependency-path: web/package-lock.json
       - run: npm ci --prefix web
@@ -84,7 +84,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: "22"
+          node-version: "24.12.0"
           cache: npm
           cache-dependency-path: web/package-lock.json
       - run: npm ci --prefix web
@@ -96,11 +96,17 @@ jobs:
           PLAYWRIGHT_JSON_OUTPUT_NAME: test-results/browser.json
       - name: Validate required capability browser journeys
         run: python3 scripts/core-capability-evidence.py browser web/test-results
+      - name: Test GCIP sign-in with the signed SDK fixture
+        run: npm run test:gcip --prefix web -- --reporter=list,json
+        env:
+          PLAYWRIGHT_JSON_OUTPUT_NAME: gcip-test-results/browser.json
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
           name: collaboration-browser-evidence
-          path: web/test-results/
+          path: |
+            web/test-results/
+            web/gcip-test-results/
           if-no-files-found: ignore
   rust-tests:
     name: Rust tests (${{ matrix.partition }}, ${{ matrix.shard }}/2)
@@ -221,7 +227,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: "22"
+          node-version: "24.12.0"
           cache: npm
           cache-dependency-path: web/package-lock.json
       - run: rustup show active-toolchain
@@ -249,7 +255,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: "22"
+          node-version: "24.12.0"
       - run: rustup show active-toolchain
       - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
         with:

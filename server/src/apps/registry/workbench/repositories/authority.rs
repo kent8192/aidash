@@ -31,6 +31,7 @@ pub(crate) fn principal(actor: &Actor) -> Principal {
 pub(crate) struct Scope<'a> {
 	pub tx: &'a mut dyn TransactionExecutor,
 	pub actor: &'a Actor,
+	pub policy: Option<aidash_application::ports::authorization::dashboard::AccountPolicy>,
 }
 #[async_trait]
 impl DefinitionLookup for Scope<'_> {
@@ -70,7 +71,9 @@ impl DraftAuthority for Scope<'_> {
 	}
 	async fn lock_identity(&mut self) -> Result<()> {
 		if let Actor::Subject(identity) = self.actor {
-			identity.lock_native(self.tx, false).await?;
+			identity
+				.lock_native(self.tx, false, self.policy.as_ref())
+				.await?;
 		}
 		Ok(())
 	}

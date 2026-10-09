@@ -46,9 +46,11 @@ impl Node {
 			lease_seconds: 30,
 			default_host_packages: vec![],
 			oidc: None,
+			gcip: None,
 		};
 		let f = Federation {
 			sandbox: Default::default(),
+			gcip: None,
 			registry: Registry::new(store.pool.clone(), &store.node_id).unwrap(),
 			store,
 			config,

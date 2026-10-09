@@ -21,4 +21,8 @@ pub struct DashboardLoginTransaction {
 	pub callback_uri: String,
 	#[field]
 	pub expires_at: DateTime<Utc>,
+	#[field(null = true)]
+	pub started_at: Option<DateTime<Utc>>,
+	#[field(field_type = "text", null = true)]
+	pub gcip_tenant: Option<String>,
 }
