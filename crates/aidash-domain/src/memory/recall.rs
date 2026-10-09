@@ -50,6 +50,51 @@ pub fn fuse(rankings: &Rankings, allowed: &BTreeSet<Uuid>, limit: usize) -> Resu
 	Ok(ranked)
 }
 
+/// Apply the prior to relevance hits before the candidate cap. Missing scores are identity.
+pub fn fuse_with_prior(
+	rankings: &Rankings,
+	allowed: &BTreeSet<Uuid>,
+	limit: usize,
+	decay: Option<&super::Decay>,
+	retention: &BTreeMap<Uuid, f64>,
+) -> Result<Vec<Ranked>> {
+	let Some(decay) = decay else {
+		return fuse(rankings, allowed, limit);
+	};
+	let mut ranked = fuse(rankings, allowed, allowed.len())?;
+	for hit in &mut ranked {
+		let score = retention.get(&hit.id).copied().unwrap_or(1.0);
+		if !score.is_finite() || score <= 0.0 || score > 1.0 {
+			return Err(Error::Invalid("retention score must be in (0, 1]".into()));
+		}
+		hit.score *= super::decay::prior(decay, score);
+	}
+	ranked.sort_by(|a, b| compare(a.id, a.score, b.id, b.score, Some(retention)));
+	ranked.truncate(limit);
+	Ok(ranked)
+}
+
+pub fn compare(
+	a: Uuid,
+	a_score: f64,
+	b: Uuid,
+	b_score: f64,
+	retention: Option<&BTreeMap<Uuid, f64>>,
+) -> std::cmp::Ordering {
+	b_score
+		.total_cmp(&a_score)
+		.then_with(|| {
+			retention.map_or(std::cmp::Ordering::Equal, |scores| {
+				scores
+					.get(&b)
+					.copied()
+					.unwrap_or(1.0)
+					.total_cmp(&scores.get(&a).copied().unwrap_or(1.0))
+			})
+		})
+		.then(a.cmp(&b))
+}
+
 /// Traversal only sees the preauthorized snapshot. No link grants read permission.
 pub fn graph(units: &[Unit], seeds: &[Uuid], bounds: &Bounds) -> Vec<Uuid> {
 	graph_with_edges(units, seeds, &[], bounds)

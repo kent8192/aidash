@@ -219,7 +219,8 @@ jobs:
   acceptance:
     name: Federation and browser tests
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    # Cold builds and crash recovery precede all 250 serial browser scenarios.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

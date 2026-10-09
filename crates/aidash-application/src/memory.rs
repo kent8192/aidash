@@ -241,6 +241,7 @@ impl Engine<'_> {
 			.collect();
 		let mut budget = Budget::new(&self.policy.bounds);
 		if known.is_empty() {
+			scope.reactivate_support(&trigger.bank, &mandatory).await?;
 			return Ok(Consolidated {
 				units: mandatory,
 				allowance: budget.allowance()?,
@@ -272,6 +273,7 @@ impl Engine<'_> {
 			.map(|id| known[id].clone())
 			.collect();
 		if candidates.is_empty() {
+			scope.reactivate_support(&trigger.bank, &mandatory).await?;
 			return Ok(Consolidated {
 				units: mandatory,
 				allowance: budget.allowance()?,
@@ -301,6 +303,7 @@ impl Engine<'_> {
 				&units.iter().map(Unit::evidence).collect::<Vec<_>>(),
 			)
 			.await?;
+		scope.reactivate_support(&trigger.bank, &units).await?;
 		Ok(Consolidated {
 			units,
 			allowance: budget.allowance()?,
@@ -421,8 +424,32 @@ impl Engine<'_> {
 		bank: &Bank,
 		query: &RecallQuery,
 	) -> Result<Recall> {
-		self.recall_in(scope, bank, query, &mut Budget::new(&self.policy.bounds))
-			.await
+		self.recall_in(
+			scope,
+			bank,
+			query,
+			&mut Budget::new(&self.policy.bounds),
+			false,
+		)
+		.await
+	}
+	pub async fn recall_including_dormant(
+		&self,
+		scope: &mut dyn MemoryScope,
+		bank: &Bank,
+		query: &RecallQuery,
+	) -> Result<Recall> {
+		scope
+			.authorize(bank, self.provider, "memory.read_dormant")
+			.await?;
+		self.recall_in(
+			scope,
+			bank,
+			query,
+			&mut Budget::new(&self.policy.bounds),
+			true,
+		)
+		.await
 	}
 	async fn recall_in(
 		&self,
@@ -430,6 +457,7 @@ impl Engine<'_> {
 		bank: &Bank,
 		query: &RecallQuery,
 		budget: &mut Budget,
+		include_dormant: bool,
 	) -> Result<Recall> {
 		self.validate()?;
 		self.query(query)?;
@@ -437,11 +465,27 @@ impl Engine<'_> {
 		if query.max_tokens == 0 {
 			return Ok(Recall::NoSpace);
 		}
-		let snapshot = scope.snapshot(bank, self.policy.bounds.max_units).await?;
+		let mut snapshot = scope
+			.recall_snapshot(bank, self.policy.bounds.max_units)
+			.await?;
 		if snapshot.units.len() > self.policy.bounds.max_units {
 			return Err(Error::Invalid(
 				"memory snapshot exceeded source limit".into(),
 			));
+		}
+		if include_dormant {
+			let dormant = scope
+				.dormant_snapshot(bank, self.policy.bounds.max_units)
+				.await?;
+			if dormant.units.len() > self.policy.bounds.max_units
+				|| dormant.authority_revision != snapshot.authority_revision
+			{
+				return Err(Error::Conflict(
+					"dormant recall snapshot changed or exceeded source limit".into(),
+				));
+			}
+			snapshot.units.extend(dormant.units);
+			snapshot.graph.extend(dormant.graph);
 		}
 		let units: Vec<_> = snapshot
 			.units
@@ -484,7 +528,12 @@ impl Engine<'_> {
 		let graph =
 			recall::graph_with_edges(&units, &semantic, &snapshot.graph, &self.policy.bounds);
 		let temporal = recall::temporal(&units, query.time.as_ref(), limit);
-		let fused = recall::fuse(
+		let retention = if self.policy.decay.is_some() {
+			scope.retention_scores(bank, &units).await?
+		} else {
+			BTreeMap::new()
+		};
+		let fused = recall::fuse_with_prior(
 			&recall::Rankings {
 				semantic,
 				keyword,
@@ -493,6 +542,8 @@ impl Engine<'_> {
 			},
 			&allowed,
 			limit,
+			self.policy.decay.as_ref(),
+			&retention,
 		)?;
 		let by_id: BTreeMap<_, _> = units.into_iter().map(|unit| (unit.id, unit)).collect();
 		let candidates: Vec<_> = fused
@@ -535,7 +586,15 @@ impl Engine<'_> {
 				"reranker returned an invalid candidate permutation".into(),
 			));
 		}
-		scores.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+		scores.sort_by(|a, b| {
+			recall::compare(
+				a.0,
+				a.1,
+				b.0,
+				b.1,
+				self.policy.decay.as_ref().map(|_| &retention),
+			)
+		});
 		let mut selected = Vec::new();
 		for (id, _) in scores.into_iter().take(self.policy.bounds.max_results) {
 			let mut proposed = selected.clone();
@@ -578,7 +637,9 @@ impl Engine<'_> {
 			.await?;
 		let mut budget = Budget::new(&self.policy.bounds);
 		let mut context = Vec::<Unit>::new();
-		let initial = self.recall_in(scope, bank, query, &mut budget).await?;
+		let initial = self
+			.recall_in(scope, bank, query, &mut budget, false)
+			.await?;
 		if let Recall::Ready { units } = initial {
 			context = units;
 		}
@@ -621,13 +682,17 @@ impl Engine<'_> {
 					if followup.max_tokens > query.max_tokens {
 						return Err(Error::Invalid("reflection context budget exhausted".into()));
 					}
-					let recall = self.recall_in(scope, bank, &followup, &mut budget).await?;
+					let recall = self
+						.recall_in(scope, bank, &followup, &mut budget, false)
+						.await?;
 					if let Recall::Ready { units } = recall {
 						context = units;
 					}
 				}
 				ReflectStep::Read { id, revision } => {
-					let snapshot = scope.snapshot(bank, self.policy.bounds.max_units).await?;
+					let snapshot = scope
+						.recall_snapshot(bank, self.policy.bounds.max_units)
+						.await?;
 					let unit = snapshot
 						.units
 						.into_iter()

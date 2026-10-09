@@ -387,7 +387,8 @@ test("generation dashboard manages policy, approval, completion and retained his
       await dialog
         .getByRole("button", { name: "ポリシーで割り当て", exact: true })
         .click();
-      await expect(dialog).toHaveCount(0);
+      // Assignment reloads the real server state before closing the dialog.
+      await expect(dialog).toHaveCount(0, { timeout: 15000 });
       await navigate("Agent生成");
       const row = page
         .locator(".generation-request")

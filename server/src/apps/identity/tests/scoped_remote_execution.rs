@@ -2123,12 +2123,14 @@ async fn revocation_during_remote_inference_discards_response_and_cancel_closes_
 		federation: p.b.clone(),
 	};
 	let step = tokio::spawn(async move { worker.worker_once().await.unwrap() });
+	// Retained bindings require several bounded peer checks before provider HTTP.
+	// Match Pair::step's combined fixture budget on loaded CI runners.
 	tokio::time::timeout(
-		std::time::Duration::from_secs(10),
+		std::time::Duration::from_secs(60),
 		p.model.entered.notified(),
 	)
 	.await
-	.unwrap();
+	.expect("remote inference must reach the held provider within the fixture budget");
 	assert_eq!(
 		request(
 			&p.aa,
@@ -2143,9 +2145,9 @@ async fn revocation_during_remote_inference_discards_response_and_cancel_closes_
 	);
 	p.model.release.notify_one();
 	assert!(
-		tokio::time::timeout(std::time::Duration::from_secs(10), step)
+		tokio::time::timeout(std::time::Duration::from_secs(60), step)
 			.await
-			.unwrap()
+			.expect("revoked inference must finish within the fixture budget")
 			.unwrap()
 	);
 	assert_eq!(p.run().await.control.as_str(), "PAUSED");
