@@ -19,7 +19,8 @@ pub struct Resource {
 pub struct Version {
 	#[field(primary_key = true, field_type = "text")]
 	pub resource: String,
-	#[field(primary_key = true)]
+	// Allocated from the resource's next_version counter, never a database sequence.
+	#[field(primary_key = true, auto_increment = false)]
 	pub version: i64,
 	#[field(field_type = "text")]
 	pub tenant: String,
