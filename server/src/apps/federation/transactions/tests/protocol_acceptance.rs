@@ -27,10 +27,19 @@ struct Node {
 	f: Federation,
 	server: Option<tokio::task::JoinHandle<()>>,
 	listen: std::net::SocketAddr,
+	// Real-process cases keep this socket owned across stop, SIGKILL and exec.
+	reservation: Option<std::net::TcpListener>,
 	_capacity: Option<tokio::sync::OwnedSemaphorePermit>,
 }
 impl Node {
 	async fn new(environment: &TestEnvironment, suffix: &str) -> Self {
+		Self::with_port_reservation(environment, suffix, false).await
+	}
+	async fn with_port_reservation(
+		environment: &TestEnvironment,
+		suffix: &str,
+		reserve_port: bool,
+	) -> Self {
 		let admin = environment.database_url.clone();
 		let database = format!(
 			"atomic_{}_{}",
@@ -50,7 +59,18 @@ impl Node {
 		url.set_path(&format!("/{database}"));
 		let node_id = format!("aidash://atomic-{suffix}");
 		let store = common::native_store(url.as_str(), &node_id).await;
-		let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+		let (listener, reservation) = if reserve_port {
+			let reservation = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+			reservation.set_nonblocking(true).unwrap();
+			let listener =
+				tokio::net::TcpListener::from_std(reservation.try_clone().unwrap()).unwrap();
+			(listener, Some(reservation))
+		} else {
+			(
+				tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap(),
+				None,
+			)
+		};
 		let listen = listener.local_addr().unwrap();
 		let config = Config {
 			node_id,
@@ -80,6 +100,7 @@ impl Node {
 		Self {
 			f,
 			listen,
+			reservation,
 			server,
 			_capacity: None,
 		}
@@ -88,6 +109,11 @@ impl Node {
 		if let Some(server) = self.server.take() {
 			server.abort();
 			let _ = server.await;
+		}
+		if self.reservation.is_some() {
+			// Child readiness must use a fresh connection to the inherited socket,
+			// rather than an idle keep-alive connection to the previous server.
+			self.f.client = reqwest::Client::new();
 		}
 	}
 	async fn restart(&mut self) {
@@ -101,11 +127,26 @@ impl Node {
 			notify: Arc::new(tokio::sync::Notify::new()),
 			..self.f.clone()
 		};
-		let listener = tokio::net::TcpListener::bind(self.listen).await.unwrap();
+		let listener = self.listener().await;
 		let app = common::application(self.f.clone()).await.test_transport();
 		self.server = Some(tokio::spawn(async move {
 			axum::serve(listener, app).await.unwrap()
 		}));
+	}
+	async fn listener(&self) -> tokio::net::TcpListener {
+		match &self.reservation {
+			Some(listener) => {
+				tokio::net::TcpListener::from_std(listener.try_clone().unwrap()).unwrap()
+			}
+			None => tokio::net::TcpListener::bind(self.listen)
+				.await
+				.unwrap_or_else(|error| {
+					panic!(
+						"fixture {} bind {}: {error}",
+						self.f.config.node_id, self.listen
+					)
+				}),
+		}
 	}
 	async fn request(
 		&self,
@@ -151,12 +192,18 @@ impl Drop for Node {
 	}
 }
 async fn pair(environment: &TestEnvironment) -> (Node, Node, Manifest, Uuid, Uuid) {
+	pair_with_port_reservation(environment, false).await
+}
+async fn pair_with_port_reservation(
+	environment: &TestEnvironment,
+	reserve_ports: bool,
+) -> (Node, Node, Manifest, Uuid, Uuid) {
 	static CAPACITY: std::sync::LazyLock<Arc<tokio::sync::Semaphore>> =
 		std::sync::LazyLock::new(|| Arc::new(tokio::sync::Semaphore::new(2)));
 	let capacity = CAPACITY.clone().acquire_owned().await.unwrap();
-	let mut a = Node::new(environment, "a").await;
+	let mut a = Node::with_port_reservation(environment, "a", reserve_ports).await;
 	a._capacity = Some(capacity);
-	let b = Node::new(environment, "b").await;
+	let b = Node::with_port_reservation(environment, "b", reserve_ports).await;
 	for (local, remote) in [(&a, &b), (&b, &a)] {
 		local
 			.f
@@ -1386,7 +1433,7 @@ async fn mapped_transaction_admission_and_revocation(
 						}
 					},
 				));
-			let listener = tokio::net::TcpListener::bind(b.listen).await.unwrap();
+			let listener = b.listener().await;
 			b.server = Some(tokio::spawn(async move {
 				axum::serve(listener, app).await.unwrap()
 			}));
