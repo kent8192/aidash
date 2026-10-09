@@ -1,0 +1,204 @@
+{
+  "feasible_plans": [
+    {
+      "supplier": "D",
+      "sensor": "T",
+      "quantity": 100,
+      "adapter_quantity": 100,
+      "inbound_service": "express",
+      "inbound_arrival_day": 4,
+      "assembly_slot": "ALT-4",
+      "outbound_service": "express",
+      "delivery_day": 5,
+      "costs": {
+        "sensors": 140000,
+        "baseboards": 120000,
+        "adapters": 30000,
+        "inbound": 30000,
+        "assembly": 80000,
+        "outbound": 40000
+      },
+      "total_cost": 440000
+    },
+    {
+      "supplier": "B",
+      "sensor": "S",
+      "quantity": 100,
+      "adapter_quantity": 0,
+      "inbound_service": "normal",
+      "inbound_arrival_day": 3,
+      "assembly_slot": "STD-3",
+      "outbound_service": "normal",
+      "delivery_day": 5,
+      "costs": {
+        "sensors": 240000,
+        "baseboards": 120000,
+        "adapters": 0,
+        "inbound": 10000,
+        "assembly": 60000,
+        "outbound": 15000
+      },
+      "total_cost": 445000
+    },
+    {
+      "supplier": "C",
+      "sensor": "T",
+      "quantity": 100,
+      "adapter_quantity": 100,
+      "inbound_service": "normal",
+      "inbound_arrival_day": 3,
+      "assembly_slot": "ALT-4",
+      "outbound_service": "express",
+      "delivery_day": 5,
+      "costs": {
+        "sensors": 170000,
+        "baseboards": 120000,
+        "adapters": 30000,
+        "inbound": 10000,
+        "assembly": 80000,
+        "outbound": 40000
+      },
+      "total_cost": 450000
+    },
+    {
+      "supplier": "B",
+      "sensor": "S",
+      "quantity": 100,
+      "adapter_quantity": 0,
+      "inbound_service": "normal",
+      "inbound_arrival_day": 3,
+      "assembly_slot": "STD-4",
+      "outbound_service": "express",
+      "delivery_day": 5,
+      "costs": {
+        "sensors": 240000,
+        "baseboards": 120000,
+        "adapters": 0,
+        "inbound": 10000,
+        "assembly": 50000,
+        "outbound": 40000
+      },
+      "total_cost": 460000
+    },
+    {
+      "supplier": "B",
+      "sensor": "S",
+      "quantity": 100,
+      "adapter_quantity": 0,
+      "inbound_service": "express",
+      "inbound_arrival_day": 2,
+      "assembly_slot": "STD-3",
+      "outbound_service": "normal",
+      "delivery_day": 5,
+      "costs": {
+        "sensors": 240000,
+        "baseboards": 120000,
+        "adapters": 0,
+        "inbound": 30000,
+        "assembly": 60000,
+        "outbound": 15000
+      },
+      "total_cost": 465000
+    },
+    {
+      "supplier": "B",
+      "sensor": "S",
+      "quantity": 100,
+      "adapter_quantity": 0,
+      "inbound_service": "normal",
+      "inbound_arrival_day": 3,
+      "assembly_slot": "STD-3",
+      "outbound_service": "express",
+      "delivery_day": 4,
+      "costs": {
+        "sensors": 240000,
+        "baseboards": 120000,
+        "adapters": 0,
+        "inbound": 10000,
+        "assembly": 60000,
+        "outbound": 40000
+      },
+      "total_cost": 470000
+    },
+    {
+      "supplier": "C",
+      "sensor": "T",
+      "quantity": 100,
+      "adapter_quantity": 100,
+      "inbound_service": "express",
+      "inbound_arrival_day": 2,
+      "assembly_slot": "ALT-4",
+      "outbound_service": "express",
+      "delivery_day": 5,
+      "costs": {
+        "sensors": 170000,
+        "baseboards": 120000,
+        "adapters": 30000,
+        "inbound": 30000,
+        "assembly": 80000,
+        "outbound": 40000
+      },
+      "total_cost": 470000
+    },
+    {
+      "supplier": "B",
+      "sensor": "S",
+      "quantity": 100,
+      "adapter_quantity": 0,
+      "inbound_service": "express",
+      "inbound_arrival_day": 2,
+      "assembly_slot": "STD-4",
+      "outbound_service": "express",
+      "delivery_day": 5,
+      "costs": {
+        "sensors": 240000,
+        "baseboards": 120000,
+        "adapters": 0,
+        "inbound": 30000,
+        "assembly": 50000,
+        "outbound": 40000
+      },
+      "total_cost": 480000
+    },
+    {
+      "supplier": "B",
+      "sensor": "S",
+      "quantity": 100,
+      "adapter_quantity": 0,
+      "inbound_service": "express",
+      "inbound_arrival_day": 2,
+      "assembly_slot": "STD-3",
+      "outbound_service": "express",
+      "delivery_day": 4,
+      "costs": {
+        "sensors": 240000,
+        "baseboards": 120000,
+        "adapters": 0,
+        "inbound": 30000,
+        "assembly": 60000,
+        "outbound": 40000
+      },
+      "total_cost": 490000
+    }
+  ],
+  "optimum": {
+    "supplier": "D",
+    "sensor": "T",
+    "quantity": 100,
+    "adapter_quantity": 100,
+    "inbound_service": "express",
+    "inbound_arrival_day": 4,
+    "assembly_slot": "ALT-4",
+    "outbound_service": "express",
+    "delivery_day": 5,
+    "costs": {
+      "sensors": 140000,
+      "baseboards": 120000,
+      "adapters": 30000,
+      "inbound": 30000,
+      "assembly": 80000,
+      "outbound": 40000
+    },
+    "total_cost": 440000
+  }
+}
