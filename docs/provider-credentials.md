@@ -109,6 +109,13 @@ afterward; normal startup registers the current key. Tenants then delete revoked
 credentials and reconnect through OAuth (#158). The command is safe to rerun
 after an interrupted recovery. Plan Token recovery will be added by #159.
 
+GCP deployment renders this non-secret Store descriptor from the
+`aidash-provider-credentials` VM metadata into a read-only Reinhardt settings
+source for migrations and the server. BYOK-enabled runtime secrets must contain
+the stable `AIDASH_PROVIDER_FINGERPRINT_KEY` value; a missing or short value
+blocks startup. The key is never generated or changed during deployment. When
+BYOK is omitted, the managed Store remains unset and no fingerprint is required.
+
 Tenant metadata endpoints are GET `/api/tenants/{tenant}/provider-credentials`
 and GET `/api/tenants/{tenant}/provider-credentials/{id}`. Revoke and delete remain
 available, alongside `/api/tenants/{tenant}/provider-credential-bindings`.
@@ -134,16 +141,30 @@ composition accepts typed providers and `SecretString` directly and runs policy
 decisions; there is no Key Material HTTP serializer, SDK operation, environment
 variable, or settings input for this write path. Tests seed through it directly.
 Creation persists `pending` before provider verification and secret storage.
-Rotation pins a verified new version before disabling the old one. Revocation
-is irreversible and disables all versions; deletion destroys versions and keeps
+Rotation pins a verified new version before disabling the old one. If that
+post-commit disable fails, it returns the committed metadata with a cleanup
+warning; the PostgreSQL active-row inventory retains the reconciliation work.
+The supervised reconciler retries unpinned versions. With background tasks
+disabled, cleanup remains pending until reconciliation resumes. Revocation
+commits its irreversible metadata state and audit before disabling all versions,
+so effective access closes immediately. A failed database commit leaves external
+versions unchanged; interrupted or failed disables are retried from revoked rows.
+The API returns the committed revoked state while cleanup is pending. Deletion
+destroys versions and keeps
 a metadata tombstone, but refuses a bound record. A supervised reconciler scans
-expired PostgreSQL pending records and disables unpinned active versions left
-by interrupted rotations. It never lists Secret Manager secrets.
+expired PostgreSQL pending records, disables unpinned active versions left
+by interrupted rotations, and disables all versions of revoked records. Each supervised pass processes at most 25 non-deleted
+metadata records in UUID order, retains its cursor across passes, and waits 60
+seconds after completing a page. A failed candidate is retried on the next sweep
+without blocking later Tenants. It never lists Secret Manager secrets.
 
 Admission records a local-only Provider Credential ID per Run and provider.
 This includes the enabled workspace semantic index's embedding provider, even
 when the Agent's Model uses an environment source. Missing embedding bindings
-therefore reject admission before the Run is committed.
+therefore reject admission before the Run is committed. RequiredHome remote
+semantic bindings reject Tenant-backed workspace embeddings before binding or
+dispatch: this path has no approved local Run pin or BYOK maintenance authority.
+Environment-backed remote embeddings remain supported.
 Calls check that record's current active state and current version pin; changing
 a binding cannot retarget admitted Runs. Receiving federation admission uses
 the mapped local Tenant. PostgreSQL resolves the current pinned version through

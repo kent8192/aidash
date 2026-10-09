@@ -339,6 +339,12 @@ to enable BYOK provisioning; it must differ from `project_id` and contain only
 Provider Credential secrets. Omit it or leave it empty for existing deployments
 without the Store: no BYOK API, project lookup, role, audit configuration or runtime
 grant is provisioned. Existing shared-project lifecycle operations remain available.
+Before clearing or replacing an enabled `byok_project_id`, retire all managed
+environments using the applied project. The controller refuses a mismatched
+project before observing hosts or applying Terraform while environment inventory
+remains; cleanup must verify each old prefix is empty before removing its runtime
+identity and disk. Enabling BYOK on a legacy deployment remains supported.
+
 Bootstrap enables Secret Manager and its DATA_READ/DATA_WRITE audit logs there.
 Human-run bootstrap defines `aidashByokCreate`, `aidashByokManage` and
 `aidashByokBrokerRead` once per deployment. Environment automation binds runtime
@@ -347,6 +353,18 @@ manage role with their environment's Secret name prefix using the numeric projec
 number. Runtime identities have no BYOK payload access or IAM-setting permission.
 The shared project's existing per-secret runtime configuration read remains in
 place for host startup.
+
+BYOK-enabled VM metadata supplies the non-secret Store descriptor through
+`aidash-provider-credentials`. Host startup mounts a descriptor-only JSON source
+read-only into migrations and the app; Reinhardt loads it via
+`AIDASH_PROVIDER_CREDENTIAL_SETTINGS`. The runtime configuration secret must also
+include a stable independent `AIDASH_PROVIDER_FINGERPRINT_KEY` of at least 32
+bytes. Startup refuses a missing or short key; deployments never regenerate it.
+Keep that key unchanged across upgrades and restarts. It stays in restrictive
+`app.env`, never in VM metadata or the public descriptor. Disabled BYOK omits the
+metadata attribute, renders no Store, and needs no fingerprint key. The managed descriptor uses `fingerprint_key = {env = "AIDASH_PROVIDER_FINGERPRINT_KEY"}`
+and `store.kind = "secret_manager"`; the fingerprint reference stays outside the
+Registry-accessible `AIDASH_SECRET_*` namespace.
 
 The deploy identity's BYOK role contains only `resourcemanager.projects.get`,
 `getIamPolicy` and `setIamPolicy`. Its binding uses exactly

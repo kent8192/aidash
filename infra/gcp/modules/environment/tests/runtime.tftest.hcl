@@ -54,6 +54,17 @@ run "retained_disks_and_spot_policy" {
     )
     error_message = "Runtime must bind only bootstrap's fixed Create/Manage roles, with management limited to its environment prefix."
   }
+  assert {
+    condition = jsondecode(google_compute_instance.host[0].metadata["aidash-provider-credentials"]) == {
+      fingerprint_key = { env = "AIDASH_PROVIDER_FINGERPRINT_KEY" }
+      store = {
+        kind            = "secret_manager"
+        byok_project_id = "aidash-byok-fixture"
+        environment_id  = "test"
+      }
+    }
+    error_message = "BYOK must deliver the Store descriptor and a fingerprint reference, never the secret value, to server startup."
+  }
 }
 
 run "preview_uses_shared_tls" {

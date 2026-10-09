@@ -4,7 +4,8 @@ use super::super::{
 	serializers::provider_credentials::StoreConfig,
 };
 use crate::{Error, Result};
-use aidash_application::provider_credentials::{Repository, Service};
+use aidash_application::provider_credentials::{RECONCILIATION_BATCH_SIZE, Repository, Service};
+use aidash_domain::provider_credentials::State;
 use serde::Serialize;
 use std::{collections::BTreeSet, sync::Arc};
 
@@ -52,16 +53,25 @@ async fn recover(execute: bool) -> Result<Counts> {
 		pool,
 		node: config.node_id,
 	});
-	let affected: Vec<_> = repository
-		.active()
-		.await?
-		.into_iter()
-		.filter(|row| {
-			row.pinned_version
-				.as_ref()
-				.is_some_and(|pin| lost_pins.contains(pin))
-		})
-		.collect();
+	let mut affected = Vec::new();
+	let mut cursor = None;
+	loop {
+		let page = repository
+			.reconciliation_candidates(cursor, RECONCILIATION_BATCH_SIZE)
+			.await?;
+		cursor = page.last().map(|row| row.id);
+		let complete = page.len() < RECONCILIATION_BATCH_SIZE;
+		affected.extend(page.into_iter().filter(|row| {
+			row.state == State::Active
+				&& row
+					.pinned_version
+					.as_ref()
+					.is_some_and(|pin| lost_pins.contains(pin))
+		}));
+		if complete {
+			break;
+		}
+	}
 	let counts = Counts {
 		affected_tenants: affected
 			.iter()

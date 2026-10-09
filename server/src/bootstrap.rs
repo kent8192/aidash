@@ -160,12 +160,24 @@ impl RuntimeTasks {
 		if let Some(provider_credentials) = federation.store.provider_credentials.clone() {
 			let mut stopping = receiver.clone();
 			tasks.spawn_service(runtime_task(async move {
+				let mut cursor = None;
 				loop {
 					if *stopping.borrow() {
 						return Ok(());
 					}
-					if let Err(error) = provider_credentials.reconcile().await {
-						tracing::warn!(error=%error,"Provider Credential reconciliation failed");
+					match provider_credentials.reconcile_page(cursor).await {
+						Ok(result) => {
+							cursor = result.next;
+							if result.failed != 0 {
+								tracing::warn!(
+									failed = result.failed,
+									"Provider Credential cleanup is pending"
+								);
+							}
+						}
+						Err(_) => tracing::warn!(
+							"Provider Credential reconciliation inventory unavailable"
+						),
 					}
 					tokio::select! { _=stopping.changed()=>{}, _=tokio::time::sleep(Duration::from_secs(60))=>{} }
 				}

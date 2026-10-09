@@ -16,6 +16,7 @@ import sys
 import tarfile
 import time
 import urllib.request
+from urllib.error import HTTPError
 
 from policy import IMAGE_KINDS, idle_due, meaningful_request
 
@@ -315,6 +316,44 @@ def environment_file(values):
     return "".join(f"{key}={value}\n" for key, value in sorted(values.items()))
 
 
+def provider_settings(external):
+    """Render only the managed non-secret Store descriptor, never its key."""
+    try:
+        descriptor = json.loads(request(
+            "http://metadata.google.internal/computeMetadata/v1/instance/attributes/aidash-provider-credentials"
+        ))
+    except HTTPError as error:
+        if error.code != 404:
+            raise
+        descriptor = {"fingerprint_key": None, "store": None}
+    if not isinstance(descriptor, dict) or set(descriptor) != {"fingerprint_key", "store"}:
+        raise ValueError("invalid managed Provider Credential configuration")
+    store = descriptor["store"]
+    if store is not None:
+        if (
+            not isinstance(store, dict)
+            or set(store) != {"kind", "byok_project_id", "environment_id"}
+            or store["kind"] != "secret_manager"
+            or not isinstance(store["byok_project_id"], str)
+            or not re.fullmatch(r"[a-z][a-z0-9-]{4,28}[a-z0-9]", store["byok_project_id"])
+            or not isinstance(store["environment_id"], str)
+            or not re.fullmatch(r"develop|test|pr-[1-9][0-9]*", store["environment_id"])
+            or descriptor["fingerprint_key"] != {"env": "AIDASH_PROVIDER_FINGERPRINT_KEY"}
+        ):
+            raise ValueError("invalid managed Provider Credential Store")
+        fingerprint = external.get("AIDASH_PROVIDER_FINGERPRINT_KEY")
+        if not isinstance(fingerprint, str) or len(fingerprint.strip().encode()) < 32:
+            raise ValueError("BYOK requires a stable Provider Credential fingerprint key of at least 32 bytes")
+    elif descriptor["fingerprint_key"] is not None:
+        raise ValueError("invalid managed Provider Credential configuration")
+    path = RUN / "provider-settings" / "settings.json"
+    # Descriptor only; UID 10001 must traverse/read this directory bind mount.
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.parent.chmod(0o755)
+    private(path, json.dumps({"provider_credentials": descriptor}), 0o644)
+    return path
+
+
 def configuration(host):
     payload = json.loads(
         request(
@@ -354,6 +393,7 @@ def configuration(host):
             ),
         )
     identity = json.loads(path.read_text())
+    managed_provider_settings = provider_settings(external)
     result = dict(
         external,
         DATABASE_URL=f"postgres://aidash:{identity['database']}@127.0.0.1:5432/aidash_a",
@@ -369,6 +409,7 @@ def configuration(host):
         AIDASH_CAPABILITY_PROFILE=str(ROOT / "profile.json"),
         AIDASH_MEMORY_RECOVERY_DIR=str(ROOT / "memory-recovery"),
         AIDASH_CORE_RUNNER_TOKEN=identity["runner"],
+        AIDASH_PROVIDER_CREDENTIAL_SETTINGS=str(managed_provider_settings),
     )
     private(RUN / "app.env", environment_file(result))
     private(
@@ -590,6 +631,8 @@ WantedBy=multi-user.target
         f"{memory}:{memory}",
         "-v",
         f"{ROOT}/profile.json:{ROOT}/profile.json:ro",
+        "-v",
+        f"{RUN}/provider-settings:{RUN}/provider-settings:ro",
     ]
     # Migrate explicitly; a failed migration never drops/recreates a retained database.
     command(

@@ -1932,6 +1932,28 @@ async fn recovery_dry_run_and_execute_cover_total_partial_and_mixed_key_loss(
 		.unwrap()
 		.provider_credential;
 	let resource = old_store.resource(alpha.id);
+	// Recovery must reach lost-key pins beyond the bounded reconciliation page.
+	let mut expected_revocations =
+		vec![("alpha".to_owned(), alpha.id), ("beta".to_owned(), beta.id)];
+	for index in 0..24 {
+		let tenant = format!("lost-page-{index:02}");
+		let row = old_service
+			.create(
+				&tenant,
+				Uuid::now_v7(),
+				Provider::Openrouter,
+				"lost-page-material-157".into(),
+				"actor",
+			)
+			.await
+			.unwrap()
+			.provider_credential;
+		expected_revocations.push((tenant, row.id));
+	}
+	let expected_tenants: std::collections::BTreeSet<_> = expected_revocations
+		.iter()
+		.map(|(tenant, _)| tenant.clone())
+		.collect();
 	let mut unaffected = None;
 	let mut known_before = Vec::<Version>::new();
 	let mut known_keys_before = Vec::<RegisteredKey>::new();
@@ -2015,7 +2037,8 @@ async fn recovery_dry_run_and_execute_cover_total_partial_and_mixed_key_loss(
 	let dir = tempfile::tempdir().unwrap();
 	recovery_settings(&f, dir.path(), &current);
 	let before = recovery_snapshot(&f).await;
-	let counts = json!({"affected_tenants":2,"affected_provider_credentials":2,"version_rows":if partial {3} else {2},"key_registry_rows":1});
+	let affected_count = expected_revocations.len();
+	let counts = json!({"affected_tenants":affected_count,"affected_provider_credentials":affected_count,"version_rows":affected_count + usize::from(partial),"key_registry_rows":1});
 	let mut tx = f.database.connection.begin().await.unwrap();
 	let mut private_values = Vec::new();
 	for row in Version::objects()
@@ -2064,6 +2087,7 @@ async fn recovery_dry_run_and_execute_cover_total_partial_and_mixed_key_loss(
 			&current,
 			"lost-alpha-material-157",
 			"lost-beta-material-157",
+			"lost-page-material-157",
 		] {
 			assert!(!printed.contains(forbidden));
 		}
@@ -2080,8 +2104,8 @@ async fn recovery_dry_run_and_execute_cover_total_partial_and_mixed_key_loss(
 			assert_eq!(recovery_snapshot(&f).await, before);
 		}
 	}
-	for (tenant, id) in [("alpha", alpha.id), ("beta", beta.id)] {
-		let mut scope = old_service.repository.begin(tenant).await.unwrap();
+	for (tenant, id) in expected_revocations {
+		let mut scope = old_service.repository.begin(&tenant).await.unwrap();
 		let row = scope.get(id).await.unwrap();
 		assert_eq!(row.state, State::Revoked);
 		assert_eq!(
@@ -2136,7 +2160,7 @@ async fn recovery_dry_run_and_execute_cover_total_partial_and_mixed_key_loss(
 		.and_where(Expr::col("kind").eq(Expr::value("provider_credential.revoked")))
 		.build(PostgresQueryBuilder);
 	let events = tx.fetch_all(&sql, convert_values(values)).await.unwrap();
-	assert_eq!(events.len(), 2);
+	assert_eq!(events.len(), affected_count);
 	let mut tenants = std::collections::BTreeSet::new();
 	for event in events {
 		let data: Value = serde_json::from_str(&event.get::<String>("data").unwrap()).unwrap();
@@ -2144,10 +2168,7 @@ async fn recovery_dry_run_and_execute_cover_total_partial_and_mixed_key_loss(
 		assert_eq!(data["state"], "revoked");
 		tenants.insert(data["tenant"].as_str().unwrap().to_owned());
 	}
-	assert_eq!(
-		tenants,
-		std::collections::BTreeSet::from(["alpha".into(), "beta".into()])
-	);
+	assert_eq!(tenants, expected_tenants);
 	tx.commit().await.unwrap();
 	assert_eq!(
 		recovery_snapshot(&f).await["credential_store_resources"],
@@ -2319,4 +2340,83 @@ async fn recovery_requires_postgres_and_valid_key_sources(#[future] endpoint: En
 		}
 	}
 	assert_eq!(recovery_snapshot(&f).await, before);
+}
+
+#[rstest]
+#[tokio::test]
+async fn native_cleanup_inventory_is_bounded_ordered_and_includes_revocations(
+	#[future] endpoint: EndpointFixture,
+) {
+	use aidash_application::provider_credentials::{RECONCILIATION_BATCH_SIZE, Repository};
+	use aidash_domain::provider_credentials::{ProviderCredential, State};
+	let f = endpoint.await;
+	let repository = NativeRepository {
+		pool: f.runtime.store.control_pool.clone(),
+		node: f.runtime.store.node_id.clone(),
+	};
+	let mut expected = Vec::new();
+	for tenant in ["alpha", "beta"] {
+		let mut scope = repository.begin(tenant).await.unwrap();
+		for ordinal in 0..18 {
+			let id = Uuid::now_v7();
+			let state = [
+				State::Pending,
+				State::Active,
+				State::Revoked,
+				State::Deleted,
+			][ordinal % 4];
+			if state != State::Deleted {
+				expected.push(id);
+			}
+			scope
+				.insert(&ProviderCredential {
+					id,
+					tenant: tenant.into(),
+					provider: Provider::Openrouter,
+					base_url: Provider::Openrouter.base_url().into(),
+					secret_resource: format!("fake/{id}"),
+					pinned_version: if state == State::Pending {
+						None
+					} else {
+						Some(format!("fake/{id}/versions/1"))
+					},
+					fingerprint: "0123456789abcdef".into(),
+					last4: "test".into(),
+					state,
+					created_at: chrono::Utc::now(),
+					rotated_at: None,
+					revoked_at: if state == State::Revoked {
+						Some(chrono::Utc::now())
+					} else {
+						None
+					},
+					revision: 1,
+				})
+				.await
+				.unwrap();
+		}
+		scope.commit().await.unwrap();
+	}
+	expected.sort();
+	let first = repository
+		.reconciliation_candidates(None, usize::MAX)
+		.await
+		.unwrap();
+	assert_eq!(first.len(), RECONCILIATION_BATCH_SIZE);
+	assert!(first.iter().any(|row| row.state == State::Pending));
+	assert!(first.iter().any(|row| row.state == State::Revoked));
+	let second = repository
+		.reconciliation_candidates(first.last().map(|row| row.id), usize::MAX)
+		.await
+		.unwrap();
+	let actual: Vec<_> = first.into_iter().chain(second).map(|row| row.id).collect();
+	assert_eq!(actual, expected);
+	assert_eq!(
+		repository
+			.reconciliation_candidates(expected.last().copied(), 25)
+			.await
+			.unwrap()
+			.len(),
+		0
+	);
 }
