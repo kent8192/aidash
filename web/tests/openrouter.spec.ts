@@ -271,3 +271,41 @@ test("manual model names survive model and effort changes", async ({
   await dialog.getByLabel("Reasoning Effort").selectOption("");
   await expect(name).toHaveValue("vendor-fixture-model-low");
 });
+
+test("projection versions are sent only beyond the legacy default", async ({
+  page,
+}) => {
+  const dialog = page.getByRole("dialog");
+  const register = async () => {
+    const posted = page.waitForRequest(
+      (r) =>
+        new URL(r.url()).pathname === "/api/registry" && r.method() === "POST",
+    );
+    await dialog
+      .getByRole("button", { name: "エンティティを登録", exact: true })
+      .click();
+    return (await posted).postDataJSON().config;
+  };
+  await dialog.getByLabel("説明").fill("A model for agent execution");
+  await dialog
+    .getByRole("combobox", { name: "プロバイダーのモデルID" })
+    .fill("fixture");
+  await dialog.getByRole("option", { name: /Fixture Chat/ }).click();
+  await expect(dialog.getByLabel("legacy")).toBeChecked();
+  expect(await register()).not.toHaveProperty("projection_versions");
+
+  await page
+    .getByRole("button", { name: "エンティティを登録", exact: true })
+    .click();
+  await dialog.getByLabel("エンティティの種類").selectOption("model");
+  await dialog.getByLabel("説明").fill("A model for agent execution");
+  await dialog
+    .getByRole("combobox", { name: "プロバイダーのモデルID" })
+    .fill("fixture");
+  await dialog.getByRole("option", { name: /Fixture Chat/ }).click();
+  await dialog.getByLabel("ordered").check();
+  expect((await register()).projection_versions).toEqual([
+    "legacy",
+    "ordered",
+  ]);
+});

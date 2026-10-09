@@ -561,7 +561,9 @@ export function EntityForm({
               </select>
             </Field>
             <Field
-              label={locale === "ja-JP" ? "投影バージョン" : "Projection version"}
+              label={
+                locale === "ja-JP" ? "投影バージョン" : "Projection version"
+              }
             >
               <select name="projection_version" defaultValue="legacy">
                 <option value="legacy">legacy</option>
