@@ -127,6 +127,21 @@ async fn credential_list_paginates_authorized_rows_beyond_the_first_page(
 	#[future] endpoint: EndpointFixture,
 ) {
 	use aidash_domain::provider_credentials::{ProviderCredential, State};
+	use aidash_server::apps::identity::models::AuthorizationDecision;
+	use reinhardt::db::orm::Model;
+	async fn decisions(f: &EndpointFixture) -> Vec<AuthorizationDecision> {
+		let mut tx = f.database.connection.begin().await.unwrap();
+		let rows = AuthorizationDecision::objects()
+			.filter(AuthorizationDecision::field_tenant().eq("alpha"))
+			.filter(AuthorizationDecision::field_subject().eq("alice"))
+			.filter(AuthorizationDecision::field_action().eq("provider_credential.read"))
+			.order_by(&["sequence"])
+			.all_with_executor(tx.as_mut())
+			.await
+			.unwrap();
+		tx.commit().await.unwrap();
+		rows
+	}
 	let mut f = endpoint.await;
 	let ids: Vec<_> = (0..203).map(|_| Uuid::now_v7()).collect();
 	let bundle = json!({
@@ -212,7 +227,6 @@ async fn credential_list_paginates_authorized_rows_beyond_the_first_page(
 		("", &ids[200..]),
 		("?offset=0&limit=2", &ids[200..202]),
 		("?offset=2&limit=2", &ids[202..]),
-		("?offset=3&limit=2", &ids[203..]),
 	] {
 		let rows = assert_json(
 			subject
@@ -228,6 +242,24 @@ async fn credential_list_paginates_authorized_rows_beyond_the_first_page(
 			.map(|row| Uuid::parse_str(row["id"].as_str().unwrap()).unwrap())
 			.collect();
 		assert_eq!(actual, expected, "page {query}");
+	}
+	// An offset beyond the visible set still finalizes exactly one allow/deny
+	// audit for every evaluated record before returning the empty page.
+	let before = decisions(&f).await.len();
+	let empty = assert_json(
+		subject
+			.get("/api/tenants/alpha/provider-credentials?offset=3&limit=2")
+			.await
+			.unwrap(),
+		200,
+	);
+	assert_eq!(empty, json!([]));
+	let audits = decisions(&f).await;
+	let page_audits = &audits[before..];
+	assert_eq!(page_audits.len(), ids.len());
+	for (index, (decision, id)) in page_audits.iter().zip(&ids).enumerate() {
+		assert_eq!(decision.resource_id, id.to_string());
+		assert_eq!(decision.decision.0["allowed"], index >= 200);
 	}
 	let operator_rows = assert_json(
 		f.operator
