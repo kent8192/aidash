@@ -193,8 +193,15 @@ pub(crate) async fn control(
 	bank: &Bank,
 	id: Uuid,
 	pinned: Option<bool>,
+	operation: Uuid,
+	digest: &str,
 ) -> Result<Unit> {
 	super::candidates::human(lease)?;
+	if operation.is_nil() {
+		return Err(Error::Invalid(
+			"memory control operation ID is required".into(),
+		));
+	}
 	if let Some(access) = lease.access() {
 		let participant: Option<String> = if let Some(id) = bank.participant {
 			native::query_scalar(
@@ -217,6 +224,26 @@ pub(crate) async fn control(
 			access.require(&workspace, "workspace.update").await?;
 		}
 	}
+	let bank_id = repository::bank_id(lease, bank, false)
+		.await?
+		.ok_or(Error::Forbidden)?;
+	let receipt = native::query(
+		&Query::select()
+			.column(ColumnRef::Asterisk)
+			.from(Alias::new("memory_receipts"))
+			.and_where(Expr::col("operation_id").eq(Expr::value(operation)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_optional(&mut **lease.tx())
+	.await?;
+	if let Some(receipt) = &receipt
+		&& (receipt.try_get::<Uuid>("bank_id")? != bank_id
+			|| receipt.try_get::<String>("digest")? != digest)
+	{
+		return Err(Error::Conflict(
+			"memory operation ID was reused with a different request".into(),
+		));
+	}
 	let unit = units::load(lease, id, false)
 		.await?
 		.ok_or(Error::Forbidden)?;
@@ -231,9 +258,41 @@ pub(crate) async fn control(
 		policy.bounds.max_graph_visits,
 	)
 	.await?;
-	let bank_id = repository::bank_id(lease, bank, false)
-		.await?
-		.ok_or(Error::Forbidden)?;
+	if let Some(receipt) = receipt {
+		let outcome: Vec<Evidence> = receipt.try_get("outcome")?;
+		if outcome != vec![unit.evidence()] {
+			return Err(Error::Conflict(
+				"memory operation completed; its result has since changed".into(),
+			));
+		}
+		return Ok(unit);
+	}
+	repository::record_capacity(
+		lease,
+		bank_id,
+		"memory_receipts",
+		policy.retention.max_model_operations,
+	)
+	.await?;
+	// Reserve the exact request before changing the ranking state. Both writes
+	// share this authority transaction, so a failed control leaves no receipt.
+	native::query(
+		&Query::insert()
+			.into_table(Alias::new("memory_receipts"))
+			.columns(["operation_id", "bank_id", "digest", "outcome", "created_at"].map(Alias::new))
+			.from_subquery(
+				Query::select()
+					.expr(Expr::value(operation))
+					.expr(Expr::value(bank_id))
+					.expr(Expr::value(digest))
+					.expr(Expr::value(serde_json::to_value(vec![unit.evidence()])?))
+					.expr(Expr::value(Utc::now()))
+					.to_owned(),
+			)
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(&mut **lease.tx())
+	.await?;
 	ensure(lease, bank_id, id).await?;
 	if let Some(value) = pinned {
 		native::query(
