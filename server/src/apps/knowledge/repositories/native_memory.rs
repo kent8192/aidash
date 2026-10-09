@@ -402,22 +402,14 @@ pub(crate) async fn mutate_origin(
 	)
 	.await?;
 	let outcome: Vec<_> = result.iter().map(Unit::evidence).collect();
-	native::query(
-		&Query::insert()
-			.into_table(Alias::new("memory_receipts"))
-			.columns(["operation_id", "bank_id", "digest", "outcome", "created_at"].map(Alias::new))
-			.from_subquery(
-				Query::select()
-					.expr(Expr::value(mutation.operation_id))
-					.expr(Expr::value(bank_id))
-					.expr(Expr::value(digest))
-					.expr(Expr::value(serde_json::to_value(outcome)?))
-					.expr(Expr::value(now))
-					.to_owned(),
-			)
-			.to_string(PostgresQueryBuilder),
+	super::memory_receipts::reserve(
+		lease,
+		mutation.operation_id,
+		bank_id,
+		&digest,
+		&outcome,
+		now,
 	)
-	.execute(&mut **lease.tx())
 	.await?;
 	Ok(result)
 }
@@ -944,8 +936,17 @@ pub(crate) async fn list_mode(
 			"memory snapshot exceeds its declared bound".into(),
 		));
 	}
+	load_snapshot(lease, bank, &ids, max_graph_visits).await
+}
+
+async fn load_snapshot(
+	lease: &mut Lease<'_>,
+	bank: &Bank,
+	ids: &[Uuid],
+	max_graph_visits: usize,
+) -> Result<Vec<Unit>> {
 	let mut result = Vec::new();
-	for id in ids {
+	for &id in ids {
 		let unit = units::load(lease, id, false)
 			.await?
 			.ok_or(Error::Forbidden)?;
@@ -967,6 +968,76 @@ pub(crate) async fn list_mode(
 		result.push(unit);
 	}
 	Ok(result)
+}
+
+/// Classify both recall partitions in one PostgreSQL statement snapshot. Source
+/// hydration may overlap retention changes, but cannot change captured membership.
+pub(crate) async fn recall_including_dormant(
+	lease: &mut Lease<'_>,
+	bank: &Bank,
+	limit: usize,
+	max_graph_visits: usize,
+) -> Result<(Vec<Unit>, Vec<Unit>)> {
+	lock_workspace(lease, bank.workspace, false).await?;
+	units::authorize(lease, bank, "memory.read").await?;
+	units::authorize(lease, bank, "memory.read_dormant").await?;
+	let Some(bank_id) = bank_id(lease, bank, false).await? else {
+		return Ok((Vec::new(), Vec::new()));
+	};
+	let settings = super::bank_settings::get(lease, bank)
+		.await?
+		.ok_or(Error::Forbidden)?;
+	let policy = crate::semantic::native_memory::policy(lease, &settings.provider).await?;
+	let dormant = if policy
+		.decay
+		.as_ref()
+		.is_some_and(|decay| decay.dormancy.is_some())
+	{
+		Expr::col("id").in_subquery(super::memory_decay::dormant_filter(
+			bank_id,
+			&settings.provider,
+		)?)
+	} else {
+		Expr::value(false)
+	};
+	let total_limit = limit
+		.checked_mul(2)
+		.and_then(|value| value.checked_add(1))
+		.ok_or_else(|| Error::Invalid("memory snapshot bound overflow".into()))?;
+	let rows = native::query(
+		&Query::select()
+			.column(Alias::new("id"))
+			.expr_as(dormant, Alias::new("dormant"))
+			.from(Alias::new("memory_units"))
+			.and_where(Expr::col("bank_id").eq(Expr::value(bank_id)))
+			.and_where(Expr::col("deleted").eq(false))
+			.and_where(Expr::col("stale").eq(false))
+			.and_where(Expr::col("verification").ne("contradicted"))
+			.order_by(Alias::new("id"), Order::Asc)
+			.limit(total_limit as u64)
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_all(&mut **lease.tx())
+	.await?;
+	let mut active = Vec::new();
+	let mut dormant = Vec::new();
+	for row in rows {
+		let partition = if row.try_get::<bool>("dormant")? {
+			&mut dormant
+		} else {
+			&mut active
+		};
+		partition.push(row.try_get::<Uuid>("id")?);
+		if partition.len() > limit {
+			return Err(Error::Conflict(
+				"memory snapshot exceeds its declared bound".into(),
+			));
+		}
+	}
+	Ok((
+		load_snapshot(lease, bank, &active, max_graph_visits).await?,
+		load_snapshot(lease, bank, &dormant, max_graph_visits).await?,
+	))
 }
 
 pub(crate) async fn keyword(

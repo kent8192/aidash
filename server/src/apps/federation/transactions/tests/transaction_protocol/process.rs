@@ -1,6 +1,8 @@
 //! Runs the actual server executable with deterministic before/after SQL cuts.
 use super::*;
 use reinhardt::test::fixtures::temp_dir;
+#[cfg(unix)]
+use std::os::{fd::AsRawFd, unix::process::CommandExt};
 use std::{
 	fs::File,
 	path::Path,
@@ -15,6 +17,21 @@ struct Server {
 }
 impl Server {
 	fn start(node: &Node, cut: Option<(Uuid, &str, &Path)>) -> Self {
+		let listener = node
+			.reservation
+			.as_ref()
+			.expect("real-process fixtures must retain their listener reservation");
+		Self::start_with_listener(node, cut, Some(listener))
+	}
+	fn start_with_listener(
+		node: &Node,
+		cut: Option<(Uuid, &str, &Path)>,
+		listener: Option<&std::net::TcpListener>,
+	) -> Self {
+		assert!(
+			node.server.is_none(),
+			"stop the in-process server before handover"
+		);
 		let directory = temp_dir();
 		let log = File::create(directory.path().join("server.log")).unwrap();
 		let binary = std::env::var_os("AIDASH_TEST_BINARY")
@@ -54,8 +71,32 @@ impl Server {
 				.env("AIDASH_TRANSACTION_FAULT", format!("{id}:{point}"))
 				.env("AIDASH_TRANSACTION_FAULT_DIR", directory);
 		}
+		#[cfg(unix)]
+		if let Some(listener) = listener {
+			let fd = listener.as_raw_fd();
+			command.env("AIDASH_LISTEN_FD", fd.to_string());
+			// SAFETY: only async-signal-safe fcntl calls run after fork. Clearing
+			// CLOEXEC only in this child leaves concurrent parent spawns isolated.
+			// The node retains the descriptor until spawn completes and thereafter.
+			unsafe {
+				command.pre_exec(move || {
+					let flags = libc::fcntl(fd, libc::F_GETFD);
+					if flags < 0 || libc::fcntl(fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) < 0 {
+						return Err(std::io::Error::last_os_error());
+					}
+					Ok(())
+				});
+			}
+		}
+		#[cfg(not(unix))]
+		assert!(listener.is_none(), "listener handover requires Unix");
 		Self {
-			process: command.spawn().unwrap(),
+			process: command.spawn().unwrap_or_else(|error| {
+				panic!(
+					"spawn {} on {}: {error}",
+					node.f.config.node_id, node.listen
+				)
+			}),
 			directory,
 		}
 	}
@@ -75,9 +116,13 @@ async fn healthy(node: &Node, server: &mut Server, stage: &str) {
 	// allowance does not change the durable-cut or convergence deadlines.
 	let ready = tokio::time::timeout(WallDuration::from_secs(60), async {
 		loop {
+			let exited = server.process.try_wait().unwrap();
 			assert!(
-				server.process.try_wait().unwrap().is_none(),
-				"server exited during startup: {}",
+				exited.is_none(),
+				"server {} pid {} on {} exited {exited:?} during {stage}: {}",
+				node.f.config.node_id,
+				server.process.id(),
+				node.listen,
 				server.log()
 			);
 			if node
@@ -97,10 +142,188 @@ async fn healthy(node: &Node, server: &mut Server, stage: &str) {
 	.await;
 	assert!(
 		ready.is_ok(),
-		"server startup timed out at {stage} for {}: {}",
+		"server startup timed out at {stage} for {} on {}: {}",
 		node.f.config.node_id,
+		node.listen,
 		server.log()
 	);
+}
+
+#[cfg(unix)]
+struct HandoverNodes {
+	nodes: [Node; 2],
+	_environment: Arc<TestEnvironment>,
+}
+
+#[cfg(unix)]
+#[rstest::fixture]
+async fn handover_nodes(
+	#[future(awt)]
+	#[from(common::isolated_test_environment)]
+	environment: Arc<TestEnvironment>,
+) -> HandoverNodes {
+	let (a, b) = tokio::join!(
+		Node::with_port_reservation(&environment, "handover-a", true),
+		Node::with_port_reservation(&environment, "handover-b", true),
+	);
+	HandoverNodes {
+		nodes: [a, b],
+		_environment: environment,
+	}
+}
+
+#[cfg(unix)]
+struct PortContender {
+	task: Option<std::thread::JoinHandle<usize>>,
+	stopping: Arc<std::sync::atomic::AtomicBool>,
+}
+
+#[cfg(unix)]
+impl PortContender {
+	fn start(addresses: [std::net::SocketAddr; 2]) -> Self {
+		let stopping = Arc::new(std::sync::atomic::AtomicBool::new(false));
+		let stop = stopping.clone();
+		// This OS thread also competes while the test's Tokio thread is spawning
+		// or reaping children, including the entire in-process handover interval.
+		let task = std::thread::spawn(move || {
+			let mut attempts = 0;
+			while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+				for address in addresses {
+					let error = std::net::TcpListener::bind(address)
+						.expect_err("the fixture must retain its endpoint during handover");
+					assert_eq!(
+						error.kind(),
+						std::io::ErrorKind::AddrInUse,
+						"{address}: {error}"
+					);
+					attempts += 1;
+				}
+				std::thread::sleep(WallDuration::from_millis(1));
+			}
+			attempts
+		});
+		Self {
+			task: Some(task),
+			stopping,
+		}
+	}
+	fn finish(mut self) {
+		self.stopping
+			.store(true, std::sync::atomic::Ordering::Relaxed);
+		let attempts = self
+			.task
+			.take()
+			.unwrap()
+			.join()
+			.expect("concurrent port contender");
+		assert!(
+			attempts >= 2,
+			"the competing fixture must attempt both ports"
+		);
+		eprintln!("PORT-HANDOVER competing_bind_attempts={attempts}");
+	}
+}
+
+#[cfg(unix)]
+impl Drop for PortContender {
+	fn drop(&mut self) {
+		self.stopping
+			.store(true, std::sync::atomic::Ordering::Relaxed);
+		if let Some(task) = self.task.take() {
+			let _ = task.join();
+		}
+	}
+}
+
+#[cfg(unix)]
+#[rstest::rstest]
+#[tokio::test]
+async fn port_reservation_survives_concurrent_handover_and_process_restarts(
+	#[future(awt)] handover_nodes: HandoverNodes,
+) {
+	let HandoverNodes {
+		nodes: [mut a, mut b],
+		_environment,
+	} = handover_nodes;
+	let endpoints = [a.f.config.endpoint.clone(), b.f.config.endpoint.clone()];
+	assert_ne!(
+		a.listen, b.listen,
+		"concurrent fixtures need isolated endpoints"
+	);
+	// Act: compete for both endpoints throughout every process transition.
+	let contender = PortContender::start([a.listen, b.listen]);
+	for generation in 0..3 {
+		assert_eq!(a.get("/health").await.0, 200);
+		assert_eq!(b.get("/health").await.0, 200);
+		a.stop().await;
+		b.stop().await;
+		// Act: both real executables inherit their independently owned sockets.
+		let (mut process_a, mut process_b) = std::thread::scope(|scope| {
+			let a = scope.spawn(|| Server::start(&a, None));
+			let b = scope.spawn(|| Server::start(&b, None));
+			(a.join().unwrap(), b.join().unwrap())
+		});
+		healthy(&a, &mut process_a, "concurrent handover").await;
+		healthy(&b, &mut process_b, "concurrent handover").await;
+		assert_eq!(a.f.config.endpoint, endpoints[0]);
+		assert_eq!(b.f.config.endpoint, endpoints[1]);
+		// Act: reap both SIGKILLed children before rebuilding the native nodes.
+		drop(process_a);
+		drop(process_b);
+		if generation < 2 {
+			a.restart().await;
+			b.restart().await;
+		}
+	}
+	contender.finish();
+	a.cleanup().await;
+	b.cleanup().await;
+}
+
+#[cfg(unix)]
+#[rstest::rstest]
+#[case::occupied_port(false, "HTTP listener bind")]
+#[case::wrong_listener(true, "inherited HTTP listener")]
+#[tokio::test]
+async fn child_listener_conflicts_fail_with_endpoint_diagnostics(
+	#[future(awt)] handover_nodes: HandoverNodes,
+	#[case] wrong_listener: bool,
+	#[case] diagnostic: &str,
+) {
+	let HandoverNodes {
+		nodes: [mut a, mut b],
+		_environment,
+	} = handover_nodes;
+	a.stop().await;
+	b.stop().await;
+	let mut server = Server::start_with_listener(
+		&a,
+		None,
+		wrong_listener.then(|| b.reservation.as_ref().unwrap()),
+	);
+	let status = tokio::time::timeout(WallDuration::from_secs(60), async {
+		loop {
+			if let Some(status) = server.process.try_wait().unwrap() {
+				break status;
+			}
+			tokio::time::sleep(WallDuration::from_millis(25)).await;
+		}
+	})
+	.await
+	.unwrap_or_else(|_| panic!("conflicting child did not exit: {}", server.log()));
+	assert!(!status.success(), "a listener conflict must fail startup");
+	let log = server.log();
+	assert!(log.contains(diagnostic), "{log}");
+	assert!(log.contains(&a.listen.to_string()), "{log}");
+	if wrong_listener {
+		assert!(log.contains(&b.listen.to_string()), "{log}");
+		assert!(log.contains("expected"), "{log}");
+	} else {
+		assert!(log.contains("Address already in use"), "{log}");
+	}
+	drop(server);
+	a.cleanup().await;
+	b.cleanup().await;
 }
 
 #[rstest::rstest]
@@ -127,7 +350,8 @@ async fn real_server_sigkill_at_durable_cut(
 ) {
 	// Every cut is repeated three times; a failed repetition fails the case.
 	for repetition in 1..=3 {
-		let (mut a, mut b, mut manifest, wa, wb) = pair(&environment).await;
+		let (mut a, mut b, mut manifest, wa, wb) =
+			pair_with_port_reservation(&environment, true).await;
 		if abort {
 			let aidash_server::transactions::Mutation::WorkspaceState {
 				expected_revision, ..

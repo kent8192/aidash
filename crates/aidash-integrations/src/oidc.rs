@@ -47,12 +47,22 @@ pub struct AccountLookup {
 }
 #[async_trait::async_trait]
 impl aidash_application::ports::authorization::dashboard::AccountStatus for AccountLookup {
-	async fn enabled(&self, subject: &str) -> Result<bool> {
+	async fn lookup(
+		&self,
+		subject: &str,
+		gcip_tenant: Option<&str>,
+	) -> Result<aidash_domain::identity::dashboard::AccountState> {
+		if gcip_tenant.is_some() {
+			return Err(Error::Forbidden);
+		}
 		let settings = self
 			.settings
 			.as_ref()
 			.ok_or_else(|| Error::NotFound("dashboard sign-in is not configured".into()))?;
-		keycloak_enabled(&self.client, settings, subject).await
+		Ok(aidash_domain::identity::dashboard::AccountState {
+			disabled: !keycloak_enabled(&self.client, settings, subject).await?,
+			valid_since: None,
+		})
 	}
 }
 
@@ -76,6 +86,10 @@ struct GoogleClaims {
 	#[serde(rename = "iat")]
 	_issued_at: i64,
 	sid: Option<String>,
+	#[serde(default)]
+	email_verified: bool,
+	email: Option<String>,
+	name: Option<String>,
 }
 
 fn oidc_http_client() -> Result<openidconnect::reqwest::Client> {
@@ -227,7 +241,7 @@ pub async fn exchange_identity(
 	metadata: CoreProviderMetadata,
 	transaction: &PendingLogin<'_>,
 	code: String,
-) -> Result<(String, Option<String>)> {
+) -> Result<(aidash_domain::identity::dashboard::SignIn, Option<String>)> {
 	if config.is_google() {
 		return exchange_google_identity(config, &metadata, transaction, &code).await;
 	}
@@ -269,7 +283,31 @@ pub async fn exchange_identity(
 		.get("sid")
 		.and_then(Value::as_str)
 		.map(str::to_owned);
-	Ok((subject, provider_sid))
+	let verified_email = payload
+		.get("email")
+		.and_then(Value::as_str)
+		.filter(|email| {
+			payload.get("email_verified").and_then(Value::as_bool) == Some(true)
+				&& !email.is_empty()
+				&& email.len() <= 320
+		})
+		.map(str::to_owned);
+	let display_name = payload
+		.get("name")
+		.and_then(Value::as_str)
+		.filter(|name| !name.is_empty() && name.len() <= 512)
+		.map(str::to_owned);
+	Ok((
+		aidash_domain::identity::dashboard::SignIn {
+			subject,
+			gcip_tenant: None,
+			gcip_provider: None,
+			auth_time: chrono::Utc::now(),
+			verified_email,
+			display_name,
+		},
+		provider_sid,
+	))
 }
 
 async fn exchange_google_identity(
@@ -277,7 +315,7 @@ async fn exchange_google_identity(
 	metadata: &CoreProviderMetadata,
 	transaction: &PendingLogin<'_>,
 	code: &str,
-) -> Result<(String, Option<String>)> {
+) -> Result<(aidash_domain::identity::dashboard::SignIn, Option<String>)> {
 	// Google also issues `iss=accounts.google.com`, which the OIDC library's
 	// URL-typed issuer cannot deserialize. Verify the original JWT with the
 	// existing JWT library; never rewrite its signed payload.
@@ -325,7 +363,21 @@ async fn exchange_google_identity(
 	if !aidash_domain::configuration::same_secret(&claims.nonce, transaction.nonce) {
 		return Err(Error::Unauthorized);
 	}
-	Ok((claims.sub, claims.sid))
+	Ok((
+		aidash_domain::identity::dashboard::SignIn {
+			subject: claims.sub,
+			gcip_tenant: None,
+			gcip_provider: None,
+			auth_time: chrono::Utc::now(),
+			verified_email: claims
+				.email
+				.filter(|email| claims.email_verified && !email.is_empty() && email.len() <= 320),
+			display_name: claims
+				.name
+				.filter(|name| !name.is_empty() && name.len() <= 512),
+		},
+		claims.sid,
+	))
 }
 
 /// Verify the signed envelope before application-level logout claim rules.

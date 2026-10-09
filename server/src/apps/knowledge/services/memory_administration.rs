@@ -1,7 +1,7 @@
 //! Explicit index maintenance preserves canonical unit revisions and read dependencies.
 use super::native_memory::{Operation, definition};
 use crate::apps::knowledge::repositories::{
-	access::Lease, candidates, native_memory as repository, units,
+	access::Lease, candidates, memory_receipts, native_memory as repository, units,
 };
 use crate::{Error, Result, database::native};
 use aidash_domain::{memory::*, semantic::EmbeddingConfig};
@@ -103,24 +103,14 @@ pub(crate) async fn reindex(
 	for unit in &selected {
 		repository::project(lease, unit, &actor, Some(&input.provider)).await?;
 	}
-	native::query(
-		&Query::insert()
-			.into_table(Alias::new("memory_receipts"))
-			.columns(["operation_id", "bank_id", "digest", "outcome", "created_at"].map(Alias::new))
-			.from_subquery(
-				Query::select()
-					.expr(Expr::value(input.operation_id))
-					.expr(Expr::value(bank_id))
-					.expr(Expr::value(digest))
-					.expr(Expr::value(serde_json::to_value(
-						selected.iter().map(Unit::evidence).collect::<Vec<_>>(),
-					)?))
-					.expr(Expr::value(Utc::now()))
-					.to_owned(),
-			)
-			.to_string(PostgresQueryBuilder),
+	memory_receipts::reserve(
+		lease,
+		input.operation_id,
+		bank_id,
+		&digest,
+		&selected.iter().map(Unit::evidence).collect::<Vec<_>>(),
+		Utc::now(),
 	)
-	.execute(&mut **lease.tx())
 	.await?;
 	Ok(selected)
 }
