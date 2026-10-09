@@ -15,6 +15,8 @@ import time
 import urllib.parse
 import urllib.request
 
+from gcip import reconcile_environment
+
 from cloud import (
     Store,
     Terraform,
@@ -385,37 +387,34 @@ def instance_status(config, output):
 
 def provision_secret(config, output, kind):
     secret = output["runtime_secret"]
-    versions = json.loads(
-        run(
-            "gcloud",
-            "secrets",
-            "versions",
-            "list",
-            secret,
-            "--project",
-            config["project_id"],
-            "--filter=state=ENABLED",
-            "--format=json(name)",
-        )
-    )
-    if not versions:
-        value = os.environ.get("AIDASH_RUNTIME_" + kind.upper())
-        if not value:
-            raise Refused(
-                f"Set the {kind} runtime configuration secret before resuming this environment"
-            )
-        json.loads(value)
-        run(
-            "gcloud",
-            "secrets",
-            "versions",
-            "add",
-            secret,
-            "--project",
-            config["project_id"],
-            "--data-file=-",
-            data=value.encode(),
-        )
+    versions = json.loads(run("gcloud", "secrets", "versions", "list", secret,
+        "--project", config["project_id"], "--filter=state=ENABLED", "--format=json(name)"))
+    if versions:
+        raw = run("gcloud", "secrets", "versions", "access", "latest", "--secret", secret, "--project", config["project_id"])
+    else:
+        raw = os.environ.get("AIDASH_RUNTIME_" + kind.upper())
+        if not raw:
+            raise Refused(f"Set the {kind} runtime configuration secret before resuming this environment")
+    value = json.loads(raw)
+    previous = json.dumps(value, sort_keys=True)
+    gcip = output.get("gcip", {})
+    if gcip.get("tenant_ids"):
+        dashboard = value.setdefault("dashboard", {})
+        if dashboard.get("oidc"):
+            raise Refused("Remove dashboard.oidc before enabling the sole GCIP issuer")
+        settings = dashboard.setdefault("gcip", {})
+        api_key = settings.get("web_api_key") or config.get("gcip_web_api_key")
+        if not api_key:
+            raise Refused("Configure the GCIP web API key from the bootstrap output")
+        settings.update({key: gcip[key] for key in ("project_id", "public_origin", "tenant_bindings", "providers", "password_sign_up")})
+        settings["web_api_key"] = api_key
+    elif value.get("dashboard", {}).get("gcip"):
+        # Binding removal must reach the retained server before any subsequent
+        # boundary; disabling infrastructure cannot leave an old pool admitted.
+        value["dashboard"]["gcip"].update(tenant_bindings={}, providers={}, password_sign_up=[])
+    encoded = json.dumps(value, sort_keys=True)
+    if not versions or encoded != previous:
+        run("gcloud", "secrets", "versions", "add", secret, "--project", config["project_id"], "--data-file=-", data=encoded.encode())
 
 
 def restart_bootstrap(config, output, fresh_boot=False):
@@ -583,6 +582,8 @@ def reconcile(config, store):
                 generation = snapshot["generation"]
                 entry = current_entry(store, identity, generation)
                 output = terraform.outputs().get(identity) if managed else None
+                if output and entry["desired"] != "destroyed":
+                    reconcile_environment(output)
                 # Close/merge cleanup is reconciled regardless of CI, builds, or fork approval.
                 if entry["kind"] == "pr" and entry["desired"] != "destroyed":
                     pr = github(f"repos/{config['repository']}/pulls/{identity[3:]}")
@@ -600,6 +601,7 @@ def reconcile(config, store):
                     if identity in managed:
                         managed[identity]["published"] = False
                         terraform.apply(managed)
+                        reconcile_environment(output, enabled=False)
                         del managed[identity]
                         terraform.apply(managed, retiring={identity})
                     update_entry(
@@ -794,6 +796,7 @@ def reconcile(config, store):
                     current_entry(store, identity, generation)
                     power(config, output, "start")
                     fresh_boot = True
+                reconcile_environment(output)
                 provision_secret(config, output, entry["kind"])
                 current_entry(store, identity, generation)
                 restart_bootstrap(config, output, fresh_boot)

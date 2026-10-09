@@ -22,9 +22,33 @@ pub(crate) struct Repository(pub(crate) Federation);
 pub(crate) struct Login(pub(crate) reinhardt::db::orm::DatabaseConnection);
 #[async_trait]
 impl aidash_application::ports::authorization::dashboard::LoginAccounts for Login {
-	async fn register(&mut self, issuer: &str, subject: &str) -> Result<Account> {
+	async fn find(
+		&mut self,
+		issuer: &str,
+		sign_in: &aidash_domain::identity::dashboard::SignIn,
+	) -> Result<Option<Account>> {
+		use reinhardt::db::orm::Model;
+		Ok(DashboardIdentity::objects()
+			.filter(DashboardIdentity::field_issuer().eq(issuer.to_owned()))
+			.filter(
+				DashboardIdentity::field_gcip_tenant()
+					.eq(sign_in.gcip_tenant.clone().unwrap_or_default()),
+			)
+			.filter(DashboardIdentity::field_subject().eq(sign_in.subject.clone()))
+			.all_with_db(&mut self.0)
+			.await
+			.map_err(crate::Error::from)?
+			.pop()
+			.map(account))
+	}
+
+	async fn register(
+		&mut self,
+		issuer: &str,
+		sign_in: &aidash_domain::identity::dashboard::SignIn,
+	) -> Result<Account> {
 		Ok(account(
-			DashboardIdentity::register(self.0, issuer, subject).await?,
+			DashboardIdentity::register(self.0, issuer, sign_in).await?,
 		))
 	}
 }
@@ -37,6 +61,8 @@ pub(crate) fn account(row: DashboardIdentity) -> Account {
 		id: row.id,
 		issuer: row.issuer,
 		subject: row.subject,
+		gcip_tenant: (!row.gcip_tenant.is_empty()).then_some(row.gcip_tenant),
+		valid_since: row.valid_since,
 		last_valid_at: row.last_valid_at,
 		disabled_at: row.disabled_at,
 	}
@@ -45,19 +71,17 @@ pub(crate) fn account(row: DashboardIdentity) -> Account {
 #[async_trait]
 impl Accounts for Repository {
 	fn policy(&self) -> Option<AccountPolicy> {
-		self.0.config.oidc.as_ref().map(|config| AccountPolicy {
-			issuer: config.issuer.clone(),
-			google: config.is_google(),
-		})
+		self.0.config.dashboard_policy()
 	}
 	fn now(&self) -> DateTime<Utc> {
 		Utc::now()
 	}
 	async fn active(&self) -> Result<Vec<Account>> {
-		let config = self.0.config.oidc.as_ref().ok_or_else(|| {
+		let config = self.0.config.dashboard_session().ok_or_else(|| {
 			aidash_application::Error::NotFound("dashboard sign-in is not configured".into())
 		})?;
 		let lease = self.0.store.orm_connection()?;
+		DashboardIdentity::expire_registrations(lease.handle()).await?;
 		Ok(
 			DashboardIdentity::active(lease.handle(), config.session_idle_seconds)
 				.await?
@@ -66,9 +90,14 @@ impl Accounts for Repository {
 				.collect(),
 		)
 	}
-	async fn record_valid(&self, identity: Uuid, started: DateTime<Utc>) -> Result<()> {
+	async fn record_valid(
+		&self,
+		identity: Uuid,
+		started: DateTime<Utc>,
+		valid_since: Option<DateTime<Utc>>,
+	) -> Result<()> {
 		let lease = self.0.store.orm_connection()?;
-		DashboardIdentity::record_valid(lease.handle(), identity, started)
+		DashboardIdentity::record_valid(lease.handle(), identity, started, valid_since)
 			.await
 			.map_err(Into::into)
 	}

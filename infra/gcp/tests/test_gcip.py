@@ -1,0 +1,192 @@
+"""Tenant IAM uses fake REST policies, including concurrent operator changes."""
+
+from copy import deepcopy
+import json
+from pathlib import Path
+import sys
+import unittest
+from unittest.mock import patch
+from urllib.error import HTTPError
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "control"))
+from gcip import TenantIAM, READ_ROLE, reconcile_environment
+import controller
+
+MEMBER = "serviceAccount:runtime@aidash-fixture.iam.gserviceaccount.com"
+OUTPUT = {
+    "runtime_secret": "runtime",
+    "gcip": {
+        "project_id": "aidash-fixture",
+        "public_origin": "https://test.aidash.run",
+        "tenant_ids": ["pool-a"],
+        "runtime_service_account": MEMBER.split(":", 1)[1],
+        "tenant_bindings": {"pool-a": "acme"},
+        "providers": {"pool-a": ["password"]},
+        "password_sign_up": ["pool-a"],
+    },
+}
+
+
+class FakeAPI(TenantIAM):
+    def __init__(self):
+        self.policy = {
+            "version": 3,
+            "etag": "first",
+            "bindings": [
+                {
+                    "role": "roles/identityplatform.admin",
+                    "members": ["user:operator@example.test"],
+                },
+                {
+                    "role": READ_ROLE,
+                    "members": ["user:auditor@example.test"],
+                    "condition": {"title": "temporary", "expression": "true"},
+                },
+            ],
+            "auditConfigs": [{"service": "allServices"}],
+        }
+        self.sets = []
+        self.conflict = False
+
+    def call(self, resource, method, body):
+        assert resource == "projects/aidash-fixture/tenants/pool-a"
+        if method == "getIamPolicy":
+            assert body == {"options": {"requestedPolicyVersion": 3}}
+            return deepcopy(self.policy)
+        assert method == "setIamPolicy" and body["updateMask"] == "bindings,etag"
+        assert body["policy"]["etag"] == self.policy["etag"]
+        if self.conflict:
+            self.conflict = False
+            self.policy["etag"] = "concurrent"
+            self.policy["bindings"].append(
+                {"role": READ_ROLE, "members": ["user:new@example.test"]}
+            )
+            raise HTTPError("", 409, "conflict", {}, None)
+        self.sets.append(deepcopy(body))
+        self.policy = deepcopy(body["policy"])
+        return deepcopy(self.policy)
+
+
+class TenantIAMTests(unittest.TestCase):
+    def test_add_idempotence_and_unrelated_conditional_policy_preservation(self):
+        api = FakeAPI()
+        original = deepcopy(api.policy)
+        reconcile_environment(OUTPUT, api=api)
+        reconcile_environment(OUTPUT, api=api)
+        self.assertEqual(len(api.sets), 1)
+        self.assertEqual(api.policy["bindings"][:2], original["bindings"])
+        self.assertEqual(api.policy["auditConfigs"], original["auditConfigs"])
+        self.assertEqual(
+            api.policy["bindings"][2], {"role": READ_ROLE, "members": [MEMBER]}
+        )
+
+    def test_etag_conflict_refetches_and_preserves_the_concurrent_binding(self):
+        api = FakeAPI()
+        api.conflict = True
+        reconcile_environment(OUTPUT, api=api)
+        self.assertEqual(api.policy["etag"], "concurrent")
+        self.assertIn(MEMBER, api.policy["bindings"][2]["members"])
+        self.assertIn("user:new@example.test", api.policy["bindings"][2]["members"])
+
+    def test_destroy_removes_only_our_managed_member(self):
+        api = FakeAPI()
+        reconcile_environment(OUTPUT, api=api)
+        api.policy["bindings"][-1]["members"].append("user:unrelated@example.test")
+        reconcile_environment(OUTPUT, enabled=False, api=api)
+        self.assertEqual(
+            api.policy["bindings"][-1]["members"], ["user:unrelated@example.test"]
+        )
+        reconcile_environment(OUTPUT, enabled=False, api=api)
+        self.assertEqual(len(api.sets), 2)
+
+    def test_refuses_existing_policy_without_etag(self):
+        api = FakeAPI()
+        del api.policy["etag"]
+        with self.assertRaisesRegex(RuntimeError, "etag"):
+            reconcile_environment(OUTPUT, api=api)
+        self.assertFalse(api.sets)
+
+    def test_missing_destroyed_tenant_is_idempotent(self):
+        api = FakeAPI()
+        with patch.object(
+            api, "call", side_effect=HTTPError("", 404, "gone", {}, None)
+        ):
+            reconcile_environment(OUTPUT, enabled=False, api=api)
+            with self.assertRaises(HTTPError):
+                reconcile_environment(OUTPUT, api=api)
+
+    def test_rest_transport_uses_exact_tenant_resource(self):
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                pass
+
+            def read(self):
+                return b'{"etag":"fixture"}'
+
+        with (
+            patch("gcip.run", return_value=b"token"),
+            patch("gcip.urllib.request.urlopen", return_value=Response()) as request,
+        ):
+            TenantIAM().call(
+                "projects/aidash-fixture/tenants/pool-a", "getIamPolicy", {}
+            )
+        sent = request.call_args.args[0]
+        self.assertEqual(
+            sent.full_url,
+            "https://identitytoolkit.googleapis.com/admin/v2/projects/aidash-fixture/tenants/pool-a:getIamPolicy",
+        )
+        self.assertEqual(sent.get_header("Authorization"), "Bearer token")
+
+
+class RuntimeConfigTests(unittest.TestCase):
+    def test_outputs_replace_runtime_bindings_without_republishing_unchanged_secrets(
+        self,
+    ):
+        raw = {
+            "node": {"api_token": "private"},
+            "dashboard": {"gcip": {"web_api_key": "public"}},
+        }
+        calls = []
+
+        def command(*args, **kwargs):
+            calls.append((args, kwargs))
+            if "list" in args:
+                return b'[{"name":"version"}]'
+            if "access" in args:
+                return json.dumps(raw).encode()
+            return b""
+
+        with patch("controller.run", side_effect=command):
+            controller.provision_secret(
+                {"project_id": "aidash-fixture"}, OUTPUT, "test"
+            )
+            additions = [kwargs for args, kwargs in calls if "add" in args]
+            self.assertEqual(len(additions), 1)
+            value = json.loads(additions[0]["data"])
+            self.assertEqual(
+                value["dashboard"]["gcip"]["tenant_bindings"], {"pool-a": "acme"}
+            )
+            self.assertEqual(value["node"]["api_token"], "private")
+            raw.clear()
+            raw.update(value)
+            calls.clear()
+            controller.provision_secret(
+                {"project_id": "aidash-fixture"}, OUTPUT, "test"
+            )
+            self.assertFalse(any("add" in args for args, _ in calls))
+
+    def test_oidc_and_gcip_runtime_configuration_cannot_coexist(self):
+        with patch(
+            "controller.run",
+            side_effect=[
+                b'[{"name":"v"}]',
+                b'{"dashboard":{"oidc":{"issuer":"issuer"}}}',
+            ],
+        ):
+            with self.assertRaises(controller.Refused):
+                controller.provision_secret(
+                    {"project_id": "aidash-fixture"}, OUTPUT, "test"
+                )

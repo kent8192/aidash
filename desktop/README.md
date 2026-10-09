@@ -25,7 +25,7 @@ bundle. Signing/notarization and Windows signing credentials must be supplied
 by the distributor; this repository does not contain them. An unsigned local
 build is not a signed production release. Automatic updates are not installed.
 
-Add a named connection using the server's `AIDASH_OIDC_PUBLIC_ORIGIN`, including
+Add a named connection using the server's configured dashboard `public_origin`, including
 its port. Only origin URLs are accepted: no path, credentials, query or fragment.
 Remote servers require HTTPS; HTTP is permitted for `localhost` and `127.0.0.1`.
 HTTP IPv6 literals such as `http://[::1]:8080` are rejected because WebView CSP
@@ -38,7 +38,14 @@ Multiple profiles retain separate logins; only one profile is active.
 
 ## Authentication and persistence
 
-Configure the backend's existing Google client, client secret and registered
+For a GCIP-backed server, configure `[dashboard.gcip]` as described in the root
+README. The system browser chooses the organization and completes GCIP sign-in,
+then returns to the existing consent page. The loopback PKCE handoff and native
+client need no changes. Derived desktop sessions retain the browser's original
+`auth_time`, so GCIP `validSince` can revoke both sessions together without
+pausing admitted work. GCIP tokens never enter desktop credentials or storage.
+
+Configure the self-hosted backend's existing Google client, client secret and registered
 `/auth/callback` URI as described in the root README. No new Google client secret
 is distributed with the desktop client. Servers must advertise
 `desktop_protocol: 1` at `/auth/config`; an older server produces upgrade guidance.
@@ -48,7 +55,7 @@ S256 PKCE, and opens the selected server's sign-in page in the system browser.
 The browser completes the existing Google flow and explicitly approves the
 handoff. A single-use code (60 seconds) and state return to the loopback listener.
 The code is bound to the initiating browser session, server origin, callback and
-PKCE verifier. Provider tokens and the Google client secret remain on the server.
+PKCE verifier. The desktop receives only Aidash credentials. The Google client secret remains on the server.
 There is no embedded WebView login and no custom-protocol callback registration.
 
 The native process stores the Aidash refresh credential in macOS Keychain,

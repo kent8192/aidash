@@ -7,6 +7,7 @@ use std::{collections::BTreeSet, sync::Mutex};
 #[derive(Clone, Copy)]
 enum ProviderResult {
 	Enabled,
+	Revoked,
 	Disabled,
 	Offline,
 }
@@ -23,9 +24,11 @@ struct Scope {
 	state: Arc<Mutex<State>>,
 	configured: bool,
 	google: bool,
+	tenant_bindings: Option<std::collections::BTreeMap<String, String>>,
 	result: ProviderResult,
 	newer_validity: bool,
 	delay_seconds: i64,
+	valid_since: Option<DateTime<Utc>>,
 }
 #[fixture]
 fn scope() -> Scope {
@@ -34,6 +37,8 @@ fn scope() -> Scope {
 		id: Uuid::new_v4(),
 		issuer: "issuer".into(),
 		subject: "subject".into(),
+		gcip_tenant: None,
+		valid_since: None,
 		last_valid_at: Some(now - Duration::seconds(400)),
 		disabled_at: None,
 	};
@@ -49,20 +54,37 @@ fn scope() -> Scope {
 		})),
 		configured: true,
 		google: false,
+		tenant_bindings: None,
 		result: ProviderResult::Enabled,
 		newer_validity: false,
 		delay_seconds: 0,
+		valid_since: None,
 	}
 }
 #[async_trait]
 impl AccountStatus for Scope {
-	async fn enabled(&self, subject: &str) -> Result<bool> {
+	async fn lookup(
+		&self,
+		subject: &str,
+		gcip_tenant: Option<&str>,
+	) -> Result<aidash_domain::identity::dashboard::AccountState> {
 		let mut state = self.state.lock().unwrap();
 		state.trace.push(format!("lookup:{subject}"));
+		assert_eq!(gcip_tenant, state.account.gcip_tenant.as_deref());
 		state.now += Duration::seconds(self.delay_seconds);
 		match self.result {
-			ProviderResult::Enabled => Ok(true),
-			ProviderResult::Disabled => Ok(false),
+			ProviderResult::Enabled => Ok(aidash_domain::identity::dashboard::AccountState {
+				disabled: false,
+				valid_since: self.valid_since,
+			}),
+			ProviderResult::Disabled => Ok(aidash_domain::identity::dashboard::AccountState {
+				disabled: true,
+				valid_since: self.valid_since,
+			}),
+			ProviderResult::Revoked => Ok(aidash_domain::identity::dashboard::AccountState {
+				disabled: false,
+				valid_since: Some(state.now - Duration::seconds(60)),
+			}),
 			ProviderResult::Offline => Err(Error::External("provider unavailable".into())),
 		}
 	}
@@ -73,6 +95,7 @@ impl Accounts for Scope {
 		self.configured.then(|| AccountPolicy {
 			issuer: "issuer".into(),
 			google: self.google,
+			tenant_bindings: self.tenant_bindings.clone(),
 		})
 	}
 	fn now(&self) -> DateTime<Utc> {
@@ -81,10 +104,20 @@ impl Accounts for Scope {
 	async fn active(&self) -> Result<Vec<Account>> {
 		Ok(vec![self.state.lock().unwrap().account.clone()])
 	}
-	async fn record_valid(&self, _: Uuid, started: DateTime<Utc>) -> Result<()> {
+	async fn record_valid(
+		&self,
+		_: Uuid,
+		started: DateTime<Utc>,
+		valid_since: Option<DateTime<Utc>>,
+	) -> Result<()> {
 		let mut state = self.state.lock().unwrap();
 		state.trace.push("record".into());
 		state.recorded.push(started);
+		if let Some(since) = valid_since {
+			state
+				.trace
+				.push(format!("revoke-before:{}", since.timestamp()));
+		}
 		Ok(())
 	}
 	async fn disable_if_current(&self, _: Uuid, _: Option<DateTime<Utc>>) -> Result<bool> {
@@ -264,9 +297,14 @@ async fn active_identity_cannot_be_restored_without_a_disabled_state(scope: Scop
 
 #[async_trait]
 impl crate::ports::authorization::dashboard::LoginAccounts for Recovery {
-	async fn register(&mut self, issuer: &str, subject: &str) -> Result<Account> {
+	async fn find(&mut self, _: &str, _: &SignIn) -> Result<Option<Account>> {
+		Ok(None)
+	}
+	async fn register(&mut self, issuer: &str, sign_in: &SignIn) -> Result<Account> {
 		let mut state = self.0.lock().unwrap();
-		state.trace.push(format!("register:{issuer}:{subject}"));
+		state
+			.trace
+			.push(format!("register:{issuer}:{}", sign_in.subject));
 		Ok(state.account.clone())
 	}
 }
@@ -279,7 +317,7 @@ async fn rejected_login_never_registers_an_account(mut scope: Scope) {
 	let mut login = Recovery(scope.state.clone());
 	assert!(matches!(
 		authority(scope.clone())
-			.admit_login(&mut login, "subject")
+			.admit_login(&mut login, &sign_in())
 			.await,
 		Err(Error::Forbidden)
 	));
@@ -297,7 +335,7 @@ async fn login_cannot_reactivate_a_persisted_disabled_account(scope: Scope) {
 	let mut login = Recovery(scope.state.clone());
 	assert!(matches!(
 		authority(scope.clone())
-			.admit_login(&mut login, "subject")
+			.admit_login(&mut login, &sign_in())
 			.await,
 		Err(Error::Forbidden)
 	));
@@ -331,4 +369,132 @@ async fn signed_login_token_cannot_revoke_sessions_through_backchannel(scope: Sc
 		matches!(backchannel_logout(&logout, "signed").await, Err(Error::Domain(aidash_domain::Error::Invalid(reason))) if reason == "invalid logout token claims")
 	);
 	assert_eq!(scope.state.lock().unwrap().trace, ["verify-signature"]);
+}
+
+fn sign_in() -> SignIn {
+	SignIn {
+		subject: "subject".into(),
+		gcip_tenant: None,
+		auth_time: DateTime::from_timestamp(1_800_000_000, 0).unwrap(),
+		verified_email: None,
+		display_name: None,
+	}
+}
+
+#[rstest]
+#[tokio::test]
+async fn gcip_revocation_ends_older_sessions_without_disabling_work(mut scope: Scope) {
+	scope.result = ProviderResult::Revoked;
+	scope.tenant_bindings = Some([("pool-a".into(), "acme".into())].into());
+	let mut account = scope.state.lock().unwrap().account.clone();
+	account.gcip_tenant = Some("pool-a".into());
+	scope.state.lock().unwrap().account.gcip_tenant = account.gcip_tenant.clone();
+	let now = scope.state.lock().unwrap().now;
+	let scope = Arc::new(scope);
+	authority(scope.clone())
+		.account_valid(&account)
+		.await
+		.unwrap();
+	assert_eq!(
+		scope.state.lock().unwrap().trace,
+		[
+			"lookup:subject".to_owned(),
+			"record".into(),
+			format!(
+				"revoke-before:{}",
+				(now - Duration::seconds(60)).timestamp()
+			)
+		]
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn disabled_gcip_account_disables_identity_and_marks_work_at_a_boundary(mut scope: Scope) {
+	scope.result = ProviderResult::Disabled;
+	scope.tenant_bindings = Some([("pool-a".into(), "acme".into())].into());
+	let mut account = scope.state.lock().unwrap().account.clone();
+	account.gcip_tenant = Some("pool-a".into());
+	scope.state.lock().unwrap().account.gcip_tenant = account.gcip_tenant.clone();
+	let scope = Arc::new(scope);
+	assert!(matches!(
+		authority(scope.clone()).account_valid(&account).await,
+		Err(Error::Forbidden)
+	));
+	assert_eq!(
+		scope.state.lock().unwrap().trace,
+		["lookup:subject", "disable-current", "mark-disabled"]
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn removed_binding_disables_even_a_fresh_identity_before_provider_io(mut scope: Scope) {
+	scope.tenant_bindings = Some(Default::default());
+	let mut account = scope.state.lock().unwrap().account.clone();
+	account.gcip_tenant = Some("removed-pool".into());
+	account.last_valid_at = Some(scope.state.lock().unwrap().now);
+	let scope = Arc::new(scope);
+	assert!(matches!(
+		authority(scope.clone()).account_valid(&account).await,
+		Err(Error::Forbidden)
+	));
+	assert_eq!(
+		scope.state.lock().unwrap().trace,
+		["disable-current", "mark-disabled"]
+	);
+}
+
+#[rstest]
+#[case("pool-a", "acme", true)]
+#[case("pool-a", "other", false)]
+#[case("pool-b", "acme", false)]
+fn mapping_requires_the_exact_bound_tenant(
+	#[case] pool: &str,
+	#[case] tenant: &str,
+	#[case] allowed: bool,
+) {
+	let policy = AccountPolicy {
+		issuer: "issuer".into(),
+		google: false,
+		tenant_bindings: Some([("pool-a".into(), "acme".into())].into()),
+	};
+	assert_eq!(
+		policy.require_mapping("issuer", Some(pool), tenant).is_ok(),
+		allowed
+	);
+	assert!(
+		policy
+			.require_mapping("old-issuer", Some(pool), tenant)
+			.is_err()
+	);
+	assert!(policy.require_mapping("issuer", None, tenant).is_err());
+}
+
+#[rstest]
+#[case(-1, true)]
+#[case(0, false)]
+#[case(1, false)]
+fn valid_since_compares_authentication_time_strictly(#[case] seconds: i64, #[case] revoked: bool) {
+	let since = DateTime::from_timestamp(1_800_000_000, 0).unwrap();
+	assert_eq!(
+		session_revoked(since + Duration::seconds(seconds), Some(since)),
+		revoked
+	);
+	assert!(!session_revoked(since, None));
+}
+
+#[rstest]
+#[tokio::test]
+async fn stale_authentication_cannot_create_a_session(mut scope: Scope) {
+	scope.valid_since = Some(scope.state.lock().unwrap().now + Duration::seconds(1));
+	let scope = Arc::new(scope);
+	let mut login = Recovery(scope.state.clone());
+	assert!(matches!(
+		authority(scope.clone())
+			.admit_login(&mut login, &sign_in())
+			.await,
+		Err(Error::Forbidden)
+	));
+	assert_eq!(scope.state.lock().unwrap().trace, ["lookup:subject"]);
 }

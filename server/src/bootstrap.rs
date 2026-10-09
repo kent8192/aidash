@@ -65,7 +65,9 @@ pub async fn initialize(
 	let pool = connection
 		.into_postgres()
 		.ok_or_else(|| Error::Invalid("Aidash requires PostgreSQL".into()))?;
-	let store = Store::from_pool(pool, config.node_id.clone()).await?;
+	let store = Store::from_pool(pool, config.node_id.clone())
+		.await?
+		.with_dashboard_policy(config.dashboard_policy());
 	let registry = Registry::new(store.pool.clone(), &store.node_id)?;
 	registry.seed_system().await?;
 	let client = reqwest::Client::builder()
@@ -75,6 +77,12 @@ pub async fn initialize(
 		.build()?;
 	let federation = Federation {
 		sandbox: Default::default(),
+		gcip: config.gcip.as_ref().map(|gcip| {
+			Arc::new(aidash_integrations::gcip::Services::new(
+				gcip.project_id.clone(),
+				client.clone(),
+			))
+		}),
 		store,
 		registry,
 		config,
@@ -170,7 +178,7 @@ impl RuntimeTasks {
 				crate::capabilities::transfer::run(transfers, stopping).await
 			}));
 		}
-		if federation.config.oidc.is_some() {
+		if federation.config.dashboard_session().is_some() {
 			tasks.spawn_service(runtime_task(crate::dashboard_auth::refresh_active(
 				federation.clone(),
 				receiver.clone(),
@@ -1634,8 +1642,9 @@ pub(crate) fn peer_mapping_repository(
 pub(crate) fn draft_authority_scope<'a>(
 	tx: &'a mut dyn reinhardt::db::backends::TransactionExecutor,
 	actor: &'a crate::authorization::identity::Actor,
+	policy: Option<aidash_application::ports::authorization::dashboard::AccountPolicy>,
 ) -> crate::apps::registry::workbench::repositories::authority::Scope<'a> {
-	crate::apps::registry::workbench::repositories::authority::Scope { tx, actor }
+	crate::apps::registry::workbench::repositories::authority::Scope { tx, actor, policy }
 }
 /// HTTP edits assemble the same repository used by application draft workflows.
 pub(crate) fn draft_repository(
@@ -1975,10 +1984,16 @@ pub(crate) fn dashboard_authority(
 		accounts: Arc::new(crate::apps::identity::repositories::dashboard::Repository(
 			federation.clone(),
 		)),
-		status: Arc::new(aidash_integrations::oidc::AccountLookup {
-			client: federation.client.clone(),
-			settings: federation.config.oidc.as_ref().map(oidc_settings),
-		}),
+		status: federation
+			.gcip
+			.as_ref()
+			.map(|gcip| gcip.status.clone())
+			.unwrap_or_else(|| {
+				Arc::new(aidash_integrations::oidc::AccountLookup {
+					client: federation.client.clone(),
+					settings: federation.config.oidc.as_ref().map(oidc_settings),
+				})
+			}),
 	}
 }
 

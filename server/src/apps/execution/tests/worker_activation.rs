@@ -1396,6 +1396,7 @@ async fn embedded_worker_child() {
 		.unwrap();
 	let f = Federation {
 		sandbox: Default::default(),
+		gcip: None,
 		registry: aidash_server::registry::Registry::new(store.pool.clone(), node).unwrap(),
 		store,
 		config: aidash_server::config::Config {
@@ -1408,6 +1409,7 @@ async fn embedded_worker_child() {
 			lease_seconds: 30,
 			default_host_packages: vec![],
 			oidc: None,
+			gcip: None,
 		},
 		client: reqwest::Client::new(),
 		notify: Arc::new(tokio::sync::Notify::new()),

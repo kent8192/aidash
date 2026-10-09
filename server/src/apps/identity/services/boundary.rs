@@ -97,7 +97,7 @@ impl AccessBoundary {
 			.authenticate(token.ok_or(Error::Unauthorized)?)
 			.await?
 		} else {
-			if runtime.config.oidc.is_none() {
+			if runtime.config.dashboard_session().is_none() {
 				return Err(Error::Unauthorized);
 			}
 			let (actor, origin) =
@@ -122,6 +122,7 @@ impl AccessBoundary {
 #[async_trait]
 impl Middleware for AccessBoundary {
 	async fn process(&self, request: Request, next: Arc<dyn Handler>) -> ViewResult<Response> {
+		let auth_response = request.uri.path().starts_with("/auth/");
 		let result: Result<Response> = async {
 			let context = request
 				.get_di_context::<Arc<InjectionContext>>()
@@ -157,6 +158,10 @@ impl Middleware for AccessBoundary {
 			Ok(response)
 		}
 		.await;
-		Ok(result.unwrap_or_else(Error::http_response))
+		let mut response = result.unwrap_or_else(Error::http_response);
+		if auth_response {
+			super::oidc::no_store(&mut response);
+		}
+		Ok(response)
 	}
 }

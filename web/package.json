@@ -13,7 +13,8 @@
     "prebuild": "../scripts/generate-api.sh",
     "test:collaboration": "node --experimental-strip-types --test unit/collaboration.test.mjs unit/cytoscape-projection.test.mjs unit/display-labels.test.mjs unit/thread-messages.test.mjs unit/notifications.test.mjs",
     "test:ui": "playwright test --config playwright.ui.config.ts",
-    "test:desktop": "playwright test --config playwright.desktop.config.ts"
+    "test:desktop": "playwright test --config playwright.desktop.config.ts",
+    "test:gcip": "playwright test --config playwright.gcip.config.ts"
   },
   "dependencies": {
     "@radix-ui/react-collapsible": "^1.1.21",
@@ -32,6 +33,7 @@
     "clsx": "^2.1.1",
     "cytoscape": "3.34.1",
     "exceljs": "^4.4.0",
+    "firebase": "^13.0.0",
     "lucide-react": "^0.468.0",
     "pdfjs-dist": "^6.3.289",
     "react": "^19.2.0",

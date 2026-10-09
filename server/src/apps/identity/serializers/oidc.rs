@@ -16,6 +16,7 @@ pub(crate) struct Configuration {
 #[derive(Deserialize, JsonSchema)]
 pub(crate) struct LoginQuery {
 	pub(crate) return_to: Option<String>,
+	pub(crate) org: Option<String>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -54,6 +55,9 @@ pub(crate) struct IdentityView {
 	pub(crate) id: Uuid,
 	pub(crate) issuer: String,
 	pub(crate) subject: String,
+	pub(crate) gcip_tenant: Option<String>,
+	pub(crate) verified_email: Option<String>,
+	pub(crate) display_name: Option<String>,
 	pub(crate) disabled_at: Option<DateTime<Utc>>,
 }
 

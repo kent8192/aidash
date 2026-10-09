@@ -3,7 +3,7 @@ use crate::{
 	Error, Result,
 	ports::authorization::dashboard::{AccountStatus, Accounts},
 };
-use aidash_domain::identity::dashboard::Account;
+use aidash_domain::identity::dashboard::{Account, SignIn, session_revoked};
 use chrono::{DateTime, Duration, Utc};
 use std::sync::Arc;
 use uuid::Uuid;
@@ -22,18 +22,47 @@ impl DashboardAuthority {
 	pub async fn admit_login(
 		&self,
 		scope: &mut dyn crate::ports::authorization::dashboard::LoginAccounts,
-		subject: &str,
+		sign_in: &SignIn,
 	) -> Result<Account> {
 		let policy = self
 			.accounts
 			.policy()
 			.ok_or_else(|| Error::NotFound("dashboard sign-in is not configured".into()))?;
-		if !policy.google && !self.status.enabled(subject).await? {
+		policy.require_identity(&policy.issuer, sign_in.gcip_tenant.as_deref())?;
+		let started = self.accounts.now();
+		let status = if policy.google {
+			None
+		} else {
+			Some(
+				self.status
+					.lookup(&sign_in.subject, sign_in.gcip_tenant.as_deref())
+					.await?,
+			)
+		};
+		if status.is_some_and(|status| {
+			status.disabled || session_revoked(sign_in.auth_time, status.valid_since)
+		}) {
+			if let Some(account) = scope.find(&policy.issuer, sign_in).await?
+				&& let Some(status) = status
+			{
+				if status.disabled {
+					self.disable(account.id, Some(started)).await?;
+				} else if account.disabled_at.is_none() {
+					self.accounts
+						.record_valid(account.id, started, status.valid_since)
+						.await?;
+				}
+			}
 			return Err(Error::Forbidden);
 		}
-		let account = scope.register(&policy.issuer, subject).await?;
+		let account = scope.register(&policy.issuer, sign_in).await?;
 		if account.disabled_at.is_some() {
 			return Err(Error::Forbidden);
+		}
+		if let Some(status) = status {
+			self.accounts
+				.record_valid(account.id, started, status.valid_since)
+				.await?;
 		}
 		Ok(account)
 	}
@@ -45,7 +74,15 @@ impl DashboardAuthority {
 			.accounts
 			.policy()
 			.ok_or_else(|| Error::NotFound("dashboard sign-in is not configured".into()))?;
-		if account.issuer != policy.issuer {
+		if policy
+			.require_identity(&account.issuer, account.gcip_tenant.as_deref())
+			.is_err()
+		{
+			// GCIP Binding removal takes effect durably at this boundary. Keep
+			// generic OIDC's request rejection and background issuer retirement.
+			if policy.tenant_bindings.is_some() || account.gcip_tenant.is_some() {
+				self.disable(account.id, None).await?;
+			}
 			return Err(Error::Forbidden);
 		}
 		if policy.google {
@@ -59,9 +96,17 @@ impl DashboardAuthority {
 			return Ok(());
 		}
 		// The deadline begins before provider IO, including a slow response body.
-		match self.status.enabled(&account.subject).await {
-			Ok(true) => self.accounts.record_valid(account.id, now).await,
-			Ok(false) => {
+		match self
+			.status
+			.lookup(&account.subject, account.gcip_tenant.as_deref())
+			.await
+		{
+			Ok(status) if !status.disabled => {
+				self.accounts
+					.record_valid(account.id, now, status.valid_since)
+					.await
+			}
+			Ok(_) => {
 				self.disable(account.id, Some(now)).await?;
 				Err(Error::Forbidden)
 			}
@@ -107,13 +152,21 @@ impl DashboardAuthority {
 			.ok_or_else(|| Error::NotFound("dashboard sign-in is not configured".into()))?;
 		let mut scope = self.accounts.recovery().await?;
 		let account = scope.account(identity).await?;
-		if account.issuer != policy.issuer || account.disabled_at.is_none() {
+		if policy
+			.require_identity(&account.issuer, account.gcip_tenant.as_deref())
+			.is_err() || account.disabled_at.is_none()
+		{
 			return Err(Error::Conflict(
 				"identity is not disabled for the configured issuer".into(),
 			));
 		}
 		let started = self.accounts.now();
-		if !self.status.enabled(&account.subject).await? {
+		if self
+			.status
+			.lookup(&account.subject, account.gcip_tenant.as_deref())
+			.await?
+			.disabled
+		{
 			return Err(Error::Forbidden);
 		}
 		scope.restore(identity, started).await
@@ -123,10 +176,12 @@ impl DashboardAuthority {
 		if policy.as_ref().is_some_and(|policy| policy.google) {
 			return;
 		}
-		if policy
-			.as_ref()
-			.is_some_and(|policy| account.issuer != policy.issuer)
-		{
+		if policy.as_ref().is_some_and(|policy| {
+			account.issuer != policy.issuer
+				|| policy
+					.require_identity(&account.issuer, account.gcip_tenant.as_deref())
+					.is_err()
+		}) {
 			if let Err(error) = self.disable(account.id, None).await {
 				tracing::warn!(identity_id=%account.id, %error, "old-issuer identity could not be disabled");
 			}
@@ -139,7 +194,7 @@ impl DashboardAuthority {
 				}
 			}
 			Err(error) if !matches!(error, Error::Forbidden | Error::IdentityStatusUnavailable) => {
-				tracing::warn!(identity_id=%account.id, "Keycloak status refresh did not establish validity");
+				tracing::warn!(identity_id=%account.id, "issuer status refresh did not establish validity");
 			}
 			Err(_) => {}
 		}

@@ -75,6 +75,7 @@ impl ExecutionScope for Scope {
 		entry: &Entry,
 	) -> Result<aidash_domain::registry::bindings::BindingSnapshot> {
 		let mut lookup = super::super::authority::Scope {
+			policy: self.tx.pool().dashboard_policy(),
 			tx: &mut *self.tx,
 			actor: &self.actor,
 		};
@@ -119,8 +120,9 @@ impl ExecutionScope for Scope {
 	}
 
 	async fn validate_content(&mut self, draft: &Draft) -> Result<Entry> {
+		let policy = self.tx.pool().dashboard_policy();
 		aidash_application::registry::workbench::validate_content(
-			&mut crate::bootstrap::draft_authority_scope(&mut self.tx, &self.actor),
+			&mut crate::bootstrap::draft_authority_scope(&mut self.tx, &self.actor, policy),
 			&crate::bootstrap::registry_validation(),
 			draft,
 			&self.node_id,

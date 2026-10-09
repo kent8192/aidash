@@ -122,6 +122,7 @@ pub fn setup(
 			.unwrap();
 		let federation = Federation {
 			sandbox: Default::default(),
+			gcip: None,
 			store,
 			registry: Registry::new(pool, "aidash://execution-test").unwrap(),
 			config: Config {
@@ -134,6 +135,7 @@ pub fn setup(
 				lease_seconds: 30,
 				default_host_packages: vec![],
 				oidc: None,
+				gcip: None,
 			},
 			client: reqwest::Client::new(),
 			notify: Arc::new(tokio::sync::Notify::new()),

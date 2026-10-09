@@ -13,16 +13,50 @@ pub struct Config {
 	pub lease_seconds: i32,
 	pub default_host_packages: Vec<String>,
 	pub oidc: Option<OidcConfig>,
+	pub gcip: Option<GcipConfig>,
 }
 
-pub use crate::apps::identity::serializers::settings::OidcConfig;
+pub use crate::apps::identity::serializers::settings::{GcipConfig, OidcConfig, SessionConfig};
 
 pub const PROTOCOL_VERSION: &str = "0.2";
 
 impl Config {
+	pub fn dashboard_session(&self) -> Option<SessionConfig<'_>> {
+		self.gcip
+			.as_ref()
+			.map(Into::into)
+			.or_else(|| self.oidc.as_ref().map(Into::into))
+	}
+	pub fn dashboard_policy(
+		&self,
+	) -> Option<aidash_application::ports::authorization::dashboard::AccountPolicy> {
+		self.gcip
+			.as_ref()
+			.map(
+				|gcip| aidash_application::ports::authorization::dashboard::AccountPolicy {
+					issuer: gcip.issuer(),
+					google: false,
+					tenant_bindings: Some(gcip.tenant_bindings.clone()),
+				},
+			)
+			.or_else(|| {
+				self.oidc.as_ref().map(|oidc| {
+					aidash_application::ports::authorization::dashboard::AccountPolicy {
+						issuer: oidc.issuer.clone(),
+						google: oidc.is_google(),
+						tenant_bindings: None,
+					}
+				})
+			})
+	}
+
 	pub fn from_settings(settings: &super::settings::ProjectSettings) -> Result<Self> {
 		settings
 			.node
+			.validate(&Profile::parse("local"))
+			.map_err(|error| Error::Invalid(error.to_string()))?;
+		settings
+			.dashboard
 			.validate(&Profile::parse("local"))
 			.map_err(|error| Error::Invalid(error.to_string()))?;
 		let database = settings
@@ -47,6 +81,12 @@ impl Config {
 			web_dir: web_dir.to_string_lossy().into_owned(),
 			lease_seconds: node.lease_seconds,
 			default_host_packages: node.default_host_packages.clone(),
+			gcip: settings
+				.dashboard
+				.gcip
+				.as_ref()
+				.map(GcipConfig::normalized)
+				.transpose()?,
 			oidc: settings
 				.dashboard
 				.oidc
