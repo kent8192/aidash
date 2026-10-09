@@ -96,6 +96,7 @@ pub async fn resolve(
 			alias,
 			narrow,
 			members,
+			exposure: _,
 		} = normalized.binding;
 		let origin = normalized.origin;
 		target.validate()?;
@@ -158,6 +159,7 @@ pub async fn resolve(
 							alias: None,
 							narrow: narrow.clone(),
 							members: vec![],
+							exposure: None,
 						},
 						origin,
 					},
@@ -334,7 +336,16 @@ pub async fn resolve(
 		resolved.insert(target, binding);
 	}
 	if source_skill_support {
-		for operation in SKILL_TOOLS {
+		let support: Vec<&str> = if config.exposure_policy().is_deferred() {
+			EXPOSURE_TOOLS
+				.iter()
+				.copied()
+				.chain([SKILL_ASSET_READ])
+				.collect()
+		} else {
+			SKILL_TOOLS.to_vec()
+		};
+		for operation in support {
 			let identity = QualifiedRef::builtin(&agent.registry_node, operation);
 			let support = resolved.get_mut(&identity).ok_or_else(|| {
 				Error::Invalid("native Skills require all Skill support tools".into())
@@ -493,6 +504,7 @@ pub async fn resolve(
 								alias: None,
 								narrow: Default::default(),
 								members: vec![],
+								exposure: None,
 							});
 						}
 					}

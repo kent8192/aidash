@@ -307,6 +307,36 @@ impl WorkerAuthority {
 		let mut access = self.access.lock().await;
 		crate::capabilities::skills::context(store, &mut access, run).await
 	}
+	pub async fn direct_skills(
+		&self,
+		store: &Store,
+		run: &Run,
+	) -> Result<Vec<aidash_domain::exposure::DirectSkill>> {
+		let mut access = self.access.lock().await;
+		crate::capabilities::skills::direct(store, &mut access, run).await
+	}
+	pub async fn direct_skill_body(
+		&self,
+		store: &Store,
+		run: &Run,
+		skill_id: Uuid,
+		digest: &str,
+	) -> Result<String> {
+		let mut access = self.access.lock().await;
+		crate::capabilities::skills::direct_body(store, &mut access, run, skill_id, digest).await
+	}
+	pub async fn direct_skill_file(
+		&self,
+		store: &Store,
+		run: &Run,
+		skill_id: Uuid,
+		digest: &str,
+		path: &str,
+	) -> Result<Vec<u8>> {
+		let mut access = self.access.lock().await;
+		crate::capabilities::skills::direct_file(store, &mut access, run, skill_id, digest, path)
+			.await
+	}
 	pub async fn workspace_record(&self, workspace: Uuid, kind: &str, id: Uuid) -> Result<Value> {
 		self.access
 			.lock()
@@ -566,13 +596,18 @@ impl Guard {
 	) -> Result<()> {
 		self.inference().await?;
 		if self.agent.core_capabilities.skills {
+			let deferred = self.agent.exposure_policy().is_deferred();
 			let binding = self
 				.run
 				.context
 				.binding_snapshot
 				.as_ref()
 				.ok_or_else(|| Error::Invalid("Run has no Binding snapshot".into()))?
-				.operation("skill_list")?;
+				.operation(if deferred {
+					aidash_domain::registry::bindings::SKILL_ASSET_READ
+				} else {
+					"skill_list"
+				})?;
 			let descriptor: aidash_domain::tool::providers::ToolDescriptor =
 				serde_json::from_value(binding.definition.config.clone())?;
 			let contract = descriptor.declared_contract(binding.identity.clone())?;
@@ -582,7 +617,13 @@ impl Guard {
 					name: binding.alias.clone().ok_or_else(|| {
 						Error::Invalid("Skill support binding has no alias".into())
 					})?,
-					arguments: json!({}),
+					// Under deferred@1 an alias naming no Registry Skill takes the
+					// direct-Skill authority path that pinned Skill context needs.
+					arguments: if deferred {
+						json!({"alias": ""})
+					} else {
+						json!({})
+					},
 				},
 				&contract,
 			)

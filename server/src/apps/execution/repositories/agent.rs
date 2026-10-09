@@ -511,6 +511,28 @@ impl ExecutionEnvironment for Environment<'_> {
 			Ok(String::new())
 		}
 	}
+	async fn direct_skills(&self, run: &Run) -> Result<Vec<aidash_domain::exposure::DirectSkill>> {
+		match self
+			.authority
+			.as_ref()
+			.and_then(|authority| authority.guard.local_authority())
+		{
+			Some(authority) => authority
+				.direct_skills(&self.federation.store, run)
+				.await
+				.map_err(Into::into),
+			None => Ok(vec![]),
+		}
+	}
+	async fn direct_skill_body(&self, run: &Run, skill_id: Uuid, digest: &str) -> Result<String> {
+		self.authority
+			.as_ref()
+			.and_then(|authority| authority.guard.local_authority())
+			.ok_or_else(|| aidash_application::Error::NotFound("skill unavailable".into()))?
+			.direct_skill_body(&self.federation.store, run, skill_id, digest)
+			.await
+			.map_err(Into::into)
+	}
 	async fn semantic_context(
 		&self,
 		run: &Run,

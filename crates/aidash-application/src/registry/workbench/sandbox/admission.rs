@@ -8,6 +8,7 @@ use crate::{
 	},
 };
 use aidash_domain::{
+	exposure,
 	model::ModelConfig,
 	provider::ModelRequest,
 	registry::{
@@ -85,6 +86,54 @@ fn skill_source_context(
 		text.push_str(instructions);
 	}
 	Ok(text)
+}
+
+/// `deferred@1`: the same selection a Run's first request makes. Mandatory and
+/// eager tools, resident eager Skill blocks and the capability index.
+/// Attachments are Discoverable; mounted roots have no live area here.
+fn deferred_context(
+	instructions: &mut String,
+	config: &AgentConfig,
+	snapshot: &aidash_domain::registry::bindings::BindingSnapshot,
+	budgets: &exposure::DeferredBudgets,
+) -> Result<Vec<aidash_domain::provider::ToolSpec>> {
+	let specifications =
+		crate::registry::bindings::execution::bound_specifications(snapshot, |binding, _| {
+			Ok(crate::tools::plugin_specification(
+				&binding.definition,
+				binding.alias.as_deref().unwrap_or_default(),
+			))
+		})?;
+	let attachments = config
+		.skill_attachments
+		.iter()
+		.map(crate::capabilities::skills::attachment_skill)
+		.collect::<Result<Vec<_>>>()?;
+	let catalog = exposure::catalog(snapshot, &specifications, &attachments)?;
+	let selection = exposure::select(budgets, &catalog, &exposure::ExposureState::default())?;
+	for alias in &selection.skills {
+		let Some(capability) = catalog.iter().find(|c| &c.alias == alias) else {
+			continue;
+		};
+		let exposure::CapabilityIdentity::Registry(reference) = &capability.identity else {
+			continue;
+		};
+		let binding = snapshot
+			.bindings
+			.iter()
+			.find(|binding| &binding.identity == reference)
+			.ok_or_else(|| Error::Invalid("selected Skill is not bound".into()))?;
+		instructions.push_str(&exposure::resident_block(
+			capability,
+			&aidash_domain::registry::rules::skill_instructions(&binding.definition)?,
+		));
+	}
+	instructions.push_str(&selection.index);
+	Ok(specifications
+		.into_iter()
+		.filter(|(alias, _)| selection.tools.contains(alias))
+		.map(|(_, specification)| specification)
+		.collect())
 }
 
 pub async fn admit(admission: &Admission<'_>, id: Uuid, input: TestInput) -> Result<Admitted> {
@@ -178,24 +227,28 @@ pub async fn admit(admission: &Admission<'_>, id: Uuid, input: TestInput) -> Res
 	} else {
 		instructions.push_str("\n\nSandbox: all tool calls are simulated from explicit fixtures. Never claim an unprovided tool result.\n");
 	}
-	for skill in &config.skills {
-		let skill = scope.effective(skill).await?;
-		instructions.push_str("\nSkill:\n");
-		instructions.push_str(&aidash_domain::registry::rules::skill_instructions(&skill)?);
-	}
-	instructions.push_str(&skill_source_context(&config, &snapshot, &input)?);
+	let tool_specs = if let Some(budgets) = config.exposure_policy().budgets() {
+		deferred_context(&mut instructions, &config, &snapshot, budgets)?
+	} else {
+		for skill in &config.skills {
+			let skill = scope.effective(skill).await?;
+			instructions.push_str("\nSkill:\n");
+			instructions.push_str(&aidash_domain::registry::rules::skill_instructions(&skill)?);
+		}
+		instructions.push_str(&skill_source_context(&config, &snapshot, &input)?);
+		snapshot
+			.bindings
+			.iter()
+			.filter(|b| b.excluded_reason.is_none())
+			.filter_map(|b| {
+				b.alias
+					.as_deref()
+					.map(|alias| crate::tools::plugin_specification(&b.definition, alias))
+			})
+			.collect()
+	};
 	instructions.push_str("\nAdditional instructions:\n");
 	instructions.push_str(&config.instructions);
-	let tool_specs = snapshot
-		.bindings
-		.iter()
-		.filter(|b| b.excluded_reason.is_none())
-		.filter_map(|b| {
-			b.alias
-				.as_deref()
-				.map(|alias| crate::tools::plugin_specification(&b.definition, alias))
-		})
-		.collect();
 	let mut request = ModelRequest {
 		content_parts: Vec::new(),
 		instructions,

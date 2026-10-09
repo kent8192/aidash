@@ -1333,3 +1333,35 @@ async fn memory_retention_lookup_index_upgrades_and_reverses_without_rewriting_t
 	let reapplied: Vec<String> = sqlx::query_scalar(&query).fetch_all(&pool).await.unwrap();
 	assert_eq!(reapplied, created);
 }
+
+#[rstest]
+#[tokio::test]
+async fn deferred_exposure_contract_rejects_explicit_null_budgets(
+	#[future] fresh_database: MigrationFixture,
+) {
+	let fixture = fresh_database.await;
+	fixture.migrate().await;
+	let pool = fixture.connection.clone().into_postgres().unwrap();
+	let agent = |exposure: serde_json::Value| json!({"schema_version":1,"model":{"id":"fixture-model","version":"1.0.0"},"instructions":"Assist.","exposure":exposure});
+	assert!(
+		contract_accepts(
+			&pool,
+			"aidash_agent_bindings_is_valid",
+			vec![agent(json!({"version":"deferred@1","schema_bytes":4096}))]
+		)
+		.await
+	);
+	for budget in ["metadata_bytes", "schema_bytes", "skill_bytes"] {
+		let mut exposure = json!({"version":"deferred@1"});
+		exposure[budget] = serde_json::Value::Null;
+		assert!(
+			!contract_accepts(
+				&pool,
+				"aidash_agent_bindings_is_valid",
+				vec![agent(exposure)]
+			)
+			.await,
+			"{budget}"
+		);
+	}
+}

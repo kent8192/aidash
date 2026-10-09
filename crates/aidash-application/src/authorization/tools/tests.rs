@@ -1,7 +1,14 @@
 use super::*;
 use crate::ports::authorization::tools::{AgentToolRepository, AgentToolScope};
 use aidash_domain::{
-	HumanRequest, RunControl, RunPhase, Task, TaskStatus, policy::Resource, registry::Entry,
+	HumanRequest, RunControl, RunPhase, Task, TaskStatus,
+	policy::Resource,
+	registry::{
+		Entry,
+		bindings::{
+			BindingOrigin, BindingSnapshot, Narrowing, ResolvedBinding, ResolvedDefinition,
+		},
+	},
 };
 use async_trait::async_trait;
 use chrono::Utc;
@@ -256,6 +263,7 @@ struct Repository {
 	catalog: Entry,
 	outcomes: BTreeMap<(String, String), Outcome>,
 	journal: Arc<Mutex<Journal>>,
+	snapshot: Option<BindingSnapshot>,
 }
 #[fixture]
 fn repository() -> Repository {
@@ -271,6 +279,7 @@ fn repository() -> Repository {
 		catalog: entry(),
 		outcomes: BTreeMap::new(),
 		journal: Arc::new(Mutex::new(Journal::default())),
+		snapshot: None,
 	}
 }
 impl Repository {
@@ -303,6 +312,9 @@ impl Drop for Scope<'_> {
 impl AgentToolRepository for Repository {
 	fn is_remote(&self) -> bool {
 		self.remote
+	}
+	fn binding_snapshot(&self) -> Option<&BindingSnapshot> {
+		self.snapshot.as_ref()
 	}
 	async fn lease(&self) -> Result<Box<dyn AgentToolScope + '_>> {
 		self.record("lease");
@@ -1107,6 +1119,129 @@ async fn malformed_registry_skill_keeps_the_original_invalid_json_message(
 	assert!(
 		matches!(authorize(&repository,&run,&agent,&call("skill_read",json!({"skill":null}))).await,Err(Error::Invalid(ref message)) if message==&expected)
 	);
+}
+/// A deferred snapshot binding the configured Registry Skill; returns its alias.
+fn asset_snapshot(repository: &mut Repository, run: &RunMetadata) -> String {
+	let node = run.home_node.as_str();
+	let skill = QualifiedRef {
+		registry_node: node.into(),
+		id: reference().id,
+		version: reference().version,
+	};
+	let agent = QualifiedRef {
+		registry_node: node.into(),
+		id: run.agent_id.clone(),
+		version: run.agent_version.clone(),
+	};
+	let definition = |identity: &QualifiedRef, kind: &str, config: Value| -> Entry {
+		serde_json::from_value(json!({
+			"id": identity.id, "version": identity.version, "kind": kind,
+			"name": {"en": identity.id}, "description": {"en": "Fixture"}, "config": config,
+		}))
+		.unwrap()
+	};
+	let skill_entry = definition(&skill, "skill", json!({"instructions":"Use it."}));
+	let agent_entry = definition(
+		&agent,
+		"agent",
+		json!({"schema_version":1,"model":{"id":"model","version":"1"},"instructions":"Work.","bindings":[],"exposure":{"version":"deferred@1"}}),
+	);
+	let snapshot = BindingSnapshot {
+		schema_version: 1,
+		agent: agent.clone(),
+		remote: false,
+		bindings: vec![ResolvedBinding {
+			identity: skill.clone(),
+			definition: skill_entry.clone(),
+			digest: "skill-digest".into(),
+			origin: BindingOrigin::Explicit,
+			alias: None,
+			narrow: Narrowing::default(),
+			installation: None,
+			provider_contract_digest: None,
+			provider_implementation: None,
+			excluded_reason: None,
+		}],
+		definitions: [(skill, skill_entry), (agent, agent_entry)]
+			.into_iter()
+			.map(|(identity, definition)| ResolvedDefinition {
+				identity,
+				definition,
+				digest: "digest".into(),
+			})
+			.collect(),
+		foreign_agents: vec![],
+	};
+	let alias = aidash_domain::exposure::catalog(&snapshot, &BTreeMap::new(), &[])
+		.unwrap()
+		.remove(0)
+		.alias;
+	repository.snapshot = Some(snapshot);
+	alias
+}
+#[rstest]
+#[tokio::test]
+async fn a_registry_skill_asset_read_uses_catalog_authority_without_a_core_flag(
+	mut repository: Repository,
+	run: RunMetadata,
+	mut agent: AgentConfig,
+) {
+	let alias = asset_snapshot(&mut repository, &run);
+	repository.catalog.kind = "skill".into();
+	agent.core_capabilities.skills = false;
+	let read = call(
+		"skill_asset_read",
+		json!({"alias":alias,"digest":"d","path":"a"}),
+	);
+	authorize(&repository, &run, &agent, &read).await.unwrap();
+	assert_eq!(
+		repository.calls(),
+		vec![
+			"lease",
+			"require:builtin:skill_asset_read:tool.invoke",
+			"catalog:configured:skill.use",
+			"release"
+		]
+	);
+	agent.skills.clear();
+	assert!(matches!(
+		authorize(&repository, &run, &agent, &read).await,
+		Err(Error::Forbidden)
+	));
+}
+#[rstest]
+#[case::skills_off(false)]
+#[case::skills_on(true)]
+#[tokio::test]
+async fn a_direct_skill_asset_read_requires_the_core_skills_permission(
+	mut repository: Repository,
+	run: RunMetadata,
+	mut agent: AgentConfig,
+	#[case] skills: bool,
+) {
+	asset_snapshot(&mut repository, &run);
+	agent.core_capabilities.skills = skills;
+	let result = authorize(
+		&repository,
+		&run,
+		&agent,
+		&call(
+			"skill_asset_read",
+			json!({"alias":"skill_direct_0000","digest":"d","path":"a"}),
+		),
+	)
+	.await;
+	assert_eq!(result.is_ok(), skills);
+	assert!(
+		!skills
+			|| !repository
+				.calls()
+				.iter()
+				.any(|call| call.starts_with("catalog:"))
+	);
+	if !skills {
+		assert!(matches!(result, Err(Error::Forbidden)));
+	}
 }
 #[rstest]
 #[case::discovery("agent_discover")]

@@ -3,6 +3,9 @@ use crate::{
 	Error, Result,
 	ports::{Credentials, bindings::ProviderCatalog, registry::CoreToolCatalog},
 };
+use aidash_domain::exposure::{
+	self, CapabilityIdentity, CapabilityKind, DeferredBudgets, ExposureState,
+};
 use aidash_domain::registry::rules::skill_instructions;
 use aidash_domain::{
 	configuration::{validate_endpoint, validate_node_id, validate_secret_reference},
@@ -352,6 +355,9 @@ impl DefinitionValidation {
 			})
 			.ok_or_else(|| Error::NotFound(config.model.id.clone()))?;
 		let model: ModelConfig = serde_json::from_value(model.definition.config.clone())?;
+		if let Some(budgets) = config.exposure_policy().budgets() {
+			return self.deferred_headroom(snapshot, &config, &model, budgets, private_context);
+		}
 		let mut instructions = aidash_domain::context::agent_instructions("");
 		let mut specifications = vec![];
 		for binding in &snapshot.bindings {
@@ -385,6 +391,104 @@ impl DefinitionValidation {
 		)
 		.map_err(Into::into)
 	}
+
+	/// `deferred@1`: the request carries Mandatory exposure, eager tools and
+	/// eager Skill blocks, and may grow to the full exposure budgets. Every
+	/// single Discoverable capability must also fit its own budget.
+	fn deferred_headroom(
+		&self,
+		snapshot: &aidash_domain::registry::bindings::BindingSnapshot,
+		config: &AgentConfig,
+		model: &ModelConfig,
+		budgets: &DeferredBudgets,
+		private_context: &Value,
+	) -> Result<usize> {
+		let node = self.node_specifications();
+		let specifications = crate::registry::bindings::execution::bound_specifications(
+			snapshot,
+			|binding, descriptor| {
+				Ok(
+					match (&descriptor.transport, node.get(&descriptor.operation)) {
+						(None, Some(specification)) => specification.clone(),
+						_ => crate::tools::plugin_specification(
+							&binding.definition,
+							binding.alias.as_deref().unwrap_or_default(),
+						),
+					},
+				)
+			},
+		)?;
+		let attachments = config
+			.skill_attachments
+			.iter()
+			.map(crate::capabilities::skills::attachment_skill)
+			.collect::<Result<Vec<_>>>()?;
+		let catalog = exposure::catalog(snapshot, &specifications, &attachments)?;
+		for capability in &catalog {
+			let (name, budget) = match capability.kind {
+				CapabilityKind::Tool => ("schema_bytes", budgets.schema_bytes),
+				CapabilityKind::Skill => ("skill_bytes", budgets.skill_bytes),
+			};
+			if capability.definition_bytes > budget {
+				return Err(Error::Invalid(format!(
+					"{} {} needs {} bytes, over the deferred@1 {name} budget of {budget} bytes",
+					capability.kind.as_str(),
+					capability.alias,
+					capability.definition_bytes,
+				)));
+			}
+		}
+		let selection = exposure::select(budgets, &catalog, &ExposureState::default())?;
+		let mut instructions = aidash_domain::context::agent_instructions("");
+		for alias in &selection.skills {
+			let capability = catalog
+				.iter()
+				.find(|capability| &capability.alias == alias)
+				.ok_or_else(|| Error::Invalid("selected Skill is not Discoverable".into()))?;
+			// Only Registry Skills can be eager.
+			let CapabilityIdentity::Registry(reference) = &capability.identity else {
+				continue;
+			};
+			let binding = snapshot
+				.bindings
+				.iter()
+				.find(|binding| &binding.identity == reference)
+				.ok_or_else(|| Error::Invalid("selected Skill is not bound".into()))?;
+			instructions.push_str(&exposure::resident_block(
+				capability,
+				&skill_instructions(&binding.definition)?,
+			));
+		}
+		instructions.push_str("\nAdditional user instructions:\n");
+		instructions.push_str(&config.instructions);
+		let exposed = specifications
+			.into_iter()
+			.filter(|(alias, _)| selection.tools.contains(alias))
+			.map(|(_, specification)| specification)
+			.collect::<Vec<_>>();
+		let reserve = budgets.metadata_bytes
+			+ budgets
+				.schema_bytes
+				.saturating_sub(selection.usage.schema_bytes)
+			+ budgets
+				.skill_bytes
+				.saturating_sub(selection.usage.skill_bytes);
+		aidash_domain::context::request_context_budget(
+			model.context_window,
+			model.output_token_limit(),
+			&instructions,
+			&exposed,
+			private_context,
+		)?
+		.checked_sub(reserve)
+		.filter(|remaining| *remaining >= aidash_domain::context::MIN_CONTEXT_RESERVE)
+		.ok_or_else(|| {
+			Error::Invalid(
+				"deferred@1 exposure budgets cannot fit the model window with output and context reserves"
+					.into(),
+			)
+		})
+	}
 }
 
 impl crate::ports::bindings::ProviderCatalog for DefinitionValidation {
@@ -407,3 +511,6 @@ impl crate::ports::bindings::ProviderCatalog for DefinitionValidation {
 		))
 	}
 }
+
+#[cfg(test)]
+mod tests;

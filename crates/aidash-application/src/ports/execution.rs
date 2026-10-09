@@ -203,6 +203,12 @@ pub trait ExecutionEnvironment: Send + Sync {
 	async fn documents(&self, entry: &Entry) -> Result<Value>;
 	async fn recheck_source_observation(&self, run: &Run, content: &Value) -> Result<()>;
 	async fn skill_context(&self, run: &Run) -> Result<String>;
+	/// Direct Skills pinned for this Run, as deferred-exposure catalog input. Empty
+	/// when Skills are off, nothing is pinned, or the Home has no local authority.
+	async fn direct_skills(&self, run: &Run) -> Result<Vec<aidash_domain::exposure::DirectSkill>>;
+	/// Exact SKILL.md text of one pinned direct Skill. A digest other than the
+	/// pinned one is `Conflict("CAPABILITY_CHANGED")`.
+	async fn direct_skill_body(&self, run: &Run, skill_id: Uuid, digest: &str) -> Result<String>;
 	async fn semantic_context(
 		&self,
 		run: &Run,

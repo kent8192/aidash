@@ -41,7 +41,7 @@ impl Catalog {
 			foreign: BTreeMap::new(),
 		};
 		result.insert(entry("model", "model", json!({})));
-		for operation in REQUIRED_TOOLS.iter().chain(DEFAULT_TOOLS) {
+		for operation in crate::registry::system::operations() {
 			result.core(operation);
 		}
 		result
@@ -192,6 +192,7 @@ async fn mounted_source_aggregation_rejects_ambiguous_ids_and_shared_limits(
 			alias: None,
 			narrow: Default::default(),
 			members: vec![],
+			exposure: None,
 		});
 	}
 	let result = snapshot(&mut catalog, &config, false).await;
@@ -268,6 +269,7 @@ async fn python_start_operations_share_pinned_companions() {
 		alias: None,
 		narrow: Narrowing::default(),
 		members: vec![],
+		exposure: None,
 	});
 	let saved = snapshot(&mut catalog, &config, false).await.unwrap();
 	for operation in [
@@ -309,6 +311,7 @@ async fn selecting_async_start_also_pins_companions_but_not_other_starts() {
 		alias: None,
 		narrow: Narrowing::default(),
 		members: vec![code.id],
+		exposure: None,
 	});
 	let saved = snapshot(&mut catalog, &config, false).await.unwrap();
 	assert!(
@@ -347,6 +350,7 @@ async fn incompatible_companions_cycles_and_undeclared_members_are_rejected() {
 		alias: None,
 		narrow: Narrowing::default(),
 		members: vec![],
+		exposure: None,
 	});
 	assert!(snapshot(&mut catalog, &config, false).await.is_err());
 	config.bindings[0].members = vec!["absent".into()];
@@ -554,6 +558,7 @@ async fn coordinator_bundle_selections_reject_undeclared_ids_even_with_complete_
 			alias: None,
 			narrow: Default::default(),
 			members: vec![selected.id.clone()],
+			exposure: None,
 		});
 		catalog.insert(entry(
 			"cluster",
@@ -694,6 +699,7 @@ async fn root_installation_and_unselected_recursive_bundle_members_are_checked()
 		alias: None,
 		narrow: Default::default(),
 		members: vec![safe.id],
+		exposure: None,
 	});
 	assert!(snapshot(&mut catalog, &config, false).await.is_err());
 }
@@ -720,6 +726,7 @@ async fn native_context_is_explicit_and_skill_sources_cannot_omit_support() {
 		alias: None,
 		narrow: Default::default(),
 		members: vec![],
+		exposure: None,
 	});
 	let bound = snapshot(&mut catalog, &config, false).await.unwrap();
 	assert!(
@@ -746,6 +753,7 @@ async fn native_context_is_explicit_and_skill_sources_cannot_omit_support() {
 		alias: None,
 		narrow: Default::default(),
 		members: vec![],
+		exposure: None,
 	});
 	config.instructions.clear();
 	let sources = snapshot(&mut catalog, &config, false).await.unwrap();
@@ -760,6 +768,63 @@ async fn native_context_is_explicit_and_skill_sources_cannot_omit_support() {
 	}
 	assert!(snapshot(&mut catalog, &config, true).await.is_err());
 	config.remove_default.push("skill_load".into());
+	assert!(snapshot(&mut catalog, &config, false).await.is_err());
+}
+
+#[tokio::test]
+async fn deferred_skill_sources_require_exposure_support_with_canonical_aliases() {
+	let mut catalog = Catalog::new();
+	catalog.insert(entry(
+		"skills-root",
+		"source",
+		json!({"schema_version":1,"source":{"adapter":"skill_roots","roots":[".agents/skills"]}}),
+	));
+	let mut config = agent_config();
+	config.exposure = Some(aidash_domain::exposure::ExposurePolicy::Deferred(
+		Default::default(),
+	));
+	config.instructions.clear();
+	config.bindings.push(Binding {
+		kind: BindingKind::Source,
+		target: reference("skills-root"),
+		alias: None,
+		narrow: Default::default(),
+		members: vec![],
+		exposure: None,
+	});
+	let sources = snapshot(&mut catalog, &config, false).await.unwrap();
+	sources.validate().unwrap();
+	let origin = |operation: &str| {
+		sources
+			.bindings
+			.iter()
+			.find(|b| b.identity == QualifiedRef::builtin(NODE, operation))
+			.map(|b| (b.origin, b.alias.clone()))
+	};
+	for operation in EXPOSURE_TOOLS {
+		assert_eq!(
+			origin(operation),
+			Some((BindingOrigin::Required, Some(operation.to_string())))
+		);
+	}
+	assert_eq!(
+		origin(SKILL_ASSET_READ),
+		Some((BindingOrigin::SkillSupport, Some(SKILL_ASSET_READ.into())))
+	);
+	for operation in SKILL_TOOLS {
+		assert_eq!(origin(operation), None);
+	}
+	let mut renamed = config.clone();
+	renamed.bindings.push(Binding {
+		kind: BindingKind::Tool,
+		target: QualifiedRef::builtin(NODE, SKILL_ASSET_READ),
+		alias: Some("read_asset".into()),
+		narrow: Default::default(),
+		members: vec![],
+		exposure: None,
+	});
+	assert!(snapshot(&mut catalog, &renamed, false).await.is_err());
+	config.remove_default.push(SKILL_ASSET_READ.into());
 	assert!(snapshot(&mut catalog, &config, false).await.is_err());
 }
 
@@ -796,6 +861,7 @@ async fn skill_sources_require_canonical_support_aliases_at_admission_and_recove
 		alias: None,
 		narrow: Default::default(),
 		members: vec![],
+		exposure: None,
 	});
 	let mut support = Binding::tool(QualifiedRef::builtin(NODE, operation));
 	support.alias = Some(operation.into());
@@ -858,6 +924,7 @@ async fn full_host_bundles_share_explicit_and_generated_poll_cancel_members() {
 		alias: None,
 		narrow: Default::default(),
 		members: vec![],
+		exposure: None,
 	});
 	let saved = snapshot(&mut catalog, &config, false).await.unwrap();
 	for operation in operations {
@@ -1114,6 +1181,7 @@ async fn recovered_snapshots_must_match_the_agent_binding_closure_before_run_adm
 			alias: None,
 			narrow: Default::default(),
 			members: vec![],
+			exposure: None,
 		});
 	}
 	let code = catalog.core("code_interpreter");
@@ -1127,6 +1195,7 @@ async fn recovered_snapshots_must_match_the_agent_binding_closure_before_run_adm
 		alias: None,
 		narrow: Default::default(),
 		members: vec![code.id.clone()],
+		exposure: None,
 	});
 	let saved = snapshot(&mut catalog, &config, false).await.unwrap();
 	let recovered: BindingSnapshot =
@@ -1219,6 +1288,7 @@ async fn bundle_selection_rejects_same_id_on_different_nodes_or_versions() {
 			alias: None,
 			narrow: Default::default(),
 			members: vec![member.id],
+			exposure: None,
 		});
 		assert!(snapshot(&mut catalog, &config, false).await.is_err());
 	}
@@ -1239,6 +1309,7 @@ async fn remote_registry_skill_reader_does_not_require_a_native_working_area() {
 		alias: None,
 		narrow: Default::default(),
 		members: vec![],
+		exposure: None,
 	});
 	let admitted = snapshot(&mut catalog, &config, true).await.unwrap();
 	assert!(admitted.operation("skill_read").is_ok());
@@ -1425,6 +1496,7 @@ async fn aggregate_reference_mounts_require_files_and_unique_identities() {
 			alias: None,
 			narrow: Default::default(),
 			members: vec![],
+			exposure: None,
 		});
 	}
 	assert!(snapshot(&mut catalog, &config, false).await.is_err());

@@ -2,11 +2,14 @@
 use crate::Result;
 use aidash_domain::{
 	Artifact, ArtifactInput, HumanRequest, NewTask, Task,
+	exposure::DirectSkill,
+	provider::ToolSpec,
 	registry::{EntityRef, Search, SkillFile},
 	tool::ToolConfig,
 };
 use async_trait::async_trait;
 use serde_json::Value;
+use std::collections::BTreeMap;
 use uuid::Uuid;
 
 #[async_trait]
@@ -52,4 +55,15 @@ pub trait ToolOperations: Send + Sync {
 		reflect: bool,
 	) -> Result<Value>;
 	async fn human_request(&self, kind: &str, prompt: &str, key: &str) -> Result<HumanRequest>;
+	/// Model-visible specifications of the Run's aliased tool Bindings, by alias,
+	/// exactly as dispatch advertises them (`bound_specification`).
+	async fn binding_specifications(&self) -> Result<BTreeMap<String, ToolSpec>>;
+	/// Direct Skills pinned for the Run. Empty when Skills are off, nothing is
+	/// pinned, or this placement has no local authority.
+	async fn direct_skills(&self) -> Result<Vec<DirectSkill>>;
+	/// Bytes of one file of a pinned direct Skill. A Skill digest other than the
+	/// pinned one is `Conflict("CAPABILITY_CHANGED")`.
+	async fn direct_skill_file(&self, skill_id: Uuid, digest: &str, path: &str) -> Result<Vec<u8>>;
+	/// Encoded-byte cap of one Skill asset chunk: the resource profile's `read_bytes`.
+	fn skill_read_bytes(&self) -> Result<usize>;
 }
