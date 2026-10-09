@@ -244,11 +244,23 @@ pub(crate) async fn control(
 			"memory operation ID was reused with a different request".into(),
 		));
 	}
+	// Authority was checked above. An exact completed request whose result is
+	// no longer available is a changed outcome; new requests remain forbidden.
+	let unavailable = || {
+		if receipt.is_some() {
+			Error::Conflict("memory operation completed; its result has since changed".into())
+		} else {
+			Error::Forbidden
+		}
+	};
 	let unit = units::load(lease, id, false)
 		.await?
-		.ok_or(Error::Forbidden)?;
-	if unit.bank != *bank || !unit.visible() {
+		.ok_or_else(unavailable)?;
+	if unit.bank != *bank {
 		return Err(Error::Forbidden);
+	}
+	if !unit.visible() {
+		return Err(unavailable());
 	}
 	let policy = units::unexpired(lease, &unit).await?;
 	units::current(
