@@ -168,6 +168,13 @@ impl ModelProvider for OpenRouterProvider {
 		let deadline = self.config.request_timeout()?;
 		tokio::time::timeout(deadline, async {
 			request.validate()?;
+			// Unsupported routes never receive `cache_control` (ADR 0019).
+			if request.cache_breakpoints && !self.config.accepts_cache_breakpoints() {
+				return Err(Error::Invalid(format!(
+					"model {} does not accept cache breakpoints",
+					self.config.model_id
+				)));
+			}
 			for modality in request.content_parts.iter().filter_map(|part| match part {
 				ContentPart::Image { .. } => Some("image"),
 				ContentPart::Audio { .. } => Some("audio"),

@@ -32,6 +32,9 @@ struct State {
 	memory_revision: Mutex<i64>,
 	/// Whether the source reports dependency revisions (a local Home does).
 	memory_dependencies: bool,
+	prompt_cache: aidash_domain::context::projection::PromptCache,
+	/// Serve an `anthropic/` model that declares explicit prompt caching.
+	explicit_cache_model: bool,
 }
 impl Backend {
 	fn record(&self, name: &'static str) {
@@ -42,8 +45,13 @@ impl Backend {
 	}
 	fn entry(&self, id: &str) -> Entry {
 		let window = *self.0.context_window.lock().unwrap();
+		let (model_id, cache_mode) = if self.0.explicit_cache_model {
+			("anthropic/fixture", "explicit")
+		} else {
+			("fixture", "none")
+		};
 		serde_json::from_value(json!({"id":id,"version":"1.0.0","kind":"agent","name":{"en":id},"description":{"en":"Fixture"},"config":{
-        "provider":"openrouter","model_id":"fixture","endpoint":"http://fixture.invalid/v1","credential_env":null,"context_window":window,"max_output_tokens":4096,"modalities":["text"],"cost":{},"projection_versions":["legacy","ordered"]
+        "provider":"openrouter","model_id":model_id,"endpoint":"http://fixture.invalid/v1","credential_env":null,"context_window":window,"max_output_tokens":4096,"modalities":["text"],"cost":{},"projection_versions":["legacy","ordered"],"cache_mode":cache_mode
     }})).unwrap()
 	}
 }
@@ -448,6 +456,7 @@ impl ExecutionEnvironment for Backend {
 			allow_task_creation: None,
 			conversation_memory: self.0.conversation_memory,
 			projection: self.0.projection,
+			prompt_cache: self.0.prompt_cache,
 		})
 	}
 	fn provider(&self, _model: ModelConfig) -> Result<Arc<dyn ModelProvider>> {
@@ -570,6 +579,8 @@ fn fixture() -> Fixture {
 		context_window: Mutex::new(128000),
 		memory_revision: Mutex::new(1),
 		memory_dependencies: true,
+		prompt_cache: Default::default(),
+		explicit_cache_model: false,
 	}));
 	Fixture { backend, run }
 }
@@ -1195,4 +1206,65 @@ async fn legacy_semantic_memory_stays_keyed_by_step(mut fixture: Fixture) {
 	assert_eq!(calls_named(&fixture, "source.current"), 0);
 	let saved = fixture.run.context.source_observation.as_ref().unwrap();
 	assert_eq!(saved.boundary, format!("{}:0:0", fixture.run.step));
+}
+
+/// One Ordered inference against a provider that fails, so the sent request is
+/// recorded and the step ends there.
+fn cache_fixture(
+	mut fixture: Fixture,
+	projection: aidash_domain::context::projection::ProjectionVersion,
+	prompt_cache: aidash_domain::context::projection::PromptCache,
+) -> Fixture {
+	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	state.provider_status = Some(503);
+	state.projection = projection;
+	state.prompt_cache = prompt_cache;
+	state.explicit_cache_model = true;
+	fixture.run.state = RunState::Thinking(ThinkingState::default());
+	fixture
+}
+
+#[rstest]
+#[case::opted_in(aidash_domain::context::projection::PromptCache::Explicit, true)]
+#[case::not_opted_in(aidash_domain::context::projection::PromptCache::Off, false)]
+#[tokio::test]
+async fn ordered_requests_carry_breakpoints_only_for_an_opted_in_agent(
+	fixture: Fixture,
+	#[case] prompt_cache: aidash_domain::context::projection::PromptCache,
+	#[case] expected: bool,
+) {
+	// Arrange
+	let mut fixture = cache_fixture(
+		fixture,
+		aidash_domain::context::projection::ProjectionVersion::Ordered,
+		prompt_cache,
+	);
+
+	// Act
+	assert!(advance_sources(&mut fixture).await.is_err());
+
+	// Assert
+	let requests = fixture.backend.0.requests.lock().unwrap();
+	assert_eq!(requests.len(), 1);
+	assert_eq!(requests[0].cache_breakpoints, expected);
+	let body = requests[0].input_body().to_string();
+	assert_eq!(body.contains("cache_control"), expected);
+}
+
+#[rstest]
+#[tokio::test]
+async fn an_explicit_opt_in_never_reaches_a_legacy_request(fixture: Fixture) {
+	// Arrange
+	let mut fixture = cache_fixture(
+		fixture,
+		aidash_domain::context::projection::ProjectionVersion::Legacy,
+		aidash_domain::context::projection::PromptCache::Explicit,
+	);
+
+	// Act
+	let error = advance_sources(&mut fixture).await.unwrap_err();
+
+	// Assert
+	assert!(matches!(error, Error::Invalid(_)), "{error:?}");
+	assert!(fixture.backend.0.requests.lock().unwrap().is_empty());
 }

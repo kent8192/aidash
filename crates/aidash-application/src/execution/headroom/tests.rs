@@ -272,3 +272,116 @@ fn model_registration_rejects_invalid_projection_version_sets(#[case] versions: 
 		"{result:?}"
 	);
 }
+
+fn cache_snapshot(
+	projection: Option<&str>,
+	model_id: &str,
+	cache_mode: Option<&str>,
+) -> aidash_domain::registry::bindings::BindingSnapshot {
+	let mut root = crate::test_support::agent("agent");
+	root.config["prompt_cache"] = json!("explicit");
+	if let Some(version) = projection {
+		root.config["projection_version"] = json!(version);
+	}
+	let mut config = json!({"provider":"openrouter","model_id":model_id,"endpoint":"https://fixture.invalid","context_window":200000,"max_output_tokens":1024,"modalities":["text"],"cost":{},"projection_versions":["legacy","ordered"]});
+	if let Some(mode) = cache_mode {
+		config["cache_mode"] = json!(mode);
+	}
+	let model = crate::test_support::entry("fixture-model", "model", config);
+	crate::test_support::resolve("aidash://local", &root, false, vec![model])
+}
+
+#[rstest]
+#[case(None)]
+#[case(Some("automatic"))]
+fn registration_rejects_explicit_prompt_cache_without_an_explicit_model(
+	#[case] cache_mode: Option<&str>,
+) {
+	// Arrange
+	let validation = DefinitionValidation::new(Arc::new(Contracts), Arc::new(Contracts));
+	let snapshot = cache_snapshot(Some("ordered"), "anthropic/claude-fixture", cache_mode);
+	// Act
+	let result = validation.bound_prompt_headroom(&snapshot, &Value::Null);
+	// Assert
+	match result {
+		Err(Error::Invalid(message)) => assert_eq!(
+			message,
+			"Agent prompt_cache explicit requires model fixture-model@1.0.0 to declare cache_mode explicit on a supported slug"
+		),
+		other => panic!("unexpected admission outcome: {other:?}"),
+	}
+}
+
+#[rstest]
+fn registration_rejects_explicit_prompt_cache_on_a_slug_outside_the_allowlist() {
+	// Arrange: the snapshot bypasses model registration, which also rejects it.
+	let validation = DefinitionValidation::new(Arc::new(Contracts), Arc::new(Contracts));
+	let snapshot = cache_snapshot(Some("ordered"), "openai/gpt-x", Some("explicit"));
+	// Act
+	let result = validation.bound_prompt_headroom(&snapshot, &Value::Null);
+	// Assert
+	assert!(
+		matches!(&result, Err(Error::Invalid(message)) if message.contains("cache_mode explicit")),
+		"{result:?}"
+	);
+}
+
+#[rstest]
+fn registration_rejects_explicit_prompt_cache_on_a_legacy_agent() {
+	// Arrange
+	let validation = DefinitionValidation::new(Arc::new(Contracts), Arc::new(Contracts));
+	let snapshot = cache_snapshot(None, "anthropic/claude-fixture", Some("explicit"));
+	// Act
+	let result = validation.bound_prompt_headroom(&snapshot, &Value::Null);
+	// Assert
+	match result {
+		Err(Error::Invalid(message)) => assert_eq!(
+			message,
+			"Agent prompt_cache explicit requires projection_version ordered"
+		),
+		other => panic!("unexpected admission outcome: {other:?}"),
+	}
+}
+
+#[rstest]
+fn registration_accepts_explicit_prompt_cache_on_an_ordered_agent_and_explicit_model() {
+	// Arrange
+	let validation = DefinitionValidation::new(Arc::new(Contracts), Arc::new(Contracts));
+	let snapshot = cache_snapshot(
+		Some("ordered"),
+		"anthropic/claude-fixture",
+		Some("explicit"),
+	);
+	// Act
+	let result = validation.bound_prompt_headroom(&snapshot, &Value::Null);
+	// Assert
+	assert!(result.is_ok(), "{result:?}");
+}
+
+#[rstest]
+#[case("openai/gpt-x", "explicit", false)]
+#[case("anthropic/claude-fixture", "explicit", true)]
+#[case("openai/gpt-x", "automatic", true)]
+#[case("openai/gpt-x", "none", true)]
+fn model_registration_admits_explicit_cache_mode_only_for_allowlisted_slugs(
+	#[case] model_id: &str,
+	#[case] cache_mode: &str,
+	#[case] accepted: bool,
+) {
+	// Arrange
+	let validation = DefinitionValidation::new(Arc::new(Contracts), Arc::new(Contracts));
+	let model = crate::test_support::entry(
+		"fixture-model",
+		"model",
+		json!({"provider":"openrouter","model_id":model_id,"endpoint":"https://fixture.invalid","context_window":200000,"max_output_tokens":1024,"modalities":["text"],"cost":{},"cache_mode":cache_mode}),
+	);
+	// Act
+	let result = validation.validate_in(&model, false);
+	// Assert
+	let rejected = matches!(
+		&result,
+		Err(Error::Invalid(message) | Error::Domain(aidash_domain::Error::Invalid(message)))
+			if message.contains("cannot declare explicit prompt caching")
+	);
+	assert_eq!(rejected, !accepted, "{result:?}");
+}

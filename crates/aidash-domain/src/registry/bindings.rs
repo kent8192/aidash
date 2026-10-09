@@ -164,6 +164,12 @@ pub struct AgentBindings {
 		skip_serializing_if = "crate::context::projection::ProjectionVersion::is_legacy"
 	)]
 	pub projection_version: crate::context::projection::ProjectionVersion,
+	/// Prompt-caching opt-in pinned by every Run of this Agent (ADR 0019).
+	#[serde(
+		default,
+		skip_serializing_if = "crate::context::projection::PromptCache::is_off"
+	)]
+	pub prompt_cache: crate::context::projection::PromptCache,
 }
 impl AgentBindings {
 	pub fn validate(&self) -> Result<()> {

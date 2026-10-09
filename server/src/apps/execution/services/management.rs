@@ -589,6 +589,7 @@ impl HarnessManagement {
 				tools: Vec::new(),
 				max_output_tokens: 0,
 				projection: Default::default(),
+				cache_breakpoints: false,
 				content_parts: parts,
 			};
 			request.validate()?;

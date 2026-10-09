@@ -181,3 +181,96 @@ fn the_cache_salt_line_has_one_width_for_every_key_version() {
 	assert_eq!(line.len(), cache_salt_placeholder().len());
 	assert!(line.starts_with("Cache scope: kffffffff."));
 }
+
+fn marked(request: &ModelRequest) -> Vec<String> {
+	let body = request.input_body();
+	let mut marked = vec![];
+	if body["tools"].to_string().contains("cache_control") {
+		marked.push("tools".into());
+	}
+	if body["messages"][0]["content"][0]
+		.get("cache_control")
+		.is_some()
+	{
+		marked.push("system".into());
+	}
+	for part in body["messages"][1]["content"].as_array().unwrap() {
+		if part.get("cache_control").is_some() {
+			marked.push(part["text"].as_str().unwrap().chars().take(12).collect());
+		}
+	}
+	marked
+}
+
+#[rstest]
+fn breakpoints_end_system_and_the_last_history_part_but_never_the_current_state(context: Context) {
+	let mut request = request(ProjectionVersion::Ordered, &context, 7);
+	assert!(marked(&request).is_empty());
+	request.cache_breakpoints = true;
+	assert_eq!(marked(&request), ["system", "{\"history\":{"]);
+	let user = request.input_body()["messages"][1]["content"].clone();
+	let parts = user.as_array().unwrap();
+	assert!(
+		parts[2].get("cache_control").is_some(),
+		"the last of two history parts"
+	);
+	assert!(
+		parts[3].get("cache_control").is_none(),
+		"the current step state"
+	);
+}
+
+#[test]
+fn without_history_the_breakpoint_ends_the_run_context_part() {
+	let mut request = request(ProjectionVersion::Ordered, &Context::default(), 0);
+	request.cache_breakpoints = true;
+	assert_eq!(marked(&request), ["system", "{\"identity\":"]);
+}
+
+#[rstest]
+fn breakpoints_never_change_an_ordered_estimate(context: Context) {
+	let mut request = request(ProjectionVersion::Ordered, &context, 7);
+	let unmarked = request.estimated_total_tokens();
+	request.cache_breakpoints = true;
+	assert_eq!(request.estimated_total_tokens(), unmarked);
+	assert!(unmarked >= request.input_body().to_string().len());
+}
+
+#[rstest]
+fn legacy_requests_reject_breakpoints(context: Context) {
+	let mut request = request(ProjectionVersion::Legacy, &context, 7);
+	request.cache_breakpoints = true;
+	assert!(request.validate().is_err());
+}
+
+#[rstest]
+fn tenant_salts_separate_the_first_cached_entry(context: Context) {
+	let tools = tools();
+	let cached_system = |salt: &str| {
+		let instructions = crate::context::agent_instructions(salt, ProjectionVersion::Ordered);
+		let mut request = RequestBudget {
+			window: usize::MAX,
+			instructions: &instructions,
+			tools: &tools,
+			max_output_tokens: 64,
+			projection: ProjectionVersion::Ordered,
+		}
+		.request(&context, &pinned(7));
+		request.cache_breakpoints = true;
+		assert_eq!(
+			marked(&request)[0],
+			"system",
+			"no breakpoint precedes system"
+		);
+		request.input_body()["messages"][0]["content"][0]["text"].clone()
+	};
+	let first = cached_system(&cache_salt_line(1, &[1; CACHE_SALT_MAC_BYTES]));
+	let second = cached_system(&cache_salt_line(1, &[2; CACHE_SALT_MAC_BYTES]));
+	assert_ne!(first, second);
+	assert!(
+		first
+			.as_str()
+			.unwrap()
+			.starts_with("Cache scope: k00000001.")
+	);
+}

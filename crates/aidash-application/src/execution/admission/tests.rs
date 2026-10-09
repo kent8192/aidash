@@ -29,6 +29,7 @@ fn request() -> ModelRequest {
 		tools: vec![],
 		max_output_tokens: 4096,
 		projection: Default::default(),
+		cache_breakpoints: false,
 		content_parts: vec![],
 	}
 }

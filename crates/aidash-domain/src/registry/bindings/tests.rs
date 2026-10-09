@@ -182,6 +182,8 @@ fn definitions_without_projection_fields_round_trip_byte_identically() {
 		decoded_model.projection_versions,
 		crate::context::projection::ProjectionVersion::legacy_only()
 	);
+	assert!(decoded.prompt_cache.is_off());
+	assert!(decoded_model.cache_mode.is_none());
 	assert_eq!(serde_json::to_string(&decoded).unwrap(), agent);
 	assert_eq!(serde_json::to_string(&decoded_model).unwrap(), model);
 	let pinned = crate::registry::AgentConfig::from_definition(decoded).definition();
@@ -203,5 +205,24 @@ fn declared_projection_versions_survive_the_agent_settings_view() {
 	);
 	assert_eq!(serde_json::to_value(&pinned).unwrap(), input);
 	input["projection_version"] = json!("v2");
+	assert!(serde_json::from_value::<AgentBindings>(input).is_err());
+}
+
+#[test]
+fn declared_prompt_cache_survives_the_agent_settings_view() {
+	// Arrange
+	let mut input = serde_json::to_value(agent()).unwrap();
+	input["projection_version"] = json!("ordered");
+	input["prompt_cache"] = json!("explicit");
+	// Act
+	let decoded: AgentBindings = serde_json::from_value(input.clone()).unwrap();
+	let pinned = crate::registry::AgentConfig::from_definition(decoded).definition();
+	// Assert
+	assert_eq!(
+		pinned.prompt_cache,
+		crate::context::projection::PromptCache::Explicit
+	);
+	assert_eq!(serde_json::to_value(&pinned).unwrap(), input);
+	input["prompt_cache"] = json!("automatic");
 	assert!(serde_json::from_value::<AgentBindings>(input).is_err());
 }

@@ -140,6 +140,8 @@ pub struct AgentConfig {
 	pub max_steps: i32,
 	/// Pinned through the Binding snapshot's Agent definition.
 	pub projection_version: crate::context::projection::ProjectionVersion,
+	/// Prompt-caching opt-in pinned through the Binding snapshot (ADR 0019).
+	pub prompt_cache: crate::context::projection::PromptCache,
 	pub core_capabilities: crate::capabilities::CoreCapabilities,
 	pub skill_attachments: Vec<crate::capabilities::SkillAttachment>,
 	pub skill_roots: Vec<String>,

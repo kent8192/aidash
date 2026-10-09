@@ -7,6 +7,7 @@ fn media_reservation_covers_complete_request_growth() {
 		tools: vec![],
 		max_output_tokens: 512,
 		projection: Default::default(),
+		cache_breakpoints: false,
 		content_parts: vec![],
 	};
 	let without_media = request.estimated_total_tokens();

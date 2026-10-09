@@ -1392,6 +1392,118 @@ async fn projection_versions_migration_admits_new_keys_and_reverses(
 
 #[rstest]
 #[tokio::test]
+async fn prompt_cache_migration_admits_new_keys_and_reverses(
+	#[future] fresh_database: MigrationFixture,
+) {
+	use aidash_server::apps::registry::models::{Definition, states::DefinitionKind};
+	// Arrange
+	let fixture = fresh_database.await;
+	fixture.migrate().await;
+	let pool = fixture.connection.clone().into_postgres().unwrap();
+	let agent = |cache: Option<&str>| {
+		let mut config = json!({"schema_version":1,"model":{"id":"model","version":"1.0.0"},"instructions":"Work","projection_version":"ordered"});
+		if let Some(mode) = cache {
+			config["prompt_cache"] = json!(mode);
+		}
+		config
+	};
+	let model = |id: &str, cache_mode: serde_json::Value| {
+		let metadata = json!({"id":id,"version":"1.0.0","kind":"model",
+			"name":{"en":"Prompt cache fixture"},"description":{"en":"Migration test"},
+			"config":{"provider":"openrouter","model_id":"anthropic/model",
+				"endpoint":"http://127.0.0.1:1/v1","credential_env":null,
+				"context_window":32768,"max_output_tokens":4096,
+				"modalities":["text"],"cost":{},"cache_mode":cache_mode}});
+		Definition::build()
+			.id(id)
+			.version("1.0.0")
+			.kind(DefinitionKind::Model)
+			.metadata(metadata.into())
+			.finish()
+	};
+	// Act / Assert: the Agent contract admits prompt_cache off and explicit only.
+	for (cache, accepted) in [
+		(None, true),
+		(Some("off"), true),
+		(Some("explicit"), true),
+		(Some("automatic"), false),
+		(Some("on"), false),
+	] {
+		assert_eq!(
+			contract_accepts(&pool, "aidash_agent_bindings_is_valid", vec![agent(cache)]).await,
+			accepted,
+			"{cache:?}"
+		);
+	}
+	let model_check = || async {
+		sqlx::query_scalar::<_, String>(
+			"SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname='registry_model_config'",
+		)
+		.fetch_one(&pool)
+		.await
+		.unwrap()
+	};
+	let upgraded = model_check().await;
+	assert!(upgraded.contains("cache_mode"), "{upgraded}");
+	let migrations =
+		FilesystemSource::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations"))
+			.all_migrations()
+			.await
+			.unwrap();
+	let migration = migrations
+		.into_iter()
+		.find(|m| m.app_label == "registry" && m.name == "0017_prompt_cache")
+		.unwrap();
+	let mut executor =
+		reinhardt::db::migrations::DatabaseMigrationExecutor::new(fixture.connection.clone());
+	executor
+		.rollback_migrations(std::slice::from_ref(&migration))
+		.await
+		.unwrap();
+	// Assert: the reverse restores the 0016 contracts.
+	assert!(
+		!contract_accepts(
+			&pool,
+			"aidash_agent_bindings_is_valid",
+			vec![agent(Some("explicit"))]
+		)
+		.await
+	);
+	assert!(contract_accepts(&pool, "aidash_agent_bindings_is_valid", vec![agent(None)]).await);
+	let reverted = model_check().await;
+	assert!(!reverted.contains("cache_mode"), "{reverted}");
+	assert!(reverted.contains("projection_versions"), "{reverted}");
+	executor.apply_migrations(&[migration]).await.unwrap();
+	assert_eq!(model_check().await, upgraded);
+	// Act / Assert: the registry_model_config CHECK admits declared cache modes.
+	let lease = DatabaseConnectionLease::register(fixture.connection.clone()).unwrap();
+	let mut connection = lease.handle();
+	for (id, mode) in [
+		("none-model", "none"),
+		("automatic-model", "automatic"),
+		("explicit-model", "explicit"),
+	] {
+		Definition::objects()
+			.create_with_conn(&mut connection, &model(id, json!(mode)))
+			.await
+			.unwrap();
+	}
+	for (id, mode) in [("bad-model", json!("always")), ("typed-model", json!(true))] {
+		let error = Definition::objects()
+			.create_with_conn(&mut connection, &model(id, mode))
+			.await
+			.unwrap_err();
+		let database = error.database_error().expect("database constraint error");
+		assert_eq!(
+			database.constraint(),
+			Some("registry_model_config"),
+			"{error}"
+		);
+	}
+}
+
+#[rstest]
+#[tokio::test]
 async fn memory_retention_lookup_index_upgrades_and_reverses_without_rewriting_tables(
 	#[future] fresh_database: MigrationFixture,
 ) {

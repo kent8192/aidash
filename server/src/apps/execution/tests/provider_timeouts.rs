@@ -50,6 +50,7 @@ async fn infer_after(
 				tools: vec![],
 				max_output_tokens: 512,
 				projection: Default::default(),
+				cache_breakpoints: false,
 				content_parts: vec![],
 			}),
 			delay_secs,

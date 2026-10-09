@@ -228,6 +228,13 @@ export function OpenRouterModelPicker({
           ordered
         </label>
       </fieldset>
+      <Field label={locale === "ja-JP" ? "キャッシュモード" : "Cache mode"}>
+        <select name="cache_mode" defaultValue="none">
+          <option value="none">none</option>
+          <option value="automatic">automatic</option>
+          <option value="explicit">explicit</option>
+        </select>
+      </Field>
       <input
         type="hidden"
         name="endpoint"

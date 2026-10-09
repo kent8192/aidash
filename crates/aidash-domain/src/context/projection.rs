@@ -44,6 +44,23 @@ impl ProjectionVersion {
 	}
 }
 
+/// An Agent definition's prompt-caching opt-in, pinned with the Run's Binding
+/// snapshot (ADR 0019).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum PromptCache {
+	#[default]
+	Off,
+	/// Send `cache_control` breakpoints on a model that declares `explicit`.
+	Explicit,
+}
+
+impl PromptCache {
+	pub fn is_off(&self) -> bool {
+		*self == Self::Off
+	}
+}
+
 /// Pinned fields that stay fixed for a Run and therefore precede the history.
 const STABLE_PINNED: [&str; 3] = ["identity", "task", "reference_documents"];
 /// Run context part order. The run-message summary changes only on catch-up

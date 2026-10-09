@@ -8,6 +8,7 @@ fn request() -> ModelRequest {
 		tools: vec![],
 		max_output_tokens: 12,
 		projection: Default::default(),
+		cache_breakpoints: false,
 		content_parts: vec![
 			ContentPart::Text("abc".into()),
 			ContentPart::Image {

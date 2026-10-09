@@ -57,6 +57,7 @@ pub async fn load<S: MediaAttachments + ?Sized>(
 		tools: Vec::new(),
 		max_output_tokens: 0,
 		projection: Default::default(),
+		cache_breakpoints: false,
 		content_parts: Vec::new(),
 	};
 	for (seq, id, headroom) in messages {

@@ -272,7 +272,7 @@ test("manual model names survive model and effort changes", async ({
   await expect(name).toHaveValue("vendor-fixture-model-low");
 });
 
-test("projection versions are sent only beyond the legacy default", async ({
+test("projection versions and cache mode are sent only beyond their defaults", async ({
   page,
 }) => {
   const dialog = page.getByRole("dialog");
@@ -292,7 +292,9 @@ test("projection versions are sent only beyond the legacy default", async ({
     .fill("fixture");
   await dialog.getByRole("option", { name: /Fixture Chat/ }).click();
   await expect(dialog.getByLabel("legacy")).toBeChecked();
-  expect(await register()).not.toHaveProperty("projection_versions");
+  const defaults = await register();
+  expect(defaults).not.toHaveProperty("projection_versions");
+  expect(defaults).not.toHaveProperty("cache_mode");
 
   await page
     .getByRole("button", { name: "エンティティを登録", exact: true })
@@ -304,8 +306,8 @@ test("projection versions are sent only beyond the legacy default", async ({
     .fill("fixture");
   await dialog.getByRole("option", { name: /Fixture Chat/ }).click();
   await dialog.getByLabel("ordered").check();
-  expect((await register()).projection_versions).toEqual([
-    "legacy",
-    "ordered",
-  ]);
+  await dialog.getByLabel("キャッシュモード").selectOption("explicit");
+  const declared = await register();
+  expect(declared.projection_versions).toEqual(["legacy", "ordered"]);
+  expect(declared.cache_mode).toBe("explicit");
 });

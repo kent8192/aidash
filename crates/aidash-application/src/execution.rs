@@ -611,6 +611,7 @@ pub fn media_request_headroom(
 		tools: Vec::new(),
 		max_output_tokens: 0,
 		projection: Default::default(),
+		cache_breakpoints: false,
 		content_parts: Vec::new(),
 	};
 	request
@@ -637,6 +638,7 @@ pub fn encoded_run_message_reservation(messages: &[Value]) -> usize {
 			tools: Vec::new(),
 			max_output_tokens: 0,
 			projection: Default::default(),
+			cache_breakpoints: false,
 			content_parts: Vec::new(),
 		}
 		.estimated_total_tokens()
@@ -664,6 +666,7 @@ pub fn check_model_media_headroom(
 		tools: Vec::new(),
 		max_output_tokens: 0,
 		projection: Default::default(),
+		cache_breakpoints: false,
 		content_parts: parts,
 	};
 	request.validate()?;

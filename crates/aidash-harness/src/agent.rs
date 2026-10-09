@@ -235,6 +235,18 @@ impl<'a> Executor<'a> {
 						model_cfg.model_id, agent.projection
 					)));
 				}
+				let explicit_cache = agent.prompt_cache
+					== aidash_domain::context::projection::PromptCache::Explicit;
+				// Registration enforces the same pairing; never drop an opt-in
+				// silently (ADR 0019).
+				if explicit_cache
+					&& (agent.projection.is_legacy() || !model_cfg.accepts_cache_breakpoints())
+				{
+					return Err(Error::Invalid(format!(
+						"model {} cannot receive the Agent's explicit cache breakpoints",
+						model_cfg.model_id
+					)));
+				}
 				let window = model_cfg.context_window;
 				let output_limit = model_cfg.output_token_limit();
 				let model = self.environment.provider(model_cfg.clone())?;
@@ -578,6 +590,12 @@ impl<'a> Executor<'a> {
 				}
 				let mut request = budget.request(&context, &pinned);
 				request.content_parts = media.parts;
+				// A catch-up or media-deferral step changes `system` or tools, so
+				// its prefix would not be reused; skip the cache write (ADR 0019).
+				request.cache_breakpoints = explicit_cache
+					&& !run_message_catchup
+					&& !media.defer_human
+					&& !media.defer_selected;
 				request.ensure_fits(window).map_err(Error::from).map_err(
 					|error| {
 						if guard.is_some_and(|guard| guard.is_remote()) {

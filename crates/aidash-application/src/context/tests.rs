@@ -80,6 +80,7 @@ async fn japanese_history_compacts_before_the_final_request_check() {
 		tools: vec![],
 		max_output_tokens: 256,
 		projection: Default::default(),
+		cache_breakpoints: false,
 		content_parts: vec![],
 	};
 	check_request(12000, &request).unwrap();
@@ -124,6 +125,7 @@ fn request_check_reserves_completion_tokens() {
 		tools: vec![],
 		max_output_tokens: 4096,
 		projection: Default::default(),
+		cache_breakpoints: false,
 		content_parts: vec![],
 	};
 	assert!(check_request(2000, &request).is_err());

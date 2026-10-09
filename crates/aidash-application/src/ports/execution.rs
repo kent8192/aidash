@@ -29,6 +29,8 @@ pub struct ExecutionAgent {
 	pub conversation_memory: bool,
 	/// Pinned through the Run's Binding snapshot (ADR 0015).
 	pub projection: aidash_domain::context::projection::ProjectionVersion,
+	/// Pinned through the Run's Binding snapshot (ADR 0019).
+	pub prompt_cache: aidash_domain::context::projection::PromptCache,
 }
 pub struct InvocationOutcome {
 	pub status: String,

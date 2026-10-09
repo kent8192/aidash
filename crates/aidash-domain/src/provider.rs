@@ -33,6 +33,11 @@ pub struct ModelRequest {
 	/// request metadata and digests keep their exact bytes.
 	#[serde(default, skip_serializing_if = "ProjectionVersion::is_legacy")]
 	pub projection: ProjectionVersion,
+	/// Mark the end of `system` and the last history part (the Run context part
+	/// when the history is empty) with `cache_control` (ADR 0019). Valid only
+	/// for `Ordered` and later; omitted when false.
+	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
+	pub cache_breakpoints: bool,
 	/// Resolved, authorized input for this inference only. Never persist bytes
 	/// in the durable context or serialize them with the request metadata.
 	#[serde(skip)]
@@ -166,6 +171,11 @@ impl ContentPart {
 	}
 }
 
+/// A five-minute provider cache breakpoint, the provider default (ADR 0019).
+fn cache_control() -> Value {
+	json!({"type":"ephemeral"})
+}
+
 impl ModelRequest {
 	fn media_tokens(parts: &[ContentPart]) -> usize {
 		parts.iter().fold(0_usize, |total, part| {
@@ -215,7 +225,7 @@ impl ModelRequest {
 	/// User-message content: the rendered context followed by `extra` parts.
 	/// `Legacy` sends one context string, or one text part when media follows;
 	/// `Ordered` always sends its text parts (ADR 0015).
-	fn user_content(&self, extra: Vec<Value>) -> Value {
+	fn user_content(&self, extra: Vec<Value>, breakpoints: bool) -> Value {
 		match self.projection {
 			ProjectionVersion::Legacy if extra.is_empty() => {
 				Value::String(self.context.to_string())
@@ -225,19 +235,36 @@ impl ModelRequest {
 					.chain(extra)
 					.collect(),
 			),
-			ProjectionVersion::Ordered => Value::Array(
-				crate::context::projection::ordered_texts(&self.context)
-					.into_iter()
-					.map(|text| json!({"type":"text","text":text}))
-					.chain(extra)
-					.collect(),
-			),
+			ProjectionVersion::Ordered => {
+				let texts = crate::context::projection::ordered_texts(&self.context);
+				// The current step state is the last text part and is never cached.
+				let breakpoint = breakpoints.then(|| texts.len() - 2);
+				Value::Array(
+					texts
+						.into_iter()
+						.enumerate()
+						.map(|(index, text)| {
+							let mut part = json!({"type":"text","text":text});
+							if Some(index) == breakpoint {
+								part["cache_control"] = cache_control();
+							}
+							part
+						})
+						.chain(extra)
+						.collect(),
+				)
+			}
 		}
 	}
 
-	fn body(&self, content: Value) -> Value {
+	fn body(&self, content: Value, breakpoints: bool) -> Value {
+		let system = if breakpoints {
+			json!([{"type":"text","text":self.instructions,"cache_control":cache_control()}])
+		} else {
+			json!(self.instructions)
+		};
 		let mut body = json!({"messages":[
-			{"role":"system","content":self.instructions},
+			{"role":"system","content":system},
 			{"role":"user","content":content}]});
 		if !self.tools.is_empty() {
 			body["tools"] = Value::Array(self.tools.iter().map(|t| json!({"type":"function","function":{"name":t.name,"description":t.description,"parameters":t.parameters}})).collect());
@@ -254,7 +281,9 @@ impl ModelRequest {
 					.iter()
 					.map(ContentPart::openrouter)
 					.collect(),
+				self.cache_breakpoints,
 			),
+			self.cache_breakpoints,
 		)
 	}
 
@@ -274,16 +303,19 @@ impl ModelRequest {
 				_ => None,
 			})
 			.collect();
+		// Ordered estimates always count cache breakpoint framing, so whether a
+		// step carries breakpoints never changes a fitting decision (ADR 0019).
+		let breakpoints = !self.projection.is_legacy();
 		// Legacy switches to array framing for any part, including media.
-		let content = if parts.is_empty() || !self.projection.is_legacy() {
-			self.user_content(text_parts)
+		let content = if parts.is_empty() || breakpoints {
+			self.user_content(text_parts, breakpoints)
 		} else {
-			match self.user_content(text_parts) {
+			match self.user_content(text_parts, false) {
 				Value::String(text) => Value::Array(vec![json!({"type":"text","text":text})]),
 				content => content,
 			}
 		};
-		self.body(content)
+		self.body(content, breakpoints)
 			.to_string()
 			.len()
 			.saturating_add(Self::media_tokens(parts))
@@ -292,6 +324,11 @@ impl ModelRequest {
 	}
 
 	pub fn validate(&self) -> Result<()> {
+		if self.cache_breakpoints && self.projection.is_legacy() {
+			return Err(Error::Invalid(
+				"cache breakpoints require the Ordered projection version".into(),
+			));
+		}
 		for part in &self.content_parts {
 			part.validate()?;
 		}

@@ -55,6 +55,7 @@ fn model() -> ModelConfig {
 		media_routes: vec![routes(vec!["image/png".into(), "mp3".into()])],
 		cost: json!({}),
 		projection_versions: aidash_domain::context::projection::ProjectionVersion::legacy_only(),
+		cache_mode: Default::default(),
 	}
 }
 #[derive(Default)]

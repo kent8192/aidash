@@ -953,7 +953,10 @@ async fn admitted_run() -> Run {
 	let mut read = Binding::tool(QualifiedRef::builtin(NODE, "workspace_read"));
 	read.narrow.limits.insert("max_chars".into(), 128);
 	config.bindings.push(read);
-	let saved = snapshot(&mut Catalog::new(), &config, false).await.unwrap();
+	bound_run(&config).await
+}
+async fn bound_run(config: &AgentBindings) -> Run {
+	let saved = snapshot(&mut Catalog::new(), config, false).await.unwrap();
 	let mut run = Run {
 		id: uuid::Uuid::new_v4(),
 		task_id: uuid::Uuid::new_v4(),
@@ -977,6 +980,33 @@ async fn admitted_run() -> Run {
 	};
 	run.bind(saved).unwrap();
 	run
+}
+/// The tool definitions a model request carries, in the order they are sent.
+async fn sent_tool_definitions(bindings: [&str; 3]) -> String {
+	let mut config = agent_config();
+	config.bindings.extend(
+		bindings
+			.into_iter()
+			.map(|name| Binding::tool(QualifiedRef::builtin(NODE, name))),
+	);
+	let run = bound_run(&config).await;
+	let live = Arc::new(Live::new());
+	let resolver = execution::PinnedResolver {
+		providers: live.clone(),
+		authority: live,
+	};
+	let tools = resolver.tools(&run).await.unwrap();
+	let specifications = tools
+		.values()
+		.map(|tool| tool.specification())
+		.collect::<Vec<_>>();
+	serde_json::to_string(&specifications).unwrap()
+}
+#[tokio::test]
+async fn tool_definitions_are_byte_identical_for_any_binding_order() {
+	let declared = sent_tool_definitions(["workspace_read", "file_read", "artifact_publish"]).await;
+	let reversed = sent_tool_definitions(["artifact_publish", "file_read", "workspace_read"]).await;
+	assert_eq!(declared, reversed);
 }
 #[tokio::test]
 async fn saved_dispatch_enforces_narrowing_and_rechecks_revocation_and_provider_loss_before_effects()

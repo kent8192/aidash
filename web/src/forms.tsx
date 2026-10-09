@@ -343,6 +343,9 @@ export function EntityForm({
                   ...(s("projection_version") === "ordered"
                     ? { projection_version: "ordered" }
                     : {}),
+                  ...(s("prompt_cache") === "explicit"
+                    ? { prompt_cache: "explicit" }
+                    : {}),
                   ...core,
                 }
               : kind === "model"
@@ -357,6 +360,9 @@ export function EntityForm({
                     modalities: JSON.parse(s("modalities")),
                     media_routes: JSON.parse(s("media_routes") || "[]"),
                     ...projectionVersions(d),
+                    ...(s("cache_mode") && s("cache_mode") !== "none"
+                      ? { cache_mode: s("cache_mode") }
+                      : {}),
                     cost: JSON.parse(s("cost")),
                   }
                 : kind === "embedding"
@@ -568,6 +574,16 @@ export function EntityForm({
               <select name="projection_version" defaultValue="legacy">
                 <option value="legacy">legacy</option>
                 <option value="ordered">ordered</option>
+              </select>
+            </Field>
+            <Field
+              label={
+                locale === "ja-JP" ? "プロンプトキャッシュ" : "Prompt cache"
+              }
+            >
+              <select name="prompt_cache" defaultValue="off">
+                <option value="off">off</option>
+                <option value="explicit">explicit</option>
               </select>
             </Field>
           </>

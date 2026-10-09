@@ -6,7 +6,7 @@ use crate::{
 use aidash_domain::registry::rules::skill_instructions;
 use aidash_domain::{
 	configuration::{validate_endpoint, validate_node_id, validate_secret_reference},
-	context::projection::{ProjectionVersion, cache_salt_placeholder},
+	context::projection::{ProjectionVersion, PromptCache, cache_salt_placeholder},
 	model::ModelConfig,
 	registry::{AgentConfig, ClusterConfig, CompactorConfig, Entry},
 	tool::ToolConfig,
@@ -132,6 +132,7 @@ impl DefinitionValidation {
 				}
 				m.request_timeout()?;
 				m.validate_projection_versions()?;
+				m.validate_cache_mode()?;
 				for route in &m.media_routes {
 					if route.tag.is_empty()
 						|| !route
@@ -364,6 +365,19 @@ impl DefinitionValidation {
 				"Agent projection_version {name} is not supported by model {}@{}",
 				config.model.id, config.model.version
 			)));
+		}
+		if config.prompt_cache == PromptCache::Explicit {
+			if !model.accepts_cache_breakpoints() {
+				return Err(Error::Invalid(format!(
+					"Agent prompt_cache explicit requires model {}@{} to declare cache_mode explicit on a supported slug",
+					config.model.id, config.model.version
+				)));
+			}
+			if projection.is_legacy() {
+				return Err(Error::Invalid(
+					"Agent prompt_cache explicit requires projection_version ordered".into(),
+				));
+			}
 		}
 		// Reserve the fixed-width cache salt line the Ordered prefix carries.
 		let prefix = match projection {

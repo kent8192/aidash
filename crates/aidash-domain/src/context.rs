@@ -137,6 +137,8 @@ impl RequestBudget<'_> {
 			tools: self.tools.to_vec(),
 			max_output_tokens: self.max_output_tokens,
 			projection: self.projection,
+			// Set per step by the harness; estimates count it either way.
+			cache_breakpoints: false,
 			content_parts: vec![],
 		}
 	}
