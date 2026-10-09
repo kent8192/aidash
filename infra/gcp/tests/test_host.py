@@ -1,13 +1,16 @@
 """Activity/admission races using private temporary host state."""
 
 from contextlib import ExitStack, redirect_stdout
+from concurrent.futures import ThreadPoolExecutor
 import bz2
 import hashlib
 import io
 import json
+import os
 from pathlib import Path
 import sys
 import tarfile
+from threading import Event
 from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
@@ -172,7 +175,7 @@ class HostTests(unittest.TestCase):
         source = cmd.split("<<'AIDASH_GCIP_QUIESCE'\n", 1)[1].rsplit("\nAIDASH_GCIP_QUIESCE", 1)[0]
         output = io.StringIO()
         with patch.object(host, "command", command), patch.object(sys, "path", list(sys.path)), redirect_stdout(output):
-            # The retained host has only gate/command; no new CLI action or
+            # The retained lifecycle state and command API need no new CLI action or
             # updated bundle is required to freeze its old policy first.
             exec(source, {"__name__": "quiesce_fixture"})
         self.assertEqual(json.loads(output.getvalue()), {"quiesced": True})
@@ -192,10 +195,39 @@ class HostTests(unittest.TestCase):
                         return b'{"Running": true, "Paused": true}'
                     return b""
 
-                with patch.object(host, "command", command):
+                with patch.object(host, "command", command), patch.object(host, "request", side_effect=AssertionError("a paused or absent application cannot answer HTTP")):
                     self.assertEqual(gcip_quiesce.quiesce(host), {"quiesced": True})
                 self.assertNotIn(("docker", "pause", "aidash-app"), calls)
                 self.assertIn(("systemctl", "stop", "aidash-runner"), calls)
+
+    def test_gcip_quiescence_waits_for_the_existing_host_lifecycle_lock(self):
+        host.RUN.mkdir()
+        lock_path = host.RUN / "lifecycle.lock"
+        acquiring = Event()
+        calls = []
+        flock = host.fcntl.flock
+
+        with lock_path.open("a") as owner:
+            flock(owner, host.fcntl.LOCK_EX)
+
+            def acquire(lock, operation):
+                self.assertEqual(os.fstat(lock.fileno()).st_ino, os.fstat(owner.fileno()).st_ino)
+                acquiring.set()
+                flock(lock, operation)
+
+            def command(*args, **kwargs):
+                calls.append(args)
+                return b""
+
+            with patch.object(host.fcntl, "flock", acquire), patch.object(host, "command", command), ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(gcip_quiesce.quiesce, host)
+                try:
+                    self.assertTrue(acquiring.wait(1), "quiescence bypassed the lifecycle lock")
+                    self.assertFalse(future.done())
+                    self.assertFalse(calls)
+                finally:
+                    flock(owner, host.fcntl.LOCK_UN)
+                self.assertEqual(future.result(timeout=5), {"quiesced": True})
 
     def test_pause_failure_restores_admission_and_never_claims_sealed(self):
         calls = []

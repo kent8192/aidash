@@ -198,7 +198,7 @@ class Terraform:
             )
         return value or {}
 
-    def apply(self, environments, retiring=(), starting=()):
+    def apply(self, environments, retiring=(), starting=(), before_apply=None):
         variables = {
             key: self.configuration[key]
             for key in (
@@ -247,6 +247,8 @@ class Terraform:
                         raise RuntimeError(
                             "plan would delete a retained disk without explicit retirement"
                         )
+            if before_apply:
+                before_apply(value)
             run(
                 "terraform",
                 f"-chdir={self.root}",
