@@ -294,7 +294,10 @@ jobs:
         bruno,
         acceptance,
       ]
-    if: always()
+    # `always()` stays true after cancellation, so a run superseded by a newer head
+    # kept this job queued. `!cancelled()` still runs after failed or skipped
+    # prerequisites, which the result check below rejects.
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
