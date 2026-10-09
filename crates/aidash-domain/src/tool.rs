@@ -2,6 +2,8 @@
 use crate::registry::EntityRef;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+pub mod concurrency;
+pub use concurrency::Concurrency;
 pub mod contract;
 pub use contract::*;
 pub mod providers;

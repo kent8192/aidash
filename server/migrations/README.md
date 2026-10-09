@@ -247,3 +247,5 @@ metadata and exclude procedural checks and references from the ORM snapshot, whi
 retaining the physical constraints established by the preceding migrations.
 
 Binding and native memory histories converge in `registry/0015_binding_memory_merge` and `execution/0011_binding_memory_merge`. The registry merge preserves strict Agent Bindings, Host lifecycle validation and native memory operations. Agent memory-role references derive from qualified Binding targets. These migrations depend on both histories and leave their existing migration identities unchanged.
+
+`registry/0016_tool_parallelism` replaces the Agent Binding, descriptor and installation-override contract functions. They now accept the Agent `tool_parallelism` ceiling (1–16) and a Binding or descriptor `narrow.concurrency` restriction (`sequential` or `shared_read`). Existing rows are unchanged; the reverse migration restores the 0015 and 0011 function bodies.

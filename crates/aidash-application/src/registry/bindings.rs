@@ -5,7 +5,10 @@ use crate::{
 };
 use aidash_domain::{
 	registry::{Entry, bindings::*},
-	tool::providers::{ToolDescriptor, remote_exclusion, reserved_aliases, validate_restrictions},
+	tool::providers::{
+		ToolDescriptor, remote_exclusion, reserved_aliases, validate_concurrency,
+		validate_restrictions,
+	},
 };
 use std::collections::{BTreeMap, BTreeSet};
 pub mod catalog;
@@ -15,11 +18,6 @@ struct Pending {
 	normalized: NormalizedBinding,
 	ancestry: BTreeSet<QualifiedRef>,
 	lifecycle: Option<(String, String)>,
-}
-fn contract_digest(contract: &aidash_domain::tool::ToolContract) -> Result<String> {
-	Ok(aidash_domain::registry::rules::digest(
-		&serde_json::to_value(contract)?,
-	))
 }
 pub async fn resolve(
 	catalog: &mut dyn BindingCatalog,
@@ -182,6 +180,7 @@ pub async fn resolve(
 			let contract = providers.contract(&descriptor, &target)?;
 			validate_restrictions(&descriptor.operation, &effective_narrow)?;
 			effective_narrow = descriptor.narrow.intersect(&effective_narrow)?;
+			validate_concurrency(&contract, &effective_narrow)?;
 			if let Some((provider, operation)) = &lifecycle
 				&& (descriptor.provider != *provider
 					|| descriptor.operation != *operation
@@ -206,7 +205,7 @@ pub async fn resolve(
 			if remote {
 				excluded_reason = remote_exclusion(origin, &contract)?;
 			}
-			provider_contract_digest = Some(contract_digest(&contract)?);
+			provider_contract_digest = Some(contract.digest()?);
 			if excluded_reason.is_none() {
 				provider_implementation = Some(providers.implementation(&descriptor)?);
 			}
@@ -537,17 +536,18 @@ pub async fn resolve(
 mod tests;
 
 /// Used at execution boundaries; current authority is still required by the native adapter.
+/// Returns the provider contract as pinned, before Binding restrictions apply.
 pub fn recheck_provider(
 	providers: &dyn ProviderCatalog,
 	binding: &ResolvedBinding,
 ) -> Result<aidash_domain::tool::ToolContract> {
 	let descriptor: ToolDescriptor = serde_json::from_value(binding.definition.config.clone())?;
 	let contract = providers.contract(&descriptor, &binding.identity)?;
-	if binding.provider_contract_digest.as_deref() != Some(&contract_digest(&contract)?) {
-		return Err(Error::Conflict(
-			"pinned provider operation contract changed".into(),
-		));
+	let contract = match binding.provider_contract_digest.as_deref() {
+		Some(digest) => contract.pinned(digest)?,
+		None => None,
 	}
+	.ok_or_else(|| Error::Conflict("pinned provider operation contract changed".into()))?;
 	providers.implementation(&descriptor)?;
 	Ok(contract)
 }
