@@ -22,7 +22,7 @@ metadata:
   name: {{ $name }}-{{ $role }}
 spec:
   clusterIP: None
-  selector: { aidash.run/dependency: {{ $role }}, app.kubernetes.io/instance: {{ $.Release.Name }} }
+  selector: { aidash.run/dependency: {{ $role }}, app.kubernetes.io/instance: {{ $.Release.Name | quote }} }
   ports:
     - { name: client, port: {{ ternary 5432 4222 (eq $role "postgres") }}, targetPort: client }
 ---
@@ -34,10 +34,10 @@ spec:
   replicas: 1
   serviceName: {{ $name }}-{{ $role }}
   persistentVolumeClaimRetentionPolicy: { whenDeleted: Retain, whenScaled: Retain }
-  selector: { matchLabels: { aidash.run/dependency: {{ $role }}, app.kubernetes.io/instance: {{ $.Release.Name }} } }
+  selector: { matchLabels: { aidash.run/dependency: {{ $role }}, app.kubernetes.io/instance: {{ $.Release.Name | quote }} } }
   template:
     metadata:
-      labels: { aidash.run/dependency: {{ $role }}, app.kubernetes.io/instance: {{ $.Release.Name }} }
+      labels: { aidash.run/dependency: {{ $role }}, app.kubernetes.io/instance: {{ $.Release.Name | quote }} }
     spec:
       hostNetwork: false
       automountServiceAccountToken: false
@@ -82,7 +82,7 @@ spec:
   ingress:
     - from:
         - podSelector: { matchExpressions: [{ key: app.kubernetes.io/component, operator: In, values: [server, worker] }] }
-        - podSelector: { matchLabels: { aidash.run/activity: {{ .Release.Name }} } }
+        - podSelector: { matchLabels: { aidash.run/activity: {{ .Release.Name | quote }} } }
       ports:
         - { protocol: TCP, port: 5432 }
         - { protocol: TCP, port: 4222 }

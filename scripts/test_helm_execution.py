@@ -165,13 +165,29 @@ class ChartsTest(unittest.TestCase):
         accepted(release='r' * 46)
         with self.assertRaises(subprocess.CalledProcessError):
             accepted(release='r' * 47)
-        # The guest's processes are host tasks of the Sentry, and the probe forks that many.
-        with self.assertRaises(subprocess.CalledProcessError):
-            accepted(limits={'processes': 128, 'host_tasks': 128})
-        # The node guard rejects Python cells above 600 seconds.
-        with self.assertRaises(subprocess.CalledProcessError):
-            accepted(limits={'maximum_seconds': 601})
-        accepted(limits={'maximum_seconds': 600})
+        # The Sentry's own host threads share pids.max with the probe's guest children;
+        # only the 128/512 headroom is verified, so neither ratio nor margin may shrink.
+        for processes, host_tasks, ok in ((128, 129, False), (128, 511, False), (128, 512, True),
+                                          (8, 391, False), (8, 392, True), (256, 1023, False), (256, 1024, True)):
+            with self.subTest(processes=processes, host_tasks=host_tasks):
+                limits = {'limits': {'processes': processes, 'host_tasks': host_tasks}}
+                if ok:
+                    accepted(**limits)
+                else:
+                    with self.assertRaises(subprocess.CalledProcessError):
+                        accepted(**limits)
+        # The admission probe requests 30 seconds; the guard rejects cells above 600
+        # seconds, frozen sessions beyond 1800, and result files above 24 MiB.
+        for limit, value, ok in (('maximum_seconds', 29, False), ('maximum_seconds', 30, True),
+                                 ('maximum_seconds', 600, True), ('maximum_seconds', 601, False),
+                                 ('idle_seconds', 1800, True), ('idle_seconds', 1801, False),
+                                 ('output_bytes', 8 << 20, True), ('output_bytes', (8 << 20) + 1, False)):
+            with self.subTest(limit=limit, value=value):
+                if ok:
+                    accepted(limits={limit: value})
+                else:
+                    with self.assertRaises(subprocess.CalledProcessError):
+                        accepted(limits={limit: value})
         # The installer only writes the runtime under /usr/local/bin.
         installer = {'enabled': True, 'image': 'installer' + DIGEST}
         values = dict(self.base, environment={'nodeSelector': {'pool': 'execution'}})
@@ -204,6 +220,31 @@ class ChartsTest(unittest.TestCase):
                 pod = value['spec']['template']['spec']
                 self.assertFalse(pod['hostNetwork'])
                 self.assertTrue(all(term.get('tolerationSeconds', 30) < 300 for term in pod['tolerations']))
+
+    def test_environment_labels_stay_strings_and_edge_keeps_no_file_access_log(self):
+        values = {'postgres': {'existingSecret': 'db'},
+                  'edge': {'hostname': 'fixture.example', 'admissionImage': 'admission' + DIGEST},
+                  'activity': {'existingSecret': 'observer', 'observerImage': 'observer' + DIGEST,
+                               'collectorImage': 'collector' + DIGEST}}
+        # Valid release names that YAML would otherwise read as booleans or null.
+        for release in ('true', 'null'):
+            with self.subTest(release=release):
+                objects = render(self.environment, values, release)
+                for value in objects:
+                    for labels in (value['metadata'].get('labels', {}),
+                                   value.get('spec', {}).get('selector', {}),
+                                   value.get('spec', {}).get('selector', {}).get('matchLabels', {}),
+                                   value.get('spec', {}).get('template', {}).get('metadata', {}).get('labels', {})):
+                        if isinstance(labels, dict):
+                            self.assertTrue(all(isinstance(label, str) for label in labels.values()
+                                                if not isinstance(label, dict)), (value['kind'], labels))
+                policy = select(objects, 'NetworkPolicy', '-dependencies')['spec']
+                self.assertIn({'podSelector': {'matchLabels': {'aidash.run/activity': release}}},
+                              policy['ingress'][0]['from'])
+        admission = next(value['data']['admission.conf'] for value in render(self.environment, values)
+                         if value['kind'] == 'ConfigMap' and 'admission.conf' in value.get('data', {}))
+        logs = [line.strip() for line in admission.splitlines() if line.strip().startswith('access_log')]
+        self.assertEqual(logs, ['access_log off;', 'access_log off;'])
 
 
 class ActivityTest(unittest.TestCase):

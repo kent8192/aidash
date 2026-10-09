@@ -137,6 +137,7 @@
               "minimum": 8
             },
             "host_tasks": {
+              "description": "Sentry pids.max. The chart requires at least max(4 * processes, processes + 384), the headroom of the verified 128/512 profile: the Sentry's own host threads share this ceiling with the admission probe's processes - 16 guest children.",
               "type": "integer",
               "minimum": 1
             },
@@ -149,18 +150,22 @@
               "minimum": 1
             },
             "maximum_seconds": {
-              "description": "Operation time limit. The node guard rejects Python cells above 600 seconds.",
+              "description": "Operation time limit. The Runner's admission probe always requests 30 seconds (runner/control.py verify_isolation), and the node guard rejects Python cells above 600 seconds.",
               "type": "integer",
-              "minimum": 1,
+              "minimum": 30,
               "maximum": 600
             },
             "output_bytes": {
+              "description": "Per-cell budget for stdout and, separately, decoded PNG displays. Both are base64-encoded into one result file that the node guard rejects above 24 MiB, so the budget is capped at 8 MiB.",
               "type": "integer",
-              "minimum": 1
+              "minimum": 1,
+              "maximum": 8388608
             },
             "idle_seconds": {
+              "description": "Session idle interval. The node guard caps every frozen-session deadline at 1800 seconds.",
               "type": "integer",
-              "minimum": 1
+              "minimum": 1,
+              "maximum": 1800
             }
           }
         }

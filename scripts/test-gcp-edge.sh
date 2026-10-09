@@ -27,5 +27,7 @@ opened=$(request 8089 GET /activity)
 request 8089 POST /admission/close >/dev/null
 closed=$(request 8089 GET /activity)
 [[ "$closed" == *"\"closed\":true"* ]]
-printf "%s\n" "Chart Nginx/Lua: starts closed; public admission blocked; private open/close verified"
+# Requests must not grow a file in the writable layer: logs go to container streams.
+[[ -z "$(find /var/log/nginx -type f -size +0c)" ]]
+printf "%s\n" "Chart Nginx/Lua: starts closed; public admission blocked; private open/close verified; no file logs"
 '
