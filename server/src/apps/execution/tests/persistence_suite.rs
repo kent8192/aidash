@@ -2,6 +2,9 @@
 mod native_database;
 use native_database::{DatabaseFixture, database};
 
+#[path = "database_readiness.rs"]
+mod readiness;
+
 #[path = "../../knowledge/tests/database_limits.rs"]
 mod semantic_limits;
 

@@ -61,16 +61,18 @@ async fn rest_store_writes_payload_once_and_uses_only_metadata_and_lifecycle_end
 	let remote = resource.clone();
 	let app=Router::new().fallback(move |method:Method,uri:Uri,headers:HeaderMap,body:Bytes| { let history=history.clone();let remote=remote.clone(); async move {
   let path=uri.to_string();
-  if path=="/token" { assert_eq!(headers["metadata-flavor"],"Google"); return Json(json!({"access_token":"metadata-token","expires_in":3600})); }
+  let value = if path=="/token" { assert_eq!(headers["metadata-flavor"],"Google"); json!({"access_token":"metadata-token","expires_in":3600}) } else {
   assert_eq!(headers["authorization"],"Bearer metadata-token");
   let body:Value=if body.is_empty(){Value::Null}else{serde_json::from_slice(&body).unwrap()};
   history.lock().unwrap().push((method.to_string(),path.clone(),body));
-  if path.contains(":addVersion") {Json(json!({"name":format!("{remote}/versions/2")}))}
-  else if path.contains("pageToken="){Json(json!({"versions":[{"name":format!("{remote}/versions/3"),"state":"DESTROYED"}]}))}
-  else if path.contains("?pageSize="){Json(json!({"versions":[{"name":format!("{remote}/versions/1"),"state":"DISABLED"},{"name":format!("{remote}/versions/2"),"state":"ENABLED"}],"nextPageToken":"next page"}))}
-  else if method==Method::GET && path.ends_with("/versions/1"){Json(json!({"state":"DISABLED"}))}
-  else if method==Method::GET && path.ends_with("/versions/3"){Json(json!({"state":"DESTROYED"}))}
-  else {Json(json!({"state":"ENABLED"}))}
+  if path.contains(":addVersion") {json!({"name":format!("{remote}/versions/2")})}
+  else if path.contains("pageToken="){json!({"versions":[{"name":format!("{remote}/versions/3"),"state":"DESTROYED"}]})}
+  else if path.contains("?pageSize="){json!({"versions":[{"name":format!("{remote}/versions/1"),"state":"DISABLED"},{"name":format!("{remote}/versions/2"),"state":"ENABLED"}],"nextPageToken":"next page"})}
+  else if method==Method::GET && path.ends_with("/versions/1"){json!({"state":"DISABLED"})}
+  else if method==Method::GET && path.ends_with("/versions/3"){json!({"state":"DESTROYED"})}
+  else {json!({"state":"ENABLED"})}
+  };
+  ([("Metadata-Flavor", "Google")], Json(value))
  }});
 	let (url, _server) = serve(app).await;
 	let mut store = SecretManager::new("byok-project".into(), "dev".into()).unwrap();
@@ -128,6 +130,33 @@ async fn rest_store_writes_payload_once_and_uses_only_metadata_and_lifecycle_end
 			.iter()
 			.any(|(_, p, _)| p.ends_with("/versions/2:destroy"))
 	);
+}
+#[tokio::test]
+async fn rest_store_rejects_metadata_tokens_without_the_google_response_header() {
+	use axum::{Json, Router, http::Uri};
+	use std::sync::{
+		Arc,
+		atomic::{AtomicUsize, Ordering},
+	};
+	let store_calls = Arc::new(AtomicUsize::new(0));
+	let observed = store_calls.clone();
+	// An interposed responder that omits the header must not be trusted as metadata.
+	let app = Router::new().fallback(move |uri: Uri| {
+		let observed = observed.clone();
+		async move {
+			if uri.path() != "/token" {
+				observed.fetch_add(1, Ordering::SeqCst);
+			}
+			Json(json!({"access_token":"interposed-token","expires_in":3600}))
+		}
+	});
+	let (url, _server) = serve(app).await;
+	let mut store = SecretManager::new("byok-project".into(), "dev".into()).unwrap();
+	store.api = format!("{url}/v1");
+	store.metadata = format!("{url}/token");
+	let error = store.create(Uuid::now_v7()).await.unwrap_err();
+	assert!(matches!(error, Error::External(_)), "{error:?}");
+	assert_eq!(store_calls.load(Ordering::SeqCst), 0);
 }
 #[rstest::rstest]
 #[case(200, Some(10), false, false)]

@@ -14,6 +14,8 @@ use uuid::Uuid;
 
 pub struct SecretManager {
 	client: reqwest::Client,
+	/// Metadata tokens carry Store authority and must never traverse an HTTP proxy.
+	metadata_client: reqwest::Client,
 	project: String,
 	prefix: String,
 	api: String,
@@ -34,7 +36,24 @@ impl SecretManager {
 				"invalid Provider Credential Store project or environment".into(),
 			));
 		}
-		Ok(Self{client:reqwest::Client::builder().timeout(Duration::from_secs(20)).connect_timeout(Duration::from_secs(3)).redirect(reqwest::redirect::Policy::none()).build().map_err(crate::http_error)?,project,prefix:format!("aidash-{environment}-cred-"),api:"https://secretmanager.googleapis.com/v1".into(),metadata:"http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token".into()})
+		let client = |builder: reqwest::ClientBuilder| {
+			builder
+				.timeout(Duration::from_secs(20))
+				.connect_timeout(Duration::from_secs(3))
+				.redirect(reqwest::redirect::Policy::none())
+				.build()
+				.map_err(crate::http_error)
+		};
+		Ok(Self {
+			client: client(reqwest::Client::builder())?,
+			metadata_client: client(reqwest::Client::builder().no_proxy())?,
+			project,
+			prefix: format!("aidash-{environment}-cred-"),
+			api: "https://secretmanager.googleapis.com/v1".into(),
+			metadata:
+				"http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token"
+					.into(),
+		})
 	}
 	fn validate_resource(&self, resource: &str) -> Result<()> {
 		let prefix = format!("projects/{}/secrets/{}", self.project, self.prefix);
@@ -68,13 +87,19 @@ impl SecretManager {
 			access_token: SecretString,
 		}
 		let response = self
-			.client
+			.metadata_client
 			.get(&self.metadata)
 			.header("Metadata-Flavor", "Google")
 			.send()
 			.await
 			.map_err(crate::http_error)?;
-		if !response.status().is_success() {
+		if !response.status().is_success()
+			|| response
+				.headers()
+				.get("Metadata-Flavor")
+				.and_then(|v| v.to_str().ok())
+				!= Some("Google")
+		{
 			return Err(Error::External(
 				"Provider Credential Store token is unavailable".into(),
 			));
