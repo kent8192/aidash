@@ -211,6 +211,11 @@ class Terraform:
             )
         }
         variables["environments"] = environments
+        variables["credential_brokers"] = {
+            key: value
+            for key, value in self.configuration.get("credential_brokers", {}).items()
+            if key in environments
+        }
         path = self.root / "controller.auto.tfvars.json"
         plan = self.root / "controller.tfplan"
         private_json(path, variables)

@@ -45,3 +45,12 @@ variable "byok_project_id" {
     error_message = "Use an explicit dedicated BYOK project distinct from the shared environment project."
   }
 }
+variable "byok_broker_environments" {
+  description = "Explicit BYOK-enabled environment IDs. Human bootstrap creates their broker identities and read grants; never PR previews."
+  type        = set(string)
+  default     = []
+  validation {
+    condition     = alltrue([for id in var.byok_broker_environments : can(regex("^[a-z][a-z0-9-]{0,16}$", id)) && !startswith(id, "pr-")])
+    error_message = "Broker environments must use canonical IDs of at most 17 characters and exclude PR previews."
+  }
+}

@@ -177,3 +177,4 @@ output "zone" { value = local.zone }
 output "hostname" { value = var.hostname }
 output "external_ip" { value = try(google_compute_instance.host[0].network_interface[0].access_config[0].nat_ip, "") }
 output "runtime_secret" { value = google_secret_manager_secret.runtime.secret_id }
+output "runtime_service_account" { value = google_service_account.runtime.email }

@@ -754,3 +754,84 @@ fn provider_credential_definition_sources_are_portable_and_fail_closed_without_s
 		assert!(configured.validate_in(&changed, local).is_err());
 	}
 }
+
+#[tokio::test]
+async fn byok_timeout_is_validated_on_registration_import_and_consumption() {
+	let validator = validation().with_provider_credentials(true);
+	let mut entry = definition(
+		"byok-timeout",
+		"model",
+		json!({"provider":"openrouter","model_id":"vendor/model","endpoint":"https://openrouter.ai/api/v1","provider_credential":"openrouter","context_window":32768,"max_output_tokens":4096,"modalities":["text"],"cost":{}}),
+	);
+	for timeout in [json!(null), json!(1), json!(3600)] {
+		entry.config["request_timeout_secs"] = timeout;
+		validator.validate_in(&entry, true).unwrap();
+		validator.validate_in(&entry, false).unwrap();
+	}
+	for timeout in [3601_u32, u32::MAX] {
+		entry.config["request_timeout_secs"] = json!(timeout);
+		for local in [true, false] {
+			assert!(
+				validator
+					.validate_in(&entry, local)
+					.unwrap_err()
+					.to_string()
+					.contains("at most 3600")
+			);
+		}
+		let mut scope = Scope::default();
+		assert!(
+			register_definition(&mut scope, &validator, &entry, "aidash://home")
+				.await
+				.is_err()
+		);
+		assert!(scope.trace.is_empty());
+		assert!(scope.events.is_empty());
+		let mut bundle = package();
+		bundle.entity = entry.clone();
+		let value = serde_json::to_value(&bundle).unwrap();
+		let source = value.to_string();
+		let hash = digest(&value);
+		let plan = prepare_install(
+			PackageSnapshot {
+				manifest: value,
+				source,
+				digest: hash.clone(),
+			},
+			&hash,
+			json!({}),
+		)
+		.unwrap();
+		assert!(
+			install(
+				&mut scope,
+				&validator,
+				plan,
+				"aidash://home",
+				&entry.id,
+				&entry.version
+			)
+			.await
+			.unwrap_err()
+			.to_string()
+			.contains("at most 3600")
+		);
+		assert!(scope.trace.is_empty());
+		assert!(scope.events.is_empty());
+		assert!(
+			publish(&mut scope, &validator, bundle)
+				.await
+				.unwrap_err()
+				.to_string()
+				.contains("at most 3600")
+		);
+		assert!(scope.trace.is_empty());
+	}
+	// Direct env configurations keep their existing deadline range.
+	entry
+		.config
+		.as_object_mut()
+		.unwrap()
+		.remove("provider_credential");
+	validator.validate_in(&entry, true).unwrap();
+}

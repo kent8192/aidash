@@ -383,30 +383,14 @@ impl aidash_application::provider_access::ProviderAccess for AdmittedAccess {
 				Error::Invalid("Provider Credential Store is not configured".into())
 			})?;
 		if context.run.is_none() {
-			if context.tenant.is_empty() || context.maintenance.is_none() {
-				return Err(Error::Invalid(
-					"Provider Credential requires a local Tenant and maintenance purpose".into(),
-				));
-			}
-			let provider = aidash_domain::provider_credentials::Provider::parse(provider)?;
-			let mut scope = service.repository.begin(&context.tenant).await?;
-			let id = scope
-				.bindings()
-				.await?
-				.into_iter()
-				.find(|binding| binding.provider == provider)
-				.and_then(|binding| binding.provider_credential_id)
-				.ok_or_else(|| Error::Invalid("Provider Credential binding is missing".into()))?;
-			scope.commit().await?;
-			let mut resolved = context.clone();
-			resolved.provider_credential_id = Some(id);
 			return TenantAccess {
 				environment: EnvironmentAccess {
 					credentials: crate::bootstrap::environment_credentials(),
 				},
 				repository: service.repository.clone(),
+				issuer: self.store.capability_issuer.clone(),
 			}
-			.resolve(&resolved, endpoint, source)
+			.resolve(context, endpoint, source)
 			.await;
 		}
 		let run = context.run.expect("Run was checked above");
@@ -443,12 +427,14 @@ impl aidash_application::provider_access::ProviderAccess for AdmittedAccess {
 			run: Some(run),
 			maintenance: context.maintenance,
 			provider_credential_id: Some(pin.provider_credential_id),
+			inference: context.inference.clone(),
 		};
 		TenantAccess {
 			environment: EnvironmentAccess {
 				credentials: crate::bootstrap::environment_credentials(),
 			},
 			repository: service.repository.clone(),
+			issuer: self.store.capability_issuer.clone(),
 		}
 		.resolve(&context, endpoint, source)
 		.await

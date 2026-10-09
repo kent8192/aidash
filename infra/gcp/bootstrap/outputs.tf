@@ -2,6 +2,7 @@ output "configuration" {
   value = {
     project_id                 = var.project_id
     byok_project_id            = var.byok_project_id
+    broker_service_accounts    = { for id, account in google_service_account.broker : id => account.email }
     state_bucket               = google_storage_bucket.state.name
     release_bucket             = google_storage_bucket.releases.name
     registry                   = "us-central1-docker.pkg.dev/${var.project_id}/aidash"

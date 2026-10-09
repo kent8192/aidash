@@ -16,8 +16,73 @@ run "empty_has_no_hosts_or_dns" {
     error_message = "An unrequested environment must not be provisioned."
   }
   assert {
+    condition     = length(module.credential_broker) == 0
+    error_message = "Brokers require explicit Provider Credential enablement."
+  }
+  assert {
     condition     = google_compute_disk.preview_tls.name == "aidash-preview-tls" && google_compute_disk.preview_tls.size == 10
     error_message = "The preview TLS store must survive even when every PR is retired."
+  }
+}
+
+run "no_broker_in_preview" {
+  command = plan
+  variables {
+    environments = {
+      pr-137 = {
+        kind          = "pr"
+        incarnation   = "aaaaaaaaaaaa"
+        generation    = 1
+        running       = false
+        published     = false
+        spot          = true
+        bundle_object = "bundles/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.tar.gz"
+        bundle_sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        release_sha   = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    }
+    credential_brokers = {
+      pr-137 = {
+        enabled                      = true
+        byok_project_id              = "aidash-byok-fixture"
+        secret_prefix                = "aidash-pr-137-cred-"
+        broker_service_account_email = "aidash-pr-137-broker@aidash-fixture.iam.gserviceaccount.com"
+        image                        = "broker@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    }
+  }
+  expect_failures = [var.credential_brokers]
+}
+
+run "staging_uses_bootstrap_broker_sa" {
+  command = plan
+  variables {
+    environments = {
+      test = {
+        kind          = "test"
+        incarnation   = "aaaaaaaaaaaa"
+        generation    = 1
+        running       = false
+        published     = false
+        spot          = true
+        bundle_object = "bundles/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.tar.gz"
+        bundle_sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        release_sha   = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    }
+    credential_brokers = {
+      test = {
+        enabled                      = true
+        byok_project_id              = "aidash-byok-fixture"
+        secret_prefix                = "aidash-test-cred-"
+        broker_service_account_email = "aidash-test-broker@aidash-fixture.iam.gserviceaccount.com"
+        image                        = "broker@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    }
+  }
+  assert {
+    condition     = module.credential_broker["test"].service_account == var.credential_brokers["test"].broker_service_account_email
+    error_message = "Environment composition must consume the broker SA from bootstrap."
   }
 }
 

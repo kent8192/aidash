@@ -81,6 +81,26 @@ class LockTests(unittest.TestCase):
 
 
 class PlanTests(unittest.TestCase):
+    def test_broker_opt_in_is_forwarded_only_for_environments_in_current_intent(self):
+        with TemporaryDirectory() as directory:
+            terraform = Terraform.__new__(Terraform)
+            terraform.root = Path(directory)
+            terraform.configuration = dict.fromkeys(
+                ("project_id", "byok_project_id", "cloudflare_zone_id", "release_bucket", "deploy_service_account", "domain"), "fixture"
+            )
+            broker = {"enabled": True, "byok_project_id": "byok", "secret_prefix": "aidash-test-cred-", "broker_service_account_email": "aidash-test-broker@fixture.iam.gserviceaccount.com", "image": "digest"}
+            terraform.configuration["credential_brokers"] = {"test": broker, "retired": broker}
+            variables = []
+
+            def command(*args, **kwargs):
+                if "plan" in args:
+                    variables.append(json.loads((terraform.root / "controller.auto.tfvars.json").read_text()))
+                return b'{"resource_changes":[]}'
+
+            with patch("cloud.run", side_effect=command):
+                terraform.apply({"test": {"kind": "test"}})
+            self.assertEqual(variables[0]["credential_brokers"], {"test": broker})
+
     def apply(self, resource_type, actions, **authorization):
         with TemporaryDirectory() as directory:
             terraform = Terraform.__new__(Terraform)

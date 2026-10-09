@@ -379,6 +379,7 @@ async fn access_uses_the_admitted_tenant_id_and_never_falls_back_to_environment(
 			credentials: Arc::new(Env),
 		},
 		repository: Arc::new(repo),
+		issuer: None,
 	};
 	let source = Source::Tenant {
 		provider: "openrouter".into(),
@@ -388,6 +389,7 @@ async fn access_uses_the_admitted_tenant_id_and_never_falls_back_to_environment(
 		run: Some(Uuid::now_v7()),
 		maintenance: None,
 		provider_credential_id: Some(a.provider_credential.id),
+		inference: None,
 	};
 	assert!(matches!(
 		access

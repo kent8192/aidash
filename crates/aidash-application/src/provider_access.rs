@@ -13,6 +13,20 @@ pub struct Context {
 	pub maintenance: Option<MaintenancePurpose>,
 	/// Admission pins an ID, not a Secret Manager version or a mutable binding.
 	pub provider_credential_id: Option<Uuid>,
+	/// Approved per-invocation model and bounds; populated by the inference adapter.
+	pub inference: Option<Inference>,
+}
+#[derive(Debug, Clone)]
+pub struct Inference {
+	pub model: String,
+	pub operations: Vec<Operation>,
+	pub max_output_tokens: u32,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Operation {
+	Chat,
+	Discovery,
+	Embeddings,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MaintenancePurpose {
@@ -74,11 +88,20 @@ impl ProviderAccess for EnvironmentAccess {
 	}
 }
 
-/// Cloud calls inspect current metadata for the admitted ID. Plaintext reads and
-/// broker routing belong exclusively to Issue #137; this adapter fails closed.
+/// Worker-local minting port. It receives validated metadata, never Key Material.
+#[async_trait]
+pub trait TokenIssuer: Send + Sync {
+	async fn mint(
+		&self,
+		context: &Context,
+		credential: &aidash_domain::provider_credentials::ProviderCredential,
+	) -> Result<Access>;
+}
+/// Cloud calls reload current metadata for the admitted ID before each mint.
 pub struct TenantAccess {
 	pub environment: EnvironmentAccess,
 	pub repository: Arc<dyn crate::provider_credentials::Repository>,
+	pub issuer: Option<Arc<dyn TokenIssuer>>,
 }
 #[async_trait]
 impl ProviderAccess for TenantAccess {
@@ -96,10 +119,20 @@ impl ProviderAccess for TenantAccess {
 				"Provider Credential requires a local Tenant and Run or maintenance purpose".into(),
 			));
 		}
-		let id = context.provider_credential_id.ok_or_else(|| {
-			Error::Invalid("Provider Credential access has no resolved ID".into())
-		})?;
 		let mut scope = self.repository.begin(&context.tenant).await?;
+		let id = if context.run.is_some() {
+			context.provider_credential_id.ok_or_else(|| {
+				Error::Invalid("Provider Credential access has no resolved ID".into())
+			})?
+		} else {
+			scope
+				.bindings()
+				.await?
+				.into_iter()
+				.find(|binding| binding.tenant == context.tenant && binding.provider == provider)
+				.and_then(|binding| binding.provider_credential_id)
+				.ok_or_else(|| Error::Invalid("Provider Credential binding is missing".into()))?
+		};
 		let row = scope.get(id).await?;
 		if row.tenant != context.tenant
 			|| row.provider != provider
@@ -113,6 +146,10 @@ impl ProviderAccess for TenantAccess {
 		// a later binding change cannot alter the ID admitted for this Run.
 		row.require_active()?;
 		scope.commit().await?;
-		Err(Error::Invalid("credential broker not configured".into()))
+		self.issuer
+			.as_ref()
+			.ok_or_else(|| Error::Invalid("credential broker not configured".into()))?
+			.mint(context, &row)
+			.await
 	}
 }
