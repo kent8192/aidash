@@ -187,6 +187,8 @@ Configure a peer on **both** nodes in Settings. Each peer record contains the ot
 
 Every Agent retains `workspace_read` and `human_request`. The other Built-in tools are included by default and can be removed through `remove_default`. Cluster coordinators must retain `task_create`, `task_delegate` and `agent_discover`. The model's final text completes its task and publishes a final artifact. A coordinator must wait for its subtasks and synthesize their artifacts. Unresolved children require an explicit, audited abandonment before the parent can finish.
 
+Independent reads in one model response can run concurrently when both the Agent's `tool_parallelism` and the process's `AIDASH_TOOL_PARALLELISM` exceed one. See [parallel read batches](docs/features/parallel-read-batches.md).
+
 Tools are immutable Registry descriptors with provider-owned behavior and a JSON Schema for arguments. For an HTTP integration, register this configuration on its exact Node:
 
 ```json
