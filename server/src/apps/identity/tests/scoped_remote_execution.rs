@@ -4703,23 +4703,32 @@ impl ScopedWorkerProcess {
 		)
 	}
 	/// Run milestones are measured only after the process can claim work.
+	/// `/ready` covers only database connectivity: the probe listener starts
+	/// before the runtime tasks, so the worker slot's activation startup
+	/// recovery is awaited from the log, as in the other worker process
+	/// fixtures. That pass completes with the broker transport or in its
+	/// database fallback, and either way the slot can then claim the Run.
 	async fn ready(&mut self) {
 		let client = reqwest::Client::builder()
 			.timeout(std::time::Duration::from_millis(500))
 			.build()
 			.unwrap();
+		let mut probed = false;
 		loop {
 			assert!(
 				self.child.try_wait().unwrap().is_none(),
 				"scoped worker exited before readiness: {}",
 				self.report()
 			);
-			if client
-				.get(format!("http://{}/ready", self.probe))
-				.send()
-				.await
-				.is_ok_and(|response| response.status().is_success())
-			{
+			if !probed {
+				probed = client
+					.get(format!("http://{}/ready", self.probe))
+					.send()
+					.await
+					.is_ok_and(|response| response.status().is_success());
+			}
+			let log = std::fs::read_to_string(&self.log).unwrap_or_default();
+			if probed && log.contains("activation startup recovery complete") {
 				break;
 			}
 			assert!(
