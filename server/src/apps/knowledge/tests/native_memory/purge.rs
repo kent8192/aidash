@@ -69,6 +69,20 @@ async fn purge_erases_transitive_quotes_after_history_retention_expires(
 	memory::mutate(&store, &Actor::Operator, input)
 		.await
 		.unwrap();
+	for id in [chain[0].id, independent] {
+		memory::operate(
+			&store,
+			&Actor::Operator,
+			memory::Operation {
+				operation_id: Uuid::now_v7(),
+				provider: reference("short-history"),
+				bank: bank.clone(),
+				action: memory::Action::Pin { id },
+			},
+		)
+		.await
+		.unwrap();
+	}
 	let mut deletion = mutation(
 		&bank,
 		Change::Delete {
@@ -161,6 +175,20 @@ async fn purge_erases_transitive_quotes_after_history_retention_expires(
 	.await
 	.unwrap();
 	assert_eq!(state, "purged");
+	let retained: Vec<Uuid> = native::query_scalar(
+		&Query::select()
+			.column(Alias::new("unit_id"))
+			.from(Alias::new("memory_unit_retention"))
+			.to_string(PostgresQueryBuilder),
+	)
+	.scalar_all(&store.pool)
+	.await
+	.unwrap();
+	assert_eq!(
+		retained,
+		vec![independent],
+		"physical purge erases the source's Usage and recall state, preserving unrelated Units"
+	);
 }
 
 #[rstest]
