@@ -16,6 +16,7 @@ import sys
 import tarfile
 import time
 import urllib.request
+from urllib.error import HTTPError
 
 from policy import IMAGE_KINDS, idle_due, meaningful_request
 
@@ -353,6 +354,34 @@ def configuration(host):
             ),
         )
     identity = json.loads(path.read_text())
+    try:
+        providers = json.loads(request(
+            "http://metadata.google.internal/computeMetadata/v1/instance/attributes/aidash-provider-credentials"
+        ))
+    except HTTPError as error:
+        if error.code != 404:
+            raise
+        providers = None  # Existing hosts without BYOK metadata retain direct access.
+    if providers is not None:
+        if (
+            not isinstance(providers, dict)
+            or set(providers) != {"store", "broker"}
+            or not isinstance(providers["store"], dict)
+            or set(providers["store"]) != {"byok_project_id", "environment_id", "fingerprint_env"}
+            or not isinstance(providers["broker"], dict)
+            or set(providers["broker"]) != {"endpoint", "issuer", "audience", "kid"}
+        ):
+            raise ValueError("invalid managed Provider Credential configuration")
+    provider_settings = RUN / "provider-settings" / "settings.json"
+    # Bootstrap inherits umask 077; the descriptor-only bind mount must be
+    # traversable by the application's unprivileged UID 10001.
+    provider_settings.parent.mkdir(parents=True, exist_ok=True)
+    provider_settings.parent.chmod(0o755)
+    private(
+        provider_settings,
+        json.dumps({"provider_credentials": providers or {"store": None, "broker": None}}),
+        0o644,  # Descriptor only; fingerprint is an environment reference, never Key Material.
+    )
     result = dict(
         external,
         DATABASE_URL=f"postgres://aidash:{identity['database']}@127.0.0.1:5432/aidash_a",
@@ -368,6 +397,7 @@ def configuration(host):
         AIDASH_CAPABILITY_PROFILE=str(ROOT / "profile.json"),
         AIDASH_MEMORY_RECOVERY_DIR=str(ROOT / "memory-recovery"),
         AIDASH_CORE_RUNNER_TOKEN=identity["runner"],
+        AIDASH_PROVIDER_CREDENTIAL_SETTINGS=str(provider_settings),
     )
     private(RUN / "app.env", environment_file(result))
     private(
@@ -589,6 +619,8 @@ WantedBy=multi-user.target
         f"{memory}:{memory}",
         "-v",
         f"{ROOT}/profile.json:{ROOT}/profile.json:ro",
+        "-v",
+        f"{RUN}/provider-settings:{RUN}/provider-settings:ro",
     ]
     # Migrate explicitly; a failed migration never drops/recreates a retained database.
     command(

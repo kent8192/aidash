@@ -144,9 +144,10 @@ resource "google_compute_instance" "host" {
     enable_integrity_monitoring = true
   }
   metadata = {
-    enable-oslogin         = "TRUE"
-    block-project-ssh-keys = "TRUE"
-    serial-port-enable     = "FALSE"
+    aidash-provider-credentials = jsonencode(local.provider_credentials)
+    enable-oslogin              = "TRUE"
+    block-project-ssh-keys      = "TRUE"
+    serial-port-enable          = "FALSE"
     startup-script = templatefile("${path.module}/startup.sh.tftpl", {
       project  = var.project_id
       bucket   = var.release_bucket
@@ -175,6 +176,17 @@ resource "google_compute_instance" "host" {
 output "instance" { value = local.name }
 output "zone" { value = local.zone }
 output "hostname" { value = var.hostname }
+locals {
+  provider_credentials = var.broker != null && var.byok_project_id != "" ? {
+    store = {
+      byok_project_id = var.byok_project_id
+      environment_id  = var.environment_id
+      fingerprint_env = "AIDASH_SECRET_PROVIDER_FINGERPRINT"
+    }
+    broker = var.broker
+  } : null
+}
+output "provider_credentials" { value = local.provider_credentials }
 output "external_ip" { value = try(google_compute_instance.host[0].network_interface[0].access_config[0].nat_ip, "") }
 output "runtime_secret" { value = google_secret_manager_secret.runtime.secret_id }
 output "runtime_service_account" { value = google_service_account.runtime.email }

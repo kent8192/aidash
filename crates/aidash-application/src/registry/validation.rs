@@ -151,6 +151,9 @@ impl DefinitionValidation {
 				));
 				}
 				m.request_timeout()?;
+				if m.provider_credential.is_some() {
+					aidash_domain::provider_credentials::validate_model_id(&m.model_id)?;
+				}
 				for route in &m.media_routes {
 					if route.tag.is_empty()
 						|| !route
@@ -273,6 +276,9 @@ impl DefinitionValidation {
 		config: &aidash_domain::semantic::EmbeddingConfig,
 		local: bool,
 	) -> Result<()> {
+		if config.provider_credential.is_some() {
+			aidash_domain::provider_credentials::validate_model_id(&config.model)?;
+		}
 		self.provider_source(
 			&config.endpoint,
 			&config.provider,

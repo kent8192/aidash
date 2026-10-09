@@ -835,3 +835,93 @@ async fn byok_timeout_is_validated_on_registration_import_and_consumption() {
 		.remove("provider_credential");
 	validator.validate_in(&entry, true).unwrap();
 }
+
+#[rstest]
+#[case("model", "model_id")]
+#[case("embedding", "model")]
+#[tokio::test]
+async fn byok_model_scope_is_validated_before_registration_and_model_import(
+	#[case] kind: &str,
+	#[case] model_key: &str,
+) {
+	let validator = validation().with_provider_credentials(true);
+	let config = if kind == "model" {
+		json!({"provider":"openrouter","model_id":"vendor/model","endpoint":"https://openrouter.ai/api/v1","provider_credential":"openrouter","context_window":32768,"max_output_tokens":4096,"modalities":["text"],"cost":{}})
+	} else {
+		json!({"provider":"openrouter","endpoint":"https://openrouter.ai/api/v1","provider_credential":"openrouter","model":"vendor/model","model_version":"1","dimensions":3})
+	};
+	let mut entry = definition("byok-model-scope", kind, config);
+	entry.config[model_key] = json!("m".repeat(256));
+	for local in [true, false] {
+		validator.validate_in(&entry, local).unwrap();
+	}
+	for invalid in [
+		"m".repeat(257),
+		"vendor/../model".into(),
+		"vendor//model".into(),
+	] {
+		entry.config[model_key] = json!(invalid);
+		for local in [true, false] {
+			assert!(
+				validator
+					.validate_in(&entry, local)
+					.unwrap_err()
+					.to_string()
+					.contains("at most 256")
+			);
+		}
+		let mut scope = Scope::default();
+		assert!(
+			register_definition(&mut scope, &validator, &entry, "aidash://home")
+				.await
+				.is_err()
+		);
+		// Embedding definitions are registered directly, not installed packages.
+		if kind == "model" {
+			let mut bundle = package();
+			bundle.entity = entry.clone();
+			let value = serde_json::to_value(&bundle).unwrap();
+			let hash = digest(&value);
+			let plan = prepare_install(
+				PackageSnapshot {
+					manifest: value.clone(),
+					source: value.to_string(),
+					digest: hash.clone(),
+				},
+				&hash,
+				json!({}),
+			)
+			.unwrap();
+			assert!(
+				install(
+					&mut scope,
+					&validator,
+					plan,
+					"aidash://home",
+					&entry.id,
+					&entry.version
+				)
+				.await
+				.unwrap_err()
+				.to_string()
+				.contains("at most 256")
+			);
+			assert!(
+				publish(&mut scope, &validator, bundle)
+					.await
+					.unwrap_err()
+					.to_string()
+					.contains("at most 256")
+			);
+		}
+		assert!(scope.trace.is_empty());
+		assert!(scope.events.is_empty());
+	}
+	// Existing direct-env definitions retain their prior model-ID contract.
+	entry
+		.config
+		.as_object_mut()
+		.unwrap()
+		.remove("provider_credential");
+	validator.validate_in(&entry, true).unwrap();
+}

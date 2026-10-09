@@ -661,6 +661,7 @@ def reconcile(config, store):
                     or not entry.get("applied")
                     or entry["applied"].get("release_sha") != entry["sha"]
                     or (entry.get("force") and entry.get("start_pending"))
+                    or entry.get("provider_credentials") != (output or {}).get("provider_credentials")
                 )
                 if previous and previous["running"]:
                     if entry.get("keepalive_at", 0) > entry.get("keepalive_applied", 0):
@@ -734,6 +735,7 @@ def reconcile(config, store):
                             generation,
                             status="ready",
                             start_pending=False,
+                            provider_credentials=output.get("provider_credentials"),
                         )
                         continue
                 if not entry.get("release"):
@@ -829,6 +831,7 @@ def reconcile(config, store):
                     published=True,
                     status="ready",
                     keepalive_applied=entry.get("keepalive_at", 0),
+                    provider_credentials=output.get("provider_credentials"),
                 )
                 print(
                     f"Ready: {identity} https://{output['hostname']} source={entry['sha']}"

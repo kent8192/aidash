@@ -14,6 +14,12 @@ run "retained_disks_and_spot_policy" {
   variables {
     environment_id = "test"
     hostname       = "test.aidash.run"
+    broker = {
+      endpoint = "https://broker.run.app/api/v1"
+      issuer   = "aidash"
+      audience = "test"
+      kid      = "kms-version"
+    }
     environment = {
       kind          = "test"
       incarnation   = "aaaaaaaaaaaa"
@@ -41,6 +47,10 @@ run "retained_disks_and_spot_policy" {
   assert {
     condition     = google_compute_firewall.iap.source_ranges == toset(["35.235.240.0/20"])
     error_message = "SSH must be available through IAP only."
+  }
+  assert {
+    condition     = jsondecode(google_compute_instance.host[0].metadata["aidash-provider-credentials"]).broker == var.broker && jsondecode(google_compute_instance.host[0].metadata["aidash-provider-credentials"]).store.environment_id == var.environment_id && output.provider_credentials.store.fingerprint_env == "AIDASH_SECRET_PROVIDER_FINGERPRINT"
+    error_message = "The managed host must receive Store/broker settings through non-secret metadata."
   }
   assert {
     condition = (

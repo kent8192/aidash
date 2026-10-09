@@ -233,6 +233,37 @@ class ReconcileTests(unittest.TestCase):
         self.assertNotIn(("start", "test"), self.calls)
         self.assertFalse(self.cloud.managed["test"]["published"])
 
+    def test_provider_descriptor_change_waits_for_work_then_redeploys_once_without_power(self):
+        self.request()
+        self.reconcile()
+        outputs = self.cloud.outputs
+        descriptor = {"store": {"environment_id": "test"}, "broker": {"endpoint": "https://broker.run.app/api/v1", "kid": "version-1"}}
+        def managed_outputs():
+            values = outputs()
+            values["test"]["provider_credentials"] = descriptor if self.cloud.brokers.get("test", {}).get("enabled") else None
+            return values
+        with patch.object(self.cloud, "outputs", side_effect=managed_outputs):
+            for enabled in [True, False]:
+                self.config["credential_brokers"] = {"test": {"enabled": enabled, "image": "fixture"}}
+                self.calls.clear()
+                self.busy = True
+                self.reconcile()
+                self.assertEqual(self.store.state["environments"]["test"]["status"], "waiting_for_active_work")
+                self.assertFalse(any(call[0] in {"bootstrap", "start", "stop"} for call in self.calls))
+                self.busy = False
+                self.calls.clear()
+                self.reconcile()
+                entry = self.store.state["environments"]["test"]
+                self.assertEqual(entry["status"], "ready")
+                self.assertEqual(entry["provider_credentials"], descriptor if enabled else None)
+                self.assertEqual([call for call in self.calls if call[0] == "bootstrap"], [("bootstrap", "test", False)])
+                self.assertFalse(any(call[0] in {"start", "stop"} for call in self.calls))
+                self.calls.clear()
+                self.cloud.plans.clear()
+                self.reconcile()
+                self.assertEqual(self.cloud.plans, [])
+                self.assertFalse(any(call[0] == "bootstrap" for call in self.calls))
+
     def test_resumed_and_replaced_hosts_wait_for_their_boot_script(self):
         self.request()
         self.reconcile()

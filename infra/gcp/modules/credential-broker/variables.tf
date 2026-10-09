@@ -30,7 +30,20 @@ variable "secret_prefix" {
     error_message = "The BYOK secret prefix must match this environment."
   }
 }
-variable "runtime_service_account" { type = string }
+variable "runtime_service_account" {
+  description = "Optional worker signer for standalone composition. Roots that feed broker settings back to the worker bind it after both modules exist."
+  type        = string
+  default     = null
+  validation {
+    condition     = !var.enabled || !var.bind_runtime_signer || var.runtime_service_account != null
+    error_message = "Standalone enabled brokers require a worker runtime signer account."
+  }
+}
+variable "bind_runtime_signer" {
+  description = "Bind the worker signer inside this module; false when the composing root owns that binding."
+  type        = bool
+  default     = true
+}
 variable "deploy_service_account" { type = string }
 variable "broker_service_account_email" {
   description = "broker_service_accounts[environment_id] from human-run bootstrap; #137 owns the SA and BYOK read grant."

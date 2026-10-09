@@ -73,15 +73,8 @@ impl TokenIssuer for CapabilityIssuer {
 		let request = context.inference.as_ref().ok_or_else(|| {
 			Error::Invalid("Capability Token has no approved inference scope".into())
 		})?;
-		if request.model.is_empty()
-			|| request.model.len() > 256
-			|| request.model.split('/').any(|s| {
-				s.is_empty()
-					|| s == "." || s == ".."
-					|| !s
-						.bytes()
-						.all(|b| b.is_ascii_alphanumeric() || b"-_.:".contains(&b))
-			}) || request.operations.is_empty()
+		aidash_domain::provider_credentials::validate_model_id(&request.model)?;
+		if request.operations.is_empty()
 			|| request.operations.len() > 3
 			|| request
 				.operations

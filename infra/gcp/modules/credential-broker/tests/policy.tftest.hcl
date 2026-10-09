@@ -49,6 +49,10 @@ run "production" {
     error_message = "Run as the bootstrap broker SA; the runtime can only sign."
   }
   assert {
+    condition     = google_cloud_run_v2_service.broker[0].template[0].max_instance_request_concurrency == 4 && google_cloud_run_v2_service.broker[0].template[0].containers[0].resources[0].limits["memory"] == "1Gi"
+    error_message = "Media buffering requires bounded per-instance concurrency and explicit memory."
+  }
+  assert {
     condition     = google_service_account_iam_member.deploy[0].service_account_id == "projects/${var.project_id}/serviceAccounts/${var.broker_service_account_email}" && google_service_account_iam_member.deploy[0].role == "roles/iam.serviceAccountUser" && google_service_account_iam_member.deploy[0].member == "serviceAccount:${var.deploy_service_account}"
     error_message = "Deploy automation may act as the supplied application-project SA."
   }

@@ -39,7 +39,7 @@ resource "google_kms_crypto_key" "capability" {
   }
 }
 resource "google_kms_crypto_key_iam_member" "signer" {
-  count         = local.enabled ? 1 : 0
+  count         = local.enabled && var.bind_runtime_signer ? 1 : 0
   crypto_key_id = google_kms_crypto_key.capability[0].id
   role          = "roles/cloudkms.signer"
   member        = "serviceAccount:${var.runtime_service_account}"
@@ -58,8 +58,9 @@ resource "google_cloud_run_v2_service" "broker" {
   invoker_iam_disabled = var.invoker_iam_disabled
   deletion_protection  = false
   template {
-    service_account = var.broker_service_account_email
-    timeout         = "${var.timeout_secs}s"
+    service_account                  = var.broker_service_account_email
+    timeout                          = "${var.timeout_secs}s"
+    max_instance_request_concurrency = 4
     scaling {
       min_instance_count = coalesce(var.min_instances, var.environment_kind == "production" ? 1 : 0)
       max_instance_count = var.max_instances
@@ -67,6 +68,8 @@ resource "google_cloud_run_v2_service" "broker" {
     // No VPC connector or direct VPC egress: use Cloud Run's default egress.
     containers {
       image = var.image
+      // Bound buffered 16 MiB requests and their JSON/relay copies per instance.
+      resources { limits = { cpu = "1", memory = "1Gi" } }
       ports { container_port = 8080 }
       dynamic "env" {
         for_each = {
@@ -97,3 +100,4 @@ output "worker_configuration" {
   } : null
 }
 output "service_account" { value = local.enabled ? var.broker_service_account_email : null }
+output "signing_key" { value = local.enabled ? google_kms_crypto_key.capability[0].id : null }

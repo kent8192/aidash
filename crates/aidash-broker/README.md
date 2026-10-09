@@ -140,19 +140,31 @@ separate from this implementation. No Cloud infrastructure has been applied.
 
 Workers configure `[provider_credentials.broker]` with the module's
 `worker_configuration` (`endpoint`, `issuer`, `audience`, `kid`). Its audience
-must equal the Store's environment. Startup composes `MetadataTokenSource`,
+must equal the Store's environment. Managed environments put the non-secret
+Store/broker descriptor in VM metadata. Host bootstrap writes it into a
+read-only mounted settings directory and sets `AIDASH_PROVIDER_CREDENTIAL_SETTINGS`;
+Reinhardt composes that source above TOML defaults. Fingerprints remain runtime
+Secret references. Enablement, key-version changes and disablement wait for active
+work to drain before reloading application settings, without restarting VM power.
+Startup composes `MetadataTokenSource`,
 `KmsTokenSigner` and `CapabilityIssuer` in the worker process. `TenantAccess`
 reloads active metadata and the current numeric pin on every call; it uses the
 Run's admitted ID or the current local Maintenance binding. Inference adapters
 attach the exact model, operation and approved output bound immediately before
 resolution. BYOK model deadlines above 3600 seconds are rejected at the shared
 Registry registration/import/Marketplace validation boundary and before use.
+BYOK model IDs use catalog path segments with a maximum of 256 bytes, checked
+by the same domain rule at Registry admission and capability minting.
 Env-based deadlines and per-call direct key resolution retain their behavior.
 
 Cloud Run uses internal ingress with its invoker IAM check disabled and default
 egress. Production defaults to 1 minimum instance; other environments use 0.
 Maximum instances default to 10 and timeout to 3600 seconds. These are module
-inputs. The existing nonproduction environments root remains nonproduction;
+inputs. Each instance explicitly uses 1 GiB of memory, one CPU and a maximum
+of four concurrent requests to bound buffered media and JSON parsing copies.
+Bootstrap rejects overlapping credential prefixes such as `prod` and
+`prod-cred-blue`; environment composition also checks managed environments that
+have no broker. The existing nonproduction environments root remains nonproduction;
 its opt-in `credential_brokers` configuration is forwarded by the controller.
 The module can also be composed by a production root. PR previews cannot enable
 a broker. Apply the human-run bootstrap with #136's BYOK roles and #137's

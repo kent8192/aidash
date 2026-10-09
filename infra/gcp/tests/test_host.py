@@ -5,12 +5,14 @@ import bz2
 import hashlib
 import io
 import json
+import os
 from pathlib import Path
 import sys
 import tarfile
 from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
+from urllib.error import HTTPError
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "control"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "runtime"))
@@ -39,11 +41,50 @@ class HostTests(unittest.TestCase):
 
     def test_memory_recovery_directory_follows_the_retained_home_identity(self):
         secret = {"payload": {"data": host.base64.b64encode(json.dumps({"AIDASH_OIDC_CLIENT_ID": "fixture-client", "AIDASH_OIDC_CLIENT_SECRET": "fixture-secret"}).encode()).decode()}}
-        with patch.object(host, "request", return_value=json.dumps(secret).encode()), patch.object(host, "cloud_token", return_value="fixture"):
+        def request(url, *args):
+            return b"null" if "instance/attributes/aidash-provider-credentials" in url else json.dumps(secret).encode()
+        with patch.object(host, "request", side_effect=request), patch.object(host, "cloud_token", return_value="fixture"):
             host.configuration({"project": "fixture", "secret": "home-a", "hostname": "example.invalid"})
         values = dict(line.split("=", 1) for line in (host.RUN / "app.env").read_text().splitlines())
         self.assertEqual(values["AIDASH_MEMORY_RECOVERY_DIR"], str(host.ROOT / "memory-recovery"))
         self.assertEqual(values["AIDASH_NODE_ID"], "aidash://home-a")
+
+    def test_managed_provider_descriptor_reaches_worker_without_key_material(self):
+        provider = {
+            "store": {"byok_project_id": "aidash-byok-fixture", "environment_id": "test", "fingerprint_env": "AIDASH_SECRET_PROVIDER_FINGERPRINT"},
+            "broker": {"endpoint": "https://broker.run.app/api/v1", "issuer": "aidash", "audience": "test", "kid": "kms-version"},
+        }
+        secret = {"payload": {"data": host.base64.b64encode(json.dumps({"AIDASH_OIDC_CLIENT_ID": "fixture-client", "AIDASH_OIDC_CLIENT_SECRET": "oauth-secret-canary", "AIDASH_SECRET_PROVIDER_FINGERPRINT": "fingerprint-canary"}).encode()).decode()}}
+        def request(url, *args):
+            return json.dumps(provider if "instance/attributes/aidash-provider-credentials" in url else secret).encode()
+        with patch.object(host, "request", side_effect=request), patch.object(host, "cloud_token", return_value="fixture"):
+            previous_umask = os.umask(0o077)
+            try:
+                host.configuration({"project": "fixture", "secret": "test", "hostname": "example.invalid"})
+            finally:
+                os.umask(previous_umask)
+            target = host.RUN / "provider-settings/settings.json"
+            self.assertEqual(json.loads(target.read_text()), {"provider_credentials": provider})
+            self.assertEqual(target.stat().st_mode & 0o777, 0o644)
+            self.assertEqual(target.parent.stat().st_mode & 0o777, 0o755)
+            self.assertNotIn("canary", target.read_text())
+            self.assertIn(f"AIDASH_PROVIDER_CREDENTIAL_SETTINGS={target}\n", (host.RUN / "app.env").read_text())
+            provider = None
+            host.configuration({"project": "fixture", "secret": "test", "hostname": "example.invalid"})
+            self.assertEqual(json.loads(target.read_text()), {"provider_credentials": {"store": None, "broker": None}})
+
+    def test_legacy_metadata_absence_and_external_source_allowlist(self):
+        external = {"AIDASH_OIDC_CLIENT_ID": "fixture", "AIDASH_OIDC_CLIENT_SECRET": "fixture"}
+        def request(url, *args):
+            if "instance/attributes/aidash-provider-credentials" in url:
+                raise HTTPError(url, 404, "absent", {}, None)
+            return json.dumps({"payload": {"data": host.base64.b64encode(json.dumps(external).encode()).decode()}}).encode()
+        with patch.object(host, "request", side_effect=request), patch.object(host, "cloud_token", return_value="fixture"):
+            host.configuration({"project": "fixture", "secret": "test", "hostname": "example.invalid"})
+            self.assertEqual(json.loads((host.RUN / "provider-settings/settings.json").read_text())["provider_credentials"], {"store": None, "broker": None})
+            external["AIDASH_PROVIDER_CREDENTIAL_SETTINGS"] = "/untrusted/settings.json"
+            with self.assertRaisesRegex(ValueError, "runtime secret may contain only"):
+                host.configuration({"project": "fixture", "secret": "test", "hostname": "example.invalid"})
 
     def record_previous(self, observed_at, busy):
         (self.directory / "last-active").write_text("100")

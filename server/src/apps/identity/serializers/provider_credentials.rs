@@ -1,6 +1,8 @@
 //! Provider Credential metadata management contracts; no public Key Material input.
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+mod settings;
+pub(crate) use settings::ManagedSource;
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 #[schemars(rename = "ProviderCredentialRevision")]

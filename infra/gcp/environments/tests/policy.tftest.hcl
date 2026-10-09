@@ -1,4 +1,15 @@
-mock_provider "google" {}
+mock_provider "google" {
+  mock_resource "google_cloud_run_v2_service" { defaults = { uri = "https://broker.run.app" } }
+  mock_resource "google_service_account" {
+    defaults = {
+      name  = "projects/aidash-fixture/serviceAccounts/runtime@aidash-fixture.iam.gserviceaccount.com"
+      email = "runtime@aidash-fixture.iam.gserviceaccount.com"
+    }
+  }
+  mock_data "google_kms_crypto_key_version" {
+    defaults = { public_key = [{ pem = "fixture-public-key", algorithm = "EC_SIGN_ED25519" }] }
+  }
+}
 mock_provider "cloudflare" {}
 
 variables {
@@ -55,7 +66,7 @@ run "no_broker_in_preview" {
 }
 
 run "staging_uses_bootstrap_broker_sa" {
-  command = plan
+  command = apply
   variables {
     environments = {
       test = {
@@ -84,6 +95,41 @@ run "staging_uses_bootstrap_broker_sa" {
     condition     = module.credential_broker["test"].service_account == var.credential_brokers["test"].broker_service_account_email
     error_message = "Environment composition must consume the broker SA from bootstrap."
   }
+  assert {
+    condition     = google_kms_crypto_key_iam_member.broker_signer["test"].member == "serviceAccount:${module.environment["test"].runtime_service_account}" && google_kms_crypto_key_iam_member.broker_signer["test"].role == "roles/cloudkms.signer" && google_kms_crypto_key_iam_member.broker_signer["test"].crypto_key_id == module.credential_broker["test"].signing_key
+    error_message = "Only the matching VM runtime may sign capabilities for its broker."
+  }
+  assert {
+    condition     = output.environments["test"].provider_credentials.broker == module.credential_broker["test"].worker_configuration && output.environments["test"].provider_credentials.store.byok_project_id == var.byok_project_id && output.environments["test"].provider_credentials.store.environment_id == "test" && output.environments["test"].provider_credentials.broker.endpoint == "https://broker.run.app/api/v1"
+    error_message = "Managed VM output must carry the actual Store and broker worker settings."
+  }
+}
+
+run "broker_must_use_the_environment_store_project" {
+  command = plan
+  variables {
+    environments = { test = {
+      kind          = "test"
+      incarnation   = "aaaaaaaaaaaa"
+      generation    = 1
+      running       = false
+      published     = false
+      spot          = true
+      bundle_object = "bundles/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.tar.gz"
+      bundle_sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      release_sha   = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    } }
+    credential_brokers = {
+      test = {
+        enabled                      = true
+        byok_project_id              = "aidash-byok-other"
+        secret_prefix                = "aidash-test-cred-"
+        broker_service_account_email = "aidash-test-broker@aidash-fixture.iam.gserviceaccount.com"
+        image                        = "broker@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    }
+  }
+  expect_failures = [var.credential_brokers]
 }
 
 run "stopped_retains_host_and_disks_without_dns" {
