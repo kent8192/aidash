@@ -55,6 +55,7 @@ fn disclosure() -> Disclosure {
 }
 struct Saved {
 	permits: Vec<DispatchPermit>,
+	completed: BTreeMap<Uuid, (AttemptStatus, Option<BTreeMap<String, Probability>>)>,
 	answers: usize,
 	evidence: Vec<Evidence>,
 	applied: usize,
@@ -63,6 +64,16 @@ struct Saved {
 struct Fixture {
 	events: usize,
 	corrupt_boundary: bool,
+	recovery_run: Option<Uuid>,
+	run_revision: i64,
+	plan_revision: usize,
+	binding_restrictions: Restrictions,
+	corrupt_bound_config: bool,
+	omit_recovery: bool,
+	revoke_in_reserve: bool,
+	advance_on_reserve: Option<DateTime<Utc>>,
+	clock: Mutex<Option<DateTime<Utc>>>,
+	setup_error: Option<u8>,
 	configuration_digest: String,
 	provider_implementation: String,
 	saved: Mutex<Saved>,
@@ -99,10 +110,21 @@ impl Fixture {
 		Self {
 			events: 10,
 			corrupt_boundary: false,
+			recovery_run: None,
+			run_revision: 1,
+			plan_revision: 0,
+			binding_restrictions: Restrictions::default(),
+			corrupt_bound_config: false,
+			omit_recovery: false,
+			revoke_in_reserve: false,
+			advance_on_reserve: None,
+			clock: Mutex::new(None),
+			setup_error: None,
 			configuration_digest: config(mode).digest().unwrap(),
 			provider_implementation: "node-decision-adapter:23".into(),
 			saved: Mutex::new(Saved {
 				permits: vec![],
+				completed: BTreeMap::new(),
 				answers: 0,
 				evidence: vec![],
 				applied: 0,
@@ -149,6 +171,15 @@ impl Fixture {
 impl DecisionAuthority for Fixture {
 	async fn check(&self, _: &Boundary, _: &DeciderPin, _: &[SourcePin]) -> Result<Approval> {
 		let check = self.checks.fetch_add(1, Ordering::SeqCst);
+		if self.setup_error == Some(0) && check > 0 {
+			return Ok(Approval {
+				restrictions: Restrictions {
+					preserve_recent: 5,
+					..Default::default()
+				},
+				state_retention: Default::default(),
+			});
+		}
 		if self.denied.load(Ordering::SeqCst) || self.deny_after_initial && check > 0 {
 			return Err(Error::Forbidden);
 		}
@@ -187,11 +218,73 @@ impl DecisionAuthority for Fixture {
 #[async_trait]
 impl DecisionJournal for Fixture {
 	fn now(&self) -> DateTime<Utc> {
-		self.commit_time.unwrap_or_else(Utc::now)
+		self.clock.lock().unwrap().unwrap_or_else(|| {
+			if self.calls.load(Ordering::SeqCst) > 0 && self.in_flight.load(Ordering::SeqCst) == 0 {
+				self.commit_time.unwrap_or_else(Utc::now)
+			} else {
+				Utc::now()
+			}
+		})
 	}
-	async fn reserve(&self, record: &DispatchRecord) -> Result<DispatchPermit> {
+	async fn recover(&self, decision: Uuid, _: &Boundary) -> Result<Vec<RecoveredAttempt>> {
+		if self.omit_recovery {
+			return Ok(vec![]);
+		}
+		let saved = self.saved.lock().unwrap();
+		if saved
+			.evidence
+			.iter()
+			.any(|e| e.id == decision && e.outcome != Outcome::Rejected)
+		{
+			return Err(Error::Conflict(
+				"decision already committed; reload Run".into(),
+			));
+		}
+		Ok(saved
+			.permits
+			.iter()
+			.filter(|p| p.record.decision == decision)
+			.map(|permit| {
+				let (status, answers) = saved
+					.completed
+					.get(&permit.record.attempt)
+					.cloned()
+					.unwrap_or((AttemptStatus::Uncertain, None));
+				RecoveredAttempt {
+					permit: permit.clone(),
+					status,
+					answers,
+				}
+			})
+			.collect())
+	}
+	async fn reserve(&self, record: &DispatchRecord) -> Result<Reservation> {
 		assert!(self.preparations.load(Ordering::SeqCst) > 0);
+		if let Some(kind) = self.setup_error {
+			if kind == 1 {
+				return Err(Error::Conflict("worker lease lost".into()));
+			}
+			if kind == 2 {
+				return Err(Error::External("journal unavailable".into()));
+			}
+		}
 		let mut saved = self.saved.lock().unwrap();
+		if let Some(permit) = saved
+			.permits
+			.iter()
+			.find(|p| p.record.attempt == record.attempt)
+		{
+			let (status, answers) = saved
+				.completed
+				.get(&record.attempt)
+				.cloned()
+				.unwrap_or((AttemptStatus::Uncertain, None));
+			return Ok(Reservation::Recovered(RecoveredAttempt {
+				permit: permit.clone(),
+				status,
+				answers,
+			}));
+		}
 		if saved.permits.len() >= self.budget {
 			return Err(Error::Forbidden);
 		}
@@ -212,7 +305,13 @@ impl DecisionJournal for Fixture {
 			permit.record.request_digest = format!("sha256:{}", "b".repeat(64));
 		}
 		saved.permits.push(permit.clone());
-		Ok(permit)
+		if self.revoke_in_reserve {
+			self.denied.store(true, Ordering::SeqCst);
+		}
+		if let Some(now) = self.advance_on_reserve {
+			*self.clock.lock().unwrap() = Some(now);
+		}
+		Ok(Reservation::Fresh(permit))
 	}
 	async fn finish_attempt(
 		&self,
@@ -232,6 +331,11 @@ impl DecisionJournal for Fixture {
 			return Err(Error::External("journal failed".into()));
 		}
 		assert_eq!(answers.is_some(), status == AttemptStatus::Answered);
+		self.saved
+			.lock()
+			.unwrap()
+			.completed
+			.insert(permit.record.attempt, (status, answers.cloned()));
 		if answers.is_some() {
 			self.saved.lock().unwrap().answers += 1;
 		}
@@ -312,7 +416,10 @@ impl DecisionProvider for Fixture {
 		Ok(questions
 			.iter()
 			.map(|(id, q)| PreparedRequest {
-				body: serde_json::to_vec(&json!({"state":state,"question":q})).unwrap(),
+				body: serde_json::to_vec(
+					&json!({"state":state,"question":q,"plan_revision":self.plan_revision}),
+				)
+				.unwrap(),
 				questions: BTreeMap::from([(id.clone(), q.clone())]),
 			})
 			.collect())
@@ -408,9 +515,9 @@ async fn evaluate(
 	};
 	let mut boundary = Boundary {
 		node: "aidash://execution".into(),
-		run: Uuid::new_v4(),
+		run: fixture.recovery_run.unwrap_or_else(Uuid::new_v4),
 		step: 1,
-		run_revision: 1,
+		run_revision: fixture.run_revision,
 		input_revision: 2,
 		worker: Uuid::new_v4(),
 		input_digest: compaction_input_digest(&context, &budget, &pinned).unwrap(),
@@ -429,12 +536,18 @@ async fn evaluate(
 		configuration_digest: config(mode).digest().unwrap(),
 		provider_implementation: "node-decision-adapter:23".into(),
 	};
-	let restrictions = Restrictions::default();
+	let mut bound = BoundDecider {
+		pin,
+		config: config(mode),
+		restrictions: fixture.binding_restrictions.clone(),
+	};
+	if fixture.corrupt_bound_config {
+		bound.config.model = "jev-1.14.0".into();
+	}
 	let input = Evaluation {
 		boundary: &boundary,
-		decider: &pin,
+		decider: &bound,
 		definition: &definition,
-		restrictions: &restrictions,
 		disclosure: &view,
 		now: Utc::now(),
 	};
@@ -633,6 +746,7 @@ async fn forbid_apply_policy_changes_are_forbidden_and_shadow_remains_a_proposal
 			assert_eq!(saved.applied, 0);
 			let evidence = &saved.evidence[0];
 			assert_eq!(evidence.reason, Reason::Forbidden);
+			assert!(evidence.restrictions.forbid_apply);
 			if mode == Mode::Enforce {
 				assert!(matches!(result, Err(Error::Forbidden)));
 				assert_eq!(evidence.outcome, Outcome::Rejected);
@@ -755,7 +869,7 @@ async fn failed_finalization_preserves_every_dispatched_attempt_and_receipt() {
 		let saved = fixture.saved.lock().unwrap();
 		let evidence = &saved.evidence[0];
 		assert_eq!(evidence.outcome, Outcome::Rejected);
-		assert_eq!(evidence.reason, Reason::ProviderFailure);
+		assert_eq!(evidence.reason, Reason::JournalFailure);
 		assert_eq!(evidence.summary().attempts, 6);
 		assert_eq!(fixture.calls.load(Ordering::SeqCst), 6);
 		assert_eq!(saved.answers, if partial { 3 } else { 0 });
@@ -889,7 +1003,7 @@ async fn invalid_final_approval_preserves_completed_attempts_without_context_or_
 			assert_eq!(saved.evidence.len(), 1);
 			let evidence = &saved.evidence[0];
 			assert_eq!(evidence.outcome, Outcome::Rejected);
-			assert_eq!(evidence.reason, Reason::Forbidden);
+			assert_eq!(evidence.reason, Reason::AuthorityFailure);
 			assert_eq!(evidence.state, StateReference::Disabled);
 			assert_eq!(fixture.calls.load(Ordering::SeqCst), 6);
 			assert_eq!(saved.answers, 6);
@@ -958,6 +1072,8 @@ async fn replay_rejects_impossible_reason_fit_and_mode_combinations() {
 		Reason::Insufficient,
 		Reason::Forbidden,
 		Reason::ProviderFailure,
+		Reason::AuthorityFailure,
+		Reason::JournalFailure,
 		Reason::InvalidAnswers,
 		Reason::NoCandidates,
 	] {
@@ -1069,6 +1185,7 @@ async fn replay_rejects_unknown_or_overlapping_questions_for_every_attempt_statu
 		AttemptStatus::Answered,
 		AttemptStatus::Failed,
 		AttemptStatus::Uncertain,
+		AttemptStatus::NotDispatched,
 	] {
 		for questions in [
 			vec!["unknown-question".to_owned()],
@@ -1200,4 +1317,212 @@ fn state_and_question_sizes_have_no_aidash_ceiling() {
 	assert!(serde_json::to_vec(&built.candidates).unwrap().len() > 1_048_576);
 	assert_eq!(built.candidates.len(), 593);
 	assert_eq!(built.state["goal"].as_str().unwrap().len(), 1_100_000);
+}
+
+#[tokio::test]
+async fn reservation_wait_cannot_outlive_authority_or_source_deadline() {
+	for mode in [Mode::Enforce, Mode::Shadow] {
+		for expired in [false, true] {
+			let now = Utc::now();
+			let deadline = now + chrono::Duration::hours(1);
+			let fixture = Fixture {
+				revoke_in_reserve: !expired,
+				advance_on_reserve: expired.then_some(deadline),
+				..Fixture::new(mode)
+			};
+			let mut view = disclosure();
+			view.source_expiry = Some(deadline);
+			let (result, context, original) = evaluate(&fixture, mode, 80_000, view).await;
+			assert!(matches!(result, Err(Error::Forbidden)));
+			assert_eq!(context.history, original.history);
+			assert_eq!(
+				fixture.calls.load(Ordering::SeqCst),
+				0,
+				"reservation disclosed expired/revoked state"
+			);
+			let saved = fixture.saved.lock().unwrap();
+			assert!(!saved.permits.is_empty());
+			assert_eq!(saved.evidence[0].attempts.len(), saved.permits.len());
+			assert_eq!(saved.evidence[0].reason, Reason::Forbidden);
+		}
+	}
+}
+
+#[tokio::test]
+async fn batch_setup_preserves_authority_and_journal_error_categories() {
+	for kind in 0..3 {
+		let mut fixture = Fixture {
+			setup_error: Some(kind),
+			recovery_run: Some(Uuid::new_v4()),
+			..Fixture::new(Mode::Enforce)
+		};
+		let (result, context, original) =
+			evaluate(&fixture, Mode::Enforce, 80_000, disclosure()).await;
+		assert!(
+			matches!(
+				(kind, result),
+				(0, Err(Error::Domain(aidash_domain::Error::Invalid(_))))
+					| (1, Err(Error::Conflict(_)))
+					| (2, Err(Error::External(_)))
+			),
+			"original setup error category {kind} was lost"
+		);
+		assert_eq!(context.history, original.history);
+		assert_eq!(fixture.calls.load(Ordering::SeqCst), 0);
+		let rejected = {
+			let saved = fixture.saved.lock().unwrap();
+			assert_ne!(saved.evidence[0].reason, Reason::ProviderFailure);
+			saved.evidence[0].clone()
+		};
+		fixture.setup_error = None;
+		fixture.run_revision += 1;
+		let (result, context, _) = evaluate(&fixture, Mode::Enforce, 80_000, disclosure()).await;
+		assert!(matches!(result, Ok(CompactionResult::Applied(_))));
+		assert_eq!(context.history.len(), 7);
+		let saved = fixture.saved.lock().unwrap();
+		assert_eq!(saved.evidence.len(), 2);
+		assert_eq!(saved.evidence[0], rejected);
+		assert_eq!(saved.evidence[1].id, rejected.id);
+		assert_eq!(saved.permits.len(), 6);
+		assert_eq!(fixture.calls.load(Ordering::SeqCst), 6);
+	}
+}
+
+#[tokio::test]
+async fn new_worker_reuses_charged_attempts_after_uncommitted_decision() {
+	for cut in 0..7 {
+		let mut fixture = Fixture {
+			recovery_run: Some(Uuid::new_v4()),
+			fail_commit: true,
+			fail_finish: cut == 1,
+			fail_transport: cut == 2,
+			fail_finish_result: cut == 3,
+			..Fixture::new(Mode::Enforce)
+		};
+		let (result, context, original) =
+			evaluate(&fixture, Mode::Enforce, 80_000, disclosure()).await;
+		assert!(result.is_err());
+		assert_eq!(context.history, original.history);
+		assert_eq!(fixture.calls.load(Ordering::SeqCst), 6);
+		let original_permits = fixture.saved.lock().unwrap().permits.clone();
+		fixture.fail_commit = false;
+		fixture.fail_finish = false;
+		fixture.fail_transport = false;
+		fixture.fail_finish_result = false;
+		fixture.omit_recovery = cut == 4;
+		fixture.fail_prepare = cut == 0;
+		fixture.denied.store(cut == 5, Ordering::SeqCst);
+		fixture.run_revision += 1;
+		fixture.plan_revision = usize::from(cut == 6);
+		let (result, context, original) =
+			evaluate(&fixture, Mode::Enforce, 80_000, disclosure()).await;
+		if cut == 0 || cut == 4 {
+			assert!(matches!(result, Ok(CompactionResult::Applied(_))));
+			assert_eq!(context.history.len(), 7);
+		} else if cut == 5 {
+			assert!(matches!(result, Err(Error::Forbidden)));
+			assert_eq!(context.history, original.history);
+		} else {
+			assert!(matches!(result, Err(Error::Conflict(_))));
+			assert_eq!(context.history, original.history);
+		}
+		assert_eq!(
+			fixture.calls.load(Ordering::SeqCst),
+			6,
+			"recovery redispatched charged requests"
+		);
+		let saved = fixture.saved.lock().unwrap();
+		assert_eq!(saved.permits, original_permits);
+		let evidence = saved.evidence.last().unwrap();
+		assert_ne!(
+			evidence.boundary.run_revision,
+			original_permits[0].record.boundary.run_revision
+		);
+		assert_ne!(
+			evidence.boundary.worker,
+			original_permits[0].record.boundary.worker
+		);
+		assert_eq!(evidence.id, original_permits[0].record.decision);
+		assert_eq!(evidence.attempts.len(), 6);
+	}
+}
+
+#[tokio::test]
+async fn replay_rejects_erased_retention_markers() {
+	for expired in [false, true] {
+		let fixture = Fixture {
+			retain_state: true,
+			expire_at_commit: expired,
+			..Fixture::new(Mode::Enforce)
+		};
+		evaluate(&fixture, Mode::Enforce, 80_000, disclosure())
+			.await
+			.0
+			.unwrap();
+		let mut evidence = fixture.saved.lock().unwrap().evidence[0].clone();
+		assert_eq!(evidence.replay().unwrap(), evidence.branches);
+		let mut serialized = serde_json::to_value(&evidence).unwrap();
+		serialized
+			.as_object_mut()
+			.unwrap()
+			.remove("state_retention");
+		assert!(serde_json::from_value::<Evidence>(serialized).is_err());
+		let mut old = evidence.clone();
+		old.version = 1;
+		assert!(old.replay().is_err());
+		evidence.state = StateReference::Disabled;
+		assert!(
+			evidence.replay().is_err(),
+			"erased retention marker was accepted"
+		);
+	}
+}
+
+#[tokio::test]
+async fn bound_decider_restrictions_reach_compaction_without_separate_defaults() {
+	for restrictions in [
+		Restrictions {
+			keep_threshold: Probability::new(0.1).unwrap(),
+			..Default::default()
+		},
+		Restrictions {
+			preserve_recent: 8,
+			..Default::default()
+		},
+		Restrictions {
+			forbid_apply: true,
+			..Default::default()
+		},
+	] {
+		let fixture = Fixture {
+			binding_restrictions: restrictions.clone(),
+			keep: Probability::new(0.25).unwrap(),
+			..Fixture::new(Mode::Enforce)
+		};
+		let (result, context, original) =
+			evaluate(&fixture, Mode::Enforce, 80_000, disclosure()).await;
+		assert!(result.is_err());
+		assert_eq!(context.history, original.history);
+		let saved = fixture.saved.lock().unwrap();
+		let evidence = &saved.evidence[0];
+		assert_eq!(evidence.restrictions, restrictions);
+		if restrictions.forbid_apply {
+			assert!(matches!(result, Err(Error::Forbidden)));
+			assert!(saved.permits.is_empty());
+		} else if restrictions.preserve_recent == 8 {
+			assert_eq!(evidence.fit.dropped, 1);
+			assert!(evidence.candidates.iter().all(|c| c.history_index < 2));
+		} else {
+			assert!(evidence.branches.values().all(|b| *b == Branch::Keep));
+		}
+	}
+	let fixture = Fixture {
+		corrupt_bound_config: true,
+		..Fixture::new(Mode::Enforce)
+	};
+	let (result, context, original) = evaluate(&fixture, Mode::Enforce, 80_000, disclosure()).await;
+	assert!(matches!(result, Err(Error::Invalid(_))));
+	assert_eq!(context.history, original.history);
+	assert_eq!(fixture.checks.load(Ordering::SeqCst), 0);
+	assert!(fixture.saved.lock().unwrap().permits.is_empty());
 }

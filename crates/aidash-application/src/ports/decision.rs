@@ -92,6 +92,7 @@ pub struct DispatchRecord {
 	pub decision: Uuid,
 	pub boundary: Boundary,
 	pub decider: DeciderPin,
+	pub binding_restrictions: Restrictions,
 	pub request_digest: String,
 	pub state_digest: String,
 	pub questions: Vec<String>,
@@ -101,6 +102,19 @@ pub struct DispatchRecord {
 pub struct DispatchPermit {
 	pub record: DispatchRecord,
 	pub owner_receipts: BTreeMap<String, Uuid>,
+}
+
+/// Durable recovery data; pending reservations are returned as Uncertain.
+#[derive(Debug, Clone)]
+pub struct RecoveredAttempt {
+	pub permit: DispatchPermit,
+	pub status: AttemptStatus,
+	pub answers: Option<BTreeMap<String, Probability>>,
+}
+#[derive(Debug, Clone)]
+pub enum Reservation {
+	Fresh(DispatchPermit),
+	Recovered(RecoveredAttempt),
 }
 
 #[derive(Debug, Clone)]
@@ -117,13 +131,30 @@ pub trait DecisionJournal: Send + Sync {
 	fn now(&self) -> DateTime<Utc> {
 		Utc::now()
 	}
+	/// Load every charged attempt for this stable decision under the current lease.
+	/// Verify the current boundary's worker/run revision before returning; the saved
+	/// records retain the original worker fence. An Applied/Shadow decision returns
+	/// Conflict so the caller reloads the authoritative Run instead of overwriting
+	/// its outcome/state. Rejected snapshots may be resumed with the same charges;
+	/// earlier evidence snapshots must remain immutable in the journal.
+	/// Source/invocation revocation must still allow this fenced recovery and rejection
+	/// evidence persistence, without authorizing state disclosure or context application.
+	/// Never infer that a pending attempt was not dispatched. Only durably Answered
+	/// records may supply reusable answers.
+	async fn recover(&self, decision: Uuid, boundary: &Boundary) -> Result<Vec<RecoveredAttempt>>;
 	/// Every owner atomically checks pinned/current allowances and durably charges all
 	/// local generated ancestors. Waits for all remote owner receipts and commits the
 	/// dispatch record before returning. Concurrent reservations must not overspend.
 	/// A returned permit stays charged even if the worker dies before transport returns.
-	async fn reserve(&self, record: &DispatchRecord) -> Result<DispatchPermit>;
+	/// Atomically deduplicate by stable decision/attempt identity. A previously
+	/// charged attempt returns Recovered, never a fresh dispatch permission or charge.
+	/// Reject changed immutable inputs/pins/Binding restrictions and overlapping
+	/// question coverage from another plan. Current lease checks still apply.
+	async fn reserve(&self, record: &DispatchRecord) -> Result<Reservation>;
 	/// Stores validated answers or safe failure/uncertainty without raw provider bodies.
-	/// Persisted answered attempts are the only possible recovery source.
+	/// Persisted answered attempts are the only possible recovery source. NotDispatched
+	/// records a charged reservation stopped by the post-reservation authority check;
+	/// it must never become a fresh dispatch permission automatically.
 	async fn finish_attempt(
 		&self,
 		permit: &DispatchPermit,
@@ -140,6 +171,10 @@ pub trait DecisionJournal: Send + Sync {
 	/// Shadow/rejected records use None and must never replace execution context.
 	/// At the atomic write, compare state.expires_at with the persistence clock. If
 	/// elapsed, omit the state bytes and persist an Expired reference in the evidence.
+	/// Preserve the immutable state_retention witness through commit/cleanup; never
+	/// replace an Applied/Shadow decision with a new outcome or retention witness.
+	/// Retrying a rejected decision appends a snapshot, preserving earlier evidence
+	/// and all existing charged attempts; a rejection never resets owner allowances.
 	async fn commit(
 		&self,
 		evidence: &Evidence,
