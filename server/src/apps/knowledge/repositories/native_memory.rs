@@ -1006,7 +1006,7 @@ pub(crate) async fn recall_including_dormant(
 			&settings.provider,
 		)?)
 	} else {
-		Expr::value(false).into()
+		Expr::value(false)
 	};
 	let total_limit = limit
 		.checked_mul(2)
