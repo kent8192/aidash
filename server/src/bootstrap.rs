@@ -89,6 +89,9 @@ pub async fn initialize(
 		client,
 		notify: Arc::new(Notify::new()),
 	};
+	// Persist removed GCIP Bindings even for inactive Identities before this
+	// policy can serve requests or start workers. Provider IO is unnecessary.
+	dashboard_authority(&federation).reconcile_policy().await?;
 	let lease = DatabaseConnectionLease::register(connection)?;
 	context.set_singleton(lease.handle());
 	context.set_singleton(lease);

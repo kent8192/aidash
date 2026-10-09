@@ -93,6 +93,8 @@ pub trait StatusRecovery: Send {
 pub trait Accounts: Send + Sync {
 	fn policy(&self) -> Option<AccountPolicy>;
 	fn now(&self) -> DateTime<Utc>;
+	/// Every enabled Identity, including those without live sessions or runs.
+	async fn identities(&self) -> Result<Vec<Account>>;
 	async fn active(&self) -> Result<Vec<Account>>;
 	/// Record freshness and revoke older sessions atomically; admitted work is untouched.
 	async fn record_valid(

@@ -714,11 +714,15 @@ async fn removing_binding_disables_a_fresh_identity_at_its_next_boundary(
 }
 
 #[rstest::rstest]
+#[case::login("login")]
+#[case::refresh("refresh")]
+#[case::install("install")]
 #[tokio::test]
 async fn removed_binding_login_disables_an_inactive_identity_and_its_existing_authority(
 	#[future(awt)]
 	#[from(test_environment)]
 	environment: Arc<TestEnvironment>,
+	#[case] boundary: &str,
 ) {
 	let (mut f, url, schema) = common::setup(&environment).await;
 	let (status, _admin) = configure(&mut f).await;
@@ -819,18 +823,57 @@ async fn removed_binding_login_disables_an_inactive_identity_and_its_existing_au
 	);
 	// A removed Binding must not contact the retired pool's Admin API.
 	status.outage.store(true, Ordering::SeqCst);
-	assert_eq!(
-		exchange(
-			&changed,
-			&state,
-			&cookie,
-			&token("pool-a", "Person", Utc::now().timestamp()),
-			"http://127.0.0.1:8080"
-		)
+	if boundary == "login" {
+		assert_eq!(
+			exchange(
+				&changed,
+				&state,
+				&cookie,
+				&token("pool-a", "Person", Utc::now().timestamp()),
+				"http://127.0.0.1:8080"
+			)
+			.await
+			.status(),
+			403
+		);
+	} else if boundary == "install" {
+		let mut settings = common::settings_for(&url);
+		settings.node.node_id = f.config.node_id.clone();
+		settings.node.endpoint = f.config.endpoint.clone();
+		settings.node.api_token = f.config.api_token.clone();
+		settings.dashboard.gcip = f.config.gcip.clone();
+		let context = reinhardt::test::fixtures::injection_context::default();
+		let installed =
+			aidash_server::bootstrap::initialize(&context, &settings, f.store.pool.connection())
+				.await
+				.unwrap();
+		installed.store.control_pool.close().await;
+	} else {
+		let (stop, stopping) = tokio::sync::watch::channel(false);
+		let runtime = f.clone();
+		let mut refresh = FakeAdmin(tokio::spawn(async move {
+			aidash_server::dashboard_auth::refresh_active(runtime, stopping)
+				.await
+				.unwrap();
+		}));
+		tokio::time::timeout(std::time::Duration::from_secs(5), async {
+			loop {
+				if sqlx::query_scalar::<_, Option<chrono::DateTime<Utc>>>(&disabled)
+					.fetch_one(f.store.pool.driver())
+					.await
+					.unwrap()
+					.is_some()
+				{
+					break;
+				}
+				tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+			}
+		})
 		.await
-		.status(),
-		403
-	);
+		.unwrap();
+		stop.send(true).unwrap();
+		(&mut refresh.0).await.unwrap();
+	}
 	assert!(
 		sqlx::query_scalar::<_, Option<chrono::DateTime<Utc>>>(&disabled)
 			.fetch_one(f.store.pool.driver())

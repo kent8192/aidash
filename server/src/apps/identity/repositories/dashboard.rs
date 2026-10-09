@@ -76,6 +76,18 @@ impl Accounts for Repository {
 	fn now(&self) -> DateTime<Utc> {
 		Utc::now()
 	}
+	async fn identities(&self) -> Result<Vec<Account>> {
+		use reinhardt::db::orm::Model;
+		let lease = self.0.store.orm_connection()?;
+		Ok(DashboardIdentity::objects()
+			.filter(DashboardIdentity::field_disabled_at().is_null())
+			.all_with_db(&mut lease.handle())
+			.await
+			.map_err(crate::Error::from)?
+			.into_iter()
+			.map(account)
+			.collect())
+	}
 	async fn active(&self) -> Result<Vec<Account>> {
 		let config = self.0.config.dashboard_session().ok_or_else(|| {
 			aidash_application::Error::NotFound("dashboard sign-in is not configured".into())

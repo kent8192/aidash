@@ -19,6 +19,25 @@ impl DashboardAuthority {
 	pub fn configured(&self) -> bool {
 		self.accounts.policy().is_some()
 	}
+	/// Install GCIP policy durably before admitting requests or refreshing status.
+	pub async fn reconcile_policy(&self) -> Result<()> {
+		let Some(policy) = self
+			.accounts
+			.policy()
+			.filter(|policy| policy.tenant_bindings.is_some())
+		else {
+			return Ok(());
+		};
+		for account in self.accounts.identities().await? {
+			if policy
+				.require_identity(&account.issuer, account.gcip_tenant.as_deref())
+				.is_err()
+			{
+				self.disable(account.id, None).await?;
+			}
+		}
+		Ok(())
+	}
 	pub async fn admit_login(
 		&self,
 		scope: &mut dyn crate::ports::authorization::dashboard::LoginAccounts,
@@ -154,6 +173,7 @@ impl DashboardAuthority {
 		Ok(())
 	}
 	pub async fn active(&self) -> Result<Vec<Account>> {
+		self.reconcile_policy().await?;
 		self.accounts.active().await
 	}
 	pub async fn restore(&self, identity: Uuid) -> Result<()> {

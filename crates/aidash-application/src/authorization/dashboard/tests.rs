@@ -24,6 +24,7 @@ struct State {
 struct Scope {
 	state: Arc<Mutex<State>>,
 	configured: bool,
+	active: bool,
 	google: bool,
 	tenant_bindings: Option<std::collections::BTreeMap<String, String>>,
 	gcip_providers: std::collections::BTreeMap<String, Vec<String>>,
@@ -55,6 +56,7 @@ fn scope() -> Scope {
 			notified: 0,
 		})),
 		configured: true,
+		active: true,
 		google: false,
 		tenant_bindings: None,
 		gcip_providers: Default::default(),
@@ -105,8 +107,20 @@ impl Accounts for Scope {
 	fn now(&self) -> DateTime<Utc> {
 		self.state.lock().unwrap().now
 	}
+	async fn identities(&self) -> Result<Vec<Account>> {
+		let account = self.state.lock().unwrap().account.clone();
+		Ok(if account.disabled_at.is_none() {
+			vec![account]
+		} else {
+			vec![]
+		})
+	}
 	async fn active(&self) -> Result<Vec<Account>> {
-		Ok(vec![self.state.lock().unwrap().account.clone()])
+		Ok(if self.active {
+			vec![self.state.lock().unwrap().account.clone()]
+		} else {
+			vec![]
+		})
 	}
 	async fn record_valid(
 		&self,
@@ -350,6 +364,40 @@ async fn gcip_login_rejects_a_signed_provider_outside_the_pool_allowlist(mut sco
 		Err(Error::Forbidden)
 	));
 	assert!(scope.state.lock().unwrap().trace.is_empty());
+}
+
+#[rstest]
+#[case::removed(false)]
+#[case::bound(true)]
+#[tokio::test]
+async fn removed_binding_refresh_disables_an_inactive_identity(
+	mut scope: Scope,
+	#[case] bound: bool,
+) {
+	scope.active = false;
+	scope.tenant_bindings = Some(if bound {
+		[("pool-a".into(), "acme".into())].into()
+	} else {
+		Default::default()
+	});
+	scope.state.lock().unwrap().account.gcip_tenant = Some("pool-a".into());
+	assert!(
+		authority(Arc::new(scope.clone()))
+			.active()
+			.await
+			.unwrap()
+			.is_empty()
+	);
+	let state = scope.state.lock().unwrap();
+	assert_eq!(state.account.disabled_at.is_some(), !bound);
+	assert_eq!(
+		state.trace,
+		if bound {
+			vec![]
+		} else {
+			vec!["disable-current", "mark-disabled"]
+		}
+	);
 }
 
 #[rstest]
