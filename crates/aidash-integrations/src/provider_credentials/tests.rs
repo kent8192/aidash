@@ -154,7 +154,7 @@ async fn rest_store_rejects_metadata_tokens_without_the_google_response_header()
 	let mut store = SecretManager::new("byok-project".into(), "dev".into()).unwrap();
 	store.api = format!("{url}/v1");
 	store.metadata = format!("{url}/token");
-	let error = store.create(Uuid::now_v7()).await.unwrap_err();
+	let error = store.create("alpha", Uuid::now_v7()).await.unwrap_err();
 	assert!(matches!(error, Error::External(_)), "{error:?}");
 	assert_eq!(store_calls.load(Ordering::SeqCst), 0);
 }
