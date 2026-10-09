@@ -1293,3 +1293,138 @@ async fn inclusive_snapshot_keeps_both_units_when_retention_changes_during_hydra
 	assert_eq!(dormant, vec![admitted[0].clone()]);
 	lease.finish(Ok(())).await.unwrap();
 }
+#[rstest]
+#[tokio::test]
+async fn inclusive_semantic_graph_links_active_seeds_to_dormant_neighbors(
+	#[future] database: DatabaseFixture,
+	bounds: Bounds,
+) {
+	use crate::apps::knowledge::repositories::memory_scope::Scope;
+	use crate::apps::knowledge::services::memory_models::Models;
+	use aidash_application::ports::memory::MemoryScope;
+	use axum::{Json, Router, routing::post};
+	use reinhardt::test::fixtures::server::test_server_guard;
+	let model = test_server_guard(Router::new().route("/v1/embeddings", post(
+        |Json(input): Json<serde_json::Value>| async move {
+            Json(json!({"model":input["model"],"data":[{"index":0,"embedding":[1.,0.1,0.]}],"usage":{"prompt_tokens":1}}))
+        }
+    ))).await;
+	let database = database.await;
+	let d = Decay {
+		half_life_days: 1,
+		prior_floor_millionths: 0,
+		dormancy: Some(Dormancy {
+			threshold_millionths: 500_000,
+			interval_hours: 1,
+			batch: 1,
+			include_preferences: true,
+			include_procedures: true,
+		}),
+	};
+	let (store, _, workspace) = setup_endpoint_decay(
+		&database,
+		bounds.clone(),
+		&format!("{}/v1", model.url),
+		(false, false, false),
+		None,
+		Some(d),
+	)
+	.await;
+	let bank = memory::create_participant(
+		&store,
+		&Actor::Operator,
+		workspace,
+		memory::CreateParticipant {
+			agent: reference("a"),
+		},
+	)
+	.await
+	.unwrap()
+	.bank;
+	let mut admitted = Vec::new();
+	for text in [
+		"Active semantic seed",
+		"Dormant neighbor with distinct terms",
+	] {
+		admitted.push(
+			memory::mutate(
+				&store,
+				&Actor::Operator,
+				mutation(
+					&bank,
+					Change::Add {
+						id: Uuid::now_v7(),
+						content: content(text),
+					},
+				),
+			)
+			.await
+			.unwrap()
+			.remove(0),
+		);
+	}
+	crate::semantic::worker::sweep(&store).await.unwrap();
+	let mut lease = Lease::begin(&store, &Actor::Operator).await.unwrap();
+	let bank_id = repository::bank_id(&mut lease, &bank, false)
+		.await
+		.unwrap()
+		.unwrap();
+	super::ensure(&mut lease, bank_id, admitted[1].id)
+		.await
+		.unwrap();
+	native::query(
+		&Query::update()
+			.table(Alias::new("memory_unit_retention"))
+			.value(Alias::new("dormant_policy"), json!(reference("p")))
+			.and_where(Expr::col("unit_id").eq(Expr::value(admitted[1].id)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(&mut **lease.tx())
+	.await
+	.unwrap();
+	let policy = memory::policy(&mut lease, &reference("p")).await.unwrap();
+	let models = Models::resolve(
+		&store,
+		&mut lease,
+		reference("p"),
+		bank.clone(),
+		policy.clone(),
+		Uuid::now_v7(),
+		"inclusive-semantic-graph-fixture".into(),
+		None,
+	)
+	.await
+	.unwrap();
+	let mut delivered = Vec::new();
+	let snapshot = Scope {
+		store: &store,
+		lease: &mut lease,
+		models: &models,
+		delivered: &mut delivered,
+	}
+	.recall_including_dormant_snapshot(&bank, 1)
+	.await
+	.unwrap();
+	assert_eq!(snapshot.units, admitted);
+	assert!(
+		snapshot
+			.graph
+			.iter()
+			.any(|edge| edge.source == admitted[0].id
+				&& edge.source_revision == admitted[0].revision
+				&& edge.target.target == admitted[1].id
+				&& edge.target.revision == admitted[1].revision
+				&& edge.target.kind == LinkKind::Semantic)
+	);
+	let found = recall::graph_with_edges(
+		&snapshot.units,
+		&[admitted[0].id],
+		&snapshot.graph,
+		&policy.bounds,
+	);
+	assert!(
+		found.contains(&admitted[1].id),
+		"the capped semantic seed must discover its Dormant neighbor through the graph arm"
+	);
+	lease.finish(Ok(())).await.unwrap();
+}

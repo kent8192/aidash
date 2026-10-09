@@ -253,14 +253,13 @@ impl MemoryScope for Scope<'_, '_> {
 				.config
 				.clone(),
 		)?;
-		let mut graph =
-			super::memory_graph::current(self.lease, &units, &self.models.policy, &embedding)
-				.await?;
-		graph.extend(
-			super::memory_graph::current(self.lease, &dormant, &self.models.policy, &embedding)
-				.await?,
-		);
 		units.extend(dormant);
+		// Each inclusive partition has its own source bound. Validate graph
+		// scalar work against the actual combined authorized snapshot.
+		let mut graph_policy = self.models.policy.clone();
+		graph_policy.bounds.max_units = graph_policy.bounds.max_units.max(units.len());
+		let graph =
+			super::memory_graph::current(self.lease, &units, &graph_policy, &embedding).await?;
 		Ok(Snapshot {
 			units,
 			graph,
