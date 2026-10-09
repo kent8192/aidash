@@ -5,6 +5,7 @@ from contextvars import ContextVar
 import json
 import os
 from pathlib import Path
+import re
 import signal
 import subprocess
 import time
@@ -75,6 +76,70 @@ def run(*args, data=None, timeout=900):
 
 def github(path):
     return json.loads(run("gh", "api", path))
+
+
+def retire_provider_credentials(configuration, identity):
+    """Delete only this environment's dynamic secrets before losing its inventory.
+
+    Authenticated deployment has bootstrap-only list/delete permissions, never
+    payload access. Listing is project-scoped; filtering and deletion are exact
+    environment-prefix operations. Collect all pages before deleting anything.
+    """
+    project = configuration.get("byok_project_id", "")
+    if not project:
+        return 0
+    if not re.fullmatch(r"develop|test|pr-[1-9][0-9]*", identity):
+        raise ValueError("invalid Provider Credential retirement environment")
+    number = run(
+        "gcloud", "projects", "describe", project,
+        "--format=value(projectNumber)", timeout=30,
+    ).decode().strip()
+    if not re.fullmatch(r"[0-9]+", number):
+        raise RuntimeError("BYOK project number is unavailable")
+    token = run("gcloud", "auth", "print-access-token", timeout=30).decode().strip()
+    if not token:
+        raise RuntimeError("deployment authentication is unavailable")
+    parent = f"projects/{number}/secrets/"
+    prefix = parent + f"aidash-{identity}-cred-"
+
+    def call(method, resource):
+        request = urllib.request.Request(
+            "https://secretmanager.googleapis.com/v1/" + resource,
+            method=method,
+            headers={"Authorization": "Bearer " + token},
+        )
+        with urllib.request.urlopen(request, timeout=bounded_timeout(60)) as response:
+            return response.read()
+
+    def inventory():
+        names, pages = set(), set()
+        page = ""
+        while True:
+            query = urllib.parse.urlencode({"pageSize": 1000, "pageToken": page})
+            result = json.loads(call("GET", parent.rstrip("/") + "?" + query))
+            for secret in result.get("secrets", []):
+                name = secret.get("name", "")
+                if not re.fullmatch(re.escape(parent) + r"[A-Za-z0-9_-]+", name):
+                    raise RuntimeError("unexpected BYOK inventory resource")
+                if name.startswith(prefix):
+                    names.add(name)
+            page = result.get("nextPageToken", "")
+            if not page:
+                return sorted(names)
+            if page in pages:
+                raise RuntimeError("BYOK inventory pagination did not advance")
+            pages.add(page)
+
+    names = inventory()
+    for name in names:
+        try:
+            call("DELETE", name)
+        except urllib.error.HTTPError as error:
+            if error.code != 404:
+                raise
+    if inventory():
+        raise RuntimeError("Provider Credential retirement is incomplete")
+    return len(names)
 
 
 class Store:

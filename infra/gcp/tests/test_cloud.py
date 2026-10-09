@@ -1,6 +1,7 @@
 """Plan review must enforce authorization even for drift after preflight."""
 
 import json
+import io
 from pathlib import Path
 import sys
 from tempfile import TemporaryDirectory
@@ -16,6 +17,7 @@ from cloud import (
     operation_budget,
     run,
     bounded_timeout,
+    retire_provider_credentials,
 )
 
 
@@ -78,6 +80,78 @@ class LockTests(unittest.TestCase):
                     self.fail("must not enter an unowned critical section")
             call.assert_not_called()
             sleep.assert_not_called()
+
+
+class ProviderCredentialRetirementTests(unittest.TestCase):
+    def retire(self, responses):
+        calls = []
+
+        def api(request, **kwargs):
+            calls.append((request.get_method(), request.full_url))
+            self.assertEqual(request.headers["Authorization"], "Bearer fixture-token")
+            self.assertLessEqual(kwargs["timeout"], 60)
+            expected, result = responses.pop(0)
+            self.assertEqual(request.get_method(), expected)
+            if isinstance(result, BaseException):
+                raise result
+            return io.BytesIO(json.dumps(result).encode())
+
+        with (
+            patch("cloud.run", side_effect=[b"123456789012\n", b"fixture-token\n"]) as cli,
+            patch("cloud.urllib.request.urlopen", side_effect=api),
+        ):
+            count = retire_provider_credentials({"byok_project_id": "fixture-byok"}, "pr-12")
+        self.assertEqual(cli.call_count, 2)
+        self.assertFalse(responses)
+        return count, calls
+
+    def test_all_pages_are_collected_before_exact_prefix_deletion(self):
+        prefix = "projects/123456789012/secrets/"
+        own = [prefix + "aidash-pr-12-cred-a", prefix + "aidash-pr-12-cred-b"]
+        other = [prefix + "aidash-pr-120-cred-a", prefix + "aidash-test-cred-a", prefix + "unrelated"]
+        count, calls = self.retire([
+            ("GET", {"secrets": [{"name": name} for name in [own[0], *other]], "nextPageToken": "next/page"}),
+            ("GET", {"secrets": [{"name": name} for name in own]}),
+            ("DELETE", {}), ("DELETE", {}),
+            ("GET", {"secrets": [{"name": name} for name in other]}),
+        ])
+        self.assertEqual(count, 2)
+        self.assertEqual([method for method, _ in calls], ["GET", "GET", "DELETE", "DELETE", "GET"])
+        self.assertIn("pageToken=next%2Fpage", calls[1][1])
+        self.assertEqual([url.rsplit("/", 1)[1] for method, url in calls if method == "DELETE"], ["aidash-pr-12-cred-a", "aidash-pr-12-cred-b"])
+        self.assertTrue(all("/versions/" not in url for _, url in calls))
+
+    def test_already_deleted_secrets_are_idempotent(self):
+        name = "projects/123456789012/secrets/aidash-pr-12-cred-a"
+        count, _ = self.retire([
+            ("GET", {"secrets": [{"name": name}]}),
+            ("DELETE", HTTPError("", 404, "gone", {}, None)),
+            ("GET", {}),
+        ])
+        self.assertEqual(count, 1)
+        self.assertEqual(self.retire([("GET", {}), ("GET", {})])[0], 0)
+
+    def test_delete_failure_and_remaining_inventory_block_retirement(self):
+        name = "projects/123456789012/secrets/aidash-pr-12-cred-a"
+        with self.assertRaises(HTTPError):
+            self.retire([("GET", {"secrets": [{"name": name}]}), ("DELETE", HTTPError("", 403, "denied", {}, None))])
+        with self.assertRaisesRegex(RuntimeError, "incomplete"):
+            self.retire([("GET", {"secrets": [{"name": name}]}), ("DELETE", {}), ("GET", {"secrets": [{"name": name}]})])
+
+    def test_inventory_failure_unexpected_project_and_repeated_page_fail_closed(self):
+        with self.assertRaises(HTTPError):
+            self.retire([("GET", HTTPError("", 403, "denied", {}, None))])
+        with self.assertRaisesRegex(RuntimeError, "unexpected"):
+            self.retire([("GET", {"secrets": [{"name": "projects/999/secrets/aidash-pr-12-cred-a"}]})])
+        with self.assertRaisesRegex(RuntimeError, "pagination"):
+            self.retire([("GET", {"nextPageToken": "same"}), ("GET", {"nextPageToken": "same"})])
+
+    def test_legacy_configuration_and_invalid_environment_make_no_cloud_calls(self):
+        with patch("cloud.run") as cli:
+            self.assertEqual(retire_provider_credentials({}, "test"), 0)
+            with self.assertRaises(ValueError):
+                retire_provider_credentials({"byok_project_id": "fixture-byok"}, "pr-12/../../other")
+        cli.assert_not_called()
 
 
 class PlanTests(unittest.TestCase):

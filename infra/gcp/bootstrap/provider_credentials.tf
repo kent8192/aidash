@@ -67,6 +67,43 @@ resource "google_project_iam_member" "byok_deploy" {
   }
 }
 
+// Retirement is bootstrap-only. Deploy cannot grant these roles through its
+// unchanged Create/Manage allowlist. It already controls the delete-bearing
+// Manage binding; #151 treats deployment as the trust root.
+resource "google_project_iam_custom_role" "byok_retire" {
+  count       = var.byok_project_id != "" ? 1 : 0
+  project     = var.byok_project_id
+  role_id     = "aidashByokRetire"
+  title       = "Aidash Provider Credential retirement"
+  permissions = ["secretmanager.secrets.delete"]
+}
+resource "google_project_iam_member" "byok_retire" {
+  count   = var.byok_project_id != "" ? 1 : 0
+  project = var.byok_project_id
+  role    = google_project_iam_custom_role.byok_retire[0].name
+  member  = "serviceAccount:${google_service_account.automation["deploy"].email}"
+  condition {
+    title      = "only-aidash-provider-credential-retirement"
+    expression = "resource.name.startsWith('projects/${data.google_project.byok[0].number}/secrets/aidash-')"
+  }
+}
+// secrets.list is checked on the parent project, so it needs a separate,
+// unconditioned list-only role. Residual: deploy can see every BYOK secret name.
+// Neither role grants payload, version-read, or IAM permissions.
+resource "google_project_iam_custom_role" "byok_retire_inventory" {
+  count       = var.byok_project_id != "" ? 1 : 0
+  project     = var.byok_project_id
+  role_id     = "aidashByokRetireInventory"
+  title       = "Aidash Provider Credential retirement inventory"
+  permissions = ["secretmanager.secrets.list"]
+}
+resource "google_project_iam_member" "byok_retire_inventory" {
+  count   = var.byok_project_id != "" ? 1 : 0
+  project = var.byok_project_id
+  role    = google_project_iam_custom_role.byok_retire_inventory[0].name
+  member  = "serviceAccount:${google_service_account.automation["deploy"].email}"
+}
+
 // One audit configuration per deployment; all environments share this project.
 resource "google_project_iam_audit_config" "byok_secret_manager" {
   count   = var.byok_project_id != "" ? 1 : 0

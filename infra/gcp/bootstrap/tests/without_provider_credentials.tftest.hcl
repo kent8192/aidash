@@ -17,6 +17,10 @@ run "legacy_bootstrap_has_no_byok_resources" {
       length(google_project_iam_custom_role.byok_broker_read) == 0 &&
       length(google_project_iam_custom_role.byok_deploy) == 0 &&
       length(google_project_iam_member.byok_deploy) == 0 &&
+      length(google_project_iam_custom_role.byok_retire) == 0 &&
+      length(google_project_iam_custom_role.byok_retire_inventory) == 0 &&
+      length(google_project_iam_member.byok_retire) == 0 &&
+      length(google_project_iam_member.byok_retire_inventory) == 0 &&
       length(google_project_iam_audit_config.byok_secret_manager) == 0
     )
     error_message = "An omitted BYOK project must leave existing bootstrap usable without BYOK resources."

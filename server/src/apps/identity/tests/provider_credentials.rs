@@ -96,6 +96,13 @@ impl KeyValidator for Validator {
 	}
 }
 
+async fn authorize_tenant(f: &EndpointFixture, tenant: &str) {
+	assert_json(f.operator.post(&format!("/api/authorization/{tenant}"), &json!({
+		"expected_revision":0,"bundle":{"tenant":tenant,"subjects":{"actor":{"kind":"user"},aidash_domain::qualified_agent(&f.runtime.config.node_id,"environment-agent","1.0.0"):{"kind":"agent"}},
+		"policies":[{"id":"fixture","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}}]}
+	}), "json").await.unwrap(),200);
+}
+
 async fn all_database_text(f: &EndpointFixture) -> String {
 	let mut tx = f.database.connection.begin().await.unwrap();
 	let (sql, values) = Query::select()
@@ -598,16 +605,17 @@ async fn lifecycle_api_uses_live_tenant_policy_and_never_persists_or_returns_key
 
 #[rstest]
 #[tokio::test]
-async fn admission_pins_local_tenant_id_and_reloads_state_without_environment_fallback(
+async fn workspace_embedding_credential_is_pinned_with_environment_model_admission(
 	#[future] endpoint: EndpointFixture,
 ) {
 	use aidash_application::provider_access::{Context, ProviderAccess, Source};
-	use aidash_server::apps::identity::{
-		models::provider_credentials::RunProviderCredential as Pin,
-		repositories::provider_credentials::{AdmittedAccess, admit},
+	use aidash_server::apps::identity::models::{
+		AuthorizationWorkspace, provider_credentials::RunProviderCredential as Pin,
 	};
-	use reinhardt::db::orm::Model;
+	use aidash_server::apps::knowledge::models::SemanticIndexe;
+	use reinhardt::db::orm::{Json, Model};
 	let mut f = endpoint.await;
+	authorize_tenant(&f, "beta").await;
 	let service = Arc::new(Service {
 		repository: Arc::new(NativeRepository {
 			pool: f.runtime.store.control_pool.clone(),
@@ -618,7 +626,217 @@ async fn admission_pins_local_tenant_id_and_reloads_state_without_environment_fa
 		fingerprint_key: "test-fingerprint-key-that-is-at-least-32-bytes".into(),
 		max_per_tenant: 20,
 	});
-	let model: aidash_server::registry::Entry = serde_json::from_value(json!({"id":"tenant-model","version":"1.0.0","kind":"model","name":{"en":"Tenant model"},"description":{"en":"Tenant model"},"config":{"provider":"openrouter","model_id":"test/model","endpoint":"https://openrouter.ai/api/v1","credential_env":null,"provider_credential":"openrouter","context_window":4096,"max_output_tokens":1024,"modalities":["text"],"cost":{}}})).unwrap();
+	f.runtime.store.provider_credentials = Some(service.clone());
+	f.runtime.registry = f.runtime.registry.clone().with_provider_credentials(true);
+	for (kind, id, config) in [
+		(
+			"model",
+			"environment-agent-fixture-model",
+			json!({"provider":"openrouter","model_id":"fixture","endpoint":"http://127.0.0.1:1/v1","credential_env":null,"context_window":128000,"max_output_tokens":4096,"modalities":["text"],"cost":{}}),
+		),
+		(
+			"agent",
+			"environment-agent",
+			json!({"schema_version":1,"model":{"id":"environment-agent-fixture-model","version":"1.0.0"},"instructions":"Embedding admission fixture","bindings":[],"remove_default":["file_search","file_read"]}),
+		),
+	] {
+		f.runtime.registry.register(serde_json::from_value(json!({"id":id,"version":"1.0.0","kind":kind,"name":{"en":id},"description":{"en":"Embedding admission fixture"},"config":config})).unwrap()).await.unwrap();
+	}
+
+	f.context.set_singleton(f.runtime.clone());
+	for id in ["environment-agent-fixture-model", "environment-agent"] {
+		assert_json(
+			f.operator
+				.post(
+					"/api/authorization/beta/catalog",
+					&json!({"entry":{"id":id,"version":"1.0.0"},"expected_revision":0,"enabled":true}),
+					"json",
+				)
+				.await
+				.unwrap(),
+			200,
+		);
+	}
+	let token = assert_json(
+		f.operator
+			.post(
+				"/api/authorization/beta/credentials",
+				&json!({"subject":"actor"}),
+				"json",
+			)
+			.await
+			.unwrap(),
+		200,
+	);
+	let actor = reinhardt::test::fixtures::api_client_from_url(&f.server.url);
+	actor
+		.set_header(
+			"Authorization",
+			&format!("Bearer {}", token["token"].as_str().unwrap()),
+		)
+		.await
+		.unwrap();
+	let workspace = f
+		.runtime
+		.store
+		.create_workspace("BYOK retrieval", "Test admission")
+		.await
+		.unwrap();
+	let mut tx = f.database.connection.begin().await.unwrap();
+	let authority = AuthorizationWorkspace::build()
+		.workspace_id(workspace.id)
+		.tenant("beta")
+		.owner_subject("actor")
+		.finish();
+	AuthorizationWorkspace::objects()
+		.insert_with_executor(tx.as_mut(), &authority)
+		.await
+		.unwrap();
+	let index = SemanticIndexe::build()
+		.workspace_id(workspace.id).tenant("beta").revision(1)
+		.spec(Json(json!({
+			"embedding":{"provider":"openrouter","endpoint":"https://openrouter.ai/api/v1","credential_env":null,"provider_credential":"openrouter","model":"fixture","model_version":"1","dimensions":3},
+			"vector":{"provider":"postgres","endpoint":"local","credential_env":null},
+			"enabled":true,"auto_context":true,"max_sources":64,"max_results":10,"max_result_tokens":4096,"max_input_bytes":8192
+		})))
+		.collection("workspace-embedding-fixture").finish();
+	SemanticIndexe::objects()
+		.insert_with_executor(tx.as_mut(), &index)
+		.await
+		.unwrap();
+	tx.commit().await.unwrap();
+	let task = f
+		.runtime
+		.store
+		.create_task(
+			workspace.id,
+			&aidash_domain::NewTask {
+				title: "Embedding admission".into(),
+				description: "Env model, Tenant embedding".into(),
+				requirements: json!({}),
+				dependencies: vec![],
+				parent_id: None,
+			},
+			"actor",
+			None,
+		)
+		.await
+		.unwrap();
+	let claim_path = format!("/api/tasks/{}/claim", task.id);
+	let claim =
+		json!({"revision":task.revision,"agent":{"id":"environment-agent","version":"1.0.0"}});
+	let rejected = assert_json(actor.post(&claim_path, &claim, "json").await.unwrap(), 400);
+	assert!(
+		rejected.to_string().contains("binding is missing"),
+		"{rejected}"
+	);
+	assert_eq!(
+		f.runtime.store.task(task.id).await.unwrap().status,
+		aidash_domain::TaskStatus::Open
+	);
+	// The failed admission must roll back its Run as well as every credential pin.
+	assert!(f.runtime.store.runs().await.unwrap().is_empty());
+	let credential = service
+		.create(
+			"beta",
+			Uuid::now_v7(),
+			Provider::Openrouter,
+			"beta-embedding-provider-key-5678".into(),
+			"actor",
+		)
+		.await
+		.unwrap()
+		.provider_credential;
+	service
+		.bind("beta", Provider::Openrouter, credential.id, 0, "actor")
+		.await
+		.unwrap();
+	assert_json(actor.post(&claim_path, &claim, "json").await.unwrap(), 200);
+	let run = f.runtime.store.runs().await.unwrap().remove(0);
+	let mut tx = f.database.connection.begin().await.unwrap();
+	let pins = Pin::objects()
+		.filter(Pin::field_run_id().eq(run.id))
+		.all_with_executor(tx.as_mut())
+		.await
+		.unwrap();
+	assert_eq!(pins.len(), 1);
+	assert_eq!(pins[0].tenant, "beta");
+	assert_eq!(pins[0].provider, "openrouter");
+	assert_eq!(pins[0].provider_credential_id, credential.id);
+	tx.commit().await.unwrap();
+	let access =
+		aidash_server::apps::identity::repositories::provider_credentials::AdmittedAccess {
+			store: f.runtime.store.clone(),
+		};
+	let source = Source::Tenant {
+		provider: "openrouter".into(),
+	};
+	let context = Context {
+		tenant: "beta".into(),
+		run: Some(run.id),
+		maintenance: None,
+		provider_credential_id: None,
+	};
+	// Resolution reaches the deliberately unbound broker, proving it found the
+	// admitted embedding pin rather than failing at the Env-only Agent closure.
+	assert!(
+		access
+			.resolve(&context, Provider::Openrouter.base_url(), &source)
+			.await
+			.unwrap_err()
+			.to_string()
+			.contains("credential broker not configured")
+	);
+	service
+		.bind("beta", Provider::Openrouter, None, 1, "actor")
+		.await
+		.unwrap();
+	assert!(
+		access
+			.resolve(&context, Provider::Openrouter.base_url(), &source)
+			.await
+			.unwrap_err()
+			.to_string()
+			.contains("credential broker not configured")
+	);
+	service
+		.revoke("beta", credential.id, credential.revision, "actor")
+		.await
+		.unwrap();
+	assert!(
+		access
+			.resolve(&context, Provider::Openrouter.base_url(), &source)
+			.await
+			.unwrap_err()
+			.to_string()
+			.contains("not active")
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn admission_pins_local_tenant_id_and_reloads_state_without_environment_fallback(
+	#[future] endpoint: EndpointFixture,
+) {
+	use aidash_application::provider_access::{Context, ProviderAccess, Source};
+	use aidash_server::apps::identity::{
+		models::provider_credentials::RunProviderCredential as Pin,
+		repositories::provider_credentials::{AdmittedAccess, admit},
+	};
+	use reinhardt::db::orm::Model;
+	let mut f = endpoint.await;
+	authorize_tenant(&f, "beta").await;
+	let service = Arc::new(Service {
+		repository: Arc::new(NativeRepository {
+			pool: f.runtime.store.control_pool.clone(),
+			node: f.runtime.store.node_id.clone(),
+		}),
+		store: Arc::new(FakeStore::default()),
+		validator: Arc::new(Validator),
+		fingerprint_key: "test-fingerprint-key-that-is-at-least-32-bytes".into(),
+		max_per_tenant: 20,
+	});
+	let model: aidash_server::registry::Entry = serde_json::from_value(json!({"id":"tenant-model","version":"1.0.0","kind":"model","name":{"en":"Tenant model"},"description":{"en":"Tenant model"},"config":{"provider":"openrouter","model_id":"test/model","endpoint":"https://openrouter.ai/api/v1","credential_env":null,"provider_credential":"openrouter","context_window":128000,"max_output_tokens":1024,"modalities":["text"],"cost":{}}})).unwrap();
 	assert!(
 		f.runtime
 			.registry
@@ -631,6 +849,46 @@ async fn admission_pins_local_tenant_id_and_reloads_state_without_environment_fa
 	f.runtime.store.provider_credentials = Some(service.clone());
 	f.runtime.registry = f.runtime.registry.clone().with_provider_credentials(true);
 	f.runtime.registry.register(model).await.unwrap();
+	f.context.set_singleton(f.runtime.clone());
+	let draft = assert_json(f.operator.post("/api/workbench/drafts", &json!({
+		"tenant":"beta","owner":"actor","entry":{
+			"id":"","version":"1.0.0","kind":"agent","name":{"en":"Tenant sandbox"},"description":{"en":"Tenant sandbox"},
+			"config":{"schema_version":1,"model":{"id":"tenant-model","version":"1.0.0"},"instructions":"Test admission","bindings":[],"remove_default":["memory_mutate","memory_recall","memory_reflect"]}
+		}
+	}), "json").await.unwrap(),200);
+	// Leave enough fixture headroom for the built-in catalog so this request
+	// exercises credential admission rather than the independent input bound.
+	assert_json(f.operator.put("/api/workbench/test-limits/beta", &json!({
+		"tenant":"beta","max_input_bytes":1000000,"max_output_tokens":1024,"max_total_tokens":1000000,
+		"max_steps":4,"max_duration_secs":30,"max_concurrent":1,"payload_days":1,"incident_evidence_days":1
+	}), "json").await.unwrap(),200);
+	let sandbox_path = format!(
+		"/api/workbench/drafts/{}/tests",
+		draft["id"].as_str().unwrap()
+	);
+	let rejected = assert_json(
+		f.operator
+			.post(
+				&sandbox_path,
+				&json!({"expected_revision":draft["revision"],"message":"Test the Tenant model"}),
+				"json",
+			)
+			.await
+			.unwrap(),
+		400,
+	);
+	assert!(
+		rejected
+			.to_string()
+			.contains("Workbench tests do not support Tenant Provider Credentials"),
+		"{rejected}"
+	);
+	let sessions = assert_json(f.operator.get(&sandbox_path).await.unwrap(), 200);
+	assert_eq!(
+		sessions,
+		json!([]),
+		"rejection must precede sandbox session admission"
+	);
 	let agent: aidash_server::registry::Entry = serde_json::from_value(json!({"id":"tenant-agent","version":"1.0.0","kind":"agent","name":{"en":"Tenant agent"},"description":{"en":"Tenant agent"},"config":{"schema_version":1,"bindings":[],"model":{"id":"tenant-model","version":"1.0.0"},"instructions":"Test admission","cluster":null}})).unwrap();
 	struct Lookup<'a>(&'a aidash_server::registry::Registry);
 	#[async_trait]
@@ -960,6 +1218,27 @@ async fn registry_migration_preserves_current_constraints_in_both_directions(
 	assert_eq!(
 		definition(tx.as_mut(), "registry_agent_config").await,
 		agent
+	);
+	let semantic = definition(tx.as_mut(), "semantic_indexes_revision").await;
+	apply_asset(
+		tx.as_mut(),
+		&f.database.connection,
+		include_str!("../../../../migrations/knowledge/sql/backward/0027_provider_credentials.sql"),
+	)
+	.await;
+	assert_eq!(
+		definition(tx.as_mut(), "semantic_indexes_revision").await,
+		semantic.replace("'provider_credential'::text, ", "")
+	);
+	apply_asset(
+		tx.as_mut(),
+		&f.database.connection,
+		include_str!("../../../../migrations/knowledge/sql/forward/0027_provider_credentials.sql"),
+	)
+	.await;
+	assert_eq!(
+		definition(tx.as_mut(), "semantic_indexes_revision").await,
+		semantic
 	);
 	tx.rollback().await.unwrap();
 }
