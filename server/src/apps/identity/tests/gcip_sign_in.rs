@@ -788,6 +788,17 @@ async fn replacement_registration_keeps_freshly_authenticated_display_attributes
 		.await
 		.unwrap();
 	let (cookie, csrf) = sign_in(&app, "acme", "pool-a", "Freshly authenticated").await;
+	// The UI reads status before showing the replacement submission action.
+	let previous_status: Value = browser()
+		.get(app.url("/auth/registration"))
+		.header("cookie", &cookie)
+		.send()
+		.await
+		.unwrap()
+		.json()
+		.await
+		.unwrap();
+	assert_eq!(previous_status["status"], "expired");
 	let replacement = browser()
 		.post(app.url("/auth/registration"))
 		.header("cookie", &cookie)

@@ -1,7 +1,10 @@
 //! Browser authentication state and provider-status persistence.
 
 use super::dashboard_administration::database_time;
-use super::{DashboardIdentity, DashboardLoginTransaction, DashboardLogoutToken, DashboardSession};
+use super::{
+	DashboardIdentity, DashboardLoginTransaction, DashboardLogoutToken,
+	DashboardRegistrationRequest, DashboardSession,
+};
 use crate::{Error, Result};
 use chrono::{DateTime, Duration, Utc};
 use reinhardt::core::exception::Error as FrameworkError;
@@ -142,14 +145,30 @@ impl DashboardIdentity {
 				)
 				.build(PostgresQueryBuilder);
 			TransactionExecutor::execute(tx, &sql, convert_values(values)).await?;
-			Self::objects()
+			let identity = Self::objects()
 				.filter(Self::field_issuer().eq(issuer))
 				.filter(Self::field_subject().eq(subject.clone()))
 				.filter(Self::field_gcip_tenant().eq(gcip_tenant))
 				.all_with_db(tx)
 				.await?
 				.pop()
-				.ok_or_else(|| Error::NotFound("identity".into()))
+				.ok_or_else(|| Error::NotFound("identity".into()))?;
+			// The upsert holds the same identity lock as expiry erasure. End old
+			// requests before exposing refreshed claims so a later status read or
+			// a sweeper waiting on this lock cannot erase the new sign-in's display.
+			DashboardRegistrationRequest::objects()
+				.filter(DashboardRegistrationRequest::field_identity_id().eq(identity.id))
+				.filter(DashboardRegistrationRequest::field_status().eq("pending"))
+				.filter(DashboardRegistrationRequest::field_expires_at().lte(now))
+				.update_fields_with_conn(
+					tx,
+					[(
+						DashboardRegistrationRequest::field_status(),
+						"expired".to_owned(),
+					)],
+				)
+				.await?;
+			Ok(identity)
 		})
 		.await
 	}
