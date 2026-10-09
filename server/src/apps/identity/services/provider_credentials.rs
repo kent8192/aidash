@@ -32,6 +32,37 @@ impl Authority {
 		}
 	}
 }
+
+struct ListAudit {
+	access: Option<NativeAccess>,
+	finished: bool,
+}
+impl ListAudit {
+	async fn finish<T>(mut self, result: Result<T>) -> Result<T> {
+		if let Some(access) = self.access.take()
+			&& let Err(error) = access.finish(Ok(())).await
+		{
+			self.finished = true;
+			tracing::error!(
+				audit_status = "failed",
+				"Provider Credential list audit could not be finalized"
+			);
+			return Err(error);
+		}
+		self.finished = true;
+		result
+	}
+}
+impl Drop for ListAudit {
+	fn drop(&mut self) {
+		if !self.finished {
+			tracing::error!(
+				audit_status = "failed",
+				"Provider Credential list audit was cancelled before finalization"
+			);
+		}
+	}
+}
 impl Management {
 	fn service(&self) -> Result<Arc<Service>> {
 		self.runtime
@@ -136,28 +167,70 @@ impl Management {
 	pub async fn list(&self, actor: Actor, tenant: String, page: Page) -> Result<Vec<Metadata>> {
 		let service = self.service()?;
 		self.tenant(&actor, &tenant)?;
-		let mut scope = service.repository.begin(&tenant).await?;
-		let rows = scope.list(page.offset, page.limit).await?;
-		scope.commit().await?;
-		let mut result = Vec::new();
-		for row in rows {
-			match self
-				.authorize(
-					&actor,
-					&tenant,
-					&row.id.to_string(),
-					row.provider,
-					"provider_credential",
-					"read",
-				)
-				.await
-			{
-				Ok(authority) => result.push(authority.finish(Ok(row.into())).await?),
-				Err(Error::Forbidden) => {}
-				Err(error) => return Err(error),
+		let access = match &actor {
+			Actor::Subject(identity) => {
+				Some(NativeAccess::begin(&self.runtime.store, identity).await?)
+			}
+			Actor::Operator => None,
+		};
+		let mut audit = ListAudit {
+			access,
+			finished: false,
+		};
+		let result = async {
+			let limit = page.limit.clamp(1, 200);
+			let operator = matches!(actor, Actor::Operator);
+			let mut source_offset = if operator { page.offset } else { 0 };
+			let mut visible_offset = if operator { 0 } else { page.offset };
+			let batch_size = if operator { limit } else { 200 };
+			let mut result = Vec::new();
+			loop {
+				let mut scope = service.repository.begin(&tenant).await?;
+				let rows = scope.list(source_offset, batch_size).await?;
+				let exhausted = rows.len() < batch_size;
+				source_offset += rows.len();
+				scope.commit().await?;
+				for row in rows {
+					if let Some(access) = &mut audit.access {
+						let resource = access.resource(
+							"provider_credential",
+							row.id,
+							json!({"provider":row.provider.id()}),
+						);
+						if !access.decide(&resource, "provider_credential.read").await? {
+							continue;
+						}
+					} else {
+						self.authorize(
+							&actor,
+							&tenant,
+							&row.id.to_string(),
+							row.provider,
+							"provider_credential",
+							"read",
+						)
+						.await?
+						.finish(Ok(()))
+						.await?;
+					}
+					// Pagination counts only records visible to this actor.
+					if visible_offset > 0 {
+						visible_offset -= 1;
+					} else {
+						result.push(row.into());
+						if result.len() == limit {
+							return Ok(result);
+						}
+					}
+				}
+				if exhausted {
+					return Ok(result);
+				}
 			}
 		}
-		Ok(result)
+		.await;
+		// Finish every evaluated decision even if reading a later batch fails.
+		audit.finish(result).await
 	}
 	pub async fn get(&self, actor: Actor, tenant: String, id: Uuid) -> Result<Metadata> {
 		let service = self.service()?;

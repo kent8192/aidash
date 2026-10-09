@@ -63,8 +63,21 @@ async fn record_in(lease: &mut Lease<'_>, run: Uuid, selected: &[Unit]) -> Resul
 	)
 	.fetch_one(&mut **lease.tx())
 	.await?;
-	for unit in selected {
-		native::query(
+	let mut ordered: Vec<_> = selected.iter().collect();
+	ordered.sort_by_key(|unit| unit.id);
+	for unit in ordered {
+		let prior: Option<Uuid> = native::query_scalar(
+			&Query::select()
+				.column(Alias::new("unit_id"))
+				.from(Alias::new("memory_run_reads"))
+				.and_where(Expr::col("run_id").eq(Expr::value(run)))
+				.and_where(Expr::col("unit_id").eq(Expr::value(unit.id)))
+				.limit(1)
+				.to_string(PostgresQueryBuilder),
+		)
+		.scalar_optional(&mut **lease.tx())
+		.await?;
+		let inserted = native::query(
 			&Query::insert()
 				.into_table(Alias::new("memory_run_reads"))
 				.columns(["run_id", "unit_id", "revision"].map(Alias::new))
@@ -88,6 +101,14 @@ async fn record_in(lease: &mut Lease<'_>, run: Uuid, selected: &[Unit]) -> Resul
 		)
 		.execute(&mut **lease.tx())
 		.await?;
+		if metadata.home_node == unit.bank.home {
+			super::memory_decay::delivery(
+				lease,
+				unit,
+				inserted.rows_affected() > 0 && prior.is_none(),
+			)
+			.await?;
+		}
 	}
 	// A future Run proof also visits the Run itself. Automatic learning validates
 	// that proof together with all canonical input/output evidence, whose finite

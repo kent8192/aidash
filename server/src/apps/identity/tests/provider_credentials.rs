@@ -120,6 +120,159 @@ async fn all_database_text(f: &EndpointFixture) -> String {
 	}
 	result
 }
+
+#[rstest]
+#[tokio::test]
+async fn credential_list_paginates_authorized_rows_beyond_the_first_page(
+	#[future] endpoint: EndpointFixture,
+) {
+	use aidash_domain::provider_credentials::{ProviderCredential, State};
+	use aidash_server::apps::identity::models::AuthorizationDecision;
+	use reinhardt::db::orm::Model;
+	async fn decisions(f: &EndpointFixture) -> Vec<AuthorizationDecision> {
+		let mut tx = f.database.connection.begin().await.unwrap();
+		let rows = AuthorizationDecision::objects()
+			.filter(AuthorizationDecision::field_tenant().eq("alpha"))
+			.filter(AuthorizationDecision::field_subject().eq("alice"))
+			.filter(AuthorizationDecision::field_action().eq("provider_credential.read"))
+			.order_by(&["sequence"])
+			.all_with_executor(tx.as_mut())
+			.await
+			.unwrap();
+		tx.commit().await.unwrap();
+		rows
+	}
+	let mut f = endpoint.await;
+	let ids: Vec<_> = (0..203).map(|_| Uuid::now_v7()).collect();
+	let bundle = json!({
+		"tenant":"alpha",
+		"subjects":{"alice":{"kind":"user"}},
+		"policies":[{
+			"id":"selected-credentials", "effect":"allow",
+			"subjects":{"ids":["alice"]},
+			"actions":["provider_credential.read"],
+			"resources":{"kinds":["provider_credential"],"ids":&ids[200..]}
+		}]
+	});
+	assert_json(
+		f.operator
+			.post(
+				"/api/authorization/alpha",
+				&json!({"expected_revision":0,"bundle":bundle}),
+				"json",
+			)
+			.await
+			.unwrap(),
+		200,
+	);
+	let service = Arc::new(Service {
+		repository: Arc::new(NativeRepository {
+			pool: f.runtime.store.control_pool.clone(),
+			node: f.runtime.store.node_id.clone(),
+		}),
+		store: Arc::new(FakeStore::default()),
+		validator: Arc::new(Validator),
+		fingerprint_key: "test-fingerprint-key-that-is-at-least-32-bytes".into(),
+		max_per_tenant: ids.len(),
+	});
+	// Seed metadata in chronological order: the first 200 records are denied.
+	let mut scope = service.repository.begin("alpha").await.unwrap();
+	let created_at = chrono::Utc::now();
+	for (index, id) in ids.iter().enumerate() {
+		scope
+			.insert(&ProviderCredential {
+				id: *id,
+				tenant: "alpha".into(),
+				provider: Provider::Openrouter,
+				base_url: Provider::Openrouter.base_url().into(),
+				secret_resource: format!("fake/{id}"),
+				pinned_version: Some(format!("fake/{id}/versions/1")),
+				fingerprint: "0123456789abcdef".into(),
+				last4: "test".into(),
+				state: State::Active,
+				created_at: created_at + chrono::Duration::milliseconds(index as i64),
+				rotated_at: None,
+				revoked_at: None,
+				revision: 1,
+			})
+			.await
+			.unwrap();
+	}
+	scope.commit().await.unwrap();
+	f.runtime.store.provider_credentials = Some(service);
+	f.context.set_singleton(f.runtime.clone());
+	let token = assert_json(
+		f.operator
+			.post(
+				"/api/authorization/alpha/credentials",
+				&json!({"subject":"alice","expires_in_seconds":3600}),
+				"json",
+			)
+			.await
+			.unwrap(),
+		200,
+	);
+	let subject = reinhardt::test::fixtures::api_client_from_url(&f.server.url);
+	subject
+		.set_header(
+			"Authorization",
+			&format!("Bearer {}", token["token"].as_str().unwrap()),
+		)
+		.await
+		.unwrap();
+
+	// The default dashboard page reaches allowed rows after a full denied batch;
+	// offset and limit then refer to the authorized set, without gaps or duplicates.
+	for (query, expected) in [
+		("", &ids[200..]),
+		("?offset=0&limit=2", &ids[200..202]),
+		("?offset=2&limit=2", &ids[202..]),
+	] {
+		let rows = assert_json(
+			subject
+				.get(&format!("/api/tenants/alpha/provider-credentials{query}"))
+				.await
+				.unwrap(),
+			200,
+		);
+		let actual: Vec<_> = rows
+			.as_array()
+			.unwrap()
+			.iter()
+			.map(|row| Uuid::parse_str(row["id"].as_str().unwrap()).unwrap())
+			.collect();
+		assert_eq!(actual, expected, "page {query}");
+	}
+	// An offset beyond the visible set still finalizes exactly one allow/deny
+	// audit for every evaluated record before returning the empty page.
+	let before = decisions(&f).await.len();
+	let empty = assert_json(
+		subject
+			.get("/api/tenants/alpha/provider-credentials?offset=3&limit=2")
+			.await
+			.unwrap(),
+		200,
+	);
+	assert_eq!(empty, json!([]));
+	let audits = decisions(&f).await;
+	let page_audits = &audits[before..];
+	assert_eq!(page_audits.len(), ids.len());
+	for (index, (decision, id)) in page_audits.iter().zip(&ids).enumerate() {
+		assert_eq!(decision.resource_id, id.to_string());
+		assert_eq!(decision.decision.0["allowed"], index >= 200);
+	}
+	let operator_rows = assert_json(
+		f.operator
+			.get("/api/tenants/alpha/provider-credentials?offset=201&limit=2")
+			.await
+			.unwrap(),
+		200,
+	);
+	assert_eq!(operator_rows[0]["id"], ids[201].to_string());
+	assert_eq!(operator_rows[1]["id"], ids[202].to_string());
+	assert_eq!(operator_rows.as_array().unwrap().len(), 2);
+}
+
 #[rstest]
 #[tokio::test]
 async fn lifecycle_api_uses_live_tenant_policy_and_never_persists_or_returns_key_material(

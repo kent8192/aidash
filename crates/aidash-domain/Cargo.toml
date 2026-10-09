@@ -26,4 +26,5 @@ url = "2"
 http = "1"
 
 [dev-dependencies]
+toml = "1.1"
 rstest.workspace = true

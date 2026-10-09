@@ -78,3 +78,28 @@ id = "weather-cause"
 patterns = ["(?i)(rain|雨)", "(?i)(delay|遅延|遅れ)"]
 kind = "world"
 learning = "fact"
+
+# Deterministic paired ranking fixture; never invokes a model or shares learned state.
+[[decay_cases]]
+id = "stale-relevant-versus-recent-noisy"
+as_of = "2026-01-01T00:00:00Z"
+activated_at = "2024-01-01T00:00:00Z"
+half_life_days = 30
+prior_floor_millionths = 100000
+semantic = [1]
+keyword = [2, 1]
+expected_without_decay = [1, 2]
+expected_with_decay = [1, 2]
+
+[[decay_cases.units]]
+id = 1
+learned_at = "2024-01-01T00:00:00Z"
+last_delivered_at = "2025-12-01T00:00:00Z"
+deliveries = 24
+pinned = false
+
+[[decay_cases.units]]
+id = 2
+learned_at = "2025-12-31T00:00:00Z"
+deliveries = 0
+pinned = false
