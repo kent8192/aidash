@@ -155,10 +155,18 @@ configured. The project is never inferred from a developer's `gcloud` default.
 | Secret   | `GCP_TEST_RUNTIME_CONFIG`        | Google/provider configuration JSON for test                                             |
 | Secret   | `GCP_PR_RUNTIME_CONFIG`          | Google/provider configuration JSON for PR staging                                       |
 
-Each runtime JSON contains string values for `AIDASH_OIDC_CLIENT_ID` and
+Without GCIP, each runtime JSON contains string values for `AIDASH_OIDC_CLIENT_ID` and
 `AIDASH_OIDC_CLIENT_SECRET`, plus required provider credentials named
 `AIDASH_SECRET_*`. Optional Google session lifetime settings are
 `AIDASH_OIDC_SESSION_ABSOLUTE_SECONDS` and `AIDASH_OIDC_SESSION_IDLE_SECONDS`.
+When GCIP is enabled, omit all `AIDASH_OIDC_*` keys. The controller adds the
+public `dashboard.gcip` fragment to the same JSON; provider credentials remain
+flat `AIDASH_SECRET_*` strings. The host writes only the GCIP fragment into a
+read-only mounted settings directory and selects it through `AIDASH_GCIP_SETTINGS`.
+Reinhardt composes this source with the normal server settings, applies typed
+defaults and validates the sole issuer. The host does not export legacy OIDC
+settings in this mode. Removing Tenant Bindings updates the retained settings file
+before the environment is reopened.
 The host generates private database/API/Runner keys and environment-specific
 node identity; callers cannot override these through runtime JSON. Terraform
 creates secret metadata only. The controller uploads an initial secret version

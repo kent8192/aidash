@@ -154,7 +154,7 @@ class RuntimeConfigTests(unittest.TestCase):
         def command(*args, **kwargs):
             calls.append((args, kwargs))
             if "list" in args:
-                return b'[{"name":"projects/aidash-fixture/secrets/runtime/versions/1"}]'
+                return b'[{"name":"projects/aidash-fixture/secrets/runtime/versions/1","state":"ENABLED"}]'
             if "access" in args:
                 return json.dumps(raw).encode()
             return b""
@@ -194,11 +194,24 @@ class RuntimeConfigTests(unittest.TestCase):
         with patch(
             "controller.run",
             side_effect=[
-                b'[{"name":"projects/aidash-fixture/secrets/runtime/versions/1"}]',
+                b'[{"name":"projects/aidash-fixture/secrets/runtime/versions/1","state":"ENABLED"}]',
                 b'{"dashboard":{"oidc":{"issuer":"issuer"}}}',
             ],
         ):
             with self.assertRaises(controller.Refused):
+                controller.provision_secret(
+                    {"project_id": "aidash-fixture"}, OUTPUT, "test"
+                )
+
+    def test_legacy_oidc_environment_cannot_coexist_with_gcip(self):
+        with patch(
+            "controller.run",
+            side_effect=[
+                b'[{"name":"projects/aidash-fixture/secrets/runtime/versions/1","state":"ENABLED"}]',
+                b'{"AIDASH_OIDC_CLIENT_ID":"legacy"}',
+            ],
+        ):
+            with self.assertRaisesRegex(controller.Refused, "Remove OIDC"):
                 controller.provision_secret(
                     {"project_id": "aidash-fixture"}, OUTPUT, "test"
                 )
@@ -225,14 +238,8 @@ class RuntimeConfigTests(unittest.TestCase):
 
         def command(*args, **kwargs):
             if "list" in args:
-                self.assertIn("--filter=state=ENABLED", args)
-                return json.dumps(
-                    [
-                        {"name": item["name"]}
-                        for item in versions
-                        if item["state"] == "ENABLED"
-                    ]
-                ).encode()
+                self.assertIn("--format=json(name,state)", args)
+                return json.dumps(versions).encode()
             if "access" in args:
                 version = args[args.index("access") + 1]
                 self.assertEqual(version, "10")
@@ -252,3 +259,16 @@ class RuntimeConfigTests(unittest.TestCase):
         self.assertEqual(
             published[0]["dashboard"]["gcip"]["tenant_bindings"], {"pool-a": "acme"}
         )
+
+        # A disabled latest must be replaced even if its enabled predecessor
+        # already has the desired bindings; the VM cannot list secret versions.
+        raw.clear()
+        raw.update(published[0])
+        published.clear()
+        accessed.clear()
+        with patch("controller.run", side_effect=command):
+            controller.provision_secret(
+                {"project_id": "aidash-fixture"}, OUTPUT, "test"
+            )
+        self.assertEqual(accessed, ["10"])
+        self.assertEqual(published, [raw])

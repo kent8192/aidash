@@ -387,11 +387,14 @@ def instance_status(config, output):
 
 def provision_secret(config, output, kind):
     secret = output["runtime_secret"]
-    versions = json.loads(run("gcloud", "secrets", "versions", "list", secret,
-        "--project", config["project_id"], "--filter=state=ENABLED", "--format=json(name)"))
+    all_versions = json.loads(run("gcloud", "secrets", "versions", "list", secret,
+        "--project", config["project_id"], "--format=json(name,state)"))
+    versions = [item for item in all_versions if item["state"] == "ENABLED"]
+    latest_enabled = False
     if versions:
         # Version IDs increase with creation; latest can point at a disabled rollback version.
         version = max(int(item["name"].rsplit("/", 1)[-1]) for item in versions)
+        latest_enabled = version == max(int(item["name"].rsplit("/", 1)[-1]) for item in all_versions)
         raw = run("gcloud", "secrets", "versions", "access", str(version), "--secret", secret, "--project", config["project_id"])
     else:
         raw = os.environ.get("AIDASH_RUNTIME_" + kind.upper())
@@ -402,8 +405,8 @@ def provision_secret(config, output, kind):
     gcip = output.get("gcip", {})
     if gcip.get("tenant_ids"):
         dashboard = value.setdefault("dashboard", {})
-        if dashboard.get("oidc"):
-            raise Refused("Remove dashboard.oidc before enabling the sole GCIP issuer")
+        if dashboard.get("oidc") or any(key.startswith("AIDASH_OIDC_") for key in value):
+            raise Refused("Remove OIDC runtime configuration before enabling the sole GCIP issuer")
         settings = dashboard.setdefault("gcip", {})
         api_key = config.get("gcip_web_api_key") or settings.get("web_api_key")
         if not api_key:
@@ -415,7 +418,9 @@ def provision_secret(config, output, kind):
         # boundary; disabling infrastructure cannot leave an old pool admitted.
         value["dashboard"]["gcip"].update(tenant_bindings={}, providers={}, password_sign_up=[])
     encoded = json.dumps(value, sort_keys=True)
-    if not versions or encoded != previous:
+    # The VM reads latest with accessor-only IAM. Restore an enabled latest
+    # version after rollback even when the selected configuration is unchanged.
+    if not versions or encoded != previous or not latest_enabled:
         run("gcloud", "secrets", "versions", "add", secret, "--project", config["project_id"], "--data-file=-", data=encoded.encode())
 
 
