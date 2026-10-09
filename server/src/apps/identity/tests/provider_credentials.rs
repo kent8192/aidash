@@ -11,6 +11,7 @@ use aidash_domain::provider_credentials::Provider;
 use aidash_server::apps::identity::repositories::provider_credentials::NativeRepository;
 use async_trait::async_trait;
 use endpoint_fixtures::{EndpointFixture, assert_json, endpoint};
+use native_database::{DatabaseFixture, database};
 use reinhardt::db::orm::execution::convert_values;
 use reinhardt::query::{
 	Alias, Expr, ExprTrait, IntoIden, PostgresQueryBuilder, Query, QueryStatementBuilder,
@@ -1751,43 +1752,106 @@ async fn bootstrap_loads_trimmed_keys_and_fails_closed_without_valid_key_sources
 	assert!(f.runtime.store.provider_key_material_reader.is_none());
 }
 
+const MANAGE_CASE_BUDGET: std::time::Duration = std::time::Duration::from_secs(180);
+
+// One deadline covers fixture startup, setup, assertions, and every manage child.
+struct ManageCase {
+	name: &'static str,
+	started: tokio::time::Instant,
+	deadline: tokio::time::Instant,
+}
+
+impl ManageCase {
+	fn new(name: &'static str) -> Self {
+		let started = tokio::time::Instant::now();
+		Self {
+			name,
+			started,
+			deadline: started + MANAGE_CASE_BUDGET,
+		}
+	}
+
+	async fn stage<T>(&self, stage: &str, future: impl std::future::Future<Output = T>) -> T {
+		let started = tokio::time::Instant::now();
+		let result = tokio::time::timeout_at(self.deadline, future).await.unwrap_or_else(|_| {
+			panic!("{}: {stage} exceeded the shared {MANAGE_CASE_BUDGET:?} case budget (stage elapsed {:?}, case elapsed {:?})", self.name, started.elapsed(), self.started.elapsed())
+		});
+		eprintln!(
+			"{}: {stage} completed (stage elapsed {:?}, case elapsed {:?})",
+			self.name,
+			started.elapsed(),
+			self.started.elapsed()
+		);
+		result
+	}
+
+	async fn output(
+		&self,
+		stage: &str,
+		command: &mut tokio::process::Command,
+	) -> std::process::Output {
+		let started = tokio::time::Instant::now();
+		let child = command
+			.stdin(std::process::Stdio::null())
+			.stdout(std::process::Stdio::piped())
+			.stderr(std::process::Stdio::piped())
+			.kill_on_drop(true)
+			.spawn()
+			.unwrap_or_else(|error| panic!("{}: cannot spawn {stage}: {error}", self.name));
+		let pid = child.id().expect("newly spawned manage child has a PID");
+		eprintln!(
+			"{}: {stage} started (PID {pid}, case elapsed {:?})",
+			self.name,
+			self.started.elapsed()
+		);
+		let output = tokio::time::timeout_at(self.deadline, child.wait_with_output())
+			.await
+			.unwrap_or_else(|_| panic!("{}: {stage} PID {pid} exceeded the shared {MANAGE_CASE_BUDGET:?} case budget (stage elapsed {:?}, case elapsed {:?})", self.name, started.elapsed(), self.started.elapsed()))
+			.unwrap_or_else(|error| panic!("{}: cannot wait for {stage} PID {pid}: {error}", self.name));
+		eprintln!(
+			"{}: {stage} PID {pid} completed (stage elapsed {:?}, case elapsed {:?})",
+			self.name,
+			started.elapsed(),
+			self.started.elapsed()
+		);
+		output
+	}
+}
+
 #[rstest]
 #[tokio::test]
-async fn manage_migrate_does_not_load_configured_store_keys(#[future] endpoint: EndpointFixture) {
-	let f = endpoint.await;
-	let dir = tempfile::tempdir().unwrap();
-	std::fs::write(
-		dir.path().join("base.toml"),
-		r#"
+async fn manage_migrate_does_not_load_configured_store_keys(#[future] database: DatabaseFixture) {
+	let case = ManageCase::new("migrate without configured store keys");
+	let f = case.stage("database fixture", database).await;
+	case.stage("migrate setup and assertions", async {
+		let dir = tempfile::tempdir().unwrap();
+		std::fs::write(
+			dir.path().join("base.toml"),
+			r#"
 [provider_credentials]
 fingerprint_key = { env = "AIDASH_PROVIDER_MISSING_FINGERPRINT_157" }
 [provider_credentials.store]
 kind = "postgres"
 master_key = { file = "/definitely-missing/aidash157-master-key" }
 "#,
-	)
-	.unwrap();
-	let output = tokio::time::timeout(
-		std::time::Duration::from_secs(45),
-		tokio::process::Command::new(env!("CARGO_BIN_EXE_manage"))
+		)
+		.unwrap();
+		let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_manage"));
+		command
 			.arg("migrate")
-			.env("DATABASE_URL", &f.database.url)
+			.env("DATABASE_URL", &f.url)
 			.env("REINHARDT_SETTINGS_DIR", dir.path())
 			.env("REINHARDT_ENV", "local")
-			.env_remove("AIDASH_PROVIDER_MISSING_FINGERPRINT_157")
-			.stdin(std::process::Stdio::null())
-			.kill_on_drop(true)
-			.output(),
-	)
-	.await
-	.unwrap()
-	.unwrap();
-	assert!(
-		output.status.success(),
-		"{}\n{}",
-		String::from_utf8_lossy(&output.stdout),
-		String::from_utf8_lossy(&output.stderr)
-	);
+			.env_remove("AIDASH_PROVIDER_MISSING_FINGERPRINT_157");
+		let output = case.output("manage migrate", &mut command).await;
+		assert!(
+			output.status.success(),
+			"{}\n{}",
+			String::from_utf8_lossy(&output.stdout),
+			String::from_utf8_lossy(&output.stderr)
+		);
+	})
+	.await;
 }
 
 fn recovery_settings(f: &EndpointFixture, dir: &std::path::Path, current: &str) {
@@ -1821,6 +1885,7 @@ master_key = {{ file = {:?} }}
 }
 
 async fn recovery_command(
+	case: &ManageCase,
 	f: &EndpointFixture,
 	dir: &std::path::Path,
 	execute: bool,
@@ -1830,19 +1895,19 @@ async fn recovery_command(
 	if execute {
 		command.arg("--execute");
 	}
-	tokio::time::timeout(
-		std::time::Duration::from_secs(45),
-		command
-			.env("DATABASE_URL", &f.database.url)
-			.env("REINHARDT_SETTINGS_DIR", dir)
-			.env("REINHARDT_ENV", "local")
-			.stdin(std::process::Stdio::null())
-			.kill_on_drop(true)
-			.output(),
+	command
+		.env("DATABASE_URL", &f.database.url)
+		.env("REINHARDT_SETTINGS_DIR", dir)
+		.env("REINHARDT_ENV", "local");
+	case.output(
+		if execute {
+			"recovery execute"
+		} else {
+			"recovery dry-run"
+		},
+		&mut command,
 	)
 	.await
-	.unwrap()
-	.unwrap()
 }
 
 async fn recovery_snapshot(f: &EndpointFixture) -> Value {
@@ -1901,10 +1966,23 @@ async fn recovery_dry_run_and_execute_cover_total_partial_and_mixed_key_loss(
 	#[future] endpoint: EndpointFixture,
 	#[case] partial: bool,
 ) {
+	let case = ManageCase::new(if partial {
+		"partial key loss"
+	} else {
+		"total key loss"
+	});
+	let f = case.stage("endpoint fixture", endpoint).await;
+	case.stage(
+		"recovery setup and assertions",
+		recovery_loss_case(&case, f, partial),
+	)
+	.await;
+}
+
+async fn recovery_loss_case(case: &ManageCase, f: EndpointFixture, partial: bool) {
 	use aidash_domain::provider_credentials::State;
 	use aidash_server::apps::identity::models::credential_store::{RegisteredKey, Version};
 	use reinhardt::db::orm::Model;
-	let f = endpoint.await;
 	let lost = "91".repeat(32);
 	let current = "92".repeat(32);
 	let old_store = postgres_store(&f, &lost, vec![]).await;
@@ -2067,7 +2145,7 @@ async fn recovery_dry_run_and_execute_cover_total_partial_and_mixed_key_loss(
 	}
 	tx.commit().await.unwrap();
 	for execute in [false, true] {
-		let output = recovery_command(&f, dir.path(), execute).await;
+		let output = recovery_command(case, &f, dir.path(), execute).await;
 		assert!(
 			output.status.success(),
 			"{}",
@@ -2214,7 +2292,7 @@ async fn recovery_dry_run_and_execute_cover_total_partial_and_mixed_key_loss(
 			.expose_secret(),
 		"reconnected-provider-material-157"
 	);
-	let output = recovery_command(&f, dir.path(), true).await;
+	let output = recovery_command(case, &f, dir.path(), true).await;
 	assert!(output.status.success());
 	assert_eq!(
 		serde_json::from_slice::<Value>(&output.stdout).unwrap(),
@@ -2230,9 +2308,22 @@ async fn recovery_refuses_tampered_configured_key_checks_without_mutation(
 	#[future] endpoint: EndpointFixture,
 	#[case] retired: bool,
 ) {
+	let case = ManageCase::new(if retired {
+		"tampered retired key"
+	} else {
+		"tampered current key"
+	});
+	let f = case.stage("endpoint fixture", endpoint).await;
+	case.stage(
+		"recovery setup and assertions",
+		recovery_tampered_case(&case, f, retired),
+	)
+	.await;
+}
+
+async fn recovery_tampered_case(case: &ManageCase, f: EndpointFixture, retired: bool) {
 	use aidash_server::apps::identity::models::credential_store::RegisteredKey;
 	use reinhardt::db::orm::Model;
-	let f = endpoint.await;
 	let lost = "93".repeat(32);
 	let current = "94".repeat(32);
 	let old = postgres_store(&f, &lost, vec![]).await;
@@ -2288,7 +2379,7 @@ async fn recovery_refuses_tampered_configured_key_checks_without_mutation(
 	}
 	let before = recovery_snapshot(&f).await;
 	for execute in [false, true] {
-		let output = recovery_command(&f, dir.path(), execute).await;
+		let output = recovery_command(case, &f, dir.path(), execute).await;
 		assert!(!output.status.success());
 		assert!(String::from_utf8_lossy(&output.stderr).contains("Master Key check failed"));
 		assert_eq!(recovery_snapshot(&f).await, before);
@@ -2298,7 +2389,16 @@ async fn recovery_refuses_tampered_configured_key_checks_without_mutation(
 #[rstest]
 #[tokio::test]
 async fn recovery_requires_postgres_and_valid_key_sources(#[future] endpoint: EndpointFixture) {
-	let f = endpoint.await;
+	let case = ManageCase::new("invalid recovery settings");
+	let f = case.stage("endpoint fixture", endpoint).await;
+	case.stage(
+		"recovery setup and assertions",
+		recovery_invalid_settings_case(&case, f),
+	)
+	.await;
+}
+
+async fn recovery_invalid_settings_case(case: &ManageCase, f: EndpointFixture) {
 	let dir = tempfile::tempdir().unwrap();
 	let before = recovery_snapshot(&f).await;
 	for shape in [
@@ -2316,7 +2416,7 @@ async fn recovery_requires_postgres_and_valid_key_sources(#[future] endpoint: En
 			),
 		)
 		.unwrap();
-		let output = recovery_command(&f, dir.path(), false).await;
+		let output = recovery_command(case, &f, dir.path(), false).await;
 		assert!(!output.status.success());
 		assert!(String::from_utf8_lossy(&output.stderr).contains("requires a PostgreSQL Store"));
 	}
@@ -2328,7 +2428,7 @@ async fn recovery_requires_postgres_and_valid_key_sources(#[future] endpoint: En
 			std::fs::remove_file(dir.path().join("master")).unwrap();
 		}
 		for execute in [false, true] {
-			let output = recovery_command(&f, dir.path(), execute).await;
+			let output = recovery_command(case, &f, dir.path(), execute).await;
 			assert!(!output.status.success());
 			assert!(
 				String::from_utf8_lossy(&output.stderr).contains(if key.is_some() {
