@@ -326,6 +326,11 @@ fn body_policy(body: &[u8], claims: &Claims, op: Operation) -> Result<(), Failur
 	if value.pointer("/provider/zdr") != Some(&Value::Bool(true)) {
 		return Err(Failure::ClaimViolation);
 	}
+	if op == Operation::Chat
+		&& value.pointer("/provider/require_parameters") != Some(&Value::Bool(true))
+	{
+		return Err(Failure::ClaimViolation);
+	}
 	if op == Operation::Chat {
 		policy::chat_input(&value)?;
 	}

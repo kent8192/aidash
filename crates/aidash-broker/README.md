@@ -64,7 +64,10 @@ their existing paths unchanged.
 
 Chat bodies must name the exact model, reject the `models` fallback field,
 include positive `max_tokens` no greater
-than `max_output_tokens`, and set `provider.zdr: true`. OpenRouter embeddings
+than `max_output_tokens`, and set both `provider.zdr: true` and
+`provider.require_parameters: true`. The latter rejects routing to endpoints
+that [ignore requested parameters](https://openrouter.ai/docs/guides/routing/provider-selection#requiring-providers-to-support-all-parameters).
+OpenRouter embeddings
 must name the exact model and set ZDR. Model discovery paths use the shared
 Provider Credential model-ID validator, including single-segment and multiple-
 segment IDs, and must exactly match the signed claim; ZDR discovery is an
@@ -194,7 +197,11 @@ every successfully sealed host and reports restoration failures for reconciliati
 Operation-budget expiry follows the same restoration path, with a fresh bounded
 180-second cleanup allowance before the original deadline is re-raised.
 Non-deployment early exits, including pending builds, restore broker-presealed
-admission for a still-running, published release. Failed deployments that were
+admission for a still-running, published release. When broker intent changes
+the managed settings descriptor, reload the existing release and verify its
+original source SHA before restoring admission, even while a new build is
+pending. Record the descriptor so reconciliation does not repeat the reload;
+reload failure keeps the release gated. Failed deployments that were
 deliberately gated, stopped hosts and retired hosts remain gated.
 
 ### Operators who applied a pre-merge draft

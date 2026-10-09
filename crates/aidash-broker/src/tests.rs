@@ -205,7 +205,7 @@ impl Fixture {
 	}
 }
 fn chat() -> Value {
-	json!({"model":"author/model","max_tokens":10,"provider":{"zdr":true}})
+	json!({"model":"author/model","max_tokens":10,"provider":{"zdr":true,"require_parameters":true}})
 }
 async fn json_body(response: Response) -> Value {
 	serde_json::from_slice(
@@ -308,6 +308,36 @@ async fn chat_rejects_provider_executed_tools_and_plugins_but_preserves_function
 		json_body(response).await;
 	}
 	assert_eq!(f.provider.calls.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn chat_requires_provider_parameter_enforcement_before_key_lookup() {
+	let f = Fixture::new().await;
+	for provider in [
+		json!({"zdr":true}),
+		json!({"zdr":true,"require_parameters":false}),
+		json!({"zdr":true,"require_parameters":null}),
+		json!({"zdr":true,"require_parameters":"true"}),
+		json!({"zdr":true,"require_parameters":1}),
+	] {
+		let mut body = chat();
+		body["provider"] = provider;
+		let response = f
+			.request(&f.claims(), "POST", "/api/v1/chat/completions", body)
+			.await;
+		assert_eq!(response.status(), 403);
+		assert_eq!(
+			json_body(response).await["error"]["code"],
+			"capability_claim_violation"
+		);
+		assert_eq!(f.source.reads.load(Ordering::SeqCst), 0);
+		assert_eq!(f.provider.calls.load(Ordering::SeqCst), 0);
+	}
+	let response = f
+		.request(&f.claims(), "POST", "/api/v1/chat/completions", chat())
+		.await;
+	assert_eq!(response.status(), 200);
+	json_body(response).await;
 }
 
 #[tokio::test]
@@ -487,7 +517,7 @@ async fn chat_rejects_prompt_cache_directives_recursively_before_key_lookup() {
 		json!({"cache_control":null}),
 		json!({"messages":[{"role":"user","content":[{"type":"text","text":"test","cache_control":{"type":"ephemeral","ttl":"1h"}}]}]}),
 		json!({"tools":[{"type":"function","function":{"name":"test","cache_control":{"type":"ephemeral"}}}]}),
-		json!({"provider":{"zdr":true,"nested":[{"cache_control":{"type":"ephemeral"}}]}}),
+		json!({"provider":{"zdr":true,"require_parameters":true,"nested":[{"cache_control":{"type":"ephemeral"}}]}}),
 	] {
 		let mut body = chat();
 		body.as_object_mut()

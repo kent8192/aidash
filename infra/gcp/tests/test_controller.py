@@ -231,8 +231,9 @@ class ReconcileTests(unittest.TestCase):
                         for call in self.calls
                     )
                 )
-                self.assertEqual(("seal", "test") in self.calls, previously_enabled)
-                self.assertEqual(("unseal", "test") in self.calls, previously_enabled)
+                drain_required = previously_enabled or bool((desired or {}).get("enabled"))
+                self.assertEqual(("seal", "test") in self.calls, drain_required)
+                self.assertEqual(("unseal", "test") in self.calls, drain_required)
                 self.cloud.plans.clear()
                 self.reconcile()
                 self.assertEqual(self.cloud.plans, [])
@@ -642,6 +643,67 @@ class ReconcileTests(unittest.TestCase):
         self.assertTrue(self.cloud.managed["develop"]["published"])
         self.assertEqual(self.cloud.managed["develop"]["release_sha"], SHA)
         self.assertFalse(any(call[0] in {"bootstrap", "start", "stop"} for call in self.calls))
+
+    def test_pending_build_reloads_changed_broker_settings_for_the_existing_release(self):
+        self.config["develop_branch"] = "develop/0.1.0"
+        initial = {"develop": {"enabled": True, "image": "initial", "signing_version": "1"}}
+        self.config["credential_brokers"] = deepcopy(initial)
+        outputs = self.cloud.outputs
+        def managed_outputs():
+            values = outputs()
+            for identity, output in values.items():
+                broker = self.cloud.brokers.get(identity, {})
+                output["provider_credentials"] = {
+                    "store": {"environment_id": identity},
+                    "broker": {"endpoint": "https://broker.run.app/api/v1", "kid": broker.get("signing_version", "1")} if broker.get("enabled") else None,
+                }
+            return values
+        with patch.object(self.cloud, "outputs", side_effect=managed_outputs):
+            self.request("develop", source_ref="develop/0.1.0")
+            self.reconcile()
+            self.request("develop", action="update", sha="b" * 40, source_ref="develop/0.1.0")["release"] = None
+            for desired in [{"develop": {"enabled": False, "image": "initial"}}, {}, {"develop": {"enabled": True, "image": "initial", "signing_version": "2"}}]:
+                with self.subTest(desired=desired):
+                    self.config["credential_brokers"] = deepcopy(initial)
+                    self.reconcile()
+                    self.config["credential_brokers"] = desired
+                    self.calls.clear()
+                    self.reconcile()
+                    self.assertEqual([call for call in self.calls if call[0] in {"seal", "bootstrap", "health", "unseal"}], [("seal", "develop"), ("bootstrap", "develop", False), ("health", "develop"), ("unseal", "develop")])
+                    entry = self.store.state["environments"]["develop"]
+                    self.assertEqual(entry["status"], "awaiting_build")
+                    self.assertEqual(entry["provider_credentials"], self.cloud.outputs()["develop"]["provider_credentials"])
+                    self.assertEqual(self.cloud.managed["develop"]["release_sha"], SHA)
+                    self.assertTrue(self.cloud.managed["develop"]["published"])
+                    self.assertTrue(self.cloud.managed["develop"]["running"])
+                    self.assertFalse(any(call[0] in {"start", "stop"} for call in self.calls))
+                    self.calls.clear()
+                    self.cloud.plans.clear()
+                    self.reconcile()
+                    self.assertFalse(any(call[0] in {"bootstrap", "start", "stop"} for call in self.calls))
+                    self.assertEqual(self.cloud.plans, [])
+
+    def test_pending_build_broker_settings_reload_failure_keeps_admission_gated(self):
+        self.config["develop_branch"] = "develop/0.1.0"
+        self.config["credential_brokers"] = {"develop": {"enabled": True, "image": "initial"}}
+        self.request("develop", source_ref="develop/0.1.0")
+        self.reconcile()
+        self.request("develop", action="update", sha="b" * 40, source_ref="develop/0.1.0")["release"] = None
+        self.config["credential_brokers"] = {}
+        outputs = self.cloud.outputs
+        def managed_outputs():
+            values = outputs()
+            values["develop"]["provider_credentials"] = {"store": {"environment_id": "develop"}, "broker": None}
+            return values
+        self.calls.clear()
+        with patch.object(self.cloud, "outputs", side_effect=managed_outputs), patch.object(controller, "restart_bootstrap", side_effect=RuntimeError("reload unavailable")), self.assertRaisesRegex(RuntimeError, "Reconciliation incomplete"):
+            self.reconcile()
+        self.assertIn(("gate", "develop"), self.calls)
+        self.assertNotIn(("unseal", "develop"), self.calls)
+        self.assertFalse(self.cloud.managed["develop"]["published"])
+        entry = self.store.state["environments"]["develop"]
+        self.assertEqual(entry["failed_deployment_generation"], entry["generation"])
+        self.assertFalse(any(call[0] in {"start", "stop"} for call in self.calls))
 
     def test_declined_idle_stop_restores_broker_presealed_healthy_release(self):
         self.config["credential_brokers"] = {"test": {"enabled": True, "image": "initial"}}

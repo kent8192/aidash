@@ -609,9 +609,10 @@ def reconcile(config, store):
             try:
                 for identity, previous in managed.items():
                     prior = (previous_brokers or {}).get(identity, {})
+                    desired = desired_brokers.get(identity, {})
                     if not previous["running"] or (
                         previous_brokers is not None
-                        and (not prior.get("enabled") or prior == desired_brokers.get(identity))
+                        and (prior == desired or (not prior.get("enabled") and not desired.get("enabled")))
                     ):
                         continue
                     state, _ = store.read("lifecycle/state.json")
@@ -726,12 +727,32 @@ def reconcile(config, store):
                     )
                     restore_presealed_running_host(config, output, identity, presealed, managed)
                     continue
+                previous = managed.get(identity)
+                if (
+                    identity in presealed
+                    and previous and previous["running"] and previous["published"]
+                    and entry.get("provider_credentials") != output.get("provider_credentials")
+                ):
+                    # Broker intent has already changed VM metadata. Reload the
+                    # existing authorized bundle even if a newer build is pending.
+                    # Failure must take the deployment gate path, not unseal stale settings.
+                    current_entry(store, identity, generation)
+                    deployment_started = True
+                    restart_bootstrap(config, output, False)
+                    if host(config, output, "health")["source_sha"] != previous["release_sha"]:
+                        raise Refused("Settings reload changed the running source")
+                    current_entry(store, identity, generation)
+                    update_entry(
+                        store, identity, generation,
+                        provider_credentials=output.get("provider_credentials"),
+                    )
+                    entry = current_entry(store, identity, generation)
+                    deployment_started = False
                 if entry.get(
                     "failed_deployment_generation"
                 ) == generation and not entry.get("start_pending"):
                     restore_presealed_running_host(config, output, identity, presealed, managed)
                     continue
-                previous = managed.get(identity)
                 needs_deploy = bool(entry.get("release")) and (
                     not previous
                     or not previous["running"]
