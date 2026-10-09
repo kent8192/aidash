@@ -283,11 +283,19 @@
       ]
     },
     "AT13": {
-      "description": "Skill discovery supplies bounded metadata; activation supplies the selected manifest and on-demand files. Loading instructions never executes bundled scripts.",
+      "description": "Skill discovery supplies bounded metadata; loading supplies the selected manifest and on-demand files. Loading instructions never executes bundled scripts.",
       "tests": [
         {
           "name": "direct_skills_are_pinned_and_loaded_progressively",
           "source": "server/src/apps/execution/capabilities/tests/core_capabilities.rs"
+        },
+        {
+          "name": "deferred_exposure_tests::deferred_first_request_exposes_only_mandatory_and_eager_capabilities",
+          "source": "server/src/apps/execution/capabilities/tests/core_capabilities/deferred_exposure.rs"
+        },
+        {
+          "name": "deferred_exposure_tests::deferred_skills_load_once_and_read_assets_in_chunks",
+          "source": "server/src/apps/execution/capabilities/tests/core_capabilities/deferred_exposure.rs"
         }
       ]
     },
@@ -297,6 +305,18 @@
         {
           "name": "direct_skills_are_pinned_and_loaded_progressively",
           "source": "server/src/apps/execution/capabilities/tests/core_capabilities.rs"
+        },
+        {
+          "name": "deferred_exposure_tests::deferred_invocation_rejections_keep_unloaded_capabilities_unavailable",
+          "source": "server/src/apps/execution/capabilities/tests/core_capabilities/deferred_exposure.rs"
+        },
+        {
+          "name": "deferred_exposure_tests::deferred_discovery_never_reveals_foreign_unbound_or_unapproved_entries",
+          "source": "server/src/apps/execution/capabilities/tests/core_capabilities/deferred_exposure.rs"
+        },
+        {
+          "name": "deferred_exposure_tests::deferred_skills_load_once_and_read_assets_in_chunks",
+          "source": "server/src/apps/execution/capabilities/tests/core_capabilities/deferred_exposure.rs"
         }
       ]
     },
@@ -580,6 +600,14 @@
         {
           "name": "native_migrations_build_a_fresh_schema_and_preserve_records_on_replay",
           "source": "server/src/apps/execution/tests/migrations.rs"
+        },
+        {
+          "name": "deferred_exposure_tests::deferred_revoked_binding_fails_the_step_like_legacy",
+          "source": "server/src/apps/execution/capabilities/tests/core_capabilities/deferred_exposure.rs"
+        },
+        {
+          "name": "deferred_exposure_tests::legacy_agent_beside_deferred_keeps_legacy_tools_and_skill_record",
+          "source": "server/src/apps/execution/capabilities/tests/core_capabilities/deferred_exposure.rs"
         }
       ]
     },

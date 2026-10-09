@@ -1664,3 +1664,6 @@ use reinhardt::query::SimpleExpr;
 
 #[path = "core_capabilities/media.rs"]
 mod media_tests;
+
+#[path = "core_capabilities/deferred_exposure.rs"]
+mod deferred_exposure_tests;
