@@ -1,10 +1,11 @@
 import hashlib
 import io
+import os
 from pathlib import Path
 import tarfile
 import tempfile
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import gvisor_installer as installer
 
@@ -127,6 +128,35 @@ class InstallerTest(unittest.TestCase):
         self.assertEqual(sleeps, [5, 5])
         with self.assertRaisesRegex(RuntimeError, r'\[7\]'):
             installer.drain(self.root, 12, sleep=sleep, clock=lambda: now[0], live=lambda root: [7])
+
+    def run_main(self, install):
+        calls = []
+        environment = {'AIDASH_HOST_ROOT': str(self.root), 'AIDASH_GVISOR_LABEL': 'x/admit',
+                       'AIDASH_GVISOR_INSTALLED_LABEL': 'x/installed',
+                       'AIDASH_GVISOR_READY': str(self.root / 'ready')}
+        with (patch.object(installer, 'label', side_effect=calls.append),
+              patch.object(installer, 'install', install),
+              patch.object(installer.time, 'sleep', side_effect=StopIteration),
+              patch.object(installer.os, 'uname', return_value=Mock(machine='x86_64')),
+              patch.dict(os.environ, environment)):
+            try:
+                installer.main()
+            except (StopIteration, RuntimeError) as error:
+                return calls, error
+        return calls, None
+
+    def test_replacement_withdraws_only_admission_and_keeps_the_guard_scheduled(self):
+        calls, error = self.run_main(Mock())
+        self.assertIsInstance(error, StopIteration)
+        self.assertEqual(calls, [{'x/admit': None},
+                                 {'x/admit': installer.GVISOR_VERSION, 'x/installed': 'true'}])
+        self.assertTrue((self.root / 'ready').exists())
+
+    def test_failed_replacement_stays_unadmitted_without_withdrawing_the_guard(self):
+        calls, error = self.run_main(Mock(side_effect=RuntimeError('live sandboxes')))
+        self.assertIsInstance(error, RuntimeError)
+        self.assertEqual(calls, [{'x/admit': None}, {'x/admit': None}])
+        self.assertFalse((self.root / 'ready').exists())
 
 
 if __name__ == '__main__':

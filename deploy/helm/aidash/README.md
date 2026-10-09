@@ -36,9 +36,10 @@ Set **separate** `execution.runner.image`, `execution.guard.image` and
 workflow ref, including for fork PR Environments. Never build their code, their
 Dockerfile or their chart from deployed PR source. Only the Execution Pod image
 may contain that source, using its trusted build recipe. Production controllers
-must pin all trusted images by digest. Installer node patch permissions are
-cluster-wide, so granting them to source-built code would cross Environment
-boundaries.
+must pin all trusted images by digest: the chart refuses to render an enabled
+installer, guard or Runner whose image does not end in `@sha256:<digest>`.
+Installer node patch permissions are cluster-wide, so granting them to
+source-built code would cross Environment boundaries.
 
 The only verified GCP profile is GKE Standard on Ubuntu/containerd N2 pools with
 upstream gVisor; GKE Sandbox and Autopilot are excluded. The installer checks the
@@ -46,12 +47,15 @@ release archive SHA-256, validates all archive paths and regular files, writes
 every binary (including `gvisor-bin`), verifies a receipt against installed file
 hashes, registers containerd's version-2 `runsc` runtime, and restarts containerd
 through PID 1 only after configuration changes. It publishes
-`aidash.run/gvisor=20260921.0` after verification; the RuntimeClass requires it.
-Its ServiceAccount has only cluster-wide `get`/`patch` on Cluster Nodes.
+`aidash.run/gvisor=20260921.0` after verification; the RuntimeClass requires it, so
+this admission label decides where new sandboxes start. It also sets
+`aidash.run/gvisor-installed=true`, which places the guard and is never withdrawn
+once a runtime has been verified. Its ServiceAccount has only cluster-wide `get`/`patch` on Cluster Nodes.
 
 The installer is privileged and rewrites host binaries, so the chart refuses to
 render it without a global or Environment `nodeSelector`; select only the dedicated
-execution pool. Before replacing a runtime it withdraws the label, then waits up to
+execution pool. Before replacing a runtime it withdraws only the admission label, so
+no new sandbox starts while the guard keeps watching live ones, then waits up to
 `AIDASH_GVISOR_DRAIN_SECONDS` (3600) for every process running an installed
 `runsc` or `gvisor_sentry` to exit. A running Sentry keeps its old executable
 inode, which the guard's `samefile` check would stop recognizing, so the installer

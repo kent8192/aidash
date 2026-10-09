@@ -168,7 +168,7 @@ def install(root, version, checksum, arch, download, restart, runsc_root='/run/c
         restart()
 
 
-def label(value):
+def label(values):
     """This KSA has cluster-wide get/patch nodes; no workload permissions."""
     account = Path('/var/run/secrets/kubernetes.io/serviceaccount')
     host = os.environ['KUBERNETES_SERVICE_HOST']
@@ -177,8 +177,7 @@ def label(value):
     url = f'https://{host}:{port}/api/v1/nodes/{name}'
     headers = {'Authorization': 'Bearer ' + (account / 'token').read_text().strip(),
                'Content-Type': 'application/merge-patch+json'}
-    data = json.dumps({'metadata': {'labels': {os.environ.get(
-        'AIDASH_GVISOR_LABEL', 'aidash.run/gvisor'): value}}}).encode()
+    data = json.dumps({'metadata': {'labels': values}}).encode()
     context = ssl.create_default_context(cafile=str(account / 'ca.crt'))
     with urllib.request.urlopen(urllib.request.Request(url, data=data, headers=headers,
                                                       method='PATCH'), context=context, timeout=30):
@@ -191,6 +190,11 @@ def main():
     arch = os.uname().machine
     checksum = os.environ.get('AIDASH_GVISOR_SHA', ARCHIVE_HASHES[arch])
     runsc_root = os.environ.get('AIDASH_RUNSC_ROOT', '/run/containerd/runsc')
+    # The admission label gates new sandboxes (RuntimeClass); the installed label
+    # keeps the node-local guard scheduled and is never withdrawn once verified.
+    admission = os.environ.get('AIDASH_GVISOR_LABEL', 'aidash.run/gvisor')
+    installed = os.environ.get('AIDASH_GVISOR_INSTALLED_LABEL', 'aidash.run/gvisor-installed')
+    ready = Path(os.environ.get('AIDASH_GVISOR_READY', '/tmp/gvisor-ready'))
     # Existing cells end by maximum_seconds/idle_seconds; allow one idle interval plus margin.
     drain_seconds = int(os.environ.get('AIDASH_GVISOR_DRAIN_SECONDS', '3600'))
 
@@ -203,16 +207,16 @@ def main():
                         'systemctl', 'restart', 'containerd'], check=True, timeout=120)
 
     try:
-        # Withdraw readiness during startup/repair. Do not remove the label on
-        # a periodic timer: that would evict the node-local guard DaemonSet.
-        label(None)
+        # Withdraw only admission during startup/repair. The guard must keep
+        # watching live sandboxes while a runtime replacement drains them.
+        label({admission: None})
         install(root, version, checksum, arch, download, restart, runsc_root,
                 drain=lambda host: drain(host, drain_seconds))
-        label(version)
-        Path('/tmp/gvisor-ready').touch()
+        label({admission: version, installed: 'true'})
+        ready.touch()
     except Exception:
-        Path('/tmp/gvisor-ready').unlink(missing_ok=True)
-        label(None)
+        ready.unlink(missing_ok=True)
+        label({admission: None})
         raise
     while True:
         time.sleep(60)

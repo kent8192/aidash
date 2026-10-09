@@ -9,6 +9,9 @@
 {{- if eq $sandbox $trusted -}}{{ fail "Execution Pods and trusted DaemonSets require different namespaces" }}{{- end -}}
 {{- if or (eq $trusted .Release.Namespace) (eq $sandbox .Release.Namespace) -}}{{ fail "Execution and trusted namespaces must be separate from application workloads" }}{{- end -}}
 {{- if eq $runtime "gvisor" -}}{{ fail "Use an Aidash RuntimeClass, not the GKE Sandbox gvisor RuntimeClass" }}{{- end -}}
+{{- range $component, $values := dict "installer" $e.installer "guard" $e.guard "runner" $e.runner -}}
+{{- if and $values.enabled (not (regexMatch "@sha256:[0-9a-f]{64}$" (toString $values.image))) -}}{{ fail (printf "execution.%s.image must be pinned by digest: it runs trusted, privileged or cluster-scoped code" $component) }}{{- end -}}
+{{- end -}}
 {{- if $e.createNamespaces }}
 {{- range $namespace := list $sandbox $trusted }}
 ---
@@ -90,6 +93,7 @@ spec:
             - { name: AIDASH_GVISOR_VERSION, value: {{ $e.gvisor.version | quote }} }
             - { name: AIDASH_GVISOR_SHA, value: {{ $e.gvisor.sha256 | quote }} }
             - { name: AIDASH_GVISOR_LABEL, value: {{ $e.gvisor.label | quote }} }
+            - { name: AIDASH_GVISOR_INSTALLED_LABEL, value: {{ $e.gvisor.installedLabel | quote }} }
             - { name: AIDASH_RUNSC_ROOT, value: {{ $e.paths.runscRoot | quote }} }
           readinessProbe:
             exec: { command: [test, -f, /tmp/gvisor-ready] }
@@ -115,7 +119,7 @@ spec:
       hostNetwork: false
       hostPID: true
       automountServiceAccountToken: false
-      nodeSelector: {{ toYaml (mergeOverwrite (deepCopy $selector) (dict $e.gvisor.label $e.gvisor.version)) | nindent 8 }}
+      nodeSelector: {{ toYaml (mergeOverwrite (deepCopy $selector) (dict $e.gvisor.installedLabel "true")) | nindent 8 }}
       tolerations: {{ toYaml $tolerations | nindent 8 }}
       containers:
         - name: guard

@@ -8,6 +8,7 @@ import unittest
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
+DIGEST = '@sha256:' + 'b' * 64
 
 
 def render(chart, values, release='fixture'):
@@ -57,9 +58,9 @@ class ChartsTest(unittest.TestCase):
     def test_execution_privileges_scheduling_and_independent_trusted_images(self):
         execution = {'createNamespaces': True, 'sandboxImage': 'sandbox@sha256:' + 'a' * 64,
                      'runtimeClass': {'create': True},
-                     'runner': {'enabled': True, 'existingSecret': 'runner', 'image': 'trusted-runner'},
-                     'guard': {'enabled': True, 'image': 'trusted-guard'},
-                     'installer': {'enabled': True, 'image': 'trusted-installer'}}
+                     'runner': {'enabled': True, 'existingSecret': 'runner', 'image': 'trusted-runner' + DIGEST},
+                     'guard': {'enabled': True, 'image': 'trusted-guard' + DIGEST},
+                     'installer': {'enabled': True, 'image': 'trusted-installer' + DIGEST}}
         objects = render(self.aidash, dict(self.base, execution=execution,
                                            environment={'nodeSelector': {'pool': 'execution'}}))
         runtime = select(objects, 'RuntimeClass', '-runsc')
@@ -74,8 +75,13 @@ class ChartsTest(unittest.TestCase):
             pod = select(objects, 'DaemonSet', '-' + role)['spec']['template']['spec']
             self.assertTrue(pod['hostPID'])
             self.assertFalse(pod['hostNetwork'])
-            self.assertEqual(pod['containers'][0]['image'], 'trusted-' + role)
+            self.assertEqual(pod['containers'][0]['image'], 'trusted-' + role + DIGEST)
         guard = select(objects, 'DaemonSet', '-guard')['spec']['template']['spec']
+        # The guard follows the installed label, which is never withdrawn during a
+        # runtime replacement; only the RuntimeClass depends on the admission label.
+        self.assertEqual(guard['nodeSelector'], {'pool': 'execution', 'aidash.run/gvisor-installed': 'true'})
+        env = {value['name']: value.get('value') for value in select(objects, 'DaemonSet', '-installer')['spec']['template']['spec']['containers'][0]['env']}
+        self.assertEqual((env['AIDASH_GVISOR_LABEL'], env['AIDASH_GVISOR_INSTALLED_LABEL']), ('aidash.run/gvisor', 'aidash.run/gvisor-installed'))
         mounts = {mount['name']: mount for mount in guard['containers'][0]['volumeMounts']}
         self.assertEqual(mounts['kubelet-pods']['mountPropagation'], 'HostToContainer')
         for name in ('runsc', 'gvisor-bin', 'ctr'):
@@ -84,7 +90,7 @@ class ChartsTest(unittest.TestCase):
         runner = select(objects, 'Deployment', '-execution-runner')
         self.assertEqual(runner['spec']['replicas'], 1)
         self.assertEqual(runner['spec']['strategy']['type'], 'Recreate')
-        self.assertEqual(runner['spec']['template']['spec']['containers'][0]['image'], 'trusted-runner')
+        self.assertEqual(runner['spec']['template']['spec']['containers'][0]['image'], 'trusted-runner' + DIGEST)
         profile = json.loads(select(objects, 'ConfigMap', '-profile')['data']['profile.json'])
         self.assertEqual(profile['processes'], 128)
         self.assertEqual(profile['host_tasks'], 512)
@@ -92,7 +98,7 @@ class ChartsTest(unittest.TestCase):
 
     def test_installer_needs_a_selector_guard_state_is_per_release_and_process_floor(self):
         execution = {'createNamespaces': True, 'sandboxImage': 'sandbox@sha256:' + 'a' * 64,
-                     'guard': {'enabled': True, 'image': 'g'}, 'installer': {'enabled': True, 'image': 'i'}}
+                     'guard': {'enabled': True, 'image': 'g' + DIGEST}, 'installer': {'enabled': True, 'image': 'i' + DIGEST}}
         with self.assertRaises(subprocess.CalledProcessError):
             render(self.aidash, dict(self.base, execution=execution))
         values = dict(self.base, execution=execution, environment={'nodeSelector': {'pool': 'execution'}})
@@ -120,6 +126,20 @@ class ChartsTest(unittest.TestCase):
             else:
                 with self.assertRaises(subprocess.CalledProcessError):
                     render(self.aidash, limits)
+
+    def test_enabled_trusted_images_must_be_pinned_by_digest(self):
+        for component in ('installer', 'guard', 'runner'):
+            execution = {'createNamespaces': True, 'sandboxImage': 'sandbox' + DIGEST,
+                         'runner': {'existingSecret': 'runner'}}
+            execution.setdefault(component, {}).update(enabled=True, image='trusted:latest')
+            values = dict(self.base, execution=execution, environment={'nodeSelector': {'pool': 'execution'}})
+            with self.subTest(component=component):
+                with self.assertRaises(subprocess.CalledProcessError):
+                    render(self.aidash, values)
+                execution[component]['image'] = 'trusted' + DIGEST
+                render(self.aidash, values)
+        # A disabled component is not rendered, so its default tag is not an error.
+        render(self.aidash, self.base)
 
     def test_gcp_persistence_local_lb_private_admission_and_activity(self):
         objects = render(self.environment, {'postgres': {'existingSecret': 'db'}, 'edge': {'hostname': 'fixture.example'},
