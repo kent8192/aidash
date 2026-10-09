@@ -49,6 +49,14 @@ through PID 1 only after configuration changes. It publishes
 `aidash.run/gvisor=20260921.0` after verification; the RuntimeClass requires it.
 Its ServiceAccount has only cluster-wide `get`/`patch` on Cluster Nodes.
 
+The installer is privileged and rewrites host binaries, so the chart refuses to
+render it without a global or Environment `nodeSelector`; select only the dedicated
+execution pool. Before replacing a runtime it withdraws the label, then waits up to
+`AIDASH_GVISOR_DRAIN_SECONDS` (3600) for every process running an installed
+`runsc` or `gvisor_sentry` to exit. A running Sentry keeps its old executable
+inode, which the guard's `samefile` check would stop recognizing, so the installer
+fails without replacing anything if sandboxes remain; it retries on restart.
+
 The release gets three separate namespaces: the application release namespace,
 `<release>-sandbox` (Pod Security `restricted`), and `<release>-guard` (trusted
 privileged DaemonSets only). Names can be overridden but must remain distinct.
@@ -69,12 +77,15 @@ the `<release>-execution-runner:8949` endpoint. The chart's Runner profile does
 not provision the application's retained object store or change its admission
 configuration; those remain operator-provisioned state.
 
-The profile keeps guest `processes=128` and separate `host_tasks=512`. The guard
+The profile keeps guest `processes=128` (minimum 8: the admission probe lowers its
+own hard `RLIMIT_NPROC` to 8 and cannot raise it) and separate `host_tasks=512`. The guard
 writes and verifies Sentry `pids.max`; `sandbox.py` enforces guest `RLIMIT_NPROC`.
 Resource evidence includes both. The guard requires host PID access, containerd,
 kubelet emptyDirs with `HostToContainer` propagation, its own retained host state,
 and the host executable paths mounted at the same paths for `samefile` checks.
 `execution.paths` configures the runtime root, executable paths and cgroup root.
+The guard state defaults to `/var/lib/aidash-node-guard/<release>`: each guard holds
+an exclusive `watch.lock`, so releases sharing a Cluster Node must not share it.
 
 The Runner selects the guard on the Execution Pod's recorded Cluster Node and
 uses `kubectl exec -i` with the existing stdin/stdout JSON protocol. Old journals

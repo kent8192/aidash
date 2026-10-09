@@ -17,6 +17,8 @@ GVISOR_SHA = '3dd478770dd751d09c257ba14d739b179348a36c5f2d9e954b773f5f90bff646'
 ARCHIVE_HASHES = {'x86_64': GVISOR_SHA,
                  'aarch64': 'edf717346495ec5e995551e84e47beb5d0ecbfd872d9773ffb554aa24a158c4e'}
 REQUIRED = {'runsc', 'containerd-shim-runsc-v1', 'gvisor-bin/gvisor_sentry'}
+# Executables the node guard identifies a live sandbox by (`samefile` on /proc/<pid>/exe).
+SENTRY_BINARIES = ('usr/local/bin/runsc', 'usr/local/bin/gvisor-bin/gvisor_sentry')
 
 
 def relative(name):
@@ -118,12 +120,42 @@ def configure(root, runsc_root='/run/containerd/runsc'):
     return changed
 
 
-def install(root, version, checksum, arch, download, restart, runsc_root='/run/containerd/runsc'):
+def live_sentries(root, proc='/proc'):
+    """PIDs running an installed Sentry executable, judged as the node guard does."""
+    targets = [root / name for name in SENTRY_BINARIES if (root / name).exists()]
+    pids = []
+    for entry in Path(proc).iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            if any(os.path.samefile(entry / 'exe', target) for target in targets):
+                pids.append(int(entry.name))
+        except OSError:
+            continue  # the process exited while it was being inspected
+    return pids
+
+
+def drain(root, seconds, sleep=time.sleep, clock=time.monotonic, live=live_sentries):
+    """Wait for live sandboxes to exit; refuse to proceed while any remain.
+
+    A running Sentry keeps its old executable inode. Replacing the file would
+    leave the node guard unable to recognize, and so unable to kill, that process.
+    """
+    end = clock() + seconds
+    while pids := live(root):
+        if clock() >= end:
+            raise RuntimeError(f'live gVisor sandboxes still use the installed runtime: {sorted(pids)[:8]}')
+        sleep(5)
+
+
+def install(root, version, checksum, arch, download, restart, runsc_root='/run/containerd/runsc',
+            drain=lambda root: None):
     if not installed(root, version, checksum):
         url = f'https://storage.googleapis.com/gvisor/releases/release/{version}/{arch}/gvisor.tar.bz2'
         files = archive_files(download(url), checksum)
         # Validate every destination before changing any executable.
         paths = {name: destination(root / 'usr/local/bin', name) for name in files}
+        drain(root)
         for name, data in files.items():
             write(paths[name], data, 0o755)
         write(root / 'usr/local/share/aidash/gvisor.json', json.dumps({
@@ -159,6 +191,8 @@ def main():
     arch = os.uname().machine
     checksum = os.environ.get('AIDASH_GVISOR_SHA', ARCHIVE_HASHES[arch])
     runsc_root = os.environ.get('AIDASH_RUNSC_ROOT', '/run/containerd/runsc')
+    # Existing cells end by maximum_seconds/idle_seconds; allow one idle interval plus margin.
+    drain_seconds = int(os.environ.get('AIDASH_GVISOR_DRAIN_SECONDS', '3600'))
 
     def download(url):
         with urllib.request.urlopen(url, timeout=120) as response:
@@ -172,7 +206,8 @@ def main():
         # Withdraw readiness during startup/repair. Do not remove the label on
         # a periodic timer: that would evict the node-local guard DaemonSet.
         label(None)
-        install(root, version, checksum, arch, download, restart, runsc_root)
+        install(root, version, checksum, arch, download, restart, runsc_root,
+                drain=lambda host: drain(host, drain_seconds))
         label(version)
         Path('/tmp/gvisor-ready').touch()
     except Exception:

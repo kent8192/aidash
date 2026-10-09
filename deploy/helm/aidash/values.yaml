@@ -63,8 +63,18 @@ affinity: {}
 environment:
   nodeSelector: {}
   tolerations:
-    - { key: node.kubernetes.io/not-ready, operator: Exists, effect: NoExecute, tolerationSeconds: 30 }
-    - { key: node.kubernetes.io/unreachable, operator: Exists, effect: NoExecute, tolerationSeconds: 30 }
+    - {
+        key: node.kubernetes.io/not-ready,
+        operator: Exists,
+        effect: NoExecute,
+        tolerationSeconds: 30,
+      }
+    - {
+        key: node.kubernetes.io/unreachable,
+        operator: Exists,
+        effect: NoExecute,
+        tolerationSeconds: 30,
+      }
 
 # Only GKE Standard Ubuntu/containerd N2 pools have been verified on GCP.
 # Each component is opt-in. Names are unique per Environment/release.
@@ -88,8 +98,11 @@ execution:
     gvisorBin: /usr/local/bin/gvisor-bin
     ctr: /usr/bin/ctr
     cgroupRoot: /sys/fs/cgroup
-    guardState: /var/lib/aidash-node-guard
-    sentryBinaries: [/usr/local/bin/runsc, /usr/local/bin/gvisor-bin/gvisor_sentry]
+    # Empty derives /var/lib/aidash-node-guard/<release>: each guard holds an
+    # exclusive watch.lock, so releases sharing a Node need distinct directories.
+    guardState: ""
+    sentryBinaries:
+      [/usr/local/bin/runsc, /usr/local/bin/gvisor-bin/gvisor_sentry]
   installer:
     enabled: false
     # Build from the trusted ref, never the deployed PR source.

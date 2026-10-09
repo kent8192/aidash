@@ -10,8 +10,8 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def render(chart, values):
-    output = subprocess.check_output(['helm', 'template', 'fixture', str(ROOT / chart),
+def render(chart, values, release='fixture'):
+    output = subprocess.check_output(['helm', 'template', release, str(ROOT / chart),
                                      '--namespace', 'environment', '-f', '-'], input=json.dumps(values).encode())
     return [value for value in yaml.safe_load_all(output) if value]
 
@@ -60,7 +60,8 @@ class ChartsTest(unittest.TestCase):
                      'runner': {'enabled': True, 'existingSecret': 'runner', 'image': 'trusted-runner'},
                      'guard': {'enabled': True, 'image': 'trusted-guard'},
                      'installer': {'enabled': True, 'image': 'trusted-installer'}}
-        objects = render(self.aidash, dict(self.base, execution=execution))
+        objects = render(self.aidash, dict(self.base, execution=execution,
+                                           environment={'nodeSelector': {'pool': 'execution'}}))
         runtime = select(objects, 'RuntimeClass', '-runsc')
         self.assertEqual(runtime['handler'], 'runsc')
         self.assertEqual(runtime['scheduling']['nodeSelector'], {'aidash.run/gvisor': '20260921.0'})
@@ -88,6 +89,37 @@ class ChartsTest(unittest.TestCase):
         self.assertEqual(profile['processes'], 128)
         self.assertEqual(profile['host_tasks'], 512)
         self.assertNotIn('kubeconfig', profile['runner'])
+
+    def test_installer_needs_a_selector_guard_state_is_per_release_and_process_floor(self):
+        execution = {'createNamespaces': True, 'sandboxImage': 'sandbox@sha256:' + 'a' * 64,
+                     'guard': {'enabled': True, 'image': 'g'}, 'installer': {'enabled': True, 'image': 'i'}}
+        with self.assertRaises(subprocess.CalledProcessError):
+            render(self.aidash, dict(self.base, execution=execution))
+        values = dict(self.base, execution=execution, environment={'nodeSelector': {'pool': 'execution'}})
+        installer = select(render(self.aidash, values), 'DaemonSet', '-installer')
+        self.assertEqual(installer['spec']['template']['spec']['nodeSelector'], {'pool': 'execution'})
+        states = []
+        for release in ('alpha', 'beta'):
+            guard = select(render(self.aidash, values, release), 'DaemonSet', '-guard')['spec']['template']['spec']
+            container = guard['containers'][0]
+            path = next(volume['hostPath']['path'] for volume in guard['volumes'] if volume['name'] == 'state')
+            self.assertEqual(path, '/var/lib/aidash-node-guard/' + release)
+            self.assertIn({'name': 'AIDASH_GUARD_STATE', 'value': path}, container['env'])
+            self.assertIn({'name': 'state', 'mountPath': path}, container['volumeMounts'])
+            self.assertIn(path + '/watch.lock', '\n'.join(container['readinessProbe']['exec']['command']))
+            states.append(path)
+        self.assertEqual(len(set(states)), 2)
+        custom = dict(values, execution=dict(execution, paths={'guardState': '/srv/guard'}))
+        guard = select(render(self.aidash, custom), 'DaemonSet', '-guard')['spec']['template']['spec']
+        self.assertIn({'name': 'state', 'hostPath': {'path': '/srv/guard', 'type': 'DirectoryOrCreate'}}, guard['volumes'])
+        # The admission probe lowers its own hard RLIMIT_NPROC to 8 and cannot raise it.
+        for processes, accepted in ((7, False), (8, True)):
+            limits = dict(self.base, execution={'limits': {'processes': processes}})
+            if accepted:
+                render(self.aidash, limits)
+            else:
+                with self.assertRaises(subprocess.CalledProcessError):
+                    render(self.aidash, limits)
 
     def test_gcp_persistence_local_lb_private_admission_and_activity(self):
         objects = render(self.environment, {'postgres': {'existingSecret': 'db'}, 'edge': {'hostname': 'fixture.example'},
@@ -141,6 +173,21 @@ class ActivityTest(unittest.TestCase):
         self.assertFalse(self.combine(previous, counts={'database_work': 1})['busy'])
         self.assertTrue(self.combine(previous, counts={'leases': 1})['busy'])
         self.assertEqual(self.combine(dict(previous, busy=True))['last_active'], 10000)
+
+    def test_persisted_snapshot_keeps_a_bounded_transfer_digest(self):
+        previous = {'observed_at': 9950, 'last_active': 5000, 'busy': False}
+        first = self.combine(previous, transfers=['a', 'b'])
+        self.assertNotIn('completed_transfers', first)
+        self.assertEqual(first['completed_transfers_count'], 2)
+        settled = dict(first, last_active=5000, observed_at=9950)
+        self.assertEqual(self.combine(settled, transfers=['b', 'a'])['last_active'], 5000)
+        self.assertEqual(self.combine(settled, transfers=['a', 'b', 'c'])['last_active'], 10000)
+        self.assertEqual(self.combine(settled, transfers=['a'])['last_active'], 10000)
+        legacy = dict(previous, completed_transfers=['a', 'b'])
+        self.assertEqual(self.combine(legacy, transfers=['b', 'a'])['last_active'], 5000)
+        self.assertEqual(self.combine(legacy, transfers=['a', 'b', 'c'])['last_active'], 10000)
+        many = self.combine(previous, transfers=[f'{n:036d}' for n in range(50000)])
+        self.assertLess(len(json.dumps(many)), 2048)
 
 
 if __name__ == '__main__':

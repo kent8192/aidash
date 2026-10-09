@@ -1,10 +1,15 @@
 """Read-only Environment observation; publish one fail-closed snapshot."""
+import hashlib
 import json
 import os
 from pathlib import Path
 import ssl
 import time
 import urllib.request
+
+
+def digest(transfers):
+    return hashlib.sha256('\n'.join(sorted(transfers)).encode()).hexdigest()
 
 
 def combine(database, edge, runner, previous, now):
@@ -18,12 +23,19 @@ def combine(database, edge, runner, previous, now):
     active = any(value for key, value in counts.items() if key != 'database_work')
     last = max(previous.get('last_active', now), edge['last_active'],
                database.get('last_work_completed', 0), runner.get('last_work_completed', 0))
+    # Receipt IDs are durable and only accumulate, while a ConfigMap is capped near
+    # 1 MiB. Persist a fixed-size digest, never the set. Any change renews idle, so
+    # the post-transfer interval is never shortened. A snapshot without a digest is
+    # compared as its legacy list, or as no transfers when it has neither.
     transfers = database['completed_transfers']
-    if (active or gap or previous.get('busy', True)
-            or set(transfers) - set(previous.get('completed_transfers', []))):
+    seen = digest(transfers)
+    before = previous.get('completed_transfers_digest') or digest(previous.get('completed_transfers', []))
+    if active or gap or previous.get('busy', True) or seen != before:
         last = now
-    return dict(database, counts=counts, busy=active or gap, observation_gap=gap,
-                observed_at=now, last_active=last, edge_closed=edge['closed'])
+    snapshot = {key: value for key, value in database.items() if key != 'completed_transfers'}
+    return dict(snapshot, counts=counts, busy=active or gap, observation_gap=gap,
+                observed_at=now, last_active=last, edge_closed=edge['closed'],
+                completed_transfers_digest=seen, completed_transfers_count=len(transfers))
 
 
 def request(url, token=None, *, data=None, method=None, context=None):

@@ -9,13 +9,13 @@ from unittest.mock import Mock
 import gvisor_installer as installer
 
 
-def archive(extra=None):
+def archive(extra=None, content=b'binary'):
     output = io.BytesIO()
     with tarfile.open(fileobj=output, mode='w:bz2') as tar:
         for name in sorted(installer.REQUIRED):
             member = tarfile.TarInfo(name)
-            member.size = 6
-            tar.addfile(member, io.BytesIO(b'binary'))
+            member.size = len(content)
+            tar.addfile(member, io.BytesIO(content))
         if extra:
             tar.addfile(extra, io.BytesIO(b'x') if extra.isfile() else None)
     return output.getvalue()
@@ -85,6 +85,48 @@ class InstallerTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'symlink'):
             self.install()
         self.assertFalse((self.root / 'usr/local/bin/runsc').exists())
+
+    def test_replacement_is_refused_while_a_sandbox_uses_the_installed_runtime(self):
+        self.install()
+        sentry = self.root / 'usr/local/bin/gvisor-bin/gvisor_sentry'
+        replacement = archive(content=b'newer!')
+        sha = hashlib.sha256(replacement).hexdigest()
+
+        def blocked(root):
+            raise RuntimeError('live gVisor sandboxes')
+
+        with self.assertRaisesRegex(RuntimeError, 'live gVisor'):
+            installer.install(self.root, 'next', sha, 'x86_64', Mock(return_value=replacement),
+                              self.restart, drain=blocked)
+        self.assertEqual(sentry.read_bytes(), b'binary')
+        installer.install(self.root, 'next', sha, 'x86_64', Mock(return_value=replacement),
+                          self.restart, drain=lambda root: None)
+        self.assertEqual(sentry.read_bytes(), b'newer!')
+
+    def test_live_sentries_use_the_guards_executable_identity(self):
+        self.install()
+        proc = self.root / 'proc'
+        for pid, target in (('101', 'usr/local/bin/gvisor-bin/gvisor_sentry'),
+                            ('102', 'usr/local/bin/runsc'),
+                            ('103', 'usr/local/bin/containerd-shim-runsc-v1'),
+                            ('not-a-pid', 'usr/local/bin/runsc')):
+            (proc / pid).mkdir(parents=True)
+            (proc / pid / 'exe').symlink_to(self.root / target)
+        (proc / '104').mkdir()  # exited: no readable executable
+        self.assertEqual(sorted(installer.live_sentries(self.root, proc)), [101, 102])
+
+    def test_drain_waits_then_fails_closed_after_its_deadline(self):
+        now, sleeps = [0.0], []
+
+        def sleep(seconds):
+            sleeps.append(seconds)
+            now[0] += seconds
+
+        waiting = iter([[7], [7], []])
+        installer.drain(self.root, 60, sleep=sleep, clock=lambda: now[0], live=lambda root: next(waiting))
+        self.assertEqual(sleeps, [5, 5])
+        with self.assertRaisesRegex(RuntimeError, r'\[7\]'):
+            installer.drain(self.root, 12, sleep=sleep, clock=lambda: now[0], live=lambda root: [7])
 
 
 if __name__ == '__main__':

@@ -57,8 +57,9 @@
               "pattern": "^/[A-Za-z0-9_./-]+$"
             },
             "guardState": {
+              "description": "Node-local guard state directory. Empty derives a release-specific path.",
               "type": "string",
-              "pattern": "^/[A-Za-z0-9_./-]+$"
+              "pattern": "^(/[A-Za-z0-9_./-]+)?$"
             },
             "sentryBinaries": {
               "type": "array",
@@ -131,8 +132,9 @@
               "minimum": 1
             },
             "processes": {
+              "description": "Guest RLIMIT_NPROC. The admission probe lowers its own hard limit to 8 (runner/probe.py fork_probe_limit) and cannot raise it, so smaller values crash-loop the Runner.",
               "type": "integer",
-              "minimum": 1
+              "minimum": 8
             },
             "host_tasks": {
               "type": "integer",
