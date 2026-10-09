@@ -47,6 +47,18 @@ class CloudFixture:
         self.managed = {}
         self.status = {}
         self.plans = []
+        self.configuration = {}
+        self.brokers = {}
+
+    def broker_configuration_changed(self, store, environments):
+        return self.brokers != self.broker_configuration(environments)
+
+    def broker_configuration(self, environments):
+        return {
+            key: dict(value, enabled=value.get("enabled") or False)
+            for key, value in self.configuration.get("credential_brokers", {}).items()
+            if key in environments
+        }
 
     def configuration_in_state(self, store):
         return deepcopy(self.managed)
@@ -60,6 +72,7 @@ class CloudFixture:
             ):
                 self.status[identity] = "RUNNING"
         self.managed = deepcopy(managed)
+        self.brokers = deepcopy(self.broker_configuration(managed))
 
     def outputs(self):
         return {
@@ -77,6 +90,7 @@ class ReconcileTests(unittest.TestCase):
     def setUp(self):
         self.store = MemoryStore()
         self.cloud = CloudFixture()
+        self.config = deepcopy(CONFIG)
         self.sequence = 0
         self.calls = []
         self.busy = False
@@ -85,7 +99,7 @@ class ReconcileTests(unittest.TestCase):
         self.context = ExitStack()
         self.addCleanup(self.context.close)
         replacements = {
-            "Terraform": lambda *args: self.cloud,
+            "Terraform": self.terraform,
             "instance_status": lambda config, output: self.cloud.status.get(
                 output["instance"], "MISSING"
             ),
@@ -113,6 +127,10 @@ class ReconcileTests(unittest.TestCase):
             base={"ref": "main"},
             head={"sha": self.store.state["environments"][identity]["sha"]},
         )
+
+    def terraform(self, root, configuration):
+        self.cloud.configuration = configuration
+        return self.cloud
 
     def host(self, config, output, action, force=False):
         self.calls.append((action, output["instance"]))
@@ -151,7 +169,38 @@ class ReconcileTests(unittest.TestCase):
         return entry
 
     def reconcile(self):
-        controller.reconcile(CONFIG, self.store)
+        controller.reconcile(self.config, self.store)
+
+    def test_ready_environment_reconciles_broker_enable_rotation_disable_and_removal(self):
+        self.request()
+        self.reconcile()
+        self.assertEqual(self.store.state["environments"]["test"]["status"], "ready")
+        broker = {"enabled": True, "image": "sha256:" + "a" * 64}
+        for desired in [
+            broker,
+            dict(broker, image="sha256:" + "b" * 64),
+            dict(broker, enabled=False),
+            None,
+        ]:
+            with self.subTest(desired=desired):
+                self.config["credential_brokers"] = {"retired": broker}
+                expected = {} if desired is None else {"test": desired}
+                self.config["credential_brokers"].update(expected)
+                self.cloud.plans.clear()
+                self.calls.clear()
+                self.reconcile()
+                self.assertEqual(len(self.cloud.plans), 1)
+                self.assertEqual(self.cloud.brokers, expected)
+                self.assertTrue(self.cloud.managed["test"]["running"])
+                self.assertFalse(
+                    any(
+                        call[0] in {"bootstrap", "start", "stop", "seal"}
+                        for call in self.calls
+                    )
+                )
+                self.cloud.plans.clear()
+                self.reconcile()
+                self.assertEqual(self.cloud.plans, [])
 
     def test_resume_of_running_host_does_not_authorize_a_future_spot_restart(self):
         self.request()

@@ -24,6 +24,15 @@ variables {
   broker_service_account_email = "aidash-production-broker@aidash-fixture.iam.gserviceaccount.com"
   image                        = "us-central1-docker.pkg.dev/aidash-fixture/aidash/broker@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 }
+run "seventeen_character_environment_forbidden" {
+  command = plan
+  variables {
+    environment_id               = "abcdefghijklmnopq"
+    secret_prefix                = "aidash-abcdefghijklmnopq-cred-"
+    broker_service_account_email = "aidash-abcdefghijklmnopq-broker@aidash-fixture.iam.gserviceaccount.com"
+  }
+  expect_failures = [var.environment_id]
+}
 run "production" {
   command = apply
   variables { enabled = true }

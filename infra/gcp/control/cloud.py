@@ -198,6 +198,23 @@ class Terraform:
             )
         return value or {}
 
+    def broker_configuration(self, environments):
+        # Match Terraform's optional enabled=false default in persisted intent.
+        return {
+            key: dict(value, enabled=value.get("enabled") or False)
+            for key, value in self.configuration.get("credential_brokers", {}).items()
+            if key in environments
+        }
+
+    def broker_configuration_changed(self, store, environments):
+        state, _ = store.read("terraform/environments/default.tfstate")
+        if state is None:
+            return False
+        previous = state.get("outputs", {}).get("managed_credential_brokers", {}).get("value")
+        # Legacy state has no broker-intent output. Apply once to reconcile any
+        # old resources and establish the durable comparison for future ticks.
+        return previous != self.broker_configuration(environments)
+
     def apply(self, environments, retiring=(), starting=()):
         variables = {
             key: self.configuration[key]
@@ -211,11 +228,7 @@ class Terraform:
             )
         }
         variables["environments"] = environments
-        variables["credential_brokers"] = {
-            key: value
-            for key, value in self.configuration.get("credential_brokers", {}).items()
-            if key in environments
-        }
+        variables["credential_brokers"] = self.broker_configuration(environments)
         path = self.root / "controller.auto.tfvars.json"
         plan = self.root / "controller.tfplan"
         private_json(path, variables)

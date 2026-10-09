@@ -7,6 +7,20 @@ use std::{collections::BTreeMap, sync::Arc, time::Duration};
 fn env(name: &str) -> Result<String, &'static str> {
 	std::env::var(name).map_err(|_| "missing broker configuration")
 }
+async fn shutdown_signal() {
+	#[cfg(unix)]
+	let terminate = async {
+		let mut signal = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+			.expect("unable to install broker SIGTERM handler");
+		signal.recv().await;
+	};
+	#[cfg(not(unix))]
+	let terminate = std::future::pending::<()>();
+	tokio::select! {
+		_ = tokio::signal::ctrl_c() => {},
+		_ = terminate => {},
+	}
+}
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
 	tracing_subscriber::fmt().json().with_target(false).init();
@@ -48,9 +62,65 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 		.parse()?;
 	let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::UNSPECIFIED, port)).await?;
 	axum::serve(listener, broker.router())
-		.with_graceful_shutdown(async {
-			let _ = tokio::signal::ctrl_c().await;
-		})
+		.with_graceful_shutdown(shutdown_signal())
 		.await?;
 	Ok(())
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+	use super::*;
+	use tokio::io::{AsyncBufReadExt, BufReader};
+
+	#[tokio::test]
+	async fn shutdown_handles_sigterm_and_sigint_in_an_isolated_process() {
+		const CHILD: &str = "AIDASH_BROKER_SIGNAL_TEST_CHILD";
+		if std::env::var_os(CHILD).is_some() {
+			let signal = shutdown_signal();
+			tokio::pin!(signal);
+			assert!(futures_util::poll!(&mut signal).is_pending());
+			println!("broker-signal-ready");
+			signal.await;
+			return;
+		}
+		for signal in ["-TERM", "-INT"] {
+			let mut child = tokio::process::Command::new(std::env::current_exe().unwrap())
+				.args([
+					"--exact",
+					"tests::shutdown_handles_sigterm_and_sigint_in_an_isolated_process",
+					"--nocapture",
+				])
+				.env(CHILD, "1")
+				.stdout(std::process::Stdio::piped())
+				.kill_on_drop(true)
+				.spawn()
+				.unwrap();
+			let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
+			tokio::time::timeout(Duration::from_secs(10), async {
+				while let Some(line) = lines.next_line().await.unwrap() {
+					if line.contains("broker-signal-ready") {
+						return;
+					}
+				}
+				panic!("signal helper exited before installing handlers");
+			})
+			.await
+			.unwrap();
+			assert!(
+				tokio::process::Command::new("kill")
+					.args([signal, &child.id().unwrap().to_string()])
+					.status()
+					.await
+					.unwrap()
+					.success()
+			);
+			assert!(
+				tokio::time::timeout(Duration::from_secs(10), child.wait())
+					.await
+					.unwrap()
+					.unwrap()
+					.success()
+			);
+		}
+	}
 }

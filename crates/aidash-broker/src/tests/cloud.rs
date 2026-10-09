@@ -74,6 +74,7 @@ impl Scope for Repo {
 struct Signer {
 	inner: InMemorySigner,
 	claims: Mutex<Vec<Claims>>,
+	unavailable: AtomicBool,
 }
 #[async_trait]
 impl TokenSigner for Signer {
@@ -93,6 +94,9 @@ impl TokenSigner for Signer {
 			.lock()
 			.unwrap()
 			.push(serde_json::from_slice(&bytes).unwrap());
+		if self.unavailable.load(Ordering::SeqCst) {
+			return Err(aidash_capability::SignError);
+		}
 		self.inner.sign(input).await
 	}
 }
@@ -137,15 +141,20 @@ fn row(id: Uuid, tenant: &str, version: &str) -> ProviderCredential {
 }
 impl Cloud {
 	async fn new(expired_broker: bool) -> Self {
+		Self::with_deadline(expired_broker, Duration::from_secs(5)).await
+	}
+	async fn with_deadline(expired_broker: bool, deadline: Duration) -> Self {
 		let fixture = Fixture::new().await;
 		let signer = Arc::new(Signer {
 			inner: InMemorySigner::new("kms/1".into(), [7; 32]),
 			claims: Mutex::new(vec![]),
+			unavailable: AtomicBool::new(false),
 		});
 		let mut keys = PublicKeys::default();
 		keys.insert(signer.kid().into(), signer.inner.public_key());
 		let mut configuration = config();
 		configuration.secret_prefix = "aidash-environment-cred-".into();
+		configuration.inference_deadline = deadline;
 		let mut broker = Broker::new(
 			configuration,
 			keys,
@@ -256,6 +265,76 @@ impl Cloud {
 		});
 		context
 	}
+}
+
+#[tokio::test]
+async fn cloud_chat_accepts_the_full_raw_media_allowance_after_base64_encoding() {
+	// Debug builds must serialize and parse the full 8 MiB allowance several times.
+	let c = Cloud::with_deadline(false, Duration::from_secs(60)).await;
+	let mut config = c.config();
+	config.context_window = 131_072;
+	config.request_timeout_secs = Some(60);
+	config.media_routes = vec![aidash_domain::model::MediaRouteEvidence {
+		tag: "vendor/route".into(),
+		formats: vec!["image/png".into()],
+		source: "fixture".into(),
+		verified_at: chrono::Utc::now() - chrono::Duration::seconds(10),
+		expires_at: chrono::Utc::now() + chrono::Duration::minutes(10),
+	}];
+	let provider = aidash_integrations::inference::provider(
+		reqwest::Client::new(),
+		config,
+		c.access.clone(),
+		c.context.clone(),
+	)
+	.unwrap();
+	let mut bytes = b"\x89PNG\r\n\x1a\n".to_vec();
+	bytes.resize(8 * 1024 * 1024, 0);
+	let mut request = Cloud::request();
+	request
+		.content_parts
+		.push(aidash_domain::provider::ContentPart::Image {
+			media_type: "image/png".into(),
+			bytes,
+		});
+	assert!(aidash_domain::provider::ModelRequest::media_within_limits(
+		&request.content_parts
+	));
+	let size = request.input_body().to_string().len();
+	assert!(size > REQUEST_LIMIT && size < CHAT_REQUEST_LIMIT);
+	assert_eq!(provider.infer(request).await.unwrap().text, "ok");
+	assert!(
+		c.fixture
+			.provider
+			.paths
+			.lock()
+			.unwrap()
+			.iter()
+			.any(|p| p.ends_with("/chat/completions"))
+	);
+}
+
+#[tokio::test]
+async fn transient_signing_failure_is_external_and_recovers_before_any_broker_call() {
+	let c = Cloud::new(false).await;
+	let provider = aidash_integrations::inference::provider(
+		reqwest::Client::new(),
+		c.config(),
+		c.access.clone(),
+		c.context.clone(),
+	)
+	.unwrap();
+	c.signer.unavailable.store(true, Ordering::SeqCst);
+	let error = provider.infer(Cloud::request()).await.unwrap_err();
+	assert!(matches!(error, aidash_application::Error::External(_)));
+	assert_eq!(error.to_string(), "Capability Token signing unavailable");
+	assert_eq!(c.signer.claims.lock().unwrap().len(), 1);
+	assert_eq!(c.broker_calls.load(Ordering::SeqCst), 0);
+	assert_eq!(c.fixture.source.reads.load(Ordering::SeqCst), 0);
+	c.signer.unavailable.store(false, Ordering::SeqCst);
+	assert_eq!(provider.infer(Cloud::request()).await.unwrap().text, "ok");
+	assert_eq!(c.signer.claims.lock().unwrap().len(), 2);
+	assert_eq!(c.broker_calls.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test]

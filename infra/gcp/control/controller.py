@@ -572,6 +572,10 @@ def reconcile(config, store):
         if not state:
             return
         observe_interruptions(config, store, terraform, managed)
+        # Observe missing/interrupted VMs before any plan, including broker-only
+        # changes. The normal apply fence still forbids unauthorized VM creation.
+        if terraform.broker_configuration_changed(store, managed):
+            terraform.apply(managed)
         state, _ = store.read("lifecycle/state.json")
         failures = []
         for identity, snapshot in sorted(

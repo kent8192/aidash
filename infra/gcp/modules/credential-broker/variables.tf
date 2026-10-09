@@ -9,8 +9,8 @@ variable "byok_project_id" {
 variable "environment_id" {
   type = string
   validation {
-    condition     = can(regex("^[a-z][a-z0-9-]*$", var.environment_id))
-    error_message = "Use a canonical environment ID."
+    condition     = can(regex("^[a-z][a-z0-9-]{0,15}$", var.environment_id))
+    error_message = "Use a canonical environment ID of at most 16 characters."
   }
 }
 variable "environment_kind" { type = string }

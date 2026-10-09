@@ -5,6 +5,7 @@ resource "google_service_account" "broker" {
   project      = var.project_id
   account_id   = "aidash-${each.key}-broker"
   display_name = "Aidash ${each.key} Credential Broker"
+  depends_on   = [google_project_service.required]
 }
 resource "google_project_iam_member" "byok_broker_read" {
   for_each = var.byok_broker_environments

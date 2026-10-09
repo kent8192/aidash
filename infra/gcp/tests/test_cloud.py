@@ -5,7 +5,7 @@ from pathlib import Path
 import sys
 from tempfile import TemporaryDirectory
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from urllib.error import HTTPError
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "control"))
@@ -81,6 +81,33 @@ class LockTests(unittest.TestCase):
 
 
 class PlanTests(unittest.TestCase):
+    def test_persisted_broker_intent_detects_rotation_disable_and_legacy_state(self):
+        terraform = Terraform.__new__(Terraform)
+        broker = {"image": "digest", "enabled": True}
+        terraform.configuration = {
+            "credential_brokers": {"test": broker, "retired": broker}
+        }
+        environments = {"test": {"kind": "test"}}
+        state = {"outputs": {"managed_credential_brokers": {"value": {"test": broker}}}}
+        store = Mock()
+        store.read.return_value = (state, "1")
+        self.assertFalse(terraform.broker_configuration_changed(store, environments))
+        terraform.configuration["credential_brokers"]["test"] = dict(
+            broker, image="new-digest"
+        )
+        self.assertTrue(terraform.broker_configuration_changed(store, environments))
+        terraform.configuration["credential_brokers"] = {}
+        self.assertTrue(terraform.broker_configuration_changed(store, environments))
+        state["outputs"]["managed_credential_brokers"]["value"] = {}
+        self.assertFalse(terraform.broker_configuration_changed(store, environments))
+        del state["outputs"]["managed_credential_brokers"]
+        self.assertTrue(terraform.broker_configuration_changed(store, environments))
+        terraform.configuration["credential_brokers"] = {"test": {"image": "digest"}}
+        state["outputs"]["managed_credential_brokers"] = {
+            "value": {"test": {"image": "digest", "enabled": False}}
+        }
+        self.assertFalse(terraform.broker_configuration_changed(store, environments))
+
     def test_broker_opt_in_is_forwarded_only_for_environments_in_current_intent(self):
         with TemporaryDirectory() as directory:
             terraform = Terraform.__new__(Terraform)

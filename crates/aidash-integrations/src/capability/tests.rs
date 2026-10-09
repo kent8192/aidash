@@ -42,6 +42,18 @@ async fn handle(State(api): State<Arc<Api>>, request: Request) -> Response {
 	if mode == "denied" {
 		return (StatusCode::FORBIDDEN, CANARY).into_response();
 	}
+	if mode == "disabled" {
+		return (
+			StatusCode::BAD_REQUEST,
+			Json(
+				serde_json::json!({"error":{"code":400,"status":"FAILED_PRECONDITION","message":CANARY}}),
+			),
+		)
+			.into_response();
+	}
+	if mode == "outage" {
+		return (StatusCode::SERVICE_UNAVAILABLE, CANARY).into_response();
+	}
 	if mode == "oversize" {
 		return "x".repeat(65_537).into_response();
 	}
@@ -144,6 +156,42 @@ async fn secret_manager_reads_only_pinned_environment_resources_and_redacts_erro
 	}
 	assert_eq!(s.api.calls.load(Ordering::SeqCst), before);
 }
+#[tokio::test]
+async fn disabled_secret_versions_are_permanent_while_store_outages_are_retryable() {
+	let s = server().await;
+	let mut source = SecretManagerKeyMaterialSource::new(
+		"1234",
+		"aidash-test-cred-",
+		Arc::new(Tokens::default()),
+	)
+	.unwrap();
+	source.base = s.base.clone();
+	let secret = format!(
+		"projects/1234/secrets/aidash-test-cred-{}",
+		uuid::Uuid::from_u128(100)
+	);
+	for (mode, unavailable) in [("disabled", true), ("outage", false)] {
+		*s.api.mode.lock().await = mode.into();
+		let error = source.access(&secret, "1").await.unwrap_err();
+		assert_eq!(matches!(error, KeyMaterialError::Unavailable), unavailable);
+		assert!(!error.to_string().contains(CANARY));
+	}
+	assert_eq!(s.api.calls.load(Ordering::SeqCst), 2);
+}
+
+#[test]
+fn worker_audience_fits_the_bootstrap_service_account_name() {
+	let mut configuration = issuer::WorkerConfiguration {
+		endpoint: "https://broker.example/api/v1".into(),
+		issuer: "worker".into(),
+		audience: "a".repeat(16),
+		kid: KID.into(),
+	};
+	configuration.validate().unwrap();
+	configuration.audience.push('a');
+	assert!(configuration.validate().is_err());
+}
+
 #[tokio::test]
 async fn metadata_token_is_cached_and_requires_google_response_header() {
 	let s = server().await;

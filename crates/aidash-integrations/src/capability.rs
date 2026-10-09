@@ -208,7 +208,9 @@ impl KeyMaterialSource for SecretManagerKeyMaterialSource {
 			.send()
 			.await
 			.map_err(|_| KeyMaterialError::StoreUnavailable)?;
-		if matches!(response.status().as_u16(), 403 | 404 | 409) {
+		// Disabled/destroyed versions return 400 FAILED_PRECONDITION. These are
+		// permanent credential failures, not a transient Secret Manager outage.
+		if matches!(response.status().as_u16(), 400 | 403 | 404 | 409) {
 			return Err(KeyMaterialError::Unavailable);
 		}
 		#[derive(Deserialize)]

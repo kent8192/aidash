@@ -25,7 +25,7 @@ impl WorkerConfiguration {
 			|| self.issuer.is_empty()
 			|| self.issuer.len() > 256
 			|| self.audience.is_empty()
-			|| self.audience.len() > 17
+			|| self.audience.len() > 16
 			|| !self
 				.audience
 				.bytes()
@@ -164,7 +164,7 @@ impl TokenIssuer for CapabilityIssuer {
 		};
 		let bearer = aidash_capability::mint(&claims, self.signer.as_ref())
 			.await
-			.map_err(|_| Error::Invalid("Capability Token signing unavailable".into()))?;
+			.map_err(|_| Error::External("Capability Token signing unavailable".into()))?;
 		tracing::info!(jti=%claims.jti, subject=?claims.sub, "Capability Token minted");
 		Ok(Access {
 			endpoint: self.configuration.endpoint.clone(),

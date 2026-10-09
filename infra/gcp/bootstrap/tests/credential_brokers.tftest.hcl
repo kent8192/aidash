@@ -45,3 +45,16 @@ run "bootstrap_preview_broker_forbidden" {
   variables { byok_broker_environments = ["pr-137"] }
   expect_failures = [var.byok_broker_environments]
 }
+run "longest_broker_identity_fits_gcp_account_id" {
+  command = plan
+  variables { byok_broker_environments = ["abcdefghijklmnop"] }
+  assert {
+    condition     = length(google_service_account.broker["abcdefghijklmnop"].account_id) == 30
+    error_message = "The 16-character environment boundary must fit GCP's 30-character account ID."
+  }
+}
+run "bootstrap_17_character_broker_forbidden" {
+  command = plan
+  variables { byok_broker_environments = ["abcdefghijklmnopq"] }
+  expect_failures = [var.byok_broker_environments]
+}

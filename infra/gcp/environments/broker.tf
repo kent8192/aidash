@@ -29,3 +29,7 @@ module "credential_broker" {
   broker_service_account_email = each.value.broker_service_account_email
 }
 output "credential_brokers" { value = { for id, broker in module.credential_broker : id => broker.worker_configuration } }
+output "managed_credential_brokers" {
+  description = "Non-secret applied broker intent, including disabled entries, for controller reconciliation."
+  value       = { for id, broker in var.credential_brokers : id => broker if contains(keys(var.environments), id) }
+}

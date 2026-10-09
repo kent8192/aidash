@@ -55,18 +55,20 @@ and other headers are never copied upstream.
 The endpoint returned to workers ends with `/api/v1`; integrations append
 their existing paths unchanged.
 
-| Operation | Method and broker path | Success response limit |
-| --- | --- | --- |
-| chat | `POST /api/v1/chat/completions` | 1 MiB |
-| discovery | `GET /api/v1/models/{author}/{slug}/endpoints` | 2 MiB |
-| discovery | `GET /api/v1/endpoints/zdr` | 8 MiB |
-| embeddings | `POST /api/v1/embeddings` | 1 MiB |
+| Operation  | Method and broker path                         | Success response limit |
+| ---------- | ---------------------------------------------- | ---------------------- |
+| chat       | `POST /api/v1/chat/completions`                | 1 MiB                  |
+| discovery  | `GET /api/v1/models/{author}/{slug}/endpoints` | 2 MiB                  |
+| discovery  | `GET /api/v1/endpoints/zdr`                    | 8 MiB                  |
+| embeddings | `POST /api/v1/embeddings`                      | 1 MiB                  |
 
 Chat bodies must name the exact model, include positive `max_tokens` no greater
 than `max_output_tokens`, and set `provider.zdr: true`. OpenRouter embeddings
 must name the exact model and set ZDR. Model discovery paths must match the
-claim; ZDR discovery is an operation-wide catalog. Requests are limited to
-1 MiB. Query strings, absolute URIs, percent-encoded paths, empty segments and
+claim; ZDR discovery is an operation-wide catalog. Chat requests are limited to
+16 MiB so the application's 8 MiB raw-media allowance fits after base64 encoding
+and JSON framing. Other requests remain limited to 1 MiB. Query strings,
+absolute URIs, percent-encoded paths, empty segments and
 path traversal are rejected. Violations are rejected, never rewritten.
 
 Capability failures use `401` for signature, key, expiry or audience failures,

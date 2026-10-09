@@ -21,6 +21,9 @@ use std::{
 use tokio::time::Instant;
 
 const REQUEST_LIMIT: usize = 1024 * 1024;
+// The application's 8 MiB raw-media allowance expands to about 11 MiB in base64.
+// Leave bounded room for JSON framing and the approved text context as well.
+const CHAT_REQUEST_LIMIT: usize = 16 * 1024 * 1024;
 const ERROR_LIMIT: usize = 16 * 1024;
 const CACHE_TTL: Duration = Duration::from_secs(60);
 
@@ -374,7 +377,12 @@ async fn relay(State(broker): State<Arc<Broker>>, request: Request) -> Response 
 		);
 	}
 	let method = request.method().clone();
-	let body = match tokio::time::timeout_at(deadline, to_bytes(request.into_body(), REQUEST_LIMIT))
+	let request_limit = if op == Operation::Chat {
+		CHAT_REQUEST_LIMIT
+	} else {
+		REQUEST_LIMIT
+	};
+	let body = match tokio::time::timeout_at(deadline, to_bytes(request.into_body(), request_limit))
 		.await
 	{
 		Ok(Ok(b)) => b,

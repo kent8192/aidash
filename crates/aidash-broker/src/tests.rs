@@ -53,7 +53,9 @@ async fn upstream(State(state): State<Arc<ProviderState>>, request: Request) -> 
 	);
 	let path = request.uri().path().to_owned();
 	state.paths.lock().unwrap().push(path.clone());
-	let body = to_bytes(request.into_body(), REQUEST_LIMIT).await.unwrap();
+	let body = to_bytes(request.into_body(), CHAT_REQUEST_LIMIT)
+		.await
+		.unwrap();
 	let value: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
 	match value.get("test").and_then(Value::as_str) {
 		Some("error") => {
@@ -93,7 +95,7 @@ async fn upstream(State(state): State<Arc<ProviderState>>, request: Request) -> 
 			.unwrap();
 	}
 	Json(match path.as_str() {
-		"/api/v1/models/author/model/endpoints" => json!({"data":{"architecture":{"input_modalities":["text","image"]},"endpoints":[{"tag":"vendor/route","context_length":32768}]}}),
+		"/api/v1/models/author/model/endpoints" => json!({"data":{"architecture":{"input_modalities":["text","image"]},"endpoints":[{"tag":"vendor/route","context_length":131072}]}}),
 		"/api/v1/endpoints/zdr" => json!({"data":[{"model_id":"author/model","tag":"vendor/route"}]}),
 		"/api/v1/embeddings" => json!({"model":"author/model","data":[{"index":0,"embedding":[1.0,0.0]}],"usage":{"prompt_tokens":4,"total_tokens":4}}),
 		_ => json!({"choices":[{"finish_reason":"stop","message":{"content":"ok"}}],"usage":{"prompt_tokens":4,"completion_tokens":2,"total_tokens":6,"untrusted":CANARY}})
@@ -515,11 +517,25 @@ async fn unavailable_version_and_body_limits_fail_closed() {
 	assert_eq!(f.provider.calls.load(Ordering::SeqCst), 0);
 	f.source.unavailable.store(false, Ordering::SeqCst);
 	let mut body = chat();
-	body["input"] = json!("x".repeat(REQUEST_LIMIT));
+	body["input"] = json!("x".repeat(CHAT_REQUEST_LIMIT));
 	let r = f
 		.request(&f.claims(), "POST", "/api/v1/chat/completions", body)
 		.await;
 	assert_eq!(r.status(), 403);
+	assert_eq!(
+		json_body(r).await["error"]["code"],
+		"capability_claim_violation"
+	);
+	let mut body = chat();
+	body["input"] = json!("x".repeat(REQUEST_LIMIT));
+	let r = f
+		.request(&f.claims(), "POST", "/api/v1/embeddings", body)
+		.await;
+	assert_eq!(r.status(), 403);
+	assert_eq!(
+		json_body(r).await["error"]["code"],
+		"capability_claim_violation"
+	);
 	let mut body = chat();
 	body["test"] = json!("huge");
 	let r = f
