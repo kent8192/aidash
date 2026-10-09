@@ -2,6 +2,7 @@ import { defineConfig } from "@playwright/test";
 export default defineConfig({
   testDir: "./tests",
   testMatch: "gcip-sign-in.spec.ts",
+  outputDir: "gcip-test-results",
   workers: 1,
   use: { baseURL: "http://127.0.0.1:18084", trace: "retain-on-failure" },
   webServer: {

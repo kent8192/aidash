@@ -4,7 +4,11 @@ use chrono::{DateTime, Utc};
 use reinhardt::model;
 use serde::{Deserialize, Serialize};
 
-#[model(app_label = "identity", table_name = "dashboard_identities")]
+#[model(
+	app_label = "identity",
+	table_name = "dashboard_identities",
+	constraints = [unique(fields = ["issuer", "gcip_tenant", "subject"], name = "dashboard_identity_key")]
+)]
 #[derive(Serialize, Deserialize)]
 pub struct DashboardIdentity {
 	#[field(primary_key = true)]
