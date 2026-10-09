@@ -164,9 +164,6 @@ pub(crate) async fn exchange(
 		.gcip_tenant
 		.as_deref()
 		.ok_or(Error::Unauthorized)?;
-	if !config.tenant_bindings.contains_key(tenant) {
-		return Err(Error::Forbidden);
-	}
 	let services = f.gcip.as_ref().ok_or(Error::Unauthorized)?;
 	if services.verifier.project != config.project_id {
 		return Err(Error::Unauthorized);
@@ -179,7 +176,8 @@ pub(crate) async fn exchange(
 			transaction.started_at.ok_or(Error::Unauthorized)?,
 		)
 		.await?;
-	// Perform a live Admin API check through the shared application authority.
+	// Verify the token before the shared authority checks the Binding and
+	// durably disables an existing identity whose Binding has been removed.
 	let lease = f.store.orm_connection()?;
 	let identity = crate::bootstrap::dashboard_authority(f)
 		.admit_login(

@@ -28,7 +28,17 @@ impl DashboardAuthority {
 			.accounts
 			.policy()
 			.ok_or_else(|| Error::NotFound("dashboard sign-in is not configured".into()))?;
-		policy.require_identity(&policy.issuer, sign_in.gcip_tenant.as_deref())?;
+		if let Err(error) = policy.require_identity(&policy.issuer, sign_in.gcip_tenant.as_deref())
+		{
+			// A verified login reaches inactive identities that the background
+			// refresh cannot see. Retire their authority before rejecting it.
+			if (policy.tenant_bindings.is_some() || sign_in.gcip_tenant.is_some())
+				&& let Some(account) = scope.find(&policy.issuer, sign_in).await?
+			{
+				self.disable(account.id, None).await?;
+			}
+			return Err(error);
+		}
 		let started = self.accounts.now();
 		let status = if policy.google {
 			None

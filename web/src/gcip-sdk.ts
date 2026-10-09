@@ -61,8 +61,26 @@ export function createClient(config: GcipClientConfig) {
         email,
         password,
       );
-      await sendEmailVerification(result.user);
-      await signOut(auth);
+      try {
+        await sendEmailVerification(result.user);
+        return true;
+      } catch {
+        // Creation succeeded. Recovery must authenticate the existing user
+        // rather than attempting to create the same account again.
+        return false;
+      } finally {
+        await signOut(auth);
+      }
+    },
+    async resend(email: string, password: string) {
+      const result = await signInWithEmailAndPassword(auth, email, password);
+      try {
+        if (result.user.emailVerified) return false;
+        await sendEmailVerification(result.user);
+        return true;
+      } finally {
+        await signOut(auth);
+      }
     },
     async close() {
       if (closed) return;

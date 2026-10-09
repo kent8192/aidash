@@ -20,6 +20,7 @@ struct State {
 	permitted: BTreeSet<Uuid>,
 	notified: usize,
 }
+#[derive(Clone)]
 struct Scope {
 	state: Arc<Mutex<State>>,
 	configured: bool,
@@ -121,11 +122,11 @@ impl Accounts for Scope {
 		Ok(())
 	}
 	async fn disable_if_current(&self, _: Uuid, _: Option<DateTime<Utc>>) -> Result<bool> {
-		self.state
-			.lock()
-			.unwrap()
-			.trace
-			.push("disable-current".into());
+		let mut state = self.state.lock().unwrap();
+		state.trace.push("disable-current".into());
+		if !self.newer_validity {
+			state.account.disabled_at = Some(state.now);
+		}
 		Ok(!self.newer_validity)
 	}
 	async fn mark_waiting_disabled(&self, _: Uuid) -> Result<()> {
@@ -307,6 +308,72 @@ impl crate::ports::authorization::dashboard::LoginAccounts for Recovery {
 			.push(format!("register:{issuer}:{}", sign_in.subject));
 		Ok(state.account.clone())
 	}
+}
+
+struct ExistingLogin(Arc<Mutex<State>>);
+#[async_trait]
+impl crate::ports::authorization::dashboard::LoginAccounts for ExistingLogin {
+	async fn find(&mut self, issuer: &str, sign_in: &SignIn) -> Result<Option<Account>> {
+		let mut state = self.0.lock().unwrap();
+		state.trace.push("find".into());
+		Ok((state.account.issuer == issuer
+			&& state.account.subject == sign_in.subject
+			&& state.account.gcip_tenant == sign_in.gcip_tenant)
+			.then(|| state.account.clone()))
+	}
+	async fn register(&mut self, _: &str, _: &SignIn) -> Result<Account> {
+		let mut state = self.0.lock().unwrap();
+		state.trace.push("register".into());
+		Ok(state.account.clone())
+	}
+}
+
+#[rstest]
+#[tokio::test]
+async fn removed_binding_login_persists_disable_across_binding_restoration(mut scope: Scope) {
+	scope.tenant_bindings = Some(Default::default());
+	scope.state.lock().unwrap().account.gcip_tenant = Some("pool-a".into());
+	let sign_in = SignIn {
+		gcip_tenant: Some("pool-a".into()),
+		..sign_in()
+	};
+	let mut login = ExistingLogin(scope.state.clone());
+	assert!(matches!(
+		authority(Arc::new(scope.clone()))
+			.admit_login(&mut login, &sign_in)
+			.await,
+		Err(Error::Forbidden)
+	));
+	{
+		let state = scope.state.lock().unwrap();
+		assert!(state.account.disabled_at.is_some());
+		assert_eq!(state.trace, ["find", "disable-current", "mark-disabled"]);
+	}
+	scope.tenant_bindings = Some([("pool-a".into(), "acme".into())].into());
+	assert!(matches!(
+		authority(Arc::new(scope))
+			.admit_login(&mut login, &sign_in)
+			.await,
+		Err(Error::Forbidden)
+	));
+}
+
+#[rstest]
+#[tokio::test]
+async fn removed_binding_unknown_login_never_registers_or_contacts_provider(mut scope: Scope) {
+	scope.tenant_bindings = Some(Default::default());
+	let sign_in = SignIn {
+		gcip_tenant: Some("pool-a".into()),
+		..sign_in()
+	};
+	let mut login = Recovery(scope.state.clone());
+	assert!(matches!(
+		authority(Arc::new(scope.clone()))
+			.admit_login(&mut login, &sign_in)
+			.await,
+		Err(Error::Forbidden)
+	));
+	assert!(scope.state.lock().unwrap().trace.is_empty());
 }
 
 #[rstest]

@@ -617,6 +617,175 @@ async fn removing_binding_disables_a_fresh_identity_at_its_next_boundary(
 
 #[rstest::rstest]
 #[tokio::test]
+async fn removed_binding_login_disables_an_inactive_identity_and_its_existing_authority(
+	#[future(awt)]
+	#[from(test_environment)]
+	environment: Arc<TestEnvironment>,
+) {
+	let (mut f, url, schema) = common::setup(&environment).await;
+	let (status, _admin) = configure(&mut f).await;
+	let policy = serde_json::from_value(
+		json!({"tenant":"acme","subjects":{"alice":{"kind":"user"}},"policies":[]}),
+	)
+	.unwrap();
+	aidash_server::authorization::Authorization {
+		pool: f.store.pool.clone(),
+	}
+	.replace("acme", 0, policy, "operator")
+	.await
+	.unwrap();
+	let app = common::application(f.clone()).await;
+	let (cookie, csrf) = sign_in(&app, "acme", "pool-a", "Person").await;
+	let registration: Value = browser()
+		.post(app.url("/auth/registration"))
+		.header("cookie", cookie)
+		.header("origin", "http://127.0.0.1:8080")
+		.header("x-aidash-csrf", csrf)
+		.send()
+		.await
+		.unwrap()
+		.json()
+		.await
+		.unwrap();
+	let identity = uuid::Uuid::parse_str(registration["identity_id"].as_str().unwrap()).unwrap();
+	let approved = browser()
+		.post(app.url(format!(
+			"/api/dashboard/registrations/{}/approve",
+			registration["id"].as_str().unwrap()
+		)))
+		.bearer_auth(&f.config.api_token)
+		.json(&json!({"tenant":"acme","subject":"alice"}))
+		.send()
+		.await
+		.unwrap();
+	assert_eq!(approved.status(), 200);
+	let grant = browser()
+		.post(app.url(format!(
+			"/api/dashboard/identities/{identity}/operator-grant"
+		)))
+		.bearer_auth(&f.config.api_token)
+		.json(&json!({"enabled":true,"expected_revision":0}))
+		.send()
+		.await
+		.unwrap();
+	assert_eq!(grant.status(), 200);
+	// No live browser session or run remains for background active refresh.
+	let expire = Query::update()
+		.table(Alias::new("dashboard_sessions"))
+		.value_expr(
+			Alias::new("expires_at"),
+			Expr::val(Utc::now() - chrono::Duration::seconds(1)),
+		)
+		.and_where(Expr::col("identity_id").eq(Expr::val(identity)))
+		.to_string(PostgresQueryBuilder);
+	sqlx::query(&expire)
+		.execute(f.store.pool.driver())
+		.await
+		.unwrap();
+	let (state, cookie) = transaction(&app, "acme").await;
+	f.config
+		.gcip
+		.as_mut()
+		.unwrap()
+		.tenant_bindings
+		.remove("pool-a");
+	f.store = f
+		.store
+		.clone()
+		.with_dashboard_policy(f.config.dashboard_policy());
+	let changed = common::application(f.clone()).await;
+	let disabled = Query::select()
+		.column(Alias::new("disabled_at"))
+		.from(Alias::new("dashboard_identities"))
+		.and_where(Expr::col("id").eq(Expr::val(identity)))
+		.to_string(PostgresQueryBuilder);
+	// An invalid token must never be able to retire another user's authority.
+	assert_eq!(
+		exchange(
+			&changed,
+			&state,
+			&cookie,
+			"invalid-token",
+			"http://127.0.0.1:8080"
+		)
+		.await
+		.status(),
+		401
+	);
+	assert!(
+		sqlx::query_scalar::<_, Option<chrono::DateTime<Utc>>>(&disabled)
+			.fetch_one(f.store.pool.driver())
+			.await
+			.unwrap()
+			.is_none()
+	);
+	// A removed Binding must not contact the retired pool's Admin API.
+	status.outage.store(true, Ordering::SeqCst);
+	assert_eq!(
+		exchange(
+			&changed,
+			&state,
+			&cookie,
+			&token("pool-a", "Person", Utc::now().timestamp()),
+			"http://127.0.0.1:8080"
+		)
+		.await
+		.status(),
+		403
+	);
+	assert!(
+		sqlx::query_scalar::<_, Option<chrono::DateTime<Utc>>>(&disabled)
+			.fetch_one(f.store.pool.driver())
+			.await
+			.unwrap()
+			.is_some()
+	);
+	for table in ["dashboard_mappings", "dashboard_operator_grants"] {
+		let enabled = Query::select()
+			.column(Alias::new("enabled"))
+			.from(Alias::new(table))
+			.and_where(Expr::col("identity_id").eq(Expr::val(identity)))
+			.to_string(PostgresQueryBuilder);
+		// Disablement preserves operator-managed approvals, but gates all of
+		// them behind an explicit Identity restore rather than a fresh login.
+		assert!(
+			sqlx::query_scalar::<_, bool>(&enabled)
+				.fetch_one(f.store.pool.driver())
+				.await
+				.unwrap(),
+			"{table} approval must still exist while the Identity is disabled"
+		);
+	}
+	f.config
+		.gcip
+		.as_mut()
+		.unwrap()
+		.tenant_bindings
+		.insert("pool-a".into(), "acme".into());
+	f.store = f
+		.store
+		.clone()
+		.with_dashboard_policy(f.config.dashboard_policy());
+	status.outage.store(false, Ordering::SeqCst);
+	let restored_binding = common::application(f.clone()).await;
+	let (state, cookie) = transaction(&restored_binding, "acme").await;
+	assert_eq!(
+		exchange(
+			&restored_binding,
+			&state,
+			&cookie,
+			&token("pool-a", "Person", Utc::now().timestamp()),
+			"http://127.0.0.1:8080"
+		)
+		.await
+		.status(),
+		403
+	);
+	common::cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
 async fn approved_mapping_cannot_cross_the_bound_tenant_at_a_request_boundary(
 	#[future(awt)]
 	#[from(test_environment)]

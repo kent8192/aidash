@@ -14,6 +14,12 @@ const copy = {
     signIn: "Sign in",
     register: "Create account",
     verification: "Check your email to verify your account, then sign in.",
+    verificationFailed:
+      "Your account was created, but we couldn't send the verification email. Enter your password and resend it.",
+    resend: "Resend verification email",
+    resendError:
+      "Unable to send the verification email. Enter your password and try again.",
+    verified: "Your email is already verified. Sign in to continue.",
     provider: "Continue with",
     error: "Sign-in failed. Please try again.",
     loading: "Loading sign-in…",
@@ -28,6 +34,12 @@ const copy = {
     register: "アカウントを作成",
     verification:
       "確認メールからアカウントを確認してから、サインインしてください。",
+    verificationFailed:
+      "アカウントは作成されましたが、確認メールを送信できませんでした。パスワードを入力して再送してください。",
+    resend: "確認メールを再送",
+    resendError:
+      "確認メールを送信できませんでした。パスワードを入力して、もう一度お試しください。",
+    verified: "メールアドレスは確認済みです。サインインしてください。",
     provider: "続ける",
     error: "サインインできませんでした。もう一度お試しください。",
     loading: "サインインを準備中…",
@@ -66,16 +78,24 @@ export default function GcipSignIn({
       });
     return () => controller.abort();
   }, [state, text.error]);
-  const authenticate = async (provider?: string, register = false) => {
+  const authenticate = async (
+    provider?: string,
+    action: "sign-in" | "register" | "resend" = "sign-in",
+  ) => {
     if (!config || !state || busy) return;
     setBusy(true);
     setMessage("");
     let client: ReturnType<typeof createClient> | undefined;
     try {
       client = createClient(config);
-      if (register) {
-        await client.register(email, password);
-        setMessage(text.verification);
+      if (action === "register") {
+        const sent = await client.register(email, password);
+        setMessage(sent ? text.verification : text.verificationFailed);
+        return;
+      }
+      if (action === "resend") {
+        const sent = await client.resend(email, password);
+        setMessage(sent ? text.verification : text.verified);
         return;
       }
       const token = provider
@@ -100,7 +120,7 @@ export default function GcipSignIn({
       await client.close();
       window.location.assign(result.return_to);
     } catch {
-      setMessage(text.error);
+      setMessage(action === "resend" ? text.resendError : text.error);
     } finally {
       setPassword("");
       await client?.close().catch(() => {});
@@ -188,11 +208,18 @@ export default function GcipSignIn({
                 <Button
                   type="button"
                   disabled={busy || !email || !password}
-                  onClick={() => void authenticate(undefined, true)}
+                  onClick={() => void authenticate(undefined, "register")}
                 >
                   {text.register}
                 </Button>
               )}
+              <Button
+                type="button"
+                disabled={busy || !email || !password}
+                onClick={() => void authenticate(undefined, "resend")}
+              >
+                {text.resend}
+              </Button>
             </form>
           )}
         </>

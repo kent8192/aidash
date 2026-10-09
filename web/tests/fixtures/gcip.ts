@@ -7,7 +7,7 @@ const privateKey = readFileSync(
     import.meta.url,
   ),
 );
-export function signedToken() {
+export function signedToken(emailVerified = true, provider = "google.com") {
   const now = Math.floor(Date.now() / 1000);
   const header = Buffer.from(
     JSON.stringify({ alg: "RS256", kid: "fixture" }),
@@ -20,8 +20,9 @@ export function signedToken() {
       iat: now,
       exp: now + 3600,
       auth_time: now,
-      firebase: { tenant: "pool-a", sign_in_provider: "google.com" },
-      email_verified: true,
+      firebase: { tenant: "pool-a", sign_in_provider: provider },
+      email: "person@example.test",
+      email_verified: emailVerified,
     }),
   ).toString("base64url");
   const content = `${header}.${payload}`;
@@ -42,7 +43,7 @@ export async function mockGcip(
   await page.route("**/src/gcip-sdk.ts", (route) =>
     route.fulfill({
       contentType: "text/javascript",
-      body: `export function createClient(config) { window.gcipCalls ??= []; window.gcipCalls.push({kind:'create',tenant:config.tenant_id}); return { popup: async id => {window.gcipCalls.push({kind:'popup',id});return ${JSON.stringify(token)}}, password: async () => ${JSON.stringify(token)}, register: async () => window.gcipCalls.push({kind:'register'}), close: async () => window.gcipCalls.push({kind:'close'}) }; }`,
+      body: `export function createClient(config) { window.gcipCalls ??= []; window.gcipCalls.push({kind:'create',tenant:config.tenant_id}); return { popup: async id => {window.gcipCalls.push({kind:'popup',id});return ${JSON.stringify(token)}}, password: async () => ${JSON.stringify(token)}, register: async () => { window.gcipCalls.push({kind:'register'}); return true; }, resend: async () => { window.gcipCalls.push({kind:'resend'}); return true; }, close: async () => window.gcipCalls.push({kind:'close'}) }; }`,
     }),
   );
   await page.route("**/auth/gcip/transaction?**", (route) =>
@@ -78,6 +79,9 @@ export async function mockGcip(
     expect(
       JSON.parse(Buffer.from(payload, "base64url").toString()).firebase.tenant,
     ).toBe("pool-a");
+    expect(
+      JSON.parse(Buffer.from(payload, "base64url").toString()).email_verified,
+    ).toBe(true);
     return route.fulfill({
       json: { return_to: destination },
       headers: { "cache-control": "no-store" },
