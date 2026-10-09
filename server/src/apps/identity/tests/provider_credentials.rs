@@ -17,10 +17,17 @@ use reinhardt::query::{
 	SimpleExpr,
 };
 use rstest::rstest;
-use secrecy::SecretString;
+use secrecy::{ExposeSecret, SecretString};
 use serde_json::{Value, json};
 use std::sync::{Arc, Mutex, OnceLock};
 use uuid::Uuid;
+
+struct NoEnvironment;
+impl aidash_application::ports::Credentials for NoEnvironment {
+	fn resolve(&self, _: &str) -> Result<String> {
+		panic!("Tenant access must not read environment keys")
+	}
+}
 
 static LOG: OnceLock<Arc<Mutex<Vec<u8>>>> = OnceLock::new();
 struct LogWriter(Arc<Mutex<Vec<u8>>>);
@@ -48,11 +55,11 @@ impl Store for FakeStore {
 	fn resource(&self, id: Uuid) -> String {
 		format!("fake/{id}")
 	}
-	async fn create(&self, id: Uuid) -> Result<()> {
+	async fn create(&self, _tenant: &str, id: Uuid) -> Result<()> {
 		self.0.lock().unwrap().insert(self.resource(id), vec![]);
 		Ok(())
 	}
-	async fn add_version(&self, resource: &str, _: &SecretString) -> Result<String> {
+	async fn add_version(&self, _tenant: &str, resource: &str, _: &SecretString) -> Result<String> {
 		let mut values = self.0.lock().unwrap();
 		let versions = values.get_mut(resource).unwrap();
 		let name = format!("{resource}/versions/{}", versions.len() + 1);
@@ -102,20 +109,13 @@ async fn all_database_text(f: &EndpointFixture) -> String {
 		let name: String = table.get("tablename").unwrap();
 		let (sql, values) = Query::select()
 			.expr_as(
-				SimpleExpr::FunctionCall(
-					"row_to_json".into_iden(),
-					vec![Expr::col(Alias::new("record")).into()],
-				),
+				Expr::col(Alias::new("record")).cast_as(Alias::new("text")),
 				Alias::new("document"),
 			)
 			.from_as(Alias::new(&name), Alias::new("record"))
 			.build(PostgresQueryBuilder);
 		for row in tx.fetch_all(&sql, convert_values(values)).await.unwrap() {
-			let reinhardt::db::backends::QueryValue::Json(Some(value)) = &row.data["document"]
-			else {
-				panic!("row_to_json must return JSON");
-			};
-			result.push_str(&value.to_string());
+			result.push_str(&row.get::<String>("document").unwrap());
 		}
 	}
 	result
@@ -962,4 +962,1082 @@ async fn registry_migration_preserves_current_constraints_in_both_directions(
 		agent
 	);
 	tx.rollback().await.unwrap();
+}
+
+async fn postgres_store(
+	f: &EndpointFixture,
+	current: &str,
+	retired: Vec<SecretString>,
+) -> Arc<aidash_server::apps::identity::repositories::credential_store::PostgresStore> {
+	Arc::new(
+		aidash_server::apps::identity::repositories::credential_store::PostgresStore::new(
+			f.runtime.store.control_pool.clone(),
+			current.into(),
+			retired,
+		)
+		.await
+		.unwrap(),
+	)
+}
+
+#[rstest]
+#[tokio::test]
+async fn postgres_store_service_lifecycle_resolves_pins_and_never_leaks_canary(
+	#[future] endpoint: EndpointFixture,
+) {
+	use aidash_application::provider_access::{
+		Context, EnvironmentAccess, KeyMaterialReader, ProviderAccess, Source, TenantAccess,
+	};
+	let f = endpoint.await;
+	let store = postgres_store(&f, &"11".repeat(32), vec![]).await;
+	let service = Service {
+		repository: Arc::new(NativeRepository {
+			pool: f.runtime.store.control_pool.clone(),
+			node: f.runtime.store.node_id.clone(),
+		}),
+		store: store.clone(),
+		validator: Arc::new(Validator),
+		fingerprint_key: "fingerprint-test-key-at-least-32-bytes".into(),
+		max_per_tenant: 20,
+	};
+	let canary = "canary-self-hosted-provider-key-never-persist-157!";
+	let row = service
+		.create(
+			"alpha",
+			Uuid::now_v7(),
+			Provider::Openrouter,
+			canary.into(),
+			"actor",
+		)
+		.await
+		.unwrap()
+		.provider_credential;
+	let resource = store.resource(row.id);
+	let old = format!("{resource}/versions/1");
+	let access = TenantAccess {
+		environment: EnvironmentAccess {
+			credentials: Arc::new(NoEnvironment),
+		},
+		repository: service.repository.clone(),
+		reader: Some(store.clone()),
+	};
+	let context = Context {
+		tenant: "alpha".into(),
+		run: Some(Uuid::now_v7()),
+		provider_credential_id: Some(row.id),
+		..Default::default()
+	};
+	let source = Source::Tenant {
+		provider: "openrouter".into(),
+	};
+	assert_eq!(
+		access
+			.resolve(&context, Provider::Openrouter.base_url(), &source)
+			.await
+			.unwrap()
+			.bearer
+			.expose_secret(),
+		canary
+	);
+	assert!(store.read("beta", &resource, &old).await.is_err());
+	assert!(
+		store
+			.add_version("beta", &resource, &"other-key".into())
+			.await
+			.is_err()
+	);
+	assert!(store.create("alpha", row.id).await.is_err());
+	service
+		.rotate(
+			"alpha",
+			row.id,
+			2,
+			"replacement-provider-key-157".into(),
+			"actor",
+		)
+		.await
+		.unwrap();
+	assert!(store.read("alpha", &resource, &old).await.is_err());
+	assert_eq!(
+		access
+			.resolve(&context, Provider::Openrouter.base_url(), &source)
+			.await
+			.unwrap()
+			.bearer
+			.expose_secret(),
+		"replacement-provider-key-157"
+	);
+	// Scan all persisted rows while ciphertext exists, not only after deletion.
+	let mut persisted = all_database_text(&f).await;
+	service.revoke("alpha", row.id, 3, "actor").await.unwrap();
+	assert!(
+		access
+			.resolve(&context, Provider::Openrouter.base_url(), &source)
+			.await
+			.is_err()
+	);
+	assert!(
+		store
+			.read("alpha", &resource, &format!("{resource}/versions/2"))
+			.await
+			.is_err()
+	);
+	service.delete("alpha", row.id, 4, "actor").await.unwrap();
+	store.disable(&old).await.unwrap();
+	store.destroy(&old).await.unwrap();
+	store.delete(&resource).await.unwrap();
+	assert!(store.versions(&resource).await.unwrap().is_empty());
+	use aidash_server::apps::identity::models::credential_store::{Resource, Version};
+	use reinhardt::db::orm::Model;
+	let mut tx = f.database.connection.begin().await.unwrap();
+	assert!(
+		Resource::objects()
+			.all()
+			.all_with_executor(tx.as_mut())
+			.await
+			.unwrap()
+			.is_empty()
+	);
+	assert!(
+		Version::objects()
+			.all()
+			.all_with_executor(tx.as_mut())
+			.await
+			.unwrap()
+			.is_empty()
+	);
+	tx.commit().await.unwrap();
+	persisted.push_str(&all_database_text(&f).await);
+	persisted.push_str(&String::from_utf8(LOG.get().unwrap().lock().unwrap().clone()).unwrap());
+	use base64::Engine;
+	for value in [
+		canary.to_owned(),
+		canary.bytes().map(|b| format!("{b:02x}")).collect(),
+		base64::engine::general_purpose::STANDARD.encode(canary),
+	] {
+		assert!(!persisted.contains(&value), "canary leaked");
+	}
+}
+
+#[rstest]
+#[case::version("alpha", true)]
+#[case::record("alpha", false)]
+#[case::tenant("beta", false)]
+#[tokio::test]
+async fn postgres_store_rejects_ciphertext_copied_to_another_identity(
+	#[future] endpoint: EndpointFixture,
+	#[case] destination_tenant: &str,
+	#[case] same_resource: bool,
+) {
+	use aidash_application::provider_access::KeyMaterialReader;
+	use aidash_server::apps::identity::models::credential_store::Version;
+	use reinhardt::db::orm::Model;
+	let f = endpoint.await;
+	let store = postgres_store(&f, &"22".repeat(32), vec![]).await;
+	let a = Uuid::now_v7();
+	store.create("alpha", a).await.unwrap();
+	let a_resource = store.resource(a);
+	let source = store
+		.add_version("alpha", &a_resource, &"source-provider-key".into())
+		.await
+		.unwrap();
+	let resource = if same_resource || destination_tenant == "beta" {
+		a_resource.clone()
+	} else {
+		let b = Uuid::now_v7();
+		store.create(destination_tenant, b).await.unwrap();
+		store.resource(b)
+	};
+	let dest = if destination_tenant == "beta" {
+		// Isolate Tenant binding: keep the resource and version unchanged.
+		source.clone()
+	} else {
+		store
+			.add_version(
+				destination_tenant,
+				&resource,
+				&"destination-provider-key".into(),
+			)
+			.await
+			.unwrap()
+	};
+	let mut tx = f.database.connection.begin().await.unwrap();
+	let rows = Version::objects()
+		.order_by(&["created_at"])
+		.all_with_executor(tx.as_mut())
+		.await
+		.unwrap();
+	let mut copied = rows[if destination_tenant == "beta" { 0 } else { 1 }].clone();
+	copied.tenant = destination_tenant.into();
+	copied.nonce = rows[0].nonce.clone();
+	copied.ciphertext = rows[0].ciphertext.clone();
+	Version::objects()
+		.save_with_executor(tx.as_mut(), &copied)
+		.await
+		.unwrap();
+	tx.commit().await.unwrap();
+	assert_eq!(
+		store
+			.read(destination_tenant, &resource, &dest)
+			.await
+			.unwrap_err()
+			.to_string(),
+		"Provider Credential Store cannot read the pinned version"
+	);
+	if destination_tenant == "alpha" {
+		assert_eq!(
+			store
+				.read("alpha", &a_resource, &source)
+				.await
+				.unwrap()
+				.expose_secret(),
+			"source-provider-key"
+		);
+	}
+}
+
+#[rstest]
+#[tokio::test]
+async fn postgres_store_key_registry_handles_concurrent_boot_rotation_wrong_key_and_tampering(
+	#[future] endpoint: EndpointFixture,
+) {
+	use aidash_application::provider_access::KeyMaterialReader;
+	use aidash_server::apps::identity::{
+		models::credential_store::RegisteredKey, repositories::credential_store::PostgresStore,
+	};
+	use reinhardt::db::orm::Model;
+	let f = endpoint.await;
+	let pool = f.runtime.store.control_pool.clone();
+	let old = "33".repeat(32);
+	let new = "44".repeat(32);
+	let (a, b) = tokio::join!(
+		PostgresStore::new(pool.clone(), old.clone().into(), vec![]),
+		PostgresStore::new(pool.clone(), old.clone().into(), vec![])
+	);
+	let a = a.unwrap();
+	b.unwrap();
+	let id = Uuid::now_v7();
+	a.create("alpha", id).await.unwrap();
+	let resource = a.resource(id);
+	let first = a
+		.add_version("alpha", &resource, &"first-provider-key".into())
+		.await
+		.unwrap();
+	assert!(
+		PostgresStore::new(pool.clone(), "55".repeat(32).into(), vec![])
+			.await
+			.err()
+			.unwrap()
+			.to_string()
+			.contains("does not match")
+	);
+	let mut tx = f.database.connection.begin().await.unwrap();
+	assert_eq!(
+		RegisteredKey::objects()
+			.all()
+			.all_with_executor(tx.as_mut())
+			.await
+			.unwrap()
+			.len(),
+		1
+	);
+	tx.commit().await.unwrap();
+	let rotated = PostgresStore::new(pool.clone(), new.clone().into(), vec![old.clone().into()])
+		.await
+		.unwrap();
+	assert_eq!(
+		rotated
+			.read("alpha", &resource, &first)
+			.await
+			.unwrap()
+			.expose_secret(),
+		"first-provider-key"
+	);
+	let second = rotated
+		.add_version("alpha", &resource, &"second-provider-key".into())
+		.await
+		.unwrap();
+	let retired_removed = PostgresStore::new(pool.clone(), new.clone().into(), vec![])
+		.await
+		.unwrap();
+	assert!(
+		retired_removed
+			.read("alpha", &resource, &first)
+			.await
+			.is_err()
+	);
+	assert!(
+		String::from_utf8(LOG.get().unwrap().lock().unwrap().clone())
+			.unwrap()
+			.contains("versions use an unconfigured Master Key")
+	);
+	retired_removed.disable(&first).await.unwrap();
+	retired_removed.destroy(&first).await.unwrap();
+	assert_eq!(
+		retired_removed
+			.read("alpha", &resource, &second)
+			.await
+			.unwrap()
+			.expose_secret(),
+		"second-provider-key"
+	);
+	retired_removed.delete(&resource).await.unwrap();
+	let mut tx = f.database.connection.begin().await.unwrap();
+	let rows = RegisteredKey::objects()
+		.all()
+		.all_with_executor(tx.as_mut())
+		.await
+		.unwrap();
+	let mut row = rows[0].clone();
+	row.check_ciphertext[0] ^= 1;
+	RegisteredKey::objects()
+		.save_with_executor(tx.as_mut(), &row)
+		.await
+		.unwrap();
+	tx.commit().await.unwrap();
+	assert!(
+		PostgresStore::new(pool, new.into(), vec![old.into()])
+			.await
+			.err()
+			.unwrap()
+			.to_string()
+			.contains("check failed")
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn postgres_store_allocates_monotonic_versions_even_after_destroy(
+	#[future] endpoint: EndpointFixture,
+) {
+	let f = endpoint.await;
+	let store = postgres_store(&f, &"66".repeat(32), vec![]).await;
+	let id = Uuid::now_v7();
+	store.create("alpha", id).await.unwrap();
+	let resource = store.resource(id);
+	let first = SecretString::from("first-key");
+	let other = SecretString::from("other-key");
+	let (a, b) = tokio::join!(
+		store.add_version("alpha", &resource, &first),
+		store.add_version("alpha", &resource, &other)
+	);
+	let mut values = vec![a.unwrap(), b.unwrap()];
+	values.sort();
+	assert_eq!(
+		values,
+		vec![
+			format!("{resource}/versions/1"),
+			format!("{resource}/versions/2")
+		]
+	);
+	store.destroy(&values[1]).await.unwrap();
+	assert_eq!(
+		store.versions(&resource).await.unwrap(),
+		vec![values[0].clone()]
+	);
+	use aidash_application::provider_access::KeyMaterialReader;
+	assert!(store.read("alpha", &resource, &values[1]).await.is_err());
+	store.destroy(&values[1]).await.unwrap();
+	assert_eq!(
+		store
+			.add_version("alpha", &resource, &"third-key".into())
+			.await
+			.unwrap(),
+		format!("{resource}/versions/3")
+	);
+}
+
+#[test]
+fn store_settings_validate_shape_without_loading_keys() {
+	use aidash_server::apps::identity::serializers::provider_credentials::Settings;
+	use reinhardt::conf::settings::{fragment::SettingsValidation, profile::Profile};
+	let current = json!({"file":"/definitely-missing/aidash157-master-key"});
+	let fingerprint = json!({"env":"AIDASH_PROVIDER_FINGERPRINT_KEY"});
+	let valid = json!({"fingerprint_key":fingerprint,"store":{"kind":"postgres","master_key":current,"retired_master_keys":[{"env":"AIDASH_PROVIDER_STORE_MASTER_KEY_OLD"}]}});
+	serde_json::from_value::<Settings>(valid.clone())
+		.unwrap()
+		.validate(&Profile::parse("local"))
+		.unwrap();
+	for source in [
+		json!({}),
+		json!({"env":"AIDASH_SECRET_MASTER"}),
+		json!({"file":"/tmp/key","env":"AIDASH_PROVIDER_KEY"}),
+	] {
+		let mut value = valid.clone();
+		value["store"]["master_key"] = source.clone();
+		assert!(
+			serde_json::from_value::<Settings>(value)
+				.unwrap()
+				.validate(&Profile::parse("local"))
+				.is_err()
+		);
+		let cloud = json!({"fingerprint_key":source,"store":{"kind":"secret_manager","byok_project_id":"byok-project","environment_id":"local"}});
+		assert!(
+			serde_json::from_value::<Settings>(cloud)
+				.unwrap()
+				.validate(&Profile::parse("local"))
+				.is_err()
+		);
+	}
+	let mut no_fingerprint = valid.clone();
+	no_fingerprint
+		.as_object_mut()
+		.unwrap()
+		.remove("fingerprint_key");
+	assert!(
+		serde_json::from_value::<Settings>(no_fingerprint)
+			.unwrap()
+			.validate(&Profile::parse("local"))
+			.is_err()
+	);
+	let mut cloud_master = valid;
+	cloud_master["store"] = json!({"kind":"secret_manager","byok_project_id":"byok-project","environment_id":"local","master_key":current});
+	assert!(serde_json::from_value::<Settings>(cloud_master).is_err());
+}
+
+#[rstest]
+#[tokio::test]
+async fn bootstrap_loads_trimmed_keys_and_fails_closed_without_valid_key_sources(
+	#[future] endpoint: EndpointFixture,
+) {
+	use aidash_server::apps::identity::serializers::provider_credentials::Settings;
+	let mut f = endpoint.await;
+	let dir = tempfile::tempdir().unwrap();
+	let master = dir.path().join("master");
+	let fingerprint = dir.path().join("fingerprint");
+	std::fs::write(&fingerprint, "   fingerprint-root-at-least-32-bytes-157\n").unwrap();
+	let shape = json!({"fingerprint_key":{"file":fingerprint},"store":{"kind":"postgres","master_key":{"file":master}}});
+	let settings: Settings = serde_json::from_value(shape.clone()).unwrap();
+	assert!(
+		aidash_server::bootstrap::configure_provider_credentials(&mut f.runtime.store, &settings)
+			.await
+			.unwrap_err()
+			.to_string()
+			.contains("Master Key file is missing or unreadable")
+	);
+	for malformed in ["", "short", &"gg".repeat(32)] {
+		std::fs::write(&master, malformed).unwrap();
+		assert!(
+			aidash_server::bootstrap::configure_provider_credentials(
+				&mut f.runtime.store,
+				&settings
+			)
+			.await
+			.unwrap_err()
+			.to_string()
+			.contains("64 hex characters")
+		);
+	}
+	std::fs::write(&master, format!("  {}\n", "77".repeat(32))).unwrap();
+	aidash_server::bootstrap::configure_provider_credentials(&mut f.runtime.store, &settings)
+		.await
+		.unwrap();
+	assert!(f.runtime.store.provider_credentials.is_some());
+	assert!(f.runtime.store.provider_key_material_reader.is_some());
+	assert_eq!(
+		f.runtime
+			.store
+			.provider_credentials
+			.as_ref()
+			.unwrap()
+			.fingerprint_key
+			.expose_secret(),
+		"fingerprint-root-at-least-32-bytes-157"
+	);
+	std::fs::write(&master, "88".repeat(32)).unwrap();
+	assert!(
+		aidash_server::bootstrap::configure_provider_credentials(&mut f.runtime.store, &settings)
+			.await
+			.unwrap_err()
+			.to_string()
+			.contains("does not match")
+	);
+	let mut missing_env = shape;
+	missing_env["store"]["master_key"] =
+		json!({"env": format!("AIDASH_PROVIDER_STORE_MISSING_{}", Uuid::new_v4().simple())});
+	let settings: Settings = serde_json::from_value(missing_env).unwrap();
+	assert!(
+		aidash_server::bootstrap::configure_provider_credentials(&mut f.runtime.store, &settings)
+			.await
+			.unwrap_err()
+			.to_string()
+			.contains("Master Key environment variable is missing")
+	);
+
+	let cloud: Settings = serde_json::from_value(json!({"fingerprint_key":{"file":fingerprint},"store":{"kind":"secret_manager","byok_project_id":"fixture-byok","environment_id":"local"}})).unwrap();
+	aidash_server::bootstrap::configure_provider_credentials(&mut f.runtime.store, &cloud)
+		.await
+		.unwrap();
+	assert!(f.runtime.store.provider_credentials.is_some());
+	assert!(f.runtime.store.provider_key_material_reader.is_none());
+}
+
+#[rstest]
+#[tokio::test]
+async fn manage_migrate_does_not_load_configured_store_keys(#[future] endpoint: EndpointFixture) {
+	let f = endpoint.await;
+	let dir = tempfile::tempdir().unwrap();
+	std::fs::write(
+		dir.path().join("base.toml"),
+		r#"
+[provider_credentials]
+fingerprint_key = { env = "AIDASH_PROVIDER_MISSING_FINGERPRINT_157" }
+[provider_credentials.store]
+kind = "postgres"
+master_key = { file = "/definitely-missing/aidash157-master-key" }
+"#,
+	)
+	.unwrap();
+	let output = tokio::time::timeout(
+		std::time::Duration::from_secs(45),
+		tokio::process::Command::new(env!("CARGO_BIN_EXE_manage"))
+			.arg("migrate")
+			.env("DATABASE_URL", &f.database.url)
+			.env("REINHARDT_SETTINGS_DIR", dir.path())
+			.env("REINHARDT_ENV", "local")
+			.env_remove("AIDASH_PROVIDER_MISSING_FINGERPRINT_157")
+			.stdin(std::process::Stdio::null())
+			.kill_on_drop(true)
+			.output(),
+	)
+	.await
+	.unwrap()
+	.unwrap();
+	assert!(
+		output.status.success(),
+		"{}\n{}",
+		String::from_utf8_lossy(&output.stdout),
+		String::from_utf8_lossy(&output.stderr)
+	);
+}
+
+fn recovery_settings(f: &EndpointFixture, dir: &std::path::Path, current: &str) {
+	std::fs::write(dir.join("master"), format!("  {current}\n")).unwrap();
+	std::fs::write(
+		dir.join("fingerprint"),
+		" fingerprint-root-at-least-32-bytes-157\n",
+	)
+	.unwrap();
+	std::fs::write(
+		dir.join("base.toml"),
+		format!(
+			r#"[core]
+secret_key = "recovery-fixture-secret-key-not-for-production-at-least-50-bytes-157"
+[node]
+node_id = {:?}
+endpoint = "http://127.0.0.1:8080"
+api_token = "recovery-fixture-token-at-least-16"
+[provider_credentials]
+fingerprint_key = {{ file = {:?} }}
+[provider_credentials.store]
+kind = "postgres"
+master_key = {{ file = {:?} }}
+"#,
+			f.runtime.store.node_id,
+			dir.join("fingerprint"),
+			dir.join("master")
+		),
+	)
+	.unwrap();
+}
+
+async fn recovery_command(
+	f: &EndpointFixture,
+	dir: &std::path::Path,
+	execute: bool,
+) -> std::process::Output {
+	let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_manage"));
+	command.arg("provider-credential-store-recovery");
+	if execute {
+		command.arg("--execute");
+	}
+	tokio::time::timeout(
+		std::time::Duration::from_secs(45),
+		command
+			.env("DATABASE_URL", &f.database.url)
+			.env("REINHARDT_SETTINGS_DIR", dir)
+			.env("REINHARDT_ENV", "local")
+			.stdin(std::process::Stdio::null())
+			.kill_on_drop(true)
+			.output(),
+	)
+	.await
+	.unwrap()
+	.unwrap()
+}
+
+async fn recovery_snapshot(f: &EndpointFixture) -> Value {
+	let mut tx = f.database.connection.begin().await.unwrap();
+	let mut snapshot = serde_json::Map::new();
+	for name in [
+		"credential_store_resources",
+		"credential_store_versions",
+		"credential_store_keys",
+		"provider_credentials",
+		"provider_credential_bindings",
+		"events",
+	] {
+		let (sql, values) = Query::select()
+			.expr_as(
+				Expr::col(Alias::new("record")).cast_as(Alias::new("text")),
+				Alias::new("document"),
+			)
+			.from_as(Alias::new(name), Alias::new("record"))
+			.build(PostgresQueryBuilder);
+		let mut rows: Vec<String> = tx
+			.fetch_all(&sql, convert_values(values))
+			.await
+			.unwrap()
+			.into_iter()
+			.map(|r| r.get("document").unwrap())
+			.collect();
+		rows.sort();
+		snapshot.insert(name.into(), json!(rows));
+	}
+	tx.commit().await.unwrap();
+	Value::Object(snapshot)
+}
+
+fn real_service(
+	f: &EndpointFixture,
+	store: Arc<aidash_server::apps::identity::repositories::credential_store::PostgresStore>,
+) -> Service {
+	Service {
+		repository: Arc::new(NativeRepository {
+			pool: f.runtime.store.control_pool.clone(),
+			node: f.runtime.store.node_id.clone(),
+		}),
+		store,
+		validator: Arc::new(Validator),
+		fingerprint_key: "fingerprint-root-at-least-32-bytes-157".into(),
+		max_per_tenant: 20,
+	}
+}
+
+#[rstest]
+#[case::total(false)]
+#[case::partial(true)]
+#[tokio::test]
+async fn recovery_dry_run_and_execute_cover_total_partial_and_mixed_key_loss(
+	#[future] endpoint: EndpointFixture,
+	#[case] partial: bool,
+) {
+	use aidash_domain::provider_credentials::State;
+	use aidash_server::apps::identity::models::credential_store::{RegisteredKey, Version};
+	use reinhardt::db::orm::Model;
+	let f = endpoint.await;
+	let lost = "91".repeat(32);
+	let current = "92".repeat(32);
+	let old_store = postgres_store(&f, &lost, vec![]).await;
+	let old_service = real_service(&f, old_store.clone());
+	let alpha = old_service
+		.create(
+			"alpha",
+			Uuid::now_v7(),
+			Provider::Openrouter,
+			"lost-alpha-material-157".into(),
+			"actor",
+		)
+		.await
+		.unwrap()
+		.provider_credential;
+	let beta = old_service
+		.create(
+			"beta",
+			Uuid::now_v7(),
+			Provider::Openrouter,
+			"lost-beta-material-157".into(),
+			"actor",
+		)
+		.await
+		.unwrap()
+		.provider_credential;
+	let resource = old_store.resource(alpha.id);
+	let mut unaffected = None;
+	let mut known_before = Vec::<Version>::new();
+	let mut known_keys_before = Vec::<RegisteredKey>::new();
+	if partial {
+		let known_store = postgres_store(&f, &current, vec![lost.clone().into()]).await;
+		let known_service = real_service(&f, known_store.clone());
+		known_service
+			.rotate(
+				"alpha",
+				alpha.id,
+				2,
+				"known-alpha-material-157".into(),
+				"actor",
+			)
+			.await
+			.unwrap();
+		old_service
+			.rotate(
+				"alpha",
+				alpha.id,
+				3,
+				"lost-alpha-rotated-157".into(),
+				"actor",
+			)
+			.await
+			.unwrap();
+		// A configured-key orphan must be disabled by normal Revocation but retained intact.
+		known_store
+			.add_version("alpha", &resource, &"known-orphan-material-157".into())
+			.await
+			.unwrap();
+		let gamma = known_service
+			.create(
+				"gamma",
+				Uuid::now_v7(),
+				Provider::Openrouter,
+				"known-gamma-material-157".into(),
+				"actor",
+			)
+			.await
+			.unwrap()
+			.provider_credential;
+		let mut scope = known_service.repository.begin("gamma").await.unwrap();
+		unaffected = Some(serde_json::to_value(scope.get(gamma.id).await.unwrap()).unwrap());
+		scope.commit().await.unwrap();
+		let mut tx = f.database.connection.begin().await.unwrap();
+		known_before = Version::objects()
+			.all()
+			.all_with_executor(tx.as_mut())
+			.await
+			.unwrap()
+			.into_iter()
+			.filter(|row| {
+				row.resource == resource && (row.version == 2 || row.version == 4)
+					|| row.tenant == "gamma"
+			})
+			.collect();
+		let known_id = &known_before[0].key_id;
+		known_keys_before = RegisteredKey::objects()
+			.filter(RegisteredKey::field_key_id().eq(known_id))
+			.all_with_executor(tx.as_mut())
+			.await
+			.unwrap();
+		tx.commit().await.unwrap();
+	} else {
+		let error =
+			aidash_server::apps::identity::repositories::credential_store::PostgresStore::new(
+				f.runtime.store.control_pool.clone(),
+				current.clone().into(),
+				vec![],
+			)
+			.await
+			.err()
+			.unwrap();
+		assert!(
+			error
+				.to_string()
+				.contains("manage provider-credential-store-recovery")
+		);
+	}
+	let dir = tempfile::tempdir().unwrap();
+	recovery_settings(&f, dir.path(), &current);
+	let before = recovery_snapshot(&f).await;
+	let counts = json!({"affected_tenants":2,"affected_provider_credentials":2,"version_rows":if partial {3} else {2},"key_registry_rows":1});
+	let mut tx = f.database.connection.begin().await.unwrap();
+	let mut private_values = Vec::new();
+	for row in Version::objects()
+		.all()
+		.all_with_executor(tx.as_mut())
+		.await
+		.unwrap()
+	{
+		private_values.push(row.key_id);
+		for bytes in [row.nonce, row.ciphertext] {
+			private_values.push(bytes.iter().map(|b| format!("{b:02x}")).collect::<String>());
+			private_values.push(serde_json::to_string(&bytes).unwrap());
+		}
+	}
+	for row in RegisteredKey::objects()
+		.all()
+		.all_with_executor(tx.as_mut())
+		.await
+		.unwrap()
+	{
+		private_values.push(row.key_id);
+		for bytes in [row.check_nonce, row.check_ciphertext] {
+			private_values.push(bytes.iter().map(|b| format!("{b:02x}")).collect::<String>());
+			private_values.push(serde_json::to_string(&bytes).unwrap());
+		}
+	}
+	tx.commit().await.unwrap();
+	for execute in [false, true] {
+		let output = recovery_command(&f, dir.path(), execute).await;
+		assert!(
+			output.status.success(),
+			"{}",
+			String::from_utf8_lossy(&output.stderr)
+		);
+		assert_eq!(
+			serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+			counts
+		);
+		let printed = format!(
+			"{}{}",
+			String::from_utf8_lossy(&output.stdout),
+			String::from_utf8_lossy(&output.stderr)
+		);
+		for forbidden in [
+			&lost,
+			&current,
+			"lost-alpha-material-157",
+			"lost-beta-material-157",
+		] {
+			assert!(!printed.contains(forbidden));
+		}
+		for forbidden in &private_values {
+			assert!(!printed.contains(forbidden));
+		}
+		for table in ["credential_store_versions", "credential_store_keys"] {
+			for row in before[table].as_array().unwrap() {
+				// Full persisted rows (including ciphertext, nonces and identifiers) never print.
+				assert!(!printed.contains(row.as_str().unwrap()));
+			}
+		}
+		if !execute {
+			assert_eq!(recovery_snapshot(&f).await, before);
+		}
+	}
+	for (tenant, id) in [("alpha", alpha.id), ("beta", beta.id)] {
+		let mut scope = old_service.repository.begin(tenant).await.unwrap();
+		let row = scope.get(id).await.unwrap();
+		assert_eq!(row.state, State::Revoked);
+		assert_eq!(
+			row.revision,
+			if tenant == "alpha" && partial { 5 } else { 3 }
+		);
+		scope.commit().await.unwrap();
+	}
+	let mut tx = f.database.connection.begin().await.unwrap();
+	let remaining = Version::objects()
+		.all()
+		.all_with_executor(tx.as_mut())
+		.await
+		.unwrap();
+	assert_eq!(remaining.len(), if partial { 3 } else { 0 });
+	for before in &known_before {
+		let after = remaining
+			.iter()
+			.find(|r| r.resource == before.resource && r.version == before.version)
+			.unwrap();
+		if before.tenant == "gamma" {
+			assert_eq!(
+				serde_json::to_value(after).unwrap(),
+				serde_json::to_value(before).unwrap()
+			);
+		} else {
+			assert_eq!(after.state, "disabled");
+			let mut expected = serde_json::to_value(before).unwrap();
+			if before.state == "enabled" {
+				assert!(after.disabled_at.is_some());
+				expected["state"] = json!("disabled");
+				expected["disabled_at"] = json!(after.disabled_at);
+			}
+			assert_eq!(serde_json::to_value(after).unwrap(), expected);
+		}
+	}
+	let keys = RegisteredKey::objects()
+		.all()
+		.all_with_executor(tx.as_mut())
+		.await
+		.unwrap();
+	assert_eq!(
+		serde_json::to_value(&keys).unwrap(),
+		serde_json::to_value(&known_keys_before).unwrap()
+	);
+	let (sql, values) = Query::select()
+		.expr_as(
+			Expr::col("data").cast_as(Alias::new("text")),
+			Alias::new("data"),
+		)
+		.from(Alias::new("events"))
+		.and_where(Expr::col("kind").eq(Expr::value("provider_credential.revoked")))
+		.build(PostgresQueryBuilder);
+	let events = tx.fetch_all(&sql, convert_values(values)).await.unwrap();
+	assert_eq!(events.len(), 2);
+	let mut tenants = std::collections::BTreeSet::new();
+	for event in events {
+		let data: Value = serde_json::from_str(&event.get::<String>("data").unwrap()).unwrap();
+		assert_eq!(data["actor"], "provider-credential-store-recovery");
+		assert_eq!(data["state"], "revoked");
+		tenants.insert(data["tenant"].as_str().unwrap().to_owned());
+	}
+	assert_eq!(
+		tenants,
+		std::collections::BTreeSet::from(["alpha".into(), "beta".into()])
+	);
+	tx.commit().await.unwrap();
+	assert_eq!(
+		recovery_snapshot(&f).await["credential_store_resources"],
+		before["credential_store_resources"]
+	);
+	if let Some(before) = unaffected {
+		let mut scope = old_service.repository.begin("gamma").await.unwrap();
+		assert_eq!(
+			serde_json::to_value(
+				scope
+					.get(serde_json::from_value(before["id"].clone()).unwrap())
+					.await
+					.unwrap()
+			)
+			.unwrap(),
+			before
+		);
+		scope.commit().await.unwrap();
+	}
+	// Recovery never registers the replacement; ordinary startup now can.
+	let recovered = postgres_store(&f, &current, vec![]).await;
+	let fresh = real_service(&f, recovered.clone())
+		.create(
+			"reconnected",
+			Uuid::now_v7(),
+			Provider::Openrouter,
+			"reconnected-provider-material-157".into(),
+			"oauth-callback",
+		)
+		.await
+		.unwrap()
+		.provider_credential;
+	use aidash_application::provider_access::KeyMaterialReader;
+	assert_eq!(
+		recovered
+			.read(
+				"reconnected",
+				&recovered.resource(fresh.id),
+				&format!("{}/versions/1", recovered.resource(fresh.id))
+			)
+			.await
+			.unwrap()
+			.expose_secret(),
+		"reconnected-provider-material-157"
+	);
+	let output = recovery_command(&f, dir.path(), true).await;
+	assert!(output.status.success());
+	assert_eq!(
+		serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+		json!({"affected_tenants":0,"affected_provider_credentials":0,"version_rows":0,"key_registry_rows":0})
+	);
+}
+
+#[rstest]
+#[case::current(false)]
+#[case::retired(true)]
+#[tokio::test]
+async fn recovery_refuses_tampered_configured_key_checks_without_mutation(
+	#[future] endpoint: EndpointFixture,
+	#[case] retired: bool,
+) {
+	use aidash_server::apps::identity::models::credential_store::RegisteredKey;
+	use reinhardt::db::orm::Model;
+	let f = endpoint.await;
+	let lost = "93".repeat(32);
+	let current = "94".repeat(32);
+	let old = postgres_store(&f, &lost, vec![]).await;
+	real_service(&f, old)
+		.create(
+			"alpha",
+			Uuid::now_v7(),
+			Provider::Openrouter,
+			"tamper-lost-material-157".into(),
+			"actor",
+		)
+		.await
+		.unwrap();
+	let mut tx = f.database.connection.begin().await.unwrap();
+	let old_id = RegisteredKey::objects()
+		.all()
+		.all_with_executor(tx.as_mut())
+		.await
+		.unwrap()[0]
+		.key_id
+		.clone();
+	tx.commit().await.unwrap();
+	postgres_store(&f, &current, vec![lost.clone().into()]).await;
+	let mut tx = f.database.connection.begin().await.unwrap();
+	for mut row in RegisteredKey::objects()
+		.all()
+		.all_with_executor(tx.as_mut())
+		.await
+		.unwrap()
+	{
+		if (row.key_id == old_id) == retired {
+			row.check_ciphertext[0] ^= 1;
+			RegisteredKey::objects()
+				.save_with_executor(tx.as_mut(), &row)
+				.await
+				.unwrap();
+		}
+	}
+	tx.commit().await.unwrap();
+	let dir = tempfile::tempdir().unwrap();
+	recovery_settings(&f, dir.path(), &current);
+	if retired {
+		std::fs::write(dir.path().join("retired"), lost).unwrap();
+		let settings = std::fs::read_to_string(dir.path().join("base.toml")).unwrap();
+		std::fs::write(
+			dir.path().join("base.toml"),
+			format!(
+				"{settings}retired_master_keys = [{{ file = {:?} }}]\n",
+				dir.path().join("retired")
+			),
+		)
+		.unwrap();
+	}
+	let before = recovery_snapshot(&f).await;
+	for execute in [false, true] {
+		let output = recovery_command(&f, dir.path(), execute).await;
+		assert!(!output.status.success());
+		assert!(String::from_utf8_lossy(&output.stderr).contains("Master Key check failed"));
+		assert_eq!(recovery_snapshot(&f).await, before);
+	}
+}
+
+#[rstest]
+#[tokio::test]
+async fn recovery_requires_postgres_and_valid_key_sources(#[future] endpoint: EndpointFixture) {
+	let f = endpoint.await;
+	let dir = tempfile::tempdir().unwrap();
+	let before = recovery_snapshot(&f).await;
+	for shape in [
+		"[provider_credentials]\n",
+		"[provider_credentials]\nfingerprint_key = { env = \"AIDASH_PROVIDER_MISSING_157\" }\n[provider_credentials.store]\nkind = \"secret_manager\"\nbyok_project_id = \"byok-project\"\nenvironment_id = \"local\"\n",
+	] {
+		recovery_settings(&f, dir.path(), &"95".repeat(32));
+		let text = std::fs::read_to_string(dir.path().join("base.toml")).unwrap();
+		std::fs::write(
+			dir.path().join("base.toml"),
+			format!(
+				"{}{}",
+				text.split("[provider_credentials]").next().unwrap(),
+				shape
+			),
+		)
+		.unwrap();
+		let output = recovery_command(&f, dir.path(), false).await;
+		assert!(!output.status.success());
+		assert!(String::from_utf8_lossy(&output.stderr).contains("requires a PostgreSQL Store"));
+	}
+	for key in [None, Some("malformed")] {
+		recovery_settings(&f, dir.path(), &"95".repeat(32));
+		if let Some(value) = key {
+			std::fs::write(dir.path().join("master"), value).unwrap();
+		} else {
+			std::fs::remove_file(dir.path().join("master")).unwrap();
+		}
+		for execute in [false, true] {
+			let output = recovery_command(&f, dir.path(), execute).await;
+			assert!(!output.status.success());
+			assert!(
+				String::from_utf8_lossy(&output.stderr).contains(if key.is_some() {
+					"64 hex characters"
+				} else {
+					"Master Key file is missing"
+				})
+			);
+		}
+	}
+	assert_eq!(recovery_snapshot(&f).await, before);
 }

@@ -1,4 +1,4 @@
-//! Pure authorization rules. This layer has no transport or database I/O.
+//! Identity use case composition and pure authorization rules.
 
 pub mod policy;
 
@@ -18,4 +18,5 @@ pub(crate) mod dashboard_rules;
 
 pub(crate) mod desktop_cors;
 
+pub mod credential_store_recovery;
 pub mod provider_credentials;

@@ -26,6 +26,9 @@ name = "local-dev-db"
 path = "src/bin/local-dev-db.rs"
 
 [dependencies]
+aes-gcm = "=0.10.3"
+hkdf = "=0.12.4"
+zeroize = "1.9"
 secrecy = { version = "0.10", features = ["serde"] }
 aidash-domain.workspace = true
 aidash-application.workspace = true

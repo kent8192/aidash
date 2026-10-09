@@ -45,6 +45,19 @@ class HostTests(unittest.TestCase):
         self.assertEqual(values["AIDASH_MEMORY_RECOVERY_DIR"], str(host.ROOT / "memory-recovery"))
         self.assertEqual(values["AIDASH_NODE_ID"], "aidash://home-a")
 
+    def test_runtime_key_allowlist_accepts_fingerprint_and_rejects_master_key(self):
+        base = {"AIDASH_OIDC_CLIENT_ID": "fixture-client", "AIDASH_OIDC_CLIENT_SECRET": "fixture-secret"}
+        for key, allowed in [("AIDASH_PROVIDER_FINGERPRINT_KEY", True), ("AIDASH_SECRET_TOOL", True), ("AIDASH_PROVIDER_STORE_MASTER_KEY", False), ("UNRELATED_SENTINEL", False)]:
+            external = dict(base, **{key: "fixture-value"})
+            secret = {"payload": {"data": host.base64.b64encode(json.dumps(external).encode()).decode()}}
+            with patch.object(host, "request", return_value=json.dumps(secret).encode()), patch.object(host, "cloud_token", return_value="fixture"):
+                if allowed:
+                    host.configuration({"project": "fixture", "secret": "home-a", "hostname": "example.invalid"})
+                    self.assertIn(key + "=fixture-value", (host.RUN / "app.env").read_text())
+                else:
+                    with self.assertRaises(ValueError):
+                        host.configuration({"project": "fixture", "secret": "home-a", "hostname": "example.invalid"})
+
     def record_previous(self, observed_at, busy):
         (self.directory / "last-active").write_text("100")
         (self.directory / "activity.json").write_text(

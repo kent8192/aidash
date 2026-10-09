@@ -33,6 +33,8 @@ use uuid::Uuid;
 
 #[derive(Clone)]
 pub struct Store {
+	pub provider_key_material_reader:
+		Option<std::sync::Arc<dyn aidash_application::provider_access::KeyMaterialReader>>,
 	pub provider_credentials:
 		Option<std::sync::Arc<aidash_application::provider_credentials::Service>>,
 	pub capabilities: crate::capabilities::Runtime,
@@ -192,6 +194,7 @@ impl Store {
 			semantic_client: crate::semantic::backend::client()?,
 			recovery_cursors: Default::default(),
 			provider_credentials: None,
+			provider_key_material_reader: None,
 			capabilities: crate::capabilities::Runtime::from_env()?,
 		}
 		.with_memory_recovery(memory_recovery))
@@ -242,6 +245,7 @@ impl Store {
 			semantic_client: self.semantic_client.clone(),
 			recovery_cursors: self.recovery_cursors.clone(),
 			provider_credentials: self.provider_credentials.clone(),
+			provider_key_material_reader: self.provider_key_material_reader.clone(),
 			capabilities: self.capabilities.clone(),
 		})
 	}
@@ -274,6 +278,7 @@ impl Store {
 			semantic_client: self.semantic_client.clone(),
 			recovery_cursors: self.recovery_cursors.clone(),
 			provider_credentials: self.provider_credentials.clone(),
+			provider_key_material_reader: self.provider_key_material_reader.clone(),
 			capabilities: self.capabilities.clone(),
 		})
 	}

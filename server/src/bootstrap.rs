@@ -41,6 +41,9 @@ pub fn management_commands() -> reinhardt::commands::CommandRegistry {
 	registry.register_capability(Box::new(
 		crate::semantic::services::memory_recovery::Command,
 	));
+	registry.register_capability(Box::new(
+		crate::apps::identity::services::credential_store_recovery::Command,
+	));
 	registry
 }
 
@@ -66,7 +69,7 @@ pub async fn initialize(
 		.into_postgres()
 		.ok_or_else(|| Error::Invalid("Aidash requires PostgreSQL".into()))?;
 	let mut store = Store::from_pool(pool, config.node_id.clone()).await?;
-	configure_provider_credentials(&mut store, &settings.provider_credentials)?;
+	configure_provider_credentials(&mut store, &settings.provider_credentials).await?;
 	let registry = Registry::new(store.pool.clone(), &store.node_id)?
 		.with_provider_credentials(store.provider_credentials.is_some());
 	registry.seed_system().await?;
@@ -2072,11 +2075,12 @@ pub(crate) fn desktop_protocol(
 	crate::apps::identity::repositories::desktop::Repository(runtime.clone())
 }
 
-/// Compose write-only storage at startup; absent settings keep self-hosted access unchanged.
-pub fn configure_provider_credentials(
+/// Load private operator keys only at shared server/worker bootstrap.
+pub async fn configure_provider_credentials(
 	store: &mut Store,
 	settings: &crate::apps::identity::serializers::provider_credentials::Settings,
 ) -> Result<()> {
+	use crate::apps::identity::serializers::provider_credentials::StoreConfig;
 	use reinhardt::conf::settings::{fragment::SettingsValidation, profile::Profile};
 	settings
 		.validate(&Profile::parse("local"))
@@ -2084,12 +2088,35 @@ pub fn configure_provider_credentials(
 	let Some(config) = &settings.store else {
 		return Ok(());
 	};
-	let fingerprint_key = crate::config::secret(&config.fingerprint_env)?;
-	if fingerprint_key.len() < 32 {
-		return Err(Error::Invalid(
-			"Provider Credential fingerprint key must be at least 32 bytes".into(),
-		));
-	}
+	let fingerprint_key = settings.load_fingerprint_key().await?;
+	type WriteStore = Arc<dyn aidash_application::provider_credentials::Store>;
+	type Reader = Arc<dyn aidash_application::provider_access::KeyMaterialReader>;
+	let (adapter, reader): (WriteStore, Option<Reader>) = match config {
+		StoreConfig::SecretManager {
+			byok_project_id,
+			environment_id,
+		} => (
+			Arc::new(
+				aidash_integrations::provider_credentials::SecretManager::new(
+					byok_project_id.clone(),
+					environment_id.clone(),
+				)?,
+			),
+			None,
+		),
+		StoreConfig::Postgres { .. } => {
+			let (current, retired) = config.load_postgres_keys().await?;
+			let adapter = Arc::new(
+				crate::apps::identity::repositories::credential_store::PostgresStore::new(
+					store.control_pool.clone(),
+					current,
+					retired,
+				)
+				.await?,
+			);
+			(adapter.clone(), Some(adapter as Reader))
+		}
+	};
 	let client = aidash_integrations::semantic::client()?;
 	store.provider_credentials = Some(Arc::new(
 		aidash_application::provider_credentials::Service {
@@ -2099,19 +2126,15 @@ pub fn configure_provider_credentials(
 					node: store.node_id.clone(),
 				},
 			),
-			store: Arc::new(
-				aidash_integrations::provider_credentials::SecretManager::new(
-					config.byok_project_id.clone(),
-					config.environment_id.clone(),
-				)?,
-			),
+			store: adapter,
 			validator: Arc::new(
 				aidash_integrations::provider_credentials::OpenRouterKeyValidator { client },
 			),
-			fingerprint_key: fingerprint_key.into(),
-			max_per_tenant: config.max_per_tenant,
+			fingerprint_key,
+			max_per_tenant: settings.max_per_tenant,
 		},
 	));
+	store.provider_key_material_reader = reader;
 	Ok(())
 }
 

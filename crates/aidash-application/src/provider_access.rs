@@ -74,11 +74,18 @@ impl ProviderAccess for EnvironmentAccess {
 	}
 }
 
-/// Cloud calls inspect current metadata for the admitted ID. Plaintext reads and
-/// broker routing belong exclusively to Issue #137; this adapter fails closed.
+/// Reads only one explicitly pinned version of Key Material.
+#[async_trait]
+pub trait KeyMaterialReader: Send + Sync {
+	async fn read(&self, tenant: &str, resource: &str, version: &str) -> Result<SecretString>;
+}
+
+/// Calls inspect current metadata for the admitted ID before reading its pin.
+/// Cloud leaves the reader absent until Credential Broker routing is configured.
 pub struct TenantAccess {
 	pub environment: EnvironmentAccess,
 	pub repository: Arc<dyn crate::provider_credentials::Repository>,
+	pub reader: Option<Arc<dyn KeyMaterialReader>>,
 }
 #[async_trait]
 impl ProviderAccess for TenantAccess {
@@ -111,8 +118,18 @@ impl ProviderAccess for TenantAccess {
 		}
 		// Reload the current pin on every call: rotation takes effect immediately;
 		// a later binding change cannot alter the ID admitted for this Run.
-		row.require_active()?;
+		let version = row.require_active()?.to_owned();
 		scope.commit().await?;
-		Err(Error::Invalid("credential broker not configured".into()))
+		let reader = self
+			.reader
+			.as_ref()
+			.ok_or_else(|| Error::Invalid("credential broker not configured".into()))?;
+		let bearer = reader
+			.read(&context.tenant, &row.secret_resource, &version)
+			.await?;
+		Ok(Access {
+			endpoint: provider.base_url().into(),
+			bearer,
+		})
 	}
 }

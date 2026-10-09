@@ -327,6 +327,7 @@ def configuration(host):
         key.startswith("AIDASH_SECRET_")
         or key
         in {
+            "AIDASH_PROVIDER_FINGERPRINT_KEY",
             "AIDASH_OIDC_CLIENT_ID",
             "AIDASH_OIDC_CLIENT_SECRET",
             "AIDASH_OIDC_SESSION_ABSOLUTE_SECONDS",

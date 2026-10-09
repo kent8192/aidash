@@ -177,6 +177,33 @@ async fn bounded_get(client: &Client, url: &str, limit: usize) -> Result<Vec<u8>
 	Ok(bytes)
 }
 
+// The CLI may authenticate, but cannot inherit private operator keys.
+fn gh_environment_allowed(name: &std::ffi::OsStr) -> bool {
+	let Some(name) = name.to_str() else {
+		return false;
+	};
+	name.starts_with("GH_")
+		|| matches!(
+			name,
+			"PATH"
+				| "HOME" | "USER"
+				| "LANG" | "LC_ALL"
+				| "TMPDIR" | "XDG_CONFIG_HOME"
+				| "XDG_CACHE_HOME"
+				| "XDG_DATA_HOME"
+				| "GITHUB_TOKEN"
+				| "SSL_CERT_FILE"
+				| "SSL_CERT_DIR"
+				| "HTTP_PROXY"
+				| "HTTPS_PROXY"
+				| "ALL_PROXY"
+				| "NO_PROXY" | "http_proxy"
+				| "https_proxy"
+				| "all_proxy"
+				| "no_proxy"
+		)
+}
+
 async fn gh_api(url: &str, limit: usize, accept: &str) -> Result<Option<Vec<u8>>> {
 	let parsed = Url::parse(url).map_err(|error| Error::Invalid(error.to_string()))?;
 	let endpoint = format!(
@@ -188,6 +215,8 @@ async fn gh_api(url: &str, limit: usize, accept: &str) -> Result<Option<Vec<u8>>
 			.unwrap_or_default()
 	);
 	let mut child = tokio::process::Command::new("gh")
+		.env_clear()
+		.envs(std::env::vars_os().filter(|(name, _)| gh_environment_allowed(name)))
 		.arg("api")
 		.arg(endpoint)
 		.arg("-H")
