@@ -286,8 +286,9 @@ async fn separate_process_notifications_and_negative_control(
 
 	let mut samples = Vec::new();
 	let mut pids = Vec::new();
-	// Each window has a fresh 60s recovery delay and fewer than 60s of samples.
-	for window in 0..5 {
+	// Retain 100 admission samples while keeping each measured window below
+	// the unchanged 60s recovery delay, including on loaded hosted runners.
+	for window in 0..10 {
 		let mut one = Process::start(
 			&f,
 			&url,
@@ -311,7 +312,7 @@ async fn separate_process_notifications_and_negative_control(
 		pids.extend([one.child.id(), two.child.id()]);
 		let recovery_before = count(&f, "claim_source = 'recovery'").await;
 		let window_start = Instant::now();
-		for index in 0..20 {
+		for index in 0..10 {
 			// Keep the activation workload constant: historical workspace
 			// observation growth is a different performance dimension.
 			let workspace: Value = reqwest::Client::new()
@@ -382,8 +383,8 @@ async fn separate_process_notifications_and_negative_control(
 	}
 	// A suspended replica cannot hoard prefetched work. The other replica must
 	// drain a batch larger than its two execution slots through notifications.
-	let mut busy = Process::start(&f, &url, &schema, "worker", &directory, 11, true);
-	let mut available = Process::start(&f, &url, &schema, "worker", &directory, 12, true);
+	let mut busy = Process::start(&f, &url, &schema, "worker", &directory, 21, true);
+	let mut available = Process::start(&f, &url, &schema, "worker", &directory, 22, true);
 	busy.ready().await;
 	available.ready().await;
 	assert!(
@@ -1396,6 +1397,7 @@ async fn embedded_worker_child() {
 		.unwrap();
 	let f = Federation {
 		sandbox: Default::default(),
+		gcip: None,
 		registry: aidash_server::registry::Registry::new(store.pool.clone(), node).unwrap(),
 		store,
 		config: aidash_server::config::Config {
@@ -1408,6 +1410,7 @@ async fn embedded_worker_child() {
 			lease_seconds: 30,
 			default_host_packages: vec![],
 			oidc: None,
+			gcip: None,
 		},
 		client: reqwest::Client::new(),
 		notify: Arc::new(tokio::sync::Notify::new()),

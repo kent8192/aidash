@@ -39,6 +39,7 @@ enum Lease {
 	Subject(Box<NativeAccess>),
 }
 struct Scope {
+	policy: Option<aidash_application::ports::authorization::dashboard::AccountPolicy>,
 	lease: Lease,
 	actor: Actor,
 }
@@ -65,6 +66,7 @@ impl InspectionRepository for Repository<'_> {
 			)),
 		};
 		Ok(Box::new(Scope {
+			policy: self.runtime.config.dashboard_policy(),
 			lease,
 			actor: self.actor.clone(),
 		}))
@@ -77,8 +79,9 @@ impl InspectionScope for Scope {
 	}
 	async fn require_inspection(&mut self, reference: &EntityRef) -> Result<()> {
 		let actor = self.actor.clone();
+		let policy = self.policy.clone();
 		aidash_application::registry::workbench::inspection::require(
-			&mut crate::bootstrap::draft_authority_scope(self.tx(), &actor),
+			&mut crate::bootstrap::draft_authority_scope(self.tx(), &actor, policy),
 			reference,
 		)
 		.await
@@ -143,8 +146,9 @@ impl InspectionScope for Scope {
 	}
 	async fn authorize_draft(&mut self, draft: &Draft) -> Result<()> {
 		let actor = self.actor.clone();
+		let policy = self.policy.clone();
 		aidash_application::registry::workbench::authorize(
-			&mut crate::bootstrap::draft_authority_scope(self.tx(), &actor),
+			&mut crate::bootstrap::draft_authority_scope(self.tx(), &actor, policy),
 			draft,
 			"agent_draft.read",
 			true,

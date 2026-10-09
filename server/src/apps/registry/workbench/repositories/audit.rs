@@ -77,8 +77,9 @@ impl AuditRepository for Repository<'_> {
 #[async_trait]
 impl AuditScope for Scope {
 	async fn require_inspection(&mut self, reference: &EntityRef) -> Result<()> {
+		let policy = self.tx.pool().dashboard_policy();
 		aidash_application::registry::workbench::inspection::require(
-			&mut crate::bootstrap::draft_authority_scope(&mut self.tx, &self.actor),
+			&mut crate::bootstrap::draft_authority_scope(&mut self.tx, &self.actor, policy),
 			reference,
 		)
 		.await
@@ -101,8 +102,9 @@ impl AuditScope for Scope {
 		Ok(AgentDraft::read(&mut self.tx, id, false).await?.into())
 	}
 	async fn authorize_draft(&mut self, draft: &Draft) -> Result<()> {
+		let policy = self.tx.pool().dashboard_policy();
 		aidash_application::registry::workbench::authorize(
-			&mut crate::bootstrap::draft_authority_scope(&mut self.tx, &self.actor),
+			&mut crate::bootstrap::draft_authority_scope(&mut self.tx, &self.actor, policy),
 			draft,
 			"agent_draft.read",
 			true,

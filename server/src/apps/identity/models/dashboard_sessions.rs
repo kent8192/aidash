@@ -19,6 +19,8 @@ pub struct DashboardSession {
 	pub provider_sid: Option<String>,
 	#[field]
 	pub created_at: DateTime<Utc>,
+	#[field(null = true)]
+	pub auth_time: Option<DateTime<Utc>>,
 	#[field]
 	pub last_activity_at: DateTime<Utc>,
 	#[field]
@@ -42,6 +44,7 @@ crate::native_record!(DashboardSession {
 	identity_id,
 	provider_sid,
 	created_at,
+	auth_time,
 	last_activity_at,
 	expires_at,
 	revoked_at,

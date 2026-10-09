@@ -465,27 +465,19 @@ impl Engine<'_> {
 		if query.max_tokens == 0 {
 			return Ok(Recall::NoSpace);
 		}
-		let mut snapshot = scope
-			.recall_snapshot(bank, self.policy.bounds.max_units)
-			.await?;
-		if snapshot.units.len() > self.policy.bounds.max_units {
+		let limit = self.policy.bounds.max_units;
+		let snapshot = if include_dormant {
+			scope.recall_including_dormant_snapshot(bank, limit).await?
+		} else {
+			scope.recall_snapshot(bank, limit).await?
+		};
+		let snapshot_limit = limit
+			.checked_mul(if include_dormant { 2 } else { 1 })
+			.ok_or_else(|| Error::Invalid("memory snapshot bound overflow".into()))?;
+		if snapshot.units.len() > snapshot_limit {
 			return Err(Error::Invalid(
 				"memory snapshot exceeded source limit".into(),
 			));
-		}
-		if include_dormant {
-			let dormant = scope
-				.dormant_snapshot(bank, self.policy.bounds.max_units)
-				.await?;
-			if dormant.units.len() > self.policy.bounds.max_units
-				|| dormant.authority_revision != snapshot.authority_revision
-			{
-				return Err(Error::Conflict(
-					"dormant recall snapshot changed or exceeded source limit".into(),
-				));
-			}
-			snapshot.units.extend(dormant.units);
-			snapshot.graph.extend(dormant.graph);
 		}
 		let units: Vec<_> = snapshot
 			.units

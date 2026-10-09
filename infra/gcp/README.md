@@ -155,10 +155,18 @@ configured. The project is never inferred from a developer's `gcloud` default.
 | Secret   | `GCP_TEST_RUNTIME_CONFIG`        | Google/provider configuration JSON for test                                             |
 | Secret   | `GCP_PR_RUNTIME_CONFIG`          | Google/provider configuration JSON for PR staging                                       |
 
-Each runtime JSON contains string values for `AIDASH_OIDC_CLIENT_ID` and
+Without GCIP, each runtime JSON contains string values for `AIDASH_OIDC_CLIENT_ID` and
 `AIDASH_OIDC_CLIENT_SECRET`, plus required provider credentials named
 `AIDASH_SECRET_*`. Optional Google session lifetime settings are
 `AIDASH_OIDC_SESSION_ABSOLUTE_SECONDS` and `AIDASH_OIDC_SESSION_IDLE_SECONDS`.
+When GCIP is enabled, omit all `AIDASH_OIDC_*` keys. The controller adds the
+public `dashboard.gcip` fragment to the same JSON; provider credentials remain
+flat `AIDASH_SECRET_*` strings. The host writes only the GCIP fragment into a
+read-only mounted settings directory and selects it through `AIDASH_GCIP_SETTINGS`.
+Reinhardt composes this source with the normal server settings, applies typed
+defaults and validates the sole issuer. The host does not export legacy OIDC
+settings in this mode. Removing Tenant Bindings updates the retained settings file
+before the environment is reopened.
 The host generates private database/API/Runner keys and environment-specific
 node identity; callers cannot override these through runtime JSON. Terraform
 creates secret metadata only. The controller uploads an initial secret version
@@ -332,3 +340,19 @@ Implementation references: [K3s containerd templates](https://docs.k3s.io/advanc
 [GitHub workflow events](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows),
 [Google WIF](https://docs.cloud.google.com/iam/docs/workload-identity-federation-with-deployment-pipelines),
 [Cloudflare DNS Terraform](https://developers.cloudflare.com/api/terraform/resources/dns/subresources/records/).
+
+## GCIP sign-in
+
+Enable `gcip_enabled` in bootstrap and supply `environment_domains` matching the environment stacks' `domain` values. Bootstrap enables Identity Platform multi-tenancy and derives the develop, preview and test authorized callback hosts, including the project's default Firebase auth domain. Export the sensitive `gcip_web_api_key` output into the public SDK configuration field; it is not an Admin API credential.
+
+Supply `gcip_tenants` to the environment controller configuration. For example, `{"acme":{"tenant":"acme","password_sign_up":true,"google_client_id":"CLIENT_ID"}}` creates a fresh pool per environment incarnation. OIDC and SAML provider maps use `oidc.*` and `saml.*` IDs; those SSO pools must disable password signup. OAuth client secrets are separate `gcip_idp_secrets` Terraform inputs, supplied by `AIDASH_GCIP_IDP_SECRETS` in the controller (the lifecycle workflow reads the repository secret `GCP_GCIP_IDP_SECRETS` as this JSON map). They are confined to private inputs and protected Terraform state. Each module outputs its GCIP Tenant IDs, runtime service-account email, Tenant Bindings, providers and password-signup list. The controller merges these settings into the environment runtime secret, preserving its other settings and refusing coexistence with OIDC.
+
+The controller records digests of both desired shared inputs (Tenant configuration, IdP secrets and web API key) and actual public GCIP outputs, including generated Tenant IDs. Before applying changed shared inputs or a plan that changes GCIP tenant resources, it closes proxy admission, pauses the application and stops the trusted runner on every affected running host, including unpublished hosts. The fence uses the retained host's existing lifecycle lock, state and command API. It never calls an HTTP endpoint on a paused or absent application and requires confirmed quiescence before Terraform can apply.
+
+After every apply, including unrelated lifecycle work, the controller compares actual GCIP outputs and refreshes IAM and runtime secrets for changed retained environments. Published hosts reload their existing authorized release with the new policy before reopening admission. Stopped environments receive the new secret without being started. Unpublished hosts remain fenced until an authorized deployment succeeds. Failed refreshes retain a pending marker for scheduled retry; successful environments are not restarted again on that retry. A fenced host cannot pass through ordinary seal/unseal rollback with its old policy: non-forced stop or redeployment waits for policy recovery, while the existing explicit force operation can stop the VM or repair the deployment. No IdP secret or unhashed private input is copied into lifecycle state.
+
+The Google 7.46.1 provider has no tenant IAM resource. The approved controller adapter therefore calls [tenant getIamPolicy](https://docs.cloud.google.com/identity-platform/docs/reference/rest/v2/projects.tenants/getIamPolicy) and [tenant setIamPolicy](https://docs.cloud.google.com/identity-platform/docs/reference/rest/v2/projects.tenants/setIamPolicy). It adds `roles/identityplatform.viewer` only on that environment's tenant resources for that environment's runtime principal, preserving unrelated/conditional bindings and policy metadata, using etag concurrency and bounded conflict retries. Retirement removes only its managed viewer member before Terraform destroys the environment. Runtime principals receive no project-wide Firebase user access.
+
+`roles/identityplatform.viewer` includes `firebaseauth.users.get` in the [official permission list](https://docs.cloud.google.com/iam/docs/roles-permissions/identityplatform). Its applicability and effective isolation of tenant `accounts:lookup` remain **documented assumptions awaiting a sandbox test**. Verify own-pool lookup succeeds and another environment's pool and project-root lookup fail before rollout; failure must stop rollout and return to the lead, never broaden runtime IAM. The trusted deploy principal holds Identity Platform administration to create pools and reconcile their policies. Password-change/reset behavior for `validSince` also awaits sandbox verification; the server relies only on the returned timestamp.
+
+Provider-mocked Terraform cases cover multi-tenancy, callback domains, per-pool signup and IdP resources. Fake REST controller tests cover grant creation, repeated reconciliation, unrelated bindings, etag retry, and destruction. Rust and Playwright use signed fixtures; the Firebase Auth Emulator is not used.
