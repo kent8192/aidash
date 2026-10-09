@@ -182,6 +182,10 @@ name = "inference_cancellation"
 path = "src/apps/execution/tests/inference_cancellation.rs"
 
 [[test]]
+name = "inference_progress"
+path = "src/apps/execution/tests/inference_progress.rs"
+
+[[test]]
 name = "interaction_authorization"
 path = "src/apps/identity/tests/interaction_authorization.rs"
 

@@ -1,0 +1,20 @@
+meta {
+  name: 0974 frontend-index-head - Serve the configured frontend content
+  type: http
+  seq: 974
+}
+
+head {
+  url: {{base_url}}/
+  body: none
+  auth: none
+}
+
+headers {
+  Accept: application/json
+}
+
+tests {
+  test("Exact HTTP 200", function () { expect(res.getStatus()).to.equal(200); });
+  test("Serve the configured frontend content contract", function () { expect(res.getBody()).to.equal("");expect(res.getHeader("x-content-type-options")).to.equal("nosniff");bru.setVar("frontendEtag",res.getHeader("etag")); });
+}

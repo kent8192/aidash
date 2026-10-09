@@ -152,6 +152,7 @@ pub fn provider(
 	match config.provider.as_str() {
 		"openrouter" => {
 			config.request_timeout()?;
+			config.stream_stall_timeout()?;
 			Ok(Arc::new(OpenRouterProvider {
 				client,
 				config,
@@ -167,9 +168,11 @@ impl ModelProvider for OpenRouterProvider {
 	async fn infer(
 		&self,
 		request: ModelRequest,
-		_progress: &dyn InferenceProgressSink,
+		progress: &dyn InferenceProgressSink,
 	) -> Result<ModelResponse> {
 		let deadline = self.config.request_timeout()?;
+		let streaming = self.config.streaming();
+		let stall = self.config.stream_stall_timeout()?;
 		tokio::time::timeout(deadline, async {
 			request.validate()?;
 			for modality in request.content_parts.iter().filter_map(|part| match part {
@@ -203,6 +206,10 @@ impl ModelProvider for OpenRouterProvider {
 			if let Some(effort) = self.config.reasoning_effort {
 				body["reasoning"] = json!({"effort": effort});
 			}
+			if streaming {
+				body["stream"] = json!(true);
+				body["stream_options"] = json!({"include_usage": true});
+			}
 			let mut call = self
 			.client
 			.post(format!(
@@ -217,7 +224,15 @@ impl ModelProvider for OpenRouterProvider {
 				call = call.bearer_auth(self.credentials.resolve(name)?);
 			}
 			let started = std::time::Instant::now();
-			let response = call.send().await.map_err(crate::http_error)?;
+			let response = if streaming {
+				// Response headers are the first sign of life of a streamed call.
+				tokio::time::timeout(stall, call.send())
+					.await
+					.map_err(|_| Error::InferenceStalled)?
+			} else {
+				call.send().await
+			}
+			.map_err(crate::http_error)?;
 			metrics::histogram!("aidash_model_response_headers_seconds")
 				.record(started.elapsed().as_secs_f64());
 			if !response.status().is_success() {
@@ -238,7 +253,11 @@ impl ModelProvider for OpenRouterProvider {
 					reason: safe_upstream_reason(&detail),
 				});
 			}
-			let result = parse_openai(crate::response::json(response, 1_048_576).await?)?;
+			let result = if streaming {
+				read_stream(response, progress, stall).await?
+			} else {
+				parse_openai(crate::response::json(response, MAX_RESPONSE_BYTES).await?)?
+			};
 			metrics::counter!("aidash_model_tokens_total", "direction" => "input")
 				.increment(result.input_tokens);
 			metrics::counter!("aidash_model_tokens_total", "direction" => "output")
@@ -248,6 +267,33 @@ impl ModelProvider for OpenRouterProvider {
 		.await
 		.map_err(|_| Error::External("model inference timed out".into()))?
 	}
+}
+
+/// Largest accepted completion, whether received whole or assembled from a stream.
+const MAX_RESPONSE_BYTES: usize = 1_048_576;
+
+/// Read a streamed completion until `[DONE]`. Only data events reset the stall
+/// timer; provider keepalive comments do not.
+async fn read_stream(
+	mut response: reqwest::Response,
+	progress: &dyn InferenceProgressSink,
+	stall: std::time::Duration,
+) -> Result<ModelResponse> {
+	let mut assembler = stream::StreamAssembler::new(progress, MAX_RESPONSE_BYTES);
+	let mut last_data = tokio::time::Instant::now();
+	while !assembler.done() {
+		let chunk = tokio::time::timeout_at(last_data + stall, response.chunk())
+			.await
+			.map_err(|_| Error::InferenceStalled)?
+			.map_err(crate::http_error)?;
+		let Some(chunk) = chunk else {
+			break;
+		};
+		if assembler.push(&chunk)? {
+			last_data = tokio::time::Instant::now();
+		}
+	}
+	assembler.finish()
 }
 
 fn safe_upstream_reason(detail: &str) -> String {
@@ -348,6 +394,8 @@ fn validate_response(r: &ModelResponse) -> Result<()> {
 	}
 	Ok(())
 }
+
+mod stream;
 
 #[cfg(test)]
 mod tests;

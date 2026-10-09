@@ -1,0 +1,21 @@
+meta {
+  name: 0975 frontend-index-head - Conditional request matches the content ETag
+  type: http
+  seq: 975
+}
+
+head {
+  url: {{base_url}}/
+  body: none
+  auth: none
+}
+
+headers {
+  Accept: application/json
+  If-None-Match: {{frontendEtag}}
+}
+
+tests {
+  test("Exact HTTP 304", function () { expect(res.getStatus()).to.equal(304); });
+  test("Conditional request matches the content ETag contract", function () { expect(res.getBody()).to.equal(""); });
+}

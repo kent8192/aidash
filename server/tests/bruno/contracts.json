@@ -25719,6 +25719,15 @@
   },
   {
     "method": "GET",
+    "path": "/api/runs/{id}/inference/stream",
+    "name": "run-inference-stream",
+    "source": "server/src/apps/execution/views/management.rs",
+    "json": false,
+    "uuid_parameters": ["id"],
+    "query_parameters": ["after"]
+  },
+  {
+    "method": "GET",
     "path": "/health",
     "name": "health",
     "source": "server/src/apps/execution/views/management.rs",

@@ -1,153 +1,216 @@
 {
   "version": 1,
-  "endpoint_count": 284,
+  "endpoint_count": 285,
   "requests": [
     {
       "name": "Health reports the configured node",
       "file": "journeys/01-health-reports-the-configured-node.bru",
       "endpoint": "GET /health",
       "scenario": "stateful journey",
-      "required_checks": ["HTTP 200", "JSON response contract"]
+      "required_checks": [
+        "HTTP 200",
+        "JSON response contract"
+      ]
     },
     {
       "name": "OIDC configuration remains public",
       "file": "journeys/02-oidc-configuration-remains-public.bru",
       "endpoint": "GET /auth/config",
       "scenario": "stateful journey",
-      "required_checks": ["HTTP 200", "JSON response contract"]
+      "required_checks": [
+        "HTTP 200",
+        "JSON response contract"
+      ]
     },
     {
       "name": "Anonymous task reads are unauthorized",
       "file": "journeys/03-anonymous-task-reads-are-unauthorized.bru",
       "endpoint": "GET /api/tasks",
       "scenario": "stateful journey",
-      "required_checks": ["HTTP 401", "JSON response contract"]
+      "required_checks": [
+        "HTTP 401",
+        "JSON response contract"
+      ]
     },
     {
       "name": "Anonymous SSE reconnects are unauthorized",
       "file": "journeys/04-anonymous-sse-reconnects-are-unauthorized.bru",
       "endpoint": "GET /api/events/stream",
       "scenario": "stateful journey",
-      "required_checks": ["HTTP 401", "JSON response contract"]
+      "required_checks": [
+        "HTTP 401",
+        "JSON response contract"
+      ]
     },
     {
       "name": "Create the scoped authorization policy",
       "file": "journeys/05-create-the-scoped-authorization-policy.bru",
       "endpoint": "POST /api/authorization/{tenant}",
       "scenario": "stateful journey",
-      "required_checks": ["HTTP 200", "JSON response contract"]
+      "required_checks": [
+        "HTTP 200",
+        "JSON response contract"
+      ]
     },
     {
       "name": "Issue alice credential",
       "file": "journeys/06-issue-alice-credential.bru",
       "endpoint": "POST /api/authorization/{tenant}/credentials",
       "scenario": "stateful journey",
-      "required_checks": ["HTTP 200", "JSON response contract"]
+      "required_checks": [
+        "HTTP 200",
+        "JSON response contract"
+      ]
     },
     {
       "name": "Issue bob credential",
       "file": "journeys/07-issue-bob-credential.bru",
       "endpoint": "POST /api/authorization/{tenant}/credentials",
       "scenario": "stateful journey",
-      "required_checks": ["HTTP 200", "JSON response contract"]
+      "required_checks": [
+        "HTTP 200",
+        "JSON response contract"
+      ]
     },
     {
       "name": "Subject creates an owned workspace",
       "file": "journeys/08-subject-creates-an-owned-workspace.bru",
       "endpoint": "POST /api/workspaces",
       "scenario": "stateful journey",
-      "required_checks": ["HTTP 200", "JSON response contract"]
+      "required_checks": [
+        "HTTP 200",
+        "JSON response contract"
+      ]
     },
     {
       "name": "Denied subject cannot read the workspace",
       "file": "journeys/09-denied-subject-cannot-read-the-workspace.bru",
       "endpoint": "GET /api/workspaces/{id}",
       "scenario": "stateful journey",
-      "required_checks": ["HTTP 403", "JSON response contract"]
+      "required_checks": [
+        "HTTP 403",
+        "JSON response contract"
+      ]
     },
     {
       "name": "Update the owned workspace",
       "file": "journeys/10-update-the-owned-workspace.bru",
       "endpoint": "PATCH /api/workspaces/{id}",
       "scenario": "stateful journey",
-      "required_checks": ["HTTP 200", "JSON response contract"]
+      "required_checks": [
+        "HTTP 200",
+        "JSON response contract"
+      ]
     },
     {
       "name": "Stale updates retain conflict behavior",
       "file": "journeys/11-stale-updates-retain-conflict-behavior.bru",
       "endpoint": "PATCH /api/workspaces/{id}",
       "scenario": "stateful journey",
-      "required_checks": ["HTTP 409", "JSON response contract"]
+      "required_checks": [
+        "HTTP 409",
+        "JSON response contract"
+      ]
     },
     {
       "name": "Denied writes cannot change the workspace",
       "file": "journeys/12-denied-writes-cannot-change-the-workspace.bru",
       "endpoint": "PATCH /api/workspaces/{id}",
       "scenario": "stateful journey",
-      "required_checks": ["HTTP 403", "JSON response contract"]
+      "required_checks": [
+        "HTTP 403",
+        "JSON response contract"
+      ]
     },
     {
       "name": "Snapshot retains the committed state",
       "file": "journeys/13-snapshot-retains-the-committed-state.bru",
       "endpoint": "GET /api/workspaces/{id}",
       "scenario": "stateful journey",
-      "required_checks": ["HTTP 200", "JSON response contract"]
+      "required_checks": [
+        "HTTP 200",
+        "JSON response contract"
+      ]
     },
     {
       "name": "Create a task through the scoped API",
       "file": "journeys/14-create-a-task-through-the-scoped-api.bru",
       "endpoint": "POST /api/workspaces/{id}/tasks",
       "scenario": "stateful journey",
-      "required_checks": ["HTTP 200", "JSON response contract"]
+      "required_checks": [
+        "HTTP 200",
+        "JSON response contract"
+      ]
     },
     {
       "name": "Task paging retains the response contract",
       "file": "journeys/15-task-paging-retains-the-response-contract.bru",
       "endpoint": "GET /api/tasks",
       "scenario": "stateful journey",
-      "required_checks": ["HTTP 200", "JSON response contract"]
+      "required_checks": [
+        "HTTP 200",
+        "JSON response contract"
+      ]
     },
     {
       "name": "Strict JSON rejects unknown input fields",
       "file": "journeys/16-strict-json-rejects-unknown-input-fields.bru",
       "endpoint": "POST /api/workspaces",
       "scenario": "stateful journey",
-      "required_checks": ["HTTP 422", "JSON response contract"]
+      "required_checks": [
+        "HTTP 422",
+        "JSON response contract"
+      ]
     },
     {
       "name": "Wrong media type retains the rejection",
       "file": "journeys/17-wrong-media-type-retains-the-rejection.bru",
       "endpoint": "POST /api/workspaces",
       "scenario": "stateful journey",
-      "required_checks": ["HTTP 415", "JSON response contract"]
+      "required_checks": [
+        "HTTP 415",
+        "JSON response contract"
+      ]
     },
     {
       "name": "Revoke the owned bearer credential",
       "file": "journeys/18-revoke-the-owned-bearer-credential.bru",
       "endpoint": "POST /api/authorization/{tenant}/credentials/{id}/revoke",
       "scenario": "stateful journey",
-      "required_checks": ["HTTP 200", "JSON response contract"]
+      "required_checks": [
+        "HTTP 200",
+        "JSON response contract"
+      ]
     },
     {
       "name": "Revocation is applied on subsequent reads",
       "file": "journeys/19-revocation-is-applied-on-subsequent-reads.bru",
       "endpoint": "GET /api/workspaces/{id}",
       "scenario": "stateful journey",
-      "required_checks": ["HTTP 401", "JSON response contract"]
+      "required_checks": [
+        "HTTP 401",
+        "JSON response contract"
+      ]
     },
     {
       "name": "Start the browser login",
       "file": "journeys/20-start-the-browser-login.bru",
       "endpoint": "GET /auth/login",
       "scenario": "stateful journey",
-      "required_checks": ["HTTP 307", "Bound browser login redirect"]
+      "required_checks": [
+        "HTTP 307",
+        "Bound browser login redirect"
+      ]
     },
     {
       "name": "Authorize against the local OIDC fixture",
       "file": "journeys/21-authorize-against-the-local-oidc-fixture.bru",
       "endpoint": null,
       "scenario": "external OIDC authorization",
-      "required_checks": ["HTTP 307", "Callback stays on the configured origin"]
+      "required_checks": [
+        "HTTP 307",
+        "Callback stays on the configured origin"
+      ]
     },
     {
       "name": "Exchange code for the opaque browser session",
@@ -165,84 +228,119 @@
       "file": "journeys/23-browser-registration-requires-csrf.bru",
       "endpoint": "POST /auth/registration",
       "scenario": "stateful journey",
-      "required_checks": ["HTTP 403", "JSON response contract"]
+      "required_checks": [
+        "HTTP 403",
+        "JSON response contract"
+      ]
     },
     {
       "name": "Create the browser registration",
       "file": "journeys/24-create-the-browser-registration.bru",
       "endpoint": "POST /auth/registration",
       "scenario": "stateful journey",
-      "required_checks": ["HTTP 200", "JSON response contract"]
+      "required_checks": [
+        "HTTP 200",
+        "JSON response contract"
+      ]
     },
     {
       "name": "Approve the browser mapping as operator",
       "file": "journeys/25-approve-the-browser-mapping-as-operator.bru",
       "endpoint": "POST /api/dashboard/registrations/{id}/approve",
       "scenario": "stateful journey",
-      "required_checks": ["HTTP 200", "JSON response contract"]
+      "required_checks": [
+        "HTTP 200",
+        "JSON response contract"
+      ]
     },
     {
       "name": "Browser session reports its approved mapping",
       "file": "journeys/26-browser-session-reports-its-approved-mapping.bru",
       "endpoint": "GET /auth/session",
       "scenario": "stateful journey",
-      "required_checks": ["HTTP 200", "JSON response contract"]
+      "required_checks": [
+        "HTTP 200",
+        "JSON response contract"
+      ]
     },
     {
       "name": "Cookie writes require the CSRF token",
       "file": "journeys/27-cookie-writes-require-the-csrf-token.bru",
       "endpoint": "POST /api/workspaces",
       "scenario": "stateful journey",
-      "required_checks": ["HTTP 403", "JSON response contract"]
+      "required_checks": [
+        "HTTP 403",
+        "JSON response contract"
+      ]
     },
     {
       "name": "Cookie writes reject another origin",
       "file": "journeys/28-cookie-writes-reject-another-origin.bru",
       "endpoint": "POST /api/workspaces",
       "scenario": "stateful journey",
-      "required_checks": ["HTTP 403", "JSON response contract"]
+      "required_checks": [
+        "HTTP 403",
+        "JSON response contract"
+      ]
     },
     {
       "name": "Cookie writes accept matching origin and CSRF",
       "file": "journeys/29-cookie-writes-accept-matching-origin-and-csrf.bru",
       "endpoint": "POST /api/workspaces",
       "scenario": "stateful journey",
-      "required_checks": ["HTTP 200", "JSON response contract"]
+      "required_checks": [
+        "HTTP 200",
+        "JSON response contract"
+      ]
     },
     {
       "name": "Cookie reads use the approved authority",
       "file": "journeys/30-cookie-reads-use-the-approved-authority.bru",
       "endpoint": "GET /api/workspaces/{id}",
       "scenario": "stateful journey",
-      "required_checks": ["HTTP 200", "JSON response contract"]
+      "required_checks": [
+        "HTTP 200",
+        "JSON response contract"
+      ]
     },
     {
       "name": "Logout requires CSRF",
       "file": "journeys/31-logout-requires-csrf.bru",
       "endpoint": "POST /auth/logout",
       "scenario": "stateful journey",
-      "required_checks": ["HTTP 403", "JSON response contract"]
+      "required_checks": [
+        "HTTP 403",
+        "JSON response contract"
+      ]
     },
     {
       "name": "Logout invalidates the opaque session",
       "file": "journeys/32-logout-invalidates-the-opaque-session.bru",
       "endpoint": "POST /auth/logout",
       "scenario": "stateful journey",
-      "required_checks": ["HTTP 204"]
+      "required_checks": [
+        "HTTP 204"
+      ]
     },
     {
       "name": "Logged out cookies cannot authenticate",
       "file": "journeys/33-logged-out-cookies-cannot-authenticate.bru",
       "endpoint": "GET /auth/session",
       "scenario": "stateful journey",
-      "required_checks": ["HTTP 401", "JSON response contract"]
+      "required_checks": [
+        "HTTP 401",
+        "JSON response contract"
+      ]
     },
     {
       "name": "Logged out cookies cannot read workspace data",
       "file": "journeys/34-logged-out-cookies-cannot-read-workspace-data.bru",
       "endpoint": "GET /api/workspaces/{id}",
       "scenario": "stateful journey",
-      "required_checks": ["HTTP 401", "JSON response contract"]
+      "required_checks": [
+        "HTTP 401",
+        "JSON response contract"
+      ]
     },
     {
       "name": "0101 authorization-issue-credential - Issue a fresh subject credential",
@@ -261,14 +359,20 @@
       "file": "contracts/0036-fresh-browser-session.bru",
       "endpoint": "GET /auth/login",
       "scenario": "fresh browser session",
-      "required_checks": ["HTTP 307", "Bound browser login redirect"]
+      "required_checks": [
+        "HTTP 307",
+        "Bound browser login redirect"
+      ]
     },
     {
       "name": "Fresh session: Authorize against the local OIDC fixture",
       "file": "contracts/0037-fresh-browser-session.bru",
       "endpoint": null,
       "scenario": "fresh browser session",
-      "required_checks": ["HTTP 307", "Callback stays on the configured origin"]
+      "required_checks": [
+        "HTTP 307",
+        "Callback stays on the configured origin"
+      ]
     },
     {
       "name": "Fresh session: Exchange code for the opaque browser session",
@@ -2384,7 +2488,10 @@
       "endpoint": "GET /auth/config",
       "scenario": "Public contract",
       "status": 200,
-      "required_checks": ["Exact HTTP 200", "Public contract contract"]
+      "required_checks": [
+        "Exact HTTP 200",
+        "Public contract contract"
+      ]
     },
     {
       "name": "0281 sessions-configuration - Untrusted bearer does not restrict public reads",
@@ -6523,7 +6630,10 @@
       "endpoint": "GET /.well-known/aidash",
       "scenario": "Public contract",
       "status": 200,
-      "required_checks": ["Exact HTTP 200", "Public contract contract"]
+      "required_checks": [
+        "Exact HTTP 200",
+        "Public contract contract"
+      ]
     },
     {
       "name": "0634 identity - Untrusted bearer does not restrict public reads",
@@ -9918,7 +10028,10 @@
       "endpoint": "GET /live",
       "scenario": "Public contract",
       "status": 200,
-      "required_checks": ["Exact HTTP 200", "Public contract contract"]
+      "required_checks": [
+        "Exact HTTP 200",
+        "Public contract contract"
+      ]
     },
     {
       "name": "0924 process-live - Untrusted bearer does not restrict public reads",
@@ -9948,7 +10061,10 @@
       "endpoint": "GET /ready",
       "scenario": "Public contract",
       "status": 200,
-      "required_checks": ["Exact HTTP 200", "Public contract contract"]
+      "required_checks": [
+        "Exact HTTP 200",
+        "Public contract contract"
+      ]
     },
     {
       "name": "0927 process-ready - Untrusted bearer does not restrict public reads",
@@ -9978,7 +10094,10 @@
       "endpoint": "GET /api/openapi.json",
       "scenario": "Public contract",
       "status": 200,
-      "required_checks": ["Exact HTTP 200", "Public contract contract"]
+      "required_checks": [
+        "Exact HTTP 200",
+        "Public contract contract"
+      ]
     },
     {
       "name": "0930 openapi - Untrusted bearer does not restrict public reads",
@@ -10343,7 +10462,10 @@
       "endpoint": "GET /api/events/stream",
       "scenario": "Initial event replay",
       "status": 200,
-      "required_checks": ["Exact HTTP 200", "Initial event replay contract"]
+      "required_checks": [
+        "Exact HTTP 200",
+        "Initial event replay contract"
+      ]
     },
     {
       "name": "0962 stream - Last-Event-ID overrides the query cursor",
@@ -10368,16 +10490,64 @@
       ]
     },
     {
-      "name": "0964 health - Public contract",
-      "file": "contracts/0964-health.bru",
+      "name": "0964 run-inference-stream - Anonymous request is rejected",
+      "file": "contracts/0964-run-inference-stream.bru",
+      "endpoint": "GET /api/runs/{id}/inference/stream",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "0965 run-inference-stream - Typed resource IDs reject invalid UUIDs",
+      "file": "contracts/0965-run-inference-stream.bru",
+      "endpoint": "GET /api/runs/{id}/inference/stream",
+      "scenario": "Typed resource IDs reject invalid UUIDs",
+      "status": 400,
+      "required_checks": [
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "0966 run-inference-stream - Application read preserves the typed response contract",
+      "file": "contracts/0966-run-inference-stream.bru",
+      "endpoint": "GET /api/runs/{id}/inference/stream",
+      "scenario": "Application read preserves the typed response contract",
+      "status": 404,
+      "required_checks": [
+        "Exact HTTP 404",
+        "Rejection is diagnostic and does not disclose SQL or credentials",
+        "Application read preserves the typed response contract contract"
+      ]
+    },
+    {
+      "name": "0967 run-inference-stream - Paging rejects nonnumeric or malformed cursors",
+      "file": "contracts/0967-run-inference-stream.bru",
+      "endpoint": "GET /api/runs/{id}/inference/stream",
+      "scenario": "Paging rejects nonnumeric or malformed cursors",
+      "status": 400,
+      "required_checks": [
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "0968 health - Public contract",
+      "file": "contracts/0968-health.bru",
       "endpoint": "GET /health",
       "scenario": "Public contract",
       "status": 200,
-      "required_checks": ["Exact HTTP 200", "Public contract contract"]
+      "required_checks": [
+        "Exact HTTP 200",
+        "Public contract contract"
+      ]
     },
     {
-      "name": "0965 health - Untrusted bearer does not restrict public reads",
-      "file": "contracts/0965-health.bru",
+      "name": "0969 health - Untrusted bearer does not restrict public reads",
+      "file": "contracts/0969-health.bru",
       "endpoint": "GET /health",
       "scenario": "Untrusted bearer does not restrict public reads",
       "status": 200,
@@ -10387,8 +10557,8 @@
       ]
     },
     {
-      "name": "0966 health - Foreign origin receives the same public contract",
-      "file": "contracts/0966-health.bru",
+      "name": "0970 health - Foreign origin receives the same public contract",
+      "file": "contracts/0970-health.bru",
       "endpoint": "GET /health",
       "scenario": "Foreign origin receives the same public contract",
       "status": 200,
@@ -10398,8 +10568,8 @@
       ]
     },
     {
-      "name": "0967 frontend-index - Serve the configured frontend content",
-      "file": "contracts/0967-frontend-index.bru",
+      "name": "0971 frontend-index - Serve the configured frontend content",
+      "file": "contracts/0971-frontend-index.bru",
       "endpoint": "GET /",
       "scenario": "Serve the configured frontend content",
       "status": 200,
@@ -10409,8 +10579,8 @@
       ]
     },
     {
-      "name": "0968 frontend-index - Conditional request matches the content ETag",
-      "file": "contracts/0968-frontend-index.bru",
+      "name": "0972 frontend-index - Conditional request matches the content ETag",
+      "file": "contracts/0972-frontend-index.bru",
       "endpoint": "GET /",
       "scenario": "Conditional request matches the content ETag",
       "status": 304,
@@ -10420,8 +10590,8 @@
       ]
     },
     {
-      "name": "0969 frontend-index - Stale conditional request serves current content",
-      "file": "contracts/0969-frontend-index.bru",
+      "name": "0973 frontend-index - Stale conditional request serves current content",
+      "file": "contracts/0973-frontend-index.bru",
       "endpoint": "GET /",
       "scenario": "Stale conditional request serves current content",
       "status": 200,
@@ -10431,8 +10601,8 @@
       ]
     },
     {
-      "name": "0970 frontend-index-head - Serve the configured frontend content",
-      "file": "contracts/0970-frontend-index-head.bru",
+      "name": "0974 frontend-index-head - Serve the configured frontend content",
+      "file": "contracts/0974-frontend-index-head.bru",
       "endpoint": "HEAD /",
       "scenario": "Serve the configured frontend content",
       "status": 200,
@@ -10442,8 +10612,8 @@
       ]
     },
     {
-      "name": "0971 frontend-index-head - Conditional request matches the content ETag",
-      "file": "contracts/0971-frontend-index-head.bru",
+      "name": "0975 frontend-index-head - Conditional request matches the content ETag",
+      "file": "contracts/0975-frontend-index-head.bru",
       "endpoint": "HEAD /",
       "scenario": "Conditional request matches the content ETag",
       "status": 304,
@@ -10453,8 +10623,8 @@
       ]
     },
     {
-      "name": "0972 frontend-index-head - Stale conditional request serves current content",
-      "file": "contracts/0972-frontend-index-head.bru",
+      "name": "0976 frontend-index-head - Stale conditional request serves current content",
+      "file": "contracts/0976-frontend-index-head.bru",
       "endpoint": "HEAD /",
       "scenario": "Stale conditional request serves current content",
       "status": 200,
@@ -10464,50 +10634,52 @@
       ]
     },
     {
-      "name": "0973 frontend-asset - Serve the configured frontend content",
-      "file": "contracts/0973-frontend-asset.bru",
-      "endpoint": "GET /{<path:asset>}",
-      "scenario": "Serve the configured frontend content",
-      "status": 200,
-      "required_checks": [
-        "Exact HTTP 200",
-        "Serve the configured frontend content contract"
-      ]
-    },
-    {
-      "name": "0974 frontend-asset - Conditional request matches the content ETag",
-      "file": "contracts/0974-frontend-asset.bru",
-      "endpoint": "GET /{<path:asset>}",
-      "scenario": "Conditional request matches the content ETag",
-      "status": 304,
-      "required_checks": [
-        "Exact HTTP 304",
-        "Conditional request matches the content ETag contract"
-      ]
-    },
-    {
-      "name": "0975 frontend-asset - Stale conditional request serves current content",
-      "file": "contracts/0975-frontend-asset.bru",
-      "endpoint": "GET /{<path:asset>}",
-      "scenario": "Stale conditional request serves current content",
-      "status": 200,
-      "required_checks": [
-        "Exact HTTP 200",
-        "Stale conditional request serves current content contract"
-      ]
-    },
-    {
-      "name": "0976 frontend-asset - Missing asset does not fall back to the SPA",
-      "file": "contracts/0976-frontend-asset.bru",
-      "endpoint": "GET /{<path:asset>}",
-      "scenario": "Missing asset does not fall back to the SPA",
-      "status": 404,
-      "required_checks": ["Exact HTTP 404"]
-    },
-    {
-      "name": "0977 frontend-asset - Client route falls back to the SPA",
+      "name": "0977 frontend-asset - Serve the configured frontend content",
       "file": "contracts/0977-frontend-asset.bru",
       "endpoint": "GET /{<path:asset>}",
+      "scenario": "Serve the configured frontend content",
+      "status": 200,
+      "required_checks": [
+        "Exact HTTP 200",
+        "Serve the configured frontend content contract"
+      ]
+    },
+    {
+      "name": "0978 frontend-asset - Conditional request matches the content ETag",
+      "file": "contracts/0978-frontend-asset.bru",
+      "endpoint": "GET /{<path:asset>}",
+      "scenario": "Conditional request matches the content ETag",
+      "status": 304,
+      "required_checks": [
+        "Exact HTTP 304",
+        "Conditional request matches the content ETag contract"
+      ]
+    },
+    {
+      "name": "0979 frontend-asset - Stale conditional request serves current content",
+      "file": "contracts/0979-frontend-asset.bru",
+      "endpoint": "GET /{<path:asset>}",
+      "scenario": "Stale conditional request serves current content",
+      "status": 200,
+      "required_checks": [
+        "Exact HTTP 200",
+        "Stale conditional request serves current content contract"
+      ]
+    },
+    {
+      "name": "0980 frontend-asset - Missing asset does not fall back to the SPA",
+      "file": "contracts/0980-frontend-asset.bru",
+      "endpoint": "GET /{<path:asset>}",
+      "scenario": "Missing asset does not fall back to the SPA",
+      "status": 404,
+      "required_checks": [
+        "Exact HTTP 404"
+      ]
+    },
+    {
+      "name": "0981 frontend-asset - Client route falls back to the SPA",
+      "file": "contracts/0981-frontend-asset.bru",
+      "endpoint": "GET /{<path:asset>}",
       "scenario": "Client route falls back to the SPA",
       "status": 200,
       "required_checks": [
@@ -10516,8 +10688,8 @@
       ]
     },
     {
-      "name": "0978 frontend-asset-head - Serve the configured frontend content",
-      "file": "contracts/0978-frontend-asset-head.bru",
+      "name": "0982 frontend-asset-head - Serve the configured frontend content",
+      "file": "contracts/0982-frontend-asset-head.bru",
       "endpoint": "HEAD /{<path:asset>}",
       "scenario": "Serve the configured frontend content",
       "status": 200,
@@ -10527,8 +10699,8 @@
       ]
     },
     {
-      "name": "0979 frontend-asset-head - Conditional request matches the content ETag",
-      "file": "contracts/0979-frontend-asset-head.bru",
+      "name": "0983 frontend-asset-head - Conditional request matches the content ETag",
+      "file": "contracts/0983-frontend-asset-head.bru",
       "endpoint": "HEAD /{<path:asset>}",
       "scenario": "Conditional request matches the content ETag",
       "status": 304,
@@ -10538,8 +10710,8 @@
       ]
     },
     {
-      "name": "0980 frontend-asset-head - Stale conditional request serves current content",
-      "file": "contracts/0980-frontend-asset-head.bru",
+      "name": "0984 frontend-asset-head - Stale conditional request serves current content",
+      "file": "contracts/0984-frontend-asset-head.bru",
       "endpoint": "HEAD /{<path:asset>}",
       "scenario": "Stale conditional request serves current content",
       "status": 200,
@@ -10549,16 +10721,18 @@
       ]
     },
     {
-      "name": "0981 frontend-asset-head - Missing asset does not fall back to the SPA",
-      "file": "contracts/0981-frontend-asset-head.bru",
+      "name": "0985 frontend-asset-head - Missing asset does not fall back to the SPA",
+      "file": "contracts/0985-frontend-asset-head.bru",
       "endpoint": "HEAD /{<path:asset>}",
       "scenario": "Missing asset does not fall back to the SPA",
       "status": 404,
-      "required_checks": ["Exact HTTP 404"]
+      "required_checks": [
+        "Exact HTTP 404"
+      ]
     },
     {
-      "name": "0982 frontend-asset-head - Client route falls back to the SPA",
-      "file": "contracts/0982-frontend-asset-head.bru",
+      "name": "0986 frontend-asset-head - Client route falls back to the SPA",
+      "file": "contracts/0986-frontend-asset-head.bru",
       "endpoint": "HEAD /{<path:asset>}",
       "scenario": "Client route falls back to the SPA",
       "status": 200,
@@ -10568,8 +10742,8 @@
       ]
     },
     {
-      "name": "0983 desktop-start - Reject unsafe loopback callback",
-      "file": "contracts/0983-desktop-start.bru",
+      "name": "0987 desktop-start - Reject unsafe loopback callback",
+      "file": "contracts/0987-desktop-start.bru",
       "endpoint": "POST /auth/desktop/start",
       "scenario": "Reject unsafe loopback callback",
       "status": 400,
@@ -10579,8 +10753,8 @@
       ]
     },
     {
-      "name": "0984 desktop-start - Reject undersized state",
-      "file": "contracts/0984-desktop-start.bru",
+      "name": "0988 desktop-start - Reject undersized state",
+      "file": "contracts/0988-desktop-start.bru",
       "endpoint": "POST /auth/desktop/start",
       "scenario": "Reject undersized state",
       "status": 400,
@@ -10590,8 +10764,8 @@
       ]
     },
     {
-      "name": "0985 desktop-start - Reject malformed S256 challenge",
-      "file": "contracts/0985-desktop-start.bru",
+      "name": "0989 desktop-start - Reject malformed S256 challenge",
+      "file": "contracts/0989-desktop-start.bru",
       "endpoint": "POST /auth/desktop/start",
       "scenario": "Reject malformed S256 challenge",
       "status": 400,
@@ -10601,8 +10775,8 @@
       ]
     },
     {
-      "name": "0986 desktop-start - Reject unknown broker input",
-      "file": "contracts/0986-desktop-start.bru",
+      "name": "0990 desktop-start - Reject unknown broker input",
+      "file": "contracts/0990-desktop-start.bru",
       "endpoint": "POST /auth/desktop/start",
       "scenario": "Reject unknown broker input",
       "status": 422,
@@ -10612,8 +10786,8 @@
       ]
     },
     {
-      "name": "0987 desktop-authorize - Unknown handoff does not reveal consent",
-      "file": "contracts/0987-desktop-authorize.bru",
+      "name": "0991 desktop-authorize - Unknown handoff does not reveal consent",
+      "file": "contracts/0991-desktop-authorize.bru",
       "endpoint": "GET /auth/desktop/authorize",
       "scenario": "Unknown handoff does not reveal consent",
       "status": 401,
@@ -10623,8 +10797,8 @@
       ]
     },
     {
-      "name": "0988 desktop-authorize - Consent requires a request identity",
-      "file": "contracts/0988-desktop-authorize.bru",
+      "name": "0992 desktop-authorize - Consent requires a request identity",
+      "file": "contracts/0992-desktop-authorize.bru",
       "endpoint": "GET /auth/desktop/authorize",
       "scenario": "Consent requires a request identity",
       "status": 400,
@@ -10634,8 +10808,8 @@
       ]
     },
     {
-      "name": "0989 desktop-authorize - Malformed handoff identity is rejected",
-      "file": "contracts/0989-desktop-authorize.bru",
+      "name": "0993 desktop-authorize - Malformed handoff identity is rejected",
+      "file": "contracts/0993-desktop-authorize.bru",
       "endpoint": "GET /auth/desktop/authorize",
       "scenario": "Malformed handoff identity is rejected",
       "status": 400,
@@ -10645,8 +10819,8 @@
       ]
     },
     {
-      "name": "0990 desktop-consent - Desktop consent requires a browser session",
-      "file": "contracts/0990-desktop-consent.bru",
+      "name": "0994 desktop-consent - Desktop consent requires a browser session",
+      "file": "contracts/0994-desktop-consent.bru",
       "endpoint": "POST /auth/desktop/authorize",
       "scenario": "Desktop consent requires a browser session",
       "status": 401,
@@ -10656,8 +10830,8 @@
       ]
     },
     {
-      "name": "0991 desktop-exchange - Missing broker proof is rejected",
-      "file": "contracts/0991-desktop-exchange.bru",
+      "name": "0995 desktop-exchange - Missing broker proof is rejected",
+      "file": "contracts/0995-desktop-exchange.bru",
       "endpoint": "POST /auth/desktop/exchange",
       "scenario": "Missing broker proof is rejected",
       "status": 422,
@@ -10667,8 +10841,8 @@
       ]
     },
     {
-      "name": "0992 desktop-exchange - Malformed broker JSON is rejected",
-      "file": "contracts/0992-desktop-exchange.bru",
+      "name": "0996 desktop-exchange - Malformed broker JSON is rejected",
+      "file": "contracts/0996-desktop-exchange.bru",
       "endpoint": "POST /auth/desktop/exchange",
       "scenario": "Malformed broker JSON is rejected",
       "status": 400,
@@ -10678,8 +10852,8 @@
       ]
     },
     {
-      "name": "0993 desktop-exchange - Invalid verifier cannot issue a session",
-      "file": "contracts/0993-desktop-exchange.bru",
+      "name": "0997 desktop-exchange - Invalid verifier cannot issue a session",
+      "file": "contracts/0997-desktop-exchange.bru",
       "endpoint": "POST /auth/desktop/exchange",
       "scenario": "Invalid verifier cannot issue a session",
       "status": 401,
@@ -10689,8 +10863,8 @@
       ]
     },
     {
-      "name": "0994 desktop-refresh - Missing rotation credentials are rejected",
-      "file": "contracts/0994-desktop-refresh.bru",
+      "name": "0998 desktop-refresh - Missing rotation credentials are rejected",
+      "file": "contracts/0998-desktop-refresh.bru",
       "endpoint": "POST /auth/desktop/refresh",
       "scenario": "Missing rotation credentials are rejected",
       "status": 422,
@@ -10700,8 +10874,8 @@
       ]
     },
     {
-      "name": "0995 desktop-refresh - Successor must differ from predecessor",
-      "file": "contracts/0995-desktop-refresh.bru",
+      "name": "0999 desktop-refresh - Successor must differ from predecessor",
+      "file": "contracts/0999-desktop-refresh.bru",
       "endpoint": "POST /auth/desktop/refresh",
       "scenario": "Successor must differ from predecessor",
       "status": 401,
@@ -10711,8 +10885,8 @@
       ]
     },
     {
-      "name": "0996 desktop-refresh - Foreign credential cannot rotate a family",
-      "file": "contracts/0996-desktop-refresh.bru",
+      "name": "1000 desktop-refresh - Foreign credential cannot rotate a family",
+      "file": "contracts/1000-desktop-refresh.bru",
       "endpoint": "POST /auth/desktop/refresh",
       "scenario": "Foreign credential cannot rotate a family",
       "status": 401,
@@ -10722,8 +10896,8 @@
       ]
     },
     {
-      "name": "0997 desktop-revoke - Revocation requires its input envelope",
-      "file": "contracts/0997-desktop-revoke.bru",
+      "name": "1001 desktop-revoke - Revocation requires its input envelope",
+      "file": "contracts/1001-desktop-revoke.bru",
       "endpoint": "POST /auth/desktop/revoke",
       "scenario": "Revocation requires its input envelope",
       "status": 422,
@@ -10733,8 +10907,8 @@
       ]
     },
     {
-      "name": "0998 desktop-revoke - Unknown refresh revocation remains idempotent",
-      "file": "contracts/0998-desktop-revoke.bru",
+      "name": "1002 desktop-revoke - Unknown refresh revocation remains idempotent",
+      "file": "contracts/1002-desktop-revoke.bru",
       "endpoint": "POST /auth/desktop/revoke",
       "scenario": "Unknown refresh revocation remains idempotent",
       "status": 204,
@@ -10744,8 +10918,8 @@
       ]
     },
     {
-      "name": "0999 memory-operate - Anonymous request is rejected",
-      "file": "contracts/0999-memory-operate.bru",
+      "name": "1003 memory-operate - Anonymous request is rejected",
+      "file": "contracts/1003-memory-operate.bru",
       "endpoint": "POST /api/workspaces/{workspace}/memory/operate",
       "scenario": "Anonymous request is rejected",
       "status": 401,
@@ -10756,8 +10930,8 @@
       ]
     },
     {
-      "name": "1000 memory-operate - Wrong JSON media type is rejected",
-      "file": "contracts/1000-memory-operate.bru",
+      "name": "1004 memory-operate - Wrong JSON media type is rejected",
+      "file": "contracts/1004-memory-operate.bru",
       "endpoint": "POST /api/workspaces/{workspace}/memory/operate",
       "scenario": "Wrong JSON media type is rejected",
       "status": 415,
@@ -10768,8 +10942,8 @@
       ]
     },
     {
-      "name": "1001 memory-operate - Malformed JSON cannot reach the use case",
-      "file": "contracts/1001-memory-operate.bru",
+      "name": "1005 memory-operate - Malformed JSON cannot reach the use case",
+      "file": "contracts/1005-memory-operate.bru",
       "endpoint": "POST /api/workspaces/{workspace}/memory/operate",
       "scenario": "Malformed JSON cannot reach the use case",
       "status": 400,
@@ -10780,8 +10954,8 @@
       ]
     },
     {
-      "name": "1002 memory-operate - Incomplete native memory envelope is rejected",
-      "file": "contracts/1002-memory-operate.bru",
+      "name": "1006 memory-operate - Incomplete native memory envelope is rejected",
+      "file": "contracts/1006-memory-operate.bru",
       "endpoint": "POST /api/workspaces/{workspace}/memory/operate",
       "scenario": "Incomplete native memory envelope is rejected",
       "status": 422,
@@ -10792,8 +10966,8 @@
       ]
     },
     {
-      "name": "1003 memory-participant-upgrade - Anonymous request is rejected",
-      "file": "contracts/1003-memory-participant-upgrade.bru",
+      "name": "1007 memory-participant-upgrade - Anonymous request is rejected",
+      "file": "contracts/1007-memory-participant-upgrade.bru",
       "endpoint": "POST /api/workspaces/{workspace}/memory/participants/{participant}/upgrade",
       "scenario": "Anonymous request is rejected",
       "status": 401,
@@ -10804,8 +10978,8 @@
       ]
     },
     {
-      "name": "1004 memory-participant-upgrade - Wrong JSON media type is rejected",
-      "file": "contracts/1004-memory-participant-upgrade.bru",
+      "name": "1008 memory-participant-upgrade - Wrong JSON media type is rejected",
+      "file": "contracts/1008-memory-participant-upgrade.bru",
       "endpoint": "POST /api/workspaces/{workspace}/memory/participants/{participant}/upgrade",
       "scenario": "Wrong JSON media type is rejected",
       "status": 415,
@@ -10816,8 +10990,8 @@
       ]
     },
     {
-      "name": "1005 memory-participant-upgrade - Malformed JSON cannot reach the use case",
-      "file": "contracts/1005-memory-participant-upgrade.bru",
+      "name": "1009 memory-participant-upgrade - Malformed JSON cannot reach the use case",
+      "file": "contracts/1009-memory-participant-upgrade.bru",
       "endpoint": "POST /api/workspaces/{workspace}/memory/participants/{participant}/upgrade",
       "scenario": "Malformed JSON cannot reach the use case",
       "status": 400,
@@ -10828,8 +11002,8 @@
       ]
     },
     {
-      "name": "1006 memory-participant-upgrade - Incomplete native memory envelope is rejected",
-      "file": "contracts/1006-memory-participant-upgrade.bru",
+      "name": "1010 memory-participant-upgrade - Incomplete native memory envelope is rejected",
+      "file": "contracts/1010-memory-participant-upgrade.bru",
       "endpoint": "POST /api/workspaces/{workspace}/memory/participants/{participant}/upgrade",
       "scenario": "Incomplete native memory envelope is rejected",
       "status": 422,
@@ -10840,8 +11014,8 @@
       ]
     },
     {
-      "name": "1007 memory-units - Anonymous request is rejected",
-      "file": "contracts/1007-memory-units.bru",
+      "name": "1011 memory-units - Anonymous request is rejected",
+      "file": "contracts/1011-memory-units.bru",
       "endpoint": "POST /api/workspaces/{workspace}/memory/units/query",
       "scenario": "Anonymous request is rejected",
       "status": 401,
@@ -10852,8 +11026,8 @@
       ]
     },
     {
-      "name": "1008 memory-units - Wrong JSON media type is rejected",
-      "file": "contracts/1008-memory-units.bru",
+      "name": "1012 memory-units - Wrong JSON media type is rejected",
+      "file": "contracts/1012-memory-units.bru",
       "endpoint": "POST /api/workspaces/{workspace}/memory/units/query",
       "scenario": "Wrong JSON media type is rejected",
       "status": 415,
@@ -10864,8 +11038,8 @@
       ]
     },
     {
-      "name": "1009 memory-units - Malformed JSON cannot reach the use case",
-      "file": "contracts/1009-memory-units.bru",
+      "name": "1013 memory-units - Malformed JSON cannot reach the use case",
+      "file": "contracts/1013-memory-units.bru",
       "endpoint": "POST /api/workspaces/{workspace}/memory/units/query",
       "scenario": "Malformed JSON cannot reach the use case",
       "status": 400,
@@ -10876,8 +11050,8 @@
       ]
     },
     {
-      "name": "1010 memory-units - Incomplete native memory envelope is rejected",
-      "file": "contracts/1010-memory-units.bru",
+      "name": "1014 memory-units - Incomplete native memory envelope is rejected",
+      "file": "contracts/1014-memory-units.bru",
       "endpoint": "POST /api/workspaces/{workspace}/memory/units/query",
       "scenario": "Incomplete native memory envelope is rejected",
       "status": 422,
@@ -10888,8 +11062,8 @@
       ]
     },
     {
-      "name": "1011 memory-mutate - Anonymous request is rejected",
-      "file": "contracts/1011-memory-mutate.bru",
+      "name": "1015 memory-mutate - Anonymous request is rejected",
+      "file": "contracts/1015-memory-mutate.bru",
       "endpoint": "POST /api/workspaces/{workspace}/memory/units/mutate",
       "scenario": "Anonymous request is rejected",
       "status": 401,
@@ -10900,8 +11074,8 @@
       ]
     },
     {
-      "name": "1012 memory-mutate - Wrong JSON media type is rejected",
-      "file": "contracts/1012-memory-mutate.bru",
+      "name": "1016 memory-mutate - Wrong JSON media type is rejected",
+      "file": "contracts/1016-memory-mutate.bru",
       "endpoint": "POST /api/workspaces/{workspace}/memory/units/mutate",
       "scenario": "Wrong JSON media type is rejected",
       "status": 415,
@@ -10912,8 +11086,8 @@
       ]
     },
     {
-      "name": "1013 memory-mutate - Malformed JSON cannot reach the use case",
-      "file": "contracts/1013-memory-mutate.bru",
+      "name": "1017 memory-mutate - Malformed JSON cannot reach the use case",
+      "file": "contracts/1017-memory-mutate.bru",
       "endpoint": "POST /api/workspaces/{workspace}/memory/units/mutate",
       "scenario": "Malformed JSON cannot reach the use case",
       "status": 400,
@@ -10924,8 +11098,8 @@
       ]
     },
     {
-      "name": "1014 memory-mutate - Incomplete native memory envelope is rejected",
-      "file": "contracts/1014-memory-mutate.bru",
+      "name": "1018 memory-mutate - Incomplete native memory envelope is rejected",
+      "file": "contracts/1018-memory-mutate.bru",
       "endpoint": "POST /api/workspaces/{workspace}/memory/units/mutate",
       "scenario": "Incomplete native memory envelope is rejected",
       "status": 422,
@@ -10936,8 +11110,8 @@
       ]
     },
     {
-      "name": "1015 memory-participant - Anonymous request is rejected",
-      "file": "contracts/1015-memory-participant.bru",
+      "name": "1019 memory-participant - Anonymous request is rejected",
+      "file": "contracts/1019-memory-participant.bru",
       "endpoint": "POST /api/workspaces/{workspace}/memory/participants",
       "scenario": "Anonymous request is rejected",
       "status": 401,
@@ -10948,8 +11122,8 @@
       ]
     },
     {
-      "name": "1016 memory-participant - Wrong JSON media type is rejected",
-      "file": "contracts/1016-memory-participant.bru",
+      "name": "1020 memory-participant - Wrong JSON media type is rejected",
+      "file": "contracts/1020-memory-participant.bru",
       "endpoint": "POST /api/workspaces/{workspace}/memory/participants",
       "scenario": "Wrong JSON media type is rejected",
       "status": 415,
@@ -10960,8 +11134,8 @@
       ]
     },
     {
-      "name": "1017 memory-participant - Malformed JSON cannot reach the use case",
-      "file": "contracts/1017-memory-participant.bru",
+      "name": "1021 memory-participant - Malformed JSON cannot reach the use case",
+      "file": "contracts/1021-memory-participant.bru",
       "endpoint": "POST /api/workspaces/{workspace}/memory/participants",
       "scenario": "Malformed JSON cannot reach the use case",
       "status": 400,
@@ -10972,8 +11146,8 @@
       ]
     },
     {
-      "name": "1018 memory-participant - Incomplete native memory envelope is rejected",
-      "file": "contracts/1018-memory-participant.bru",
+      "name": "1022 memory-participant - Incomplete native memory envelope is rejected",
+      "file": "contracts/1022-memory-participant.bru",
       "endpoint": "POST /api/workspaces/{workspace}/memory/participants",
       "scenario": "Incomplete native memory envelope is rejected",
       "status": 422,
@@ -10984,8 +11158,8 @@
       ]
     },
     {
-      "name": "1019 memory-participants - Anonymous request is rejected",
-      "file": "contracts/1019-memory-participants.bru",
+      "name": "1023 memory-participants - Anonymous request is rejected",
+      "file": "contracts/1023-memory-participants.bru",
       "endpoint": "GET /api/workspaces/{workspace}/memory/participants",
       "scenario": "Anonymous request is rejected",
       "status": 401,
@@ -10995,8 +11169,8 @@
       ]
     },
     {
-      "name": "1020 memory-participants - Typed resource IDs reject invalid UUIDs",
-      "file": "contracts/1020-memory-participants.bru",
+      "name": "1024 memory-participants - Typed resource IDs reject invalid UUIDs",
+      "file": "contracts/1024-memory-participants.bru",
       "endpoint": "GET /api/workspaces/{workspace}/memory/participants",
       "scenario": "Typed resource IDs reject invalid UUIDs",
       "status": 400,
@@ -11006,8 +11180,8 @@
       ]
     },
     {
-      "name": "1021 memory-participants - Application read preserves the typed response contract",
-      "file": "contracts/1021-memory-participants.bru",
+      "name": "1025 memory-participants - Application read preserves the typed response contract",
+      "file": "contracts/1025-memory-participants.bru",
       "endpoint": "GET /api/workspaces/{workspace}/memory/participants",
       "scenario": "Application read preserves the typed response contract",
       "status": 200,
@@ -11017,8 +11191,8 @@
       ]
     },
     {
-      "name": "1022 memory-participants - Paging rejects nonnumeric or malformed cursors",
-      "file": "contracts/1022-memory-participants.bru",
+      "name": "1026 memory-participants - Paging rejects nonnumeric or malformed cursors",
+      "file": "contracts/1026-memory-participants.bru",
       "endpoint": "GET /api/workspaces/{workspace}/memory/participants",
       "scenario": "Paging rejects nonnumeric or malformed cursors",
       "status": 400,
@@ -11028,8 +11202,8 @@
       ]
     },
     {
-      "name": "1023 memory-participant-assignment - Anonymous request is rejected",
-      "file": "contracts/1023-memory-participant-assignment.bru",
+      "name": "1027 memory-participant-assignment - Anonymous request is rejected",
+      "file": "contracts/1027-memory-participant-assignment.bru",
       "endpoint": "POST /api/workspaces/{workspace}/tasks/{task}/memory-participant",
       "scenario": "Anonymous request is rejected",
       "status": 401,
@@ -11040,8 +11214,8 @@
       ]
     },
     {
-      "name": "1024 memory-participant-assignment - Wrong JSON media type is rejected",
-      "file": "contracts/1024-memory-participant-assignment.bru",
+      "name": "1028 memory-participant-assignment - Wrong JSON media type is rejected",
+      "file": "contracts/1028-memory-participant-assignment.bru",
       "endpoint": "POST /api/workspaces/{workspace}/tasks/{task}/memory-participant",
       "scenario": "Wrong JSON media type is rejected",
       "status": 415,
@@ -11052,8 +11226,8 @@
       ]
     },
     {
-      "name": "1025 memory-participant-assignment - Malformed JSON cannot reach the use case",
-      "file": "contracts/1025-memory-participant-assignment.bru",
+      "name": "1029 memory-participant-assignment - Malformed JSON cannot reach the use case",
+      "file": "contracts/1029-memory-participant-assignment.bru",
       "endpoint": "POST /api/workspaces/{workspace}/tasks/{task}/memory-participant",
       "scenario": "Malformed JSON cannot reach the use case",
       "status": 400,
@@ -11064,8 +11238,8 @@
       ]
     },
     {
-      "name": "1026 memory-participant-assignment - Incomplete native memory envelope is rejected",
-      "file": "contracts/1026-memory-participant-assignment.bru",
+      "name": "1030 memory-participant-assignment - Incomplete native memory envelope is rejected",
+      "file": "contracts/1030-memory-participant-assignment.bru",
       "endpoint": "POST /api/workspaces/{workspace}/tasks/{task}/memory-participant",
       "scenario": "Incomplete native memory envelope is rejected",
       "status": 422,
@@ -11076,8 +11250,8 @@
       ]
     },
     {
-      "name": "1027 memory-participant-current - Anonymous request is rejected",
-      "file": "contracts/1027-memory-participant-current.bru",
+      "name": "1031 memory-participant-current - Anonymous request is rejected",
+      "file": "contracts/1031-memory-participant-current.bru",
       "endpoint": "GET /api/workspaces/{workspace}/tasks/{task}/memory-participant",
       "scenario": "Anonymous request is rejected",
       "status": 401,
@@ -11087,8 +11261,8 @@
       ]
     },
     {
-      "name": "1028 memory-participant-current - Typed resource IDs reject invalid UUIDs",
-      "file": "contracts/1028-memory-participant-current.bru",
+      "name": "1032 memory-participant-current - Typed resource IDs reject invalid UUIDs",
+      "file": "contracts/1032-memory-participant-current.bru",
       "endpoint": "GET /api/workspaces/{workspace}/tasks/{task}/memory-participant",
       "scenario": "Typed resource IDs reject invalid UUIDs",
       "status": 400,
@@ -11098,8 +11272,8 @@
       ]
     },
     {
-      "name": "1029 memory-participant-current - Missing scoped authority cannot disclose application data",
-      "file": "contracts/1029-memory-participant-current.bru",
+      "name": "1033 memory-participant-current - Missing scoped authority cannot disclose application data",
+      "file": "contracts/1033-memory-participant-current.bru",
       "endpoint": "GET /api/workspaces/{workspace}/tasks/{task}/memory-participant",
       "scenario": "Missing scoped authority cannot disclose application data",
       "status": 403,
@@ -11109,8 +11283,8 @@
       ]
     },
     {
-      "name": "1030 marketplace-approve-set - Anonymous request is rejected",
-      "file": "contracts/1030-marketplace-approve-set.bru",
+      "name": "1034 marketplace-approve-set - Anonymous request is rejected",
+      "file": "contracts/1034-marketplace-approve-set.bru",
       "endpoint": "POST /api/marketplace/approval-sets",
       "scenario": "Anonymous request is rejected",
       "status": 401,
@@ -11121,8 +11295,8 @@
       ]
     },
     {
-      "name": "1031 marketplace-approve-set - Wrong JSON media type is rejected",
-      "file": "contracts/1031-marketplace-approve-set.bru",
+      "name": "1035 marketplace-approve-set - Wrong JSON media type is rejected",
+      "file": "contracts/1035-marketplace-approve-set.bru",
       "endpoint": "POST /api/marketplace/approval-sets",
       "scenario": "Wrong JSON media type is rejected",
       "status": 415,
@@ -11133,8 +11307,8 @@
       ]
     },
     {
-      "name": "1032 marketplace-approve-set - Malformed JSON cannot reach the use case",
-      "file": "contracts/1032-marketplace-approve-set.bru",
+      "name": "1036 marketplace-approve-set - Malformed JSON cannot reach the use case",
+      "file": "contracts/1036-marketplace-approve-set.bru",
       "endpoint": "POST /api/marketplace/approval-sets",
       "scenario": "Malformed JSON cannot reach the use case",
       "status": 400,
@@ -11145,8 +11319,8 @@
       ]
     },
     {
-      "name": "1033 marketplace-host-packages - Anonymous request is rejected",
-      "file": "contracts/1033-marketplace-host-packages.bru",
+      "name": "1037 marketplace-host-packages - Anonymous request is rejected",
+      "file": "contracts/1037-marketplace-host-packages.bru",
       "endpoint": "POST /api/marketplace/host-packages",
       "scenario": "Anonymous request is rejected",
       "status": 401,
@@ -11157,8 +11331,8 @@
       ]
     },
     {
-      "name": "1034 marketplace-host-packages - Wrong JSON media type is rejected",
-      "file": "contracts/1034-marketplace-host-packages.bru",
+      "name": "1038 marketplace-host-packages - Wrong JSON media type is rejected",
+      "file": "contracts/1038-marketplace-host-packages.bru",
       "endpoint": "POST /api/marketplace/host-packages",
       "scenario": "Wrong JSON media type is rejected",
       "status": 415,
@@ -11169,8 +11343,8 @@
       ]
     },
     {
-      "name": "1035 marketplace-host-packages - Malformed JSON cannot reach the use case",
-      "file": "contracts/1035-marketplace-host-packages.bru",
+      "name": "1039 marketplace-host-packages - Malformed JSON cannot reach the use case",
+      "file": "contracts/1039-marketplace-host-packages.bru",
       "endpoint": "POST /api/marketplace/host-packages",
       "scenario": "Malformed JSON cannot reach the use case",
       "status": 400,
@@ -11181,8 +11355,8 @@
       ]
     },
     {
-      "name": "1036 remote-human-answer - Anonymous request is rejected",
-      "file": "contracts/1036-remote-human-answer.bru",
+      "name": "1040 remote-human-answer - Anonymous request is rejected",
+      "file": "contracts/1040-remote-human-answer.bru",
       "endpoint": "POST /api/tasks/{task}/remote-grants/{grant}/human-requests/answer",
       "scenario": "Anonymous request is rejected",
       "status": 401,
@@ -11193,8 +11367,8 @@
       ]
     },
     {
-      "name": "1037 remote-human-answer - Wrong JSON media type is rejected",
-      "file": "contracts/1037-remote-human-answer.bru",
+      "name": "1041 remote-human-answer - Wrong JSON media type is rejected",
+      "file": "contracts/1041-remote-human-answer.bru",
       "endpoint": "POST /api/tasks/{task}/remote-grants/{grant}/human-requests/answer",
       "scenario": "Wrong JSON media type is rejected",
       "status": 415,
@@ -11205,8 +11379,8 @@
       ]
     },
     {
-      "name": "1038 remote-human-answer - Malformed JSON cannot reach the use case",
-      "file": "contracts/1038-remote-human-answer.bru",
+      "name": "1042 remote-human-answer - Malformed JSON cannot reach the use case",
+      "file": "contracts/1042-remote-human-answer.bru",
       "endpoint": "POST /api/tasks/{task}/remote-grants/{grant}/human-requests/answer",
       "scenario": "Malformed JSON cannot reach the use case",
       "status": 400,
@@ -11217,8 +11391,8 @@
       ]
     },
     {
-      "name": "1039 peer-agent-bindings - Reject unsupported federation protocol",
-      "file": "contracts/1039-peer-agent-bindings.bru",
+      "name": "1043 peer-agent-bindings - Reject unsupported federation protocol",
+      "file": "contracts/1043-peer-agent-bindings.bru",
       "endpoint": "GET /federation/v0.1/discover/{id}/{version}/bindings",
       "scenario": "Reject unsupported federation protocol",
       "status": 400,
@@ -11229,8 +11403,8 @@
       ]
     },
     {
-      "name": "1040 peer-agent-bindings - Require the peer node identity",
-      "file": "contracts/1040-peer-agent-bindings.bru",
+      "name": "1044 peer-agent-bindings - Require the peer node identity",
+      "file": "contracts/1044-peer-agent-bindings.bru",
       "endpoint": "GET /federation/v0.1/discover/{id}/{version}/bindings",
       "scenario": "Require the peer node identity",
       "status": 401,
@@ -11240,8 +11414,8 @@
       ]
     },
     {
-      "name": "1041 peer-agent-bindings - Require the peer bearer credential",
-      "file": "contracts/1041-peer-agent-bindings.bru",
+      "name": "1045 peer-agent-bindings - Require the peer bearer credential",
+      "file": "contracts/1045-peer-agent-bindings.bru",
       "endpoint": "GET /federation/v0.1/discover/{id}/{version}/bindings",
       "scenario": "Require the peer bearer credential",
       "status": 401,
@@ -11251,8 +11425,8 @@
       ]
     },
     {
-      "name": "1042 peer-agent-bindings - Unknown legacy agent has no discovery record",
-      "file": "contracts/1042-peer-agent-bindings.bru",
+      "name": "1046 peer-agent-bindings - Unknown legacy agent has no discovery record",
+      "file": "contracts/1046-peer-agent-bindings.bru",
       "endpoint": "GET /federation/v0.1/discover/{id}/{version}/bindings",
       "scenario": "Unknown legacy agent has no discovery record",
       "status": 404,
@@ -11262,8 +11436,8 @@
       ]
     },
     {
-      "name": "1043 remote-agent-inspection - Anonymous request is rejected",
-      "file": "contracts/1043-remote-agent-inspection.bru",
+      "name": "1047 remote-agent-inspection - Anonymous request is rejected",
+      "file": "contracts/1047-remote-agent-inspection.bru",
       "endpoint": "POST /api/tasks/{id}/remote-grants/inspect",
       "scenario": "Anonymous request is rejected",
       "status": 401,
@@ -11274,8 +11448,8 @@
       ]
     },
     {
-      "name": "1044 remote-agent-inspection - Wrong JSON media type is rejected",
-      "file": "contracts/1044-remote-agent-inspection.bru",
+      "name": "1048 remote-agent-inspection - Wrong JSON media type is rejected",
+      "file": "contracts/1048-remote-agent-inspection.bru",
       "endpoint": "POST /api/tasks/{id}/remote-grants/inspect",
       "scenario": "Wrong JSON media type is rejected",
       "status": 415,
@@ -11286,8 +11460,8 @@
       ]
     },
     {
-      "name": "1045 remote-agent-inspection - Malformed JSON cannot reach the use case",
-      "file": "contracts/1045-remote-agent-inspection.bru",
+      "name": "1049 remote-agent-inspection - Malformed JSON cannot reach the use case",
+      "file": "contracts/1049-remote-agent-inspection.bru",
       "endpoint": "POST /api/tasks/{id}/remote-grants/inspect",
       "scenario": "Malformed JSON cannot reach the use case",
       "status": 400,
@@ -11298,8 +11472,8 @@
       ]
     },
     {
-      "name": "1046 sessions-gcip-transaction - Transaction requires its state query",
-      "file": "contracts/1046-sessions-gcip-transaction.bru",
+      "name": "1050 sessions-gcip-transaction - Transaction requires its state query",
+      "file": "contracts/1050-sessions-gcip-transaction.bru",
       "endpoint": "GET /auth/gcip/transaction",
       "scenario": "Transaction requires its state query",
       "status": 400,
@@ -11309,8 +11483,8 @@
       ]
     },
     {
-      "name": "1047 sessions-gcip-transaction - OIDC deployment cannot expose GCIP configuration",
-      "file": "contracts/1047-sessions-gcip-transaction.bru",
+      "name": "1051 sessions-gcip-transaction - OIDC deployment cannot expose GCIP configuration",
+      "file": "contracts/1051-sessions-gcip-transaction.bru",
       "endpoint": "GET /auth/gcip/transaction",
       "scenario": "OIDC deployment cannot expose GCIP configuration",
       "status": 401,
@@ -11320,8 +11494,8 @@
       ]
     },
     {
-      "name": "1048 sessions-gcip-transaction - Tampered browser cookie cannot expose GCIP configuration",
-      "file": "contracts/1048-sessions-gcip-transaction.bru",
+      "name": "1052 sessions-gcip-transaction - Tampered browser cookie cannot expose GCIP configuration",
+      "file": "contracts/1052-sessions-gcip-transaction.bru",
       "endpoint": "GET /auth/gcip/transaction",
       "scenario": "Tampered browser cookie cannot expose GCIP configuration",
       "status": 401,
@@ -11331,8 +11505,8 @@
       ]
     },
     {
-      "name": "1049 sessions-gcip-exchange - Exchange requires its typed token envelope",
-      "file": "contracts/1049-sessions-gcip-exchange.bru",
+      "name": "1053 sessions-gcip-exchange - Exchange requires its typed token envelope",
+      "file": "contracts/1053-sessions-gcip-exchange.bru",
       "endpoint": "POST /auth/gcip/exchange",
       "scenario": "Exchange requires its typed token envelope",
       "status": 422,
@@ -11342,8 +11516,8 @@
       ]
     },
     {
-      "name": "1050 sessions-gcip-exchange - Malformed token envelope is rejected",
-      "file": "contracts/1050-sessions-gcip-exchange.bru",
+      "name": "1054 sessions-gcip-exchange - Malformed token envelope is rejected",
+      "file": "contracts/1054-sessions-gcip-exchange.bru",
       "endpoint": "POST /auth/gcip/exchange",
       "scenario": "Malformed token envelope is rejected",
       "status": 400,
@@ -11353,8 +11527,8 @@
       ]
     },
     {
-      "name": "1051 sessions-gcip-exchange - OIDC deployment cannot accept a GCIP token",
-      "file": "contracts/1051-sessions-gcip-exchange.bru",
+      "name": "1055 sessions-gcip-exchange - OIDC deployment cannot accept a GCIP token",
+      "file": "contracts/1055-sessions-gcip-exchange.bru",
       "endpoint": "POST /auth/gcip/exchange",
       "scenario": "OIDC deployment cannot accept a GCIP token",
       "status": 401,

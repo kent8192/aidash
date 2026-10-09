@@ -1,5 +1,7 @@
 //! Compatibility entry points compose native ports with the shared worker driver.
 use crate::{Result, domain::Run, federation::Federation};
+use aidash_application::ports::execution::InferenceInterruption;
+use aidash_domain::RunControl;
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -98,13 +100,42 @@ impl Harness {
 	}
 }
 
-pub(crate) async fn wait_for_inference_cancellation(
+/// Resolve when committed Run control is Cancelled or a Run input newer than
+/// the request's included input is committed. Reads happen outside the worker's
+/// authority transaction, and a failed observation never interrupts inference.
+pub(crate) async fn wait_for_inference_interruption(
 	store: &crate::store::Store,
 	id: Uuid,
-) -> Result<()> {
-	aidash_harness::execution::wait_for_cancellation(&crate::bootstrap::worker_leases(store), id)
-		.await
-		.map_err(Into::into)
+	included_input_seq: i64,
+) -> Result<InferenceInterruption> {
+	loop {
+		match inference_interruption(store, id, included_input_seq).await {
+			Ok(Some(interruption)) => return Ok(interruption),
+			Ok(None) => {}
+			Err(error) => {
+				tracing::warn!(run_id = %id, %error, "inference interruption poll failed; retrying")
+			}
+		}
+		tokio::time::sleep(INTERRUPTION_POLL).await;
+	}
+}
+
+const INTERRUPTION_POLL: std::time::Duration = std::time::Duration::from_millis(250);
+
+async fn inference_interruption(
+	store: &crate::store::Store,
+	id: Uuid,
+	included_input_seq: i64,
+) -> Result<Option<InferenceInterruption>> {
+	use crate::apps::execution::models::{Run as RunRecord, RunInput};
+	let lease = store.orm_connection()?;
+	if RunRecord::committed_control(&mut lease.handle(), id).await? == RunControl::Cancelled {
+		return Ok(Some(InferenceInterruption::Cancelled));
+	}
+	let mut tx = store.database().begin().await?;
+	let newer = RunInput::newer_than(tx.as_mut(), id, included_input_seq).await?;
+	tx.commit().await?;
+	Ok(newer.then_some(InferenceInterruption::Superseded))
 }
 
 #[cfg(test)]

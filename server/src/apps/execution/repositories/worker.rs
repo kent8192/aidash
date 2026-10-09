@@ -258,7 +258,7 @@ pub(crate) fn classify_failure(error: &NativeError) -> ExecutionFailure {
 		},
 		NativeError::MediaRouteUnavailable(_) => ExecutionFailure::MediaRoute(error.to_string()),
 		NativeError::TransactionPending | NativeError::StaleInference => ExecutionFailure::Deferred,
-		NativeError::External(_) => ExecutionFailure::Inference {
+		NativeError::External(_) | NativeError::InferenceStalled => ExecutionFailure::Inference {
 			transport: true,
 			status: None,
 			message: error.to_string(),

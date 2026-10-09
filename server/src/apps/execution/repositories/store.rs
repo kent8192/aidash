@@ -2723,6 +2723,8 @@ impl Store {
 				.await?
 			};
 			if stale {
+				tx.rollback().await?;
+				self.discard_stale_inference(run.id, worker).await;
 				return Err(Error::StaleInference);
 			}
 		}
@@ -2734,9 +2736,32 @@ impl Store {
 		.fetch_optional(&mut *tx)
 		.await? }
 		.ok_or_else(|| Error::Conflict("worker lease lost".into()))?;
+		// The accepted response and its attempt's outcome commit together. A Run
+		// that ends here cannot be claimed again, so its orphaned attempt closes now.
+		let closed = if kind == "model.completed" {
+			crate::apps::execution::repositories::inference::close_pending(
+				tx.as_mut(),
+				&self.node_id,
+				run.id,
+				Some(aidash_domain::provider::progress::ProgressOutcome::Accepted),
+			)
+			.await?;
+			Vec::new()
+		} else if saved.phase().is_terminal() {
+			crate::apps::execution::repositories::inference::close_pending(
+				tx.as_mut(),
+				&self.node_id,
+				run.id,
+				None,
+			)
+			.await?
+		} else {
+			Vec::new()
+		};
 		self.event(&mut tx, (run.home_node == self.node_id).then_some(run.workspace_id), kind,
             json!({"run_id":saved.id,"task_id":saved.task_id,"workspace_id":saved.workspace_id,"agent_id":saved.agent_id,"phase":saved.phase(),"step":saved.step,"error":saved.error,"context_usage":saved.context.usage})).await?;
 		tx.commit().await?;
+		crate::apps::execution::repositories::inference::record_interruptions(&closed);
 		Ok(saved)
 	}
 	pub async fn release_lease(&self, id: Uuid, worker: Uuid) -> Result<()> {
@@ -2901,7 +2926,15 @@ impl Store {
 			json!({"run_id":run.id,"task_id":run.task_id}),
 		)
 		.await?;
+		let closed = crate::apps::execution::repositories::inference::close_pending(
+			tx.as_mut(),
+			&self.node_id,
+			run.id,
+			None,
+		)
+		.await?;
 		tx.commit().await?;
+		crate::apps::execution::repositories::inference::record_interruptions(&closed);
 		Ok(())
 	}
 
@@ -4164,7 +4197,16 @@ impl Store {
 			json!({"run_id":run.id,"task_id":run.task_id}),
 		)
 		.await?;
+		// Pausing releases the lease; the worker can no longer finish its attempt.
+		let closed = crate::apps::execution::repositories::inference::close_pending(
+			tx.as_mut(),
+			&self.node_id,
+			run.id,
+			None,
+		)
+		.await?;
 		tx.commit().await?;
+		crate::apps::execution::repositories::inference::record_interruptions(&closed);
 		Ok(())
 	}
 }

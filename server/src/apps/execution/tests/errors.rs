@@ -113,3 +113,25 @@ fn persisted_semantic_decode_errors_keep_the_internal_error_boundary(#[case] sou
 	);
 	assert!(!response.headers.contains_key("retry-after"));
 }
+
+#[rstest]
+fn stalled_streams_retry_like_provider_transport_timeouts() {
+	// Arrange
+	let stalled = Error::from(aidash_application::Error::InferenceStalled);
+	let timeout = Error::from(aidash_application::Error::External(
+		"model inference timed out".into(),
+	));
+	// Act
+	let classify = crate::apps::execution::repositories::worker::classify_failure;
+	// Assert
+	assert!(matches!(stalled, Error::InferenceStalled));
+	assert!(classify(&stalled).retryable());
+	assert_eq!(
+		classify(&stalled).retryable(),
+		classify(&timeout).retryable()
+	);
+	assert!(matches!(
+		aidash_application::Error::from(stalled),
+		aidash_application::Error::InferenceStalled
+	));
+}

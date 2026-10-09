@@ -1,12 +1,15 @@
 //! Native scopes retain serializable validation, visibility gates and authority auditing.
 use super::coordination::connection;
-use crate::apps::federation::transactions::{
-	models::{
-		AtomicGate, AtomicHistory, AtomicParticipant, AtomicPeerTrust,
-		states::AtomicParticipantPhase,
+use crate::apps::{
+	execution::repositories::inference,
+	federation::transactions::{
+		models::{
+			AtomicGate, AtomicHistory, AtomicParticipant, AtomicPeerTrust,
+			states::AtomicParticipantPhase,
+		},
+		serializers::contracts as native,
+		services::{authority, fault},
 	},
-	serializers::contracts as native,
-	services::{authority, fault},
 };
 use crate::{Error, authorization::access::NativeAccess, federation::Federation};
 use aidash_application::{
@@ -15,9 +18,12 @@ use aidash_application::{
 		ParticipantRepository, ParticipantScope, PendingParticipants,
 	},
 };
-use aidash_domain::transactions::{
-	Manifest,
-	coordination::{LocalStatus, ParticipantPhase},
+use aidash_domain::{
+	provider::progress::ProgressOutcome,
+	transactions::{
+		Manifest,
+		coordination::{LocalStatus, ParticipantPhase},
+	},
 };
 use async_trait::async_trait;
 use reinhardt::db::{backends::TransactionExecutor, orm::DatabaseConnectionLease};
@@ -40,6 +46,8 @@ impl Transaction {
 struct Scope {
 	runtime: Federation,
 	transaction: Transaction,
+	/// Interruptions applied mutations wrote; recorded once the transaction commits.
+	interruptions: Vec<ProgressOutcome>,
 }
 
 fn phase(phase: ParticipantPhase) -> AtomicParticipantPhase {
@@ -131,26 +139,33 @@ impl ParticipantScope for Scope {
 	async fn apply_mutations(&mut self, manifest: &Manifest) -> Result<()> {
 		let tx = self.transaction.executor();
 		AtomicParticipant::mutation_context(tx, manifest.id).await?;
-		aidash_application::transactions::mutation::apply(
-			&mut crate::bootstrap::transaction_mutation_scope(tx),
+		let mut scope = crate::bootstrap::transaction_mutation_scope(tx);
+		let applied = aidash_application::transactions::mutation::apply(
+			&mut scope,
 			&crate::bootstrap::registry_validation(),
 			&self.runtime.store.node_id,
 			manifest,
 		)
-		.await
+		.await;
+		self.interruptions.extend(scope.1);
+		applied
 	}
 	async fn finish(self: Box<Self>, result: Result<LocalStatus>) -> Result<LocalStatus> {
-		match self.transaction {
-			Transaction::Admitted(access) => (*access)
-				.finish(result.map_err(Into::into))
-				.await
-				.map_err(Into::into),
+		let Scope {
+			transaction,
+			interruptions,
+			..
+		} = *self;
+		let row = match transaction {
+			Transaction::Admitted(access) => (*access).finish(result.map_err(Into::into)).await?,
 			Transaction::Standalone(tx) => {
 				let row = result?;
 				tx.commit().await.map_err(Error::from)?;
-				Ok(row)
+				row
 			}
-		}
+		};
+		inference::record_interruptions(&interruptions);
+		Ok(row)
 	}
 	async fn rollback(self: Box<Self>) -> Result<()> {
 		match self.transaction {
@@ -187,6 +202,7 @@ impl ParticipantRepository for Repository {
 		Ok(Box::new(Scope {
 			runtime: self.runtime.clone(),
 			transaction: Transaction::Standalone(tx),
+			interruptions: Vec::new(),
 		}))
 	}
 	async fn admission(
@@ -200,6 +216,7 @@ impl ParticipantRepository for Repository {
 		Ok(Some(Box::new(Scope {
 			runtime: self.runtime.clone(),
 			transaction: Transaction::Admitted(Box::new(access.into_native()?)),
+			interruptions: Vec::new(),
 		})))
 	}
 	async fn pending(&self) -> Result<Box<dyn PendingParticipants>> {

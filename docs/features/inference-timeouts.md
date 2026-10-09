@@ -69,14 +69,48 @@ follow the existing retry policy. Closing a local HTTP request does not guarante
 that an upstream provider stops processing or waives charges; this change does
 not guarantee exactly-once billing.
 
+## Streamed responses
+
+A model can set `config.streaming` to `true` to request a server-sent event
+stream from OpenRouter (`"stream": true` with `stream_options.include_usage`).
+Omitting it, or setting it to `null` or `false`, keeps the non-streamed request
+unchanged. Aidash assembles the complete stream, including the final
+`finish_reason`, usage, and `[DONE]` marker, and validates it exactly like a
+non-streamed completion before any tool call can run. A stream that ends early,
+is truncated, refused, oversized (more than 1 MiB assembled), or reports a
+provider error fails with the same errors as the equivalent non-streamed
+response. While the stream is open, only display progress is published: text,
+and each tool call's ID, name and argument size. Argument text and provider
+reasoning are never published.
+
+`config.stream_stall_timeout_secs` is the longest silence, in seconds, between
+streamed data events, including the wait for response headers. Provider
+keepalive comments such as `: OPENROUTER PROCESSING` do not reset it; reasoning
+chunks do, even though their content is dropped. Omitting it, or setting it to
+`null`, uses **120 seconds**; the supported range is `1..=4294967295`. A stall
+fails the inference attempt and follows the same retry path as a transport
+timeout. `request_timeout_secs` still bounds the complete streamed request.
+
+Both settings can be installation overrides. The registry migration
+`registry/0016_model_streaming_config` widens the model registration and
+installation-override validators to accept them; omitted settings stay
+unserialized, so existing configuration digests are unchanged.
+
 ## Regression tests
 
-Run `cargo test --locked --test provider_timeouts --test providers`. The timeout
+Run `cargo test --locked -p aidash-server --test providers` and
+`cargo test --locked -p aidash-integrations inference`. The timeout
 tests use a local HTTP fixture and Tokio's virtual clock, not paid model calls or
 multi-minute wall-clock sleeps. They cover a 508-second completion beyond the old
 120-second cutoff, a configured limit beyond the 900-second default, shorter
 configured limits, the default deadline, unchanged non-inference deadlines, and
 configuration validation and legacy deserialization.
+
+The streamed-response tests use a scripted local event stream. They cover
+progress before the accepted response, equality with the non-streamed result,
+missing `[DONE]` or `finish_reason`, duplicate call IDs, truncation, refusal,
+keepalive-only stalls, oversized streams, and that argument text never reaches
+progress.
 
 Run `scripts/test-rust.sh --coverage` for the full suite with disposable services.
 This includes the PostgreSQL tests in the [inference cancellation suite](../../server/src/apps/execution/tests/inference_cancellation.rs) and

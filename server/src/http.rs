@@ -351,7 +351,8 @@ impl Middleware for Gateway {
 		let private = (path.starts_with("/api") && path != "/api/openapi.json")
 			|| path.starts_with("/federation")
 			|| path.starts_with("/auth/");
-		let sse = path == "/api/events/stream";
+		let sse = path == "/api/events/stream"
+			|| (path.starts_with("/api/runs/") && path.ends_with("/inference/stream"));
 		let limit = if path.contains("/chunks") || path.contains("/scoped/files/") {
 			6 * 1024 * 1024
 		} else {

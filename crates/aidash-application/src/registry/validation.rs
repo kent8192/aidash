@@ -130,6 +130,7 @@ impl DefinitionValidation {
 				));
 				}
 				m.request_timeout()?;
+				m.stream_stall_timeout()?;
 				for route in &m.media_routes {
 					if route.tag.is_empty()
 						|| !route
