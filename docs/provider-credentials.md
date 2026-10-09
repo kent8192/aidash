@@ -56,7 +56,10 @@ It replaces `store.fingerprint_env`, including on Cloud. Supply an independent
 random raw string of at least 32 bytes, through `{ env = "..." }` or
 `{ file = "/run/secrets/..." }`. Each source must name exactly one of file or env;
 `AIDASH_SECRET_*` environment names are rejected because Registry configurations
-can resolve that namespace. Fingerprints use independent derived Tenant keys,
+can resolve that namespace. Names that skill imports pass to the `gh` CLI, such
+as `GH_*`, `GITHUB_TOKEN`, `PATH` and the proxy variables, are rejected too,
+because `gh` sends `GH_TOKEN`/`GITHUB_TOKEN` to GitHub as authentication.
+Fingerprints use independent derived Tenant keys,
 HMAC-SHA256 and the first eight bytes in hexadecimal. They are metadata, not
 bearer values. PostgreSQL contains AEAD ciphertext only; plaintext Key Material
 never appears in tables, events, responses, request logs or browser persistence.

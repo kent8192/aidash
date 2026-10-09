@@ -177,8 +177,9 @@ async fn bounded_get(client: &Client, url: &str, limit: usize) -> Result<Vec<u8>
 	Ok(bytes)
 }
 
-// The CLI may authenticate, but cannot inherit private operator keys.
-fn gh_environment_allowed(name: &std::ffi::OsStr) -> bool {
+/// Whether a variable reaches the `gh` CLI child. The CLI may authenticate, but
+/// cannot inherit private operator keys; key sources must avoid these names.
+pub fn gh_environment_allowed(name: &std::ffi::OsStr) -> bool {
 	let Some(name) = name.to_str() else {
 		return false;
 	};

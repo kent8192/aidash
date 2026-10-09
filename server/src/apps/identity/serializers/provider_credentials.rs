@@ -55,12 +55,16 @@ impl KeySource {
 			(None, Some(env))
 				if !env.is_empty()
 					&& !env.starts_with("AIDASH_SECRET_")
-					&& env.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') =>
+					// Skill imports forward these names to `gh`, which sends
+					// GH_TOKEN/GITHUB_TOKEN to GitHub as authentication.
+					&& !aidash_integrations::skill_import::gh_environment_allowed(
+						std::ffi::OsStr::new(env),
+					) && env.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') =>
 			{
 				Ok(())
 			}
 			_ => Err(
-				"key source must name exactly one nonempty file or env outside AIDASH_SECRET_*"
+				"key source must name exactly one nonempty file or env outside AIDASH_SECRET_* and the gh CLI environment"
 					.into(),
 			),
 		}

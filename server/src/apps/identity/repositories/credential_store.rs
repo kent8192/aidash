@@ -310,28 +310,28 @@ impl PostgresStore {
 		tenant: &str,
 		resource: &str,
 		version: &str,
-	) -> std::result::Result<SecretString, &'static str> {
+	) -> std::result::Result<SecretString, ReadFailure> {
 		resource_id(resource).map_err(|_| "invalid resource")?;
 		let (pinned, n) = version_id(version).map_err(|_| "invalid version")?;
 		if pinned != resource {
-			return Err("resource mismatch");
+			return Err("resource mismatch".into());
 		}
-		let mut tx = self.begin().await.map_err(|_| "database unavailable")?;
+		let mut tx = self.begin().await.map_err(|_| ReadFailure::Unavailable)?;
 		let rows = Version::objects()
 			.filter(Version::field_resource().eq(resource))
 			.filter(Version::field_version().eq(n))
 			.all_with_executor(tx.as_mut())
 			.await
-			.map_err(|_| "database unavailable")?;
+			.map_err(|_| ReadFailure::Unavailable)?;
 		let row = rows.first().ok_or("missing version")?;
 		if row.tenant != tenant {
-			return Err("Tenant mismatch");
+			return Err("Tenant mismatch".into());
 		}
 		if row.state != "enabled" {
-			return Err("disabled version");
+			return Err("disabled version".into());
 		}
 		if row.algorithm != ALGORITHM {
-			return Err("unsupported algorithm");
+			return Err("unsupported algorithm".into());
 		}
 		let key = self.keys.get(&row.key_id).ok_or("unknown key identifier")?;
 		let plaintext = key
@@ -343,8 +343,18 @@ impl PostgresStore {
 			.map_err(|_| "decryption failure")?;
 		let value = std::str::from_utf8(&plaintext).map_err(|_| "invalid plaintext encoding")?;
 		let secret = SecretString::from(value.to_owned());
-		tx.commit().await.map_err(|_| "database unavailable")?;
+		tx.commit().await.map_err(|_| ReadFailure::Unavailable)?;
 		Ok(secret)
+	}
+}
+/// Transient database failures stay retryable; rejected pins are permanent.
+enum ReadFailure {
+	Unavailable,
+	Rejected(&'static str),
+}
+impl From<&'static str> for ReadFailure {
+	fn from(reason: &'static str) -> Self {
+		Self::Rejected(reason)
 	}
 }
 #[async_trait]
@@ -352,12 +362,21 @@ impl KeyMaterialReader for PostgresStore {
 	async fn read(&self, tenant: &str, resource: &str, version: &str) -> Result<SecretString> {
 		self.read_pinned(tenant, resource, version)
 			.await
-			.map_err(|reason| {
-				tracing::warn!(
-					reason,
-					"Provider Credential Store cannot read the pinned version"
-				);
-				invalid("Provider Credential Store cannot read the pinned version")
+			.map_err(|failure| match failure {
+				ReadFailure::Unavailable => {
+					tracing::warn!(
+						reason = "database unavailable",
+						"Provider Credential Store cannot read the pinned version"
+					);
+					Error::External("Provider Credential Store is unavailable".into())
+				}
+				ReadFailure::Rejected(reason) => {
+					tracing::warn!(
+						reason,
+						"Provider Credential Store cannot read the pinned version"
+					);
+					invalid("Provider Credential Store cannot read the pinned version")
+				}
 			})
 	}
 }

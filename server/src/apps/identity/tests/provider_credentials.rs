@@ -1564,6 +1564,42 @@ async fn postgres_store_service_lifecycle_resolves_pins_and_never_leaks_canary(
 }
 
 #[rstest]
+#[tokio::test]
+async fn postgres_store_reports_database_outages_as_retryable_and_rejections_as_invalid(
+	#[future] endpoint: EndpointFixture,
+) {
+	use aidash_application::provider_access::KeyMaterialReader;
+	let f = endpoint.await;
+	let store = postgres_store(&f, &"11".repeat(32), vec![]).await;
+	let id = Uuid::now_v7();
+	let resource = store.resource(id);
+	store.create("alpha", id).await.unwrap();
+	let version = store
+		.add_version("alpha", &resource, &"outage-provider-key".into())
+		.await
+		.unwrap();
+	// A wrong Tenant or missing pin is a permanent admission/state failure.
+	for (tenant, pin) in [
+		("beta", version.clone()),
+		("alpha", format!("{resource}/versions/9")),
+	] {
+		let error = store.read(tenant, &resource, &pin).await.unwrap_err();
+		assert!(
+			matches!(error, aidash_application::Error::Invalid(_)),
+			"{error:?}"
+		);
+	}
+	// Semantic indexing retries External failures; a database outage must not
+	// permanently fail indexing or execution work.
+	f.runtime.store.control_pool.close().await;
+	let error = store.read("alpha", &resource, &version).await.unwrap_err();
+	assert!(
+		matches!(error, aidash_application::Error::External(_)),
+		"{error:?}"
+	);
+}
+
+#[rstest]
 #[case::version("alpha", true)]
 #[case::record("alpha", false)]
 #[case::tenant("beta", false)]
@@ -1806,6 +1842,11 @@ fn store_settings_validate_shape_without_loading_keys() {
 		json!({}),
 		json!({"env":"AIDASH_SECRET_MASTER"}),
 		json!({"file":"/tmp/key","env":"AIDASH_PROVIDER_KEY"}),
+		// Skill imports forward these to `gh`, which authenticates to GitHub with them.
+		json!({"env":"GH_TOKEN"}),
+		json!({"env":"GITHUB_TOKEN"}),
+		json!({"env":"GH_ENTERPRISE_TOKEN"}),
+		json!({"env":"HTTPS_PROXY"}),
 	] {
 		let mut value = valid.clone();
 		value["store"]["master_key"] = source.clone();
