@@ -403,12 +403,8 @@ impl aidash_application::provider_access::ProviderAccess for AdmittedAccess {
 			.map_err(crate::Error::from)?;
 		let pins = super::super::models::provider_credentials::RunProviderCredential::objects()
 			.filter(
-				super::super::models::provider_credentials::RunProviderCredential::field_run_id()
-					.eq(run),
-			)
-			.filter(
-				super::super::models::provider_credentials::RunProviderCredential::field_provider()
-					.eq(provider),
+				super::super::models::provider_credentials::RunProviderCredential::field_id()
+					.eq(format!("{run}:{provider}")),
 			)
 			.all_with_executor(tx.as_mut())
 			.await

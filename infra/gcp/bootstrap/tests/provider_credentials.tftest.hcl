@@ -15,7 +15,7 @@ run "fixed_roles_and_limited_deploy" {
   command = plan
   override_resource {
     override_during = plan
-    target          = google_project_iam_custom_role.byok_deploy
+    target          = google_project_iam_custom_role.byok_deploy[0]
     values          = { name = "projects/aidash-byok-fixture/roles/aidashByokDeployment" }
   }
   override_resource {
@@ -28,16 +28,16 @@ run "fixed_roles_and_limited_deploy" {
   }
   assert {
     condition = (
-      google_project_iam_custom_role.byok_create.role_id == "aidashByokCreate" &&
-      google_project_iam_custom_role.byok_create.permissions == toset(["secretmanager.secrets.create"]) &&
-      google_project_iam_custom_role.byok_manage.role_id == "aidashByokManage" &&
-      google_project_iam_custom_role.byok_manage.permissions == toset([
+      google_project_iam_custom_role.byok_create[0].role_id == "aidashByokCreate" &&
+      google_project_iam_custom_role.byok_create[0].permissions == toset(["secretmanager.secrets.create"]) &&
+      google_project_iam_custom_role.byok_manage[0].role_id == "aidashByokManage" &&
+      google_project_iam_custom_role.byok_manage[0].permissions == toset([
         "secretmanager.secrets.get", "secretmanager.secrets.delete", "secretmanager.versions.add",
         "secretmanager.versions.disable", "secretmanager.versions.destroy",
         "secretmanager.versions.get", "secretmanager.versions.list",
       ]) &&
-      google_project_iam_custom_role.byok_broker_read.role_id == "aidashByokBrokerRead" &&
-      google_project_iam_custom_role.byok_broker_read.permissions == toset([
+      google_project_iam_custom_role.byok_broker_read[0].role_id == "aidashByokBrokerRead" &&
+      google_project_iam_custom_role.byok_broker_read[0].permissions == toset([
         "secretmanager.versions.access", "secretmanager.versions.get", "secretmanager.secrets.get",
       ])
     )
@@ -45,15 +45,15 @@ run "fixed_roles_and_limited_deploy" {
   }
   assert {
     condition = (
-      google_project_iam_custom_role.byok_deploy.permissions == toset([
+      google_project_iam_custom_role.byok_deploy[0].permissions == toset([
         "resourcemanager.projects.get", "resourcemanager.projects.getIamPolicy",
         "resourcemanager.projects.setIamPolicy",
       ]) &&
-      google_project_iam_member.byok_deploy.project == var.byok_project_id &&
-      google_project_iam_member.byok_deploy.role == "projects/aidash-byok-fixture/roles/aidashByokDeployment" &&
-      google_project_iam_member.byok_deploy.member == "serviceAccount:aidash-deploy@aidash-fixture.iam.gserviceaccount.com" &&
-      length(google_project_iam_member.byok_deploy.condition) == 1 &&
-      google_project_iam_member.byok_deploy.condition[0].expression == "api.getAttribute('iam.googleapis.com/modifiedGrantsByRole', []).hasOnly(['projects/aidash-byok-fixture/roles/aidashByokCreate', 'projects/aidash-byok-fixture/roles/aidashByokManage'])"
+      google_project_iam_member.byok_deploy[0].project == var.byok_project_id &&
+      google_project_iam_member.byok_deploy[0].role == "projects/aidash-byok-fixture/roles/aidashByokDeployment" &&
+      google_project_iam_member.byok_deploy[0].member == "serviceAccount:aidash-deploy@aidash-fixture.iam.gserviceaccount.com" &&
+      length(google_project_iam_member.byok_deploy[0].condition) == 1 &&
+      google_project_iam_member.byok_deploy[0].condition[0].expression == "api.getAttribute('iam.googleapis.com/modifiedGrantsByRole', []).hasOnly(['projects/aidash-byok-fixture/roles/aidashByokCreate', 'projects/aidash-byok-fixture/roles/aidashByokManage'])"
     )
     error_message = "Deploy must have no role-edit permission and only the exact Create/Manage role-grant allowlist."
   }

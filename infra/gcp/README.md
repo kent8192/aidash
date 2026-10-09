@@ -334,8 +334,11 @@ Implementation references: [K3s containerd templates](https://docs.k3s.io/advanc
 [Cloudflare DNS Terraform](https://developers.cloudflare.com/api/terraform/resources/dns/subresources/records/).
 
 Provider Credential Key Material uses a separate existing, billing-enabled BYOK
-project. Set `byok_project_id` explicitly in bootstrap and deployment configuration;
-it must differ from `project_id` and contain only Provider Credential secrets.
+project. Set `byok_project_id` explicitly in bootstrap and deployment configuration
+to enable BYOK provisioning; it must differ from `project_id` and contain only
+Provider Credential secrets. Omit it or leave it empty for existing deployments
+without the Store: no BYOK API, project lookup, role, audit configuration or runtime
+grant is provisioned. Existing shared-project lifecycle operations remain available.
 Bootstrap enables Secret Manager and its DATA_READ/DATA_WRITE audit logs there.
 Human-run bootstrap defines `aidashByokCreate`, `aidashByokManage` and
 `aidashByokBrokerRead` once per deployment. Environment automation binds runtime

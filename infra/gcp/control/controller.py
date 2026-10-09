@@ -47,7 +47,6 @@ def load_config():
     )
     required = {
         "project_id",
-        "byok_project_id",
         "state_bucket",
         "release_bucket",
         "cloudflare_zone_id",

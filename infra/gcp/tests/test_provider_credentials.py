@@ -12,9 +12,12 @@ def resource(source, kind, name):
     depth = 1
     rest = source[start.end():]
     for token in re.finditer(r'"(?:\\.|[^"\\])*"|[{}]', rest):
-        if token.group() == "{": depth += 1
-        elif token.group() == "}": depth -= 1
-        if depth == 0: return rest[:token.start()]
+        if token.group() == "{":
+            depth += 1
+        elif token.group() == "}":
+            depth -= 1
+        if depth == 0:
+            return rest[:token.start()]
     raise AssertionError("Unbalanced HCL resource")
 
 class ProviderCredentialIamTests(unittest.TestCase):
@@ -46,7 +49,7 @@ class ProviderCredentialIamTests(unittest.TestCase):
         self.assertNotIn("condition {", create_binding)
         manage_binding = resource(self.byok, "google_project_iam_member", "provider_credential_manage")
         self.assertIn('"projects/${var.byok_project_id}/roles/aidashByokManage"', manage_binding)
-        self.assertIn("data.google_project.byok.number", manage_binding)
+        self.assertIn("data.google_project.byok[0].number", manage_binding)
         self.assertIn("local.provider_credential_secret_prefix", manage_binding)
         self.assertIn("resource.name.startsWith", manage_binding)
         self.assertNotIn("secretmanager.versions.access", self.byok)
@@ -64,7 +67,7 @@ class ProviderCredentialIamTests(unittest.TestCase):
         binding = resource(self.bootstrap, "google_project_iam_member", "byok_deploy")
         self.assertRegex(binding, r'project\s*=\s*var\.byok_project_id')
         self.assertIn('google_service_account.automation["deploy"].email', binding)
-        self.assertRegex(binding, r'role\s*=\s*google_project_iam_custom_role\.byok_deploy\.name')
+        self.assertRegex(binding, r'role\s*=\s*google_project_iam_custom_role\.byok_deploy\[0\]\.name')
         expression = re.search(r'expression\s*=\s*"([^"]+)"', binding).group(1)
         self.assertEqual(expression,
             "api.getAttribute('iam.googleapis.com/modifiedGrantsByRole', []).hasOnly("
@@ -92,7 +95,7 @@ class ProviderCredentialIamTests(unittest.TestCase):
                         if "byok_broker_read" in body or "aidashByokBrokerRead" in body:
                             self.assertEqual((path.relative_to(ROOT).as_posix(), name), ("bootstrap/credential_brokers.tf", "byok_broker_read"))
                             self.assertIn("google_service_account.broker[each.key].email", body)
-                            self.assertIn("data.google_project.byok.number", body)
+                            self.assertIn("data.google_project.byok[0].number", body)
                             self.assertIn("aidash-${each.key}-cred-", body)
                         if "var.byok_project_id" in body:
                             self.assertNotIn('roles/secretmanager.', body)

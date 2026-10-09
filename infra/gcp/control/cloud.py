@@ -220,13 +220,13 @@ class Terraform:
             key: self.configuration[key]
             for key in (
                 "project_id",
-                "byok_project_id",
                 "cloudflare_zone_id",
                 "release_bucket",
                 "deploy_service_account",
                 "domain",
             )
         }
+        variables["byok_project_id"] = self.configuration.get("byok_project_id", "")
         variables["environments"] = environments
         variables["credential_brokers"] = self.broker_configuration(environments)
         path = self.root / "controller.auto.tfvars.json"

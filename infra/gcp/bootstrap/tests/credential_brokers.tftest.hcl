@@ -25,7 +25,7 @@ run "broker_environments" {
     values = { email = "aidash-test-broker@aidash-fixture.iam.gserviceaccount.com" }
   }
   assert {
-    condition     = alltrue([for id, account in google_service_account.broker : account.project == var.project_id && account.account_id == "aidash-${id}-broker" && google_project_iam_member.byok_broker_read[id].project == var.byok_project_id && google_project_iam_member.byok_broker_read[id].role == google_project_iam_custom_role.byok_broker_read.name && google_project_iam_member.byok_broker_read[id].member == "serviceAccount:${account.email}" && google_project_iam_member.byok_broker_read[id].condition[0].expression == "resource.name.startsWith(\"projects/123456789012/secrets/aidash-${id}-cred-\")"])
+    condition     = alltrue([for id, account in google_service_account.broker : account.project == var.project_id && account.account_id == "aidash-${id}-broker" && google_project_iam_member.byok_broker_read[id].project == var.byok_project_id && google_project_iam_member.byok_broker_read[id].role == google_project_iam_custom_role.byok_broker_read[0].name && google_project_iam_member.byok_broker_read[id].member == "serviceAccount:${account.email}" && google_project_iam_member.byok_broker_read[id].condition[0].expression == "resource.name.startsWith(\"projects/123456789012/secrets/aidash-${id}-cred-\")"])
     error_message = "Only dedicated broker SAs may receive prefix-conditioned BYOK read access."
   }
   assert {
@@ -38,6 +38,17 @@ run "brokers_opt_in_only" {
   assert {
     condition     = length(google_service_account.broker) == 0 && length(google_project_iam_member.byok_broker_read) == 0
     error_message = "No broker identity or read grant without explicit opt-in."
+  }
+}
+run "without_provider_store" {
+  command = plan
+  variables {
+    byok_project_id          = ""
+    byok_broker_environments = ["test"]
+  }
+  assert {
+    condition     = length(google_service_account.broker) == 0 && length(google_project_iam_member.byok_broker_read) == 0 && output.broker_service_accounts == {}
+    error_message = "Disabled BYOK must create no broker identities or payload-access grants even with an environment opt-in."
   }
 }
 run "bootstrap_preview_broker_forbidden" {
