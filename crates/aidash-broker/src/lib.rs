@@ -276,6 +276,19 @@ fn body_policy(body: &[u8], claims: &Claims, op: Operation) -> Result<(), Failur
 	{
 		return Err(Failure::ClaimViolation);
 	}
+	// Only client-executed function tools are within signed inference authority.
+	// Provider tools/plugins can add external data processing and unbounded fees.
+	if op == Operation::Chat
+		&& (value.get("plugins").is_some()
+			|| value.get("tools").is_some_and(|tools| {
+				tools.as_array().is_none_or(|tools| {
+					tools
+						.iter()
+						.any(|tool| tool.get("type").and_then(Value::as_str) != Some("function"))
+				})
+			})) {
+		return Err(Failure::ClaimViolation);
+	}
 	if value.pointer("/provider/zdr") != Some(&Value::Bool(true)) {
 		return Err(Failure::ClaimViolation);
 	}

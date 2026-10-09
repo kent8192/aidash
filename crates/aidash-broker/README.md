@@ -80,6 +80,12 @@ Chat uses only `max_tokens` for the signed completion limit. OpenRouter also
 documents [`max_completion_tokens`](https://openrouter.ai/docs/api/api-reference/chat/send-chat-completion-request);
 the broker rejects that alternate field, including equal or null values, before
 Key Material lookup so two limit names cannot have different interpretations.
+Chat `tools`, when present, must be an array containing only `type: "function"`
+tools executed by the client. Provider-executed tool types and any `plugins`
+field are rejected before Key Material lookup. OpenRouter's
+[server tools](https://openrouter.ai/docs/guides/features/server-tools/web-search)
+can execute external searches and add charges beyond model tokens, which the
+signed inference capability does not authorize.
 
 Capability failures use `401` for signature, key, expiry or audience failures,
 and `403` for tenant, credential, operation, model or claim violations:

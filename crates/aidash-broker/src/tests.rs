@@ -250,6 +250,52 @@ async fn discovery_accepts_validated_model_paths_and_rejects_other_signed_models
 }
 
 #[tokio::test]
+async fn chat_rejects_provider_executed_tools_and_plugins_but_preserves_function_tools() {
+	let f = Fixture::new().await;
+	for (field, value) in [
+		("tools", json!([{"type":"openrouter:web_search"}])),
+		("tools", json!([{"type":"openrouter:web_fetch"}])),
+		(
+			"tools",
+			json!([{"type":"function"}, {"type":"openrouter:web_search"}]),
+		),
+		("tools", json!([{"type":"unknown"}])),
+		("tools", json!([{}])),
+		("tools", json!({"type":"function"})),
+		("tools", Value::Null),
+		("plugins", json!([{"id":"web"}])),
+		("plugins", json!([])),
+		("plugins", Value::Null),
+	] {
+		let mut body = chat();
+		body[field] = value;
+		let response = f
+			.request(&f.claims(), "POST", "/api/v1/chat/completions", body)
+			.await;
+		assert_eq!(response.status(), 403, "unauthorized {field}");
+		assert_eq!(
+			json_body(response).await["error"]["code"],
+			"capability_claim_violation"
+		);
+		assert_eq!(f.provider.calls.load(Ordering::SeqCst), 0);
+		assert_eq!(f.source.reads.load(Ordering::SeqCst), 0);
+	}
+	for tools in [
+		json!([]),
+		json!([{"type":"function","function":{"name":"workspace_read","parameters":{"type":"object","properties":{}}}}]),
+	] {
+		let mut body = chat();
+		body["tools"] = tools;
+		let response = f
+			.request(&f.claims(), "POST", "/api/v1/chat/completions", body)
+			.await;
+		assert_eq!(response.status(), 200);
+		json_body(response).await;
+	}
+	assert_eq!(f.provider.calls.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
 async fn maintenance_purposes_authorize_only_the_explicit_operation() {
 	let f = Fixture::new().await;
 	for purpose in [
