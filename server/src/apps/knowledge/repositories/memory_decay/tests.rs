@@ -111,20 +111,67 @@ async fn deliveries(store: &Store, id: Uuid) -> Option<i64> {
 	.unwrap()
 }
 
+async fn competing_receipt_request(
+	store: &Store,
+	lease: &mut Lease<'_>,
+	request: &memory::Operation,
+	kind: &str,
+	bounds: &Bounds,
+) -> Result<memory::Outcome> {
+	let memory::Action::Pin { id } = request.action else {
+		unreachable!()
+	};
+	if kind == "mutation" {
+		let mut correction = mutation(
+			&request.bank,
+			Change::Correct {
+				id,
+				expected_revision: 1,
+				content: content("Competing mutation must roll back on a receipt conflict"),
+			},
+		);
+		correction.operation_id = request.operation_id;
+		return repository::mutate(lease, &correction, bounds)
+			.await
+			.map(memory::Outcome::Units);
+	}
+	let mut request = request.clone();
+	if kind == "reindex" {
+		request.action = memory::Action::Reindex {
+			expected_index_revision: 1,
+		};
+	} else {
+		assert_eq!(kind, "control");
+	}
+	memory::operate_staged(store, lease, request, None, &mut Vec::new()).await
+}
+
 #[rstest]
-#[case(true)]
-#[case(false)]
+#[case("control", "control", true)]
+#[case("control", "mutation", true)]
+#[case("control", "reindex", true)]
+#[case("mutation", "control", true)]
+#[case("mutation", "mutation", true)]
+#[case("mutation", "reindex", true)]
+#[case("reindex", "control", true)]
+#[case("reindex", "mutation", true)]
+#[case("reindex", "reindex", true)]
+#[case("control", "control", false)]
+#[case("control", "mutation", false)]
+#[case("control", "reindex", false)]
 #[tokio::test]
-async fn concurrent_control_receipt_collision_respects_the_winning_transaction(
+async fn concurrent_receipt_writers_respect_the_winning_transaction_and_rollback_losing_effects(
 	#[future] database: DatabaseFixture,
 	bounds: Bounds,
+	#[case] winner_kind: &str,
+	#[case] contender_kind: &str,
 	#[case] commit_winner: bool,
 ) {
 	use crate::apps::identity::models::AuthorizationWorkspace;
 	use reinhardt::query::SimpleExpr;
 	use reinhardt::query::prelude::IntoIden;
 	let database = database.await;
-	let (store, _, workspace) = setup(&database, bounds).await;
+	let (store, _, workspace) = setup(&database, bounds.clone()).await;
 	let other = store
 		.create_workspace("Other", "Independent workspace lock")
 		.await
@@ -204,16 +251,43 @@ async fn concurrent_control_receipt_collision_respects_the_winning_transaction(
 		.await
 		.unwrap();
 	assert!(before.is_none());
+	let projection = || {
+		Query::select()
+			.columns(["revision", "point_id"].map(Alias::new))
+			.from(Alias::new("semantic_entries"))
+			.and_where(Expr::col("id").eq(Expr::value(losing_id)))
+			.to_string(PostgresQueryBuilder)
+	};
+	let projected_before: (i64, Uuid) = native::query_as(&projection())
+		.columns(&["revision", "point_id"])
+		.fetch_one(&store.pool)
+		.await
+		.unwrap();
+	let mut baseline = Lease::begin(&store, &Actor::Operator).await.unwrap();
+	let unit_before = units::load(&mut baseline, losing_id, false)
+		.await
+		.unwrap()
+		.unwrap();
+	let losing_bank = repository::bank_id(&mut baseline, &requests[1].bank, false)
+		.await
+		.unwrap()
+		.unwrap();
+	let bank_revision = || {
+		Query::select()
+			.column(Alias::new("revision"))
+			.from(Alias::new("memory_banks"))
+			.and_where(Expr::col("id").eq(Expr::value(losing_bank)))
+			.to_string(PostgresQueryBuilder)
+	};
+	let bank_before: i64 = native::query_scalar(&bank_revision())
+		.scalar_one(&mut **baseline.tx())
+		.await
+		.unwrap();
+	baseline.finish(Ok(())).await.unwrap();
 	let mut winner = Lease::begin(&store, &Actor::Operator).await.unwrap();
-	memory::operate_staged(
-		&store,
-		&mut winner,
-		requests[0].clone(),
-		None,
-		&mut Vec::new(),
-	)
-	.await
-	.unwrap();
+	competing_receipt_request(&store, &mut winner, &requests[0], winner_kind, &bounds)
+		.await
+		.unwrap();
 	let (send, receive) = tokio::sync::oneshot::channel();
 	let contender = async {
 		let mut lease = Lease::begin(&store, &Actor::Operator).await.unwrap();
@@ -229,14 +303,9 @@ async fn concurrent_control_receipt_collision_respects_the_winning_transaction(
 		.await
 		.unwrap();
 		send.send(pid).unwrap();
-		let result = memory::operate_staged(
-			&store,
-			&mut lease,
-			requests[1].clone(),
-			None,
-			&mut Vec::new(),
-		)
-		.await;
+		let result =
+			competing_receipt_request(&store, &mut lease, &requests[1], contender_kind, &bounds)
+				.await;
 		lease.finish(result).await
 	};
 	let release = async {
@@ -284,20 +353,57 @@ async fn concurrent_control_receipt_collision_respects_the_winning_transaction(
 		.fetch_optional(&store.pool)
 		.await
 		.unwrap();
+	let projected_after: (i64, Uuid) = native::query_as(&projection())
+		.columns(&["revision", "point_id"])
+		.fetch_one(&store.pool)
+		.await
+		.unwrap();
+	let mut lease = Lease::begin(&store, &Actor::Operator).await.unwrap();
+	let unit_after = units::load(&mut lease, losing_id, false)
+		.await
+		.unwrap()
+		.unwrap();
+	let bank_after: i64 = native::query_scalar(&bank_revision())
+		.scalar_one(&mut **lease.tx())
+		.await
+		.unwrap();
 	if commit_winner {
 		assert!(matches!(result, Err(Error::Conflict(_))), "{result:?}");
 		assert_eq!(
 			after, before,
 			"a losing reservation must not change retention"
 		);
+		assert_eq!(
+			unit_after, unit_before,
+			"losing mutations must roll back canonical content"
+		);
+		assert_eq!(
+			bank_after, bank_before,
+			"losing mutations must roll back Bank revisions"
+		);
+		assert_eq!(
+			projected_after, projected_before,
+			"losing mutations and reindex must roll back projections"
+		);
 	} else {
 		assert!(
 			matches!(result, Ok(memory::Outcome::Units(_))),
 			"{result:?}"
 		);
-		assert!(after.is_some_and(|(pinned, anchor)| pinned && anchor.is_some()));
+		if contender_kind == "control" {
+			assert!(after.is_some_and(|(pinned, anchor)| pinned && anchor.is_some()));
+		} else {
+			assert_eq!(projected_after.0, projected_before.0 + 1);
+			assert_ne!(projected_after.1, projected_before.1);
+			if contender_kind == "mutation" {
+				assert_eq!(unit_after.revision, unit_before.revision + 1);
+				assert_eq!(bank_after, bank_before + 1);
+			} else {
+				assert_eq!(unit_after, unit_before);
+				assert_eq!(bank_after, bank_before);
+			}
+		}
 	}
-	let mut lease = Lease::begin(&store, &Actor::Operator).await.unwrap();
 	let expected_bank = repository::bank_id(
 		&mut lease,
 		&requests[usize::from(!commit_winner)].bank,

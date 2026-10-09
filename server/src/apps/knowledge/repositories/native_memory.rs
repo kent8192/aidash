@@ -402,22 +402,14 @@ pub(crate) async fn mutate_origin(
 	)
 	.await?;
 	let outcome: Vec<_> = result.iter().map(Unit::evidence).collect();
-	native::query(
-		&Query::insert()
-			.into_table(Alias::new("memory_receipts"))
-			.columns(["operation_id", "bank_id", "digest", "outcome", "created_at"].map(Alias::new))
-			.from_subquery(
-				Query::select()
-					.expr(Expr::value(mutation.operation_id))
-					.expr(Expr::value(bank_id))
-					.expr(Expr::value(digest))
-					.expr(Expr::value(serde_json::to_value(outcome)?))
-					.expr(Expr::value(now))
-					.to_owned(),
-			)
-			.to_string(PostgresQueryBuilder),
+	super::memory_receipts::reserve(
+		lease,
+		mutation.operation_id,
+		bank_id,
+		&digest,
+		&outcome,
+		now,
 	)
-	.execute(&mut **lease.tx())
 	.await?;
 	Ok(result)
 }

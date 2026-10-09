@@ -276,57 +276,16 @@ pub(crate) async fn control(
 	.await?;
 	// Reserve the exact request before changing the ranking state. Both writes
 	// share this authority transaction, so a failed control leaves no receipt.
-	let reservation = native::query(
-		&Query::insert()
-			.into_table(Alias::new("memory_receipts"))
-			.columns(["operation_id", "bank_id", "digest", "outcome", "created_at"].map(Alias::new))
-			.from_subquery(
-				Query::select()
-					.expr(Expr::value(operation))
-					.expr(Expr::value(bank_id))
-					.expr(Expr::value(digest))
-					.expr(Expr::value(serde_json::to_value(vec![unit.evidence()])?))
-					.expr(Expr::value(Utc::now()))
-					.to_owned(),
-			)
-			.on_conflict(
-				OnConflict::column(Alias::new("operation_id"))
-					.do_nothing()
-					.to_owned(),
-			)
-			.to_string(PostgresQueryBuilder),
+	if !super::memory_receipts::reserve(
+		lease,
+		operation,
+		bank_id,
+		digest,
+		&[unit.evidence()],
+		Utc::now(),
 	)
-	.execute(&mut **lease.tx())
-	.await?;
-	if reservation.rows_affected() == 0 {
-		// Different workspace locks do not serialize the globally keyed receipt.
-		// The insert waits for its winner; read that committed request before
-		// performing any retention writes in this transaction.
-		let receipt = native::query(
-			&Query::select()
-				.column(ColumnRef::Asterisk)
-				.from(Alias::new("memory_receipts"))
-				.and_where(Expr::col("operation_id").eq(Expr::value(operation)))
-				.to_string(PostgresQueryBuilder),
-		)
-		.fetch_optional(&mut **lease.tx())
-		.await?
-		.ok_or_else(|| {
-			Error::Conflict("memory control receipt changed during reservation".into())
-		})?;
-		if receipt.try_get::<Uuid>("bank_id")? != bank_id
-			|| receipt.try_get::<String>("digest")? != digest
-		{
-			return Err(Error::Conflict(
-				"memory operation ID was reused with a different request".into(),
-			));
-		}
-		let outcome: Vec<Evidence> = receipt.try_get("outcome")?;
-		if outcome != vec![unit.evidence()] {
-			return Err(Error::Conflict(
-				"memory operation completed; its result has since changed".into(),
-			));
-		}
+	.await?
+	{
 		return Ok(unit);
 	}
 	ensure(lease, bank_id, id).await?;
