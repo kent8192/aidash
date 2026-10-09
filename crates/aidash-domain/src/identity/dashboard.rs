@@ -6,9 +6,45 @@ use uuid::Uuid;
 pub struct Account {
 	pub id: Uuid,
 	pub issuer: String,
+	pub gcip_tenant: Option<String>,
 	pub subject: String,
+	pub valid_since: Option<DateTime<Utc>>,
 	pub last_valid_at: Option<DateTime<Utc>>,
 	pub disabled_at: Option<DateTime<Utc>>,
+}
+
+/// A GCIP Tenant is a user pool, never an authorization Tenant by itself.
+pub fn bound_tenant<'a>(
+	bindings: &'a std::collections::BTreeMap<String, String>,
+	gcip_tenant: Option<&str>,
+) -> Option<&'a str> {
+	gcip_tenant
+		.and_then(|tenant| bindings.get(tenant))
+		.map(String::as_str)
+}
+
+/// Verified display attributes never establish authority or link identities.
+#[derive(Debug, Clone)]
+pub struct SignIn {
+	pub subject: String,
+	pub gcip_tenant: Option<String>,
+	/// The sign-in method from a verified GCIP token, independent of UI choices.
+	pub gcip_provider: Option<String>,
+	pub auth_time: DateTime<Utc>,
+	pub verified_email: Option<String>,
+	pub display_name: Option<String>,
+}
+
+/// Only the issuer-reported value drives session revocation; events that advance
+/// it must be verified in a GCIP sandbox, never inferred from account attributes.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct AccountState {
+	pub disabled: bool,
+	pub valid_since: Option<DateTime<Utc>>,
+}
+
+pub fn session_revoked(auth_time: DateTime<Utc>, valid_since: Option<DateTime<Utc>>) -> bool {
+	valid_since.is_some_and(|since| auth_time < since)
 }
 
 /// Replay identity is consumed atomically with the matching session revocations.

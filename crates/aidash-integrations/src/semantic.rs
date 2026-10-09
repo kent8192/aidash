@@ -1,7 +1,7 @@
 //! Explicit embedding adapter. PostgreSQL storage belongs to the native repository.
 use crate::{Error, Result};
 use aidash_application::ports::EmbeddingProvider;
-use aidash_application::provider_access::{Context, ProviderAccess, Source};
+use aidash_application::provider_access::{Context, Inference, Operation, ProviderAccess, Source};
 use aidash_domain::semantic::{Embedding, EmbeddingConfig};
 use async_trait::async_trait;
 use secrecy::ExposeSecret;
@@ -53,9 +53,15 @@ pub async fn embed(
 		body["dimensions"] = json!(config.dimensions);
 		body["provider"] = json!({"zdr":true});
 	}
+	let mut context = context.clone();
+	context.inference = Some(Inference {
+		model: config.model.clone(),
+		operations: vec![Operation::Embeddings],
+		max_output_tokens: 1,
+	});
 	let access = access
 		.resolve(
-			context,
+			&context,
 			&config.endpoint,
 			&Source::configured(&config.credential_env, &config.provider_credential),
 		)
@@ -73,8 +79,15 @@ pub async fn embed(
 
 	let response = call.send().await.map_err(crate::http_error)?;
 	if !response.status().is_success() {
+		let status = response.status().as_u16();
+		if config.provider_credential.is_some() {
+			let body = crate::response::json::<Value>(response, 16_384).await.ok();
+			if let Some(error) = crate::response::capability_failure(status, body.as_ref()) {
+				return Err(error);
+			}
+		}
 		use aidash_domain::semantic::Failure;
-		return Err(Error::RemoteSemantic(match response.status().as_u16() {
+		return Err(Error::RemoteSemantic(match status {
 			408 | 429 | 500..=599 => Failure::Unavailable,
 			401..=403 => Failure::Configuration,
 			_ => Failure::ProviderContract,

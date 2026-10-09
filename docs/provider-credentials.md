@@ -157,6 +157,10 @@ metadata-only cleanup event without changing the deletion revision. Interrupted
 cleanup is retried from that tombstone and never restores effective access.
 Subject writes preserve their committed result if the separate authorization
 audit cannot finalize, and report that audit failure through static telemetry.
+Authorized mutation attempts finalize their allow audit independently of the
+operation result, including failed creates that leave pending or deleted metadata;
+the original operation error is preserved. Cleanup completion events use the same
+Tenant and Provider Credential read-policy checks in state, polling, and SSE.
 A supervised reconciler scans
 expired PostgreSQL pending records, disables unpinned active versions left
 by interrupted rotations, disables all versions of revoked records, and completes
@@ -175,16 +179,16 @@ Environment-backed remote embeddings remain supported.
 Calls check that record's current active state and current version pin; changing
 a binding cannot retarget admitted Runs. Receiving federation admission uses
 the mapped local Tenant. PostgreSQL resolves the current pinned version through
-the narrow read port. Cloud broker routing belongs to Issue #137; until that
-broker exists, Cloud Tenant access fails with `credential broker not configured`
-after metadata validation and never falls back to environment keys.
+the narrow read port. On Cloud, the configured Credential Broker handles
+plaintext reads and provider routing after metadata validation. Without a
+PostgreSQL Store or that broker, Tenant access fails with `credential broker
+not configured` and never falls back to environment keys.
 
 Explicitly authorized local maintenance without a Run resolves the current
 Tenant binding and includes its memory indexing, retention, reflection or
 retrieval purpose in the access context. Run calls keep their admission pins.
 Both paths check current metadata before access. PostgreSQL reads the pinned
-version; Cloud continues to fail with `credential broker not configured` until
-#137 supplies the Credential Broker.
+version; Cloud issues a broker capability token.
 
 Workbench tests currently support environment-backed Models only. A Model using
 Tenant Provider Credentials is rejected before a sandbox session is admitted;
@@ -197,9 +201,10 @@ to `aidash-<environment_id>-cred-` by a project-number-based IAM condition. The
 runtime identity has no BYOK `versions.access` or `setIamPolicy`. Bootstrap
 configures DATA_READ and DATA_WRITE audits and the fixed custom roles once.
 Deploy can grant only the fixed runtime Create/Manage roles and cannot edit
-BYOK roles. The BrokerRead role is defined but unbound; no broker identity or
-BYOK payload read grant is provisioned here. #137's human-run bootstrap owns
-the broker identity and the prefix-conditioned BrokerRead binding.
+BYOK roles. Human-run bootstrap creates the broker identities listed in
+`byok_broker_environments` and binds the fixed BrokerRead role to each
+environment's Secret name prefix. Only these broker bindings grant BYOK
+payload access; runtime and deployment identities have no payload read grant.
 Human-run bootstrap also binds deploy to a prefix-conditioned delete-only
 `aidashByokRetire` role and an unconditioned project list-only
 `aidashByokRetireInventory` role. Deployment cannot grant either role through

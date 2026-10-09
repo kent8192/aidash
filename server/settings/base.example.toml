@@ -96,3 +96,10 @@ enabled = false
 # kind = "secret_manager"
 # byok_project_id = "your-aidash-byok-project"
 # environment_id = "develop"
+# Cloud Workers additionally mint Capability Tokens with the broker module's
+# non-secret worker_configuration (Secret Manager Stores only):
+# [provider_credentials.broker]
+# endpoint = "https://your-broker.run.app/api/v1"
+# issuer = "aidash-worker"
+# audience = "develop"
+# kid = "projects/your-aidash-project/locations/us-central1/keyRings/aidash-develop-capability/cryptoKeys/capability/cryptoKeyVersions/1"

@@ -25,7 +25,10 @@ impl RealDispatchRepository for Repository {
 impl RealDispatchScope for Scope {
 	async fn lock_identity(&mut self) -> Result<()> {
 		if let Actor::Subject(identity) = &self.actor {
-			identity.lock_native(&mut self.tx, false).await?;
+			let policy = self.tx.pool().dashboard_policy();
+			identity
+				.lock_native(&mut self.tx, false, policy.as_ref())
+				.await?;
 		}
 		Ok(())
 	}

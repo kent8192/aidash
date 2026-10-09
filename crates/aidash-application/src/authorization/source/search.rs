@@ -72,6 +72,14 @@ pub async fn search<R: SemanticSearchRepository + ?Sized>(
 		journal::prepare(repository.journal(), &operation, &description.semantic).await?;
 		let agent = AgentConfig::from_snapshot(&description.inspection.binding_snapshot)?;
 		let spec = access.index_spec(task.workspace_id).await?;
+		// The binding was checked when the grant was issued, but the index can be
+		// reconfigured afterwards. A tenant-backed embedding needs a local Run
+		// admission pin and approved maintenance authority that RequiredHome search
+		// does not have, and the environment transport would fail every call.
+		// Revalidate the current index before any claim, reservation or effect.
+		if spec.embedding.provider_credential.is_some() {
+			return Err(Error::RemoteSemantic(Failure::Configuration));
+		}
 		let transport_truncated = query.len() > 32768;
 		let (query, query_truncated) = bounded_query(&operation.query, spec.max_input_bytes);
 		let max_tokens = operation.max_tokens.min(spec.max_result_tokens);

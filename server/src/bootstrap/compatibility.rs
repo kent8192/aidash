@@ -51,7 +51,7 @@ pub async fn serve(settings: ProjectSettings, workers: bool) -> Result<()> {
 		}
 		None => None,
 	};
-	let listener = tokio::net::TcpListener::bind(address).await?;
+	let listener = super::listener::bind(address, std::env::var_os("AIDASH_LISTEN_FD")).await?;
 	let tasks = RuntimeTasks::start(
 		federation,
 		if workers {

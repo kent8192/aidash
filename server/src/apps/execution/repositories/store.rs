@@ -35,6 +35,8 @@ use uuid::Uuid;
 pub struct Store {
 	pub provider_key_material_reader:
 		Option<std::sync::Arc<dyn aidash_application::provider_access::KeyMaterialReader>>,
+	pub capability_issuer:
+		Option<std::sync::Arc<dyn aidash_application::provider_access::TokenIssuer>>,
 	pub provider_credentials:
 		Option<std::sync::Arc<aidash_application::provider_credentials::Service>>,
 	pub capabilities: crate::capabilities::Runtime,
@@ -195,11 +197,21 @@ impl Store {
 			recovery_cursors: Default::default(),
 			provider_credentials: None,
 			provider_key_material_reader: None,
+			capability_issuer: None,
 			capabilities: crate::capabilities::Runtime::from_env()?,
 		}
 		.with_memory_recovery(memory_recovery))
 	}
 
+	/// Attach the deployment issuer and Tenant Bindings to every authority pool.
+	pub fn with_dashboard_policy(
+		mut self,
+		policy: Option<aidash_application::ports::authorization::dashboard::AccountPolicy>,
+	) -> Self {
+		self.pool = self.pool.with_dashboard_policy(policy.clone());
+		self.control_pool = self.control_pool.with_dashboard_policy(policy);
+		self
+	}
 	pub(crate) fn with_memory_recovery(
 		mut self,
 		recovery: Option<std::sync::Arc<dyn aidash_application::ports::memory::MemoryRecovery>>,
@@ -223,7 +235,8 @@ impl Store {
 			.into();
 		store.control_pool = store
 			.control_pool
-			.with_memory_recovery(self.control_pool.memory_recovery());
+			.with_memory_recovery(self.control_pool.memory_recovery())
+			.with_dashboard_policy(self.control_pool.dashboard_policy());
 		Ok(store)
 	}
 
@@ -239,13 +252,16 @@ impl Store {
 			.connect_with(self.pool.connect_options().as_ref().clone())
 			.await?;
 		Ok(Self {
-			pool: Pool::from(pool).with_memory_recovery(self.pool.memory_recovery()),
+			pool: Pool::from(pool)
+				.with_memory_recovery(self.pool.memory_recovery())
+				.with_dashboard_policy(self.pool.dashboard_policy()),
 			control_pool: self.control_pool.clone(),
 			node_id: self.node_id.clone(),
 			semantic_client: self.semantic_client.clone(),
 			recovery_cursors: self.recovery_cursors.clone(),
 			provider_credentials: self.provider_credentials.clone(),
 			provider_key_material_reader: self.provider_key_material_reader.clone(),
+			capability_issuer: self.capability_issuer.clone(),
 			capabilities: self.capabilities.clone(),
 		})
 	}
@@ -272,13 +288,18 @@ impl Store {
 			.await?
 			.into();
 		Ok(Self {
-			pool: Pool::from(pool).with_memory_recovery(self.pool.memory_recovery()),
-			control_pool: control_pool.with_memory_recovery(self.control_pool.memory_recovery()),
+			pool: Pool::from(pool)
+				.with_memory_recovery(self.pool.memory_recovery())
+				.with_dashboard_policy(self.pool.dashboard_policy()),
+			control_pool: control_pool
+				.with_memory_recovery(self.control_pool.memory_recovery())
+				.with_dashboard_policy(self.control_pool.dashboard_policy()),
 			node_id: self.node_id.clone(),
 			semantic_client: self.semantic_client.clone(),
 			recovery_cursors: self.recovery_cursors.clone(),
 			provider_credentials: self.provider_credentials.clone(),
 			provider_key_material_reader: self.provider_key_material_reader.clone(),
+			capability_issuer: self.capability_issuer.clone(),
 			capabilities: self.capabilities.clone(),
 		})
 	}

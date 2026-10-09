@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "endpoint_count": 289,
+  "endpoint_count": 291,
   "requests": [
     {
       "name": "Health reports the configured node",
@@ -11792,6 +11792,72 @@
         "Rejected input preserves committed workspace state",
         "Exact HTTP 422",
         "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1088 sessions-gcip-transaction - Transaction requires its state query",
+      "file": "contracts/1088-sessions-gcip-transaction.bru",
+      "endpoint": "GET /auth/gcip/transaction",
+      "scenario": "Transaction requires its state query",
+      "status": 400,
+      "required_checks": [
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1089 sessions-gcip-transaction - OIDC deployment cannot expose GCIP configuration",
+      "file": "contracts/1089-sessions-gcip-transaction.bru",
+      "endpoint": "GET /auth/gcip/transaction",
+      "scenario": "OIDC deployment cannot expose GCIP configuration",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1090 sessions-gcip-transaction - Tampered browser cookie cannot expose GCIP configuration",
+      "file": "contracts/1090-sessions-gcip-transaction.bru",
+      "endpoint": "GET /auth/gcip/transaction",
+      "scenario": "Tampered browser cookie cannot expose GCIP configuration",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1091 sessions-gcip-exchange - Exchange requires its typed token envelope",
+      "file": "contracts/1091-sessions-gcip-exchange.bru",
+      "endpoint": "POST /auth/gcip/exchange",
+      "scenario": "Exchange requires its typed token envelope",
+      "status": 422,
+      "required_checks": [
+        "Exact HTTP 422",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1092 sessions-gcip-exchange - Malformed token envelope is rejected",
+      "file": "contracts/1092-sessions-gcip-exchange.bru",
+      "endpoint": "POST /auth/gcip/exchange",
+      "scenario": "Malformed token envelope is rejected",
+      "status": 400,
+      "required_checks": [
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1093 sessions-gcip-exchange - OIDC deployment cannot accept a GCIP token",
+      "file": "contracts/1093-sessions-gcip-exchange.bru",
+      "endpoint": "POST /auth/gcip/exchange",
+      "scenario": "OIDC deployment cannot accept a GCIP token",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
       ]
     }
   ]

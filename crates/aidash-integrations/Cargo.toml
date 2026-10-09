@@ -12,8 +12,12 @@ workspace = true
 secrecy = "0.10"
 aidash-application.workspace = true
 aidash-domain.workspace = true
+aidash-capability = { path = "../aidash-capability" }
+zeroize = "1"
+crc32c = "0.6"
 async-trait.workspace = true
 metrics = "0.24"
+tracing = "0.1"
 chrono.workspace = true
 serde.workspace = true
 serde_json = { workspace = true, features = ["raw_value"] }
@@ -46,8 +50,13 @@ jsonwebtoken = { version = "11.1", default-features = false, features = [
   "aws_lc_rs",
 ] }
 openidconnect = "4.0.1"
+gcp_auth = "0.12.7"
 
 [dev-dependencies]
+jsonwebtoken = { version = "11.1", default-features = false, features = [
+  "aws_lc_rs",
+  "use_pem",
+] }
 rstest.workspace = true
 axum = "0.8"
 tempfile = "3"

@@ -39,6 +39,9 @@ class WorkspaceBoundaryTests(unittest.TestCase):
 
     def test_portable_layers_reject_reverse_and_adapter_dependencies(self):
         for owner, dependency in (
+            ("aidash-capability", "aidash-broker"),
+            ("aidash-capability", "aidash-integrations"),
+            ("aidash-capability", "reqwest"),
             ("aidash-domain", "aidash-application"),
             ("aidash-application", "aidash-harness"),
             ("aidash-harness", "aidash-runtime"),

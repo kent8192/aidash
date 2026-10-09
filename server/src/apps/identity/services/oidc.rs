@@ -21,7 +21,7 @@ use crate::{
 	federation::Federation,
 };
 
-use chrono::{DateTime, Duration, Utc};
+use chrono::{Duration, Utc};
 use openidconnect::{
 	ClientId, ClientSecret, CsrfToken, Nonce, PkceCodeChallenge, RedirectUrl,
 	core::{CoreAuthenticationFlow, CoreClient, CoreProviderMetadata},
@@ -29,8 +29,8 @@ use openidconnect::{
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-const SESSION_COOKIE: &str = "__Host-aidash-session";
-const LOGIN_COOKIE: &str = "__Host-aidash-login";
+pub(crate) const SESSION_COOKIE: &str = "__Host-aidash-session";
+pub(crate) const LOGIN_COOKIE: &str = "__Host-aidash-login";
 pub(crate) const CSRF_COOKIE: &str = "aidash-csrf";
 static BACKCHANNEL_CAPACITY: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(4);
 
@@ -43,8 +43,8 @@ pub(crate) fn random_secret() -> String {
 	format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple())
 }
 
-pub(crate) fn required_config(f: &Federation) -> Result<&OidcConfig> {
-	f.config.oidc.as_ref().ok_or(Error::NotFound(
+pub(crate) fn required_config(f: &Federation) -> Result<crate::config::SessionConfig<'_>> {
+	f.config.dashboard_session().ok_or(Error::NotFound(
 		"dashboard sign-in is not configured".into(),
 	))
 }
@@ -65,11 +65,14 @@ pub(crate) fn cookie_value<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a
 #[path = "../tests/oidc_headers.rs"]
 mod header_tests;
 
-fn secure_cookie(config: &OidcConfig) -> bool {
-	config.public_origin.starts_with("https://")
+fn secure_cookie<'a>(config: impl Into<crate::config::SessionConfig<'a>>) -> bool {
+	config.into().public_origin.starts_with("https://")
 }
 
-fn cookie_name(base: &str, config: &OidcConfig) -> String {
+pub(crate) fn cookie_name<'a>(
+	base: &str,
+	config: impl Into<crate::config::SessionConfig<'a>>,
+) -> String {
 	if secure_cookie(config) {
 		base.to_owned()
 	} else {
@@ -77,14 +80,15 @@ fn cookie_name(base: &str, config: &OidcConfig) -> String {
 	}
 }
 
-fn set_cookie(
+pub(crate) fn set_cookie<'a>(
 	response: &mut Response,
 	name: &str,
 	value: &str,
-	config: &OidcConfig,
+	config: impl Into<crate::config::SessionConfig<'a>>,
 	http_only: bool,
 	max_age: i64,
 ) -> Result<()> {
+	let config = config.into();
 	let mut cookie = format!(
 		"{}={}; Path=/; SameSite=Lax; Max-Age={max_age}",
 		cookie_name(name, config),
@@ -105,16 +109,16 @@ fn set_cookie(
 	Ok(())
 }
 
-fn clear_cookie(
+fn clear_cookie<'a>(
 	response: &mut Response,
 	name: &str,
-	config: &OidcConfig,
+	config: impl Into<crate::config::SessionConfig<'a>>,
 	http_only: bool,
 ) -> Result<()> {
 	set_cookie(response, name, "", config, http_only, 0)
 }
 
-fn no_store(response: &mut Response) {
+pub(crate) fn no_store(response: &mut Response) {
 	response.headers.insert(
 		header::CACHE_CONTROL,
 		"no-store".parse().expect("static header"),
@@ -131,7 +135,7 @@ async fn provider_metadata(config: &OidcConfig) -> Result<CoreProviderMetadata> 
 		.map_err(Into::into)
 }
 
-fn return_path(value: Option<&str>) -> Result<&str> {
+pub(crate) fn return_path(value: Option<&str>) -> Result<&str> {
 	let value = value.unwrap_or("/");
 	if value.len() > 1024
 		|| !value.starts_with('/')
@@ -145,22 +149,11 @@ fn return_path(value: Option<&str>) -> Result<&str> {
 	Ok(value)
 }
 
-async fn account_valid(
-	f: &Federation,
-	id: Uuid,
-	issuer: &str,
-	subject: &str,
-	last_valid_at: Option<DateTime<Utc>>,
-	disabled_at: Option<DateTime<Utc>>,
-) -> Result<()> {
+async fn account_valid(f: &Federation, row: DashboardIdentity) -> Result<()> {
 	crate::bootstrap::dashboard_authority(f)
-		.account_valid(&aidash_domain::identity::dashboard::Account {
-			id,
-			issuer: issuer.to_owned(),
-			subject: subject.to_owned(),
-			last_valid_at,
-			disabled_at,
-		})
+		.account_valid(&crate::apps::identity::repositories::dashboard::account(
+			row,
+		))
 		.await
 		.map_err(Into::into)
 }
@@ -223,24 +216,23 @@ pub(crate) async fn validate_session_identity(
 ) -> Result<BrowserSession> {
 	let lease = f.store.orm_connection()?;
 	let identity = DashboardIdentity::find(&mut lease.handle(), session.identity_id()).await?;
-	account_valid(
-		f,
-		identity.id,
-		&identity.issuer,
-		&identity.subject,
-		identity.last_valid_at,
-		identity.disabled_at,
-	)
-	.await?;
+	account_valid(f, identity).await?;
+	let current =
+		DashboardSession::from_token(&mut lease.handle(), session.token_hash.clone()).await?;
+	if current.revoked_at.is_some() {
+		return Err(Error::Unauthorized);
+	}
+
 	Ok(session)
 }
 
-pub fn csrf_allowed(
-	config: &OidcConfig,
+pub fn csrf_allowed<'a>(
+	config: impl Into<crate::config::SessionConfig<'a>>,
 	headers: &HeaderMap,
 	session: &BrowserSession,
 	method: &Method,
 ) -> bool {
+	let config = config.into();
 	if session.desktop {
 		return crate::apps::identity::repositories::desktop::access_token(headers).is_some();
 	}
@@ -253,7 +245,7 @@ pub fn csrf_allowed(
 	let csrf = headers
 		.get("x-aidash-csrf")
 		.and_then(|value| value.to_str().ok());
-	origin == Some(config.public_origin.as_str())
+	origin == Some(config.public_origin)
 		&& csrf.is_some_and(|value| digest(value) == session.csrf_hash)
 }
 
@@ -371,19 +363,24 @@ impl DashboardSessions {
 	pub(crate) async fn configuration(&self) -> Result<Configuration> {
 		let f = self.runtime.clone();
 		Ok(Configuration {
-			enabled: f.config.oidc.is_some(),
+			enabled: f.config.dashboard_session().is_some(),
 			desktop_protocol: 1,
-			provider: if f.config.oidc.as_ref().is_none_or(OidcConfig::is_google) {
+			provider: if f.config.gcip.is_some() {
+				"gcip"
+			} else if f.config.oidc.as_ref().is_none_or(OidcConfig::is_google) {
 				"google"
 			} else {
 				"keycloak"
 			},
-			login_url: f.config.oidc.as_ref().map(|_| "/auth/login"),
+			login_url: f.config.dashboard_session().map(|_| "/auth/login"),
 		})
 	}
 	pub(crate) async fn login(&self, headers: HeaderMap, query: LoginQuery) -> Result<Response> {
 		let f = self.runtime.clone();
-		let config = required_config(&f)?;
+		if f.config.gcip.is_some() {
+			return crate::apps::identity::services::gcip::login(&f, headers, query).await;
+		}
+		let config = f.config.oidc.as_ref().ok_or(Error::Unauthorized)?;
 		let destination = return_path(query.return_to.as_deref())?;
 		let browser = cookie_value(&headers, &cookie_name(LOGIN_COOKIE, config))
 			.map(str::to_owned)
@@ -405,6 +402,8 @@ impl DashboardSessions {
 			.return_to(destination)
 			.callback_uri(callback)
 			.expires_at(Utc::now() + Duration::minutes(5))
+			.started_at(None)
+			.gcip_tenant(None)
 			.finish();
 		let lease = f.store.orm_connection()?;
 		reservation.reserve(lease.handle()).await?;
@@ -444,7 +443,7 @@ impl DashboardSessions {
 		query: CallbackQuery,
 	) -> Result<Response> {
 		let f = self.runtime.clone();
-		let config = required_config(&f)?;
+		let config = f.config.oidc.as_ref().ok_or(Error::Unauthorized)?;
 		let browser = cookie_value(&headers, &cookie_name(LOGIN_COOKIE, config))
 			.ok_or(Error::Unauthorized)?;
 		let lease = f.store.orm_connection()?;
@@ -457,12 +456,12 @@ impl DashboardSessions {
 			return Err(Error::Unauthorized);
 		}
 		let metadata = provider_metadata(config).await?;
-		let (subject, provider_sid) =
+		let (sign_in, provider_sid) =
 			exchange_identity(config, metadata, &transaction, query.code).await?;
 		let identity = crate::bootstrap::dashboard_authority(&f)
 			.admit_login(
 				&mut crate::bootstrap::dashboard_login(lease.handle()),
-				&subject,
+				&sign_in,
 			)
 			.await?;
 		let secret = random_secret();
@@ -473,6 +472,7 @@ impl DashboardSessions {
 			identity.id,
 			(digest(&secret), digest(&csrf)),
 			provider_sid,
+			sign_in.auth_time,
 			config.session_absolute_seconds,
 			previous,
 		)
@@ -505,6 +505,20 @@ impl DashboardSessions {
 		let mut connection = lease.handle();
 		let mappings =
 			DashboardMapping::enabled_for_identity(&mut connection, session.identity_id()).await?;
+		let external = DashboardIdentity::find(&mut connection, session.identity_id()).await?;
+		let policy = f.config.dashboard_policy();
+		let mappings = mappings
+			.into_iter()
+			.filter(|mapping| {
+				identity::require_dashboard_mapping(
+					policy.as_ref(),
+					&external.issuer,
+					&external.gcip_tenant,
+					&mapping.tenant,
+				)
+				.is_ok()
+			})
+			.collect::<Vec<_>>();
 		let operator =
 			DashboardOperatorGrant::enabled_for_identity(&mut connection, session.identity_id())
 				.await?;
@@ -529,6 +543,7 @@ impl DashboardSessions {
 		let f = self.runtime.clone();
 		let session = session_from_headers(&f, &headers).await?;
 		let lease = f.store.orm_connection()?;
+		DashboardIdentity::expire_registrations(lease.handle()).await?;
 		let mut connection = lease.handle();
 		let mut response = Response::ok().with_json(
 			&(DashboardRegistrationRequest::latest(&mut connection, session.identity_id())
@@ -589,6 +604,7 @@ impl DashboardSessions {
 			input,
 			decision_actor(actor),
 			digest(&random_secret()),
+			self.runtime.config.dashboard_policy(),
 		)
 		.await
 	}
@@ -714,7 +730,7 @@ async fn exchange_identity(
 	metadata: CoreProviderMetadata,
 	transaction: &DashboardLoginTransaction,
 	code: String,
-) -> Result<(String, Option<String>)> {
+) -> Result<(aidash_domain::identity::dashboard::SignIn, Option<String>)> {
 	aidash_integrations::oidc::exchange_identity(
 		&crate::bootstrap::oidc_settings(config),
 		metadata,

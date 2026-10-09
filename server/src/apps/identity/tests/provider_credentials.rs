@@ -50,18 +50,29 @@ fn capture_logs() {
 		.try_init();
 }
 #[derive(Default)]
-struct FakeStore(Mutex<std::collections::BTreeMap<String, Vec<String>>>);
+struct FakeStore {
+	secrets: Mutex<std::collections::BTreeMap<String, Vec<String>>>,
+	fail_create: bool,
+}
 #[async_trait]
 impl Store for FakeStore {
 	fn resource(&self, id: Uuid) -> String {
 		format!("fake/{id}")
 	}
 	async fn create(&self, _tenant: &str, id: Uuid) -> Result<()> {
-		self.0.lock().unwrap().insert(self.resource(id), vec![]);
+		if self.fail_create {
+			return Err(aidash_application::Error::External(
+				"Provider Credential Store unavailable".into(),
+			));
+		}
+		self.secrets
+			.lock()
+			.unwrap()
+			.insert(self.resource(id), vec![]);
 		Ok(())
 	}
 	async fn add_version(&self, _tenant: &str, resource: &str, _: &SecretString) -> Result<String> {
-		let mut values = self.0.lock().unwrap();
+		let mut values = self.secrets.lock().unwrap();
 		let versions = values.get_mut(resource).unwrap();
 		let name = format!("{resource}/versions/{}", versions.len() + 1);
 		versions.push(name.clone());
@@ -69,7 +80,7 @@ impl Store for FakeStore {
 	}
 	async fn versions(&self, resource: &str) -> Result<Vec<String>> {
 		Ok(self
-			.0
+			.secrets
 			.lock()
 			.unwrap()
 			.get(resource)
@@ -83,7 +94,7 @@ impl Store for FakeStore {
 		Ok(())
 	}
 	async fn delete(&self, resource: &str) -> Result<()> {
-		self.0.lock().unwrap().remove(resource);
+		self.secrets.lock().unwrap().remove(resource);
 		Ok(())
 	}
 }
@@ -588,9 +599,77 @@ async fn lifecycle_api_uses_live_tenant_policy_and_never_persists_or_returns_key
 			.to_string()
 			.contains("provider_credential_binding.updated")
 	);
+	let cleanup = own_events
+		.as_array()
+		.unwrap()
+		.iter()
+		.find(|event| {
+			event["kind"] == "provider_credential.cleanup_completed" && event["data"]["id"] == id
+		})
+		.expect("the Tenant's authorized cleanup event must reach polling");
+	assert_eq!(cleanup["data"]["state"], "deleted");
+	let own_state = assert_json(alpha_subject.get("/api/state").await.unwrap(), 200);
+	assert!(
+		own_state["events"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.any(|event| event["id"] == cleanup["id"])
+	);
+	// Stream the same stored event through the production Subject SSE route.
+	use futures_util::StreamExt as _;
+	let response = reqwest::Client::new()
+		.get(format!(
+			"{}/api/events/stream?after={}",
+			f.server.url,
+			cleanup["sequence"].as_i64().unwrap() - 1
+		))
+		.bearer_auth(alpha_token["token"].as_str().unwrap())
+		.send()
+		.await
+		.unwrap();
+	assert_eq!(response.status().as_u16(), 200);
+	let mut stream = response.bytes_stream();
+	let frame = tokio::time::timeout(std::time::Duration::from_secs(5), stream.next())
+		.await
+		.unwrap()
+		.unwrap()
+		.unwrap();
+	let frame = String::from_utf8_lossy(&frame);
+	assert!(frame.contains("provider_credential.cleanup_completed"));
+	assert!(frame.contains(id));
+	assert!(!frame.contains(canary));
+	drop(stream);
 	assert!(!own_events.to_string().contains(canary));
 	let other_events = assert_json(subject.get("/api/events?after=0").await.unwrap(), 200);
 	assert!(!other_events.to_string().contains(id));
+	let other_state = assert_json(subject.get("/api/state").await.unwrap(), 200);
+	assert!(!other_state["events"].to_string().contains(id));
+	// Matching the Tenant is insufficient when Provider Credential read is denied.
+	let denied = json!({"tenant":"alpha","subjects":{"alice":{"kind":"user"}},"policies":[]});
+	assert_json(
+		f.operator
+			.post(
+				"/api/authorization/alpha",
+				&json!({"expected_revision":1,"bundle":denied}),
+				"json",
+			)
+			.await
+			.unwrap(),
+		200,
+	);
+	let denied_events = assert_json(alpha_subject.get("/api/events?after=0").await.unwrap(), 200);
+	assert!(
+		!denied_events
+			.to_string()
+			.contains(cleanup["id"].as_str().unwrap())
+	);
+	let denied_state = assert_json(alpha_subject.get("/api/state").await.unwrap(), 200);
+	assert!(
+		!denied_state["events"]
+			.to_string()
+			.contains(cleanup["id"].as_str().unwrap())
+	);
 	let database = all_database_text(&f).await;
 	assert!(
 		!database.contains(canary),
@@ -777,6 +856,7 @@ async fn workspace_embedding_credential_is_pinned_with_environment_model_admissi
 		run: Some(run.id),
 		maintenance: None,
 		provider_credential_id: None,
+		inference: None,
 	};
 	// Resolution reaches the deliberately unbound broker, proving it found the
 	// admitted embedding pin rather than failing at the Env-only Agent closure.
@@ -849,7 +929,21 @@ async fn admission_pins_local_tenant_id_and_reloads_state_without_environment_fa
 	);
 	f.runtime.store.provider_credentials = Some(service.clone());
 	f.runtime.registry = f.runtime.registry.clone().with_provider_credentials(true);
-	f.runtime.registry.register(model).await.unwrap();
+	f.runtime.registry.register(model.clone()).await.unwrap();
+	for seconds in [3601_u32, u32::MAX] {
+		let mut invalid = model.clone();
+		invalid.id = format!("byok-too-long-{seconds}");
+		invalid.config["request_timeout_secs"] = json!(seconds);
+		assert!(
+			f.runtime
+				.registry
+				.register(invalid)
+				.await
+				.unwrap_err()
+				.to_string()
+				.contains("at most 3600")
+		);
+	}
 	f.context.set_singleton(f.runtime.clone());
 	let draft = assert_json(f.operator.post("/api/workbench/drafts", &json!({
 		"tenant":"beta","owner":"actor","entry":{
@@ -980,6 +1074,7 @@ async fn admission_pins_local_tenant_id_and_reloads_state_without_environment_fa
 		run: Some(run),
 		maintenance: None,
 		provider_credential_id: None,
+		inference: None,
 	};
 	let mut maintenance = Context {
 		tenant: "beta".into(),
@@ -987,6 +1082,7 @@ async fn admission_pins_local_tenant_id_and_reloads_state_without_environment_fa
 		maintenance: None,
 		// Supplied IDs cannot select another Tenant's record for maintenance.
 		provider_credential_id: Some(a.id),
+		inference: None,
 	};
 	assert!(
 		access
@@ -1069,6 +1165,73 @@ async fn admission_pins_local_tenant_id_and_reloads_state_without_environment_fa
 	assert_eq!(pins[0].tenant, "beta");
 	assert_eq!(pins[0].provider_credential_id, b.id);
 	tx.commit().await.unwrap();
+	// Native admission feeds the worker-local issuer, retaining the Run pin and
+	// selecting the current mapped-local binding for Run-less maintenance.
+	struct Issuer(Arc<Mutex<Vec<(Context, Uuid, String)>>>);
+	#[async_trait]
+	impl aidash_application::provider_access::TokenIssuer for Issuer {
+		async fn mint(
+			&self,
+			context: &Context,
+			row: &aidash_domain::provider_credentials::ProviderCredential,
+		) -> Result<aidash_application::provider_access::Access> {
+			self.0
+				.lock()
+				.unwrap()
+				.push((context.clone(), row.id, row.require_active()?.into()));
+			Ok(aidash_application::provider_access::Access {
+				endpoint: "https://broker.test/api/v1".into(),
+				bearer: "fixture-token".into(),
+			})
+		}
+	}
+	let mints = Arc::new(Mutex::new(Vec::new()));
+	f.runtime.store.capability_issuer = Some(Arc::new(Issuer(mints.clone())));
+	let enabled = AdmittedAccess {
+		store: f.runtime.store.clone(),
+	};
+	let mut scoped = context.clone();
+	scoped.inference = Some(aidash_application::provider_access::Inference {
+		model: "test/model".into(),
+		operations: vec![aidash_application::provider_access::Operation::Chat],
+		max_output_tokens: 1024,
+	});
+	assert_eq!(
+		enabled
+			.resolve(&scoped, Provider::Openrouter.base_url(), &source)
+			.await
+			.unwrap()
+			.endpoint,
+		"https://broker.test/api/v1"
+	);
+	let mut scoped_maintenance = maintenance.clone();
+	scoped_maintenance.inference = scoped.inference.clone();
+	enabled
+		.resolve(
+			&scoped_maintenance,
+			Provider::Openrouter.base_url(),
+			&source,
+		)
+		.await
+		.unwrap();
+	let mut metadata = service.repository.begin("beta").await.unwrap();
+	let current = metadata.get(b.id).await.unwrap();
+	let current_pin = current.require_active().unwrap().to_owned();
+	metadata.commit().await.unwrap();
+	{
+		let captured = mints.lock().unwrap();
+		assert_eq!(captured.len(), 2);
+		assert_eq!(captured[0].0.tenant, "beta");
+		assert_eq!(captured[0].0.run, Some(run));
+		assert_eq!(
+			captured[0].0.inference.as_ref().unwrap().model,
+			"test/model"
+		);
+		assert_eq!(captured[0].1, b.id);
+		assert_eq!(captured[0].2, current_pin);
+		assert_eq!(captured[1].0.run, None);
+		assert_eq!(captured[1].1, replacement.id);
+	}
 	service
 		.revoke("beta", b.id, rotated.revision, "actor")
 		.await
@@ -1224,7 +1387,7 @@ async fn registry_migration_preserves_current_constraints_in_both_directions(
 	apply_asset(
 		tx.as_mut(),
 		&f.database.connection,
-		include_str!("../../../../migrations/knowledge/sql/backward/0027_provider_credentials.sql"),
+		include_str!("../../../../migrations/knowledge/sql/backward/0028_provider_credentials.sql"),
 	)
 	.await;
 	assert_eq!(
@@ -1234,7 +1397,7 @@ async fn registry_migration_preserves_current_constraints_in_both_directions(
 	apply_asset(
 		tx.as_mut(),
 		&f.database.connection,
-		include_str!("../../../../migrations/knowledge/sql/forward/0027_provider_credentials.sql"),
+		include_str!("../../../../migrations/knowledge/sql/forward/0028_provider_credentials.sql"),
 	)
 	.await;
 	assert_eq!(
@@ -1300,6 +1463,7 @@ async fn postgres_store_service_lifecycle_resolves_pins_and_never_leaks_canary(
 		},
 		repository: service.repository.clone(),
 		reader: Some(store.clone()),
+		issuer: None,
 	};
 	let context = Context {
 		tenant: "alpha".into(),
@@ -2709,7 +2873,7 @@ async fn subject_mutations_return_committed_results_when_decision_audit_fails(
 	assert_eq!(tombstone.pinned_version, None);
 	assert!(tombstone.require_active().is_err());
 	scope.commit().await.unwrap();
-	assert!(store.0.lock().unwrap().is_empty());
+	assert!(store.secrets.lock().unwrap().is_empty());
 	let mut tx = f.database.connection.begin().await.unwrap();
 	let decisions = AuthorizationDecision::objects()
 		.filter(AuthorizationDecision::field_subject().eq("alice"))
@@ -2734,5 +2898,134 @@ async fn subject_mutations_return_committed_results_when_decision_audit_fails(
 		assert!(persisted.contains(event), "missing committed event {event}");
 	}
 	let log = String::from_utf8_lossy(&LOG.get().unwrap().lock().unwrap()).into_owned();
-	assert!(log.contains("Committed Provider Credential mutation audit could not be finalized"));
+	assert!(log.contains("Provider Credential mutation audit could not be finalized"));
+}
+
+#[rstest]
+#[tokio::test]
+async fn failed_subject_creates_preserve_the_operation_error_and_durable_allow_audit(
+	#[future] endpoint: EndpointFixture,
+) {
+	use aidash_domain::provider_credentials::State;
+	use aidash_server::{
+		apps::identity::{
+			models::AuthorizationDecision, services::provider_credentials::Management,
+		},
+		authorization::Authorization,
+	};
+	use reinhardt::db::orm::Model;
+	struct RejectedValidator;
+	#[async_trait]
+	impl KeyValidator for RejectedValidator {
+		async fn validate(&self, _: Provider, _: &SecretString) -> Result<Validation> {
+			Err(aidash_application::Error::Invalid(
+				"Provider Credential validation rejected".into(),
+			))
+		}
+	}
+	let f = endpoint.await;
+	let bundle = json!({"tenant":"alpha","subjects":{"alice":{"kind":"user"}},"policies":[{"id":"provider-create","effect":"allow","subjects":{"ids":["alice"]},"actions":["provider_credential.create"],"resources":{"kinds":["provider_credential"]}}]});
+	assert_json(
+		f.operator
+			.post(
+				"/api/authorization/alpha",
+				&json!({"expected_revision":0,"bundle":bundle}),
+				"json",
+			)
+			.await
+			.unwrap(),
+		200,
+	);
+	let issued = assert_json(
+		f.operator
+			.post(
+				"/api/authorization/alpha/credentials",
+				&json!({"subject":"alice","expires_in_seconds":3600}),
+				"json",
+			)
+			.await
+			.unwrap(),
+		200,
+	);
+	let actor = Authorization {
+		pool: f.runtime.store.pool.clone(),
+	}
+	.authenticate(issued["token"].as_str().unwrap())
+	.await
+	.unwrap();
+	let mut seen = std::collections::BTreeSet::new();
+	for fail_store in [false, true] {
+		let store = Arc::new(FakeStore {
+			fail_create: fail_store,
+			..Default::default()
+		});
+		let validator: Arc<dyn KeyValidator> = if fail_store {
+			Arc::new(Validator)
+		} else {
+			Arc::new(RejectedValidator)
+		};
+		let service = Arc::new(Service {
+			repository: Arc::new(NativeRepository {
+				pool: f.runtime.store.control_pool.clone(),
+				node: f.runtime.store.node_id.clone(),
+			}),
+			store: store.clone(),
+			validator,
+			fingerprint_key: "test-fingerprint-key-that-is-at-least-32-bytes".into(),
+			max_per_tenant: 20,
+		});
+		let mut runtime = f.runtime.clone();
+		runtime.store.provider_credentials = Some(service.clone());
+		let management = Management { runtime };
+		let canary = "failed-create-key-material-canary-9a72";
+		let error = management
+			.create(
+				actor.clone(),
+				"alpha".into(),
+				Provider::Openrouter,
+				canary.into(),
+			)
+			.await
+			.unwrap_err();
+		if fail_store {
+			assert!(
+				matches!(error, aidash_server::Error::External(ref message) if message == "Provider Credential Store unavailable")
+			);
+		} else {
+			assert!(
+				matches!(error, aidash_server::Error::Invalid(ref message) if message == "Provider Credential validation rejected")
+			);
+		}
+		let mut scope = service.repository.begin("alpha").await.unwrap();
+		let rows = scope.list(0, 200).await.unwrap();
+		let row = rows.iter().find(|row| !seen.contains(&row.id)).unwrap();
+		assert_eq!(
+			row.state,
+			if fail_store {
+				State::Pending
+			} else {
+				State::Deleted
+			}
+		);
+		assert_eq!(row.revision, if fail_store { 1 } else { 2 });
+		assert_eq!(row.pinned_version, None);
+		assert!(row.require_active().is_err());
+		seen.insert(row.id);
+		scope.commit().await.unwrap();
+		assert!(store.secrets.lock().unwrap().is_empty());
+		let mut tx = f.database.connection.begin().await.unwrap();
+		let decisions = AuthorizationDecision::objects()
+			.filter(AuthorizationDecision::field_subject().eq("alice"))
+			.filter(AuthorizationDecision::field_action().eq("provider_credential.create"))
+			.order_by(&["sequence"])
+			.all_with_executor(tx.as_mut())
+			.await
+			.unwrap();
+		tx.commit().await.unwrap();
+		assert_eq!(decisions.len(), seen.len());
+		let decision = decisions.last().unwrap();
+		assert_eq!(decision.resource_id, row.id.to_string());
+		assert_eq!(decision.decision.0["allowed"], true);
+		assert!(!all_database_text(&f).await.contains(canary));
+	}
 }

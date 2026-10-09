@@ -2,8 +2,8 @@
 // Native schema operations enforce Tenant ownership and catalog/state invariants.
 use reinhardt::db::migrations::prelude::*;
 pub(super) fn migration() -> Migration {
-	Migration::new("0013_provider_credential_constraints", "identity")
-.add_dependency("identity", "0012_provider_credentials").database_only(true).atomic(true)
+	Migration::new("0014_provider_credential_constraints", "identity")
+.add_dependency("identity", "0013_provider_credentials").database_only(true).atomic(true)
 .add_operation(Operation::AddConstraintDefinition {table:"provider_credentials".to_owned(),constraint:Constraint::Check {name:"provider_credential_catalog".to_owned(),expression:r#"provider = 'openrouter' AND base_url = 'https://openrouter.ai/api/v1'"#.to_owned()}})
 .add_operation(Operation::AddConstraintDefinition {table:"provider_credentials".to_owned(),constraint:Constraint::Check {name:"provider_credential_state".to_owned(),expression:r#"state IN ('pending','active','revoked','deleted') AND (state <> 'active' OR pinned_version IS NOT NULL) AND (state <> 'pending' OR pinned_version IS NULL) AND (state <> 'revoked' OR revoked_at IS NOT NULL)"#.to_owned()}})
 .add_operation(Operation::AddConstraintDefinition {table:"provider_credentials".to_owned(),constraint:Constraint::Check {name:"provider_credential_metadata".to_owned(),expression:r#"revision > 0 AND id::text ~ '^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$' AND fingerprint ~ '^[0-9a-f]{16}$' AND length(last4) = 4 AND length(tenant) BETWEEN 1 AND 256"#.to_owned()}})

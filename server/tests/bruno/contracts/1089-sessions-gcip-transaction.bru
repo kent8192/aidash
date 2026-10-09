@@ -1,0 +1,20 @@
+meta {
+  name: 1089 sessions-gcip-transaction - OIDC deployment cannot expose GCIP configuration
+  type: http
+  seq: 1089
+}
+
+get {
+  url: {{base_url}}/auth/gcip/transaction?state=invalid
+  body: none
+  auth: none
+}
+
+headers {
+  Accept: application/json
+}
+
+tests {
+  test("Exact HTTP 401", function () { expect(res.getStatus()).to.equal(401); });
+  test("Stable authorization error envelope", function () { expect(res.getHeader("content-type")).to.include("application/json"); expect(res.getBody()).to.eql({error:"unauthorized"}); });
+}

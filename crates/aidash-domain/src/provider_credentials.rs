@@ -74,6 +74,26 @@ pub struct Binding {
 	pub revision: i64,
 }
 /// Structural validation applies at every configuration write and on consumption.
+pub fn validate_model_id(model: &str) -> Result<()> {
+	if model.is_empty()
+		|| model.len() > 256
+		|| model.split('/').any(|part| {
+			part.is_empty()
+				|| part == "."
+				|| part == ".."
+				|| !part
+					.bytes()
+					.all(|byte| byte.is_ascii_alphanumeric() || b"-_.:".contains(&byte))
+		}) {
+		return Err(Error::Invalid(
+			"Provider Credential model ID must use catalog path segments and be at most 256 bytes"
+				.into(),
+		));
+	}
+	Ok(())
+}
+
+/// Structural validation applies at every configuration write and on consumption.
 pub fn validate_source(
 	endpoint: &str,
 	provider: &str,

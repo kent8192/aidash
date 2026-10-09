@@ -2,7 +2,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 terraform fmt -check -recursive infra/gcp
-for root in bootstrap environments modules/environment; do
+for root in bootstrap environments modules/environment modules/credential-broker; do
   terraform -chdir="infra/gcp/$root" init -backend=false -input=false -no-color
   terraform -chdir="infra/gcp/$root" validate -no-color
   terraform -chdir="infra/gcp/$root" test -no-color

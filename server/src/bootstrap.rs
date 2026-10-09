@@ -68,7 +68,9 @@ pub async fn initialize(
 	let pool = connection
 		.into_postgres()
 		.ok_or_else(|| Error::Invalid("Aidash requires PostgreSQL".into()))?;
-	let mut store = Store::from_pool(pool, config.node_id.clone()).await?;
+	let mut store = Store::from_pool(pool, config.node_id.clone())
+		.await?
+		.with_dashboard_policy(config.dashboard_policy());
 	configure_provider_credentials(&mut store, &settings.provider_credentials).await?;
 	let registry = Registry::new(store.pool.clone(), &store.node_id)?
 		.with_provider_credentials(store.provider_credentials.is_some());
@@ -80,12 +82,21 @@ pub async fn initialize(
 		.build()?;
 	let federation = Federation {
 		sandbox: Default::default(),
+		gcip: config.gcip.as_ref().map(|gcip| {
+			Arc::new(aidash_integrations::gcip::Services::new(
+				gcip.project_id.clone(),
+				client.clone(),
+			))
+		}),
 		store,
 		registry,
 		config,
 		client,
 		notify: Arc::new(Notify::new()),
 	};
+	// Persist removed GCIP Bindings even for inactive Identities before this
+	// policy can serve requests or start workers. Provider IO is unnecessary.
+	dashboard_authority(&federation).reconcile_policy().await?;
 	let lease = DatabaseConnectionLease::register(connection)?;
 	context.set_singleton(lease.handle());
 	context.set_singleton(lease);
@@ -201,7 +212,7 @@ impl RuntimeTasks {
 				crate::capabilities::transfer::run(transfers, stopping).await
 			}));
 		}
-		if federation.config.oidc.is_some() {
+		if federation.config.dashboard_session().is_some() {
 			tasks.spawn_service(runtime_task(crate::dashboard_auth::refresh_active(
 				federation.clone(),
 				receiver.clone(),
@@ -320,6 +331,7 @@ pub fn model_catalog(client: reqwest::Client) -> Arc<dyn aidash_application::por
 }
 
 mod compatibility;
+mod listener;
 pub use compatibility::{migrate, serve};
 
 /// All inference paths use the same credential resolver and application port.
@@ -1693,8 +1705,9 @@ pub(crate) fn peer_mapping_repository(
 pub(crate) fn draft_authority_scope<'a>(
 	tx: &'a mut dyn reinhardt::db::backends::TransactionExecutor,
 	actor: &'a crate::authorization::identity::Actor,
+	policy: Option<aidash_application::ports::authorization::dashboard::AccountPolicy>,
 ) -> crate::apps::registry::workbench::repositories::authority::Scope<'a> {
-	crate::apps::registry::workbench::repositories::authority::Scope { tx, actor }
+	crate::apps::registry::workbench::repositories::authority::Scope { tx, actor, policy }
 }
 /// HTTP edits assemble the same repository used by application draft workflows.
 pub(crate) fn draft_repository(
@@ -2040,10 +2053,16 @@ pub(crate) fn dashboard_authority(
 		accounts: Arc::new(crate::apps::identity::repositories::dashboard::Repository(
 			federation.clone(),
 		)),
-		status: Arc::new(aidash_integrations::oidc::AccountLookup {
-			client: federation.client.clone(),
-			settings: federation.config.oidc.as_ref().map(oidc_settings),
-		}),
+		status: federation
+			.gcip
+			.as_ref()
+			.map(|gcip| gcip.status.clone())
+			.unwrap_or_else(|| {
+				Arc::new(aidash_integrations::oidc::AccountLookup {
+					client: federation.client.clone(),
+					settings: federation.config.oidc.as_ref().map(oidc_settings),
+				})
+			}),
 	}
 }
 
@@ -2112,15 +2131,34 @@ pub async fn configure_provider_credentials(
 		StoreConfig::SecretManager {
 			byok_project_id,
 			environment_id,
-		} => (
-			Arc::new(
-				aidash_integrations::provider_credentials::SecretManager::new(
+		} => {
+			// Settings validation admits a broker only for this Store kind.
+			if let Some(broker) = &settings.broker {
+				use aidash_integrations::capability::{
+					KmsTokenSigner, MetadataTokenSource, issuer::CapabilityIssuer,
+				};
+				let tokens = Arc::new(MetadataTokenSource::new().map_err(|_| {
+					Error::Invalid("Capability Token metadata configuration unavailable".into())
+				})?);
+				let signer = Arc::new(KmsTokenSigner::new(broker.kid.clone(), tokens).map_err(
+					|_| Error::Invalid("invalid Capability Token KMS key version".into()),
+				)?);
+				store.capability_issuer = Some(Arc::new(CapabilityIssuer::new(
+					broker.clone(),
 					byok_project_id.clone(),
-					environment_id.clone(),
-				)?,
-			),
-			None,
-		),
+					signer,
+				)?));
+			}
+			(
+				Arc::new(
+					aidash_integrations::provider_credentials::SecretManager::new(
+						byok_project_id.clone(),
+						environment_id.clone(),
+					)?,
+				),
+				None,
+			)
+		}
 		StoreConfig::Postgres { .. } => {
 			let (current, retired) = config.load_postgres_keys().await?;
 			let adapter = Arc::new(
@@ -2176,6 +2214,7 @@ pub(crate) fn admitted_model_provider(
 			run,
 			maintenance,
 			provider_credential_id: None,
+			inference: None,
 		},
 	)
 	.map_err(Into::into)
@@ -2197,6 +2236,7 @@ pub(crate) fn admitted_semantic_transport(
 		run,
 		maintenance,
 		provider_credential_id: None,
+		inference: None,
 	};
 	transport
 }

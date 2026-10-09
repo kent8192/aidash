@@ -1,4 +1,4 @@
-"""Human-run bootstrap owns BYOK roles; broker identity grants remain deferred."""
+"""Human-run bootstrap owns BYOK roles; dedicated broker identities receive prefix-conditioned read grants."""
 from pathlib import Path
 import unittest
 ROOT = Path(__file__).resolve().parents[1]

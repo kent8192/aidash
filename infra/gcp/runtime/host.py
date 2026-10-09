@@ -27,6 +27,7 @@ K3S_VERSION = "v1.34.11+k3s1"
 K3S_SHA = "c1991a83985375d318560ac10f2def2fa117995d94d0319d801f283ca074d1b0"
 GVISOR_VERSION = "20260921.0"
 GVISOR_SHA = "3dd478770dd751d09c257ba14d739b179348a36c5f2d9e954b773f5f90bff646"
+LEGACY_FINGERPRINT_KEY = "AIDASH_SECRET_PROVIDER_FINGERPRINT"
 
 
 def command(*args, data=None, timeout=120, check=True):
@@ -317,7 +318,7 @@ def environment_file(values):
 
 
 def provider_settings(external):
-    """Render only the managed non-secret Store descriptor, never its key."""
+    """Render managed Store/broker descriptors, never their key material."""
     try:
         descriptor = json.loads(request(
             "http://metadata.google.internal/computeMetadata/v1/instance/attributes/aidash-provider-credentials"
@@ -325,8 +326,10 @@ def provider_settings(external):
     except HTTPError as error:
         if error.code != 404:
             raise
-        descriptor = {"fingerprint_key": None, "store": None}
-    if not isinstance(descriptor, dict) or set(descriptor) != {"fingerprint_key", "store"}:
+        descriptor = {"fingerprint_key": None, "store": None, "broker": None}
+    if descriptor is None:
+        descriptor = {"fingerprint_key": None, "store": None, "broker": None}
+    if not isinstance(descriptor, dict) or set(descriptor) != {"fingerprint_key", "store", "broker"}:
         raise ValueError("invalid managed Provider Credential configuration")
     store = descriptor["store"]
     if store is not None:
@@ -346,12 +349,50 @@ def provider_settings(external):
             raise ValueError("BYOK requires a stable Provider Credential fingerprint key of at least 32 bytes")
     elif descriptor["fingerprint_key"] is not None:
         raise ValueError("invalid managed Provider Credential configuration")
+    broker = descriptor["broker"]
+    if broker is not None and (
+        store is None
+        or not isinstance(broker, dict)
+        or set(broker) != {"endpoint", "issuer", "audience", "kid"}
+        or any(not isinstance(value, str) or not value for value in broker.values())
+        or broker["audience"] != store["environment_id"]
+    ):
+        raise ValueError("invalid managed Provider Credential broker")
     path = RUN / "provider-settings" / "settings.json"
     # Descriptor only; UID 10001 must traverse/read this directory bind mount.
     path.parent.mkdir(parents=True, exist_ok=True)
     path.parent.chmod(0o755)
     private(path, json.dumps({"provider_credentials": descriptor}), 0o644)
     return path
+
+
+def gcip_settings(host, dashboard):
+    """Render only the managed public GCIP fragment, separate from runtime secrets."""
+    if dashboard is None:
+        return {}
+    if not isinstance(dashboard, dict) or set(dashboard) != {"gcip"}:
+        raise ValueError("managed dashboard configuration must select GCIP only")
+    settings = dashboard["gcip"]
+    allowed = {
+        "project_id", "web_api_key", "public_origin", "tenant_bindings",
+        "providers", "password_sign_up", "session_absolute_seconds", "session_idle_seconds",
+    }
+    if not isinstance(settings, dict) or set(settings) - allowed:
+        raise ValueError("unsupported managed GCIP configuration")
+    if (
+        settings.get("project_id") != host["project"]
+        or settings.get("public_origin") != "https://" + host["hostname"]
+        or not isinstance(settings.get("web_api_key"), str)
+        or not settings["web_api_key"].strip()
+        or not isinstance(settings.get("tenant_bindings"), dict)
+    ):
+        raise ValueError("managed GCIP configuration must match this environment")
+    directory = RUN / "dashboard-settings"
+    directory.mkdir(mode=0o755, parents=True, exist_ok=True)
+    directory.chmod(0o755)
+    path = directory / "settings.json"
+    private(path, json.dumps({"dashboard": {"gcip": settings}}, sort_keys=True), 0o644)
+    return {"AIDASH_GCIP_SETTINGS": str(path)}
 
 
 def configuration(host):
@@ -362,6 +403,15 @@ def configuration(host):
         )
     )
     external = json.loads(base64.b64decode(payload["payload"]["data"]))
+    dashboard = external.pop("dashboard", None)
+    # BYOK environments provisioned before the rename still store the fingerprint
+    # under the Registry-resolvable name. Carry the same value over once so rolling
+    # hosts keep stable fingerprints, and never emit the legacy name to the app.
+    legacy_fingerprint = external.pop(LEGACY_FINGERPRINT_KEY, None)
+    if legacy_fingerprint is not None:
+        external.setdefault("AIDASH_PROVIDER_FINGERPRINT_KEY", legacy_fingerprint)
+    if dashboard is not None and any(key.startswith("AIDASH_OIDC_") for key in external):
+        raise ValueError("GCIP and OIDC runtime configuration cannot coexist")
     if not all(
         key.startswith("AIDASH_SECRET_")
         or key
@@ -377,8 +427,10 @@ def configuration(host):
         raise ValueError(
             "runtime secret may contain only Google client/session and provider credential configuration"
         )
-    if not external.get("AIDASH_OIDC_CLIENT_ID") or not external.get(
-        "AIDASH_OIDC_CLIENT_SECRET"
+    dashboard_environment = gcip_settings(host, dashboard)
+    if not dashboard_environment and (
+        not external.get("AIDASH_OIDC_CLIENT_ID")
+        or not external.get("AIDASH_OIDC_CLIENT_SECRET")
     ):
         raise ValueError("Google OAuth client configuration is required")
     path = ROOT / "identity.json"
@@ -404,13 +456,15 @@ def configuration(host):
         AIDASH_LISTEN="127.0.0.1:18080",
         AIDASH_PROBE_LISTEN="127.0.0.1:18081",
         AIDASH_AUTH_TRUSTED_PROXY_IPS="127.0.0.1",
-        AIDASH_OIDC_ISSUER="https://accounts.google.com",
-        AIDASH_OIDC_PUBLIC_ORIGIN="https://" + host["hostname"],
         AIDASH_CAPABILITY_PROFILE=str(ROOT / "profile.json"),
         AIDASH_MEMORY_RECOVERY_DIR=str(ROOT / "memory-recovery"),
         AIDASH_CORE_RUNNER_TOKEN=identity["runner"],
         AIDASH_PROVIDER_CREDENTIAL_SETTINGS=str(managed_provider_settings),
     )
+    result.update(dashboard_environment or {
+        "AIDASH_OIDC_ISSUER": "https://accounts.google.com",
+        "AIDASH_OIDC_PUBLIC_ORIGIN": "https://" + host["hostname"],
+    })
     private(RUN / "app.env", environment_file(result))
     private(
         RUN / "observer.env", environment_file({"DATABASE_URL": result["DATABASE_URL"]})
@@ -634,6 +688,8 @@ WantedBy=multi-user.target
         "-v",
         f"{RUN}/provider-settings:{RUN}/provider-settings:ro",
     ]
+    if (RUN / "dashboard-settings").is_dir():
+        mount += ["-v", f"{RUN}/dashboard-settings:{RUN}/dashboard-settings:ro"]
     # Migrate explicitly; a failed migration never drops/recreates a retained database.
     command(
         "docker",

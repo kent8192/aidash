@@ -1,7 +1,7 @@
 //! Real PostgreSQL regressions for independent recall state and bounded maintenance.
 use super::*;
 use aidash_server::database::native;
-use chrono::{Duration, Utc};
+use chrono::{Duration, SubsecRound, Utc};
 
 fn policy() -> Decay {
 	Decay {
@@ -79,6 +79,302 @@ async fn clock(store: &Store, bank: &Bank, as_of: chrono::DateTime<Utc>, cursor:
 }
 async fn sweep(store: &Store) {
 	aidash_server::semantic::worker::sweep(store).await.unwrap();
+}
+
+#[rstest]
+#[tokio::test]
+async fn retention_controls_replay_without_renewing_reactivation_and_reject_reused_ids(
+	#[future] database: DatabaseFixture,
+	bounds: Bounds,
+) {
+	let database = database.await;
+	let (store, _, workspace) = setup_endpoint_decay(
+		&database,
+		bounds,
+		"http://127.0.0.1:9/v1",
+		(false, false, false),
+		None,
+		Some(policy()),
+	)
+	.await;
+	let bank = participant(&store, workspace).await;
+	let ids = [Uuid::now_v7(), Uuid::now_v7()];
+	let mut admission = mutation(
+		&bank,
+		Change::Add {
+			id: ids[0],
+			content: content("Retention controls preserve this canonical Unit"),
+		},
+	);
+	admission.changes.push(Change::Add {
+		id: ids[1],
+		content: content("A different Unit cannot reuse the same control request"),
+	});
+	let admitted = memory::mutate(&store, &Actor::Operator, admission)
+		.await
+		.unwrap();
+	let anchor = (Utc::now() - Duration::days(3)).trunc_subsecs(6);
+	for (action, pinned) in [
+		(memory::Action::Pin { id: ids[0] }, true),
+		(memory::Action::Unpin { id: ids[0] }, false),
+		(memory::Action::Reactivate { id: ids[0] }, false),
+	] {
+		let request = memory::Operation {
+			operation_id: Uuid::now_v7(),
+			provider: reference("p"),
+			bank: bank.clone(),
+			action,
+		};
+		let memory::Outcome::Units(result) =
+			memory::operate(&store, &Actor::Operator, request.clone())
+				.await
+				.unwrap()
+		else {
+			panic!("control result");
+		};
+		assert_eq!(result, vec![admitted[0].clone()]);
+		// Model a later dormancy sweep between the first response and a retry.
+		// A receipt replay must neither reactivate again nor extend the anchor.
+		let mut tx = native::begin(&store.pool).await.unwrap();
+		native::query(
+			&Query::update()
+				.table(Alias::new("memory_unit_retention"))
+				.value(Alias::new("reactivated_at"), anchor)
+				.value(
+					Alias::new("dormant_policy"),
+					serde_json::to_value(reference("p")).unwrap(),
+				)
+				.and_where(Expr::col("unit_id").eq(Expr::value(ids[0])))
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(&mut *tx)
+		.await
+		.unwrap();
+		tx.commit().await.unwrap();
+		let memory::Outcome::Units(replayed) =
+			memory::operate(&store, &Actor::Operator, request.clone())
+				.await
+				.unwrap()
+		else {
+			panic!("control replay");
+		};
+		assert_eq!(replayed, result);
+		for action in [
+			memory::Action::Reactivate { id: ids[1] },
+			if pinned {
+				memory::Action::Unpin { id: ids[0] }
+			} else {
+				memory::Action::Pin { id: ids[0] }
+			},
+		] {
+			assert!(matches!(
+				memory::operate(
+					&store,
+					&Actor::Operator,
+					memory::Operation {
+						action,
+						..request.clone()
+					}
+				)
+				.await,
+				Err(aidash_server::Error::Conflict(_))
+			));
+		}
+		let row = native::query(
+			&Query::select()
+				.columns(["reactivated_at", "pinned", "dormant_policy"].map(Alias::new))
+				.from(Alias::new("memory_unit_retention"))
+				.and_where(Expr::col("unit_id").eq(Expr::value(ids[0])))
+				.to_string(PostgresQueryBuilder),
+		)
+		.fetch_one(&store.pool)
+		.await
+		.unwrap();
+		assert_eq!(
+			row.try_get::<chrono::DateTime<Utc>>("reactivated_at")
+				.unwrap(),
+			anchor
+		);
+		assert_eq!(row.try_get::<bool>("pinned").unwrap(), pinned);
+		assert_eq!(
+			row.try_get::<serde_json::Value>("dormant_policy").unwrap(),
+			json!(reference("p"))
+		);
+		let receipt: Vec<Evidence> = native::query_scalar(
+			&Query::select()
+				.column(Alias::new("outcome"))
+				.from(Alias::new("memory_receipts"))
+				.and_where(Expr::col("operation_id").eq(Expr::value(request.operation_id)))
+				.to_string(PostgresQueryBuilder),
+		)
+		.scalar_one(&store.pool)
+		.await
+		.unwrap();
+		assert_eq!(receipt, vec![admitted[0].evidence()]);
+	}
+	assert!(matches!(
+		memory::operate(
+			&store,
+			&Actor::Operator,
+			memory::Operation {
+				operation_id: Uuid::nil(),
+				provider: reference("p"),
+				bank,
+				action: memory::Action::Reactivate { id: ids[0] },
+			}
+		)
+		.await,
+		Err(aidash_server::Error::Invalid(_))
+	));
+}
+
+#[rstest]
+#[tokio::test]
+async fn completed_control_replays_report_changed_visibility_as_conflicts(
+	#[future] database: DatabaseFixture,
+	bounds: Bounds,
+) {
+	let database = database.await;
+	let (store, _, workspace) = setup_endpoint_decay(
+		&database,
+		bounds,
+		"http://127.0.0.1:9/v1",
+		(false, false, false),
+		None,
+		Some(policy()),
+	)
+	.await;
+	let bank = participant(&store, workspace).await;
+	for state in ["deleted", "stale", "contradicted"] {
+		for action in ["pin", "unpin", "reactivate"] {
+			let unit = Uuid::now_v7();
+			let source = Uuid::now_v7();
+			let mut body = content("A completed control has a durable outcome");
+			if state == "stale" {
+				let admitted_source = memory::mutate(
+					&store,
+					&Actor::Operator,
+					mutation(
+						&bank,
+						Change::Add {
+							id: source,
+							content: content("The original supporting evidence"),
+						},
+					),
+				)
+				.await
+				.unwrap();
+				body.evidence = vec![admitted_source[0].evidence()];
+			}
+			let admitted = memory::mutate(
+				&store,
+				&Actor::Operator,
+				mutation(
+					&bank,
+					Change::Add {
+						id: unit,
+						content: body.clone(),
+					},
+				),
+			)
+			.await
+			.unwrap();
+			let request = memory::Operation {
+				operation_id: Uuid::now_v7(),
+				provider: reference("p"),
+				bank: bank.clone(),
+				action: match action {
+					"pin" => memory::Action::Pin { id: unit },
+					"unpin" => memory::Action::Unpin { id: unit },
+					"reactivate" => memory::Action::Reactivate { id: unit },
+					_ => unreachable!(),
+				},
+			};
+			memory::operate(&store, &Actor::Operator, request.clone())
+				.await
+				.unwrap();
+			// Use the public mutation path so canonical state, projections, and
+			// the independent recovery ledger all admit the same transition.
+			let change = match state {
+				"deleted" => Change::Delete {
+					id: unit,
+					expected_revision: 1,
+				},
+				"stale" => Change::Correct {
+					id: source,
+					expected_revision: 1,
+					content: content("The supporting evidence changed"),
+				},
+				"contradicted" => {
+					body.verification = Verification::Contradicted;
+					Change::Correct {
+						id: unit,
+						expected_revision: 1,
+						content: body,
+					}
+				}
+				_ => unreachable!(),
+			};
+			memory::mutate(&store, &Actor::Operator, mutation(&bank, change))
+				.await
+				.unwrap();
+			let retention = || {
+				Query::select()
+					.columns(["reactivated_at", "pinned", "dormant_policy"].map(Alias::new))
+					.from(Alias::new("memory_unit_retention"))
+					.and_where(Expr::col("unit_id").eq(Expr::value(unit)))
+					.to_string(PostgresQueryBuilder)
+			};
+			let before: (chrono::DateTime<Utc>, bool, Option<serde_json::Value>) =
+				native::query_as(&retention())
+					.columns(&["reactivated_at", "pinned", "dormant_policy"])
+					.fetch_one(&store.pool)
+					.await
+					.unwrap();
+			let replay = memory::operate(&store, &Actor::Operator, request.clone()).await;
+			assert!(
+				matches!(replay, Err(aidash_server::Error::Conflict(_))),
+				"{action}/{state}: {replay:?}"
+			);
+			let fresh = memory::Operation {
+				operation_id: Uuid::now_v7(),
+				..request.clone()
+			};
+			assert!(matches!(
+				memory::operate(&store, &Actor::Operator, fresh.clone()).await,
+				Err(aidash_server::Error::Forbidden)
+			));
+			let after: (chrono::DateTime<Utc>, bool, Option<serde_json::Value>) =
+				native::query_as(&retention())
+					.columns(&["reactivated_at", "pinned", "dormant_policy"])
+					.fetch_one(&store.pool)
+					.await
+					.unwrap();
+			assert_eq!(after, before, "a changed replay must not affect retention");
+			let receipt: Vec<Evidence> = native::query_scalar(
+				&Query::select()
+					.column(Alias::new("outcome"))
+					.from(Alias::new("memory_receipts"))
+					.and_where(Expr::col("operation_id").eq(Expr::value(request.operation_id)))
+					.to_string(PostgresQueryBuilder),
+			)
+			.scalar_one(&store.pool)
+			.await
+			.unwrap();
+			assert_eq!(receipt, vec![admitted[0].evidence()]);
+			let missing: Option<Uuid> = native::query_scalar(
+				&Query::select()
+					.column(Alias::new("operation_id"))
+					.from(Alias::new("memory_receipts"))
+					.and_where(Expr::col("operation_id").eq(Expr::value(fresh.operation_id)))
+					.to_string(PostgresQueryBuilder),
+			)
+			.scalar_optional(&store.pool)
+			.await
+			.unwrap();
+			assert!(missing.is_none());
+		}
+	}
 }
 
 #[rstest]

@@ -1,8 +1,8 @@
 //! Provider Credential metadata management contracts; no public Key Material input.
-mod settings;
 use serde::{Deserialize, Serialize};
-pub(crate) use settings::ManagedSource;
 use uuid::Uuid;
+mod settings;
+pub(crate) use settings::ManagedSource;
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 #[schemars(rename = "ProviderCredentialRevision")]
@@ -143,6 +143,8 @@ pub struct Settings {
 	pub fingerprint_key: Option<KeySource>,
 	#[setting(default = "None", leaf)]
 	pub store: Option<StoreConfig>,
+	#[setting(default = "None", leaf)]
+	pub broker: Option<aidash_integrations::capability::issuer::WorkerConfiguration>,
 }
 impl Settings {
 	pub(crate) async fn load_fingerprint_key(&self) -> crate::Result<secrecy::SecretString> {
@@ -173,6 +175,17 @@ impl SettingsValidation for Settings {
 		}
 		if let Some(key) = &self.fingerprint_key {
 			key.validate_shape().map_err(invalid)?;
+		}
+		if let Some(broker) = &self.broker {
+			broker.validate().map_err(|e| invalid(e.to_string()))?;
+			// Only Cloud Secret Manager Stores are served by a Credential Broker.
+			if !matches!(
+				&self.store,
+				Some(StoreConfig::SecretManager { environment_id, .. })
+					if *environment_id == broker.audience
+			) {
+				return Err(invalid("Credential Broker audience must match the configured Provider Credential Store environment".into()));
+			}
 		}
 		if let Some(store) = &self.store {
 			if self.fingerprint_key.is_none() {

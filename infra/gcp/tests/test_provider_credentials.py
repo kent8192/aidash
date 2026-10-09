@@ -90,17 +90,17 @@ class ProviderCredentialIamTests(unittest.TestCase):
         inventory = resource(self.bootstrap, "google_project_iam_member", "byok_retire_inventory")
         self.assertNotIn("condition {", inventory)
 
-    def test_no_byok_payload_read_grant_exists(self):
+    def test_only_bootstrap_broker_has_byok_payload_read_grant(self):
         role = resource(self.bootstrap, "google_project_iam_custom_role", "byok_broker_read")
         self.assertIn('"aidashByokBrokerRead"', role)
         self.assertEqual(set(re.findall(r'"(secretmanager\.[^"]+)"', role)), {
             "secretmanager.versions.access", "secretmanager.versions.get", "secretmanager.secrets.get",
         })
-        # The future read role is defined but unbound. Inventory every source
-        # file, including secret-level IAM, so a new file cannot add a reader.
+        # Inventory every source, including secret-level IAM: bootstrap is the
+        # only permitted binding of the fixed payload-read role.
         readers = []
         byok_grants = []
-        for root in [ROOT / "bootstrap", ROOT / "environments", ROOT / "modules/environment"]:
+        for root in [ROOT / "bootstrap", ROOT / "environments", ROOT / "modules/environment", ROOT / "modules/credential-broker"]:
             for path in root.glob("*.tf"):
                 source = path.read_text()
                 for kind, name in re.findall(r'resource "([^"]+)" "([^"]+)"', source):
@@ -108,8 +108,11 @@ class ProviderCredentialIamTests(unittest.TestCase):
                     if kind == "google_project_iam_custom_role" and '"secretmanager.versions.access"' in body:
                         readers.append((path.relative_to(ROOT).as_posix(), name))
                     if kind.endswith(("_iam_member", "_iam_binding", "_iam_policy")):
-                        self.assertNotIn("byok_broker_read", body)
-                        self.assertNotIn("aidashByokBrokerRead", body)
+                        if "byok_broker_read" in body or "aidashByokBrokerRead" in body:
+                            self.assertEqual((path.relative_to(ROOT).as_posix(), name), ("bootstrap/credential_brokers.tf", "byok_broker_read"))
+                            self.assertIn("google_service_account.broker[each.key].email", body)
+                            self.assertIn("data.google_project.byok[0].number", body)
+                            self.assertIn("aidash-${each.key}-cred-", body)
                         if "var.byok_project_id" in body:
                             self.assertNotIn('roles/secretmanager.', body)
                             byok_grants.append((path.relative_to(ROOT).as_posix(), name))
@@ -119,6 +122,7 @@ class ProviderCredentialIamTests(unittest.TestCase):
         self.assertEqual(readers, [("bootstrap/provider_credentials.tf", "byok_broker_read")])
         self.assertEqual(set(byok_grants), {
             ("bootstrap/provider_credentials.tf", "byok_deploy"),
+            ("bootstrap/credential_brokers.tf", "byok_broker_read"),
             ("bootstrap/provider_credentials.tf", "byok_retire"),
             ("bootstrap/provider_credentials.tf", "byok_retire_inventory"),
             ("modules/environment/provider_credentials.tf", "provider_credential_create"),

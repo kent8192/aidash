@@ -3,7 +3,7 @@
 // Physical bytea DDL precedes the equivalent Binary model snapshot.
 use reinhardt::db::migrations::prelude::*;
 pub(super) fn migration() -> Migration {
-	Migration::new("0014_credential_store_schema", "identity").add_dependency("identity", "0013_provider_credential_constraints")
+	Migration::new("0015_credential_store_schema", "identity").add_dependency("identity", "0014_provider_credential_constraints")
  .database_only(true).atomic(true)
 .add_operation(Operation::CreateTable { name: "credential_store_resources".into(), columns: vec![
 ColumnDefinition::new("resource", FieldType::Text).with_not_null(true).with_primary_key(true),

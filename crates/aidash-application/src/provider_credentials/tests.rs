@@ -412,6 +412,7 @@ async fn access_uses_the_admitted_tenant_id_and_never_falls_back_to_environment(
 		},
 		repository: Arc::new(repo),
 		reader: None,
+		issuer: None,
 	};
 	let source = Source::Tenant {
 		provider: "openrouter".into(),
@@ -421,6 +422,7 @@ async fn access_uses_the_admitted_tenant_id_and_never_falls_back_to_environment(
 		run: Some(Uuid::now_v7()),
 		maintenance: None,
 		provider_credential_id: Some(a.provider_credential.id),
+		inference: None,
 	};
 	assert!(matches!(
 		access
@@ -563,6 +565,7 @@ async fn reader_resolves_current_pin_after_metadata_checks() {
 		},
 		repository: Arc::new(repo),
 		reader: Some(Arc::new(store)),
+		issuer: None,
 	};
 	let mut context = Context {
 		tenant: "alpha".into(),
@@ -768,6 +771,7 @@ async fn revocation_commit_failure_has_no_external_effect_and_committed_cleanup_
 		},
 		repository: Arc::new(repo.clone()),
 		reader: Some(Arc::new(store.clone())),
+		issuer: None,
 	};
 	let error = access
 		.resolve(
@@ -776,6 +780,7 @@ async fn revocation_commit_failure_has_no_external_effect_and_committed_cleanup_
 				run: Some(Uuid::now_v7()),
 				provider_credential_id: Some(first.id),
 				maintenance: None,
+				inference: None,
 			},
 			Provider::Openrouter.base_url(),
 			&Source::Tenant {
