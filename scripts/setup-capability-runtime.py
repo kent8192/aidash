@@ -72,7 +72,7 @@ nodes:
   kubeadmConfigPatches:
   - |
     kind: KubeletConfiguration
-    podPidsLimit: 128
+    podPidsLimit: 1024
     containerLogMaxSize: 10Mi
     containerLogMaxFiles: 2
 """)
@@ -146,7 +146,7 @@ WantedBy=multi-user.target
     profile = {
         "admission": True, "storage": str(directory / "objects"), "outbound_origins": [], "package_origins": [],
         "working_bytes": 1073741824, "retained_bytes": 10737418240, "temporary_bytes": 268435456,
-        "cpu": 2, "memory_bytes": 2147483648, "processes": 128,
+        "cpu": 2, "memory_bytes": 2147483648, "processes": 128, "host_tasks": 512,
         "operation_seconds": 120, "maximum_seconds": 600, "install_seconds": 300,
         "idle_seconds": 1800, "recovery_seconds": 604800, "grant_seconds": 3600,
         "approval_seconds": 86400, "output_bytes": 8388608, "staging_seconds": 86400,

@@ -1,0 +1,91 @@
+import hashlib
+import io
+from pathlib import Path
+import tarfile
+import tempfile
+import unittest
+from unittest.mock import Mock
+
+import gvisor_installer as installer
+
+
+def archive(extra=None):
+    output = io.BytesIO()
+    with tarfile.open(fileobj=output, mode='w:bz2') as tar:
+        for name in sorted(installer.REQUIRED):
+            member = tarfile.TarInfo(name)
+            member.size = 6
+            tar.addfile(member, io.BytesIO(b'binary'))
+        if extra:
+            tar.addfile(extra, io.BytesIO(b'x') if extra.isfile() else None)
+    return output.getvalue()
+
+
+class InstallerTest(unittest.TestCase):
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.root = Path(directory.name)
+        (self.root / 'etc/containerd').mkdir(parents=True)
+        (self.root / 'etc/containerd/config.toml').write_text('version = 2\n')
+        self.data = archive()
+        self.sha = hashlib.sha256(self.data).hexdigest()
+        self.download, self.restart = Mock(return_value=self.data), Mock()
+
+    def install(self):
+        installer.install(self.root, installer.GVISOR_VERSION, self.sha, 'x86_64',
+                          self.download, self.restart)
+
+    def test_idempotence_verifies_every_archive_binary_and_repairs_tampering(self):
+        self.install()
+        self.install()
+        self.assertEqual(self.download.call_count, 1)
+        self.assertEqual(self.restart.call_count, 1)
+        self.assertTrue(installer.installed(self.root, installer.GVISOR_VERSION, self.sha))
+        sentry = self.root / 'usr/local/bin/gvisor-bin/gvisor_sentry'
+        sentry.write_bytes(b'tampered')
+        self.install()
+        self.assertEqual(sentry.read_bytes(), b'binary')
+        self.assertEqual(self.download.call_count, 2)
+        self.assertEqual(self.restart.call_count, 1)
+
+    def test_swap_platform_and_root_configuration_repair_restarts_once(self):
+        self.install()
+        config = self.root / 'etc/containerd/runsc.toml'
+        config.write_text('root = "wrong"\n')
+        self.install()
+        self.assertIn('platform = "systrap"', config.read_text())
+        self.assertEqual(self.restart.call_count, 2)
+
+    def test_incompatible_runtime_and_containerd_version_are_refused(self):
+        config = self.root / 'etc/containerd/config.toml'
+        for text in ('version = 3\n', 'version = 2\n[plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runsc]\nruntime_type="other"\n'):
+            config.write_text(text)
+            with self.assertRaises(ValueError):
+                self.install()
+            self.assertEqual(config.read_text(), text)
+        self.restart.assert_not_called()
+
+    def test_checksum_and_unsafe_archive_members_fail_before_install(self):
+        with self.assertRaisesRegex(ValueError, 'checksum'):
+            installer.archive_files(self.data, '0' * 64)
+        for name, kind in (('../escape', tarfile.REGTYPE), ('/absolute', tarfile.REGTYPE),
+                           ('link', tarfile.SYMTYPE), ('hard', tarfile.LNKTYPE),
+                           ('fifo', tarfile.FIFOTYPE), ('runsc', tarfile.REGTYPE)):
+            with self.subTest(name=name):
+                member = tarfile.TarInfo(name)
+                member.type, member.size = kind, 1 if kind == tarfile.REGTYPE else 0
+                data = archive(member)
+                with self.assertRaises(ValueError):
+                    installer.archive_files(data, hashlib.sha256(data).hexdigest())
+
+    def test_symlink_destination_is_refused(self):
+        (self.root / 'usr/local/bin').mkdir(parents=True)
+        (self.root / 'usr/local/bin/gvisor-bin').symlink_to(self.root / 'etc')
+        with self.assertRaisesRegex(ValueError, 'symlink'):
+            self.install()
+        self.assertFalse((self.root / 'usr/local/bin/runsc').exists())
+
+
+if __name__ == '__main__':
+    unittest.main()
