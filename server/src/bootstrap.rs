@@ -289,6 +289,7 @@ pub fn model_catalog(client: reqwest::Client) -> Arc<dyn aidash_application::por
 }
 
 mod compatibility;
+mod listener;
 pub use compatibility::{migrate, serve};
 
 /// All inference paths use the same credential resolver and application port.

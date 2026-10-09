@@ -21,6 +21,11 @@ The `aidash` binary delegates to the same command registry and only preserves
 the existing executable name and default `serve` behavior. Existing
 `cargo run --locked -- serve`, `server`, and `worker` invocations remain valid.
 
+On Unix, `server` and `serve` can receive an owned listening socket through
+`AIDASH_LISTEN_FD`, validated against `AIDASH_LISTEN`. The
+[transaction process fixture](docs/operations/transaction-acceptance.md) uses
+this handover to keep its endpoints reserved across process restarts.
+
 | Package               | Responsibility                                                           |
 | --------------------- | ------------------------------------------------------------------------ |
 | `aidash-domain`       | Business models, typed state, and pure invariants.                       |
