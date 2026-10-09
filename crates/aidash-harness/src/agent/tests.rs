@@ -100,6 +100,15 @@ impl ExecutionStore for Backend {
 		let _ = (run, token, key, name, input, replay_safe);
 		unexpected("ExecutionStore.invocation_start")
 	}
+	async fn invocation_start_batch(
+		&self,
+		run: &Run,
+		token: Uuid,
+		calls: &[BatchInvocation<'_>],
+	) -> Result<Vec<InvocationOutcome>> {
+		let _ = (run, token, calls);
+		unexpected("ExecutionStore.invocation_start_batch")
+	}
 	async fn invocation_finish(
 		&self,
 		run: &Run,
@@ -407,6 +416,7 @@ impl ExecutionEnvironment for Backend {
 			max_steps: 64,
 			allow_task_creation: None,
 			conversation_memory: self.0.conversation_memory,
+			tool_parallelism: 1,
 		})
 	}
 	fn provider(&self, _model: ModelConfig) -> Result<Arc<dyn ModelProvider>> {
@@ -981,3 +991,5 @@ async fn advance_sources(fixture: &mut Fixture) -> Result<()> {
 		.advance(&mut fixture.run, backend.0.token, &mut backend.clone())
 		.await
 }
+
+mod batch;

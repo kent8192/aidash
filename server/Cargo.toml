@@ -282,6 +282,10 @@ name = "streaming"
 path = "src/apps/execution/tests/streaming.rs"
 
 [[test]]
+name = "tool_batches"
+path = "src/apps/execution/tests/tool_batches.rs"
+
+[[test]]
 name = "transaction_protocol"
 path = "src/apps/federation/transactions/tests/protocol_suite.rs"
 
