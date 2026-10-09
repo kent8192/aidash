@@ -5428,7 +5428,8 @@ async fn remote_human_continuations_survive_retries_and_restart_without_a_shadow
 		p.a.store.run(p.admission).await.is_err(),
 		"Home must not create a shadow execution Run"
 	);
-	for server in p.servers.drain(1..) {
+	// The model guard lives in providers; both peer transports must stop before rebinding.
+	for server in p.servers.drain(..) {
 		server.shutdown().await;
 	}
 	reconnect(&mut p.a, source_notify).await;
