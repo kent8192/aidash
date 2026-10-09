@@ -215,6 +215,7 @@ jobs:
       - run: python3 -m unittest discover -s scripts -p test_transaction_cluster_acceptance.py
       - run: python3 -m unittest discover -s scripts -p test_core_capability_evidence.py
       - run: python3 -m unittest discover -s scripts -p test_golden_path.py
+      - run: python3 -m unittest discover -s scripts -p test_ci_success_aggregate.py
       - run: python3 -m unittest discover -s runner -p test_resource_limits.py
   acceptance:
     name: Federation and browser tests
