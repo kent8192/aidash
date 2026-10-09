@@ -2,8 +2,13 @@
 use aidash_application::{Error, Result, execution::*, ports::execution::*};
 use aidash_domain::{
 	context::{self, Context, ContextEvent, ContextUsage},
+	exposure,
 	media::Selection,
 	model::ModelConfig,
+	registry::{
+		bindings::{AgentBindings, BindingSnapshot},
+		rules,
+	},
 	semantic::{Failure, InputRead},
 	tool::{ResultFitting, ToolIdentity, ToolUseMode},
 	*,
@@ -239,21 +244,37 @@ impl<'a> Executor<'a> {
 				let binding_digest = self.environment.catalog().content_digest(&serde_json::to_string(&run.context.binding_snapshot)?);
 				let cached_sources = run.context.source_observation.as_ref().map(|observation| observation.at(&source_boundary, &binding_digest)).transpose()?.flatten().cloned();
 				if let Some(content) = &cached_sources { self.environment.recheck_source_observation(run, content).await?; }
-				let mut instructions = context::agent_instructions("");
-				for skill in &agent.skills {
-					let entry = self
-						.environment
-						.catalog().get_for_run(&*run, &skill.id, &skill.version)
-						.await?;
-					instructions.push('\n');
-					instructions.push_str(&format!("Skill {}@{}:\n", skill.id, skill.version));
-					instructions.push_str(&self.environment.catalog().skill_instructions(&entry)?);
-				}
 				let mut source_skill_context = String::new();
-				if tools.contains_key("skill_list") && home.has_local_authority()
-				{
-					source_skill_context = if let Some(cached) = &cached_sources { cached["skill_context"].as_str().unwrap_or_default().to_owned() } else { self.environment.skill_context(run).await? };
+				let exposure = match deferred_exposure(run)? {
+					Some((snapshot, budgets)) => {
+						let catalog = exposure_catalog(self.environment, run, snapshot, &tools).await?;
+						let selection = exposure::select(&budgets, &catalog, &run.context.exposure)?;
+						// Resident Skill blocks replace the Registry Skill loop and the
+						// pinned Skill context; recovery reuses them at the same boundary.
+						source_skill_context = if let Some(cached) = &cached_sources { cached["skill_context"].as_str().unwrap_or_default().to_owned() } else { resident_skills(self.environment, run, snapshot, &catalog, &selection).await? };
+						Some(selection)
+					}
+					None => None,
+				};
+				let mut instructions = context::agent_instructions("");
+				if let Some(selection) = &exposure {
 					instructions.push_str(&source_skill_context);
+					instructions.push_str(&selection.index);
+				} else {
+					for skill in &agent.skills {
+						let entry = self
+							.environment
+							.catalog().get_for_run(&*run, &skill.id, &skill.version)
+							.await?;
+						instructions.push('\n');
+						instructions.push_str(&format!("Skill {}@{}:\n", skill.id, skill.version));
+						instructions.push_str(&self.environment.catalog().skill_instructions(&entry)?);
+					}
+					if tools.contains_key("skill_list") && home.has_local_authority()
+					{
+						source_skill_context = if let Some(cached) = &cached_sources { cached["skill_context"].as_str().unwrap_or_default().to_owned() } else { self.environment.skill_context(run).await? };
+						instructions.push_str(&source_skill_context);
+					}
 				}
 				instructions.push_str("\nAdditional user instructions:\n");
 				instructions.push_str(&agent.instructions);
@@ -337,6 +358,7 @@ impl<'a> Executor<'a> {
 				}
 				let mut specifications = tools
 					.iter()
+					.filter(|(alias, _)| exposure.as_ref().is_none_or(|selection| selection.tools.contains(*alias)))
 					.filter(|(_, tool)| !run_message_catchup || tool.contract().behavior.permits(ToolUseMode::MessageCatchUp))
 					.map(|(_, tool)| tool)
 					.map(|t| t.specification())
@@ -564,6 +586,7 @@ impl<'a> Executor<'a> {
 					output_tokens: result.output_tokens,
 					context_window: window,
 					compactions: context.compactions,
+					exposure: exposure.map(|selection| selection.usage),
 				});
 				run.context = context.clone();
 				let references_read_at_inference = required_run_message_reads
@@ -928,6 +951,12 @@ impl<'a> Executor<'a> {
 				let Some(tool) = tools.get(&call.name) else {
 					return self.tool_error(run, token, &call, cursor, format!("unavailable tool {}", call.name)).await;
 				};
+				if let Some((snapshot, budgets)) = deferred_exposure(run)? {
+					let catalog = exposure_catalog(self.environment, run, snapshot, &tools).await?;
+					if !exposure::select(&budgets, &catalog, &run.context.exposure)?.tools.contains(&call.name) {
+						return self.tool_error(run, token, &call, cursor, format!("capability {} is not loaded; use capability_load", call.name)).await;
+					}
+				}
 				let contract = tool.contract();
 				if !pending_selected_media(run.state.tool()?).is_empty() && !contract.behavior.permits(ToolUseMode::MediaPending) {
 					return self.tool_error(run, token, &call, cursor, "selected model media must be inferred before this tool call; retry it after the next model response".into()).await;
@@ -1152,6 +1181,15 @@ impl<'a> Executor<'a> {
 				}
 				if invocation.status != "COMPLETED" {
 					store.invocation_finish(run, token, &key, &output).await?;
+				}
+				// Load/Unload results change the Exposure set with the same save
+				// that records them; replayed results apply idempotently.
+				if contract.behavior.exposure_update
+					&& let Some(update) = output.get("exposure_update")
+				{
+					context
+						.exposure
+						.apply(&serde_json::from_value::<exposure::ExposureUpdate>(update.clone())?);
 				}
 				let event = ContextEvent::tool(call.clone(), output.clone());
 				record_message_read_for(&mut context.message_read_coverage, &contract, &event);
@@ -1456,12 +1494,80 @@ fn is_invalid(error: &Error) -> bool {
 		Error::Invalid(_) | Error::Domain(aidash_domain::Error::Invalid(_))
 	)
 }
+/// The pinned snapshot and budgets of a `deferred@1` Run, read from its
+/// Agent definition; `None` under `legacy@1` or without a Binding snapshot.
+fn deferred_exposure(run: &Run) -> Result<Option<(&BindingSnapshot, exposure::DeferredBudgets)>> {
+	let Some(snapshot) = run.context.binding_snapshot.as_deref() else {
+		return Ok(None);
+	};
+	let agent = snapshot
+		.definitions
+		.iter()
+		.find(|definition| definition.identity == snapshot.agent)
+		.ok_or_else(|| Error::Invalid("snapshot lacks its Agent definition".into()))?;
+	let policy =
+		serde_json::from_value::<AgentBindings>(agent.definition.config.clone())?.exposure_policy();
+	Ok(policy.budgets().map(|budgets| (snapshot, *budgets)))
+}
+/// Discoverable capabilities over the specifications dispatch advertises.
+async fn exposure_catalog(
+	environment: &dyn ExecutionEnvironment,
+	run: &Run,
+	snapshot: &BindingSnapshot,
+	tools: &Tools,
+) -> Result<Vec<exposure::Capability>> {
+	let specs = tools
+		.iter()
+		.map(|(alias, tool)| (alias.clone(), tool.specification()))
+		.collect();
+	let direct = environment.direct_skills(run).await?;
+	Ok(exposure::catalog(snapshot, &specs, &direct)?)
+}
+/// Resident blocks of the selected Skills: Registry bodies from the pinned
+/// snapshot, direct bodies from the Run's pinned Skill files.
+async fn resident_skills(
+	environment: &dyn ExecutionEnvironment,
+	run: &Run,
+	snapshot: &BindingSnapshot,
+	catalog: &[exposure::Capability],
+	selection: &exposure::Selection,
+) -> Result<String> {
+	let mut text = String::new();
+	for alias in &selection.skills {
+		let capability = catalog
+			.iter()
+			.find(|capability| &capability.alias == alias)
+			.ok_or_else(|| {
+				Error::Invalid(format!("selected Skill {alias} is not in the catalog"))
+			})?;
+		let body = match &capability.identity {
+			exposure::CapabilityIdentity::Registry(reference) => {
+				let binding = snapshot
+					.bindings
+					.iter()
+					.find(|binding| {
+						&binding.identity == reference && binding.definition.kind == "skill"
+					})
+					.ok_or_else(|| Error::Invalid(format!("snapshot lacks Skill {alias}")))?;
+				rules::skill_instructions(&binding.definition)?
+			}
+			exposure::CapabilityIdentity::DirectSkill { skill_id, .. } => {
+				environment
+					.direct_skill_body(run, *skill_id, &capability.digest)
+					.await?
+			}
+		};
+		text.push_str(&exposure::resident_block(capability, &body));
+	}
+	Ok(text)
+}
 async fn compact_execution(
 	context: &mut Context,
 	classifier: &dyn aidash_application::ports::CompactionClassifier,
 	budget: &context::RequestBudget<'_>,
 	pinned: &Value,
 ) -> Result<()> {
+	// Compaction replaces history only; the Exposure set is carried unchanged.
 	let mut candidate = context.clone();
 	context::observation::normalize_history(&mut candidate.history);
 	aidash_application::context::compact(&mut candidate, classifier, budget, pinned).await?;

@@ -1,10 +1,20 @@
 //! Agent lifecycle and inference authority are tested without a database or HTTP.
 use super::*;
 use aidash_application::ports::{CompactionClassifier, CompactionQuestions, ModelProvider};
-use aidash_domain::provider::{ContentPart, ModelRequest, ModelResponse, ToolCall};
+use aidash_domain::capabilities::skills::SkillMetadata;
+use aidash_domain::exposure::{
+	CapabilityKind, DirectSkill, ExposureState, ExposureUpdate, Loaded, SkillOriginKind,
+};
+use aidash_domain::provider::{ContentPart, ModelRequest, ModelResponse, ToolCall, ToolSpec};
+use aidash_domain::registry::bindings::{
+	BindingOrigin, DEFAULT_TOOLS, EXPOSURE_TOOLS, Narrowing, QualifiedRef, REQUIRED_TOOLS,
+	ResolvedBinding, ResolvedDefinition, SKILL_ASSET_READ, SKILL_TOOLS,
+};
 use aidash_domain::registry::{EntityRef, Entry};
+use aidash_domain::tool::providers::core_descriptor;
 use async_trait::async_trait;
 use rstest::{fixture, rstest};
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 #[derive(Clone)]
@@ -26,6 +36,18 @@ struct State {
 	dependency_status: Option<TaskStatus>,
 	remote_home: bool,
 	human: Mutex<Option<HumanRequest>>,
+	tools: Vec<&'static str>,
+	skills: Vec<EntityRef>,
+	skill_context: Option<String>,
+	local_authority: bool,
+	inputs: Vec<aidash_domain::run_input::RunInput>,
+	messages: Vec<Message>,
+	/// Tools that replace or extend the builtin fixtures, by alias.
+	custom: BTreeMap<String, Arc<Scripted>>,
+	/// Journaled invocations by key: status and result.
+	invocations: Mutex<BTreeMap<String, (String, Option<Value>)>>,
+	direct_skills: Vec<DirectSkill>,
+	direct_bodies: BTreeMap<Uuid, String>,
 }
 impl Backend {
 	fn record(&self, name: &'static str) {
@@ -62,7 +84,7 @@ impl ExecutionStore for Backend {
 	}
 	async fn run_inputs(&self, run: Uuid) -> Result<Vec<aidash_domain::run_input::RunInput>> {
 		let _ = run;
-		Ok(vec![])
+		Ok(self.0.inputs.clone())
 	}
 	async fn begin_final_completion(&self, run: &Run, token: Uuid) -> Result<bool> {
 		let _ = run;
@@ -97,8 +119,15 @@ impl ExecutionStore for Backend {
 		input: &Value,
 		replay_safe: bool,
 	) -> Result<InvocationOutcome> {
-		let _ = (run, token, key, name, input, replay_safe);
-		unexpected("ExecutionStore.invocation_start")
+		let _ = (run, name, input, replay_safe);
+		assert_eq!(token, self.0.token);
+		self.record("invocation.start");
+		let mut invocations = self.0.invocations.lock().unwrap();
+		let (status, result) = invocations
+			.entry(key.to_owned())
+			.or_insert_with(|| ("STARTED".into(), None))
+			.clone();
+		Ok(InvocationOutcome { status, result })
 	}
 	async fn invocation_finish(
 		&self,
@@ -107,8 +136,15 @@ impl ExecutionStore for Backend {
 		key: &str,
 		output: &Value,
 	) -> Result<()> {
-		let _ = (run, token, key, output);
-		unexpected("ExecutionStore.invocation_finish")
+		let _ = run;
+		assert_eq!(token, self.0.token);
+		self.record("invocation.finish");
+		self.0
+			.invocations
+			.lock()
+			.unwrap()
+			.insert(key.to_owned(), ("COMPLETED".into(), Some(output.clone())));
+		Ok(())
 	}
 	async fn reconciliation_request(
 		&self,
@@ -121,7 +157,12 @@ impl ExecutionStore for Backend {
 		unexpected("ExecutionStore.reconciliation_request")
 	}
 	async fn run_message_has_media(&self, messages: &[Uuid]) -> Result<bool> {
-		assert!(messages.is_empty());
+		assert!(messages.iter().all(|id| {
+			self.0
+				.inputs
+				.iter()
+				.any(|input| input.message_id == Some(*id))
+		}));
 		Ok(false)
 	}
 }
@@ -134,8 +175,16 @@ impl ExecutionCatalog for Backend {
 		Ok(self.entry(id))
 	}
 
-	fn skill_instructions(&self, _entry: &Entry) -> Result<String> {
-		unexpected("skill_instructions")
+	fn skill_instructions(&self, entry: &Entry) -> Result<String> {
+		assert!(
+			self.0.skills.iter().any(|skill| skill.id == entry.id),
+			"unexpected skill_instructions for {}",
+			entry.id
+		);
+		Ok(format!(
+			"# {0}\nApply the {0} checklist to every change.\n",
+			entry.id
+		))
 	}
 	fn content_digest(&self, content: &str) -> String {
 		aidash_domain::registry::rules::digest(&json!(content))
@@ -165,6 +214,15 @@ impl ExecutionHome for Backend {
 		Ok(self.task_value())
 	}
 	async fn read_record(&self, kind: &str, id: &str) -> Result<Value> {
+		if kind == "message" {
+			let message = self
+				.0
+				.messages
+				.iter()
+				.find(|message| message.id.to_string() == id)
+				.expect("fixture message");
+			return Ok(json!(message));
+		}
 		assert_eq!(kind, "task");
 		let mut task = self.task_value();
 		task.id = id.parse().unwrap();
@@ -229,7 +287,7 @@ impl ExecutionHome for Backend {
 		!self.0.remote_home
 	}
 	fn has_local_authority(&self) -> bool {
-		false
+		self.0.local_authority
 	}
 }
 
@@ -322,7 +380,30 @@ impl ExecutionEnvironment for Backend {
 	}
 	async fn skill_context(&self, run: &Run) -> Result<String> {
 		let _ = run;
-		unexpected("ExecutionEnvironment.skill_context")
+		Ok(self
+			.0
+			.skill_context
+			.clone()
+			.unwrap_or_else(|| unexpected("ExecutionEnvironment.skill_context")))
+	}
+	async fn direct_skills(&self, run: &Run) -> Result<Vec<DirectSkill>> {
+		let _ = run;
+		self.record("skills.direct");
+		Ok(self.0.direct_skills.clone())
+	}
+	async fn direct_skill_body(&self, run: &Run, skill_id: Uuid, digest: &str) -> Result<String> {
+		let _ = run;
+		self.record("skills.direct_body");
+		let skill = self
+			.0
+			.direct_skills
+			.iter()
+			.find(|skill| skill.metadata.skill_id == skill_id)
+			.expect("pinned direct Skill");
+		if skill.metadata.digest != digest {
+			return Err(Error::Conflict("CAPABILITY_CHANGED".into()));
+		}
+		Ok(self.0.direct_bodies[&skill_id].clone())
 	}
 	async fn semantic_context(
 		&self,
@@ -403,7 +484,7 @@ impl ExecutionEnvironment for Backend {
 			instructions: "Do the task".into(),
 			knowledge_digest: None,
 			tools: vec![],
-			skills: vec![],
+			skills: self.0.skills.clone(),
 			max_steps: 64,
 			allow_task_creation: None,
 			conversation_memory: self.0.conversation_memory,
@@ -525,6 +606,16 @@ fn fixture() -> Fixture {
 		dependency_status: None,
 		remote_home: false,
 		human: Mutex::new(None),
+		tools: vec![],
+		skills: vec![],
+		skill_context: None,
+		local_authority: false,
+		inputs: vec![],
+		messages: vec![],
+		custom: BTreeMap::new(),
+		invocations: Mutex::new(BTreeMap::new()),
+		direct_skills: vec![],
+		direct_bodies: BTreeMap::new(),
 	}));
 	Fixture { backend, run }
 }
@@ -881,7 +972,57 @@ async fn ready_inference_and_completion_use_the_same_durable_executor(mut fixtur
 #[async_trait]
 impl aidash_application::ports::bindings::BindingResolver for Backend {
 	async fn tools(&self, _: &Run) -> Result<Tools> {
-		Ok(Tools::new())
+		let mut tools: Tools = self
+			.0
+			.tools
+			.iter()
+			.map(|name| ((*name).to_owned(), Advertised::builtin(name)))
+			.collect();
+		for (alias, tool) in &self.0.custom {
+			tools.insert(alias.clone(), tool.clone());
+		}
+		Ok(tools)
+	}
+}
+
+/// Advertises the application builtin specification when one exists, so the
+/// request baselines pin real builtin descriptions and schemas.
+struct Advertised {
+	specification: ToolSpec,
+	contract: aidash_domain::tool::ToolContract,
+}
+impl Advertised {
+	fn builtin(name: &str) -> Arc<dyn ExecutionTool> {
+		let specification = aidash_application::tools::builtins()
+			.remove(name)
+			.map_or_else(
+				|| ToolSpec {
+					name: name.into(),
+					description: format!("Fixture {name} tool."),
+					parameters: json!({"type":"object","additionalProperties":false}),
+				},
+				|builtin| builtin.specification(),
+			);
+		Arc::new(Self {
+			specification,
+			contract: aidash_domain::tool::builtin_contract(name).expect("declared builtin"),
+		})
+	}
+}
+#[async_trait]
+impl ExecutionTool for Advertised {
+	fn specification(&self) -> ToolSpec {
+		self.specification.clone()
+	}
+	fn contract(&self) -> aidash_domain::tool::ToolContract {
+		self.contract.clone()
+	}
+	fn replay_safe(&self) -> bool {
+		self.contract.replay_safe()
+	}
+	async fn invoke(&self, run: &Run, input: Value, key: &str) -> Result<Value> {
+		let _ = (run, input, key);
+		unexpected("ExecutionTool.invoke")
 	}
 }
 
@@ -980,4 +1121,730 @@ async fn advance_sources(fixture: &mut Fixture) -> Result<()> {
 	Executor::new(&backend)
 		.advance(&mut fixture.run, backend.0.token, &mut backend.clone())
 		.await
+}
+
+fn default_tools() -> Vec<&'static str> {
+	REQUIRED_TOOLS
+		.iter()
+		.chain(DEFAULT_TOOLS)
+		.copied()
+		.collect()
+}
+fn plain_agent(fixture: &mut Fixture) {
+	Arc::get_mut(&mut fixture.backend.0).unwrap().tools = default_tools();
+}
+fn registry_skill(fixture: &mut Fixture) {
+	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	state.tools = default_tools();
+	state.skills = vec![EntityRef {
+		id: "code-review".into(),
+		version: "1.2.0".into(),
+	}];
+}
+fn direct_skill(fixture: &mut Fixture) {
+	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	state.tools = REQUIRED_TOOLS.iter().chain(SKILL_TOOLS).copied().collect();
+	state.local_authority = true;
+	// The shape of `capabilities::skills::context`: metadata per pinned Skill,
+	// followed by SKILL.md for each loaded one.
+	state.skill_context = Some(
+		concat!(
+			"\nPinned Skills (select by UUID and origin; use skill_load):\n",
+			r#"{"skill_id":"00000000-0000-0000-0000-000000000031","name":"release-notes","description":"Draft release notes from merged changes.","origin":"area:00000000-0000-0000-0000-000000000030:.agents/skills/release-notes"}"#,
+			"\n---\nname: release-notes\ndescription: Draft release notes from merged changes.\n---\n# Release notes\nGroup changes by user impact.\n\n",
+			r#"{"skill_id":"00000000-0000-0000-0000-000000000032","name":"triage","description":"Classify incoming issues.","origin":"area:00000000-0000-0000-0000-000000000030:.agents/skills/triage"}"#,
+			"\n",
+		)
+		.into(),
+	);
+}
+fn run_message_catch_up(fixture: &mut Fixture) {
+	let id = Uuid::from_u128(0x20);
+	let content = "Also include the rollback steps.";
+	let workspace_id = fixture.run.workspace_id;
+	let created_at = fixture.run.updated_at;
+	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	state.tools = default_tools();
+	state.inputs = vec![aidash_domain::run_input::RunInput {
+		seq: 2,
+		sender: "human".into(),
+		content: content.into(),
+		idempotency_key: "input-2".into(),
+		message_id: Some(id),
+		reference_only: false,
+	}];
+	state.messages = vec![Message {
+		id,
+		workspace_id,
+		sender: "human".into(),
+		content: content.into(),
+		idempotency_key: Some("input-2".into()),
+		created_at,
+	}];
+	// An earlier summary turns every unprocessed run message into catch-up.
+	fixture.run.context.run_message_summary = "The user wants a release checklist.".into();
+	fixture.run.context.run_message_summary_seq = 1;
+	fixture.run.observed_input_seq = 1;
+}
+
+/// Legacy Agents (no exposure policy) must keep sending exactly these
+/// requests. Baselines are compact `serde_json` output of the captured
+/// `ModelRequest` (instructions, context, tools in order, output limit).
+#[rstest]
+#[case::default_tools(
+	plain_agent,
+	&default_tools(),
+	include_str!("../../../../tests/fixtures/legacy_model_request_default_tools.json")
+)]
+#[case::registry_skill(
+	registry_skill,
+	&default_tools(),
+	include_str!("../../../../tests/fixtures/legacy_model_request_registry_skill.json")
+)]
+#[case::direct_skill(
+	direct_skill,
+	&["workspace_read", "human_request", "skill_list", "skill_load", "skill_read"],
+	include_str!("../../../../tests/fixtures/legacy_model_request_direct_skill.json")
+)]
+#[case::run_message_catch_up(
+	run_message_catch_up,
+	&["workspace_read"],
+	include_str!("../../../../tests/fixtures/legacy_model_request_run_message_catch_up.json")
+)]
+#[tokio::test]
+async fn legacy_thinking_request_matches_byte_baseline(
+	mut fixture: Fixture,
+	#[case] arrange: fn(&mut Fixture),
+	#[case] advertised: &[&str],
+	#[case] baseline: &str,
+) {
+	// Arrange: fixed identities keep the serialized context reproducible.
+	let workspace = Uuid::from_u128(0x10);
+	let task = Uuid::from_u128(0x11);
+	fixture.run.id = Uuid::from_u128(0x12);
+	fixture.run.workspace_id = workspace;
+	fixture.run.task_id = task;
+	{
+		let mut home = fixture.backend.0.task.lock().unwrap();
+		home.id = task;
+		home.workspace_id = workspace;
+	}
+	fixture.run.state = RunState::Thinking(ThinkingState::default());
+	arrange(&mut fixture);
+	// Act
+	advance_sources(&mut fixture).await.unwrap();
+	// Assert
+	let requests = fixture.backend.0.requests.lock().unwrap();
+	let [request] = requests.as_slice() else {
+		panic!("expected one provider request, got {}", requests.len());
+	};
+	// Tools are advertised in alias order, after the catch-up filter.
+	let mut sorted = advertised.to_vec();
+	sorted.sort_unstable();
+	assert_eq!(
+		request
+			.tools
+			.iter()
+			.map(|tool| tool.name.as_str())
+			.collect::<Vec<_>>(),
+		sorted
+	);
+	assert_eq!(serde_json::to_string(request).unwrap(), baseline.trim());
+}
+
+/// A tool whose results the test scripts in call order; counts real invocations.
+struct Scripted {
+	specification: ToolSpec,
+	contract: aidash_domain::tool::ToolContract,
+	outputs: Mutex<std::collections::VecDeque<Value>>,
+	invocations: Mutex<usize>,
+}
+impl Scripted {
+	fn new(specification: ToolSpec, contract: &str) -> Arc<Self> {
+		Arc::new(Self {
+			specification,
+			contract: aidash_domain::tool::builtin_contract(contract).expect("declared builtin"),
+			outputs: Mutex::new(Default::default()),
+			invocations: Mutex::new(0),
+		})
+	}
+	fn invocations(&self) -> usize {
+		*self.invocations.lock().unwrap()
+	}
+}
+#[async_trait]
+impl ExecutionTool for Scripted {
+	fn specification(&self) -> ToolSpec {
+		self.specification.clone()
+	}
+	fn contract(&self) -> aidash_domain::tool::ToolContract {
+		self.contract.clone()
+	}
+	fn replay_safe(&self) -> bool {
+		self.contract.replay_safe()
+	}
+	async fn invoke(&self, run: &Run, input: Value, key: &str) -> Result<Value> {
+		let _ = (run, input, key);
+		*self.invocations.lock().unwrap() += 1;
+		Ok(self
+			.outputs
+			.lock()
+			.unwrap()
+			.pop_front()
+			.expect("scripted tool output"))
+	}
+}
+
+const NODE: &str = "aidash://fixture";
+const LARGE_TOOLS: usize = 12;
+const DIRECT_SKILL: Uuid = Uuid::from_u128(0x31);
+
+fn reference(id: &str) -> QualifiedRef {
+	QualifiedRef {
+		registry_node: NODE.into(),
+		id: id.into(),
+		version: "1.0.0".into(),
+	}
+}
+
+/// An unvalidated `deferred@1` Run snapshot: the Executor reads only the
+/// Agent policy, bindings and Skill definitions from it.
+#[derive(Default)]
+struct DeferredSnapshot {
+	agent: Vec<Value>,
+	definitions: Vec<ResolvedDefinition>,
+	bindings: Vec<ResolvedBinding>,
+}
+impl DeferredSnapshot {
+	fn define(
+		&mut self,
+		identity: &QualifiedRef,
+		kind: &str,
+		description: &str,
+		config: Value,
+	) -> (Entry, String) {
+		let entry: Entry = serde_json::from_value(json!({
+			"id": identity.id,
+			"version": identity.version,
+			"kind": kind,
+			"name": {"en": identity.id},
+			"description": {"en": description},
+			"config": config,
+		}))
+		.unwrap();
+		let digest = rules::digest(&serde_json::to_value(&entry).unwrap());
+		self.definitions.push(ResolvedDefinition {
+			identity: identity.clone(),
+			definition: entry.clone(),
+			digest: digest.clone(),
+		});
+		(entry, digest)
+	}
+	fn bind(
+		&mut self,
+		identity: QualifiedRef,
+		kind: &str,
+		description: &str,
+		config: Value,
+		alias: Option<&str>,
+		origin: BindingOrigin,
+	) {
+		let (definition, digest) = self.define(&identity, kind, description, config);
+		let tool = kind == "tool";
+		self.bindings.push(ResolvedBinding {
+			identity,
+			definition,
+			digest,
+			origin,
+			alias: alias.map(Into::into),
+			narrow: Narrowing::default(),
+			installation: None,
+			provider_contract_digest: tool.then(|| "contract".into()),
+			provider_implementation: tool.then(|| "implementation".into()),
+			excluded_reason: None,
+		});
+	}
+	fn eager(&mut self, kind: &str, id: &str) {
+		self.agent
+			.push(json!({"kind": kind, "target": reference(id), "exposure": "eager"}));
+	}
+	fn snapshot(mut self) -> BindingSnapshot {
+		let agent = reference("agent");
+		let config = json!({
+			"schema_version": 1,
+			"model": {"id": "model", "version": "1.0.0"},
+			"instructions": "Do the task",
+			"bindings": self.agent,
+			"exposure": {"version": "deferred@1"},
+		});
+		self.define(&agent, "agent", "", config);
+		BindingSnapshot {
+			schema_version: 1,
+			agent,
+			remote: false,
+			bindings: self.bindings,
+			definitions: self.definitions,
+			foreign_agents: vec![],
+		}
+	}
+}
+
+fn mandatory_tools() -> Vec<&'static str> {
+	REQUIRED_TOOLS
+		.iter()
+		.chain(EXPOSURE_TOOLS)
+		.chain(&[SKILL_ASSET_READ])
+		.copied()
+		.collect()
+}
+/// Mandatory exposure, one eager tool and one eager Skill, plus deferred
+/// tools and Skills whose definitions together exceed every default budget.
+fn deferred_agent(fixture: &mut Fixture) {
+	let mut snapshot = DeferredSnapshot::default();
+	for operation in mandatory_tools() {
+		snapshot.bind(
+			QualifiedRef::builtin(NODE, operation),
+			"tool",
+			operation,
+			json!(core_descriptor(NODE, operation).unwrap()),
+			Some(operation),
+			BindingOrigin::Required,
+		);
+	}
+	let mut custom = BTreeMap::new();
+	let mut tool = |snapshot: &mut DeferredSnapshot, alias: String, pad: usize| {
+		let description = format!("Fixture {alias} tool.");
+		snapshot.bind(
+			reference(&alias),
+			"tool",
+			&description,
+			json!(core_descriptor(NODE, "outbound_get").unwrap()),
+			Some(&alias),
+			BindingOrigin::Explicit,
+		);
+		let specification = ToolSpec {
+			name: alias.clone(),
+			description,
+			parameters: json!({"type":"object","description":format!("schema-{alias}-{}", "x".repeat(pad))}),
+		};
+		custom.insert(alias, Scripted::new(specification, "outbound_get"));
+	};
+	for index in 0..LARGE_TOOLS {
+		tool(&mut snapshot, format!("tool_{index:02}"), 2_000);
+	}
+	tool(&mut snapshot, "eager_tool".into(), 0);
+	snapshot.eager("tool", "eager_tool");
+	for (id, pad) in [
+		("guide", 0),
+		("skill-a", 12_000),
+		("skill-b", 12_000),
+		("skill-c", 12_000),
+	] {
+		snapshot.bind(
+			reference(id),
+			"skill",
+			&format!("The {id} Skill."),
+			json!({"instructions": format!("BODY-{id} {}", "y".repeat(pad))}),
+			None,
+			BindingOrigin::Explicit,
+		);
+	}
+	snapshot.eager("skill", "guide");
+	let load = aidash_application::tools::builtins()
+		.remove("capability_load")
+		.map_or_else(
+			|| ToolSpec {
+				name: "capability_load".into(),
+				description: "Fixture capability_load tool.".into(),
+				parameters: json!({"type":"object","additionalProperties":false}),
+			},
+			|builtin| builtin.specification(),
+		);
+	custom.insert(
+		"capability_load".into(),
+		Scripted::new(load, "capability_load"),
+	);
+	fixture.run.context.binding_snapshot = Some(Box::new(snapshot.snapshot()));
+	let body = "---\nname: release-notes\ndescription: Draft release notes.\n---\nBODY-direct Group changes by user impact.\n";
+	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	state.tools = mandatory_tools();
+	state.custom = custom;
+	state.direct_skills = vec![DirectSkill {
+		metadata: SkillMetadata {
+			skill_id: DIRECT_SKILL,
+			name: "release-notes".into(),
+			description: "Draft release notes.".into(),
+			origin: "area:00000000-0000-0000-0000-000000000030:.agents/skills/release-notes".into(),
+			digest: "sha256:direct".into(),
+			license: None,
+		},
+		origin: SkillOriginKind::Attachment,
+		body_bytes: json!(body).to_string().len() - 2,
+		files: vec![],
+	}];
+	state.direct_bodies = BTreeMap::from([(DIRECT_SKILL, body.to_owned())]);
+}
+fn budgets(run: &Run) -> aidash_domain::exposure::DeferredBudgets {
+	deferred_exposure(run).unwrap().expect("deferred Agent").1
+}
+async fn deferred_catalog(fixture: &Fixture) -> Vec<exposure::Capability> {
+	let tools =
+		aidash_application::ports::bindings::BindingResolver::tools(&fixture.backend, &fixture.run)
+			.await
+			.unwrap();
+	let snapshot = fixture.run.context.binding_snapshot.as_deref().unwrap();
+	exposure_catalog(&fixture.backend, &fixture.run, snapshot, &tools)
+		.await
+		.unwrap()
+}
+fn alias_of(catalog: &[exposure::Capability], identity: &exposure::CapabilityIdentity) -> String {
+	catalog
+		.iter()
+		.find(|capability| &capability.identity == identity)
+		.unwrap()
+		.alias
+		.clone()
+}
+/// The `capability_load` result for `alias` against the Run's current state.
+fn load_output(catalog: &[exposure::Capability], run: &Run, alias: &str) -> Value {
+	let digest = &catalog.iter().find(|c| c.alias == alias).unwrap().digest;
+	exposure::load(
+		&budgets(run),
+		catalog,
+		&run.context.exposure,
+		alias,
+		digest,
+		run.step,
+	)
+	.unwrap()
+}
+fn call(id: &str, name: &str, arguments: Value) -> ToolCall {
+	ToolCall {
+		id: id.into(),
+		name: name.into(),
+		arguments,
+	}
+}
+fn respond(run: &mut Run, calls: Vec<ToolCall>) {
+	run.state = RunState::ToolCall(Box::new(ToolCallState {
+		response: ModelResponse {
+			tool_calls: calls,
+			usage_complete: true,
+			..Default::default()
+		},
+		..Default::default()
+	}));
+}
+fn tool_names(request: &ModelRequest) -> Vec<&str> {
+	request
+		.tools
+		.iter()
+		.map(|tool| tool.name.as_str())
+		.collect()
+}
+fn last_write(fixture: &Fixture) -> (String, Run) {
+	fixture
+		.backend
+		.0
+		.writes
+		.lock()
+		.unwrap()
+		.last()
+		.unwrap()
+		.clone()
+}
+
+#[rstest]
+#[tokio::test]
+async fn deferred_first_request_advertises_only_mandatory_and_eager_capabilities(
+	mut fixture: Fixture,
+) {
+	// Arrange
+	deferred_agent(&mut fixture);
+	fixture.run.state = RunState::Thinking(ThinkingState::default());
+	// Act
+	advance_sources(&mut fixture).await.unwrap();
+	// Assert
+	let requests = fixture.backend.0.requests.lock().unwrap();
+	let [request] = requests.as_slice() else {
+		panic!("expected one provider request, got {}", requests.len());
+	};
+	let mut expected = mandatory_tools();
+	expected.push("eager_tool");
+	expected.sort_unstable();
+	assert_eq!(tool_names(request), expected);
+	assert!(expected.contains(&"human_request"));
+	let encoded = serde_json::to_string(request).unwrap();
+	assert!(
+		!encoded.contains("schema-tool_"),
+		"deferred schemas stay out of the request"
+	);
+	for body in [
+		"BODY-skill-a",
+		"BODY-skill-b",
+		"BODY-skill-c",
+		"BODY-direct",
+	] {
+		assert!(
+			!encoded.contains(body),
+			"{body} must not be resident before a Load"
+		);
+	}
+	assert_eq!(request.instructions.matches("BODY-guide").count(), 1);
+	assert!(
+		request
+			.instructions
+			.contains("tool_00 [tool]: Fixture tool_00 tool.")
+	);
+	assert!(request.instructions.contains("release_notes"));
+	let (event, saved) = last_write(&fixture);
+	assert_eq!(event, "model.completed");
+	let usage = saved
+		.context
+		.usage
+		.clone()
+		.unwrap()
+		.exposure
+		.expect("deferred usage");
+	assert!(usage.exposed.iter().any(|(alias, _)| alias == "eager_tool"));
+	assert!(usage.schema_bytes <= budgets(&saved).schema_bytes);
+	assert!(usage.metadata_bytes > 0);
+}
+
+#[rstest]
+#[tokio::test]
+async fn deferred_dispatch_rejects_a_capability_that_is_not_loaded(mut fixture: Fixture) {
+	// Arrange
+	deferred_agent(&mut fixture);
+	respond(&mut fixture.run, vec![call("call-1", "tool_03", json!({}))]);
+	// Act
+	advance_sources(&mut fixture).await.unwrap();
+	// Assert
+	let (event, saved) = last_write(&fixture);
+	assert_eq!(event, "run.tool_recorded");
+	assert!(matches!(
+		saved.context.history.last(),
+		Some(ContextEvent::Tool { result, .. })
+			if result == &json!({"error":"capability tool_03 is not loaded; use capability_load"})
+	));
+	assert_eq!(fixture.backend.0.custom["tool_03"].invocations(), 0);
+	assert!(
+		!fixture
+			.backend
+			.0
+			.calls
+			.lock()
+			.unwrap()
+			.contains(&"invocation.start")
+	);
+	assert_eq!(saved.state.tool().unwrap().cursor, 1);
+}
+
+#[rstest]
+#[tokio::test]
+async fn loads_change_the_next_request_and_skill_bodies_stay_resident_once(mut fixture: Fixture) {
+	// Arrange: one response loads a tool, two Skills, and repeats one Skill load.
+	deferred_agent(&mut fixture);
+	let catalog = deferred_catalog(&fixture).await;
+	let skill = alias_of(
+		&catalog,
+		&exposure::CapabilityIdentity::Registry(reference("skill-a")),
+	);
+	let direct = alias_of(
+		&catalog,
+		&exposure::CapabilityIdentity::DirectSkill {
+			skill_id: DIRECT_SKILL,
+			origin: fixture.backend.0.direct_skills[0].metadata.origin.clone(),
+		},
+	);
+	let skill_load = load_output(&catalog, &fixture.run, &skill);
+	*fixture.backend.0.custom["capability_load"]
+		.outputs
+		.lock()
+		.unwrap() = [
+		load_output(&catalog, &fixture.run, "tool_05"),
+		skill_load.clone(),
+		load_output(&catalog, &fixture.run, &direct),
+		skill_load,
+	]
+	.into();
+	respond(
+		&mut fixture.run,
+		["tool_05", skill.as_str(), direct.as_str(), skill.as_str()]
+			.iter()
+			.enumerate()
+			.map(|(index, alias)| {
+				call(
+					&format!("call-{index}"),
+					"capability_load",
+					json!({"alias": alias}),
+				)
+			})
+			.collect(),
+	);
+	// Act: four tool steps, the step transition, then the next inference.
+	for _ in 0..6 {
+		advance_sources(&mut fixture).await.unwrap();
+	}
+	// Assert
+	assert_eq!(fixture.backend.0.custom["capability_load"].invocations(), 4);
+	let loaded = fixture
+		.run
+		.context
+		.exposure
+		.loaded
+		.iter()
+		.map(|loaded| loaded.alias.as_str())
+		.collect::<Vec<_>>();
+	assert_eq!(loaded, ["tool_05", skill.as_str(), direct.as_str()]);
+	let requests = fixture.backend.0.requests.lock().unwrap();
+	let [request] = requests.as_slice() else {
+		panic!("expected one provider request, got {}", requests.len());
+	};
+	assert!(tool_names(request).contains(&"tool_05"));
+	assert!(!tool_names(request).contains(&"tool_06"));
+	assert_eq!(request.instructions.matches("BODY-skill-a").count(), 1);
+	assert_eq!(request.instructions.matches("BODY-direct").count(), 1);
+	assert!(!request.instructions.contains("BODY-skill-b"));
+	assert!(!request.instructions.contains(&format!("{skill} [skill]")));
+	let usage = fixture.run.context.usage.clone().unwrap().exposure.unwrap();
+	assert!(usage.exposed.iter().any(|(alias, _)| alias == &skill));
+	assert!(
+		fixture
+			.backend
+			.0
+			.calls
+			.lock()
+			.unwrap()
+			.contains(&"skills.direct_body")
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn replayed_load_and_resumed_run_keep_the_same_exposure(mut fixture: Fixture) {
+	// Arrange: the load completed before the worker restarted.
+	deferred_agent(&mut fixture);
+	let catalog = deferred_catalog(&fixture).await;
+	let output = load_output(&catalog, &fixture.run, "tool_05");
+	let mut expected = ExposureState::default();
+	expected.apply(
+		&serde_json::from_value::<ExposureUpdate>(output["exposure_update"].clone()).unwrap(),
+	);
+	assert_eq!(
+		expected.loaded,
+		[Loaded {
+			alias: "tool_05".into(),
+			kind: CapabilityKind::Tool,
+			identity: exposure::CapabilityIdentity::Registry(reference("tool_05")),
+			digest: catalog
+				.iter()
+				.find(|c| c.alias == "tool_05")
+				.unwrap()
+				.digest
+				.clone(),
+			step: 0,
+		}]
+	);
+	respond(
+		&mut fixture.run,
+		vec![call(
+			"call-0",
+			"capability_load",
+			json!({"alias":"tool_05"}),
+		)],
+	);
+	fixture.backend.0.invocations.lock().unwrap().insert(
+		format!("{}:0:0", fixture.run.id),
+		("COMPLETED".into(), Some(output)),
+	);
+	// Act: replay the completed invocation.
+	advance_sources(&mut fixture).await.unwrap();
+	// Assert
+	assert_eq!(fixture.backend.0.custom["capability_load"].invocations(), 0);
+	let (event, saved) = last_write(&fixture);
+	assert_eq!(event, "run.tool_recorded");
+	assert_eq!(saved.context.exposure, expected);
+	// Act: resume from the persisted Run, then infer.
+	fixture.run = serde_json::from_slice(&serde_json::to_vec(&saved).unwrap()).unwrap();
+	advance_sources(&mut fixture).await.unwrap();
+	advance_sources(&mut fixture).await.unwrap();
+	// Assert
+	assert_eq!(fixture.run.context.exposure, expected);
+	let requests = fixture.backend.0.requests.lock().unwrap();
+	let [request] = requests.as_slice() else {
+		panic!("expected one provider request, got {}", requests.len());
+	};
+	assert!(tool_names(request).contains(&"tool_05"));
+}
+
+#[rstest]
+#[tokio::test]
+async fn deferred_run_message_catch_up_advertises_only_workspace_read(mut fixture: Fixture) {
+	// Arrange
+	fixture.run.state = RunState::Thinking(ThinkingState::default());
+	run_message_catch_up(&mut fixture);
+	deferred_agent(&mut fixture);
+	// Act
+	advance_sources(&mut fixture).await.unwrap();
+	// Assert
+	let requests = fixture.backend.0.requests.lock().unwrap();
+	let [request] = requests.as_slice() else {
+		panic!("expected one provider request, got {}", requests.len());
+	};
+	assert_eq!(tool_names(request), ["workspace_read"]);
+}
+
+/// Answers every compaction question with "drop".
+struct DropAll;
+#[async_trait]
+impl CompactionClassifier for DropAll {
+	async fn ask(&self, _state: &Value, questions: &CompactionQuestions) -> Result<Value> {
+		let answers = questions
+			.keys()
+			.map(|name| (name.clone(), json!({"noul": 0.0})))
+			.collect::<serde_json::Map<_, _>>();
+		Ok(json!({"answers": answers}))
+	}
+}
+
+#[rstest]
+#[tokio::test]
+async fn compaction_leaves_the_exposure_set_intact() {
+	// Arrange
+	let mut context = Context::default();
+	context.exposure.apply(&ExposureUpdate::Load(Loaded {
+		alias: "tool_05".into(),
+		kind: CapabilityKind::Tool,
+		identity: exposure::CapabilityIdentity::Registry(reference("tool_05")),
+		digest: "sha256:tool".into(),
+		step: 1,
+	}));
+	context.exposure.apply(&ExposureUpdate::Unload {
+		alias: "eager_tool".into(),
+	});
+	for index in 0..24 {
+		context.history.push(ContextEvent::tool(
+			call(&format!("call-{index}"), "tool_05", json!({})),
+			json!({"text": "z".repeat(4_000)}),
+		));
+	}
+	let exposure = context.exposure.clone();
+	let pinned = json!({});
+	let tools = [];
+	let mut budget = context::RequestBudget {
+		window: usize::MAX,
+		instructions: "Do the task",
+		tools: &tools,
+		max_output_tokens: 100,
+	};
+	budget.window = budget.request(&context, &pinned).estimated_total_tokens() / 2;
+	// Act
+	compact_execution(&mut context, &DropAll, &budget, &pinned)
+		.await
+		.unwrap();
+	// Assert
+	assert_eq!(context.compactions, 1);
+	assert!(context.history.len() < 24);
+	assert_eq!(context.exposure, exposure);
 }
