@@ -37,6 +37,7 @@ struct State {
 	retrieval: Mutex<RetrievalScope>,
 	semantic_keys: Mutex<Vec<Option<String>>>,
 	inputs: Mutex<Vec<aidash_domain::run_input::RunInput>>,
+	instructions: String,
 }
 impl Backend {
 	fn record(&self, name: &'static str) {
@@ -458,7 +459,7 @@ impl ExecutionEnvironment for Backend {
 				id: "model".into(),
 				version: "1.0.0".into(),
 			},
-			instructions: "Do the task".into(),
+			instructions: self.0.instructions.clone(),
 			knowledge_digest: None,
 			tools: vec![],
 			skills: vec![],
@@ -598,6 +599,7 @@ fn fixture() -> Fixture {
 		}),
 		semantic_keys: Mutex::new(vec![]),
 		inputs: Mutex::new(vec![]),
+		instructions: "Do the task".into(),
 	}));
 	Fixture { backend, run }
 }
@@ -1436,6 +1438,33 @@ fn ordered_estimate_counts_the_complete_request_near_the_window(#[case] events: 
 		growth(&scope),
 		context::tool_event_growth(&context, &history_event(events + 1))
 	);
+}
+
+/// Fixed content that leaves less headroom than the Run-stable quota must
+/// truncate the task snapshot, not admit a request that cannot fit.
+#[rstest]
+#[case::legacy(false)]
+#[case::ordered(true)]
+#[tokio::test]
+async fn oversized_fixed_content_truncates_the_snapshot_to_fit(
+	mut canonical: Fixture,
+	#[case] is_ordered: bool,
+) {
+	if is_ordered {
+		ordered(&mut canonical);
+	}
+	Arc::get_mut(&mut canonical.backend.0).unwrap().instructions = "x".repeat(100_000);
+	// Smaller than the Run-stable quota, larger than the remaining headroom.
+	let quota = context::ordered_stable_quota(128_000, 4096);
+	canonical.backend.0.task.lock().unwrap().description = "d".repeat(quota - 4096);
+	assert!(matches!(
+		advance_sources(&mut canonical).await,
+		Err(Error::ProviderRejected { .. })
+	));
+	let requests = canonical.backend.0.requests.lock().unwrap();
+	let content = requests[0].input_body().to_string();
+	assert!(content.contains("snapshot_truncated"));
+	assert!(requests[0].ensure_fits(128_000).is_ok());
 }
 
 /// One plain step, then a run-message catch-up step on the same Run.

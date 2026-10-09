@@ -74,3 +74,28 @@ fn every_admitted_request_or_media_change_has_a_distinct_identity(
 	}
 	assert_ne!(request.inference_digest(), before);
 }
+#[rstest]
+fn media_only_estimate_keeps_transmitted_array_framing_without_encoded_payload(
+	mut request: ModelRequest,
+) {
+	request.content_parts.remove(0);
+	let body = request.input_body();
+	assert!(body["messages"][1]["content"].is_array());
+	let payload: usize = request
+		.content_parts
+		.iter()
+		.map(|part| match part {
+			ContentPart::Image { bytes, .. } | ContentPart::Audio { bytes, .. } => {
+				base64::engine::general_purpose::STANDARD
+					.encode(bytes)
+					.len()
+			}
+			ContentPart::Text(_) => 0,
+		})
+		.sum();
+	let expected = body.to_string().len() - payload
+		+ ModelRequest::media_tokens(&request.content_parts)
+		+ request.max_output_tokens as usize
+		+ 1024;
+	assert_eq!(request.estimated_total_tokens(), expected);
+}

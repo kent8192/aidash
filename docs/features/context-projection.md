@@ -5,11 +5,11 @@ model request. An Agent definition version names it, the Run's Binding snapshot
 pins it, and it never changes while the Run exists. Runs created before this
 feature, and Agent definitions that name no version, use `legacy`.
 
-| Version | Request shape |
-| --- | --- |
-| `legacy` | One JSON user message with alphabetically ordered keys. This is the default. |
+| Version   | Request shape                                                                                                                           |
+| --------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| `legacy`  | One JSON user message with alphabetically ordered keys. This is the default.                                                            |
 | `ordered` | A Tenant Cache Salt line at the start of `system`, then one user message with two text parts: a Stable Prefix part and a volatile part. |
-| `native` | Reserved for model-native messages (#178). Registration rejects it. |
+| `native`  | Reserved for model-native messages (#178). Registration rejects it.                                                                     |
 
 ## Selecting `ordered`
 
@@ -32,7 +32,7 @@ Declare the versions a model accepts, then name one in the Agent definition:
 ```json
 {
   "schema_version": 1,
-  "model": {"id": "model", "version": "1.0.0"},
+  "model": { "id": "model", "version": "1.0.0" },
   "instructions": "Do the task.",
   "projection_version": "ordered"
 }
@@ -85,6 +85,10 @@ These events legitimately end the shared prefix:
 - History compaction, or removal of an old media observation.
 - A change to the task, the instructions, or a loaded Skill body.
 - Run-message catch-up and media-intake turns, which narrow or clear the tools.
+- Fixed content (instructions, tools, reference documents, per-turn
+  instructions) so large that the Run-stable snapshot quota no longer fits
+  beside it: the snapshot is then truncated to the remaining headroom, as in
+  `legacy`, instead of failing the request.
 - A different tool set.
 
 For `ordered` Runs, a semantic retrieval is reused across steps while its

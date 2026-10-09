@@ -165,6 +165,20 @@ impl ContentPart {
 		}
 	}
 
+	/// Transport framing of this part with any encoded media payload left
+	/// empty, so estimates keep the array shape without counting base64 bytes.
+	fn estimate_frame(&self) -> Value {
+		match self {
+			Self::Text(_) => self.openrouter(),
+			Self::Image { media_type, .. } => {
+				json!({"type":"image_url","image_url":{"url":format!("data:{media_type};base64,")}})
+			}
+			Self::Audio { format, .. } => {
+				json!({"type":"input_audio","input_audio":{"data":"","format":format}})
+			}
+		}
+	}
+
 	fn validate(&self) -> Result<()> {
 		match self {
 			Self::Text(_) => Ok(()),
@@ -233,18 +247,18 @@ impl ModelRequest {
 	}
 
 	/// Space added to a media-free request by these parts, including text
-	/// labels and the conservative provider-side media token allowance.
+	/// labels, media part framing, and the conservative provider-side media
+	/// token allowance.
 	pub fn content_parts_reservation(parts: &[ContentPart]) -> usize {
 		if parts.is_empty() {
 			return 0;
 		}
 		let mut reserved = 64_usize.saturating_add(Self::media_tokens(parts));
-		// Array/text framing replaces a plain context string.
+		// Array/text framing replaces a plain context string; media parts keep
+		// their framing but not their encoded payload bytes.
 		for part in parts {
-			if let ContentPart::Text(_) = part {
-				reserved =
-					reserved.saturating_add(part.openrouter().to_string().len().saturating_add(1));
-			}
+			reserved =
+				reserved.saturating_add(part.estimate_frame().to_string().len().saturating_add(1));
 		}
 		reserved
 	}
@@ -299,11 +313,9 @@ impl ModelRequest {
 
 	pub fn estimated_total_tokens_with_parts(&self, parts: &[ContentPart]) -> usize {
 		// Base64 is a transport encoding, not text for the model tokenizer.
-		// Keep the ordinary text estimate and reserve a bounded media estimate.
-		let body = self.body(parts.iter().filter_map(|part| match part {
-			ContentPart::Text(_) => Some(part.openrouter()),
-			_ => None,
-		}));
+		// Keep the transmitted array framing, excluding only encoded media
+		// payload bytes, and reserve a bounded media estimate.
+		let body = self.body(parts.iter().map(ContentPart::estimate_frame));
 		let salt = if self.cache_scope.is_some() {
 			crate::projection::CACHE_SALT_LINE_RESERVE
 		} else {

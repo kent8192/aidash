@@ -567,10 +567,18 @@ impl<'a> Executor<'a> {
 				let volatile_budget = available.saturating_sub(message_size) / 4;
 				let snapshot_fit = if ordered {
 					// Stable fields use a Run-stable quota so every step renders the
-					// same Stable Prefix bytes for the same task.
+					// same Stable Prefix bytes for the same task. It never exceeds
+					// half the headroom left beside the fixed content, run messages
+					// and volatile fields (the rest absorbs JSON string escaping and
+					// history), so oversized fixed content truncates the snapshot,
+					// or reports overflow, as Legacy does.
+					let headroom = available
+						.saturating_sub(message_size)
+						.saturating_sub(volatile_budget)
+						/ 2;
 					context::bound_ordered_snapshot(
 						&mut pinned,
-						context::ordered_stable_quota(window, output_limit),
+						context::ordered_stable_quota(window, output_limit).min(headroom),
 						volatile_budget,
 					)
 				} else {
