@@ -206,10 +206,23 @@ Acknowledging completed, failed or cancelled extraction releases the runner's
 staged payloads. Python result acknowledgement also releases copied inline images.
 
 Direct Skills use immutable directory manifests. Discovery reveals bounded
-metadata; activation loads the chosen instructions, and other files are read on
-demand. Name collisions use distinct identities. Loading instructions does not
-execute scripts. Existing Registry Skills remain readable through their exact
-old identities and authority.
+metadata; loading brings the chosen instructions into the model request, and
+other files are read on demand. Name collisions use distinct identities. Loading
+instructions does not execute scripts. Existing Registry Skills remain readable
+through their exact old identities and authority.
+
+Under the legacy Exposure policy, `skill_list`, `skill_load` and `skill_read`
+behave as before, and `skill_load` marks the Skill loaded in the Run's Skill
+record. Under `deferred@1`, those tools are not bound. Direct and Registry Skills
+become Discoverable capabilities with `skill_` Model aliases. The model finds them
+with `capability_search` and loads their bodies with `capability_load`. A loaded
+body is resident in later requests within `skill_bytes`, and `capability_unload`
+removes it. The load state is kept only in the Run's `context.exposure`, never in
+the Skill record. `skill_asset_read` reads other packaged files by Skill alias,
+digest and path under the same `read_bytes` bound, `next_offset` and `truncated`
+contract; binary files return metadata only. Direct Skills are not Discoverable
+in remote Runs. See
+[deferred capability exposure](registry-capabilities.md#deferred-capability-exposure).
 
 The outbound broker enforces configured HTTPS origins, public DNS/IP checks,
 per-hop scope and bounded responses. Shell/Python have no general network proxy.

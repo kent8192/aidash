@@ -26,18 +26,31 @@ are not supported by this importer.
 The UI links to the Anthropic and OpenAI Skills repositories; it does not bundle or
 relicense their content. Register a new version when adopting an upstream update.
 
-At runtime, the agent sees the Skill instructions and the paths of its bundled
-files. It can read those files on demand with `skill_read`, bound to its exact
-registered Skill version. Reads preserve UTF-8 character boundaries, and an
-unknown file path is returned as a recoverable tool error. Bundled scripts remain
-text and are not run. Configure the tools a Skill needs separately; do not infer
-tool permissions from `allowed-tools`.
+At runtime, an Agent under the legacy Exposure policy sees the Skill instructions
+and the paths of its bundled files. It can read those files on demand with
+`skill_read`, bound to its exact registered Skill version. Reads preserve UTF-8
+character boundaries, and an unknown file path is returned as a recoverable tool
+error. Bundled scripts remain text and are not run. Configure the tools a Skill
+needs separately; do not infer tool permissions from `allowed-tools`.
+
+An Agent registered with `"exposure": {"version": "deferred@1"}` loads Skills
+on demand instead. Each bound Skill appears as a Discoverable capability with a
+`skill_` Model alias. The capability index in the instructions lists it, and
+`capability_search` and `capability_describe` show its description and packaged
+files. `capability_load` makes its instructions resident in later requests,
+within the Agent's `skill_bytes` budget. `capability_unload` removes them, and
+a Skill Binding with `"exposure": "eager"` is resident from the first request.
+Bundled files are read with `skill_asset_read`, using the Skill alias and
+digest, the file path, and optional `offset` and `max_chars`. Loading a Skill
+never runs its scripts or grants permissions. See
+[deferred capability exposure](../operations/registry-capabilities.md#deferred-capability-exposure).
 
 Workspace and Skill text reads count Unicode scalar values in `offset`,
 `max_chars`, `next_offset`, and `total_chars` wherever those fields are present.
 Japanese characters and emoji each count as one scalar value; a combining mark
-counts separately. Pinned Skill reads accept `max_chars`. Encoded-byte resource
-limits still cap the returned text independently of that character quota.
+counts separately. Pinned Skill reads and `skill_asset_read` accept `max_chars`.
+Encoded-byte resource limits still cap the returned text independently of that
+character quota.
 
 Format reference: <https://agentskills.io/specification>.
 Sources: <https://github.com/anthropics/skills>, <https://github.com/openai/skills>.

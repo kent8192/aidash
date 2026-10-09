@@ -10,7 +10,7 @@ Bundle member IDs must be unique within each bundle, including across versions a
 
 New Tool registrations require qualified Provider descriptors. Old transport-tagged definitions and old Agent configurations are unsupported for new execution; they remain historical records and are not converted. HTTP/MCP/Agent integration configuration is nested under the descriptor's `transport` field.
 
-Node startup seeds the 17 required/default builtin declarations at exact immutable versions. Seeding verifies existing bytes and fails the entire transaction on a reserved-name conflict. System catalog visibility does not add tenant resource grants. Builtins cannot be published, installed or mutated through Marketplace.
+Node startup seeds 22 builtin declarations at exact immutable versions (`aidash.<operation>@1.0.0`): the 17 legacy required/default operations plus `capability_search`, `capability_describe`, `capability_load`, `capability_unload` and `skill_asset_read`. All 22 are seeded whatever Exposure policies Agents use; an Agent's [Exposure policy](#deferred-capability-exposure) decides which of them it binds implicitly. Seeding verifies existing bytes and fails the entire transaction on a reserved-name conflict. System catalog visibility does not add tenant resource grants. Builtins cannot be published, installed or mutated through Marketplace.
 
 ## Pending Host packages
 
@@ -46,14 +46,18 @@ Every digest, revision, provider, dependency kind and lifecycle member is checke
 ## Binding-only registration and execution
 
 An Agent submits `schema_version: 1`, its exact `model` reference, `instructions`,
-`bindings` and `remove_default`. Each Binding has a typed kind (`tool`, `bundle`,
-`skill`, `memory` or `source`), a Node-qualified exact target and narrowing-only
-restrictions. Tool aliases are stable declaration names; collisions fail after
-bundle expansion. The required `workspace_read` and `human_request` cannot be
-removed. Bound Skills and Skill Sources require all three Skill support tools;
-Skill Sources retain the canonical `skill_list`, `skill_load` and `skill_read`
-aliases at admission and snapshot recovery. Cluster coordinators require all
-three coordination tools.
+`bindings`, `remove_default` and an optional `exposure` policy. Each Binding has a
+typed kind (`tool`, `bundle`, `skill`, `memory` or `source`), a Node-qualified
+exact target, narrowing-only restrictions and, under a deferred policy only, an
+optional `exposure`. Tool aliases are stable declaration names; collisions fail
+after bundle expansion. The required `workspace_read` and `human_request` cannot
+be removed. Under the legacy policy, bound Skills and Skill Sources require all
+three Skill support tools; Skill Sources retain the canonical `skill_list`,
+`skill_load` and `skill_read` aliases at admission and snapshot recovery. Under
+`deferred@1`, bound Skills require `skill_asset_read`, and Skill Sources require
+`capability_search`, `capability_describe`, `capability_load`,
+`capability_unload` and `skill_asset_read`, all with their canonical aliases.
+Cluster coordinators require all three coordination tools.
 
 ```json
 {
@@ -100,6 +104,182 @@ Run and retains its snapshot and journals. Restoring availability does not
 resume work automatically; an explicit resume rechecks the saved contracts.
 Direct capability HTTP requests recheck the selected Tool's current catalog
 approval, pinned installation and immutable definition before dispatch.
+
+## Deferred capability exposure
+
+An Agent's `exposure` field names its [Exposure policy](registry-capability-glossary.md).
+The policy is part of the Agent definition, so it is fixed with each Run's
+Binding snapshot. Without the field, or with `{"version": "legacy@1"}`, every
+model request carries every bound capability. Model requests, dispatch, Skill
+records and errors are then exactly those of earlier releases, and
+`skill_read@1.0.0` is unchanged. `legacy@1` accepts no other field.
+
+```json
+{
+  "exposure": {
+    "version": "deferred@1",
+    "metadata_bytes": 4096,
+    "schema_bytes": 16384,
+    "skill_bytes": 32768
+  }
+}
+```
+
+| Budget           | Default | Accepted range | Measures                                                                                                      |
+| ---------------- | ------- | -------------- | ------------------------------------------------------------------------------------------------------------- |
+| `metadata_bytes` | 4,096   | 512–65,536     | JSON-escaped bytes of the capability index in the instructions                                                |
+| `schema_bytes`   | 16,384  | 1,024–262,144  | Serialized JSON of every exposed tool definition, including Mandatory exposure, Eager bindings and companions |
+| `skill_bytes`    | 32,768  | 1,024–262,144  | JSON-escaped bytes of the resident Skill blocks                                                               |
+
+Any budget may be omitted and takes its default. Registration rejects an
+out-of-range budget or an unknown field. Budgets are UTF-8 bytes of the JSON
+request text, the same conservative estimate used by
+[context compaction](../protocol.md#context-compaction); no tokenizer or model
+call is involved.
+
+### Bindings under `deferred@1`
+
+A `tool`, `bundle` or `skill` Binding may set `"exposure": "eager"` or
+`"exposure": "deferred"`; an absent value means `deferred`. Registration rejects
+the field on other kinds and under the legacy policy. An Eager binding is in
+the Exposure set from the Run's first request. An eager bundle makes its selected
+members eager unless a member has its own `tool` Binding, whose `exposure` then
+decides. Eagerness affects only exposure, never authority.
+
+Normalization adds `capability_search`, `capability_describe`,
+`capability_load` and `capability_unload` as Required Bindings with canonical
+aliases; they cannot be removed. The implicit defaults replace `skill_list`,
+`skill_load` and `skill_read` with `skill_asset_read`. `remove_default` may name
+`skill_asset_read` only when no Skill Binding or Skill Source is bound, and
+cannot name the legacy Skill tools. Under the legacy policy, `remove_default`
+cannot name `skill_asset_read`.
+
+Mandatory exposure is `workspace_read`, `human_request`, the four
+`capability_*` tools and, when bound, `skill_asset_read`. Registration measures
+Mandatory exposure, Eager tool definitions and eager Skill blocks, plus all
+three budgets in full, against the selected model window with output and context
+reserves. It also rejects any single tool definition larger than `schema_bytes`
+and any Registry or attached Skill block larger than `skill_bytes`, naming the
+alias and its size. If Mandatory exposure and Eager bindings exceed
+`schema_bytes` or `skill_bytes` at a step, that step fails instead of running
+with less.
+
+### Requests
+
+At each step the Harness rebuilds the Run's Discoverable capabilities, sorted by
+alias. These are:
+
+- every non-excluded aliased Tool Binding that passes its authority and Provider
+  checks at that step, described exactly as dispatch advertises it (name = Model
+  alias, parameters = declared schema, description = English declaration
+  description, falling back to the Provider description);
+- every Registry Skill, with its body taken from the Binding snapshot;
+- on local Runs, every direct Skill (attachment or root).
+
+Lifecycle companions such as `shell_poll` and `shell_cancel` are folded into
+their parent Tool and exposed with it; they are not separate capabilities. A
+Skill's Model alias is `skill_<stem>_<hash>`. The stem is the Skill name or ID,
+lowercased, with characters outside `[a-z0-9_]` replaced by `_` and truncated to
+40 characters. The hash is the first eight hex digits of the SHA-256 of its
+identity. Duplicate aliases fail the step.
+
+A request's Exposure set has three parts:
+
+- Mandatory exposure;
+- Eager bindings that have not been unloaded;
+- loaded capabilities whose alias, kind, identity and digest still match the
+  catalog, in load order.
+
+Only those tool definitions are sent. A call to any other alias returns a
+recoverable tool error telling the model to use `capability_load`, and nothing
+is invoked. The instructions carry each resident Skill body, eager Skills first
+and then loaded Skills in load order:
+
+```text
+Skill <alias> (<identity>; digest <digest>; origin <registry|attachment|root>):
+<SKILL.md body>
+```
+
+`<identity>` is `<registry_node>/<id>@<version>` for a Registry Skill and
+`<origin>#<skill_id>` for a direct Skill. The legacy Registry Skill instructions
+and `Pinned Skills` listing are not emitted. After the Skill blocks comes the
+index. It lists every Discoverable capability outside the Exposure set, in alias
+order, under a header naming `capability_search` and `capability_load`. Each line
+is `<alias> [tool|skill]: <first description line, at most 160 characters>`.
+Lines are added while they fit `metadata_bytes`; the rest are replaced by
+`<n> more — use capability_search`.
+
+Each request records `context.usage.exposure`:
+`{"metadata_bytes", "schema_bytes", "skill_bytes", "exposed": [[alias, digest], …]}`.
+Legacy requests omit it.
+
+### Capability tools
+
+These tools are `core.exposure@1` Built-ins. They read only the Run's own catalog
+and change only the Run's Exposure set. Identities serialize as
+`{"registry": {"registry_node", "id", "version"}}` or
+`{"direct_skill": {"skill_id", "origin"}}`.
+
+| Tool                  | Arguments                                | Result                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| --------------------- | ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `capability_search`   | `query?`, `cursor?`                      | `{"results": [{alias, kind, name, description, digest, loaded}], "next_cursor", "truncated"}`. The query is split into lowercase alphanumeric tokens. Each token adds 2 for each of the alias and name that contains it and 1 for each of the description and bundle that contains it. Results with a positive score (all, for an empty query) are ordered by score and then alias, 16 per page. `description` is the first description line, at most 160 characters. `loaded` is true for anything in the Exposure set. |
+| `capability_describe` | `alias`                                  | `{alias, kind, identity, digest, detail, bytes, budget}`. For a Tool, `detail` is the exact tool definition `{name, description, parameters}`. For a Skill, it is `{name, description, origin, license, files: [{path, digest, size}]}`. `bytes` counts the Tool definition with its companions, or the resident Skill block. `budget` is `schema_bytes` or `skill_bytes`.                                                                                                                                               |
+| `capability_load`     | `alias`, `digest` (from search/describe) | `{"status": "loaded", alias, identity, digest, bytes}`; `{"status": "already_loaded", identity, digest}` for Mandatory exposure, a current Eager binding or a loaded capability                                                                                                                                                                                                                                                                                                                                          |
+| `capability_unload`   | `alias`                                  | `{"status": "unloaded"}`; `{"status": "not_loaded"}` when the capability is not in the Exposure set                                                                                                                                                                                                                                                                                                                                                                                                                      |
+
+| Code                       | Returned by            | Meaning                                                                                         |
+| -------------------------- | ---------------------- | ----------------------------------------------------------------------------------------------- |
+| `UNKNOWN_CAPABILITY`       | describe, load, unload | The alias is not a Discoverable capability of the Run; recoverable tool error                   |
+| `MANDATORY_EXPOSURE`       | unload                 | Mandatory exposure cannot be unloaded; recoverable tool error                                   |
+| `CAPABILITY_CHANGED`       | load                   | The supplied digest is not the capability's current digest; recoverable tool error              |
+| `EXPOSURE_BUDGET_EXCEEDED` | load                   | Ordinary result `{"error", "exposed": [{alias, bytes}], "budget", "required"}`; nothing changes |
+
+An invalid search cursor is a recoverable tool error.
+
+A successful load or unload also returns an `exposure_update`. The Executor
+applies it to `context.exposure` only for tools whose contract declares
+`exposure_update`; tools never write the Run. The state is
+`{"loaded": [{alias, kind, identity, digest, step}], "unloaded_eager": [alias, …]}`.
+Applying an update is idempotent, including on replay of a completed invocation.
+A load takes effect from the next request. A loaded Skill's body is not returned
+in the load result; it becomes resident in later requests. Unloading an Eager
+binding records it in `unloaded_eager`, and loading it again removes that
+record, so it counts against its budget again.
+
+Loading never evicts. If the capability would raise exposed Tool definitions
+above `schema_bytes`, or resident Skill blocks above `skill_bytes`, the result is
+`EXPOSURE_BUDGET_EXCEEDED`. `exposed` lists the exposed capabilities of the same
+kind with their bytes, `budget` the applicable budget and `required` the bytes
+the load would need. The model must unload something before retrying.
+
+### Skills, authority and placement
+
+Under `deferred@1`, all Skill load state lives in `context.exposure`; the Run's
+Skill record is never written. Under the legacy policy, `skill_load` still sets
+the record's `loaded` flag. `skill_asset_read` (`core.skills@1`) takes `alias`,
+`digest`, `path`, `offset?` and `max_chars?`. It reads one packaged file of a
+Registry or direct Skill named by its Skill alias and current digest. Text is
+returned in Unicode-scalar chunks capped by the `read_bytes` limit, with
+`next_offset` and `truncated`; binary files return metadata only. A stale
+digest returns the recoverable tool error `CAPABILITY_CHANGED` and an unknown
+path returns `SKILL_FILE_UNAVAILABLE`; neither fails the step.
+
+Loading never installs a package, grants authority or changes the Binding
+snapshot. Every step still checks current authority and Provider support for
+every Binding, and a failed check fails the step exactly as it does under the
+legacy policy, whether or not the capability is loaded. `capability_*` add no
+Agent flag, Core capability or resource requirement. `skill_asset_read`
+authorization depends on the target: a Registry Skill requires its configured
+Skill and `skill.use`, and a direct Skill requires the Agent's Skills Core
+capability (see [authorization](../authorization.md#tenant-catalog-and-local-execution)).
+
+The four capability tools and `skill_asset_read` are exposed to remote Runs.
+Direct Skills are never Discoverable remotely; Registry Skills behave as under
+the legacy policy. Remote headroom reserves the deferred budgets as registration
+does.
+
+To measure both policies on the same tools against a running server, see the
+[capability exposure evaluation](../capability-exposure-evaluation.md).
 
 ## Home protocol and Human continuations
 
