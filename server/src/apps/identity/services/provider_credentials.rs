@@ -31,6 +31,24 @@ impl Authority {
 			None => value,
 		}
 	}
+	/// Lifecycle and binding writes have already committed in their owning
+	/// repository. Finalizing a separate authorization audit cannot undo them.
+	async fn finish_committed<T>(self, value: Result<T>) -> Result<T> {
+		match value {
+			Ok(value) => {
+				if let Some(access) = self.0
+					&& access.finish(Ok(())).await.is_err()
+				{
+					tracing::error!(
+						audit_status = "failed",
+						"Committed Provider Credential mutation audit could not be finalized"
+					);
+				}
+				Ok(value)
+			}
+			Err(error) => self.finish(Err(error)).await,
+		}
+	}
 }
 
 struct ListAudit {
@@ -156,7 +174,7 @@ impl Management {
 			)
 			.await?;
 		authority
-			.finish(
+			.finish_committed(
 				service
 					.create(&tenant, id, provider, key_material, Self::actor(&actor))
 					.await
@@ -275,7 +293,7 @@ impl Management {
 			)
 			.await?;
 		authority
-			.finish(
+			.finish_committed(
 				service
 					.rotate(
 						&tenant,
@@ -321,7 +339,7 @@ impl Management {
 				.revoke(&tenant, id, input.expected_revision, Self::actor(&actor))
 				.await
 		};
-		authority.finish(result.map_err(Into::into)).await
+		authority.finish_committed(result.map_err(Into::into)).await
 	}
 	pub async fn bindings(
 		&self,
@@ -386,7 +404,7 @@ impl Management {
 			)
 			.await?;
 		authority
-			.finish(
+			.finish_committed(
 				service
 					.bind(
 						&tenant,

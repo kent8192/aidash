@@ -4,15 +4,17 @@ use tokio::sync::{Mutex, OwnedMutexGuard};
 #[derive(Clone, Default)]
 struct Data {
 	commit_failure: bool,
+	events: Vec<(Uuid, String, i64)>,
 	rows: BTreeMap<Uuid, ProviderCredential>,
 	bindings: BTreeMap<String, Binding>,
 }
 #[derive(Clone, Default)]
-struct Repo(Arc<Mutex<Data>>);
+struct Repo(Arc<Mutex<Data>>, Arc<std::sync::atomic::AtomicBool>);
 struct Lease {
 	guard: OwnedMutexGuard<Data>,
 	data: Data,
 	tenant: String,
+	commit_failure: Arc<std::sync::atomic::AtomicBool>,
 }
 #[async_trait]
 impl Repository for Repo {
@@ -23,6 +25,7 @@ impl Repository for Repo {
 			guard,
 			data,
 			tenant: tenant.into(),
+			commit_failure: self.1.clone(),
 		}))
 	}
 	async fn reconciliation_candidates(
@@ -36,7 +39,10 @@ impl Repository for Repo {
 			.await
 			.rows
 			.values()
-			.filter(|row| row.state != State::Deleted && after.is_none_or(|id| row.id > id))
+			.filter(|row| {
+				(row.state != State::Deleted || row.pinned_version.is_some())
+					&& after.is_none_or(|id| row.id > id)
+			})
 			.take(limit.clamp(1, RECONCILIATION_BATCH_SIZE))
 			.cloned()
 			.collect())
@@ -76,9 +82,10 @@ impl Scope for Lease {
 		self.data.rows.insert(row.id, row.clone());
 		Ok(())
 	}
-	async fn save(&mut self, row: &ProviderCredential, _: &str, _: &str) -> Result<()> {
+	async fn save(&mut self, row: &ProviderCredential, event: &str, _: &str) -> Result<()> {
 		assert_eq!(row.tenant, self.tenant);
 		self.data.rows.insert(row.id, row.clone());
+		self.data.events.push((row.id, event.into(), row.revision));
 		Ok(())
 	}
 	async fn bindings(&mut self) -> Result<Vec<Binding>> {
@@ -97,7 +104,11 @@ impl Scope for Lease {
 		Ok(())
 	}
 	async fn commit(mut self: Box<Self>) -> Result<()> {
-		if self.guard.commit_failure {
+		if self.guard.commit_failure
+			|| self
+				.commit_failure
+				.load(std::sync::atomic::Ordering::SeqCst)
+		{
 			return Err(Error::External("database commit failed".into()));
 		}
 		*self.guard = self.data.clone();
@@ -109,6 +120,9 @@ struct FakeStore {
 	state: Arc<Mutex<StoredSecrets>>,
 	disable_failure: Arc<Mutex<Option<String>>>,
 	version_lists: Arc<Mutex<Vec<String>>>,
+	destroy_failure: Arc<Mutex<Option<String>>>,
+	delete_failure: Arc<Mutex<bool>>,
+	fail_commit_after_delete: Arc<Mutex<Option<Arc<std::sync::atomic::AtomicBool>>>>,
 }
 type StoredSecrets = BTreeMap<String, BTreeMap<String, (SecretString, &'static str)>>;
 #[async_trait]
@@ -154,6 +168,9 @@ impl Store for FakeStore {
 		panic!("unknown version")
 	}
 	async fn destroy(&self, version: &str) -> Result<()> {
+		if self.destroy_failure.lock().await.as_deref() == Some(version) {
+			return Err(Error::External("destroy-error-canary".into()));
+		}
 		let mut state = self.state.lock().await;
 		for versions in state.values_mut() {
 			if let Some(v) = versions.get_mut(version) {
@@ -165,7 +182,13 @@ impl Store for FakeStore {
 		panic!("unknown version")
 	}
 	async fn delete(&self, resource: &str) -> Result<()> {
+		if *self.delete_failure.lock().await {
+			return Err(Error::External("delete-error-canary".into()));
+		}
 		self.state.lock().await.remove(resource);
+		if let Some(flag) = self.fail_commit_after_delete.lock().await.as_ref() {
+			flag.store(true, std::sync::atomic::Ordering::SeqCst);
+		}
 		Ok(())
 	}
 }
@@ -677,4 +700,154 @@ async fn revocation_commit_failure_has_no_external_effect_and_committed_cleanup_
 		repo.0.lock().await.rows[&first.id].revision,
 		revoked.revision
 	);
+}
+
+#[tokio::test]
+async fn deletion_commit_failure_preserves_metadata_and_key_material() {
+	let (s, repo, store) = service();
+	let first = create(&s, "alpha").await.provider_credential;
+	let original = repo.0.lock().await.rows[&first.id].clone();
+	repo.0.lock().await.commit_failure = true;
+	assert!(
+		s.delete("alpha", first.id, first.revision, "actor")
+			.await
+			.is_err()
+	);
+	assert!(store.version_lists.lock().await.is_empty());
+	let data = repo.0.lock().await;
+	assert_eq!(data.rows[&first.id].state, State::Active);
+	assert_eq!(data.rows[&first.id].revision, first.revision);
+	assert_eq!(data.rows[&first.id].pinned_version, original.pinned_version);
+	assert!(
+		data.events
+			.iter()
+			.all(|(_, event, _)| event != "provider_credential.deleted")
+	);
+	assert!(
+		store.state.lock().await[&original.secret_resource]
+			.values()
+			.all(|v| v.1 == "enabled")
+	);
+}
+
+#[tokio::test]
+async fn deleted_intent_recovers_partial_destruction_secret_deletion_and_final_commit_failures() {
+	use std::sync::atomic::Ordering;
+	for failure in ["destroy", "delete", "commit"] {
+		let (s, repo, store) = service();
+		let first = create(&s, "alpha").await.provider_credential;
+		let original = repo.0.lock().await.rows[&first.id].clone();
+		let extra = store
+			.add_version(&original.secret_resource, &"extra-key-5678".into())
+			.await
+			.unwrap();
+		match failure {
+			"destroy" => *store.destroy_failure.lock().await = Some(extra.clone()),
+			"delete" => *store.delete_failure.lock().await = true,
+			"commit" => *store.fail_commit_after_delete.lock().await = Some(repo.1.clone()),
+			_ => unreachable!(),
+		}
+		let deleted = s
+			.delete("alpha", first.id, first.revision, "actor")
+			.await
+			.unwrap();
+		assert_eq!(deleted.state, State::Deleted);
+		assert_eq!(deleted.revision, first.revision + 1);
+		assert!(
+			!serde_json::to_string(&deleted)
+				.unwrap()
+				.contains("error-canary")
+		);
+		{
+			let data = repo.0.lock().await;
+			let row = &data.rows[&first.id];
+			assert_eq!(row.state, State::Deleted);
+			assert_eq!(row.pinned_version, original.pinned_version);
+			assert!(row.require_active().is_err());
+			assert_eq!(
+				data.events
+					.iter()
+					.filter(|(_, e, _)| e == "provider_credential.deleted")
+					.count(),
+				1
+			);
+			assert_eq!(
+				data.events
+					.iter()
+					.filter(|(_, e, _)| e == "provider_credential.cleanup_completed")
+					.count(),
+				0
+			);
+		}
+		if failure == "destroy" {
+			let secrets = store.state.lock().await;
+			assert_eq!(
+				secrets[&original.secret_resource][original.pinned_version.as_ref().unwrap()].1,
+				"destroyed"
+			);
+			assert_eq!(secrets[&original.secret_resource][&extra].1, "enabled");
+		} else if failure == "delete" {
+			assert!(
+				store.state.lock().await[&original.secret_resource]
+					.values()
+					.all(|v| v.1 == "destroyed")
+			);
+		} else {
+			assert!(
+				!store
+					.state
+					.lock()
+					.await
+					.contains_key(&original.secret_resource)
+			);
+		}
+		*store.destroy_failure.lock().await = None;
+		*store.delete_failure.lock().await = false;
+		*store.fail_commit_after_delete.lock().await = None;
+		repo.1.store(false, Ordering::SeqCst);
+		// A restarted service has only persisted metadata as its cleanup inventory.
+		let restarted = Service {
+			repository: Arc::new(repo.clone()),
+			store: Arc::new(store.clone()),
+			validator: Arc::new(Validator),
+			fingerprint_key: "test-fingerprint-root-key".into(),
+			max_per_tenant: 2,
+		};
+		let page = restarted.reconcile_page(None).await.unwrap();
+		assert_eq!(page.cleaned, 1);
+		assert_eq!(page.failed, 0);
+		assert!(
+			!store
+				.state
+				.lock()
+				.await
+				.contains_key(&original.secret_resource)
+		);
+		let data = repo.0.lock().await;
+		assert_eq!(data.rows[&first.id].state, State::Deleted);
+		assert_eq!(data.rows[&first.id].revision, deleted.revision);
+		assert_eq!(data.rows[&first.id].pinned_version, None);
+		assert_eq!(
+			data.events
+				.iter()
+				.filter(|(_, e, _)| e == "provider_credential.deleted")
+				.count(),
+			1
+		);
+		assert_eq!(
+			data.events
+				.iter()
+				.filter(|(_, e, _)| e == "provider_credential.cleanup_completed")
+				.count(),
+			1
+		);
+		drop(data);
+		assert!(
+			repo.reconciliation_candidates(None, 25)
+				.await
+				.unwrap()
+				.is_empty()
+		);
+		assert_eq!(restarted.reconcile_page(None).await.unwrap().cleaned, 0);
+	}
 }
