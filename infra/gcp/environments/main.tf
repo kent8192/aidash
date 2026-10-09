@@ -13,6 +13,8 @@ module "environment" {
   source   = "../modules/environment"
   for_each = var.environments
 
+  gcip_tenants           = var.gcip_tenants
+  gcip_idp_secrets       = var.gcip_idp_secrets
   project_id             = var.project_id
   environment_id         = each.key
   environment            = each.value
@@ -40,6 +42,7 @@ output "environments" {
     hostname       = m.hostname
     external_ip    = m.external_ip
     runtime_secret = m.runtime_secret
+    gcip           = m.gcip
   } }
 }
 

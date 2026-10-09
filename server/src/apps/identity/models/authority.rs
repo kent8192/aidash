@@ -192,6 +192,7 @@ impl AuthorizationCredential {
 		id: Uuid,
 		tenant: &str,
 		subject: &str,
+		policy: Option<&aidash_application::ports::authorization::dashboard::AccountPolicy>,
 	) -> Result<()> {
 		let (sql, values) = Query::select()
 			.column(Alias::new("id"))
@@ -214,7 +215,7 @@ impl AuthorizationCredential {
 			return Err(Error::Unauthorized);
 		}
 		let (sql, values) = Query::select()
-			.columns(["identity_id", "enabled"].map(Alias::new))
+			.columns(["identity_id", "enabled", "tenant"].map(Alias::new))
 			.from(Alias::new(DashboardMapping::table_name()))
 			.and_where(Expr::col("credential_id").eq(Expr::value(id)))
 			.lock(LockType::Share)
@@ -226,9 +227,13 @@ impl AuthorizationCredential {
 			{
 				return Err(Error::Forbidden);
 			}
+			let mapping_tenant: String = mapping.get("tenant").map_err(FrameworkError::from)?;
+			if mapping_tenant != tenant {
+				return Err(Error::Forbidden);
+			}
 			let identity: Uuid = mapping.get("identity_id").map_err(FrameworkError::from)?;
 			let (sql, values) = Query::select()
-				.columns(["issuer", "last_valid_at", "disabled_at"].map(Alias::new))
+				.columns(["issuer", "gcip_tenant", "last_valid_at", "disabled_at"].map(Alias::new))
 				.from(Alias::new(DashboardIdentity::table_name()))
 				.and_where(Expr::col("id").eq(Expr::value(identity)))
 				.lock(LockType::Share)
@@ -242,7 +247,14 @@ impl AuthorizationCredential {
 				serde_json::from_value(identity["disabled_at"].clone())?;
 			let valid: Option<DateTime<Utc>> =
 				serde_json::from_value(identity["last_valid_at"].clone())?;
-			let issuer = serde_json::from_value(identity["issuer"].clone())?;
+			let issuer: String = serde_json::from_value(identity["issuer"].clone())?;
+			let pool: String = serde_json::from_value(identity["gcip_tenant"].clone())?;
+			crate::authorization::identity::require_dashboard_mapping(
+				policy,
+				&issuer,
+				&pool,
+				&mapping_tenant,
+			)?;
 			crate::authorization::identity::validate_dashboard_status(Some((
 				issuer, valid, disabled,
 			)))?;

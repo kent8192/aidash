@@ -7,6 +7,7 @@ pub(crate) mod indexing;
 pub(crate) mod memory_decay;
 pub(crate) mod memory_graph;
 pub(crate) mod memory_reads;
+pub(crate) mod memory_receipts;
 pub(crate) mod memory_scope;
 pub(crate) mod mutations;
 pub(crate) mod native_memory;

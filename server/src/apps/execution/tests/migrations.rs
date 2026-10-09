@@ -61,7 +61,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 	);
 	let knowledge = graph.get_leaf_nodes_for_app("knowledge");
 	assert_eq!(knowledge.len(), 1);
-	assert_eq!(knowledge[0].name, "0026_memory_decay_model_state");
+	assert_eq!(knowledge[0].name, "0027_memory_retention_lookup");
 	// Assert: retain the physical graph, model snapshots, and all supported tables.
 	assert!(
 		migrations
@@ -1263,4 +1263,73 @@ async fn binding_memory_merge_preserves_native_packages_and_restores_legacy_desc
 	executor.apply_migrations(&[migration]).await.unwrap();
 	assert!(contract_accepts(&pool, "aidash_descriptor_is_valid", vec![current]).await);
 	assert!(!contract_accepts(&pool, "aidash_descriptor_is_valid", vec![legacy]).await);
+}
+
+#[rstest]
+#[tokio::test]
+async fn memory_retention_lookup_index_upgrades_and_reverses_without_rewriting_tables(
+	#[future] fresh_database: MigrationFixture,
+) {
+	let fixture = fresh_database.await;
+	let migrations =
+		FilesystemSource::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations"))
+			.all_migrations()
+			.await
+			.unwrap();
+	let lookup = migrations
+		.iter()
+		.find(|migration| {
+			migration.app_label == "knowledge" && migration.name == "0027_memory_retention_lookup"
+		})
+		.unwrap()
+		.clone();
+	let baseline: Vec<_> = migrations
+		.into_iter()
+		.filter(|migration| !(migration.app_label == "knowledge" && migration.name == lookup.name))
+		.collect();
+	let mut executor =
+		reinhardt::db::migrations::DatabaseMigrationExecutor::new(fixture.connection.clone());
+	executor.apply_migrations(&baseline).await.unwrap();
+	let pool = fixture.connection.clone().into_postgres().unwrap();
+	let query = Query::select()
+		.column(Alias::new("indexdef"))
+		.from((Alias::new("pg_catalog"), Alias::new("pg_indexes")))
+		.and_where(Expr::col("schemaname").eq("public"))
+		.and_where(Expr::col("tablename").eq("memory_unit_retention"))
+		.and_where(
+			Expr::col("indexname").eq("idx_memory_unit_retention_bank_id_dormant_policy_pinned"),
+		)
+		.to_string(PostgresQueryBuilder);
+	assert!(
+		sqlx::query_scalar::<_, String>(&query)
+			.fetch_all(&pool)
+			.await
+			.unwrap()
+			.is_empty()
+	);
+	executor
+		.apply_migrations(std::slice::from_ref(&lookup))
+		.await
+		.unwrap();
+	let created: Vec<String> = sqlx::query_scalar(&query).fetch_all(&pool).await.unwrap();
+	assert_eq!(created.len(), 1);
+	assert!(
+		created[0].contains("USING btree (bank_id, dormant_policy, pinned)"),
+		"{}",
+		created[0]
+	);
+	executor
+		.rollback_migrations(std::slice::from_ref(&lookup))
+		.await
+		.unwrap();
+	assert!(
+		sqlx::query_scalar::<_, String>(&query)
+			.fetch_all(&pool)
+			.await
+			.unwrap()
+			.is_empty()
+	);
+	executor.apply_migrations(&[lookup]).await.unwrap();
+	let reapplied: Vec<String> = sqlx::query_scalar(&query).fetch_all(&pool).await.unwrap();
+	assert_eq!(reapplied, created);
 }

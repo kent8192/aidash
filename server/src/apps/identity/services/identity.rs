@@ -16,6 +16,8 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 type IdentityValidity = (String, Option<DateTime<Utc>>, Option<DateTime<Utc>>);
+pub(crate) type PoolIdentityValidity =
+	(String, String, Option<DateTime<Utc>>, Option<DateTime<Utc>>);
 
 /// Constructed only after authenticating a bearer token. Never deserialize this
 /// from a request body, query parameter or peer-provided identity claim.
@@ -121,15 +123,77 @@ impl Authorization {
 }
 
 impl SubjectIdentity {
+	/// Persist missing-Binding disablement before taking any execution lease.
+	pub(crate) async fn check_binding(&self, pool: &crate::database::native::Pool) -> Result<()> {
+		let col = |table: &str, name: &str| Expr::col((Alias::new(table), Alias::new(name)));
+		let query = Query::select()
+			.columns(
+				["id", "issuer", "gcip_tenant"].map(|name| (Alias::new("i"), Alias::new(name))),
+			)
+			.from_as(Alias::new("dashboard_identities"), Alias::new("i"))
+			.join(
+				reinhardt::query::JoinType::InnerJoin,
+				reinhardt::query::TableRef::table_alias(
+					Alias::new("dashboard_mappings"),
+					Alias::new("m"),
+				),
+				col("m", "identity_id").equals((Alias::new("i"), Alias::new("id"))),
+			)
+			.and_where(col("m", "credential_id").eq(Expr::value(self.credential_id)))
+			.to_string(PostgresQueryBuilder);
+		let row: Option<(Uuid, String, String)> = crate::database::native::query_as(&query)
+			.columns(&["id", "issuer", "gcip_tenant"])
+			.fetch_optional(pool)
+			.await?;
+		let Some((id, issuer, gcip_tenant)) = row else {
+			return Ok(());
+		};
+		let allowed = match pool.dashboard_policy() {
+			Some(policy) => policy
+				.require_identity(
+					&issuer,
+					(!gcip_tenant.is_empty()).then_some(gcip_tenant.as_str()),
+				)
+				.is_ok(),
+			None => gcip_tenant.is_empty(),
+		};
+		if allowed {
+			return Ok(());
+		}
+		let lease =
+			reinhardt::db::orm::connection::DatabaseConnectionLease::register(pool.connection())?;
+		if crate::apps::identity::models::DashboardIdentity::disable_if_current(
+			lease.handle(),
+			id,
+			None,
+		)
+		.await?
+		{
+			let mut db = lease.handle();
+			let runs = crate::apps::identity::models::DashboardExecutionOrigin::status_waiting(
+				&mut db, id,
+			)
+			.await?;
+			crate::apps::execution::models::Run::mark_identity_disabled(&mut db, runs).await?;
+		}
+		Err(Error::Forbidden)
+	}
 	pub(crate) async fn lock_native(
 		&self,
 		tx: &mut dyn TransactionExecutor,
 		exclusive: bool,
+		policy: Option<&aidash_application::ports::authorization::dashboard::AccountPolicy>,
 	) -> Result<Snapshot> {
 		super::policy::identifier(&self.tenant)?;
 		let snapshot = AuthorizationBundle::lock_snapshot(tx, &self.tenant, exclusive).await?;
-		AuthorizationCredential::lock_valid(tx, self.credential_id, &self.tenant, &self.subject)
-			.await?;
+		AuthorizationCredential::lock_valid(
+			tx,
+			self.credential_id,
+			&self.tenant,
+			&self.subject,
+			policy,
+		)
+		.await?;
 		if !enabled(&snapshot, &self.subject) {
 			return Err(Error::Forbidden);
 		}
@@ -216,11 +280,15 @@ impl SubjectIdentity {
 		// Dashboard credentials are never exported as bearer secrets. Their
 		// original mapping and external identity remain part of every durable
 		// execution lease, including leases obtained after browser logout.
-		let mapping: Option<(Uuid, bool)> = {
+		let mapping: Option<(Uuid, bool, String)> = {
 			let query_bind_1 = self.credential_id;
 			crate::database::native::query_as(
 				&Query::select()
-					.columns([Alias::new("identity_id"), Alias::new("enabled")])
+					.columns([
+						Alias::new("identity_id"),
+						Alias::new("enabled"),
+						Alias::new("tenant"),
+					])
 					.from(Alias::new("dashboard_mappings"))
 					.and_where(
 						reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("credential_id")))
@@ -232,20 +300,21 @@ impl SubjectIdentity {
 					.lock(LockType::Share)
 					.to_string(PostgresQueryBuilder),
 			)
-			.columns(&["identity_id", "enabled"])
+			.columns(&["identity_id", "enabled", "tenant"])
 			.fetch_optional(&mut **tx)
 			.await?
 		};
-		if let Some((identity_id, mapping_enabled)) = mapping {
-			if !mapping_enabled {
+		if let Some((identity_id, mapping_enabled, mapping_tenant)) = mapping {
+			if !mapping_enabled || mapping_tenant != self.tenant {
 				return Err(Error::Forbidden);
 			}
-			let validity: Option<IdentityValidity> = {
+			let validity: Option<PoolIdentityValidity> = {
 				let query_bind_1 = identity_id;
 				crate::database::native::query_as(
 					&Query::select()
 						.columns([
 							Alias::new("issuer"),
+							Alias::new("gcip_tenant"),
 							Alias::new("last_valid_at"),
 							Alias::new("disabled_at"),
 						])
@@ -261,11 +330,18 @@ impl SubjectIdentity {
 						.lock(LockType::Share)
 						.to_string(PostgresQueryBuilder),
 				)
-				.columns(&["issuer", "last_valid_at", "disabled_at"])
+				.columns(&["issuer", "gcip_tenant", "last_valid_at", "disabled_at"])
 				.fetch_optional(&mut **tx)
 				.await?
 			};
-			validate_dashboard_status(validity)?;
+			let (issuer, gcip_tenant, valid, disabled) = validity.ok_or(Error::Forbidden)?;
+			require_dashboard_mapping(
+				tx.pool().dashboard_policy().as_ref(),
+				&issuer,
+				&gcip_tenant,
+				&mapping_tenant,
+			)?;
+			validate_dashboard_status(Some((issuer, valid, disabled)))?;
 		}
 		Ok(())
 	}
@@ -337,3 +413,19 @@ pub(crate) fn validate_dashboard_status(validity: Option<IdentityValidity>) -> R
 }
 
 use reinhardt::query::SimpleExpr;
+
+/// A missing runtime policy must never admit a GCIP Mapping through a fixture or legacy path.
+pub(crate) fn require_dashboard_mapping(
+	policy: Option<&aidash_application::ports::authorization::dashboard::AccountPolicy>,
+	issuer: &str,
+	pool: &str,
+	tenant: &str,
+) -> Result<()> {
+	match policy {
+		Some(policy) => policy
+			.require_mapping(issuer, (!pool.is_empty()).then_some(pool), tenant)
+			.map_err(Into::into),
+		None if pool.is_empty() => Ok(()),
+		None => Err(Error::Forbidden),
+	}
+}

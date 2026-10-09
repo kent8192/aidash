@@ -198,7 +198,7 @@ class Terraform:
             )
         return value or {}
 
-    def apply(self, environments, retiring=(), starting=()):
+    def apply(self, environments, retiring=(), starting=(), before_apply=None):
         variables = {
             key: self.configuration[key]
             for key in (
@@ -210,6 +210,8 @@ class Terraform:
             )
         }
         variables["environments"] = environments
+        variables["gcip_tenants"] = self.configuration.get("gcip_tenants", {})
+        variables["gcip_idp_secrets"] = json.loads(os.environ.get("AIDASH_GCIP_IDP_SECRETS") or "{}")
         path = self.root / "controller.auto.tfvars.json"
         plan = self.root / "controller.tfplan"
         private_json(path, variables)
@@ -245,6 +247,8 @@ class Terraform:
                         raise RuntimeError(
                             "plan would delete a retained disk without explicit retirement"
                         )
+            if before_apply:
+                before_apply(value)
             run(
                 "terraform",
                 f"-chdir={self.root}",

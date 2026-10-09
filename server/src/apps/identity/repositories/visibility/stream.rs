@@ -35,12 +35,18 @@ impl StreamAuthorityStore for Authority<'_> {
 	}
 	async fn current(&self, workspace: Option<Uuid>) -> Result<Option<AuthorityRecord>> {
 		let result: NativeResult<Option<AuthorityRecord>> = async {
+			self.workspaces
+				.identity
+				.check_binding(&self.workspaces.store.pool)
+				.await?;
 			struct Current {
 				revision: i64,
 				document: Value,
 				owner_subject: Option<String>,
 				mapping_id: Option<Uuid>,
 				mapping_enabled: Option<bool>,
+				mapping_tenant: Option<String>,
+				gcip_tenant: Option<String>,
 				issuer: Option<String>,
 				last_valid_at: Option<chrono::DateTime<chrono::Utc>>,
 				disabled_at: Option<chrono::DateTime<chrono::Utc>>,
@@ -51,6 +57,8 @@ impl StreamAuthorityStore for Authority<'_> {
 				owner_subject,
 				mapping_id,
 				mapping_enabled,
+				mapping_tenant,
+				gcip_tenant,
 				issuer,
 				last_valid_at,
 				disabled_at
@@ -67,6 +75,8 @@ impl StreamAuthorityStore for Authority<'_> {
 				])
 				.expr_as(col("m", "id"), Alias::new("mapping_id"))
 				.expr_as(col("m", "enabled"), Alias::new("mapping_enabled"))
+				.expr_as(col("m", "tenant"), Alias::new("mapping_tenant"))
+				.expr_as(col("i", "gcip_tenant"), Alias::new("gcip_tenant"))
 				.columns(
 					["issuer", "last_valid_at", "disabled_at"]
 						.map(|name| (Alias::new("i"), Alias::new(name))),
@@ -118,6 +128,26 @@ impl StreamAuthorityStore for Authority<'_> {
 					.bind(&self.workspaces.identity.subject)
 					.fetch_optional(&self.workspaces.store.pool)
 					.await?;
+			if let Some(current) = &current
+				&& current.mapping_id.is_some()
+			{
+				let tenant = current
+					.mapping_tenant
+					.as_deref()
+					.ok_or(crate::Error::Forbidden)?;
+				if tenant != self.workspaces.identity.tenant {
+					return Err(crate::Error::Forbidden);
+				}
+				crate::authorization::identity::require_dashboard_mapping(
+					self.workspaces.store.pool.dashboard_policy().as_ref(),
+					current.issuer.as_deref().ok_or(crate::Error::Forbidden)?,
+					current
+						.gcip_tenant
+						.as_deref()
+						.ok_or(crate::Error::Forbidden)?,
+					tenant,
+				)?;
+			}
 			Ok(current.map(|current| AuthorityRecord {
 				revision: current.revision,
 				document: current.document,

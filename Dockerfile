@@ -17,7 +17,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     fi && \
     /out/aidash openapi > /out/aidash.json
 
-FROM node:22-bookworm-slim AS web-source
+FROM node:24.12.0-bookworm-slim AS web-source
 WORKDIR /build/web
 COPY web/package.json web/package-lock.json ./
 RUN npm ci --ignore-scripts

@@ -43,6 +43,7 @@ pub(crate) struct Scope {
 impl Scope {
 	fn authority(&mut self) -> authority::Scope<'_> {
 		authority::Scope {
+			policy: self.tx.pool().dashboard_policy(),
 			tx: &mut self.tx,
 			actor: &self.actor,
 		}
