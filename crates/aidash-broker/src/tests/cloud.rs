@@ -26,7 +26,11 @@ impl Repository for Repo {
 		self.begins.fetch_add(1, Ordering::SeqCst);
 		Ok(Box::new(self.clone()))
 	}
-	async fn pending(&self) -> aidash_application::Result<Vec<ProviderCredential>> {
+	async fn reconciliation_candidates(
+		&self,
+		_after: Option<Uuid>,
+		_limit: usize,
+	) -> aidash_application::Result<Vec<ProviderCredential>> {
 		Ok(vec![])
 	}
 }

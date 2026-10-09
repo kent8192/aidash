@@ -326,6 +326,63 @@ class ReconcileTests(unittest.TestCase):
         self.assertEqual(self.cloud.plans, plans)
         self.assertEqual(self.store.state, before)
 
+    def test_blocked_multi_environment_broker_change_restores_sealed_hosts(self):
+        brokers = {identity: {"enabled": True, "image": "initial"} for identity in ["develop", "test"]}
+        self.config["develop_branch"] = "develop/0.1.0"
+        self.config["credential_brokers"] = brokers
+        for identity in brokers:
+            self.request(identity, source_ref="develop/0.1.0" if identity == "develop" else "main")
+            self.reconcile()
+        for busy in brokers:
+            with self.subTest(busy=busy):
+                self.config["credential_brokers"] = brokers
+                self.reconcile()
+                self.config["credential_brokers"] = {}
+                self.cloud.plans.clear()
+                self.calls.clear()
+                def selective_host(config, output, action, force=False, busy=busy):
+                    result = self.host(config, output, action, force)
+                    return {"sealed": False} if action == "seal" and output["instance"] == busy else result
+                with patch.object(controller, "host", side_effect=selective_host):
+                    self.reconcile()
+                self.assertEqual(self.cloud.plans, [])
+                self.assertEqual(self.cloud.brokers, brokers)
+                idle = next(identity for identity in brokers if identity != busy)
+                self.assertEqual(self.calls, [("seal", "develop"), ("seal", "test"), ("unseal", idle)])
+                self.assertEqual(self.store.state["environments"][busy]["status"], "waiting_for_active_work")
+
+    def test_broker_preflight_failure_restores_prior_seals(self):
+        brokers = {identity: {"enabled": True, "image": "initial"} for identity in ["develop", "test"]}
+        self.config["develop_branch"] = "develop/0.1.0"
+        self.config["credential_brokers"] = brokers
+        for identity in brokers:
+            self.request(identity, source_ref="develop/0.1.0" if identity == "develop" else "main")
+            self.reconcile()
+        self.config["credential_brokers"] = {}
+        self.cloud.plans.clear()
+        self.calls.clear()
+        def failed_seal(config, output, action, force=False):
+            result = self.host(config, output, action, force)
+            if action == "seal" and output["instance"] == "test":
+                raise RuntimeError("seal unavailable")
+            return result
+        with patch.object(controller, "host", side_effect=failed_seal), self.assertRaisesRegex(RuntimeError, "seal unavailable"):
+            self.reconcile()
+        self.assertEqual(self.calls, [("seal", "develop"), ("seal", "test"), ("unseal", "develop")])
+        self.assertEqual(self.cloud.plans, [])
+        self.assertEqual(self.cloud.brokers, brokers)
+
+    def test_broker_admission_restoration_attempts_all_hosts_after_a_failure(self):
+        calls = []
+        def restore(config, output, action):
+            calls.append((action, output["instance"]))
+            if output["instance"] == "develop":
+                raise RuntimeError("unseal unavailable")
+        outputs = {identity: {"instance": identity} for identity in ["develop", "test"]}
+        with patch.object(controller, "host", side_effect=restore), self.assertRaisesRegex(RuntimeError, "admission restoration failed"):
+            controller.restore_broker_admission(self.config, outputs, set(outputs))
+        self.assertEqual(calls, [("unseal", "develop"), ("unseal", "test")])
+
     def test_byok_retirement_cleans_stopped_and_missing_vms_without_waking_them(self):
         for status in ["TERMINATED", "MISSING"]:
             with self.subTest(status=status):

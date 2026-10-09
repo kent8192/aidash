@@ -280,18 +280,31 @@ class Terraform:
         return value or {}
 
     def broker_configuration(self, environments):
-        # Match Terraform's optional enabled=false default in persisted intent.
+        # Match Terraform's optional defaults and set ordering in persisted intent.
         return {
-            key: dict(value, enabled=value.get("enabled") or False)
+            key: self.normalized_broker(value)
             for key, value in self.configuration.get("credential_brokers", {}).items()
             if key in environments
         }
+
+    @staticmethod
+    def normalized_broker(value):
+        signing = value.get("signing_version")
+        versions = value.get("verification_versions")
+        if versions is None:
+            versions = ["1"]
+        if not isinstance(versions, (list, tuple, set)):
+            raise RuntimeError("Broker verification versions must be a collection")
+        return dict(value, enabled=value.get("enabled") or False,
+                    signing_version="1" if signing is None else str(signing),
+                    verification_versions=sorted({str(version) for version in versions}))
 
     def broker_configuration_in_state(self, store):
         state, _ = store.read("terraform/environments/default.tfstate")
         if state is None:
             return {}
-        return state.get("outputs", {}).get("managed_credential_brokers", {}).get("value")
+        value = state.get("outputs", {}).get("managed_credential_brokers", {}).get("value")
+        return None if value is None else {key: self.normalized_broker(broker) for key, broker in value.items()}
 
     def broker_configuration_changed(self, store, environments):
         previous = self.broker_configuration_in_state(store)

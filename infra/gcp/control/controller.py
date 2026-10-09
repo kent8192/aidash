@@ -563,6 +563,19 @@ def observe_interruptions(config, store, terraform, managed):
     return changed
 
 
+def restore_broker_admission(config, outputs, sealed):
+    # No plan has run: restore every successful preflight seal, even if an
+    # earlier unseal fails. Keep failures explicit so reconciliation retries.
+    failed = False
+    for identity in sorted(sealed):
+        try:
+            host(config, outputs[identity], "unseal")
+        except Exception:
+            failed = True
+    if failed:
+        raise RuntimeError("Broker drain admission restoration failed")
+
+
 def reconcile(config, store):
     with store.lock():
         terraform = Terraform(ROOT / "infra/gcp/environments", config)
@@ -582,22 +595,27 @@ def reconcile(config, store):
             blocked = False
             # Every apply consumes broker intent, including interruption/lifecycle
             # plans. Drain before any plan can remove or replace a live broker.
-            for identity, previous in managed.items():
-                prior = (previous_brokers or {}).get(identity, {})
-                if not previous["running"] or (
-                    previous_brokers is not None
-                    and (not prior.get("enabled") or prior == desired_brokers.get(identity))
-                ):
-                    continue
-                state, _ = store.read("lifecycle/state.json")
-                entry = state["environments"][identity]
-                current_entry(store, identity, entry["generation"])
-                if host(config, outputs[identity], "seal")["sealed"]:
-                    presealed.add(identity)
-                else:
-                    update_entry(store, identity, entry["generation"], status="waiting_for_active_work")
-                    blocked = True
+            try:
+                for identity, previous in managed.items():
+                    prior = (previous_brokers or {}).get(identity, {})
+                    if not previous["running"] or (
+                        previous_brokers is not None
+                        and (not prior.get("enabled") or prior == desired_brokers.get(identity))
+                    ):
+                        continue
+                    state, _ = store.read("lifecycle/state.json")
+                    entry = state["environments"][identity]
+                    current_entry(store, identity, entry["generation"])
+                    if host(config, outputs[identity], "seal")["sealed"]:
+                        presealed.add(identity)
+                    else:
+                        update_entry(store, identity, entry["generation"], status="waiting_for_active_work")
+                        blocked = True
+            except Exception:
+                restore_broker_admission(config, outputs, presealed)
+                raise
             if blocked:
+                restore_broker_admission(config, outputs, presealed)
                 return
         if interrupted or broker_changed:
             terraform.apply(managed)

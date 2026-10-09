@@ -235,7 +235,22 @@ class PlanTests(unittest.TestCase):
 
             with patch("cloud.run", side_effect=command):
                 terraform.apply({"test": {"kind": "test"}})
-            self.assertEqual(variables[0]["credential_brokers"], {"test": broker})
+            self.assertEqual(variables[0]["credential_brokers"], {"test": dict(broker, signing_version="1", verification_versions=["1"])})
+
+    def test_persisted_version_sets_and_defaults_do_not_cause_repeated_apply(self):
+        terraform = Terraform.__new__(Terraform)
+        terraform.configuration = {"credential_brokers": {"test": {
+            "enabled": True, "image": "digest", "signing_version": "2",
+            "verification_versions": ["2", "1", "2"],
+        }}}
+        store = Mock()
+        store.read.return_value = ({"outputs": {"managed_credential_brokers": {"value": {"test": {
+            "enabled": True, "image": "digest", "signing_version": "2",
+            "verification_versions": ["1", "2"],
+        }}}}}, "1")
+        self.assertFalse(terraform.broker_configuration_changed(store, {"test": {}}))
+        terraform.configuration["credential_brokers"]["test"]["signing_version"] = "1"
+        self.assertTrue(terraform.broker_configuration_changed(store, {"test": {}}))
 
     def test_legacy_configuration_applies_without_byok_resources(self):
         with TemporaryDirectory() as directory:

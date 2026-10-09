@@ -142,6 +142,14 @@ at runtime. Module tests prove it cannot create a second BYOK read grant;
 bootstrap tests own the proof that its binding is the only `versions.access`
 grant in the BYOK project.
 
+Managed `credential_brokers[environment_id]` also accepts `signing_version`
+(default `"1"`) and `verification_versions` (default `["1"]`). After a human
+operator creates and enables a replacement KMS version, set, for example,
+`signing_version = "2"` and `verification_versions = ["1", "2"]`. The worker
+descriptor selects version 2 while the broker verifies both versions. Keep the
+old public key until all capabilities signed with it expire, then remove it from
+the verification set. The stable bootstrap `signing_key_id` stays unchanged.
+
 Mock lifecycle plans prove disable, re-enable and environment removal change
 only the service/signing grant; bootstrap key and key-ring plans remain no-ops.
 Automation also refuses any plan that would delete a KMS key, key ring or version.

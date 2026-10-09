@@ -6,6 +6,8 @@ variable "credential_brokers" {
     secret_prefix                = string
     broker_service_account_email = string
     signing_key_id               = string
+    signing_version              = optional(string, "1")
+    verification_versions        = optional(set(string), ["1"])
     image                        = string
   }))
   default = {}
@@ -37,6 +39,8 @@ module "credential_broker" {
   deploy_service_account       = var.deploy_service_account
   broker_service_account_email = each.value.broker_service_account_email
   signing_key_id               = each.value.signing_key_id
+  signing_version              = each.value.signing_version
+  verification_versions        = each.value.verification_versions
 }
 // Wire IAM after both modules exist: broker -> VM settings must not create a
 // reverse module dependency through the worker's service-account output.

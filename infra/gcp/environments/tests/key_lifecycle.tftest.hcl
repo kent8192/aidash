@@ -75,6 +75,30 @@ run "environment_enabled" {
   }
 }
 
+run "broker_rotation_plan" {
+  command   = plan
+  state_key = "environment-lifecycle"
+  variables {
+    release_bucket         = "aidash-fixture-releases"
+    deploy_service_account = "deploy@aidash-fixture.iam.gserviceaccount.com"
+    cloudflare_zone_id     = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    environments           = run.environment_enabled.managed_configuration
+    credential_brokers = { test = merge(run.environment_enabled.managed_credential_brokers["test"], {
+      signing_version       = "2"
+      verification_versions = ["1", "2"]
+    }) }
+  }
+  override_data {
+    target = module.credential_broker["test"].data.google_kms_crypto_key_version.verification["2"]
+    values = { public_key = [{ pem = "fixture-public-key-2", algorithm = "EC_SIGN_ED25519" }] }
+  }
+  assert {
+    condition     = output.credential_brokers["test"].kid == "${run.bootstrap_keys.broker_signing_keys["test"]}/cryptoKeyVersions/2"
+    error_message = "Managed workers must sign with the operator-selected numeric version."
+  }
+
+}
+
 run "broker_disabled_plan" {
   command   = plan
   state_key = "environment-lifecycle"

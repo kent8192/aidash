@@ -109,6 +109,21 @@ class CredentialBrokerTerraformTests(unittest.TestCase):
             self.assertEqual(list(keys.values()), ["PUBLIC-KEY-FIXTURE"])
             self.assertTrue(next(iter(keys)).endswith("/cryptoKeyVersions/1"))
 
+    def test_managed_rotation_updates_service_without_replacing_key_material(self):
+        changes = self.lifecycle_plans["broker_rotation_plan"]
+        material = {"google_kms_key_ring", "google_kms_crypto_key", "google_kms_crypto_key_version"}
+        self.assertFalse([r for r in changes if r["mode"] == "managed" and r["type"] in material])
+        service, = [r for r in changes if r["type"] == "google_cloud_run_v2_service"]
+        self.assertEqual(service["change"]["actions"], ["update"])
+        signer, = [r for r in changes if r["type"] == "google_kms_crypto_key_iam_member"]
+        self.assertEqual(signer["change"]["actions"], ["no-op"])
+        key = signer["change"]["after"]["crypto_key_id"]
+        env = {item["name"]: item["value"] for item in service["change"]["after"]["template"][0]["containers"][0]["env"]}
+        self.assertEqual(json.loads(env["AIDASH_CAPABILITY_PUBLIC_KEYS"]), {
+            f"{key}/cryptoKeyVersions/1": "fixture-public-key",
+            f"{key}/cryptoKeyVersions/2": "fixture-public-key-2",
+        })
+
     def test_pr_and_disabled_environments_have_no_broker_or_accessor(self):
         for run in ("pr", "disabled"):
             self.assertFalse([r for r in self.states[run] if r["mode"] == "managed"])

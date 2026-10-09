@@ -650,6 +650,7 @@ async fn revocation_commit_failure_has_no_external_effect_and_committed_cleanup_
 			credentials: Arc::new(Env),
 		},
 		repository: Arc::new(repo.clone()),
+		issuer: None,
 	};
 	let error = access
 		.resolve(
@@ -658,6 +659,7 @@ async fn revocation_commit_failure_has_no_external_effect_and_committed_cleanup_
 				run: Some(Uuid::now_v7()),
 				provider_credential_id: Some(first.id),
 				maintenance: None,
+				inference: None,
 			},
 			Provider::Openrouter.base_url(),
 			&Source::Tenant {
