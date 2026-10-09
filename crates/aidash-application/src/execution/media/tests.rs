@@ -48,6 +48,8 @@ fn model() -> ModelConfig {
 		endpoint: "https://provider.example/api".into(),
 		credential_env: None,
 		request_timeout_secs: None,
+		streaming: None,
+		stream_stall_timeout_secs: None,
 		reasoning_effort: None,
 		context_window: 128000,
 		max_output_tokens: Some(8192),

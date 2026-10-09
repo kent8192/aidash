@@ -1,6 +1,6 @@
 //! OpenRouter inference transport implementing the application port.
 use crate::{Error, Result};
-use aidash_application::ports::{Credentials, ModelProvider};
+use aidash_application::ports::{Credentials, InferenceProgressSink, ModelProvider};
 use aidash_domain::{
 	model::ModelConfig,
 	provider::{ContentPart, ModelRequest, ModelResponse, ToolCall},
@@ -164,7 +164,11 @@ pub fn provider(
 
 #[async_trait]
 impl ModelProvider for OpenRouterProvider {
-	async fn infer(&self, request: ModelRequest) -> Result<ModelResponse> {
+	async fn infer(
+		&self,
+		request: ModelRequest,
+		_progress: &dyn InferenceProgressSink,
+	) -> Result<ModelResponse> {
 		let deadline = self.config.request_timeout()?;
 		tokio::time::timeout(deadline, async {
 			request.validate()?;

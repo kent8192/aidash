@@ -44,13 +44,16 @@ async fn infer_after(
 	let model = provider(shared_client(), serde_json::from_value(config).unwrap()).unwrap();
 	let result = server
 		.respond_after(
-			model.infer(ModelRequest {
-				instructions: "test".into(),
-				context: json!({}),
-				tools: vec![],
-				max_output_tokens: 512,
-				content_parts: vec![],
-			}),
+			model.infer(
+				ModelRequest {
+					instructions: "test".into(),
+					context: json!({}),
+					tools: vec![],
+					max_output_tokens: 512,
+					content_parts: vec![],
+				},
+				&aidash_application::ports::NoProgress,
+			),
 			delay_secs,
 		)
 		.await;

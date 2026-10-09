@@ -463,7 +463,11 @@ impl Credentials for Repository {
 struct NeverInfer;
 #[async_trait]
 impl ModelProvider for NeverInfer {
-	async fn infer(&self, _: ModelRequest) -> Result<ModelResponse> {
+	async fn infer(
+		&self,
+		_: ModelRequest,
+		_: &dyn crate::ports::InferenceProgressSink,
+	) -> Result<ModelResponse> {
 		panic!("admission must not call inference")
 	}
 }

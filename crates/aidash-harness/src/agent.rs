@@ -536,11 +536,12 @@ impl<'a> Executor<'a> {
 				visibility.suspend().await?;
 				let result = tokio::select! {
 					biased;
-					cancelled = self.environment.wait_for_inference_cancellation(run.id) => match cancelled {
-						Ok(()) => Err(Error::Conflict("run cancelled during inference".into())),
+					interrupted = self.environment.wait_for_inference_interruption(run.id, input_seq) => match interrupted {
+						Ok(aidash_application::ports::execution::InferenceInterruption::Cancelled) => Err(Error::Conflict("run cancelled during inference".into())),
+						Ok(aidash_application::ports::execution::InferenceInterruption::Superseded) => Err(Error::TransactionPending),
 						Err(error) => Err(error),
 					},
-					result = model.infer(request) => result,
+					result = model.infer(request, &aidash_application::ports::NoProgress) => result,
 				};
 				let resumed = visibility.resume().await;
 				if let (Some(reservation), Ok(response)) = (reservation, result.as_ref()) {

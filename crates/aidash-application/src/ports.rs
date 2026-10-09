@@ -40,12 +40,29 @@ pub trait ModelCatalog: Send + Sync {
 	async fn models(&self) -> Result<Vec<aidash_domain::catalog::CatalogModel>>;
 }
 
+/// Receives sanitized Inference Progress while an adapter streams. `offer`
+/// never blocks inference; implementations coalesce or drop under pressure.
+pub trait InferenceProgressSink: Send + Sync {
+	fn offer(&self, progress: aidash_domain::provider::progress::InferenceProgress);
+}
+
+/// Sink for callers that do not display progress.
+pub struct NoProgress;
+
+impl InferenceProgressSink for NoProgress {
+	fn offer(&self, _: aidash_domain::provider::progress::InferenceProgress) {}
+}
+
 /// One inference includes validation and the complete response body deadline.
+/// Streaming adapters assemble and validate the complete response themselves and
+/// offer only display data to `progress`; partial output never leaves the adapter
+/// as a `ModelResponse`.
 #[async_trait]
 pub trait ModelProvider: Send + Sync {
 	async fn infer(
 		&self,
 		request: aidash_domain::provider::ModelRequest,
+		progress: &dyn InferenceProgressSink,
 	) -> Result<aidash_domain::provider::ModelResponse>;
 }
 

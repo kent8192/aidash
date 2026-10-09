@@ -3,7 +3,7 @@ use super::dispatch;
 use crate::{
 	Error, Result,
 	ports::{
-		Credentials, ModelProvider,
+		Credentials, ModelProvider, NoProgress,
 		registry::workbench::{
 			profile::ProfileConfiguration,
 			sandbox::{dispatch::RealToolTransport, execution::ExecutionRepository},
@@ -119,7 +119,7 @@ pub async fn simulate(execution: &Execution, session_id: Uuid, job: &Job) -> Res
 			error = Some("test context exceeds configured input or model window limit".into());
 			break;
 		}
-		let response = model_provider.infer(request.clone()).await?;
+		let response = model_provider.infer(request.clone(), &NoProgress).await?;
 		input_tokens = input_tokens.saturating_add(response.input_tokens);
 		output_tokens = output_tokens.saturating_add(response.output_tokens);
 		usage_complete &= response.usage_complete;

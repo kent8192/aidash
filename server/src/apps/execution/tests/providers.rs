@@ -1,4 +1,5 @@
 use crate::provider_fixtures::{CompletionFixture, completion_server, unavailable_server};
+use aidash_application::ports::NoProgress;
 use aidash_server::{
 	provider::{ContentPart, ModelRequest, ToolSpec, provider},
 	registry::{Entry, MediaRouteEvidence, ModelConfig, validate},
@@ -23,6 +24,8 @@ fn config(
 		endpoint,
 		credential_env: None,
 		request_timeout_secs: None,
+		streaming: None,
+		stream_stall_timeout_secs: None,
 		reasoning_effort: None,
 		context_window: 128000,
 		max_output_tokens: Some(65536),
@@ -140,21 +143,24 @@ async fn openrouter_enforces_zdr_and_preserves_reasoning_tools_and_usage(
 		let model = provider(client.clone(), model_config).unwrap();
 		for with_tools in [true, false] {
 			let response = model
-				.infer(ModelRequest {
-					instructions: "Follow the task".into(),
-					context: json!({"task":"Read notes"}),
-					tools: if with_tools {
-						vec![ToolSpec {
-							name: "read".into(),
-							description: "Read notes".into(),
-							parameters: json!({"type":"object","properties":{"path":{"type":"string"}}}),
-						}]
-					} else {
-						vec![]
+				.infer(
+					ModelRequest {
+						instructions: "Follow the task".into(),
+						context: json!({"task":"Read notes"}),
+						tools: if with_tools {
+							vec![ToolSpec {
+								name: "read".into(),
+								description: "Read notes".into(),
+								parameters: json!({"type":"object","properties":{"path":{"type":"string"}}}),
+							}]
+						} else {
+							vec![]
+						},
+						max_output_tokens,
+						content_parts: vec![],
 					},
-					max_output_tokens,
-					content_parts: vec![],
-				})
+					&NoProgress,
+				)
 				.await
 				.unwrap();
 			let request = fixture.received.recv().await.unwrap();
@@ -221,24 +227,27 @@ async fn openrouter_sends_ordered_native_image_and_audio_parts() {
 	let image = b"\x89PNG\r\n\x1a\nimage".to_vec();
 	let audio = b"RIFF\0\0\0\0WAVEaudio".to_vec();
 	let response = model
-		.infer(ModelRequest {
-			instructions: "Inspect the media".into(),
-			context: json!({"run_message":"Describe the attachment"}),
-			tools: vec![],
-			max_output_tokens: 512,
-			content_parts: vec![
-				ContentPart::Text("first attachment".into()),
-				ContentPart::Image {
-					media_type: "image/png".into(),
-					bytes: image,
-				},
-				ContentPart::Text("second attachment".into()),
-				ContentPart::Audio {
-					format: "wav".into(),
-					bytes: audio,
-				},
-			],
-		})
+		.infer(
+			ModelRequest {
+				instructions: "Inspect the media".into(),
+				context: json!({"run_message":"Describe the attachment"}),
+				tools: vec![],
+				max_output_tokens: 512,
+				content_parts: vec![
+					ContentPart::Text("first attachment".into()),
+					ContentPart::Image {
+						media_type: "image/png".into(),
+						bytes: image,
+					},
+					ContentPart::Text("second attachment".into()),
+					ContentPart::Audio {
+						format: "wav".into(),
+						bytes: audio,
+					},
+				],
+			},
+			&NoProgress,
+		)
 		.await
 		.unwrap();
 	assert_eq!(response.text, "I saw and heard the input");
@@ -333,16 +342,19 @@ async fn media_route_lookup_obeys_the_total_inference_deadline() {
 	let model = provider(reqwest::Client::new(), model_config).unwrap();
 	let result = tokio::time::timeout(
 		Duration::from_secs(3),
-		model.infer(ModelRequest {
-			instructions: String::new(),
-			context: json!({}),
-			tools: vec![],
-			max_output_tokens: 128,
-			content_parts: vec![ContentPart::Image {
-				media_type: "image/png".into(),
-				bytes: b"\x89PNG\r\n\x1a\nfixture".to_vec(),
-			}],
-		}),
+		model.infer(
+			ModelRequest {
+				instructions: String::new(),
+				context: json!({}),
+				tools: vec![],
+				max_output_tokens: 128,
+				content_parts: vec![ContentPart::Image {
+					media_type: "image/png".into(),
+					bytes: b"\x89PNG\r\n\x1a\nfixture".to_vec(),
+				}],
+			},
+			&NoProgress,
+		),
 	)
 	.await
 	.expect("the configured inference deadline was exceeded");
@@ -422,13 +434,16 @@ async fn unavailable_zdr_endpoint_does_not_retry_without_zdr(
 	.unwrap();
 	assert!(
 		model
-			.infer(ModelRequest {
-				instructions: "test".into(),
-				context: json!({}),
-				tools: vec![],
-				max_output_tokens: 512,
-				content_parts: vec![]
-			})
+			.infer(
+				ModelRequest {
+					instructions: "test".into(),
+					context: json!({}),
+					tools: vec![],
+					max_output_tokens: 512,
+					content_parts: vec![]
+				},
+				&NoProgress,
+			)
 			.await
 			.is_err()
 	);
@@ -457,13 +472,16 @@ async fn upstream_media_rejection_keeps_its_status_and_safe_reason() {
 	let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
 	let model = provider(reqwest::Client::new(), config("openrouter", endpoint)).unwrap();
 	let error = model
-		.infer(ModelRequest {
-			instructions: "test".into(),
-			context: json!({}),
-			tools: vec![],
-			max_output_tokens: 512,
-			content_parts: vec![],
-		})
+		.infer(
+			ModelRequest {
+				instructions: "test".into(),
+				context: json!({}),
+				tools: vec![],
+				max_output_tokens: 512,
+				content_parts: vec![],
+			},
+			&NoProgress,
+		)
 		.await
 		.unwrap_err();
 	assert!(
@@ -492,13 +510,16 @@ async fn upstream_errors_cannot_echo_unrecognized_media_or_secret_data() {
 	let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
 	let model = provider(reqwest::Client::new(), config("openrouter", endpoint)).unwrap();
 	let error = model
-		.infer(ModelRequest {
-			instructions: "test".into(),
-			context: json!({}),
-			tools: vec![],
-			max_output_tokens: 512,
-			content_parts: vec![],
-		})
+		.infer(
+			ModelRequest {
+				instructions: "test".into(),
+				context: json!({}),
+				tools: vec![],
+				max_output_tokens: 512,
+				content_parts: vec![],
+			},
+			&NoProgress,
+		)
 		.await
 		.unwrap_err();
 	assert!(matches!(

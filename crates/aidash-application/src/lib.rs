@@ -37,6 +37,9 @@ pub enum Error {
 	OrchestrationUnavailable,
 	#[error("OpenRouter returned {status}: {reason}")]
 	ProviderRejected { status: u16, reason: String },
+	/// A streamed response produced no data within the stall timeout.
+	#[error("model provider stream stalled")]
+	InferenceStalled,
 	#[error("semantic backend unavailable or invalid; inspect index status and retry")]
 	SemanticUnavailable,
 	#[error("external identity status is unavailable")]
