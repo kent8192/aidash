@@ -2365,7 +2365,8 @@ async fn native_cleanup_inventory_is_bounded_ordered_and_includes_revocations(
 				State::Revoked,
 				State::Deleted,
 			][ordinal % 4];
-			if state != State::Deleted {
+			let cleanup_pending = state == State::Deleted && ordinal % 8 == 3;
+			if state != State::Deleted || cleanup_pending {
 				expected.push(id);
 			}
 			scope
@@ -2375,7 +2376,9 @@ async fn native_cleanup_inventory_is_bounded_ordered_and_includes_revocations(
 					provider: Provider::Openrouter,
 					base_url: Provider::Openrouter.base_url().into(),
 					secret_resource: format!("fake/{id}"),
-					pinned_version: if state == State::Pending {
+					pinned_version: if state == State::Pending
+						|| (state == State::Deleted && !cleanup_pending)
+					{
 						None
 					} else {
 						Some(format!("fake/{id}/versions/1"))
@@ -2405,6 +2408,7 @@ async fn native_cleanup_inventory_is_bounded_ordered_and_includes_revocations(
 	assert_eq!(first.len(), RECONCILIATION_BATCH_SIZE);
 	assert!(first.iter().any(|row| row.state == State::Pending));
 	assert!(first.iter().any(|row| row.state == State::Revoked));
+	assert!(first.iter().any(|row| row.state == State::Deleted));
 	let second = repository
 		.reconciliation_candidates(first.last().map(|row| row.id), usize::MAX)
 		.await
@@ -2419,4 +2423,216 @@ async fn native_cleanup_inventory_is_bounded_ordered_and_includes_revocations(
 			.len(),
 		0
 	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn subject_mutations_return_committed_results_when_decision_audit_fails(
+	#[future] endpoint: EndpointFixture,
+) {
+	use aidash_server::{
+		apps::identity::{
+			models::AuthorizationDecision, services::provider_credentials::Management,
+		},
+		authorization::Authorization,
+	};
+	use reinhardt::{db::orm::Model, query::TableConstraint};
+	let mut f = endpoint.await;
+	let bundle = json!({"tenant":"alpha","subjects":{"alice":{"kind":"user"}},"policies":[{"id":"provider-access","effect":"allow","subjects":{"ids":["alice"]},"actions":["provider_credential.create","provider_credential.read","provider_credential.rotate","provider_credential.revoke","provider_credential.delete","provider_credential_binding.read","provider_credential_binding.update"],"resources":{"kinds":["provider_credential","provider_credential_binding"]}}]});
+	assert_json(
+		f.operator
+			.post(
+				"/api/authorization/alpha",
+				&json!({"expected_revision":0,"bundle":bundle}),
+				"json",
+			)
+			.await
+			.unwrap(),
+		200,
+	);
+	let issued = assert_json(
+		f.operator
+			.post(
+				"/api/authorization/alpha/credentials",
+				&json!({"subject":"alice","expires_in_seconds":3600}),
+				"json",
+			)
+			.await
+			.unwrap(),
+		200,
+	);
+	let token = issued["token"].as_str().unwrap();
+	let actor = Authorization {
+		pool: f.runtime.store.pool.clone(),
+	}
+	.authenticate(token)
+	.await
+	.unwrap();
+	let subject = reinhardt::test::fixtures::api_client_from_url(&f.server.url);
+	subject
+		.set_header("Authorization", &format!("Bearer {token}"))
+		.await
+		.unwrap();
+	let store = Arc::new(FakeStore::default());
+	let service = Arc::new(Service {
+		repository: Arc::new(NativeRepository {
+			pool: f.runtime.store.control_pool.clone(),
+			node: f.runtime.store.node_id.clone(),
+		}),
+		store: store.clone(),
+		validator: Arc::new(Validator),
+		fingerprint_key: "test-fingerprint-key-that-is-at-least-32-bytes".into(),
+		max_per_tenant: 2,
+	});
+	f.runtime.store.provider_credentials = Some(service.clone());
+	f.context.set_singleton(f.runtime.clone());
+	let management = Management {
+		runtime: f.runtime.clone(),
+	};
+	// A typed CHECK fails only the later authorization-decision append. The
+	// lifecycle and binding transactions, including their own events, commit.
+	let statement = Query::alter_table()
+		.table(Alias::new("authorization_decisions"))
+		.add_constraint(TableConstraint::Check {
+			name: Some(Alias::new("fixture_provider_audit_failure").into_iden()),
+			expr: Expr::col("action").is_not_in([
+				"provider_credential.create",
+				"provider_credential.rotate",
+				"provider_credential.revoke",
+				"provider_credential.delete",
+				"provider_credential_binding.update",
+			]),
+		})
+		.to_string(PostgresQueryBuilder);
+	let mut tx = f.database.connection.begin().await.unwrap();
+	tx.execute(&statement, vec![]).await.unwrap();
+	tx.commit().await.unwrap();
+	let created = management
+		.create(
+			actor.clone(),
+			"alpha".into(),
+			Provider::Openrouter,
+			"valid-provider-key-1234".into(),
+		)
+		.await
+		.unwrap()
+		.provider_credential;
+	let id = created.id;
+	assert_eq!(created.revision, 2);
+	let rotated = management
+		.rotate(
+			actor,
+			"alpha".into(),
+			id,
+			created.revision,
+			"rotated-provider-key-5678".into(),
+		)
+		.await
+		.unwrap()
+		.provider_credential;
+	assert_eq!(rotated.revision, 3);
+	let binding = assert_json(
+		subject
+			.put(
+				"/api/tenants/alpha/provider-credential-bindings/openrouter",
+				&json!({"expected_revision":0,"provider_credential_id":id}),
+				"json",
+			)
+			.await
+			.unwrap(),
+		200,
+	);
+	assert_eq!(binding["revision"], 1);
+	let revoke_path = format!("/api/tenants/alpha/provider-credentials/{id}/revoke");
+	let revoked = assert_json(
+		subject
+			.post(
+				&revoke_path,
+				&json!({"expected_revision":rotated.revision}),
+				"json",
+			)
+			.await
+			.unwrap(),
+		200,
+	);
+	assert_eq!(revoked["state"], "revoked");
+	assert_eq!(revoked["revision"], 4);
+	assert_eq!(
+		subject
+			.post(
+				&revoke_path,
+				&json!({"expected_revision":rotated.revision}),
+				"json"
+			)
+			.await
+			.unwrap()
+			.status_code(),
+		409
+	);
+	let delete_path = format!("/api/tenants/alpha/provider-credentials/{id}");
+	let client = reqwest::Client::new();
+	let response = client
+		.delete(format!("{}{delete_path}", f.server.url))
+		.bearer_auth(token)
+		.json(&json!({"expected_revision":4}))
+		.send()
+		.await
+		.unwrap();
+	assert_eq!(response.status().as_u16(), 409);
+	assert_eq!(response.headers()["cache-control"], "no-store");
+	let unbound = assert_json(
+		subject
+			.put(
+				"/api/tenants/alpha/provider-credential-bindings/openrouter",
+				&json!({"expected_revision":1,"provider_credential_id":null}),
+				"json",
+			)
+			.await
+			.unwrap(),
+		200,
+	);
+	assert_eq!(unbound["revision"], 2);
+	let response = client
+		.delete(format!("{}{delete_path}", f.server.url))
+		.bearer_auth(token)
+		.json(&json!({"expected_revision":4}))
+		.send()
+		.await
+		.unwrap();
+	assert_eq!(response.status().as_u16(), 200);
+	assert_eq!(response.headers()["cache-control"], "no-store");
+	let deleted = response.json::<Value>().await.unwrap();
+	assert_eq!(deleted["state"], "deleted");
+	assert_eq!(deleted["revision"], 5);
+	let mut scope = service.repository.begin("alpha").await.unwrap();
+	let tombstone = scope.get(id).await.unwrap();
+	assert_eq!(tombstone.pinned_version, None);
+	assert!(tombstone.require_active().is_err());
+	scope.commit().await.unwrap();
+	assert!(store.0.lock().unwrap().is_empty());
+	let mut tx = f.database.connection.begin().await.unwrap();
+	let decisions = AuthorizationDecision::objects()
+		.filter(AuthorizationDecision::field_subject().eq("alice"))
+		.all_with_executor(tx.as_mut())
+		.await
+		.unwrap();
+	tx.commit().await.unwrap();
+	assert!(
+		decisions
+			.iter()
+			.all(|decision| !decision.action.starts_with("provider_credential"))
+	);
+	let persisted = all_database_text(&f).await;
+	for event in [
+		"provider_credential.created",
+		"provider_credential.rotated",
+		"provider_credential.revoked",
+		"provider_credential.deleted",
+		"provider_credential.cleanup_completed",
+		"provider_credential_binding.updated",
+	] {
+		assert!(persisted.contains(event), "missing committed event {event}");
+	}
+	let log = String::from_utf8_lossy(&LOG.get().unwrap().lock().unwrap()).into_owned();
+	assert!(log.contains("Committed Provider Credential mutation audit could not be finalized"));
 }
