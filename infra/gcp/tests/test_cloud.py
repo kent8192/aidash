@@ -81,6 +81,27 @@ class LockTests(unittest.TestCase):
 
 
 class PlanTests(unittest.TestCase):
+    def test_legacy_configuration_applies_without_byok_resources(self):
+        with TemporaryDirectory() as directory:
+            terraform = Terraform.__new__(Terraform)
+            terraform.root = Path(directory)
+            terraform.configuration = dict.fromkeys(
+                ("project_id", "cloudflare_zone_id", "release_bucket",
+                 "deploy_service_account", "domain"), "fixture"
+            )
+
+            def command(*args, **kwargs):
+                variables = json.loads(
+                    (terraform.root / "controller.auto.tfvars.json").read_text()
+                )
+                self.assertEqual(variables["byok_project_id"], "")
+                self.assertEqual(variables["project_id"], "fixture")
+                return b'{"resource_changes":[]}'
+
+            with patch("cloud.run", side_effect=command) as run:
+                terraform.apply({})
+            self.assertTrue(any("apply" in call.args for call in run.call_args_list))
+
     def apply(self, resource_type, actions, **authorization):
         with TemporaryDirectory() as directory:
             terraform = Terraform.__new__(Terraform)

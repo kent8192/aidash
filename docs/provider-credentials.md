@@ -33,8 +33,7 @@ Tenant metadata endpoints are GET `/api/tenants/{tenant}/provider-credentials`
 and GET `/api/tenants/{tenant}/provider-credentials/{id}`. Revoke and delete remain
 available, alongside `/api/tenants/{tenant}/provider-credential-bindings`.
 Lifecycle operations and
-binding updates require the current `expected_revision`; stale writes return
-409. Sending `provider_credential_id: null` explicitly unbinds a provider and
+binding updates require the current `expected_revision`; stale writes return 409. Sending `provider_credential_id: null` explicitly unbinds a provider and
 retains its revision history; unbind before deleting the last bound record.
 Public policy actions are `provider_credential.read`, `.revoke`, `.delete`, and
 `provider_credential_binding.read`, `.update`. Internal Provider Authorization

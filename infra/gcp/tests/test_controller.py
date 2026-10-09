@@ -19,6 +19,25 @@ SHA = "a" * 40
 CONFIG = {"repository": "kent8192/aidash"}
 
 
+class ConfigurationTests(unittest.TestCase):
+    def test_existing_lifecycle_config_does_not_require_byok(self):
+        config = dict.fromkeys(
+            ("project_id", "state_bucket", "release_bucket", "cloudflare_zone_id",
+             "deploy_service_account", "repository", "develop_branch"),
+            "fixture",
+        )
+        config["domain"] = "aidash.run"
+        with TemporaryDirectory() as directory, patch.object(
+            controller, "CONFIG", Path(directory) / "absent.json"
+        ):
+            for byok in [None, "aidash-byok-fixture"]:
+                value = dict(config)
+                if byok is not None:
+                    value["byok_project_id"] = byok
+                with patch.dict(os.environ, {"AIDASH_GCP_CONFIG": json.dumps(value)}):
+                    self.assertEqual(controller.load_config(), value)
+
+
 class MemoryStore:
     def __init__(self):
         self.state = {"environments": {}}
