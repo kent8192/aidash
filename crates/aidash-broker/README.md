@@ -86,6 +86,9 @@ field are rejected before Key Material lookup. OpenRouter's
 [server tools](https://openrouter.ai/docs/guides/features/server-tools/web-search)
 can execute external searches and add charges beyond model tokens, which the
 signed inference capability does not authorize.
+The legacy `x_search_filter` activation field is also rejected, as is any
+`preset` field: [server-side presets](https://openrouter.ai/blog/tutorials/presets/)
+can merge additional tools and options after admission checks.
 Chat output is text-only: omit `modalities` or use exactly `["text"]`. Non-text
 or malformed modalities and any `image_config` or `audio` field are rejected
 before Key Material lookup. Image and audio input in `messages` remains supported.
@@ -188,6 +191,8 @@ Broker changes that remove or replace a live service drain all affected workers
 before any Terraform apply, including applies triggered by another interrupted VM.
 If preflight or Terraform fails, the controller attempts to restore admission on
 every successfully sealed host and reports restoration failures for reconciliation.
+Operation-budget expiry follows the same restoration path, with a fresh bounded
+180-second cleanup allowance before the original deadline is re-raised.
 Non-deployment early exits, including pending builds, restore broker-presealed
 admission for a still-running, published release. Failed deployments that were
 deliberately gated, stopped hosts and retired hosts remain gated.

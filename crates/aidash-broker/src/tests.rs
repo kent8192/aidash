@@ -311,6 +311,55 @@ async fn chat_rejects_provider_executed_tools_and_plugins_but_preserves_function
 }
 
 #[tokio::test]
+async fn chat_rejects_legacy_x_search_activation_before_key_lookup() {
+	let f = Fixture::new().await;
+	for value in [
+		json!({"allowed_x_handles":["test"]}),
+		json!({}),
+		Value::Null,
+		json!(false),
+	] {
+		let mut body = chat();
+		body["x_search_filter"] = value;
+		let response = f
+			.request(&f.claims(), "POST", "/api/v1/chat/completions", body)
+			.await;
+		assert_eq!(response.status(), 403);
+		assert_eq!(
+			json_body(response).await["error"]["code"],
+			"capability_claim_violation"
+		);
+		assert_eq!(f.source.reads.load(Ordering::SeqCst), 0);
+		assert_eq!(f.provider.calls.load(Ordering::SeqCst), 0);
+	}
+}
+
+#[tokio::test]
+async fn chat_rejects_server_side_presets_before_key_lookup() {
+	let f = Fixture::new().await;
+	for value in [
+		json!("@preset/search"),
+		json!("ignored-slug"),
+		json!(""),
+		Value::Null,
+		json!({}),
+	] {
+		let mut body = chat();
+		body["preset"] = value;
+		let response = f
+			.request(&f.claims(), "POST", "/api/v1/chat/completions", body)
+			.await;
+		assert_eq!(response.status(), 403);
+		assert_eq!(
+			json_body(response).await["error"]["code"],
+			"capability_claim_violation"
+		);
+		assert_eq!(f.source.reads.load(Ordering::SeqCst), 0);
+		assert_eq!(f.provider.calls.load(Ordering::SeqCst), 0);
+	}
+}
+
+#[tokio::test]
 async fn chat_rejects_non_text_output_and_media_configuration_before_key_lookup() {
 	let f = Fixture::new().await;
 	for (field, value) in [

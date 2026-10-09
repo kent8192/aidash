@@ -301,6 +301,9 @@ fn body_policy(body: &[u8], claims: &Claims, op: Operation) -> Result<(), Failur
 	// Provider tools/plugins can add external data processing and unbounded fees.
 	if op == Operation::Chat
 		&& (value.get("plugins").is_some()
+			|| value.get("x_search_filter").is_some()
+			// Presets merge additional provider-side authority after admission.
+			|| value.get("preset").is_some()
 			|| value.get("tools").is_some_and(|tools| {
 				tools.as_array().is_none_or(|tools| {
 					tools

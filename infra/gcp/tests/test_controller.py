@@ -418,6 +418,52 @@ class ReconcileTests(unittest.TestCase):
         self.assertEqual(self.calls, [("seal", "develop"), ("seal", "test"), ("unseal", "develop"), ("unseal", "test")])
         self.assertIn("apply unavailable", str(failure.exception.__context__))
 
+    def test_broker_deadline_restores_presealed_hosts_with_a_fresh_cleanup_budget(self):
+        from cloud import DEADLINE
+        brokers = {identity: {"enabled": True, "image": "initial"} for identity in ["develop", "test"]}
+        self.config["develop_branch"] = "develop/0.1.0"
+        self.config["credential_brokers"] = brokers
+        for identity in brokers:
+            self.request(identity, source_ref="develop/0.1.0" if identity == "develop" else "main")
+            self.reconcile()
+        for stage in ["preflight", "apply"]:
+            with self.subTest(stage=stage):
+                self.config["credential_brokers"] = {}
+                self.calls.clear()
+                def deadline_host(config, output, action, force=False, stage=stage):
+                    result = self.host(config, output, action, force)
+                    if stage == "preflight" and action == "seal" and output["instance"] == "test":
+                        DEADLINE.set(0)
+                        controller.bounded_timeout(1)
+                    if action == "unseal":
+                        self.assertGreater(controller.bounded_timeout(1), 0)
+                    return result
+                def deadline_apply(*args, **kwargs):
+                    self.calls.append(("apply", "all"))
+                    DEADLINE.set(0)
+                    controller.bounded_timeout(1)
+                with controller.operation_budget(60), patch.object(controller, "host", side_effect=deadline_host), patch.object(self.cloud, "apply", side_effect=deadline_apply), self.assertRaises(controller.OperationDeadline):
+                    self.reconcile()
+                expected = [("seal", "develop"), ("seal", "test")]
+                if stage == "apply":
+                    expected += [("apply", "all")]
+                expected += [("unseal", "develop")]
+                if stage == "apply":
+                    expected += [("unseal", "test")]
+                self.assertEqual(self.calls, expected)
+                self.assertEqual(self.cloud.brokers, brokers)
+                self.assertFalse(self.store.locked)
+
+    def test_broker_restore_deadline_still_attempts_every_host(self):
+        outputs = {identity: {"instance": identity} for identity in ["develop", "test"]}
+        def deadline_restore(config, output, action, force=False):
+            self.calls.append((action, output["instance"]))
+            if output["instance"] == "develop":
+                raise controller.OperationDeadline("fixture cleanup deadline")
+        with patch.object(controller, "host", side_effect=deadline_restore), self.assertRaisesRegex(RuntimeError, "admission restoration failed"):
+            controller.restore_broker_admission(self.config, outputs, set(outputs))
+        self.assertEqual(self.calls, [("unseal", "develop"), ("unseal", "test")])
+
     def test_interruption_apply_failure_without_broker_seals_preserves_original_error(self):
         self.request()
         self.reconcile()

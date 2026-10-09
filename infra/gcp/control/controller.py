@@ -567,11 +567,14 @@ def restore_broker_admission(config, outputs, sealed):
     # Restore every successful preflight seal when reconciliation cannot reach
     # host cleanup, even if an earlier unseal fails. Keep failures explicit.
     failed = False
-    for identity in sorted(sealed):
-        try:
-            host(config, outputs[identity], "unseal")
-        except Exception:
-            failed = True
+    # Use the same reserved cleanup allowance as per-environment recovery;
+    # the reconciliation budget may already have expired.
+    with operation_budget(180):
+        for identity in sorted(sealed):
+            try:
+                host(config, outputs[identity], "unseal")
+            except (Exception, OperationDeadline):
+                failed = True
     if failed:
         raise RuntimeError("Broker drain admission restoration failed")
 
@@ -619,7 +622,7 @@ def reconcile(config, store):
                     else:
                         update_entry(store, identity, entry["generation"], status="waiting_for_active_work")
                         blocked = True
-            except Exception:
+            except (Exception, OperationDeadline):
                 restore_broker_admission(config, outputs, presealed)
                 raise
             if blocked:
@@ -628,7 +631,7 @@ def reconcile(config, store):
         if interrupted or broker_changed:
             try:
                 terraform.apply(managed)
-            except Exception:
+            except (Exception, OperationDeadline):
                 if presealed:
                     restore_broker_admission(config, outputs, presealed)
                 raise
