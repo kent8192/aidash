@@ -204,9 +204,11 @@ roles and admission; only an idle verdict permits stopping the Runner and the
 remaining workloads. Work that starts between the last idle observation and
 the drain can be interrupted **even without `force`**. The activity CronJob
 persists minute observations; missing or stale observations block automatic stop.
-Stopping retains PVCs. Destroy is the separate deletion action. Controller/IAM
-integration and real GKE Cluster Node loss verification are gated follow-up work;
-see the [Phase 4 handoff](operations/issue-155-phase4.md).
+Stopping retains PVCs. Destroy is the separate deletion action. The GCP lifecycle
+controller drives this sequence through `kubectl` and Helm; see the
+[GCP Environments guide](../infra/gcp/README.md). Real GKE Cluster Node loss,
+Spot preemption and disk reattachment drills remain open; see the
+[Phase 4 handoff](operations/issue-155-phase4.md).
 
 ## Acceptance
 

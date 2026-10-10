@@ -1,13 +1,13 @@
 # Issue #155 Phase 4 handoff
 
-Phases 1–3 supply the execution components and charts. Existing GCP Terraform,
-VM runtime and lifecycle controller remain unchanged until the sequencing gate
-opens. On 2026-10-09, PRs [#161](https://github.com/kent8192/aidash/pull/161),
+Phases 1–3 supplied the execution components and charts. Phase 4 replaces the
+per-Environment VM with the shared GKE Standard cluster described in the
+[GCP Environments guide](../../infra/gcp/README.md). The work started from the
+merged base of PRs [#161](https://github.com/kent8192/aidash/pull/161),
 [#162](https://github.com/kent8192/aidash/pull/162) and
-[#163](https://github.com/kent8192/aidash/pull/163) were open. Recheck all three
-before starting Phase 4 and incorporate their merged base in the authoritative
-task worktree. Preserve Provider Credential, capability broker and GCIP resources
-and carry their grants onto the designated Workload Identity principals.
+[#163](https://github.com/kent8192/aidash/pull/163). Provider Credential,
+capability broker and GCIP resources are preserved; their grants moved to the
+server and worker Workload Identity principals.
 
 Build the charts, Runner, installer, guard, observer and activity collector from
 the trusted workflow ref and pin their images by digest. Deployed fork PR source
@@ -57,22 +57,51 @@ server/worker processes:
   as busy, including old journals. The guard watchdog supplies its existing
   termination evidence and does not submit operations.
 
-Repeat this audit after incorporating the three gated PRs. Confirm no additional
-producer can submit while both roles are stopped; if there is one, report to the
-lead before implementing the seal. No Rust role behavior changed in Phases 1–3.
+The audit was repeated on the merged #161/#162/#163 base: every Runner submission
+path is inside the server/worker processes, and the Credential Broker cannot mint
+or submit without them. Scaling both roles to zero stops all producers. Repeat it
+whenever a new background producer is added.
 
-## Integration and verification still required
+## Implemented
 
-The approved Phase 4 design includes GKE Standard, Ubuntu N2 Environment pools,
-the E2 system pool, Workload Identity, private Cluster Nodes and Cloud NAT,
-retained disks, generation fencing, durable lifecycle locking, one active
-Environment per kind, ephemeral LoadBalancer/DNS resume and static preview TLS
-PV rebinding only after the old attachment is gone. The existing cloud APIs and
-controller are not yet wired to the new charts. Preserve their current safety,
-credential and activity checks when replacing VM lifecycle operations.
+- Terraform: shared network, Cloud NAT, node service account, zonal cluster
+  `aidash` with Dataplane V2, Workload Identity and private nodes, the E2 system
+  pool (one node iff any Environment runs), per-Environment Ubuntu N2 pools with
+  label/taint, server/worker service accounts and the preview TLS disk. VM,
+  firewall, runtime service account, startup script and bundle resources are
+  removed; deploy no longer has OS Login or IAP grants.
+- Release: eight digest-pinned images; `app`, `postgres` and `sandbox` from the
+  deployed source, `observer`, `control` and `edge` only from the trusted
+  checkout, `nats` and `caddy` from reviewed upstream digests.
+- Charts: digest image values, retained claims, capability storage, provider and
+  GCIP settings, trusted-proxy CIDR and backend NetworkPolicy; the controller owns
+  the StorageClass and preview PV.
+- Controller: Kubernetes/Helm deploy, the post-drain seal above, stop/resume,
+  destroy with retained PV cleanup, preview PV rebinding, GCIP quiesce, broker
+  descriptor updates and plan fences for the cluster, preview disk and node pools.
+  Generation fencing, budgets, the durable lock and CI/source checks are unchanged.
+- The VM runtime (`infra/gcp/runtime/`), its tests and the VM host references outside
+  history records are removed.
 
-Local kind verification with upstream gVisor passed isolation, freeze, guest
-process capacity and host task limits. It does not prove GKE Cluster Node loss,
-Spot preemption, persistent disk reattachment, preview disk rebinding, IAM or
-resume/stop/destroy behavior. Real GKE drills and all cloud resource mutations
-require the user's explicit authorization through the lead.
+## Verification still required on real GKE
+
+Local verification covers provider-mocked Terraform, controller regressions with
+patched Kubernetes/Helm helpers, Helm rendering, the edge admission container and
+kind with upstream gVisor (isolation, freeze, guest process capacity and host task
+limits). It does not prove:
+
+- Cluster Node loss: Pods reschedule, retained disks reattach and in-flight
+  operations surface as uncertain without replay.
+- Spot preemption and Spot capacity unavailability for test/PR pools.
+- Persistent disk reattachment of PostgreSQL, NATS, journal, Home ledger and
+  capability claims across stop/resume.
+- Preview TLS PV rebinding between `pr-N` namespaces, including the
+  VolumeAttachment wait.
+- Workload Identity and IAM: server BYOK Create/Manage and GCIP tenant read,
+  worker KMS signing, and denial for the node service account and other Pods.
+- Re-check of [#137](https://github.com/kent8192/aidash/issues/137) and
+  [#149](https://github.com/kent8192/aidash/issues/149) behavior on GKE.
+- Full create, idle stop, resume, PR replacement/close and destroy cycles.
+
+Real GKE drills and all cloud resource mutations require the user's explicit
+authorization through the lead.

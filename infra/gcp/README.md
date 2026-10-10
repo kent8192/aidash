@@ -1,91 +1,119 @@
 # GCP staging and test environments
 
-This provisions nonproduction GCP environments using Terraform, a trusted
-GitHub Actions controller, and infrastructure-side
-activity observation. Application and Runner business logic are unchanged.
-No production environment or always-running management VM is created.
+This provisions nonproduction GCP Environments on one shared GKE Standard
+cluster using Terraform, a trusted GitHub Actions controller, Helm and
+infrastructure-side activity observation. Application and Runner business logic
+are unchanged. No production Environment or always-running management VM is
+created; with every Environment stopped, no Cluster Node runs.
 
 ## Environments and lifecycle
 
-| Environment | Source                                                           | Host            | Public origin                |
+| Environment | Source                                                           | Node pool       | Public origin                |
 | ----------- | ---------------------------------------------------------------- | --------------- | ---------------------------- |
-| `develop`   | Configured `develop/x.y.z`                                       | Normal VM       | `https://develop.aidash.run` |
+| `develop`   | Configured `develop/x.y.z`                                       | Normal          | `https://develop.aidash.run` |
 | `pr-N`      | Explicitly requested open PR targeting `main` or `develop/x.y.z` | Spot by default | `https://preview.aidash.run` |
 | `test`      | Explicit branch or full SHA, then pinned                         | Spot by default | `https://test.aidash.run`    |
 
-Each environment owns a VPC, service account, Secret Manager secret, VM,
-10 GiB boot disk and 20 GiB data disk. The initial host is `e2-standard-4` in
-`us-central1-a`. PostgreSQL 17 with pgvector/PGroonga, NATS, web/API/workers, K3s and the existing
-gVisor Runner run on that host. Execution uses disposable Pods without a new
-global Python/Shell queue. The existing runtime still controls physical writer
-freeze, termination proof and uncertain-operation recovery.
+All Environments share the zonal GKE Standard cluster `aidash` in
+`us-central1-a` (Dataplane V2, Workload Identity, private Cluster Nodes with Cloud
+NAT, Kubernetes 1.34 or later). Each Environment owns:
 
-Only one instance of each environment kind may run; other PR requests wait for
-the preview slot. Stopped PRs retain their own independent data. `stop` retains
-disks and identity; `destroy` deletes that environment's disks and secret. A
-closed/merged PR is destroyed by reconciliation, regardless of its build result.
-Reopening it requires a fresh explicit request.
+- namespaces `aidash-<id>` (app), `aidash-<id>-sandbox` (Execution Pods) and
+  `aidash-<id>-trusted` (guard/installer);
+- an Ubuntu/containerd N2 node pool (`n2-standard-4` by default) labelled and
+  tainted `aidash.run/environment=<id>`; nothing else schedules there;
+- server and worker Google service accounts bound through Workload Identity, a
+  Secret Manager runtime secret and, when enabled, GCIP tenants;
+- retained PVCs on the `aidash-retain` StorageClass (`pd-balanced`, `Retain`):
+  PostgreSQL, NATS JetStream, Runner journal, Home ledger (`memory-recovery`) and
+  capability objects (`capability-objects`).
 
-The preview hostname has a separate 10 GiB `aidash-preview-tls` disk managed by
-`environments/`, with Terraform destruction protection. Only the running preview
-attaches it; stop detaches it before another PR can use the slot. Caddy mounts it
-at `/var/lib/aidash/tls`, preserving certificates and ACME accounts across PR
-replacement and retirement. It contains no application data and remains allocated
-after the last PR is destroyed. Develop/test keep TLS state on their own data disks.
-Do not delete the shared store during routine PR cleanup.
+A small untainted E2 system pool runs one node only while any Environment runs.
+PostgreSQL 17 with pgvector/PGroonga and NATS JetStream are single-replica
+StatefulSets from [the Environment chart](helm/environment/README.md); web/API,
+workers and the opt-in gVisor execution components come from
+[the application chart](../../deploy/helm/aidash/README.md). Execution Pods run
+upstream gVisor installed by the privileged installer DaemonSet.
 
-Push/CI completion never creates a missing environment or wakes a stopped host.
+Only one Environment of each kind may run; other PR requests wait for the preview
+slot. Stopped PRs retain their own independent data. `stop` scales the
+Environment's workloads and node pool to zero, removes its LoadBalancer and DNS
+record and keeps PVCs, Secrets and identities. `resume` restores them.
+`destroy` deletes the namespaces, the retained disks bound to their claims, the
+node pool, service accounts and runtime secret. A closed/merged PR is destroyed
+by reconciliation, regardless of its build result. Reopening it requires a fresh
+explicit request.
+
+Each running Environment has its own L4 passthrough LoadBalancer Service for the
+edge (ephemeral IP, `externalTrafficPolicy: Local`) and a DNS-only Cloudflare A
+record. The preview hostname keeps a separate 10 GiB `aidash-preview-tls` GCE disk
+managed by `environments/` with Terraform destruction protection. The controller
+exposes it as the static PV `aidash-preview-tls` and binds it to the active
+`aidash-pr-N/preview-tls` claim only after the previous PR's edge has no Pods and
+no VolumeAttachment for it; until then the request waits as
+`waiting_for_preview_tls`. Caddy mounts it at `/var/lib/aidash/tls`, preserving
+certificates and ACME accounts across PR replacement and retirement. Destroying a
+PR releases the claim reference and never deletes the disk. Develop/test keep TLS
+state on their own retained claims.
+
+Push/CI completion never creates a missing Environment or wakes a stopped one.
 An active shared develop or opted-in same-repository PR follows its current,
 CI-successful SHA. Test environments remain pinned. Updates wait for active
-work and coalesce to the latest authorized source. Explicit normal-VM overrides
-persist across updates. Spot preemption/unavailability requires manual resume;
-there is no automatic normal fallback or infrastructure replay of tool code.
+work and coalesce to the latest authorized source. Explicit normal-capacity
+overrides persist across updates.
 
 ## Structure and trust boundary
 
 - `bootstrap/`: shared private state/release buckets, Artifact Registry, APIs,
   deployment/publisher identities and GitHub Workload Identity Federation.
-- `environments/`, `modules/environment/`: retained per-environment resources and
-  the three DNS-only Cloudflare A records. The existing DNS zone is not owned.
+- `environments/`: the shared network, Cloud NAT, node service account, GKE
+  cluster and system pool, preview TLS disk, broker grants and the DNS-only
+  Cloudflare A records. The existing DNS zone is not owned.
+- `modules/environment/`: per-Environment node pool, Workload Identity service
+  accounts, runtime secret metadata, BYOK grants and GCIP tenants.
+- `helm/environment/`: PostgreSQL, NATS, edge (Caddy + Nginx admission) and the
+  activity collector chart.
 - `control/`: authorized requests, generation fencing, image publication,
-  desired-state reconciliation and explicit Compute Engine power operations.
-- `runtime/`: VM setup, reverse proxy, admission control and host observation.
+  desired-state reconciliation and Kubernetes/Helm lifecycle operations.
 - `observer/`: separate Rust program; SeaQuery/SeaORM, read-only transactions,
   no changes to the application schema.
-- `tests/`, `check.sh`: provider-mocked Terraform tests, controller/host regressions,
-  real PostgreSQL queries and a real Ubuntu/Nginx admission fixture.
+- `tests/`, `check.sh`: provider-mocked Terraform tests, controller regressions,
+  real PostgreSQL queries, the edge admission container check and Helm rendering.
 
 WIF trusts numeric repository/owner IDs and only
 `.github/workflows/gcp-environments.yml` on `refs/heads/main`. The workflow
-checks out privileged code from the repository default branch. Source images
-are built from an exact SHA in a separate job without cloud credentials, using
-trusted Dockerfiles. A publisher job copies image archives to digest-addressed
-private registry entries without executing them. Fork heads require explicit
-write-collaborator authorization for that exact SHA; a retained approval covers
-resuming the same SHA, never a later commit. Actions/comments require repository
-write, maintain or admin permission. No workflow posts PR comments.
+checks out privileged code and chart templates from the repository default
+branch. Source images (`app`, `postgres`, `sandbox`) are built from an exact SHA
+in a separate job without cloud credentials, using trusted Dockerfiles.
+Privileged images (`observer`, `control` for the Runner/guard/installer and
+`edge`) are built only from the trusted checkout, including for fork previews.
+NATS and Caddy use reviewed upstream linux/amd64 digests in `control/images.py`.
+A publisher job copies all eight image archives to digest-addressed private
+registry entries without executing them; `release.json` records each digest.
+Fork heads require explicit write-collaborator authorization for that exact SHA;
+a retained approval covers resuming the same SHA, never a later commit.
+Actions/comments require repository write, maintain or admin permission. No
+workflow posts PR comments. Retried workflows re-emit a pending build for the
+accepted SHA and generation; newer stop/destroy requests still fence it.
+Attempt-specific publish tags and replaceable workflow artifacts allow recovery
+from partial publication.
 
-All five service images are digest-addressed in the private registry. NATS uses a reviewed upstream linux/amd64 digest in `control/images.py`, passes
-through the same build-archive/publisher boundary and appear in the release
-manifest. Retried workflows re-emit a pending build for the accepted SHA and
-generation; newer stop/destroy requests still fence it. Attempt-specific publish
-tags and replaceable workflow artifacts allow recovery from partial publication.
+The apply job installs `kubectl`, `gke-gcloud-auth-plugin` and pinned Helm, and
+fetches cluster credentials through the DNS-based control plane endpoint into a
+private kubeconfig. There is no SSH or IAP access; the IP endpoint has no
+authorized networks.
 
-Bootstrap compares installed K3s and all gVisor binaries with the pinned hashes,
-repairs or upgrades retained installations, and restarts K3s when binaries or
-runtime configuration changed. After readiness succeeds, host health checks
-remove obsolete Aidash image digests. They preserve the current observer and
-sandbox images, images used by Pods/containers and unrelated repositories.
-
-Runtime SAs can read image/bundle artifacts and only their own runtime secret.
-They do not receive DNS or deployment credentials. Only ports 80/443 are public;
-SSH uses IAP. Database, probe, proxy-control and Runner endpoints are loopback
-only. Sandbox Pods retain deny-all networking and no host credentials. The
-existing Runner must prove isolation and Python freeze/termination at startup
-before an environment is declared ready.
-Authentication throttling trusts only the loopback Nginx peer's `X-Real-IP`.
-Caddy replaces client-supplied forwarding headers with its socket client address,
-and Nginx overwrites `X-Real-IP`; separate clients therefore keep separate budgets.
+Workload Identity is the only path to Aidash permissions. The server's service
+account may create Provider Credential secrets and manage those under its
+Environment prefix (BYOK) and read its own GCIP tenants. The worker's may only
+sign with the Cloud KMS capability key (`roles/cloudkms.signer`). The node service
+account has only logging/monitoring writer and Artifact Registry reader roles;
+every other Pod, including fork previews, holds no Aidash grants. Fork previews
+are isolated by namespace, tainted node pool and NetworkPolicy. Sandbox Pods keep
+deny-all networking. The backend accepts ingress only from the edge Pods, and
+authentication throttling trusts `X-Real-IP` only from the Pod CIDR: Caddy
+replaces client-supplied forwarding headers with its socket client address, and
+Nginx overwrites `X-Real-IP`, so separate clients keep separate budgets.
 
 ## Initial configuration
 
@@ -129,7 +157,8 @@ configured. The project is never inferred from a developer's `gcloud` default.
 5. Keep the existing Cloudflare `aidash.run` zone/nameservers. Create a token
    scoped to DNS edit for that zone. The three records must be absent or
    deliberately imported before enabling automation; do not overwrite unrelated
-   A/AAAA/CNAME records. No Cloud DNS zone, paid load balancer or static IP is used.
+   A/AAAA/CNAME records. No Cloud DNS zone or static IP is used; each running Environment publishes its
+   ephemeral L4 LoadBalancer IP.
 6. Configure a Google Web OAuth client with exact redirect URIs:
    `https://develop.aidash.run/auth/callback`,
    `https://preview.aidash.run/auth/callback`,
@@ -155,23 +184,30 @@ configured. The project is never inferred from a developer's `gcloud` default.
 | Secret   | `GCP_TEST_RUNTIME_CONFIG`        | Google/provider configuration JSON for test                                             |
 | Secret   | `GCP_PR_RUNTIME_CONFIG`          | Google/provider configuration JSON for PR staging                                       |
 
+The optional `node_count` map in `AIDASH_GCP_CONFIG` (keys `develop`, `test`,
+`pr`) sets the Environment node pool size per kind; omitted kinds use one node.
+
 Without GCIP, each runtime JSON contains string values for `AIDASH_OIDC_CLIENT_ID` and
 `AIDASH_OIDC_CLIENT_SECRET`, plus required provider credentials named
 `AIDASH_SECRET_*`. Optional Google session lifetime settings are
 `AIDASH_OIDC_SESSION_ABSOLUTE_SECONDS` and `AIDASH_OIDC_SESSION_IDLE_SECONDS`.
 When GCIP is enabled, omit all `AIDASH_OIDC_*` keys. The controller adds the
 public `dashboard.gcip` fragment to the same JSON; provider credentials remain
-flat `AIDASH_SECRET_*` strings. The host writes only the GCIP fragment into a
-read-only mounted settings directory and selects it through `AIDASH_GCIP_SETTINGS`.
-Reinhardt composes this source with the normal server settings, applies typed
-defaults and validates the sole issuer. The host does not export legacy OIDC
-settings in this mode. Removing Tenant Bindings updates the retained settings file
-before the environment is reopened.
-The host generates private database/API/Runner keys and environment-specific
-node identity; callers cannot override these through runtime JSON. Terraform
-creates secret metadata only. The controller uploads an initial secret version
-via stdin; the host reads it using its own service account. Runtime files are
-root-readable and secret values do not enter Terraform state.
+flat `AIDASH_SECRET_*` strings. The controller passes only the GCIP fragment to
+the app chart's `gcip.settings`, which mounts it read-only and selects it through
+`AIDASH_GCIP_SETTINGS`. Reinhardt composes this source with the normal server
+settings, applies typed defaults and validates the sole issuer. Legacy OIDC
+settings are not exported in this mode. Removing Tenant Bindings updates the
+settings before the Environment is reopened.
+
+The controller generates private database/API/Runner keys once into the
+namespace's `aidash-identity` Secret and never regenerates them; callers cannot
+override these or the node identity through runtime JSON. Terraform creates secret
+metadata only. The controller uploads an initial secret version via stdin, reads
+the allowlisted keys (`AIDASH_OIDC_*`, `AIDASH_SECRET_*`,
+`AIDASH_PROVIDER_FINGERPRINT_KEY`) and materializes the `app-runtime` Kubernetes
+Secret consumed by server and worker. No Pod identity can read Secret Manager
+runtime secrets, and secret values do not enter Terraform state.
 
 ## Operation
 
@@ -215,7 +251,7 @@ authors are excluded before it starts, and malformed/unauthorized commands
 cannot start the prepare/apply jobs.
 
 Command acceptance and cloud
-reconciliation share a durable lock, so an older apply cannot create/start a VM
+reconciliation share a durable lock, so an older apply cannot scale up a node pool
 after a newer stop/destroy request has been accepted. Preparation waits up to 450
 seconds for the lock; if that expires, the command has not been accepted and the
 Actions run fails. Retry after the lock owner finishes. Locks are never stolen.
@@ -232,116 +268,120 @@ Builds run outside the lock and attach only to their accepted generation. A late
 scheduled reconciliation can process accepted intent or a completed build if its
 immediate apply job finds the lock busy. Inspect Actions
 logs and `lifecycle/state.json` in the private state bucket for ready/pending/
-interrupted/failed state, source and digests. A build artifact alone is not proof
+draining/`waiting_for_active_work`/`waiting_for_preview_tls`/
+`waiting_for_gcip_refresh`/interrupted/failed state, source and digests. A build artifact alone is not proof
 of a successful deployment.
 
-A newly created, resumed or replaced VM runs the Compute Engine startup script
-once at boot. The controller waits for that service to finish; only a failed
-initial run gets one explicit retry after credentials are provisioned. An update
-to a running VM waits for any existing bootstrap before explicitly restarting it.
-A timeout leaves the generation failed for operator inspection, without replaying
-an install whose outcome is unknown.
+A deployment brings the Environment node pool (and the system pool) up, ensures
+the `aidash-retain` StorageClass, namespaces, Secrets and retained PVCs, installs
+the `env` chart (PostgreSQL, NATS, edge, activity collector), runs a one-shot Job
+for migrations, Home ledger initialization and activation provisioning, then
+installs the `app` chart. Readiness requires the server Deployment's
+`aidash.run/source-sha` annotation to equal the authorized SHA, complete rollouts,
+a ready Runner and the public HTTPS node identity. Only then is the edge
+LoadBalancer IP published in DNS and admission opened. A timeout leaves the
+generation failed for operator inspection, without replaying unknown work.
 
 ## Idle stop, updates and failure recovery
 
-The proxy counts admitted sign-in/submission/save/execution requests, including
+The edge counts admitted sign-in/submission/save/execution requests, including
 in-flight writes not yet visible in PostgreSQL, and the dashboard's pointer or
 keyboard interaction heartbeat (`POST /auth/activity`, at most every 15 seconds).
 Polling, session checks, token refresh, logout, health checks, reading,
-scrolling and unsent drafts do not renew the deadline. A host timer samples
-durable work every minute. The read-only observer covers Runs, leases, capability
-operations, verification, generation, transactions and active transfers; Runner
-journals cover uncertain physical writers. Federation writes, including bodies
-still being uploaded, block sealing and successful completion renews activity.
-Completed work and explicit resume renew the idle deadline. Transfer receipts
-have no completion timestamp: a newly observed inbound/outbound completion starts
-a full idle hour at observation time, and subsequent samples of that receipt do
-not extend it. Pure human-input/approval waits may idle; approval
-expiration remains wall-clock based.
-An update waiting for a failed, cancelled or unfinished build still observes its
-previously applied VM and can stop it when idle. The pending source remains
-recorded, but a late build cannot attach to or wake the stopped environment.
+scrolling and unsent drafts do not renew the deadline. The activity CronJob
+samples durable work every minute into its ConfigMap. The read-only observer
+covers Runs, leases, capability operations, verification, generation,
+transactions and active transfers; the Runner's `/v1/activity` covers pending and
+unproven operations. Completed work and explicit resume renew the idle deadline.
+Transfer receipts have no completion timestamp: a newly observed completion
+starts a full idle hour at observation time. Pure human-input/approval waits may
+idle; approval expiration remains wall-clock based.
 
-Before stop/update, the controller closes proxy admission, freezes application
-and Runner controllers and checks work again, including outstanding HTTP and
-database transactions. If work remains or observation fails it restores admission
-and defers. Explicit `force=true` permits interrupting work, including repair of
-an incomplete bootstrap. An uncertain operation is never automatically replayed
-by infrastructure. A normal resume of an already running host renews its idle hour.
+Before stop, update, idle stop, broker change or BYOK destroy, the controller
+seals the Environment as described in the
+[Phase 4 handoff](../../docs/operations/issue-155-phase4.md): close edge
+admission, scale server and worker to zero and wait for their Pods to exit, then
+run the activity Job and require a fresh observation. Busy, failed, stale or
+unavailable observations restore server, worker and admission and defer. Only an
+idle verdict permits stopping the Runner, edge and StatefulSets. Work started
+between the last idle observation and the drain can be interrupted **even
+without `force`**. Explicit `force=true` skips the observation. Neither drain
+completion nor Kubernetes eviction is termination proof; uncertain operations are
+never replayed by infrastructure.
 
 The stop threshold is 60 minutes. Reconciliation is scheduled every five minutes
 and GitHub scheduling/startup can be delayed; **this is not an exact shutdown-time
 SLA**. PR-close cleanup has the same scheduling delay. If Actions is disabled or
-observation/IAM fails, a host can keep accruing charges; inspect failed runs. No
-idle timer can automatically resume a stopped VM.
+observation/IAM fails, an Environment can keep accruing charges; inspect failed
+runs. No idle timer resumes a stopped Environment.
 
-- **Spot unavailable/interrupted:** inspect the failure, then explicitly resume
-  or choose `vm_mode=normal`. The power authorization is consumed once. Terraform
-  ignores drift in `desired_status`, so another environment's apply cannot undo
-  preemption. Missing VMs are recorded without automatic replacement.
-- **Bootstrap/migration/readiness failure:** data is retained and DNS withdrawn;
+- **Node loss and Spot preemption:** GKE recreates the node and Kubernetes
+  reschedules the Pods; retained disks reattach to the replacement. There is no
+  power observation or automatic normal-capacity fallback. In-flight operations
+  surface as uncertain through the existing Runner recovery and are not replayed.
+  If Spot capacity is unavailable, the pool stays unscheduled: stop, or resume
+  with `vm_mode=normal`.
+- **Deployment/migration/readiness failure:** data is retained and DNS withdrawn;
   no destructive rollback or database downgrade is attempted. Repair the cause
   and use explicit `resume` (with `force=true` if admission observation is broken).
   A failed deployment generation is not retried by cron. HTTPS readiness checks
-  the environment's node identity, not just an HTTP 200 from an old preview IP.
-- **Runtime credential rotation:** add a new version to that environment's
+  the Environment's node identity, not just an HTTP 200 from an old preview IP.
+- **Runtime credential rotation:** add a new version to that Environment's
   Secret Manager secret using secure file/stdin input, then explicitly resume
-  with `force=true` to reinstall configuration. Changing a GitHub seed secret
-  affects newly created environment secrets, not already populated secrets.
+  with `force=true` to rematerialize `app-runtime`. Changing a GitHub seed secret
+  affects newly created Environment secrets, not already populated secrets.
 - **Abandoned lifecycle lock:** read `lifecycle/apply.lock`, inspect its GitHub run
   and confirm that no intake or reconciliation still runs before removing that exact GCS generation.
   Locks are never stolen on a timeout. Preserve `lifecycle/state.json`, including
   tombstones; deleting it loses stale-run fencing. Terraform's own backend lock
   is separate and also requires proving the owner has stopped before recovery.
-- **Partial Terraform apply:** inspect the plan/state and retained disk ownership
-  before retrying. The controller rejects plans deleting any disk outside an
-  explicit retirement. Missing canonical state output requires operator repair;
-  do not reset state or remove disks to get a clean plan.
+- **Partial Terraform apply:** inspect the plan and state before retrying. The
+  controller rejects plans deleting the cluster, the preview TLS disk or KMS keys,
+  deleting a node pool outside an explicit retirement, or scaling a node pool up
+  from zero for an Environment that is not starting. Do not reset state or
+  delete retained PVs to get a clean plan.
 
-On a host, inspect protected `google-startup-scripts`, `k3s`, `aidash-runner` and
-`aidash-node-guard` service journals through IAP. Avoid publishing configuration,
-database URLs or logs containing private application data. Container and access
-logs are rotated. Sandbox runtime paths match the existing node guard:
-`/run/containerd/runsc/k8s.io` and `/var/lib/kubelet/pods`.
+Inspect workloads with `kubectl -n aidash-<id>` using credentials from
+`gcloud container clusters get-credentials aidash --location us-central1-a --dns-endpoint`.
+Avoid publishing configuration, database URLs or logs containing private
+application data.
 
 ## Validation and remaining deployment gates
 
-Run `bash infra/gcp/check.sh` with Terraform, Rust and Docker installed. It creates
-only disposable local test containers and uses mocked cloud providers. Also run
-Ruff, actionlint and `git diff --check` for changed Python/workflows. Main CI now
-requires the reusable **GCP infrastructure checks** job.
+Run `bash infra/gcp/check.sh` with Terraform, Rust, Helm and Docker installed. It
+creates only disposable local test containers and uses mocked cloud providers.
+Also run Ruff, actionlint and `git diff --check` for changed Python/workflows.
+Main CI requires the reusable **GCP infrastructure checks** job.
 
-The local checks do not establish real GCP IAM/boot, gVisor on the selected VM,
-Google login, SSE, DNS/TLS, retained-data recovery or a measured capacity limit.
-Before inviting users, exercise create, a real Shell/Python/file operation,
-long-running-work drain, one idle hour, stop/resume, PR replacement/close, explicit
-Spot recovery and deletion. Confirm Runner `verified` and `python_verified`,
-Google registration/authorization, and retained data/identity. Measure memory,
-disk growth and concurrent sandbox admission on the initial 4 vCPU/16 GiB host.
-Source/host-Runner protocol compatibility and observer schema readiness are
-explicit startup gates. Backups and production availability are deferred.
+The local checks do not establish real GKE behavior: Cluster Node loss, Spot
+preemption, persistent disk reattachment, preview PV rebinding, Workload Identity
+and IAM, Google login, SSE, DNS/TLS or a measured capacity limit. Before inviting
+users, exercise create, a real Shell/Python/file operation, long-running-work
+drain, one idle hour, stop/resume, PR replacement/close, Spot recovery and
+deletion; see the [Phase 4 handoff](../../docs/operations/issue-155-phase4.md).
+Backups and production availability are deferred.
 
 ## Cost and external references
 
-The combined budget target is JPY 10,000/month, including VM runtime, retained
-disks, IPv4, registry/bundle/state storage, traffic, secrets, logs, applicable
-Actions charges and tax; LLM/API costs are separate. This target is not a billing cap.
-Retained images/bundles are not automatically expired because stopped environments
-must remain resumable. Periodically remove only versions no longer referenced by
-desired/applied lifecycle state. Review billing and artifact growth explicitly.
+The combined budget target is JPY 10,000/month, including node pool runtime, the
+system node while any Environment runs, retained disks, LoadBalancer forwarding
+rules and IPv4, Cloud NAT, registry/state storage, traffic, secrets, logs,
+applicable Actions charges and tax; LLM/API costs are separate. The GKE cluster
+management fee is covered by the free tier for one zonal cluster per billing
+account; verify current terms. This target is not a billing cap. Retained images
+are not automatically expired because stopped Environments must remain
+resumable. Periodically remove only versions no longer referenced by
+desired/applied lifecycle state. Scheduled workflows also consume Actions
+capacity even when every Environment is stopped.
 
-Scheduled workflows also consume Actions capacity even when hosts are stopped.
-The repository was public when implemented; check current plan/billing terms
-before changing visibility or runner type. No Cloud SQL, GKE management fee,
-Cloud NAT, managed load balancer, Cloud DNS zone or permanently running VM is
-included in this topology.
-
-Implementation references: [K3s containerd templates](https://docs.k3s.io/advanced#configuring-containerd),
+Implementation references: [GKE Workload Identity](https://cloud.google.com/kubernetes-engine/docs/how-to/workload-identity),
+[GKE Spot VMs](https://cloud.google.com/kubernetes-engine/docs/concepts/spot-vms),
 [gVisor containerd setup](https://gvisor.dev/docs/user_guide/containerd/quick_start/),
-[Nginx Lua admission hooks](https://github.com/openresty/lua-nginx-module#access_by_lua_block),
 [GitHub workflow events](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows),
 [Google WIF](https://docs.cloud.google.com/iam/docs/workload-identity-federation-with-deployment-pipelines),
 [Cloudflare DNS Terraform](https://developers.cloudflare.com/api/terraform/resources/dns/subresources/records/).
+
+## Provider Credentials, broker and BYOK
 
 Provider Credential Key Material uses a separate existing, billing-enabled BYOK
 project. Set `byok_project_id` explicitly in bootstrap and deployment configuration
@@ -351,32 +391,28 @@ without the Store: no BYOK API, project lookup, role, audit configuration or run
 grant is provisioned. Existing shared-project lifecycle operations remain available.
 Before clearing or replacing an enabled `byok_project_id`, retire all managed
 environments using the applied project. The controller refuses a mismatched
-project before observing hosts or applying Terraform while environment inventory
+project before observing Environments or applying Terraform while environment inventory
 remains; cleanup must verify each old prefix is empty before removing its runtime
-identity and disk. Enabling BYOK on a legacy deployment remains supported.
+identities and disks. Enabling BYOK on a legacy deployment remains supported.
 
 Bootstrap enables Secret Manager and its DATA_READ/DATA_WRITE audit logs there.
 Human-run bootstrap defines `aidashByokCreate`, `aidashByokManage` and
-`aidashByokBrokerRead` once per deployment. Environment automation binds runtime
-service accounts to the create-only role without a condition and the seven-permission
+`aidashByokBrokerRead` once per deployment. Environment automation binds each Environment's
+server Workload Identity service account to the create-only role without a condition and the seven-permission
 manage role with their environment's Secret name prefix using the numeric project
 number. Runtime identities have no BYOK payload access or IAM-setting permission.
-The shared project's existing per-secret runtime configuration read remains in
-place for host startup.
+Pods have no Secret Manager runtime configuration access; the controller
+materializes runtime configuration as a Kubernetes Secret.
 
-BYOK-enabled VM metadata supplies the non-secret Store descriptor through
-`aidash-provider-credentials`. Host startup mounts a descriptor-only JSON source
-read-only into migrations and the app; Reinhardt loads it via
-`AIDASH_PROVIDER_CREDENTIAL_SETTINGS`. The runtime configuration secret must also
-include a stable independent `AIDASH_PROVIDER_FINGERPRINT_KEY` of at least 32
-bytes. Startup refuses a missing or short key; deployments never regenerate it.
-Keep that key unchanged across upgrades and restarts. It stays in restrictive
-`app.env`, never in VM metadata or the public descriptor. Environments
-provisioned with the earlier `AIDASH_SECRET_PROVIDER_FINGERPRINT` name keep
-working: host startup uses that value as `AIDASH_PROVIDER_FINGERPRINT_KEY` when
-the new name is absent and never passes the legacy name to the app. Move the
-value to the new name at the next runtime secret update. Disabled BYOK omits the
-metadata attribute, renders no Store, and needs no fingerprint key. The managed descriptor uses `fingerprint_key = {env = "AIDASH_PROVIDER_FINGERPRINT_KEY"}`
+BYOK-enabled Environments pass the non-secret Store descriptor to the app chart's
+`providerCredentials.settings`; the chart mounts it read-only into migrations and
+the app, and Reinhardt loads it via `AIDASH_PROVIDER_CREDENTIAL_SETTINGS`. The
+runtime configuration secret must also include a stable independent
+`AIDASH_PROVIDER_FINGERPRINT_KEY` of at least 32 bytes. Startup refuses a missing
+or short key; deployments never regenerate it. Keep that key unchanged across
+upgrades and restarts. It stays in the `app-runtime` Secret, never in the public
+descriptor. Disabled BYOK renders no Store and needs no fingerprint key. The
+managed descriptor uses `fingerprint_key = {env = "AIDASH_PROVIDER_FINGERPRINT_KEY"}`
 and `store.kind = "secret_manager"`; the fingerprint reference stays outside the
 Registry-accessible `AIDASH_SECRET_*` namespace. Store-only environments use a
 null broker descriptor; enabled brokers add their non-secret endpoint, issuer,
@@ -401,12 +437,12 @@ in deployment's Create/Manage role-grant allowlist. Residual: deploy can see
 BYOK secret names through project-level listing. The application still uses its
 PostgreSQL inventory and never lists Secret Manager secrets.
 
-Before deleting an environment's retained disk, identity or runtime IAM,
+Before deleting an environment's retained disks, identities or runtime IAM,
 retirement collects every inventory page and deletes only names starting with
 `aidash-<environment_id>-cred-`, then confirms that prefix is empty. Already
 deleted secrets are skipped on retry. Existing running app writers are sealed
-first; stopped or missing VMs are cleaned without a wake or recreation. Failure
-keeps the retained disk and identity for retry. This does not add effective
+first; stopped Environments are cleaned without a wake. Failure keeps the
+retained disks and identities for retry. This does not add effective
 delete power: deployment already controls bindings of Manage, which includes
 delete. Deployment remains the trust root under #151; bootstrap owns these
 fixed retirement grants and deployment cannot re-grant them or any read role.
@@ -445,9 +481,9 @@ Enable `gcip_enabled` in bootstrap and supply `environment_domains` matching the
 
 Supply `gcip_tenants` to the environment controller configuration. For example, `{"acme":{"tenant":"acme","password_sign_up":true,"google_client_id":"CLIENT_ID"}}` creates a fresh pool per environment incarnation. OIDC and SAML provider maps use `oidc.*` and `saml.*` IDs; those SSO pools must disable password signup. OAuth client secrets are separate `gcip_idp_secrets` Terraform inputs, supplied by `AIDASH_GCIP_IDP_SECRETS` in the controller (the lifecycle workflow reads the repository secret `GCP_GCIP_IDP_SECRETS` as this JSON map). They are confined to private inputs and protected Terraform state. Each module outputs its GCIP Tenant IDs, runtime service-account email, Tenant Bindings, providers and password-signup list. The controller merges these settings into the environment runtime secret, preserving its other settings and refusing coexistence with OIDC.
 
-The controller records digests of both desired shared inputs (Tenant configuration, IdP secrets and web API key) and actual public GCIP outputs, including generated Tenant IDs. Before applying changed shared inputs or a plan that changes GCIP tenant resources, it closes proxy admission, pauses the application and stops the trusted runner on every affected running host, including unpublished hosts. The fence uses the retained host's existing lifecycle lock, state and command API. It never calls an HTTP endpoint on a paused or absent application and requires confirmed quiescence before Terraform can apply.
+The controller records digests of both desired shared inputs (Tenant configuration, IdP secrets and web API key) and actual public GCIP outputs, including generated Tenant IDs. Before applying changed shared inputs or a plan that changes GCIP tenant resources, in every affected running Environment, including unpublished ones, it closes edge admission and scales server, worker and Runner to zero under the existing lifecycle lock and state. It never calls an HTTP endpoint on a paused or absent application and requires confirmed quiescence before Terraform can apply.
 
-After every apply, including unrelated lifecycle work, the controller compares actual GCIP outputs and refreshes IAM and runtime secrets for changed retained environments. Published hosts reload their existing authorized release with the new policy before reopening admission. Stopped environments receive the new secret without being started. Unpublished hosts remain fenced until an authorized deployment succeeds. Failed refreshes retain a pending marker for scheduled retry; successful environments are not restarted again on that retry. A fenced host cannot pass through ordinary seal/unseal rollback with its old policy: non-forced stop or redeployment waits for policy recovery, while the existing explicit force operation can stop the VM or repair the deployment. No IdP secret or unhashed private input is copied into lifecycle state.
+After every apply, including unrelated lifecycle work, the controller compares actual GCIP outputs and refreshes IAM and runtime secrets for changed retained environments. Published Environments upgrade the `app` release of their existing authorized source with the new policy before reopening admission. Stopped environments receive the new secret without being started. Unpublished Environments remain fenced until an authorized deployment succeeds. Failed refreshes retain a pending marker for scheduled retry; successful environments are not restarted again on that retry. A fenced Environment cannot pass through ordinary seal/unseal rollback with its old policy: non-forced stop or redeployment waits for policy recovery, while the existing explicit force operation can stop the Environment or repair the deployment. No IdP secret or unhashed private input is copied into lifecycle state.
 
 The Google 7.46.1 provider has no tenant IAM resource. The approved controller adapter therefore calls [tenant getIamPolicy](https://docs.cloud.google.com/identity-platform/docs/reference/rest/v2/projects.tenants/getIamPolicy) and [tenant setIamPolicy](https://docs.cloud.google.com/identity-platform/docs/reference/rest/v2/projects.tenants/setIamPolicy). It adds `roles/identityplatform.viewer` only on that environment's tenant resources for that environment's runtime principal, preserving unrelated/conditional bindings and policy metadata, using etag concurrency and bounded conflict retries. Retirement removes only its managed viewer member before Terraform destroys the environment. Runtime principals receive no project-wide Firebase user access.
 

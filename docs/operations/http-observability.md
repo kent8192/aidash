@@ -19,7 +19,7 @@ No cluster-wide quota or automatic request retry is introduced.
 | `AIDASH_API_RATE_BURST`         | `120`   | Authenticated API burst per tenant/subject, or operator; refill 10 requests/second |
 | `AIDASH_PEER_RATE_BURST`        | `240`   | Federation burst per authenticated node; refill 20 requests/second                 |
 | `AIDASH_AUTH_RATE_PERIOD_MS`    | `2000`  | Refill interval per auth request                                                   |
-| `AIDASH_AUTH_TRUSTED_PROXY_IPS` | unset   | Comma-separated exact proxy IPs allowed to provide a single `X-Real-IP`            |
+| `AIDASH_AUTH_TRUSTED_PROXY_IPS` | unset   | Comma-separated proxy IPs or CIDRs allowed to provide a single `X-Real-IP`         |
 | `AIDASH_API_RATE_PERIOD_MS`     | `100`   | Refill interval per API request                                                    |
 | `AIDASH_PEER_RATE_PERIOD_MS`    | `50`    | Refill interval per federation request                                             |
 | `AIDASH_METRICS_LISTEN`         | unset   | Optional separate Prometheus listener, for example `127.0.0.1:9090`                |
@@ -53,13 +53,16 @@ pruned every 1024 requests. Multiple replicas have independent budgets.
 `/auth/*` uses the TCP peer address supplied by Reinhardt in `Request::remote_addr`.
 By default it ignores all
 forwarded headers. To preserve separate client budgets behind a trusted reverse
-proxy, set `AIDASH_AUTH_TRUSTED_PROXY_IPS` to its exact socket IPs. Only those peers
-may provide `X-Real-IP`, which must contain exactly one IPv4 or IPv6 address.
+proxy, set `AIDASH_AUTH_TRUSTED_PROXY_IPS` to its socket IPs or CIDR networks
+(`10.4.0.0/14`; a plain IP matches only itself, host bits are refused). Only those
+peers may provide `X-Real-IP`, which must contain exactly one IPv4 or IPv6 address.
 Missing, malformed or repeated headers fall back to the socket peer. `Forwarded`
 and `X-Forwarded-For` remain ignored. The trusted proxy must overwrite incoming
-`X-Real-IP`, and application ports must be restricted to that proxy. The GCP
-Caddy/Nginx stack configures this for its loopback-only application listener;
-Caddy derives identity from its client connection and Nginx replaces `X-Real-IP`.
+`X-Real-IP`, and application ports must be restricted to that proxy. On GCP the
+Environment edge Pod (Caddy in front of the Nginx admission listener) is that
+proxy: the app chart trusts the Pod CIDR and a NetworkPolicy admits backend
+ingress only from the edge Pods. Caddy derives identity from its client
+connection and Nginx replaces `X-Real-IP`.
 Embedded servers
 must also provide the socket peer; in-process Reinhardt requests can set `remote_addr`.
 

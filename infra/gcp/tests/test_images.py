@@ -23,8 +23,8 @@ class AppImageTests(unittest.TestCase):
         self.sha = "a" * 40
         self.docker = Mock()
 
-    def build(self):
-        arguments = ["images.py", "build", "--kind", "app", "--source", str(self.source),
+    def build(self, kind="app"):
+        arguments = ["images.py", "build", "--kind", kind, "--source", str(self.source),
                      "--sha", self.sha, "--directory", str(self.output)]
         with patch.object(sys, "argv", arguments), \
              patch.object(images.subprocess, "check_output", return_value=self.sha + "\n"), \
@@ -58,6 +58,30 @@ class AppImageTests(unittest.TestCase):
         with self.assertRaisesRegex(SystemExit, "trusted-proxy authentication rate limits"):
             self.build()
         self.docker.assert_not_called()
+
+    def test_privileged_kinds_build_only_from_the_trusted_checkout(self):
+        for kind, dockerfile in [("control", "runner/control.Dockerfile"),
+                                 ("edge", "infra/gcp/helm/environment/edge.Dockerfile"),
+                                 ("observer", "infra/gcp/observer/Dockerfile")]:
+            with self.subTest(kind=kind):
+                self.docker.reset_mock()
+                command = self.build(kind).call_args_list[0].args[0]
+                self.assertEqual(command[command.index("--file") + 1],
+                                 str(images.ROOT / dockerfile))
+                self.assertTrue(Path(command[-1]).is_relative_to(images.ROOT))
+                self.assertFalse(Path(command[-1]).is_relative_to(self.source))
+
+    def test_sandbox_context_is_the_deployed_source(self):
+        command = self.build("sandbox").call_args_list[0].args[0]
+        self.assertEqual(command[-1], str(self.source / "runner"))
+
+    def test_caddy_is_copied_from_its_reviewed_digest(self):
+        docker = self.build("caddy")
+        self.assertEqual(docker.call_args_list[0].args[0], [
+            "docker", "pull", "--platform", "linux/amd64",
+            "caddy:2.10.2@sha256:c3d7ee5d2b11f9dc54f947f68a734c84e9c9666c92c88a7f30b9cba5da182adb",
+        ])
+        self.assertEqual(docker.call_args_list[1].args[0][-1], f"aidash-caddy:{self.sha}")
 
 
 if __name__ == "__main__":

@@ -7,5 +7,6 @@
   "cloudflare_zone_id": "replace-with-the-existing-aidash-run-zone-id",
   "domain": "aidash.run",
   "repository": "kent8192/aidash",
-  "develop_branch": "develop/0.1.0"
+  "develop_branch": "develop/0.1.0",
+  "node_count": { "develop": 1, "test": 1, "pr": 1 }
 }
