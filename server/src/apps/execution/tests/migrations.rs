@@ -1340,8 +1340,14 @@ async fn projection_versions_migration_admits_new_keys_and_reverses(
 		.unwrap();
 	// The catalog edit extends the current constraint, keeping earlier additions.
 	let extended = constraint_definition(&pool, "registry_model_config").await;
-	assert!(extended.contains("'provider_credential'::text"), "{extended}");
-	assert!(extended.contains("'projection_versions'::text"), "{extended}");
+	assert!(
+		extended.contains("'provider_credential'::text"),
+		"{extended}"
+	);
+	assert!(
+		extended.contains("'projection_versions'::text"),
+		"{extended}"
+	);
 	let mut executor =
 		reinhardt::db::migrations::DatabaseMigrationExecutor::new(fixture.connection.clone());
 	executor

@@ -117,10 +117,7 @@ fn configured_key_salts_through_the_shared_entry_point(key: PromptCacheKey) {
 	// Act
 	let line = salt(Some(&key), tenant_scope("acme")).unwrap();
 	// Assert
-	assert_eq!(
-		line,
-		key.salt_line(tenant_scope("acme")).unwrap()
-	);
+	assert_eq!(line, key.salt_line(tenant_scope("acme")).unwrap());
 }
 
 #[rstest]

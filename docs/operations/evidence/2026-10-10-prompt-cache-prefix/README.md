@@ -109,16 +109,16 @@ Tool-order compliance is reported separately and is not part of the oracle.
 
 ## Route A: automatic caching, Legacy vs Ordered
 
-| Item | Value |
-| --- | --- |
-| Date | 2026-10-09 20:44–20:53 UTC (2026-10-10 JST) |
-| Binary | W1 `feat/issue-172-ordered-projection` at `889386f161eed7a320431a817122ae663309c218`, `cargo build --release --locked --bin aidash`. The branch was later rebased onto `22837f11`, which changed only CI and test-support files; the Rust sources of the feature commit are unchanged. |
-| Binary SHA-256 | `a29d92d51512e06a21750a41b0768b461fd6f75280d34384a9ce45e801a6d6e0` |
-| Working tree | Only `web/src/forms.tsx` modified, which is outside the Rust binary, plus this untracked directory. `git diff HEAD` SHA-256 `a5fb7d05af98d1a31db8ad2243dbf9d5b248dcb6824dea104ba65d9eb77c7b3e` |
-| Model | `openai/gpt-5.4-mini`, `reasoning_effort` `medium`. Every call was served by Azure through OpenRouter with `provider.zdr = true`. |
-| A1 | Agent default projection (`legacy`); model registered without `projection_versions` |
-| A2 | Agent `projection_version: ordered`; model `projection_versions: [legacy, ordered]` |
-| Schedule | 3 repeats, interleaved A1, A2, A1, A2, A1, A2 on one node with one cache key |
+| Item           | Value                                                                                                                                                                                                                                                                                  |
+| -------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Date           | 2026-10-09 20:44–20:53 UTC (2026-10-10 JST)                                                                                                                                                                                                                                            |
+| Binary         | W1 `feat/issue-172-ordered-projection` at `889386f161eed7a320431a817122ae663309c218`, `cargo build --release --locked --bin aidash`. The branch was later rebased onto `22837f11`, which changed only CI and test-support files; the Rust sources of the feature commit are unchanged. |
+| Binary SHA-256 | `a29d92d51512e06a21750a41b0768b461fd6f75280d34384a9ce45e801a6d6e0`                                                                                                                                                                                                                     |
+| Working tree   | Only `web/src/forms.tsx` modified, which is outside the Rust binary, plus this untracked directory. `git diff HEAD` SHA-256 `a5fb7d05af98d1a31db8ad2243dbf9d5b248dcb6824dea104ba65d9eb77c7b3e`                                                                                         |
+| Model          | `openai/gpt-5.4-mini`, `reasoning_effort` `medium`. Every call was served by Azure through OpenRouter with `provider.zdr = true`.                                                                                                                                                      |
+| A1             | Agent default projection (`legacy`); model registered without `projection_versions`                                                                                                                                                                                                    |
+| A2             | Agent `projection_version: ordered`; model `projection_versions: [legacy, ordered]`                                                                                                                                                                                                    |
+| Schedule       | 3 repeats, interleaved A1, A2, A1, A2, A1, A2 on one node with one cache key                                                                                                                                                                                                           |
 
 Route choice: the specified Gemini route (`google/gemini-3.8-flash`, medium) was
 run once per variant first. Both runs passed with five calls, but no call
@@ -134,10 +134,10 @@ these, `gpt-5.4-mini` is the most recent `-mini` model.
 
 ### Results (3 runs per variant)
 
-| Variant | Runs passed / completed / attempted | Inference calls | Prompt tokens | Cached tokens | Cached share, calls 2..n | Cache-write tokens | Completion tokens | Cost (USD) | Mean cost per run | Cost per call | Mean elapsed |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| A1 Legacy | 1 / 3 / 3 | 24 | 94,941 | 0 | 0.0% | 0 | 8,383 | 0.108929 | 0.036310 | 0.004539 | 65.4 s |
-| A2 Ordered | 3 / 3 / 3 | 20 | 75,652 | 26,112 | 38.0% | 0 | 9,710 | 0.082808 | 0.027603 | 0.004140 | 90.5 s |
+| Variant    | Runs passed / completed / attempted | Inference calls | Prompt tokens | Cached tokens | Cached share, calls 2..n | Cache-write tokens | Completion tokens | Cost (USD) | Mean cost per run | Cost per call | Mean elapsed |
+| ---------- | ----------------------------------- | --------------- | ------------- | ------------- | ------------------------ | ------------------ | ----------------- | ---------- | ----------------- | ------------- | ------------ |
+| A1 Legacy  | 1 / 3 / 3                           | 24              | 94,941        | 0             | 0.0%                     | 0                  | 8,383             | 0.108929   | 0.036310          | 0.004539      | 65.4 s       |
+| A2 Ordered | 3 / 3 / 3                           | 20              | 75,652        | 26,112        | 38.0%                    | 0                  | 9,710             | 0.082808   | 0.027603          | 0.004140      | 90.5 s       |
 
 Per-run detail:
 

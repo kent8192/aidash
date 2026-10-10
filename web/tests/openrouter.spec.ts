@@ -304,8 +304,5 @@ test("projection versions are sent only beyond the legacy default", async ({
     .fill("fixture");
   await dialog.getByRole("option", { name: /Fixture Chat/ }).click();
   await dialog.getByLabel("ordered").check();
-  expect((await register()).projection_versions).toEqual([
-    "legacy",
-    "ordered",
-  ]);
+  expect((await register()).projection_versions).toEqual(["legacy", "ordered"]);
 });
