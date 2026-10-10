@@ -139,7 +139,8 @@ pub async fn pin(
 		.chain(a.files);
 		for file in inputs {
 			use base64::Engine;
-			let bytes = if file.encoding.as_deref() == Some("base64") {
+			let binary = file.encoding.as_deref() == Some("base64");
+			let bytes = if binary {
 				base64::engine::general_purpose::STANDARD
 					.decode(&file.content)
 					.map_err(|_| Error::Invalid("INVALID_SKILL_ENCODING".into()))?
@@ -156,6 +157,11 @@ pub async fn pin(
 				return Err(Error::Invalid("SKILL_PACKAGE_LIMIT".into()));
 			}
 			let (id, digest) = scope.put_skill(area.id, &bytes).await?;
+			let mut provenance = json!({"kind":"skill","skill_id":a.skill_id,"origin":a.origin});
+			// A declared base64 file stays binary whatever its decoded bytes are.
+			if binary {
+				provenance["encoding"] = json!("base64");
+			}
 			files.push(FileEntry {
 				file_id: id,
 				path: file.path,
@@ -163,7 +169,7 @@ pub async fn pin(
 				size: bytes.len() as u64,
 				media_type: "application/octet-stream".into(),
 				scope: FileScope::References,
-				provenance: json!({"kind":"skill","skill_id":a.skill_id,"origin":a.origin}),
+				provenance,
 			});
 		}
 		pinned.push(Pinned {
@@ -453,16 +459,17 @@ pub async fn direct_body(
 	instructions(scope, &skill).await
 }
 
-/// Bytes of one packaged file of a pinned direct Skill. SKILL.md is the
-/// instruction body: only `capability_load` makes it resident, under the
-/// `skill_bytes` budget, so it is never an asset.
+/// Bytes of one packaged file of a pinned direct Skill, `None` for a file
+/// declared binary (base64) at pinning. SKILL.md is the instruction body:
+/// only `capability_load` makes it resident, under the `skill_bytes` budget,
+/// so it is never an asset.
 pub async fn direct_file(
 	scope: &mut dyn SkillScope,
 	run: &RunMetadata,
 	skill_id: Uuid,
 	digest: &str,
 	path: &str,
-) -> Result<Vec<u8>> {
+) -> Result<Option<Vec<u8>>> {
 	aidash_domain::registry::rules::validate_path(path)?;
 	if path == SKILL_BODY {
 		return Err(Error::Invalid("SKILL_FILE_UNAVAILABLE".into()));
@@ -476,7 +483,10 @@ pub async fn direct_file(
 		.iter()
 		.find(|file| file.path == path)
 		.ok_or_else(|| Error::Invalid("SKILL_FILE_UNAVAILABLE".into()))?;
-	scope.read_skill_file(file).await
+	if file.provenance["encoding"] == "base64" {
+		return Ok(None);
+	}
+	scope.read_skill_file(file).await.map(Some)
 }
 
 /// An Agent's Skill attachment as a Discoverable capability before it is

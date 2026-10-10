@@ -2024,6 +2024,54 @@ async fn deferred_media_intake_reports_no_tool_exposure(mut fixture: Fixture) {
 }
 
 #[rstest]
+#[case::fits(100_000, "run.tool_recorded")]
+#[case::deferred(4_000, "run.description_deferred")]
+#[tokio::test]
+async fn capability_descriptions_are_recorded_whole_or_deferred(
+	mut fixture: Fixture,
+	#[case] window: usize,
+	#[case] expected: &str,
+) {
+	// Arrange: a description larger than a small remaining request window.
+	deferred_agent(&mut fixture);
+	let describe = Scripted::new(
+		aidash_application::tools::builtins()
+			.remove("capability_describe")
+			.unwrap()
+			.specification(),
+		"capability_describe",
+	);
+	let description = json!({
+		"alias": "tool_00", "kind": "tool", "digest": "sha256:tool",
+		"detail": {"description": "z".repeat(40_000)}, "bytes": 40_000, "budget": 65_536,
+	});
+	*describe.outputs.lock().unwrap() = [description.clone()].into();
+	Arc::get_mut(&mut fixture.backend.0)
+		.unwrap()
+		.custom
+		.insert("capability_describe".into(), describe);
+	let request = call("call-0", "capability_describe", json!({"alias": "tool_00"}));
+	respond(&mut fixture.run, vec![request.clone()]);
+	fixture.run.state.tool_mut().unwrap().request_window = window;
+	// Act
+	advance_sources(&mut fixture).await.unwrap();
+	// Assert: never a description the next request cannot carry.
+	let (event, saved) = last_write(&fixture);
+	assert_eq!(event, expected);
+	if let RunState::Thinking(thinking) = &saved.state {
+		assert!(thinking.force_workspace_read_compaction);
+		assert_eq!(thinking.deferred_skill_read.as_ref().unwrap().call, request);
+		assert!(saved.context.history.is_empty());
+	} else {
+		assert!(matches!(
+			saved.context.history.last(),
+			Some(ContextEvent::Tool { call, result, .. })
+				if call == &request && result == &description
+		));
+	}
+}
+
+#[rstest]
 #[tokio::test]
 async fn skill_asset_reads_fit_the_remaining_request_budget(mut fixture: Fixture) {
 	// Arrange: a large asset page against a small remaining request window.

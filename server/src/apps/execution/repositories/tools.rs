@@ -175,7 +175,12 @@ impl ToolOperations for Operations {
 			None => Ok(vec![]),
 		}
 	}
-	async fn direct_skill_file(&self, skill_id: Uuid, digest: &str, path: &str) -> Result<Vec<u8>> {
+	async fn direct_skill_file(
+		&self,
+		skill_id: Uuid,
+		digest: &str,
+		path: &str,
+	) -> Result<Option<Vec<u8>>> {
 		self.0
 			.home
 			.authority

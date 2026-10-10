@@ -715,6 +715,7 @@ fn prepared_result_views_share_fences_and_deferral() {
 		ResultFitting::WorkspaceRecord,
 		ResultFitting::SkillText,
 		ResultFitting::SkillAsset,
+		ResultFitting::CapabilityDescription,
 		ResultFitting::Observation,
 	] {
 		let mut pending = ToolCallState::default();
@@ -756,6 +757,9 @@ fn prepared_result_views_share_fences_and_deferral() {
 			ResultFitting::WorkspaceRecord => (next.deferred_workspace_read, "run.read_deferred"),
 			ResultFitting::SkillText | ResultFitting::SkillAsset => {
 				(next.deferred_skill_read, "run.skill_read_deferred")
+			}
+			ResultFitting::CapabilityDescription => {
+				(next.deferred_skill_read, "run.description_deferred")
 			}
 			ResultFitting::Observation => (
 				next.deferred_workspace_observation,

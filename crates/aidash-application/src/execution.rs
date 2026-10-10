@@ -326,13 +326,22 @@ pub fn tool_result_fits(
 ) -> bool {
 	let mut bounded = call.clone();
 	bounded.arguments[parameter] = json!(size);
-	let event = ContextEvent::tool(bounded, output);
+	tool_event_fits(context, &ContextEvent::tool(bounded, output), budget)
+}
+
+/// Whether one recorded tool event fits the request, reserving space for the
+/// remaining calls of the response.
+pub fn tool_event_fits(
+	context: &Context,
+	event: &ContextEvent,
+	budget: WorkspaceReadFitBudget,
+) -> bool {
 	let maximum = budget
 		.request_window
 		.saturating_sub(budget.remaining_calls.saturating_mul(TOOL_EVENT_RESERVE));
 	budget
 		.request_tokens
-		.saturating_add(context::tool_event_growth(context, &event))
+		.saturating_add(context::tool_event_growth(context, event))
 		<= maximum
 }
 
@@ -516,6 +525,15 @@ pub fn deferred_skill_asset_read(call: &aidash_domain::provider::ToolCall) -> Bo
 	})
 }
 
+pub fn deferred_capability_description(
+	call: &aidash_domain::provider::ToolCall,
+) -> Box<DeferredRead> {
+	Box::new(DeferredRead {
+		message: "Retry this capability_describe after reducing the retained context; its description did not fit.".into(),
+		call: call.clone(),
+	})
+}
+
 pub fn deferred_workspace_observation(
 	call: &aidash_domain::provider::ToolCall,
 ) -> Box<DeferredRead> {
@@ -537,6 +555,11 @@ pub fn tool_result_plan(
 		ResultFitting::WorkspaceRecord => workspace_read_range(call)?,
 		ResultFitting::SkillText => skill_read_range(call)?,
 		ResultFitting::SkillAsset => skill_asset_range(call)?,
+		// A description is recorded whole, so it has no range to narrow.
+		ResultFitting::CapabilityDescription => WorkspaceReadRange {
+			offset: 0,
+			requested: 0,
+		},
 		ResultFitting::Observation => WorkspaceReadRange {
 			offset: call.arguments["offset"].as_u64().unwrap_or(0) as usize,
 			requested: call.arguments["limit"]
@@ -554,8 +577,10 @@ pub fn tool_result_plan(
 pub fn result_plan(pending: &ToolCallState, fitting: ResultFitting) -> &Option<ReadPlan> {
 	match fitting {
 		ResultFitting::WorkspaceRecord => &pending.workspace_read_plan,
-		// Both Skill readers share one prepared slot; a plan matches only its call.
-		ResultFitting::SkillText | ResultFitting::SkillAsset => &pending.skill_read_plan,
+		// Skill and capability reads share one prepared slot; a plan matches only its call.
+		ResultFitting::SkillText
+		| ResultFitting::SkillAsset
+		| ResultFitting::CapabilityDescription => &pending.skill_read_plan,
 		ResultFitting::Observation => &pending.workspace_observation_plan,
 	}
 }
@@ -565,7 +590,9 @@ pub fn result_plan_mut(
 ) -> &mut Option<ReadPlan> {
 	match fitting {
 		ResultFitting::WorkspaceRecord => &mut pending.workspace_read_plan,
-		ResultFitting::SkillText | ResultFitting::SkillAsset => &mut pending.skill_read_plan,
+		ResultFitting::SkillText
+		| ResultFitting::SkillAsset
+		| ResultFitting::CapabilityDescription => &mut pending.skill_read_plan,
 		ResultFitting::Observation => &mut pending.workspace_observation_plan,
 	}
 }
@@ -591,6 +618,10 @@ pub fn defer_result(
 		ResultFitting::SkillAsset => {
 			state.deferred_skill_read = Some(deferred_skill_asset_read(call));
 			"run.skill_read_deferred"
+		}
+		ResultFitting::CapabilityDescription => {
+			state.deferred_skill_read = Some(deferred_capability_description(call));
+			"run.description_deferred"
 		}
 		ResultFitting::Observation => {
 			state.deferred_workspace_observation = Some(deferred_workspace_observation(call));

@@ -111,11 +111,11 @@ async fn asset(ctx: &ToolContext<'_>, catalog: &[Capability], input: &Value) -> 
 				.ok_or_else(|| Error::Invalid("SKILL_FILE_UNAVAILABLE".into()))?;
 			(file.encoding.as_deref() != Some("base64")).then(|| file.content.into_bytes())
 		}
-		CapabilityIdentity::DirectSkill { skill_id, .. } => Some(
+		CapabilityIdentity::DirectSkill { skill_id, .. } => {
 			ctx.operations
 				.direct_skill_file(*skill_id, digest, path)
-				.await?,
-		),
+				.await?
+		}
 	};
 	let Some(text) = bytes
 		.as_deref()

@@ -86,7 +86,12 @@ impl ToolOperations for Operations {
 	async fn direct_skills(&self) -> Result<Vec<DirectSkill>> {
 		Ok(self.direct.clone())
 	}
-	async fn direct_skill_file(&self, skill_id: Uuid, digest: &str, path: &str) -> Result<Vec<u8>> {
+	async fn direct_skill_file(
+		&self,
+		skill_id: Uuid,
+		digest: &str,
+		path: &str,
+	) -> Result<Option<Vec<u8>>> {
 		let skill = self
 			.direct
 			.iter()
@@ -98,6 +103,7 @@ impl ToolOperations for Operations {
 		self.files
 			.get(path)
 			.cloned()
+			.map(Some)
 			.ok_or_else(|| Error::Invalid("SKILL_FILE_UNAVAILABLE".into()))
 	}
 	fn skill_read_bytes(&self) -> Result<usize> {

@@ -332,7 +332,7 @@ impl WorkerAuthority {
 		skill_id: Uuid,
 		digest: &str,
 		path: &str,
-	) -> Result<Vec<u8>> {
+	) -> Result<Option<Vec<u8>>> {
 		let mut access = self.access.lock().await;
 		crate::capabilities::skills::direct_file(store, &mut access, run, skill_id, digest, path)
 			.await

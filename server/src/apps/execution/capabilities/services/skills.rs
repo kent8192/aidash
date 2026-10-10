@@ -87,7 +87,7 @@ pub(crate) async fn direct_file(
 	skill_id: Uuid,
 	digest: &str,
 	path: &str,
-) -> Result<Vec<u8>> {
+) -> Result<Option<Vec<u8>>> {
 	aidash_application::capabilities::skills::direct_file(
 		&mut crate::bootstrap::file_scope(Some(store), access, Some(run)),
 		&run.metadata(),

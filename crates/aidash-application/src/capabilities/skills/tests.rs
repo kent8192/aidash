@@ -156,6 +156,8 @@ mod exposure {
 		snapshot: BindingSnapshot,
 		pinned: Value,
 		files: BTreeMap<String, Vec<u8>>,
+		/// Objects written by `put_skill`, by file id.
+		stored: BTreeMap<Uuid, Vec<u8>>,
 		updates: usize,
 		required: Vec<String>,
 	}
@@ -286,10 +288,16 @@ mod exposure {
 			})
 		}
 		async fn read_skill_file(&mut self, file: &FileEntry) -> Result<Vec<u8>> {
-			Ok(self.files[&file.path].clone())
+			Ok(self
+				.stored
+				.get(&file.file_id)
+				.unwrap_or_else(|| &self.files[&file.path])
+				.clone())
 		}
-		async fn put_skill(&mut self, _: Uuid, _: &[u8]) -> Result<(Uuid, String)> {
-			panic!("unexpected put_skill effect")
+		async fn put_skill(&mut self, _: Uuid, bytes: &[u8]) -> Result<(Uuid, String)> {
+			let id = Uuid::new_v4();
+			self.stored.insert(id, bytes.to_vec());
+			Ok((id, format!("stored:{id}")))
 		}
 		async fn skill_record(&mut self, _: Uuid) -> Result<Record> {
 			Ok(Record {
@@ -304,8 +312,9 @@ mod exposure {
 				expires_at: None,
 			})
 		}
-		async fn insert_skills(&mut self, _: Uuid, _: Uuid, _: Value) -> Result<()> {
-			panic!("unexpected insert_skills effect")
+		async fn insert_skills(&mut self, _: Uuid, _: Uuid, data: Value) -> Result<()> {
+			self.pinned = data;
+			Ok(())
 		}
 		async fn update_skills(&mut self, record: &mut Record) -> Result<()> {
 			self.updates += 1;
@@ -365,6 +374,7 @@ mod exposure {
 			snapshot: crate::test_support::resolve(NODE, &root, false, vec![source]),
 			pinned: json!([pinned]),
 			files,
+			stored: BTreeMap::new(),
 			updates: 0,
 			required: vec![],
 		}
@@ -448,7 +458,7 @@ mod exposure {
 			direct_file(&mut scope, &run, skill.skill_id, &skill.digest, "guide.md")
 				.await
 				.unwrap(),
-			b"guide"
+			Some(b"guide".to_vec())
 		);
 		for path in ["other.md", "SKILL.md"] {
 			assert!(
@@ -460,6 +470,51 @@ mod exposure {
 			);
 		}
 		assert_eq!(scope.updates, 0);
+	}
+
+	#[tokio::test]
+	async fn declared_binary_attachment_files_stay_binary_after_pinning() {
+		// Arrange: base64 content whose decoded bytes happen to be UTF-8.
+		use base64::Engine;
+		let mut scope = scope(true, &metadata());
+		let run = run();
+		let mut attachment: SkillAttachment = serde_json::from_value(json!({
+			"skill_id": Uuid::new_v4(), "origin": "fixture", "digest": "",
+			"instructions": "---\nname: test\ndescription: Fixture\n---\nRead this.",
+			"files": [
+				{"path": "data.bin", "content": base64::engine::general_purpose::STANDARD.encode("plain"), "encoding": "base64"},
+				{"path": "notes.md", "content": "notes"},
+			],
+		}))
+		.unwrap();
+		attachment.digest = content_digest(&attachment);
+		let mut config = AgentConfig::from_snapshot(&scope.snapshot).unwrap();
+		config.core_capabilities.skills = true;
+		config.skill_attachments = vec![attachment.clone()];
+		let area: Area = serde_json::from_value(json!({
+			"id": Uuid::new_v4(), "tenant": "tenant", "home_node": NODE,
+			"workspace_id": Uuid::new_v4(), "thread_id": Uuid::new_v4(), "agent_id": "agent",
+			"owner": "owner", "generation": 0, "revision": 0, "epoch": 0, "state": "ready",
+			"manifest": [], "constraints": {}, "next_sequence": 0,
+		}))
+		.unwrap();
+		pin(&mut scope, run.id, &area, &config).await.unwrap();
+		// Act
+		let mut read = async |path| {
+			direct_file(
+				&mut scope,
+				&run,
+				attachment.skill_id,
+				&attachment.digest,
+				path,
+			)
+			.await
+			.unwrap()
+		};
+		let (binary, text) = (read("data.bin").await, read("notes.md").await);
+		// Assert
+		assert_eq!(binary, None);
+		assert_eq!(text.as_deref(), Some(&b"notes"[..]));
 	}
 
 	#[rstest::rstest]

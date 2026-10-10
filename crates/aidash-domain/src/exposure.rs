@@ -107,18 +107,27 @@ impl ExposurePolicy {
 			SKILL_TOOLS
 		}
 	}
-	/// `deferred@1` makes Skill instructions resident only through the Exposure
-	/// set and reads packaged files with `skill_asset_read`. The legacy Skill
-	/// readers return instructions directly, bypassing load state and the
-	/// `skill_bytes` budget, so they cannot be bound under it at all.
+	/// Builtins bound under this policy must work under it. `deferred@1` makes
+	/// Skill instructions resident only through the Exposure set and reads
+	/// packaged files with `skill_asset_read`; the legacy Skill readers return
+	/// instructions directly, bypassing load state and the `skill_bytes`
+	/// budget. Conversely, the `capability_*` tools and `skill_asset_read`
+	/// read the deferred catalog and fail every call under `legacy@1`.
 	pub fn admit_tool(&self, descriptor: &ToolDescriptor) -> Result<()> {
-		if self.is_deferred()
-			&& descriptor.transport.is_none()
-			&& SKILL_TOOLS.contains(&descriptor.operation.as_str())
+		if descriptor.transport.is_some() {
+			return Ok(());
+		}
+		let operation = descriptor.operation.as_str();
+		if self.is_deferred() && SKILL_TOOLS.contains(&operation) {
+			return Err(Error::Invalid(format!(
+				"{operation} cannot be bound under deferred@1; Skills load with capability_load and read files with skill_asset_read"
+			)));
+		}
+		if !self.is_deferred()
+			&& (EXPOSURE_TOOLS.contains(&operation) || operation == SKILL_ASSET_READ)
 		{
 			return Err(Error::Invalid(format!(
-				"{} cannot be bound under deferred@1; Skills load with capability_load and read files with skill_asset_read",
-				descriptor.operation
+				"{operation} requires the deferred@1 Exposure policy"
 			)));
 		}
 		Ok(())

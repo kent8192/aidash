@@ -828,33 +828,32 @@ async fn deferred_skill_sources_require_exposure_support_with_canonical_aliases(
 	assert!(snapshot(&mut catalog, &config, false).await.is_err());
 }
 
-#[rstest::rstest]
-#[tokio::test]
-async fn deferred_agents_reject_explicit_legacy_skill_readers_at_admission_and_recovery(
-	#[values("skill_list", "skill_load", "skill_read")] operation: &str,
-	#[values("admission", "recovery")] boundary: &str,
-) {
-	// Arrange: a legacy Agent may bind the reader explicitly.
+/// Binds builtin `operation` explicitly under `admitted`, where it resolves,
+/// then returns the error that `rejected` raises at `boundary`.
+async fn policy_rejection(
+	operation: &str,
+	admitted: Option<aidash_domain::exposure::ExposurePolicy>,
+	rejected: Option<aidash_domain::exposure::ExposurePolicy>,
+	boundary: &str,
+) -> String {
 	let mut catalog = Catalog::new();
-	let reader = QualifiedRef::builtin(NODE, operation);
+	let target = QualifiedRef::builtin(NODE, operation);
 	let mut config = agent_config();
-	config.bindings.push(Binding::tool(reader.clone()));
-	let legacy = snapshot(&mut catalog, &config, false).await.unwrap();
-	legacy.validate().unwrap();
-	config.exposure = Some(aidash_domain::exposure::ExposurePolicy::Deferred(
-		Default::default(),
-	));
-	// Act
+	config.exposure = admitted;
+	config.bindings.push(Binding::tool(target.clone()));
+	let bound = snapshot(&mut catalog, &config, false).await.unwrap();
+	bound.validate().unwrap();
+	config.exposure = rejected;
 	let result = if boundary == "admission" {
 		snapshot(&mut catalog, &config, false)
 			.await
 			.map(|_| ())
 			.map_err(|error| error.to_string())
 	} else {
-		// A restored deferred closure rejects it even when its normalization,
+		// A restored closure rejects it even when its normalization,
 		// definitions and digests are internally consistent.
 		let mut without = config.clone();
-		without.bindings.retain(|binding| binding.target != reader);
+		without.bindings.retain(|binding| binding.target != target);
 		let mut saved = snapshot(&mut catalog, &without, false).await.unwrap();
 		saved.validate().unwrap();
 		let root = saved
@@ -868,8 +867,8 @@ async fn deferred_agents_reject_explicit_legacy_skill_readers_at_admission_and_r
 			&serde_json::to_value(&root.definition).unwrap(),
 		);
 		let (binding, definition) = (
-			legacy.bindings.iter().find(|b| b.identity == reader),
-			legacy.definitions.iter().find(|d| d.identity == reader),
+			bound.bindings.iter().find(|b| b.identity == target),
+			bound.definitions.iter().find(|d| d.identity == target),
 		);
 		let mut binding = binding.unwrap().clone();
 		binding.origin = BindingOrigin::Explicit;
@@ -877,10 +876,49 @@ async fn deferred_agents_reject_explicit_legacy_skill_readers_at_admission_and_r
 		saved.definitions.push(definition.unwrap().clone());
 		saved.validate().map_err(|error| error.to_string())
 	};
+	result.expect_err("a builtin that cannot work under the policy is rejected")
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn deferred_agents_reject_explicit_legacy_skill_readers_at_admission_and_recovery(
+	#[values("skill_list", "skill_load", "skill_read")] operation: &str,
+	#[values("admission", "recovery")] boundary: &str,
+) {
+	// Arrange / Act: a legacy Agent may bind the reader explicitly.
+	let deferred = aidash_domain::exposure::ExposurePolicy::Deferred(Default::default());
+	let error = policy_rejection(operation, None, Some(deferred), boundary).await;
 	// Assert
-	let error = result.expect_err("legacy Skill readers bypass deferred exposure");
 	assert!(
 		error.contains(&format!("{operation} cannot be bound under deferred@1")),
+		"{boundary}: {error}"
+	);
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn legacy_agents_reject_deferred_only_builtins_at_admission_and_recovery(
+	#[values(
+		"capability_search",
+		"capability_describe",
+		"capability_load",
+		"capability_unload",
+		"skill_asset_read"
+	)]
+	operation: &str,
+	#[values(None, Some(aidash_domain::exposure::ExposurePolicy::Legacy))] legacy: Option<
+		aidash_domain::exposure::ExposurePolicy,
+	>,
+	#[values("admission", "recovery")] boundary: &str,
+) {
+	// Arrange / Act: a deferred Agent binds the builtin.
+	let deferred = aidash_domain::exposure::ExposurePolicy::Deferred(Default::default());
+	let error = policy_rejection(operation, Some(deferred), legacy, boundary).await;
+	// Assert
+	assert!(
+		error.contains(&format!(
+			"{operation} requires the deferred@1 Exposure policy"
+		)),
 		"{boundary}: {error}"
 	);
 }

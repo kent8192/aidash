@@ -106,7 +106,7 @@ impl ToolOperations for Operations {
 	async fn direct_skills(&self) -> Result<Vec<aidash_domain::exposure::DirectSkill>> {
 		panic!("unexpected tool effect: direct_skills")
 	}
-	async fn direct_skill_file(&self, _: Uuid, _: &str, _: &str) -> Result<Vec<u8>> {
+	async fn direct_skill_file(&self, _: Uuid, _: &str, _: &str) -> Result<Option<Vec<u8>>> {
 		panic!("unexpected tool effect: direct_skill_file")
 	}
 	fn skill_read_bytes(&self) -> Result<usize> {

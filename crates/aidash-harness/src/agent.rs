@@ -1602,6 +1602,18 @@ async fn prepare_tool_result(
 				size.map(|chars| (chars, skill_asset_result(&output, chars))),
 			)
 		}
+		ResultFitting::CapabilityDescription => {
+			let output = tool.invoke(run, call.arguments.clone(), "").await?;
+			let event = ContextEvent::tool(call.clone(), output.clone());
+			return Ok(if tool_event_fits(context, &event, budget) {
+				PreparedResult::Fitted {
+					call: call.clone(),
+					result: output,
+				}
+			} else {
+				PreparedResult::NoEnvelopeRoom
+			});
+		}
 		ResultFitting::Observation => (
 			"limit",
 			home.observation_fitted(budget.offset, budget.requested, &|limit, output| {

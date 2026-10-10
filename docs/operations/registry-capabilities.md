@@ -161,7 +161,9 @@ cannot name the legacy Skill tools. The legacy Skill tools cannot be bound
 explicitly either, alone, in a bundle or through a Tool definition: they would
 return Skill instructions without a Load or the `skill_bytes` budget, so
 registration and snapshot recovery reject them. Under the legacy policy,
-`remove_default` cannot name `skill_asset_read`.
+`remove_default` cannot name `skill_asset_read`, and the four `capability_*`
+tools and `skill_asset_read` cannot be bound at all, since they read the
+deferred catalog and would fail every call.
 
 Mandatory exposure is `workspace_read`, `human_request`, the four
 `capability_*` tools and, when bound, `skill_asset_read`. It is identified by
@@ -256,7 +258,11 @@ and change only the Run's Exposure set. Identities serialize as
 | `CAPABILITY_CHANGED`       | load                   | The supplied digest is not the capability's current digest; recoverable tool error              |
 | `EXPOSURE_BUDGET_EXCEEDED` | load                   | Ordinary result `{"error", "exposed": [{alias, bytes}], "budget", "required"}`; nothing changes |
 
-An invalid search cursor is a recoverable tool error.
+An invalid search cursor is a recoverable tool error. A description is recorded
+whole or not at all: when it would not fit the remaining request budget, with
+room reserved for the response's later calls, the step is deferred like a
+`skill_read` that does not fit (`run.description_deferred`). The retained
+context is compacted and the next request asks the model to retry the call.
 
 A successful load or unload also returns an `exposure_update`. The Executor
 stages it in `context.exposure` only for tools whose contract declares

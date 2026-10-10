@@ -61,9 +61,15 @@ pub trait ToolOperations: Send + Sync {
 	/// Direct Skills pinned for the Run. Empty when Skills are off, nothing is
 	/// pinned, or this placement has no local authority.
 	async fn direct_skills(&self) -> Result<Vec<DirectSkill>>;
-	/// Bytes of one file of a pinned direct Skill. A Skill digest other than the
-	/// pinned one is `Conflict("CAPABILITY_CHANGED")`.
-	async fn direct_skill_file(&self, skill_id: Uuid, digest: &str, path: &str) -> Result<Vec<u8>>;
+	/// Bytes of one file of a pinned direct Skill; `None` for a file declared
+	/// binary at pinning. A Skill digest other than the pinned one is
+	/// `Conflict("CAPABILITY_CHANGED")`.
+	async fn direct_skill_file(
+		&self,
+		skill_id: Uuid,
+		digest: &str,
+		path: &str,
+	) -> Result<Option<Vec<u8>>>;
 	/// Encoded-byte cap of one Skill asset chunk: the resource profile's `read_bytes`.
 	fn skill_read_bytes(&self) -> Result<usize>;
 }
