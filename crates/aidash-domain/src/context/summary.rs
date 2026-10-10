@@ -111,6 +111,8 @@ pub enum Rejection {
 	InvalidItem,
 	#[error("summary dropped previous item {0} without resolving it")]
 	DroppedItem(String),
+	#[error("summary changed previous item {0} without resolving it")]
+	ChangedItem(String),
 	#[error("summary exceeds its {0}-token bound")]
 	Oversized(u32),
 	#[error("summary did not reduce the complete request")]
@@ -124,6 +126,7 @@ impl Rejection {
 			Self::EmptyGoal => "empty_goal",
 			Self::InvalidItem => "invalid_item",
 			Self::DroppedItem(_) => "dropped_item",
+			Self::ChangedItem(_) => "changed_item",
 			Self::Oversized(_) => "oversized",
 			Self::NotReduced => "not_reduced",
 		}
@@ -164,14 +167,22 @@ impl SummaryContent {
 			})
 			.collect::<Result<BTreeSet<_>, _>>()?;
 		if let Some(previous) = previous {
-			for item in previous
-				.content
-				.constraints
-				.iter()
-				.chain(&previous.content.unresolved)
-			{
-				if !ids.contains(item.id.as_str()) && !resolved.contains(item.id.as_str()) {
-					return Err(Rejection::DroppedItem(item.id.clone()));
+			// A retained item keeps its list and exact text; only an explicit
+			// resolution may close or rewrite a previous item.
+			for (current, items) in [
+				(&content.constraints, &previous.content.constraints),
+				(&content.unresolved, &previous.content.unresolved),
+			] {
+				for item in items {
+					if resolved.contains(item.id.as_str()) {
+						continue;
+					}
+					if !ids.contains(item.id.as_str()) {
+						return Err(Rejection::DroppedItem(item.id.clone()));
+					}
+					if !current.contains(item) {
+						return Err(Rejection::ChangedItem(item.id.clone()));
+					}
 				}
 			}
 		}

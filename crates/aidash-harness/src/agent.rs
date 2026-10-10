@@ -161,6 +161,8 @@ impl<'a> Executor<'a> {
 		};
 		let model_cfg: ModelConfig = serde_json::from_value(entry.config)?;
 		let summary_window = model_cfg.context_window;
+		// The policy bound never exceeds what the pinned summarizer may emit.
+		let max_tokens = max_tokens.min(model_cfg.output_token_limit());
 		let provider = self
 			.environment
 			.provider(model_cfg)

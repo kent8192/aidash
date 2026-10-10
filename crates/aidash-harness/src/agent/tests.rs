@@ -41,6 +41,8 @@ struct State {
 	revoke_summarizer: bool,
 	/// A source an adopted Execution Summary depends on is no longer readable.
 	stale_summary_dependencies: bool,
+	/// The summarizer's configured `max_output_tokens`.
+	summarizer_output_tokens: u32,
 }
 impl Backend {
 	fn record(&self, name: &'static str) {
@@ -51,13 +53,13 @@ impl Backend {
 	}
 	fn entry(&self, id: &str) -> Entry {
 		// The summarizer has a larger window so it can read absorbed history.
-		let (kind, window) = if id == "summarizer" {
-			("model", 1_000_000)
+		let (kind, window, output) = if id == "summarizer" {
+			("model", 1_000_000, self.0.summarizer_output_tokens)
 		} else {
-			("agent", 128_000)
+			("agent", 128_000, 4096)
 		};
 		serde_json::from_value(json!({"id":id,"version":"1.0.0","kind":kind,"name":{"en":id},"description":{"en":"Fixture"},"config":{
-        "provider":"openrouter","model_id":"fixture","endpoint":"http://fixture.invalid/v1","credential_env":null,"context_window":window,"max_output_tokens":4096,"modalities":["text"],"cost":{}
+        "provider":"openrouter","model_id":"fixture","endpoint":"http://fixture.invalid/v1","credential_env":null,"context_window":window,"max_output_tokens":output,"modalities":["text"],"cost":{}
     }})).unwrap()
 	}
 	/// Journal the projection's new entries; an adoption also requires its open
@@ -743,6 +745,7 @@ fn fixture() -> Fixture {
 		summary_text: Mutex::new(None),
 		revoke_summarizer: false,
 		stale_summary_dependencies: false,
+		summarizer_output_tokens: 4096,
 	}));
 	Fixture { backend, run }
 }
@@ -1528,6 +1531,26 @@ async fn imported_history_is_journaled_whole_before_pruning(mut fixture: Fixture
 	let calls = calls(&fixture);
 	let position = |name| calls.iter().position(|call| *call == name).unwrap();
 	assert!(position("journal") < position("jev.ask"));
+}
+
+#[rstest]
+#[tokio::test]
+async fn summary_output_is_capped_at_the_summarizer_limit(mut fixture: Fixture) {
+	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	state.context_policy = Some(recovery_policy(true));
+	state.jev_retention = Some(1.0);
+	state.summarizer_output_tokens = 1024;
+	*state.summary_text.lock().unwrap() = Some(valid_summary());
+	thinking_with_history(&mut fixture, 40);
+	advance_sources(&mut fixture).await.unwrap();
+	assert_eq!(events(&fixture).last().unwrap(), "context.compacted");
+	let requests = fixture.backend.0.requests.lock().unwrap();
+	let summary = requests
+		.iter()
+		.find(|request| request.response_format.is_some())
+		.unwrap();
+	// The policy default (4096) is clamped to the pinned summarizer's limit.
+	assert_eq!(summary.max_output_tokens, 1024);
 }
 
 fn fixture_with(configure: impl FnOnce(&mut State)) -> Fixture {

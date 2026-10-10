@@ -93,6 +93,32 @@ fn merge_keeps_constraints_and_unresolved_work_across_compactions() {
 		),
 		Err(Rejection::DroppedItem("u1".into()))
 	);
+	// A retained ID must keep its list and exact text; rewriting or moving it
+	// would silently drop the original requirement from model context.
+	assert_eq!(
+		SummaryContent::parse(
+			&content(
+				&[("c1", "touch main freely")],
+				&[("u1", "fix flaky test")],
+				&[]
+			),
+			Some(&first),
+			4096
+		),
+		Err(Rejection::ChangedItem("c1".into()))
+	);
+	assert_eq!(
+		SummaryContent::parse(
+			&content(
+				&[("c1", "never touch main"), ("u1", "fix flaky test")],
+				&[],
+				&[]
+			),
+			Some(&first),
+			4096
+		),
+		Err(Rejection::ChangedItem("u1".into()))
+	);
 	// Explicit resolution closes an item; the merged range keeps its origin.
 	let second = adopted(
 		&content(

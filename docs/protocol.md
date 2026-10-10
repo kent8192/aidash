@@ -133,14 +133,14 @@ An Agent version selects its recovery behavior with an immutable
 `prune-only/1`, and its provider requests are byte-identical to earlier
 versions. The opt-in `context-recovery/1` policy accepts:
 
-| Field                 | Default | Bounds                | Meaning                                                         |
-| --------------------- | ------- | --------------------- | --------------------------------------------------------------- |
-| `preserve_recent`     | 6       | 6–1000                | Latest events that are never pruned or summarized               |
-| `overflow_retries`    | 2       | 0–4                   | Compact-and-retry attempts after a provider Context Overflow    |
-| `overflow_shrink`     | 0.75    | 0.5–0.9               | Factor applied to the effective window on each overflow retry   |
-| `summary.model`       | none    | exact model reference | Separately approved summarizer; enables the Summary Stage       |
-| `summary.max_tokens`  | 4,096   | 256–4,096             | Summary output bound, further capped at an eighth of the window |
-| `summary.call_budget` | 8       | 1–64                  | Summary requests per Run, including failed attempts             |
+| Field                 | Default | Bounds                | Meaning                                                                                           |
+| --------------------- | ------- | --------------------- | ------------------------------------------------------------------------------------------------- |
+| `preserve_recent`     | 6       | 6–1000                | Latest events that are never pruned or summarized                                                 |
+| `overflow_retries`    | 2       | 0–4                   | Compact-and-retry attempts after a provider Context Overflow                                      |
+| `overflow_shrink`     | 0.75    | 0.5–0.9               | Factor applied to the effective window on each overflow retry                                     |
+| `summary.model`       | none    | exact model reference | Separately approved summarizer; enables the Summary Stage                                         |
+| `summary.max_tokens`  | 4,096   | 256–4,096             | Summary output bound, further capped at an eighth of the window and the summarizer's output limit |
+| `summary.call_budget` | 8       | 1–64                  | Summary requests per Run, including failed attempts                                               |
 
 The pipeline is fixed: fit check, Jev pruning, the optional Summary Stage, then
 complete-request validation. Under an explicit policy an unavailable Jev pauses
@@ -151,8 +151,10 @@ events into the structured Execution Summary. It absorbs only `tool` and
 were already part of an accepted inference request. Human answers, corrections
 and continuation markers always stay verbatim. The summarizer receives only the
 task, the previous summary and the absorbed events, with no tools and a JSON
-schema response format. Each merge keeps the previous summary's constraints and
-unresolved items under their IDs unless it lists them as resolved, records the
+schema response format. Each merge
+keeps the previous summary's constraints and unresolved items under their IDs,
+in the same list and with unchanged text, unless it lists them as resolved;
+a changed or moved item is rejected. It records the
 exact journal range and the absorbed entries' digest, and carries the sources it
 depends on. A summary is adopted only if it validates, strictly shrinks the
 complete request and makes it fit.
