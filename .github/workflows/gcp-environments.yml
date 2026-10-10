@@ -19,7 +19,7 @@ on:
       vm_mode:
         type: choice
         options: [default, spot, normal]
-        description: "Default preserves the existing mode; new test/PR defaults to Spot"
+        description: "Node pool mode; default preserves the existing mode, new test/PR defaults to Spot"
       approved_sha:
         description: "Full reviewed head SHA required for a fork PR"
         type: string
@@ -108,7 +108,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        image: [app, postgres, sandbox, observer, nats]
+        # images.py builds app/postgres/sandbox from source; observer/control/edge
+        # only from the trusted checkout; nats/caddy are reviewed upstream digests.
+        image: [app, postgres, sandbox, observer, nats, control, edge, caddy]
     permissions:
       contents: read
     steps:
@@ -206,6 +208,11 @@ jobs:
           workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
           service_account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
       - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3
+        with:
+          install_components: kubectl,gke-gcloud-auth-plugin
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v4.1.4
       - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3
         with:
           terraform_version: 1.14.8

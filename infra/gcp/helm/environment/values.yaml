@@ -1,0 +1,61 @@
+nodeSelector: {}
+tolerations:
+  - {
+      key: node.kubernetes.io/not-ready,
+      operator: Exists,
+      effect: NoExecute,
+      tolerationSeconds: 30,
+    }
+  - {
+      key: node.kubernetes.io/unreachable,
+      operator: Exists,
+      effect: NoExecute,
+      tolerationSeconds: 30,
+    }
+storage:
+  # Cluster-wide Retain/WaitForFirstConsumer class ensured by the lifecycle controller.
+  className: aidash-retain
+postgres:
+  # Build deploy/postgres/Dockerfile (runtime target); includes all three extensions.
+  # Runs with the retained database volume and its full Secret, so it must end in
+  # @sha256:<digest>; the chart refuses mutable tags.
+  image: aidash-postgres:17-pg-jsonschema-0.3.4
+  existingSecret: ""
+  size: 10Gi
+  resources:
+    requests: { cpu: 100m, memory: 256Mi }
+    limits: { cpu: "2", memory: 2Gi }
+nats:
+  # Runs with the retained JetStream volume; must end in @sha256:<digest> (OCI index of nats:2.12.4).
+  image: nats:2.12.4@sha256:c9abdce88a85ed5fcc8e9fc6b284d2601f5d1c1d0d58ddd67cfdc411768bfd7f
+  size: 2Gi
+  resources:
+    requests: { cpu: 100m, memory: 64Mi }
+    limits: { cpu: "1", memory: 512Mi }
+edge:
+  hostname: ""
+  backend: aidash-backend
+  # Receives all public traffic and shares the edge Pod's network namespace with
+  # admission, so it must also end in @sha256:<digest> (OCI index of caddy:2.10.2).
+  caddyImage: caddy:2.10.2@sha256:c3d7ee5d2b11f9dc54f947f68a734c84e9c9666c92c88a7f30b9cba5da182adb
+  # Build edge.Dockerfile from the trusted ref (Nginx + Lua + cjson).
+  # Must end in @sha256:<digest>; the chart refuses mutable tags for trusted images.
+  admissionImage: aidash-edge-admission:0.1.0
+  tlsSize: 2Gi
+  # Preview only: the controller-bound claim of the shared static TLS PV.
+  existingTlsClaim: ""
+  loadBalancer: true
+  resources:
+    requests: { cpu: 50m, memory: 64Mi }
+    limits: { cpu: "1", memory: 256Mi }
+activity:
+  enabled: true
+  # Must end in @sha256:<digest>; the chart refuses mutable tags for trusted images.
+  observerImage: aidash-infra-observer:0.1.0
+  collectorImage: aidash-runner:0.1.0
+  # Secret contains the read-only observer DATABASE_URL and Runner token.
+  existingSecret: ""
+  runnerEndpoint: http://aidash-execution-runner:8949
+  resources:
+    requests: { cpu: 50m, memory: 64Mi }
+    limits: { cpu: "1", memory: 256Mi }

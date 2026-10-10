@@ -72,7 +72,7 @@ nodes:
   kubeadmConfigPatches:
   - |
     kind: KubeletConfiguration
-    podPidsLimit: 128
+    podPidsLimit: 1024
     containerLogMaxSize: 10Mi
     containerLogMaxFiles: 2
 """)
@@ -143,6 +143,8 @@ WantedBy=multi-user.target
     run([executables["kind"], "load", "docker-image", "--name", args.name, tag])
     image = "docker.io/library/aidash-sandbox@" + digest
     run(docker + ["ctr", "-n", "k8s.io", "images", "tag", tag, image])
+    # Shared with the Rust capability runtime, whose Profile denies unknown fields:
+    # Runner-only settings such as host_tasks stay out (the Runner defaults to 512).
     profile = {
         "admission": True, "storage": str(directory / "objects"), "outbound_origins": [], "package_origins": [],
         "working_bytes": 1073741824, "retained_bytes": 10737418240, "temporary_bytes": 268435456,

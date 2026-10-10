@@ -1,0 +1,351 @@
+{{- $e := .Values.execution -}}
+{{- $name := printf "%s-execution" .Release.Name -}}
+{{- /* Cluster-scoped objects: releases of the same name in other namespaces must not collide. */ -}}
+{{- $cluster := printf "%s-%s-execution" .Release.Namespace .Release.Name -}}
+{{- $sandbox := include "aidash.sandboxNamespace" . -}}
+{{- $trusted := $e.trustedNamespace | default (printf "%s-guard" .Release.Name) -}}
+{{- $runtime := include "aidash.runtimeClassName" . -}}
+{{- $selector := mergeOverwrite (deepCopy .Values.nodeSelector) .Values.environment.nodeSelector -}}
+{{- $tolerations := concat .Values.tolerations .Values.environment.tolerations -}}
+{{- $guardState := $e.paths.guardState | default (printf "/var/lib/aidash-node-guard/%s" .Release.Name) -}}
+{{- if eq $sandbox $trusted -}}{{ fail "Execution Pods and trusted DaemonSets require different namespaces" }}{{- end -}}
+{{- if or (eq $trusted .Release.Namespace) (eq $sandbox .Release.Namespace) -}}{{ fail "Execution and trusted namespaces must be separate from application workloads" }}{{- end -}}
+{{- if eq $runtime "gvisor" -}}{{ fail "Use an Aidash RuntimeClass, not the GKE Sandbox gvisor RuntimeClass" }}{{- end -}}
+{{- range $component, $values := dict "installer" $e.installer "guard" $e.guard "runner" $e.runner -}}
+{{- if and $values.enabled (not (regexMatch "@sha256:[0-9a-f]{64}$" (toString $values.image))) -}}{{ fail (printf "execution.%s.image must be pinned by digest: it runs trusted, privileged or cluster-scoped code" $component) }}{{- end -}}
+{{- end -}}
+{{- $processes := int $e.limits.processes -}}
+{{- $hostTasks := max (mul 4 $processes) (add $processes 384) -}}
+{{- if and $e.runner.enabled (lt (int $e.limits.host_tasks) $hostTasks) -}}{{ fail (printf "execution.limits.host_tasks must be at least %d (max(4 * processes, processes + 384)): the Sentry's own host threads share pids.max with the admission probe's guest children, and only the 128/512 headroom is verified" $hostTasks) }}{{- end -}}
+{{- if and $e.runner.enabled (gt (len (printf "%s-runner" $name)) 63) -}}{{ fail "release name is too long: the Runner Service name must fit a 63-character DNS label" }}{{- end -}}
+{{- if and $e.runner.enabled (not (semverCompare ">=1.34.0-0" .Capabilities.KubeVersion.Version)) -}}{{ fail (printf "execution.runner needs Kubernetes 1.34 or later (found %s): Execution Pods set pod-level spec.resources" .Capabilities.KubeVersion.Version) }}{{- end -}}
+{{- if and $e.installer.enabled (or (ne $e.paths.runsc "/usr/local/bin/runsc") (ne $e.paths.gvisorBin "/usr/local/bin/gvisor-bin")) -}}{{ fail "execution.installer writes the verified runtime under /usr/local/bin; custom execution.paths.runsc or gvisorBin would leave the guard's mounts pointing at missing files" }}{{- end -}}
+{{- if and $e.runner.enabled (not $e.guard.enabled) -}}{{ fail "execution.runner requires execution.guard.enabled: the Runner's isolation probe applies Sentry limits and freezes writers through this release's guard DaemonSet" }}{{- end -}}
+{{- /* Host runtime files are replaced atomically, so the guard sees them through
+directory mounts: a file bind mount would keep the replaced inode. */ -}}
+{{- $runtimeDir := "/run/aidash-host-runtime" -}}
+{{- $sentries := list -}}
+{{- range $path := $e.paths.sentryBinaries -}}
+{{- if eq (dir $path) (dir $e.paths.runsc) -}}
+{{- $sentries = append $sentries (printf "%s/%s" $runtimeDir (base $path)) -}}
+{{- else if hasPrefix (printf "%s/" $e.paths.gvisorBin) $path -}}
+{{- $sentries = append $sentries $path -}}
+{{- else -}}
+{{- fail (printf "execution.paths.sentryBinaries entry %s must be beside runsc or under gvisorBin: the guard mounts only those host directories" $path) -}}
+{{- end -}}
+{{- end -}}
+{{- $sentry := printf "%s/gvisor_sentry" $e.paths.gvisorBin -}}
+{{- if and $e.guard.enabled (not (has $sentry $e.paths.sentryBinaries)) -}}{{ fail (printf "execution.paths.sentryBinaries must include %s: the pinned runtime runs a split Sentry, and the guard kills only a PID it recognizes" $sentry) }}{{- end -}}
+{{- if $e.createNamespaces }}
+{{- range $namespace := list $sandbox $trusted }}
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ $namespace | quote }}
+  labels:
+    pod-security.kubernetes.io/enforce: {{ ternary "restricted" "privileged" (eq $namespace $sandbox) }}
+    pod-security.kubernetes.io/enforce-version: {{ $e.podSecurityVersion }}
+{{- end }}
+{{- end }}
+{{- if $e.runtimeClass.create }}
+---
+apiVersion: node.k8s.io/v1
+kind: RuntimeClass
+metadata:
+  name: {{ $runtime | quote }}
+handler: runsc
+scheduling:
+  nodeSelector:
+    {{ $e.gvisor.label }}: {{ $e.gvisor.version | quote }}
+  {{- with $tolerations }}
+  tolerations: {{ toYaml . | nindent 4 }}
+  {{- end }}
+{{- end }}
+{{- if $e.installer.enabled }}
+{{- if not $selector -}}{{ fail "execution.installer.enabled needs a nodeSelector (global or environment) that names only the dedicated execution pool; the privileged installer rewrites host binaries, restarts containerd and labels nodes" }}{{- end }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $name }}-installer
+  namespace: {{ $trusted | quote }}
+---
+# Cluster-wide node get/patch is necessary for a DaemonSet on replaceable machines.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ $cluster }}-installer
+rules:
+  - apiGroups: [""]
+    resources: [nodes]
+    verbs: [get, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ $cluster }}-installer
+subjects:
+  - { kind: ServiceAccount, name: {{ $name }}-installer, namespace: {{ $trusted | quote }} }
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: {{ $cluster }}-installer }
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ $name }}-installer
+  namespace: {{ $trusted | quote }}
+spec:
+  selector: { matchLabels: { aidash.run/installer: {{ .Release.Name | quote }} } }
+  template:
+    metadata:
+      labels: { aidash.run/installer: {{ .Release.Name | quote }} }
+    spec:
+      hostNetwork: false
+      hostPID: true
+      serviceAccountName: {{ $name }}-installer
+      nodeSelector: {{ toYaml $selector | nindent 8 }}
+      tolerations: {{ toYaml $tolerations | nindent 8 }}
+      containers:
+        - name: installer
+          image: {{ $e.installer.image | quote }}
+          imagePullPolicy: {{ $e.imagePullPolicy }}
+          command: [python3, -I, /opt/aidash/gvisor_installer.py]
+          securityContext: { privileged: true }
+          env:
+            - name: CLUSTER_NODE_NAME
+              valueFrom: { fieldRef: { fieldPath: spec.nodeName } }
+            - { name: AIDASH_GVISOR_VERSION, value: {{ $e.gvisor.version | quote }} }
+            - { name: AIDASH_GVISOR_SHA, value: {{ $e.gvisor.sha256 | quote }} }
+            - { name: AIDASH_GVISOR_LABEL, value: {{ $e.gvisor.label | quote }} }
+            - { name: AIDASH_GVISOR_INSTALLED_LABEL, value: {{ $e.gvisor.installedLabel | quote }} }
+            - { name: AIDASH_RUNSC_ROOT, value: {{ $e.paths.runscRoot | quote }} }
+          readinessProbe:
+            exec: { command: [test, -f, /tmp/gvisor-ready] }
+            periodSeconds: 5
+          volumeMounts:
+            - { name: host, mountPath: /host }
+      volumes:
+        - { name: host, hostPath: { path: /, type: Directory } }
+{{- end }}
+{{- if $e.guard.enabled }}
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ $name }}-guard
+  namespace: {{ $trusted | quote }}
+spec:
+  selector: { matchLabels: { aidash.run/guard: {{ .Release.Name | quote }} } }
+  template:
+    metadata:
+      labels: { aidash.run/guard: {{ .Release.Name | quote }} }
+    spec:
+      hostNetwork: false
+      hostPID: true
+      automountServiceAccountToken: false
+      nodeSelector: {{ toYaml (mergeOverwrite (deepCopy $selector) (dict $e.gvisor.installedLabel "true")) | nindent 8 }}
+      tolerations: {{ toYaml $tolerations | nindent 8 }}
+      containers:
+        - name: guard
+          image: {{ $e.guard.image | quote }}
+          imagePullPolicy: {{ $e.imagePullPolicy }}
+          command: [python3, -I, /opt/aidash/node_guard.py, watch]
+          securityContext: { privileged: true }
+          env:
+            - { name: AIDASH_SANDBOX_NAMESPACE, value: {{ $sandbox | quote }} }
+            - { name: AIDASH_RUNSC_ROOT, value: {{ printf "%s/k8s.io" $e.paths.runscRoot | quote }} }
+            - { name: AIDASH_RUNSC_BINARY, value: {{ printf "%s/%s" $runtimeDir (base $e.paths.runsc) | quote }} }
+            - { name: AIDASH_CTR_BINARY, value: {{ $e.paths.ctr | quote }} }
+            - { name: AIDASH_CGROUP_ROOT, value: {{ $e.paths.cgroupRoot | quote }} }
+            - { name: AIDASH_GUARD_STATE, value: {{ $guardState | quote }} }
+            - { name: AIDASH_SENTRY_BINARIES, value: {{ toJson $sentries | quote }} }
+          readinessProbe:
+            exec:
+              command:
+                - python3
+                - -c
+                - |
+                  import fcntl
+                  f = open('{{ $guardState }}/watch.lock', 'a')
+                  try:
+                      fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                  except BlockingIOError:
+                      exit(0)
+                  exit(1)
+            periodSeconds: 5
+          volumeMounts:
+            - { name: state, mountPath: {{ $guardState }} }
+            - { name: containerd-run, mountPath: /run/containerd }
+            - { name: runsc-root, mountPath: {{ $e.paths.runscRoot }} }
+            {{- if ne $e.paths.cgroupRoot "/sys/fs/cgroup" }}
+            - { name: cgroup-tree, mountPath: {{ $e.paths.cgroupRoot }} }
+            {{- end }}
+            - { name: kubelet-pods, mountPath: /var/lib/kubelet/pods, mountPropagation: HostToContainer }
+            - { name: runsc-dir, mountPath: {{ $runtimeDir }}, readOnly: true }
+            - { name: gvisor-bin, mountPath: {{ $e.paths.gvisorBin }}, readOnly: true }
+            - { name: ctr, mountPath: {{ $e.paths.ctr }}, readOnly: true }
+      volumes:
+        - { name: state, hostPath: { path: {{ $guardState }}, type: DirectoryOrCreate } }
+        - { name: containerd-run, hostPath: { path: /run/containerd, type: Directory } }
+        - { name: runsc-root, hostPath: { path: {{ $e.paths.runscRoot }}, type: DirectoryOrCreate } }
+        {{- if ne $e.paths.cgroupRoot "/sys/fs/cgroup" }}
+        - { name: cgroup-tree, hostPath: { path: /sys/fs/cgroup, type: Directory } }
+        {{- end }}
+        - { name: kubelet-pods, hostPath: { path: /var/lib/kubelet/pods, type: Directory } }
+        - { name: runsc-dir, hostPath: { path: {{ dir $e.paths.runsc }}, type: Directory } }
+        - { name: gvisor-bin, hostPath: { path: {{ $e.paths.gvisorBin }}, type: Directory } }
+        - { name: ctr, hostPath: { path: {{ $e.paths.ctr }}, type: File } }
+{{- end }}
+{{- if $e.runner.enabled }}
+{{- $image := required "execution.sandboxImage must be digest pinned" $e.sandboxImage -}}
+{{- if not (regexMatch "@sha256:[0-9a-f]{64}$" $image) -}}{{ fail "execution.sandboxImage must be digest pinned" }}{{- end }}
+{{- $secret := required "execution.runner.existingSecret is required" $e.runner.existingSecret }}
+{{- $_ := required "execution.runner requires capabilities.storage.existingClaim: the application capability profile keeps its objects there" .Values.capabilities.storage.existingClaim }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $name }}-runner
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $name }}-sandbox
+  namespace: {{ $sandbox | quote }}
+rules:
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list, watch, create, delete]
+  - apiGroups: [""]
+    resources: [pods/exec]
+    verbs: [create]
+  - apiGroups: [""]
+    resources: [pods/log]
+    verbs: [get]
+  - apiGroups: [networking.k8s.io]
+    resources: [networkpolicies]
+    verbs: [get, create, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $name }}-guard
+  namespace: {{ $trusted | quote }}
+rules:
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list]
+  - apiGroups: [""]
+    resources: [pods/exec]
+    verbs: [create]
+{{- range $binding := list (dict "namespace" $sandbox "role" "sandbox") (dict "namespace" $trusted "role" "guard") }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $name }}-runner
+  namespace: {{ $binding.namespace | quote }}
+subjects:
+  - { kind: ServiceAccount, name: {{ $name }}-runner, namespace: {{ $.Release.Namespace | quote }} }
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: {{ $name }}-{{ $binding.role }} }
+{{- end }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ $cluster }}-runtime
+rules:
+  - apiGroups: [node.k8s.io]
+    resources: [runtimeclasses]
+    resourceNames: [{{ $runtime | quote }}]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ $cluster }}-runtime
+subjects:
+  - { kind: ServiceAccount, name: {{ $name }}-runner, namespace: {{ .Release.Namespace | quote }} }
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: {{ $cluster }}-runtime }
+{{- if not $e.runner.journal.existingClaim }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ $name }}-journal
+  annotations: { helm.sh/resource-policy: keep }
+spec:
+  accessModes: [ReadWriteOnce]
+  {{- with $e.runner.journal.storageClassName }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+  resources: { requests: { storage: {{ $e.runner.journal.size }} } }
+{{- end }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name }}-profile
+data:
+  profile.json: |-
+    {{- $runner := dict "journal" "/var/lib/aidash/journal" "namespace" $sandbox "image" $image "runtime_class" $runtime "kubectl" "/usr/local/bin/kubectl" "listen_host" "0.0.0.0" "listen_port" 8949 "token_env" "AIDASH_CORE_RUNNER_TOKEN" "node_selector" $selector "tolerations" $tolerations "node_guard" (dict "namespace" $trusted "selector" (printf "aidash.run/guard=%s" .Release.Name) "container" "guard" "command" (list "python3" "-I" "/opt/aidash/node_guard.py")) }}
+    {{- toJson (mergeOverwrite (deepCopy $e.limits) (dict "runner" $runner)) | nindent 4 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}-runner
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector: { matchLabels: { aidash.run/runner: {{ .Release.Name | quote }} } }
+  template:
+    metadata:
+      labels: { aidash.run/runner: {{ .Release.Name | quote }} }
+      annotations:
+        checksum/profile: {{ toJson $e | sha256sum }}
+    spec:
+      hostNetwork: false
+      serviceAccountName: {{ $name }}-runner
+      nodeSelector: {{ toYaml $selector | nindent 8 }}
+      tolerations: {{ toYaml $tolerations | nindent 8 }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: runner
+          image: {{ $e.runner.image | quote }}
+          imagePullPolicy: {{ $e.imagePullPolicy }}
+          command: [python3, -I, /opt/aidash/control.py]
+          env:
+            - { name: AIDASH_CAPABILITY_PROFILE, value: /etc/aidash/profile.json }
+            - name: AIDASH_CORE_RUNNER_TOKEN
+              valueFrom: { secretKeyRef: { name: {{ $secret }}, key: {{ $e.runner.tokenKey }} } }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+          ports: [{ name: http, containerPort: 8949 }]
+          resources: {{ toYaml $e.runner.resources | nindent 12 }}
+          startupProbe: { tcpSocket: { port: http }, periodSeconds: 5, failureThreshold: 120 }
+          readinessProbe: { tcpSocket: { port: http }, periodSeconds: 5 }
+          volumeMounts:
+            - { name: profile, mountPath: /etc/aidash, readOnly: true }
+            - { name: journal, mountPath: /var/lib/aidash/journal }
+      volumes:
+        - { name: profile, configMap: { name: {{ $name }}-profile } }
+        - name: journal
+          persistentVolumeClaim:
+            claimName: {{ $e.runner.journal.existingClaim | default (printf "%s-journal" $name) }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}-runner
+spec:
+  selector: { aidash.run/runner: {{ .Release.Name | quote }} }
+  ports: [{ name: http, port: 8949, targetPort: http }]
+{{- end }}

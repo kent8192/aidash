@@ -1,0 +1,77 @@
+{{- $name := include "environment.name" . -}}
+{{- $secret := required "postgres.existingSecret is required" .Values.postgres.existingSecret -}}
+{{- range $role := list "postgres" "nats" }}
+{{- $settings := index $.Values $role }}
+{{- if not (regexMatch "@sha256:[0-9a-f]{64}$" (toString $settings.image)) -}}{{ fail (printf "%s.image must be pinned by digest: it runs with the retained %s volume" $role $role) }}{{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}-{{ $role }}
+spec:
+  clusterIP: None
+  selector: { aidash.run/dependency: {{ $role }}, app.kubernetes.io/instance: {{ $.Release.Name | quote }} }
+  ports:
+    - { name: client, port: {{ ternary 5432 4222 (eq $role "postgres") }}, targetPort: client }
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ $name }}-{{ $role }}
+spec:
+  replicas: 1
+  serviceName: {{ $name }}-{{ $role }}
+  persistentVolumeClaimRetentionPolicy: { whenDeleted: Retain, whenScaled: Retain }
+  selector: { matchLabels: { aidash.run/dependency: {{ $role }}, app.kubernetes.io/instance: {{ $.Release.Name | quote }} } }
+  template:
+    metadata:
+      labels: { aidash.run/dependency: {{ $role }}, app.kubernetes.io/instance: {{ $.Release.Name | quote }} }
+    spec:
+      hostNetwork: false
+      automountServiceAccountToken: false
+      nodeSelector: {{ toYaml $.Values.nodeSelector | nindent 8 }}
+      tolerations: {{ toYaml $.Values.tolerations | nindent 8 }}
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: {{ $role }}
+          image: {{ $settings.image | quote }}
+          ports: [{ name: client, containerPort: {{ ternary 5432 4222 (eq $role "postgres") }} }]
+          resources: {{ toYaml $settings.resources | nindent 12 }}
+          {{- if eq $role "postgres" }}
+          envFrom: [{ secretRef: { name: {{ $secret | quote }} } }]
+          env: [{ name: PGDATA, value: /var/lib/postgresql/data/pgdata }]
+          readinessProbe:
+            exec: { command: [sh, -ec, 'pg_isready -h 127.0.0.1 -U "$POSTGRES_USER" -d "$POSTGRES_DB"'] }
+            periodSeconds: 5
+          volumeMounts: [{ name: data, mountPath: /var/lib/postgresql/data }]
+          {{- else }}
+          args: [-js, -sd, /data]
+          readinessProbe: { tcpSocket: { port: client }, periodSeconds: 5 }
+          volumeMounts: [{ name: data, mountPath: /data }]
+          {{- end }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        annotations: { helm.sh/resource-policy: keep }
+      spec:
+        accessModes: [ReadWriteOnce]
+        storageClassName: {{ $.Values.storage.className | quote }}
+        resources: { requests: { storage: {{ $settings.size }} } }
+{{- end }}
+---
+# Namespace isolation for the retained dependencies; no cross-Environment ingress.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $name }}-dependencies
+spec:
+  podSelector: { matchExpressions: [{ key: aidash.run/dependency, operator: Exists }] }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        # The controller's one-shot migration Job runs the app image as `migration`.
+        - podSelector: { matchExpressions: [{ key: app.kubernetes.io/component, operator: In, values: [server, worker, migration] }] }
+        - podSelector: { matchLabels: { aidash.run/activity: {{ .Release.Name | quote }} } }
+      ports:
+        - { protocol: TCP, port: 5432 }
+        - { protocol: TCP, port: 4222 }

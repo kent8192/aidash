@@ -1,0 +1,109 @@
+{{- $name := include "environment.name" . -}}
+{{- $edge := .Values.edge -}}
+{{- $hostname := required "edge.hostname is required" $edge.hostname -}}
+{{- if not (regexMatch "@sha256:[0-9a-f]{64}$" (toString $edge.admissionImage)) -}}{{ fail "edge.admissionImage must be pinned by digest: it enforces the admission gate" }}{{- end -}}
+{{- if not (regexMatch "@sha256:[0-9a-f]{64}$" (toString $edge.caddyImage)) -}}{{ fail "edge.caddyImage must be pinned by digest: it receives all public traffic and shares the admission container's network namespace" }}{{- end -}}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name }}-edge
+data:
+  Caddyfile: |
+    {{ $hostname }} {
+      reverse_proxy 127.0.0.1:8088
+    }
+  admission.conf: |
+{{ .Files.Get "files/admission.conf" | replace "AIDASH_BACKEND" $edge.backend | indent 4 }}
+{{- if not $edge.existingTlsClaim }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ $name }}-tls
+  annotations: { helm.sh/resource-policy: keep }
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: {{ .Values.storage.className | quote }}
+  resources: { requests: { storage: {{ $edge.tlsSize }} } }
+{{- end }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}-edge
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector: { matchLabels: { aidash.run/edge: {{ .Release.Name | quote }} } }
+  template:
+    metadata:
+      labels: { aidash.run/edge: {{ .Release.Name | quote }} }
+      annotations:
+        checksum/config: {{ printf "%s%s%s" $hostname $edge.backend (.Files.Get "files/admission.conf") | sha256sum }}
+    spec:
+      hostNetwork: false
+      automountServiceAccountToken: false
+      nodeSelector: {{ toYaml .Values.nodeSelector | nindent 8 }}
+      tolerations: {{ toYaml .Values.tolerations | nindent 8 }}
+      containers:
+        - name: caddy
+          image: {{ $edge.caddyImage | quote }}
+          ports: [{ name: http, containerPort: 80 }, { name: https, containerPort: 443 }]
+          resources: {{ toYaml $edge.resources | nindent 12 }}
+          volumeMounts:
+            - { name: config, mountPath: /etc/caddy/Caddyfile, subPath: Caddyfile, readOnly: true }
+            - { name: tls, mountPath: /data }
+        - name: admission
+          image: {{ $edge.admissionImage | quote }}
+          ports: [{ name: activity, containerPort: 8089 }]
+          readinessProbe: { httpGet: { path: /activity, port: activity }, periodSeconds: 5 }
+          resources: {{ toYaml $edge.resources | nindent 12 }}
+          volumeMounts:
+            - { name: config, mountPath: /etc/nginx/conf.d/aidash.conf, subPath: admission.conf, readOnly: true }
+            - { name: admission-state, mountPath: /etc/aidash-admission, readOnly: true }
+      volumes:
+        - { name: config, configMap: { name: {{ $name }}-edge } }
+        # Desired admission, owned by the lifecycle controller and never rendered
+        # here, so an upgrade cannot reset it. Absent or not `open` = closed.
+        - { name: admission-state, configMap: { name: {{ $name }}-admission, optional: true } }
+        - name: tls
+          persistentVolumeClaim:
+            claimName: {{ $edge.existingTlsClaim | default (printf "%s-tls" $name) | quote }}
+{{- if $edge.loadBalancer }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}-edge
+spec:
+  type: LoadBalancer
+  externalTrafficPolicy: Local
+  selector: { aidash.run/edge: {{ .Release.Name | quote }} }
+  ports:
+    - { name: http, port: 80, targetPort: http }
+    - { name: https, port: 443, targetPort: https }
+{{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}-activity
+spec:
+  type: ClusterIP
+  selector: { aidash.run/edge: {{ .Release.Name | quote }} }
+  ports: [{ name: activity, port: 8089, targetPort: activity }]
+---
+# The public LB exposes only Caddy. Admission control is private to the collector
+# and the trusted controller's `kubectl exec ... curl` on the Pod's loopback.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $name }}-edge
+spec:
+  podSelector: { matchLabels: { aidash.run/edge: {{ .Release.Name | quote }} } }
+  policyTypes: [Ingress]
+  ingress:
+    - ports: [{ protocol: TCP, port: 80 }, { protocol: TCP, port: 443 }]
+    - from: [{ podSelector: { matchLabels: { aidash.run/activity: {{ .Release.Name | quote }} } } }]
+      ports: [{ protocol: TCP, port: 8089 }]

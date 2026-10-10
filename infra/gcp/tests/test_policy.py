@@ -10,7 +10,6 @@ from policy import (
     attach_release,
     build_needed,
     idle_due,
-    meaningful_request,
     preview_command,
     transition,
 )
@@ -80,11 +79,11 @@ class LifecycleTests(unittest.TestCase):
         state = self.apply({}, self.request())
         images = {
             name: f"us-central1-docker.pkg.dev/fixture/aidash/{name}@sha256:{'a' * 64}"
-            for name in ("app", "postgres", "sandbox", "observer", "nats")
+            for name in ("app", "postgres", "sandbox", "observer", "nats", "control", "edge", "caddy")
         }
         release = {"source_sha": "a" * 40, "images": images}
         self.assertTrue(attach_release(state, "test", 1, release)[1])
-        for name in ("nats",):
+        for name in ("nats", "control", "caddy"):
             for invalid in (None, f"{name}:latest"):
                 with self.subTest(name=name, image=invalid):
                     candidate = dict(images)
@@ -149,32 +148,6 @@ class LifecycleTests(unittest.TestCase):
             "/preview up $(bad)",
         ]:
             self.assertIsNone(preview_command(body))
-
-    def test_polling_and_probes_do_not_reset_idle(self):
-        for method, path in [
-            ("GET", "/api/state"),
-            ("GET", "/auth/session"),
-            ("GET", "/health"),
-            ("POST", "/api/runs/id/shell/poll"),
-            ("POST", "/api/runs/id/python/poll"),
-            ("GET", "/federation/v0.1/observe"),
-            ("POST", "/federation/v0.10/scoped/files/chunk"),
-            ("POST", "/federation/v0.1/discover"),
-            ("POST", "/federation/v0.1/workspace"),
-            ("POST", "/federation/v0.1/scoped/files/status"),
-            ("POST", "/federation/v0.1/scoped/execution/status"),
-            ("POST", "/federation/v0.1/scoped/execution/admissions/id/verify"),
-        ]:
-            self.assertFalse(meaningful_request(method, path, 200))
-        for method, path in [
-            ("GET", "/auth/callback"),
-            ("POST", "/api/runs/id/python"),
-            ("PATCH", "/api/tasks/id"),
-            ("POST", "/federation/v0.1/scoped/files/commit"),
-            ("POST", "/federation/v0.1/transactions/prepare"),
-        ]:
-            self.assertTrue(meaningful_request(method, path, 200))
-        self.assertFalse(meaningful_request("POST", "/api/tasks", 401))
 
     def test_unknown_or_old_observation_defers_shutdown(self):
         value = dict(

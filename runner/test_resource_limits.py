@@ -1,9 +1,14 @@
 """Remote-controller sizing must match the execution node's physical ceiling."""
 import unittest
+import tempfile
+from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
+import uuid
 
 from control import Runner, Rejected
 from node_guard import filesystem_capacity
+import node_guard
 
 
 class ResourceLimitsTest(unittest.TestCase):
@@ -35,6 +40,39 @@ class ResourceLimitsTest(unittest.TestCase):
                 self.assertEqual(limits['cpu'], 2)
                 self.assertEqual(limits['memory_bytes'], 2 << 30)
                 self.assertEqual(limits['processes'], 128)
+                self.assertEqual(limits['host_tasks'], 512)
+
+    def test_guard_writes_separate_host_ceiling_and_refuses_lower_ancestor_limit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            cgroups = root / 'cgroup'
+            current = cgroups / 'sentry'
+            current.mkdir(parents=True)
+            for file, value in {'cpu.max': '200000 100000', 'memory.max': str(2 << 30),
+                                'pids.max': 'max', 'memory.swap.max': 'max'}.items():
+                (current / file).write_text(value)
+            request = dict(action='limits', area_id=str(uuid.uuid4()), pod_uid=str(uuid.uuid4()),
+                           container_id='a' * 64, epoch=1, image='fixture', cpu=2,
+                           memory_bytes=2 << 30, host_tasks=512, processes=128,
+                           working_bytes=4096, temporary_bytes=4096)
+            with patch.object(node_guard, 'ROOT', root / 'guard'), \
+                 patch.object(node_guard, 'CGROUP_ROOT', cgroups), \
+                 patch.object(node_guard, 'sentry_cgroup', return_value=current), \
+                 patch.object(node_guard, 'validate', return_value=('a' * 64, request['pod_uid'], request['area_id'], {'pid': 42})), \
+                 patch.object(node_guard, 'binding', return_value={}), \
+                 patch.object(node_guard.os, 'statvfs', return_value=SimpleNamespace(f_blocks=1, f_frsize=4096)), \
+                 patch.object(node_guard.os, 'sysconf', return_value=4096):
+                evidence = node_guard.handle(request)
+                self.assertEqual(evidence['host_tasks'], 512)
+                self.assertEqual(evidence['processes'], 128)
+                self.assertEqual((current / 'pids.max').read_text(), '512')
+                self.assertEqual((current / 'memory.swap.max').read_text(), '0')
+                (cgroups / 'pids.max').write_text('256')
+                with self.assertRaisesRegex(ValueError, 'limits differ'):
+                    node_guard.handle(request)
+                for invalid in (0, -1, True, '512'):
+                    with self.assertRaisesRegex(ValueError, 'positive host task'):
+                        node_guard.handle(dict(request, host_tasks=invalid))
 
     def test_node_rounds_only_to_its_verified_page_boundary(self):
         for size, page, expected in ((1, 4096, 4096), (4096, 4096, 4096),

@@ -79,7 +79,7 @@ class TransactionPartitionTests(unittest.TestCase):
                 transaction_cases([2, 3, 16], **arguments)
 
     def test_cli_rejects_empty_or_ambiguous_selection_before_creating_resources(self):
-        required = ["driver", "--kubeconfig", "unused", "--distribution", "k3s", "--image", "unused", "--queries", "unused"]
+        required = ["driver", "--kubeconfig", "unused", "--distribution", "kubernetes", "--image", "unused", "--queries", "unused"]
         for arguments, message in ((["--nodes", "3", "--lifecycle", "peer-recovery"], "no transaction cases"),
                                    (["--partition", "lifecycle", "--phase", "coordinator.commit"], "select a partition"),
                                    (["--partition", "participant", "--lifecycle", "rolling"], "select a partition"),
@@ -97,7 +97,7 @@ class TransactionPartitionTests(unittest.TestCase):
     def test_partition_executes_and_records_all_expected_cases_with_full_topology(self):
         with tempfile.TemporaryDirectory() as directory:
             cluster = Mock(directory=pathlib.Path(directory))
-            arguments = ["driver", "--kubeconfig", "unused", "--distribution", "k3s", "--image", "unused", "--queries", "unused",
+            arguments = ["driver", "--kubeconfig", "unused", "--distribution", "kubernetes", "--image", "unused", "--queries", "unused",
                          "--partition", "participant"]
             with patch("sys.argv", arguments), patch(
                 "transaction_cluster_acceptance.Cluster", return_value=cluster
@@ -116,7 +116,7 @@ class TransactionPartitionTests(unittest.TestCase):
     def test_evidence_write_failure_closes_resources_before_provisioning(self):
         with tempfile.TemporaryDirectory() as directory:
             cluster = Mock(directory=pathlib.Path(directory))
-            arguments = ["driver", "--kubeconfig", "unused", "--distribution", "k3s", "--image", "unused", "--queries", "unused"]
+            arguments = ["driver", "--kubeconfig", "unused", "--distribution", "kubernetes", "--image", "unused", "--queries", "unused"]
             with patch("sys.argv", arguments), patch(
                 "transaction_cluster_acceptance.Cluster", return_value=cluster
             ), patch.object(pathlib.Path, "write_text", side_effect=OSError("full")), contextlib.redirect_stdout(io.StringIO()):

@@ -261,7 +261,7 @@ class RuntimeConfigTests(unittest.TestCase):
         )
 
         # A disabled latest must be replaced even if its enabled predecessor
-        # already has the desired bindings; the VM cannot list secret versions.
+        # already has the desired bindings; readers of "latest" must see it.
         raw.clear()
         raw.update(published[0])
         published.clear()

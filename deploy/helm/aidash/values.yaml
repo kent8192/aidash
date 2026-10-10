@@ -1,12 +1,17 @@
 image:
   repository: aidash
   tag: "0.1.0"
+  # sha256:<hex>; when set, server and worker run repository@digest and tag is ignored.
+  digest: ""
   pullPolicy: IfNotPresent
   pullSecrets: []
 node:
   id: ""
   # Stable federation URL; defaults to the internal backend Service.
   endpoint: ""
+release:
+  # Deployed commit; annotates the server/worker Deployments as aidash.run/source-sha.
+  sourceSha: ""
 # Provision separately: DATABASE_URL, NATS_URL, AIDASH_API_TOKEN and provider/
 # pair-specific AIDASH_SECRET_* variables. For a postgres Provider Credential Store,
 # include AIDASH_PROVIDER_STORE_MASTER_KEY and AIDASH_PROVIDER_FINGERPRINT_KEY.
@@ -20,7 +25,30 @@ memoryRecovery:
   directory: /var/lib/aidash/memory-recovery
   # Select the initialized Home directory when it is a child of the claim root.
   subPath: ""
+capabilities:
+  storage:
+    # Retained RWO claim for capability objects, mounted at /var/lib/aidash/capabilities
+    # in server and worker; objects live in its objects/ child. Required with the Runner.
+    existingClaim: ""
+# Socket peers (IPs or CIDRs) allowed to supply X-Real-IP, e.g. the edge Pod CIDR.
+trustedProxy:
+  cidrs: []
+# When set, a NetworkPolicy admits backend :8080 only from these same-namespace
+# Pod label sets (plus this release's frontend when enabled).
+backendIngress:
+  podSelectors: []
+# Managed Provider Credential descriptor {fingerprint_key, store, broker}; null
+# renders nothing. Rendered as {"provider_credentials": ...} for
+# AIDASH_PROVIDER_CREDENTIAL_SETTINGS. Never key material.
+providerCredentials:
+  settings: null
+# Managed public GCIP fragment {dashboard: {gcip: {...}}} for AIDASH_GCIP_SETTINGS;
+# public_origin must equal node.endpoint. null renders nothing.
+gcip:
+  settings: null
 server:
+  serviceAccount:
+    annotations: {}
   # Optional role-scoped override of existingSecret.
   existingSecret: ""
   replicas: 1
@@ -31,6 +59,8 @@ sse:
   reconcileIntervalMs: 5000
   backpressureTimeoutSeconds: 30
 worker:
+  serviceAccount:
+    annotations: {}
   existingSecret: ""
   slots: 4
   replicas: 1
@@ -38,6 +68,8 @@ worker:
     requests: { cpu: 100m, memory: 128Mi }
     limits: { cpu: "2", memory: 1Gi }
 frontend:
+  # Disable when the application image serves the web bundle itself.
+  enabled: true
   replicas: 1
   image:
     repository: aidash-frontend
@@ -57,6 +89,87 @@ terminationGracePeriodSeconds: 30
 nodeSelector: {}
 tolerations: []
 affinity: {}
+
+# Per-Environment scheduling (e.g. cloud.google.com/gke-nodepool: develop).
+environment:
+  nodeSelector: {}
+  tolerations:
+    - {
+        key: node.kubernetes.io/not-ready,
+        operator: Exists,
+        effect: NoExecute,
+        tolerationSeconds: 30,
+      }
+    - {
+        key: node.kubernetes.io/unreachable,
+        operator: Exists,
+        effect: NoExecute,
+        tolerationSeconds: 30,
+      }
+
+# Only GKE Standard Ubuntu/containerd N2 pools have been verified on GCP.
+# Each component is opt-in. Names are unique per Environment/release.
+execution:
+  sandboxNamespace: ""
+  trustedNamespace: ""
+  createNamespaces: false
+  podSecurityVersion: v1.34
+  imagePullPolicy: IfNotPresent
+  sandboxImage: ""
+  runtimeClass:
+    create: false
+    name: ""
+  gvisor:
+    version: "20260921.0"
+    sha256: "3dd478770dd751d09c257ba14d739b179348a36c5f2d9e954b773f5f90bff646"
+    # Admission: set to the verified version; the RuntimeClass requires it, and the
+    # installer withdraws it while replacing a runtime so no new sandbox starts.
+    label: aidash.run/gvisor
+    # Placement of the node-local guard. Set once a runtime is verified and kept
+    # during replacement, so live sandboxes always have a watchdog.
+    installedLabel: aidash.run/gvisor-installed
+  paths:
+    runscRoot: /run/containerd/runsc
+    runsc: /usr/local/bin/runsc
+    gvisorBin: /usr/local/bin/gvisor-bin
+    ctr: /usr/bin/ctr
+    cgroupRoot: /sys/fs/cgroup
+    # Empty derives /var/lib/aidash-node-guard/<release>: each guard holds an
+    # exclusive watch.lock, so releases sharing a Node need distinct directories.
+    guardState: ""
+    sentryBinaries:
+      [/usr/local/bin/runsc, /usr/local/bin/gvisor-bin/gvisor_sentry]
+  installer:
+    enabled: false
+    # Build from the trusted ref, never the deployed PR source.
+    image: aidash-runner:0.1.0
+  guard:
+    enabled: false
+    # Build from the trusted ref, never the deployed PR source.
+    image: aidash-runner:0.1.0
+  runner:
+    enabled: false
+    # Build from the trusted ref, never the deployed PR source.
+    image: aidash-runner:0.1.0
+    existingSecret: ""
+    tokenKey: AIDASH_CORE_RUNNER_TOKEN
+    journal:
+      existingClaim: ""
+      storageClassName: ""
+      size: 10Gi
+    resources:
+      requests: { cpu: 100m, memory: 128Mi }
+      limits: { cpu: "1", memory: 512Mi }
+  limits:
+    cpu: 2
+    memory_bytes: 2147483648
+    processes: 128
+    host_tasks: 512
+    working_bytes: 1073741824
+    temporary_bytes: 268435456
+    output_bytes: 8388608
+    maximum_seconds: 600
+    idle_seconds: 1800
 
 # Stable across Pod replacements. Provision once with `aidash activation-provision`
 # using operator credentials and these same values; runtime does not create objects.

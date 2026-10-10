@@ -68,12 +68,21 @@ class Runner:
         self.token = os.environ[config["token_env"]]
         if len(self.token) < 32:
             raise ValueError("runner token must have at least 32 characters")
-        if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,61}[a-z0-9]", config["namespace"]):
+        # A Kubernetes namespace is an RFC 1123 label, which may be one character.
+        if not re.fullmatch(r"[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?", config["namespace"]):
             raise ValueError("invalid dedicated namespace")
         if not re.search(r"@sha256:[0-9a-f]{64}$", config["image"]):
             raise ValueError("runner image must be digest pinned")
-        self.command = [config["kubectl"], "--kubeconfig", config["kubeconfig"], "--namespace", config["namespace"]]
+        self.command = [config["kubectl"]]
+        if config.get('kubeconfig'):
+            self.command += ['--kubeconfig', config['kubeconfig']]
+        self.command += ['--namespace', config['namespace']]
         self.environment = {"PATH": os.defpath, "HOME": str(self.root)}
+        # kubectl's in-cluster authentication needs these coordinates and the
+        # mounted ServiceAccount token. Never inherit unrelated credentials.
+        for key in ('KUBERNETES_SERVICE_HOST', 'KUBERNETES_SERVICE_PORT'):
+            if key in os.environ:
+                self.environment[key] = os.environ[key]
         runtime = self.kube_json(["get", "runtimeclass", config["runtime_class"], "-o", "json"])
         if runtime["handler"] != "runsc":
             raise ValueError("verified runsc runtime class required")
@@ -107,6 +116,9 @@ class Runner:
                 report = json.loads(base64.b64decode(record["stdout"]))
                 if ("gvisor" not in report["kernel"].lower() or report["uid"] == 0
                         or report["process_limit"] != self.config["processes"]
+                        or report.get('guest_capacity_verified') != max(1, self.config['processes'] - 16)
+                        or record['resource_evidence']['host_tasks'] != self.config.get('host_tasks', 512)
+                        or record['resource_evidence']['processes'] != self.config['processes']
                         or not isinstance(report.get("physical_page_size"), int)
                         or report["physical_page_size"] <= 0
                         or not all(report["egress_denied"].values())):
@@ -131,7 +143,8 @@ class Runner:
             self.kube(["wait", "--for=condition=Ready", "pod/" + self.pod_name(operation), "--timeout=60s"], timeout=70)
             pod = self.pod(operation)
             status = next(s for s in pod["status"]["containerStatuses"] if s["name"] == "execution")
-            record.update(pod_uid=pod["metadata"]["uid"], container_id=status["containerID"].split("://", 1)[1])
+            record.update(pod_uid=pod["metadata"]["uid"], container_id=status["containerID"].split("://", 1)[1],
+                          cluster_node=pod['spec']['nodeName'], image=self.config['image'])
             self.guard(record, "freeze", idle_seconds=30)
             first = self.guard(record, "read", path="tick", offset=0)
             time.sleep(.3)
@@ -357,6 +370,7 @@ class Runner:
 
     def execution_limits(self, record):
         limits = {k: self.config[k] for k in ('cpu', 'memory_bytes', 'processes', 'temporary_bytes')}
+        limits['host_tasks'] = self.config.get('host_tasks', 512)
         # Keep the logical size requested by the Pod manifest. The trusted
         # node adapter rounds to its own physical pages; a remote controller
         # can have a different page size from the Linux execution node.
@@ -407,6 +421,8 @@ class Runner:
                          "shareProcessNamespace": False, "hostNetwork": False, "hostPID": False, "hostIPC": False,
                          "dnsPolicy": "None", "dnsConfig": {"nameservers": ["127.0.0.1"]},
                          "securityContext": {"fsGroup": 10000, "fsGroupChangePolicy": "OnRootMismatch"},
+                         "nodeSelector": profile.get('node_selector', {}),
+                         "tolerations": profile.get('tolerations', []),
                          "terminationGracePeriodSeconds": 1, "containers": [worker, collector], "volumes": volumes}}
 
     def pod(self, operation):
@@ -427,18 +443,38 @@ class Runner:
         if not arguments:
             raise RuntimeError("Execution requires a verified node lifecycle adapter")
         image = record.get('image')
-        if image is None:
+        cluster_node = record.get('cluster_node')
+        remote = isinstance(arguments, dict)
+        if image is None or (remote and cluster_node is None):
             # Upgrade old journals without trusting caller-controlled image
             # names. A live API object must match the already observed Pod UID.
             pod = self.pod(record.get('pod_operation',record['operation_id']))
             if not pod or pod['metadata']['uid'] != record['pod_uid']:
                 raise RuntimeError('old journal image binding unavailable')
             image = next(c['image'] for c in pod['spec']['containers'] if c['name']=='execution')
+            cluster_node = pod['spec']['nodeName']
+            # Persist bindings for pre-cluster journals before using them.
+            if self.path(record['operation_id']).exists():
+                self.update(record['operation_id'], image=image, cluster_node=cluster_node)
+        if remote:
+            guards = self.kube_json(['--namespace', arguments['namespace'], 'get', 'pods',
+                                    '-l', arguments['selector'], '--field-selector',
+                                    'spec.nodeName=' + cluster_node, '-o', 'json'])['items']
+            ready = [pod for pod in guards if not pod['metadata'].get('deletionTimestamp')
+                     and pod['spec']['nodeName'] == cluster_node
+                     and any(c['type'] == 'Ready' and c['status'] == 'True'
+                             for c in pod.get('status', {}).get('conditions', []))]
+            if len(ready) != 1:
+                raise RuntimeError('exact Cluster Node guard unavailable; termination remains unconfirmed')
+            arguments = self.command + ['--namespace', arguments['namespace'], 'exec', '-i',
+                         ready[0]['metadata']['name'], '-c', arguments.get('container', 'guard'),
+                         '--', *arguments['command']]
         request = dict(container_id=record["container_id"], pod_uid=record["pod_uid"],
                        area_id=record["area_id"], epoch=record["epoch"], image=image,
                        action=action, **fields)
         result = subprocess.run(arguments, input=json.dumps(request).encode(), stdout=subprocess.PIPE,
-                                stderr=subprocess.PIPE, timeout=45, check=False)
+                                stderr=subprocess.PIPE, timeout=45, check=False,
+                                **({'env': self.environment} if remote else {}))
         value = json.loads(result.stdout)
         if result.returncode:
             raise RuntimeError("node lifecycle adapter: " + str(value.get("error", "failed")))
@@ -497,7 +533,8 @@ class Runner:
             if record.get("pod_uid", pod["metadata"]["uid"]) != pod["metadata"]["uid"]:
                 raise RuntimeError("Python environment identity changed")
             cid = statuses["execution"]["containerID"].split("://", 1)[1]
-            record = self.update(operation, pod_operation=pod_operation, pod_uid=pod["metadata"]["uid"], container_id=cid)
+            record = self.update(operation, pod_operation=pod_operation, pod_uid=pod["metadata"]["uid"], container_id=cid,
+                                 cluster_node=pod['spec']['nodeName'], image=pod['spec']['containers'][0]['image'])
             limits = self.guard(record, 'limits', **self.execution_limits(record))
             self.update(operation, resource_evidence=limits)
             if pod_operation == operation and not record.get("hydrated"):
@@ -661,7 +698,8 @@ class Runner:
                 execution = statuses.get("execution", {}).get("state", {})
                 collector = statuses.get("collector", {}).get("state", {})
                 if "running" in execution and "running" in collector and not hydrated:
-                    record = self.update(operation, pod_uid=uid, container_id=statuses['execution']['containerID'].split('://',1)[1])
+                    record = self.update(operation, pod_uid=uid, container_id=statuses['execution']['containerID'].split('://',1)[1],
+                                         cluster_node=pod['spec']['nodeName'], image=pod['spec']['containers'][0]['image'])
                     limits = self.guard(record, 'limits', **self.execution_limits(record))
                     self.update(operation, resource_evidence=limits)
                     payload = dict(record["request"], working_bytes=self.config["working_bytes"], processes=self.config["processes"])
@@ -760,6 +798,21 @@ class Runner:
             record = self.update(operation, cancel_requested=True)
         return self.public(record)
 
+    def activity(self):
+        """Read-only activity; an unproven writer always prevents idle stop."""
+        with self.lock:
+            busy, completed = 0, 0
+            for path in self.root.glob('*.json'):
+                if path.name.startswith(('area-', 'session-')):
+                    continue
+                record = json.loads(path.read_bytes())
+                if record['status'] not in TERMINAL or not (
+                        record.get('termination_confirmed') or record.get('writer_frozen')):
+                    busy += 1
+                completed = max(completed, record.get('finished_at', 0))
+            return {'protocol': 'aidash-runner-activity/1', 'counts': {'runner': busy},
+                    'busy': busy > 0, 'last_work_completed': completed}
+
 
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
@@ -809,6 +862,8 @@ class Handler(BaseHTTPRequestHandler):
             return {"protocol": "aidash-runner/1", "runtime_class": runner.config["runtime_class"],
                     "image": runner.config["image"], "maximum_seconds": runner.config["maximum_seconds"],
                     "instance": runner.instance, "verified": runner.verified, "probe": runner.probe, "python_verified": runner.python_verified}
+        if self.command == 'GET' and path == '/v1/activity':
+            return runner.activity()
         raise Rejected(404, "runner route unavailable")
 
     def respond(self):

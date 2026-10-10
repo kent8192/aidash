@@ -6,7 +6,7 @@ import re
 SHA = re.compile(r"[0-9a-f]{40}")
 ENVIRONMENT = re.compile(r"(?:develop|test|pr-[1-9][0-9]*)")
 DEVELOP = re.compile(r"develop/[0-9]+\.[0-9]+\.[0-9]+")
-IMAGE_KINDS = ("app", "postgres", "sandbox", "observer", "nats")
+IMAGE_KINDS = ("app", "postgres", "sandbox", "observer", "nats", "control", "edge", "caddy")
 PREVIEW = re.compile(
     r"/preview (up|stop|destroy)(?: (spot|normal))?(?: ([0-9a-f]{40}))?"
 )
@@ -22,7 +22,7 @@ def preview_command(body):
         return None
     action, mode, sha = match.groups()
     if action != "up" and (mode or sha):
-        raise Refused("Only /preview up accepts a VM mode or an approved SHA")
+        raise Refused("Only /preview up accepts a node pool mode or an approved SHA")
     return {"action": action, "mode": mode or "", "approved_sha": sha or ""}
 
 
@@ -42,7 +42,7 @@ def validate_request(request):
     if request.get("mode", "") not in {"", "spot", "normal"}:
         raise Refused("Unknown provisioning model")
     if request["environment"] == "develop" and request.get("mode") == "spot":
-        raise Refused("Shared development staging uses a normal VM")
+        raise Refused("Shared development staging uses a normal (non-Spot) node pool")
     if request["action"] in {"create", "up", "resume", "update"} and not request.get(
         "sha"
     ):
@@ -186,31 +186,6 @@ def attach_release(state, identity, generation, release):
             )
     entry["release"] = release
     return result, True
-
-
-def meaningful_request(method, path, status):
-    # The access log contains $uri, never a query string, cookie, or request body.
-    if not 200 <= status < 400:
-        return False
-    if method == "GET":
-        return path in {"/auth/login", "/auth/callback"}
-    if method not in {"POST", "PUT", "PATCH", "DELETE"} or not path.startswith(
-        ("/api/", "/federation/v0.1/")
-    ):
-        return False
-    if re.fullmatch(r"/api/runs/[^/]+/(shell|python)/poll", path):
-        return False
-    if path.startswith(("/api/peer/", "/api/metrics", "/api/state", "/api/session")):
-        return False
-    # The peer protocol also uses POST for discovery, verification and polling.
-    if re.fullmatch(
-        r"/federation/v0\.1/(discover|workspace|scoped/discover|scoped/registry/verify|"
-        r"scoped/execution/(inspect|status|grants/(verify|snapshot|describe|activation)|"
-        r"admissions/[^/]+/verify)|scoped/files/(negotiate|describe|status|recipients))",
-        path,
-    ):
-        return False
-    return True
 
 
 def idle_due(observation, now, keepalive_at=0):

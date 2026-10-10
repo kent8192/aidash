@@ -39,10 +39,24 @@ for root, budget in [('/work', int(sys.argv[1])), ('/tmp', int(sys.argv[2]))]:
         except OSError as error:
             report['disk_enforced'][root] = error.errno == errno.ENOSPC
 # Verify fork works before lowering this probe's inherited hard limit. Exhausting
-# the entire Pod pids.max also consumes the Sentry's host threads and can kill
-# the verifier itself. The trusted node adapter independently checks the exact
-# configured pids.max; this bounded probe exercises enforcement inside gVisor.
+# the host task ceiling also consumes the Sentry's host threads and can kill
+# the verifier itself. The trusted guard independently checks host_tasks at
+# pids.max; this bounded probe exercises the separate guest process ceiling.
 subprocess.run(['true'], check=True)
+# Leave room for the guest's collector/control processes while proving the host
+# ceiling no longer cuts the default 128-process guest off at about 40. Exact
+# pids.max is independently checked by the guard before this code is released.
+report['guest_capacity_target'] = max(1, report['process_limit'] - 16)
+capacity = []
+try:
+    for _ in range(report['guest_capacity_target']):
+        capacity.append(subprocess.Popen(['sleep', '10']))
+finally:
+    for process in capacity:
+        process.terminate()
+    for process in capacity:
+        process.wait()
+report['guest_capacity_verified'] = len(capacity)
 report['fork_probe_limit'] = 8
 resource.setrlimit(resource.RLIMIT_NPROC, (report['fork_probe_limit'], report['fork_probe_limit']))
 processes = []

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Two real HTTP Nodes, separate PostgreSQL databases and native PostgreSQL search.
 
-Run only against an explicit disposable Kubernetes/k3s cluster. The ordinary
+Run only against an explicit disposable Kubernetes cluster. The ordinary
 case kills the inference worker. The generated case kills Home during embedding,
 holds a link outage, and restarts both servers, the worker and PostgreSQL. Provider
 requests, durable cuts, image IDs and failures are retained as synthetic evidence.
@@ -414,7 +414,7 @@ class RemoteMemory(Cluster):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--kubeconfig", required=True)
-    parser.add_argument("--distribution", choices=["kubernetes", "k3s"], required=True)
+    parser.add_argument("--distribution", choices=["kubernetes"], required=True)
     parser.add_argument("--image", required=True)
     parser.add_argument("--postgres-image", required=True)
     parser.add_argument("--queries", required=True)

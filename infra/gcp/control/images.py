@@ -16,6 +16,19 @@ KINDS = IMAGE_KINDS
 # publication path as source builds and never pull mutable tags on a host.
 AUXILIARY_IMAGES = {
     "nats": "nats:2.12.15-alpine@sha256:e01e9f09c03f60a8ded4785444ec4c5b2fd18a773b8b874daeefeff559119316",
+    "caddy": "caddy:2.10.2@sha256:c3d7ee5d2b11f9dc54f947f68a734c84e9c9666c92c88a7f30b9cba5da182adb",
+}
+# Dockerfiles always come from this trusted checkout. Source kinds build the
+# deployed source context; privileged kinds build only trusted contexts.
+SOURCE_BUILDS = {
+    "app": ("Dockerfile", ".", ["--target", "runtime"]),
+    "postgres": ("deploy/postgres/Dockerfile", ".", []),
+    "sandbox": ("runner/Dockerfile", "runner", []),
+}
+TRUSTED_BUILDS = {
+    "observer": ("infra/gcp/observer/Dockerfile", "infra/gcp/observer", []),
+    "control": ("runner/control.Dockerfile", "runner", []),
+    "edge": ("infra/gcp/helm/environment/edge.Dockerfile", "infra/gcp/helm/environment", []),
 }
 
 
@@ -59,16 +72,12 @@ def main():
             )
             subprocess.run(["docker", "tag", source, tag], check=True)
         else:
-            file, context, target = {
-                "app": (ROOT / "Dockerfile", args.source, ["--target", "runtime"]),
-                "postgres": (ROOT / "deploy/postgres/Dockerfile", args.source, []),
-                "sandbox": (ROOT / "runner/Dockerfile", args.source / "runner", []),
-                "observer": (
-                    ROOT / "infra/gcp/observer/Dockerfile",
-                    ROOT / "infra/gcp/observer",
-                    [],
-                ),
-            }[args.kind]
+            if args.kind in TRUSTED_BUILDS:
+                file, context, target = TRUSTED_BUILDS[args.kind]
+                context = ROOT / context
+            else:
+                file, context, target = SOURCE_BUILDS[args.kind]
+                context = args.source / context
             subprocess.run(
                 [
                     "docker",
@@ -76,7 +85,7 @@ def main():
                     "--platform",
                     "linux/amd64",
                     "--file",
-                    str(file),
+                    str(ROOT / file),
                     "--tag",
                     tag,
                     *target,

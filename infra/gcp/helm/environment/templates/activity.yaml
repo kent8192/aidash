@@ -1,0 +1,123 @@
+{{- if .Values.activity.enabled -}}
+{{- $name := include "environment.name" . -}}
+{{- $secret := required "activity.existingSecret is required" .Values.activity.existingSecret -}}
+{{- if not (regexMatch "@sha256:[0-9a-f]{64}$" (toString .Values.activity.observerImage)) -}}{{ fail "activity.observerImage must be pinned by digest: it holds the database credential" }}{{- end -}}
+{{- if not (regexMatch "@sha256:[0-9a-f]{64}$" (toString .Values.activity.collectorImage)) -}}{{ fail "activity.collectorImage must be pinned by digest: it receives the Runner token and may patch the activity ConfigMap" }}{{- end -}}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name }}-activity
+data:
+  snapshot.json: '{"protocol":"aidash-infra-activity/1","busy":true,"observation_gap":true}'
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name }}-activity-code
+data:
+  activity.py: |
+{{ .Files.Get "files/activity.py" | indent 4 }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $name }}-activity
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $name }}-activity
+rules:
+  - apiGroups: [""]
+    resources: [configmaps]
+    resourceNames: [{{ $name }}-activity]
+    verbs: [get, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $name }}-activity
+subjects:
+  - { kind: ServiceAccount, name: {{ $name }}-activity, namespace: {{ .Release.Namespace | quote }} }
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: {{ $name }}-activity }
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ $name }}-activity
+spec:
+  schedule: "* * * * *"
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 30
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 1
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 55
+      template:
+        metadata:
+          labels: { aidash.run/activity: {{ .Release.Name | quote }} }
+        spec:
+          hostNetwork: false
+          serviceAccountName: {{ $name }}-activity
+          # The ServiceAccount may patch the activity ConfigMap. Only the collector
+          # publishes; the database-facing observer must not be able to forge it.
+          automountServiceAccountToken: false
+          restartPolicy: Never
+          nodeSelector: {{ toYaml .Values.nodeSelector | nindent 12 }}
+          tolerations: {{ toYaml .Values.tolerations | nindent 12 }}
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10001
+            runAsGroup: 10001
+            fsGroup: 10001
+            seccompProfile: { type: RuntimeDefault }
+          initContainers:
+            - name: observer
+              image: {{ .Values.activity.observerImage | quote }}
+              # Never fail the Pod: a failed observation leaves no database.json,
+              # so the collector still runs and publishes its busy, fail-closed
+              # snapshot instead of leaving the last idle one in place.
+              command: [sh, -c, 'if aidash-infra-observer > /snapshot/observer.json; then mv /snapshot/observer.json /snapshot/database.json; fi']
+              env:
+                - name: DATABASE_URL
+                  valueFrom: { secretKeyRef: { name: {{ $secret | quote }}, key: DATABASE_URL } }
+              resources: {{ toYaml .Values.activity.resources | nindent 16 }}
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities: { drop: [ALL] }
+              volumeMounts: [{ name: snapshot, mountPath: /snapshot }]
+          containers:
+            - name: collector
+              image: {{ .Values.activity.collectorImage | quote }}
+              command: [python3, -I, /opt/activity/activity.py]
+              env:
+                - { name: ACTIVITY_CONFIGMAP, value: {{ $name }}-activity }
+                - name: OBSERVATION_JOB
+                  valueFrom: { fieldRef: { fieldPath: "metadata.labels['batch.kubernetes.io/job-name']" } }
+                - { name: EDGE_ACTIVITY_ENDPOINT, value: "http://{{ $name }}-activity:8089" }
+                - { name: RUNNER_ENDPOINT, value: {{ .Values.activity.runnerEndpoint | quote }} }
+                - name: AIDASH_CORE_RUNNER_TOKEN
+                  valueFrom: { secretKeyRef: { name: {{ $secret | quote }}, key: AIDASH_CORE_RUNNER_TOKEN } }
+              resources: {{ toYaml .Values.activity.resources | nindent 16 }}
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities: { drop: [ALL] }
+              volumeMounts:
+                - { name: snapshot, mountPath: /snapshot, readOnly: true }
+                - { name: code, mountPath: /opt/activity, readOnly: true }
+                - { name: api, mountPath: /var/run/secrets/kubernetes.io/serviceaccount, readOnly: true }
+          volumes:
+            - { name: snapshot, emptyDir: { sizeLimit: 16Mi } }
+            - { name: code, configMap: { name: {{ $name }}-activity-code } }
+            - name: api
+              projected:
+                sources:
+                  - serviceAccountToken: { path: token, expirationSeconds: 3607 }
+                  - configMap: { name: kube-root-ca.crt, items: [{ key: ca.crt, path: ca.crt }] }
+                  - downwardAPI: { items: [{ path: namespace, fieldRef: { apiVersion: v1, fieldPath: metadata.namespace } }] }
+{{- end }}
