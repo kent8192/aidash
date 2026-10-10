@@ -89,10 +89,8 @@ pub async fn transition(
 		"COMPLETED" | "DENIED" | "STOPPED" | "EXPIRED" | "FAILED" | "DELETED"
 	);
 	if terminal && !job.quota_released {
-		let (unused, unused_calls, unused_embeddings) = scope.unused(job).await?;
-		scope
-			.release_policy(job, unused, unused_calls, unused_embeddings)
-			.await?;
+		let (unused, unused_calls) = scope.unused(job).await?;
+		scope.release_policy(job, unused, &unused_calls).await?;
 		scope.mark_quota_released(job).await?;
 	}
 	if matches!(status, "STOPPED" | "EXPIRED" | "DELETED") {

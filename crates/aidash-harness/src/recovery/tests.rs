@@ -1,5 +1,8 @@
 use super::*;
-use aidash_domain::{RecoveryState, Run, StateVersion, ThinkingState, context::Context};
+use aidash_domain::{
+	RecoveryState, Run, StateVersion, ThinkingState,
+	context::{Context, recovery::Failure as ContextFailure},
+};
 use async_trait::async_trait;
 use rstest::{fixture, rstest};
 use std::sync::Mutex;
@@ -9,6 +12,7 @@ enum Write {
 	Save(String),
 	Pause(String, String),
 	Semantic(SemanticFailure),
+	Context(ContextFailure),
 }
 struct Repository {
 	run: Mutex<Option<Run>>,
@@ -41,6 +45,12 @@ impl ExecutionRecoveryStore for Repository {
 		assert_eq!(token, self.token);
 		*self.run.lock().unwrap() = Some(run.clone());
 		self.writes.lock().unwrap().push(Write::Semantic(reason));
+		Ok(())
+	}
+	async fn pause_context(&self, run: &Run, token: Uuid, reason: ContextFailure) -> Result<()> {
+		assert_eq!(token, self.token);
+		*self.run.lock().unwrap() = Some(run.clone());
+		self.writes.lock().unwrap().push(Write::Context(reason));
 		Ok(())
 	}
 }
@@ -277,4 +287,76 @@ async fn a_new_lease_owner_prevents_any_recovery_write(repository: Repository, n
 		repository.run.lock().unwrap().as_ref().unwrap().state,
 		RunState::Thinking(_)
 	));
+}
+#[rstest]
+#[case(ContextFailure::ContextUnreducible)]
+#[case(ContextFailure::PruneUnavailable)]
+#[case(ContextFailure::SummaryUnavailable)]
+#[case(ContextFailure::SummaryInvalid)]
+#[case(ContextFailure::OverflowRetriesExhausted)]
+#[case(ContextFailure::OutputTruncated)]
+#[case(ContextFailure::Refused)]
+#[tokio::test]
+async fn typed_context_failures_pause_without_scheduling_a_retry(
+	repository: Repository,
+	now: DateTime<Utc>,
+	#[case] reason: ContextFailure,
+) {
+	// Arrange: even with retry allowance left, a context failure is final.
+	repository
+		.run
+		.lock()
+		.unwrap()
+		.as_mut()
+		.unwrap()
+		.recovery
+		.retry = Some(RetryState { count: 1, at: now });
+	// Act
+	let retry = recover(
+		&repository,
+		repository.token,
+		ExecutionFailure::Context(reason),
+		now,
+	)
+	.await
+	.unwrap();
+	// Assert
+	assert!(!retry);
+	assert_eq!(*repository.writes.lock().unwrap(), [Write::Context(reason)]);
+	let run = repository.run.lock().unwrap();
+	let run = run.as_ref().unwrap();
+	assert_eq!(run.recovery.context_reason, Some(reason));
+	assert_eq!(run.recovery.retry.as_ref().unwrap().count, 1);
+	assert_eq!(run.recovery.retry.as_ref().unwrap().at, now);
+	assert!(matches!(run.state, RunState::Thinking(_)));
+	assert!(!ExecutionFailure::Context(reason).retryable());
+	assert_eq!(
+		ExecutionFailure::Context(reason).message(),
+		reason.to_string()
+	);
+}
+#[rstest]
+#[tokio::test]
+async fn transport_failures_still_retry(repository: Repository, now: DateTime<Utc>) {
+	let retry = recover(
+		&repository,
+		repository.token,
+		ExecutionFailure::Inference {
+			transport: true,
+			status: None,
+			message: "connection reset".into(),
+		},
+		now,
+	)
+	.await
+	.unwrap();
+	assert!(retry);
+	assert_eq!(
+		*repository.writes.lock().unwrap(),
+		[Write::Save("run.retrying".into())]
+	);
+	let run = repository.run.lock().unwrap();
+	let run = run.as_ref().unwrap();
+	assert_eq!(run.recovery.retry.as_ref().unwrap().count, 1);
+	assert_eq!(run.recovery.context_reason, None);
 }

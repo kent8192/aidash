@@ -105,6 +105,8 @@ async fn seed_history(f: &Federation, run: &aidash_server::domain::Run) {
 		let query_bind_1 = run.id;
 		let mut context = serde_json::to_value(&run.context).unwrap();
 		context["history"] = json!(history);
+		// Bare events are a pre-journal projection; drop the cursor so it is imported.
+		context.as_object_mut().unwrap().remove("journal");
 		let query_bind_2 = context;
 		sqlx::query(
 			&reinhardt::query::Query::update()

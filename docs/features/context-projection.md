@@ -77,7 +77,9 @@ reject `ordered` Agents even on a node that has keys.
 ## What stays stable
 
 The Stable Prefix part holds `identity`, `task`, `reference_documents`,
-`run_message_summary` and `history`, in that order. The volatile part follows:
+`run_message_summary`, the adopted Execution Summary as `summary` (only when a
+Context Policy's Summary Stage produced one), and `history`, in that order. The
+volatile part follows:
 it holds the agent state, workspace observation, run messages, deferred markers,
 `semantic_memory` and per-turn instructions such as run-message catch-up and
 media intake. Two consecutive steps share their bytes through all earlier
@@ -85,7 +87,8 @@ history.
 
 These events legitimately end the shared prefix:
 
-- History compaction, or removal of an old media observation.
+- History compaction, including a Summary Stage merge, or removal of an old
+  media observation.
 - A change to the task, the instructions, or a loaded Skill body.
 - Run-message catch-up and media-intake turns, which narrow or clear the tools.
 - Fixed content (instructions, tools, reference documents, per-turn

@@ -20,6 +20,8 @@ pub(crate) struct Admissions<'a> {
 	pub(crate) remote: Option<&'a Federation>,
 	pub(crate) access: &'a Arc<Mutex<Access>>,
 	pub(crate) run: &'a Run,
+	/// Home admission purpose; local reservations always charge model tokens.
+	pub(crate) purpose: Purpose,
 }
 #[async_trait]
 impl InferenceAdmissionRepository<InferenceReservation> for Admissions<'_> {
@@ -44,17 +46,10 @@ impl InferenceAdmissionRepository<InferenceReservation> for Admissions<'_> {
 		units: i64,
 	) -> Result<InferenceReservation> {
 		let federation = self.remote.ok_or(Error::Forbidden)?;
-		protocol::admit(
-			federation,
-			self.run,
-			attempt,
-			Purpose::Inference,
-			digest,
-			units,
-		)
-		.await
-		.map(|reservation| InferenceReservation::Remote(Box::new(reservation)))
-		.map_err(Into::into)
+		protocol::admit(federation, self.run, attempt, self.purpose, digest, units)
+			.await
+			.map(|reservation| InferenceReservation::Remote(Box::new(reservation)))
+			.map_err(Into::into)
 	}
 	async fn reserve_local(
 		&self,

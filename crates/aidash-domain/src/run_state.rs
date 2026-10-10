@@ -334,6 +334,9 @@ impl RunState {
 pub struct RecoveryState {
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub semantic_reason: Option<crate::semantic::Failure>,
+	/// Typed context-recovery reason for a paused Run; cleared on resume.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub context_reason: Option<crate::context::recovery::Failure>,
 	pub retry: Option<RetryState>,
 	pub lease_recovered: bool,
 }

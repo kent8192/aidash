@@ -66,6 +66,8 @@ impl Record for Usage {
 			compaction_calls: row.try_get("compaction_calls")?,
 			embedding_calls: row.try_get("embedding_calls")?,
 			embedding_call_limit: row.try_get("embedding_call_limit")?,
+			summary_calls: row.try_get("summary_calls")?,
+			summary_call_limit: row.try_get("summary_call_limit")?,
 		})
 	}
 }

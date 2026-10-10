@@ -49,6 +49,12 @@ pub async fn recover(
 			current.recovery.semantic_reason = Some(reason);
 			store.pause_semantic(&current, token, reason).await?;
 		}
+	} else if let ExecutionFailure::Context(reason) = failure {
+		// Final for this step and never a transport retry. Local and remote-hosted
+		// Runs share this path: the store records the typed reason, pauses, and
+		// emits `run.context_blocked`, like every other execution pause.
+		current.recovery.context_reason = Some(reason);
+		store.pause_context(&current, token, reason).await?;
 	} else if let ExecutionFailure::Authority {
 		identity_unavailable,
 	} = failure

@@ -14,6 +14,7 @@ impl AgentConfig {
 			remove_default: self.remove_default.clone(),
 			cluster: self.cluster.clone(),
 			max_steps: self.max_steps,
+			context_policy: self.context_policy.clone(),
 			projection_version: self.projection_version,
 			prompt_cache: self.prompt_cache,
 		}
@@ -36,6 +37,7 @@ impl AgentConfig {
 			instructions: input.instructions,
 			cluster: input.cluster,
 			max_steps: input.max_steps,
+			context_policy: input.context_policy,
 			projection_version: input.projection_version,
 			prompt_cache: input.prompt_cache,
 			core_capabilities: Default::default(),

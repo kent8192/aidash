@@ -54,6 +54,18 @@ fn a_pause_without_a_semantic_reason_does_not_clear_ordinary_recovery(mut raw: R
 	assert_eq!(raw.resumed_pending().unwrap(), None);
 }
 #[rstest]
+fn manual_context_retry_clears_its_typed_reason_and_schedule(mut raw: RawRun) {
+	let recovery = raw.pending["recovery"].as_object_mut().unwrap();
+	recovery.remove("semantic_reason");
+	recovery.insert("context_reason".into(), json!("output_truncated"));
+	let result = raw.resumed_pending().unwrap().unwrap();
+	assert_eq!(result["data"], raw.pending["data"]);
+	assert_eq!(
+		result["recovery"],
+		json!({"retry":null,"lease_recovered":true})
+	);
+}
+#[rstest]
 #[case::unsupported_state("state")]
 #[case::incomplete_pending("pending")]
 #[case::malformed_context("context")]

@@ -144,6 +144,14 @@ pub trait ExecutionRecoveryStore: Send + Sync {
 		token: uuid::Uuid,
 		reason: aidash_domain::semantic::Failure,
 	) -> Result<()>;
+	/// Pauses on a typed context-recovery failure and records it as the Run's
+	/// `context_reason`, with the same visibility as any other execution pause.
+	async fn pause_context(
+		&self,
+		run: &aidash_domain::Run,
+		token: uuid::Uuid,
+		reason: aidash_domain::context::recovery::Failure,
+	) -> Result<()>;
 }
 
 pub mod execution;

@@ -86,6 +86,8 @@ pub struct Usage {
 	pub compaction_calls: i64,
 	pub embedding_calls: i64,
 	pub embedding_call_limit: i64,
+	pub summary_calls: i64,
+	pub summary_call_limit: i64,
 }
 
 impl Request {

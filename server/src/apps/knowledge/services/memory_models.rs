@@ -617,9 +617,11 @@ impl Models {
 			context: context.into(),
 			tools: vec![],
 			max_output_tokens: output as u32,
+			response_format: None,
 			content_parts: vec![],
 			cache_scope: None,
 			cache_breakpoints: false,
+			disable_provider_transforms: false,
 		};
 		request.ensure_fits(config.context_window)?;
 		let charge = rate.charge(input as u64, output as u64)?;

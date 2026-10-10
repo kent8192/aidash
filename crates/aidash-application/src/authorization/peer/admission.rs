@@ -341,6 +341,7 @@ pub async fn activate<R: PeerAdmissionRepository>(
 			phase: run.phase().into(),
 			control: run.control.into(),
 			semantic_reason: run.recovery.semantic_reason,
+			context_reason: run.recovery.context_reason,
 			error: run.error,
 		})
 	}
@@ -372,6 +373,10 @@ pub async fn status<R: PeerAdmissionRepository>(
 			.as_ref()
 			.and_then(|r| r.recovery.as_ref())
 			.and_then(|r| r.semantic_reason),
+		context_reason: run
+			.as_ref()
+			.and_then(|r| r.recovery.as_ref())
+			.and_then(|r| r.context_reason),
 		error: run.and_then(|r| {
 			r.error
 				.clone()
@@ -413,6 +418,7 @@ pub async fn control<R: PeerAdmissionRepository>(
 		phase: run.phase().into(),
 		control: run.control.into(),
 		semantic_reason: run.recovery.as_ref().and_then(|r| r.semantic_reason),
+		context_reason: run.recovery.as_ref().and_then(|r| r.context_reason),
 		error: run
 			.error
 			.clone()

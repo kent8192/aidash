@@ -112,6 +112,54 @@ impl ExecutionStore for Store {
 			.await
 			.map_err(Into::into)
 	}
+	async fn context_journal(
+		&self,
+		run: Uuid,
+		from: u64,
+		through: u64,
+	) -> Result<Vec<aidash_domain::context::HistoryEntry>> {
+		Store::context_journal(self, run, from, through)
+			.await
+			.map_err(Into::into)
+	}
+	async fn journal_context(&self, run: &Run, token: Uuid) -> Result<()> {
+		Store::journal_context(self, run, token)
+			.await
+			.map_err(Into::into)
+	}
+	async fn begin_compaction(
+		&self,
+		run: &Run,
+		token: Uuid,
+		attempt: &aidash_domain::context::recovery::Attempt,
+		call_budget: u32,
+	) -> Result<()> {
+		Store::begin_compaction(self, run, token, attempt, call_budget)
+			.await
+			.map_err(Into::into)
+	}
+	async fn settle_compaction(
+		&self,
+		run: &Run,
+		token: Uuid,
+		attempt: Uuid,
+		settlement: &aidash_domain::context::recovery::Settlement,
+	) -> Result<()> {
+		Store::settle_compaction(self, run, token, attempt, settlement)
+			.await
+			.map_err(Into::into)
+	}
+	async fn adopt_compaction(
+		&self,
+		run: &Run,
+		token: Uuid,
+		attempt: Uuid,
+		settlement: &aidash_domain::context::recovery::Settlement,
+	) -> Result<()> {
+		Store::adopt_compaction(self, run, token, attempt, settlement)
+			.await
+			.map_err(Into::into)
+	}
 }
 
 #[async_trait]
@@ -330,6 +378,33 @@ impl ExecutionAuthority for Authority<'_> {
 			})
 			.map_err(Into::into)
 	}
+	async fn reserve_summary(
+		&self,
+		token: Uuid,
+		summarizer: &aidash_domain::context::summary::SummaryProvider,
+		window: usize,
+		output: u32,
+		request: &ModelRequest,
+	) -> Result<Option<Box<dyn InferenceReservation>>> {
+		self.guard
+			.reserve_summary(self.federation, token, summarizer, window, output, request)
+			.await
+			.map(|value| {
+				value.map(|reservation| {
+					Box::new(Reservation(reservation)) as Box<dyn InferenceReservation>
+				})
+			})
+			.map_err(Into::into)
+	}
+	async fn recheck_summary(
+		&self,
+		summarizer: &aidash_domain::context::summary::SummaryProvider,
+	) -> Result<()> {
+		self.guard
+			.recheck_summary(self.federation, summarizer)
+			.await
+			.map_err(Into::into)
+	}
 	async fn suspend(&self) -> Result<()> {
 		self.guard.suspend().await.map_err(Into::into)
 	}
@@ -402,6 +477,7 @@ impl ExecutionEnvironment for Environment<'_> {
 			max_steps: config.max_steps,
 			allow_task_creation: config.allow_task_creation,
 			conversation_memory: config.conversation_memory,
+			context_policy: config.context_policy,
 			projection_version: config.projection_version.unwrap_or_default(),
 			prompt_cache: config.prompt_cache.unwrap_or_default(),
 		})
@@ -709,6 +785,40 @@ impl ExecutionEnvironment for Environment<'_> {
 		)
 		.await
 		.map_err(Into::into)
+	}
+	async fn summary_dependencies_current(
+		&self,
+		run: &Run,
+		dependencies: &aidash_domain::context::summary::SummaryDependencies,
+	) -> Result<bool> {
+		if dependencies.message_ids.is_empty() {
+			return Ok(true);
+		}
+		if let Some(authority) = &self.authority {
+			if run.id != self.step_run.id {
+				return Err(aidash_application::Error::Forbidden);
+			}
+			return authority
+				.guard
+				.messages_readable(&dependencies.message_ids)
+				.await
+				.map_err(Into::into);
+		}
+		// Trusted local execution has no worker policy: a dependency is current
+		// while the message still exists in the Run's Workspace.
+		for id in &dependencies.message_ids {
+			match self
+				.federation
+				.store
+				.workspace_record(run.workspace_id, "message", *id)
+				.await
+			{
+				Ok(_) => {}
+				Err(crate::Error::NotFound(_) | crate::Error::Forbidden) => return Ok(false),
+				Err(error) => return Err(error.into()),
+			}
+		}
+		Ok(true)
 	}
 }
 

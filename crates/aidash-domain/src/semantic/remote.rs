@@ -35,6 +35,10 @@ pub enum Request {
 		native: Option<Box<NativeRequest>>,
 		#[serde(default, skip_serializing_if = "Option::is_none")]
 		compactor: Option<EntityRef>,
+		/// Exact Summary Stage model pinned by the Agent's Context Policy.
+		/// Omitted for peers and Agents without a Summary Stage.
+		#[serde(default, skip_serializing_if = "Option::is_none")]
+		summarizer: Option<EntityRef>,
 	},
 }
 
@@ -87,6 +91,12 @@ impl Request {
 			Self::RequiredHome { compactor, .. } => compactor.as_ref(),
 		}
 	}
+	pub fn summarizer(&self) -> Option<&EntityRef> {
+		match self {
+			Self::Disabled {} => None,
+			Self::RequiredHome { summarizer, .. } => summarizer.as_ref(),
+		}
+	}
 }
 
 /// The configuration digest includes the credential *reference*, never its value.
@@ -118,6 +128,10 @@ pub enum Binding {
 		native: Option<Box<NativeBinding>>,
 		#[serde(default, skip_serializing_if = "Option::is_none")]
 		compactor: Option<Box<Provider>>,
+		/// Home-disclosed Summary Stage model pin; absent means no Summary
+		/// Stage may run for this remote execution.
+		#[serde(default, skip_serializing_if = "Option::is_none")]
+		summarizer: Option<Box<Provider>>,
 	},
 }
 impl Default for Binding {
@@ -135,6 +149,7 @@ impl Binding {
 			Self::RequiredHome {
 				embedding,
 				compactor,
+				summarizer,
 				native,
 				..
 			} => Request::RequiredHome {
@@ -143,12 +158,19 @@ impl Binding {
 					.as_ref()
 					.map(|binding| Box::new(binding.selection.clone())),
 				compactor: compactor.as_ref().map(|p| p.entry.clone()),
+				summarizer: summarizer.as_ref().map(|p| p.entry.clone()),
 			},
 		}
 	}
 }
 
 impl Binding {
+	pub fn summarizer(&self) -> Option<&Provider> {
+		match self {
+			Self::RequiredHome { summarizer, .. } => summarizer.as_deref(),
+			Self::Disabled {} => None,
+		}
+	}
 	pub fn native(&self) -> Option<&NativeBinding> {
 		match self {
 			Self::RequiredHome { native, .. } => native.as_deref(),

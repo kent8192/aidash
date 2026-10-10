@@ -250,6 +250,12 @@ impl FailureScope for Failure {
 pub(crate) fn classify_failure(error: &NativeError) -> ExecutionFailure {
 	match error {
 		NativeError::RemoteSemantic(reason) => ExecutionFailure::Semantic(*reason),
+		NativeError::Context(reason) => ExecutionFailure::Context(*reason),
+		// The harness owns bounded compact-and-retry; an overflow that escapes
+		// it has exhausted recovery and must pause rather than transport-retry.
+		NativeError::ContextOverflow => ExecutionFailure::Context(
+			aidash_domain::context::recovery::Failure::OverflowRetriesExhausted,
+		),
 		NativeError::Forbidden | NativeError::Unauthorized => ExecutionFailure::Authority {
 			identity_unavailable: false,
 		},

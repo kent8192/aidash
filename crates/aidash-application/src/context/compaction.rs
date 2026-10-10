@@ -47,7 +47,7 @@ struct Fitted {
 }
 
 pub(super) struct Compacted {
-	pub history: Vec<ContextEvent>,
+	pub history: Vec<HistoryEntry>,
 	pub requests: usize,
 	pub stage: &'static str,
 	pub calls_dropped: usize,
@@ -102,10 +102,10 @@ pub(super) fn estimate_tokens(value: &str) -> usize {
 	tenths.div_ceil(10)
 }
 
-fn collect_calls(history: &[ContextEvent], recent: usize) -> Vec<Call<'_>> {
+fn collect_calls(history: &[HistoryEntry], recent: usize) -> Vec<Call<'_>> {
 	let mut calls = Vec::new();
-	for (index, event) in history.iter().enumerate() {
-		let ContextEvent::Tool { call, result } = event else {
+	for (index, entry) in history.iter().enumerate() {
+		let ContextEvent::Tool { call, result } = &entry.event else {
 			continue;
 		};
 		let tool = call.name.as_str();
@@ -128,7 +128,7 @@ fn collect_calls(history: &[ContextEvent], recent: usize) -> Vec<Call<'_>> {
 }
 
 fn entries(
-	history: &[ContextEvent],
+	history: &[HistoryEntry],
 	calls: &[Call<'_>],
 	current: &Value,
 	limit: usize,
@@ -142,7 +142,7 @@ fn entries(
 		tool_calls: vec![],
 	}];
 	let by_index: BTreeMap<_, _> = calls.iter().map(|c| (c.index, c)).collect();
-	for (i, event) in history.iter().enumerate() {
+	for (i, HistoryEntry { event, .. }) in history.iter().enumerate() {
 		let mut entry = Entry {
 			i: Some(i),
 			role: if matches!(event, ContextEvent::Human { .. }) {
@@ -171,7 +171,7 @@ fn entries(
 }
 
 fn fit_state(
-	history: &[ContextEvent],
+	history: &[HistoryEntry],
 	calls: &[Call<'_>],
 	current: &Value,
 	options: &Options,
@@ -340,7 +340,7 @@ fn batches<'a>(
 }
 
 pub(super) async fn prune(
-	history: &[ContextEvent],
+	history: &[HistoryEntry],
 	current: &Value,
 	asker: &dyn JevAsker,
 	options: &Options,
@@ -395,23 +395,24 @@ pub(super) async fn prune(
 		calls_dropped: 0,
 		results_truncated: 0,
 	};
-	for (index, event) in history.iter().enumerate() {
+	for (index, entry) in history.iter().enumerate() {
+		let event = &entry.event;
 		let Some(&(keep_call, keep_result)) = answers.get(&index) else {
-			output.history.push(event.clone());
+			output.history.push(entry.clone());
 			continue;
 		};
 		if keep_result >= options.keep_threshold {
-			output.history.push(event.clone());
+			output.history.push(entry.clone());
 		} else if keep_call >= options.keep_threshold {
 			let ContextEvent::Tool { result, .. } = event else {
 				return Err(Error::Invalid("invalid compaction target".into()));
 			};
 			let result = text(result);
 			let length = result.chars().count();
-			let mut kept = event.clone();
+			let mut kept = entry.clone();
 			if length > options.truncate_head_chars.saturating_add(120) {
 				let head: String = result.chars().take(options.truncate_head_chars).collect();
-				let ContextEvent::Tool { result, .. } = &mut kept else {
+				let ContextEvent::Tool { result, .. } = &mut kept.event else {
 					return Err(Error::Invalid("invalid compaction target".into()));
 				};
 				*result = json!(format!(
@@ -454,4 +455,4 @@ pub(crate) struct Entry {
 	pub(crate) original_chars: usize,
 }
 
-use aidash_domain::context::ContextEvent;
+use aidash_domain::context::{ContextEvent, HistoryEntry};

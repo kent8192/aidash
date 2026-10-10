@@ -167,6 +167,7 @@ fn world() -> World {
 			index_digest: digest(),
 			embedding: Box::new(embedding),
 			compactor: Some(Box::new(compactor_provider)),
+			summarizer: None,
 		},
 	};
 	let input = Input {
@@ -544,6 +545,54 @@ fn each_inference_binding_change_is_forbidden(world: World, #[case] changed: &st
 		"allowance" => usage.reserved_tokens -= 1,
 		_ => panic!("case"),
 	}
+	assert!(matches!(
+		exact_provider(&state.description, &usage),
+		Err(Error::Forbidden)
+	));
+}
+#[rstest]
+fn summary_usage_requires_the_home_disclosed_summarizer_pin(world: World) {
+	let mut state = world.0.lock().unwrap();
+	let mut usage = state.input.usage.clone();
+	usage.purpose = Purpose::Summary;
+	assert!(matches!(
+		exact_provider(&state.description, &usage),
+		Err(Error::Context(
+			aidash_domain::context::recovery::Failure::SummaryUnavailable
+		))
+	));
+	// The agent model doubles as the pinned summarizer in this fixture.
+	let Binding::RequiredHome { summarizer, .. } = &mut state.description.semantic else {
+		panic!("binding")
+	};
+	*summarizer = Some(Box::new(usage.provider.clone()));
+	// Without a Summary Stage in the pinned Agent's policy, nothing is derivable.
+	assert!(matches!(
+		exact_provider(&state.description, &usage),
+		Err(Error::Context(
+			aidash_domain::context::recovery::Failure::SummaryUnavailable
+		))
+	));
+	state.description.inspection.agent.config["context_policy"] = json!({
+		"version":"context-recovery/1",
+		"summary":{"model":reference("model"),"max_tokens":512}
+	});
+	// Exactly one full summarizer request at the policy's output bound.
+	usage.reserved_tokens = 4096 + 512;
+	exact_provider(&state.description, &usage).unwrap();
+	// Neither an under-reservation nor any other amount is accepted.
+	for reserved in [1, 4096 + 511, 4096 + 513, 4096 + 1024] {
+		usage.reserved_tokens = reserved;
+		assert!(
+			matches!(
+				exact_provider(&state.description, &usage),
+				Err(Error::Forbidden)
+			),
+			"{reserved}"
+		);
+	}
+	usage.reserved_tokens = 4096 + 512;
+	usage.provider.digest = "wrong".into();
 	assert!(matches!(
 		exact_provider(&state.description, &usage),
 		Err(Error::Forbidden)

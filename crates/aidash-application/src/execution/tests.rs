@@ -69,25 +69,22 @@ fn stale_response_requeues_media_and_restores_its_inference_marker() {
 #[test]
 
 fn durable_media_observations_keep_recent_text_within_the_request_budget() {
-	let mut context = aidash_domain::context::Context {
-		history: vec![aidash_domain::context::ContextEvent::tool(
-			aidash_domain::provider::ToolCall {
-				id: "keep".into(),
-				name: "read".into(),
-				arguments: json!({}),
-			},
-			json!("keep"),
-		)],
-		..Default::default()
-	};
+	let mut context = aidash_domain::context::Context::default();
+	context.push(aidash_domain::context::ContextEvent::tool(
+		aidash_domain::provider::ToolCall {
+			id: "keep".into(),
+			name: "read".into(),
+			arguments: json!({}),
+		},
+		json!("keep"),
+	));
 	let budget = super::media_observation_budget(&pending(json!({"request_window":8192})));
 	assert_eq!(budget, 512);
 	for seq in 1..=20 {
 		super::record_media_observation(&mut context, &"あ\\\"".repeat(1000), Some(seq), budget);
 	}
 	let observations: Vec<_> = context
-		.history
-		.iter()
+		.events()
 		.filter(|event| matches!(event, ContextEvent::ModelMediaObservation { .. }))
 		.collect();
 	assert!(observations.len() < 20);
@@ -100,7 +97,7 @@ fn durable_media_observations_keep_recent_text_within_the_request_budget() {
 			.sum::<usize>()
 			<= budget
 	);
-	assert_eq!(json!(context.history[0])["result"], "keep");
+	assert_eq!(json!(context.history[0].event)["result"], "keep");
 }
 
 #[rstest::rstest]
@@ -805,13 +802,13 @@ fn referenced_run_message_requires_every_record_chunk() {
 		}))
 	};
 	let mut context = aidash_domain::context::Context::default();
-	context.history.push(event(0, "abc", Some(3)));
+	context.push(event(0, "abc", Some(3)));
 	super::capture_message_read_coverage(&mut context);
 	assert!(!super::referenced_message_read(&context, id));
-	context.history.push(event(4, "ef", None));
+	context.push(event(4, "ef", None));
 	super::capture_message_read_coverage(&mut context);
 	assert!(!super::referenced_message_read(&context, id));
-	context.history.push(event(3, "def", None));
+	context.push(event(3, "def", None));
 	super::capture_message_read_coverage(&mut context);
 	assert!(super::referenced_message_read(&context, id));
 	context.history.clear();
@@ -820,11 +817,11 @@ fn referenced_run_message_requires_every_record_chunk() {
 	// content in a provider request.
 	super::capture_message_inference_coverage(&mut context);
 	assert!(!super::referenced_message_inferred(&context, id));
-	context.history.push(event(0, "abc", Some(3)));
+	context.push(event(0, "abc", Some(3)));
 	super::capture_message_inference_coverage(&mut context);
 	assert!(!super::referenced_message_inferred(&context, id));
 	context.history.clear();
-	context.history.push(event(3, "def", None));
+	context.push(event(3, "def", None));
 	super::capture_message_inference_coverage(&mut context);
 	assert!(super::referenced_message_inferred(&context, id));
 	context.history.clear();

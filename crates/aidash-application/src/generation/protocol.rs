@@ -10,6 +10,7 @@ use crate::{
 };
 use aidash_domain::{
 	Run,
+	context::recovery::Failure as ContextFailure,
 	federation::execution::Description,
 	generation::{
 		dispatch::{FinalizeInput, Input},
@@ -86,6 +87,36 @@ fn exact_provider(description: &Description, usage: &Usage) -> Result<()> {
 			// Home cannot verify the execution peer's compaction body. Charge
 			// the approved maximum instead of trusting its claimed byte count.
 			if usage.reserved_tokens != (config.max_request_bytes + 1024) as i64 {
+				return Err(Error::Forbidden);
+			}
+		}
+		Purpose::Summary => {
+			let provider = description
+				.semantic
+				.summarizer()
+				.ok_or(Error::Context(ContextFailure::SummaryUnavailable))?;
+			if provider != &usage.provider || usage.dispatcher_node != description.target_node {
+				return Err(Error::Forbidden);
+			}
+			let definition = description
+				.inspection
+				.definitions
+				.iter()
+				.find(|d| d.kind == "model" && d.entry == usage.provider.entry)
+				.ok_or(Error::Forbidden)?;
+			let config: aidash_domain::model::ModelConfig =
+				serde_json::from_value(definition.metadata.config.clone())?;
+			let agent: aidash_domain::registry::AgentConfig =
+				serde_json::from_value(description.inspection.agent.config.clone())?;
+			let policy =
+				aidash_domain::context::policy::Effective::of(agent.context_policy.as_ref())
+					.summary
+					.ok_or(Error::Context(ContextFailure::SummaryUnavailable))?;
+			// Home cannot derive the Run's current window, which may cap the
+			// summary output further. Charge the approved maximum: one full
+			// summarizer request with the policy's output bound.
+			let output = policy.max_tokens.min(config.output_token_limit());
+			if usage.reserved_tokens != (config.context_window + output as usize) as i64 {
 				return Err(Error::Forbidden);
 			}
 		}
@@ -266,6 +297,11 @@ pub async fn admit(
 			} => (**provider).clone(),
 			_ => return Err(Error::RemoteSemantic(Failure::ContextBudget)),
 		},
+		Purpose::Summary => description
+			.semantic
+			.summarizer()
+			.cloned()
+			.ok_or(Error::Context(ContextFailure::SummaryUnavailable))?,
 		Purpose::Embedding | Purpose::Memory => return Err(Error::Forbidden),
 	};
 	let input = Input {

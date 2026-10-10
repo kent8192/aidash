@@ -33,6 +33,10 @@ pub enum Error {
 	SemanticUnavailable,
 	#[error("{0}")]
 	RemoteSemantic(crate::semantic::remote::Failure),
+	#[error("{0}")]
+	Context(aidash_domain::context::recovery::Failure),
+	#[error("the provider reported that the request exceeded its context window")]
+	ContextOverflow,
 	#[error("Kubernetes observations unavailable; check service account and API connectivity")]
 	OrchestrationUnavailable,
 	#[error("{0}")]
@@ -78,6 +82,11 @@ impl Error {
 				self.to_string(),
 			),
 			Self::StaleInference => (StatusCode::CONFLICT, self.to_string()),
+			Self::Context(_) => (StatusCode::CONFLICT, self.to_string()),
+			Self::ContextOverflow => (
+				StatusCode::BAD_REQUEST,
+				"the request exceeded the model context window".into(),
+			),
 			Self::ProviderRejected { status, .. } => (
 				StatusCode::from_u16(*status).unwrap_or(StatusCode::BAD_GATEWAY),
 				self.to_string(),
@@ -236,6 +245,10 @@ impl From<aidash_application::Error> for Error {
 			ApplicationError::MediaRouteUnavailable(model) => Self::MediaRouteUnavailable(model),
 			ApplicationError::OrchestrationUnavailable => Self::OrchestrationUnavailable,
 			ApplicationError::RemoteSemantic(reason) => Self::RemoteSemantic(reason),
+			ApplicationError::Context(reason) | ApplicationError::TerminalResponse(reason, _) => {
+				Self::Context(reason)
+			}
+			ApplicationError::ContextOverflow => Self::ContextOverflow,
 			ApplicationError::SemanticUnavailable => Self::SemanticUnavailable,
 			ApplicationError::IdentityStatusUnavailable => Self::IdentityStatusUnavailable,
 			ApplicationError::ProviderRejected { status, reason } => {
@@ -261,6 +274,8 @@ impl From<Error> for aidash_application::Error {
 			Error::Unauthorized => Self::Unauthorized,
 			Error::Json(error) => Self::Json(error),
 			Error::RemoteSemantic(reason) => Self::RemoteSemantic(reason),
+			Error::Context(reason) => Self::Context(reason),
+			Error::ContextOverflow => Self::ContextOverflow,
 			Error::SemanticUnavailable => Self::SemanticUnavailable,
 			Error::IdentityStatusUnavailable => Self::IdentityStatusUnavailable,
 			Error::TransactionPending => Self::TransactionPending,

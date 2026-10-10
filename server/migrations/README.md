@@ -248,4 +248,16 @@ retaining the physical constraints established by the preceding migrations.
 
 Binding and native memory histories converge in `registry/0015_binding_memory_merge` and `execution/0011_binding_memory_merge`. The registry merge preserves strict Agent Bindings, Host lifecycle validation and native memory operations. Agent memory-role references derive from qualified Binding targets. These migrations depend on both histories and leave their existing migration identities unchanged.
 
+`execution/0012_context_journal` creates the append-only `run_context_events`
+Context Journal and `context_compaction_attempts` with typed operations: composite
+`(run_id, seq)` key, cascading Run references, origin/stage/outcome CHECKs, a
+`(run_id, stage)` lookup index and a partial unique index allowing one unsettled
+attempt per Run. Only the two `atomic_write_guard` statement triggers use
+`RunSQL`, because the typed API cannot express trigger DDL. Like the desktop
+schema, this physical migration is database-only and precedes its state-only
+model snapshot `execution/0013_context_journal_model_state`. `runs.context`
+remains the lossy projection; stored projections written before the journal are
+upgraded when decoded, and their first save, or the worker before their first
+pruning or summary, journals those events as `imported`.
+
 `registry/0018_prompt_cache` admits the Agent `prompt_cache` key (`off` or `explicit`) in the Agent Binding contract and the model `cache_mode` key in the `registry_model_config` allowlist. It builds on the `registry/0017_projection_versions` Agent contract and edits the current model constraint read from the catalog (`pg_get_constraintdef`), so earlier additions such as `provider_credential` and `projection_versions` survive; the edit raises if its allowlist anchor is missing. The separate `registry_model_cache_mode` constraint limits `cache_mode` to `none`, `automatic` or `explicit`. The database does not enforce the explicit-caching slug allowlist; Registry validation does. Function bodies and catalog-driven constraint edits have no typed Reinhardt operation, so the migration uses reversible SQL assets. The reverse migration restores the 0017 Agent contract and removes only the `cache_mode` additions. Its precondition is that no registry Definition or Agent Package carries either key: pre-0018 binaries reject such configs and registered Definitions are immutable, so a read-only guard refuses the rollback with SQLSTATE `55000`. Restore the pre-upgrade database backup instead.

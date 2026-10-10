@@ -49,9 +49,11 @@ async fn infer_after(
 				context: json!({}).into(),
 				tools: vec![],
 				max_output_tokens: 512,
+				response_format: None,
 				content_parts: vec![],
 				cache_scope: None,
 				cache_breakpoints: false,
+				disable_provider_transforms: false,
 			}),
 			delay_secs,
 		)

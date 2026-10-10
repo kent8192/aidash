@@ -588,9 +588,11 @@ impl HarnessManagement {
 				context: json!({"run_message":input.content}).into(),
 				tools: Vec::new(),
 				max_output_tokens: 0,
+				response_format: None,
 				content_parts: parts,
 				cache_scope: None,
 				cache_breakpoints: false,
+				disable_provider_transforms: false,
 			};
 			request.validate()?;
 			crate::generation::budget::Reservation::check_request(headroom, &request)?;

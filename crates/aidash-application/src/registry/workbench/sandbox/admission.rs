@@ -202,8 +202,10 @@ pub async fn admit(admission: &Admission<'_>, id: Uuid, input: TestInput) -> Res
 		context: json!({"test_message":input.message,"private_references":draft.documents,"test_mode":input.mode,"profile_id":input.profile_id}).into(),
 		tools: tool_specs,
 		max_output_tokens: (limits.max_output_tokens as u32).min(model_config.output_token_limit()),
+		response_format: None,
 		cache_scope: None,
 		cache_breakpoints: false,
+		disable_provider_transforms: false,
 	};
 	if input.continue_from.is_some()
 		&& let Some(context) = request.context.legacy_mut()

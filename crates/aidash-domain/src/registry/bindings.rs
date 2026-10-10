@@ -48,6 +48,9 @@ pub fn definition_references(
 			let config: AgentBindings = serde_json::from_value(entry.config.clone())?;
 			config.validate()?;
 			result.push((local(&config.model), "model".into()));
+			if let Some(summary) = config.context_summary() {
+				result.push((local(&summary.model), "model".into()));
+			}
 			result.extend(config.cluster.iter().map(|r| (local(r), "cluster".into())));
 			for normalized in entry.normalized_bindings(&identity.registry_node)? {
 				let kind = match normalized.binding.kind {
@@ -158,6 +161,9 @@ pub struct AgentBindings {
 	pub cluster: Option<EntityRef>,
 	#[serde(default = "super::max_steps")]
 	pub max_steps: i32,
+	/// Opt-in Context Policy; absent keeps the legacy prune-only behavior.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub context_policy: Option<crate::context::policy::ContextPolicy>,
 	/// Projection Version this Agent version's Runs render with (ADR 0015).
 	/// Omitted means Legacy and is not serialized, so existing definitions,
 	/// their digests and Binding snapshots stay byte-identical.
@@ -213,7 +219,15 @@ impl AgentBindings {
 				"bound Skills require Skill support tools".into(),
 			));
 		}
+		if let Some(policy) = &self.context_policy {
+			policy.validate()?;
+		}
 		Ok(())
+	}
+	pub fn context_summary(&self) -> Option<&crate::context::policy::SummaryPolicy> {
+		match self.context_policy.as_ref()? {
+			crate::context::policy::ContextPolicy::RecoveryV1 { summary, .. } => summary.as_ref(),
+		}
 	}
 	pub fn normalize(&self, node: &str) -> Result<Vec<NormalizedBinding>> {
 		self.validate()?;

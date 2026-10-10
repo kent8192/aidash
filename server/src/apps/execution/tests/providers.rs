@@ -156,9 +156,11 @@ async fn openrouter_enforces_zdr_and_preserves_reasoning_tools_and_usage(
 						vec![]
 					},
 					max_output_tokens,
+					response_format: None,
 					content_parts: vec![],
 					cache_scope: None,
 					cache_breakpoints: false,
+					disable_provider_transforms: false,
 				})
 				.await
 				.unwrap();
@@ -213,9 +215,11 @@ async fn openrouter_sends_cache_control_only_to_opted_in_explicit_routes(
 		}),
 		tools: vec![],
 		max_output_tokens: 1024,
+		response_format: None,
 		content_parts: vec![],
 		cache_scope: None,
 		cache_breakpoints,
+		disable_provider_transforms: false,
 	};
 	let mut explicit = config("openrouter", endpoint.clone());
 	explicit.model_id = "anthropic/claude-fixture".into();
@@ -290,6 +294,7 @@ async fn openrouter_sends_ordered_native_image_and_audio_parts() {
 			context: json!({"run_message":"Describe the attachment"}).into(),
 			tools: vec![],
 			max_output_tokens: 512,
+			response_format: None,
 			content_parts: vec![
 				ContentPart::Text("first attachment".into()),
 				ContentPart::Image {
@@ -304,6 +309,7 @@ async fn openrouter_sends_ordered_native_image_and_audio_parts() {
 			],
 			cache_scope: None,
 			cache_breakpoints: false,
+			disable_provider_transforms: false,
 		})
 		.await
 		.unwrap();
@@ -404,12 +410,14 @@ async fn media_route_lookup_obeys_the_total_inference_deadline() {
 			context: json!({}).into(),
 			tools: vec![],
 			max_output_tokens: 128,
+			response_format: None,
 			content_parts: vec![ContentPart::Image {
 				media_type: "image/png".into(),
 				bytes: b"\x89PNG\r\n\x1a\nfixture".to_vec(),
 			}],
 			cache_scope: None,
 			cache_breakpoints: false,
+			disable_provider_transforms: false,
 		}),
 	)
 	.await
@@ -495,9 +503,11 @@ async fn unavailable_zdr_endpoint_does_not_retry_without_zdr(
 				context: json!({}).into(),
 				tools: vec![],
 				max_output_tokens: 512,
+				response_format: None,
 				content_parts: vec![],
 				cache_scope: None,
 				cache_breakpoints: false,
+				disable_provider_transforms: false,
 			})
 			.await
 			.is_err()
@@ -532,9 +542,11 @@ async fn upstream_media_rejection_keeps_its_status_and_safe_reason() {
 			context: json!({}).into(),
 			tools: vec![],
 			max_output_tokens: 512,
+			response_format: None,
 			content_parts: vec![],
 			cache_scope: None,
 			cache_breakpoints: false,
+			disable_provider_transforms: false,
 		})
 		.await
 		.unwrap_err();
@@ -569,9 +581,11 @@ async fn upstream_errors_cannot_echo_unrecognized_media_or_secret_data() {
 			context: json!({}).into(),
 			tools: vec![],
 			max_output_tokens: 512,
+			response_format: None,
 			content_parts: vec![],
 			cache_scope: None,
 			cache_breakpoints: false,
+			disable_provider_transforms: false,
 		})
 		.await
 		.unwrap_err();

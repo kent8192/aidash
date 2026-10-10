@@ -27,6 +27,10 @@ pub struct ModelRequest {
 	pub context: ModelContext,
 	pub tools: Vec<ToolSpec>,
 	pub max_output_tokens: u32,
+	/// Structured-output schema for non-tool requests such as the Summary
+	/// Stage. Absent for ordinary inference, whose body stays unchanged.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub response_format: Option<Value>,
 	/// Resolved, authorized input for this inference only. Never persist bytes
 	/// in the durable context or serialize them with the request metadata.
 	#[serde(skip)]
@@ -41,6 +45,12 @@ pub struct ModelRequest {
 	/// inference digests keep their bytes.
 	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
 	pub cache_breakpoints: bool,
+	/// Set for Agents that opted into a Context Policy, whose recovery alone
+	/// may reduce context: OpenRouter then receives `transforms: []`. Prune-only
+	/// requests keep the provider default; omitted when false, so their
+	/// request metadata and inference digests keep their bytes.
+	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
+	pub disable_provider_transforms: bool,
 }
 
 /// Model-visible context in the shape fixed by the Run's Projection Version.
@@ -332,6 +342,9 @@ impl ModelRequest {
 			{"role":"user","content":content}]});
 		if !self.tools.is_empty() {
 			body["tools"] = Value::Array(self.tools.iter().map(|t| json!({"type":"function","function":{"name":t.name,"description":t.description,"parameters":t.parameters}})).collect());
+		}
+		if let Some(format) = &self.response_format {
+			body["response_format"] = format.clone();
 		}
 		body
 	}
