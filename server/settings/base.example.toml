@@ -82,14 +82,22 @@ enabled = false
 # ca_file = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
 # token_file = "/var/run/secrets/kubernetes.io/serviceaccount/token"
 
-# Optional Tenant-owned Provider Credentials (dedicated existing BYOK project).
-# Without a Store, environment-based provider access is unchanged.
+# Optional Provider Credential Store. Keys are loaded only by server/worker bootstrap.
+# [provider_credentials]
+# max_per_tenant = 20
+# fingerprint_key = { env = "AIDASH_PROVIDER_FINGERPRINT_KEY" }
+# Or fingerprint_key = { file = "/run/secrets/aidash-fingerprint-key" }
 # [provider_credentials.store]
+# kind = "postgres"
+# master_key = { file = "/run/secrets/aidash-master-key" }
+# Or master_key = { env = "AIDASH_PROVIDER_STORE_MASTER_KEY" }
+# retired_master_keys = [{ env = "AIDASH_PROVIDER_STORE_MASTER_KEY_OLD" }]
+# Cloud alternative (omit master_key and retired_master_keys):
+# kind = "secret_manager"
 # byok_project_id = "your-aidash-byok-project"
 # environment_id = "develop"
-# fingerprint_env = "AIDASH_SECRET_PROVIDER_FINGERPRINT"
-# max_per_tenant = 20
-# Worker-local signing uses the broker module's non-secret worker_configuration.
+# Cloud Workers additionally mint Capability Tokens with the broker module's
+# non-secret worker_configuration (Secret Manager Stores only):
 # [provider_credentials.broker]
 # endpoint = "https://your-broker.run.app/api/v1"
 # issuer = "aidash-worker"

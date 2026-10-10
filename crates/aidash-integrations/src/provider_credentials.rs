@@ -149,7 +149,7 @@ impl Store for SecretManager {
 	fn resource(&self, id: Uuid) -> String {
 		format!("projects/{}/secrets/{}{id}", self.project, self.prefix)
 	}
-	async fn create(&self, id: Uuid) -> Result<()> {
+	async fn create(&self, _tenant: &str, id: Uuid) -> Result<()> {
 		self.validate_resource(&self.resource(id))?;
 		let environment = self
 			.prefix
@@ -160,7 +160,12 @@ impl Store for SecretManager {
 		self.call(reqwest::Method::POST,&format!("projects/{}/secrets?secretId={}{id}",self.project,self.prefix),Some(json!({"replication":{"userManaged":{"replicas":[{"location":"us-central1"}]}},"labels":{"environment":environment,"credential-id":id.to_string()}})),false).await?;
 		Ok(())
 	}
-	async fn add_version(&self, resource: &str, key: &SecretString) -> Result<String> {
+	async fn add_version(
+		&self,
+		_tenant: &str,
+		resource: &str,
+		key: &SecretString,
+	) -> Result<String> {
 		self.validate_resource(resource)?;
 		let data = base64::engine::general_purpose::STANDARD.encode(key.expose_secret().as_bytes());
 		let response = self

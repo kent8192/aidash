@@ -141,3 +141,5 @@ pub(crate) mod home_execution;
 pub(crate) mod desktop;
 
 pub mod provider_credentials;
+
+pub mod credential_store;

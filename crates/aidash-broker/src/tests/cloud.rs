@@ -226,6 +226,7 @@ impl Cloud {
 				credentials: env.clone(),
 			},
 			repository: Arc::new(repo.clone()),
+			reader: None,
 			issuer: Some(Arc::new(issuer)),
 		});
 		let context = Context {

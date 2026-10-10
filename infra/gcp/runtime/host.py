@@ -27,6 +27,7 @@ K3S_VERSION = "v1.34.11+k3s1"
 K3S_SHA = "c1991a83985375d318560ac10f2def2fa117995d94d0319d801f283ca074d1b0"
 GVISOR_VERSION = "20260921.0"
 GVISOR_SHA = "3dd478770dd751d09c257ba14d739b179348a36c5f2d9e954b773f5f90bff646"
+LEGACY_FINGERPRINT_KEY = "AIDASH_SECRET_PROVIDER_FINGERPRINT"
 
 
 def command(*args, data=None, timeout=120, check=True):
@@ -325,26 +326,29 @@ def provider_settings(external):
     except HTTPError as error:
         if error.code != 404:
             raise
-        descriptor = {"store": None, "broker": None}
+        descriptor = {"fingerprint_key": None, "store": None, "broker": None}
     if descriptor is None:
-        descriptor = {"store": None, "broker": None}
-    if not isinstance(descriptor, dict) or set(descriptor) != {"store", "broker"}:
+        descriptor = {"fingerprint_key": None, "store": None, "broker": None}
+    if not isinstance(descriptor, dict) or set(descriptor) != {"fingerprint_key", "store", "broker"}:
         raise ValueError("invalid managed Provider Credential configuration")
     store = descriptor["store"]
     if store is not None:
         if (
             not isinstance(store, dict)
-            or set(store) != {"byok_project_id", "environment_id", "fingerprint_env"}
+            or set(store) != {"kind", "byok_project_id", "environment_id"}
+            or store["kind"] != "secret_manager"
             or not isinstance(store["byok_project_id"], str)
             or not re.fullmatch(r"[a-z][a-z0-9-]{4,28}[a-z0-9]", store["byok_project_id"])
             or not isinstance(store["environment_id"], str)
             or not re.fullmatch(r"develop|test|pr-[1-9][0-9]*", store["environment_id"])
-            or store["fingerprint_env"] != "AIDASH_SECRET_PROVIDER_FINGERPRINT"
+            or descriptor["fingerprint_key"] != {"env": "AIDASH_PROVIDER_FINGERPRINT_KEY"}
         ):
             raise ValueError("invalid managed Provider Credential Store")
-        fingerprint = external.get("AIDASH_SECRET_PROVIDER_FINGERPRINT")
-        if not isinstance(fingerprint, str) or len(fingerprint.encode()) < 32:
+        fingerprint = external.get("AIDASH_PROVIDER_FINGERPRINT_KEY")
+        if not isinstance(fingerprint, str) or len(fingerprint.strip().encode()) < 32:
             raise ValueError("BYOK requires a stable Provider Credential fingerprint key of at least 32 bytes")
+    elif descriptor["fingerprint_key"] is not None:
+        raise ValueError("invalid managed Provider Credential configuration")
     broker = descriptor["broker"]
     if broker is not None and (
         store is None
@@ -400,12 +404,19 @@ def configuration(host):
     )
     external = json.loads(base64.b64decode(payload["payload"]["data"]))
     dashboard = external.pop("dashboard", None)
+    # BYOK environments provisioned before the rename still store the fingerprint
+    # under the Registry-resolvable name. Carry the same value over once so rolling
+    # hosts keep stable fingerprints, and never emit the legacy name to the app.
+    legacy_fingerprint = external.pop(LEGACY_FINGERPRINT_KEY, None)
+    if legacy_fingerprint is not None:
+        external.setdefault("AIDASH_PROVIDER_FINGERPRINT_KEY", legacy_fingerprint)
     if dashboard is not None and any(key.startswith("AIDASH_OIDC_") for key in external):
         raise ValueError("GCIP and OIDC runtime configuration cannot coexist")
     if not all(
         key.startswith("AIDASH_SECRET_")
         or key
         in {
+            "AIDASH_PROVIDER_FINGERPRINT_KEY",
             "AIDASH_OIDC_CLIENT_ID",
             "AIDASH_OIDC_CLIENT_SECRET",
             "AIDASH_OIDC_SESSION_ABSOLUTE_SECONDS",

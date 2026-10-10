@@ -480,3 +480,47 @@ fn rejects_github_instructions_that_registry_cannot_store() {
 	}
 	assert!(github_instructions(vec![b'x'; 65_536], "SKILL.md").is_ok());
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn github_cli_receives_only_allowlisted_environment() {
+	use std::os::unix::fs::PermissionsExt;
+	if std::env::var_os("AIDASH157_GH_ENV_SENTINEL").is_some() {
+		let output = super::gh_api(
+			"https://api.github.com/repos/fixture/project",
+			4096,
+			"application/json",
+		)
+		.await
+		.unwrap()
+		.unwrap();
+		let value: serde_json::Value = serde_json::from_slice(&output).unwrap();
+		assert_eq!(
+			value,
+			serde_json::json!({"sentinel":"absent","master":"absent","fingerprint":"absent","host":"github.com","token":"fixture-token","proxy":"fixture-proxy"})
+		);
+		return;
+	}
+	let dir = tempfile::tempdir().unwrap();
+	let gh = dir.path().join("gh");
+	std::fs::write(&gh, r#"#!/bin/sh
+printf '{"sentinel":"%s","master":"%s","fingerprint":"%s","host":"%s","token":"%s","proxy":"%s"}' "${AIDASH157_GH_ENV_SENTINEL-absent}" "${AIDASH_PROVIDER_STORE_MASTER_KEY-absent}" "${AIDASH_PROVIDER_FINGERPRINT_KEY-absent}" "$GH_HOST" "$GITHUB_TOKEN" "$https_proxy"
+"#).unwrap();
+	std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o700)).unwrap();
+	let status = std::process::Command::new(std::env::current_exe().unwrap())
+		.args([
+			"--exact",
+			"skill_import::tests::github_cli_receives_only_allowlisted_environment",
+			"--nocapture",
+		])
+		.env("PATH", dir.path())
+		.env("AIDASH157_GH_ENV_SENTINEL", "must-not-reach-child")
+		.env("AIDASH_PROVIDER_STORE_MASTER_KEY", "fixture-master")
+		.env("AIDASH_PROVIDER_FINGERPRINT_KEY", "fixture-fingerprint")
+		.env("GH_HOST", "override.invalid")
+		.env("GITHUB_TOKEN", "fixture-token")
+		.env("https_proxy", "fixture-proxy")
+		.status()
+		.unwrap();
+	assert!(status.success());
+}

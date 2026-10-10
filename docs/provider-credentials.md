@@ -2,8 +2,9 @@
 
 Provider Credentials are Tenant-owned metadata records obtained only through
 Provider Authorization, the provider's OAuth flow, as decided in ADR 0006.
-Key Material passes from the server-side exchange into the write-only Provider
-Credential Store. Aidash exposes no HTTP create/rotate endpoint or dashboard
+Key Material passes from the server-side exchange into the Provider Credential
+Store write port. Pinned reads use a separate narrow read port.
+Aidash exposes no HTTP create/rotate endpoint or dashboard
 form accepting typed or pasted provider keys. OAuth connection and reconnect
 flows are tracked in [#158](https://github.com/kent8192/aidash/issues/158).
 The v1 Provider Catalog contains `openrouter`, with base URL
@@ -13,26 +14,108 @@ Registry model and embedding configurations use `provider_credential =
 Provider Credential ID. The removal of operator `credential_env` keys and the
 mandatory Store requirement for self-hosted nodes belong to #158's migration.
 
-Configure the optional server settings only for a dedicated BYOK project:
+Choose a Provider Credential Store in server settings. Without
+`[provider_credentials.store]`, Provider Credentials and Plan Connections are
+unavailable. Until [#158](https://github.com/kent8192/aidash/issues/158) lands,
+a self-hosted node has no production path to create Provider Credentials.
+
+For self-hosted PostgreSQL storage:
+
+```toml
+[provider_credentials]
+max_per_tenant = 20
+fingerprint_key = { env = "AIDASH_PROVIDER_FINGERPRINT_KEY" }
+
+[provider_credentials.store]
+kind = "postgres"
+master_key = { file = "/run/secrets/aidash-master-key" }
+# Alternatively: master_key = { env = "AIDASH_PROVIDER_STORE_MASTER_KEY" }
+retired_master_keys = []
+```
+
+Generate a Master Key with `openssl rand -hex 32`. Deliver its 64 hex characters
+through a private mounted file or the named environment variable. Server and
+worker both need the same current and retired Master Keys. The Helm chart's
+`existingSecret` supplies both processes through `envFrom`; when using separate
+server/worker Secret overrides, include the keys in both. Native `manage`
+commands such as `migrate` validate settings shape but do not load these keys.
+The explicit recovery command below loads the same keys as bootstrap.
+Surrounding whitespace is trimmed from file and environment values.
+
+For Cloud, replace the Store section with:
 
 ```toml
 [provider_credentials.store]
+kind = "secret_manager"
 byok_project_id = "your-aidash-byok-project"
 environment_id = "develop"
-fingerprint_env = "AIDASH_SECRET_PROVIDER_FINGERPRINT"
-max_per_tenant = 20
 ```
 
-Supply an independent random fingerprint root key of at least 32 bytes through
-the named environment variable. Fingerprints use independent derived Tenant
-keys, HMAC-SHA256, and the first eight bytes in hexadecimal. They are metadata,
-not bearer values. Key Material is not written to PostgreSQL, events, responses,
-request logs, or browser persistence.
+Both kinds require the separate `provider_credentials.fingerprint_key` setting.
+It replaces `store.fingerprint_env`, including on Cloud. Supply an independent
+random raw string of at least 32 bytes, through `{ env = "..." }` or
+`{ file = "/run/secrets/..." }`. Each source must name exactly one of file or env;
+`AIDASH_SECRET_*` environment names are rejected because Registry configurations
+can resolve that namespace. Names that skill imports pass to the `gh` CLI, such
+as `GH_*`, `GITHUB_TOKEN`, `PATH` and the proxy variables, are rejected too,
+because `gh` sends `GH_TOKEN`/`GITHUB_TOKEN` to GitHub as authentication.
+Fingerprints use independent derived Tenant keys,
+HMAC-SHA256 and the first eight bytes in hexadecimal. They are metadata, not
+bearer values. PostgreSQL contains AEAD ciphertext only; plaintext Key Material
+never appears in tables, events, responses, request logs or browser persistence.
+
+The Store encrypts each version with AES-256-GCM and a fresh random nonce.
+Associated data binds its Tenant, resource and version. Encryption keys and key
+identifiers are separately derived from the Master Key with HKDF-SHA256.
+
+To rotate the Master Key, generate a new key, set it as `master_key`, move the
+previous source into `retired_master_keys` and restart server and worker. Retired
+keys decrypt existing versions only. A Provider Credential moves to the current
+key when it is next rotated; there is no bulk re-encryption command. Retain old
+keys while any needed versions still use them.
+
+Startup refuses a missing, unreadable or malformed Master Key, configured keys
+that match no registered key identifier, or a failed stored key check. Wrong
+keys are rejected before registering them. When some registered keys are known,
+versions under an unconfigured key produce a warning with counts; reads fail,
+while revocation and deletion remain available. There is no fallback.
+
+Losing the Master Key loses every Provider Credential and Plan Connection on
+the node. Recovery means reconnecting through OAuth (#158 for Provider
+Credentials).
+A database backup is useless without a separately retained key backup. Keep the
+current and necessary retired keys backed up outside the database.
+
+After total or partial key loss, stop server and worker and run the following
+with the same settings and key sources as the node, including any retained keys:
+
+```sh
+manage provider-credential-store-recovery
+manage provider-credential-store-recovery --execute
+```
+
+The default is a dry run. Both invocations print only JSON counts:
+`affected_tenants` and `affected_provider_credentials` count active records whose
+pin uses a lost key; `version_rows` and `key_registry_rows` count rows to remove.
+Recovery requires a PostgreSQL Store and valid current Master Key and fingerprint
+key. It verifies registered configured keys, so a failed key check refuses both
+dry run and execute without changes. It bypasses the wrong-key startup gate and
+does not register a replacement key, migrate, or start runtime services.
+
+With `--execute`, normal application Revocation records the lifecycle event for
+each affected Provider Credential. Recovery then deletes all version and key
+registry rows under unconfigured keys. Configured-key versions in the same
+resource are disabled by normal Revocation, remain present, and keep their
+ciphertext. Unaffected Provider Credentials retain every row and state.
+Recovery never decrypts or re-encrypts version payloads. Restart server and worker
+afterward; normal startup registers the current key. Tenants then delete revoked
+credentials and reconnect through OAuth (#158). The command is safe to rerun
+after an interrupted recovery. Plan Token recovery will be added by #159.
 
 GCP deployment renders this non-secret Store descriptor from the
 `aidash-provider-credentials` VM metadata into a read-only Reinhardt settings
 source for migrations and the server. BYOK-enabled runtime secrets must contain
-the stable `AIDASH_SECRET_PROVIDER_FINGERPRINT` value; a missing or short value
+the stable `AIDASH_PROVIDER_FINGERPRINT_KEY` value; a missing or short value
 blocks startup. The key is never generated or changed during deployment. When
 BYOK is omitted, the managed Store remains unset and no fingerprint is required.
 
@@ -98,15 +181,17 @@ dispatch: this path has no approved local Run pin or BYOK maintenance authority.
 Environment-backed remote embeddings remain supported.
 Calls check that record's current active state and current version pin; changing
 a binding cannot retarget admitted Runs. Receiving federation admission uses
-the mapped local Tenant. The configured Credential Broker handles plaintext
-reads and provider routing after metadata validation. Without that broker,
-Tenant access fails with `credential broker not configured` and never falls
-back to environment keys.
+the mapped local Tenant. PostgreSQL resolves the current pinned version through
+the narrow read port. On Cloud, the configured Credential Broker handles
+plaintext reads and provider routing after metadata validation. Without a
+PostgreSQL Store or that broker, Tenant access fails with `credential broker
+not configured` and never falls back to environment keys.
 
 Explicitly authorized local maintenance without a Run resolves the current
 Tenant binding and includes its memory indexing, retention, reflection or
 retrieval purpose in the access context. Run calls keep their admission pins.
-Both paths check current metadata before issuing a broker capability token.
+Both paths check current metadata before access. PostgreSQL reads the pinned
+version; Cloud issues a broker capability token.
 
 Workbench tests currently support environment-backed Models only. A Model using
 Tenant Provider Credentials is rejected before a sandbox session is admitted;

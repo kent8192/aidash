@@ -366,13 +366,19 @@ BYOK-enabled VM metadata supplies the non-secret Store descriptor through
 `aidash-provider-credentials`. Host startup mounts a descriptor-only JSON source
 read-only into migrations and the app; Reinhardt loads it via
 `AIDASH_PROVIDER_CREDENTIAL_SETTINGS`. The runtime configuration secret must also
-include a stable independent `AIDASH_SECRET_PROVIDER_FINGERPRINT` of at least 32
+include a stable independent `AIDASH_PROVIDER_FINGERPRINT_KEY` of at least 32
 bytes. Startup refuses a missing or short key; deployments never regenerate it.
 Keep that key unchanged across upgrades and restarts. It stays in restrictive
-`app.env`, never in VM metadata or the public descriptor. Disabled BYOK omits the
-metadata attribute, renders no Store, and needs no fingerprint key. Store-only
-environments use a null broker descriptor; enabled brokers add their non-secret
-endpoint, issuer, audience and signing-key version to the same settings source.
+`app.env`, never in VM metadata or the public descriptor. Environments
+provisioned with the earlier `AIDASH_SECRET_PROVIDER_FINGERPRINT` name keep
+working: host startup uses that value as `AIDASH_PROVIDER_FINGERPRINT_KEY` when
+the new name is absent and never passes the legacy name to the app. Move the
+value to the new name at the next runtime secret update. Disabled BYOK omits the
+metadata attribute, renders no Store, and needs no fingerprint key. The managed descriptor uses `fingerprint_key = {env = "AIDASH_PROVIDER_FINGERPRINT_KEY"}`
+and `store.kind = "secret_manager"`; the fingerprint reference stays outside the
+Registry-accessible `AIDASH_SECRET_*` namespace. Store-only environments use a
+null broker descriptor; enabled brokers add their non-secret endpoint, issuer,
+audience and signing-key version to the same settings source.
 
 The deploy identity's BYOK role contains only `resourcemanager.projects.get`,
 `getIamPolicy` and `setIamPolicy`. Its binding uses exactly

@@ -37,6 +37,7 @@ async fn inference_cancellation_poll_errors_do_not_signal_cancellation() {
 		semantic_client: reqwest::Client::new(),
 		recovery_cursors: Default::default(),
 		provider_credentials: None,
+		provider_key_material_reader: None,
 		capability_issuer: None,
 	};
 	let cancellation = super::wait_for_inference_cancellation(&store, uuid::Uuid::new_v4());

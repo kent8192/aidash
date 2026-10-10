@@ -130,14 +130,19 @@ impl Store for FakeStore {
 	fn resource(&self, id: Uuid) -> String {
 		format!("fake/{id}")
 	}
-	async fn create(&self, id: Uuid) -> Result<()> {
+	async fn create(&self, _tenant: &str, id: Uuid) -> Result<()> {
 		self.state
 			.lock()
 			.await
 			.insert(self.resource(id), BTreeMap::new());
 		Ok(())
 	}
-	async fn add_version(&self, resource: &str, key: &SecretString) -> Result<String> {
+	async fn add_version(
+		&self,
+		_tenant: &str,
+		resource: &str,
+		key: &SecretString,
+	) -> Result<String> {
 		let mut state = self.state.lock().await;
 		let versions = state.get_mut(resource).unwrap();
 		let name = format!("{resource}/versions/{}", versions.len() + 1);
@@ -375,7 +380,7 @@ async fn pending_reconciliation_uses_rows_and_cleans_only_expired_pending_resour
 	pending.created_at = Utc::now() - Duration::minutes(6);
 	let id = pending.id;
 	repo.0.lock().await.rows.insert(id, pending);
-	store.create(id).await.unwrap();
+	store.create("alpha", id).await.unwrap();
 	assert_eq!(s.reconcile().await.unwrap(), 1);
 	assert_eq!(repo.0.lock().await.rows[&id].state, State::Deleted);
 	assert!(
@@ -406,6 +411,7 @@ async fn access_uses_the_admitted_tenant_id_and_never_falls_back_to_environment(
 			credentials: Arc::new(Env),
 		},
 		repository: Arc::new(repo),
+		reader: None,
 		issuer: None,
 	};
 	let source = Source::Tenant {
@@ -514,6 +520,7 @@ async fn reconciler_disables_unpinned_versions_left_by_a_rotation_crash() {
 	let metadata = repo.0.lock().await.rows[&row.id].clone();
 	let abandoned = store
 		.add_version(
+			"alpha",
 			&metadata.secret_resource,
 			&SecretString::from("uncommitted-key-1234"),
 		)
@@ -526,6 +533,88 @@ async fn reconciler_disables_unpinned_versions_left_by_a_rotation_crash() {
 		states[&metadata.secret_resource][metadata.pinned_version.as_ref().unwrap()].1,
 		"enabled"
 	);
+}
+
+#[async_trait]
+impl crate::provider_access::KeyMaterialReader for FakeStore {
+	async fn read(&self, _: &str, resource: &str, version: &str) -> Result<SecretString> {
+		let state = self.state.lock().await;
+		let (key, status) = state.get(resource).and_then(|v| v.get(version)).unwrap();
+		if *status != "enabled" {
+			return Err(Error::Invalid("disabled version".into()));
+		}
+		Ok(key.clone())
+	}
+}
+#[tokio::test]
+async fn reader_resolves_current_pin_after_metadata_checks() {
+	use crate::provider_access::{
+		Context, EnvironmentAccess, ProviderAccess, Source, TenantAccess,
+	};
+	struct Env;
+	impl crate::ports::Credentials for Env {
+		fn resolve(&self, _: &str) -> Result<String> {
+			panic!("no environment fallback")
+		}
+	}
+	let (s, repo, store) = service();
+	let row = create(&s, "alpha").await.provider_credential;
+	let access = TenantAccess {
+		environment: EnvironmentAccess {
+			credentials: Arc::new(Env),
+		},
+		repository: Arc::new(repo),
+		reader: Some(Arc::new(store)),
+		issuer: None,
+	};
+	let mut context = Context {
+		tenant: "alpha".into(),
+		run: Some(Uuid::now_v7()),
+		provider_credential_id: Some(row.id),
+		..Default::default()
+	};
+	let source = Source::Tenant {
+		provider: "openrouter".into(),
+	};
+	let endpoint = Provider::Openrouter.base_url();
+	assert_eq!(
+		access
+			.resolve(&context, endpoint, &source)
+			.await
+			.unwrap()
+			.bearer
+			.expose_secret(),
+		"valid-provider-key-1234"
+	);
+	s.rotate(
+		"alpha",
+		row.id,
+		2,
+		"replacement-provider-key-5678".into(),
+		"actor",
+	)
+	.await
+	.unwrap();
+	assert_eq!(
+		access
+			.resolve(&context, endpoint, &source)
+			.await
+			.unwrap()
+			.bearer
+			.expose_secret(),
+		"replacement-provider-key-5678"
+	);
+	assert!(
+		access
+			.resolve(&context, "https://example.com", &source)
+			.await
+			.is_err()
+	);
+	context.tenant = "beta".into();
+	assert!(access.resolve(&context, endpoint, &source).await.is_err());
+	context.tenant = "alpha".into();
+	s.revoke("alpha", row.id, 3, "actor").await.unwrap();
+	assert!(access.resolve(&context, endpoint, &source).await.is_err());
 }
 
 #[tokio::test]
@@ -593,7 +682,11 @@ async fn reconciliation_pages_bound_work_and_reach_later_tenants_after_failures(
 	// Leave an unpinned version on the first candidate, and simulate an outage.
 	let first = repo.0.lock().await.rows[&rows[0]].clone();
 	store
-		.add_version(&first.secret_resource, &"uncommitted-version-key".into())
+		.add_version(
+			&first.tenant,
+			&first.secret_resource,
+			&"uncommitted-version-key".into(),
+		)
 		.await
 		.unwrap();
 	*store.disable_failure.lock().await = Some("external outage".into());
@@ -633,7 +726,11 @@ async fn revocation_commit_failure_has_no_external_effect_and_committed_cleanup_
 	let first = create(&s, "alpha").await.provider_credential;
 	let original = repo.0.lock().await.rows[&first.id].clone();
 	store
-		.add_version(&original.secret_resource, &"unpinned-key-5678".into())
+		.add_version(
+			&original.tenant,
+			&original.secret_resource,
+			&"unpinned-key-5678".into(),
+		)
 		.await
 		.unwrap();
 	repo.0.lock().await.commit_failure = true;
@@ -673,6 +770,7 @@ async fn revocation_commit_failure_has_no_external_effect_and_committed_cleanup_
 			credentials: Arc::new(Env),
 		},
 		repository: Arc::new(repo.clone()),
+		reader: Some(Arc::new(store.clone())),
 		issuer: None,
 	};
 	let error = access
@@ -742,7 +840,11 @@ async fn deleted_intent_recovers_partial_destruction_secret_deletion_and_final_c
 		let first = create(&s, "alpha").await.provider_credential;
 		let original = repo.0.lock().await.rows[&first.id].clone();
 		let extra = store
-			.add_version(&original.secret_resource, &"extra-key-5678".into())
+			.add_version(
+				&original.tenant,
+				&original.secret_resource,
+				&"extra-key-5678".into(),
+			)
 			.await
 			.unwrap();
 		match failure {

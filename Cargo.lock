@@ -237,6 +237,7 @@ dependencies = [
 name = "aidash-server"
 version = "0.1.0"
 dependencies = [
+ "aes-gcm",
  "aidash-application",
  "aidash-domain",
  "aidash-harness",
@@ -255,6 +256,7 @@ dependencies = [
  "clap",
  "ctor 0.6.3",
  "futures-util",
+ "hkdf",
  "hmac 0.12.1",
  "http",
  "indexmap 2.14.2",
@@ -290,6 +292,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+ "zeroize",
 ]
 
 [[package]]

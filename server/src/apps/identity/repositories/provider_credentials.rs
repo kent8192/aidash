@@ -404,6 +404,7 @@ impl aidash_application::provider_access::ProviderAccess for AdmittedAccess {
 					credentials: crate::bootstrap::environment_credentials(),
 				},
 				repository: service.repository.clone(),
+				reader: self.store.provider_key_material_reader.clone(),
 				issuer: self.store.capability_issuer.clone(),
 			}
 			.resolve(context, endpoint, source)
@@ -446,6 +447,7 @@ impl aidash_application::provider_access::ProviderAccess for AdmittedAccess {
 				credentials: crate::bootstrap::environment_credentials(),
 			},
 			repository: service.repository.clone(),
+			reader: self.store.provider_key_material_reader.clone(),
 			issuer: self.store.capability_issuer.clone(),
 		}
 		.resolve(&context, endpoint, source)

@@ -78,9 +78,9 @@ async fn rest_store_writes_payload_once_and_uses_only_metadata_and_lifecycle_end
 	let mut store = SecretManager::new("byok-project".into(), "dev".into()).unwrap();
 	store.api = format!("{url}/v1");
 	store.metadata = format!("{url}/token");
-	store.create(id).await.unwrap();
+	store.create("alpha", id).await.unwrap();
 	let key: SecretString = "canary-provider-write-only-key".into();
-	let version = store.add_version(&resource, &key).await.unwrap();
+	let version = store.add_version("alpha", &resource, &key).await.unwrap();
 	assert_eq!(version, format!("{resource}/versions/2"));
 	assert_eq!(store.versions(&resource).await.unwrap().len(), 2);
 	store.disable(&version).await.unwrap();
@@ -154,7 +154,7 @@ async fn rest_store_rejects_metadata_tokens_without_the_google_response_header()
 	let mut store = SecretManager::new("byok-project".into(), "dev".into()).unwrap();
 	store.api = format!("{url}/v1");
 	store.metadata = format!("{url}/token");
-	let error = store.create(Uuid::now_v7()).await.unwrap_err();
+	let error = store.create("alpha", Uuid::now_v7()).await.unwrap_err();
 	assert!(matches!(error, Error::External(_)), "{error:?}");
 	assert_eq!(store_calls.load(Ordering::SeqCst), 0);
 }

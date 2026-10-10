@@ -88,6 +88,12 @@ impl ProviderAccess for EnvironmentAccess {
 	}
 }
 
+/// Reads only one explicitly pinned version of Key Material.
+#[async_trait]
+pub trait KeyMaterialReader: Send + Sync {
+	async fn read(&self, tenant: &str, resource: &str, version: &str) -> Result<SecretString>;
+}
+
 /// Worker-local minting port. It receives validated metadata, never Key Material.
 #[async_trait]
 pub trait TokenIssuer: Send + Sync {
@@ -97,10 +103,13 @@ pub trait TokenIssuer: Send + Sync {
 		credential: &aidash_domain::provider_credentials::ProviderCredential,
 	) -> Result<Access>;
 }
-/// Cloud calls reload current metadata for the admitted ID before each mint.
+/// Calls reload current metadata for the admitted ID before each mint or pinned read.
+/// Cloud mints through the Credential Broker; self-hosted PostgreSQL Stores read
+/// the pin locally. Without either, Tenant access fails closed.
 pub struct TenantAccess {
 	pub environment: EnvironmentAccess,
 	pub repository: Arc<dyn crate::provider_credentials::Repository>,
+	pub reader: Option<Arc<dyn KeyMaterialReader>>,
 	pub issuer: Option<Arc<dyn TokenIssuer>>,
 }
 #[async_trait]
@@ -144,12 +153,21 @@ impl ProviderAccess for TenantAccess {
 		}
 		// Reload the current pin on every call: rotation takes effect immediately;
 		// a later binding change cannot alter the ID admitted for this Run.
-		row.require_active()?;
+		let version = row.require_active()?.to_owned();
 		scope.commit().await?;
-		self.issuer
+		if let Some(issuer) = &self.issuer {
+			return issuer.mint(context, &row).await;
+		}
+		let reader = self
+			.reader
 			.as_ref()
-			.ok_or_else(|| Error::Invalid("credential broker not configured".into()))?
-			.mint(context, &row)
-			.await
+			.ok_or_else(|| Error::Invalid("credential broker not configured".into()))?;
+		let bearer = reader
+			.read(&context.tenant, &row.secret_resource, &version)
+			.await?;
+		Ok(Access {
+			endpoint: provider.base_url().into(),
+			bearer,
+		})
 	}
 }

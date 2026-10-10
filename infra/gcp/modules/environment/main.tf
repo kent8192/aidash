@@ -179,10 +179,11 @@ output "zone" { value = local.zone }
 output "hostname" { value = var.hostname }
 locals {
   provider_credentials = var.byok_project_id != "" ? {
+    fingerprint_key = { env = "AIDASH_PROVIDER_FINGERPRINT_KEY" }
     store = {
+      kind            = "secret_manager"
       byok_project_id = var.byok_project_id
       environment_id  = var.environment_id
-      fingerprint_env = "AIDASH_SECRET_PROVIDER_FINGERPRINT"
     }
     broker = var.broker
   } : null

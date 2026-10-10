@@ -21,8 +21,9 @@ pub trait KeyValidator: Send + Sync {
 #[async_trait]
 pub trait Store: Send + Sync {
 	fn resource(&self, id: Uuid) -> String;
-	async fn create(&self, id: Uuid) -> Result<()>;
-	async fn add_version(&self, resource: &str, key: &SecretString) -> Result<String>;
+	async fn create(&self, tenant: &str, id: Uuid) -> Result<()>;
+	async fn add_version(&self, tenant: &str, resource: &str, key: &SecretString)
+	-> Result<String>;
 	async fn versions(&self, resource: &str) -> Result<Vec<String>>;
 	async fn disable(&self, version: &str) -> Result<()>;
 	async fn destroy(&self, version: &str) -> Result<()>;
@@ -190,8 +191,11 @@ impl Service {
 				return Err(e);
 			}
 		};
-		self.store.create(id).await?;
-		let version = self.store.add_version(&row.secret_resource, &key).await?;
+		self.store.create(tenant, id).await?;
+		let version = self
+			.store
+			.add_version(tenant, &row.secret_resource, &key)
+			.await?;
 		let mut scope = self.repository.begin(tenant).await?;
 		let pending = scope.get(id).await?;
 		if pending.state != State::Pending {
@@ -227,7 +231,10 @@ impl Service {
 		row.check_revision(expected)?;
 		let old = row.require_active()?.to_owned();
 		let validation = self.validator.validate(row.provider, &key).await?;
-		let version = self.store.add_version(&row.secret_resource, &key).await?;
+		let version = self
+			.store
+			.add_version(tenant, &row.secret_resource, &key)
+			.await?;
 		let (fingerprint, last4) = self.fingerprint(tenant, &key);
 		row.pinned_version = Some(version.clone());
 		row.fingerprint = fingerprint;

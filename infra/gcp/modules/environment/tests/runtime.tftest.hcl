@@ -49,7 +49,7 @@ run "retained_disks_and_spot_policy" {
     error_message = "SSH must be available through IAP only."
   }
   assert {
-    condition     = jsondecode(google_compute_instance.host[0].metadata["aidash-provider-credentials"]).broker == var.broker && jsondecode(google_compute_instance.host[0].metadata["aidash-provider-credentials"]).store.environment_id == var.environment_id && output.provider_credentials.store.fingerprint_env == "AIDASH_SECRET_PROVIDER_FINGERPRINT"
+    condition     = jsondecode(google_compute_instance.host[0].metadata["aidash-provider-credentials"]).broker == var.broker && jsondecode(google_compute_instance.host[0].metadata["aidash-provider-credentials"]).store.environment_id == var.environment_id && output.provider_credentials.fingerprint_key.env == "AIDASH_PROVIDER_FINGERPRINT_KEY"
     error_message = "The managed host must receive Store/broker settings through non-secret metadata."
   }
   assert {
@@ -66,10 +66,11 @@ run "retained_disks_and_spot_policy" {
   }
   assert {
     condition = jsondecode(google_compute_instance.host[0].metadata["aidash-provider-credentials"]) == {
+      fingerprint_key = { env = "AIDASH_PROVIDER_FINGERPRINT_KEY" }
       store = {
+        kind            = "secret_manager"
         byok_project_id = "aidash-byok-fixture"
         environment_id  = "test"
-        fingerprint_env = "AIDASH_SECRET_PROVIDER_FINGERPRINT"
       }
       broker = var.broker
     }
