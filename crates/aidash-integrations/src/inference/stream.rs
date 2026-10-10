@@ -329,5 +329,29 @@ fn rejected(error: &Value) -> Error {
 	}
 }
 
+/// How a 2xx answer to a streamed request is encoded.
+pub(crate) enum MediaType {
+	EventStream,
+	/// A whole completion from an endpoint that ignores `stream`.
+	Json,
+	Other,
+}
+
+pub(crate) fn media_type(response: &reqwest::Response) -> MediaType {
+	let essence = response
+		.headers()
+		.get(reqwest::header::CONTENT_TYPE)
+		.and_then(|value| value.to_str().ok())
+		.and_then(|value| value.split(';').next())
+		.map(str::trim);
+	match essence {
+		Some(essence) if essence.eq_ignore_ascii_case("text/event-stream") => {
+			MediaType::EventStream
+		}
+		Some(essence) if essence.eq_ignore_ascii_case("application/json") => MediaType::Json,
+		_ => MediaType::Other,
+	}
+}
+
 #[cfg(test)]
 mod tests;

@@ -173,6 +173,8 @@ async fn openrouter_enforces_zdr_and_preserves_reasoning_tools_and_usage(
 			);
 			assert_eq!(request["max_tokens"], 65536);
 			assert!(request.get("max_completion_tokens").is_none());
+			assert_eq!(request["stream"], true);
+			assert_eq!(request["stream_options"], json!({"include_usage": true}));
 			assert_eq!(request["provider"]["zdr"], true);
 			assert_eq!(request["provider"]["require_parameters"], true);
 			if let Some(effort) = effort {

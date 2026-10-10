@@ -71,10 +71,15 @@ not guarantee exactly-once billing.
 
 ## Streamed responses
 
-A model can set `config.streaming` to `true` to request a server-sent event
-stream from OpenRouter (`"stream": true` with `stream_options.include_usage`).
-Omitting it, or setting it to `null` or `false`, keeps the non-streamed request
-unchanged. Aidash assembles the complete stream, including the final
+Inference streams by default. A model that omits `config.streaming`, or sets
+it to `null` or `true`, requests a server-sent event stream from OpenRouter
+(`"stream": true` with `stream_options.include_usage`). Setting
+`streaming: false` opts out and keeps the non-streamed request. Some
+OpenAI-compatible endpoints ignore `stream`: a 2xx answer with Content-Type
+`application/json` is read with the same 1 MiB cap and validated as a
+non-streamed completion, without progress. Any other content type than
+`text/event-stream` or `application/json` fails the attempt. Aidash assembles
+the complete stream, including the final
 `finish_reason`, usage, and `[DONE]` marker, and validates it exactly like a
 non-streamed completion before any tool call can run. A stream that ends early,
 is truncated, refused, oversized (more than 1 MiB assembled), or reports a
@@ -109,8 +114,9 @@ configuration validation and legacy deserialization.
 The streamed-response tests use a scripted local event stream. They cover
 progress before the accepted response, equality with the non-streamed result,
 missing `[DONE]` or `finish_reason`, duplicate call IDs, truncation, refusal,
-keepalive-only stalls, oversized streams, and that argument text never reaches
-progress.
+keepalive-only stalls, oversized streams, that argument text never reaches
+progress, a whole JSON completion answering a streamed request, and rejection
+of other content types.
 
 Run `scripts/test-rust.sh --coverage` for the full suite with disposable services.
 This includes the PostgreSQL tests in the [inference cancellation suite](../../server/src/apps/execution/tests/inference_cancellation.rs) and

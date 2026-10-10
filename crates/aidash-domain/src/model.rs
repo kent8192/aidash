@@ -6,7 +6,7 @@ use serde_json::Value;
 use std::time::Duration;
 
 /// Streaming applies to model configs that do not choose explicitly.
-pub const STREAMING_DEFAULT: bool = false;
+pub const STREAMING_DEFAULT: bool = true;
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]

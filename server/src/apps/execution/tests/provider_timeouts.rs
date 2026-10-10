@@ -8,6 +8,8 @@ use rstest::fixture;
 use serde_json::{Value, json};
 use std::time::Duration;
 
+/// The whole-response deadline is a property of the non-streamed path; a
+/// streamed call would stall on the delayed headers first.
 #[fixture]
 fn model_config(#[default("https://openrouter.ai/api/v1")] endpoint: &str
 ) -> Value {
@@ -15,7 +17,7 @@ fn model_config(#[default("https://openrouter.ai/api/v1")] endpoint: &str
 		"provider":"openrouter", "model_id":"vendor/fixture-model",
 		"endpoint":endpoint, "credential_env":null,
 		"context_window":32768, "max_output_tokens":4096,
-		"modalities":["text"], "cost":{}
+		"modalities":["text"], "cost":{}, "streaming":false
 	})
 }
 
