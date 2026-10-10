@@ -479,6 +479,7 @@ impl ExecutionEnvironment for Environment<'_> {
 			conversation_memory: config.conversation_memory,
 			context_policy: config.context_policy,
 			projection_version: config.projection_version.unwrap_or_default(),
+			prompt_cache: config.prompt_cache.unwrap_or_default(),
 		})
 	}
 	fn provider(&self, model: ModelConfig) -> Result<Arc<dyn ModelProvider>> {

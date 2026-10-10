@@ -1,13 +1,94 @@
-import { observeGraphTheme } from "./graph-theme";
+import {
+  graphTokens,
+  observeGraphTheme,
+  type GraphTokens,
+} from "./graph-theme";
 import { Button } from "../components/ui/button";
 import { useEffect, useId, useRef } from "react";
-import cytoscape, { type Core } from "cytoscape";
+import cytoscape, { type Core, type StylesheetJson } from "cytoscape";
 import type { AgentGraph, GraphNode } from "../agent-graph/model";
 import type { GraphCopy } from "../agent-graph/copy";
-import { Scan } from "lucide-react";
+import { Crosshair, Minus, Plus, Scan } from "lucide-react";
 import { useGraphFit } from "../graph-fit-view";
 import { cytoscapeFit } from "./graph-camera";
 import { synchronizeGraph } from "./cytoscape-model";
+
+function graphStylesheet(t: GraphTokens): StylesheetJson {
+  return [
+    {
+      selector: "node",
+      style: {
+        label: "data(label)",
+        shape: "round-rectangle",
+        "corner-radius": "10",
+        width: 30,
+        height: 30,
+        "background-color": t.surface,
+        "border-color": t.borderStrong,
+        "border-width": 1,
+        color: t.foreground,
+        "font-family": t.sans,
+        "font-size": 11,
+        "text-valign": "bottom",
+        "text-margin-y": 8,
+        "text-wrap": "ellipsis",
+        "text-max-width": "160px",
+        "text-outline-color": t.background,
+        "text-outline-width": 2,
+      },
+    },
+    {
+      selector: "node.root",
+      style: {
+        "background-color": t.raised,
+        "border-color": t.brandMark,
+        "border-width": 2,
+        width: 38,
+        height: 38,
+      },
+    },
+    {
+      selector: "node.unavailable",
+      style: {
+        "background-color": t.background,
+        "border-color": t.faint,
+        "border-style": "dashed",
+        color: t.faint,
+      },
+    },
+    {
+      selector: "edge",
+      style: {
+        width: 1,
+        "line-color": t.edge,
+        "target-arrow-color": t.edge,
+        "target-arrow-shape": "triangle",
+        "arrow-scale": 0.8,
+        "curve-style": "bezier",
+      },
+    },
+    {
+      selector: 'edge[layer = "runtime"]',
+      style: {
+        "line-style": "dashed",
+        "line-color": t.edgeStrong,
+        "target-arrow-color": t.edgeStrong,
+      },
+    },
+    {
+      selector: "node.focused",
+      style: {
+        "outline-color": t.brandMark,
+        "outline-width": 2,
+        "outline-offset": 3,
+        "underlay-color": t.brandMark,
+        "underlay-opacity": 0.15,
+        "underlay-padding": 8,
+      },
+    },
+    { selector: ".dimmed", style: { opacity: 0.3 } },
+  ];
+}
 
 export function CytoscapeCanvas({
   graph,
@@ -61,64 +142,10 @@ export function CytoscapeCanvas({
       maxZoom: 4,
       wheelSensitivity: 0.2,
       boxSelectionEnabled: false,
-      style: [
-        {
-          selector: "node",
-          style: {
-            label: "data(label)",
-            "background-color": "#e7f0eb",
-            "border-color": "#527462",
-            "border-width": 1.5,
-            color: "#20372c",
-            width: 26,
-            height: 26,
-            "font-size": 11,
-            "text-valign": "bottom",
-            "text-margin-y": 8,
-            "text-wrap": "ellipsis",
-            "text-max-width": "160px",
-          },
-        },
-        {
-          selector: "node.root",
-          style: {
-            "background-color": "#285b44",
-            "border-width": 3,
-            width: 38,
-            height: 38,
-          },
-        },
-        {
-          selector: "node.unavailable",
-          style: { "background-color": "#d9dde0", "border-style": "dashed" },
-        },
-        {
-          selector: "edge",
-          style: {
-            width: 1.5,
-            "line-color": "#8ca597",
-            "target-arrow-color": "#8ca597",
-            "target-arrow-shape": "triangle",
-            "curve-style": "bezier",
-          },
-        },
-        {
-          selector: 'edge[layer = "runtime"]',
-          style: {
-            "line-style": "dashed",
-            "line-color": "#798cab",
-            "target-arrow-color": "#798cab",
-          },
-        },
-        {
-          selector: ".focused",
-          style: { "border-color": "#d3762a", "border-width": 4 },
-        },
-        { selector: ".dimmed", style: { opacity: 0.28 } },
-      ],
+      style: graphStylesheet(graphTokens()),
     });
     instance.current = cy;
-    const stopTheme = observeGraphTheme(cy);
+    const stopTheme = observeGraphTheme(cy, graphStylesheet);
     cy.on("tap", "node", (event) => onSelect.current(event.target.id()));
     const observer = new ResizeObserver(() => cy.resize());
     observer.observe(container.current);
@@ -152,14 +179,16 @@ export function CytoscapeCanvas({
     }
   }, [selectedId, graph]);
   return (
-    <div className="agent-graph-canvas">
+    <div className="agent-graph-canvas relative h-full min-h-[320px] w-full">
       <div
-        className="agent-graph-controls"
+        className="absolute right-3 top-3 z-[1] inline-flex items-center gap-0.5 rounded-md border border-border-strong bg-surface/90 p-0.5 shadow-overlay"
         role="group"
         aria-label={copy.graph}
       >
         <Button
-          variant="outline"
+          variant="ghost"
+          size="icon"
+          className="size-7"
           type="button"
           onClick={() => {
             fit.cancel();
@@ -169,10 +198,12 @@ export function CytoscapeCanvas({
           }}
           aria-label={copy.zoomIn}
         >
-          +
+          <Plus size={14} aria-hidden="true" />
         </Button>
         <Button
-          variant="outline"
+          variant="ghost"
+          size="icon"
+          className="size-7"
           type="button"
           onClick={() => {
             fit.cancel();
@@ -182,12 +213,13 @@ export function CytoscapeCanvas({
           }}
           aria-label={copy.zoomOut}
         >
-          −
+          <Minus size={14} aria-hidden="true" />
         </Button>
+        <span aria-hidden className="mx-0.5 h-4 w-px bg-border" />
         <Button
-          variant="outline"
+          variant="ghost"
+          size="sm"
           type="button"
-          className="graph-fit-button"
           aria-label={copy.fit}
           title={
             fit.available ? copy.fit : `${copy.fit}: ${copy.fitUnavailable}`
@@ -196,11 +228,12 @@ export function CytoscapeCanvas({
           disabled={!fit.available}
           onClick={fit.request}
         >
-          <Scan size={16} aria-hidden="true" />
+          <Scan size={14} aria-hidden="true" />
           <span>{copy.fit}</span>
         </Button>
         <Button
-          variant="outline"
+          variant="ghost"
+          size="sm"
           type="button"
           onClick={() => {
             fit.cancel();
@@ -209,15 +242,16 @@ export function CytoscapeCanvas({
             if (cy) cy.center(cy.getElementById(selectedId));
           }}
         >
+          <Crosshair size={14} aria-hidden="true" />
           {copy.focus}
         </Button>
       </div>
-      <span id={fitDescription} className="graph-fit-status" role="status">
+      <span id={fitDescription} className="sr-only" role="status">
         {fit.available ? "" : copy.fitUnavailable}
       </span>
       <div
         ref={container}
-        className="collab-cytoscape"
+        className="collab-cytoscape h-full min-h-[320px] w-full touch-none"
         role="img"
         aria-label={copy.graph}
       />

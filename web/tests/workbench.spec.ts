@@ -123,7 +123,6 @@ async function editableDrafts(
   await expect(page.getByLabel("Additional instructions")).toHaveValue(
     "First draft",
   );
-  await page.getByText("Select & manage drafts", { exact: true }).click();
   return { state, saves, cursors, drafts };
 }
 
@@ -135,7 +134,7 @@ test("Creator opens and edits a focused draft beyond the first page", async ({
     null,
     "00000000-0000-7000-8000-000000000199",
   ]);
-  await expect(page.locator(".wb-picker select").first()).toHaveValue(
+  await expect(page.getByLabel("Select a draft", { exact: true })).toHaveValue(
     "managed-agent@1.0.0",
   );
   await page.getByLabel("Additional instructions").fill("Edit an older draft");
@@ -150,8 +149,8 @@ test("Creator opens and edits a focused draft beyond the first page", async ({
 test("Register has one release-notes editor", async ({ page }) => {
   await editableDrafts(page);
   await page
-    .getByRole("navigation", { name: "Creator" })
-    .getByRole("button", { name: "Register in Registry" })
+    .getByRole("tablist", { name: "Creator" })
+    .getByRole("tab", { name: "Register in Registry" })
     .click();
   const notes = page.getByRole("textbox", {
     name: "Release notes",
@@ -188,8 +187,7 @@ test("Creator discards edits and hydrates a selected draft with another revision
   await instructions.fill("Discard these edits");
   page.on("dialog", (dialog) => dialog.accept());
   await page
-    .locator(".wb-picker select")
-    .first()
+    .getByLabel("Select a draft", { exact: true })
     .selectOption("second-agent@1.0.0");
   await expect(instructions).toHaveValue("Second draft");
   await instructions.fill("Saved second draft");
@@ -211,8 +209,7 @@ test("switching drafts keeps the selected Binding restrictions through save", as
   const restrictions = page.getByLabel("Restrictions (JSON)");
   await expect(restrictions).toHaveValue('{"allowed_hosts":["first.example"]}');
   await page
-    .locator(".wb-picker select")
-    .first()
+    .getByLabel("Select a draft", { exact: true })
     .selectOption("second-agent@1.0.0");
   await expect(restrictions).toHaveValue(
     '{"allowed_hosts":["second.example"]}',
@@ -256,7 +253,7 @@ for (const revision of [1, 7]) {
     page,
   }) => {
     await editableDrafts(page, revision);
-    const picker = page.locator(".wb-picker select").first();
+    const picker = page.getByLabel("Select a draft", { exact: true });
     const instructions = page.getByLabel("Additional instructions");
     await picker.selectOption("second-agent@1.0.0");
     await expect(instructions).toHaveValue("Second draft");
@@ -383,7 +380,6 @@ for (const [viewport, locale] of [
       });
     });
     await page.goto("/creator?focus=managed-agent%401.0.0");
-    await expect(page.locator(".wb-page")).toBeVisible();
     await expect(page.locator(".wb-layout.overview")).toBeVisible();
     const instructions = page.getByLabel(
       locale === "ja-JP" ? "追加の指示" : "Additional instructions",
@@ -400,8 +396,7 @@ for (const [viewport, locale] of [
     expect(draft.revision).toBe(2);
     if (viewport.width === 1280) {
       await page
-        .locator(".wb-tabs")
-        .getByRole("button", { name: "Test", exact: true })
+        .getByRole("tab", { name: "Test", exact: true })
         .click();
       await page.getByLabel("Tool mode").selectOption("real");
       await page.getByLabel("Test connection profile").selectOption("sandbox");
@@ -432,8 +427,7 @@ for (const [viewport, locale] of [
       await expect.poll(() => postedTests.length).toBe(3);
       expect(postedTests[2].continue_from).toBeNull();
       await page
-        .locator(".wb-tabs")
-        .getByRole("button", { name: "Overview", exact: true })
+        .getByRole("tab", { name: "Overview", exact: true })
         .click();
       await expect(page.locator(".wb-layout.overview")).toBeVisible();
     }
@@ -530,8 +524,7 @@ for (const [viewport, locale] of [
       page.getByRole("main").getByText("Research", { exact: true }),
     ).toBeVisible();
     await page
-      .locator(".wb-tabs")
-      .getByRole("button", {
+      .getByRole("tab", {
         name: locale === "ja-JP" ? "認証" : "Certifications",
       })
       .click();
@@ -545,8 +538,7 @@ for (const [viewport, locale] of [
         .first(),
     ).toBeVisible();
     await page
-      .locator(".wb-tabs")
-      .getByRole("button", {
+      .getByRole("tab", {
         name: locale === "ja-JP" ? "ポリシー" : "Policies",
       })
       .click();
@@ -627,8 +619,7 @@ for (const status of [
       },
     );
     await page
-      .locator(".wb-tabs")
-      .getByRole("button", { name: "Test", exact: true })
+      .getByRole("tab", { name: "Test", exact: true })
       .click();
     await page.getByLabel("Tool mode").selectOption("simulated");
     const input = page.getByPlaceholder("Test message…");
@@ -670,10 +661,9 @@ test("Creator renders object-valued Tool conversation content", async ({
   );
   await page.reload();
   await page
-    .locator(".wb-tabs")
-    .getByRole("button", { name: "Test", exact: true })
+    .getByRole("tab", { name: "Test", exact: true })
     .click();
-  await expect(page.locator(".wb-chat .tool")).toContainText(
+  await expect(page.getByRole("log").locator('[data-role="tool"]')).toContainText(
     '"title": "Tool result"',
   );
   await expect(page.getByPlaceholder("Test message…")).toBeVisible();
@@ -757,12 +747,14 @@ for (const change of ["add", "replace", "remove", "unchanged", "cluster"]) {
     );
     await page.reload();
     await page
-      .locator(".wb-tabs")
-      .getByRole("button", { name: "Versions", exact: true })
+      .getByRole("tab", { name: "Versions", exact: true })
       .click();
     const differences = page
-      .locator(".wb-version-detail p")
-      .filter({ hasText: "Differences from saved draft" });
+      .getByRole("region", { name: "Version details" })
+      .locator("div")
+      .filter({
+        has: page.getByText("Differences from saved draft", { exact: true }),
+      });
     await expect(differences).toContainText(
       change === "cluster"
         ? "Cluster"
@@ -879,8 +871,8 @@ for (const width of [1280, 390]) {
       path: testInfo.outputPath("overview-details.png"),
       fullPage: true,
     });
-    const tabs = page.locator(".wb-tabs");
-    await tabs.getByRole("button", { name: "Audit", exact: true }).click();
+    const tabs = page.getByRole("tablist", { name: "Trust" });
+    await tabs.getByRole("tab", { name: "Audit", exact: true }).click();
     await expect(
       page.getByText("No event selected", { exact: true }),
     ).toBeVisible();
@@ -910,7 +902,7 @@ for (const width of [1280, 390]) {
     ).toBeVisible();
     expect(auditOffsets).toContain("50");
     await tabs
-      .getByRole("button", { name: "Certifications", exact: true })
+      .getByRole("tab", { name: "Certifications", exact: true })
       .click();
     await expect(
       page.getByRole("heading", {
@@ -933,7 +925,7 @@ for (const width of [1280, 390]) {
       path: testInfo.outputPath("policies.png"),
       fullPage: true,
     });
-    await tabs.getByRole("button", { name: "Incidents", exact: true }).click();
+    await tabs.getByRole("tab", { name: "Incidents", exact: true }).click();
     await page
       .getByRole("combobox", { name: "Status", exact: true })
       .selectOption("open");
@@ -1012,7 +1004,8 @@ test("Creator preserves unsaved edits across all five tabs and invalidates valid
       });
     },
   );
-  const tabs = page.locator(".wb-tabs");
+  const tabs = page.getByRole("tablist", { name: "Creator" });
+  const register = page.getByRole("button", { name: /Register in Registry$/ });
   await page
     .getByLabel("Additional instructions")
     .fill("Keep these instructions while reviewing the draft");
@@ -1020,7 +1013,9 @@ test("Creator preserves unsaved edits across all five tabs and invalidates valid
     .locator(".wb-actions")
     .getByRole("button", { name: "Review registration", exact: true })
     .click();
-  await expect(page.locator(".wb-register-layout")).toBeVisible();
+  await expect(
+    tabs.getByRole("tab", { name: "Register in Registry", exact: true }),
+  ).toHaveAttribute("aria-selected", "true");
   expect(saves).toEqual([]);
   expect(registered).toEqual([]);
   for (const name of [
@@ -1030,10 +1025,11 @@ test("Creator preserves unsaved edits across all five tabs and invalidates valid
     "Register in Registry",
     "Overview",
   ]) {
-    await tabs.getByRole("button", { name, exact: true }).click();
-    await expect(
-      tabs.getByRole("button", { name, exact: true }),
-    ).toHaveAttribute("aria-current", "page");
+    await tabs.getByRole("tab", { name, exact: true }).click();
+    await expect(tabs.getByRole("tab", { name, exact: true })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
     if (name === "Test") {
       await expect(page.getByLabel("Tool mode")).toHaveValue("real");
       await expect(page.locator(".wb-test-compose button")).toBeDisabled();
@@ -1043,9 +1039,7 @@ test("Creator preserves unsaved edits across all five tabs and invalidates valid
         page.getByText("Register your first version to view history"),
       ).toBeVisible();
     if (name === "Register in Registry")
-      await expect(
-        page.locator(".wb-register-layout .wb-primary"),
-      ).toBeEnabled();
+      await expect(register).toBeEnabled();
   }
   await expect(page.getByLabel("Additional instructions")).toHaveValue(
     "Keep these instructions while reviewing the draft",
@@ -1058,14 +1052,16 @@ test("Creator preserves unsaved edits across all five tabs and invalidates valid
     })
     .click();
   await tabs
-    .getByRole("button", { name: "Register in Registry", exact: true })
+    .getByRole("tab", { name: "Register in Registry", exact: true })
     .click();
-  await expect(page.locator(".wb-register-layout .wb-primary")).toBeEnabled();
+  await expect(register).toBeEnabled();
   await page
     .getByLabel("Release notes", { exact: true })
     .fill("Changed after validation");
-  await expect(page.locator(".wb-register-layout .wb-primary")).toBeEnabled();
-  await expect(page.locator(".wb-validation-status")).toContainText(
+  await expect(register).toBeEnabled();
+  await expect(
+    page.getByRole("region", { name: "Technical validation" }),
+  ).toContainText(
     "This draft has not been validated.",
   );
   expect(registered).toEqual([]);
@@ -1076,7 +1072,7 @@ test("Creator preserves unsaved edits across all five tabs and invalidates valid
       exact: true,
     })
     .click();
-  await page.locator(".wb-register-layout .wb-primary").click();
+  await register.click();
   await expect.poll(() => registered.length).toBe(1);
   expect(registered[0]).toEqual({ expected_revision: drafts[0].revision });
 });
@@ -1087,7 +1083,6 @@ for (const width of [1280, 900, 640, 600, 541, 390]) {
   }) => {
     await page.setViewportSize({ width, height: 960 });
     await editableDrafts(page);
-    await page.getByText("Select & manage drafts", { exact: true }).click();
     for (const name of [
       "Build",
       "Test",
@@ -1096,8 +1091,7 @@ for (const width of [1280, 900, 640, 600, 541, 390]) {
       "Overview",
     ]) {
       await page
-        .locator(".wb-tabs")
-        .getByRole("button", { name, exact: true })
+        .getByRole("tab", { name, exact: true })
         .click();
       const dimensions = await page.evaluate(() => ({
         width: document.documentElement.scrollWidth,
@@ -1105,28 +1099,6 @@ for (const width of [1280, 900, 640, 600, 541, 390]) {
       }));
       expect(dimensions.width, name).toBeLessThanOrEqual(dimensions.viewport);
       await expect(page.locator(".wb-layout")).toBeVisible();
-      if (width <= 640 && (name === "Overview" || name === "Build")) {
-        const sizes = await page
-          .locator(".wb-editor-grid")
-          .evaluate((element) => ({
-            width: element.getBoundingClientRect().width,
-            cards: [...element.querySelectorAll(":scope > .wb-span")].map(
-              (card) => card.getBoundingClientRect().width,
-            ),
-          }));
-        for (const card of sizes.cards)
-          expect(Math.abs(card - sizes.width)).toBeLessThan(2);
-      }
-      const colors = await page.locator(".wb-creator").evaluate((element) => ({
-        surface: getComputedStyle(element).backgroundColor,
-        card: getComputedStyle(element.querySelector(".wb-card")!)
-          .backgroundColor,
-        primary: getComputedStyle(element.querySelector(".wb-primary")!)
-          .backgroundColor,
-      }));
-      expect(colors.surface).toBe("rgb(250, 250, 250)");
-      expect(colors.card).toBe("rgb(255, 255, 255)");
-      expect(colors.primary).toBe("rgb(199, 71, 48)");
     }
   });
 }
@@ -1186,7 +1158,9 @@ for (const attemptValidation of [false, true]) {
       .locator(".wb-actions")
       .getByRole("button", { name: "Review registration", exact: true })
       .click();
-    const register = page.locator(".wb-register-layout .wb-primary");
+    const register = page.getByRole("button", {
+      name: /Register in Registry$/,
+    });
     await expect(register).toBeEnabled();
     await register.click();
     await expect.poll(() => registrations.length).toBe(1);
@@ -1376,8 +1350,7 @@ for (const [width, locale] of [
           dependencies.length,
         );
         await page
-          .locator(".wb-tabs")
-          .getByRole("button", { name: text("Overview", "概要"), exact: true })
+          .getByRole("tab", { name: text("Overview", "概要"), exact: true })
           .click();
         for (const [index, dependency] of dependencies.entries())
           await expect(

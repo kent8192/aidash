@@ -16,6 +16,7 @@ impl AgentConfig {
 			max_steps: self.max_steps,
 			context_policy: self.context_policy.clone(),
 			projection_version: self.projection_version,
+			prompt_cache: self.prompt_cache,
 		}
 	}
 	pub fn from_definition(input: AgentBindings) -> Self {
@@ -38,6 +39,7 @@ impl AgentConfig {
 			max_steps: input.max_steps,
 			context_policy: input.context_policy,
 			projection_version: input.projection_version,
+			prompt_cache: input.prompt_cache,
 			core_capabilities: Default::default(),
 			skill_attachments: vec![],
 			skill_roots: vec![],

@@ -120,6 +120,7 @@ fn request_check_reserves_completion_tokens() {
 		response_format: None,
 		content_parts: vec![],
 		cache_scope: None,
+		cache_breakpoints: false,
 	};
 	assert!(check_request(2000, &request).is_err());
 }

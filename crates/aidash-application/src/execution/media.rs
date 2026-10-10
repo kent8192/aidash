@@ -59,6 +59,7 @@ pub async fn load<S: MediaAttachments + ?Sized>(
 		response_format: None,
 		content_parts: Vec::new(),
 		cache_scope: None,
+		cache_breakpoints: false,
 	};
 	for (seq, id, headroom) in messages {
 		let attachments = scope.attachments(workspace, *id).await?;

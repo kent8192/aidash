@@ -9,6 +9,7 @@ fn media_reservation_covers_complete_request_growth() {
 		response_format: None,
 		content_parts: vec![],
 		cache_scope: None,
+		cache_breakpoints: false,
 	};
 	let without_media = request.estimated_total_tokens();
 	request.content_parts = vec![
@@ -171,6 +172,7 @@ fn every_chat_request_disables_openrouter_transforms(#[case] routes: Vec<String>
 		response_format: None,
 		content_parts: vec![],
 		cache_scope: None,
+		cache_breakpoints: false,
 	};
 	let body = request_body(&config, &request, routes, None);
 	assert_eq!(body["transforms"], json!([]));
@@ -238,16 +240,29 @@ mod cache_salt {
 		}
 
 		fn provider(&self, keys: Option<CacheSaltKeys>) -> Arc<dyn ModelProvider> {
-			let config: ModelConfig = serde_json::from_value(json!({
+			self.route(keys, "fixture", None)
+		}
+
+		/// A provider for `model_id` declaring `cache_mode`, if any.
+		fn route(
+			&self,
+			keys: Option<CacheSaltKeys>,
+			model_id: &str,
+			cache_mode: Option<&str>,
+		) -> Arc<dyn ModelProvider> {
+			let mut config = json!({
 				"provider": "openrouter",
-				"model_id": "fixture",
+				"model_id": model_id,
 				"endpoint": self.endpoint,
 				"credential_env": null,
 				"context_window": 100_000,
 				"modalities": ["text"],
 				"cost": {}
-			}))
-			.unwrap();
+			});
+			if let Some(mode) = cache_mode {
+				config["cache_mode"] = json!(mode);
+			}
+			let config: ModelConfig = serde_json::from_value(config).unwrap();
 			salted_provider(
 				reqwest::Client::new(),
 				config,
@@ -303,6 +318,7 @@ mod cache_salt {
 			response_format: None,
 			content_parts: vec![],
 			cache_scope: None,
+			cache_breakpoints: false,
 		}
 	}
 
@@ -422,6 +438,72 @@ mod cache_salt {
 			.await
 			.unwrap_err();
 		assert!(matches!(error, Error::Invalid(_)), "{error:?}");
+		assert!(upstream.bodies().is_empty());
+	}
+
+	#[rstest::rstest]
+	#[tokio::test]
+	async fn explicit_routes_receive_breakpoints_after_the_tenant_salt() {
+		// Arrange
+		let mut upstream = Upstream::start().await;
+		let provider = upstream.route(Some(keys()), "anthropic/claude-fixture", Some("explicit"));
+		let marked = ModelRequest {
+			cache_breakpoints: true,
+			..ordered(scope("tenant-a", 1))
+		};
+		let expected_line = keys().line(&scope("tenant-a", 1)).unwrap();
+		// Act
+		provider.infer(marked.clone()).await.unwrap();
+		provider.infer(ordered(scope("tenant-a", 1))).await.unwrap();
+		// Assert
+		let bodies = upstream.bodies();
+		let ephemeral = json!({"type":"ephemeral"});
+		assert_eq!(
+			bodies[0]["messages"][0]["content"],
+			json!([{"type":"text","text":format!("{expected_line}Shared instructions"),"cache_control":ephemeral}])
+		);
+		let parts = bodies[0]["messages"][1]["content"].as_array().unwrap();
+		assert_eq!(
+			parts[0]["cache_control"], ephemeral,
+			"the Stable Prefix part"
+		);
+		assert!(parts[1].get("cache_control").is_none(), "the volatile part");
+		assert_eq!(bodies[0]["messages"][1], marked.input_body()["messages"][1]);
+		assert_eq!(bodies[0]["provider"]["zdr"], true);
+		assert!(!bodies[1].to_string().contains("cache_control"));
+		assert_eq!(
+			first_line(&bodies[1]),
+			expected_line,
+			"the same Tenant salt with or without breakpoints"
+		);
+	}
+
+	#[rstest::rstest]
+	#[case::undeclared("anthropic/claude-fixture", None)]
+	#[case::automatic("anthropic/claude-fixture", Some("automatic"))]
+	#[case::outside_the_allowlist("openai/gpt-fixture", Some("explicit"))]
+	#[tokio::test]
+	async fn other_routes_never_receive_breakpoints(
+		#[case] model_id: &str,
+		#[case] cache_mode: Option<&str>,
+	) {
+		// Arrange
+		let mut upstream = Upstream::start().await;
+		let marked = ModelRequest {
+			cache_breakpoints: true,
+			..ordered(scope("tenant-a", 1))
+		};
+		// Act
+		let error = upstream
+			.route(Some(keys()), model_id, cache_mode)
+			.infer(marked)
+			.await
+			.unwrap_err();
+		// Assert
+		assert!(
+			matches!(&error, Error::Invalid(message) if message.contains("does not accept cache breakpoints")),
+			"{error:?}"
+		);
 		assert!(upstream.bodies().is_empty());
 	}
 

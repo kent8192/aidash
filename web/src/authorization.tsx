@@ -1,6 +1,10 @@
 import { Button } from "./components/ui/button";
+import { Input } from "./components/ui/input";
+import { NativeSelect } from "./components/ui/native-select";
+import { Textarea } from "./components/ui/textarea";
 import { RecordView } from "./record-view";
 import { useState } from "react";
+import { ShieldCheck, ShieldX } from "lucide-react";
 import { PeerMappings } from "./peer-mappings";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -37,9 +41,40 @@ import {
   Panel,
   useI18n,
   useEntryLabel,
+  type StatusTone,
 } from "./ui";
+import {
+  Alert,
+  Check,
+  Disclosure,
+  Facts,
+  HistoryRow,
+  Hint,
+  Loading,
+  Metric,
+  MetricRow,
+  Notice,
+  Pager,
+  RowList,
+} from "./components/patterns";
+import { cn } from "./lib/utils";
 
 const PAGE_SIZE = 25;
+
+const accessTones = {
+  authAllowed: "success",
+  authApproved: "success",
+  authActive: "success",
+  authDenied: "danger",
+  authRevoked: "danger",
+  authExpired: "warning",
+  authDisabled: "neutral",
+} satisfies Record<string, StatusTone>;
+
+/** Access-control state badge; keeps the `badge <state>` hook class. */
+function AccessBadge({ value }: { value: keyof typeof accessTones }) {
+  return <Badge value={value} tone={accessTones[value]} />;
+}
 const object = (value: unknown): Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -56,22 +91,33 @@ export function AuthorizationPage({ entries }: { entries: Entry[] }) {
   const { t } = useI18n();
   const [tenant, setTenant] = useState("");
   return (
-    <div className="authorization-page">
-      <p className="notice">{t("authorizationHelp")}</p>
-      <form
-        className="generation-tenant"
-        onSubmit={(event) => {
-          event.preventDefault();
-          setTenant(
-            String(new FormData(event.currentTarget).get("tenant")).trim(),
-          );
-        }}
-      >
-        <Field label={t("tenant")}>
-          <input name="tenant" required maxLength={256} />
-        </Field>
-        <Button variant="outline">{t("open")}</Button>
-      </form>
+    <div className="authorization-page grid min-w-0 gap-6">
+      <div className="grid min-w-0 gap-3">
+        <Hint>{t("authorizationHelp")}</Hint>
+        <form
+          className="flex flex-wrap items-end gap-2"
+          onSubmit={(event) => {
+            event.preventDefault();
+            setTenant(
+              String(new FormData(event.currentTarget).get("tenant")).trim(),
+            );
+          }}
+        >
+          <div className="w-full min-w-0 sm:w-72">
+            <Field label={t("tenant")}>
+              <Input
+                name="tenant"
+                required
+                maxLength={256}
+                autoComplete="off"
+                spellCheck={false}
+                className="font-mono"
+              />
+            </Field>
+          </div>
+          <Button variant="outline">{t("open")}</Button>
+        </form>
+      </div>
       {tenant && (
         <TenantAuthorization key={tenant} tenant={tenant} entries={entries} />
       )}
@@ -86,7 +132,7 @@ function TenantAuthorization({
   tenant: string;
   entries: Entry[];
 }) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const entryLabel = useEntryLabel(entries);
   const client = useQueryClient();
   const path = encodeURIComponent(tenant);
@@ -164,34 +210,38 @@ function TenantAuthorization({
   const modal = !!editor || issuing || !!revoking;
   return (
     <>
-      <p className="muted">
-        {t("tenant")}: <strong>{tenant}</strong>
-      </p>
-      {!admissions.isError && (admissions.data?.length ?? 0) > 0 && (
-        <p className="notice" role="status">
-          {t("transactionRevocationPending")}
+      <div className="grid min-w-0 gap-3">
+        <p className="text-xs text-muted-foreground">
+          {t("tenant")}{" "}
+          <span className="font-mono text-foreground">{tenant}</span>
+          {current && (
+            <>
+              {" · "}
+              {t("revision")}{" "}
+              <span className="font-mono tabular text-foreground">
+                {current.revision}
+              </span>
+            </>
+          )}
         </p>
-      )}
-      {error && !modal && (
-        <p role="alert" className="error">
-          {error}
-        </p>
-      )}
-      {snapshot.isPending && <p>{t("loading")}</p>}
-      {snapshot.isError && !missing && (
-        <p role="alert" className="error">
-          {snapshot.error.message}
-          <Button variant="outline" onClick={() => void snapshot.refetch()}>
-            {t("retry")}
-          </Button>
-        </p>
-      )}
+        {!admissions.isError && (admissions.data?.length ?? 0) > 0 && (
+          <Notice tone="warning" role="status">{t("transactionRevocationPending")}</Notice>
+        )}
+        {error && !modal && <Alert>{error}</Alert>}
+        {snapshot.isPending && <Loading />}
+        {snapshot.isError && !missing && (
+          <Alert retry={() => void snapshot.refetch()}>
+            {snapshot.error.message}
+          </Alert>
+        )}
+      </div>
       {(current || missing) && (
         <Panel
           title={t("authPolicyBundle")}
           action={
             <Button
-              variant="outline"
+              variant={current ? "outline" : "default"}
+              size="sm"
               onClick={() => {
                 setError("");
                 setEditor(
@@ -213,15 +263,14 @@ function TenantAuthorization({
           }
         >
           {current ? (
-            <div className="auth-padding">
+            <>
               <BundleSummary snapshot={current} />
-              <details>
-                <summary>{t("authCurrentDocument")}</summary>
+              <Disclosure summary={t("authCurrentDocument")}>
                 <JsonView value={current.bundle} />
-              </details>
-            </div>
+              </Disclosure>
+            </>
           ) : (
-            <p className="auth-padding">{t("authMissingPolicy")}</p>
+            <Hint>{t("authMissingPolicy")}</Hint>
           )}
         </Panel>
       )}
@@ -237,6 +286,7 @@ function TenantAuthorization({
             action={
               <Button
                 variant="outline"
+                size="sm"
                 onClick={() => {
                   setError("");
                   setIssued(null);
@@ -247,62 +297,79 @@ function TenantAuthorization({
               </Button>
             }
           >
-            <p className="auth-padding muted">{t("authCredentialsHelp")}</p>
+            <Hint>{t("authCredentialsHelp")}</Hint>
             {credentials.isError && (
-              <p role="alert" className="error">
-                {credentials.error.message}
-              </p>
+              <Alert>{credentials.error.message}</Alert>
             )}
-            {credentials.isPending && (
-              <p className="auth-padding">{t("loading")}</p>
-            )}
+            {credentials.isPending && <Loading />}
             {!credentials.isError && credentials.data?.length === 0 && (
               <Empty />
             )}
-            {!credentials.isError &&
-              credentials.data?.map((credential) => (
-                <div className="auth-row" key={credential.id}>
-                  <div>
-                    <strong>{credential.subject}</strong>
-                    <small>
-                      {new Date(credential.created_at).toLocaleString()}
-                    </small>
-                    <small>
-                      {t("authExpires")}:{" "}
-                      {new Date(credential.expires_at).toLocaleString()}
-                    </small>
+            {!credentials.isError && !!credentials.data?.length && (
+              <RowList>
+                {credentials.data.map((credential) => (
+                  <div
+                    className="auth-row grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-x-4 gap-y-2 py-2 sm:grid-cols-[minmax(0,1fr)_auto_auto]"
+                    key={credential.id}
+                  >
+                    <div className="grid min-w-0 gap-0.5">
+                      <span className="truncate font-medium text-foreground">
+                        {credential.subject}
+                      </span>
+                      <span className="truncate text-[11px] text-faint">
+                        <time
+                          className="font-mono"
+                          dateTime={credential.created_at}
+                        >
+                          {new Date(credential.created_at).toLocaleString(
+                            locale,
+                          )}
+                        </time>
+                        {" · "}
+                        {t("authExpires")}{" "}
+                        <time
+                          className="font-mono"
+                          dateTime={credential.expires_at}
+                        >
+                          {new Date(credential.expires_at).toLocaleString(
+                            locale,
+                          )}
+                        </time>
+                      </span>
+                    </div>
+                    <AccessBadge
+                      value={
+                        credential.revoked_at
+                          ? "authRevoked"
+                          : Date.parse(credential.expires_at) <=
+                              credentials.dataUpdatedAt
+                            ? "authExpired"
+                            : "authActive"
+                      }
+                    />
+                    {!credential.revoked_at && (
+                      <Button
+                        variant="destructive"
+                        size="sm"
+                        className="col-span-2 justify-self-start sm:col-span-1"
+                        disabled={busy}
+                        onClick={() => {
+                          setError("");
+                          setRevoking(credential);
+                        }}
+                      >
+                        {t("authRevoke")}
+                      </Button>
+                    )}
                   </div>
-                  <Badge
-                    value={
-                      credential.revoked_at
-                        ? "authRevoked"
-                        : Date.parse(credential.expires_at) <=
-                            credentials.dataUpdatedAt
-                          ? "authExpired"
-                          : "authActive"
-                    }
-                  />
-                  {!credential.revoked_at && (
-                    <Button
-                      variant="outline"
-                      disabled={busy}
-                      onClick={() => {
-                        setError("");
-                        setRevoking(credential);
-                      }}
-                    >
-                      {t("authRevoke")}
-                    </Button>
-                  )}
-                </div>
-              ))}
+                ))}
+              </RowList>
+            )}
           </Panel>
           <Panel title={t("authCatalog")}>
-            <p className="auth-padding">{t("authCatalogHelp")}</p>
+            <Hint>{t("authCatalogHelp")}</Hint>
             {catalog.isError ? (
-              <p role="alert" className="error">
-                {catalog.error.message}
-              </p>
+              <Alert>{catalog.error.message}</Alert>
             ) : catalog.data ? (
               <>
                 <CatalogForm
@@ -313,50 +380,63 @@ function TenantAuthorization({
                     mutate(() => authorizationSetCatalog(path, binding))
                   }
                 />
-                {catalog.data.map((binding) => (
-                  <div
-                    className="auth-row"
-                    key={`${binding.entry_id}@${binding.entry_version}`}
-                  >
-                    <div>
-                      <strong>
-                        {entryLabel({
-                          id: binding.entry_id,
-                          version: binding.entry_version,
-                        })}
-                      </strong>
-                      <small>
-                        {t("revision")}: {binding.revision}
-                      </small>
-                    </div>
-                    <Badge
-                      value={binding.enabled ? "authApproved" : "authDisabled"}
-                    />
-                    <Button
-                      variant="outline"
-                      disabled={busy}
-                      onClick={() =>
-                        void mutate(() =>
-                          authorizationSetCatalog(path, {
-                            entry: {
+                {catalog.data.length > 0 && (
+                  <RowList>
+                    {catalog.data.map((binding) => (
+                      <div
+                        className="auth-row grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-x-4 gap-y-2 py-2 sm:grid-cols-[minmax(0,1fr)_auto_auto]"
+                        key={`${binding.entry_id}@${binding.entry_version}`}
+                      >
+                        <div className="grid min-w-0 gap-0.5">
+                          <span className="truncate font-medium text-foreground">
+                            {entryLabel({
                               id: binding.entry_id,
                               version: binding.entry_version,
-                            },
-                            expected_revision: binding.revision,
-                            enabled: !binding.enabled,
-                          }),
-                        )
-                      }
-                    >
-                      {t(
-                        binding.enabled ? "authDisableApproval" : "authApprove",
-                      )}
-                    </Button>
-                  </div>
-                ))}
+                            })}
+                          </span>
+                          <span className="text-[11px] text-faint">
+                            {t("revision")}{" "}
+                            <span className="font-mono tabular">
+                              {binding.revision}
+                            </span>
+                          </span>
+                        </div>
+                        <AccessBadge
+                          value={
+                            binding.enabled ? "authApproved" : "authDisabled"
+                          }
+                        />
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="col-span-2 justify-self-start sm:col-span-1"
+                          disabled={busy}
+                          onClick={() =>
+                            void mutate(() =>
+                              authorizationSetCatalog(path, {
+                                entry: {
+                                  id: binding.entry_id,
+                                  version: binding.entry_version,
+                                },
+                                expected_revision: binding.revision,
+                                enabled: !binding.enabled,
+                              }),
+                            )
+                          }
+                        >
+                          {t(
+                            binding.enabled
+                              ? "authDisableApproval"
+                              : "authApprove",
+                          )}
+                        </Button>
+                      </div>
+                    ))}
+                  </RowList>
+                )}
               </>
             ) : (
-              <p className="auth-padding">{t("loading")}</p>
+              <Loading />
             )}
           </Panel>
           <PeerMappings
@@ -401,7 +481,7 @@ function TenantAuthorization({
       {issuing && (
         <Modal title={t("authIssueCredential")} close={close}>
           <form
-            className="auth-editor"
+            className="grid min-w-0 gap-3"
             onSubmit={(event) => {
               event.preventDefault();
               const data = new FormData(event.currentTarget);
@@ -415,87 +495,108 @@ function TenantAuthorization({
               });
             }}
           >
-            {error && (
-              <p role="alert" className="error">
-                {error}
-              </p>
-            )}
-            <Field label={t("authSubject")}>
-              <select name="subject" required>
-                {Object.entries(current?.bundle.subjects ?? {})
-                  .filter(([, subject]) => subject.enabled !== false)
-                  .map(([id]) => (
-                    <option key={id}>{id}</option>
-                  ))}
-              </select>
-            </Field>
-            <Field label={t("authLifetime")}>
-              <input
-                name="seconds"
-                type="number"
-                required
-                min={1}
-                max={2592000}
-                defaultValue={3600}
-              />
-            </Field>
-            <Button variant="outline" className="primary" disabled={busy}>
-              {t("authIssueCredential")}
-            </Button>
+            {error && <Alert>{error}</Alert>}
+            <div className="grid gap-3 sm:grid-cols-2">
+              <Field label={t("authSubject")}>
+                <NativeSelect name="subject" required className="font-mono">
+                  {Object.entries(current?.bundle.subjects ?? {})
+                    .filter(([, subject]) => subject.enabled !== false)
+                    .map(([id]) => (
+                      <option key={id}>{id}</option>
+                    ))}
+                </NativeSelect>
+              </Field>
+              <Field label={t("authLifetime")}>
+                <Input
+                  name="seconds"
+                  type="number"
+                  required
+                  min={1}
+                  max={2592000}
+                  defaultValue={3600}
+                  className="font-mono tabular"
+                />
+              </Field>
+            </div>
+            <div className="flex justify-end gap-2 border-t border-border pt-4">
+              <Button disabled={busy}>{t("authIssueCredential")}</Button>
+            </div>
           </form>
         </Modal>
       )}
       {issued && (
         <Modal title={t("authIssuedCredential")} close={() => setIssued(null)}>
-          <div className="auth-editor">
-            <p className="notice">{t("authTokenOnce")}</p>
-            <p>
-              {t("tenant")}: {tenant} · {t("authSubject")}:{" "}
-              {issued.credential.subject}
-            </p>
+          <div className="grid min-w-0 gap-3">
+            <Notice tone="warning">{t("authTokenOnce")}</Notice>
+            <Facts
+              items={[
+                [t("tenant"), <span className="font-mono">{tenant}</span>],
+                [
+                  t("authSubject"),
+                  <span className="font-mono">
+                    {issued.credential.subject}
+                  </span>,
+                ],
+              ]}
+            />
             <Field label={t("authIssuedToken")}>
-              <textarea
+              <Textarea
                 readOnly
                 value={issued.token}
                 autoComplete="off"
                 spellCheck={false}
+                rows={4}
+                className="font-mono text-xs break-all"
                 onFocus={(event) => event.target.select()}
               />
             </Field>
-            <Button variant="outline" onClick={() => setIssued(null)}>
-              {t("authDismissToken")}
-            </Button>
+            <div className="flex justify-end border-t border-border pt-4">
+              <Button variant="outline" onClick={() => setIssued(null)}>
+                {t("authDismissToken")}
+              </Button>
+            </div>
           </div>
         </Modal>
       )}
       {revoking && (
         <Modal title={t("authRevoke")} close={close}>
-          <div className="auth-editor">
-            <p>{t("authRevokeHelp")}</p>
-            <p>{revoking.subject}</p>
-            <span>
-              {revoking.subject} ·{" "}
-              {new Date(revoking.created_at).toLocaleString()}
-            </span>
-            {error && (
-              <p role="alert" className="error">
-                {error}
-              </p>
-            )}
-            <Button
-              variant="outline"
-              className="primary"
-              disabled={busy}
-              onClick={() =>
-                void mutate(async () => {
-                  await authorizationRevokeCredential(path, revoking.id);
-                  if (issued?.credential.id === revoking.id) setIssued(null);
-                  setRevoking(null);
-                })
-              }
-            >
-              {t("authConfirmRevoke")}
-            </Button>
+          <div className="grid min-w-0 gap-3">
+            <p className="text-[13px] leading-relaxed text-muted-foreground">
+              {t("authRevokeHelp")}
+            </p>
+            <Facts
+              items={[
+                [
+                  t("authSubject"),
+                  <span className="font-mono">{revoking.subject}</span>,
+                ],
+                [
+                  t("createdAt"),
+                  <time className="font-mono" dateTime={revoking.created_at}>
+                    {new Date(revoking.created_at).toLocaleString(locale)}
+                  </time>,
+                ],
+              ]}
+            />
+            {error && <Alert>{error}</Alert>}
+            <div className="flex flex-wrap justify-end gap-2 border-t border-border pt-4">
+              <Button variant="outline" disabled={busy} onClick={close}>
+                {t("cancel")}
+              </Button>
+              <Button
+                variant="destructive"
+                disabled={busy}
+                onClick={() =>
+                  void mutate(async () => {
+                    await authorizationRevokeCredential(path, revoking.id);
+                    if (issued?.credential.id === revoking.id) setIssued(null);
+                    setRevoking(null);
+                  })
+                }
+              >
+                {t("authConfirmRevoke")}
+              </Button>
+            </div>
           </div>
         </Modal>
       )}
@@ -506,20 +607,19 @@ function TenantAuthorization({
 function BundleSummary({ snapshot }: { snapshot: Snapshot }) {
   const { t } = useI18n();
   return (
-    <dl className="auth-summary">
-      {[
-        ["revision", snapshot.revision],
-        ["authSubjects", Object.keys(snapshot.bundle.subjects ?? {}).length],
-        ["authGroups", Object.keys(snapshot.bundle.groups ?? {}).length],
-        ["authRoles", Object.keys(snapshot.bundle.roles ?? {}).length],
-        ["authRules", snapshot.bundle.policies?.length ?? 0],
-      ].map(([label, value]) => (
-        <div key={label}>
-          <dt>{t(String(label))}</dt>
-          <dd>{value}</dd>
-        </div>
+    <MetricRow className="border-y">
+      {(
+        [
+          ["revision", snapshot.revision],
+          ["authSubjects", Object.keys(snapshot.bundle.subjects ?? {}).length],
+          ["authGroups", Object.keys(snapshot.bundle.groups ?? {}).length],
+          ["authRoles", Object.keys(snapshot.bundle.roles ?? {}).length],
+          ["authRules", snapshot.bundle.policies?.length ?? 0],
+        ] as const
+      ).map(([label, value]) => (
+        <Metric key={label} label={t(label)} value={value} />
       ))}
-    </dl>
+    </MetricRow>
   );
 }
 
@@ -540,7 +640,7 @@ function PolicyEditor({
   const [invalid, setInvalid] = useState("");
   return (
     <form
-      className="auth-editor"
+      className="grid min-w-0 gap-3"
       onSubmit={(event) => {
         event.preventDefault();
         setInvalid("");
@@ -569,23 +669,44 @@ function PolicyEditor({
         }
       }}
     >
-      <p>{t("authPolicyHelp")}</p>
-      <p>
-        {t("tenant")}: {snapshot.bundle.tenant} · {t("authExpectedRevision")}:{" "}
-        {snapshot.revision}
+      <p className="text-[13px] leading-relaxed text-muted-foreground">
+        {t("authPolicyHelp")}
       </p>
-      {(error || invalid) && (
-        <p role="alert" className="error">
-          {error || invalid}
-        </p>
-      )}
+      <Facts
+        items={[
+          [
+            t("tenant"),
+            <span className="font-mono">{snapshot.bundle.tenant}</span>,
+          ],
+          [
+            t("authExpectedRevision"),
+            <span className="font-mono tabular">{snapshot.revision}</span>,
+          ],
+        ]}
+      />
+      {(error || invalid) && <Alert>{error || invalid}</Alert>}
       {review ? (
         <>
-          <p className="notice">{t("authReviewHelp")}</p>
+          <Notice tone="warning">{t("authReviewHelp")}</Notice>
           <BundleSummary
             snapshot={{ bundle: review, revision: snapshot.revision + 1 }}
           />
           <JsonView value={review} />
+        </>
+      ) : (
+        <Field label={t("authPolicyJson")}>
+          <Textarea
+            required
+            rows={20}
+            spellCheck={false}
+            className="font-mono text-xs"
+            value={draft}
+            onChange={(event) => setDraft(event.target.value)}
+          />
+        </Field>
+      )}
+      <div className="flex flex-wrap justify-end gap-2 border-t border-border pt-4">
+        {review && (
           <Button
             variant="outline"
             type="button"
@@ -594,40 +715,61 @@ function PolicyEditor({
           >
             {t("authBackToEdit")}
           </Button>
-        </>
-      ) : (
-        <Field label={t("authPolicyJson")}>
-          <textarea
-            required
-            rows={20}
-            spellCheck={false}
-            value={draft}
-            onChange={(event) => setDraft(event.target.value)}
-          />
-        </Field>
-      )}
-      <Button variant="outline" className="primary" disabled={busy}>
-        {t(review ? "authApplyPolicy" : "authReviewPolicy")}
-      </Button>
+        )}
+        <Button disabled={busy}>
+          {t(review ? "authApplyPolicy" : "authReviewPolicy")}
+        </Button>
+      </div>
     </form>
   );
 }
 
 function DecisionView({ decision }: { decision: Decision }) {
   const { t } = useI18n();
+  const Icon = decision.allowed ? ShieldCheck : ShieldX;
   return (
-    <div className="auth-decision" role="status">
-      <Badge value={decision.allowed ? "authAllowed" : "authDenied"} />
-      <dl>
-        <dt>{t("authDecisionReason")}</dt>
-        <dd>{t(`authReason_${decision.reason}`)}</dd>
-        <dt>{t("revision")}</dt>
-        <dd>{decision.revision}</dd>
-        <dt>{t("authMatchedPolicies")}</dt>
-        <dd>{decision.matched_policies.join(", ") || "—"}</dd>
-        <dt>{t("authEffectiveRoles")}</dt>
-        <dd>{decision.effective_roles.join(", ") || "—"}</dd>
-      </dl>
+    <div
+      className={cn(
+        "auth-decision grid min-w-0 gap-3 rounded-lg border p-4",
+        decision.allowed
+          ? "border-success/30 bg-success-soft"
+          : "border-destructive/30 bg-destructive-soft",
+      )}
+      role="status"
+    >
+      <div
+        className={cn(
+          "flex items-center gap-2",
+          decision.allowed ? "text-success" : "text-destructive",
+        )}
+      >
+        <Icon aria-hidden className="size-5 shrink-0" />
+        <span className="text-[15px] font-semibold">
+          {t(decision.allowed ? "authAllowed" : "authDenied")}
+        </span>
+      </div>
+      <Facts
+        className="sm:grid-cols-[minmax(0,8rem)_minmax(0,1fr)]"
+        items={[
+          [t("authDecisionReason"), t(`authReason_${decision.reason}`)],
+          [
+            t("revision"),
+            <span className="font-mono tabular">{decision.revision}</span>,
+          ],
+          [
+            t("authMatchedPolicies"),
+            <span className="font-mono">
+              {decision.matched_policies.join(", ") || "-"}
+            </span>,
+          ],
+          [
+            t("authEffectiveRoles"),
+            <span className="font-mono">
+              {decision.effective_roles.join(", ") || "-"}
+            </span>,
+          ],
+        ]}
+      />
     </div>
   );
 }
@@ -648,7 +790,7 @@ function EvaluationPanel({
   return (
     <Panel title={t("authEvaluate")}>
       <form
-        className="auth-editor"
+        className="grid min-w-0 gap-5 lg:grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)]"
         onChange={() => {
           setDecision(null);
           setError("");
@@ -696,60 +838,86 @@ function EvaluationPanel({
             .finally(() => setBusy(false));
         }}
       >
-        <p>{t("authEvaluateHelp")}</p>
-        <fieldset disabled={busy} className="auth-fields">
-          <Field label={t("authSubject")}>
-            <select name="subject" required>
-              {Object.keys(snapshot.bundle.subjects ?? {}).map((id) => (
-                <option key={id}>{id}</option>
-              ))}
-            </select>
-          </Field>
-          <Field label={t("authAction")}>
-            <input name="action" required defaultValue="workspace.read" />
-          </Field>
-          <Field label={t("authResourceKind")}>
-            <input name="kind" required defaultValue="workspace" />
-          </Field>
-          <Field label={t("authResourceId")}>
-            <input name="resource" required defaultValue="example" />
-          </Field>
-          <Field label={t("authResourceAttributes")}>
-            <textarea
-              name="attributes"
-              defaultValue="{}"
-              rows={3}
-              spellCheck={false}
-              required
-            />
-          </Field>
-          <Field label={t("authEnvironment")}>
-            <textarea
-              name="environment"
-              defaultValue="{}"
-              rows={3}
-              spellCheck={false}
-              required
-            />
-          </Field>
-          <label className="generation-check">
-            <input
-              type="checkbox"
+        <div className="grid min-w-0 content-start gap-3">
+          <fieldset
+            disabled={busy}
+            className="grid min-w-0 gap-3 sm:grid-cols-2"
+          >
+            <Field label={t("authSubject")}>
+              <NativeSelect name="subject" required className="font-mono">
+                {Object.keys(snapshot.bundle.subjects ?? {}).map((id) => (
+                  <option key={id}>{id}</option>
+                ))}
+              </NativeSelect>
+            </Field>
+            <Field label={t("authAction")}>
+              <Input
+                name="action"
+                required
+                defaultValue="workspace.read"
+                className="font-mono"
+              />
+            </Field>
+            <Field label={t("authResourceKind")}>
+              <Input
+                name="kind"
+                required
+                defaultValue="workspace"
+                className="font-mono"
+              />
+            </Field>
+            <Field label={t("authResourceId")}>
+              <Input
+                name="resource"
+                required
+                defaultValue="example"
+                className="font-mono"
+              />
+            </Field>
+            <Field label={t("authResourceAttributes")}>
+              <Textarea
+                name="attributes"
+                defaultValue="{}"
+                rows={3}
+                spellCheck={false}
+                className="font-mono text-xs"
+                required
+              />
+            </Field>
+            <Field label={t("authEnvironment")}>
+              <Textarea
+                name="environment"
+                defaultValue="{}"
+                rows={3}
+                spellCheck={false}
+                className="font-mono text-xs"
+                required
+              />
+            </Field>
+          </fieldset>
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+            <Button disabled={busy}>
+              {t(audit ? "authEvaluateRecord" : "authDryRun")}
+            </Button>
+            <Check
               checked={audit}
+              disabled={busy}
               onChange={(event) => setAudit(event.target.checked)}
-            />
-            {t("authRecordDecision")}
-          </label>
-        </fieldset>
-        <Button variant="outline" disabled={busy} className="primary">
-          {t(audit ? "authEvaluateRecord" : "authDryRun")}
-        </Button>
-        {error && (
-          <p className="error" role="alert">
-            {error}
-          </p>
-        )}
-        {decision && <DecisionView decision={decision} />}
+            >
+              {t("authRecordDecision")}
+            </Check>
+          </div>
+        </div>
+        <div className="grid min-w-0 content-start gap-3">
+          {error && <Alert>{error}</Alert>}
+          {decision ? (
+            <DecisionView decision={decision} />
+          ) : (
+            <div className="rounded-lg border border-dashed border-border-strong p-4">
+              <Hint>{t("authEvaluateHelp")}</Hint>
+            </div>
+          )}
+        </div>
       </form>
     </Panel>
   );
@@ -782,7 +950,7 @@ function CatalogForm({
   );
   return (
     <form
-      className="auth-catalog-form"
+      className="flex flex-wrap items-end gap-2"
       onSubmit={(event) => {
         event.preventDefault();
         const selected = String(new FormData(event.currentTarget).get("entry"));
@@ -802,21 +970,23 @@ function CatalogForm({
         });
       }}
     >
-      <Field label={t("authCatalogEntry")}>
-        <select name="entry" required defaultValue="">
-          <option value="" disabled>
-            {t("authSelectEntry")}
-          </option>
-          {available.map((entry) => (
-            <option
-              value={JSON.stringify([entry.id, entry.version])}
-              key={`${entry.id}@${entry.version}`}
-            >
-              {local(entry.name) || t("unnamedEntity")} · {entry.version}
+      <div className="w-full min-w-0 sm:w-96">
+        <Field label={t("authCatalogEntry")}>
+          <NativeSelect name="entry" required defaultValue="">
+            <option value="" disabled>
+              {t("authSelectEntry")}
             </option>
-          ))}
-        </select>
-      </Field>
+            {available.map((entry) => (
+              <option
+                value={JSON.stringify([entry.id, entry.version])}
+                key={`${entry.id}@${entry.version}`}
+              >
+                {local(entry.name) || t("unnamedEntity")} · {entry.version}
+              </option>
+            ))}
+          </NativeSelect>
+        </Field>
+      </div>
       <Button variant="outline" disabled={busy || !available.length}>
         {t("authApprove")}
       </Button>
@@ -831,7 +1001,7 @@ function HistoryPanel({
   tenant: string;
   kind: "revisions" | "decisions";
 }) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const [cursors, setCursors] = useState([0]);
   const after = cursors[cursors.length - 1];
   const query = useQuery({
@@ -853,56 +1023,70 @@ function HistoryPanel({
         kind === "revisions" ? "authRevisionHistory" : "authDecisionHistory",
       )}
     >
-      {query.isError && (
-        <p role="alert" className="error">
-          {query.error.message}
-        </p>
-      )}
-      {query.isPending && <p className="auth-padding">{t("loading")}</p>}
+      {query.isError && <Alert>{query.error.message}</Alert>}
+      {query.isPending && <Loading />}
       {records?.length === 0 && (
-        <p className="auth-padding">{t("authNoHistory")}</p>
+        <p className="text-xs text-muted-foreground">{t("authNoHistory")}</p>
       )}
-      {records?.map((value, index) => {
-        const record = object(value);
-        return (
-          <details
-            className="auth-history"
-            key={String(record.revision) + index}
-          >
-            <summary>
-              {kind === "revisions"
-                ? `${t("revision")} ${record.revision} · ${record.actor}`
-                : `${record.subject} · ${record.action} · ${t(object(record.decision).allowed ? "authAllowed" : "authDenied")}`}
-              <time>{String(record.created_at ?? "")}</time>
-            </summary>
-            <RecordView value={value} />
-          </details>
-        );
-      })}
-      <div className="auth-pagination">
-        <Button
-          variant="outline"
-          disabled={cursors.length === 1 || query.isFetching}
-          onClick={() => setCursors(cursors.slice(0, -1))}
-        >
-          {t("authPrevious")}
-        </Button>
-        <span>
-          {t("authPage")} {cursors.length}
-        </span>
-        <Button
-          variant="outline"
-          disabled={
+      {!!records?.length && (
+        <RowList>
+          {records.map((value, index) => {
+            const record = object(value);
+            const allowed = !!object(record.decision).allowed;
+            return (
+              <HistoryRow
+                className="auth-history"
+                key={String(record.revision) + index}
+                time={
+                  record.created_at
+                    ? new Date(String(record.created_at)).toLocaleString(locale)
+                    : ""
+                }
+                summary={
+                  kind === "revisions" ? (
+                    <>
+                      {t("revision")}{" "}
+                      <span className="font-mono tabular">
+                        {String(record.revision)}
+                      </span>
+                      <span className="text-muted-foreground">
+                        {" · "}
+                        {String(record.actor)}
+                      </span>
+                    </>
+                  ) : (
+                    <>
+                      <AccessBadge
+                        value={allowed ? "authAllowed" : "authDenied"}
+                      />{" "}
+                      <span className="font-mono">
+                        {String(record.subject)} · {String(record.action)}
+                      </span>
+                    </>
+                  )
+                }
+              >
+                <RecordView value={value} />
+              </HistoryRow>
+            );
+          })}
+        </RowList>
+      )}
+      <Pager
+        page={cursors.length}
+        previous={{
+          disabled: cursors.length === 1 || query.isFetching,
+          go: () => setCursors(cursors.slice(0, -1)),
+        }}
+        next={{
+          disabled:
             records?.length !== PAGE_SIZE ||
             !Number.isSafeInteger(next) ||
             next <= after ||
-            query.isFetching
-          }
-          onClick={() => setCursors([...cursors, next])}
-        >
-          {t("authNext")}
-        </Button>
-      </div>
+            query.isFetching,
+          go: () => setCursors([...cursors, next]),
+        }}
+      />
     </Panel>
   );
 }

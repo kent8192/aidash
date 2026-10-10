@@ -299,8 +299,9 @@ for (const outcome of ["match", "exhausted", "failed"] as const) {
     });
     await page.goto("/collaboration?channel=workspace-one");
     await page.getByRole("button", { name: "Files", exact: true }).click();
-    const panel = page.locator(".core-panel").filter({
-      has: page.getByRole("heading", { name: "Working files", exact: true }),
+    const panel = page.getByRole("region", {
+      name: "Working files",
+      exact: true,
     });
     await expect(panel).toBeVisible();
     if (outcome === "failed") {

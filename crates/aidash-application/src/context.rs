@@ -173,6 +173,7 @@ pub fn summary_request(plan: &SummaryPlan, pinned: &Value, max_tokens: u32) -> M
 		response_format: Some(SummaryContent::response_format()),
 		content_parts: vec![],
 		cache_scope: None,
+		cache_breakpoints: false,
 	}
 }
 

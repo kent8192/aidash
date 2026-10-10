@@ -36,7 +36,28 @@ pub struct ModelConfig {
 	/// only and is not serialized, so existing model definitions keep bytes.
 	#[serde(default, skip_serializing_if = "Vec::is_empty")]
 	pub projection_versions: Vec<crate::projection::ProjectionVersion>,
+	/// How the provider route caches prompt prefixes (ADR 0019). Omitted means
+	/// `none` and is not serialized, so existing model definitions keep bytes.
+	/// Only `explicit` lets an opted-in Agent send cache breakpoints.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub cache_mode: Option<CacheMode>,
 }
+
+/// A model route's declared prompt-caching behavior.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum CacheMode {
+	/// No prompt caching is assumed; the same as omitting the field.
+	None,
+	/// The provider caches matching prefixes without request markers.
+	Automatic,
+	/// The provider caches only up to request breakpoints (`cache_control`).
+	Explicit,
+}
+
+/// OpenRouter model slug prefixes whose routes accept `cache_control`
+/// breakpoints. A declaration alone never sends them elsewhere (ADR 0019).
+pub const EXPLICIT_CACHE_PREFIXES: &[&str] = &["anthropic/"];
 
 /// OpenRouter's normalized reasoning levels; omission retains the model default.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema)]
@@ -104,6 +125,52 @@ impl ModelConfig {
 				"model {} does not declare Projection Version {version}",
 				self.model_id
 			)));
+		}
+		Ok(())
+	}
+
+	/// Whether this route may receive `cache_control` breakpoints.
+	pub fn accepts_cache_breakpoints(&self) -> bool {
+		self.cache_mode == Some(CacheMode::Explicit)
+			&& EXPLICIT_CACHE_PREFIXES
+				.iter()
+				.any(|prefix| self.model_id.starts_with(prefix))
+	}
+
+	/// An `explicit` declaration is accepted only for allowlisted slugs.
+	pub fn validate_cache_mode(&self) -> Result<()> {
+		if self.cache_mode == Some(CacheMode::Explicit) && !self.accepts_cache_breakpoints() {
+			return Err(Error::Invalid(format!(
+				"model {} cannot declare explicit prompt caching; supported slug prefixes: {}",
+				self.model_id,
+				EXPLICIT_CACHE_PREFIXES.join(", ")
+			)));
+		}
+		Ok(())
+	}
+
+	/// An Agent may opt in to explicit prompt caching only with the Ordered
+	/// Projection Version on a model that accepts cache breakpoints. Callers
+	/// never drop an opt-in silently (ADR 0019).
+	pub fn require_prompt_cache(
+		&self,
+		prompt_cache: crate::projection::PromptCache,
+		version: crate::projection::ProjectionVersion,
+	) -> Result<()> {
+		if prompt_cache == crate::projection::PromptCache::Off {
+			return Ok(());
+		}
+		if !self.accepts_cache_breakpoints() {
+			return Err(Error::Invalid(format!(
+				"Agent prompt_cache explicit requires model {} to declare cache_mode explicit with a supported slug prefix: {}",
+				self.model_id,
+				EXPLICIT_CACHE_PREFIXES.join(", ")
+			)));
+		}
+		if version != crate::projection::ProjectionVersion::Ordered {
+			return Err(Error::Invalid(
+				"Agent prompt_cache explicit requires projection_version ordered".into(),
+			));
 		}
 		Ok(())
 	}

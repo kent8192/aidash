@@ -591,6 +591,7 @@ impl HarnessManagement {
 				response_format: None,
 				content_parts: parts,
 				cache_scope: None,
+				cache_breakpoints: false,
 			};
 			request.validate()?;
 			crate::generation::budget::Reservation::check_request(headroom, &request)?;

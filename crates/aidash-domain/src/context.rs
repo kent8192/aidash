@@ -309,6 +309,7 @@ pub fn tool_event_growth(context: &Context, event: &ContextEvent) -> usize {
 			response_format: None,
 			content_parts: vec![],
 			cache_scope: None,
+			cache_breakpoints: false,
 		}
 		.estimated_total_tokens()
 	}
@@ -361,6 +362,8 @@ impl RequestBudget<'_> {
 			response_format: None,
 			content_parts: vec![],
 			cache_scope,
+			// Set per step by the harness; Ordered estimates count it either way.
+			cache_breakpoints: false,
 		}
 	}
 
