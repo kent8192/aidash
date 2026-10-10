@@ -276,7 +276,7 @@ async fn harness_journey_keeps_core_names_state_and_integration_secrets_separate
 			run.state,
 			run.context
 		);
-		for entry in &run.context.history {
+		for entry in run.context.events() {
 			if let ContextEvent::Tool { call, result } = entry {
 				assert!(result["error"].is_null(), "{}: {}", call.name, result);
 			}
@@ -384,7 +384,7 @@ async fn harness_journey_keeps_core_names_state_and_integration_secrets_separate
 	assert_eq!(status, 200, "{read}");
 	assert_eq!(read["content"], "42");
 	assert!(
-		finished.context.history.iter().any(|event| matches!(
+		finished.context.events().any(|event| matches!(
 			event,
 			ContextEvent::Tool { call, result }
 				if call.name == "python_poll"

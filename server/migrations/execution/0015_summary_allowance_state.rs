@@ -9,37 +9,37 @@ pub(super) fn migration() -> Migration {
 		.add_operation(Operation::AddColumn {
 			table: "generation_budgets".to_string(),
 			column: ColumnDefinition::new("summary_call_limit", FieldType::BigInteger)
-					.with_not_null(true)
-					.with_unique(false)
-					.with_primary_key(false)
-					.with_auto_increment(false)
-					.with_default(Some("0".to_string()))
-					.with_generated(None)
-					.with_domain_option(None),
+				.with_not_null(true)
+				.with_unique(false)
+				.with_primary_key(false)
+				.with_auto_increment(false)
+				.with_default(Some("0".to_string()))
+				.with_generated(None)
+				.with_domain_option(None),
 			mysql_options: None,
 		})
 		.add_operation(Operation::AddColumn {
 			table: "generation_budgets".to_string(),
 			column: ColumnDefinition::new("summary_calls", FieldType::BigInteger)
-					.with_not_null(true)
-					.with_unique(false)
-					.with_primary_key(false)
-					.with_auto_increment(false)
-					.with_default(Some("0".to_string()))
-					.with_generated(None)
-					.with_domain_option(None),
+				.with_not_null(true)
+				.with_unique(false)
+				.with_primary_key(false)
+				.with_auto_increment(false)
+				.with_default(Some("0".to_string()))
+				.with_generated(None)
+				.with_domain_option(None),
 			mysql_options: None,
 		})
 		.add_operation(Operation::AddColumn {
 			table: "generation_policies".to_string(),
 			column: ColumnDefinition::new("allocated_summary_calls", FieldType::BigInteger)
-					.with_not_null(true)
-					.with_unique(false)
-					.with_primary_key(false)
-					.with_auto_increment(false)
-					.with_default(Some("0".to_string()))
-					.with_generated(None)
-					.with_domain_option(None),
+				.with_not_null(true)
+				.with_unique(false)
+				.with_primary_key(false)
+				.with_auto_increment(false)
+				.with_default(Some("0".to_string()))
+				.with_generated(None)
+				.with_domain_option(None),
 			mysql_options: None,
 		})
 		.add_operation(Operation::CreateTable {

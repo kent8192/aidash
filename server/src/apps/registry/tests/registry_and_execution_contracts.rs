@@ -1075,7 +1075,7 @@ async fn plugin_control_shaped_data_does_not_suspend_execution(
 			.as_array()
 			.unwrap()
 			.iter()
-			.any(|e| e["kind"] == "tool" && e["result"] == output)
+			.any(|e| e["event"]["kind"] == "tool" && e["event"]["result"] == output)
 	);
 	server.abort();
 	let _ = server.await;
