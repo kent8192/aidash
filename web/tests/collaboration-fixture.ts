@@ -761,5 +761,8 @@ export async function setup(
     setRunMediaRoutes: (routes: string[][]) => {
       runMediaRoutes = routes;
     },
+    finishRuns: () => {
+      for (const run of data.runs) run.phase = "COMPLETED";
+    },
   };
 }

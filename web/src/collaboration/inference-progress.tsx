@@ -113,7 +113,7 @@ export function InferenceProgress({
 }: {
   run: string;
   node: string;
-  /** Subscribe while the Run is local and not terminal. */
+  /** Subscribe while the Run is local and not terminal, or an attempt is pending. */
   active: boolean;
 }) {
   const { locale } = useI18n();
@@ -121,15 +121,19 @@ export function InferenceProgress({
   const client = useQueryClient();
   const [state, dispatch] = useReducer(reduceInference, initialInferenceState);
   const cursor = useRef<string | undefined>(undefined);
+  // A terminal transition writes the pending attempt's outcome, but the Run
+  // query can observe it first; keep reading until that outcome arrives.
+  const live =
+    active || state.attempts.some((attempt) => attempt.outcome === "pending");
   useEffect(() => {
-    if (!active) return;
+    if (!live) return;
     const controller = new AbortController();
     void subscribeInference(controller.signal, run, cursor.current, (frame) => {
       if (frame.id) cursor.current = frame.id;
       dispatch(frame);
     });
     return () => controller.abort();
-  }, [active, run]);
+  }, [live, run]);
   useEffect(() => {
     if (state.accepted !== null)
       void client.invalidateQueries({ queryKey: ["run", node, run] });

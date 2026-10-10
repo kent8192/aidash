@@ -134,3 +134,54 @@ for (const locale of ["en-US", "ja-JP"] as const) {
     expect(errors).toEqual([]);
   });
 }
+
+test("a pending attempt keeps streaming until its outcome after the Run ends", async ({
+  page,
+}) => {
+  const { errors, finishRuns } = await setup(page, { locale: "en-US" });
+  const cursors: (string | null)[] = [];
+  let outcome = false;
+  await page.route("**/api/runs/*/inference/stream", (route) => {
+    const cursor = route.request().headers()["last-event-id"] ?? null;
+    cursors.push(cursor);
+    const rows =
+      cursor === null
+        ? [
+            row(1, "last", "started", { outcome: "pending" }),
+            row(2, "last", "text", { type: "text", text: "Final answer" }),
+          ]
+        : outcome
+          ? [row(3, "last", "outcome", { outcome: "accepted" })]
+          : [];
+    return route.fulfill({
+      status: 200,
+      contentType: "text/event-stream",
+      body: [": keepalive\n\n", ...rows].join(""),
+    });
+  });
+  await page.goto("/collaboration?channel=workspace-one");
+  await page
+    .getByRole("button", { name: "Execution history", exact: true })
+    .click();
+  await page.locator(".collab-channel .collab-task").click();
+  const dialog = page.getByRole("dialog");
+  const pending = dialog.locator(".inference-attempt.pending");
+  await expect(pending.locator(".inference-text")).toHaveText("Final answer");
+  const pause = dialog.getByRole("button", { name: "Pause", exact: true });
+  await expect(pause).toBeVisible();
+
+  // The Run query observes the terminal transition before the stream delivers
+  // the outcome written with it.
+  finishRuns();
+  await expect(pause).toHaveCount(0);
+  const beforeOutcome = cursors.length;
+  await expect.poll(() => cursors.length).toBeGreaterThan(beforeOutcome);
+  outcome = true;
+
+  await expect(pending).toHaveCount(0);
+  await expect(dialog.locator("p.sr-only[role=status]")).toHaveText(
+    "Response accepted",
+  );
+  expect(cursors[1]).toBe("2");
+  expect(errors).toEqual([]);
+});
