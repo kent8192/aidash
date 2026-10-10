@@ -1,5 +1,15 @@
 use super::*;
+use reinhardt::test::fixtures::{http_client, temp_dir};
+use reinhardt::{Request, Response, ServerRouter};
 use rstest::{fixture, rstest};
+#[path = "support/upstream.rs"]
+mod upstream_fixtures;
+use reinhardt::test::fixtures::server::TestServerGuard;
+use std::sync::{
+	Arc,
+	atomic::{AtomicUsize, Ordering},
+};
+use upstream_fixtures::{reply, upstream};
 
 #[fixture]
 fn account_profile_json() -> Value {
@@ -99,6 +109,7 @@ fn provider_candidates_have_no_run_source_identity(
 struct CredentialEnvironment {
 	profile_path: std::path::PathBuf,
 	profile: AccountProfile,
+	_directory: tempfile::TempDir,
 }
 
 impl Drop for CredentialEnvironment {
@@ -108,15 +119,17 @@ impl Drop for CredentialEnvironment {
 }
 
 #[fixture]
-fn credential_environment(mut account_profile_json: Value) -> CredentialEnvironment {
+fn credential_environment(
+	mut account_profile_json: Value,
+	temp_dir: tempfile::TempDir,
+) -> CredentialEnvironment {
 	let now = Utc::now();
 	account_profile_json["verified_at"] = json!(now - chrono::Duration::days(1));
 	account_profile_json["review_after"] = json!(now + chrono::Duration::days(1));
 	account_profile_json["price_effective_at"] = json!(now - chrono::Duration::days(1));
 	account_profile_json["price_review_after"] = json!(now + chrono::Duration::days(1));
 	account_profile_json["credential_env"] = json!("AIDASH_SECRET_BRAVE_TEST_EMPTY");
-	let profile_path =
-		std::env::temp_dir().join(format!("aidash-web-profile-{}.json", uuid::Uuid::new_v4()));
+	let profile_path = temp_dir.path().join("profile.json");
 	// Isolate credentials in a child environment, without process-global mutation.
 	std::fs::write(
 		&profile_path,
@@ -126,6 +139,7 @@ fn credential_environment(mut account_profile_json: Value) -> CredentialEnvironm
 	CredentialEnvironment {
 		profile_path,
 		profile: serde_json::from_value(account_profile_json).unwrap(),
+		_directory: temp_dir,
 	}
 }
 
@@ -134,7 +148,12 @@ fn credential_environment(mut account_profile_json: Value) -> CredentialEnvironm
 async fn empty_credential_is_unavailable_before_dispatch(
 	credential_environment: CredentialEnvironment,
 	search_request: ValidatedSearch,
+	dispatch_listener: std::net::TcpListener,
+	#[with(Url::parse(&format!("http://{}/search", dispatch_listener.local_addr().unwrap())).unwrap())]
+	brave_client: BraveClient,
 ) {
+	let listener = dispatch_listener;
+	let client = brave_client;
 	if std::env::var_os("AIDASH_WEB_EMPTY_CREDENTIAL_CHILD").is_none() {
 		let output = std::process::Command::new(std::env::current_exe().unwrap())
 			.args([
@@ -165,11 +184,7 @@ async fn empty_credential_is_unavailable_before_dispatch(
 			.validate_at(Utc::now())
 			.is_ok()
 	);
-	let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-	listener.set_nonblocking(true).unwrap();
-	let mut client = BraveClient::new().unwrap();
-	client.endpoint =
-		Url::parse(&format!("http://{}/search", listener.local_addr().unwrap())).unwrap();
+
 	assert!(
 		client
 			.search(&search_request, &credential_environment.profile)
@@ -298,44 +313,23 @@ fn provider_errors_never_expose_response_body() {
 	);
 }
 
+#[rstest]
 #[tokio::test]
-async fn transport_keeps_credential_out_of_provider_errors() {
-	use tokio::io::{AsyncReadExt, AsyncWriteExt};
-	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-	let addr = listener.local_addr().unwrap();
-	let server = tokio::spawn(async move {
-		let (mut socket, _) = listener.accept().await.unwrap();
-		let mut request = Vec::new();
-		let mut buffer = [0u8; 4096];
-		loop {
-			let read = socket.read(&mut buffer).await.unwrap();
-			if read == 0 {
-				break;
-			}
-			request.extend_from_slice(&buffer[..read]);
-			if request.windows(4).any(|window| window == b"\r\n\r\n") {
-				break;
-			}
-		}
-		let request = String::from_utf8_lossy(&request).to_ascii_lowercase();
-		assert!(request.starts_with("post /res/v1/web/search http/1.1"));
-		assert!(request.contains("x-subscription-token: sentinel-token"));
-		let body = b"sentinel-token: upstream diagnostic";
-		let response = format!(
-			"HTTP/1.1 503 Service Unavailable\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-			body.len()
-		);
-		socket.write_all(response.as_bytes()).await.unwrap();
-		socket.write_all(body).await.unwrap();
-	});
-	let mut client = BraveClient::new().unwrap();
-	client.endpoint = Url::parse(&format!("http://{addr}/res/v1/web/search")).unwrap();
-	let input = ValidatedSearch::parse(json!({"query":"public fixture"}), None).unwrap();
+async fn transport_keeps_credential_out_of_provider_errors(
+	#[future(awt)] brave_error_environment: BraveErrorEnvironment,
+	#[with(json!({"query":"public fixture"}))] search_request: ValidatedSearch,
+) {
+	let BraveErrorEnvironment {
+		client,
+		calls,
+		_server,
+	} = brave_error_environment;
+	let input = search_request;
 	let output = client
 		.search_with_token(&input, header::HeaderValue::from_static("sentinel-token"))
 		.await
 		.unwrap();
-	server.await.unwrap();
+	assert_eq!(calls.load(Ordering::SeqCst), 1);
 	assert_eq!(output["error"]["code"], "provider_unavailable");
 	assert_eq!(output["error"]["retryable"], true);
 	assert!(
@@ -346,4 +340,73 @@ async fn transport_keeps_credential_out_of_provider_errors() {
 	);
 	assert_eq!(output["limits"]["truncated"], false);
 	assert!(!output.to_string().contains("sentinel-token"));
+}
+
+// A bound, unserved socket proves rejected credentials never dispatch a connection.
+#[fixture]
+fn dispatch_listener() -> std::net::TcpListener {
+	let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+	listener.set_nonblocking(true).unwrap();
+	listener
+}
+#[fixture]
+fn brave_client(
+	#[default(Url::parse(BRAVE_ENDPOINT).unwrap())] endpoint: Url,
+	http_client: reqwest::Client,
+) -> BraveClient {
+	BraveClient {
+		client: http_client,
+		endpoint,
+	}
+}
+#[fixture]
+fn _error_router(#[from(upstream_fixtures::hits)] calls: Arc<AtomicUsize>) -> Arc<ServerRouter> {
+	Arc::new(
+		reinhardt::test::stub::StubRouter::new()
+			.route(
+				"/res/v1/web/search",
+				http::Method::POST,
+				reply(move |request: Request| {
+					let calls = calls.clone();
+					async move {
+						assert_eq!(request.uri.path(), "/res/v1/web/search");
+						assert_eq!(
+							request.headers.get("x-subscription-token").unwrap(),
+							"sentinel-token"
+						);
+						calls.fetch_add(1, Ordering::SeqCst);
+						Response::new(http::StatusCode::SERVICE_UNAVAILABLE)
+							.with_body("sentinel-token: upstream diagnostic")
+					}
+				}),
+			)
+			.into_server_router(),
+	)
+}
+
+struct BraveErrorEnvironment {
+	client: BraveClient,
+	calls: Arc<AtomicUsize>,
+	_server: TestServerGuard,
+}
+#[fixture]
+async fn brave_error_environment(
+	#[from(upstream_fixtures::hits)] calls: Arc<AtomicUsize>,
+	#[with(calls.clone())] _error_router: Arc<ServerRouter>,
+	#[future]
+	#[from(upstream)]
+	#[with(_error_router.clone())]
+	server: TestServerGuard,
+	http_client: reqwest::Client,
+) -> BraveErrorEnvironment {
+	let server = server.await;
+	let client = BraveClient {
+		client: http_client,
+		endpoint: Url::parse(&format!("{}/res/v1/web/search", server.url)).unwrap(),
+	};
+	BraveErrorEnvironment {
+		client,
+		calls,
+		_server: server,
+	}
 }

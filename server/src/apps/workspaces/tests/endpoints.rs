@@ -69,17 +69,34 @@ async fn task_dependencies_are_projected_once_and_cycles_are_rejected_over_http(
 	let headers = [("idempotency-key", "endpoint-task")];
 	// Act
 	let dependent = assert_json(
-		app.operator
-			.post_raw_with_headers(&path, body.as_bytes(), "application/json", &headers)
-			.await
-			.unwrap(),
+		async {
+			let client = &(app.operator);
+			let mut request = client
+				.request(http::Method::POST, &path)
+				.body(bytes::Bytes::copy_from_slice(body.as_bytes()))
+				.header(http::header::CONTENT_TYPE, "application/json");
+			for (name, value) in &headers {
+				request = request.header(*name, *value);
+			}
+			request.send().await
+		}
+		.await
+		.unwrap(),
 		200,
 	);
-	let repeated = app
-		.operator
-		.post_raw_with_headers(&path, body.as_bytes(), "application/json", &headers)
-		.await
-		.unwrap();
+	let repeated = async {
+		let client = &(app.operator);
+		let mut request = client
+			.request(http::Method::POST, &path)
+			.body(bytes::Bytes::copy_from_slice(body.as_bytes()))
+			.header(http::header::CONTENT_TYPE, "application/json");
+		for (name, value) in &headers {
+			request = request.header(*name, *value);
+		}
+		request.send().await
+	}
+	.await
+	.unwrap();
 	let cycle = app.operator.post(&path, &json!({"title":"Cycle","description":"Reject","parent_id":ancestor["id"],"dependencies":[dependent["id"]]}), "json").await.unwrap();
 	// Assert
 	assert_eq!(assert_json(repeated, 200)["id"], dependent["id"]);

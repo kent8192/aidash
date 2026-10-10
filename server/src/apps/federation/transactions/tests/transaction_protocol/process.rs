@@ -13,26 +13,26 @@ use tempfile::TempDir;
 
 struct Server {
 	process: Child,
-	directory: TempDir,
+	directory: Arc<TempDir>,
 }
 impl Server {
-	fn start(node: &Node, cut: Option<(Uuid, &str, &Path)>) -> Self {
+	fn start(node: &Node, cut: Option<(Uuid, &str, &Path)>, directory: Arc<TempDir>) -> Self {
 		let listener = node
 			.reservation
-			.as_ref()
+			.as_deref()
 			.expect("real-process fixtures must retain their listener reservation");
-		Self::start_with_listener(node, cut, Some(listener))
+		Self::start_with_listener(node, cut, Some(listener), directory)
 	}
 	fn start_with_listener(
 		node: &Node,
 		cut: Option<(Uuid, &str, &Path)>,
 		listener: Option<&std::net::TcpListener>,
+		directory: Arc<TempDir>,
 	) -> Self {
 		assert!(
 			node.server.is_none(),
 			"stop the in-process server before handover"
 		);
-		let directory = temp_dir();
 		let log = File::create(directory.path().join("server.log")).unwrap();
 		let binary = std::env::var_os("AIDASH_TEST_BINARY")
 			.unwrap_or_else(|| env!("CARGO_BIN_EXE_aidash").into());
@@ -158,17 +158,18 @@ struct HandoverNodes {
 #[cfg(unix)]
 #[rstest::fixture]
 async fn handover_nodes(
-	#[future(awt)]
-	#[from(common::isolated_test_environment)]
-	environment: Arc<TestEnvironment>,
+	#[from(common::isolated_test_environment)] _environment: EnvironmentFuture,
+	#[from(node)]
+	#[with("handover-a",_environment.clone(),true)]
+	first: BoxFuture<'static, Node>,
+	#[from(node)]
+	#[with("handover-b",_environment.clone(),true)]
+	second: BoxFuture<'static, Node>,
 ) -> HandoverNodes {
-	let (a, b) = tokio::join!(
-		Node::with_port_reservation(&environment, "handover-a", true),
-		Node::with_port_reservation(&environment, "handover-b", true),
-	);
+	let (a, b) = tokio::join!(first, second);
 	HandoverNodes {
 		nodes: [a, b],
-		_environment: environment,
+		_environment: _environment.await,
 	}
 }
 
@@ -258,9 +259,11 @@ async fn port_reservation_survives_concurrent_handover_and_process_restarts(
 		a.stop().await;
 		b.stop().await;
 		// Act: both real executables inherit their independently owned sockets.
+		// Each per-generation launch owns a fresh log and executable snapshot directory.
+		let (directory_a, directory_b) = (Arc::new(temp_dir()), Arc::new(temp_dir()));
 		let (mut process_a, mut process_b) = std::thread::scope(|scope| {
-			let a = scope.spawn(|| Server::start(&a, None));
-			let b = scope.spawn(|| Server::start(&b, None));
+			let a = scope.spawn(|| Server::start(&a, None, directory_a));
+			let b = scope.spawn(|| Server::start(&b, None, directory_b));
 			(a.join().unwrap(), b.join().unwrap())
 		});
 		healthy(&a, &mut process_a, "concurrent handover").await;
@@ -289,6 +292,7 @@ async fn child_listener_conflicts_fail_with_endpoint_diagnostics(
 	#[future(awt)] handover_nodes: HandoverNodes,
 	#[case] wrong_listener: bool,
 	#[case] diagnostic: &str,
+	#[from(process_directory)] directory: Arc<TempDir>,
 ) {
 	let HandoverNodes {
 		nodes: [mut a, mut b],
@@ -299,7 +303,8 @@ async fn child_listener_conflicts_fail_with_endpoint_diagnostics(
 	let mut server = Server::start_with_listener(
 		&a,
 		None,
-		wrong_listener.then(|| b.reservation.as_ref().unwrap()),
+		wrong_listener.then(|| b.reservation.as_deref().unwrap()),
+		directory,
 	);
 	let status = tokio::time::timeout(WallDuration::from_secs(60), async {
 		loop {
@@ -341,186 +346,169 @@ async fn child_listener_conflicts_fail_with_endpoint_diagnostics(
 #[case::abort_participant("participant.abort", true)]
 #[tokio::test]
 async fn real_server_sigkill_at_durable_cut(
-	#[future(awt)]
-	#[from(common::isolated_test_environment)]
-	environment: Arc<TestEnvironment>,
-	#[case] phase: &str,
+	#[case] _phase: &str,
 	#[case] abort: bool,
-	#[values("before", "after")] edge: &str,
+	#[values("before", "after")] _edge: &str,
+	#[values(1, 2, 3)] repetition: usize,
+	#[future(awt)]
+	#[from(cut_fixture)]
+	#[with(_phase, abort, _edge)]
+	fixture: CutFixture,
 ) {
-	// Every cut is repeated three times; a failed repetition fails the case.
-	for repetition in 1..=3 {
-		let (mut a, mut b, mut manifest, wa, wb) =
-			pair_with_port_reservation(&environment, true).await;
-		if abort {
-			let aidash_server::transactions::Mutation::WorkspaceState {
-				expected_revision, ..
-			} = &mut manifest.participants[1].mutations[0]
-			else {
-				unreachable!()
-			};
-			*expected_revision = 99;
-		}
-		a.stop().await;
-		b.stop().await;
-		let directory = temp_dir();
-		let point = format!("{phase}.{edge}");
-		let participant = phase.starts_with("participant.");
-		let mut process_a = Some(Server::start(
-			&a,
-			(!participant).then_some((manifest.id, point.as_str(), directory.path())),
-		));
-		let mut process_b = Some(Server::start(
-			&b,
-			participant.then_some((manifest.id, point.as_str(), directory.path())),
-		));
-		healthy(&a, process_a.as_mut().unwrap(), "initial").await;
-		healthy(&b, process_b.as_mut().unwrap(), "initial").await;
-		let client = a.f.client.clone();
-		let endpoint = a.f.config.endpoint.clone();
-		let token = a.f.config.api_token.clone();
-		let body = json!(manifest);
-		let submission = tokio::spawn(async move {
-			client
-				.post(format!("{endpoint}/api/transactions"))
-				.bearer_auth(token)
-				.json(&body)
-				.send()
-				.await
-		});
-		let marker = directory
-			.path()
-			.join(format!("{}.{point}.reached", manifest.id));
-		let mut observations = 0;
-		tokio::time::timeout(WallDuration::from_secs(40), async {
-			loop {
-				for (node, workspace) in [(&a, wa), (&b, wb)] {
-					let response = node
-						.f
-						.client
-						.get(format!(
-							"{}/api/workspaces/{workspace}",
-							node.f.config.endpoint
-						))
-						.bearer_auth(&node.f.config.api_token)
-						.timeout(WallDuration::from_secs(5))
-						.send()
-						.await
-						.unwrap();
-					match response.status().as_u16() {
-						200 => {
-							let value: Value = response.json().await.unwrap();
-							let revision = value["workspace"]["revision"]
-								.as_i64()
-								.expect("workspace snapshot revision");
-							assert!(matches!(revision, 0 | 1));
-							if revision == 1 {
-								assert_eq!(a.f.store.workspace(wa).await.unwrap().revision, 1);
-								assert_eq!(b.f.store.workspace(wb).await.unwrap().revision, 1);
-							}
-						}
-						503 => {}
-						status => panic!("unexpected visibility status {status}"),
-					}
-					observations += 1;
-				}
-				if marker.exists() {
-					break;
-				}
-				tokio::time::sleep(WallDuration::from_millis(15)).await;
-			}
-		})
-		.await
-		.unwrap_or_else(|_| {
-			panic!(
-				"unreached cut {point}, repetition {repetition}; server A: {}; server B: {}",
-				process_a.as_ref().unwrap().log(),
-				process_b.as_ref().unwrap().log()
-			)
-		});
-		// Observe at the held cut, then kill only the owning OS process. The
-		// independent peer and both databases retain their current state.
-		assert!(observations >= 2);
-		if participant {
-			drop(process_b.take());
-		} else {
-			drop(process_a.take());
-		}
-		submission.abort();
-		let _ = submission.await;
-		if participant {
-			process_b = Some(Server::start(&b, None));
-			healthy(&b, process_b.as_mut().unwrap(), "restored").await;
-		} else {
-			process_a = Some(Server::start(&a, None));
-			healthy(&a, process_a.as_mut().unwrap(), "restored").await;
-		}
-		let restored = Instant::now();
-		// Submission-before-commit legitimately left no coordinator record.
-		let (status, body) = a
-			.request(
-				reqwest::Method::POST,
-				"/api/transactions",
-				Some(json!(manifest)),
-			)
-			.await;
-		assert_eq!(status, 202, "{body}");
-		tokio::time::timeout(WallDuration::from_secs(180), async {
-			loop {
-				if coordinator::status(&a.f, manifest.id)
+	// Every cut is repeated three times as independent cases; any failed repetition fails CI.
+	let CutFixture {
+		pair: (a, b, manifest, wa, wb),
+		directory,
+		mut process_a,
+		mut process_b,
+		replacements,
+		point,
+		participant,
+	} = fixture;
+	let client = a.f.client.clone();
+	let endpoint = a.f.config.endpoint.clone();
+	let token = a.f.config.api_token.clone();
+	let body = json!(manifest);
+	let submission = tokio::spawn(async move {
+		client
+			.post(format!("{endpoint}/api/transactions"))
+			.bearer_auth(token)
+			.json(&body)
+			.send()
+			.await
+	});
+	let marker = directory
+		.path()
+		.join(format!("{}.{point}.reached", manifest.id));
+	let mut observations = 0;
+	tokio::time::timeout(WallDuration::from_secs(40), async {
+		loop {
+			for (node, workspace) in [(&a, wa), (&b, wb)] {
+				let response = node
+					.f
+					.client
+					.get(format!(
+						"{}/api/workspaces/{workspace}",
+						node.f.config.endpoint
+					))
+					.bearer_auth(&node.f.config.api_token)
+					.timeout(WallDuration::from_secs(5))
+					.send()
 					.await
-					.unwrap()
-					.complete
-				{
-					break;
+					.unwrap();
+				match response.status().as_u16() {
+					200 => {
+						let value: Value = response.json().await.unwrap();
+						let revision = value["workspace"]["revision"]
+							.as_i64()
+							.expect("workspace snapshot revision");
+						assert!(matches!(revision, 0 | 1));
+						if revision == 1 {
+							assert_eq!(a.f.store.workspace(wa).await.unwrap().revision, 1);
+							assert_eq!(b.f.store.workspace(wb).await.unwrap().revision, 1);
+						}
+					}
+					503 => {}
+					status => panic!("unexpected visibility status {status}"),
 				}
-				tokio::time::sleep(WallDuration::from_millis(25)).await;
+				observations += 1;
 			}
-		})
-		.await
-		.expect("convergence after service restoration");
-		let result = coordinator::status(&a.f, manifest.id).await.unwrap();
-		assert_eq!(
-			result.decision.as_deref(),
-			Some(if abort { "ABORT" } else { "COMMIT" })
-		);
-		for (node, workspace) in [(&a, wa), (&b, wb)] {
-			let expected = i64::from(!abort);
-			assert_eq!(
-				node.f.store.workspace(workspace).await.unwrap().revision,
-				expected
-			);
-			assert_eq!(
-				node.get(&format!("/api/workspaces/{workspace}")).await.0,
-				200
-			);
-			let count: i64 = {
-				let query_bind_1 = workspace;
-				sqlx::query_scalar(
-					&reinhardt::query::Query::select()
-						.expr(reinhardt::query::Expr::cust("COUNT(*)"))
-						.from(reinhardt::query::Alias::new("events"))
-						.and_where(SimpleExpr::CustomWithExpr(
-							"(workspace_id=? AND kind='workspace.updated')".to_owned(),
-							vec![Expr::value(query_bind_1.to_owned()).into()],
-						))
-						.to_string(reinhardt::query::PostgresQueryBuilder),
-				)
-				.fetch_one(node.f.store.pool.driver())
-				.await
+			if marker.exists() {
+				break;
 			}
-			.unwrap();
-			assert_eq!(count, expected, "logical event applied exactly once");
+			tokio::time::sleep(WallDuration::from_millis(15)).await;
 		}
-		eprintln!(
-			"TX-PROCESS point={point} abort={abort} repetition={repetition} converged_ms={} observations={observations}",
-			restored.elapsed().as_millis()
-		);
-		drop(process_a);
-		drop(process_b);
-		a.cleanup().await;
-		b.cleanup().await;
+	})
+	.await
+	.unwrap_or_else(|_| {
+		panic!(
+			"unreached cut {point}, repetition {repetition}; server A: {}; server B: {}",
+			process_a.as_ref().unwrap().log(),
+			process_b.as_ref().unwrap().log()
+		)
+	});
+	// Observe at the held cut, then kill only the owning OS process. The
+	// independent peer and both databases retain their current state.
+	assert!(observations >= 2);
+	if participant {
+		drop(process_b.take());
+	} else {
+		drop(process_a.take());
 	}
+	submission.abort();
+	let _ = submission.await;
+	if participant {
+		process_b = Some(Server::start(&b, None, replacements.1.clone()));
+		healthy(&b, process_b.as_mut().unwrap(), "restored").await;
+	} else {
+		process_a = Some(Server::start(&a, None, replacements.0.clone()));
+		healthy(&a, process_a.as_mut().unwrap(), "restored").await;
+	}
+	let restored = Instant::now();
+	// Submission-before-commit legitimately left no coordinator record.
+	let (status, body) = a
+		.request(
+			reqwest::Method::POST,
+			"/api/transactions",
+			Some(json!(manifest)),
+		)
+		.await;
+	assert_eq!(status, 202, "{body}");
+	tokio::time::timeout(WallDuration::from_secs(180), async {
+		loop {
+			if coordinator::status(&a.f, manifest.id)
+				.await
+				.unwrap()
+				.complete
+			{
+				break;
+			}
+			tokio::time::sleep(WallDuration::from_millis(25)).await;
+		}
+	})
+	.await
+	.expect("convergence after service restoration");
+	let result = coordinator::status(&a.f, manifest.id).await.unwrap();
+	assert_eq!(
+		result.decision.as_deref(),
+		Some(if abort { "ABORT" } else { "COMMIT" })
+	);
+	for (node, workspace) in [(&a, wa), (&b, wb)] {
+		let expected = i64::from(!abort);
+		assert_eq!(
+			node.f.store.workspace(workspace).await.unwrap().revision,
+			expected
+		);
+		assert_eq!(
+			node.get(&format!("/api/workspaces/{workspace}")).await.0,
+			200
+		);
+		let count: i64 = {
+			let query_bind_1 = workspace;
+			sqlx::query_scalar(
+				&reinhardt::query::Query::select()
+					.expr(reinhardt::query::Expr::cust("COUNT(*)"))
+					.from(reinhardt::query::Alias::new("events"))
+					.and_where(SimpleExpr::CustomWithExpr(
+						"(workspace_id=? AND kind='workspace.updated')".to_owned(),
+						vec![Expr::value(query_bind_1.to_owned()).into()],
+					))
+					.to_string(reinhardt::query::PostgresQueryBuilder),
+			)
+			.fetch_one(node.f.store.pool.driver())
+			.await
+		}
+		.unwrap();
+		assert_eq!(count, expected, "logical event applied exactly once");
+	}
+	eprintln!(
+		"TX-PROCESS point={point} abort={abort} repetition={repetition} converged_ms={} observations={observations}",
+		restored.elapsed().as_millis()
+	);
+	drop(process_a);
+	drop(process_b);
+	a.cleanup().await;
+	b.cleanup().await;
 }
 
 use reinhardt::query::QueryStatementBuilder as _;
@@ -528,3 +516,94 @@ use reinhardt::query::QueryStatementBuilder as _;
 use reinhardt::query::SimpleExpr;
 
 use reinhardt::query::Expr;
+
+#[fixture]
+fn process_directory(temp_dir: TempDir) -> Arc<TempDir> {
+	Arc::new(temp_dir)
+}
+struct ProcessDirectories {
+	fault: Arc<TempDir>,
+	first: Arc<TempDir>,
+	second: Arc<TempDir>,
+	replacements: (Arc<TempDir>, Arc<TempDir>),
+}
+#[fixture]
+fn process_directories(
+	#[from(process_directory)] fault: Arc<TempDir>,
+	#[from(process_directory)] first: Arc<TempDir>,
+	#[from(process_directory)] second: Arc<TempDir>,
+	#[from(process_directory)] replacement_a: Arc<TempDir>,
+	#[from(process_directory)] replacement_b: Arc<TempDir>,
+) -> ProcessDirectories {
+	ProcessDirectories {
+		fault,
+		first,
+		second,
+		replacements: (replacement_a, replacement_b),
+	}
+}
+/// Real-process pairs retain both listener reservations across handover and SIGKILL.
+#[fixture]
+fn isolated_pair(
+	#[from(common::isolated_test_environment)] _environment: EnvironmentFuture,
+	#[from(pair)]
+	#[with(_environment.clone(),true)]
+	pair: PairFuture,
+) -> PairFuture {
+	pair
+}
+struct CutFixture {
+	pair: Pair,
+	directory: Arc<TempDir>,
+	process_a: Option<Server>,
+	process_b: Option<Server>,
+	replacements: (Arc<TempDir>, Arc<TempDir>),
+	point: String,
+	participant: bool,
+}
+#[fixture]
+async fn cut_fixture(
+	#[default("coordinator.submit")] phase: &str,
+	#[default(false)] abort: bool,
+	#[default("before")] edge: &str,
+	#[future(awt)] isolated_pair: Pair,
+	process_directories: ProcessDirectories,
+) -> CutFixture {
+	let (mut a, mut b, mut manifest, wa, wb) = isolated_pair;
+	if abort {
+		let aidash_server::transactions::Mutation::WorkspaceState {
+			expected_revision, ..
+		} = &mut manifest.participants[1].mutations[0]
+		else {
+			unreachable!()
+		};
+		*expected_revision = 99;
+	}
+	a.stop().await;
+	b.stop().await;
+	let directories = process_directories;
+	let directory = directories.fault;
+	let point = format!("{phase}.{edge}");
+	let participant = phase.starts_with("participant.");
+	let mut process_a = Server::start(
+		&a,
+		(!participant).then_some((manifest.id, point.as_str(), directory.path())),
+		directories.first,
+	);
+	let mut process_b = Server::start(
+		&b,
+		participant.then_some((manifest.id, point.as_str(), directory.path())),
+		directories.second,
+	);
+	healthy(&a, &mut process_a, "initial").await;
+	healthy(&b, &mut process_b, "initial").await;
+	CutFixture {
+		pair: (a, b, manifest, wa, wb),
+		directory,
+		process_a: Some(process_a),
+		process_b: Some(process_b),
+		replacements: directories.replacements,
+		point,
+		participant,
+	}
+}

@@ -36,12 +36,13 @@ async fn infer_after(
 	mut server: CompletionFixture,
 	timeout_secs: Option<u32>,
 	delay_secs: u64,
+	client: reqwest::Client,
 ) -> (Result<ModelResponse>, Duration) {
 	let mut config = model_config(&server.server.url);
 	if let Some(timeout) = timeout_secs {
 		config["request_timeout_secs"] = json!(timeout);
 	}
-	let model = provider(shared_client(), serde_json::from_value(config).unwrap()).unwrap();
+	let model = provider(client, serde_json::from_value(config).unwrap()).unwrap();
 	let result = server
 		.respond_after(
 			model.infer(ModelRequest {
@@ -67,8 +68,10 @@ async fn infer_after(
 #[tokio::test]
 async fn provider_timeout_above_120_seconds_allows_a_508_second_response(
 	#[future] delayed_server: CompletionFixture,
+	shared_client: reqwest::Client,
 ) {
-	let (response, elapsed) = infer_after(delayed_server.await, Some(900), 508).await;
+	let (response, elapsed) =
+		infer_after(delayed_server.await, Some(900), 508, shared_client).await;
 	let response = response.unwrap();
 	assert_eq!(response.text, "Completed");
 	assert_eq!((response.input_tokens, response.output_tokens), (12, 7));
@@ -79,8 +82,10 @@ async fn provider_timeout_above_120_seconds_allows_a_508_second_response(
 #[tokio::test]
 async fn provider_timeout_is_not_capped_by_the_900_second_default(
 	#[future] delayed_server: CompletionFixture,
+	shared_client: reqwest::Client,
 ) {
-	let (response, elapsed) = infer_after(delayed_server.await, Some(1200), 1000).await;
+	let (response, elapsed) =
+		infer_after(delayed_server.await, Some(1200), 1000, shared_client).await;
 	assert_eq!(response.unwrap().text, "Completed");
 	assert_eq!(elapsed.as_secs(), 1000);
 }
@@ -89,15 +94,19 @@ async fn provider_timeout_is_not_capped_by_the_900_second_default(
 #[tokio::test]
 async fn omitted_provider_timeout_allows_a_508_second_response(
 	#[future] delayed_server: CompletionFixture,
+	shared_client: reqwest::Client,
 ) {
-	let (response, _) = infer_after(delayed_server.await, None, 508).await;
+	let (response, _) = infer_after(delayed_server.await, None, 508, shared_client).await;
 	assert_eq!(response.unwrap().text, "Completed");
 }
 
 #[rstest::rstest]
 #[tokio::test]
-async fn shorter_provider_timeout_is_enforced(#[future] delayed_server: CompletionFixture) {
-	let (response, elapsed) = infer_after(delayed_server.await, Some(30), 60).await;
+async fn shorter_provider_timeout_is_enforced(
+	#[future] delayed_server: CompletionFixture,
+	shared_client: reqwest::Client,
+) {
+	let (response, elapsed) = infer_after(delayed_server.await, Some(30), 60, shared_client).await;
 	assert!(matches!(response, Err(Error::External(_))));
 	assert!(
 		(29..=31).contains(&elapsed.as_secs()),
@@ -109,8 +118,9 @@ async fn shorter_provider_timeout_is_enforced(#[future] delayed_server: Completi
 #[tokio::test]
 async fn omitted_provider_timeout_expires_at_900_seconds(
 	#[future] delayed_server: CompletionFixture,
+	shared_client: reqwest::Client,
 ) {
-	let (response, elapsed) = infer_after(delayed_server.await, None, 1000).await;
+	let (response, elapsed) = infer_after(delayed_server.await, None, 1000, shared_client).await;
 	assert!(matches!(response, Err(Error::External(_))));
 	assert!(
 		(899..=901).contains(&elapsed.as_secs()),
@@ -122,9 +132,10 @@ async fn omitted_provider_timeout_expires_at_900_seconds(
 #[tokio::test]
 async fn non_inference_requests_keep_the_shared_client_timeout(
 	#[future] delayed_server: CompletionFixture,
+	shared_client: reqwest::Client,
 ) {
 	let mut server = delayed_server.await;
-	let request = shared_client()
+	let request = shared_client
 		.post(format!("{}/chat/completions", server.server.url))
 		.json(&json!({}))
 		.send();
@@ -179,12 +190,12 @@ fn legacy_and_null_timeouts_remain_optional_when_serialized() {
 }
 
 #[rstest::rstest]
-fn provider_rejects_zero_timeout_before_sending_a_request() {
+fn provider_rejects_zero_timeout_before_sending_a_request(shared_client: reqwest::Client) {
 	let mut value = model_config("http://127.0.0.1:1");
 	value["request_timeout_secs"] = json!(0);
 	let config: ModelConfig = serde_json::from_value(value).unwrap();
 	assert!(matches!(
-		provider(shared_client(), config),
+		provider(shared_client, config),
 		Err(Error::Invalid(_))
 	));
 }

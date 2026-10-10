@@ -5,19 +5,24 @@ mod edge_cases;
 #[path = "sse_delivery/process.rs"]
 mod process;
 use aidash_server::{domain::Event, federation::Federation, sse};
-use axum::{body::Body, http::Request};
 use common::*;
+use futures_util::FutureExt;
 use futures_util::{StreamExt, stream::BoxStream};
+use http::Request;
 use reinhardt::query::{Alias, PostgresQueryBuilder, Query};
+use rstest::fixture;
 use serde_json::{Value, json};
 use std::{sync::Arc, time::Duration};
 use tokio::time::Instant;
 
 use uuid::Uuid;
 
-type Frames = BoxStream<'static, Result<axum::body::Bytes, axum::Error>>;
+type Frames = BoxStream<'static, Result<bytes::Bytes, Box<dyn std::error::Error + Send + Sync>>>;
 
+#[derive(Clone)]
 struct Fixture {
+	_owner: common::ApplicationFixture,
+	streaming_client: reqwest::Client,
 	f: Federation,
 	url: String,
 	schema: String,
@@ -28,86 +33,12 @@ struct Fixture {
 	workspaces: Vec<Uuid>,
 }
 impl Fixture {
-	async fn new(
-		environment: &TestEnvironment,
-		interval: Duration,
-		timeout: Duration,
-		slots: usize,
-	) -> Self {
-		let (mut f, url, schema) = setup(environment).await;
-		f.config.node_id = format!("aidash://sse-{}", Uuid::new_v4().simple());
-		f.store.node_id = f.config.node_id.clone();
-		f.registry =
-			aidash_server::registry::Registry::new(f.store.pool.clone(), &f.config.node_id)
-				.unwrap();
-		let service = sse::Service::new(sse::Settings {
-			reconcile_interval: interval,
-			backpressure_timeout: timeout,
-		});
-		let app = common::application_with_event_streams(
-			f.clone(),
-			aidash_server::http::Settings {
-				sse_connections: slots,
-				..Default::default()
-			},
-			service.clone(),
-		)
-		.await;
-		let operator = &f.config.api_token;
-		let (status, value) = request(
-			&app,
-			operator,
-			"POST",
-			"/api/authorization/acme",
-			json!({"expected_revision":0,"bundle":policy(&f.config.node_id)}),
-		)
-		.await;
-		assert_eq!(status, 200, "{value}");
-		let (status, credential) = request(
-			&app,
-			operator,
-			"POST",
-			"/api/authorization/acme/credentials",
-			json!({"subject":"alice"}),
-		)
-		.await;
-		assert_eq!(status, 200, "{credential}");
-		let token = credential["token"].as_str().unwrap().to_owned();
-		let credential = credential["credential"]["id"]
-			.as_str()
-			.unwrap()
-			.parse()
-			.unwrap();
-		let mut workspaces = Vec::new();
-		for n in 0..10 {
-			let (status, workspace) = request(
-				&app,
-				&token,
-				"POST",
-				"/api/workspaces",
-				json!({"title":format!("SSE fixture {n}"),"goal":"delivery"}),
-			)
-			.await;
-			assert_eq!(status, 200, "{workspace}");
-			workspaces.push(workspace["id"].as_str().unwrap().parse().unwrap());
-		}
-		Self {
-			f,
-			url,
-			schema,
-			app,
-			service,
-			token,
-			credential,
-			workspaces,
-		}
-	}
 	async fn open(
 		&self,
 		after: i64,
 		workspace: Option<Uuid>,
 		header: Option<&str>,
-	) -> axum::response::Response {
+	) -> reinhardt::Response {
 		let mut path = format!("/api/events/stream?after={after}");
 		if let Some(id) = workspace {
 			path.push_str(&format!("&workspace_id={id}"));
@@ -119,14 +50,14 @@ impl Fixture {
 		}
 		self.app
 			.clone()
-			.oneshot(request.body(Body::empty()).unwrap())
+			.native_oneshot(request.body(bytes::Bytes::new()).unwrap())
 			.await
 			.unwrap()
 	}
 	async fn stream(&self, after: i64, workspace: Option<Uuid>, header: Option<&str>) -> Frames {
-		let response = self.open(after, workspace, header).await;
-		assert_eq!(response.status(), 200);
-		response.into_body().into_data_stream().boxed()
+		let mut response = self.open(after, workspace, header).await;
+		assert_eq!(response.status, 200);
+		response.take_stream_body().unwrap().boxed()
 	}
 	async fn subscriber(
 		&self,
@@ -155,10 +86,10 @@ impl Fixture {
 			.await
 			.unwrap()
 	}
-	async fn finish(self) {
+	async fn finish(&self) {
 		self.service.shutdown();
 		until(|| self.service.snapshot().registered_scopes == 0).await;
-		cleanup(self.f, &self.url, &self.schema).await;
+		cleanup(self.f.clone(), &self.url, &self.schema).await;
 	}
 }
 async fn until(mut predicate: impl FnMut() -> bool) {
@@ -207,16 +138,17 @@ async fn hint(client: &async_nats::Client, f: &Federation, payload: Value) {
 #[rstest::rstest]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn hints_are_scoped_untrusted_and_loss_recovers_from_postgres(
-	#[future(awt)] test_environment: Arc<TestEnvironment>,
+	#[from(sse_fixture)]
+	#[with(Duration::from_secs(1), Duration::from_secs(30), 128)]
+	root: SseFuture,
+
+	#[future(awt)]
+	#[from(sse_subscription)]
+	#[with(root.clone())]
+	subscription: SseSubscription,
 ) {
-	let fixture = Fixture::new(
-		&test_environment,
-		Duration::from_secs(1),
-		Duration::from_secs(30),
-		128,
-	)
-	.await;
-	let (stop, subscriber) = fixture.subscriber().await;
+	let fixture = root.await;
+	let (stop, subscriber) = subscription;
 	let ws = fixture.workspaces[0];
 	let other = fixture.workspaces[1];
 	let mut selected = fixture.stream(-1, Some(ws), None).await;
@@ -286,15 +218,12 @@ async fn hints_are_scoped_untrusted_and_loss_recovers_from_postgres(
 #[rstest::rstest]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn bounded_pages_drain_denied_history_and_preserve_cursor_contract(
-	#[future(awt)] test_environment: Arc<TestEnvironment>,
+	#[future(awt)]
+	#[from(sse_fixture)]
+	#[with(Duration::from_secs(60), Duration::from_secs(30), 128)]
+	root: Arc<Fixture>,
 ) {
-	let fixture = Fixture::new(
-		&test_environment,
-		Duration::from_secs(60),
-		Duration::from_secs(30),
-		128,
-	)
-	.await;
+	let fixture = root;
 	let ws = fixture.workspaces[0];
 	let mut tx = fixture.f.store.pool.begin().await.unwrap();
 	let mut expected = Vec::new();
@@ -355,21 +284,22 @@ async fn bounded_pages_drain_denied_history_and_preserve_cursor_contract(
 #[rstest::rstest]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn unpolled_output_expires_but_idle_streams_and_authority_checks_remain_live(
-	#[future(awt)] test_environment: Arc<TestEnvironment>,
+	#[from(sse_fixture)]
+	#[with(Duration::from_secs(60), Duration::from_secs(1), 2)]
+	root: SseFuture,
+
+	#[future(awt)]
+	#[from(sse_subscription)]
+	#[with(root.clone())]
+	subscription: SseSubscription,
 ) {
-	let fixture = Fixture::new(
-		&test_environment,
-		Duration::from_secs(60),
-		Duration::from_secs(1),
-		2,
-	)
-	.await;
-	let (stop, subscriber) = fixture.subscriber().await;
+	let fixture = root.await;
+	let (stop, subscriber) = subscription;
 	let ws = fixture.workspaces[0];
 	let response = fixture.open(0, Some(ws), None).await;
-	assert_eq!(response.status(), 200); // Intentionally never poll the body.
+	assert_eq!(response.status, 200); // Intentionally never poll the body.
 	let mut idle = fixture.stream(-1, Some(fixture.workspaces[1]), None).await;
-	assert_eq!(fixture.open(-1, None, None).await.status(), 503);
+	assert_eq!(fixture.open(-1, None, None).await.status, 503);
 	let healthy = fixture.emit(fixture.workspaces[1], 42).await;
 	let nats = async_nats::connect(&fixture.f.config.nats_url)
 		.await
@@ -388,8 +318,7 @@ async fn unpolled_output_expires_but_idle_streams_and_authority_checks_remain_li
 	assert_eq!(fixture.service.snapshot().registered_scopes, 1);
 	let replacement = fixture.open(-1, None, None).await;
 	assert_eq!(
-		replacement.status(),
-		200,
+		replacement.status, 200,
 		"release admission even with the original body retained"
 	);
 	until(|| fixture.service.snapshot().query_causes[0] == 5).await;
@@ -425,15 +354,12 @@ async fn unpolled_output_expires_but_idle_streams_and_authority_checks_remain_li
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn closed_gate_suppresses_reads_and_resumes_without_a_new_hint(
 	#[case] cancel: bool,
-	#[future(awt)] test_environment: Arc<TestEnvironment>,
+	#[future(awt)]
+	#[from(sse_fixture)]
+	#[with(Duration::from_secs(60), Duration::from_secs(1), 128)]
+	root: Arc<Fixture>,
 ) {
-	let fixture = Fixture::new(
-		&test_environment,
-		Duration::from_secs(60),
-		Duration::from_secs(1),
-		128,
-	)
-	.await;
+	let fixture = root;
 	let ws = fixture.workspaces[0];
 	fixture.emit(ws, 1).await;
 	let mut stream = fixture.stream(0, Some(ws), None).await;
@@ -499,15 +425,12 @@ async fn closed_gate_suppresses_reads_and_resumes_without_a_new_hint(
 #[rstest::rstest]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn global_stream_filters_revoked_workspaces_without_rewinding_on_restore(
-	#[future(awt)] test_environment: Arc<TestEnvironment>,
+	#[future(awt)]
+	#[from(sse_fixture)]
+	#[with(Duration::from_millis(250), Duration::from_secs(30), 128)]
+	root: Arc<Fixture>,
 ) {
-	let fixture = Fixture::new(
-		&test_environment,
-		Duration::from_millis(250),
-		Duration::from_secs(30),
-		128,
-	)
-	.await;
+	let fixture = root;
 	let ws = fixture.workspaces[0];
 	let mut all = fixture.stream(-1, None, None).await;
 	let mut selected = fixture.stream(-1, Some(ws), None).await;
@@ -584,3 +507,129 @@ async fn global_stream_filters_revoked_workspaces_without_rewinding_on_restore(
 }
 
 use reinhardt::query::QueryStatementBuilder as _;
+
+type SseFuture =
+	futures_util::future::Shared<futures_util::future::BoxFuture<'static, Arc<Fixture>>>;
+#[fixture]
+fn sse_runtime(#[from(common::runtime)] runtime: common::RuntimeFuture) -> common::RuntimeFuture {
+	async move {
+		let mut r = runtime.await;
+		r.federation.config.node_id = format!("aidash://sse-{}", Uuid::new_v4().simple());
+		r.federation.store.node_id = r.federation.config.node_id.clone();
+		r.federation.registry = aidash_server::registry::Registry::new(
+			r.federation.store.pool.clone(),
+			&r.federation.config.node_id,
+		)
+		.unwrap();
+		r
+	}
+	.boxed()
+	.shared()
+}
+#[fixture]
+fn sse_service(
+	#[default(Duration::from_secs(60))] interval: Duration,
+	#[default(Duration::from_secs(30))] timeout: Duration,
+) -> sse::Service {
+	sse::Service::new(sse::Settings {
+		reconcile_interval: interval,
+		backpressure_timeout: timeout,
+	})
+}
+#[fixture]
+fn sse_fixture(
+	#[default(Duration::from_secs(60))] interval: Duration,
+	#[default(Duration::from_secs(30))] timeout: Duration,
+	#[default(128)] slots: usize,
+	#[from(sse_service)]
+	#[with(interval, timeout)]
+	service: sse::Service,
+	sse_runtime: common::RuntimeFuture,
+	#[from(common::native_application)]
+	#[with(aidash_server::http::Settings{sse_connections:slots,..Default::default()},service.clone(),Arc::new(|r|r),sse_runtime.clone())]
+	application: common::ApplicationFuture,
+	#[from(common::streaming_http_client)] streaming_client: reqwest::Client,
+) -> SseFuture {
+	let _ = (interval, timeout, slots, sse_runtime);
+	async move {
+		let application_fixture = application.await;
+		let (f, url, schema) = application_fixture.runtime.parts();
+		let app = application_fixture.application.clone();
+		let operator = &f.config.api_token;
+		let (status, value) = request(
+			&app,
+			operator,
+			"POST",
+			"/api/authorization/acme",
+			json!({"expected_revision":0,"bundle":policy(&f.config.node_id)}),
+		)
+		.await;
+		assert_eq!(status, 200, "{value}");
+		let (status, credential) = request(
+			&app,
+			operator,
+			"POST",
+			"/api/authorization/acme/credentials",
+			json!({"subject":"alice"}),
+		)
+		.await;
+		assert_eq!(status, 200, "{credential}");
+		let token = credential["token"].as_str().unwrap().to_owned();
+		let credential = credential["credential"]["id"]
+			.as_str()
+			.unwrap()
+			.parse()
+			.unwrap();
+		let mut workspaces = Vec::new();
+		for n in 0..10 {
+			let (status, workspace) = request(
+				&app,
+				&token,
+				"POST",
+				"/api/workspaces",
+				json!({"title":format!("SSE fixture {n}"),"goal":"delivery"}),
+			)
+			.await;
+			assert_eq!(status, 200, "{workspace}");
+			workspaces.push(workspace["id"].as_str().unwrap().parse().unwrap());
+		}
+		Fixture {
+			_owner: application_fixture,
+			streaming_client,
+			f,
+			url,
+			schema,
+			app,
+			service,
+			token,
+			credential,
+			workspaces,
+		}
+	}
+	.map(Arc::new)
+	.boxed()
+	.shared()
+}
+
+struct SubscriberTask(tokio::task::JoinHandle<()>);
+impl Drop for SubscriberTask {
+	fn drop(&mut self) {
+		self.0.abort();
+	}
+}
+impl std::future::Future for SubscriberTask {
+	type Output = Result<(), tokio::task::JoinError>;
+	fn poll(
+		mut self: std::pin::Pin<&mut Self>,
+		cx: &mut std::task::Context<'_>,
+	) -> std::task::Poll<Self::Output> {
+		std::pin::Pin::new(&mut self.0).poll(cx)
+	}
+}
+type SseSubscription = (tokio::sync::watch::Sender<bool>, SubscriberTask);
+#[fixture]
+async fn sse_subscription(#[from(sse_fixture)] root: SseFuture) -> SseSubscription {
+	let fixture = root.await;
+	let (stop, task) = fixture.subscriber().await;
+	(stop, SubscriberTask(task))
+}

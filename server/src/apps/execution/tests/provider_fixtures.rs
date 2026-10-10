@@ -3,14 +3,22 @@ use async_trait::async_trait;
 use reinhardt::di::{DiError, DiResult, Injectable};
 use reinhardt::http::ViewResult;
 use reinhardt::test::fixtures::injection_context;
-use reinhardt::test::fixtures::server::{TestServerGuard, test_server_guard};
+use reinhardt::test::fixtures::server::TestServerGuard;
+#[path = "support/upstream.rs"]
+pub(crate) mod upstream_fixtures;
 use reinhardt::{InjectionContext, Json, Response, ServerRouter, StatusCode, post};
 use rstest::fixture;
 use serde_json::{Value, json};
-use std::{future::Future, sync::Arc, time::Duration};
+use std::{
+	future::Future,
+	sync::{Arc, Mutex},
+	time::Duration,
+};
 use tokio::sync::{Notify, mpsc};
+use upstream_fixtures::upstream;
 
 #[derive(Clone)]
+#[allow(dead_code)] // Different integration binaries select different provider replies.
 pub enum Reply {
 	Completion,
 	Final,
@@ -67,43 +75,111 @@ pub struct CompletionFixture {
 	release: Option<Arc<Notify>>,
 }
 
-#[fixture]
-pub async fn completion_server(injection_context: InjectionContext) -> CompletionFixture {
-	start(injection_context, Reply::Completion).await
+#[derive(Clone)]
+struct CompletionChannel {
+	sender: mpsc::UnboundedSender<Value>,
+	received: Arc<Mutex<Option<mpsc::UnboundedReceiver<Value>>>>,
 }
 
 #[fixture]
-pub async fn final_server(injection_context: InjectionContext) -> CompletionFixture {
-	start(injection_context, Reply::Final).await
-}
-
-#[fixture]
-pub async fn unavailable_server(injection_context: InjectionContext) -> CompletionFixture {
-	start(injection_context, Reply::Unavailable).await
-}
-
-#[fixture]
-pub async fn delayed_server(injection_context: InjectionContext) -> CompletionFixture {
-	start(injection_context, Reply::Delayed(Arc::new(Notify::new()))).await
-}
-
-async fn start(context: InjectionContext, reply: Reply) -> CompletionFixture {
+fn completion_channel() -> CompletionChannel {
 	let (sender, received) = mpsc::unbounded_channel();
-	let release = match &reply {
-		Reply::Delayed(release) => Some(release.clone()),
-		_ => None,
-	};
-	context.set_singleton(CompletionState { sender, reply });
-	let router = ServerRouter::new()
-		.endpoint(completion)
-		.mount("/api/v1/", ServerRouter::new().endpoint(completion))
-		.mount("/v1/", ServerRouter::new().endpoint(completion))
-		.with_di_context(Arc::new(context));
-	CompletionFixture {
-		received,
-		server: test_server_guard(router).await,
-		release,
+	CompletionChannel {
+		sender,
+		received: Arc::new(Mutex::new(Some(received))),
 	}
+}
+
+#[fixture]
+fn completion_state(
+	#[default(Reply::Completion)] reply: Reply,
+	completion_channel: CompletionChannel,
+) -> CompletionState {
+	CompletionState {
+		sender: completion_channel.sender,
+		reply,
+	}
+}
+
+#[fixture]
+fn completion_router(
+	completion_state: CompletionState,
+	injection_context: InjectionContext,
+) -> Arc<ServerRouter> {
+	injection_context.set_singleton(completion_state);
+	Arc::new(
+		ServerRouter::new()
+			.endpoint(completion)
+			.mount("/api/v1/", ServerRouter::new().endpoint(completion))
+			.mount("/v1/", ServerRouter::new().endpoint(completion))
+			.with_di_context(Arc::new(injection_context)),
+	)
+}
+
+#[fixture]
+pub fn completion_server(
+	#[default(Reply::Completion)] reply: Reply,
+	completion_channel: CompletionChannel,
+	#[from(completion_state)]
+	#[with(reply.clone(), completion_channel.clone())]
+	_state: CompletionState,
+	#[from(completion_router)]
+	#[with(_state.clone())]
+	_router: Arc<ServerRouter>,
+	#[future]
+	#[from(upstream)]
+	#[with(_router.clone())]
+	server: TestServerGuard,
+) -> impl Future<Output = CompletionFixture> {
+	let server = Box::pin(server);
+	async move {
+		let release = match reply {
+			Reply::Delayed(release) => Some(release),
+			_ => None,
+		};
+		let received = completion_channel.received.lock().unwrap().take().unwrap();
+		CompletionFixture {
+			received,
+			server: server.await,
+			release,
+		}
+	}
+}
+
+#[fixture]
+pub async fn final_server(
+	#[future]
+	#[from(completion_server)]
+	#[with(Reply::Final)]
+	server: CompletionFixture,
+) -> CompletionFixture {
+	server.await
+}
+
+#[fixture]
+pub async fn unavailable_server(
+	#[future]
+	#[from(completion_server)]
+	#[with(Reply::Unavailable)]
+	server: CompletionFixture,
+) -> CompletionFixture {
+	server.await
+}
+
+#[fixture]
+fn release() -> Arc<Notify> {
+	Arc::new(Notify::new())
+}
+
+#[fixture]
+pub async fn delayed_server(
+	_release: Arc<Notify>,
+	#[future]
+	#[from(completion_server)]
+	#[with(Reply::Delayed(_release.clone()))]
+	server: CompletionFixture,
+) -> CompletionFixture {
+	server.await
 }
 
 impl CompletionFixture {

@@ -15,7 +15,7 @@ fn options(mode: &str, kinds: &[&str]) -> GraphOptions {
 	}
 }
 
-#[test]
+#[rstest::rstest]
 fn kind_filter_precedes_pagination() {
 	let (sql, kinds) = query("acme", &options("mesh", &["agent", "run"]), 4096).unwrap();
 	assert_eq!(kinds, vec!["agent"]);
@@ -24,7 +24,7 @@ fn kind_filter_precedes_pagination() {
 	assert!(sql.contains("OFFSET 4096"));
 }
 
-#[test]
+#[rstest::rstest]
 fn perspective_filters_catalog_kinds() {
 	let (_, kinds) = query(
 		"acme",
@@ -37,7 +37,7 @@ fn perspective_filters_catalog_kinds() {
 	assert_eq!(kinds, vec!["agent", "tool"]);
 }
 
-#[test]
+#[rstest::rstest]
 fn irrelevant_kinds_skip_the_catalog_query() {
 	assert!(query("acme", &options("mesh", &["workspace", "goal", "run"]), 0).is_none());
 	assert!(query("acme", &options("execution", &["tool", "model"]), 0).is_none());

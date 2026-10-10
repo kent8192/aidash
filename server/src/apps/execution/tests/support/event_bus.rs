@@ -1,10 +1,7 @@
 use crate::endpoint::{EndpointFixture, endpoint};
 use aidash_server::{Result, bus::EventBus};
-use reinhardt::test::testcontainers::{
-	ContainerAsync, GenericImage, ImageExt,
-	core::{ContainerPort, WaitFor},
-	runners::AsyncRunner,
-};
+use reinhardt::test::fixtures::nats_container;
+use reinhardt::test::testcontainers::{ContainerAsync, GenericImage};
 use rstest::fixture;
 use std::future::Future;
 use tokio::task::JoinHandle;
@@ -16,25 +13,18 @@ pub struct BusFixture {
 }
 
 #[fixture]
-pub fn event_bus(#[future] endpoint: EndpointFixture) -> impl Future<Output = BusFixture> {
+pub fn event_bus(
+	#[future] endpoint: EndpointFixture,
+	#[future] nats_container: (ContainerAsync<GenericImage>, u16, String),
+) -> impl Future<Output = BusFixture> {
 	let endpoint = Box::pin(endpoint);
+	let nats_container = Box::pin(nats_container);
 	async move {
-		let broker = GenericImage::new("nats", "2.12-alpine")
-			.with_exposed_port(ContainerPort::Tcp(4222))
-			.with_wait_for(WaitFor::message_on_stderr("Server is ready"))
-			.with_cmd(["-js"])
-			.start()
+		let (broker, _port, url) = nats_container.await;
+		let app = endpoint.await;
+		let bus = EventBus::connect(&url, &app.runtime.config.node_id)
 			.await
 			.unwrap();
-		let app = endpoint.await;
-		let port = broker.get_host_port_ipv4(4222).await.unwrap();
-		let host = broker.get_host().await.unwrap();
-		let bus = EventBus::connect(
-			&format!("nats://{host}:{port}"),
-			&app.runtime.config.node_id,
-		)
-		.await
-		.unwrap();
 		BusFixture {
 			app,
 			bus,

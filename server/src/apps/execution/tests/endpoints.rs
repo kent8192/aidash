@@ -68,13 +68,14 @@ async fn event_queries_honor_workspace_and_cursor_parameters(#[future] endpoint:
 #[tokio::test]
 async fn event_stream_flushes_live_changes_and_resumes_from_last_event_id(
 	#[future] endpoint: EndpointFixture,
+	#[from(reinhardt::test::fixtures::http_client)] http_client: reqwest::Client,
 ) {
 	// Arrange
 	let app = endpoint.await;
 	let selected = workspace(&app.operator, "Stream selection").await;
 	let id = selected["id"].as_str().unwrap();
 	workspace(&app.operator, "Excluded from stream").await;
-	let client = reqwest::Client::new();
+	let client = http_client.clone();
 	let url = format!("{}/api/events/stream?workspace_id={id}", app.server.url);
 	// Act
 	let mut response = client

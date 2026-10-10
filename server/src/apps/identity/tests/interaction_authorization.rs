@@ -2,7 +2,6 @@
 mod common;
 use aidash_server::domain::{Run, qualified_agent};
 use common::*;
-use common::{TestEnvironment, test_environment};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
@@ -14,11 +13,11 @@ fn conversation() -> Value {
 #[tokio::test]
 async fn conversation_admission_is_atomic_and_records_denials_without_orphans(
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
 ) {
-	let (f, url, schema) = setup(&_test_environment).await;
-	let app = common::application(f.clone()).await;
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
 	let (mut policy, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let (status, created) =
 		request(&app, &token, "POST", "/api/conversations", conversation()).await;
@@ -136,12 +135,12 @@ async fn conversation_admission_is_atomic_and_records_denials_without_orphans(
 #[tokio::test]
 async fn human_interactions_enforce_tenant_actions_read_visibility_and_actor_attribution(
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
 ) {
 	use aidash_server::harness::Harness;
-	let (f, url, schema) = setup(&_test_environment).await;
-	let app = common::application(f.clone()).await;
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
 	let (mut policy, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let (status, created) =
 		request(&app, &token, "POST", "/api/conversations", conversation()).await;
@@ -575,11 +574,11 @@ async fn human_interactions_enforce_tenant_actions_read_visibility_and_actor_att
 #[tokio::test]
 async fn cluster_conversations_recheck_approval_at_worker_boundaries(
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
 ) {
-	let (f, url, schema) = setup(&_test_environment).await;
-	let app = common::application(f.clone()).await;
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let cluster = json!({"id":"cluster","version":"1.0.0","kind":"cluster","name":{"en":"cluster"},"description":{"en":"fixture"},"schema":{},"config":{"coordinator":{"id":"research","version":"1.0.0"}}});
 	assert_eq!(

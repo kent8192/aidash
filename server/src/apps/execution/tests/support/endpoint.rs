@@ -1,5 +1,9 @@
 //! Compose native Reinhardt fixtures with Aidash's production routes.
-use crate::native_database::{DatabaseFixture, database};
+use crate::native_database::{DatabaseFixture, DatabaseFuture, database};
+use futures_util::{
+	FutureExt,
+	future::{BoxFuture, Shared},
+};
 #[path = "settings.rs"]
 mod settings;
 use aidash_server::{bootstrap, federation::Federation};
@@ -13,57 +17,143 @@ pub use settings::settings_for;
 use std::sync::Arc;
 
 #[allow(dead_code)] // Each app suite consumes a different subset of the shared fixture.
+#[derive(Clone)]
 pub struct EndpointFixture {
 	#[allow(dead_code)] // Stream revocation tests control polling through the same route context.
 	pub context: Arc<InjectionContext>,
-	pub operator: APIClient,
-	pub anonymous: APIClient,
+	pub router: Arc<reinhardt::ServerRouter>,
+	pub operator: Arc<APIClient>,
+	pub anonymous: Arc<APIClient>,
 	pub runtime: Federation,
-	pub server: TestServerGuard,
+	pub server: Arc<TestServerGuard>,
 	pub database: DatabaseFixture,
 }
 
+pub type EndpointFuture = Shared<BoxFuture<'static, EndpointFixture>>;
+type RuntimeFuture = Shared<BoxFuture<'static, Arc<EndpointRuntime>>>;
+type RouterFuture = Shared<BoxFuture<'static, Arc<reinhardt::ServerRouter>>>;
+type ServerFuture = Shared<BoxFuture<'static, Arc<TestServerGuard>>>;
+pub type ClientFuture = Shared<BoxFuture<'static, Arc<APIClient>>>;
+
+struct EndpointRuntime {
+	context: Arc<InjectionContext>,
+	runtime: Federation,
+}
+
 #[fixture]
-pub async fn endpoint(
+fn endpoint_runtime(
 	#[default("aidash://endpoint-test")] node_id: &'static str,
-	#[future] database: DatabaseFixture,
+	database: DatabaseFuture,
 	injection_context: InjectionContext,
-) -> EndpointFixture {
-	let _ = tracing_subscriber::fmt()
-		.with_test_writer()
-		.with_env_filter(
-			tracing_subscriber::EnvFilter::try_from_default_env()
-				.unwrap_or_else(|_| "aidash=debug".into()),
-		)
-		.try_init();
-	let database = database.await;
-	let mut settings = settings_for(&database.url);
-	settings.node.node_id = node_id.into();
-	let runtime = bootstrap::initialize(&injection_context, &settings, database.connection.clone())
-		.await
-		.expect("initialize native application services");
-	let context = Arc::new(injection_context);
-	let router = aidash_server::routes()
-		.with_di_context(context.clone())
-		.into_server();
-	let server = test_server_guard(router).await;
-	let operator = api_client_from_url(&server.url);
-	operator
-		.set_header(
-			"Authorization",
-			&format!("Bearer {}", runtime.config.api_token),
-		)
-		.await
-		.unwrap();
-	let anonymous = api_client_from_url(&server.url);
-	EndpointFixture {
-		context,
-		operator,
-		anonymous,
-		runtime,
-		server,
-		database,
+) -> RuntimeFuture {
+	async move {
+		let _ = tracing_subscriber::fmt()
+			.with_test_writer()
+			.with_env_filter(
+				tracing_subscriber::EnvFilter::try_from_default_env()
+					.unwrap_or_else(|_| "aidash=debug".into()),
+			)
+			.try_init();
+		let database = database.await;
+		let mut settings = settings_for(&database.url);
+		settings.node.node_id = node_id.into();
+		let runtime =
+			bootstrap::initialize(&injection_context, &settings, database.connection.clone())
+				.await
+				.expect("initialize native application services");
+		Arc::new(EndpointRuntime {
+			context: Arc::new(injection_context),
+			runtime,
+		})
 	}
+	.boxed()
+	.shared()
+}
+
+#[fixture]
+fn endpoint_router(endpoint_runtime: RuntimeFuture) -> RouterFuture {
+	async move {
+		Arc::new(
+			aidash_server::routes()
+				.with_di_context(endpoint_runtime.await.context.clone())
+				.into_server(),
+		)
+	}
+	.boxed()
+	.shared()
+}
+
+#[fixture]
+fn endpoint_server(endpoint_runtime: RuntimeFuture) -> ServerFuture {
+	async move {
+		// Serve production
+		// routes directly, sharing DI with the separate in-process router fixture.
+		let router = aidash_server::routes()
+			.with_di_context(endpoint_runtime.await.context.clone())
+			.into_server();
+		Arc::new(test_server_guard(router).await)
+	}
+	.boxed()
+	.shared()
+}
+
+#[fixture]
+fn endpoint_client(
+	#[default(false)] operator: bool,
+	endpoint_runtime: RuntimeFuture,
+	endpoint_server: ServerFuture,
+) -> ClientFuture {
+	async move {
+		let client = api_client_from_url(&endpoint_server.await.url);
+		if operator {
+			client
+				.set_header(
+					"Authorization",
+					&format!("Bearer {}", endpoint_runtime.await.runtime.config.api_token),
+				)
+				.await
+				.unwrap();
+		}
+		Arc::new(client)
+	}
+	.boxed()
+	.shared()
+}
+
+#[fixture]
+pub fn endpoint(
+	#[default("aidash://endpoint-test")] _node_id: &'static str,
+	database: DatabaseFuture,
+	#[from(endpoint_runtime)]
+	#[with(_node_id, database.clone())]
+	runtime: RuntimeFuture,
+	#[from(endpoint_router)]
+	#[with(runtime.clone())]
+	_router: RouterFuture,
+	#[from(endpoint_server)]
+	#[with(runtime.clone())]
+	server: ServerFuture,
+	#[from(endpoint_client)]
+	#[with(true, runtime.clone(), server.clone())]
+	operator: ClientFuture,
+	#[from(endpoint_client)]
+	#[with(false, runtime.clone(), server.clone())]
+	anonymous: ClientFuture,
+) -> EndpointFuture {
+	async move {
+		let runtime = runtime.await;
+		EndpointFixture {
+			context: runtime.context.clone(),
+			router: _router.await,
+			operator: operator.await,
+			anonymous: anonymous.await,
+			runtime: runtime.runtime.clone(),
+			server: server.await,
+			database: database.await,
+		}
+	}
+	.boxed()
+	.shared()
 }
 
 pub fn assert_json(response: TestResponse, status: u16) -> Value {
@@ -102,7 +192,11 @@ pub async fn workspace(client: &APIClient, title: &str) -> Value {
 }
 
 #[allow(dead_code)] // Used by scoped-credential endpoint suites.
-pub async fn subject(fixture: &EndpointFixture, name: &str) -> APIClient {
+pub async fn subject(
+	fixture: &EndpointFixture,
+	name: &str,
+	client: Arc<APIClient>,
+) -> Arc<APIClient> {
 	let body = json!({"expected_revision":0,"bundle":{"tenant":"endpoint","subjects":{name:{"kind":"user"}},"policies":[{"id":"test-work","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}}]}});
 	assert_json(
 		fixture
@@ -124,7 +218,6 @@ pub async fn subject(fixture: &EndpointFixture, name: &str) -> APIClient {
 			.unwrap(),
 		200,
 	);
-	let client = api_client_from_url(&fixture.server.url);
 	client
 		.set_header(
 			"Authorization",
@@ -133,6 +226,13 @@ pub async fn subject(fixture: &EndpointFixture, name: &str) -> APIClient {
 		.await
 		.unwrap();
 	client
+}
+
+#[fixture]
+pub fn anonymous_client(endpoint: EndpointFuture) -> ClientFuture {
+	async move { Arc::new(api_client_from_url(&endpoint.await.server.url)) }
+		.boxed()
+		.shared()
 }
 
 /// Positive native Run fixtures use an admitted graph, including Node defaults.

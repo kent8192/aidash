@@ -136,6 +136,7 @@ async fn keep(f: &RecoveryFixture, thread_delete: bool) -> Value {
 async fn keep_converts_the_existing_recovery_snapshot_to_retained_storage(
 	#[future] recovery_fixture: RecoveryFixture,
 	#[case] thread_delete: bool,
+	#[from(worker_control)] control_1: WorkerControl,
 ) {
 	let f = Box::pin(recovery_fixture).await;
 	let retained = keep(&f, thread_delete).await;
@@ -237,7 +238,8 @@ async fn keep_converts_the_existing_recovery_snapshot_to_retained_storage(
 		.await
 		.unwrap();
 	assert_eq!(kind, "superseded_working");
-	let (stop, rx) = tokio::sync::watch::channel(false);
+	let WorkerControl { stop, receiver: rx } = control_1;
+	// Act: collect superseded bytes after the recovery snapshot has been patched.
 	let worker = tokio::spawn(aidash_server::capabilities::operations::run(
 		f.c.f.store.clone(),
 		rx,
@@ -294,13 +296,13 @@ async fn restore_rechecks_current_quota_and_administrator_policy(
 	let mut profile = (*f.c.f.store.capabilities.0).clone();
 	profile.working_bytes = 1;
 	f.c.f.store.capabilities = Runtime::new(profile.clone()).unwrap();
-	f.c.app = common::application(f.c.f.clone()).await;
+	f.c.app.context.set_singleton(f.c.f.clone());
 	let (status, rejected) = request(&f.c.app, &f.c.token, "POST", &path, input.clone()).await;
 	assert_eq!(status, 409, "{rejected}");
 	assert_eq!(rejected["error"]["code"], "WORKING_QUOTA");
 	profile.working_bytes = 1024;
 	f.c.f.store.capabilities = Runtime::new(profile).unwrap();
-	f.c.app = common::application(f.c.f.clone()).await;
+	f.c.app.context.set_singleton(f.c.f.clone());
 	assert_eq!(
 		request(&f.c.app, &f.bob, "POST", &path, input.clone())
 			.await
@@ -379,7 +381,7 @@ async fn restoring_into_a_new_thread_rolls_back_message_and_thread_when_restore_
 	let mut profile = (*f.c.f.store.capabilities.0).clone();
 	profile.working_bytes = 1;
 	f.c.f.store.capabilities = Runtime::new(profile).unwrap();
-	f.c.app = common::application(f.c.f.clone()).await;
+	f.c.app.context.set_singleton(f.c.f.clone());
 	let path = format!(
 		"/api/workspaces/{}/working-areas/{}/restore/new-thread",
 		f.workspace,
@@ -566,7 +568,7 @@ fn disabled_share(
 		let mut profile = (*f.c.f.store.capabilities.0).clone();
 		profile.admission = false;
 		f.c.f.store.capabilities = Runtime::new(profile).unwrap();
-		f.c.app = common::application(f.c.f.clone()).await;
+		f.c.app.context.set_singleton(f.c.f.clone());
 		f
 	}
 }

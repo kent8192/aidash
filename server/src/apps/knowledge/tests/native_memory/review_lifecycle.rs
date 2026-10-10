@@ -92,25 +92,18 @@ async fn stale_manual_derivations_retire_without_age_expiry(
 	mut bounds: Bounds,
 	#[case] kind: Kind,
 	#[case] exhausted_repair: Option<bool>,
+
+	#[future(awt)]
+	#[from(stale_manual_derivations_retire_without_age_expiry_provider)]
+	fixture: StaleManualDerivationsRetireWithoutAgeExpiryProvider,
 ) {
+	let server = fixture.server;
+
 	bounds.max_units = 2;
 	bounds.max_candidates = 2;
 	bounds.max_results = 2;
-	use axum::{Json, Router, routing::post};
-	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-	let endpoint = format!("http://{}/v1", listener.local_addr().unwrap());
-	let app = Router::new().route("/v1/chat/completions", post(|Json(input): Json<serde_json::Value>| async move {
-        let context: serde_json::Value = serde_json::from_str(input["messages"][1]["content"].as_str().unwrap()).unwrap();
-        let units: Vec<Unit> = serde_json::from_value(context["units"].clone()).unwrap();
-        let mut output = content("Derived from admitted evidence");
-        output.kind = serde_json::from_value(context["kind"].clone()).unwrap();
-        output.mental_model = serde_json::from_value(context["mental_model"].clone()).unwrap();
-        output.evidence = units.iter().map(Unit::evidence).collect();
-        Json(json!({"choices":[{"finish_reason":"stop","message":{"content":serde_json::to_string(&output).unwrap()}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}))
-    }));
-	let server = tokio::spawn(async move {
-		axum::serve(listener, app).await.unwrap();
-	});
+
+	let endpoint = format!("{}/v1", server.url);
 	let database = database.await;
 	let attempts = bounds.max_retries as i32;
 	let (store, _, workspace) = setup_endpoint_flags(
@@ -244,7 +237,7 @@ async fn stale_manual_derivations_retire_without_age_expiry(
 		.await
 		.unwrap();
 	}
-	server.abort();
+	drop(server);
 }
 
 #[rstest]
@@ -565,4 +558,33 @@ async fn registry_rejects_a_memory_policy_above_the_semantic_compute_allowance(
 	assert!(matches!(registry.register(provider).await,
         Err(aidash_server::Error::Invalid(message)) if message.contains("compute allowance")));
 	assert!(registry.get("oversized-memory", "1.0.0").await.is_err());
+}
+
+#[fixture]
+fn stale_manual_derivations_retire_without_age_expiry_router() -> std::sync::Arc<Router> {
+	std::sync::Arc::new(reinhardt::test::stub::StubRouter::new()
+.route("/v1/chat/completions", http::Method::POST, reply(|request: reinhardt::Request| {let input = request.json::<serde_json::Value>().unwrap();async move {
+        let context: serde_json::Value = serde_json::from_str(input["messages"][1]["content"].as_str().unwrap()).unwrap();
+        let units: Vec<Unit> = serde_json::from_value(context["units"].clone()).unwrap();
+        let mut output = content("Derived from admitted evidence");
+        output.kind = serde_json::from_value(context["kind"].clone()).unwrap();
+        output.mental_model = serde_json::from_value(context["mental_model"].clone()).unwrap();
+        output.evidence = units.iter().map(Unit::evidence).collect();
+        reinhardt::Response::ok().with_json(&json!({"choices":[{"finish_reason":"stop","message":{"content":serde_json::to_string(&output).unwrap()}}],"usage":{"prompt_tokens":1,"completion_tokens":1}})).unwrap()
+    }})).into_server_router())
+}
+struct StaleManualDerivationsRetireWithoutAgeExpiryProvider {
+	server: reinhardt::test::fixtures::server::TestServerGuard,
+}
+#[fixture]
+async fn stale_manual_derivations_retire_without_age_expiry_provider(
+	#[from(stale_manual_derivations_retire_without_age_expiry_router)] _router: std::sync::Arc<
+		Router,
+	>,
+	#[future(awt)]
+	#[from(upstream::upstream)]
+	#[with(_router.clone())]
+	server: reinhardt::test::fixtures::server::TestServerGuard,
+) -> StaleManualDerivationsRetireWithoutAgeExpiryProvider {
+	StaleManualDerivationsRetireWithoutAgeExpiryProvider { server }
 }

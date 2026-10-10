@@ -16,8 +16,7 @@ use reinhardt::query::{
 	Alias, Expr, ExprTrait, IntoIden, PostgresQueryBuilder, Query, QueryStatementBuilder,
 	SimpleExpr,
 };
-use reinhardt::test::fixtures::api_client_from_url;
-use reinhardt::test::{APIClient, TestResponse};
+use reinhardt::test::TestResponse;
 use reinhardt::{Request, Response};
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -54,15 +53,6 @@ async fn get(app: &EndpointFixture, path: &str) -> (u16, Value) {
 	decoded(app.operator.get(path).await.unwrap())
 }
 
-async fn subject_client(app: &EndpointFixture, token: &str) -> APIClient {
-	let client = api_client_from_url(&app.server.url);
-	client
-		.set_header("Authorization", &format!("Bearer {token}"))
-		.await
-		.unwrap();
-	client
-}
-
 async fn scoped_request(
 	app: &EndpointFixture,
 	token: &str,
@@ -70,24 +60,24 @@ async fn scoped_request(
 	path: &str,
 	body: Value,
 ) -> (u16, Value) {
-	let client = subject_client(app, token).await;
-	let response = match method {
-		"GET" => client.get(path).await,
-		"POST" => client.post(path, &body, "json").await,
-		"PATCH" => client.patch(path, &body, "json").await,
-		_ => panic!("unsupported test method: {method}"),
+	assert!(
+		matches!(method, "GET" | "POST" | "PATCH"),
+		"unsupported test method: {method}"
+	);
+	let mut request = app
+		.anonymous
+		.request(method.parse().unwrap(), path)
+		.header("Authorization", format!("Bearer {token}"));
+	if method != "GET" {
+		request = request.json(&body);
 	}
-	.unwrap();
-	decoded(response)
+	decoded(request.send().await.unwrap())
 }
 
 async fn stream_response(app: &EndpointFixture, path: &str, token: &str) -> Response {
 	// APIClient buffers complete responses. Dispatch through the same production
-	// routes and DI context to pause exactly between server-side SSE frames.
-	let router = aidash_server::routes()
-		.with_di_context(app.context.clone())
-		.into_server();
-	router
+	// fixture-owned production router to pause exactly between server-side SSE frames.
+	app.router
 		.handle(
 			Request::builder()
 				.uri(path)

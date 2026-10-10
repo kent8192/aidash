@@ -20,7 +20,7 @@ fn working_quota_cannot_exceed_runner_export_ceiling(
 	assert_eq!(crate::capabilities::Runtime::new(profile).is_ok(), valid);
 }
 
-#[test]
+#[rstest::rstest]
 fn defaults_and_lower_content_limits_preserve_wire_ceilings() {
 	let limits = ContentLimits::default();
 	assert!(limits.valid());

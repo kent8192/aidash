@@ -8,9 +8,11 @@ use reinhardt::{Request, Response, ServerRouter};
 mod common;
 
 use aidash_server::federation::Federation;
-use axum::response::IntoResponse;
-use common::{TestEnvironment, cleanup, request, setup, test_environment};
+use common::upstream_fixtures as upstream;
+use common::{cleanup, request};
+use reinhardt::ServerRouter as Router;
 use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
+use rstest::fixture;
 use serde_json::{Value, json};
 use std::{
 	collections::VecDeque,
@@ -21,6 +23,7 @@ use std::{
 	time::Duration,
 };
 use tokio::sync::{Mutex, Notify};
+use upstream::reply;
 
 #[derive(Default)]
 struct ModelGate {
@@ -30,7 +33,7 @@ struct ModelGate {
 }
 
 struct Workbench {
-	_environment: Arc<TestEnvironment>,
+	_fixture: common::ApplicationFixture,
 	f: Federation,
 	app: common::TestApplication,
 	url: String,
@@ -39,7 +42,7 @@ struct Workbench {
 	draft: Value,
 	responses: Arc<Mutex<VecDeque<Value>>>,
 	hits: Arc<AtomicUsize>,
-	server: tokio::task::JoinHandle<()>,
+	server: reinhardt::test::fixtures::server::TestServerGuard,
 	endpoint: String,
 	model_gate: Arc<ModelGate>,
 	effect_gate: Arc<ModelGate>,
@@ -117,128 +120,82 @@ impl Workbench {
 	}
 
 	async fn cleanup(self) {
-		self.server.abort();
+		drop(self.server);
 		cleanup(self.f, &self.url, &self.schema).await;
 	}
 }
 
 #[rstest::fixture]
-async fn workbench() -> Workbench {
-	let environment = test_environment().await;
-	let (f, url, schema) = setup(&environment).await;
-	let app = common::application(f.clone()).await;
-	let responses = Arc::new(Mutex::new(VecDeque::from([
-		json!({"choices":[{"finish_reason":"stop","message":{"content":"Complete"}}],"usage":{"prompt_tokens":30,"completion_tokens":5}}),
-	])));
-	let hits = Arc::new(AtomicUsize::new(0));
-	let model_gate = Arc::new(ModelGate::default());
-	let gate = model_gate.clone();
-	let effect_gate = Arc::new(ModelGate::default());
-	let dispatch_gate = effect_gate.clone();
-	let effect_hits = Arc::new(AtomicUsize::new(0));
-	let effects = effect_hits.clone();
-	let effect_reply_invalid = Arc::new(AtomicBool::new(false));
-	let corrupt_reply = effect_reply_invalid.clone();
-	let queue = responses.clone();
-	let count = hits.clone();
-	let mock = axum::Router::new()
-		.route(
-			"/v1/chat/completions",
-			axum::routing::post(move || {
-				let queue = queue.clone();
-				let count = count.clone();
-				let gate = gate.clone();
-				async move {
-					count.fetch_add(1, Ordering::SeqCst);
-					let mut queue = queue.lock().await;
-					let result = if queue.len() > 1 {
-						queue.pop_front().unwrap()
-					} else {
-						queue.front().unwrap().clone()
-					};
-					drop(queue);
-					if gate.paused.load(Ordering::SeqCst) {
-						gate.arrived.notify_one();
-						gate.release.notified().await;
-					}
-					axum::Json(result)
-				}
-			}),
+fn workbench(
+	#[future]
+	#[from(common::native_application)]
+	application_fixture: common::ApplicationFixture,
+	#[future] provider: WorkbenchProvider,
+) -> impl std::future::Future<Output = Workbench> {
+	// Heap-own the composed setup future to keep libtest stack use bounded.
+	Box::pin(async move {
+		let application_fixture = application_fixture.await;
+		let provider = provider.await;
+		let (f, url, schema) = application_fixture.runtime.parts();
+		let app = application_fixture.application.clone();
+		let responses = provider.state.responses;
+		let hits = provider.state.hits;
+		let model_gate = provider.state.model_gate;
+		let effect_gate = provider.state.effect_gate;
+		let effect_hits = provider.state.effect_hits;
+		let effect_reply_invalid = provider.state.effect_reply_invalid;
+		let server = provider.server;
+		let endpoint = server.url.clone();
+		for (id, kind, config) in [
+			(
+				"fixture-model",
+				"model",
+				json!({"provider":"openrouter","model_id":"fixture","endpoint":format!("{endpoint}/v1"),"credential_env":null,"context_window":32768,"max_output_tokens":2048,"modalities":["text"],"cost":{}}),
+			),
+			(
+				"fixture-tool",
+				"tool",
+				json!({"registry_node":f.config.node_id,"provider":"integration.http@1","operation":"invoke","default_alias":"plugin_0","tier":"integration","narrow":{},"transport":{"transport":"http","endpoint":format!("{endpoint}/effect"),"credential_env":null,"replay":"read_only"}}),
+			),
+		] {
+			assert_eq!(request(&app, &f.config.api_token, "POST", "/api/registry", json!({"id":id,"version":"1.0.0","kind":kind,"name":{"en":id},"description":{"en":"Fixture"},"config":config})).await.0, 200);
+		}
+		assert_eq!(request(&app, &f.config.api_token, "POST", "/api/authorization/acme", json!({"expected_revision":0,"bundle":{"tenant":"acme","subjects":{"alice":{"kind":"user"},"bob":{"kind":"user"}},"policies":[{"id":"fixture","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}}]}})).await.0, 200);
+		let (status, credential) = request(
+			&app,
+			&f.config.api_token,
+			"POST",
+			"/api/authorization/acme/credentials",
+			json!({"subject":"alice"}),
 		)
-		.route(
-			"/test-effect",
-			axum::routing::post(move || {
-				let effects = effects.clone();
-				let corrupt_reply = corrupt_reply.clone();
-				let gate = dispatch_gate.clone();
-				async move {
-					effects.fetch_add(1, Ordering::SeqCst);
-					if gate.paused.load(Ordering::SeqCst) {
-						gate.arrived.notify_one();
-						gate.release.notified().await;
-					}
-					if corrupt_reply.load(Ordering::SeqCst) {
-						"{".into_response()
-					} else {
-						axum::Json(json!({"ok":true})).into_response()
-					}
-				}
-			}),
-		);
-	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-	let endpoint = format!("http://{}", listener.local_addr().unwrap());
-	let server = tokio::spawn(async move {
-		axum::serve(listener, mock).await.unwrap();
-	});
-	for (id, kind, config) in [
-		(
-			"fixture-model",
-			"model",
-			json!({"provider":"openrouter","model_id":"fixture","endpoint":format!("{endpoint}/v1"),"credential_env":null,"context_window":32768,"max_output_tokens":2048,"modalities":["text"],"cost":{}}),
-		),
-		(
-			"fixture-tool",
-			"tool",
-			json!({"registry_node":f.config.node_id,"provider":"integration.http@1","operation":"invoke","default_alias":"plugin_0","tier":"integration","narrow":{},"transport":{"transport":"http","endpoint":format!("{endpoint}/effect"),"credential_env":null,"replay":"read_only"}}),
-		),
-	] {
-		assert_eq!(request(&app, &f.config.api_token, "POST", "/api/registry", json!({"id":id,"version":"1.0.0","kind":kind,"name":{"en":id},"description":{"en":"Fixture"},"config":config})).await.0, 200);
-	}
-	assert_eq!(request(&app, &f.config.api_token, "POST", "/api/authorization/acme", json!({"expected_revision":0,"bundle":{"tenant":"acme","subjects":{"alice":{"kind":"user"},"bob":{"kind":"user"}},"policies":[{"id":"fixture","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}}]}})).await.0, 200);
-	let (status, credential) = request(
-		&app,
-		&f.config.api_token,
-		"POST",
-		"/api/authorization/acme/credentials",
-		json!({"subject":"alice"}),
-	)
-	.await;
-	assert_eq!(status, 200);
-	let token = credential["token"].as_str().unwrap().to_owned();
-	let (status, draft) = request(&app, &token, "POST", "/api/workbench/drafts", json!({"entry":{"id":"","version":"1.0.0","kind":"agent","name":{"en":"Regression fixture"},"description":{"en":"Fixture"},"config":{"model":{"id":"fixture-model","version":"1.0.0"},"instructions":"Summarize","schema_version":1,"bindings":[{"kind":"tool","target":{"registry_node":f.config.node_id,"id":"fixture-tool","version":"1.0.0"},"alias":"plugin_0","narrow":{}}],"remove_default":["memory_mutate","memory_recall","memory_reflect"],"cluster":null,"max_steps":8}}})).await;
-	assert_eq!(status, 200, "draft: {draft}");
-	Workbench {
-		_environment: environment,
-		f,
-		app,
-		url,
-		schema,
-		token,
-		draft,
-		responses,
-		hits,
-		server,
-		endpoint,
-		model_gate,
-		effect_gate,
-		effect_hits,
-		effect_reply_invalid,
-	}
+		.await;
+		assert_eq!(status, 200);
+		let token = credential["token"].as_str().unwrap().to_owned();
+		let (status, draft) = request(&app, &token, "POST", "/api/workbench/drafts", json!({"entry":{"id":"","version":"1.0.0","kind":"agent","name":{"en":"Regression fixture"},"description":{"en":"Fixture"},"config":{"model":{"id":"fixture-model","version":"1.0.0"},"instructions":"Summarize","schema_version":1,"bindings":[{"kind":"tool","target":{"registry_node":f.config.node_id,"id":"fixture-tool","version":"1.0.0"},"alias":"plugin_0","narrow":{}}],"remove_default":["memory_mutate","memory_recall","memory_reflect"],"cluster":null,"max_steps":8}}})).await;
+		assert_eq!(status, 200, "draft: {draft}");
+		Workbench {
+			_fixture: application_fixture,
+			f,
+			app,
+			url,
+			schema,
+			token,
+			draft,
+			responses,
+			hits,
+			server,
+			endpoint,
+			model_gate,
+			effect_gate,
+			effect_hits,
+			effect_reply_invalid,
+		}
+	})
 }
 
 #[rstest::fixture]
-async fn crowded_workbench() -> Workbench {
-	let wb = workbench().await;
+async fn crowded_workbench(#[future(awt)] workbench: Workbench) -> Workbench {
+	let wb = workbench;
 	// An older shared draft must also survive the invisible newer batch.
 	let (status, shared) = request(&wb.app, &wb.f.config.api_token, "POST", "/api/workbench/drafts", json!({"tenant":"acme","owner":"bob","entry":{
 		"id":"","version":"1.0.0","kind":"agent","name":{"en":"Shared fixture"},"description":{"en":"Fixture"},"config":wb.draft["entry"]["config"]
@@ -484,8 +441,8 @@ async fn expired_real_tests_keep_profile_and_continuation_metadata_in_trust(
 }
 
 #[rstest::fixture]
-async fn expired_incidents() -> Workbench {
-	let wb = workbench().await;
+async fn expired_incidents(#[future(awt)] workbench: Workbench) -> Workbench {
+	let wb = workbench;
 	wb.register().await;
 	let path = format!(
 		"/api/workbench/versions/{}/1.0.0/incidents",
@@ -637,8 +594,10 @@ async fn registry_reload_preserves_registered_and_packaged_behavior_flags(
 }
 
 #[rstest::fixture]
-async fn revoked_workbench() -> (Workbench, common::TestApplication) {
-	let wb = workbench().await;
+async fn revoked_workbench(
+	#[future(awt)] workbench: Workbench,
+) -> (Workbench, common::TestApplication) {
+	let wb = workbench;
 	let authorization = aidash_server::authorization::Authorization {
 		pool: wb.f.store.pool.clone(),
 	};
@@ -648,6 +607,7 @@ async fn revoked_workbench() -> (Workbench, common::TestApplication) {
 		.revoke_credential("acme", credential.id)
 		.await
 		.unwrap();
+	// Act: capture this scenario actor after the domain authority mutation.
 	let app = captured_actor_application(&wb.f, actor).await;
 	(wb, app)
 }
@@ -675,8 +635,8 @@ async fn draft_mutation_rechecks_the_authenticated_credential_before_commit(
 }
 
 #[rstest::fixture]
-async fn clustered_workbench() -> Workbench {
-	let mut wb = workbench().await;
+async fn clustered_workbench(#[future(awt)] workbench: Workbench) -> Workbench {
+	let mut wb = workbench;
 	wb.register().await;
 	let (status, cluster) = request(&wb.app, &wb.f.config.api_token, "POST", "/api/registry", json!({"id":"fixture-cluster","version":"1.0.0","kind":"cluster","name":{"en":"Fixture cluster"},"description":{"en":"Fixture"},"config":{"coordinator":{"id":wb.draft["entry"]["id"],"version":"1.0.0"}}})).await;
 	assert_eq!(status, 200, "cluster: {cluster}");
@@ -758,8 +718,11 @@ async fn trust_reports_the_configured_cluster_and_its_execution_dependencies(
 }
 
 #[rstest::fixture]
-async fn hidden_incident_backlog(#[default(false)] other_tenant: bool) -> (Workbench, Value) {
-	let wb = workbench().await;
+async fn hidden_incident_backlog(
+	#[default(false)] other_tenant: bool,
+	#[future(awt)] workbench: Workbench,
+) -> (Workbench, Value) {
+	let wb = workbench;
 	wb.register().await;
 	let path = format!(
 		"/api/workbench/versions/{}/1.0.0/incidents",
@@ -814,45 +777,52 @@ async fn incident_list_reaches_older_authorized_rows(
 }
 
 #[rstest::fixture]
-async fn model_waiting_for_real_tool(#[default(false)] shared: bool) -> (Workbench, Value) {
-	let wb = workbench().await;
-	*wb.responses.lock().await = VecDeque::from([
-		json!({"choices":[{"finish_reason":"tool_calls","message":{"content":"","tool_calls":[{"id":"real-call","function":{"name":"plugin_0","arguments":"{\"action\":\"read\",\"resource\":\"sandbox\"}"}}]}}],"usage":{"prompt_tokens":30,"completion_tokens":5}}),
-	]);
-	assert_eq!(request(&wb.app, &wb.f.config.api_token, "PUT", "/api/workbench/test-profiles/acme/sandbox", json!({"expected_revision":0,"enabled":true,"rules":[{"tool":{"id":"fixture-tool","version":"1.0.0"},"endpoint":format!("{}/test-effect",wb.endpoint),"credential_env":null,"read_only_verified":true,"allowed_actions":["read"],"allowed_resources":["sandbox"]}]})).await.0, 200);
-	let token = if shared {
-		wb.call(
-			"POST",
-			&format!("{}/shares", wb.path()),
-			json!({"subject":"bob","can_edit":true,"enabled":true,"include_documents":false}),
-		)
-		.await;
-		let (_, credential) = request(
+fn model_waiting_for_real_tool(
+	#[default(false)] shared: bool,
+	#[future] workbench: Workbench,
+) -> impl std::future::Future<Output = (Workbench, Value)> {
+	// Heap-own the composed setup future to keep libtest stack use bounded.
+	Box::pin(async move {
+		let workbench = workbench.await;
+		let wb = workbench;
+		*wb.responses.lock().await = VecDeque::from([
+			json!({"choices":[{"finish_reason":"tool_calls","message":{"content":"","tool_calls":[{"id":"real-call","function":{"name":"plugin_0","arguments":"{\"action\":\"read\",\"resource\":\"sandbox\"}"}}]}}],"usage":{"prompt_tokens":30,"completion_tokens":5}}),
+		]);
+		assert_eq!(request(&wb.app, &wb.f.config.api_token, "PUT", "/api/workbench/test-profiles/acme/sandbox", json!({"expected_revision":0,"enabled":true,"rules":[{"tool":{"id":"fixture-tool","version":"1.0.0"},"endpoint":format!("{}/test-effect",wb.endpoint),"credential_env":null,"read_only_verified":true,"allowed_actions":["read"],"allowed_resources":["sandbox"]}]})).await.0, 200);
+		let token = if shared {
+			wb.call(
+				"POST",
+				&format!("{}/shares", wb.path()),
+				json!({"subject":"bob","can_edit":true,"enabled":true,"include_documents":false}),
+			)
+			.await;
+			let (_, credential) = request(
+				&wb.app,
+				&wb.f.config.api_token,
+				"POST",
+				"/api/authorization/acme/credentials",
+				json!({"subject":"bob"}),
+			)
+			.await;
+			credential["token"].as_str().unwrap().to_owned()
+		} else {
+			wb.token.clone()
+		};
+		wb.model_gate.paused.store(true, Ordering::SeqCst);
+		let (status, session) = request(
 			&wb.app,
-			&wb.f.config.api_token,
+			&token,
 			"POST",
-			"/api/authorization/acme/credentials",
-			json!({"subject":"bob"}),
+			&format!("{}/tests", wb.path()),
+			json!({"expected_revision":1,"message":"Use the tool","mode":"real","profile_id":"sandbox"}),
 		)
 		.await;
-		credential["token"].as_str().unwrap().to_owned()
-	} else {
-		wb.token.clone()
-	};
-	wb.model_gate.paused.store(true, Ordering::SeqCst);
-	let (status, session) = request(
-		&wb.app,
-		&token,
-		"POST",
-		&format!("{}/tests", wb.path()),
-		json!({"expected_revision":1,"message":"Use the tool","mode":"real","profile_id":"sandbox"}),
-	)
-	.await;
-	assert_eq!(status, 200, "session: {session}");
-	tokio::time::timeout(Duration::from_secs(5), wb.model_gate.arrived.notified())
-		.await
-		.expect("model fixture must reach the in-flight boundary");
-	(wb, session)
+		assert_eq!(status, 200, "session: {session}");
+		tokio::time::timeout(Duration::from_secs(5), wb.model_gate.arrived.notified())
+			.await
+			.expect("model fixture must reach the in-flight boundary");
+		(wb, session)
+	})
 }
 
 #[rstest::rstest]
@@ -904,8 +874,8 @@ async fn an_unreadable_response_after_dispatch_preserves_the_unknown_external_ou
 }
 
 #[rstest::fixture]
-async fn production_endpoint_workbench() -> Workbench {
-	let wb = workbench().await;
+async fn production_endpoint_workbench(#[future(awt)] workbench: Workbench) -> Workbench {
+	let wb = workbench;
 	assert_eq!(request(&wb.app, &wb.f.config.api_token, "POST", "/api/registry", json!({"id":"production-tool","version":"1.0.0","kind":"tool","name":{"en":"Production"},"description":{"en":"Fixture"},"config":{"registry_node":wb.f.config.node_id,"provider":"integration.http@1","operation":"invoke","default_alias":"plugin_0","tier":"integration","narrow":{},"transport":{"transport":"http","endpoint":"https://example.com/api","credential_env":null,"replay":"read_only"}}})).await.0, 200);
 	wb
 }
@@ -928,8 +898,8 @@ async fn real_test_profiles_require_a_distinct_canonical_destination(
 }
 
 #[rstest::fixture]
-async fn one_step_workbench() -> Workbench {
-	let mut wb = workbench().await;
+async fn one_step_workbench(#[future(awt)] workbench: Workbench) -> Workbench {
+	let mut wb = workbench;
 	let mut entry = wb.draft["entry"].clone();
 	entry["config"]["max_steps"] = json!(1);
 	wb.draft = wb
@@ -967,8 +937,8 @@ async fn behavioral_evidence_cannot_exceed_the_draft_agents_step_limit(
 }
 
 #[rstest::fixture]
-async fn incident_event_backlog() -> (Workbench, Value) {
-	let wb = workbench().await;
+async fn incident_event_backlog(#[future(awt)] workbench: Workbench) -> (Workbench, Value) {
+	let wb = workbench;
 	wb.register().await;
 	let incident = wb
 		.call(
@@ -1031,8 +1001,11 @@ async fn incident_history_keeps_the_latest_events_in_display_order(
 }
 
 #[rstest::fixture]
-async fn trust_run_backlog(#[default("workspace.read")] denied_action: &str) -> (Workbench, Value) {
-	let wb = workbench().await;
+async fn trust_run_backlog(
+	#[default("workspace.read")] denied_action: &str,
+	#[future(awt)] workbench: Workbench,
+) -> (Workbench, Value) {
+	let wb = workbench;
 	wb.register().await;
 	let visible =
 		wb.f.store
@@ -1167,8 +1140,8 @@ async fn trust_inspection_reaches_older_runs_in_authorized_workspaces(
 }
 
 #[rstest::fixture]
-async fn oversized_agent_tool_workbench() -> Workbench {
-	let wb = workbench().await;
+async fn oversized_agent_tool_workbench(#[future(awt)] workbench: Workbench) -> Workbench {
+	let wb = workbench;
 	wb.register().await;
 	assert_eq!(request(&wb.app,&wb.f.config.api_token,"POST","/api/registry",json!({"id":"oversized-agent-tool","version":"1.0.0","kind":"tool","name":{"en":"Delegate"},"description":{"en":"Fixture"},"schema":{"type":"object","description":"A".repeat(180_000)},"config":{"registry_node":wb.f.config.node_id,"provider":"integration.agent@1","operation":"invoke","default_alias":"plugin_0","tier":"integration","narrow":{},"transport":{"transport":"agent","node_id":wb.f.config.node_id,"agent":{"id":wb.draft["entry"]["id"],"version":"1.0.0"}}}})).await.0,200);
 	wb
@@ -1222,8 +1195,10 @@ async fn creator_prompt_validation_charges_only_bound_agent_tools(
 }
 
 #[rstest::fixture]
-async fn revoked_incident_workbench() -> (Workbench, common::TestApplication, Value) {
-	let wb = workbench().await;
+async fn revoked_incident_workbench(
+	#[future(awt)] workbench: Workbench,
+) -> (Workbench, common::TestApplication, Value) {
+	let wb = workbench;
 	wb.register().await;
 	let incident = wb
 		.call(
@@ -1244,6 +1219,7 @@ async fn revoked_incident_workbench() -> (Workbench, common::TestApplication, Va
 		.revoke_credential("acme", credential.id)
 		.await
 		.unwrap();
+	// Act: capture this scenario actor after the domain authority mutation.
 	let app = captured_actor_application(&wb.f, actor).await;
 	(wb, app, incident)
 }
@@ -1289,8 +1265,8 @@ async fn incident_mutations_reject_a_revoked_authenticated_actor(
 }
 
 #[rstest::fixture]
-async fn visible_draft_backlog() -> Workbench {
-	let wb = workbench().await;
+async fn visible_draft_backlog(#[future(awt)] workbench: Workbench) -> Workbench {
+	let wb = workbench;
 	let timestamp: chrono::DateTime<chrono::Utc> =
 		wb.draft["updated_at"].as_str().unwrap().parse().unwrap();
 	let query = Query::insert()
@@ -1403,8 +1379,11 @@ async fn draft_pages_reach_older_visible_rows_without_duplicates(
 }
 
 #[rstest::fixture]
-async fn shared_transfer_workbench(#[default(false)] can_edit: bool) -> (Workbench, String) {
-	let wb = workbench().await;
+async fn shared_transfer_workbench(
+	#[default(false)] can_edit: bool,
+	#[future(awt)] workbench: Workbench,
+) -> (Workbench, String) {
+	let wb = workbench;
 	wb.call(
 		"POST",
 		&format!("{}/shares", wb.path()),
@@ -1557,24 +1536,30 @@ async fn draft_authority_changes_wait_for_a_shared_real_dispatch(
 }
 
 #[rstest::fixture]
-async fn installed_tool_waiting_for_dispatch() -> (Workbench, Value, String) {
-	let (wb, started) = model_waiting_for_real_tool(false).await;
-	let entry = wb.f.registry.get("fixture-tool", "1.0.0").await.unwrap();
-	let package =
+fn installed_tool_waiting_for_dispatch(
+	#[future] model_waiting_for_real_tool: (Workbench, Value),
+) -> impl std::future::Future<Output = (Workbench, Value, String)> {
+	// Heap-own the composed setup future to keep libtest stack use bounded.
+	Box::pin(async move {
+		let model_waiting_for_real_tool = model_waiting_for_real_tool.await;
+		let (wb, started) = model_waiting_for_real_tool;
+		let entry = wb.f.registry.get("fixture-tool", "1.0.0").await.unwrap();
+		let package =
+			wb.f.registry
+				.publish(aidash_server::registry::Package {
+					entity: entry,
+					author: "Fixture".into(),
+					permissions: vec![],
+					dependencies: vec![],
+				})
+				.await
+				.unwrap();
 		wb.f.registry
-			.publish(aidash_server::registry::Package {
-				entity: entry,
-				author: "Fixture".into(),
-				permissions: vec![],
-				dependencies: vec![],
-			})
+			.install("fixture-tool", "1.0.0", &package.digest, json!({}))
 			.await
 			.unwrap();
-	wb.f.registry
-		.install("fixture-tool", "1.0.0", &package.digest, json!({}))
-		.await
-		.unwrap();
-	(wb, started, package.digest)
+		(wb, started, package.digest)
+	})
 }
 
 #[rstest::rstest]
@@ -1619,8 +1604,8 @@ async fn real_dispatch_rejects_effective_tool_isolation_changes(
 }
 
 #[rstest::fixture]
-async fn incident_audit_workbench() -> (Workbench, Value) {
-	let wb = workbench().await;
+async fn incident_audit_workbench(#[future(awt)] workbench: Workbench) -> (Workbench, Value) {
+	let wb = workbench;
 	wb.register().await;
 	let incident = wb
 		.call(
@@ -1705,8 +1690,11 @@ async fn audit_rechecks_incident_visibility_before_returning_event_history(
 }
 
 #[rstest::fixture]
-async fn registered_document_workbench(#[default("replace")] change: &str) -> Workbench {
-	let mut wb = workbench().await;
+async fn registered_document_workbench(
+	#[default("replace")] change: &str,
+	#[future(awt)] workbench: Workbench,
+) -> Workbench {
+	let mut wb = workbench;
 	let documents = if change == "add" {
 		json!([])
 	} else {
@@ -1792,7 +1780,7 @@ async fn captured_actor_application(runtime: &Federation, actor: Actor) -> commo
 			.endpoint(drafts::save)
 			.endpoint(incident::create)
 			.endpoint(incident::update)
-			.with_middleware(CapturedActor(actor))
+			.with_middleware(CapturedActor(actor.clone()))
 	})
 	.await
 }
@@ -1804,3 +1792,114 @@ use reinhardt::query::ExprTrait;
 mod browser_authority;
 
 use reinhardt::query::SimpleExpr;
+
+#[derive(Clone)]
+struct WorkbenchState {
+	responses: Arc<Mutex<VecDeque<Value>>>,
+	hits: Arc<AtomicUsize>,
+	model_gate: Arc<ModelGate>,
+	effect_gate: Arc<ModelGate>,
+	effect_hits: Arc<AtomicUsize>,
+	effect_reply_invalid: Arc<AtomicBool>,
+}
+#[fixture]
+fn workbench_state() -> WorkbenchState {
+	let responses = Arc::new(Mutex::new(VecDeque::from([
+		json!({"choices":[{"finish_reason":"stop","message":{"content":"Complete"}}],"usage":{"prompt_tokens":30,"completion_tokens":5}}),
+	])));
+	let hits = Arc::new(AtomicUsize::new(0));
+	let model_gate = Arc::new(ModelGate::default());
+	let effect_gate = Arc::new(ModelGate::default());
+	let effect_hits = Arc::new(AtomicUsize::new(0));
+	let effect_reply_invalid = Arc::new(AtomicBool::new(false));
+	WorkbenchState {
+		responses,
+		hits,
+		model_gate,
+		effect_gate,
+		effect_hits,
+		effect_reply_invalid,
+	}
+}
+#[fixture]
+fn workbench_router(#[from(workbench_state)] state: WorkbenchState) -> Arc<Router> {
+	let gate = state.model_gate.clone();
+	let dispatch_gate = state.effect_gate.clone();
+	let effects = state.effect_hits.clone();
+	let corrupt_reply = state.effect_reply_invalid.clone();
+	let queue = state.responses.clone();
+	let count = state.hits.clone();
+	Arc::new(
+		reinhardt::test::stub::StubRouter::new()
+			.route(
+				"/v1/chat/completions",
+				http::Method::POST,
+				reply(move |_request: reinhardt::Request| {
+					let queue = queue.clone();
+					let count = count.clone();
+					let gate = gate.clone();
+					async move {
+						count.fetch_add(1, Ordering::SeqCst);
+						let mut queue = queue.lock().await;
+						let result = if queue.len() > 1 {
+							queue.pop_front().unwrap()
+						} else {
+							queue.front().unwrap().clone()
+						};
+						drop(queue);
+						if gate.paused.load(Ordering::SeqCst) {
+							gate.arrived.notify_one();
+							gate.release.notified().await;
+						}
+						reinhardt::Response::ok().with_json(&result).unwrap()
+					}
+				}),
+			)
+			.route(
+				"/test-effect",
+				http::Method::POST,
+				reply(move |_request: reinhardt::Request| {
+					let effects = effects.clone();
+					let corrupt_reply = corrupt_reply.clone();
+					let gate = dispatch_gate.clone();
+					async move {
+						effects.fetch_add(1, Ordering::SeqCst);
+						if gate.paused.load(Ordering::SeqCst) {
+							gate.arrived.notify_one();
+							gate.release.notified().await;
+						}
+						if corrupt_reply.load(Ordering::SeqCst) {
+							reinhardt::Response::ok()
+								.with_body("{")
+								.with_header("Content-Type", "text/plain; charset=utf-8")
+						} else {
+							reinhardt::Response::ok()
+								.with_json(&json!({"ok":true}))
+								.unwrap()
+						}
+					}
+				}),
+			)
+			.into_server_router(),
+	)
+}
+struct WorkbenchProvider {
+	state: WorkbenchState,
+	server: reinhardt::test::fixtures::server::TestServerGuard,
+}
+#[fixture]
+async fn provider(
+	workbench_state: WorkbenchState,
+	#[from(workbench_router)]
+	#[with(workbench_state.clone())]
+	_router: Arc<Router>,
+	#[future(awt)]
+	#[from(upstream::upstream)]
+	#[with(_router.clone())]
+	server: reinhardt::test::fixtures::server::TestServerGuard,
+) -> WorkbenchProvider {
+	WorkbenchProvider {
+		state: workbench_state,
+		server,
+	}
+}

@@ -2,7 +2,10 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use futures_util::Stream;
 use reinhardt::http::{Handler, ViewResult};
-use reinhardt::test::fixtures::server::{TestServerGuard, test_server_guard};
+use reinhardt::test::fixtures::http_client;
+use reinhardt::test::fixtures::server::TestServerGuard;
+#[path = "support/upstream.rs"]
+mod upstream_fixtures;
 use reinhardt::{Request, Response, ServerRouter};
 use rstest::{fixture, rstest};
 use std::{
@@ -15,6 +18,7 @@ use std::{
 	time::Duration,
 };
 use tokio::sync::mpsc;
+use upstream_fixtures::upstream;
 
 type Chunk = Result<Bytes, Box<dyn std::error::Error + Send + Sync>>;
 
@@ -51,19 +55,57 @@ struct StreamingFixture {
 	server: TestServerGuard,
 }
 
+#[derive(Clone)]
+struct StreamChannel {
+	sender: mpsc::Sender<Chunk>,
+	receiver: Arc<Mutex<Option<mpsc::Receiver<Chunk>>>>,
+}
+
 #[fixture]
-async fn streaming_server() -> StreamingFixture {
+fn stream_channel() -> StreamChannel {
 	let (sender, receiver) = mpsc::channel(1);
-	let dropped = Arc::new(AtomicBool::new(false));
-	let handler = StreamingHandler(Mutex::new(Some(PendingStream {
-		receiver,
-		dropped: dropped.clone(),
-	})));
-	let server = test_server_guard(ServerRouter::new().handler("/", handler)).await;
-	StreamingFixture {
+	StreamChannel {
 		sender,
-		dropped,
-		server,
+		receiver: Arc::new(Mutex::new(Some(receiver))),
+	}
+}
+
+#[fixture]
+fn producer_dropped() -> Arc<AtomicBool> {
+	Arc::new(AtomicBool::new(false))
+}
+
+#[fixture]
+fn streaming_router(
+	stream_channel: StreamChannel,
+	producer_dropped: Arc<AtomicBool>,
+) -> Arc<ServerRouter> {
+	let handler = StreamingHandler(Mutex::new(Some(PendingStream {
+		receiver: stream_channel.receiver.lock().unwrap().take().unwrap(),
+		dropped: producer_dropped,
+	})));
+	Arc::new(ServerRouter::new().handler("/", handler))
+}
+
+#[fixture]
+fn streaming_server(
+	stream_channel: StreamChannel,
+	producer_dropped: Arc<AtomicBool>,
+	#[from(streaming_router)]
+	#[with(stream_channel.clone(), producer_dropped.clone())]
+	_router: Arc<ServerRouter>,
+	#[future]
+	#[from(upstream)]
+	#[with(_router.clone())]
+	server: TestServerGuard,
+) -> impl std::future::Future<Output = StreamingFixture> {
+	let server = Box::pin(server);
+	async move {
+		StreamingFixture {
+			sender: stream_channel.sender,
+			dropped: producer_dropped,
+			server: server.await,
+		}
 	}
 }
 
@@ -71,6 +113,7 @@ async fn streaming_server() -> StreamingFixture {
 #[tokio::test]
 async fn native_transport_flushes_pending_stream_and_drops_producer_on_disconnect(
 	#[future] streaming_server: StreamingFixture,
+	http_client: reqwest::Client,
 ) {
 	// Arrange
 	let app = streaming_server.await;
@@ -78,7 +121,7 @@ async fn native_transport_flushes_pending_stream_and_drops_producer_on_disconnec
 		.send(Ok(Bytes::from_static(b"data: first\n\n")))
 		.await
 		.unwrap();
-	let client = reqwest::Client::new();
+	let client = http_client;
 	// Act
 	let mut response = client.get(&app.server.url).send().await.unwrap();
 	let first = tokio::time::timeout(Duration::from_secs(3), response.chunk())
@@ -104,14 +147,17 @@ async fn native_transport_flushes_pending_stream_and_drops_producer_on_disconnec
 
 #[rstest]
 #[tokio::test]
-async fn native_transport_propagates_stream_errors(#[future] streaming_server: StreamingFixture) {
+async fn native_transport_propagates_stream_errors(
+	#[future] streaming_server: StreamingFixture,
+	http_client: reqwest::Client,
+) {
 	// Arrange
 	let app = streaming_server.await;
 	app.sender
 		.send(Ok(Bytes::from_static(b"data: first\n\n")))
 		.await
 		.unwrap();
-	let client = reqwest::Client::new();
+	let client = http_client;
 	let mut response = client.get(&app.server.url).send().await.unwrap();
 	assert_eq!(response.chunk().await.unwrap().unwrap(), "data: first\n\n");
 	// Act
@@ -132,6 +178,7 @@ async fn native_transport_propagates_stream_errors(#[future] streaming_server: S
 #[tokio::test]
 async fn dropping_server_guard_releases_an_open_stream(
 	#[future] streaming_server: StreamingFixture,
+	http_client: reqwest::Client,
 ) {
 	// Arrange
 	let app = streaming_server.await;
@@ -139,7 +186,7 @@ async fn dropping_server_guard_releases_an_open_stream(
 		.send(Ok(Bytes::from_static(b"data: first\n\n")))
 		.await
 		.unwrap();
-	let client = reqwest::Client::new();
+	let client = http_client;
 	let mut response = client.get(&app.server.url).send().await.unwrap();
 	assert_eq!(response.chunk().await.unwrap().unwrap(), "data: first\n\n");
 	// Act: retain the client connection while dropping only the server guard.

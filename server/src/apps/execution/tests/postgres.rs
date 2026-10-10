@@ -1,6 +1,10 @@
+use common::upstream_fixtures;
 use http::Method;
+use reinhardt::ServerRouter as Router;
 use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
 use reinhardt::test::fixtures::http_client;
+use reinhardt::test::fixtures::server::TestServerGuard;
+use upstream_fixtures::{reply, upstream};
 #[path = "support/legacy.rs"]
 mod common;
 use aidash_server::{
@@ -15,21 +19,53 @@ use http::StatusCode;
 use serde_json::json;
 use sqlx::ConnectOptions;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use uuid::Uuid;
 
-async fn setup(environment: &TestEnvironment) -> (Store, String, String) {
-	setup_node(environment, "aidash://test").await
+use futures_util::{
+	FutureExt,
+	future::{BoxFuture, Shared},
+};
+use rstest::fixture;
+
+type StoreFuture = Shared<BoxFuture<'static, StoreFixture>>;
+#[derive(Clone)]
+struct StoreFixture {
+	store: Store,
+	runtime: common::RuntimeFixture,
 }
-async fn setup_node(environment: &TestEnvironment, node: &str) -> (Store, String, String) {
-	let (mut runtime, url, schema) = common::setup(environment).await;
-	runtime.store.node_id = node.into();
-	Registry::new(runtime.store.pool.clone(), node)
-		.unwrap()
-		.seed_system()
-		.await
-		.unwrap();
-	(runtime.store, url, schema)
+impl StoreFixture {
+	fn parts(&self) -> (Store, String, String) {
+		(
+			self.store.clone(),
+			self.runtime.url.clone(),
+			self.runtime.schema.clone(),
+		)
+	}
 }
+#[fixture]
+fn store(
+	#[default("aidash://test")] node_id: &str,
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) -> StoreFuture {
+	let node_id = node_id.to_owned();
+	async move {
+		let mut runtime = runtime.await;
+		runtime.federation.store.node_id = node_id.clone();
+		Registry::new(runtime.federation.store.pool.clone(), &node_id)
+			.unwrap()
+			.seed_system()
+			.await
+			.unwrap();
+		StoreFixture {
+			store: runtime.federation.store.clone(),
+			runtime,
+		}
+	}
+	.boxed()
+	.shared()
+}
+
 async fn cleanup(store: Store, url: &str, schema: &str) {
 	store.control_pool.close().await;
 	store.pool.close().await;
@@ -57,10 +93,10 @@ fn new_task() -> NewTask {
 #[tokio::test]
 async fn concurrent_claims_dependencies_and_idempotent_completion(
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(store)]
+	_store_fixture: StoreFixture,
 ) {
-	let (store, url, schema) = setup(&_test_environment).await;
+	let (store, url, schema) = _store_fixture.parts();
 	let registry = Registry::new(store.pool.clone(), &store.node_id).unwrap();
 	let agent = seed(&registry).await;
 	let w = store
@@ -172,12 +208,12 @@ async fn concurrent_claims_dependencies_and_idempotent_completion(
 #[tokio::test]
 async fn ordered_run_creation_requires_a_cache_salt_key_and_a_tenant(
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(store)]
+	_store_fixture: StoreFixture,
 ) {
 	// Arrange: a model that declares Ordered and an Agent that names it, on a
 	// node without Cache Salt Keys.
-	let (store, url, schema) = setup(&_test_environment).await;
+	let (store, url, schema) = _store_fixture.parts();
 	let registry = Registry::new(store.pool.clone(), &store.node_id).unwrap();
 	registry.register(entry("model","model",json!({"provider":"openrouter","model_id":"fixture","endpoint":"http://127.0.0.1:9999/v1","credential_env":null,"context_window":128000,"max_output_tokens":4096,"modalities":["text"],"cost":{},"projection_versions":["legacy","ordered"]}))).await.unwrap();
 	let agent = registry.register(entry("agent","research",json!({"model":{"id":"model","version":"1.0.0"},"instructions":"Research","schema_version":1,"bindings":[],"remove_default":[],"projection_version":"ordered"}))).await.unwrap();
@@ -231,10 +267,10 @@ async fn ordered_run_creation_requires_a_cache_salt_key_and_a_tenant(
 #[tokio::test]
 async fn lease_fencing_and_uncertain_effect_reconciliation(
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(store)]
+	_store_fixture: StoreFixture,
 ) {
-	let (store, url, schema) = setup(&_test_environment).await;
+	let (store, url, schema) = _store_fixture.parts();
 	let registry = Registry::new(store.pool.clone(), &store.node_id).unwrap();
 	let agent = seed(&registry).await;
 	let w = store
@@ -402,11 +438,17 @@ async fn lease_fencing_and_uncertain_effect_reconciliation(
 #[rstest::rstest]
 #[tokio::test]
 async fn registry_installation_versions_and_authenticated_api(
+	#[from(store)] _store_fixture: StoreFuture,
+	#[from(authenticated_runtime)]
+	#[with(_store_fixture.clone())]
+	_api_runtime: common::RuntimeFuture,
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	#[with(aidash_server::http::Settings::default(), aidash_server::sse::Service::new(aidash_server::sse::Settings::default()), Arc::new(|router| router), _api_runtime.clone())]
+	_application: common::ApplicationFixture,
+	http_client: reqwest::Client,
 ) {
-	let (store, url, schema) = setup(&_test_environment).await;
+	let (store, url, schema) = _store_fixture.clone().await.parts();
 	let registry = Registry::new(store.pool.clone(), &store.node_id).unwrap();
 	seed(&registry).await;
 	let skill = entry(
@@ -460,42 +502,23 @@ async fn registry_installation_versions_and_authenticated_api(
 		.await
 		.unwrap();
 	assert_eq!(matches.len(), 1);
-	let config = Config {
-		node_id: store.node_id.clone(),
-		endpoint: "http://127.0.0.1:18080".into(),
-		database_url: url.clone(),
-		nats_url: "nats://127.0.0.1:42270".into(),
-		api_token: "test-access-token".into(),
-		web_dir: "web/dist".into(),
-		lease_seconds: 30,
-		default_host_packages: vec![],
-		oidc: None,
-		gcip: None,
-	};
-	let f = Federation {
-		sandbox: Default::default(),
-		gcip: None,
-		store: store.clone(),
-		registry,
-		config,
-		client: reqwest::Client::new(),
-		notify: Arc::new(tokio::sync::Notify::new()),
-	};
-	let router = common::application(f).await;
-	let unauth = http_client()
+	let _f = _api_runtime.await.federation;
+
+	let router = _application.application.clone();
+	let unauth = http_client
 		.request(Method::GET, router.url("/api/state"))
 		.send()
 		.await
 		.unwrap();
 	assert_eq!(unauth.status(), StatusCode::UNAUTHORIZED);
-	let auth = http_client()
+	let auth = http_client
 		.request(Method::GET, router.url("/api/state"))
 		.header("Authorization", "Bearer test-access-token")
 		.send()
 		.await
 		.unwrap();
 	assert_eq!(auth.status(), StatusCode::OK);
-	let peer = http_client()
+	let peer = http_client
 		.request(Method::POST, router.url("/federation/v0.1/discover"))
 		.header("x-aidash-node", "aidash://intruder")
 		.header("x-aidash-protocol", "0.2")
@@ -511,11 +534,17 @@ async fn registry_installation_versions_and_authenticated_api(
 #[rstest::rstest]
 #[tokio::test]
 async fn human_requests_controls_and_cancellation_before_dependencies_finish(
+	#[from(store)] _store_fixture: StoreFuture,
+	#[from(authenticated_runtime)]
+	#[with(_store_fixture.clone())]
+	_api_runtime: common::RuntimeFuture,
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	#[with(aidash_server::http::Settings::default(), aidash_server::sse::Service::new(aidash_server::sse::Settings::default()), Arc::new(|router| router), _api_runtime.clone())]
+	_application: common::ApplicationFixture,
+	http_client: reqwest::Client,
 ) {
-	let (store, url, schema) = setup(&_test_environment).await;
+	let (store, url, schema) = _store_fixture.clone().await.parts();
 	let registry = Registry::new(store.pool.clone(), &store.node_id).unwrap();
 	let agent = seed(&registry).await;
 	let workspace = store
@@ -536,27 +565,7 @@ async fn human_requests_controls_and_cancellation_before_dependencies_finish(
 		.accept_run(&task, &store.node_id, &agent.id, &agent.version)
 		.await
 		.unwrap();
-	let config = Config {
-		node_id: store.node_id.clone(),
-		endpoint: "http://127.0.0.1:18080".into(),
-		database_url: url.clone(),
-		nats_url: "nats://127.0.0.1:42270".into(),
-		api_token: "test-access-token".into(),
-		web_dir: "web/dist".into(),
-		lease_seconds: 30,
-		default_host_packages: vec![],
-		oidc: None,
-		gcip: None,
-	};
-	let federation = Federation {
-		sandbox: Default::default(),
-		gcip: None,
-		store: store.clone(),
-		registry,
-		config,
-		client: reqwest::Client::new(),
-		notify: Arc::new(tokio::sync::Notify::new()),
-	};
+	let federation = _api_runtime.await.federation;
 	let harness = aidash_server::harness::Harness {
 		federation: federation.clone(),
 	};
@@ -625,8 +634,8 @@ async fn human_requests_controls_and_cancellation_before_dependencies_finish(
 		);
 		assert!(store.answer(request.id, json!(true)).await.is_err());
 	}
-	let router = common::application(federation).await;
-	let response = http_client()
+	let router = _application.application.clone();
+	let response = http_client
 		.request(
 			Method::POST,
 			router.url(format!("/api/runs/{}/message", run.id)),
@@ -666,31 +675,50 @@ async fn human_requests_controls_and_cancellation_before_dependencies_finish(
 	cleanup(store, &url, &schema).await;
 }
 
-fn federation_for(store: &Store) -> Federation {
-	Federation {
-		sandbox: Default::default(),
-		gcip: None,
-		store: store.clone(),
-		registry: Registry::new(store.pool.clone(), &store.node_id).unwrap(),
-		config: Config {
-			node_id: store.node_id.clone(),
-			endpoint: "http://127.0.0.1:18080".into(),
-			database_url: store.pool.connect_options().to_url_lossy().to_string(),
-			nats_url: "nats://127.0.0.1:1".into(),
-			api_token: "test-access-token".into(),
-			web_dir: "web/dist".into(),
-			lease_seconds: 30,
-			default_host_packages: vec![],
-			oidc: None,
-			gcip: None,
-		},
-		client: reqwest::Client::builder()
-			.timeout(std::time::Duration::from_secs(2))
-			.build()
-			.unwrap(),
-		notify: Arc::new(tokio::sync::Notify::new()),
-	}
+#[fixture]
+fn peer_client() -> reqwest::Client {
+	// Outage/retry tests intentionally bound a failed peer request to two seconds.
+	reqwest::Client::builder()
+		.timeout(std::time::Duration::from_secs(2))
+		.build()
+		.unwrap()
 }
+#[fixture]
+fn federation(
+	#[from(store)] store_fixture: StoreFuture,
+	peer_client: reqwest::Client,
+) -> common::RuntimeFuture {
+	async move {
+		let store_fixture = store_fixture.await;
+		let store = &store_fixture.store;
+		let federation = Federation {
+			sandbox: Default::default(),
+			gcip: None,
+			store: store.clone(),
+			registry: Registry::new(store.pool.clone(), &store.node_id).unwrap(),
+			config: Config {
+				node_id: store.node_id.clone(),
+				endpoint: "http://127.0.0.1:18080".into(),
+				database_url: store.pool.connect_options().to_url_lossy().to_string(),
+				nats_url: "nats://127.0.0.1:1".into(),
+				api_token: "test-access-token".into(),
+				web_dir: "web/dist".into(),
+				lease_seconds: 30,
+				default_host_packages: vec![],
+				oidc: None,
+				gcip: None,
+			},
+			client: peer_client,
+			notify: Arc::new(tokio::sync::Notify::new()),
+		};
+		let mut runtime = store_fixture.runtime;
+		runtime.federation = federation;
+		runtime
+	}
+	.boxed()
+	.shared()
+}
+
 async fn running_task(store: &Store, agent: &Entry, workspace: Uuid, parent: Option<Uuid>) -> Task {
 	let mut input = new_task();
 	input.parent_id = parent;
@@ -750,12 +778,18 @@ async fn final_response(store: &Store, task: Uuid) {
 #[rstest::rstest]
 #[tokio::test]
 async fn parent_can_finish_after_explicit_child_abandonment(
+	#[from(store)] _store_fixture: StoreFuture,
+	#[from(federation)]
+	#[with(_store_fixture.clone())]
+	_federation: common::RuntimeFuture,
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	#[with(aidash_server::http::Settings::default(), aidash_server::sse::Service::new(aidash_server::sse::Settings::default()), Arc::new(|router| router), _federation.clone())]
+	_application: common::ApplicationFixture,
+	http_client: reqwest::Client,
 ) {
-	let (store, url, schema) = setup(&_test_environment).await;
-	let f = federation_for(&store);
+	let (store, url, schema) = _store_fixture.clone().await.parts();
+	let f = _federation.await.federation;
 	let agent = seed(&f.registry).await;
 	let workspace = store
 		.create_workspace("Partial results", "Resolve terminal children")
@@ -837,8 +871,8 @@ async fn parent_can_finish_after_explicit_child_abandonment(
 				.await
 				.is_err()
 		);
-		let app = common::application(f.clone()).await;
-		let response = http_client()
+		let app = _application.application.clone();
+		let response = http_client
 			.request(
 				Method::POST,
 				app.url(format!("/api/tasks/{}/abandon", child.id)),
@@ -892,36 +926,20 @@ async fn parent_can_finish_after_explicit_child_abandonment(
 #[rstest::rstest]
 #[tokio::test]
 async fn successful_tool_retry_resets_the_next_invocation_budget(
+	#[from(store)] _store_fixture: StoreFuture,
+	#[from(federation)]
+	#[with(_store_fixture.clone())]
+	_federation: common::RuntimeFuture,
+	#[from(successful_tool_retry_resets_the_next_invocation_budget_router)] _router: Arc<Router>,
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(upstream)]
+	#[with(_router.clone())]
+	server: TestServerGuard,
 ) {
-	let (store, url, schema) = setup(&_test_environment).await;
-	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-	let endpoint = format!("http://{}", listener.local_addr().unwrap());
-	let server = tokio::spawn(async move {
-		axum::serve(
-			listener,
-			axum::Router::new().route(
-				"/",
-				axum::routing::post(
-					|axum::Json(input): axum::Json<serde_json::Value>| async move {
-						if input["call"] == 1 {
-							(StatusCode::OK, axum::Json(json!({"saved":true})))
-						} else {
-							(
-								StatusCode::SERVICE_UNAVAILABLE,
-								axum::Json(json!({"error":"temporary failure"})),
-							)
-						}
-					},
-				),
-			),
-		)
-		.await
-		.unwrap();
-	});
-	let f = federation_for(&store);
+	let (store, url, schema) = _store_fixture.clone().await.parts();
+
+	let endpoint = server.url.clone();
+	let f = _federation.await.federation;
 	seed(&f.registry).await;
 	f.registry
 		.register(entry(
@@ -1022,7 +1040,7 @@ async fn successful_tool_retry_resets_the_next_invocation_budget(
 		store.task(task.id).await.unwrap().status.as_str(),
 		"RUNNING"
 	);
-	server.abort();
+	drop(server);
 	cleanup(store, &url, &schema).await;
 }
 
@@ -1061,40 +1079,31 @@ struct WriteApproval {
 	run: Run,
 	first: Uuid,
 	effects: Arc<std::sync::atomic::AtomicUsize>,
-	server: tokio::task::JoinHandle<()>,
-	_environment: Arc<TestEnvironment>,
+	server: TestServerGuard,
+	_runtime: common::RuntimeFixture,
 }
 
 #[rstest::fixture]
 async fn write_approval(
 	#[default(false)] expired: bool,
 	#[default(false)] prior_response: bool,
+	#[from(store)] _store_fixture: StoreFuture,
+	#[from(federation)]
+	#[with(_store_fixture.clone())]
+	_federation: common::RuntimeFuture,
+	#[from(upstream_fixtures::hits)] effects: Arc<std::sync::atomic::AtomicUsize>,
+	#[from(write_approval_router)]
+	#[with(effects.clone())]
+	_router: Arc<Router>,
+	#[future(awt)]
+	#[from(upstream)]
+	#[with(_router.clone())]
+	server: TestServerGuard,
 ) -> WriteApproval {
-	let environment = test_environment().await;
-	use std::sync::atomic::{AtomicUsize, Ordering};
-	let (store, url, schema) = setup(&environment).await;
-	let effects = Arc::new(AtomicUsize::new(0));
-	let counter = effects.clone();
-	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-	let endpoint = format!("http://{}", listener.local_addr().unwrap());
-	let server = tokio::spawn(async move {
-		axum::serve(
-			listener,
-			axum::Router::new().route(
-				"/",
-				axum::routing::post(move || {
-					let counter = counter.clone();
-					async move {
-						counter.fetch_add(1, Ordering::SeqCst);
-						axum::Json(json!({"ok":true}))
-					}
-				}),
-			),
-		)
-		.await
-		.unwrap();
-	});
-	let f = federation_for(&store);
+	let (store, url, schema) = _store_fixture.clone().await.parts();
+
+	let endpoint = server.url.clone();
+	let f = _federation.await.federation;
 	seed(&f.registry).await;
 	f.registry
 		.register(entry(
@@ -1270,7 +1279,7 @@ async fn write_approval(
 		first,
 		effects,
 		server,
-		_environment: environment,
+		_runtime: _store_fixture.clone().await.runtime,
 	}
 }
 
@@ -1288,7 +1297,6 @@ async fn managed_external_write_requires_exact_one_call_approval(
 	#[with(_expired, _prior_response)]
 	write_approval: WriteApproval,
 ) {
-	use std::sync::atomic::Ordering;
 	let WriteApproval {
 		store,
 		url,
@@ -1298,7 +1306,7 @@ async fn managed_external_write_requires_exact_one_call_approval(
 		first,
 		effects,
 		server,
-		_environment,
+		_runtime,
 	} = write_approval;
 	assert_eq!(run.phase().as_str(), "WAITING");
 	assert_eq!(effects.load(Ordering::SeqCst), 0);
@@ -1357,90 +1365,32 @@ async fn managed_external_write_requires_exact_one_call_approval(
 	harness.worker_once().await.unwrap();
 	harness.worker_once().await.unwrap();
 	assert_eq!(effects.load(Ordering::SeqCst), 1);
-	server.abort();
+	drop(server);
 	cleanup(store, &url, &schema).await;
 }
 
 #[rstest::rstest]
 #[tokio::test]
 async fn integration_failures_reach_the_agent_without_replay_or_schema_escape(
+	#[from(store)] _store_fixture: StoreFuture,
+	#[from(federation)]
+	#[with(_store_fixture.clone())]
+	_federation: common::RuntimeFuture,
+	#[from(upstream_fixtures::hits)] source_hits: Arc<std::sync::atomic::AtomicUsize>,
+	#[from(rejected_sources_router)]
+	#[with(source_hits.clone())]
+	_router: Arc<Router>,
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(upstream)]
+	#[with(_router.clone())]
+	server: TestServerGuard,
 ) {
 	use aidash_server::harness::Harness;
-	use axum::{Json, Router, routing::post};
-	use std::sync::atomic::{AtomicUsize, Ordering};
 
-	let (store, database_url, schema) = setup(&_test_environment).await;
-	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-	let endpoint = format!("http://{}", listener.local_addr().unwrap());
-	let forbidden_host = format!(
-		"http://localhost:{}/blocked",
-		listener.local_addr().unwrap().port()
-	);
-	let source_hits = Arc::new(AtomicUsize::new(0));
-	let hits = source_hits.clone();
-	let model_endpoint = endpoint.clone();
-	let server = Router::new()
-		.route("/evidence", post(move |Json(body): Json<serde_json::Value>| {
-			let hits = hits.clone();
-			async move {
-				hits.fetch_add(1, Ordering::SeqCst);
-				let url = reqwest::Url::parse(body["url"].as_str().unwrap()).unwrap();
-				Json(match url.path() {
-					"/blocked" => json!({"ok":false,"error":{"kind":"source_status","status":403}}),
-					"/missing" => json!({"ok":false,"error":{"kind":"source_status","status":404}}),
-					"/alternate" => json!({"ok":true,"text":"Alternate evidence"}),
-					_ => panic!("unexpected source"),
-				})
-			}
-		}))
-		.route("/v1/chat/completions", post(move |Json(body): Json<serde_json::Value>| {
-			let endpoint = model_endpoint.clone();
-			let forbidden_host = forbidden_host.clone();
-			async move {
-				let context: serde_json::Value = serde_json::from_str(
-					body["messages"][1]["content"].as_str().unwrap()
-				).unwrap();
-				let history: Vec<_> = context["history"]
-					.as_array()
-					.unwrap()
-					.iter()
-					.filter(|event| event.get("call").is_some())
-					.collect();
-				let next = match history.len() {
-					0 => Some(format!("{endpoint}/blocked")),
-					1 => {
-						assert_eq!(history[0]["result"]["ok"], false);
-						assert_eq!(history[0]["result"]["error"]["kind"], "source_status");
-						assert_eq!(history[0]["result"]["error"]["status"], 403);
-						Some(format!("{endpoint}/missing"))
-					}
-					2 => {
-						assert_eq!(history[1]["result"], json!({"ok":false,"error":{"kind":"source_status","status":404}}));
-						Some(format!("{endpoint}/alternate"))
-					}
-					3 => {
-						assert_eq!(history[2]["result"]["text"], "Alternate evidence");
-						Some(forbidden_host)
-					}
-					4 => {
-						assert!(history[3]["result"]["error"].as_str().unwrap().contains("does not match"));
-						None
-					}
-					_ => panic!("unexpected inference after final response"),
-				};
-				let message = if let Some(url) = next {
-					json!({"role":"assistant","content":null,"tool_calls":[{"id":format!("fetch-{}",history.len()),"type":"function","function":{"name":"plugin_0","arguments":json!({"url":url}).to_string()}}]})
-				} else {
-					json!({"role":"assistant","content":"Used alternate evidence"})
-				};
-				Json(json!({"choices":[{"index":0,"finish_reason":if message.get("tool_calls").is_some() {"tool_calls"} else {"stop"},"message":message}],"usage":{"prompt_tokens":1,"completion_tokens":1}}))
-			}
-		}));
-	let server = tokio::spawn(async move { axum::serve(listener, server).await.unwrap() });
-	let federation = federation_for(&store);
+	let (store, database_url, schema) = _store_fixture.clone().await.parts();
+
+	let endpoint = server.url.clone();
+	let federation = _federation.await.federation;
 	federation.registry.register(entry("model", "web-model", json!({"provider":"openrouter","model_id":"fixture","endpoint":format!("{endpoint}/v1"),"credential_env":null,"context_window":128000,"max_output_tokens":4096,"modalities":["text"],"cost":{}}))).await.unwrap();
 	federation
 		.registry
@@ -1511,8 +1461,7 @@ async fn integration_failures_reach_the_agent_without_replay_or_schema_escape(
 			.iter()
 			.any(|event| event.kind == "run.retrying")
 	);
-	server.abort();
-	let _ = server.await;
+	drop(server);
 	cleanup(store, &database_url, &schema).await;
 }
 
@@ -1555,62 +1504,30 @@ async fn add_test_peer(store: &Store, node: &str, endpoint: &str) {
 #[rstest::rstest]
 #[tokio::test]
 async fn failed_home_transition_survives_outage_and_worker_restart(
+	#[from(store)] _store_fixture: StoreFuture,
+	#[from(federation)]
+	#[with(_store_fixture.clone())]
+	_federation: common::RuntimeFuture,
+	#[from(home_scene)]
+	#[with(_federation.clone())]
+	home_scene: HomeSceneFuture,
+	#[from(upstream_fixtures::available)] online: Arc<std::sync::atomic::AtomicBool>,
+	#[from(failed_home_router)]
+	#[with(home_scene.clone(), online.clone())]
+	_router: upstream_fixtures::RouterFuture,
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(upstream_fixtures::async_upstream)]
+	#[with(_router.clone())]
+	server: Arc<TestServerGuard>,
 ) {
-	let (store, url, schema) = setup(&_test_environment).await;
-	let f = federation_for(&store);
-	let agent = seed(&f.registry).await;
-	let workspace = store
-		.create_workspace("Remote failure", "Retry terminal delivery")
-		.await
-		.unwrap();
-	let mut task = store
-		.create_task(workspace.id, &new_task(), "human", None)
-		.await
-		.unwrap();
-	task.status = TaskStatus::Running;
-	task.owner = Some(qualified_agent(&store.node_id, &agent.id, &agent.version));
-	let home_task = Arc::new(std::sync::Mutex::new(task.clone()));
-	let online = Arc::new(std::sync::atomic::AtomicBool::new(false));
-	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-	let endpoint = format!("http://{}", listener.local_addr().unwrap());
-	let remote_task = home_task.clone();
-	let available = online.clone();
-	let server = tokio::spawn(async move {
-		let router = axum::Router::new().route(
-			"/federation/v0.1/workspace",
-			axum::routing::post(move |axum::Json(body): axum::Json<serde_json::Value>| {
-				let task = remote_task.clone();
-				let available = available.clone();
-				async move {
-					if !available.load(std::sync::atomic::Ordering::SeqCst) {
-						return (
-							StatusCode::SERVICE_UNAVAILABLE,
-							axum::Json(json!({"error":"home unavailable"})),
-						);
-					}
-					let mut task = task.lock().unwrap();
-					match body["operation"].as_str() {
-						Some("task") => {}
-						Some("run_message_terminal_transition") => {
-							task.status =
-								serde_json::from_value(body["data"]["status"].clone()).unwrap();
-						}
-						_ => {
-							return (
-								StatusCode::BAD_REQUEST,
-								axum::Json(json!({"error":"unknown federation operation"})),
-							);
-						}
-					}
-					(StatusCode::OK, axum::Json(json!(*task)))
-				}
-			}),
-		);
-		axum::serve(listener, router).await.unwrap();
-	});
+	let (store, url, schema) = _store_fixture.clone().await.parts();
+	let f = _federation.await.federation;
+	let scene = home_scene.await;
+	let agent = scene.agent;
+	let home_task = scene.task;
+	let task = home_task.lock().unwrap().clone();
+
+	let endpoint = server.url.clone();
 	add_test_peer(&store, "aidash://home", &endpoint).await;
 	let run = store
 		.accept_run(&task, "aidash://home", &agent.id, &agent.version)
@@ -1701,19 +1618,25 @@ async fn failed_home_transition_survives_outage_and_worker_restart(
 		"FAILED"
 	);
 	assert_eq!(home_task.lock().unwrap().status.as_str(), "FAILED");
-	server.abort();
+	drop(server);
 	cleanup(store, &url, &schema).await;
 }
 
 #[rstest::rstest]
 #[tokio::test]
 async fn terminal_delegations_allow_reads_and_exact_completion_replay_only(
+	#[from(store)] _store_fixture: StoreFuture,
+	#[from(federation)]
+	#[with(_store_fixture.clone())]
+	_federation: common::RuntimeFuture,
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	#[with(aidash_server::http::Settings::default(), aidash_server::sse::Service::new(aidash_server::sse::Settings::default()), Arc::new(|router| router), _federation.clone())]
+	_application: common::ApplicationFixture,
+	http_client: reqwest::Client,
 ) {
-	let (store, url, schema) = setup(&_test_environment).await;
-	let f = federation_for(&store);
+	let (store, url, schema) = _store_fixture.clone().await.parts();
+	let f = _federation.await.federation;
 	let agent = seed(&f.registry).await;
 	let workspace = store
 		.create_workspace("Revocation", "Reject stale peer writes")
@@ -1791,7 +1714,7 @@ async fn terminal_delegations_allow_reads_and_exact_completion_replay_only(
 		.complete(task.id, &owner, &key, &artifact)
 		.await
 		.unwrap();
-	let router = common::application(f).await;
+	let router = _application.application.clone();
 	let token = std::env::var("AIDASH_SECRET_TEST_PEER")
 		.expect("set AIDASH_SECRET_TEST_PEER for peer regression tests");
 	for operation in [
@@ -1812,7 +1735,7 @@ async fn terminal_delegations_allow_reads_and_exact_completion_replay_only(
 		} else {
 			json!({"key":"stale","content":"stale write","status":"RUNNING"})
 		};
-		let response = http_client().request(Method::POST, router.url("/federation/v0.1/workspace"))
+		let response = http_client.request(Method::POST, router.url("/federation/v0.1/workspace"))
 		.header("authorization", format!("Bearer {token}"))
 		.header("x-aidash-node", peer)
 		.header("x-aidash-protocol", "0.2")
@@ -1847,12 +1770,13 @@ async fn terminal_delegations_allow_reads_and_exact_completion_replay_only(
 #[rstest::rstest]
 #[tokio::test]
 async fn queued_executor_conflict_rolls_back_claim_and_dependencies_wait(
-	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(store)] _store_fixture: StoreFuture,
+	#[from(federation)]
+	#[with(_store_fixture.clone())]
+	_federation: common::RuntimeFuture,
 ) {
-	let (store, url, schema) = setup(&_test_environment).await;
-	let f = federation_for(&store);
+	let (store, url, schema) = _store_fixture.clone().await.parts();
+	let f = _federation.await.federation;
 	let agent = seed(&f.registry).await;
 	let mut other = agent.clone();
 	other.id = "other".into();
@@ -1972,12 +1896,13 @@ async fn queued_executor_conflict_rolls_back_claim_and_dependencies_wait(
 #[rstest::rstest]
 #[tokio::test]
 async fn child_creation_and_parent_completion_are_serialized(
-	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(store)] _store_fixture: StoreFuture,
+	#[from(federation)]
+	#[with(_store_fixture.clone())]
+	_federation: common::RuntimeFuture,
 ) {
-	let (store, url, schema) = setup(&_test_environment).await;
-	let f = federation_for(&store);
+	let (store, url, schema) = _store_fixture.clone().await.parts();
+	let f = _federation.await.federation;
 	let agent = seed(&f.registry).await;
 	let workspace = store
 		.create_workspace("Children", "Atomic completion")
@@ -2049,12 +1974,13 @@ async fn child_creation_and_parent_completion_are_serialized(
 #[rstest::rstest]
 #[tokio::test]
 async fn skill_reads_fit_the_pending_request_budget_before_recording(
-	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(store)] _store_fixture: StoreFuture,
+	#[from(federation)]
+	#[with(_store_fixture.clone())]
+	_federation: common::RuntimeFuture,
 ) {
-	let (store, url, schema) = setup(&_test_environment).await;
-	let f = federation_for(&store);
+	let (store, url, schema) = _store_fixture.clone().await.parts();
+	let f = _federation.await.federation;
 	f.registry
 		.register(entry(
 			"skill",
@@ -2131,14 +2057,15 @@ async fn skill_reads_fit_the_pending_request_budget_before_recording(
 #[rstest::rstest]
 #[tokio::test]
 async fn unavailable_tools_are_results_and_child_gating_advances_step(
-	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(store)] _store_fixture: StoreFuture,
+	#[from(federation)]
+	#[with(_store_fixture.clone())]
+	_federation: common::RuntimeFuture,
 ) {
 	let _tracing =
 		tracing::subscriber::set_default(tracing_subscriber::fmt().with_test_writer().finish());
-	let (store, url, schema) = setup(&_test_environment).await;
-	let f = federation_for(&store);
+	let (store, url, schema) = _store_fixture.clone().await.parts();
+	let f = _federation.await.federation;
 	let agent = seed(&f.registry).await;
 	let workspace = store
 		.create_workspace("Recovery", "Repair model errors")
@@ -2277,12 +2204,13 @@ async fn unavailable_tools_are_results_and_child_gating_advances_step(
 #[rstest::rstest]
 #[tokio::test]
 async fn peer_disable_and_retry_rotation_do_not_require_a_live_peer(
-	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(store)] _store_fixture: StoreFuture,
+	#[from(federation)]
+	#[with(_store_fixture.clone())]
+	_federation: common::RuntimeFuture,
 ) {
-	let (store, url, schema) = setup(&_test_environment).await;
-	let f = federation_for(&store);
+	let (store, url, schema) = _store_fixture.clone().await.parts();
+	let f = _federation.await.federation;
 	let agent = seed(&f.registry).await;
 	add_test_peer(&store, "aidash://offline", "http://127.0.0.1:1").await;
 	sqlx::query(
@@ -2405,14 +2333,20 @@ async fn peer_disable_and_retry_rotation_do_not_require_a_live_peer(
 #[rstest::rstest]
 #[tokio::test]
 async fn registry_event_and_conversation_creation_roll_back_as_units(
+	#[from(store)] _store_fixture: StoreFuture,
+	#[from(federation)]
+	#[with(_store_fixture.clone())]
+	_federation: common::RuntimeFuture,
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	#[with(aidash_server::http::Settings::default(), aidash_server::sse::Service::new(aidash_server::sse::Settings::default()), Arc::new(|router| router), _federation.clone())]
+	_application: common::ApplicationFixture,
+	http_client: reqwest::Client,
 ) {
-	let (store, url, schema) = setup(&_test_environment).await;
-	let f = federation_for(&store);
+	let (store, url, schema) = _store_fixture.clone().await.parts();
+	let f = _federation.await.federation;
 	seed(&f.registry).await;
-	let app = common::application(f).await;
+	let app = _application.application.clone();
 	// Simulate an event insertion failure after the primary mutation.
 	// SeaQuery cannot add a CHECK constraint to an existing table.
 	sqlx::query(
@@ -2421,7 +2355,7 @@ async fn registry_event_and_conversation_creation_roll_back_as_units(
 	.execute(store.pool.driver())
 	.await
 	.unwrap();
-	let response = http_client()
+	let response = http_client
 		.request(Method::POST, app.url("/api/registry"))
 		.header("authorization", "Bearer test-access-token")
 		.header("content-type", "application/json")
@@ -2451,7 +2385,7 @@ async fn registry_event_and_conversation_creation_roll_back_as_units(
 	.execute(store.pool.driver())
 	.await
 	.unwrap();
-	let response=http_client().request(Method::POST, app.url("/api/conversations"))
+	let response=http_client.request(Method::POST, app.url("/api/conversations"))
 		.header("authorization","Bearer test-access-token")
 		.header("content-type","application/json")
 		.body(json!({"title":"Atomic","goal":"Must roll back","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"}).to_string())
@@ -2467,13 +2401,13 @@ async fn oversized_outbox_payload_publishes_a_reference_without_blocking_later_e
 	#[future(awt)]
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(outbox_store)] _store_fixture: StoreFuture,
+	#[from(federation)]
+	#[with(_store_fixture.clone())]
+	_federation: common::RuntimeFuture,
 ) {
-	let (store, url, schema) = setup_node(
-		&_test_environment,
-		&format!("aidash://outbox-{}", Uuid::new_v4().simple()),
-	)
-	.await;
-	let mut f = federation_for(&store);
+	let (store, url, schema) = _store_fixture.clone().await.parts();
+	let mut f = _federation.await.federation;
 	f.config.nats_url = _test_environment.nats_url.clone();
 	let bus = aidash_server::bus::EventBus::connect(&f.config.nats_url, &store.node_id)
 		.await
@@ -2554,12 +2488,18 @@ async fn oversized_outbox_payload_publishes_a_reference_without_blocking_later_e
 #[rstest::rstest]
 #[tokio::test]
 async fn ambiguous_peer_credentials_cannot_impersonate_another_node(
+	#[from(store)] _store_fixture: StoreFuture,
+	#[from(federation)]
+	#[with(_store_fixture.clone())]
+	_federation: common::RuntimeFuture,
+	#[from(ambiguous_peer_credentials_cannot_impersonate_another_node_router)] _router: Arc<Router>,
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(upstream)]
+	#[with(_router.clone())]
+	server: TestServerGuard,
 ) {
-	let (store, url, schema) = setup(&_test_environment).await;
-	let f = federation_for(&store);
+	let (store, url, schema) = _store_fixture.clone().await.parts();
+	let f = _federation.await.federation;
 	let secret = std::env::var("AIDASH_SECRET_TEST_PEER").unwrap();
 	add_test_peer(&store, "aidash://peer-b", "http://127.0.0.1:1").await;
 	assert!(
@@ -2573,21 +2513,8 @@ async fn ambiguous_peer_credentials_cannot_impersonate_another_node(
 			.await
 			.is_err()
 	);
-	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-	let endpoint = format!("http://{}", listener.local_addr().unwrap());
-	let server = tokio::spawn(async move {
-		axum::serve(
-			listener,
-			axum::Router::new().route(
-				"/.well-known/aidash",
-				axum::routing::get(|| async {
-					axum::Json(json!({"id":"aidash://peer-d","protocol_version":"0.2"}))
-				}),
-			),
-		)
-		.await
-		.unwrap();
-	});
+
+	let endpoint = server.url.clone();
 	assert!(matches!(
 		f.register_peer(aidash_server::federation::Peer {
 			node_id: "aidash://peer-d".into(),
@@ -2599,19 +2526,20 @@ async fn ambiguous_peer_credentials_cannot_impersonate_another_node(
 		.await,
 		Err(aidash_server::Error::Invalid(_))
 	));
-	server.abort();
+	drop(server);
 	cleanup(store, &url, &schema).await;
 }
 
 #[rstest::rstest]
 #[tokio::test]
 async fn recovery_publishes_reconciliation_marker_with_the_request(
-	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(store)] _store_fixture: StoreFuture,
+	#[from(federation)]
+	#[with(_store_fixture.clone())]
+	_federation: common::RuntimeFuture,
 ) {
-	let (store, url, schema) = setup(&_test_environment).await;
-	let f = federation_for(&store);
+	let (store, url, schema) = _store_fixture.clone().await.parts();
+	let f = _federation.await.federation;
 	let mut agent = seed(&f.registry).await;
 	f.registry
 		.register(entry(
@@ -2721,13 +2649,14 @@ async fn recovery_publishes_reconciliation_marker_with_the_request(
 #[rstest::rstest]
 #[tokio::test]
 async fn agent_tools_attach_children_and_clusters_require_existing_agents(
-	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(store)] _store_fixture: StoreFuture,
+	#[from(federation)]
+	#[with(_store_fixture.clone())]
+	_federation: common::RuntimeFuture,
 ) {
 	use aidash_server::tool::{PluginTool, Tool, ToolConfig, ToolContext};
-	let (store, url, schema) = setup(&_test_environment).await;
-	let f = federation_for(&store);
+	let (store, url, schema) = _store_fixture.clone().await.parts();
+	let f = _federation.await.federation;
 	let agent = seed(&f.registry).await;
 	for coordinator in ["missing", "model"] {
 		assert!(
@@ -2814,12 +2743,13 @@ async fn agent_tools_attach_children_and_clusters_require_existing_agents(
 #[rstest::rstest]
 #[tokio::test]
 async fn terminal_dependencies_fail_dependents_instead_of_polling_forever(
-	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(store)] _store_fixture: StoreFuture,
+	#[from(federation)]
+	#[with(_store_fixture.clone())]
+	_federation: common::RuntimeFuture,
 ) {
-	let (store, url, schema) = setup(&_test_environment).await;
-	let f = federation_for(&store);
+	let (store, url, schema) = _store_fixture.clone().await.parts();
+	let f = _federation.await.federation;
 	let agent = seed(&f.registry).await;
 	let worker = aidash_server::harness::Harness { federation: f };
 	for terminal in ["FAILED", "CANCELLED", "ABANDONED"] {
@@ -2905,12 +2835,23 @@ async fn terminal_dependencies_fail_dependents_instead_of_polling_forever(
 #[rstest::rstest]
 #[tokio::test]
 async fn remote_workspace_snapshot_pages_large_accumulated_artifacts(
+	#[from(store)] _store_fixture: StoreFuture,
+	#[from(store)]
+	#[with("aidash://worker")]
+	_store_fixture_2: StoreFuture,
+	#[from(federation)]
+	#[with(_store_fixture.clone())]
+	_home_runtime: common::RuntimeFuture,
+	#[from(federation)]
+	#[with(_store_fixture_2.clone())]
+	_worker_runtime: common::RuntimeFuture,
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	#[with(aidash_server::http::Settings::default(), aidash_server::sse::Service::new(aidash_server::sse::Settings::default()), Arc::new(|router| router), _home_runtime.clone())]
+	_home_app: common::ApplicationFixture,
 ) {
-	let (home, url, schema) = setup(&_test_environment).await;
-	let f = federation_for(&home);
+	let (home, url, schema) = _store_fixture.clone().await.parts();
+	let f = _home_runtime.await.federation;
 	let agent = seed(&f.registry).await;
 	let workspace = home
 		.create_workspace("Large snapshot", "Preserve every item")
@@ -2945,10 +2886,9 @@ async fn remote_workspace_snapshot_pages_large_accumulated_artifacts(
 	assert!(serde_json::to_vec(&page).unwrap().len() < 3_145_728);
 	assert_eq!(page.items.len(), 1);
 	assert!(page.next.is_some());
-	let (worker_store, worker_url, worker_schema) =
-		setup_node(&_test_environment, "aidash://worker").await;
+	let (worker_store, worker_url, worker_schema) = _store_fixture_2.clone().await.parts();
 	seed(&Registry::new(worker_store.pool.clone(), &worker_store.node_id).unwrap()).await;
-	let server = common::application(f).await;
+	let server = _home_app.application;
 	let endpoint = server.server.url.clone();
 	add_test_peer(&home, &worker_store.node_id, "http://127.0.0.1:9").await;
 	add_test_peer(&worker_store, &home.node_id, &endpoint).await;
@@ -2999,7 +2939,7 @@ async fn remote_workspace_snapshot_pages_large_accumulated_artifacts(
 		.accept_run(&task, &home.node_id, &agent.id, &agent.version)
 		.await
 		.unwrap();
-	let remote = aidash_server::federation::Home::new(federation_for(&worker_store), run)
+	let remote = aidash_server::federation::Home::new(_worker_runtime.await.federation, run)
 		.snapshot()
 		.await
 		.unwrap();
@@ -3034,21 +2974,267 @@ fn request_id(run: &Run) -> Uuid {
 #[path = "postgres/typed_state.rs"]
 mod typed_state;
 
+#[rstest::fixture]
+fn successful_tool_retry_resets_the_next_invocation_budget_router() -> Arc<Router> {
+	Arc::new(
+		reinhardt::test::stub::StubRouter::new()
+			.route(
+				"/",
+				http::Method::POST,
+				reply(|request: reinhardt::Request| {
+					let input = request.json::<serde_json::Value>().unwrap();
+					async move {
+						if input["call"] == 1 {
+							reinhardt::Response::new(StatusCode::OK)
+								.with_json(&json!({"saved":true}))
+								.unwrap()
+						} else {
+							reinhardt::Response::new(StatusCode::SERVICE_UNAVAILABLE)
+								.with_json(&json!({"error":"temporary failure"}))
+								.unwrap()
+						}
+					}
+				}),
+			)
+			.into_server_router(),
+	)
+}
+
+#[rstest::fixture]
+fn write_approval_router(
+	#[from(upstream_fixtures::hits)] effects: Arc<std::sync::atomic::AtomicUsize>,
+) -> Arc<Router> {
+	Arc::new(
+		reinhardt::test::stub::StubRouter::new()
+			.route(
+				"/",
+				http::Method::POST,
+				reply(move |_request: reinhardt::Request| {
+					let counter = effects.clone();
+					async move {
+						counter.fetch_add(1, Ordering::SeqCst);
+						reinhardt::Response::ok()
+							.with_json(&json!({"ok":true}))
+							.unwrap()
+					}
+				}),
+			)
+			.into_server_router(),
+	)
+}
+
+#[rstest::fixture]
+fn ambiguous_peer_credentials_cannot_impersonate_another_node_router() -> Arc<Router> {
+	Arc::new(
+		reinhardt::test::stub::StubRouter::new()
+			.route(
+				"/.well-known/aidash",
+				http::Method::GET,
+				reply(|_request: reinhardt::Request| async {
+					reinhardt::Response::ok()
+						.with_json(&json!({"id":"aidash://peer-d","protocol_version":"0.2"}))
+						.unwrap()
+				}),
+			)
+			.into_server_router(),
+	)
+}
+
+#[fixture]
+fn rejected_sources_router(
+	#[from(upstream_fixtures::hits)] source_hits: Arc<std::sync::atomic::AtomicUsize>,
+) -> Arc<Router> {
+	Arc::new(reinhardt::test::stub::StubRouter::new()
+.route("/evidence", http::Method::POST, reply(move |request: reinhardt::Request| {
+            let body = request.json::<serde_json::Value>().unwrap();
+            let hits = source_hits.clone();
+            async move {
+                hits.fetch_add(1,Ordering::SeqCst);
+                let url = reqwest::Url::parse(body["url"].as_str().unwrap()).unwrap();
+                let result = match url.path() {
+                    "/blocked" => json!({"ok":false,"error":{"kind":"source_status","status":403}}),
+                    "/missing" => json!({"ok":false,"error":{"kind":"source_status","status":404}}),
+                    "/alternate" => json!({"ok":true,"text":"Alternate evidence"}),
+                    _ => panic!("unexpected source"),
+                };
+                reinhardt::Response::ok().with_json(&result).unwrap()
+            }
+        }))
+.route("/v1/chat/completions", http::Method::POST, reply(move |request: reinhardt::Request| {let body = request.json::<serde_json::Value>().unwrap();
+			let endpoint = format!("http://{}", request.headers["host"].to_str().unwrap());
+let forbidden_host = format!("http://localhost:{}/blocked", reqwest::Url::parse(&endpoint).unwrap().port().unwrap());
+			async move {
+				let context: serde_json::Value = serde_json::from_str(
+					body["messages"][1]["content"].as_str().unwrap()
+				).unwrap();
+				let history: Vec<_> = context["history"].as_array().unwrap().iter().filter(|event|event.get("call").is_some()).collect();
+				let next = match history.len() {
+					0 => Some(format!("{endpoint}/blocked")),
+					1 => {
+						assert_eq!(history[0]["result"]["ok"], false);
+						assert_eq!(history[0]["result"]["error"]["kind"], "source_status");
+						assert_eq!(history[0]["result"]["error"]["status"], 403);
+						Some(format!("{endpoint}/missing"))
+					}
+					2 => {
+						assert_eq!(history[1]["result"], json!({"ok":false,"error":{"kind":"source_status","status":404}}));
+						Some(format!("{endpoint}/alternate"))
+					}
+					3 => {
+						assert_eq!(history[2]["result"]["text"], "Alternate evidence");
+						Some(forbidden_host)
+					}
+					4 => {
+						assert!(history[3]["result"]["error"].as_str().unwrap().contains("does not match"));
+						None
+					}
+					_ => panic!("unexpected inference after final response"),
+				};
+				let message = if let Some(url) = next {
+					json!({"role":"assistant","content":null,"tool_calls":[{"id":format!("fetch-{}",history.len()),"type":"function","function":{"name":"plugin_0","arguments":json!({"url":url}).to_string()}}]})
+				} else {
+					json!({"role":"assistant","content":"Used alternate evidence"})
+				};
+				reinhardt::Response::ok().with_json(&json!({"choices":[{"index":0,"finish_reason":if message.get("tool_calls").is_some() {"tool_calls"} else {"stop"},"message":message}],"usage":{"prompt_tokens":1,"completion_tokens":1}})).unwrap()
+			}
+		})).into_server_router())
+}
+
+type HomeSceneFuture = Shared<BoxFuture<'static, HomeScene>>;
+#[derive(Clone)]
+struct HomeScene {
+	agent: Entry,
+	task: Arc<std::sync::Mutex<Task>>,
+	_runtime: common::RuntimeFixture,
+}
+#[fixture]
+fn home_scene(#[from(federation)] runtime: common::RuntimeFuture) -> HomeSceneFuture {
+	async move {
+		let owner = runtime.await;
+		let f = &owner.federation;
+		let store = &f.store;
+
+		let agent = seed(&f.registry).await;
+		let workspace = store
+			.create_workspace("Remote failure", "Retry terminal delivery")
+			.await
+			.unwrap();
+		let mut task = store
+			.create_task(workspace.id, &new_task(), "human", None)
+			.await
+			.unwrap();
+		task.status = TaskStatus::Running;
+		task.owner = Some(qualified_agent(&store.node_id, &agent.id, &agent.version));
+		HomeScene {
+			agent,
+			task: Arc::new(std::sync::Mutex::new(task)),
+			_runtime: owner,
+		}
+	}
+	.boxed()
+	.shared()
+}
+#[fixture]
+fn failed_home_router(
+	home_scene: HomeSceneFuture,
+	#[from(upstream_fixtures::available)] online: Arc<std::sync::atomic::AtomicBool>,
+) -> upstream_fixtures::RouterFuture {
+	async move {
+		let remote_task = home_scene.await.task;
+		let available = online;
+		Arc::new(
+			reinhardt::test::stub::StubRouter::new()
+				.route(
+					"/federation/v0.1/workspace",
+					http::Method::POST,
+					reply(move |request: reinhardt::Request| {
+						let body = request.json::<serde_json::Value>().unwrap();
+						let task = remote_task.clone();
+						let available = available.clone();
+						async move {
+							if !available.load(std::sync::atomic::Ordering::SeqCst) {
+								return reinhardt::Response::new(StatusCode::SERVICE_UNAVAILABLE)
+									.with_json(&json!({"error":"home unavailable"}))
+									.unwrap();
+							}
+							let mut task = task.lock().unwrap();
+							match body["operation"].as_str() {
+								Some("task") => {}
+								Some("run_message_terminal_transition") => {
+									task.status =
+										serde_json::from_value(body["data"]["status"].clone())
+											.unwrap();
+								}
+								_ => {
+									return reinhardt::Response::new(StatusCode::BAD_REQUEST)
+										.with_json(&json!({"error":"unknown federation operation"}))
+										.unwrap();
+								}
+							}
+							reinhardt::Response::new(StatusCode::OK)
+								.with_json(&json!(*task))
+								.unwrap()
+						}
+					}),
+				)
+				.into_server_router(),
+		)
+	}
+	.boxed()
+	.shared()
+}
+
+#[fixture]
+fn authenticated_runtime(
+	#[from(store)] store_fixture: StoreFuture,
+	http_client: reqwest::Client,
+) -> common::RuntimeFuture {
+	async move {
+		let store_fixture = store_fixture.await;
+		let mut runtime = store_fixture.runtime;
+		let store = store_fixture.store;
+		runtime.federation.store = store.clone();
+		runtime.federation.registry = Registry::new(store.pool.clone(), &store.node_id).unwrap();
+		runtime.federation.config = Config {
+			node_id: store.node_id.clone(),
+			endpoint: "http://127.0.0.1:18080".into(),
+			database_url: runtime.url.clone(),
+			nats_url: "nats://127.0.0.1:42270".into(),
+			api_token: "test-access-token".into(),
+			web_dir: "web/dist".into(),
+			lease_seconds: 30,
+			default_host_packages: vec![],
+			oidc: None,
+			gcip: None,
+		};
+		runtime.federation.client = http_client;
+		runtime
+	}
+	.boxed()
+	.shared()
+}
+
 #[rstest::rstest]
 #[tokio::test]
 async fn operator_remote_humans_live_on_home_and_survive_receiver_reconstruction(
 	#[future(awt)]
-	#[from(test_environment)]
-	environment: Arc<TestEnvironment>,
+	#[from(common::native_peer)]
+	#[with("aidash://human-home")]
+	home_fixture: common::PeerFixture,
+	#[future(awt)]
+	#[from(common::native_peer)]
+	#[with("aidash://human-worker")]
+	worker_fixture: common::PeerFixture,
+	#[from(reinhardt::test::fixtures::http_client)] transport: reqwest::Client,
 ) {
-	let (home_store, home_url, home_schema) = setup_node(&environment, "aidash://human-home").await;
-	let (worker_store, worker_url, worker_schema) =
-		setup_node(&environment, "aidash://human-worker").await;
-	let mut home_f = federation_for(&home_store);
-	let mut worker_f = federation_for(&worker_store);
+	let (home_f, home_url, home_schema) = home_fixture.runtime.parts();
+	let (worker_f, worker_url, worker_schema) = worker_fixture.runtime.parts();
+	let home_store = home_f.store.clone();
+	let worker_store = worker_f.store.clone();
+	home_f.registry.seed_system().await.unwrap();
 	let agent = seed(&worker_f.registry).await;
-	let home_app = common::peer_application(&mut home_f).await;
-	let worker_app = common::peer_application(&mut worker_f).await;
+	let home_app = home_fixture.application.clone();
+	let worker_app = worker_fixture.application.clone();
 	add_test_peer(
 		&home_store,
 		&worker_store.node_id,
@@ -3088,7 +3274,7 @@ async fn operator_remote_humans_live_on_home_and_survive_receiver_reconstruction
 		.await
 		.unwrap();
 	let offer = json!({"task":task,"agent":{"id":agent.id,"version":agent.version}});
-	let old = http_client()
+	let old = transport
 		.post(worker_app.url("/federation/v0.1/offers"))
 		.bearer_auth(std::env::var("AIDASH_SECRET_TEST_PEER").unwrap())
 		.header("x-aidash-node", &home_store.node_id)
@@ -3204,4 +3390,10 @@ async fn operator_remote_humans_live_on_home_and_survive_receiver_reconstruction
 	drop((home_app, worker_app));
 	cleanup(worker_store, &worker_url, &worker_schema).await;
 	cleanup(home_store, &home_url, &home_schema).await;
+}
+
+#[rstest::fixture]
+fn outbox_store(#[from(common::runtime)] runtime: common::RuntimeFuture) -> StoreFuture {
+	let node = format!("aidash://outbox-{}", Uuid::new_v4().simple());
+	store(&node, runtime)
 }

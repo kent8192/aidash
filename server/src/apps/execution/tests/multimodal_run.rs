@@ -1,15 +1,14 @@
+use common::upstream_fixtures;
+use reinhardt::ServerRouter as Router;
+use reinhardt::test::fixtures::server::TestServerGuard;
+use upstream_fixtures::{reply, upstream};
 #[path = "support/legacy.rs"]
 mod common;
 
 use aidash_server::{federation::Federation, harness::Harness};
-use axum::{
-	Json, Router,
-	body::Body,
-	http::Request,
-	routing::{get, post},
-};
+
 use base64::Engine;
-use common::{TestEnvironment, bootstrap, cleanup, request, setup, test_environment};
+use common::{bootstrap, cleanup, request};
 use serde_json::{Value, json};
 use std::sync::{
 	Arc,
@@ -32,23 +31,23 @@ async fn upload(
 		mime.replace('/', "%2F"),
 		Uuid::new_v4()
 	);
-	let response = app
-		.clone()
-		.oneshot(
-			Request::post(path)
-				.header("authorization", format!("Bearer {token}"))
-				.header("content-type", "application/octet-stream")
-				.body(Body::from(bytes.to_vec()))
-				.unwrap(),
-		)
-		.await
-		.unwrap();
-	let status = response.status();
-	let bytes = axum::body::to_bytes(response.into_body(), 2 * 1024 * 1024)
-		.await
-		.unwrap();
-	let body: Value = serde_json::from_slice(&bytes).unwrap();
+
+	let authorization = format!("Bearer {token}");
+	let response = async {
+		let client = &(app.api_http);
+		let mut request = client
+			.request(http::Method::POST, &path)
+			.body(bytes::Bytes::copy_from_slice(bytes))
+			.header(http::header::CONTENT_TYPE, "application/octet-stream");
+		request = request.header("authorization", authorization.as_str());
+		request.send().await
+	}
+	.await
+	.unwrap();
+	let status = response.status_code();
+	let body = response.json_value().unwrap();
 	assert_eq!(status, 200, "{body}");
+
 	body
 }
 
@@ -491,36 +490,23 @@ async fn verify_separate_format_routes(
 #[tokio::test]
 async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 	#[future(awt)]
-	#[from(test_environment)]
-	environment: Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+	media_requests: MediaRequests,
+	#[from(empty_media_observation)] _empty_media: Arc<AtomicBool>,
+	#[from(media_router)]
+	#[with(media_requests.clone(), _empty_media.clone())]
+	_router: Arc<Router>,
+	#[future(awt)]
+	#[from(upstream)]
+	#[with(_router.clone())]
+	server: TestServerGuard,
 ) {
-	let (sent, mut received) = mpsc::unbounded_channel();
-	let empty_media_observation = Arc::new(AtomicBool::new(true));
-	let provider = Router::new()
-		.route("/v1/models/fixture/endpoints", get(|| async { Json(json!({"data":{"architecture":{"input_modalities":["text","image","audio"]},"endpoints":[{"tag":"fixture/verified","context_length":128000},{"tag":"fixture/png","context_length":128000},{"tag":"fixture/jpeg","context_length":128000}]}})) }))
-		.route("/v1/endpoints/zdr", get(|| async { Json(json!({"data":[{"model_id":"fixture","tag":"fixture/verified"},{"model_id":"fixture","tag":"fixture/png"},{"model_id":"fixture","tag":"fixture/jpeg"}]})) }))
-		.route("/v1/chat/completions", post(move |Json(body): Json<Value>| {
-			let sent = sent.clone();
-			let empty_media_observation = empty_media_observation.clone();
-			async move {
-				let image_count = body["messages"][1]["content"]
-					.as_array()
-					.map(|parts| parts.iter().filter(|part| part["type"] == "image_url").count())
-					.unwrap_or(0);
-				let no_tools = body.get("tools").is_none();
-				sent.send(body).unwrap();
-				if image_count == 5 && empty_media_observation.swap(false, Ordering::SeqCst) {
-					assert!(no_tools, "media intake must not advertise task tools");
-					return Json(json!({"choices":[{"finish_reason":"tool_calls","message":{"content":null,"tool_calls":[{"id":"ignored-media-call","function":{"name":"workspace_read","arguments":"{}"}}]}}],"usage":{"prompt_tokens":10,"completion_tokens":2}}));
-				}
-				Json(json!({"choices":[{"finish_reason":"stop","message":{"content":"Done"}}],"usage":{"prompt_tokens":10,"completion_tokens":2}}))
-			}
-		}));
-	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-	let endpoint = format!("http://{}", listener.local_addr().unwrap());
-	let server = tokio::spawn(async move { axum::serve(listener, provider).await.unwrap() });
-	let (f, url, schema) = setup(&environment).await;
-	let app = common::application(f.clone()).await;
+	let mut received = media_requests.receiver.lock().unwrap().take().unwrap();
+
+	let endpoint = server.url.clone();
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
 	let (mut policy, token, _) = bootstrap(&f, &app, &endpoint).await;
 	policy["subjects"]
 		[aidash_server::domain::qualified_agent(&f.config.node_id, "research", "1.0.1")] =
@@ -946,6 +932,51 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 		&app, &f, &operator,
 	))
 	.await;
-	server.abort();
+	drop(server);
 	cleanup(f, &url, &schema).await;
+}
+
+#[derive(Clone)]
+struct MediaRequests {
+	sender: mpsc::UnboundedSender<Value>,
+	receiver: Arc<std::sync::Mutex<Option<mpsc::UnboundedReceiver<Value>>>>,
+}
+#[rstest::fixture]
+fn media_requests() -> MediaRequests {
+	let (sender, receiver) = mpsc::unbounded_channel();
+	MediaRequests {
+		sender,
+		receiver: Arc::new(std::sync::Mutex::new(Some(receiver))),
+	}
+}
+#[rstest::fixture]
+fn empty_media_observation() -> Arc<AtomicBool> {
+	Arc::new(AtomicBool::new(true))
+}
+#[rstest::fixture]
+fn media_router(
+	media_requests: MediaRequests,
+	empty_media_observation: Arc<AtomicBool>,
+) -> Arc<Router> {
+	let sent = media_requests.sender;
+	Arc::new(reinhardt::test::stub::StubRouter::new()
+.route("/v1/models/fixture/endpoints", http::Method::GET, reply(|_request: reinhardt::Request| async { reinhardt::Response::ok().with_json(&json!({"data":{"architecture":{"input_modalities":["text","image","audio"]},"endpoints":[{"tag":"fixture/verified","context_length":128000},{"tag":"fixture/png","context_length":128000},{"tag":"fixture/jpeg","context_length":128000}]}})).unwrap() }))
+.route("/v1/endpoints/zdr", http::Method::GET, reply(|_request: reinhardt::Request| async { reinhardt::Response::ok().with_json(&json!({"data":[{"model_id":"fixture","tag":"fixture/verified"},{"model_id":"fixture","tag":"fixture/png"},{"model_id":"fixture","tag":"fixture/jpeg"}]})).unwrap() }))
+.route("/v1/chat/completions", http::Method::POST, reply(move |request: reinhardt::Request| {let body = request.json::<Value>().unwrap();
+			let sent = sent.clone();
+			let empty_media_observation = empty_media_observation.clone();
+			async move {
+				let image_count = body["messages"][1]["content"]
+					.as_array()
+					.map(|parts| parts.iter().filter(|part| part["type"] == "image_url").count())
+					.unwrap_or(0);
+				let no_tools = body.get("tools").is_none();
+				sent.send(body).unwrap();
+				if image_count == 5 && empty_media_observation.swap(false, Ordering::SeqCst) {
+					assert!(no_tools, "media intake must not advertise task tools");
+					return reinhardt::Response::ok().with_json(&json!({"choices":[{"finish_reason":"tool_calls","message":{"content":null,"tool_calls":[{"id":"ignored-media-call","function":{"name":"workspace_read","arguments":"{}"}}]}}],"usage":{"prompt_tokens":10,"completion_tokens":2}})).unwrap();
+				}
+				reinhardt::Response::ok().with_json(&json!({"choices":[{"finish_reason":"stop","message":{"content":"Done"}}],"usage":{"prompt_tokens":10,"completion_tokens":2}})).unwrap()
+			}
+		})).into_server_router())
 }

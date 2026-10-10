@@ -8,7 +8,6 @@ use aidash_server::{
 		models::{coordinator_records, states::AtomicCoordinatorDecision},
 		services::decisions::CoordinatorTransition,
 	},
-	config::Config,
 	federation::{Federation, Peer},
 	registry::Registry,
 	transactions::{Manifest, coordinator, participant},
@@ -17,193 +16,132 @@ use chrono::{Duration, Utc};
 use common::{TestEnvironment, test_environment};
 use reinhardt::db::backends::{DatabaseConnection, dialect::PostgresBackend};
 use reinhardt::db::orm::DatabaseConnectionLease;
+use reinhardt::test::fixtures::http_client;
 use serde_json::{Value, json};
-use sqlx::{Connection, Executor, postgres::PgConnection};
 use std::sync::Arc;
 use uuid::Uuid;
 use worker_process::WorkerProcess;
 
-struct Node {
-	f: Federation,
-	server: Option<tokio::task::JoinHandle<()>>,
-	listen: std::net::SocketAddr,
-	// Real-process cases keep this socket owned across stop, SIGKILL and exec.
-	reservation: Option<std::net::TcpListener>,
-	_capacity: Option<tokio::sync::OwnedSemaphorePermit>,
-}
-impl Node {
-	async fn new(environment: &TestEnvironment, suffix: &str) -> Self {
-		Self::with_port_reservation(environment, suffix, false).await
+use futures_util::{
+	FutureExt,
+	future::{BoxFuture, Shared},
+};
+use rstest::fixture;
+type EnvironmentFuture = Shared<BoxFuture<'static, Arc<TestEnvironment>>>;
+type Pair = (Node, Node, Manifest, Uuid, Uuid);
+type PairFuture = BoxFuture<'static, Pair>;
+
+#[fixture]
+fn atomic_runtime(
+	#[default("a")] suffix: &str,
+	#[from(test_environment)] _environment: EnvironmentFuture,
+	#[from(common::execution_database)]
+	#[with(_environment.clone(), &format!("atomic_{}",suffix.replace('-',"_")), 10)]
+	_database: common::DatabaseFuture,
+	#[from(common::runtime)]
+	#[with(_database.clone())]
+	runtime: common::RuntimeFuture,
+) -> common::RuntimeFuture {
+	let suffix = suffix.to_owned();
+	async move {
+		let mut runtime = runtime.await;
+		let f = &mut runtime.federation;
+		f.config.node_id = format!("aidash://atomic-{suffix}");
+		f.store.node_id = f.config.node_id.clone();
+		f.config.api_token = "atomic-operator-fixture-token".into();
+		f.registry = Registry::new(f.store.pool.clone(), &f.config.node_id).unwrap();
+		runtime
 	}
-	async fn with_port_reservation(
-		environment: &TestEnvironment,
-		suffix: &str,
-		reserve_port: bool,
-	) -> Self {
-		let admin = environment.database_url.clone();
-		let database = format!(
-			"atomic_{}_{}",
-			suffix.replace('-', "_"),
-			Uuid::new_v4().simple()
-		);
-		PgConnection::connect(&admin)
-			.await
+	.boxed()
+	.shared()
+}
+type Reservation = Option<Arc<std::net::TcpListener>>;
+/// Real-process cases keep this socket owned across stop, SIGKILL and exec.
+#[fixture]
+fn node_listener(
+	#[default(false)] reserve_port: bool,
+) -> (common::upstream_fixtures::ListenerFuture, Reservation) {
+	let reservation = reserve_port.then(|| {
+		let reservation = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+		reservation.set_nonblocking(true).unwrap();
+		Arc::new(reservation)
+	});
+	let owned = reservation.clone();
+	let listener = async move {
+		Arc::new(match owned {
+			Some(reservation) => {
+				tokio::net::TcpListener::from_std(reservation.try_clone().unwrap()).unwrap()
+			}
+			None => tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap(),
+		})
+	}
+	.boxed()
+	.shared();
+	(listener, reservation)
+}
+#[fixture]
+fn node(
+	#[default("a")] _suffix: &str,
+	#[from(test_environment)] _environment: EnvironmentFuture,
+	#[default(false)] _reserve_port: bool,
+	#[default(aidash_server::sse::Service::new(Default::default()))]
+	_streams: aidash_server::sse::Service,
+	#[from(node_listener)]
+	#[with(_reserve_port)]
+	listener: (common::upstream_fixtures::ListenerFuture, Reservation),
+	#[from(atomic_runtime)]
+	#[with(_suffix,_environment.clone())]
+	_atomic: common::RuntimeFuture,
+	#[from(common::native_peer)]
+	#[with(&format!("aidash://atomic-{_suffix}"),Arc::new(|router|router),_atomic.clone(),_streams.clone(),listener.0.clone())]
+	peer: common::PeerFuture,
+) -> BoxFuture<'static, Node> {
+	let reservation = listener.1;
+	async move {
+		let peer = peer.await;
+		let f = peer.runtime.federation.clone();
+		let listen = f
+			.config
+			.endpoint
+			.strip_prefix("http://")
 			.unwrap()
-			.execute(
-				// SeaQuery has no CREATE/DROP DATABASE builder.
-				format!("CREATE DATABASE {database}").as_str(),
-			)
-			.await
+			.parse()
 			.unwrap();
-		let mut url = reqwest::Url::parse(&admin).unwrap();
-		url.set_path(&format!("/{database}"));
-		let node_id = format!("aidash://atomic-{suffix}");
-		let store = common::native_store(url.as_str(), &node_id).await;
-		let (listener, reservation) = if reserve_port {
-			let reservation = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-			reservation.set_nonblocking(true).unwrap();
-			let listener =
-				tokio::net::TcpListener::from_std(reservation.try_clone().unwrap()).unwrap();
-			(listener, Some(reservation))
-		} else {
-			(
-				tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap(),
-				None,
-			)
-		};
-		let listen = listener.local_addr().unwrap();
-		let config = Config {
-			node_id,
-			endpoint: format!("http://{listen}"),
-			database_url: url.to_string(),
-			nats_url: environment.nats_url.clone(),
-			api_token: "atomic-operator-fixture-token".into(),
-			web_dir: "web/dist".into(),
-			lease_seconds: 30,
-			default_host_packages: vec![],
-			oidc: None,
-			gcip: None,
-		};
-		let f = Federation {
-			sandbox: Default::default(),
-			gcip: None,
-			registry: Registry::new(store.pool.clone(), &store.node_id).unwrap(),
-			store,
-			config,
-			client: reqwest::Client::new(),
-			notify: Arc::new(tokio::sync::Notify::new()),
-		};
-		let app = common::application(f.clone()).await.test_transport();
-		let server = Some(tokio::spawn(async move {
-			axum::serve(listener, app).await.unwrap()
-		}));
-		Self {
+		Node {
 			f,
 			listen,
 			reservation,
-			server,
+			server: Some(peer.server),
+			client: peer.client,
+			application: peer.application,
+			_runtime: peer.runtime,
 			_capacity: None,
 		}
 	}
-	async fn stop(&mut self) {
-		if let Some(server) = self.server.take() {
-			server.abort();
-			let _ = server.await;
-		}
-		if self.reservation.is_some() {
-			// Child readiness must use a fresh connection to the inherited socket,
-			// rather than an idle keep-alive connection to the previous server.
-			self.f.client = reqwest::Client::new();
-		}
-	}
-	async fn restart(&mut self) {
-		self.stop().await;
-		self.f.store.pool.close().await;
-		self.f.store.control_pool.close().await;
-		let store = common::native_store(&self.f.config.database_url, &self.f.config.node_id).await;
-		self.f = Federation {
-			registry: Registry::new(store.pool.clone(), &store.node_id).unwrap(),
-			store,
-			notify: Arc::new(tokio::sync::Notify::new()),
-			..self.f.clone()
-		};
-		let listener = self.listener().await;
-		let app = common::application(self.f.clone()).await.test_transport();
-		self.server = Some(tokio::spawn(async move {
-			axum::serve(listener, app).await.unwrap()
-		}));
-	}
-	async fn listener(&self) -> tokio::net::TcpListener {
-		match &self.reservation {
-			Some(listener) => {
-				tokio::net::TcpListener::from_std(listener.try_clone().unwrap()).unwrap()
-			}
-			None => tokio::net::TcpListener::bind(self.listen)
-				.await
-				.unwrap_or_else(|error| {
-					panic!(
-						"fixture {} bind {}: {error}",
-						self.f.config.node_id, self.listen
-					)
-				}),
-		}
-	}
-	async fn request(
-		&self,
-		method: reqwest::Method,
-		path: &str,
-		body: Option<Value>,
-	) -> (u16, Value) {
-		let mut request = self
-			.f
-			.client
-			.request(method, format!("{}{path}", self.f.config.endpoint))
-			.bearer_auth(&self.f.config.api_token)
-			.timeout(std::time::Duration::from_secs(5));
-		if let Some(body) = body {
-			request = request.json(&body);
-		}
-		let response = request.send().await.unwrap();
-		let status = response.status().as_u16();
-		let bytes = response.bytes().await.unwrap();
-		(
-			status,
-			serde_json::from_slice(&bytes).unwrap_or(Value::Null),
-		)
-	}
-	async fn get(&self, path: &str) -> (u16, Value) {
-		self.request(reqwest::Method::GET, path, None).await
-	}
-	async fn cleanup(mut self) {
-		self.stop().await;
-		self.f.store.pool.close().await;
-		self.f.store.control_pool.close().await;
-		// TestEnvironment owns the disposable postmaster and all isolated
-		// databases. Match the shared fixture cleanup: DROP DATABASE emits a
-		// global process barrier and can block another test's PGroonga index
-		// initialization. The final environment owner removes the container.
-	}
+	.boxed()
 }
-impl Drop for Node {
-	fn drop(&mut self) {
-		if let Some(server) = &self.server {
-			server.abort();
-		}
-	}
-}
-async fn pair(environment: &TestEnvironment) -> (Node, Node, Manifest, Uuid, Uuid) {
-	pair_with_port_reservation(environment, false).await
-}
-async fn pair_with_port_reservation(
-	environment: &TestEnvironment,
-	reserve_ports: bool,
-) -> (Node, Node, Manifest, Uuid, Uuid) {
+#[fixture]
+fn pair_capacity() -> BoxFuture<'static, tokio::sync::OwnedSemaphorePermit> {
 	static CAPACITY: std::sync::LazyLock<Arc<tokio::sync::Semaphore>> =
 		std::sync::LazyLock::new(|| Arc::new(tokio::sync::Semaphore::new(2)));
-	let capacity = CAPACITY.clone().acquire_owned().await.unwrap();
-	let mut a = Node::with_port_reservation(environment, "a", reserve_ports).await;
-	a._capacity = Some(capacity);
-	let b = Node::with_port_reservation(environment, "b", reserve_ports).await;
+	async { CAPACITY.clone().acquire_owned().await.unwrap() }.boxed()
+}
+#[fixture]
+fn pair(
+	#[from(test_environment)] _environment: EnvironmentFuture,
+	#[default(false)] _reserve_ports: bool,
+	#[default(aidash_server::sse::Service::new(Default::default()))]
+	_streams: aidash_server::sse::Service,
+	pair_capacity: BoxFuture<'static, tokio::sync::OwnedSemaphorePermit>,
+	#[from(node)]
+	#[with("a",_environment.clone(),_reserve_ports,_streams.clone())]
+	first: BoxFuture<'static, Node>,
+	#[from(node)]
+	#[with("b",_environment.clone(),_reserve_ports)]
+	second: BoxFuture<'static, Node>,
+) -> PairFuture {
+	let capacity = Box::pin(pair_capacity);
+	async move {let capacity=capacity.await; let mut a=first.await; a._capacity=Some(capacity); let b=second.await;
 	for (local, remote) in [(&a, &b), (&b, &a)] {
 		local
 			.f
@@ -240,6 +178,118 @@ async fn pair_with_port_reservation(
 			.unwrap();
 	let manifest=serde_json::from_value(json!({"id":Uuid::new_v4(),"coordinator":a.f.config.node_id,"isolation":"serializable","deadline":Utc::now()+Duration::minutes(5),"participants":[{"node_id":a.f.config.node_id,"mutations":[{"kind":"workspace_state","workspace_id":wa.id,"expected_revision":0,"state":{"value":"new-a"}}]},{"node_id":b.f.config.node_id,"mutations":[{"kind":"workspace_state","workspace_id":wb.id,"expected_revision":0,"state":{"value":"new-b"}}]}]})).unwrap();
 	(a, b, manifest, wa.id, wb.id)
+ }.boxed()
+}
+struct Node {
+	f: Federation,
+	server: Option<Arc<common::PeerServerGuard>>,
+	client: Arc<reinhardt::test::APIClient>,
+	listen: std::net::SocketAddr,
+	// Real-process cases keep this socket owned across stop, SIGKILL and exec.
+	reservation: Reservation,
+	application: common::TestApplication,
+	_runtime: common::RuntimeFixture,
+	_capacity: Option<tokio::sync::OwnedSemaphorePermit>,
+}
+impl Node {
+	async fn stop(&mut self) {
+		if let Some(server) = self.server.take() {
+			server.shutdown().await;
+		}
+		if self.reservation.is_some() {
+			// Child readiness must use a fresh connection to the inherited socket,
+			// rather than an idle keep-alive connection to the previous server.
+			self.f.client = reqwest::Client::new();
+			self.client = Arc::new(
+				reinhardt::test::APIClient::builder()
+					.base_url(&self.f.config.endpoint)
+					.timeout(std::time::Duration::from_secs(5))
+					.build(),
+			);
+		}
+	}
+	async fn restart(&mut self) {
+		// Act: close and reconnect the participant pools, then rebind its stable origin.
+		self.stop().await;
+		self.f.store.pool.close().await;
+		self.f.store.control_pool.close().await;
+		let store = common::native_store(&self.f.config.database_url, &self.f.config.node_id).await;
+		self.f = Federation {
+			registry: Registry::new(store.pool.clone(), &store.node_id).unwrap(),
+			store,
+			notify: Arc::new(tokio::sync::Notify::new()),
+			..self.f.clone()
+		};
+		self.application = common::application(self.f.clone()).await;
+		self.serve(self.application.native_router()).await;
+	}
+	async fn serve(&mut self, router: Arc<reinhardt::ServerRouter>) {
+		// Act: replace the live participant routes while preserving its advertised port.
+		self.stop().await;
+		let listener = Arc::new(self.listener().await);
+		self.server = Some(Arc::new(common::PeerServerGuard::spawn(
+			listener, router, None,
+		)));
+	}
+	async fn listener(&self) -> tokio::net::TcpListener {
+		match &self.reservation {
+			Some(listener) => {
+				tokio::net::TcpListener::from_std(listener.try_clone().unwrap()).unwrap()
+			}
+			None => tokio::net::TcpListener::bind(self.listen)
+				.await
+				.unwrap_or_else(|error| {
+					panic!(
+						"fixture {} bind {}: {error}",
+						self.f.config.node_id, self.listen
+					)
+				}),
+		}
+	}
+	async fn request(
+		&self,
+		method: reqwest::Method,
+		path: &str,
+		body: Option<Value>,
+	) -> (u16, Value) {
+		let mut request = self.client.request(method.clone(), path).header(
+			"Authorization",
+			format!("Bearer {}", self.f.config.api_token),
+		);
+		if method == reqwest::Method::POST {
+			request = request.json(&body.unwrap_or(Value::Null));
+		} else if let Some(body) = body {
+			request = request.json(&body);
+		}
+		let response = if matches!(method, reqwest::Method::GET | reqwest::Method::POST) {
+			request.send().await.unwrap()
+		} else {
+			// Preserve the existing five-second bound on other protocol methods.
+			tokio::time::timeout(std::time::Duration::from_secs(5), request.send())
+				.await
+				.unwrap()
+				.unwrap()
+		};
+		(
+			response.status_code(),
+			response.json_value().unwrap_or(Value::Null),
+		)
+	}
+	async fn get(&self, path: &str) -> (u16, Value) {
+		self.request(reqwest::Method::GET, path, None).await
+	}
+	async fn cleanup(mut self) {
+		self.stop().await;
+		self.f.store.pool.close().await;
+		self.f.store.control_pool.close().await;
+	}
+}
+impl Drop for Node {
+	fn drop(&mut self) {
+		if let Some(server) = &self.server {
+			server.abort();
+		}
+	}
 }
 async fn steps(node: &Node, id: Uuid, count: usize) {
 	for _ in 0..count {
@@ -298,11 +348,9 @@ async fn unavailable(node: &Node, workspace: Uuid) {
 #[rstest::rstest]
 #[tokio::test]
 async fn abort_records_a_durable_decision_while_recovery_owns_the_transition_lease(
-	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[future(awt)] pair: Pair,
 ) {
-	let (a, b, manifest, wa, wb) = pair(&_test_environment).await;
+	let (a, b, manifest, wa, wb) = pair;
 	coordinator::submit(&a.f, &manifest).await.unwrap();
 	steps(&a, manifest.id, 4).await; // Both votes are prepared, still undecided.
 	let mut transition = a.f.store.control_pool.driver().begin().await.unwrap();
@@ -361,11 +409,9 @@ async fn abort_records_a_durable_decision_while_recovery_owns_the_transition_lea
 #[rstest::rstest]
 #[tokio::test]
 async fn two_node_commit_hides_partial_application_and_releases_only_after_all_apply(
-	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[future(awt)] pair: Pair,
 ) {
-	let (a, b, manifest, wa, wb) = pair(&_test_environment).await;
+	let (a, b, manifest, wa, wb) = pair;
 	coordinator::submit(&a.f, &manifest).await.unwrap();
 	steps(&a, manifest.id, 2).await;
 	unavailable(&a, wa).await;
@@ -483,11 +529,9 @@ async fn two_node_commit_hides_partial_application_and_releases_only_after_all_a
 #[rstest::rstest]
 #[tokio::test]
 async fn stale_prepare_aborts_every_node_and_delayed_reserve_cannot_resurrect_it(
-	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[future(awt)] pair: Pair,
 ) {
-	let (a, b, mut manifest, wa, wb) = pair(&_test_environment).await;
+	let (a, b, mut manifest, wa, wb) = pair;
 	if let aidash_server::transactions::Mutation::WorkspaceState {
 		expected_revision, ..
 	} = &mut manifest.participants[1].mutations[0]
@@ -529,11 +573,9 @@ async fn stale_prepare_aborts_every_node_and_delayed_reserve_cannot_resurrect_it
 #[rstest::rstest]
 #[tokio::test]
 async fn partition_after_commit_retains_barriers_and_restart_recovers_the_same_decision(
-	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[future(awt)] pair: Pair,
 ) {
-	let (mut a, mut b, manifest, wa, wb) = pair(&_test_environment).await;
+	let (mut a, mut b, manifest, wa, wb) = pair;
 	coordinator::submit(&a.f, &manifest).await.unwrap();
 	steps(&a, manifest.id, 5).await;
 	b.stop().await;
@@ -558,11 +600,9 @@ async fn partition_after_commit_retains_barriers_and_restart_recovers_the_same_d
 #[rstest::rstest]
 #[tokio::test]
 async fn overlapping_coordinators_use_the_same_node_order_without_lost_updates(
-	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[future(awt)] pair: Pair,
 ) {
-	let (a, b, first, wa, wb) = pair(&_test_environment).await;
+	let (a, b, first, wa, wb) = pair;
 	let mut second = first.clone();
 	second.id = Uuid::new_v4();
 	second.coordinator = b.f.config.node_id.clone();
@@ -590,15 +630,13 @@ async fn overlapping_coordinators_use_the_same_node_order_without_lost_updates(
 #[rstest::rstest]
 #[tokio::test]
 async fn registry_workspace_task_execution_and_artifact_commit_together_once(
-	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[future(awt)] pair: Pair,
 ) {
 	use aidash_server::{
 		domain::{NewTask, qualified_agent},
 		registry::Entry,
 	};
-	let (a, b, mut manifest, wa, _wb) = pair(&_test_environment).await;
+	let (a, b, mut manifest, wa, _wb) = pair;
 	let agent:Entry=serde_json::from_value(json!({"id":"executor","version":"1.0.0","kind":"agent","name":{"en":"Executor"},"description":{"en":"Atomic fixture"},"config":{"model":{"id":"fixture","version":"1.0.0"},"instructions":"Atomic execution","schema_version":1,"bindings":[],"remove_default":[]}})).unwrap();
 	let model: Entry = serde_json::from_value(json!({"id":"fixture","version":"1.0.0","kind":"model","name":{"en":"Atomic model"},"description":{"en":"Pinned execution fixture"},"config":{"provider":"openrouter","model_id":"fixture","endpoint":"http://localhost:19999/v1","context_window":128000,"max_output_tokens":4096,"modalities":["text"],"cost":{}}})).unwrap();
 	b.f.registry.register(model).await.unwrap();
@@ -788,11 +826,9 @@ async fn registry_workspace_task_execution_and_artifact_commit_together_once(
 #[rstest::rstest]
 #[tokio::test]
 async fn participant_pulls_only_durable_decisions_and_never_guesses_after_timeout(
-	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[future(awt)] pair: Pair,
 ) {
-	let (mut a, b, manifest, wa, wb) = pair(&_test_environment).await;
+	let (mut a, b, manifest, wa, wb) = pair;
 	coordinator::submit(&a.f, &manifest).await.unwrap();
 	steps(&a, manifest.id, 4).await;
 	a.stop().await;
@@ -817,37 +853,29 @@ async fn participant_pulls_only_durable_decisions_and_never_guesses_after_timeou
 #[rstest::rstest]
 #[tokio::test]
 async fn an_existing_sse_stream_waits_for_atomic_visibility_before_emitting_changes(
+	event_streams: aidash_server::sse::Service,
+	#[from(test_environment)] _environment: EnvironmentFuture,
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(pair)]
+	#[with(_environment.clone(),false,event_streams.clone())]
+	pair: Pair,
 ) {
-	use axum::{body::Body, http::Request};
 	use futures_util::StreamExt;
-	let (a, b, manifest, wa, _wb) = pair(&_test_environment).await;
-	// This fixture has no Outbox publisher or NATS subscriber. Use a bounded
-	// reconciliation cadence to exercise the visibility gate without waiting
-	// for the production five-second missed-notification fallback.
-	let event_streams = aidash_server::sse::Service::new(aidash_server::sse::Settings {
-		reconcile_interval: std::time::Duration::from_millis(250),
-		..Default::default()
-	});
-	let response = common::application_with_event_streams(
-		a.f.clone(),
-		Default::default(),
-		event_streams.clone(),
-	)
-	.await
-	.oneshot(
-		Request::builder()
-			.uri(format!("/api/events/stream?workspace_id={wa}"))
-			.header("authorization", format!("Bearer {}", a.f.config.api_token))
-			.body(Body::empty())
-			.unwrap(),
-	)
-	.await
-	.unwrap();
+	let (a, b, manifest, wa, _wb) = pair;
+	// APIClient buffers bodies; the fixture-owned raw client preserves incremental SSE polling (#6661).
+	let response = a
+		.application
+		.streaming_http
+		.get(
+			a.application
+				.url(format!("/api/events/stream?workspace_id={wa}")),
+		)
+		.bearer_auth(&a.f.config.api_token)
+		.send()
+		.await
+		.unwrap();
 	assert_eq!(response.status(), 200);
-	let mut stream = response.into_body().into_data_stream();
+	let mut stream = response.bytes_stream();
 	let first = tokio::time::timeout(std::time::Duration::from_secs(3), stream.next())
 		.await
 		.unwrap()
@@ -884,11 +912,9 @@ async fn an_existing_sse_stream_waits_for_atomic_visibility_before_emitting_chan
 #[rstest::rstest]
 #[tokio::test]
 async fn peer_trust_denial_aborts_promptly_and_revocation_preserves_admitted_recovery(
-	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[future(awt)] pair: Pair,
 ) {
-	let (a, b, manifest, wa, wb) = pair(&_test_environment).await;
+	let (a, b, manifest, wa, wb) = pair;
 	let set_trust = |enabled| json!({"node_id":a.f.config.node_id,"enabled":enabled});
 	assert_eq!(
 		b.request(
@@ -969,12 +995,8 @@ async fn peer_trust_denial_aborts_promptly_and_revocation_preserves_admitted_rec
 
 #[rstest::rstest]
 #[tokio::test]
-async fn every_durable_transition_survives_fresh_pools_and_http_servers(
-	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
-) {
-	let (mut a, mut b, manifest, wa, wb) = pair(&_test_environment).await;
+async fn every_durable_transition_survives_fresh_pools_and_http_servers(#[future(awt)] pair: Pair) {
+	let (mut a, mut b, manifest, wa, wb) = pair;
 	coordinator::submit(&a.f, &manifest).await.unwrap();
 	let mut transitions = 0;
 	loop {
@@ -1007,11 +1029,9 @@ async fn every_durable_transition_survives_fresh_pools_and_http_servers(
 #[rstest::rstest]
 #[tokio::test]
 async fn undecided_deadline_aborts_without_publishing_prepared_mutations(
-	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[future(awt)] pair: Pair,
 ) {
-	let (a, b, mut manifest, wa, wb) = pair(&_test_environment).await;
+	let (a, b, mut manifest, wa, wb) = pair;
 	manifest.deadline = Utc::now() + Duration::seconds(2);
 	coordinator::submit(&a.f, &manifest).await.unwrap();
 	steps(&a, manifest.id, 4).await;
@@ -1032,15 +1052,18 @@ async fn undecided_deadline_aborts_without_publishing_prepared_mutations(
 #[rstest::rstest]
 #[tokio::test]
 async fn actual_worker_sigkill_after_commit_recovers_without_replaying_effects(
-	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[future(awt)] pair: Pair,
+	#[from(reinhardt::test::fixtures::temp_dir)] worker_directory: tempfile::TempDir,
+	#[from(reinhardt::test::fixtures::temp_dir)] restart_a_directory: tempfile::TempDir,
+	#[from(reinhardt::test::fixtures::temp_dir)] restart_b_directory: tempfile::TempDir,
 ) {
-	let (a, mut b, manifest, wa, wb) = pair(&_test_environment).await;
+	let (a, mut b, manifest, wa, wb) = pair;
 	coordinator::submit(&a.f, &manifest).await.unwrap();
 	steps(&a, manifest.id, 5).await;
 	b.stop().await;
-	let mut worker = WorkerProcess::start(&a.f, &a.f.config.database_url, "public");
+	// Act: start recovery after the committed transaction and peer partition.
+	let mut worker =
+		WorkerProcess::start(&a.f, &a.f.config.database_url, "public", worker_directory);
 	let reached = tokio::time::timeout(std::time::Duration::from_secs(15), async {
 		loop {
 			let phase: String = {
@@ -1085,8 +1108,19 @@ async fn actual_worker_sigkill_after_commit_recovers_without_replaying_effects(
 	);
 	unavailable(&a, wa).await;
 	b.restart().await;
-	let mut restarted_a = WorkerProcess::start(&a.f, &a.f.config.database_url, "public");
-	let mut restarted_b = WorkerProcess::start(&b.f, &b.f.config.database_url, "public");
+	// Act: replace killed workers using fresh declared directories.
+	let mut restarted_a = WorkerProcess::start(
+		&a.f,
+		&a.f.config.database_url,
+		"public",
+		restart_a_directory,
+	);
+	let mut restarted_b = WorkerProcess::start(
+		&b.f,
+		&b.f.config.database_url,
+		"public",
+		restart_b_directory,
+	);
 	let completed = tokio::time::timeout(std::time::Duration::from_secs(15), async {
 		loop {
 			if coordinator::status(&a.f, manifest.id)
@@ -1137,11 +1171,9 @@ async fn actual_worker_sigkill_after_commit_recovers_without_replaying_effects(
 #[rstest::rstest]
 #[tokio::test]
 async fn unreachable_aborted_transactions_cannot_starve_later_local_work(
-	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[future(awt)] pair: Pair,
 ) {
-	let (a, mut b, manifest, wa, _wb) = pair(&_test_environment).await;
+	let (a, mut b, manifest, wa, _wb) = pair;
 	for _ in 0..33 {
 		let mut old = manifest.clone();
 		old.id = Uuid::new_v4();
@@ -1180,21 +1212,25 @@ async fn unreachable_aborted_transactions_cannot_starve_later_local_work(
 #[case::recipient_disclosure_denied(0, "disclosure", "REJECTED")]
 #[tokio::test]
 async fn mapped_transaction_admission_and_revocation(
-	#[future(awt)]
-	#[from(test_environment)]
-	environment: Arc<TestEnvironment>,
 	#[case] transitions: usize,
 	#[case] revocation: &str,
 	#[case] expected: &str,
 	#[values(2, 3)] count: usize,
+
+	#[future(awt)]
+	#[from(mapped_nodes)]
+	#[with(count)]
+	nodes: (Pair, Option<Node>),
+	fault_signals: FaultSignals,
+	http_client: reqwest::Client,
 ) {
 	use aidash_server::authorization::{
 		Authorization,
 		peer::{PeerMappingInput, write},
 	};
-	let (mut a, mut b, mut manifest, _, _) = pair(&environment).await;
-	let app_a = common::application(a.f.clone()).await;
-	let app_b = common::application(b.f.clone()).await;
+	let (mut a, mut b, mut manifest, _, _) = nodes.0;
+	let app_a = a.application.clone();
+	let app_b = b.application.clone();
 	let (_, token_a, task_a) = common::bootstrap(&a.f, &app_a, "http://127.0.0.1:9").await;
 	let (_, _, task_b) = common::bootstrap(&b.f, &app_b, "http://127.0.0.1:9").await;
 	let wa = a.f.store.task(task_a).await.unwrap().workspace_id;
@@ -1242,8 +1278,9 @@ async fn mapped_transaction_admission_and_revocation(
 			}];
 	}
 	let mut third = None;
+	let mut initial_third = nodes.1;
 	if count == 3 {
-		let c = Node::new(&environment, "c").await;
+		let c = initial_third.take().unwrap();
 		for (local, remote) in [(&a, &c), (&c, &a)] {
 			local
 				.f
@@ -1268,7 +1305,7 @@ async fn mapped_transaction_admission_and_revocation(
 				200
 			);
 		}
-		let app_c = common::application(c.f.clone()).await;
+		let app_c = c.application.clone();
 		let (_, _, task) = common::bootstrap(&c.f, &app_c, "http://127.0.0.1:9").await;
 		let workspace = c.f.store.task(task).await.unwrap().workspace_id;
 		let auth = Authorization {
@@ -1407,37 +1444,37 @@ async fn mapped_transaction_admission_and_revocation(
 	let mut reconciliation_check = None;
 	match revocation {
 		"lost_reply" => {
-			use axum::{middleware, response::IntoResponse};
+			// Act: delay the durable reservation reply through native middleware.
 			b.stop().await;
-			let admitted = Arc::new(tokio::sync::Notify::new());
-			let release = Arc::new(tokio::sync::Notify::new());
+			let admitted = fault_signals.admitted;
+			let release = fault_signals.release;
 			let reached = admitted.clone();
 			let unblock = release.clone();
-			let app = common::application(b.f.clone())
-				.await
-				.test_transport()
-				.layer(middleware::from_fn(
-					move |request: axum::extract::Request, next: middleware::Next| {
+			let app = aidash_server::routes()
+				.into_server()
+				.with_di_context(b.application.context.clone())
+				.with_middleware(ClosureMiddleware(
+					move |request: reinhardt::Request, next: Arc<dyn reinhardt::Handler>| {
 						let reached = reached.clone();
 						let unblock = unblock.clone();
 						async move {
 							let reservation =
-								request.uri().path() == "/federation/v0.1/transactions/reserve";
-							let response = next.run(request).await;
-							if reservation && response.status().is_success() {
+								request.uri.path() == "/federation/v0.1/transactions/reserve";
+							let response = next.handle(request).await.unwrap();
+							if reservation && response.status.is_success() {
 								reached.notify_one();
 								unblock.notified().await;
-								return http::StatusCode::SERVICE_UNAVAILABLE.into_response();
+								return reinhardt::Response::new(
+									http::StatusCode::SERVICE_UNAVAILABLE,
+								);
 							}
 							response
 						}
 					},
 				));
-			let listener = b.listener().await;
-			b.server = Some(tokio::spawn(async move {
-				axum::serve(listener, app).await.unwrap()
-			}));
-			a.f.client = reqwest::Client::new();
+			b.serve(Arc::new(app)).await;
+			// Act: use a fresh declared connection pool after replacing the participant transport.
+			a.f.client = http_client;
 			let f = a.f.clone();
 			let id = manifest.id;
 			let pending = tokio::spawn(async move { coordinator::advance(&f, id).await.unwrap() });
@@ -1461,37 +1498,38 @@ async fn mapped_transaction_admission_and_revocation(
 					.into();
 			let ticket_app = common::application(limited.clone()).await;
 			let peer_token = std::env::var("AIDASH_SECRET_TEST_PEER").unwrap();
+			// Act: rebuild after constraining the durable control pool to one slot.
 			for _ in 0..2 {
-				let response = ticket_app
-					.clone()
-					.oneshot(
-						http::Request::builder()
-							.uri(format!(
-								"/federation/v0.1/transactions/{}/authority",
-								manifest.id
-							))
-							.header("authorization", format!("Bearer {peer_token}"))
-							.header("x-aidash-node", &b.f.config.node_id)
-							.header("x-aidash-protocol", "0.2")
-							.body(axum::body::Body::empty())
-							.unwrap(),
-					)
-					.await
-					.unwrap();
-				let status = response.status();
-				let bytes = axum::body::to_bytes(response.into_body(), 1_048_576)
-					.await
-					.unwrap();
+				let response = async {
+					let client = &(ticket_app.client());
+					let mut request = client.request(
+						http::Method::GET,
+						&format!("/federation/v0.1/transactions/{}/authority", manifest.id),
+					);
+					for (name, value) in &[
+						("authorization", format!("Bearer {peer_token}").as_str()),
+						("x-aidash-node", b.f.config.node_id.as_str()),
+						("x-aidash-protocol", "0.2"),
+					] {
+						request = request.header(*name, *value);
+					}
+					request.send().await
+				}
+				.await
+				.unwrap();
+				let status = response.status_code();
+				let bytes = response.body();
 				assert_eq!(
 					status,
 					200,
 					"ticket retry required another control slot: {}",
-					String::from_utf8_lossy(&bytes)
+					String::from_utf8_lossy(bytes)
 				);
-				let ticket: Value = serde_json::from_slice(&bytes).unwrap();
+				let ticket: Value = serde_json::from_slice(bytes).unwrap();
 				assert_eq!(ticket["id"], json!(manifest.id));
 				assert_eq!(ticket["digest"], manifest.digest().unwrap());
 			}
+
 			drop(ticket_app);
 			limited.store.control_pool.close().await;
 			let path = format!(
@@ -1624,12 +1662,10 @@ mod tiers;
 #[rstest::rstest]
 #[tokio::test]
 async fn restoring_the_same_peer_during_a_barrier_does_not_restore_transaction_trust(
-	#[future(awt)]
-	#[from(test_environment)]
-	environment: Arc<TestEnvironment>,
+	#[future(awt)] pair: Pair,
 ) {
 	use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
-	let (a, b, manifest, wa, wb) = pair(&environment).await;
+	let (a, b, manifest, wa, wb) = pair;
 	coordinator::submit(&a.f, &manifest).await.unwrap();
 	steps(&a, manifest.id, 5).await;
 	assert_eq!(
@@ -1744,3 +1780,68 @@ mod listing;
 use reinhardt::query::QueryStatementBuilder as _;
 
 use reinhardt::query::SimpleExpr;
+
+#[fixture]
+fn mapped_nodes(
+	#[default(2)] count: usize,
+	#[from(test_environment)] _environment: EnvironmentFuture,
+	#[from(pair)]
+	#[with(_environment.clone())]
+	pair: PairFuture,
+	#[from(node)]
+	#[with("c",_environment.clone())]
+	third: BoxFuture<'static, Node>,
+) -> BoxFuture<'static, (Pair, Option<Node>)> {
+	async move {
+		(
+			pair.await,
+			if count == 3 { Some(third.await) } else { None },
+		)
+	}
+	.boxed()
+}
+#[derive(Clone)]
+struct FaultSignals {
+	admitted: Arc<tokio::sync::Notify>,
+	release: Arc<tokio::sync::Notify>,
+	gate: Arc<tokio::sync::Semaphore>,
+	barrier: Arc<tokio::sync::Barrier>,
+	active: Arc<std::sync::atomic::AtomicUsize>,
+	peak: Arc<std::sync::atomic::AtomicUsize>,
+}
+#[fixture]
+fn fault_signals() -> FaultSignals {
+	FaultSignals {
+		gate: Arc::new(tokio::sync::Semaphore::new(0)),
+		admitted: Arc::new(tokio::sync::Notify::new()),
+		release: Arc::new(tokio::sync::Notify::new()),
+		barrier: Arc::new(tokio::sync::Barrier::new(2)),
+		active: Default::default(),
+		peak: Default::default(),
+	}
+}
+/// Type adapter for native middleware closures; all state is fixture-owned.
+struct ClosureMiddleware<F>(F);
+#[async_trait::async_trait]
+impl<F, Fut> reinhardt::Middleware for ClosureMiddleware<F>
+where
+	F: Fn(reinhardt::Request, Arc<dyn reinhardt::Handler>) -> Fut + Send + Sync + 'static,
+	Fut: std::future::Future<Output = reinhardt::Response> + Send + 'static,
+{
+	async fn process(
+		&self,
+		request: reinhardt::Request,
+		next: Arc<dyn reinhardt::Handler>,
+	) -> reinhardt::Result<reinhardt::Response> {
+		Ok((self.0)(request, next).await)
+	}
+}
+
+#[fixture]
+fn event_streams() -> aidash_server::sse::Service {
+	// No Outbox/NATS subscriber: bound reconciliation while observing the real visibility gate.
+	aidash_server::sse::Service::new(aidash_server::sse::Settings {
+		reconcile_interval: std::time::Duration::from_millis(250),
+		..Default::default()
+	})
+}

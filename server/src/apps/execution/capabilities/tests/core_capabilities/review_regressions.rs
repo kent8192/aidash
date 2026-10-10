@@ -92,14 +92,18 @@ async fn withdrawn_operation_fixture(
 #[rstest::rstest]
 #[tokio::test]
 async fn authority_withdrawal_before_dispatch_keeps_saved_files_usable(
-	#[future] withdrawn_operation_fixture: (CoreFixture, aidash_server::domain::Run, Value, Uuid),
+	#[future]
+	#[from(running_withdrawn_operation_fixture)]
+	withdrawn_operation_fixture: (
+		CoreFixture,
+		aidash_server::domain::Run,
+		Value,
+		Uuid,
+		CapabilityWorker,
+	),
 ) {
-	let (c, run, area, id) = Box::pin(withdrawn_operation_fixture).await;
-	let (stop, rx) = tokio::sync::watch::channel(false);
-	let worker = tokio::spawn(aidash_server::capabilities::operations::run(
-		c.f.store.clone(),
-		rx,
-	));
+	let (c, run, area, id, worker) = Box::pin(withdrawn_operation_fixture).await;
+	let stop = worker.stop.clone();
 	let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(8);
 	loop {
 		let state: String = {
@@ -251,21 +255,19 @@ async fn extraction_queue_fixture(
 	let mut profile = (*c.f.store.capabilities.0).clone();
 	profile.admission = false;
 	c.f.store.capabilities = Runtime::new(profile).unwrap();
-	c.app = common::application(c.f.clone()).await;
+	c.app.context.set_singleton(c.f.clone());
 	(c, last)
 }
 
 #[rstest::rstest]
 #[tokio::test]
 async fn stale_extraction_credentials_do_not_starve_later_uploads(
-	#[future] extraction_queue_fixture: (CoreFixture, String),
+	#[future]
+	#[from(running_extraction_queue_fixture)]
+	extraction_queue_fixture: (CoreFixture, String, CapabilityWorker),
 ) {
-	let (c, path) = Box::pin(extraction_queue_fixture).await;
-	let (stop, rx) = tokio::sync::watch::channel(false);
-	let worker = tokio::spawn(aidash_server::capabilities::operations::run(
-		c.f.store.clone(),
-		rx,
-	));
+	let (c, path, worker) = Box::pin(extraction_queue_fixture).await;
+	let stop = worker.stop.clone();
 	let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
 	let finished = loop {
 		let (status, state) = request(&c.app, &c.token, "GET", &path, Value::Null).await;
@@ -338,7 +340,7 @@ async fn full_mount_fixture(
 	// These calls must enforce writable capacity before leaving a dispatch intent.
 	profile.runner = None;
 	c.f.store.capabilities = Runtime::new(profile).unwrap();
-	c.app = common::application(c.f.clone()).await;
+	c.app.context.set_singleton(c.f.clone());
 	(c, run)
 }
 
@@ -356,7 +358,7 @@ async fn mounted_skills_require_writable_capacity_before_operation_commit(
 	let mut profile = (*c.f.store.capabilities.0).clone();
 	profile.working_bytes += writable_bytes;
 	c.f.store.capabilities = Runtime::new(profile).unwrap();
-	c.app = common::application(c.f.clone()).await;
+	c.app.context.set_singleton(c.f.clone());
 	let (status, denied) = request(
 		&c.app,
 		&c.token,
@@ -404,32 +406,64 @@ use reinhardt::query::{ExprTrait as _, QueryStatementBuilder as _};
 
 use reinhardt::query::SimpleExpr;
 
+#[rstest::fixture]
+async fn running_withdrawn_operation_fixture(
+	#[future] withdrawn_operation_fixture: (CoreFixture, aidash_server::domain::Run, Value, Uuid),
+	worker_control: WorkerControl,
+) -> (
+	CoreFixture,
+	aidash_server::domain::Run,
+	Value,
+	Uuid,
+	CapabilityWorker,
+) {
+	let (c, run, area, id) = Box::pin(withdrawn_operation_fixture).await;
+	let worker = CapabilityWorker {
+		stop: worker_control.stop,
+		handle: tokio::spawn(aidash_server::capabilities::operations::run(
+			c.f.store.clone(),
+			worker_control.receiver,
+		)),
+	};
+	(c, run, area, id, worker)
+}
+
+#[rstest::fixture]
+async fn running_extraction_queue_fixture(
+	#[future] extraction_queue_fixture: (CoreFixture, String),
+	worker_control: WorkerControl,
+) -> (CoreFixture, String, CapabilityWorker) {
+	let (c, path) = Box::pin(extraction_queue_fixture).await;
+	let worker = CapabilityWorker {
+		stop: worker_control.stop,
+		handle: tokio::spawn(aidash_server::capabilities::operations::run(
+			c.f.store.clone(),
+			worker_control.receiver,
+		)),
+	};
+	(c, path, worker)
+}
+
 #[rstest::rstest]
 #[tokio::test]
 async fn cached_skill_context_rechecks_descriptor_authority_before_model_retry(
-	#[future] test_environment: Arc<TestEnvironment>,
+	#[from(retry_calls)] calls: Arc<std::sync::atomic::AtomicUsize>,
+	#[from(retry_router)]
+	#[with(calls.clone())]
+	_router: Arc<reinhardt::ServerRouter>,
+	#[from(upstream_fixtures::provider_transport)]
+	#[with(_router.clone())]
+	provider: upstream_fixtures::UpstreamFuture,
+	#[from(provider_endpoint)]
+	#[with(provider.clone())]
+	_endpoint: EndpointFuture,
+	#[from(capability_fixture)]
+	#[with("aidash://execution-test",_endpoint.clone())]
+	core: CoreFuture,
 ) {
-	use std::sync::atomic::{AtomicUsize, Ordering};
-	let calls = Arc::new(AtomicUsize::new(0));
-	let seen = calls.clone();
-	let model = axum::Router::new().route(
-		"/v1/chat/completions",
-		axum::routing::post(move || {
-			let seen = seen.clone();
-			async move {
-				seen.fetch_add(1, Ordering::SeqCst);
-				(
-					http::StatusCode::INTERNAL_SERVER_ERROR,
-					axum::Json(json!({"error":"retry fixture"})),
-				)
-			}
-		}),
-	);
-	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-	let endpoint = format!("http://{}", listener.local_addr().unwrap());
-	let server = tokio::spawn(async move { axum::serve(listener, model).await.unwrap() });
-	let c =
-		build_core_fixture_at(test_environment.await, "aidash://execution-test", &endpoint).await;
+	use std::sync::atomic::Ordering;
+	let c = core.await;
+	let server = provider.await;
 	let admitted = admit(&c).await;
 	let harness = aidash_server::harness::Harness {
 		federation: c.f.clone(),
@@ -507,7 +541,7 @@ async fn cached_skill_context_rechecks_descriptor_authority_before_model_retry(
 			"cached Source text must not be a public inspection field"
 		);
 	}
-	server.abort();
+	drop(server);
 	c.close().await;
 }
 
@@ -569,4 +603,29 @@ async fn direct_host_http_rejects_a_withdrawn_bound_tool_before_creating_an_oper
 		"withdrawn binding must not create a Host operation"
 	);
 	c.close().await;
+}
+
+#[rstest::fixture]
+fn retry_calls() -> Arc<std::sync::atomic::AtomicUsize> {
+	Arc::new(std::sync::atomic::AtomicUsize::new(0))
+}
+#[rstest::fixture]
+fn retry_router(retry_calls: Arc<std::sync::atomic::AtomicUsize>) -> Arc<reinhardt::ServerRouter> {
+	Arc::new(
+		reinhardt::test::stub::StubRouter::new()
+			.route(
+				"/v1/chat/completions",
+				http::Method::POST,
+				upstream_fixtures::reply(move |_| {
+					let calls = retry_calls.clone();
+					async move {
+						calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+						reinhardt::Response::new(http::StatusCode::INTERNAL_SERVER_ERROR)
+							.with_json(&json!({"error":"retry fixture"}))
+							.unwrap()
+					}
+				}),
+			)
+			.into_server_router(),
+	)
 }

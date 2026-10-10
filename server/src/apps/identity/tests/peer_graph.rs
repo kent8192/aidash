@@ -1,8 +1,7 @@
 #[path = "../../execution/tests/support/legacy.rs"]
 mod common;
 
-use axum::{body::Body, http::Request};
-use common::{TestEnvironment, bootstrap, cleanup, request, setup, test_environment};
+use common::{bootstrap, cleanup, request};
 use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
 use serde_json::{Value, json};
 
@@ -37,29 +36,29 @@ async fn graph_custom(
 		.as_object_mut()
 		.unwrap()
 		.extend(overrides.as_object().unwrap().clone());
-	let response = app
-		.clone()
-		.oneshot(
-			Request::builder()
-				.method("POST")
-				.uri("/federation/v0.1/scoped/graph")
-				.header("authorization", format!("Bearer {token}"))
-				.header("x-aidash-node", SOURCE)
-				.header("x-aidash-protocol", "0.2")
-				.header("content-type", "application/json")
-				.body(Body::from(payload.to_string()))
-				.unwrap(),
-		)
-		.await
-		.unwrap();
+	let authorization = format!("Bearer {token}");
+	let response = async {
+		let client = &(app.client());
+		let mut request = client
+			.request(http::Method::POST, "/federation/v0.1/scoped/graph")
+			.body(bytes::Bytes::copy_from_slice(
+				payload.to_string().as_bytes(),
+			))
+			.header(http::header::CONTENT_TYPE, "application/json");
+		for (name, value) in &[
+			("authorization", authorization.as_str()),
+			("x-aidash-node", SOURCE),
+			("x-aidash-protocol", "0.2"),
+		] {
+			request = request.header(*name, *value);
+		}
+		request.send().await
+	}
+	.await
+	.unwrap();
 	let status = response.status().as_u16();
-	let bytes = axum::body::to_bytes(response.into_body(), 4_194_304)
-		.await
-		.unwrap();
-	(
-		status,
-		serde_json::from_slice(&bytes).unwrap_or(Value::Null),
-	)
+	let bytes = response.body();
+	(status, serde_json::from_slice(bytes).unwrap_or(Value::Null))
 }
 
 async fn add_peer(f: &aidash_server::federation::Federation, node: &str) {
@@ -107,11 +106,11 @@ async fn add_peer(f: &aidash_server::federation::Federation, node: &str) {
 #[tokio::test]
 async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 	#[future(awt)]
-	#[from(test_environment)]
-	environment: std::sync::Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
 ) {
-	let (f, url, schema) = setup(&environment).await;
-	let app = common::application(f.clone()).await;
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
 	let (mut policy, subject_token, task_id) = bootstrap(&f, &app, "http://localhost:1").await;
 	let long_goal = format!(
 		"First line.\n{}\nEnd of the current Goal.",
@@ -769,11 +768,11 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 #[tokio::test]
 async fn sparse_goal_pages_advance_and_activity_reaches_older_page_events(
 	#[future(awt)]
-	#[from(test_environment)]
-	environment: std::sync::Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
 ) {
-	let (f, url, schema) = setup(&environment).await;
-	let app = common::application(f.clone()).await;
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
 	bootstrap(&f, &app, "http://localhost:1").await;
 	add_peer(&f, SOURCE).await;
 	let peer_token = std::env::var("AIDASH_SECRET_TEST_PEER").unwrap();

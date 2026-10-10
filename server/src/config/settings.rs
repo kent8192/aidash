@@ -192,9 +192,11 @@ impl Injectable for ProjectSettings {
 mod tests {
 	use super::*;
 	use reinhardt::conf::settings::fragment::SettingsValidation;
+	use reinhardt::test::fixtures::temp_dir;
 
-	fn managed_fixture() -> tempfile::TempDir {
-		let directory = tempfile::tempdir().unwrap();
+	#[rstest::fixture]
+	fn managed_fixture(temp_dir: tempfile::TempDir) -> tempfile::TempDir {
+		let directory = temp_dir;
 		let source = include_str!("../../settings/base.example.toml")
 			.replace(
 				"[core]\n",
@@ -217,9 +219,10 @@ mod tests {
 	}
 
 	#[rstest::rstest]
-	fn managed_provider_settings_reach_composed_startup_and_disable_cleanly() {
+	fn managed_provider_settings_reach_composed_startup_and_disable_cleanly(
+		#[from(managed_fixture)] directory: tempfile::TempDir,
+	) {
 		// Arrange: the same descriptor and source path emitted by host bootstrap.
-		let directory = managed_fixture();
 		let path = directory.path().join("managed.json");
 		std::fs::write(&path, managed_descriptor().to_string()).unwrap();
 		let build = || {
@@ -263,8 +266,9 @@ mod tests {
 	}
 
 	#[rstest::rstest]
-	fn managed_provider_settings_fail_closed_and_do_not_expand_other_secrets() {
-		let directory = managed_fixture();
+	fn managed_provider_settings_fail_closed_and_do_not_expand_other_secrets(
+		#[from(managed_fixture)] directory: tempfile::TempDir,
+	) {
 		let path = directory.path().join("managed.json");
 		let mut invalid = managed_descriptor();
 		invalid["provider_credentials"]["broker"]["audience"] = serde_json::json!("other");
@@ -309,18 +313,10 @@ mod tests {
 	#[rstest::rstest]
 	#[case::enabled(true)]
 	#[case::disabled(false)]
-	fn managed_provider_store_settings_are_loaded_without_secret_material(#[case] enabled: bool) {
-		let directory = tempfile::tempdir().unwrap();
-		let source = include_str!("../../settings/base.example.toml")
-			.replace(
-				"[core]\n",
-				"[core]\nsecret_key = 'isolated-settings-test-secret-0123456789'\n",
-			)
-			.replace(
-				"[node]\n",
-				"[node]\napi_token = 'isolated-settings-test-operator-0123456789'\n",
-			);
-		std::fs::write(directory.path().join("base.toml"), source).unwrap();
+	fn managed_provider_store_settings_are_loaded_without_secret_material(
+		#[case] enabled: bool,
+		#[from(managed_fixture)] directory: tempfile::TempDir,
+	) {
 		let path = directory.path().join("settings.json");
 		let store = enabled.then(|| {
 			serde_json::json!({
@@ -367,8 +363,9 @@ mod tests {
 	}
 
 	#[rstest::rstest]
-	fn managed_provider_settings_reject_other_sections_and_missing_sources() {
-		let directory = tempfile::tempdir().unwrap();
+	fn managed_provider_settings_reject_other_sections_and_missing_sources(
+		#[from(temp_dir)] directory: tempfile::TempDir,
+	) {
 		let path = directory.path().join("settings.json");
 		assert!(
 			managed_settings_builder("local", directory.path(), directory.path(), Some(&path))
@@ -390,29 +387,11 @@ mod tests {
 	#[rstest::rstest]
 	#[case::local("local")]
 	#[case::development_alias("development")]
-	fn profile_overrides_preserve_required_base_settings(#[case] profile: &str) {
+	fn profile_overrides_preserve_required_base_settings(
+		#[case] profile: &str,
+		#[from(profile_files)] directory: tempfile::TempDir,
+	) {
 		// Arrange: isolated files supply only local test credentials.
-		let directory = tempfile::tempdir().unwrap();
-		let source = include_str!("../../settings/base.example.toml")
-			.replace(
-				"[core]\n",
-				"[core]\nsecret_key = \"isolated-settings-test-secret-0123456789\"\n",
-			)
-			.replace(
-				"[node]\n",
-				"[node]\napi_token = \"isolated-settings-test-operator-0123456789\"\n",
-			);
-		std::fs::write(directory.path().join("base.toml"), source).unwrap();
-		std::fs::write(
-			directory.path().join("local.toml"),
-			"[core]\ndebug = true\n[node]\nworker_count = 2\n",
-		)
-		.unwrap();
-		std::fs::write(
-			directory.path().join("development.toml"),
-			"[node]\nworker_count = 9\n",
-		)
-		.unwrap();
 		// Act: exercise the same file composition used by process startup.
 		let settings = file_settings_builder(profile, directory.path(), directory.path())
 			.build_pending_composed::<ProjectSettings>()
@@ -438,9 +417,47 @@ mod tests {
 	}
 
 	#[rstest::rstest]
-	fn oidc_presence_does_not_resolve_unselected_credentials() {
+	fn oidc_presence_does_not_resolve_unselected_credentials(
+		#[from(oidc_files)] directory: tempfile::TempDir,
+	) {
 		// Arrange: management operations may only need to inspect provider presence.
-		let directory = tempfile::tempdir().unwrap();
+		// Act: inspect the same scoped settings graph before adding legacy tuning.
+		let settings = file_settings_builder("local", directory.path(), directory.path())
+			.build_scoped()
+			.unwrap();
+		// Assert: no interpolation or required-field validation is needed for presence.
+		assert!(settings.has_path(&["dashboard", "oidc"]));
+	}
+
+	#[rstest::fixture]
+	fn profile_files(temp_dir: tempfile::TempDir) -> tempfile::TempDir {
+		let directory = temp_dir;
+		let source = include_str!("../../settings/base.example.toml")
+			.replace(
+				"[core]\n",
+				"[core]\nsecret_key = \"isolated-settings-test-secret-0123456789\"\n",
+			)
+			.replace(
+				"[node]\n",
+				"[node]\napi_token = \"isolated-settings-test-operator-0123456789\"\n",
+			);
+		std::fs::write(directory.path().join("base.toml"), source).unwrap();
+		std::fs::write(
+			directory.path().join("local.toml"),
+			"[core]\ndebug = true\n[node]\nworker_count = 2\n",
+		)
+		.unwrap();
+		std::fs::write(
+			directory.path().join("development.toml"),
+			"[node]\nworker_count = 9\n",
+		)
+		.unwrap();
+		directory
+	}
+
+	#[rstest::fixture]
+	fn oidc_files(temp_dir: tempfile::TempDir) -> tempfile::TempDir {
+		let directory = temp_dir;
 		std::fs::write(
 			directory.path().join("base.toml"),
 			concat!(
@@ -450,12 +467,7 @@ mod tests {
 			),
 		)
 		.unwrap();
-		// Act: inspect the same scoped settings graph before adding legacy tuning.
-		let settings = file_settings_builder("local", directory.path(), directory.path())
-			.build_scoped()
-			.unwrap();
-		// Assert: no interpolation or required-field validation is needed for presence.
-		assert!(settings.has_path(&["dashboard", "oidc"]));
+		directory
 	}
 
 	#[rstest::rstest]

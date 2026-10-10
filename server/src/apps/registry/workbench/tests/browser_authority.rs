@@ -15,8 +15,9 @@ use uuid::Uuid;
 #[rstest::fixture]
 async fn browser_workbench(
 	#[default("https://accounts.google.com")] issuer: &str,
+	#[future(awt)] workbench: Workbench,
 ) -> (Workbench, HeaderMap, DashboardSession) {
-	let mut wb = workbench().await;
+	let mut wb = workbench;
 	wb.f.config.oidc = Some(OidcConfig {
 		issuer: issuer.into(),
 		client_id: "aidash".into(),
@@ -119,11 +120,13 @@ async fn native_draft_mutations_recheck_browser_authority(
 		aidash_server::dashboard_auth::actor_from_headers(&wb.f, &headers, &Method::GET)
 			.await
 			.unwrap();
+	// Act: capture the actor after applying this scenario authority configuration.
 	let app = captured_actor_application(&wb.f, actor).await;
 	let mut db = wb.f.registry.db;
 	let now = Utc::now();
 	match change {
 		"logout" => {
+			// Act: rebuild the browser context after the scenario authority configuration.
 			let browser = common::application(wb.f.clone()).await;
 			let client = browser.client();
 			for (name, value) in &headers {

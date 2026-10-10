@@ -1,4 +1,4 @@
-use crate::endpoint::{EndpointFixture, assert_json, endpoint, subject};
+use crate::endpoint::{assert_json, endpoint, subject};
 use aidash_server::apps::registry::workbench::models::AgentDraft;
 use aidash_server::apps::registry::workbench::models::AgentTestLimit;
 use reinhardt::db::orm::Model;
@@ -14,12 +14,15 @@ fn draft_entry() -> Value {
 #[rstest]
 #[tokio::test]
 async fn draft_create_save_and_stale_write_preserve_owner_and_revision(
-	#[future] endpoint: EndpointFixture,
+	endpoint: crate::endpoint::EndpointFuture,
 	draft_entry: Value,
+	#[from(crate::endpoint::anonymous_client)]
+	#[with(endpoint.clone())]
+	_credential_client_0: crate::endpoint::ClientFuture,
 ) {
 	// Arrange
 	let app = endpoint.await;
-	let alice = subject(&app, "alice").await;
+	let alice = subject(&app, "alice", _credential_client_0.await).await;
 	let draft = assert_json(
 		alice
 			.post(
@@ -60,10 +63,13 @@ async fn draft_create_save_and_stale_write_preserve_owner_and_revision(
 #[rstest]
 #[tokio::test]
 async fn invalid_test_limits_leave_the_saved_tenant_policy_unchanged(
-	#[future] endpoint: EndpointFixture,
+	endpoint: crate::endpoint::EndpointFuture,
+	#[from(crate::endpoint::anonymous_client)]
+	#[with(endpoint.clone())]
+	_credential_client_0: crate::endpoint::ClientFuture,
 ) {
 	let app = endpoint.await;
-	let _alice = subject(&app, "alice").await;
+	let _alice = subject(&app, "alice", _credential_client_0.await).await;
 	let path = "/api/workbench/test-limits/endpoint";
 	let valid = json!({"tenant":"endpoint","max_input_bytes":4096,"max_output_tokens":128,
 		"max_total_tokens":512,"max_steps":4,"max_duration_secs":30,"max_concurrent":1,

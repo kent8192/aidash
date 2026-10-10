@@ -5,7 +5,7 @@ use aidash_integrations::gcip::{AccessToken, AccountLookup, Services, SigningKey
 use aidash_server::{config::GcipConfig, federation::Federation};
 use async_trait::async_trait;
 use chrono::Utc;
-use common::{TestEnvironment, test_environment};
+use common::upstream_fixtures;
 use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header, encode};
 use reinhardt::query::{
 	Alias, Expr, ExprTrait, PostgresQueryBuilder, Query, QueryStatementBuilder,
@@ -43,32 +43,79 @@ struct Status {
 	since: AtomicI64,
 	outage: AtomicBool,
 }
-struct FakeAdmin(tokio::task::JoinHandle<()>);
-impl Drop for FakeAdmin {
+/// Abort a background Act when its owner unwinds.
+struct AbortOnDrop(tokio::task::JoinHandle<()>);
+impl Drop for AbortOnDrop {
 	fn drop(&mut self) {
 		self.0.abort();
 	}
 }
-async fn configure(f: &mut Federation) -> (Arc<Status>, FakeAdmin) {
-	use axum::{
-		Json, Router,
-		http::{HeaderMap, StatusCode},
-		routing::post,
-	};
-	let status = Arc::new(Status::default());
-	let handler = status.clone();
-	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-	let endpoint = format!("http://{}", listener.local_addr().unwrap());
-	let router = Router::new().route("/v1/projects/fixture-project/tenants/{pool}/accounts:lookup", post(move |axum::extract::Path(pool): axum::extract::Path<String>, headers: HeaderMap, Json(body): Json<Value>| {
-        let status = handler.clone(); async move {
-            assert_eq!(headers["authorization"], "Bearer service-token"); assert!(matches!(pool.as_str(), "pool-a" | "pool-b"));
-            if status.outage.load(Ordering::SeqCst) { return (StatusCode::SERVICE_UNAVAILABLE, Json(json!({}))); }
-            (StatusCode::OK, Json(json!({"users":[{"localId":body["localId"][0],"tenantId":pool,"disabled":status.disabled.load(Ordering::SeqCst),"validSince":status.since.load(Ordering::SeqCst).to_string()}]})))
-        }
-    }));
-	let server = FakeAdmin(tokio::spawn(async move {
-		axum::serve(listener, router).await.unwrap();
-	}));
+#[rstest::fixture]
+fn admin_status() -> Arc<Status> {
+	Arc::new(Status::default())
+}
+/// Fake tenant Admin API accounts:lookup contract served by a native catch-all route.
+#[rstest::fixture]
+fn admin_router(admin_status: Arc<Status>) -> Arc<reinhardt::ServerRouter> {
+	let reply = Arc::new(upstream_fixtures::any_handler(
+		move |request: reinhardt::Request| {
+			let status = admin_status.clone();
+			async move {
+				assert_eq!(request.method, http::Method::POST);
+				let pool = request
+					.uri
+					.path()
+					.strip_prefix("/v1/projects/fixture-project/tenants/")
+					.and_then(|path| path.strip_suffix("/accounts:lookup"))
+					.expect("tenant accounts:lookup path")
+					.to_owned();
+				assert_eq!(request.headers["authorization"], "Bearer service-token");
+				assert!(matches!(pool.as_str(), "pool-a" | "pool-b"));
+				if status.outage.load(Ordering::SeqCst) {
+					return reinhardt::Response::new(http::StatusCode::SERVICE_UNAVAILABLE)
+						.with_json(&json!({}))
+						.unwrap();
+				}
+				let body = request.json::<Value>().unwrap();
+				reinhardt::Response::new(http::StatusCode::OK)
+					.with_json(&json!({"users":[{"localId":body["localId"][0],"tenantId":pool,"disabled":status.disabled.load(Ordering::SeqCst),"validSince":status.since.load(Ordering::SeqCst).to_string()}]}))
+					.unwrap()
+			}
+		},
+	));
+	Arc::new(
+		reinhardt::ServerRouter::new()
+			.handler_arc("/", reply.clone())
+			.handler_arc("/{*rest}", reply),
+	)
+}
+struct GcipFixture {
+	runtime: common::RuntimeFixture,
+	status: Arc<Status>,
+	_admin: reinhardt::test::fixtures::server::TestServerGuard,
+}
+/// Production runtime configured for two tenant-bound pools and the fake Admin API.
+#[rstest::fixture]
+async fn gcip_runtime(
+	#[from(admin_status)] status: Arc<Status>,
+	#[from(admin_router)]
+	#[with(status.clone())]
+	_router: Arc<reinhardt::ServerRouter>,
+	#[future(awt)]
+	#[from(upstream_fixtures::upstream)]
+	#[with(_router.clone())]
+	admin: reinhardt::test::fixtures::server::TestServerGuard,
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) -> GcipFixture {
+	let mut runtime = runtime.await;
+	configure(&mut runtime.federation, &admin.url);
+	GcipFixture {
+		runtime,
+		status,
+		_admin: admin,
+	}
+}
+fn configure(f: &mut Federation, endpoint: &str) {
 	f.config.gcip = Some(GcipConfig {
 		project_id: "fixture-project".into(),
 		web_api_key: "public-key".into(),
@@ -94,12 +141,11 @@ async fn configure(f: &mut Federation) -> (Arc<Status>, FakeAdmin) {
 		},
 		status: Arc::new(AccountLookup {
 			project: "fixture-project".into(),
-			endpoint,
+			endpoint: endpoint.into(),
 			client: reqwest::Client::new(),
 			credentials: Arc::new(Credentials),
 		}),
 	}));
-	(status, server)
 }
 fn browser() -> reqwest::Client {
 	reqwest::Client::builder()
@@ -199,11 +245,15 @@ async fn sign_in(
 #[tokio::test]
 async fn provider_allowlist_is_enforced_for_an_existing_uid_before_admin_io(
 	#[future(awt)]
-	#[from(test_environment)]
-	environment: Arc<TestEnvironment>,
+	#[from(gcip_runtime)]
+	gcip: GcipFixture,
 ) {
-	let (mut f, url, schema) = common::setup(&environment).await;
-	let (status, _admin) = configure(&mut f).await;
+	let GcipFixture {
+		runtime,
+		status,
+		_admin,
+	} = gcip;
+	let (mut f, url, schema) = runtime.parts();
 	let app = common::application(f.clone()).await;
 	sign_in(&app, "acme", "pool-a", "Person").await;
 	f.config.gcip.as_mut().unwrap().providers.insert(
@@ -294,11 +344,13 @@ async fn provider_allowlist_is_enforced_for_an_existing_uid_before_admin_io(
 #[tokio::test]
 async fn browser_bound_exchange_rejects_bad_origin_browser_pool_auth_time_expiry_and_replay(
 	#[future(awt)]
-	#[from(test_environment)]
-	environment: Arc<TestEnvironment>,
+	#[from(gcip_runtime)]
+	gcip: GcipFixture,
 ) {
-	let (mut f, url, schema) = common::setup(&environment).await;
-	let (_status, _admin) = configure(&mut f).await;
+	let GcipFixture {
+		runtime, _admin, ..
+	} = gcip;
+	let (f, url, schema) = runtime.parts();
 	let app = common::application(f.clone()).await;
 	let config: Value = browser()
 		.get(app.url("/auth/config"))
@@ -410,11 +462,15 @@ async fn browser_bound_exchange_rejects_bad_origin_browser_pool_auth_time_expiry
 #[tokio::test]
 async fn tenant_identity_keys_approval_display_and_status_revocation_are_distinct(
 	#[future(awt)]
-	#[from(test_environment)]
-	environment: Arc<TestEnvironment>,
+	#[from(gcip_runtime)]
+	gcip: GcipFixture,
 ) {
-	let (mut f, url, schema) = common::setup(&environment).await;
-	let (status, _admin) = configure(&mut f).await;
+	let GcipFixture {
+		runtime,
+		status,
+		_admin,
+	} = gcip;
+	let (f, url, schema) = runtime.parts();
 	let app = common::application(f.clone()).await;
 	let (cookie, csrf) = sign_in(&app, "acme", "pool-a", "First").await;
 	let registrations = browser()
@@ -570,13 +626,17 @@ async fn tenant_identity_keys_approval_display_and_status_revocation_are_distinc
 #[tokio::test]
 async fn desktop_gcip_handoff_inherits_browser_auth_time_and_revokes_both_sessions(
 	#[future(awt)]
-	#[from(test_environment)]
-	environment: Arc<TestEnvironment>,
+	#[from(gcip_runtime)]
+	gcip: GcipFixture,
 ) {
 	use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 	use sha2::{Digest, Sha256};
-	let (mut f, url, schema) = common::setup(&environment).await;
-	let (status, _admin) = configure(&mut f).await;
+	let GcipFixture {
+		runtime,
+		status,
+		_admin,
+	} = gcip;
+	let (f, url, schema) = runtime.parts();
 	let app = common::application(f.clone()).await;
 	let (cookie, csrf) = sign_in(&app, "acme", "pool-a", "Person").await;
 	let cookie = format!("{cookie}; aidash-csrf={csrf}");
@@ -672,11 +732,13 @@ async fn desktop_gcip_handoff_inherits_browser_auth_time_and_revokes_both_sessio
 #[tokio::test]
 async fn removing_binding_disables_a_fresh_identity_at_its_next_boundary(
 	#[future(awt)]
-	#[from(test_environment)]
-	environment: Arc<TestEnvironment>,
+	#[from(gcip_runtime)]
+	gcip: GcipFixture,
 ) {
-	let (mut f, url, schema) = common::setup(&environment).await;
-	let (_status, _admin) = configure(&mut f).await;
+	let GcipFixture {
+		runtime, _admin, ..
+	} = gcip;
+	let (mut f, url, schema) = runtime.parts();
 	let app = common::application(f.clone()).await;
 	let (cookie, _) = sign_in(&app, "acme", "pool-a", "Person").await;
 	f.config
@@ -720,12 +782,16 @@ async fn removing_binding_disables_a_fresh_identity_at_its_next_boundary(
 #[tokio::test]
 async fn removed_binding_login_disables_an_inactive_identity_and_its_existing_authority(
 	#[future(awt)]
-	#[from(test_environment)]
-	environment: Arc<TestEnvironment>,
+	#[from(gcip_runtime)]
+	gcip: GcipFixture,
 	#[case] boundary: &str,
 ) {
-	let (mut f, url, schema) = common::setup(&environment).await;
-	let (status, _admin) = configure(&mut f).await;
+	let GcipFixture {
+		runtime,
+		status,
+		_admin,
+	} = gcip;
+	let (mut f, url, schema) = runtime.parts();
 	let policy = serde_json::from_value(
 		json!({"tenant":"acme","subjects":{"alice":{"kind":"user"}},"policies":[]}),
 	)
@@ -851,7 +917,7 @@ async fn removed_binding_login_disables_an_inactive_identity_and_its_existing_au
 	} else {
 		let (stop, stopping) = tokio::sync::watch::channel(false);
 		let runtime = f.clone();
-		let mut refresh = FakeAdmin(tokio::spawn(async move {
+		let mut refresh = AbortOnDrop(tokio::spawn(async move {
 			aidash_server::dashboard_auth::refresh_active(runtime, stopping)
 				.await
 				.unwrap();
@@ -929,11 +995,13 @@ async fn removed_binding_login_disables_an_inactive_identity_and_its_existing_au
 #[tokio::test]
 async fn approved_mapping_cannot_cross_the_bound_tenant_at_a_request_boundary(
 	#[future(awt)]
-	#[from(test_environment)]
-	environment: Arc<TestEnvironment>,
+	#[from(gcip_runtime)]
+	gcip: GcipFixture,
 ) {
-	let (mut f, url, schema) = common::setup(&environment).await;
-	let (_status, _admin) = configure(&mut f).await;
+	let GcipFixture {
+		runtime, _admin, ..
+	} = gcip;
+	let (f, url, schema) = runtime.parts();
 	for tenant in ["acme", "other"] {
 		let policy = serde_json::from_value(
 			json!({"tenant":tenant,"subjects":{"alice":{"kind":"user"}},"policies":[]}),
@@ -1068,11 +1136,13 @@ async fn approved_mapping_cannot_cross_the_bound_tenant_at_a_request_boundary(
 #[tokio::test]
 async fn replacement_registration_keeps_freshly_authenticated_display_attributes(
 	#[future(awt)]
-	#[from(test_environment)]
-	environment: Arc<TestEnvironment>,
+	#[from(gcip_runtime)]
+	gcip: GcipFixture,
 ) {
-	let (mut f, url, schema) = common::setup(&environment).await;
-	let (_status, _admin) = configure(&mut f).await;
+	let GcipFixture {
+		runtime, _admin, ..
+	} = gcip;
+	let (f, url, schema) = runtime.parts();
 	let app = common::application(f.clone()).await;
 	let (cookie, csrf) = sign_in(&app, "acme", "pool-a", "Original").await;
 	let previous: Value = browser()
@@ -1169,11 +1239,13 @@ async fn replacement_registration_keeps_freshly_authenticated_display_attributes
 #[tokio::test]
 async fn expired_registration_clears_unmapped_display_attributes(
 	#[future(awt)]
-	#[from(test_environment)]
-	environment: Arc<TestEnvironment>,
+	#[from(gcip_runtime)]
+	gcip: GcipFixture,
 ) {
-	let (mut f, url, schema) = common::setup(&environment).await;
-	let (_status, _admin) = configure(&mut f).await;
+	let GcipFixture {
+		runtime, _admin, ..
+	} = gcip;
+	let (f, url, schema) = runtime.parts();
 	let app = common::application(f.clone()).await;
 	let (cookie, csrf) = sign_in(&app, "acme", "pool-a", "Person").await;
 	let registration: Value = browser()

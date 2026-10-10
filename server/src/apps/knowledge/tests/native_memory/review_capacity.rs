@@ -339,21 +339,14 @@ async fn policy_replacement_cannot_shrink_below_existing_reverse_impact(
 async fn recovery_shards_keep_home_ledgers_above_64_mib_writable(
 	#[future] database: DatabaseFixture,
 	bounds: Bounds,
+
+	#[future(awt)]
+	#[from(recovery_shards_keep_home_ledgers_above_64_mib_writable_provider)]
+	fixture: RecoveryShardsKeepHomeLedgersAbove64MibWritableProvider,
 ) {
-	use axum::{Json, Router, routing::post};
-	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-	let endpoint = format!("http://{}/v1", listener.local_addr().unwrap());
-	struct Provider(tokio::task::JoinHandle<()>);
-	impl Drop for Provider {
-		fn drop(&mut self) {
-			self.0.abort();
-		}
-	}
-	let _provider = Provider(tokio::spawn(async move {
-		axum::serve(listener, Router::new().route("/v1/embeddings", post(|Json(input): Json<serde_json::Value>| async move {
-			Json(json!({"model":input["model"],"data":[{"index":0,"embedding":[1.,0.1,0.]}],"usage":{"prompt_tokens":1}}))
-		}))).await.unwrap();
-	}));
+	let _provider = fixture.server;
+
+	let endpoint = format!("{}/v1", _provider.url);
 	let database = database.await;
 	let (store, _, workspace) = setup_endpoint(&database, bounds, &endpoint).await;
 	let directory = database.recovery_directory.path();
@@ -454,4 +447,27 @@ async fn recovery_shards_keep_home_ledgers_above_64_mib_writable(
 			.await
 			.is_err()
 	);
+}
+
+#[fixture]
+fn recovery_shards_keep_home_ledgers_above_64_mib_writable_router() -> std::sync::Arc<Router> {
+	std::sync::Arc::new(reinhardt::test::stub::StubRouter::new()
+.route("/v1/embeddings", http::Method::POST, reply(|request: reinhardt::Request| {let input = request.json::<serde_json::Value>().unwrap();async move {
+			reinhardt::Response::ok().with_json(&json!({"model":input["model"],"data":[{"index":0,"embedding":[1.,0.1,0.]}],"usage":{"prompt_tokens":1}})).unwrap()
+		}})).into_server_router())
+}
+struct RecoveryShardsKeepHomeLedgersAbove64MibWritableProvider {
+	server: reinhardt::test::fixtures::server::TestServerGuard,
+}
+#[fixture]
+async fn recovery_shards_keep_home_ledgers_above_64_mib_writable_provider(
+	#[from(recovery_shards_keep_home_ledgers_above_64_mib_writable_router)] _router: std::sync::Arc<
+		Router,
+	>,
+	#[future(awt)]
+	#[from(upstream::upstream)]
+	#[with(_router.clone())]
+	server: reinhardt::test::fixtures::server::TestServerGuard,
+) -> RecoveryShardsKeepHomeLedgersAbove64MibWritableProvider {
+	RecoveryShardsKeepHomeLedgersAbove64MibWritableProvider { server }
 }

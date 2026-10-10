@@ -2,8 +2,7 @@
 mod common;
 
 use aidash_server::{domain::Task, federation::Federation};
-use axum::{body::Body, http::Request};
-use common::{TestEnvironment, bootstrap, cleanup, request, setup, test_environment};
+use common::{bootstrap, cleanup, request};
 use reinhardt::query::{Alias, ColumnRef, Expr, PostgresQueryBuilder, Query};
 use serde_json::{Value, json};
 
@@ -22,26 +21,27 @@ async fn project(app: &common::TestApplication, viewer: Value, options: Value) -
 		.unwrap()
 		.extend(options.as_object().unwrap().clone());
 	let token = std::env::var("AIDASH_SECRET_TEST_PEER").unwrap();
-	let response = app
-		.clone()
-		.oneshot(
-			Request::builder()
-				.method("POST")
-				.uri("/federation/v0.1/scoped/graph")
-				.header("authorization", format!("Bearer {token}"))
-				.header("x-aidash-node", SOURCE)
-				.header("x-aidash-protocol", "0.2")
-				.header("content-type", "application/json")
-				.body(Body::from(input.to_string()))
-				.unwrap(),
-		)
-		.await
-		.unwrap();
+	let authorization = format!("Bearer {token}");
+	let response = async {
+		let client = &(app.client());
+		let mut request = client
+			.request(http::Method::POST, "/federation/v0.1/scoped/graph")
+			.body(bytes::Bytes::copy_from_slice(input.to_string().as_bytes()))
+			.header(http::header::CONTENT_TYPE, "application/json");
+		for (name, value) in &[
+			("authorization", authorization.as_str()),
+			("x-aidash-node", SOURCE),
+			("x-aidash-protocol", "0.2"),
+		] {
+			request = request.header(*name, *value);
+		}
+		request.send().await
+	}
+	.await
+	.unwrap();
 	let status = response.status().as_u16();
-	let body = axum::body::to_bytes(response.into_body(), 4_194_304)
-		.await
-		.unwrap();
-	(status, serde_json::from_slice(&body).unwrap())
+	let body = response.body();
+	(status, serde_json::from_slice(body).unwrap())
 }
 
 async fn credential(f: &Federation, app: &common::TestApplication, tenant: &str) -> Uuid {
@@ -326,11 +326,11 @@ fn run_ids(page: &Value) -> Vec<Uuid> {
 #[tokio::test]
 async fn admitted_graph_runs_use_receiver_authority_and_scope_bound_generations(
 	#[future(awt)]
-	#[from(test_environment)]
-	environment: std::sync::Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
 ) {
-	let (f, url, schema) = setup(&environment).await;
-	let app = common::application(f.clone()).await;
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
 	let (mut policy, token, task_id) = bootstrap(&f, &app, "http://localhost:1").await;
 	let (subject, credential) = viewer(&f, &app).await;
 	let task: Task = {
@@ -511,11 +511,11 @@ async fn event_decisions(f: &Federation) -> i64 {
 #[tokio::test]
 async fn graph_activity_is_newest_first_and_checks_workspace_events_once(
 	#[future(awt)]
-	#[from(test_environment)]
-	environment: std::sync::Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
 ) {
-	let (f, url, schema) = setup(&environment).await;
-	let app = common::application(f.clone()).await;
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
 	let (mut policy, _, task_id) = bootstrap(&f, &app, "http://localhost:1").await;
 	let (subject, _) = viewer(&f, &app).await;
 	let workspace: Uuid = {

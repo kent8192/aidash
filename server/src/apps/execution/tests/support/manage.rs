@@ -2,9 +2,9 @@
 use crate::deployment::deployment_command;
 use crate::native_database::{DatabaseFixture, database};
 use reinhardt::test::APIClient;
-use reinhardt::test::fixtures::{api_client_from_url, temp_dir};
+use reinhardt::test::fixtures::{api_client_from_url, http_client, temp_dir};
 use rstest::fixture;
-use std::{fs::File, net::TcpListener, process::Stdio, time::Duration};
+use std::{fs::File, net::TcpListener, process::Stdio, sync::Arc, time::Duration};
 use tempfile::TempDir;
 use tokio::process::{Child, Command};
 
@@ -19,37 +19,76 @@ pub struct ManageFixture {
 
 #[fixture]
 pub async fn native_server(
-	#[default("container")] profile: &str,
-	#[future] database: DatabaseFixture,
-	temp_dir: TempDir,
+	#[default("container")] _profile: &str,
+	#[future]
+	#[from(native_process)]
+	#[with(false, _profile)]
+	process: ManageFixture,
 ) -> ManageFixture {
-	start(database.await, temp_dir, false, profile).await
+	process.await
 }
 
 #[fixture]
 pub async fn native_worker(
-	#[future] database: DatabaseFixture,
-	temp_dir: TempDir,
+	#[future]
+	#[from(native_process)]
+	#[with(true, "container")]
+	process: ManageFixture,
 ) -> ManageFixture {
-	start(database.await, temp_dir, true, "container").await
+	process.await
 }
 
-async fn start(
-	database: DatabaseFixture,
+#[derive(Clone)]
+struct ManagementAddresses {
+	listeners: Arc<[TcpListener; 3]>,
+}
+#[fixture]
+fn management_addresses() -> ManagementAddresses {
+	// These reservations belong to the real child process, which must bind
+	// its own listeners. An in-process HTTP guard cannot exercise that handoff.
+	ManagementAddresses {
+		listeners: Arc::new([
+			TcpListener::bind("127.0.0.1:0").unwrap(),
+			TcpListener::bind("127.0.0.1:0").unwrap(),
+			TcpListener::bind("127.0.0.1:0").unwrap(),
+		]),
+	}
+}
+#[fixture]
+fn manage_client(
+	#[default(0)] ordinal: usize,
+	management_addresses: ManagementAddresses,
+) -> APIClient {
+	api_client_from_url(&format!(
+		"http://{}",
+		management_addresses.listeners[ordinal]
+			.local_addr()
+			.unwrap()
+	))
+}
+#[fixture]
+async fn native_process(
+	#[default(false)] worker: bool,
+	#[default("container")] profile: &str,
+	#[future] database: DatabaseFixture,
 	temp_dir: TempDir,
-	worker: bool,
-	profile: &str,
+	management_addresses: ManagementAddresses,
+	#[from(management_clients)]
+	#[with(worker, management_addresses.clone())]
+	_state: ManagementClients,
+	http_client: reqwest::Client,
 ) -> ManageFixture {
-	let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-	let address = listener.local_addr().unwrap();
-	let probe_listener = TcpListener::bind("127.0.0.1:0").unwrap();
-	let metrics_listener = TcpListener::bind("127.0.0.1:0").unwrap();
-	let metrics_address = metrics_listener.local_addr().unwrap();
-	let probe_address = if worker {
-		address
-	} else {
-		probe_listener.local_addr().unwrap()
-	};
+	let ManagementClients {
+		client,
+		probes,
+		metrics,
+	} = _state;
+	let database = database.await;
+	let address = management_addresses.listeners[0].local_addr().unwrap();
+	let probe_address = management_addresses.listeners[if worker { 0 } else { 1 }]
+		.local_addr()
+		.unwrap();
+	let metrics_address = management_addresses.listeners[2].local_addr().unwrap();
 	let mut command = deployment_command(&database.url, temp_dir.path());
 	command.env("REINHARDT_ENV", profile);
 	if profile == "oidc" {
@@ -70,9 +109,7 @@ async fn start(
 		]);
 	}
 	let log = File::create(temp_dir.path().join("manage.log")).unwrap();
-	drop(listener);
-	drop(probe_listener);
-	drop(metrics_listener);
+	drop(management_addresses);
 	if worker {
 		command.args(["runworker", &address.to_string()]);
 	} else {
@@ -90,9 +127,6 @@ async fn start(
 		.kill_on_drop(true)
 		.spawn()
 		.expect("start native manage process");
-	let client = api_client_from_url(&format!("http://{address}"));
-	let probes = api_client_from_url(&format!("http://{probe_address}"));
-	let metrics = api_client_from_url(&format!("http://{metrics_address}"));
 	let mut fixture = ManageFixture {
 		client,
 		probes,
@@ -101,10 +135,7 @@ async fn start(
 		database,
 		directory: temp_dir,
 	};
-	let probe = reqwest::Client::builder()
-		.timeout(Duration::from_millis(500))
-		.build()
-		.unwrap();
+	let probe = http_client;
 	let ready = tokio::time::timeout(Duration::from_secs(30), async {
 		loop {
 			if let Some(status) = fixture.process.try_wait().unwrap() {
@@ -112,6 +143,7 @@ async fn start(
 			}
 			let runtime_ready = probe
 				.get(format!("http://{probe_address}/ready"))
+				.timeout(Duration::from_millis(500))
 				.send()
 				.await
 				.is_ok_and(|response| response.status().is_success());
@@ -120,11 +152,13 @@ async fn start(
 			let http_ready = worker
 				|| probe
 					.get(format!("http://{address}/.well-known/aidash"))
+					.timeout(Duration::from_millis(500))
 					.send()
 					.await
 					.is_ok_and(|response| response.status().is_success());
 			let metrics_ready = probe
 				.get(format!("http://{metrics_address}/metrics"))
+				.timeout(Duration::from_millis(500))
 				.send()
 				.await
 				.is_ok_and(|response| response.status().is_success());
@@ -177,5 +211,32 @@ impl ManageFixture {
 		}
 		#[cfg(not(unix))]
 		self.process.kill().await.unwrap();
+	}
+}
+
+struct ManagementClients {
+	client: APIClient,
+	probes: APIClient,
+	metrics: APIClient,
+}
+#[rstest::fixture]
+fn management_clients(
+	#[default(false)] worker: bool,
+	management_addresses: ManagementAddresses,
+	#[from(manage_client)]
+	#[with(0, management_addresses.clone())]
+	client: APIClient,
+	#[from(manage_client)]
+	#[with(if worker {0} else {1}, management_addresses.clone())]
+	probes: APIClient,
+	#[from(manage_client)]
+	#[with(2, management_addresses.clone())]
+	metrics: APIClient,
+) -> ManagementClients {
+	let _ = (worker, management_addresses);
+	ManagementClients {
+		client,
+		probes,
+		metrics,
 	}
 }

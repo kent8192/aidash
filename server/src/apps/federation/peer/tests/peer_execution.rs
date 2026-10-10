@@ -19,8 +19,7 @@ use aidash_server::{
 use endpoint::EndpointFixture;
 use execution_fixtures::{ExecutionFixture, execution};
 use reinhardt::db::orm::Model;
-use reinhardt::test::fixtures::api_client_from_url;
-use reinhardt::test::{APIClient, TestResponse};
+use reinhardt::test::TestResponse;
 use serde_json::{Value, json};
 
 const PEER_ENV: &str = "AIDASH_SECRET_PEER_EXECUTION_FIXTURE";
@@ -38,25 +37,30 @@ fn decoded(response: TestResponse) -> (u16, Value) {
 async fn operator(app: &EndpointFixture, path: &str, input: Value) -> (u16, Value) {
 	decoded(app.operator.post(path, &input, "json").await.unwrap())
 }
-async fn peer_client(app: &EndpointFixture, token: &str) -> APIClient {
-	let client = api_client_from_url(&app.server.url);
-	client
-		.set_header("Authorization", &format!("Bearer {token}"))
-		.await
-		.unwrap();
-	client
-		.set_header("x-aidash-node", "aidash://source")
-		.await
-		.unwrap();
-	client.set_header("x-aidash-protocol", "0.2").await.unwrap();
-	client
-}
-async fn inspect(client: &APIClient, input: Value) -> (u16, Value) {
+
+async fn inspect(app: &EndpointFixture, token: &str, input: Value) -> (u16, Value) {
+	let authorization = format!("Bearer {token}");
 	decoded(
-		client
-			.post("/federation/v0.1/scoped/execution/inspect", &input, "json")
-			.await
-			.unwrap(),
+		async {
+			let client = &(app.anonymous);
+			let mut request = client
+				.request(
+					http::Method::POST,
+					"/federation/v0.1/scoped/execution/inspect",
+				)
+				.body(bytes::Bytes::copy_from_slice(input.to_string().as_bytes()))
+				.header(http::header::CONTENT_TYPE, "application/json");
+			for (name, value) in &[
+				("Authorization", authorization.as_str()),
+				("x-aidash-node", "aidash://source"),
+				("x-aidash-protocol", "0.2"),
+			] {
+				request = request.header(*name, *value);
+			}
+			request.send().await
+		}
+		.await
+		.unwrap(),
 	)
 }
 
@@ -83,9 +87,8 @@ async fn receiver_preflight_intersects_executor_and_mapping_without_admitting_a_
 		.create_with_conn(&mut app.database.lease.handle(), &record)
 		.await
 		.unwrap();
-	let peer = peer_client(app, PEER_SECRET).await;
 	let input = json!({"tenant":"remote","subject":"bob","agent":{"id":"research","version":"1.0.0"},"requirements":{}});
-	assert_eq!(inspect(&peer, input.clone()).await.0, 403);
+	assert_eq!(inspect(app, PEER_SECRET, input.clone()).await.0, 403);
 	let (_, issued) = operator(
 		app,
 		"/api/authorization/acme/credentials",
@@ -98,10 +101,9 @@ async fn receiver_preflight_intersects_executor_and_mapping_without_admitting_a_
 		issued["token"].as_str().unwrap(),
 		f.config.api_token.as_str(),
 	] {
-		let client = peer_client(app, rejected).await;
-		assert_eq!(inspect(&client, input.clone()).await.0, 401);
+		assert_eq!(inspect(app, rejected, input.clone()).await.0, 401);
 	}
-	let (status, result) = inspect(&peer, input.clone()).await;
+	let (status, result) = inspect(app, PEER_SECRET, input.clone()).await;
 	assert_eq!(status, 200, "{result}");
 	assert_eq!(result["node_id"], f.config.node_id);
 	assert_eq!(result["agent"]["id"], "research");
@@ -125,7 +127,7 @@ async fn receiver_preflight_intersects_executor_and_mapping_without_admitting_a_
 	}
 	let mut mismatch = input.clone();
 	mismatch["requirements"] = json!({"capability":"missing-capability"});
-	assert_eq!(inspect(&peer, mismatch).await.0, 400);
+	assert_eq!(inspect(app, PEER_SECRET, mismatch).await.0, 400);
 	let executor = qualified_agent(&f.config.node_id, "research", "1.0.0");
 	// Every denied action is tested for both the mapped root and the receiver's
 	// executor. An allow on one must never override the other's explicit deny.
@@ -153,7 +155,7 @@ async fn receiver_preflight_intersects_executor_and_mapping_without_admitting_a_
 			);
 			revision += 1;
 			assert_eq!(
-				inspect(&peer, input.clone()).await.0,
+				inspect(app, PEER_SECRET, input.clone()).await.0,
 				403,
 				"{subject} {action} {kind}"
 			);
@@ -180,7 +182,7 @@ async fn receiver_preflight_intersects_executor_and_mapping_without_admitting_a_
 			.0,
 			200
 		);
-		assert_eq!(inspect(&peer, input.clone()).await.0, 403);
+		assert_eq!(inspect(app, PEER_SECRET, input.clone()).await.0, 403);
 		assert_eq!(
 			operator(
 				app,
@@ -192,7 +194,7 @@ async fn receiver_preflight_intersects_executor_and_mapping_without_admitting_a_
 			200
 		);
 	}
-	assert_eq!(inspect(&peer, input.clone()).await.0, 200);
+	assert_eq!(inspect(app, PEER_SECRET, input.clone()).await.0, 200);
 	assert_eq!(
 		operator(
 			app,
@@ -206,7 +208,7 @@ async fn receiver_preflight_intersects_executor_and_mapping_without_admitting_a_
 		.0,
 		200
 	);
-	assert_eq!(inspect(&peer, input).await.0, 403);
+	assert_eq!(inspect(app, PEER_SECRET, input).await.0, 403);
 	assert!(
 		Run::objects()
 			.all()
@@ -221,9 +223,10 @@ async fn receiver_preflight_intersects_executor_and_mapping_without_admitting_a_
 #[rstest::rstest]
 #[tokio::test]
 async fn public_agent_closures_are_authenticated_and_offers_pin_exact_receiver_definitions(
-	#[future]
-	#[from(endpoint::endpoint)]
-	endpoint: EndpointFixture,
+	#[from(endpoint::endpoint)] endpoint: endpoint::EndpointFuture,
+	#[from(closure_peer_client)]
+	#[with(endpoint.clone())]
+	peer_client: futures_util::future::BoxFuture<'static, reinhardt::test::APIClient>,
 ) {
 	if !isolated::isolated_process(&[(PEER_ENV, PEER_SECRET)]).await {
 		return;
@@ -241,7 +244,7 @@ async fn public_agent_closures_are_authenticated_and_offers_pin_exact_receiver_d
 		.create_with_conn(&mut app.database.lease.handle(), &record)
 		.await
 		.unwrap();
-	let client = peer_client(&app, PEER_SECRET).await;
+	let client = peer_client.await;
 	let path = "/federation/v0.1/discover/public-child/1.0.0/bindings";
 	assert_eq!(app.anonymous.get(path).await.unwrap().status_code(), 400);
 	assert_eq!(app.operator.get(path).await.unwrap().status_code(), 400);
@@ -356,10 +359,12 @@ async fn public_agent_closures_are_authenticated_and_offers_pin_exact_receiver_d
 #[rstest::rstest]
 #[tokio::test]
 async fn operator_permission_inspection_resolves_foreign_agents_without_subject_imports(
-	#[future]
 	#[from(endpoint::endpoint)]
 	#[with("aidash://inspection-home")]
-	home: EndpointFixture,
+	home: endpoint::EndpointFuture,
+	#[from(endpoint::anonymous_client)]
+	#[with(home.clone())]
+	reader_client: endpoint::ClientFuture,
 	#[future]
 	#[from(endpoint::endpoint)]
 	#[with("aidash://inspection-child")]
@@ -393,7 +398,7 @@ async fn operator_permission_inspection_resolves_foreign_agents_without_subject_
 	parent.binding_normalization = None;
 	parent.config["bindings"] = json!([{"kind":"tool","target":{"registry_node":home.runtime.config.node_id,"id":"foreign-tool","version":"1.0.0"},"narrow":{}}]);
 	home.runtime.registry.register(parent).await.unwrap();
-	let subject = endpoint::subject(&home, "reader").await;
+	let subject = endpoint::subject(&home, "reader", reader_client.await).await;
 	let path = "/api/workbench/versions/parent/1.0.1/permissions";
 	let input = json!({"tenant":"endpoint","subject":"reader"});
 	let report = operator(&home, path, input.clone()).await;
@@ -415,4 +420,22 @@ async fn operator_permission_inspection_resolves_foreign_agents_without_subject_
 		decoded(subject.post(path, &input, "json").await.unwrap()).0,
 		403
 	);
+}
+
+#[rstest::fixture]
+fn closure_peer_client(
+	#[from(endpoint::endpoint)] endpoint: endpoint::EndpointFuture,
+) -> futures_util::future::BoxFuture<'static, reinhardt::test::APIClient> {
+	Box::pin(async move {
+		let app = endpoint.await;
+		let client = reinhardt::test::fixtures::api_client_from_url(&app.server.url);
+		for (name, value) in [
+			("authorization", format!("Bearer {PEER_SECRET}")),
+			("x-aidash-node", "aidash://source".into()),
+			("x-aidash-protocol", "0.2".into()),
+		] {
+			client.set_header(name, &value).await.unwrap();
+		}
+		client
+	})
 }

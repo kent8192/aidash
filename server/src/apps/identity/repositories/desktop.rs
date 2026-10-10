@@ -644,12 +644,12 @@ mod tests {
 	fn rejects_unsafe_callback(#[case] value: &str) {
 		assert!(callback_url(value).is_err());
 	}
-	#[test]
+	#[rstest::rstest]
 	fn accepts_only_bounded_loopback_callback() {
 		assert!(callback_url("http://127.0.0.1:43157/callback").is_ok());
 	}
 
-	#[test]
+	#[rstest::rstest]
 	fn desktop_policy_enforces_lifetime_bounds() {
 		const EXPECTED: &str = "AIDASH_DESKTOP_POLICY_TEST_EXPECTED";
 		if let Ok(expected) = std::env::var(EXPECTED) {

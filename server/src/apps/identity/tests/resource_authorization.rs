@@ -1,3 +1,10 @@
+use common::upstream_fixtures;
+use futures_util::{FutureExt, future::BoxFuture};
+use std::sync::{
+	Arc,
+	atomic::{AtomicUsize, Ordering},
+};
+use upstream_fixtures::{async_upstream, reply};
 #[path = "../../execution/tests/support/legacy.rs"]
 mod common;
 use aidash_server::{
@@ -5,18 +12,17 @@ use aidash_server::{
 	harness::Harness,
 };
 use common::*;
-use common::{TestEnvironment, test_environment};
 use serde_json::{Value, json};
 
 #[rstest::rstest]
 #[tokio::test]
 async fn guarded_child_summary_pages_minimal_visible_rows(
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
 ) {
-	let (f, url, schema) = setup(&_test_environment).await;
-	let app = common::application(f.clone()).await;
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
 	let (mut bundle, token, parent_id) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let parent = f.store.task(parent_id).await.unwrap();
 	for index in 0..102 {
@@ -107,11 +113,11 @@ async fn guarded_child_summary_pages_minimal_visible_rows(
 #[tokio::test]
 async fn task_artifact_message_denials_filter_aggregate_events_and_run_details(
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
 ) {
-	let (f, url, schema) = setup(&_test_environment).await;
-	let app = common::application(f.clone()).await;
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
 	let (mut bundle, token, task) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let task_record = f.store.task(task).await.unwrap();
 	assert_eq!(
@@ -237,11 +243,11 @@ async fn task_artifact_message_denials_filter_aggregate_events_and_run_details(
 #[tokio::test]
 async fn hidden_task_cannot_be_claimed_or_used_as_a_dependency(
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
 ) {
-	let (f, url, schema) = setup(&_test_environment).await;
-	let app = common::application(f.clone()).await;
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
 	let (mut bundle, token, task) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let workspace = f.store.task(task).await.unwrap().workspace_id;
 	bundle["policies"].as_array_mut().unwrap().push(json!({"id":"deny-task","effect":"deny","subjects":{"ids":["alice"]},"actions":["task.read"],"resources":{"kinds":["task"],"ids":[task]}}));
@@ -299,47 +305,30 @@ async fn hidden_task_cannot_be_claimed_or_used_as_a_dependency(
 #[tokio::test]
 async fn recorded_source_revocation_hides_journals_and_pauses_before_provider_io(
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(retained_snapshot_revocation_provider)]
+	fixture: RetainedSnapshotRevocationProvider,
 ) {
-	retained_snapshot_revocation(&_test_environment, false).await;
+	retained_snapshot_revocation(fixture, false).await;
 }
 
 #[rstest::rstest]
 #[tokio::test]
 async fn workspace_event_revocation_hides_journals_and_pauses_before_provider_io(
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(retained_snapshot_revocation_provider)]
+	fixture: RetainedSnapshotRevocationProvider,
 ) {
-	retained_snapshot_revocation(&_test_environment, true).await;
+	retained_snapshot_revocation(fixture, true).await;
 }
-async fn retained_snapshot_revocation(environment: &TestEnvironment, events_only: bool) {
-	use axum::{Json, Router, routing::post};
-	use std::sync::{
-		Arc,
-		atomic::{AtomicUsize, Ordering},
-	};
-	let (f, url, schema) = setup(environment).await;
-	let calls = Arc::new(AtomicUsize::new(0));
-	let seen = calls.clone();
-	let pool = f.store.pool.driver().clone();
-	let server=Router::new().route("/v1/chat/completions",post(move |Json(body):Json<Value>|{
-        let seen=seen.clone();let pool=pool.clone();async move {
-            seen.fetch_add(1,Ordering::SeqCst);
-            let context: Value = serde_json::from_str(body["messages"][1]["content"].as_str().unwrap()).unwrap();
-            let artifact_id = context["current"]["workspace"]["artifacts"][0]["id"].clone();
-            assert!(artifact_id.is_string());
-            assert!(!body.to_string().contains("private-artifact-content"));
-            let sources:i64=sqlx::query_scalar(&reinhardt::query::Query::select().expr(reinhardt::query::Expr::cust("COUNT(*)")).from(reinhardt::query::Alias::new("authorization_run_reads")).and_where(reinhardt::query::Expr::cust("resource_kind = 'artifact'")).to_string(reinhardt::query::PostgresQueryBuilder)).fetch_one(&pool).await.unwrap();
-            assert_eq!(sources,20,"only records exposed by the bounded observation page are tracked before provider I/O");
-            Json(json!({"choices":[{"index":0,"finish_reason":"tool_calls","message":{"role":"assistant","content":null,"tool_calls":[{"id":"read","type":"function","function":{"name":"workspace_read","arguments":json!({"kind":"artifact","id":artifact_id}).to_string()}}]}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}))
-        }
-    }));
-	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-	let endpoint = format!("http://{}", listener.local_addr().unwrap());
-	let server = tokio::spawn(async move { axum::serve(listener, server).await.unwrap() });
-	let app = common::application(f.clone()).await;
+async fn retained_snapshot_revocation(
+	fixture: RetainedSnapshotRevocationProvider,
+	events_only: bool,
+) {
+	let (f, url, schema) = fixture.application.runtime.parts();
+	let app = fixture.application.application;
+	let server = fixture.server;
+	let endpoint = server.url.clone();
+	let calls = fixture.calls;
 	let (mut bundle, token, task) = bootstrap(&f, &app, &endpoint).await;
 	let workspace = f.store.task(task).await.unwrap().workspace_id;
 	assert_eq!(
@@ -468,7 +457,7 @@ async fn retained_snapshot_revocation(environment: &TestEnvironment, events_only
 		"PAUSED"
 	);
 	assert_eq!(calls.load(Ordering::SeqCst), 1);
-	server.abort();
+	drop(server);
 	cleanup(f, &url, &schema).await;
 }
 
@@ -476,32 +465,14 @@ async fn retained_snapshot_revocation(environment: &TestEnvironment, events_only
 #[tokio::test]
 async fn opened_thread_events_retain_their_root_message_read_dependency(
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(opened_thread_events_retain_their_root_message_read_dependency_provider)]
+	fixture: OpenedThreadEventsRetainTheirRootMessageReadDependencyProvider,
 ) {
-	use axum::{Json, Router, routing::post};
-	use std::sync::{
-		Arc,
-		atomic::{AtomicUsize, Ordering},
-	};
-
-	let calls = Arc::new(AtomicUsize::new(0));
-	let seen = calls.clone();
-	let server = Router::new().route(
-		"/v1/chat/completions",
-		post(move |Json(_body): Json<Value>| {
-			let seen = seen.clone();
-			async move {
-				seen.fetch_add(1, Ordering::SeqCst);
-				Json(json!({"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"Noted the discussion."}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}))
-			}
-		}),
-	);
-	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-	let endpoint = format!("http://{}", listener.local_addr().unwrap());
-	let server = tokio::spawn(async move { axum::serve(listener, server).await.unwrap() });
-	let (f, url, schema) = setup(&_test_environment).await;
-	let app = common::application(f.clone()).await;
+	let (f, url, schema) = fixture.application.runtime.parts();
+	let app = fixture.application.application;
+	let server = fixture.server;
+	let endpoint = server.url.clone();
+	let calls = fixture.calls;
 	let (mut bundle, token, task) = bootstrap(&f, &app, &endpoint).await;
 	let workspace = f.store.task(task).await.unwrap().workspace_id;
 	let root_content = "older thread root";
@@ -681,7 +652,7 @@ async fn opened_thread_events_retain_their_root_message_read_dependency(
 		.0,
 		403
 	);
-	server.abort();
+	drop(server);
 	cleanup(f, &url, &schema).await;
 }
 
@@ -689,11 +660,11 @@ async fn opened_thread_events_retain_their_root_message_read_dependency(
 #[tokio::test]
 async fn stored_message_author_controls_visibility_and_forged_authorship_is_rejected(
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
 ) {
-	let (f, url, schema) = setup(&_test_environment).await;
-	let app = common::application(f.clone()).await;
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
 	let (mut bundle, alice, task) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let workspace = f.store.task(task).await.unwrap().workspace_id;
 	bundle["subjects"]["bob"] = json!({"kind":"user"});
@@ -720,19 +691,24 @@ async fn stored_message_author_controls_visibility_and_forged_authorship_is_reje
 	.await;
 	let bob = bob["token"].as_str().unwrap();
 	let path = format!("/api/workspaces/{workspace}/messages");
-	let client = app.client();
-	client
-		.set_header("Authorization", &format!("Bearer {bob}"))
-		.await
-		.unwrap();
-	let rejected = client
-		.post(
-			&path,
-			&json!({"content":"bob-private","sender":"alice"}),
-			"json",
-		)
-		.await
-		.unwrap();
+	let authorization = format!("Bearer {bob}");
+	// Keep the shared
+	// anonymous client free of default credentials so later Alice requests stay isolated.
+	let rejected = async {
+		let client = &(app.client());
+		let mut request = client
+			.request(http::Method::POST, &path)
+			.body(bytes::Bytes::copy_from_slice(
+				json!({"content":"bob-private","sender":"alice"})
+					.to_string()
+					.as_bytes(),
+			))
+			.header(http::header::CONTENT_TYPE, "application/json");
+		request = request.header("Authorization", authorization.as_str());
+		request.send().await
+	}
+	.await
+	.unwrap();
 	assert_eq!(rejected.status_code(), 422);
 	assert!(
 		std::str::from_utf8(rejected.body())
@@ -785,11 +761,11 @@ async fn stored_message_author_controls_visibility_and_forged_authorship_is_reje
 #[tokio::test]
 async fn denied_new_task_read_rolls_back_creation_but_retains_the_decision(
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
 ) {
-	let (f, url, schema) = setup(&_test_environment).await;
-	let app = common::application(f.clone()).await;
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
 	let (mut bundle, token, task) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let workspace = f.store.task(task).await.unwrap().workspace_id;
 	bundle["policies"].as_array_mut().unwrap().push(json!({"id":"deny-new-task","effect":"deny","subjects":{"ids":["alice"]},"actions":["task.read"],"resources":{"kinds":["task"]},"condition":{"op":"eq","left":{"source":"resource","path":"/created_by"},"right":{"source":"literal","value":"alice"}}}));
@@ -846,11 +822,11 @@ async fn denied_new_task_read_rolls_back_creation_but_retains_the_decision(
 #[tokio::test]
 async fn cyclic_journal_dependencies_terminate_and_propagate_revocation(
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
 ) {
-	let (f, url, schema) = setup(&_test_environment).await;
-	let app = common::application(f.clone()).await;
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
 	let (mut bundle, token, first) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let workspace = f.store.task(first).await.unwrap().workspace_id;
 	let (_, second) = request(
@@ -989,27 +965,14 @@ async fn cyclic_journal_dependencies_terminate_and_propagate_revocation(
 #[tokio::test]
 async fn worker_continues_with_visible_subset_and_never_sends_denied_records(
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(worker_continues_with_visible_subset_and_never_sends_denied_records_provider)]
+	fixture: WorkerContinuesWithVisibleSubsetAndNeverSendsDeniedRecordsProvider,
 ) {
-	use axum::{Json, Router, routing::post};
-	use std::sync::{
-		Arc,
-		atomic::{AtomicUsize, Ordering},
-	};
-	let calls = Arc::new(AtomicUsize::new(0));
-	let seen = calls.clone();
-	let server=Router::new().route("/v1/chat/completions",post(move |Json(body):Json<Value>|{let seen=seen.clone();async move {
-        seen.fetch_add(1,Ordering::SeqCst);
-        assert!(!body.to_string().contains("hidden-provider-source"));assert!(!body.to_string().contains("hidden-message"));
-        assert!(body.to_string().contains("Use approved tools"));
-        Json(json!({"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"Visible work completed"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}))
-    }}));
-	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-	let endpoint = format!("http://{}", listener.local_addr().unwrap());
-	let server = tokio::spawn(async move { axum::serve(listener, server).await.unwrap() });
-	let (f, url, schema) = setup(&_test_environment).await;
-	let app = common::application(f.clone()).await;
+	let (f, url, schema) = fixture.application.runtime.parts();
+	let app = fixture.application.application;
+	let server = fixture.server;
+	let endpoint = server.url.clone();
+	let calls = fixture.calls;
 	let (mut bundle, token, task) = bootstrap(&f, &app, &endpoint).await;
 	let workspace = f.store.task(task).await.unwrap().workspace_id;
 	assert_eq!(
@@ -1163,7 +1126,7 @@ async fn worker_continues_with_visible_subset_and_never_sends_denied_records(
 		assert_eq!(status, 200);
 		assert!(state["runs"].as_array().unwrap().is_empty());
 	}
-	server.abort();
+	drop(server);
 	cleanup(f, &url, &schema).await;
 }
 
@@ -1171,11 +1134,11 @@ async fn worker_continues_with_visible_subset_and_never_sends_denied_records(
 #[tokio::test]
 async fn artifact_state_page_is_filled_after_task_denials(
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
 ) {
-	let (f, url, schema) = setup(&_test_environment).await;
-	let app = common::application(f.clone()).await;
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
 	let (mut bundle, token, hidden) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let workspace = f.store.task(hidden).await.unwrap().workspace_id;
 	let (_, visible) = request(
@@ -1303,27 +1266,14 @@ async fn artifact_state_page_is_filled_after_task_denials(
 #[tokio::test]
 async fn discovered_registry_entries_remain_live_journal_dependencies(
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(discovered_registry_entries_remain_live_journal_dependencies_provider)]
+	fixture: DiscoveredRegistryEntriesRemainLiveJournalDependenciesProvider,
 ) {
-	use axum::{Json, Router, routing::post};
-	use std::sync::{
-		Arc,
-		atomic::{AtomicUsize, Ordering},
-	};
-	let calls = Arc::new(AtomicUsize::new(0));
-	let server=Router::new().route("/v1/chat/completions",post(move || {let calls=calls.clone(); async move {
-        let message=if calls.fetch_add(1,Ordering::SeqCst)==0 {
-            json!({"role":"assistant","content":null,"tool_calls":[{"id":"discover","type":"function","function":{"name":"agent_discover","arguments":"{}"}}]})
-        } else { json!({"role":"assistant","content":"Completed discovery"}) };
-        let reason=if message.get("tool_calls").is_some(){"tool_calls"}else{"stop"};
-        Json(json!({"choices":[{"index":0,"finish_reason":reason,"message":message}],"usage":{"prompt_tokens":1,"completion_tokens":1}}))
-    }}));
-	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-	let endpoint = format!("http://{}", listener.local_addr().unwrap());
-	let server = tokio::spawn(async move { axum::serve(listener, server).await.unwrap() });
-	let (f, url, schema) = setup(&_test_environment).await;
-	let app = common::application(f.clone()).await;
+	let (f, url, schema) = fixture.application.runtime.parts();
+	let app = fixture.application.application;
+	let server = fixture.server;
+	let endpoint = server.url.clone();
+	let _calls = fixture.calls;
 	let (mut bundle, token, task) = bootstrap(&f, &app, &endpoint).await;
 	let mut entry = f.registry.get("research", "1.0.0").await.unwrap();
 	entry.id = "discovered-only".into();
@@ -1387,7 +1337,7 @@ async fn discovered_registry_entries_remain_live_journal_dependencies(
 	}
 	.unwrap();
 	assert_eq!(tracked, 1);
-	// Recreate the HTTP application over persisted reads before changing policy.
+	// Act: rebuild the HTTP application over persisted reads before changing policy.
 	drop(app);
 	let app = common::application(f.clone()).await;
 	assert_eq!(
@@ -1439,7 +1389,7 @@ async fn discovered_registry_entries_remain_live_journal_dependencies(
 		request(&app, &token, "GET", &path, Value::Null).await.0,
 		403
 	);
-	server.abort();
+	drop(server);
 	cleanup(f, &url, &schema).await;
 }
 
@@ -1450,3 +1400,253 @@ use reinhardt::query::ExprTrait;
 use reinhardt::query::Expr;
 
 use reinhardt::query::SimpleExpr;
+
+#[rstest::fixture]
+fn retained_snapshot_revocation_provider_calls() -> Arc<AtomicUsize> {
+	Arc::new(AtomicUsize::new(0))
+}
+
+#[rstest::fixture]
+fn retained_snapshot_revocation_provider_router(
+	#[from(retained_snapshot_revocation_provider_calls)] calls: Arc<AtomicUsize>,
+	runtime: common::RuntimeFuture,
+) -> upstream_fixtures::RouterFuture {
+	async move {
+
+
+	let f = runtime.await.federation;
+
+	let seen = calls.clone();
+	let pool = f.store.pool.driver().clone();
+	let server=reinhardt::test::stub::StubRouter::new()
+.route("/v1/chat/completions", http::Method::POST, reply(move |request: reinhardt::Request| {let body = request.json::<Value>().unwrap();
+        let seen=seen.clone();let pool=pool.clone();async move {
+            seen.fetch_add(1,Ordering::SeqCst);
+            let context: Value = serde_json::from_str(body["messages"][1]["content"].as_str().unwrap()).unwrap();
+            let artifact_id = context["current"]["workspace"]["artifacts"][0]["id"].clone();
+            assert!(artifact_id.is_string());
+            assert!(!body.to_string().contains("private-artifact-content"));
+            let sources:i64=sqlx::query_scalar(&reinhardt::query::Query::select().expr(reinhardt::query::Expr::cust("COUNT(*)")).from(reinhardt::query::Alias::new("authorization_run_reads")).and_where(reinhardt::query::Expr::cust("resource_kind = 'artifact'")).to_string(reinhardt::query::PostgresQueryBuilder)).fetch_one(&pool).await.unwrap();
+            assert_eq!(sources,20,"only records exposed by the bounded observation page are tracked before provider I/O");
+            reinhardt::Response::ok().with_json(&json!({"choices":[{"index":0,"finish_reason":"tool_calls","message":{"role":"assistant","content":null,"tool_calls":[{"id":"read","type":"function","function":{"name":"workspace_read","arguments":json!({"kind":"artifact","id":artifact_id}).to_string()}}]}}],"usage":{"prompt_tokens":1,"completion_tokens":1}})).unwrap()
+        }
+    })).into_server_router();
+
+
+
+Arc::new(server)}.boxed().shared()
+}
+
+struct RetainedSnapshotRevocationProvider {
+	application: common::ApplicationFixture,
+	server: Arc<reinhardt::test::fixtures::server::TestServerGuard>,
+	calls: Arc<AtomicUsize>,
+}
+
+#[rstest::fixture]
+fn retained_snapshot_revocation_provider(
+	#[from(retained_snapshot_revocation_provider_calls)] calls: Arc<AtomicUsize>,
+	#[from(common::runtime)] _runtime: common::RuntimeFuture,
+	#[from(retained_snapshot_revocation_provider_router)]
+	#[with(calls.clone(), _runtime.clone())]
+	_router: upstream_fixtures::RouterFuture,
+	#[from(async_upstream)]
+	#[with(_router.clone())]
+	_server: upstream_fixtures::UpstreamFuture,
+	#[from(common::native_application)]
+	#[with(Default::default(),aidash_server::sse::Service::new(Default::default()),Arc::new(|r|r),_runtime.clone())]
+	_application: common::ApplicationFuture,
+) -> BoxFuture<'static, RetainedSnapshotRevocationProvider> {
+	async move {
+		RetainedSnapshotRevocationProvider {
+			application: _application.await,
+			server: _server.await,
+			calls,
+		}
+	}
+	.boxed()
+}
+
+#[rstest::fixture]
+fn opened_thread_events_retain_their_root_message_read_dependency_provider_calls()
+-> Arc<AtomicUsize> {
+	Arc::new(AtomicUsize::new(0))
+}
+
+#[rstest::fixture]
+fn opened_thread_events_retain_their_root_message_read_dependency_provider_router(
+	#[from(opened_thread_events_retain_their_root_message_read_dependency_provider_calls)]
+	calls: Arc<AtomicUsize>,
+) -> upstream_fixtures::RouterFuture {
+	async move {
+
+
+
+
+	let seen = calls.clone();
+	let server = reinhardt::test::stub::StubRouter::new()
+.route("/v1/chat/completions", http::Method::POST, reply(move |request: reinhardt::Request| {let _body = request.json::<Value>().unwrap();
+			let seen = seen.clone();
+			async move {
+				seen.fetch_add(1, Ordering::SeqCst);
+				reinhardt::Response::ok().with_json(&json!({"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"Noted the discussion."}}],"usage":{"prompt_tokens":1,"completion_tokens":1}})).unwrap()
+			}
+		})).into_server_router();
+
+
+
+Arc::new(server)}.boxed().shared()
+}
+
+struct OpenedThreadEventsRetainTheirRootMessageReadDependencyProvider {
+	application: common::ApplicationFixture,
+	server: Arc<reinhardt::test::fixtures::server::TestServerGuard>,
+	calls: Arc<AtomicUsize>,
+}
+
+#[rstest::fixture]
+fn opened_thread_events_retain_their_root_message_read_dependency_provider(
+	#[from(opened_thread_events_retain_their_root_message_read_dependency_provider_calls)]
+	calls: Arc<AtomicUsize>,
+	#[from(common::runtime)] _runtime: common::RuntimeFuture,
+	#[from(opened_thread_events_retain_their_root_message_read_dependency_provider_router)]
+	#[with(calls.clone())]
+	_router: upstream_fixtures::RouterFuture,
+	#[from(async_upstream)]
+	#[with(_router.clone())]
+	_server: upstream_fixtures::UpstreamFuture,
+	#[from(common::native_application)]
+	#[with(Default::default(),aidash_server::sse::Service::new(Default::default()),Arc::new(|r|r),_runtime.clone())]
+	_application: common::ApplicationFuture,
+) -> BoxFuture<'static, OpenedThreadEventsRetainTheirRootMessageReadDependencyProvider> {
+	async move {
+		OpenedThreadEventsRetainTheirRootMessageReadDependencyProvider {
+			application: _application.await,
+			server: _server.await,
+			calls,
+		}
+	}
+	.boxed()
+}
+
+#[rstest::fixture]
+fn worker_continues_with_visible_subset_and_never_sends_denied_records_provider_calls()
+-> Arc<AtomicUsize> {
+	Arc::new(AtomicUsize::new(0))
+}
+
+#[rstest::fixture]
+fn worker_continues_with_visible_subset_and_never_sends_denied_records_provider_router(
+	#[from(worker_continues_with_visible_subset_and_never_sends_denied_records_provider_calls)]
+	calls: Arc<AtomicUsize>,
+) -> upstream_fixtures::RouterFuture {
+	async move {
+
+
+
+	let seen = calls.clone();
+	let server=reinhardt::test::stub::StubRouter::new()
+.route("/v1/chat/completions", http::Method::POST, reply(move |request: reinhardt::Request| {let body = request.json::<Value>().unwrap();let seen=seen.clone();async move {
+        seen.fetch_add(1,Ordering::SeqCst);
+        assert!(!body.to_string().contains("hidden-provider-source"));assert!(!body.to_string().contains("hidden-message"));
+        assert!(body.to_string().contains("Use approved tools"));
+        reinhardt::Response::ok().with_json(&json!({"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"Visible work completed"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}})).unwrap()
+    }})).into_server_router();
+
+
+
+Arc::new(server)}.boxed().shared()
+}
+
+struct WorkerContinuesWithVisibleSubsetAndNeverSendsDeniedRecordsProvider {
+	application: common::ApplicationFixture,
+	server: Arc<reinhardt::test::fixtures::server::TestServerGuard>,
+	calls: Arc<AtomicUsize>,
+}
+
+#[rstest::fixture]
+fn worker_continues_with_visible_subset_and_never_sends_denied_records_provider(
+	#[from(worker_continues_with_visible_subset_and_never_sends_denied_records_provider_calls)]
+	calls: Arc<AtomicUsize>,
+	#[from(common::runtime)] _runtime: common::RuntimeFuture,
+	#[from(worker_continues_with_visible_subset_and_never_sends_denied_records_provider_router)]
+	#[with(calls.clone())]
+	_router: upstream_fixtures::RouterFuture,
+	#[from(async_upstream)]
+	#[with(_router.clone())]
+	_server: upstream_fixtures::UpstreamFuture,
+	#[from(common::native_application)]
+	#[with(Default::default(),aidash_server::sse::Service::new(Default::default()),Arc::new(|r|r),_runtime.clone())]
+	_application: common::ApplicationFuture,
+) -> BoxFuture<'static, WorkerContinuesWithVisibleSubsetAndNeverSendsDeniedRecordsProvider> {
+	async move {
+		WorkerContinuesWithVisibleSubsetAndNeverSendsDeniedRecordsProvider {
+			application: _application.await,
+			server: _server.await,
+			calls,
+		}
+	}
+	.boxed()
+}
+
+#[rstest::fixture]
+fn discovered_registry_entries_remain_live_journal_dependencies_provider_calls() -> Arc<AtomicUsize>
+{
+	Arc::new(AtomicUsize::new(0))
+}
+
+#[rstest::fixture]
+fn discovered_registry_entries_remain_live_journal_dependencies_provider_router(
+	#[from(discovered_registry_entries_remain_live_journal_dependencies_provider_calls)] calls: Arc<
+		AtomicUsize,
+	>,
+) -> upstream_fixtures::RouterFuture {
+	async move {
+
+
+
+	let server=reinhardt::test::stub::StubRouter::new()
+.route("/v1/chat/completions", http::Method::POST, reply(move |_request: reinhardt::Request| {let calls=calls.clone(); async move {
+        let message=if calls.fetch_add(1,Ordering::SeqCst)==0 {
+            json!({"role":"assistant","content":null,"tool_calls":[{"id":"discover","type":"function","function":{"name":"agent_discover","arguments":"{}"}}]})
+        } else { json!({"role":"assistant","content":"Completed discovery"}) };
+        let reason=if message.get("tool_calls").is_some(){"tool_calls"}else{"stop"};
+        reinhardt::Response::ok().with_json(&json!({"choices":[{"index":0,"finish_reason":reason,"message":message}],"usage":{"prompt_tokens":1,"completion_tokens":1}})).unwrap()
+    }})).into_server_router();
+
+
+
+Arc::new(server)}.boxed().shared()
+}
+
+struct DiscoveredRegistryEntriesRemainLiveJournalDependenciesProvider {
+	application: common::ApplicationFixture,
+	server: Arc<reinhardt::test::fixtures::server::TestServerGuard>,
+	calls: Arc<AtomicUsize>,
+}
+
+#[rstest::fixture]
+fn discovered_registry_entries_remain_live_journal_dependencies_provider(
+	#[from(discovered_registry_entries_remain_live_journal_dependencies_provider_calls)] calls: Arc<
+		AtomicUsize,
+	>,
+	#[from(common::runtime)] _runtime: common::RuntimeFuture,
+	#[from(discovered_registry_entries_remain_live_journal_dependencies_provider_router)]
+	#[with(calls.clone())]
+	_router: upstream_fixtures::RouterFuture,
+	#[from(async_upstream)]
+	#[with(_router.clone())]
+	_server: upstream_fixtures::UpstreamFuture,
+	#[from(common::native_application)]
+	#[with(Default::default(),aidash_server::sse::Service::new(Default::default()),Arc::new(|r|r),_runtime.clone())]
+	_application: common::ApplicationFuture,
+) -> BoxFuture<'static, DiscoveredRegistryEntriesRemainLiveJournalDependenciesProvider> {
+	async move {
+		DiscoveredRegistryEntriesRemainLiveJournalDependenciesProvider {
+			application: _application.await,
+			server: _server.await,
+			calls,
+		}
+	}
+	.boxed()
+}
