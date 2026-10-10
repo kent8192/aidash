@@ -99,5 +99,26 @@ class GuardTransportTest(unittest.TestCase):
             self.runner.activity()
 
 
+class NamespaceTest(unittest.TestCase):
+    def construct(self, namespace):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        config = {'journal': directory.name, 'token_env': 'AIDASH_TEST_RUNNER_TOKEN', 'namespace': namespace,
+                  'image': 'sandbox@sha256:' + 'a' * 64, 'kubectl': 'kubectl', 'runtime_class': 'runsc'}
+        # Stop at the first cluster call: everything before it is local validation.
+        with (patch.dict('os.environ', {'AIDASH_TEST_RUNNER_TOKEN': 't' * 32}),
+              patch.object(Runner, 'kube_json', side_effect=RuntimeError('validated'))):
+            Runner(config)
+
+    def test_dedicated_namespace_is_any_rfc1123_label(self):
+        # The chart accepts any Kubernetes namespace, including one character.
+        for namespace in ('a', '7', 'ab', 'a-b', 'x' * 63):
+            with self.subTest(namespace=namespace), self.assertRaisesRegex(RuntimeError, 'validated'):
+                self.construct(namespace)
+        for namespace in ('', '-a', 'a-', 'A', 'a_b', 'x' * 64):
+            with self.subTest(namespace=namespace), self.assertRaisesRegex(ValueError, 'namespace'):
+                self.construct(namespace)
+
+
 if __name__ == '__main__':
     unittest.main()

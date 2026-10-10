@@ -11,9 +11,11 @@ ROOT = Path(__file__).resolve().parents[1]
 DIGEST = '@sha256:' + 'b' * 64
 
 
-def render(chart, values, release='fixture'):
-    output = subprocess.check_output(['helm', 'template', release, str(ROOT / chart),
-                                     '--namespace', 'environment', '-f', '-'], input=json.dumps(values).encode())
+def render(chart, values, release='fixture', kube_version=None):
+    command = ['helm', 'template', release, str(ROOT / chart), '--namespace', 'environment', '-f', '-']
+    if kube_version:
+        command += ['--kube-version', kube_version]
+    output = subprocess.check_output(command, input=json.dumps(values).encode())
     return [value for value in yaml.safe_load_all(output) if value]
 
 
@@ -146,8 +148,12 @@ class ChartsTest(unittest.TestCase):
                   'edge': {'hostname': 'fixture.example', 'admissionImage': 'admission' + DIGEST},
                   'activity': {'existingSecret': 'observer', 'observerImage': 'observer' + DIGEST,
                                'collectorImage': 'collector' + DIGEST}}
-        render(self.environment, values)
-        for section, key in (('edge', 'admissionImage'), ('activity', 'observerImage'), ('activity', 'collectorImage')):
+        objects = render(self.environment, values)
+        # The shipped Caddy default is digest pinned too: it receives all public traffic.
+        caddy = select(objects, 'Deployment', '-edge')['spec']['template']['spec']['containers'][0]
+        self.assertRegex(caddy['image'], r'@sha256:[0-9a-f]{64}$')
+        for section, key in (('edge', 'admissionImage'), ('edge', 'caddyImage'),
+                             ('activity', 'observerImage'), ('activity', 'collectorImage')):
             with self.subTest(image=key):
                 mutable = dict(values, **{section: dict(values[section], **{key: 'image:latest'})})
                 with self.assertRaises(subprocess.CalledProcessError):
@@ -165,6 +171,19 @@ class ChartsTest(unittest.TestCase):
         accepted(release='r' * 46)
         with self.assertRaises(subprocess.CalledProcessError):
             accepted(release='r' * 47)
+        # Execution Pods set pod-level spec.resources, which needs Kubernetes 1.34.
+        for version, ok in (('1.33.5', False), ('1.34.0', True), ('v1.34.1-gke.1000', True)):
+            with self.subTest(kube_version=version):
+                values = dict(self.base, execution=base)
+                if ok:
+                    render(self.aidash, values, kube_version=version)
+                else:
+                    with self.assertRaises(subprocess.CalledProcessError):
+                        render(self.aidash, values, kube_version=version)
+        # Execution stays opt-in, so the parent chart still renders on older clusters.
+        render(self.aidash, self.base, kube_version='1.30.0')
+        # Any RFC 1123 label is a valid sandbox namespace, including one character.
+        accepted(sandboxNamespace='a')
         # The Sentry's own host threads share pids.max with the probe's guest children;
         # only the 128/512 headroom is verified, so neither ratio nor margin may shrink.
         for processes, host_tasks, ok in ((128, 129, False), (128, 511, False), (128, 512, True),
@@ -261,6 +280,23 @@ class ChartsTest(unittest.TestCase):
         self.assertEqual(len(select(objects, 'Service', '-environment-postgres')['metadata']['name']), 52)
         with self.assertRaises(subprocess.CalledProcessError):
             render(self.environment, values, 'r' * 32)
+
+    def test_only_the_activity_collector_receives_the_patch_token(self):
+        values = {'postgres': {'existingSecret': 'db'},
+                  'edge': {'hostname': 'fixture.example', 'admissionImage': 'admission' + DIGEST},
+                  'activity': {'existingSecret': 'observer', 'observerImage': 'observer' + DIGEST,
+                               'collectorImage': 'collector' + DIGEST}}
+        job = select(render(self.environment, values), 'CronJob', '-activity')
+        pod = job['spec']['jobTemplate']['spec']['template']['spec']
+        self.assertIs(pod['automountServiceAccountToken'], False)
+        api = next(volume for volume in pod['volumes'] if 'projected' in volume)
+        sources = api['projected']['sources']
+        self.assertEqual([next(iter(source)) for source in sources],
+                         ['serviceAccountToken', 'configMap', 'downwardAPI'])
+        account = '/var/run/secrets/kubernetes.io/serviceaccount'
+        (observer,), (collector,) = pod['initContainers'], pod['containers']
+        self.assertNotIn(api['name'], [mount['name'] for mount in observer['volumeMounts']])
+        self.assertIn({'name': api['name'], 'mountPath': account, 'readOnly': True}, collector['volumeMounts'])
 
 
 class ActivityTest(unittest.TestCase):

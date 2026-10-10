@@ -68,7 +68,8 @@ class Runner:
         self.token = os.environ[config["token_env"]]
         if len(self.token) < 32:
             raise ValueError("runner token must have at least 32 characters")
-        if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,61}[a-z0-9]", config["namespace"]):
+        # A Kubernetes namespace is an RFC 1123 label, which may be one character.
+        if not re.fullmatch(r"[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?", config["namespace"]):
             raise ValueError("invalid dedicated namespace")
         if not re.search(r"@sha256:[0-9a-f]{64}$", config["image"]):
             raise ValueError("runner image must be digest pinned")

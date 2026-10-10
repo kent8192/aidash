@@ -83,7 +83,9 @@ The Runner gets `get`/`list` Pods and `create` `pods/exec` there, execution and
 NetworkPolicy rights in its sandbox namespace, and `get` on its named RuntimeClass.
 It cannot read Secrets or patch Cluster Nodes. The guard has no API token.
 
-The Runner has one replica, `Recreate` updates, and a ReadWriteOnce journal.
+The Runner has one replica, `Recreate` updates, and a ReadWriteOnce journal. It
+requires Kubernetes 1.34 or later, because Execution Pods set pod-level
+`spec.resources`; the chart refuses to render it on older clusters.
 Set `execution.runner.journal.existingClaim` to reuse a retained journal, or
 provide a storage class and size for its kept claim. Use a class with reclaim
 `Retain` on GCP. Supply its bearer token using `execution.runner.existingSecret`
