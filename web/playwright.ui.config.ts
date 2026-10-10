@@ -25,6 +25,7 @@ export default defineConfig({
     "openrouter.spec.ts",
     "generation-validation.spec.ts",
     "workbench.spec.ts",
+    "provider-credentials.spec.ts",
   ],
   workers: 1,
   retries: 0,

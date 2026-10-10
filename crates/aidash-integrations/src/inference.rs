@@ -1,21 +1,33 @@
 //! OpenRouter inference transport implementing the application port.
 use crate::{Error, Result};
-use aidash_application::ports::{Credentials, InferenceProgressSink, ModelProvider};
+use aidash_application::ports::{InferenceProgressSink, ModelProvider};
+use aidash_application::provider_access::{Context, Inference, Operation, ProviderAccess, Source};
 use aidash_domain::{
 	model::ModelConfig,
 	provider::{ContentPart, ModelRequest, ModelResponse, ToolCall},
 };
 use async_trait::async_trait;
+use secrecy::ExposeSecret;
 use serde_json::{Value, json};
 use std::sync::Arc;
 
 pub struct OpenRouterProvider {
 	pub client: reqwest::Client,
 	pub config: ModelConfig,
-	pub credentials: Arc<dyn Credentials>,
+	pub access: Arc<dyn ProviderAccess>,
+	pub context: Context,
 }
 
 impl OpenRouterProvider {
+	fn call_context(&self, operation: Operation, max_output_tokens: u32) -> Context {
+		let mut context = self.context.clone();
+		context.inference = Some(Inference {
+			model: self.config.model_id.clone(),
+			operations: vec![operation],
+			max_output_tokens,
+		});
+		context
+	}
 	async fn verified_media_routes(&self, request: &ModelRequest) -> Result<Vec<String>> {
 		let formats: Vec<&str> = request
 			.content_parts
@@ -35,7 +47,18 @@ impl OpenRouterProvider {
 				self.config.model_id
 			)));
 		}
-		let mut url = reqwest::Url::parse(&self.config.endpoint)
+		let access = self
+			.access
+			.resolve(
+				&self.call_context(Operation::Discovery, self.config.output_token_limit()),
+				&self.config.endpoint,
+				&Source::configured(
+					&self.config.credential_env,
+					&self.config.provider_credential,
+				),
+			)
+			.await?;
+		let mut url = reqwest::Url::parse(&access.endpoint)
 			.map_err(|_| Error::Invalid("invalid OpenRouter endpoint".into()))?;
 		{
 			let mut segments = url
@@ -58,26 +81,31 @@ impl OpenRouterProvider {
 			.client
 			.get(format!(
 				"{}/endpoints/zdr",
-				self.config.endpoint.trim_end_matches('/')
+				access.endpoint.trim_end_matches('/')
 			))
 			.timeout(std::time::Duration::from_secs(15));
-		if let Some(name) = &self.config.credential_env {
-			let credential = self.credentials.resolve(name)?;
-			endpoints = endpoints.bearer_auth(&credential);
-			zdr = zdr.bearer_auth(&credential);
+		if !access.bearer.expose_secret().is_empty() {
+			endpoints = endpoints.bearer_auth(access.bearer.expose_secret());
+			zdr = zdr.bearer_auth(access.bearer.expose_secret());
 		}
 		let (endpoints, zdr) =
 			tokio::try_join!(endpoints.send(), zdr.send()).map_err(crate::http_error)?;
-		let endpoints = crate::response::json::<Value>(
-			endpoints.error_for_status().map_err(crate::http_error)?,
-			2 * 1024 * 1024,
-		)
-		.await?;
-		let zdr = crate::response::json::<Value>(
-			zdr.error_for_status().map_err(crate::http_error)?,
-			8 * 1024 * 1024,
-		)
-		.await?;
+		if !endpoints.status().is_success() {
+			return Err(crate::response::provider_rejection(
+				endpoints,
+				self.config.provider_credential.is_some(),
+			)
+			.await);
+		}
+		if !zdr.status().is_success() {
+			return Err(crate::response::provider_rejection(
+				zdr,
+				self.config.provider_credential.is_some(),
+			)
+			.await);
+		}
+		let endpoints = crate::response::json::<Value>(endpoints, 2 * 1024 * 1024).await?;
+		let zdr = crate::response::json::<Value>(zdr, 8 * 1024 * 1024).await?;
 		let modalities = endpoints
 			.pointer("/data/architecture/input_modalities")
 			.and_then(Value::as_array)
@@ -147,8 +175,15 @@ impl OpenRouterProvider {
 pub fn provider(
 	client: reqwest::Client,
 	config: ModelConfig,
-	credentials: Arc<dyn Credentials>,
+	access: Arc<dyn ProviderAccess>,
+	context: Context,
 ) -> Result<Arc<dyn ModelProvider>> {
+	aidash_domain::provider_credentials::validate_source(
+		&config.endpoint,
+		&config.provider,
+		config.credential_env.as_deref(),
+		config.provider_credential.as_deref(),
+	)?;
 	match config.provider.as_str() {
 		"openrouter" => {
 			config.request_timeout()?;
@@ -156,7 +191,8 @@ pub fn provider(
 			Ok(Arc::new(OpenRouterProvider {
 				client,
 				config,
-				credentials,
+				access,
+				context,
 			}))
 		}
 		_ => Err(Error::Invalid("unsupported model provider".into())),
@@ -175,6 +211,13 @@ impl ModelProvider for OpenRouterProvider {
 		let stall = self.config.stream_stall_timeout()?;
 		tokio::time::timeout(deadline, async {
 			request.validate()?;
+			if self.config.provider_credential.is_some()
+				&& request.max_output_tokens > self.config.output_token_limit()
+			{
+				return Err(Error::Invalid(
+					"BYOK inference exceeds the configured output limit".into(),
+				));
+			}
 			for modality in request.content_parts.iter().filter_map(|part| match part {
 				ContentPart::Image { .. } => Some("image"),
 				ContentPart::Audio { .. } => Some("audio"),
@@ -210,18 +253,29 @@ impl ModelProvider for OpenRouterProvider {
 				body["stream"] = json!(true);
 				body["stream_options"] = json!({"include_usage": true});
 			}
+			let access = self
+				.access
+				.resolve(
+					&self.call_context(Operation::Chat, request.max_output_tokens),
+					&self.config.endpoint,
+					&Source::configured(
+						&self.config.credential_env,
+						&self.config.provider_credential,
+					),
+				)
+				.await?;
 			let mut call = self
 			.client
 			.post(format!(
 				"{}/chat/completions",
-				self.config.endpoint.trim_end_matches('/')
+				access.endpoint.trim_end_matches('/')
 			))
 			// Override only inference, including response-body reads. Other HTTP
 			// traffic retains the shared client's timeout and connection policy.
 			.timeout(deadline)
 			.json(&body);
-			if let Some(name) = &self.config.credential_env {
-				call = call.bearer_auth(self.credentials.resolve(name)?);
+			if !access.bearer.expose_secret().is_empty() {
+				call = call.bearer_auth(access.bearer.expose_secret());
 			}
 			let started = std::time::Instant::now();
 			let response = if streaming {
@@ -236,22 +290,11 @@ impl ModelProvider for OpenRouterProvider {
 			metrics::histogram!("aidash_model_response_headers_seconds")
 				.record(started.elapsed().as_secs_f64());
 			if !response.status().is_success() {
-				let status = response.status();
-				let detail = crate::response::json::<Value>(response, 16_384)
-					.await
-					.ok()
-					.and_then(|body| {
-						body.pointer("/error/message")
-							.and_then(Value::as_str)
-							.map(str::to_owned)
-					})
-					.unwrap_or_else(|| {
-						"upstream rejected the request without a readable reason".into()
-					});
-				return Err(Error::ProviderRejected {
-					status: status.as_u16(),
-					reason: safe_upstream_reason(&detail),
-				});
+				return Err(crate::response::provider_rejection(
+					response,
+					self.config.provider_credential.is_some(),
+				)
+				.await);
 			}
 			let result = if streaming {
 				read_stream(response, progress, stall).await?
@@ -309,7 +352,7 @@ async fn read_stream(
 	assembler.finish()
 }
 
-fn safe_upstream_reason(detail: &str) -> String {
+pub(crate) fn safe_upstream_reason(detail: &str) -> String {
 	let normalized = detail.to_ascii_lowercase();
 	if normalized.contains("audio")
 		&& (normalized.contains("exceed")

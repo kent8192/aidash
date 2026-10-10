@@ -127,7 +127,7 @@ impl ForeignGenerationReceiverScope for Scope {
 			policy,
 			&intent.reason,
 			Some(intent),
-			&crate::bootstrap::registry_validation(),
+			&crate::bootstrap::registry_validation_for(&self.federation.store),
 		)
 		.await
 	}

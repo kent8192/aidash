@@ -406,9 +406,14 @@ impl ExecutionAdmissionSession for Admission<'_> {
 		&mut self,
 		entry: &Entry,
 	) -> Result<aidash_domain::registry::bindings::BindingSnapshot> {
-		crate::apps::registry::repositories::bindings::authorized(self.access, entry, false)
-			.await
-			.map_err(Into::into)
+		crate::apps::registry::repositories::bindings::authorized(
+			self.access,
+			entry,
+			false,
+			self.f.store.provider_credentials.is_some(),
+		)
+		.await
+		.map_err(Into::into)
 	}
 
 	async fn prepare_thread(

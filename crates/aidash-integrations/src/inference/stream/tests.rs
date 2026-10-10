@@ -296,6 +296,58 @@ fn oversized_streams_fail_like_oversized_bodies() {
 }
 
 #[rstest::rstest]
+#[case::reasoning(json!({"choices":[{"delta":{"reasoning":"x"}}]}))]
+#[case::unknown_field(json!({"padding":"0123456789012345678901234567"}))]
+fn events_without_assembled_text_count_toward_the_stream_cap(#[case] event: Value) {
+	// Arrange: each event fits the 64-byte line bound and adds nothing assembled.
+	let events = vec![event; 8192 / 40 + 1];
+	let body = sse(&events, true);
+
+	// Act
+	let (result, _) = assemble(&body, 4096, 64);
+
+	// Assert
+	assert!(
+		matches!(result, Err(Error::External(message)) if message == "response stream exceeds 8192 bytes")
+	);
+}
+
+#[rstest::rstest]
+#[case::both_unindexed(json!([{"delta":{"content":"one"}},{"delta":{"content":"two"}}]))]
+#[case::one_unindexed(json!([{"index":0,"delta":{"content":"one"}},{"delta":{"content":"two"}}]))]
+fn several_unindexed_choices_are_rejected_as_ambiguous(#[case] choices: Value) {
+	// Arrange
+	let body = sse(&[json!({"choices":choices}), finish("stop")], true);
+
+	// Act
+	let (result, _) = assemble(&body, 4096, 1_048_576);
+
+	// Assert
+	assert!(
+		matches!(result, Err(Error::External(message)) if message == "provider stream returned ambiguous unindexed choices")
+	);
+}
+
+#[rstest::rstest]
+fn a_sole_unindexed_choice_is_choice_zero() {
+	// Arrange
+	let body = sse(
+		&[
+			json!({"choices":[{"delta":{"content":"only"}}]}),
+			json!({"choices":[{"index":1,"delta":{"content":"other"}}]}),
+			finish("stop"),
+		],
+		true,
+	);
+
+	// Act
+	let (result, _) = assemble(&body, 4096, 1_048_576);
+
+	// Assert
+	assert_eq!(result.unwrap().text, "only");
+}
+
+#[rstest::rstest]
 fn only_data_events_count_as_liveness() {
 	// Arrange
 	let (recorder, received) = recorder();

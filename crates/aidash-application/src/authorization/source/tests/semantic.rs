@@ -492,3 +492,38 @@ fn selection_requirements_use_the_remote_closure_without_a_home_catalog(#[case] 
 		assert!(requirements.memory_available);
 	}
 }
+
+#[rstest]
+#[case::environment(false)]
+#[case::tenant(true)]
+#[tokio::test]
+async fn remote_home_binding_rejects_tenant_embedding_before_provider_or_dispatch_authority(
+	#[case] tenant_source: bool,
+) {
+	let mut scope = BindingScope::new();
+	scope.spec.embedding = serde_json::from_value(json!({
+		"provider":"openrouter", "endpoint":"https://openrouter.ai/api/v1",
+		"credential_env":null, "provider_credential":if tenant_source { Some("openrouter") } else { None },
+		"model":"embed", "model_version":"1", "dimensions":3
+	})).unwrap();
+	scope.entry.config = serde_json::to_value(&scope.spec.embedding).unwrap();
+	scope.index.spec = serde_json::to_value(&scope.spec).unwrap();
+	let result = use_case::binding(
+		&mut scope,
+		&task(),
+		"aidash://receiver",
+		&remote_inspection(),
+		&request(),
+	)
+	.await;
+	if tenant_source {
+		assert!(matches!(
+			result,
+			Err(Error::RemoteSemantic(Failure::Configuration))
+		));
+		assert_eq!(scope.reads, vec!["index"]);
+	} else {
+		assert!(matches!(result.unwrap(), Binding::RequiredHome { .. }));
+		assert_eq!(scope.reads, vec!["index", "entry", "lineage"]);
+	}
+}

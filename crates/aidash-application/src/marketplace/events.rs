@@ -44,6 +44,13 @@ pub async fn poll_events(
 	for event in events {
 		let allowed = if event.kind.starts_with("marketplace.") {
 			visible(scope, &event, node).await?
+		} else if event.workspace_id.is_none()
+			&& (event.kind.starts_with("provider_credential.")
+				|| event.kind.starts_with("provider_credential_binding."))
+		{
+			// Global Tenant metadata still rechecks current Tenant and read policy
+			// at handoff, just as workspace events do.
+			scope.workspace_event_visible(&event).await?
 		} else if let Some(workspace) = event.workspace_id {
 			scope.workspace_allowed(workspace, "workspace.read").await?
 				&& scope
