@@ -417,16 +417,25 @@ pub fn fit_capability_search(
 	output: &Value,
 	budget: WorkspaceReadFitBudget,
 ) -> Option<Value> {
-	let returned = output["results"].as_array().map_or(0, Vec::len);
-	let page = |kept| capability_search_result(output, budget.offset, kept);
-	let fits = |kept| {
+	fit_capability_search_page(output, budget.offset, |page| {
 		tool_event_fits(
 			context,
-			&ContextEvent::tool(call.clone(), page(kept)),
+			&ContextEvent::tool(call.clone(), page.clone()),
 			budget,
 		)
-	};
-	largest_fit(returned.min(1), returned, fits).map(page)
+	})
+}
+
+/// The page with the most leading results that `fits` accepts; `None` when not
+/// even the empty page does.
+pub fn fit_capability_search_page(
+	output: &Value,
+	offset: usize,
+	fits: impl Fn(&Value) -> bool,
+) -> Option<Value> {
+	let returned = output["results"].as_array().map_or(0, Vec::len);
+	let page = |kept| capability_search_result(output, offset, kept);
+	largest_fit(returned.min(1), returned, |kept| fits(&page(kept))).map(page)
 }
 
 pub fn workspace_read_result(

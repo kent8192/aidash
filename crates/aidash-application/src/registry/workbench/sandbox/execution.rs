@@ -125,13 +125,14 @@ pub async fn simulate(execution: &Execution, session_id: Uuid, job: &Job) -> Res
 			Some(_) => deferred::Deferred::new(&snapshot)?,
 			None => None,
 		};
-		if request.input_body().to_string().len() > limits.max_input_bytes as usize
-			|| request.estimated_total_tokens() > *context_window
-			|| input_tokens
-				.saturating_add(output_tokens)
-				.saturating_add(request.estimated_total_tokens() as u64)
-				> limits.max_total_tokens as u64
-		{
+		if exceeds_limits(
+			&request,
+			limits,
+			*context_window,
+			input_tokens,
+			output_tokens,
+			0,
+		) {
 			error = Some("test context exceeds configured input or model window limit".into());
 			break;
 		}
@@ -184,7 +185,24 @@ pub async fn simulate(execution: &Execution, session_id: Uuid, job: &Job) -> Res
 			});
 			let evaluated = match (&discoverable, exposure.as_mut(), binding, &admitted) {
 				(Some(discoverable), Some(session), Some(binding), Ok(())) => {
-					discoverable.evaluate(binding, &call, &mut session.state, step)?
+					// The next request resends the whole conversation, so a
+					// result must leave it within the session's limits.
+					let fits = |output: &Value, reserve: usize| {
+						let mut next = request.clone();
+						let mut retained = conversation.clone();
+						retained.push(json!({"role":"tool","content":{"id":call.id,"name":call.name,"arguments":call.arguments,"result":output,"outcome":deferred::EVALUATED}}));
+						next.context.legacy_mut().expect("Legacy request context")["conversation"] =
+							json!(retained);
+						!exceeds_limits(
+							&next,
+							limits,
+							*context_window,
+							input_tokens,
+							output_tokens,
+							reserve,
+						)
+					};
+					discoverable.evaluate(binding, &call, &mut session.state, step, &fits)?
 				}
 				_ => None,
 			};
@@ -273,6 +291,30 @@ pub async fn simulate(execution: &Execution, session_id: Uuid, job: &Job) -> Res
 		usage: json!({"input_tokens":input_tokens,"output_tokens":output_tokens,"usage_complete":usage_complete}),
 		error,
 	})
+}
+
+/// Whether `request`, grown by `reserve` bytes, exceeds the session's input,
+/// model window or total token limits.
+fn exceeds_limits(
+	request: &ModelRequest,
+	limits: &TestLimits,
+	context_window: usize,
+	input_tokens: u64,
+	output_tokens: u64,
+	reserve: usize,
+) -> bool {
+	let estimated = request.estimated_total_tokens().saturating_add(reserve);
+	request
+		.input_body()
+		.to_string()
+		.len()
+		.saturating_add(reserve)
+		> limits.max_input_bytes as usize
+		|| estimated > context_window
+		|| input_tokens
+			.saturating_add(output_tokens)
+			.saturating_add(estimated as u64)
+			> limits.max_total_tokens as u64
 }
 
 /// A runtime deadline is classified from durable evidence, never inferred as a safe retry.

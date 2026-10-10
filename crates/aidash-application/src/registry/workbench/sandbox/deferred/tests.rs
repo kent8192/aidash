@@ -29,7 +29,13 @@ fn exposure_tools_are_evaluated_and_staged_while_other_calls_follow_their_reques
 	let mut state = ExposureState::default();
 	let evaluate = |name: &str, arguments: Value, state: &mut ExposureState| {
 		deferred
-			.evaluate(binding(&snapshot, name), &call(name, arguments), state, 0)
+			.evaluate(
+				binding(&snapshot, name),
+				&call(name, arguments),
+				state,
+				0,
+				&|_, _| true,
+			)
 			.unwrap()
 	};
 	// Act / Assert: an unadvertised capability is answered, not simulated.
@@ -80,6 +86,56 @@ fn exposure_tools_are_evaluated_and_staged_while_other_calls_follow_their_reques
 	let (text, tools) = deferred.request(&snapshot, &state).unwrap();
 	assert!(!tools.iter().any(|tool| tool.name == "workspace_observe"));
 	assert!(text.contains("workspace_observe [tool]"));
+}
+
+#[test]
+fn descriptions_and_search_pages_are_fitted_before_the_session_retains_them() {
+	// Arrange: the next test request carries at most `limit` result bytes.
+	let snapshot = snapshot();
+	let deferred = Deferred::new(&snapshot).unwrap().unwrap();
+	let evaluate = |name: &str, arguments: Value, limit: usize| {
+		let fits = |result: &Value, reserve: usize| result.to_string().len() + reserve <= limit;
+		deferred
+			.evaluate(
+				binding(&snapshot, name),
+				&call(name, arguments),
+				&mut ExposureState::default(),
+				0,
+				&fits,
+			)
+			.unwrap()
+			.unwrap()
+	};
+	let describe = |limit| {
+		evaluate(
+			"capability_describe",
+			json!({"alias":"workspace_observe"}),
+			limit,
+		)
+	};
+	let whole = describe(usize::MAX);
+	let bytes = whole["bytes"].as_u64().unwrap() as usize;
+	let needed = whole.to_string().len() + bytes;
+	// Act / Assert: a description is kept only with room for its later Load.
+	assert_eq!(describe(needed), whole);
+	let omitted = describe(needed - 1);
+	assert!(omitted.get("detail").is_none(), "{omitted}");
+	assert_eq!(omitted["deferred"], true);
+	assert_eq!(
+		(&omitted["alias"], &omitted["digest"], &omitted["bytes"]),
+		(&whole["alias"], &whole["digest"], &whole["bytes"])
+	);
+	// A search page keeps only its leading results that fit.
+	let page = evaluate("capability_search", json!({}), usize::MAX);
+	let results = page["results"].as_array().unwrap();
+	assert!(results.len() > 1);
+	let first = crate::execution::capability_search_result(&page, 0, 1);
+	let cut = evaluate("capability_search", json!({}), first.to_string().len());
+	assert_eq!(cut, first);
+	assert_eq!(cut["next_cursor"], "1");
+	let empty = evaluate("capability_search", json!({}), 0);
+	assert_eq!(empty["results"], json!([]));
+	assert_eq!(empty["deferred"], true);
 }
 
 #[test]

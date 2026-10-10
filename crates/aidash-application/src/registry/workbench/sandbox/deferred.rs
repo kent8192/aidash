@@ -102,12 +102,18 @@ impl Deferred {
 	/// response is decided against its own request's Exposure set; Load/Unload
 	/// results are staged into `state` for the next request. `None` leaves the
 	/// call to its fixture or real dispatch.
+	///
+	/// `fits(result, reserve)` tells whether the next test request still fits
+	/// its limits with `result` recorded and `reserve` more request bytes. A
+	/// session has no context compaction, so search pages and descriptions are
+	/// fitted before they are retained, as the Harness fits them for a Run.
 	pub fn evaluate(
 		&self,
 		binding: &ResolvedBinding,
 		call: &ToolCall,
 		state: &mut ExposureState,
 		step: i32,
+		fits: &dyn Fn(&Value, usize) -> bool,
 	) -> Result<Option<Value>> {
 		let exposed = |state: &ExposureState| -> Result<bool> {
 			Ok(exposure::select(&self.budgets, &self.catalog, state)?
@@ -162,6 +168,14 @@ impl Deferred {
 				.and_then(|alias| Ok(exposure::unload(&self.catalog, &effective, alias)?)),
 		};
 		let output = match output {
+			Ok(output) if operation == "capability_search" => {
+				let offset = crate::execution::capability_search_offset(call);
+				crate::execution::fit_capability_search_page(&output, offset, |page| fits(page, 0))
+					.unwrap_or_else(|| {
+						crate::execution::capability_search_result(&output, offset, 0)
+					})
+			}
+			Ok(output) if operation == "capability_describe" => fit_description(output, fits),
 			Ok(output) => output,
 			Err(
 				Error::Invalid(message) | Error::Domain(aidash_domain::Error::Invalid(message)),
@@ -175,6 +189,25 @@ impl Deferred {
 		}
 		Ok(Some(output))
 	}
+}
+
+/// A description is retained only when the next request also carries the
+/// definition a Load would add, since the session never compacts it away.
+/// Otherwise its detail is omitted; the digest still loads the capability.
+fn fit_description(output: Value, fits: &dyn Fn(&Value, usize) -> bool) -> Value {
+	let reserve = output["bytes"].as_u64().unwrap_or(0) as usize;
+	if fits(&output, reserve) {
+		return output;
+	}
+	let mut omitted = output;
+	if let Some(object) = omitted.as_object_mut() {
+		object.remove("detail");
+	}
+	omitted["deferred"] = json!(true);
+	omitted["message"] = json!(
+		"This description does not fit the remaining test context together with its definition; its detail was omitted. Load the capability by digest to use it."
+	);
+	omitted
 }
 
 /// The Exposure set a continued session ended with: the evaluated Load/Unload

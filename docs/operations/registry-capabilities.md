@@ -333,8 +333,14 @@ against the pinned snapshot rather than fixtures, and calls to capabilities
 outside the request's Exposure set are answered with the same recoverable
 errors; both are recorded with the outcome `evaluated`. Load and unload results
 apply from the next turn, and a continued session resumes the Exposure set its
-evaluated results produced. Other tools still need fixtures or a real-tool
-profile.
+evaluated results produced. A session never compacts its conversation, so
+evaluated results are fitted before they are retained. A search page keeps only
+its leading results that leave the next test request within the session's
+input, model-window and total-token limits, as described above. A description
+is kept only if that request also has room for the definition a load would add.
+Otherwise the session omits its `detail` and sets `deferred` and a `message`,
+and the digest still loads the capability. Other tools still need fixtures or
+a real-tool profile.
 
 To measure both policies on the same tools against a running server, see the
 [capability exposure evaluation](../capability-exposure-evaluation.md).
