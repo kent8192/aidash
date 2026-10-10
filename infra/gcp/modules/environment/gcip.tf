@@ -58,7 +58,7 @@ output "gcip" {
   value = {
     project_id              = var.project_id
     public_origin           = "https://${var.hostname}"
-    runtime_service_account = google_service_account.runtime.email
+    runtime_service_account = google_service_account.workload["server"].email
     tenant_ids              = [for pool in google_identity_platform_tenant.aidash : pool.name]
     tenant_bindings         = { for alias, pool in google_identity_platform_tenant.aidash : pool.name => var.gcip_tenants[alias].tenant }
     providers               = { for alias, pool in google_identity_platform_tenant.aidash : pool.name => concat(var.gcip_tenants[alias].password_sign_up ? ["password"] : [], var.gcip_tenants[alias].google_client_id != null ? ["google.com"] : [], keys(var.gcip_tenants[alias].oidc), keys(var.gcip_tenants[alias].saml)) }

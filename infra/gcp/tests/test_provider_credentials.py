@@ -1,4 +1,4 @@
-"""Provider Credential IAM boundaries, including the retained runtime-config exception."""
+"""Provider Credential IAM boundaries; workloads receive no runtime-config secret grant."""
 import re
 import unittest
 from pathlib import Path
@@ -42,7 +42,8 @@ class ProviderCredentialIamTests(unittest.TestCase):
         for name in bindings:
             body = resource(self.byok, "google_project_iam_member", name)
             self.assertRegex(body, r'project\s*=\s*var\.byok_project_id')
-            self.assertIn('google_service_account.runtime.email', body)
+            self.assertIn('google_service_account.workload["server"].email', body)
+            self.assertNotIn('"worker"', body)
             self.assertNotIn('secretAccessor', body)
         create_binding = resource(self.byok, "google_project_iam_member", "provider_credential_create")
         self.assertIn('"projects/${var.byok_project_id}/roles/aidashByokCreate"', create_binding)
@@ -116,9 +117,8 @@ class ProviderCredentialIamTests(unittest.TestCase):
                         if "var.byok_project_id" in body:
                             self.assertNotIn('roles/secretmanager.', body)
                             byok_grants.append((path.relative_to(ROOT).as_posix(), name))
-                        if kind.startswith("google_secret_manager_secret_iam_"):
-                            self.assertEqual((path.relative_to(ROOT).as_posix(), name),
-                                             ("modules/environment/main.tf", "runtime"))
+                        self.assertFalse(kind.startswith("google_secret_manager_secret_iam_"),
+                                         (path.relative_to(ROOT).as_posix(), name))
         self.assertEqual(readers, [("bootstrap/provider_credentials.tf", "byok_broker_read")])
         self.assertEqual(set(byok_grants), {
             ("bootstrap/provider_credentials.tf", "byok_deploy"),
@@ -129,16 +129,12 @@ class ProviderCredentialIamTests(unittest.TestCase):
             ("modules/environment/provider_credentials.tf", "provider_credential_manage"),
         })
 
-    def test_shared_project_retains_only_own_runtime_configuration_read(self):
-        body = resource(self.shared, "google_secret_manager_secret_iam_member", "runtime")
-        self.assertIn('google_secret_manager_secret.runtime.id', body)
-        self.assertIn('"roles/secretmanager.secretAccessor"', body)
-        self.assertIn('google_service_account.runtime.email', body)
+    def test_workloads_have_no_shared_project_secret_access(self):
+        self.assertIn('resource "google_secret_manager_secret" "runtime"', self.shared)
         for source in (self.shared, self.byok):
             for name in re.findall(r'resource "google_project_iam_member" "([^"]+)"', source):
                 binding = resource(source, "google_project_iam_member", name)
-                if 'google_service_account.runtime.email' in binding:
-                    self.assertNotIn('roles/secretmanager.', binding)
+                self.assertNotIn('roles/secretmanager.', binding)
         self.assertNotIn('secretmanager.secrets.create', self.shared)
 
     def test_audit_and_bootstrap_are_on_explicit_byok_project(self):

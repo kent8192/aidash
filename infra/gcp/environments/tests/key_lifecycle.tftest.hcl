@@ -46,19 +46,16 @@ run "environment_enabled" {
   command   = apply
   state_key = "environment-lifecycle"
   variables {
-    release_bucket         = "aidash-fixture-releases"
     deploy_service_account = "deploy@aidash-fixture.iam.gserviceaccount.com"
     cloudflare_zone_id     = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     environments = { test = {
-      kind          = "test"
-      incarnation   = "aaaaaaaaaaaa"
-      generation    = 1
-      running       = false
-      published     = false
-      spot          = true
-      bundle_object = "bundles/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.tar.gz"
-      bundle_sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-      release_sha   = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      kind        = "test"
+      incarnation = "aaaaaaaaaaaa"
+      generation  = 1
+      running     = false
+      published   = false
+      spot        = true
+      release_sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     } }
     credential_brokers = { test = {
       enabled                      = true
@@ -79,7 +76,6 @@ run "broker_rotation_plan" {
   command   = plan
   state_key = "environment-lifecycle"
   variables {
-    release_bucket         = "aidash-fixture-releases"
     deploy_service_account = "deploy@aidash-fixture.iam.gserviceaccount.com"
     cloudflare_zone_id     = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     environments           = run.environment_enabled.managed_configuration
@@ -103,7 +99,6 @@ run "broker_disabled_plan" {
   command   = plan
   state_key = "environment-lifecycle"
   variables {
-    release_bucket         = "aidash-fixture-releases"
     deploy_service_account = "deploy@aidash-fixture.iam.gserviceaccount.com"
     cloudflare_zone_id     = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     environments           = run.environment_enabled.managed_configuration
@@ -118,7 +113,6 @@ run "broker_disabled_apply" {
   command   = apply
   state_key = "environment-lifecycle"
   variables {
-    release_bucket         = "aidash-fixture-releases"
     deploy_service_account = "deploy@aidash-fixture.iam.gserviceaccount.com"
     cloudflare_zone_id     = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     environments           = run.environment_enabled.managed_configuration
@@ -129,7 +123,6 @@ run "broker_reenabled_plan" {
   command   = plan
   state_key = "environment-lifecycle"
   variables {
-    release_bucket         = "aidash-fixture-releases"
     deploy_service_account = "deploy@aidash-fixture.iam.gserviceaccount.com"
     cloudflare_zone_id     = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     environments           = run.environment_enabled.managed_configuration
@@ -144,7 +137,6 @@ run "broker_reenabled_apply" {
   command   = apply
   state_key = "environment-lifecycle"
   variables {
-    release_bucket         = "aidash-fixture-releases"
     deploy_service_account = "deploy@aidash-fixture.iam.gserviceaccount.com"
     cloudflare_zone_id     = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     environments           = run.environment_enabled.managed_configuration
@@ -155,7 +147,6 @@ run "environment_removed_plan" {
   command   = plan
   state_key = "environment-lifecycle"
   variables {
-    release_bucket         = "aidash-fixture-releases"
     deploy_service_account = "deploy@aidash-fixture.iam.gserviceaccount.com"
     cloudflare_zone_id     = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     environments           = {}
