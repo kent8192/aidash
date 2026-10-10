@@ -65,7 +65,9 @@ stop. A gap longer than 120 seconds is busy and starts a full new idle interval;
 new transfer receipts and actual work completions also renew it. Receipt IDs only
 accumulate, so the snapshot keeps their SHA-256 digest and count rather than the
 set, staying far below the ConfigMap size limit; any change renews the interval.
-A failed observer leaves an old snapshot that the controller must reject as stale.
+A failed observer writes no database evidence but does not fail the Pod, so the
+collector still publishes a fresh busy snapshot; a Pod that never publishes leaves
+an old snapshot that the controller must reject as stale.
 
 The Phase 4 idle seal closes admission and gracefully drains **both server and
 worker**. Keep the Runner, edge, database and observer running for the fresh

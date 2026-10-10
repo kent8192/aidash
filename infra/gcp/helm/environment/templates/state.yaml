@@ -101,7 +101,7 @@ spec:
   storageClassName: ""
   claimRef:
     name: {{ .Values.previewTls.claimName }}
-    namespace: {{ .Values.previewTls.claimNamespace | default .Release.Namespace }}
+    namespace: {{ .Values.previewTls.claimNamespace | default .Release.Namespace | quote }}
   csi:
     driver: pd.csi.storage.gke.io
     volumeHandle: {{ required "previewTls.volumeHandle is required" .Values.previewTls.volumeHandle | quote }}
