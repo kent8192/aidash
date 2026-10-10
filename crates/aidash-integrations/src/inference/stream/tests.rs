@@ -459,12 +459,14 @@ fn only_data_events_count_as_liveness() {
 	// Act
 	let comment = assembler.push(b": OPENROUTER PROCESSING\n\n").unwrap();
 	let blank = assembler.push(b"\n").unwrap();
-	let reasoning = assembler
-		.push(format!("data: {}\n\n", delta(json!({"reasoning":"thinking"}))).as_bytes())
-		.unwrap();
+	let empty = assembler.push(b"data:\n\ndata\n\n").unwrap();
+	let event = format!("data: {}\n\n", delta(json!({"reasoning":"thinking"})));
+	let (head, tail) = event.split_at(event.len() - 1);
+	let partial = assembler.push(head.as_bytes()).unwrap();
+	let reasoning = assembler.push(tail.as_bytes()).unwrap();
 
-	// Assert
-	assert!(!comment && !blank);
+	// Assert: only a dispatched nonempty event is liveness.
+	assert!(!comment && !blank && !empty && !partial);
 	assert!(reasoning);
 	assert!(received.try_recv().is_err());
 }
@@ -493,4 +495,54 @@ fn large_text_deltas_are_offered_within_the_item_bound() {
 		})
 		.collect();
 	assert_eq!(offered, text);
+}
+
+#[rstest::rstest]
+#[case::explicit(json!([
+	{"index":0,"id":"call-1","function":{"name":"run","arguments":"{\"a\":"}},
+	{"index":0,"function":{"arguments":"1}"}}
+]))]
+#[case::explicit_and_positional(json!([
+	{"id":"call-1","function":{"name":"run","arguments":"{}"}},
+	{"index":0,"function":{"arguments":""}}
+]))]
+fn repeated_tool_call_indices_in_one_delta_are_rejected(#[case] calls: Value) {
+	// Arrange
+	let body = sse(
+		&[delta(json!({"tool_calls":calls})), finish("tool_calls")],
+		true,
+	);
+
+	// Act
+	let (result, _) = assemble(&body, 4096, 1_048_576);
+
+	// Assert
+	assert!(
+		matches!(result, Err(Error::External(message)) if message == "provider stream repeated a tool call index in one delta")
+	);
+}
+
+#[rstest::rstest]
+fn each_new_tool_call_is_charged_its_structure() {
+	// Arrange: empty fragments under distinct indices assemble no strings.
+	let limit = 4 * TOOL_CALL_STRUCTURE_BYTES;
+	let chunks: Vec<Value> = (0..5)
+		.map(|index| delta(json!({"tool_calls":[{"index":index}]})))
+		.collect();
+	let repeated: Vec<Value> = (0..5)
+		.map(|_| delta(json!({"tool_calls":[{"index":0,"function":{"arguments":""}}]})))
+		.collect();
+
+	// Act
+	let (distinct, progress) = assemble(&sse(&chunks, false), 4096, limit);
+	let (same, _) = assemble(&sse(&repeated, false), 4096, limit);
+
+	// Assert: the fifth call exceeds the cap; fragments of one call do not.
+	assert!(
+		matches!(distinct, Err(Error::External(message)) if message == format!("response exceeds {limit} bytes"))
+	);
+	assert_eq!(progress.len(), 4);
+	assert!(
+		!matches!(same, Err(Error::External(message)) if message.starts_with("response exceeds"))
+	);
 }

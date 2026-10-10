@@ -19,6 +19,9 @@ use std::collections::BTreeMap;
 /// that fits the limit can arrive as one-token deltas, each wrapped in a few
 /// hundred bytes of chunk envelope; reasoning and unknown fields count too.
 const STREAM_ENVELOPE_FACTOR: usize = 128;
+/// The assembled JSON of one tool call around its strings:
+/// `{"id":"","type":"function","function":{"name":"","arguments":""}},`.
+const TOOL_CALL_STRUCTURE_BYTES: usize = 64;
 
 #[derive(Default)]
 struct PartialCall {
@@ -74,8 +77,9 @@ impl<'a> StreamAssembler<'a> {
 		self.done
 	}
 
-	/// Consume one network chunk. Returns whether it carried any `data:` field,
-	/// which is the only liveness signal; comment lines never count.
+	/// Consume one network chunk. Returns whether it dispatched a nonempty
+	/// `data` event, the only liveness signal; comments, empty `data:` fields and
+	/// events still being received never count.
 	pub(crate) fn push(&mut self, mut chunk: &[u8]) -> Result<bool> {
 		let stream_limit = self.limit.saturating_mul(STREAM_ENVELOPE_FACTOR);
 		if chunk.len() > stream_limit.saturating_sub(self.received) {
@@ -174,6 +178,7 @@ impl<'a> StreamAssembler<'a> {
 			// An empty data buffer dispatches nothing, as in the SSE specification.
 			if let Some(data) = self.data.take().filter(|data| !data.is_empty()) {
 				self.event(&data)?;
+				return Ok(true);
 			}
 			return Ok(false);
 		}
@@ -199,7 +204,7 @@ impl<'a> StreamAssembler<'a> {
 			data.push(b'\n');
 		}
 		data.extend_from_slice(value);
-		Ok(true)
+		Ok(false)
 	}
 
 	fn event(&mut self, data: &[u8]) -> Result<()> {
@@ -282,21 +287,29 @@ impl<'a> StreamAssembler<'a> {
 			self.refusal.get_or_insert_with(String::new).push_str(text);
 		}
 		if let Some(calls) = delta.get("tool_calls").and_then(Value::as_array) {
-			for (position, call) in calls.iter().enumerate() {
-				self.tool_call(position, call)?;
+			// Fragments of one index in a delta would merge into one call that the
+			// equivalent non-streamed response keeps as separate entries.
+			let indices = calls
+				.iter()
+				.enumerate()
+				.map(|(position, call)| call_index(position, call))
+				.collect::<Result<Vec<_>>>()?;
+			let mut unique = indices.clone();
+			unique.sort_unstable();
+			unique.dedup();
+			if unique.len() != indices.len() {
+				return Err(Error::External(
+					"provider stream repeated a tool call index in one delta".into(),
+				));
+			}
+			for (index, call) in indices.into_iter().zip(calls) {
+				self.tool_call(index, call)?;
 			}
 		}
 		Ok(())
 	}
 
-	fn tool_call(&mut self, position: usize, fragment: &Value) -> Result<()> {
-		let index = match fragment.get("index") {
-			Some(index) => index
-				.as_u64()
-				.filter(|index| u32::try_from(*index).is_ok())
-				.ok_or_else(|| Error::External("invalid streamed tool call index".into()))?,
-			None => position as u64,
-		};
+	fn tool_call(&mut self, index: u64, fragment: &Value) -> Result<()> {
 		let id = fragment.get("id").and_then(Value::as_str);
 		let function = fragment.get("function");
 		let name = function
@@ -305,11 +318,19 @@ impl<'a> StreamAssembler<'a> {
 		let arguments = function
 			.and_then(|function| function.get("arguments"))
 			.and_then(Value::as_str);
+		// A new call also costs its JSON structure, so empty fragments under
+		// distinct indices cannot assemble unbounded calls within the cap.
+		let structure = if self.calls.contains_key(&index) {
+			0
+		} else {
+			TOOL_CALL_STRUCTURE_BYTES
+		};
 		let growth = [id, name, arguments]
 			.into_iter()
 			.flatten()
 			.map(str::len)
-			.sum();
+			.sum::<usize>()
+			+ structure;
 		self.grow(growth)?;
 		let call = self.calls.entry(index).or_default();
 		set_identity(&mut call.id, id)?;
@@ -340,6 +361,16 @@ impl<'a> StreamAssembler<'a> {
 		}
 		self.assembled += bytes;
 		Ok(())
+	}
+}
+
+fn call_index(position: usize, fragment: &Value) -> Result<u64> {
+	match fragment.get("index") {
+		Some(index) => index
+			.as_u64()
+			.filter(|index| u32::try_from(*index).is_ok())
+			.ok_or_else(|| Error::External("invalid streamed tool call index".into())),
+		None => Ok(position as u64),
 	}
 }
 

@@ -1323,6 +1323,82 @@ async fn prompt_cache_migration_admits_new_keys_and_reverses(
 
 #[rstest]
 #[tokio::test]
+async fn model_streaming_migration_refuses_rollback_with_installation_overrides(
+	#[future] fresh_database: MigrationFixture,
+) {
+	use aidash_server::apps::registry::{
+		models::{Definition, Installation},
+		services::states::DefinitionKind,
+	};
+	// Arrange: a model whose streaming settings exist only in its override.
+	let fixture = fresh_database.await;
+	fixture.migrate().await;
+	let pool = fixture.connection.clone().into_postgres().unwrap();
+	let upgraded = constraint_definition(&pool, "registry_model_config").await;
+	for key in ["streaming", "stream_stall_timeout_secs", "cache_mode"] {
+		assert!(upgraded.contains(&format!("'{key}'::text")), "{upgraded}");
+	}
+	let lease = DatabaseConnectionLease::register(fixture.connection.clone()).unwrap();
+	let mut connection = lease.handle();
+	let metadata = json!({"id":"stream-model","version":"1.0.0","kind":"model",
+		"name":{"en":"Streaming fixture"},"description":{"en":"Migration test"},
+		"config":{"provider":"openrouter","model_id":"openai/model",
+			"endpoint":"http://127.0.0.1:1/v1","credential_env":null,
+			"context_window":32768,"modalities":["text"],"cost":{}}});
+	Definition::objects()
+		.create_with_conn(
+			&mut connection,
+			&Definition::build()
+				.id("stream-model")
+				.version("1.0.0")
+				.kind(DefinitionKind::Model)
+				.metadata(metadata.into())
+				.finish(),
+		)
+		.await
+		.unwrap();
+	Installation::objects()
+		.create_with_conn(
+			&mut connection,
+			&Installation::build()
+				.id("stream-model")
+				.version("1.0.0")
+				.digest("streaming-fixture")
+				.config(json!({"streaming":false}).into())
+				.finish(),
+		)
+		.await
+		.unwrap();
+	let migration =
+		FilesystemSource::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations"))
+			.all_migrations()
+			.await
+			.unwrap()
+			.into_iter()
+			.find(|m| m.app_label == "registry" && m.name == "0019_model_streaming_config")
+			.unwrap();
+	let mut executor =
+		reinhardt::db::migrations::DatabaseMigrationExecutor::new(fixture.connection.clone());
+	// Act
+	let error = executor
+		.rollback_migrations(std::slice::from_ref(&migration))
+		.await
+		.unwrap_err();
+	// Assert: the guard refuses before any DDL runs.
+	assert!(
+		error
+			.to_string()
+			.contains("registry 0019_model_streaming_config cannot be reversed"),
+		"{error}"
+	);
+	assert_eq!(
+		constraint_definition(&pool, "registry_model_config").await,
+		upgraded
+	);
+}
+
+#[rstest]
+#[tokio::test]
 async fn binding_memory_merge_preserves_native_packages_and_restores_legacy_descriptors(
 	#[future] fresh_database: MigrationFixture,
 ) {

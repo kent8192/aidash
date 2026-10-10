@@ -586,7 +586,10 @@ function RunPanel({
           {run.error}
         </p>
       )}
-      {local && <InferenceProgress run={id} node={node} active={!terminal} />}
+      {/* The server denies subjects the stream of a foreign-home run. */}
+      {local && !managed && (
+        <InferenceProgress run={id} node={node} active={!terminal} />
+      )}
       {managed && <RemoteMemoryProvenance url={`/api/runs/${id}/semantic`} />}
       {managed && <RemoteRunManagement id={id} />}
       {controllable && (

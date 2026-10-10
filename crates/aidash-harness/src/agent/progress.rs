@@ -15,6 +15,9 @@ use tokio::{
 };
 use uuid::Uuid;
 
+/// Bounds one display-only append, so a blocked progress write cannot hold an
+/// already completed provider response past the worker lease.
+pub(super) const APPEND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 /// Room for the storage encoding's formatting around one serialized item.
 const STORAGE_SLACK: usize = 64;
 /// Escaped text bytes per stored item, leaving room for the item's JSON envelope.
@@ -58,7 +61,8 @@ impl ProgressBuffer {
 
 	/// Store pending progress every `FLUSH_INTERVAL`, or sooner once
 	/// `FLUSH_BYTES` are pending, until the remainder after `finish` is stored.
-	/// A failed append ends progress for this attempt; inference continues.
+	/// A failed or timed-out append ends progress for this attempt; inference
+	/// continues.
 	pub(super) async fn flush(
 		&self,
 		store: &dyn ExecutionStore,
@@ -79,11 +83,21 @@ impl ProgressBuffer {
 				(std::mem::take(&mut pending.items), pending.finished)
 			};
 			let batch = bounded(items);
-			if !batch.is_empty()
-				&& let Err(error) = store
-					.append_inference_progress(run, token, attempt, &batch)
-					.await
-			{
+			let appended = if batch.is_empty() {
+				Ok(())
+			} else {
+				tokio::time::timeout(
+					APPEND_TIMEOUT,
+					store.append_inference_progress(run, token, attempt, &batch),
+				)
+				.await
+				.unwrap_or_else(|_| {
+					Err(aidash_application::Error::External(
+						"progress append timed out".into(),
+					))
+				})
+			};
+			if let Err(error) = appended {
 				tracing::warn!(run_id = %run.id, %attempt, %error, "inference progress append failed; progress display stops for this attempt");
 				let mut pending = self.pending();
 				pending.closed = true;

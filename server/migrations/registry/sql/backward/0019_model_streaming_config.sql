@@ -1,4 +1,26 @@
 -- Restore the 0018_prompt_cache model constraint and installation guard.
+-- Rollback precondition: no model Definition, Package or installation override
+-- may carry the streaming keys. Pre-0019 binaries decode model configs with
+-- deny_unknown_fields, and neither the restored registry constraint nor the
+-- replaced trigger rechecks existing installation overrides. This read-only
+-- guard refuses the rollback instead of leaving records no binary can read.
+DO $$
+DECLARE definition_count bigint; package_count bigint; installation_count bigint;
+BEGIN
+  SELECT count(*) INTO definition_count FROM registry
+   WHERE kind = 'model' AND metadata->'config' ?| ARRAY['streaming','stream_stall_timeout_secs'];
+  SELECT count(*) INTO package_count FROM packages
+   WHERE manifest #>> '{entity,kind}' = 'model'
+     AND manifest #> '{entity,config}' ?| ARRAY['streaming','stream_stall_timeout_secs'];
+  SELECT count(*) INTO installation_count FROM installations
+    JOIN registry ON registry.id = installations.id AND registry.version = installations.version
+   WHERE registry.kind = 'model' AND installations.config ?| ARRAY['streaming','stream_stall_timeout_secs'];
+  IF definition_count > 0 OR package_count > 0 OR installation_count > 0 THEN
+    RAISE EXCEPTION 'registry 0019_model_streaming_config cannot be reversed: % Definitions, % Packages and % installation overrides use streaming or stream_stall_timeout_secs', definition_count, package_count, installation_count
+      USING ERRCODE = '55000',
+            HINT = 'Pre-0019 binaries cannot read these records; remove the streaming settings or restore the pre-upgrade database backup instead of reversing this migration.';
+  END IF;
+END $$;
 ALTER TABLE registry DROP CONSTRAINT registry_model_streaming;
 DO $$
 DECLARE definition text; edited text;

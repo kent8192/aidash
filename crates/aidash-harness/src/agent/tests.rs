@@ -57,6 +57,8 @@ struct State {
 	interruption: tokio::sync::watch::Sender<Option<InferenceInterruption>>,
 	deny_recheck: bool,
 	fail_append: bool,
+	/// Appends never complete, as when another transaction holds the Run row.
+	block_append: bool,
 	projection: ProjectionVersion,
 	skill_tool: bool,
 	skill_revision: Mutex<Option<i64>>,
@@ -188,6 +190,9 @@ impl ExecutionStore for Backend {
 		);
 		if self.0.fail_append {
 			return Err(Error::External("progress store unavailable".into()));
+		}
+		if self.0.block_append {
+			return std::future::pending().await;
 		}
 		self.0
 			.progress
@@ -783,6 +788,7 @@ fn fixture() -> Fixture {
 		interruption: tokio::sync::watch::channel(None).0,
 		deny_recheck: false,
 		fail_append: false,
+		block_append: false,
 		projection: ProjectionVersion::Legacy,
 		skill_tool: false,
 		skill_revision: Mutex::new(Some(1)),
@@ -1636,6 +1642,23 @@ async fn failed_progress_append_stops_display_but_not_inference(fixture: Fixture
 	);
 	assert_eq!(fixture.run.phase(), RunPhase::ToolCall);
 	assert_eq!(fixture.backend.outcomes(), [[ProgressOutcome::Accepted]]);
+}
+
+#[rstest]
+#[tokio::test(start_paused = true)]
+async fn a_blocked_progress_append_cannot_hold_a_completed_response(fixture: Fixture) {
+	// Arrange
+	let mut fixture = thinking(fixture);
+	Arc::get_mut(&mut fixture.backend.0).unwrap().block_append = true;
+	fixture.backend.script(vec![text("Completed task")]);
+	let started = tokio::time::Instant::now();
+	// Act
+	advance_sources(&mut fixture).await.unwrap();
+	// Assert: the response is accepted once the bounded append expires.
+	assert!(started.elapsed() <= progress::APPEND_TIMEOUT + FLUSH_INTERVAL);
+	assert_eq!(fixture.run.phase(), RunPhase::ToolCall);
+	assert_eq!(fixture.backend.outcomes(), [[ProgressOutcome::Accepted]]);
+	assert!(fixture.backend.progress_text().is_empty());
 }
 
 /// Fixed identities so request bytes can be compared with checked-in fixtures.

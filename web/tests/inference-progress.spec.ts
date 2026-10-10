@@ -193,3 +193,56 @@ test("a pending attempt keeps streaming until its outcome after the Run ends", a
   expect(cursors[1]).toBe("2");
   expect(errors).toEqual([]);
 });
+
+test("subjects never subscribe to a foreign-home run's inference stream", async ({
+  page,
+}) => {
+  const { errors } = await setup(page, {
+    subject: true,
+    locale: "en-US",
+  });
+  let streams = 0;
+  await page.route("**/api/runs/*/inference/stream", (route) => {
+    streams += 1;
+    return route.fulfill({
+      status: 403,
+      json: { error: { message: "denied" } },
+    });
+  });
+  await page.route("**/api/runs/run-0/management", (route) =>
+    route.fulfill({
+      json: { id: "run-0", phase: "THINKING", control: "RUNNING" },
+    }),
+  );
+  await page.goto("/collaboration?channel=workspace-one");
+  await page
+    .getByRole("button", { name: "Execution history", exact: true })
+    .click();
+  // The Run is stored here but homed on another node.
+  const stored = await page.evaluate(() =>
+    fetch("/api/runs/run-0").then((response) => response.json()),
+  );
+  await page.route(
+    (url) => url.pathname === "/api/runs/run-0",
+    (route) =>
+      route.fulfill({
+        json: {
+          ...stored,
+          run: { ...stored.run, home_node: "aidash://remote-home" },
+        },
+      }),
+  );
+  await page
+    .getByRole("dialog")
+    .getByRole("button")
+    .filter({ hasText: "Researcher" })
+    .click();
+  await expect(
+    page.getByRole("region", { name: "Execution management" }),
+  ).toBeVisible();
+  // Long enough for several reconnect attempts of a mounted reader.
+  await page.waitForTimeout(4000);
+  expect(streams).toBe(0);
+  await expect(page.locator(".inference-progress")).toHaveCount(0);
+  expect(errors).toEqual([]);
+});
