@@ -170,7 +170,7 @@ async fn concurrent_claims_dependencies_and_idempotent_completion(
 
 #[rstest::rstest]
 #[tokio::test]
-async fn ordered_run_creation_requires_a_cache_salt_key(
+async fn ordered_run_creation_requires_a_cache_salt_key_and_a_tenant(
 	#[future(awt)]
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
@@ -192,8 +192,7 @@ async fn ordered_run_creation_requires_a_cache_salt_key(
 	let owner = qualified_agent(&store.node_id, &agent.id, &agent.version);
 	// Act: claiming would create the Run.
 	let rejected = store.claim(task.id, 0, &owner, &agent).await;
-	// Assert: no Run and no claim without a key; the same claim succeeds once
-	// this node has one.
+	// Assert: no Run and no claim without a key.
 	assert!(
 		matches!(rejected, Err(aidash_server::Error::Invalid(_))),
 		"{rejected:?}"
@@ -209,7 +208,21 @@ async fn ordered_run_creation_requires_a_cache_salt_key(
 		)
 		.unwrap(),
 	));
-	let claimed = salted.claim(task.id, 0, &owner, &agent).await.unwrap();
+	// A key alone is not enough: this tenantless legacy workspace has no
+	// Tenant to salt with, so the Run could never reach inference.
+	let tenantless = salted.claim(task.id, 0, &owner, &agent).await;
+	assert!(
+		matches!(tenantless, Err(aidash_server::Error::Invalid(_))),
+		"{tenantless:?}"
+	);
+	assert_eq!(store.task(task.id).await.unwrap().revision, 0);
+	// Legacy Agents in the same workspace are unaffected.
+	let legacy = registry.register(entry("agent","legacy-research",json!({"model":{"id":"model","version":"1.0.0"},"instructions":"Research","schema_version":1,"bindings":[],"remove_default":[]}))).await.unwrap();
+	let legacy_owner = qualified_agent(&store.node_id, &legacy.id, &legacy.version);
+	let claimed = salted
+		.claim(task.id, 0, &legacy_owner, &legacy)
+		.await
+		.unwrap();
 	assert_eq!(claimed.revision, 1);
 	cleanup(store, &url, &schema).await;
 }

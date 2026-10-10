@@ -69,7 +69,10 @@ logs a warning. To rotate, add a new key version and change `current`. Later
 requests use the new version, and the only effect is cache misses. The OpenRouter
 adapter adds the salt just before sending. Request metadata, compaction input,
 logs and diagnostics show only the key version. A remote Run is salted with the
-receiving node's local Tenant and that node's key.
+receiving node's local Tenant and that node's key. Because the salt needs a
+Tenant, `ordered` Runs are created only through Tenant-scoped execution. Legacy
+claims and legacy remote admission run in Workspaces without a Tenant, so they
+reject `ordered` Agents even on a node that has keys.
 
 ## What stays stable
 

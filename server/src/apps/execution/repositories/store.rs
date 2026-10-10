@@ -169,13 +169,16 @@ impl Store {
 
 	/// Run creation re-checks the Projection Version pinned by the Binding
 	/// snapshot (ADR 0015/0016): it must be implemented, declared by the
-	/// pinned model and, when salted, backed by this node's Cache Salt Key.
-	/// Legacy Runs are never affected; nothing falls back to Legacy.
+	/// pinned model and, when salted, backed by this node's Cache Salt Key and
+	/// a Tenant to salt with. `tenant_scoped` is false for tenantless legacy
+	/// execution, whose Runs could never derive a Cache Scope. Legacy Runs are
+	/// never affected; nothing falls back to Legacy.
 	pub(crate) fn require_projection(
 		&self,
 		snapshot: &aidash_domain::registry::bindings::BindingSnapshot,
+		tenant_scoped: bool,
 	) -> Result<()> {
-		require_projection(snapshot, self.cache_salt.is_some())
+		require_projection(snapshot, self.cache_salt.is_some(), tenant_scoped)
 	}
 
 	/// Share this store's existing data pool with native persistence operations.
@@ -817,7 +820,23 @@ impl Store {
 				.await?
 			};
 			snapshot.validate()?;
-			self.require_projection(&snapshot)?;
+			// Scoped claims run in a Tenant-owned workspace; the legacy claim
+			// path has already required a workspace without one.
+			let tenant_scoped: bool = {
+				let query_bind_1 = claimed.workspace_id;
+				crate::database::native::query_scalar(
+					&Query::select()
+						.expr(SimpleExpr::CustomWithExpr(
+							"(EXISTS(SELECT 1 FROM authorization_workspaces WHERE workspace_id = ?))"
+								.to_owned(),
+							vec![Expr::value(query_bind_1.to_owned()).into()],
+						))
+						.to_string(PostgresQueryBuilder),
+				)
+				.scalar_one(&mut **tx)
+				.await?
+			};
+			self.require_projection(&snapshot, tenant_scoped)?;
 			let context = crate::context::Context {
 				binding_snapshot: Some(Box::new(snapshot)),
 				..Default::default()
@@ -2536,7 +2555,8 @@ impl Store {
 				"offered Agent closure differs from receiver admission".into(),
 			));
 		}
-		self.require_projection(&snapshot)?;
+		// Legacy remote admission is tenantless (require_legacy_execution).
+		self.require_projection(&snapshot, false)?;
 		let context = crate::context::Context {
 			binding_snapshot: Some(Box::new(snapshot)),
 			..Default::default()
@@ -4411,6 +4431,7 @@ impl Store {
 fn require_projection(
 	snapshot: &aidash_domain::registry::bindings::BindingSnapshot,
 	cache_salt: bool,
+	tenant_scoped: bool,
 ) -> Result<()> {
 	let agent = crate::registry::AgentConfig::from_snapshot(snapshot)?;
 	let version = agent.projection_version.unwrap_or_default();
@@ -4442,6 +4463,11 @@ fn require_projection(
 	if version.salted() && !cache_salt {
 		return Err(Error::Invalid(format!(
 			"this node has no Cache Salt Key for Projection Version {version}"
+		)));
+	}
+	if version.salted() && !tenant_scoped {
+		return Err(Error::Invalid(format!(
+			"Projection Version {version} requires a Tenant-owned workspace; legacy execution has none"
 		)));
 	}
 	Ok(())
