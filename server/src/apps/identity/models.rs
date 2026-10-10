@@ -70,3 +70,5 @@ pub use desktop_handoffs::DesktopHandoff;
 
 mod desktop_refresh_credentials;
 pub use desktop_refresh_credentials::DesktopRefreshCredential;
+
+pub mod provider_credentials;

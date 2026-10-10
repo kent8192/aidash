@@ -16,6 +16,8 @@ module "environment" {
   gcip_tenants           = var.gcip_tenants
   gcip_idp_secrets       = var.gcip_idp_secrets
   project_id             = var.project_id
+  byok_project_id        = var.byok_project_id
+  broker                 = try(module.credential_broker[each.key].worker_configuration, null)
   environment_id         = each.key
   environment            = each.value
   hostname               = "${each.value.kind == "pr" ? "preview" : each.value.kind}.${var.domain}"
@@ -37,12 +39,15 @@ resource "cloudflare_dns_record" "environment" {
 
 output "environments" {
   value = { for id, m in module.environment : id => {
-    instance       = m.instance
-    zone           = m.zone
-    hostname       = m.hostname
-    external_ip    = m.external_ip
-    runtime_secret = m.runtime_secret
-    gcip           = m.gcip
+    instance             = m.instance
+    zone                 = m.zone
+    hostname             = m.hostname
+    external_ip          = m.external_ip
+    runtime_secret       = m.runtime_secret
+    byok_project_id      = m.byok_project_id
+    secret_prefix        = m.secret_prefix
+    provider_credentials = m.provider_credentials
+    gcip                 = m.gcip
   } }
 }
 
@@ -50,3 +55,6 @@ output "managed_configuration" {
   description = "Non-secret last applied intent used to recover after a controller interruption."
   value       = var.environments
 }
+
+output "byok_project_id" { value = var.byok_project_id }
+output "secret_prefix" { value = { for id, m in module.environment : id => m.secret_prefix } }

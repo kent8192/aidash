@@ -1,6 +1,7 @@
 mock_provider "google" {}
 variables {
   project_id          = "aidash-fixture"
+  byok_project_id     = "aidash-byok-fixture"
   state_bucket_name   = "aidash-fixture-state"
   release_bucket_name = "aidash-fixture-releases"
 }

@@ -10,7 +10,16 @@ def violations(metadata, root):
     packages = {package["id"]: package for package in metadata["packages"]}
     members = {packages[member]["name"]: member for member in metadata["workspace_members"]}
     errors = []
-    expected = {"aidash-domain", "aidash-application", "aidash-harness", "aidash-runtime", "aidash-integrations", "aidash-server"}
+    expected = {
+        "aidash-domain",
+        "aidash-application",
+        "aidash-harness",
+        "aidash-runtime",
+        "aidash-integrations",
+        "aidash-server",
+        "aidash-capability",
+        "aidash-broker",
+    }
     if set(members) != expected:
         errors.append(f"workspace packages must be {sorted(expected)}, found {sorted(members)}")
     for name, member in members.items():
@@ -36,6 +45,7 @@ def violations(metadata, root):
         ] for node in metadata["resolve"]["nodes"]
     }
     portable_layers = {
+        "aidash-capability": set(),
         "aidash-domain": set(),
         "aidash-application": {"aidash-domain"},
         "aidash-harness": {"aidash-domain", "aidash-application"},

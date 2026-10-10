@@ -84,11 +84,13 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "futures-util",
+ "hmac 0.12.1",
  "jsonschema",
  "metrics",
  "regex",
  "rstest",
  "schemars 1.2.2",
+ "secrecy",
  "semver",
  "serde",
  "serde_json",
@@ -97,6 +99,47 @@ dependencies = [
  "tokio",
  "tracing",
  "url",
+ "uuid",
+]
+
+[[package]]
+name = "aidash-broker"
+version = "0.1.0"
+dependencies = [
+ "aidash-application",
+ "aidash-capability",
+ "aidash-domain",
+ "aidash-integrations",
+ "async-stream",
+ "async-trait",
+ "axum",
+ "base64 0.22.1",
+ "chrono",
+ "futures-util",
+ "reqwest 0.13.5",
+ "secrecy",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tower",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+ "zeroize",
+]
+
+[[package]]
+name = "aidash-capability"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "ed25519-dalek",
+ "secrecy",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "tokio",
  "uuid",
 ]
 
@@ -143,6 +186,7 @@ name = "aidash-integrations"
 version = "0.1.0"
 dependencies = [
  "aidash-application",
+ "aidash-capability",
  "aidash-domain",
  "async-nats",
  "async-stream",
@@ -150,6 +194,7 @@ dependencies = [
  "axum",
  "base64 0.22.1",
  "chrono",
+ "crc32c",
  "futures-util",
  "gcp_auth",
  "jsonwebtoken 11.1.0",
@@ -159,13 +204,16 @@ dependencies = [
  "reqwest 0.13.5",
  "rmcp",
  "rstest",
+ "secrecy",
  "serde",
  "serde_json",
  "sha2 0.10.9",
  "sse-stream",
  "tempfile",
  "tokio",
+ "tracing",
  "uuid",
+ "zeroize",
 ]
 
 [[package]]
@@ -225,6 +273,7 @@ dependencies = [
  "rstest",
  "rust_decimal",
  "schemars 1.2.2",
+ "secrecy",
  "semver",
  "serde",
  "serde-saphyr",
@@ -1810,6 +1859,15 @@ name = "crc16"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "338089f42c427b86394a5ee60ff321da23a5c89c9d89514c829687b26359fcff"
+
+[[package]]
+name = "crc32c"
+version = "0.6.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3a47af21622d091a8f0fb295b88bc886ac74efcc613efc19f5d0b21de5c89e47"
+dependencies = [
+ "rustc_version",
+]
 
 [[package]]
 name = "crc32fast"
@@ -9084,6 +9142,7 @@ version = "0.10.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e891af845473308773346dc847b2c23ee78fe442e0472ac50e22a18a93d3ae5a"
 dependencies = [
+ "serde",
  "zeroize",
 ]
 
@@ -10598,6 +10657,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "tracing-serde"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "704b1aeb7be0d0a84fc9828cae51dab5970fee5088f83d1dd7ee6f6246fc6ff1"
+dependencies = [
+ "serde",
+ "tracing-core",
+]
+
+[[package]]
 name = "tracing-subscriber"
 version = "0.3.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10607,6 +10676,8 @@ dependencies = [
  "nu-ansi-term",
  "once_cell",
  "regex-automata",
+ "serde",
+ "serde_json",
  "sharded-slab",
  "smallvec",
  "thread_local",
@@ -10614,6 +10685,7 @@ dependencies = [
  "tracing",
  "tracing-core",
  "tracing-log",
+ "tracing-serde",
 ]
 
 [[package]]

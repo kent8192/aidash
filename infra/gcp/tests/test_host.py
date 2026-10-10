@@ -14,6 +14,7 @@ from threading import Event
 from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
+from urllib.error import HTTPError
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "control"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "runtime"))
@@ -42,13 +43,103 @@ class HostTests(unittest.TestCase):
             completed_transfers=[],
         )
 
-    def test_memory_recovery_directory_follows_the_retained_home_identity(self):
-        secret = {"payload": {"data": host.base64.b64encode(json.dumps({"AIDASH_OIDC_CLIENT_ID": "fixture-client", "AIDASH_OIDC_CLIENT_SECRET": "fixture-secret"}).encode()).decode()}}
-        with patch.object(host, "request", return_value=json.dumps(secret).encode()), patch.object(host, "cloud_token", return_value="fixture"):
+    def configure(self, descriptor=None, fingerprint=None):
+        external = {"AIDASH_OIDC_CLIENT_ID": "fixture-client", "AIDASH_OIDC_CLIENT_SECRET": "fixture-secret"}
+        if fingerprint is not None:
+            external["AIDASH_SECRET_PROVIDER_FINGERPRINT"] = fingerprint
+        secret = {"payload": {"data": host.base64.b64encode(json.dumps(external).encode()).decode()}}
+
+        def request(url, *args, **kwargs):
+            if url.startswith("https://secretmanager.googleapis.com/"):
+                return json.dumps(secret).encode()
+            self.assertTrue(url.endswith("/instance/attributes/aidash-provider-credentials"))
+            if isinstance(descriptor, BaseException):
+                raise descriptor
+            if descriptor is None:
+                raise HTTPError(url, 404, "legacy host", {}, None)
+            return json.dumps(descriptor).encode()
+
+        with patch.object(host, "request", side_effect=request), patch.object(host, "cloud_token", return_value="fixture"):
             host.configuration({"project": "fixture", "secret": "home-a", "hostname": "example.invalid"})
-        values = dict(line.split("=", 1) for line in (host.RUN / "app.env").read_text().splitlines())
+        return dict(line.split("=", 1) for line in (host.RUN / "app.env").read_text().splitlines())
+
+    def test_memory_recovery_directory_follows_the_retained_home_identity(self):
+        values = self.configure()
         self.assertEqual(values["AIDASH_MEMORY_RECOVERY_DIR"], str(host.ROOT / "memory-recovery"))
         self.assertEqual(values["AIDASH_NODE_ID"], "aidash://home-a")
+
+    def test_managed_provider_descriptor_reaches_worker_without_key_material(self):
+        provider = {
+            "store": {"byok_project_id": "aidash-byok-fixture", "environment_id": "test", "fingerprint_env": "AIDASH_SECRET_PROVIDER_FINGERPRINT"},
+            "broker": {"endpoint": "https://broker.run.app/api/v1", "issuer": "aidash", "audience": "test", "kid": "kms-version"},
+        }
+        previous_umask = os.umask(0o077)
+        try:
+            self.configure(provider, "independent-fingerprint-canary-0123456789")
+        finally:
+            os.umask(previous_umask)
+        target = host.RUN / "provider-settings/settings.json"
+        self.assertEqual(json.loads(target.read_text()), {"provider_credentials": provider})
+        self.assertEqual(target.stat().st_mode & 0o777, 0o644)
+        self.assertEqual(target.parent.stat().st_mode & 0o777, 0o755)
+        self.assertNotIn("canary", target.read_text())
+        self.assertIn(f"AIDASH_PROVIDER_CREDENTIAL_SETTINGS={target}\n", (host.RUN / "app.env").read_text())
+        self.configure(None)
+        self.assertEqual(json.loads(target.read_text()), {"provider_credentials": {"store": None, "broker": None}})
+
+    def test_legacy_metadata_absence_and_external_source_allowlist(self):
+        external = {"AIDASH_OIDC_CLIENT_ID": "fixture", "AIDASH_OIDC_CLIENT_SECRET": "fixture"}
+        def request(url, *args):
+            if "instance/attributes/aidash-provider-credentials" in url:
+                raise HTTPError(url, 404, "absent", {}, None)
+            return json.dumps({"payload": {"data": host.base64.b64encode(json.dumps(external).encode()).decode()}}).encode()
+        with patch.object(host, "request", side_effect=request), patch.object(host, "cloud_token", return_value="fixture"):
+            host.configuration({"project": "fixture", "secret": "test", "hostname": "example.invalid"})
+            self.assertEqual(json.loads((host.RUN / "provider-settings/settings.json").read_text())["provider_credentials"], {"store": None, "broker": None})
+            external["AIDASH_PROVIDER_CREDENTIAL_SETTINGS"] = "/untrusted/settings.json"
+            with self.assertRaisesRegex(ValueError, "runtime secret may contain only"):
+                host.configuration({"project": "fixture", "secret": "test", "hostname": "example.invalid"})
+
+    def store_descriptor(self):
+        return {"store": {"byok_project_id": "aidash-byok-fixture", "environment_id": "pr-42", "fingerprint_env": "AIDASH_SECRET_PROVIDER_FINGERPRINT"}, "broker": None}
+
+    def test_byok_metadata_enables_store_without_putting_fingerprint_in_settings(self):
+        fingerprint = "independent-fingerprint-test-key-0123456789"
+        previous = host.os.umask(0o077)
+        try:
+            values = self.configure(self.store_descriptor(), fingerprint)
+        finally:
+            host.os.umask(previous)
+        path = Path(values["AIDASH_PROVIDER_CREDENTIAL_SETTINGS"])
+        self.assertEqual(path, host.RUN / "provider-settings/settings.json")
+        self.assertEqual(json.loads(path.read_text()), {"provider_credentials": self.store_descriptor()})
+        self.assertNotIn(fingerprint, path.read_text())
+        self.assertEqual(path.stat().st_mode & 0o777, 0o644)
+        self.assertEqual(path.parent.stat().st_mode & 0o777, 0o755)
+        self.assertEqual((host.RUN / "app.env").stat().st_mode & 0o777, 0o600)
+        self.assertEqual(values["AIDASH_SECRET_PROVIDER_FINGERPRINT"], fingerprint)
+        again = self.configure(self.store_descriptor(), fingerprint)
+        self.assertEqual(again["AIDASH_SECRET_PROVIDER_FINGERPRINT"], fingerprint)
+        self.assertEqual(json.loads(path.read_text()), {"provider_credentials": self.store_descriptor()})
+
+    def test_byok_disabled_renders_no_store_and_requires_no_fingerprint(self):
+        for descriptor in [None, {"store": None, "broker": None}]:
+            with self.subTest(descriptor=descriptor):
+                values = self.configure(descriptor)
+                self.assertNotIn("AIDASH_SECRET_PROVIDER_FINGERPRINT", values)
+                self.assertEqual(json.loads(Path(values["AIDASH_PROVIDER_CREDENTIAL_SETTINGS"]).read_text()), {"provider_credentials": {"store": None, "broker": None}})
+
+    def test_enabled_store_requires_fingerprint_and_rejects_invalid_metadata(self):
+        for fingerprint in [None, "too-short"]:
+            with self.subTest(fingerprint=fingerprint), self.assertRaisesRegex(ValueError, "fingerprint key"):
+                self.configure(self.store_descriptor(), fingerprint)
+        for descriptor in [{"store": {}, "core": {}}, {**self.store_descriptor(), "store": {**self.store_descriptor()["store"], "environment_id": "pr-42/other"}}, {**self.store_descriptor(), "store": {**self.store_descriptor()["store"], "fingerprint_env": "AIDASH_SECRET_OTHER"}}, {**self.store_descriptor(), "broker": {}}]:
+            with self.subTest(descriptor=descriptor), self.assertRaisesRegex(ValueError, "invalid managed"):
+                self.configure(descriptor, "independent-fingerprint-test-key-0123456789")
+        with self.assertRaises(HTTPError):
+            self.configure(HTTPError("", 403, "denied", {}, None))
+        self.assertFalse((host.RUN / "app.env").exists())
+        self.assertFalse((host.RUN / "provider-settings/settings.json").exists())
 
     def record_previous(self, observed_at, busy):
         (self.directory / "last-active").write_text("100")
