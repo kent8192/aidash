@@ -1950,6 +1950,20 @@ async fn deferred_run_message_catch_up_advertises_only_workspace_read(mut fixtur
 		panic!("expected one provider request, got {}", requests.len());
 	};
 	assert_eq!(tool_names(request), ["workspace_read"]);
+	// Usage measures only the tool definitions the catch-up request sent.
+	let usage = fixture.run.context.usage.clone().unwrap().exposure.unwrap();
+	assert_eq!(
+		usage.schema_bytes,
+		exposure::tool_bytes(&request.tools[0]).unwrap()
+	);
+	assert!(
+		usage
+			.exposed
+			.iter()
+			.all(|(alias, _)| alias == "workspace_read" || alias.starts_with("skill_")),
+		"{:?}",
+		usage.exposed
+	);
 }
 
 /// Answers every compaction question with "drop".

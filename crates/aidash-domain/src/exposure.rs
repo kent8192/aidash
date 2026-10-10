@@ -227,8 +227,11 @@ pub struct Capability {
 	pub bundle: Option<String>,
 	/// Lifecycle companions (shell_poll/cancel…), exposed with the parent.
 	pub companions: Vec<String>,
-	/// Tool: serialized ToolSpec JSON length (+companions); Skill: escaped
-	/// resident block length.
+	/// Request bytes of each companion, parallel to `companions`. Companions
+	/// shared by several parents are charged once per request.
+	pub companion_bytes: Vec<usize>,
+	/// Tool: request bytes of its definition (+companions), as sent inside the
+	/// provider's function wrapper; Skill: escaped resident block length.
 	pub definition_bytes: usize,
 	/// Tool: the exact ToolSpec; Skill: {name, description, origin, license, files}.
 	pub detail: Value,
@@ -345,6 +348,23 @@ pub struct Selection {
 	pub index_omitted: usize,
 	pub usage: ExposureUsage,
 }
+impl Selection {
+	/// Narrow the selection to the tool definitions a request actually sent,
+	/// such as a run-message catch-up request; its usage then measures those.
+	pub fn restrict_tools(&mut self, sent: &[ToolSpec]) -> Result<()> {
+		let names = sent
+			.iter()
+			.map(|spec| spec.name.as_str())
+			.collect::<BTreeSet<_>>();
+		self.tools.retain(|alias| names.contains(alias.as_str()));
+		self.usage.schema_bytes = sent.iter().map(tool_bytes).sum::<Result<usize>>()?;
+		let skills = &self.skills;
+		self.usage
+			.exposed
+			.retain(|(alias, _)| names.contains(alias.as_str()) || skills.contains(alias));
+		Ok(())
+	}
+}
 
 /// Every Discoverable capability of a Run, sorted by alias. `specs` are the
 /// tool specifications exactly as dispatch advertises them, keyed by alias.
@@ -440,10 +460,11 @@ pub fn catalog(
 		}
 		let spec = &specs[*alias];
 		let companions = companions.remove(alias).unwrap_or_default();
-		let mut definition_bytes = spec_bytes(spec)?;
-		for companion in &companions {
-			definition_bytes += spec_bytes(&specs[companion])?;
-		}
+		let companion_bytes = companions
+			.iter()
+			.map(|companion| tool_bytes(&specs[companion]))
+			.collect::<Result<Vec<_>>>()?;
+		let definition_bytes = tool_bytes(spec)? + companion_bytes.iter().sum::<usize>();
 		let bundle = bundled.get(&binding.identity);
 		result.push(Capability {
 			alias: (*alias).clone(),
@@ -454,6 +475,7 @@ pub fn catalog(
 			description: spec.description.clone(),
 			bundle: bundle.map(|(id, _)| id.clone()),
 			companions,
+			companion_bytes,
 			definition_bytes,
 			detail: serde_json::to_value(spec)?,
 			mandatory: mandatory.contains(alias),
@@ -493,6 +515,7 @@ pub fn catalog(
 			description,
 			bundle: None,
 			companions: vec![],
+			companion_bytes: vec![],
 			definition_bytes: 0,
 			mandatory: false,
 			eager: explicit.get(&binding.identity) == Some(&BindingExposure::Eager),
@@ -515,6 +538,7 @@ pub fn catalog(
 			description: metadata.description.clone(),
 			bundle: None,
 			companions: vec![],
+			companion_bytes: vec![],
 			definition_bytes: 0,
 			detail: json!({
 				"name": metadata.name,
@@ -619,8 +643,17 @@ pub fn select(
 	let mut expose = |capability: &Capability, usage: &mut ExposureUsage| match capability.kind {
 		CapabilityKind::Tool => {
 			if tools.insert(capability.alias.clone()) {
-				tools.extend(capability.companions.iter().cloned());
-				usage.schema_bytes += capability.definition_bytes;
+				usage.schema_bytes +=
+					capability.definition_bytes - capability.companion_bytes.iter().sum::<usize>();
+				for (companion, bytes) in capability
+					.companions
+					.iter()
+					.zip(&capability.companion_bytes)
+				{
+					if tools.insert(companion.clone()) {
+						usage.schema_bytes += bytes;
+					}
+				}
 			}
 		}
 		CapabilityKind::Skill => {
@@ -909,8 +942,15 @@ fn expand_bundle(
 	Ok(())
 }
 
-fn spec_bytes(spec: &ToolSpec) -> Result<usize> {
-	Ok(estimated_tokens(&serde_json::to_string(spec)?))
+/// Request bytes of one tool definition as `ModelRequest::input_body` sends
+/// it: inside the provider function wrapper, plus its array delimiter.
+pub fn tool_bytes(spec: &ToolSpec) -> Result<usize> {
+	let wrapped = json!({"type": "function", "function": {
+		"name": spec.name,
+		"description": spec.description,
+		"parameters": spec.parameters,
+	}});
+	Ok(estimated_tokens(&serde_json::to_string(&wrapped)?) + 1)
 }
 
 fn localized(values: &Localized, fallback: &str) -> String {

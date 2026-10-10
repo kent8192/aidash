@@ -131,11 +131,11 @@ records and errors are then exactly those of earlier releases, and
 }
 ```
 
-| Budget           | Default | Accepted range | Measures                                                                                                      |
-| ---------------- | ------- | -------------- | ------------------------------------------------------------------------------------------------------------- |
-| `metadata_bytes` | 4,096   | 512–65,536     | JSON-escaped bytes of the capability index in the instructions                                                |
-| `schema_bytes`   | 16,384  | 1,024–262,144  | Serialized JSON of every exposed tool definition, including Mandatory exposure, Eager bindings and companions |
-| `skill_bytes`    | 32,768  | 1,024–262,144  | JSON-escaped bytes of the resident Skill blocks                                                               |
+| Budget           | Default | Accepted range | Measures                                                                                                                                                                   |
+| ---------------- | ------- | -------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `metadata_bytes` | 4,096   | 512–65,536     | JSON-escaped bytes of the capability index in the instructions                                                                                                             |
+| `schema_bytes`   | 16,384  | 1,024–262,144  | Request JSON of every exposed tool definition as sent (`{"type":"function","function":…}` plus its delimiter), including Mandatory exposure, Eager bindings and companions |
+| `skill_bytes`    | 32,768  | 1,024–262,144  | JSON-escaped bytes of the resident Skill blocks                                                                                                                            |
 
 Any budget may be omitted and takes its default. Registration rejects an
 out-of-range budget or an unknown field. Budgets are UTF-8 bytes of the JSON
@@ -186,6 +186,9 @@ alias. These are:
 
 Lifecycle companions such as `shell_poll` and `shell_cancel` are folded into
 their parent Tool and exposed with it; they are not separate capabilities. A
+companion shared by several exposed parents, such as `python_poll`, counts
+against `schema_bytes` once. A run-message catch-up request sends only the
+tools catch-up permits, and its recorded usage counts only those. A
 Skill's Model alias is `skill_<stem>_<hash>`. The stem is the Skill name or ID,
 lowercased, with characters outside `[a-z0-9_]` replaced by `_` and truncated to
 40 characters. The hash is the first eight hex digits of the SHA-256 of its

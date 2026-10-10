@@ -529,7 +529,8 @@ fn lifecycle_companions_fold_into_their_parent() {
 	);
 	let shell = capability(&catalog, "shell");
 	assert_eq!(shell.companions, ["shell_cancel", "shell_poll"]);
-	let spec = |alias: &str| serde_json::to_string(&run.specs[alias]).unwrap().len();
+	let spec = |alias: &str| tool_bytes(&run.specs[alias]).unwrap();
+	assert!(spec("shell") > serde_json::to_string(&run.specs["shell"]).unwrap().len());
 	assert_eq!(
 		shell.definition_bytes,
 		spec("shell") + spec("shell_poll") + spec("shell_cancel")
@@ -555,6 +556,74 @@ fn lifecycle_companions_fold_into_their_parent() {
 	for alias in ["shell", "shell_poll", "shell_cancel"] {
 		assert!(tools.contains(alias), "{alias}");
 	}
+}
+
+#[test]
+fn shared_lifecycle_companions_are_charged_once() {
+	// Arrange: two Python parents share python_poll and python_cancel.
+	let mut run = Run::default();
+	run.mandatory()
+		.builtin("code_interpreter", BindingOrigin::Explicit)
+		.builtin("python_install", BindingOrigin::Explicit)
+		.builtin("python_poll", BindingOrigin::Companion)
+		.builtin("python_cancel", BindingOrigin::Companion);
+	let catalog = run.catalog();
+	let budgets = DeferredBudgets::default();
+	let base = select(&budgets, &catalog, &ExposureState::default())
+		.unwrap()
+		.usage
+		.schema_bytes;
+	let mut state = ExposureState::default();
+	for alias in ["code_interpreter", "python_install"] {
+		let digest = capability(&catalog, alias).digest.clone();
+		state = applied(
+			&state,
+			&load(&budgets, &catalog, &state, alias, &digest, 1).unwrap(),
+		);
+	}
+	// Act
+	let selection = select(&budgets, &catalog, &state).unwrap();
+	// Assert
+	let bytes = |alias: &str| tool_bytes(&run.specs[alias]).unwrap();
+	assert_eq!(
+		selection.usage.schema_bytes - base,
+		bytes("code_interpreter")
+			+ bytes("python_install")
+			+ bytes("python_poll")
+			+ bytes("python_cancel")
+	);
+}
+
+#[test]
+fn restricted_selection_measures_only_the_sent_tools() {
+	// Arrange
+	let mut run = Run::default();
+	run.mandatory();
+	let catalog = run.catalog();
+	let mut selection = select(
+		&DeferredBudgets::default(),
+		&catalog,
+		&ExposureState::default(),
+	)
+	.unwrap();
+	let sent = [run.specs["workspace_read"].clone()];
+	// Act
+	selection.restrict_tools(&sent).unwrap();
+	// Assert
+	assert_eq!(
+		selection.tools.iter().collect::<Vec<_>>(),
+		["workspace_read"]
+	);
+	assert_eq!(selection.usage.schema_bytes, tool_bytes(&sent[0]).unwrap());
+	assert_eq!(
+		selection
+			.usage
+			.exposed
+			.iter()
+			.map(|(alias, _)| alias.as_str())
+			.collect::<Vec<_>>(),
+		["workspace_read"]
+	);
 }
 
 #[test]

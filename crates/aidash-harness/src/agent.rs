@@ -364,7 +364,7 @@ impl<'a> Executor<'a> {
 				// Load/Unload results of the previous response take effect with this
 				// request; activation is idempotent across retries of this boundary.
 				run.context.exposure.activate();
-				let exposure = match deferred_exposure(run)? {
+				let mut exposure = match deferred_exposure(run)? {
 					Some((snapshot, budgets)) => {
 						let catalog = exposure_catalog(self.environment, run, snapshot, &tools).await?;
 						let selection = exposure::select(&budgets, &catalog, &run.context.exposure)?;
@@ -488,6 +488,10 @@ impl<'a> Executor<'a> {
 					.map(|(_, tool)| tool)
 					.map(|t| t.specification())
 					.collect::<Vec<_>>();
+				// Catch-up sends only the tools it permits; usage measures those.
+				if run_message_catchup && let Some(selection) = exposure.as_mut() {
+					selection.restrict_tools(&specifications)?;
+				}
 				let selected_media = thinking.selected_media.clone();
 				let media_headroom = self.environment.run_request_headroom(run).await?;
 				let mut new_messages = Vec::new();
