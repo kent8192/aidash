@@ -169,14 +169,10 @@ pub struct UsageDispatch {
 	pub response_epoch: i64,
 	pub model_id: String,
 	pub model_version: String,
-	/// Request projection version. Always [`LEGACY_PROJECTION_VERSION`] until
-	/// request projections are versioned.
+	/// The Run's pinned Projection Version, as [`crate::projection::ProjectionVersion::number`].
 	pub projection_version: u8,
 	pub estimate: RequestEstimate,
 }
-
-/// The Legacy request projection used by every current Run.
-pub const LEGACY_PROJECTION_VERSION: u8 = 1;
 
 /// Terminal outcome of a dispatched Inference Attempt. Interrupted, timed-out
 /// and crashed attempts are `Unknown` and carry no counts.

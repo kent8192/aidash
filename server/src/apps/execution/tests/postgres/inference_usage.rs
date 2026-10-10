@@ -1,8 +1,8 @@
 //! Usage Records are dispatched under the worker lease and completed at most once.
 use super::*;
+use aidash_domain::projection::ProjectionVersion;
 use aidash_domain::provider::usage::{
-	LEGACY_PROJECTION_VERSION, ProviderCost, ReportedUsage, RequestEstimate, UsageDispatch,
-	UsageOutcome,
+	ProviderCost, ReportedUsage, RequestEstimate, UsageDispatch, UsageOutcome,
 };
 use reinhardt::query::{Alias, Expr, LockType, PostgresQueryBuilder, Query};
 
@@ -55,7 +55,7 @@ fn dispatch(token: Uuid) -> UsageDispatch {
 		response_epoch: 3,
 		model_id: "model".into(),
 		model_version: "1.0.0".into(),
-		projection_version: LEGACY_PROJECTION_VERSION,
+		projection_version: ProjectionVersion::Legacy.number(),
 		estimate: RequestEstimate::conservative_bytes(1234),
 	}
 }
