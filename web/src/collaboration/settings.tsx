@@ -26,7 +26,12 @@ import {
   TableRow,
 } from "../components/ui/table";
 import { DeploymentPage } from "../deployment";
-import { Disclosure, Facts, Notice, ScreenHeader } from "../components/patterns";
+import {
+  Disclosure,
+  Facts,
+  Notice,
+  ScreenHeader,
+} from "../components/patterns";
 import { ToolSection } from "../integrated-tools";
 import { cn } from "../lib/utils";
 import { MarketplaceAdministration, ScopedMarketplace } from "../marketplace";

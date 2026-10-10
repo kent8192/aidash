@@ -77,7 +77,9 @@ export function AccountPanel({ account }: { account: Account }) {
             {account.context === "operator"
               ? auth.operator
               : account.mappings
-                  .filter((mapping) => account.context === `mapping:${mapping.id}`)
+                  .filter(
+                    (mapping) => account.context === `mapping:${mapping.id}`,
+                  )
                   .map((mapping) => `${mapping.tenant} / ${mapping.subject}`)}
           </span>
         </span>

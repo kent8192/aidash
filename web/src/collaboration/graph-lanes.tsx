@@ -65,7 +65,9 @@ export function ExecutionLanes({
     tasks.map((task) => [
       task.id,
       task.owner ??
-        runLane.get(runs.find(({ run }) => run.task_id === task.id)?.run.id ?? "") ??
+        runLane.get(
+          runs.find(({ run }) => run.task_id === task.id)?.run.id ?? "",
+        ) ??
         system,
     ]),
   );
@@ -117,7 +119,10 @@ export function ExecutionLanes({
       },
     ];
   });
-  const times = [...ticks.map((tick) => tick.at), ...bars.map((bar) => bar.start)];
+  const times = [
+    ...ticks.map((tick) => tick.at),
+    ...bars.map((bar) => bar.start),
+  ];
   if (!times.length)
     return (
       <section
@@ -128,10 +133,7 @@ export function ExecutionLanes({
         <p className="text-xs text-faint">{copy.noTimeline}</p>
       </section>
     );
-  const first = Math.max(
-    windowStart,
-    Math.min(now - 15 * minute, ...times),
-  );
+  const first = Math.max(windowStart, Math.min(now - 15 * minute, ...times));
   const span = Math.max(now - first, minute);
   const start = first - span * 0.02;
   const end = now + span * 0.04;
@@ -140,7 +142,8 @@ export function ExecutionLanes({
     steps.find((value) => (end - start) / (value * minute) <= 6) ?? 10080;
   const axis: number[] = [];
   for (
-    let value = Math.ceil(start / (stepMinutes * minute)) * stepMinutes * minute;
+    let value =
+      Math.ceil(start / (stepMinutes * minute)) * stepMinutes * minute;
     value <= end;
     value += stepMinutes * minute
   )

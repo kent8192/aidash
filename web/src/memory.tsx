@@ -384,28 +384,28 @@ export function MemoryWorkspace({
   const modalNotice = (error || conflict) && (
     <Alert>
       <div className="grid gap-2">
-      <p>{error}</p>
-      {conflict && (
-        <p>
-          {text(
-            "The observed revision changed. Close this editor, refresh and review the current record.",
-            "確認したrevisionが変わりました。編集画面を閉じて再読み込みし、現在の内容を確認してください。",
-          )}
-        </p>
-      )}
-      {retry && (
-        <div>
-          <Button
-            variant="outline"
-            size="sm"
-            type="button"
-            disabled={busy}
-            onClick={() => void send(retry.url, retry.body)}
-          >
-            {text("Retry the same operation", "同じ操作を再試行")}
-          </Button>
-        </div>
-      )}
+        <p>{error}</p>
+        {conflict && (
+          <p>
+            {text(
+              "The observed revision changed. Close this editor, refresh and review the current record.",
+              "確認したrevisionが変わりました。編集画面を閉じて再読み込みし、現在の内容を確認してください。",
+            )}
+          </p>
+        )}
+        {retry && (
+          <div>
+            <Button
+              variant="outline"
+              size="sm"
+              type="button"
+              disabled={busy}
+              onClick={() => void send(retry.url, retry.body)}
+            >
+              {text("Retry the same operation", "同じ操作を再試行")}
+            </Button>
+          </div>
+        )}
       </div>
     </Alert>
   );
@@ -668,46 +668,46 @@ export function MemoryWorkspace({
       {(error || failures.length > 0) && (
         <Alert>
           <div className="grid gap-2">
-          <p>{error || failures.map((value) => String(value)).join(" · ")}</p>
-          {conflict && (
-            <p>
-              {text(
-                "The observed revision changed. Refresh and review the new state before editing again.",
-                "確認したrevisionが変わりました。再読み込みして内容を確認し、改めて編集してください。",
-              )}
-            </p>
-          )}
-          {retry && (
-            <div className="flex flex-wrap gap-2">
-              <Button
-                variant="outline"
-                size="sm"
-                type="button"
-                disabled={busy}
-                onClick={() => void send(retry.url, retry.body)}
-              >
-                {text("Retry the same operation", "同じ操作を再試行")}
-              </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                type="button"
-                disabled={busy}
-                onClick={() => {
-                  setRetry(null);
-                  setEditing(null);
-                  void client.invalidateQueries({
-                    queryKey: ["memory", workspace],
-                  });
-                }}
-              >
+            <p>{error || failures.map((value) => String(value)).join(" · ")}</p>
+            {conflict && (
+              <p>
                 {text(
-                  "Dismiss retry and refresh recorded state",
-                  "再試行を取り消して保存状態を確認",
+                  "The observed revision changed. Refresh and review the new state before editing again.",
+                  "確認したrevisionが変わりました。再読み込みして内容を確認し、改めて編集してください。",
                 )}
-              </Button>
-            </div>
-          )}
+              </p>
+            )}
+            {retry && (
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void send(retry.url, retry.body)}
+                >
+                  {text("Retry the same operation", "同じ操作を再試行")}
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  type="button"
+                  disabled={busy}
+                  onClick={() => {
+                    setRetry(null);
+                    setEditing(null);
+                    void client.invalidateQueries({
+                      queryKey: ["memory", workspace],
+                    });
+                  }}
+                >
+                  {text(
+                    "Dismiss retry and refresh recorded state",
+                    "再試行を取り消して保存状態を確認",
+                  )}
+                </Button>
+              </div>
+            )}
           </div>
         </Alert>
       )}
@@ -1054,27 +1054,25 @@ export function MemoryWorkspace({
             "鮮度・履歴・影響するRun・消去状況",
           )}
         >
-            <MemoryRecord
-              value={{
-                ...inspection.data.pages[0].value,
-                items: inspection.data.pages.flatMap(
-                  (page) => page.value.items,
-                ),
-              }}
-            />
-            {inspection.hasNextPage && (
-              <div>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  type="button"
-                  disabled={blocked || inspection.isFetchingNextPage}
-                  onClick={() => void inspection.fetchNextPage()}
-                >
-                  {text("More unit status", "さらにUnitの状態を表示")}
-                </Button>
-              </div>
-            )}
+          <MemoryRecord
+            value={{
+              ...inspection.data.pages[0].value,
+              items: inspection.data.pages.flatMap((page) => page.value.items),
+            }}
+          />
+          {inspection.hasNextPage && (
+            <div>
+              <Button
+                variant="outline"
+                size="sm"
+                type="button"
+                disabled={blocked || inspection.isFetchingNextPage}
+                onClick={() => void inspection.fetchNextPage()}
+              >
+                {text("More unit status", "さらにUnitの状態を表示")}
+              </Button>
+            </div>
+          )}
         </Disclosure>
       )}
       {inspection.error && (
@@ -1090,21 +1088,21 @@ export function MemoryWorkspace({
           className="border-t border-border pt-3"
           summary={text("Engine jobs and retries", "メモリ処理・再試行")}
         >
-            <MemoryRecord
-              value={jobs.data.pages.flatMap((page) => page.value.items)}
-            />
-            {jobs.hasNextPage && (
-              <div>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  type="button"
-                  onClick={() => void jobs.fetchNextPage()}
-                >
-                  {text("More jobs", "処理をさらに表示")}
-                </Button>
-              </div>
-            )}
+          <MemoryRecord
+            value={jobs.data.pages.flatMap((page) => page.value.items)}
+          />
+          {jobs.hasNextPage && (
+            <div>
+              <Button
+                variant="outline"
+                size="sm"
+                type="button"
+                onClick={() => void jobs.fetchNextPage()}
+              >
+                {text("More jobs", "処理をさらに表示")}
+              </Button>
+            </div>
+          )}
         </Disclosure>
       )}
       {questionSource && (
@@ -1188,14 +1186,14 @@ export function MemoryWorkspace({
                 .map((unit) => (
                   <Check
                     key={unit.id}
-                      checked={questionSources.includes(unit.id)}
-                      onChange={(e) =>
-                        setQuestionSources((ids) =>
-                          e.target.checked
-                            ? [...ids, unit.id]
-                            : ids.filter((id) => id !== unit.id),
-                        )
-                      }
+                    checked={questionSources.includes(unit.id)}
+                    onChange={(e) =>
+                      setQuestionSources((ids) =>
+                        e.target.checked
+                          ? [...ids, unit.id]
+                          : ids.filter((id) => id !== unit.id),
+                      )
+                    }
                   >
                     {unit.content.text}{" "}
                     <span className="font-mono text-faint">
@@ -1205,8 +1203,8 @@ export function MemoryWorkspace({
                 ))}
             </Group>
             <Check
-                checked={autoRefresh}
-                onChange={(e) => setAutoRefresh(e.target.checked)}
+              checked={autoRefresh}
+              onChange={(e) => setAutoRefresh(e.target.checked)}
             >
               {text(
                 "Refresh when admitted sources change",
@@ -1468,9 +1466,9 @@ function UnitEditor({
             />
           </Field>
           <Check
-              disabled
-              checked={autoRefresh}
-              onChange={(e) => setAutoRefresh(e.target.checked)}
+            disabled
+            checked={autoRefresh}
+            onChange={(e) => setAutoRefresh(e.target.checked)}
           >
             {ja ? "根拠の変更時に更新" : "Refresh after source changes"}
           </Check>
@@ -1524,18 +1522,18 @@ function ContentMetadata({
       )}
     >
       <Check
-          checked={value.occurred !== null}
-          onChange={(e) =>
-            change({
-              ...value,
-              occurred: e.target.checked
-                ? {
-                    start: new Date().toISOString(),
-                    end: new Date().toISOString(),
-                  }
-                : null,
-            })
-          }
+        checked={value.occurred !== null}
+        onChange={(e) =>
+          change({
+            ...value,
+            occurred: e.target.checked
+              ? {
+                  start: new Date().toISOString(),
+                  end: new Date().toISOString(),
+                }
+              : null,
+          })
+        }
       >
         {label(
           "Record an occurrence interval (UTC)",

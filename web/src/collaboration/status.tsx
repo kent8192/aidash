@@ -234,9 +234,7 @@ export function ChannelStatus({
         </section>
       </div>
       <div className="grid gap-2 border-t border-border pt-4">
-        {control.error && (
-          <Alert>{control.error}</Alert>
-        )}
+        {control.error && <Alert>{control.error}</Alert>}
         <Button
           variant="outline"
           type="button"

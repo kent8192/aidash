@@ -360,9 +360,7 @@ export function AppShell({
             <PopoverTrigger asChild>
               <RailButton
                 label={collab.settings}
-                className={cn(
-                  section === "settings" && "bg-raised text-brand",
-                )}
+                className={cn(section === "settings" && "bg-raised text-brand")}
               >
                 <Settings2 aria-hidden strokeWidth={1.75} />
               </RailButton>
@@ -514,7 +512,10 @@ export function AppShell({
               />
               <span className="max-md:sr-only">{collab[streamStatus]}</span>
             </span>
-            <span aria-hidden className="hidden h-[18px] w-px bg-border md:block" />
+            <span
+              aria-hidden
+              className="hidden h-[18px] w-px bg-border md:block"
+            />
             <Button
               variant="ghost"
               size="icon"

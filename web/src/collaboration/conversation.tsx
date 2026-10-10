@@ -624,9 +624,7 @@ function ConversationFeed({
           {opening && (
             <Loading className="px-4 pt-0 pb-1">{threads.opening}</Loading>
           )}
-          {error && (
-            <Alert className="mx-4 mb-2">{error}</Alert>
-          )}
+          {error && <Alert className="mx-4 mb-2">{error}</Alert>}
           {(!threadList || thread) && (
             <form
               className="shrink-0 border-t border-border p-3"

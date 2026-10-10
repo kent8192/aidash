@@ -121,10 +121,7 @@ export function TrustCertifications({
               key={tab}
               className="flex flex-wrap items-center gap-x-3 gap-y-2 py-3"
             >
-              <span
-                aria-hidden
-                className="text-faint [&_svg]:size-4"
-              >
+              <span aria-hidden className="text-faint [&_svg]:size-4">
                 {icon}
               </span>
               <div className="min-w-0 flex-1 basis-56">
@@ -228,7 +225,10 @@ export function TrustSummary({
               ] as const
             ).map(([icon, title, description]) => (
               <li key={title} className="flex gap-2.5">
-                <span aria-hidden className="mt-0.5 text-faint [&_svg]:size-3.5">
+                <span
+                  aria-hidden
+                  className="mt-0.5 text-faint [&_svg]:size-3.5"
+                >
                   {icon}
                 </span>
                 <div className="grid gap-0.5">
@@ -469,7 +469,9 @@ export function TrustAudit({
             ) : (
               <EmptyState
                 icon={<FileText />}
-                title={ja ? "イベントが選択されていません" : "No event selected"}
+                title={
+                  ja ? "イベントが選択されていません" : "No event selected"
+                }
               >
                 {ja
                   ? "監査履歴から記録を選択すると、詳細が表示されます。"

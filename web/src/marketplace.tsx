@@ -318,9 +318,7 @@ export function ScopedMarketplace({ identity }: { identity: string }) {
   const view = selected ? detail.data : undefined;
   return (
     <div className="grid min-w-0 gap-6">
-      {message && (
-        <Notice role="status">{message}</Notice>
-      )}
+      {message && <Notice role="status">{message}</Notice>}
       <div
         className={cn(
           "grid min-w-0 items-start gap-6",
@@ -349,9 +347,7 @@ export function ScopedMarketplace({ identity }: { identity: string }) {
               />
             </Field>
           </div>
-          {packages.isError && (
-            <Alert>{copy.unavailable}</Alert>
-          )}
+          {packages.isError && <Alert>{copy.unavailable}</Alert>}
           {!packages.isPending &&
             !packages.isError &&
             !packages.data?.length && <Hint>{copy.empty}</Hint>}
@@ -551,56 +547,56 @@ export function ScopedMarketplace({ identity }: { identity: string }) {
                   summary={copy.consent}
                 >
                   <Hint>{copy.consentHelp}</Hint>
-                    <Field label={copy.redistributor}>
-                      <Input
-                        value={redistributor}
-                        onChange={(e) => setRedistributor(e.target.value)}
-                      />
-                    </Field>
-                    <Field label={copy.consentRevision}>
-                      <Input
-                        type="number"
-                        min={0}
-                        className="font-mono tabular"
-                        value={consentRevision}
-                        onChange={(e) =>
-                          setConsentDraft({
-                            key: consentKey,
-                            revision: Number(e.target.value),
-                            audience: consentAudience,
-                          })
-                        }
-                      />
-                    </Field>
-                    <Field label={copy.tenants}>
-                      <Textarea
-                        className="min-h-16 font-mono text-xs"
-                        value={consentAudience}
-                        onChange={(e) =>
-                          setConsentDraft({
-                            key: consentKey,
-                            revision: consentRevision,
-                            audience: e.target.value,
-                          })
-                        }
-                      />
-                    </Field>
-                    <div>
-                      <Button
-                        variant="outline"
-                        disabled={busy || !redistributor || !consent}
-                        onClick={() =>
-                          void run(async () => {
-                            await marketplaceConsent(selected, redistributor, {
-                              expected_revision: consentRevision,
-                              tenants: tenants(consentAudience),
-                            });
-                          })
-                        }
-                      >
-                        {copy.consent}
-                      </Button>
-                    </div>
+                  <Field label={copy.redistributor}>
+                    <Input
+                      value={redistributor}
+                      onChange={(e) => setRedistributor(e.target.value)}
+                    />
+                  </Field>
+                  <Field label={copy.consentRevision}>
+                    <Input
+                      type="number"
+                      min={0}
+                      className="font-mono tabular"
+                      value={consentRevision}
+                      onChange={(e) =>
+                        setConsentDraft({
+                          key: consentKey,
+                          revision: Number(e.target.value),
+                          audience: consentAudience,
+                        })
+                      }
+                    />
+                  </Field>
+                  <Field label={copy.tenants}>
+                    <Textarea
+                      className="min-h-16 font-mono text-xs"
+                      value={consentAudience}
+                      onChange={(e) =>
+                        setConsentDraft({
+                          key: consentKey,
+                          revision: consentRevision,
+                          audience: e.target.value,
+                        })
+                      }
+                    />
+                  </Field>
+                  <div>
+                    <Button
+                      variant="outline"
+                      disabled={busy || !redistributor || !consent}
+                      onClick={() =>
+                        void run(async () => {
+                          await marketplaceConsent(selected, redistributor, {
+                            expected_revision: consentRevision,
+                            tenants: tenants(consentAudience),
+                          });
+                        })
+                      }
+                    >
+                      {copy.consent}
+                    </Button>
+                  </div>
                 </Disclosure>
               )}
             </Panel>
@@ -975,9 +971,7 @@ export function MarketplaceAdministration() {
           : "pending";
   return (
     <div className="grid min-w-0 gap-6">
-      {message && (
-        <Notice role="status">{message}</Notice>
-      )}
+      {message && <Notice role="status">{message}</Notice>}
       {gate.data && (
         <Panel
           title={copy.rollout}

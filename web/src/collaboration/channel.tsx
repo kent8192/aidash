@@ -611,9 +611,7 @@ export function Channel({
             </Button>
           )}
         </div>
-        {control.error && (
-          <Alert className="basis-full">{control.error}</Alert>
-        )}
+        {control.error && <Alert className="basis-full">{control.error}</Alert>}
       </header>
       <Tabs
         value={shownTab}

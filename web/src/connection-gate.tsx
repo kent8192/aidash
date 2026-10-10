@@ -187,7 +187,9 @@ export function ConnectionGate({
                     size="icon"
                     className="size-7"
                     aria-label={
-                      english ? "Remove saved connection" : "保存した接続先を削除"
+                      english
+                        ? "Remove saved connection"
+                        : "保存した接続先を削除"
                     }
                     disabled={busy}
                     onClick={() => {

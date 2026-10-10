@@ -386,7 +386,10 @@ export function TrustOverview({
             </Hint>
           </Block>
           <Block
-            title={text("Configured tools and skills", "設定済みツール・スキル")}
+            title={text(
+              "Configured tools and skills",
+              "設定済みツール・スキル",
+            )}
             link={link("policies", text("Inspect permissions", "権限を確認"))}
           >
             {agent.config.bindings.length ? (
@@ -464,7 +467,10 @@ export function TrustOverview({
           </Block>
           <Block
             title={text("Permission matrix", "権限マトリクス")}
-            link={link("policies", text("View full matrix", "マトリクスを見る"))}
+            link={link(
+              "policies",
+              text("View full matrix", "マトリクスを見る"),
+            )}
             className="trust-matrix xl:col-span-2"
           >
             {permissions ? (
@@ -554,9 +560,14 @@ export function TrustOverview({
             ) : tests.length ? (
               <ul className="divide-y divide-border">
                 {tests.slice(0, 3).map((test) => (
-                  <li key={test.session_id} className="grid gap-1 py-2 first:pt-0">
+                  <li
+                    key={test.session_id}
+                    className="grid gap-1 py-2 first:pt-0"
+                  >
                     <div className="flex items-center justify-between gap-2">
-                      <span className="text-[13px] font-medium">{test.mode}</span>
+                      <span className="text-[13px] font-medium">
+                        {test.mode}
+                      </span>
                       <FactBadge>{test.status}</FactBadge>
                     </div>
                     <p className="font-mono text-[11px] text-faint">
@@ -582,7 +593,9 @@ export function TrustOverview({
                 text(" Latest 100 records only.", " 最新100件が対象です。")}
             </p>
           </InspectorSection>
-          <InspectorSection title={text("Impacted workspaces", "利用ワークスペース")}>
+          <InspectorSection
+            title={text("Impacted workspaces", "利用ワークスペース")}
+          >
             {!inspection ? (
               <Hint>{pending}</Hint>
             ) : inspection.workspaces.length ? (
