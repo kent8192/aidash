@@ -32,6 +32,8 @@ pub(crate) struct StreamAssembler<'a> {
 	progress: &'a dyn InferenceProgressSink,
 	limit: usize,
 	line: Vec<u8>,
+	/// The previous line ended in CR, so a leading LF completes that CRLF.
+	pending_cr: bool,
 	data: Option<Vec<u8>>,
 	received: usize,
 	assembled: usize,
@@ -51,6 +53,7 @@ impl<'a> StreamAssembler<'a> {
 			progress,
 			limit,
 			line: Vec::new(),
+			pending_cr: false,
 			data: None,
 			received: 0,
 			assembled: 0,
@@ -80,24 +83,27 @@ impl<'a> StreamAssembler<'a> {
 		self.received += chunk.len();
 		let mut live = false;
 		while !chunk.is_empty() && !self.done {
-			let (part, end) = match chunk.iter().position(|byte| *byte == b'\n') {
-				Some(end) => (&chunk[..end], true),
-				None => (chunk, false),
-			};
+			// SSE lines end in CRLF, LF or a bare CR; a CRLF split across
+			// chunks is still one line ending.
+			if std::mem::take(&mut self.pending_cr) && chunk[0] == b'\n' {
+				chunk = &chunk[1..];
+				continue;
+			}
+			let end = chunk.iter().position(|byte| matches!(byte, b'\n' | b'\r'));
+			let part = &chunk[..end.unwrap_or(chunk.len())];
 			if part.len() > self.limit.saturating_sub(self.line.len()) {
 				return Err(self.overflow());
 			}
 			self.line.extend_from_slice(part);
-			chunk = &chunk[(part.len() + usize::from(end)).min(chunk.len())..];
-			if end {
-				let mut line = std::mem::take(&mut self.line);
-				if line.last() == Some(&b'\r') {
-					line.pop();
-				}
-				live |= self.field(&line)?;
-				line.clear();
-				self.line = line;
-			}
+			let Some(end) = end else {
+				break;
+			};
+			self.pending_cr = chunk[end] == b'\r';
+			chunk = &chunk[end + 1..];
+			let mut line = std::mem::take(&mut self.line);
+			live |= self.field(&line)?;
+			line.clear();
+			self.line = line;
 		}
 		Ok(live)
 	}
@@ -228,7 +234,28 @@ impl<'a> StreamAssembler<'a> {
 	}
 
 	fn choice(&mut self, choice: &Value) -> Result<()> {
-		if let Some(reason) = choice.get("finish_reason").and_then(Value::as_str) {
+		let reason = choice.get("finish_reason").and_then(Value::as_str);
+		if self.finish_reason.is_some() {
+			// A completed choice takes no further output, like a whole completion.
+			let delta = choice.get("delta");
+			let output = ["content", "refusal", "tool_calls"].into_iter().any(|key| {
+				delta
+					.and_then(|delta| delta.get(key))
+					.is_some_and(|value| match value {
+						Value::Null => false,
+						Value::String(text) => !text.is_empty(),
+						Value::Array(items) => !items.is_empty(),
+						_ => true,
+					})
+			});
+			if reason.is_some() || output {
+				return Err(Error::External(
+					"provider stream continued after its finish reason".into(),
+				));
+			}
+			return Ok(());
+		}
+		if let Some(reason) = reason {
 			if reason == "error" {
 				return Err(rejected(choice.get("error").unwrap_or(&Value::Null)));
 			}
