@@ -79,7 +79,7 @@ pub(super) async fn install(
 ) -> Result<InstallationRevision> {
 	aidash_application::marketplace::installations::install(
 		&mut crate::bootstrap::marketplace_publication_scope(store, access),
-		&crate::bootstrap::registry_validation(),
+		&crate::bootstrap::registry_validation_for(store),
 		package,
 		&install_command(input),
 		&store.node_id,
@@ -95,7 +95,7 @@ pub(super) async fn configure(
 ) -> Result<InstallationRevision> {
 	aidash_application::marketplace::installations::configure(
 		&mut crate::bootstrap::marketplace_publication_scope(store, access),
-		&crate::bootstrap::registry_validation(),
+		&crate::bootstrap::registry_validation_for(store),
 		id,
 		&configure_command(input),
 		&store.node_id,

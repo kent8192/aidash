@@ -154,9 +154,14 @@ where
 		&mut self,
 		entry: &aidash_domain::registry::Entry,
 	) -> Result<aidash_domain::registry::bindings::BindingSnapshot> {
-		crate::apps::registry::repositories::bindings::authorized(&mut self.access, entry, true)
-			.await
-			.map_err(Into::into)
+		crate::apps::registry::repositories::bindings::authorized(
+			&mut self.access,
+			entry,
+			true,
+			self.runtime.borrow().store.provider_credentials.is_some(),
+		)
+		.await
+		.map_err(Into::into)
 	}
 
 	async fn lineage(&mut self) -> Result<Vec<Ancestor>> {
@@ -541,6 +546,14 @@ impl PeerAdmissionScope for Owned {
 			.bind(&d.inspection.agent.version)
 			.bind(serde_json::to_value(context)?)
 			.execute(&mut **access.tx)
+			.await?;
+			super::provider_credentials::admit(
+				&mut **access.tx,
+				id,
+				&access.identity.tenant,
+				&d.inspection.binding_snapshot,
+				self.runtime.store.provider_credentials.is_some(),
+			)
 			.await?;
 			Ok(())
 		}

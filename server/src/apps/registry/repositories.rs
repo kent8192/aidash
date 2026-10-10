@@ -25,8 +25,16 @@ pub struct Registry {
 	pub db: DatabaseConnection,
 	_lease: DatabaseConnectionLease,
 	node_id: String,
+	provider_credentials: bool,
 }
 impl Registry {
+	pub fn with_provider_credentials(mut self, configured: bool) -> Self {
+		self.provider_credentials = configured;
+		self
+	}
+	pub(crate) fn validation(&self) -> aidash_application::registry::DefinitionValidation {
+		crate::bootstrap::registry_validation().with_provider_credentials(self.provider_credentials)
+	}
 	pub async fn seed_system(&self) -> Result<()> {
 		self.db
 			.atomic(async |tx| {
@@ -35,7 +43,7 @@ impl Registry {
 						db: tx,
 						node: &self.node_id,
 					},
-					&crate::bootstrap::registry_validation(),
+					&self.validation(),
 					&self.node_id,
 				)
 				.await?)
@@ -48,6 +56,7 @@ impl Registry {
 			db: lease.handle(),
 			_lease: lease,
 			node_id: node_id.into(),
+			provider_credentials: false,
 		})
 	}
 	pub async fn get(&self, id: &str, version: &str) -> Result<Entry> {
@@ -111,7 +120,7 @@ impl Registry {
 						db: tx,
 						node: &self.node_id,
 					},
-					&crate::bootstrap::registry_validation(),
+					&self.validation(),
 					entry,
 					None,
 					false,
@@ -133,7 +142,7 @@ impl Registry {
 						db: tx,
 						node: &self.node_id,
 					},
-					&crate::bootstrap::registry_validation(),
+					&self.validation(),
 					entry,
 					key,
 					true,
@@ -145,7 +154,7 @@ impl Registry {
 	}
 	pub async fn validate_references(&self, entry: &Entry) -> Result<()> {
 		let mut db = self.db;
-		validate_references_with(&mut db, entry, &self.node_id).await
+		validate_references_with(&mut db, entry, &self.node_id, &self.validation()).await
 	}
 	pub async fn publish(&self, package: Package) -> Result<PackageRecord> {
 		self.db
@@ -155,7 +164,7 @@ impl Registry {
 						db: tx,
 						node: &self.node_id,
 					},
-					&crate::bootstrap::registry_validation(),
+					&self.validation(),
 					package,
 				)
 				.await?)
@@ -187,7 +196,7 @@ impl Registry {
 						db: tx,
 						node: &self.node_id,
 					},
-					&crate::bootstrap::registry_validation(),
+					&self.validation(),
 					plan,
 					&self.node_id,
 					id,
@@ -389,10 +398,11 @@ pub(crate) async fn validate_references_with<E: OrmExecutor>(
 	db: &mut E,
 	entry: &Entry,
 	node: &str,
+	validation: &aidash_application::registry::DefinitionValidation,
 ) -> Result<()> {
 	Ok(aidash_application::registry::validate_references(
 		&mut OrmScope { db, node },
-		&crate::bootstrap::registry_validation(),
+		validation,
 		entry,
 		node,
 	)
@@ -402,10 +412,11 @@ pub(crate) async fn register_in(
 	tx: &mut crate::database::native::Transaction,
 	entry: &Entry,
 	node: &str,
+	validation: &aidash_application::registry::DefinitionValidation,
 ) -> Result<bool> {
 	Ok(aidash_application::registry::register_definition(
 		&mut sql::SqlScope(tx),
-		&crate::bootstrap::registry_validation(),
+		validation,
 		entry,
 		node,
 	)
@@ -443,7 +454,7 @@ impl Registry {
 				db: &mut db,
 				node: &self.node_id,
 			},
-			&crate::bootstrap::registry_validation(),
+			&self.validation(),
 			draft,
 			&self.node_id,
 		)
@@ -455,7 +466,7 @@ impl Registry {
 						db: tx,
 						node: &self.node_id,
 					},
-					&crate::bootstrap::registry_validation(),
+					&self.validation(),
 					registration,
 					key,
 					&self.node_id,

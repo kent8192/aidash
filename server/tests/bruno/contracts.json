@@ -26024,6 +26024,474 @@
   },
   {
     "method": "GET",
+    "path": "/api/tenants/{tenant}/provider-credentials",
+    "name": "provider-credential-list",
+    "source": "server/src/apps/identity/views/provider_credentials.rs",
+    "json": false,
+    "uuid_parameters": [],
+    "query_parameters": ["limit", "offset"],
+    "response": {
+      "schema": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/ProviderCredentialMetadata"
+        }
+      },
+      "definitions": {
+        "ProviderCredentialMetadata": {
+          "type": "object",
+          "required": [
+            "id",
+            "tenant",
+            "provider",
+            "base_url",
+            "fingerprint",
+            "last4",
+            "state",
+            "created_at",
+            "rotated_at",
+            "revoked_at",
+            "revision"
+          ],
+          "properties": {
+            "base_url": {
+              "type": "string"
+            },
+            "created_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "fingerprint": {
+              "type": "string"
+            },
+            "id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "last4": {
+              "type": "string"
+            },
+            "provider": {
+              "$ref": "#/components/schemas/Provider"
+            },
+            "revision": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "revoked_at": {
+              "type": ["string", "null"],
+              "format": "date-time"
+            },
+            "rotated_at": {
+              "type": ["string", "null"],
+              "format": "date-time"
+            },
+            "state": {
+              "$ref": "#/components/schemas/State"
+            },
+            "tenant": {
+              "type": "string"
+            }
+          }
+        },
+        "Provider": {
+          "type": "string",
+          "description": "Catalog IDs are portable; Provider Credential IDs never enter Registry configuration.",
+          "enum": ["openrouter"]
+        },
+        "State": {
+          "type": "string",
+          "enum": ["pending", "active", "revoked", "deleted"]
+        }
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/tenants/{tenant}/provider-credentials/{id}",
+    "name": "provider-credential-get",
+    "source": "server/src/apps/identity/views/provider_credentials.rs",
+    "json": false,
+    "uuid_parameters": ["id"],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/ProviderCredentialMetadata"
+      },
+      "definitions": {
+        "ProviderCredentialMetadata": {
+          "type": "object",
+          "required": [
+            "id",
+            "tenant",
+            "provider",
+            "base_url",
+            "fingerprint",
+            "last4",
+            "state",
+            "created_at",
+            "rotated_at",
+            "revoked_at",
+            "revision"
+          ],
+          "properties": {
+            "base_url": {
+              "type": "string"
+            },
+            "created_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "fingerprint": {
+              "type": "string"
+            },
+            "id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "last4": {
+              "type": "string"
+            },
+            "provider": {
+              "$ref": "#/components/schemas/Provider"
+            },
+            "revision": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "revoked_at": {
+              "type": ["string", "null"],
+              "format": "date-time"
+            },
+            "rotated_at": {
+              "type": ["string", "null"],
+              "format": "date-time"
+            },
+            "state": {
+              "$ref": "#/components/schemas/State"
+            },
+            "tenant": {
+              "type": "string"
+            }
+          }
+        },
+        "Provider": {
+          "type": "string",
+          "description": "Catalog IDs are portable; Provider Credential IDs never enter Registry configuration.",
+          "enum": ["openrouter"]
+        },
+        "State": {
+          "type": "string",
+          "enum": ["pending", "active", "revoked", "deleted"]
+        }
+      }
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/tenants/{tenant}/provider-credentials/{id}/revoke",
+    "name": "provider-credential-revoke",
+    "source": "server/src/apps/identity/views/provider_credentials.rs",
+    "json": true,
+    "uuid_parameters": ["id"],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/ProviderCredentialMetadata"
+      },
+      "definitions": {
+        "ProviderCredentialMetadata": {
+          "type": "object",
+          "required": [
+            "id",
+            "tenant",
+            "provider",
+            "base_url",
+            "fingerprint",
+            "last4",
+            "state",
+            "created_at",
+            "rotated_at",
+            "revoked_at",
+            "revision"
+          ],
+          "properties": {
+            "base_url": {
+              "type": "string"
+            },
+            "created_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "fingerprint": {
+              "type": "string"
+            },
+            "id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "last4": {
+              "type": "string"
+            },
+            "provider": {
+              "$ref": "#/components/schemas/Provider"
+            },
+            "revision": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "revoked_at": {
+              "type": ["string", "null"],
+              "format": "date-time"
+            },
+            "rotated_at": {
+              "type": ["string", "null"],
+              "format": "date-time"
+            },
+            "state": {
+              "$ref": "#/components/schemas/State"
+            },
+            "tenant": {
+              "type": "string"
+            }
+          }
+        },
+        "Provider": {
+          "type": "string",
+          "description": "Catalog IDs are portable; Provider Credential IDs never enter Registry configuration.",
+          "enum": ["openrouter"]
+        },
+        "State": {
+          "type": "string",
+          "enum": ["pending", "active", "revoked", "deleted"]
+        }
+      }
+    }
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/tenants/{tenant}/provider-credentials/{id}",
+    "name": "provider-credential-delete",
+    "source": "server/src/apps/identity/views/provider_credentials.rs",
+    "json": true,
+    "uuid_parameters": ["id"],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/ProviderCredentialMetadata"
+      },
+      "definitions": {
+        "ProviderCredentialMetadata": {
+          "type": "object",
+          "required": [
+            "id",
+            "tenant",
+            "provider",
+            "base_url",
+            "fingerprint",
+            "last4",
+            "state",
+            "created_at",
+            "rotated_at",
+            "revoked_at",
+            "revision"
+          ],
+          "properties": {
+            "base_url": {
+              "type": "string"
+            },
+            "created_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "fingerprint": {
+              "type": "string"
+            },
+            "id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "last4": {
+              "type": "string"
+            },
+            "provider": {
+              "$ref": "#/components/schemas/Provider"
+            },
+            "revision": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "revoked_at": {
+              "type": ["string", "null"],
+              "format": "date-time"
+            },
+            "rotated_at": {
+              "type": ["string", "null"],
+              "format": "date-time"
+            },
+            "state": {
+              "$ref": "#/components/schemas/State"
+            },
+            "tenant": {
+              "type": "string"
+            }
+          }
+        },
+        "Provider": {
+          "type": "string",
+          "description": "Catalog IDs are portable; Provider Credential IDs never enter Registry configuration.",
+          "enum": ["openrouter"]
+        },
+        "State": {
+          "type": "string",
+          "enum": ["pending", "active", "revoked", "deleted"]
+        }
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/tenants/{tenant}/provider-credential-bindings",
+    "name": "provider-credential-binding-list",
+    "source": "server/src/apps/identity/views/provider_credentials.rs",
+    "json": false,
+    "uuid_parameters": [],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/ProviderCredentialBinding"
+        }
+      },
+      "definitions": {
+        "ProviderCredentialBinding": {
+          "type": "object",
+          "required": [
+            "tenant",
+            "provider",
+            "provider_credential_id",
+            "revision"
+          ],
+          "properties": {
+            "provider": {
+              "$ref": "#/components/schemas/Provider"
+            },
+            "provider_credential_id": {
+              "type": ["string", "null"],
+              "format": "uuid"
+            },
+            "revision": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "tenant": {
+              "type": "string"
+            }
+          }
+        },
+        "Provider": {
+          "type": "string",
+          "description": "Catalog IDs are portable; Provider Credential IDs never enter Registry configuration.",
+          "enum": ["openrouter"]
+        }
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/tenants/{tenant}/provider-credential-bindings/{provider}",
+    "name": "provider-credential-binding-get",
+    "source": "server/src/apps/identity/views/provider_credentials.rs",
+    "json": false,
+    "uuid_parameters": [],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/ProviderCredentialBinding"
+      },
+      "definitions": {
+        "ProviderCredentialBinding": {
+          "type": "object",
+          "required": [
+            "tenant",
+            "provider",
+            "provider_credential_id",
+            "revision"
+          ],
+          "properties": {
+            "provider": {
+              "$ref": "#/components/schemas/Provider"
+            },
+            "provider_credential_id": {
+              "type": ["string", "null"],
+              "format": "uuid"
+            },
+            "revision": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "tenant": {
+              "type": "string"
+            }
+          }
+        },
+        "Provider": {
+          "type": "string",
+          "description": "Catalog IDs are portable; Provider Credential IDs never enter Registry configuration.",
+          "enum": ["openrouter"]
+        }
+      }
+    }
+  },
+  {
+    "method": "PUT",
+    "path": "/api/tenants/{tenant}/provider-credential-bindings/{provider}",
+    "name": "provider-credential-binding-update",
+    "source": "server/src/apps/identity/views/provider_credentials.rs",
+    "json": true,
+    "uuid_parameters": [],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/ProviderCredentialBinding"
+      },
+      "definitions": {
+        "ProviderCredentialBinding": {
+          "type": "object",
+          "required": [
+            "tenant",
+            "provider",
+            "provider_credential_id",
+            "revision"
+          ],
+          "properties": {
+            "provider": {
+              "$ref": "#/components/schemas/Provider"
+            },
+            "provider_credential_id": {
+              "type": ["string", "null"],
+              "format": "uuid"
+            },
+            "revision": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "tenant": {
+              "type": "string"
+            }
+          }
+        },
+        "Provider": {
+          "type": "string",
+          "description": "Catalog IDs are portable; Provider Credential IDs never enter Registry configuration.",
+          "enum": ["openrouter"]
+        }
+      }
+    }
+  },
+  {
+    "method": "GET",
     "path": "/auth/gcip/transaction",
     "name": "sessions-gcip-transaction",
     "source": "server/src/apps/identity/views/sessions.rs",

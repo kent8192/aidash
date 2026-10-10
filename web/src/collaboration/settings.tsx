@@ -9,6 +9,8 @@ import { Badge, Panel, useEntityName, useI18n } from "../ui";
 
 import { SemanticPage } from "../semantic";
 
+import { ProviderCredentialsPage } from "../provider-credentials";
+
 import { DeploymentPage } from "../deployment";
 
 import { collaborationCopy } from "./copy";
@@ -97,6 +99,9 @@ export function Configuration({
       ) : (
         <>
           {section === "deployment" && operator && <DeploymentPage />}
+          {section === "providerCredentials" && (
+            <ProviderCredentialsPage access={data.access} />
+          )}
           {["agents", "registry", "clusters"].includes(section) && (
             <>
               {operator && (

@@ -11,6 +11,7 @@ pub mod memory;
 pub mod model;
 pub mod policy;
 pub mod provider;
+pub mod provider_credentials;
 pub mod run_input;
 pub mod run_state;
 pub mod semantic;

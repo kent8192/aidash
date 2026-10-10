@@ -34,8 +34,13 @@ impl GenerationCreationScope for NativeAssignment<'_> {
 		entry: &aidash_domain::registry::Entry,
 	) -> aidash_application::Result<aidash_domain::registry::bindings::BindingSnapshot> {
 		let node = self.runtime.config.node_id.clone();
-		crate::apps::registry::repositories::bindings::preview(&mut *self.access.tx, &node, entry)
-			.await
+		crate::apps::registry::repositories::bindings::preview(
+			&mut *self.access.tx,
+			&node,
+			entry,
+			self.runtime.store.provider_credentials.is_some(),
+		)
+		.await
 	}
 	fn tenant(&self) -> &str {
 		&self.access.identity.tenant
@@ -651,8 +656,13 @@ impl GenerationCreationScope for Session {
 		entry: &aidash_domain::registry::Entry,
 	) -> aidash_application::Result<aidash_domain::registry::bindings::BindingSnapshot> {
 		let node = self.runtime.config.node_id.clone();
-		crate::apps::registry::repositories::bindings::preview(&mut *self.access.tx, &node, entry)
-			.await
+		crate::apps::registry::repositories::bindings::preview(
+			&mut *self.access.tx,
+			&node,
+			entry,
+			self.runtime.store.provider_credentials.is_some(),
+		)
+		.await
 	}
 	fn tenant(&self) -> &str {
 		&self.access.identity.tenant

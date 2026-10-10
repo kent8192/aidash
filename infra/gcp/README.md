@@ -341,6 +341,102 @@ Implementation references: [K3s containerd templates](https://docs.k3s.io/advanc
 [Google WIF](https://docs.cloud.google.com/iam/docs/workload-identity-federation-with-deployment-pipelines),
 [Cloudflare DNS Terraform](https://developers.cloudflare.com/api/terraform/resources/dns/subresources/records/).
 
+Provider Credential Key Material uses a separate existing, billing-enabled BYOK
+project. Set `byok_project_id` explicitly in bootstrap and deployment configuration
+to enable BYOK provisioning; it must differ from `project_id` and contain only
+Provider Credential secrets. Omit it or leave it empty for existing deployments
+without the Store: no BYOK API, project lookup, role, audit configuration or runtime
+grant is provisioned. Existing shared-project lifecycle operations remain available.
+Before clearing or replacing an enabled `byok_project_id`, retire all managed
+environments using the applied project. The controller refuses a mismatched
+project before observing hosts or applying Terraform while environment inventory
+remains; cleanup must verify each old prefix is empty before removing its runtime
+identity and disk. Enabling BYOK on a legacy deployment remains supported.
+
+Bootstrap enables Secret Manager and its DATA_READ/DATA_WRITE audit logs there.
+Human-run bootstrap defines `aidashByokCreate`, `aidashByokManage` and
+`aidashByokBrokerRead` once per deployment. Environment automation binds runtime
+service accounts to the create-only role without a condition and the seven-permission
+manage role with their environment's Secret name prefix using the numeric project
+number. Runtime identities have no BYOK payload access or IAM-setting permission.
+The shared project's existing per-secret runtime configuration read remains in
+place for host startup.
+
+BYOK-enabled VM metadata supplies the non-secret Store descriptor through
+`aidash-provider-credentials`. Host startup mounts a descriptor-only JSON source
+read-only into migrations and the app; Reinhardt loads it via
+`AIDASH_PROVIDER_CREDENTIAL_SETTINGS`. The runtime configuration secret must also
+include a stable independent `AIDASH_PROVIDER_FINGERPRINT_KEY` of at least 32
+bytes. Startup refuses a missing or short key; deployments never regenerate it.
+Keep that key unchanged across upgrades and restarts. It stays in restrictive
+`app.env`, never in VM metadata or the public descriptor. Environments
+provisioned with the earlier `AIDASH_SECRET_PROVIDER_FINGERPRINT` name keep
+working: host startup uses that value as `AIDASH_PROVIDER_FINGERPRINT_KEY` when
+the new name is absent and never passes the legacy name to the app. Move the
+value to the new name at the next runtime secret update. Disabled BYOK omits the
+metadata attribute, renders no Store, and needs no fingerprint key. The managed descriptor uses `fingerprint_key = {env = "AIDASH_PROVIDER_FINGERPRINT_KEY"}`
+and `store.kind = "secret_manager"`; the fingerprint reference stays outside the
+Registry-accessible `AIDASH_SECRET_*` namespace. Store-only environments use a
+null broker descriptor; enabled brokers add their non-secret endpoint, issuer,
+audience and signing-key version to the same settings source.
+
+The deploy identity's BYOK role contains only `resourcemanager.projects.get`,
+`getIamPolicy` and `setIamPolicy`. Its binding uses exactly
+`api.getAttribute('iam.googleapis.com/modifiedGrantsByRole', []).hasOnly(['projects/<byok>/roles/aidashByokCreate', 'projects/<byok>/roles/aidashByokManage'])`.
+It has no BYOK `iam.roles.*` permission and cannot directly grant BrokerRead or
+change its own BYOK binding. Google documents this restriction for project
+`setIamPolicy` in [Set limits on granting roles](https://docs.cloud.google.com/iam/docs/setting-limits-on-granting-roles)
+and lists Projects/Resource Manager in the [IAM API attribute reference](https://docs.cloud.google.com/iam/docs/conditions-attribute-reference#iam_api_attributes).
+
+Environment retirement uses two additional fixed roles bound only by human-run
+bootstrap. `aidashByokRetire` contains `secretmanager.secrets.delete` and has the
+condition `resource.name.startsWith('projects/<byok-number>/secrets/aidash-')`.
+`aidashByokRetireInventory` contains only `secretmanager.secrets.list`, with an
+unconditioned project binding because [listing is authorized on the parent
+project](https://docs.cloud.google.com/secret-manager/docs/reference/rest/v1/projects.secrets.list).
+Neither role contains payload, version-read or IAM permissions, and neither is
+in deployment's Create/Manage role-grant allowlist. Residual: deploy can see
+BYOK secret names through project-level listing. The application still uses its
+PostgreSQL inventory and never lists Secret Manager secrets.
+
+Before deleting an environment's retained disk, identity or runtime IAM,
+retirement collects every inventory page and deletes only names starting with
+`aidash-<environment_id>-cred-`, then confirms that prefix is empty. Already
+deleted secrets are skipped on retry. Existing running app writers are sealed
+first; stopped or missing VMs are cleaned without a wake or recreation. Failure
+keeps the retained disk and identity for retry. This does not add effective
+delete power: deployment already controls bindings of Manage, which includes
+delete. Deployment remains the trust root under #151; bootstrap owns these
+fixed retirement grants and deployment cannot re-grant them or any read role.
+
+`aidashByokBrokerRead` contains `secretmanager.versions.access`, `versions.get`
+and `secrets.get`. Human-run bootstrap alone binds it to the broker identities
+listed in `byok_broker_environments`, with each environment's Secret name prefix.
+Deployment and runtime identities receive no BYOK payload read grant. Outputs
+`byok_project_id` and `secret_prefix` supply the broker's secret namespace.
+The same human-run bootstrap owns permanent signing keys and exports
+`broker_signing_keys`. It grants the deploy service account
+`roles/cloudkms.publicKeyViewer` on each signing CryptoKey so deployment plans
+can fetch verification PEMs; this grant does not authorize signing. Cloud KMS
+Admin does not provide the required
+[`cloudkms.cryptoKeyVersions.viewPublicKey`](https://docs.cloud.google.com/kms/docs/reference/rest/v1/projects.locations.keyRings.cryptoKeys.cryptoKeyVersions/getPublicKey)
+permission. Environment automation consumes their IDs and removes
+only service/signing bindings on disable or retirement. Keep the bootstrap
+environment set to preserve immutable KMS names. See the
+[broker deployment guide](../../crates/aidash-broker/README.md) for the input
+contract and operator-only import steps for any pre-merge draft deployment.
+
+The existing deployment identity has shared-project
+`roles/iam.serviceAccountAdmin`, allowing it to change the IAM policy of any
+broker service account placed there and grant itself impersonation permission.
+An identity allowed to redeploy a future broker can also execute broker code
+that reads Key Material. The BYOK role-grant restriction does not close these paths.
+The deploy pipeline remains part of the v1 trust root. The human-run IAM deny
+policy to block broker impersonation and deployment entry-point hardening are
+tracked in [#151](https://github.com/kent8192/aidash/issues/151). A separate
+credential enclave is deferred. The existing shared-project deploy grant is
+retained here; no read identity is attached to it by this change.
+
 ## GCIP sign-in
 
 Enable `gcip_enabled` in bootstrap and supply `environment_domains` matching the environment stacks' `domain` values. Bootstrap enables Identity Platform multi-tenancy and derives the develop, preview and test authorized callback hosts, including the project's default Firebase auth domain. Export the sensitive `gcip_web_api_key` output into the public SDK configuration field; it is not an Admin API credential.
