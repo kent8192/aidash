@@ -87,10 +87,12 @@ fn other_unexpected_finish_reasons_remain_external() {
 #[case::anthropic(400, json!({"error":{"code":400,"message":"Provider returned error","metadata":{"raw":"prompt is too long: 210000 tokens > 200000 maximum"}}}))]
 #[case::payload_too_large(413, json!({"error":{"message":"prompt is too long"}}))]
 fn provider_proven_overflow_is_typed(#[case] status: u16, #[case] body: Value) {
-	assert!(matches!(
-		rejection(status, Some(&body)),
-		Error::ContextOverflow
-	));
+	for byok in [false, true] {
+		assert!(matches!(
+			rejection(status, Some(&body), byok),
+			Error::ContextOverflow
+		));
+	}
 }
 #[rstest::rstest]
 #[case::media(Some(json!({"error":{"message":"Audio exceeds the provider limit"}})), "Audio exceeds the provider limit")]
@@ -101,7 +103,7 @@ fn payload_too_large_without_proof_is_not_an_overflow(
 	#[case] expected: &str,
 ) {
 	assert!(matches!(
-		rejection(413, body.as_ref()),
+		rejection(413, body.as_ref(), false),
 		Error::ProviderRejected { status: 413, reason } if reason == expected
 	));
 }
@@ -113,12 +115,24 @@ fn unrelated_rejections_stay_provider_rejected_without_the_body(
 	#[case] status: u16,
 	#[case] body: Option<Value>,
 ) {
-	let error = rejection(status, body.as_ref());
+	let error = rejection(status, body.as_ref(), false);
 	assert!(
 		matches!(&error, Error::ProviderRejected { status: actual, reason } if *actual == status && reason == "upstream rejected the request"),
 		"{error:?}"
 	);
 	assert!(!error.to_string().contains("secret"));
+}
+#[rstest::rstest]
+fn byok_chat_keeps_broker_capability_failures_typed() {
+	let body = json!({"error":{"code":"capability_expired","message":"maximum context length"}});
+	assert!(matches!(
+		rejection(401, Some(&body), true),
+		Error::Invalid(message) if message.contains("capability_expired")
+	));
+	assert!(matches!(
+		rejection(401, Some(&body), false),
+		Error::ProviderRejected { status: 401, .. }
+	));
 }
 #[rstest::rstest]
 #[case::text(vec![])]

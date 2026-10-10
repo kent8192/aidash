@@ -103,10 +103,15 @@ impl GenerationPublication for NativePublication<'_> {
 		Ok(())
 	}
 	async fn register(&mut self, entry: &Entry) -> aidash_application::Result<()> {
-		crate::registry::register_in(&mut self.access.tx, entry, &self.runtime.config.node_id)
-			.await
-			.map(|_| ())
-			.map_err(Into::into)
+		crate::registry::register_in(
+			&mut self.access.tx,
+			entry,
+			&self.runtime.config.node_id,
+			&crate::bootstrap::registry_validation_for(&self.runtime.store),
+		)
+		.await
+		.map(|_| ())
+		.map_err(Into::into)
 	}
 	async fn approve(&mut self, job: &Request, entry: &Entry) -> aidash_application::Result<()> {
 		let access = &mut *self.access;

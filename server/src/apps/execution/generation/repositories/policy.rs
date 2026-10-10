@@ -27,6 +27,7 @@ enum Mode {
 	Subject(Box<Access>),
 }
 struct Session {
+	configured: bool,
 	node: String,
 	mode: Mode,
 }
@@ -97,6 +98,7 @@ impl GenerationPolicies for NativePolicies {
 			}?)),
 		};
 		Ok(Box::new(Session {
+			configured: self.store.provider_credentials.is_some(),
 			mode,
 			node: self.store.node_id.clone(),
 		}))
@@ -109,7 +111,14 @@ impl PolicySession for Session {
 		entry: &aidash_domain::registry::Entry,
 	) -> aidash_application::Result<aidash_domain::registry::bindings::BindingSnapshot> {
 		let node = self.node.clone();
-		crate::apps::registry::repositories::bindings::preview(&mut **self.tx(), &node, entry).await
+		let configured = self.configured;
+		crate::apps::registry::repositories::bindings::preview(
+			&mut **self.tx(),
+			&node,
+			entry,
+			configured,
+		)
+		.await
 	}
 	async fn decide(&mut self, id: &str, action: &str) -> aidash_application::Result<bool> {
 		match &mut self.mode {
