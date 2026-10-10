@@ -28,6 +28,10 @@ run "password_and_sso_tenants_are_separate" {
     condition     = length(google_identity_platform_tenant_default_supported_idp_config.google) == 1 && length(google_identity_platform_tenant_oauth_idp_config.oidc) == 1 && length(google_identity_platform_tenant_inbound_saml_config.saml) == 1
     error_message = "Each selected IdP must be configured inside its environment's tenant."
   }
+  assert {
+    condition     = google_identity_platform_tenant_inbound_saml_config.saml["sso/saml.company"].sp_config[0].callback_uri == "https://test.aidash.run/__/auth/handler" && output.gcip.auth_helper == "public_origin"
+    error_message = "SAML must post to this environment's proxied sign-in helper, which the runtime is told to use."
+  }
 }
 run "sso_cannot_enable_password_signup" {
   command = plan

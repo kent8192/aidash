@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 import { mockGcip } from "./fixtures/gcip";
 
 test("organization selection and popup exchange keep GCIP tokens out of browser storage", async ({
@@ -25,6 +25,92 @@ test("organization selection and popup exchange keep GCIP tokens out of browser 
   }));
   expect(storage.local + storage.session).not.toContain(token);
   expect(storage.local + storage.session).not.toContain("refreshToken");
+});
+
+// Same-origin helper state is GCIP state too: none may outlive an attempt.
+async function expectNoFirebaseResidue(page: Page, token: string) {
+  const residue = await page.evaluate(async () => ({
+    storage: JSON.stringify(localStorage) + JSON.stringify(sessionStorage),
+    databases: (await indexedDB.databases()).map((database) => database.name),
+  }));
+  expect(residue.storage).not.toContain(token);
+  expect(residue.storage).not.toContain("refreshToken");
+  expect(residue.storage).not.toContain("firebase:");
+  expect(residue.databases).not.toContain("firebaseLocalStorageDb");
+}
+const calls = (page: Page) =>
+  page.evaluate(
+    () =>
+      JSON.parse(sessionStorage.getItem("fixture-calls") ?? "[]") as string[],
+  );
+
+test("a blocked popup falls back to redirect and resumes the same transaction", async ({
+  page,
+}) => {
+  const token = await mockGcip(page);
+  await page.addInitScript(() =>
+    sessionStorage.setItem("fixture-popup-error", "auth/popup-blocked"),
+  );
+  await page.route("**/signed-in", (route) =>
+    route.fulfill({ contentType: "text/html", body: "<h1>Signed in</h1>" }),
+  );
+  const exchanges: string[] = [];
+  page.on("request", (request) => {
+    if (new URL(request.url()).pathname === "/auth/gcip/exchange")
+      exchanges.push(request.postDataJSON().state);
+  });
+  await page.goto("/sign-in?state=browser-bound-state");
+  await page
+    .getByRole("button", { name: "Continue with Google", exact: true })
+    .click();
+  await expect(page).toHaveURL(/\/signed-in$/);
+  expect(exchanges).toEqual(["browser-bound-state"]);
+  expect(await calls(page)).toEqual([
+    "create",
+    "redirectResult",
+    "close",
+    "create",
+    "popup:google.com",
+    "redirect:google.com",
+    "create",
+    "redirectResult",
+    "close",
+  ]);
+  await expectNoFirebaseResidue(page, token);
+});
+
+test("a popup the user closes does not start a redirect", async ({ page }) => {
+  await mockGcip(page);
+  await page.addInitScript(() =>
+    sessionStorage.setItem("fixture-popup-error", "auth/popup-closed-by-user"),
+  );
+  await page.goto("/sign-in?state=browser-bound-state");
+  await page
+    .getByRole("button", { name: "Continue with Google", exact: true })
+    .click();
+  await expect(page.getByRole("status")).toContainText("Sign-in failed");
+  expect(await calls(page)).not.toContain("redirect:google.com");
+});
+
+test("a failed redirect exchange keeps the form and clears Firebase state", async ({
+  page,
+}) => {
+  const token = await mockGcip(page);
+  await page.route("**/auth/gcip/exchange", (route) =>
+    route.fulfill({ status: 401, body: "" }),
+  );
+  await page.addInitScript(() =>
+    sessionStorage.setItem(
+      "firebase:pendingRedirect:public-key:aidash-gcip",
+      "true",
+    ),
+  );
+  await page.goto("/sign-in?state=browser-bound-state");
+  await expect(page.getByRole("status")).toContainText("Sign-in failed");
+  await expect(
+    page.getByRole("button", { name: "Continue with Google", exact: true }),
+  ).toBeEnabled();
+  await expectNoFirebaseResidue(page, token);
 });
 
 for (const provider of ["oidc.company", "saml.company"])

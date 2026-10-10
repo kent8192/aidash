@@ -63,6 +63,7 @@ class GcipHostTests(unittest.TestCase):
             self.assertEqual(values["AIDASH_SECRET_FIXTURE"], "private")
             self.assertNotIn("private", path.read_text())
             self.assertEqual(values["AIDASH_NODE_ID"], "aidash://runtime")
+            self.assertEqual(json.loads(path.read_text())["dashboard"]["gcip"]["auth_helper"], "public_origin")
 
             removed = deepcopy(OUTPUT)
             removed["gcip"]["tenant_ids"] = []
@@ -88,8 +89,26 @@ class GcipHostTests(unittest.TestCase):
             {"dashboard": {"gcip": dict(settings, project_id="another-project")}},
             {"dashboard": {"gcip": dict(settings, public_origin="https://other.invalid")}},
             {"dashboard": {"gcip": dict(settings, arbitrary="value")}},
+            {"dashboard": {"gcip": dict(settings, auth_helper="auth.example.test")}},
             {"dashboard": {"gcip": settings}, "AIDASH_GCIP_SETTINGS": "/override"},
         ]:
             with self.subTest(value=value), self.assertRaises(ValueError):
                 self.configure(value)
         self.assertFalse((host.RUN / "app.env").exists())
+
+    def test_only_a_public_origin_helper_is_proxied_ahead_of_admission(self):
+        environment = dict(self.environment, project="aidash-fixture")
+        for gcip in [None, {}, {"auth_helper": "firebase"}]:
+            with self.subTest(gcip=gcip):
+                rendered = host.caddyfile(environment, gcip)
+                self.assertNotIn("/__/", rendered)
+                self.assertIn("reverse_proxy 127.0.0.1:8088", rendered)
+        rendered = host.caddyfile(environment, {"auth_helper": "public_origin"})
+        helper, application = rendered.split("  handle {\n")
+        self.assertIn("@firebase_helper path /__/auth/* /__/firebase/init.json", helper)
+        self.assertIn("handle @firebase_helper {", helper)
+        self.assertIn("reverse_proxy https://aidash-fixture.firebaseapp.com {", helper)
+        # Aidash session/CSRF cookies must never be forwarded to Google.
+        for directive in ["header_up -Cookie", "header_up -Authorization", "header_down -Set-Cookie"]:
+            self.assertIn(directive, helper)
+        self.assertIn("reverse_proxy 127.0.0.1:8088", application)

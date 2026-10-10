@@ -18,6 +18,7 @@ OUTPUT = {
     "gcip": {
         "project_id": "aidash-fixture",
         "public_origin": "https://test.aidash.run",
+        "auth_helper": "public_origin",
         "tenant_ids": ["pool-a"],
         "runtime_service_account": MEMBER.split(":", 1)[1],
         "tenant_bindings": {"pool-a": "acme"},

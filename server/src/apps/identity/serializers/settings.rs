@@ -122,6 +122,19 @@ impl OidcConfig {
 	}
 }
 
+/// Origin that serves the Firebase sign-in helper (`/__/auth/*`) to the browser.
+#[derive(
+	Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum AuthHelper {
+	/// Google's `<project>.firebaseapp.com`; needs no proxy but is cross-origin.
+	#[default]
+	Firebase,
+	/// The public origin, which must transparently proxy `/__/auth/*` to Firebase.
+	PublicOrigin,
+}
+
 #[settings(fragment = true)]
 #[derive(Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct GcipConfig {
@@ -138,6 +151,8 @@ pub struct GcipConfig {
 	#[setting(default = "Default::default()")]
 	#[setting(leaf)]
 	pub password_sign_up: std::collections::BTreeSet<String>,
+	#[setting(default = "AuthHelper::Firebase", leaf)]
+	pub auth_helper: AuthHelper,
 	#[setting(default = "43200")]
 	pub session_absolute_seconds: i64,
 	#[setting(default = "1800")]
@@ -149,12 +164,26 @@ impl fmt::Debug for GcipConfig {
 			.field("project_id", &self.project_id)
 			.field("public_origin", &self.public_origin)
 			.field("tenant_bindings", &self.tenant_bindings)
+			.field("auth_helper", &self.auth_helper)
 			.finish_non_exhaustive()
 	}
 }
 impl GcipConfig {
 	pub fn issuer(&self) -> String {
 		format!("https://securetoken.google.com/{}", self.project_id)
+	}
+	/// Firebase `authDomain`: a host with an optional port, never a URL.
+	pub fn auth_domain(&self) -> String {
+		match self.auth_helper {
+			AuthHelper::Firebase => format!("{}.firebaseapp.com", self.project_id),
+			AuthHelper::PublicOrigin => {
+				let origin = self.public_origin.trim_end_matches('/');
+				origin
+					.split_once("://")
+					.map_or(origin, |(_, authority)| authority)
+					.to_owned()
+			}
+		}
 	}
 	pub fn normalized(&self) -> Result<Self> {
 		if self.project_id.is_empty()
@@ -368,5 +397,28 @@ mod tests {
 	fn gcip_rejects_invalid_origins(mut gcip_config: GcipConfig, #[case] origin: &str) {
 		gcip_config.public_origin = origin.into();
 		assert!(gcip_config.normalized().is_err());
+	}
+	#[rstest]
+	#[case::default_keeps_google_helper(None, "fixture-project.firebaseapp.com")]
+	#[case::firebase(Some("firebase"), "fixture-project.firebaseapp.com")]
+	#[case::public_origin(Some("public_origin"), "dashboard.example.test")]
+	fn auth_domain_follows_the_auth_helper(#[case] helper: Option<&str>, #[case] expected: &str) {
+		let mut value = serde_json::json!({"project_id":"fixture-project","web_api_key":"public-key","public_origin":"https://dashboard.example.test/","tenant_bindings":{}});
+		if let Some(helper) = helper {
+			value["auth_helper"] = helper.into();
+		}
+		let config: GcipConfig = serde_json::from_value(value).unwrap();
+		assert_eq!(config.auth_domain(), expected);
+	}
+	#[rstest]
+	fn public_origin_auth_domain_keeps_a_non_default_port(mut gcip_config: GcipConfig) {
+		gcip_config.public_origin = "http://127.0.0.1:8080".into();
+		gcip_config.auth_helper = AuthHelper::PublicOrigin;
+		assert_eq!(gcip_config.auth_domain(), "127.0.0.1:8080");
+	}
+	#[rstest]
+	fn unknown_auth_helper_is_rejected() {
+		let value = serde_json::json!({"project_id":"fixture-project","web_api_key":"public-key","public_origin":"https://dashboard.example.test","tenant_bindings":{},"auth_helper":"auth.example.test"});
+		assert!(serde_json::from_value::<GcipConfig>(value).is_err());
 	}
 }

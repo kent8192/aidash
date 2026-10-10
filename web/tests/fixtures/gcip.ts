@@ -40,10 +40,45 @@ export async function mockGcip(
   await page.route("**/auth/config", (route) =>
     route.fulfill({ json: { enabled: true, provider: "gcip" } }),
   );
+  // The stub mimics what Firebase leaves on this origin once the helper is
+  // same-origin: a pending-redirect flag, a cached user and its IndexedDB store.
+  const pending = "firebase:pendingRedirect:public-key:aidash-gcip";
   await page.route("**/src/gcip-sdk.ts", (route) =>
     route.fulfill({
       contentType: "text/javascript",
-      body: `export function createClient(config) { window.gcipCalls ??= []; window.gcipCalls.push({kind:'create',tenant:config.tenant_id}); return { popup: async id => {window.gcipCalls.push({kind:'popup',id});return ${JSON.stringify(token)}}, password: async () => ${JSON.stringify(token)}, register: async () => { window.gcipCalls.push({kind:'register'}); return true; }, resend: async () => { window.gcipCalls.push({kind:'resend'}); return true; }, close: async () => window.gcipCalls.push({kind:'close'}) }; }`,
+      body: `
+const token = ${JSON.stringify(token)};
+// Calls survive the redirect round trip; clearing removes only firebase: keys.
+const record = (call) => sessionStorage.setItem("fixture-calls", JSON.stringify([...JSON.parse(sessionStorage.getItem("fixture-calls") ?? "[]"), call.id ? call.kind + ":" + call.id : call.kind]));
+export function createClient() {
+  record({ kind: "create" });
+  return {
+    popup: async (id) => {
+      record({ kind: "popup", id });
+      const code = sessionStorage.getItem("fixture-popup-error");
+      if (code) throw Object.assign(new Error(code), { code });
+      return token;
+    },
+    redirect: (id) => {
+      record({ kind: "redirect", id });
+      sessionStorage.setItem(${JSON.stringify(pending)}, "true");
+      // The provider round trip returns to the page that started it.
+      window.location.assign(window.location.href);
+      return new Promise(() => {});
+    },
+    redirectResult: async () => {
+      record({ kind: "redirectResult" });
+      if (sessionStorage.getItem(${JSON.stringify(pending)}) !== "true") return null;
+      localStorage.setItem("firebase:authUser:public-key:aidash-gcip", JSON.stringify({ stsTokenManager: { accessToken: token, refreshToken: "fixture-refresh-token" } }));
+      await new Promise((resolve) => { const request = indexedDB.open("firebaseLocalStorageDb"); request.onsuccess = () => { request.result.close(); resolve(); }; });
+      return token;
+    },
+    password: async () => token,
+    register: async () => { record({ kind: "register" }); return true; },
+    resend: async () => { record({ kind: "resend" }); return true; },
+    close: async () => record({ kind: "close" }),
+  };
+}`,
     }),
   );
   await page.route("**/auth/gcip/transaction?**", (route) =>

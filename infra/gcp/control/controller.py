@@ -424,7 +424,7 @@ def provision_secret(config, output, kind):
         api_key = config.get("gcip_web_api_key") or settings.get("web_api_key")
         if not api_key:
             raise Refused("Configure the GCIP web API key from the bootstrap output")
-        settings.update({key: gcip[key] for key in ("project_id", "public_origin", "tenant_bindings", "providers", "password_sign_up")})
+        settings.update({key: gcip[key] for key in ("project_id", "public_origin", "auth_helper", "tenant_bindings", "providers", "password_sign_up")})
         settings["web_api_key"] = api_key
     elif value.get("dashboard", {}).get("gcip"):
         # Binding removal must reach the retained server before any subsequent
