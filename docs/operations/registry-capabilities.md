@@ -149,8 +149,10 @@ A `tool`, `bundle` or `skill` Binding may set `"exposure": "eager"` or
 `"exposure": "deferred"`; an absent value means `deferred`. Registration rejects
 the field on other kinds and under the legacy policy. An Eager binding is in
 the Exposure set from the Run's first request. An eager bundle makes its selected
-members eager unless a member has its own `tool` Binding, whose `exposure` then
-decides. Eagerness affects only exposure, never authority.
+members eager unless a member also has its own `tool` Binding that sets
+`exposure`, which then decides. That Binding, with its alias and narrowing,
+replaces the bundle's expansion for the member instead of conflicting with it.
+Eagerness affects only exposure, never authority.
 
 Normalization adds `capability_search`, `capability_describe`,
 `capability_load` and `capability_unload` as Required Bindings with canonical
@@ -263,6 +265,13 @@ whole or not at all: when it would not fit the remaining request budget, with
 room reserved for the response's later calls, the step is deferred like a
 `skill_read` that does not fit (`run.description_deferred`). The retained
 context is compacted and the next request asks the model to retry the call.
+
+A search page is recorded with only its leading results that fit the remaining
+request budget, with the same reserve. A cut page sets `truncated` and
+`budget_limited`, and its `next_cursor` resumes at the first dropped result.
+When no result fits but the empty page does, the page also sets `deferred` and
+a `message` to continue on a later turn. When not even the empty page fits, the
+step is deferred (`run.search_deferred`) like a description.
 
 A successful load or unload also returns an `exposure_update`. The Executor
 stages it in `context.exposure` only for tools whose contract declares

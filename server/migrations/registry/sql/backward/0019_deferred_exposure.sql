@@ -1,4 +1,35 @@
--- Restore the 0018_prompt_cache bodies: no deferred Exposure policy and no exposure builtins. DDL only.
+-- Restore the 0018_prompt_cache bodies: no deferred Exposure policy and no exposure builtins.
+-- Rollback precondition: no Agent Definition, Package or Installation may use
+-- `exposure`. Pre-0019 binaries decode Agent configs and Bindings with
+-- deny_unknown_fields, the restored contracts reject the key, PostgreSQL does
+-- not revalidate stored rows when validators are replaced, and registered
+-- Definitions are immutable. This read-only guard refuses the rollback with an
+-- actionable error instead of leaving rows that neither the contracts nor the
+-- binaries accept. Binding `exposure` and the deferred-only builtins require an
+-- Agent `exposure` policy; the Binding check still guards the key on its own.
+-- The Node-seeded aidash.capability_* and aidash.skill_asset_read system
+-- declarations stay: they carry no Agent configuration, pre-0019 binaries
+-- decode their descriptors (the operation is a string) and refuse them at
+-- admission like any unsupported operation, and they are never rewritten.
+-- DDL only; no application data is modified.
+DO $$
+DECLARE definition_count bigint; package_count bigint; installation_count bigint;
+BEGIN
+  SELECT count(*) INTO definition_count FROM registry
+   WHERE kind = 'agent'
+     AND (metadata->'config' ? 'exposure'
+      OR jsonb_path_exists(metadata->'config', '$.bindings[*] ? (exists (@.exposure))'));
+  SELECT count(*) INTO package_count FROM packages
+   WHERE manifest #>> '{entity,kind}' = 'agent'
+     AND (manifest #> '{entity,config}' ? 'exposure'
+      OR jsonb_path_exists(manifest #> '{entity,config}', '$.bindings[*] ? (exists (@.exposure))'));
+  SELECT count(*) INTO installation_count FROM installations WHERE config ? 'exposure';
+  IF definition_count > 0 OR package_count > 0 OR installation_count > 0 THEN
+    RAISE EXCEPTION 'registry 0019_deferred_exposure cannot be reversed: % Definitions, % Packages and % Installations use exposure', definition_count, package_count, installation_count
+      USING ERRCODE = '55000',
+            HINT = 'Pre-0019 binaries cannot read these records; restore the pre-upgrade database backup instead of reversing this migration.';
+  END IF;
+END $$;
 CREATE OR REPLACE FUNCTION public.aidash_agent_bindings_is_valid(value jsonb) RETURNS boolean
 LANGUAGE plpgsql IMMUTABLE STRICT AS $$
 DECLARE item jsonb; removals jsonb; edges jsonb; step_count numeric; restriction jsonb; candidate jsonb;

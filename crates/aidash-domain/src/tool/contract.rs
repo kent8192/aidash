@@ -43,6 +43,9 @@ pub enum ResultFitting {
 	/// A `capability_describe` result, useful only complete: recorded whole
 	/// when it fits the remaining request budget, otherwise deferred.
 	CapabilityDescription,
+	/// A `capability_search` page, cut to its leading results that fit the
+	/// remaining request budget; `next_cursor` resumes after the last kept one.
+	CapabilitySearch,
 	Observation,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -343,8 +346,11 @@ pub fn builtin_contract(name: &str) -> Option<ToolContract> {
 			behavior.effect = ToolEffect::ReadOnly;
 			behavior.media_pending = true;
 			contract.disclosure = DisclosureBoundary::Local;
-			behavior.fitting =
-				(name == "capability_describe").then_some(ResultFitting::CapabilityDescription);
+			behavior.fitting = Some(if name == "capability_describe" {
+				ResultFitting::CapabilityDescription
+			} else {
+				ResultFitting::CapabilitySearch
+			});
 			contract.remote_exposure = true;
 		}
 		"capability_load" | "capability_unload" => {
@@ -548,6 +554,10 @@ mod tests {
 		assert_eq!(
 			selected(|c| c.behavior.fitting == Some(ResultFitting::CapabilityDescription)),
 			["capability_describe"]
+		);
+		assert_eq!(
+			selected(|c| c.behavior.fitting == Some(ResultFitting::CapabilitySearch)),
+			["capability_search"]
 		);
 		let asset = builtin_contract("skill_asset_read").unwrap();
 		assert_eq!(asset.behavior.effect, ToolEffect::ReadOnly);

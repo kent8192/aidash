@@ -1614,6 +1614,18 @@ async fn prepare_tool_result(
 				PreparedResult::NoEnvelopeRoom
 			});
 		}
+		ResultFitting::CapabilitySearch => {
+			let output = tool.invoke(run, call.arguments.clone(), "").await?;
+			return Ok(
+				match fit_capability_search(context, call, &output, budget) {
+					Some(result) => PreparedResult::Fitted {
+						call: call.clone(),
+						result,
+					},
+					None => PreparedResult::NoEnvelopeRoom,
+				},
+			);
+		}
 		ResultFitting::Observation => (
 			"limit",
 			home.observation_fitted(budget.offset, budget.requested, &|limit, output| {

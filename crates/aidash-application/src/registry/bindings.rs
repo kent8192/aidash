@@ -45,6 +45,7 @@ pub async fn resolve(
 		agent_definition.normalize_agent(&agent.registry_node)?;
 	}
 	let normalized = agent_definition.normalized_bindings(&agent.registry_node)?;
+	let overrides = NormalizedBinding::member_overrides(&normalized);
 	let mut pending: Vec<_> = normalized
 		.into_iter()
 		.map(|normalized| Pending {
@@ -150,6 +151,10 @@ pub async fn resolve(
 						));
 					}
 				};
+				if member_kind == BindingKind::Tool && overrides.contains(&member) {
+					// The Agent's own exposure Binding for this member takes precedence.
+					continue;
+				}
 				definitions.insert(member.clone(), definition);
 				pending.push(Pending {
 					normalized: NormalizedBinding {

@@ -10,11 +10,13 @@ impl BindingSnapshot {
 		config: &AgentBindings,
 		definitions: &BTreeMap<&QualifiedRef, &ResolvedDefinition>,
 	) -> Result<()> {
-		let mut pending = definitions
+		let normalized = definitions
 			.get(&self.agent)
 			.ok_or_else(|| Error::Invalid("snapshot lacks Agent".into()))?
 			.definition
-			.normalized_bindings(&self.agent.registry_node)?
+			.normalized_bindings(&self.agent.registry_node)?;
+		let overrides = NormalizedBinding::member_overrides(&normalized);
+		let mut pending = normalized
 			.into_iter()
 			.map(|binding| (binding, BTreeSet::new(), None::<(String, String)>))
 			.collect::<Vec<_>>();
@@ -71,6 +73,9 @@ impl BindingSnapshot {
 							));
 						}
 					};
+					if kind == BindingKind::Tool && overrides.contains(&member) {
+						continue;
+					}
 					pending.push((
 						NormalizedBinding {
 							binding: Binding {

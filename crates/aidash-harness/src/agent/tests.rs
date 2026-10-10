@@ -2072,6 +2072,73 @@ async fn capability_descriptions_are_recorded_whole_or_deferred(
 }
 
 #[rstest]
+#[case::whole(100_000, Some(16))]
+#[case::cut(4_000, None)]
+#[case::deferred(1, Some(0))]
+#[tokio::test]
+async fn capability_search_pages_fit_the_remaining_request_budget(
+	mut fixture: Fixture,
+	#[case] window: usize,
+	#[case] expected: Option<usize>,
+) {
+	// Arrange: a full page of capabilities with long localized names.
+	deferred_agent(&mut fixture);
+	let search = Scripted::new(
+		aidash_application::tools::builtins()
+			.remove("capability_search")
+			.unwrap()
+			.specification(),
+		"capability_search",
+	);
+	let results = (0..16)
+		.map(|index| {
+			json!({"alias": format!("tool_{index:02}"), "kind": "tool",
+				"name": "n".repeat(2_000), "description": "Fixture",
+				"digest": "sha256:tool", "loaded": false})
+		})
+		.collect::<Vec<_>>();
+	let page = json!({"results": results, "next_cursor": "32", "truncated": true});
+	*search.outputs.lock().unwrap() = [page.clone()].into();
+	Arc::get_mut(&mut fixture.backend.0)
+		.unwrap()
+		.custom
+		.insert("capability_search".into(), search);
+	let request = call("call-0", "capability_search", json!({"cursor": "16"}));
+	respond(&mut fixture.run, vec![request.clone()]);
+	fixture.run.state.tool_mut().unwrap().request_window = window;
+	// Act
+	advance_sources(&mut fixture).await.unwrap();
+	// Assert: never a page the next request cannot carry.
+	let (event, saved) = last_write(&fixture);
+	if expected == Some(0) {
+		assert_eq!(event, "run.search_deferred");
+		let RunState::Thinking(thinking) = &saved.state else {
+			panic!("a deferred search returns to thinking");
+		};
+		assert!(thinking.force_workspace_read_compaction);
+		assert_eq!(thinking.deferred_skill_read.as_ref().unwrap().call, request);
+		assert!(saved.context.history.is_empty());
+		return;
+	}
+	assert_eq!(event, "run.tool_recorded");
+	let Some(ContextEvent::Tool { call, result, .. }) = saved.context.history.last() else {
+		panic!("expected a tool result");
+	};
+	assert_eq!(call, &request);
+	if expected == Some(16) {
+		assert_eq!(result, &page);
+		return;
+	}
+	// The page keeps its leading results and resumes at the first dropped one.
+	let kept = result["results"].as_array().unwrap();
+	assert!((1..16).contains(&kept.len()), "{}", kept.len());
+	assert_eq!(kept[..], page["results"].as_array().unwrap()[..kept.len()]);
+	assert_eq!(result["next_cursor"], json!((16 + kept.len()).to_string()));
+	assert_eq!(result["truncated"], true);
+	assert_eq!(result["budget_limited"], true);
+}
+
+#[rstest]
 #[tokio::test]
 async fn skill_asset_reads_fit_the_remaining_request_budget(mut fixture: Fixture) {
 	// Arrange: a large asset page against a small remaining request window.

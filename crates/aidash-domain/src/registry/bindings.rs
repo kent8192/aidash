@@ -615,6 +615,18 @@ pub struct NormalizedBinding {
 	pub binding: Binding,
 	pub origin: BindingOrigin,
 }
+impl NormalizedBinding {
+	/// Tools whose own Binding sets an `exposure`. Such a Binding is the documented
+	/// per-member override of a bundle, so bundle expansion skips that member instead
+	/// of producing a second, conflicting Binding for the same exact capability.
+	pub fn member_overrides(bindings: &[Self]) -> BTreeSet<QualifiedRef> {
+		bindings
+			.iter()
+			.filter(|n| n.binding.kind == BindingKind::Tool && n.binding.exposure.is_some())
+			.map(|n| n.binding.target.clone())
+			.collect()
+	}
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]

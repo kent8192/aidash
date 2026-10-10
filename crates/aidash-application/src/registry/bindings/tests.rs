@@ -1032,6 +1032,68 @@ async fn full_host_bundles_share_explicit_and_generated_poll_cancel_members() {
 		assert_eq!(bindings[0].origin, BindingOrigin::Explicit);
 	}
 }
+
+#[tokio::test]
+async fn explicit_member_exposure_overrides_an_eager_bundle_member() {
+	// Arrange: an eager bundle plus an explicit deferred Binding of one member.
+	let mut catalog = Catalog::new();
+	let patch = catalog.core("apply_patch");
+	let share = catalog.core("file_share");
+	let bundle = catalog.bundle("editing", vec![patch.clone(), share.clone()]);
+	let mut config = agent_config();
+	config.exposure = Some(aidash_domain::exposure::ExposurePolicy::Deferred(
+		Default::default(),
+	));
+	config.bindings.push(Binding {
+		kind: BindingKind::Bundle,
+		target: bundle,
+		alias: None,
+		narrow: Default::default(),
+		members: vec![],
+		exposure: Some(aidash_domain::exposure::BindingExposure::Eager),
+	});
+	let mut member = Binding::tool(patch.clone());
+	member.exposure = Some(aidash_domain::exposure::BindingExposure::Deferred);
+	config.bindings.push(member);
+	// Act
+	let saved = snapshot(&mut catalog, &config, false).await.unwrap();
+	// Assert: one Binding per member, and recovery rebuilds the same closure.
+	saved.validate().unwrap();
+	for target in [&patch, &share] {
+		let count = saved
+			.bindings
+			.iter()
+			.filter(|binding| &binding.identity == target)
+			.count();
+		assert_eq!(count, 1, "{target:?}");
+	}
+	let specs = saved
+		.bindings
+		.iter()
+		.filter(|binding| binding.definition.kind == "tool")
+		.filter_map(|binding| binding.alias.clone())
+		.map(|alias| {
+			let spec = ToolSpec {
+				name: alias.clone(),
+				description: "Fixture".into(),
+				parameters: json!({"type":"object"}),
+			};
+			(alias, spec)
+		})
+		.collect();
+	let capabilities = aidash_domain::exposure::catalog(&saved, &specs, &[]).unwrap();
+	let exposure = |alias: &str| {
+		capabilities
+			.iter()
+			.find(|capability| capability.alias == alias)
+			.map(|capability| (capability.eager, capability.bundle.clone()))
+	};
+	assert_eq!(
+		exposure("apply_patch"),
+		Some((false, Some("editing".into())))
+	);
+	assert_eq!(exposure("file_share"), Some((true, Some("editing".into()))));
+}
 use aidash_domain::{Run, RunControl, context::Context, provider::ToolSpec};
 use std::sync::{
 	Arc,

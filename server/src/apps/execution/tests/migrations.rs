@@ -1565,3 +1565,93 @@ async fn deferred_exposure_lets_agent_installations_override_exposure(
 	);
 	assert_eq!(guard.matches("'exposure'").count(), 1, "{guard}");
 }
+
+#[rstest]
+#[tokio::test]
+async fn deferred_exposure_rollback_is_refused_while_an_agent_uses_exposure(
+	#[future] fresh_database: MigrationFixture,
+) {
+	use aidash_server::apps::registry::{models::Definition, services::states::DefinitionKind};
+	// Arrange
+	let fixture = fresh_database.await;
+	fixture.migrate().await;
+	let pool = fixture.connection.clone().into_postgres().unwrap();
+	let deferred = json!({"schema_version":1,"model":{"id":"exposure-model","version":"1.0.0"},
+		"instructions":"Assist.","exposure":{"version":"deferred@1"}});
+	let migration =
+		FilesystemSource::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations"))
+			.all_migrations()
+			.await
+			.unwrap()
+			.into_iter()
+			.find(|m| m.app_label == "registry" && m.name == "0019_deferred_exposure")
+			.unwrap();
+	let mut executor =
+		reinhardt::db::migrations::DatabaseMigrationExecutor::new(fixture.connection.clone());
+	// Act / Assert: without exposure data the reverse restores the 0018 contract.
+	executor
+		.rollback_migrations(std::slice::from_ref(&migration))
+		.await
+		.unwrap();
+	assert!(
+		!contract_accepts(
+			&pool,
+			"aidash_agent_bindings_is_valid",
+			vec![deferred.clone()]
+		)
+		.await
+	);
+	executor
+		.apply_migrations(std::slice::from_ref(&migration))
+		.await
+		.unwrap();
+	assert!(
+		contract_accepts(
+			&pool,
+			"aidash_agent_bindings_is_valid",
+			vec![deferred.clone()]
+		)
+		.await
+	);
+	// Arrange: register an Agent with a deferred Exposure policy.
+	let lease = DatabaseConnectionLease::register(fixture.connection.clone()).unwrap();
+	let mut connection = lease.handle();
+	let model = json!({"id":"exposure-model","version":"1.0.0","kind":"model",
+		"name":{"en":"Exposure fixture"},"description":{"en":"Migration test"},
+		"config":{"provider":"openrouter","model_id":"anthropic/model",
+			"endpoint":"http://127.0.0.1:1/v1","credential_env":null,
+			"context_window":32768,"max_output_tokens":4096,
+			"modalities":["text"],"cost":{},
+			"projection_versions":["legacy","ordered"],"cache_mode":"none"}});
+	let agent = json!({"id":"exposure-agent","version":"1.0.0","kind":"agent",
+		"name":{"en":"Exposure agent"},"description":{"en":"Migration test"},
+		"config":deferred.clone()});
+	for (id, kind, metadata) in [
+		("exposure-model", DefinitionKind::Model, model),
+		("exposure-agent", DefinitionKind::Agent, agent),
+	] {
+		let definition = Definition::build()
+			.id(id)
+			.version("1.0.0")
+			.kind(kind)
+			.metadata(metadata.into())
+			.finish();
+		Definition::objects()
+			.create_with_conn(&mut connection, &definition)
+			.await
+			.unwrap();
+	}
+	// Act
+	let error = executor
+		.rollback_migrations(std::slice::from_ref(&migration))
+		.await
+		.unwrap_err();
+	// Assert: the guard refuses before any contract is restored.
+	assert!(
+		error
+			.to_string()
+			.contains("registry 0019_deferred_exposure cannot be reversed: 1 Definitions"),
+		"{error}"
+	);
+	assert!(contract_accepts(&pool, "aidash_agent_bindings_is_valid", vec![deferred]).await);
+}
