@@ -188,14 +188,14 @@ pub fn record_message_read(context: &mut Context, event: &ContextEvent) {
 }
 
 pub fn capture_message_read_coverage(context: &mut Context) {
-	for event in context.history.clone() {
-		record_message_read(context, &event);
+	for entry in &context.history {
+		record_message_read_in(&mut context.message_read_coverage, &entry.event);
 	}
 }
 
 pub fn capture_message_inference_coverage(context: &mut Context) {
-	for event in context.history.clone() {
-		record_message_read_in(&mut context.message_inference_coverage, &event);
+	for entry in &context.history {
+		record_message_read_in(&mut context.message_inference_coverage, &entry.event);
 	}
 }
 
@@ -614,6 +614,7 @@ pub fn media_request_headroom(
 		context: json!({}),
 		tools: Vec::new(),
 		max_output_tokens: 0,
+		response_format: None,
 		content_parts: Vec::new(),
 	};
 	request
@@ -636,6 +637,7 @@ pub fn encoded_run_message_reservation(messages: &[Value]) -> usize {
 			}),
 			tools: Vec::new(),
 			max_output_tokens: 0,
+			response_format: None,
 			content_parts: Vec::new(),
 		}
 		.estimated_total_tokens()
@@ -662,6 +664,7 @@ pub fn check_model_media_headroom(
 		context: json!({}),
 		tools: Vec::new(),
 		max_output_tokens: 0,
+		response_format: None,
 		content_parts: parts,
 	};
 	request.validate()?;
@@ -696,7 +699,7 @@ pub fn record_media_observation(
 			truncated: end < source.len(),
 		};
 		if event.encoded_len() <= budget {
-			context.history.push(event);
+			context.push(event);
 			break;
 		}
 		end -= 1;
@@ -707,7 +710,7 @@ pub fn record_media_observation(
 	let mut used = 0_usize;
 	let mut remove = Vec::new();
 	for index in (0..context.history.len()).rev() {
-		let event = &context.history[index];
+		let event = &context.history[index].event;
 		if matches!(event, ContextEvent::ModelMediaObservation { .. }) {
 			let bytes = event.to_string().len();
 			if used.saturating_add(bytes) > budget {
@@ -806,5 +809,7 @@ pub mod semantic_context;
 pub mod cancellation;
 
 pub mod admission;
+
+pub mod summary;
 
 pub mod headroom;

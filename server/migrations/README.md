@@ -247,3 +247,14 @@ metadata and exclude procedural checks and references from the ORM snapshot, whi
 retaining the physical constraints established by the preceding migrations.
 
 Binding and native memory histories converge in `registry/0015_binding_memory_merge` and `execution/0011_binding_memory_merge`. The registry merge preserves strict Agent Bindings, Host lifecycle validation and native memory operations. Agent memory-role references derive from qualified Binding targets. These migrations depend on both histories and leave their existing migration identities unchanged.
+
+`execution/0012_context_journal` creates the append-only `run_context_events`
+Context Journal and `context_compaction_attempts` with typed operations: composite
+`(run_id, seq)` key, cascading Run references, origin/stage/outcome CHECKs, a
+`(run_id, stage)` lookup index and a partial unique index allowing one unsettled
+attempt per Run. Only the two `atomic_write_guard` statement triggers use
+`RunSQL`, because the typed API cannot express trigger DDL. Like the desktop
+schema, this physical migration is database-only and precedes its state-only
+model snapshot `execution/0013_context_journal_model_state`. `runs.context`
+remains the lossy projection; stored projections written before the journal are
+upgraded when decoded, and their first save journals those events as `imported`.

@@ -26,6 +26,7 @@ fn binding() -> Binding {
 			configuration_digest: "configuration-digest".into(),
 		}),
 		compactor: None,
+		summarizer: None,
 	}
 }
 #[fixture]

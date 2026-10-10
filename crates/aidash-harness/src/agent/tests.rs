@@ -1,6 +1,7 @@
 //! Agent lifecycle and inference authority are tested without a database or HTTP.
 use super::*;
 use aidash_application::ports::{CompactionClassifier, CompactionQuestions, ModelProvider};
+use aidash_domain::context::recovery::{Attempt, Outcome, Settlement};
 use aidash_domain::provider::{ContentPart, ModelRequest, ModelResponse, ToolCall};
 use aidash_domain::registry::{EntityRef, Entry};
 use async_trait::async_trait;
@@ -26,6 +27,15 @@ struct State {
 	dependency_status: Option<TaskStatus>,
 	remote_home: bool,
 	human: Mutex<Option<HumanRequest>>,
+	/// In-memory Context Journal keyed by Run, with the same append rule as Postgres.
+	journal: Mutex<Vec<(Uuid, aidash_domain::context::HistoryEntry)>>,
+	attempts: Mutex<Vec<(Attempt, Option<Outcome>)>>,
+	context_policy: Option<aidash_domain::context::policy::ContextPolicy>,
+	/// Ordinary inference requests answered with a provider Context Overflow.
+	overflows: Mutex<u32>,
+	/// Jev keeps every pair when enabled; otherwise compaction is unexpected.
+	jev_keeps: bool,
+	summary_text: Mutex<Option<String>>,
 }
 impl Backend {
 	fn record(&self, name: &'static str) {
@@ -35,9 +45,52 @@ impl Backend {
 		self.0.task.lock().unwrap().clone()
 	}
 	fn entry(&self, id: &str) -> Entry {
-		serde_json::from_value(json!({"id":id,"version":"1.0.0","kind":"agent","name":{"en":id},"description":{"en":"Fixture"},"config":{
-        "provider":"openrouter","model_id":"fixture","endpoint":"http://fixture.invalid/v1","credential_env":null,"context_window":128000,"max_output_tokens":4096,"modalities":["text"],"cost":{}
+		// The summarizer has a larger window so it can read absorbed history.
+		let (kind, window) = if id == "summarizer" {
+			("model", 1_000_000)
+		} else {
+			("agent", 128_000)
+		};
+		serde_json::from_value(json!({"id":id,"version":"1.0.0","kind":kind,"name":{"en":id},"description":{"en":"Fixture"},"config":{
+        "provider":"openrouter","model_id":"fixture","endpoint":"http://fixture.invalid/v1","credential_env":null,"context_window":window,"max_output_tokens":4096,"modalities":["text"],"cost":{}
     }})).unwrap()
+	}
+	/// Journal the projection's new entries; an adoption also requires its open
+	/// attempt and the attempt's source range, all-or-nothing like the store.
+	fn persist(&self, run: &Run, event: &str, adopt: Option<(Uuid, &Settlement)>) -> Result<()> {
+		let mut journal = self.0.journal.lock().unwrap();
+		let head = journal
+			.iter()
+			.filter(|(id, _)| *id == run.id)
+			.map(|(_, entry)| entry.seq)
+			.max()
+			.unwrap_or(0);
+		let appended: Vec<_> = run.context.unjournaled(head).cloned().collect();
+		if let Some((attempt, settlement)) = adopt {
+			let mut attempts = self.0.attempts.lock().unwrap();
+			let open = attempts
+				.iter_mut()
+				.find(|(a, outcome)| a.id == attempt && a.run_id == run.id && outcome.is_none())
+				.ok_or_else(|| {
+					aidash_application::Error::Conflict(
+						"compaction attempt is no longer open".into(),
+					)
+				})?;
+			if appended.last().map_or(head, |entry| entry.seq) < open.0.source_through_seq {
+				return Err(aidash_application::Error::Conflict(
+					"context journal lacks the compacted source range".into(),
+				));
+			}
+			open.1 = Some(settlement.outcome);
+		}
+		journal.extend(appended.into_iter().map(|entry| (run.id, entry)));
+		self.record("save");
+		self.0
+			.writes
+			.lock()
+			.unwrap()
+			.push((event.to_owned(), run.clone()));
+		Ok(())
 	}
 }
 fn unexpected(operation: &str) -> ! {
@@ -48,13 +101,7 @@ fn unexpected(operation: &str) -> ! {
 impl ExecutionStore for Backend {
 	async fn save_run(&self, run: &Run, token: Uuid, event: &str) -> Result<()> {
 		assert_eq!(token, self.0.token);
-		self.record("save");
-		self.0
-			.writes
-			.lock()
-			.unwrap()
-			.push((event.to_owned(), run.clone()));
-		Ok(())
+		self.persist(run, event, None)
 	}
 	async fn emit(&self, workspace: Option<Uuid>, kind: &str, data: Value) -> Result<Event> {
 		let _ = (workspace, kind, data);
@@ -123,6 +170,80 @@ impl ExecutionStore for Backend {
 	async fn run_message_has_media(&self, messages: &[Uuid]) -> Result<bool> {
 		assert!(messages.is_empty());
 		Ok(false)
+	}
+	async fn context_journal(
+		&self,
+		run: Uuid,
+		from: u64,
+		through: u64,
+	) -> Result<Vec<aidash_domain::context::HistoryEntry>> {
+		let journal = self.0.journal.lock().unwrap();
+		let mut entries: Vec<_> = journal
+			.iter()
+			.filter(|(id, entry)| *id == run && (from..=through).contains(&entry.seq))
+			.map(|(_, entry)| entry.clone())
+			.collect();
+		entries.sort_by_key(|entry| entry.seq);
+		Ok(entries)
+	}
+	async fn begin_compaction(
+		&self,
+		run: &Run,
+		token: Uuid,
+		attempt: &Attempt,
+		call_budget: u32,
+	) -> Result<()> {
+		assert_eq!(token, self.0.token);
+		assert_eq!(attempt.run_id, run.id);
+		self.record("compaction.begin");
+		let mut attempts = self.0.attempts.lock().unwrap();
+		for (_, outcome) in attempts.iter_mut().filter(|(a, _)| a.run_id == run.id) {
+			outcome.get_or_insert(Outcome::Abandoned);
+		}
+		let spent = attempts
+			.iter()
+			.filter(|(a, _)| a.run_id == run.id && a.stage == attempt.stage)
+			.count();
+		if spent >= call_budget as usize {
+			return Err(aidash_application::Error::Context(
+				aidash_domain::context::recovery::Failure::SummaryUnavailable,
+			));
+		}
+		attempts.push((attempt.clone(), None));
+		Ok(())
+	}
+	async fn settle_compaction(
+		&self,
+		run: &Run,
+		token: Uuid,
+		attempt: Uuid,
+		settlement: &Settlement,
+	) -> Result<()> {
+		assert_eq!(token, self.0.token);
+		assert_ne!(settlement.outcome, Outcome::Adopted);
+		self.record("compaction.settle");
+		if let Some((_, outcome)) = self
+			.0
+			.attempts
+			.lock()
+			.unwrap()
+			.iter_mut()
+			.find(|(a, outcome)| a.id == attempt && a.run_id == run.id && outcome.is_none())
+		{
+			*outcome = Some(settlement.outcome);
+		}
+		Ok(())
+	}
+	async fn adopt_compaction(
+		&self,
+		run: &Run,
+		token: Uuid,
+		attempt: Uuid,
+		settlement: &Settlement,
+	) -> Result<()> {
+		assert_eq!(token, self.0.token);
+		assert_eq!(settlement.outcome, Outcome::Adopted);
+		self.persist(run, "context.compacted", Some((attempt, settlement)))
 	}
 }
 
@@ -285,6 +406,18 @@ impl ExecutionAuthority for Backend {
 		self.record("reservation.admit");
 		Ok(Some(Box::new(self.clone())))
 	}
+	async fn reserve_summary(
+		&self,
+		token: Uuid,
+		summarizer: &aidash_domain::context::summary::SummaryProvider,
+		window: usize,
+		output: u32,
+		request: &ModelRequest,
+	) -> Result<Option<Box<dyn InferenceReservation>>> {
+		let _ = (summarizer, window, output, request);
+		assert_eq!(token, self.0.token);
+		Ok(None)
+	}
 	async fn suspend(&self) -> Result<()> {
 		self.record("authority.suspend");
 		Ok(())
@@ -407,6 +540,7 @@ impl ExecutionEnvironment for Backend {
 			max_steps: 64,
 			allow_task_creation: None,
 			conversation_memory: self.0.conversation_memory,
+			context_policy: self.0.context_policy.clone(),
 		})
 	}
 	fn provider(&self, _model: ModelConfig) -> Result<Arc<dyn ModelProvider>> {
@@ -414,6 +548,14 @@ impl ExecutionEnvironment for Backend {
 	}
 	fn compactor(&self) -> Result<Box<dyn CompactionClassifier>> {
 		Ok(Box::new(self.clone()))
+	}
+	async fn summary_dependencies_current(
+		&self,
+		run: &Run,
+		dependencies: &aidash_domain::context::summary::SummaryDependencies,
+	) -> Result<bool> {
+		let _ = (run, dependencies);
+		Ok(true)
 	}
 }
 
@@ -432,9 +574,36 @@ impl ExecutionVisibility for Backend {
 #[async_trait]
 impl ModelProvider for Backend {
 	async fn infer(&self, request: ModelRequest) -> Result<ModelResponse> {
+		if request.response_format.is_some() {
+			request.ensure_fits(1_000_000).unwrap();
+			assert!(request.tools.is_empty());
+			self.record("summarizer.infer");
+			self.0.requests.lock().unwrap().push(request);
+			let text = self
+				.0
+				.summary_text
+				.lock()
+				.unwrap()
+				.clone()
+				.expect("summary fixture");
+			return Ok(ModelResponse {
+				text,
+				input_tokens: 100,
+				output_tokens: 50,
+				usage_complete: true,
+				..Default::default()
+			});
+		}
 		request.ensure_fits(128000).unwrap();
 		self.record("provider.infer");
 		self.0.requests.lock().unwrap().push(request);
+		{
+			let mut overflows = self.0.overflows.lock().unwrap();
+			if *overflows > 0 {
+				*overflows -= 1;
+				return Err(Error::ContextOverflow);
+			}
+		}
 		if let Some(status) = self.0.provider_status {
 			return Err(Error::ProviderRejected {
 				status,
@@ -452,8 +621,16 @@ impl ModelProvider for Backend {
 }
 #[async_trait]
 impl CompactionClassifier for Backend {
-	async fn ask(&self, _state: &Value, _questions: &CompactionQuestions) -> Result<Value> {
-		unexpected("compaction")
+	async fn ask(&self, _state: &Value, questions: &CompactionQuestions) -> Result<Value> {
+		if !self.0.jev_keeps {
+			unexpected("compaction")
+		}
+		self.record("jev.ask");
+		let answers: serde_json::Map<_, _> = questions
+			.keys()
+			.map(|key| (key.clone(), json!({"noul":1.0})))
+			.collect();
+		Ok(json!({"answers":answers}))
 	}
 }
 #[async_trait]
@@ -525,6 +702,12 @@ fn fixture() -> Fixture {
 		dependency_status: None,
 		remote_home: false,
 		human: Mutex::new(None),
+		journal: Mutex::new(vec![]),
+		attempts: Mutex::new(vec![]),
+		context_policy: None,
+		overflows: Mutex::new(0),
+		jev_keeps: false,
+		summary_text: Mutex::new(None),
 	}));
 	Fixture { backend, run }
 }
@@ -980,4 +1163,218 @@ async fn advance_sources(fixture: &mut Fixture) -> Result<()> {
 	Executor::new(&backend)
 		.advance(&mut fixture.run, backend.0.token, &mut backend.clone())
 		.await
+}
+
+fn recovery_policy(summary: bool) -> aidash_domain::context::policy::ContextPolicy {
+	let mut policy = json!({"version":"context-recovery/1"});
+	if summary {
+		policy["summary"] = json!({"model":{"id":"summarizer","version":"1.0.0"}});
+	}
+	serde_json::from_value(policy).unwrap()
+}
+
+fn thinking_with_history(fixture: &mut Fixture, old: usize) {
+	fixture.run.state = RunState::Thinking(ThinkingState::default());
+	fixture.run.context.push(ContextEvent::Human {
+		request: "Never deploy on Fridays".into(),
+		request_kind: "INFORMATION_REQUEST".into(),
+		response: json!("acknowledged"),
+	});
+	for i in 0..old {
+		fixture.run.context.push(ContextEvent::tool(
+			ToolCall {
+				id: format!("old-{i}"),
+				name: "read".into(),
+				arguments: json!({"path":format!("old-{i}")}),
+			},
+			json!("x".repeat(4000)),
+		));
+	}
+	for i in 0..6 {
+		fixture.run.context.push(ContextEvent::tool(
+			ToolCall {
+				id: format!("recent-{i}"),
+				name: "read".into(),
+				arguments: json!({}),
+			},
+			json!("recent"),
+		));
+	}
+	// Everything above already reached an accepted inference.
+	fixture.run.context.journal.inferred_through = fixture.run.context.journal.head;
+}
+
+fn events(fixture: &Fixture) -> Vec<String> {
+	fixture
+		.backend
+		.0
+		.writes
+		.lock()
+		.unwrap()
+		.iter()
+		.map(|(event, _)| event.clone())
+		.collect()
+}
+
+#[rstest]
+#[tokio::test]
+async fn provider_overflow_retries_with_a_smaller_window_without_dispatching(mut fixture: Fixture) {
+	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	state.context_policy = Some(recovery_policy(false));
+	*state.overflows.lock().unwrap() = 2;
+	fixture.run.state = RunState::Thinking(ThinkingState::default());
+	advance_sources(&mut fixture).await.unwrap();
+	// The overflow saved only recovery state; no response or tool call exists.
+	assert!(matches!(fixture.run.state, RunState::Thinking(_)));
+	assert_eq!(fixture.run.context.recovery.window_permille, 750);
+	assert_eq!(fixture.run.context.recovery.overflow_attempts, 1);
+	assert_eq!(events(&fixture).last().unwrap(), "run.context_overflow");
+	// The retried request did not shrink, so recovery pauses instead of looping.
+	assert!(matches!(
+		advance_sources(&mut fixture).await,
+		Err(Error::Context(
+			aidash_domain::context::recovery::Failure::OverflowRetriesExhausted
+		))
+	));
+	assert_eq!(fixture.backend.0.requests.lock().unwrap().len(), 2);
+	assert!(matches!(fixture.run.state, RunState::Thinking(_)));
+}
+
+#[rstest]
+#[tokio::test]
+async fn legacy_versions_and_unrelated_rejections_never_compact_and_retry(mut fixture: Fixture) {
+	*fixture.backend.0.overflows.lock().unwrap() = 1;
+	fixture.run.state = RunState::Thinking(ThinkingState::default());
+	assert!(matches!(
+		advance_sources(&mut fixture).await,
+		Err(Error::Context(
+			aidash_domain::context::recovery::Failure::OverflowRetriesExhausted
+		))
+	));
+	assert!(fixture.run.context.recovery.is_initial());
+
+	let mut rejected = fixture_with(|state| {
+		state.context_policy = Some(recovery_policy(false));
+		state.provider_status = Some(400);
+	});
+	rejected.run.state = RunState::Thinking(ThinkingState::default());
+	assert!(matches!(
+		advance_sources(&mut rejected).await,
+		Err(Error::ProviderRejected { status: 400, .. })
+	));
+	assert!(rejected.run.context.recovery.is_initial());
+	assert!(!events(&rejected).contains(&"run.context_overflow".to_owned()));
+}
+
+#[rstest]
+#[tokio::test]
+async fn summary_stage_fits_history_that_pruning_cannot_and_keeps_the_journal(
+	mut fixture: Fixture,
+) {
+	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	state.context_policy = Some(recovery_policy(true));
+	state.jev_keeps = true;
+	*state.summary_text.lock().unwrap() = Some(
+		json!({"goal":"Fixture task","constraints":[{"id":"c1","text":"Never deploy on Fridays"}],"decisions":[],"unresolved":[{"id":"u1","text":"finish reading"}],"resolved":[],"artifacts":[],"verification":[]})
+			.to_string(),
+	);
+	thinking_with_history(&mut fixture, 40);
+	let originals = fixture.run.context.history.clone();
+
+	// Step 1: Jev keeps everything, so the Summary Stage merges old history.
+	advance_sources(&mut fixture).await.unwrap();
+	assert_eq!(events(&fixture).last().unwrap(), "context.compacted");
+	let summary = fixture.run.context.execution_summary.as_ref().unwrap();
+	assert_eq!(
+		(summary.source.from_seq, summary.source.through_seq),
+		(2, 41)
+	);
+	assert_eq!(fixture.run.context.history.len(), 7);
+	assert!(matches!(
+		fixture.run.context.history[0].event,
+		ContextEvent::Human { .. }
+	));
+	{
+		let attempts = fixture.backend.0.attempts.lock().unwrap();
+		assert_eq!(attempts.len(), 1);
+		assert_eq!(attempts[0].1, Some(Outcome::Adopted));
+	}
+	// The authoritative journal still holds every original event.
+	let journal = fixture
+		.backend
+		.context_journal(fixture.run.id, 1, u64::MAX >> 1)
+		.await
+		.unwrap();
+	assert_eq!(journal, originals);
+
+	// Step 2: the adopted projection fits and inference proceeds.
+	advance_sources(&mut fixture).await.unwrap();
+	assert!(matches!(fixture.run.state, RunState::ToolCall(_)));
+	let request = fixture
+		.backend
+		.0
+		.requests
+		.lock()
+		.unwrap()
+		.last()
+		.unwrap()
+		.clone();
+	assert!(request.response_format.is_none());
+	assert_eq!(request.context["summary"]["constraints"][0]["id"], "c1");
+	assert!(!request.context.to_string().contains("old-0"));
+}
+
+#[rstest]
+#[tokio::test]
+async fn invalid_summary_leaves_the_saved_context_unchanged(mut fixture: Fixture) {
+	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	state.context_policy = Some(recovery_policy(true));
+	state.jev_keeps = true;
+	*state.summary_text.lock().unwrap() = Some("not json".into());
+	thinking_with_history(&mut fixture, 40);
+	let before = fixture.run.context.history.clone();
+	assert!(matches!(
+		advance_sources(&mut fixture).await,
+		Err(Error::Context(
+			aidash_domain::context::recovery::Failure::SummaryInvalid
+		))
+	));
+	assert_eq!(fixture.run.context.history, before);
+	assert!(fixture.run.context.execution_summary.is_none());
+	assert!(!events(&fixture).contains(&"context.compacted".to_owned()));
+	assert_eq!(
+		fixture.backend.0.attempts.lock().unwrap()[0].1,
+		Some(Outcome::Invalid)
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn summary_stage_is_unavailable_without_a_policy_model(mut fixture: Fixture) {
+	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	state.context_policy = Some(recovery_policy(false));
+	state.jev_keeps = true;
+	thinking_with_history(&mut fixture, 40);
+	assert!(matches!(
+		advance_sources(&mut fixture).await,
+		Err(Error::Context(
+			aidash_domain::context::recovery::Failure::ContextUnreducible
+		))
+	));
+	assert!(fixture.backend.0.attempts.lock().unwrap().is_empty());
+	assert!(
+		!fixture
+			.backend
+			.0
+			.calls
+			.lock()
+			.unwrap()
+			.contains(&"summarizer.infer")
+	);
+}
+
+fn fixture_with(configure: impl FnOnce(&mut State)) -> Fixture {
+	let mut fixture = fixture();
+	configure(Arc::get_mut(&mut fixture.backend.0).unwrap());
+	fixture
 }

@@ -11,7 +11,30 @@ pub struct MessageReadCoverage {
 	pub ranges: Vec<[usize; 2]>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
+/// One Context Projection event with its durable Context Journal sequence.
+/// The journal keeps the original event; the projection may later truncate it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct HistoryEntry {
+	pub seq: u64,
+	pub event: ContextEvent,
+}
+
+/// Context Journal position. Entries up to `imported_through` were recovered
+/// from a projection saved before the journal existed and may already be lossy.
+/// Entries up to `inferred_through` were present when an inference was accepted.
+#[derive(
+	Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema,
+)]
+#[serde(deny_unknown_fields)]
+pub struct JournalCursor {
+	pub head: u64,
+	pub imported_through: u64,
+	#[serde(default)]
+	pub inferred_through: u64,
+}
+
+#[derive(Debug, Clone, Default, Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Context {
 	#[serde(default, skip_serializing_if = "Option::is_none")]
@@ -19,14 +42,20 @@ pub struct Context {
 	/// Installed before activation and retained through every execution boundary.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub binding_snapshot: Option<Box<crate::registry::bindings::BindingSnapshot>>,
-	pub summary: String,
+	/// Opt-in Summary Stage output; absent for prune-only Context Policies.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub execution_summary: Option<Box<summary::ExecutionSummary>>,
 	// Older run messages are summarized in bounded pages before task execution.
 	// Keep this separately from ordinary context compaction summaries.
 	pub run_message_summary: String,
 	pub run_message_summary_seq: i64,
 	/// Highest run input whose attached media reached a successful inference.
 	pub media_inferred_seq: i64,
-	pub history: Vec<ContextEvent>,
+	pub history: Vec<HistoryEntry>,
+	#[serde(default)]
+	pub journal: JournalCursor,
+	#[serde(default, skip_serializing_if = "recovery::RecoveryState::is_initial")]
+	pub recovery: recovery::RecoveryState,
 	pub usage: Option<ContextUsage>,
 	pub compactions: u32,
 	// Execution proof stays out of provider context and survives Jev history
@@ -37,16 +66,174 @@ pub struct Context {
 	pub message_inference_coverage: BTreeMap<uuid::Uuid, MessageReadCoverage>,
 }
 
+/// Stored contexts written before the Context Journal carry bare history
+/// events and a never-written `summary` string. Reinhardt's filesystem
+/// migrations only run SQL, and AGENTS.md forbids raw DML, so the upgrade
+/// happens here: bare events receive journal sequences marked as imported.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StoredContext {
+	#[serde(default)]
+	source_observation: Option<sources::SourceObservation>,
+	#[serde(default)]
+	binding_snapshot: Option<Box<crate::registry::bindings::BindingSnapshot>>,
+	#[serde(default)]
+	execution_summary: Option<Box<summary::ExecutionSummary>>,
+	#[serde(default, rename = "summary")]
+	_legacy_summary: Option<String>,
+	run_message_summary: String,
+	run_message_summary_seq: i64,
+	media_inferred_seq: i64,
+	history: Vec<StoredHistory>,
+	#[serde(default)]
+	journal: Option<JournalCursor>,
+	#[serde(default)]
+	recovery: recovery::RecoveryState,
+	usage: Option<ContextUsage>,
+	compactions: u32,
+	message_read_coverage: BTreeMap<uuid::Uuid, MessageReadCoverage>,
+	message_inference_coverage: BTreeMap<uuid::Uuid, MessageReadCoverage>,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum StoredHistory {
+	Entry(HistoryEntry),
+	Legacy(ContextEvent),
+}
+
+impl<'de> Deserialize<'de> for Context {
+	fn deserialize<D: serde::Deserializer<'de>>(
+		deserializer: D,
+	) -> std::result::Result<Self, D::Error> {
+		use serde::de::Error as _;
+		let stored = StoredContext::deserialize(deserializer)?;
+		let legacy = stored
+			.history
+			.iter()
+			.all(|entry| matches!(entry, StoredHistory::Legacy(_)));
+		let journaled = stored
+			.history
+			.iter()
+			.all(|entry| matches!(entry, StoredHistory::Entry(_)));
+		let (history, journal) = match stored.journal {
+			Some(journal) if journaled => {
+				let history: Vec<HistoryEntry> = stored
+					.history
+					.into_iter()
+					.filter_map(|entry| match entry {
+						StoredHistory::Entry(entry) => Some(entry),
+						StoredHistory::Legacy(_) => None,
+					})
+					.collect();
+				if history.windows(2).any(|pair| pair[0].seq >= pair[1].seq)
+					|| history
+						.iter()
+						.any(|entry| entry.seq == 0 || entry.seq > journal.head)
+				{
+					return Err(D::Error::custom(
+						"context history is not ordered by journal sequence",
+					));
+				}
+				(history, journal)
+			}
+			None if legacy => {
+				let history: Vec<HistoryEntry> = stored
+					.history
+					.into_iter()
+					.zip(1_u64..)
+					.filter_map(|(entry, seq)| match entry {
+						StoredHistory::Legacy(event) => Some(HistoryEntry { seq, event }),
+						StoredHistory::Entry(_) => None,
+					})
+					.collect();
+				let head = history.len() as u64;
+				(
+					history,
+					JournalCursor {
+						head,
+						imported_through: head,
+						inferred_through: 0,
+					},
+				)
+			}
+			_ => {
+				return Err(D::Error::custom(
+					"context mixes journaled and legacy history",
+				));
+			}
+		};
+		Ok(Self {
+			source_observation: stored.source_observation,
+			binding_snapshot: stored.binding_snapshot,
+			execution_summary: stored.execution_summary,
+			run_message_summary: stored.run_message_summary,
+			run_message_summary_seq: stored.run_message_summary_seq,
+			media_inferred_seq: stored.media_inferred_seq,
+			history,
+			journal,
+			recovery: stored.recovery,
+			usage: stored.usage,
+			compactions: stored.compactions,
+			message_read_coverage: stored.message_read_coverage,
+			message_inference_coverage: stored.message_inference_coverage,
+		})
+	}
+}
+
+impl Context {
+	/// Append an event to the projection with the next Context Journal sequence.
+	pub fn push(&mut self, event: ContextEvent) {
+		self.journal.head += 1;
+		self.history.push(HistoryEntry {
+			seq: self.journal.head,
+			event,
+		});
+	}
+
+	pub fn events(&self) -> impl DoubleEndedIterator<Item = &ContextEvent> + ExactSizeIterator {
+		self.history.iter().map(|entry| &entry.event)
+	}
+
+	/// Projection entries not yet written to a journal whose head is `persisted`.
+	pub fn unjournaled(&self, persisted: u64) -> impl Iterator<Item = &HistoryEntry> {
+		self.history
+			.iter()
+			.filter(move |entry| entry.seq > persisted)
+	}
+
+	/// Model-visible `summary` value. Prune-only contexts keep the legacy empty
+	/// string so their provider requests remain byte-identical.
+	pub fn summary_view(&self) -> Value {
+		self.execution_summary.as_ref().map_or_else(
+			|| Value::String(String::new()),
+			|summary| summary.model_view(),
+		)
+	}
+
+	/// Provider-visible projection of this context.
+	pub fn model_view(&self, current: &Value) -> Value {
+		json!({
+			"current": current,
+			"summary": self.summary_view(),
+			"run_message_summary": self.run_message_summary,
+			"history": self.events().collect::<Vec<_>>(),
+		})
+	}
+}
+
 /// Public inspection omits the durable, authority-bound Source cache.
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub struct InspectionContext<'a> {
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub binding_snapshot: Option<&'a crate::registry::bindings::BindingSnapshot>,
-	pub summary: &'a str,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub execution_summary: Option<&'a summary::ExecutionSummary>,
 	pub run_message_summary: &'a str,
 	pub run_message_summary_seq: i64,
 	pub media_inferred_seq: i64,
-	pub history: &'a [ContextEvent],
+	pub history: &'a [HistoryEntry],
+	pub journal: JournalCursor,
 	pub usage: Option<&'a ContextUsage>,
 	pub compactions: u32,
 	pub message_read_coverage: &'a BTreeMap<uuid::Uuid, MessageReadCoverage>,
@@ -56,11 +243,12 @@ impl Context {
 	pub fn inspection(&self) -> InspectionContext<'_> {
 		InspectionContext {
 			binding_snapshot: self.binding_snapshot.as_deref(),
-			summary: &self.summary,
+			execution_summary: self.execution_summary.as_deref(),
 			run_message_summary: &self.run_message_summary,
 			run_message_summary_seq: self.run_message_summary_seq,
 			media_inferred_seq: self.media_inferred_seq,
 			history: &self.history,
+			journal: self.journal,
 			usage: self.usage.as_ref(),
 			compactions: self.compactions,
 			message_read_coverage: &self.message_read_coverage,
@@ -94,21 +282,17 @@ pub fn tool_event_growth(context: &Context, event: &ContextEvent) -> usize {
 	fn estimate(context: &Context) -> usize {
 		crate::provider::ModelRequest {
 			instructions: String::new(),
-			context: json!({
-				"current": Value::Null,
-				"summary": context.summary,
-				"run_message_summary": context.run_message_summary,
-				"history": context.history,
-			}),
+			context: context.model_view(&Value::Null),
 			tools: vec![],
 			max_output_tokens: 0,
+			response_format: None,
 			content_parts: vec![],
 		}
 		.estimated_total_tokens()
 	}
 	let before = estimate(context);
 	let mut after = context.clone();
-	after.history.push(event.clone());
+	after.push(event.clone());
 	estimate(&after).saturating_sub(before)
 }
 
@@ -123,14 +307,10 @@ impl RequestBudget<'_> {
 	pub fn request(&self, context: &Context, pinned: &Value) -> crate::provider::ModelRequest {
 		crate::provider::ModelRequest {
 			instructions: self.instructions.into(),
-			context: json!({
-				"current":pinned,
-				"summary":context.summary,
-				"run_message_summary":context.run_message_summary,
-				"history":context.history
-			}),
+			context: context.model_view(pinned),
 			tools: self.tools.to_vec(),
 			max_output_tokens: self.max_output_tokens,
+			response_format: None,
 			content_parts: vec![],
 		}
 	}
@@ -312,3 +492,10 @@ use serde::{Deserialize, Serialize};
 pub mod observation;
 
 pub mod sources;
+
+pub mod policy;
+pub mod recovery;
+pub mod summary;
+
+#[cfg(test)]
+mod journal_tests;

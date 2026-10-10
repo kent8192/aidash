@@ -144,6 +144,14 @@ impl ExecutionRecoveryStore for Scope {
 	) -> Result<()> {
 		panic!("authority failures must not become semantic failures")
 	}
+	async fn pause_context(
+		&self,
+		_: &Run,
+		_: Uuid,
+		_: aidash_domain::context::recovery::Failure,
+	) -> Result<()> {
+		panic!("authority failures must not become context failures")
+	}
 }
 #[async_trait]
 impl WorkerStep for Scope {

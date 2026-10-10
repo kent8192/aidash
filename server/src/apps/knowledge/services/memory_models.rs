@@ -611,6 +611,7 @@ impl Models {
 			context,
 			tools: vec![],
 			max_output_tokens: output as u32,
+			response_format: None,
 			content_parts: vec![],
 		};
 		request.ensure_fits(config.context_window)?;

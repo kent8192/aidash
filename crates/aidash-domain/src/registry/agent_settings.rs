@@ -14,6 +14,7 @@ impl AgentConfig {
 			remove_default: self.remove_default.clone(),
 			cluster: self.cluster.clone(),
 			max_steps: self.max_steps,
+			context_policy: self.context_policy.clone(),
 		}
 	}
 	pub fn from_definition(input: AgentBindings) -> Self {
@@ -34,6 +35,7 @@ impl AgentConfig {
 			instructions: input.instructions,
 			cluster: input.cluster,
 			max_steps: input.max_steps,
+			context_policy: input.context_policy,
 			core_capabilities: Default::default(),
 			skill_attachments: vec![],
 			skill_roots: vec![],

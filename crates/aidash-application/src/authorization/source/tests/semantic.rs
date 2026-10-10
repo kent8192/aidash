@@ -167,6 +167,7 @@ fn request() -> Request {
 			version: "1.0.0".into(),
 		},
 		compactor: None,
+		summarizer: None,
 	}
 }
 
@@ -461,6 +462,7 @@ async fn compactor_binding_requires_the_pinned_remote_definition() {
 			version: "1.0.0".into(),
 		},
 		compactor: Some(compactor),
+		summarizer: None,
 	};
 	assert!(matches!(
 		use_case::binding(

@@ -322,11 +322,33 @@
                 },
                 "index_revision": {
                   "type": "integer",
-                  "format": "int64"
+                  "format": "int64",
+                  "description": "Zero for native memory: index generations never identify canonical Unit reads."
                 },
                 "mode": {
                   "type": "string",
                   "enum": ["required_home"]
+                },
+                "native": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/NativeBinding"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "summarizer": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/RemoteSemanticProvider"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "Home-disclosed Summary Stage model pin; absent means no Summary\nStage may run for this remote execution."
                 },
                 "version": {
                   "type": "integer",
@@ -429,6 +451,167 @@
               "format": "int64"
             }
           }
+        },
+        "NativeBinding": {
+          "type": "object",
+          "required": [
+            "selection",
+            "generation",
+            "participant",
+            "agent",
+            "banks"
+          ],
+          "properties": {
+            "agent": {
+              "$ref": "#/components/schemas/RemoteSemanticProvider"
+            },
+            "banks": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/NativeBank"
+              }
+            },
+            "generation": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/NativeOrigin"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "participant": {
+              "$ref": "#/components/schemas/Binding3"
+            },
+            "selection": {
+              "$ref": "#/components/schemas/NativeRequest"
+            }
+          },
+          "additionalProperties": false
+        },
+        "Binding3": {
+          "type": "object",
+          "required": ["bank", "participant_revision", "agent", "provider"],
+          "properties": {
+            "agent": {
+              "$ref": "#/components/schemas/EntityRef"
+            },
+            "bank": {
+              "$ref": "#/components/schemas/Bank"
+            },
+            "participant_revision": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "provider": {
+              "$ref": "#/components/schemas/EntityRef"
+            }
+          },
+          "additionalProperties": false
+        },
+        "NativeBank": {
+          "type": "object",
+          "required": [
+            "bank",
+            "provider",
+            "roles",
+            "max_model_tokens",
+            "max_context_tokens",
+            "cache_max_age_seconds",
+            "cache_max_attempts"
+          ],
+          "properties": {
+            "bank": {
+              "$ref": "#/components/schemas/Bank"
+            },
+            "cache_max_age_seconds": {
+              "type": "integer",
+              "format": "uint64",
+              "description": "Home's pinned retention for disposable receiver quotations.",
+              "minimum": 0
+            },
+            "cache_max_attempts": {
+              "type": "integer",
+              "format": "uint",
+              "minimum": 0
+            },
+            "max_context_tokens": {
+              "type": "integer",
+              "format": "uint",
+              "minimum": 0
+            },
+            "max_model_tokens": {
+              "type": "integer",
+              "format": "uint",
+              "minimum": 0
+            },
+            "provider": {
+              "$ref": "#/components/schemas/RemoteSemanticProvider"
+            },
+            "roles": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/RemoteSemanticProvider"
+              }
+            }
+          },
+          "additionalProperties": false
+        },
+        "NativeOrigin": {
+          "type": "object",
+          "required": ["node_id", "intent_id"],
+          "properties": {
+            "intent_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "node_id": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        "NativeRequest": {
+          "type": "object",
+          "required": ["participant", "expected_revision", "provider"],
+          "properties": {
+            "expected_revision": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "participant": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "provider": {
+              "$ref": "#/components/schemas/EntityRef"
+            }
+          },
+          "additionalProperties": false
+        },
+        "Bank": {
+          "type": "object",
+          "description": "Issued by the Home authority for a participant, independently of a definition version.",
+          "required": ["home", "tenant", "workspace", "participant"],
+          "properties": {
+            "home": {
+              "type": "string"
+            },
+            "participant": {
+              "type": ["string", "null"],
+              "format": "uuid",
+              "description": "`None` is the explicitly published Workspace bank."
+            },
+            "tenant": {
+              "type": "string"
+            },
+            "workspace": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "additionalProperties": false
         }
       }
     }
@@ -1201,11 +1384,33 @@
                 },
                 "index_revision": {
                   "type": "integer",
-                  "format": "int64"
+                  "format": "int64",
+                  "description": "Zero for native memory: index generations never identify canonical Unit reads."
                 },
                 "mode": {
                   "type": "string",
                   "enum": ["required_home"]
+                },
+                "native": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/NativeBinding"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "summarizer": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/RemoteSemanticProvider"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "Home-disclosed Summary Stage model pin; absent means no Summary\nStage may run for this remote execution."
                 },
                 "version": {
                   "type": "integer",
@@ -1328,6 +1533,167 @@
               "type": "boolean"
             }
           }
+        },
+        "NativeBinding": {
+          "type": "object",
+          "required": [
+            "selection",
+            "generation",
+            "participant",
+            "agent",
+            "banks"
+          ],
+          "properties": {
+            "agent": {
+              "$ref": "#/components/schemas/RemoteSemanticProvider"
+            },
+            "banks": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/NativeBank"
+              }
+            },
+            "generation": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/NativeOrigin"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "participant": {
+              "$ref": "#/components/schemas/Binding3"
+            },
+            "selection": {
+              "$ref": "#/components/schemas/NativeRequest"
+            }
+          },
+          "additionalProperties": false
+        },
+        "Binding3": {
+          "type": "object",
+          "required": ["bank", "participant_revision", "agent", "provider"],
+          "properties": {
+            "agent": {
+              "$ref": "#/components/schemas/EntityRef"
+            },
+            "bank": {
+              "$ref": "#/components/schemas/Bank"
+            },
+            "participant_revision": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "provider": {
+              "$ref": "#/components/schemas/EntityRef"
+            }
+          },
+          "additionalProperties": false
+        },
+        "NativeBank": {
+          "type": "object",
+          "required": [
+            "bank",
+            "provider",
+            "roles",
+            "max_model_tokens",
+            "max_context_tokens",
+            "cache_max_age_seconds",
+            "cache_max_attempts"
+          ],
+          "properties": {
+            "bank": {
+              "$ref": "#/components/schemas/Bank"
+            },
+            "cache_max_age_seconds": {
+              "type": "integer",
+              "format": "uint64",
+              "description": "Home's pinned retention for disposable receiver quotations.",
+              "minimum": 0
+            },
+            "cache_max_attempts": {
+              "type": "integer",
+              "format": "uint",
+              "minimum": 0
+            },
+            "max_context_tokens": {
+              "type": "integer",
+              "format": "uint",
+              "minimum": 0
+            },
+            "max_model_tokens": {
+              "type": "integer",
+              "format": "uint",
+              "minimum": 0
+            },
+            "provider": {
+              "$ref": "#/components/schemas/RemoteSemanticProvider"
+            },
+            "roles": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/RemoteSemanticProvider"
+              }
+            }
+          },
+          "additionalProperties": false
+        },
+        "NativeOrigin": {
+          "type": "object",
+          "required": ["node_id", "intent_id"],
+          "properties": {
+            "intent_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "node_id": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        "NativeRequest": {
+          "type": "object",
+          "required": ["participant", "expected_revision", "provider"],
+          "properties": {
+            "expected_revision": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "participant": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "provider": {
+              "$ref": "#/components/schemas/EntityRef"
+            }
+          },
+          "additionalProperties": false
+        },
+        "Bank": {
+          "type": "object",
+          "description": "Issued by the Home authority for a participant, independently of a definition version.",
+          "required": ["home", "tenant", "workspace", "participant"],
+          "properties": {
+            "home": {
+              "type": "string"
+            },
+            "participant": {
+              "type": ["string", "null"],
+              "format": "uuid",
+              "description": "`None` is the explicitly published Workspace bank."
+            },
+            "tenant": {
+              "type": "string"
+            },
+            "workspace": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "additionalProperties": false
         }
       }
     }
@@ -3464,11 +3830,33 @@
                 },
                 "index_revision": {
                   "type": "integer",
-                  "format": "int64"
+                  "format": "int64",
+                  "description": "Zero for native memory: index generations never identify canonical Unit reads."
                 },
                 "mode": {
                   "type": "string",
                   "enum": ["required_home"]
+                },
+                "native": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/NativeBinding"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "summarizer": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/RemoteSemanticProvider"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "Home-disclosed Summary Stage model pin; absent means no Summary\nStage may run for this remote execution."
                 },
                 "version": {
                   "type": "integer",
@@ -3536,6 +3924,167 @@
             },
             "tenant": {
               "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        "NativeBinding": {
+          "type": "object",
+          "required": [
+            "selection",
+            "generation",
+            "participant",
+            "agent",
+            "banks"
+          ],
+          "properties": {
+            "agent": {
+              "$ref": "#/components/schemas/RemoteSemanticProvider"
+            },
+            "banks": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/NativeBank"
+              }
+            },
+            "generation": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/NativeOrigin"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "participant": {
+              "$ref": "#/components/schemas/Binding3"
+            },
+            "selection": {
+              "$ref": "#/components/schemas/NativeRequest"
+            }
+          },
+          "additionalProperties": false
+        },
+        "Binding3": {
+          "type": "object",
+          "required": ["bank", "participant_revision", "agent", "provider"],
+          "properties": {
+            "agent": {
+              "$ref": "#/components/schemas/EntityRef"
+            },
+            "bank": {
+              "$ref": "#/components/schemas/Bank"
+            },
+            "participant_revision": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "provider": {
+              "$ref": "#/components/schemas/EntityRef"
+            }
+          },
+          "additionalProperties": false
+        },
+        "NativeBank": {
+          "type": "object",
+          "required": [
+            "bank",
+            "provider",
+            "roles",
+            "max_model_tokens",
+            "max_context_tokens",
+            "cache_max_age_seconds",
+            "cache_max_attempts"
+          ],
+          "properties": {
+            "bank": {
+              "$ref": "#/components/schemas/Bank"
+            },
+            "cache_max_age_seconds": {
+              "type": "integer",
+              "format": "uint64",
+              "description": "Home's pinned retention for disposable receiver quotations.",
+              "minimum": 0
+            },
+            "cache_max_attempts": {
+              "type": "integer",
+              "format": "uint",
+              "minimum": 0
+            },
+            "max_context_tokens": {
+              "type": "integer",
+              "format": "uint",
+              "minimum": 0
+            },
+            "max_model_tokens": {
+              "type": "integer",
+              "format": "uint",
+              "minimum": 0
+            },
+            "provider": {
+              "$ref": "#/components/schemas/RemoteSemanticProvider"
+            },
+            "roles": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/RemoteSemanticProvider"
+              }
+            }
+          },
+          "additionalProperties": false
+        },
+        "NativeOrigin": {
+          "type": "object",
+          "required": ["node_id", "intent_id"],
+          "properties": {
+            "intent_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "node_id": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        "NativeRequest": {
+          "type": "object",
+          "required": ["participant", "expected_revision", "provider"],
+          "properties": {
+            "expected_revision": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "participant": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "provider": {
+              "$ref": "#/components/schemas/EntityRef"
+            }
+          },
+          "additionalProperties": false
+        },
+        "Bank": {
+          "type": "object",
+          "description": "Issued by the Home authority for a participant, independently of a definition version.",
+          "required": ["home", "tenant", "workspace", "participant"],
+          "properties": {
+            "home": {
+              "type": "string"
+            },
+            "participant": {
+              "type": ["string", "null"],
+              "format": "uuid",
+              "description": "`None` is the explicitly published Workspace bank."
+            },
+            "tenant": {
+              "type": "string"
+            },
+            "workspace": {
+              "type": "string",
+              "format": "uuid"
             }
           },
           "additionalProperties": false
@@ -3661,11 +4210,33 @@
                 },
                 "index_revision": {
                   "type": "integer",
-                  "format": "int64"
+                  "format": "int64",
+                  "description": "Zero for native memory: index generations never identify canonical Unit reads."
                 },
                 "mode": {
                   "type": "string",
                   "enum": ["required_home"]
+                },
+                "native": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/NativeBinding"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "summarizer": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/RemoteSemanticProvider"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "Home-disclosed Summary Stage model pin; absent means no Summary\nStage may run for this remote execution."
                 },
                 "version": {
                   "type": "integer",
@@ -3733,6 +4304,167 @@
             },
             "tenant": {
               "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        "NativeBinding": {
+          "type": "object",
+          "required": [
+            "selection",
+            "generation",
+            "participant",
+            "agent",
+            "banks"
+          ],
+          "properties": {
+            "agent": {
+              "$ref": "#/components/schemas/RemoteSemanticProvider"
+            },
+            "banks": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/NativeBank"
+              }
+            },
+            "generation": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/NativeOrigin"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "participant": {
+              "$ref": "#/components/schemas/Binding3"
+            },
+            "selection": {
+              "$ref": "#/components/schemas/NativeRequest"
+            }
+          },
+          "additionalProperties": false
+        },
+        "Binding3": {
+          "type": "object",
+          "required": ["bank", "participant_revision", "agent", "provider"],
+          "properties": {
+            "agent": {
+              "$ref": "#/components/schemas/EntityRef"
+            },
+            "bank": {
+              "$ref": "#/components/schemas/Bank"
+            },
+            "participant_revision": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "provider": {
+              "$ref": "#/components/schemas/EntityRef"
+            }
+          },
+          "additionalProperties": false
+        },
+        "NativeBank": {
+          "type": "object",
+          "required": [
+            "bank",
+            "provider",
+            "roles",
+            "max_model_tokens",
+            "max_context_tokens",
+            "cache_max_age_seconds",
+            "cache_max_attempts"
+          ],
+          "properties": {
+            "bank": {
+              "$ref": "#/components/schemas/Bank"
+            },
+            "cache_max_age_seconds": {
+              "type": "integer",
+              "format": "uint64",
+              "description": "Home's pinned retention for disposable receiver quotations.",
+              "minimum": 0
+            },
+            "cache_max_attempts": {
+              "type": "integer",
+              "format": "uint",
+              "minimum": 0
+            },
+            "max_context_tokens": {
+              "type": "integer",
+              "format": "uint",
+              "minimum": 0
+            },
+            "max_model_tokens": {
+              "type": "integer",
+              "format": "uint",
+              "minimum": 0
+            },
+            "provider": {
+              "$ref": "#/components/schemas/RemoteSemanticProvider"
+            },
+            "roles": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/RemoteSemanticProvider"
+              }
+            }
+          },
+          "additionalProperties": false
+        },
+        "NativeOrigin": {
+          "type": "object",
+          "required": ["node_id", "intent_id"],
+          "properties": {
+            "intent_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "node_id": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        "NativeRequest": {
+          "type": "object",
+          "required": ["participant", "expected_revision", "provider"],
+          "properties": {
+            "expected_revision": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "participant": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "provider": {
+              "$ref": "#/components/schemas/EntityRef"
+            }
+          },
+          "additionalProperties": false
+        },
+        "Bank": {
+          "type": "object",
+          "description": "Issued by the Home authority for a participant, independently of a definition version.",
+          "required": ["home", "tenant", "workspace", "participant"],
+          "properties": {
+            "home": {
+              "type": "string"
+            },
+            "participant": {
+              "type": ["string", "null"],
+              "format": "uuid",
+              "description": "`None` is the explicitly published Workspace bank."
+            },
+            "tenant": {
+              "type": "string"
+            },
+            "workspace": {
+              "type": "string",
+              "format": "uuid"
             }
           },
           "additionalProperties": false
@@ -9684,7 +10416,8 @@
             "generated_count",
             "allocated_tokens",
             "allocated_compaction_calls",
-            "allocated_embedding_calls"
+            "allocated_embedding_calls",
+            "allocated_summary_calls"
           ],
           "properties": {
             "allocated_compaction_calls": {
@@ -9692,6 +10425,10 @@
               "format": "int64"
             },
             "allocated_embedding_calls": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "allocated_summary_calls": {
               "type": "integer",
               "format": "int64"
             },
@@ -9764,6 +10501,16 @@
               "anyOf": [
                 {
                   "$ref": "#/components/schemas/GenerationRemoteApprovals"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "summary": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/GenerationSummary"
                 },
                 {
                   "type": "null"
@@ -9916,6 +10663,24 @@
               "items": {
                 "$ref": "#/components/schemas/RemoteSemanticProvider"
               }
+            },
+            "memory": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/RemoteSemanticProvider"
+              },
+              "description": "Home-owned native memory model roles. The ancestor's total token budget\nand the pinned memory workflow's call/token/cost caps both apply."
+            },
+            "summary": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/GenerationRemoteAllowance"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Summary Stage model the remote origin approves for generated Agents."
             }
           },
           "additionalProperties": false
@@ -10063,6 +10828,25 @@
             },
             "tenant": {
               "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        "GenerationSummary": {
+          "type": "object",
+          "description": "Separately approved Summary Stage model for generated Agents. Every\nancestor must approve the same exact model version.",
+          "required": ["provider", "calls_per_agent", "call_budget"],
+          "properties": {
+            "call_budget": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "calls_per_agent": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "provider": {
+              "$ref": "#/components/schemas/EntityRef"
             }
           },
           "additionalProperties": false
@@ -10096,7 +10880,8 @@
             "generated_count",
             "allocated_tokens",
             "allocated_compaction_calls",
-            "allocated_embedding_calls"
+            "allocated_embedding_calls",
+            "allocated_summary_calls"
           ],
           "properties": {
             "allocated_compaction_calls": {
@@ -10104,6 +10889,10 @@
               "format": "int64"
             },
             "allocated_embedding_calls": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "allocated_summary_calls": {
               "type": "integer",
               "format": "int64"
             },
@@ -10176,6 +10965,16 @@
               "anyOf": [
                 {
                   "$ref": "#/components/schemas/GenerationRemoteApprovals"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "summary": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/GenerationSummary"
                 },
                 {
                   "type": "null"
@@ -10328,6 +11127,24 @@
               "items": {
                 "$ref": "#/components/schemas/RemoteSemanticProvider"
               }
+            },
+            "memory": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/RemoteSemanticProvider"
+              },
+              "description": "Home-owned native memory model roles. The ancestor's total token budget\nand the pinned memory workflow's call/token/cost caps both apply."
+            },
+            "summary": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/GenerationRemoteAllowance"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Summary Stage model the remote origin approves for generated Agents."
             }
           },
           "additionalProperties": false
@@ -10475,6 +11292,25 @@
             },
             "tenant": {
               "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        "GenerationSummary": {
+          "type": "object",
+          "description": "Separately approved Summary Stage model for generated Agents. Every\nancestor must approve the same exact model version.",
+          "required": ["provider", "calls_per_agent", "call_budget"],
+          "properties": {
+            "call_budget": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "calls_per_agent": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "provider": {
+              "$ref": "#/components/schemas/EntityRef"
             }
           },
           "additionalProperties": false
@@ -11317,7 +12153,9 @@
             "compaction_call_limit",
             "compaction_calls",
             "embedding_calls",
-            "embedding_call_limit"
+            "embedding_call_limit",
+            "summary_calls",
+            "summary_call_limit"
           ],
           "properties": {
             "compaction_call_limit": {
@@ -11337,6 +12175,14 @@
               "format": "int64"
             },
             "inference_attempts": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "summary_call_limit": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "summary_calls": {
               "type": "integer",
               "format": "int64"
             },
@@ -11412,6 +12258,16 @@
               "anyOf": [
                 {
                   "$ref": "#/components/schemas/GenerationRemoteApprovals"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "summary": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/GenerationSummary"
                 },
                 {
                   "type": "null"
@@ -11564,6 +12420,24 @@
               "items": {
                 "$ref": "#/components/schemas/RemoteSemanticProvider"
               }
+            },
+            "memory": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/RemoteSemanticProvider"
+              },
+              "description": "Home-owned native memory model roles. The ancestor's total token budget\nand the pinned memory workflow's call/token/cost caps both apply."
+            },
+            "summary": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/GenerationRemoteAllowance"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Summary Stage model the remote origin approves for generated Agents."
             }
           },
           "additionalProperties": false
@@ -11711,6 +12585,25 @@
             },
             "tenant": {
               "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        "GenerationSummary": {
+          "type": "object",
+          "description": "Separately approved Summary Stage model for generated Agents. Every\nancestor must approve the same exact model version.",
+          "required": ["provider", "calls_per_agent", "call_budget"],
+          "properties": {
+            "call_budget": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "calls_per_agent": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "provider": {
+              "$ref": "#/components/schemas/EntityRef"
             }
           },
           "additionalProperties": false
@@ -12390,27 +13283,52 @@
         "Context": {
           "type": "object",
           "required": [
-            "summary",
             "run_message_summary",
             "run_message_summary_seq",
             "media_inferred_seq",
             "history",
+            "journal",
             "usage",
             "compactions",
             "message_read_coverage",
             "message_inference_coverage"
           ],
           "properties": {
+            "binding_snapshot": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/BindingSnapshot"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Installed before activation and retained through every execution boundary."
+            },
             "compactions": {
               "type": "integer",
               "format": "uint32",
               "minimum": 0
             },
+            "execution_summary": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/ExecutionSummary"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Opt-in Summary Stage output; absent for prune-only Context Policies."
+            },
             "history": {
               "type": "array",
               "items": {
-                "$ref": "#/components/schemas/ContextEvent"
+                "$ref": "#/components/schemas/HistoryEntry"
               }
+            },
+            "journal": {
+              "$ref": "#/components/schemas/JournalCursor"
             },
             "media_inferred_seq": {
               "type": "integer",
@@ -12429,6 +13347,9 @@
                 "$ref": "#/components/schemas/MessageReadCoverage"
               }
             },
+            "recovery": {
+              "$ref": "#/components/schemas/ContextRecoveryState"
+            },
             "run_message_summary": {
               "type": "string"
             },
@@ -12436,8 +13357,15 @@
               "type": "integer",
               "format": "int64"
             },
-            "summary": {
-              "type": "string"
+            "source_observation": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/SourceObservation"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             },
             "usage": {
               "anyOf": [
@@ -12642,6 +13570,17 @@
           "type": "object",
           "required": ["retry", "lease_recovered"],
           "properties": {
+            "context_reason": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/ContextRecoveryFailure"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Typed context-recovery reason for a paused Run; cleared on resume."
+            },
             "lease_recovered": {
               "type": "boolean"
             },
@@ -13370,6 +14309,773 @@
           "type": "integer",
           "format": "uint32",
           "minimum": 0
+        },
+        "ContextRecoveryFailure": {
+          "type": "string",
+          "description": "Why a Run paused instead of sending or acting on a provider request.\nEach reason is final for its step; none of them is retried as transport.",
+          "enum": [
+            "context_unreducible",
+            "prune_unavailable",
+            "summary_unavailable",
+            "summary_invalid",
+            "overflow_retries_exhausted",
+            "output_truncated",
+            "refused"
+          ]
+        },
+        "BindingSnapshot": {
+          "type": "object",
+          "required": [
+            "schema_version",
+            "agent",
+            "remote",
+            "bindings",
+            "definitions"
+          ],
+          "properties": {
+            "agent": {
+              "$ref": "#/components/schemas/QualifiedRef"
+            },
+            "bindings": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/ResolvedBinding"
+              }
+            },
+            "definitions": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/ResolvedDefinition"
+              }
+            },
+            "foreign_agents": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/ForeignAgentSnapshot"
+              },
+              "description": "Public operator Agent transports retain the receiver's complete admitted closure."
+            },
+            "remote": {
+              "type": "boolean",
+              "description": "Admission placement determines which implicit defaults must remain excluded."
+            },
+            "schema_version": {
+              "type": "integer",
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false
+        },
+        "ContextRecoveryState": {
+          "type": "object",
+          "description": "Per-Run state that bounds Context Overflow recovery. The effective window\nshrink persists for the Run because its model binding is pinned; the\nconsecutive-overflow count resets after an accepted inference.",
+          "required": [
+            "window_permille",
+            "overflow_attempts",
+            "overflow_request_tokens"
+          ],
+          "properties": {
+            "overflow_attempts": {
+              "type": "integer",
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0
+            },
+            "overflow_request_tokens": {
+              "type": ["integer", "null"],
+              "format": "uint64",
+              "description": "Estimated request size of the last overflowing request.",
+              "minimum": 0
+            },
+            "window_permille": {
+              "type": "integer",
+              "format": "uint16",
+              "description": "Effective window as thousandths of the configured request window.",
+              "maximum": 65535,
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false
+        },
+        "ExecutionSummary": {
+          "type": "object",
+          "required": [
+            "version",
+            "content",
+            "source",
+            "dependencies",
+            "policy_version",
+            "provider",
+            "digest"
+          ],
+          "properties": {
+            "content": {
+              "$ref": "#/components/schemas/SummaryContent"
+            },
+            "dependencies": {
+              "$ref": "#/components/schemas/SummaryDependencies"
+            },
+            "digest": {
+              "type": "string"
+            },
+            "policy_version": {
+              "type": "string"
+            },
+            "previous": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/SummaryLink"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "provider": {
+              "$ref": "#/components/schemas/SummaryProvider"
+            },
+            "source": {
+              "$ref": "#/components/schemas/SummarySource"
+            },
+            "version": {
+              "type": "integer",
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false
+        },
+        "HistoryEntry": {
+          "type": "object",
+          "description": "One Context Projection event with its durable Context Journal sequence.\nThe journal keeps the original event; the projection may later truncate it.",
+          "required": ["seq", "event"],
+          "properties": {
+            "event": {
+              "$ref": "#/components/schemas/ContextEvent"
+            },
+            "seq": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false
+        },
+        "JournalCursor": {
+          "type": "object",
+          "description": "Context Journal position. Entries up to `imported_through` were recovered\nfrom a projection saved before the journal existed and may already be lossy.\nEntries up to `inferred_through` were present when an inference was accepted.",
+          "required": ["head", "imported_through", "inferred_through"],
+          "properties": {
+            "head": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "imported_through": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "inferred_through": {
+              "type": "integer",
+              "format": "uint64",
+              "default": 0,
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false
+        },
+        "SourceObservation": {
+          "type": "object",
+          "required": ["boundary", "binding_digest", "content", "digest"],
+          "properties": {
+            "binding_digest": {
+              "type": "string"
+            },
+            "boundary": {
+              "type": "string"
+            },
+            "content": {},
+            "digest": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        "SummaryContent": {
+          "type": "object",
+          "description": "Model-generated part of an Execution Summary.",
+          "required": [
+            "goal",
+            "constraints",
+            "decisions",
+            "unresolved",
+            "resolved",
+            "artifacts",
+            "verification"
+          ],
+          "properties": {
+            "artifacts": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/ArtifactRef"
+              }
+            },
+            "constraints": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/SummaryItem"
+              }
+            },
+            "decisions": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "goal": {
+              "type": "string"
+            },
+            "resolved": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/ResolvedItem"
+              },
+              "description": "Previous constraints or unresolved items explicitly closed by this merge."
+            },
+            "unresolved": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/SummaryItem"
+              }
+            },
+            "verification": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/VerificationRef"
+              }
+            }
+          },
+          "additionalProperties": false
+        },
+        "SummaryDependencies": {
+          "type": "object",
+          "description": "Sources whose authority the summarized text depends on.",
+          "required": ["message_ids", "tool_call_ids"],
+          "properties": {
+            "message_ids": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "uniqueItems": true
+            },
+            "tool_call_ids": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "uniqueItems": true
+            }
+          },
+          "additionalProperties": false
+        },
+        "SummaryLink": {
+          "type": "object",
+          "required": ["through_seq", "digest"],
+          "properties": {
+            "digest": {
+              "type": "string"
+            },
+            "through_seq": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false
+        },
+        "SummaryProvider": {
+          "type": "object",
+          "required": ["model", "definition_digest"],
+          "properties": {
+            "definition_digest": {
+              "type": "string"
+            },
+            "model": {
+              "$ref": "#/components/schemas/EntityRef"
+            }
+          },
+          "additionalProperties": false
+        },
+        "SummarySource": {
+          "type": "object",
+          "description": "Exact Context Journal range folded into the summary.",
+          "required": ["from_seq", "through_seq", "entries_digest"],
+          "properties": {
+            "entries_digest": {
+              "type": "string",
+              "description": "Digest of the projection entries absorbed by the latest merge."
+            },
+            "from_seq": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "through_seq": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false
+        },
+        "EntityRef": {
+          "type": "object",
+          "required": ["id", "version"],
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "version": {
+              "type": "string"
+            }
+          }
+        },
+        "ArtifactRef": {
+          "type": "object",
+          "required": ["reference", "revision"],
+          "properties": {
+            "reference": {
+              "type": "string",
+              "description": "Path, artifact ID or record reference exactly as it appeared in history."
+            },
+            "revision": {
+              "type": "string",
+              "description": "Revision or digest when history stated one; otherwise empty."
+            }
+          },
+          "additionalProperties": false
+        },
+        "ResolvedItem": {
+          "type": "object",
+          "required": ["id", "resolved_by"],
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "resolved_by": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        "SummaryItem": {
+          "type": "object",
+          "required": ["id", "text"],
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "text": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        "VerificationRef": {
+          "type": "object",
+          "required": ["reference", "outcome"],
+          "properties": {
+            "outcome": {
+              "type": "string"
+            },
+            "reference": {
+              "type": "string",
+              "description": "Tool call ID or evidence reference from history. Never a model claim."
+            }
+          },
+          "additionalProperties": false
+        },
+        "ForeignAgentSnapshot": {
+          "type": "object",
+          "description": "One authenticated receiver's public closure. Nested foreign or private\ndependencies require their own supported disclosure/admission protocol.",
+          "required": ["schema_version", "agent", "bindings", "definitions"],
+          "properties": {
+            "agent": {
+              "$ref": "#/components/schemas/QualifiedRef"
+            },
+            "bindings": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/ResolvedBinding"
+              }
+            },
+            "definitions": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/ResolvedDefinition"
+              }
+            },
+            "schema_version": {
+              "type": "integer",
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false
+        },
+        "QualifiedRef": {
+          "type": "object",
+          "required": ["registry_node", "id", "version"],
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "registry_node": {
+              "type": "string"
+            },
+            "version": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        "ResolvedBinding": {
+          "type": "object",
+          "required": [
+            "identity",
+            "definition",
+            "digest",
+            "origin",
+            "alias",
+            "narrow",
+            "installation",
+            "provider_contract_digest",
+            "provider_implementation",
+            "excluded_reason"
+          ],
+          "properties": {
+            "alias": {
+              "type": ["string", "null"]
+            },
+            "definition": {
+              "$ref": "#/components/schemas/Entry"
+            },
+            "digest": {
+              "type": "string"
+            },
+            "excluded_reason": {
+              "type": ["string", "null"]
+            },
+            "identity": {
+              "$ref": "#/components/schemas/QualifiedRef"
+            },
+            "installation": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/MarketplaceProjection"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "narrow": {
+              "$ref": "#/components/schemas/Narrowing"
+            },
+            "origin": {
+              "$ref": "#/components/schemas/BindingOrigin"
+            },
+            "provider_contract_digest": {
+              "type": ["string", "null"]
+            },
+            "provider_implementation": {
+              "type": ["string", "null"]
+            }
+          },
+          "additionalProperties": false
+        },
+        "ResolvedDefinition": {
+          "type": "object",
+          "required": ["identity", "definition", "digest"],
+          "properties": {
+            "definition": {
+              "$ref": "#/components/schemas/Entry"
+            },
+            "digest": {
+              "type": "string"
+            },
+            "identity": {
+              "$ref": "#/components/schemas/QualifiedRef"
+            }
+          },
+          "additionalProperties": false
+        },
+        "Entry": {
+          "type": "object",
+          "required": [
+            "id",
+            "version",
+            "kind",
+            "name",
+            "description",
+            "capabilities",
+            "tags",
+            "languages",
+            "skills",
+            "schema",
+            "config"
+          ],
+          "properties": {
+            "binding_normalization": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/AgentNormalization"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "capabilities": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "config": {
+              "type": "object",
+              "default": {},
+              "additionalProperties": true
+            },
+            "description": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
+            "id": {
+              "type": "string"
+            },
+            "installation": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/MarketplaceProjection"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "kind": {
+              "type": "string"
+            },
+            "languages": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "name": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
+            "schema": {
+              "default": {}
+            },
+            "skills": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "tags": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "version": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        "AgentNormalization": {
+          "type": "object",
+          "description": "Read-only registration metadata is compiled by the Node before publication.",
+          "required": ["schema_version", "registry_node", "bindings"],
+          "properties": {
+            "bindings": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/NormalizedBinding"
+              }
+            },
+            "registry_node": {
+              "type": "string"
+            },
+            "schema_version": {
+              "type": "integer",
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false
+        },
+        "MarketplaceProjection": {
+          "type": "object",
+          "required": ["contract", "tenant", "installation", "revision"],
+          "properties": {
+            "contract": {
+              "type": "integer",
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0
+            },
+            "installation": {
+              "type": "string"
+            },
+            "revision": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "tenant": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        "NormalizedBinding": {
+          "type": "object",
+          "required": ["binding", "origin"],
+          "properties": {
+            "binding": {
+              "$ref": "#/components/schemas/Binding2"
+            },
+            "origin": {
+              "$ref": "#/components/schemas/BindingOrigin"
+            }
+          },
+          "additionalProperties": false
+        },
+        "Binding2": {
+          "type": "object",
+          "required": ["kind", "target", "narrow"],
+          "properties": {
+            "alias": {
+              "type": ["string", "null"]
+            },
+            "kind": {
+              "$ref": "#/components/schemas/BindingKind"
+            },
+            "members": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "An empty member list binds the entire bundle. IDs are unique within a bundle."
+            },
+            "narrow": {
+              "$ref": "#/components/schemas/Narrowing"
+            },
+            "target": {
+              "$ref": "#/components/schemas/QualifiedRef"
+            }
+          },
+          "additionalProperties": false
+        },
+        "BindingOrigin": {
+          "type": "string",
+          "description": "Only the registration resolver creates provenance; it is absent from writable Bindings.",
+          "enum": [
+            "required",
+            "default",
+            "explicit",
+            "skill_support",
+            "companion"
+          ]
+        },
+        "BindingKind": {
+          "type": "string",
+          "enum": ["tool", "bundle", "skill", "memory", "source", "decider"]
+        },
+        "Narrowing": {
+          "type": "object",
+          "description": "No effect, replay, approval or disclosure field is accepted here.",
+          "properties": {
+            "allowed_hosts": {
+              "type": ["array", "null"],
+              "items": {
+                "type": "string"
+              },
+              "uniqueItems": true
+            },
+            "decision": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/Restrictions"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "limits": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "integer",
+                "format": "uint64",
+                "minimum": 0
+              }
+            },
+            "scope": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "uniqueItems": true
+              }
+            }
+          },
+          "additionalProperties": false
+        },
+        "Restrictions": {
+          "type": "object",
+          "description": "Lower keep thresholds and larger protected suffixes preserve more content.",
+          "required": ["keep_threshold", "preserve_recent", "forbid_apply"],
+          "properties": {
+            "forbid_apply": {
+              "type": "boolean",
+              "default": false
+            },
+            "keep_threshold": {
+              "type": "string",
+              "default": "3fe0000000000000"
+            },
+            "preserve_recent": {
+              "type": "integer",
+              "format": "uint",
+              "default": 6,
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false
         }
       }
     }
@@ -16760,11 +18466,33 @@
                 },
                 "index_revision": {
                   "type": "integer",
-                  "format": "int64"
+                  "format": "int64",
+                  "description": "Zero for native memory: index generations never identify canonical Unit reads."
                 },
                 "mode": {
                   "type": "string",
                   "enum": ["required_home"]
+                },
+                "native": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/NativeBinding"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "summarizer": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/RemoteSemanticProvider"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "Home-disclosed Summary Stage model pin; absent means no Summary\nStage may run for this remote execution."
                 },
                 "version": {
                   "type": "integer",
@@ -16867,6 +18595,167 @@
               "format": "int64"
             }
           }
+        },
+        "NativeBinding": {
+          "type": "object",
+          "required": [
+            "selection",
+            "generation",
+            "participant",
+            "agent",
+            "banks"
+          ],
+          "properties": {
+            "agent": {
+              "$ref": "#/components/schemas/RemoteSemanticProvider"
+            },
+            "banks": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/NativeBank"
+              }
+            },
+            "generation": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/NativeOrigin"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "participant": {
+              "$ref": "#/components/schemas/Binding3"
+            },
+            "selection": {
+              "$ref": "#/components/schemas/NativeRequest"
+            }
+          },
+          "additionalProperties": false
+        },
+        "Binding3": {
+          "type": "object",
+          "required": ["bank", "participant_revision", "agent", "provider"],
+          "properties": {
+            "agent": {
+              "$ref": "#/components/schemas/EntityRef"
+            },
+            "bank": {
+              "$ref": "#/components/schemas/Bank"
+            },
+            "participant_revision": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "provider": {
+              "$ref": "#/components/schemas/EntityRef"
+            }
+          },
+          "additionalProperties": false
+        },
+        "NativeBank": {
+          "type": "object",
+          "required": [
+            "bank",
+            "provider",
+            "roles",
+            "max_model_tokens",
+            "max_context_tokens",
+            "cache_max_age_seconds",
+            "cache_max_attempts"
+          ],
+          "properties": {
+            "bank": {
+              "$ref": "#/components/schemas/Bank"
+            },
+            "cache_max_age_seconds": {
+              "type": "integer",
+              "format": "uint64",
+              "description": "Home's pinned retention for disposable receiver quotations.",
+              "minimum": 0
+            },
+            "cache_max_attempts": {
+              "type": "integer",
+              "format": "uint",
+              "minimum": 0
+            },
+            "max_context_tokens": {
+              "type": "integer",
+              "format": "uint",
+              "minimum": 0
+            },
+            "max_model_tokens": {
+              "type": "integer",
+              "format": "uint",
+              "minimum": 0
+            },
+            "provider": {
+              "$ref": "#/components/schemas/RemoteSemanticProvider"
+            },
+            "roles": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/RemoteSemanticProvider"
+              }
+            }
+          },
+          "additionalProperties": false
+        },
+        "NativeOrigin": {
+          "type": "object",
+          "required": ["node_id", "intent_id"],
+          "properties": {
+            "intent_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "node_id": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        "NativeRequest": {
+          "type": "object",
+          "required": ["participant", "expected_revision", "provider"],
+          "properties": {
+            "expected_revision": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "participant": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "provider": {
+              "$ref": "#/components/schemas/EntityRef"
+            }
+          },
+          "additionalProperties": false
+        },
+        "Bank": {
+          "type": "object",
+          "description": "Issued by the Home authority for a participant, independently of a definition version.",
+          "required": ["home", "tenant", "workspace", "participant"],
+          "properties": {
+            "home": {
+              "type": "string"
+            },
+            "participant": {
+              "type": ["string", "null"],
+              "format": "uuid",
+              "description": "`None` is the explicitly published Workspace bank."
+            },
+            "tenant": {
+              "type": "string"
+            },
+            "workspace": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "additionalProperties": false
         }
       }
     }
@@ -21985,27 +23874,52 @@
         "Context": {
           "type": "object",
           "required": [
-            "summary",
             "run_message_summary",
             "run_message_summary_seq",
             "media_inferred_seq",
             "history",
+            "journal",
             "usage",
             "compactions",
             "message_read_coverage",
             "message_inference_coverage"
           ],
           "properties": {
+            "binding_snapshot": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/BindingSnapshot"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Installed before activation and retained through every execution boundary."
+            },
             "compactions": {
               "type": "integer",
               "format": "uint32",
               "minimum": 0
             },
+            "execution_summary": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/ExecutionSummary"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Opt-in Summary Stage output; absent for prune-only Context Policies."
+            },
             "history": {
               "type": "array",
               "items": {
-                "$ref": "#/components/schemas/ContextEvent"
+                "$ref": "#/components/schemas/HistoryEntry"
               }
+            },
+            "journal": {
+              "$ref": "#/components/schemas/JournalCursor"
             },
             "media_inferred_seq": {
               "type": "integer",
@@ -22024,6 +23938,9 @@
                 "$ref": "#/components/schemas/MessageReadCoverage"
               }
             },
+            "recovery": {
+              "$ref": "#/components/schemas/ContextRecoveryState"
+            },
             "run_message_summary": {
               "type": "string"
             },
@@ -22031,8 +23948,15 @@
               "type": "integer",
               "format": "int64"
             },
-            "summary": {
-              "type": "string"
+            "source_observation": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/SourceObservation"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             },
             "usage": {
               "anyOf": [
@@ -22237,6 +24161,17 @@
           "type": "object",
           "required": ["retry", "lease_recovered"],
           "properties": {
+            "context_reason": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/ContextRecoveryFailure"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Typed context-recovery reason for a paused Run; cleared on resume."
+            },
             "lease_recovered": {
               "type": "boolean"
             },
@@ -23072,6 +25007,588 @@
               "type": "string"
             }
           }
+        },
+        "ContextRecoveryFailure": {
+          "type": "string",
+          "description": "Why a Run paused instead of sending or acting on a provider request.\nEach reason is final for its step; none of them is retried as transport.",
+          "enum": [
+            "context_unreducible",
+            "prune_unavailable",
+            "summary_unavailable",
+            "summary_invalid",
+            "overflow_retries_exhausted",
+            "output_truncated",
+            "refused"
+          ]
+        },
+        "BindingSnapshot": {
+          "type": "object",
+          "required": [
+            "schema_version",
+            "agent",
+            "remote",
+            "bindings",
+            "definitions"
+          ],
+          "properties": {
+            "agent": {
+              "$ref": "#/components/schemas/QualifiedRef"
+            },
+            "bindings": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/ResolvedBinding"
+              }
+            },
+            "definitions": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/ResolvedDefinition"
+              }
+            },
+            "foreign_agents": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/ForeignAgentSnapshot"
+              },
+              "description": "Public operator Agent transports retain the receiver's complete admitted closure."
+            },
+            "remote": {
+              "type": "boolean",
+              "description": "Admission placement determines which implicit defaults must remain excluded."
+            },
+            "schema_version": {
+              "type": "integer",
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false
+        },
+        "ContextRecoveryState": {
+          "type": "object",
+          "description": "Per-Run state that bounds Context Overflow recovery. The effective window\nshrink persists for the Run because its model binding is pinned; the\nconsecutive-overflow count resets after an accepted inference.",
+          "required": [
+            "window_permille",
+            "overflow_attempts",
+            "overflow_request_tokens"
+          ],
+          "properties": {
+            "overflow_attempts": {
+              "type": "integer",
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0
+            },
+            "overflow_request_tokens": {
+              "type": ["integer", "null"],
+              "format": "uint64",
+              "description": "Estimated request size of the last overflowing request.",
+              "minimum": 0
+            },
+            "window_permille": {
+              "type": "integer",
+              "format": "uint16",
+              "description": "Effective window as thousandths of the configured request window.",
+              "maximum": 65535,
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false
+        },
+        "ExecutionSummary": {
+          "type": "object",
+          "required": [
+            "version",
+            "content",
+            "source",
+            "dependencies",
+            "policy_version",
+            "provider",
+            "digest"
+          ],
+          "properties": {
+            "content": {
+              "$ref": "#/components/schemas/SummaryContent"
+            },
+            "dependencies": {
+              "$ref": "#/components/schemas/SummaryDependencies"
+            },
+            "digest": {
+              "type": "string"
+            },
+            "policy_version": {
+              "type": "string"
+            },
+            "previous": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/SummaryLink"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "provider": {
+              "$ref": "#/components/schemas/SummaryProvider"
+            },
+            "source": {
+              "$ref": "#/components/schemas/SummarySource"
+            },
+            "version": {
+              "type": "integer",
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false
+        },
+        "HistoryEntry": {
+          "type": "object",
+          "description": "One Context Projection event with its durable Context Journal sequence.\nThe journal keeps the original event; the projection may later truncate it.",
+          "required": ["seq", "event"],
+          "properties": {
+            "event": {
+              "$ref": "#/components/schemas/ContextEvent"
+            },
+            "seq": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false
+        },
+        "JournalCursor": {
+          "type": "object",
+          "description": "Context Journal position. Entries up to `imported_through` were recovered\nfrom a projection saved before the journal existed and may already be lossy.\nEntries up to `inferred_through` were present when an inference was accepted.",
+          "required": ["head", "imported_through", "inferred_through"],
+          "properties": {
+            "head": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "imported_through": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "inferred_through": {
+              "type": "integer",
+              "format": "uint64",
+              "default": 0,
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false
+        },
+        "SourceObservation": {
+          "type": "object",
+          "required": ["boundary", "binding_digest", "content", "digest"],
+          "properties": {
+            "binding_digest": {
+              "type": "string"
+            },
+            "boundary": {
+              "type": "string"
+            },
+            "content": {},
+            "digest": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        "SummaryContent": {
+          "type": "object",
+          "description": "Model-generated part of an Execution Summary.",
+          "required": [
+            "goal",
+            "constraints",
+            "decisions",
+            "unresolved",
+            "resolved",
+            "artifacts",
+            "verification"
+          ],
+          "properties": {
+            "artifacts": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/ArtifactRef"
+              }
+            },
+            "constraints": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/SummaryItem"
+              }
+            },
+            "decisions": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "goal": {
+              "type": "string"
+            },
+            "resolved": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/ResolvedItem"
+              },
+              "description": "Previous constraints or unresolved items explicitly closed by this merge."
+            },
+            "unresolved": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/SummaryItem"
+              }
+            },
+            "verification": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/VerificationRef"
+              }
+            }
+          },
+          "additionalProperties": false
+        },
+        "SummaryDependencies": {
+          "type": "object",
+          "description": "Sources whose authority the summarized text depends on.",
+          "required": ["message_ids", "tool_call_ids"],
+          "properties": {
+            "message_ids": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "uniqueItems": true
+            },
+            "tool_call_ids": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "uniqueItems": true
+            }
+          },
+          "additionalProperties": false
+        },
+        "SummaryLink": {
+          "type": "object",
+          "required": ["through_seq", "digest"],
+          "properties": {
+            "digest": {
+              "type": "string"
+            },
+            "through_seq": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false
+        },
+        "SummaryProvider": {
+          "type": "object",
+          "required": ["model", "definition_digest"],
+          "properties": {
+            "definition_digest": {
+              "type": "string"
+            },
+            "model": {
+              "$ref": "#/components/schemas/EntityRef"
+            }
+          },
+          "additionalProperties": false
+        },
+        "SummarySource": {
+          "type": "object",
+          "description": "Exact Context Journal range folded into the summary.",
+          "required": ["from_seq", "through_seq", "entries_digest"],
+          "properties": {
+            "entries_digest": {
+              "type": "string",
+              "description": "Digest of the projection entries absorbed by the latest merge."
+            },
+            "from_seq": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "through_seq": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false
+        },
+        "EntityRef": {
+          "type": "object",
+          "required": ["id", "version"],
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "version": {
+              "type": "string"
+            }
+          }
+        },
+        "ArtifactRef": {
+          "type": "object",
+          "required": ["reference", "revision"],
+          "properties": {
+            "reference": {
+              "type": "string",
+              "description": "Path, artifact ID or record reference exactly as it appeared in history."
+            },
+            "revision": {
+              "type": "string",
+              "description": "Revision or digest when history stated one; otherwise empty."
+            }
+          },
+          "additionalProperties": false
+        },
+        "ResolvedItem": {
+          "type": "object",
+          "required": ["id", "resolved_by"],
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "resolved_by": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        "SummaryItem": {
+          "type": "object",
+          "required": ["id", "text"],
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "text": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        "VerificationRef": {
+          "type": "object",
+          "required": ["reference", "outcome"],
+          "properties": {
+            "outcome": {
+              "type": "string"
+            },
+            "reference": {
+              "type": "string",
+              "description": "Tool call ID or evidence reference from history. Never a model claim."
+            }
+          },
+          "additionalProperties": false
+        },
+        "ForeignAgentSnapshot": {
+          "type": "object",
+          "description": "One authenticated receiver's public closure. Nested foreign or private\ndependencies require their own supported disclosure/admission protocol.",
+          "required": ["schema_version", "agent", "bindings", "definitions"],
+          "properties": {
+            "agent": {
+              "$ref": "#/components/schemas/QualifiedRef"
+            },
+            "bindings": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/ResolvedBinding"
+              }
+            },
+            "definitions": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/ResolvedDefinition"
+              }
+            },
+            "schema_version": {
+              "type": "integer",
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false
+        },
+        "QualifiedRef": {
+          "type": "object",
+          "required": ["registry_node", "id", "version"],
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "registry_node": {
+              "type": "string"
+            },
+            "version": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        "ResolvedBinding": {
+          "type": "object",
+          "required": [
+            "identity",
+            "definition",
+            "digest",
+            "origin",
+            "alias",
+            "narrow",
+            "installation",
+            "provider_contract_digest",
+            "provider_implementation",
+            "excluded_reason"
+          ],
+          "properties": {
+            "alias": {
+              "type": ["string", "null"]
+            },
+            "definition": {
+              "$ref": "#/components/schemas/Entry"
+            },
+            "digest": {
+              "type": "string"
+            },
+            "excluded_reason": {
+              "type": ["string", "null"]
+            },
+            "identity": {
+              "$ref": "#/components/schemas/QualifiedRef"
+            },
+            "installation": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/MarketplaceProjection"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "narrow": {
+              "$ref": "#/components/schemas/Narrowing"
+            },
+            "origin": {
+              "$ref": "#/components/schemas/BindingOrigin"
+            },
+            "provider_contract_digest": {
+              "type": ["string", "null"]
+            },
+            "provider_implementation": {
+              "type": ["string", "null"]
+            }
+          },
+          "additionalProperties": false
+        },
+        "ResolvedDefinition": {
+          "type": "object",
+          "required": ["identity", "definition", "digest"],
+          "properties": {
+            "definition": {
+              "$ref": "#/components/schemas/Entry"
+            },
+            "digest": {
+              "type": "string"
+            },
+            "identity": {
+              "$ref": "#/components/schemas/QualifiedRef"
+            }
+          },
+          "additionalProperties": false
+        },
+        "BindingOrigin": {
+          "type": "string",
+          "description": "Only the registration resolver creates provenance; it is absent from writable Bindings.",
+          "enum": [
+            "required",
+            "default",
+            "explicit",
+            "skill_support",
+            "companion"
+          ]
+        },
+        "Narrowing": {
+          "type": "object",
+          "description": "No effect, replay, approval or disclosure field is accepted here.",
+          "properties": {
+            "allowed_hosts": {
+              "type": ["array", "null"],
+              "items": {
+                "type": "string"
+              },
+              "uniqueItems": true
+            },
+            "decision": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/Restrictions"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "limits": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "integer",
+                "format": "uint64",
+                "minimum": 0
+              }
+            },
+            "scope": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "uniqueItems": true
+              }
+            }
+          },
+          "additionalProperties": false
+        },
+        "Restrictions": {
+          "type": "object",
+          "description": "Lower keep thresholds and larger protected suffixes preserve more content.",
+          "required": ["keep_threshold", "preserve_recent", "forbid_apply"],
+          "properties": {
+            "forbid_apply": {
+              "type": "boolean",
+              "default": false
+            },
+            "keep_threshold": {
+              "type": "string",
+              "default": "3fe0000000000000"
+            },
+            "preserve_recent": {
+              "type": "integer",
+              "format": "uint",
+              "default": 6,
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false
         }
       }
     }
@@ -23505,27 +26022,52 @@
         "Context": {
           "type": "object",
           "required": [
-            "summary",
             "run_message_summary",
             "run_message_summary_seq",
             "media_inferred_seq",
             "history",
+            "journal",
             "usage",
             "compactions",
             "message_read_coverage",
             "message_inference_coverage"
           ],
           "properties": {
+            "binding_snapshot": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/BindingSnapshot"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Installed before activation and retained through every execution boundary."
+            },
             "compactions": {
               "type": "integer",
               "format": "uint32",
               "minimum": 0
             },
+            "execution_summary": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/ExecutionSummary"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Opt-in Summary Stage output; absent for prune-only Context Policies."
+            },
             "history": {
               "type": "array",
               "items": {
-                "$ref": "#/components/schemas/ContextEvent"
+                "$ref": "#/components/schemas/HistoryEntry"
               }
+            },
+            "journal": {
+              "$ref": "#/components/schemas/JournalCursor"
             },
             "media_inferred_seq": {
               "type": "integer",
@@ -23544,6 +26086,9 @@
                 "$ref": "#/components/schemas/MessageReadCoverage"
               }
             },
+            "recovery": {
+              "$ref": "#/components/schemas/ContextRecoveryState"
+            },
             "run_message_summary": {
               "type": "string"
             },
@@ -23551,8 +26096,15 @@
               "type": "integer",
               "format": "int64"
             },
-            "summary": {
-              "type": "string"
+            "source_observation": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/SourceObservation"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             },
             "usage": {
               "anyOf": [
@@ -23757,6 +26309,17 @@
           "type": "object",
           "required": ["retry", "lease_recovered"],
           "properties": {
+            "context_reason": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/ContextRecoveryFailure"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Typed context-recovery reason for a paused Run; cleared on resume."
+            },
             "lease_recovered": {
               "type": "boolean"
             },
@@ -24485,6 +27048,773 @@
           "type": "integer",
           "format": "uint32",
           "minimum": 0
+        },
+        "ContextRecoveryFailure": {
+          "type": "string",
+          "description": "Why a Run paused instead of sending or acting on a provider request.\nEach reason is final for its step; none of them is retried as transport.",
+          "enum": [
+            "context_unreducible",
+            "prune_unavailable",
+            "summary_unavailable",
+            "summary_invalid",
+            "overflow_retries_exhausted",
+            "output_truncated",
+            "refused"
+          ]
+        },
+        "BindingSnapshot": {
+          "type": "object",
+          "required": [
+            "schema_version",
+            "agent",
+            "remote",
+            "bindings",
+            "definitions"
+          ],
+          "properties": {
+            "agent": {
+              "$ref": "#/components/schemas/QualifiedRef"
+            },
+            "bindings": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/ResolvedBinding"
+              }
+            },
+            "definitions": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/ResolvedDefinition"
+              }
+            },
+            "foreign_agents": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/ForeignAgentSnapshot"
+              },
+              "description": "Public operator Agent transports retain the receiver's complete admitted closure."
+            },
+            "remote": {
+              "type": "boolean",
+              "description": "Admission placement determines which implicit defaults must remain excluded."
+            },
+            "schema_version": {
+              "type": "integer",
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false
+        },
+        "ContextRecoveryState": {
+          "type": "object",
+          "description": "Per-Run state that bounds Context Overflow recovery. The effective window\nshrink persists for the Run because its model binding is pinned; the\nconsecutive-overflow count resets after an accepted inference.",
+          "required": [
+            "window_permille",
+            "overflow_attempts",
+            "overflow_request_tokens"
+          ],
+          "properties": {
+            "overflow_attempts": {
+              "type": "integer",
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0
+            },
+            "overflow_request_tokens": {
+              "type": ["integer", "null"],
+              "format": "uint64",
+              "description": "Estimated request size of the last overflowing request.",
+              "minimum": 0
+            },
+            "window_permille": {
+              "type": "integer",
+              "format": "uint16",
+              "description": "Effective window as thousandths of the configured request window.",
+              "maximum": 65535,
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false
+        },
+        "ExecutionSummary": {
+          "type": "object",
+          "required": [
+            "version",
+            "content",
+            "source",
+            "dependencies",
+            "policy_version",
+            "provider",
+            "digest"
+          ],
+          "properties": {
+            "content": {
+              "$ref": "#/components/schemas/SummaryContent"
+            },
+            "dependencies": {
+              "$ref": "#/components/schemas/SummaryDependencies"
+            },
+            "digest": {
+              "type": "string"
+            },
+            "policy_version": {
+              "type": "string"
+            },
+            "previous": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/SummaryLink"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "provider": {
+              "$ref": "#/components/schemas/SummaryProvider"
+            },
+            "source": {
+              "$ref": "#/components/schemas/SummarySource"
+            },
+            "version": {
+              "type": "integer",
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false
+        },
+        "HistoryEntry": {
+          "type": "object",
+          "description": "One Context Projection event with its durable Context Journal sequence.\nThe journal keeps the original event; the projection may later truncate it.",
+          "required": ["seq", "event"],
+          "properties": {
+            "event": {
+              "$ref": "#/components/schemas/ContextEvent"
+            },
+            "seq": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false
+        },
+        "JournalCursor": {
+          "type": "object",
+          "description": "Context Journal position. Entries up to `imported_through` were recovered\nfrom a projection saved before the journal existed and may already be lossy.\nEntries up to `inferred_through` were present when an inference was accepted.",
+          "required": ["head", "imported_through", "inferred_through"],
+          "properties": {
+            "head": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "imported_through": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "inferred_through": {
+              "type": "integer",
+              "format": "uint64",
+              "default": 0,
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false
+        },
+        "SourceObservation": {
+          "type": "object",
+          "required": ["boundary", "binding_digest", "content", "digest"],
+          "properties": {
+            "binding_digest": {
+              "type": "string"
+            },
+            "boundary": {
+              "type": "string"
+            },
+            "content": {},
+            "digest": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        "SummaryContent": {
+          "type": "object",
+          "description": "Model-generated part of an Execution Summary.",
+          "required": [
+            "goal",
+            "constraints",
+            "decisions",
+            "unresolved",
+            "resolved",
+            "artifacts",
+            "verification"
+          ],
+          "properties": {
+            "artifacts": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/ArtifactRef"
+              }
+            },
+            "constraints": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/SummaryItem"
+              }
+            },
+            "decisions": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "goal": {
+              "type": "string"
+            },
+            "resolved": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/ResolvedItem"
+              },
+              "description": "Previous constraints or unresolved items explicitly closed by this merge."
+            },
+            "unresolved": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/SummaryItem"
+              }
+            },
+            "verification": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/VerificationRef"
+              }
+            }
+          },
+          "additionalProperties": false
+        },
+        "SummaryDependencies": {
+          "type": "object",
+          "description": "Sources whose authority the summarized text depends on.",
+          "required": ["message_ids", "tool_call_ids"],
+          "properties": {
+            "message_ids": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "uniqueItems": true
+            },
+            "tool_call_ids": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "uniqueItems": true
+            }
+          },
+          "additionalProperties": false
+        },
+        "SummaryLink": {
+          "type": "object",
+          "required": ["through_seq", "digest"],
+          "properties": {
+            "digest": {
+              "type": "string"
+            },
+            "through_seq": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false
+        },
+        "SummaryProvider": {
+          "type": "object",
+          "required": ["model", "definition_digest"],
+          "properties": {
+            "definition_digest": {
+              "type": "string"
+            },
+            "model": {
+              "$ref": "#/components/schemas/EntityRef"
+            }
+          },
+          "additionalProperties": false
+        },
+        "SummarySource": {
+          "type": "object",
+          "description": "Exact Context Journal range folded into the summary.",
+          "required": ["from_seq", "through_seq", "entries_digest"],
+          "properties": {
+            "entries_digest": {
+              "type": "string",
+              "description": "Digest of the projection entries absorbed by the latest merge."
+            },
+            "from_seq": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "through_seq": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false
+        },
+        "EntityRef": {
+          "type": "object",
+          "required": ["id", "version"],
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "version": {
+              "type": "string"
+            }
+          }
+        },
+        "ArtifactRef": {
+          "type": "object",
+          "required": ["reference", "revision"],
+          "properties": {
+            "reference": {
+              "type": "string",
+              "description": "Path, artifact ID or record reference exactly as it appeared in history."
+            },
+            "revision": {
+              "type": "string",
+              "description": "Revision or digest when history stated one; otherwise empty."
+            }
+          },
+          "additionalProperties": false
+        },
+        "ResolvedItem": {
+          "type": "object",
+          "required": ["id", "resolved_by"],
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "resolved_by": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        "SummaryItem": {
+          "type": "object",
+          "required": ["id", "text"],
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "text": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        "VerificationRef": {
+          "type": "object",
+          "required": ["reference", "outcome"],
+          "properties": {
+            "outcome": {
+              "type": "string"
+            },
+            "reference": {
+              "type": "string",
+              "description": "Tool call ID or evidence reference from history. Never a model claim."
+            }
+          },
+          "additionalProperties": false
+        },
+        "ForeignAgentSnapshot": {
+          "type": "object",
+          "description": "One authenticated receiver's public closure. Nested foreign or private\ndependencies require their own supported disclosure/admission protocol.",
+          "required": ["schema_version", "agent", "bindings", "definitions"],
+          "properties": {
+            "agent": {
+              "$ref": "#/components/schemas/QualifiedRef"
+            },
+            "bindings": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/ResolvedBinding"
+              }
+            },
+            "definitions": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/ResolvedDefinition"
+              }
+            },
+            "schema_version": {
+              "type": "integer",
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false
+        },
+        "QualifiedRef": {
+          "type": "object",
+          "required": ["registry_node", "id", "version"],
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "registry_node": {
+              "type": "string"
+            },
+            "version": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        "ResolvedBinding": {
+          "type": "object",
+          "required": [
+            "identity",
+            "definition",
+            "digest",
+            "origin",
+            "alias",
+            "narrow",
+            "installation",
+            "provider_contract_digest",
+            "provider_implementation",
+            "excluded_reason"
+          ],
+          "properties": {
+            "alias": {
+              "type": ["string", "null"]
+            },
+            "definition": {
+              "$ref": "#/components/schemas/Entry"
+            },
+            "digest": {
+              "type": "string"
+            },
+            "excluded_reason": {
+              "type": ["string", "null"]
+            },
+            "identity": {
+              "$ref": "#/components/schemas/QualifiedRef"
+            },
+            "installation": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/MarketplaceProjection"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "narrow": {
+              "$ref": "#/components/schemas/Narrowing"
+            },
+            "origin": {
+              "$ref": "#/components/schemas/BindingOrigin"
+            },
+            "provider_contract_digest": {
+              "type": ["string", "null"]
+            },
+            "provider_implementation": {
+              "type": ["string", "null"]
+            }
+          },
+          "additionalProperties": false
+        },
+        "ResolvedDefinition": {
+          "type": "object",
+          "required": ["identity", "definition", "digest"],
+          "properties": {
+            "definition": {
+              "$ref": "#/components/schemas/Entry"
+            },
+            "digest": {
+              "type": "string"
+            },
+            "identity": {
+              "$ref": "#/components/schemas/QualifiedRef"
+            }
+          },
+          "additionalProperties": false
+        },
+        "Entry": {
+          "type": "object",
+          "required": [
+            "id",
+            "version",
+            "kind",
+            "name",
+            "description",
+            "capabilities",
+            "tags",
+            "languages",
+            "skills",
+            "schema",
+            "config"
+          ],
+          "properties": {
+            "binding_normalization": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/AgentNormalization"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "capabilities": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "config": {
+              "type": "object",
+              "default": {},
+              "additionalProperties": true
+            },
+            "description": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
+            "id": {
+              "type": "string"
+            },
+            "installation": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/MarketplaceProjection"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "kind": {
+              "type": "string"
+            },
+            "languages": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "name": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
+            "schema": {
+              "default": {}
+            },
+            "skills": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "tags": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "version": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        "AgentNormalization": {
+          "type": "object",
+          "description": "Read-only registration metadata is compiled by the Node before publication.",
+          "required": ["schema_version", "registry_node", "bindings"],
+          "properties": {
+            "bindings": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/NormalizedBinding"
+              }
+            },
+            "registry_node": {
+              "type": "string"
+            },
+            "schema_version": {
+              "type": "integer",
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false
+        },
+        "MarketplaceProjection": {
+          "type": "object",
+          "required": ["contract", "tenant", "installation", "revision"],
+          "properties": {
+            "contract": {
+              "type": "integer",
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0
+            },
+            "installation": {
+              "type": "string"
+            },
+            "revision": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "tenant": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        "NormalizedBinding": {
+          "type": "object",
+          "required": ["binding", "origin"],
+          "properties": {
+            "binding": {
+              "$ref": "#/components/schemas/Binding2"
+            },
+            "origin": {
+              "$ref": "#/components/schemas/BindingOrigin"
+            }
+          },
+          "additionalProperties": false
+        },
+        "Binding2": {
+          "type": "object",
+          "required": ["kind", "target", "narrow"],
+          "properties": {
+            "alias": {
+              "type": ["string", "null"]
+            },
+            "kind": {
+              "$ref": "#/components/schemas/BindingKind"
+            },
+            "members": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "An empty member list binds the entire bundle. IDs are unique within a bundle."
+            },
+            "narrow": {
+              "$ref": "#/components/schemas/Narrowing"
+            },
+            "target": {
+              "$ref": "#/components/schemas/QualifiedRef"
+            }
+          },
+          "additionalProperties": false
+        },
+        "BindingOrigin": {
+          "type": "string",
+          "description": "Only the registration resolver creates provenance; it is absent from writable Bindings.",
+          "enum": [
+            "required",
+            "default",
+            "explicit",
+            "skill_support",
+            "companion"
+          ]
+        },
+        "BindingKind": {
+          "type": "string",
+          "enum": ["tool", "bundle", "skill", "memory", "source", "decider"]
+        },
+        "Narrowing": {
+          "type": "object",
+          "description": "No effect, replay, approval or disclosure field is accepted here.",
+          "properties": {
+            "allowed_hosts": {
+              "type": ["array", "null"],
+              "items": {
+                "type": "string"
+              },
+              "uniqueItems": true
+            },
+            "decision": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/Restrictions"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "limits": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "integer",
+                "format": "uint64",
+                "minimum": 0
+              }
+            },
+            "scope": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "uniqueItems": true
+              }
+            }
+          },
+          "additionalProperties": false
+        },
+        "Restrictions": {
+          "type": "object",
+          "description": "Lower keep thresholds and larger protected suffixes preserve more content.",
+          "required": ["keep_threshold", "preserve_recent", "forbid_apply"],
+          "properties": {
+            "forbid_apply": {
+              "type": "boolean",
+              "default": false
+            },
+            "keep_threshold": {
+              "type": "string",
+              "default": "3fe0000000000000"
+            },
+            "preserve_recent": {
+              "type": "integer",
+              "format": "uint",
+              "default": 6,
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false
         }
       }
     }
@@ -24598,27 +27928,52 @@
         "Context": {
           "type": "object",
           "required": [
-            "summary",
             "run_message_summary",
             "run_message_summary_seq",
             "media_inferred_seq",
             "history",
+            "journal",
             "usage",
             "compactions",
             "message_read_coverage",
             "message_inference_coverage"
           ],
           "properties": {
+            "binding_snapshot": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/BindingSnapshot"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Installed before activation and retained through every execution boundary."
+            },
             "compactions": {
               "type": "integer",
               "format": "uint32",
               "minimum": 0
             },
+            "execution_summary": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/ExecutionSummary"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Opt-in Summary Stage output; absent for prune-only Context Policies."
+            },
             "history": {
               "type": "array",
               "items": {
-                "$ref": "#/components/schemas/ContextEvent"
+                "$ref": "#/components/schemas/HistoryEntry"
               }
+            },
+            "journal": {
+              "$ref": "#/components/schemas/JournalCursor"
             },
             "media_inferred_seq": {
               "type": "integer",
@@ -24637,6 +27992,9 @@
                 "$ref": "#/components/schemas/MessageReadCoverage"
               }
             },
+            "recovery": {
+              "$ref": "#/components/schemas/ContextRecoveryState"
+            },
             "run_message_summary": {
               "type": "string"
             },
@@ -24644,8 +28002,15 @@
               "type": "integer",
               "format": "int64"
             },
-            "summary": {
-              "type": "string"
+            "source_observation": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/SourceObservation"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             },
             "usage": {
               "anyOf": [
@@ -24838,6 +28203,17 @@
           "type": "object",
           "required": ["retry", "lease_recovered"],
           "properties": {
+            "context_reason": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/ContextRecoveryFailure"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Typed context-recovery reason for a paused Run; cleared on resume."
+            },
             "lease_recovered": {
               "type": "boolean"
             },
@@ -25566,6 +28942,773 @@
           "type": "integer",
           "format": "uint32",
           "minimum": 0
+        },
+        "ContextRecoveryFailure": {
+          "type": "string",
+          "description": "Why a Run paused instead of sending or acting on a provider request.\nEach reason is final for its step; none of them is retried as transport.",
+          "enum": [
+            "context_unreducible",
+            "prune_unavailable",
+            "summary_unavailable",
+            "summary_invalid",
+            "overflow_retries_exhausted",
+            "output_truncated",
+            "refused"
+          ]
+        },
+        "BindingSnapshot": {
+          "type": "object",
+          "required": [
+            "schema_version",
+            "agent",
+            "remote",
+            "bindings",
+            "definitions"
+          ],
+          "properties": {
+            "agent": {
+              "$ref": "#/components/schemas/QualifiedRef"
+            },
+            "bindings": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/ResolvedBinding"
+              }
+            },
+            "definitions": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/ResolvedDefinition"
+              }
+            },
+            "foreign_agents": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/ForeignAgentSnapshot"
+              },
+              "description": "Public operator Agent transports retain the receiver's complete admitted closure."
+            },
+            "remote": {
+              "type": "boolean",
+              "description": "Admission placement determines which implicit defaults must remain excluded."
+            },
+            "schema_version": {
+              "type": "integer",
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false
+        },
+        "ContextRecoveryState": {
+          "type": "object",
+          "description": "Per-Run state that bounds Context Overflow recovery. The effective window\nshrink persists for the Run because its model binding is pinned; the\nconsecutive-overflow count resets after an accepted inference.",
+          "required": [
+            "window_permille",
+            "overflow_attempts",
+            "overflow_request_tokens"
+          ],
+          "properties": {
+            "overflow_attempts": {
+              "type": "integer",
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0
+            },
+            "overflow_request_tokens": {
+              "type": ["integer", "null"],
+              "format": "uint64",
+              "description": "Estimated request size of the last overflowing request.",
+              "minimum": 0
+            },
+            "window_permille": {
+              "type": "integer",
+              "format": "uint16",
+              "description": "Effective window as thousandths of the configured request window.",
+              "maximum": 65535,
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false
+        },
+        "ExecutionSummary": {
+          "type": "object",
+          "required": [
+            "version",
+            "content",
+            "source",
+            "dependencies",
+            "policy_version",
+            "provider",
+            "digest"
+          ],
+          "properties": {
+            "content": {
+              "$ref": "#/components/schemas/SummaryContent"
+            },
+            "dependencies": {
+              "$ref": "#/components/schemas/SummaryDependencies"
+            },
+            "digest": {
+              "type": "string"
+            },
+            "policy_version": {
+              "type": "string"
+            },
+            "previous": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/SummaryLink"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "provider": {
+              "$ref": "#/components/schemas/SummaryProvider"
+            },
+            "source": {
+              "$ref": "#/components/schemas/SummarySource"
+            },
+            "version": {
+              "type": "integer",
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false
+        },
+        "HistoryEntry": {
+          "type": "object",
+          "description": "One Context Projection event with its durable Context Journal sequence.\nThe journal keeps the original event; the projection may later truncate it.",
+          "required": ["seq", "event"],
+          "properties": {
+            "event": {
+              "$ref": "#/components/schemas/ContextEvent"
+            },
+            "seq": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false
+        },
+        "JournalCursor": {
+          "type": "object",
+          "description": "Context Journal position. Entries up to `imported_through` were recovered\nfrom a projection saved before the journal existed and may already be lossy.\nEntries up to `inferred_through` were present when an inference was accepted.",
+          "required": ["head", "imported_through", "inferred_through"],
+          "properties": {
+            "head": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "imported_through": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "inferred_through": {
+              "type": "integer",
+              "format": "uint64",
+              "default": 0,
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false
+        },
+        "SourceObservation": {
+          "type": "object",
+          "required": ["boundary", "binding_digest", "content", "digest"],
+          "properties": {
+            "binding_digest": {
+              "type": "string"
+            },
+            "boundary": {
+              "type": "string"
+            },
+            "content": {},
+            "digest": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        "SummaryContent": {
+          "type": "object",
+          "description": "Model-generated part of an Execution Summary.",
+          "required": [
+            "goal",
+            "constraints",
+            "decisions",
+            "unresolved",
+            "resolved",
+            "artifacts",
+            "verification"
+          ],
+          "properties": {
+            "artifacts": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/ArtifactRef"
+              }
+            },
+            "constraints": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/SummaryItem"
+              }
+            },
+            "decisions": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "goal": {
+              "type": "string"
+            },
+            "resolved": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/ResolvedItem"
+              },
+              "description": "Previous constraints or unresolved items explicitly closed by this merge."
+            },
+            "unresolved": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/SummaryItem"
+              }
+            },
+            "verification": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/VerificationRef"
+              }
+            }
+          },
+          "additionalProperties": false
+        },
+        "SummaryDependencies": {
+          "type": "object",
+          "description": "Sources whose authority the summarized text depends on.",
+          "required": ["message_ids", "tool_call_ids"],
+          "properties": {
+            "message_ids": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "uniqueItems": true
+            },
+            "tool_call_ids": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "uniqueItems": true
+            }
+          },
+          "additionalProperties": false
+        },
+        "SummaryLink": {
+          "type": "object",
+          "required": ["through_seq", "digest"],
+          "properties": {
+            "digest": {
+              "type": "string"
+            },
+            "through_seq": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false
+        },
+        "SummaryProvider": {
+          "type": "object",
+          "required": ["model", "definition_digest"],
+          "properties": {
+            "definition_digest": {
+              "type": "string"
+            },
+            "model": {
+              "$ref": "#/components/schemas/EntityRef"
+            }
+          },
+          "additionalProperties": false
+        },
+        "SummarySource": {
+          "type": "object",
+          "description": "Exact Context Journal range folded into the summary.",
+          "required": ["from_seq", "through_seq", "entries_digest"],
+          "properties": {
+            "entries_digest": {
+              "type": "string",
+              "description": "Digest of the projection entries absorbed by the latest merge."
+            },
+            "from_seq": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "through_seq": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false
+        },
+        "EntityRef": {
+          "type": "object",
+          "required": ["id", "version"],
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "version": {
+              "type": "string"
+            }
+          }
+        },
+        "ArtifactRef": {
+          "type": "object",
+          "required": ["reference", "revision"],
+          "properties": {
+            "reference": {
+              "type": "string",
+              "description": "Path, artifact ID or record reference exactly as it appeared in history."
+            },
+            "revision": {
+              "type": "string",
+              "description": "Revision or digest when history stated one; otherwise empty."
+            }
+          },
+          "additionalProperties": false
+        },
+        "ResolvedItem": {
+          "type": "object",
+          "required": ["id", "resolved_by"],
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "resolved_by": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        "SummaryItem": {
+          "type": "object",
+          "required": ["id", "text"],
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "text": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        "VerificationRef": {
+          "type": "object",
+          "required": ["reference", "outcome"],
+          "properties": {
+            "outcome": {
+              "type": "string"
+            },
+            "reference": {
+              "type": "string",
+              "description": "Tool call ID or evidence reference from history. Never a model claim."
+            }
+          },
+          "additionalProperties": false
+        },
+        "ForeignAgentSnapshot": {
+          "type": "object",
+          "description": "One authenticated receiver's public closure. Nested foreign or private\ndependencies require their own supported disclosure/admission protocol.",
+          "required": ["schema_version", "agent", "bindings", "definitions"],
+          "properties": {
+            "agent": {
+              "$ref": "#/components/schemas/QualifiedRef"
+            },
+            "bindings": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/ResolvedBinding"
+              }
+            },
+            "definitions": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/ResolvedDefinition"
+              }
+            },
+            "schema_version": {
+              "type": "integer",
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false
+        },
+        "QualifiedRef": {
+          "type": "object",
+          "required": ["registry_node", "id", "version"],
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "registry_node": {
+              "type": "string"
+            },
+            "version": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        "ResolvedBinding": {
+          "type": "object",
+          "required": [
+            "identity",
+            "definition",
+            "digest",
+            "origin",
+            "alias",
+            "narrow",
+            "installation",
+            "provider_contract_digest",
+            "provider_implementation",
+            "excluded_reason"
+          ],
+          "properties": {
+            "alias": {
+              "type": ["string", "null"]
+            },
+            "definition": {
+              "$ref": "#/components/schemas/Entry"
+            },
+            "digest": {
+              "type": "string"
+            },
+            "excluded_reason": {
+              "type": ["string", "null"]
+            },
+            "identity": {
+              "$ref": "#/components/schemas/QualifiedRef"
+            },
+            "installation": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/MarketplaceProjection"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "narrow": {
+              "$ref": "#/components/schemas/Narrowing"
+            },
+            "origin": {
+              "$ref": "#/components/schemas/BindingOrigin"
+            },
+            "provider_contract_digest": {
+              "type": ["string", "null"]
+            },
+            "provider_implementation": {
+              "type": ["string", "null"]
+            }
+          },
+          "additionalProperties": false
+        },
+        "ResolvedDefinition": {
+          "type": "object",
+          "required": ["identity", "definition", "digest"],
+          "properties": {
+            "definition": {
+              "$ref": "#/components/schemas/Entry"
+            },
+            "digest": {
+              "type": "string"
+            },
+            "identity": {
+              "$ref": "#/components/schemas/QualifiedRef"
+            }
+          },
+          "additionalProperties": false
+        },
+        "Entry": {
+          "type": "object",
+          "required": [
+            "id",
+            "version",
+            "kind",
+            "name",
+            "description",
+            "capabilities",
+            "tags",
+            "languages",
+            "skills",
+            "schema",
+            "config"
+          ],
+          "properties": {
+            "binding_normalization": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/AgentNormalization"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "capabilities": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "config": {
+              "type": "object",
+              "default": {},
+              "additionalProperties": true
+            },
+            "description": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
+            "id": {
+              "type": "string"
+            },
+            "installation": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/MarketplaceProjection"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "kind": {
+              "type": "string"
+            },
+            "languages": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "name": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
+            "schema": {
+              "default": {}
+            },
+            "skills": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "tags": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "version": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        "AgentNormalization": {
+          "type": "object",
+          "description": "Read-only registration metadata is compiled by the Node before publication.",
+          "required": ["schema_version", "registry_node", "bindings"],
+          "properties": {
+            "bindings": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/NormalizedBinding"
+              }
+            },
+            "registry_node": {
+              "type": "string"
+            },
+            "schema_version": {
+              "type": "integer",
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false
+        },
+        "MarketplaceProjection": {
+          "type": "object",
+          "required": ["contract", "tenant", "installation", "revision"],
+          "properties": {
+            "contract": {
+              "type": "integer",
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0
+            },
+            "installation": {
+              "type": "string"
+            },
+            "revision": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "tenant": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        "NormalizedBinding": {
+          "type": "object",
+          "required": ["binding", "origin"],
+          "properties": {
+            "binding": {
+              "$ref": "#/components/schemas/Binding2"
+            },
+            "origin": {
+              "$ref": "#/components/schemas/BindingOrigin"
+            }
+          },
+          "additionalProperties": false
+        },
+        "Binding2": {
+          "type": "object",
+          "required": ["kind", "target", "narrow"],
+          "properties": {
+            "alias": {
+              "type": ["string", "null"]
+            },
+            "kind": {
+              "$ref": "#/components/schemas/BindingKind"
+            },
+            "members": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "An empty member list binds the entire bundle. IDs are unique within a bundle."
+            },
+            "narrow": {
+              "$ref": "#/components/schemas/Narrowing"
+            },
+            "target": {
+              "$ref": "#/components/schemas/QualifiedRef"
+            }
+          },
+          "additionalProperties": false
+        },
+        "BindingOrigin": {
+          "type": "string",
+          "description": "Only the registration resolver creates provenance; it is absent from writable Bindings.",
+          "enum": [
+            "required",
+            "default",
+            "explicit",
+            "skill_support",
+            "companion"
+          ]
+        },
+        "BindingKind": {
+          "type": "string",
+          "enum": ["tool", "bundle", "skill", "memory", "source", "decider"]
+        },
+        "Narrowing": {
+          "type": "object",
+          "description": "No effect, replay, approval or disclosure field is accepted here.",
+          "properties": {
+            "allowed_hosts": {
+              "type": ["array", "null"],
+              "items": {
+                "type": "string"
+              },
+              "uniqueItems": true
+            },
+            "decision": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/Restrictions"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "limits": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "integer",
+                "format": "uint64",
+                "minimum": 0
+              }
+            },
+            "scope": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "uniqueItems": true
+              }
+            }
+          },
+          "additionalProperties": false
+        },
+        "Restrictions": {
+          "type": "object",
+          "description": "Lower keep thresholds and larger protected suffixes preserve more content.",
+          "required": ["keep_threshold", "preserve_recent", "forbid_apply"],
+          "properties": {
+            "forbid_apply": {
+              "type": "boolean",
+              "default": false
+            },
+            "keep_threshold": {
+              "type": "string",
+              "default": "3fe0000000000000"
+            },
+            "preserve_recent": {
+              "type": "integer",
+              "format": "uint",
+              "default": 6,
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false
         }
       }
     }

@@ -675,6 +675,61 @@ impl Guard {
 		.map_err(Into::into)
 	}
 
+	/// Authorize the exact pinned summarizer and charge every allowance
+	/// before the Summary Stage request leaves this node.
+	pub async fn reserve_summary(
+		&self,
+		f: &Federation,
+		attempt: Uuid,
+		summarizer: &aidash_domain::context::summary::SummaryProvider,
+		window: usize,
+		output: u32,
+		request: &crate::provider::ModelRequest,
+	) -> Result<Option<crate::generation::budget::InferenceReservation>> {
+		let request_bytes = serde_json::to_vec(request)?.len().max(1) as i64;
+		aidash_application::execution::summary::authorize(
+			&SummaryApproval { guard: self, f },
+			summarizer,
+			request_bytes,
+		)
+		.await?;
+		aidash_application::execution::admission::reserve(
+			&crate::bootstrap::summary_admission_repository(
+				&f.store,
+				self.remote.as_ref(),
+				&self.access,
+				&self.run,
+			),
+			attempt,
+			window,
+			output,
+			request,
+		)
+		.await
+		.map_err(aidash_application::execution::summary::classify)
+		.map_err(Into::into)
+	}
+
+	/// Whether every message is still readable by this Run under current
+	/// authority. The recheck records no new read. Remote visibility belongs
+	/// to the Home, so remote message dependencies fail closed.
+	pub async fn messages_readable(&self, ids: &std::collections::BTreeSet<Uuid>) -> Result<bool> {
+		if ids.is_empty() {
+			return Ok(true);
+		}
+		if self.remote.is_some() {
+			return Ok(false);
+		}
+		let mut access = self.access.lock().await;
+		aidash_application::authorization::records::messages_readable(
+			&mut crate::bootstrap::run_visibility_scope(&mut access),
+			self.run.workspace_id,
+			ids.iter().copied(),
+		)
+		.await
+		.map_err(Into::into)
+	}
+
 	pub async fn inference(&self) -> Result<()> {
 		self.refresh_remote().await?;
 		let mut access = self.access.lock().await;
@@ -747,6 +802,74 @@ impl Guard {
 			.map_err(|_| Error::Conflict("execution boundary still in use".into()))?
 			.into_inner();
 		access.finish(result).await
+	}
+}
+
+/// Summary Stage approvals under the Guard's retained worker authority.
+struct SummaryApproval<'a> {
+	guard: &'a Guard,
+	f: &'a Federation,
+}
+#[async_trait::async_trait]
+impl aidash_application::ports::execution::summary::SummaryAuthorization for SummaryApproval<'_> {
+	fn remote(&self) -> bool {
+		self.guard.remote.is_some()
+	}
+	fn node_id(&self) -> &str {
+		&self.f.config.node_id
+	}
+	async fn refresh(&self) -> aidash_application::Result<()> {
+		self.guard.refresh_remote().await.map_err(Into::into)
+	}
+	async fn remote_binding(
+		&self,
+	) -> aidash_application::Result<aidash_domain::semantic::remote::Binding> {
+		use aidash_application::ports::generation::compaction::remote::RemoteCompactionAuthority as _;
+		let remote = self.guard.remote.as_ref().ok_or(Error::Forbidden)?;
+		let mut access = self.guard.access.lock().await;
+		let mut scope = crate::bootstrap::generation_remote_compaction_scope(&mut access, remote);
+		// Reacquire the Home's current lease before reading its disclosed pins.
+		scope.suspend().await?;
+		if !scope.refresh(&self.guard.run).await? {
+			return Err(aidash_application::Error::Forbidden);
+		}
+		let description: aidash_domain::federation::execution::Description =
+			serde_json::from_value(scope.description(self.guard.run.id).await?)?;
+		Ok(description.semantic)
+	}
+	async fn catalog_entry(
+		&self,
+		model: &EntityRef,
+		action: &str,
+	) -> aidash_application::Result<crate::registry::Entry> {
+		let mut access = self.guard.access.lock().await;
+		catalog::entry(&mut access, model, action)
+			.await
+			.map_err(Into::into)
+	}
+	async fn charge_generated(
+		&self,
+		summarizer: &aidash_domain::context::summary::SummaryProvider,
+		request_bytes: i64,
+	) -> aidash_application::Result<()> {
+		let run = &self.guard.run;
+		let mut access = self.guard.access.lock().await;
+		aidash_application::generation::summary::reserve(
+			&mut crate::bootstrap::generation_compaction_authority_scope(&mut access),
+			&crate::bootstrap::generation_summary_repository(&self.f.store),
+			&aidash_domain::generation::compaction::Context {
+				run: run.id,
+				task: run.task_id,
+				agent: EntityRef {
+					id: run.agent_id.clone(),
+					version: run.agent_version.clone(),
+				},
+			},
+			summarizer,
+			request_bytes,
+		)
+		.await
+		.map(|_| ())
 	}
 }
 

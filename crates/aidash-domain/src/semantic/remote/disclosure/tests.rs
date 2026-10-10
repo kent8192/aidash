@@ -153,6 +153,7 @@ fn mixed_receipt_preserves_ordinary_provenance_before_trimming_native_units(
 		index_digest: "index".into(),
 		embedding: Box::new(provider.clone()),
 		compactor: None,
+		summarizer: None,
 		native: Some(Box::new(NativeBinding {
 			selection: NativeRequest {
 				participant: bank.participant.unwrap(),

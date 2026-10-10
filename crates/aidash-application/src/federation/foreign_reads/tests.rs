@@ -539,6 +539,7 @@ async fn required_home_semantics_recheck_the_source_workspace_permission(
 			configuration_digest: "configuration".into(),
 		}),
 		compactor: None,
+		summarizer: None,
 	};
 	scope.source_denied = Some("semantic.use");
 	assert!(!visible(&mut scope, &run).await.unwrap());

@@ -37,7 +37,7 @@ pub fn build_compaction_state(
 	let mut history = vec![];
 	let mut candidates = vec![];
 	let mut questions = Questions::new();
-	for (index, event) in context.history.iter().enumerate() {
+	for (index, event) in context.events().enumerate() {
 		if let Some(text) = disclosure.conversation.get(&index) {
 			if matches!(event, ContextEvent::Tool { .. }) {
 				return Err(Error::Invalid(

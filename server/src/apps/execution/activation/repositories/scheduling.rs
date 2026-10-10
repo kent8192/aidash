@@ -224,14 +224,27 @@ impl<E: Executor> SchedulingScope for Scope<E> {
 			.and_where(worker_context())
 			.returning_all()
 			.build(PostgresQueryBuilder);
-		self.tx
+		let leased = self
+			.tx
 			.executor()
 			.fetch_optional(&sql, convert_values(values))
 			.await
 			.map_err(Error::from)?
 			.map(|row| raw(row)?.decode().map_err(Into::into))
 			.transpose()
-			.map_err(|e: Error| e.into())
+			.map_err(|e: Error| aidash_application::Error::from(e))?;
+		if leased.is_some() && run.recovery.lease_recovered {
+			// The previous worker's unsettled Compaction Attempt can never settle.
+			let (sql, values) =
+				crate::apps::execution::repositories::context_journal::abandon_open(run.id)
+					.build(PostgresQueryBuilder);
+			self.tx
+				.executor()
+				.execute(&sql, convert_values(values))
+				.await
+				.map_err(Error::from)?;
+		}
+		Ok(leased)
 	}
 	async fn repair_lease(
 		&mut self,

@@ -43,6 +43,12 @@ pub enum Error {
 	IdentityStatusUnavailable,
 	#[error("{0}")]
 	RemoteSemantic(aidash_domain::semantic::Failure),
+	/// Typed context-recovery pause; never retried as transport.
+	#[error("{0}")]
+	Context(aidash_domain::context::recovery::Failure),
+	/// Provider-proven Context Overflow. Only this enters compact-and-retry.
+	#[error("the provider reported that the request exceeded its context window")]
+	ContextOverflow,
 	#[error("atomic transaction visibility pending; retry after recovery")]
 	TransactionPending,
 	/// Opaque adapter errors retain their identity for retry and recovery.

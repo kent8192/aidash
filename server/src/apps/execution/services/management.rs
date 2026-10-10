@@ -588,6 +588,7 @@ impl HarnessManagement {
 				context: json!({"run_message":input.content}),
 				tools: Vec::new(),
 				max_output_tokens: 0,
+				response_format: None,
 				content_parts: parts,
 			};
 			request.validate()?;

@@ -4199,6 +4199,8 @@ async fn seed_remote_history(p: &Pair) {
 		let query_bind_1 = p.admission;
 		let mut context = serde_json::to_value(p.run().await.context).unwrap();
 		context["history"] = json!(history);
+		// Bare events are a pre-journal projection; drop the cursor so it is imported.
+		context.as_object_mut().unwrap().remove("journal");
 		let query_bind_2 = context;
 		let query_bind_3 = common::pending(aidash_server::domain::RunState::Thinking(
 			aidash_server::domain::ThinkingState::default(),
@@ -4933,7 +4935,7 @@ async fn remote_memory_mutate_is_not_advertised_and_cannot_write_a_receiver_subs
 	assert_eq!(p.requests.lock().await.len(), 1);
 	let run = p.run().await;
 	assert_eq!(
-		serde_json::to_value(&run.context).unwrap()["history"][0]["result"]["error"],
+		serde_json::to_value(&run.context).unwrap()["history"][0]["event"]["result"]["error"],
 		"unavailable tool memory_mutate",
 		"unsupported remote writes must return an explicit tool error"
 	);

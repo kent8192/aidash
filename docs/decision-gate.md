@@ -3,6 +3,11 @@
 The portable `DecisionGate` provides explicit, version-pinned Compaction decisions
 for #108. It is not composed into native agent execution yet. Native authority,
 owner accounting, atomic persistence and administration adapters remain required.
+Native [context recovery](protocol.md#context-recovery) calls its Jev prune stage
+through `aidash_application::context::compact`, whose input (a context, budget,
+pinned snapshot and policy) and fit-or-unchanged result match this gate. The
+gate can replace that stage without changing the Summary Stage, which is a
+separately approved generation step and never a decider fallback.
 
 Decider declarations require an exact Jev model version and an HTTPS endpoint.
 HTTP is accepted only when the URL host is a literal loopback IPv4 or IPv6

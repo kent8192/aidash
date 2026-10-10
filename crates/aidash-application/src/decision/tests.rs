@@ -27,20 +27,46 @@ fn definition(mode: Mode) -> aidash_domain::registry::Entry {
 	.unwrap()
 }
 fn history() -> Context {
-	Context {
-		history: (0..10)
-			.map(|index| ContextEvent::Tool {
-				call: aidash_domain::provider::ToolCall {
-					id: format!("call{index}"),
-					name: "safe_tool".into(),
-					arguments: json!({"private":"INPUT_SECRET","query":"permitted"}),
-				},
-				result: json!({"body":format!("RESULT_SECRET{}", "x".repeat(10_000))}),
-			})
-			.collect(),
-		summary: "PRIVATE_SUMMARY".into(),
-		..Default::default()
+	let mut context = Context::default();
+	for index in 0..10 {
+		context.push(ContextEvent::Tool {
+			call: aidash_domain::provider::ToolCall {
+				id: format!("call{index}"),
+				name: "safe_tool".into(),
+				arguments: json!({"private":"INPUT_SECRET","query":"permitted"}),
+			},
+			result: json!({"body":format!("RESULT_SECRET{}", "x".repeat(10_000))}),
+		});
 	}
+	// The decision state must never disclose the Execution Summary either.
+	use aidash_domain::context::summary::*;
+	let content = SummaryContent {
+		goal: "PRIVATE_SUMMARY".into(),
+		constraints: vec![],
+		decisions: vec![],
+		unresolved: vec![],
+		resolved: vec![],
+		artifacts: vec![],
+		verification: vec![],
+	};
+	let provider = SummaryProvider {
+		model: aidash_domain::registry::EntityRef {
+			id: "summarizer".into(),
+			version: "1.0.0".into(),
+		},
+		definition_digest: "digest".into(),
+	};
+	let summary = ExecutionSummary::merge(
+		content,
+		None,
+		&context.history[..1],
+		Default::default(),
+		"context-recovery/1",
+		provider,
+	)
+	.unwrap();
+	context.execution_summary = Some(Box::new(summary));
+	context
 }
 fn disclosure() -> Disclosure {
 	Disclosure {
@@ -496,15 +522,16 @@ async fn evaluate(
 	view: Disclosure,
 ) -> (Result<CompactionResult>, Context, Context) {
 	let mut context = history();
-	context.history = (0..fixture.events)
-		.map(|i| {
-			let mut event = context.history[i % context.history.len()].clone();
-			if let ContextEvent::Tool { call, .. } = &mut event {
-				call.id = format!("call{i}");
-			}
-			event
-		})
-		.collect();
+	let template = context.history.clone();
+	context.history.clear();
+	context.journal = Default::default();
+	for i in 0..fixture.events {
+		let mut event = template[i % template.len()].event.clone();
+		if let ContextEvent::Tool { call, .. } = &mut event {
+			call.id = format!("call{i}");
+		}
+		context.push(event);
+	}
 	let original = context.clone();
 	let pinned = json!({"reference_documents":"DOCUMENT_SECRET"});
 	let budget = RequestBudget {
@@ -785,13 +812,13 @@ async fn call_only_branch_keeps_call_and_historical_result_prefix() {
 	let (result, context, original) = evaluate(&fixture, Mode::Enforce, 80_000, disclosure()).await;
 	result.unwrap();
 	assert_eq!(context.history.len(), 10);
-	let ContextEvent::Tool { call: before, .. } = &original.history[1] else {
+	let ContextEvent::Tool { call: before, .. } = &original.history[1].event else {
 		panic!()
 	};
 	let ContextEvent::Tool {
 		call: after,
 		result,
-	} = &context.history[1]
+	} = &context.history[1].event
 	else {
 		panic!()
 	};

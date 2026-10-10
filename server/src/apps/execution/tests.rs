@@ -4,6 +4,7 @@
 //! Execute an individual target with `cargo test -p aidash-server --test <target>`.
 //!
 //! - `commands`
+//! - `context_journal`
 //! - `endpoints`
 //! - `event_bus`
 //! - `framework_regressions`

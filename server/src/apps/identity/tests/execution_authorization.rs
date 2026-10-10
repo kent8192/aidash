@@ -116,7 +116,7 @@ async fn scoped_worker_recovers_from_a_missing_skill_path_and_reads_an_approved_
 	);
 	let run = f.store.run(run.id).await.unwrap();
 	assert_eq!(
-		json!(run.context)["history"][0]["result"]["error"],
+		json!(run.context)["history"][0]["event"]["result"]["error"],
 		"Skill file not found: references/missing.md"
 	);
 	assert!(
@@ -129,7 +129,7 @@ async fn scoped_worker_recovers_from_a_missing_skill_path_and_reads_an_approved_
 	);
 	let run = f.store.run(run.id).await.unwrap();
 	assert_eq!(
-		json!(run.context)["history"][1]["result"]["text"],
+		json!(run.context)["history"][1]["event"]["result"]["text"],
 		"Approved guide"
 	);
 	cleanup(f, &url, &schema).await;
@@ -1517,7 +1517,7 @@ async fn malformed_scoped_delegation_arguments_remain_model_correctable(
 	let run = f.store.run(run.id).await.unwrap();
 	assert_eq!(run.phase().as_str(), "TOOL_CALL");
 	assert_eq!(json!(run.state)["data"]["cursor"], 1);
-	assert!(json!(run.context)["history"][0]["result"]["error"].is_string());
+	assert!(json!(run.context)["history"][0]["event"]["result"]["error"].is_string());
 	assert_eq!(f.store.task(task).await.unwrap().status.as_str(), "RUNNING");
 	cleanup(f, &url, &schema).await;
 }

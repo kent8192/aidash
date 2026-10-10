@@ -379,6 +379,7 @@ impl GenerationActivationScope for Session {
 			allocated_tokens: 10000,
 			allocated_compaction_calls: 0,
 			allocated_embedding_calls: 0,
+			allocated_summary_calls: 0,
 		})
 	}
 	async fn pinned_policy(&mut self, job: &Request) -> Result<Value> {

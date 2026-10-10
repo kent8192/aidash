@@ -167,6 +167,7 @@ fn world() -> World {
 			index_digest: digest(),
 			embedding: Box::new(embedding),
 			compactor: Some(Box::new(compactor_provider)),
+			summarizer: None,
 		},
 	};
 	let input = Input {
@@ -544,6 +545,37 @@ fn each_inference_binding_change_is_forbidden(world: World, #[case] changed: &st
 		"allowance" => usage.reserved_tokens -= 1,
 		_ => panic!("case"),
 	}
+	assert!(matches!(
+		exact_provider(&state.description, &usage),
+		Err(Error::Forbidden)
+	));
+}
+#[rstest]
+fn summary_usage_requires_the_home_disclosed_summarizer_pin(world: World) {
+	let mut state = world.0.lock().unwrap();
+	let mut usage = state.input.usage.clone();
+	usage.purpose = Purpose::Summary;
+	assert!(matches!(
+		exact_provider(&state.description, &usage),
+		Err(Error::Context(
+			aidash_domain::context::recovery::Failure::SummaryUnavailable
+		))
+	));
+	// The agent model doubles as the pinned summarizer in this fixture.
+	let Binding::RequiredHome { summarizer, .. } = &mut state.description.semantic else {
+		panic!("binding")
+	};
+	*summarizer = Some(Box::new(usage.provider.clone()));
+	exact_provider(&state.description, &usage).unwrap();
+	usage.reserved_tokens -= 1;
+	exact_provider(&state.description, &usage).unwrap();
+	usage.reserved_tokens += 2;
+	assert!(matches!(
+		exact_provider(&state.description, &usage),
+		Err(Error::Forbidden)
+	));
+	usage.reserved_tokens -= 1;
+	usage.provider.digest = "wrong".into();
 	assert!(matches!(
 		exact_provider(&state.description, &usage),
 		Err(Error::Forbidden)

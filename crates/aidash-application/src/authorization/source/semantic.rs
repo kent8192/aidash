@@ -37,6 +37,7 @@ pub async fn binding<S: SemanticBindingScope + ?Sized>(
 		embedding,
 		compactor,
 		native,
+		summarizer,
 	} = request
 	else {
 		if native_enabled {
@@ -54,11 +55,39 @@ pub async fn binding<S: SemanticBindingScope + ?Sized>(
 	if !agent.semantic_memory && !agent.workspace_context {
 		return Err(Error::RemoteSemantic(Failure::Configuration));
 	}
+	// Only the exact summarizer pinned by the Agent's Context Policy may be
+	// disclosed; its definition is part of the admitted Binding closure.
+	let summarizer = if let Some(reference) = summarizer {
+		let pinned = match agent.context_policy.as_ref() {
+			Some(aidash_domain::context::policy::ContextPolicy::RecoveryV1 {
+				summary: Some(summary),
+				..
+			}) => Some(&summary.model),
+			_ => None,
+		};
+		if pinned != Some(reference) {
+			return Err(Error::RemoteSemantic(Failure::Configuration));
+		}
+		let definition = inspection
+			.definitions
+			.iter()
+			.find(|d| d.kind == "model" && &d.entry == reference)
+			.ok_or(Error::RemoteSemantic(Failure::Configuration))?;
+		Some(Provider {
+			node_id: node.to_owned(),
+			entry: reference.clone(),
+			digest: definition.digest.clone(),
+			configuration_digest: digest(&definition.metadata.config),
+		})
+	} else {
+		None
+	};
 	super::authorize(access, task, node, inspection).await?;
 	let mut workspace = access.source_workspace(task.workspace_id).await?;
 	workspace.attributes["remote_node"] = json!(node);
 	workspace.attributes["inference_model"] = json!(agent.model);
 	workspace.attributes["compactor"] = json!(compactor);
+	workspace.attributes["summarizer"] = json!(summarizer.as_ref().map(|p| &p.entry));
 	access.source_require(&workspace, "semantic.search").await?;
 	// Disclosure is independently selectable in policy; local read/search is
 	// not permission to send text to the execution node and its providers.
@@ -150,5 +179,6 @@ pub async fn binding<S: SemanticBindingScope + ?Sized>(
 			configuration_digest: digest(&entry.config),
 		}),
 		compactor: compactor.map(Box::new),
+		summarizer: summarizer.map(Box::new),
 	})
 }

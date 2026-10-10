@@ -29,7 +29,7 @@ impl<'a> Executor<'a> {
 		let mut context = run.context.clone();
 		let event = ContextEvent::tool(call.clone(), json!({"error":message}));
 		let growth = context::tool_event_growth(&context, &event);
-		context.history.push(event);
+		context.push(event);
 		run.state.tool_mut()?.request_tokens =
 			run.state.tool()?.request_tokens.saturating_add(growth);
 		run.context = context.clone();
@@ -80,6 +80,270 @@ impl<'a> Executor<'a> {
 			text,
 		)
 		.await
+	}
+	/// Record a provider-proven Context Overflow and re-enter Thinking with a
+	/// smaller effective window, or pause once the bounded allowance is spent
+	/// or the retried request did not shrink. Only recovery state is saved.
+	async fn context_overflowed(
+		&self,
+		run: &mut Run,
+		token: Uuid,
+		request_tokens: usize,
+		policy: &context::policy::Effective,
+	) -> Result<()> {
+		let mut recovery = run.context.recovery;
+		if !recovery.overflowed(
+			request_tokens as u64,
+			policy.overflow_retries,
+			policy.overflow_shrink_permille,
+		) {
+			metrics::counter!("aidash_context_overflow_total", "outcome" => "exhausted")
+				.increment(1);
+			return Err(Error::Context(
+				context::recovery::Failure::OverflowRetriesExhausted,
+			));
+		}
+		metrics::counter!("aidash_context_overflow_total", "outcome" => "retried").increment(1);
+		run.context.recovery = recovery;
+		self.environment
+			.store()
+			.save_run(run, token, "run.context_overflow")
+			.await
+	}
+	/// Run one Summary Stage merge. Adoption saves the Run atomically and keeps
+	/// it Thinking so the next step fits from durable state; every other
+	/// outcome settles the attempt and leaves the saved projection unchanged.
+	#[allow(clippy::too_many_arguments)]
+	async fn summarize(
+		&self,
+		run: &mut Run,
+		token: Uuid,
+		guard: Option<&dyn ExecutionAuthority>,
+		visibility: &mut dyn ExecutionVisibility,
+		fitting: &aidash_application::context::Fitting<'_>,
+		plan: aidash_application::context::SummaryPlan,
+		tools: &Tools,
+	) -> Result<()> {
+		use aidash_application::context::{
+			record_stage, record_tokens, summary_candidate, summary_request,
+		};
+		use context::recovery::{Attempt, Failure as ContextFailure, Outcome, Settlement, Stage};
+		let store = self.environment.store();
+		let unavailable = || {
+			record_stage("summary", "unavailable");
+			Error::Context(ContextFailure::SummaryUnavailable)
+		};
+		let (Some(summary), Some(max_tokens)) = (
+			fitting.policy.summary.as_ref(),
+			fitting.policy.summary_tokens(fitting.budget.window),
+		) else {
+			return Err(unavailable());
+		};
+		let (Some(first), Some(last)) = (plan.absorbed.first(), plan.absorbed.last()) else {
+			return Err(Error::Context(ContextFailure::ContextUnreducible));
+		};
+		// Only the summarizer pinned in the Run's admission closure may run.
+		let entry = match self
+			.environment
+			.catalog()
+			.get_for_run(run, &summary.model.id, &summary.model.version)
+			.await
+		{
+			Ok(entry) if entry.kind == "model" => entry,
+			Ok(_) | Err(Error::NotFound(_) | Error::Invalid(_)) => return Err(unavailable()),
+			Err(error) => return Err(error),
+		};
+		let summarizer = context::summary::SummaryProvider {
+			model: summary.model.clone(),
+			definition_digest: aidash_domain::registry::rules::digest(&serde_json::to_value(
+				&entry,
+			)?),
+		};
+		let model_cfg: ModelConfig = serde_json::from_value(entry.config)?;
+		let summary_window = model_cfg.context_window;
+		let provider = self
+			.environment
+			.provider(model_cfg)
+			.map_err(|_| unavailable())?;
+		let request = summary_request(&plan, fitting.pinned, max_tokens);
+		if request.ensure_fits(summary_window).is_err() {
+			// The summarizer cannot read the absorbed history; never split it silently.
+			record_stage("summary", "invalid");
+			return Err(Error::Context(ContextFailure::SummaryInvalid));
+		}
+		let attempt = Attempt {
+			id: Uuid::new_v4(),
+			run_id: run.id,
+			stage: Stage::Summary,
+			policy_version: fitting.policy.version.into(),
+			provider: format!(
+				"{}@{}#{}",
+				summary.model.id, summary.model.version, summarizer.definition_digest
+			),
+			source_from_seq: first.seq,
+			source_through_seq: last.seq,
+			base_revision: run.revision,
+			observed_input_seq: run.observed_input_seq,
+			before_tokens: plan.before_tokens as u64,
+		};
+		if let Err(error) = store
+			.begin_compaction(run, token, &attempt, summary.call_budget)
+			.await
+		{
+			if matches!(error, Error::Context(_)) {
+				record_stage("summary", "unavailable");
+			}
+			return Err(error);
+		}
+		let settlement =
+			|outcome: Outcome, reason: Option<&str>, after: Option<usize>| Settlement {
+				outcome,
+				reason: reason.map(str::to_owned),
+				candidate_digest: None,
+				after_tokens: after.map(|tokens| tokens as u64),
+			};
+		let reservation = match guard {
+			Some(guard) => match guard
+				.reserve_summary(token, &summarizer, summary_window, max_tokens, &request)
+				.await
+			{
+				Ok(reservation) => reservation,
+				Err(error) => {
+					let outcome = if matches!(error, Error::Forbidden | Error::Unauthorized) {
+						Outcome::Unauthorized
+					} else {
+						Outcome::Unavailable
+					};
+					store
+						.settle_compaction(run, token, attempt.id, &settlement(outcome, None, None))
+						.await?;
+					record_stage("summary", outcome.label());
+					return Err(error);
+				}
+			},
+			None => None,
+		};
+		// Like inference, release visibility and authorization locks during I/O.
+		if let Some(guard) = guard {
+			guard.suspend().await?;
+		}
+		visibility.suspend().await?;
+		let result = tokio::select! {
+			biased;
+			cancelled = self.environment.wait_for_inference_cancellation(run.id) => match cancelled {
+				Ok(()) => Err(Error::Conflict("run cancelled during context summary".into())),
+				Err(error) => Err(error),
+			},
+			result = provider.infer(request) => result,
+		};
+		let resumed = visibility.resume().await;
+		if let (Some(reservation), Ok(response)) = (reservation, result.as_ref()) {
+			reservation.settle(response).await?;
+		}
+		resumed?;
+		if let Some(guard) = guard {
+			guard.resume().await?;
+		}
+		let response = match result {
+			Ok(response) => response,
+			// An overflowing, truncated or refused summary is never adopted, and
+			// it does not recurse into another compaction.
+			Err(error @ (Error::ContextOverflow | Error::Context(_))) => {
+				let reason = match &error {
+					Error::Context(failure) => failure.label(),
+					_ => "context_overflow",
+				};
+				store
+					.settle_compaction(
+						run,
+						token,
+						attempt.id,
+						&settlement(Outcome::Invalid, Some(reason), None),
+					)
+					.await?;
+				record_stage("summary", "invalid");
+				return Err(Error::Context(ContextFailure::SummaryInvalid));
+			}
+			Err(error) => {
+				store
+					.settle_compaction(
+						run,
+						token,
+						attempt.id,
+						&settlement(Outcome::Unavailable, None, None),
+					)
+					.await?;
+				record_stage("summary", "unavailable");
+				return Err(error);
+			}
+		};
+		if let Some(guard) = guard
+			&& let Err(error) = guard.inference().await
+		{
+			store
+				.settle_compaction(
+					run,
+					token,
+					attempt.id,
+					&settlement(Outcome::Unauthorized, None, None),
+				)
+				.await?;
+			record_stage("summary", "unauthorized");
+			return Err(error);
+		}
+		let dependencies = summary_dependencies(&plan.absorbed, tools);
+		match summary_candidate(
+			&plan,
+			&response.text,
+			dependencies,
+			summarizer,
+			max_tokens,
+			fitting,
+		) {
+			Ok((candidate, after)) => {
+				let mut adopted = settlement(Outcome::Adopted, None, Some(after));
+				adopted.candidate_digest = candidate
+					.execution_summary
+					.as_ref()
+					.map(|summary| summary.digest.clone());
+				let previous = std::mem::replace(&mut run.context, candidate);
+				if let Err(error) = store
+					.adopt_compaction(run, token, attempt.id, &adopted)
+					.await
+				{
+					run.context = previous;
+					return Err(error);
+				}
+				record_stage("summary", "applied");
+				record_tokens("summary", plan.before_tokens, after);
+				Ok(())
+			}
+			Err(unadopted) => {
+				store
+					.settle_compaction(
+						run,
+						token,
+						attempt.id,
+						&settlement(
+							unadopted.outcome,
+							unadopted
+								.rejection
+								.as_ref()
+								.map(|rejection| rejection.label()),
+							unadopted.after_tokens,
+						),
+					)
+					.await?;
+				record_stage("summary", unadopted.outcome.label());
+				Err(Error::Context(
+					if unadopted.outcome == Outcome::Insufficient {
+						ContextFailure::ContextUnreducible
+					} else {
+						ContextFailure::SummaryInvalid
+					},
+				))
+			}
+		}
 	}
 	pub async fn advance(
 		&self,
@@ -223,7 +487,9 @@ impl<'a> Executor<'a> {
 					.catalog().get_for_run(&*run, &agent.model.id, &agent.model.version)
 					.await?;
 				let model_cfg: ModelConfig = serde_json::from_value(model_entry.config)?;
-				let window = model_cfg.context_window;
+				// A proven provider overflow shrinks the effective window for the Run.
+				let window = run.context.recovery.effective_window(model_cfg.context_window);
+				let policy = context::policy::Effective::of(agent.context_policy.as_ref());
 				let output_limit = model_cfg.output_token_limit();
 				let model = self.environment.provider(model_cfg.clone())?;
 				let tools = self.environment.binding_resolver().tools(run).await?;
@@ -411,7 +677,8 @@ impl<'a> Executor<'a> {
 					&instructions,
 					&specifications,
 					&private_context,
-				)?;
+				)
+				.map_err(|_| unreducible(guard))?;
 				let mut budget = context::RequestBudget {
 					window: context_window,
 					instructions: &instructions,
@@ -464,13 +731,13 @@ impl<'a> Executor<'a> {
 						)
 					};
 				}
-				if let Err(error) = snapshot_fit
+				if snapshot_fit.is_err()
 					&& budget
 						.request(&Context::default(), &pinned)
 						.estimated_total_tokens()
 						> budget.window
 				{
-					return Err(error.into());
+					return Err(unreducible(guard));
 				}
 				let semantic_budget = budget.remaining(&Context::default(), &pinned) / 2;
 				let semantic_inputs = inputs
@@ -495,28 +762,31 @@ impl<'a> Executor<'a> {
                     run.context = context.clone();
                     store.observe_sources(run, token).await?;
                 }
+                if let Some(summary) = &context.execution_summary
+                    && !summary_dependencies_current(self.environment, guard, home.as_ref(), run, &summary.dependencies).await?
+                {
+                    // A revoked source must not survive inside summary text.
+                    let journal = store.context_journal(run.id, summary.source.from_seq, summary.source.through_seq).await?;
+                    aidash_application::context::restore_summarized(&mut context, journal)?;
+                    aidash_application::context::record_stage("summary", "revoked");
+                }
                 let compactor = self.environment.compactor()?;
-                compact_execution(&mut context, compactor.as_ref(), &budget, &pinned)
-                    .await.map_err(|error| {
-                        if guard.is_some_and(|guard| guard.is_remote()) && is_invalid(&error) {
-                            Error::RemoteSemantic(Failure::ContextBudget)
-                        } else { error }
-                    })?;
+                let fitting = aidash_application::context::Fitting { budget: &budget, pinned: &pinned, policy: &policy };
+                match compact_execution(&mut context, compactor.as_ref(), &fitting).await.map_err(|error| remote_budget(guard, error))? {
+                    aidash_application::context::Compaction::Fits => {}
+                    aidash_application::context::Compaction::NeedsSummary(plan) => {
+                        return Box::pin(self.summarize(run, token, guard, visibility, &fitting, *plan, &tools)).await.map_err(|error| remote_budget(guard, error));
+                    }
+                }
 
 				if let Some(guard) = guard {
 					guard.inference().await?;
 				}
 				let mut request = budget.request(&context, &pinned);
 				request.content_parts = media.parts;
-				request.ensure_fits(window).map_err(Error::from).map_err(
-					|error| {
-						if guard.is_some_and(|guard| guard.is_remote()) {
-							Error::RemoteSemantic(Failure::ContextBudget)
-						} else {
-							error
-						}
-					},
-				)?;
+				request
+					.ensure_fits(window)
+					.map_err(|_| unreducible(guard))?;
 				let request_tokens = request.estimated_total_tokens();
 				let media_inferred_seq_before_response = context.media_inferred_seq;
 				let observed_input_seq_before_response = run.observed_input_seq;
@@ -549,13 +819,27 @@ impl<'a> Executor<'a> {
 					reservation.settle(response).await?;
 				}
 				resumed?;
-				let result = result?;
+				let result = match result {
+					Err(Error::ContextOverflow) => {
+						if let Some(guard) = guard {
+							guard.resume().await?;
+						}
+						return self
+							.context_overflowed(run, token, request_tokens, &policy)
+							.await;
+					}
+					result => result?,
+				};
 				if let Some(guard) = guard {
 					guard.resume().await?;
 				}
 				// Count only tool content that survived compaction and was present
 				// in a successful provider request, not every completed read.
 				capture_declared_coverage(&mut context, &tools, true);
+				// Everything in this request reached an accepted inference, so the
+				// Summary Stage may later absorb it without hiding unread content.
+				context.journal.inferred_through = context.journal.head;
+				context.recovery.inference_accepted();
 				if let Some(seq) = media.through_seq {
 					context.media_inferred_seq = context.media_inferred_seq.max(seq);
 				}
@@ -720,7 +1004,7 @@ impl<'a> Executor<'a> {
 					&& let Some(call) = result.tool_calls.get(cursor)
 					&& !tools.get(&call.name).is_some_and(|tool| is_required_message_read_for(&tool.contract(), call, &required_reads, &context))
 				{
-					context.history.push(ContextEvent::RunMessageReadRequired {
+					context.push(ContextEvent::RunMessageReadRequired {
 						message_ids: required_reads.clone(),
 					});
 
@@ -737,7 +1021,7 @@ impl<'a> Executor<'a> {
 					return Ok(());
 				}
 				if cursor >= result.tool_calls.len() && !informed_response {
-					context.history.push(ContextEvent::RunMessageReadRequired {
+					context.push(ContextEvent::RunMessageReadRequired {
 						message_ids: required_reads.clone(),
 					});
 
@@ -756,13 +1040,11 @@ impl<'a> Executor<'a> {
 				if cursor >= result.tool_calls.len() && run_message_catchup {
 					let summary = result.text.trim().to_owned();
 					if summary.is_empty() {
-						context
-							.history
-							.push(ContextEvent::RunMessageSummaryRequired {
-								through_seq: run.state.tool()?.run_message_summary_end_seq,
-								max_bytes: None,
-								reason: None,
-							});
+						context.push(ContextEvent::RunMessageSummaryRequired {
+							through_seq: run.state.tool()?.run_message_summary_end_seq,
+							max_bytes: None,
+							reason: None,
+						});
 
 						run.step += 1;
 						run.state = RunState::Thinking(stale_media_pending(
@@ -778,13 +1060,11 @@ impl<'a> Executor<'a> {
 					}
 					let summary_limit = run.state.tool()?.run_message_summary_limit;
 					if summary.len() > summary_limit {
-						context
-							.history
-							.push(ContextEvent::RunMessageSummaryRequired {
-								through_seq: run.state.tool()?.run_message_summary_end_seq,
-								max_bytes: Some(summary_limit),
-								reason: Some("summary exceeded the complete-summary limit".into()),
-							});
+						context.push(ContextEvent::RunMessageSummaryRequired {
+							through_seq: run.state.tool()?.run_message_summary_end_seq,
+							max_bytes: Some(summary_limit),
+							reason: Some("summary exceeded the complete-summary limit".into()),
+						});
 
 						run.step += 1;
 						run.state = RunState::Thinking(stale_media_pending(
@@ -804,8 +1084,8 @@ impl<'a> Executor<'a> {
 						.iter()
 						.copied()
 						.collect::<std::collections::BTreeSet<_>>();
-					context.history.retain(|event| {
-						declared_message_read_range(&tools, event)
+					context.history.retain(|entry| {
+						declared_message_read_range(&tools, &entry.event)
 							.is_none_or(|(id, _, _, _)| !summarized_ids.contains(&id))
 					});
 					for id in &required_reads {
@@ -1156,7 +1436,7 @@ impl<'a> Executor<'a> {
 				let event = ContextEvent::tool(call.clone(), output.clone());
 				record_message_read_for(&mut context.message_read_coverage, &contract, &event);
 				let growth = context::tool_event_growth(&context, &event);
-				context.history.push(event);
+				context.push(event);
 				run.state.tool_mut()?.request_tokens =
 					run.state.tool()?.request_tokens.saturating_add(growth);
 				run.context = context.clone();
@@ -1252,7 +1532,7 @@ impl<'a> Executor<'a> {
 						_ => {}
 					}
 					if !matches!(waiting, WaitingState::Reconciliation { .. }) {
-						run.context.history.push(ContextEvent::Human {
+						run.context.push(ContextEvent::Human {
 							request: h.prompt,
 							request_kind: h.kind,
 							response,
@@ -1293,16 +1573,16 @@ fn declared_message_read_range(
 	message_read_range_for(&tools.get(&call.name)?.contract(), event)
 }
 fn capture_declared_coverage(context: &mut Context, tools: &Tools, inference: bool) {
-	for event in context.history.clone() {
-		if let ContextEvent::Tool { call, .. } = &event
+	let coverage = if inference {
+		&mut context.message_inference_coverage
+	} else {
+		&mut context.message_read_coverage
+	};
+	for entry in &context.history {
+		if let ContextEvent::Tool { call, .. } = &entry.event
 			&& let Some(tool) = tools.get(&call.name)
 		{
-			let coverage = if inference {
-				&mut context.message_inference_coverage
-			} else {
-				&mut context.message_read_coverage
-			};
-			record_message_read_for(coverage, &tool.contract(), &event);
+			record_message_read_for(coverage, &tool.contract(), &entry.event);
 		}
 	}
 }
@@ -1450,23 +1730,77 @@ enum PreparedResult {
 		result: Value,
 	},
 }
-fn is_invalid(error: &Error) -> bool {
-	matches!(
-		error,
-		Error::Invalid(_) | Error::Domain(aidash_domain::Error::Invalid(_))
+/// Mandatory context that cannot fit pauses with a typed reason. Remote
+/// executors keep reporting the established semantic context-budget pause.
+fn unreducible(guard: Option<&dyn ExecutionAuthority>) -> Error {
+	remote_budget(
+		guard,
+		Error::Context(context::recovery::Failure::ContextUnreducible),
 	)
+}
+fn remote_budget(guard: Option<&dyn ExecutionAuthority>, error: Error) -> Error {
+	match error {
+		Error::Context(context::recovery::Failure::ContextUnreducible)
+			if guard.is_some_and(|guard| guard.is_remote()) =>
+		{
+			Error::RemoteSemantic(Failure::ContextBudget)
+		}
+		error => error,
+	}
 }
 async fn compact_execution(
 	context: &mut Context,
 	classifier: &dyn aidash_application::ports::CompactionClassifier,
-	budget: &context::RequestBudget<'_>,
-	pinned: &Value,
-) -> Result<()> {
+	fitting: &aidash_application::context::Fitting<'_>,
+) -> Result<aidash_application::context::Compaction> {
 	let mut candidate = context.clone();
 	context::observation::normalize_history(&mut candidate.history);
-	aidash_application::context::compact(&mut candidate, classifier, budget, pinned).await?;
-	*context = candidate;
-	Ok(())
+	let compaction =
+		aidash_application::context::compact(&mut candidate, classifier, fitting).await?;
+	if matches!(compaction, aidash_application::context::Compaction::Fits) {
+		*context = candidate;
+	}
+	Ok(compaction)
+}
+/// Local Runs recheck summary sources under worker authority without
+/// recording reads. A remote executor asks its Home through the same
+/// filtered record path that admitted the original reads.
+async fn summary_dependencies_current(
+	environment: &dyn ExecutionEnvironment,
+	guard: Option<&dyn ExecutionAuthority>,
+	home: &dyn ExecutionHome,
+	run: &Run,
+	dependencies: &context::summary::SummaryDependencies,
+) -> Result<bool> {
+	if !guard.is_some_and(|guard| guard.is_remote()) {
+		return environment
+			.summary_dependencies_current(run, dependencies)
+			.await;
+	}
+	for id in &dependencies.message_ids {
+		match home.read_record("message", &id.to_string()).await {
+			Ok(_) => {}
+			Err(Error::NotFound(_) | Error::Forbidden | Error::Unauthorized) => return Ok(false),
+			Err(error) => return Err(error),
+		}
+	}
+	Ok(true)
+}
+/// Sources whose current authority the summarized text depends on.
+fn summary_dependencies(
+	entries: &[context::HistoryEntry],
+	tools: &Tools,
+) -> context::summary::SummaryDependencies {
+	let mut dependencies = context::summary::SummaryDependencies::default();
+	for entry in entries {
+		if let ContextEvent::Tool { call, .. } = &entry.event {
+			dependencies.tool_call_ids.insert(call.id.clone());
+			if let Some((id, ..)) = declared_message_read_range(tools, &entry.event) {
+				dependencies.message_ids.insert(id);
+			}
+		}
+	}
+	dependencies
 }
 
 #[cfg(test)]

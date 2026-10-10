@@ -27,6 +27,8 @@ pub struct ExecutionAgent {
 	pub max_steps: i32,
 	pub allow_task_creation: Option<bool>,
 	pub conversation_memory: bool,
+	/// Opt-in Context Policy from the immutable Agent version.
+	pub context_policy: Option<aidash_domain::context::policy::ContextPolicy>,
 }
 pub struct InvocationOutcome {
 	pub status: String,
@@ -84,6 +86,42 @@ pub trait ExecutionStore: Send + Sync {
 		prompt: &str,
 	) -> Result<()>;
 	async fn run_message_has_media(&self, messages: &[Uuid]) -> Result<bool>;
+	/// Original Context Journal entries with `from <= seq <= through`, in order.
+	async fn context_journal(
+		&self,
+		run: Uuid,
+		from: u64,
+		through: u64,
+	) -> Result<Vec<aidash_domain::context::HistoryEntry>>;
+	/// Record a Compaction Attempt before provider I/O, fenced by the lease.
+	/// Unsettled earlier attempts of the Run become `abandoned` in the same
+	/// transaction. Returns `Error::Context(SummaryUnavailable)` once the Run
+	/// already has `call_budget` attempts of the same stage.
+	async fn begin_compaction(
+		&self,
+		run: &Run,
+		token: Uuid,
+		attempt: &aidash_domain::context::recovery::Attempt,
+		call_budget: u32,
+	) -> Result<()>;
+	/// Settle an attempt that leaves the saved Context Projection unchanged.
+	async fn settle_compaction(
+		&self,
+		run: &Run,
+		token: Uuid,
+		attempt: Uuid,
+		settlement: &aidash_domain::context::recovery::Settlement,
+	) -> Result<()>;
+	/// Save `run`, whose context carries the adopted projection, and mark the
+	/// attempt adopted in one lease-fenced transaction. Returns `Conflict` when
+	/// the attempt is no longer open or the journal lacks its source range.
+	async fn adopt_compaction(
+		&self,
+		run: &Run,
+		token: Uuid,
+		attempt: Uuid,
+		settlement: &aidash_domain::context::recovery::Settlement,
+	) -> Result<()>;
 }
 #[async_trait]
 pub trait ExecutionCatalog: Send + Sync {
@@ -178,6 +216,19 @@ pub trait ExecutionAuthority: Send + Sync {
 		output: u32,
 		request: &ModelRequest,
 	) -> Result<Option<Box<dyn InferenceReservation>>>;
+	/// Authorize one Summary Stage request for the exact pinned summarizer and
+	/// charge its allowance before I/O: catalog approval, remote RequiredHome
+	/// summarizer pin and disclosure, and every generated ancestor's summary
+	/// allowance. Returns `Error::Context(SummaryUnavailable)` when any approval
+	/// is missing; it never substitutes another provider.
+	async fn reserve_summary(
+		&self,
+		token: Uuid,
+		summarizer: &aidash_domain::context::summary::SummaryProvider,
+		window: usize,
+		output: u32,
+		request: &ModelRequest,
+	) -> Result<Option<Box<dyn InferenceReservation>>>;
 	async fn suspend(&self) -> Result<()>;
 	async fn resume(&self) -> Result<()>;
 }
@@ -224,6 +275,13 @@ pub trait ExecutionEnvironment: Send + Sync {
 		messages: &[(i64, Uuid, usize)],
 		model: &ModelConfig,
 	) -> Result<HumanMediaBatch>;
+	/// Whether every source an adopted Execution Summary depends on is still
+	/// readable by the Run under current authority.
+	async fn summary_dependencies_current(
+		&self,
+		run: &Run,
+		dependencies: &aidash_domain::context::summary::SummaryDependencies,
+	) -> Result<bool>;
 }
 
 pub mod media;
@@ -231,6 +289,8 @@ pub mod media;
 pub mod cancellation;
 
 pub mod admission;
+
+pub mod summary;
 
 pub mod terminal;
 pub mod worker;

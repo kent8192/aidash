@@ -171,15 +171,19 @@ impl RunMetadata {
 }
 
 impl RawRun {
-	/// Manual semantic retry clears its retry schedule while retaining the execution state.
+	/// Manual retry of a semantic or context pause clears its typed reason and
+	/// retry schedule while retaining the execution state.
 	pub fn resumed_pending(&self) -> crate::Result<Option<Value>> {
 		let (state, mut recovery) = decode(self.phase, self.pending.clone())?;
 		if !state.failure_delivery() {
 			self.decode()?;
 		}
-		if self.control == RunControl::Paused && recovery.semantic_reason.is_some() {
+		if self.control == RunControl::Paused
+			&& (recovery.semantic_reason.is_some() || recovery.context_reason.is_some())
+		{
 			recovery.retry = None;
 			recovery.semantic_reason = None;
+			recovery.context_reason = None;
 			Ok(Some(encode(&state, &recovery)?))
 		} else {
 			Ok(None)

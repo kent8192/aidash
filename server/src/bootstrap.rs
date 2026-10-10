@@ -826,6 +826,13 @@ pub(crate) fn generation_compaction_repository(
 		store: store.clone(),
 	}
 }
+pub(crate) fn generation_summary_repository(
+	store: &Store,
+) -> crate::apps::execution::generation::repositories::summary::NativeSummaryRepository {
+	crate::apps::execution::generation::repositories::summary::NativeSummaryRepository {
+		store: store.clone(),
+	}
+}
 pub(crate) struct ApprovedCompactionProvider;
 impl aidash_application::ports::generation::compaction::GenerationCompactionProvider
 	for ApprovedCompactionProvider
@@ -1209,6 +1216,24 @@ pub(crate) fn inference_admission_repository<'a>(
 		remote,
 		access,
 		run,
+		purpose: crate::generation::remote::Purpose::Inference,
+	}
+}
+
+/// Summary Stage admission charges model tokens locally and the `summary`
+/// purpose (with its call allowance) at the Home.
+pub(crate) fn summary_admission_repository<'a>(
+	store: &'a Store,
+	remote: Option<&'a Federation>,
+	access: &'a Arc<tokio::sync::Mutex<crate::authorization::access::Access>>,
+	run: &'a crate::domain::Run,
+) -> crate::apps::identity::repositories::execution::admission::Admissions<'a> {
+	crate::apps::identity::repositories::execution::admission::Admissions {
+		store,
+		remote,
+		access,
+		run,
+		purpose: crate::generation::remote::Purpose::Summary,
 	}
 }
 

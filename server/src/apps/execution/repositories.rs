@@ -43,10 +43,22 @@ impl ExecutionRecoveryStore for RecoveryRepository {
 			.await
 			.map_err(Into::into)
 	}
+	async fn pause_context(
+		&self,
+		run: &Run,
+		token: Uuid,
+		reason: aidash_domain::context::recovery::Failure,
+	) -> Result<()> {
+		self.store
+			.pause_for_context_execution(run, token, reason)
+			.await
+			.map_err(Into::into)
+	}
 }
 
 pub(crate) mod agent;
 pub(crate) mod bindings;
+pub(crate) mod context_journal;
 pub(crate) mod task_evidence;
 
 pub(crate) mod events;

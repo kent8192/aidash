@@ -41,19 +41,15 @@ async fn legacy_observation_projection_preserves_human_records_and_failed_contex
 		"tasks":[],"artifacts":[],"messages":[],
 		"events":[{"sequence":1,"id":uuid::Uuid::new_v4(),"node_id":"aidash://test","workspace_id":null,"kind":"tool.completed","data":{"result":"nested".repeat(5000)},"created_at":chrono::Utc::now()}]
 	});
-	let mut context = Context {
-		history: vec![
-			event(
-				json!({"kind":"tool","call":{"id":"observe","name":"workspace_observe","arguments":{}},"result":snapshot}),
-			),
-			ContextEvent::Human {
-				request: "Reject action".into(),
-				request_kind: "APPROVAL_REQUIRED".into(),
-				response: json!({"approved":false,"data":snapshot}),
-			},
-		],
-		..Default::default()
-	};
+	let mut context = Context::default();
+	context.push(event(
+		json!({"kind":"tool","call":{"id":"observe","name":"workspace_observe","arguments":{}},"result":snapshot}),
+	));
+	context.push(ContextEvent::Human {
+		request: "Reject action".into(),
+		request_kind: "APPROVAL_REQUIRED".into(),
+		response: json!({"approved":false,"data":snapshot}),
+	});
 	let before = json!(context);
 	let asker = FakeJev::new(drop_all);
 	assert!(
@@ -66,17 +62,17 @@ async fn legacy_observation_projection_preserves_human_records_and_failed_contex
 		.await
 		.unwrap();
 	assert_eq!(
-		json!(context.history[0])["result"]["view"],
+		json!(context.history[0].event)["result"]["view"],
 		"workspace_observation_v1"
 	);
 	assert!(
-		json!(context.history[0])["result"]["events"][0]
+		json!(context.history[0].event)["result"]["events"][0]
 			.get("data")
 			.is_none()
 	);
 	assert_eq!(
-		json!(context.history[0])["call"],
-		before["history"][0]["call"]
+		json!(context.history[0].event)["call"],
+		before["history"][0]["event"]["call"]
 	);
 	assert_eq!(json!(context.history[1]), before["history"][1]);
 	assert_eq!(context.compactions, 0);

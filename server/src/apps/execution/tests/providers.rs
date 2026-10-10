@@ -153,6 +153,7 @@ async fn openrouter_enforces_zdr_and_preserves_reasoning_tools_and_usage(
 						vec![]
 					},
 					max_output_tokens,
+					response_format: None,
 					content_parts: vec![],
 				})
 				.await
@@ -226,6 +227,7 @@ async fn openrouter_sends_ordered_native_image_and_audio_parts() {
 			context: json!({"run_message":"Describe the attachment"}),
 			tools: vec![],
 			max_output_tokens: 512,
+			response_format: None,
 			content_parts: vec![
 				ContentPart::Text("first attachment".into()),
 				ContentPart::Image {
@@ -338,6 +340,7 @@ async fn media_route_lookup_obeys_the_total_inference_deadline() {
 			context: json!({}),
 			tools: vec![],
 			max_output_tokens: 128,
+			response_format: None,
 			content_parts: vec![ContentPart::Image {
 				media_type: "image/png".into(),
 				bytes: b"\x89PNG\r\n\x1a\nfixture".to_vec(),
@@ -427,6 +430,7 @@ async fn unavailable_zdr_endpoint_does_not_retry_without_zdr(
 				context: json!({}),
 				tools: vec![],
 				max_output_tokens: 512,
+				response_format: None,
 				content_parts: vec![]
 			})
 			.await
@@ -462,6 +466,7 @@ async fn upstream_media_rejection_keeps_its_status_and_safe_reason() {
 			context: json!({}),
 			tools: vec![],
 			max_output_tokens: 512,
+			response_format: None,
 			content_parts: vec![],
 		})
 		.await
@@ -497,6 +502,7 @@ async fn upstream_errors_cannot_echo_unrecognized_media_or_secret_data() {
 			context: json!({}),
 			tools: vec![],
 			max_output_tokens: 512,
+			response_format: None,
 			content_parts: vec![],
 		})
 		.await

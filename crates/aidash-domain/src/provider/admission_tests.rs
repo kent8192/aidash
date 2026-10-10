@@ -7,6 +7,7 @@ fn request() -> ModelRequest {
 		context: json!({"text":"東京"}),
 		tools: vec![],
 		max_output_tokens: 12,
+		response_format: None,
 		content_parts: vec![
 			ContentPart::Text("abc".into()),
 			ContentPart::Image {

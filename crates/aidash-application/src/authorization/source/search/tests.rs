@@ -195,6 +195,7 @@ fn binding() -> Binding {
 			configuration_digest: "configuration".into(),
 		}),
 		compactor: None,
+		summarizer: None,
 	}
 }
 fn description() -> Description {

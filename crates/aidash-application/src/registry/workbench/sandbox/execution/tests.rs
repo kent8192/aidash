@@ -384,6 +384,7 @@ fn job(model: Arc<Model>) -> Job {
 			context: json!({"test_message":"original"}),
 			tools: vec![],
 			max_output_tokens: 128,
+			response_format: None,
 			content_parts: vec![],
 		},
 		initial_conversation: vec![json!({"role":"user","content":"original"})],
