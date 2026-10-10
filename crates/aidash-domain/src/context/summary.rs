@@ -129,6 +129,8 @@ pub enum Rejection {
 	UnprovenResolution(String),
 	#[error("summary verification {0} names no tool call from its history")]
 	UnprovenVerification(String),
+	#[error("summary dropped or changed previous verification {0}")]
+	DroppedVerification(String),
 	#[error("summary exceeds its {0}-token bound")]
 	Oversized(u32),
 	#[error("summary did not reduce the complete request")]
@@ -145,6 +147,7 @@ impl Rejection {
 			Self::ChangedItem(_) => "changed_item",
 			Self::UnprovenResolution(_) => "unproven_resolution",
 			Self::UnprovenVerification(_) => "unproven_verification",
+			Self::DroppedVerification(_) => "dropped_verification",
 			Self::Oversized(_) => "oversized",
 			Self::NotReduced => "not_reduced",
 		}
@@ -208,6 +211,17 @@ impl SummaryContent {
 				));
 			}
 		}
+		// The checked events left the projection with the earlier merge, so a
+		// previous verification is its only model-visible record: keep it.
+		if let Some(previous) = previous
+			&& let Some(dropped) = previous
+				.content
+				.verification
+				.iter()
+				.find(|verification| !content.verification.contains(verification))
+		{
+			return Err(Rejection::DroppedVerification(dropped.reference.clone()));
+		}
 		if let Some(previous) = previous {
 			// A retained item keeps its list and exact text; only an explicit
 			// resolution may close or rewrite a previous item.
@@ -256,13 +270,12 @@ impl SummaryContent {
 	}
 }
 
-/// Events the Summary Stage may absorb. Human answers, corrections and
-/// continuation markers always stay verbatim in the projection.
+/// Events the Summary Stage may absorb: tool results, whose sources the
+/// summary tracks as dependencies. Human answers, corrections, continuation
+/// markers and media observations, whose source messages a summary could not
+/// recheck, always stay verbatim in the projection.
 pub fn absorbable(event: &ContextEvent) -> bool {
-	matches!(
-		event,
-		ContextEvent::Tool { .. } | ContextEvent::ModelMediaObservation { .. }
-	)
+	matches!(event, ContextEvent::Tool { .. })
 }
 
 pub fn entries_digest(entries: &[HistoryEntry]) -> String {

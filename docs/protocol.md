@@ -146,10 +146,11 @@ The pipeline is fixed: fit check, Jev pruning, the optional Summary Stage, then
 complete-request validation. Under an explicit policy an unavailable Jev pauses
 the Run with `prune_unavailable`; the Summary Stage never stands in for Jev.
 When pruning cannot fit the request, the Summary Stage merges eligible older
-events into the structured Execution Summary. It absorbs only `tool` and
-`model_media_observation` events that are older than the protected tail and
-were already part of an accepted inference request. Human answers, corrections
-and continuation markers always stay verbatim. The summarizer receives only the
+events into the structured Execution Summary. It absorbs only `tool` events
+that are older than the protected tail and were already part of an accepted
+inference request. Human answers, corrections, continuation markers and
+`model_media_observation` events, whose source messages a summary could not
+recheck, always stay verbatim. The summarizer receives only the
 task, the previous summary and the absorbed events, with no tools and a JSON
 schema response format. Each merge
 keeps the previous summary's constraints and unresolved items under their IDs,
@@ -184,7 +185,8 @@ summary is discarded and the original journal events it absorbed return to the
 saved projection, and the step pauses for authority before Jev or the model
 receives them. A local Run rechecks message dependencies under its current authority without
 recording a read; a remote Run rechecks them through the Home's filtered record
-reads.
+reads. An authority-bearing Run rechecks them again after pruning, whose Jev
+I/O releases its authority, before the summarizer or the model is called.
 
 Provider failures are classified before recovery. An OpenRouter `400` or `413`
 whose message reports the maximum context length is a Context Overflow; a `413`
@@ -194,7 +196,10 @@ effective window for the rest of the Run, re-runs the pipeline, and must send a
 smaller request than the previous overflowing one; otherwise, or once the retry
 allowance is spent, the Run pauses with `overflow_retries_exhausted`. Output
 truncation (`output_truncated`) and refusals (`refused`) pause immediately and
-never dispatch the response's tool calls. Other `4xx` responses keep their
+never dispatch the response's tool calls; their reported usage still settles
+the call's token reservation. A paused Run's typed reason is reported as
+`context_reason` by run management and by remote execution status and control.
+Other `4xx` responses keep their
 existing handling, and transport errors keep their bounded retry. Every
 OpenRouter request sets `transforms: []`, so the provider never compresses a
 request on its own.

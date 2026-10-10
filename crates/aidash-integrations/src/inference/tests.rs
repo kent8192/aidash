@@ -51,7 +51,23 @@ fn truncation_cannot_complete_a_task() {
 		parse_openai(
 			json!({"choices":[{"finish_reason":"length","message":{"content":"partial"}}]})
 		),
-		Err(Error::Context(Failure::OutputTruncated))
+		Err(Error::TerminalResponse(Failure::OutputTruncated, _))
+	));
+}
+#[rstest::rstest]
+fn a_terminal_response_keeps_its_usage_for_settlement() {
+	let error = parse_openai(json!({
+		"choices":[{"finish_reason":"length","message":{"content":"partial"}}],
+		"usage":{"prompt_tokens":1200,"completion_tokens":256}
+	}))
+	.unwrap_err();
+	let usage = error.terminal_usage().unwrap();
+	assert_eq!((usage.input_tokens, usage.output_tokens), (1200, 256));
+	assert!(usage.usage_complete);
+	assert!(usage.text.is_empty() && usage.tool_calls.is_empty());
+	assert!(matches!(
+		error.settled(),
+		Error::Context(Failure::OutputTruncated)
 	));
 }
 #[rstest::rstest]
@@ -63,7 +79,7 @@ fn truncated_or_filtered_output_never_yields_tool_calls(
 ) {
 	let result = parse_openai(json!({"choices":[{"finish_reason":finish_reason,"message":{
 		"tool_calls":[{"id":"one","function":{"name":"search","arguments":"{}"}}]}}]}));
-	assert!(matches!(result, Err(Error::Context(actual)) if actual == expected));
+	assert!(matches!(result, Err(Error::TerminalResponse(actual, _)) if actual == expected));
 }
 #[rstest::rstest]
 #[case::stop("stop")]
@@ -72,7 +88,10 @@ fn a_refusal_is_typed_whatever_the_finish_reason(#[case] finish_reason: &str) {
 	let result = parse_openai(json!({"choices":[{"finish_reason":finish_reason,"message":{
 		"refusal":"I can't help with that",
 		"tool_calls":[{"id":"one","function":{"name":"search","arguments":"{}"}}]}}]}));
-	assert!(matches!(result, Err(Error::Context(Failure::Refused))));
+	assert!(matches!(
+		result,
+		Err(Error::TerminalResponse(Failure::Refused, _))
+	));
 }
 #[rstest::rstest]
 fn other_unexpected_finish_reasons_remain_external() {

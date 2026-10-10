@@ -245,7 +245,9 @@ impl From<aidash_application::Error> for Error {
 			ApplicationError::MediaRouteUnavailable(model) => Self::MediaRouteUnavailable(model),
 			ApplicationError::OrchestrationUnavailable => Self::OrchestrationUnavailable,
 			ApplicationError::RemoteSemantic(reason) => Self::RemoteSemantic(reason),
-			ApplicationError::Context(reason) => Self::Context(reason),
+			ApplicationError::Context(reason) | ApplicationError::TerminalResponse(reason, _) => {
+				Self::Context(reason)
+			}
 			ApplicationError::ContextOverflow => Self::ContextOverflow,
 			ApplicationError::SemanticUnavailable => Self::SemanticUnavailable,
 			ApplicationError::IdentityStatusUnavailable => Self::IdentityStatusUnavailable,

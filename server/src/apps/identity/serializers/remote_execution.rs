@@ -12,6 +12,9 @@ pub struct RemoteExecutionActivation {
 	pub error: Option<String>,
 	#[serde(default)]
 	pub semantic_reason: Option<crate::semantic::remote::Failure>,
+	/// Typed context-recovery pause reason of the remote Run.
+	#[serde(default)]
+	pub context_reason: Option<aidash_domain::context::recovery::Failure>,
 }
 
 #[derive(Serialize, schemars::JsonSchema)]
@@ -64,6 +67,7 @@ impl From<aidash_domain::federation::execution::admission::Activation>
 			control: row.control,
 			error: row.error,
 			semantic_reason: row.semantic_reason,
+			context_reason: row.context_reason,
 		}
 	}
 }

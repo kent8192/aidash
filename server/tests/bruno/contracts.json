@@ -14,8 +14,25 @@
       "definitions": {
         "RunManagement": {
           "type": "object",
-          "required": ["id", "phase", "control", "semantic_reason"],
+          "required": [
+            "id",
+            "phase",
+            "control",
+            "semantic_reason",
+            "context_reason"
+          ],
           "properties": {
+            "context_reason": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/ContextRecoveryFailure"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Typed context-recovery pause reason; cleared on resume."
+            },
             "control": {
               "$ref": "#/components/schemas/RunControl"
             },
@@ -67,6 +84,19 @@
             "unavailable",
             "retries_exhausted",
             "pending"
+          ]
+        },
+        "ContextRecoveryFailure": {
+          "type": "string",
+          "description": "Why a Run paused instead of sending or acting on a provider request.\nEach reason is final for its step; none of them is retried as transport.",
+          "enum": [
+            "context_unreducible",
+            "prune_unavailable",
+            "summary_unavailable",
+            "summary_invalid",
+            "overflow_retries_exhausted",
+            "output_truncated",
+            "refused"
           ]
         }
       }
@@ -87,8 +117,25 @@
       "definitions": {
         "RunManagement": {
           "type": "object",
-          "required": ["id", "phase", "control", "semantic_reason"],
+          "required": [
+            "id",
+            "phase",
+            "control",
+            "semantic_reason",
+            "context_reason"
+          ],
           "properties": {
+            "context_reason": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/ContextRecoveryFailure"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Typed context-recovery pause reason; cleared on resume."
+            },
             "control": {
               "$ref": "#/components/schemas/RunControl"
             },
@@ -140,6 +187,19 @@
             "unavailable",
             "retries_exhausted",
             "pending"
+          ]
+        },
+        "ContextRecoveryFailure": {
+          "type": "string",
+          "description": "Why a Run paused instead of sending or acting on a provider request.\nEach reason is final for its step; none of them is retried as transport.",
+          "enum": [
+            "context_unreducible",
+            "prune_unavailable",
+            "summary_unavailable",
+            "summary_invalid",
+            "overflow_retries_exhausted",
+            "output_truncated",
+            "refused"
           ]
         }
       }
@@ -745,6 +805,17 @@
               "type": "string",
               "format": "uuid"
             },
+            "context_reason": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/ContextRecoveryFailure"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Typed context-recovery pause reason of the remote Run."
+            },
             "control": {
               "$ref": "#/components/schemas/RemoteExecutionControlState"
             },
@@ -804,6 +875,19 @@
             "unavailable",
             "retries_exhausted",
             "pending"
+          ]
+        },
+        "ContextRecoveryFailure": {
+          "type": "string",
+          "description": "Why a Run paused instead of sending or acting on a provider request.\nEach reason is final for its step; none of them is retried as transport.",
+          "enum": [
+            "context_unreducible",
+            "prune_unavailable",
+            "summary_unavailable",
+            "summary_invalid",
+            "overflow_retries_exhausted",
+            "output_truncated",
+            "refused"
           ]
         }
       }
@@ -838,6 +922,17 @@
               "type": "string",
               "format": "uuid"
             },
+            "context_reason": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/ContextRecoveryFailure"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Typed context-recovery pause reason of the remote Run."
+            },
             "control": {
               "$ref": "#/components/schemas/RemoteExecutionControlState"
             },
@@ -897,6 +992,19 @@
             "unavailable",
             "retries_exhausted",
             "pending"
+          ]
+        },
+        "ContextRecoveryFailure": {
+          "type": "string",
+          "description": "Why a Run paused instead of sending or acting on a provider request.\nEach reason is final for its step; none of them is retried as transport.",
+          "enum": [
+            "context_unreducible",
+            "prune_unavailable",
+            "summary_unavailable",
+            "summary_invalid",
+            "overflow_retries_exhausted",
+            "output_truncated",
+            "refused"
           ]
         }
       }
@@ -971,6 +1079,17 @@
               "type": "string",
               "format": "uuid"
             },
+            "context_reason": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/ContextRecoveryFailure"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Typed context-recovery pause reason of the remote Run."
+            },
             "control": {
               "$ref": "#/components/schemas/RemoteExecutionControlState"
             },
@@ -1030,6 +1149,19 @@
             "unavailable",
             "retries_exhausted",
             "pending"
+          ]
+        },
+        "ContextRecoveryFailure": {
+          "type": "string",
+          "description": "Why a Run paused instead of sending or acting on a provider request.\nEach reason is final for its step; none of them is retried as transport.",
+          "enum": [
+            "context_unreducible",
+            "prune_unavailable",
+            "summary_unavailable",
+            "summary_invalid",
+            "overflow_retries_exhausted",
+            "output_truncated",
+            "refused"
           ]
         }
       }
@@ -1097,6 +1229,17 @@
               "type": "string",
               "format": "uuid"
             },
+            "context_reason": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/ContextRecoveryFailure"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Typed context-recovery pause reason of the remote Run."
+            },
             "control": {
               "$ref": "#/components/schemas/RemoteExecutionControlState"
             },
@@ -1156,6 +1299,19 @@
             "unavailable",
             "retries_exhausted",
             "pending"
+          ]
+        },
+        "ContextRecoveryFailure": {
+          "type": "string",
+          "description": "Why a Run paused instead of sending or acting on a provider request.\nEach reason is final for its step; none of them is retried as transport.",
+          "enum": [
+            "context_unreducible",
+            "prune_unavailable",
+            "summary_unavailable",
+            "summary_invalid",
+            "overflow_retries_exhausted",
+            "output_truncated",
+            "refused"
           ]
         }
       }
@@ -1217,6 +1373,17 @@
             "admission_id": {
               "type": "string",
               "format": "uuid"
+            },
+            "context_reason": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/ContextRecoveryFailure"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Typed context-recovery pause reason of the remote Run."
             },
             "control": {
               "$ref": "#/components/schemas/RemoteExecutionControlState"
@@ -1694,6 +1861,19 @@
             }
           },
           "additionalProperties": false
+        },
+        "ContextRecoveryFailure": {
+          "type": "string",
+          "description": "Why a Run paused instead of sending or acting on a provider request.\nEach reason is final for its step; none of them is retried as transport.",
+          "enum": [
+            "context_unreducible",
+            "prune_unavailable",
+            "summary_unavailable",
+            "summary_invalid",
+            "overflow_retries_exhausted",
+            "output_truncated",
+            "refused"
+          ]
         }
       }
     }
@@ -1726,6 +1906,17 @@
             "admission_id": {
               "type": "string",
               "format": "uuid"
+            },
+            "context_reason": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/ContextRecoveryFailure"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Typed context-recovery pause reason of the remote Run."
             },
             "control": {
               "$ref": "#/components/schemas/RemoteExecutionControlState"
@@ -1786,6 +1977,19 @@
             "unavailable",
             "retries_exhausted",
             "pending"
+          ]
+        },
+        "ContextRecoveryFailure": {
+          "type": "string",
+          "description": "Why a Run paused instead of sending or acting on a provider request.\nEach reason is final for its step; none of them is retried as transport.",
+          "enum": [
+            "context_unreducible",
+            "prune_unavailable",
+            "summary_unavailable",
+            "summary_invalid",
+            "overflow_retries_exhausted",
+            "output_truncated",
+            "refused"
           ]
         }
       }

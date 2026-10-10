@@ -43,6 +43,10 @@ struct State {
 	revoke_summarizer: bool,
 	/// A source an adopted Execution Summary depends on is no longer readable.
 	stale_summary_dependencies: bool,
+	/// Ordinary inference ends with this truncated or refused completion.
+	terminal: Option<aidash_domain::context::recovery::Failure>,
+	/// Summary dependency checks that pass before the sources are revoked.
+	summary_checks_before_revocation: Option<usize>,
 	/// The summarizer's configured `max_output_tokens`.
 	summarizer_output_tokens: u32,
 	projection: ProjectionVersion,
@@ -655,7 +659,20 @@ impl ExecutionEnvironment for Backend {
 		dependencies: &aidash_domain::context::summary::SummaryDependencies,
 	) -> Result<bool> {
 		let _ = (run, dependencies);
-		Ok(!self.0.stale_summary_dependencies)
+		self.record("summary.dependencies");
+		let checks = self
+			.0
+			.calls
+			.lock()
+			.unwrap()
+			.iter()
+			.filter(|call| **call == "summary.dependencies")
+			.count();
+		Ok(!self.0.stale_summary_dependencies
+			&& self
+				.0
+				.summary_checks_before_revocation
+				.is_none_or(|current| checks <= current))
 	}
 }
 
@@ -703,6 +720,17 @@ impl ModelProvider for Backend {
 				*overflows -= 1;
 				return Err(Error::ContextOverflow);
 			}
+		}
+		if let Some(failure) = self.0.terminal {
+			return Err(Error::TerminalResponse(
+				failure,
+				Box::new(ModelResponse {
+					input_tokens: 200,
+					output_tokens: 4096,
+					usage_complete: true,
+					..Default::default()
+				}),
+			));
 		}
 		if let Some(status) = self.0.provider_status {
 			return Err(Error::ProviderRejected {
@@ -810,6 +838,8 @@ fn fixture() -> Fixture {
 		summary_text: Mutex::new(None),
 		revoke_summarizer: false,
 		stale_summary_dependencies: false,
+		summary_checks_before_revocation: None,
+		terminal: None,
 		summarizer_output_tokens: 4096,
 		projection: ProjectionVersion::Legacy,
 		skill_tool: false,
@@ -1609,6 +1639,75 @@ async fn a_revoked_summary_dependency_pauses_before_jev_or_inference(mut fixture
 	assert_eq!(fixture.run.context.history, originals);
 	let step = &calls(&fixture)[earlier..];
 	for provider in ["jev.ask", "provider.infer", "summarizer.infer"] {
+		assert!(!step.contains(&provider), "{provider}: {step:?}");
+	}
+	assert_eq!(fixture.backend.0.requests.lock().unwrap().len(), requests);
+}
+
+#[rstest]
+#[case::truncated(aidash_domain::context::recovery::Failure::OutputTruncated)]
+#[case::refused(aidash_domain::context::recovery::Failure::Refused)]
+#[tokio::test]
+async fn a_terminal_completion_settles_its_reservation_and_pauses(
+	mut fixture: Fixture,
+	#[case] failure: aidash_domain::context::recovery::Failure,
+) {
+	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	state.scoped = true;
+	state.terminal = Some(failure);
+	fixture.run.state = RunState::Thinking(ThinkingState::default());
+	assert!(matches!(
+		advance_sources(&mut fixture).await,
+		Err(Error::Context(actual)) if actual == failure
+	));
+	let calls = calls(&fixture);
+	let position = |name| calls.iter().position(|call| *call == name).unwrap();
+	// The reported usage settles the reservation instead of keeping the
+	// whole window charged; no tool call or response is accepted.
+	assert!(position("provider.infer") < position("reservation.settle"));
+	assert!(matches!(fixture.run.state, RunState::Thinking(_)));
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_summary_dependency_revoked_during_pruning_pauses_before_inference(mut fixture: Fixture) {
+	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	state.scoped = true;
+	state.context_policy = Some(recovery_policy(true));
+	state.jev_retention = Some(1.0);
+	*state.summary_text.lock().unwrap() = Some(valid_summary());
+	thinking_with_history(&mut fixture, 40);
+	let originals = fixture.run.context.history.clone();
+	advance_sources(&mut fixture).await.unwrap();
+	assert!(fixture.run.context.execution_summary.is_some());
+
+	// The check before pruning passes; the source is revoked before the
+	// check that follows it, while authority was released for Jev.
+	let earlier = calls(&fixture).len();
+	let checks = calls(&fixture)
+		.iter()
+		.filter(|call| **call == "summary.dependencies")
+		.count();
+	Arc::get_mut(&mut fixture.backend.0)
+		.unwrap()
+		.summary_checks_before_revocation = Some(checks + 1);
+	let requests = fixture.backend.0.requests.lock().unwrap().len();
+	assert!(matches!(
+		advance_sources(&mut fixture).await,
+		Err(Error::Forbidden)
+	));
+	assert_eq!(events(&fixture).last().unwrap(), "context.summary_revoked");
+	assert!(fixture.run.context.execution_summary.is_none());
+	assert_eq!(fixture.run.context.history, originals);
+	let step = &calls(&fixture)[earlier..];
+	assert_eq!(
+		step.iter()
+			.filter(|call| **call == "summary.dependencies")
+			.count(),
+		2,
+		"{step:?}"
+	);
+	for provider in ["provider.infer", "summarizer.infer"] {
 		assert!(!step.contains(&provider), "{provider}: {step:?}");
 	}
 	assert_eq!(fixture.backend.0.requests.lock().unwrap().len(), requests);

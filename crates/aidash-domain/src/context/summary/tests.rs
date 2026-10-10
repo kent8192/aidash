@@ -184,9 +184,9 @@ fn merge_rejects_overlapping_ranges() {
 }
 
 #[test]
-fn only_tool_and_media_events_are_absorbable() {
+fn only_tool_events_are_absorbable() {
 	assert!(absorbable(&tool(1).event));
-	assert!(absorbable(&ContextEvent::ModelMediaObservation {
+	assert!(!absorbable(&ContextEvent::ModelMediaObservation {
 		text: "x".into(),
 		through_seq: None,
 		truncated: false
@@ -274,6 +274,18 @@ fn resolutions_and_verification_need_tool_call_evidence() {
 			4096
 		)
 		.is_ok()
+	);
+	// Its checked events already left the projection, so it cannot be dropped.
+	let mut dropped: serde_json::Value = serde_json::from_str(&content(
+		&[("c1", "never touch main")],
+		&[("u1", "fix flaky test")],
+		&[],
+	))
+	.unwrap();
+	dropped["verification"] = json!([]);
+	assert_eq!(
+		SummaryContent::parse(&dropped.to_string(), Some(&first), &[tool(5)], 4096),
+		Err(Rejection::DroppedVerification("call_2".into()))
 	);
 }
 

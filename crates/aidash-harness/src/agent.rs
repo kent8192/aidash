@@ -240,9 +240,12 @@ impl<'a> Executor<'a> {
 			result = provider.infer(request) => result,
 		};
 		let resumed = visibility.resume().await;
-		if let (Some(reservation), Ok(response)) = (reservation, result.as_ref()) {
+		if let Some(reservation) = reservation
+			&& let Some(response) = settled_usage(&result)
+		{
 			reservation.settle(response).await?;
 		}
+		let result = result.map_err(Error::settled);
 		resumed?;
 		if let Some(guard) = guard {
 			guard.resume().await?;
@@ -353,6 +356,36 @@ impl<'a> Executor<'a> {
 				))
 			}
 		}
+	}
+	/// A revoked source must not survive inside summary text. The restored
+	/// originals are saved, but the step pauses for authority before Jev, the
+	/// summarizer or the model can receive them.
+	async fn pause_if_summary_revoked(
+		&self,
+		run: &mut Run,
+		token: Uuid,
+		guard: Option<&dyn ExecutionAuthority>,
+		home: &dyn ExecutionHome,
+		context: &mut Context,
+	) -> Result<()> {
+		let Some(summary) = context.execution_summary.as_deref() else {
+			return Ok(());
+		};
+		if summary_dependencies_current(self.environment, guard, home, run, &summary.dependencies)
+			.await?
+		{
+			return Ok(());
+		}
+		let (from, through) = (summary.source.from_seq, summary.source.through_seq);
+		let store = self.environment.store();
+		let journal = store.context_journal(run.id, from, through).await?;
+		aidash_application::context::restore_summarized(context, journal)?;
+		aidash_application::context::record_stage("summary", "revoked");
+		run.context = context.clone();
+		store
+			.save_run(run, token, "context.summary_revoked")
+			.await?;
+		Err(Error::Forbidden)
 	}
 	/// Reuse an Ordered Run's Skill context while its Skill record revision is
 	/// unchanged and its authority still holds.
@@ -943,19 +976,7 @@ impl<'a> Executor<'a> {
                     store.observe_sources(run, token).await?;
                 }
                 }
-                if let Some(summary) = &context.execution_summary
-                    && !summary_dependencies_current(self.environment, guard, home.as_ref(), run, &summary.dependencies).await?
-                {
-                    // A revoked source must not survive inside summary text. The
-                    // restored originals are saved, but this step pauses for
-                    // authority before Jev or the model can receive them.
-                    let journal = store.context_journal(run.id, summary.source.from_seq, summary.source.through_seq).await?;
-                    aidash_application::context::restore_summarized(&mut context, journal)?;
-                    aidash_application::context::record_stage("summary", "revoked");
-                    run.context = context;
-                    store.save_run(run, token, "context.summary_revoked").await?;
-                    return Err(Error::Forbidden);
-                }
+                self.pause_if_summary_revoked(run, token, guard, home.as_ref(), &mut context).await?;
                 // History imported from a pre-journal Run may never have been
                 // saved; journal it whole before pruning or a summary drops any.
                 if run.context.journal.imported_through > run.context.journal.inferred_through {
@@ -963,7 +984,13 @@ impl<'a> Executor<'a> {
                 }
                 let compactor = self.environment.compactor()?;
                 let fitting = aidash_application::context::Fitting { budget: &budget, pinned: &pinned, policy: &policy };
-                match compact_execution(&mut context, compactor.as_ref(), &fitting).await.map_err(|error| remote_budget(guard, error))? {
+                let compaction = compact_execution(&mut context, compactor.as_ref(), &fitting).await.map_err(|error| remote_budget(guard, error))?;
+                // Pruning may release authority for Jev I/O; a source revoked
+                // meanwhile must reach neither the summarizer nor the model.
+                if guard.is_some() {
+                    self.pause_if_summary_revoked(run, token, guard, home.as_ref(), &mut context).await?;
+                }
+                match compaction {
                     aidash_application::context::Compaction::Fits => {}
                     aidash_application::context::Compaction::NeedsSummary(plan) => {
                         return Box::pin(self.summarize(run, token, guard, visibility, &fitting, *plan, &tools)).await.map_err(|error| remote_budget(guard, error));
@@ -1004,11 +1031,14 @@ impl<'a> Executor<'a> {
 					result = model.infer(request) => result,
 				};
 				let resumed = visibility.resume().await;
-				if let (Some(reservation), Ok(response)) = (reservation, result.as_ref()) {
+				if let Some(reservation) = reservation
+					&& let Some(response) = settled_usage(&result)
+				{
 					// Provider usage is billable even when authorization changed
 					// or a transaction committed while its result was in flight.
 					reservation.settle(response).await?;
 				}
+				let result = result.map_err(Error::settled);
 				resumed?;
 				let result = match result {
 					Err(Error::ContextOverflow) => {
@@ -2030,6 +2060,14 @@ async fn summary_dependencies_current(
 		}
 	}
 	Ok(true)
+}
+/// Usage that settles an inference reservation: an accepted response, or a
+/// truncated or refused one whose output is never dispatched.
+fn settled_usage(result: &Result<provider::ModelResponse>) -> Option<&provider::ModelResponse> {
+	match result {
+		Ok(response) => Some(response),
+		Err(error) => error.terminal_usage(),
+	}
 }
 /// Sources whose current authority the summarized text depends on.
 fn summary_dependencies(

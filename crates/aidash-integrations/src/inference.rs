@@ -318,8 +318,8 @@ impl ModelProvider for OpenRouterProvider {
 
 /// The OpenRouter chat body. `transforms: []` disables OpenRouter's
 /// middle-out compression so only the Agent's Context Policy reduces context.
-/// The transmitted chat body. A salted request's Tenant Cache Salt line
-/// starts `system`; it never enters request metadata or accounting.
+/// A salted request's Tenant Cache Salt line starts `system`; it never enters
+/// request metadata or accounting.
 fn request_body(
 	config: &ModelConfig,
 	request: &ModelRequest,
@@ -394,27 +394,7 @@ pub fn parse_openai(value: Value) -> Result<ModelResponse> {
 		.pointer("/choices/0")
 		.ok_or_else(|| Error::External("provider returned no completion choice".into()))?;
 	let message = &choice["message"];
-	// Truncated or refused output is never acted on, so no tool call escapes.
-	if !message["refusal"].is_null() {
-		return Err(Error::Context(Failure::Refused));
-	}
-	match choice["finish_reason"].as_str() {
-		Some("stop" | "tool_calls") => {}
-		Some("length") => return Err(Error::Context(Failure::OutputTruncated)),
-		Some("content_filter") => return Err(Error::Context(Failure::Refused)),
-		_ => {
-			return Err(Error::External(
-				"provider returned an unexpected finish reason".into(),
-			));
-		}
-	}
-	let content = message["content"].as_str().unwrap_or_default();
-	let mut result = ModelResponse {
-		text: if content.trim().is_empty() {
-			String::new()
-		} else {
-			content.to_owned()
-		},
+	let usage = ModelResponse {
 		usage_complete: value
 			.pointer("/usage/prompt_tokens")
 			.and_then(Value::as_u64)
@@ -432,6 +412,31 @@ pub fn parse_openai(value: Value) -> Result<ModelResponse> {
 			.and_then(Value::as_u64)
 			.unwrap_or(0),
 		..Default::default()
+	};
+	// Truncated or refused output is never acted on, so no tool call escapes;
+	// only its usage is kept, to settle the call's reservation.
+	let terminal = |failure| Err(Error::TerminalResponse(failure, Box::new(usage.clone())));
+	if !message["refusal"].is_null() {
+		return terminal(Failure::Refused);
+	}
+	match choice["finish_reason"].as_str() {
+		Some("stop" | "tool_calls") => {}
+		Some("length") => return terminal(Failure::OutputTruncated),
+		Some("content_filter") => return terminal(Failure::Refused),
+		_ => {
+			return Err(Error::External(
+				"provider returned an unexpected finish reason".into(),
+			));
+		}
+	}
+	let content = message["content"].as_str().unwrap_or_default();
+	let mut result = ModelResponse {
+		text: if content.trim().is_empty() {
+			String::new()
+		} else {
+			content.to_owned()
+		},
+		..usage
 	};
 	if let Some(calls) = message["tool_calls"].as_array() {
 		for call in calls {
