@@ -75,6 +75,7 @@ impl ConfigurationScope for Scope<'_> {
 			&self.store.node_id,
 			entry,
 			false,
+			self.store.provider_credentials.is_some(),
 		)
 		.await?;
 		for definition in &snapshot.definitions {
@@ -96,9 +97,14 @@ impl ConfigurationScope for Scope<'_> {
 		Ok(snapshot)
 	}
 	async fn register(&mut self, entry: &Entry) -> Result<bool> {
-		crate::registry::register_in(&mut self.access.tx, entry, &self.store.node_id)
-			.await
-			.map_err(Into::into)
+		crate::registry::register_in(
+			&mut self.access.tx,
+			entry,
+			&self.store.node_id,
+			&crate::bootstrap::registry_validation_for(self.store),
+		)
+		.await
+		.map_err(Into::into)
 	}
 	async fn provenance(&mut self, source: &EntityRef, entry: &Entry) -> Result<()> {
 		crate::marketplace::propagate_provenance(

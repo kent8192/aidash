@@ -97,7 +97,7 @@ impl Authorization {
 		)
 		.await?;
 		let pending = if expected_revision == 0 && !groups.is_empty() {
-			let validation = crate::bootstrap::registry_validation();
+			let validation = crate::bootstrap::registry_validation_for(store);
 			Some(
 				aidash_application::marketplace::operations::host_packages::provision(
 					&mut crate::bootstrap::marketplace_operator_scope(

@@ -18,7 +18,7 @@ use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
 use serde_json::{Value, json};
 use std::sync::{
 	Arc,
-	atomic::{AtomicBool, AtomicUsize, Ordering},
+	atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
 };
 use tokio::sync::Mutex;
 use tokio::sync::Notify;
@@ -103,6 +103,7 @@ struct Pair {
 	_owners: Vec<common::RuntimeFixture>,
 	model: ModelScript,
 	drop_reply: Arc<Mutex<Option<String>>>,
+	peers: Arc<PeerActivity>,
 	a: Federation,
 	b: Federation,
 	aa: common::TestApplication,
@@ -182,6 +183,52 @@ impl Pair {
 	}
 }
 
+/// Federation responses served by the in-test Home and receiver applications.
+/// Every scoped worker step performs peer calls, so served work distinguishes
+/// a slowly progressing Run from a stalled one independently of host speed.
+struct PeerActivity {
+	origin: std::time::Instant,
+	served: AtomicUsize,
+	/// Milliseconds after `origin` of the last served response.
+	last: AtomicU64,
+}
+impl PeerActivity {
+	fn new() -> Self {
+		Self {
+			origin: std::time::Instant::now(),
+			served: AtomicUsize::new(0),
+			last: AtomicU64::new(0),
+		}
+	}
+	fn served(&self) -> usize {
+		self.served.load(Ordering::Acquire)
+	}
+	/// Time since the later of `since` and the last served response.
+	fn idle(&self, since: std::time::Instant) -> std::time::Duration {
+		let last =
+			self.origin + std::time::Duration::from_millis(self.last.load(Ordering::Acquire));
+		last.max(since).elapsed()
+	}
+}
+/// Count federation responses served by a production route table.
+struct PeerActivityMiddleware(Arc<PeerActivity>);
+#[async_trait::async_trait]
+impl reinhardt::Middleware for PeerActivityMiddleware {
+	async fn process(
+		&self,
+		request: reinhardt::Request,
+		next: Arc<dyn reinhardt::Handler>,
+	) -> reinhardt::Result<reinhardt::Response> {
+		let federation = request.uri.path().starts_with("/federation/");
+		let response = next.handle(request).await;
+		if federation {
+			let at = self.0.origin.elapsed().as_millis() as u64;
+			self.0.last.fetch_max(at, Ordering::AcqRel);
+			self.0.served.fetch_add(1, Ordering::AcqRel);
+		}
+		response
+	}
+}
 async fn reconnect(f: &mut Federation, notify: Arc<Notify>) {
 	let pool = f
 		.store
@@ -220,6 +267,7 @@ async fn scoped_pair(
 		model_state,
 		model_server,
 		drop_reply,
+		peers,
 		source,
 		receiver,
 		embedding_provider,
@@ -460,6 +508,7 @@ async fn scoped_pair(
 		_owners: owners,
 		model: model_state,
 		drop_reply,
+		peers,
 		a,
 		b,
 		aa,
@@ -4533,11 +4582,17 @@ async fn remote_compaction_without_explicit_recipient_pauses_without_environment
 	p.close().await;
 }
 
+/// A real receiver `runworker` launch. Startup and Run progress are bounded
+/// separately so a failure names its milestone and distinguishes an exited
+/// process from a live worker whose Run stopped progressing.
 struct ScopedWorkerCommand {
 	command: std::process::Command,
+	probe: std::net::SocketAddr,
+	log: std::path::PathBuf,
 	_settings_directory: tempfile::TempDir,
-	_binary: ScopedWorkerBinary,
+	_binary: Arc<ScopedWorkerBinary>,
 }
+/// The exact worker executable for every process one test starts.
 struct ScopedWorkerBinary {
 	path: std::path::PathBuf,
 	_directory: tempfile::TempDir,
@@ -4545,8 +4600,12 @@ struct ScopedWorkerBinary {
 #[rstest::fixture]
 fn scoped_worker_binary(
 	#[from(reinhardt::test::fixtures::temp_dir)] directory: tempfile::TempDir,
-) -> ScopedWorkerBinary {
-	// Own the exact local executable until the child is reaped; preserve the macOS snapshot.
+) -> Arc<ScopedWorkerBinary> {
+	// Own the exact local executable until every child is reaped: another
+	// build can replace the shared Cargo output. macOS delays the first exec
+	// of each new executable file by seconds with no CPU in the child, while
+	// later execs of that file start in milliseconds; one snapshot per test
+	// keeps that delay out of the post-SIGKILL restart.
 	#[cfg(target_os = "macos")]
 	let path = {
 		let snapshot = directory.path().join("aidash");
@@ -4556,16 +4615,16 @@ fn scoped_worker_binary(
 	};
 	#[cfg(not(target_os = "macos"))]
 	let path = std::path::PathBuf::from(env!("CARGO_BIN_EXE_aidash"));
-	ScopedWorkerBinary {
+	Arc::new(ScopedWorkerBinary {
 		path,
 		_directory: directory,
-	}
+	})
 }
 #[rstest::fixture]
 fn scoped_worker_command(
 	#[from(pair_future)] pair: PairFuture,
+	scoped_worker_binary: Arc<ScopedWorkerBinary>,
 	#[from(reinhardt::test::fixtures::temp_dir)] directory: tempfile::TempDir,
-	scoped_worker_binary: ScopedWorkerBinary,
 ) -> BoxFuture<'static, ScopedWorkerCommand> {
 	async move {
 		let state = pair.await;
@@ -4575,6 +4634,13 @@ fn scoped_worker_command(
 		database
 			.query_pairs_mut()
 			.append_pair("options", &format!("-c application_name={}", p.bschema));
+		// Readiness uses the production probe listener on its own port.
+		let probe = std::net::TcpListener::bind("127.0.0.1:0")
+			.unwrap()
+			.local_addr()
+			.unwrap();
+		let log = directory.path().join("worker.log");
+		let output = std::fs::File::create(&log).unwrap();
 		let mut command = std::process::Command::new(&scoped_worker_binary.path);
 		command
 			// The fixture has already migrated both databases. Starting only the
@@ -4588,11 +4654,20 @@ fn scoped_worker_command(
 			))
 			.env("AIDASH_ACTIVATION_NAMESPACE", &p.bschema)
 			.env("AIDASH_ENV", "test")
-			.env("RUST_LOG", "aidash_server=info")
-			.stdout(std::process::Stdio::inherit())
-			.stderr(std::process::Stdio::inherit());
+			.env("AIDASH_PROBE_LISTEN", probe.to_string())
+			// Activation claims and deferred step recovery are logged by the
+			// harness and application crates.
+			.env(
+				"RUST_LOG",
+				"aidash_server=info,aidash_harness=info,aidash_application=info",
+			)
+			.stdin(std::process::Stdio::null())
+			.stdout(output.try_clone().unwrap())
+			.stderr(output);
 		ScopedWorkerCommand {
 			command,
+			probe,
+			log,
 			_settings_directory: directory,
 			_binary: scoped_worker_binary,
 		}
@@ -4601,29 +4676,157 @@ fn scoped_worker_command(
 }
 struct ScopedWorkerProcess {
 	child: std::process::Child,
-	_command: ScopedWorkerCommand,
+	spawned: std::time::Instant,
+	command: ScopedWorkerCommand,
 }
 impl ScopedWorkerProcess {
+	/// Process start through settings, database pools and system seeding, as
+	/// in the other process fixtures. It precedes every Run milestone.
+	const STARTUP: std::time::Duration = std::time::Duration::from_secs(60);
+	/// Worker steps serve peer responses continuously: the longest gap was
+	/// 19s at saturated host load, and the worker abandons a command, grant
+	/// or usage call after 60s. No response for this long means a stall.
+	const STALL: std::time::Duration = std::time::Duration::from_secs(60);
+	/// Each milestone spans at most two worker steps and served 26-41 peer
+	/// responses at both low and saturated host load; one retried semantic
+	/// query raised that to 59. Beyond this bound the worker repeats work,
+	/// such as in a retry loop, rather than progressing slowly.
+	const PEER_RESPONSES: usize = 120;
+	const LOG_LINES: usize = 40;
+
 	// Process primitive used by the initial fixture and by the explicit restart Act.
 	fn spawn(mut command: ScopedWorkerCommand) -> Self {
 		let child = command.command.spawn().unwrap();
 		Self {
 			child,
-			_command: command,
+			spawned: std::time::Instant::now(),
+			command,
+		}
+	}
+	/// Process state and a bounded tail of this worker's own log.
+	fn report(&mut self) -> String {
+		let state = match self.child.try_wait() {
+			Ok(Some(status)) => format!("exited ({status})"),
+			Ok(None) => format!("alive (pid {})", self.child.id()),
+			Err(error) => format!("unobservable ({error})"),
+		};
+		let log = std::fs::read_to_string(&self.command.log).unwrap_or_default();
+		let lines: Vec<&str> = log.lines().collect();
+		let tail = lines[lines.len().saturating_sub(Self::LOG_LINES)..]
+			.iter()
+			.map(|line| line.chars().take(400).collect::<String>())
+			.collect::<Vec<_>>()
+			.join("\n");
+		format!(
+			"worker {state} {:.1?} after spawn; last {} of {} log lines:\n{tail}",
+			self.spawned.elapsed(),
+			lines.len().min(Self::LOG_LINES),
+			lines.len()
+		)
+	}
+	/// Run milestones are measured only after the process can claim work.
+	/// `/ready` covers only database connectivity: the probe listener starts
+	/// before the runtime tasks, so the worker slot's activation startup
+	/// recovery is awaited from the log, as in the other worker process
+	/// fixtures. That pass completes with the broker transport or in its
+	/// database fallback, and either way the slot can then claim the Run.
+	async fn ready(&mut self, http_client: &reqwest::Client) {
+		let mut probed = false;
+		loop {
+			assert!(
+				self.child.try_wait().unwrap().is_none(),
+				"scoped worker exited before readiness: {}",
+				self.report()
+			);
+			if !probed {
+				probed = http_client
+					.get(format!("http://{}/ready", self.command.probe))
+					.timeout(std::time::Duration::from_millis(500))
+					.send()
+					.await
+					.is_ok_and(|response| response.status().is_success());
+			}
+			let log = std::fs::read_to_string(&self.command.log).unwrap_or_default();
+			if probed && log.contains("activation startup recovery complete") {
+				break;
+			}
+			assert!(
+				self.spawned.elapsed() < Self::STARTUP,
+				"scoped worker did not become ready: {}",
+				self.report()
+			);
+			tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+		}
+		eprintln!(
+			"scoped worker {} ready {:.1?} after spawn",
+			self.child.id(),
+			self.spawned.elapsed()
+		);
+	}
+	/// Wait for one Run milestone while this process remains alive and its
+	/// active Run keeps serving bounded peer work.
+	async fn until(&mut self, p: &Pair, milestone: &str, mut reached: impl AsyncFnMut() -> bool) {
+		let started = std::time::Instant::now();
+		let baseline = p.peers.served();
+		loop {
+			let served = p.peers.served() - baseline;
+			if reached().await {
+				eprintln!(
+					"scoped worker {} reached {milestone} in {:.1?} after {served} peer responses",
+					self.child.id(),
+					started.elapsed()
+				);
+				return;
+			}
+			if self.child.try_wait().unwrap().is_some() {
+				panic!(
+					"{milestone}: worker exited after {served} peer responses; {}\n{}",
+					run_progress(p).await,
+					self.report()
+				);
+			}
+			if run_state(p).await.1 == "PAUSED" {
+				panic!(
+					"{milestone}: Run paused after {served} peer responses; {}\n{}",
+					run_progress(p).await,
+					self.report()
+				);
+			}
+			let idle = p.peers.idle(started);
+			if idle >= Self::STALL {
+				panic!(
+					"{milestone}: live worker stalled; no peer response for {idle:.1?} after {served} in {:.1?}; {}\n{}",
+					started.elapsed(),
+					run_progress(p).await,
+					self.report()
+				);
+			}
+			if served > Self::PEER_RESPONSES {
+				panic!(
+					"{milestone}: live worker repeated work; not reached after {served} peer responses in {:.1?}; {}\n{}",
+					started.elapsed(),
+					run_progress(p).await,
+					self.report()
+				);
+			}
+			tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 		}
 	}
 }
+/// Both launches share one executable snapshot, so the post-SIGKILL restart
+/// reuses a file that has already been executed once.
 #[rstest::fixture]
 async fn running_scoped_pair(
 	#[from(pair_future)]
 	#[with(true)]
 	pair: PairFuture,
+	#[from(scoped_worker_binary)] _binary: Arc<ScopedWorkerBinary>,
 	#[from(scoped_worker_command)]
-	#[with(pair.clone())]
+	#[with(pair.clone(),_binary.clone())]
 	#[future(awt)]
 	initial: ScopedWorkerCommand,
 	#[from(scoped_worker_command)]
-	#[with(pair.clone())]
+	#[with(pair.clone(),_binary.clone())]
 	#[future(awt)]
 	restart: ScopedWorkerCommand,
 ) -> (Pair, ScopedWorkerProcess, ScopedWorkerCommand) {
@@ -4638,24 +4841,77 @@ impl Drop for ScopedWorkerProcess {
 		let _ = self.child.wait();
 	}
 }
+/// Phase and control only: this test runtime also serves every peer call,
+/// and decoding the whole Run on each poll would compete with that work.
+async fn run_state(p: &Pair) -> (String, String) {
+	sqlx::query_as(
+		&Query::select()
+			.columns(["phase", "control"].map(Alias::new))
+			.from(Alias::new("runs"))
+			.and_where(Expr::col("id").eq(Expr::value(p.admission)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(p.b.store.pool.driver())
+	.await
+	.unwrap()
+}
+/// Durable Run progress and activation claims, without the Run context.
+async fn run_progress(p: &Pair) -> String {
+	let run = p.run().await;
+	let claims: (i64, Option<i64>, Option<f64>) = {
+		let query_bind_1 = p.admission;
+		sqlx::query_as(
+			&Query::select()
+				.expr(Expr::cust("COUNT(claimed_at)"))
+				.expr(Expr::cust(
+					"(ARRAY_AGG(worker_pid ORDER BY claimed_at DESC NULLS LAST))[1]",
+				))
+				.expr(Expr::cust(
+					"EXTRACT(EPOCH FROM CLOCK_TIMESTAMP()-MAX(claimed_at))::float8",
+				))
+				.from(Alias::new("run_activations"))
+				.and_where(Expr::col("run_id").eq(Expr::value(query_bind_1)))
+				.to_string(PostgresQueryBuilder),
+		)
+		.fetch_one(p.b.store.pool.driver())
+		.await
+	}
+	.unwrap();
+	let now = chrono::Utc::now();
+	format!(
+		"run phase={} control={} step={} revision={} updated {:.1}s ago, lease_owner={:?} lease_remaining={:?}s, lease_recovered={}, error={:?}, retry={:?}; activation claims={} last_pid={:?} last_claim {:?}s ago; peer responses={} last {:.1?} ago; provider requests={}",
+		run.phase().as_str(),
+		run.control.as_str(),
+		run.step,
+		run.revision,
+		(now - run.updated_at).as_seconds_f64(),
+		run.lease_owner,
+		run.lease_until.map(|until| (until - now).as_seconds_f64()),
+		run.recovery.lease_recovered,
+		run.error,
+		run.recovery.retry,
+		claims.0,
+		claims.1,
+		claims.2,
+		p.peers.served(),
+		p.peers.idle(p.peers.origin),
+		p.requests.lock().await.len(),
+	)
+}
 
 #[rstest::rstest]
 #[tokio::test]
 async fn process_sigkill_preserves_remote_receipt_and_uncertain_origin_charges(
 	#[future(awt)] running_scoped_pair: (Pair, ScopedWorkerProcess, ScopedWorkerCommand),
+	#[from(reinhardt::test::fixtures::http_client)] http_client: reqwest::Client,
 ) {
 	let (p, mut worker, restart) = running_scoped_pair;
-	let arrived = tokio::time::timeout(
-		std::time::Duration::from_secs(60),
-		p.model.entered.notified(),
-	)
-	.await;
-	assert!(
-		arrived.is_ok(),
-		"worker={:?}, run={:?}",
-		worker.child.try_wait(),
-		p.run().await
-	);
+	worker.ready(&http_client).await;
+	worker
+		.until(&p, "initial inference arrival", async || {
+			!p.requests.lock().await.is_empty()
+		})
+		.await;
 	drop(worker); // Actual SIGKILL. No worker cleanup or settlement runs.
 	let old_attempt: Uuid = sqlx::query_scalar(
 		&Query::select()
@@ -4734,28 +4990,19 @@ async fn process_sigkill_preserves_remote_receipt_and_uncertain_origin_charges(
 	.unwrap();
 	// Act: replace the killed worker after preserving its durable receipt and advancing its lease.
 	let mut worker = ScopedWorkerProcess::spawn(restart);
-	let recovered = tokio::time::timeout(std::time::Duration::from_secs(60), async {
-		loop {
-			let run = p.run().await;
-			if run.phase().as_str() == "COMPLETED" {
-				break;
-			}
-			assert_ne!(run.control.as_str(), "PAUSED", "{run:?}");
-			tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-		}
-	})
-	.await;
-	let state = p.run().await;
-	assert!(
-		recovered.is_ok(),
-		"same remote Run must recover under its original admission: worker={:?}, phase={}, step={}, revision={}, error={:?}, retry={:?}",
-		worker.child.try_wait(),
-		state.phase().as_str(),
-		state.step,
-		state.revision,
-		state.error,
-		state.recovery.retry
-	);
+	worker.ready(&http_client).await;
+	worker
+		.until(&p, "recovered inference arrival", async || {
+			p.requests.lock().await.len() >= 2
+		})
+		.await;
+	worker
+		.until(
+			&p,
+			"same remote Run completion under its original admission",
+			async || run_state(&p).await.0 == "COMPLETED",
+		)
+		.await;
 	drop(worker);
 	let after = p.run().await;
 	assert_eq!(after.id, before.id);
@@ -5298,22 +5545,34 @@ impl reinhardt::Middleware for SourceReplyMiddleware {
 		}
 	}
 }
+/// Optional fault and observation middleware for a scoped peer's production routes.
+#[derive(Clone, Default)]
+struct RouterObservers {
+	reply: Option<Arc<Mutex<Option<String>>>>,
+	activity: Option<Arc<PeerActivity>>,
+}
+#[rstest::fixture]
+fn peer_activity() -> Arc<PeerActivity> {
+	Arc::new(PeerActivity::new())
+}
 #[rstest::fixture]
 fn scoped_router(
 	scoped_application: ScopedApplicationFuture,
-	#[default(None)] reply: Option<Arc<Mutex<Option<String>>>>,
+	#[default(RouterObservers::default())] observers: RouterObservers,
 ) -> upstream_fixtures::RouterFuture {
 	async move {
 		let owner = scoped_application.await;
 		// reinhardt-web#6673: apply fault middleware to production routes directly, preserving HEAD.
-		let router = aidash_server::routes()
+		let mut router = aidash_server::routes()
 			.into_server()
 			.with_di_context(owner.application.application.context.clone());
-		Arc::new(if let Some(reply) = reply {
-			router.with_middleware(SourceReplyMiddleware(reply))
-		} else {
-			router
-		})
+		if let Some(reply) = observers.reply {
+			router = router.with_middleware(SourceReplyMiddleware(reply));
+		}
+		if let Some(activity) = observers.activity {
+			router = router.with_middleware(PeerActivityMiddleware(activity));
+		}
+		Arc::new(router)
 	}
 	.boxed()
 	.shared()
@@ -5334,12 +5593,12 @@ struct ScopedPeer {
 fn scoped_peer(
 	#[default(false)] _native: bool,
 	#[default("aidash://execution-test")] _node: &str,
-	#[default(None)] _reply: Option<Arc<Mutex<Option<String>>>>,
+	#[default(RouterObservers::default())] _observers: RouterObservers,
 	#[from(scoped_application)]
 	#[with(_native, _node)]
 	application: ScopedApplicationFuture,
 	#[from(scoped_router)]
-	#[with(application.clone(),_reply.clone())]
+	#[with(application.clone(),_observers.clone())]
 	router: upstream_fixtures::RouterFuture,
 	#[from(scoped_listener)]
 	#[with(application.clone())]
@@ -5361,6 +5620,7 @@ struct ScopedInfrastructure {
 	model_state: ModelScript,
 	model_server: Arc<reinhardt::test::fixtures::server::TestServerGuard>,
 	drop_reply: Arc<Mutex<Option<String>>>,
+	peers: Arc<PeerActivity>,
 	source: ScopedPeer,
 	receiver: ScopedPeer,
 	embedding_provider: BoxFuture<'static, EmbeddingProvider>,
@@ -5370,11 +5630,12 @@ fn scoped_infrastructure(
 	#[default(false)] _native: bool,
 	scoped_model: BoxFuture<'static, ScopedModel>,
 	#[from(reply_state)] drop_reply: Arc<Mutex<Option<String>>>,
+	#[from(peer_activity)] peers: Arc<PeerActivity>,
 	#[from(scoped_peer)]
-	#[with(_native,"aidash://execution-test",Some(drop_reply.clone()))]
+	#[with(_native,"aidash://execution-test",RouterObservers{reply:Some(drop_reply.clone()),activity:Some(peers.clone())})]
 	source: BoxFuture<'static, ScopedPeer>,
 	#[from(scoped_peer)]
-	#[with(_native, "aidash://scoped-receiver")]
+	#[with(_native,"aidash://scoped-receiver",RouterObservers{reply:None,activity:Some(peers.clone())})]
 	receiver: BoxFuture<'static, ScopedPeer>,
 	embedding_provider: BoxFuture<'static, EmbeddingProvider>,
 ) -> BoxFuture<'static, ScopedInfrastructure> {
@@ -5384,6 +5645,7 @@ fn scoped_infrastructure(
 			model_state: model.state,
 			model_server: model.server,
 			drop_reply,
+			peers,
 			source: source.await,
 			receiver: receiver.await,
 			embedding_provider,

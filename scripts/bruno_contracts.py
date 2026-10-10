@@ -669,6 +669,42 @@ def render():
                 )
             continue
         add(endpoint, "Anonymous request is rejected", 401, immutable=method != "GET")
+        if route["source"] == "server/src/apps/identity/views/provider_credentials.rs":
+            uri = path.replace("{provider}", "openrouter")
+            body = (
+                json.dumps({"expected_revision": 0, "provider_credential_id": None})
+                if method == "PUT"
+                else json.dumps({"expected_revision": 0})
+                if route["json"]
+                else None
+            )
+            add(endpoint, "Forged bearer cannot manage Provider Credentials", 401,
+                path=uri, headers={"Authorization": "Bearer forged"}, body=body)
+            for label, headers in [
+                ("Missing Store fails closed for the operator", OPERATOR),
+                ("Missing Store fails closed for the subject", SUBJECT),
+            ]:
+                add(endpoint, label, 404, path=uri, headers=headers, body=body,
+                    checks='expect(res.getHeader("cache-control")).to.equal("no-store");expect(res.getBody()).to.eql({error:"Provider Credential Store is not configured"});',
+                    immutable=method != "GET")
+            if route["json"]:
+                add(endpoint, "Wrong JSON media type is rejected", 415,
+                    path=uri, headers=OPERATOR, body=body, media="text/plain", immutable=True)
+                add(endpoint, "Malformed JSON cannot reach the use case", 400,
+                    path=uri, headers=OPERATOR, body="{", immutable=True)
+                add(endpoint, "Required lifecycle fields cannot be omitted", 422,
+                    path=uri, headers=OPERATOR, body="{}", immutable=True)
+                invalid = json.loads(body)
+                invalid["unexpected"] = True
+                add(endpoint, "Unknown lifecycle fields are rejected", 422,
+                    path=uri, headers=OPERATOR, body=json.dumps(invalid), immutable=True)
+            elif route["uuid_parameters"]:
+                add(endpoint, "Typed credential IDs reject invalid UUIDs", 400,
+                    path=uri.replace("{id}", "not-a-uuid"), headers=OPERATOR)
+            elif route["query_parameters"]:
+                add(endpoint, "Credential paging rejects nonnumeric offsets", 400,
+                    path=uri + "?offset=invalid", headers=OPERATOR)
+            continue
         if route["json"]:
             add(
                 endpoint,

@@ -150,7 +150,7 @@ impl Drafts {
 		Ok(
 			aidash_application::registry::workbench::publication::validate(
 				&crate::bootstrap::draft_repository(&self.runtime, actor),
-				&crate::bootstrap::registry_validation(),
+				&crate::bootstrap::registry_validation_for(&self.runtime.store),
 				id,
 				input,
 			)
@@ -175,7 +175,7 @@ impl Drafts {
 		Ok(
 			aidash_application::registry::workbench::publication::register(
 				&crate::bootstrap::draft_repository(&self.runtime, actor),
-				&crate::bootstrap::registry_validation(),
+				&crate::bootstrap::registry_validation_for(&self.runtime.store),
 				id,
 				input,
 			)

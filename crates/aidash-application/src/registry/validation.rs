@@ -16,14 +16,35 @@ use std::sync::Arc;
 #[derive(Clone)]
 pub struct DefinitionValidation {
 	credentials: Arc<dyn Credentials>,
+	provider_credentials_enabled: bool,
 	core_tools: Arc<dyn CoreToolCatalog>,
 }
 impl DefinitionValidation {
 	pub fn new(credentials: Arc<dyn Credentials>, core_tools: Arc<dyn CoreToolCatalog>) -> Self {
 		Self {
+			provider_credentials_enabled: false,
 			credentials,
 			core_tools,
 		}
+	}
+	pub fn with_provider_credentials(mut self, configured: bool) -> Self {
+		self.provider_credentials_enabled = configured;
+		self
+	}
+	fn provider_source(
+		&self,
+		endpoint: &str,
+		provider: &str,
+		env: Option<&str>,
+		catalog: Option<&str>,
+	) -> Result<()> {
+		aidash_domain::provider_credentials::validate_source(endpoint, provider, env, catalog)?;
+		if catalog.is_some() && !self.provider_credentials_enabled {
+			return Err(Error::Invalid(
+				"Provider Credential Store is not configured".into(),
+			));
+		}
+		Ok(())
 	}
 	pub fn node_specifications(
 		&self,
@@ -130,6 +151,9 @@ impl DefinitionValidation {
 				));
 				}
 				m.request_timeout()?;
+				if m.provider_credential.is_some() {
+					aidash_domain::provider_credentials::validate_model_id(&m.model_id)?;
+				}
 				for route in &m.media_routes {
 					if route.tag.is_empty()
 						|| !route
@@ -152,7 +176,12 @@ impl DefinitionValidation {
 						return Err(Error::Invalid("invalid media route evidence".into()));
 					}
 				}
-				validate_endpoint(&m.endpoint)?;
+				self.provider_source(
+					&m.endpoint,
+					&m.provider,
+					m.credential_env.as_deref(),
+					m.provider_credential.as_deref(),
+				)?;
 				if let Some(name) = m.credential_env {
 					validate_secret_reference(&name)?;
 					if local {
@@ -247,7 +276,15 @@ impl DefinitionValidation {
 		config: &aidash_domain::semantic::EmbeddingConfig,
 		local: bool,
 	) -> Result<()> {
-		validate_endpoint(&config.endpoint)?;
+		if config.provider_credential.is_some() {
+			aidash_domain::provider_credentials::validate_model_id(&config.model)?;
+		}
+		self.provider_source(
+			&config.endpoint,
+			&config.provider,
+			config.credential_env.as_deref(),
+			config.provider_credential.as_deref(),
+		)?;
 		if let Some(name) = &config.credential_env {
 			validate_secret_reference(name)?;
 			if local {

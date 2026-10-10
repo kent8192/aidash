@@ -16,6 +16,9 @@ fn transient_provider_statuses_keep_the_worker_retry_path() {
 			}
 		));
 	}
+	assert!(!super::retryable_inference_error(&Error::Invalid(
+		"Credential Broker rejected Capability Token (capability_expired)".into(),
+	)));
 }
 
 #[rstest::rstest]
@@ -54,5 +57,8 @@ async fn cancellation_store(
 		node_id: "cancellation-poll-test".into(),
 		semantic_client: http_client.clone(),
 		recovery_cursors: Default::default(),
+		provider_credentials: None,
+		provider_key_material_reader: None,
+		capability_issuer: None,
 	}
 }
