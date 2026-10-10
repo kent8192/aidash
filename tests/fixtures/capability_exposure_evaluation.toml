@@ -154,7 +154,14 @@ id = "small-set-weather"
 language = "en"
 task = "What is the weather forecast for Osaka on 2026-10-12?"
 expected_tool = "weather_forecast"
-tools = ["weather_forecast", "currency_convert", "invoice_lookup", "shipment_trace", "calendar_find_slot", "translate_text"]
+tools = [
+  "weather_forecast",
+  "currency_convert",
+  "invoice_lookup",
+  "shipment_trace",
+  "calendar_find_slot",
+  "translate_text",
+]
 
 [[cases]]
 id = "full-set-invoice"
@@ -175,7 +182,20 @@ id = "skill-guided-shipment"
 language = "en"
 task = "A customer says parcel 1Z999AA10123456784 shipped with UPS never arrived. Handle it following the Shipping claims Skill."
 expected_tool = "shipment_trace"
-tools = ["weather_forecast", "currency_convert", "invoice_lookup", "shipment_trace", "calendar_find_slot", "translate_text", "stock_quote", "flight_status", "hotel_search", "restaurant_reserve", "crm_contact_find", "ticket_create"]
+tools = [
+  "weather_forecast",
+  "currency_convert",
+  "invoice_lookup",
+  "shipment_trace",
+  "calendar_find_slot",
+  "translate_text",
+  "stock_quote",
+  "flight_status",
+  "hotel_search",
+  "restaurant_reserve",
+  "crm_contact_find",
+  "ticket_create",
+]
 skills = ["shipping-claims", "expense-policy"]
 
 [[cases]]
