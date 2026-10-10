@@ -191,6 +191,7 @@ async fn worker_mint_and_broker_audit_are_correlated_and_never_log_secrets() {
 			context: json!({}).into(),
 			tools: vec![],
 			max_output_tokens: 10,
+			response_format: None,
 			content_parts: vec![],
 			cache_scope: None,
 		})

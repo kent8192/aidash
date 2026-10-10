@@ -269,6 +269,7 @@ impl Cloud {
 			context: json!({}).into(),
 			tools: vec![],
 			max_output_tokens: 10,
+			response_format: None,
 			content_parts: vec![],
 			cache_scope: None,
 		}
