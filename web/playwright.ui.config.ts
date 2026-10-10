@@ -12,6 +12,7 @@ export default defineConfig({
     "transaction-authority.spec.ts",
     "google-auth.spec.ts",
     "collaboration.spec.ts",
+    "inference-progress.spec.ts",
     "core-capabilities.spec.ts",
     "mesh-graph.spec.ts",
     "federated-graph.spec.ts",

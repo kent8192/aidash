@@ -255,7 +255,9 @@ impl Cloud {
 			credential_env: None,
 			provider_credential: Some("openrouter".into()),
 			request_timeout_secs: Some(5),
-			streaming: None,
+			// The fake upstream holds a stream open for the broker's own stream
+			// tests; these cases cover the access path of a whole completion.
+			streaming: Some(false),
 			stream_stall_timeout_secs: None,
 			reasoning_effort: None,
 			context_window: 32768,

@@ -357,12 +357,25 @@ impl ModelProvider for OpenRouterProvider {
 const MAX_RESPONSE_BYTES: usize = 1_048_576;
 
 /// Read a streamed completion until `[DONE]`. Only data events reset the stall
-/// timer; provider keepalive comments do not.
+/// timer; provider keepalive comments do not. Endpoints that ignore `stream`
+/// and answer with a whole JSON completion are parsed as a non-streamed
+/// response, without progress.
 async fn read_stream(
 	mut response: reqwest::Response,
 	progress: &dyn InferenceProgressSink,
 	stall: std::time::Duration,
 ) -> Result<ModelResponse> {
+	match stream::media_type(&response) {
+		stream::MediaType::EventStream => {}
+		stream::MediaType::Json => {
+			return parse_openai(crate::response::json(response, MAX_RESPONSE_BYTES).await?);
+		}
+		stream::MediaType::Other => {
+			return Err(Error::External(
+				"provider answered a streamed request with an unsupported content type".into(),
+			));
+		}
+	}
 	let mut assembler = stream::StreamAssembler::new(progress, MAX_RESPONSE_BYTES);
 	let mut last_data = tokio::time::Instant::now();
 	while !assembler.done() {

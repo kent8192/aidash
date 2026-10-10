@@ -112,7 +112,7 @@ fn usage() -> Step {
 #[fixture]
 fn model_config(
 	#[default("http://127.0.0.1:1")] endpoint: &str,
-	#[default(true)] streaming: bool,
+	#[default(Some(true))] streaming: Option<bool>,
 ) -> ModelConfig {
 	let mut config = json!({
 		"provider":"openrouter", "model_id":"vendor/fixture-model",
@@ -120,8 +120,8 @@ fn model_config(
 		"context_window":32768, "max_output_tokens":4096,
 		"modalities":["text"], "cost":{}
 	});
-	if streaming {
-		config["streaming"] = json!(true);
+	if let Some(streaming) = streaming {
+		config["streaming"] = json!(streaming);
 	}
 	serde_json::from_value(config).unwrap()
 }
@@ -154,7 +154,35 @@ impl InferenceProgressSink for Progress {
 }
 
 fn model(endpoint: &str, streaming: bool) -> Arc<dyn ModelProvider> {
-	provider(reqwest::Client::new(), model_config(endpoint, streaming)).unwrap()
+	provider(
+		reqwest::Client::new(),
+		model_config(endpoint, Some(streaming)),
+	)
+	.unwrap()
+}
+
+/// Answer every completion request with one whole body, ignoring `stream`.
+async fn serve_whole(content_type: &'static str, body: String) -> Fixture {
+	let (sender, received) = mpsc::unbounded_channel();
+	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+	let endpoint = format!("http://{}", listener.local_addr().unwrap());
+	let app = Router::new().route(
+		"/chat/completions",
+		post(move |Json(request): Json<Value>| {
+			let sender = sender.clone();
+			let body = body.clone();
+			async move {
+				sender.send(request).unwrap();
+				([(header::CONTENT_TYPE, content_type)], body).into_response()
+			}
+		}),
+	);
+	let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+	Fixture {
+		endpoint,
+		received,
+		server,
+	}
 }
 
 async fn infer_stream(
@@ -302,6 +330,67 @@ async fn incomplete_or_invalid_streams_produce_no_response(
 }
 
 #[rstest::rstest]
+#[case::text(false)]
+#[case::tool_calls(true)]
+#[tokio::test]
+async fn streamed_requests_accept_a_whole_json_completion_without_progress(
+	#[case] with_tools: bool,
+) {
+	// Arrange
+	let whole = if with_tools {
+		json!({"choices":[{"finish_reason":"tool_calls","message":{"content":"Reading ",
+			"tool_calls":[{"id":"call-1","type":"function","function":{"name":"read",
+			"arguments":"{\"path\":\"private-notes\"}"}}]}}],
+			"usage":{"prompt_tokens":12,"completion_tokens":7}})
+	} else {
+		json!({"choices":[{"finish_reason":"stop","message":{"content":"Completed"}}],
+			"usage":{"prompt_tokens":12,"completion_tokens":7}})
+	};
+	let mut fixture = serve_whole("application/json; charset=utf-8", whole.to_string()).await;
+	let (sender, mut offered) = mpsc::unbounded_channel();
+
+	// Act
+	let streamed = model(&fixture.endpoint, true)
+		.infer(request(with_tools), &Progress(sender))
+		.await
+		.unwrap();
+	let non_streamed = model(&fixture.endpoint, false)
+		.infer(request(with_tools), &NoProgress)
+		.await
+		.unwrap();
+
+	// Assert
+	assert_eq!(fixture.received.recv().await.unwrap()["stream"], true);
+	assert_eq!(
+		serde_json::to_value(&streamed).unwrap(),
+		serde_json::to_value(&non_streamed).unwrap()
+	);
+	assert_eq!((streamed.input_tokens, streamed.output_tokens), (12, 7));
+	assert!(offered.try_recv().is_err());
+}
+
+#[rstest::rstest]
+#[case::plain_text("text/plain")]
+#[case::html("text/html")]
+#[tokio::test]
+async fn streamed_requests_reject_other_content_types(#[case] content_type: &'static str) {
+	// Arrange
+	let body = json!({"choices":[{"finish_reason":"stop","message":{"content":"Completed"}}]});
+	let fixture = serve_whole(content_type, body.to_string()).await;
+
+	// Act
+	let result = model(&fixture.endpoint, true)
+		.infer(request(false), &NoProgress)
+		.await;
+
+	// Assert
+	assert!(
+		matches!(result, Err(aidash_application::Error::External(_))),
+		"{result:?}"
+	);
+}
+
+#[rstest::rstest]
 #[tokio::test]
 async fn comment_only_keepalives_stall_the_stream(mut model_config: ModelConfig) {
 	// Arrange
@@ -392,7 +481,7 @@ fn registry_validates_streaming_settings() {
 	let mut entry: Entry = serde_json::from_value(json!({
 		"id":"stream-model", "version":"1.0.0", "kind":"model",
 		"name":{"en":"Stream model"}, "description":{"en":"Test model"},
-		"config":serde_json::to_value(model_config("https://openrouter.ai/api/v1", false)).unwrap()
+		"config":serde_json::to_value(model_config("https://openrouter.ai/api/v1", Some(false))).unwrap()
 	}))
 	.unwrap();
 
@@ -423,9 +512,9 @@ fn registry_validates_streaming_settings() {
 }
 
 #[rstest::rstest]
-fn omitted_streaming_settings_stay_unserialized_and_default_off() {
+fn omitted_streaming_settings_stay_unserialized_and_default_on() {
 	// Arrange
-	let config = model_config("https://openrouter.ai/api/v1", false);
+	let config = model_config("https://openrouter.ai/api/v1", None);
 
 	// Act
 	let serialized = serde_json::to_value(&config).unwrap();
@@ -433,7 +522,7 @@ fn omitted_streaming_settings_stay_unserialized_and_default_off() {
 	// Assert
 	assert!(serialized.get("streaming").is_none());
 	assert!(serialized.get("stream_stall_timeout_secs").is_none());
-	assert!(!config.streaming());
+	assert!(config.streaming());
 	assert_eq!(
 		config.stream_stall_timeout().unwrap(),
 		Duration::from_secs(120)

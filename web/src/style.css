@@ -1040,6 +1040,68 @@ dd {
   color: var(--muted-foreground);
   margin: 16px 0 3px;
 }
+.inference-progress {
+  margin: 16px 0;
+}
+.inference-attempt {
+  padding: 12px 0;
+  border-bottom: 1px solid #e5ebdf;
+}
+.inference-attempt summary,
+.inference-label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+  color: var(--muted-foreground);
+}
+.inference-phase {
+  padding: 1px 8px;
+  border: 1px dashed currentColor;
+  border-radius: 999px;
+  font-weight: 600;
+}
+.inference-attempt.pending .inference-phase {
+  color: var(--foreground);
+}
+.inference-text {
+  display: block;
+  margin: 8px 0 0;
+  max-height: 320px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 13px;
+}
+.inference-attempt.pending .inference-text {
+  font-style: italic;
+}
+.inference-attempt.ended .inference-text {
+  color: var(--muted-foreground);
+  text-decoration: line-through;
+}
+.inference-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.inference-tool {
+  display: inline-flex;
+  gap: 6px;
+  padding: 2px 10px;
+  border: 1px solid #e5ebdf;
+  border-radius: 999px;
+  font-size: 12px;
+}
+.inference-gap,
+.inference-note {
+  margin: 8px 0;
+  font-size: 12px;
+  color: var(--muted-foreground);
+}
 details > summary {
   cursor: pointer;
   font-size: 12px;
