@@ -1,5 +1,9 @@
 import { Button } from "./components/ui/button";
+import { Input } from "./components/ui/input";
+import { NativeSelect } from "./components/ui/native-select";
+import { Textarea } from "./components/ui/textarea";
 import { useState } from "react";
+import { Check, Group, Hint, pairClass } from "./components/patterns";
 import { Field, useI18n } from "./ui";
 import { disambiguateLabels } from "./display-labels";
 export type Binding = {
@@ -83,7 +87,8 @@ function Restrictions({
     setDraft({ source: serialized, text: serialized });
   }
   return (
-    <textarea
+    <Textarea
+      className="min-h-16 font-mono text-xs"
       id={id}
       value={draft.source === serialized ? draft.text : serialized}
       onChange={(e) => setDraft({ source: serialized, text: e.target.value })}
@@ -168,32 +173,41 @@ export function AgentBindings({
       ),
     });
   return (
-    <fieldset className="core-config">
-      <legend>{ja ? "Registry Binding" : "Registry bindings"}</legend>
-      <p>
+    <Group legend={ja ? "Registry Binding" : "Registry bindings"}>
+      <Hint>
         {ja
           ? "workspace_read と human_request は常に含まれます。機能の利用には現在の権限とProviderが必要です。メモリの読み込みにはMemoryまたはSourceを明示的に追加してください。"
           : "workspace_read and human_request are always included. Current permissions and providers are required. Add a Memory or Source explicitly to read memory."}
-      </p>
-      <Field label={ja ? "登録Node" : "Registering Node"}>
-        <input value={origin} readOnly />
-      </Field>
-      <Field label={ja ? "追加する定義" : "Definition to bind"}>
-        <select value={target} onChange={(e) => setTarget(e.target.value)}>
-          <option value="">{ja ? "選択" : "Select"}</option>
-          {available.map((e) => (
-            <option
-              key={`${e.kind}:${e.id}@${e.version}`}
-              value={`${e.kind}:${e.id}@${e.version}`}
-            >
-              {labels.get(`${e.kind}:${e.id}@${e.version}`)} · {e.kind}
-            </option>
-          ))}
-        </select>
-      </Field>
+      </Hint>
+      <div className={pairClass}>
+        <Field label={ja ? "登録Node" : "Registering Node"}>
+          <Input
+            value={origin}
+            readOnly
+            className="bg-raised font-mono text-xs text-muted-foreground"
+          />
+        </Field>
+        <Field label={ja ? "追加する定義" : "Definition to bind"}>
+          <NativeSelect
+            value={target}
+            onChange={(e) => setTarget(e.target.value)}
+          >
+            <option value="">{ja ? "選択" : "Select"}</option>
+            {available.map((e) => (
+              <option
+                key={`${e.kind}:${e.id}@${e.version}`}
+                value={`${e.kind}:${e.id}@${e.version}`}
+              >
+                {labels.get(`${e.kind}:${e.id}@${e.version}`)} · {e.kind}
+              </option>
+            ))}
+          </NativeSelect>
+        </Field>
+      </div>
       <Button
         type="button"
         variant="outline"
+        className="justify-self-start"
         disabled={!target || !origin}
         onClick={() => {
           const entry = available.find(
@@ -229,78 +243,94 @@ export function AgentBindings({
       >
         {ja ? "Bindingを追加" : "Add binding"}
       </Button>
-      {bindings.map((binding, i) => (
-        <section
-          key={`${binding.target.registry_node}:${binding.target.id}@${binding.target.version}`}
-        >
-          <p>
-            {label(binding)} · {binding.kind} · {binding.target.registry_node}
-          </p>
-          {binding.kind === "tool" && (
-            <Field
-              label={
-                ja
-                  ? "モデルに提示する名前（省略可）"
-                  : "Stable alias (optional)"
-              }
+      {bindings.length > 0 && (
+        <ul className="grid min-w-0 gap-3">
+          {bindings.map((binding, i) => (
+            <li
+              key={`${binding.target.registry_node}:${binding.target.id}@${binding.target.version}`}
+              className="grid min-w-0 gap-3 border-l-2 border-brand-line pl-3"
             >
-              <input
-                value={binding.alias ?? ""}
-                pattern="[A-Za-z0-9_-]{1,64}"
-                onChange={(e) =>
-                  update(i, { alias: e.target.value || undefined })
-                }
-              />
-            </Field>
-          )}
-          <Field label={ja ? "制限（JSON）" : "Restrictions (JSON)"}>
-            <Restrictions
-              value={binding.narrow}
-              change={(narrow) => update(i, { narrow })}
-              ja={ja}
-            />
-          </Field>
-          {binding.kind === "bundle" && (
-            <Field
-              label={
-                ja
-                  ? "選ぶメンバーID（空欄ならすべて）"
-                  : "Member IDs (empty selects all)"
-              }
-            >
-              <input
-                value={(binding.members ?? []).join(", ")}
-                onChange={(e) =>
-                  update(i, {
-                    members: e.target.value
-                      .split(",")
-                      .map((s) => s.trim())
-                      .filter(Boolean),
-                  })
-                }
-              />
-            </Field>
-          )}
-          <Button
-            type="button"
-            variant="outline"
-            onClick={() =>
-              save({
-                ...value,
-                bindings: bindings.filter((_, index) => index !== i),
-              })
-            }
-          >
-            {ja ? "取り外す" : "Remove binding"}
-          </Button>
-        </section>
-      ))}
-      <fieldset>
-        <legend>{ja ? "標準ツール" : "Default tools"}</legend>
-        {defaults.map((name) => (
-          <label className="check" key={name}>
-            <input
-              type="checkbox"
+              <div className="flex min-w-0 items-start gap-2">
+                <p className="min-w-0 flex-1 text-[13px] font-medium text-foreground [overflow-wrap:anywhere]">
+                  {label(binding)}{" "}
+                  <span className="font-normal text-muted-foreground">
+                    · {binding.kind} ·{" "}
+                    <span className="font-mono text-xs">
+                      {binding.target.registry_node}
+                    </span>
+                  </span>
+                </p>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() =>
+                    save({
+                      ...value,
+                      bindings: bindings.filter((_, index) => index !== i),
+                    })
+                  }
+                >
+                  {ja ? "取り外す" : "Remove binding"}
+                </Button>
+              </div>
+              {binding.kind === "tool" && (
+                <Field
+                  label={
+                    ja
+                      ? "モデルに提示する名前（省略可）"
+                      : "Stable alias (optional)"
+                  }
+                >
+                  <Input
+                    className="font-mono text-xs"
+                    value={binding.alias ?? ""}
+                    pattern="[A-Za-z0-9_-]{1,64}"
+                    onChange={(e) =>
+                      update(i, { alias: e.target.value || undefined })
+                    }
+                  />
+                </Field>
+              )}
+              <Field label={ja ? "制限（JSON）" : "Restrictions (JSON)"}>
+                <Restrictions
+                  value={binding.narrow}
+                  change={(narrow) => update(i, { narrow })}
+                  ja={ja}
+                />
+              </Field>
+              {binding.kind === "bundle" && (
+                <Field
+                  label={
+                    ja
+                      ? "選ぶメンバーID（空欄ならすべて）"
+                      : "Member IDs (empty selects all)"
+                  }
+                >
+                  <Input
+                    className="font-mono text-xs"
+                    value={(binding.members ?? []).join(", ")}
+                    onChange={(e) =>
+                      update(i, {
+                        members: e.target.value
+                          .split(",")
+                          .map((s) => s.trim())
+                          .filter(Boolean),
+                      })
+                    }
+                  />
+                </Field>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+      <Group nested legend={ja ? "標準ツール" : "Default tools"}>
+        <div className="grid min-w-0 gap-x-4 gap-y-1.5 sm:grid-cols-2">
+          {defaults.map((name) => (
+            <Check
+              key={name}
+              className="font-mono text-xs"
               disabled={required.includes(name)}
               checked={!removed.includes(name)}
               onChange={(e) =>
@@ -311,12 +341,13 @@ export function AgentBindings({
                     : [...removed, name],
                 })
               }
-            />
-            {name}
-          </label>
-        ))}
-      </fieldset>
-    </fieldset>
+            >
+              {name}
+            </Check>
+          ))}
+        </div>
+      </Group>
+    </Group>
   );
 }
 

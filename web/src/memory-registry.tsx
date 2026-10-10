@@ -1,6 +1,10 @@
 import { useState } from "react";
+import { controlClass } from "./components/ui/control";
+import { Input } from "./components/ui/input";
+import { NativeSelect } from "./components/ui/native-select";
 import type { Entry } from "./types";
 import { Field, useEntityLabel, useI18n } from "./ui";
+import { Check, Disclosure, Group, Hint, pairClass } from "./components/patterns";
 
 const reference = (value: string) => {
   const at = value.lastIndexOf("@");
@@ -163,7 +167,7 @@ function ReferenceField({
   const { t } = useI18n();
   return (
     <Field label={label}>
-      <select name={name} required={!optional} defaultValue="">
+      <NativeSelect name={name} required={!optional} defaultValue="">
         <option value="">{t("choose")}</option>
         {entries
           .filter((entry) => entry.kind === kind)
@@ -175,7 +179,7 @@ function ReferenceField({
               {entityLabel(entry)}
             </option>
           ))}
-      </select>
+      </NativeSelect>
     </Field>
   );
 }
@@ -194,10 +198,9 @@ export function AgentMemoryFields({
     | undefined;
   const entityLabel = useEntityLabel(entries);
   return (
-    <fieldset>
-      <legend>{ja ? "メモリ" : "Memory"}</legend>
+    <Group nested legend={ja ? "メモリ" : "Memory"}>
       <Field label={ja ? "個人メモリのポリシー" : "Private memory policy"}>
-        <select
+        <NativeSelect
           name="memory_provider"
           defaultValue={value ? `${value.id}@${value.version}` : ""}
         >
@@ -212,21 +215,20 @@ export function AgentMemoryFields({
                 {entityLabel(entry)}
               </option>
             ))}
-        </select>
+        </NativeSelect>
       </Field>
-      <label>
-        <input
-          type="checkbox"
-          name="allow_memory_write"
-          defaultChecked={initial?.allow_memory_write === true}
-        />
+      <Check
+        name="allow_memory_write"
+        defaultChecked={initial?.allow_memory_write === true}
+      >
         {ja
           ? "このAgentによるUnitの変更を許可"
           : "Allow unit changes by this Agent"}
-      </label>
+      </Check>
       <Field label={ja ? "追加の検索元" : "Additional recall sources"}>
         <select
           multiple
+          className={`${controlClass} min-h-24 py-1`}
           name="memory_sources"
           defaultValue={
             Array.isArray(initial?.sources)
@@ -249,12 +251,12 @@ export function AgentMemoryFields({
             ))}
         </select>
       </Field>
-      <p className="muted">
+      <Hint>
         {ja
           ? "本文はWorkspaceに保持されます。選択した定義のバージョンを固定します。"
           : "Bodies belong to the Workspace. Selected definition versions are pinned."}
-      </p>
-    </fieldset>
+      </Hint>
+    </Group>
   );
 }
 export function MemoryRegistryFields({
@@ -277,24 +279,24 @@ export function MemoryRegistryFields({
   ];
   if (kind === "tokenizer")
     return (
-      <p>
+      <Hint>
         {ja
           ? "UTF-8バイト数による保守的な上限。根拠を含む全体を計算します。"
           : "Conservative UTF-8 byte upper bound, counting the complete provenance envelope."}
-      </p>
+      </Hint>
     );
   if (kind === "reranker")
     return (
       <>
         <Field label={ja ? "順位付け方法" : "Ranking method"}>
-          <select
+          <NativeSelect
             name="memory_reranker_kind"
             value={reranker}
             onChange={(e) => setReranker(e.target.value)}
           >
             <option value="rrf">RRF</option>
             <option value="model">{ja ? "モデル" : "Model"}</option>
-          </select>
+          </NativeSelect>
         </Field>
         {reranker === "model" && (
           <ReferenceField
@@ -316,21 +318,21 @@ export function MemoryRegistryFields({
           label={ja ? "メモリポリシー" : "Memory policy"}
         />
         <Field label={ja ? "検索する範囲" : "Recall scope"}>
-          <select name="memory_scope">
+          <NativeSelect name="memory_scope">
             <option value="workspace">
               {ja ? "共有Workspace" : "Shared Workspace"}
             </option>
             <option value="participant">
               {ja ? "論理Agentの個人メモリ" : "Logical Agent private memory"}
             </option>
-          </select>
+          </NativeSelect>
         </Field>
         <Field
           label={
             ja ? "根拠を含むトークン上限" : "Token cap including provenance"
           }
         >
-          <input
+          <Input
             name="source_tokens"
             type="number"
             min={1}
@@ -343,44 +345,42 @@ export function MemoryRegistryFields({
     );
   return (
     <>
-      <p>
+      <Hint>
         {ja
           ? "RustのHindsight。モデル・料金・上限を固定します。"
           : "Native Rust Hindsight with pinned roles, prices and finite limits."}
-      </p>
-      {roles.map(([role, en, jp]) => (
-        <ReferenceField
-          key={role}
-          entries={entries}
-          kind={
-            ["embedding", "reranker", "tokenizer"].includes(role)
-              ? role
-              : "model"
-          }
-          name={`memory_role_${role}`}
-          label={ja ? jp : en}
-        />
-      ))}
-      <label>
-        <input type="checkbox" name="memory_learning" />
+      </Hint>
+      <div className={pairClass}>
+        {roles.map(([role, en, jp]) => (
+          <ReferenceField
+            key={role}
+            entries={entries}
+            kind={
+              ["embedding", "reranker", "tokenizer"].includes(role)
+                ? role
+                : "model"
+            }
+            name={`memory_role_${role}`}
+            label={ja ? jp : en}
+          />
+        ))}
+      </div>
+      <Check name="memory_learning">
         {ja
           ? "完了Runからレビュー待ち候補を作成"
           : "Propose review candidates from completed Runs"}
-      </label>
-      <label>
-        <input type="checkbox" name="memory_observations" defaultChecked />
+      </Check>
+      <Check name="memory_observations" defaultChecked>
         {ja
           ? "採用済みUnitからObservationを更新"
           : "Maintain observations from admitted units"}
-      </label>
-      <label>
-        <input type="checkbox" name="memory_refresh" defaultChecked />
+      </Check>
+      <Check name="memory_refresh" defaultChecked>
         {ja
           ? "選択された定期的な問いを更新"
           : "Refresh selected recurring questions"}
-      </label>
-      <fieldset>
-        <legend>{ja ? "意味的な関連づけ" : "Semantic links"}</legend>
+      </Check>
+      <Group nested legend={ja ? "意味的な関連づけ" : "Semantic links"}>
         <Field
           label={
             ja
@@ -388,7 +388,7 @@ export function MemoryRegistryFields({
               : "Minimum cosine similarity (millionths)"
           }
         >
-          <input
+          <Input
             name="semantic_link_min_similarity_millionths"
             type="number"
             min={1}
@@ -397,23 +397,25 @@ export function MemoryRegistryFields({
             required
           />
         </Field>
-      </fieldset>
-      <fieldset>
-        <legend>
-          {ja
+      </Group>
+      <Group
+        nested
+        legend={
+          ja
             ? "固定した料金（百万トークンあたりの通貨の百万分の一）"
-            : "Pinned prices (microcurrency per million tokens)"}
-        </legend>
+            : "Pinned prices (microcurrency per million tokens)"
+        }
+      >
         {roles
           .filter(([role]) => role !== "tokenizer")
           .map(([role, en, jp]) => (
-            <div key={role}>
+            <div key={role} className={pairClass}>
               {["input", "output"].map((direction) => (
                 <Field
                   key={direction}
                   label={`${ja ? jp : en} · ${ja ? (direction === "input" ? "入力" : "出力") : direction}`}
                 >
-                  <input
+                  <Input
                     name={`price_${role}_${direction}`}
                     type="number"
                     min={0}
@@ -424,33 +426,32 @@ export function MemoryRegistryFields({
               ))}
             </div>
           ))}
-      </fieldset>
-      <details>
-        <summary>
-          {ja ? "処理・保存の上限" : "Operation and storage limits"}
-        </summary>
-        {Object.entries({ ...bounds, ...retention }).map(([key, value]) => (
-          <Field key={key} label={boundLabels[key][ja ? 1 : 0]}>
-            <input
-              name={key}
-              type="number"
-              min={1}
-              max={key.endsWith("days") ? 3650 : 2147483647}
-              defaultValue={value}
-              required
-            />
+      </Group>
+      <Disclosure summary={ja ? "処理・保存の上限" : "Operation and storage limits"}>
+        <div className={pairClass}>
+          {Object.entries({ ...bounds, ...retention }).map(([key, value]) => (
+            <Field key={key} label={boundLabels[key][ja ? 1 : 0]}>
+              <Input
+                name={key}
+                type="number"
+                min={1}
+                max={key.endsWith("days") ? 3650 : 2147483647}
+                defaultValue={value}
+                required
+              />
+            </Field>
+          ))}
+          <Field
+            label={
+              ja
+                ? "採用済みUnitの保持日数（空欄なら無期限）"
+                : "Admitted unit retention days (blank keeps indefinitely)"
+            }
+          >
+            <Input name="unit_max_age_days" type="number" min={1} max={3650} />
           </Field>
-        ))}
-        <Field
-          label={
-            ja
-              ? "採用済みUnitの保持日数（空欄なら無期限）"
-              : "Admitted unit retention days (blank keeps indefinitely)"
-          }
-        >
-          <input name="unit_max_age_days" type="number" min={1} max={3650} />
-        </Field>
-      </details>
+        </div>
+      </Disclosure>
     </>
   );
 }

@@ -1,3 +1,5 @@
+import { panelClass } from "./display";
+import { Alert, Hint, Pre } from "../components/patterns";
 import { Button } from "../components/ui/button";
 import { useState } from "react";
 import { useInfiniteQuery } from "@tanstack/react-query";
@@ -54,7 +56,7 @@ export function SkillFiles({ run }: { run: string }) {
     }
   };
   return (
-    <details className="core-panel">
+    <details className={panelClass}>
       <summary>Skills</summary>
       <Button
         variant="outline"
@@ -72,9 +74,9 @@ export function SkillFiles({ run }: { run: string }) {
           <article key={skill.skill_id}>
             <strong>{skill.name}</strong>
             <p>{skill.description}</p>
-            <small>
+            <Hint>
               {skill.origin} · {skill.digest}
-            </small>
+            </Hint>
             <Button
               variant="outline"
               type="button"
@@ -100,7 +102,7 @@ export function SkillFiles({ run }: { run: string }) {
               ? "ファイルの読込みはスクリプトを実行しません。"
               : "Reading a file does not execute its scripts."}
           </p>
-          <ul>
+          <ul className="grid gap-1 text-xs">
             {inventory.map((file) => (
               <li key={file.path}>
                 <Button
@@ -114,7 +116,7 @@ export function SkillFiles({ run }: { run: string }) {
               </li>
             ))}
           </ul>
-          {read?.content && <pre>{read.content}</pre>}
+          {read?.content && <Pre>{read.content}</Pre>}
           {read?.encoding === "binary" && (
             <p>
               {ja
@@ -134,7 +136,7 @@ export function SkillFiles({ run }: { run: string }) {
         </div>
       )}
       {(error || query.error) && (
-        <p role="alert">{error || query.error?.message}</p>
+        <Alert>{error || query.error?.message}</Alert>
       )}
     </details>
   );

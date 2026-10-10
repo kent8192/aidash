@@ -1,4 +1,6 @@
 import { Button } from "../components/ui/button";
+import { Input } from "../components/ui/input";
+import { Textarea } from "../components/ui/textarea";
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
@@ -7,7 +9,8 @@ import type {
   RemoteSemanticFailure,
 } from "../generated/models";
 import { apiFetch } from "../transport";
-import { useI18n } from "../ui";
+import { Alert, Facts, Hint, formClass } from "../components/patterns";
+import { Field, useI18n } from "../ui";
 import type { RunManagement } from "../generated/models";
 
 export function RemoteRunManagement({ id }: { id: string }) {
@@ -42,15 +45,21 @@ export function RemoteRunManagement({ id }: { id: string }) {
       .finally(() => setBusy(false));
   };
   return (
-    <section aria-label={ja ? "実行の管理" : "Execution management"}>
+    <section
+      aria-label={ja ? "実行の管理" : "Execution management"}
+      className="grid min-w-0 gap-3 border-t border-border pt-4"
+    >
+      <h3 className="text-[13px] font-semibold text-foreground">
+        {ja ? "実行の管理" : "Execution management"}
+      </h3>
       {state.semantic_reason && (
-        <p role="status">{reasons[state.semantic_reason][ja ? 1 : 0]}</p>
+        <Hint role="status">{reasons[state.semantic_reason][ja ? 1 : 0]}</Hint>
       )}
       {state.memory_cleanup && (
         <CleanupMessage state={state.memory_cleanup.state} />
       )}
       {!terminal && (
-        <div className="button-row">
+        <div className="flex min-w-0 flex-wrap gap-2">
           {state.control === "ACTIVE" && (
             <Button
               variant="outline"
@@ -61,7 +70,7 @@ export function RemoteRunManagement({ id }: { id: string }) {
             </Button>
           )}
           <Button
-            variant="outline"
+            variant="destructive"
             disabled={busy}
             onClick={() => act("cancel")}
           >
@@ -70,13 +79,13 @@ export function RemoteRunManagement({ id }: { id: string }) {
         </div>
       )}
       {state.control === "PAUSED" && !terminal && (
-        <p>
+        <Hint>
           {ja
             ? "元の Home Node で権限と参照元を確認して再開してください。"
             : "Resume from the original Home node after rechecking authority and sources."}
-        </p>
+        </Hint>
       )}
-      {error && <p role="alert">{error}</p>}
+      {error && <Alert>{error}</Alert>}
     </section>
   );
 }
@@ -90,10 +99,10 @@ function CleanupMessage({ state }: { state: string }) {
     failed: ["Failed", "失敗"],
   };
   return (
-    <p role="status">
+    <Hint role="status">
       {ja ? "受信コピーの清掃" : "Receiver copy cleanup"}:{" "}
       {labels[state]?.[ja ? 1 : 0] ?? state}
-    </p>
+    </Hint>
   );
 }
 
@@ -159,28 +168,43 @@ export function RemoteMemoryStatus({
   const { locale } = useI18n();
   const ja = locale === "ja-JP";
   const language = ja ? 1 : 0;
+  const details: (readonly [string, string, boolean])[] = [];
+  if (status.retry_count > 0)
+    details.push([
+      ja ? "自動再試行" : "Automatic retries",
+      `${status.retry_count}/5`,
+      true,
+    ]);
+  if (status.retry_at)
+    details.push([
+      ja ? "次の試行" : "Next attempt",
+      new Date(status.retry_at).toLocaleString(locale),
+      true,
+    ]);
+  if (status.result_count != null)
+    details.push([
+      ja ? "一致件数" : "Matches",
+      String(status.result_count),
+      true,
+    ]);
   return (
-    <section aria-label={ja ? "Home の記憶" : "Home memory"}>
-      <h4>{ja ? "Home の記憶" : "Home memory"}</h4>
-      <p>{states[status.state]?.[language] ?? status.state}</p>
-      {status.reason && <p role="status">{reasons[status.reason][language]}</p>}
+    <section
+      aria-label={ja ? "Home の記憶" : "Home memory"}
+      className="grid min-w-0 gap-2 border-l-2 border-border pl-3"
+    >
+      <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1">
+        <h4 className="text-xs font-medium text-muted-foreground">
+          {ja ? "Home の記憶" : "Home memory"}
+        </h4>
+        <p className="text-xs text-foreground">
+          {states[status.state]?.[language] ?? status.state}
+        </p>
+      </div>
+      {status.reason && (
+        <Hint role="status">{reasons[status.reason][language]}</Hint>
+      )}
       {status.body_cleanup && <CleanupMessage state={status.body_cleanup} />}
-      {status.retry_count > 0 && (
-        <p>
-          {ja ? "自動再試行" : "Automatic retries"}: {status.retry_count}/5
-        </p>
-      )}
-      {status.retry_at && (
-        <p>
-          {ja ? "次の試行" : "Next attempt"}:{" "}
-          {new Date(status.retry_at).toLocaleString(locale)}
-        </p>
-      )}
-      {status.result_count != null && (
-        <p>
-          {ja ? "一致件数" : "Matches"}: {status.result_count}
-        </p>
-      )}
+      {details.length > 0 && <Facts items={details} />}
       {status.state !== "disabled" && !status.reason && (
         <RemoteMemoryProvenance url={provenanceUrl} />
       )}
@@ -203,64 +227,87 @@ export function RemoteMemoryProvenance({ url }: { url: string }) {
   // Never render cached source identities after a refresh is denied or fails.
   const receipt =
     open && !query.isFetching && !query.isError ? query.data : undefined;
+  const label = "text-[11px] font-medium text-faint";
+  const row =
+    "grid min-w-0 gap-0.5 py-1.5 text-xs text-muted-foreground [overflow-wrap:anywhere]";
   return (
-    <div>
-      <Button
-        variant="outline"
-        type="button"
-        onClick={() => {
-          if (open) setInspection((value) => value + 1);
-          setOpen(!open);
-        }}
-      >
-        {open
-          ? ja
-            ? "参照情報を閉じる"
-            : "Hide provenance"
-          : ja
-            ? "参照情報を確認"
-            : "Inspect provenance"}
-      </Button>
+    <div className="grid min-w-0 gap-2">
+      <div>
+        <Button
+          variant="outline"
+          size="sm"
+          type="button"
+          onClick={() => {
+            if (open) setInspection((value) => value + 1);
+            setOpen(!open);
+          }}
+        >
+          {open
+            ? ja
+              ? "参照情報を閉じる"
+              : "Hide provenance"
+            : ja
+              ? "参照情報を確認"
+              : "Inspect provenance"}
+        </Button>
+      </div>
       {open && query.isError && (
-        <p role="status">
+        <Hint role="status">
           {ja
             ? "現在の権限で参照情報を確認できません。"
             : "Provenance is unavailable under current authority."}
-        </p>
+        </Hint>
       )}
       {open && query.isPending && (
-        <p role="status">{ja ? "権限を確認中…" : "Checking authority…"}</p>
+        <Hint role="status">
+          {ja ? "権限を確認中…" : "Checking authority…"}
+        </Hint>
       )}
       {open && receipt && (
-        <dl>
-          <dt>Home Node</dt>
-          <dd>{receipt.home_node}</dd>
-          <dt>{ja ? "検索モデル" : "Retrieval model"}</dt>
-          <dd>
-            {receipt.model} · {receipt.model_version}
-          </dd>
-          <dt>{ja ? "取得日時" : "Retrieved"}</dt>
-          <dd>{new Date(receipt.retrieved_at).toLocaleString(locale)}</dd>
-          <dt>{ja ? "実行 Agent" : "Executor"}</dt>
-          <dd>
-            <code>{receipt.executor}</code>
-          </dd>
-          <dt>{ja ? "参照元とリビジョン" : "Sources and revisions"}</dt>
-          <dd>
-            <ul>
+        <div className="grid min-w-0 gap-3">
+          <Facts
+            items={[
+              ["Home Node", receipt.home_node, true],
+              [
+                ja ? "検索モデル" : "Retrieval model",
+                `${receipt.model} · ${receipt.model_version}`,
+                true,
+              ],
+              [
+                ja ? "取得日時" : "Retrieved",
+                new Date(receipt.retrieved_at).toLocaleString(locale),
+                true,
+              ],
+              [ja ? "実行 Agent" : "Executor", receipt.executor, true],
+            ]}
+          />
+          <div className="grid min-w-0 gap-1.5">
+            <h5 className={label}>
+              {ja ? "参照元とリビジョン" : "Sources and revisions"}
+            </h5>
+            <ul className="grid min-w-0 divide-y divide-border border-y border-border">
               {receipt.sources.map((source) => (
-                <li key={source.entry_id}>
-                  <code>{source.entry_id}</code> · {source.revision}
-                  <br />
-                  <code>{source.content_digest}</code>
+                <li key={source.entry_id} className={row}>
+                  <span>
+                    <code className="font-mono text-foreground">
+                      {source.entry_id}
+                    </code>{" "}
+                    · {source.revision}
+                  </span>
+                  <code className="font-mono text-faint">
+                    {source.content_digest}
+                  </code>
                   {source.agent && <p>{source.agent}</p>}
                 </li>
               ))}
             </ul>
-          </dd>
+          </div>
           {(receipt.memory ?? []).map((bank) => (
-            <dd key={JSON.stringify(bank.bank)}>
-              <p>
+            <div
+              key={JSON.stringify(bank.bank)}
+              className="grid min-w-0 gap-1.5"
+            >
+              <h5 className={label}>
                 {bank.bank.participant
                   ? ja
                     ? "Homeの私有記憶"
@@ -269,13 +316,20 @@ export function RemoteMemoryProvenance({ url }: { url: string }) {
                     ? "Homeの共有記憶"
                     : "Shared Home memory"}{" "}
                 · {states[bank.state]?.[ja ? 1 : 0] ?? bank.state}
+              </h5>
+              <p className="min-w-0 font-mono text-xs text-muted-foreground [overflow-wrap:anywhere]">
+                <code>{bank.bank.participant ?? bank.bank.workspace}</code> ·{" "}
+                {bank.provider.id}@{bank.provider.version}
               </p>
-              <code>{bank.bank.participant ?? bank.bank.workspace}</code> ·{" "}
-              {bank.provider.id}@{bank.provider.version}
-              <ul>
+              <ul className="grid min-w-0 divide-y divide-border border-y border-border">
                 {bank.units.map((unit) => (
-                  <li key={unit.id}>
-                    <code>{unit.id}</code> · r{unit.revision} · {unit.kind}
+                  <li key={unit.id} className={row}>
+                    <span>
+                      <code className="font-mono text-foreground">
+                        {unit.id}
+                      </code>{" "}
+                      · r{unit.revision} · {unit.kind}
+                    </span>
                     <p>
                       {unit.verification === "unverified"
                         ? ja
@@ -289,11 +343,13 @@ export function RemoteMemoryProvenance({ url }: { url: string }) {
                             ? "矛盾あり"
                             : "Contradicted"}
                     </p>
-                    <code>{unit.content_digest}</code>
-                    <ul>
+                    <code className="font-mono text-faint">
+                      {unit.content_digest}
+                    </code>
+                    <ul className="grid min-w-0 gap-0.5 border-l border-border pl-2">
                       {unit.evidence.map((source, index) => (
                         <li key={index}>
-                          <code>
+                          <code className="font-mono">
                             {source.kind}: {source.id}
                           </code>{" "}
                           · r{source.revision}
@@ -303,44 +359,55 @@ export function RemoteMemoryProvenance({ url }: { url: string }) {
                   </li>
                 ))}
               </ul>
-            </dd>
+            </div>
           ))}
           {receipt.allowances?.length > 0 && (
-            <>
-              <dt>
+            <div className="grid min-w-0 gap-1.5">
+              <h5 className={label}>
                 {ja
                   ? "この Node の生成予算"
                   : "Generation allowances at this node"}
-              </dt>
-              <dd>{receipt.allowance_node}</dd>
+              </h5>
+              <p className="min-w-0 font-mono text-xs text-muted-foreground [overflow-wrap:anywhere]">
+                {receipt.allowance_node}
+              </p>
               {receipt.allowances.map((allowance) => (
-                <dd key={allowance.request_id}>
-                  <code>{allowance.request_id}</code>
-                  <dl>
-                    <dt>{t("generationUsedTokens")}</dt>
-                    <dd>
-                      {allowance.used_tokens.toLocaleString()} /{" "}
-                      {allowance.token_limit.toLocaleString()}
-                    </dd>
-                    <dt>{t("generationEmbeddingCalls")}</dt>
-                    <dd>
-                      {allowance.embedding_calls} /{" "}
-                      {allowance.embedding_call_limit}
-                    </dd>
-                    <dt>{t("generationCompactionCalls")}</dt>
-                    <dd>
-                      {allowance.compaction_calls} /{" "}
-                      {allowance.compaction_call_limit}
-                    </dd>
-                  </dl>
-                </dd>
+                <div
+                  key={allowance.request_id}
+                  className="grid min-w-0 gap-1.5 border-t border-border pt-2"
+                >
+                  <code className="min-w-0 font-mono text-xs text-foreground [overflow-wrap:anywhere]">
+                    {allowance.request_id}
+                  </code>
+                  <Facts
+                    items={[
+                      [
+                        t("generationUsedTokens"),
+                        `${allowance.used_tokens.toLocaleString()} / ${allowance.token_limit.toLocaleString()}`,
+                        true,
+                      ],
+                      [
+                        t("generationEmbeddingCalls"),
+                        `${allowance.embedding_calls} / ${allowance.embedding_call_limit}`,
+                        true,
+                      ],
+                      [
+                        t("generationCompactionCalls"),
+                        `${allowance.compaction_calls} / ${allowance.compaction_call_limit}`,
+                        true,
+                      ],
+                    ]}
+                  />
+                </div>
               ))}
-            </>
+            </div>
           )}
-        </dl>
+        </div>
       )}
       {open && receipt === null && (
-        <p>{ja ? "検索結果はまだありません。" : "No retrieval receipt yet."}</p>
+        <Hint>
+          {ja ? "検索結果はまだありません。" : "No retrieval receipt yet."}
+        </Hint>
       )}
     </div>
   );
@@ -364,12 +431,20 @@ export function RemoteFollowUp({
   const [description, setDescription] = useState("");
   const [key, setKey] = useState(() => crypto.randomUUID());
   return (
-    <div>
-      <Button variant="outline" type="button" onClick={() => setOpen(!open)}>
-        {ja ? "Follow-up Task を作成" : "Create follow-up task"}
-      </Button>
+    <div className="grid min-w-0 gap-3">
+      <div>
+        <Button
+          variant="outline"
+          size="sm"
+          type="button"
+          onClick={() => setOpen(!open)}
+        >
+          {ja ? "Follow-up Task を作成" : "Create follow-up task"}
+        </Button>
+      </div>
       {open && (
         <form
+          className={formClass}
           onSubmit={(event) => {
             event.preventDefault();
             setBusy(true);
@@ -402,14 +477,13 @@ export function RemoteFollowUp({
               .finally(() => setBusy(false));
           }}
         >
-          <p>
+          <Hint>
             {ja
               ? "現在のソースを使うための新しい指示を入力してください。新しい Task を作成した後に、実行する Agent と記憶の参照を設定できます。"
               : "Enter new instructions using current sources. After creating the task, choose its executor and memory access."}
-          </p>
-          <label>
-            {ja ? "タイトル" : "Title"}
-            <input
+          </Hint>
+          <Field label={ja ? "タイトル" : "Title"}>
+            <Input
               required
               value={title}
               disabled={busy}
@@ -418,10 +492,9 @@ export function RemoteFollowUp({
                 setKey(crypto.randomUUID());
               }}
             />
-          </label>
-          <label>
-            {ja ? "新しい指示" : "New instructions"}
-            <textarea
+          </Field>
+          <Field label={ja ? "新しい指示" : "New instructions"}>
+            <Textarea
               required
               value={description}
               disabled={busy}
@@ -430,11 +503,13 @@ export function RemoteFollowUp({
                 setKey(crypto.randomUUID());
               }}
             />
-          </label>
-          {error && <p role="alert">{error}</p>}
-          <Button variant="outline" disabled={busy}>
-            {ja ? "作成" : "Create"}
-          </Button>
+          </Field>
+          {error && <Alert>{error}</Alert>}
+          <div className="flex justify-end">
+            <Button type="submit" disabled={busy}>
+              {ja ? "作成" : "Create"}
+            </Button>
+          </div>
         </form>
       )}
     </div>

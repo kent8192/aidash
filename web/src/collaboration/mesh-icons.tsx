@@ -15,8 +15,12 @@ import {
 } from "lucide-react";
 import type { MeshKind } from "./mesh-model";
 
+/** Floating canvas toolbar surface (zoom/fit and view actions). */
+export const floatingToolbar =
+  "mesh-camera absolute right-3 top-3 z-20 flex h-9 items-center gap-0.5 rounded-md border border-border-strong bg-surface/95 px-1 shadow-overlay";
+
 // Reuse the application's existing, consistent stroke icon library.
-export const meshIcons = {
+const meshIcons = {
   human: CircleUserRound,
   workspace: FolderKanban,
   goal: Target,
@@ -31,28 +35,22 @@ export const meshIcons = {
   model: Cpu,
   skill: Sparkles,
 };
-export const meshColors: Record<MeshKind, string> = {
-  human: "#f4a16e",
-  workspace: "#83b9ea",
-  goal: "#63e9b4",
-  conversation: "#6fbef1",
-  task: "#6ecde9",
-  run: "#d9a4ef",
-  agent: "#c79aee",
-  tool: "#76b7e8",
-  artifact: "#e2bc65",
-  cluster: "#6bbda5",
-  remote: "#9eaaf4",
-  model: "#a2b2c8",
-  skill: "#dba4cc",
-};
 export function MeshIcon({
   kind,
-  size = 18,
+  size = 14,
+  className,
 }: {
   kind: MeshKind;
   size?: number;
+  className?: string;
 }) {
   const Icon = meshIcons[kind] ?? Box;
-  return <Icon size={size} strokeWidth={1.6} aria-hidden="true" />;
+  return (
+    <Icon
+      size={size}
+      strokeWidth={1.6}
+      aria-hidden="true"
+      className={className}
+    />
+  );
 }

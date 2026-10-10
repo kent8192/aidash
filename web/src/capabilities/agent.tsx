@@ -1,3 +1,7 @@
+import { Input } from "../components/ui/input";
+import { panelClass } from "./display";
+import { Alert, Hint } from "../components/patterns";
+import { NativeSelect } from "../components/ui/native-select";
 import { Button } from "../components/ui/button";
 import { useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -40,14 +44,14 @@ export function AgentCapabilities() {
   const [saved, setSaved] = useState("");
   const request = useRef<{ body: string; key: string } | undefined>(undefined);
   return (
-    <details className="core-panel">
+    <details className={panelClass}>
       <summary>
         {ja
           ? "Agent の実行機能・Skill・参照原本"
           : "Agent capabilities, Skills and original references"}
       </summary>
       <Field label={ja ? "設定を引き継ぐ Agent" : "Source Agent version"}>
-        <select
+        <NativeSelect
           value={agent ? `${agent.id}@${agent.version}` : ""}
           onChange={(e) => {
             const next = query.data?.find(
@@ -76,14 +80,14 @@ export function AgentCapabilities() {
                 {a.name.ja ?? a.name.en ?? a.id} · {a.version}
               </option>
             ))}
-        </select>
+        </NativeSelect>
       </Field>
       {agent && (
         <>
           <Field
             label={ja ? "保存する新しいバージョン" : "New immutable version"}
           >
-            <input
+            <Input
               value={version}
               onChange={(e) => setVersion(e.target.value)}
             />
@@ -140,9 +144,9 @@ export function AgentCapabilities() {
           </Button>
         </>
       )}
-      {saved && <p role="status">{saved}</p>}
+      {saved && <Hint role="status">{saved}</Hint>}
       {(error || query.isError) && (
-        <p role="alert">{error || query.error?.message}</p>
+        <Alert>{error || query.error?.message}</Alert>
       )}
     </details>
   );

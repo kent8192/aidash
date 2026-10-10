@@ -6,12 +6,16 @@ import {
   type BindingConfiguration,
 } from "./agent-bindings";
 import { Button } from "./components/ui/button";
+import { Input } from "./components/ui/input";
+import { NativeSelect } from "./components/ui/native-select";
+import { Textarea } from "./components/ui/textarea";
+import { Table, TableBody, TableCell, TableRow } from "./components/ui/table";
 import { RemoteGenerationAssignForm } from "./remote-generation";
 import { RecordView } from "./record-view";
 import { disambiguateLabels } from "./display-labels";
 import { useState, type FormEvent } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Plus, ArrowUpRight } from "lucide-react";
+import { Plus, ChevronRight } from "lucide-react";
 import {
   Badge,
   Field,
@@ -22,6 +26,18 @@ import {
   useEntryLabel,
   useEntityLabel,
 } from "./ui";
+import {
+  Alert,
+  Check,
+  Disclosure,
+  Facts,
+  Hint,
+  Loading,
+  Metric,
+  MetricRow,
+  RowList,
+  Section,
+} from "./components/patterns";
 import {
   authorizationCatalog,
   generationAssign,
@@ -92,7 +108,7 @@ type AgentFields = {
 };
 
 export function GenerationPage({ data }: { data: State }) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const client = useQueryClient();
   const subjectTenant =
     data.access.kind === "subject" ? data.access.tenant : null;
@@ -158,49 +174,53 @@ export function GenerationPage({ data }: { data: State }) {
   };
   const queryError = policies.error ?? requests.error ?? catalog.error;
   return (
-    <div className="generation-page">
-      {subjectTenant === null ? (
-        <form
-          className="generation-tenant"
-          onSubmit={(event) => {
-            event.preventDefault();
-            const tenant = String(
-              new FormData(event.currentTarget).get("tenant"),
-            ).trim();
-            setChosenTenant(tenant);
-            setSelected(null);
-            setEditing(null);
-            setError("");
-          }}
-        >
-          <Field label={t("tenant")}>
-            <input name="tenant" required maxLength={256} />
-          </Field>
-          <Button variant="outline">{t("open")}</Button>
-        </form>
-      ) : (
-        <p className="muted">
-          {t("tenant")}: {tenant}
-        </p>
-      )}
-      {!tenant && <p className="notice">{t("generationTenantHelp")}</p>}
-      {error && !editing && !selected && (
-        <p className="error" role="alert">
-          {error}
-        </p>
-      )}
-      {queryError && (
-        <p className="error" role="alert">
-          {queryError.message}
-        </p>
-      )}
+    <div className="generation-page grid min-w-0 gap-6">
+      <div className="grid min-w-0 gap-3">
+        {subjectTenant === null ? (
+          <form
+            className="generation-tenant flex flex-wrap items-end gap-2"
+            onSubmit={(event) => {
+              event.preventDefault();
+              const tenant = String(
+                new FormData(event.currentTarget).get("tenant"),
+              ).trim();
+              setChosenTenant(tenant);
+              setSelected(null);
+              setEditing(null);
+              setError("");
+            }}
+          >
+            <div className="w-full min-w-0 sm:w-72">
+              <Field label={t("tenant")}>
+                <Input
+                  name="tenant"
+                  required
+                  maxLength={256}
+                  autoComplete="off"
+                  spellCheck={false}
+                  className="font-mono"
+                />
+              </Field>
+            </div>
+            <Button variant="outline">{t("open")}</Button>
+          </form>
+        ) : (
+          <p className="text-xs text-muted-foreground">
+            {t("tenant")}{" "}
+            <span className="font-mono text-foreground">{tenant}</span>
+          </p>
+        )}
+        {!tenant && <Hint>{t("generationTenantHelp")}</Hint>}
+        {error && !editing && !selected && <Alert>{error}</Alert>}
+        {queryError && <Alert>{queryError.message}</Alert>}
+      </div>
       {tenant && (
         <>
           <Panel
             title={t("generationPolicies")}
             action={
               <Button
-                variant="outline"
+                size="sm"
                 disabled={
                   busy || (subjectTenant === null && !catalog.isSuccess)
                 }
@@ -209,55 +229,57 @@ export function GenerationPage({ data }: { data: State }) {
                   setEditing("new");
                 }}
               >
-                <Plus size={16} />
+                <Plus />
                 {t("newGenerationPolicy")}
               </Button>
             }
           >
             {policies.isPending ? (
-              <p className="generation-padding">{t("loading")}</p>
+              <Loading />
             ) : (
-              !policies.isError && (
-                <div className="generation-padding">
-                  {!policies.data?.length && (
-                    <p className="muted">{t("generationNoPolicies")}</p>
-                  )}
-                  {policies.data?.map((policy) => (
-                    <article className="generation-policy" key={policy.id}>
-                      <div>
-                        <h3>{policyPresentation.name(policy)}</h3>
-                        <p className="muted">
-                          {t("revision")} {policy.revision}
+              !policies.isError &&
+              (policies.data.length ? (
+                <RowList>
+                  {policies.data.map((policy) => (
+                    <article
+                      className="generation-policy grid min-w-0 gap-x-6 gap-y-2 py-3 lg:grid-cols-[minmax(0,1.3fr)_minmax(0,2fr)_auto] lg:items-center"
+                      key={policy.id}
+                    >
+                      <div className="grid min-w-0 gap-0.5">
+                        <div className="flex min-w-0 items-center gap-2">
+                          <h3 className="truncate text-[13px] font-medium text-foreground">
+                            {policyPresentation.name(policy)}
+                          </h3>
+                          <Badge
+                            value={policy.spec.enabled ? "ENABLED" : "DISABLED"}
+                          />
+                        </div>
+                        <p className="truncate font-mono text-[11px] text-faint">
+                          {policy.tenant} · {t("revision")} {policy.revision}
                         </p>
                       </div>
-                      <Badge
-                        value={policy.spec.enabled ? "ENABLED" : "DISABLED"}
-                      />
-                      <dl>
-                        <dt>{t("generationCount")}</dt>
-                        <dd>
-                          {policy.generated_count} /{" "}
-                          {policy.spec.limits.max_agents}
-                        </dd>
-                        <dt>{t("generationAllocated")}</dt>
-                        <dd>
-                          {policy.allocated_tokens.toLocaleString()} /{" "}
-                          {policy.spec.limits.token_budget.toLocaleString()}
-                        </dd>
-                        <dt>{t("generationCompactionBudget")}</dt>
-                        <dd>
-                          {policy.allocated_compaction_calls} /{" "}
-                          {policy.spec.compaction?.call_budget ?? "—"}
-                        </dd>
-                        <dt>{t("generationEmbeddingBudget")}</dt>
-                        <dd>
-                          {policy.allocated_embedding_calls} /{" "}
-                          {policy.spec.embedding?.call_budget ?? "—"}
-                        </dd>
-                      </dl>
-                      <div className="generation-actions">
+                      <MetricRow compact columns={4} className="border-b-0">
+                        <Metric
+                          label={t("generationCount")}
+                          value={`${policy.generated_count} / ${policy.spec.limits.max_agents}`}
+                        />
+                        <Metric
+                          label={t("generationAllocated")}
+                          value={`${policy.allocated_tokens.toLocaleString(locale)} / ${policy.spec.limits.token_budget.toLocaleString(locale)}`}
+                        />
+                        <Metric
+                          label={t("generationCompactionBudget")}
+                          value={`${policy.allocated_compaction_calls} / ${policy.spec.compaction?.call_budget ?? "-"}`}
+                        />
+                        <Metric
+                          label={t("generationEmbeddingBudget")}
+                          value={`${policy.allocated_embedding_calls} / ${policy.spec.embedding?.call_budget ?? "-"}`}
+                        />
+                      </MetricRow>
+                      <div className="flex flex-wrap items-center gap-1.5 lg:justify-end">
                         <Button
                           variant="outline"
+                          size="sm"
                           disabled={busy}
                           onClick={() => {
                             setError("");
@@ -267,7 +289,8 @@ export function GenerationPage({ data }: { data: State }) {
                           {t("editPolicy")}
                         </Button>
                         <Button
-                          variant="outline"
+                          variant="ghost"
+                          size="sm"
                           disabled={busy}
                           onClick={() =>
                             void mutate(
@@ -296,60 +319,80 @@ export function GenerationPage({ data }: { data: State }) {
                       </div>
                     </article>
                   ))}
-                </div>
-              )
+                </RowList>
+              ) : (
+                <p className="text-xs text-muted-foreground">
+                  {t("generationNoPolicies")}
+                </p>
+              ))
             )}
           </Panel>
           <Panel
             title={t("generationRequests")}
             action={
-              <span className="count">
-                {requests.isError ? "—" : (requests.data?.length ?? 0)}
+              <span className="rounded-sm bg-raised px-1.5 font-mono text-[11px] tabular text-muted-foreground">
+                {requests.isError ? "-" : (requests.data?.length ?? 0)}
               </span>
             }
           >
             {requests.isPending ? (
-              <p className="generation-padding">{t("loading")}</p>
+              <Loading />
             ) : (
-              !requests.isError && (
-                <div className="generation-padding">
-                  {!requests.data?.length && (
-                    <p className="muted">{t("generationNoRequests")}</p>
-                  )}
-                  {requests.data?.map((request) => (
-                    <Button
-                      variant="outline"
-                      className="generation-request"
-                      key={request.id}
-                      onClick={() => {
-                        setError("");
-                        setSelected(request.id);
-                      }}
-                    >
-                      <div>
-                        <strong>
-                          {data.tasks.find(
-                            (task) => task.id === request.task_id,
-                          )?.title || t("task")}
-                        </strong>
-                        <p>{request.reason}</p>
-                        <small>
-                          {(() => {
-                            const policy = policies.data?.find(
-                              (item) => item.id === request.policy_id,
-                            );
-                            return policy
+              !requests.isError &&
+              (requests.data.length ? (
+                <RowList>
+                  {requests.data.map((request) => {
+                    const policy = policies.data?.find(
+                      (item) => item.id === request.policy_id,
+                    );
+                    return (
+                      <button
+                        type="button"
+                        className="generation-request group mb-0 grid w-full min-w-0 cursor-pointer grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-3 px-2 py-2 text-left transition-colors duration-150 hover:bg-accent focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring"
+                        key={request.id}
+                        onClick={() => {
+                          setError("");
+                          setSelected(request.id);
+                        }}
+                      >
+                        <span className="grid min-w-0 gap-0.5">
+                          <span className="truncate font-medium text-foreground">
+                            {data.tasks.find(
+                              (task) => task.id === request.task_id,
+                            )?.title || t("task")}
+                          </span>
+                          <span className="truncate text-xs text-muted-foreground">
+                            {request.reason}
+                          </span>
+                          <span className="truncate text-[11px] text-faint">
+                            {policy
                               ? policyPresentation.label(policy)
-                              : `${t("unavailableEntity")} · ${t("revision")} ${request.policy_revision}`;
-                          })()}
-                        </small>
-                      </div>
-                      <Badge value={request.status} />
-                      <ArrowUpRight size={16} />
-                    </Button>
-                  ))}
-                </div>
-              )
+                              : `${t("unavailableEntity")} · ${t("revision")} ${request.policy_revision}`}
+                            {" · "}
+                            <time
+                              className="font-mono"
+                              dateTime={request.expires_at}
+                            >
+                              {new Date(request.expires_at).toLocaleString(
+                                locale,
+                              )}
+                            </time>
+                          </span>
+                        </span>
+                        <Badge value={request.status} />
+                        <ChevronRight
+                          aria-hidden
+                          className="size-3.5 text-faint transition-colors group-hover:text-foreground"
+                        />
+                      </button>
+                    );
+                  })}
+                </RowList>
+              ) : (
+                <p className="text-xs text-muted-foreground">
+                  {t("generationNoRequests")}
+                </p>
+              ))
             )}
           </Panel>
         </>
@@ -359,12 +402,8 @@ export function GenerationPage({ data }: { data: State }) {
           title={t(editing === "new" ? "newGenerationPolicy" : "editPolicy")}
           close={() => setEditing(null)}
         >
-          {error && (
-            <p className="error" role="alert">
-              {error}
-            </p>
-          )}
-          <fieldset className="generation-fieldset" disabled={busy}>
+          {error && <Alert>{error}</Alert>}
+          <fieldset className="min-w-0" disabled={busy}>
             <PolicyEditor
               entries={entries}
               node={data.node.id}
@@ -388,11 +427,7 @@ export function GenerationPage({ data }: { data: State }) {
       )}
       {selected && (
         <Modal title={t("generationDetails")} close={() => setSelected(null)}>
-          {error && (
-            <p className="error" role="alert">
-              {error}
-            </p>
-          )}
+          {error && <Alert>{error}</Alert>}
           {selectedRequest ? (
             <RequestDetail
               key={selectedRequest.id}
@@ -414,7 +449,7 @@ export function GenerationPage({ data }: { data: State }) {
               }
             />
           ) : (
-            <p role="status">{t("generationUnavailable")}</p>
+            <Hint role="status">{t("generationUnavailable")}</Hint>
           )}
         </Modal>
       )}
@@ -560,358 +595,383 @@ function PolicyEditor({
     }
   };
   return (
-    <form onSubmit={submit} className="generation-editor">
-      <div className="two-columns">
+    <form onSubmit={submit} className="grid min-w-0 gap-4">
+      <div className="grid gap-3 sm:grid-cols-2">
         <Field label={t("version")}>
-          <input
+          <Input
             name="version"
             required
+            className="font-mono"
             defaultValue={initial?.template.version ?? "1.0.0"}
           />
         </Field>
       </div>
-      <div className="generation-actions">
-        <label className="generation-check">
-          <input
-            name="enabled"
-            type="checkbox"
-            defaultChecked={initial?.enabled ?? true}
-          />
+      <div className="flex flex-wrap gap-x-5 gap-y-2">
+        <Check name="enabled" defaultChecked={initial?.enabled ?? true}>
           {t("enabled")}
-        </label>
-        <label className="generation-check">
-          <input
-            name="approval"
-            type="checkbox"
-            defaultChecked={initial?.approval_required ?? true}
-          />
+        </Check>
+        <Check
+          name="approval"
+          defaultChecked={initial?.approval_required ?? true}
+        >
           {t("generationRequireApproval")}
-        </label>
+        </Check>
       </div>
-      <h3>{t("generationTemplate")}</h3>
-      <div className="two-columns">
-        <Field label={`${t("name")} · English`}>
-          <input
-            name="name_en"
+      <Section level={3} title={t("generationTemplate")}>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <Field label={`${t("name")} · English`}>
+            <Input
+              name="name_en"
+              required
+              defaultValue={
+                initial?.template.name["en-US"] ?? initial?.template.name.en
+              }
+            />
+          </Field>
+          <Field label={`${t("name")} · 日本語`}>
+            <Input
+              name="name_ja"
+              defaultValue={
+                initial?.template.name["ja-JP"] ?? initial?.template.name.ja
+              }
+            />
+          </Field>
+        </div>
+        <Field label={`${t("description")} · English`}>
+          <Textarea
+            name="description_en"
             required
+            rows={2}
             defaultValue={
-              initial?.template.name["en-US"] ?? initial?.template.name.en
+              initial?.template.description["en-US"] ??
+              initial?.template.description.en
             }
           />
         </Field>
-        <Field label={`${t("name")} · 日本語`}>
-          <input
-            name="name_ja"
+        <Field label={`${t("description")} · 日本語`}>
+          <Textarea
+            name="description_ja"
+            rows={2}
             defaultValue={
-              initial?.template.name["ja-JP"] ?? initial?.template.name.ja
+              initial?.template.description["ja-JP"] ??
+              initial?.template.description.ja
             }
           />
         </Field>
-      </div>
-      <Field label={`${t("description")} · English`}>
-        <textarea
-          name="description_en"
-          required
-          defaultValue={
-            initial?.template.description["en-US"] ??
-            initial?.template.description.en
-          }
+        <div className="grid gap-3 sm:grid-cols-2">
+          <Field label={t("capabilities")}>
+            <Input
+              name="capabilities"
+              placeholder={t("commaSeparated")}
+              defaultValue={initial?.template.capabilities.join(", ")}
+            />
+          </Field>
+          <Field label={t("languages")}>
+            <Input
+              name="languages"
+              required
+              defaultValue={initial?.template.languages.join(", ") ?? "en, ja"}
+            />
+          </Field>
+        </div>
+        <div className="grid gap-1.5">
+          <Field label={t("model")}>
+            <NativeSelect
+              required
+              value={model}
+              onChange={(event) => setModel(event.target.value)}
+            >
+              <option value="">{t("choose")}</option>
+              {models.map((entry) => (
+                <option key={key(entry)} value={key(entry)}>
+                  {entityLabel(entry)}
+                </option>
+              ))}
+              {model && !modelEntry && (
+                <option value={model}>
+                  {t("generationReferenceUnavailable")}
+                </option>
+              )}
+            </NativeSelect>
+          </Field>
+          <p className="text-xs leading-relaxed text-muted-foreground">
+            {t("generationModelHelp")}
+            {window > 0 && (
+              <>
+                {" "}
+                {t("generationMinReservation")}:{" "}
+                <span className="font-mono tabular text-foreground">
+                  {minTokens.toLocaleString(locale)}
+                </span>
+              </>
+            )}
+          </p>
+        </div>
+        <AgentBindings
+          value={bindings}
+          change={setBindings}
+          cluster={Boolean(cluster)}
+          entries={entries}
+          node={node}
         />
-      </Field>
-      <Field label={`${t("description")} · 日本語`}>
-        <textarea
-          name="description_ja"
-          defaultValue={
-            initial?.template.description["ja-JP"] ??
-            initial?.template.description.ja
-          }
-        />
-      </Field>
-      <div className="two-columns">
-        <Field label={t("capabilities")}>
-          <input
-            name="capabilities"
-            placeholder={t("commaSeparated")}
-            defaultValue={initial?.template.capabilities.join(", ")}
+        <Field label={t("additionalInstructions")}>
+          <Textarea
+            name="instructions"
+            rows={4}
+            defaultValue={config?.instructions}
           />
         </Field>
-        <Field label={t("languages")}>
-          <input
-            name="languages"
-            required
-            defaultValue={initial?.template.languages.join(", ") ?? "en, ja"}
+        <Field label={t("cluster")}>
+          <NativeSelect
+            name="cluster"
+            value={cluster}
+            onChange={(e) => {
+              const selected = e.target.value;
+              setCluster(selected);
+              if (selected)
+                setBindings((previous) => ({
+                  ...previous,
+                  remove_default: previous.remove_default.filter(
+                    (name) => !coordinatorDefaults.includes(name),
+                  ),
+                }));
+            }}
+          >
+            <option value="">{t("generationNoCluster")}</option>
+            {entries
+              .filter((entry) => entry.kind === "cluster")
+              .map((entry) => (
+                <option key={key(entry)} value={key(entry)}>
+                  {entityLabel(entry)}
+                </option>
+              ))}
+            {config?.cluster &&
+              !entries.some((entry) => key(entry) === key(config.cluster!)) && (
+                <option value={key(config.cluster)}>
+                  {t("generationReferenceUnavailable")} ·{" "}
+                  {config.cluster.version}
+                </option>
+              )}
+          </NativeSelect>
+        </Field>
+      </Section>
+      <Section level={3}
+        title={t("permissions")}
+        description={t("generationPermissionsHelp")}
+      >
+        <div className="grid gap-3 sm:grid-cols-2">
+          <Field label={t("generationRoles")}>
+            <Input
+              name="roles"
+              defaultValue={initial?.permissions.roles?.join(", ")}
+              placeholder={t("commaSeparated")}
+            />
+          </Field>
+          <Field label={t("generationGroups")}>
+            <Input
+              name="groups"
+              defaultValue={initial?.permissions.groups?.join(", ")}
+              placeholder={t("commaSeparated")}
+            />
+          </Field>
+        </div>
+        <Field label={t("generationAttributes")}>
+          <Textarea
+            name="attributes"
+            rows={3}
+            spellCheck={false}
+            className="font-mono text-xs"
+            defaultValue={JSON.stringify(
+              initial?.permissions.attributes ?? {},
+              null,
+              2,
+            )}
           />
         </Field>
-      </div>
-      <Field label={t("model")}>
-        <select
-          required
-          value={model}
-          onChange={(event) => setModel(event.target.value)}
-        >
-          <option value="">{t("choose")}</option>
-          {models.map((entry) => (
-            <option key={key(entry)} value={key(entry)}>
-              {entityLabel(entry)}
-            </option>
-          ))}
-          {model && !modelEntry && (
-            <option value={model}>{t("generationReferenceUnavailable")}</option>
-          )}
-        </select>
-      </Field>
-      <p className="muted">
-        {t("generationModelHelp")}
-        {window > 0 &&
-          ` ${t("generationMinReservation")}: ${minTokens.toLocaleString()}`}
-      </p>
-      <AgentBindings
-        value={bindings}
-        change={setBindings}
-        cluster={Boolean(cluster)}
-        entries={entries}
-        node={node}
-      />
-      <Field label={t("additionalInstructions")}>
-        <textarea
-          name="instructions"
-          rows={4}
-          defaultValue={config?.instructions}
-        />
-      </Field>
-
-      <Field label={t("cluster")}>
-        <select
-          name="cluster"
-          value={cluster}
-          onChange={(e) => {
-            const selected = e.target.value;
-            setCluster(selected);
-            if (selected)
-              setBindings((previous) => ({
-                ...previous,
-                remove_default: previous.remove_default.filter(
-                  (name) => !coordinatorDefaults.includes(name),
-                ),
-              }));
-          }}
-        >
-          <option value="">{t("generationNoCluster")}</option>
-          {entries
-            .filter((entry) => entry.kind === "cluster")
-            .map((entry) => (
+      </Section>
+      <Section level={3}
+        title={t("generationCompaction")}
+        description={t("generationCompactionHelp")}
+      >
+        <Field label={t("generationCompactor")}>
+          <NativeSelect
+            name="compactor"
+            value={compactor}
+            onChange={(e) => setCompactor(e.target.value)}
+          >
+            <option value="">{t("generationCompactionDisabled")}</option>
+            {compactors.map((entry) => (
               <option key={key(entry)} value={key(entry)}>
                 {entityLabel(entry)}
               </option>
             ))}
-          {config?.cluster &&
-            !entries.some((entry) => key(entry) === key(config.cluster!)) && (
-              <option value={key(config.cluster)}>
-                {t("generationReferenceUnavailable")} · {config.cluster.version}
-              </option>
-            )}
-        </select>
-      </Field>
-      <h3>{t("permissions")}</h3>
-      <p className="muted">{t("generationPermissionsHelp")}</p>
-      <div className="two-columns">
-        <Field label={t("generationRoles")}>
-          <input
-            name="roles"
-            defaultValue={initial?.permissions.roles?.join(", ")}
-            placeholder={t("commaSeparated")}
-          />
+            {compactor &&
+              !compactors.some((entry) => key(entry) === compactor) && (
+                <option value={compactor}>
+                  {t("generationReferenceUnavailable")}
+                </option>
+              )}
+          </NativeSelect>
         </Field>
-        <Field label={t("generationGroups")}>
-          <input
-            name="groups"
-            defaultValue={initial?.permissions.groups?.join(", ")}
-            placeholder={t("commaSeparated")}
-          />
+        {compactor && (
+          <div className="grid gap-3 sm:grid-cols-2">
+            <Field label={t("generationCompactionPerAgent")}>
+              <Input
+                type="number"
+                name="calls_per_agent"
+                required
+                min={1}
+                max={1000000}
+                className="font-mono tabular"
+                defaultValue={initial?.compaction?.calls_per_agent ?? 10}
+              />
+            </Field>
+            <Field label={t("generationCompactionBudget")}>
+              <Input
+                type="number"
+                name="call_budget"
+                required
+                min={1}
+                max={1000000}
+                className="font-mono tabular"
+                defaultValue={initial?.compaction?.call_budget ?? 100}
+              />
+            </Field>
+          </div>
+        )}
+      </Section>
+      <Section level={3}
+        title={t("generationEmbedding")}
+        description={t("generationEmbeddingHelp")}
+      >
+        <Field label={t("generationEmbedder")}>
+          <NativeSelect
+            name="embedding"
+            value={embedding}
+            onChange={(e) => setEmbedding(e.target.value)}
+          >
+            <option value="">{t("generationEmbeddingDisabled")}</option>
+            {embeddings.map((entry) => (
+              <option key={key(entry)} value={key(entry)}>
+                {entityLabel(entry)}
+              </option>
+            ))}
+            {embedding &&
+              !embeddings.some((entry) => key(entry) === embedding) && (
+                <option value={embedding}>
+                  {t("generationReferenceUnavailable")}
+                </option>
+              )}
+          </NativeSelect>
         </Field>
-      </div>
-      <Field label={t("generationAttributes")}>
-        <textarea
-          name="attributes"
-          rows={3}
-          defaultValue={JSON.stringify(
-            initial?.permissions.attributes ?? {},
-            null,
-            2,
-          )}
-        />
-      </Field>
-      <h3>{t("generationCompaction")}</h3>
-      <p className="muted">{t("generationCompactionHelp")}</p>
-      <Field label={t("generationCompactor")}>
-        <select
-          name="compactor"
-          value={compactor}
-          onChange={(e) => setCompactor(e.target.value)}
-        >
-          <option value="">{t("generationCompactionDisabled")}</option>
-          {compactors.map((entry) => (
-            <option key={key(entry)} value={key(entry)}>
-              {entityLabel(entry)}
-            </option>
-          ))}
-          {compactor &&
-            !compactors.some((entry) => key(entry) === compactor) && (
-              <option value={compactor}>
-                {t("generationReferenceUnavailable")}
-              </option>
-            )}
-        </select>
-      </Field>
-      {compactor && (
-        <div className="two-columns">
-          <Field label={t("generationCompactionPerAgent")}>
-            <input
-              type="number"
-              name="calls_per_agent"
-              required
-              min={1}
-              max={1000000}
-              defaultValue={initial?.compaction?.calls_per_agent ?? 10}
-            />
-          </Field>
-          <Field label={t("generationCompactionBudget")}>
-            <input
-              type="number"
-              name="call_budget"
-              required
-              min={1}
-              max={1000000}
-              defaultValue={initial?.compaction?.call_budget ?? 100}
-            />
-          </Field>
-        </div>
-      )}
-      <h3>{t("generationEmbedding")}</h3>
-      <p className="muted">{t("generationEmbeddingHelp")}</p>
-      <Field label={t("generationEmbedder")}>
-        <select
-          name="embedding"
-          value={embedding}
-          onChange={(e) => setEmbedding(e.target.value)}
-        >
-          <option value="">{t("generationEmbeddingDisabled")}</option>
-          {embeddings.map((entry) => (
-            <option key={key(entry)} value={key(entry)}>
-              {entityLabel(entry)}
-            </option>
-          ))}
-          {embedding &&
-            !embeddings.some((entry) => key(entry) === embedding) && (
-              <option value={embedding}>
-                {t("generationReferenceUnavailable")}
-              </option>
-            )}
-        </select>
-      </Field>
-      {embedding && (
-        <div className="two-columns">
-          <Field label={t("generationEmbeddingPerAgent")}>
-            <input
-              type="number"
-              name="embedding_calls_per_agent"
-              required
-              min={1}
-              max={1000000}
-              defaultValue={initial?.embedding?.calls_per_agent ?? 10}
-            />
-          </Field>
-          <Field label={t("generationEmbeddingBudget")}>
-            <input
-              type="number"
-              name="embedding_call_budget"
-              required
-              min={1}
-              max={1000000}
-              defaultValue={initial?.embedding?.call_budget ?? 100}
-            />
-          </Field>
-        </div>
-      )}
-      <h3>{t("generationLimits")}</h3>
-      <p className="muted">{t("generationBudgetHelp")}</p>
-      <div className="two-columns">
-        {(
-          [
-            ["max_agents", "generationMaxAgents", 1, 512],
-            ["max_concurrent", "generationMaxConcurrent", 1, 512],
-            ["max_depth", "generationMaxDepth", 1, 31],
-            ["token_budget", "generationTokenBudget", 1, 1000000000000],
+        {embedding && (
+          <div className="grid gap-3 sm:grid-cols-2">
+            <Field label={t("generationEmbeddingPerAgent")}>
+              <Input
+                type="number"
+                name="embedding_calls_per_agent"
+                required
+                min={1}
+                max={1000000}
+                className="font-mono tabular"
+                defaultValue={initial?.embedding?.calls_per_agent ?? 10}
+              />
+            </Field>
+            <Field label={t("generationEmbeddingBudget")}>
+              <Input
+                type="number"
+                name="embedding_call_budget"
+                required
+                min={1}
+                max={1000000}
+                className="font-mono tabular"
+                defaultValue={initial?.embedding?.call_budget ?? 100}
+              />
+            </Field>
+          </div>
+        )}
+      </Section>
+      <Section level={3}
+        title={t("generationLimits")}
+        description={t("generationBudgetHelp")}
+      >
+        <div className="grid gap-3 sm:grid-cols-2">
+          {(
             [
-              "tokens_per_agent",
-              "generationTokensPerAgent",
-              minTokens,
-              1000000000000,
-            ],
-            ["lifetime_seconds", "generationLifetime", 1, 2592000],
-          ] as const
-        ).map(([name, label, min, max]) => (
-          <Field key={name} label={t(label)}>
-            <input
+              ["max_agents", "generationMaxAgents", 1, 512],
+              ["max_concurrent", "generationMaxConcurrent", 1, 512],
+              ["max_depth", "generationMaxDepth", 1, 31],
+              ["token_budget", "generationTokenBudget", 1, 1000000000000],
+              [
+                "tokens_per_agent",
+                "generationTokensPerAgent",
+                minTokens,
+                1000000000000,
+              ],
+              ["lifetime_seconds", "generationLifetime", 1, 2592000],
+            ] as const
+          ).map(([name, label, min, max]) => (
+            <Field key={name} label={t(label)}>
+              <Input
+                type="number"
+                required
+                name={name}
+                min={min}
+                max={max}
+                step={1}
+                className="font-mono tabular"
+                defaultValue={limits[name]}
+              />
+            </Field>
+          ))}
+          <Field label={t("generationMaxSteps")}>
+            <Input
               type="number"
+              name="max_steps"
               required
-              name={name}
-              min={min}
-              max={max}
-              step={1}
-              defaultValue={limits[name]}
+              min={1}
+              max={1000}
+              className="font-mono tabular"
+              defaultValue={config?.max_steps ?? 64}
             />
           </Field>
-        ))}
-        <Field label={t("generationMaxSteps")}>
-          <input
-            type="number"
-            name="max_steps"
-            required
-            min={1}
-            max={1000}
-            defaultValue={config?.max_steps ?? 64}
-          />
-        </Field>
-      </div>
-      {error && (
-        <p role="alert" className="error">
-          {error}
-        </p>
-      )}
-      <details>
-        <summary>
-          {locale === "ja-JP"
-            ? "別 Node のプロバイダー承認"
-            : "Provider approvals at other nodes"}
-        </summary>
-        <p>
-          {locale === "ja-JP"
-            ? "所有 Node、定義のバージョンとダイジェストを固定します。embedding と compaction はそれぞれ呼び出し予算が必要です。空のオブジェクトは遠隔プロバイダーを許可しません。"
-            : "Pin each provider's owning node, version and digests. Embedding and compaction each require call allowances. An empty object grants no remote provider approval."}
-        </p>
-        <Field
-          label={
+        </div>
+      </Section>
+      <section className="grid min-w-0 gap-3 border-t border-border pt-4">
+        <Disclosure
+          summary={
             locale === "ja-JP"
-              ? "遠隔プロバイダー承認（JSON）"
-              : "Remote provider approvals (JSON)"
+              ? "別 Node のプロバイダー承認"
+              : "Provider approvals at other nodes"
           }
         >
-          <textarea
-            name="remote_approvals"
-            defaultValue={JSON.stringify(initial?.remote ?? {}, null, 2)}
-            rows={10}
-            required
-          />
-        </Field>
-      </details>
-      <Button
-        variant="outline"
-        className="primary"
-        disabled={!models.length && !model}
-      >
-        {t("save")}
-      </Button>
+          <Hint>
+            {locale === "ja-JP"
+              ? "所有 Node、定義のバージョンとダイジェストを固定します。embedding と compaction はそれぞれ呼び出し予算が必要です。空のオブジェクトは遠隔プロバイダーを許可しません。"
+              : "Pin each provider's owning node, version and digests. Embedding and compaction each require call allowances. An empty object grants no remote provider approval."}
+          </Hint>
+          <Field
+            label={
+              locale === "ja-JP"
+                ? "遠隔プロバイダー承認（JSON）"
+                : "Remote provider approvals (JSON)"
+            }
+          >
+            <Textarea
+              name="remote_approvals"
+              defaultValue={JSON.stringify(initial?.remote ?? {}, null, 2)}
+              rows={10}
+              spellCheck={false}
+              className="font-mono text-xs"
+              required
+            />
+          </Field>
+        </Disclosure>
+      </section>
+      {error && <Alert>{error}</Alert>}
+      <div className="flex justify-end border-t border-border pt-4">
+        <Button disabled={!models.length && !model}>{t("save")}</Button>
+      </div>
     </form>
   );
 }
@@ -946,137 +1006,183 @@ function RequestDetail({
     queryFn: () => generationSpec(encodeURIComponent(tenant), request.id),
   });
   const config = request.definition.config as AgentFields;
+  const pinnedRows = pinned.data
+    ? ([
+        [t("generationRoles"), pinned.data.permissions.roles?.join(", ") || "-"],
+        [
+          t("generationGroups"),
+          pinned.data.permissions.groups?.join(", ") || "-",
+        ],
+        [t("generationMaxConcurrent"), pinned.data.limits.max_concurrent],
+        [t("generationMaxDepth"), pinned.data.limits.max_depth],
+        [
+          t("generationCompactor"),
+          pinned.data.compaction
+            ? entryLabel(pinned.data.compaction.provider)
+            : t("generationCompactionDisabled"),
+        ],
+        ...(pinned.data.compaction
+          ? [
+              [
+                t("generationCompactionPerAgent"),
+                pinned.data.compaction.calls_per_agent,
+              ] as const,
+            ]
+          : []),
+        [
+          t("generationEmbedder"),
+          pinned.data.embedding
+            ? entryLabel(pinned.data.embedding.provider)
+            : t("generationEmbeddingDisabled"),
+        ],
+        ...(pinned.data.embedding
+          ? [
+              [
+                t("generationEmbeddingPerAgent"),
+                pinned.data.embedding.calls_per_agent,
+              ] as const,
+            ]
+          : []),
+      ] as const)
+    : [];
   return (
     <>
-      <h3>
-        {data.tasks.find((task) => task.id === request.task_id)?.title ??
-          t("task")}
-      </h3>
-      <Badge value={request.status} />
-      <p className="generation-reason">{request.reason}</p>
-      <dl>
-        <dt>{t("generationTemplate")}</dt>
-        <dd>
-          {local(request.definition.name)} · {request.agent_version}
-        </dd>
-        <dt>{t("model")}</dt>
-        <dd>{config.model && entryLabel(config.model)}</dd>
-        <dt>{t("tools")}</dt>
-        <dd>
-          {config.bindings
-            ?.filter((b) => b.kind === "tool" || b.kind === "bundle")
-            .map((b) => entryLabel(b.target))
-            .join(", ") || "—"}
-        </dd>
-        <dt>{t("generationSkills")}</dt>
-        <dd>
-          {config.bindings
-            ?.filter((b) => b.kind === "skill")
-            .map((b) => entryLabel(b.target))
-            .join(", ") || "—"}
-        </dd>
-        <dt>{t("capabilities")}</dt>
-        <dd>{request.definition.capabilities.join(", ") || "—"}</dd>
-        <dt>{t("generationPolicy")}</dt>
-        <dd>
-          {local(pinned.data?.template.name ?? {}) || t("unavailableEntity")} ·{" "}
-          {t("revision")} {request.policy_revision}
-        </dd>
-        <dt>{t("generationOrigin")}</dt>
-        <dd>{request.subject_chain.join(" → ")}</dd>
-        <dt>{t("generationDepth")}</dt>
-        <dd>{request.depth}</dd>
-        <dt>{t("generationExpires")}</dt>
-        <dd>{new Date(request.expires_at).toLocaleString(locale)}</dd>
-      </dl>
-      {usage.isError ? (
-        <p role="alert" className="error">
-          {usage.error.message}
+      <header className="grid min-w-0 gap-1.5">
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
+          <h3 className="min-w-0 text-[15px] font-semibold text-foreground [overflow-wrap:anywhere]">
+            {data.tasks.find((task) => task.id === request.task_id)?.title ??
+              t("task")}
+          </h3>
+          <Badge value={request.status} />
+        </div>
+        <p className="text-[13px] leading-relaxed text-muted-foreground [overflow-wrap:anywhere]">
+          {request.reason}
         </p>
+      </header>
+      <Facts
+        items={[
+          [
+            t("generationTemplate"),
+            <>
+              {local(request.definition.name)} ·{" "}
+              <span className="font-mono">{request.agent_version}</span>
+            </>,
+          ],
+          [t("model"), config.model && entryLabel(config.model)],
+          [
+            t("tools"),
+            config.bindings
+              ?.filter((b) => b.kind === "tool" || b.kind === "bundle")
+              .map((b) => entryLabel(b.target))
+              .join(", ") || "-",
+          ],
+          [
+            t("generationSkills"),
+            config.bindings
+              ?.filter((b) => b.kind === "skill")
+              .map((b) => entryLabel(b.target))
+              .join(", ") || "-",
+          ],
+          [
+            t("capabilities"),
+            request.definition.capabilities.join(", ") || "-",
+          ],
+          [
+            t("generationPolicy"),
+            <>
+              {local(pinned.data?.template.name ?? {}) ||
+                t("unavailableEntity")}{" "}
+              · {t("revision")}{" "}
+              <span className="font-mono">{request.policy_revision}</span>
+            </>,
+          ],
+          [
+            t("generationOrigin"),
+            <span className="font-mono">
+              {request.subject_chain.join(" → ")}
+            </span>,
+          ],
+          [
+            t("generationDepth"),
+            <span className="font-mono tabular">{request.depth}</span>,
+          ],
+          [
+            t("generationExpires"),
+            <time className="font-mono" dateTime={request.expires_at}>
+              {new Date(request.expires_at).toLocaleString(locale)}
+            </time>,
+          ],
+        ]}
+      />
+      {usage.isError ? (
+        <Alert>{usage.error.message}</Alert>
       ) : (
         usage.data && (
-          <dl>
-            <dt>{t("generationUsedTokens")}</dt>
-            <dd>
-              {usage.data.used_tokens.toLocaleString()} /{" "}
-              {usage.data.token_limit.toLocaleString()}
-            </dd>
-            <dt>{t("generationInferenceAttempts")}</dt>
-            <dd>{usage.data.inference_attempts}</dd>
-            <dt>{t("generationCompactionCalls")}</dt>
-            <dd>
-              {usage.data.compaction_calls} / {usage.data.compaction_call_limit}
-            </dd>
-            <dt>{t("generationEmbeddingCalls")}</dt>
-            <dd>
-              {usage.data.embedding_calls} / {usage.data.embedding_call_limit}
-            </dd>
-          </dl>
+          <MetricRow compact columns={4} className="border-y">
+            <Metric
+              label={t("generationUsedTokens")}
+              value={`${usage.data.used_tokens.toLocaleString(locale)} / ${usage.data.token_limit.toLocaleString(locale)}`}
+            />
+            <Metric
+              label={t("generationInferenceAttempts")}
+              value={usage.data.inference_attempts}
+            />
+            <Metric
+              label={t("generationCompactionCalls")}
+              value={`${usage.data.compaction_calls} / ${usage.data.compaction_call_limit}`}
+            />
+            <Metric
+              label={t("generationEmbeddingCalls")}
+              value={`${usage.data.embedding_calls} / ${usage.data.embedding_call_limit}`}
+            />
+          </MetricRow>
         )
       )}
       {pinned.isError ? (
-        <p role="alert" className="error">
-          {pinned.error.message}
-        </p>
+        <Alert>{pinned.error.message}</Alert>
       ) : (
         pinned.data && (
-          <details className="generation-permissions" open>
-            <summary>{t("generationPinnedPermissions")}</summary>
-            <dl>
-              <dt>{t("generationRoles")}</dt>
-              <dd>{pinned.data.permissions.roles?.join(", ") || "—"}</dd>
-              <dt>{t("generationGroups")}</dt>
-              <dd>{pinned.data.permissions.groups?.join(", ") || "—"}</dd>
-              <dt>{t("generationMaxConcurrent")}</dt>
-              <dd>{pinned.data.limits.max_concurrent}</dd>
-              <dt>{t("generationMaxDepth")}</dt>
-              <dd>{pinned.data.limits.max_depth}</dd>
-              <dt>{t("generationCompactor")}</dt>
-              <dd>
-                {pinned.data.compaction
-                  ? entryLabel(pinned.data.compaction.provider)
-                  : t("generationCompactionDisabled")}
-              </dd>
-              {pinned.data.compaction && (
-                <>
-                  <dt>{t("generationCompactionPerAgent")}</dt>
-                  <dd>{pinned.data.compaction.calls_per_agent}</dd>
-                </>
-              )}
-              <dt>{t("generationEmbedder")}</dt>
-              <dd>
-                {pinned.data.embedding
-                  ? entryLabel(pinned.data.embedding.provider)
-                  : t("generationEmbeddingDisabled")}
-              </dd>
-              {pinned.data.embedding && (
-                <>
-                  <dt>{t("generationEmbeddingPerAgent")}</dt>
-                  <dd>{pinned.data.embedding.calls_per_agent}</dd>
-                </>
-              )}
-            </dl>
+          <section className="generation-permissions grid min-w-0 gap-2">
+            <h4 className="text-[13px] font-semibold text-foreground">
+              {t("generationPinnedPermissions")}
+            </h4>
+            <div className="overflow-hidden rounded-md border border-border">
+              <Table>
+                <TableBody>
+                  {pinnedRows.map(([label, value]) => (
+                    <TableRow key={label} className="hover:bg-transparent">
+                      <TableCell className="h-8 w-[42%] text-xs text-faint">
+                        {label}
+                      </TableCell>
+                      <TableCell className="h-8 text-xs [overflow-wrap:anywhere]">
+                        {value}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
             <JsonView value={pinned.data.permissions.attributes ?? {}} />
             {pinned.data.remote && (
-              <details>
-                <summary>
-                  {locale === "ja-JP"
+              <Disclosure
+                summary={
+                  locale === "ja-JP"
                     ? "別 Node のプロバイダー承認"
-                    : "Provider approvals at other nodes"}
-                </summary>
+                    : "Provider approvals at other nodes"
+                }
+              >
                 <RecordView value={pinned.data.remote} />
-              </details>
+              </Disclosure>
             )}
-          </details>
+          </section>
         )
       )}
-      <details>
-        <summary>{t("generationDefinition")}</summary>
+      <Disclosure summary={t("generationDefinition")}>
         <RecordView value={request.definition} />
-      </details>
+      </Disclosure>
       {request.status !== "DELETED" && (
         <form
-          className="generation-control"
+          className="grid min-w-0 gap-3 border-t border-border pt-4"
           onSubmit={(event) => {
             event.preventDefault();
             const action = (event.nativeEvent as SubmitEvent)
@@ -1088,19 +1194,14 @@ function RequestDetail({
               );
           }}
         >
-          <fieldset disabled={busy} className="generation-fieldset">
+          <fieldset disabled={busy} className="grid min-w-0 gap-3">
             <Field label={t("generationDecisionReason")}>
-              <textarea name="reason" required maxLength={4096} rows={2} />
+              <Textarea name="reason" required maxLength={4096} rows={2} />
             </Field>
-            <div className="generation-actions">
+            <div className="flex flex-wrap items-center gap-2">
               {request.status === "PENDING_APPROVAL" && (
                 <>
-                  <Button
-                    variant="outline"
-                    className="primary"
-                    value="approve"
-                    disabled={!pinned.isSuccess}
-                  >
+                  <Button value="approve" disabled={!pinned.isSuccess}>
                     {t("generationApprove")}
                   </Button>
                   <Button variant="outline" value="deny">
@@ -1109,11 +1210,15 @@ function RequestDetail({
                 </>
               )}
               {active(request.status) ? (
-                <Button variant="outline" className="danger" value="stop">
+                <Button
+                  variant="destructive"
+                  className="sm:ml-auto"
+                  value="stop"
+                >
                   {t("generationStop")}
                 </Button>
               ) : (
-                <Button variant="outline" value="delete">
+                <Button variant="outline" className="sm:ml-auto" value="delete">
                   {t("generationDelete")}
                 </Button>
               )}
@@ -1121,23 +1226,43 @@ function RequestDetail({
           </fieldset>
         </form>
       )}
-      <h4>{t("generationHistory")}</h4>
-      {history.isError ? (
-        <p role="alert" className="error">
-          {history.error.message}
-        </p>
-      ) : (
-        <ol className="generation-history">
-          {history.data?.map((entry) => (
-            <li key={entry.sequence}>
-              <Badge value={entry.status} />
-              <strong>{entry.actor}</strong>
-              <time>{new Date(entry.created_at).toLocaleString(locale)}</time>
-              <p>{entry.reason}</p>
-            </li>
-          ))}
-        </ol>
-      )}
+      <section className="grid min-w-0 gap-3 border-t border-border pt-4">
+        <h4 className="text-[13px] font-semibold text-foreground">
+          {t("generationHistory")}
+        </h4>
+        {history.isError ? (
+          <Alert>{history.error.message}</Alert>
+        ) : (
+          <ol className="generation-history grid min-w-0">
+            {history.data?.map((entry) => (
+              <li
+                key={entry.sequence}
+                className="relative grid min-w-0 gap-1 border-l border-border pb-4 pl-4 last:pb-0"
+              >
+                <span
+                  aria-hidden
+                  className="absolute -left-[4.5px] top-1.5 size-2 rounded-full bg-border-strong ring-2 ring-popover"
+                />
+                <div className="flex min-w-0 flex-wrap items-center gap-2">
+                  <Badge value={entry.status} />
+                  <span className="font-mono text-xs text-foreground">
+                    {entry.actor}
+                  </span>
+                  <time
+                    className="m-0 inline font-mono text-[11px] text-faint"
+                    dateTime={entry.created_at}
+                  >
+                    {new Date(entry.created_at).toLocaleString(locale)}
+                  </time>
+                </div>
+                <p className="m-0 text-xs leading-relaxed text-muted-foreground [overflow-wrap:anywhere]">
+                  {entry.reason}
+                </p>
+              </li>
+            ))}
+          </ol>
+        )}
+      </section>
     </>
   );
 }
@@ -1167,6 +1292,7 @@ export function GenerationAssignForm({
   return (
     <>
       <form
+        className="grid min-w-0 gap-3"
         onSubmit={(event) => {
           event.preventDefault();
           const form = new FormData(event.currentTarget);
@@ -1178,36 +1304,36 @@ export function GenerationAssignForm({
           );
         }}
       >
-        <h3>{task.title}</h3>
-        <p>{t("generationAssignHelp")}</p>
-        {policies.isError && (
-          <p role="alert" className="error">
-            {policies.error.message}
+        <div className="grid gap-1">
+          <h3 className="text-[13px] font-semibold text-foreground [overflow-wrap:anywhere]">
+            {task.title}
+          </h3>
+          <p className="text-xs leading-relaxed text-muted-foreground">
+            {t("generationAssignHelp")}
           </p>
+        </div>
+        {policies.isError && (
+          <Alert>{policies.error.message}</Alert>
         )}
         <Field label={t("generationPolicy")}>
-          <select name="policy" required defaultValue="">
+          <NativeSelect name="policy" required defaultValue="">
             <option value="">{t("choose")}</option>
             {choices.map((policy) => (
               <option key={policy.id} value={policy.id}>
                 {policyPresentation.label(policy)}
               </option>
             ))}
-          </select>
+          </NativeSelect>
         </Field>
         {!policies.isPending && !choices.length && (
-          <p className="notice">{t("generationNoPolicies")}</p>
+          <Hint>{t("generationNoPolicies")}</Hint>
         )}
         <Field label={t("generationRequestReason")}>
-          <textarea name="reason" required maxLength={4096} rows={3} />
+          <Textarea name="reason" required maxLength={4096} rows={3} />
         </Field>
-        <Button
-          variant="outline"
-          className="primary"
-          disabled={!choices.length}
-        >
-          {t("generationAssign")}
-        </Button>
+        <div className="flex justify-end">
+          <Button disabled={!choices.length}>{t("generationAssign")}</Button>
+        </div>
       </form>
       <RemoteGenerationAssignForm
         task={task.id}

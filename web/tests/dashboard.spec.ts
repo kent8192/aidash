@@ -7,7 +7,7 @@ import {
 test.beforeEach(async ({ page }) => {
   await installBearerDashboard(page, "acceptance-access-token");
   await page.goto("/");
-  await expect(page.locator(".collab-app")).toBeVisible();
+  await expect(page.locator("#main")).toBeVisible();
 });
 
 test("restarts the event stream when the tab selects another authority", async ({
@@ -32,10 +32,15 @@ test("restarts the event stream when the tab selects another authority", async (
     });
   });
   await page.reload();
-  const selector = page.locator(".account-popover select").first();
+  await page
+    .getByRole("button", { name: "アカウント設定", exact: true })
+    .click();
+  const selector = page.getByRole("combobox", {
+    name: "このタブで使う権限を選択してください",
+    exact: true,
+  });
   await expect(selector).toHaveValue("operator");
   await expect.poll(() => contexts.includes("operator")).toBeTruthy();
-  await page.locator(".account-popover > summary").click();
   await selector.selectOption("mapping:fixture-mapping");
   await expect
     .poll(() => contexts.includes("mapping:fixture-mapping"))
@@ -53,7 +58,7 @@ test("reinitializes an open tab after its shared session is replaced", async ({
   );
   await page.clock.install();
   await page.reload();
-  await expect(page.locator(".collab-app")).toBeVisible();
+  await expect(page.locator("#main")).toBeVisible();
   sessionId = "replacement-browser-session";
   await page.clock.fastForward(60_000);
   await expect(
@@ -127,7 +132,7 @@ test("creates a workspace and task and receives live assignment changes", async 
   const name = `Browser workspace ${Date.now()}`;
   const taskName = `Browser research ${Date.now()}`;
   await page.goto("/collaboration");
-  await page.getByLabel("アカウント設定", { exact: true }).click();
+  await page.getByRole("button", { name: "設定", exact: true }).click();
   await page.getByRole("button", { name: "準備用チャンネル" }).click();
   await page
     .getByRole("dialog")

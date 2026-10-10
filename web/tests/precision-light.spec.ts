@@ -14,10 +14,21 @@ for (const locale of ["ja-JP", "en-US"] as const) {
         referenceLayout: true,
       });
       await page.goto("/collaboration?channel=workspace-one");
-      await expect(page.locator(".collab-composer textarea")).toBeVisible();
-      await expect(page.locator(".intent-inline-progress")).toBeVisible();
-      await expect(page.locator(".collab-rail")).toHaveCount(0);
-      await expect(page.locator(".workspace-tabbar")).toHaveCount(0);
+      await expect(
+        page.getByRole("textbox", {
+          name: ja ? "メッセージ" : "Message",
+          exact: true,
+        }),
+      ).toBeVisible();
+      await expect(
+        page.getByRole("heading", { name: "# v0.1-release", exact: true }),
+      ).toBeVisible();
+      if (width >= 760)
+        await expect(
+          page.getByRole("region", {
+            name: ja ? "依頼のキャンバス" : "Request canvas",
+          }),
+        ).toBeVisible();
       await page.screenshot({
         path: testInfo.outputPath("conversation.png"),
         animations: "disabled",
@@ -36,6 +47,7 @@ for (const locale of ["ja-JP", "en-US"] as const) {
           exact: true,
         }),
       ).toBeVisible();
+      if (width >= 760) await page.keyboard.press("ControlOrMeta+K");
       const search = page.getByRole("searchbox", {
         name: ja ? "履歴を検索" : "Search history",
       });
@@ -53,6 +65,7 @@ for (const locale of ["ja-JP", "en-US"] as const) {
             exact: true,
           })
           .click();
+      else await page.keyboard.press("Escape");
       await page
         .getByRole("button", { name: ja ? "ファイル" : "Files", exact: true })
         .click();
@@ -71,7 +84,10 @@ for (const locale of ["ja-JP", "en-US"] as const) {
         })
         .click();
       await expect(
-        page.getByRole("dialog").locator(".collab-task").first(),
+        page
+          .getByRole("dialog")
+          .getByRole("button")
+          .filter({ hasText: "リリースチェックリスト" }),
       ).toBeVisible();
       await page.keyboard.press("Escape");
       await expect(page.getByRole("dialog")).toHaveCount(0);

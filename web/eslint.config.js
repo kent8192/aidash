@@ -18,6 +18,16 @@ export default tseslint.config(
     extends: [js.configs.recommended, ...tseslint.configs.recommended],
     languageOptions: { globals: { ...globals.browser, ...globals.node } },
     plugins: { "react-hooks": hooks, "jsx-a11y": jsxA11y },
+    // Form primitives render native controls; let jsx-a11y treat them as such.
+    settings: {
+      "jsx-a11y": {
+        components: {
+          Input: "input",
+          Textarea: "textarea",
+          NativeSelect: "select",
+        },
+      },
+    },
     rules: {
       ...hooks.configs.recommended.rules,
       // React Compiler is not enabled; TanStack Table/Virtual use mutable instances.

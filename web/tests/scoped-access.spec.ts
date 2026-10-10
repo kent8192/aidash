@@ -149,7 +149,7 @@ test("subject dashboard completes a conversation and clears revoked access", asy
       name: "alice",
     });
     await page.goto("/");
-    await expect(page.locator(".collab-app")).toBeVisible();
+    await expect(page.locator("#main")).toBeVisible();
     await page.goto("/settings");
     await expect(
       page.locator('.collab-settings-select option[value="marketplace"]'),

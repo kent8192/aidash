@@ -1,8 +1,13 @@
 import { Button } from "./components/ui/button";
+import { Input } from "./components/ui/input";
+import { NativeSelect } from "./components/ui/native-select";
 import { useEffect, useState, type ReactNode } from "react";
 import { useQueryClient } from "@tanstack/react-query";
+import { Plug, RotateCw, Trash2 } from "lucide-react";
 import { desktop, desktopAvailable, type DesktopSettings } from "./desktop";
 import { selectConnection } from "./transport";
+import { AuthCard } from "./shell/auth-card";
+import { Alert } from "./components/patterns";
 
 /** Desktop integration lives at the application boundary, outside shared screens. */
 export function ConnectionGate({
@@ -64,125 +69,145 @@ export function ConnectionGate({
     }
   };
   return (
-    <div className="desktop-shell">
+    <div className="flex min-h-0 flex-1 flex-col">
       <div
-        className="desktop-connections"
+        className="flex h-10 shrink-0 items-center gap-2 border-b border-border bg-rail px-3"
         aria-label={english ? "Aidash connections" : "Aidashの接続先"}
       >
-        <label>
-          {english ? "Connection" : "接続先"}{" "}
-          <select
+        <label className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
+          <Plug aria-hidden className="size-3.5 shrink-0" />
+          {english ? "Connection" : "接続先"}
+          <NativeSelect
             aria-label={english ? "Connection" : "接続先"}
             value={active ?? ""}
             disabled={busy}
             onChange={(event) => void change(event.target.value || null)}
+            wrapperClassName="w-auto"
+            className="h-7 max-w-[min(420px,60vw)] font-mono text-xs"
           >
             <option value="">
               {english ? "Manage connections" : "接続先を管理"}
             </option>
             {settings?.profiles.map((p) => (
               <option key={p.id} value={p.id}>
-                {p.name} — {p.origin}
+                {p.name} · {p.origin}
               </option>
             ))}
-          </select>
+          </NativeSelect>
         </label>
         {active && (
           <Button
-            variant="outline"
+            variant="ghost"
+            size="sm"
             disabled={busy}
             onClick={() => void change(active)}
           >
+            <RotateCw aria-hidden />
             {english ? "Reconnect" : "再接続"}
           </Button>
         )}
       </div>
       {error && (
-        <p className="error" role="alert">
-          {error}
-        </p>
+        <div className="shrink-0 px-3 pt-3">
+          <Alert>{error}</Alert>
+        </div>
       )}
       {active ? (
-        <div className="desktop-content" key={generation}>
+        <div className="flex min-h-0 flex-1 flex-col" key={generation}>
           {children}
         </div>
       ) : (
-        <main className="login">
-          <div className="login-card">
-            <h1>{english ? "Connect to Aidash" : "Aidashに接続"}</h1>
-            <p>
-              {english
-                ? "Choose a running Aidash installation. Remote connections require HTTPS."
-                : "起動済みのAidashを選択してください。リモート接続にはHTTPSが必要です。"}
-            </p>
-            <form
-              onSubmit={(event) => {
-                event.preventDefault();
-                setBusy(true);
-                setError("");
-                void desktop
-                  .save(name, origin)
-                  .then(async (profile) => {
-                    setName("");
-                    await change(profile.id);
-                  })
-                  .catch((reason) => setError(String(reason)))
-                  .finally(() => setBusy(false));
-              }}
-            >
-              <label>
-                {english ? "Name" : "名前"}
-                <input
-                  required
-                  maxLength={80}
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                />
-              </label>
-              <label>
-                URL
-                <input
-                  required
-                  type="url"
-                  value={origin}
-                  onChange={(e) => setOrigin(e.target.value)}
-                />
-              </label>
-              <Button variant="outline" disabled={busy}>
-                {english ? "Save and connect" : "保存して接続"}
-              </Button>
-            </form>
-            {settings?.profiles.map((p) => (
-              <div className="card" key={p.id}>
-                <strong>{p.name}</strong>
-                <p>{p.origin}</p>
-                <Button
-                  variant="outline"
-                  disabled={busy}
-                  onClick={() => void change(p.id)}
-                >
-                  {english ? "Connect" : "接続"}
-                </Button>
-                <Button
-                  variant="outline"
-                  disabled={busy}
-                  onClick={() => {
-                    setBusy(true);
-                    setError("");
-                    void desktop
-                      .remove(p.id)
-                      .then(() => desktop.settings())
-                      .then(setSettings)
-                      .catch((reason) => setError(String(reason)))
-                      .finally(() => setBusy(false));
-                  }}
-                >
-                  {english ? "Remove saved connection" : "保存した接続先を削除"}
-                </Button>
-              </div>
-            ))}
-          </div>
-        </main>
+        <AuthCard title={english ? "Connect to Aidash" : "Aidashに接続"}>
+          <p className="text-muted-foreground">
+            {english
+              ? "Choose a running Aidash installation. Remote connections require HTTPS."
+              : "起動済みのAidashを選択してください。リモート接続にはHTTPSが必要です。"}
+          </p>
+          <form
+            className="grid gap-3"
+            onSubmit={(event) => {
+              event.preventDefault();
+              setBusy(true);
+              setError("");
+              void desktop
+                .save(name, origin)
+                .then(async (profile) => {
+                  setName("");
+                  await change(profile.id);
+                })
+                .catch((reason) => setError(String(reason)))
+                .finally(() => setBusy(false));
+            }}
+          >
+            <label className="grid gap-1.5 text-xs font-medium text-muted-foreground">
+              {english ? "Name" : "名前"}
+              <Input
+                required
+                maxLength={80}
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+              />
+            </label>
+            <label className="grid gap-1.5 text-xs font-medium text-muted-foreground">
+              URL
+              <Input
+                required
+                type="url"
+                value={origin}
+                className="font-mono"
+                onChange={(e) => setOrigin(e.target.value)}
+              />
+            </label>
+            <Button disabled={busy} className="justify-self-start">
+              {english ? "Save and connect" : "保存して接続"}
+            </Button>
+          </form>
+          {settings && settings.profiles.length > 0 && (
+            <ul className="divide-y divide-border border-t border-border">
+              {settings.profiles.map((p) => (
+                <li key={p.id} className="flex items-center gap-2 py-2.5">
+                  <span className="min-w-0 flex-1">
+                    <strong className="block truncate text-[13px] font-medium">
+                      {p.name}
+                    </strong>
+                    <span className="block truncate font-mono text-[11px] text-faint">
+                      {p.origin}
+                    </span>
+                  </span>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={busy}
+                    onClick={() => void change(p.id)}
+                  >
+                    {english ? "Connect" : "接続"}
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="size-7"
+                    aria-label={
+                      english ? "Remove saved connection" : "保存した接続先を削除"
+                    }
+                    disabled={busy}
+                    onClick={() => {
+                      setBusy(true);
+                      setError("");
+                      void desktop
+                        .remove(p.id)
+                        .then(() => desktop.settings())
+                        .then(setSettings)
+                        .catch((reason) => setError(String(reason)))
+                        .finally(() => setBusy(false));
+                    }}
+                  >
+                    <Trash2 aria-hidden />
+                  </Button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </AuthCard>
       )}
     </div>
   );
