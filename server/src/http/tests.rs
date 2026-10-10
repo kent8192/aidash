@@ -1,4 +1,4 @@
-use super::{mark_sensitive_headers, private_response};
+use super::{Protection, ProxyNetwork, Settings, mark_sensitive_headers, private_response};
 use http::{HeaderValue, header};
 use reinhardt::{Request, Response};
 use rstest::rstest;
@@ -75,4 +75,52 @@ fn every_request_credential_field_is_redacted() {
 	assert!(!diagnostic.contains("first-secret"));
 	assert!(!diagnostic.contains("second-secret"));
 	assert!(!request.headers[header::CONTENT_TYPE].is_sensitive());
+}
+
+#[rstest]
+#[case::inside_pod_range("10.4.0.0/14", "10.7.255.254", true)]
+#[case::past_pod_range("10.4.0.0/14", "10.8.0.1", false)]
+#[case::before_pod_range("10.4.0.0/14", "10.3.255.255", false)]
+#[case::exact_ip("127.0.0.1", "127.0.0.1", true)]
+#[case::other_ip("127.0.0.1", "127.0.0.2", false)]
+#[case::exact_ipv6("::1", "::1", true)]
+#[case::ipv6_prefix("2001:db8::/32", "2001:db8:ffff::1", true)]
+#[case::ipv4_any_excludes_ipv6("0.0.0.0/0", "::1", false)]
+#[case::ipv6_any_excludes_ipv4("::/0", "198.51.100.1", false)]
+fn only_peers_inside_a_trusted_network_supply_the_client_address(
+	#[case] network: &str,
+	#[case] peer: &str,
+	#[case] trusted: bool,
+) {
+	let protection = Protection::new(Settings {
+		auth_trusted_proxy_ips: vec![network.parse().unwrap()],
+		..Default::default()
+	});
+	let mut request = Request::builder()
+		.uri("/auth/config")
+		.header("x-real-ip", "198.51.100.9")
+		.build()
+		.unwrap();
+	let peer: std::net::IpAddr = peer.parse().unwrap();
+	request.remote_addr = Some(std::net::SocketAddr::new(peer, 1));
+
+	let client = protection.auth_ip(&request).unwrap();
+
+	let expected = if trusted {
+		"198.51.100.9".parse().unwrap()
+	} else {
+		peer
+	};
+	assert_eq!(client, expected);
+}
+
+#[rstest]
+#[case::host_bits("10.4.0.1/14")]
+#[case::ipv4_prefix_too_long("10.0.0.0/33")]
+#[case::ipv6_prefix_too_long("::/129")]
+#[case::empty_prefix("10.0.0.0/")]
+#[case::signed_prefix("10.0.0.0/+8")]
+#[case::hostname("proxy.internal")]
+fn malformed_trusted_proxy_entries_are_rejected(#[case] raw: &str) {
+	assert!(raw.parse::<ProxyNetwork>().is_err());
 }

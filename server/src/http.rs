@@ -53,8 +53,8 @@ pub struct Settings {
 	pub sse_connections: usize,
 	pub auth_burst: u32,
 	pub auth_period: Duration,
-	/// Exact socket peers allowed to supply a sanitized, single X-Real-IP.
-	pub auth_trusted_proxy_ips: Vec<IpAddr>,
+	/// Socket peers (exact IPs or CIDR networks) allowed to supply a sanitized, single X-Real-IP.
+	pub auth_trusted_proxy_ips: Vec<ProxyNetwork>,
 	pub actor_burst: u32,
 	pub actor_period: Duration,
 	pub peer_burst: u32,
@@ -74,6 +74,59 @@ impl Default for Settings {
 			peer_burst: 240,
 			peer_period: Duration::from_millis(50),
 		}
+	}
+}
+/// A trusted proxy network. A plain IP is a full-length prefix and matches only itself.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ProxyNetwork {
+	address: IpAddr,
+	prefix: u32,
+}
+impl ProxyNetwork {
+	fn width(address: IpAddr) -> u32 {
+		if address.is_ipv4() { 32 } else { 128 }
+	}
+	fn bits(address: IpAddr) -> u128 {
+		match address {
+			IpAddr::V4(address) => u32::from(address).into(),
+			IpAddr::V6(address) => address.into(),
+		}
+	}
+	fn masked(&self, address: IpAddr) -> u128 {
+		let host = Self::width(address) - self.prefix;
+		Self::bits(address) & u128::MAX.checked_shl(host).unwrap_or(0)
+	}
+	pub fn contains(&self, address: IpAddr) -> bool {
+		address.is_ipv4() == self.address.is_ipv4()
+			&& self.masked(address) == Self::bits(self.address)
+	}
+}
+impl std::str::FromStr for ProxyNetwork {
+	type Err = crate::Error;
+	fn from_str(raw: &str) -> crate::Result<Self> {
+		let invalid = || crate::Error::Invalid("invalid AIDASH_AUTH_TRUSTED_PROXY_IPS".into());
+		let (address, prefix) = raw
+			.split_once('/')
+			.map_or((raw, None), |(a, p)| (a, Some(p)));
+		let address: IpAddr = address.parse().map_err(|_| invalid())?;
+		let width = Self::width(address);
+		let prefix = match prefix {
+			None => width,
+			Some(prefix) if !prefix.is_empty() && prefix.bytes().all(|b| b.is_ascii_digit()) => {
+				prefix
+					.parse()
+					.ok()
+					.filter(|p| *p <= width)
+					.ok_or_else(invalid)?
+			}
+			Some(_) => return Err(invalid()),
+		};
+		let network = Self { address, prefix };
+		// Host bits set usually mean a mistyped network; refuse rather than widen it.
+		if network.masked(address) != Self::bits(address) {
+			return Err(invalid());
+		}
+		Ok(network)
 	}
 }
 impl Settings {
@@ -270,7 +323,12 @@ impl Protection {
 	}
 	fn auth_ip(&self, request: &Request) -> Option<IpAddr> {
 		let peer = request.remote_addr?.ip();
-		if self.settings.auth_trusted_proxy_ips.contains(&peer) {
+		if self
+			.settings
+			.auth_trusted_proxy_ips
+			.iter()
+			.any(|network| network.contains(peer))
+		{
 			let mut values = request.headers.get_all("x-real-ip").iter();
 			let ip = values
 				.next()
