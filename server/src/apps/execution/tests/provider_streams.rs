@@ -129,7 +129,7 @@ fn model_config(
 fn request(with_tools: bool) -> ModelRequest {
 	ModelRequest {
 		instructions: "Follow the task".into(),
-		context: json!({"task":"Read notes"}),
+		context: json!({"task":"Read notes"}).into(),
 		tools: if with_tools {
 			vec![ToolSpec {
 				name: "read".into(),
@@ -141,6 +141,7 @@ fn request(with_tools: bool) -> ModelRequest {
 		},
 		max_output_tokens: 512,
 		content_parts: vec![],
+		cache_scope: None,
 	}
 }
 

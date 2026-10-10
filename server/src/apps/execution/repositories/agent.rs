@@ -448,9 +448,11 @@ impl ExecutionEnvironment for Environment<'_> {
 			max_steps: config.max_steps,
 			allow_task_creation: config.allow_task_creation,
 			conversation_memory: config.conversation_memory,
+			projection_version: config.projection_version.unwrap_or_default(),
 		})
 	}
 	fn provider(&self, model: ModelConfig) -> Result<Arc<dyn ModelProvider>> {
+		// Carries this node's Cache Salt Keys for salted Projection Versions.
 		crate::bootstrap::admitted_model_provider(
 			&self.federation.store,
 			model,
@@ -564,6 +566,64 @@ impl ExecutionEnvironment for Environment<'_> {
 			Ok(String::new())
 		}
 	}
+	async fn skill_revision(&self, run: &Run) -> Result<Option<i64>> {
+		super::skills::revision(&self.federation.store, run.id).await
+	}
+	async fn retrieval_scope(
+		&self,
+		run: &Run,
+	) -> Result<aidash_domain::context::sources::RetrievalScope> {
+		if let Some(authority) = &self.authority {
+			return authority
+				.guard
+				.retrieval_scope(&self.federation.store)
+				.await
+				.map_err(Into::into);
+		}
+		// Operator Runs carry no subject policy snapshot; their Tenant is the
+		// one whose provider cache this Run already shares.
+		let tenant = self.cache_scope(run).await?.tenant;
+		let revisions = crate::semantic::services::memory_context::source_revisions(
+			&self.federation.store,
+			run,
+		)
+		.await?;
+		Ok(aidash_domain::context::sources::RetrievalScope {
+			tenant,
+			subject: "operator".into(),
+			authorization_revision: None,
+			index_revision: revisions.index,
+			participant_revision: revisions.participant,
+			corpus_digest: Some(revisions.corpus),
+		})
+	}
+	async fn cache_scope(&self, run: &Run) -> Result<aidash_domain::projection::CacheScope> {
+		let keys = self.federation.store.cache_salt.as_ref().ok_or_else(|| {
+			aidash_application::Error::Invalid(
+				"this node has no Cache Salt Key for salted Projection Versions".into(),
+			)
+		})?;
+		// The executing node's local Tenant: the worker's Access for scoped and
+		// remote Runs (the receiver's mapped Tenant), otherwise the Tenant that
+		// owns the local workspace. Unscoped workspaces have no Tenant to salt.
+		let tenant = match &self.authority {
+			Some(authority) => authority.guard.tenant().await,
+			None => self
+				.federation
+				.store
+				.workspace_tenant(run.workspace_id)
+				.await?
+				.ok_or_else(|| {
+					aidash_application::Error::Invalid(
+						"salted Projection Versions require a Tenant-owned workspace".into(),
+					)
+				})?,
+		};
+		Ok(aidash_domain::projection::CacheScope {
+			tenant,
+			key_version: keys.current(),
+		})
+	}
 	async fn semantic_context(
 		&self,
 		run: &Run,
@@ -571,6 +631,7 @@ impl ExecutionEnvironment for Environment<'_> {
 		inputs: &[(InputRead, String)],
 		budget: usize,
 		entry: &Entry,
+		key: Option<&aidash_domain::context::sources::RetrievalKey>,
 	) -> Result<Option<Value>> {
 		let settings =
 			AgentConfig::from_snapshot(run.context.binding_snapshot.as_ref().ok_or_else(
@@ -582,7 +643,7 @@ impl ExecutionEnvironment for Environment<'_> {
 		if let Some(authority) = &self.authority {
 			return authority
 				.guard
-				.semantic_context(&self.federation.store, task, inputs, budget)
+				.semantic_context(&self.federation.store, task, inputs, budget, key)
 				.await
 				.map_err(Into::into);
 		}
@@ -621,6 +682,7 @@ impl ExecutionEnvironment for Environment<'_> {
 				inputs,
 				budget.saturating_sub(reserved),
 				&agent,
+				key,
 			)
 			.await?;
 			crate::semantic::services::memory_context::complete(

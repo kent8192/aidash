@@ -10,14 +10,11 @@ use reinhardt::query::{Alias, Expr, OnConflict, PostgresQueryBuilder, Query};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-pub(crate) async fn context(
+/// The receiver's pinned admission Description for a remote Run.
+pub(crate) async fn admission(
 	f: &Federation,
 	run: &crate::domain::Run,
-	task: &crate::domain::Task,
-	inputs: &[(InputRead, String)],
-	query: &str,
-	budget: usize,
-) -> Result<Option<Value>> {
+) -> Result<crate::authorization::remote::Description> {
 	let description: Value = {
 		let query_bind_1 = run.id;
 		let query_bind_2 = &run.home_node;
@@ -38,8 +35,18 @@ pub(crate) async fn context(
 		.await?
 	}
 	.ok_or(Error::Forbidden)?;
-	let description: crate::authorization::remote::Description =
-		serde_json::from_value(description)?;
+	Ok(serde_json::from_value(description)?)
+}
+
+pub(crate) async fn context(
+	f: &Federation,
+	run: &crate::domain::Run,
+	task: &crate::domain::Task,
+	inputs: &[(InputRead, String)],
+	query: &str,
+	budget: usize,
+) -> Result<Option<Value>> {
+	let description = admission(f, run).await?;
 	if description.semantic.disabled() {
 		return Ok(None);
 	}

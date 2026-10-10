@@ -365,6 +365,16 @@ pub async fn publish(
 			"packages require an author and a distributable capability".into(),
 		));
 	}
+	if package.entity.kind == "agent" {
+		let agent: aidash_domain::registry::bindings::AgentBindings =
+			serde_json::from_value(package.entity.config.clone())?;
+		let model = scope
+			.definition(&agent.model.id, &agent.model.version)
+			.await?;
+		let model: aidash_domain::model::ModelConfig = serde_json::from_value(model.config)
+			.map_err(|error| Error::Invalid(error.to_string()))?;
+		model.require_projection(agent.projection_version.unwrap_or_default())?;
+	}
 	// Publish authored edges only. Registration provenance and implicit defaults
 	// belong to the receiving Node and are never portable package content.
 	let node = scope.registry_node().to_owned();
