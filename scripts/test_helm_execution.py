@@ -31,26 +31,42 @@ def select(objects, kind, suffix):
 class ChartsTest(unittest.TestCase):
     aidash = 'deploy/helm/aidash'
     environment = 'infra/gcp/helm/environment'
-    base = {'node': {'id': 'aidash://fixture'}, 'existingSecret': 'fixture'}
+    # The Runner requires the application's capability object claim.
+    base = {'node': {'id': 'aidash://fixture'}, 'existingSecret': 'fixture',
+            'capabilities': {'storage': {'existingClaim': 'objects'}}}
 
     def test_execution_is_opt_in(self):
         objects = render(self.aidash, self.base)
         self.assertFalse(any(value['kind'] in ('DaemonSet', 'RuntimeClass', 'Namespace', 'PersistentVolumeClaim') for value in objects))
-
-    def test_shared_rwo_ledger_co_locates_roles_and_avoids_update_surge(self):
-        objects = render(self.aidash, dict(self.base, memoryRecovery={'existingClaim': 'ledger'},
-                         affinity={'nodeAffinity': {'preferredDuringSchedulingIgnoredDuringExecution': []}}))
+        # Without the Runner the application keeps its admission-disabled default profile.
+        self.assertFalse(any(value['kind'] == 'ConfigMap' and 'profile.json' in value.get('data', {}) for value in objects))
         for role in ('server', 'worker'):
-            deployment = select(objects, 'Deployment', '-aidash-' + role)
-            self.assertEqual(deployment['spec']['strategy'], {'type': 'Recreate'})
-            pod = deployment['spec']['template']
-            term = pod['spec']['affinity']['podAffinity']['requiredDuringSchedulingIgnoredDuringExecution'][0]
-            self.assertEqual(term['topologyKey'], 'kubernetes.io/hostname')
-            for key, value in term['labelSelector']['matchLabels'].items():
-                self.assertEqual(pod['metadata']['labels'][key], value)
-            self.assertIn('nodeAffinity', pod['spec']['affinity'])
-            claim = pod['spec']['volumes'][0]['persistentVolumeClaim']['claimName']
-            self.assertEqual(claim, 'ledger')
+            env = select(objects, 'Deployment', '-aidash-' + role)['spec']['template']['spec']['containers'][0]['env']
+            self.assertNotIn('AIDASH_CAPABILITY_PROFILE', [variable['name'] for variable in env])
+
+    def test_shared_rwo_claims_co_locate_roles_and_avoid_update_surge(self):
+        affinity = {'nodeAffinity': {'preferredDuringSchedulingIgnoredDuringExecution': []}}
+        ledger = dict(self.base, capabilities={'storage': {'existingClaim': ''}}, memoryRecovery={'existingClaim': 'ledger'})
+        objects_only = dict(self.base)
+        for values, mounts in ((ledger, {'memory-recovery': ('ledger', '/var/lib/aidash/memory-recovery')}),
+                               (objects_only, {'capabilities': ('objects', '/var/lib/aidash/capabilities')})):
+            objects = render(self.aidash, dict(values, affinity=affinity))
+            for role in ('server', 'worker'):
+                deployment = select(objects, 'Deployment', '-aidash-' + role)
+                self.assertEqual(deployment['spec']['strategy'], {'type': 'Recreate'})
+                pod = deployment['spec']['template']
+                term = pod['spec']['affinity']['podAffinity']['requiredDuringSchedulingIgnoredDuringExecution'][0]
+                self.assertEqual(term['topologyKey'], 'kubernetes.io/hostname')
+                for key, value in term['labelSelector']['matchLabels'].items():
+                    self.assertEqual(pod['metadata']['labels'][key], value)
+                self.assertIn('nodeAffinity', pod['spec']['affinity'])
+                self.assertEqual(pod['spec']['securityContext']['fsGroup'], 10001)
+                claims = {volume['name']: volume['persistentVolumeClaim']['claimName'] for volume in pod['spec']['volumes']}
+                paths = {mount['name']: mount['mountPath'] for mount in pod['spec']['containers'][0]['volumeMounts']}
+                self.assertEqual({name: (claims[name], paths[name]) for name in claims}, mounts)
+        # Without a shared claim the roles roll independently.
+        unshared = render(self.aidash, dict(self.base, capabilities={'storage': {'existingClaim': ''}}))
+        self.assertEqual(select(unshared, 'Deployment', '-aidash-server')['spec']['strategy']['type'], 'RollingUpdate')
 
     def test_server_worker_google_identities_are_separate(self):
         objects = render(self.aidash, dict(self.base,
@@ -61,6 +77,168 @@ class ChartsTest(unittest.TestCase):
             self.assertEqual(account['metadata']['annotations']['iam.gke.io/gcp-service-account'], role + '@example')
             pod = select(objects, 'Deployment', '-aidash-' + role)['spec']['template']['spec']
             self.assertEqual(pod['serviceAccountName'], account['metadata']['name'])
+
+    def test_gke_release_image_annotation_frontend_and_backend_ingress(self):
+        sha = '0123456789abcdef' * 2 + '01234567'
+        values = dict(self.base, image={'repository': 'registry/app', 'digest': 'sha256:' + 'c' * 64},
+                      release={'sourceSha': sha}, frontend={'enabled': False},
+                      trustedProxy={'cidrs': ['10.4.0.0/14', '127.0.0.1']},
+                      backendIngress={'podSelectors': [{'aidash.run/edge': 'env'}]})
+        objects = render(self.aidash, values, 'app')
+        for role in ('server', 'worker'):
+            deployment = select(objects, 'Deployment', '-aidash-' + role)
+            self.assertEqual(deployment['metadata']['annotations'], {'aidash.run/source-sha': sha})
+            container = deployment['spec']['template']['spec']['containers'][0]
+            # The digest wins over the default tag.
+            self.assertEqual(container['image'], 'registry/app@sha256:' + 'c' * 64)
+            proxies = [variable.get('value') for variable in container['env'] if variable['name'] == 'AIDASH_AUTH_TRUSTED_PROXY_IPS']
+            self.assertEqual(proxies, ['10.4.0.0/14,127.0.0.1'] if role == 'server' else [])
+        # The runtime image serves the web bundle; nothing selects frontend Pods.
+        self.assertEqual(sorted(value['metadata']['name'] for value in objects if value['kind'] in ('Deployment', 'Service')),
+                         ['app-aidash-server', 'app-aidash-worker', 'app-backend'])
+        policy = select(objects, 'NetworkPolicy', '-backend')['spec']
+        backend = select(objects, 'Service', '-backend')['spec']['selector']
+        self.assertEqual(policy['podSelector']['matchLabels'], backend)
+        self.assertEqual(policy['ingress'], [{'from': [{'podSelector': {'matchLabels': {'aidash.run/edge': 'env'}}}],
+                                              'ports': [{'protocol': 'TCP', 'port': 8080}]}])
+        # An enabled frontend proxies to the backend, so it stays admitted.
+        policy = select(render(self.aidash, dict(values, frontend={'enabled': True}), 'app'), 'NetworkPolicy', '-backend')['spec']
+        self.assertIn({'podSelector': {'matchLabels': {'app.kubernetes.io/instance': 'app', 'app.kubernetes.io/component': 'frontend'}}},
+                      policy['ingress'][0]['from'])
+        defaults = render(self.aidash, self.base, 'app')
+        self.assertFalse(any(value['kind'] == 'NetworkPolicy' for value in defaults))
+        self.assertEqual(select(defaults, 'Deployment', '-aidash-server')['spec']['template']['spec']['containers'][0]['image'], 'aidash:0.1.0')
+        self.assertNotIn('annotations', select(defaults, 'Deployment', '-aidash-server')['metadata'])
+        self.assertEqual(select(defaults, 'Deployment', '-frontend')['spec']['replicas'], 1)
+        for invalid in ({'release': {'sourceSha': sha[:39]}}, {'release': {'sourceSha': sha.upper()}},
+                        {'image': {'repository': 'registry/app', 'digest': 'sha256:short'}}):
+            with self.subTest(values=invalid), self.assertRaises(subprocess.CalledProcessError):
+                render(self.aidash, dict(self.base, **invalid))
+
+    @staticmethod
+    def mounted(objects, role, variable):
+        """Content of the file an env variable names, through the Pod's mounts."""
+        pod = select(objects, 'Deployment', '-aidash-' + role)['spec']['template']['spec']
+        path = Path(next(item['value'] for item in pod['containers'][0]['env'] if item['name'] == variable))
+        mount = next(item for item in pod['containers'][0]['volumeMounts'] if Path(item['mountPath']) == path.parent)
+        volume = next(item for item in pod['volumes'] if item['name'] == mount['name'])
+        assert mount.get('readOnly'), mount
+        return select(objects, 'ConfigMap', volume['configMap']['name'])['data'][path.name]
+
+    def test_application_capability_profile_matches_the_runner_it_names(self):
+        execution = {'createNamespaces': True, 'sandboxImage': 'sandbox' + DIGEST,
+                     'sandboxNamespace': 'aidash-pr-1-sandbox', 'trustedNamespace': 'aidash-pr-1-trusted',
+                     'runtimeClass': {'create': True, 'name': 'aidash-gvisor-pr-1'},
+                     'runner': {'enabled': True, 'existingSecret': 'app-runner', 'image': 'control' + DIGEST},
+                     'guard': {'enabled': True, 'image': 'control' + DIGEST}}
+        values = dict(self.base, execution=execution)
+        objects = render(self.aidash, values, 'app', namespace='aidash-pr-1')
+        runner_profile = json.loads(select(objects, 'ConfigMap', '-execution-profile')['data']['profile.json'])
+        runner_container = select(objects, 'Deployment', '-execution-runner')['spec']['template']['spec']['containers'][0]
+        runner_token = next(item['valueFrom'] for item in runner_container['env'] if item['name'] == 'AIDASH_CORE_RUNNER_TOKEN')
+        service = select(objects, 'Service', '-execution-runner')
+        profiles = []
+        for role in ('server', 'worker'):
+            profile = json.loads(self.mounted(objects, role, 'AIDASH_CAPABILITY_PROFILE'))
+            profiles.append(profile)
+            container = select(objects, 'Deployment', '-aidash-' + role)['spec']['template']['spec']['containers'][0]
+            # The token the application presents is the one the Runner verifies.
+            token = next(item['valueFrom'] for item in container['env'] if item['name'] == profile['runner']['token_env'])
+            self.assertEqual(token, runner_token)
+            # Capability objects live on the retained claim.
+            mounts = {item['mountPath']: item['name'] for item in container['volumeMounts']}
+            self.assertEqual(mounts[profile['storage']], 'capabilities')
+        self.assertEqual(profiles[0], profiles[1])
+        profile = profiles[0]
+        # Exactly the Rust `Profile` fields (deny_unknown_fields): no Runner-only host_tasks.
+        self.assertEqual(set(profile), {'admission', 'storage', 'cpu', 'memory_bytes', 'processes', 'working_bytes',
+                                        'temporary_bytes', 'output_bytes', 'maximum_seconds', 'idle_seconds',
+                                        'operation_seconds', 'install_seconds', 'runner'})
+        self.assertIs(profile['admission'], True)
+        for key in set(profile) & set(runner_profile) - {'runner'}:
+            self.assertEqual(profile[key], runner_profile[key], key)
+        self.assertEqual(profile['runner'], {
+            'endpoint': 'http://%s:%d' % (service['metadata']['name'], service['spec']['ports'][0]['port']),
+            'token_env': 'AIDASH_CORE_RUNNER_TOKEN', 'image': runner_profile['runner']['image'],
+            'runtime_class': select(objects, 'RuntimeClass', '')['metadata']['name'],
+            'namespace': select(objects, 'Namespace', '-sandbox')['metadata']['name']})
+        # Operation and install limits never exceed the operation time limit.
+        short = render(self.aidash, dict(values, execution=dict(execution, limits={'maximum_seconds': 30})))
+        profile = json.loads(self.mounted(short, 'server', 'AIDASH_CAPABILITY_PROFILE'))
+        self.assertEqual((profile['operation_seconds'], profile['install_seconds'], profile['maximum_seconds']), (30, 30, 30))
+        # Admission without a retained object store would write to a read-only root.
+        with self.assertRaises(subprocess.CalledProcessError):
+            render(self.aidash, dict(values, capabilities={'storage': {'existingClaim': ''}}))
+        # Cluster-scoped objects of same-named releases in other Environments stay distinct.
+        other = dict(execution, sandboxNamespace='aidash-test-sandbox', trustedNamespace='aidash-test-trusted',
+                     runtimeClass={'create': True, 'name': 'aidash-gvisor-test'}, installer={'enabled': True, 'image': 'control' + DIGEST})
+        names = []
+        for namespace, environment in (('aidash-pr-1', dict(execution, installer=other['installer'])), ('aidash-test', other)):
+            rendered = render(self.aidash, dict(values, execution=environment, environment={'nodeSelector': {'pool': namespace}}),
+                              'app', namespace=namespace)
+            names.append({(value['kind'], value['metadata']['name']) for value in rendered
+                          if value['kind'] in ('ClusterRole', 'ClusterRoleBinding', 'RuntimeClass', 'Namespace')})
+        # Two ClusterRoles, two bindings, the RuntimeClass and two Namespaces.
+        self.assertEqual(len(names[0]), 7)
+        self.assertEqual(names[0] & names[1], set())
+
+    def test_managed_provider_and_gcip_settings_are_validated_and_mounted(self):
+        store = {'kind': 'secret_manager', 'byok_project_id': 'aidash-byok-1', 'environment_id': 'pr-1'}
+        broker = {'endpoint': 'https://broker.run.app/api/v1', 'issuer': 'aidash-worker', 'audience': 'pr-1', 'kid': 'k1'}
+        descriptor = {'fingerprint_key': {'env': 'AIDASH_PROVIDER_FINGERPRINT_KEY'}, 'store': store, 'broker': broker}
+        gcip = {'project_id': 'fixture', 'web_api_key': 'public', 'public_origin': 'https://pr-1.aidash.run',
+                'tenant_bindings': {'Pool-X': 'acme'}, 'session_idle_seconds': 3600}
+        values = dict(self.base, node={'id': 'aidash://fixture', 'endpoint': 'https://pr-1.aidash.run'},
+                      providerCredentials={'settings': descriptor}, gcip={'settings': {'dashboard': {'gcip': gcip}}})
+        objects = render(self.aidash, values)
+        for role in ('server', 'worker'):
+            self.assertEqual(json.loads(self.mounted(objects, role, 'AIDASH_PROVIDER_CREDENTIAL_SETTINGS')),
+                             {'provider_credentials': descriptor})
+            self.assertEqual(json.loads(self.mounted(objects, role, 'AIDASH_GCIP_SETTINGS')), {'dashboard': {'gcip': gcip}})
+        # A descriptor change restarts the Pods that read it at startup.
+        rotated = render(self.aidash, dict(values, providerCredentials={'settings': dict(descriptor, broker=dict(broker, kid='k2'))}))
+
+        def checksum(rendered):
+            return select(rendered, 'Deployment', '-aidash-server')['spec']['template']['metadata']['annotations']['checksum/settings']
+
+        self.assertNotEqual(checksum(objects), checksum(rotated))
+        # The all-null descriptor is rendered as an explicit "no managed Store".
+        disabled = {'fingerprint_key': None, 'store': None, 'broker': None}
+        rendered = render(self.aidash, dict(self.base, providerCredentials={'settings': disabled}))
+        self.assertEqual(json.loads(self.mounted(rendered, 'server', 'AIDASH_PROVIDER_CREDENTIAL_SETTINGS')),
+                         {'provider_credentials': disabled})
+        # Unset settings add nothing.
+        names = [item['name'] for item in select(render(self.aidash, self.base), 'Deployment', '-aidash-server')
+                 ['spec']['template']['spec']['containers'][0]['env']]
+        self.assertFalse({'AIDASH_PROVIDER_CREDENTIAL_SETTINGS', 'AIDASH_GCIP_SETTINGS'} & set(names))
+        invalid_descriptors = [
+            dict(descriptor, extra=None),
+            dict(descriptor, store=dict(store, kind='postgres')),
+            dict(descriptor, store=dict(store, environment_id='production')),
+            dict(descriptor, store=dict(store, byok_project_id='Bad_Project')),
+            dict(descriptor, store=dict(store, master_key={'env': 'KEY'})),
+            dict(descriptor, fingerprint_key={'file': '/key'}),
+            dict(descriptor, broker=dict(broker, audience='develop')),
+            dict(descriptor, broker=dict(broker, kid='')),
+            dict(disabled, broker=broker),
+            dict(disabled, fingerprint_key={'env': 'AIDASH_PROVIDER_FINGERPRINT_KEY'}),
+        ]
+        for invalid in invalid_descriptors:
+            with self.subTest(descriptor=invalid), self.assertRaises(subprocess.CalledProcessError):
+                render(self.aidash, dict(values, providerCredentials={'settings': invalid}))
+        invalid_gcip = [
+            {'dashboard': {'gcip': dict(gcip, public_origin='https://other.aidash.run')}},
+            {'dashboard': {'gcip': dict(gcip, arbitrary='value')}},
+            {'dashboard': {'gcip': dict(gcip, web_api_key=' ')}},
+            {'dashboard': {'gcip': gcip, 'oidc': {}}},
+            {'dashboard': {'gcip': gcip}, 'node': {'api_token': 'override'}},
+        ]
+        for invalid in invalid_gcip:
+            with self.subTest(gcip=invalid), self.assertRaises(subprocess.CalledProcessError):
+                render(self.aidash, dict(values, gcip={'settings': invalid}))
+        # The public origin is the node's own endpoint, so an unset endpoint is refused.
+        with self.assertRaises(subprocess.CalledProcessError):
+            render(self.aidash, dict(values, node={'id': 'aidash://fixture'}))
 
     def test_execution_privileges_scheduling_and_independent_trusted_images(self):
         execution = {'createNamespaces': True, 'sandboxImage': 'sandbox@sha256:' + 'a' * 64,
@@ -133,7 +311,7 @@ class ChartsTest(unittest.TestCase):
         self.assertEqual(runner['spec']['replicas'], 1)
         self.assertEqual(runner['spec']['strategy']['type'], 'Recreate')
         self.assertEqual(runner['spec']['template']['spec']['containers'][0]['image'], 'trusted-runner' + DIGEST)
-        profile = json.loads(select(objects, 'ConfigMap', '-profile')['data']['profile.json'])
+        profile = json.loads(select(objects, 'ConfigMap', '-execution-profile')['data']['profile.json'])
         self.assertEqual(profile['processes'], 128)
         self.assertEqual(profile['host_tasks'], 512)
         self.assertNotIn('kubeconfig', profile['runner'])
@@ -265,19 +443,33 @@ class ChartsTest(unittest.TestCase):
             render(self.aidash, dict(values, execution=dict(base, installer=installer, paths={'runsc': '/opt/bin/runsc'})))
 
     def test_gcp_persistence_local_lb_private_admission_and_activity(self):
-        objects = render(self.environment, {'postgres': POSTGRES,
+        values = {'postgres': POSTGRES,
             'edge': {'hostname': 'fixture.example', 'admissionImage': 'admission' + DIGEST},
             'activity': {'existingSecret': 'observer', 'observerImage': 'observer' + DIGEST,
-                         'collectorImage': 'collector' + DIGEST}, 'storage': {'createClass': True},
-            'previewTls': {'createVolume': True, 'volumeHandle': 'projects/fixture/zones/us-central1-a/disks/preview'}})
-        self.assertEqual(select(objects, 'StorageClass', 'retain')['reclaimPolicy'], 'Retain')
+                         'collectorImage': 'collector' + DIGEST}}
+        objects = render(self.environment, values)
+        # Releases share one cluster; StorageClass and the preview TLS PV are controller-owned.
+        cluster_scoped = ('StorageClass', 'PersistentVolume', 'Namespace', 'ClusterRole', 'ClusterRoleBinding')
+        self.assertEqual([value['kind'] for value in objects if value['kind'] in cluster_scoped], [])
         for role in ('postgres', 'nats'):
             state = select(objects, 'StatefulSet', '-' + role)['spec']
             self.assertEqual(state['replicas'], 1)
             self.assertEqual(state['persistentVolumeClaimRetentionPolicy'], {'whenDeleted': 'Retain', 'whenScaled': 'Retain'})
             self.assertEqual(state['volumeClaimTemplates'][0]['spec']['accessModes'], ['ReadWriteOnce'])
-        pv = select(objects, 'PersistentVolume', 'preview-tls')
-        self.assertEqual(pv['spec']['persistentVolumeReclaimPolicy'], 'Retain')
+            self.assertEqual(state['volumeClaimTemplates'][0]['spec']['storageClassName'], 'aidash-retain')
+        # The controller's migration Job reaches the dependencies alongside server and worker.
+        sources = select(objects, 'NetworkPolicy', '-dependencies')['spec']['ingress'][0]['from']
+        components = next(source['podSelector']['matchExpressions'][0]['values'] for source in sources
+                          if 'matchExpressions' in source['podSelector'])
+        self.assertEqual(components, ['server', 'worker', 'migration'])
+        # A preview edge mounts the controller-bound shared TLS claim instead of its own.
+        own = select(objects, 'PersistentVolumeClaim', '-tls')
+        self.assertEqual(own['metadata']['annotations'], {'helm.sh/resource-policy': 'keep'})
+        preview = render(self.environment, dict(values, edge=dict(values['edge'], existingTlsClaim='preview-tls')))
+        self.assertFalse(any(value['kind'] == 'PersistentVolumeClaim' for value in preview))
+        tls = next(volume for volume in select(preview, 'Deployment', '-edge')['spec']['template']['spec']['volumes']
+                   if volume['name'] == 'tls')
+        self.assertEqual(tls['persistentVolumeClaim']['claimName'], 'preview-tls')
         service = select(objects, 'Service', '-edge')
         self.assertEqual(service['spec']['externalTrafficPolicy'], 'Local')
         self.assertEqual([port['port'] for port in service['spec']['ports']], [80, 443])
@@ -311,19 +503,14 @@ class ChartsTest(unittest.TestCase):
                 self.assertIn({'podSelector': {'matchLabels': {'aidash.run/activity': release}}},
                               policy['ingress'][0]['from'])
         # A release namespace that YAML would read as a boolean stays a string too.
-        preview = dict(values, previewTls={'createVolume': True, 'volumeHandle': 'projects/f/zones/z/disks/d'})
-        objects = render(self.environment, preview, namespace='true')
+        objects = render(self.environment, values, namespace='true')
         binding = select(objects, 'RoleBinding', '-activity')
         self.assertEqual([subject['namespace'] for subject in binding['subjects']], ['true'])
-        self.assertEqual(select(objects, 'PersistentVolume', '')['spec']['claimRef']['namespace'], 'true')
-        # Configurable Secret, StorageClass and preview volume names stay strings too.
-        names = dict(preview, postgres=dict(POSTGRES, existingSecret='true'),
+        # Configurable Secret and StorageClass names stay strings too.
+        names = dict(values, postgres=dict(POSTGRES, existingSecret='true'),
                      activity=dict(values['activity'], existingSecret='null'),
-                     storage={'createClass': True, 'className': 'true', 'type': 'null'},
-                     previewTls=dict(preview['previewTls'], volumeName='true', claimName='null', zone='true'))
+                     storage={'className': 'true'})
         objects = render(self.environment, names)
-        self.assertEqual(select(objects, 'StorageClass', '')['metadata']['name'], 'true')
-        self.assertEqual(select(objects, 'StorageClass', '')['parameters'], {'type': 'null'})
         postgres = select(objects, 'StatefulSet', '-postgres')['spec']
         self.assertEqual(postgres['template']['spec']['containers'][0]['envFrom'], [{'secretRef': {'name': 'true'}}])
         self.assertEqual(postgres['volumeClaimTemplates'][0]['spec']['storageClassName'], 'true')
@@ -333,10 +520,6 @@ class ChartsTest(unittest.TestCase):
                       for container in collector['initContainers'] + collector['containers']
                       for variable in container.get('env', []) if 'secretKeyRef' in variable.get('valueFrom', {})]
         self.assertEqual(set(references), {'null'})
-        volume = select(objects, 'PersistentVolume', '')
-        self.assertEqual((volume['metadata']['name'], volume['spec']['claimRef']['name']), ('true', 'null'))
-        zones = volume['spec']['nodeAffinity']['required']['nodeSelectorTerms'][0]['matchExpressions'][0]['values']
-        self.assertEqual(zones, ['true'])
         admission = next(value['data']['admission.conf'] for value in render(self.environment, values)
                          if value['kind'] == 'ConfigMap' and 'admission.conf' in value.get('data', {}))
         logs = [line.strip() for line in admission.splitlines() if line.strip().startswith('access_log')]

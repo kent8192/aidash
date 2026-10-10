@@ -1,14 +1,15 @@
 # GCP Environment dependencies
 
-This chart is the GCP-only companion to `deploy/helm/aidash`. It renders one
-PostgreSQL 17 StatefulSet using the existing `deploy/postgres/Dockerfile` image
-with pgvector, PGroonga and pg_jsonschema; one NATS JetStream StatefulSet; one
-Caddy plus Nginx/Lua edge Deployment; and a minute activity CronJob. It does not
-create a GKE cluster, disks through cloud APIs, IAM grants, DNS, or lifecycle
-controller actions. Those are Phase 4 integration work.
+This chart is the GCP-only companion to `deploy/helm/aidash`. The lifecycle
+controller installs it as release `env` in each Environment's `aidash-<id>`
+namespace, from the trusted checkout. It renders one PostgreSQL 17 StatefulSet
+using the existing `deploy/postgres/Dockerfile` image with pgvector, PGroonga and
+pg_jsonschema; one NATS JetStream StatefulSet; one Caddy plus Nginx/Lua edge
+Deployment; and a minute activity CronJob. It creates no cluster-scoped objects,
+cloud disks, IAM grants or DNS records.
 
-Install a single shared `storage.createClass=true` class, or reference an
-existing class that uses reclaim `Retain` and `WaitForFirstConsumer`. The chart
+`storage.className` (default `aidash-retain`) names the cluster-wide class with
+reclaim `Retain` and `WaitForFirstConsumer`; the controller ensures it. The chart
 keeps claims and uses StatefulSet claim-retention policies for both scale-down
 and deletion. Server, worker, Runner journal, application objects and Home ledger
 claims are separately provisioned; never restore the ledger from a DB backup.
@@ -23,7 +24,7 @@ Build `edge.Dockerfile` from the trusted ref for Nginx/Lua, and use the same tru
 ref for chart files, the observer, activity collector, Runner, guard and installer.
 Their trust boundary is independent of any deployed fork PR source.
 
-Set `edge.hostname` and `edge.backend` (normally `<aidash-release>-backend`).
+Set `edge.hostname` and `edge.backend` (normally `<aidash-release>-backend`, e.g. `app-backend`).
 The release name is limited to 31 characters: generated names add up to 21
 (`-environment-postgres`), and StatefulSet and CronJob names must leave 11 of
 63 characters for their controller-generated suffixes.
@@ -34,18 +35,17 @@ is on a kept ReadWriteOnce claim. Nginx starts with admission closed; the truste
 controller opens it only after dependencies, migrations and execution admission
 are verified. The internal activity Service exposes port 8089. NetworkPolicy
 permits that port only from the activity collector in this namespace; the
-controller uses authenticated Kubernetes API port-forward for seal/unseal.
+controller seals and unseals through
+`kubectl exec deploy/env-environment-edge -c admission -- curl -fsS -X POST http://127.0.0.1:8089/admission/{close,open}`,
+which is why the trusted edge image includes `curl`.
 PostgreSQL and NATS accept only same-namespace server/worker and observer traffic.
 
-For shared preview TLS, render `previewTls.createVolume=true` once, with the
-existing disk's CSI `volumeHandle`, zone, claim name and claim namespace. The
-static PV has `Retain` and is kept across chart uninstall. The trusted controller
-must create/bind its explicit `storageClassName: ""`, `volumeName` PVC and rebind
-it to the next active pr-N namespace only after the previous edge is stopped and
-its attachment is gone. Set `edge.existingTlsClaim` to that claim. Never let Helm
-uninstall or a preview switch delete the shared TLS disk. Rebinding belongs to
-the gated lifecycle controller; this chart does not guess ownership or detach a
-live claim.
+Preview TLS uses the existing `aidash-preview-tls` disk as one static `Retain`
+PersistentVolume. The controller owns that PV and its `preview-tls` claim, and
+rebinds it to the next active pr-N namespace only after the previous edge has no
+Pods and no VolumeAttachment for it. Set `edge.existingTlsClaim: preview-tls`
+for previews; otherwise the chart creates its own kept TLS claim. This chart never
+renders the PV, so Helm uninstall cannot delete the shared TLS disk.
 
 `activity.observerImage`, `activity.collectorImage`, `edge.admissionImage`,
 `edge.caddyImage`, `postgres.image` and `nats.image` hold the database credential,
@@ -83,10 +83,10 @@ static-disk rebinding and IAM verification require later cloud approval.
 ```sh
 # images.yaml sets the digest-pinned postgres.image, edge.admissionImage,
 # activity.observerImage and activity.collectorImage.
-helm lint infra/gcp/helm/environment -f images.yaml --set postgres.existingSecret=db \
-  --set edge.hostname=develop.example --set activity.existingSecret=observer
-helm template develop infra/gcp/helm/environment --namespace develop -f images.yaml \
-  --set postgres.existingSecret=db --set edge.hostname=develop.example \
-  --set edge.backend=develop-backend --set activity.existingSecret=observer \
-  --set activity.runnerEndpoint=http://develop-execution-runner:8949
+helm lint infra/gcp/helm/environment -f images.yaml --set postgres.existingSecret=env-postgres \
+  --set edge.hostname=develop.example --set activity.existingSecret=env-activity
+helm template env infra/gcp/helm/environment --namespace aidash-develop -f images.yaml \
+  --set postgres.existingSecret=env-postgres --set edge.hostname=develop.example \
+  --set edge.backend=app-backend --set activity.existingSecret=env-activity \
+  --set activity.runnerEndpoint=http://app-execution-runner:8949
 ```

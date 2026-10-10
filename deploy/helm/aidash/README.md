@@ -1,8 +1,14 @@
 # Aidash chart
 
-The default chart runs the server, worker and frontend. Provision role Secrets,
-PostgreSQL, JetStream, and an independently retained and initialized Home recovery
-ledger before enabling native memory. See [orchestration](../../../docs/orchestration.md).
+The default chart runs the server, worker and frontend. Set `frontend.enabled:
+false` when the application image serves the web bundle itself. Provision role
+Secrets, PostgreSQL, JetStream, and an independently retained and initialized
+Home recovery ledger before enabling native memory. See [orchestration](../../../docs/orchestration.md).
+
+`image.digest` (`sha256:<hex>`) pins server and worker to
+`<repository>@<digest>` and takes precedence over `image.tag`. `release.sourceSha`
+(40 hex characters) annotates both Deployments with `aidash.run/source-sha`, so a
+controller can tie a completed rollout to the deployed commit.
 
 Server and worker have separate Kubernetes ServiceAccounts. Set
 `server.serviceAccount.annotations` and `worker.serviceAccount.annotations` to
@@ -12,12 +18,34 @@ in `environment.nodeSelector` and `environment.tolerations`; no Pod uses
 `hostNetwork`. The default loss tolerations are 30 seconds. Disk detach/reattach
 still determines recovery time.
 
-With `memoryRecovery.existingClaim`, required Pod affinity puts every server and
-worker on the same Cluster Node. The selector includes both roles and each Pod
-itself, allowing the first Pod to bootstrap the group. Both Deployments use
-`Recreate` so a replacement does not surge onto a second machine with the shared
-ReadWriteOnce ledger. This profile pauses during replacement and disk recovery.
-Keep any additional affinity compatible with this placement.
+With `memoryRecovery.existingClaim` or `capabilities.storage.existingClaim`,
+required Pod affinity puts every server and worker on the same Cluster Node. The
+selector includes both roles and each Pod itself, allowing the first Pod to
+bootstrap the group. Both Deployments use `Recreate` so a replacement does not
+surge onto a second machine with a shared ReadWriteOnce claim. This profile pauses
+during replacement and disk recovery. Keep any additional affinity compatible
+with this placement. `capabilities.storage.existingClaim` is mounted at
+`/var/lib/aidash/capabilities`, the capability object store.
+
+## Edge, settings and network
+
+`trustedProxy.cidrs` sets the server's `AIDASH_AUTH_TRUSTED_PROXY_IPS`: socket
+peers, given as exact IPs or CIDR networks such as the cluster Pod range, that may
+supply a single `X-Real-IP`. Pair it with `backendIngress.podSelectors`, which
+renders a NetworkPolicy so that only the listed same-namespace Pods (for example
+`{aidash.run/edge: env}`) and this release's frontend reach the server on 8080;
+any other Pod in that range then cannot claim a client address.
+
+`providerCredentials.settings` takes the managed Provider Credential descriptor
+`{fingerprint_key, store, broker}`, never key material. The chart validates it
+(a Secret Manager Store with its BYOK project and Environment, the fingerprint key
+referenced as `AIDASH_PROVIDER_FINGERPRINT_KEY`, and a broker whose audience is
+that Environment), renders `{"provider_credentials": ...}` into a ConfigMap and
+points `AIDASH_PROVIDER_CREDENTIAL_SETTINGS` at it. Pass the all-null descriptor
+to override file settings with "no managed Store"; `null` renders nothing.
+`gcip.settings` takes `{dashboard: {gcip: {...}}}` with only the managed public
+GCIP keys; its `public_origin` must equal `node.endpoint`. It is rendered the same
+way for `AIDASH_GCIP_SETTINGS`. Changing either restarts server and worker.
 
 ## Optional execution components
 
@@ -75,7 +103,10 @@ custom `execution.paths.runsc` or `gvisorBin` while it is enabled.
 
 The release gets three separate namespaces: the application release namespace,
 `<release>-sandbox` (Pod Security `restricted`), and `<release>-guard` (trusted
-privileged DaemonSets only). Names can be overridden but must remain distinct.
+privileged DaemonSets only). Names can be overridden but must remain distinct;
+when several Environments use the same release name, set distinct namespace and
+RuntimeClass names. The installer and runtime ClusterRoles and their bindings are
+named `<release namespace>-<release>-execution-*`, so they never collide.
 The trusted namespace must contain only the guard and installer; never schedule
 workloads from the deployed source there. Kubernetes RBAC cannot constrain exec
 to DaemonSet-generated Pod names by label, so its namespace is the boundary.
@@ -89,11 +120,16 @@ requires Kubernetes 1.34 or later, because Execution Pods set pod-level
 Set `execution.runner.journal.existingClaim` to reuse a retained journal, or
 provide a storage class and size for its kept claim. Use a class with reclaim
 `Retain` on GCP. Supply its bearer token using `execution.runner.existingSecret`
-and `execution.runner.tokenKey`; never put it in Helm values. Configure the
-application's own capability profile with the same guest/resource limits and
-the `<release>-execution-runner:8949` endpoint. The chart's Runner profile does
-not provision the application's retained object store or change its admission
-configuration; those remain operator-provisioned state.
+and `execution.runner.tokenKey`; never put it in Helm values.
+
+With the Runner enabled the chart also renders the application's capability
+profile (`<release>-aidash-capability-profile`) and points server and worker at it
+through `AIDASH_CAPABILITY_PROFILE`, with `admission: true`. It shares the Runner's
+guest/resource limits (without the Runner-only `host_tasks`), stores objects in
+`capabilities.storage.existingClaim` (required), caps the operation and install
+limits at `maximum_seconds`, and names the `<release>-execution-runner:8949`
+endpoint, Execution Pod image, RuntimeClass and sandbox namespace. Server and
+worker read `AIDASH_CORE_RUNNER_TOKEN` from the Runner's own Secret key.
 
 The profile keeps guest `processes=128` (16 to 4096, the application capability
 profile's range) and separate `host_tasks=512`.

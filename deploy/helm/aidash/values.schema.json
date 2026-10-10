@@ -205,8 +205,58 @@
       "properties": {
         "repository": { "type": "string", "minLength": 1 },
         "tag": { "type": "string", "minLength": 1 },
+        "digest": { "type": "string", "pattern": "^(sha256:[0-9a-f]{64})?$" },
         "pullPolicy": { "enum": ["Always", "IfNotPresent", "Never"] }
       }
+    },
+    "release": {
+      "type": "object",
+      "properties": {
+        "sourceSha": { "type": "string", "pattern": "^([0-9a-f]{40})?$" }
+      }
+    },
+    "capabilities": {
+      "type": "object",
+      "properties": {
+        "storage": {
+          "type": "object",
+          "properties": { "existingClaim": { "type": "string" } }
+        }
+      }
+    },
+    "trustedProxy": {
+      "type": "object",
+      "properties": {
+        "cidrs": {
+          "description": "Exact IPs or CIDR networks, for AIDASH_AUTH_TRUSTED_PROXY_IPS.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9A-Fa-f:.]+(/[0-9]{1,3})?$"
+          }
+        }
+      }
+    },
+    "backendIngress": {
+      "type": "object",
+      "properties": {
+        "podSelectors": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "minProperties": 1,
+            "additionalProperties": { "type": "string" }
+          }
+        }
+      }
+    },
+    "providerCredentials": {
+      "type": "object",
+      "properties": { "settings": { "type": ["object", "null"] } }
+    },
+    "gcip": {
+      "type": "object",
+      "properties": { "settings": { "type": ["object", "null"] } }
     },
     "server": { "$ref": "#/definitions/role" },
     "worker": {
@@ -225,6 +275,7 @@
       "type": "object",
       "required": ["replicas", "image", "resources"],
       "properties": {
+        "enabled": { "type": "boolean" },
         "replicas": { "type": "integer", "minimum": 0 },
         "image": { "$ref": "#/definitions/image" },
         "resources": {

@@ -1,8 +1,10 @@
 {{- $e := .Values.execution -}}
 {{- $name := printf "%s-execution" .Release.Name -}}
-{{- $sandbox := $e.sandboxNamespace | default (printf "%s-sandbox" .Release.Name) -}}
+{{- /* Cluster-scoped objects: releases of the same name in other namespaces must not collide. */ -}}
+{{- $cluster := printf "%s-%s-execution" .Release.Namespace .Release.Name -}}
+{{- $sandbox := include "aidash.sandboxNamespace" . -}}
 {{- $trusted := $e.trustedNamespace | default (printf "%s-guard" .Release.Name) -}}
-{{- $runtime := $e.runtimeClass.name | default (printf "%s-runsc" .Release.Name) -}}
+{{- $runtime := include "aidash.runtimeClassName" . -}}
 {{- $selector := mergeOverwrite (deepCopy .Values.nodeSelector) .Values.environment.nodeSelector -}}
 {{- $tolerations := concat .Values.tolerations .Values.environment.tolerations -}}
 {{- $guardState := $e.paths.guardState | default (printf "/var/lib/aidash-node-guard/%s" .Release.Name) -}}
@@ -73,7 +75,7 @@ metadata:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: {{ $name }}-installer
+  name: {{ $cluster }}-installer
 rules:
   - apiGroups: [""]
     resources: [nodes]
@@ -82,10 +84,10 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: {{ $name }}-installer
+  name: {{ $cluster }}-installer
 subjects:
   - { kind: ServiceAccount, name: {{ $name }}-installer, namespace: {{ $trusted | quote }} }
-roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: {{ $name }}-installer }
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: {{ $cluster }}-installer }
 ---
 apiVersion: apps/v1
 kind: DaemonSet
@@ -198,6 +200,7 @@ spec:
 {{- $image := required "execution.sandboxImage must be digest pinned" $e.sandboxImage -}}
 {{- if not (regexMatch "@sha256:[0-9a-f]{64}$" $image) -}}{{ fail "execution.sandboxImage must be digest pinned" }}{{- end }}
 {{- $secret := required "execution.runner.existingSecret is required" $e.runner.existingSecret }}
+{{- $_ := required "execution.runner requires capabilities.storage.existingClaim: the application capability profile keeps its objects there" .Values.capabilities.storage.existingClaim }}
 ---
 apiVersion: v1
 kind: ServiceAccount
@@ -250,7 +253,7 @@ roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: {{ $name }}-{{
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: {{ $name }}-runtime
+  name: {{ $cluster }}-runtime
 rules:
   - apiGroups: [node.k8s.io]
     resources: [runtimeclasses]
@@ -260,10 +263,10 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: {{ $name }}-runtime
+  name: {{ $cluster }}-runtime
 subjects:
   - { kind: ServiceAccount, name: {{ $name }}-runner, namespace: {{ .Release.Namespace | quote }} }
-roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: {{ $name }}-runtime }
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: {{ $cluster }}-runtime }
 {{- if not $e.runner.journal.existingClaim }}
 ---
 apiVersion: v1

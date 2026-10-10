@@ -13,11 +13,8 @@ tolerations:
       tolerationSeconds: 30,
     }
 storage:
-  # Install once per shared cluster; later releases reference the same class.
-  createClass: false
+  # Cluster-wide Retain/WaitForFirstConsumer class ensured by the lifecycle controller.
   className: aidash-retain
-  provisioner: pd.csi.storage.gke.io
-  type: pd-balanced
 postgres:
   # Build deploy/postgres/Dockerfile (runtime target); includes all three extensions.
   # Runs with the retained database volume and its full Secret, so it must end in
@@ -45,21 +42,12 @@ edge:
   # Must end in @sha256:<digest>; the chart refuses mutable tags for trusted images.
   admissionImage: aidash-edge-admission:0.1.0
   tlsSize: 2Gi
-  # Existing claim is for the retained static preview TLS PV.
+  # Preview only: the controller-bound claim of the shared static TLS PV.
   existingTlsClaim: ""
   loadBalancer: true
   resources:
     requests: { cpu: 50m, memory: 64Mi }
     limits: { cpu: "1", memory: 256Mi }
-previewTls:
-  createVolume: false
-  # One cluster-scoped PV; never delete it on a release uninstall.
-  volumeName: aidash-preview-tls
-  volumeHandle: ""
-  claimName: preview-tls
-  claimNamespace: ""
-  zone: us-central1-a
-  size: 2Gi
 activity:
   enabled: true
   # Must end in @sha256:<digest>; the chart refuses mutable tags for trusted images.

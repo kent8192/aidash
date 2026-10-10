@@ -1,12 +1,17 @@
 image:
   repository: aidash
   tag: "0.1.0"
+  # sha256:<hex>; when set, server and worker run repository@digest and tag is ignored.
+  digest: ""
   pullPolicy: IfNotPresent
   pullSecrets: []
 node:
   id: ""
   # Stable federation URL; defaults to the internal backend Service.
   endpoint: ""
+release:
+  # Deployed commit; annotates the server/worker Deployments as aidash.run/source-sha.
+  sourceSha: ""
 # Provision separately: DATABASE_URL, NATS_URL, AIDASH_API_TOKEN and provider/
 # pair-specific AIDASH_SECRET_* variables. For a postgres Provider Credential Store,
 # include AIDASH_PROVIDER_STORE_MASTER_KEY and AIDASH_PROVIDER_FINGERPRINT_KEY.
@@ -20,6 +25,27 @@ memoryRecovery:
   directory: /var/lib/aidash/memory-recovery
   # Select the initialized Home directory when it is a child of the claim root.
   subPath: ""
+capabilities:
+  storage:
+    # Retained RWO claim for capability objects, mounted at
+    # /var/lib/aidash/capabilities in server and worker. Required with the Runner.
+    existingClaim: ""
+# Socket peers (IPs or CIDRs) allowed to supply X-Real-IP, e.g. the edge Pod CIDR.
+trustedProxy:
+  cidrs: []
+# When set, a NetworkPolicy admits backend :8080 only from these same-namespace
+# Pod label sets (plus this release's frontend when enabled).
+backendIngress:
+  podSelectors: []
+# Managed Provider Credential descriptor {fingerprint_key, store, broker}; null
+# renders nothing. Rendered as {"provider_credentials": ...} for
+# AIDASH_PROVIDER_CREDENTIAL_SETTINGS. Never key material.
+providerCredentials:
+  settings: null
+# Managed public GCIP fragment {dashboard: {gcip: {...}}} for AIDASH_GCIP_SETTINGS;
+# public_origin must equal node.endpoint. null renders nothing.
+gcip:
+  settings: null
 server:
   serviceAccount:
     annotations: {}
@@ -42,6 +68,8 @@ worker:
     requests: { cpu: 100m, memory: 128Mi }
     limits: { cpu: "2", memory: 1Gi }
 frontend:
+  # Disable when the application image serves the web bundle itself.
+  enabled: true
   replicas: 1
   image:
     repository: aidash-frontend

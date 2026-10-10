@@ -81,8 +81,10 @@ nodes:
         secret = {'apiVersion': 'v1', 'kind': 'Secret', 'metadata': {'name': 'runner', 'namespace': namespace},
                   'stringData': {'AIDASH_CORE_RUNNER_TOKEN': token}}
         run(kube + ['create', '-f', '-'], json.dumps(secret).encode())
+        # Server and worker stay at zero replicas, so the capability claim is never bound.
         values = {'node': {'id': 'aidash://execution-chart-test'}, 'existingSecret': 'runner',
                   'server': {'replicas': 0}, 'worker': {'replicas': 0}, 'frontend': {'replicas': 0},
+                  'capabilities': {'storage': {'existingClaim': 'capability-objects'}},
                   'environment': {'nodeSelector': {'aidash.run/local-test': args.name}},
                   'execution': {'createNamespaces': True, 'runtimeClass': {'create': True},
                                 'paths': {'ctr': ctr},

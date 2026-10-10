@@ -1,9 +1,9 @@
 {{- define "aidash.affinity" -}}
 {{- $affinity := deepCopy .Values.affinity -}}
-{{- if .Values.memoryRecovery.existingClaim -}}
+{{- if or .Values.memoryRecovery.existingClaim .Values.capabilities.storage.existingClaim -}}
 {{- $pod := get $affinity "podAffinity" | default dict -}}
 {{- $terms := get $pod "requiredDuringSchedulingIgnoredDuringExecution" | default list -}}
-{{- $term := dict "topologyKey" "kubernetes.io/hostname" "labelSelector" (dict "matchLabels" (dict "app.kubernetes.io/instance" .Release.Name "aidash.run/home-ledger" "true")) -}}
+{{- $term := dict "topologyKey" "kubernetes.io/hostname" "labelSelector" (dict "matchLabels" (dict "app.kubernetes.io/instance" .Release.Name "aidash.run/co-located" "true")) -}}
 {{- $_ := set $pod "requiredDuringSchedulingIgnoredDuringExecution" (append $terms $term) -}}
 {{- $_ := set $affinity "podAffinity" $pod -}}
 {{- end -}}
