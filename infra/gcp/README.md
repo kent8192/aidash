@@ -244,8 +244,10 @@ an install whose outcome is unknown.
 
 ## Idle stop, updates and failure recovery
 
-The proxy counts admitted login/submission/save/execution requests, including
-in-flight writes not yet visible in PostgreSQL. Polling, health checks, reading,
+The proxy counts admitted sign-in/submission/save/execution requests, including
+in-flight writes not yet visible in PostgreSQL, and the dashboard's pointer or
+keyboard interaction heartbeat (`POST /auth/activity`, at most every 15 seconds).
+Polling, session checks, token refresh, logout, health checks, reading,
 scrolling and unsent drafts do not renew the deadline. A host timer samples
 durable work every minute. The read-only observer covers Runs, leases, capability
 operations, verification, generation, transactions and active transfers; Runner

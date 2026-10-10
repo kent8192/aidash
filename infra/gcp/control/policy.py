@@ -192,8 +192,15 @@ def meaningful_request(method, path, status):
     # The access log contains $uri, never a query string, cookie, or request body.
     if not 200 <= status < 400:
         return False
+    # Sign-in steps and the dashboard's interaction heartbeat are user intent;
+    # session/config polling, token refresh and logout are not. The edge Lua
+    # predicates (runtime/nginx.conf, helm/environment/files/admission.conf) match.
     if method == "GET":
-        return path in {"/auth/login", "/auth/callback"}
+        return bool(re.fullmatch(r"/auth/(login|callback|gcip/transaction|desktop/authorize)", path))
+    if method == "POST" and re.fullmatch(
+        r"/auth/(activity|registration|gcip/exchange|desktop/(start|authorize|exchange))", path
+    ):
+        return True
     if method not in {"POST", "PUT", "PATCH", "DELETE"} or not path.startswith(
         ("/api/", "/federation/v0.1/")
     ):

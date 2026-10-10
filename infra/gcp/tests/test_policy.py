@@ -154,6 +154,12 @@ class LifecycleTests(unittest.TestCase):
         for method, path in [
             ("GET", "/api/state"),
             ("GET", "/auth/session"),
+            ("GET", "/auth/config"),
+            ("GET", "/auth/registration"),
+            ("POST", "/auth/desktop/refresh"),
+            ("POST", "/auth/logout"),
+            ("POST", "/auth/backchannel-logout"),
+            ("POST", "/auth/activity/extra"),
             ("GET", "/health"),
             ("POST", "/api/runs/id/shell/poll"),
             ("POST", "/api/runs/id/python/poll"),
@@ -168,6 +174,11 @@ class LifecycleTests(unittest.TestCase):
             self.assertFalse(meaningful_request(method, path, 200))
         for method, path in [
             ("GET", "/auth/callback"),
+            ("GET", "/auth/gcip/transaction"),
+            ("POST", "/auth/activity"),
+            ("POST", "/auth/registration"),
+            ("POST", "/auth/gcip/exchange"),
+            ("POST", "/auth/desktop/authorize"),
             ("POST", "/api/runs/id/python"),
             ("PATCH", "/api/tasks/id"),
             ("POST", "/federation/v0.1/scoped/files/commit"),
@@ -175,6 +186,20 @@ class LifecycleTests(unittest.TestCase):
         ]:
             self.assertTrue(meaningful_request(method, path, 200))
         self.assertFalse(meaningful_request("POST", "/api/tasks", 401))
+        self.assertFalse(meaningful_request("POST", "/auth/activity", 401))
+
+    def test_vm_and_cluster_edges_share_the_request_predicate(self):
+        root = Path(__file__).resolve().parents[1]
+
+        def predicate(path):
+            text = path.read_text()
+            start = text.index("access_by_lua_block")
+            return text[start : text.index("proxy_pass", start)]
+
+        self.assertEqual(
+            predicate(root / "runtime/nginx.conf"),
+            predicate(root / "helm/environment/files/admission.conf"),
+        )
 
     def test_unknown_or_old_observation_defers_shutdown(self):
         value = dict(

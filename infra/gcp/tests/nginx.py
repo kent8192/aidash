@@ -181,8 +181,24 @@ def inside():
             call("/admission/open", b"", port=8089)
         finally:
             client.close()
+        # Session polling stays idle; the dashboard's interaction heartbeat renews.
+        # The log phase decrements in-flight before it records last_active, so let
+        # the preceding request's log phase finish before taking the baseline.
+        wait_inflight(0)
+        time.sleep(0.2)
+        before = activity()["last_active"]
+        call("/auth/session")
+        time.sleep(0.2)
+        assert activity()["last_active"] == before
+        call("/auth/activity", b"")
+        for _ in range(50):
+            if activity()["last_active"] > before:
+                break
+            time.sleep(0.1)
+        else:
+            raise AssertionError("dashboard heartbeat did not renew activity")
         print(
-            "Caddy/Nginx: client IPs preserved and spoofed headers replaced; polling excluded; API/federation writes and slow bodies counted; admission closed and reopened"
+            "Caddy/Nginx: client IPs preserved and spoofed headers replaced; polling excluded; API/federation writes, heartbeats and slow bodies counted; admission closed and reopened"
         )
     finally:
         print(Path("/var/log/nginx/error.log").read_text()[-2000:])

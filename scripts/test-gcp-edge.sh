@@ -7,6 +7,8 @@ docker build -f infra/gcp/helm/environment/edge.Dockerfile -t "$image" infra/gcp
 docker run --rm --network none --label purpose=aidash-155-edge-check \
   -v "$PWD/infra/gcp/helm/environment/files:/source:ro" "$image" bash -euc '
 sed "s/AIDASH_BACKEND/127.0.0.1/g" /source/admission.conf > /etc/nginx/conf.d/aidash.conf
+# Stand-in application: every request succeeds.
+printf "%s\n" "server { listen 127.0.0.1:8080; access_log off; location / { return 200 \"{}\"; } }" > /etc/nginx/conf.d/backend.conf
 nginx -t
 nginx
 trap "nginx -s quit" EXIT
@@ -24,10 +26,16 @@ public=$(request 8088 GET /api/state)
 request 8089 POST /admission/open >/dev/null
 opened=$(request 8089 GET /activity)
 [[ "$opened" == *"\"closed\":false"* ]]
+[[ "$opened" == *"\"last_active\":0"* ]]
+# Session polling stays idle; the dashboard interaction heartbeat renews activity.
+request 8088 GET /auth/session >/dev/null
+[[ "$(request 8089 GET /activity)" == *"\"last_active\":0"* ]]
+request 8088 POST /auth/activity >/dev/null
+[[ "$(request 8089 GET /activity)" != *"\"last_active\":0"* ]]
 request 8089 POST /admission/close >/dev/null
 closed=$(request 8089 GET /activity)
 [[ "$closed" == *"\"closed\":true"* ]]
 # Requests must not grow a file in the writable layer: logs go to container streams.
 [[ -z "$(find /var/log/nginx -type f -size +0c)" ]]
-printf "%s\n" "Chart Nginx/Lua: starts closed; public admission blocked; private open/close verified; no file logs"
+printf "%s\n" "Chart Nginx/Lua: starts closed; public admission blocked; private open/close verified; heartbeat counted, polling idle; no file logs"
 '
