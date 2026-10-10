@@ -41,7 +41,7 @@ impl Definitions for Context<'_> {
 			.map_err(Into::into)
 	}
 	fn validation(&self) -> DefinitionValidation {
-		crate::bootstrap::registry_validation()
+		crate::bootstrap::registry_validation_for(&self.0.store)
 	}
 	async fn pinned_headroom(&self, run: Uuid) -> Result<usize> {
 		aidash_application::capabilities::skills::context_headroom_reserve(

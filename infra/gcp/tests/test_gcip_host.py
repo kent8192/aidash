@@ -8,6 +8,7 @@ import sys
 from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
+from urllib.error import HTTPError
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "control"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "runtime"))
@@ -28,7 +29,13 @@ class GcipHostTests(unittest.TestCase):
 
     def configure(self, value):
         payload = {"payload": {"data": host.base64.b64encode(json.dumps(value).encode()).decode()}}
-        with patch.object(host, "request", return_value=json.dumps(payload).encode()):
+        def request(url, *args, **kwargs):
+            # A host without BYOK has no Provider Credential metadata attribute.
+            if url.endswith("/instance/attributes/aidash-provider-credentials"):
+                raise HTTPError(url, 404, "absent", {}, None)
+            return json.dumps(payload).encode()
+
+        with patch.object(host, "request", side_effect=request):
             host.configuration(self.environment)
         return dict(line.split("=", 1) for line in (host.RUN / "app.env").read_text().splitlines())
 

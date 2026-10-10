@@ -871,63 +871,80 @@ async fn background_indexing_uses_generated_authority_and_checks_expiry_before_h
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
 	for expired in [false, true] {
-		let fixture = Fixture::new(&_test_environment, Some(2), Some(2)).await;
-		let entry = fixture.remember().await;
-		if expired {
-			sqlx::query(
-				&reinhardt::query::Query::update()
-					.table(reinhardt::query::Alias::new("generation_requests"))
-					.value_expr(
-						reinhardt::query::Alias::new("expires_at"),
-						reinhardt::query::Expr::cust("CLOCK_TIMESTAMP() - INTERVAL '1 SECOND'"),
-					)
-					.to_string(reinhardt::query::PostgresQueryBuilder),
+		let stage = std::cell::Cell::new("fixture setup");
+		// Include setup, timeout diagnostics and cleanup in the fixture bound;
+		// the narrower remember/index bounds cannot cover those database waits.
+		tokio::time::timeout(std::time::Duration::from_secs(180), async {
+			let fixture = Fixture::new(&_test_environment, Some(2), Some(2)).await;
+			stage.set("remember source");
+			let entry = fixture.remember().await;
+			stage.set("expire authority");
+			if expired {
+				sqlx::query(
+					&reinhardt::query::Query::update()
+						.table(reinhardt::query::Alias::new("generation_requests"))
+						.value_expr(
+							reinhardt::query::Alias::new("expires_at"),
+							reinhardt::query::Expr::cust("CLOCK_TIMESTAMP() - INTERVAL '1 SECOND'"),
+						)
+						.to_string(reinhardt::query::PostgresQueryBuilder),
+				)
+				.execute(fixture.f.store.pool.driver())
+				.await
+				.unwrap();
+			}
+			stage.set("index sweep");
+			tokio::time::timeout(
+				// Native origin checks also run against the real database under coverage.
+				// A self-held source lock still cannot settle within this bounded wait.
+				std::time::Duration::from_secs(30),
+				semantic::worker::sweep(&fixture.f.store),
 			)
-			.execute(fixture.f.store.pool.driver())
 			.await
+			.expect("indexing must not block on a source held by its own authority lease")
 			.unwrap();
-		}
-		tokio::time::timeout(
-			// Native origin checks also run against the real database under coverage.
-			// A self-held source lock still cannot settle within this bounded wait.
-			std::time::Duration::from_secs(30),
-			semantic::worker::sweep(&fixture.f.store),
-		)
+			stage.set("check indexed state and usage");
+			let state: String = {
+				let query_bind_1 = entry;
+				sqlx::query_scalar(
+					&reinhardt::query::Query::select()
+						.expr(reinhardt::query::SimpleExpr::from(
+							reinhardt::query::Expr::col(reinhardt::query::Alias::new("state")),
+						))
+						.from(reinhardt::query::Alias::new("semantic_entries"))
+						.and_where(reinhardt::query::SimpleExpr::CustomWithExpr(
+							"(id = ?)".to_owned(),
+							vec![reinhardt::query::Expr::value(query_bind_1.to_owned()).into()],
+						))
+						.to_string(reinhardt::query::PostgresQueryBuilder),
+				)
+				.fetch_one(fixture.f.store.pool.driver())
+				.await
+			}
+			.unwrap();
+			assert_eq!(state, if expired { "ERROR" } else { "READY" });
+			assert_eq!(
+				fixture.embeddings.load(Ordering::SeqCst),
+				if expired { 2 } else { 3 }
+			);
+			assert_eq!(
+				fixture.usage().await["embedding_calls"],
+				if expired { 1 } else { 2 }
+			);
+			assert_eq!(
+				fixture.usage().await["used_tokens"],
+				if expired { 14 } else { 16 }
+			);
+			stage.set("fixture cleanup");
+			fixture.dispose().await;
+		})
 		.await
-		.expect("indexing must not block on a source held by its own authority lease")
-		.unwrap();
-		let state: String = {
-			let query_bind_1 = entry;
-			sqlx::query_scalar(
-				&reinhardt::query::Query::select()
-					.expr(reinhardt::query::SimpleExpr::from(
-						reinhardt::query::Expr::col(reinhardt::query::Alias::new("state")),
-					))
-					.from(reinhardt::query::Alias::new("semantic_entries"))
-					.and_where(reinhardt::query::SimpleExpr::CustomWithExpr(
-						"(id = ?)".to_owned(),
-						vec![reinhardt::query::Expr::value(query_bind_1.to_owned()).into()],
-					))
-					.to_string(reinhardt::query::PostgresQueryBuilder),
+		.unwrap_or_else(|_| {
+			panic!(
+				"background indexing expired={expired} did not finish within 180s at {}",
+				stage.get()
 			)
-			.fetch_one(fixture.f.store.pool.driver())
-			.await
-		}
-		.unwrap();
-		assert_eq!(state, if expired { "ERROR" } else { "READY" });
-		assert_eq!(
-			fixture.embeddings.load(Ordering::SeqCst),
-			if expired { 2 } else { 3 }
-		);
-		assert_eq!(
-			fixture.usage().await["embedding_calls"],
-			if expired { 1 } else { 2 }
-		);
-		assert_eq!(
-			fixture.usage().await["used_tokens"],
-			if expired { 14 } else { 16 }
-		);
-		fixture.dispose().await;
+		});
 	}
 }
 

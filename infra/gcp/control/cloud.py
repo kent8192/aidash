@@ -5,6 +5,7 @@ from contextvars import ContextVar
 import json
 import os
 from pathlib import Path
+import re
 import signal
 import subprocess
 import time
@@ -75,6 +76,70 @@ def run(*args, data=None, timeout=900):
 
 def github(path):
     return json.loads(run("gh", "api", path))
+
+
+def retire_provider_credentials(configuration, identity):
+    """Delete only this environment's dynamic secrets before losing its inventory.
+
+    Authenticated deployment has bootstrap-only list/delete permissions, never
+    payload access. Listing is project-scoped; filtering and deletion are exact
+    environment-prefix operations. Collect all pages before deleting anything.
+    """
+    project = configuration.get("byok_project_id", "")
+    if not project:
+        return 0
+    if not re.fullmatch(r"develop|test|pr-[1-9][0-9]*", identity):
+        raise ValueError("invalid Provider Credential retirement environment")
+    number = run(
+        "gcloud", "projects", "describe", project,
+        "--format=value(projectNumber)", timeout=30,
+    ).decode().strip()
+    if not re.fullmatch(r"[0-9]+", number):
+        raise RuntimeError("BYOK project number is unavailable")
+    token = run("gcloud", "auth", "print-access-token", timeout=30).decode().strip()
+    if not token:
+        raise RuntimeError("deployment authentication is unavailable")
+    parent = f"projects/{number}/secrets/"
+    prefix = parent + f"aidash-{identity}-cred-"
+
+    def call(method, resource):
+        request = urllib.request.Request(
+            "https://secretmanager.googleapis.com/v1/" + resource,
+            method=method,
+            headers={"Authorization": "Bearer " + token},
+        )
+        with urllib.request.urlopen(request, timeout=bounded_timeout(60)) as response:
+            return response.read()
+
+    def inventory():
+        names, pages = set(), set()
+        page = ""
+        while True:
+            query = urllib.parse.urlencode({"pageSize": 1000, "pageToken": page})
+            result = json.loads(call("GET", parent.rstrip("/") + "?" + query))
+            for secret in result.get("secrets", []):
+                name = secret.get("name", "")
+                if not re.fullmatch(re.escape(parent) + r"[A-Za-z0-9_-]+", name):
+                    raise RuntimeError("unexpected BYOK inventory resource")
+                if name.startswith(prefix):
+                    names.add(name)
+            page = result.get("nextPageToken", "")
+            if not page:
+                return sorted(names)
+            if page in pages:
+                raise RuntimeError("BYOK inventory pagination did not advance")
+            pages.add(page)
+
+    names = inventory()
+    for name in names:
+        try:
+            call("DELETE", name)
+        except urllib.error.HTTPError as error:
+            if error.code != 404:
+                raise
+    if inventory():
+        raise RuntimeError("Provider Credential retirement is incomplete")
+    return len(names)
 
 
 class Store:
@@ -196,7 +261,56 @@ class Terraform:
             raise RuntimeError(
                 "Terraform state lacks managed_configuration; inspect partial apply before continuing"
             )
+        # Keep the applied BYOK project authoritative until every environment
+        # has retired its exact prefix. Changing this input earlier would make
+        # cleanup target another project, or skip it, before removing IAM.
+        outputs = state.get("outputs", {})
+        environments = outputs.get("environments", {}).get("value") or {}
+        applied_projects = {
+            item.get("byok_project_id", "") for item in environments.values()
+        }
+        if value or environments:
+            applied_projects.add(outputs.get("byok_project_id", {}).get("value", ""))
+        configured_project = self.configuration.get("byok_project_id", "")
+        if any(project and project != configured_project for project in applied_projects):
+            raise RuntimeError(
+                "Restore the applied BYOK project and retire all managed environments "
+                "before changing byok_project_id"
+            )
         return value or {}
+
+    def broker_configuration(self, environments):
+        # Match Terraform's optional defaults and set ordering in persisted intent.
+        return {
+            key: self.normalized_broker(value)
+            for key, value in self.configuration.get("credential_brokers", {}).items()
+            if key in environments
+        }
+
+    @staticmethod
+    def normalized_broker(value):
+        signing = value.get("signing_version")
+        versions = value.get("verification_versions")
+        if versions is None:
+            versions = ["1"]
+        if not isinstance(versions, (list, tuple, set)):
+            raise RuntimeError("Broker verification versions must be a collection")
+        return dict(value, enabled=value.get("enabled") or False,
+                    signing_version="1" if signing is None else str(signing),
+                    verification_versions=sorted({str(version) for version in versions}))
+
+    def broker_configuration_in_state(self, store):
+        state, _ = store.read("terraform/environments/default.tfstate")
+        if state is None:
+            return {}
+        value = state.get("outputs", {}).get("managed_credential_brokers", {}).get("value")
+        return None if value is None else {key: self.normalized_broker(broker) for key, broker in value.items()}
+
+    def broker_configuration_changed(self, store, environments):
+        previous = self.broker_configuration_in_state(store)
+        # Legacy state has no broker-intent output. Apply once to reconcile any
+        # old resources and establish the durable comparison for future ticks.
+        return previous != self.broker_configuration(environments)
 
     def apply(self, environments, retiring=(), starting=(), before_apply=None):
         variables = {
@@ -209,9 +323,11 @@ class Terraform:
                 "domain",
             )
         }
+        variables["byok_project_id"] = self.configuration.get("byok_project_id", "")
         variables["environments"] = environments
         variables["gcip_tenants"] = self.configuration.get("gcip_tenants", {})
         variables["gcip_idp_secrets"] = json.loads(os.environ.get("AIDASH_GCIP_IDP_SECRETS") or "{}")
+        variables["credential_brokers"] = self.broker_configuration(environments)
         path = self.root / "controller.auto.tfvars.json"
         plan = self.root / "controller.tfplan"
         private_json(path, variables)
@@ -229,6 +345,13 @@ class Terraform:
                 run("terraform", f"-chdir={self.root}", "show", "-json", plan)
             )
             for change in value.get("resource_changes", []):
+                if (
+                    change["type"] in {"google_kms_key_ring", "google_kms_crypto_key", "google_kms_crypto_key_version"}
+                    and "delete" in change["change"]["actions"]
+                ):
+                    raise RuntimeError(
+                        "plan would destroy signing key material; transfer draft key state to bootstrap first"
+                    )
                 if (
                     change["type"] == "google_compute_instance"
                     and "create" in change["change"]["actions"]

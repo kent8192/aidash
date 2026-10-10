@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "endpoint_count": 284,
+  "endpoint_count": 291,
   "requests": [
     {
       "name": "Health reports the configured node",
@@ -11298,8 +11298,505 @@
       ]
     },
     {
-      "name": "1046 sessions-gcip-transaction - Transaction requires its state query",
-      "file": "contracts/1046-sessions-gcip-transaction.bru",
+      "name": "1046 provider-credential-list - Anonymous request is rejected",
+      "file": "contracts/1046-provider-credential-list.bru",
+      "endpoint": "GET /api/tenants/{tenant}/provider-credentials",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1047 provider-credential-list - Forged bearer cannot manage Provider Credentials",
+      "file": "contracts/1047-provider-credential-list.bru",
+      "endpoint": "GET /api/tenants/{tenant}/provider-credentials",
+      "scenario": "Forged bearer cannot manage Provider Credentials",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1048 provider-credential-list - Missing Store fails closed for the operator",
+      "file": "contracts/1048-provider-credential-list.bru",
+      "endpoint": "GET /api/tenants/{tenant}/provider-credentials",
+      "scenario": "Missing Store fails closed for the operator",
+      "status": 404,
+      "required_checks": [
+        "Exact HTTP 404",
+        "Rejection is diagnostic and does not disclose SQL or credentials",
+        "Missing Store fails closed for the operator contract"
+      ]
+    },
+    {
+      "name": "1049 provider-credential-list - Missing Store fails closed for the subject",
+      "file": "contracts/1049-provider-credential-list.bru",
+      "endpoint": "GET /api/tenants/{tenant}/provider-credentials",
+      "scenario": "Missing Store fails closed for the subject",
+      "status": 404,
+      "required_checks": [
+        "Exact HTTP 404",
+        "Rejection is diagnostic and does not disclose SQL or credentials",
+        "Missing Store fails closed for the subject contract"
+      ]
+    },
+    {
+      "name": "1050 provider-credential-list - Credential paging rejects nonnumeric offsets",
+      "file": "contracts/1050-provider-credential-list.bru",
+      "endpoint": "GET /api/tenants/{tenant}/provider-credentials",
+      "scenario": "Credential paging rejects nonnumeric offsets",
+      "status": 400,
+      "required_checks": [
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1051 provider-credential-get - Anonymous request is rejected",
+      "file": "contracts/1051-provider-credential-get.bru",
+      "endpoint": "GET /api/tenants/{tenant}/provider-credentials/{id}",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1052 provider-credential-get - Forged bearer cannot manage Provider Credentials",
+      "file": "contracts/1052-provider-credential-get.bru",
+      "endpoint": "GET /api/tenants/{tenant}/provider-credentials/{id}",
+      "scenario": "Forged bearer cannot manage Provider Credentials",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1053 provider-credential-get - Missing Store fails closed for the operator",
+      "file": "contracts/1053-provider-credential-get.bru",
+      "endpoint": "GET /api/tenants/{tenant}/provider-credentials/{id}",
+      "scenario": "Missing Store fails closed for the operator",
+      "status": 404,
+      "required_checks": [
+        "Exact HTTP 404",
+        "Rejection is diagnostic and does not disclose SQL or credentials",
+        "Missing Store fails closed for the operator contract"
+      ]
+    },
+    {
+      "name": "1054 provider-credential-get - Missing Store fails closed for the subject",
+      "file": "contracts/1054-provider-credential-get.bru",
+      "endpoint": "GET /api/tenants/{tenant}/provider-credentials/{id}",
+      "scenario": "Missing Store fails closed for the subject",
+      "status": 404,
+      "required_checks": [
+        "Exact HTTP 404",
+        "Rejection is diagnostic and does not disclose SQL or credentials",
+        "Missing Store fails closed for the subject contract"
+      ]
+    },
+    {
+      "name": "1055 provider-credential-get - Typed credential IDs reject invalid UUIDs",
+      "file": "contracts/1055-provider-credential-get.bru",
+      "endpoint": "GET /api/tenants/{tenant}/provider-credentials/{id}",
+      "scenario": "Typed credential IDs reject invalid UUIDs",
+      "status": 400,
+      "required_checks": [
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1056 provider-credential-revoke - Anonymous request is rejected",
+      "file": "contracts/1056-provider-credential-revoke.bru",
+      "endpoint": "POST /api/tenants/{tenant}/provider-credentials/{id}/revoke",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1057 provider-credential-revoke - Forged bearer cannot manage Provider Credentials",
+      "file": "contracts/1057-provider-credential-revoke.bru",
+      "endpoint": "POST /api/tenants/{tenant}/provider-credentials/{id}/revoke",
+      "scenario": "Forged bearer cannot manage Provider Credentials",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1058 provider-credential-revoke - Missing Store fails closed for the operator",
+      "file": "contracts/1058-provider-credential-revoke.bru",
+      "endpoint": "POST /api/tenants/{tenant}/provider-credentials/{id}/revoke",
+      "scenario": "Missing Store fails closed for the operator",
+      "status": 404,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 404",
+        "Rejection is diagnostic and does not disclose SQL or credentials",
+        "Missing Store fails closed for the operator contract"
+      ]
+    },
+    {
+      "name": "1059 provider-credential-revoke - Missing Store fails closed for the subject",
+      "file": "contracts/1059-provider-credential-revoke.bru",
+      "endpoint": "POST /api/tenants/{tenant}/provider-credentials/{id}/revoke",
+      "scenario": "Missing Store fails closed for the subject",
+      "status": 404,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 404",
+        "Rejection is diagnostic and does not disclose SQL or credentials",
+        "Missing Store fails closed for the subject contract"
+      ]
+    },
+    {
+      "name": "1060 provider-credential-revoke - Wrong JSON media type is rejected",
+      "file": "contracts/1060-provider-credential-revoke.bru",
+      "endpoint": "POST /api/tenants/{tenant}/provider-credentials/{id}/revoke",
+      "scenario": "Wrong JSON media type is rejected",
+      "status": 415,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 415",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1061 provider-credential-revoke - Malformed JSON cannot reach the use case",
+      "file": "contracts/1061-provider-credential-revoke.bru",
+      "endpoint": "POST /api/tenants/{tenant}/provider-credentials/{id}/revoke",
+      "scenario": "Malformed JSON cannot reach the use case",
+      "status": 400,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1062 provider-credential-revoke - Required lifecycle fields cannot be omitted",
+      "file": "contracts/1062-provider-credential-revoke.bru",
+      "endpoint": "POST /api/tenants/{tenant}/provider-credentials/{id}/revoke",
+      "scenario": "Required lifecycle fields cannot be omitted",
+      "status": 422,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 422",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1063 provider-credential-revoke - Unknown lifecycle fields are rejected",
+      "file": "contracts/1063-provider-credential-revoke.bru",
+      "endpoint": "POST /api/tenants/{tenant}/provider-credentials/{id}/revoke",
+      "scenario": "Unknown lifecycle fields are rejected",
+      "status": 422,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 422",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1064 provider-credential-delete - Anonymous request is rejected",
+      "file": "contracts/1064-provider-credential-delete.bru",
+      "endpoint": "DELETE /api/tenants/{tenant}/provider-credentials/{id}",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1065 provider-credential-delete - Forged bearer cannot manage Provider Credentials",
+      "file": "contracts/1065-provider-credential-delete.bru",
+      "endpoint": "DELETE /api/tenants/{tenant}/provider-credentials/{id}",
+      "scenario": "Forged bearer cannot manage Provider Credentials",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1066 provider-credential-delete - Missing Store fails closed for the operator",
+      "file": "contracts/1066-provider-credential-delete.bru",
+      "endpoint": "DELETE /api/tenants/{tenant}/provider-credentials/{id}",
+      "scenario": "Missing Store fails closed for the operator",
+      "status": 404,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 404",
+        "Rejection is diagnostic and does not disclose SQL or credentials",
+        "Missing Store fails closed for the operator contract"
+      ]
+    },
+    {
+      "name": "1067 provider-credential-delete - Missing Store fails closed for the subject",
+      "file": "contracts/1067-provider-credential-delete.bru",
+      "endpoint": "DELETE /api/tenants/{tenant}/provider-credentials/{id}",
+      "scenario": "Missing Store fails closed for the subject",
+      "status": 404,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 404",
+        "Rejection is diagnostic and does not disclose SQL or credentials",
+        "Missing Store fails closed for the subject contract"
+      ]
+    },
+    {
+      "name": "1068 provider-credential-delete - Wrong JSON media type is rejected",
+      "file": "contracts/1068-provider-credential-delete.bru",
+      "endpoint": "DELETE /api/tenants/{tenant}/provider-credentials/{id}",
+      "scenario": "Wrong JSON media type is rejected",
+      "status": 415,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 415",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1069 provider-credential-delete - Malformed JSON cannot reach the use case",
+      "file": "contracts/1069-provider-credential-delete.bru",
+      "endpoint": "DELETE /api/tenants/{tenant}/provider-credentials/{id}",
+      "scenario": "Malformed JSON cannot reach the use case",
+      "status": 400,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1070 provider-credential-delete - Required lifecycle fields cannot be omitted",
+      "file": "contracts/1070-provider-credential-delete.bru",
+      "endpoint": "DELETE /api/tenants/{tenant}/provider-credentials/{id}",
+      "scenario": "Required lifecycle fields cannot be omitted",
+      "status": 422,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 422",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1071 provider-credential-delete - Unknown lifecycle fields are rejected",
+      "file": "contracts/1071-provider-credential-delete.bru",
+      "endpoint": "DELETE /api/tenants/{tenant}/provider-credentials/{id}",
+      "scenario": "Unknown lifecycle fields are rejected",
+      "status": 422,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 422",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1072 provider-credential-binding-list - Anonymous request is rejected",
+      "file": "contracts/1072-provider-credential-binding-list.bru",
+      "endpoint": "GET /api/tenants/{tenant}/provider-credential-bindings",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1073 provider-credential-binding-list - Forged bearer cannot manage Provider Credentials",
+      "file": "contracts/1073-provider-credential-binding-list.bru",
+      "endpoint": "GET /api/tenants/{tenant}/provider-credential-bindings",
+      "scenario": "Forged bearer cannot manage Provider Credentials",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1074 provider-credential-binding-list - Missing Store fails closed for the operator",
+      "file": "contracts/1074-provider-credential-binding-list.bru",
+      "endpoint": "GET /api/tenants/{tenant}/provider-credential-bindings",
+      "scenario": "Missing Store fails closed for the operator",
+      "status": 404,
+      "required_checks": [
+        "Exact HTTP 404",
+        "Rejection is diagnostic and does not disclose SQL or credentials",
+        "Missing Store fails closed for the operator contract"
+      ]
+    },
+    {
+      "name": "1075 provider-credential-binding-list - Missing Store fails closed for the subject",
+      "file": "contracts/1075-provider-credential-binding-list.bru",
+      "endpoint": "GET /api/tenants/{tenant}/provider-credential-bindings",
+      "scenario": "Missing Store fails closed for the subject",
+      "status": 404,
+      "required_checks": [
+        "Exact HTTP 404",
+        "Rejection is diagnostic and does not disclose SQL or credentials",
+        "Missing Store fails closed for the subject contract"
+      ]
+    },
+    {
+      "name": "1076 provider-credential-binding-get - Anonymous request is rejected",
+      "file": "contracts/1076-provider-credential-binding-get.bru",
+      "endpoint": "GET /api/tenants/{tenant}/provider-credential-bindings/{provider}",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1077 provider-credential-binding-get - Forged bearer cannot manage Provider Credentials",
+      "file": "contracts/1077-provider-credential-binding-get.bru",
+      "endpoint": "GET /api/tenants/{tenant}/provider-credential-bindings/{provider}",
+      "scenario": "Forged bearer cannot manage Provider Credentials",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1078 provider-credential-binding-get - Missing Store fails closed for the operator",
+      "file": "contracts/1078-provider-credential-binding-get.bru",
+      "endpoint": "GET /api/tenants/{tenant}/provider-credential-bindings/{provider}",
+      "scenario": "Missing Store fails closed for the operator",
+      "status": 404,
+      "required_checks": [
+        "Exact HTTP 404",
+        "Rejection is diagnostic and does not disclose SQL or credentials",
+        "Missing Store fails closed for the operator contract"
+      ]
+    },
+    {
+      "name": "1079 provider-credential-binding-get - Missing Store fails closed for the subject",
+      "file": "contracts/1079-provider-credential-binding-get.bru",
+      "endpoint": "GET /api/tenants/{tenant}/provider-credential-bindings/{provider}",
+      "scenario": "Missing Store fails closed for the subject",
+      "status": 404,
+      "required_checks": [
+        "Exact HTTP 404",
+        "Rejection is diagnostic and does not disclose SQL or credentials",
+        "Missing Store fails closed for the subject contract"
+      ]
+    },
+    {
+      "name": "1080 provider-credential-binding-update - Anonymous request is rejected",
+      "file": "contracts/1080-provider-credential-binding-update.bru",
+      "endpoint": "PUT /api/tenants/{tenant}/provider-credential-bindings/{provider}",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1081 provider-credential-binding-update - Forged bearer cannot manage Provider Credentials",
+      "file": "contracts/1081-provider-credential-binding-update.bru",
+      "endpoint": "PUT /api/tenants/{tenant}/provider-credential-bindings/{provider}",
+      "scenario": "Forged bearer cannot manage Provider Credentials",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1082 provider-credential-binding-update - Missing Store fails closed for the operator",
+      "file": "contracts/1082-provider-credential-binding-update.bru",
+      "endpoint": "PUT /api/tenants/{tenant}/provider-credential-bindings/{provider}",
+      "scenario": "Missing Store fails closed for the operator",
+      "status": 404,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 404",
+        "Rejection is diagnostic and does not disclose SQL or credentials",
+        "Missing Store fails closed for the operator contract"
+      ]
+    },
+    {
+      "name": "1083 provider-credential-binding-update - Missing Store fails closed for the subject",
+      "file": "contracts/1083-provider-credential-binding-update.bru",
+      "endpoint": "PUT /api/tenants/{tenant}/provider-credential-bindings/{provider}",
+      "scenario": "Missing Store fails closed for the subject",
+      "status": 404,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 404",
+        "Rejection is diagnostic and does not disclose SQL or credentials",
+        "Missing Store fails closed for the subject contract"
+      ]
+    },
+    {
+      "name": "1084 provider-credential-binding-update - Wrong JSON media type is rejected",
+      "file": "contracts/1084-provider-credential-binding-update.bru",
+      "endpoint": "PUT /api/tenants/{tenant}/provider-credential-bindings/{provider}",
+      "scenario": "Wrong JSON media type is rejected",
+      "status": 415,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 415",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1085 provider-credential-binding-update - Malformed JSON cannot reach the use case",
+      "file": "contracts/1085-provider-credential-binding-update.bru",
+      "endpoint": "PUT /api/tenants/{tenant}/provider-credential-bindings/{provider}",
+      "scenario": "Malformed JSON cannot reach the use case",
+      "status": 400,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1086 provider-credential-binding-update - Required lifecycle fields cannot be omitted",
+      "file": "contracts/1086-provider-credential-binding-update.bru",
+      "endpoint": "PUT /api/tenants/{tenant}/provider-credential-bindings/{provider}",
+      "scenario": "Required lifecycle fields cannot be omitted",
+      "status": 422,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 422",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1087 provider-credential-binding-update - Unknown lifecycle fields are rejected",
+      "file": "contracts/1087-provider-credential-binding-update.bru",
+      "endpoint": "PUT /api/tenants/{tenant}/provider-credential-bindings/{provider}",
+      "scenario": "Unknown lifecycle fields are rejected",
+      "status": 422,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 422",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1088 sessions-gcip-transaction - Transaction requires its state query",
+      "file": "contracts/1088-sessions-gcip-transaction.bru",
       "endpoint": "GET /auth/gcip/transaction",
       "scenario": "Transaction requires its state query",
       "status": 400,
@@ -11309,8 +11806,8 @@
       ]
     },
     {
-      "name": "1047 sessions-gcip-transaction - OIDC deployment cannot expose GCIP configuration",
-      "file": "contracts/1047-sessions-gcip-transaction.bru",
+      "name": "1089 sessions-gcip-transaction - OIDC deployment cannot expose GCIP configuration",
+      "file": "contracts/1089-sessions-gcip-transaction.bru",
       "endpoint": "GET /auth/gcip/transaction",
       "scenario": "OIDC deployment cannot expose GCIP configuration",
       "status": 401,
@@ -11320,8 +11817,8 @@
       ]
     },
     {
-      "name": "1048 sessions-gcip-transaction - Tampered browser cookie cannot expose GCIP configuration",
-      "file": "contracts/1048-sessions-gcip-transaction.bru",
+      "name": "1090 sessions-gcip-transaction - Tampered browser cookie cannot expose GCIP configuration",
+      "file": "contracts/1090-sessions-gcip-transaction.bru",
       "endpoint": "GET /auth/gcip/transaction",
       "scenario": "Tampered browser cookie cannot expose GCIP configuration",
       "status": 401,
@@ -11331,8 +11828,8 @@
       ]
     },
     {
-      "name": "1049 sessions-gcip-exchange - Exchange requires its typed token envelope",
-      "file": "contracts/1049-sessions-gcip-exchange.bru",
+      "name": "1091 sessions-gcip-exchange - Exchange requires its typed token envelope",
+      "file": "contracts/1091-sessions-gcip-exchange.bru",
       "endpoint": "POST /auth/gcip/exchange",
       "scenario": "Exchange requires its typed token envelope",
       "status": 422,
@@ -11342,8 +11839,8 @@
       ]
     },
     {
-      "name": "1050 sessions-gcip-exchange - Malformed token envelope is rejected",
-      "file": "contracts/1050-sessions-gcip-exchange.bru",
+      "name": "1092 sessions-gcip-exchange - Malformed token envelope is rejected",
+      "file": "contracts/1092-sessions-gcip-exchange.bru",
       "endpoint": "POST /auth/gcip/exchange",
       "scenario": "Malformed token envelope is rejected",
       "status": 400,
@@ -11353,8 +11850,8 @@
       ]
     },
     {
-      "name": "1051 sessions-gcip-exchange - OIDC deployment cannot accept a GCIP token",
-      "file": "contracts/1051-sessions-gcip-exchange.bru",
+      "name": "1093 sessions-gcip-exchange - OIDC deployment cannot accept a GCIP token",
+      "file": "contracts/1093-sessions-gcip-exchange.bru",
       "endpoint": "POST /auth/gcip/exchange",
       "scenario": "OIDC deployment cannot accept a GCIP token",
       "status": 401,

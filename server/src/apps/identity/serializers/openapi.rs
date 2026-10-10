@@ -25,6 +25,88 @@ use serde_json::Value;
 
 pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) -> Result<()> {
 	use super::desktop;
+	use super::provider_credentials as pc;
+	use aidash_application::provider_credentials::Metadata;
+	use aidash_domain::provider_credentials::Binding as ProviderBinding;
+	contracts.response::<_, Vec<Metadata>>(
+		document,
+		views::provider_credentials::list,
+		200,
+		"application/json",
+	)?;
+	contracts.query::<_, pc::Page>(document, views::provider_credentials::list)?;
+	contracts.path(document, views::provider_credentials::list, &["String"])?;
+	contracts.response::<_, Metadata>(
+		document,
+		views::provider_credentials::get_record,
+		200,
+		"application/json",
+	)?;
+	contracts.path(
+		document,
+		views::provider_credentials::get_record,
+		&["String", "Uuid"],
+	)?;
+	contracts.request::<_, pc::Revision>(document, views::provider_credentials::revoke)?;
+	contracts.response::<_, Metadata>(
+		document,
+		views::provider_credentials::revoke,
+		200,
+		"application/json",
+	)?;
+	contracts.path(
+		document,
+		views::provider_credentials::revoke,
+		&["String", "Uuid"],
+	)?;
+	contracts.request::<_, pc::Revision>(document, views::provider_credentials::delete_record)?;
+	contracts.response::<_, Metadata>(
+		document,
+		views::provider_credentials::delete_record,
+		200,
+		"application/json",
+	)?;
+	contracts.path(
+		document,
+		views::provider_credentials::delete_record,
+		&["String", "Uuid"],
+	)?;
+	contracts.response::<_, Vec<ProviderBinding>>(
+		document,
+		views::provider_credentials::list_bindings,
+		200,
+		"application/json",
+	)?;
+	contracts.path(
+		document,
+		views::provider_credentials::list_bindings,
+		&["String"],
+	)?;
+	contracts.response::<_, ProviderBinding>(
+		document,
+		views::provider_credentials::get_binding,
+		200,
+		"application/json",
+	)?;
+	contracts.path(
+		document,
+		views::provider_credentials::get_binding,
+		&["String", "String"],
+	)?;
+	contracts
+		.request::<_, pc::BindingUpdate>(document, views::provider_credentials::update_binding)?;
+	contracts.response::<_, ProviderBinding>(
+		document,
+		views::provider_credentials::update_binding,
+		200,
+		"application/json",
+	)?;
+	contracts.path(
+		document,
+		views::provider_credentials::update_binding,
+		&["String", "String"],
+	)?;
+
 	contracts.response::<_, desktop::Started>(
 		document,
 		views::desktop::start,

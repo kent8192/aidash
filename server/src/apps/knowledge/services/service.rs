@@ -166,9 +166,42 @@ pub(crate) async fn embed(
 	text: &str,
 	origin: crate::generation::embedding::Origin,
 ) -> Result<Vec<f32>> {
+	let transport = if config.provider_credential.is_some() {
+		use crate::generation::embedding::Origin;
+		use aidash_application::provider_access::MaintenancePurpose;
+		use reinhardt::query::{
+			Alias, Expr, ExprTrait, PostgresQueryBuilder, Query, QueryStatementBuilder,
+		};
+		let tenant: String = crate::database::native::query_scalar(
+			&Query::select()
+				.column(Alias::new("tenant"))
+				.from(Alias::new("authorization_workspaces"))
+				.and_where(Expr::col("workspace_id").eq(Expr::value(workspace)))
+				.to_string(PostgresQueryBuilder),
+		)
+		.scalar_optional(&mut **lease.tx())
+		.await?
+		.ok_or_else(|| {
+			crate::Error::Invalid("Provider Credential requires a local Tenant".into())
+		})?;
+		if lease
+			.access()
+			.is_some_and(|access| access.identity.tenant != tenant)
+		{
+			return Err(crate::Error::Forbidden);
+		}
+		let (run, maintenance) = match origin {
+			Origin::Query(Some(run)) => (Some(run), None),
+			Origin::Query(None) => (None, Some(MaintenancePurpose::MemoryRetrieval)),
+			Origin::Index(_) => (None, Some(MaintenancePurpose::MemoryIndexing)),
+		};
+		crate::bootstrap::admitted_semantic_transport(store, run, tenant, maintenance)
+	} else {
+		crate::bootstrap::semantic_transport(store)
+	};
 	aidash_application::semantic::embedding::invoke(
 		&mut crate::bootstrap::semantic_embedding_scope(store, lease),
-		&crate::bootstrap::semantic_transport(store),
+		&transport,
 		workspace,
 		config,
 		text,

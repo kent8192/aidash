@@ -21,36 +21,53 @@ pub(crate) fn event_scope(
 		Expr::col(Alias::new("workspace_id")).is_in(workspaces.iter().copied().map(Expr::value)),
 	);
 	if include_marketplace {
-		scope.add(
-			Condition::all()
-				.add(Expr::col(Alias::new("workspace_id")).is_null())
-				.add(Expr::col(Alias::new("kind")).like("marketplace.%"))
-				.add(
-					Expr::col(Alias::new("kind"))
-						.ne(reinhardt::query::Expr::value("marketplace.audit")),
-				)
-				.add(
-					Condition::any()
-						.add(
-							Expr::cust("data->>'tenant'").eq(reinhardt::query::Expr::value(tenant)),
-						)
-						.add(
-							Expr::cust("data->>'key'").in_subquery(
-								Query::select()
-									.column(Alias::new("key"))
-									.from_as(
-										Alias::new("marketplace_audiences"),
-										Alias::new("audience"),
-									)
-									.and_where(Expr::cust("audience.document->'tenants'").binary(
-										BinOper::PgOperator(PgBinOper::Contains),
-										Expr::val(json!([tenant])),
-									))
-									.to_owned(),
+		scope
+			.add(
+				Condition::all()
+					.add(Expr::col(Alias::new("workspace_id")).is_null())
+					.add(Expr::col(Alias::new("kind")).is_in([
+						"provider_credential.created",
+						"provider_credential.rotated",
+						"provider_credential.revoked",
+						"provider_credential.deleted",
+						"provider_credential.cleanup_completed",
+						"provider_credential_binding.updated",
+					]))
+					.add(Expr::cust("data->>'tenant'").eq(Expr::value(tenant))),
+			)
+			.add(
+				Condition::all()
+					.add(Expr::col(Alias::new("workspace_id")).is_null())
+					.add(Expr::col(Alias::new("kind")).like("marketplace.%"))
+					.add(
+						Expr::col(Alias::new("kind"))
+							.ne(reinhardt::query::Expr::value("marketplace.audit")),
+					)
+					.add(
+						Condition::any()
+							.add(
+								Expr::cust("data->>'tenant'")
+									.eq(reinhardt::query::Expr::value(tenant)),
+							)
+							.add(
+								Expr::cust("data->>'key'").in_subquery(
+									Query::select()
+										.column(Alias::new("key"))
+										.from_as(
+											Alias::new("marketplace_audiences"),
+											Alias::new("audience"),
+										)
+										.and_where(
+											Expr::cust("audience.document->'tenants'").binary(
+												BinOper::PgOperator(PgBinOper::Contains),
+												Expr::val(json!([tenant])),
+											),
+										)
+										.to_owned(),
+								),
 							),
-						),
-				),
-		)
+					),
+			)
 	} else {
 		scope
 	}

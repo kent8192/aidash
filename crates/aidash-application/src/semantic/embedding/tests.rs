@@ -9,6 +9,7 @@ fn configuration() -> EmbeddingConfig {
 		provider: "openai".into(),
 		endpoint: "https://embedding.invalid".into(),
 		credential_env: None,
+		provider_credential: None,
 		model: "fixture".into(),
 		model_version: "1".into(),
 		dimensions: 2,
@@ -207,4 +208,46 @@ async fn settlement_error_keeps_adapter_identity_and_withholds_embedding() {
 	assert!(matches!(error, Error::Port(error) if error.is::<AdapterFailure>()));
 	assert_eq!(*calls.lock().unwrap(), ["reserve", "provider", "settle"]);
 	assert_eq!(*scope.reported.lock().unwrap(), [Some(1)]);
+}
+
+struct TenantScope;
+#[async_trait]
+impl SemanticEmbeddingScope for TenantScope {
+	async fn reserve(
+		&mut self,
+		_: Uuid,
+		_: &EmbeddingConfig,
+		_: &str,
+		_: Origin,
+	) -> Result<Option<Box<dyn EmbeddingAllowance>>> {
+		Ok(None)
+	}
+}
+struct RevokedProvider;
+#[async_trait]
+impl EmbeddingProvider for RevokedProvider {
+	async fn embed(&self, _: &EmbeddingConfig, _: &str) -> Result<Embedding> {
+		Err(Error::Invalid("Provider Credential is not active".into()))
+	}
+}
+#[rstest]
+#[tokio::test]
+async fn revoked_tenant_embedding_remains_a_non_retryable_state_error() {
+	let mut config = configuration();
+	config.provider = "openrouter".into();
+	config.endpoint = "https://openrouter.ai/api/v1".into();
+	config.provider_credential = Some("openrouter".into());
+	let error = invoke(
+		&mut TenantScope,
+		&RevokedProvider,
+		Uuid::now_v7(),
+		&config,
+		"query",
+		Origin::Query(None),
+	)
+	.await
+	.unwrap_err();
+	assert!(
+		matches!(error, Error::Invalid(ref message) if message == "Provider Credential is not active")
+	);
 }

@@ -10,6 +10,7 @@ export const settingsSections = [
   "semantic",
   "transactions",
   "deployment",
+  "providerCredentials",
   "marketplace",
   "node",
 ] as const;
@@ -20,6 +21,7 @@ export const visibleSettingsSections = [
   "registry",
   "clusters",
   "deployment",
+  "providerCredentials",
   "marketplace",
 ] as const;
 export type IntegratedView =

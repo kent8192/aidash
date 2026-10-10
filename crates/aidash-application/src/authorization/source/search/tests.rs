@@ -229,6 +229,7 @@ fn spec() -> IndexingSpec {
 			provider: "openai".into(),
 			endpoint: "https://embedding.invalid".into(),
 			credential_env: None,
+			provider_credential: None,
 			model: "embedding".into(),
 			model_version: "1".into(),
 			dimensions: 2,
@@ -519,6 +520,7 @@ struct Repository {
 	denied: Option<&'static str>,
 	revoked_at_delivery: bool,
 	blocked: bool,
+	tenant_embedding: bool,
 }
 impl Repository {
 	fn new() -> Self {
@@ -532,6 +534,7 @@ impl Repository {
 			denied: None,
 			revoked_at_delivery: false,
 			blocked: false,
+			tenant_embedding: false,
 		}
 	}
 	fn cached(&self, candidate: &str) {
@@ -545,6 +548,7 @@ struct Scope {
 	trace: Trace,
 	authority: Arc<Mutex<Authority>>,
 	denied: Option<&'static str>,
+	tenant_embedding: bool,
 }
 impl Drop for Scope {
 	fn drop(&mut self) {
@@ -597,6 +601,7 @@ impl SemanticSearchRepository for Repository {
 				trace: self.trace.clone(),
 				authority: self.authority.clone(),
 				denied: self.denied,
+				tenant_embedding: self.tenant_embedding,
 			},
 			description,
 		))
@@ -657,7 +662,11 @@ impl SemanticSearchScope for Scope {
 		Ok(value)
 	}
 	async fn index_spec(&mut self, _: Uuid) -> Result<IndexingSpec> {
-		Ok(spec())
+		let mut value = spec();
+		if self.tenant_embedding {
+			value.embedding.provider_credential = Some("openrouter".into());
+		}
+		Ok(value)
 	}
 	async fn prepare_search(
 		&mut self,
@@ -916,6 +925,22 @@ async fn current_authority_and_complete_input_boundary_precede_journal_or_provid
 	if denied != "receiver" {
 		assert!(!trace.contains(&"receiver"));
 	}
+}
+#[rstest]
+#[tokio::test]
+async fn an_index_reconfigured_to_a_tenant_embedding_is_rejected_before_any_claim_or_effect() {
+	let mut repo = Repository::new();
+	repo.tenant_embedding = true;
+	let result = search(&repo, "aidash://receiver", operation()).await;
+	assert!(matches!(
+		result,
+		Err(Error::RemoteSemantic(Failure::Configuration))
+	));
+	assert_eq!(repo.authority.lock().unwrap().active, 0);
+	let trace = repo.trace.lock().unwrap();
+	assert!(!trace.contains(&"candidates"));
+	assert!(!trace.contains(&"claim"));
+	assert!(trace.contains(&"finish_denied"));
 }
 #[rstest]
 #[case(true)]
