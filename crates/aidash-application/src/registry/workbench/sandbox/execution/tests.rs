@@ -387,6 +387,7 @@ fn job(model: Arc<Model>) -> Job {
 			max_output_tokens: 128,
 			content_parts: vec![],
 			cache_scope: None,
+			cache_breakpoints: false,
 		},
 		initial_conversation: vec![json!({"role":"user","content":"original"})],
 		pinned_draft: draft(7),

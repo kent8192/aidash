@@ -1,3 +1,6 @@
+import { Input } from "../components/ui/input";
+import { panelClass } from "./display";
+import { Alert, Check, Hint, inlineFormClass } from "../components/patterns";
 import { Button } from "../components/ui/button";
 import { useState } from "react";
 import { useInfiniteQuery, useQueryClient } from "@tanstack/react-query";
@@ -46,39 +49,37 @@ function Card({ item }: { item: Approval }) {
     <article>
       <strong>{ja ? "外部接続の承認" : "Outbound request"}</strong>
       <p>{item.targets.join(", ")}</p>
-      <small>
+      <Hint>
         {ja ? "要求者" : "Requester"}: {item.requester} ·{" "}
         {ja ? "承認者" : "Approver"}:{" "}
         {item.approver ??
           (ja
             ? "承認できる人がいないため実行できません"
             : "Blocked: no eligible approver")}
-      </small>
-      <p role="status">
+      </Hint>
+      <Hint role="status">
         {item.state}
         {item.expires_at && (
           <> · {new Date(item.expires_at).toLocaleString()}</>
         )}
-      </p>
+      </Hint>
       {item.state === "pending" && (
         <>
-          <label className="check">
-            <input
-              type="checkbox"
-              checked={runGrant}
-              onChange={(e) => setRunGrant(e.target.checked)}
-            />
+          <Check
+            checked={runGrant}
+            onChange={(e) => setRunGrant(e.target.checked)}
+          >
             {ja
               ? "この Run で同じ接続先を期限付きで許可"
               : "Grant the same targets for this Run until expiry"}
-          </label>
+          </Check>
           {runGrant && (
             <Field
               label={
                 ja ? "有効期間（分、最大60）" : "Duration (minutes, up to 60)"
               }
             >
-              <input
+              <Input
                 type="number"
                 min={1}
                 max={60}
@@ -89,7 +90,7 @@ function Card({ item }: { item: Approval }) {
               />
             </Field>
           )}
-          <div className="core-inline">
+          <div className={inlineFormClass}>
             <Button
               variant="outline"
               type="button"
@@ -125,7 +126,7 @@ function Card({ item }: { item: Approval }) {
           {ja ? "許可を取り消す" : "Revoke"}
         </Button>
       )}
-      {error && <p role="alert">{error}</p>}
+      {error && <Alert>{error}</Alert>}
     </article>
   );
 }
@@ -150,13 +151,13 @@ export function CapabilityApprovals({ area }: { area?: string }) {
       .filter((i) => !area || i.area_id === area) ?? [];
   return (
     <details
-      className="core-panel"
+      className={panelClass}
       open={items.some((i) => i.state === "pending")}
     >
       <summary>
         {ja ? "承認と接続許可" : "Approvals and grants"} ({items.length})
       </summary>
-      {query.isError && <p role="alert">{query.error.message}</p>}
+      {query.isError && <Alert>{query.error.message}</Alert>}
       {items.map((item) => (
         <Card key={item.id} item={item} />
       ))}

@@ -1,18 +1,25 @@
-import { observeGraphTheme } from "./graph-theme";
+import {
+  graphTokens,
+  observeGraphTheme,
+  onThemeChange,
+  type GraphTokens,
+} from "./graph-theme";
 import { Button } from "../components/ui/button";
-import { useEffect, useId, useRef, useState } from "react";
-import { renderToStaticMarkup } from "react-dom/server";
+import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import cytoscape, {
   type Core,
   type ElementDefinition,
   type Layouts,
+  type StylesheetJson,
 } from "cytoscape";
 import { Crosshair, Maximize, Minus, Plus, Scan } from "lucide-react";
+import { cn } from "../lib/utils";
+import { statusTone } from "../ui";
 import { useGraphFit } from "../graph-fit-view";
-import type { Bounds } from "../graph-fit";
 import { cytoscapeFit } from "./graph-camera";
 import type { MeshCopy } from "./mesh-copy";
-import { meshColors, meshIcons } from "./mesh-icons";
+import { floatingToolbar, MeshIcon } from "./mesh-icons";
+import { Dot } from "../components/patterns";
 import {
   resourceKey,
   type MeshGraph,
@@ -27,12 +34,19 @@ import {
 } from "./graph-regions";
 
 export type MeshLayout = "structured" | "force" | "circle";
-const iconUrls = Object.fromEntries(
-  Object.entries(meshIcons).map(([kind, Icon]) => [
-    kind,
-    `data:image/svg+xml;charset=utf-8,${encodeURIComponent(renderToStaticMarkup(<Icon color={meshColors[kind as MeshKind]} width={28} height={28} strokeWidth={1.5} />))}`,
-  ]),
-);
+
+const pillKinds: Partial<Record<MeshKind, true>> = {
+  tool: true,
+  model: true,
+  skill: true,
+};
+/** Canvas tiles: Cytoscape draws the tile, the label layer draws its text at the same size. */
+function tileSize(kind: MeshKind) {
+  if (kind === "agent") return { w: 176, h: 48 };
+  if (pillKinds[kind]) return { w: 132, h: 28 };
+  return { w: 156, h: 44 };
+}
+const regionInset = { x: 12, y: 8 };
 
 function elements(
   graph: MeshGraph,
@@ -48,28 +62,30 @@ function elements(
       data: { id: region.id, regionKind: region.kind, nodeId: region.nodeId },
       classes: `mesh-group region-${region.kind} ${region.kind === "execution" && !showNodeFrames ? "region-hidden" : ""}`,
     })),
-    ...[...graph.nodes].map((n) => ({
-      data: {
-        id: n.id,
-        label: label(n),
-        kind: n.kind,
-        parent: regionForNode(n)?.id,
-        color: meshColors[n.kind],
-        icon: iconUrls[n.kind],
-      },
-      position: positions[n.id] ?? { x: 500, y: 400 },
-      classes: ["mesh-node", n.available ? "" : "unavailable"].join(" "),
-    })),
+    ...graph.nodes.map((n) => {
+      const size = tileSize(n.kind);
+      return {
+        data: {
+          id: n.id,
+          label: label(n),
+          kind: n.kind,
+          parent: regionForNode(n)?.id,
+          w: size.w,
+          h: size.h,
+        },
+        position: positions[n.id] ?? { x: 500, y: 400 },
+        classes: [
+          "mesh-node",
+          pillKinds[n.kind] ? "pill" : "",
+          n.available ? "" : "unavailable",
+        ].join(" "),
+      };
+    }),
     ...graph.edges.map((e) => ({
       data: {
         id: e.id,
         source: e.source,
         target: e.target,
-        label:
-          graph.edges.length < 30 ||
-          ["goal", "delegates", "federation", "depends"].includes(e.relation)
-            ? copy.relations[e.relation]
-            : "",
         fullLabel: copy.relations[e.relation],
         layer: e.layer,
         relation: e.relation,
@@ -78,15 +94,173 @@ function elements(
   ];
 }
 
-function labelOffset(node: MeshNode) {
-  return {
-    x: 0,
-    y: node.kind === "goal" || node.kind === "workspace" ? 39 : 29,
-  };
-}
+const handoff = ["delegates", "coordinates", "assigned", "executes", "creates"]
+  .map((relation) => `edge[relation = "${relation}"]`)
+  .join(", ");
+const structural = ["contains", "member", "hosts", "participates"]
+  .map((relation) => `edge[relation = "${relation}"]`)
+  .join(", ");
 
-function regionLabelPosition(bounds: Bounds) {
-  return { x: (bounds.x1 + bounds.x2) / 2, y: bounds.y1 + 10 };
+function meshStylesheet(t: GraphTokens): StylesheetJson {
+  return [
+    {
+      selector: "node.mesh-node",
+      style: {
+        shape: "round-rectangle",
+        "corner-radius": "10",
+        width: "data(w)",
+        height: "data(h)",
+        "background-color": t.surface,
+        "border-width": 1,
+        "border-color": t.borderStrong,
+        "overlay-opacity": 0,
+        "transition-property": "opacity",
+        "transition-duration": 150,
+      },
+    },
+    {
+      selector: "node.pill",
+      style: { "corner-radius": "14", "border-color": t.border },
+    },
+    {
+      selector: "node.unavailable",
+      style: { "border-style": "dashed", "border-color": t.faint },
+    },
+    {
+      selector: "node.mesh-group",
+      style: {
+        shape: "round-rectangle",
+        "corner-radius": "10",
+        "background-color": t.raised,
+        "background-opacity": 0.28,
+        "border-color": t.faint,
+        "border-style": "dashed",
+        "border-width": 1,
+        "border-opacity": 0.7,
+        padding: "36px",
+        "min-width": "190px",
+        "min-height": "110px",
+        "overlay-opacity": 0,
+      },
+    },
+    {
+      selector: "node.region-shared",
+      style: { "background-opacity": 0.14 },
+    },
+    {
+      selector: "node.region-configuration",
+      style: { "background-opacity": 0, "border-opacity": 0.45 },
+    },
+    {
+      selector: "node.region-hidden",
+      style: { "border-opacity": 0, "background-opacity": 0 },
+    },
+    {
+      selector: "edge",
+      style: {
+        width: 1,
+        "line-color": t.edge,
+        "target-arrow-color": t.edge,
+        "target-arrow-shape": "none",
+        "arrow-scale": 0.7,
+        "curve-style": "bezier",
+        "control-point-step-size": 40,
+        "source-distance-from-node": 2,
+        "target-distance-from-node": 3,
+        "font-size": 10,
+        "font-family": t.mono,
+        color: t.muted,
+        "text-background-color": t.background,
+        "text-background-opacity": 1,
+        "text-background-padding": "2px",
+        "text-background-shape": "roundrectangle",
+        "text-rotation": "none",
+        "overlay-opacity": 0,
+      },
+    },
+    {
+      selector: handoff,
+      style: {
+        width: 1.25,
+        "line-color": t.edgeStrong,
+        "target-arrow-color": t.edgeStrong,
+        "target-arrow-shape": "triangle",
+      },
+    },
+    {
+      selector: 'edge[relation = "goal"], edge[relation = "produces"]',
+      style: { "target-arrow-shape": "triangle" },
+    },
+    {
+      selector: 'edge[relation = "depends"]',
+      style: {
+        width: 1.25,
+        "line-style": "dashed",
+        "line-dash-pattern": [5, 4],
+        "line-color": t.warning,
+        "target-arrow-color": t.warning,
+        "target-arrow-shape": "triangle",
+      },
+    },
+    {
+      selector: 'edge[relation = "tool"], edge[relation = "skill"]',
+      style: { width: 0.75 },
+    },
+    {
+      selector: 'edge[relation = "model"]',
+      style: { "line-style": "dotted", width: 1 },
+    },
+    {
+      selector: structural,
+      style: { width: 0.75, "line-color": t.borderStrong },
+    },
+    {
+      selector: 'edge[layer = "federation"]',
+      style: {
+        "line-style": "dashed",
+        "line-dash-pattern": [6, 5],
+        "line-color": t.edge,
+        "target-arrow-shape": "none",
+      },
+    },
+    {
+      selector: "node.is-selected",
+      style: {
+        "border-color": t.brandMark,
+        "outline-width": 2,
+        "outline-offset": 2,
+        "outline-color": t.brandMark,
+        "outline-opacity": 0.9,
+        "underlay-color": t.brandMark,
+        "underlay-opacity": 0.12,
+        "underlay-padding": 9,
+        "underlay-shape": "round-rectangle",
+      },
+    },
+    {
+      selector: "node.mesh-group.is-selected",
+      style: {
+        "border-color": t.brandMark,
+        "border-opacity": 1,
+        "outline-width": 0,
+        "underlay-opacity": 0,
+      },
+    },
+    {
+      selector: "edge.is-connected",
+      style: {
+        label: "data(fullLabel)",
+        width: 1.6,
+        "line-color": t.foreground,
+        "target-arrow-color": t.foreground,
+      },
+    },
+    {
+      selector: 'edge.is-connected[relation = "depends"]',
+      style: { "line-color": t.warning, "target-arrow-color": t.warning },
+    },
+    { selector: ".is-dimmed", style: { opacity: 0.28 } },
+  ];
 }
 
 export function MeshCanvas({
@@ -94,26 +268,30 @@ export function MeshCanvas({
   mode,
   layout,
   selectedId,
+  focusId,
   select,
   label,
   status,
   copy,
   localNode,
   showNodeFrames,
+  actions,
 }: {
   graph: MeshGraph;
   mode: MeshMode;
   layout: MeshLayout;
   selectedId: string;
+  /** Explicit selection: its neighbourhood stays bright, the rest dims. */
+  focusId: string;
   select: (id: string) => void;
   label: (node: MeshNode) => string;
   status: (node: MeshNode) => string;
   copy: MeshCopy;
   localNode: string;
   showNodeFrames: boolean;
+  actions: ReactNode;
 }) {
   const host = useRef<HTMLDivElement>(null);
-  const labelLayer = useRef<HTMLDivElement>(null);
   const needsFraming = useRef(true);
   const fitDescription = useId();
   const mini = useRef<HTMLCanvasElement>(null);
@@ -130,59 +308,16 @@ export function MeshCanvas({
     x: number;
     y: number;
     points: Record<string, { x: number; y: number }>;
-    regions: Record<string, { x: number; y: number }>;
+    regions: Record<string, { x: number; y: number; w: number }>;
   }>({ zoom: 1, x: 0, y: 0, points: {}, regions: {} });
   const fit = useGraphFit(
     host,
     () => {
       const cy = instance.current;
-      const layer = labelLayer.current;
-      if (!cy || !host.current || !layer || !graph.nodes.length) return null;
-      const labels = new Map(
-        [...layer.querySelectorAll<HTMLElement>("[data-mesh-node]")].map(
-          (element) => [element.dataset.meshNode, element],
-        ),
-      );
-      const bounds: Bounds[] = [];
-      for (const node of graph.nodes) {
-        const rendered = cy.getElementById(node.id);
-        if (rendered.empty()) return null;
-        if (rendered.isParent()) continue;
-        const element = labels.get(node.id);
-        if (!element || !element.offsetWidth || !element.offsetHeight)
-          return null;
-        const point = rendered.position();
-        const offset = labelOffset(node);
-        bounds.push({
-          x1: point.x + offset.x - element.offsetWidth / 2,
-          y1: point.y + offset.y,
-          x2: point.x + offset.x + element.offsetWidth / 2,
-          y2: point.y + offset.y + element.offsetHeight,
-        });
-      }
-      const regionLabels = new Map(
-        [...layer.querySelectorAll<HTMLElement>("[data-mesh-region]")].map(
-          (element) => [element.dataset.meshRegion, element],
-        ),
-      );
-      for (const region of graphRegions(graph, localNode)) {
-        if (region.kind === "execution" && !showNodeFrames) continue;
-        const rendered = cy.getElementById(region.id);
-        if (rendered.empty()) return null;
-        const element = regionLabels.get(region.id);
-        if (!element || !element.offsetWidth || !element.offsetHeight)
-          return null;
-        const point = regionLabelPosition(
-          rendered.boundingBox({ includeLabels: false }),
-        );
-        bounds.push({
-          x1: point.x - element.offsetWidth / 2,
-          y1: point.y,
-          x2: point.x + element.offsetWidth / 2,
-          y2: point.y + element.offsetHeight,
-        });
-      }
-      return cytoscapeFit(cy, host.current, 0.12, bounds);
+      if (!cy || !host.current || !graph.nodes.length) return null;
+      if (graph.nodes.some((node) => cy.getElementById(node.id).empty()))
+        return null;
+      return cytoscapeFit(cy, host.current, 0.12);
     },
     (camera) => {
       needsFraming.current = false;
@@ -210,146 +345,10 @@ export function MeshCanvas({
       minZoom: 0.12,
       maxZoom: 2.5,
       boxSelectionEnabled: false,
-      style: [
-        {
-          selector: "node.mesh-node",
-          style: {
-            width: 44,
-            height: 44,
-            "background-color": "#0b2422",
-            "border-color": "data(color)",
-            "border-width": 1.5,
-            "background-image": "data(icon)",
-            "background-width": 25,
-            "background-height": 25,
-            "background-fit": "none",
-            "overlay-opacity": 0,
-            "underlay-color": "data(color)",
-            "underlay-opacity": 0.045,
-            "underlay-padding": 7,
-            "underlay-shape": "ellipse",
-          },
-        },
-        {
-          selector: 'node[kind = "agent"]',
-          style: { shape: "hexagon", width: 48, height: 50 },
-        },
-        {
-          selector:
-            'node[kind = "task"], node[kind = "artifact"], node[kind = "tool"], node[kind = "skill"], node[kind = "model"]',
-          style: {
-            shape: "roundrectangle",
-            width: 36,
-            height: 39,
-            "background-width": 22,
-            "background-height": 22,
-          },
-        },
-        {
-          selector: 'node[kind = "goal"], node[kind = "workspace"]',
-          style: {
-            width: 61,
-            height: 61,
-            "background-width": 32,
-            "background-height": 32,
-            "underlay-padding": 10,
-          },
-        },
-        {
-          selector: "node.mesh-group",
-          style: {
-            shape: "roundrectangle",
-            "background-color": "#102e27",
-            "background-opacity": 0.16,
-            "border-color": "#507b70",
-            "border-style": "dashed",
-            "border-width": 1,
-            padding: "62px",
-            "min-width": "190px",
-            "min-height": "110px",
-            "background-image": "none",
-          },
-        },
-        {
-          selector: "node.region-execution",
-          style: { "border-color": "#9984bd", "background-color": "#242039" },
-        },
-        {
-          selector: "node.region-shared",
-          style: { "border-color": "#61a7a0", "background-color": "#103a36" },
-        },
-        {
-          selector: "node.region-configuration",
-          style: { "border-color": "#6f8d96", "background-color": "#182d35" },
-        },
-        {
-          selector: "node.region-hidden",
-          style: { "border-opacity": 0, "background-opacity": 0 },
-        },
-        {
-          selector: "node.unavailable",
-          style: { "border-style": "dashed", opacity: 0.55 },
-        },
-        {
-          selector: "edge",
-          style: {
-            label: "data(label)",
-            width: 1,
-            "line-color": "#517b70",
-            "target-arrow-color": "#81a69d",
-            "target-arrow-shape": "triangle",
-            "arrow-scale": 0.6,
-            "curve-style": "bezier",
-            "control-point-step-size": 45,
-            "font-size": 9,
-            "font-family": "DM Sans, Noto Sans JP, sans-serif",
-            color: "#93ada6",
-            "text-background-color": "#061e19",
-            "text-background-opacity": 0.85,
-            "text-background-padding": "3px",
-            "text-rotation": "none",
-            "text-margin-y": -7,
-            "text-wrap": "wrap",
-            "text-max-width": "95px",
-            "source-distance-from-node": 5,
-            "target-distance-from-node": 7,
-          },
-        },
-        {
-          selector: 'edge[layer = "federation"]',
-          style: {
-            "line-style": "dashed",
-            "line-color": "#c18b62",
-            "target-arrow-color": "#c18b62",
-            color: "#d4a076",
-          },
-        },
-        {
-          selector:
-            'edge[relation = "depends"], edge[relation = "tool"], edge[relation = "skill"]',
-          style: { "line-style": "dashed" },
-        },
-        {
-          selector: ".is-selected",
-          style: {
-            "border-width": 3,
-            "underlay-opacity": 0.12,
-            "underlay-padding": 12,
-          },
-        },
-        {
-          selector: "edge.is-connected",
-          style: {
-            label: "data(fullLabel)",
-            width: 1.6,
-            "line-color": "#93c5b6",
-            "target-arrow-color": "#93c5b6",
-          },
-        },
-      ],
     });
     instance.current = cy;
-    const stopTheme = observeGraphTheme(cy, true);
+    const stopTheme = observeGraphTheme(cy, meshStylesheet);
+    let tokens = graphTokens();
     let frame = 0;
     const update = () => {
       if (frame) return;
@@ -369,8 +368,19 @@ export function MeshCanvas({
           ),
           regions: Object.fromEntries(
             cy.nodes(".mesh-group").map((n) => {
-              const bounds = n.boundingBox({ includeLabels: false });
-              return [n.id(), regionLabelPosition(bounds)];
+              const bounds = n.boundingBox({
+                includeLabels: false,
+                includeOverlays: false,
+                includeUnderlays: false,
+              });
+              return [
+                n.id(),
+                {
+                  x: bounds.x1 + regionInset.x,
+                  y: bounds.y1 + regionInset.y,
+                  w: bounds.w - 2 * regionInset.x,
+                },
+              ];
             }),
           ),
         });
@@ -382,19 +392,19 @@ export function MeshCanvas({
         const canvas = mini.current;
         const ctx = canvas?.getContext("2d");
         if (!canvas || !ctx) return;
-        ctx.clearRect(0, 0, 132, 92);
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
         if (cy.nodes().empty()) return;
         const bounds = cy.elements().boundingBox();
         const scale = Math.min(
-          116 / Math.max(bounds.w, 1),
-          76 / Math.max(bounds.h, 1),
+          (canvas.width - 16) / Math.max(bounds.w, 1),
+          (canvas.height - 16) / Math.max(bounds.h, 1),
         );
         miniBounds.current = { x: bounds.x1, y: bounds.y1, scale };
         const project = (point: { x: number; y: number }) => ({
           x: (point.x - bounds.x1) * scale + 8,
           y: (point.y - bounds.y1) * scale + 8,
         });
-        ctx.strokeStyle = "#355e52";
+        ctx.strokeStyle = tokens.edge;
         ctx.lineWidth = 0.5;
         cy.edges().forEach((e) => {
           const a = project(e.source().position());
@@ -408,18 +418,24 @@ export function MeshCanvas({
           .not(":parent")
           .forEach((n) => {
             const p = project(n.position());
-            ctx.fillStyle = n.data("color") || "#87bba7";
+            ctx.fillStyle = n.hasClass("is-selected")
+              ? tokens.brandMark
+              : tokens.muted;
             ctx.beginPath();
-            ctx.arc(p.x, p.y, 1.7, 0, Math.PI * 2);
+            ctx.arc(p.x, p.y, 1.8, 0, Math.PI * 2);
             ctx.fill();
           });
         const extent = cy.extent();
         const corner = project({ x: extent.x1, y: extent.y1 });
-        ctx.strokeStyle = "#b8d7cc";
+        ctx.strokeStyle = tokens.brandMark;
         ctx.lineWidth = 1;
         ctx.strokeRect(corner.x, corner.y, extent.w * scale, extent.h * scale);
       });
     };
+    const stopMinimapTheme = onThemeChange(() => {
+      tokens = graphTokens();
+      update();
+    });
     cy.on("tap", "node", (event) => {
       if (graphRef.current.nodes.some((n) => n.id === event.target.id()))
         selectRef.current(event.target.id());
@@ -446,6 +462,7 @@ export function MeshCanvas({
       observer.disconnect();
       runningLayout.current?.stop();
       stopTheme();
+      stopMinimapTheme();
       cy.destroy();
       instance.current = null;
     };
@@ -487,7 +504,7 @@ export function MeshCanvas({
     if (reset) {
       needsFraming.current = true;
       resetKey.current = key;
-      // Perspectives change the canvas height (statistics and timeline) and width.
+      // Perspectives change the canvas height (timeline) and width.
       // Measure that viewport before fitting, rather than waiting for ResizeObserver.
       cy.resize();
       if (layout !== "structured") {
@@ -499,7 +516,7 @@ export function MeshCanvas({
                 fit: false,
                 padding: 65,
                 nodeRepulsion: () => 32000,
-                idealEdgeLength: () => 150,
+                idealEdgeLength: () => 170,
                 nodeOverlap: 40,
                 numIter: 450,
               }
@@ -517,20 +534,35 @@ export function MeshCanvas({
     }
     cy.emit("position");
   }, [graph, mode, layout, label, copy, localNode, showNodeFrames]);
+  const focusVisible = graph.nodes.some((node) => node.id === focusId);
+  const bright = new Set<string>([focusId]);
+  for (const edge of graph.edges) {
+    if (edge.source === focusId) bright.add(edge.target);
+    if (edge.target === focusId) bright.add(edge.source);
+  }
   useEffect(() => {
     const cy = instance.current;
     if (!cy) return;
-    cy.elements().removeClass("is-selected is-connected");
-    const selected = cy.getElementById(selectedId);
-    selected.addClass("is-selected");
-    selected.connectedEdges().addClass("is-connected");
-    for (const region of graphRegions(graph, localNode))
-      if (
-        region.kind === "execution" &&
-        resourceKey(region.nodeId, "remote", region.nodeId) === selectedId
-      )
-        cy.getElementById(region.id).addClass("is-selected");
-  }, [selectedId, graph, mode, layout, label, copy, localNode]);
+    cy.batch(() => {
+      cy.elements().removeClass("is-selected is-connected is-dimmed");
+      const selected = cy.getElementById(selectedId);
+      selected.addClass("is-selected");
+      selected.connectedEdges().addClass("is-connected");
+      for (const region of graphRegions(graph, localNode))
+        if (
+          region.kind === "execution" &&
+          resourceKey(region.nodeId, "remote", region.nodeId) === selectedId
+        )
+          cy.getElementById(region.id).addClass("is-selected");
+      const focused = cy.getElementById(focusId);
+      if (focusId && !focused.empty() && !focused.isParent())
+        cy.elements()
+          .not(".mesh-group")
+          .difference(focused.closedNeighborhood())
+          .addClass("is-dimmed");
+    });
+    cy.emit("position");
+  }, [selectedId, focusId, graph, mode, layout, label, copy, localNode]);
   const zoom = (factor: number) => {
     fit.cancel();
     needsFraming.current = false;
@@ -545,19 +577,32 @@ export function MeshCanvas({
       });
   };
   return (
-    <div className="mesh-canvas-wrap">
+    <div className="absolute inset-0 overflow-hidden">
       <div
         ref={host}
-        className="collab-cytoscape mesh-canvas"
+        className="collab-cytoscape mesh-canvas h-full w-full touch-none"
         role="img"
         aria-label={copy.canvas}
       />
       <div
-        ref={labelLayer}
-        className="mesh-label-layer"
+        className="mesh-label-layer pointer-events-none absolute left-0 top-0 origin-top-left"
         style={{
           transform: `translate(${camera.x}px, ${camera.y}px) scale(${camera.zoom})`,
         }}
+        onWheel={(event) =>
+          host.current?.dispatchEvent(
+            new WheelEvent("wheel", {
+              deltaX: event.deltaX,
+              deltaY: event.deltaY,
+              deltaMode: event.deltaMode,
+              clientX: event.clientX,
+              clientY: event.clientY,
+              ctrlKey: event.ctrlKey,
+              bubbles: true,
+              cancelable: true,
+            }),
+          )
+        }
       >
         {graphRegions(graph, localNode).map((region) => {
           const point = camera.regions[region.id];
@@ -575,43 +620,89 @@ export function MeshCanvas({
               : region.kind === "shared"
                 ? `${copy.sharedData} · ${workspace ? label(workspace) : region.workspaceId} · ${copy.homeNode}: ${region.nodeId}`
                 : `${copy.configurationReferences} · ${region.nodeId}`;
+          const style = {
+            left: point.x,
+            top: point.y,
+            maxWidth: Math.max(point.w, 80),
+          };
+          const content =
+            region.kind === "execution" ? (
+              <>
+                <span className="truncate text-muted-foreground">
+                  {region.nodeId}
+                </span>
+                <span className="shrink-0 font-sans text-faint">
+                  {copy.executionRegion}
+                </span>
+              </>
+            ) : region.kind === "shared" ? (
+              <>
+                <span className="shrink-0 font-sans text-faint">
+                  {copy.sharedData}
+                </span>
+                <span className="truncate font-sans text-muted-foreground">
+                  {workspace ? label(workspace) : region.workspaceId}
+                </span>
+                <span className="truncate text-faint">
+                  {`${copy.homeNode}: ${region.nodeId}`}
+                </span>
+              </>
+            ) : (
+              <>
+                <span className="shrink-0 font-sans text-faint">
+                  {copy.configurationReferences}
+                </span>
+                <span className="truncate text-faint">{region.nodeId}</span>
+              </>
+            );
           return region.kind === "execution" ? (
-            <Button
-              variant="outline"
+            <button
               type="button"
-              className="mesh-region-label mesh-region-execution-label"
+              className={cn(
+                "mesh-region-label mesh-region-execution-label pointer-events-auto absolute flex h-5 items-center gap-2 whitespace-nowrap rounded-sm px-1 font-mono text-[11px] transition-colors hover:bg-accent focus-visible:outline-2 focus-visible:outline-ring",
+                resourceKey(region.nodeId, "remote", region.nodeId) ===
+                  selectedId && "bg-brand-soft",
+              )}
               data-mesh-region={region.id}
               key={region.id}
-              style={{ left: point.x, top: point.y }}
+              style={style}
               onClick={() =>
                 select(resourceKey(region.nodeId, "remote", region.nodeId))
               }
               title={heading}
             >
-              {heading}
-            </Button>
+              {content}
+            </button>
           ) : (
             <span
-              className="mesh-region-label"
+              className="mesh-region-label absolute flex h-5 items-center gap-2 whitespace-nowrap px-1 font-mono text-[11px]"
               data-mesh-region={region.id}
               key={region.id}
-              style={{ left: point.x, top: point.y }}
+              style={style}
               title={heading}
             >
-              {heading}
+              {content}
             </span>
           );
         })}
         {graph.nodes.map((node) => {
           const point = camera.points[node.id];
           if (!point) return null;
+          const size = tileSize(node.kind);
+          const name = label(node);
+          const tone = node.status ? statusTone(node.status) : "neutral";
+          const pill = pillKinds[node.kind];
           return (
-            <Button
-              variant="outline"
+            <button
               type="button"
               key={node.id}
               data-mesh-node={node.id}
-              className={`mesh-node-label ${selectedId === node.id ? "selected" : ""}`}
+              className={cn(
+                "mesh-node-label pointer-events-auto absolute flex -translate-x-1/2 -translate-y-1/2 items-center text-left transition-[background-color,opacity] duration-150 hover:bg-accent focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring motion-reduce:transition-none",
+                pill ? "gap-1.5 rounded-full px-3" : "gap-2 rounded-lg px-2.5",
+                selectedId === node.id && "selected",
+                focusVisible && !bright.has(node.id) && "opacity-35",
+              )}
               aria-pressed={selectedId === node.id}
               onClick={() => select(node.id)}
               onFocus={(event) => {
@@ -622,31 +713,77 @@ export function MeshCanvas({
                 if (cy) cy.center(cy.getElementById(node.id));
               }}
               style={{
-                left: point.x + labelOffset(node).x,
-                top: point.y + labelOffset(node).y,
+                left: point.x,
+                top: point.y,
+                width: size.w,
+                height: size.h,
               }}
-              title={`${label(node)} · ${copy.kinds[node.kind]}`}
+              title={`${name} · ${copy.kinds[node.kind]}`}
             >
-              <strong>{label(node)}</strong>
-              <span className="mesh-node-kind">{copy.kinds[node.kind]}</span>
-              {node.status && (
-                <span
-                  className={`mesh-status status-${node.status.toLowerCase()}`}
-                >
-                  {status(node)}
-                </span>
+              {pill ? (
+                <>
+                  <MeshIcon
+                    kind={node.kind}
+                    size={12}
+                    className="shrink-0 text-faint"
+                  />
+                  <strong className="truncate font-mono text-[11px] font-normal text-muted-foreground">
+                    {name}
+                  </strong>
+                </>
+              ) : (
+                <>
+                  {node.kind === "agent" ? (
+                    <span
+                      aria-hidden="true"
+                      className="grid size-7 shrink-0 place-items-center rounded-md border border-border-strong bg-raised text-[11px] font-semibold text-foreground"
+                    >
+                      {name.trim().slice(0, 1).toUpperCase()}
+                    </span>
+                  ) : (
+                    <MeshIcon
+                      kind={node.kind}
+                      size={14}
+                      className="shrink-0 text-muted-foreground"
+                    />
+                  )}
+                  <span className="grid min-w-0 flex-1 gap-0.5">
+                    <strong
+                      className={cn(
+                        "truncate font-medium leading-tight text-foreground",
+                        node.kind === "agent" ? "text-[13px]" : "text-xs",
+                      )}
+                    >
+                      {name}
+                    </strong>
+                    <span className="flex min-w-0 items-center gap-1.5 text-[11px] leading-tight text-faint">
+                      {node.kind !== "agent" && (
+                        <span className="mesh-node-kind truncate">
+                          {copy.kinds[node.kind]}
+                        </span>
+                      )}
+                      {node.status && (
+                        <span className="flex min-w-0 items-center gap-1 text-muted-foreground">
+                          <Dot tone={tone} />
+                          <span className="truncate">{status(node)}</span>
+                        </span>
+                      )}
+                      {!node.available && (
+                        <span className="mesh-node-kind truncate">
+                          {copy.missing}
+                        </span>
+                      )}
+                    </span>
+                  </span>
+                </>
               )}
-              {!node.available && (
-                <span className="mesh-node-kind">{copy.missing}</span>
-              )}
-            </Button>
+            </button>
           );
         })}
       </div>
-      <Button
-        variant="outline"
+      <button
         type="button"
-        className="mesh-minimap"
+        className="mesh-minimap absolute bottom-3 right-3 z-10 overflow-hidden rounded-md border border-border-strong bg-surface/90 transition-colors hover:border-edge focus-visible:outline-2 focus-visible:outline-ring disabled:opacity-45 max-md:hidden"
         aria-label={copy.minimap}
         disabled={!graph.nodes.length}
         onClick={(event) => {
@@ -678,32 +815,47 @@ export function MeshCanvas({
           });
         }}
       >
-        <canvas ref={mini} width={132} height={92} />
-      </Button>
-      <div className="mesh-camera" role="group" aria-label={copy.camera}>
+        <canvas
+          ref={mini}
+          width={132}
+          height={92}
+          className="block h-[92px] w-[132px]"
+        />
+      </button>
+      <div
+        className={floatingToolbar}
+        role="group"
+        aria-label={copy.camera}
+      >
         <Button
-          variant="outline"
-          type="button"
-          aria-label={copy.zoomIn}
-          title={copy.zoomIn}
-          onClick={() => zoom(1.25)}
-        >
-          <Plus size={16} />
-        </Button>
-        <Button
-          variant="outline"
-          type="button"
+          variant="ghost"
+          size="icon"
+          className="size-7"
           aria-label={copy.zoomOut}
           title={copy.zoomOut}
           onClick={() => zoom(0.8)}
         >
-          <Minus size={16} />
+          <Minus />
         </Button>
+        <span className="w-10 text-center font-mono text-[11px] text-muted-foreground tabular max-md:hidden">
+          {Math.round(camera.zoom * 100)}%
+        </span>
         <Button
-          variant="outline"
-          type="button"
+          variant="ghost"
+          size="icon"
+          className="size-7"
+          aria-label={copy.zoomIn}
+          title={copy.zoomIn}
+          onClick={() => zoom(1.25)}
+        >
+          <Plus />
+        </Button>
+        <span aria-hidden="true" className="mx-0.5 h-4 w-px bg-border" />
+        <Button
+          variant="ghost"
+          size="sm"
+          className="h-7 px-2"
           aria-label={copy.fit}
-          className="graph-fit-button"
           title={
             fit.available ? copy.fit : `${copy.fit}: ${copy.fitUnavailable}`
           }
@@ -711,12 +863,13 @@ export function MeshCanvas({
           disabled={!fit.available}
           onClick={fit.request}
         >
-          <Scan size={16} aria-hidden="true" />
+          <Scan aria-hidden="true" />
           <span>{copy.fit}</span>
         </Button>
         <Button
-          variant="outline"
-          type="button"
+          variant="ghost"
+          size="icon"
+          className="size-7"
           aria-label={copy.center}
           title={copy.center}
           disabled={!selectedId}
@@ -727,11 +880,12 @@ export function MeshCanvas({
             if (cy) cy.center(cy.getElementById(selectedId));
           }}
         >
-          <Crosshair size={16} />
+          <Crosshair />
         </Button>
         <Button
-          variant="outline"
-          type="button"
+          variant="ghost"
+          size="icon"
+          className="size-7 max-md:hidden"
           aria-label={copy.fullscreen}
           title={copy.fullscreen}
           onClick={() => {
@@ -744,10 +898,12 @@ export function MeshCanvas({
                 .catch(() => {});
           }}
         >
-          <Maximize size={16} />
+          <Maximize />
         </Button>
+        <span aria-hidden="true" className="mx-0.5 h-4 w-px bg-border" />
+        {actions}
       </div>
-      <span id={fitDescription} className="graph-fit-status" role="status">
+      <span id={fitDescription} className="sr-only" role="status">
         {fit.available ? "" : copy.fitUnavailable}
       </span>
     </div>

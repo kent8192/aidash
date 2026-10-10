@@ -64,6 +64,19 @@ export const marketplaceCopy = {
     installed: "Installation prepared",
     dependencies:
       "Prepare dependencies before installation. Nothing is fetched automatically.",
+    reviewInstall: "Review and install",
+    installHelp:
+      "Check the exact digest and requested permissions. The installation stays pending until an operator approves it.",
+    cancel: "Cancel",
+    colPackage: "Package",
+    colKind: "Kind",
+    colVersion: "Version",
+    colPublisher: "Publisher",
+    colPermissions: "Permissions",
+    colState: "State",
+    noPermissions: "No permissions requested",
+    capabilities: "Capabilities",
+    sharing: "Sharing",
   },
   "ja-JP": {
     publicationVersion: "公開するバージョン",
@@ -129,5 +142,18 @@ export const marketplaceCopy = {
     published: "パッケージを公開しました",
     installed: "導入を準備しました",
     dependencies: "依存関係は導入前に準備してください。自動取得は行いません。",
+    reviewInstall: "確認して導入",
+    installHelp:
+      "ダイジェストと要求される権限を確認してください。管理者が承認するまで導入は承認待ちのままです。",
+    cancel: "キャンセル",
+    colPackage: "パッケージ",
+    colKind: "種類",
+    colVersion: "バージョン",
+    colPublisher: "公開元",
+    colPermissions: "権限",
+    colState: "状態",
+    noPermissions: "要求される権限はありません",
+    capabilities: "機能",
+    sharing: "共有範囲",
   },
 } as const;

@@ -452,9 +452,20 @@ for (const locale of ["en-US", "ja-JP"] as const) {
     await expect.poll(() => shared).toMatchObject({ tenants: ["a"] });
     await page
       .getByRole("button", {
+        name: ja ? "確認して導入" : "Review and install",
+        exact: true,
+      })
+      .click();
+    const review = page.getByRole("dialog", {
+      name: ja ? "このテナントに導入" : "Install for this tenant",
+    });
+    await expect(review).toContainText("sha256:source");
+    await review
+      .getByRole("button", {
         name: ja ? "このテナントに導入" : "Install for this tenant",
       })
       .click();
+    await expect(review).toHaveCount(0);
     await expect(
       page.getByText(
         ja ? "導入済み・利用承認待ち" : "Installed; awaiting approval",
@@ -544,10 +555,19 @@ for (const locale of ["en-US", "ja-JP"] as const) {
         exact: true,
       }),
     ).toHaveCount(0);
-    await page.locator(".account-popover summary").click();
     await page
-      .locator(".account-popover select")
-      .first()
+      .getByRole("button", {
+        name: ja ? "アカウント設定" : "Account settings",
+        exact: true,
+      })
+      .click();
+    await page
+      .getByRole("combobox", {
+        name: ja
+          ? "このタブで使う権限を選択してください"
+          : "Choose the authority for this tab",
+        exact: true,
+      })
       .selectOption("mapping:second-mapping");
     await expect(
       page.getByText(

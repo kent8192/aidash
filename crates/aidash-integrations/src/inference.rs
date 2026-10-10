@@ -227,6 +227,13 @@ impl ModelProvider for OpenRouterProvider {
 		let deadline = self.config.request_timeout()?;
 		tokio::time::timeout(deadline, async {
 			request.validate()?;
+			// Unsupported routes never receive `cache_control` (ADR 0019).
+			if request.cache_breakpoints && !self.config.accepts_cache_breakpoints() {
+				return Err(Error::Invalid(format!(
+					"model {} does not accept cache breakpoints",
+					self.config.model_id
+				)));
+			}
 			if self.config.provider_credential.is_some()
 				&& request.max_output_tokens > self.config.output_token_limit()
 			{
@@ -271,7 +278,12 @@ impl ModelProvider for OpenRouterProvider {
 			let media_routes = self.verified_media_routes(&request).await?;
 			let mut body = request.input_body();
 			if let Some(salt) = salt {
-				let system = &mut body["messages"][0]["content"];
+				// With a cache breakpoint, `system` is one marked text block; the
+				// salt starts its text, so cached prefixes stay per Tenant.
+				let system = match &mut body["messages"][0]["content"] {
+					Value::Array(blocks) => &mut blocks[0]["text"],
+					text => text,
+				};
 				let salted = format!("{salt}{}", system.as_str().unwrap_or_default());
 				*system = Value::String(salted);
 			}

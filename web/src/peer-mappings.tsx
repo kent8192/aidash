@@ -16,6 +16,16 @@ import type {
 } from "./generated/models";
 import { ApiError } from "./transport";
 import { Badge, Field, Modal, Panel, useI18n } from "./ui";
+import { Input } from "./components/ui/input";
+import { NativeSelect } from "./components/ui/native-select";
+import {
+  Alert,
+  Hint,
+  HistoryRow,
+  Loading,
+  Pager,
+  RowList,
+} from "./components/patterns";
 
 const PAGE_SIZE = 25;
 export function PeerMappings({
@@ -25,7 +35,7 @@ export function PeerMappings({
   tenant: string;
   credentials: Credential[];
 }) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const credentialLabels = disambiguateLabels(
     credentials,
     (credential) => credential.id,
@@ -91,6 +101,7 @@ export function PeerMappings({
         action={
           <Button
             variant="outline"
+            size="sm"
             onClick={() => {
               setError("");
               setEditing("new");
@@ -100,150 +111,149 @@ export function PeerMappings({
           </Button>
         }
       >
-        <p className="auth-padding">{t("authPeerMappingHelp")}</p>
-        {error && !editing && (
-          <p role="alert" className="error">
-            {t(error)}
-          </p>
-        )}
-        {mappings.isError && (
-          <p role="alert" className="error">
-            {mappings.error.message}
-          </p>
-        )}
-        {mappings.isPending && <p className="auth-padding">{t("loading")}</p>}
+        <Hint>{t("authPeerMappingHelp")}</Hint>
+        {error && !editing && <Alert>{t(error)}</Alert>}
+        {mappings.isError && <Alert>{mappings.error.message}</Alert>}
+        {mappings.isPending && <Loading />}
         {rows?.length === 0 && (
-          <p className="auth-padding">{t("authNoPeerMappings")}</p>
+          <p className="text-xs text-muted-foreground">
+            {t("authNoPeerMappings")}
+          </p>
         )}
-        {rows?.map((mapping) => (
-          <div
-            className="auth-row"
-            key={JSON.stringify([
-              mapping.source_node,
-              mapping.source_tenant,
-              mapping.source_subject,
-            ])}
-          >
-            <div>
-              <strong>
-                <ReferenceName id={mapping.source_node} />
-              </strong>
-              <small>
-                {mapping.source_tenant} / {mapping.source_subject}
-              </small>
-              <small>
-                {t("authMappedCredential")}:{" "}
-                {credentials.find(
-                  (credential) => credential.id === mapping.credential_id,
-                )?.subject || t("unavailableEntity")}
-              </small>
-              <small>
-                {t("revision")}: {mapping.revision}
-              </small>
-            </div>
-            <Badge value={mapping.enabled ? "authApproved" : "authDisabled"} />
-            <Button
-              variant="outline"
-              disabled={busy}
-              onClick={() => {
-                setError("");
-                setEditing(mapping);
-              }}
-            >
-              {t("authEditPeerMapping")}
-            </Button>
-            <Button
-              variant="outline"
-              disabled={busy}
-              onClick={() =>
-                void save({
-                  expected_revision: mapping.revision,
-                  enabled: !mapping.enabled,
-                  source_node: mapping.source_node,
-                  source_tenant: mapping.source_tenant,
-                  source_subject: mapping.source_subject,
-                  credential_id: mapping.credential_id,
-                })
-              }
-            >
-              {t(mapping.enabled ? "authDisableApproval" : "authApprove")}
-            </Button>
-          </div>
-        ))}
-        <div className="auth-pagination">
-          <Button
-            variant="outline"
-            disabled={offset === 0 || mappings.isFetching}
-            onClick={() => setOffset(Math.max(0, offset - PAGE_SIZE))}
-          >
-            {t("authPrevious")}
-          </Button>
-          <span>
-            {t("authPage")} {offset / PAGE_SIZE + 1}
-          </span>
-          <Button
-            variant="outline"
-            disabled={!rows || rows.length < PAGE_SIZE || mappings.isFetching}
-            onClick={() => setOffset(offset + PAGE_SIZE)}
-          >
-            {t("authNext")}
-          </Button>
-        </div>
+        {!!rows?.length && (
+          <RowList>
+            {rows.map((mapping) => (
+              <div
+                className="auth-row grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-x-4 gap-y-2 py-2 md:grid-cols-[minmax(0,1fr)_auto_auto]"
+                key={JSON.stringify([
+                  mapping.source_node,
+                  mapping.source_tenant,
+                  mapping.source_subject,
+                ])}
+              >
+                <div className="grid min-w-0 gap-0.5">
+                  <span className="truncate font-medium text-foreground">
+                    <ReferenceName id={mapping.source_node} />
+                  </span>
+                  <span className="truncate font-mono text-[11px] text-muted-foreground">
+                    {mapping.source_tenant} / {mapping.source_subject}
+                  </span>
+                  <span className="truncate text-[11px] text-faint">
+                    {t("authMappedCredential")}{" "}
+                    <span className="font-mono text-muted-foreground">
+                      {credentials.find(
+                        (credential) => credential.id === mapping.credential_id,
+                      )?.subject || t("unavailableEntity")}
+                    </span>
+                    {" · "}
+                    {t("revision")}{" "}
+                    <span className="font-mono tabular">{mapping.revision}</span>
+                  </span>
+                </div>
+                <Badge
+                  value={mapping.enabled ? "authApproved" : "authDisabled"}
+                  tone={mapping.enabled ? "success" : "neutral"}
+                />
+                <div className="col-span-2 flex flex-wrap gap-1.5 md:col-span-1">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={busy}
+                    onClick={() => {
+                      setError("");
+                      setEditing(mapping);
+                    }}
+                  >
+                    {t("authEditPeerMapping")}
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    disabled={busy}
+                    onClick={() =>
+                      void save({
+                        expected_revision: mapping.revision,
+                        enabled: !mapping.enabled,
+                        source_node: mapping.source_node,
+                        source_tenant: mapping.source_tenant,
+                        source_subject: mapping.source_subject,
+                        credential_id: mapping.credential_id,
+                      })
+                    }
+                  >
+                    {t(mapping.enabled ? "authDisableApproval" : "authApprove")}
+                  </Button>
+                </div>
+              </div>
+            ))}
+          </RowList>
+        )}
+        <Pager
+          page={offset / PAGE_SIZE + 1}
+          previous={{
+            disabled: offset === 0 || mappings.isFetching,
+            go: () => setOffset(Math.max(0, offset - PAGE_SIZE)),
+          }}
+          next={{
+            disabled: !rows || rows.length < PAGE_SIZE || mappings.isFetching,
+            go: () => setOffset(offset + PAGE_SIZE),
+          }}
+        />
       </Panel>
       <Panel title={t("authPeerMappingHistory")}>
-        {history.isError && (
-          <p role="alert" className="error">
-            {history.error.message}
-          </p>
-        )}
-        {history.isPending && <p className="auth-padding">{t("loading")}</p>}
+        {history.isError && <Alert>{history.error.message}</Alert>}
+        {history.isPending && <Loading />}
         {revisions?.length === 0 && (
-          <p className="auth-padding">{t("authNoHistory")}</p>
+          <p className="text-xs text-muted-foreground">{t("authNoHistory")}</p>
         )}
-        {revisions?.map((revision) => (
-          <details className="auth-history" key={revision.sequence}>
-            <summary>
-              <ReferenceName id={revision.source_node} /> ·{" "}
-              {revision.source_tenant} / {revision.source_subject}
-              <time>{revision.updated_at}</time>
-            </summary>
-            <RecordView
-              value={revision}
-              labels={
-                new Map(
-                  credentials.map((credential) => [
-                    credential.id,
-                    credentialLabels.get(credential.id) ?? credential.subject,
-                  ]),
-                )
-              }
-            />
-          </details>
-        ))}
-        <div className="auth-pagination">
-          <Button
-            variant="outline"
-            disabled={cursors.length === 1 || history.isFetching}
-            onClick={() => setCursors(cursors.slice(0, -1))}
-          >
-            {t("authPrevious")}
-          </Button>
-          <span>
-            {t("authPage")} {cursors.length}
-          </span>
-          <Button
-            variant="outline"
-            disabled={
-              !revisions || revisions.length < PAGE_SIZE || history.isFetching
-            }
-            onClick={() => {
+        {!!revisions?.length && (
+          <RowList>
+            {revisions.map((revision) => (
+              <HistoryRow
+                className="auth-history"
+                key={revision.sequence}
+                time={new Date(revision.updated_at).toLocaleString(locale)}
+                summary={
+                  <>
+                    <ReferenceName id={revision.source_node} />
+                    <span className="font-mono text-muted-foreground">
+                      {" · "}
+                      {revision.source_tenant} / {revision.source_subject}
+                    </span>
+                  </>
+                }
+              >
+                <RecordView
+                  value={revision}
+                  labels={
+                    new Map(
+                      credentials.map((credential) => [
+                        credential.id,
+                        credentialLabels.get(credential.id) ??
+                          credential.subject,
+                      ]),
+                    )
+                  }
+                />
+              </HistoryRow>
+            ))}
+          </RowList>
+        )}
+        <Pager
+          page={cursors.length}
+          previous={{
+            disabled: cursors.length === 1 || history.isFetching,
+            go: () => setCursors(cursors.slice(0, -1)),
+          }}
+          next={{
+            disabled:
+              !revisions || revisions.length < PAGE_SIZE || history.isFetching,
+            go: () => {
               const next = revisions?.at(-1)?.sequence;
               if (next !== undefined) setCursors([...cursors, next]);
-            }}
-          >
-            {t("authNext")}
-          </Button>
-        </div>
+            },
+          }}
+        />
       </Panel>
       {editing && (
         <Modal
@@ -258,7 +268,7 @@ export function PeerMappings({
           }}
         >
           <form
-            className="form-grid"
+            className="grid min-w-0 gap-3"
             onSubmit={(event) => {
               event.preventDefault();
               const form = new FormData(event.currentTarget);
@@ -286,24 +296,27 @@ export function PeerMappings({
                 value={editing.source_node}
               />
             )}
-            {(
-              [
-                ["source_tenant", "authSourceTenant"],
-                ["source_subject", "authSourceSubject"],
-              ] as const
-            ).map(([name, label]) => (
-              <Field key={name} label={t(label)}>
-                <input
-                  name={name}
-                  required
-                  maxLength={256}
-                  readOnly={editing !== "new"}
-                  defaultValue={editing === "new" ? "" : editing[name]}
-                />
-              </Field>
-            ))}
+            <div className="grid gap-3 sm:grid-cols-2">
+              {(
+                [
+                  ["source_tenant", "authSourceTenant"],
+                  ["source_subject", "authSourceSubject"],
+                ] as const
+              ).map(([name, label]) => (
+                <Field key={name} label={t(label)}>
+                  <Input
+                    name={name}
+                    required
+                    maxLength={256}
+                    readOnly={editing !== "new"}
+                    className="font-mono read-only:bg-raised read-only:text-muted-foreground"
+                    defaultValue={editing === "new" ? "" : editing[name]}
+                  />
+                </Field>
+              ))}
+            </div>
             <Field label={t("authMappedCredential")}>
-              <select
+              <NativeSelect
                 name="credential_id"
                 required
                 defaultValue={editing === "new" ? "" : editing.credential_id}
@@ -321,17 +334,13 @@ export function PeerMappings({
                     {credentialLabels.get(credential.id)}
                   </option>
                 ))}
-              </select>
+              </NativeSelect>
             </Field>
-            <p>{t("authPeerMappingSaveHelp")}</p>
-            {error && (
-              <p role="alert" className="error">
-                {t(error)}
-              </p>
-            )}
-            <Button variant="outline" disabled={busy}>
-              {t("authSavePeerMapping")}
-            </Button>
+            <Hint>{t("authPeerMappingSaveHelp")}</Hint>
+            {error && <Alert>{t(error)}</Alert>}
+            <div className="flex justify-end border-t border-border pt-4">
+              <Button disabled={busy}>{t("authSavePeerMapping")}</Button>
+            </div>
           </form>
         </Modal>
       )}

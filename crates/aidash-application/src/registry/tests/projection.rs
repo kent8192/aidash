@@ -179,3 +179,128 @@ fn definitions_without_projection_fields_keep_their_bytes_and_resolve_as_legacy(
 	assert!(model_bindings.supports_projection(ProjectionVersion::Legacy));
 	assert!(!model_bindings.supports_projection(ProjectionVersion::Ordered));
 }
+
+/// An Ordered-capable model on `model_id`, declaring `cache_mode` if given.
+fn cache_model(model_id: &str, cache_mode: Option<&str>) -> Value {
+	let mut config = model_config(Some(json!(["legacy", "ordered"])));
+	config["model_id"] = json!(model_id);
+	if let Some(mode) = cache_mode {
+		config["cache_mode"] = json!(mode);
+	}
+	config
+}
+
+fn cache_agent(version: Option<&str>) -> Value {
+	let mut config = agent_config(version);
+	config["prompt_cache"] = json!("explicit");
+	config
+}
+
+#[rstest]
+#[case::off(Some("off"))]
+#[case::omitted(None)]
+#[case::explicit(Some("explicit"))]
+#[tokio::test]
+async fn registration_accepts_prompt_cache_on_an_ordered_agent_and_explicit_model(
+	validation: DefinitionValidation,
+	#[case] prompt_cache: Option<&str>,
+) {
+	// Arrange
+	let mut scope = scope_with(cache_model("anthropic/claude-fixture", Some("explicit")));
+	let mut config = agent_config(Some("ordered"));
+	if let Some(cache) = prompt_cache {
+		config["prompt_cache"] = json!(cache);
+	}
+	let agent = definition("agent", "agent", config.clone());
+	// Act
+	let inserted = register_definition(&mut scope, &validation, &agent, NODE)
+		.await
+		.unwrap();
+	// Assert
+	assert!(inserted);
+	assert_eq!(
+		scope.entries["agent@1.0.0"].config.get("prompt_cache"),
+		config.get("prompt_cache")
+	);
+}
+
+#[rstest]
+#[case::undeclared_model("anthropic/claude-fixture", None, Some("ordered"))]
+#[case::automatic_model("anthropic/claude-fixture", Some("automatic"), Some("ordered"))]
+#[case::slug_outside_the_allowlist("openai/gpt-fixture", Some("explicit"), Some("ordered"))]
+#[case::legacy_agent("anthropic/claude-fixture", Some("explicit"), None)]
+#[tokio::test]
+async fn registration_rejects_explicit_prompt_cache_without_ordered_and_an_explicit_route(
+	validation: DefinitionValidation,
+	#[case] model_id: &str,
+	#[case] cache_mode: Option<&str>,
+	#[case] version: Option<&str>,
+) {
+	// Arrange: a stored model outside the allowlist bypasses model validation.
+	let mut scope = scope_with(cache_model(model_id, cache_mode));
+	let agent = definition("agent", "agent", cache_agent(version));
+	// Act
+	let error = register_definition(&mut scope, &validation, &agent, NODE)
+		.await
+		.unwrap_err();
+	// Assert
+	assert!(
+		matches!(&error, Error::Domain(aidash_domain::Error::Invalid(message)) if message.starts_with("Agent prompt_cache explicit requires")),
+		"{error:?}"
+	);
+	assert!(!scope.entries.contains_key("agent@1.0.0"));
+	assert!(!scope.trace.iter().any(|step| step == "insert"));
+}
+
+#[rstest]
+#[tokio::test]
+async fn publication_rejects_explicit_prompt_cache_its_model_cannot_receive(
+	validation: DefinitionValidation,
+) {
+	// Arrange
+	let mut scope = scope_with(cache_model("anthropic/claude-fixture", Some("automatic")));
+	let package = Package {
+		entity: definition("agent", "agent", cache_agent(Some("ordered"))),
+		author: "author".into(),
+		permissions: Vec::new(),
+		dependencies: Vec::new(),
+	};
+	// Act
+	let error = publish(&mut scope, &validation, package).await.unwrap_err();
+	// Assert
+	assert!(is_invalid(&error), "{error:?}");
+	assert!(!scope.trace.iter().any(|step| step == "publish"));
+}
+
+#[rstest]
+#[case::explicit_outside_the_allowlist("openai/gpt-fixture", "explicit", false)]
+#[case::explicit_anthropic("anthropic/claude-fixture", "explicit", true)]
+#[case::automatic("openai/gpt-fixture", "automatic", true)]
+#[case::none("openai/gpt-fixture", "none", true)]
+#[case::unknown("anthropic/claude-fixture", "always", false)]
+fn model_definitions_admit_explicit_cache_mode_only_for_allowlisted_slugs(
+	validation: DefinitionValidation,
+	#[case] model_id: &str,
+	#[case] cache_mode: &str,
+	#[case] accepted: bool,
+) {
+	let model = definition("model", "model", cache_model(model_id, Some(cache_mode)));
+	let result = validation.validate_in(&model, false);
+	assert_eq!(result.is_ok(), accepted, "{result:?}");
+	if cache_mode == "explicit" && !accepted {
+		assert!(
+			matches!(&result, Err(Error::Domain(aidash_domain::Error::Invalid(message))) if message.contains("cannot declare explicit prompt caching")),
+			"{result:?}"
+		);
+	}
+}
+
+#[rstest]
+fn definitions_without_cache_fields_keep_their_bytes() {
+	let model: ModelConfig = serde_json::from_str(LEGACY_MODEL).unwrap();
+	let agent: AgentBindings = serde_json::from_str(LEGACY_AGENT).unwrap();
+	assert_eq!(model.cache_mode, None);
+	assert_eq!(agent.prompt_cache, None);
+	assert_eq!(serde_json::to_string(&model).unwrap(), LEGACY_MODEL);
+	assert_eq!(serde_json::to_string(&agent).unwrap(), LEGACY_AGENT);
+}

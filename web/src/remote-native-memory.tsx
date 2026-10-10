@@ -3,7 +3,10 @@ import { useState } from "react";
 import { useInfiniteQuery } from "@tanstack/react-query";
 import type { Entry, EntityRef } from "./types";
 import { apiFetch } from "./transport";
+import { Button } from "./components/ui/button";
+import { NativeSelect } from "./components/ui/native-select";
 import { Field, useI18n } from "./ui";
+import { Alert, Check, Group, Hint, Notice } from "./components/patterns";
 
 type Participant = {
   id: string;
@@ -85,21 +88,19 @@ export function HomeNativeMemoryFields({
       );
   const chosen = choices.find((choice) => choice.participant.id === selected);
   return (
-    <fieldset>
-      <legend>
-        {ja ? "Homeの論理Agentの記憶" : "Home logical Agent memory"}
-      </legend>
-      <label className="check">
-        <input
-          type="checkbox"
-          checked={enabled}
-          disabled={required}
-          onChange={(event) => setOptional(event.target.checked)}
-        />
+    <Group
+      nested
+      legend={ja ? "Homeの論理Agentの記憶" : "Home logical Agent memory"}
+    >
+      <Check
+        checked={enabled}
+        disabled={required}
+        onChange={(event) => setOptional(event.target.checked)}
+      >
         {ja
           ? "Homeの私有・共有記憶を参照する"
           : "Use private and shared memory at Home"}
-      </label>
+      </Check>
       {enabled && (
         <>
           <Field
@@ -113,7 +114,7 @@ export function HomeNativeMemoryFields({
                   : "Home logical Agent"
             }
           >
-            <select
+            <NativeSelect
               required
               value={chosen?.participant.id ?? ""}
               onChange={(event) => setSelected(event.target.value)}
@@ -128,31 +129,36 @@ export function HomeNativeMemoryFields({
                   {choice.participant.revision}
                 </option>
               ))}
-            </select>
+            </NativeSelect>
           </Field>
           <input
             type="hidden"
             name="native_memory"
             value={chosen ? JSON.stringify(chosen.request) : ""}
           />
-          {query.isError && <p role="alert">{query.error.message}</p>}
+          {query.isError && (
+            <Alert>{query.error.message}</Alert>
+          )}
           {!query.isPending && !choices.length && (
-            <p role="status">
+            <Notice tone="warning" role="status">
               {ja
                 ? "記憶を有効にした論理Agentを、このWorkspaceの記憶画面で作成してください。"
                 : "Create a logical Agent with memory enabled in this Workspace's memory view."}
-            </p>
+            </Notice>
           )}
           {query.hasNextPage && (
-            <button
+            <Button
+              variant="ghost"
+              size="sm"
+              className="justify-self-start"
               type="button"
               disabled={query.isFetchingNextPage}
               onClick={() => void query.fetchNextPage()}
             >
               {ja ? "論理Agentを追加で表示" : "Load more logical Agents"}
-            </button>
+            </Button>
           )}
-          <p>
+          <Hint>
             {generated
               ? ja
                 ? "Homeに新しい論理Agent IDを発行し、私有記憶を空で開始します。テンプレートの本文はコピーせず、設定された共有Sourceを参照します。"
@@ -160,9 +166,9 @@ export function HomeNativeMemoryFields({
               : ja
                 ? "選択したHomeの記憶を使用します。実行Nodeの記憶は含めません。"
                 : "Execution uses the selected Home memory. Executor-local memory is excluded."}
-          </p>
+          </Hint>
         </>
       )}
-    </fieldset>
+    </Group>
   );
 }

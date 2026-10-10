@@ -166,7 +166,7 @@ test("generation dashboard manages policy, approval, completion and retained his
       "acceptance-access-token",
     );
     await page.goto("/");
-    await expect(page.locator(".collab-app")).toBeVisible();
+    await expect(page.locator("#main")).toBeVisible();
     const navigate = async (label: string) => {
       if (label === "タスク") {
         await page.goto(
@@ -308,7 +308,7 @@ test("generation dashboard manages policy, approval, completion and retained his
     await dialog.getByRole("button", { name: "保存", exact: true }).click();
     await expect(dialog).toHaveCount(0);
     await navigate("ワークスペース");
-    await page.getByLabel("アカウント設定", { exact: true }).click();
+    await page.getByRole("button", { name: "設定", exact: true }).click();
     await page
       .getByRole("button", { name: "準備用チャンネル", exact: true })
       .click();
