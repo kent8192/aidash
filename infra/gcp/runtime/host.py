@@ -375,7 +375,8 @@ def gcip_settings(host, dashboard):
     settings = dashboard["gcip"]
     allowed = {
         "project_id", "web_api_key", "public_origin", "tenant_bindings",
-        "providers", "password_sign_up", "session_absolute_seconds", "session_idle_seconds",
+        "providers", "password_sign_up", "auth_helper",
+        "session_absolute_seconds", "session_idle_seconds",
     }
     if not isinstance(settings, dict) or set(settings) - allowed:
         raise ValueError("unsupported managed GCIP configuration")
@@ -385,6 +386,7 @@ def gcip_settings(host, dashboard):
         or not isinstance(settings.get("web_api_key"), str)
         or not settings["web_api_key"].strip()
         or not isinstance(settings.get("tenant_bindings"), dict)
+        or settings.get("auth_helper", "firebase") not in {"firebase", "public_origin"}
     ):
         raise ValueError("managed GCIP configuration must match this environment")
     directory = RUN / "dashboard-settings"
@@ -393,6 +395,33 @@ def gcip_settings(host, dashboard):
     path = directory / "settings.json"
     private(path, json.dumps({"dashboard": {"gcip": settings}}, sort_keys=True), 0o644)
     return {"AIDASH_GCIP_SETTINGS": str(path)}
+
+
+def caddyfile(host, gcip):
+    """Route the public origin; only the GCIP sign-in helper bypasses nginx admission."""
+    application = "reverse_proxy 127.0.0.1:8088"
+    if not gcip or gcip.get("auth_helper") != "public_origin":
+        return f"{host['hostname']} {{\n  {application}\n}}\n"
+    # Firebase requires a transparent proxy, not a redirect; handler.js also reads
+    # init.json from its own origin. The helper grants no authority (the exchange
+    # stays behind admission), and Aidash cookies or credentials never reach
+    # Google nor can Google set cookies on this origin.
+    return (
+        f"{host['hostname']} {{\n"
+        "  @firebase_helper path /__/auth/* /__/firebase/init.json\n"
+        "  handle @firebase_helper {\n"
+        f"    reverse_proxy https://{host['project']}.firebaseapp.com {{\n"
+        "      header_up Host {upstream_hostport}\n"
+        "      header_up -Cookie\n"
+        "      header_up -Authorization\n"
+        "      header_down -Set-Cookie\n"
+        "    }\n"
+        "  }\n"
+        "  handle {\n"
+        f"    {application}\n"
+        "  }\n"
+        "}\n"
+    )
 
 
 def configuration(host):
@@ -488,6 +517,7 @@ def configuration(host):
             }
         ),
     )
+    return (dashboard or {}).get("gcip")
 
 
 def replace_container(name, image, options, arguments, restart="unless-stopped"):
@@ -553,7 +583,7 @@ def install():
     command("systemctl", "stop", "aidash-runner", check=False)
     command("systemctl", "restart", "docker")
     release = json.loads((BUNDLE / "release.json").read_text())
-    configuration(host)
+    gcip = configuration(host)
     configure_runtime()
     registry = release["images"]["app"].split("/", 1)[0]
     command(
@@ -717,11 +747,7 @@ WantedBy=multi-user.target
         0o644,
     )
     Path("/etc/nginx/sites-enabled/default").unlink(missing_ok=True)
-    private(
-        "/etc/caddy/Caddyfile",
-        f"{host['hostname']} {{\n  reverse_proxy 127.0.0.1:8088\n}}\n",
-        0o644,
-    )
+    private("/etc/caddy/Caddyfile", caddyfile(host, gcip), 0o644)
     # Previews share this store across PRs; other hosts retain it with their data.
     # The Caddy uid can differ between images used by successive previews.
     command("chown", "-R", "caddy:caddy", ROOT / "tls")

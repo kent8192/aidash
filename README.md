@@ -114,6 +114,7 @@ Cloud deployments can select GCIP as the sole dashboard issuer. `[dashboard.gcip
 project_id = "aidash-cloud-project"
 web_api_key = "PUBLIC_FIREBASE_WEB_API_KEY"
 public_origin = "https://develop.aidash.run"
+auth_helper = "public_origin"  # default "firebase"
 session_absolute_seconds = 43200
 session_idle_seconds = 1800
 password_sign_up = ["acme-pool-id"]
@@ -127,7 +128,22 @@ acme-pool-id = ["google.com", "password"]
 
 The GCIP Tenant ID maps one-to-one to an Aidash Tenant name. Terraform supplies these IDs, provider choices and signup settings to the environment runtime secret. The runtime uses Application Default Credentials for tenant-scoped `accounts:lookup`; it never uses the public web API key as an administrative credential. See [GCIP infrastructure setup](infra/gcp/README.md#gcip-sign-in) and [authorization](docs/authorization.md#gcip-sign-in).
 
-`GET /auth/login?org=acme` creates a browser-bound ten-minute transaction and opens the lazy `/sign-in` page. Without `org`, the browser asks for the organization. The npm Firebase Auth SDK uses memory persistence, popup federation and an email/password form; signup waits for verified email. The backend verifies signed ID tokens and live Account Status, then exchanges them for the existing opaque HttpOnly Aidash session. GCIP tokens are discarded and are never put in browser storage. Registration approval, Mappings and Operator grants remain Aidash authority.
+`GET /auth/login?org=acme` creates a browser-bound ten-minute transaction and opens the lazy `/sign-in` page. Without `org`, the browser asks for the organization. The npm Firebase Auth SDK uses memory persistence, popup federation and an email/password form; signup waits for verified email. When the browser blocks the popup, federation falls back to a redirect that returns to the same transaction. The backend verifies signed ID tokens and live Account Status, then exchanges them for the existing opaque HttpOnly Aidash session. GCIP tokens are discarded and are never put in browser storage; every attempt also removes any `firebase:` storage keys and Firebase's IndexedDB store. Registration approval, Mappings and Operator grants remain Aidash authority.
+
+`auth_helper` selects the origin that serves Firebase's sign-in helper. The default, `firebase`, uses `<project_id>.firebaseapp.com` and needs no proxy, but provider consent screens show that domain and redirect sign-in fails in browsers that block third-party storage. `public_origin` uses the `public_origin` host as `authDomain`. Choose it only after the public origin transparently proxies `/__/auth/*` and `/__/firebase/init.json` to `https://<project_id>.firebaseapp.com` without forwarding Aidash cookies, for example with nginx:
+
+```nginx
+location ~ ^/__/(auth/|firebase/init\.json$) {
+  proxy_pass https://<project_id>.firebaseapp.com;
+  proxy_ssl_server_name on;
+  proxy_set_header Host <project_id>.firebaseapp.com;
+  proxy_set_header Cookie "";
+  proxy_set_header Authorization "";
+  proxy_hide_header Set-Cookie;
+}
+```
+
+Then register `https://<public origin host>/__/auth/handler` as each identity provider's redirect URI (the SAML ACS URL for SAML providers). Aidash Cloud environments set `public_origin` and serve the proxy from Caddy.
 
 ### Dashboard OIDC setup
 
