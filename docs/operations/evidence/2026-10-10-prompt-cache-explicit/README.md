@@ -15,17 +15,17 @@ on the machine that ran the evidence.
 
 ## Route B: explicit caching, Ordered without vs with `cache_control`
 
-| Item | Value |
-| --- | --- |
-| Date | 2026-10-09 20:50–20:55 UTC (2026-10-10 JST) |
-| Binary | W2 `feat/issue-142-stable-request-prefix` working tree on `889386f161eed7a320431a817122ae663309c218`, `cargo build --release --locked --bin aidash`. Those uncommitted Rust changes were committed unchanged as this branch's feature commit; the branch was later rebased onto `22837f11`, which changed only CI and test-support files. |
-| Binary SHA-256 | `de1f81fccbdc3455ba662d1dc7c2e62eccc3a02c4c3d2552c22aa851fa03bb28` |
-| Working tree | Uncommitted: 34 modified and 3 untracked files, including migration `registry/0017_prompt_cache`. The `git diff HEAD` SHA-256 `9995b7ba9df81601c84871cb8c3018e87933b337dd6c6d2c2c2cda795d06bfc2` was identical before the build, after the build and after the runs. The file list is `source.status_short` in `results-explicit.json`. |
-| Model | `anthropic/claude-haiku-5.5` (`anthropic/claude-haiku-5.5-20261007`), `reasoning_effort` `medium`. Every call was served by Google (Vertex) through OpenRouter with `provider.zdr = true`. |
-| Model registration | `cache_mode: explicit`, `projection_versions: [legacy, ordered]` |
-| B1 | Agent `projection_version: ordered`, `prompt_cache` default (`off`) |
-| B2 | Agent `projection_version: ordered`, `prompt_cache: explicit` |
-| Schedule | 3 repeats, interleaved B1, B2, B1, B2, B1, B2 on one node with one random cache key |
+| Item               | Value                                                                                                                                                                                                                                                                                                                                     |
+| ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Date               | 2026-10-09 20:50–20:55 UTC (2026-10-10 JST)                                                                                                                                                                                                                                                                                               |
+| Binary             | W2 `feat/issue-142-stable-request-prefix` working tree on `889386f161eed7a320431a817122ae663309c218`, `cargo build --release --locked --bin aidash`. Those uncommitted Rust changes were committed unchanged as this branch's feature commit; the branch was later rebased onto `22837f11`, which changed only CI and test-support files. |
+| Binary SHA-256     | `de1f81fccbdc3455ba662d1dc7c2e62eccc3a02c4c3d2552c22aa851fa03bb28`                                                                                                                                                                                                                                                                        |
+| Working tree       | Uncommitted: 34 modified and 3 untracked files, including migration `registry/0017_prompt_cache`. The `git diff HEAD` SHA-256 `9995b7ba9df81601c84871cb8c3018e87933b337dd6c6d2c2c2cda795d06bfc2` was identical before the build, after the build and after the runs. The file list is `source.status_short` in `results-explicit.json`.   |
+| Model              | `anthropic/claude-haiku-5.5` (`anthropic/claude-haiku-5.5-20261007`), `reasoning_effort` `medium`. Every call was served by Google (Vertex) through OpenRouter with `provider.zdr = true`.                                                                                                                                                |
+| Model registration | `cache_mode: explicit`, `projection_versions: [legacy, ordered]`                                                                                                                                                                                                                                                                          |
+| B1                 | Agent `projection_version: ordered`, `prompt_cache` default (`off`)                                                                                                                                                                                                                                                                       |
+| B2                 | Agent `projection_version: ordered`, `prompt_cache: explicit`                                                                                                                                                                                                                                                                             |
+| Schedule           | 3 repeats, interleaved B1, B2, B1, B2, B1, B2 on one node with one random cache key                                                                                                                                                                                                                                                       |
 
 ### Model choice
 
@@ -49,10 +49,10 @@ Public `GET /api/v1/models` and `GET /api/v1/endpoints/zdr` were checked on
 
 ### Results (3 runs per variant)
 
-| Variant | Runs passed / completed / attempted | Inference calls | Prompt tokens | Cached tokens (read) | Cached share, calls 2..n | Cache-write tokens | Completion tokens | Cost (USD) | Mean cost per run | Cost per call | Mean elapsed |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| B1 Ordered, no `cache_control` | 3 / 3 / 3 | 19 | 111,250 | 0 | 0.0% | 0 | 9,037 | 0.015644 | 0.005214 | 0.000823 | 29.3 s |
-| B2 Ordered + `cache_control` | 3 / 3 / 3 | 24 | 150,095 | 53,766 | 36.8% | 37,963 | 11,596 | 0.016918 | 0.005639 | 0.000705 | 40.6 s |
+| Variant                        | Runs passed / completed / attempted | Inference calls | Prompt tokens | Cached tokens (read) | Cached share, calls 2..n | Cache-write tokens | Completion tokens | Cost (USD) | Mean cost per run | Cost per call | Mean elapsed |
+| ------------------------------ | ----------------------------------- | --------------- | ------------- | -------------------- | ------------------------ | ------------------ | ----------------- | ---------- | ----------------- | ------------- | ------------ |
+| B1 Ordered, no `cache_control` | 3 / 3 / 3                           | 19              | 111,250       | 0                    | 0.0%                     | 0                  | 9,037             | 0.015644   | 0.005214          | 0.000823      | 29.3 s       |
+| B2 Ordered + `cache_control`   | 3 / 3 / 3                           | 24              | 150,095       | 53,766               | 36.8%                    | 37,963             | 11,596            | 0.016918   | 0.005639          | 0.000705      | 40.6 s       |
 
 Call counts:
 

@@ -1495,8 +1495,14 @@ async fn prompt_cache_migration_admits_new_keys_and_reverses(
 	// The catalog edit extends the current constraint, keeping earlier additions.
 	let upgraded = constraint_definition(&pool, "registry_model_config").await;
 	assert!(upgraded.contains("'cache_mode'::text"), "{upgraded}");
-	assert!(upgraded.contains("'projection_versions'::text"), "{upgraded}");
-	assert!(upgraded.contains("'provider_credential'::text"), "{upgraded}");
+	assert!(
+		upgraded.contains("'projection_versions'::text"),
+		"{upgraded}"
+	);
+	assert!(
+		upgraded.contains("'provider_credential'::text"),
+		"{upgraded}"
+	);
 	let migrations =
 		FilesystemSource::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations"))
 			.all_migrations()
