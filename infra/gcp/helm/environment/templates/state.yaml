@@ -5,10 +5,10 @@
 apiVersion: storage.k8s.io/v1
 kind: StorageClass
 metadata:
-  name: {{ .Values.storage.className }}
+  name: {{ .Values.storage.className | quote }}
   annotations: { helm.sh/resource-policy: keep }
-provisioner: {{ .Values.storage.provisioner }}
-parameters: { type: {{ .Values.storage.type }} }
+provisioner: {{ .Values.storage.provisioner | quote }}
+parameters: { type: {{ .Values.storage.type | quote }} }
 reclaimPolicy: Retain
 volumeBindingMode: WaitForFirstConsumer
 allowVolumeExpansion: true
@@ -51,7 +51,7 @@ spec:
           ports: [{ name: client, containerPort: {{ ternary 5432 4222 (eq $role "postgres") }} }]
           resources: {{ toYaml $settings.resources | nindent 12 }}
           {{- if eq $role "postgres" }}
-          envFrom: [{ secretRef: { name: {{ $secret }} } }]
+          envFrom: [{ secretRef: { name: {{ $secret | quote }} } }]
           env: [{ name: PGDATA, value: /var/lib/postgresql/data/pgdata }]
           readinessProbe:
             exec: { command: [sh, -ec, 'pg_isready -h 127.0.0.1 -U "$POSTGRES_USER" -d "$POSTGRES_DB"'] }
@@ -68,7 +68,7 @@ spec:
         annotations: { helm.sh/resource-policy: keep }
       spec:
         accessModes: [ReadWriteOnce]
-        storageClassName: {{ $.Values.storage.className }}
+        storageClassName: {{ $.Values.storage.className | quote }}
         resources: { requests: { storage: {{ $settings.size }} } }
 {{- end }}
 ---
@@ -92,7 +92,7 @@ spec:
 apiVersion: v1
 kind: PersistentVolume
 metadata:
-  name: {{ .Values.previewTls.volumeName }}
+  name: {{ .Values.previewTls.volumeName | quote }}
   annotations: { helm.sh/resource-policy: keep }
 spec:
   capacity: { storage: {{ .Values.previewTls.size }} }
@@ -100,7 +100,7 @@ spec:
   persistentVolumeReclaimPolicy: Retain
   storageClassName: ""
   claimRef:
-    name: {{ .Values.previewTls.claimName }}
+    name: {{ .Values.previewTls.claimName | quote }}
     namespace: {{ .Values.previewTls.claimNamespace | default .Release.Namespace | quote }}
   csi:
     driver: pd.csi.storage.gke.io
@@ -110,5 +110,5 @@ spec:
     required:
       nodeSelectorTerms:
         - matchExpressions:
-            - { key: topology.gke.io/zone, operator: In, values: [{{ .Values.previewTls.zone }}] }
+            - { key: topology.gke.io/zone, operator: In, values: [{{ .Values.previewTls.zone | quote }}] }
 {{- end }}

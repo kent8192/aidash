@@ -24,7 +24,7 @@ metadata:
   annotations: { helm.sh/resource-policy: keep }
 spec:
   accessModes: [ReadWriteOnce]
-  storageClassName: {{ .Values.storage.className }}
+  storageClassName: {{ .Values.storage.className | quote }}
   resources: { requests: { storage: {{ $edge.tlsSize }} } }
 {{- end }}
 ---
@@ -65,7 +65,7 @@ spec:
         - { name: config, configMap: { name: {{ $name }}-edge } }
         - name: tls
           persistentVolumeClaim:
-            claimName: {{ $edge.existingTlsClaim | default (printf "%s-tls" $name) }}
+            claimName: {{ $edge.existingTlsClaim | default (printf "%s-tls" $name) | quote }}
 {{- if $edge.loadBalancer }}
 ---
 apiVersion: v1

@@ -83,7 +83,7 @@ spec:
               command: [sh, -c, 'if aidash-infra-observer > /snapshot/observer.json; then mv /snapshot/observer.json /snapshot/database.json; fi']
               env:
                 - name: DATABASE_URL
-                  valueFrom: { secretKeyRef: { name: {{ $secret }}, key: DATABASE_URL } }
+                  valueFrom: { secretKeyRef: { name: {{ $secret | quote }}, key: DATABASE_URL } }
               resources: {{ toYaml .Values.activity.resources | nindent 16 }}
               securityContext:
                 allowPrivilegeEscalation: false
@@ -99,7 +99,7 @@ spec:
                 - { name: EDGE_ACTIVITY_ENDPOINT, value: "http://{{ $name }}-activity:8089" }
                 - { name: RUNNER_ENDPOINT, value: {{ .Values.activity.runnerEndpoint | quote }} }
                 - name: AIDASH_CORE_RUNNER_TOKEN
-                  valueFrom: { secretKeyRef: { name: {{ $secret }}, key: AIDASH_CORE_RUNNER_TOKEN } }
+                  valueFrom: { secretKeyRef: { name: {{ $secret | quote }}, key: AIDASH_CORE_RUNNER_TOKEN } }
               resources: {{ toYaml .Values.activity.resources | nindent 16 }}
               securityContext:
                 allowPrivilegeEscalation: false

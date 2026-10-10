@@ -160,9 +160,9 @@ class ChartsTest(unittest.TestCase):
         custom = dict(values, execution=dict(execution, paths={'guardState': '/srv/guard'}))
         guard = select(render(self.aidash, custom), 'DaemonSet', '-guard')['spec']['template']['spec']
         self.assertIn({'name': 'state', 'hostPath': {'path': '/srv/guard', 'type': 'DirectoryOrCreate'}}, guard['volumes'])
-        # The admission probe lowers its own hard RLIMIT_NPROC to 8 and cannot raise it.
-        for processes, accepted in ((7, False), (8, True)):
-            limits = dict(self.base, execution={'limits': {'processes': processes}})
+        # The application capability profile accepts 16..=4096 guest processes.
+        for processes, accepted in ((15, False), (16, True), (4096, True), (4097, False)):
+            limits = dict(self.base, execution={'limits': {'processes': processes, 'host_tasks': 4 * processes}})
             if accepted:
                 render(self.aidash, limits)
             else:
@@ -236,7 +236,7 @@ class ChartsTest(unittest.TestCase):
         # The Sentry's own host threads share pids.max with the probe's guest children;
         # only the 128/512 headroom is verified, so neither ratio nor margin may shrink.
         for processes, host_tasks, ok in ((128, 129, False), (128, 511, False), (128, 512, True),
-                                          (8, 391, False), (8, 392, True), (256, 1023, False), (256, 1024, True)):
+                                          (16, 399, False), (16, 400, True), (256, 1023, False), (256, 1024, True)):
             with self.subTest(processes=processes, host_tasks=host_tasks):
                 limits = {'limits': {'processes': processes, 'host_tasks': host_tasks}}
                 if ok:
@@ -249,7 +249,8 @@ class ChartsTest(unittest.TestCase):
         for limit, value, ok in (('maximum_seconds', 29, False), ('maximum_seconds', 30, True),
                                  ('maximum_seconds', 600, True), ('maximum_seconds', 601, False),
                                  ('idle_seconds', 1800, True), ('idle_seconds', 1801, False),
-                                 ('output_bytes', 8 << 20, True), ('output_bytes', (8 << 20) + 1, False)):
+                                 ('output_bytes', 8 << 20, True), ('output_bytes', (8 << 20) + 1, False),
+                                 ('working_bytes', 1 << 30, True), ('working_bytes', (1 << 30) + 1, False)):
             with self.subTest(limit=limit, value=value):
                 if ok:
                     accepted(limits={limit: value})
@@ -315,6 +316,27 @@ class ChartsTest(unittest.TestCase):
         binding = select(objects, 'RoleBinding', '-activity')
         self.assertEqual([subject['namespace'] for subject in binding['subjects']], ['true'])
         self.assertEqual(select(objects, 'PersistentVolume', '')['spec']['claimRef']['namespace'], 'true')
+        # Configurable Secret, StorageClass and preview volume names stay strings too.
+        names = dict(preview, postgres=dict(POSTGRES, existingSecret='true'),
+                     activity=dict(values['activity'], existingSecret='null'),
+                     storage={'createClass': True, 'className': 'true', 'type': 'null'},
+                     previewTls=dict(preview['previewTls'], volumeName='true', claimName='null', zone='true'))
+        objects = render(self.environment, names)
+        self.assertEqual(select(objects, 'StorageClass', '')['metadata']['name'], 'true')
+        self.assertEqual(select(objects, 'StorageClass', '')['parameters'], {'type': 'null'})
+        postgres = select(objects, 'StatefulSet', '-postgres')['spec']
+        self.assertEqual(postgres['template']['spec']['containers'][0]['envFrom'], [{'secretRef': {'name': 'true'}}])
+        self.assertEqual(postgres['volumeClaimTemplates'][0]['spec']['storageClassName'], 'true')
+        self.assertEqual(select(objects, 'PersistentVolumeClaim', '-tls')['spec']['storageClassName'], 'true')
+        collector = select(objects, 'CronJob', '-activity')['spec']['jobTemplate']['spec']['template']['spec']
+        references = [variable['valueFrom']['secretKeyRef']['name']
+                      for container in collector['initContainers'] + collector['containers']
+                      for variable in container.get('env', []) if 'secretKeyRef' in variable.get('valueFrom', {})]
+        self.assertEqual(set(references), {'null'})
+        volume = select(objects, 'PersistentVolume', '')
+        self.assertEqual((volume['metadata']['name'], volume['spec']['claimRef']['name']), ('true', 'null'))
+        zones = volume['spec']['nodeAffinity']['required']['nodeSelectorTerms'][0]['matchExpressions'][0]['values']
+        self.assertEqual(zones, ['true'])
         admission = next(value['data']['admission.conf'] for value in render(self.environment, values)
                          if value['kind'] == 'ConfigMap' and 'admission.conf' in value.get('data', {}))
         logs = [line.strip() for line in admission.splitlines() if line.strip().startswith('access_log')]
