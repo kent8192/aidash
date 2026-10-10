@@ -149,7 +149,8 @@ impl WorkerAuthority {
 	/// Concurrent core tool calls of one Run share the outer authority lease.
 	/// Each call runs in its own inner transaction while the outer transaction
 	/// keeps the authorization locks, so revocation waits until every concurrent
-	/// call ends. Exclusive users take the write lock.
+	/// call ends. Exclusive users take the write lock. A `shared_read` call
+	/// loads its Working Area with a shared row lock so batched reads overlap.
 	pub async fn core_tool(
 		&self,
 		store: &Store,
@@ -157,9 +158,11 @@ impl WorkerAuthority {
 		name: &str,
 		input: Value,
 		key: &str,
+		shared_read: bool,
 	) -> Result<Value> {
 		let outer = self.access.read().await;
 		let mut access = Access::under_lease(&outer).await?;
+		access.shared_area = shared_read;
 		let result =
 			crate::capabilities::service::invoke(store, &mut access, run, name, input, key).await;
 		match access.finish(result).await {

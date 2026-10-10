@@ -39,7 +39,14 @@ impl Tool for CoreTool {
 			return Err(Error::Forbidden);
 		};
 		authority
-			.core_tool(&ctx.store, &ctx.run, self.name, input, key)
+			.core_tool(
+				&ctx.store,
+				&ctx.run,
+				self.name,
+				input,
+				key,
+				aidash_domain::tool::concurrency::batchable(&self.contract.behavior),
+			)
 			.await
 	}
 }

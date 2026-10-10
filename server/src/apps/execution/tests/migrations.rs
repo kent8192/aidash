@@ -1168,6 +1168,279 @@ async fn contract_accepts(pool: &PgPool, function: &str, values: Vec<serde_json:
 	sqlx::query_scalar(&query).fetch_one(pool).await.unwrap()
 }
 
+async fn constraint_definition(pool: &PgPool, name: &str) -> String {
+	use reinhardt::query::IntoIden;
+	let query = Query::select()
+		.expr(reinhardt::query::SimpleExpr::FunctionCall(
+			Alias::new("pg_get_constraintdef").into_iden(),
+			vec![Expr::col("oid").into()],
+		))
+		.from(Alias::new("pg_constraint"))
+		.and_where(Expr::col("conname").eq(name))
+		.to_string(PostgresQueryBuilder);
+	sqlx::query_scalar(&query).fetch_one(pool).await.unwrap()
+}
+
+#[rstest]
+#[tokio::test]
+async fn prompt_cache_migration_admits_new_keys_and_reverses(
+	#[future] fresh_database: MigrationFixture,
+) {
+	use aidash_server::apps::registry::{models::Definition, services::states::DefinitionKind};
+	// Arrange
+	let fixture = fresh_database.await;
+	fixture.migrate().await;
+	let pool = fixture.connection.clone().into_postgres().unwrap();
+	let agent = |cache: Option<serde_json::Value>| {
+		let mut config = json!({"schema_version":1,"model":{"id":"model","version":"1.0.0"},"instructions":"Work","projection_version":"ordered"});
+		if let Some(mode) = cache {
+			config["prompt_cache"] = mode;
+		}
+		config
+	};
+	let model = |id: &str, cache_mode: serde_json::Value| {
+		let metadata = json!({"id":id,"version":"1.0.0","kind":"model",
+			"name":{"en":"Prompt cache fixture"},"description":{"en":"Migration test"},
+			"config":{"provider":"openrouter","model_id":"anthropic/model",
+				"endpoint":"http://127.0.0.1:1/v1","credential_env":null,
+				"context_window":32768,"max_output_tokens":4096,
+				"modalities":["text"],"cost":{},
+				"projection_versions":["legacy","ordered"],"cache_mode":cache_mode}});
+		Definition::build()
+			.id(id)
+			.version("1.0.0")
+			.kind(DefinitionKind::Model)
+			.metadata(metadata.into())
+			.finish()
+	};
+	// Act / Assert: the Agent contract admits prompt_cache off and explicit only.
+	for (cache, accepted) in [
+		(None, true),
+		(Some(json!(null)), true),
+		(Some(json!("off")), true),
+		(Some(json!("explicit")), true),
+		(Some(json!("automatic")), false),
+		(Some(json!(true)), false),
+	] {
+		assert_eq!(
+			contract_accepts(
+				&pool,
+				"aidash_agent_bindings_is_valid",
+				vec![agent(cache.clone())]
+			)
+			.await,
+			accepted,
+			"{cache:?}"
+		);
+	}
+	// The catalog edit extends the current allowlist, keeping earlier additions.
+	let upgraded = constraint_definition(&pool, "registry_model_config").await;
+	for key in ["cache_mode", "projection_versions", "provider_credential"] {
+		assert!(upgraded.contains(&format!("'{key}'::text")), "{upgraded}");
+	}
+	assert!(
+		upgraded.contains("'projection_versions'::text, 'cache_mode'::text]"),
+		"{upgraded}"
+	);
+	let migrations =
+		FilesystemSource::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations"))
+			.all_migrations()
+			.await
+			.unwrap();
+	let migration = migrations
+		.into_iter()
+		.find(|m| m.app_label == "registry" && m.name == "0018_prompt_cache")
+		.unwrap();
+	let mut executor =
+		reinhardt::db::migrations::DatabaseMigrationExecutor::new(fixture.connection.clone());
+	executor
+		.rollback_migrations(std::slice::from_ref(&migration))
+		.await
+		.unwrap();
+	// Assert: the reverse restores the 0017 contracts.
+	assert!(
+		!contract_accepts(
+			&pool,
+			"aidash_agent_bindings_is_valid",
+			vec![agent(Some(json!("explicit")))]
+		)
+		.await
+	);
+	assert!(contract_accepts(&pool, "aidash_agent_bindings_is_valid", vec![agent(None)]).await);
+	assert_eq!(
+		constraint_definition(&pool, "registry_model_config").await,
+		upgraded.replace(", 'cache_mode'::text", "")
+	);
+	executor
+		.apply_migrations(std::slice::from_ref(&migration))
+		.await
+		.unwrap();
+	assert_eq!(
+		constraint_definition(&pool, "registry_model_config").await,
+		upgraded
+	);
+	// Act / Assert: the model constraints admit declared cache modes only.
+	let lease = DatabaseConnectionLease::register(fixture.connection.clone()).unwrap();
+	let mut connection = lease.handle();
+	for (id, mode) in [
+		("none-model", "none"),
+		("automatic-model", "automatic"),
+		("explicit-model", "explicit"),
+	] {
+		Definition::objects()
+			.create_with_conn(&mut connection, &model(id, json!(mode)))
+			.await
+			.unwrap();
+	}
+	for (id, mode) in [("bad-model", json!("always")), ("typed-model", json!(true))] {
+		let error = Definition::objects()
+			.create_with_conn(&mut connection, &model(id, mode))
+			.await
+			.unwrap_err();
+		let database = error.database_error().expect("database constraint error");
+		assert_eq!(
+			database.constraint(),
+			Some("registry_model_cache_mode"),
+			"{error}"
+		);
+	}
+	// Act / Assert: a stored key refuses the rollback before any DDL runs.
+	let error = executor
+		.rollback_migrations(std::slice::from_ref(&migration))
+		.await
+		.unwrap_err();
+	assert!(
+		error
+			.to_string()
+			.contains("registry 0018_prompt_cache cannot be reversed"),
+		"{error}"
+	);
+	assert_eq!(
+		constraint_definition(&pool, "registry_model_config").await,
+		upgraded
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn tool_parallelism_migration_reverses_to_prompt_cache_and_refuses_stored_fields(
+	#[future] fresh_database: MigrationFixture,
+) {
+	use aidash_server::apps::registry::{models::Definition, services::states::DefinitionKind};
+	// Arrange
+	let fixture = fresh_database.await;
+	fixture.migrate().await;
+	let pool = fixture.connection.clone().into_postgres().unwrap();
+	let agent = |extra: serde_json::Value| {
+		let mut config = json!({"schema_version":1,"model":{"id":"model","version":"1.0.0"},"instructions":"Work","projection_version":"ordered","prompt_cache":"explicit"});
+		config
+			.as_object_mut()
+			.unwrap()
+			.extend(extra.as_object().unwrap().clone());
+		config
+	};
+	let parallel = json!({"tool_parallelism":2});
+	assert!(
+		contract_accepts(
+			&pool,
+			"aidash_agent_bindings_is_valid",
+			vec![agent(parallel.clone())]
+		)
+		.await
+	);
+	let migrations =
+		FilesystemSource::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations"))
+			.all_migrations()
+			.await
+			.unwrap();
+	let migration = migrations
+		.into_iter()
+		.find(|m| m.app_label == "registry" && m.name == "0019_tool_parallelism")
+		.unwrap();
+	let mut executor =
+		reinhardt::db::migrations::DatabaseMigrationExecutor::new(fixture.connection.clone());
+	// Act: reverse with no stored parallelism fields.
+	executor
+		.rollback_migrations(std::slice::from_ref(&migration))
+		.await
+		.unwrap();
+	// Assert: the 0018_prompt_cache Agent contract is restored.
+	assert!(
+		contract_accepts(
+			&pool,
+			"aidash_agent_bindings_is_valid",
+			vec![agent(json!({}))]
+		)
+		.await
+	);
+	assert!(
+		!contract_accepts(
+			&pool,
+			"aidash_agent_bindings_is_valid",
+			vec![agent(parallel.clone())]
+		)
+		.await
+	);
+	executor
+		.apply_migrations(std::slice::from_ref(&migration))
+		.await
+		.unwrap();
+	// Arrange: a registered Agent declaring a Tool Parallelism ceiling.
+	let lease = DatabaseConnectionLease::register(fixture.connection.clone()).unwrap();
+	let mut connection = lease.handle();
+	let model = json!({"id":"model","version":"1.0.0","kind":"model",
+		"name":{"en":"Parallel fixture"},"description":{"en":"Migration test"},
+		"config":{"provider":"openrouter","model_id":"anthropic/model",
+			"endpoint":"http://127.0.0.1:1/v1","credential_env":null,
+			"context_window":32768,"max_output_tokens":4096,
+			"modalities":["text"],"cost":{}}});
+	Definition::objects()
+		.create_with_conn(
+			&mut connection,
+			&Definition::build()
+				.id("model")
+				.version("1.0.0")
+				.kind(DefinitionKind::Model)
+				.metadata(model.into())
+				.finish(),
+		)
+		.await
+		.unwrap();
+	let metadata = json!({"id":"parallel","version":"1.0.0","kind":"agent",
+		"name":{"en":"Parallel"},"description":{"en":"Migration test"},"config":agent(parallel.clone())});
+	Definition::objects()
+		.create_with_conn(
+			&mut connection,
+			&Definition::build()
+				.id("parallel")
+				.version("1.0.0")
+				.kind(DefinitionKind::Agent)
+				.metadata(metadata.into())
+				.finish(),
+		)
+		.await
+		.unwrap();
+	// Act / Assert: the stored field refuses the rollback before any DDL runs.
+	let error = executor
+		.rollback_migrations(std::slice::from_ref(&migration))
+		.await
+		.unwrap_err();
+	assert!(
+		error
+			.to_string()
+			.contains("registry 0019_tool_parallelism cannot be reversed"),
+		"{error}"
+	);
+	assert!(
+		contract_accepts(
+			&pool,
+			"aidash_agent_bindings_is_valid",
+			vec![agent(parallel)]
+		)
+		.await
+	);
+}
+
 #[rstest]
 #[tokio::test]
 async fn binding_memory_merge_preserves_native_packages_and_restores_legacy_descriptors(

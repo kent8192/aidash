@@ -1,3 +1,6 @@
+import { Input } from "../components/ui/input";
+import { panelClass } from "./display";
+import { Alert, Check, Hint, inlineFormClass } from "../components/patterns";
 import { Button } from "../components/ui/button";
 import { useRef, useState } from "react";
 import { useInfiniteQuery, useQueryClient } from "@tanstack/react-query";
@@ -68,14 +71,14 @@ export function OutboundFiles({
     }
   };
   return (
-    <details className="core-panel">
+    <details className={panelClass}>
       <summary>
         {ja
           ? "外部ファイルと Python パッケージ"
           : "External files and Python packages"}
       </summary>
       <Field label="HTTPS URL">
-        <input
+        <Input
           type="url"
           value={url}
           onChange={(e) => setUrl(e.target.value)}
@@ -102,15 +105,15 @@ export function OutboundFiles({
       {items.map((item) => (
         <article key={item.operation_id}>
           <strong>{item.url}</strong>
-          <p role="status">
+          <Hint role="status">
             {item.status}
             {item.http_status ? ` · HTTP ${item.http_status}` : ""}
-          </p>
-          {item.error && <p role="alert">{item.error.message}</p>}
+          </Hint>
+          {item.error && <Alert>{item.error.message}</Alert>}
           {item.output_file && (
             <>
-              <small>SHA-256: {item.output_file.digest}</small>
-              <div className="core-inline">
+              <Hint>SHA-256: {item.output_file.digest}</Hint>
+              <div className={inlineFormClass}>
                 <Button
                   variant="outline"
                   type="button"
@@ -150,22 +153,20 @@ export function OutboundFiles({
               {item.status === "completed" &&
                 item.http_status === 200 &&
                 filename(item).endsWith(".whl") && (
-                  <label className="check">
-                    <input
-                      type="checkbox"
-                      checked={selected.includes(item.operation_id)}
-                      onChange={(e) =>
-                        setSelected(
-                          e.target.checked
-                            ? [...selected, item.operation_id]
-                            : selected.filter((id) => id !== item.operation_id),
-                        )
-                      }
-                    />
+                  <Check
+                    checked={selected.includes(item.operation_id)}
+                    onChange={(e) =>
+                      setSelected(
+                        e.target.checked
+                          ? [...selected, item.operation_id]
+                          : selected.filter((id) => id !== item.operation_id),
+                      )
+                    }
+                  >
                     {ja
                       ? "Python に導入する wheel"
                       : "Wheel to install in Python"}
-                  </label>
+                  </Check>
                 )}
             </>
           )}
@@ -212,7 +213,7 @@ export function OutboundFiles({
         </Button>
       )}
       {(error || query.isError) && (
-        <p role="alert">{error || query.error?.message}</p>
+        <Alert>{error || query.error?.message}</Alert>
       )}
     </details>
   );

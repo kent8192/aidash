@@ -189,3 +189,23 @@ fn concurrency_narrowing_requires_a_tool_or_bundle_binding(
 	// Assert: only Bindings that bind Tools may lower their concurrency.
 	assert_eq!(binding.validate().is_ok(), accepted);
 }
+
+#[test]
+fn declared_prompt_cache_survives_the_agent_settings_view() {
+	// Arrange
+	let mut input = serde_json::to_value(agent()).unwrap();
+	assert!(input.get("prompt_cache").is_none());
+	input["projection_version"] = json!("ordered");
+	input["prompt_cache"] = json!("explicit");
+	// Act
+	let decoded: AgentBindings = serde_json::from_value(input.clone()).unwrap();
+	let pinned = crate::registry::AgentConfig::from_definition(decoded).definition();
+	// Assert
+	assert_eq!(
+		pinned.prompt_cache,
+		Some(crate::projection::PromptCache::Explicit)
+	);
+	assert_eq!(serde_json::to_value(&pinned).unwrap(), input);
+	input["prompt_cache"] = json!("automatic");
+	assert!(serde_json::from_value::<AgentBindings>(input).is_err());
+}

@@ -141,6 +141,8 @@ pub struct AgentConfig {
 	pub tool_parallelism: u8,
 	/// As written in the definition; `None` renders as Legacy.
 	pub projection_version: Option<crate::projection::ProjectionVersion>,
+	/// As written in the definition; `None` means `off` (ADR 0019).
+	pub prompt_cache: Option<crate::projection::PromptCache>,
 	pub core_capabilities: crate::capabilities::CoreCapabilities,
 	pub skill_attachments: Vec<crate::capabilities::SkillAttachment>,
 	pub skill_roots: Vec<String>,

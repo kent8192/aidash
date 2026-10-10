@@ -1,7 +1,15 @@
-import { useI18n } from "./ui";
+import { ArrowDown } from "lucide-react";
+import { Badge as StatusBadge } from "./components/ui/badge";
+import { useI18n, type StatusTone } from "./ui";
+import {
+  Disclosure,
+  Facts,
+  Metric,
+  MetricRow,
+  type Fact,
+} from "./components/patterns";
 import { useRecordLabels } from "./record-view";
 import type { Content, Evidence, Unit } from "./memory";
-import "./memory.css";
 
 const names: Record<string, [string, string]> = {
   recall: ["Recall", "検索"],
@@ -91,13 +99,21 @@ function useMemoryLabels() {
       key.replaceAll("_", " ").replace(/^./, (first) => first.toUpperCase()),
   };
 }
+const tagTone: Record<string, StatusTone> = {
+  supported: "success",
+  unverified: "warning",
+  stale: "warning",
+  contradicted: "danger",
+  deleted: "danger",
+};
+const meta = "font-mono text-[11px] text-faint tabular";
 const record = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value);
 const unitAnchor = (id: string) => `memory-unit-${id}`;
 
 export function MemoryOverview({ units }: { units: Unit[] }) {
   const { text } = useMemoryLabels();
-  const metrics = [
+  const metrics: [string, number][] = [
     [text("Memories", "記憶"), units.length],
     [
       text("Supported", "裏付けあり"),
@@ -114,17 +130,11 @@ export function MemoryOverview({ units }: { units: Unit[] }) {
     ],
   ];
   return (
-    <dl
-      className="memory-overview"
-      aria-label={text("Memory overview", "記憶の概要")}
-    >
+    <MetricRow columns={4} label={text("Memory overview", "記憶の概要")}>
       {metrics.map(([name, count]) => (
-        <div key={name}>
-          <dt>{name}</dt>
-          <dd>{count}</dd>
-        </div>
+        <Metric key={name} label={name} value={count} />
       ))}
-    </dl>
+    </MetricRow>
   );
 }
 
@@ -148,14 +158,15 @@ function EvidenceView({ value, units }: { value: Evidence; units: Unit[] }) {
     ? source.content.text
     : (labels.get(value.id) ?? value.id);
   return (
-    <div className="memory-evidence-node">
-      <span className="memory-tag">
+    <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 rounded-md border border-border bg-background px-3 py-2">
+      <StatusBadge tone="neutral">
         {value.kind === "unit" ? text("Memory", "記憶") : label(value.kind)}
-      </span>
-      <span className="memory-evidence-title">
+      </StatusBadge>
+      <span className="grid min-w-0 flex-1 gap-0.5 break-words">
         {source ? (
           <button
             type="button"
+            className="text-left text-[13px] text-brand underline-offset-2 hover:underline"
             onClick={() => {
               const target = document.getElementById(unitAnchor(source.id));
               target?.scrollIntoView({ block: "center" });
@@ -167,21 +178,21 @@ function EvidenceView({ value, units }: { value: Evidence; units: Unit[] }) {
         ) : (
           <span>{title}</span>
         )}
-        <small>
+        <span className={meta}>
           {text("Revision", "リビジョン")} {value.revision}
-        </small>
+        </span>
       </span>
       {value.bank && (
-        <small>
+        <span className="text-[11px] text-muted-foreground">
           {value.bank.participant
             ? text("Private", "プライベート")
             : text("Shared", "共有")}
-        </small>
+        </span>
       )}
       {value.digest && (
-        <small className="memory-digest">
+        <span className={`w-full break-all ${meta}`}>
           {text("Digest", "ダイジェスト")}: {value.digest}
-        </small>
+        </span>
       )}
     </div>
   );
@@ -198,8 +209,8 @@ export function MemoryContent({
 }) {
   const { locale, label, text } = useMemoryLabels();
   return (
-    <div className="memory-content">
-      <div className="memory-tags">
+    <div className="grid min-w-0 gap-3">
+      <div className="flex flex-wrap gap-1.5">
         {[
           content.kind,
           content.learning,
@@ -209,40 +220,51 @@ export function MemoryContent({
         ]
           .filter((value): value is string => !!value)
           .map((value) => (
-            <span className={`memory-tag ${value}`} key={value}>
+            <StatusBadge tone={tagTone[value] ?? "neutral"} key={value}>
               {label(value)}
-            </span>
+            </StatusBadge>
           ))}
       </div>
       {content.mental_model && (
-        <div className="memory-question">
-          <strong>{content.mental_model.question}</strong>
-          <small>
+        <div className="grid gap-0.5 border-l-2 border-brand-mark pl-3">
+          <strong className="text-[13px] font-medium text-foreground">
+            {content.mental_model.question}
+          </strong>
+          <small className="text-[11px] text-muted-foreground">
             {content.mental_model.automatic_refresh
               ? text("Automatic refresh", "自動更新")
               : text("Manual refresh", "手動更新")}
           </small>
         </div>
       )}
-      <p className="memory-body">{content.text}</p>
+      <p className="whitespace-pre-wrap break-words text-[13px] leading-relaxed text-foreground">
+        {content.text}
+      </p>
       {!!content.entities?.length && (
         <ul
-          className="memory-entities"
+          className="flex flex-wrap gap-1.5"
           aria-label={text("Entities", "エンティティ")}
         >
           {content.entities.map((entity, index) => (
-            <li key={index}>
-              <strong>{entity.name}</strong>
-              <span>{entity.category}</span>
+            <li
+              key={index}
+              className="flex min-w-0 flex-wrap items-baseline gap-x-2 rounded-md border border-border px-2 py-1 text-xs"
+            >
+              <strong className="font-medium text-foreground">
+                {entity.name}
+              </strong>
+              <span className="text-muted-foreground">{entity.category}</span>
               {!!entity.aliases?.length && (
-                <small>{entity.aliases.join(" · ")}</small>
+                <small className="text-[11px] text-faint">
+                  {entity.aliases.join(" · ")}
+                </small>
               )}
             </li>
           ))}
         </ul>
       )}
       {unit && (
-        <div className="memory-dates">
+        <div className={`flex flex-wrap gap-x-4 gap-y-1 ${meta}`}>
           <span>
             {label("revision")} {unit.revision}
           </span>
@@ -254,42 +276,50 @@ export function MemoryContent({
           </span>
         </div>
       )}
-      <details className="memory-sources">
-        <summary>
-          {text("Sources, entities and time", "出典・エンティティ・時刻")} ·{" "}
-          {content.evidence?.length ?? 0}
-        </summary>
+      <Disclosure
+        summary={
+          <>
+            {text("Sources, entities and time", "出典・エンティティ・時刻")} ·{" "}
+            {content.evidence?.length ?? 0}
+          </>
+        }
+      >
         {content.evidence?.length ? (
           <div
-            className="memory-provenance"
+            className="mt-3 grid gap-1"
             aria-label={text("Evidence connections", "根拠のつながり")}
           >
-            <ul>
+            <ul className="grid gap-1.5">
               {content.evidence.map((proof, index) => (
                 <li key={index}>
                   <EvidenceView value={proof} units={units} />
                 </li>
               ))}
             </ul>
-            <div className="memory-provenance-target">
-              <span aria-hidden="true">↓</span>
+            <div className="flex items-center justify-center gap-1.5 py-1 text-xs text-brand">
+              <ArrowDown aria-hidden className="size-3.5" />
               {text("Cited by this memory", "この記憶が引用")}
             </div>
           </div>
         ) : (
-          <p className="muted">
+          <p className="mt-2 text-xs text-faint">
             {text("No cited evidence", "引用された根拠はありません")}
           </p>
         )}
         {!!content.links?.length && (
-          <ul className="memory-links">
+          <ul className="mt-3 grid gap-1 text-xs">
             {content.links.map((link, index) => (
-              <li key={index}>
-                <span>{label(link.kind)}</span>
-                <span>
+              <li
+                key={index}
+                className="flex min-w-0 flex-wrap gap-x-3 break-all"
+              >
+                <span className="text-muted-foreground">
+                  {label(link.kind)}
+                </span>
+                <span className="font-mono">
                   {link.target} · r{link.revision}
                 </span>
-                <span>
+                <span className="font-mono text-faint tabular">
                   {text("Weight", "重み")} {link.weight}
                 </span>
               </li>
@@ -297,7 +327,7 @@ export function MemoryContent({
           </ul>
         )}
         {content.occurred && (
-          <p>
+          <p className="mt-2 text-xs text-muted-foreground">
             {text("Occurred", "発生日時")}:{" "}
             <time dateTime={content.occurred.start}>
               {new Date(content.occurred.start).toLocaleString(locale)}
@@ -309,16 +339,16 @@ export function MemoryContent({
           </p>
         )}
         {unit && (
-          <p className="muted">
+          <p className="mt-2 text-xs text-muted-foreground">
             {label("learned_at")}:{" "}
             <time dateTime={unit.learned_at}>
               {new Date(unit.learned_at).toLocaleString(locale)}
             </time>
             <br />
-            ID: <span className="memory-id">{unit.id}</span>
+            ID: <span className="break-all font-mono">{unit.id}</span>
           </p>
         )}
-      </details>
+      </Disclosure>
     </div>
   );
 }
@@ -334,34 +364,41 @@ export function MemoryRecord({
   const { locale, label, text } = useMemoryLabels();
   const labels = useRecordLabels();
   if (value === null || value === undefined)
-    return <span className="muted">{text("Not recorded", "未記録")}</span>;
+    return <span className="text-faint">{text("Not recorded", "未記録")}</span>;
   if (typeof value === "boolean")
     return <span>{value ? text("Yes", "はい") : text("No", "いいえ")}</span>;
   if (typeof value === "number")
     return (
-      <span className="memory-number">{value.toLocaleString(locale)}</span>
+      <span className="font-mono font-medium tabular">
+        {value.toLocaleString(locale)}
+      </span>
     );
   if (typeof value === "string") {
     const date = /^\d{4}-\d\d-\d\dT/.test(value) ? new Date(value) : null;
     return date && !Number.isNaN(date.getTime()) ? (
-      <time dateTime={value}>{date.toLocaleString(locale)}</time>
+      <time dateTime={value} className="font-mono text-xs tabular">
+        {date.toLocaleString(locale)}
+      </time>
     ) : (
-      <span className="memory-value">
+      <span className="break-words">
         {labels.get(value) ?? (names[value] ? label(value) : value)}
       </span>
     );
   }
   if (Array.isArray(value))
     return value.length ? (
-      <ol className="memory-record-list">
+      <ol className="grid gap-2">
         {value.map((item, index) => (
-          <li key={index}>
+          <li
+            key={index}
+            className="min-w-0 rounded-md border border-border bg-surface p-3"
+          >
             <MemoryRecord value={item} units={units} />
           </li>
         ))}
       </ol>
     ) : (
-      <span className="muted">{text("None", "なし")}</span>
+      <span className="text-faint">{text("None", "なし")}</span>
     );
   if (!record(value)) return null;
   if (typeof value.text === "string")
@@ -381,18 +418,14 @@ export function MemoryRecord({
       </span>
     );
   return (
-    <dl className="memory-fields">
-      {Object.entries(value)
+    <Facts
+      items={Object.entries(value)
         .filter(([key]) => key !== "next")
-        .map(([key, field]) => (
-          <div key={key}>
-            <dt>{label(key)}</dt>
-            <dd>
-              <MemoryRecord value={field} units={units} />
-            </dd>
-          </div>
-        ))}
-    </dl>
+        .map(([key, field]): Fact => [
+          label(key),
+          <MemoryRecord key={key} value={field} units={units} />,
+        ])}
+    />
   );
 }
 

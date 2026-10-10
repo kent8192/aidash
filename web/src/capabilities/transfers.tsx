@@ -1,3 +1,5 @@
+import { panelClass } from "./display";
+import { Alert, Hint, Notice } from "../components/patterns";
 import { Button } from "../components/ui/button";
 import { useInfiniteQuery } from "@tanstack/react-query";
 import { useState } from "react";
@@ -30,7 +32,7 @@ export function TransferHistory({ area }: { area: string }) {
     getNextPageParam: (page) => page.next_cursor ?? undefined,
   });
   return (
-    <details className="core-panel">
+    <details className={panelClass}>
       <summary>
         {ja ? "共有履歴と受領結果" : "Transfer history and receipts"}
       </summary>
@@ -45,10 +47,10 @@ export function TransferHistory({ area }: { area: string }) {
             <p>
               {item.recipient.node_id} · {item.recipient.thread_id}
             </p>
-            <small>
+            <Hint>
               {ja ? "転送番号" : "Transfer"}: {item.operation_id}
-            </small>
-            <small>SHA-256: {item.manifest_digest}</small>
+            </Hint>
+            <Hint>SHA-256: {item.manifest_digest}</Hint>
             {item.receipt && (
               <p>
                 {ja
@@ -57,13 +59,13 @@ export function TransferHistory({ area }: { area: string }) {
               </p>
             )}
             {item.effects_may_have_occurred && !item.receipt && (
-              <p className="core-warning">
+              <Notice tone="warning">
                 {ja
                   ? "受領結果がまだ確認できません。同じ転送を照会してください。"
                   : "Delivery may have occurred. Reconcile this transfer to confirm its receipt."}
-              </p>
+              </Notice>
             )}
-            {item.error && <p role="alert">{item.error.message}</p>}
+            {item.error && <Alert>{item.error.message}</Alert>}
             {item.status === "uncertain" && (
               <Button
                 variant="outline"
@@ -94,7 +96,7 @@ export function TransferHistory({ area }: { area: string }) {
         </Button>
       )}
       {(error || query.error) && (
-        <p role="alert">{error || query.error?.message}</p>
+        <Alert>{error || query.error?.message}</Alert>
       )}
     </details>
   );

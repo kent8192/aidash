@@ -1,5 +1,6 @@
 import { Button } from "../components/ui/button";
 import { useEffect, useState } from "react";
+import { Alert, Loading } from "../components/patterns";
 import { useInfiniteQuery } from "@tanstack/react-query";
 import { Download, Eye, FileText } from "lucide-react";
 import {
@@ -61,19 +62,19 @@ function AttachmentPreview({
   return (
     <Modal title={attachment.filename} close={close}>
       {content.error ? (
-        <p className="error" role="alert">
-          {content.error}
-        </p>
+        <Alert>{content.error}</Alert>
       ) : content.image ? (
         <img
-          className="workspace-file-image"
+          className="max-h-[70vh] w-full rounded-md border border-border object-contain"
           src={content.image}
           alt={attachment.filename}
         />
       ) : content.text !== undefined ? (
-        <pre className="workspace-file-text">{content.text}</pre>
+        <pre className="max-h-[70vh] overflow-auto whitespace-pre-wrap rounded-md border border-border bg-background p-3 font-mono text-xs leading-relaxed text-foreground">
+          {content.text}
+        </pre>
       ) : (
-        <p role="status">{collaborationCopy[locale].processing}</p>
+        <Loading>{collaborationCopy[locale].processing}</Loading>
       )}
     </Modal>
   );
@@ -120,39 +121,36 @@ export function AttachmentCard({
   }
   return (
     <>
-      <div className="workspace-file-card">
-        <Button
-          variant="outline"
+      <div className="inline-flex max-w-full items-stretch overflow-hidden rounded-md border border-border bg-surface text-xs">
+        <button
           type="button"
+          className="flex min-w-0 items-center gap-2 px-2 py-1 text-left transition-colors hover:bg-accent disabled:opacity-50"
           aria-label={`${copy.downloadAttachment}: ${attachment.filename}`}
           disabled={downloading}
           onClick={() => void download()}
         >
-          <FileText size={22} />
-          <span>
-            <strong>{attachment.filename}</strong>
-            <small>
-              {attachment.media_type} ·{" "}
-              {Math.max(1, Math.ceil(attachment.size_bytes / 1024))} KB
-            </small>
+          <FileText aria-hidden className="size-3.5 shrink-0 text-faint" />
+          <span className="truncate font-mono text-foreground">
+            {attachment.filename}
           </span>
-          <Download size={13} />
-        </Button>
+          <span className="shrink-0 font-mono tabular text-faint">
+            {Math.max(1, Math.ceil(attachment.size_bytes / 1024))} KB
+          </span>
+          <Download aria-hidden className="size-3 shrink-0 text-faint" />
+        </button>
         {previewable && (
-          <Button
-            variant="outline"
+          <button
             type="button"
+            className="grid w-7 place-items-center border-l border-border text-faint transition-colors hover:bg-accent hover:text-foreground"
             aria-label={`${locale === "ja-JP" ? "プレビュー" : "Preview"}: ${attachment.filename}`}
             onClick={() => setPreview(true)}
           >
-            <Eye size={14} />
-          </Button>
+            <Eye aria-hidden className="size-3.5" />
+          </button>
         )}
       </div>
       {error && (
-        <p role="alert" className="error">
-          {error}
-        </p>
+        <Alert className="mt-1">{error}</Alert>
       )}
       {preview && (
         <AttachmentPreview
@@ -168,6 +166,8 @@ export function AttachmentCard({
 export function ChannelFiles({ workspace }: { workspace: string }) {
   const { locale } = useI18n();
   const copy = collaborationCopy[locale];
+  const title =
+    locale === "ja-JP" ? "チャンネルの共有ファイル" : "Shared channel files";
   const query = useInfiniteQuery({
     queryKey: ["channel-history", workspace, null],
     initialPageParam: undefined as string | undefined,
@@ -187,36 +187,32 @@ export function ChannelFiles({ workspace }: { workspace: string }) {
         (entry) => entry.attachments,
       );
   return (
-    <section className="collab-artifacts">
-      <h3>
-        {locale === "ja-JP"
-          ? "チャンネルの共有ファイル"
-          : "Shared channel files"}
-      </h3>
+    <section className="grid gap-2" aria-label={title}>
+      <h3 className="text-[11px] font-medium text-faint">{title}</h3>
       {query.isError ? (
-        <p role="alert" className="error">
-          {copy.unavailable}
-        </p>
+        <Alert>{copy.unavailable}</Alert>
       ) : (
         <>
-          <p className="muted">
+          <p className="text-xs text-muted-foreground">
             {locale === "ja-JP"
               ? "読み込んだチャンネル履歴の添付ファイルです。返信の添付は各スレッドで確認できます。"
               : "Attachments in loaded channel history. Reply attachments are available in their threads."}
           </p>
-          <ul className="collab-attachments workspace-file-gallery">
+          <ul className="grid gap-1.5">
             {files.map((file) => (
-              <li key={file.id}>
+              <li key={file.id} className="min-w-0">
                 <AttachmentCard workspace={workspace} attachment={file} />
               </li>
             ))}
           </ul>
           {!query.isPending && files.length === 0 && (
-            <p className="muted">{copy.empty}</p>
+            <p className="text-xs text-faint">{copy.empty}</p>
           )}
           {query.hasNextPage && (
             <Button
               variant="outline"
+              size="sm"
+              className="justify-self-start"
               type="button"
               disabled={query.isFetchingNextPage}
               onClick={() => void query.fetchNextPage()}

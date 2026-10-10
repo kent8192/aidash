@@ -119,6 +119,12 @@ impl SessionScope for Scope<'_> {
 	async fn load(&mut self, id: Uuid) -> Result<Option<Area>> {
 		let result: NativeResult<_> = async {
 			let access = &mut *self.access;
+			// Batched reads share the row so they run concurrently; writers still exclude them.
+			let lock = if access.shared_area {
+				LockType::Share
+			} else {
+				LockType::Update
+			};
 			let area: Option<NativeArea> = {
 				let query_bind_1 = id;
 				let query_bind_2 = &access.identity.tenant;
@@ -140,7 +146,7 @@ impl SessionScope for Scope<'_> {
 								),
 							),
 						)
-						.lock(LockType::Update)
+						.lock(lock)
 						.to_string(PostgresQueryBuilder),
 				)
 				.fetch_optional(&mut **access.tx)

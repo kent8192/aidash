@@ -580,6 +580,67 @@ async fn model_response_reads_run_as_one_batch_and_are_adopted_in_call_order(
 	b.close().await;
 }
 
+#[rstest::rstest]
+#[tokio::test]
+async fn batched_reads_share_the_working_area_row(
+	#[future(awt)]
+	#[from(test_environment)]
+	environment: Arc<TestEnvironment>,
+) {
+	use reinhardt::query::{
+		Alias, Expr, ExprTrait as _, LockType, PostgresQueryBuilder, Query,
+		QueryStatementBuilder as _,
+	};
+	// Arrange: a Run positioned at a two-read model response.
+	let b = Batching::new(environment, 2, 2).await;
+	let run = b.delegate(b.task).await;
+	let file = b.file(&run, "notes/a.txt", "東京\n").await;
+	b.script(&[
+		(
+			"provider-search",
+			"file_search",
+			json!({"query":"東京","mode":"literal","scope":"working"}),
+		),
+		(
+			"provider-read",
+			"file_read",
+			json!({"file_id":file["file_id"],"representation":"text","max_bytes":64}),
+		),
+	]);
+	let worker = Harness {
+		federation: b.f.clone(),
+	};
+	while b.f.store.run(run.id).await.unwrap().phase() != RunPhase::ToolCall {
+		assert!(worker.worker_once().await.unwrap());
+	}
+	// Another reader holds a shared lock on the Working Area row.
+	let area: Uuid = serde_json::from_value(run_area(&b, &run).await).unwrap();
+	let pool = b.f.store.pool.driver().clone();
+	let mut reader = pool.begin().await.unwrap();
+	sqlx::query(
+		&Query::select()
+			.column(Alias::new("id"))
+			.from(Alias::new("core_areas"))
+			.and_where(Expr::col(Alias::new("id")).eq(Expr::value(area)))
+			.lock(LockType::Share)
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(&mut *reader)
+	.await
+	.unwrap();
+	// Act: the batch runs while the shared lock is held.
+	let step = tokio::time::timeout(Duration::from_secs(20), worker.worker_once()).await;
+	reader.rollback().await.unwrap();
+	// Assert: batched reads never wait for an exclusive Working Area lock.
+	assert!(
+		step.expect("batched reads must not take an exclusive area lock")
+			.unwrap()
+	);
+	let after = b.f.store.run(run.id).await.unwrap();
+	assert_eq!(after.state.tool().unwrap().cursor, 2);
+	b.close().await;
+}
+
 async fn run_area(b: &Batching, run: &Run) -> Value {
 	let (status, area) = request(
 		&b.app,

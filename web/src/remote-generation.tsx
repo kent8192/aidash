@@ -8,6 +8,15 @@ import type {
 import type { Submit } from "./forms";
 import { ApiError, apiFetch } from "./transport";
 import { Field, useI18n } from "./ui";
+import { Input } from "./components/ui/input";
+import { Textarea } from "./components/ui/textarea";
+import {
+  Alert,
+  Check,
+  Disclosure,
+  Facts,
+  Hint,
+} from "./components/patterns";
 import type { Entry } from "./types";
 import {
   HomeNativeMemoryFields,
@@ -89,16 +98,19 @@ export function RemoteGenerationAssignForm({
     }
   };
   return (
-    <details className="detail-section">
-      <summary>
-        {ja ? "別の Node で Agent を生成" : "Generate an agent at another node"}
-      </summary>
-      <p>
+    <Disclosure
+      className="border-t border-border pt-3"
+      summary={
+        ja ? "別の Node で Agent を生成" : "Generate an agent at another node"
+      }
+    >
+      <Hint>
         {ja
           ? "実行 Node のポリシーを指定して Agent を準備します。必要な承認が完了した後に、実行と Home の記憶の参照を許可できます。"
           : "Prepare an agent under the execution node's policy. After any required approval, authorize its execution and access to Home memory."}
-      </p>
+      </Hint>
       <form
+        className="grid min-w-0 gap-3"
         onSubmit={(event) => {
           event.preventDefault();
           const data = new FormData(event.currentTarget);
@@ -114,9 +126,17 @@ export function RemoteGenerationAssignForm({
           );
         }}
       >
-        <fieldset disabled={busy || draft !== null}>
+        <fieldset
+          disabled={busy || draft !== null}
+          className="grid min-w-0 gap-3 sm:grid-cols-2"
+        >
           <Field label={ja ? "実行 Node" : "Execution node"}>
-            <input name="node" required placeholder="aidash://node-b" />
+            <Input
+              name="node"
+              required
+              placeholder="aidash://node-b"
+              className="font-mono"
+            />
           </Field>
           <Field
             label={
@@ -125,11 +145,12 @@ export function RemoteGenerationAssignForm({
                 : "Execution node generation policy"
             }
           >
-            <input name="policy" required />
+            <Input name="policy" required className="font-mono" />
           </Field>
           <Field label={ja ? "ポリシーのリビジョン" : "Policy revision"}>
-            <input
+            <Input
               name="revision"
+              className="font-mono tabular"
               type="number"
               min={1}
               step={1}
@@ -137,48 +158,52 @@ export function RemoteGenerationAssignForm({
               required
             />
           </Field>
-          <Field label={ja ? "生成を依頼する理由" : "Reason for generation"}>
-            <textarea name="reason" maxLength={4096} required />
-          </Field>
+          <div className="sm:col-span-2">
+            <Field label={ja ? "生成を依頼する理由" : "Reason for generation"}>
+              <Textarea name="reason" maxLength={4096} rows={2} required />
+            </Field>
+          </div>
         </fieldset>
-        <Button variant="outline" disabled={busy || !!terminalPrepared}>
-          {draft
-            ? ja
-              ? "同じ準備・承認状態を再確認"
-              : "Recheck the same preparation and approval"
-            : ja
-              ? "Agent を準備"
-              : "Prepare agent"}
-        </Button>
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          {terminalPrepared && (
+            <Button
+              variant="ghost"
+              type="button"
+              disabled={busy || grantPending}
+              onClick={() => {
+                setDraft(null);
+                setPrepared(null);
+                grant.current = null;
+              }}
+            >
+              {ja ? "新しい依頼を作成" : "Create a new intent"}
+            </Button>
+          )}
+          {draft && !terminalPrepared && (
+            <Button
+              variant="ghost"
+              type="button"
+              disabled={busy || grantPending}
+              onClick={() => void cancel()}
+            >
+              {ja ? "準備を中止" : "Cancel preparation"}
+            </Button>
+          )}
+          <Button variant="outline" disabled={busy || !!terminalPrepared}>
+            {draft
+              ? ja
+                ? "同じ準備・承認状態を再確認"
+                : "Recheck the same preparation and approval"
+              : ja
+                ? "Agent を準備"
+                : "Prepare agent"}
+          </Button>
+        </div>
       </form>
-      {error && <p role="alert">{error}</p>}
-      {terminalPrepared && (
-        <Button
-          variant="outline"
-          type="button"
-          disabled={busy || grantPending}
-          onClick={() => {
-            setDraft(null);
-            setPrepared(null);
-            grant.current = null;
-          }}
-        >
-          {ja ? "新しい依頼を作成" : "Create a new intent"}
-        </Button>
-      )}
-      {draft && !terminalPrepared && (
-        <Button
-          variant="outline"
-          type="button"
-          disabled={busy || grantPending}
-          onClick={() => void cancel()}
-        >
-          {ja ? "準備を中止" : "Cancel preparation"}
-        </Button>
-      )}
+      {error && <Alert>{error}</Alert>}
       {prepared && (
         <>
-          <p role="status">
+          <Hint role="status">
             {terminalPrepared
               ? ja
                 ? "準備は終了しました。新しい依頼を作成してください。"
@@ -190,21 +215,28 @@ export function RemoteGenerationAssignForm({
                 : ja
                   ? "実行 Node で必要な承認を完了してから再確認してください。"
                   : "Complete the required approval at the execution node, then recheck."}
-          </p>
-          <dl>
-            <dt>{ja ? "承認対象のリクエスト" : "Request for approval"}</dt>
-            <dd>
-              <code>
-                {prepared.node_id} · {prepared.request_id}
-              </code>
-            </dd>
-            <dt>{ja ? "有効期限" : "Expires"}</dt>
-            <dd>{new Date(prepared.expires_at).toLocaleString(locale)}</dd>
-          </dl>
+          </Hint>
+          <Facts
+            items={[
+              [
+                ja ? "承認対象のリクエスト" : "Request for approval",
+                <code className="text-xs">
+                  {prepared.node_id} · {prepared.request_id}
+                </code>,
+              ],
+              [
+                ja ? "有効期限" : "Expires",
+                <time className="font-mono" dateTime={prepared.expires_at}>
+                  {new Date(prepared.expires_at).toLocaleString(locale)}
+                </time>,
+              ],
+            ]}
+          />
         </>
       )}
       {prepared?.prepared && ["QUEUED", "ACTIVE"].includes(prepared.status) && (
         <form
+          className="grid min-w-0 gap-3 border-t border-border pt-3"
           onSubmit={(event) => {
             event.preventDefault();
             const fields = new FormData(event.currentTarget);
@@ -263,12 +295,15 @@ export function RemoteGenerationAssignForm({
             }).finally(() => setBusy(false));
           }}
         >
-          <p>
-            <code>
+          <p className="text-xs text-muted-foreground">
+            <code className="text-foreground">
               {prepared.agent.id}@{prepared.agent.version}
             </code>
           </p>
-          <fieldset disabled={busy || grantPending}>
+          <fieldset
+            disabled={busy || grantPending}
+            className="grid min-w-0 gap-3"
+          >
             <Field
               label={
                 ja
@@ -276,25 +311,24 @@ export function RemoteGenerationAssignForm({
                   : "Execution grant lifetime (seconds)"
               }
             >
-              <input
+              <Input
                 name="lifetime"
                 type="number"
                 min={1}
                 max={3600}
                 defaultValue={600}
+                className="font-mono tabular sm:w-40"
                 required
               />
             </Field>
-            <label>
-              <input
-                type="checkbox"
-                checked={memory}
-                onChange={(event) => setMemory(event.target.checked)}
-              />
+            <Check
+              checked={memory}
+              onChange={(event) => setMemory(event.target.checked)}
+            >
               {ja
                 ? "Home の記憶を毎回参照"
                 : "Require Home memory for each inference"}
-            </label>
+            </Check>
             {memory && (
               <>
                 <Field
@@ -302,10 +336,11 @@ export function RemoteGenerationAssignForm({
                     ja ? "Home の embedding 定義" : "Home embedding definition"
                   }
                 >
-                  <input
+                  <Input
                     name="embedding"
                     placeholder="embedding-id@1.0.0"
                     pattern=".+@[0-9]+\.[0-9]+\.[0-9]+.*"
+                    className="font-mono"
                     required
                   />
                 </Field>
@@ -321,33 +356,36 @@ export function RemoteGenerationAssignForm({
                       : "Optional: approved compactor"
                   }
                 >
-                  <input
+                  <Input
                     name="compactor"
                     placeholder="compactor-id@1.0.0"
                     pattern=".+@[0-9]+\.[0-9]+\.[0-9]+.*"
+                    className="font-mono"
                   />
                 </Field>
               </>
             )}
           </fieldset>
           {grantPending && (
-            <p role="status">
+            <Hint role="status">
               {ja
                 ? "結果が確定するまで、同じ実行許可を再試行します。"
                 : "Retry the same execution grant until its outcome is confirmed."}
-            </p>
+            </Hint>
           )}
-          <Button variant="outline" className="primary" disabled={busy}>
-            {grantPending
-              ? ja
-                ? "同じ実行許可を再試行"
-                : "Retry the same execution grant"
-              : ja
-                ? "許可して実行"
-                : "Authorize and execute"}
-          </Button>
+          <div className="flex justify-end">
+            <Button disabled={busy}>
+              {grantPending
+                ? ja
+                  ? "同じ実行許可を再試行"
+                  : "Retry the same execution grant"
+                : ja
+                  ? "許可して実行"
+                  : "Authorize and execute"}
+            </Button>
+          </div>
         </form>
       )}
-    </details>
+    </Disclosure>
   );
 }

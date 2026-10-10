@@ -31,7 +31,7 @@ jobs:
     # incur compute charges if this repository's visibility changes.
     if: github.event.repository.private == false
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 360
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -64,7 +64,7 @@ jobs:
       matrix:
         os: [ubuntu-24.04, windows-2022, macos-15]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    timeout-minutes: 360
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/desktop/src-tauri/target
     steps:

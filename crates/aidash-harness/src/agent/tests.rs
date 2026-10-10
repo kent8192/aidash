@@ -40,6 +40,9 @@ struct State {
 	instructions: String,
 	/// The semantic read returns as much content as its budget allows.
 	fill_semantic_budget: bool,
+	prompt_cache: aidash_domain::projection::PromptCache,
+	/// Serve an `anthropic/` model that declares explicit prompt caching.
+	explicit_cache_model: bool,
 }
 impl Backend {
 	fn record(&self, name: &'static str) {
@@ -49,9 +52,14 @@ impl Backend {
 		self.0.task.lock().unwrap().clone()
 	}
 	fn entry(&self, id: &str) -> Entry {
-		serde_json::from_value(json!({"id":id,"version":"1.0.0","kind":"agent","name":{"en":id},"description":{"en":"Fixture"},"config":{
-        "provider":"openrouter","model_id":"fixture","endpoint":"http://fixture.invalid/v1","credential_env":null,"context_window":128000,"max_output_tokens":4096,"modalities":["text"],"cost":{}
-    }})).unwrap()
+		let mut config = json!({
+			"provider":"openrouter","model_id":"fixture","endpoint":"http://fixture.invalid/v1","credential_env":null,"context_window":128000,"max_output_tokens":4096,"modalities":["text"],"cost":{}
+		});
+		if self.0.explicit_cache_model {
+			config["model_id"] = json!("anthropic/fixture");
+			config["cache_mode"] = json!("explicit");
+		}
+		serde_json::from_value(json!({"id":id,"version":"1.0.0","kind":"agent","name":{"en":id},"description":{"en":"Fixture"},"config":config})).unwrap()
 	}
 }
 fn unexpected(operation: &str) -> ! {
@@ -482,6 +490,7 @@ impl ExecutionEnvironment for Backend {
 			conversation_memory: self.0.conversation_memory,
 			tool_parallelism: 1,
 			projection_version: self.0.projection,
+			prompt_cache: self.0.prompt_cache,
 		})
 	}
 	fn provider(&self, _model: ModelConfig) -> Result<Arc<dyn ModelProvider>> {
@@ -617,6 +626,8 @@ fn fixture() -> Fixture {
 		inputs: Mutex::new(vec![]),
 		instructions: "Do the task".into(),
 		fill_semantic_budget: false,
+		prompt_cache: Default::default(),
+		explicit_cache_model: false,
 	}));
 	Fixture { backend, run }
 }
@@ -1427,9 +1438,14 @@ fn ordered_estimate_counts_the_complete_request_near_the_window(#[case] events: 
 	};
 	let ordered = request(&scope);
 	let estimate = ordered.estimated_total_tokens();
+	// Ordered estimates count cache breakpoint framing whether or not a step
+	// sends it, so the estimate equals the marked request (ADR 0019).
+	let mut marked = ordered.clone();
+	marked.cache_breakpoints = true;
+	assert_eq!(marked.estimated_total_tokens(), estimate);
 	assert_eq!(
 		estimate,
-		ordered.input_body().to_string().len()
+		marked.input_body().to_string().len()
 			+ aidash_domain::projection::CACHE_SALT_LINE_RESERVE
 			+ 4096 + 1024
 	);
@@ -1551,5 +1567,103 @@ async fn ordered_catch_up_keeps_its_turn_paragraph_out_of_the_system_prompt() {
 	assert_eq!(
 		volatile(&catch_up)["turn_instructions"],
 		json!(catch_up_paragraph.trim_start())
+	);
+}
+
+/// An Agent opted in to explicit prompt caching on an `anthropic/` model that
+/// declares `explicit`, on the given Projection Version.
+fn explicit_cache(fixture: &mut Fixture, projection: ProjectionVersion) {
+	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	state.projection = projection;
+	state.prompt_cache = aidash_domain::projection::PromptCache::Explicit;
+	state.explicit_cache_model = true;
+}
+
+#[rstest]
+#[case::opted_in(aidash_domain::projection::PromptCache::Explicit, true)]
+#[case::not_opted_in(aidash_domain::projection::PromptCache::Off, false)]
+#[tokio::test]
+async fn ordered_requests_carry_breakpoints_only_for_an_opted_in_agent(
+	mut canonical: Fixture,
+	#[case] prompt_cache: aidash_domain::projection::PromptCache,
+	#[case] expected: bool,
+) {
+	// Arrange
+	explicit_cache(&mut canonical, ProjectionVersion::Ordered);
+	Arc::get_mut(&mut canonical.backend.0).unwrap().prompt_cache = prompt_cache;
+
+	// Act
+	assert!(advance_sources(&mut canonical).await.is_err());
+
+	// Assert
+	let requests = canonical.backend.0.requests.lock().unwrap();
+	assert_eq!(requests.len(), 1);
+	assert_eq!(requests[0].cache_breakpoints, expected);
+	let body = requests[0].input_body();
+	assert_eq!(
+		body.to_string().matches("cache_control").count(),
+		if expected { 2 } else { 0 }
+	);
+	assert_eq!(
+		body["messages"][1]["content"][0]
+			.get("cache_control")
+			.is_some(),
+		expected,
+		"the Stable Prefix part"
+	);
+	assert!(
+		body["messages"][1]["content"][1]
+			.get("cache_control")
+			.is_none(),
+		"the volatile part"
+	);
+}
+
+#[rstest]
+#[case::legacy_agent(ProjectionVersion::Legacy, true)]
+#[case::undeclared_model(ProjectionVersion::Ordered, false)]
+#[tokio::test]
+async fn an_explicit_opt_in_never_reaches_an_unsupported_request(
+	mut canonical: Fixture,
+	#[case] projection: ProjectionVersion,
+	#[case] explicit_cache_model: bool,
+) {
+	// Arrange
+	explicit_cache(&mut canonical, projection);
+	Arc::get_mut(&mut canonical.backend.0)
+		.unwrap()
+		.explicit_cache_model = explicit_cache_model;
+
+	// Act
+	let error = advance_sources(&mut canonical).await.unwrap_err();
+
+	// Assert
+	assert!(
+		matches!(&error, Error::Domain(aidash_domain::Error::Invalid(message)) if message.starts_with("Agent prompt_cache explicit requires")),
+		"{error:?}"
+	);
+	assert!(canonical.backend.0.requests.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn catch_up_steps_carry_no_breakpoints() {
+	// Arrange
+	let mut fixture = canonical(fixture());
+	explicit_cache(&mut fixture, ProjectionVersion::Ordered);
+
+	// Act
+	let (plain, catch_up) = catch_up_requests(fixture).await;
+
+	// Assert
+	assert!(plain.cache_breakpoints);
+	assert!(!catch_up.cache_breakpoints);
+	assert!(!catch_up.input_body().to_string().contains("cache_control"));
+	assert_eq!(
+		catch_up.estimated_total_tokens(),
+		ModelRequest {
+			cache_breakpoints: true,
+			..catch_up.clone()
+		}
+		.estimated_total_tokens()
 	);
 }

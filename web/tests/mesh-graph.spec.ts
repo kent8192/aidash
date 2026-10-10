@@ -4,6 +4,11 @@ import { meshScene } from "./mesh-scene.mjs";
 import type { Core } from "cytoscape";
 import { cytoscapeCamera, expectCytoscapeFitted } from "./graph-fit-assertions";
 
+const graphSearch = (page: Page) =>
+  page.getByRole("searchbox", {
+    name: "Search nodes, tasks, agents, or artifacts…",
+  });
+
 async function setup(
   page: Page,
   subject = false,
@@ -108,7 +113,7 @@ test("inspector follows the selected graph workspace", async ({ page }) => {
     .filter({ hasText: "Other Task" })
     .click();
   const inspector = page.getByRole("complementary", { name: "Node details" });
-  await inspector.getByRole("button", { name: "Events", exact: true }).click();
+  await inspector.getByRole("tab", { name: /^Events/ }).click();
   await expect(inspector).toContainText("task.created");
   expect(errors).toEqual([]);
 });
@@ -121,16 +126,14 @@ test("renders mesh groups and navigates node details, tasks and the existing rel
   await expect(
     inspector.getByRole("heading", { name: "Planner Agent", exact: true }),
   ).toBeVisible();
-  await inspector.getByRole("button", { name: "Tasks 3", exact: true }).click();
+  await inspector.getByRole("tab", { name: "Tasks 3", exact: true }).click();
   await inspector
     .getByRole("button", { name: "Build Prototype Running", exact: true })
     .click();
   await expect(
     inspector.getByRole("heading", { name: "Build Prototype", exact: true }),
   ).toBeVisible();
-  await inspector
-    .getByRole("button", { name: "Connections", exact: true })
-    .click();
+  await inspector.getByRole("tab", { name: "Connections", exact: true }).click();
   await expect(inspector.locator(".mesh-relations-list")).toContainText(
     "prerequisite for",
   );
@@ -151,7 +154,7 @@ test("search, type and relation filters, neighborhood focus, list view and reset
   page,
 }, testInfo) => {
   const { errors } = await setup(page);
-  const search = page.getByRole("banner").getByRole("searchbox");
+  const search = graphSearch(page);
   await search.fill("nothing-matches");
   await expect(
     page.getByRole("heading", { name: "No matching nodes" }),
@@ -199,13 +202,11 @@ test("search, type and relation filters, neighborhood focus, list view and reset
   await page.getByText("Relation types", { exact: true }).first().click();
   await page.getByRole("checkbox", { name: "executes", exact: true }).uncheck();
   await expect(table).not.toContainText("→ executes →");
-  await page.locator(".account-popover > summary").click();
-  await page.getByRole("button", { name: "Dark theme", exact: true }).click();
-  await page.locator(".account-popover > summary").click();
-  await expect(page.locator(".intent-app")).toHaveAttribute(
-    "data-theme",
-    "dark",
-  );
+  await page
+    .getByRole("banner")
+    .getByRole("button", { name: "Switch to light theme", exact: true })
+    .click();
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
   await expect(
     page.getByRole("checkbox", { name: "Tools", exact: true }),
   ).not.toBeChecked();
@@ -229,7 +230,7 @@ test("connected local node opens topology and relationship controls only show ac
     "aidash://product-lab",
   );
   await page.getByLabel("Graph perspective").selectOption("neighborhood");
-  await expect(page.getByRole("banner").getByRole("searchbox")).toHaveCount(0);
+  await expect(graphSearch(page)).toHaveCount(0);
   await expect(page.getByLabel("Activity window")).toHaveCount(0);
   await expect(page.getByLabel("Layout", { exact: true })).toHaveCount(0);
   await page
@@ -312,9 +313,13 @@ test("all perspectives and layout engines render and execution events select tas
       await expect(page.locator(".mesh-statistics")).toContainText(
         "Blocked tasks",
       );
-      await page.locator(".mesh-timeline-track button").last().click();
+      await page
+        .getByRole("region", { name: "Execution timeline" })
+        .getByRole("button", { name: /^task\.claimed · / })
+        .first()
+        .click();
       await expect(page.locator(".mesh-inspector h2")).toHaveText(
-        "Research & Plan",
+        "Build Prototype",
       );
     }
     await expectCytoscapeFitted(page.locator(".mesh-canvas"));
@@ -519,7 +524,7 @@ test("empty filters and viewport changes preserve the camera until explicit fit"
   });
   await page.getByRole("button", { name: "Zoom in", exact: true }).click();
   const before = await cytoscapeCamera(canvas);
-  await page.getByRole("banner").getByRole("searchbox").fill("nothing-matches");
+  await graphSearch(page).fill("nothing-matches");
   await expect(
     page.getByRole("heading", { name: "No matching nodes" }),
   ).toBeVisible();
@@ -536,7 +541,7 @@ test("empty filters and viewport changes preserve the camera until explicit fit"
     )
     .toBe(true);
   expect((await cytoscapeCamera(canvas)).zoom).toEqual(before.zoom);
-  await page.getByRole("banner").getByRole("searchbox").fill("");
+  await graphSearch(page).fill("");
   await expect(fit).toBeEnabled();
   expect((await cytoscapeCamera(canvas)).pan).toEqual(before.pan);
   await page
@@ -563,7 +568,9 @@ test("empty filters and viewport changes preserve the camera until explicit fit"
     buttons
       .find((button) => button.textContent?.includes("Fit entire graph"))!
       .click();
-    buttons[0].click();
+    buttons
+      .find((button) => button.getAttribute("aria-label") === "Zoom in")!
+      .click();
   });
   await page.evaluate(
     () =>
@@ -635,7 +642,7 @@ test("a filtered single resource is centered without automatic magnification", a
     .locator(".mesh-filters")
     .getByRole("checkbox")
     .all()) {
-    if ((await checkbox.locator("..").innerText()).trim() !== "Conversations")
+    if ((await checkbox.getAttribute("aria-label")) !== "Conversations")
       await checkbox.uncheck();
   }
   const canvas = page.locator(".mesh-canvas");

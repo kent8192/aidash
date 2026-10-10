@@ -3,6 +3,7 @@ const port = Number(process.env.AIDASH_UI_PORT ?? 18082);
 if (!Number.isInteger(port) || port < 1 || port > 65535)
   throw new Error("AIDASH_UI_PORT must be a TCP port");
 const baseURL = `http://127.0.0.1:${port}`;
+const dist = process.env.AIDASH_UI_DIST ?? "dist";
 export default defineConfig({
   testDir: "./tests",
   testMatch: [
@@ -36,7 +37,7 @@ export default defineConfig({
     trace: "retain-on-failure",
   },
   webServer: {
-    command: `node node_modules/vite/bin/vite.js preview --host 127.0.0.1 --port ${port} --strictPort`,
+    command: `node node_modules/vite/bin/vite.js preview --host 127.0.0.1 --port ${port} --strictPort --outDir ${dist}`,
     url: baseURL,
     reuseExistingServer: false,
   },

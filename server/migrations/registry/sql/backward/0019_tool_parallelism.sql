@@ -1,12 +1,30 @@
 -- PostgreSQL function bodies have no typed migration operation. DDL only.
--- Restore the 0017 Agent Binding contract, the 0015 descriptor contract and the 0011 installation guard.
+-- Restore the 0018_prompt_cache Agent Binding contract, the 0015 descriptor contract and the 0011 installation guard.
+-- Downgrading refuses stored parallelism declarations rather than leaving rows
+-- that the restored contracts and pre-0019 binaries reject.
+DO $$
+BEGIN
+ IF EXISTS(SELECT 1 FROM registry WHERE kind = 'agent' AND (metadata->'config' ? 'tool_parallelism'
+   OR jsonb_path_exists(metadata->'config', 'strict $.bindings[*].narrow.concurrency')))
+ OR EXISTS(SELECT 1 FROM registry WHERE kind = 'tool' AND metadata #> '{config,narrow}' ? 'concurrency')
+ OR EXISTS(SELECT 1 FROM packages WHERE manifest #> '{entity,config}' ? 'tool_parallelism'
+   OR jsonb_path_exists(manifest #> '{entity,config}', 'strict $.bindings[*].narrow.concurrency')
+   OR manifest #> '{entity,config,narrow}' ? 'concurrency')
+ OR EXISTS(SELECT 1 FROM installations WHERE config ? 'tool_parallelism'
+   OR jsonb_path_exists(config, 'strict $.bindings[*].narrow.concurrency')
+   OR config #> '{narrow}' ? 'concurrency') THEN
+  RAISE EXCEPTION 'registry 0019_tool_parallelism cannot be reversed: definitions, packages or installations declare tool_parallelism or narrow.concurrency';
+ END IF;
+END
+$$;
 CREATE OR REPLACE FUNCTION public.aidash_agent_bindings_is_valid(value jsonb) RETURNS boolean
 LANGUAGE plpgsql IMMUTABLE STRICT AS $$
 DECLARE item jsonb; removals jsonb; edges jsonb; step_count numeric; restriction jsonb; candidate jsonb;
 BEGIN
  IF jsonb_typeof(value) IS DISTINCT FROM 'object'
- OR value - ARRAY['schema_version','model','instructions','bindings','remove_default','cluster','max_steps','projection_version']::text[] <> '{}'::jsonb
+ OR value - ARRAY['schema_version','model','instructions','bindings','remove_default','cluster','max_steps','projection_version','prompt_cache']::text[] <> '{}'::jsonb
  OR NOT COALESCE(value->'projection_version','null'::jsonb) IN ('null'::jsonb,'"legacy"'::jsonb,'"ordered"'::jsonb,'"native"'::jsonb)
+ OR NOT COALESCE(value->'prompt_cache','null'::jsonb) IN ('null'::jsonb,'"off"'::jsonb,'"explicit"'::jsonb)
  OR value->'schema_version' IS DISTINCT FROM '1'::jsonb
  OR NOT COALESCE(public.aidash_qualified_ref_is_valid(value->'model' || '{"registry_node":"aidash://contract"}'::jsonb),false)
  OR jsonb_typeof(COALESCE(value->'instructions','""'::jsonb)) <> 'string' THEN RETURN false; END IF;
