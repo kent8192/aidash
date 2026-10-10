@@ -274,7 +274,8 @@ the record's `loaded` flag. `skill_asset_read` (`core.skills@1`) takes `alias`,
 `digest`, `path`, `offset?` and `max_chars?`. It reads one packaged file of a
 Registry or direct Skill named by its Skill alias and current digest. Text is
 returned in Unicode-scalar chunks capped by the `read_bytes` limit, with
-`next_offset` and `truncated`; binary files return metadata only. A direct
+`next_offset` and `truncated`; binary files, including every Registry file
+declared `"encoding": "base64"`, return metadata only. A direct
 Skill's `SKILL.md` is its instruction body, not a packaged file: it is absent
 from `files` and reading it returns `SKILL_FILE_UNAVAILABLE`, so it becomes
 resident only through `capability_load` under `skill_bytes`. A stale

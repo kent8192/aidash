@@ -1388,3 +1388,27 @@ async fn deferred_exposure_contract_rejects_explicit_null_budgets(
 		);
 	}
 }
+
+#[rstest]
+#[tokio::test]
+async fn deferred_exposure_lets_agent_installations_override_exposure(
+	#[future] fresh_database: MigrationFixture,
+) {
+	// Arrange
+	let fixture = fresh_database.await;
+	// Act
+	fixture.migrate().await;
+	// Assert: only the Agent allowlist of the installation guard gains `exposure`.
+	let pool = fixture.connection.clone().into_postgres().unwrap();
+	let query = Query::select()
+		.expr(Expr::cust(
+			"pg_get_functiondef('public.guard_installation_config()'::regprocedure)",
+		))
+		.to_string(PostgresQueryBuilder);
+	let guard: String = sqlx::query_scalar(&query).fetch_one(&pool).await.unwrap();
+	assert!(
+		guard.contains("'remove_default','cluster','max_steps','exposure']::text[]"),
+		"{guard}"
+	);
+	assert_eq!(guard.matches("'exposure'").count(), 1, "{guard}");
+}

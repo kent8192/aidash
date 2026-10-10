@@ -101,7 +101,8 @@ Each variant has these fields:
   `exposure`, including the exposed `[alias, digest]` pairs.
 - `tool_calls`: every tool event in `context.history`, in order, with `name`,
   `arguments`, `error` and `dispatch_rejected`. `dispatch_rejected` is true when
-  the call was refused because the alias was unavailable or not loaded.
+  the call was refused because the alias was unavailable, not loaded, or loaded
+  only by an earlier call of the same response.
 - `capability_calls`: counts of `capability_search`, `capability_describe`,
   `capability_load`, `capability_unload` and `skill_asset_read` calls.
 - `selection`:

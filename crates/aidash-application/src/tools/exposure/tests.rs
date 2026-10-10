@@ -206,6 +206,7 @@ fn fixture() -> Fixture {
 			json!({"instructions":"Follow the guide.","files":[
 				{"path":"notes.md","content":"界abc"},
 				{"path":"image.bin","content":base64::engine::general_purpose::STANDARD.encode(BINARY),"encoding":"base64"},
+				{"path":"data.txt","content":base64::engine::general_purpose::STANDARD.encode("plain text"),"encoding":"base64"},
 			]}),
 		),
 		"Guide Skill",
@@ -404,6 +405,16 @@ async fn registry_skill_assets_continue_within_the_read_budget(fixture: Fixture)
 	assert_eq!(binary["encoding"], "binary");
 	assert_eq!(binary["metadata"]["size"], BINARY.len());
 	assert!(binary.get("content").is_none());
+	// A declared base64 asset stays binary even when it decodes to UTF-8.
+	let declared = fixture
+		.call(
+			"skill_asset_read",
+			json!({"alias":skill["alias"],"digest":skill["digest"],"path":"data.txt"}),
+		)
+		.await
+		.unwrap();
+	assert_eq!(declared["encoding"], "binary");
+	assert!(declared.get("content").is_none());
 	assert!(matches!(
 		fixture
 			.call(

@@ -25,6 +25,8 @@ TERMINAL = ("COMPLETED", "FAILED", "CANCELLED")
 EVENT_WINDOW = 100  # GET /api/workspaces/{id} returns at most this many recent events.
 NO_HUMAN = "No human is available during this evaluation; continue without further input."
 DISPATCH_REJECTIONS = ("unavailable tool ", "capability ")
+# Harness refusals of an alias outside the Exposure set of the call's request.
+UNEXPOSED_SUFFIXES = ("use capability_load", "call it after the next model request")
 LIMITATIONS = [
     "context.usage holds only the latest provider response; per-request token counts come from "
     "model.completed events in the Run's Workspace, which GET /api/workspaces/{id} caps at 100.",
@@ -160,7 +162,7 @@ def evaluate(call, node, model, profile, fixture=None, report=None, endpoint=Non
                           "error": error,
                           "dispatch_rejected": error is not None and (
                               error.startswith(DISPATCH_REJECTIONS[0])
-                              or (error.startswith(DISPATCH_REJECTIONS[1]) and error.endswith("use capability_load")))})
+                              or (error.startswith(DISPATCH_REJECTIONS[1]) and error.endswith(UNEXPOSED_SUFFIXES)))})
         expected = [index for index, item in enumerate(calls) if item["name"] == case["expected_tool"]]
         selected = [index for index in expected if not calls[index]["dispatch_rejected"]]
         final_exposure = usage.get("exposure")

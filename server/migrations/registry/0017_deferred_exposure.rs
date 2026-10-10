@@ -1,5 +1,6 @@
 // reinhardt-migration-source: 1
-// PostgreSQL function bodies and NOT VALID JSON checks require DDL SQL assets.
+// PostgreSQL function bodies, NOT VALID JSON checks and the catalog-driven
+// installation guard allowlist rewrite require DDL SQL assets.
 use reinhardt::db::migrations::prelude::*;
 pub(super) fn migration() -> Migration {
 	Migration::new("0017_deferred_exposure", "registry")

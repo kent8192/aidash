@@ -135,3 +135,14 @@ BEGIN
 EXCEPTION WHEN OTHERS THEN RETURN false;
 END
 $$;
+-- Agent installations may override `exposure` like the other writable Agent
+-- fields. Rewrite only the current guard's Agent allowlist; the merged config is
+-- still checked by aidash_agent_bindings_is_valid above.
+DO $$
+DECLARE definition text; extended text;
+BEGIN
+  SELECT pg_get_functiondef('public.guard_installation_config()'::regprocedure) INTO STRICT definition;
+  extended := replace(definition, '''cluster'',''max_steps'']::text[]', '''cluster'',''max_steps'',''exposure'']::text[]');
+  IF extended = definition THEN RAISE EXCEPTION 'installation Agent override allowlist anchor missing'; END IF;
+  EXECUTE extended;
+END $$;

@@ -102,3 +102,12 @@ BEGIN
 EXCEPTION WHEN OTHERS THEN RETURN false;
 END
 $$;
+-- Withdraw the `exposure` installation override from the guard's Agent allowlist.
+DO $$
+DECLARE definition text; previous text;
+BEGIN
+  SELECT pg_get_functiondef('public.guard_installation_config()'::regprocedure) INTO STRICT definition;
+  previous := replace(definition, '''cluster'',''max_steps'',''exposure'']::text[]', '''cluster'',''max_steps'']::text[]');
+  IF previous = definition THEN RAISE EXCEPTION 'installation Agent override allowlist addition missing'; END IF;
+  EXECUTE previous;
+END $$;

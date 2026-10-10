@@ -11,7 +11,6 @@ use aidash_domain::{
 	provider::ToolSpec,
 	registry::{AgentConfig, rules},
 };
-use base64::Engine;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
@@ -91,6 +90,7 @@ async fn asset(ctx: &ToolContext<'_>, catalog: &[Capability], input: &Value) -> 
 		.and_then(|files| files.iter().find(|file| file["path"] == path))
 		.cloned()
 		.ok_or_else(|| Error::Invalid("SKILL_FILE_UNAVAILABLE".into()))?;
+	// A declared base64 asset is binary whatever its decoded bytes are.
 	let bytes = match &capability.identity {
 		CapabilityIdentity::Registry(reference) => {
 			let binding = ctx
@@ -109,21 +109,18 @@ async fn asset(ctx: &ToolContext<'_>, catalog: &[Capability], input: &Value) -> 
 				.into_iter()
 				.find(|file| file.path == path)
 				.ok_or_else(|| Error::Invalid("SKILL_FILE_UNAVAILABLE".into()))?;
-			if file.encoding.as_deref() == Some("base64") {
-				base64::engine::general_purpose::STANDARD
-					.decode(&file.content)
-					.map_err(|_| Error::Invalid("INVALID_SKILL_ENCODING".into()))?
-			} else {
-				file.content.into_bytes()
-			}
+			(file.encoding.as_deref() != Some("base64")).then(|| file.content.into_bytes())
 		}
-		CapabilityIdentity::DirectSkill { skill_id, .. } => {
+		CapabilityIdentity::DirectSkill { skill_id, .. } => Some(
 			ctx.operations
 				.direct_skill_file(*skill_id, digest, path)
-				.await?
-		}
+				.await?,
+		),
 	};
-	let Ok(text) = std::str::from_utf8(&bytes) else {
+	let Some(text) = bytes
+		.as_deref()
+		.and_then(|bytes| std::str::from_utf8(bytes).ok())
+	else {
 		return Ok(json!({
 			"alias": alias,
 			"path": path,
