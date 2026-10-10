@@ -13367,6 +13367,10 @@
                 }
               ]
             },
+            "summary": {
+              "type": "string",
+              "description": "Free-text `summary` of a context stored before Execution Summaries. No\ncurrent path writes one; a non-empty value stays model-visible verbatim."
+            },
             "usage": {
               "anyOf": [
                 {
@@ -14615,8 +14619,22 @@
         "SummarySource": {
           "type": "object",
           "description": "Exact Context Journal range folded into the summary.",
-          "required": ["from_seq", "through_seq", "entries_digest"],
+          "required": ["from_seq", "through_seq", "absorbed", "entries_digest"],
           "properties": {
+            "absorbed": {
+              "type": "array",
+              "description": "Inclusive journal sequence ranges absorbed by this summary and every\nsummary it merged. Entries pruned between them were never absorbed.",
+              "items": {
+                "type": "array",
+                "items": {
+                  "type": "integer",
+                  "format": "uint64",
+                  "minimum": 0
+                },
+                "minItems": 2,
+                "maxItems": 2
+              }
+            },
             "entries_digest": {
               "type": "string",
               "description": "Digest of the projection entries absorbed by the latest merge."
@@ -23958,6 +23976,10 @@
                 }
               ]
             },
+            "summary": {
+              "type": "string",
+              "description": "Free-text `summary` of a context stored before Execution Summaries. No\ncurrent path writes one; a non-empty value stays model-visible verbatim."
+            },
             "usage": {
               "anyOf": [
                 {
@@ -25313,8 +25335,22 @@
         "SummarySource": {
           "type": "object",
           "description": "Exact Context Journal range folded into the summary.",
-          "required": ["from_seq", "through_seq", "entries_digest"],
+          "required": ["from_seq", "through_seq", "absorbed", "entries_digest"],
           "properties": {
+            "absorbed": {
+              "type": "array",
+              "description": "Inclusive journal sequence ranges absorbed by this summary and every\nsummary it merged. Entries pruned between them were never absorbed.",
+              "items": {
+                "type": "array",
+                "items": {
+                  "type": "integer",
+                  "format": "uint64",
+                  "minimum": 0
+                },
+                "minItems": 2,
+                "maxItems": 2
+              }
+            },
             "entries_digest": {
               "type": "string",
               "description": "Digest of the projection entries absorbed by the latest merge."
@@ -26105,6 +26141,10 @@
                   "type": "null"
                 }
               ]
+            },
+            "summary": {
+              "type": "string",
+              "description": "Free-text `summary` of a context stored before Execution Summaries. No\ncurrent path writes one; a non-empty value stays model-visible verbatim."
             },
             "usage": {
               "anyOf": [
@@ -27354,8 +27394,22 @@
         "SummarySource": {
           "type": "object",
           "description": "Exact Context Journal range folded into the summary.",
-          "required": ["from_seq", "through_seq", "entries_digest"],
+          "required": ["from_seq", "through_seq", "absorbed", "entries_digest"],
           "properties": {
+            "absorbed": {
+              "type": "array",
+              "description": "Inclusive journal sequence ranges absorbed by this summary and every\nsummary it merged. Entries pruned between them were never absorbed.",
+              "items": {
+                "type": "array",
+                "items": {
+                  "type": "integer",
+                  "format": "uint64",
+                  "minimum": 0
+                },
+                "minItems": 2,
+                "maxItems": 2
+              }
+            },
             "entries_digest": {
               "type": "string",
               "description": "Digest of the projection entries absorbed by the latest merge."
@@ -28011,6 +28065,10 @@
                   "type": "null"
                 }
               ]
+            },
+            "summary": {
+              "type": "string",
+              "description": "Free-text `summary` of a context stored before Execution Summaries. No\ncurrent path writes one; a non-empty value stays model-visible verbatim."
             },
             "usage": {
               "anyOf": [
@@ -29248,8 +29306,22 @@
         "SummarySource": {
           "type": "object",
           "description": "Exact Context Journal range folded into the summary.",
-          "required": ["from_seq", "through_seq", "entries_digest"],
+          "required": ["from_seq", "through_seq", "absorbed", "entries_digest"],
           "properties": {
+            "absorbed": {
+              "type": "array",
+              "description": "Inclusive journal sequence ranges absorbed by this summary and every\nsummary it merged. Entries pruned between them were never absorbed.",
+              "items": {
+                "type": "array",
+                "items": {
+                  "type": "integer",
+                  "format": "uint64",
+                  "minimum": 0
+                },
+                "minItems": 2,
+                "maxItems": 2
+              }
+            },
             "entries_digest": {
               "type": "string",
               "description": "Digest of the projection entries absorbed by the latest merge."

@@ -64,3 +64,22 @@ fn push_assigns_monotonic_sequences_and_rejects_disorder() {
 	stored["history"][0]["seq"] = json!(9);
 	assert!(serde_json::from_value::<Context>(stored).is_err());
 }
+
+#[test]
+fn a_stored_legacy_summary_stays_model_visible_across_saves() {
+	let mut stored = legacy_context();
+	stored["summary"] = json!("Never deploy on Fridays");
+	let context: Context = serde_json::from_value(stored).unwrap();
+	let pinned = json!({"task":{"id":"t"}});
+	assert_eq!(
+		context.model_view(&pinned)["summary"],
+		json!("Never deploy on Fridays")
+	);
+	let ordered: Value = serde_json::from_str(&ordered_context(&context, &pinned).stable).unwrap();
+	assert_eq!(ordered["summary"], json!("Never deploy on Fridays"));
+	// The next save keeps the text instead of dropping it.
+	let saved = serde_json::to_value(&context).unwrap();
+	assert_eq!(saved["summary"], json!("Never deploy on Fridays"));
+	let reloaded: Context = serde_json::from_value(saved).unwrap();
+	assert_eq!(reloaded.legacy_summary, "Never deploy on Fridays");
+}

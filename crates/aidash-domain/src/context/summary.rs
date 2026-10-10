@@ -60,6 +60,9 @@ pub struct SummaryContent {
 pub struct SummarySource {
 	pub from_seq: u64,
 	pub through_seq: u64,
+	/// Inclusive journal sequence ranges absorbed by this summary and every
+	/// summary it merged. Entries pruned between them were never absorbed.
+	pub absorbed: Vec<[u64; 2]>,
 	/// Digest of the projection entries absorbed by the latest merge.
 	pub entries_digest: String,
 }
@@ -69,6 +72,15 @@ pub struct SummarySource {
 pub struct SummaryLink {
 	pub through_seq: u64,
 	pub digest: String,
+}
+
+impl SummarySource {
+	/// Whether the journal entry at `seq` was folded into the summary.
+	pub fn absorbs(&self, seq: u64) -> bool {
+		self.absorbed
+			.iter()
+			.any(|[from, through]| (*from..=*through).contains(&seq))
+	}
 }
 
 /// Sources whose authority the summarized text depends on.
@@ -113,6 +125,10 @@ pub enum Rejection {
 	DroppedItem(String),
 	#[error("summary changed previous item {0} without resolving it")]
 	ChangedItem(String),
+	#[error("summary resolved item {0} without a tool call from this merge as evidence")]
+	UnprovenResolution(String),
+	#[error("summary verification {0} names no tool call from its history")]
+	UnprovenVerification(String),
 	#[error("summary exceeds its {0}-token bound")]
 	Oversized(u32),
 	#[error("summary did not reduce the complete request")]
@@ -127,6 +143,8 @@ impl Rejection {
 			Self::InvalidItem => "invalid_item",
 			Self::DroppedItem(_) => "dropped_item",
 			Self::ChangedItem(_) => "changed_item",
+			Self::UnprovenResolution(_) => "unproven_resolution",
+			Self::UnprovenVerification(_) => "unproven_verification",
 			Self::Oversized(_) => "oversized",
 			Self::NotReduced => "not_reduced",
 		}
@@ -135,10 +153,12 @@ impl Rejection {
 
 impl SummaryContent {
 	/// Parse provider text and enforce the merge contract against the previous
-	/// summary. Size reduction of the complete request is checked by the caller.
+	/// summary and the `absorbed` history. Size reduction of the complete
+	/// request is checked by the caller.
 	pub fn parse(
 		text: &str,
 		previous: Option<&ExecutionSummary>,
+		absorbed: &[HistoryEntry],
 		max_tokens: u32,
 	) -> Result<Self, Rejection> {
 		let content: Self = serde_json::from_str(text.trim()).map_err(|_| Rejection::Malformed)?;
@@ -155,17 +175,39 @@ impl SummaryContent {
 				return Err(Rejection::InvalidItem);
 			}
 		}
+		// Only tool calls this merge absorbs are evidence; model text never is.
+		let evidence: BTreeSet<&str> = absorbed
+			.iter()
+			.filter_map(|entry| match &entry.event {
+				ContextEvent::Tool { call, .. } => Some(call.id.as_str()),
+				_ => None,
+			})
+			.collect();
 		let resolved = content
 			.resolved
 			.iter()
 			.map(|item| {
 				if item.resolved_by.trim().is_empty() {
 					Err(Rejection::InvalidItem)
+				} else if !evidence.contains(item.resolved_by.as_str()) {
+					Err(Rejection::UnprovenResolution(item.id.clone()))
 				} else {
 					Ok(item.id.as_str())
 				}
 			})
 			.collect::<Result<BTreeSet<_>, _>>()?;
+		// A verification names an absorbed tool call, or is carried unchanged
+		// from the previous summary, which validated it when it was merged.
+		for verification in &content.verification {
+			if !evidence.contains(verification.reference.as_str())
+				&& !previous
+					.is_some_and(|previous| previous.content.verification.contains(verification))
+			{
+				return Err(Rejection::UnprovenVerification(
+					verification.reference.clone(),
+				));
+			}
+		}
 		if let Some(previous) = previous {
 			// A retained item keeps its list and exact text; only an explicit
 			// resolution may close or rewrite a previous item.
@@ -229,7 +271,8 @@ pub fn entries_digest(entries: &[HistoryEntry]) -> String {
 
 impl ExecutionSummary {
 	/// Compose an adopted summary from validated content. `absorbed` must be
-	/// non-empty and ordered; the merged range starts at the previous summary.
+	/// non-empty and strictly ordered; the merged range starts at the previous
+	/// summary.
 	pub fn merge(
 		content: SummaryContent,
 		previous: Option<&ExecutionSummary>,
@@ -243,6 +286,11 @@ impl ExecutionSummary {
 				"summary merge requires absorbed history".into(),
 			));
 		};
+		if absorbed.windows(2).any(|pair| pair[0].seq >= pair[1].seq) {
+			return Err(crate::Error::Invalid(
+				"summary merge requires strictly ordered history".into(),
+			));
+		}
 		if let Some(previous) = previous {
 			if first.seq <= previous.source.through_seq {
 				return Err(crate::Error::Invalid(
@@ -256,12 +304,20 @@ impl ExecutionSummary {
 				.tool_call_ids
 				.extend(previous.dependencies.tool_call_ids.iter().cloned());
 		}
+		let mut ranges = previous.map_or_else(Vec::new, |p| p.source.absorbed.clone());
+		for entry in absorbed {
+			match ranges.last_mut() {
+				Some(range) if range[1] + 1 == entry.seq => range[1] = entry.seq,
+				_ => ranges.push([entry.seq, entry.seq]),
+			}
+		}
 		let mut summary = Self {
 			version: SUMMARY_VERSION,
 			content,
 			source: SummarySource {
 				from_seq: previous.map_or(first.seq, |p| p.source.from_seq),
 				through_seq: last.seq,
+				absorbed: ranges,
 				entries_digest: entries_digest(absorbed),
 			},
 			previous: previous.map(|p| SummaryLink {

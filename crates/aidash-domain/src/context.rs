@@ -42,6 +42,10 @@ pub struct Context {
 	/// Installed before activation and retained through every execution boundary.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub binding_snapshot: Option<Box<crate::registry::bindings::BindingSnapshot>>,
+	/// Free-text `summary` of a context stored before Execution Summaries. No
+	/// current path writes one; a non-empty value stays model-visible verbatim.
+	#[serde(rename = "summary", skip_serializing_if = "String::is_empty")]
+	pub legacy_summary: String,
 	/// Opt-in Summary Stage output; absent for prune-only Context Policies.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub execution_summary: Option<Box<summary::ExecutionSummary>>,
@@ -67,7 +71,7 @@ pub struct Context {
 }
 
 /// Stored contexts written before the Context Journal carry bare history
-/// events and a never-written `summary` string. Reinhardt's filesystem
+/// events and a `summary` string. Reinhardt's filesystem
 /// migrations only run SQL, and AGENTS.md forbids raw DML, so the upgrade
 /// happens here: bare events receive journal sequences marked as imported.
 #[derive(Deserialize)]
@@ -80,7 +84,7 @@ struct StoredContext {
 	#[serde(default)]
 	execution_summary: Option<Box<summary::ExecutionSummary>>,
 	#[serde(default, rename = "summary")]
-	_legacy_summary: Option<String>,
+	legacy_summary: Option<String>,
 	run_message_summary: String,
 	run_message_summary_seq: i64,
 	media_inferred_seq: i64,
@@ -166,6 +170,7 @@ impl<'de> Deserialize<'de> for Context {
 		Ok(Self {
 			source_observation: stored.source_observation,
 			binding_snapshot: stored.binding_snapshot,
+			legacy_summary: stored.legacy_summary.unwrap_or_default(),
 			execution_summary: stored.execution_summary,
 			run_message_summary: stored.run_message_summary,
 			run_message_summary_seq: stored.run_message_summary_seq,
@@ -202,13 +207,27 @@ impl Context {
 			.filter(move |entry| entry.seq > persisted)
 	}
 
-	/// Model-visible `summary` value. Prune-only contexts keep the legacy empty
-	/// string so their provider requests remain byte-identical.
+	/// Model-visible summary, or `None` when there is neither an Execution
+	/// Summary nor a stored legacy summary text.
+	pub fn summary_projection(&self) -> Option<Value> {
+		match (&self.execution_summary, self.legacy_summary.is_empty()) {
+			(None, true) => None,
+			(None, false) => Some(Value::String(self.legacy_summary.clone())),
+			(Some(summary), legacy_empty) => {
+				let mut view = summary.model_view();
+				if !legacy_empty {
+					view["legacy_summary"] = Value::String(self.legacy_summary.clone());
+				}
+				Some(view)
+			}
+		}
+	}
+
+	/// Legacy `summary` value. Prune-only contexts keep the stored string, so
+	/// their provider requests remain byte-identical.
 	pub fn summary_view(&self) -> Value {
-		self.execution_summary.as_ref().map_or_else(
-			|| Value::String(String::new()),
-			|summary| summary.model_view(),
-		)
+		self.summary_projection()
+			.unwrap_or_else(|| Value::String(String::new()))
 	}
 
 	/// Provider-visible projection of this context.
@@ -383,7 +402,7 @@ pub fn ordered_context(context: &Context, pinned: &Value) -> crate::provider::Or
 		#[serde(skip_serializing_if = "Option::is_none")]
 		reference_documents: Option<&'a Value>,
 		run_message_summary: &'a str,
-		// Absent for prune-only Context Policies, so their bytes stay unchanged.
+		// Absent without any summary, so prune-only bytes stay unchanged.
 		#[serde(skip_serializing_if = "Option::is_none")]
 		summary: Option<Value>,
 		// Last, so earlier events stay a byte prefix while the history grows.
@@ -410,10 +429,7 @@ pub fn ordered_context(context: &Context, pinned: &Value) -> crate::provider::Or
 		task: fields.get("task"),
 		reference_documents: fields.get("reference_documents"),
 		run_message_summary: &context.run_message_summary,
-		summary: context
-			.execution_summary
-			.as_ref()
-			.map(|summary| summary.model_view()),
+		summary: context.summary_projection(),
 		history: context.events().collect(),
 	};
 	let mut volatile = ORDERED_VOLATILE_KEYS

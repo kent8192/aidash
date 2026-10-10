@@ -154,10 +154,14 @@ task, the previous summary and the absorbed events, with no tools and a JSON
 schema response format. Each merge
 keeps the previous summary's constraints and unresolved items under their IDs,
 in the same list and with unchanged text, unless it lists them as resolved;
-a changed or moved item is rejected. It records the
-exact journal range and the absorbed entries' digest, and carries the sources it
-depends on. A summary is adopted only if it validates, strictly shrinks the
-complete request and makes it fit.
+a changed or moved item is rejected. A resolution's `resolved_by` and every new
+`verification` reference must be the exact ID of a tool call the merge absorbs;
+a previous verification entry may only be carried unchanged. It records the
+exact journal range, the absorbed sequence ranges (entries pruned between them
+were never absorbed), and the absorbed entries' digest, and carries the sources
+it depends on. A summary is adopted only if it validates, strictly shrinks the
+complete request and makes it fit. A `summary` text stored before the journal
+existed stays model-visible verbatim.
 
 Every summary request is recorded in `context_compaction_attempts` before any
 provider I/O. The summarizer must be the exact model pinned in the Run's Binding
@@ -176,9 +180,9 @@ summarizer revoked during its call is never adopted. Malformed, empty,
 non-reducing, unauthorized or interrupted summaries leave the saved context
 unchanged; an interrupted attempt is marked `abandoned` by the next attempt or
 by lease recovery. If a source the summary depends on is no longer readable, the
-summary is discarded and its original journal events return to the saved
-projection, and the step pauses for authority before Jev or the model receives
-them. A local Run rechecks message dependencies under its current authority without
+summary is discarded and the original journal events it absorbed return to the
+saved projection, and the step pauses for authority before Jev or the model
+receives them. A local Run rechecks message dependencies under its current authority without
 recording a read; a remote Run rechecks them through the Home's filtered record
 reads.
 

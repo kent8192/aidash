@@ -665,7 +665,7 @@ fn summary_text(constraints: &[&str], unresolved: &[&str], resolved: &[&str]) ->
 		"constraints":constraints.iter().map(|id| json!({"id":id,"text":"Never deploy on Fridays"})).collect::<Vec<_>>(),
 		"decisions":["read every old file"],
 		"unresolved":unresolved.iter().map(|id| json!({"id":id,"text":"fix the flaky test"})).collect::<Vec<_>>(),
-		"resolved":resolved.iter().map(|id| json!({"id":id,"resolved_by":"recent-5 passed"})).collect::<Vec<_>>(),
+		"resolved":resolved.iter().map(|id| json!({"id":id,"resolved_by":"old-b0"})).collect::<Vec<_>>(),
 		"artifacts":[],
 		"verification":[]
 	})
@@ -930,4 +930,56 @@ async fn revoked_summary_restores_original_journal_events() {
 	restore_summarized(&mut adopted, original.history.clone()).unwrap();
 	assert!(adopted.execution_summary.is_none());
 	assert_eq!(adopted.history, original.history);
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn revoked_summary_restores_only_the_entries_it_absorbed() {
+	let scenario = Scenario::new();
+	let policy = recovery_policy(true);
+	let original = long_history();
+	let mut plan = needs_summary(scenario.plan(&mut original.clone(), &policy).await.unwrap());
+	// Jev pruned seq 10 before the merge, so the summary never absorbed it.
+	plan.absorbed.retain(|entry| entry.seq != 10);
+	plan.pruned.history.retain(|entry| entry.seq != 10);
+	let (mut adopted, _) = scenario
+		.adopt(&plan, &summary_text(&["c1"], &[], &[]), &policy)
+		.unwrap();
+	let summary = adopted.execution_summary.as_ref().unwrap();
+	assert_eq!(summary.source.absorbed, vec![[2, 9], [11, 31]]);
+	restore_summarized(&mut adopted, original.history.clone()).unwrap();
+	let expected = original
+		.history
+		.iter()
+		.filter(|entry| entry.seq != 10)
+		.cloned()
+		.collect::<Vec<_>>();
+	assert_eq!(adopted.history, expected);
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn a_resolution_without_absorbed_evidence_keeps_the_item() {
+	let scenario = Scenario::new();
+	let policy = recovery_policy(true);
+	let plan = needs_summary(scenario.plan(&mut long_history(), &policy).await.unwrap());
+	let (first, _) = scenario
+		.adopt(&plan, &summary_text(&["c1"], &["u1"], &[]), &policy)
+		.unwrap();
+	let mut second = first;
+	for i in 0..30 {
+		second.push(tool(&format!("old-b{i}"), &"y".repeat(400)));
+	}
+	for i in 0..6 {
+		second.push(tool(&format!("recent-b{i}"), "recent"));
+	}
+	second.journal.inferred_through = second.journal.head;
+	let plan = needs_summary(scenario.plan(&mut second, &policy).await.unwrap());
+	// The recent tail is never absorbed, so it cannot prove a resolution.
+	let unproven = summary_text(&["c1"], &[], &["u1"]).replace("old-b0", "recent-b5");
+	let unadopted = scenario.adopt(&plan, &unproven, &policy).unwrap_err();
+	assert_eq!(
+		unadopted.rejection,
+		Some(summary::Rejection::UnprovenResolution("u1".into()))
+	);
 }
