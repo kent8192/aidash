@@ -63,5 +63,7 @@ output "gcip" {
     tenant_bindings         = { for alias, pool in google_identity_platform_tenant.aidash : pool.name => var.gcip_tenants[alias].tenant }
     providers               = { for alias, pool in google_identity_platform_tenant.aidash : pool.name => concat(var.gcip_tenants[alias].password_sign_up ? ["password"] : [], var.gcip_tenants[alias].google_client_id != null ? ["google.com"] : [], keys(var.gcip_tenants[alias].oidc), keys(var.gcip_tenants[alias].saml)) }
     password_sign_up        = [for alias, pool in google_identity_platform_tenant.aidash : pool.name if var.gcip_tenants[alias].password_sign_up]
+    # Reconciled by the controller: the Google provider has no tenant MFA arguments.
+    mfa = { for alias, pool in google_identity_platform_tenant.aidash : pool.name => var.gcip_tenants[alias].mfa.state }
   }
 }

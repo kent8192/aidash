@@ -1,7 +1,8 @@
 """Exercise complete reconciliation with cloud boundaries replaced, not the policy."""
 
-from contextlib import ExitStack, contextmanager
+from contextlib import ExitStack, contextmanager, redirect_stdout
 from copy import deepcopy
+import io
 import json
 import os
 from pathlib import Path
@@ -715,6 +716,70 @@ class ReconcileTests(unittest.TestCase):
                 controller.reconcile(config, self.store)
         self.assertEqual(len(self.cloud.plans), plans)
         self.assertTrue(self.store.state["environments"]["test"]["gcip_pending"])
+
+    def test_tenant_mfa_is_enforced_every_run_and_fences_only_after_a_failed_correction(self):
+        self.request()
+        self.reconcile()
+        config = dict(CONFIG, gcip_tenants={"company": {"tenant": "acme"}})
+        self.cloud.gcip = {
+            "project_id": "aidash-fixture",
+            "tenant_ids": ["pool"],
+            "tenant_bindings": {"pool": "acme"},
+            "mfa": {"pool": "disabled"},
+        }
+        entry = lambda: self.store.state["environments"]["test"]
+        drift = {}
+        failing = []
+
+        def mfa(output):
+            self.calls.append(("mfa", output["instance"]))
+            if failing:
+                raise RuntimeError("fixture MFA failure")
+            return dict(drift)
+
+        with (
+            patch.object(controller, "reconcile_mfa", mfa),
+            patch.object(controller, "reconcile_environment"),
+            patch.dict(os.environ, {"AIDASH_GCIP_IDP_SECRETS": "{}"}),
+        ):
+            self.calls.clear()
+            controller.reconcile(config, self.store)
+            # A new pool holds its declared MFA before the host reopens admission.
+            self.assertLess(self.calls.index(("mfa", "test")), self.calls.index(("unseal", "test")))
+
+            # Declaring the requirement explicitly changes neither fence digest.
+            config["gcip_tenants"]["company"]["mfa"] = {"state": "disabled"}
+            self.calls.clear()
+            plans = len(self.cloud.plans)
+            controller.reconcile(config, self.store)
+            self.assertEqual([call for call in self.calls if call[0] != "observe"], [("mfa", "test")])
+            self.assertEqual(len(self.cloud.plans), plans)
+            self.assertNotIn("gcip_mfa_drift_at", entry())
+
+            # Out-of-band drift is corrected, annotated and recorded without fencing.
+            drift["pool"] = ["providerConfigs", "state"]
+            self.calls.clear()
+            with redirect_stdout(io.StringIO()) as stdout:
+                controller.reconcile(config, self.store)
+            self.assertIn(
+                "::warning title=GCIP MFA drift corrected::test tenant=pool fields=providerConfigs,state",
+                stdout.getvalue(),
+            )
+            self.assertEqual(entry()["gcip_mfa_drift_at"], 10000)
+            self.assertEqual([call for call in self.calls if call[0] != "observe"], [("mfa", "test")])
+
+            # A failed correction fences the host and retries through the GCIP refresh.
+            drift.clear()
+            failing.append(True)
+            with self.assertRaisesRegex(RuntimeError, "Reconciliation incomplete"):
+                controller.reconcile(config, self.store)
+            self.assertTrue(entry()["gcip_pending"])
+            failing.clear()
+            self.calls.clear()
+            controller.reconcile(config, self.store)
+            self.assertLess(self.calls.index(("quiesce", "test")), self.calls.index(("mfa", "test")))
+            self.assertLess(self.calls.index(("mfa", "test")), self.calls.index(("unseal", "test")))
+            self.assertFalse(entry()["gcip_pending"])
 
     def test_gcip_change_fences_a_running_unpublished_failed_deployment(self):
         self.request()
