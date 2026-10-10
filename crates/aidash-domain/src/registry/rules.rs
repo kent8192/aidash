@@ -91,6 +91,7 @@ pub fn validate_override_keys(kind: &str, overrides: &Value) -> Result<()> {
 			"model_id",
 			"endpoint",
 			"credential_env",
+			"provider_credential",
 			"reasoning_effort",
 			"context_window",
 			"modalities",

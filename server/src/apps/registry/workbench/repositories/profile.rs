@@ -31,6 +31,7 @@ impl ProfileConfiguration for Configuration {
 	}
 }
 struct Scope {
+	configured: bool,
 	node: String,
 	tx: crate::database::native::Transaction,
 	actor: Actor,
@@ -42,6 +43,7 @@ impl ProfileRepository for Repository<'_> {
 	}
 	async fn begin_draft(&self) -> Result<Box<dyn ProfileDraftScope + '_>> {
 		Ok(Box::new(Scope {
+			configured: self.runtime.store.provider_credentials.is_some(),
 			node: self.runtime.config.node_id.clone(),
 			tx: crate::database::native::begin(&self.runtime.store.pool).await?,
 			actor: self.actor.clone(),
@@ -78,7 +80,14 @@ impl ProfileDraftScope for Scope {
 		entry: &aidash_domain::registry::Entry,
 	) -> aidash_application::Result<aidash_domain::registry::bindings::BindingSnapshot> {
 		let node = self.node.clone();
-		crate::apps::registry::repositories::bindings::preview(&mut *self.tx, &node, entry).await
+		let configured = self.configured;
+		crate::apps::registry::repositories::bindings::preview(
+			&mut *self.tx,
+			&node,
+			entry,
+			configured,
+		)
+		.await
 	}
 	async fn draft(&mut self, id: Uuid) -> Result<Draft> {
 		Ok(AgentDraft::read(&mut self.tx, id, false).await?.into())

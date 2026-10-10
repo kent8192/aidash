@@ -242,6 +242,40 @@ impl EventVisibilityScope for Reads<'_> {
 			.map_err(Into::into)
 	}
 	async fn resource_visible(&mut self, event: &Event) -> Result<Option<bool>> {
+		let kind = if event.kind.starts_with("provider_credential.") {
+			Some("provider_credential")
+		} else if event.kind.starts_with("provider_credential_binding.") {
+			Some("provider_credential_binding")
+		} else {
+			None
+		};
+		if let Some(kind) = kind {
+			if event.workspace_id.is_some()
+				|| event.data["tenant"].as_str() != Some(self.access.identity.tenant.as_str())
+			{
+				return Ok(Some(false));
+			}
+			let (Some(id), Some(provider)) =
+				(event.data["id"].as_str(), event.data["provider"].as_str())
+			else {
+				return Ok(Some(false));
+			};
+			if aidash_domain::provider_credentials::Provider::parse(provider).is_err()
+				|| (kind == "provider_credential" && Uuid::parse_str(id).is_err())
+				|| (kind == "provider_credential_binding" && id != provider)
+			{
+				return Ok(Some(false));
+			}
+			let resource = self
+				.access
+				.resource(kind, id, serde_json::json!({"provider":provider}));
+			return self
+				.access
+				.decide(&resource, &format!("{kind}.read"))
+				.await
+				.map(Some)
+				.map_err(Into::into);
+		}
 		self.access
 			.resource_event_visible(event)
 			.await

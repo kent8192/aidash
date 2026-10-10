@@ -27,6 +27,7 @@ from cloud import (
     OperationDeadline,
     operation_budget,
     bounded_timeout,
+    retire_provider_credentials,
 )
 from policy import (
     Refused,
@@ -585,6 +586,15 @@ class GcipTerraform:
     def outputs(self):
         return self.terraform.outputs() if self.previous else {}
 
+    def broker_configuration(self, environments):
+        return self.terraform.broker_configuration(environments)
+
+    def broker_configuration_in_state(self, store):
+        return self.terraform.broker_configuration_in_state(store)
+
+    def broker_configuration_changed(self, store, environments):
+        return self.terraform.broker_configuration_changed(store, environments)
+
     def apply(self, managed, retiring=(), starting=(), affected=None, allow_failures=False):
         # Include removed environments until their destruction plan is fenced.
         protected = self.previous | managed
@@ -731,8 +741,31 @@ def observe_interruptions(config, store, terraform, managed):
             published=False,
         )
         changed = True
-    if changed:
-        terraform.apply(managed)
+    return changed
+
+
+def restore_broker_admission(config, outputs, sealed):
+    # Restore every successful preflight seal when reconciliation cannot reach
+    # host cleanup, even if an earlier unseal fails. Keep failures explicit.
+    failed = False
+    # Use the same reserved cleanup allowance as per-environment recovery;
+    # the reconciliation budget may already have expired.
+    with operation_budget(180):
+        for identity in sorted(sealed):
+            try:
+                host(config, outputs[identity], "unseal")
+            except (Exception, OperationDeadline):
+                failed = True
+    if failed:
+        raise RuntimeError("Broker drain admission restoration failed")
+
+
+def restore_presealed_running_host(config, output, identity, presealed, managed):
+    previous = managed.get(identity, {})
+    if identity in presealed and previous.get("running") and previous.get("published"):
+        # Early exits keep the prior healthy release serving. Deliberately
+        # gated failed deployments and stopped/retired VMs must stay gated.
+        restore_broker_admission(config, {identity: output}, {identity})
 
 
 def reconcile(config, store):
@@ -743,9 +776,53 @@ def reconcile(config, store):
         state, _ = store.read("lifecycle/state.json")
         if not state:
             return
+        # Fence every old GCIP binding before any apply can change the shared pools.
         revision, affected = gate_gcip_changes(config, store, terraform, managed)
-        observe_interruptions(config, store, terraform, managed)
-        gcip_failures = terraform.apply(managed, affected=affected, allow_failures=True) if affected else []
+        interrupted = observe_interruptions(config, store, terraform, managed)
+        # Observe missing/interrupted VMs before any plan, including broker-only
+        # changes. The normal apply fence still forbids unauthorized VM creation.
+        broker_changed = terraform.broker_configuration_changed(store, managed)
+        presealed = set()
+        if broker_changed:
+            previous_brokers = terraform.broker_configuration_in_state(store)
+            desired_brokers = terraform.broker_configuration(managed)
+            outputs = terraform.outputs() if managed else {}
+            blocked = False
+            # Every apply consumes broker intent, including interruption/lifecycle
+            # plans. Drain before any plan can remove or replace a live broker.
+            try:
+                for identity, previous in managed.items():
+                    prior = (previous_brokers or {}).get(identity, {})
+                    desired = desired_brokers.get(identity, {})
+                    if not previous["running"] or (
+                        previous_brokers is not None
+                        and (prior == desired or (not prior.get("enabled") and not desired.get("enabled")))
+                    ):
+                        continue
+                    state, _ = store.read("lifecycle/state.json")
+                    entry = state["environments"][identity]
+                    current_entry(store, identity, entry["generation"])
+                    if host(config, outputs[identity], "seal")["sealed"]:
+                        presealed.add(identity)
+                    else:
+                        update_entry(store, identity, entry["generation"], status="waiting_for_active_work")
+                        blocked = True
+            except (Exception, OperationDeadline):
+                restore_broker_admission(config, outputs, presealed)
+                raise
+            if blocked:
+                restore_broker_admission(config, outputs, presealed)
+                return
+        # One apply serves interruption recovery, broker intent and GCIP fencing, after
+        # brokers are drained so no plan can replace a live broker first.
+        gcip_failures = []
+        if interrupted or broker_changed or affected:
+            try:
+                gcip_failures = terraform.apply(managed, affected=affected, allow_failures=True)
+            except (Exception, OperationDeadline):
+                if presealed:
+                    restore_broker_admission(config, outputs, presealed)
+                raise
         state, _ = store.read("lifecycle/state.json")
         failures = list(gcip_failures)
         for identity, snapshot in sorted(
@@ -753,7 +830,7 @@ def reconcile(config, store):
             key=lambda pair: (pair[1]["desired"] == "running", pair[1]["sequence"]),
         ):
             deployment_started = False
-            sealed = False
+            sealed = identity in presealed
             try:
                 generation = snapshot["generation"]
                 entry = current_entry(store, identity, generation)
@@ -776,10 +853,27 @@ def reconcile(config, store):
                     current_entry(store, identity, generation)
                     if identity in managed:
                         managed[identity]["published"] = False
+                        if config.get("byok_project_id"):
+                            status = instance_status(config, output)
+                            if status == "RUNNING":
+                                # Freeze the only app writer before inventorying
+                                # dynamic secrets. Failure keeps the host gated;
+                                # retirement never wakes or recreates a VM.
+                                if not host(config, output, "seal", force=True)["sealed"]:
+                                    raise Refused("Provider Credential writer is not sealed")
+                            elif status not in {"MISSING", "TERMINATED", "SUSPENDED"}:
+                                raise Refused("Provider Credential writer state is unknown")
+                            if status == "MISSING":
+                                managed[identity]["vm_present"] = False
+                        retire_provider_credentials(config, identity)
+                        current_entry(store, identity, generation)
                         terraform.apply(managed)
                         reconcile_environment(output, enabled=False)
                         del managed[identity]
                         terraform.apply(managed, retiring={identity})
+                    else:
+                        # Also recover a partial earlier Terraform retirement.
+                        retire_provider_credentials(config, identity)
                     update_entry(
                         store,
                         identity,
@@ -833,12 +927,43 @@ def reconcile(config, store):
                     update_entry(
                         store, identity, generation, status="waiting_for_pr_slot"
                     )
+                    restore_presealed_running_host(config, output, identity, presealed, managed)
                     continue
+                previous = managed.get(identity)
+                if (
+                    previous and previous["running"] and previous["published"]
+                    and entry.get("provider_credentials") != output.get("provider_credentials")
+                    and (identity in presealed or not entry.get("release"))
+                ):
+                    if not sealed:
+                        # Recover a prior successful apply whose controller
+                        # stopped before updating the durable settings receipt.
+                        current_entry(store, identity, generation)
+                        if not host(config, output, "seal")["sealed"]:
+                            update_entry(store, identity, generation, status="waiting_for_active_work")
+                            continue
+                        sealed = True
+                        presealed.add(identity)
+                    # Broker intent has already changed VM metadata. Reload the
+                    # existing authorized bundle even if a newer build is pending.
+                    # Failure must take the deployment gate path, not unseal stale settings.
+                    current_entry(store, identity, generation)
+                    deployment_started = True
+                    restart_bootstrap(config, output, False)
+                    if host(config, output, "health")["source_sha"] != previous["release_sha"]:
+                        raise Refused("Settings reload changed the running source")
+                    current_entry(store, identity, generation)
+                    update_entry(
+                        store, identity, generation,
+                        provider_credentials=output.get("provider_credentials"),
+                    )
+                    entry = current_entry(store, identity, generation)
+                    deployment_started = False
                 if entry.get(
                     "failed_deployment_generation"
                 ) == generation and not entry.get("start_pending"):
+                    restore_presealed_running_host(config, output, identity, presealed, managed)
                     continue
-                previous = managed.get(identity)
                 needs_deploy = bool(entry.get("release")) and (
                     not previous
                     or not previous["running"]
@@ -847,6 +972,7 @@ def reconcile(config, store):
                     or not entry.get("applied")
                     or entry["applied"].get("release_sha") != entry["sha"]
                     or (entry.get("force") and entry.get("start_pending"))
+                    or entry.get("provider_credentials") != (output or {}).get("provider_credentials")
                 )
                 if previous and previous["running"]:
                     if entry.get("gcip_quiesced") and not (needs_deploy and entry.get("force")):
@@ -860,7 +986,7 @@ def reconcile(config, store):
                             generation,
                             keepalive_applied=entry["keepalive_at"],
                         )
-                    if needs_deploy:
+                    if needs_deploy and not sealed:
                         if entry.get("force"):
                             try:
                                 host(config, output, "gate")
@@ -877,7 +1003,7 @@ def reconcile(config, store):
                             )
                             continue
                         sealed = True
-                    else:
+                    elif not needs_deploy:
                         observation = host(config, output, "observe")
                         if idle_due(
                             observation, time.time(), entry.get("keepalive_at", 0)
@@ -907,13 +1033,15 @@ def reconcile(config, store):
                                     published=False,
                                     status="stopped",
                                 )
+                            restore_presealed_running_host(config, output, identity, presealed, managed)
                             continue
                         if not entry.get("release"):
                             update_entry(
                                 store, identity, generation, status="awaiting_build"
                             )
+                            restore_presealed_running_host(config, output, identity, presealed, managed)
                             continue
-                        if entry.get("status") != "ready":
+                        if sealed or entry.get("status") != "ready":
                             current_entry(store, identity, generation)
                             host(config, output, "unseal")
                             host(config, output, "health")
@@ -923,10 +1051,12 @@ def reconcile(config, store):
                             generation,
                             status="ready",
                             start_pending=False,
+                            provider_credentials=output.get("provider_credentials"),
                         )
                         continue
                 if not entry.get("release"):
                     update_entry(store, identity, generation, status="awaiting_build")
+                    restore_presealed_running_host(config, output, identity, presealed, managed)
                     continue
                 # Revalidate source identity at the effect boundary, not just at intake.
                 current_entry(store, identity, generation)
@@ -941,6 +1071,7 @@ def reconcile(config, store):
                         desired="stopped",
                         status="interrupted",
                     )
+                    restore_presealed_running_host(config, output, identity, presealed, managed)
                     continue
                 # A manual resume is a single power authorization, not permission
                 # to restart forever after a later Spot interruption.
@@ -1023,6 +1154,7 @@ def reconcile(config, store):
                     gcip_pending=False,
                     gcip_quiesced=False,
                     keepalive_applied=entry.get("keepalive_at", 0),
+                    provider_credentials=output.get("provider_credentials"),
                 )
                 print(
                     f"Ready: {identity} https://{output['hostname']} source={entry['sha']}"

@@ -33,6 +33,12 @@ use uuid::Uuid;
 
 #[derive(Clone)]
 pub struct Store {
+	pub provider_key_material_reader:
+		Option<std::sync::Arc<dyn aidash_application::provider_access::KeyMaterialReader>>,
+	pub capability_issuer:
+		Option<std::sync::Arc<dyn aidash_application::provider_access::TokenIssuer>>,
+	pub provider_credentials:
+		Option<std::sync::Arc<aidash_application::provider_credentials::Service>>,
 	pub capabilities: crate::capabilities::Runtime,
 	pub pool: Pool,
 	pub control_pool: Pool,
@@ -223,6 +229,9 @@ impl Store {
 			semantic_client: crate::semantic::backend::client()?,
 			recovery_cursors: Default::default(),
 			tool_slots,
+			provider_credentials: None,
+			provider_key_material_reader: None,
+			capability_issuer: None,
 			capabilities: crate::capabilities::Runtime::from_env()?,
 		}
 		.with_memory_recovery(memory_recovery))
@@ -285,6 +294,9 @@ impl Store {
 			semantic_client: self.semantic_client.clone(),
 			recovery_cursors: self.recovery_cursors.clone(),
 			tool_slots: self.tool_slots.clone(),
+			provider_credentials: self.provider_credentials.clone(),
+			provider_key_material_reader: self.provider_key_material_reader.clone(),
+			capability_issuer: self.capability_issuer.clone(),
 			capabilities: self.capabilities.clone(),
 		})
 	}
@@ -321,6 +333,9 @@ impl Store {
 			semantic_client: self.semantic_client.clone(),
 			recovery_cursors: self.recovery_cursors.clone(),
 			tool_slots: self.tool_slots.clone(),
+			provider_credentials: self.provider_credentials.clone(),
+			provider_key_material_reader: self.provider_key_material_reader.clone(),
+			capability_issuer: self.capability_issuer.clone(),
 			capabilities: self.capabilities.clone(),
 		})
 	}
@@ -812,6 +827,7 @@ impl Store {
 					&self.node_id,
 					agent,
 					false,
+					self.provider_credentials.is_some(),
 				)
 				.await?
 			};
@@ -908,6 +924,27 @@ impl Store {
 					"task has a queued run for a different agent".into(),
 				));
 			}
+			let run_id: Uuid = crate::database::native::query_scalar(
+				&Query::select()
+					.column(Alias::new("id"))
+					.from(Alias::new("runs"))
+					.and_where(Expr::col("home_node").eq(Expr::value(&self.node_id)))
+					.and_where(Expr::col("task_id").eq(Expr::value(id)))
+					.to_string(PostgresQueryBuilder),
+			)
+			.scalar_one(&mut **tx)
+			.await?;
+			crate::apps::identity::repositories::provider_credentials::admit_workspace(
+				&mut **tx,
+				run_id,
+				claimed.workspace_id,
+				context
+					.binding_snapshot
+					.as_deref()
+					.expect("admitted Binding snapshot"),
+				self.provider_credentials.is_some(),
+			)
+			.await?;
 		}
 		self.event(
 			tx,
@@ -2527,6 +2564,7 @@ impl Store {
 			&self.node_id,
 			&agent,
 			home_node != self.node_id,
+			self.provider_credentials.is_some(),
 		)
 		.await?;
 		if pinned.is_some_and(|pinned| pinned.snapshot() != snapshot) {
@@ -2664,6 +2702,17 @@ impl Store {
 				Err(error) => return Err(error),
 			}
 		}
+		crate::apps::identity::repositories::provider_credentials::admit_workspace(
+			&mut *tx,
+			run.id,
+			run.workspace_id,
+			run.context
+				.binding_snapshot
+				.as_deref()
+				.ok_or_else(|| Error::Invalid("Run has no admitted Binding snapshot".into()))?,
+			self.provider_credentials.is_some(),
+		)
+		.await?;
 		tx.commit().await?;
 		Ok(run)
 	}

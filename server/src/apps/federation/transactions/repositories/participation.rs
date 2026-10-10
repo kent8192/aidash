@@ -115,7 +115,7 @@ impl ParticipantScope for Scope {
 			.map_err(Error::from)?;
 		aidash_application::transactions::mutation::apply(
 			&mut crate::bootstrap::transaction_mutation_scope(tx),
-			&crate::bootstrap::registry_validation(),
+			&crate::bootstrap::registry_validation_for(&self.runtime.store),
 			&self.runtime.store.node_id,
 			manifest,
 		)
@@ -133,7 +133,7 @@ impl ParticipantScope for Scope {
 		AtomicParticipant::mutation_context(tx, manifest.id).await?;
 		aidash_application::transactions::mutation::apply(
 			&mut crate::bootstrap::transaction_mutation_scope(tx),
-			&crate::bootstrap::registry_validation(),
+			&crate::bootstrap::registry_validation_for(&self.runtime.store),
 			&self.runtime.store.node_id,
 			manifest,
 		)
