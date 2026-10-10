@@ -3,7 +3,7 @@ use crate::Result;
 use aidash_domain::{
 	HumanRequest, RunMetadata, Task,
 	policy::Resource,
-	registry::{EntityRef, Entry},
+	registry::{EntityRef, Entry, bindings::BindingSnapshot},
 };
 use async_trait::async_trait;
 use serde_json::Value;
@@ -12,6 +12,8 @@ use uuid::Uuid;
 #[async_trait]
 pub trait AgentToolRepository: Send + Sync {
 	fn is_remote(&self) -> bool;
+	/// The admitted Binding snapshot of the Run being authorized.
+	fn binding_snapshot(&self) -> Option<&BindingSnapshot>;
 	async fn lease(&self) -> Result<Box<dyn AgentToolScope + '_>>;
 }
 #[async_trait]

@@ -52,6 +52,52 @@ pub(crate) async fn context(store: &Store, access: &mut Access, run: &Run) -> Re
 	.await
 	.map_err(Into::into)
 }
+pub(crate) async fn direct(
+	store: &Store,
+	access: &mut Access,
+	run: &Run,
+) -> Result<Vec<aidash_domain::exposure::DirectSkill>> {
+	aidash_application::capabilities::skills::direct(
+		&mut crate::bootstrap::file_scope(Some(store), access, Some(run)),
+		&run.metadata(),
+	)
+	.await
+	.map_err(Into::into)
+}
+pub(crate) async fn direct_body(
+	store: &Store,
+	access: &mut Access,
+	run: &Run,
+	skill_id: Uuid,
+	digest: &str,
+) -> Result<String> {
+	aidash_application::capabilities::skills::direct_body(
+		&mut crate::bootstrap::file_scope(Some(store), access, Some(run)),
+		&run.metadata(),
+		skill_id,
+		digest,
+	)
+	.await
+	.map_err(Into::into)
+}
+pub(crate) async fn direct_file(
+	store: &Store,
+	access: &mut Access,
+	run: &Run,
+	skill_id: Uuid,
+	digest: &str,
+	path: &str,
+) -> Result<Option<Vec<u8>>> {
+	aidash_application::capabilities::skills::direct_file(
+		&mut crate::bootstrap::file_scope(Some(store), access, Some(run)),
+		&run.metadata(),
+		skill_id,
+		digest,
+		path,
+	)
+	.await
+	.map_err(Into::into)
+}
 pub(crate) async fn mounted(access: &mut Access, run: Uuid) -> Result<Vec<FileEntry>> {
 	aidash_application::capabilities::skills::mounted(
 		&mut crate::bootstrap::file_scope(None, access, None),

@@ -35,6 +35,9 @@ pub struct Context {
 	// A tool read is proof only after its content survived compaction and was
 	// sent in a provider request. Keep that separate from completed tool reads.
 	pub message_inference_coverage: BTreeMap<uuid::Uuid, MessageReadCoverage>,
+	/// Load/Unload changes of a `deferred@1` Run; empty and absent for legacy Runs.
+	#[serde(default, skip_serializing_if = "ExposureState::is_empty")]
+	pub exposure: ExposureState,
 }
 
 /// Public inspection omits the durable, authority-bound Source cache.
@@ -51,6 +54,8 @@ pub struct InspectionContext<'a> {
 	pub compactions: u32,
 	pub message_read_coverage: &'a BTreeMap<uuid::Uuid, MessageReadCoverage>,
 	pub message_inference_coverage: &'a BTreeMap<uuid::Uuid, MessageReadCoverage>,
+	#[serde(skip_serializing_if = "ExposureState::is_empty")]
+	pub exposure: &'a ExposureState,
 }
 impl Context {
 	pub fn inspection(&self) -> InspectionContext<'_> {
@@ -65,6 +70,7 @@ impl Context {
 			compactions: self.compactions,
 			message_read_coverage: &self.message_read_coverage,
 			message_inference_coverage: &self.message_inference_coverage,
+			exposure: &self.exposure,
 		}
 	}
 }
@@ -78,7 +84,7 @@ pub fn serialize_inspection_context<S: serde::Serializer>(
 		.serialize(serializer)
 }
 
-use crate::{Error, Result};
+use crate::{Error, Result, exposure::ExposureState};
 use serde_json::{Value, json};
 
 // Conservative upper bound for mixed-language text, not a provider tokenizer.
@@ -340,6 +346,9 @@ pub struct ContextUsage {
 	pub output_tokens: u64,
 	pub context_window: usize,
 	pub compactions: u32,
+	/// Exposure accounting of a `deferred@1` request.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub exposure: Option<crate::exposure::ExposureUsage>,
 }
 
 /// Bound optional snapshot material independently of the durable journal. IDs

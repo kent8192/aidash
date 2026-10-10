@@ -100,6 +100,18 @@ impl ToolOperations for Operations {
 	async fn human_request(&self, _kind: &str, _prompt: &str, _key: &str) -> Result<HumanRequest> {
 		panic!("unexpected tool effect: human_request")
 	}
+	async fn binding_specifications(&self) -> Result<BTreeMap<String, ToolSpec>> {
+		panic!("unexpected tool effect: binding_specifications")
+	}
+	async fn direct_skills(&self) -> Result<Vec<aidash_domain::exposure::DirectSkill>> {
+		panic!("unexpected tool effect: direct_skills")
+	}
+	async fn direct_skill_file(&self, _: Uuid, _: &str, _: &str) -> Result<Option<Vec<u8>>> {
+		panic!("unexpected tool effect: direct_skill_file")
+	}
+	fn skill_read_bytes(&self) -> Result<usize> {
+		panic!("unexpected tool effect: skill_read_bytes")
+	}
 }
 #[async_trait]
 impl ToolTransport for Operations {

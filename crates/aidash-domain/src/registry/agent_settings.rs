@@ -14,11 +14,13 @@ impl AgentConfig {
 			remove_default: self.remove_default.clone(),
 			cluster: self.cluster.clone(),
 			max_steps: self.max_steps,
+			exposure: self.exposure,
 			projection_version: self.projection_version,
 			prompt_cache: self.prompt_cache,
 		}
 	}
 	pub fn from_definition(input: AgentBindings) -> Self {
+		let policy = input.exposure_policy();
 		let mut result = Self {
 			memory: input
 				.bindings
@@ -36,6 +38,7 @@ impl AgentConfig {
 			instructions: input.instructions,
 			cluster: input.cluster,
 			max_steps: input.max_steps,
+			exposure: input.exposure,
 			projection_version: input.projection_version,
 			prompt_cache: input.prompt_cache,
 			core_capabilities: Default::default(),
@@ -51,7 +54,11 @@ impl AgentConfig {
 			allow_workspace_retrieval: Some(true),
 			allow_cross_conversation_memory: Some(false),
 		};
-		for name in REQUIRED_TOOLS.iter().chain(DEFAULT_TOOLS) {
+		for name in policy
+			.required_tools()
+			.into_iter()
+			.chain(policy.default_tools())
+		{
 			if !result.remove_default.iter().any(|removed| removed == name) {
 				result.operation(name);
 			}
@@ -162,9 +169,15 @@ impl AgentConfig {
 		// reads retain their own resource authority without requiring a local area.
 		self.core_capabilities.enabled()
 	}
+	/// The resolved Exposure policy; absent means `legacy@1`.
+	pub fn exposure_policy(&self) -> crate::exposure::ExposurePolicy {
+		self.exposure.unwrap_or_default()
+	}
 	pub fn permits_builtin(&self, name: &str) -> bool {
-		REQUIRED_TOOLS.contains(&name)
-			|| DEFAULT_TOOLS.contains(&name) && !self.remove_default.iter().any(|n| n == name)
+		let policy = self.exposure_policy();
+		policy.required_tools().contains(&name)
+			|| policy.default_tools().contains(&name)
+				&& !self.remove_default.iter().any(|n| n == name)
 	}
 }
 

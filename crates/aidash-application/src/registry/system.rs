@@ -3,19 +3,27 @@ use crate::{Result, ports::registry::DefinitionWriter, registry::DefinitionValid
 use aidash_domain::{
 	registry::{
 		Entry,
-		bindings::{DEFAULT_TOOLS, REQUIRED_TOOLS},
+		bindings::{DEFAULT_TOOLS, EXPOSURE_TOOLS, REQUIRED_TOOLS, SKILL_ASSET_READ},
 	},
 	tool::providers::core_descriptor,
 };
 use serde_json::json;
 
-pub fn entries(validation: &DefinitionValidation, node: &str) -> Result<Vec<Entry>> {
-	let specifications = validation.node_specifications();
+/// Every system builtin operation of either Exposure policy, in seeding order.
+pub fn operations() -> impl Iterator<Item = &'static str> {
 	REQUIRED_TOOLS
 		.iter()
 		.chain(DEFAULT_TOOLS)
+		.chain(EXPOSURE_TOOLS)
+		.copied()
+		.chain([SKILL_ASSET_READ])
+}
+
+pub fn entries(validation: &DefinitionValidation, node: &str) -> Result<Vec<Entry>> {
+	let specifications = validation.node_specifications();
+	operations()
 		.map(|operation| {
-			let spec = specifications.get(*operation).ok_or_else(|| {
+			let spec = specifications.get(operation).ok_or_else(|| {
 				crate::Error::Invalid(format!(
 					"system provider has no declaration for {operation}"
 				))
@@ -82,9 +90,7 @@ pub fn builtin_reference(reference: &aidash_domain::registry::EntityRef) -> bool
 		&& reference
 			.id
 			.strip_prefix("aidash.")
-			.is_some_and(|operation| {
-				REQUIRED_TOOLS.contains(&operation) || DEFAULT_TOOLS.contains(&operation)
-			})
+			.is_some_and(|operation| operations().any(|builtin| builtin == operation))
 }
 
 pub fn reject_distribution(entry: &Entry) -> Result<()> {
@@ -113,3 +119,5 @@ pub fn attributes(entry: &Entry) -> serde_json::Value {
 }
 
 pub mod packages;
+#[cfg(test)]
+mod tests;

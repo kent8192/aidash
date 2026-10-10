@@ -7,14 +7,16 @@ use crate::tool::providers::{
 impl BindingSnapshot {
 	pub(super) fn validate_closure(
 		&self,
-		_config: &AgentBindings,
+		config: &AgentBindings,
 		definitions: &BTreeMap<&QualifiedRef, &ResolvedDefinition>,
 	) -> Result<()> {
-		let mut pending = definitions
+		let normalized = definitions
 			.get(&self.agent)
 			.ok_or_else(|| Error::Invalid("snapshot lacks Agent".into()))?
 			.definition
-			.normalized_bindings(&self.agent.registry_node)?
+			.normalized_bindings(&self.agent.registry_node)?;
+		let overrides = NormalizedBinding::member_overrides(&normalized);
+		let mut pending = normalized
 			.into_iter()
 			.map(|binding| (binding, BTreeSet::new(), None::<(String, String)>))
 			.collect::<Vec<_>>();
@@ -23,6 +25,8 @@ impl BindingSnapshot {
 		let mut decision_hooks = BTreeSet::new();
 		while let Some((mut normalized, mut ancestry, lifecycle)) = pending.pop() {
 			let binding = &mut normalized.binding;
+			// Exposure selects request visibility only; it never changes the closure.
+			binding.exposure = None;
 			let entry = &definitions
 				.get(&binding.target)
 				.ok_or_else(|| Error::Invalid("snapshot lacks a bound definition".into()))?
@@ -69,6 +73,9 @@ impl BindingSnapshot {
 							));
 						}
 					};
+					if kind == BindingKind::Tool && overrides.contains(&member) {
+						continue;
+					}
 					pending.push((
 						NormalizedBinding {
 							binding: Binding {
@@ -77,6 +84,7 @@ impl BindingSnapshot {
 								alias: None,
 								narrow: binding.narrow.clone(),
 								members: vec![],
+								exposure: None,
 							},
 							origin: normalized.origin,
 						},
@@ -88,6 +96,7 @@ impl BindingSnapshot {
 			}
 			if binding.kind == BindingKind::Tool {
 				let descriptor: ToolDescriptor = serde_json::from_value(entry.config.clone())?;
+				config.exposure_policy().admit_tool(&descriptor)?;
 				descriptor.declared_contract(binding.target.clone())?;
 				validate_restrictions(&descriptor.operation, &binding.narrow)?;
 				binding.narrow = descriptor.narrow.intersect(&binding.narrow)?;
@@ -186,7 +195,17 @@ impl BindingSnapshot {
 			}
 		}
 		if source_skill_support {
-			for operation in SKILL_TOOLS {
+			let policy = config.exposure_policy();
+			let support: Vec<&str> = if policy.is_deferred() {
+				EXPOSURE_TOOLS
+					.iter()
+					.copied()
+					.chain([SKILL_ASSET_READ])
+					.collect()
+			} else {
+				SKILL_TOOLS.to_vec()
+			};
+			for operation in support {
 				let binding = expected
 					.get_mut(&QualifiedRef::builtin(&self.agent.registry_node, operation))
 					.ok_or_else(|| Error::Invalid("snapshot lacks native Skill support".into()))?;

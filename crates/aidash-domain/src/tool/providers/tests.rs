@@ -95,3 +95,33 @@ fn legacy_transport_tags_do_not_accept_descriptor_fields_or_convert_descriptors(
 			.unwrap();
 	assert!(crate::tool::legacy_config(&descriptor).unwrap().is_none());
 }
+
+#[test]
+fn exposure_and_skill_asset_operations_are_builtin_core_operations() {
+	for (operation, provider) in [
+		("capability_search", "core.exposure@1"),
+		("capability_describe", "core.exposure@1"),
+		("capability_load", "core.exposure@1"),
+		("capability_unload", "core.exposure@1"),
+		("skill_asset_read", "core.skills@1"),
+	] {
+		assert_eq!(core_provider(operation), Some(provider));
+		assert_eq!(tier(operation), Some(ToolTier::Builtin));
+		assert!(reserved_aliases().contains(operation));
+		let descriptor = core_descriptor("aidash://node-a", operation).unwrap();
+		assert!(descriptor.lifecycle.is_none());
+		let contract = descriptor
+			.declared_contract(QualifiedRef::builtin("aidash://node-a", operation))
+			.unwrap();
+		assert!(contract.remote_exposure);
+		assert!(
+			remote_exclusion(BindingOrigin::Required, &contract)
+				.unwrap()
+				.is_none()
+		);
+		assert_eq!(
+			contract.behavior.exposure_update,
+			matches!(operation, "capability_load" | "capability_unload")
+		);
+	}
+}

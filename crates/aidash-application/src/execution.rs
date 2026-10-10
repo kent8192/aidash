@@ -326,13 +326,22 @@ pub fn tool_result_fits(
 ) -> bool {
 	let mut bounded = call.clone();
 	bounded.arguments[parameter] = json!(size);
-	let event = ContextEvent::tool(bounded, output);
+	tool_event_fits(context, &ContextEvent::tool(bounded, output), budget)
+}
+
+/// Whether one recorded tool event fits the request, reserving space for the
+/// remaining calls of the response.
+pub fn tool_event_fits(
+	context: &Context,
+	event: &ContextEvent,
+	budget: WorkspaceReadFitBudget,
+) -> bool {
 	let maximum = budget
 		.request_window
 		.saturating_sub(budget.remaining_calls.saturating_mul(TOOL_EVENT_RESERVE));
 	budget
 		.request_tokens
-		.saturating_add(context::tool_event_growth(context, &event))
+		.saturating_add(context::tool_event_growth(context, event))
 		<= maximum
 }
 
@@ -346,12 +355,17 @@ pub fn fit_tool_result(
 	result: impl Fn(usize) -> Value,
 ) -> Option<usize> {
 	let fits = |size| tool_result_fits(context, call, parameter, size, result(size), budget);
-	let minimum = minimum.min(budget.requested);
+	largest_fit(minimum.min(budget.requested), budget.requested, fits)
+}
+
+/// The largest size in `minimum..=requested` that fits, assuming smaller sizes
+/// never grow the result. Below a viable `minimum`, only an empty result is tried.
+fn largest_fit(minimum: usize, requested: usize, fits: impl Fn(usize) -> bool) -> Option<usize> {
 	if !fits(minimum) {
 		return (minimum > 0 && fits(0)).then_some(0);
 	}
 	let mut low = minimum;
-	let mut high = budget.requested;
+	let mut high = requested;
 	while low < high {
 		let middle = low + (high - low).div_ceil(2);
 		if fits(middle) {
@@ -361,6 +375,67 @@ pub fn fit_tool_result(
 		}
 	}
 	Some(low)
+}
+
+/// The first page offset of a `capability_search` call. An invalid cursor is
+/// left to the tool, which reports it as a recoverable error.
+pub fn capability_search_offset(call: &aidash_domain::provider::ToolCall) -> usize {
+	call.arguments["cursor"]
+		.as_str()
+		.and_then(|cursor| cursor.parse().ok())
+		.unwrap_or(0)
+}
+
+/// A `capability_search` page that starts at `offset`, cut to its first `kept`
+/// results. A cut page continues from the first dropped result.
+pub fn capability_search_result(output: &Value, offset: usize, kept: usize) -> Value {
+	let mut result = output.clone();
+	let Some(results) = output["results"].as_array() else {
+		return result;
+	};
+	if kept >= results.len() {
+		return result;
+	}
+	result["results"] = json!(results[..kept]);
+	result["next_cursor"] = json!(offset.saturating_add(kept).to_string());
+	result["truncated"] = json!(true);
+	result["budget_limited"] = json!(true);
+	if kept == 0 {
+		result["deferred"] = json!(true);
+		result["message"] = json!(
+			"No request budget remains for search results. Continue from next_cursor on a later turn; do not repeat this search now."
+		);
+	}
+	result
+}
+
+/// The most leading results of a `capability_search` page the request carries,
+/// with the recorded call unchanged; `None` when not even an empty page fits.
+pub fn fit_capability_search(
+	context: &Context,
+	call: &aidash_domain::provider::ToolCall,
+	output: &Value,
+	budget: WorkspaceReadFitBudget,
+) -> Option<Value> {
+	fit_capability_search_page(output, budget.offset, |page| {
+		tool_event_fits(
+			context,
+			&ContextEvent::tool(call.clone(), page.clone()),
+			budget,
+		)
+	})
+}
+
+/// The page with the most leading results that `fits` accepts; `None` when not
+/// even the empty page does.
+pub fn fit_capability_search_page(
+	output: &Value,
+	offset: usize,
+	fits: impl Fn(&Value) -> bool,
+) -> Option<Value> {
+	let returned = output["results"].as_array().map_or(0, Vec::len);
+	let page = |kept| capability_search_result(output, offset, kept);
+	largest_fit(returned.min(1), returned, |kept| fits(&page(kept))).map(page)
 }
 
 pub fn workspace_read_result(
@@ -396,27 +471,66 @@ pub fn workspace_read_result(
 	result
 }
 
+fn read_argument(
+	call: &aidash_domain::provider::ToolCall,
+	label: &str,
+	name: &str,
+) -> Result<Option<usize>> {
+	call.arguments
+		.get(name)
+		.map(|value| {
+			usize::try_from(value.as_u64().ok_or_else(|| {
+				Error::Invalid(format!("{label} {name} must be a nonnegative integer"))
+			})?)
+			.map_err(|_| Error::Invalid(format!("{label} {name} is too large")))
+		})
+		.transpose()
+}
+
 pub fn skill_read_range(call: &aidash_domain::provider::ToolCall) -> Result<WorkspaceReadRange> {
-	let offset = match call.arguments.get("offset") {
-		None => 0,
-		Some(value) => usize::try_from(value.as_u64().ok_or_else(|| {
-			Error::Invalid("Skill read offset must be a nonnegative integer".into())
-		})?)
-		.map_err(|_| Error::Invalid("Skill read offset is too large".into()))?,
-	};
-	let requested = match call.arguments.get("max_chars") {
-		None => 8000,
-		Some(value) => usize::try_from(value.as_u64().ok_or_else(|| {
-			Error::Invalid("Skill read max_chars must be a nonnegative integer".into())
-		})?)
-		.map_err(|_| Error::Invalid("Skill read max_chars is too large".into()))?,
-	};
+	let offset = read_argument(call, "Skill read", "offset")?.unwrap_or(0);
+	let requested = read_argument(call, "Skill read", "max_chars")?.unwrap_or(8000);
 	if requested > 16_000 {
 		return Err(Error::Invalid(
 			"Skill read max_chars must not exceed 16000".into(),
 		));
 	}
 	Ok(WorkspaceReadRange { offset, requested })
+}
+
+/// Without `max_chars` the configured read limit bounds the page, so the fitted
+/// size is clamped to the returned content instead.
+pub fn skill_asset_range(call: &aidash_domain::provider::ToolCall) -> Result<WorkspaceReadRange> {
+	Ok(WorkspaceReadRange {
+		offset: read_argument(call, "Skill asset read", "offset")?.unwrap_or(0),
+		requested: read_argument(call, "Skill asset read", "max_chars")?.unwrap_or(usize::MAX),
+	})
+}
+
+/// A `skill_asset_read` page cut to `chars` scalar values; binary metadata and
+/// pages that already fit are unchanged.
+pub fn skill_asset_result(output: &Value, chars: usize) -> Value {
+	let mut result = output.clone();
+	let Some(original) = output["content"].as_str() else {
+		return result;
+	};
+	let content: String = original.chars().take(chars).collect();
+	let taken = content.chars().count();
+	if taken == original.chars().count() {
+		return result;
+	}
+	let offset = output["offset"].as_u64().unwrap_or(0) as usize;
+	result["content"] = json!(content);
+	result["next_offset"] = json!(offset.saturating_add(taken));
+	result["truncated"] = json!(true);
+	result["budget_limited"] = json!(true);
+	if taken == 0 {
+		result["deferred"] = json!(true);
+		result["message"] = json!(
+			"No request budget remains for this Skill asset. Continue on a later turn; do not repeat this read now."
+		);
+	}
+	result
 }
 
 pub fn skill_read_result(output: &Value, chars: usize) -> Value {
@@ -470,6 +584,29 @@ pub fn deferred_skill_read(call: &aidash_domain::provider::ToolCall) -> Box<Defe
 	})
 }
 
+pub fn deferred_skill_asset_read(call: &aidash_domain::provider::ToolCall) -> Box<DeferredRead> {
+	Box::new(DeferredRead {
+		message: "Retry this skill_asset_read after reducing the retained context; its result envelope did not fit.".into(),
+		call: call.clone(),
+	})
+}
+
+pub fn deferred_capability_description(
+	call: &aidash_domain::provider::ToolCall,
+) -> Box<DeferredRead> {
+	Box::new(DeferredRead {
+		message: "Retry this capability_describe after reducing the retained context; its description did not fit.".into(),
+		call: call.clone(),
+	})
+}
+
+pub fn deferred_capability_search(call: &aidash_domain::provider::ToolCall) -> Box<DeferredRead> {
+	Box::new(DeferredRead {
+		message: "Retry this capability_search after reducing the retained context; its result envelope did not fit.".into(),
+		call: call.clone(),
+	})
+}
+
 pub fn deferred_workspace_observation(
 	call: &aidash_domain::provider::ToolCall,
 ) -> Box<DeferredRead> {
@@ -490,6 +627,16 @@ pub fn tool_result_plan(
 	let range = match fitting {
 		ResultFitting::WorkspaceRecord => workspace_read_range(call)?,
 		ResultFitting::SkillText => skill_read_range(call)?,
+		ResultFitting::SkillAsset => skill_asset_range(call)?,
+		// A description is recorded whole, so it has no range to narrow.
+		ResultFitting::CapabilityDescription => WorkspaceReadRange {
+			offset: 0,
+			requested: 0,
+		},
+		ResultFitting::CapabilitySearch => WorkspaceReadRange {
+			offset: capability_search_offset(call),
+			requested: aidash_domain::exposure::SEARCH_PAGE_SIZE,
+		},
 		ResultFitting::Observation => WorkspaceReadRange {
 			offset: call.arguments["offset"].as_u64().unwrap_or(0) as usize,
 			requested: call.arguments["limit"]
@@ -507,7 +654,11 @@ pub fn tool_result_plan(
 pub fn result_plan(pending: &ToolCallState, fitting: ResultFitting) -> &Option<ReadPlan> {
 	match fitting {
 		ResultFitting::WorkspaceRecord => &pending.workspace_read_plan,
-		ResultFitting::SkillText => &pending.skill_read_plan,
+		// Skill and capability reads share one prepared slot; a plan matches only its call.
+		ResultFitting::SkillText
+		| ResultFitting::SkillAsset
+		| ResultFitting::CapabilityDescription
+		| ResultFitting::CapabilitySearch => &pending.skill_read_plan,
 		ResultFitting::Observation => &pending.workspace_observation_plan,
 	}
 }
@@ -517,7 +668,10 @@ pub fn result_plan_mut(
 ) -> &mut Option<ReadPlan> {
 	match fitting {
 		ResultFitting::WorkspaceRecord => &mut pending.workspace_read_plan,
-		ResultFitting::SkillText => &mut pending.skill_read_plan,
+		ResultFitting::SkillText
+		| ResultFitting::SkillAsset
+		| ResultFitting::CapabilityDescription
+		| ResultFitting::CapabilitySearch => &mut pending.skill_read_plan,
 		ResultFitting::Observation => &mut pending.workspace_observation_plan,
 	}
 }
@@ -539,6 +693,18 @@ pub fn defer_result(
 		ResultFitting::SkillText => {
 			state.deferred_skill_read = Some(deferred_skill_read(call));
 			"run.skill_read_deferred"
+		}
+		ResultFitting::SkillAsset => {
+			state.deferred_skill_read = Some(deferred_skill_asset_read(call));
+			"run.skill_read_deferred"
+		}
+		ResultFitting::CapabilityDescription => {
+			state.deferred_skill_read = Some(deferred_capability_description(call));
+			"run.description_deferred"
+		}
+		ResultFitting::CapabilitySearch => {
+			state.deferred_skill_read = Some(deferred_capability_search(call));
+			"run.search_deferred"
 		}
 		ResultFitting::Observation => {
 			state.deferred_workspace_observation = Some(deferred_workspace_observation(call));

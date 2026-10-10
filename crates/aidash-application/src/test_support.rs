@@ -121,9 +121,7 @@ pub(crate) fn http_tool(node: &str, id: &str, alias: &str) -> Entry {
 	)
 }
 pub(crate) fn builtin_entries(node: &str) -> Vec<Entry> {
-	aidash_domain::registry::bindings::REQUIRED_TOOLS
-		.iter()
-		.chain(aidash_domain::registry::bindings::DEFAULT_TOOLS)
+	crate::registry::system::operations()
 		.map(|name| {
 			entry(
 				&format!("aidash.{name}"),

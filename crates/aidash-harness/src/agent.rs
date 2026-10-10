@@ -2,9 +2,11 @@
 use aidash_application::{Error, Result, execution::*, ports::execution::*};
 use aidash_domain::{
 	context::{self, Context, ContextEvent, ContextUsage},
+	exposure,
 	media::Selection,
 	model::ModelConfig,
 	projection::{ProjectionVersion, PromptCache},
+	registry::bindings::{AgentBindings, BindingSnapshot},
 	semantic::{Failure, InputRead},
 	tool::{ResultFitting, ToolIdentity, ToolUseMode},
 	*,
@@ -361,26 +363,45 @@ impl<'a> Executor<'a> {
 				// Ordered Runs key their sources by Retrieval Key and Skill revision below.
 				let cached_sources = if ordered { None } else { run.context.source_observation.as_ref().map(|observation| observation.at(&source_boundary, &binding_digest)).transpose()?.flatten().cloned() };
 				if let Some(content) = &cached_sources { self.environment.recheck_source_observation(run, content).await?; }
-				let mut instructions = context::agent_instructions("");
-				for skill in &agent.skills {
-					let entry = self
-						.environment
-						.catalog().get_for_run(&*run, &skill.id, &skill.version)
-						.await?;
-					instructions.push('\n');
-					instructions.push_str(&format!("Skill {}@{}:\n", skill.id, skill.version));
-					instructions.push_str(&self.environment.catalog().skill_instructions(&entry)?);
-				}
 				let mut source_skill_context = String::new();
 				let mut ordered_skill = OrderedSkill::Absent;
-				if tools.contains_key("skill_list") && home.has_local_authority()
-				{
-					source_skill_context = if ordered {
-						let (text, skill) = self.ordered_skill_context(run, &binding_digest).await?;
-						ordered_skill = skill;
-						text
-					} else if let Some(cached) = &cached_sources { cached["skill_context"].as_str().unwrap_or_default().to_owned() } else { self.environment.skill_context(run).await? };
+				// Load/Unload results of the previous response take effect with this
+				// request; activation is idempotent across retries of this boundary.
+				run.context.exposure.activate();
+				let mut exposure = match deferred_exposure(run)? {
+					Some((snapshot, budgets)) => {
+						let catalog = exposure_catalog(self.environment, run, snapshot, &tools).await?;
+						let selection = exposure::select(&budgets, &catalog, &run.context.exposure)?;
+						// Resident Skill blocks replace the Registry Skill loop and the
+						// pinned Skill context; recovery reuses them at the same boundary.
+						source_skill_context = if let Some(cached) = &cached_sources { cached["skill_context"].as_str().unwrap_or_default().to_owned() } else { resident_skills(self.environment, run, snapshot, &catalog, &selection).await? };
+						Some(selection)
+					}
+					None => None,
+				};
+				let mut instructions = context::agent_instructions("");
+				if let Some(selection) = &exposure {
 					instructions.push_str(&source_skill_context);
+					instructions.push_str(&selection.index);
+				} else {
+					for skill in &agent.skills {
+						let entry = self
+							.environment
+							.catalog().get_for_run(&*run, &skill.id, &skill.version)
+							.await?;
+						instructions.push('\n');
+						instructions.push_str(&format!("Skill {}@{}:\n", skill.id, skill.version));
+						instructions.push_str(&self.environment.catalog().skill_instructions(&entry)?);
+					}
+					if tools.contains_key("skill_list") && home.has_local_authority()
+					{
+						source_skill_context = if ordered {
+							let (text, skill) = self.ordered_skill_context(run, &binding_digest).await?;
+							ordered_skill = skill;
+							text
+						} else if let Some(cached) = &cached_sources { cached["skill_context"].as_str().unwrap_or_default().to_owned() } else { self.environment.skill_context(run).await? };
+						instructions.push_str(&source_skill_context);
+					}
 				}
 				instructions.push_str("\nAdditional user instructions:\n");
 				instructions.push_str(&agent.instructions);
@@ -466,6 +487,7 @@ impl<'a> Executor<'a> {
 				}
 				let mut specifications = tools
 					.iter()
+					.filter(|(alias, _)| exposure.as_ref().is_none_or(|selection| selection.tools.contains(*alias)))
 					.filter(|(_, tool)| !run_message_catchup || tool.contract().behavior.permits(ToolUseMode::MessageCatchUp))
 					.map(|(_, tool)| tool)
 					.map(|t| t.specification())
@@ -522,9 +544,14 @@ impl<'a> Executor<'a> {
 					}
 				}
 				let has_run_message_references = !required_run_message_reads.is_empty();
-				if media.defer_human || media.defer_selected {
+				let media_intake = media.defer_human || media.defer_selected;
+				if media_intake {
 					specifications.clear();
 					(if ordered { &mut turn_instructions } else { &mut instructions }).push_str("\nMedia intake is continuing. For this interim turn, postpone required workspace reads and the cumulative run-message summary. Preserve the user goals, constraints, and corrections in these run messages and describe the media in this request as plain text. Do not call tools or complete the task; deferred media will be provided in the next request.");
+				}
+				// Catch-up and media intake send fewer tools; usage measures those sent.
+				if (run_message_catchup || media_intake) && let Some(selection) = exposure.as_mut() {
+					selection.restrict_tools(&specifications)?;
 				}
 				let context_window = window.saturating_sub(
 					aidash_domain::provider::ModelRequest::content_parts_reservation(&media.parts),
@@ -748,6 +775,7 @@ impl<'a> Executor<'a> {
 					output_tokens: result.output_tokens,
 					context_window: window,
 					compactions: context.compactions,
+					exposure: exposure.map(|selection| selection.usage),
 				});
 				run.context = context.clone();
 				let references_read_at_inference = required_run_message_reads
@@ -1112,6 +1140,19 @@ impl<'a> Executor<'a> {
 				let Some(tool) = tools.get(&call.name) else {
 					return self.tool_error(run, token, &call, cursor, format!("unavailable tool {}", call.name)).await;
 				};
+				if let Some((snapshot, budgets)) = deferred_exposure(run)? {
+					// Every call is checked against the Exposure set its request
+					// advertised; Load/Unload in this response apply to the next one.
+					let catalog = exposure_catalog(self.environment, run, snapshot, &tools).await?;
+					if !exposure::select(&budgets, &catalog, &run.context.exposure)?.tools.contains(&call.name) {
+						let message = if exposure::select(&budgets, &catalog, &run.context.exposure.effective())?.tools.contains(&call.name) {
+							format!("capability {} was loaded in this response; call it after the next model request", call.name)
+						} else {
+							format!("capability {} is not loaded; use capability_load", call.name)
+						};
+						return self.tool_error(run, token, &call, cursor, message).await;
+					}
+				}
 				let contract = tool.contract();
 				if !pending_selected_media(run.state.tool()?).is_empty() && !contract.behavior.permits(ToolUseMode::MediaPending) {
 					return self.tool_error(run, token, &call, cursor, "selected model media must be inferred before this tool call; retry it after the next model response".into()).await;
@@ -1337,6 +1378,15 @@ impl<'a> Executor<'a> {
 				if invocation.status != "COMPLETED" {
 					store.invocation_finish(run, token, &key, &output).await?;
 				}
+				// Load/Unload results are staged with the same save that records
+				// them and take effect with the next inference.
+				if contract.behavior.exposure_update
+					&& let Some(update) = output.get("exposure_update")
+				{
+					context
+						.exposure
+						.stage(serde_json::from_value::<exposure::ExposureUpdate>(update.clone())?);
+				}
 				let event = ContextEvent::tool(call.clone(), output.clone());
 				record_message_read_for(&mut context.message_read_coverage, &contract, &event);
 				let growth = context::tool_event_growth(&context, &event);
@@ -1535,6 +1585,47 @@ async fn prepare_tool_result(
 				size.map(|chars| (chars, skill_read_result(&output, chars))),
 			)
 		}
+		ResultFitting::SkillAsset => {
+			let output = tool.invoke(run, call.arguments.clone(), "").await?;
+			let returned = output["content"]
+				.as_str()
+				.map_or(0, |text| text.chars().count());
+			let budget = WorkspaceReadFitBudget {
+				requested: budget.requested.min(returned),
+				..budget
+			};
+			let size = fit_tool_result(context, call, "max_chars", budget, 1, |chars| {
+				skill_asset_result(&output, chars)
+			});
+			(
+				"max_chars",
+				size.map(|chars| (chars, skill_asset_result(&output, chars))),
+			)
+		}
+		ResultFitting::CapabilityDescription => {
+			let output = tool.invoke(run, call.arguments.clone(), "").await?;
+			let event = ContextEvent::tool(call.clone(), output.clone());
+			return Ok(if tool_event_fits(context, &event, budget) {
+				PreparedResult::Fitted {
+					call: call.clone(),
+					result: output,
+				}
+			} else {
+				PreparedResult::NoEnvelopeRoom
+			});
+		}
+		ResultFitting::CapabilitySearch => {
+			let output = tool.invoke(run, call.arguments.clone(), "").await?;
+			return Ok(
+				match fit_capability_search(context, call, &output, budget) {
+					Some(result) => PreparedResult::Fitted {
+						call: call.clone(),
+						result,
+					},
+					None => PreparedResult::NoEnvelopeRoom,
+				},
+			);
+		}
 		ResultFitting::Observation => (
 			"limit",
 			home.observation_fitted(budget.offset, budget.requested, &|limit, output| {
@@ -1640,6 +1731,66 @@ fn is_invalid(error: &Error) -> bool {
 		Error::Invalid(_) | Error::Domain(aidash_domain::Error::Invalid(_))
 	)
 }
+/// The pinned snapshot and budgets of a `deferred@1` Run, read from its
+/// Agent definition; `None` under `legacy@1` or without a Binding snapshot.
+fn deferred_exposure(run: &Run) -> Result<Option<(&BindingSnapshot, exposure::DeferredBudgets)>> {
+	let Some(snapshot) = run.context.binding_snapshot.as_deref() else {
+		return Ok(None);
+	};
+	let agent = snapshot
+		.definitions
+		.iter()
+		.find(|definition| definition.identity == snapshot.agent)
+		.ok_or_else(|| Error::Invalid("snapshot lacks its Agent definition".into()))?;
+	let policy =
+		serde_json::from_value::<AgentBindings>(agent.definition.config.clone())?.exposure_policy();
+	Ok(policy.budgets().map(|budgets| (snapshot, *budgets)))
+}
+/// Discoverable capabilities over the specifications dispatch advertises.
+async fn exposure_catalog(
+	environment: &dyn ExecutionEnvironment,
+	run: &Run,
+	snapshot: &BindingSnapshot,
+	tools: &Tools,
+) -> Result<Vec<exposure::Capability>> {
+	let specs = tools
+		.iter()
+		.map(|(alias, tool)| (alias.clone(), tool.specification()))
+		.collect();
+	let direct = environment.direct_skills(run).await?;
+	Ok(exposure::catalog(snapshot, &specs, &direct)?)
+}
+/// Resident blocks of the selected Skills: Registry bodies from the pinned
+/// snapshot, direct bodies from the Run's pinned Skill files.
+async fn resident_skills(
+	environment: &dyn ExecutionEnvironment,
+	run: &Run,
+	snapshot: &BindingSnapshot,
+	catalog: &[exposure::Capability],
+	selection: &exposure::Selection,
+) -> Result<String> {
+	let mut text = String::new();
+	for alias in &selection.skills {
+		let capability = catalog
+			.iter()
+			.find(|capability| &capability.alias == alias)
+			.ok_or_else(|| {
+				Error::Invalid(format!("selected Skill {alias} is not in the catalog"))
+			})?;
+		let body = match &capability.identity {
+			exposure::CapabilityIdentity::Registry(_) => {
+				exposure::registry_skill_body(snapshot, capability)?
+			}
+			exposure::CapabilityIdentity::DirectSkill { skill_id, .. } => {
+				environment
+					.direct_skill_body(run, *skill_id, &capability.digest)
+					.await?
+			}
+		};
+		text.push_str(&exposure::resident_block(capability, &body));
+	}
+	Ok(text)
+}
 /// How this step obtained an Ordered Run's Skill context.
 enum OrderedSkill {
 	/// This request carries no Skill context.
@@ -1699,6 +1850,7 @@ async fn compact_execution(
 	budget: &context::RequestBudget<'_>,
 	pinned: &Value,
 ) -> Result<()> {
+	// Compaction replaces history only; the Exposure set is carried unchanged.
 	let mut candidate = context.clone();
 	context::observation::normalize_history(&mut candidate.history);
 	aidash_application::context::compact(&mut candidate, classifier, budget, pinned).await?;

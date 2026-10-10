@@ -41,7 +41,7 @@ impl Catalog {
 			foreign: BTreeMap::new(),
 		};
 		result.insert(entry("model", "model", json!({})));
-		for operation in REQUIRED_TOOLS.iter().chain(DEFAULT_TOOLS) {
+		for operation in crate::registry::system::operations() {
 			result.core(operation);
 		}
 		result
@@ -192,6 +192,7 @@ async fn mounted_source_aggregation_rejects_ambiguous_ids_and_shared_limits(
 			alias: None,
 			narrow: Default::default(),
 			members: vec![],
+			exposure: None,
 		});
 	}
 	let result = snapshot(&mut catalog, &config, false).await;
@@ -268,6 +269,7 @@ async fn python_start_operations_share_pinned_companions() {
 		alias: None,
 		narrow: Narrowing::default(),
 		members: vec![],
+		exposure: None,
 	});
 	let saved = snapshot(&mut catalog, &config, false).await.unwrap();
 	for operation in [
@@ -309,6 +311,7 @@ async fn selecting_async_start_also_pins_companions_but_not_other_starts() {
 		alias: None,
 		narrow: Narrowing::default(),
 		members: vec![code.id],
+		exposure: None,
 	});
 	let saved = snapshot(&mut catalog, &config, false).await.unwrap();
 	assert!(
@@ -347,6 +350,7 @@ async fn incompatible_companions_cycles_and_undeclared_members_are_rejected() {
 		alias: None,
 		narrow: Narrowing::default(),
 		members: vec![],
+		exposure: None,
 	});
 	assert!(snapshot(&mut catalog, &config, false).await.is_err());
 	config.bindings[0].members = vec!["absent".into()];
@@ -554,6 +558,7 @@ async fn coordinator_bundle_selections_reject_undeclared_ids_even_with_complete_
 			alias: None,
 			narrow: Default::default(),
 			members: vec![selected.id.clone()],
+			exposure: None,
 		});
 		catalog.insert(entry(
 			"cluster",
@@ -694,6 +699,7 @@ async fn root_installation_and_unselected_recursive_bundle_members_are_checked()
 		alias: None,
 		narrow: Default::default(),
 		members: vec![safe.id],
+		exposure: None,
 	});
 	assert!(snapshot(&mut catalog, &config, false).await.is_err());
 }
@@ -720,6 +726,7 @@ async fn native_context_is_explicit_and_skill_sources_cannot_omit_support() {
 		alias: None,
 		narrow: Default::default(),
 		members: vec![],
+		exposure: None,
 	});
 	let bound = snapshot(&mut catalog, &config, false).await.unwrap();
 	assert!(
@@ -746,6 +753,7 @@ async fn native_context_is_explicit_and_skill_sources_cannot_omit_support() {
 		alias: None,
 		narrow: Default::default(),
 		members: vec![],
+		exposure: None,
 	});
 	config.instructions.clear();
 	let sources = snapshot(&mut catalog, &config, false).await.unwrap();
@@ -761,6 +769,158 @@ async fn native_context_is_explicit_and_skill_sources_cannot_omit_support() {
 	assert!(snapshot(&mut catalog, &config, true).await.is_err());
 	config.remove_default.push("skill_load".into());
 	assert!(snapshot(&mut catalog, &config, false).await.is_err());
+}
+
+#[tokio::test]
+async fn deferred_skill_sources_require_exposure_support_with_canonical_aliases() {
+	let mut catalog = Catalog::new();
+	catalog.insert(entry(
+		"skills-root",
+		"source",
+		json!({"schema_version":1,"source":{"adapter":"skill_roots","roots":[".agents/skills"]}}),
+	));
+	let mut config = agent_config();
+	config.exposure = Some(aidash_domain::exposure::ExposurePolicy::Deferred(
+		Default::default(),
+	));
+	config.instructions.clear();
+	config.bindings.push(Binding {
+		kind: BindingKind::Source,
+		target: reference("skills-root"),
+		alias: None,
+		narrow: Default::default(),
+		members: vec![],
+		exposure: None,
+	});
+	let sources = snapshot(&mut catalog, &config, false).await.unwrap();
+	sources.validate().unwrap();
+	let origin = |operation: &str| {
+		sources
+			.bindings
+			.iter()
+			.find(|b| b.identity == QualifiedRef::builtin(NODE, operation))
+			.map(|b| (b.origin, b.alias.clone()))
+	};
+	for operation in EXPOSURE_TOOLS {
+		assert_eq!(
+			origin(operation),
+			Some((BindingOrigin::Required, Some(operation.to_string())))
+		);
+	}
+	assert_eq!(
+		origin(SKILL_ASSET_READ),
+		Some((BindingOrigin::SkillSupport, Some(SKILL_ASSET_READ.into())))
+	);
+	for operation in SKILL_TOOLS {
+		assert_eq!(origin(operation), None);
+	}
+	let mut renamed = config.clone();
+	renamed.bindings.push(Binding {
+		kind: BindingKind::Tool,
+		target: QualifiedRef::builtin(NODE, SKILL_ASSET_READ),
+		alias: Some("read_asset".into()),
+		narrow: Default::default(),
+		members: vec![],
+		exposure: None,
+	});
+	assert!(snapshot(&mut catalog, &renamed, false).await.is_err());
+	config.remove_default.push(SKILL_ASSET_READ.into());
+	assert!(snapshot(&mut catalog, &config, false).await.is_err());
+}
+
+/// Binds builtin `operation` explicitly under `admitted`, where it resolves,
+/// then returns the error that `rejected` raises at `boundary`.
+async fn policy_rejection(
+	operation: &str,
+	admitted: Option<aidash_domain::exposure::ExposurePolicy>,
+	rejected: Option<aidash_domain::exposure::ExposurePolicy>,
+	boundary: &str,
+) -> String {
+	let mut catalog = Catalog::new();
+	let target = QualifiedRef::builtin(NODE, operation);
+	let mut config = agent_config();
+	config.exposure = admitted;
+	config.bindings.push(Binding::tool(target.clone()));
+	let bound = snapshot(&mut catalog, &config, false).await.unwrap();
+	bound.validate().unwrap();
+	config.exposure = rejected;
+	let result = if boundary == "admission" {
+		snapshot(&mut catalog, &config, false)
+			.await
+			.map(|_| ())
+			.map_err(|error| error.to_string())
+	} else {
+		// A restored closure rejects it even when its normalization,
+		// definitions and digests are internally consistent.
+		let mut without = config.clone();
+		without.bindings.retain(|binding| binding.target != target);
+		let mut saved = snapshot(&mut catalog, &without, false).await.unwrap();
+		saved.validate().unwrap();
+		let root = saved
+			.definitions
+			.iter_mut()
+			.find(|definition| definition.identity == saved.agent)
+			.unwrap();
+		root.definition.config = serde_json::to_value(&config).unwrap();
+		root.definition.normalize_agent(NODE).unwrap();
+		root.digest = aidash_domain::registry::rules::digest(
+			&serde_json::to_value(&root.definition).unwrap(),
+		);
+		let (binding, definition) = (
+			bound.bindings.iter().find(|b| b.identity == target),
+			bound.definitions.iter().find(|d| d.identity == target),
+		);
+		let mut binding = binding.unwrap().clone();
+		binding.origin = BindingOrigin::Explicit;
+		saved.bindings.push(binding);
+		saved.definitions.push(definition.unwrap().clone());
+		saved.validate().map_err(|error| error.to_string())
+	};
+	result.expect_err("a builtin that cannot work under the policy is rejected")
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn deferred_agents_reject_explicit_legacy_skill_readers_at_admission_and_recovery(
+	#[values("skill_list", "skill_load", "skill_read")] operation: &str,
+	#[values("admission", "recovery")] boundary: &str,
+) {
+	// Arrange / Act: a legacy Agent may bind the reader explicitly.
+	let deferred = aidash_domain::exposure::ExposurePolicy::Deferred(Default::default());
+	let error = policy_rejection(operation, None, Some(deferred), boundary).await;
+	// Assert
+	assert!(
+		error.contains(&format!("{operation} cannot be bound under deferred@1")),
+		"{boundary}: {error}"
+	);
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn legacy_agents_reject_deferred_only_builtins_at_admission_and_recovery(
+	#[values(
+		"capability_search",
+		"capability_describe",
+		"capability_load",
+		"capability_unload",
+		"skill_asset_read"
+	)]
+	operation: &str,
+	#[values(None, Some(aidash_domain::exposure::ExposurePolicy::Legacy))] legacy: Option<
+		aidash_domain::exposure::ExposurePolicy,
+	>,
+	#[values("admission", "recovery")] boundary: &str,
+) {
+	// Arrange / Act: a deferred Agent binds the builtin.
+	let deferred = aidash_domain::exposure::ExposurePolicy::Deferred(Default::default());
+	let error = policy_rejection(operation, Some(deferred), legacy, boundary).await;
+	// Assert
+	assert!(
+		error.contains(&format!(
+			"{operation} requires the deferred@1 Exposure policy"
+		)),
+		"{boundary}: {error}"
+	);
 }
 
 #[rstest::rstest]
@@ -796,6 +956,7 @@ async fn skill_sources_require_canonical_support_aliases_at_admission_and_recove
 		alias: None,
 		narrow: Default::default(),
 		members: vec![],
+		exposure: None,
 	});
 	let mut support = Binding::tool(QualifiedRef::builtin(NODE, operation));
 	support.alias = Some(operation.into());
@@ -858,6 +1019,7 @@ async fn full_host_bundles_share_explicit_and_generated_poll_cancel_members() {
 		alias: None,
 		narrow: Default::default(),
 		members: vec![],
+		exposure: None,
 	});
 	let saved = snapshot(&mut catalog, &config, false).await.unwrap();
 	for operation in operations {
@@ -869,6 +1031,68 @@ async fn full_host_bundles_share_explicit_and_generated_poll_cancel_members() {
 		assert_eq!(bindings.len(), 1);
 		assert_eq!(bindings[0].origin, BindingOrigin::Explicit);
 	}
+}
+
+#[tokio::test]
+async fn explicit_member_exposure_overrides_an_eager_bundle_member() {
+	// Arrange: an eager bundle plus an explicit deferred Binding of one member.
+	let mut catalog = Catalog::new();
+	let patch = catalog.core("apply_patch");
+	let share = catalog.core("file_share");
+	let bundle = catalog.bundle("editing", vec![patch.clone(), share.clone()]);
+	let mut config = agent_config();
+	config.exposure = Some(aidash_domain::exposure::ExposurePolicy::Deferred(
+		Default::default(),
+	));
+	config.bindings.push(Binding {
+		kind: BindingKind::Bundle,
+		target: bundle,
+		alias: None,
+		narrow: Default::default(),
+		members: vec![],
+		exposure: Some(aidash_domain::exposure::BindingExposure::Eager),
+	});
+	let mut member = Binding::tool(patch.clone());
+	member.exposure = Some(aidash_domain::exposure::BindingExposure::Deferred);
+	config.bindings.push(member);
+	// Act
+	let saved = snapshot(&mut catalog, &config, false).await.unwrap();
+	// Assert: one Binding per member, and recovery rebuilds the same closure.
+	saved.validate().unwrap();
+	for target in [&patch, &share] {
+		let count = saved
+			.bindings
+			.iter()
+			.filter(|binding| &binding.identity == target)
+			.count();
+		assert_eq!(count, 1, "{target:?}");
+	}
+	let specs = saved
+		.bindings
+		.iter()
+		.filter(|binding| binding.definition.kind == "tool")
+		.filter_map(|binding| binding.alias.clone())
+		.map(|alias| {
+			let spec = ToolSpec {
+				name: alias.clone(),
+				description: "Fixture".into(),
+				parameters: json!({"type":"object"}),
+			};
+			(alias, spec)
+		})
+		.collect();
+	let capabilities = aidash_domain::exposure::catalog(&saved, &specs, &[]).unwrap();
+	let exposure = |alias: &str| {
+		capabilities
+			.iter()
+			.find(|capability| capability.alias == alias)
+			.map(|capability| (capability.eager, capability.bundle.clone()))
+	};
+	assert_eq!(
+		exposure("apply_patch"),
+		Some((false, Some("editing".into())))
+	);
+	assert_eq!(exposure("file_share"), Some((true, Some("editing".into()))));
 }
 use aidash_domain::{Run, RunControl, context::Context, provider::ToolSpec};
 use std::sync::{
@@ -1146,6 +1370,7 @@ async fn recovered_snapshots_must_match_the_agent_binding_closure_before_run_adm
 			alias: None,
 			narrow: Default::default(),
 			members: vec![],
+			exposure: None,
 		});
 	}
 	let code = catalog.core("code_interpreter");
@@ -1159,6 +1384,7 @@ async fn recovered_snapshots_must_match_the_agent_binding_closure_before_run_adm
 		alias: None,
 		narrow: Default::default(),
 		members: vec![code.id.clone()],
+		exposure: None,
 	});
 	let saved = snapshot(&mut catalog, &config, false).await.unwrap();
 	let recovered: BindingSnapshot =
@@ -1251,6 +1477,7 @@ async fn bundle_selection_rejects_same_id_on_different_nodes_or_versions() {
 			alias: None,
 			narrow: Default::default(),
 			members: vec![member.id],
+			exposure: None,
 		});
 		assert!(snapshot(&mut catalog, &config, false).await.is_err());
 	}
@@ -1271,6 +1498,7 @@ async fn remote_registry_skill_reader_does_not_require_a_native_working_area() {
 		alias: None,
 		narrow: Default::default(),
 		members: vec![],
+		exposure: None,
 	});
 	let admitted = snapshot(&mut catalog, &config, true).await.unwrap();
 	assert!(admitted.operation("skill_read").is_ok());
@@ -1457,6 +1685,7 @@ async fn aggregate_reference_mounts_require_files_and_unique_identities() {
 			alias: None,
 			narrow: Default::default(),
 			members: vec![],
+			exposure: None,
 		});
 	}
 	assert!(snapshot(&mut catalog, &config, false).await.is_err());

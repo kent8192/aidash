@@ -1,0 +1,210 @@
+# Frozen synthetic tool sets for scripts/evaluate-capability-exposure.py.
+# Each case runs once under a legacy Agent and once under a deferred@1 Agent
+# with the same tools and Skills. Results are measurements, not grades.
+version = "capability-exposure-v1"
+instructions = """Complete the Task with the bound tools. Call the single most appropriate tool once with complete arguments. \
+If the call is denied or fails, do not retry it; finish with a short final answer naming the tool you called and its arguments."""
+max_steps = 16
+
+[[tools]]
+alias = "weather_forecast"
+description = "Daily weather forecast (temperature range, precipitation chance, wind) for a city on a date."
+schema = '{"type":"object","properties":{"city":{"type":"string","description":"City name"},"date":{"type":"string","format":"date","description":"Forecast date, YYYY-MM-DD"}},"required":["city","date"],"additionalProperties":false}'
+
+[[tools]]
+alias = "currency_convert"
+description = "Convert an amount between ISO 4217 currencies at the current reference rate."
+schema = '{"type":"object","properties":{"amount":{"type":"number"},"from":{"type":"string","pattern":"^[A-Z]{3}$"},"to":{"type":"string","pattern":"^[A-Z]{3}$"}},"required":["amount","from","to"],"additionalProperties":false}'
+
+[[tools]]
+alias = "invoice_lookup"
+description = "Look up an accounts-receivable invoice by number: amount, due date, payment status and payer."
+schema = '{"type":"object","properties":{"invoice_number":{"type":"string","description":"Invoice number such as INV-2026-0001"}},"required":["invoice_number"],"additionalProperties":false}'
+
+[[tools]]
+alias = "shipment_trace"
+description = "Trace a parcel by carrier and tracking number and return its scan history and current location."
+schema = '{"type":"object","properties":{"carrier":{"type":"string","enum":["UPS","FedEx","DHL","JapanPost","Yamato"]},"tracking_number":{"type":"string"}},"required":["carrier","tracking_number"],"additionalProperties":false}'
+
+[[tools]]
+alias = "calendar_find_slot"
+description = "Find meeting slots when every attendee is free, within a time window. カレンダーの空き時間検索。"
+schema = '{"type":"object","properties":{"attendees":{"type":"array","items":{"type":"string"},"minItems":1},"duration_minutes":{"type":"integer","minimum":5,"maximum":480},"earliest":{"type":"string","format":"date-time"},"latest":{"type":"string","format":"date-time"}},"required":["attendees","duration_minutes","earliest","latest"],"additionalProperties":false}'
+
+[[tools]]
+alias = "translate_text"
+description = "Translate text into a target language identified by a BCP 47 tag."
+schema = '{"type":"object","properties":{"text":{"type":"string"},"target_language":{"type":"string"}},"required":["text","target_language"],"additionalProperties":false}'
+
+[[tools]]
+alias = "stock_quote"
+description = "Latest exchange quote for a listed security ticker symbol."
+schema = '{"type":"object","properties":{"symbol":{"type":"string"},"exchange":{"type":"string"}},"required":["symbol"],"additionalProperties":false}'
+
+[[tools]]
+alias = "flight_status"
+description = "Scheduled and estimated departure and arrival times and gate for a flight on a date."
+schema = '{"type":"object","properties":{"flight_number":{"type":"string"},"date":{"type":"string","format":"date"}},"required":["flight_number","date"],"additionalProperties":false}'
+
+[[tools]]
+alias = "hotel_search"
+description = "Search hotel availability and nightly prices in a city for given dates and guests."
+schema = '{"type":"object","properties":{"city":{"type":"string"},"check_in":{"type":"string","format":"date"},"check_out":{"type":"string","format":"date"},"guests":{"type":"integer","minimum":1,"maximum":8}},"required":["city","check_in","check_out","guests"],"additionalProperties":false}'
+
+[[tools]]
+alias = "restaurant_reserve"
+description = "Request a restaurant table reservation for a party at a specific time."
+schema = '{"type":"object","properties":{"restaurant":{"type":"string"},"time":{"type":"string","format":"date-time"},"party_size":{"type":"integer","minimum":1,"maximum":20}},"required":["restaurant","time","party_size"],"additionalProperties":false}'
+
+[[tools]]
+alias = "crm_contact_find"
+description = "Find customer contacts in the CRM by person name and optional company."
+schema = '{"type":"object","properties":{"name":{"type":"string"},"company":{"type":"string"}},"required":["name"],"additionalProperties":false}'
+
+[[tools]]
+alias = "ticket_create"
+description = "Open a support ticket with a title, priority and description."
+schema = '{"type":"object","properties":{"title":{"type":"string"},"priority":{"type":"string","enum":["low","normal","high","urgent"]},"body":{"type":"string"}},"required":["title","priority","body"],"additionalProperties":false}'
+
+[[tools]]
+alias = "inventory_check"
+description = "On-hand and reserved stock for a SKU, optionally in one warehouse."
+schema = '{"type":"object","properties":{"sku":{"type":"string"},"warehouse":{"type":"string"}},"required":["sku"],"additionalProperties":false}'
+
+[[tools]]
+alias = "payroll_summary"
+description = "Gross pay, deductions and net pay of an employee for a payroll period."
+schema = '{"type":"object","properties":{"employee_id":{"type":"string"},"period":{"type":"string","pattern":"^[0-9]{4}-[0-9]{2}$"}},"required":["employee_id","period"],"additionalProperties":false}'
+
+[[tools]]
+alias = "expense_submit"
+description = "Submit an expense report line with amount, currency, category and receipt link."
+schema = '{"type":"object","properties":{"amount":{"type":"number","exclusiveMinimum":0},"currency":{"type":"string","pattern":"^[A-Z]{3}$"},"category":{"type":"string","enum":["travel","meals","lodging","supplies","other"]},"receipt_url":{"type":"string","format":"uri"}},"required":["amount","currency","category"],"additionalProperties":false}'
+
+[[tools]]
+alias = "dns_lookup"
+description = "Resolve DNS records of a hostname."
+schema = '{"type":"object","properties":{"hostname":{"type":"string"},"record_type":{"type":"string","enum":["A","AAAA","CNAME","MX","TXT","NS"]}},"required":["hostname","record_type"],"additionalProperties":false}'
+
+[[tools]]
+alias = "code_search"
+description = "Search source code in a repository for a literal or regular-expression query."
+schema = '{"type":"object","properties":{"repository":{"type":"string"},"query":{"type":"string"},"regex":{"type":"boolean"}},"required":["repository","query"],"additionalProperties":false}'
+
+[[tools]]
+alias = "unit_convert"
+description = "Convert a physical quantity between units (length, mass, volume, temperature)."
+schema = '{"type":"object","properties":{"value":{"type":"number"},"from_unit":{"type":"string"},"to_unit":{"type":"string"}},"required":["value","from_unit","to_unit"],"additionalProperties":false}'
+
+[[tools]]
+alias = "timezone_convert"
+description = "Convert a local time between IANA time zones."
+schema = '{"type":"object","properties":{"time":{"type":"string","format":"date-time"},"from_zone":{"type":"string"},"to_zone":{"type":"string"}},"required":["time","from_zone","to_zone"],"additionalProperties":false}'
+
+[[tools]]
+alias = "news_headlines"
+description = "Recent news headlines on a topic in a language."
+schema = '{"type":"object","properties":{"topic":{"type":"string"},"language":{"type":"string"}},"required":["topic"],"additionalProperties":false}'
+
+[[tools]]
+alias = "tax_rate_lookup"
+description = "Sales or consumption tax rate for a country, optional region and product category."
+schema = '{"type":"object","properties":{"country":{"type":"string","pattern":"^[A-Z]{2}$"},"region":{"type":"string"},"category":{"type":"string"}},"required":["country"],"additionalProperties":false}'
+
+[[tools]]
+alias = "patent_search"
+description = "Search published patents and applications by keywords in a jurisdiction."
+schema = '{"type":"object","properties":{"query":{"type":"string"},"jurisdiction":{"type":"string","enum":["US","EP","JP","WO","CN"]}},"required":["query"],"additionalProperties":false}'
+
+[[tools]]
+alias = "recipe_nutrition"
+description = "Estimated calories and macronutrients per serving of a recipe."
+schema = '{"type":"object","properties":{"recipe":{"type":"string"},"servings":{"type":"integer","minimum":1}},"required":["recipe","servings"],"additionalProperties":false}'
+
+[[tools]]
+alias = "package_dependency_audit"
+description = "Known vulnerabilities and license findings for one package version and its dependencies."
+schema = '{"type":"object","properties":{"ecosystem":{"type":"string","enum":["npm","pypi","crates","maven","go"]},"package":{"type":"string"},"version":{"type":"string"}},"required":["ecosystem","package","version"],"additionalProperties":false}'
+
+[[skills]]
+id = "shipping-claims"
+name = "Shipping claims"
+description = "Procedure for handling a customer report of a missing or damaged parcel."
+instructions = """# Shipping claims
+
+When a customer reports a missing or damaged parcel:
+
+1. Trace the parcel first with `shipment_trace`, using the carrier and tracking number exactly as reported.
+2. Only if the trace shows no delivery scan in the last 72 hours, open a ticket with `ticket_create` at priority `high`.
+3. Never promise a refund. The checklist in `references/checklist.md` lists the evidence a claim needs."""
+files = [
+  { path = "references/checklist.md", content = "# Claim evidence\n\n- Tracking number and carrier\n- Last scan location and time\n- Photo of damaged packaging, if any\n" },
+]
+
+[[skills]]
+id = "expense-policy"
+name = "Expense policy"
+description = "Company rules for submitting travel and meal expenses."
+instructions = """# Expense policy
+
+Submit each receipt as one `expense_submit` line in its original currency. Meals over 50 USD per person need a business purpose in the report body. Lodging requires the hotel folio."""
+
+[[cases]]
+id = "small-set-weather"
+language = "en"
+task = "What is the weather forecast for Osaka on 2026-10-12?"
+expected_tool = "weather_forecast"
+tools = [
+  "weather_forecast",
+  "currency_convert",
+  "invoice_lookup",
+  "shipment_trace",
+  "calendar_find_slot",
+  "translate_text",
+]
+
+[[cases]]
+id = "full-set-invoice"
+language = "en"
+task = "Check whether invoice INV-2026-0417 has been paid and when it is due."
+expected_tool = "invoice_lookup"
+tools = "all"
+
+[[cases]]
+id = "full-set-calendar-ja"
+language = "ja"
+task = "佐藤さんと田中さんが二人とも参加できる30分の会議枠を、2026-10-13T09:00:00+09:00から2026-10-13T18:00:00+09:00の間で探してください。"
+expected_tool = "calendar_find_slot"
+tools = "all"
+
+[[cases]]
+id = "skill-guided-shipment"
+language = "en"
+task = "A customer says parcel 1Z999AA10123456784 shipped with UPS never arrived. Handle it following the Shipping claims Skill."
+expected_tool = "shipment_trace"
+tools = [
+  "weather_forecast",
+  "currency_convert",
+  "invoice_lookup",
+  "shipment_trace",
+  "calendar_find_slot",
+  "translate_text",
+  "stock_quote",
+  "flight_status",
+  "hotel_search",
+  "restaurant_reserve",
+  "crm_contact_find",
+  "ticket_create",
+]
+skills = ["shipping-claims", "expense-policy"]
+
+[[cases]]
+id = "eager-currency"
+language = "en"
+task = "Convert 1250.50 EUR to JPY."
+expected_tool = "currency_convert"
+tools = "all"
+eager = ["currency_convert"]
+
+[cases.deferred]
+schema_bytes = 32768

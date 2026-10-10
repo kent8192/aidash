@@ -390,6 +390,34 @@ fn installation_checks_source_bytes_and_decoded_manifest(
 	);
 }
 
+#[test]
+fn agent_installations_may_select_an_exposure_policy() {
+	// Arrange
+	let mut agent = package();
+	agent.entity = definition(
+		"agent",
+		"agent",
+		json!({"schema_version":1,"model":{"id":"model","version":"1.0.0"},"instructions":"Work."}),
+	);
+	let digest = snapshot(&agent).digest;
+	let exposure = json!({"version":"deferred@1","schema_bytes":4096});
+	// Act
+	let plan = prepare_install(snapshot(&agent), &digest, json!({"exposure":exposure})).unwrap();
+	// Assert
+	assert_eq!(plan.effective.config["exposure"], exposure);
+	assert_eq!(
+		prepare_install(
+			snapshot(&agent),
+			&digest,
+			json!({"exposure_policy":exposure})
+		)
+		.err()
+		.unwrap()
+		.to_string(),
+		"agent installation cannot override exposure_policy"
+	);
+}
+
 #[rstest]
 #[tokio::test]
 async fn missing_package_dependency_prevents_install_and_event(validation: DefinitionValidation) {

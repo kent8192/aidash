@@ -44,7 +44,9 @@ pub async fn request(scope: &dyn Definitions, run: &RunMetadata) -> Result<usize
 		.bound_prompt_headroom(&snapshot, &private_context)?
 		.saturating_sub(MIN_CONTEXT_RESERVE);
 
-	if !agent.core_capabilities.skills {
+	// Deferred registration already reserves the full exposure budgets, and a
+	// deferred Run never marks pinned Skills loaded.
+	if !agent.core_capabilities.skills || agent.exposure_policy().is_deferred() {
 		return Ok(available);
 	}
 	Ok(available.saturating_sub(scope.pinned_headroom(run.id).await?))
