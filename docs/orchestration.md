@@ -38,10 +38,12 @@ optional Kubernetes observer.
 `AIDASH_PROMPT_CACHE_KEY` is the node's prompt cache key: at least 32 printable
 ASCII characters with eight distinct characters, for example
 `openssl rand -hex 32`. Runs pinned to the `ordered` projection salt the first
-system line with an HMAC of their Tenant under this key, and fail when it is
-missing. Optional `AIDASH_PROMPT_CACHE_KEY_VERSION` (default `1`) is the only
-part that diagnostics show. Rotating the key or version only causes provider
-prompt cache misses. The key may differ between nodes.
+system line with an HMAC of their Node ID and Tenant under this key, so equal
+Tenant names on Nodes that share a key and provider account never share a
+prompt cache. They fail when the key is missing. Optional
+`AIDASH_PROMPT_CACHE_KEY_VERSION` (default `1`) is the only part that
+diagnostics show. Rotating the key or version only causes provider prompt cache
+misses. The key may differ between nodes.
 
 ```sh
 helm upgrade --install node-a deploy/helm/aidash --namespace aidash \

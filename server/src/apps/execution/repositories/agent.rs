@@ -526,9 +526,13 @@ impl ExecutionEnvironment for Environment<'_> {
 		}
 		// A Run without a Guard has no execution grant, no remote admission and
 		// an unscoped Workspace (`Guard::begin`), so no Tenant owns it.
+		let node = &self.federation.config.node_id;
 		let scope = match &self.authority {
-			Some(authority) => crate::config::PromptCacheScope::Tenant(authority.guard.tenant()),
-			None => crate::config::PromptCacheScope::Operator(&self.federation.config.node_id),
+			Some(authority) => crate::config::PromptCacheScope::Tenant {
+				node,
+				tenant: authority.guard.tenant(),
+			},
+			None => crate::config::PromptCacheScope::Operator(node),
 		};
 		crate::config::prompt_cache::salt(self.federation.config.prompt_cache.as_ref(), scope)
 			.map_err(Into::into)

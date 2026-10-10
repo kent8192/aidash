@@ -14,22 +14,35 @@ const SCOPE_DOMAIN: &[u8] = b"aidash.prompt-cache-scope.v1\0";
 /// The authority a Run's provider requests are cached under.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum PromptCacheScope<'a> {
-	/// The Tenant whose authority executes the Run.
-	Tenant(&'a str),
+	/// The Tenant whose authority executes the Run. Tenant names are local to
+	/// the executing Node, so the Node is part of the scope: equal Tenant names
+	/// on Nodes sharing a key and provider account remain separate scopes.
+	Tenant { node: &'a str, tenant: &'a str },
 	/// A Run without Tenant authority, scoped to the executing Node.
 	Operator(&'a str),
 }
 
 impl PromptCacheScope<'_> {
 	fn update(self, mac: &mut Hmac<Sha256>) {
-		let (kind, id): (&[u8], &str) = match self {
-			Self::Tenant(tenant) => (b"tenant\0", tenant),
-			Self::Operator(node) => (b"operator\0", node),
-		};
 		mac.update(SCOPE_DOMAIN);
-		mac.update(kind);
-		mac.update(id.as_bytes());
+		match self {
+			Self::Tenant { node, tenant } => {
+				mac.update(b"tenant\0");
+				update_field(mac, node);
+				update_field(mac, tenant);
+			}
+			Self::Operator(node) => {
+				mac.update(b"operator\0");
+				update_field(mac, node);
+			}
+		}
 	}
+}
+
+/// Length-prefix each identity so no two field splits share one MAC input.
+fn update_field(mac: &mut Hmac<Sha256>, value: &str) {
+	mac.update(&(value.len() as u64).to_be_bytes());
+	mac.update(value.as_bytes());
 }
 
 /// A versioned HMAC-SHA256 key. `Debug` shows only the version.
