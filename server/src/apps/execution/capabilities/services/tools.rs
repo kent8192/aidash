@@ -41,14 +41,7 @@ impl Tool for CoreTool {
 		let shared_read = aidash_domain::tool::concurrency::batchable(&self.contract.behavior)
 			&& aidash_domain::tool::concurrency::shares_every_resource(self.name, &input);
 		authority
-			.core_tool(
-				&ctx.store,
-				&ctx.run,
-				self.name,
-				input,
-				key,
-				shared_read,
-			)
+			.core_tool(&ctx.store, &ctx.run, self.name, input, key, shared_read)
 			.await
 	}
 }
