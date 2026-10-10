@@ -1,8 +1,10 @@
 //! Explicit embedding adapter. PostgreSQL storage belongs to the native repository.
 use crate::{Error, Result};
-use aidash_application::ports::{Credentials, EmbeddingProvider};
+use aidash_application::ports::EmbeddingProvider;
+use aidash_application::provider_access::{Context, Inference, Operation, ProviderAccess, Source};
 use aidash_domain::semantic::{Embedding, EmbeddingConfig};
 use async_trait::async_trait;
+use secrecy::ExposeSecret;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -27,21 +29,9 @@ fn request(
 	crate::compaction::validate_endpoint(endpoint)?;
 	Ok(client.request(method, format!("{}{path}", endpoint.trim_end_matches('/'))))
 }
-fn credential(
-	credentials: &dyn Credentials,
-	request: reqwest::RequestBuilder,
-	name: &Option<String>,
-) -> Result<reqwest::RequestBuilder> {
-	match name {
-		Some(name) => {
-			let key = credentials.resolve(name)?;
-			Ok(request.bearer_auth(key))
-		}
-		None => Ok(request),
-	}
-}
 pub async fn embed(
-	credentials: &dyn Credentials,
+	access: &dyn ProviderAccess,
+	context: &Context,
 	client: &reqwest::Client,
 	config: &EmbeddingConfig,
 	text: &str,
@@ -63,21 +53,41 @@ pub async fn embed(
 		body["dimensions"] = json!(config.dimensions);
 		body["provider"] = json!({"zdr":true});
 	}
-	let request = credential(
-		credentials,
-		request(
-			client,
-			reqwest::Method::POST,
+	let mut context = context.clone();
+	context.inference = Some(Inference {
+		model: config.model.clone(),
+		operations: vec![Operation::Embeddings],
+		max_output_tokens: 1,
+	});
+	let access = access
+		.resolve(
+			&context,
 			&config.endpoint,
-			"/embeddings",
-		)?,
-		&config.credential_env,
+			&Source::configured(&config.credential_env, &config.provider_credential),
+		)
+		.await?;
+	let mut call = request(
+		client,
+		reqwest::Method::POST,
+		&access.endpoint,
+		"/embeddings",
 	)?
 	.json(&body);
-	let response = request.send().await.map_err(crate::http_error)?;
+	if !access.bearer.expose_secret().is_empty() {
+		call = call.bearer_auth(access.bearer.expose_secret());
+	}
+
+	let response = call.send().await.map_err(crate::http_error)?;
 	if !response.status().is_success() {
+		let status = response.status().as_u16();
+		if config.provider_credential.is_some() {
+			let body = crate::response::json::<Value>(response, 16_384).await.ok();
+			if let Some(error) = crate::response::capability_failure(status, body.as_ref()) {
+				return Err(error);
+			}
+		}
 		use aidash_domain::semantic::Failure;
-		return Err(Error::RemoteSemantic(match response.status().as_u16() {
+		return Err(Error::RemoteSemantic(match status {
 			408 | 429 | 500..=599 => Failure::Unavailable,
 			401..=403 => Failure::Configuration,
 			_ => Failure::ProviderContract,
@@ -117,12 +127,20 @@ pub async fn embed(
 #[derive(Clone)]
 pub struct SemanticClient {
 	pub client: reqwest::Client,
-	pub credentials: Arc<dyn Credentials>,
+	pub access: Arc<dyn ProviderAccess>,
+	pub context: Context,
 }
 #[async_trait]
 impl EmbeddingProvider for SemanticClient {
 	async fn embed(&self, config: &EmbeddingConfig, text: &str) -> Result<Embedding> {
-		embed(self.credentials.as_ref(), &self.client, config, text).await
+		embed(
+			self.access.as_ref(),
+			&self.context,
+			&self.client,
+			config,
+			text,
+		)
+		.await
 	}
 }
 

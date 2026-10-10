@@ -27,7 +27,7 @@ pub(super) fn command(
 pub(super) async fn publish(store: &Store, access: &mut Access, input: &Publish) -> Result<Value> {
 	aidash_application::marketplace::publication::publish(
 		&mut crate::bootstrap::marketplace_publication_scope(store, access),
-		&crate::bootstrap::registry_validation(),
+		&crate::bootstrap::registry_validation_for(store),
 		&command(input),
 		&store.node_id,
 	)

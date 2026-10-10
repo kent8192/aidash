@@ -407,7 +407,14 @@ impl ExecutionEnvironment for Environment<'_> {
 		})
 	}
 	fn provider(&self, model: ModelConfig) -> Result<Arc<dyn ModelProvider>> {
-		crate::bootstrap::model_provider(self.federation.client.clone(), model).map_err(Into::into)
+		crate::bootstrap::admitted_model_provider(
+			&self.federation.store,
+			model,
+			Some(self.step_run.id),
+			String::new(),
+			None,
+		)
+		.map_err(Into::into)
 	}
 	fn compactor(&self) -> Result<Box<dyn CompactionClassifier>> {
 		let classifier: Box<dyn crate::context::jev::JevAsker> =
@@ -520,9 +527,13 @@ impl ExecutionEnvironment for Environment<'_> {
 		}
 		// A Run without a Guard has no execution grant, no remote admission and
 		// an unscoped Workspace (`Guard::begin`), so no Tenant owns it.
+		let node = &self.federation.config.node_id;
 		let scope = match &self.authority {
-			Some(authority) => crate::config::PromptCacheScope::Tenant(authority.guard.tenant()),
-			None => crate::config::PromptCacheScope::Operator(&self.federation.config.node_id),
+			Some(authority) => crate::config::PromptCacheScope::Tenant {
+				node,
+				tenant: authority.guard.tenant(),
+			},
+			None => crate::config::PromptCacheScope::Operator(node),
 		};
 		crate::config::prompt_cache::salt(self.federation.config.prompt_cache.as_ref(), scope)
 			.map_err(Into::into)

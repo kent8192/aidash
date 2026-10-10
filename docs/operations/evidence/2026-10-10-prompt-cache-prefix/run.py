@@ -569,9 +569,9 @@ def main():
             try:
                 api("/health", timeout=5)
                 break
-            except Exception:
+            except Exception as error:
                 if time.monotonic() > deadline or children[0].poll() is not None:
-                    raise RuntimeError("node startup failed; see node.log")
+                    raise RuntimeError("node startup failed; see node.log") from error
                 time.sleep(0.5)
         log("node healthy; registering")
         for role in ROLES:

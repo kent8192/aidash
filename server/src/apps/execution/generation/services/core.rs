@@ -38,7 +38,7 @@ pub async fn assign(
 		task_id,
 		policy_id,
 		reason,
-		&crate::bootstrap::registry_validation(),
+		&crate::bootstrap::registry_validation_for(&f.store),
 	)
 	.await
 	.map_err(Into::into)
@@ -55,7 +55,7 @@ pub(crate) async fn assign_in(
 		task_id,
 		policy_id,
 		reason,
-		&crate::bootstrap::registry_validation(),
+		&crate::bootstrap::registry_validation_for(&f.store),
 	)
 	.await
 	.map_err(Into::into)

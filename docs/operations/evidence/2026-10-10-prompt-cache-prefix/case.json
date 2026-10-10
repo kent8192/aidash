@@ -144,9 +144,7 @@
       "outbound": "integer"
     },
     "total_cost": "integer",
-    "evidence_ids": [
-      "tool result evidence IDs"
-    ],
+    "evidence_ids": ["tool result evidence IDs"],
     "explanation": "short rationale including why cheaper alternatives fail"
   }
 }

@@ -9,8 +9,11 @@ node:
   endpoint: ""
 # Provision separately: DATABASE_URL, NATS_URL, AIDASH_API_TOKEN,
 # AIDASH_PROMPT_CACHE_KEY (optional AIDASH_PROMPT_CACHE_KEY_VERSION) and
-# provider/pair-specific AIDASH_SECRET_* variables. No secret values belong in
-# Helm values.
+# provider/pair-specific AIDASH_SECRET_* variables. For a postgres Provider
+# Credential Store, include AIDASH_PROVIDER_STORE_MASTER_KEY and
+# AIDASH_PROVIDER_FINGERPRINT_KEY. existingSecret reaches both server and worker
+# through envFrom; role overrides must each carry the keys. No secret values
+# belong in Helm values.
 existingSecret: ""
 # Native memory requires an independently retained, pre-initialized Home ledger.
 # Server and workers share this claim; do not restore it from a PostgreSQL backup.

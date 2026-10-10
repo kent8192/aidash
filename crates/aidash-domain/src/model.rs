@@ -12,8 +12,11 @@ pub struct ModelConfig {
 	pub model_id: String,
 	pub endpoint: String,
 	pub credential_env: Option<String>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub provider_credential: Option<String>,
 	/// Total inference request timeout in seconds, including the response body.
 	/// Omitted or null values use 900 seconds; configured values must be positive.
+	/// BYOK configurations are capped at the broker's 3600-second deadline.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub request_timeout_secs: Option<u32>,
 	#[serde(default)]
@@ -237,6 +240,11 @@ impl ModelConfig {
 		if seconds == 0 {
 			return Err(Error::Invalid(
 				"model request_timeout_secs must be greater than zero".into(),
+			));
+		}
+		if self.provider_credential.is_some() && seconds > 3600 {
+			return Err(Error::Invalid(
+				"BYOK model request_timeout_secs must be at most 3600".into(),
 			));
 		}
 		Ok(Duration::from_secs(u64::from(seconds)))

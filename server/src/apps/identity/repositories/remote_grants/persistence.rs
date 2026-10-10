@@ -400,7 +400,7 @@ impl GrantRepository for Repository {
 		crate::config::PROTOCOL_VERSION
 	}
 	fn validation(&self) -> aidash_application::registry::DefinitionValidation {
-		crate::bootstrap::registry_validation()
+		crate::bootstrap::registry_validation_for(&self.runtime.store)
 	}
 	async fn source_begin(&self) -> Result<Scope> {
 		HomeRepository::begin(self).await

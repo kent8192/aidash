@@ -61,7 +61,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 	);
 	let knowledge = graph.get_leaf_nodes_for_app("knowledge");
 	assert_eq!(knowledge.len(), 1);
-	assert_eq!(knowledge[0].name, "0027_memory_retention_lookup");
+	assert_eq!(knowledge[0].name, "0028_provider_credentials");
 	// Assert: retain the physical graph, model snapshots, and all supported tables.
 	assert!(
 		migrations
@@ -73,7 +73,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		18
+		19
 	);
 	let tables = migrations
 		.iter()
@@ -540,7 +540,7 @@ async fn preserved_baseline_does_not_generate_table_recreation(
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		18
+		19
 	);
 }
 
@@ -1336,14 +1336,28 @@ async fn projection_versions_migration_admits_new_keys_and_reverses(
 			.unwrap();
 	let migration = migrations
 		.into_iter()
-		.find(|m| m.app_label == "registry" && m.name == "0016_projection_versions")
+		.find(|m| m.app_label == "registry" && m.name == "0017_projection_versions")
 		.unwrap();
+	// The catalog edit extends the current constraint, keeping earlier additions.
+	let extended = constraint_definition(&pool, "registry_model_config").await;
+	assert!(
+		extended.contains("'provider_credential'::text"),
+		"{extended}"
+	);
+	assert!(
+		extended.contains("'projection_versions'::text"),
+		"{extended}"
+	);
 	let mut executor =
 		reinhardt::db::migrations::DatabaseMigrationExecutor::new(fixture.connection.clone());
 	executor
 		.rollback_migrations(std::slice::from_ref(&migration))
 		.await
 		.unwrap();
+	assert_eq!(
+		constraint_definition(&pool, "registry_model_config").await,
+		extended.replace(", 'projection_versions'::text", "")
+	);
 	assert!(
 		!contract_accepts(
 			&pool,
@@ -1353,8 +1367,15 @@ async fn projection_versions_migration_admits_new_keys_and_reverses(
 		.await
 	);
 	assert!(contract_accepts(&pool, "aidash_agent_bindings_is_valid", vec![agent(None)]).await);
-	executor.apply_migrations(&[migration]).await.unwrap();
-	// Act / Assert: the registry_model_config CHECK accepts declared versions.
+	executor
+		.apply_migrations(std::slice::from_ref(&migration))
+		.await
+		.unwrap();
+	assert_eq!(
+		constraint_definition(&pool, "registry_model_config").await,
+		extended
+	);
+	// Act / Assert: the model constraints accept declared versions.
 	let lease = DatabaseConnectionLease::register(fixture.connection.clone()).unwrap();
 	let mut connection = lease.handle();
 	let model = |id: &str, versions: serde_json::Value| {
@@ -1385,9 +1406,45 @@ async fn projection_versions_migration_admits_new_keys_and_reverses(
 	let database = error.database_error().expect("database constraint error");
 	assert_eq!(
 		database.constraint(),
-		Some("registry_model_config"),
+		Some("registry_model_projection_versions"),
 		"{error}"
 	);
+	// Act / Assert: a stored key refuses the rollback before any DDL runs.
+	let error = executor
+		.rollback_migrations(std::slice::from_ref(&migration))
+		.await
+		.unwrap_err();
+	assert!(
+		error
+			.to_string()
+			.contains("0017_projection_versions cannot be reversed"),
+		"{error}"
+	);
+	assert_eq!(
+		constraint_definition(&pool, "registry_model_config").await,
+		extended
+	);
+	assert!(
+		contract_accepts(
+			&pool,
+			"aidash_agent_bindings_is_valid",
+			vec![agent(Some("ordered"))]
+		)
+		.await
+	);
+}
+
+async fn constraint_definition(pool: &PgPool, name: &str) -> String {
+	use reinhardt::query::IntoIden;
+	let query = Query::select()
+		.expr(reinhardt::query::SimpleExpr::FunctionCall(
+			Alias::new("pg_get_constraintdef").into_iden(),
+			vec![Expr::col("oid").into()],
+		))
+		.from(Alias::new("pg_constraint"))
+		.and_where(Expr::col("conname").eq(name))
+		.to_string(PostgresQueryBuilder);
+	sqlx::query_scalar(&query).fetch_one(pool).await.unwrap()
 }
 
 #[rstest]
@@ -1435,16 +1492,11 @@ async fn prompt_cache_migration_admits_new_keys_and_reverses(
 			"{cache:?}"
 		);
 	}
-	let model_check = || async {
-		sqlx::query_scalar::<_, String>(
-			"SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname='registry_model_config'",
-		)
-		.fetch_one(&pool)
-		.await
-		.unwrap()
-	};
-	let upgraded = model_check().await;
-	assert!(upgraded.contains("cache_mode"), "{upgraded}");
+	// The catalog edit extends the current constraint, keeping earlier additions.
+	let upgraded = constraint_definition(&pool, "registry_model_config").await;
+	assert!(upgraded.contains("'cache_mode'::text"), "{upgraded}");
+	assert!(upgraded.contains("'projection_versions'::text"), "{upgraded}");
+	assert!(upgraded.contains("'provider_credential'::text"), "{upgraded}");
 	let migrations =
 		FilesystemSource::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations"))
 			.all_migrations()
@@ -1452,7 +1504,7 @@ async fn prompt_cache_migration_admits_new_keys_and_reverses(
 			.unwrap();
 	let migration = migrations
 		.into_iter()
-		.find(|m| m.app_label == "registry" && m.name == "0017_prompt_cache")
+		.find(|m| m.app_label == "registry" && m.name == "0018_prompt_cache")
 		.unwrap();
 	let mut executor =
 		reinhardt::db::migrations::DatabaseMigrationExecutor::new(fixture.connection.clone());
@@ -1460,7 +1512,7 @@ async fn prompt_cache_migration_admits_new_keys_and_reverses(
 		.rollback_migrations(std::slice::from_ref(&migration))
 		.await
 		.unwrap();
-	// Assert: the reverse restores the 0016 contracts.
+	// Assert: the reverse restores the 0017 contracts.
 	assert!(
 		!contract_accepts(
 			&pool,
@@ -1470,12 +1522,19 @@ async fn prompt_cache_migration_admits_new_keys_and_reverses(
 		.await
 	);
 	assert!(contract_accepts(&pool, "aidash_agent_bindings_is_valid", vec![agent(None)]).await);
-	let reverted = model_check().await;
-	assert!(!reverted.contains("cache_mode"), "{reverted}");
-	assert!(reverted.contains("projection_versions"), "{reverted}");
-	executor.apply_migrations(&[migration]).await.unwrap();
-	assert_eq!(model_check().await, upgraded);
-	// Act / Assert: the registry_model_config CHECK admits declared cache modes.
+	assert_eq!(
+		constraint_definition(&pool, "registry_model_config").await,
+		upgraded.replace(", 'cache_mode'::text", "")
+	);
+	executor
+		.apply_migrations(std::slice::from_ref(&migration))
+		.await
+		.unwrap();
+	assert_eq!(
+		constraint_definition(&pool, "registry_model_config").await,
+		upgraded
+	);
+	// Act / Assert: the model constraints admit declared cache modes only.
 	let lease = DatabaseConnectionLease::register(fixture.connection.clone()).unwrap();
 	let mut connection = lease.handle();
 	for (id, mode) in [
@@ -1496,10 +1555,25 @@ async fn prompt_cache_migration_admits_new_keys_and_reverses(
 		let database = error.database_error().expect("database constraint error");
 		assert_eq!(
 			database.constraint(),
-			Some("registry_model_config"),
+			Some("registry_model_cache_mode"),
 			"{error}"
 		);
 	}
+	// Act / Assert: a stored key refuses the rollback before any DDL runs.
+	let error = executor
+		.rollback_migrations(std::slice::from_ref(&migration))
+		.await
+		.unwrap_err();
+	assert!(
+		error
+			.to_string()
+			.contains("0018_prompt_cache cannot be reversed"),
+		"{error}"
+	);
+	assert_eq!(
+		constraint_definition(&pool, "registry_model_config").await,
+		upgraded
+	);
 }
 
 #[rstest]
@@ -1520,9 +1594,32 @@ async fn memory_retention_lookup_index_upgrades_and_reverses_without_rewriting_t
 		})
 		.unwrap()
 		.clone();
+	// The baseline omits the lookup and every migration that depends on it, so
+	// later knowledge migrations never run ahead of their missing parent.
+	let mut excluded = vec![(lookup.app_label.to_string(), lookup.name.to_string())];
+	loop {
+		let descendants: Vec<_> = migrations
+			.iter()
+			.filter(|migration| {
+				let key = (migration.app_label.to_string(), migration.name.to_string());
+				!excluded.contains(&key)
+					&& migration
+						.dependencies
+						.iter()
+						.any(|(app, name)| excluded.contains(&(app.to_string(), name.to_string())))
+			})
+			.map(|migration| (migration.app_label.to_string(), migration.name.to_string()))
+			.collect();
+		if descendants.is_empty() {
+			break;
+		}
+		excluded.extend(descendants);
+	}
 	let baseline: Vec<_> = migrations
 		.into_iter()
-		.filter(|migration| !(migration.app_label == "knowledge" && migration.name == lookup.name))
+		.filter(|migration| {
+			!excluded.contains(&(migration.app_label.to_string(), migration.name.to_string()))
+		})
 		.collect();
 	let mut executor =
 		reinhardt::db::migrations::DatabaseMigrationExecutor::new(fixture.connection.clone());

@@ -34,6 +34,12 @@ pub(crate) fn browser_operator_allowed(method: &Method, path: &str) -> bool {
 		return true;
 	}
 	let path = path.strip_prefix("/api").unwrap_or(path);
+	if path.starts_with("/tenants/")
+		&& (path.contains("/provider-credentials")
+			|| path.contains("/provider-credential-bindings"))
+	{
+		return true;
+	}
 	let segments: Vec<&str> = path.split('/').collect();
 	if matches!(
 		segments.as_slice(),

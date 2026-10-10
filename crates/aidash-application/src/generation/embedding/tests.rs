@@ -47,6 +47,7 @@ fn config() -> EmbeddingConfig {
 		provider: "openai".into(),
 		endpoint: "https://embedding.example/v1".into(),
 		credential_env: Some("FIXTURE_EMBEDDING_KEY".into()),
+		provider_credential: None,
 		model: "fixture".into(),
 		model_version: "1".into(),
 		dimensions: 4,

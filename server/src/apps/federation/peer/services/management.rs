@@ -155,6 +155,7 @@ impl PeerManagement {
 					tx,
 					&f.config.node_id,
 					&entry,
+					f.store.provider_credentials.is_some(),
 				)
 				.await?;
 				let snapshot =
@@ -173,6 +174,7 @@ impl PeerManagement {
 							tx,
 							&f.config.node_id,
 							&definition.definition,
+							f.store.provider_credentials.is_some(),
 						)
 						.await?;
 					}
