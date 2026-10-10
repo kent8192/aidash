@@ -85,6 +85,25 @@ impl ExecutionStore for Store {
 			result: result.result,
 		})
 	}
+	async fn invocation_start_batch(
+		&self,
+		run: &Run,
+		token: Uuid,
+		calls: &[BatchInvocation<'_>],
+	) -> Result<Vec<InvocationOutcome>> {
+		let calls: Vec<_> = calls
+			.iter()
+			.map(|call| (call.key, call.name, call.input))
+			.collect();
+		Ok(Store::invocation_start_batch(self, run, token, &calls)
+			.await?
+			.into_iter()
+			.map(|invocation| InvocationOutcome {
+				status: invocation.status,
+				result: invocation.result,
+			})
+			.collect())
+	}
 	async fn invocation_finish(
 		&self,
 		run: &Run,
@@ -402,9 +421,13 @@ impl ExecutionEnvironment for Environment<'_> {
 			max_steps: config.max_steps,
 			allow_task_creation: config.allow_task_creation,
 			conversation_memory: config.conversation_memory,
+			tool_parallelism: usize::from(config.tool_parallelism),
 			projection_version: config.projection_version.unwrap_or_default(),
 			prompt_cache: config.prompt_cache.unwrap_or_default(),
 		})
+	}
+	fn tool_slots(&self) -> Option<&ToolSlots> {
+		Some(&self.federation.store.tool_slots)
 	}
 	fn provider(&self, model: ModelConfig) -> Result<Arc<dyn ModelProvider>> {
 		// Carries this node's Cache Salt Keys for salted Projection Versions.

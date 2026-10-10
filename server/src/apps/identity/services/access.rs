@@ -78,6 +78,8 @@ pub(crate) struct Access {
 	pub(super) pool: Pool,
 	pub read_run: Option<Uuid>,
 	pub read_grant: Option<Uuid>,
+	/// A batchable read loads its Working Area and records without excluding concurrent reads.
+	pub shared_area: bool,
 	pub(super) environment: Value,
 }
 
@@ -209,6 +211,7 @@ impl Access {
 			pool: pool.clone(),
 			read_run: None,
 			read_grant: None,
+			shared_area: false,
 			environment: json!({"node_id":node,"transport":"api"}),
 		}
 	}
@@ -317,6 +320,7 @@ impl Access {
 			pool: pool.clone(),
 			read_run: lease.read_run,
 			read_grant: lease.read_grant,
+			shared_area: false,
 			environment: lease.environment.clone(),
 		})
 	}

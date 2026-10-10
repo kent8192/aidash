@@ -1627,3 +1627,239 @@ fn decider_bindings_reject_deletion_widening_and_tool_only_fields() {
 	tool.narrow.decision = Some(Default::default());
 	assert!(tool.validate().is_err());
 }
+
+// Tool Batch concurrency is pinned with the Run: a Run admitted before its
+// provider declared SharedRead keeps the operation Sequential, and Registry
+// configuration may only lower the provider's declaration.
+use aidash_domain::tool::{Concurrency, concurrency::ConcurrentCall};
+
+/// A provider bound like the Node's: its contract is the provider's current one.
+struct CurrentProviders;
+impl ProviderCatalog for CurrentProviders {
+	fn contract(
+		&self,
+		descriptor: &ToolDescriptor,
+		identity: &QualifiedRef,
+	) -> Result<ToolContract> {
+		Ok(descriptor.declared_contract(identity.clone())?)
+	}
+	fn implementation(&self, _: &ToolDescriptor) -> Result<String> {
+		Ok("implementation".into())
+	}
+}
+#[async_trait]
+impl ProviderSet for CurrentProviders {
+	async fn bind(&self, _: &Run, binding: &ResolvedBinding) -> Result<Arc<dyn ExecutionTool>> {
+		let descriptor: ToolDescriptor = serde_json::from_value(binding.definition.config.clone())?;
+		Ok(Arc::new(SharedReader {
+			contract: self.contract(&descriptor, &binding.identity)?,
+		}))
+	}
+}
+#[async_trait]
+impl BindingAuthority for CurrentProviders {
+	async fn check(&self, _: &Run, _: &ResolvedBinding) -> Result<()> {
+		Ok(())
+	}
+}
+/// Provider code that always derives a batchable call, so only the Binding decides.
+struct SharedReader {
+	contract: ToolContract,
+}
+#[async_trait]
+impl ExecutionTool for SharedReader {
+	fn specification(&self) -> ToolSpec {
+		ToolSpec {
+			name: "file_read".into(),
+			description: String::new(),
+			parameters: json!({"type":"object"}),
+		}
+	}
+	fn contract(&self) -> ToolContract {
+		self.contract.clone()
+	}
+	fn replay_safe(&self) -> bool {
+		self.contract.replay_safe()
+	}
+	fn concurrent_call(&self, _: &Value) -> Option<ConcurrentCall> {
+		Some(ConcurrentCall {
+			claims: vec![],
+			output_bytes: 0,
+		})
+	}
+	async fn invoke(&self, _: &Run, input: Value, _: &str) -> Result<Value> {
+		Ok(input)
+	}
+}
+fn snapshot_run(saved: BindingSnapshot) -> Run {
+	let mut run = Run {
+		id: uuid::Uuid::new_v4(),
+		task_id: uuid::Uuid::new_v4(),
+		workspace_id: uuid::Uuid::new_v4(),
+		home_node: NODE.into(),
+		agent_id: "agent".into(),
+		agent_version: "1.0.0".into(),
+		state_version: Default::default(),
+		state: Default::default(),
+		recovery: Default::default(),
+		control: RunControl::Active,
+		context: Context::default(),
+		step: 0,
+		revision: 0,
+		observed_input_seq: 0,
+		ledger_worker_ready: false,
+		error: None,
+		lease_owner: None,
+		lease_until: None,
+		updated_at: chrono::Utc::now(),
+	};
+	run.bind(saved).unwrap();
+	run
+}
+fn file_read_binding(snapshot: &mut BindingSnapshot) -> &mut ResolvedBinding {
+	snapshot
+		.bindings
+		.iter_mut()
+		.find(|binding| binding.alias.as_deref() == Some("file_read"))
+		.unwrap()
+}
+/// The digest a Run admitted before Concurrency existed pinned for `binding`.
+fn sequential_digest(binding: &ResolvedBinding) -> String {
+	let descriptor: ToolDescriptor =
+		serde_json::from_value(binding.definition.config.clone()).unwrap();
+	let mut contract = descriptor
+		.declared_contract(binding.identity.clone())
+		.unwrap();
+	contract.behavior.concurrency = Concurrency::Sequential;
+	assert!(
+		serde_json::to_value(&contract).unwrap()["behavior"]
+			.get("concurrency")
+			.is_none(),
+		"a Sequential contract must serialize exactly as before the field existed"
+	);
+	contract.digest().unwrap()
+}
+async fn file_read_tool(run: &Run) -> (ToolContract, Option<ConcurrentCall>) {
+	let providers = Arc::new(CurrentProviders);
+	let resolver = execution::PinnedResolver {
+		providers: providers.clone(),
+		authority: providers,
+	};
+	let tools = resolver.tools(run).await.unwrap();
+	let read = &tools["file_read"];
+	let input = json!({"file_id":uuid::Uuid::new_v4()});
+	read.invoke(run, input.clone(), "pinned-read")
+		.await
+		.unwrap();
+	(read.contract(), read.concurrent_call(&input))
+}
+
+#[tokio::test]
+async fn current_file_read_pin_is_shared_read() {
+	// Arrange: a Run admitted after file_read declared SharedRead.
+	let saved = snapshot(&mut Catalog::new(), &agent_config(), false)
+		.await
+		.unwrap();
+	let run = snapshot_run(saved);
+	// Act
+	let (contract, call) = file_read_tool(&run).await;
+	// Assert
+	assert_eq!(contract.behavior.concurrency, Concurrency::SharedRead);
+	assert!(call.is_some());
+}
+
+#[tokio::test]
+async fn run_pinned_before_shared_read_keeps_file_read_sequential() {
+	// Arrange: the same snapshot, but file_read pinned under the digest a Run
+	// admitted before the provider declared Concurrency safety would hold.
+	let mut saved = snapshot(&mut Catalog::new(), &agent_config(), false)
+		.await
+		.unwrap();
+	let binding = file_read_binding(&mut saved);
+	let legacy = sequential_digest(binding);
+	assert_ne!(binding.provider_contract_digest.as_deref(), Some(&*legacy));
+	binding.provider_contract_digest = Some(legacy.clone());
+	// Act: recovery validation, provider recheck and pinned dispatch.
+	saved.validate().unwrap();
+	let pinned = recheck_provider(&CurrentProviders, file_read_binding(&mut saved)).unwrap();
+	let run = snapshot_run(saved);
+	let (contract, call) = file_read_tool(&run).await;
+	// Assert: the pin still resolves, but the operation never joins a batch.
+	assert_eq!(pinned.behavior.concurrency, Concurrency::Sequential);
+	assert_eq!(pinned.digest().unwrap(), legacy);
+	assert_eq!(contract.behavior.concurrency, Concurrency::Sequential);
+	assert!(call.is_none());
+}
+
+#[tokio::test]
+async fn unknown_file_read_pin_is_rejected() {
+	// Arrange: a digest matching neither the current nor the pre-Concurrency contract.
+	let mut saved = snapshot(&mut Catalog::new(), &agent_config(), false)
+		.await
+		.unwrap();
+	file_read_binding(&mut saved).provider_contract_digest = Some("0".repeat(64));
+	// Act / Assert
+	assert!(saved.validate().is_err());
+	assert!(recheck_provider(&CurrentProviders, file_read_binding(&mut saved)).is_err());
+}
+
+#[rstest::rstest]
+#[case::binding(false)]
+#[case::descriptor(true)]
+#[tokio::test]
+async fn sequential_narrowing_lowers_shared_read(#[case] descriptor: bool) {
+	// Arrange: lower file_read either on the Agent Binding or on its descriptor.
+	let mut catalog = Catalog::new();
+	let mut config = agent_config();
+	let target = QualifiedRef::builtin(NODE, "file_read");
+	if descriptor {
+		catalog
+			.entries
+			.get_mut(&reference(&target.id))
+			.unwrap()
+			.config["narrow"]["concurrency"] = json!("sequential");
+	} else {
+		let mut read = Binding::tool(target);
+		read.narrow = serde_json::from_value(json!({"concurrency":"sequential"})).unwrap();
+		config.bindings.push(read);
+	}
+	let saved = snapshot(&mut catalog, &config, false).await.unwrap();
+	let run = snapshot_run(saved);
+	// Act
+	let (contract, call) = file_read_tool(&run).await;
+	// Assert
+	assert_eq!(contract.behavior.concurrency, Concurrency::Sequential);
+	assert!(call.is_none());
+}
+
+#[rstest::rstest]
+#[case::binding(false)]
+#[case::descriptor(true)]
+#[tokio::test]
+async fn shared_read_claim_above_a_sequential_provider_is_rejected(#[case] descriptor: bool) {
+	// Arrange: workspace_read's provider is Sequential.
+	let mut catalog = Catalog::new();
+	let mut config = agent_config();
+	let target = QualifiedRef::builtin(NODE, "workspace_read");
+	if descriptor {
+		catalog
+			.entries
+			.get_mut(&reference(&target.id))
+			.unwrap()
+			.config["narrow"]["concurrency"] = json!("shared_read");
+	} else {
+		let mut read = Binding::tool(target);
+		read.narrow = serde_json::from_value(json!({"concurrency":"shared_read"})).unwrap();
+		config.bindings.push(read);
+	}
+	// Act
+	let resolved = snapshot(&mut catalog, &config, false).await;
+	// Assert
+	let error = resolved.expect_err("a claim above the provider must be rejected");
+	assert!(
+		error
+			.to_string()
+			.contains("claims more concurrency safety than its provider"),
+		"{error}"
+	);
+}

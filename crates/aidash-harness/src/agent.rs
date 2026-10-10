@@ -12,6 +12,16 @@ use aidash_domain::{
 use serde_json::{Value, json};
 use uuid::Uuid;
 
+/// The calls of one response that a Tool Batch may cover, starting at the cursor.
+struct BatchStep<'a> {
+	home: &'a dyn ExecutionHome,
+	guard: Option<&'a dyn ExecutionAuthority>,
+	tools: &'a Tools,
+	calls: &'a [aidash_domain::provider::ToolCall],
+	cursor: usize,
+	end: usize,
+}
+
 pub struct Executor<'a> {
 	environment: &'a dyn ExecutionEnvironment,
 }
@@ -57,6 +67,196 @@ impl<'a> Executor<'a> {
 				.await?;
 		}
 		self.tool_error(run, token, call, cursor, message).await
+	}
+	/// Execute the Tool Batch `[cursor, end)` and adopt its results in call
+	/// order. Returns `false`, having persisted nothing, when authority checks
+	/// shrink a fresh plan below two calls; the cursor call then runs alone.
+	async fn execute_batch(&self, run: &mut Run, token: Uuid, step: BatchStep<'_>) -> Result<bool> {
+		let BatchStep {
+			home,
+			guard,
+			tools,
+			calls,
+			cursor,
+			mut end,
+		} = step;
+		let store = self.environment.store();
+		let resumed = run.state.tool()?.batch_end.is_some();
+		if end <= cursor || end > calls.len() {
+			return Err(Error::Conflict(
+				"Tool Batch exceeds its model response".into(),
+			));
+		}
+		let tool = |call: &aidash_domain::provider::ToolCall| {
+			tools.get(&call.name).cloned().ok_or_else(|| {
+				Error::Conflict(format!("batched tool {} is unavailable", call.name))
+			})
+		};
+		// Current authority precedes the journal, as on the sequential path. A
+		// resumed batch is already journaled: a revoked call records its denial.
+		let mut denied = vec![None; end - cursor];
+		if let Some(guard) = guard {
+			for index in cursor..end {
+				let call = &calls[index];
+				match guard.tool(call, &tool(call)?.contract()).await {
+					Ok(()) => {}
+					Err(
+						Error::Invalid(message)
+						| Error::Domain(aidash_domain::Error::Invalid(message)),
+					) => {
+						if !resumed {
+							end = index;
+							break;
+						}
+						denied[index - cursor] = Some(message);
+					}
+					Err(error) => return Err(error),
+				}
+			}
+		}
+		if end - cursor < 2 {
+			return Ok(false);
+		}
+		denied.truncate(end - cursor);
+		let response_epoch = run.state.tool()?.response_epoch;
+		let keys: Vec<String> = (cursor..end)
+			.map(|index| format!("{}:{response_epoch}:{index}", run.id))
+			.collect();
+		run.state.tool_mut()?.batch_end = Some(end);
+		let journal: Vec<BatchInvocation<'_>> = (cursor..end)
+			.map(|index| BatchInvocation {
+				key: &keys[index - cursor],
+				name: &calls[index].name,
+				input: &calls[index].arguments,
+			})
+			.collect();
+		let outcomes = store.invocation_start_batch(run, token, &journal).await?;
+		if outcomes.len() != end - cursor {
+			return Err(Error::Conflict("Tool Batch admission lost a call".into()));
+		}
+		let mut outputs: Vec<Option<Value>> = vec![None; end - cursor];
+		let mut dispatch = Vec::new();
+		// Admit every call before dispatching any, so checks that need the Run's
+		// authority scope exclusively never wait behind a sibling's execution.
+		for (offset, outcome) in outcomes.into_iter().enumerate() {
+			let call = &calls[cursor + offset];
+			let denial = denied[offset].take();
+			match outcome.status.as_str() {
+				// As on the sequential path, a revoked call's journaled result
+				// never crosses into the Context Journal.
+				"COMPLETED" => {
+					let result = outcome.result.ok_or_else(|| {
+						Error::Conflict("completed invocation has no result".into())
+					})?;
+					outputs[offset] =
+						Some(denial.map_or(result, |message| json!({"error":message})));
+					continue;
+				}
+				"STARTED" => {}
+				_ => {
+					return Err(Error::Conflict(
+						"batched invocation is not replay-safe".into(),
+					));
+				}
+			}
+			let tool = tool(call)?;
+			let input = match denial {
+				Some(message) => Err(message),
+				None => match tool.admit(run, call.arguments.clone()).await {
+					Ok(input) => Ok(input),
+					Err(
+						Error::Invalid(message)
+						| Error::Domain(aidash_domain::Error::Invalid(message)),
+					) => Err(message),
+					Err(error) => return Err(error),
+				},
+			};
+			dispatch.push((offset, tool, input));
+		}
+		let slots = self.environment.tool_slots();
+		let admitted: &Run = run;
+		let keys = &keys;
+		let calls_in_flight = dispatch
+			.into_iter()
+			.map(|(offset, tool, input)| async move {
+				let key = &keys[offset];
+				// The slot covers every database connection of the call,
+				// including the one that records its result.
+				let _permit = match slots {
+					Some(slots) => Some(slots.acquire().await?),
+					None => None,
+				};
+				let output = match input {
+					Err(message) => json!({"error":message}),
+					Ok(input) => match tool.dispatch(admitted, input, key).await {
+						Ok(output) => output,
+						Err(
+							Error::Invalid(message)
+							| Error::Domain(aidash_domain::Error::Invalid(message)),
+						) => json!({"error":message}),
+						Err(error) => return Err(error),
+					},
+				};
+				store
+					.invocation_finish(admitted, token, key, &output)
+					.await?;
+				Ok((offset, output))
+			});
+		// Read-only calls may be dropped on cancellation; nothing is adopted and
+		// the next step observes the cancelled Run.
+		let finished = tokio::select! {
+			biased;
+			cancelled = self.environment.wait_for_inference_cancellation(admitted.id) => {
+				cancelled?;
+				return Err(Error::Conflict("run cancelled during tool batch".into()));
+			}
+			finished = futures_util::future::join_all(calls_in_flight) => finished,
+		};
+		// Every call has finished or failed; report the first failure in call order.
+		for result in finished {
+			let (offset, output) = result?;
+			outputs[offset] = Some(output);
+		}
+		let mut context = run.context.clone();
+		capture_declared_coverage(&mut context, tools, false);
+		for (offset, output) in outputs.into_iter().enumerate() {
+			let call = &calls[cursor + offset];
+			let output =
+				output.ok_or_else(|| Error::Conflict("batched call has no result".into()))?;
+			let contract = tool(call)?.contract();
+			if contract
+				.behavior
+				.model_media_result(&call.arguments, &output)
+				|| !matches!(
+					FrameworkResult::decode(&contract, &output)?,
+					FrameworkResult::Ordinary
+				) {
+				return Err(Error::Conflict(
+					"batched call produced a continuation or model media".into(),
+				));
+			}
+			let event = ContextEvent::tool(call.clone(), output.clone());
+			record_message_read_for(&mut context.message_read_coverage, &contract, &event);
+			let growth = context::tool_event_growth(&context, &event);
+			context.history.push(event);
+			let progress = run.state.tool_mut()?;
+			progress.request_tokens = progress.request_tokens.saturating_add(growth);
+			home.report(
+				&format!("{}:tool", keys[offset]),
+				"remote.tool.completed",
+				json!({"run_id":run.id,"call":call,"result":output}),
+			)
+			.await?;
+		}
+		run.context = context;
+		let progress = run.state.tool_mut()?;
+		progress.workspace_read_plan = None;
+		progress.skill_read_plan = None;
+		progress.workspace_observation_plan = None;
+		progress.cursor = end;
+		progress.batch_end = None;
+		store.save_run(run, token, "run.tool_recorded").await?;
+		Ok(true)
 	}
 	async fn publish_model_text(
 		&self,
@@ -794,6 +994,7 @@ impl<'a> Executor<'a> {
 					skill_read_plan: None,
 					workspace_observation_plan: None,
 					workbench_approval_result: None,
+					batch_end: None,
 				}));
 				run.error = None;
 				store.save_run(run, token, "model.completed").await?;
@@ -1105,6 +1306,48 @@ impl<'a> Executor<'a> {
 						store.save_run(run, token, "run.thinking").await?;
 					}
 					return Ok(());
+				}
+				// Tool Batches run only in ordinary mode: no message catch-up, no
+				// pending media selection and a response informed by required reads.
+				let pending = run.state.tool()?;
+				let batch_end = match pending.batch_end {
+					Some(end) => Some(end),
+					None if !run_message_catchup
+						&& informed_response
+						&& pending_selected_media(pending).is_empty() =>
+					{
+						let ceiling = agent
+							.tool_parallelism
+							.min(self.environment.tool_slots().map_or(1, ToolSlots::ceiling));
+						let mut context = run.context.clone();
+						capture_declared_coverage(&mut context, &tools, false);
+						let end = batch::plan_tool_batch(
+							&context,
+							&result.tool_calls,
+							cursor,
+							&tools,
+							ceiling,
+							batch::BatchBudget {
+								request_tokens: pending.request_tokens,
+								request_window: pending.request_window,
+							},
+						);
+						(end > cursor).then_some(end)
+					}
+					None => None,
+				};
+				if let Some(end) = batch_end {
+					let step = BatchStep {
+						home: home.as_ref(),
+						guard,
+						tools: &tools,
+						calls: &result.tool_calls,
+						cursor,
+						end,
+					};
+					if self.execute_batch(run, token, step).await? {
+						return Ok(());
+					}
 				}
 				let mut context = run.context.clone();
 				capture_declared_coverage(&mut context, &tools, false);

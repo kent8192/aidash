@@ -7,7 +7,10 @@ use aidash_domain::{
 	Run,
 	provider::ToolSpec,
 	registry::{bindings::*, rules::digest},
-	tool::ToolContract,
+	tool::{
+		ToolContract,
+		concurrency::{ConcurrentCall, batchable},
+	},
 };
 use async_trait::async_trait;
 use serde_json::Value;
@@ -45,13 +48,22 @@ impl BindingResolver for PinnedResolver {
 			let Some(alias) = &binding.alias else {
 				continue;
 			};
-			let contract = super::recheck_provider(self.providers.as_ref(), binding)?;
+			let provider = super::recheck_provider(self.providers.as_ref(), binding)?;
 			let inner = self.providers.bind(run, binding).await?;
-			if inner.contract() != contract {
+			let pinned = binding
+				.provider_contract_digest
+				.as_deref()
+				.unwrap_or_default();
+			if inner.contract().pinned(pinned)?.as_ref() != Some(&provider) {
 				return Err(Error::Conflict(
 					"Provider dispatch differs from its admitted operation contract".into(),
 				));
 			}
+			let mut contract = provider;
+			contract.behavior.concurrency = contract
+				.behavior
+				.concurrency
+				.narrowed(binding.narrow.concurrency);
 			tools.insert(
 				alias.clone(),
 				Arc::new(BoundTool {
@@ -94,7 +106,19 @@ impl ExecutionTool for BoundTool {
 	fn replay_safe(&self) -> bool {
 		self.contract.replay_safe()
 	}
-	async fn invoke(&self, run: &Run, mut input: Value, key: &str) -> Result<Value> {
+	async fn invoke(&self, run: &Run, input: Value, key: &str) -> Result<Value> {
+		let admitted = self.admit(run, input).await?;
+		self.dispatch(run, admitted, key).await
+	}
+	fn concurrent_call(&self, input: &Value) -> Option<ConcurrentCall> {
+		if !batchable(&self.contract.behavior) {
+			return None;
+		}
+		let mut narrowed = input.clone();
+		self.binding.narrow.apply(&mut narrowed).ok()?;
+		self.inner.concurrent_call(&narrowed)
+	}
+	async fn admit(&self, run: &Run, mut input: Value) -> Result<Value> {
 		if run.id != self.run
 			|| run
 				.context
@@ -112,6 +136,9 @@ impl ExecutionTool for BoundTool {
 		self.authority.refresh(run).await?;
 		self.authority.check(run, &self.binding).await?;
 		self.binding.narrow.apply(&mut input)?;
-		self.inner.invoke(run, input, key).await
+		Ok(input)
+	}
+	async fn dispatch(&self, run: &Run, admitted: Value, key: &str) -> Result<Value> {
+		self.inner.invoke(run, admitted, key).await
 	}
 }

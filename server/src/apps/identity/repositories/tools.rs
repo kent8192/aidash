@@ -16,17 +16,17 @@ use aidash_domain::{
 use async_trait::async_trait;
 use serde_json::Value;
 use std::sync::Arc;
-use tokio::sync::{Mutex, OwnedMutexGuard};
+use tokio::sync::{OwnedRwLockWriteGuard, RwLock};
 use uuid::Uuid;
 
 pub(crate) struct AgentTools<'a> {
 	pub(crate) remote: Option<&'a Federation>,
-	pub(crate) access: &'a Arc<Mutex<Access>>,
+	pub(crate) access: &'a Arc<RwLock<Access>>,
 	pub(crate) run: &'a Run,
 }
 struct Scope<'a> {
 	remote: Option<&'a Federation>,
-	access: OwnedMutexGuard<Access>,
+	access: OwnedRwLockWriteGuard<Access>,
 	run: &'a Run,
 }
 #[async_trait]
@@ -37,7 +37,7 @@ impl AgentToolRepository for AgentTools<'_> {
 	async fn lease(&self) -> Result<Box<dyn AgentToolScope + '_>> {
 		Ok(Box::new(Scope {
 			remote: self.remote,
-			access: self.access.clone().lock_owned().await,
+			access: self.access.clone().write_owned().await,
 			run: self.run,
 		}))
 	}

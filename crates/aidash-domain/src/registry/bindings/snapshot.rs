@@ -228,10 +228,13 @@ impl BindingSnapshot {
 				} else {
 					None
 				};
-				let contract_digest = super::super::rules::digest(&serde_json::to_value(contract)?);
+				let pinned = match saved.provider_contract_digest.as_deref() {
+					Some(digest) => contract.pinned(digest)?.is_some(),
+					None => false,
+				};
 				if saved.excluded_reason != excluded_reason
-					|| saved.provider_contract_digest.as_deref() != Some(&contract_digest)
-					|| excluded_reason.is_some() && saved.provider_implementation.is_some()
+					|| !pinned || excluded_reason.is_some()
+					&& saved.provider_implementation.is_some()
 				{
 					return Err(Error::Invalid(
 						"Tool snapshot differs from its placement or Provider contract".into(),

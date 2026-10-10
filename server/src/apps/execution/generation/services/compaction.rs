@@ -10,10 +10,10 @@ use crate::{
 };
 use serde_json::Value;
 use std::sync::Arc;
-use tokio::sync::Mutex;
+use tokio::sync::RwLock;
 
 pub(crate) struct ApprovedCompactor {
-	pub access: Arc<Mutex<Access>>,
+	pub access: Arc<RwLock<Access>>,
 	pub store: Store,
 	pub run: Run,
 	pub client: reqwest::Client,
@@ -28,7 +28,7 @@ impl JevAsker for ApprovedCompactor {
 				Error::RemoteSemantic(crate::authorization::remote::semantic::failure(&error))
 			});
 		}
-		let mut access = self.access.lock().await;
+		let mut access = self.access.write().await;
 		let transport = aidash_application::generation::compaction::reserve(
 			&mut crate::bootstrap::generation_compaction_authority_scope(&mut access),
 			&crate::bootstrap::generation_compaction_repository(&self.store),
@@ -65,7 +65,7 @@ impl ApprovedCompactor {
 		state: &Value,
 		questions: &Questions,
 	) -> Result<Value> {
-		let mut access = self.access.lock().await;
+		let mut access = self.access.write().await;
 		aidash_application::generation::compaction::remote::ask(
 			&mut crate::bootstrap::generation_remote_compaction_scope(&mut access, federation),
 			&crate::bootstrap::generation_compaction_provider(),

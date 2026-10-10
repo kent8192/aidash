@@ -142,17 +142,17 @@ impl MediaTransaction for Transaction {
 use crate::apps::execution::capabilities::{contracts::FileEntry, service, sessions};
 use aidash_domain::{Run, media::SelectedFile};
 use std::sync::Arc;
-use tokio::sync::{Mutex, OwnedMutexGuard};
+use tokio::sync::{OwnedRwLockWriteGuard, RwLock};
 
 pub(crate) struct SelectedMedia<'a> {
 	pub(crate) store: &'a Store,
 	pub(crate) run: &'a Run,
-	pub(crate) access: Arc<Mutex<Access>>,
-	lease: Option<OwnedMutexGuard<Access>>,
+	pub(crate) access: Arc<RwLock<Access>>,
+	lease: Option<OwnedRwLockWriteGuard<Access>>,
 	files: Vec<FileEntry>,
 }
 impl<'a> SelectedMedia<'a> {
-	pub(crate) fn new(store: &'a Store, run: &'a Run, access: Arc<Mutex<Access>>) -> Self {
+	pub(crate) fn new(store: &'a Store, run: &'a Run, access: Arc<RwLock<Access>>) -> Self {
 		Self {
 			store,
 			run,
@@ -166,7 +166,7 @@ impl<'a> SelectedMedia<'a> {
 impl aidash_application::ports::execution::media::SelectedMediaScope for SelectedMedia<'_> {
 	async fn current_files(&mut self) -> Result<Vec<SelectedFile>> {
 		if self.lease.is_none() {
-			self.lease = Some(self.access.clone().lock_owned().await);
+			self.lease = Some(self.access.clone().write_owned().await);
 		}
 		let access = self
 			.lease

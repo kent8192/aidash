@@ -10,6 +10,12 @@ pub(crate) async fn get(access: &mut Access, id: Uuid, kind: &str) -> Result<Rec
 		let query_bind_1 = id;
 		let query_bind_2 = &access.identity.tenant;
 		let query_bind_3 = kind;
+		// Shared reads such as batched skill_list calls must not exclude each other.
+		let lock = if access.shared_area {
+			LockType::Share
+		} else {
+			LockType::Update
+		};
 		crate::database::native::query_as(
 			&sessions::select("core_records")
 				.and_where(
@@ -36,7 +42,7 @@ pub(crate) async fn get(access: &mut Access, id: Uuid, kind: &str) -> Result<Rec
 						),
 					),
 				)
-				.lock(LockType::Update)
+				.lock(lock)
 				.to_string(PostgresQueryBuilder),
 		)
 		.fetch_optional(&mut **access.tx)

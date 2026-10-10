@@ -10,6 +10,14 @@ pub const BINDING_SCHEMA: u8 = 1;
 mod snapshot;
 pub mod sources;
 pub const MAX_BINDINGS: usize = 128;
+/// Upper bound for an Agent definition's Run Tool Parallelism ceiling.
+pub const MAX_TOOL_PARALLELISM: u8 = 16;
+fn sequential_tools() -> u8 {
+	1
+}
+fn is_sequential_tools(value: &u8) -> bool {
+	*value == 1
+}
 pub const REQUIRED_TOOLS: &[&str] = &["workspace_read", "human_request"];
 pub const DEFAULT_TOOLS: &[&str] = &[
 	"workspace_observe",
@@ -158,6 +166,13 @@ pub struct AgentBindings {
 	pub cluster: Option<EntityRef>,
 	#[serde(default = "super::max_steps")]
 	pub max_steps: i32,
+	/// The Run Tool Parallelism ceiling, fixed with the Run's Binding snapshot.
+	/// Omitted at one so definitions written before this field keep their digest.
+	#[serde(
+		default = "sequential_tools",
+		skip_serializing_if = "is_sequential_tools"
+	)]
+	pub tool_parallelism: u8,
 	/// Projection Version this Agent version's Runs render with (ADR 0015).
 	/// Omitted means Legacy and is not serialized, so existing definitions,
 	/// their digests and Binding snapshots stay byte-identical.
@@ -172,6 +187,7 @@ impl AgentBindings {
 	pub fn validate(&self) -> Result<()> {
 		if self.schema_version != BINDING_SCHEMA
 			|| !(1..=1000).contains(&self.max_steps)
+			|| !(1..=MAX_TOOL_PARALLELISM).contains(&self.tool_parallelism)
 			|| self.bindings.len() > MAX_BINDINGS
 			|| self.instructions.trim().is_empty()
 				&& !self
@@ -359,7 +375,8 @@ impl QualifiedRef {
 	}
 }
 
-/// No effect, replay, approval or disclosure field is accepted here.
+/// No effect, replay, approval or disclosure field is accepted here. Concurrency
+/// safety may only be lowered; a claim above the provider's is rejected.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct Narrowing {
@@ -371,6 +388,8 @@ pub struct Narrowing {
 	pub scope: BTreeMap<String, BTreeSet<String>>,
 	#[serde(skip_serializing_if = "BTreeMap::is_empty")]
 	pub limits: BTreeMap<String, u64>,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub concurrency: Option<crate::tool::Concurrency>,
 }
 impl Narrowing {
 	pub fn intersect(&self, other: &Self) -> Result<Self> {
@@ -410,6 +429,10 @@ impl Narrowing {
 			allowed_hosts,
 			scope,
 			limits,
+			concurrency: match (self.concurrency, other.concurrency) {
+				(Some(a), Some(b)) => Some(a.min(b)),
+				(a, b) => a.or(b),
+			},
 		};
 		if result
 			.allowed_hosts
@@ -526,6 +549,14 @@ impl Binding {
 		} else if self.narrow.decision.is_some() {
 			return Err(Error::Invalid(
 				"decision restrictions require a Decider Binding".into(),
+			));
+		}
+		// Only Tool and Bundle Bindings bind Tools whose concurrency can be lowered.
+		if self.narrow.concurrency.is_some()
+			&& !matches!(self.kind, BindingKind::Tool | BindingKind::Bundle)
+		{
+			return Err(Error::Invalid(
+				"concurrency restrictions require a Tool or Bundle Binding".into(),
 			));
 		}
 		if let Some(alias) = &self.alias {

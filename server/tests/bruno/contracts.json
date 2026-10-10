@@ -12927,6 +12927,11 @@
             "workbench_approval_result"
           ],
           "properties": {
+            "batch_end": {
+              "type": ["integer", "null"],
+              "format": "uint",
+              "minimum": 0
+            },
             "cursor": {
               "type": "integer",
               "format": "uint",
@@ -22522,6 +22527,11 @@
             "workbench_approval_result"
           ],
           "properties": {
+            "batch_end": {
+              "type": ["integer", "null"],
+              "format": "uint",
+              "minimum": 0
+            },
             "cursor": {
               "type": "integer",
               "format": "uint",
@@ -24042,6 +24052,11 @@
             "workbench_approval_result"
           ],
           "properties": {
+            "batch_end": {
+              "type": ["integer", "null"],
+              "format": "uint",
+              "minimum": 0
+            },
             "cursor": {
               "type": "integer",
               "format": "uint",
@@ -25123,6 +25138,11 @@
             "workbench_approval_result"
           ],
           "properties": {
+            "batch_end": {
+              "type": ["integer", "null"],
+              "format": "uint",
+              "minimum": 0
+            },
             "cursor": {
               "type": "integer",
               "format": "uint",

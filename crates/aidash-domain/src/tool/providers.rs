@@ -203,9 +203,23 @@ impl ToolDescriptor {
 			ToolContract::registry(identity.local(), transport)
 		};
 		validate_restrictions(&self.operation, &self.narrow)?;
+		validate_concurrency(&contract, &self.narrow)?;
 		contract.identity = ToolIdentity::Descriptor(identity);
 		Ok(contract)
 	}
+}
+
+/// Registry configuration may lower a provider's Concurrency safety, never raise it.
+pub fn validate_concurrency(contract: &ToolContract, narrow: &Narrowing) -> Result<()> {
+	if narrow
+		.concurrency
+		.is_some_and(|claim| claim > contract.behavior.concurrency)
+	{
+		return Err(Error::Invalid(
+			"Tool configuration claims more concurrency safety than its provider".into(),
+		));
+	}
+	Ok(())
 }
 
 /// Supported argument restrictions are provider declarations, not arbitrary JSON overlays.

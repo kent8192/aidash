@@ -122,6 +122,15 @@ impl ExecutionStore for Backend {
 		let _ = (run, token, key, name, input, replay_safe);
 		unexpected("ExecutionStore.invocation_start")
 	}
+	async fn invocation_start_batch(
+		&self,
+		run: &Run,
+		token: Uuid,
+		calls: &[BatchInvocation<'_>],
+	) -> Result<Vec<InvocationOutcome>> {
+		let _ = (run, token, calls);
+		unexpected("ExecutionStore.invocation_start_batch")
+	}
 	async fn invocation_finish(
 		&self,
 		run: &Run,
@@ -479,6 +488,7 @@ impl ExecutionEnvironment for Backend {
 			max_steps: 64,
 			allow_task_creation: None,
 			conversation_memory: self.0.conversation_memory,
+			tool_parallelism: 1,
 			projection_version: self.0.projection,
 			prompt_cache: self.0.prompt_cache,
 		})
@@ -1114,6 +1124,7 @@ async fn advance_sources(fixture: &mut Fixture) -> Result<()> {
 		.await
 }
 
+mod batch;
 /// Fixed identities so request bytes can be compared with checked-in fixtures.
 #[fixture]
 fn canonical(mut fixture: Fixture) -> Fixture {
