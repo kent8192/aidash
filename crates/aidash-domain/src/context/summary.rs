@@ -129,6 +129,8 @@ pub enum Rejection {
 	UnprovenResolution(String),
 	#[error("summary resolved item {0} but kept it active")]
 	ResolvedItemActive(String),
+	#[error("summary dropped or changed previous resolution {0}")]
+	DroppedResolution(String),
 	#[error("summary verification {0} names no tool call from its history")]
 	UnprovenVerification(String),
 	#[error("summary dropped or changed previous verification {0}")]
@@ -149,6 +151,7 @@ impl Rejection {
 			Self::ChangedItem(_) => "changed_item",
 			Self::UnprovenResolution(_) => "unproven_resolution",
 			Self::ResolvedItemActive(_) => "resolved_item_active",
+			Self::DroppedResolution(_) => "dropped_resolution",
 			Self::UnprovenVerification(_) => "unproven_verification",
 			Self::DroppedVerification(_) => "dropped_verification",
 			Self::Oversized(_) => "oversized",
@@ -195,7 +198,10 @@ impl SummaryContent {
 			.map(|item| {
 				if item.resolved_by.trim().is_empty() {
 					Err(Rejection::InvalidItem)
-				} else if !evidence.contains(item.resolved_by.as_str()) {
+				} else if !evidence.contains(item.resolved_by.as_str())
+					&& !previous.is_some_and(|previous| previous.content.resolved.contains(item))
+				{
+					// A carried resolution was proven when it was merged.
 					Err(Rejection::UnprovenResolution(item.id.clone()))
 				} else {
 					Ok(item.id.as_str())
@@ -206,6 +212,17 @@ impl SummaryContent {
 		// resolved ID left active could carry rewritten requirement text.
 		if let Some(id) = resolved.iter().find(|id| ids.contains(**id)) {
 			return Err(Rejection::ResolvedItemActive((*id).to_owned()));
+		}
+		// Resolutions accumulate: a retired ID stays retired, so it can never
+		// return as an active item with new text.
+		if let Some(dropped) = previous.and_then(|previous| {
+			previous
+				.content
+				.resolved
+				.iter()
+				.find(|item| !content.resolved.contains(item))
+		}) {
+			return Err(Rejection::DroppedResolution(dropped.id.clone()));
 		}
 		// A verification names an absorbed tool call, or is carried unchanged
 		// from the previous summary, which validated it when it was merged.

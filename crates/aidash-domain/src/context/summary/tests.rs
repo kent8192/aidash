@@ -156,6 +156,28 @@ fn merge_keeps_constraints_and_unresolved_work_across_compactions() {
 	assert_eq!((second.source.from_seq, second.source.through_seq), (2, 5));
 	assert_eq!(second.previous.as_ref().unwrap().digest, first.digest);
 	assert_eq!(second.content.constraints[0].id, "c1");
+	// A later merge may not drop the resolution and revive its ID.
+	assert_eq!(
+		SummaryContent::parse(
+			&content(
+				&[("c1", "never touch main")],
+				&[("u1", "skip the test")],
+				&[]
+			),
+			Some(&second),
+			&[tool(7)],
+			4096
+		),
+		Err(Rejection::DroppedResolution("u1".into()))
+	);
+	// Carried unchanged, the resolution needs no new evidence.
+	SummaryContent::parse(
+		&content(&[("c1", "never touch main")], &[], &[("u1", "call_5")]),
+		Some(&second),
+		&[tool(7)],
+		4096,
+	)
+	.unwrap();
 }
 
 #[test]

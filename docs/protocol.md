@@ -158,7 +158,8 @@ in the same list and with unchanged text, unless it lists them as resolved;
 a changed or moved item is rejected, and a resolved ID must leave both active
 lists. A resolution's `resolved_by` and every new
 `verification` reference must be the exact ID of a tool call the merge absorbs;
-a previous verification entry may only be carried unchanged. It records the
+previous resolved and verification entries must be carried unchanged, so a
+retired ID never returns. It records the
 exact journal range, the absorbed sequence ranges (entries pruned between them
 were never absorbed), and the absorbed entries' digest, and carries the sources
 it depends on. A summary is adopted only if it validates, strictly shrinks the

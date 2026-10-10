@@ -73,6 +73,17 @@ fn a_terminal_response_keeps_its_usage_for_settlement() {
 	));
 }
 #[rstest::rstest]
+fn token_metrics_count_terminal_responses_but_not_failures() {
+	let truncated = parse_openai(json!({
+		"choices":[{"finish_reason":"length","message":{"content":"partial"}}],
+		"usage":{"prompt_tokens":1200,"completion_tokens":256}
+	}));
+	let usage = billed_usage(&truncated).unwrap();
+	assert_eq!((usage.input_tokens, usage.output_tokens), (1200, 256));
+	let failed = parse_openai(json!({"choices":[]}));
+	assert!(billed_usage(&failed).is_none());
+}
+#[rstest::rstest]
 #[case::length("length", Failure::OutputTruncated)]
 #[case::content_filter("content_filter", Failure::Refused)]
 fn truncated_or_filtered_output_never_yields_tool_calls(

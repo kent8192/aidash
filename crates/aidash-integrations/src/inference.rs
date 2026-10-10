@@ -311,15 +311,26 @@ impl ModelProvider for OpenRouterProvider {
 					self.config.provider_credential.is_some(),
 				));
 			}
-			let result = parse_openai(crate::response::json(response, 1_048_576).await?)?;
-			metrics::counter!("aidash_model_tokens_total", "direction" => "input")
-				.increment(result.input_tokens);
-			metrics::counter!("aidash_model_tokens_total", "direction" => "output")
-				.increment(result.output_tokens);
-			Ok(result)
+			let result = parse_openai(crate::response::json(response, 1_048_576).await?);
+			if let Some(usage) = billed_usage(&result) {
+				metrics::counter!("aidash_model_tokens_total", "direction" => "input")
+					.increment(usage.input_tokens);
+				metrics::counter!("aidash_model_tokens_total", "direction" => "output")
+					.increment(usage.output_tokens);
+			}
+			result
 		})
 		.await
 		.map_err(|_| Error::External("model inference timed out".into()))?
+	}
+}
+
+/// Usage the provider billed: an accepted completion, or a truncated or
+/// refused one whose output is discarded but whose tokens were still spent.
+fn billed_usage(result: &Result<ModelResponse>) -> Option<&ModelResponse> {
+	match result {
+		Ok(response) => Some(response),
+		Err(error) => error.terminal_usage(),
 	}
 }
 
