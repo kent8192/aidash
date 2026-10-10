@@ -175,6 +175,15 @@ impl Store {
 		.collect()
 	}
 
+	/// Journal saved projection entries the journal lacks, under the lease and
+	/// without saving the Run, so imported history survives later pruning.
+	pub(crate) async fn journal_context(&self, run: &Run, worker: Uuid) -> Result<()> {
+		let mut tx = native::begin(&self.pool).await?;
+		fence(&mut tx, run.id, worker).await?;
+		append(&mut tx, run.id, &run.context).await?;
+		tx.commit().await
+	}
+
 	/// Record a Compaction Attempt before provider I/O. Earlier unsettled
 	/// attempts are abandoned even when the stage budget is already spent.
 	pub(crate) async fn begin_compaction(

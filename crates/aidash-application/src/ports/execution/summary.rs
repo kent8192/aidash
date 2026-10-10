@@ -24,4 +24,6 @@ pub trait SummaryAuthorization: Send + Sync {
 		summarizer: &SummaryProvider,
 		request_bytes: i64,
 	) -> Result<()>;
+	/// Recheck every generated ancestor's approval without charging another call.
+	async fn recheck_generated(&self, summarizer: &SummaryProvider) -> Result<()>;
 }

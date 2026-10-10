@@ -710,6 +710,21 @@ impl Guard {
 		.map_err(Into::into)
 	}
 
+	/// Repeat every `reserve_summary` approval for the exact summarizer without
+	/// charging another call; a revoked summarizer's output is never adopted.
+	pub async fn recheck_summary(
+		&self,
+		f: &Federation,
+		summarizer: &aidash_domain::context::summary::SummaryProvider,
+	) -> Result<()> {
+		aidash_application::execution::summary::recheck(
+			&SummaryApproval { guard: self, f },
+			summarizer,
+		)
+		.await
+		.map_err(Into::into)
+	}
+
 	/// Whether every message is still readable by this Run under current
 	/// authority. The recheck records no new read. Remote visibility belongs
 	/// to the Home, so remote message dependencies fail closed.
@@ -852,24 +867,42 @@ impl aidash_application::ports::execution::summary::SummaryAuthorization for Sum
 		summarizer: &aidash_domain::context::summary::SummaryProvider,
 		request_bytes: i64,
 	) -> aidash_application::Result<()> {
-		let run = &self.guard.run;
 		let mut access = self.guard.access.lock().await;
 		aidash_application::generation::summary::reserve(
 			&mut crate::bootstrap::generation_compaction_authority_scope(&mut access),
 			&crate::bootstrap::generation_summary_repository(&self.f.store),
-			&aidash_domain::generation::compaction::Context {
-				run: run.id,
-				task: run.task_id,
-				agent: EntityRef {
-					id: run.agent_id.clone(),
-					version: run.agent_version.clone(),
-				},
-			},
+			&self.generation_context(),
 			summarizer,
 			request_bytes,
 		)
 		.await
 		.map(|_| ())
+	}
+	async fn recheck_generated(
+		&self,
+		summarizer: &aidash_domain::context::summary::SummaryProvider,
+	) -> aidash_application::Result<()> {
+		let mut access = self.guard.access.lock().await;
+		aidash_application::generation::summary::recheck(
+			&mut crate::bootstrap::generation_compaction_authority_scope(&mut access),
+			&self.f.store.node_id,
+			&self.generation_context(),
+			summarizer,
+		)
+		.await
+	}
+}
+impl SummaryApproval<'_> {
+	fn generation_context(&self) -> aidash_domain::generation::compaction::Context {
+		let run = &self.guard.run;
+		aidash_domain::generation::compaction::Context {
+			run: run.id,
+			task: run.task_id,
+			agent: EntityRef {
+				id: run.agent_id.clone(),
+				version: run.agent_version.clone(),
+			},
+		}
 	}
 }
 

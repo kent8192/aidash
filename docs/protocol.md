@@ -118,8 +118,9 @@ Every history event a Run records receives a sequence number and is appended to
 the `run_context_events` Context Journal in the same transaction that saves the
 Run. The history sent to the model is a lossy Context Projection of that
 journal: pruning and summaries change the projection, never the journal. Runs
-saved before the journal existed import their current projection on their next
-save, marked `imported`, because earlier pruning may already have removed
+saved before the journal existed import their current projection, marked
+`imported`, on their next save or, at the latest, before their first pruning or
+summary, because earlier pruning may already have removed
 events. Message-read and inference coverage, semantic and authorization read
 journals, and pending execution state are kept outside the projection, so
 compaction cannot make an unread source look read or forget a revoked
@@ -167,12 +168,15 @@ admitted with usage purpose `summary` against every owner's `summary` (or
 `remote.summary`) allowance. Peers without the field never receive it.
 Disclosure is checked before every request. A missing approval makes the stage unavailable,
 with no fallback. Adoption saves the Run and marks the attempt adopted in one
-lease-fenced transaction, after authority is rechecked. Malformed, empty,
+lease-fenced transaction, after the Run's inference authority and every
+summarizer approval above are rechecked without charging another call; a
+summarizer revoked during its call is never adopted. Malformed, empty,
 non-reducing, unauthorized or interrupted summaries leave the saved context
 unchanged; an interrupted attempt is marked `abandoned` by the next attempt or
 by lease recovery. If a source the summary depends on is no longer readable, the
-summary is discarded and its original journal events return to the projection.
-A local Run rechecks message dependencies under its current authority without
+summary is discarded and its original journal events return to the saved
+projection, and the step pauses for authority before Jev or the model receives
+them. A local Run rechecks message dependencies under its current authority without
 recording a read; a remote Run rechecks them through the Home's filtered record
 reads.
 

@@ -122,6 +122,11 @@ impl ExecutionStore for Store {
 			.await
 			.map_err(Into::into)
 	}
+	async fn journal_context(&self, run: &Run, token: Uuid) -> Result<()> {
+		Store::journal_context(self, run, token)
+			.await
+			.map_err(Into::into)
+	}
 	async fn begin_compaction(
 		&self,
 		run: &Run,
@@ -389,6 +394,15 @@ impl ExecutionAuthority for Authority<'_> {
 					Box::new(Reservation(reservation)) as Box<dyn InferenceReservation>
 				})
 			})
+			.map_err(Into::into)
+	}
+	async fn recheck_summary(
+		&self,
+		summarizer: &aidash_domain::context::summary::SummaryProvider,
+	) -> Result<()> {
+		self.guard
+			.recheck_summary(self.federation, summarizer)
+			.await
 			.map_err(Into::into)
 	}
 	async fn suspend(&self) -> Result<()> {

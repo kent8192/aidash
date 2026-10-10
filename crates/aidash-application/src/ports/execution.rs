@@ -93,6 +93,10 @@ pub trait ExecutionStore: Send + Sync {
 		from: u64,
 		through: u64,
 	) -> Result<Vec<aidash_domain::context::HistoryEntry>>;
+	/// Journal every saved projection entry the Context Journal lacks, fenced
+	/// by the lease and without saving the Run. A projection imported from a
+	/// pre-journal Run is journaled whole here before any lossy compaction.
+	async fn journal_context(&self, run: &Run, token: Uuid) -> Result<()>;
 	/// Record a Compaction Attempt before provider I/O, fenced by the lease.
 	/// Unsettled earlier attempts of the Run become `abandoned` in the same
 	/// transaction. Returns `Error::Context(SummaryUnavailable)` once the Run
@@ -229,6 +233,13 @@ pub trait ExecutionAuthority: Send + Sync {
 		output: u32,
 		request: &ModelRequest,
 	) -> Result<Option<Box<dyn InferenceReservation>>>;
+	/// Repeat `reserve_summary`'s approval checks for the exact summarizer,
+	/// without charging another call, after authority is resumed and before a
+	/// Summary Stage candidate is adopted.
+	async fn recheck_summary(
+		&self,
+		summarizer: &aidash_domain::context::summary::SummaryProvider,
+	) -> Result<()>;
 	async fn suspend(&self) -> Result<()>;
 	async fn resume(&self) -> Result<()>;
 }

@@ -44,6 +44,21 @@ pub async fn authorize(
 	summarizer: &SummaryProvider,
 	request_bytes: i64,
 ) -> Result<()> {
+	approve(port, summarizer, Some(request_bytes)).await
+}
+
+/// Repeat every approval `authorize` checked for the exact summarizer, without
+/// charging another call, before a summary produced while authority was
+/// suspended may be adopted.
+pub async fn recheck(port: &dyn SummaryAuthorization, summarizer: &SummaryProvider) -> Result<()> {
+	approve(port, summarizer, None).await
+}
+
+async fn approve(
+	port: &dyn SummaryAuthorization,
+	summarizer: &SummaryProvider,
+	charge: Option<i64>,
+) -> Result<()> {
 	async {
 		port.refresh().await?;
 		if port.remote() {
@@ -59,7 +74,10 @@ pub async fn authorize(
 		{
 			return Err(Error::Context(Failure::SummaryUnavailable));
 		}
-		port.charge_generated(summarizer, request_bytes).await
+		match charge {
+			Some(request_bytes) => port.charge_generated(summarizer, request_bytes).await,
+			None => port.recheck_generated(summarizer).await,
+		}
 	}
 	.await
 	.map_err(classify)

@@ -109,6 +109,10 @@ impl SummaryAuthorization for Port {
 		self.calls.lock().unwrap().push("charge".into());
 		Ok(())
 	}
+	async fn recheck_generated(&self, _: &SummaryProvider) -> Result<()> {
+		self.calls.lock().unwrap().push("recheck".into());
+		Ok(())
+	}
 }
 fn unavailable(result: Result<()>) -> bool {
 	matches!(result, Err(Error::Context(Failure::SummaryUnavailable)))
@@ -178,5 +182,28 @@ async fn remote_pin_must_name_the_exact_summarizer_on_this_node() {
 			unavailable(authorize(&port, &summarizer(), 64).await),
 			"{change}"
 		);
+	}
+}
+
+#[tokio::test]
+async fn recheck_repeats_every_approval_without_charging() {
+	let port = Port::local();
+	recheck(&port, &summarizer()).await.unwrap();
+	assert_eq!(
+		port.calls(),
+		["refresh", "registry.read", "model.infer", "recheck"]
+	);
+	let revoked = Port {
+		approved: false,
+		..Port::local()
+	};
+	assert!(unavailable(recheck(&revoked, &summarizer()).await));
+	let mut changed = summarizer();
+	changed.definition_digest = format!("sha256:{}", "f".repeat(64));
+	assert!(unavailable(recheck(&Port::local(), &changed).await));
+	let unpinned = Port::remote(required_home(None));
+	assert!(unavailable(recheck(&unpinned, &summarizer()).await));
+	for port in [revoked, unpinned] {
+		assert!(!port.calls().contains(&"charge".into()));
 	}
 }

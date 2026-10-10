@@ -277,8 +277,14 @@ impl<'a> Executor<'a> {
 				return Err(error);
 			}
 		};
+		// Authority was released during I/O: recheck the Run's ordinary inference
+		// authority and the exact summarizer before any candidate is adopted.
 		if let Some(guard) = guard
-			&& let Err(error) = guard.inference().await
+			&& let Err(error) = async {
+				guard.inference().await?;
+				guard.recheck_summary(&summarizer).await
+			}
+			.await
 		{
 			store
 				.settle_compaction(
@@ -765,10 +771,20 @@ impl<'a> Executor<'a> {
                 if let Some(summary) = &context.execution_summary
                     && !summary_dependencies_current(self.environment, guard, home.as_ref(), run, &summary.dependencies).await?
                 {
-                    // A revoked source must not survive inside summary text.
+                    // A revoked source must not survive inside summary text. The
+                    // restored originals are saved, but this step pauses for
+                    // authority before Jev or the model can receive them.
                     let journal = store.context_journal(run.id, summary.source.from_seq, summary.source.through_seq).await?;
                     aidash_application::context::restore_summarized(&mut context, journal)?;
                     aidash_application::context::record_stage("summary", "revoked");
+                    run.context = context;
+                    store.save_run(run, token, "context.summary_revoked").await?;
+                    return Err(Error::Forbidden);
+                }
+                // History imported from a pre-journal Run may never have been
+                // saved; journal it whole before pruning or a summary drops any.
+                if run.context.journal.imported_through > run.context.journal.inferred_through {
+                    store.journal_context(run, token).await?;
                 }
                 let compactor = self.environment.compactor()?;
                 let fitting = aidash_application::context::Fitting { budget: &budget, pinned: &pinned, policy: &policy };

@@ -257,4 +257,5 @@ attempt per Run. Only the two `atomic_write_guard` statement triggers use
 schema, this physical migration is database-only and precedes its state-only
 model snapshot `execution/0013_context_journal_model_state`. `runs.context`
 remains the lossy projection; stored projections written before the journal are
-upgraded when decoded, and their first save journals those events as `imported`.
+upgraded when decoded, and their first save, or the worker before their first
+pruning or summary, journals those events as `imported`.

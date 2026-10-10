@@ -279,6 +279,38 @@ async fn ordinary_runs_have_no_generated_charge(world: World) {
 }
 
 #[rstest]
+#[tokio::test]
+async fn recheck_repeats_ancestor_approval_without_charging(world: World) {
+	let recheck_with = |world: &World| {
+		let world = world.clone();
+		async move {
+			recheck(
+				&mut Authority(world),
+				"aidash://origin",
+				&context(),
+				&summarizer(),
+			)
+			.await
+		}
+	};
+	recheck_with(&world).await.unwrap();
+	{
+		let mut state = world.0.lock().unwrap();
+		assert!(state.calls.values().all(|calls| *calls == 0));
+		assert!(state.attempts.is_empty());
+		assert!(!state.events.contains(&"commit".into()));
+		let parent = state.jobs[1].id;
+		let mut spec: Spec = serde_json::from_value(state.specs[&parent].clone()).unwrap();
+		spec.summary = None;
+		state.specs.insert(parent, json!(spec));
+	}
+	assert!(matches!(
+		recheck_with(&world).await,
+		Err(Error::Context(Failure::SummaryUnavailable))
+	));
+}
+
+#[rstest]
 #[case("missing_child")]
 #[case("missing_parent")]
 #[case("different_parent")]
