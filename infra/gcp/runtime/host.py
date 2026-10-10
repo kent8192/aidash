@@ -434,23 +434,23 @@ def configuration(host):
     ):
         raise ValueError("Google OAuth client configuration is required")
     path = ROOT / "identity.json"
-    identity = json.loads(path.read_text()) if path.exists() else {}
-    # Hosts provisioned before a value existed gain it without rotating others.
-    missing = [
-        name
-        for name in ("database", "api", "runner", "prompt_cache")
-        if name not in identity
-    ]
-    if missing:
-        identity.update({name: secrets.token_hex(32) for name in missing})
-        private(path, json.dumps(identity))
+    if not path.exists():
+        private(
+            path,
+            json.dumps(
+                {
+                    name: secrets.token_hex(32)
+                    for name in ("database", "api", "runner")
+                }
+            ),
+        )
+    identity = json.loads(path.read_text())
     managed_provider_settings = provider_settings(external)
     result = dict(
         external,
         DATABASE_URL=f"postgres://aidash:{identity['database']}@127.0.0.1:5432/aidash_a",
         NATS_URL="nats://127.0.0.1:4222",
         AIDASH_API_TOKEN=identity["api"],
-        AIDASH_PROMPT_CACHE_KEY=identity["prompt_cache"],
         AIDASH_NODE_ID="aidash://" + host["secret"],
         AIDASH_ENDPOINT="https://" + host["hostname"],
         AIDASH_LISTEN="127.0.0.1:18080",

@@ -208,33 +208,6 @@ export function OpenRouterModelPicker({
           />
         </details>
       )}
-      <fieldset>
-        <legend>
-          {locale === "ja-JP"
-            ? "対応する投影バージョン"
-            : "Supported projection versions"}
-        </legend>
-        <label className="check">
-          <input
-            type="checkbox"
-            name="projection_versions"
-            value="legacy"
-            defaultChecked
-          />
-          legacy
-        </label>
-        <label className="check">
-          <input type="checkbox" name="projection_versions" value="ordered" />
-          ordered
-        </label>
-      </fieldset>
-      <Field label={locale === "ja-JP" ? "キャッシュモード" : "Cache mode"}>
-        <select name="cache_mode" defaultValue="none">
-          <option value="none">none</option>
-          <option value="automatic">automatic</option>
-          <option value="explicit">explicit</option>
-        </select>
-      </Field>
       <input
         type="hidden"
         name="endpoint"

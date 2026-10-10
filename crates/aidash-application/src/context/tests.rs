@@ -76,12 +76,12 @@ async fn japanese_history_compacts_before_the_final_request_check() {
 		.unwrap();
 	let request = provider::ModelRequest {
 		instructions: String::new(),
-		context: json!({"current":pinned,"summary":context.summary,"history":context.history}),
+		context: json!({"current":pinned,"summary":context.summary,"history":context.history})
+			.into(),
 		tools: vec![],
 		max_output_tokens: 256,
-		projection: Default::default(),
-		cache_breakpoints: false,
 		content_parts: vec![],
+		cache_scope: None,
 	};
 	check_request(12000, &request).unwrap();
 	assert_eq!(context.compactions, 1);
@@ -100,7 +100,7 @@ async fn media_space_is_reserved_before_retained_history_is_compacted() {
 		instructions: "Inspect the image",
 		tools: &[],
 		max_output_tokens: 256,
-		projection: Default::default(),
+		projection: &RequestProjection::Legacy,
 	};
 	let pinned = json!({"task":"Inspect accepted image"});
 	let mut context = Context {
@@ -121,12 +121,11 @@ async fn media_space_is_reserved_before_retained_history_is_compacted() {
 fn request_check_reserves_completion_tokens() {
 	let request = provider::ModelRequest {
 		instructions: String::new(),
-		context: json!({}),
+		context: json!({}).into(),
 		tools: vec![],
 		max_output_tokens: 4096,
-		projection: Default::default(),
-		cache_breakpoints: false,
 		content_parts: vec![],
+		cache_scope: None,
 	};
 	assert!(check_request(2000, &request).is_err());
 }
@@ -138,7 +137,7 @@ fn request_check_reserves_the_registered_model_maximum_with_input_and_framing() 
 		instructions: "",
 		tools: &[],
 		max_output_tokens: 65_536,
-		projection: Default::default(),
+		projection: &RequestProjection::Legacy,
 	};
 	let request = budget.request(&Context::default(), &json!({}));
 	assert_eq!(request.max_output_tokens, 65_536);
@@ -171,16 +170,13 @@ fn tool_event_growth_matches_the_complete_request_delta() {
 		instructions: "instructions with newline\n",
 		tools: &tools,
 		max_output_tokens: 2048,
-		projection: Default::default(),
+		projection: &RequestProjection::Legacy,
 	};
 	let delta = budget
 		.request(&after, &pinned)
 		.estimated_total_tokens()
 		.saturating_sub(budget.request(&context, &pinned).estimated_total_tokens());
-	assert_eq!(
-		tool_event_growth(&context, &event, Default::default()),
-		delta
-	);
+	assert_eq!(tool_event_growth(&context, &event), delta);
 }
 
 #[rstest::rstest]
@@ -203,7 +199,7 @@ async fn fitting_and_final_checks_share_escaped_input_tools_and_output_budget() 
 			instructions: text,
 			tools: &tools,
 			max_output_tokens: 4096,
-			projection: Default::default(),
+			projection: &RequestProjection::Legacy,
 		};
 		let request = budget.request(&context, &pinned);
 		budget.window = request.estimated_total_tokens();
@@ -504,7 +500,7 @@ fn registration_and_execution_share_the_context_reserve_at_its_boundary() {
 		instructions,
 		tools: &specifications,
 		max_output_tokens: output,
-		projection: Default::default(),
+		projection: &RequestProjection::Legacy,
 	};
 	let window = request
 		.request(&Context::default(), &private_context)
@@ -516,7 +512,7 @@ fn registration_and_execution_share_the_context_reserve_at_its_boundary() {
 		instructions,
 		&specifications,
 		&private_context,
-		Default::default(),
+		&RequestProjection::Legacy,
 	)
 	.unwrap();
 	let execution_budget =
@@ -530,7 +526,7 @@ fn registration_and_execution_share_the_context_reserve_at_its_boundary() {
 			instructions,
 			&specifications,
 			&private_context,
-			Default::default()
+			&RequestProjection::Legacy
 		)
 		.is_err()
 	);
@@ -568,7 +564,7 @@ async fn compact(
 			instructions,
 			tools: &[],
 			max_output_tokens: 256,
-			projection: Default::default(),
+			projection: &RequestProjection::Legacy,
 		},
 		pinned,
 	)
@@ -590,7 +586,7 @@ async fn compaction_counts_private_documents_without_disclosing_them() {
 		instructions: "",
 		tools: &[],
 		max_output_tokens: 256,
-		projection: Default::default(),
+		projection: &RequestProjection::Legacy,
 	};
 	super::compact(&mut context, &asker, &budget, &pinned)
 		.await
@@ -604,10 +600,8 @@ async fn compaction_counts_private_documents_without_disclosing_them() {
 	);
 	assert!(budget.request(&context, &pinned).estimated_total_tokens() <= budget.window);
 	assert!(
-		budget
-			.request(&context, &pinned)
-			.context
-			.to_string()
+		serde_json::to_string(&budget.request(&context, &pinned).context)
+			.unwrap()
 			.contains("PRIVATE-REFERENCE-123")
 	);
 }

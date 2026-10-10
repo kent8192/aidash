@@ -69,16 +69,6 @@ class HostTests(unittest.TestCase):
         self.assertEqual(values["AIDASH_MEMORY_RECOVERY_DIR"], str(host.ROOT / "memory-recovery"))
         self.assertEqual(values["AIDASH_NODE_ID"], "aidash://home-a")
 
-    def test_prompt_cache_key_is_added_to_an_existing_identity_without_rotation(self):
-        (self.directory / "identity.json").write_text(json.dumps({"database": "d", "api": "a", "runner": "r"}))
-        keys = []
-        for _ in range(2):
-            values = self.configure()
-            self.assertEqual(values["AIDASH_API_TOKEN"], "a")
-            keys.append(values["AIDASH_PROMPT_CACHE_KEY"])
-        self.assertEqual(keys[0], keys[1])
-        self.assertEqual(len(keys[0]), 64)
-
     def test_runtime_key_allowlist_accepts_fingerprint_and_rejects_master_key(self):
         for key, allowed in [("AIDASH_PROVIDER_FINGERPRINT_KEY", True), ("AIDASH_SECRET_TOOL", True), ("AIDASH_PROVIDER_STORE_MASTER_KEY", False), ("UNRELATED_SENTINEL", False)]:
             with self.subTest(key=key):

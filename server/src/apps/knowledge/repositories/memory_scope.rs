@@ -21,44 +21,36 @@ pub(crate) struct Scope<'a, 'scope> {
 	pub models: &'a Models,
 	pub delivered: &'a mut Vec<Unit>,
 }
-/// The authority revision a Bank snapshot is recalled and delivered under: the
-/// Bank revision, the Tenant authorization bundle revision and the saved
-/// authority, read with shared locks. `None` while the Bank does not exist.
-pub(crate) async fn authority_stamp(lease: &mut Lease<'_>, bank: &Bank) -> Result<Option<String>> {
-	let Some(bank_id) = repository::bank_id(lease, bank, false).await? else {
-		return Ok(None);
-	};
-	let revision: i64 = native::query_scalar(
-		&Query::select()
-			.column(Alias::new("revision"))
-			.from(Alias::new("memory_banks"))
-			.and_where(Expr::col("id").eq(Expr::value(bank_id)))
-			.lock(LockType::Share)
-			.to_string(PostgresQueryBuilder),
-	)
-	.scalar_one(&mut **lease.tx())
-	.await?;
-	let authority: Option<i64> = native::query_scalar(
-		&Query::select()
-			.column(Alias::new("revision"))
-			.from(Alias::new("authorization_bundles"))
-			.and_where(Expr::col("tenant").eq(bank.tenant.as_str()))
-			.lock(LockType::Share)
-			.to_string(PostgresQueryBuilder),
-	)
-	.scalar_optional(&mut **lease.tx())
-	.await?;
-	Ok(Some(serde_json::to_string(&(
-		revision,
-		authority,
-		lease.saved()?,
-	))?))
-}
 impl Scope<'_, '_> {
 	async fn stamp(&mut self, bank: &Bank) -> Result<String> {
-		authority_stamp(self.lease, bank)
+		let bank_id = repository::bank_id(self.lease, bank, false)
 			.await?
-			.ok_or(Error::Forbidden)
+			.ok_or(Error::Forbidden)?;
+		let revision: i64 = native::query_scalar(
+			&Query::select()
+				.column(Alias::new("revision"))
+				.from(Alias::new("memory_banks"))
+				.and_where(Expr::col("id").eq(Expr::value(bank_id)))
+				.lock(LockType::Share)
+				.to_string(PostgresQueryBuilder),
+		)
+		.scalar_one(&mut **self.lease.tx())
+		.await?;
+		let authority: Option<i64> = native::query_scalar(
+			&Query::select()
+				.column(Alias::new("revision"))
+				.from(Alias::new("authorization_bundles"))
+				.and_where(Expr::col("tenant").eq(bank.tenant.as_str()))
+				.lock(LockType::Share)
+				.to_string(PostgresQueryBuilder),
+		)
+		.scalar_optional(&mut **self.lease.tx())
+		.await?;
+		Ok(serde_json::to_string(&(
+			revision,
+			authority,
+			self.lease.saved()?,
+		))?)
 	}
 	async fn snapshot_mode(
 		&mut self,

@@ -14,9 +14,6 @@ pub struct Config {
 	pub default_host_packages: Vec<String>,
 	pub oidc: Option<OidcConfig>,
 	pub gcip: Option<GcipConfig>,
-	/// Separates provider prompt caches per Tenant (ADR 0016). `None` leaves
-	/// `Ordered` Runs unable to build requests.
-	pub prompt_cache: Option<super::PromptCacheKey>,
 }
 
 pub use crate::apps::identity::serializers::settings::{GcipConfig, OidcConfig, SessionConfig};
@@ -97,11 +94,6 @@ impl Config {
 				.oidc
 				.as_ref()
 				.map(OidcConfig::normalized)
-				.transpose()?,
-			prompt_cache: node
-				.prompt_cache_key
-				.as_deref()
-				.map(|key| super::PromptCacheKey::new(node.prompt_cache_key_version, key))
 				.transpose()?,
 		})
 	}

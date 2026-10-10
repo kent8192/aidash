@@ -158,18 +158,11 @@ pub struct AgentBindings {
 	pub cluster: Option<EntityRef>,
 	#[serde(default = "super::max_steps")]
 	pub max_steps: i32,
-	/// Projection Version pinned by every Run of this Agent (ADR 0015).
-	#[serde(
-		default,
-		skip_serializing_if = "crate::context::projection::ProjectionVersion::is_legacy"
-	)]
-	pub projection_version: crate::context::projection::ProjectionVersion,
-	/// Prompt-caching opt-in pinned by every Run of this Agent (ADR 0019).
-	#[serde(
-		default,
-		skip_serializing_if = "crate::context::projection::PromptCache::is_off"
-	)]
-	pub prompt_cache: crate::context::projection::PromptCache,
+	/// Projection Version this Agent version's Runs render with (ADR 0015).
+	/// Omitted means Legacy and is not serialized, so existing definitions,
+	/// their digests and Binding snapshots stay byte-identical.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub projection_version: Option<crate::projection::ProjectionVersion>,
 }
 impl AgentBindings {
 	pub fn validate(&self) -> Result<()> {
@@ -191,6 +184,13 @@ impl AgentBindings {
 			return Err(Error::Invalid(
 				"invalid Binding schema, defaults or Agent instructions".into(),
 			));
+		}
+		if let Some(version) = self.projection_version
+			&& !version.is_implemented()
+		{
+			return Err(Error::Invalid(format!(
+				"Projection Version {version} is not implemented"
+			)));
 		}
 		let mut targets = BTreeSet::new();
 		for binding in &self.bindings {

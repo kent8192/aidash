@@ -512,7 +512,7 @@ async fn evaluate(
 		instructions: "SYSTEM_SECRET",
 		tools: &[],
 		max_output_tokens: 0,
-		projection: Default::default(),
+		projection: &aidash_domain::context::RequestProjection::Legacy,
 	};
 	let mut boundary = Boundary {
 		node: "aidash://execution".into(),

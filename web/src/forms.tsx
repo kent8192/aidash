@@ -269,13 +269,6 @@ export function TaskForm({
     </form>
   );
 }
-/** Omits the field for the default legacy-only set so stored bytes stay unchanged. */
-function projectionVersions(d: FormData): { projection_versions?: string[] } {
-  const versions = d.getAll("projection_versions").map(String);
-  return versions.length === 1 && versions[0] === "legacy"
-    ? {}
-    : { projection_versions: versions };
-}
 export function EntityForm({
   data,
   submit,
@@ -285,7 +278,7 @@ export function EntityForm({
   submit: Submit;
   initial?: string;
 }) {
-  const { t, locale } = useI18n();
+  const { t } = useI18n();
   const entityLabel = useEntityLabel(data.registry);
   const [kind, setKind] = useState(initial);
   const registration = useRef<{ body: string; key: string } | null>(null);
@@ -340,12 +333,6 @@ export function EntityForm({
                   schema_version: 1,
                   cluster: s("cluster") ? ref(s("cluster")) : null,
                   max_steps: 64,
-                  ...(s("projection_version") === "ordered"
-                    ? { projection_version: "ordered" }
-                    : {}),
-                  ...(s("prompt_cache") === "explicit"
-                    ? { prompt_cache: "explicit" }
-                    : {}),
                   ...core,
                 }
               : kind === "model"
@@ -359,10 +346,6 @@ export function EntityForm({
                     max_output_tokens: Number(s("max_output_tokens")),
                     modalities: JSON.parse(s("modalities")),
                     media_routes: JSON.parse(s("media_routes") || "[]"),
-                    ...projectionVersions(d),
-                    ...(s("cache_mode") && s("cache_mode") !== "none"
-                      ? { cache_mode: s("cache_mode") }
-                      : {}),
                     cost: JSON.parse(s("cost")),
                   }
                 : kind === "embedding"
@@ -564,26 +547,6 @@ export function EntityForm({
                       {entityLabel(e)}
                     </option>
                   ))}
-              </select>
-            </Field>
-            <Field
-              label={
-                locale === "ja-JP" ? "投影バージョン" : "Projection version"
-              }
-            >
-              <select name="projection_version" defaultValue="legacy">
-                <option value="legacy">legacy</option>
-                <option value="ordered">ordered</option>
-              </select>
-            </Field>
-            <Field
-              label={
-                locale === "ja-JP" ? "プロンプトキャッシュ" : "Prompt cache"
-              }
-            >
-              <select name="prompt_cache" defaultValue="off">
-                <option value="off">off</option>
-                <option value="explicit">explicit</option>
               </select>
             </Field>
           </>

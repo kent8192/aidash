@@ -377,8 +377,6 @@ pub(crate) struct Guard {
 	access: Arc<Mutex<Access>>,
 	run: Run,
 	agent: AgentConfig,
-	/// The Tenant whose authority executes the Run; fixed for the Guard.
-	tenant: String,
 }
 
 pub(in crate::apps::identity) async fn authorize_guard(
@@ -461,17 +459,10 @@ impl Guard {
 		.await?;
 		Ok(entry.map(|entry| Self {
 			remote: entry.remote.then(|| f.clone()),
-			tenant: entry.scope.identity.tenant.clone(),
 			access: Arc::new(Mutex::new(entry.scope)),
 			run: run.clone(),
 			agent: entry.agent,
 		}))
-	}
-	/// The Run's Tenant: the execution grant's Tenant for a local Run, or the
-	/// local Tenant mapped from the Home's Tenant for a Run admitted from a
-	/// remote Home. Selects the prompt cache scope (ADR 0016).
-	pub(crate) fn tenant(&self) -> &str {
-		&self.tenant
 	}
 	pub async fn suspend(&self) -> Result<()> {
 		let mut access = self.access.lock().await;
@@ -500,6 +491,11 @@ impl Guard {
 	pub fn is_remote(&self) -> bool {
 		self.remote.is_some()
 	}
+	/// The executing node's local Tenant of this worker: for a remote Run, the
+	/// receiver's mapped Tenant, never the Home node's.
+	pub(crate) async fn tenant(&self) -> String {
+		self.access.lock().await.identity.tenant.clone()
+	}
 	async fn refresh_remote(&self) -> Result<()> {
 		aidash_application::authorization::tools::refresh(&crate::bootstrap::agent_tool_repository(
 			self.remote.as_ref(),
@@ -515,34 +511,69 @@ impl Guard {
 			access: self.access.clone(),
 		}
 	}
-	/// Under `ProjectionVersion::Ordered` a local retrieval reports its
-	/// dependency revisions. A remote Home reports none, so remote Ordered Runs
-	/// retrieve again at every step: the federated contract carries no Bank
-	/// authority stamps or index revisions the worker could compare later.
+	/// Retrieval Key scope: a local Run's subject and policy revision; a remote
+	/// Run's admission values, without the Home's policy revision.
+	pub(crate) async fn retrieval_scope(
+		&self,
+		store: &Store,
+	) -> Result<aidash_domain::context::sources::RetrievalScope> {
+		if let Some(federation) = &self.remote {
+			let description = super::peer::semantic::admission(federation, &self.run).await?;
+			let (index_revision, participant_revision) = match &description.semantic {
+				aidash_domain::semantic::remote::Binding::Disabled {} => (None, None),
+				aidash_domain::semantic::remote::Binding::RequiredHome {
+					index_revision,
+					native,
+					..
+				} => (
+					Some(*index_revision),
+					native
+						.as_ref()
+						.map(|native| native.participant.participant_revision),
+				),
+			};
+			// The Home's corpus is not observable here; the Home journal refresh
+			// before every reuse is the remote recheck.
+			return Ok(aidash_domain::context::sources::RetrievalScope {
+				tenant: description.source_tenant,
+				subject: description.source_subject,
+				authorization_revision: None,
+				index_revision,
+				participant_revision,
+				corpus_digest: None,
+			});
+		}
+		let (tenant, subject, authorization_revision) = {
+			let access = self.access.lock().await;
+			(
+				access.identity.tenant.clone(),
+				access.identity.subject.clone(),
+				access.snapshot.revision,
+			)
+		};
+		let revisions =
+			crate::semantic::services::memory_context::source_revisions(store, &self.run).await?;
+		Ok(aidash_domain::context::sources::RetrievalScope {
+			tenant,
+			subject,
+			authorization_revision: Some(authorization_revision),
+			index_revision: revisions.index,
+			participant_revision: revisions.participant,
+			corpus_digest: Some(revisions.corpus),
+		})
+	}
 	pub async fn semantic_context(
 		&self,
 		store: &Store,
 		task: &Task,
 		inputs: &[(crate::semantic::remote::InputRead, String)],
 		budget: usize,
-		projection: aidash_domain::context::projection::ProjectionVersion,
-	) -> Result<aidash_application::ports::execution::SemanticRetrieval> {
+		key: Option<&aidash_domain::context::sources::RetrievalKey>,
+	) -> Result<Option<Value>> {
 		let workspace_budget = if self.remote.is_some() {
 			budget
 		} else {
 			crate::semantic::services::memory_context::workspace_budget(budget)?
-		};
-		let workspace_index = if self.remote.is_none() && !projection.is_legacy() {
-			let mut access = self.access.lock().await;
-			crate::semantic::services::memory_context::workspace_index(
-				store,
-				&mut crate::semantic::service::Lease::Inherited(&mut access),
-				&self.run,
-				&self.agent,
-			)
-			.await?
-		} else {
-			None
 		};
 		let semantic = aidash_application::execution::semantic_context::retrieve(
 			&crate::bootstrap::run_semantic_repository(
@@ -559,10 +590,7 @@ impl Guard {
 		.await
 		.map_err(Error::from)?;
 		if self.remote.is_some() {
-			return Ok(aidash_application::ports::execution::SemanticRetrieval {
-				value: semantic,
-				dependencies: None,
-			});
+			return Ok(semantic);
 		}
 		let reserved =
 			serde_json::to_vec(&serde_json::json!({"workspace":semantic,"memory":null}))?.len();
@@ -576,52 +604,15 @@ impl Guard {
 			inputs,
 			available,
 			&self.agent,
-			projection,
+			key,
 		)
 		.await?;
-		let dependencies = (!projection.is_legacy())
-			.then(|| {
-				crate::semantic::services::memory_context::dependencies(
-					workspace_index,
-					Some(&memory),
-				)
-			})
-			.transpose()?;
-		let value = crate::semantic::services::memory_context::complete(
+		crate::semantic::services::memory_context::complete(
 			&mut crate::semantic::service::Lease::Inherited(&mut access),
 			&self.run,
 			semantic,
 			memory,
 			budget,
-		)
-		.await?;
-		Ok(aidash_application::ports::execution::SemanticRetrieval {
-			value,
-			dependencies,
-		})
-	}
-
-	/// `ProjectionVersion::Ordered` only; see
-	/// `ExecutionEnvironment::semantic_observation_current`. Remote values carry
-	/// no dependencies and are never offered here.
-	pub(crate) async fn semantic_observation_current(
-		&self,
-		store: &Store,
-		semantic: &Value,
-		dependencies: &Value,
-	) -> Result<bool> {
-		if self.remote.is_some() {
-			return Err(Error::Invalid(
-				"remote semantic context reports no dependency revisions".into(),
-			));
-		}
-		let mut access = self.access.lock().await;
-		crate::semantic::services::memory_context::current(
-			store,
-			&mut crate::semantic::service::Lease::Inherited(&mut access),
-			&self.run,
-			semantic,
-			dependencies,
 		)
 		.await
 	}

@@ -30,8 +30,7 @@ fn config(
 		modalities: vec!["text".into()],
 		media_routes: vec![],
 		cost: json!({}),
-		projection_versions: aidash_domain::context::projection::ProjectionVersion::legacy_only(),
-		cache_mode: Default::default(),
+		projection_versions: vec![],
 	}
 }
 
@@ -145,7 +144,7 @@ async fn openrouter_enforces_zdr_and_preserves_reasoning_tools_and_usage(
 			let response = model
 				.infer(ModelRequest {
 					instructions: "Follow the task".into(),
-					context: json!({"task":"Read notes"}),
+					context: json!({"task":"Read notes"}).into(),
 					tools: if with_tools {
 						vec![ToolSpec {
 							name: "read".into(),
@@ -156,9 +155,8 @@ async fn openrouter_enforces_zdr_and_preserves_reasoning_tools_and_usage(
 						vec![]
 					},
 					max_output_tokens,
-					projection: Default::default(),
-					cache_breakpoints: false,
 					content_parts: vec![],
+					cache_scope: None,
 				})
 				.await
 				.unwrap();
@@ -191,65 +189,6 @@ async fn openrouter_enforces_zdr_and_preserves_reasoning_tools_and_usage(
 			}
 		}
 	}
-}
-
-#[rstest::rstest]
-#[tokio::test]
-async fn openrouter_sends_cache_control_only_to_opted_in_explicit_routes(
-	#[future] completion_server: CompletionFixture,
-	http_client: Client,
-) {
-	use aidash_domain::{context::projection::ProjectionVersion, model::CacheMode};
-	let mut fixture = completion_server.await;
-	let endpoint = format!("{}/api/v1/", fixture.server.url);
-	let ordered = |cache_breakpoints| ModelRequest {
-		instructions: "Cache scope: salt\n\nFollow the task".into(),
-		context: json!({
-			"context":{"task":"Read notes"},
-			"history":[{"kind":"tool","n":1},{"kind":"tool","n":2}],
-			"current":{"agent_state":{"step":3}}
-		}),
-		tools: vec![],
-		max_output_tokens: 1024,
-		projection: ProjectionVersion::Ordered,
-		cache_breakpoints,
-		content_parts: vec![],
-	};
-	let mut explicit = config("openrouter", endpoint.clone());
-	explicit.model_id = "anthropic/claude-fixture".into();
-	explicit.projection_versions = vec![ProjectionVersion::Legacy, ProjectionVersion::Ordered];
-	explicit.cache_mode = CacheMode::Explicit;
-	let model = provider(http_client.clone(), explicit).unwrap();
-
-	model.infer(ordered(true)).await.unwrap();
-	let request = fixture.received.recv().await.unwrap();
-	let ephemeral = json!({"type":"ephemeral"});
-	assert_eq!(
-		request["messages"][0]["content"][0]["cache_control"],
-		ephemeral
-	);
-	let parts = request["messages"][1]["content"].as_array().unwrap();
-	assert_eq!(parts.len(), 4);
-	let marked = parts
-		.iter()
-		.map(|part| part.get("cache_control").is_some())
-		.collect::<Vec<_>>();
-	assert_eq!(marked, [false, false, true, false]);
-	assert_eq!(request["provider"]["zdr"], true);
-
-	model.infer(ordered(false)).await.unwrap();
-	let request = fixture.received.recv().await.unwrap();
-	assert!(!request.to_string().contains("cache_control"));
-
-	let mut automatic = config("openrouter", endpoint);
-	automatic.projection_versions = vec![ProjectionVersion::Legacy, ProjectionVersion::Ordered];
-	automatic.cache_mode = CacheMode::Automatic;
-	let model = provider(http_client, automatic).unwrap();
-	assert!(model.infer(ordered(true)).await.is_err());
-	assert!(
-		fixture.received.try_recv().is_err(),
-		"nothing reaches the route"
-	);
 }
 
 #[rstest::rstest]
@@ -287,11 +226,9 @@ async fn openrouter_sends_ordered_native_image_and_audio_parts() {
 	let response = model
 		.infer(ModelRequest {
 			instructions: "Inspect the media".into(),
-			context: json!({"run_message":"Describe the attachment"}),
+			context: json!({"run_message":"Describe the attachment"}).into(),
 			tools: vec![],
 			max_output_tokens: 512,
-			projection: Default::default(),
-			cache_breakpoints: false,
 			content_parts: vec![
 				ContentPart::Text("first attachment".into()),
 				ContentPart::Image {
@@ -304,6 +241,7 @@ async fn openrouter_sends_ordered_native_image_and_audio_parts() {
 					bytes: audio,
 				},
 			],
+			cache_scope: None,
 		})
 		.await
 		.unwrap();
@@ -401,15 +339,14 @@ async fn media_route_lookup_obeys_the_total_inference_deadline() {
 		Duration::from_secs(3),
 		model.infer(ModelRequest {
 			instructions: String::new(),
-			context: json!({}),
+			context: json!({}).into(),
 			tools: vec![],
 			max_output_tokens: 128,
-			projection: Default::default(),
-			cache_breakpoints: false,
 			content_parts: vec![ContentPart::Image {
 				media_type: "image/png".into(),
 				bytes: b"\x89PNG\r\n\x1a\nfixture".to_vec(),
 			}],
+			cache_scope: None,
 		}),
 	)
 	.await
@@ -492,12 +429,11 @@ async fn unavailable_zdr_endpoint_does_not_retry_without_zdr(
 		model
 			.infer(ModelRequest {
 				instructions: "test".into(),
-				context: json!({}),
+				context: json!({}).into(),
 				tools: vec![],
 				max_output_tokens: 512,
-				projection: Default::default(),
-				cache_breakpoints: false,
-				content_parts: vec![]
+				content_parts: vec![],
+				cache_scope: None,
 			})
 			.await
 			.is_err()
@@ -529,12 +465,11 @@ async fn upstream_media_rejection_keeps_its_status_and_safe_reason() {
 	let error = model
 		.infer(ModelRequest {
 			instructions: "test".into(),
-			context: json!({}),
+			context: json!({}).into(),
 			tools: vec![],
 			max_output_tokens: 512,
-			projection: Default::default(),
-			cache_breakpoints: false,
 			content_parts: vec![],
+			cache_scope: None,
 		})
 		.await
 		.unwrap_err();
@@ -566,12 +501,11 @@ async fn upstream_errors_cannot_echo_unrecognized_media_or_secret_data() {
 	let error = model
 		.infer(ModelRequest {
 			instructions: "test".into(),
-			context: json!({}),
+			context: json!({}).into(),
 			tools: vec![],
 			max_output_tokens: 512,
-			projection: Default::default(),
-			cache_breakpoints: false,
 			content_parts: vec![],
+			cache_scope: None,
 		})
 		.await
 		.unwrap_err();

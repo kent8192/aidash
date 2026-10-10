@@ -1411,7 +1411,6 @@ async fn embedded_worker_child() {
 			default_host_packages: vec![],
 			oidc: None,
 			gcip: None,
-			prompt_cache: None,
 		},
 		client: reqwest::Client::new(),
 		notify: Arc::new(tokio::sync::Notify::new()),

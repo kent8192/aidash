@@ -1,5 +1,5 @@
 //! Model configuration and accepted media-route invariants.
-use crate::{Error, Result, context::projection::ProjectionVersion};
+use crate::{Error, Result};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -32,40 +32,11 @@ pub struct ModelConfig {
 	#[serde(default)]
 	pub media_routes: Vec<MediaRouteEvidence>,
 	pub cost: Value,
-	/// Projection Versions an Agent on this model may pin (ADR 0015).
-	#[serde(
-		default = "ProjectionVersion::legacy_only",
-		skip_serializing_if = "ProjectionVersion::is_legacy_only"
-	)]
-	pub projection_versions: Vec<ProjectionVersion>,
-	/// How the provider route caches prompt prefixes (ADR 0019). Only
-	/// `explicit` lets an opted-in Agent send cache breakpoints.
-	#[serde(default, skip_serializing_if = "CacheMode::is_none")]
-	pub cache_mode: CacheMode,
+	/// Projection Versions this model accepts (ADR 0015). Omitted means Legacy
+	/// only and is not serialized, so existing model definitions keep bytes.
+	#[serde(default, skip_serializing_if = "Vec::is_empty")]
+	pub projection_versions: Vec<crate::projection::ProjectionVersion>,
 }
-
-/// A model route's declared prompt-caching behavior.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "lowercase")]
-pub enum CacheMode {
-	/// No prompt caching is assumed.
-	#[default]
-	None,
-	/// The provider caches matching prefixes without request markers.
-	Automatic,
-	/// The provider caches only up to request breakpoints (`cache_control`).
-	Explicit,
-}
-
-impl CacheMode {
-	pub fn is_none(&self) -> bool {
-		*self == Self::None
-	}
-}
-
-/// OpenRouter model slug prefixes whose routes accept `cache_control`
-/// breakpoints. A declaration alone never sends them elsewhere (ADR 0019).
-pub const EXPLICIT_CACHE_PREFIXES: &[&str] = &["anthropic/"];
 
 /// OpenRouter's normalized reasoning levels; omission retains the model default.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema)]
@@ -92,37 +63,47 @@ pub struct MediaRouteEvidence {
 }
 
 impl ModelConfig {
-	pub fn supports_projection(&self, version: ProjectionVersion) -> bool {
-		self.projection_versions.contains(&version)
+	/// Projection Versions this model accepts; Legacy when none are declared.
+	pub fn supports_projection(&self, version: crate::projection::ProjectionVersion) -> bool {
+		if self.projection_versions.is_empty() {
+			version.is_legacy()
+		} else {
+			self.projection_versions.contains(&version)
+		}
 	}
 
-	/// Whether this route may receive `cache_control` breakpoints.
-	pub fn accepts_cache_breakpoints(&self) -> bool {
-		self.cache_mode == CacheMode::Explicit
-			&& EXPLICIT_CACHE_PREFIXES
-				.iter()
-				.any(|prefix| self.model_id.starts_with(prefix))
-	}
-
-	/// An `explicit` declaration is accepted only for allowlisted slugs.
-	pub fn validate_cache_mode(&self) -> Result<()> {
-		if self.cache_mode == CacheMode::Explicit && !self.accepts_cache_breakpoints() {
-			return Err(Error::Invalid(format!(
-				"model {} cannot declare explicit prompt caching; supported slug prefixes: {}",
-				self.model_id,
-				EXPLICIT_CACHE_PREFIXES.join(", ")
-			)));
+	/// Model definitions may declare only implemented versions, each once.
+	pub fn validate_projection_versions(&self) -> Result<()> {
+		let mut declared = std::collections::BTreeSet::new();
+		for version in &self.projection_versions {
+			if !version.is_implemented() {
+				return Err(Error::Invalid(format!(
+					"model {} declares Projection Version {version}, which is not implemented",
+					self.model_id
+				)));
+			}
+			if !declared.insert(version) {
+				return Err(Error::Invalid(format!(
+					"model {} declares Projection Version {version} more than once",
+					self.model_id
+				)));
+			}
 		}
 		Ok(())
 	}
 
-	/// Supported Projection Versions are a non-empty set.
-	pub fn validate_projection_versions(&self) -> Result<()> {
-		let unique: std::collections::BTreeSet<_> = self.projection_versions.iter().collect();
-		if unique.is_empty() || unique.len() != self.projection_versions.len() {
-			return Err(Error::Invalid(
-				"model projection_versions must be a non-empty list without duplicates".into(),
-			));
+	/// An Agent may pin only an implemented version its model declares.
+	pub fn require_projection(&self, version: crate::projection::ProjectionVersion) -> Result<()> {
+		if !version.is_implemented() {
+			return Err(Error::Invalid(format!(
+				"Projection Version {version} is not implemented"
+			)));
+		}
+		if !self.supports_projection(version) {
+			return Err(Error::Invalid(format!(
+				"model {} does not declare Projection Version {version}",
+				self.model_id
+			)));
 		}
 		Ok(())
 	}

@@ -46,12 +46,11 @@ async fn infer_after(
 		.respond_after(
 			model.infer(ModelRequest {
 				instructions: "test".into(),
-				context: json!({}),
+				context: json!({}).into(),
 				tools: vec![],
 				max_output_tokens: 512,
-				projection: Default::default(),
-				cache_breakpoints: false,
 				content_parts: vec![],
+				cache_scope: None,
 			}),
 			delay_secs,
 		)

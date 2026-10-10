@@ -23,6 +23,8 @@ lint:
         - deploy/helm/**/templates/**
         # Compact JSON is the byte-exact baseline for legacy policy serialization.
         - tests/fixtures/native_memory_policy_baseline.json
+        # Compact JSON is the byte-exact baseline for provider request bytes.
+        - crates/aidash-harness/src/agent/fixtures/*_request.json
     - linters: [ALL]
       paths:
         - openapi/aidash.json

@@ -11,7 +11,7 @@ fn settings_source() -> Value {
 			"engine":"postgresql", "name":"fixture", "host":"localhost",
 			"user":"fixture", "password":"fixture", "port":5432
 		}}},
-		"contacts":{}, "migrations":{}, "dashboard":{}, "kubernetes":{}, "provider_credentials":{},
+		"contacts":{}, "migrations":{}, "dashboard":{}, "kubernetes":{}, "provider_credentials":{}, "cache_salt":{},
 		"node":{"node_id":"aidash://test-settings", "endpoint":"http://localhost",
 			"api_token":"test-only-operator-secret"}
 	})
@@ -46,7 +46,6 @@ fn settings_defaults_and_runtime_share_the_native_database(settings_source: Valu
 	assert_eq!(runtime.lease_seconds, 30);
 	assert_eq!(settings.node.worker_count, 4);
 	assert!(runtime.oidc.is_none());
-	assert!(runtime.prompt_cache.is_none());
 	assert!(settings.provider_credentials.store.is_none());
 	assert!(!format!("{:?}", settings.node).contains("test-only-operator-secret"));
 }
@@ -59,9 +58,6 @@ fn settings_defaults_and_runtime_share_the_native_database(settings_source: Valu
 #[case("worker_count", json!(65))]
 #[case("nats_url", json!("file:///tmp/nats"))]
 #[case("probe_listen", json!("not-an-address"))]
-#[case("prompt_cache_key", json!("short-prompt-cache-key"))]
-#[case("prompt_cache_key", json!("abababababababababababababababab"))]
-#[case("prompt_cache_key_version", json!(0))]
 fn invalid_node_settings_fail_before_startup(
 	mut settings_source: Value,
 	#[case] field: &str,
@@ -73,35 +69,6 @@ fn invalid_node_settings_fail_before_startup(
 	let result = build(settings_source);
 	// Assert
 	assert!(result.is_err());
-}
-
-#[rstest]
-#[case::default_version(None, 1)]
-#[case::explicit_version(Some(json!(3)), 3)]
-fn prompt_cache_key_reaches_runtime_and_only_its_version_is_shown(
-	mut settings_source: Value,
-	#[case] version: Option<Value>,
-	#[case] expected: u32,
-) {
-	// Arrange
-	let key = "test-only-prompt-cache-key-0123456789abcdef";
-	settings_source["node"]["prompt_cache_key"] = json!(key);
-	if let Some(version) = version {
-		settings_source["node"]["prompt_cache_key_version"] = version;
-	}
-	let settings = build(settings_source).unwrap();
-	// Act
-	let runtime = Config::from_settings(&settings).unwrap();
-	// Assert
-	let prompt_cache = runtime.prompt_cache.unwrap();
-	assert_eq!(prompt_cache.version(), expected);
-	let node = format!("{:?}", settings.node);
-	assert!(!node.contains(key), "{node}");
-	assert!(
-		node.contains(&format!("prompt_cache_key_version: Some({expected})")),
-		"{node}"
-	);
-	assert!(!format!("{prompt_cache:?}").contains(key));
 }
 
 #[fixture]

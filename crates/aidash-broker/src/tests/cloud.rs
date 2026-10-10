@@ -7,7 +7,6 @@ use aidash_application::{
 	},
 	provider_credentials::{Repository, Scope},
 };
-use aidash_domain::context::projection::ProjectionVersion;
 use aidash_domain::provider_credentials::{
 	Binding, Provider, ProviderCredential, State as CredentialState,
 };
@@ -261,19 +260,17 @@ impl Cloud {
 			modalities: vec!["text".into(), "image".into()],
 			media_routes: vec![],
 			cost: json!({}),
-			projection_versions: ProjectionVersion::legacy_only(),
-			cache_mode: Default::default(),
+			projection_versions: vec![],
 		}
 	}
 	fn request() -> aidash_domain::provider::ModelRequest {
 		aidash_domain::provider::ModelRequest {
 			instructions: "test".into(),
-			context: json!({}),
+			context: json!({}).into(),
 			tools: vec![],
 			max_output_tokens: 10,
 			content_parts: vec![],
-			projection: Default::default(),
-			cache_breakpoints: false,
+			cache_scope: None,
 		}
 	}
 	fn scoped(&self, operation: CallOperation) -> Context {

@@ -14,7 +14,6 @@ impl AgentConfig {
 			remove_default: self.remove_default.clone(),
 			cluster: self.cluster.clone(),
 			max_steps: self.max_steps,
-			prompt_cache: self.prompt_cache,
 			projection_version: self.projection_version,
 		}
 	}
@@ -36,7 +35,6 @@ impl AgentConfig {
 			instructions: input.instructions,
 			cluster: input.cluster,
 			max_steps: input.max_steps,
-			prompt_cache: input.prompt_cache,
 			projection_version: input.projection_version,
 			core_capabilities: Default::default(),
 			skill_attachments: vec![],

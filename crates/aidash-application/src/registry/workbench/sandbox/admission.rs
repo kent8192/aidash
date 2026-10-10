@@ -172,7 +172,7 @@ pub async fn admit(admission: &Admission<'_>, id: Uuid, input: TestInput) -> Res
 				.map(|alias| (alias.clone(), b.identity.local()))
 		})
 		.collect();
-	let mut instructions = aidash_domain::context::agent_instructions("", Default::default());
+	let mut instructions = aidash_domain::context::agent_instructions("");
 	if input.mode == "real" {
 		instructions.push_str("\n\nSandbox: only tools in the selected test connection profile can reach its isolated endpoint. Other tools need an explicit fixture; never claim an unprovided result.\n");
 	} else {
@@ -199,14 +199,15 @@ pub async fn admit(admission: &Admission<'_>, id: Uuid, input: TestInput) -> Res
 	let mut request = ModelRequest {
 		content_parts: Vec::new(),
 		instructions,
-		context: json!({"test_message":input.message,"private_references":draft.documents,"test_mode":input.mode,"profile_id":input.profile_id}),
+		context: json!({"test_message":input.message,"private_references":draft.documents,"test_mode":input.mode,"profile_id":input.profile_id}).into(),
 		tools: tool_specs,
 		max_output_tokens: (limits.max_output_tokens as u32).min(model_config.output_token_limit()),
-		projection: Default::default(),
-		cache_breakpoints: false,
+		cache_scope: None,
 	};
-	if input.continue_from.is_some() {
-		request.context["conversation"] = json!(conversation);
+	if input.continue_from.is_some()
+		&& let Some(context) = request.context.legacy_mut()
+	{
+		context["conversation"] = json!(conversation);
 	}
 	let serialized_bytes = serde_json::to_vec(&request)?.len();
 	if serialized_bytes > limits.max_input_bytes as usize

@@ -170,6 +170,65 @@ async fn concurrent_claims_dependencies_and_idempotent_completion(
 
 #[rstest::rstest]
 #[tokio::test]
+async fn ordered_run_creation_requires_a_cache_salt_key_and_a_tenant(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
+	// Arrange: a model that declares Ordered and an Agent that names it, on a
+	// node without Cache Salt Keys.
+	let (store, url, schema) = setup(&_test_environment).await;
+	let registry = Registry::new(store.pool.clone(), &store.node_id).unwrap();
+	registry.register(entry("model","model",json!({"provider":"openrouter","model_id":"fixture","endpoint":"http://127.0.0.1:9999/v1","credential_env":null,"context_window":128000,"max_output_tokens":4096,"modalities":["text"],"cost":{},"projection_versions":["legacy","ordered"]}))).await.unwrap();
+	let agent = registry.register(entry("agent","research",json!({"model":{"id":"model","version":"1.0.0"},"instructions":"Research","schema_version":1,"bindings":[],"remove_default":[],"projection_version":"ordered"}))).await.unwrap();
+	let workspace = store
+		.create_workspace("Research", "Compare frameworks")
+		.await
+		.unwrap();
+	let task = store
+		.create_task(workspace.id, &new_task(), "human", None)
+		.await
+		.unwrap();
+	let owner = qualified_agent(&store.node_id, &agent.id, &agent.version);
+	// Act: claiming would create the Run.
+	let rejected = store.claim(task.id, 0, &owner, &agent).await;
+	// Assert: no Run and no claim without a key.
+	assert!(
+		matches!(rejected, Err(aidash_server::Error::Invalid(_))),
+		"{rejected:?}"
+	);
+	assert_eq!(store.task(task.id).await.unwrap().revision, 0);
+	let salted = store.clone().with_cache_salt(Some(
+		aidash_integrations::inference::CacheSaltKeys::new(
+			&[aidash_integrations::inference::CacheSaltKey {
+				version: 1,
+				secret: "fixture-cache-salt-secret".into(),
+			}],
+			1,
+		)
+		.unwrap(),
+	));
+	// A key alone is not enough: this tenantless legacy workspace has no
+	// Tenant to salt with, so the Run could never reach inference.
+	let tenantless = salted.claim(task.id, 0, &owner, &agent).await;
+	assert!(
+		matches!(tenantless, Err(aidash_server::Error::Invalid(_))),
+		"{tenantless:?}"
+	);
+	assert_eq!(store.task(task.id).await.unwrap().revision, 0);
+	// Legacy Agents in the same workspace are unaffected.
+	let legacy = registry.register(entry("agent","legacy-research",json!({"model":{"id":"model","version":"1.0.0"},"instructions":"Research","schema_version":1,"bindings":[],"remove_default":[]}))).await.unwrap();
+	let legacy_owner = qualified_agent(&store.node_id, &legacy.id, &legacy.version);
+	let claimed = salted
+		.claim(task.id, 0, &legacy_owner, &legacy)
+		.await
+		.unwrap();
+	assert_eq!(claimed.revision, 1);
+	cleanup(store, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
 async fn lease_fencing_and_uncertain_effect_reconciliation(
 	#[future(awt)]
 	#[from(test_environment)]
@@ -412,7 +471,6 @@ async fn registry_installation_versions_and_authenticated_api(
 		default_host_packages: vec![],
 		oidc: None,
 		gcip: None,
-		prompt_cache: None,
 	};
 	let f = Federation {
 		sandbox: Default::default(),
@@ -489,7 +547,6 @@ async fn human_requests_controls_and_cancellation_before_dependencies_finish(
 		default_host_packages: vec![],
 		oidc: None,
 		gcip: None,
-		prompt_cache: None,
 	};
 	let federation = Federation {
 		sandbox: Default::default(),
@@ -626,7 +683,6 @@ fn federation_for(store: &Store) -> Federation {
 			default_host_packages: vec![],
 			oidc: None,
 			gcip: None,
-			prompt_cache: None,
 		},
 		client: reqwest::Client::builder()
 			.timeout(std::time::Duration::from_secs(2))
