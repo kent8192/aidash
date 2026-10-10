@@ -727,7 +727,10 @@ class ReconcileTests(unittest.TestCase):
             "tenant_bindings": {"pool": "acme"},
             "mfa": {"pool": "disabled"},
         }
-        entry = lambda: self.store.state["environments"]["test"]
+
+        def entry():
+            return self.store.state["environments"]["test"]
+
         drift = {}
         failing = []
 
