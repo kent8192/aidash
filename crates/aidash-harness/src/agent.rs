@@ -2089,7 +2089,10 @@ fn summary_dependencies(
 	for entry in entries {
 		if let ContextEvent::Tool { call, .. } = &entry.event {
 			dependencies.tool_call_ids.insert(call.id.clone());
-			if let Some((id, ..)) = declared_message_read_range(tools, &entry.event) {
+			if let Some(id) = tools
+				.get(&call.name)
+				.and_then(|tool| message_read_target(&tool.contract(), call))
+			{
 				dependencies.message_ids.insert(id);
 			}
 		}

@@ -1261,6 +1261,48 @@ impl ExecutionTool for SkillList {
 		unexpected("skill_list.invoke")
 	}
 }
+struct RecordReader;
+#[async_trait]
+impl ExecutionTool for RecordReader {
+	fn specification(&self) -> aidash_domain::provider::ToolSpec {
+		aidash_domain::provider::ToolSpec {
+			name: "renamed_reader".into(),
+			description: "Read workspace records".into(),
+			parameters: json!({"type":"object","properties":{}}),
+		}
+	}
+	fn contract(&self) -> aidash_domain::tool::ToolContract {
+		aidash_domain::tool::builtin_contract("workspace_read").unwrap()
+	}
+	fn replay_safe(&self) -> bool {
+		true
+	}
+	async fn invoke(&self, _: &Run, _: Value, _: &str) -> Result<Value> {
+		unexpected("renamed_reader.invoke")
+	}
+}
+
+#[rstest]
+fn summary_dependencies_keep_a_message_whose_read_result_jev_truncated() {
+	let id = Uuid::from_u128(7);
+	let mut tools = Tools::new();
+	tools.insert("renamed_reader".into(), Arc::new(RecordReader));
+	let call = ToolCall {
+		id: "read".into(),
+		name: "renamed_reader".into(),
+		arguments: json!({"kind":"message", "id":id, "offset":0}),
+	};
+	// Jev keeps the leading text of an old result as a plain string.
+	let entries = [context::HistoryEntry {
+		seq: 1,
+		event: ContextEvent::tool(call, json!("{\"kind\":\"message\",\"content\":\"private")),
+	}];
+
+	let dependencies = summary_dependencies(&entries, &tools);
+
+	assert!(dependencies.message_ids.contains(&id));
+	assert!(dependencies.tool_call_ids.contains("read"));
+}
 
 #[rstest]
 #[tokio::test]

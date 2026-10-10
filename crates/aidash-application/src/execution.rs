@@ -108,6 +108,21 @@ pub fn message_read_range(event: &ContextEvent) -> Option<(Uuid, usize, usize, u
 	message_read_range_for(&contract, event)
 }
 
+/// Message a workspace-record read targets. Summary dependencies key on the
+/// call because Jev truncation may replace the structured result with its
+/// leading text, which still carries message content.
+pub fn message_read_target(
+	contract: &ToolContract,
+	call: &aidash_domain::provider::ToolCall,
+) -> Option<Uuid> {
+	if contract.behavior.fitting != Some(ResultFitting::WorkspaceRecord)
+		|| call.arguments["kind"] != "message"
+	{
+		return None;
+	}
+	call.arguments["id"].as_str()?.parse().ok()
+}
+
 pub fn message_read_range_for(
 	contract: &ToolContract,
 	event: &ContextEvent,
