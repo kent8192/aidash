@@ -287,13 +287,17 @@ impl<'a> StreamAssembler<'a> {
 			self.refusal.get_or_insert_with(String::new).push_str(text);
 		}
 		if let Some(calls) = delta.get("tool_calls").and_then(Value::as_array) {
+			// An omitted index can only identify the sole call of the stream: a
+			// delta position says nothing about which call a later delta extends.
+			let unindexed = calls.iter().any(|call| call.get("index").is_none());
+			if unindexed && (calls.len() > 1 || self.calls.keys().any(|index| *index != 0)) {
+				return Err(Error::External(
+					"provider stream returned ambiguous unindexed tool calls".into(),
+				));
+			}
 			// Fragments of one index in a delta would merge into one call that the
 			// equivalent non-streamed response keeps as separate entries.
-			let indices = calls
-				.iter()
-				.enumerate()
-				.map(|(position, call)| call_index(position, call))
-				.collect::<Result<Vec<_>>>()?;
+			let indices = calls.iter().map(call_index).collect::<Result<Vec<_>>>()?;
 			let mut unique = indices.clone();
 			unique.sort_unstable();
 			unique.dedup();
@@ -364,13 +368,14 @@ impl<'a> StreamAssembler<'a> {
 	}
 }
 
-fn call_index(position: usize, fragment: &Value) -> Result<u64> {
+/// The explicit index of a fragment, or 0 for the sole unindexed call.
+fn call_index(fragment: &Value) -> Result<u64> {
 	match fragment.get("index") {
 		Some(index) => index
 			.as_u64()
 			.filter(|index| u32::try_from(*index).is_ok())
 			.ok_or_else(|| Error::External("invalid streamed tool call index".into())),
-		None => Ok(position as u64),
+		None => Ok(0),
 	}
 }
 

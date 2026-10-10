@@ -87,6 +87,22 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 		})
 		.count();
 	assert!(tables >= 117, "retain every baseline and new memory table");
+	// The repository allocates each Run's progress sequence; the physical
+	// column has no identity, so the logical state must not claim one.
+	let progress_seq = migrations
+		.iter()
+		.filter(|migration| migration.state_only)
+		.flat_map(|migration| &migration.operations)
+		.find_map(|operation| match operation {
+			reinhardt::db::migrations::Operation::CreateTable { name, columns, .. }
+				if name == "inference_progress" =>
+			{
+				columns.iter().find(|column| column.name == "seq")
+			}
+			_ => None,
+		})
+		.unwrap();
+	assert!(progress_seq.primary_key && !progress_seq.auto_increment);
 	for migration in migrations
 		.iter()
 		.filter(|migration| migration.database_only)

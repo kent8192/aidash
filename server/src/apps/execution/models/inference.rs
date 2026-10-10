@@ -38,7 +38,8 @@ pub struct InferenceAttempt {
 pub struct InferenceProgressRecord {
 	#[field(primary_key = true)]
 	pub run_id: Uuid,
-	#[field(primary_key = true)]
+	/// Allocated per Run by the repository, not by the database.
+	#[field(primary_key = true, auto_increment = false)]
 	pub seq: i64,
 	#[field]
 	pub attempt_id: Uuid,

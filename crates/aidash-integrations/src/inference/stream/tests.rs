@@ -502,9 +502,9 @@ fn large_text_deltas_are_offered_within_the_item_bound() {
 	{"index":0,"id":"call-1","function":{"name":"run","arguments":"{\"a\":"}},
 	{"index":0,"function":{"arguments":"1}"}}
 ]))]
-#[case::explicit_and_positional(json!([
-	{"id":"call-1","function":{"name":"run","arguments":"{}"}},
-	{"index":0,"function":{"arguments":""}}
+#[case::explicit_one(json!([
+	{"index":1,"id":"call-2","function":{"name":"run","arguments":"{}"}},
+	{"index":1,"function":{"arguments":""}}
 ]))]
 fn repeated_tool_call_indices_in_one_delta_are_rejected(#[case] calls: Value) {
 	// Arrange
@@ -519,6 +519,58 @@ fn repeated_tool_call_indices_in_one_delta_are_rejected(#[case] calls: Value) {
 	// Assert
 	assert!(
 		matches!(result, Err(Error::External(message)) if message == "provider stream repeated a tool call index in one delta")
+	);
+}
+
+#[rstest::rstest]
+#[case::several_in_one_delta(vec![delta(json!({"tool_calls":[
+	{"id":"call-1","function":{"name":"read","arguments":"{}"}},
+	{"id":"call-2","function":{"name":"write","arguments":"{}"}}
+]}))])]
+#[case::after_another_call(vec![
+	delta(json!({"tool_calls":[
+		{"index":0,"id":"call-1","function":{"name":"read","arguments":""}},
+		{"index":1,"id":"call-2","function":{"name":"write","arguments":""}}
+	]})),
+	delta(json!({"tool_calls":[{"function":{"arguments":"{}"}}]})),
+])]
+fn unindexed_fragments_are_rejected_once_several_calls_exist(#[case] mut chunks: Vec<Value>) {
+	// Arrange
+	chunks.push(finish("tool_calls"));
+	let body = sse(&chunks, true);
+
+	// Act
+	let (result, _) = assemble(&body, 4096, 1_048_576);
+
+	// Assert
+	assert!(
+		matches!(result, Err(Error::External(message)) if message == "provider stream returned ambiguous unindexed tool calls")
+	);
+}
+
+#[rstest::rstest]
+fn a_sole_unindexed_tool_call_assembles_across_deltas() {
+	// Arrange
+	let body = sse(
+		&[
+			delta(
+				json!({"tool_calls":[{"id":"call-1","function":{"name":"read","arguments":"{\"path\":"}}]}),
+			),
+			delta(json!({"tool_calls":[{"function":{"arguments":"\"notes\"}"}}]})),
+			finish("tool_calls"),
+		],
+		true,
+	);
+
+	// Act
+	let (response, _) = assemble(&body, 4096, 1_048_576);
+
+	// Assert
+	same_outcome(
+		response,
+		json!({"choices":[{"finish_reason":"tool_calls","message":{"content":null,"tool_calls":[
+			{"id":"call-1","type":"function","function":{"name":"read","arguments":"{\"path\":\"notes\"}"}}
+		]}}]}),
 	);
 }
 
