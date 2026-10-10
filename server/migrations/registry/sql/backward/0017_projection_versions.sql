@@ -6,15 +6,15 @@
 -- instead of leaving rows that neither the constraints nor the binaries accept.
 -- DDL only; no application data is modified.
 DO $$
-DECLARE definitions bigint; packages bigint;
+DECLARE definition_count bigint; package_count bigint;
 BEGIN
-  SELECT count(*) INTO definitions FROM registry
+  SELECT count(*) INTO definition_count FROM registry
    WHERE (kind = 'model' AND metadata->'config' ? 'projection_versions')
       OR (kind = 'agent' AND metadata->'config' ? 'projection_version');
-  SELECT count(*) INTO packages FROM packages
+  SELECT count(*) INTO package_count FROM packages
    WHERE manifest #>> '{entity,kind}' = 'agent' AND manifest #> '{entity,config}' ? 'projection_version';
-  IF definitions > 0 OR packages > 0 THEN
-    RAISE EXCEPTION 'registry 0017_projection_versions cannot be reversed: % Definitions and % Packages use projection_version(s)', definitions, packages
+  IF definition_count > 0 OR package_count > 0 THEN
+    RAISE EXCEPTION 'registry 0017_projection_versions cannot be reversed: % Definitions and % Packages use projection_version(s)', definition_count, package_count
       USING ERRCODE = '55000',
             HINT = 'Pre-0017 binaries cannot read these immutable records; restore the pre-upgrade database backup instead of reversing this migration.';
   END IF;
