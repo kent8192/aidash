@@ -2,6 +2,8 @@
 
 pub mod capabilities;
 
+pub mod cache_salt;
+
 pub mod openrouter;
 
 pub mod provider;
