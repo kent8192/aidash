@@ -38,6 +38,8 @@ impl Tool for CoreTool {
 		let Some(authority) = &ctx.home.authority else {
 			return Err(Error::Forbidden);
 		};
+		let shared_read = aidash_domain::tool::concurrency::batchable(&self.contract.behavior)
+			&& aidash_domain::tool::concurrency::shares_every_resource(self.name, &input);
 		authority
 			.core_tool(
 				&ctx.store,
@@ -45,7 +47,7 @@ impl Tool for CoreTool {
 				self.name,
 				input,
 				key,
-				aidash_domain::tool::concurrency::batchable(&self.contract.behavior),
+				shared_read,
 			)
 			.await
 	}

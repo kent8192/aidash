@@ -159,3 +159,18 @@ fn undeclared_operations_have_no_concurrent_derivation() {
 		assert!(core_call(operation, &json!({}), CEILINGS).is_none());
 	}
 }
+
+#[rstest]
+#[case::search("file_search", json!({"query":"x","mode":"literal","scope":"working"}), true)]
+#[case::read("file_read", json!({"file_id":"00000000-0000-0000-0000-000000000000","representation":"text"}), true)]
+#[case::list("skill_list", json!({}), true)]
+#[case::load("skill_load", json!({"skill_id":"00000000-0000-0000-0000-000000000000","expected_digest":"d"}), false)]
+#[case::media("file_read", json!({"file_id":"00000000-0000-0000-0000-000000000000","representation":"model_input"}), false)]
+#[case::write("file_write", json!({}), false)]
+fn only_calls_sharing_every_resource_take_shared_locks(
+	#[case] operation: &str,
+	#[case] input: Value,
+	#[case] shared: bool,
+) {
+	assert_eq!(shares_every_resource(operation, &input), shared);
+}

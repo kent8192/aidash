@@ -164,5 +164,20 @@ pub fn core_call(operation: &str, input: &Value, ceilings: ReadCeilings) -> Opti
 	}
 }
 
+/// Whether a core read only shares the resources it touches, so its
+/// transaction may take shared row locks. Calls that rewrite a resource
+/// (`skill_load`) or never batch keep exclusive locks.
+pub fn shares_every_resource(operation: &str, input: &Value) -> bool {
+	let ceilings = ReadCeilings {
+		read_bytes: 0,
+		search_bytes: 0,
+	};
+	core_call(operation, input, ceilings).is_some_and(|call| {
+		call.claims
+			.iter()
+			.all(|claim| claim.access == ResourceAccess::Shared)
+	})
+}
+
 #[cfg(test)]
 mod tests;

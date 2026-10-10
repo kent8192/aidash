@@ -78,7 +78,7 @@ pub(crate) struct Access {
 	pub(super) pool: Pool,
 	pub read_run: Option<Uuid>,
 	pub read_grant: Option<Uuid>,
-	/// A batchable read loads its Working Area without excluding concurrent reads.
+	/// A batchable read loads its Working Area and records without excluding concurrent reads.
 	pub shared_area: bool,
 	pub(super) environment: Value,
 }
