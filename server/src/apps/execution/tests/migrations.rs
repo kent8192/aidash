@@ -1403,6 +1403,29 @@ async fn projection_versions_migration_admits_new_keys_and_reverses(
 		Some("registry_model_projection_versions"),
 		"{error}"
 	);
+	// Act / Assert: a stored key refuses the rollback before any DDL runs.
+	let error = executor
+		.rollback_migrations(std::slice::from_ref(&migration))
+		.await
+		.unwrap_err();
+	assert!(
+		error
+			.to_string()
+			.contains("0017_projection_versions cannot be reversed"),
+		"{error}"
+	);
+	assert_eq!(
+		constraint_definition(&pool, "registry_model_config").await,
+		extended
+	);
+	assert!(
+		contract_accepts(
+			&pool,
+			"aidash_agent_bindings_is_valid",
+			vec![agent(Some("ordered"))]
+		)
+		.await
+	);
 }
 
 async fn constraint_definition(pool: &PgPool, name: &str) -> String {

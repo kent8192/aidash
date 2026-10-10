@@ -1,5 +1,24 @@
--- Restore the 0015 Agent contract and remove only the projection additions from
--- the current model constraint. DDL only.
+-- Restore the 0015 Agent contract and the pre-projection model key allowlist.
+-- Rollback precondition: no Definition or Package may carry the projection keys.
+-- Pre-0017 binaries decode Agent and model configs with deny_unknown_fields and
+-- the restored constraints reject the keys, while registered Definitions are
+-- immutable. This read-only guard refuses the rollback with an actionable error
+-- instead of leaving rows that neither the constraints nor the binaries accept.
+-- DDL only; no application data is modified.
+DO $$
+DECLARE definitions bigint; packages bigint;
+BEGIN
+  SELECT count(*) INTO definitions FROM registry
+   WHERE (kind = 'model' AND metadata->'config' ? 'projection_versions')
+      OR (kind = 'agent' AND metadata->'config' ? 'projection_version');
+  SELECT count(*) INTO packages FROM packages
+   WHERE manifest #>> '{entity,kind}' = 'agent' AND manifest #> '{entity,config}' ? 'projection_version';
+  IF definitions > 0 OR packages > 0 THEN
+    RAISE EXCEPTION 'registry 0017_projection_versions cannot be reversed: % Definitions and % Packages use projection_version(s)', definitions, packages
+      USING ERRCODE = '55000',
+            HINT = 'Pre-0017 binaries cannot read these immutable records; restore the pre-upgrade database backup instead of reversing this migration.';
+  END IF;
+END $$;
 CREATE OR REPLACE FUNCTION public.aidash_agent_bindings_is_valid(value jsonb) RETURNS boolean
 LANGUAGE plpgsql IMMUTABLE STRICT AS $$
 DECLARE item jsonb; removals jsonb; edges jsonb; step_count numeric; restriction jsonb; candidate jsonb;
