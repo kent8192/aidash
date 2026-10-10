@@ -123,7 +123,11 @@ resource "google_container_node_pool" "system" {
     auto_upgrade = true
   }
   node_config {
-    machine_type    = "e2-medium"
+    machine_type = "e2-medium"
+    # GKE's 100 GB pd-balanced default counts against the regional SSD quota
+    # (250 GB by default) shared with every Environment pool and retained disk.
+    disk_type       = "pd-standard"
+    disk_size_gb    = 30
     service_account = google_service_account.nodes.email
     oauth_scopes    = local.cloud_scope
     labels          = local.system_labels

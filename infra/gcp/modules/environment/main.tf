@@ -24,8 +24,12 @@ resource "google_container_node_pool" "environment" {
     auto_upgrade = true
   }
   node_config {
-    machine_type    = var.environment.machine_type
-    image_type      = "UBUNTU_CONTAINERD"
+    machine_type = var.environment.machine_type
+    image_type   = "UBUNTU_CONTAINERD"
+    # Bounded below GKE's 100 GB default, which exhausts the regional SSD quota
+    # with two nodes beside the retained disks; images and emptyDirs fit in 50 GB.
+    disk_type       = "pd-balanced"
+    disk_size_gb    = 50
     spot            = var.environment.spot
     service_account = var.node_service_account
     oauth_scopes    = ["https://www.googleapis.com/auth/cloud-platform"]
