@@ -64,7 +64,12 @@ an installed `runsc`, `gvisor_sentry` or shim to exit, confirming an empty scan 
 more after a pause. A running Sentry keeps its old executable
 inode, which the guard's `samefile` check would stop recognizing, so the installer
 fails without replacing anything if sandboxes remain; it stays fenced and retries
-on restart. The
+on restart. The new shim is also written without execute bits, whatever the
+archive order, and becomes executable only after every runtime file, the receipt
+and containerd's configuration and restart are complete. Installers of releases
+sharing a Cluster Node hold one host `flock` (`/run/lock/aidash-gvisor-installer.lock`)
+from withdrawing admission until publishing it, and write through unique temporary
+files. The
 installer writes the runtime only under `/usr/local/bin`, so the chart rejects a
 custom `execution.paths.runsc` or `gvisorBin` while it is enabled.
 

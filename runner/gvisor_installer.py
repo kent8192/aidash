@@ -1,5 +1,7 @@
 """Trusted upstream gVisor installer for Ubuntu/containerd Cluster Nodes."""
 
+import contextlib
+import fcntl
 import hashlib
 import io
 import json
@@ -7,6 +9,7 @@ import os
 from pathlib import Path, PurePosixPath
 import ssl
 import subprocess
+import tempfile
 import time
 import tomllib
 import urllib.request
@@ -16,11 +19,14 @@ GVISOR_SHA = '3dd478770dd751d09c257ba14d739b179348a36c5f2d9e954b773f5f90bff646'
 # ARM is for disposable local verification only; GKE Ubuntu N2 uses x86_64.
 ARCHIVE_HASHES = {'x86_64': GVISOR_SHA,
                  'aarch64': 'edf717346495ec5e995551e84e47beb5d0ecbfd872d9773ffb554aa24a158c4e'}
-REQUIRED = {'runsc', 'containerd-shim-runsc-v1', 'gvisor-bin/gvisor_sentry'}
+SHIM = 'containerd-shim-runsc-v1'
+REQUIRED = {'runsc', SHIM, 'gvisor-bin/gvisor_sentry'}
 # Executables the node guard identifies a live sandbox by (`samefile` on /proc/<pid>/exe).
 SENTRY_BINARIES = ('usr/local/bin/runsc', 'usr/local/bin/gvisor-bin/gvisor_sentry')
 # containerd starts this per sandbox Pod; a running shim can still launch a Sentry.
-SHIM_BINARY = 'usr/local/bin/containerd-shim-runsc-v1'
+SHIM_BINARY = 'usr/local/bin/' + SHIM
+# Host-wide, so installers of every release sharing a Cluster Node serialize.
+LOCK = 'run/lock/aidash-gvisor-installer.lock'
 
 
 def relative(name):
@@ -47,31 +53,36 @@ def write(path, data, mode=0o644):
     if path.is_file() and path.read_bytes() == data and path.stat().st_mode & 0o777 == mode:
         return False
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(path.name + '.new')
-    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, mode)
-    with os.fdopen(fd, 'wb') as stream:
-        os.fchmod(stream.fileno(), mode)
-        stream.write(data)
-        stream.flush()
-        os.fsync(stream.fileno())
-    temporary.replace(path)
+    # A unique name: another writer's temporary file is never replaced or reused.
+    fd, temporary = tempfile.mkstemp(dir=path.parent, prefix=f'.{path.name}.', suffix='.new')
+    try:
+        with os.fdopen(fd, 'wb') as stream:
+            os.fchmod(stream.fileno(), mode)
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    except BaseException:
+        Path(temporary).unlink(missing_ok=True)
+        raise
     return True
 
 
-def matches(path, checksum):
+def matches(path, checksum, mode=0o755):
     return (not path.is_symlink() and path.is_file()
-            and path.stat().st_mode & 0o777 == 0o755
+            and path.stat().st_mode & 0o777 == mode
             and hashlib.sha256(path.read_bytes()).hexdigest() == checksum)
 
 
-def installed(root, version, checksum):
+def installed(root, version, checksum, shim_mode=0o755):
     receipt = root / 'usr/local/share/aidash/gvisor.json'
     try:
         value = json.loads(receipt.read_bytes())
         files = value['files']
         return (value['version'] == version and value['archive_sha'] == checksum
                 and REQUIRED <= files.keys()
-                and all(matches(destination(root / 'usr/local/bin', name), digest)
+                and all(matches(destination(root / 'usr/local/bin', name), digest,
+                                shim_mode if name == SHIM else 0o755)
                         for name, digest in files.items()))
     except (OSError, ValueError, KeyError, TypeError):
         return False
@@ -148,8 +159,8 @@ def fence(root):
     Withdrawing the admission label only stops scheduling: kubelet does not
     recheck RuntimeClass scheduling for a Pod already bound to this node. Every
     sandbox starts by executing the shim, and execve needs an execute bit even
-    for root, so clearing them refuses such Pods until the replacement restores
-    0755. The guard's runsc and Sentry identities are left untouched.
+    for root, so clearing them refuses such Pods until `install` restores 0755
+    as its last step. The guard's runsc and Sentry identities are left untouched.
     """
     shim = destination(root, SHIM_BINARY)
     if shim.is_file():
@@ -180,25 +191,50 @@ def drain(root, seconds, sleep=time.sleep, clock=time.monotonic, live=live_sandb
 
 def install(root, version, checksum, arch, download, restart, runsc_root='/run/containerd/runsc',
             drain=lambda root: None):
-    if not installed(root, version, checksum):
+    replaced = not installed(root, version, checksum)
+    if replaced:
         url = f'https://storage.googleapis.com/gvisor/releases/release/{version}/{arch}/gvisor.tar.bz2'
         files = archive_files(download(url), checksum)
         # Validate every destination before changing any executable.
         paths = {name: destination(root / 'usr/local/bin', name) for name in files}
-        # The fence persists if the drain fails: `installed` then requires a
-        # retry, and only writing the verified runtime makes the shim executable.
+        # The fence persists through any failure below: `installed` then
+        # requires a retry, which fences, drains and replaces again.
         fence(root)
         drain(root)
         for name, data in files.items():
-            write(paths[name], data, 0o755)
+            # Whatever the archive order, the new shim is written fenced too.
+            write(paths[name], data, 0o644 if name == SHIM else 0o755)
         write(root / 'usr/local/share/aidash/gvisor.json', json.dumps({
             'version': version, 'archive_sha': checksum,
             'files': {name: hashlib.sha256(data).hexdigest() for name, data in files.items()}
         }, sort_keys=True).encode())
-    if not installed(root, version, checksum):
+    if not installed(root, version, checksum, 0o644 if replaced else 0o755):
         raise ValueError('pinned gVisor installation verification failed')
     if configure(root, runsc_root):
         restart()
+    if replaced:
+        # Only now can a sandbox start: every runtime file and containerd's
+        # configuration are the verified version.
+        os.chmod(destination(root, SHIM_BINARY), 0o755)
+        if not installed(root, version, checksum):
+            raise ValueError('pinned gVisor installation verification failed')
+
+
+@contextlib.contextmanager
+def node_lock(root):
+    """Serialize installers of every release that shares this Cluster Node.
+
+    They write the same host runtime and admission label; the whole sequence
+    from withdrawing admission to publishing it runs under one host flock.
+    """
+    path = root / LOCK
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(fd)
 
 
 def label(values):
@@ -239,18 +275,19 @@ def main():
         subprocess.run(['nsenter', '-t', '1', '-m', '-u', '-i', '-n', '-p', '--',
                         'systemctl', 'restart', 'containerd'], check=True, timeout=120)
 
-    try:
-        # Withdraw only admission during startup/repair. The guard must keep
-        # watching live sandboxes while a runtime replacement drains them.
-        label({admission: None})
-        install(root, version, checksum, arch, download, restart, runsc_root,
-                drain=lambda host: drain(host, drain_seconds))
-        label({admission: version, installed: 'true'})
-        ready.touch()
-    except Exception:
-        ready.unlink(missing_ok=True)
-        label({admission: None})
-        raise
+    with node_lock(root):
+        try:
+            # Withdraw only admission during startup/repair. The guard must keep
+            # watching live sandboxes while a runtime replacement drains them.
+            label({admission: None})
+            install(root, version, checksum, arch, download, restart, runsc_root,
+                    drain=lambda host: drain(host, drain_seconds))
+            label({admission: version, installed: 'true'})
+            ready.touch()
+        except Exception:
+            ready.unlink(missing_ok=True)
+            label({admission: None})
+            raise
     while True:
         time.sleep(60)
 

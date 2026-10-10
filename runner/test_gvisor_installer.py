@@ -65,7 +65,57 @@ class InstallerTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 self.install()
             self.assertEqual(config.read_text(), text)
+            # A runtime that containerd cannot be configured for is never unfenced.
+            shim = self.root / 'usr/local/bin' / installer.SHIM
+            self.assertEqual(shim.stat().st_mode & 0o777, 0o644)
         self.restart.assert_not_called()
+
+    def test_shim_stays_fenced_until_every_file_and_containerd_restart_complete(self):
+        shim = self.root / 'usr/local/bin' / installer.SHIM
+        observed, real = [], installer.write
+
+        def executable():
+            return shim.exists() and bool(shim.stat().st_mode & 0o111)
+
+        def write(path, data, mode=0o644):
+            changed = real(path, data, mode)
+            observed.append((path.name, executable()))
+            return changed
+
+        restart = Mock(side_effect=lambda: observed.append(('restart', executable())))
+        with patch.object(installer, 'write', write):
+            installer.install(self.root, installer.GVISOR_VERSION, self.sha, 'x86_64',
+                              self.download, restart)
+        # The archive lists the shim first; it is still never executable before the end.
+        self.assertEqual(observed[0], (installer.SHIM, False))
+        self.assertIn(('restart', False), observed)
+        self.assertFalse(any(state for _, state in observed))
+        self.assertEqual(shim.stat().st_mode & 0o777, 0o755)
+        self.assertTrue(installer.installed(self.root, installer.GVISOR_VERSION, self.sha))
+
+    def test_temporary_files_are_unique_and_never_left_behind(self):
+        binaries = self.root / 'usr/local/bin'
+        binaries.mkdir(parents=True)
+        # Another writer's in-progress file must be neither replaced nor reused.
+        (binaries / 'runsc.new').write_bytes(b'other')
+        self.install()
+        self.assertEqual((binaries / 'runsc.new').read_bytes(), b'other')
+        leftovers = [path.name for path in self.root.rglob('*.new') if path != binaries / 'runsc.new']
+        self.assertEqual(leftovers, [])
+
+    def assert_locked(self):
+        fd = os.open(self.root / installer.LOCK, os.O_RDWR)
+        try:
+            with self.assertRaises(BlockingIOError):
+                installer.fcntl.flock(fd, installer.fcntl.LOCK_EX | installer.fcntl.LOCK_NB)
+        finally:
+            os.close(fd)
+
+    def test_node_lock_excludes_other_installers_until_released(self):
+        with installer.node_lock(self.root):
+            self.assert_locked()
+        with installer.node_lock(self.root):
+            pass
 
     def test_checksum_and_unsafe_archive_members_fail_before_install(self):
         with self.assertRaisesRegex(ValueError, 'checksum'):
@@ -149,9 +199,19 @@ class InstallerTest(unittest.TestCase):
         environment = {'AIDASH_HOST_ROOT': str(self.root), 'AIDASH_GVISOR_LABEL': 'x/admit',
                        'AIDASH_GVISOR_INSTALLED_LABEL': 'x/installed',
                        'AIDASH_GVISOR_READY': str(self.root / 'ready')}
+
+        def idle(seconds):
+            # Once admission is published the lock is free for other installers.
+            fd = os.open(self.root / installer.LOCK, os.O_RDWR)
+            try:
+                installer.fcntl.flock(fd, installer.fcntl.LOCK_EX | installer.fcntl.LOCK_NB)
+            finally:
+                os.close(fd)
+            raise StopIteration
+
         with (patch.object(installer, 'label', side_effect=calls.append),
               patch.object(installer, 'install', install),
-              patch.object(installer.time, 'sleep', side_effect=StopIteration),
+              patch.object(installer.time, 'sleep', side_effect=idle),
               patch.object(installer.os, 'uname', return_value=Mock(machine='x86_64')),
               patch.dict(os.environ, environment)):
             try:
@@ -161,7 +221,7 @@ class InstallerTest(unittest.TestCase):
         return calls, None
 
     def test_replacement_withdraws_only_admission_and_keeps_the_guard_scheduled(self):
-        calls, error = self.run_main(Mock())
+        calls, error = self.run_main(Mock(side_effect=lambda *args, **kwargs: self.assert_locked()))
         self.assertIsInstance(error, StopIteration)
         self.assertEqual(calls, [{'x/admit': None},
                                  {'x/admit': installer.GVISOR_VERSION, 'x/installed': 'true'}])
