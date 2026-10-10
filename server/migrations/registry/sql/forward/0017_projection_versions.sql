@@ -78,7 +78,9 @@ DECLARE definition text; extended text;
 BEGIN
   SELECT pg_get_constraintdef(oid) INTO STRICT definition
     FROM pg_constraint WHERE conrelid = 'registry'::regclass AND conname = 'registry_model_config';
-  extended := replace(definition, '''media_routes''::text]', '''media_routes''::text, ''projection_versions''::text]');
+  -- Anchor on the allowlist sequence: `? 'media_routes'` also appears in the
+  -- media route check, and later migrations may append after this entry.
+  extended := replace(definition, '''request_timeout_secs''::text, ''media_routes''::text', '''request_timeout_secs''::text, ''media_routes''::text, ''projection_versions''::text');
   IF extended = definition THEN RAISE EXCEPTION 'Projection Versions allowlist anchor missing: registry_model_config'; END IF;
   ALTER TABLE registry DROP CONSTRAINT registry_model_config;
   EXECUTE format('ALTER TABLE registry ADD CONSTRAINT registry_model_config %s', extended);
