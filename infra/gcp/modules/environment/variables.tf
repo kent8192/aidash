@@ -25,3 +25,23 @@ variable "environment" {
     data_disk_gib = number
   })
 }
+
+variable "byok_project_id" {
+  type        = string
+  description = "Optional dedicated Provider Credential project; empty disables BYOK provisioning."
+  default     = ""
+  validation {
+    condition     = var.byok_project_id == "" || (can(regex("^[a-z][a-z0-9-]{4,28}[a-z0-9]$", var.byok_project_id)) && var.byok_project_id != var.project_id)
+    error_message = "Use an explicit dedicated BYOK project distinct from the shared environment project."
+  }
+}
+variable "broker" {
+  description = "Non-secret worker settings from the environment's Credential Broker."
+  type = object({
+    endpoint = string
+    issuer   = string
+    audience = string
+    kid      = string
+  })
+  default = null
+}

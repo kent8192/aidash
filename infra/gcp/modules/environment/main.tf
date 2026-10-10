@@ -143,7 +143,7 @@ resource "google_compute_instance" "host" {
     enable_vtpm                 = true
     enable_integrity_monitoring = true
   }
-  metadata = {
+  metadata = merge({
     enable-oslogin         = "TRUE"
     block-project-ssh-keys = "TRUE"
     serial-port-enable     = "FALSE"
@@ -156,7 +156,9 @@ resource "google_compute_instance" "host" {
       secret   = google_secret_manager_secret.runtime.secret_id
       preview  = var.environment.kind == "pr"
     })
-  }
+    }, local.provider_credentials != null ? {
+    aidash-provider-credentials = jsonencode(local.provider_credentials)
+  } : {})
   depends_on = [
     google_service_account_iam_member.deploy, google_storage_bucket_iam_member.bundle,
     google_artifact_registry_repository_iam_member.pull, google_secret_manager_secret_iam_member.runtime,
@@ -175,5 +177,18 @@ resource "google_compute_instance" "host" {
 output "instance" { value = local.name }
 output "zone" { value = local.zone }
 output "hostname" { value = var.hostname }
+locals {
+  provider_credentials = var.byok_project_id != "" ? {
+    fingerprint_key = { env = "AIDASH_PROVIDER_FINGERPRINT_KEY" }
+    store = {
+      kind            = "secret_manager"
+      byok_project_id = var.byok_project_id
+      environment_id  = var.environment_id
+    }
+    broker = var.broker
+  } : null
+}
+output "provider_credentials" { value = local.provider_credentials }
 output "external_ip" { value = try(google_compute_instance.host[0].network_interface[0].access_config[0].nat_ip, "") }
 output "runtime_secret" { value = google_secret_manager_secret.runtime.secret_id }
+output "runtime_service_account" { value = google_service_account.runtime.email }

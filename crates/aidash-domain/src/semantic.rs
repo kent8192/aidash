@@ -51,6 +51,8 @@ pub struct EmbeddingConfig {
 	pub provider: String,
 	pub endpoint: String,
 	pub credential_env: Option<String>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub provider_credential: Option<String>,
 	pub model: String,
 	pub model_version: String,
 	pub dimensions: usize,
@@ -90,6 +92,12 @@ pub struct VectorFilter<'a> {
 impl EmbeddingConfig {
 	/// Provider definition invariants do not read credentials or contact a provider.
 	pub fn validate_parameters(&self) -> crate::Result<()> {
+		crate::provider_credentials::validate_source(
+			&self.endpoint,
+			&self.provider,
+			self.credential_env.as_deref(),
+			self.provider_credential.as_deref(),
+		)?;
 		if !matches!(self.provider.as_str(), "openai" | "openrouter")
 			|| self.model.trim().is_empty()
 			|| self.model.len() > 256

@@ -61,7 +61,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 	);
 	let knowledge = graph.get_leaf_nodes_for_app("knowledge");
 	assert_eq!(knowledge.len(), 1);
-	assert_eq!(knowledge[0].name, "0027_memory_retention_lookup");
+	assert_eq!(knowledge[0].name, "0028_provider_credentials");
 	// Assert: retain the physical graph, model snapshots, and all supported tables.
 	assert!(
 		migrations
@@ -73,7 +73,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		19
+		20
 	);
 	let tables = migrations
 		.iter()
@@ -540,7 +540,7 @@ async fn preserved_baseline_does_not_generate_table_recreation(
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		19
+		20
 	);
 }
 
@@ -1283,9 +1283,32 @@ async fn memory_retention_lookup_index_upgrades_and_reverses_without_rewriting_t
 		})
 		.unwrap()
 		.clone();
+	// The baseline omits the lookup and every migration that depends on it, so
+	// later knowledge migrations never run ahead of their missing parent.
+	let mut excluded = vec![(lookup.app_label.to_string(), lookup.name.to_string())];
+	loop {
+		let descendants: Vec<_> = migrations
+			.iter()
+			.filter(|migration| {
+				let key = (migration.app_label.to_string(), migration.name.to_string());
+				!excluded.contains(&key)
+					&& migration
+						.dependencies
+						.iter()
+						.any(|(app, name)| excluded.contains(&(app.to_string(), name.to_string())))
+			})
+			.map(|migration| (migration.app_label.to_string(), migration.name.to_string()))
+			.collect();
+		if descendants.is_empty() {
+			break;
+		}
+		excluded.extend(descendants);
+	}
 	let baseline: Vec<_> = migrations
 		.into_iter()
-		.filter(|migration| !(migration.app_label == "knowledge" && migration.name == lookup.name))
+		.filter(|migration| {
+			!excluded.contains(&(migration.app_label.to_string(), migration.name.to_string()))
+		})
 		.collect();
 	let mut executor =
 		reinhardt::db::migrations::DatabaseMigrationExecutor::new(fixture.connection.clone());

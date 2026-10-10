@@ -57,7 +57,7 @@ impl AuthorityRepository for Repository {
 	}
 	fn validate(&self, manifest: &Manifest) -> Result<()> {
 		aidash_application::transactions::validate(
-			&crate::bootstrap::registry_validation(),
+			&crate::bootstrap::registry_validation_for(&self.runtime.store),
 			manifest,
 		)
 	}

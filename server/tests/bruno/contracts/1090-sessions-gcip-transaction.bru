@@ -1,22 +1,18 @@
 meta {
-  name: 1051 sessions-gcip-exchange - OIDC deployment cannot accept a GCIP token
+  name: 1090 sessions-gcip-transaction - Tampered browser cookie cannot expose GCIP configuration
   type: http
-  seq: 1051
+  seq: 1090
 }
 
-post {
-  url: {{base_url}}/auth/gcip/exchange
-  body: text
+get {
+  url: {{base_url}}/auth/gcip/transaction?state=invalid
+  body: none
   auth: none
 }
 
 headers {
   Accept: application/json
-  Content-Type: application/json
-}
-
-body:text {
-  {"state": "invalid", "id_token": "invalid"}
+  Cookie: aidash-login=tampered
 }
 
 tests {

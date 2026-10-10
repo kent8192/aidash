@@ -429,7 +429,14 @@ impl ExecutionEnvironment for Environment<'_> {
 		})
 	}
 	fn provider(&self, model: ModelConfig) -> Result<Arc<dyn ModelProvider>> {
-		crate::bootstrap::model_provider(self.federation.client.clone(), model).map_err(Into::into)
+		crate::bootstrap::admitted_model_provider(
+			&self.federation.store,
+			model,
+			Some(self.step_run.id),
+			String::new(),
+			None,
+		)
+		.map_err(Into::into)
 	}
 	fn compactor(&self) -> Result<Box<dyn CompactionClassifier>> {
 		let classifier: Box<dyn crate::context::jev::JevAsker> =
