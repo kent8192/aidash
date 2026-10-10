@@ -4,6 +4,8 @@
 mod common;
 #[path = "inference_progress/stream.rs"]
 mod stream;
+#[path = "inference_progress/worker.rs"]
+mod worker;
 
 use aidash_domain::provider::progress::{
 	InferenceAttemptId, InferenceProgress, InterruptionReason, ProgressOutcome,

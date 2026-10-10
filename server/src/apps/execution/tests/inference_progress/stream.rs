@@ -16,20 +16,59 @@ type Frames = BoxStream<'static, Result<axum::body::Bytes, axum::Error>>;
 
 /// One parsed SSE frame: `event`, optional `id` and JSON `data`.
 #[derive(Debug)]
-struct Frame {
-	event: String,
-	id: Option<i64>,
-	data: Value,
+pub(super) struct Frame {
+	pub(super) event: String,
+	pub(super) id: Option<i64>,
+	pub(super) data: Value,
 }
 
-struct Stream {
+pub(super) struct Stream {
 	body: Frames,
 	buffer: String,
 }
 
 impl Stream {
+	/// Open the Run stream of `run` as `token`, resuming after `after` or the
+	/// `Last-Event-ID` `header` when given.
+	pub(super) async fn request(
+		app: &common::TestApplication,
+		token: &str,
+		run: Uuid,
+		after: Option<i64>,
+		header: Option<i64>,
+	) -> axum::response::Response {
+		let mut path = format!("/api/runs/{run}/inference/stream");
+		if let Some(after) = after {
+			path.push_str(&format!("?after={after}"));
+		}
+		let mut request = Request::get(path).header("authorization", format!("Bearer {token}"));
+		if let Some(header) = header {
+			request = request.header("last-event-id", header.to_string());
+		}
+		app.clone()
+			.oneshot(request.body(Body::empty()).unwrap())
+			.await
+			.unwrap()
+	}
+
+	/// An accepted (200) Run stream.
+	pub(super) async fn open(
+		app: &common::TestApplication,
+		token: &str,
+		run: Uuid,
+		after: Option<i64>,
+		header: Option<i64>,
+	) -> Self {
+		let response = Self::request(app, token, run, after, header).await;
+		assert_eq!(response.status(), 200);
+		Self {
+			body: response.into_body().into_data_stream().boxed(),
+			buffer: String::new(),
+		}
+	}
+
 	/// The next non-comment frame, or `None` when the stream ends first.
-	async fn next(&mut self) -> Option<Frame> {
+	pub(super) async fn next(&mut self) -> Option<Frame> {
 		loop {
 			while let Some(end) = self.buffer.find("\n\n") {
 				let raw: String = self.buffer.drain(..end + 2).collect();
@@ -57,12 +96,12 @@ impl Stream {
 		}
 	}
 
-	async fn frame(&mut self) -> Frame {
+	pub(super) async fn frame(&mut self) -> Frame {
 		self.next().await.expect("stream ended")
 	}
 
 	/// No frame arrives within `window`.
-	async fn quiet(&mut self, window: Duration) {
+	pub(super) async fn quiet(&mut self, window: Duration) {
 		if let Ok(frame) = tokio::time::timeout(window, self.next()).await {
 			panic!("unexpected frame {frame:?}");
 		}
@@ -85,30 +124,11 @@ impl Fixture {
 	}
 
 	async fn open(&self, after: Option<i64>, header: Option<i64>) -> axum::response::Response {
-		let mut path = format!("/api/runs/{}/inference/stream", self.c.run.id);
-		if let Some(after) = after {
-			path.push_str(&format!("?after={after}"));
-		}
-		let mut request =
-			Request::get(path).header("authorization", format!("Bearer {}", self.c.token));
-		if let Some(header) = header {
-			request = request.header("last-event-id", header.to_string());
-		}
-		self.c
-			.app
-			.clone()
-			.oneshot(request.body(Body::empty()).unwrap())
-			.await
-			.unwrap()
+		Stream::request(&self.c.app, &self.c.token, self.c.run.id, after, header).await
 	}
 
 	async fn stream(&self, after: Option<i64>, header: Option<i64>) -> Stream {
-		let response = self.open(after, header).await;
-		assert_eq!(response.status(), 200);
-		Stream {
-			body: response.into_body().into_data_stream().boxed(),
-			buffer: String::new(),
-		}
+		Stream::open(&self.c.app, &self.c.token, self.c.run.id, after, header).await
 	}
 
 	async fn finish(self) {
@@ -118,7 +138,7 @@ impl Fixture {
 	}
 }
 
-async fn until(mut predicate: impl FnMut() -> bool) {
+pub(super) async fn until(mut predicate: impl FnMut() -> bool) {
 	tokio::time::timeout(Duration::from_secs(10), async {
 		while !predicate() {
 			tokio::time::sleep(Duration::from_millis(10)).await;
