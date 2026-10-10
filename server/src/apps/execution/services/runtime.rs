@@ -129,12 +129,11 @@ async fn inference_interruption(
 ) -> Result<Option<InferenceInterruption>> {
 	use crate::apps::execution::models::{Run as RunRecord, RunInput};
 	let lease = store.orm_connection()?;
-	if RunRecord::committed_control(&mut lease.handle(), id).await? == RunControl::Cancelled {
+	let mut db = lease.handle();
+	if RunRecord::committed_control(&mut db, id).await? == RunControl::Cancelled {
 		return Ok(Some(InferenceInterruption::Cancelled));
 	}
-	let mut tx = store.database().begin().await?;
-	let newer = RunInput::newer_than(tx.as_mut(), id, included_input_seq).await?;
-	tx.commit().await?;
+	let newer = RunInput::newer_committed(&mut db, id, included_input_seq).await?;
 	Ok(newer.then_some(InferenceInterruption::Superseded))
 }
 
