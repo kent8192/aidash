@@ -1,6 +1,7 @@
 //! Native transactions retain eligibility locks, DB time, CAS fences and repair events.
 use crate::apps::execution::{
-	models::Run as RunRecord, repositories::store::run_state::run_unblocked,
+	models::{Run as RunRecord, inference_usage::InferenceUsage},
+	repositories::store::run_state::run_unblocked,
 };
 use crate::{Error, Result};
 use aidash_application::ports::activation::{Approval, RecoveryCursor, SchedulingScope};
@@ -224,14 +225,19 @@ impl<E: Executor> SchedulingScope for Scope<E> {
 			.and_where(worker_context())
 			.returning_all()
 			.build(PostgresQueryBuilder);
-		self.tx
+		let Some(row) = self
+			.tx
 			.executor()
 			.fetch_optional(&sql, convert_values(values))
 			.await
 			.map_err(Error::from)?
-			.map(|row| raw(row)?.decode().map_err(Into::into))
-			.transpose()
-			.map_err(|e: Error| e.into())
+		else {
+			return Ok(None);
+		};
+		// A claim proves every earlier lease lost, so its dispatched attempts
+		// can no longer complete even if this Run never infers again.
+		InferenceUsage::abandon_superseded(self.tx.executor(), run.id, token).await?;
+		Ok(Some(raw(row)?.decode().map_err(Error::from)?))
 	}
 	async fn repair_lease(
 		&mut self,
@@ -263,14 +269,17 @@ impl<E: Executor> SchedulingScope for Scope<E> {
 			.and_where(worker_context())
 			.returning_all()
 			.build(PostgresQueryBuilder);
-		self.tx
+		let Some(row) = self
+			.tx
 			.executor()
 			.fetch_optional(&sql, convert_values(values))
 			.await
 			.map_err(Error::from)?
-			.map(|row| raw(row).map(|run| run.metadata))
-			.transpose()
-			.map_err(Into::into)
+		else {
+			return Ok(None);
+		};
+		InferenceUsage::abandon_superseded(self.tx.executor(), run.id, token).await?;
+		Ok(Some(raw(row)?.metadata))
 	}
 	async fn invalid_state(
 		&mut self,

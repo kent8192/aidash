@@ -424,7 +424,7 @@ async fn media_route_lookup_obeys_the_total_inference_deadline() {
 fn refunds_require_complete_usage() {
 	let incomplete = json!({"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":"ok"}}],"usage":{"completion_tokens":1}});
 	assert!(
-		!aidash_server::provider::parse_openai(incomplete)
+		!aidash_server::provider::parse_openai(incomplete.to_string().as_bytes())
 			.unwrap()
 			.usage_complete
 	);
@@ -438,7 +438,11 @@ fn malformed_arguments_and_inconsistent_stop_reasons_are_retryable() {
 		json!({"tool_calls":[{"id":"one","function":{"name":"tool","arguments":"{"}}]}),
 	] {
 		assert!(matches!(
-			parse_openai(json!({"choices":[{"finish_reason":"tool_calls","message":message}]})),
+			parse_openai(
+				json!({"choices":[{"finish_reason":"tool_calls","message":message}]})
+					.to_string()
+					.as_bytes()
+			),
 			Err(Error::External(_))
 		));
 	}

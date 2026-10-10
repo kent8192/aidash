@@ -7,7 +7,10 @@ use crate::{
 use aidash_domain::{
 	media::Selection,
 	model::ModelConfig,
-	provider::{ContentPart, ModelRequest, ModelResponse, ToolCall, ToolSpec},
+	provider::{
+		ContentPart, ModelRequest, ModelResponse, ToolCall, ToolSpec,
+		usage::{UsageDispatch, UsageOutcome},
+	},
 	registry::{EntityRef, Entry},
 	semantic::InputRead,
 	*,
@@ -88,6 +91,23 @@ pub trait ExecutionStore: Send + Sync {
 		token: Uuid,
 		key: &str,
 		prompt: &str,
+	) -> Result<()>;
+	/// Insert this Inference Attempt's Usage Record before provider I/O while the
+	/// worker still holds the lease. Any of the Run's records still dispatched
+	/// belong to a lost lease or crash and become unknown first.
+	async fn record_usage_dispatch(
+		&self,
+		run: &Run,
+		token: Uuid,
+		dispatch: &UsageDispatch,
+	) -> Result<()>;
+	/// Complete a dispatched Usage Record at most once. A record already marked
+	/// unknown by a later dispatch stays unchanged.
+	async fn complete_usage_record(
+		&self,
+		run: &Run,
+		attempt: Uuid,
+		outcome: &UsageOutcome,
 	) -> Result<()>;
 	async fn run_message_has_media(&self, messages: &[Uuid]) -> Result<bool>;
 }

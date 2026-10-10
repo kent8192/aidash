@@ -5,6 +5,8 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+pub mod usage;
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ToolSpec {
 	pub name: String,
@@ -104,6 +106,10 @@ pub struct ModelResponse {
 	pub input_tokens: u64,
 	pub output_tokens: u64,
 	pub usage_complete: bool,
+	/// Provider-reported usage for this attempt's Usage Record. It is not part
+	/// of the persisted pending state, which older binaries must still read.
+	#[serde(skip)]
+	pub reported: usage::ReportedUsage,
 }
 
 #[derive(Debug, Clone)]

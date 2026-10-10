@@ -13,13 +13,13 @@ pub struct Accounting {
 	pub refund: i64,
 	pub exceeded: bool,
 }
+/// Local settlement reports only complete positive usage; unknown usage keeps the
+/// full reservation and never counts as exceeding it. Cache read and write counts
+/// are breakdowns of the prompt and are never added again.
 pub fn accounting(amount: i64, response: &ModelResponse) -> Accounting {
-	let reported = response
-		.input_tokens
-		.checked_add(response.output_tokens)
-		.and_then(|tokens| i64::try_from(tokens).ok());
+	let reported = complete_reported_usage(response);
 	let refund = reported
-		.filter(|tokens| response.usage_complete && *tokens > 0 && *tokens <= amount)
+		.filter(|tokens| *tokens <= amount)
 		.map_or(0, |tokens| amount - tokens);
 	Accounting {
 		reported,
@@ -64,5 +64,37 @@ mod tests {
 			..Default::default()
 		};
 		assert_eq!(complete_reported_usage(&response), expected);
+	}
+
+	#[rstest]
+	#[case::complete(30, 10, true, Some(40), 90, false)]
+	#[case::incomplete_is_unknown(30, 10, false, None, 0, false)]
+	#[case::incomplete_never_exceeds(100, 31, false, None, 0, false)]
+	#[case::empty(0, 0, true, None, 0, false)]
+	#[case::exact(100, 30, true, Some(130), 0, false)]
+	#[case::exceeded(100, 31, true, Some(131), 0, true)]
+	#[case::database_overflow(i64::MAX as u64, 1, true, None, 0, false)]
+	fn local_accounting_reports_only_complete_positive_usage(
+		#[case] input_tokens: u64,
+		#[case] output_tokens: u64,
+		#[case] usage_complete: bool,
+		#[case] reported: Option<i64>,
+		#[case] refund: i64,
+		#[case] exceeded: bool,
+	) {
+		let response = ModelResponse {
+			input_tokens,
+			output_tokens,
+			usage_complete,
+			..Default::default()
+		};
+		assert_eq!(
+			accounting(130, &response),
+			Accounting {
+				reported,
+				refund,
+				exceeded
+			}
+		);
 	}
 }

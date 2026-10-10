@@ -138,10 +138,11 @@ Aidash additionally emits:
 - `aidash_worker_steps_total{outcome="success|error"}`: completed step attempts, not terminal tasks.
 - `aidash_worker_retries_total`: persisted worker retry transitions.
 - `aidash_model_response_headers_seconds`: successful HTTP transport time until model response headers, not first-token latency.
-- `aidash_model_tokens_total{direction="input|output"}`: reported usage from successfully parsed model responses.
+- `aidash_model_tokens_total{direction="input|output|input_cached_read|input_cached_write"}`: provider-reported usage from successfully parsed model responses. Cached reads and writes are breakdowns of `input`, not additional tokens.
 
-These counters are operational observations, not billing records. Missing provider
-usage is zero; failed/unparseable provider responses are not counted as known
+These counters are operational observations, not billing records. A direction
+receives a sample only when the provider reported that value; missing usage is
+absent, not zero. Failed/unparseable provider responses are not counted as known
 usage. Durable backlog and terminal task state remain in the database and are not
 represented by the active-step gauge. OpenTelemetry propagation and distributed
 traces are deferred to a separate change.

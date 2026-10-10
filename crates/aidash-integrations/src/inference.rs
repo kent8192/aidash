@@ -4,11 +4,15 @@ use aidash_application::ports::ModelProvider;
 use aidash_application::provider_access::{Context, Inference, Operation, ProviderAccess, Source};
 use aidash_domain::{
 	model::ModelConfig,
-	provider::{ContentPart, ModelRequest, ModelResponse, ToolCall},
+	provider::{
+		ContentPart, ModelRequest, ModelResponse, ToolCall,
+		usage::{ProviderCost, ReportedUsage},
+	},
 };
 use async_trait::async_trait;
 use secrecy::ExposeSecret;
-use serde_json::{Value, json};
+use serde::Deserialize;
+use serde_json::{Value, json, value::RawValue};
 use std::sync::Arc;
 
 pub mod cache_salt;
@@ -330,11 +334,19 @@ impl ModelProvider for OpenRouterProvider {
 				)
 				.await);
 			}
-			let result = parse_openai(crate::response::json(response, 1_048_576).await?)?;
-			metrics::counter!("aidash_model_tokens_total", "direction" => "input")
-				.increment(result.input_tokens);
-			metrics::counter!("aidash_model_tokens_total", "direction" => "output")
-				.increment(result.output_tokens);
+			let result = parse_openai(&crate::response::bytes(response, 1_048_576).await?)?;
+			// Unknown usage is absent, never a zero sample.
+			for (direction, tokens) in [
+				("input", result.reported.input_tokens),
+				("output", result.reported.output_tokens),
+				("input_cached_read", result.reported.cache_read_tokens),
+				("input_cached_write", result.reported.cache_write_tokens),
+			] {
+				if let Some(tokens) = tokens {
+					metrics::counter!("aidash_model_tokens_total", "direction" => direction)
+						.increment(tokens);
+				}
+			}
 			Ok(result)
 		})
 		.await
@@ -354,7 +366,42 @@ pub(crate) fn safe_upstream_reason(detail: &str) -> String {
 	"upstream rejected the request".into()
 }
 
-pub fn parse_openai(value: Value) -> Result<ModelResponse> {
+/// Only the cost fields OpenRouter reports in credits, kept as raw JSON text.
+/// Without `serde_json`'s `arbitrary_precision`, a parsed `Value` would already
+/// have rounded each decimal to the nearest `f64`.
+#[derive(Deserialize)]
+struct RawCosts<'a> {
+	#[serde(borrow)]
+	usage: Option<RawUsageCosts<'a>>,
+}
+#[derive(Deserialize)]
+struct RawUsageCosts<'a> {
+	#[serde(borrow)]
+	cost: Option<&'a RawValue>,
+	#[serde(borrow)]
+	cost_details: Option<RawCostDetails<'a>>,
+}
+#[derive(Deserialize)]
+struct RawCostDetails<'a> {
+	#[serde(borrow)]
+	upstream_inference_cost: Option<&'a RawValue>,
+}
+
+fn provider_cost(body: &[u8]) -> Option<ProviderCost> {
+	// A cost field with an unexpected shape is unknown, not a parse failure.
+	let usage = serde_json::from_slice::<RawCosts>(body).ok()?.usage?;
+	ProviderCost::from_report(
+		usage.cost.map(RawValue::get),
+		usage
+			.cost_details
+			.and_then(|details| details.upstream_inference_cost)
+			.map(RawValue::get),
+	)
+}
+
+pub fn parse_openai(body: &[u8]) -> Result<ModelResponse> {
+	let value: Value = serde_json::from_slice(body)
+		.map_err(|error| Error::External(format!("invalid response JSON: {error}")))?;
 	let choice = value
 		.pointer("/choices/0")
 		.ok_or_else(|| Error::External("provider returned no completion choice".into()))?;
@@ -371,28 +418,25 @@ pub fn parse_openai(value: Value) -> Result<ModelResponse> {
 		return Err(Error::External("provider refused the request".into()));
 	}
 	let content = message["content"].as_str().unwrap_or_default();
+	let count = |pointer: &str| value.pointer(pointer).and_then(Value::as_u64);
+	let reported = ReportedUsage {
+		input_tokens: count("/usage/prompt_tokens"),
+		output_tokens: count("/usage/completion_tokens"),
+		cache_read_tokens: count("/usage/prompt_tokens_details/cached_tokens"),
+		cache_write_tokens: count("/usage/prompt_tokens_details/cache_write_tokens"),
+		reasoning_tokens: count("/usage/completion_tokens_details/reasoning_tokens"),
+		cost: provider_cost(body),
+	};
 	let mut result = ModelResponse {
 		text: if content.trim().is_empty() {
 			String::new()
 		} else {
 			content.to_owned()
 		},
-		usage_complete: value
-			.pointer("/usage/prompt_tokens")
-			.and_then(Value::as_u64)
-			.is_some()
-			&& value
-				.pointer("/usage/completion_tokens")
-				.and_then(Value::as_u64)
-				.is_some(),
-		input_tokens: value
-			.pointer("/usage/prompt_tokens")
-			.and_then(Value::as_u64)
-			.unwrap_or(0),
-		output_tokens: value
-			.pointer("/usage/completion_tokens")
-			.and_then(Value::as_u64)
-			.unwrap_or(0),
+		usage_complete: reported.input_tokens.is_some() && reported.output_tokens.is_some(),
+		input_tokens: reported.input_tokens.unwrap_or(0),
+		output_tokens: reported.output_tokens.unwrap_or(0),
+		reported,
 		..Default::default()
 	};
 	if let Some(calls) = message["tool_calls"].as_array() {

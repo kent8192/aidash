@@ -3034,6 +3034,9 @@ fn request_id(run: &Run) -> Uuid {
 #[path = "postgres/typed_state.rs"]
 mod typed_state;
 
+#[path = "postgres/inference_usage.rs"]
+mod inference_usage;
+
 #[rstest::rstest]
 #[tokio::test]
 async fn operator_remote_humans_live_on_home_and_survive_receiver_reconstruction(

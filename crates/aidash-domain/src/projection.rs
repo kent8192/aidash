@@ -46,6 +46,15 @@ impl ProjectionVersion {
 	pub fn salted(&self) -> bool {
 		!self.is_legacy()
 	}
+
+	/// The version number recorded on Usage Records (ADR 0015 numbering).
+	pub fn number(self) -> u8 {
+		match self {
+			Self::Legacy => 1,
+			Self::Ordered => 2,
+			Self::Native => 3,
+		}
+	}
 }
 
 impl std::fmt::Display for ProjectionVersion {

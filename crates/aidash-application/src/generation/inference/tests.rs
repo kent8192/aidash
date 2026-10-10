@@ -240,10 +240,10 @@ async fn receipt(world: &World) -> Reservation {
 fn response(input: u64, output: u64, complete: bool) -> ModelResponse {
 	ModelResponse {
 		text: "done".into(),
-		tool_calls: vec![],
 		input_tokens: input,
 		output_tokens: output,
 		usage_complete: complete,
+		..Default::default()
 	}
 }
 fn assert_ledger(
@@ -281,11 +281,11 @@ async fn reservation_commits_both_ancestors_before_returning(world: World) {
 }
 #[rstest]
 #[case((30,10,true,Some(40),40,false))]
-#[case((30,10,false,Some(40),130,false))]
-#[case((0,0,true,Some(0),130,false))]
+#[case((30,10,false,None,130,false))]
+#[case((0,0,true,None,130,false))]
 #[case((100,30,true,Some(130),130,false))]
 #[case((100,31,true,Some(131),130,true))]
-#[case((100,31,false,Some(131),130,true))]
+#[case((100,31,false,None,130,false))]
 #[case((u64::MAX,1,true,None,130,false))]
 #[case((i64::MAX as u64+1,0,true,None,130,false))]
 #[tokio::test]
