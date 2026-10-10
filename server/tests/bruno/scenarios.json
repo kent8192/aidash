@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "endpoint_count": 291,
+  "endpoint_count": 298,
   "requests": [
     {
       "name": "Health reports the configured node",
@@ -11858,6 +11858,332 @@
       "required_checks": [
         "Exact HTTP 401",
         "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1094 tenant-administration - Anonymous request is rejected",
+      "file": "contracts/1094-tenant-administration.bru",
+      "endpoint": "GET /api/tenants/{tenant}/administration",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1095 tenant-administration - Operator bearer is never a Tenant Administrator",
+      "file": "contracts/1095-tenant-administration.bru",
+      "endpoint": "GET /api/tenants/{tenant}/administration",
+      "scenario": "Operator bearer is never a Tenant Administrator",
+      "status": 403,
+      "required_checks": [
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1096 tenant-administration - Subject Credential bearer is never a Tenant Administrator",
+      "file": "contracts/1096-tenant-administration.bru",
+      "endpoint": "GET /api/tenants/{tenant}/administration",
+      "scenario": "Subject Credential bearer is never a Tenant Administrator",
+      "status": 403,
+      "required_checks": [
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1097 tenant-registrations - Anonymous request is rejected",
+      "file": "contracts/1097-tenant-registrations.bru",
+      "endpoint": "GET /api/tenants/{tenant}/registrations",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1098 tenant-registrations - Operator bearer is never a Tenant Administrator",
+      "file": "contracts/1098-tenant-registrations.bru",
+      "endpoint": "GET /api/tenants/{tenant}/registrations",
+      "scenario": "Operator bearer is never a Tenant Administrator",
+      "status": 403,
+      "required_checks": [
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1099 tenant-registrations - Subject Credential bearer is never a Tenant Administrator",
+      "file": "contracts/1099-tenant-registrations.bru",
+      "endpoint": "GET /api/tenants/{tenant}/registrations",
+      "scenario": "Subject Credential bearer is never a Tenant Administrator",
+      "status": 403,
+      "required_checks": [
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1100 tenant-registration-approve - Anonymous request is rejected",
+      "file": "contracts/1100-tenant-registration-approve.bru",
+      "endpoint": "POST /api/tenants/{tenant}/registrations/{id}/approve",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1101 tenant-registration-approve - Operator bearer is never a Tenant Administrator",
+      "file": "contracts/1101-tenant-registration-approve.bru",
+      "endpoint": "POST /api/tenants/{tenant}/registrations/{id}/approve",
+      "scenario": "Operator bearer is never a Tenant Administrator",
+      "status": 403,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1102 tenant-registration-approve - Subject Credential bearer is never a Tenant Administrator",
+      "file": "contracts/1102-tenant-registration-approve.bru",
+      "endpoint": "POST /api/tenants/{tenant}/registrations/{id}/approve",
+      "scenario": "Subject Credential bearer is never a Tenant Administrator",
+      "status": 403,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1103 tenant-registration-approve - Malformed JSON cannot reach the use case",
+      "file": "contracts/1103-tenant-registration-approve.bru",
+      "endpoint": "POST /api/tenants/{tenant}/registrations/{id}/approve",
+      "scenario": "Malformed JSON cannot reach the use case",
+      "status": 400,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1104 tenant-registration-approve - Typed resource IDs reject invalid UUIDs",
+      "file": "contracts/1104-tenant-registration-approve.bru",
+      "endpoint": "POST /api/tenants/{tenant}/registrations/{id}/approve",
+      "scenario": "Typed resource IDs reject invalid UUIDs",
+      "status": 400,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1105 tenant-registration-reject - Anonymous request is rejected",
+      "file": "contracts/1105-tenant-registration-reject.bru",
+      "endpoint": "POST /api/tenants/{tenant}/registrations/{id}/reject",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1106 tenant-registration-reject - Operator bearer is never a Tenant Administrator",
+      "file": "contracts/1106-tenant-registration-reject.bru",
+      "endpoint": "POST /api/tenants/{tenant}/registrations/{id}/reject",
+      "scenario": "Operator bearer is never a Tenant Administrator",
+      "status": 403,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1107 tenant-registration-reject - Subject Credential bearer is never a Tenant Administrator",
+      "file": "contracts/1107-tenant-registration-reject.bru",
+      "endpoint": "POST /api/tenants/{tenant}/registrations/{id}/reject",
+      "scenario": "Subject Credential bearer is never a Tenant Administrator",
+      "status": 403,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1108 tenant-registration-reject - Typed resource IDs reject invalid UUIDs",
+      "file": "contracts/1108-tenant-registration-reject.bru",
+      "endpoint": "POST /api/tenants/{tenant}/registrations/{id}/reject",
+      "scenario": "Typed resource IDs reject invalid UUIDs",
+      "status": 400,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1109 tenant-mappings - Anonymous request is rejected",
+      "file": "contracts/1109-tenant-mappings.bru",
+      "endpoint": "GET /api/tenants/{tenant}/mappings",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1110 tenant-mappings - Operator bearer is never a Tenant Administrator",
+      "file": "contracts/1110-tenant-mappings.bru",
+      "endpoint": "GET /api/tenants/{tenant}/mappings",
+      "scenario": "Operator bearer is never a Tenant Administrator",
+      "status": 403,
+      "required_checks": [
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1111 tenant-mappings - Subject Credential bearer is never a Tenant Administrator",
+      "file": "contracts/1111-tenant-mappings.bru",
+      "endpoint": "GET /api/tenants/{tenant}/mappings",
+      "scenario": "Subject Credential bearer is never a Tenant Administrator",
+      "status": 403,
+      "required_checks": [
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1112 tenant-mappings - Paging rejects nonnumeric offsets",
+      "file": "contracts/1112-tenant-mappings.bru",
+      "endpoint": "GET /api/tenants/{tenant}/mappings",
+      "scenario": "Paging rejects nonnumeric offsets",
+      "status": 400,
+      "required_checks": [
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1113 tenant-mapping-disable - Anonymous request is rejected",
+      "file": "contracts/1113-tenant-mapping-disable.bru",
+      "endpoint": "POST /api/tenants/{tenant}/mappings/{id}/disable",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1114 tenant-mapping-disable - Operator bearer is never a Tenant Administrator",
+      "file": "contracts/1114-tenant-mapping-disable.bru",
+      "endpoint": "POST /api/tenants/{tenant}/mappings/{id}/disable",
+      "scenario": "Operator bearer is never a Tenant Administrator",
+      "status": 403,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1115 tenant-mapping-disable - Subject Credential bearer is never a Tenant Administrator",
+      "file": "contracts/1115-tenant-mapping-disable.bru",
+      "endpoint": "POST /api/tenants/{tenant}/mappings/{id}/disable",
+      "scenario": "Subject Credential bearer is never a Tenant Administrator",
+      "status": 403,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1116 tenant-mapping-disable - Malformed JSON cannot reach the use case",
+      "file": "contracts/1116-tenant-mapping-disable.bru",
+      "endpoint": "POST /api/tenants/{tenant}/mappings/{id}/disable",
+      "scenario": "Malformed JSON cannot reach the use case",
+      "status": 400,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1117 tenant-mapping-disable - Typed resource IDs reject invalid UUIDs",
+      "file": "contracts/1117-tenant-mapping-disable.bru",
+      "endpoint": "POST /api/tenants/{tenant}/mappings/{id}/disable",
+      "scenario": "Typed resource IDs reject invalid UUIDs",
+      "status": 400,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1118 tenant-subject-groups - Anonymous request is rejected",
+      "file": "contracts/1118-tenant-subject-groups.bru",
+      "endpoint": "PUT /api/tenants/{tenant}/subjects/{subject}/groups",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1119 tenant-subject-groups - Operator bearer is never a Tenant Administrator",
+      "file": "contracts/1119-tenant-subject-groups.bru",
+      "endpoint": "PUT /api/tenants/{tenant}/subjects/{subject}/groups",
+      "scenario": "Operator bearer is never a Tenant Administrator",
+      "status": 403,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1120 tenant-subject-groups - Subject Credential bearer is never a Tenant Administrator",
+      "file": "contracts/1120-tenant-subject-groups.bru",
+      "endpoint": "PUT /api/tenants/{tenant}/subjects/{subject}/groups",
+      "scenario": "Subject Credential bearer is never a Tenant Administrator",
+      "status": 403,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1121 tenant-subject-groups - Malformed JSON cannot reach the use case",
+      "file": "contracts/1121-tenant-subject-groups.bru",
+      "endpoint": "PUT /api/tenants/{tenant}/subjects/{subject}/groups",
+      "scenario": "Malformed JSON cannot reach the use case",
+      "status": 400,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
       ]
     }
   ]

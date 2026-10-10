@@ -60,6 +60,10 @@ pub struct Subject {
 pub struct Group {
 	#[serde(default)]
 	pub roles: BTreeSet<String>,
+	/// An Operator-marked Assignable Group: Tenant Administrators may add user
+	/// subjects to it or remove them from it, and confer nothing else.
+	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
+	pub assignable: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]

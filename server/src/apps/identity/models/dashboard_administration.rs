@@ -1,8 +1,9 @@
 //! Transactional dashboard registration and authority changes.
 
+use super::tenant_administration::AdministrationEvent;
 use super::{
-	AuthorizationBundle, AuthorizationCredential, DashboardIdentity, DashboardMapping,
-	DashboardOperatorGrant, DashboardRegistrationRequest,
+	AdministrationActor, AuthorizationBundle, AuthorizationCredential, DashboardIdentity,
+	DashboardMapping, DashboardOperatorGrant, DashboardRegistrationRequest, TenantAdministrator,
 };
 use crate::apps::identity::serializers::oidc::{
 	AdminMapping, AdminOperatorGrant, Approval, ApprovedMapping, IdentityView, Registration,
@@ -10,6 +11,7 @@ use crate::apps::identity::serializers::oidc::{
 use crate::apps::identity::services::dashboard_rules;
 use crate::authorization::Snapshot;
 use crate::{Error, Result};
+use aidash_domain::identity::tenant_administration;
 use chrono::{DateTime, Duration, Utc};
 use reinhardt::core::exception::Error as FrameworkError;
 use reinhardt::db::backends::TransactionExecutor;
@@ -20,6 +22,8 @@ use reinhardt::query::{
 	Alias, Expr, ExprTrait, LockType, OnConflict, PostgresQueryBuilder, Query,
 	QueryStatementBuilder,
 };
+use serde_json::json;
+use std::collections::BTreeSet;
 use uuid::Uuid;
 
 pub(super) async fn database_time(tx: &mut AtomicTransaction) -> Result<DateTime<Utc>> {
@@ -123,15 +127,27 @@ impl DashboardRegistrationRequest {
 		.await
 	}
 
+	/// Approves into `input.tenant` and `input.subject`. A Tenant Administrator
+	/// approves only into its own Tenant, and only a Registration Request from
+	/// the bound GCIP Tenant; it creates the subject with `groups` or re-approves
+	/// the subject that External Identity was previously mapped to.
 	pub(crate) async fn approve(
 		db: DatabaseConnection,
 		id: Uuid,
 		input: Approval,
-		decision_actor: String,
+		groups: BTreeSet<String>,
+		actor: &AdministrationActor,
 		token_hash: Vec<u8>,
 		policy: Option<aidash_application::ports::authorization::dashboard::AccountPolicy>,
 	) -> Result<ApprovedMapping> {
 		db.atomic(async |tx| {
+			let administrator = actor.tenant_administrator();
+			// Authority, including its exclusive policy lock, precedes every
+			// identity lock, as at execution boundaries.
+			let mut snapshot = match administrator {
+				Some(administrator) => Some(administrator.lock(tx, true).await?),
+				None => None,
+			};
 			let preliminary = Self::objects()
 				.filter(Self::field_id().eq(id))
 				.all_with_db(tx)
@@ -139,36 +155,53 @@ impl DashboardRegistrationRequest {
 				.pop()
 				.ok_or_else(|| Error::NotFound("registration".into()))?;
 			let candidate = DashboardIdentity::find(tx, preliminary.identity_id()).await?;
+			if let (Some(administrator), Some(snapshot)) = (administrator, &snapshot) {
+				visible_to(administrator, &candidate)?;
+				administrator
+					.require(
+						tx,
+						snapshot,
+						tenant_administration::REGISTRATION_APPROVE,
+						&id.to_string(),
+						json!({"identity_id": candidate.id, "subject": input.subject}),
+					)
+					.await?;
+			}
 			crate::authorization::identity::require_dashboard_mapping(
 				policy.as_ref(),
 				&candidate.issuer,
 				&candidate.gcip_tenant,
 				&input.tenant,
 			)?;
-			// QuerySet currently exposes FOR UPDATE only. This shared policy lock
-			// allows other admissions while excluding policy replacement.
-			let (sql, values) = Query::select()
-				.column(Alias::new("revision"))
-				.expr_as(
-					Expr::col(Alias::new("document")).cast_as("text"),
-					Alias::new("document"),
-				)
-				.from(Alias::new(AuthorizationBundle::table_name()))
-				.and_where(
-					Expr::col(Alias::new("tenant"))
-						.eq(reinhardt::query::Expr::value(input.tenant.clone())),
-				)
-				.lock(LockType::Share)
-				.build(PostgresQueryBuilder);
-			let row = TransactionExecutor::fetch_optional(tx, &sql, convert_values(values))
-				.await?
-				.ok_or_else(|| Error::NotFound("authorization policy".into()))?;
-			let snapshot = Snapshot {
-				revision: row.get("revision").map_err(FrameworkError::from)?,
-				bundle: serde_json::from_str(
-					&row.get::<String>("document")
-						.map_err(FrameworkError::from)?,
-				)?,
+			let mut snapshot = match snapshot.take() {
+				Some(snapshot) => snapshot,
+				None => {
+					// QuerySet currently exposes FOR UPDATE only. This shared policy lock
+					// allows other admissions while excluding policy replacement.
+					let (sql, values) = Query::select()
+						.column(Alias::new("revision"))
+						.expr_as(
+							Expr::col(Alias::new("document")).cast_as("text"),
+							Alias::new("document"),
+						)
+						.from(Alias::new(AuthorizationBundle::table_name()))
+						.and_where(
+							Expr::col(Alias::new("tenant"))
+								.eq(reinhardt::query::Expr::value(input.tenant.clone())),
+						)
+						.lock(LockType::Share)
+						.build(PostgresQueryBuilder);
+					let row = TransactionExecutor::fetch_optional(tx, &sql, convert_values(values))
+						.await?
+						.ok_or_else(|| Error::NotFound("authorization policy".into()))?;
+					Snapshot {
+						revision: row.get("revision").map_err(FrameworkError::from)?,
+						bundle: serde_json::from_str(
+							&row.get::<String>("document")
+								.map_err(FrameworkError::from)?,
+						)?,
+					}
+				}
 			};
 			let identity = DashboardIdentity::objects()
 				.filter(DashboardIdentity::field_id().eq(preliminary.identity_id()))
@@ -197,6 +230,28 @@ impl DashboardRegistrationRequest {
 				&identity.gcip_tenant,
 				&input.tenant,
 			)?;
+			if let Some(administrator) = administrator {
+				let previously_mapped = DashboardMapping::objects()
+					.filter(DashboardMapping::field_identity_id().eq(identity.id))
+					.filter(DashboardMapping::field_tenant().eq(input.tenant.clone()))
+					.filter(DashboardMapping::field_subject().eq(input.subject.clone()))
+					.exists_with_db(tx)
+					.await?;
+				if tenant_administration::approval_target(
+					&snapshot.bundle,
+					&input.subject,
+					previously_mapped,
+					&groups,
+				)? == tenant_administration::ApprovalTarget::NewSubject
+				{
+					tenant_administration::add_user_subject(
+						&mut snapshot.bundle,
+						&input.subject,
+						&groups,
+					)?;
+					snapshot.revision = administrator.save_policy(tx, &snapshot).await?;
+				}
+			}
 			dashboard_rules::require_user_mapping(&snapshot, &input.subject)?;
 			// The secret never leaves the service; this record anchors a policy
 			// lease and cannot be used as a bearer credential.
@@ -271,8 +326,21 @@ impl DashboardRegistrationRequest {
 			};
 			registration.status = "approved".into();
 			registration.decided_at = Some(now);
-			registration.decision_actor = Some(decision_actor);
+			registration.decision_actor = Some(actor.decision_actor());
 			Self::objects().update_with_conn(tx, &registration).await?;
+			actor
+				.record(
+					tx,
+					AdministrationEvent {
+						action: tenant_administration::REGISTRATION_APPROVE,
+						identity: identity_id,
+						registration: Some(id),
+						mapping: Some(mapping_id),
+						tenant: Some(&input.tenant),
+						subject: Some(&input.subject),
+					},
+				)
+				.await?;
 			Ok(ApprovedMapping {
 				id: mapping_id,
 				identity_id,
@@ -286,15 +354,33 @@ impl DashboardRegistrationRequest {
 	pub(crate) async fn reject(
 		db: DatabaseConnection,
 		id: Uuid,
-		actor: String,
+		actor: &AdministrationActor,
 	) -> Result<Registration> {
 		db.atomic(async |tx| {
+			let administrator = actor.tenant_administrator();
+			let snapshot = match administrator {
+				Some(administrator) => Some(administrator.lock(tx, false).await?),
+				None => None,
+			};
 			let preliminary = Self::objects()
 				.filter(Self::field_id().eq(id))
 				.all_with_db(tx)
 				.await?
 				.pop()
 				.ok_or_else(|| Error::Conflict("registration is no longer pending".into()))?;
+			if let (Some(administrator), Some(snapshot)) = (administrator, &snapshot) {
+				let candidate = DashboardIdentity::find(tx, preliminary.identity_id()).await?;
+				visible_to(administrator, &candidate)?;
+				administrator
+					.require(
+						tx,
+						snapshot,
+						tenant_administration::REGISTRATION_REJECT,
+						&id.to_string(),
+						json!({"identity_id": candidate.id}),
+					)
+					.await?;
+			}
 			DashboardIdentity::objects()
 				.filter(DashboardIdentity::field_id().eq(preliminary.identity_id()))
 				.select_for_update()
@@ -313,13 +399,38 @@ impl DashboardRegistrationRequest {
 			dashboard_rules::require_pending(&row.status, row.expires_at, now)?;
 			row.status = "rejected".into();
 			row.decided_at = Some(now);
-			row.decision_actor = Some(actor);
+			row.decision_actor = Some(actor.decision_actor());
 			Self::objects().update_with_conn(tx, &row).await?;
 			DashboardIdentity::clear_display_if_unmapped(tx, row.identity_id()).await?;
+			actor
+				.record(
+					tx,
+					AdministrationEvent {
+						action: tenant_administration::REGISTRATION_REJECT,
+						identity: row.identity_id(),
+						registration: Some(id),
+						mapping: None,
+						tenant: administrator.map(TenantAdministrator::tenant),
+						subject: None,
+					},
+				)
+				.await?;
 			Ok(row.contract())
 		})
 		.await
 	}
+}
+
+/// A Tenant Administrator sees only Registration Requests from the GCIP Tenant
+/// bound to its Tenant, and never acts on its own External Identity.
+pub(super) fn visible_to(
+	administrator: &TenantAdministrator,
+	identity: &DashboardIdentity,
+) -> Result<()> {
+	if identity.gcip_tenant != administrator.pool() || identity.id == administrator.identity_id {
+		return Err(Error::NotFound("registration".into()));
+	}
+	Ok(())
 }
 
 impl DashboardIdentity {
@@ -475,8 +586,34 @@ impl DashboardMapping {
 			.collect())
 	}
 
-	pub(crate) async fn disable(db: DatabaseConnection, id: Uuid, revision: i64) -> Result<()> {
+	/// A Tenant Administrator disables only another External Identity's Mapping
+	/// in its own Tenant.
+	pub(crate) async fn disable(
+		db: DatabaseConnection,
+		id: Uuid,
+		revision: i64,
+		actor: &AdministrationActor,
+	) -> Result<()> {
 		db.atomic(async |tx| {
+			if let Some(administrator) = actor.tenant_administrator() {
+				let snapshot = administrator.lock(tx, false).await?;
+				let target = Self::find(tx, id)
+					.await?
+					.filter(|mapping| mapping.tenant == administrator.tenant())
+					.ok_or_else(|| Error::NotFound("mapping".into()))?;
+				if target.identity_id() == administrator.identity_id {
+					return Err(Error::Forbidden);
+				}
+				administrator
+					.require(
+						tx,
+						&snapshot,
+						tenant_administration::MAPPING_DISABLE,
+						&id.to_string(),
+						json!({"identity_id": target.identity_id(), "subject": target.subject}),
+					)
+					.await?;
+			}
 			let mapping = Self::objects()
 				.filter(Self::field_id().eq(id))
 				.filter(Self::field_enabled().eq(true))
@@ -518,6 +655,19 @@ impl DashboardMapping {
 					.update_with_conn(tx, &credential)
 					.await?;
 			}
+			actor
+				.record(
+					tx,
+					AdministrationEvent {
+						action: tenant_administration::MAPPING_DISABLE,
+						identity: mapping.identity_id(),
+						registration: None,
+						mapping: Some(id),
+						tenant: Some(&mapping.tenant),
+						subject: Some(&mapping.subject),
+					},
+				)
+				.await?;
 			Ok(())
 		})
 		.await

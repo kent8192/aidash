@@ -12,7 +12,7 @@ OIDC-origin execution stores an immutable run origin and rechecks its underlying
 
 ### GCIP sign-in
 
-GCIP is opt-in and replaces direct Google OIDC for a Cloud deployment. A deployment selects exactly one issuer. An External Identity is keyed by issuer, GCIP Tenant ID and uid; OIDC rows use an empty GCIP Tenant ID and retain their issuer/subject identity. Emails, names and GCIP custom claims never link identities or grant authority. Verified email and display name are visible only to Operators, overwritten at sign-in, and cleared after rejection or expiry when no enabled Mapping remains.
+GCIP is opt-in and replaces direct Google OIDC for a Cloud deployment. A deployment selects exactly one issuer. An External Identity is keyed by issuer, GCIP Tenant ID and uid; OIDC rows use an empty GCIP Tenant ID and retain their issuer/subject identity. Emails, names and GCIP custom claims never link identities or grant authority. Verified email and display name are visible only to Operators and to Tenant Administrators of the Tenant bound to the identity's GCIP Tenant. They are overwritten at sign-in, and cleared after rejection or expiry when no enabled Mapping remains.
 
 A Tenant Binding maps a GCIP Tenant ID to exactly one Aidash Tenant name. Registration approval and each request, durable execution lease and idle stream snapshot require a Mapping's Tenant to equal the bound Tenant. Removing a Binding causes Identity Disablement at the next boundary, even inside the five-minute freshness window. Installing GCIP policy reconciles every enabled Identity before request/worker admission, including those without a live session or nonterminal run. The periodic refresh repeats that reconciliation. A verified login also disables an inactive existing Identity when it observes the removed Binding, before contacting that pool's Admin API. Restoring the Binding alone does not restore authority. Restore requires an Operator and a valid current Binding; admitted work then needs an authorized manual resumption.
 
@@ -23,6 +23,47 @@ Password account creation sends a verification email before sign-in. If delivery
 Account Status carries both `disabled` and `validSince`. A disabled/deleted account blocks sign-in, disables the Identity, revokes sessions and pauses admitted work at its next boundary. Re-enabling GCIP alone cannot restore Aidash authority. An advanced `validSince` atomically revokes only sessions whose original `auth_time` is strictly earlier; it leaves admitted work and Mapping credentials active. Desktop sessions inherit the browser's authentication time. A successful status result is fresh for five minutes; during an Admin outage the last successful result can admit boundaries for up to fifteen minutes. Beyond that deadline sessions are unavailable and work waits for status recovery, retaining the existing automatic outage-only recovery rules.
 
 The tenant-scoped effect of `firebaseauth.users.get`, applicability of the configured viewer role on tenants, and which password/account events advance `validSince` still require a GCP sandbox. The implementation consumes the returned timestamp without inferring those events. No unsigned/emulator token path exists.
+
+### Tenant Administrators
+
+A Tenant Administrator approves Registration Requests and manages Mappings for its own Tenant, without an Operator. It is not a separate account or grant record. It is an External Identity acting through one of its Mappings, whose subject the Tenant's policy permits to perform these actions:
+
+| Action                 | Resource kind  | Allows                                                                                 |
+| ---------------------- | -------------- | -------------------------------------------------------------------------------------- |
+| `registration.read`    | `registration` | List pending Registration Requests from the bound GCIP Tenant, with Display Attributes |
+| `registration.approve` | `registration` | Approve a request into a new user subject                                              |
+| `registration.reject`  | `registration` | Reject a request                                                                       |
+| `mapping.read`         | `mapping`      | List the Tenant's Mappings, with Display Attributes and Assignable Group memberships   |
+| `mapping.disable`      | `mapping`      | Disable another External Identity's Mapping                                            |
+| `subject.group.update` | `subject`      | Replace a user subject's Assignable Group memberships                                  |
+
+Item operations evaluate the item's ID (the request, Mapping or subject). Lists and `GET /api/tenants/{tenant}/administration` evaluate the resource ID `all`. Decisions, including denials, are recorded in the Tenant's decision log.
+
+Tenant Administrators exist only where a Tenant Binding ties Registration Requests to a Tenant (GCIP). A generic OIDC Registration Request carries no Tenant, so only Operators approve it. Every Tenant Administrator route requires a browser session in a `mapping:<id>` context whose Tenant equals the path Tenant; the Operator bearer token, an Operator context and Subject Credential bearer tokens are rejected with 403. A Tenant Administrator never sees or decides a Registration Request from another GCIP Tenant (404), and never reads or changes another Tenant (403).
+
+An Operator marks the groups a Tenant Administrator may confer by setting `"assignable": true` on a group in the Tenant's policy bundle. These Assignable Groups are the only authority a Tenant Administrator can grant:
+
+- Approval creates a new `user` subject with only the requested Assignable Groups, no roles and no delegator. It cannot hand out an existing subject (409), because that subject may hold authority outside the Assignable Groups. The one exception is re-approving an External Identity into the subject it was previously mapped to; a re-approval sends no groups and keeps the subject unchanged.
+- `PUT /api/tenants/{tenant}/subjects/{subject}/groups` with `{"groups":[...],"expected_policy_revision":n}` replaces only Assignable Group memberships. Other groups and roles are retained.
+- Neither operation edits roles, group definitions or any other part of the policy. Policy edits remain Operator-only.
+
+Whether Tenant Administrators can appoint each other is the Operator's choice of whether the administrators' own group is assignable. A Tenant Administrator cannot act on its own Mapping or subject (403). Aidash does not count remaining administrators, because deny rules and conditions make that count unreliable; an Operator recovers a Tenant that loses all of them. Within its Tenant a Tenant Administrator can disable any other Mapping and remove any user subject from an Assignable Group. That can lock people out but cannot grant authority; the audit history and an Operator repair it.
+
+Subjects created and memberships changed by a Tenant Administrator advance the policy revision with the actor `oidc:<identity id>`. An Operator replacing the policy at an older `expected_revision` receives 409 and must reload.
+
+| Method | Path                                               | Body                                                                                                       |
+| ------ | -------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| GET    | `/api/tenants/{tenant}/administration`             | Returns the permitted `actions`; for a Tenant Administrator also `assignable_groups` and `policy_revision` |
+| GET    | `/api/tenants/{tenant}/registrations`              |                                                                                                            |
+| POST   | `/api/tenants/{tenant}/registrations/{id}/approve` | `{"subject":"carol","groups":["members"]}`                                                                 |
+| POST   | `/api/tenants/{tenant}/registrations/{id}/reject`  |                                                                                                            |
+| GET    | `/api/tenants/{tenant}/mappings?offset=0`          |                                                                                                            |
+| POST   | `/api/tenants/{tenant}/mappings/{id}/disable`      | `{"expected_revision":1}`                                                                                  |
+| PUT    | `/api/tenants/{tenant}/subjects/{subject}/groups`  | `{"groups":[],"expected_policy_revision":2}`                                                               |
+
+Responses forbid caching. In the dashboard, a Tenant Administrator who selects that Mapping sees the permitted parts of **Access and accounts**; restore, operator grants and policy editing are not shown.
+
+Approvals, rejections and Mapping disables by Operators and Tenant Administrators are appended to `dashboard_administration_history`. Each row records the action, the target External Identity, request, Mapping, Tenant and subject, the actor kind (`operator` or `tenant_administrator`), the acting External Identity (absent for the operator bearer token) and the Mapping a Tenant Administrator acted through. Rows are never updated.
 
 ### Switching issuers
 
