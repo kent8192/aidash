@@ -93,9 +93,15 @@ Agent documents become immutable private Source definitions. Their contents
 retain separate knowledge/reference authorization and are never made public by
 Registry visibility. Inference journals a bounded content observation before
 calling the model; recovery at the same boundary reuses that content after
-checking current authority. A later boundary observes current mutable content.
-Run inspection and state responses omit the Source observation cache; durable
-storage retains it for authorized recovery.
+checking current authority. On the Legacy Projection Version a later boundary
+observes current mutable content. On the Ordered Projection Version the
+semantic observation is reused across steps while its Retrieval Key (query
+inputs, Run-fixed retrieval budget, binding, authorization scope and the policy,
+index and memory-binding revisions) is unchanged, and Skill context while the
+Run's Skill record revision is unchanged; every reuse is rechecked first, a
+revoked or narrowed authority pauses the Run, and a stale reuse retrieves again
+once. Run inspection and state responses omit the Source observation cache;
+durable storage retains it for authorized recovery.
 
 Local execution, remote admission and Workbench save the same complete Binding
 snapshot. Updating an active installation does not replace an admitted Run's

@@ -103,3 +103,12 @@ enabled = false
 # issuer = "aidash-worker"
 # audience = "develop"
 # kid = "projects/your-aidash-project/locations/us-central1/keyRings/aidash-develop-capability/cryptoKeys/capability/cryptoKeyVersions/1"
+
+# Tenant Cache Salt Keys for salted Projection Versions (ADR 0016). Without
+# keys this node creates only Legacy Runs. Rotate by adding a key version and
+# changing `current`.
+# [cache_salt]
+# current = 1
+# [[cache_salt.keys]]
+# version = 1
+# secret = "${AIDASH_CACHE_SALT_KEY_V1}"

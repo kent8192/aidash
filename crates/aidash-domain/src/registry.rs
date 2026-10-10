@@ -140,6 +140,8 @@ pub struct AgentConfig {
 	pub max_steps: i32,
 	/// Absent means `legacy@1`; see [`AgentConfig::exposure_policy`].
 	pub exposure: Option<crate::exposure::ExposurePolicy>,
+	/// As written in the definition; `None` renders as Legacy.
+	pub projection_version: Option<crate::projection::ProjectionVersion>,
 	pub core_capabilities: crate::capabilities::CoreCapabilities,
 	pub skill_attachments: Vec<crate::capabilities::SkillAttachment>,
 	pub skill_roots: Vec<String>,

@@ -154,6 +154,7 @@ impl DefinitionValidation {
 				));
 				}
 				m.request_timeout()?;
+				m.validate_projection_versions()?;
 				if m.provider_credential.is_some() {
 					aidash_domain::provider_credentials::validate_model_id(&m.model_id)?;
 				}
@@ -392,8 +393,17 @@ impl DefinitionValidation {
 			})
 			.ok_or_else(|| Error::NotFound(config.model.id.clone()))?;
 		let model: ModelConfig = serde_json::from_value(model.definition.config.clone())?;
+		let version = config.projection_version.unwrap_or_default();
+		model.require_projection(version)?;
 		if let Some(budgets) = config.exposure_policy().budgets() {
-			return self.deferred_headroom(snapshot, &config, &model, budgets, private_context);
+			return self.deferred_headroom(
+				snapshot,
+				&config,
+				&model,
+				budgets,
+				private_context,
+				version,
+			);
 		}
 		let mut instructions = aidash_domain::context::agent_instructions("");
 		let mut specifications = vec![];
@@ -425,6 +435,7 @@ impl DefinitionValidation {
 			&instructions,
 			&specifications,
 			private_context,
+			&registration_projection(version),
 		)
 		.map_err(Into::into)
 	}
@@ -439,6 +450,7 @@ impl DefinitionValidation {
 		model: &ModelConfig,
 		budgets: &DeferredBudgets,
 		private_context: &Value,
+		version: aidash_domain::projection::ProjectionVersion,
 	) -> Result<usize> {
 		let node = self.node_specifications();
 		let specifications = crate::registry::bindings::execution::bound_specifications(
@@ -511,6 +523,7 @@ impl DefinitionValidation {
 			&instructions,
 			&exposed,
 			private_context,
+			&registration_projection(version),
 		)?
 		.checked_sub(reserve)
 		.filter(|remaining| *remaining >= aidash_domain::context::MIN_CONTEXT_RESERVE)
@@ -520,6 +533,21 @@ impl DefinitionValidation {
 					.into(),
 			)
 		})
+	}
+}
+
+/// The request shape Run creation will use for `version`. The Cache Scope's
+/// values do not affect the estimate; only its presence reserves the salt line.
+fn registration_projection(
+	version: aidash_domain::projection::ProjectionVersion,
+) -> aidash_domain::context::RequestProjection {
+	if version.salted() {
+		aidash_domain::context::RequestProjection::Ordered(aidash_domain::projection::CacheScope {
+			tenant: String::new(),
+			key_version: 0,
+		})
+	} else {
+		aidash_domain::context::RequestProjection::Legacy
 	}
 }
 
