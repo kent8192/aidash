@@ -10,6 +10,7 @@ fn media_reservation_covers_complete_request_growth() {
 		content_parts: vec![],
 		cache_scope: None,
 		cache_breakpoints: false,
+		disable_provider_transforms: false,
 	};
 	let without_media = request.estimated_total_tokens();
 	request.content_parts = vec![
@@ -156,9 +157,10 @@ fn byok_chat_keeps_broker_capability_failures_typed() {
 	));
 }
 #[rstest::rstest]
-#[case::text(vec![])]
-#[case::media(vec!["google-vertex".to_owned()])]
-fn every_chat_request_disables_openrouter_transforms(#[case] routes: Vec<String>) {
+fn only_context_policy_requests_disable_openrouter_transforms(
+	#[values(vec![], vec!["google-vertex".to_owned()])] routes: Vec<String>,
+	#[values(false, true)] opted_in: bool,
+) {
 	let config: ModelConfig = serde_json::from_value(json!({
 		"provider":"openrouter","model_id":"vendor/model","endpoint":"https://openrouter.ai/api/v1",
 		"credential_env":null,"context_window":8192,"modalities":["text"],"cost":{}
@@ -173,9 +175,11 @@ fn every_chat_request_disables_openrouter_transforms(#[case] routes: Vec<String>
 		content_parts: vec![],
 		cache_scope: None,
 		cache_breakpoints: false,
+		disable_provider_transforms: opted_in,
 	};
 	let body = request_body(&config, &request, routes, None);
-	assert_eq!(body["transforms"], json!([]));
+	// A prune-only Agent keeps OpenRouter's default transforms unchanged.
+	assert_eq!(body.get("transforms"), opted_in.then(|| json!([])).as_ref());
 	assert_eq!(body["model"], json!("vendor/model"));
 	assert_eq!(body["provider"]["zdr"], json!(true));
 }
@@ -319,6 +323,7 @@ mod cache_salt {
 			content_parts: vec![],
 			cache_scope: None,
 			cache_breakpoints: false,
+			disable_provider_transforms: false,
 		}
 	}
 
@@ -449,6 +454,7 @@ mod cache_salt {
 		let provider = upstream.route(Some(keys()), "anthropic/claude-fixture", Some("explicit"));
 		let marked = ModelRequest {
 			cache_breakpoints: true,
+			disable_provider_transforms: false,
 			..ordered(scope("tenant-a", 1))
 		};
 		let expected_line = keys().line(&scope("tenant-a", 1)).unwrap();
@@ -491,6 +497,7 @@ mod cache_salt {
 		let mut upstream = Upstream::start().await;
 		let marked = ModelRequest {
 			cache_breakpoints: true,
+			disable_provider_transforms: false,
 			..ordered(scope("tenant-a", 1))
 		};
 		// Act

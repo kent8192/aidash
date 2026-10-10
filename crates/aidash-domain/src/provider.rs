@@ -45,6 +45,12 @@ pub struct ModelRequest {
 	/// inference digests keep their bytes.
 	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
 	pub cache_breakpoints: bool,
+	/// Set for Agents that opted into a Context Policy, whose recovery alone
+	/// may reduce context: OpenRouter then receives `transforms: []`. Prune-only
+	/// requests keep the provider default; omitted when false, so their
+	/// request metadata and inference digests keep their bytes.
+	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
+	pub disable_provider_transforms: bool,
 }
 
 /// Model-visible context in the shape fixed by the Run's Projection Version.

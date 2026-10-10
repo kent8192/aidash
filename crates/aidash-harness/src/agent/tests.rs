@@ -1478,7 +1478,15 @@ async fn provider_overflow_retries_with_a_smaller_window_without_dispatching(mut
 			aidash_domain::context::recovery::Failure::OverflowRetriesExhausted
 		))
 	));
-	assert_eq!(fixture.backend.0.requests.lock().unwrap().len(), 2);
+	let requests = fixture.backend.0.requests.lock().unwrap();
+	assert_eq!(requests.len(), 2);
+	// Only the Context Policy reduces context, never OpenRouter transforms.
+	assert!(
+		requests
+			.iter()
+			.all(|request| request.disable_provider_transforms)
+	);
+	drop(requests);
 	assert!(matches!(fixture.run.state, RunState::Thinking(_)));
 }
 
@@ -1494,6 +1502,8 @@ async fn legacy_versions_and_unrelated_rejections_never_compact_and_retry(mut fi
 		))
 	));
 	assert!(fixture.run.context.recovery.is_initial());
+	// A prune-only Agent keeps the provider's default transforms.
+	assert!(!fixture.backend.0.requests.lock().unwrap()[0].disable_provider_transforms);
 
 	let mut rejected = fixture_with(|state| {
 		state.context_policy = Some(recovery_policy(false));
@@ -1764,6 +1774,39 @@ async fn a_summary_dependency_revoked_during_pruning_pauses_before_inference(mut
 		assert!(!step.contains(&provider), "{provider}: {step:?}");
 	}
 	assert_eq!(fixture.backend.0.requests.lock().unwrap().len(), requests);
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_source_revoked_while_the_summarizer_runs_is_never_adopted(mut fixture: Fixture) {
+	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	state.scoped = true;
+	state.context_policy = Some(recovery_policy(true));
+	state.jev_retention = Some(1.0);
+	*state.summary_text.lock().unwrap() = Some(valid_summary());
+	// No summary exists yet, so the only check is the one after the
+	// summarizer call, made once authority resumes; the source is revoked.
+	state.summary_checks_before_revocation = Some(0);
+	thinking_with_history(&mut fixture, 40);
+	let before = fixture.run.context.history.clone();
+
+	assert!(matches!(
+		advance_sources(&mut fixture).await,
+		Err(Error::Forbidden)
+	));
+
+	assert!(fixture.run.context.execution_summary.is_none());
+	assert_eq!(fixture.run.context.history, before);
+	assert!(!events(&fixture).contains(&"context.compacted".to_owned()));
+	{
+		let attempts = fixture.backend.0.attempts.lock().unwrap();
+		assert_eq!(attempts.len(), 1);
+		assert_eq!(attempts[0].1, Some(Outcome::Unauthorized));
+	}
+	let calls = calls(&fixture);
+	let position = |name| calls.iter().position(|call| *call == name).unwrap();
+	assert!(position("summarizer.infer") < position("summary.dependencies"));
+	assert!(!calls.contains(&"provider.infer"));
 }
 
 #[rstest]

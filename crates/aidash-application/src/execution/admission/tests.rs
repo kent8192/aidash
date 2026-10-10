@@ -32,6 +32,7 @@ fn request() -> ModelRequest {
 		content_parts: vec![],
 		cache_scope: None,
 		cache_breakpoints: false,
+		disable_provider_transforms: false,
 	}
 }
 fn attempt() -> Uuid {

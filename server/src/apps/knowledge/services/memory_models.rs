@@ -621,6 +621,7 @@ impl Models {
 			content_parts: vec![],
 			cache_scope: None,
 			cache_breakpoints: false,
+			disable_provider_transforms: false,
 		};
 		request.ensure_fits(config.context_window)?;
 		let charge = rate.charge(input as u64, output as u64)?;

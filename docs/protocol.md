@@ -155,7 +155,8 @@ task, the previous summary and the absorbed events, with no tools and a JSON
 schema response format. Each merge
 keeps the previous summary's constraints and unresolved items under their IDs,
 in the same list and with unchanged text, unless it lists them as resolved;
-a changed or moved item is rejected. A resolution's `resolved_by` and every new
+a changed or moved item is rejected, and a resolved ID must leave both active
+lists. A resolution's `resolved_by` and every new
 `verification` reference must be the exact ID of a tool call the merge absorbs;
 a previous verification entry may only be carried unchanged. It records the
 exact journal range, the absorbed sequence ranges (entries pruned between them
@@ -200,9 +201,11 @@ never dispatch the response's tool calls; their reported usage still settles
 the call's token reservation. A paused Run's typed reason is reported as
 `context_reason` by run management and by remote execution status and control.
 Other `4xx` responses keep their
-existing handling, and transport errors keep their bounded retry. Every
-OpenRouter request sets `transforms: []`, so the provider never compresses a
-request on its own.
+existing handling, and transport errors keep their bounded retry. OpenRouter
+requests from an Agent with a Context Policy, including its Summary Stage
+requests, set `transforms: []`, so the provider never compresses them on its
+own. Prune-only Agents keep their unchanged request body and OpenRouter's
+default transforms.
 
 Metrics: `aidash_context_compaction_total{stage,outcome}` counts prune and
 summary outcomes (`applied`, `insufficient`, `unavailable`, `invalid`,

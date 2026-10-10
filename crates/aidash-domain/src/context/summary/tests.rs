@@ -123,6 +123,30 @@ fn merge_keeps_constraints_and_unresolved_work_across_compactions() {
 		),
 		Err(Rejection::ChangedItem("u1".into()))
 	);
+	// A resolved ID may not stay active: `resolved` is hidden from the model,
+	// so the rewritten text would silently replace the original requirement.
+	for (constraints, unresolved, id) in [
+		(
+			vec![("c1", "touch main freely")],
+			vec![("u1", "fix flaky test")],
+			"c1",
+		),
+		(
+			vec![("c1", "never touch main")],
+			vec![("u1", "skip the flaky test")],
+			"u1",
+		),
+	] {
+		assert_eq!(
+			SummaryContent::parse(
+				&content(&constraints, &unresolved, &[(id, "call_5")]),
+				Some(&first),
+				&[tool(5)],
+				4096
+			),
+			Err(Rejection::ResolvedItemActive(id.into()))
+		);
+	}
 	// Explicit resolution closes an item; the merged range keeps its origin.
 	let second = adopted(
 		&content(&[("c1", "never touch main")], &[], &[("u1", "call_5")]),

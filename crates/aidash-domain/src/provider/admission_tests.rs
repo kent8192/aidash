@@ -21,6 +21,7 @@ fn request() -> ModelRequest {
 		],
 		cache_scope: None,
 		cache_breakpoints: false,
+		disable_provider_transforms: false,
 	}
 }
 #[rstest]

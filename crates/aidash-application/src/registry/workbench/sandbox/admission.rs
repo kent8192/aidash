@@ -205,6 +205,7 @@ pub async fn admit(admission: &Admission<'_>, id: Uuid, input: TestInput) -> Res
 		response_format: None,
 		cache_scope: None,
 		cache_breakpoints: false,
+		disable_provider_transforms: false,
 	};
 	if input.continue_from.is_some()
 		&& let Some(context) = request.context.legacy_mut()

@@ -160,6 +160,7 @@ async fn openrouter_enforces_zdr_and_preserves_reasoning_tools_and_usage(
 					content_parts: vec![],
 					cache_scope: None,
 					cache_breakpoints: false,
+					disable_provider_transforms: false,
 				})
 				.await
 				.unwrap();
@@ -218,6 +219,7 @@ async fn openrouter_sends_cache_control_only_to_opted_in_explicit_routes(
 		content_parts: vec![],
 		cache_scope: None,
 		cache_breakpoints,
+		disable_provider_transforms: false,
 	};
 	let mut explicit = config("openrouter", endpoint.clone());
 	explicit.model_id = "anthropic/claude-fixture".into();
@@ -307,6 +309,7 @@ async fn openrouter_sends_ordered_native_image_and_audio_parts() {
 			],
 			cache_scope: None,
 			cache_breakpoints: false,
+			disable_provider_transforms: false,
 		})
 		.await
 		.unwrap();
@@ -414,6 +417,7 @@ async fn media_route_lookup_obeys_the_total_inference_deadline() {
 			}],
 			cache_scope: None,
 			cache_breakpoints: false,
+			disable_provider_transforms: false,
 		}),
 	)
 	.await
@@ -503,6 +507,7 @@ async fn unavailable_zdr_endpoint_does_not_retry_without_zdr(
 				content_parts: vec![],
 				cache_scope: None,
 				cache_breakpoints: false,
+				disable_provider_transforms: false,
 			})
 			.await
 			.is_err()
@@ -541,6 +546,7 @@ async fn upstream_media_rejection_keeps_its_status_and_safe_reason() {
 			content_parts: vec![],
 			cache_scope: None,
 			cache_breakpoints: false,
+			disable_provider_transforms: false,
 		})
 		.await
 		.unwrap_err();
@@ -579,6 +585,7 @@ async fn upstream_errors_cannot_echo_unrecognized_media_or_secret_data() {
 			content_parts: vec![],
 			cache_scope: None,
 			cache_breakpoints: false,
+			disable_provider_transforms: false,
 		})
 		.await
 		.unwrap_err();

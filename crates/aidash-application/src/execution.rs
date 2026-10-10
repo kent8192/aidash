@@ -633,6 +633,7 @@ pub fn media_request_headroom(
 		content_parts: Vec::new(),
 		cache_scope: None,
 		cache_breakpoints: false,
+		disable_provider_transforms: false,
 	};
 	request
 		.ensure_fits_with_parts(headroom, parts)
@@ -659,6 +660,7 @@ pub fn encoded_run_message_reservation(messages: &[Value]) -> usize {
 			content_parts: Vec::new(),
 			cache_scope: None,
 			cache_breakpoints: false,
+			disable_provider_transforms: false,
 		}
 		.estimated_total_tokens()
 	};
@@ -688,6 +690,7 @@ pub fn check_model_media_headroom(
 		content_parts: parts,
 		cache_scope: None,
 		cache_breakpoints: false,
+		disable_provider_transforms: false,
 	};
 	request.validate()?;
 	if !model.has_current_media_route_for_parts(&request.content_parts) {

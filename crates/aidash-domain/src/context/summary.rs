@@ -127,6 +127,8 @@ pub enum Rejection {
 	ChangedItem(String),
 	#[error("summary resolved item {0} without a tool call from this merge as evidence")]
 	UnprovenResolution(String),
+	#[error("summary resolved item {0} but kept it active")]
+	ResolvedItemActive(String),
 	#[error("summary verification {0} names no tool call from its history")]
 	UnprovenVerification(String),
 	#[error("summary dropped or changed previous verification {0}")]
@@ -146,6 +148,7 @@ impl Rejection {
 			Self::DroppedItem(_) => "dropped_item",
 			Self::ChangedItem(_) => "changed_item",
 			Self::UnprovenResolution(_) => "unproven_resolution",
+			Self::ResolvedItemActive(_) => "resolved_item_active",
 			Self::UnprovenVerification(_) => "unproven_verification",
 			Self::DroppedVerification(_) => "dropped_verification",
 			Self::Oversized(_) => "oversized",
@@ -199,6 +202,11 @@ impl SummaryContent {
 				}
 			})
 			.collect::<Result<BTreeSet<_>, _>>()?;
+		// A resolution closes its item. The model view omits `resolved`, so a
+		// resolved ID left active could carry rewritten requirement text.
+		if let Some(id) = resolved.iter().find(|id| ids.contains(**id)) {
+			return Err(Rejection::ResolvedItemActive((*id).to_owned()));
+		}
 		// A verification names an absorbed tool call, or is carried unchanged
 		// from the previous summary, which validated it when it was merged.
 		for verification in &content.verification {
@@ -224,7 +232,7 @@ impl SummaryContent {
 		}
 		if let Some(previous) = previous {
 			// A retained item keeps its list and exact text; only an explicit
-			// resolution may close or rewrite a previous item.
+			// resolution, which removes the item, may close it.
 			for (current, items) in [
 				(&content.constraints, &previous.content.constraints),
 				(&content.unresolved, &previous.content.unresolved),

@@ -121,6 +121,7 @@ impl<'a> Executor<'a> {
 		token: Uuid,
 		guard: Option<&dyn ExecutionAuthority>,
 		visibility: &mut dyn ExecutionVisibility,
+		home: &dyn ExecutionHome,
 		fitting: &aidash_application::context::Fitting<'_>,
 		plan: aidash_application::context::SummaryPlan,
 		tools: &Tools,
@@ -283,12 +284,27 @@ impl<'a> Executor<'a> {
 				return Err(error);
 			}
 		};
+		let dependencies = summary_dependencies(&plan.absorbed, tools);
 		// Authority was released during I/O: recheck the Run's ordinary inference
-		// authority and the exact summarizer before any candidate is adopted.
+		// authority, the exact summarizer and every summarized source before any
+		// candidate is adopted.
 		if let Some(guard) = guard
 			&& let Err(error) = async {
 				guard.inference().await?;
-				guard.recheck_summary(&summarizer).await
+				guard.recheck_summary(&summarizer).await?;
+				if summary_dependencies_current(
+					self.environment,
+					Some(guard),
+					home,
+					run,
+					&dependencies,
+				)
+				.await?
+				{
+					Ok(())
+				} else {
+					Err(Error::Forbidden)
+				}
 			}
 			.await
 		{
@@ -303,7 +319,6 @@ impl<'a> Executor<'a> {
 			record_stage("summary", "unauthorized");
 			return Err(error);
 		}
-		let dependencies = summary_dependencies(&plan.absorbed, tools);
 		match summary_candidate(
 			&plan,
 			&response.text,
@@ -997,7 +1012,7 @@ impl<'a> Executor<'a> {
                 match compaction {
                     aidash_application::context::Compaction::Fits => {}
                     aidash_application::context::Compaction::NeedsSummary(plan) => {
-                        return Box::pin(self.summarize(run, token, guard, visibility, &fitting, *plan, &tools)).await.map_err(|error| remote_budget(guard, error));
+                        return Box::pin(self.summarize(run, token, guard, visibility, home.as_ref(), &fitting, *plan, &tools)).await.map_err(|error| remote_budget(guard, error));
                     }
                 }
 
@@ -1013,6 +1028,7 @@ impl<'a> Executor<'a> {
 					&& !run_message_catchup
 					&& !media.defer_human
 					&& !media.defer_selected;
+				request.disable_provider_transforms = !policy.is_legacy();
 				request
 					.ensure_fits(window)
 					.map_err(|_| unreducible(guard))?;

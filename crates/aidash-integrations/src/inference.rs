@@ -323,8 +323,9 @@ impl ModelProvider for OpenRouterProvider {
 	}
 }
 
-/// The OpenRouter chat body. `transforms: []` disables OpenRouter's
-/// middle-out compression so only the Agent's Context Policy reduces context.
+/// The OpenRouter chat body. A request from an Agent with a Context Policy
+/// sends `transforms: []`, disabling OpenRouter's middle-out compression so
+/// only that policy reduces context; prune-only requests keep their body.
 /// A salted request's Tenant Cache Salt line starts `system`; it never enters
 /// request metadata or accounting.
 fn request_body(
@@ -346,7 +347,9 @@ fn request_body(
 	}
 	body["model"] = json!(config.model_id);
 	body["max_tokens"] = json!(request.max_output_tokens);
-	body["transforms"] = json!([]);
+	if request.disable_provider_transforms {
+		body["transforms"] = json!([]);
+	}
 	// Enforce ZDR on every call, including existing registered models. Never
 	// retry against non-ZDR endpoints if no eligible provider is available.
 	body["provider"] = if media_routes.is_empty() {
