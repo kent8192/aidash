@@ -181,6 +181,7 @@ async fn worker_mint_and_broker_audit_are_correlated_and_never_log_secrets() {
 			media_routes: vec![],
 			cost: json!({}),
 			projection_versions: ProjectionVersion::legacy_only(),
+			cache_mode: Default::default(),
 		},
 		Arc::new(access),
 		context,
@@ -194,6 +195,7 @@ async fn worker_mint_and_broker_audit_are_correlated_and_never_log_secrets() {
 			max_output_tokens: 10,
 			content_parts: vec![],
 			projection: Default::default(),
+			cache_breakpoints: false,
 		})
 		.await
 		.unwrap_err();

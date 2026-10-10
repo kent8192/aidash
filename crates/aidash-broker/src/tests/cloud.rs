@@ -262,6 +262,7 @@ impl Cloud {
 			media_routes: vec![],
 			cost: json!({}),
 			projection_versions: ProjectionVersion::legacy_only(),
+			cache_mode: Default::default(),
 		}
 	}
 	fn request() -> aidash_domain::provider::ModelRequest {
@@ -272,6 +273,7 @@ impl Cloud {
 			max_output_tokens: 10,
 			content_parts: vec![],
 			projection: Default::default(),
+			cache_breakpoints: false,
 		}
 	}
 	fn scoped(&self, operation: CallOperation) -> Context {
