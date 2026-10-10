@@ -655,18 +655,20 @@ def gate(cluster, identity):
 
 
 def deploy(cluster, identity, output, release, sha, settings):
-    """Install dependencies, run migrations with writers stopped, then install the app."""
+    """Install both releases with writers stopped, start dependencies, then migrate."""
     namespace = namespace_of(identity)
     # An edge started by this deploy stays closed until readiness opens it, even
     # after a forced stop that skipped the seal.
     desired_admission(cluster, namespace, "closed")
+    # The app release goes first with writers at zero: the edge's Nginx resolves the
+    # backend Service name at start and crash-loops until that Service exists.
+    cluster.upgrade(namespace, "app", APP_CHART, app_values(cluster, identity, output, release, sha, settings))
     cluster.upgrade(namespace, "env", ENV_CHART, env_values(identity, output, release))
     for target in (*STATEFULSETS, EDGE):
         cluster.scale(namespace, target, 1)
     cluster.patch("cronjob", ACTIVITY, {"spec": {"suspend": False}}, namespace)
     for target in STATEFULSETS:
         cluster.rollout(namespace, target)
-    cluster.upgrade(namespace, "app", APP_CHART, app_values(cluster, identity, output, release, sha, settings))
     cluster.scale(namespace, RUNNER, 1)
     cluster.rollout(namespace, RUNNER)
     migrate(cluster, identity, sha)

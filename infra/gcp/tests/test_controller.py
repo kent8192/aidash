@@ -277,7 +277,7 @@ class ReconcileTests(unittest.TestCase):
         self.assertEqual(entry["status"], "ready")
         events = [call for call in self.calls if call[0] in {"helm", "migrate", "admission"} or call[:3] == ("scale", "test", "server")]
         self.assertEqual(events, [
-            ("helm", "test", "env"), ("helm", "test", "app"), ("migrate", "test"),
+            ("helm", "test", "app"), ("helm", "test", "env"), ("migrate", "test"),
             ("scale", "test", "server", 1), ("admission", "test", "open"),
         ])
         # Node pool first without DNS; DNS only with the edge address, before admission opens.
