@@ -1,7 +1,19 @@
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "./components/ui/button";
-import { Badge, Field, Panel, useI18n } from "./ui";
+import { Badge as StatusBadge } from "./components/ui/badge";
+import { Input } from "./components/ui/input";
+import { NativeSelect } from "./components/ui/native-select";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "./components/ui/table";
+import { Alert, Notice } from "./components/patterns";
+import { Empty, Field, Panel, useI18n, type StatusTone } from "./ui";
 import { ApiError } from "./transport";
 import type { State } from "./types";
 import {
@@ -13,6 +25,13 @@ import {
   providerCredentialBindingUpdate,
 } from "./generated/aidash";
 
+const stateTones: Record<string, StatusTone> = {
+  active: "success",
+  pending: "warning",
+  revoked: "danger",
+  deleted: "neutral",
+};
+
 export function ProviderCredentialsPage({
   access,
 }: {
@@ -22,12 +41,11 @@ export function ProviderCredentialsPage({
   const [selected, select] = useState("");
   const tenant = access.kind === "subject" ? access.tenant : selected;
   return (
-    <section className="authorization-page">
-      <h2>{t("providerCredentials")}</h2>
-      <p className="notice">{t("providerCredentialsHelp")}</p>
+    <div className="grid max-w-5xl min-w-0 gap-6">
+      <Notice>{t("providerCredentialsHelp")}</Notice>
       {access.kind === "operator" && (
         <form
-          className="generation-tenant"
+          className="flex min-w-0 flex-wrap items-end gap-2"
           onSubmit={(event) => {
             event.preventDefault();
             select(
@@ -35,18 +53,25 @@ export function ProviderCredentialsPage({
             );
           }}
         >
-          <Field label={t("tenant")}>
-            <input name="tenant" required maxLength={256} />
-          </Field>
+          <div className="w-full max-w-xs">
+            <Field label={t("tenant")}>
+              <Input
+                name="tenant"
+                required
+                maxLength={256}
+                className="font-mono text-xs"
+              />
+            </Field>
+          </div>
           <Button variant="outline">{t("open")}</Button>
         </form>
       )}
       {tenant && <TenantProviderCredentials key={tenant} tenant={tenant} />}
-    </section>
+    </div>
   );
 }
 function TenantProviderCredentials({ tenant }: { tenant: string }) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const client = useQueryClient();
   const path = encodeURIComponent(tenant);
   const [offset, setOffset] = useState(0);
@@ -100,110 +125,146 @@ function TenantProviderCredentials({ tenant }: { tenant: string }) {
     }
   };
   const disabled = rows.error instanceof ApiError && rows.error.status === 404;
-  return (
+  return disabled ? (
+    <Notice role="status">{t("providerCredentialsDisabled")}</Notice>
+  ) : (
     <>
-      {disabled ? (
-        <p className="notice" role="status">
-          {t("providerCredentialsDisabled")}
-        </p>
-      ) : (
-        <>
-          {error && <p role="alert">{error}</p>}
-          {rows.error && !disabled && <p role="alert">{rows.error.message}</p>}
-          <Panel title={t("providerCredentialBindings")}>
-            <Field label="OpenRouter">
-              <select
-                aria-label={t("providerCredentialBindings")}
-                value={bound?.provider_credential_id ?? ""}
-                disabled={busy || !bindings.data}
-                onChange={(event) => {
-                  const id = event.currentTarget.value;
-                  void act(() =>
-                    providerCredentialBindingUpdate(path, "openrouter", {
-                      provider_credential_id: id || null,
-                      expected_revision: bound?.revision ?? 0,
-                    }),
-                  );
-                }}
-              >
-                <option value="">{t("providerCredentialUnbound")}</option>
-                {boundId && !choices.some((row) => row.id === boundId) && (
-                  <option value={boundId} disabled>
-                    {t("providerCredentialCurrentBinding")}
+      {error && <Alert>{error}</Alert>}
+      {rows.error && !disabled && <Alert>{rows.error.message}</Alert>}
+      <Panel title={t("providerCredentialBindings")}>
+        <div className="w-full max-w-md">
+          <Field label="OpenRouter">
+            <NativeSelect
+              aria-label={t("providerCredentialBindings")}
+              value={bound?.provider_credential_id ?? ""}
+              disabled={busy || !bindings.data}
+              onChange={(event) => {
+                const id = event.currentTarget.value;
+                void act(() =>
+                  providerCredentialBindingUpdate(path, "openrouter", {
+                    provider_credential_id: id || null,
+                    expected_revision: bound?.revision ?? 0,
+                  }),
+                );
+              }}
+            >
+              <option value="">{t("providerCredentialUnbound")}</option>
+              {boundId && !choices.some((row) => row.id === boundId) && (
+                <option value={boundId} disabled>
+                  {t("providerCredentialCurrentBinding")}
+                </option>
+              )}
+              {choices
+                .filter(
+                  (row) =>
+                    row.state === "active" ||
+                    row.id === bound?.provider_credential_id,
+                )
+                .map((row) => (
+                  <option key={row.id} value={row.id}>
+                    {row.provider} · {row.last4} · {row.fingerprint} ·{" "}
+                    {row.state}
                   </option>
-                )}
-                {choices
-                  .filter(
-                    (row) =>
-                      row.state === "active" ||
-                      row.id === bound?.provider_credential_id,
-                  )
-                  .map((row) => (
-                    <option key={row.id} value={row.id}>
-                      {row.provider} · {row.last4} · {row.fingerprint} ·{" "}
-                      {row.state}
-                    </option>
-                  ))}
-              </select>
-            </Field>
-            {bindings.error && <p role="alert">{bindings.error.message}</p>}
-            {boundMetadata.error && (
-              <p role="alert">{boundMetadata.error.message}</p>
-            )}
-          </Panel>
-          <div className="cards">
-            {rows.data?.map((row) => (
-              <Panel key={row.id} title={`${row.provider} · ${row.last4}`}>
-                <Badge value={t(`providerCredentialState_${row.state}`)} />
-                <dl>
-                  <dt>{t("providerCredentialFingerprint")}</dt>
-                  <dd>{row.fingerprint}</dd>
-                  <dt>{t("providerCredentialLast4")}</dt>
-                  <dd>{row.last4}</dd>
-                  <dt>{t("createdAt")}</dt>
-                  <dd>{row.created_at}</dd>
-                  <dt>{t("providerCredentialRotatedAt")}</dt>
-                  <dd>{row.rotated_at ?? "—"}</dd>
-                  <dt>{t("providerCredentialRevokedAt")}</dt>
-                  <dd>{row.revoked_at ?? "—"}</dd>
-                </dl>
-                {row.state === "active" && (
-                  <>
-                    <Button
-                      variant="outline"
-                      disabled={busy}
-                      onClick={() =>
-                        void act(() =>
-                          providerCredentialRevoke(path, row.id, {
-                            expected_revision: row.revision,
-                          }),
-                        )
-                      }
-                    >
-                      {t("revoke")}
-                    </Button>
-                  </>
-                )}
-                {row.state !== "deleted" && row.state !== "pending" && (
-                  <Button
-                    variant="outline"
-                    disabled={busy || bound?.provider_credential_id === row.id}
-                    onClick={() =>
-                      void act(() =>
-                        providerCredentialDelete(path, row.id, {
-                          expected_revision: row.revision,
-                        }),
-                      )
-                    }
-                  >
-                    {t("delete")}
-                  </Button>
-                )}
-              </Panel>
-            ))}
+                ))}
+            </NativeSelect>
+          </Field>
+        </div>
+        {bindings.error && <Alert>{bindings.error.message}</Alert>}
+        {boundMetadata.error && <Alert>{boundMetadata.error.message}</Alert>}
+      </Panel>
+      <Panel
+        title={locale === "ja-JP" ? "保存済みの認証情報" : "Stored credentials"}
+      >
+        {rows.data?.length === 0 ? (
+          <Empty />
+        ) : (
+          <div className="min-w-0 rounded-md border border-border bg-surface">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>{t("provider")}</TableHead>
+                  <TableHead>{t("providerCredentialLast4")}</TableHead>
+                  <TableHead>{t("providerCredentialFingerprint")}</TableHead>
+                  <TableHead>{t("createdAt")}</TableHead>
+                  <TableHead>{t("providerCredentialRotatedAt")}</TableHead>
+                  <TableHead>{t("providerCredentialRevokedAt")}</TableHead>
+                  <TableHead />
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {rows.data?.map((row) => (
+                  <TableRow key={row.id}>
+                    <TableCell>
+                      <div className="flex items-center gap-2">
+                        <span className="font-medium">{row.provider}</span>
+                        <StatusBadge tone={stateTones[row.state] ?? "neutral"}>
+                          {t(`providerCredentialState_${row.state}`)}
+                        </StatusBadge>
+                      </div>
+                    </TableCell>
+                    <TableCell className="font-mono text-xs">
+                      {row.last4}
+                    </TableCell>
+                    <TableCell className="font-mono text-xs text-muted-foreground">
+                      {row.fingerprint}
+                    </TableCell>
+                    <TableCell className="whitespace-nowrap font-mono text-xs text-muted-foreground">
+                      {row.created_at}
+                    </TableCell>
+                    <TableCell className="whitespace-nowrap font-mono text-xs text-muted-foreground">
+                      {row.rotated_at ?? "—"}
+                    </TableCell>
+                    <TableCell className="whitespace-nowrap font-mono text-xs text-muted-foreground">
+                      {row.revoked_at ?? "—"}
+                    </TableCell>
+                    <TableCell>
+                      <div className="flex justify-end gap-1.5">
+                        {row.state === "active" && (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            disabled={busy}
+                            onClick={() =>
+                              void act(() =>
+                                providerCredentialRevoke(path, row.id, {
+                                  expected_revision: row.revision,
+                                }),
+                              )
+                            }
+                          >
+                            {t("revoke")}
+                          </Button>
+                        )}
+                        {row.state !== "deleted" && row.state !== "pending" && (
+                          <Button
+                            variant="destructive"
+                            size="sm"
+                            disabled={
+                              busy || bound?.provider_credential_id === row.id
+                            }
+                            onClick={() =>
+                              void act(() =>
+                                providerCredentialDelete(path, row.id, {
+                                  expected_revision: row.revision,
+                                }),
+                              )
+                            }
+                          >
+                            {t("delete")}
+                          </Button>
+                        )}
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
           </div>
+        )}
+        <div className="flex justify-end gap-2">
           <Button
             variant="outline"
+            size="sm"
             disabled={offset === 0 || busy}
             onClick={() => setOffset(Math.max(0, offset - 50))}
           >
@@ -211,13 +272,14 @@ function TenantProviderCredentials({ tenant }: { tenant: string }) {
           </Button>
           <Button
             variant="outline"
+            size="sm"
             disabled={(rows.data?.length ?? 0) < 50 || busy}
             onClick={() => setOffset(offset + 50)}
           >
             {t("next")}
           </Button>
-        </>
-      )}
+        </div>
+      </Panel>
     </>
   );
 }

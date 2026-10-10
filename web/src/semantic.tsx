@@ -1,6 +1,10 @@
 import { Button } from "./components/ui/button";
+import { Input } from "./components/ui/input";
+import { NativeSelect } from "./components/ui/native-select";
+import { Textarea } from "./components/ui/textarea";
+import { Badge as StatusBadge } from "./components/ui/badge";
 import { MemoryWorkspace } from "./memory";
-import { RecordView, useRecordLabels } from "./record-view";
+import { useRecordLabels } from "./record-view";
 import { disambiguateLabels } from "./display-labels";
 import { useRef, useState, type FormEvent } from "react";
 import {
@@ -39,6 +43,8 @@ import {
   useAgentLabel,
   useI18n,
 } from "./ui";
+
+import { Alert, Check, Hint } from "./components/patterns";
 
 const semanticMessages: Record<string, string> = {
   "semantic backend unavailable or invalid; inspect index status and retry":
@@ -79,24 +85,31 @@ export function SemanticPage({
     ? (data.workspaces.find((w) => w.id === requested)?.id ?? "")
     : (data.workspaces[0]?.id ?? "");
   return (
-    <div className="semantic-page">
-      <p className="muted">{t("semanticHelp")}</p>
-      <Field label={t("workspace")}>
-        <select value={workspace} onChange={(e) => setChosen(e.target.value)}>
-          {!workspace && (
-            <option value="">
-              {locale === "ja-JP"
-                ? "依頼を選択してください"
-                : "Choose a request"}
-            </option>
-          )}
-          {data.workspaces.map((w) => (
-            <option key={w.id} value={w.id}>
-              {w.title}
-            </option>
-          ))}
-        </select>
-      </Field>
+    <div className="semantic-page grid min-w-0 gap-6">
+      <div className="flex flex-wrap items-end justify-between gap-x-6 gap-y-3">
+        <Hint>{t("semanticHelp")}</Hint>
+        <div className="w-full max-w-xs">
+          <Field label={t("workspace")}>
+            <NativeSelect
+              value={workspace}
+              onChange={(e) => setChosen(e.target.value)}
+            >
+              {!workspace && (
+                <option value="">
+                  {locale === "ja-JP"
+                    ? "依頼を選択してください"
+                    : "Choose a request"}
+                </option>
+              )}
+              {data.workspaces.map((w) => (
+                <option key={w.id} value={w.id}>
+                  {w.title}
+                </option>
+              ))}
+            </NativeSelect>
+          </Field>
+        </div>
+      </div>
       {workspace ? (
         <>
           <MemoryWorkspace
@@ -246,10 +259,17 @@ function SemanticWorkspace({
     history.error,
     cleanup.error,
   ].filter(Boolean);
+  const knownScopes =
+    (entries.isError ? [] : entries.data)
+      ?.map((entry) => entry.agent)
+      .filter((agent): agent is string => !!agent) ?? [];
+  const dialogAlert = error && (
+    <Alert>{describe(error)}</Alert>
+  );
   return (
     <>
       {(error || failures.length > 0) && (
-        <div className="error" role="alert">
+        <Alert>
           {error
             ? describe(error)
             : failures
@@ -259,25 +279,25 @@ function SemanticWorkspace({
                   ),
                 )
                 .join("; ")}
-        </div>
+        </Alert>
       )}
       <Panel
         title={t("semanticIndex")}
         action={
           operator && (
-            <Button variant="outline" onClick={openConfiguring}>
+            <Button variant="outline" size="sm" onClick={openConfiguring}>
               {t("semanticConfigure")}
             </Button>
           )
         }
       >
         {current && spec ? (
-          <div className="semantic-summary">
+          <div className="semantic-summary flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs text-muted-foreground">
             <Badge value={spec.enabled ? "ENABLED" : "DISABLED"} />
-            <span>
+            <span className="font-mono text-foreground">
               {spec.embedding.model} · {spec.embedding.model_version}
             </span>
-            <span>
+            <span className="font-mono tabular">
               {t("revision")} {current.revision}
             </span>
             <span>
@@ -285,14 +305,14 @@ function SemanticWorkspace({
             </span>
           </div>
         ) : (
-          <p>{t("semanticUnconfigured")}</p>
+          <Hint>{t("semanticUnconfigured")}</Hint>
         )}
       </Panel>
       {current && spec && (
         <>
           <Panel title={t("semanticSearch")}>
             <form
-              className="semantic-search"
+              className="grid items-end gap-3 md:grid-cols-[minmax(0,2fr)_minmax(0,1fr)_minmax(0,1fr)_auto]"
               onSubmit={(e: FormEvent<HTMLFormElement>) => {
                 e.preventDefault();
                 const values = new FormData(e.currentTarget);
@@ -311,144 +331,189 @@ function SemanticWorkspace({
               }}
             >
               <Field label={t("semanticQuery")}>
-                <input name="query" required />
+                <Input name="query" required />
               </Field>
               <Field label={t("semanticAgent")}>
-                <AgentScope
-                  data={data}
-                  knownScopes={
-                    (entries.isError ? [] : entries.data)
-                      ?.map((entry) => entry.agent)
-                      .filter((agent): agent is string => !!agent) ?? []
-                  }
-                />
+                <AgentScope data={data} knownScopes={knownScopes} />
               </Field>
               <Field label={t("semanticFilters")}>
-                <input name="metadata" defaultValue="{}" />
+                <Input
+                  name="metadata"
+                  className="font-mono"
+                  defaultValue="{}"
+                />
               </Field>
-              <Button
-                variant="outline"
-                className="primary"
-                disabled={busy || !spec.enabled}
-              >
+              <Button disabled={busy || !spec.enabled}>
                 {t("semanticSearch")}
               </Button>
             </form>
             {result && !entries.isError && (
-              <div aria-live="polite">
-                <p className="muted">
+              <div aria-live="polite" className="grid gap-2">
+                <p className="font-mono text-[11px] text-faint tabular">
                   {result.model} · {result.model_version} ·{" "}
                   {result.estimated_tokens} {t("semanticTokens")}
                   {result.truncated ? ` · ${t("semanticTruncated")}` : ""}
                 </p>
-                {result.matches.length === 0 && <p>{t("semanticNoMatches")}</p>}
-                {result.matches.map((match) => (
-                  <article className="semantic-result" key={match.entry_id}>
-                    <p>{match.text}</p>
-                    <small>
-                      {t("revision")} {match.revision} ·{" "}
-                      {match.score.toFixed(3)}
-                    </small>
-                    <RecordView
-                      labels={labels}
-                      value={{
-                        source: match.source,
-                        metadata: match.metadata,
-                        agent: scopeLabel(match.agent),
-                      }}
-                    />
-                  </article>
-                ))}
+                {result.matches.length === 0 && (
+                  <Hint>{t("semanticNoMatches")}</Hint>
+                )}
+                {result.matches.length > 0 && (
+                  <ol className="divide-y divide-border border-y border-border">
+                    {result.matches.map((match) => (
+                      <li key={match.entry_id}>
+                        <article className="semantic-result grid gap-2 py-3 sm:grid-cols-[minmax(0,1fr)_auto]">
+                          <p className="min-w-0 whitespace-pre-wrap break-words text-[13px] text-foreground">
+                            {match.text}
+                          </p>
+                          <div className="flex items-baseline gap-3 font-mono text-xs tabular sm:justify-end">
+                            <span className="text-brand">
+                              {match.score.toFixed(3)}
+                            </span>
+                            <span className="text-faint">
+                              {t("revision")} {match.revision}
+                            </span>
+                          </div>
+                          <MatchProvenance
+                            source={match.source}
+                            metadata={match.metadata}
+                            sourceLabel={(id) => labels.get(id) ?? id}
+                            scope={scopeLabel(match.agent)}
+                          />
+                        </article>
+                      </li>
+                    ))}
+                  </ol>
+                )}
               </div>
             )}
           </Panel>
           <Panel
             title={t("semanticSources")}
             action={
-              <Button variant="outline" onClick={() => openEditing("new")}>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => openEditing("new")}
+              >
                 {t("semanticAdd")}
               </Button>
             }
           >
-            {!entries.isError &&
-              entries.data?.map((entry) => (
-                <article className="semantic-entry" key={entry.id}>
-                  <div>
-                    <strong>{entryName(entry)}</strong>
-                    <Badge value={entry.state} />
-                    <small>
-                      {t("revision")} {entry.revision} · {entry.attempts}{" "}
-                      {t("semanticAttempts")}
-                    </small>
-                  </div>
-                  {entry.last_error && (
-                    <p className="error">{describe(entry.last_error)}</p>
-                  )}
-                  <p className="muted">{scopeLabel(entry.agent)}</p>
-                  <div className="actions">
-                    <Button
-                      variant="outline"
-                      disabled={busy}
-                      onClick={() => openEditing(entry)}
-                    >
-                      {t("edit")}
-                    </Button>
-                    <Button
-                      variant="outline"
-                      disabled={busy}
-                      onClick={() =>
-                        void mutate(() =>
-                          semanticReindex(workspace, entry.id, {
-                            expected_revision: entry.revision,
-                          }),
-                        )
-                      }
-                    >
-                      {t("semanticReindex")}
-                    </Button>
-                    <Button
-                      variant="outline"
-                      disabled={busy}
-                      onClick={() => openDeleting(entry)}
-                    >
-                      {t("delete")}
-                    </Button>
-                  </div>
-                </article>
-              ))}
+            {!entries.isError && !!entries.data?.length && (
+              <ul className="divide-y divide-border border-y border-border">
+                {entries.data.map((entry) => (
+                  <li key={entry.id}>
+                    <article className="semantic-entry flex flex-wrap items-center gap-x-4 gap-y-2 py-2.5">
+                      <div className="grid min-w-0 flex-1 gap-0.5">
+                        <div className="flex min-w-0 items-center gap-2">
+                          <strong className="truncate font-mono text-xs font-medium text-foreground">
+                            {entryName(entry)}
+                          </strong>
+                          <Badge value={entry.state} />
+                        </div>
+                        <p className="break-words text-xs text-muted-foreground">
+                          {scopeLabel(entry.agent)}
+                          <span className="font-mono text-faint tabular">
+                            {" "}
+                            · {t("revision")} {entry.revision} ·{" "}
+                            {entry.attempts} {t("semanticAttempts")}
+                          </span>
+                        </p>
+                        {entry.last_error && (
+                          <p className="text-xs text-destructive">
+                            {describe(entry.last_error)}
+                          </p>
+                        )}
+                      </div>
+                      <div className="flex flex-wrap gap-1">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          disabled={busy}
+                          onClick={() => openEditing(entry)}
+                        >
+                          {t("edit")}
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          disabled={busy}
+                          onClick={() =>
+                            void mutate(() =>
+                              semanticReindex(workspace, entry.id, {
+                                expected_revision: entry.revision,
+                              }),
+                            )
+                          }
+                        >
+                          {t("semanticReindex")}
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="hover:text-destructive"
+                          disabled={busy}
+                          onClick={() => openDeleting(entry)}
+                        >
+                          {t("delete")}
+                        </Button>
+                      </div>
+                    </article>
+                  </li>
+                ))}
+              </ul>
+            )}
             {!entries.isError && entries.data?.length === 0 && <Empty />}
           </Panel>
           {operator && cleanup.data && !cleanup.isError && (
             <Panel title={t("semanticCleanup")}>
-              <p>{t("semanticCleanupHelp")}</p>
-              <div className="semantic-summary">
+              <Hint>{t("semanticCleanupHelp")}</Hint>
+              <div className="semantic-summary flex flex-wrap gap-x-6 gap-y-1 text-xs text-muted-foreground">
                 <span>
                   {t("semanticCleanupPending")}:{" "}
-                  {cleanup.data.points.pending +
-                    cleanup.data.collections.pending}
+                  <span className="font-mono text-foreground tabular">
+                    {cleanup.data.points.pending +
+                      cleanup.data.collections.pending}
+                  </span>
                 </span>
                 <span>
                   {t("semanticCleanupFailed")}:{" "}
-                  {cleanup.data.points.failed + cleanup.data.collections.failed}
+                  <span className="font-mono text-foreground tabular">
+                    {cleanup.data.points.failed +
+                      cleanup.data.collections.failed}
+                  </span>
                 </span>
               </div>
             </Panel>
           )}
           <Panel title={t("semanticHistory")}>
-            {!history.isError &&
-              history.data?.slice(0, 30).map((event) => (
-                <div className="semantic-history" key={event.sequence}>
-                  <Badge
-                    value={
-                      event.state === "DELETED"
-                        ? "semanticDeleted"
-                        : event.state
-                    }
-                  />
-                  <span>{describe(event.detail)}</span>
-                  <small>{new Date(event.created_at).toLocaleString()}</small>
-                </div>
-              ))}
+            {!history.isError && !!history.data?.length && (
+              <ol className="divide-y divide-border border-y border-border">
+                {history.data.slice(0, 30).map((event) => (
+                  <li
+                    className="flex flex-wrap items-center gap-x-3 gap-y-1 py-2"
+                    key={event.sequence}
+                  >
+                    <Badge
+                      value={
+                        event.state === "DELETED"
+                          ? "semanticDeleted"
+                          : event.state
+                      }
+                    />
+                    <span className="min-w-0 flex-1 text-xs text-foreground">
+                      {describe(event.detail)}
+                    </span>
+                    <time
+                      dateTime={event.created_at}
+                      className="font-mono text-[11px] text-faint tabular"
+                    >
+                      {new Date(event.created_at).toLocaleString()}
+                    </time>
+                  </li>
+                ))}
+              </ol>
+            )}
           </Panel>
         </>
       )}
@@ -466,11 +531,7 @@ function SemanticWorkspace({
               )
             }
           />
-          {error && (
-            <div className="error" role="alert">
-              {describe(error)}
-            </div>
-          )}
+          {dialogAlert}
         </Modal>
       )}
       {editing && (
@@ -478,51 +539,81 @@ function SemanticWorkspace({
           <EntryForm
             data={data}
             workspace={workspace}
-            knownScopes={
-              (entries.isError ? [] : entries.data)
-                ?.map((entry) => entry.agent)
-                .filter((agent): agent is string => !!agent) ?? []
-            }
+            knownScopes={knownScopes}
             sources={{ artifacts, messages }}
             entry={editing === "new" ? null : editing}
             busy={busy}
             submit={(draft) => mutate(() => semanticPut(workspace, draft))}
           />
-          {error && (
-            <div className="error" role="alert">
-              {describe(error)}
-            </div>
-          )}
+          {dialogAlert}
         </Modal>
       )}
       {deleting && (
         <Modal title={t("semanticDelete")} close={closeDialogs}>
-          <p>{t("semanticDeleteHelp")}</p>
-          <p>
-            <strong>{entryName(deleting)}</strong>
+          <Hint>{t("semanticDeleteHelp")}</Hint>
+          <p className="rounded-md border border-border bg-surface px-3 py-2 font-mono text-xs text-foreground">
+            {entryName(deleting)}
           </p>
-          <Button
-            variant="outline"
-            className="primary"
-            disabled={busy}
-            onClick={() =>
-              void mutate(() =>
-                semanticDelete(workspace, deleting.id, {
-                  expected_revision: deleting.revision,
-                }),
-              )
-            }
-          >
-            {t("delete")}
-          </Button>
-          {error && (
-            <div className="error" role="alert">
-              {describe(error)}
-            </div>
-          )}
+          <div className="flex justify-end gap-2">
+            <Button variant="ghost" disabled={busy} onClick={closeDialogs}>
+              {t("cancel")}
+            </Button>
+            <Button
+              variant="destructive"
+              disabled={busy}
+              onClick={() =>
+                void mutate(() =>
+                  semanticDelete(workspace, deleting.id, {
+                    expected_revision: deleting.revision,
+                  }),
+                )
+              }
+            >
+              {t("delete")}
+            </Button>
+          </div>
+          {dialogAlert}
         </Modal>
       )}
     </>
+  );
+}
+/** Readable provenance for one match: source kind and reference, scope, metadata filters. */
+function MatchProvenance({
+  source,
+  metadata,
+  sourceLabel,
+  scope,
+}: {
+  source: unknown;
+  metadata: unknown;
+  sourceLabel: (id: string) => string;
+  scope: string;
+}) {
+  const value = (source ?? {}) as { kind?: unknown; id?: unknown };
+  const fields =
+    metadata && typeof metadata === "object" && !Array.isArray(metadata)
+      ? Object.entries(metadata)
+      : [];
+  return (
+    <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground sm:col-span-2">
+      {typeof value.kind === "string" && (
+        <StatusBadge tone="neutral" className="font-mono">
+          {value.kind}
+        </StatusBadge>
+      )}
+      {typeof value.id === "string" && (
+        <span className="min-w-0 break-all font-mono text-foreground">
+          {sourceLabel(value.id)}
+        </span>
+      )}
+      <span>{scope}</span>
+      {fields.map(([key, field]) => (
+        <span key={key} className="break-all font-mono text-faint">
+          {key}={typeof field === "string" ? field : JSON.stringify(field)}
+        </span>
+      ))}
+    </div>
   );
 }
 function IndexForm({
@@ -537,7 +628,7 @@ function IndexForm({
   const { t } = useI18n();
   return (
     <form
-      className="form-grid"
+      className="grid gap-3 sm:grid-cols-2"
       onSubmit={(e) => {
         e.preventDefault();
         const values = new FormData(e.currentTarget);
@@ -564,18 +655,18 @@ function IndexForm({
         });
       }}
     >
-      <p className="muted">{t("semanticConfigHelp")}</p>
+      <Hint className="sm:col-span-2">{t("semanticConfigHelp")}</Hint>
       <Field label={t("provider")}>
-        <select
+        <NativeSelect
           name="embeddingProvider"
           defaultValue={previous?.embedding.provider ?? "openrouter"}
         >
           <option value="openrouter">OpenRouter</option>
           <option value="openai">{t("openaiCompatible")}</option>
-        </select>
+        </NativeSelect>
       </Field>
       <Field label={t("semanticEmbeddingEndpoint")}>
-        <input
+        <Input
           name="embedding"
           type="url"
           required
@@ -585,7 +676,7 @@ function IndexForm({
         />
       </Field>
       <Field label={t("semanticEmbeddingSecret")}>
-        <input
+        <Input
           name="embeddingSecret"
           defaultValue={
             previous
@@ -596,7 +687,7 @@ function IndexForm({
         />
       </Field>
       <Field label={t("semanticModel")}>
-        <input
+        <Input
           name="model"
           required
           defaultValue={
@@ -605,14 +696,14 @@ function IndexForm({
         />
       </Field>
       <Field label={t("semanticModelVersion")}>
-        <input
+        <Input
           name="version"
           required
           defaultValue={previous?.embedding.model_version ?? "1.0.0"}
         />
       </Field>
       <Field label={t("semanticDimensions")}>
-        <input
+        <Input
           name="dimensions"
           type="number"
           min={1}
@@ -621,25 +712,17 @@ function IndexForm({
           defaultValue={previous?.embedding.dimensions ?? 3072}
         />
       </Field>
-      <label>
-        <input
-          type="checkbox"
-          name="enabled"
-          defaultChecked={previous?.enabled ?? true}
-        />{" "}
-        {t("semanticEnabled")}
-      </label>
-      <label>
-        <input
-          type="checkbox"
-          name="auto"
-          defaultChecked={previous?.auto_context ?? true}
-        />{" "}
-        {t("semanticAutoOn")}
-      </label>
-      <Button variant="outline" className="primary" disabled={busy}>
-        {t("save")}
-      </Button>
+      <div className="grid gap-2 sm:col-span-2">
+        <Check name="enabled" defaultChecked={previous?.enabled ?? true}>
+          {t("semanticEnabled")}
+        </Check>
+        <Check name="auto" defaultChecked={previous?.auto_context ?? true}>
+          {t("semanticAutoOn")}
+        </Check>
+      </div>
+      <div className="flex justify-end sm:col-span-2">
+        <Button disabled={busy}>{t("save")}</Button>
+      </div>
     </form>
   );
 }
@@ -693,7 +776,7 @@ function EntryForm({
   ];
   return (
     <form
-      className="form-grid"
+      className="grid gap-3"
       onSubmit={(e) => {
         e.preventDefault();
         const values = new FormData(e.currentTarget);
@@ -721,7 +804,7 @@ function EntryForm({
         <input type="hidden" name="key" value={entry.key} />
       ) : (
         <Field label={t("semanticKey")}>
-          <input
+          <Input
             name="key"
             required
             readOnly={!!entry}
@@ -730,7 +813,7 @@ function EntryForm({
         </Field>
       )}
       <Field label={t("semanticSourceKind")}>
-        <select
+        <NativeSelect
           value={kind}
           disabled={!!entry}
           onChange={(e) => setKind(e.target.value as SemanticSource["kind"])}
@@ -738,11 +821,11 @@ function EntryForm({
           <option value="memory">{t("semanticMemoryText")}</option>
           <option value="artifact">{t("artifact")}</option>
           <option value="message">{t("message")}</option>
-        </select>
+        </NativeSelect>
       </Field>
       {kind === "memory" ? (
         <Field label={t("semanticText")}>
-          <textarea
+          <Textarea
             name="text"
             required
             rows={5}
@@ -751,7 +834,7 @@ function EntryForm({
         </Field>
       ) : (
         <Field label={t("semanticSource")}>
-          <select
+          <NativeSelect
             name="sourceId"
             required
             defaultValue={source && source.kind !== "memory" ? source.id : ""}
@@ -784,12 +867,14 @@ function EntryForm({
               !(kind === "artifact" ? sources.artifacts : messages).some(
                 (option) => option.id === source.id,
               ) && <option value={source.id}>{t("unavailableEntity")}</option>}
-          </select>
+          </NativeSelect>
         </Field>
       )}
       {kind === "message" && olderMessages.hasNextPage && (
         <Button
-          variant="outline"
+          variant="ghost"
+          size="sm"
+          className="justify-self-start"
           type="button"
           disabled={olderMessages.isFetchingNextPage}
           onClick={() => void olderMessages.fetchNextPage()}
@@ -798,16 +883,9 @@ function EntryForm({
         </Button>
       )}
       {kind === "message" && olderMessages.isError && (
-        <p role="alert">
-          {olderMessages.error.message}{" "}
-          <Button
-            variant="outline"
-            type="button"
-            onClick={() => void olderMessages.refetch()}
-          >
-            {t("retry")}
-          </Button>
-        </p>
+        <Alert retry={() => void olderMessages.refetch()}>
+          {olderMessages.error.message}
+        </Alert>
       )}
       <Field label={t("semanticAgent")}>
         <AgentScope
@@ -817,20 +895,19 @@ function EntryForm({
         />
       </Field>
       <Field label={t("semanticFilters")}>
-        <textarea
+        <Textarea
           name="metadata"
           rows={3}
+          className="font-mono text-xs"
           defaultValue={JSON.stringify(entry?.metadata ?? {}, null, 2)}
         />
       </Field>
       {metadataError && (
-        <p role="alert" className="error">
-          {metadataError}
-        </p>
+        <Alert>{metadataError}</Alert>
       )}
-      <Button variant="outline" className="primary" disabled={busy}>
-        {t("save")}
-      </Button>
+      <div className="flex justify-end">
+        <Button disabled={busy}>{t("save")}</Button>
+      </div>
     </form>
   );
 }
@@ -876,13 +953,13 @@ function AgentScope({
     ([, name]) => name,
   );
   return (
-    <select id={id} name="agent" defaultValue={initial}>
+    <NativeSelect id={id} name="agent" defaultValue={initial}>
       <option value="">{t("semanticWorkspaceScope")}</option>
       {[...options].map(([scope]) => (
         <option key={scope} value={scope}>
           {labels.get(scope)}
         </option>
       ))}
-    </select>
+    </NativeSelect>
   );
 }

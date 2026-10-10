@@ -16,10 +16,6 @@ import {
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
-import { Search, ChevronDown, PanelLeft, Moon, Sun } from "lucide-react";
-import aidashLogo from "./assets/brand/aidash-logo.svg?no-inline";
-import { workspaceCopy } from "./collaboration/workspace-copy";
-import { Avatar } from "./collaboration/avatar";
 import {
   state as getState,
   session as getSession,
@@ -39,9 +35,9 @@ import {
 import { ConnectionGate } from "./connection-gate";
 import { LocaleContext, useI18n, type Locale } from "./ui";
 import { Channel } from "./collaboration/channel";
+import { RequestWelcome } from "./collaboration/request/welcome";
 import { Graph } from "./collaboration/graph";
 import { Workbench } from "./workbench";
-import { meshCopy } from "./collaboration/mesh-copy";
 const Configuration = lazy(() =>
   import("./collaboration/settings").then((module) => ({
     default: module.Configuration,
@@ -64,22 +60,25 @@ import {
   type SettingsSection,
 } from "./collaboration/model";
 import "./design-system.css";
-import "./style.css";
-import "./collaboration/style.css";
-import "./collaboration/workspace.css";
-import "./collaboration/mesh.css";
-import "./workbench.css";
-import "./trust-overview.css";
-import "./intent-ui.css";
-import { IntentSidebar } from "./intent-sidebar";
 import {
   ConversationTools,
   CreatorTools,
   TrustTools,
 } from "./integrated-tools";
 import { Button } from "./components/ui/button";
-import { Input } from "./components/ui/input";
-import { NotificationBell, NotificationProvider } from "./notifications";
+import { TooltipProvider } from "./components/ui/tooltip";
+import { NotificationProvider } from "./notifications";
+import type { NoticeTarget } from "./notifications/model";
+import {
+  storedThemePreference,
+  useTheme,
+  type Theme,
+  type ThemePreference,
+} from "./theme";
+import { AppShell } from "./shell/app-shell";
+import { AuthCard } from "./shell/auth-card";
+import { Alert, Loading, Notice } from "./components/patterns";
+import { authCopy, shellCopy } from "./shell/copy";
 
 const GcipSignIn = lazy(() => import("./gcip-sign-in"));
 
@@ -105,20 +104,22 @@ function SignInEntry({
     return (
       <Suspense
         fallback={
-          <p role="status">{locale === "ja-JP" ? "読み込み中…" : "Loading…"}</p>
+          <AuthCard title="Aidash">
+            <Loading>{shellCopy[locale].loading}</Loading>
+          </AuthCard>
         }
       >
         <GcipSignIn locale={locale} setLocale={setLocale} />
       </Suspense>
     );
   return (
-    <p role="status">
-      {configuration.isLoading
-        ? locale === "ja-JP"
-          ? "読み込み中…"
-          : "Loading…"
-        : authCopy[locale].setup}
-    </p>
+    <AuthCard title="Aidash">
+      <p role="status" className="text-muted-foreground">
+        {configuration.isLoading
+          ? shellCopy[locale].loading
+          : authCopy[locale].setup}
+      </p>
+    </AuthCard>
   );
 }
 
@@ -132,65 +133,50 @@ type BrowserSession = {
   mappings: { id: string; tenant: string; subject: string }[];
 };
 type Registration = { status: string; expires_at: string } | null;
-const authCopy = {
-  "ja-JP": {
-    signIn: "Google でサインイン",
-    setup:
-      "管理者が Aidash の OIDC 接続を設定してください。API の Bearer 認証は引き続き利用できます。",
-    choose: "このタブで使う権限を選択してください",
-    operator: "operator",
-    request: "登録を申請",
-    pending: "登録申請は承認待ちです。",
-    rejected: "登録申請は却下されました。24 時間後に再申請できます。",
-    expired: "登録申請の期限が切れました。再申請できます。",
-    allDevices: "全端末からログアウト",
-    currentDevice: "この端末からログアウト",
-  },
-  "en-US": {
-    signIn: "Sign in with Google",
-    setup:
-      "Ask an administrator to configure OIDC for Aidash. Bearer API access remains available.",
-    choose: "Choose the authority for this tab",
-    operator: "operator",
-    request: "Request access",
-    pending: "Your registration is awaiting approval.",
-    rejected: "Your request was rejected. You can try again after 24 hours.",
-    expired: "Your request expired. You can submit another.",
-    allDevices: "Log out on all devices",
-    currentDevice: "Log out on this device",
-  },
-} as const;
 function App() {
   const [locale, setLocale] = useState<Locale>(() =>
     localStorage.getItem("aidash-locale") === "en-US" ? "en-US" : "ja-JP",
   );
+  const { preference, theme, setPreference } = useTheme();
   useEffect(() => {
     document.documentElement.lang = locale;
     localStorage.setItem("aidash-locale", locale);
   }, [locale]);
   return (
     <LocaleContext value={locale}>
-      {window.location.pathname === "/sign-in" ? (
-        <SignInEntry locale={locale} setLocale={setLocale} />
-      ) : (
-        <ConnectionGate english={locale === "en-US"}>
-          <Dashboard locale={locale} setLocale={setLocale} />
-        </ConnectionGate>
-      )}
+      <div className="flex h-dvh min-h-0 flex-col bg-background text-foreground">
+        {window.location.pathname === "/sign-in" ? (
+          <SignInEntry locale={locale} setLocale={setLocale} />
+        ) : (
+          <ConnectionGate english={locale === "en-US"}>
+            <Dashboard
+              locale={locale}
+              setLocale={setLocale}
+              theme={theme}
+              preference={preference}
+              setPreference={setPreference}
+            />
+          </ConnectionGate>
+        )}
+      </div>
     </LocaleContext>
   );
 }
 function Dashboard({
   locale,
   setLocale,
+  theme,
+  preference,
+  setPreference,
 }: {
   locale: Locale;
   setLocale: (locale: Locale) => void;
+  theme: Theme;
+  preference: ThemePreference;
+  setPreference: (preference: ThemePreference) => void;
 }) {
   const { t } = useI18n();
   const copy = collaborationCopy[locale];
-  const words = workspaceCopy[locale];
-  const searchInput = useRef<HTMLInputElement>(null);
   const location = useLocation();
   const navigate = useNavigate();
   const route = resolveLocation(location.pathname, location.searchStr);
@@ -207,31 +193,10 @@ function Dashboard({
   const [streamStatus, setStreamStatus] = useState<"live" | "reconnecting">(
     "reconnecting",
   );
-  const [filter, setFilter] = useState("");
-  const [graphSearch, setGraphSearch] = useState("");
-  const [theme, setTheme] = useState(() =>
-    localStorage.getItem("aidash-theme") === "dark" ? "dark" : "light",
-  );
-  useEffect(() => {
-    localStorage.setItem("aidash-theme", theme);
-    document.documentElement.dataset.theme = theme;
-  }, [theme]);
   const [selection, setSelection] = useState<Selection | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const busyRef = useRef(false);
-  const [mobileChannels, setMobileChannels] = useState(false);
-  useEffect(() => {
-    const search = (event: KeyboardEvent) => {
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
-        event.preventDefault();
-        setMobileChannels(true);
-        requestAnimationFrame(() => searchInput.current?.focus());
-      }
-    };
-    window.addEventListener("keydown", search);
-    return () => window.removeEventListener("keydown", search);
-  }, []);
   const registration = useQuery({
     queryKey: ["registration", browserSession?.id],
     queryFn: async (): Promise<Registration> => {
@@ -287,7 +252,6 @@ function Dashboard({
     } = {},
   ) => {
     setSelection(null);
-    setMobileChannels(false);
     void navigate({
       to: "/$section",
       params: { section },
@@ -565,126 +529,134 @@ function Dashboard({
   };
   if (!connected)
     return (
-      <main className="login">
-        <div className="login-brand">
-          <img src={aidashLogo} alt="Aidash" width={172} height={64} />
-          <span>0.1</span>
-        </div>
-        <div className="login-card">
-          <h1>{browserSession ? auth.choose : t("connect")}</h1>
-          {error && (
-            <p className="error" role="alert">
-              {error}
-            </p>
-          )}
-          {authLoading ? (
-            <p>Loading…</p>
-          ) : !oidcEnabled ? (
-            <p>{auth.setup}</p>
-          ) : !browserSession ? (
-            <Button
-              variant="outline"
-              className="primary"
-              type="button"
-              onClick={() => {
-                const returnTo =
-                  window.location.pathname + window.location.search;
-                setAuthLoading(true);
-                void signIn(returnTo)
-                  .then(async () => {
-                    const response = await sessionFetch("/auth/session", {
-                      cache: "no-store",
-                    });
-                    if (!response.ok) throw new Error("Sign-in failed");
-                    const current = (await response.json()) as BrowserSession;
-                    selectDashboardContext(null);
-                    sessionStorage.setItem("aidash-session-id", current.id);
-                    setBrowserSession(current);
-                  })
-                  .catch((reason) => setError(String(reason)))
-                  .finally(() => setAuthLoading(false));
-              }}
-            >
-              {oidcProvider === "gcip"
-                ? locale === "ja-JP"
-                  ? "サインイン"
-                  : "Sign in"
-                : oidcProvider === "keycloak"
-                  ? auth.signIn.replace("Google", "Keycloak")
-                  : auth.signIn}
-            </Button>
-          ) : (
-            <>
-              {browserSession.mappings.map((mapping) => (
-                <Button
-                  variant="outline"
-                  key={mapping.id}
-                  type="button"
-                  onClick={() => chooseContext(`mapping:${mapping.id}`)}
-                >
-                  {mapping.tenant} / {mapping.subject}
-                </Button>
-              ))}
-              {browserSession.operator && (
-                <Button
-                  variant="outline"
-                  type="button"
-                  onClick={() => chooseContext("operator")}
-                >
-                  {auth.operator}
-                </Button>
-              )}
-              {browserSession.mappings.length === 0 &&
-                !browserSession.operator && (
-                  <>
-                    <p>
-                      {registration.data?.status === "pending"
-                        ? auth.pending
-                        : registration.data?.status === "rejected"
-                          ? auth.rejected
-                          : registration.data?.status === "expired"
-                            ? auth.expired
-                            : auth.choose}
-                    </p>
-                    {registration.data?.status !== "pending" && (
-                      <Button
-                        variant="outline"
-                        type="button"
-                        onClick={() => {
-                          void sessionFetch("/auth/registration", {
-                            method: "POST",
-                            credentials: "same-origin",
-                          })
-                            .then(async (response) => {
-                              if (!response.ok)
-                                throw new Error(
-                                  (
-                                    (await response.json()) as {
-                                      error?: string;
-                                    }
-                                  ).error ?? "Registration failed",
-                                );
-                              void registration.refetch();
-                            })
-                            .catch((reason: unknown) =>
-                              setError(
-                                reason instanceof Error
-                                  ? reason.message
-                                  : String(reason),
-                              ),
-                            );
-                        }}
-                      >
-                        {auth.request}
-                      </Button>
-                    )}
-                  </>
+      <AuthCard title={browserSession ? auth.choose : t("connect")}>
+        {error && <Alert>{error}</Alert>}
+        {authLoading ? (
+          <Loading>{shellCopy[locale].loading}</Loading>
+        ) : !oidcEnabled ? (
+          <p className="text-muted-foreground">{auth.setup}</p>
+        ) : !browserSession ? (
+          <Button
+            size="lg"
+            type="button"
+            onClick={() => {
+              const returnTo =
+                window.location.pathname + window.location.search;
+              setAuthLoading(true);
+              void signIn(returnTo)
+                .then(async () => {
+                  const response = await sessionFetch("/auth/session", {
+                    cache: "no-store",
+                  });
+                  if (!response.ok) throw new Error("Sign-in failed");
+                  const current = (await response.json()) as BrowserSession;
+                  selectDashboardContext(null);
+                  sessionStorage.setItem("aidash-session-id", current.id);
+                  setBrowserSession(current);
+                })
+                .catch((reason) => setError(String(reason)))
+                .finally(() => setAuthLoading(false));
+            }}
+          >
+            {oidcProvider === "gcip"
+              ? locale === "ja-JP"
+                ? "サインイン"
+                : "Sign in"
+              : oidcProvider === "keycloak"
+                ? auth.signIn.replace("Google", "Keycloak")
+                : auth.signIn}
+          </Button>
+        ) : (
+          <>
+            {(browserSession.mappings.length > 0 ||
+              browserSession.operator) && (
+              <div className="grid gap-1.5">
+                {browserSession.mappings.map((mapping) => (
+                  <Button
+                    variant="outline"
+                    size="lg"
+                    key={mapping.id}
+                    type="button"
+                    className="justify-start font-mono text-xs"
+                    onClick={() => chooseContext(`mapping:${mapping.id}`)}
+                  >
+                    {mapping.tenant} / {mapping.subject}
+                  </Button>
+                ))}
+                {browserSession.operator && (
+                  <Button
+                    variant="outline"
+                    size="lg"
+                    type="button"
+                    className="justify-start font-mono text-xs"
+                    onClick={() => chooseContext("operator")}
+                  >
+                    {auth.operator}
+                  </Button>
                 )}
-              <Button variant="outline" type="button" onClick={disconnect}>
+              </div>
+            )}
+            {browserSession.mappings.length === 0 &&
+              !browserSession.operator && (
+                <div className="grid gap-3">
+                  <p
+                    className={
+                      registration.data?.status === "pending"
+                        ? "rounded-md bg-warning-soft px-3 py-2 text-xs text-warning"
+                        : registration.data?.status === "rejected" ||
+                            registration.data?.status === "expired"
+                          ? "rounded-md bg-destructive-soft px-3 py-2 text-xs text-destructive"
+                          : "text-muted-foreground"
+                    }
+                  >
+                    {registration.data?.status === "pending"
+                      ? auth.pending
+                      : registration.data?.status === "rejected"
+                        ? auth.rejected
+                        : registration.data?.status === "expired"
+                          ? auth.expired
+                          : auth.choose}
+                  </p>
+                  {registration.data?.status !== "pending" && (
+                    <Button
+                      type="button"
+                      onClick={() => {
+                        void sessionFetch("/auth/registration", {
+                          method: "POST",
+                          credentials: "same-origin",
+                        })
+                          .then(async (response) => {
+                            if (!response.ok)
+                              throw new Error(
+                                (
+                                  (await response.json()) as {
+                                    error?: string;
+                                  }
+                                ).error ?? "Registration failed",
+                              );
+                            void registration.refetch();
+                          })
+                          .catch((reason: unknown) =>
+                            setError(
+                              reason instanceof Error
+                                ? reason.message
+                                : String(reason),
+                            ),
+                          );
+                      }}
+                    >
+                      {auth.request}
+                    </Button>
+                  )}
+                </div>
+              )}
+            <div className="flex flex-wrap gap-1 border-t border-border pt-3">
+              <Button variant="ghost" size="sm" type="button" onClick={disconnect}>
                 {auth.currentDevice}
               </Button>
               <Button
-                variant="outline"
+                variant="ghost"
+                size="sm"
                 type="button"
                 onClick={() => {
                   void logOut(true);
@@ -692,10 +664,10 @@ function Dashboard({
               >
                 {auth.allDevices}
               </Button>
-            </>
-          )}
-        </div>
-      </main>
+            </div>
+          </>
+        )}
+      </AuthCard>
     );
   const data = state.isError ? undefined : state.data;
   const remote = mesh.isError ? undefined : mesh.data;
@@ -732,6 +704,30 @@ function Dashboard({
           : []),
       ]
     : [];
+  const visit = (target: NoticeTarget) => {
+    const item =
+      target.kind === "human"
+        ? requests.find(
+            (item) =>
+              item.node === target.node &&
+              item.request.id === target.id &&
+              item.request.response === null,
+          )
+        : undefined;
+    const task =
+      target.kind === "task" && target.node === data?.node.id
+        ? data.tasks.find((task) => task.id === target.id)
+        : undefined;
+    if (!item && !task) return;
+    if (
+      data &&
+      target.node === data.node.id &&
+      data.workspaces.some((workspace) => workspace.id === target.workspace)
+    )
+      go("collaboration", { channel: target.workspace, focus: "" });
+    if (item) open({ kind: "human", ...item });
+    if (task) open({ kind: "taskDetail", task });
+  };
   return (
     <DisplayProvider data={data}>
       <NotificationProvider
@@ -739,455 +735,234 @@ function Dashboard({
         data={data}
         remote={operator ? remote : undefined}
         locale={locale}
-        theme={theme === "dark" ? "dark" : "light"}
-        onSelect={(target) => {
-          const item =
-            target.kind === "human"
-              ? requests.find(
-                  (item) =>
-                    item.node === target.node &&
-                    item.request.id === target.id &&
-                    item.request.response === null,
-                )
-              : undefined;
-          const task =
-            target.kind === "task" && target.node === data?.node.id
-              ? data.tasks.find((task) => task.id === target.id)
-              : undefined;
-          if (!item && !task) return;
-          if (
-            data &&
-            target.node === data.node.id &&
-            data.workspaces.some(
-              (workspace) => workspace.id === target.workspace,
-            )
-          )
-            go("collaboration", { channel: target.workspace, focus: "" });
-          if (item) open({ kind: "human", ...item });
-          if (task) open({ kind: "taskDetail", task });
-        }}
+        theme={theme}
+        onSelect={visit}
       >
-        <div
-          className={`collab-app intent-app ${route.section === "graph" ? "graph-shell" : ""}`}
-          data-theme={theme}
+        <AppShell
+          section={route.section}
+          settings={route.settings}
+          data={data}
+          channel={currentChannel}
+          operator={operator}
+          streamStatus={streamStatus}
+          decisions={requests.filter((item) => item.request.response === null)}
+          selectDecision={({ request, node }) =>
+            visit({
+              kind: "human",
+              id: request.id,
+              node,
+              workspace: request.workspace_id,
+            })
+          }
+          go={go}
+          newRequest={() => open({ kind: "goal" })}
+          prepareChannel={() => open({ kind: "workspace" })}
+          theme={theme}
+          account={{
+            name:
+              session.data?.access.kind === "subject"
+                ? session.data.access.subject
+                : auth.operator,
+            context,
+            mappings: browserSession?.mappings ?? [],
+            operatorAllowed: browserSession?.operator ?? false,
+            chooseContext,
+            setLocale,
+            logOut: (allDevices) => void logOut(allDevices),
+            preference,
+            setPreference,
+          }}
         >
-          <a className="intent-skip" href="#intent-main">
-            {locale === "ja-JP" ? "本文へ移動" : "Skip to content"}
-          </a>
-          <IntentSidebar
-            data={data}
-            current={currentChannel}
-            section={route.section}
-            theme={theme}
-            filter={filter}
-            setFilter={setFilter}
-            searchInput={searchInput}
-            expanded={mobileChannels}
-            close={() => setMobileChannels(false)}
-            create={() => open({ kind: "goal" })}
-            account={
-              <>
-                {" "}
-                <NotificationBell />{" "}
-                <details className="workspace-popover account-popover">
-                  <summary aria-label={words.account}>
-                    <Avatar
-                      name={
-                        session.data?.access.kind === "subject"
-                          ? session.data.access.subject
-                          : "account"
-                      }
-                      human
-                      small
-                    />
-                    <span>
-                      {session.data?.access.kind === "subject"
-                        ? session.data.access.subject
-                        : auth.operator}
-                    </span>
-                    <ChevronDown size={12} />
-                  </summary>
-                  <div className="workspace-popover-body">
-                    <nav
-                      className="intent-account-links"
-                      aria-label={
-                        locale === "ja-JP"
-                          ? "管理と設定"
-                          : "Management and settings"
-                      }
-                    >
-                      <Button
-                        variant="outline"
-                        type="button"
-                        onClick={(event) => {
-                          event.currentTarget
-                            .closest("details")
-                            ?.removeAttribute("open");
-                          open({ kind: "workspace" });
-                        }}
-                      >
-                        {copy.prepare}
-                      </Button>
-                      {(["creator", "trust", "settings"] as const).map(
-                        (section) => (
-                          <Button
-                            variant="outline"
-                            type="button"
-                            key={section}
-                            onClick={(event) => {
-                              event.currentTarget
-                                .closest("details")
-                                ?.removeAttribute("open");
-                              go(section, { focus: "" });
-                            }}
-                          >
-                            {section === "settings"
-                              ? copy.settings
-                              : section === "creator"
-                                ? "Creator"
-                                : "Trust"}
-                          </Button>
-                        ),
-                      )}
-                    </nav>
-
-                    <label>
-                      <span className="sr-only">{auth.choose}</span>
-                      <select
-                        value={context ?? ""}
-                        onChange={(event) => chooseContext(event.target.value)}
-                      >
-                        {browserSession?.mappings.map((mapping) => (
-                          <option
-                            key={mapping.id}
-                            value={`mapping:${mapping.id}`}
-                          >
-                            {mapping.tenant} / {mapping.subject}
-                          </option>
-                        ))}
-                        {browserSession?.operator && (
-                          <option value="operator">{auth.operator}</option>
-                        )}
-                      </select>
-                    </label>
-                    <label>
-                      <span className="sr-only">{t("language")}</span>
-                      <select
-                        data-testid="language-selector"
-                        value={locale}
-                        onChange={(event) =>
-                          setLocale(event.target.value as Locale)
-                        }
-                      >
-                        <option value="ja-JP">日本語</option>
-                        <option value="en-US">English</option>
-                      </select>
-                    </label>
+          {((error && !selection) ||
+            state.isError ||
+            (data &&
+              operator &&
+              (mesh.isError || (remote?.errors.length ?? 0) > 0))) && (
+            <div className="grid shrink-0 gap-2 border-b border-border px-4 py-3 md:px-6">
+              {error && !selection && (
+                <Alert>{error}</Alert>
+              )}
+              {state.isError && (
+                <Alert
+                  retry={() => void state.refetch()}
+                  retryLabel={copy.retry}
+                >
+                  <p>{state.error.message}</p>
+                  {session.data && (
                     <Button
                       variant="outline"
-                      type="button"
-                      onClick={disconnect}
-                    >
-                      {auth.currentDevice}
-                    </Button>
-                    <Button
-                      variant="outline"
+                      size="sm"
                       type="button"
                       onClick={() => {
-                        void logOut(true);
+                        void navigate({
+                          to: "/$section",
+                          params: { section: "collaboration" },
+                          search: {
+                            channel: currentChannel || undefined,
+                            view: "progress",
+                          },
+                        });
                       }}
                     >
-                      {auth.allDevices}
+                      {shellCopy[locale].recovery}
                     </Button>
-                    <Button
-                      variant="outline"
-                      type="button"
-                      onClick={() =>
-                        setTheme(theme === "dark" ? "light" : "dark")
-                      }
-                    >
-                      {theme === "dark" ? (
-                        <Sun size={16} />
-                      ) : (
-                        <Moon size={16} />
-                      )}
-                      {locale === "ja-JP"
-                        ? theme === "dark"
-                          ? "ライトテーマ"
-                          : "ダークテーマ"
-                        : theme === "dark"
-                          ? "Light theme"
-                          : "Dark theme"}
-                    </Button>
-                  </div>
-                </details>
-              </>
-            }
-          />
-          <div className="collab-shell">
-            <header
-              className={`collab-topbar intent-topbar ${route.section === "collaboration" ? "conversation-topbar" : ""}`}
-            >
-              <Button
-                variant="ghost"
-                size="icon"
-                className="intent-history-toggle"
-                aria-label={copy.channels}
-                aria-expanded={mobileChannels}
-                onClick={() => setMobileChannels((value) => !value)}
-              >
-                <PanelLeft size={18} />
-              </Button>
-              <span className="intent-location">
-                {route.section === "collaboration"
-                  ? locale === "ja-JP"
-                    ? "依頼"
-                    : "Request"
-                  : route.section === "settings"
-                    ? copy.settings
-                    : route.section === "graph"
-                      ? copy.graph
-                      : route.section === "creator"
-                        ? "Creator"
-                        : "Trust"}
-              </span>
-              {route.section === "graph" && (
-                <label className="graph-search">
-                  <Search size={15} />
-                  <span className="sr-only">{meshCopy[locale].search}</span>
-                  <Input
-                    type="search"
-                    value={graphSearch}
-                    onChange={(event) => setGraphSearch(event.target.value)}
-                    placeholder={meshCopy[locale].search}
-                  />
-                </label>
+                  )}
+                </Alert>
               )}
-              <span className={`stream-status ${streamStatus}`}>
-                <span className="status-dot" />
-                {copy[streamStatus]}
-              </span>
-            </header>
-            <div
-              className={`collab-workspace ${route.section !== "collaboration" ? "wide" : ""}`}
-            >
-              <main id="intent-main" className="collab-main" tabIndex={-1}>
-                {error && !selection && (
-                  <p className="error" role="alert">
-                    {error}
-                  </p>
-                )}
-                {state.isError && (
-                  <div className="error" role="alert">
-                    <p>{state.error.message}</p>
-                    <Button
-                      variant="outline"
-                      type="button"
-                      onClick={() => void state.refetch()}
-                    >
-                      {copy.retry}
-                    </Button>
-                    {session.data && (
-                      <Button
-                        variant="outline"
-                        type="button"
-                        onClick={() => {
-                          void navigate({
-                            to: "/$section",
-                            params: { section: "collaboration" },
-                            search: {
-                              channel: currentChannel || undefined,
-                              view: "progress",
-                            },
-                          });
-                        }}
+              {data &&
+                operator &&
+                (mesh.isError || (remote?.errors.length ?? 0) > 0) && (
+                  <Notice tone="warning" role="status">
+                    <p>{t("remoteUnavailable")}</p>
+                    {remote?.errors.map((peer) => (
+                      <p
+                        key={peer.node_id}
+                        className="font-mono text-[11px] text-muted-foreground"
                       >
-                        {locale === "ja-JP"
-                          ? "整合性と復旧"
-                          : "Consistency and recovery"}
-                      </Button>
-                    )}
-                  </div>
+                        <ReferenceName id={peer.node_id} />: {peer.error}
+                      </p>
+                    ))}
+                  </Notice>
                 )}
-                {!data && !state.isError && (
-                  <p role="status">{copy.processing}</p>
-                )}
-                {data && (
-                  <>
-                    {route.section === "collaboration" &&
-                      (workspace ? (
-                        <Channel
-                          key={workspace.id}
-                          workspace={workspace}
-                          data={data}
-                          discovery={
-                            discovery.isError ? undefined : discovery.data
-                          }
-                          threadList={location.search.view === "threads"}
-                          tools={(view) => {
-                            void navigate({
-                              to: "/$section",
-                              params: { section: "collaboration" },
-                              search: { channel: workspace.id, view },
-                            });
-                          }}
-                          runs={runs}
-                          requests={requests}
-                          open={open}
-                          graph={(focus) =>
-                            go("graph", {
-                              channel: workspace.id,
-                              focus: focus ?? "",
-                            })
-                          }
-                        />
-                      ) : (
-                        <section className="collab-welcome">
-                          <h1>
-                            {route.channel
-                              ? copy.unavailable
-                              : locale === "ja-JP"
-                                ? "今日は何を進めますか？"
-                                : "What would you like to work on?"}
-                          </h1>
-                          <p>
-                            {route.channel
-                              ? copy.channelHelp
-                              : locale === "ja-JP"
-                                ? "やりたいことを伝えてください。エージェントと一緒に進められます。"
-                                : "Describe your goal and work through it with your agents."}
-                          </p>
-                          <Button
-                            variant="outline"
-                            type="button"
-                            className="primary"
-                            onClick={() => open({ kind: "goal" })}
-                          >
-                            {locale === "ja-JP" ? "新しい依頼" : "New request"}
-                          </Button>
-                        </section>
-                      ))}
-                    {route.section === "graph" && (
-                      <Graph
-                        key={`${context}:${currentChannel}`}
-                        data={data}
-                        search={graphSearch}
-                        setSearch={setGraphSearch}
-                        discovery={
-                          discovery.isError ? undefined : discovery.data
-                        }
-                        runs={runs}
-                        channel={currentChannel}
-                        focus={route.focus}
-                        setFocus={(focus) => go("graph", { focus })}
-                        visitChannel={(channel) =>
-                          go("collaboration", { channel })
-                        }
-                        open={open}
-                      />
-                    )}
-                    {(route.section === "creator" ||
-                      route.section === "trust") && (
-                      <Workbench
-                        key={context ?? ""}
-                        mode={route.section}
-                        data={data}
-                        focus={route.focus}
-                        select={(focus) => go(route.section, { focus })}
-                        switchMode={(section, focus) => go(section, { focus })}
-                        integratedTools={
-                          route.section === "creator" ? (
-                            <CreatorTools
-                              data={data}
-                              initiallyOpen={route.integration === "generation"}
-                            />
-                          ) : (
-                            <TrustTools
-                              entries={data.registry}
-                              operator={operator}
-                              initiallyOpen={
-                                route.integration === "authorization"
-                              }
-                            />
-                          )
-                        }
-                      />
-                    )}
-                    {route.section === "settings" && (
-                      <Suspense
-                        fallback={<p role="status">{copy.processing}</p>}
-                      >
-                        <Configuration
-                          data={data}
-                          section={route.settings}
-                          select={(settings) => go("settings", { settings })}
-                          open={open}
-                          packages={
-                            packages.isError ? [] : (packages.data ?? [])
-                          }
-                          disconnect={disconnect}
-                          integration={route.integration}
-                          channel={currentChannel}
-                        />
-                      </Suspense>
-                    )}
-                    {operator &&
-                      (mesh.isError || (remote?.errors.length ?? 0) > 0) && (
-                        <p className="notice" role="status">
-                          {t("remoteUnavailable")}
-                          {remote?.errors.map((peer) => (
-                            <span key={peer.node_id}>
-                              <ReferenceName id={peer.node_id} />: {peer.error}
-                            </span>
-                          ))}
-                        </p>
-                      )}
-                  </>
-                )}
-                {!data && session.data && route.section === "trust" && (
-                  <TrustTools
-                    entries={[]}
-                    operator={operator}
-                    initiallyOpen={route.integration === "authorization"}
-                  />
-                )}
-              </main>
             </div>
-          </div>
-          {session.data && (
-            <ConversationTools
-              key={`${context}:${route.integration}`}
-              view={
-                route.integration === "files" ||
-                route.integration === "progress"
-                  ? route.integration
-                  : undefined
-              }
-              data={data}
-              stateError={state.isError ? state.error.message : undefined}
-              nodeId={session.data.node_id}
-              operator={operator}
-              workspace={currentChannel || undefined}
-              close={() => go("collaboration", { focus: "" })}
-            />
           )}
-          {selection && data && (
-            <Suspense fallback={<p role="status">{copy.processing}</p>}>
-              <OperationsDialog
-                selection={selection}
-                data={data}
-                discovery={discovery.isError ? undefined : discovery.data}
-                mesh={remote}
-                open={open}
-                close={() => setSelection(null)}
-                submit={submit}
-                error={error}
-                busy={busy}
-                visitChannel={(channel) => go("collaboration", { channel })}
+          {!data && !state.isError && (
+            <Loading className="flex flex-1 items-center justify-center">
+              {copy.processing}
+            </Loading>
+          )}
+          {data && (
+            <div className="relative flex min-h-0 flex-1 flex-col">
+              {route.section === "collaboration" &&
+                (workspace ? (
+                  <Channel
+                    key={workspace.id}
+                    workspace={workspace}
+                    data={data}
+                    discovery={discovery.isError ? undefined : discovery.data}
+                    threadList={location.search.view === "threads"}
+                    tools={(view) => {
+                      void navigate({
+                        to: "/$section",
+                        params: { section: "collaboration" },
+                        search: { channel: workspace.id, view },
+                      });
+                    }}
+                    runs={runs}
+                    requests={requests}
+                    open={open}
+                    graph={(focus) =>
+                      go("graph", {
+                        channel: workspace.id,
+                        focus: focus ?? "",
+                      })
+                    }
+                  />
+                ) : (
+                  <RequestWelcome
+                    unavailable={!!route.channel}
+                    create={() => open({ kind: "goal" })}
+                  />
+                ))}
+              {route.section === "graph" && (
+                <Graph
+                  key={`${context}:${currentChannel}`}
+                  data={data}
+                  discovery={discovery.isError ? undefined : discovery.data}
+                  runs={runs}
+                  channel={currentChannel}
+                  focus={route.focus}
+                  setFocus={(focus) => go("graph", { focus })}
+                  visitChannel={(channel) => go("collaboration", { channel })}
+                  open={open}
+                />
+              )}
+              {(route.section === "creator" || route.section === "trust") && (
+                <Workbench
+                  key={context ?? ""}
+                  mode={route.section}
+                  data={data}
+                  focus={route.focus}
+                  select={(focus) => go(route.section, { focus })}
+                  switchMode={(section, focus) => go(section, { focus })}
+                  integratedTools={
+                    route.section === "creator" ? (
+                      <CreatorTools
+                        data={data}
+                        initiallyOpen={route.integration === "generation"}
+                      />
+                    ) : (
+                      <TrustTools
+                        entries={data.registry}
+                        operator={operator}
+                        initiallyOpen={route.integration === "authorization"}
+                      />
+                    )
+                  }
+                />
+              )}
+              {route.section === "settings" && (
+                <Suspense
+                  fallback={
+                    <Loading className="p-6">{copy.processing}</Loading>
+                  }
+                >
+                  <Configuration
+                    data={data}
+                    section={route.settings}
+                    select={(settings) => go("settings", { settings })}
+                    open={open}
+                    packages={packages.isError ? [] : (packages.data ?? [])}
+                    disconnect={disconnect}
+                    integration={route.integration}
+                    channel={currentChannel}
+                  />
+                </Suspense>
+              )}
+            </div>
+          )}
+          {!data && session.data && route.section === "trust" && (
+            <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4 md:px-6">
+              <TrustTools
+                entries={[]}
+                operator={operator}
+                initiallyOpen={route.integration === "authorization"}
               />
-            </Suspense>
+            </div>
           )}
-        </div>
+        </AppShell>
+        {session.data && (
+          <ConversationTools
+            key={`${context}:${route.integration}`}
+            view={
+              route.integration === "files" || route.integration === "progress"
+                ? route.integration
+                : undefined
+            }
+            data={data}
+            stateError={state.isError ? state.error.message : undefined}
+            nodeId={session.data.node_id}
+            operator={operator}
+            workspace={currentChannel || undefined}
+            close={() => go("collaboration", { focus: "" })}
+          />
+        )}
+        {selection && data && (
+          <Suspense fallback={<Loading>{copy.processing}</Loading>}>
+            <OperationsDialog
+              selection={selection}
+              data={data}
+              discovery={discovery.isError ? undefined : discovery.data}
+              mesh={remote}
+              open={open}
+              close={() => setSelection(null)}
+              submit={submit}
+              error={error}
+              busy={busy}
+              visitChannel={(channel) => go("collaboration", { channel })}
+            />
+          </Suspense>
+        )}
       </NotificationProvider>
     </DisplayProvider>
   );
@@ -1215,10 +990,20 @@ declare module "@tanstack/react-router" {
     router: typeof router;
   }
 }
+// Resolve the theme before the first render so the stored preference never flashes.
+const initialTheme = storedThemePreference();
+document.documentElement.dataset.theme =
+  initialTheme === "system"
+    ? window.matchMedia("(prefers-color-scheme: dark)").matches
+      ? "dark"
+      : "light"
+    : initialTheme;
 createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <QueryClientProvider client={queryClient}>
-      <RouterProvider router={router} />
+      <TooltipProvider delayDuration={300}>
+        <RouterProvider router={router} />
+      </TooltipProvider>
     </QueryClientProvider>
   </React.StrictMode>,
 );

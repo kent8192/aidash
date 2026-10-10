@@ -1,7 +1,19 @@
 import { Button } from "../components/ui/button";
 import { useEffect, useState } from "react";
+import { Alert } from "../components/patterns";
 import { useI18n } from "../ui";
 import { download, saveFile, type CoreFile } from "./client";
+
+/**
+ * Capability panel (details or section): hairline-separated rhythm, the
+ * panel's own summary row, headings and item articles.
+ */
+export const panelClass = [
+  "grid min-w-0 gap-3 border-t border-border py-3 text-[13px] text-foreground",
+  "[&_h2]:text-[13px] [&_h2]:font-semibold [&_h3]:text-[13px] [&_h3]:font-semibold",
+  "[&_article]:grid [&_article]:gap-2 [&_article]:border-t [&_article]:border-border [&_article]:py-3",
+  "[&>summary]:flex [&>summary]:min-h-8 [&>summary]:cursor-pointer [&>summary]:items-center [&>summary]:gap-2 [&>summary]:text-[13px] [&>summary]:font-semibold [&>summary]:marker:text-muted-foreground [&>summary]:hover:text-brand",
+].join(" ");
 
 export function DisplayFile({ area, file }: { area: string; file: CoreFile }) {
   const { locale } = useI18n();
@@ -16,7 +28,7 @@ export function DisplayFile({ area, file }: { area: string; file: CoreFile }) {
     [preview],
   );
   return (
-    <figure className="core-display">
+    <figure className="my-4 grid gap-2 [&_img]:block [&_img]:h-auto [&_img]:max-w-full">
       <figcaption>
         {file.path} · {file.size.toLocaleString()} bytes
       </figcaption>
@@ -57,7 +69,7 @@ export function DisplayFile({ area, file }: { area: string; file: CoreFile }) {
       >
         {ja ? "出力をダウンロード" : "Download output"}
       </Button>
-      {error && <p role="alert">{error}</p>}
+      {error && <Alert>{error}</Alert>}
     </figure>
   );
 }

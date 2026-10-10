@@ -14,6 +14,7 @@ import {
   SheetTitle,
 } from "./components/ui/sheet";
 import { useI18n } from "./ui";
+import { Alert, Hint, Loading } from "./components/patterns";
 import type { State } from "./types";
 import { useQuery } from "@tanstack/react-query";
 import { workspaceGet } from "./generated/aidash";
@@ -49,14 +50,20 @@ export function ToolSection({
   initiallyOpen?: boolean;
 }) {
   return (
-    <Collapsible defaultOpen={initiallyOpen} className="intent-tool-section">
+    <Collapsible defaultOpen={initiallyOpen} className="group/tool min-w-0">
       <CollapsibleTrigger asChild>
-        <Button variant="ghost" className="intent-tool-trigger">
+        <Button
+          variant="ghost"
+          className="h-10 w-full justify-between rounded-none px-0 text-[13px] font-medium text-foreground hover:bg-transparent hover:text-brand"
+        >
           <span>{title}</span>
-          <ChevronDown size={16} />
+          <ChevronDown
+            aria-hidden
+            className="size-4 text-muted-foreground transition-transform group-data-[state=open]/tool:rotate-180"
+          />
         </Button>
       </CollapsibleTrigger>
-      <CollapsibleContent className="intent-tool-content">
+      <CollapsibleContent className="grid min-w-0 gap-4 pb-4">
         {children}
       </CollapsibleContent>
     </Collapsible>
@@ -81,7 +88,7 @@ export function CreatorTools({
     >
       <Suspense
         fallback={
-          <p role="status">{locale === "ja-JP" ? "読み込み中…" : "Loading…"}</p>
+          <Loading>{locale === "ja-JP" ? "読み込み中…" : "Loading…"}</Loading>
         }
       >
         <GenerationPage data={data} />
@@ -109,18 +116,16 @@ export function TrustTools({
       {operator ? (
         <Suspense
           fallback={
-            <p role="status">
+            <Loading>
               {locale === "ja-JP" ? "読み込み中…" : "Loading…"}
-            </p>
+            </Loading>
           }
         >
           <DashboardIdentityAdministration />
           <AuthorizationPage entries={entries} />
         </Suspense>
       ) : (
-        <p className="notice" role="status">
-          {t("administratorsOnly")}
-        </p>
+        <Hint role="status">{t("administratorsOnly")}</Hint>
       )}
     </ToolSection>
   );
@@ -152,11 +157,10 @@ export function ConversationTools({
       }}
     >
       <SheetContent
-        className="intent-tools-sheet"
-        data-theme={document.documentElement.dataset.theme}
+        className="flex flex-col gap-0 p-0"
         closeLabel={ja ? "閉じる" : "Close"}
       >
-        <SheetHeader>
+        <SheetHeader className="border-b border-border px-4 py-3">
           <SheetTitle>
             {view === "files"
               ? ja
@@ -176,40 +180,38 @@ export function ConversationTools({
                 : "Inspect execution consistency, waiting and recovery."}
           </SheetDescription>
         </SheetHeader>
+        <div className="grid min-h-0 flex-1 content-start gap-4 overflow-y-auto px-4 py-3">
         <Suspense
-          fallback={<p role="status">{ja ? "読み込み中…" : "Loading…"}</p>}
+          fallback={<Loading>{ja ? "読み込み中…" : "Loading…"}</Loading>}
         >
           {view === "files" && workspace && (
             <RequestFiles workspace={workspace} />
           )}
           {view === "files" &&
             (operator ? (
-              <p role="status">
+              <Hint role="status">
                 {ja
                   ? "作業ファイルを管理するには、利用者アカウントで接続してください。"
                   : "Connect with a user account to manage working files."}
-              </p>
+              </Hint>
             ) : (
               <WorkingFileSettings workspace={workspace} />
             ))}
           {view === "progress" && (
             <>
-              {stateError && (
-                <p className="error" role="alert">
-                  {stateError}
-                </p>
-              )}
+              {stateError && <Alert>{stateError}</Alert>}
               <TransactionsPage nodeId={nodeId} operator={operator} />
             </>
           )}
         </Suspense>
         {!data && view === "files" && (
-          <p role="status">
+          <Hint role="status">
             {ja
               ? "依頼の情報を読み込めません。"
               : "Request information is unavailable."}
-          </p>
+          </Hint>
         )}
+        </div>
       </SheetContent>
     </Sheet>
   );
@@ -223,20 +225,20 @@ function RequestFiles({ workspace }: { workspace: string }) {
     retry: false,
   });
   return (
-    <>
+    <div className="grid min-w-0 gap-4 [&>*+*]:border-t [&>*+*]:border-border [&>*+*]:pt-4">
       {query.isError ? (
-        <p role="alert">
+        <Alert
+          retry={() => void query.refetch()}
+          retryLabel={locale === "ja-JP" ? "再試行" : "Retry"}
+        >
           {locale === "ja-JP"
             ? "成果物を読み込めません。"
             : "Could not load results."}
-          <Button variant="outline" onClick={() => void query.refetch()}>
-            {locale === "ja-JP" ? "再試行" : "Retry"}
-          </Button>
-        </p>
+        </Alert>
       ) : (
         <ArtifactList artifacts={query.data?.artifacts ?? []} />
       )}
       <ChannelFiles workspace={workspace} />
-    </>
+    </div>
   );
 }
