@@ -313,9 +313,19 @@ fn events_without_assembled_text_count_toward_the_stream_cap(#[case] event: Valu
 }
 
 #[rstest::rstest]
-#[case::both_unindexed(json!([{"delta":{"content":"one"}},{"delta":{"content":"two"}}]))]
-#[case::one_unindexed(json!([{"index":0,"delta":{"content":"one"}},{"delta":{"content":"two"}}]))]
-fn several_unindexed_choices_are_rejected_as_ambiguous(#[case] choices: Value) {
+#[case::both_unindexed(
+	json!([{"delta":{"content":"one"}},{"delta":{"content":"two"}}]),
+	"provider stream returned ambiguous unindexed choices"
+)]
+#[case::one_unindexed(
+	json!([{"index":0,"delta":{"content":"one"}},{"delta":{"content":"two"}}]),
+	"provider stream returned ambiguous unindexed choices"
+)]
+#[case::duplicate_zero(
+	json!([{"index":0,"delta":{"content":"one"}},{"index":0,"delta":{"content":"two"}}]),
+	"provider stream returned duplicate choice 0"
+)]
+fn ambiguous_choice_zero_is_rejected(#[case] choices: Value, #[case] expected: &str) {
 	// Arrange
 	let body = sse(&[json!({"choices":choices}), finish("stop")], true);
 
@@ -323,9 +333,7 @@ fn several_unindexed_choices_are_rejected_as_ambiguous(#[case] choices: Value) {
 	let (result, _) = assemble(&body, 4096, 1_048_576);
 
 	// Assert
-	assert!(
-		matches!(result, Err(Error::External(message)) if message == "provider stream returned ambiguous unindexed choices")
-	);
+	assert!(matches!(result, Err(Error::External(message)) if message == expected));
 }
 
 #[rstest::rstest]

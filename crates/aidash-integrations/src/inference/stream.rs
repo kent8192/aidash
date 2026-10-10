@@ -200,18 +200,24 @@ impl<'a> StreamAssembler<'a> {
 			return Err(rejected(error));
 		}
 		if let Some(choices) = chunk.get("choices").and_then(Value::as_array) {
-			// A non-streamed body is read at `/choices/0`. An omitted index can
-			// only identify the sole choice of a chunk; with several, it is ambiguous.
+			// A non-streamed body is read at `/choices/0`, so a chunk contributes at
+			// most one choice zero. An omitted index can only identify the sole
+			// choice of a chunk; with several, it is ambiguous.
 			let unindexed = |choice: &Value| choice.get("index").is_none_or(Value::is_null);
 			if choices.len() > 1 && choices.iter().any(unindexed) {
 				return Err(Error::External(
 					"provider stream returned ambiguous unindexed choices".into(),
 				));
 			}
-			for choice in choices
+			let mut zero = choices
 				.iter()
-				.filter(|choice| unindexed(choice) || choice["index"] == 0)
-			{
+				.filter(|choice| unindexed(choice) || choice["index"] == 0);
+			if let Some(choice) = zero.next() {
+				if zero.next().is_some() {
+					return Err(Error::External(
+						"provider stream returned duplicate choice 0".into(),
+					));
+				}
 				self.choice(choice)?;
 			}
 		}
