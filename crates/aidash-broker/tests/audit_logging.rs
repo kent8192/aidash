@@ -6,6 +6,7 @@ use aidash_application::{
 };
 use aidash_broker::{Audit, AuditSink, CloudLogging};
 use aidash_capability::{Claims, InMemorySigner, Operation, SignError, TokenSigner};
+use aidash_domain::context::projection::ProjectionVersion;
 use aidash_domain::provider_credentials::{Provider, ProviderCredential, State};
 use aidash_integrations::capability::issuer::{CapabilityIssuer, WorkerConfiguration};
 use axum::{
@@ -179,6 +180,7 @@ async fn worker_mint_and_broker_audit_are_correlated_and_never_log_secrets() {
 			modalities: vec!["text".into()],
 			media_routes: vec![],
 			cost: json!({}),
+			projection_versions: ProjectionVersion::legacy_only(),
 		},
 		Arc::new(access),
 		context,
@@ -191,6 +193,7 @@ async fn worker_mint_and_broker_audit_are_correlated_and_never_log_secrets() {
 			tools: vec![],
 			max_output_tokens: 10,
 			content_parts: vec![],
+			projection: Default::default(),
 		})
 		.await
 		.unwrap_err();
