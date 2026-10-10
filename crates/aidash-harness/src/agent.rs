@@ -164,7 +164,10 @@ impl<'a> Executor<'a> {
 		let model_cfg: ModelConfig = serde_json::from_value(entry.config)?;
 		let summary_window = model_cfg.context_window;
 		// The policy bound never exceeds what the pinned summarizer may emit.
-		let max_tokens = max_tokens.min(model_cfg.output_token_limit());
+		// The reservation charges that bound before the window cap, which a
+		// remote Home can derive from the pinned definitions and verify.
+		let reserved_output = summary.max_tokens.min(model_cfg.output_token_limit());
+		let max_tokens = max_tokens.min(reserved_output);
 		let provider = self
 			.environment
 			.provider(model_cfg)
@@ -208,7 +211,13 @@ impl<'a> Executor<'a> {
 			};
 		let reservation = match guard {
 			Some(guard) => match guard
-				.reserve_summary(token, &summarizer, summary_window, max_tokens, &request)
+				.reserve_summary(
+					token,
+					&summarizer,
+					summary_window,
+					reserved_output,
+					&request,
+				)
 				.await
 			{
 				Ok(reservation) => reservation,
@@ -284,7 +293,16 @@ impl<'a> Executor<'a> {
 				return Err(error);
 			}
 		};
-		let dependencies = summary_dependencies(&plan.absorbed, tools);
+		// The candidate carries the previous summary's sources as well.
+		let mut dependencies = summary_dependencies(&plan.absorbed, tools);
+		if let Some(previous) = plan.pruned.execution_summary.as_deref() {
+			dependencies
+				.message_ids
+				.extend(previous.dependencies.message_ids.iter().copied());
+			dependencies
+				.tool_call_ids
+				.extend(previous.dependencies.tool_call_ids.iter().cloned());
+		}
 		// Authority was released during I/O: recheck the Run's ordinary inference
 		// authority, the exact summarizer and every summarized source before any
 		// candidate is adopted.

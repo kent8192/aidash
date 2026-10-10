@@ -106,11 +106,17 @@ fn exact_provider(description: &Description, usage: &Usage) -> Result<()> {
 				.ok_or(Error::Forbidden)?;
 			let config: aidash_domain::model::ModelConfig =
 				serde_json::from_value(definition.metadata.config.clone())?;
-			// The summary output bound is policy-derived; never exceed one full
-			// request of the pinned summarizer.
-			if usage.reserved_tokens
-				> (config.context_window + config.output_token_limit() as usize) as i64
-			{
+			let agent: aidash_domain::registry::AgentConfig =
+				serde_json::from_value(description.inspection.agent.config.clone())?;
+			let policy =
+				aidash_domain::context::policy::Effective::of(agent.context_policy.as_ref())
+					.summary
+					.ok_or(Error::Context(ContextFailure::SummaryUnavailable))?;
+			// Home cannot derive the Run's current window, which may cap the
+			// summary output further. Charge the approved maximum: one full
+			// summarizer request with the policy's output bound.
+			let output = policy.max_tokens.min(config.output_token_limit());
+			if usage.reserved_tokens != (config.context_window + output as usize) as i64 {
 				return Err(Error::Forbidden);
 			}
 		}

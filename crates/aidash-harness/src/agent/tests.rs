@@ -47,6 +47,9 @@ struct State {
 	terminal: Option<aidash_domain::context::recovery::Failure>,
 	/// Summary dependency checks that pass before the sources are revoked.
 	summary_checks_before_revocation: Option<usize>,
+	/// When set, revocation past that threshold hits only the dependency sets
+	/// that contain this message.
+	revoked_message: Option<Uuid>,
 	/// The summarizer's configured `max_output_tokens`.
 	summarizer_output_tokens: u32,
 	projection: ProjectionVersion,
@@ -667,7 +670,7 @@ impl ExecutionEnvironment for Backend {
 		run: &Run,
 		dependencies: &aidash_domain::context::summary::SummaryDependencies,
 	) -> Result<bool> {
-		let _ = (run, dependencies);
+		let _ = run;
 		self.record("summary.dependencies");
 		let checks = self
 			.0
@@ -677,11 +680,17 @@ impl ExecutionEnvironment for Backend {
 			.iter()
 			.filter(|call| **call == "summary.dependencies")
 			.count();
-		Ok(!self.0.stale_summary_dependencies
+		// Past the threshold, revocation hits every set, or only the sets that
+		// depend on `revoked_message` when one is named.
+		let revoked = self
+			.0
+			.summary_checks_before_revocation
+			.is_some_and(|current| checks > current)
 			&& self
 				.0
-				.summary_checks_before_revocation
-				.is_none_or(|current| checks <= current))
+				.revoked_message
+				.is_none_or(|id| dependencies.message_ids.contains(&id));
+		Ok(!self.0.stale_summary_dependencies && !revoked)
 	}
 }
 
@@ -848,6 +857,7 @@ fn fixture() -> Fixture {
 		revoke_summarizer: false,
 		stale_summary_dependencies: false,
 		summary_checks_before_revocation: None,
+		revoked_message: None,
 		terminal: None,
 		summarizer_output_tokens: 4096,
 		projection: ProjectionVersion::Legacy,
@@ -1807,6 +1817,56 @@ async fn a_source_revoked_while_the_summarizer_runs_is_never_adopted(mut fixture
 	let position = |name| calls.iter().position(|call| *call == name).unwrap();
 	assert!(position("summarizer.infer") < position("summary.dependencies"));
 	assert!(!calls.contains(&"provider.infer"));
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_carried_source_revoked_while_the_summarizer_runs_is_never_readopted(
+	mut fixture: Fixture,
+) {
+	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	state.scoped = true;
+	state.context_policy = Some(recovery_policy(true));
+	state.jev_retention = Some(1.0);
+	*state.summary_text.lock().unwrap() = Some(valid_summary());
+	thinking_with_history(&mut fixture, 40);
+	advance_sources(&mut fixture).await.unwrap();
+	// The first summary read message `carried`; the next merge absorbs none.
+	let carried = Uuid::from_u128(9);
+	let summary = fixture.run.context.execution_summary.as_mut().unwrap();
+	summary.dependencies.message_ids.insert(carried);
+	let first = summary.digest.clone();
+	thinking_with_history(&mut fixture, 40);
+	// The checks before and after pruning pass; `carried` is revoked while
+	// the second summarizer call is in flight.
+	let checks = calls(&fixture)
+		.iter()
+		.filter(|call| **call == "summary.dependencies")
+		.count();
+	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	state.summary_checks_before_revocation = Some(checks + 2);
+	state.revoked_message = Some(carried);
+	let earlier = calls(&fixture).len();
+
+	assert!(matches!(
+		advance_sources(&mut fixture).await,
+		Err(Error::Forbidden)
+	));
+
+	let step = &calls(&fixture)[earlier..];
+	assert!(step.contains(&"summarizer.infer"), "{step:?}");
+	assert_eq!(
+		fixture
+			.run
+			.context
+			.execution_summary
+			.as_ref()
+			.unwrap()
+			.digest,
+		first
+	);
+	let attempts = fixture.backend.0.attempts.lock().unwrap();
+	assert_eq!(attempts.last().unwrap().1, Some(Outcome::Unauthorized));
 }
 
 #[rstest]

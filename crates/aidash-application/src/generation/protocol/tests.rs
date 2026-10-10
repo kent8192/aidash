@@ -566,15 +566,32 @@ fn summary_usage_requires_the_home_disclosed_summarizer_pin(world: World) {
 		panic!("binding")
 	};
 	*summarizer = Some(Box::new(usage.provider.clone()));
-	exact_provider(&state.description, &usage).unwrap();
-	usage.reserved_tokens -= 1;
-	exact_provider(&state.description, &usage).unwrap();
-	usage.reserved_tokens += 2;
+	// Without a Summary Stage in the pinned Agent's policy, nothing is derivable.
 	assert!(matches!(
 		exact_provider(&state.description, &usage),
-		Err(Error::Forbidden)
+		Err(Error::Context(
+			aidash_domain::context::recovery::Failure::SummaryUnavailable
+		))
 	));
-	usage.reserved_tokens -= 1;
+	state.description.inspection.agent.config["context_policy"] = json!({
+		"version":"context-recovery/1",
+		"summary":{"model":reference("model"),"max_tokens":512}
+	});
+	// Exactly one full summarizer request at the policy's output bound.
+	usage.reserved_tokens = 4096 + 512;
+	exact_provider(&state.description, &usage).unwrap();
+	// Neither an under-reservation nor any other amount is accepted.
+	for reserved in [1, 4096 + 511, 4096 + 513, 4096 + 1024] {
+		usage.reserved_tokens = reserved;
+		assert!(
+			matches!(
+				exact_provider(&state.description, &usage),
+				Err(Error::Forbidden)
+			),
+			"{reserved}"
+		);
+	}
+	usage.reserved_tokens = 4096 + 512;
 	usage.provider.digest = "wrong".into();
 	assert!(matches!(
 		exact_provider(&state.description, &usage),

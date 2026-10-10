@@ -173,12 +173,16 @@ RequiredHome Runs need a summarizer pin and a summary allowance: the semantic
 request's optional `summarizer` must name the Agent's pinned `summary.model`, the
 Home discloses it as the binding's `summarizer` provider, and each request is
 admitted with usage purpose `summary` against every owner's `summary` (or
-`remote.summary`) allowance. Peers without the field never receive it.
+`remote.summary`) allowance. Peers without the field never receive it. The
+Home accepts only the approved maximum charge: the pinned summarizer's context
+window plus `summary.max_tokens` capped at its output limit.
 Disclosure is checked before every request. A missing approval makes the stage unavailable,
 with no fallback. Adoption saves the Run and marks the attempt adopted in one
-lease-fenced transaction, after the Run's inference authority and every
-summarizer approval above are rechecked without charging another call; a
-summarizer revoked during its call is never adopted. Malformed, empty,
+lease-fenced transaction, after the Run's inference authority, every
+summarizer approval above and every source the candidate depends on
+(including those carried from the previous summary) are rechecked without
+charging another call; a summarizer or source revoked during its call is
+never adopted. Malformed, empty,
 non-reducing, unauthorized or interrupted summaries leave the saved context
 unchanged; an interrupted attempt is marked `abandoned` by the next attempt or
 by lease recovery. If a source the summary depends on is no longer readable, the
