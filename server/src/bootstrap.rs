@@ -64,13 +64,25 @@ pub async fn initialize(
 		.with_ansi(false)
 		.try_init();
 	let config = Config::from_settings(settings)?;
+	let cache_salt = settings.cache_salt.keys()?;
+	// Only availability and the current key version; never key material.
+	match &cache_salt {
+		Some(keys) => tracing::info!(
+			current_key_version = keys.current(),
+			"Tenant Cache Salt available"
+		),
+		None => tracing::warn!(
+			"no Cache Salt Key configured; Runs of salted Projection Versions will be rejected"
+		),
+	}
 	crate::apps::execution::services::metrics::initialize_recorder()?;
 	let pool = connection
 		.into_postgres()
 		.ok_or_else(|| Error::Invalid("Aidash requires PostgreSQL".into()))?;
 	let mut store = Store::from_pool(pool, config.node_id.clone())
 		.await?
-		.with_dashboard_policy(config.dashboard_policy());
+		.with_dashboard_policy(config.dashboard_policy())
+		.with_cache_salt(cache_salt);
 	configure_provider_credentials(&mut store, &settings.provider_credentials).await?;
 	let registry = Registry::new(store.pool.clone(), &store.node_id)?
 		.with_provider_credentials(store.provider_credentials.is_some());
@@ -334,7 +346,9 @@ mod compatibility;
 mod listener;
 pub use compatibility::{migrate, serve};
 
-/// All inference paths use the same credential resolver and application port.
+/// Legacy-only inference over environment credentials: no Cache Salt Keys, so
+/// any salted request is rejected without being sent. Run inference uses
+/// `admitted_model_provider`, which carries this node's keys.
 pub fn model_provider(
 	client: reqwest::Client,
 	config: aidash_domain::model::ModelConfig,
@@ -1928,6 +1942,7 @@ impl aidash_application::ports::registry::workbench::sandbox::admission::Sandbox
 		&self,
 		model: aidash_domain::model::ModelConfig,
 	) -> aidash_application::Result<Arc<dyn aidash_application::ports::ModelProvider>> {
+		// Sandbox requests are always Legacy, so they never need a salt.
 		if model.provider_credential.is_some() {
 			return Err(aidash_application::Error::Invalid(
 				"Workbench tests do not support Tenant Provider Credentials".into(),
@@ -2219,6 +2234,8 @@ pub async fn configure_provider_credentials(
 }
 
 /// Worker inference is bound to local admission evidence, never a mutable binding.
+/// It carries this node's Cache Salt Keys; only requests with a Cache Scope
+/// (salted Projection Versions) use them.
 pub(crate) fn admitted_model_provider(
 	store: &Store,
 	config: aidash_domain::model::ModelConfig,
@@ -2226,7 +2243,7 @@ pub(crate) fn admitted_model_provider(
 	tenant: String,
 	maintenance: Option<aidash_application::provider_access::MaintenancePurpose>,
 ) -> Result<Arc<dyn aidash_application::ports::ModelProvider>> {
-	aidash_integrations::inference::provider(
+	aidash_integrations::inference::salted_provider(
 		store.semantic_client.clone(),
 		config,
 		Arc::new(
@@ -2241,6 +2258,7 @@ pub(crate) fn admitted_model_provider(
 			provider_credential_id: None,
 			inference: None,
 		},
+		store.cache_salt.clone(),
 	)
 	.map_err(Into::into)
 }

@@ -9,6 +9,7 @@ pub mod media;
 pub mod memory;
 pub mod model;
 pub mod policy;
+pub mod projection;
 pub mod provider;
 pub mod provider_credentials;
 pub mod run_input;

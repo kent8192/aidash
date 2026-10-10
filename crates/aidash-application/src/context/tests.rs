@@ -76,6 +76,7 @@ async fn japanese_history_compacts_before_the_final_request_check() {
 		instructions: "",
 		tools: &[],
 		max_output_tokens: 256,
+		projection: &RequestProjection::Legacy,
 	}
 	.request(&context, &pinned);
 	check_request(12000, &request).unwrap();
@@ -95,6 +96,7 @@ async fn media_space_is_reserved_before_retained_history_is_compacted() {
 		instructions: "Inspect the image",
 		tools: &[],
 		max_output_tokens: 256,
+		projection: &RequestProjection::Legacy,
 	};
 	let pinned = json!({"task":"Inspect accepted image"});
 	let mut context = journaled(history());
@@ -112,11 +114,12 @@ async fn media_space_is_reserved_before_retained_history_is_compacted() {
 fn request_check_reserves_completion_tokens() {
 	let request = provider::ModelRequest {
 		instructions: String::new(),
-		context: json!({}),
+		context: json!({}).into(),
 		tools: vec![],
 		max_output_tokens: 4096,
 		response_format: None,
 		content_parts: vec![],
+		cache_scope: None,
 	};
 	assert!(check_request(2000, &request).is_err());
 }
@@ -128,6 +131,7 @@ fn request_check_reserves_the_registered_model_maximum_with_input_and_framing() 
 		instructions: "",
 		tools: &[],
 		max_output_tokens: 65_536,
+		projection: &RequestProjection::Legacy,
 	};
 	let request = budget.request(&Context::default(), &json!({}));
 	assert_eq!(request.max_output_tokens, 65_536);
@@ -156,6 +160,7 @@ fn tool_event_growth_matches_the_complete_request_delta() {
 		instructions: "instructions with newline\n",
 		tools: &tools,
 		max_output_tokens: 2048,
+		projection: &RequestProjection::Legacy,
 	};
 	let delta = budget
 		.request(&after, &pinned)
@@ -181,6 +186,7 @@ async fn fitting_and_final_checks_share_escaped_input_tools_and_output_budget() 
 			instructions: text,
 			tools: &tools,
 			max_output_tokens: 4096,
+			projection: &RequestProjection::Legacy,
 		};
 		let request = budget.request(&context, &pinned);
 		budget.window = request.estimated_total_tokens();
@@ -477,6 +483,7 @@ fn registration_and_execution_share_the_context_reserve_at_its_boundary() {
 		instructions,
 		tools: &specifications,
 		max_output_tokens: output,
+		projection: &RequestProjection::Legacy,
 	};
 	let window = request
 		.request(&Context::default(), &private_context)
@@ -488,6 +495,7 @@ fn registration_and_execution_share_the_context_reserve_at_its_boundary() {
 		instructions,
 		&specifications,
 		&private_context,
+		&RequestProjection::Legacy,
 	)
 	.unwrap();
 	let execution_budget =
@@ -500,7 +508,8 @@ fn registration_and_execution_share_the_context_reserve_at_its_boundary() {
 			output,
 			instructions,
 			&specifications,
-			&private_context
+			&private_context,
+			&RequestProjection::Legacy
 		)
 		.is_err()
 	);
@@ -538,6 +547,7 @@ async fn compact(
 			instructions,
 			tools: &[],
 			max_output_tokens: 256,
+			projection: &RequestProjection::Legacy,
 		},
 		pinned,
 	)
@@ -575,6 +585,7 @@ async fn compaction_counts_private_documents_without_disclosing_them() {
 		instructions: "",
 		tools: &[],
 		max_output_tokens: 256,
+		projection: &RequestProjection::Legacy,
 	};
 	legacy(&mut context, &asker, &budget, &pinned)
 		.await
@@ -588,10 +599,8 @@ async fn compaction_counts_private_documents_without_disclosing_them() {
 	);
 	assert!(budget.request(&context, &pinned).estimated_total_tokens() <= budget.window);
 	assert!(
-		budget
-			.request(&context, &pinned)
-			.context
-			.to_string()
+		serde_json::to_string(&budget.request(&context, &pinned).context)
+			.unwrap()
 			.contains("PRIVATE-REFERENCE-123")
 	);
 }
@@ -688,6 +697,7 @@ impl Scenario {
 			instructions: "Work on the task",
 			tools: &[],
 			max_output_tokens: 256,
+			projection: &RequestProjection::Legacy,
 		}
 	}
 	async fn plan(&self, context: &mut Context, policy: &policy::Effective) -> Result<Compaction> {
@@ -742,13 +752,11 @@ async fn summary_recovers_history_that_pruning_alone_cannot_fit_across_compactio
 	let request = summary_request(&plan, &scenario.pinned, 1024);
 	assert!(request.tools.is_empty());
 	assert!(request.response_format.is_some());
-	assert!(
-		!request
-			.context
-			.to_string()
-			.contains("PRIVATE-REFERENCE-123")
-	);
-	assert_eq!(request.context["previous_summary"], Value::Null);
+	let provider::ModelContext::Legacy(context) = &request.context else {
+		panic!("the summary request is a single JSON message");
+	};
+	assert!(!context.to_string().contains("PRIVATE-REFERENCE-123"));
+	assert_eq!(context["previous_summary"], Value::Null);
 
 	let (first, _) = scenario
 		.adopt(&plan, &summary_text(&["c1"], &["u1"], &[]), &policy)
@@ -784,11 +792,11 @@ async fn summary_recovers_history_that_pruning_alone_cannot_fit_across_compactio
 	second.journal.inferred_through = second.journal.head;
 	let plan = needs_summary(scenario.plan(&mut second, &policy).await.unwrap());
 	assert!(plan.absorbed.iter().all(|entry| entry.seq > 31));
-	assert_eq!(
-		summary_request(&plan, &scenario.pinned, 1024).context["previous_summary"]["constraints"]
-			[0]["id"],
-		"c1"
-	);
+	let request = summary_request(&plan, &scenario.pinned, 1024);
+	let provider::ModelContext::Legacy(context) = &request.context else {
+		panic!("the summary request is a single JSON message");
+	};
+	assert_eq!(context["previous_summary"]["constraints"][0]["id"], "c1");
 	let dropped = scenario
 		.adopt(&plan, &summary_text(&[], &["u1"], &[]), &policy)
 		.unwrap_err();

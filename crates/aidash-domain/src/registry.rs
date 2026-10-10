@@ -139,6 +139,8 @@ pub struct AgentConfig {
 	pub cluster: Option<EntityRef>,
 	pub max_steps: i32,
 	pub context_policy: Option<crate::context::policy::ContextPolicy>,
+	/// As written in the definition; `None` renders as Legacy.
+	pub projection_version: Option<crate::projection::ProjectionVersion>,
 	pub core_capabilities: crate::capabilities::CoreCapabilities,
 	pub skill_attachments: Vec<crate::capabilities::SkillAttachment>,
 	pub skill_roots: Vec<String>,

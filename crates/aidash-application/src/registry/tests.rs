@@ -12,6 +12,7 @@ use std::{
 };
 
 mod memory;
+mod projection;
 
 #[derive(Default)]
 struct Secrets(Mutex<Vec<String>>);

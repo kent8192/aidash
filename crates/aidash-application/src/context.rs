@@ -166,11 +166,13 @@ pub fn summary_request(plan: &SummaryPlan, pinned: &Value, max_tokens: u32) -> M
 			"task": pinned.get("task").cloned().unwrap_or(Value::Null),
 			"previous_summary": previous,
 			"history": plan.absorbed.iter().map(|entry| &entry.event).collect::<Vec<_>>(),
-		}),
+		})
+		.into(),
 		tools: vec![],
 		max_output_tokens: max_tokens,
 		response_format: Some(SummaryContent::response_format()),
 		content_parts: vec![],
+		cache_scope: None,
 	}
 }
 

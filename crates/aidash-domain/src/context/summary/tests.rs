@@ -194,3 +194,23 @@ fn only_tool_and_media_events_are_absorbable() {
 		message_ids: vec![]
 	}));
 }
+
+#[test]
+fn ordered_projection_carries_the_adopted_summary_before_history() {
+	let mut context = crate::context::Context::default();
+	context.push(tool(1).event);
+	let pinned = json!({"task":{"id":"t"}});
+	// Prune-only contexts keep the Ordered Stable Prefix bytes unchanged.
+	let prune_only = crate::context::ordered_context(&context, &pinned);
+	assert!(!prune_only.stable.contains("\"summary\""));
+	context.execution_summary = Some(Box::new(adopted(
+		&content(&[("c1", "never touch main")], &[], &[]),
+		None,
+		&[tool(2)],
+	)));
+	let summarized = crate::context::ordered_context(&context, &pinned);
+	let stable: serde_json::Value = serde_json::from_str(&summarized.stable).unwrap();
+	assert_eq!(stable["summary"]["constraints"][0]["id"], "c1");
+	assert!(summarized.stable.find("\"summary\"") < summarized.stable.find("\"history\""));
+	assert_eq!(summarized.volatile, prune_only.volatile);
+}

@@ -12,11 +12,16 @@ use secrecy::ExposeSecret;
 use serde_json::{Value, json};
 use std::sync::Arc;
 
+pub mod cache_salt;
+pub use cache_salt::{CacheSaltKey, CacheSaltKeys};
+
 pub struct OpenRouterProvider {
 	pub client: reqwest::Client,
 	pub config: ModelConfig,
 	pub access: Arc<dyn ProviderAccess>,
 	pub context: Context,
+	/// This node's Cache Salt Keys; `None` rejects every salted request.
+	pub cache_salt: Option<CacheSaltKeys>,
 }
 
 impl OpenRouterProvider {
@@ -173,11 +178,24 @@ impl OpenRouterProvider {
 	}
 }
 
+/// A provider without Cache Salt Keys: every salted request is rejected
+/// before any provider traffic.
 pub fn provider(
 	client: reqwest::Client,
 	config: ModelConfig,
 	access: Arc<dyn ProviderAccess>,
 	context: Context,
+) -> Result<Arc<dyn ModelProvider>> {
+	salted_provider(client, config, access, context, None)
+}
+
+/// A provider that salts requests carrying a Cache Scope with this node's keys.
+pub fn salted_provider(
+	client: reqwest::Client,
+	config: ModelConfig,
+	access: Arc<dyn ProviderAccess>,
+	context: Context,
+	cache_salt: Option<CacheSaltKeys>,
 ) -> Result<Arc<dyn ModelProvider>> {
 	aidash_domain::provider_credentials::validate_source(
 		&config.endpoint,
@@ -193,6 +211,7 @@ pub fn provider(
 				config,
 				access,
 				context,
+				cache_salt,
 			}))
 		}
 		_ => Err(Error::Invalid("unsupported model provider".into())),
@@ -212,6 +231,23 @@ impl ModelProvider for OpenRouterProvider {
 					"BYOK inference exceeds the configured output limit".into(),
 				));
 			}
+			// Derive the salt before any provider traffic: a node without the
+			// requested key version sends nothing rather than an unsalted request.
+			let salt = request
+				.cache_scope
+				.as_ref()
+				.map(|scope| {
+					self.cache_salt
+						.as_ref()
+						.ok_or_else(|| {
+							Error::Invalid(format!(
+								"Cache Salt Key v{} is not configured on this node",
+								scope.key_version
+							))
+						})?
+						.line(scope)
+				})
+				.transpose()?;
 			for modality in request.content_parts.iter().filter_map(|part| match part {
 				ContentPart::Image { .. } => Some("image"),
 				ContentPart::Audio { .. } => Some("audio"),
@@ -230,7 +266,7 @@ impl ModelProvider for OpenRouterProvider {
 				}
 			}
 			let media_routes = self.verified_media_routes(&request).await?;
-			let body = request_body(&self.config, &request, media_routes);
+			let body = request_body(&self.config, &request, media_routes, salt.as_deref());
 			let access = self
 				.access
 				.resolve(
@@ -282,8 +318,20 @@ impl ModelProvider for OpenRouterProvider {
 
 /// The OpenRouter chat body. `transforms: []` disables OpenRouter's
 /// middle-out compression so only the Agent's Context Policy reduces context.
-fn request_body(config: &ModelConfig, request: &ModelRequest, media_routes: Vec<String>) -> Value {
+/// The transmitted chat body. A salted request's Tenant Cache Salt line
+/// starts `system`; it never enters request metadata or accounting.
+fn request_body(
+	config: &ModelConfig,
+	request: &ModelRequest,
+	media_routes: Vec<String>,
+	salt: Option<&str>,
+) -> Value {
 	let mut body = request.input_body();
+	if let Some(salt) = salt {
+		let system = &mut body["messages"][0]["content"];
+		let salted = format!("{salt}{}", system.as_str().unwrap_or_default());
+		*system = Value::String(salted);
+	}
 	body["model"] = json!(config.model_id);
 	body["max_tokens"] = json!(request.max_output_tokens);
 	body["transforms"] = json!([]);

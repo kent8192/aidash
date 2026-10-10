@@ -4,7 +4,7 @@ use rstest::{fixture, rstest};
 fn request() -> ModelRequest {
 	ModelRequest {
 		instructions: "system".into(),
-		context: json!({"text":"東京"}),
+		context: json!({"text":"東京"}).into(),
 		tools: vec![],
 		max_output_tokens: 12,
 		response_format: None,
@@ -19,6 +19,7 @@ fn request() -> ModelRequest {
 				bytes: b"abc".to_vec(),
 			},
 		],
+		cache_scope: None,
 	}
 }
 #[rstest]
@@ -54,7 +55,12 @@ fn every_admitted_request_or_media_change_has_a_distinct_identity(
 	let before = request.inference_digest();
 	match change {
 		"instructions" => request.instructions.push('!'),
-		"context" => request.context["text"] = json!("changed"),
+		"context" => {
+			request
+				.context
+				.legacy_mut()
+				.expect("Legacy request context")["text"] = json!("changed")
+		}
 		"output" => request.max_output_tokens += 1,
 		"bytes" => request.content_parts[0] = ContentPart::Text("abcd".into()),
 		"order" => request.content_parts.swap(0, 1),
@@ -68,4 +74,29 @@ fn every_admitted_request_or_media_change_has_a_distinct_identity(
 		_ => panic!("unknown change"),
 	}
 	assert_ne!(request.inference_digest(), before);
+}
+#[rstest]
+fn media_only_estimate_keeps_transmitted_array_framing_without_encoded_payload(
+	mut request: ModelRequest,
+) {
+	request.content_parts.remove(0);
+	let body = request.input_body();
+	assert!(body["messages"][1]["content"].is_array());
+	let payload: usize = request
+		.content_parts
+		.iter()
+		.map(|part| match part {
+			ContentPart::Image { bytes, .. } | ContentPart::Audio { bytes, .. } => {
+				base64::engine::general_purpose::STANDARD
+					.encode(bytes)
+					.len()
+			}
+			ContentPart::Text(_) => 0,
+		})
+		.sum();
+	let expected = body.to_string().len() - payload
+		+ ModelRequest::media_tokens(&request.content_parts)
+		+ request.max_output_tokens as usize
+		+ 1024;
+	assert_eq!(request.estimated_total_tokens(), expected);
 }

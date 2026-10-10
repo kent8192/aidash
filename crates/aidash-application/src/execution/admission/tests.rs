@@ -25,11 +25,12 @@ fn repository() -> Repository {
 fn request() -> ModelRequest {
 	ModelRequest {
 		instructions: "system".into(),
-		context: json!({"text":"東京"}),
+		context: json!({"text":"東京"}).into(),
 		tools: vec![],
 		max_output_tokens: 4096,
 		response_format: None,
 		content_parts: vec![],
+		cache_scope: None,
 	}
 }
 fn attempt() -> Uuid {

@@ -92,6 +92,7 @@ async fn compact(
 			instructions,
 			tools: &[],
 			max_output_tokens: 256,
+			projection: &aidash_domain::context::RequestProjection::Legacy,
 		},
 		pinned,
 	)
