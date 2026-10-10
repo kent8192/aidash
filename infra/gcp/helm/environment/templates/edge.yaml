@@ -2,6 +2,7 @@
 {{- $edge := .Values.edge -}}
 {{- $hostname := required "edge.hostname is required" $edge.hostname -}}
 {{- if not (regexMatch "@sha256:[0-9a-f]{64}$" (toString $edge.admissionImage)) -}}{{ fail "edge.admissionImage must be pinned by digest: it enforces the admission gate" }}{{- end -}}
+{{- if not (regexMatch "@sha256:[0-9a-f]{64}$" (toString $edge.caddyImage)) -}}{{ fail "edge.caddyImage must be pinned by digest: it receives all public traffic and shares the admission container's network namespace" }}{{- end -}}
 ---
 apiVersion: v1
 kind: ConfigMap

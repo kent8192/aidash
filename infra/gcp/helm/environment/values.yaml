@@ -35,7 +35,9 @@ nats:
 edge:
   hostname: ""
   backend: aidash-backend
-  caddyImage: caddy:2.10.2
+  # Receives all public traffic and shares the edge Pod's network namespace with
+  # admission, so it must also end in @sha256:<digest> (OCI index of caddy:2.10.2).
+  caddyImage: caddy:2.10.2@sha256:c3d7ee5d2b11f9dc54f947f68a734c84e9c9666c92c88a7f30b9cba5da182adb
   # Build edge.Dockerfile from the trusted ref (Nginx + Lua + cjson).
   # Must end in @sha256:<digest>; the chart refuses mutable tags for trusted images.
   admissionImage: aidash-edge-admission:0.1.0

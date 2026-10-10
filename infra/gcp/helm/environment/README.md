@@ -47,14 +47,17 @@ uninstall or a preview switch delete the shared TLS disk. Rebinding belongs to
 the gated lifecycle controller; this chart does not guess ownership or detach a
 live claim.
 
-`activity.observerImage`, `activity.collectorImage` and `edge.admissionImage` hold the
-database credential, the Runner token or the admission gate, so the chart refuses to
-render them unless they end in `@sha256:<digest>`.
+`activity.observerImage`, `activity.collectorImage`, `edge.admissionImage` and
+`edge.caddyImage` hold the database credential, the Runner token, the admission
+gate or all public traffic, so the chart refuses to render them unless they end in
+`@sha256:<digest>`; the shipped Caddy default is pinned.
 
 `activity.existingSecret` supplies the existing read-only observer `DATABASE_URL`
 and `AIDASH_CORE_RUNNER_TOKEN`. The CronJob reads database work, the private edge
 activity endpoint, and the Runner's authenticated `/v1/activity`; it gets/patches
-only `<release>-environment-activity`. The persisted `snapshot.json` uses the
+only `<release>-environment-activity`. The Pod disables automatic token mounting
+and projects that ServiceAccount token only into the collector, so the
+database-facing observer cannot publish a snapshot. The persisted `snapshot.json` uses the
 existing `aidash-infra-activity/1` contract. Failed observations cannot authorize
 stop. A gap longer than 120 seconds is busy and starts a full new idle interval;
 new transfer receipts and actual work completions also renew it. Receipt IDs only
