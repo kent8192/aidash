@@ -43,6 +43,10 @@ pub struct ModelConfig {
 	#[serde(default)]
 	pub media_routes: Vec<MediaRouteEvidence>,
 	pub cost: Value,
+	/// Projection Versions this model accepts (ADR 0015). Omitted means Legacy
+	/// only and is not serialized, so existing model definitions keep bytes.
+	#[serde(default, skip_serializing_if = "Vec::is_empty")]
+	pub projection_versions: Vec<crate::projection::ProjectionVersion>,
 }
 
 /// OpenRouter's normalized reasoning levels; omission retains the model default.
@@ -70,6 +74,51 @@ pub struct MediaRouteEvidence {
 }
 
 impl ModelConfig {
+	/// Projection Versions this model accepts; Legacy when none are declared.
+	pub fn supports_projection(&self, version: crate::projection::ProjectionVersion) -> bool {
+		if self.projection_versions.is_empty() {
+			version.is_legacy()
+		} else {
+			self.projection_versions.contains(&version)
+		}
+	}
+
+	/// Model definitions may declare only implemented versions, each once.
+	pub fn validate_projection_versions(&self) -> Result<()> {
+		let mut declared = std::collections::BTreeSet::new();
+		for version in &self.projection_versions {
+			if !version.is_implemented() {
+				return Err(Error::Invalid(format!(
+					"model {} declares Projection Version {version}, which is not implemented",
+					self.model_id
+				)));
+			}
+			if !declared.insert(version) {
+				return Err(Error::Invalid(format!(
+					"model {} declares Projection Version {version} more than once",
+					self.model_id
+				)));
+			}
+		}
+		Ok(())
+	}
+
+	/// An Agent may pin only an implemented version its model declares.
+	pub fn require_projection(&self, version: crate::projection::ProjectionVersion) -> Result<()> {
+		if !version.is_implemented() {
+			return Err(Error::Invalid(format!(
+				"Projection Version {version} is not implemented"
+			)));
+		}
+		if !self.supports_projection(version) {
+			return Err(Error::Invalid(format!(
+				"model {} does not declare Projection Version {version}",
+				self.model_id
+			)));
+		}
+		Ok(())
+	}
+
 	pub fn require_media_types<'a>(
 		&self,
 		media_types: impl IntoIterator<Item = &'a str>,

@@ -547,15 +547,11 @@ async fn admission_preserves_current_authority_locks_and_exact_plugin_indices() 
 		admitted.session.scenario,
 		json!({"mode":"simulated","profile_id":null,"profile_revision":null,"continue_from":null,"fixtures":{},"binding_snapshot":crate::test_support::resolve("aidash://fixture",&agent(),false,(0..3).map(|i|crate::test_support::http_tool("aidash://fixture",&format!("tool_{i}"),&format!("plugin_{i}"))).collect())})
 	);
-	assert!(
-		!admitted
-			.job
-			.request
-			.context
-			.as_object()
-			.unwrap()
-			.contains_key("conversation")
-	);
+	let aidash_domain::provider::ModelContext::Legacy(context) = &admitted.job.request.context
+	else {
+		panic!("Legacy request context");
+	};
+	assert!(!context.as_object().unwrap().contains_key("conversation"));
 }
 #[tokio::test]
 async fn real_profile_is_pinned_with_fingerprints_and_exact_scenario() {
@@ -599,8 +595,12 @@ async fn continuation_reuses_only_the_matching_completed_conversation() {
 			json!({"role":"user","content":"current"})
 		]
 	);
+	let aidash_domain::provider::ModelContext::Legacy(context) = &admitted.job.request.context
+	else {
+		panic!("Legacy request context");
+	};
 	assert_eq!(
-		admitted.job.request.context["conversation"],
+		context["conversation"],
 		json!(admitted.job.initial_conversation)
 	);
 }

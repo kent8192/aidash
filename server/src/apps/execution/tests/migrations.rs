@@ -116,7 +116,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 						("registry", "0014_openrouter_embeddings") => {
 							Some("registry_embedding_config")
 						}
-						("registry", "0017_model_streaming_config") => {
+						("registry", "0018_model_streaming_config") => {
 							Some("registry_model_config")
 						}
 						_ => None,

@@ -102,7 +102,7 @@ fails the inference attempt and follows the same retry path as a transport
 timeout. `request_timeout_secs` still bounds the complete streamed request.
 
 Both settings can be installation overrides. The registry migration
-`registry/0017_model_streaming_config` widens the model registration and
+`registry/0018_model_streaming_config` widens the model registration and
 installation-override validators to accept them; omitted settings stay
 unserialized, so existing configuration digests are unchanged.
 

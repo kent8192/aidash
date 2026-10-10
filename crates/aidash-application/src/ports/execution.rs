@@ -30,6 +30,9 @@ pub struct ExecutionAgent {
 	pub max_steps: i32,
 	pub allow_task_creation: Option<bool>,
 	pub conversation_memory: bool,
+	/// Pinned through the Run's Binding snapshot; Legacy when the definition
+	/// names none.
+	pub projection_version: aidash_domain::projection::ProjectionVersion,
 }
 pub struct InvocationOutcome {
 	pub status: String,
@@ -249,6 +252,20 @@ pub trait ExecutionEnvironment: Send + Sync {
 	async fn documents(&self, entry: &Entry) -> Result<Value>;
 	async fn recheck_source_observation(&self, run: &Run, content: &Value) -> Result<()>;
 	async fn skill_context(&self, run: &Run) -> Result<String>;
+	/// Current revision of the Run's pinned Skill record, `None` before one
+	/// exists. An Ordered Run reuses its Skill context while this is unchanged.
+	async fn skill_revision(&self, run: &Run) -> Result<Option<i64>>;
+	/// Cache Scope for a salted Projection Version: the Tenant whose provider
+	/// cache the request may share and the current Cache Salt Key version. Fails
+	/// with a typed error when the node has no Cache Salt Key; never unsalted.
+	async fn cache_scope(&self, run: &Run) -> Result<aidash_domain::projection::CacheScope>;
+	/// Authority scope and source revisions of an Ordered Retrieval Key. Cheap
+	/// reads only; a remote Run reports its admission values.
+	async fn retrieval_scope(
+		&self,
+		run: &Run,
+	) -> Result<aidash_domain::context::sources::RetrievalScope>;
+	/// `key` is present for an Ordered Run: equal keys replay the same bytes.
 	async fn semantic_context(
 		&self,
 		run: &Run,
@@ -256,6 +273,7 @@ pub trait ExecutionEnvironment: Send + Sync {
 		inputs: &[(InputRead, String)],
 		budget: usize,
 		entry: &Entry,
+		key: Option<&aidash_domain::context::sources::RetrievalKey>,
 	) -> Result<Option<Value>>;
 	async fn run_message_limit(&self, run: &Run) -> Result<usize>;
 	async fn run_request_headroom(&self, run: &Run) -> Result<usize>;

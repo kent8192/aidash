@@ -614,10 +614,11 @@ impl Models {
 		}
 		let request = ModelRequest {
 			instructions: instruction.into(),
-			context,
+			context: context.into(),
 			tools: vec![],
 			max_output_tokens: output as u32,
 			content_parts: vec![],
+			cache_scope: None,
 		};
 		request.ensure_fits(config.context_window)?;
 		let charge = rate.charge(input as u64, output as u64)?;
@@ -653,6 +654,7 @@ impl Models {
 			None
 		};
 
+		// Memory role requests are Legacy (`cache_scope: None`); no salt applies.
 		let provider = crate::bootstrap::admitted_model_provider(
 			&self.store,
 			config,

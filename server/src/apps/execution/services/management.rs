@@ -603,10 +603,11 @@ impl HarnessManagement {
 			let headroom = f.run_request_headroom(&run).await?;
 			let request = crate::provider::ModelRequest {
 				instructions: String::new(),
-				context: json!({"run_message":input.content}),
+				context: json!({"run_message":input.content}).into(),
 				tools: Vec::new(),
 				max_output_tokens: 0,
 				content_parts: parts,
+				cache_scope: None,
 			};
 			request.validate()?;
 			crate::generation::budget::Reservation::check_request(headroom, &request)?;
