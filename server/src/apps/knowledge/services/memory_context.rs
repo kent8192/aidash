@@ -281,41 +281,83 @@ pub(crate) async fn source_revisions(store: &Store, run: &Run) -> Result<SourceR
 	)
 	.scalar_optional(&store.pool)
 	.await?;
-	let participant: Option<i64> = crate::database::native::query_scalar(
+	let binding = crate::database::native::query_as::<(uuid::Uuid, i64)>(
 		&Query::select()
-			.column(Alias::new("participant_revision"))
+			.columns(["participant_id", "participant_revision"].map(Alias::new))
 			.from(Alias::new("memory_run_bindings"))
 			.and_where(Expr::col(Alias::new("run_id")).eq(Expr::value(run.id)))
 			.to_string(PostgresQueryBuilder),
 	)
-	.scalar_optional(&store.pool)
+	.columns(&["participant_id", "participant_revision"])
+	.fetch_optional(&store.pool)
 	.await?;
 	Ok(SourceRevisions {
 		index,
-		participant,
-		corpus: corpus_digest(store, run.workspace_id).await?,
+		participant: binding.map(|(_, revision)| revision),
+		corpus: corpus_digest(
+			store,
+			run.workspace_id,
+			binding.map(|(participant, _)| participant),
+		)
+		.await?,
 	})
 }
 
-/// Digest of a Workspace's semantic candidate set. `semantic_indexes.revision`
-/// changes only with the index configuration; entry inserts, edits, deletions
-/// and indexing transitions change this digest instead.
-pub async fn corpus_digest(store: &Store, workspace: uuid::Uuid) -> Result<String> {
+/// Digest of the content a Run's semantic read draws from: the Workspace's
+/// live semantic entries and, for a memory participant, its own and the
+/// Workspace-shared memory banks. `semantic_indexes.revision` changes only
+/// with the index configuration and `participant_revision` only with the
+/// participant; entry inserts, edits, deletions, indexing transitions and
+/// memory unit mutations (which bump their bank's revision) change this.
+pub async fn corpus_digest(
+	store: &Store,
+	workspace: uuid::Uuid,
+	participant: Option<uuid::Uuid>,
+) -> Result<String> {
 	use reinhardt::query::{
-		Alias, Expr, ExprTrait as _, PostgresQueryBuilder, Query, QueryStatementBuilder as _,
+		Alias, Cond, Expr, ExprTrait as _, Order, PostgresQueryBuilder, Query,
+		QueryStatementBuilder as _,
 	};
-	crate::database::native::query_scalar(
+	const ENTRY: [&str; 5] = ["id", "revision", "state", "index_revision", "point_id"];
+	let entries = crate::database::native::query_as::<(uuid::Uuid, i64, String, i64, uuid::Uuid)>(
 		&Query::select()
-			.expr(Expr::cust(
-				"md5(COALESCE(string_agg(concat_ws(':', id, revision, state, index_revision, point_id), ',' ORDER BY id), ''))",
-			))
+			.columns(ENTRY.map(Alias::new))
 			.from(Alias::new("semantic_entries"))
 			.and_where(Expr::col(Alias::new("workspace_id")).eq(Expr::value(workspace)))
 			.and_where(Expr::col(Alias::new("deleted")).eq(false))
+			.order_by(Alias::new("id"), Order::Asc)
 			.to_string(PostgresQueryBuilder),
 	)
-	.scalar_one(&store.pool)
-	.await
+	.columns(&ENTRY)
+	.fetch_all(&store.pool)
+	.await?;
+	let banks = match participant {
+		Some(participant) => {
+			crate::database::native::query_as::<(uuid::Uuid, i64)>(
+				&Query::select()
+					.columns(["id", "revision"].map(Alias::new))
+					.from(Alias::new("memory_banks"))
+					.and_where(Expr::col(Alias::new("workspace_id")).eq(Expr::value(workspace)))
+					.and_where(
+						Cond::any()
+							.add(Expr::col(Alias::new("participant_id")).is_null())
+							.add(
+								Expr::col(Alias::new("participant_id"))
+									.eq(Expr::value(participant)),
+							),
+					)
+					.order_by(Alias::new("id"), Order::Asc)
+					.to_string(PostgresQueryBuilder),
+			)
+			.columns(&["id", "revision"])
+			.fetch_all(&store.pool)
+			.await?
+		}
+		None => Vec::new(),
+	};
+	Ok(aidash_domain::registry::rules::digest(
+		&json!({"semantic_entries":entries,"memory_banks":banks}),
+	))
 }
 
 #[cfg(test)]

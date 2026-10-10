@@ -612,7 +612,9 @@ async fn corpus_digest_changes_with_entries_but_not_with_the_index_revision(
 	let (workspace, other) = (ids[0], ids[1]);
 	let entries = format!("/api/workspaces/{workspace}/semantic/entries");
 	let index = format!("/api/workspaces/{workspace}/semantic/index");
-	let digest = || aidash_server::semantic::services::corpus_digest(store, workspace);
+	let participant = Some(Uuid::new_v4());
+	let digest = || aidash_server::semantic::services::corpus_digest(store, workspace, participant);
+	let unbound = || aidash_server::semantic::services::corpus_digest(store, workspace, None);
 	let empty = digest().await.unwrap();
 	// Act
 	assert_json(app.operator.post(&entries, &json!({"key":"memory","expected_revision":0,"source":{"kind":"memory","text":"first"},"metadata":{}}), "json").await.unwrap(), 200);
@@ -620,10 +622,51 @@ async fn corpus_digest_changes_with_entries_but_not_with_the_index_revision(
 	assert_json(app.operator.post(&entries, &json!({"key":"memory","expected_revision":1,"source":{"kind":"memory","text":"second"},"metadata":{}}), "json").await.unwrap(), 200);
 	let edited = digest().await.unwrap();
 	assert_json(app.operator.post(&format!("/api/workspaces/{other}/semantic/entries"), &json!({"key":"memory","expected_revision":0,"source":{"kind":"memory","text":"elsewhere"},"metadata":{}}), "json").await.unwrap(), 200);
+	let unchanged = digest().await.unwrap();
+	// A memory unit mutation bumps only its bank's revision.
+	use aidash_server::database::native;
+	use reinhardt::query::{
+		Alias, Expr, ExprTrait as _, PostgresQueryBuilder, Query, QueryStatementBuilder as _,
+	};
+	let bank = Uuid::now_v7();
+	native::query(
+		&Query::insert()
+			.into_table(Alias::new("memory_banks"))
+			.columns(["id", "home", "tenant", "workspace_id", "revision"].map(Alias::new))
+			.from_subquery(
+				Query::select()
+					.expr(Expr::value(bank))
+					.expr(Expr::value(store.node_id.as_str()))
+					.expr(Expr::value("corpus-tenant"))
+					.expr(Expr::value(workspace))
+					.expr(Expr::value(1_i64))
+					.to_owned(),
+			)
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(&store.pool)
+	.await
+	.unwrap();
+	let shared_bank = digest().await.unwrap();
+	native::query(
+		&Query::update()
+			.table(Alias::new("memory_banks"))
+			.value_expr(Alias::new("revision"), Expr::col("revision").add(1_i64))
+			.and_where(Expr::col("id").eq(Expr::value(bank)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(&store.pool)
+	.await
+	.unwrap();
+	let mutated_bank = digest().await.unwrap();
 	// Assert
 	assert_ne!(inserted, empty);
 	assert_ne!(edited, inserted);
-	assert_eq!(digest().await.unwrap(), edited);
+	assert_eq!(unchanged, edited);
+	assert_ne!(shared_bank, unchanged);
+	assert_ne!(mutated_bank, shared_bank);
+	// Without a memory participant no bank is recalled, so none is keyed.
+	assert_eq!(unbound().await.unwrap(), edited);
 	assert_eq!(
 		assert_json(app.operator.get(&index).await.unwrap(), 200)["revision"],
 		1

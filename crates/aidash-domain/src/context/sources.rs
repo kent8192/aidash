@@ -90,11 +90,12 @@ pub struct RetrievalScope {
 	pub authorization_revision: Option<i64>,
 	pub index_revision: Option<i64>,
 	pub participant_revision: Option<i64>,
-	/// Digest of the Workspace's semantic candidate set: every live entry's
-	/// ID, revision, state, index revision and point. Inserting, editing,
-	/// deleting or (re)indexing an entry changes it, so an ordinary corpus
-	/// change forces a fresh retrieval instead of a stale reuse. Remote Runs
-	/// carry none.
+	/// Digest of the content the semantic read draws from: every live
+	/// semantic entry's ID, revision, state, index revision and point, and the
+	/// revision of each memory bank the Run recalls. Inserting, editing,
+	/// deleting or (re)indexing an entry, or mutating a memory unit, changes
+	/// it, so ordinary content changes force a fresh retrieval instead of a
+	/// stale reuse. Remote Runs carry none (#191).
 	pub corpus_digest: Option<String>,
 }
 
