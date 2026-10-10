@@ -1,0 +1,82 @@
+-- Explicit prompt caching (ADR 0019): Agents opt in with prompt_cache and models
+-- declare cache_mode. PostgreSQL function bodies, JSONB CHECK expressions and
+-- catalog-driven constraint edits have no typed Reinhardt operation. DDL only;
+-- no application data is modified.
+-- The Agent contract is the 0017 body plus the prompt_cache key.
+CREATE OR REPLACE FUNCTION public.aidash_agent_bindings_is_valid(value jsonb) RETURNS boolean
+LANGUAGE plpgsql IMMUTABLE STRICT AS $$
+DECLARE item jsonb; removals jsonb; edges jsonb; step_count numeric; restriction jsonb; candidate jsonb;
+BEGIN
+ IF jsonb_typeof(value) IS DISTINCT FROM 'object'
+ OR value - ARRAY['schema_version','model','instructions','bindings','remove_default','cluster','max_steps','projection_version','prompt_cache']::text[] <> '{}'::jsonb
+ OR NOT COALESCE(value->'projection_version','null'::jsonb) IN ('null'::jsonb,'"legacy"'::jsonb,'"ordered"'::jsonb,'"native"'::jsonb)
+ OR NOT COALESCE(value->'prompt_cache','null'::jsonb) IN ('null'::jsonb,'"off"'::jsonb,'"explicit"'::jsonb)
+ OR value->'schema_version' IS DISTINCT FROM '1'::jsonb
+ OR NOT COALESCE(public.aidash_qualified_ref_is_valid(value->'model' || '{"registry_node":"aidash://contract"}'::jsonb),false)
+ OR jsonb_typeof(COALESCE(value->'instructions','""'::jsonb)) <> 'string' THEN RETURN false; END IF;
+ IF COALESCE(value->'cluster','null'::jsonb) <> 'null'::jsonb
+ AND NOT COALESCE(public.aidash_qualified_ref_is_valid(value->'cluster' || '{"registry_node":"aidash://contract"}'::jsonb),false) THEN RETURN false; END IF;
+ IF jsonb_typeof(COALESCE(value->'max_steps','64'::jsonb)) <> 'number' OR NOT COALESCE(COALESCE(value->>'max_steps','64') ~ '^[0-9]+$',false) THEN RETURN false; END IF;
+ step_count := COALESCE(value->>'max_steps','64')::numeric;
+ IF step_count NOT BETWEEN 1 AND 1000 THEN RETURN false; END IF;
+ edges := COALESCE(value->'bindings','[]'::jsonb);
+ removals := COALESCE(value->'remove_default','[]'::jsonb);
+ IF jsonb_typeof(edges) <> 'array' OR jsonb_typeof(removals) <> 'array' THEN RETURN false; END IF;
+ IF jsonb_array_length(edges) > 128 THEN RETURN false; END IF;
+ FOR item IN SELECT jsonb_array_elements(edges) LOOP
+  IF jsonb_typeof(item) <> 'object' OR item - ARRAY['kind','target','alias','narrow','members']::text[] <> '{}'::jsonb
+  OR NOT COALESCE(item->>'kind' IN ('tool','bundle','skill','memory','source'),false)
+  OR NOT COALESCE(public.aidash_qualified_ref_is_valid(item->'target'),false)
+  OR jsonb_typeof(COALESCE(item->'narrow','{}'::jsonb)) <> 'object'
+  OR COALESCE(item->'narrow','{}'::jsonb) - ARRAY['allowed_hosts','scope','limits']::text[] <> '{}'::jsonb THEN RETURN false; END IF;
+  restriction := COALESCE(item->'narrow','{}'::jsonb);
+  IF COALESCE(restriction->'allowed_hosts','null'::jsonb) <> 'null'::jsonb THEN
+   IF jsonb_typeof(restriction->'allowed_hosts') <> 'array' OR jsonb_array_length(restriction->'allowed_hosts') = 0
+   OR jsonb_path_exists(restriction->'allowed_hosts','strict $[*] ? (@.type() != "string")') THEN RETURN false; END IF;
+  END IF;
+  IF jsonb_typeof(COALESCE(restriction->'scope','{}'::jsonb)) <> 'object' OR jsonb_typeof(COALESCE(restriction->'limits','{}'::jsonb)) <> 'object' THEN RETURN false; END IF;
+  FOR candidate IN SELECT v FROM jsonb_each(COALESCE(restriction->'scope','{}'::jsonb)) AS fields(k,v) LOOP
+   IF jsonb_typeof(candidate) <> 'array' OR jsonb_array_length(candidate) = 0 OR jsonb_path_exists(candidate,'strict $[*] ? (@.type() != "string")') THEN RETURN false; END IF;
+  END LOOP;
+  FOR candidate IN SELECT v FROM jsonb_each(COALESCE(restriction->'limits','{}'::jsonb)) AS fields(k,v) LOOP
+   IF jsonb_typeof(candidate) <> 'number' OR NOT candidate::text ~ '^[1-9][0-9]*$' OR candidate::text::numeric > 18446744073709551615 THEN RETURN false; END IF;
+  END LOOP;
+  IF COALESCE(item->'alias','null'::jsonb) <> 'null'::jsonb
+  AND (jsonb_typeof(item->'alias') <> 'string' OR item->>'kind' <> 'tool' OR NOT COALESCE(item->>'alias' ~ '^[A-Za-z0-9_-]{1,64}$',false)) THEN RETURN false; END IF;
+  IF COALESCE(item->'members','null'::jsonb) <> 'null'::jsonb THEN
+   IF item->>'kind' <> 'bundle' OR jsonb_typeof(item->'members') <> 'array'
+   OR jsonb_array_length(item->'members') > 128
+   OR jsonb_path_exists(item->'members','strict $[*] ? (@.type() != "string")') THEN RETURN false; END IF;
+   IF (SELECT count(*) <> count(DISTINCT e) FROM jsonb_array_elements(item->'members') e) THEN RETURN false; END IF;
+  END IF;
+ END LOOP;
+ IF (SELECT count(*) <> count(DISTINCT e->'target') FROM jsonb_array_elements(edges) e) THEN RETURN false; END IF;
+ FOR item IN SELECT jsonb_array_elements(removals) LOOP
+  IF jsonb_typeof(item) <> 'string' OR NOT (item #>> '{}') = ANY(ARRAY['workspace_observe','workspace_wait','skill_list','skill_load','skill_read','file_search','file_read','task_create','task_delegate','agent_discover','artifact_publish','workspace_message','memory_mutate','memory_recall','memory_reflect']) THEN RETURN false; END IF;
+ END LOOP;
+ IF (SELECT count(*) <> count(DISTINCT e) FROM jsonb_array_elements(removals) e) THEN RETURN false; END IF;
+ IF EXISTS(SELECT 1 FROM jsonb_array_elements(edges) e WHERE e->>'kind' = 'skill')
+ AND removals ?| ARRAY['skill_list','skill_load','skill_read'] THEN RETURN false; END IF;
+ RETURN length(btrim(COALESCE(value->>'instructions',''), U&'\0009\000A\000B\000C\000D\0020\0085\00A0\1680\2000\2001\2002\2003\2004\2005\2006\2007\2008\2009\200A\2028\2029\202F\205F\3000')) > 0
+ OR EXISTS(SELECT 1 FROM jsonb_array_elements(edges) e WHERE e->>'kind' IN ('skill','source'));
+EXCEPTION WHEN OTHERS THEN RETURN false;
+END
+$$;
+
+-- Extend only the allowlist of the CURRENT model constraint, read from the
+-- catalog, so every earlier addition survives. The anchor ends the allowlist
+-- array, so the edit cannot match the separate projection_versions check.
+DO $$
+DECLARE definition text; extended text;
+BEGIN
+  SELECT pg_get_constraintdef(oid) INTO STRICT definition
+    FROM pg_constraint WHERE conrelid = 'registry'::regclass AND conname = 'registry_model_config';
+  extended := replace(definition, '''media_routes''::text, ''projection_versions''::text]', '''media_routes''::text, ''projection_versions''::text, ''cache_mode''::text]');
+  IF extended = definition THEN RAISE EXCEPTION 'Cache mode allowlist anchor missing: registry_model_config'; END IF;
+  ALTER TABLE registry DROP CONSTRAINT registry_model_config;
+  EXECUTE format('ALTER TABLE registry ADD CONSTRAINT registry_model_config %s', extended);
+END $$;
+ALTER TABLE registry ADD CONSTRAINT registry_model_cache_mode CHECK (
+  kind <> 'model' OR NOT (metadata->'config' ? 'cache_mode')
+  OR metadata #> '{config,cache_mode}' IN ('"none"'::jsonb, '"automatic"'::jsonb, '"explicit"'::jsonb)
+);

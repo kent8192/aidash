@@ -373,7 +373,9 @@ pub async fn publish(
 			.await?;
 		let model: aidash_domain::model::ModelConfig = serde_json::from_value(model.config)
 			.map_err(|error| Error::Invalid(error.to_string()))?;
-		model.require_projection(agent.projection_version.unwrap_or_default())?;
+		let version = agent.projection_version.unwrap_or_default();
+		model.require_projection(version)?;
+		model.require_prompt_cache(agent.prompt_cache.unwrap_or_default(), version)?;
 	}
 	// Publish authored edges only. Registration provenance and implicit defaults
 	// belong to the receiving Node and are never portable package content.

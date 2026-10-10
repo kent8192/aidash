@@ -56,6 +56,7 @@ fn model() -> ModelConfig {
 		media_routes: vec![routes(vec!["image/png".into(), "mp3".into()])],
 		cost: json!({}),
 		projection_versions: vec![],
+		cache_mode: None,
 	}
 }
 #[derive(Default)]
