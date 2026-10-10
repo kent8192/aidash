@@ -317,3 +317,23 @@ fn legacy_agent_json_round_trips_byte_identically() {
 	assert!(config.permits_builtin(SKILL_ASSET_READ));
 	assert!(!config.permits_builtin("skill_read"));
 }
+
+#[test]
+fn declared_prompt_cache_survives_the_agent_settings_view() {
+	// Arrange
+	let mut input = serde_json::to_value(agent()).unwrap();
+	assert!(input.get("prompt_cache").is_none());
+	input["projection_version"] = json!("ordered");
+	input["prompt_cache"] = json!("explicit");
+	// Act
+	let decoded: AgentBindings = serde_json::from_value(input.clone()).unwrap();
+	let pinned = crate::registry::AgentConfig::from_definition(decoded).definition();
+	// Assert
+	assert_eq!(
+		pinned.prompt_cache,
+		Some(crate::projection::PromptCache::Explicit)
+	);
+	assert_eq!(serde_json::to_value(&pinned).unwrap(), input);
+	input["prompt_cache"] = json!("automatic");
+	assert!(serde_json::from_value::<AgentBindings>(input).is_err());
+}

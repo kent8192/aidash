@@ -5,7 +5,7 @@ use aidash_domain::{
 	exposure,
 	media::Selection,
 	model::ModelConfig,
-	projection::ProjectionVersion,
+	projection::{ProjectionVersion, PromptCache},
 	registry::bindings::{AgentBindings, BindingSnapshot},
 	semantic::{Failure, InputRead},
 	tool::{ResultFitting, ToolIdentity, ToolUseMode},
@@ -329,6 +329,10 @@ impl<'a> Executor<'a> {
 					.catalog().get_for_run(&*run, &agent.model.id, &agent.model.version)
 					.await?;
 				let model_cfg: ModelConfig = serde_json::from_value(model_entry.config)?;
+				// Registration enforces the same pairing; never drop an opt-in
+				// silently or send breakpoints to another route (ADR 0019).
+				model_cfg.require_prompt_cache(agent.prompt_cache, agent.projection_version)?;
+				let explicit_cache = agent.prompt_cache == PromptCache::Explicit;
 				let window = model_cfg.context_window;
 				let output_limit = model_cfg.output_token_limit();
 				let model = self.environment.provider(model_cfg.clone())?;
@@ -708,6 +712,13 @@ impl<'a> Executor<'a> {
 				}
 				let mut request = budget.request(&context, &pinned);
 				request.content_parts = media.parts;
+				// Catch-up and media-deferral steps narrow or clear the tools,
+				// which precede the cached prefix, so a cache write there would
+				// never be read; they carry no breakpoints (ADR 0019).
+				request.cache_breakpoints = explicit_cache
+					&& !run_message_catchup
+					&& !media.defer_human
+					&& !media.defer_selected;
 				request.ensure_fits(window).map_err(Error::from).map_err(
 					|error| {
 						if guard.is_some_and(|guard| guard.is_remote()) {

@@ -261,6 +261,7 @@ impl Cloud {
 			media_routes: vec![],
 			cost: json!({}),
 			projection_versions: vec![],
+			cache_mode: None,
 		}
 	}
 	fn request() -> aidash_domain::provider::ModelRequest {
@@ -271,6 +272,7 @@ impl Cloud {
 			max_output_tokens: 10,
 			content_parts: vec![],
 			cache_scope: None,
+			cache_breakpoints: false,
 		}
 	}
 	fn scoped(&self, operation: CallOperation) -> Context {

@@ -30,6 +30,7 @@ fn request() -> ModelRequest {
 		max_output_tokens: 4096,
 		content_parts: vec![],
 		cache_scope: None,
+		cache_breakpoints: false,
 	}
 }
 fn attempt() -> Uuid {

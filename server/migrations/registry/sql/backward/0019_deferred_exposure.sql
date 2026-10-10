@@ -1,11 +1,12 @@
--- Deferred capability exposure (preserving the 0017 Projection Version key): the deferred@1 Exposure policy, Binding exposure and the core.exposure@1 / skill_asset_read builtins. PostgreSQL function bodies have no typed migration operation. DDL only.
+-- Restore the 0018_prompt_cache bodies: no deferred Exposure policy and no exposure builtins. DDL only.
 CREATE OR REPLACE FUNCTION public.aidash_agent_bindings_is_valid(value jsonb) RETURNS boolean
 LANGUAGE plpgsql IMMUTABLE STRICT AS $$
-DECLARE item jsonb; removals jsonb; edges jsonb; step_count numeric; restriction jsonb; candidate jsonb; policy jsonb; deferred boolean; budget text; bound numeric; removable text[]; support text[];
+DECLARE item jsonb; removals jsonb; edges jsonb; step_count numeric; restriction jsonb; candidate jsonb;
 BEGIN
  IF jsonb_typeof(value) IS DISTINCT FROM 'object'
- OR value - ARRAY['schema_version','model','instructions','bindings','remove_default','cluster','max_steps','projection_version','exposure']::text[] <> '{}'::jsonb
+ OR value - ARRAY['schema_version','model','instructions','bindings','remove_default','cluster','max_steps','projection_version','prompt_cache']::text[] <> '{}'::jsonb
  OR NOT COALESCE(value->'projection_version','null'::jsonb) IN ('null'::jsonb,'"legacy"'::jsonb,'"ordered"'::jsonb,'"native"'::jsonb)
+ OR NOT COALESCE(value->'prompt_cache','null'::jsonb) IN ('null'::jsonb,'"off"'::jsonb,'"explicit"'::jsonb)
  OR value->'schema_version' IS DISTINCT FROM '1'::jsonb
  OR NOT COALESCE(public.aidash_qualified_ref_is_valid(value->'model' || '{"registry_node":"aidash://contract"}'::jsonb),false)
  OR jsonb_typeof(COALESCE(value->'instructions','""'::jsonb)) <> 'string' THEN RETURN false; END IF;
@@ -18,38 +19,8 @@ BEGIN
  removals := COALESCE(value->'remove_default','[]'::jsonb);
  IF jsonb_typeof(edges) <> 'array' OR jsonb_typeof(removals) <> 'array' THEN RETURN false; END IF;
  IF jsonb_array_length(edges) > 128 THEN RETURN false; END IF;
- policy := COALESCE(value->'exposure','null'::jsonb);
- deferred := policy->>'version' = 'deferred@1';
- IF policy <> 'null'::jsonb THEN
-  IF jsonb_typeof(policy) <> 'object' THEN RETURN false; END IF;
-  IF policy->>'version' = 'legacy@1' THEN
-   IF policy - 'version' <> '{}'::jsonb THEN RETURN false; END IF;
-  ELSIF deferred THEN
-   IF policy - ARRAY['version','metadata_bytes','schema_bytes','skill_bytes']::text[] <> '{}'::jsonb THEN RETURN false; END IF;
-   FOREACH budget IN ARRAY ARRAY['metadata_bytes','schema_bytes','skill_bytes'] LOOP
-    IF policy ? budget AND jsonb_typeof(policy->budget) = 'null' THEN RETURN false; END IF;
-    IF COALESCE(policy->budget,'null'::jsonb) <> 'null'::jsonb THEN
-     IF jsonb_typeof(policy->budget) <> 'number' OR NOT (policy->>budget) ~ '^[0-9]+$' THEN RETURN false; END IF;
-     bound := (policy->>budget)::numeric;
-     IF budget = 'metadata_bytes' AND bound NOT BETWEEN 512 AND 65536
-     OR budget <> 'metadata_bytes' AND bound NOT BETWEEN 1024 AND 262144 THEN RETURN false; END IF;
-    END IF;
-   END LOOP;
-  ELSE RETURN false; END IF;
- END IF;
- deferred := COALESCE(deferred,false);
- -- plpgsql ends an IF condition at its first THEN, so no CASE inside one.
- IF deferred THEN
-  removable := ARRAY['workspace_observe','workspace_wait','skill_asset_read','file_search','file_read','task_create','task_delegate','agent_discover','artifact_publish','workspace_message','memory_mutate','memory_recall','memory_reflect'];
-  support := ARRAY['skill_asset_read'];
- ELSE
-  removable := ARRAY['workspace_observe','workspace_wait','skill_list','skill_load','skill_read','file_search','file_read','task_create','task_delegate','agent_discover','artifact_publish','workspace_message','memory_mutate','memory_recall','memory_reflect'];
-  support := ARRAY['skill_list','skill_load','skill_read'];
- END IF;
  FOR item IN SELECT jsonb_array_elements(edges) LOOP
-  IF jsonb_typeof(item) <> 'object' OR item - ARRAY['kind','target','alias','narrow','members','exposure']::text[] <> '{}'::jsonb
-  OR COALESCE(item->'exposure','null'::jsonb) <> 'null'::jsonb
-  AND NOT (deferred AND item->>'kind' IN ('tool','bundle','skill') AND COALESCE(item->>'exposure' IN ('eager','deferred'),false))
+  IF jsonb_typeof(item) <> 'object' OR item - ARRAY['kind','target','alias','narrow','members']::text[] <> '{}'::jsonb
   OR NOT COALESCE(item->>'kind' IN ('tool','bundle','skill','memory','source'),false)
   OR NOT COALESCE(public.aidash_qualified_ref_is_valid(item->'target'),false)
   OR jsonb_typeof(COALESCE(item->'narrow','{}'::jsonb)) <> 'object'
@@ -77,11 +48,11 @@ BEGIN
  END LOOP;
  IF (SELECT count(*) <> count(DISTINCT e->'target') FROM jsonb_array_elements(edges) e) THEN RETURN false; END IF;
  FOR item IN SELECT jsonb_array_elements(removals) LOOP
-  IF jsonb_typeof(item) <> 'string' OR NOT (item #>> '{}') = ANY(removable) THEN RETURN false; END IF;
+  IF jsonb_typeof(item) <> 'string' OR NOT (item #>> '{}') = ANY(ARRAY['workspace_observe','workspace_wait','skill_list','skill_load','skill_read','file_search','file_read','task_create','task_delegate','agent_discover','artifact_publish','workspace_message','memory_mutate','memory_recall','memory_reflect']) THEN RETURN false; END IF;
  END LOOP;
  IF (SELECT count(*) <> count(DISTINCT e) FROM jsonb_array_elements(removals) e) THEN RETURN false; END IF;
  IF EXISTS(SELECT 1 FROM jsonb_array_elements(edges) e WHERE e->>'kind' = 'skill')
- AND removals ?| support THEN RETURN false; END IF;
+ AND removals ?| ARRAY['skill_list','skill_load','skill_read'] THEN RETURN false; END IF;
  RETURN length(btrim(COALESCE(value->>'instructions',''), U&'\0009\000A\000B\000C\000D\0020\0085\00A0\1680\2000\2001\2002\2003\2004\2005\2006\2007\2008\2009\200A\2028\2029\202F\205F\3000')) > 0
  OR EXISTS(SELECT 1 FROM jsonb_array_elements(edges) e WHERE e->>'kind' IN ('skill','source'));
 EXCEPTION WHEN OTHERS THEN RETURN false;
@@ -97,9 +68,6 @@ BEGIN
  OR jsonb_typeof(COALESCE(value->'narrow','{}'::jsonb)) <> 'object' THEN RETURN false; END IF;
  IF COALESCE(value->'narrow','{}'::jsonb) - ARRAY['allowed_hosts','scope','limits']::text[] <> '{}'::jsonb THEN RETURN false; END IF;
  expected_provider := CASE value->>'operation'
-  WHEN 'capability_search' THEN 'core.exposure@1' WHEN 'capability_describe' THEN 'core.exposure@1'
-  WHEN 'capability_load' THEN 'core.exposure@1' WHEN 'capability_unload' THEN 'core.exposure@1'
-  WHEN 'skill_asset_read' THEN 'core.skills@1'
   WHEN 'workspace_read' THEN 'core.workspace@1' WHEN 'workspace_observe' THEN 'core.workspace@1'
   WHEN 'workspace_wait' THEN 'core.workspace@1' WHEN 'workspace_message' THEN 'core.workspace@1'
   WHEN 'human_request' THEN 'core.human@1'
@@ -136,14 +104,12 @@ BEGIN
 EXCEPTION WHEN OTHERS THEN RETURN false;
 END
 $$;
--- Agent installations may override `exposure` like the other writable Agent
--- fields. Rewrite only the current guard's Agent allowlist; the merged config is
--- still checked by aidash_agent_bindings_is_valid above.
+-- Withdraw the `exposure` installation override from the guard's Agent allowlist.
 DO $$
-DECLARE definition text; extended text;
+DECLARE definition text; previous text;
 BEGIN
   SELECT pg_get_functiondef('public.guard_installation_config()'::regprocedure) INTO STRICT definition;
-  extended := replace(definition, '''cluster'',''max_steps'']::text[]', '''cluster'',''max_steps'',''exposure'']::text[]');
-  IF extended = definition THEN RAISE EXCEPTION 'installation Agent override allowlist anchor missing'; END IF;
-  EXECUTE extended;
+  previous := replace(definition, '''cluster'',''max_steps'',''exposure'']::text[]', '''cluster'',''max_steps'']::text[]');
+  IF previous = definition THEN RAISE EXCEPTION 'installation Agent override allowlist addition missing'; END IF;
+  EXECUTE previous;
 END $$;
