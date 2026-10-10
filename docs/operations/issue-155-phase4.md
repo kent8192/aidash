@@ -87,25 +87,63 @@ whenever a new background producer is added.
 - The VM runtime (`infra/gcp/runtime/`), its tests and the VM host references outside
   history records are removed.
 
-## Verification still required on real GKE
+## GKE drill (2026-10-10)
 
-Local verification covers provider-mocked Terraform, controller regressions with
-patched Kubernetes/Helm helpers, Helm rendering, the edge admission container and
-kind with upstream gVisor (isolation, freeze, guest process capacity and host task
-limits). It does not prove:
+With the user's authorization, an operator-run drill used the branch's
+`infra/gcp/environments` Terraform (separate `terraform/drill-155` state prefix) in
+the configured project, amd64 release images built by Cloud Build into the private
+registry, and the real `infra/gcp/control/kube.py` helpers with both charts. The
+GitHub workflow was not used: its Workload Identity Federation trusts only `main`.
+Every drill resource, image and state object was deleted afterwards.
 
-- Cluster Node loss: Pods reschedule, retained disks reattach and in-flight
-  operations surface as uncertain without replay.
-- Spot preemption and Spot capacity unavailability for test/PR pools.
-- Persistent disk reattachment of PostgreSQL, NATS, journal, Home ledger and
-  capability claims across stop/resume.
-- Preview TLS PV rebinding between `pr-N` namespaces, including the
-  VolumeAttachment wait.
-- Workload Identity and IAM: server BYOK Create/Manage and GCIP tenant read,
-  worker KMS signing, and denial for the node service account and other Pods.
-- Re-check of [#137](https://github.com/kent8192/aidash/issues/137) and
-  [#149](https://github.com/kent8192/aidash/issues/149) behavior on GKE.
-- Full create, idle stop, resume, PR replacement/close and destroy cycles.
+Verified on GKE 1.34 (`us-central1-a`, Ubuntu containerd N2 Spot pools):
 
-Real GKE drills and all cloud resource mutations require the user's explicit
-authorization through the lead.
+- Deploy: claims, Secrets, both releases, the migration Job, writers, health
+  (source SHA) and an ephemeral L4 LoadBalancer. HTTPS `/health` through the
+  LoadBalancer returned the Environment node ID; HTTP redirected.
+- Isolation: the upstream installer labelled both nodes; the Runner verified
+  isolation and Python freeze: kernel `4.19.0-gvisor`, 112 guest children at
+  `processes=128`, Sentry `host_tasks=512`, CPU 2, 2 GiB, no swap, disk limits,
+  denied egress including `169.254.169.254`.
+- Workload Identity: the server KSA receives the server account, the worker KSA
+  the worker account, and the Runner and any other KSA only the pool's federated
+  identity with no grants. Node attributes such as `kube-env` are not exposed.
+- Seal and stop: a fresh, self-identified post-drain observation sealed the
+  Environment; stop removed the LoadBalancer (no forwarding rules remained) and
+  the node pools scaled to zero with all six disks retained and detached.
+- Resume: the pools returned, disks reattached on new nodes, data survived, and a
+  new LoadBalancer address served HTTPS.
+- Cluster Node loss: deleting the node that ran the Runner, PostgreSQL, the edge
+  and a running Execution Pod recovered automatically. Within about three
+  minutes the Runner, PostgreSQL and edge ran on the surviving node with their
+  disks reattached, the interrupted operation surfaced as `uncertain` without
+  termination proof or replay, and a new operation completed on `4.19.0-gvisor`.
+  The Spot pool recreated the deleted node.
+- Preview TLS: `pr-1` bound `aidash-preview-tls`; after `pr-1` stopped, `pr-2`
+  waited for the old attachment, rebound the volume and served the same Caddy
+  state.
+- Destroy: `pr-2`, `pr-1` and `test` deleted their namespaces, retained PVs and
+  disks; only the preview disk remained, released.
+
+The drill found one defect, fixed in this branch: GKE's default 100 GB
+pd-balanced boot disks exceeded the default 250 GB regional SSD quota.
+
+An operation submitted directly to the Runner keeps the Runner's activity busy
+after it becomes `uncertain`, because only the application acknowledges results;
+an idle seal therefore correctly deferred for the drill's `test` Environment.
+
+Still unverified, because they need the trusted workflow on `main`, the
+Cloudflare token, Google OAuth clients or Identity Platform:
+
+- Cloudflare DNS publication, Caddy ACME issuance and `public_health`.
+- The controller run from GitHub Actions: `get-credentials --dns-endpoint` as
+  the deploy account, plan fences on real plans, the lifecycle lock and budgets.
+- Server BYOK Secret Manager calls, worker KMS signing and GCIP tenant IAM with
+  the drill's identities (the identities were verified, not the grants' use).
+- Spot capacity unavailability.
+
+[#137](https://github.com/kent8192/aidash/issues/137): the server and worker
+identities are separate Google accounts on GKE and other Pods hold none.
+[#149](https://github.com/kent8192/aidash/issues/149): Execution Pods cannot
+reach the metadata server; application Pods reach only the GKE metadata server,
+which serves their Workload Identity and hides node credentials and attributes.

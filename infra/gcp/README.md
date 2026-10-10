@@ -32,6 +32,9 @@ NAT, Kubernetes 1.34 or later). Each Environment owns:
   mounts the ledger claim root and initializes `home/` before the writers start.
 
 A small untainted E2 system pool runs one node only while any Environment runs.
+Boot disks are bounded (system 30 GB `pd-standard`, Environment nodes 50 GB
+`pd-balanced`): GKE's 100 GB default exhausts the default 250 GB regional
+`SSD_TOTAL_GB` quota, which Environment boot disks share with retained PVCs.
 PostgreSQL 17 with pgvector/PGroonga and NATS JetStream are single-replica
 StatefulSets from [the Environment chart](helm/environment/README.md); web/API,
 workers and the opt-in gVisor execution components come from
