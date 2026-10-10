@@ -18,13 +18,27 @@
 {{- if and $e.runner.enabled (gt (len (printf "%s-runner" $name)) 63) -}}{{ fail "release name is too long: the Runner Service name must fit a 63-character DNS label" }}{{- end -}}
 {{- if and $e.runner.enabled (not (semverCompare ">=1.34.0-0" .Capabilities.KubeVersion.Version)) -}}{{ fail (printf "execution.runner needs Kubernetes 1.34 or later (found %s): Execution Pods set pod-level spec.resources" .Capabilities.KubeVersion.Version) }}{{- end -}}
 {{- if and $e.installer.enabled (or (ne $e.paths.runsc "/usr/local/bin/runsc") (ne $e.paths.gvisorBin "/usr/local/bin/gvisor-bin")) -}}{{ fail "execution.installer writes the verified runtime under /usr/local/bin; custom execution.paths.runsc or gvisorBin would leave the guard's mounts pointing at missing files" }}{{- end -}}
+{{- if and $e.runner.enabled (not $e.guard.enabled) -}}{{ fail "execution.runner requires execution.guard.enabled: the Runner's isolation probe applies Sentry limits and freezes writers through this release's guard DaemonSet" }}{{- end -}}
+{{- /* Host runtime files are replaced atomically, so the guard sees them through
+directory mounts: a file bind mount would keep the replaced inode. */ -}}
+{{- $runtimeDir := "/run/aidash-host-runtime" -}}
+{{- $sentries := list -}}
+{{- range $path := $e.paths.sentryBinaries -}}
+{{- if eq (dir $path) (dir $e.paths.runsc) -}}
+{{- $sentries = append $sentries (printf "%s/%s" $runtimeDir (base $path)) -}}
+{{- else if hasPrefix (printf "%s/" $e.paths.gvisorBin) $path -}}
+{{- $sentries = append $sentries $path -}}
+{{- else -}}
+{{- fail (printf "execution.paths.sentryBinaries entry %s must be beside runsc or under gvisorBin: the guard mounts only those host directories" $path) -}}
+{{- end -}}
+{{- end -}}
 {{- if $e.createNamespaces }}
 {{- range $namespace := list $sandbox $trusted }}
 ---
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: {{ $namespace }}
+  name: {{ $namespace | quote }}
   labels:
     pod-security.kubernetes.io/enforce: {{ ternary "restricted" "privileged" (eq $namespace $sandbox) }}
     pod-security.kubernetes.io/enforce-version: {{ $e.podSecurityVersion }}
@@ -51,7 +65,7 @@ apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: {{ $name }}-installer
-  namespace: {{ $trusted }}
+  namespace: {{ $trusted | quote }}
 ---
 # Cluster-wide node get/patch is necessary for a DaemonSet on replaceable machines.
 apiVersion: rbac.authorization.k8s.io/v1
@@ -68,14 +82,14 @@ kind: ClusterRoleBinding
 metadata:
   name: {{ $name }}-installer
 subjects:
-  - { kind: ServiceAccount, name: {{ $name }}-installer, namespace: {{ $trusted }} }
+  - { kind: ServiceAccount, name: {{ $name }}-installer, namespace: {{ $trusted | quote }} }
 roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: {{ $name }}-installer }
 ---
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
   name: {{ $name }}-installer
-  namespace: {{ $trusted }}
+  namespace: {{ $trusted | quote }}
 spec:
   selector: { matchLabels: { aidash.run/installer: {{ .Release.Name | quote }} } }
   template:
@@ -115,7 +129,7 @@ apiVersion: apps/v1
 kind: DaemonSet
 metadata:
   name: {{ $name }}-guard
-  namespace: {{ $trusted }}
+  namespace: {{ $trusted | quote }}
 spec:
   selector: { matchLabels: { aidash.run/guard: {{ .Release.Name | quote }} } }
   template:
@@ -136,11 +150,11 @@ spec:
           env:
             - { name: AIDASH_SANDBOX_NAMESPACE, value: {{ $sandbox | quote }} }
             - { name: AIDASH_RUNSC_ROOT, value: {{ printf "%s/k8s.io" $e.paths.runscRoot | quote }} }
-            - { name: AIDASH_RUNSC_BINARY, value: {{ $e.paths.runsc | quote }} }
+            - { name: AIDASH_RUNSC_BINARY, value: {{ printf "%s/%s" $runtimeDir (base $e.paths.runsc) | quote }} }
             - { name: AIDASH_CTR_BINARY, value: {{ $e.paths.ctr | quote }} }
             - { name: AIDASH_CGROUP_ROOT, value: {{ $e.paths.cgroupRoot | quote }} }
             - { name: AIDASH_GUARD_STATE, value: {{ $guardState | quote }} }
-            - { name: AIDASH_SENTRY_BINARIES, value: {{ toJson $e.paths.sentryBinaries | quote }} }
+            - { name: AIDASH_SENTRY_BINARIES, value: {{ toJson $sentries | quote }} }
           readinessProbe:
             exec:
               command:
@@ -163,7 +177,7 @@ spec:
             - { name: cgroup-tree, mountPath: {{ $e.paths.cgroupRoot }} }
             {{- end }}
             - { name: kubelet-pods, mountPath: /var/lib/kubelet/pods, mountPropagation: HostToContainer }
-            - { name: runsc, mountPath: {{ $e.paths.runsc }}, readOnly: true }
+            - { name: runsc-dir, mountPath: {{ $runtimeDir }}, readOnly: true }
             - { name: gvisor-bin, mountPath: {{ $e.paths.gvisorBin }}, readOnly: true }
             - { name: ctr, mountPath: {{ $e.paths.ctr }}, readOnly: true }
       volumes:
@@ -174,7 +188,7 @@ spec:
         - { name: cgroup-tree, hostPath: { path: /sys/fs/cgroup, type: Directory } }
         {{- end }}
         - { name: kubelet-pods, hostPath: { path: /var/lib/kubelet/pods, type: Directory } }
-        - { name: runsc, hostPath: { path: {{ $e.paths.runsc }}, type: File } }
+        - { name: runsc-dir, hostPath: { path: {{ dir $e.paths.runsc }}, type: Directory } }
         - { name: gvisor-bin, hostPath: { path: {{ $e.paths.gvisorBin }}, type: Directory } }
         - { name: ctr, hostPath: { path: {{ $e.paths.ctr }}, type: File } }
 {{- end }}
@@ -192,7 +206,7 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: {{ $name }}-sandbox
-  namespace: {{ $sandbox }}
+  namespace: {{ $sandbox | quote }}
 rules:
   - apiGroups: [""]
     resources: [pods]
@@ -211,7 +225,7 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: {{ $name }}-guard
-  namespace: {{ $trusted }}
+  namespace: {{ $trusted | quote }}
 rules:
   - apiGroups: [""]
     resources: [pods]
@@ -225,9 +239,9 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   name: {{ $name }}-runner
-  namespace: {{ $binding.namespace }}
+  namespace: {{ $binding.namespace | quote }}
 subjects:
-  - { kind: ServiceAccount, name: {{ $name }}-runner, namespace: {{ $.Release.Namespace }} }
+  - { kind: ServiceAccount, name: {{ $name }}-runner, namespace: {{ $.Release.Namespace | quote }} }
 roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: {{ $name }}-{{ $binding.role }} }
 {{- end }}
 ---

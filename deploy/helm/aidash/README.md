@@ -110,7 +110,11 @@ the Runner enabled the release name is limited to 46 characters so
 writes and verifies Sentry `pids.max`; `sandbox.py` enforces guest `RLIMIT_NPROC`.
 Resource evidence includes both. The guard requires host PID access, containerd,
 kubelet emptyDirs with `HostToContainer` propagation, its own retained host state,
-and the host executable paths mounted at the same paths for `samefile` checks.
+and the runtime executables for `samefile` checks. They are seen through directory
+mounts, so an installer replacement is visible without restarting the guard: the
+directory containing `runsc` is mounted read-only at `/run/aidash-host-runtime`, and
+`gvisorBin` at its own path. Every `execution.paths.sentryBinaries` entry must be beside
+`runsc` or under `gvisorBin`. The Runner requires the guard (`execution.guard.enabled`).
 `execution.paths` configures the runtime root, executable paths and cgroup root.
 The guard state defaults to `/var/lib/aidash-node-guard/<release>`: each guard holds
 an exclusive `watch.lock`, so releases sharing a Cluster Node must not share it.

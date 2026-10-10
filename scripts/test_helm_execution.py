@@ -9,6 +9,8 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 DIGEST = '@sha256:' + 'b' * 64
+# The shipped PostgreSQL value is the locally built image's tag; it must be pinned.
+POSTGRES = {'existingSecret': 'db', 'image': 'aidash-postgres' + DIGEST}
 
 
 def render(chart, values, release='fixture', kube_version=None):
@@ -86,9 +88,35 @@ class ChartsTest(unittest.TestCase):
         self.assertEqual((env['AIDASH_GVISOR_LABEL'], env['AIDASH_GVISOR_INSTALLED_LABEL']), ('aidash.run/gvisor', 'aidash.run/gvisor-installed'))
         mounts = {mount['name']: mount for mount in guard['containers'][0]['volumeMounts']}
         self.assertEqual(mounts['kubelet-pods']['mountPropagation'], 'HostToContainer')
-        for name in ('runsc', 'gvisor-bin', 'ctr'):
-            volume = next(value for value in guard['volumes'] if value['name'] == name)
-            self.assertEqual(mounts[name]['mountPath'], volume['hostPath']['path'])
+        volumes = {value['name']: value for value in guard['volumes']}
+        for name in ('gvisor-bin', 'ctr'):
+            self.assertEqual(mounts[name]['mountPath'], volumes[name]['hostPath']['path'])
+        # The installer replaces runtime files atomically; only a directory mount
+        # shows the guard the new inode, so no runtime file is bind mounted by itself.
+        self.assertEqual(volumes['runsc-dir']['hostPath'], {'path': '/usr/local/bin', 'type': 'Directory'})
+        self.assertEqual(volumes['gvisor-bin']['hostPath']['type'], 'Directory')
+        self.assertEqual(mounts['runsc-dir'], {'name': 'runsc-dir', 'mountPath': '/run/aidash-host-runtime', 'readOnly': True})
+        guard_env = {value['name']: value['value'] for value in guard['containers'][0]['env']}
+        self.assertEqual(guard_env['AIDASH_RUNSC_BINARY'], '/run/aidash-host-runtime/runsc')
+        self.assertEqual(json.loads(guard_env['AIDASH_SENTRY_BINARIES']),
+                         ['/run/aidash-host-runtime/runsc', '/usr/local/bin/gvisor-bin/gvisor_sentry'])
+        # A Sentry path the guard cannot see would silently disable its identity check.
+        unseen = dict(execution, paths={'sentryBinaries': ['/opt/elsewhere/runsc']})
+        with self.assertRaises(subprocess.CalledProcessError):
+            render(self.aidash, dict(self.base, execution=unseen, environment={'nodeSelector': {'pool': 'execution'}}))
+        # The Runner's isolation probe goes through this release's guard.
+        unguarded = dict(execution, guard={'enabled': False})
+        with self.assertRaises(subprocess.CalledProcessError):
+            render(self.aidash, dict(self.base, execution=unguarded, environment={'nodeSelector': {'pool': 'execution'}}))
+        # Namespace overrides that YAML reads as other scalars stay strings.
+        quoted = dict(execution, sandboxNamespace='true', trustedNamespace='null')
+        names = render(self.aidash, dict(self.base, execution=quoted, environment={'nodeSelector': {'pool': 'execution'}}))
+        self.assertEqual(sorted(value['metadata']['name'] for value in names if value['kind'] == 'Namespace'), ['null', 'true'])
+        for value in names:
+            if 'namespace' in value['metadata']:
+                self.assertIsInstance(value['metadata']['namespace'], str, value['kind'])
+            for subject in value.get('subjects', []):
+                self.assertIsInstance(subject['namespace'], str, value['kind'])
         runner = select(objects, 'Deployment', '-execution-runner')
         self.assertEqual(runner['spec']['replicas'], 1)
         self.assertEqual(runner['spec']['strategy']['type'], 'Recreate')
@@ -133,6 +161,9 @@ class ChartsTest(unittest.TestCase):
         for component in ('installer', 'guard', 'runner'):
             execution = {'createNamespaces': True, 'sandboxImage': 'sandbox' + DIGEST,
                          'runner': {'existingSecret': 'runner'}}
+            if component == 'runner':
+                # The Runner always requires its release's guard.
+                execution['guard'] = {'enabled': True, 'image': 'guard' + DIGEST}
             execution.setdefault(component, {}).update(enabled=True, image='trusted:latest')
             values = dict(self.base, execution=execution, environment={'nodeSelector': {'pool': 'execution'}})
             with self.subTest(component=component):
@@ -144,24 +175,30 @@ class ChartsTest(unittest.TestCase):
         render(self.aidash, self.base)
 
     def test_environment_trusted_images_must_be_pinned_by_digest(self):
-        values = {'postgres': {'existingSecret': 'db'},
+        values = {'postgres': POSTGRES,
                   'edge': {'hostname': 'fixture.example', 'admissionImage': 'admission' + DIGEST},
                   'activity': {'existingSecret': 'observer', 'observerImage': 'observer' + DIGEST,
                                'collectorImage': 'collector' + DIGEST}}
         objects = render(self.environment, values)
-        # The shipped Caddy default is digest pinned too: it receives all public traffic.
-        caddy = select(objects, 'Deployment', '-edge')['spec']['template']['spec']['containers'][0]
-        self.assertRegex(caddy['image'], r'@sha256:[0-9a-f]{64}$')
+        # Shipped Caddy and NATS defaults are digest pinned too: one receives all public
+        # traffic, the other runs with the retained JetStream volume.
+        for kind, suffix, index in (('Deployment', '-edge', 0), ('StatefulSet', '-nats', 0)):
+            container = select(objects, kind, suffix)['spec']['template']['spec']['containers'][index]
+            self.assertRegex(container['image'], r'@sha256:[0-9a-f]{64}$')
+        values = dict(values, nats={'image': 'nats' + DIGEST})
+        render(self.environment, values)
         for section, key in (('edge', 'admissionImage'), ('edge', 'caddyImage'),
-                             ('activity', 'observerImage'), ('activity', 'collectorImage')):
-            with self.subTest(image=key):
+                             ('activity', 'observerImage'), ('activity', 'collectorImage'),
+                             ('postgres', 'image'), ('nats', 'image')):
+            with self.subTest(section=section, image=key):
                 mutable = dict(values, **{section: dict(values[section], **{key: 'image:latest'})})
                 with self.assertRaises(subprocess.CalledProcessError):
                     render(self.environment, mutable)
 
     def test_execution_limits_names_paths_and_time_are_consistent_with_the_guard(self):
         runner = {'enabled': True, 'existingSecret': 'runner', 'image': 'runner' + DIGEST}
-        base = {'sandboxImage': 'sandbox' + DIGEST, 'runner': runner}
+        guard = {'enabled': True, 'image': 'guard' + DIGEST}
+        base = {'sandboxImage': 'sandbox' + DIGEST, 'runner': runner, 'guard': guard}
 
         def accepted(release='fixture', **execution):
             render(self.aidash, dict(self.base, execution=dict(base, **execution)), release)
@@ -215,7 +252,7 @@ class ChartsTest(unittest.TestCase):
             render(self.aidash, dict(values, execution=dict(base, installer=installer, paths={'runsc': '/opt/bin/runsc'})))
 
     def test_gcp_persistence_local_lb_private_admission_and_activity(self):
-        objects = render(self.environment, {'postgres': {'existingSecret': 'db'},
+        objects = render(self.environment, {'postgres': POSTGRES,
             'edge': {'hostname': 'fixture.example', 'admissionImage': 'admission' + DIGEST},
             'activity': {'existingSecret': 'observer', 'observerImage': 'observer' + DIGEST,
                          'collectorImage': 'collector' + DIGEST}, 'storage': {'createClass': True},
@@ -241,7 +278,7 @@ class ChartsTest(unittest.TestCase):
                 self.assertTrue(all(term.get('tolerationSeconds', 30) < 300 for term in pod['tolerations']))
 
     def test_environment_labels_stay_strings_and_edge_keeps_no_file_access_log(self):
-        values = {'postgres': {'existingSecret': 'db'},
+        values = {'postgres': POSTGRES,
                   'edge': {'hostname': 'fixture.example', 'admissionImage': 'admission' + DIGEST},
                   'activity': {'existingSecret': 'observer', 'observerImage': 'observer' + DIGEST,
                                'collectorImage': 'collector' + DIGEST}}
@@ -266,7 +303,7 @@ class ChartsTest(unittest.TestCase):
         self.assertEqual(logs, ['access_log off;', 'access_log off;'])
 
     def test_environment_names_fit_kubernetes_limits(self):
-        values = {'postgres': {'existingSecret': 'db'},
+        values = {'postgres': POSTGRES,
                   'edge': {'hostname': 'fixture.example', 'admissionImage': 'admission' + DIGEST},
                   'activity': {'existingSecret': 'observer', 'observerImage': 'observer' + DIGEST,
                                'collectorImage': 'collector' + DIGEST}}
@@ -282,7 +319,7 @@ class ChartsTest(unittest.TestCase):
             render(self.environment, values, 'r' * 32)
 
     def test_only_the_activity_collector_receives_the_patch_token(self):
-        values = {'postgres': {'existingSecret': 'db'},
+        values = {'postgres': POSTGRES,
                   'edge': {'hostname': 'fixture.example', 'admissionImage': 'admission' + DIGEST},
                   'activity': {'existingSecret': 'observer', 'observerImage': 'observer' + DIGEST,
                                'collectorImage': 'collector' + DIGEST}}
