@@ -15,6 +15,7 @@ allowVolumeExpansion: true
 {{- end }}
 {{- range $role := list "postgres" "nats" }}
 {{- $settings := index $.Values $role }}
+{{- if not (regexMatch "@sha256:[0-9a-f]{64}$" (toString $settings.image)) -}}{{ fail (printf "%s.image must be pinned by digest: it runs with the retained %s volume" $role $role) }}{{- end }}
 ---
 apiVersion: v1
 kind: Service

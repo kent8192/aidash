@@ -20,6 +20,8 @@ storage:
   type: pd-balanced
 postgres:
   # Build deploy/postgres/Dockerfile (runtime target); includes all three extensions.
+  # Runs with the retained database volume and its full Secret, so it must end in
+  # @sha256:<digest>; the chart refuses mutable tags.
   image: aidash-postgres:17-pg-jsonschema-0.3.4
   existingSecret: ""
   size: 10Gi
@@ -27,7 +29,8 @@ postgres:
     requests: { cpu: 100m, memory: 256Mi }
     limits: { cpu: "2", memory: 2Gi }
 nats:
-  image: nats:2.12.4
+  # Runs with the retained JetStream volume; must end in @sha256:<digest> (OCI index of nats:2.12.4).
+  image: nats:2.12.4@sha256:c9abdce88a85ed5fcc8e9fc6b284d2601f5d1c1d0d58ddd67cfdc411768bfd7f
   size: 2Gi
   resources:
     requests: { cpu: 100m, memory: 64Mi }

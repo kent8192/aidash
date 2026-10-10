@@ -47,10 +47,12 @@ uninstall or a preview switch delete the shared TLS disk. Rebinding belongs to
 the gated lifecycle controller; this chart does not guess ownership or detach a
 live claim.
 
-`activity.observerImage`, `activity.collectorImage`, `edge.admissionImage` and
-`edge.caddyImage` hold the database credential, the Runner token, the admission
-gate or all public traffic, so the chart refuses to render them unless they end in
-`@sha256:<digest>`; the shipped Caddy default is pinned.
+`activity.observerImage`, `activity.collectorImage`, `edge.admissionImage`,
+`edge.caddyImage`, `postgres.image` and `nats.image` hold the database credential,
+the Runner token, the admission gate, all public traffic or the retained database
+and JetStream volumes, so the chart refuses to render them unless they end in
+`@sha256:<digest>`. The shipped Caddy and NATS defaults are pinned; the locally
+built PostgreSQL, admission, observer and collector images must be supplied.
 
 `activity.existingSecret` supplies the existing read-only observer `DATABASE_URL`
 and `AIDASH_CORE_RUNNER_TOKEN`. The CronJob reads database work, the private edge
@@ -77,9 +79,11 @@ records the producer audit and sequencing gate. Real GKE rescheduling, drain,
 static-disk rebinding and IAM verification require later cloud approval.
 
 ```sh
-helm lint infra/gcp/helm/environment --set postgres.existingSecret=db \
+# images.yaml sets the digest-pinned postgres.image, edge.admissionImage,
+# activity.observerImage and activity.collectorImage.
+helm lint infra/gcp/helm/environment -f images.yaml --set postgres.existingSecret=db \
   --set edge.hostname=develop.example --set activity.existingSecret=observer
-helm template develop infra/gcp/helm/environment --namespace develop \
+helm template develop infra/gcp/helm/environment --namespace develop -f images.yaml \
   --set postgres.existingSecret=db --set edge.hostname=develop.example \
   --set edge.backend=develop-backend --set activity.existingSecret=observer \
   --set activity.runnerEndpoint=http://develop-execution-runner:8949
