@@ -83,7 +83,8 @@ response. Every received byte, including reasoning, unknown fields and
 keepalives, also counts toward a 128 MiB cap on the whole stream, which leaves
 room for the per-chunk envelope of one-token deltas. Like the non-streamed
 `/choices/0`, only choice `0` is assembled; a chunk with several choices that
-omit `index` is rejected as ambiguous. While the stream is open, only display
+omit `index`, or with choice `0` more than once, is rejected as ambiguous.
+While the stream is open, only display
 progress is published: text, and each tool call's ID, name and argument size.
 Argument text and provider reasoning are never published.
 
