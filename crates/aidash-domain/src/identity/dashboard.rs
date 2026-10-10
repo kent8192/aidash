@@ -23,6 +23,48 @@ pub fn bound_tenant<'a>(
 		.map(String::as_str)
 }
 
+/// Canonical form of a Sign-in Domain: IDNA ASCII, lowercase, at least two DNS
+/// labels and no trailing dot. Returns `None` for anything else.
+pub fn sign_in_domain(raw: &str) -> Option<String> {
+	if raw.is_empty() || raw.len() > 253 || raw.ends_with('.') {
+		return None;
+	}
+	let url::Host::Domain(domain) = url::Host::parse(raw).ok()? else {
+		return None;
+	};
+	let labels = domain.split('.').collect::<Vec<_>>();
+	(domain.len() <= 253
+		&& labels.len() >= 2
+		&& labels.iter().all(|label| {
+			(1..=63).contains(&label.len())
+				&& !label.starts_with('-')
+				&& !label.ends_with('-')
+				&& label
+					.bytes()
+					.all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+		}))
+	.then_some(domain)
+}
+
+/// A Sign-in Domain only routes sign-in to a GCIP Tenant; it grants no authority.
+/// Malformed addresses and unmapped domains are indistinguishable (`None`).
+pub fn routed_gcip_tenant<'a>(
+	sign_in_domains: &'a std::collections::BTreeMap<String, String>,
+	email: &str,
+) -> Option<&'a str> {
+	let email = email.trim();
+	if email.len() > 320 {
+		return None;
+	}
+	let (local, domain) = email.split_once('@')?;
+	if local.is_empty() || local.len() > 64 || domain.contains('@') {
+		return None;
+	}
+	sign_in_domains
+		.get(&sign_in_domain(domain)?)
+		.map(String::as_str)
+}
+
 /// Verified display attributes never establish authority or link identities.
 #[derive(Debug, Clone)]
 pub struct SignIn {

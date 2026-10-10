@@ -80,6 +80,11 @@ async fn configure(f: &mut Federation) -> (Arc<Status>, FakeAdmin) {
 		.into(),
 		providers: Default::default(),
 		password_sign_up: Default::default(),
+		sign_in_domains: [
+			("acme.example".into(), "pool-a".into()),
+			("xn--bcher-kva.example".into(), "pool-b".into()),
+		]
+		.into(),
 		session_absolute_seconds: 43200,
 		session_idle_seconds: 1800,
 	});
@@ -193,6 +198,192 @@ async fn sign_in(
 		.unwrap()
 		.to_owned();
 	(session, csrf)
+}
+async fn discover(
+	app: &common::TestApplication,
+	body: &'static str,
+	origin: Option<&str>,
+) -> reqwest::Response {
+	let mut request = browser()
+		.post(app.url("/auth/login"))
+		.header("content-type", "application/x-www-form-urlencoded")
+		.body(body);
+	if let Some(origin) = origin {
+		request = request.header("origin", origin);
+	}
+	request.send().await.unwrap()
+}
+async fn pending_transactions(f: &Federation) -> i64 {
+	let query = Query::select()
+		.expr(Expr::cust("count(*)"))
+		.from(Alias::new("dashboard_login_transactions"))
+		.to_string(PostgresQueryBuilder);
+	sqlx::query_scalar(&query)
+		.fetch_one(f.store.pool.driver())
+		.await
+		.unwrap()
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn sign_in_domain_routes_to_its_pool_and_unknown_inputs_are_indistinguishable(
+	#[future(awt)]
+	#[from(test_environment)]
+	environment: Arc<TestEnvironment>,
+) {
+	let (mut f, url, schema) = common::setup(&environment).await;
+	let (_status, _admin) = configure(&mut f).await;
+	let app = common::application_with_settings(
+		f.clone(),
+		aidash_server::http::Settings {
+			auth_discovery_burst: 1000,
+			..Default::default()
+		},
+	)
+	.await;
+	const ORIGIN: &str = "http://127.0.0.1:8080";
+	for (body, pool) in [
+		("email=Alice%40ACME.example&return_to=%2Fsettings", "pool-a"),
+		(
+			"email=bob%40B%C3%9CCHER.example&return_to=%2Fsettings",
+			"pool-b",
+		),
+	] {
+		let response = discover(&app, body, Some(ORIGIN)).await;
+		assert_eq!(response.status(), 303, "{body}");
+		assert_eq!(response.headers()["cache-control"], "no-store");
+		let location = response.headers()["location"].to_str().unwrap();
+		let state = location.strip_prefix("/sign-in?state=").unwrap().to_owned();
+		let cookie = response.headers()["set-cookie"]
+			.to_str()
+			.unwrap()
+			.split(';')
+			.next()
+			.unwrap()
+			.to_owned();
+		let client: Value = browser()
+			.get(app.url(format!("/auth/gcip/transaction?state={state}")))
+			.header("cookie", &cookie)
+			.send()
+			.await
+			.unwrap()
+			.json()
+			.await
+			.unwrap();
+		assert_eq!(client["tenant_id"], pool);
+		assert!(!client.to_string().contains("acme"), "{client}");
+		let exchanged = exchange(
+			&app,
+			&state,
+			&cookie,
+			&token(pool, "Person", Utc::now().timestamp()),
+			ORIGIN,
+		)
+		.await;
+		assert_eq!(exchanged.status(), 200);
+	}
+	let before = pending_transactions(&f).await;
+	let mut unknown = Vec::new();
+	for body in [
+		"email=alice%40unmapped.example&return_to=%2Fsettings",
+		"email=alice%40eng.acme.example&return_to=%2Fsettings",
+		"email=not-an-email&return_to=%2Fsettings",
+		"email=%40acme.example&return_to=%2Fsettings",
+		"return_to=%2Fsettings",
+	] {
+		unknown.push((body, discover(&app, body, Some(ORIGIN)).await));
+	}
+	for org in ["missing", "ACME", "pool-a"] {
+		unknown.push((
+			org,
+			browser()
+				.get(app.url(format!("/auth/login?org={org}&return_to=%2Fsettings")))
+				.send()
+				.await
+				.unwrap(),
+		));
+	}
+	let mut bodies = Vec::new();
+	for (input, response) in unknown {
+		assert_eq!(response.status(), 303, "{input}");
+		assert_eq!(
+			response.headers()["location"],
+			"/sign-in?error=not_found&return_to=%2Fsettings",
+			"{input}"
+		);
+		assert_eq!(response.headers()["cache-control"], "no-store", "{input}");
+		assert!(!response.headers().contains_key("set-cookie"), "{input}");
+		bodies.push(response.bytes().await.unwrap());
+	}
+	assert!(bodies.windows(2).all(|pair| pair[0] == pair[1]));
+	assert_eq!(pending_transactions(&f).await, before);
+	// Discovery is a browser form; a foreign or missing Origin is refused
+	// before any routing decision, for mapped and unmapped domains alike.
+	for origin in [None, Some("https://attacker.example")] {
+		for body in [
+			"email=alice%40acme.example",
+			"email=alice%40unmapped.example",
+		] {
+			assert_eq!(discover(&app, body, origin).await.status(), 403);
+		}
+	}
+	common::cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn discovery_has_its_own_rate_budget(
+	#[future(awt)]
+	#[from(test_environment)]
+	environment: Arc<TestEnvironment>,
+) {
+	let (mut f, url, schema) = common::setup(&environment).await;
+	let (_status, _admin) = configure(&mut f).await;
+	let app = common::application_with_settings(
+		f.clone(),
+		aidash_server::http::Settings {
+			auth_discovery_burst: 2,
+			auth_discovery_period: std::time::Duration::from_secs(600),
+			..Default::default()
+		},
+	)
+	.await;
+	let origin = Some("http://127.0.0.1:8080");
+	assert_eq!(
+		discover(&app, "email=a%40unmapped.example", origin)
+			.await
+			.status(),
+		303
+	);
+	assert_eq!(
+		discover(&app, "email=a%40acme.example", origin)
+			.await
+			.status(),
+		303
+	);
+	for limited in [
+		discover(&app, "email=a%40unmapped.example", origin).await,
+		discover(&app, "email=a%40acme.example", origin).await,
+		browser()
+			.get(app.url("/auth/login?org=acme"))
+			.send()
+			.await
+			.unwrap(),
+		// Encoding the key must not move a lookup into the general budget.
+		browser()
+			.get(app.url("/auth/login?%6Frg=acme"))
+			.send()
+			.await
+			.unwrap(),
+	] {
+		assert_eq!(limited.status(), 429);
+	}
+	// Exhausted discovery leaves ordinary sign-in endpoints available.
+	for path in ["/auth/config", "/auth/login?return_to=%2Fsettings"] {
+		let response = browser().get(app.url(path)).send().await.unwrap();
+		assert_ne!(response.status(), 429, "{path}");
+	}
+	common::cleanup(f, &url, &schema).await;
 }
 
 #[rstest::rstest]
@@ -785,12 +976,10 @@ async fn removed_binding_login_disables_an_inactive_identity_and_its_existing_au
 		.await
 		.unwrap();
 	let (state, cookie) = transaction(&app, "acme").await;
-	f.config
-		.gcip
-		.as_mut()
-		.unwrap()
-		.tenant_bindings
-		.remove("pool-a");
+	// Terraform removes a pool's Binding and its Sign-in Domains together.
+	let gcip = f.config.gcip.as_mut().unwrap();
+	gcip.tenant_bindings.remove("pool-a");
+	gcip.sign_in_domains.retain(|_, pool| pool != "pool-a");
 	f.store = f
 		.store
 		.clone()

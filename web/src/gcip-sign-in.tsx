@@ -25,6 +25,10 @@ const copy = {
     provider: "Continue with",
     error: "Sign-in failed. Please try again.",
     loading: "Loading sign-in…",
+    useOrganization: "Use your organization ID instead",
+    useEmail: "Use your email instead",
+    notFound:
+      "We couldn't find a sign-in for that entry. Check it, or contact your administrator.",
   },
   "ja-JP": {
     title: "Aidash にサインイン",
@@ -45,8 +49,33 @@ const copy = {
     provider: "続ける",
     error: "サインインできませんでした。もう一度お試しください。",
     loading: "サインインを準備中…",
+    useOrganization: "組織 ID で続ける",
+    useEmail: "メールアドレスで続ける",
+    notFound:
+      "サインイン先が見つかりません。入力内容を確認するか、管理者に連絡してください。",
   },
 } as const;
+const EMAIL_KEY = "aidash.gcip.email";
+// The email handoff is consumed exactly once, before any await. The module
+// keeps the taken value so a development StrictMode re-render still sees it.
+let takenEmailHint: string | undefined;
+function takeEmailHint() {
+  if (takenEmailHint !== undefined) return takenEmailHint;
+  try {
+    takenEmailHint = sessionStorage.getItem(EMAIL_KEY) ?? "";
+    sessionStorage.removeItem(EMAIL_KEY);
+  } catch {
+    takenEmailHint = "";
+  }
+  return takenEmailHint;
+}
+function clearEmailHint() {
+  try {
+    sessionStorage.removeItem(EMAIL_KEY);
+  } catch {
+    // Storage unavailable; nothing to clear.
+  }
+}
 export default function GcipSignIn({
   locale,
   setLocale,
@@ -55,10 +84,16 @@ export default function GcipSignIn({
   setLocale: (locale: Locale) => void;
 }) {
   const text = copy[locale];
-  const state = new URLSearchParams(window.location.search).get("state");
+  const params = new URLSearchParams(window.location.search);
+  const state = params.get("state");
+  const returnTo = params.get("return_to");
+  const notFound = params.get("error") === "not_found";
+  const [byOrg, setByOrg] = useState(false);
+  // Read during the first render so it happens before any await.
+  const [loginHint] = useState(() => (state ? takeEmailHint() : ""));
   const [config, setConfig] = useState<GcipClientConfig>();
   const [org, setOrg] = useState("");
-  const [email, setEmail] = useState("");
+  const [email, setEmail] = useState(loginHint);
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
@@ -101,7 +136,7 @@ export default function GcipSignIn({
         return;
       }
       const token = provider
-        ? await client.popup(provider)
+        ? await client.popup(provider, loginHint || undefined)
         : await client.password(email, password);
       const response = await fetch("/auth/gcip/exchange", {
         method: "POST",
@@ -148,31 +183,73 @@ export default function GcipSignIn({
       ))}
     >
       {!state ? (
-        <form
-          className="grid gap-3"
-          onSubmit={(event) => {
-            event.preventDefault();
-            const query = new URLSearchParams({ org });
-            const destination = new URLSearchParams(window.location.search).get(
-              "return_to",
-            );
-            if (destination) query.set("return_to", destination);
-            window.location.assign(`/auth/login?${query}`);
-          }}
-        >
-          <label className={field}>
-            {text.organization}
-            <Input
-              required
-              value={org}
-              onChange={(event) => setOrg(event.target.value)}
-              autoComplete="organization"
-            />
-          </label>
-          <Button type="submit" size="lg">
-            {text.next}
+        <div className="grid gap-3">
+          {notFound && <Notice role="alert">{text.notFound}</Notice>}
+          {byOrg ? (
+            <form
+              className="grid gap-3"
+              onSubmit={(event) => {
+                event.preventDefault();
+                clearEmailHint();
+                const query = new URLSearchParams({ org });
+                if (returnTo) query.set("return_to", returnTo);
+                window.location.assign(`/auth/login?${query}`);
+              }}
+            >
+              <label className={field}>
+                {text.organization}
+                <Input
+                  required
+                  value={org}
+                  onChange={(event) => setOrg(event.target.value)}
+                  autoComplete="organization"
+                />
+              </label>
+              <Button type="submit" size="lg">
+                {text.next}
+              </Button>
+            </form>
+          ) : (
+            <form
+              className="grid gap-3"
+              method="post"
+              action="/auth/login"
+              onSubmit={() => {
+                try {
+                  sessionStorage.setItem(EMAIL_KEY, email.trim());
+                } catch {
+                  // Prefill is a convenience; continue without it.
+                }
+              }}
+            >
+              <label className={field}>
+                {text.email}
+                <Input
+                  type="email"
+                  name="email"
+                  required
+                  value={email}
+                  autoComplete="username"
+                  onChange={(event) => setEmail(event.target.value)}
+                />
+              </label>
+              {returnTo && (
+                <input type="hidden" name="return_to" value={returnTo} />
+              )}
+              <Button type="submit" size="lg">
+                {text.next}
+              </Button>
+            </form>
+          )}
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={() => setByOrg(!byOrg)}
+          >
+            {byOrg ? text.useEmail : text.useOrganization}
           </Button>
-        </form>
+        </div>
       ) : config ? (
         <div className="grid gap-4">
           {config.providers.some((id) => id !== "password") && (

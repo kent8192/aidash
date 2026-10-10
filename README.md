@@ -123,11 +123,14 @@ acme-pool-id = "acme"
 
 [dashboard.gcip.providers]
 acme-pool-id = ["google.com", "password"]
+
+[dashboard.gcip.sign_in_domains]
+"acme.example" = "acme-pool-id"
 ```
 
-The GCIP Tenant ID maps one-to-one to an Aidash Tenant name. Terraform supplies these IDs, provider choices and signup settings to the environment runtime secret. The runtime uses Application Default Credentials for tenant-scoped `accounts:lookup`; it never uses the public web API key as an administrative credential. See [GCIP infrastructure setup](infra/gcp/README.md#gcip-sign-in) and [authorization](docs/authorization.md#gcip-sign-in).
+The GCIP Tenant ID maps one-to-one to an Aidash Tenant name. Terraform supplies these IDs, provider choices, signup settings and Sign-in Domains to the environment runtime secret. The runtime uses Application Default Credentials for tenant-scoped `accounts:lookup`; it never uses the public web API key as an administrative credential. See [GCIP infrastructure setup](infra/gcp/README.md#gcip-sign-in) and [authorization](docs/authorization.md#gcip-sign-in).
 
-`GET /auth/login?org=acme` creates a browser-bound ten-minute transaction and opens the lazy `/sign-in` page. Without `org`, the browser asks for the organization. The npm Firebase Auth SDK uses memory persistence, popup federation and an email/password form; signup waits for verified email. The backend verifies signed ID tokens and live Account Status, then exchanges them for the existing opaque HttpOnly Aidash session. GCIP tokens are discarded and are never put in browser storage. Registration approval, Mappings and Operator grants remain Aidash authority.
+The lazy `/sign-in` page asks for an email first. A form `POST /auth/login` routes a Sign-in Domain (a verified email domain, lowercase ASCII with punycode for IDN) to its GCIP Tenant. `GET /auth/login?org=acme` selects the Tenant by name instead, and the page offers that as an alternative. Either creates a browser-bound ten-minute transaction. Unknown domains, malformed addresses and unknown Tenant names receive one identical response. Sign-in Domains only route; they never grant authority. The npm Firebase Auth SDK uses memory persistence, popup federation and an email/password form; signup waits for verified email. The backend verifies signed ID tokens and live Account Status, then exchanges them for the existing opaque HttpOnly Aidash session. GCIP tokens are discarded and are never put in browser storage. Registration approval, Mappings and Operator grants remain Aidash authority.
 
 ### Dashboard OIDC setup
 

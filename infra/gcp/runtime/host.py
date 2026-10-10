@@ -376,6 +376,7 @@ def gcip_settings(host, dashboard):
     allowed = {
         "project_id", "web_api_key", "public_origin", "tenant_bindings",
         "providers", "password_sign_up", "session_absolute_seconds", "session_idle_seconds",
+        "sign_in_domains",
     }
     if not isinstance(settings, dict) or set(settings) - allowed:
         raise ValueError("unsupported managed GCIP configuration")
@@ -385,6 +386,7 @@ def gcip_settings(host, dashboard):
         or not isinstance(settings.get("web_api_key"), str)
         or not settings["web_api_key"].strip()
         or not isinstance(settings.get("tenant_bindings"), dict)
+        or not isinstance(settings.get("sign_in_domains", {}), dict)
     ):
         raise ValueError("managed GCIP configuration must match this environment")
     directory = RUN / "dashboard-settings"

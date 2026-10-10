@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "endpoint_count": 291,
+  "endpoint_count": 292,
   "requests": [
     {
       "name": "Health reports the configured node",
@@ -11858,6 +11858,42 @@
       "required_checks": [
         "Exact HTTP 401",
         "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1094 sessions-login-discovery - OIDC deployment cannot route a Sign-in Domain",
+      "file": "contracts/1094-sessions-login-discovery.bru",
+      "endpoint": "POST /auth/login",
+      "scenario": "OIDC deployment cannot route a Sign-in Domain",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope",
+        "OIDC deployment cannot route a Sign-in Domain contract"
+      ]
+    },
+    {
+      "name": "1095 sessions-login-discovery - OIDC deployment refuses foreign-origin discovery",
+      "file": "contracts/1095-sessions-login-discovery.bru",
+      "endpoint": "POST /auth/login",
+      "scenario": "OIDC deployment refuses foreign-origin discovery",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope",
+        "OIDC deployment refuses foreign-origin discovery contract"
+      ]
+    },
+    {
+      "name": "1096 sessions-login-discovery - Discovery without an address reveals nothing",
+      "file": "contracts/1096-sessions-login-discovery.bru",
+      "endpoint": "POST /auth/login",
+      "scenario": "Discovery without an address reveals nothing",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope",
+        "Discovery without an address reveals nothing contract"
       ]
     }
   ]

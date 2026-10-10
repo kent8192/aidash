@@ -23,6 +23,7 @@ OUTPUT = {
         "tenant_bindings": {"pool-a": "acme"},
         "providers": {"pool-a": ["password"]},
         "password_sign_up": ["pool-a"],
+        "sign_in_domains": {"acme.example": "pool-a"},
     },
 }
 

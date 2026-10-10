@@ -26507,5 +26507,14 @@
     "json": true,
     "uuid_parameters": [],
     "query_parameters": []
+  },
+  {
+    "method": "POST",
+    "path": "/auth/login",
+    "name": "sessions-login-discovery",
+    "source": "server/src/apps/identity/views/sessions.rs",
+    "json": false,
+    "uuid_parameters": [],
+    "query_parameters": []
   }
 ]

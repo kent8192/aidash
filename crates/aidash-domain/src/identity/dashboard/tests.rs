@@ -60,3 +60,46 @@ fn token_requires_a_subject_or_session(claims: Value) {
 		matches!(logout_claims(&claims, NOW), Err(crate::Error::Invalid(message)) if message == "logout token needs a subject or session ID")
 	);
 }
+
+#[rstest]
+#[case("acme.com", Some("acme.com"))]
+#[case("ACME.Com", Some("acme.com"))]
+#[case("bücher.example", Some("xn--bcher-kva.example"))]
+#[case("xn--bcher-kva.example", Some("xn--bcher-kva.example"))]
+#[case("localhost", None)]
+#[case("acme.com.", None)]
+#[case("-acme.com", None)]
+#[case("ac_me.com", None)]
+#[case("192.0.2.1", None)]
+#[case("[::1]", None)]
+#[case("", None)]
+fn sign_in_domains_are_canonical_dns_names(#[case] raw: &str, #[case] expected: Option<&str>) {
+	assert_eq!(sign_in_domain(raw).as_deref(), expected);
+}
+
+#[rstest]
+#[case("alice@acme.com", Some("pool-a"))]
+#[case("  Alice@ACME.com ", Some("pool-a"))]
+#[case("bob@bücher.example", Some("pool-b"))]
+#[case("alice@eng.acme.com", None)]
+#[case("alice@other.com", None)]
+#[case("acme.com", None)]
+#[case("@acme.com", None)]
+#[case("a@b@acme.com", None)]
+#[case("alice@", None)]
+fn email_routes_only_by_exact_sign_in_domain(#[case] email: &str, #[case] expected: Option<&str>) {
+	let domains = std::collections::BTreeMap::from([
+		("acme.com".to_owned(), "pool-a".to_owned()),
+		("xn--bcher-kva.example".to_owned(), "pool-b".to_owned()),
+	]);
+	assert_eq!(routed_gcip_tenant(&domains, email), expected);
+}
+
+#[rstest]
+fn overlong_addresses_never_route() {
+	let domains = std::collections::BTreeMap::from([("acme.com".to_owned(), "pool-a".to_owned())]);
+	assert_eq!(
+		routed_gcip_tenant(&domains, &format!("{}@acme.com", "a".repeat(65))),
+		None
+	);
+}

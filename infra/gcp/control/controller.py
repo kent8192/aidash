@@ -425,11 +425,12 @@ def provision_secret(config, output, kind):
         if not api_key:
             raise Refused("Configure the GCIP web API key from the bootstrap output")
         settings.update({key: gcip[key] for key in ("project_id", "public_origin", "tenant_bindings", "providers", "password_sign_up")})
+        settings["sign_in_domains"] = gcip.get("sign_in_domains", {})
         settings["web_api_key"] = api_key
     elif value.get("dashboard", {}).get("gcip"):
         # Binding removal must reach the retained server before any subsequent
         # boundary; disabling infrastructure cannot leave an old pool admitted.
-        value["dashboard"]["gcip"].update(tenant_bindings={}, providers={}, password_sign_up=[])
+        value["dashboard"]["gcip"].update(tenant_bindings={}, providers={}, password_sign_up=[], sign_in_domains={})
     encoded = json.dumps(value, sort_keys=True)
     # The VM reads latest with accessor-only IAM. Restore an enabled latest
     # version after rollback even when the selected configuration is unchanged.

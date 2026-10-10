@@ -9,6 +9,9 @@ test("organization selection and popup exchange keep GCIP tokens out of browser 
     route.fulfill({ contentType: "text/html", body: "<h1>Signed in</h1>" }),
   );
   await page.goto("/sign-in?return_to=%2Fsettings");
+  await page
+    .getByRole("button", { name: "Use your organization ID instead" })
+    .click();
   await page.getByLabel("Organization").fill("acme");
   const login = page.waitForRequest("**/auth/login?**");
   await page.getByRole("button", { name: "Continue", exact: true }).click();
@@ -235,4 +238,128 @@ test("verification email failure can recover after the signup client closes", as
   await page.getByRole("button", { name: "Sign in", exact: true }).click();
   await expect(page).toHaveURL(/\/signed-in$/);
   expect(exchanges).toBe(1);
+});
+
+test("email discovery posts the form and hands the email to the state page once", async ({
+  page,
+}) => {
+  await mockGcip(page);
+  await page.goto("/sign-in?return_to=%2Fsettings");
+  await page.getByLabel("Email", { exact: true }).fill("  person@acme.test ");
+  const login = page.waitForRequest(
+    (request) =>
+      new URL(request.url()).pathname === "/auth/login" &&
+      request.method() === "POST",
+  );
+  // Park the redirect on a static page to observe the handoff before the
+  // state page consumes it.
+  await page.route("**/auth/login", (route) =>
+    route.fulfill({ status: 303, headers: { location: "/held" }, body: "" }),
+  );
+  await page.route("**/held", (route) =>
+    route.fulfill({ contentType: "text/html", body: "<p>held</p>" }),
+  );
+  await page.getByRole("button", { name: "Continue", exact: true }).click();
+  const form = new URLSearchParams((await login).postData() ?? "");
+  expect(form.get("email")).toBe("person@acme.test");
+  expect(form.get("return_to")).toBe("/settings");
+  await expect(page).toHaveURL(/\/held$/);
+  expect(
+    await page.evaluate(() => sessionStorage.getItem("aidash.gcip.email")),
+  ).toBe("person@acme.test");
+  await page.goto("/sign-in?state=browser-bound-state");
+  await expect(page.getByLabel("Email", { exact: true })).toHaveValue(
+    "person@acme.test",
+  );
+  expect(
+    await page.evaluate(() => sessionStorage.getItem("aidash.gcip.email")),
+  ).toBeNull();
+  await page.route("**/signed-in", (route) =>
+    route.fulfill({ body: "Signed in" }),
+  );
+  await page
+    .getByRole("button", { name: "Continue with oidc.company", exact: true })
+    .click();
+  await expect(page).toHaveURL(/\/signed-in$/);
+});
+
+test("state page prefills the email and passes it as a popup login hint", async ({
+  page,
+}) => {
+  await mockGcip(page);
+  await page.goto("/sign-in");
+  await page.evaluate(() =>
+    sessionStorage.setItem("aidash.gcip.email", "person@acme.test"),
+  );
+  await page.goto("/sign-in?state=browser-bound-state");
+  await expect(page.getByLabel("Email", { exact: true })).toHaveValue(
+    "person@acme.test",
+  );
+  expect(
+    await page.evaluate(() => sessionStorage.getItem("aidash.gcip.email")),
+  ).toBeNull();
+  // Stop after the popup so the page stays put for inspection.
+  await page.route("**/auth/gcip/exchange", (route) =>
+    route.fulfill({ status: 500, body: "" }),
+  );
+  await page
+    .getByRole("button", { name: "Continue with Google", exact: true })
+    .click();
+  await expect(page.getByRole("status")).toHaveText(
+    "Sign-in failed. Please try again.",
+  );
+  const calls = await page.evaluate(
+    () => (window as unknown as { gcipCalls: { kind: string }[] }).gcipCalls,
+  );
+  expect(calls.find((call) => call.kind === "popup")).toEqual({
+    kind: "popup",
+    id: "google.com",
+    hint: "person@acme.test",
+  });
+});
+
+test("unknown sign-in entries show one generic message", async ({ page }) => {
+  await mockGcip(page);
+  await page.goto("/sign-in?return_to=%2Fsettings");
+  await page.getByLabel("Email", { exact: true }).fill("person@unknown.test");
+  await page.getByRole("button", { name: "Continue", exact: true }).click();
+  await expect(page).toHaveURL(
+    /\/sign-in\?error=not_found&return_to=%2Fsettings$/,
+  );
+  await expect(page.getByRole("alert")).toHaveText(
+    "We couldn't find a sign-in for that entry. Check it, or contact your administrator.",
+  );
+  // The email form still carries return_to for the retry.
+  await expect(page.locator('input[name="return_to"]')).toHaveValue(
+    "/settings",
+  );
+  await page.getByRole("button", { name: "日本語", exact: true }).click();
+  await expect(page.getByRole("alert")).toHaveText(
+    "サインイン先が見つかりません。入力内容を確認するか、管理者に連絡してください。",
+  );
+});
+
+test("organization link reveals the org form and clears the email handoff", async ({
+  page,
+}) => {
+  await mockGcip(page);
+  await page.goto("/sign-in?return_to=%2Fsettings");
+  await page.evaluate(() =>
+    sessionStorage.setItem("aidash.gcip.email", "stale@acme.test"),
+  );
+  await expect(page.getByLabel("Organization")).toHaveCount(0);
+  await page
+    .getByRole("button", { name: "Use your organization ID instead" })
+    .click();
+  await page.getByLabel("Organization").fill("acme");
+  const login = page.waitForRequest("**/auth/login?**");
+  await page.getByRole("button", { name: "Continue", exact: true }).click();
+  const url = new URL((await login).url());
+  expect(url.searchParams.get("org")).toBe("acme");
+  expect(url.searchParams.get("return_to")).toBe("/settings");
+  await expect(page).toHaveURL(/state=browser-bound-state$/);
+  await expect(page.getByLabel("Email", { exact: true })).toHaveValue("");
+  expect(
+    await page.evaluate(() => sessionStorage.getItem("aidash.gcip.email")),
+  ).toBeNull();
 });

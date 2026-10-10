@@ -34,3 +34,26 @@ run "sso_cannot_enable_password_signup" {
   variables { gcip_tenants = { company = { tenant = "company", password_sign_up = true, oidc = { "oidc.company" = { issuer = "https://issuer.example.test", client_id = "company" } } } } }
   expect_failures = [var.gcip_tenants]
 }
+run "sign_in_domains_route_to_pool" {
+  command = plan
+  variables { gcip_tenants = { acme = { tenant = "acme", sign_in_domains = ["acme.example", "xn--bcher-kva.example"] } } }
+  assert {
+    condition     = keys(output.gcip.sign_in_domains) == ["acme.example", "xn--bcher-kva.example"]
+    error_message = "Each Sign-in Domain must map to its pool."
+  }
+}
+run "sign_in_domain_cannot_route_to_two_pools" {
+  command = plan
+  variables { gcip_tenants = { a = { tenant = "a", sign_in_domains = ["acme.example"] }, b = { tenant = "b", sign_in_domains = ["acme.example"] } } }
+  expect_failures = [var.gcip_tenants]
+}
+run "sign_in_domain_must_be_lowercase" {
+  command = plan
+  variables { gcip_tenants = { a = { tenant = "a", sign_in_domains = ["Acme.example"] } } }
+  expect_failures = [var.gcip_tenants]
+}
+run "sign_in_domain_needs_two_labels" {
+  command = plan
+  variables { gcip_tenants = { a = { tenant = "a", sign_in_domains = ["localhost"] } } }
+  expect_failures = [var.gcip_tenants]
+}

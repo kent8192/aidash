@@ -1,0 +1,28 @@
+meta {
+  name: 1094 sessions-login-discovery - OIDC deployment cannot route a Sign-in Domain
+  type: http
+  seq: 1094
+}
+
+post {
+  url: {{base_url}}/auth/login
+  body: formUrlEncoded
+  auth: none
+}
+
+headers {
+  Accept: application/json
+  Origin: {{base_url}}
+  Content-Type: application/x-www-form-urlencoded
+}
+
+body:form-urlencoded {
+  email: alice@acme.example
+  return_to: /
+}
+
+tests {
+  test("Exact HTTP 401", function () { expect(res.getStatus()).to.equal(401); });
+  test("Stable authorization error envelope", function () { expect(res.getHeader("content-type")).to.include("application/json"); expect(res.getBody()).to.eql({error:"unauthorized"}); });
+  test("OIDC deployment cannot route a Sign-in Domain contract", function () { expect(res.getHeader("set-cookie")).to.equal(undefined); });
+}

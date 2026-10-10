@@ -138,6 +138,9 @@ pub struct GcipConfig {
 	#[setting(default = "Default::default()")]
 	#[setting(leaf)]
 	pub password_sign_up: std::collections::BTreeSet<String>,
+	/// Sign-in Domain → GCIP Tenant ID. Routing only; never authority.
+	#[setting(default = "Default::default()")]
+	pub sign_in_domains: std::collections::BTreeMap<String, String>,
 	#[setting(default = "43200")]
 	pub session_absolute_seconds: i64,
 	#[setting(default = "1800")]
@@ -215,6 +218,20 @@ impl GcipConfig {
 				&& !id.starts_with("oidc.")
 		}) {
 			return Err(Error::Invalid("unsupported GCIP sign-in provider".into()));
+		}
+		// Runtime lookups use the configured keys, so they must already be in the
+		// canonical form that addresses are normalized to (lowercase IDNA ASCII).
+		for (domain, pool) in &self.sign_in_domains {
+			if aidash_domain::identity::dashboard::sign_in_domain(domain).as_ref() != Some(domain) {
+				return Err(Error::Invalid(
+					"GCIP Sign-in Domains must be lowercase ASCII DNS names".into(),
+				));
+			}
+			if !self.tenant_bindings.contains_key(pool) {
+				return Err(Error::Invalid(
+					"GCIP Sign-in Domain requires a Tenant Binding".into(),
+				));
+			}
 		}
 		if !(60..=604800).contains(&self.session_idle_seconds)
 			|| !(60..=604800).contains(&self.session_absolute_seconds)
@@ -368,5 +385,37 @@ mod tests {
 	fn gcip_rejects_invalid_origins(mut gcip_config: GcipConfig, #[case] origin: &str) {
 		gcip_config.public_origin = origin.into();
 		assert!(gcip_config.normalized().is_err());
+	}
+	#[rstest]
+	#[case("acme.com", "pool-b", "GCIP Sign-in Domain requires a Tenant Binding")]
+	#[case(
+		"ACME.com",
+		"pool-a",
+		"GCIP Sign-in Domains must be lowercase ASCII DNS names"
+	)]
+	#[case(
+		"bücher.example",
+		"pool-a",
+		"GCIP Sign-in Domains must be lowercase ASCII DNS names"
+	)]
+	#[case(
+		"localhost",
+		"pool-a",
+		"GCIP Sign-in Domains must be lowercase ASCII DNS names"
+	)]
+	fn gcip_rejects_noncanonical_or_unbound_sign_in_domains(
+		mut gcip_config: GcipConfig,
+		#[case] domain: &str,
+		#[case] pool: &str,
+		#[case] reason: &str,
+	) {
+		gcip_config
+			.sign_in_domains
+			.insert(domain.into(), pool.into());
+		assert!(
+			matches!(gcip_config.normalized(), Err(Error::Invalid(message)) if message == reason)
+		);
+		gcip_config.sign_in_domains = [("xn--bcher-kva.example".into(), "pool-a".into())].into();
+		assert!(gcip_config.normalized().is_ok());
 	}
 }

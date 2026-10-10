@@ -132,6 +132,8 @@ pub fn url_patterns() -> UnifiedRouter {
 			.with_route_middleware(AccessBoundary::public())
 			.endpoint(sessions::login)
 			.with_route_middleware(AccessBoundary::public())
+			.endpoint(sessions::login_discovery)
+			.with_route_middleware(AccessBoundary::public())
 			.endpoint(sessions::gcip_transaction)
 			.with_route_middleware(AccessBoundary::public())
 			.endpoint(sessions::gcip_exchange)
