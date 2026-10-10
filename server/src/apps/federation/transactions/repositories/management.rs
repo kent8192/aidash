@@ -53,7 +53,7 @@ impl ManagementRepository for Repository {
 	async fn submit_operator(&self, manifest: &Manifest) -> Result<Status> {
 		admission::submit(
 			&crate::bootstrap::transaction_admission_repository(&self.runtime),
-			&crate::bootstrap::registry_validation(),
+			&crate::bootstrap::registry_validation_for(&self.runtime.store),
 			manifest,
 			None,
 		)

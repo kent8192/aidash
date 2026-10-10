@@ -3,7 +3,7 @@ use axum::{Json, Router, http::HeaderMap, routing::post};
 use rstest::rstest;
 
 struct FixtureCredentials;
-impl Credentials for FixtureCredentials {
+impl aidash_application::ports::Credentials for FixtureCredentials {
 	fn resolve(&self, name: &str) -> Result<String> {
 		assert_eq!(name, "AIDASH_SECRET_OPENROUTER");
 		Ok("fixture-key".into())
@@ -22,6 +22,7 @@ fn configuration(endpoint: String) -> EmbeddingConfig {
 		provider: "openrouter".into(),
 		endpoint,
 		credential_env: Some("AIDASH_SECRET_OPENROUTER".into()),
+		provider_credential: None,
 		model: "google/gemini-embedding-2".into(),
 		model_version: "1.0.0".into(),
 		dimensions: 3072,
@@ -65,9 +66,17 @@ async fn openrouter_gemini_sends_approved_dimensions_and_bearer_credentials(
 	}));
 	let mut config = configuration(endpoint);
 	config.dimensions = dimensions;
-	let result = embed(&FixtureCredentials, &client().unwrap(), &config, input_text)
-		.await
-		.unwrap();
+	let result = embed(
+		&aidash_application::provider_access::EnvironmentAccess {
+			credentials: Arc::new(FixtureCredentials),
+		},
+		&Context::default(),
+		&client().unwrap(),
+		&config,
+		input_text,
+	)
+	.await
+	.unwrap();
 	assert_eq!(result.vector.len(), dimensions);
 	assert_eq!(result.vector[0], 1.0);
 	assert_eq!(result.tokens, Some(12));
@@ -96,7 +105,16 @@ async fn openrouter_withholds_output_that_violates_the_approved_contract(#[case]
 	let mut config = configuration(endpoint);
 	config.dimensions = 1;
 	assert!(matches!(
-		embed(&FixtureCredentials, &client().unwrap(), &config, "query").await,
+		embed(
+			&aidash_application::provider_access::EnvironmentAccess {
+				credentials: Arc::new(FixtureCredentials)
+			},
+			&Context::default(),
+			&client().unwrap(),
+			&config,
+			"query"
+		)
+		.await,
 		Err(Error::RemoteSemantic(
 			aidash_domain::semantic::Failure::ProviderContract
 		))

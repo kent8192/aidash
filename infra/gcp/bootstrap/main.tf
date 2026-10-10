@@ -4,6 +4,7 @@ locals {
     "iamcredentials.googleapis.com", "iap.googleapis.com", "oslogin.googleapis.com",
     "secretmanager.googleapis.com", "storage.googleapis.com", "sts.googleapis.com",
     "cloudresourcemanager.googleapis.com",
+    "run.googleapis.com", "cloudkms.googleapis.com",
   ])
   workflow_ref = "${var.repository}/.github/workflows/gcp-environments.yml@refs/heads/${var.trusted_branch}"
 }
@@ -89,6 +90,7 @@ resource "google_project_iam_member" "deploy" {
     "roles/iap.tunnelResourceAccessor", "roles/iam.serviceAccountAdmin",
     "roles/secretmanager.admin", "roles/artifactregistry.reader",
     "roles/serviceusage.serviceUsageConsumer",
+    "roles/run.admin", "roles/cloudkms.admin",
   ])
   project = var.project_id
   role    = each.value
