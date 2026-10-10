@@ -114,7 +114,9 @@ and the runtime executables for `samefile` checks. They are seen through directo
 mounts, so an installer replacement is visible without restarting the guard: the
 directory containing `runsc` is mounted read-only at `/run/aidash-host-runtime`, and
 `gvisorBin` at its own path. Every `execution.paths.sentryBinaries` entry must be beside
-`runsc` or under `gvisorBin`. The Runner requires the guard (`execution.guard.enabled`).
+`runsc` or under `gvisorBin`, and the list must include `<gvisorBin>/gvisor_sentry`:
+the pinned runtime runs a split Sentry, and the guard kills only a PID it recognizes.
+The Runner requires the guard (`execution.guard.enabled`).
 `execution.paths` configures the runtime root, executable paths and cgroup root.
 The guard state defaults to `/var/lib/aidash-node-guard/<release>`: each guard holds
 an exclusive `watch.lock`, so releases sharing a Cluster Node must not share it.

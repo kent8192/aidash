@@ -32,6 +32,8 @@ directory mounts: a file bind mount would keep the replaced inode. */ -}}
 {{- fail (printf "execution.paths.sentryBinaries entry %s must be beside runsc or under gvisorBin: the guard mounts only those host directories" $path) -}}
 {{- end -}}
 {{- end -}}
+{{- $sentry := printf "%s/gvisor_sentry" $e.paths.gvisorBin -}}
+{{- if and $e.guard.enabled (not (has $sentry $e.paths.sentryBinaries)) -}}{{ fail (printf "execution.paths.sentryBinaries must include %s: the pinned runtime runs a split Sentry, and the guard kills only a PID it recognizes" $sentry) }}{{- end -}}
 {{- if $e.createNamespaces }}
 {{- range $namespace := list $sandbox $trusted }}
 ---
@@ -260,7 +262,7 @@ kind: ClusterRoleBinding
 metadata:
   name: {{ $name }}-runtime
 subjects:
-  - { kind: ServiceAccount, name: {{ $name }}-runner, namespace: {{ .Release.Namespace }} }
+  - { kind: ServiceAccount, name: {{ $name }}-runner, namespace: {{ .Release.Namespace | quote }} }
 roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: {{ $name }}-runtime }
 {{- if not $e.runner.journal.existingClaim }}
 ---

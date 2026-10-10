@@ -1,9 +1,12 @@
 """Chart contract tests for scheduling, privileges and retained single writers."""
 import importlib.util
 import json
+import os
 from pathlib import Path
 import subprocess
+import tempfile
 import unittest
+from unittest.mock import patch
 
 import yaml
 
@@ -13,8 +16,8 @@ DIGEST = '@sha256:' + 'b' * 64
 POSTGRES = {'existingSecret': 'db', 'image': 'aidash-postgres' + DIGEST}
 
 
-def render(chart, values, release='fixture', kube_version=None):
-    command = ['helm', 'template', release, str(ROOT / chart), '--namespace', 'environment', '-f', '-']
+def render(chart, values, release='fixture', kube_version=None, namespace='environment'):
+    command = ['helm', 'template', release, str(ROOT / chart), '--namespace', namespace, '-f', '-']
     if kube_version:
         command += ['--kube-version', kube_version]
     output = subprocess.check_output(command, input=json.dumps(values).encode())
@@ -104,6 +107,10 @@ class ChartsTest(unittest.TestCase):
         unseen = dict(execution, paths={'sentryBinaries': ['/opt/elsewhere/runsc']})
         with self.assertRaises(subprocess.CalledProcessError):
             render(self.aidash, dict(self.base, execution=unseen, environment={'nodeSelector': {'pool': 'execution'}}))
+        # The pinned runtime splits the Sentry; without its path no kill could be verified.
+        runsc_only = dict(execution, paths={'sentryBinaries': ['/usr/local/bin/runsc']})
+        with self.assertRaises(subprocess.CalledProcessError):
+            render(self.aidash, dict(self.base, execution=runsc_only, environment={'nodeSelector': {'pool': 'execution'}}))
         # The Runner's isolation probe goes through this release's guard.
         unguarded = dict(execution, guard={'enabled': False})
         with self.assertRaises(subprocess.CalledProcessError):
@@ -297,6 +304,12 @@ class ChartsTest(unittest.TestCase):
                 policy = select(objects, 'NetworkPolicy', '-dependencies')['spec']
                 self.assertIn({'podSelector': {'matchLabels': {'aidash.run/activity': release}}},
                               policy['ingress'][0]['from'])
+        # A release namespace that YAML would read as a boolean stays a string too.
+        preview = dict(values, previewTls={'createVolume': True, 'volumeHandle': 'projects/f/zones/z/disks/d'})
+        objects = render(self.environment, preview, namespace='true')
+        binding = select(objects, 'RoleBinding', '-activity')
+        self.assertEqual([subject['namespace'] for subject in binding['subjects']], ['true'])
+        self.assertEqual(select(objects, 'PersistentVolume', '')['spec']['claimRef']['namespace'], 'true')
         admission = next(value['data']['admission.conf'] for value in render(self.environment, values)
                          if value['kind'] == 'ConfigMap' and 'admission.conf' in value.get('data', {}))
         logs = [line.strip() for line in admission.splitlines() if line.strip().startswith('access_log')]
@@ -334,6 +347,22 @@ class ChartsTest(unittest.TestCase):
         (observer,), (collector,) = pod['initContainers'], pod['containers']
         self.assertNotIn(api['name'], [mount['name'] for mount in observer['volumeMounts']])
         self.assertIn({'name': api['name'], 'mountPath': account, 'readOnly': True}, collector['volumeMounts'])
+        # A failed observer must not fail the Pod: the collector still runs, finds no
+        # database evidence and publishes its busy snapshot. Success is renamed whole.
+        script = observer['command'][2]
+        self.assertEqual(observer['command'][:2], ['sh', '-c'])
+        for status, published in ((1, False), (0, True)):
+            with self.subTest(status=status), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                (root / 'bin').mkdir()
+                (root / 'snapshot').mkdir()
+                fake = root / 'bin/aidash-infra-observer'
+                fake.write_text(f'#!/bin/sh\necho partial\nexit {status}\n')
+                fake.chmod(0o755)
+                result = subprocess.run(['sh', '-c', script.replace('/snapshot', str(root / 'snapshot'))],
+                                        env=dict(os.environ, PATH=f'{root / "bin"}:{os.environ["PATH"]}'))
+                self.assertEqual(result.returncode, 0)
+                self.assertEqual((root / 'snapshot/database.json').exists(), published)
 
 
 class ActivityTest(unittest.TestCase):
@@ -363,6 +392,34 @@ class ActivityTest(unittest.TestCase):
         self.assertFalse(self.combine(previous, counts={'database_work': 1})['busy'])
         self.assertTrue(self.combine(previous, counts={'leases': 1})['busy'])
         self.assertEqual(self.combine(dict(previous, busy=True))['last_active'], 10000)
+
+    def test_missing_database_evidence_publishes_a_busy_snapshot(self):
+        idle = {'protocol': 'aidash-infra-activity/1', 'busy': False, 'observed_at': 9990, 'last_active': 5000}
+        patches = []
+
+        def request(url, token=None, *, data=None, method=None, context=None):
+            if method == 'PATCH':
+                patches.append(json.loads(data))
+                return {}
+            if url.endswith('/configmaps/activity'):
+                return {'metadata': {'resourceVersion': '7'}, 'data': {'snapshot.json': json.dumps(idle)}}
+            return {'inflight': 0, 'last_active': 0, 'closed': False}
+
+        environment = {'KUBERNETES_SERVICE_HOST': 'api', 'KUBERNETES_SERVICE_PORT': '443',
+                       'ACTIVITY_CONFIGMAP': 'activity', 'EDGE_ACTIVITY_ENDPOINT': 'http://edge',
+                       'RUNNER_ENDPOINT': 'http://runner', 'AIDASH_CORE_RUNNER_TOKEN': 'x' * 32}
+        # The observer init container exited without writing /snapshot/database.json.
+        with (patch.dict(os.environ, environment),
+              patch.object(self.activity, 'request', request),
+              patch.object(self.activity.ssl, 'create_default_context'),
+              patch.object(Path, 'read_text', return_value='value'),
+              patch.object(Path, 'read_bytes', side_effect=FileNotFoundError('database.json'))):
+            self.activity.main()
+        (published,) = patches
+        self.assertEqual(published['metadata'], {'resourceVersion': '7'})
+        snapshot = json.loads(published['data']['snapshot.json'])
+        self.assertTrue(snapshot['busy'])
+        self.assertTrue(snapshot['observation_gap'])
 
     def test_persisted_snapshot_keeps_a_bounded_transfer_digest(self):
         previous = {'observed_at': 9950, 'last_active': 5000, 'busy': False}
