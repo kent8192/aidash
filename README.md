@@ -258,6 +258,8 @@ scripts/check.sh
 
 Trunk owns formatting and linting: rustfmt, Clippy, Prettier, ESLint, Ruff and Taplo. The Rust edition and linter versions are pinned. React Compiler is not enabled, so its incompatible-library diagnostic is disabled for the intentionally mutable TanStack Table/Virtual interfaces; the hook correctness and accessibility rules remain enabled.
 
+Trunk's `trunk-fmt-pre-commit` action formats staged files on every commit. Trunk installs the Git hook the first time it runs in a checkout. Run `trunk git-hooks sync` once in a new clone or worktree before your first commit. The hooks live in the repository's shared Git directory, so every worktree uses them.
+
 PostgreSQL integration tests use `aidash-orm-test-postgres:17-pg-jsonschema-0.3.4`,
 built by `scripts/build-test-postgres.sh` from the Dockerfile's `test` target.
 The multi-node Compose fixture uses `aidash-compose-postgres:17-pg-jsonschema-0.3.4`
