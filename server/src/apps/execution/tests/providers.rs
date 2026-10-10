@@ -30,6 +30,7 @@ fn config(
 		modalities: vec!["text".into()],
 		media_routes: vec![],
 		cost: json!({}),
+		projection_versions: vec![],
 	}
 }
 
@@ -143,7 +144,7 @@ async fn openrouter_enforces_zdr_and_preserves_reasoning_tools_and_usage(
 			let response = model
 				.infer(ModelRequest {
 					instructions: "Follow the task".into(),
-					context: json!({"task":"Read notes"}),
+					context: json!({"task":"Read notes"}).into(),
 					tools: if with_tools {
 						vec![ToolSpec {
 							name: "read".into(),
@@ -155,6 +156,7 @@ async fn openrouter_enforces_zdr_and_preserves_reasoning_tools_and_usage(
 					},
 					max_output_tokens,
 					content_parts: vec![],
+					cache_scope: None,
 				})
 				.await
 				.unwrap();
@@ -224,7 +226,7 @@ async fn openrouter_sends_ordered_native_image_and_audio_parts() {
 	let response = model
 		.infer(ModelRequest {
 			instructions: "Inspect the media".into(),
-			context: json!({"run_message":"Describe the attachment"}),
+			context: json!({"run_message":"Describe the attachment"}).into(),
 			tools: vec![],
 			max_output_tokens: 512,
 			content_parts: vec![
@@ -239,6 +241,7 @@ async fn openrouter_sends_ordered_native_image_and_audio_parts() {
 					bytes: audio,
 				},
 			],
+			cache_scope: None,
 		})
 		.await
 		.unwrap();
@@ -336,13 +339,14 @@ async fn media_route_lookup_obeys_the_total_inference_deadline() {
 		Duration::from_secs(3),
 		model.infer(ModelRequest {
 			instructions: String::new(),
-			context: json!({}),
+			context: json!({}).into(),
 			tools: vec![],
 			max_output_tokens: 128,
 			content_parts: vec![ContentPart::Image {
 				media_type: "image/png".into(),
 				bytes: b"\x89PNG\r\n\x1a\nfixture".to_vec(),
 			}],
+			cache_scope: None,
 		}),
 	)
 	.await
@@ -425,10 +429,11 @@ async fn unavailable_zdr_endpoint_does_not_retry_without_zdr(
 		model
 			.infer(ModelRequest {
 				instructions: "test".into(),
-				context: json!({}),
+				context: json!({}).into(),
 				tools: vec![],
 				max_output_tokens: 512,
-				content_parts: vec![]
+				content_parts: vec![],
+				cache_scope: None,
 			})
 			.await
 			.is_err()
@@ -460,10 +465,11 @@ async fn upstream_media_rejection_keeps_its_status_and_safe_reason() {
 	let error = model
 		.infer(ModelRequest {
 			instructions: "test".into(),
-			context: json!({}),
+			context: json!({}).into(),
 			tools: vec![],
 			max_output_tokens: 512,
 			content_parts: vec![],
+			cache_scope: None,
 		})
 		.await
 		.unwrap_err();
@@ -495,10 +501,11 @@ async fn upstream_errors_cannot_echo_unrecognized_media_or_secret_data() {
 	let error = model
 		.infer(ModelRequest {
 			instructions: "test".into(),
-			context: json!({}),
+			context: json!({}).into(),
 			tools: vec![],
 			max_output_tokens: 512,
 			content_parts: vec![],
+			cache_scope: None,
 		})
 		.await
 		.unwrap_err();

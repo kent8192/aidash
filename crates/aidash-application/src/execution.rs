@@ -611,10 +611,11 @@ pub fn media_request_headroom(
 ) -> Result<()> {
 	let request = aidash_domain::provider::ModelRequest {
 		instructions: String::new(),
-		context: json!({}),
+		context: json!({}).into(),
 		tools: Vec::new(),
 		max_output_tokens: 0,
 		content_parts: Vec::new(),
+		cache_scope: None,
 	};
 	request
 		.ensure_fits_with_parts(headroom, parts)
@@ -633,10 +634,12 @@ pub fn encoded_run_message_reservation(messages: &[Value]) -> usize {
 				"summary":"",
 				"run_message_summary":"",
 				"history":[]
-			}),
+			})
+			.into(),
 			tools: Vec::new(),
 			max_output_tokens: 0,
 			content_parts: Vec::new(),
+			cache_scope: None,
 		}
 		.estimated_total_tokens()
 	};
@@ -659,10 +662,11 @@ pub fn check_model_media_headroom(
 ) -> Result<()> {
 	let request = aidash_domain::provider::ModelRequest {
 		instructions: String::new(),
-		context: json!({}),
+		context: json!({}).into(),
 		tools: Vec::new(),
 		max_output_tokens: 0,
 		content_parts: parts,
+		cache_scope: None,
 	};
 	request.validate()?;
 	if !model.has_current_media_route_for_parts(&request.content_parts) {

@@ -53,10 +53,11 @@ pub async fn load<S: MediaAttachments + ?Sized>(
 	let mut has_more = false;
 	let request = ModelRequest {
 		instructions: String::new(),
-		context: json!({}),
+		context: json!({}).into(),
 		tools: Vec::new(),
 		max_output_tokens: 0,
 		content_parts: Vec::new(),
+		cache_scope: None,
 	};
 	for (seq, id, headroom) in messages {
 		let attachments = scope.attachments(workspace, *id).await?;

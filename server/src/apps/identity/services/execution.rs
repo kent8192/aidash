@@ -491,6 +491,11 @@ impl Guard {
 	pub fn is_remote(&self) -> bool {
 		self.remote.is_some()
 	}
+	/// The executing node's local Tenant of this worker: for a remote Run, the
+	/// receiver's mapped Tenant, never the Home node's.
+	pub(crate) async fn tenant(&self) -> String {
+		self.access.lock().await.identity.tenant.clone()
+	}
 	async fn refresh_remote(&self) -> Result<()> {
 		aidash_application::authorization::tools::refresh(&crate::bootstrap::agent_tool_repository(
 			self.remote.as_ref(),
@@ -506,12 +511,64 @@ impl Guard {
 			access: self.access.clone(),
 		}
 	}
+	/// Retrieval Key scope: a local Run's subject and policy revision; a remote
+	/// Run's admission values, without the Home's policy revision.
+	pub(crate) async fn retrieval_scope(
+		&self,
+		store: &Store,
+	) -> Result<aidash_domain::context::sources::RetrievalScope> {
+		if let Some(federation) = &self.remote {
+			let description = super::peer::semantic::admission(federation, &self.run).await?;
+			let (index_revision, participant_revision) = match &description.semantic {
+				aidash_domain::semantic::remote::Binding::Disabled {} => (None, None),
+				aidash_domain::semantic::remote::Binding::RequiredHome {
+					index_revision,
+					native,
+					..
+				} => (
+					Some(*index_revision),
+					native
+						.as_ref()
+						.map(|native| native.participant.participant_revision),
+				),
+			};
+			// The Home's corpus is not observable here; the Home journal refresh
+			// before every reuse is the remote recheck.
+			return Ok(aidash_domain::context::sources::RetrievalScope {
+				tenant: description.source_tenant,
+				subject: description.source_subject,
+				authorization_revision: None,
+				index_revision,
+				participant_revision,
+				corpus_digest: None,
+			});
+		}
+		let (tenant, subject, authorization_revision) = {
+			let access = self.access.lock().await;
+			(
+				access.identity.tenant.clone(),
+				access.identity.subject.clone(),
+				access.snapshot.revision,
+			)
+		};
+		let revisions =
+			crate::semantic::services::memory_context::source_revisions(store, &self.run).await?;
+		Ok(aidash_domain::context::sources::RetrievalScope {
+			tenant,
+			subject,
+			authorization_revision: Some(authorization_revision),
+			index_revision: revisions.index,
+			participant_revision: revisions.participant,
+			corpus_digest: Some(revisions.corpus),
+		})
+	}
 	pub async fn semantic_context(
 		&self,
 		store: &Store,
 		task: &Task,
 		inputs: &[(crate::semantic::remote::InputRead, String)],
 		budget: usize,
+		key: Option<&aidash_domain::context::sources::RetrievalKey>,
 	) -> Result<Option<Value>> {
 		let workspace_budget = if self.remote.is_some() {
 			budget
@@ -547,6 +604,7 @@ impl Guard {
 			inputs,
 			available,
 			&self.agent,
+			key,
 		)
 		.await?;
 		crate::semantic::services::memory_context::complete(

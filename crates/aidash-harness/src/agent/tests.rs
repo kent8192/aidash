@@ -1,6 +1,8 @@
 //! Agent lifecycle and inference authority are tested without a database or HTTP.
 use super::*;
 use aidash_application::ports::{CompactionClassifier, CompactionQuestions, ModelProvider};
+use aidash_domain::context::sources::{RetrievalKey, RetrievalScope};
+use aidash_domain::provider::ModelContext;
 use aidash_domain::provider::{ContentPart, ModelRequest, ModelResponse, ToolCall};
 use aidash_domain::registry::{EntityRef, Entry};
 use async_trait::async_trait;
@@ -26,6 +28,18 @@ struct State {
 	dependency_status: Option<TaskStatus>,
 	remote_home: bool,
 	human: Mutex<Option<HumanRequest>>,
+	projection: ProjectionVersion,
+	skill_tool: bool,
+	skill_revision: Mutex<Option<i64>>,
+	skill_text: Mutex<String>,
+	/// Returned once by the next source recheck.
+	source_failure: Mutex<Option<Error>>,
+	retrieval: Mutex<RetrievalScope>,
+	semantic_keys: Mutex<Vec<Option<String>>>,
+	inputs: Mutex<Vec<aidash_domain::run_input::RunInput>>,
+	instructions: String,
+	/// The semantic read returns as much content as its budget allows.
+	fill_semantic_budget: bool,
 }
 impl Backend {
 	fn record(&self, name: &'static str) {
@@ -62,7 +76,7 @@ impl ExecutionStore for Backend {
 	}
 	async fn run_inputs(&self, run: Uuid) -> Result<Vec<aidash_domain::run_input::RunInput>> {
 		let _ = run;
-		Ok(vec![])
+		Ok(self.0.inputs.lock().unwrap().clone())
 	}
 	async fn begin_final_completion(&self, run: &Run, token: Uuid) -> Result<bool> {
 		let _ = run;
@@ -121,7 +135,7 @@ impl ExecutionStore for Backend {
 		unexpected("ExecutionStore.reconciliation_request")
 	}
 	async fn run_message_has_media(&self, messages: &[Uuid]) -> Result<bool> {
-		assert!(messages.is_empty());
+		let _ = messages;
 		Ok(false)
 	}
 }
@@ -165,6 +179,22 @@ impl ExecutionHome for Backend {
 		Ok(self.task_value())
 	}
 	async fn read_record(&self, kind: &str, id: &str) -> Result<Value> {
+		if kind == "message" {
+			let id: Uuid = id.parse().unwrap();
+			let inputs = self.0.inputs.lock().unwrap();
+			let input = inputs
+				.iter()
+				.find(|input| input.message_id == Some(id))
+				.expect("delivered run message");
+			return Ok(json!(Message {
+				id,
+				workspace_id: self.task_value().workspace_id,
+				sender: input.sender.clone(),
+				content: input.content.clone(),
+				idempotency_key: Some(input.idempotency_key.clone()),
+				created_at: "2026-10-02T00:00:00Z".parse().unwrap(),
+			}));
+		}
 		assert_eq!(kind, "task");
 		let mut task = self.task_value();
 		task.id = id.parse().unwrap();
@@ -229,7 +259,7 @@ impl ExecutionHome for Backend {
 		!self.0.remote_home
 	}
 	fn has_local_authority(&self) -> bool {
-		false
+		self.0.skill_tool
 	}
 }
 
@@ -318,11 +348,36 @@ impl ExecutionEnvironment for Backend {
 		if self.0.deny_source {
 			return Err(Error::Forbidden);
 		}
+		if let Some(error) = self.0.source_failure.lock().unwrap().take() {
+			return Err(error);
+		}
 		Ok(())
 	}
 	async fn skill_context(&self, run: &Run) -> Result<String> {
 		let _ = run;
-		unexpected("ExecutionEnvironment.skill_context")
+		if !self.0.skill_tool {
+			unexpected("ExecutionEnvironment.skill_context")
+		}
+		self.record("source.skill");
+		Ok(self.0.skill_text.lock().unwrap().clone())
+	}
+	async fn skill_revision(&self, run: &Run) -> Result<Option<i64>> {
+		let _ = run;
+		Ok(*self.0.skill_revision.lock().unwrap())
+	}
+	async fn cache_scope(&self, run: &Run) -> Result<aidash_domain::projection::CacheScope> {
+		let _ = run;
+		if self.0.projection != ProjectionVersion::Ordered {
+			unexpected("ExecutionEnvironment.cache_scope")
+		}
+		Ok(aidash_domain::projection::CacheScope {
+			tenant: "tenant-a".into(),
+			key_version: 1,
+		})
+	}
+	async fn retrieval_scope(&self, run: &Run) -> Result<RetrievalScope> {
+		let _ = run;
+		Ok(self.0.retrieval.lock().unwrap().clone())
 	}
 	async fn semantic_context(
 		&self,
@@ -331,10 +386,19 @@ impl ExecutionEnvironment for Backend {
 		inputs: &[(InputRead, String)],
 		budget: usize,
 		entry: &Entry,
+		key: Option<&RetrievalKey>,
 	) -> Result<Option<Value>> {
 		let _ = (run, task, inputs, budget, entry);
+		self.0
+			.semantic_keys
+			.lock()
+			.unwrap()
+			.push(key.map(RetrievalKey::digest));
 		if self.0.conversation_memory {
 			self.record("source.memory");
+			if self.0.fill_semantic_budget {
+				return Ok(Some(json!({"fact":"m".repeat(budget.saturating_sub(16))})));
+			}
 			return Ok(Some(self.0.memory_value.lock().unwrap().clone()));
 		}
 		Ok(None)
@@ -400,13 +464,14 @@ impl ExecutionEnvironment for Backend {
 				id: "model".into(),
 				version: "1.0.0".into(),
 			},
-			instructions: "Do the task".into(),
+			instructions: self.0.instructions.clone(),
 			knowledge_digest: None,
 			tools: vec![],
 			skills: vec![],
 			max_steps: 64,
 			allow_task_creation: None,
 			conversation_memory: self.0.conversation_memory,
+			projection_version: self.0.projection,
 		})
 	}
 	fn provider(&self, _model: ModelConfig) -> Result<Arc<dyn ModelProvider>> {
@@ -525,6 +590,23 @@ fn fixture() -> Fixture {
 		dependency_status: None,
 		remote_home: false,
 		human: Mutex::new(None),
+		projection: ProjectionVersion::Legacy,
+		skill_tool: false,
+		skill_revision: Mutex::new(Some(1)),
+		skill_text: Mutex::new("\nPinned Skills: review\n".into()),
+		source_failure: Mutex::new(None),
+		retrieval: Mutex::new(RetrievalScope {
+			tenant: "tenant-a".into(),
+			subject: "alice".into(),
+			authorization_revision: Some(1),
+			index_revision: Some(1),
+			participant_revision: Some(1),
+			corpus_digest: Some("corpus-1".into()),
+		}),
+		semantic_keys: Mutex::new(vec![]),
+		inputs: Mutex::new(vec![]),
+		instructions: "Do the task".into(),
+		fill_semantic_budget: false,
 	}));
 	Fixture { backend, run }
 }
@@ -881,7 +963,40 @@ async fn ready_inference_and_completion_use_the_same_durable_executor(mut fixtur
 #[async_trait]
 impl aidash_application::ports::bindings::BindingResolver for Backend {
 	async fn tools(&self, _: &Run) -> Result<Tools> {
-		Ok(Tools::new())
+		let mut tools = Tools::new();
+		if self.0.skill_tool {
+			tools.insert("skill_list".into(), Arc::new(SkillList));
+		}
+		Ok(tools)
+	}
+}
+struct SkillList;
+#[async_trait]
+impl ExecutionTool for SkillList {
+	fn specification(&self) -> aidash_domain::provider::ToolSpec {
+		aidash_domain::provider::ToolSpec {
+			name: "skill_list".into(),
+			description: "List pinned Skills".into(),
+			parameters: json!({"type":"object","properties":{}}),
+		}
+	}
+	fn contract(&self) -> aidash_domain::tool::ToolContract {
+		aidash_domain::tool::ToolContract::registry(
+			EntityRef {
+				id: "skill_list".into(),
+				version: "1.0.0".into(),
+			},
+			&aidash_domain::tool::ToolConfig::Native {
+				operation: "skill_list".into(),
+				allowed_hosts: vec![],
+			},
+		)
+	}
+	fn replay_safe(&self) -> bool {
+		true
+	}
+	async fn invoke(&self, _: &Run, _: Value, _: &str) -> Result<Value> {
+		unexpected("skill_list.invoke")
 	}
 }
 
@@ -913,7 +1028,10 @@ async fn recovery_reuses_the_observed_memory_then_reloads_at_a_later_boundary(
 	assert!(advance_sources(&mut fixture).await.is_err());
 	{
 		let requests = fixture.backend.0.requests.lock().unwrap();
-		assert_eq!(requests[0].context, requests[1].context);
+		assert_eq!(
+			serde_json::to_value(&requests[0].context).unwrap(),
+			serde_json::to_value(&requests[1].context).unwrap()
+		);
 	}
 	assert_eq!(
 		fixture
@@ -930,7 +1048,10 @@ async fn recovery_reuses_the_observed_memory_then_reloads_at_a_later_boundary(
 	fixture.run.step += 1;
 	assert!(advance_sources(&mut fixture).await.is_err());
 	let requests = fixture.backend.0.requests.lock().unwrap();
-	assert_ne!(requests[1].context, requests[2].context);
+	assert_ne!(
+		serde_json::to_value(&requests[1].context).unwrap(),
+		serde_json::to_value(&requests[2].context).unwrap()
+	);
 	assert_eq!(
 		fixture
 			.backend
@@ -980,4 +1101,444 @@ async fn advance_sources(fixture: &mut Fixture) -> Result<()> {
 	Executor::new(&backend)
 		.advance(&mut fixture.run, backend.0.token, &mut backend.clone())
 		.await
+}
+
+/// Fixed identities so request bytes can be compared with checked-in fixtures.
+#[fixture]
+fn canonical(mut fixture: Fixture) -> Fixture {
+	fixture.run.id = Uuid::from_u128(0x172);
+	fixture.run.workspace_id = Uuid::from_u128(0x2);
+	fixture.run.task_id = Uuid::from_u128(0x3);
+	{
+		let mut task = fixture.backend.0.task.lock().unwrap();
+		task.id = fixture.run.task_id;
+		task.workspace_id = fixture.run.workspace_id;
+	}
+	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	state.conversation_memory = true;
+	// The request is recorded before the provider fails, so each advance is
+	// one inference boundary that leaves the Run in Thinking.
+	state.provider_status = Some(503);
+	fixture.run.state = RunState::Thinking(ThinkingState::default());
+	fixture.run.context.history.push(history_event(1));
+	fixture
+}
+
+fn history_event(n: u32) -> ContextEvent {
+	ContextEvent::tool(
+		ToolCall {
+			id: format!("call-{n}"),
+			name: "workspace_read".into(),
+			arguments: json!({"kind":"task"}),
+		},
+		json!({"title":"Task","read":n}),
+	)
+}
+
+fn ordered(fixture: &mut Fixture) {
+	Arc::get_mut(&mut fixture.backend.0).unwrap().projection = ProjectionVersion::Ordered;
+}
+
+fn ordered_parts(request: &ModelRequest) -> (&str, &str) {
+	match &request.context {
+		ModelContext::Ordered(context) => (&context.stable, &context.volatile),
+		ModelContext::Legacy(_) => panic!("expected an Ordered request"),
+	}
+}
+
+fn semantic_memory(request: &ModelRequest) -> Value {
+	serde_json::from_str::<Value>(ordered_parts(request).1).unwrap()["semantic_memory"].clone()
+}
+
+fn count(fixture: &Fixture, call: &str) -> usize {
+	fixture
+		.backend
+		.0
+		.calls
+		.lock()
+		.unwrap()
+		.iter()
+		.filter(|name| **name == call)
+		.count()
+}
+
+#[rstest]
+#[tokio::test]
+async fn legacy_request_bytes_and_digest_match_the_base_projection(mut canonical: Fixture) {
+	assert!(advance_sources(&mut canonical).await.is_err());
+	let requests = canonical.backend.0.requests.lock().unwrap();
+	assert_eq!(
+		requests[0].input_body().to_string(),
+		include_str!("fixtures/legacy_request.json").trim_end()
+	);
+	assert_eq!(
+		requests[0].inference_digest(),
+		include_str!("fixtures/legacy_inference_digest.txt").trim_end()
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn consecutive_ordered_steps_extend_the_stable_prefix(mut canonical: Fixture) {
+	ordered(&mut canonical);
+	Arc::get_mut(&mut canonical.backend.0).unwrap().skill_tool = true;
+	assert!(advance_sources(&mut canonical).await.is_err());
+	canonical.run.step += 1;
+	canonical.run.context.history.push(history_event(2));
+	assert!(advance_sources(&mut canonical).await.is_err());
+
+	let requests = canonical.backend.0.requests.lock().unwrap();
+	let (first, second) = (&requests[0], &requests[1]);
+	assert_eq!(
+		first.input_body().to_string(),
+		include_str!("fixtures/ordered_request.json").trim_end()
+	);
+	assert_eq!(first.instructions, second.instructions);
+	assert_eq!(
+		serde_json::to_string(&first.tools).unwrap(),
+		serde_json::to_string(&second.tools).unwrap()
+	);
+	let (stable, volatile) = ordered_parts(first);
+	let (next_stable, next_volatile) = ordered_parts(second);
+	assert!(next_stable.starts_with(stable.strip_suffix("]}").unwrap()));
+	assert_ne!(stable, next_stable);
+	assert_ne!(volatile, next_volatile);
+	assert_eq!(
+		first.cache_scope,
+		Some(aidash_domain::projection::CacheScope {
+			tenant: "tenant-a".into(),
+			key_version: 1
+		})
+	);
+	drop(requests);
+	assert_eq!(count(&canonical, "source.skill"), 1);
+	assert_eq!(count(&canonical, "source.memory"), 1);
+}
+
+#[rstest]
+#[case::same_key(|_: &mut Fixture| {}, false)]
+#[case::query_input(|f: &mut Fixture| f.backend.0.task.lock().unwrap().description = "Changed".into(), true)]
+#[case::authorization_revision(|f: &mut Fixture| f.backend.0.retrieval.lock().unwrap().authorization_revision = Some(2), true)]
+#[case::index_revision(|f: &mut Fixture| f.backend.0.retrieval.lock().unwrap().index_revision = Some(2), true)]
+#[case::participant_revision(|f: &mut Fixture| f.backend.0.retrieval.lock().unwrap().participant_revision = None, true)]
+#[case::corpus(|f: &mut Fixture| f.backend.0.retrieval.lock().unwrap().corpus_digest = Some("corpus-2".into()), true)]
+#[case::tenant(|f: &mut Fixture| f.backend.0.retrieval.lock().unwrap().tenant = "tenant-b".into(), true)]
+#[case::subject(|f: &mut Fixture| f.backend.0.retrieval.lock().unwrap().subject = "bob".into(), true)]
+#[tokio::test]
+async fn ordered_semantic_read_is_reused_only_under_the_same_retrieval_key(
+	mut canonical: Fixture,
+	#[case] change: fn(&mut Fixture),
+	#[case] retrieves: bool,
+) {
+	ordered(&mut canonical);
+	assert!(advance_sources(&mut canonical).await.is_err());
+	*canonical.backend.0.memory_value.lock().unwrap() = json!({"fact":"changed"});
+	change(&mut canonical);
+	canonical.run.step += 1;
+	assert!(advance_sources(&mut canonical).await.is_err());
+
+	assert_eq!(
+		count(&canonical, "source.memory"),
+		1 + usize::from(retrieves)
+	);
+	let requests = canonical.backend.0.requests.lock().unwrap();
+	assert_eq!(semantic_memory(&requests[0]), json!({"fact":"observed"}));
+	assert_eq!(
+		semantic_memory(&requests[1]),
+		if retrieves {
+			json!({"fact":"changed"})
+		} else {
+			json!({"fact":"observed"})
+		}
+	);
+	let keys = canonical.backend.0.semantic_keys.lock().unwrap();
+	assert!(keys.iter().all(Option::is_some));
+	if retrieves {
+		assert_ne!(keys[0], keys[1]);
+	}
+}
+
+#[rstest]
+#[tokio::test]
+async fn forbidden_recheck_stops_ordered_reuse_before_inference(mut canonical: Fixture) {
+	ordered(&mut canonical);
+	assert!(advance_sources(&mut canonical).await.is_err());
+	Arc::get_mut(&mut canonical.backend.0).unwrap().deny_source = true;
+	canonical.run.step += 1;
+	assert!(matches!(
+		advance_sources(&mut canonical).await,
+		Err(Error::Forbidden)
+	));
+	assert_eq!(canonical.backend.0.requests.lock().unwrap().len(), 1);
+	assert_eq!(count(&canonical, "source.memory"), 1);
+}
+
+#[rstest]
+#[tokio::test]
+async fn conflicting_recheck_discards_the_ordered_cache_and_retrieves_once(mut canonical: Fixture) {
+	ordered(&mut canonical);
+	assert!(advance_sources(&mut canonical).await.is_err());
+	*canonical.backend.0.memory_value.lock().unwrap() = json!({"fact":"changed"});
+	*canonical.backend.0.source_failure.lock().unwrap() =
+		Some(Error::Conflict("observed semantic index changed".into()));
+	canonical.run.step += 1;
+	assert!(matches!(
+		advance_sources(&mut canonical).await,
+		Err(Error::ProviderRejected { .. })
+	));
+
+	assert_eq!(count(&canonical, "source.memory"), 2);
+	assert_eq!(
+		semantic_memory(&canonical.backend.0.requests.lock().unwrap()[1]),
+		json!({"fact":"changed"})
+	);
+	let writes = canonical.backend.0.writes.lock().unwrap();
+	let observed = writes
+		.iter()
+		.filter(|(event, _)| event == "run.sources_observed")
+		.collect::<Vec<_>>();
+	assert_eq!(observed.len(), 2);
+	assert_eq!(
+		observed[1]
+			.1
+			.context
+			.source_observation
+			.as_ref()
+			.unwrap()
+			.content["semantic_memory"],
+		json!({"fact":"changed"})
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn conflicting_recheck_still_stops_a_legacy_run(mut canonical: Fixture) {
+	assert!(advance_sources(&mut canonical).await.is_err());
+	*canonical.backend.0.source_failure.lock().unwrap() =
+		Some(Error::Conflict("observed semantic index changed".into()));
+	assert!(matches!(
+		advance_sources(&mut canonical).await,
+		Err(Error::Conflict(_))
+	));
+	assert_eq!(canonical.backend.0.requests.lock().unwrap().len(), 1);
+}
+
+#[rstest]
+#[tokio::test]
+async fn ordered_observation_is_never_reused_by_another_run(mut canonical: Fixture) {
+	ordered(&mut canonical);
+	assert!(advance_sources(&mut canonical).await.is_err());
+	let observed = canonical.run.context.clone();
+	assert!(observed.source_observation.is_some());
+	canonical.run.id = Uuid::from_u128(0x173);
+	canonical.run.context = observed;
+	assert!(advance_sources(&mut canonical).await.is_err());
+	assert_eq!(count(&canonical, "source.memory"), 2);
+}
+
+#[rstest]
+#[tokio::test]
+async fn recovered_ordered_run_resumes_with_identical_request_bytes(mut canonical: Fixture) {
+	ordered(&mut canonical);
+	Arc::get_mut(&mut canonical.backend.0).unwrap().skill_tool = true;
+	assert!(advance_sources(&mut canonical).await.is_err());
+	let saved = canonical
+		.backend
+		.0
+		.writes
+		.lock()
+		.unwrap()
+		.last()
+		.unwrap()
+		.1
+		.clone();
+	canonical.run = serde_json::from_slice(&serde_json::to_vec(&saved).unwrap()).unwrap();
+	*canonical.backend.0.memory_value.lock().unwrap() = json!({"fact":"changed"});
+	*canonical.backend.0.skill_text.lock().unwrap() = "\nPinned Skills: changed\n".into();
+	assert!(advance_sources(&mut canonical).await.is_err());
+
+	let requests = canonical.backend.0.requests.lock().unwrap();
+	assert_eq!(
+		requests[0].input_body().to_string(),
+		requests[1].input_body().to_string()
+	);
+	drop(requests);
+	assert_eq!(count(&canonical, "source.memory"), 1);
+	assert_eq!(count(&canonical, "source.skill"), 1);
+}
+
+#[rstest]
+#[tokio::test]
+async fn changed_skill_record_revision_reloads_only_the_skill_context(mut canonical: Fixture) {
+	ordered(&mut canonical);
+	Arc::get_mut(&mut canonical.backend.0).unwrap().skill_tool = true;
+	assert!(advance_sources(&mut canonical).await.is_err());
+	*canonical.backend.0.skill_revision.lock().unwrap() = Some(2);
+	*canonical.backend.0.skill_text.lock().unwrap() = "\nPinned Skills: changed\n".into();
+	canonical.run.step += 1;
+	assert!(advance_sources(&mut canonical).await.is_err());
+
+	assert_eq!(count(&canonical, "source.skill"), 2);
+	assert_eq!(count(&canonical, "source.memory"), 1);
+	let requests = canonical.backend.0.requests.lock().unwrap();
+	assert!(requests[1].instructions.contains("Pinned Skills: changed"));
+}
+
+#[rstest]
+#[case::single_event(1)]
+#[case::long_history(64)]
+fn ordered_estimate_counts_the_complete_request_near_the_window(#[case] events: u32) {
+	let scope = context::RequestProjection::Ordered(aidash_domain::projection::CacheScope {
+		tenant: "tenant-a".into(),
+		key_version: 1,
+	});
+	let legacy = context::RequestProjection::Legacy;
+	let pinned = json!({
+		"identity":{"node_id":"aidash://fixture","agent_id":"agent","agent_version":"1.0.0"},
+		"task":{"title":"Task","description":"x".repeat(4096)},
+		"workspace":{"workspace_id":Uuid::nil()},
+		"agent_state":{"phase":"thinking","step":3},
+		"semantic_memory":{"fact":"observed"},
+	});
+	let context = Context {
+		history: (1..=events).map(history_event).collect(),
+		..Context::default()
+	};
+	let request = |projection| {
+		context::RequestBudget {
+			window: 128_000,
+			instructions: "Do the task",
+			tools: &[],
+			max_output_tokens: 4096,
+			projection,
+		}
+		.request(&context, &pinned)
+	};
+	let ordered = request(&scope);
+	let estimate = ordered.estimated_total_tokens();
+	assert_eq!(
+		estimate,
+		ordered.input_body().to_string().len()
+			+ aidash_domain::projection::CACHE_SALT_LINE_RESERVE
+			+ 4096 + 1024
+	);
+	// The final fitting decision uses the same complete estimate.
+	assert!(ordered.ensure_fits(estimate).is_ok());
+	assert!(ordered.ensure_fits(estimate - 1).is_err());
+	// History grows both projections by the same bytes, so Ordered reaches the
+	// compaction threshold at the same history size as Legacy, offset only by
+	// fixed framing and the salt reserve.
+	let mut grown = context.clone();
+	grown.history.push(history_event(events + 1));
+	let growth = |projection| {
+		let budget = context::RequestBudget {
+			window: 128_000,
+			instructions: "Do the task",
+			tools: &[],
+			max_output_tokens: 4096,
+			projection,
+		};
+		budget.request(&grown, &pinned).estimated_total_tokens()
+			- budget.request(&context, &pinned).estimated_total_tokens()
+	};
+	assert_eq!(growth(&scope), growth(&legacy));
+	assert_eq!(
+		growth(&scope),
+		context::tool_event_growth(&context, &history_event(events + 1))
+	);
+}
+
+/// Fixed content that leaves less headroom than the Run-stable quota must
+/// truncate the task snapshot, not admit a request that cannot fit.
+#[rstest]
+#[case::legacy(false)]
+#[case::ordered(true)]
+#[tokio::test]
+async fn oversized_fixed_content_truncates_the_snapshot_to_fit(
+	mut canonical: Fixture,
+	#[case] is_ordered: bool,
+) {
+	if is_ordered {
+		ordered(&mut canonical);
+	}
+	Arc::get_mut(&mut canonical.backend.0).unwrap().instructions = "x".repeat(100_000);
+	// Smaller than the Run-stable quota, larger than the remaining headroom.
+	let quota = context::ordered_stable_quota(128_000, 4096);
+	canonical.backend.0.task.lock().unwrap().description = "d".repeat(quota - 4096);
+	assert!(matches!(
+		advance_sources(&mut canonical).await,
+		Err(Error::ProviderRejected { .. })
+	));
+	let requests = canonical.backend.0.requests.lock().unwrap();
+	let content = requests[0].input_body().to_string();
+	assert!(content.contains("snapshot_truncated"));
+	assert!(requests[0].ensure_fits(128_000).is_ok());
+}
+
+/// A semantic read that fills its whole budget must still fit beside fixed
+/// content that leaves less headroom than the Run-fixed semantic budget.
+#[rstest]
+#[case::legacy(false)]
+#[case::ordered(true)]
+#[tokio::test]
+async fn semantic_budget_never_exceeds_the_remaining_headroom(
+	mut canonical: Fixture,
+	#[case] is_ordered: bool,
+) {
+	if is_ordered {
+		ordered(&mut canonical);
+	}
+	let state = Arc::get_mut(&mut canonical.backend.0).unwrap();
+	state.fill_semantic_budget = true;
+	// Leaves less request headroom than ordered_semantic_budget(128000, 4096).
+	state.instructions = "x".repeat(110_000);
+	assert!(matches!(
+		advance_sources(&mut canonical).await,
+		Err(Error::ProviderRejected { .. })
+	));
+	let requests = canonical.backend.0.requests.lock().unwrap();
+	assert!(requests[0].ensure_fits(128_000).is_ok());
+	assert!(requests[0].input_body().to_string().contains("mmmm"));
+}
+
+/// One plain step, then a run-message catch-up step on the same Run.
+async fn catch_up_requests(mut fixture: Fixture) -> (ModelRequest, ModelRequest) {
+	assert!(advance_sources(&mut fixture).await.is_err());
+	*fixture.backend.0.inputs.lock().unwrap() = vec![aidash_domain::run_input::RunInput {
+		seq: 2,
+		sender: "human".into(),
+		content: "Also cover the edge cases".into(),
+		idempotency_key: "input-2".into(),
+		message_id: Some(Uuid::from_u128(0x22)),
+		reference_only: false,
+	}];
+	// An earlier summarized page puts the next accepted input into catch-up.
+	fixture.run.context.run_message_summary_seq = 1;
+	fixture.run.step += 1;
+	assert!(advance_sources(&mut fixture).await.is_err());
+	let requests = fixture.backend.0.requests.lock().unwrap();
+	(requests[0].clone(), requests[1].clone())
+}
+
+#[tokio::test]
+async fn ordered_catch_up_keeps_its_turn_paragraph_out_of_the_system_prompt() {
+	let (legacy_plain, legacy_catch_up) = catch_up_requests(canonical(fixture())).await;
+	let catch_up_paragraph = legacy_catch_up
+		.instructions
+		.strip_prefix(&legacy_plain.instructions)
+		.unwrap();
+	assert!(!catch_up_paragraph.trim().is_empty());
+
+	let mut ordered_fixture = canonical(fixture());
+	ordered(&mut ordered_fixture);
+	let (plain, catch_up) = catch_up_requests(ordered_fixture).await;
+	assert_eq!(plain.instructions, catch_up.instructions);
+	assert_eq!(plain.instructions, legacy_plain.instructions);
+	let volatile =
+		|request: &ModelRequest| serde_json::from_str::<Value>(ordered_parts(request).1).unwrap();
+	assert!(volatile(&plain).get("turn_instructions").is_none());
+	assert_eq!(
+		volatile(&catch_up)["turn_instructions"],
+		json!(catch_up_paragraph.trim_start())
+	);
 }
