@@ -532,12 +532,15 @@ impl Guard {
 						.map(|native| native.participant.participant_revision),
 				),
 			};
+			// The Home's corpus is not observable here; the Home journal refresh
+			// before every reuse is the remote recheck.
 			return Ok(aidash_domain::context::sources::RetrievalScope {
 				tenant: description.source_tenant,
 				subject: description.source_subject,
 				authorization_revision: None,
 				index_revision,
 				participant_revision,
+				corpus_digest: None,
 			});
 		}
 		let (tenant, subject, authorization_revision) = {
@@ -548,14 +551,15 @@ impl Guard {
 				access.snapshot.revision,
 			)
 		};
-		let (index_revision, participant_revision) =
+		let revisions =
 			crate::semantic::services::memory_context::source_revisions(store, &self.run).await?;
 		Ok(aidash_domain::context::sources::RetrievalScope {
 			tenant,
 			subject,
 			authorization_revision: Some(authorization_revision),
-			index_revision,
-			participant_revision,
+			index_revision: revisions.index,
+			participant_revision: revisions.participant,
+			corpus_digest: Some(revisions.corpus),
 		})
 	}
 	pub async fn semantic_context(

@@ -579,3 +579,53 @@ async fn index_generation_replay_and_cleanup_retries_keep_durable_tombstones(
 		2
 	);
 }
+
+/// The Ordered Retrieval Key pins this digest: an ordinary entry insert or
+/// edit must change it although the index revision stays the same, while an
+/// unchanged corpus or another Workspace's entries leave it as it was.
+#[rstest]
+#[tokio::test]
+async fn corpus_digest_changes_with_entries_but_not_with_the_index_revision(
+	#[future] endpoint: EndpointFixture,
+	index_spec: Value,
+) {
+	// Arrange
+	let app = endpoint.await;
+	let store = &app.runtime.store;
+	let mut ids = vec![];
+	for title in ["Corpus", "Other corpus"] {
+		let workspace = workspace(&app.operator, title).await;
+		let id: Uuid = serde_json::from_value(workspace["id"].clone()).unwrap();
+		assert_json(
+			app.operator
+				.post(
+					&format!("/api/workspaces/{id}/semantic/index"),
+					&json!({"expected_revision":0,"spec":index_spec}),
+					"json",
+				)
+				.await
+				.unwrap(),
+			200,
+		);
+		ids.push(id);
+	}
+	let (workspace, other) = (ids[0], ids[1]);
+	let entries = format!("/api/workspaces/{workspace}/semantic/entries");
+	let index = format!("/api/workspaces/{workspace}/semantic/index");
+	let digest = || aidash_server::semantic::services::corpus_digest(store, workspace);
+	let empty = digest().await.unwrap();
+	// Act
+	assert_json(app.operator.post(&entries, &json!({"key":"memory","expected_revision":0,"source":{"kind":"memory","text":"first"},"metadata":{}}), "json").await.unwrap(), 200);
+	let inserted = digest().await.unwrap();
+	assert_json(app.operator.post(&entries, &json!({"key":"memory","expected_revision":1,"source":{"kind":"memory","text":"second"},"metadata":{}}), "json").await.unwrap(), 200);
+	let edited = digest().await.unwrap();
+	assert_json(app.operator.post(&format!("/api/workspaces/{other}/semantic/entries"), &json!({"key":"memory","expected_revision":0,"source":{"kind":"memory","text":"elsewhere"},"metadata":{}}), "json").await.unwrap(), 200);
+	// Assert
+	assert_ne!(inserted, empty);
+	assert_ne!(edited, inserted);
+	assert_eq!(digest().await.unwrap(), edited);
+	assert_eq!(
+		assert_json(app.operator.get(&index).await.unwrap(), 200)["revision"],
+		1
+	);
+}

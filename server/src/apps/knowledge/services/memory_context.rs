@@ -258,12 +258,17 @@ fn bounded_status(status: &str, budget: usize) -> Result<Option<Value>> {
 	Ok(Some(value))
 }
 
-/// Semantic index and memory participant revisions an Ordered Retrieval Key
-/// pins. Plain reads: the recheck before every reuse enforces authority.
-pub(crate) async fn source_revisions(
-	store: &Store,
-	run: &Run,
-) -> Result<(Option<i64>, Option<i64>)> {
+/// Source revisions an Ordered Retrieval Key pins.
+pub(crate) struct SourceRevisions {
+	pub index: Option<i64>,
+	pub participant: Option<i64>,
+	pub corpus: String,
+}
+
+/// Semantic index, Workspace corpus and memory participant revisions an
+/// Ordered Retrieval Key pins. Plain reads: the recheck before every reuse
+/// enforces authority.
+pub(crate) async fn source_revisions(store: &Store, run: &Run) -> Result<SourceRevisions> {
 	use reinhardt::query::{
 		Alias, Expr, ExprTrait as _, PostgresQueryBuilder, Query, QueryStatementBuilder as _,
 	};
@@ -285,7 +290,32 @@ pub(crate) async fn source_revisions(
 	)
 	.scalar_optional(&store.pool)
 	.await?;
-	Ok((index, participant))
+	Ok(SourceRevisions {
+		index,
+		participant,
+		corpus: corpus_digest(store, run.workspace_id).await?,
+	})
+}
+
+/// Digest of a Workspace's semantic candidate set. `semantic_indexes.revision`
+/// changes only with the index configuration; entry inserts, edits, deletions
+/// and indexing transitions change this digest instead.
+pub async fn corpus_digest(store: &Store, workspace: uuid::Uuid) -> Result<String> {
+	use reinhardt::query::{
+		Alias, Expr, ExprTrait as _, PostgresQueryBuilder, Query, QueryStatementBuilder as _,
+	};
+	crate::database::native::query_scalar(
+		&Query::select()
+			.expr(Expr::cust(
+				"md5(COALESCE(string_agg(concat_ws(':', id, revision, state, index_revision, point_id), ',' ORDER BY id), ''))",
+			))
+			.from(Alias::new("semantic_entries"))
+			.and_where(Expr::col(Alias::new("workspace_id")).eq(Expr::value(workspace)))
+			.and_where(Expr::col(Alias::new("deleted")).eq(false))
+			.to_string(PostgresQueryBuilder),
+	)
+	.scalar_one(&store.pool)
+	.await
 }
 
 #[cfg(test)]

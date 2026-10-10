@@ -90,6 +90,12 @@ pub struct RetrievalScope {
 	pub authorization_revision: Option<i64>,
 	pub index_revision: Option<i64>,
 	pub participant_revision: Option<i64>,
+	/// Digest of the Workspace's semantic candidate set: every live entry's
+	/// ID, revision, state, index revision and point. Inserting, editing,
+	/// deleting or (re)indexing an entry changes it, so an ordinary corpus
+	/// change forces a fresh retrieval instead of a stale reuse. Remote Runs
+	/// carry none.
+	pub corpus_digest: Option<String>,
 }
 
 /// Everything an Ordered semantic read depends on. Equal keys must yield the
@@ -127,7 +133,8 @@ impl RetrievalKey {
 	}
 }
 
-/// The fixed per-Run semantic budget of an Ordered request, in bytes.
+/// The Run-fixed semantic budget of an Ordered request, in bytes. The caller
+/// caps it by the request's remaining headroom, as Legacy does.
 pub fn ordered_semantic_budget(window: usize, max_output_tokens: u32) -> usize {
 	window.saturating_sub(max_output_tokens as usize) / 8
 }
@@ -211,6 +218,7 @@ mod tests {
 			authorization_revision: Some(1),
 			index_revision: Some(2),
 			participant_revision: Some(3),
+			corpus_digest: Some("corpus".into()),
 		}
 	}
 	#[test]
@@ -232,6 +240,7 @@ mod tests {
 			|s: &mut RetrievalScope| s.authorization_revision = Some(9),
 			|s: &mut RetrievalScope| s.index_revision = None,
 			|s: &mut RetrievalScope| s.participant_revision = Some(4),
+			|s: &mut RetrievalScope| s.corpus_digest = Some("changed".into()),
 		] {
 			let mut changed = scope();
 			change(&mut changed);

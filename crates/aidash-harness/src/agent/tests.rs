@@ -38,6 +38,8 @@ struct State {
 	semantic_keys: Mutex<Vec<Option<String>>>,
 	inputs: Mutex<Vec<aidash_domain::run_input::RunInput>>,
 	instructions: String,
+	/// The semantic read returns as much content as its budget allows.
+	fill_semantic_budget: bool,
 }
 impl Backend {
 	fn record(&self, name: &'static str) {
@@ -394,6 +396,9 @@ impl ExecutionEnvironment for Backend {
 			.push(key.map(RetrievalKey::digest));
 		if self.0.conversation_memory {
 			self.record("source.memory");
+			if self.0.fill_semantic_budget {
+				return Ok(Some(json!({"fact":"m".repeat(budget.saturating_sub(16))})));
+			}
 			return Ok(Some(self.0.memory_value.lock().unwrap().clone()));
 		}
 		Ok(None)
@@ -596,10 +601,12 @@ fn fixture() -> Fixture {
 			authorization_revision: Some(1),
 			index_revision: Some(1),
 			participant_revision: Some(1),
+			corpus_digest: Some("corpus-1".into()),
 		}),
 		semantic_keys: Mutex::new(vec![]),
 		inputs: Mutex::new(vec![]),
 		instructions: "Do the task".into(),
+		fill_semantic_budget: false,
 	}));
 	Fixture { backend, run }
 }
@@ -1214,6 +1221,7 @@ async fn consecutive_ordered_steps_extend_the_stable_prefix(mut canonical: Fixtu
 #[case::authorization_revision(|f: &mut Fixture| f.backend.0.retrieval.lock().unwrap().authorization_revision = Some(2), true)]
 #[case::index_revision(|f: &mut Fixture| f.backend.0.retrieval.lock().unwrap().index_revision = Some(2), true)]
 #[case::participant_revision(|f: &mut Fixture| f.backend.0.retrieval.lock().unwrap().participant_revision = None, true)]
+#[case::corpus(|f: &mut Fixture| f.backend.0.retrieval.lock().unwrap().corpus_digest = Some("corpus-2".into()), true)]
 #[case::tenant(|f: &mut Fixture| f.backend.0.retrieval.lock().unwrap().tenant = "tenant-b".into(), true)]
 #[case::subject(|f: &mut Fixture| f.backend.0.retrieval.lock().unwrap().subject = "bob".into(), true)]
 #[tokio::test]
@@ -1465,6 +1473,32 @@ async fn oversized_fixed_content_truncates_the_snapshot_to_fit(
 	let content = requests[0].input_body().to_string();
 	assert!(content.contains("snapshot_truncated"));
 	assert!(requests[0].ensure_fits(128_000).is_ok());
+}
+
+/// A semantic read that fills its whole budget must still fit beside fixed
+/// content that leaves less headroom than the Run-fixed semantic budget.
+#[rstest]
+#[case::legacy(false)]
+#[case::ordered(true)]
+#[tokio::test]
+async fn semantic_budget_never_exceeds_the_remaining_headroom(
+	mut canonical: Fixture,
+	#[case] is_ordered: bool,
+) {
+	if is_ordered {
+		ordered(&mut canonical);
+	}
+	let state = Arc::get_mut(&mut canonical.backend.0).unwrap();
+	state.fill_semantic_budget = true;
+	// Leaves less request headroom than ordered_semantic_budget(128000, 4096).
+	state.instructions = "x".repeat(110_000);
+	assert!(matches!(
+		advance_sources(&mut canonical).await,
+		Err(Error::ProviderRejected { .. })
+	));
+	let requests = canonical.backend.0.requests.lock().unwrap();
+	assert!(requests[0].ensure_fits(128_000).is_ok());
+	assert!(requests[0].input_body().to_string().contains("mmmm"));
 }
 
 /// One plain step, then a run-message catch-up step on the same Run.

@@ -94,8 +94,13 @@ These events legitimately end the shared prefix:
 For `ordered` Runs, a semantic retrieval is reused across steps while its
 Retrieval Key is unchanged. The key covers the query inputs, a Run-fixed budget,
 the binding, the authorization scope, and the policy, index and memory-binding
-revisions. Every reuse is rechecked against current authority first: revoked or
-narrowed access pauses the Run, and a stale result is retrieved again once.
+revisions. For local Runs it also covers a digest of the Workspace's semantic
+entries, so an inserted, edited, deleted or reindexed entry triggers a fresh
+retrieval. Remote Runs can't observe the Home's corpus yet (#191). The budget
+never exceeds half of the request's remaining headroom, the same share `legacy`
+uses, so oversized fixed content can change the budget and therefore the key.
+Every reuse is rechecked against current authority first: revoked or narrowed
+access pauses the Run, and a stale result is retrieved again once.
 
 ## Operations
 

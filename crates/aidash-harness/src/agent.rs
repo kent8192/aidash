@@ -625,10 +625,15 @@ impl<'a> Executor<'a> {
 				{
 					return Err(error.into());
 				}
+				// Legacy gives semantic memory half the remaining headroom. Ordered
+				// keeps a Run-fixed budget (part of the Retrieval Key) so steps reuse
+				// one read, but never more than that same headroom: pinned semantic
+				// content cannot be compacted away later.
+				let headroom = budget.remaining(&Context::default(), &pinned) / 2;
 				let semantic_budget = if ordered {
-					context::sources::ordered_semantic_budget(window, output_limit)
+					context::sources::ordered_semantic_budget(window, output_limit).min(headroom)
 				} else {
-					budget.remaining(&Context::default(), &pinned) / 2
+					headroom
 				};
 				let semantic_inputs = inputs
 					.iter()

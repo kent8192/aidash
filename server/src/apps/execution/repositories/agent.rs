@@ -534,18 +534,18 @@ impl ExecutionEnvironment for Environment<'_> {
 		// Operator Runs carry no subject policy snapshot; their Tenant is the
 		// one whose provider cache this Run already shares.
 		let tenant = self.cache_scope(run).await?.tenant;
-		let (index_revision, participant_revision) =
-			crate::semantic::services::memory_context::source_revisions(
-				&self.federation.store,
-				run,
-			)
-			.await?;
+		let revisions = crate::semantic::services::memory_context::source_revisions(
+			&self.federation.store,
+			run,
+		)
+		.await?;
 		Ok(aidash_domain::context::sources::RetrievalScope {
 			tenant,
 			subject: "operator".into(),
 			authorization_revision: None,
-			index_revision,
-			participant_revision,
+			index_revision: revisions.index,
+			participant_revision: revisions.participant,
+			corpus_digest: Some(revisions.corpus),
 		})
 	}
 	async fn cache_scope(&self, run: &Run) -> Result<aidash_domain::projection::CacheScope> {
