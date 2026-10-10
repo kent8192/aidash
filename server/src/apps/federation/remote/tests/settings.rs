@@ -11,7 +11,7 @@ fn settings_source() -> Value {
 			"engine":"postgresql", "name":"fixture", "host":"localhost",
 			"user":"fixture", "password":"fixture", "port":5432
 		}}},
-		"contacts":{}, "migrations":{}, "dashboard":{}, "kubernetes":{},
+		"contacts":{}, "migrations":{}, "dashboard":{}, "kubernetes":{}, "provider_credentials":{},
 		"node":{"node_id":"aidash://test-settings", "endpoint":"http://localhost",
 			"api_token":"test-only-operator-secret"}
 	})
@@ -46,6 +46,7 @@ fn settings_defaults_and_runtime_share_the_native_database(settings_source: Valu
 	assert_eq!(runtime.lease_seconds, 30);
 	assert_eq!(settings.node.worker_count, 4);
 	assert!(runtime.oidc.is_none());
+	assert!(settings.provider_credentials.store.is_none());
 	assert!(!format!("{:?}", settings.node).contains("test-only-operator-secret"));
 }
 

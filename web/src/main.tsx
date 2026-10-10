@@ -494,6 +494,8 @@ function Dashboard({
             "packages",
             "marketplace",
             "generation",
+            "provider-credentials",
+            "provider-credential-bindings",
           ]) {
             void client.invalidateQueries({ queryKey: [key] });
           }
