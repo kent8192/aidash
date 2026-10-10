@@ -1,4 +1,15 @@
 import { Button } from "../components/ui/button";
+import { Input } from "../components/ui/input";
+import { Kbd } from "../components/ui/kbd";
+import { NativeSelect } from "../components/ui/native-select";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "../components/ui/table";
 import {
   lazy,
   Suspense,
@@ -7,9 +18,19 @@ import {
   useMemo,
   useRef,
   useState,
+  type ReactNode,
 } from "react";
-import { Clock3, Filter, Focus, List, Network, RotateCcw } from "lucide-react";
+import { Loading } from "../components/patterns";
+import {
+  Focus,
+  List,
+  Network,
+  RotateCcw,
+  Search,
+  SlidersHorizontal,
+} from "lucide-react";
 import type { Discovery, Run, State } from "../types";
+import { cn } from "../lib/utils";
 import { useI18n } from "../ui";
 import { disambiguateLabels } from "../display-labels";
 import {
@@ -23,7 +44,8 @@ import {
 } from "./federated-graph";
 import { mergeGraphTimeline } from "./graph-timeline";
 import { meshCopy } from "./mesh-copy";
-import { MeshIcon } from "./mesh-icons";
+import { floatingToolbar, MeshIcon } from "./mesh-icons";
+import { ExecutionLanes } from "./graph-lanes";
 import {
   buildMeshGraph,
   eventReferences,
@@ -69,7 +91,6 @@ const validGraphTenant = (value: string) =>
   value.length > 0 &&
   new TextEncoder().encode(value).length <= 256 &&
   !/[\s\p{Cc}*]/u.test(value);
-
 export function Graph({
   data,
   channel,
@@ -79,8 +100,6 @@ export function Graph({
   open,
   discovery,
   runs,
-  search = "",
-  setSearch = () => {},
 }: {
   data: State;
   channel: string;
@@ -90,11 +109,11 @@ export function Graph({
   setFocus: (id: string) => void;
   visitChannel: (id: string) => void;
   open: (selection: Selection) => void;
-  search?: string;
-  setSearch?: (value: string) => void;
 }) {
   const { locale, t } = useI18n();
   const copy = meshCopy[locale];
+  const [search, setSearch] = useState("");
+  const searchField = useRef<HTMLInputElement>(null);
   const [requestedMode, setMode] = useState<MeshMode | "neighborhood">("mesh");
   const mode = focus ? "neighborhood" : requestedMode;
   const [layout, setLayout] = useState<MeshLayout>("structured");
@@ -547,6 +566,8 @@ export function Graph({
         kind: event.kind,
         created_at: event.created_at,
         reference: target?.id ?? null,
+        run: references.run_id,
+        task: references.task_id,
       };
     });
   const events = mergeGraphTimeline(
@@ -556,132 +577,211 @@ export function Graph({
     hours,
     Date.now(),
   );
+  const localLanes = new Map(localEvents.map((event) => [event.id, event]));
+  const laneEvents = events.map((event) => ({
+    ...event,
+    run: localLanes.get(event.id)?.run,
+    task: localLanes.get(event.id)?.task,
+  }));
   const tasks = data.tasks.filter(
     (task) => !graphWorkspace || task.workspace_id === graphWorkspace,
   );
-  const timeline = events.slice(-80);
-  const timelineStart = Date.parse(timeline[0]?.created_at ?? "");
-  const timelineEnd = Date.parse(timeline.at(-1)?.created_at ?? "");
-  const timelineTime = (value: number) =>
-    new Date(value).toLocaleString(locale, {
-      month: "short",
-      day: "numeric",
-      hour: "2-digit",
-      minute: "2-digit",
-    });
-  const kindFilter = (kind: MeshKind) => (
-    <label key={kind}>
-      <span>
-        <MeshIcon kind={kind} size={16} />
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (
+        event.key !== "/" ||
+        event.metaKey ||
+        event.ctrlKey ||
+        event.altKey ||
+        (event.target instanceof Element &&
+          event.target.closest(
+            "input, textarea, select, [contenteditable='true']",
+          ))
+      )
+        return;
+      const field = searchField.current;
+      if (!field) return;
+      event.preventDefault();
+      setFiltersOpen(true);
+      requestAnimationFrame(() => field.focus());
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+  const toggleRow = (
+    key: string,
+    name: string,
+    count: number,
+    checked: boolean,
+    change: (checked: boolean) => void,
+    glyph: ReactNode,
+  ) => (
+    <label
+      key={key}
+      className="flex h-7 cursor-pointer items-center gap-2 rounded-md px-1.5 text-[13px] transition-colors hover:bg-accent"
+    >
+      <span className="grid w-4 shrink-0 place-items-center text-faint">
+        {glyph}
       </span>
-      <span>{copy.kinds[kind]}</span>
+      <span className="min-w-0 flex-1 truncate">{name}</span>
+      <span
+        aria-hidden="true"
+        className="font-mono text-[11px] text-faint tabular"
+      >
+        {count}
+      </span>
       <input
         type="checkbox"
-        checked={kinds.includes(kind)}
-        onChange={(e) =>
-          setKinds((values) =>
-            e.target.checked
-              ? [...values, kind]
-              : values.filter((v) => v !== kind),
-          )
-        }
+        aria-label={name}
+        checked={checked}
+        onChange={(event) => change(event.target.checked)}
+        className="size-3.5 shrink-0 cursor-pointer appearance-none rounded-sm border border-border-strong bg-surface transition-colors checked:border-primary checked:bg-primary checked:shadow-[inset_0_0_0_2px_var(--surface)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
       />
     </label>
+  );
+  const kindFilter = (kind: MeshKind) =>
+    toggleRow(
+      kind,
+      copy.kinds[kind],
+      full.nodes.filter((node) => node.kind === kind).length,
+      kinds.includes(kind),
+      (checked) =>
+        setKinds((values) =>
+          checked ? [...values, kind] : values.filter((v) => v !== kind),
+        ),
+      <MeshIcon kind={kind} size={14} />,
+    );
+  const relationGlyph = (relation: MeshRelation) =>
+    relation === "depends"
+      ? "border-dashed border-warning"
+      : relation === "model"
+        ? "border-dotted border-edge-strong"
+        : relation === "federation"
+          ? "border-dashed border-edge"
+          : [
+                "delegates",
+                "coordinates",
+                "assigned",
+                "executes",
+                "creates",
+              ].includes(relation)
+            ? "border-edge-strong"
+            : "border-edge";
+  const group = (title: string, children: ReactNode) => (
+    <div className="grid gap-0.5 border-b border-border px-2 py-2.5 last:border-b-0">
+      <span className="px-1.5 pb-1 text-[11px] font-medium text-faint">
+        {title}
+      </span>
+      {children}
+    </div>
+  );
+  const statistics = [
+    [
+      copy.running,
+      tasks.filter((v) => ["RUNNING", "CLAIMED"].includes(v.status)).length,
+      "text-brand",
+    ],
+    [
+      copy.blocked,
+      tasks.filter((v) => ["BLOCKED", "FAILED"].includes(v.status)).length,
+      "text-warning",
+    ],
+    [
+      copy.pending,
+      tasks.filter((v) => v.status === "OPEN").length,
+      "text-foreground",
+    ],
+    [
+      copy.completed,
+      tasks.filter((v) => v.status === "COMPLETED").length,
+      "text-success",
+    ],
+  ] as const;
+  const perspective = (
+    <NativeSelect
+      aria-label={copy.mode}
+      value={mode}
+      onChange={(e) => changeMode(e.target.value as MeshMode | "neighborhood")}
+    >
+      {(Object.keys(copy.modes) as MeshMode[]).map((v) => (
+        <option key={v} value={v}>
+          {copy.modes[v]}
+        </option>
+      ))}
+      <option value="neighborhood">{copy.fullDetails}</option>
+    </NativeSelect>
+  );
+  const viewActions = (
+    <>
+      <Button
+        variant="ghost"
+        size="icon"
+        className="size-7"
+        title={focused ? copy.unfocus : copy.focus}
+        aria-label={focused ? copy.unfocus : copy.focus}
+        aria-pressed={Boolean(focused)}
+        disabled={!selected && !focused}
+        onClick={() => setFocused(focused ? "" : (selected?.id ?? ""))}
+      >
+        <Focus />
+      </Button>
+      <Button
+        variant="ghost"
+        size="icon"
+        className="size-7"
+        title={list ? copy.canvas : copy.list}
+        aria-label={list ? copy.canvas : copy.list}
+        aria-pressed={list}
+        onClick={() => setList((v) => !v)}
+      >
+        {list ? <Network /> : <List />}
+      </Button>
+      <Button
+        variant="ghost"
+        size="icon"
+        className="size-7"
+        aria-label={copy.clear}
+        title={copy.clear}
+        onClick={reset}
+      >
+        <RotateCcw />
+      </Button>
+      <Button
+        variant="ghost"
+        size="icon"
+        className="size-7 lg:hidden"
+        aria-label={copy.filters}
+        title={copy.filters}
+        aria-expanded={filtersOpen}
+        onClick={() => setFiltersOpen((v) => !v)}
+      >
+        <SlidersHorizontal />
+      </Button>
+    </>
   );
   const inspector = !closed && selected;
   return (
     <section
-      className={`mesh-graph mesh-${graphMode} ${inspector && mode !== "neighborhood" ? "has-inspector" : ""}`}
+      className={cn(
+        "mesh-graph flex h-full min-h-0 flex-1 flex-col bg-background",
+        `mesh-${graphMode}`,
+      )}
       aria-label="Graph View"
     >
-      <div className="mesh-main">
-        <header className="mesh-heading">
-          <div>
-            <h1>
-              {mode === "knowledge" ||
-              mode === "execution" ||
-              mode === "topology"
-                ? copy.modes[mode]
-                : "Graph View"}
-            </h1>
-            <p>{copy.subtitle}</p>
+      {mode === "neighborhood" ? (
+        <>
+          <div className="flex h-11 shrink-0 items-center gap-3 border-b border-border px-4">
+            <span className="text-[11px] font-medium text-faint">
+              {copy.mode}
+            </span>
+            <span className="w-56 max-w-full">{perspective}</span>
           </div>
-          <div className="mesh-toolbar">
-            {mode !== "neighborhood" && (
-              <label className="mesh-select">
-                <span className="sr-only">{copy.workspaceScope}</span>
-                <select
-                  aria-label={copy.workspaceScope}
-                  value={graphWorkspace}
-                  onChange={(event) => {
-                    setGraphWorkspace(event.target.value);
-                    setSelectedId("");
-                    setFocused("");
-                  }}
-                >
-                  <option value="">{copy.allWorkspaces}</option>
-                  {data.workspaces.map((workspace) => (
-                    <option key={workspace.id} value={workspace.id}>
-                      {workspace.title}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            )}
-            <label className="mesh-select">
-              <Network size={14} />
-              <span className="sr-only">{copy.mode}</span>
-              <select
-                aria-label={copy.mode}
-                value={mode}
-                onChange={(e) =>
-                  changeMode(e.target.value as MeshMode | "neighborhood")
-                }
-              >
-                {(Object.keys(copy.modes) as MeshMode[]).map((v) => (
-                  <option key={v} value={v}>
-                    {copy.modes[v]}
-                  </option>
-                ))}
-                <option value="neighborhood">{copy.fullDetails}</option>
-              </select>
-            </label>
-            {mode !== "neighborhood" && (
-              <label className="mesh-select" title={copy.windowHelp}>
-                <Clock3 size={14} />
-                <span className="sr-only">{copy.time}</span>
-                <select
-                  aria-label={copy.time}
-                  value={hours}
-                  onChange={(e) => setHours(Number(e.target.value))}
-                >
-                  <option value={1}>{copy.hour}</option>
-                  <option value={24}>{copy.day}</option>
-                  <option value={168}>{copy.week}</option>
-                  <option value={720}>{copy.month}</option>
-                  <option value={0}>{copy.allTime}</option>
-                </select>
-              </label>
-            )}
-            {mode !== "neighborhood" && (
-              <label className="mesh-select">
-                <span className="sr-only">{copy.layout}</span>
-                <select
-                  aria-label={copy.layout}
-                  value={layout}
-                  onChange={(e) => setLayout(e.target.value as MeshLayout)}
-                >
-                  <option value="structured">{copy.mesh}</option>
-                  <option value="force">{copy.force}</option>
-                  <option value="circle">{copy.radial}</option>
-                </select>
-              </label>
-            )}
-          </div>
-        </header>
-        {mode === "neighborhood" ? (
-          <div className="mesh-neighborhood">
-            <Suspense fallback={<p role="status">…</p>}>
+          <div className="min-h-0 flex-1">
+            <Suspense
+              fallback={
+                <Loading className="p-4">…</Loading>
+              }
+            >
               <Neighborhood
                 data={data}
                 channel={channel}
@@ -694,406 +794,438 @@ export function Graph({
               />
             </Suspense>
           </div>
-        ) : (
-          <>
-            <div className="mesh-view-controls">
-              <Button
-                variant="outline"
-                type="button"
-                className="mesh-filter-toggle"
-                aria-expanded={filtersOpen}
-                onClick={() => setFiltersOpen((v) => !v)}
-              >
-                <Filter size={14} />
-                {copy.filters}
-              </Button>
-              <span>
-                {graph.nodes.length} {copy.counts}
-                <span className="mesh-counter-divider">/</span>
-                {graph.edges.length} {copy.links}
-              </span>
-              <div className="mesh-view-actions">
-                <Button
-                  variant="outline"
-                  type="button"
-                  title={focused ? copy.unfocus : copy.focus}
-                  aria-label={focused ? copy.unfocus : copy.focus}
-                  aria-pressed={Boolean(focused)}
-                  disabled={!selected && !focused}
-                  onClick={() =>
-                    setFocused(focused ? "" : (selected?.id ?? ""))
-                  }
-                >
-                  <Focus size={15} />
-                </Button>
-                <Button
-                  variant="outline"
-                  type="button"
-                  title={list ? copy.canvas : copy.list}
-                  aria-label={list ? copy.canvas : copy.list}
-                  aria-pressed={list}
-                  onClick={() => setList((v) => !v)}
-                >
-                  <List size={15} />
-                </Button>
-                <Button
-                  variant="outline"
-                  type="button"
-                  aria-label={copy.clear}
-                  title={copy.clear}
-                  onClick={reset}
-                >
-                  <RotateCcw size={14} />
-                </Button>
-              </div>
-            </div>
-            {peerIds.length > 0 && (
-              <div
-                className="mesh-peer-controls"
-                aria-label={copy.kinds.remote}
-              >
-                {data.access.kind === "operator" && (
-                  <label>
-                    {copy.peerScope}
-                    <input
-                      aria-label={copy.peerScope}
-                      aria-invalid={
-                        targetTenant.length > 0 &&
-                        !validGraphTenant(targetTenant)
-                      }
-                      value={targetTenant}
-                      onChange={(event) => {
-                        setTargetTenant(event.target.value);
-                        setExpansions({});
-                        setSelectedId("");
-                      }}
-                    />
-                    {targetTenant.length > 0 &&
-                      !validGraphTenant(targetTenant) && (
-                        <span role="alert">{copy.peerInvalidTenant}</span>
-                      )}
-                  </label>
-                )}
-                {peerIds.map((peer) => {
-                  const expansion = expansions[peer];
-                  const state = expansion?.state;
-                  const stateLabel =
-                    state === "loading"
-                      ? copy.peerLoading
-                      : state === "empty"
-                        ? expansion?.page?.next_cursor
-                          ? copy.peerEmptyPage
-                          : copy.peerEmpty
-                        : state === "denied"
-                          ? copy.peerDenied
-                          : state === "unsupported"
-                            ? copy.peerUnsupported
-                            : state === "oversized"
-                              ? copy.peerOversized
-                              : state === "invalid"
-                                ? copy.peerInvalidTenant
-                                : state === "unavailable"
-                                  ? copy.peerUnavailable
-                                  : "";
-                  return (
-                    <div className="mesh-peer" key={peer}>
-                      <span>{peer}</span>
-                      <Button
-                        variant="outline"
-                        type="button"
-                        onClick={() => togglePeer(peer)}
-                        disabled={
-                          data.access.kind === "operator" &&
-                          !validGraphTenant(targetTenant)
-                        }
-                      >
-                        {expansion ? copy.collapsePeer : copy.expandPeer}
-                      </Button>
-                      {expansion && (
-                        <Button
-                          variant="outline"
-                          type="button"
-                          onClick={() => void requestPeer(peer, null, scope)}
-                        >
-                          {copy.refreshPeer}
-                        </Button>
-                      )}
-                      {expansion?.page?.next_cursor &&
-                        expansion.scope === scope && (
-                          <Button
-                            variant="outline"
-                            type="button"
-                            onClick={() =>
-                              void requestPeer(
-                                peer,
-                                expansion.page!.next_cursor,
-                                scope,
-                              )
+        </>
+      ) : (
+        <>
+          <div className="relative flex min-h-0 flex-1">
+            <div className="mesh-stage canvas-grid relative min-h-0 min-w-0 flex-1 overflow-hidden">
+              {list ? (
+                <>
+                  <div className="mesh-list absolute inset-3 top-14 z-10 overflow-auto rounded-lg border border-border bg-surface lg:left-[272px]">
+                    <Table aria-label={copy.list}>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>{copy.node}</TableHead>
+                          <TableHead>{copy.type}</TableHead>
+                          <TableHead>{copy.relationsLabel}</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {graph.nodes.map((n) => (
+                          <TableRow
+                            key={n.id}
+                            data-state={
+                              selected?.id === n.id ? "selected" : undefined
                             }
                           >
-                            {copy.loadMorePeer}
-                          </Button>
-                        )}
-                      {stateLabel && <small role="status">{stateLabel}</small>}
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-            {mode === "execution" && (
-              <div className="mesh-statistics">
-                {(
-                  [
-                    [
-                      copy.running,
-                      tasks.filter((v) =>
-                        ["RUNNING", "CLAIMED"].includes(v.status),
-                      ).length,
-                      "active",
-                    ],
-                    [
-                      copy.blocked,
-                      tasks.filter((v) =>
-                        ["BLOCKED", "FAILED"].includes(v.status),
-                      ).length,
-                      "blocked",
-                    ],
-                    [
-                      copy.pending,
-                      tasks.filter((v) => v.status === "OPEN").length,
-                      "pending",
-                    ],
-                    [
-                      copy.completed,
-                      tasks.filter((v) => v.status === "COMPLETED").length,
-                      "done",
-                    ],
-                  ] as const
-                ).map(([name, value, state]) => (
-                  <div key={state} className={state}>
-                    <span>{name}</span>
-                    <strong>{value}</strong>
-                  </div>
-                ))}
-              </div>
-            )}
-            <div className="mesh-stage">
-              <aside
-                className={`mesh-filters ${filtersOpen ? "is-open" : ""}`}
-                aria-label={copy.filters}
-              >
-                <fieldset>
-                  <legend>{copy.types}</legend>
-                  {shownKinds
-                    .filter((kind) => !["model", "skill"].includes(kind))
-                    .map(kindFilter)}
-                </fieldset>
-                {shownKinds.some((kind) =>
-                  ["model", "skill"].includes(kind),
-                ) && (
-                  <details>
-                    <summary>{copy.advancedTypes}</summary>
-                    {shownKinds
-                      .filter((kind) => ["model", "skill"].includes(kind))
-                      .map(kindFilter)}
-                  </details>
-                )}
-                <details>
-                  <summary>{copy.relationsLabel}</summary>
-                  <fieldset>
-                    <legend className="sr-only">{copy.relationsLabel}</legend>
-                    {relationTypes.map((relation) => (
-                      <label key={relation}>
-                        <span>{copy.relations[relation]}</span>
-                        <input
-                          type="checkbox"
-                          checked={!relations || relations.includes(relation)}
-                          onChange={(e) =>
-                            setRelations((values) =>
-                              e.target.checked
-                                ? [...(values ?? relationTypes), relation]
-                                : (values ?? relationTypes).filter(
-                                    (v) => v !== relation,
-                                  ),
-                            )
-                          }
-                        />
-                      </label>
-                    ))}
-                  </fieldset>
-                </details>
-              </aside>
-              {graph.nodes.length === 0 && (
-                <div className="mesh-empty" role="status">
-                  <Network size={36} />
-                  <h2>{copy.noResults}</h2>
-                  <p>{full.nodes.length ? copy.snapshot : copy.empty}</p>
-                  <Button variant="outline" type="button" onClick={reset}>
-                    {copy.clear}
-                  </Button>
-                </div>
-              )}
-              {list ? (
-                <div className="mesh-list">
-                  <table aria-label={copy.list}>
-                    <thead>
-                      <tr>
-                        <th>{copy.node}</th>
-                        <th>{copy.type}</th>
-                        <th>{copy.relationsLabel}</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {graph.nodes.map((n) => (
-                        <tr key={n.id}>
-                          <th scope="row">
-                            <Button
-                              variant="outline"
-                              type="button"
-                              onClick={() => select(n.id)}
+                            <th
+                              scope="row"
+                              className="w-[34%] px-1.5 py-1 text-left align-top font-normal"
                             >
-                              <MeshIcon kind={n.kind} size={16} />
-                              {label(n)}
-                            </Button>
-                          </th>
-                          <td>{copy.kinds[n.kind]}</td>
-                          <td>
-                            {graph.edges
-                              .filter(
-                                (e) => e.source === n.id || e.target === n.id,
-                              )
-                              .map((e) => (
-                                <div key={e.id}>
-                                  {label(
-                                    graph.nodes.find((v) => v.id === e.source)!,
-                                  )}{" "}
-                                  → {copy.relations[e.relation]} →{" "}
-                                  {label(
-                                    graph.nodes.find((v) => v.id === e.target)!,
-                                  )}
-                                </div>
-                              ))}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
+                              <button
+                                type="button"
+                                className="flex min-h-7 w-full items-center gap-2 rounded-md px-1.5 text-left transition-colors hover:bg-accent focus-visible:outline-2 focus-visible:outline-ring"
+                                onClick={() => select(n.id)}
+                              >
+                                <MeshIcon
+                                  kind={n.kind}
+                                  size={14}
+                                  className="shrink-0 text-muted-foreground"
+                                />
+                                {label(n)}
+                              </button>
+                            </th>
+                            <TableCell className="pb-2 pt-[11px] align-top text-xs text-faint">
+                              {copy.kinds[n.kind]}
+                            </TableCell>
+                            <TableCell className="pb-2 pt-[11px] align-top text-xs leading-5 text-muted-foreground">
+                              {graph.edges
+                                .filter(
+                                  (e) => e.source === n.id || e.target === n.id,
+                                )
+                                .map((e) => (
+                                  <div key={e.id}>
+                                    {label(
+                                      graph.nodes.find(
+                                        (v) => v.id === e.source,
+                                      )!,
+                                    )}{" "}
+                                    → {copy.relations[e.relation]} →{" "}
+                                    {label(
+                                      graph.nodes.find(
+                                        (v) => v.id === e.target,
+                                      )!,
+                                    )}
+                                  </div>
+                                ))}
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </div>
+                  <div
+                    className={floatingToolbar}
+                    role="group"
+                    aria-label={copy.camera}
+                  >
+                    {viewActions}
+                  </div>
+                </>
               ) : (
-                <Suspense fallback={<p role="status">…</p>}>
+                <Suspense
+                  fallback={
+                    <Loading className="p-4">…</Loading>
+                  }
+                >
                   <MeshCanvas
                     graph={graph}
                     mode={graphMode}
                     layout={layout}
                     selectedId={selected?.id ?? ""}
+                    focusId={selectedId}
                     select={select}
                     label={label}
                     status={status}
                     copy={copy}
                     localNode={data.node.id}
                     showNodeFrames={kinds.includes("remote")}
+                    actions={viewActions}
                   />
                 </Suspense>
               )}
-            </div>
-            {mode === "execution" && (
-              <div className="mesh-timeline" aria-label={copy.timeline}>
-                <strong>
-                  {copy.timeline}
-                  <span>
-                    {events.length} {copy.events}
-                  </span>
-                </strong>
-                {events.length ? (
-                  <div className="mesh-timeline-track">
-                    {timeline.map((event, index) => {
-                      const target = full.nodes.find(
-                        (node) => node.id === event.reference,
-                      );
-                      const progress =
-                        timelineEnd === timelineStart
-                          ? 0.5
-                          : (Date.parse(event.created_at) - timelineStart) /
-                            (timelineEnd - timelineStart);
-                      return (
-                        <Button
-                          variant="outline"
-                          type="button"
-                          key={event.id}
-                          disabled={!target}
-                          style={{
-                            left: `${2 + progress * 96}%`,
-                            top: index % 2 ? 16 : 2,
-                          }}
-                          title={`${event.kind} · ${new Date(event.created_at).toLocaleString(locale)}`}
-                          aria-label={`${event.kind} · ${new Date(event.created_at).toLocaleString(locale)}`}
-                          onClick={() => target && selectConnected(target.id)}
-                        >
-                          <span
-                            className={
-                              /fail|block/i.test(event.kind) ? "warning" : ""
-                            }
-                          />
-                        </Button>
-                      );
-                    })}
+              {graph.nodes.length === 0 && (
+                <div
+                  className="mesh-empty pointer-events-none absolute inset-0 z-10 grid place-items-center p-6 lg:pl-[272px]"
+                  role="status"
+                >
+                  <div className="pointer-events-auto grid max-w-sm justify-items-center gap-2 rounded-lg border border-border bg-surface px-6 py-5 text-center shadow-overlay">
+                    <Network size={22} className="text-faint" aria-hidden />
+                    <h2 className="text-[15px] font-semibold">
+                      {copy.noResults}
+                    </h2>
+                    <p className="text-xs text-muted-foreground">
+                      {full.nodes.length ? copy.snapshot : copy.empty}
+                    </p>
+                    <Button variant="outline" size="sm" onClick={reset}>
+                      {copy.clear}
+                    </Button>
                   </div>
-                ) : (
-                  <p>{copy.noTimeline}</p>
-                )}
-                {timeline.length > 0 && (
-                  <div className="mesh-timeline-times">
-                    <time dateTime={timeline[0].created_at}>
-                      {timelineTime(timelineStart)}
-                    </time>
-                    <time dateTime={timeline.at(-1)!.created_at}>
-                      {timelineTime(timelineEnd)}
-                    </time>
-                  </div>
-                )}
-                {events.length > timeline.length && (
-                  <p>
-                    {copy.omitted}: {events.length - timeline.length}{" "}
-                    {copy.events}
-                  </p>
-                )}
-              </div>
-            )}
-            <footer className="mesh-footnote">
-              <span title={copy.live}>
-                <i />
-                {copy.snapshot}
-              </span>
-              {(graph.omitted > 0 || graph.omittedEdges > 0) && (
-                <span role="status">
-                  {copy.omitted}: {graph.omitted} {copy.counts} ·{" "}
-                  {graph.omittedEdges} {copy.links}
-                </span>
+                </div>
               )}
-            </footer>
-          </>
-        )}
-      </div>
-      {mode !== "neighborhood" && inspector && (
-        <MeshInspector
-          key={selected.id}
-          node={selected}
-          graph={full}
-          data={data}
-          hours={hours}
-          now={now}
-          channel={graphWorkspace}
-          copy={copy}
-          label={label}
-          status={status}
-          select={selectConnected}
-          close={() => setClosed(true)}
-          open={open}
-          visitChannel={visitChannel}
-          remoteActivity={pages
-            .get(selected.nodeId)
-            ?.activity.filter((marker) => marker.reference === selected.id)}
-        />
+              <aside
+                className={cn(
+                  "mesh-filters absolute bottom-3 left-3 top-3 z-20 flex w-[248px] flex-col overflow-hidden rounded-lg border border-border-strong bg-surface/95 shadow-overlay max-lg:top-14 max-lg:z-40 max-lg:w-[min(280px,calc(100%-24px))]",
+                  !filtersOpen && "max-lg:hidden",
+                )}
+                aria-label={copy.filters}
+              >
+                <div className="min-h-0 flex-1 overflow-y-auto">
+                  <div className="grid gap-2 border-b border-border p-3">
+                    <label className="relative block">
+                      <Search
+                        aria-hidden
+                        className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-faint"
+                      />
+                      <Input
+                        ref={searchField}
+                        type="search"
+                        aria-label={copy.search}
+                        placeholder={copy.search}
+                        value={search}
+                        onChange={(event) => setSearch(event.target.value)}
+                        onKeyDown={(event) => {
+                          if (event.key === "Escape")
+                            event.currentTarget.blur();
+                        }}
+                        className="h-8 pl-8 pr-8 [&::-webkit-search-cancel-button]:hidden"
+                      />
+                      <Kbd className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2">
+                        /
+                      </Kbd>
+                    </label>
+                    {perspective}
+                    <NativeSelect
+                      aria-label={copy.workspaceScope}
+                      value={graphWorkspace}
+                      onChange={(event) => {
+                        setGraphWorkspace(event.target.value);
+                        setSelectedId("");
+                        setFocused("");
+                      }}
+                    >
+                      <option value="">{copy.allWorkspaces}</option>
+                      {data.workspaces.map((workspace) => (
+                        <option key={workspace.id} value={workspace.id}>
+                          {workspace.title}
+                        </option>
+                      ))}
+                    </NativeSelect>
+                    <div className="grid grid-cols-2 gap-2">
+                      <NativeSelect
+                        aria-label={copy.time}
+                        title={copy.windowHelp}
+                        value={hours}
+                        onChange={(e) => setHours(Number(e.target.value))}
+                      >
+                        <option value={1}>{copy.hour}</option>
+                        <option value={24}>{copy.day}</option>
+                        <option value={168}>{copy.week}</option>
+                        <option value={720}>{copy.month}</option>
+                        <option value={0}>{copy.allTime}</option>
+                      </NativeSelect>
+                      <NativeSelect
+                        aria-label={copy.layout}
+                        value={layout}
+                        onChange={(e) =>
+                          setLayout(e.target.value as MeshLayout)
+                        }
+                      >
+                        <option value="structured">{copy.mesh}</option>
+                        <option value="force">{copy.force}</option>
+                        <option value="circle">{copy.radial}</option>
+                      </NativeSelect>
+                    </div>
+                  </div>
+                  {group(
+                    copy.types,
+                    shownKinds
+                      .filter((kind) => !["model", "skill"].includes(kind))
+                      .map(kindFilter),
+                  )}
+                  {shownKinds.some((kind) =>
+                    ["model", "skill"].includes(kind),
+                  ) &&
+                    group(
+                      copy.advancedTypes,
+                      shownKinds
+                        .filter((kind) => ["model", "skill"].includes(kind))
+                        .map(kindFilter),
+                    )}
+                  {group(
+                    copy.relationsLabel,
+                    relationTypes.map((relation) =>
+                      toggleRow(
+                        relation,
+                        copy.relations[relation],
+                        full.edges.filter((e) => e.relation === relation)
+                          .length,
+                        !relations || relations.includes(relation),
+                        (checked) =>
+                          setRelations((values) =>
+                            checked
+                              ? [...(values ?? relationTypes), relation]
+                              : (values ?? relationTypes).filter(
+                                  (v) => v !== relation,
+                                ),
+                          ),
+                        <i
+                          className={cn(
+                            "block w-4 border-t",
+                            relationGlyph(relation),
+                          )}
+                        />,
+                      ),
+                    ),
+                  )}
+                  {peerIds.length > 0 &&
+                    group(
+                      copy.peers,
+                      <div
+                        className="mesh-peer-controls grid gap-2.5 px-1.5"
+                        role="group"
+                        aria-label={copy.peers}
+                      >
+                        {data.access.kind === "operator" && (
+                          <label className="grid gap-1 text-[11px] text-faint">
+                            {copy.peerScope}
+                            <Input
+                              aria-label={copy.peerScope}
+                              aria-invalid={
+                                targetTenant.length > 0 &&
+                                !validGraphTenant(targetTenant)
+                              }
+                              value={targetTenant}
+                              className="h-7 font-mono text-xs"
+                              onChange={(event) => {
+                                setTargetTenant(event.target.value);
+                                setExpansions({});
+                                setSelectedId("");
+                              }}
+                            />
+                            {targetTenant.length > 0 &&
+                              !validGraphTenant(targetTenant) && (
+                                <span
+                                  role="alert"
+                                  className="text-destructive"
+                                >
+                                  {copy.peerInvalidTenant}
+                                </span>
+                              )}
+                          </label>
+                        )}
+                        {peerIds.map((peer) => {
+                          const expansion = expansions[peer];
+                          const state = expansion?.state;
+                          const stateLabel =
+                            state === "loading"
+                              ? copy.peerLoading
+                              : state === "empty"
+                                ? expansion?.page?.next_cursor
+                                  ? copy.peerEmptyPage
+                                  : copy.peerEmpty
+                                : state === "denied"
+                                  ? copy.peerDenied
+                                  : state === "unsupported"
+                                    ? copy.peerUnsupported
+                                    : state === "oversized"
+                                      ? copy.peerOversized
+                                      : state === "invalid"
+                                        ? copy.peerInvalidTenant
+                                        : state === "unavailable"
+                                          ? copy.peerUnavailable
+                                          : "";
+                          return (
+                            <div className="mesh-peer grid gap-1.5" key={peer}>
+                              <span className="truncate font-mono text-xs text-muted-foreground">
+                                {peer}
+                              </span>
+                              <div className="flex flex-wrap gap-1.5">
+                                <Button
+                                  variant={expansion ? "secondary" : "outline"}
+                                  size="sm"
+                                  type="button"
+                                  onClick={() => togglePeer(peer)}
+                                  disabled={
+                                    data.access.kind === "operator" &&
+                                    !validGraphTenant(targetTenant)
+                                  }
+                                >
+                                  {expansion
+                                    ? copy.collapsePeer
+                                    : copy.expandPeer}
+                                </Button>
+                                {expansion && (
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    type="button"
+                                    onClick={() =>
+                                      void requestPeer(peer, null, scope)
+                                    }
+                                  >
+                                    {copy.refreshPeer}
+                                  </Button>
+                                )}
+                                {expansion?.page?.next_cursor &&
+                                  expansion.scope === scope && (
+                                    <Button
+                                      variant="outline"
+                                      size="sm"
+                                      type="button"
+                                      onClick={() =>
+                                        void requestPeer(
+                                          peer,
+                                          expansion.page!.next_cursor,
+                                          scope,
+                                        )
+                                      }
+                                    >
+                                      {copy.loadMorePeer}
+                                    </Button>
+                                  )}
+                              </div>
+                              {stateLabel && (
+                                <small
+                                  role="status"
+                                  className="text-[11px] text-faint"
+                                >
+                                  {stateLabel}
+                                </small>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>,
+                    )}
+                  {group(
+                    copy.status,
+                    <div className="mesh-statistics grid grid-cols-2 gap-2 px-1.5">
+                      {statistics.map(([name, value, tone]) => (
+                        <div key={name} className="grid">
+                          <strong
+                            className={cn(
+                              "font-mono text-[15px] font-medium leading-tight tabular",
+                              tone,
+                            )}
+                          >
+                            {value}
+                          </strong>
+                          <span className="text-[11px] text-faint">
+                            {name}
+                          </span>
+                        </div>
+                      ))}
+                    </div>,
+                  )}
+                </div>
+                <footer className="mesh-footnote grid shrink-0 gap-0.5 border-t border-border px-3 py-2 text-[11px] text-faint">
+                  <span className="font-mono tabular" title={copy.live}>
+                    {graph.nodes.length} {copy.counts} · {graph.edges.length}{" "}
+                    {copy.links}
+                  </span>
+                  {(graph.omitted > 0 || graph.omittedEdges > 0) && (
+                    <span role="status">
+                      {copy.omitted}: {graph.omitted} {copy.counts} ·{" "}
+                      {graph.omittedEdges} {copy.links}
+                    </span>
+                  )}
+                </footer>
+              </aside>
+            </div>
+            {inspector && (
+              <MeshInspector
+                key={selected.id}
+                node={selected}
+                graph={full}
+                data={data}
+                runs={runs}
+                hours={hours}
+                now={now}
+                channel={graphWorkspace}
+                copy={copy}
+                label={label}
+                status={status}
+                select={selectConnected}
+                close={() => setClosed(true)}
+                open={open}
+                visitChannel={visitChannel}
+                remoteActivity={pages
+                  .get(selected.nodeId)
+                  ?.activity.filter(
+                    (marker) => marker.reference === selected.id,
+                  )}
+              />
+            )}
+          </div>
+          {mode === "execution" && (
+            <ExecutionLanes
+              tasks={tasks}
+              runs={runs.filter(
+                ({ run }) =>
+                  !graphWorkspace || run.workspace_id === graphWorkspace,
+              )}
+              events={laneEvents}
+              nodes={full.nodes}
+              label={label}
+              select={selectConnected}
+              copy={copy}
+              locale={locale}
+              hours={hours}
+              now={now}
+            />
+          )}
+        </>
       )}
     </section>
   );

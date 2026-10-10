@@ -61,7 +61,7 @@ test("transaction dashboard survives reload during a partition, aborts safely an
   });
   await new Promise<void>((resolve) => peer.listen(0, "127.0.0.1", resolve));
   const peerAddress = `127.0.0.1:${(peer.address() as AddressInfo).port}`;
-  const trustRow = page.locator(".generation-request").filter({
+  const trustRow = page.getByRole("row").filter({
     has: page.getByText(peerAddress, { exact: true }),
   });
   let pending: string | undefined;

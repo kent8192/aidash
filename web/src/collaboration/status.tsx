@@ -1,17 +1,8 @@
 import { Button } from "../components/ui/button";
-import { lazy, Suspense, useRef, useState } from "react";
+import { useRef, useState } from "react";
+import { Alert } from "../components/patterns";
 import { useQueryClient } from "@tanstack/react-query";
-import {
-  CheckCircle2,
-  Circle,
-  Network,
-  Pause,
-  Play,
-  ShieldCheck,
-  Target,
-  Users,
-  X,
-} from "lucide-react";
+import { CheckCircle2, Circle, Pause, Play } from "lucide-react";
 import { runControl, remoteAction } from "../generated/aidash";
 import type { Task, Workspace, State, Discovery } from "../types";
 import type { Selection } from "./details";
@@ -19,50 +10,19 @@ import { Badge, useI18n, useAgentLabel } from "../ui";
 import { taskProgress } from "./model";
 import { workspaceCopy } from "./workspace-copy";
 import { Avatar } from "./avatar";
-
+import { SegmentedProgress } from "./request/progress";
+import { runDisplayStatus } from "./request/canvas-model";
 import {
   channelAgents,
   terminalRun,
   resumableRun,
   type LocatedRun,
 } from "./workspace-model";
-const MiniTopology = lazy(() => import("./mini-topology"));
 
-export function ChannelStatus({
-  workspace,
-  data,
-  tasks,
-  runs,
-  waiting,
-  discovery,
-  open,
-  graph,
-  showTasks,
-  expanded,
-  close,
-}: {
-  workspace: Workspace;
-  data: State;
-  tasks: Task[];
-  runs: LocatedRun[];
-  waiting: number;
-  discovery?: Discovery;
-  open: (value: Selection) => void;
-  graph: () => void;
-  showTasks: () => void;
-  expanded: boolean;
-  close: () => void;
-}) {
+/** Pause or resume every live run of this channel, local or on a peer. */
+export function useRunControl(runs: LocatedRun[], localNode: string) {
   const { locale } = useI18n();
   const words = workspaceCopy[locale];
-  const agentLabel = useAgentLabel(data, discovery);
-  const label = (item: LocatedRun) =>
-    agentLabel(item.node, {
-      id: item.run.agent_id,
-      version: item.run.agent_version,
-    });
-  const agents = channelAgents(runs);
-  const progress = taskProgress(tasks, workspace.id);
   const active = runs.filter((item) => !terminalRun(item.run));
   const paused =
     active.length > 0 && active.every((item) => item.run.control === "PAUSED");
@@ -70,7 +30,7 @@ export function ChannelStatus({
   const inFlight = useRef(false);
   const [error, setError] = useState("");
   const client = useQueryClient();
-  async function control() {
+  async function toggle() {
     if (inFlight.current) return;
     inFlight.current = true;
     setBusy(true);
@@ -84,7 +44,7 @@ export function ChannelStatus({
         continue;
       try {
         const action = paused ? "resume" : "pause";
-        if (node === data.node.id) await runControl(run.id, { action });
+        if (node === localNode) await runControl(run.id, { action });
         else
           await remoteAction({
             node_id: node,
@@ -103,61 +63,91 @@ export function ChannelStatus({
     inFlight.current = false;
     setBusy(false);
   }
+  return {
+    paused,
+    busy,
+    error,
+    label: paused ? words.resume : words.pause,
+    disabled:
+      busy ||
+      active.length === 0 ||
+      (paused && active.every(({ run }) => !resumableRun(run))),
+    toggle,
+  };
+}
+
+const sectionTitle = "text-[11px] font-medium text-faint";
+
+/** Overview tab of the progress sheet: goal, current tasks, participants and run control. */
+export function ChannelStatus({
+  workspace,
+  data,
+  tasks,
+  runs,
+  waiting,
+  discovery,
+  open,
+  showTasks,
+}: {
+  workspace: Workspace;
+  data: State;
+  tasks: Task[];
+  runs: LocatedRun[];
+  waiting: number;
+  discovery?: Discovery;
+  open: (value: Selection) => void;
+  showTasks: () => void;
+}) {
+  const { locale } = useI18n();
+  const words = workspaceCopy[locale];
+  const agentLabel = useAgentLabel(data, discovery);
+  const label = (item: LocatedRun) =>
+    agentLabel(item.node, {
+      id: item.run.agent_id,
+      version: item.run.agent_version,
+    });
+  const agents = channelAgents(runs);
+  const progress = taskProgress(tasks, workspace.id);
+  const control = useRunControl(runs, data.node.id);
+  const nodes = new Set(runs.map((item) => item.node)).size;
   return (
-    <aside
-      className={`workspace-status ${expanded ? "is-open" : ""}`}
-      aria-label={words.status}
-    >
-      <header>
-        <span>
-          <ShieldCheck size={13} />
-          {words.status}
-        </span>
-        <Button
-          variant="outline"
-          type="button"
-          className="workspace-status-close"
-          aria-label={words.close}
-          onClick={close}
-        >
-          <X size={16} />
-        </Button>
-      </header>
-      <div className="workspace-status-content">
-        <section className="workspace-goal-summary">
-          <h3>
-            <Target size={13} />
+    <section className="flex min-h-0 flex-1 flex-col" aria-label={words.status}>
+      <div className="min-h-0 flex-1 divide-y divide-border overflow-y-auto">
+        <section className="grid gap-2 pb-4">
+          <h3 className={sectionTitle}>
             {locale === "ja-JP" ? "ゴール" : "Goal"}
           </h3>
-          <h2>{workspace.title}</h2>
-          <p>{workspace.goal}</p>
-          <div className="workspace-progress-caption">
+          <p className="text-[13px] leading-relaxed text-foreground">
+            {workspace.goal}
+          </p>
+          <div className="mt-1 flex items-center gap-3 text-xs text-muted-foreground">
             <span>
-              <strong>{progress.completed}</strong> / {progress.total}{" "}
+              <span className="font-mono tabular text-foreground">
+                {progress.completed}/{progress.total}
+              </span>{" "}
               {words.taskCounts}
             </span>
-            <small>
-              {waiting} {words.waiting}
-            </small>
+            <span aria-hidden className="text-faint">
+              ·
+            </span>
+            <span>
+              <span className="font-mono tabular text-foreground">
+                {waiting}
+              </span>{" "}
+              {words.waiting}
+            </span>
           </div>
-          <progress
-            value={progress.completed}
-            max={Math.max(progress.total, 1)}
-            aria-label={words.taskCounts}
-          />
+          <SegmentedProgress tasks={tasks} label={words.taskCounts} />
         </section>
-        <section>
-          <div className="workspace-section-heading">
-            <h3>
-              <CheckCircle2 size={13} />
-              {words.currentTasks}
-            </h3>
-            <Button variant="outline" type="button" onClick={showTasks}>
+        <section className="grid gap-1 py-4">
+          <div className="flex items-center justify-between">
+            <h3 className={sectionTitle}>{words.currentTasks}</h3>
+            <Button variant="ghost" size="sm" type="button" onClick={showTasks}>
               {words.showAll}
             </Button>
           </div>
           {tasks.length === 0 && (
-            <p className="muted">
+            <p className="text-xs text-muted-foreground">
               {locale === "ja-JP"
                 ? "まだタスクはありません。"
                 : "No tasks yet."}
@@ -171,26 +161,26 @@ export function ChannelStatus({
             )
             .slice(0, 3)
             .map((task) => (
-              <Button
-                variant="outline"
-                className="workspace-task-row"
+              <button
+                className="flex h-9 items-center gap-2.5 rounded-md px-2 text-left transition-colors hover:bg-accent"
                 key={task.id}
                 type="button"
                 onClick={() => open({ kind: "taskDetail", task })}
               >
                 {task.status === "COMPLETED" ? (
-                  <CheckCircle2 size={13} />
+                  <CheckCircle2 className="size-3.5 shrink-0 text-success" />
                 ) : (
-                  <Circle size={13} />
+                  <Circle className="size-3.5 shrink-0 text-faint" />
                 )}
-                <span>{task.title}</span>
+                <span className="min-w-0 flex-1 truncate">{task.title}</span>
                 <Badge value={task.status} />
-              </Button>
+              </button>
             ))}
           {tasks.length > 3 && (
             <Button
-              variant="outline"
-              className="workspace-more-tasks"
+              variant="link"
+              size="sm"
+              className="justify-self-start px-2"
               type="button"
               onClick={showTasks}
             >
@@ -198,15 +188,21 @@ export function ChannelStatus({
             </Button>
           )}
         </section>
-        <section>
-          <div className="workspace-section-heading">
-            <h3>
-              <Users size={13} />
-              {words.participants}
-              <span className="workspace-count">{agents.length}</span>
+        <section className="grid gap-1 py-4">
+          <div className="flex items-center justify-between">
+            <h3 className={sectionTitle}>
+              {words.participants}{" "}
+              <span className="font-mono tabular">{agents.length}</span>
+              {nodes > 1 && (
+                <span className="font-normal">
+                  {" "}
+                  · {nodes} {words.nodes}
+                </span>
+              )}
             </h3>
             <Button
-              variant="outline"
+              variant="ghost"
+              size="sm"
               type="button"
               onClick={() => open({ kind: "task", workspace })}
             >
@@ -214,80 +210,43 @@ export function ChannelStatus({
             </Button>
           </div>
           {agents.length === 0 && (
-            <p className="muted">{words.noParticipants}</p>
+            <p className="text-xs text-muted-foreground">
+              {words.noParticipants}
+            </p>
           )}
           {agents.map((item) => (
-            <Button
-              variant="outline"
-              className="workspace-participant"
+            <button
+              className="flex h-11 items-center gap-2.5 rounded-md px-2 text-left transition-colors hover:bg-accent"
               type="button"
               key={`${item.node}:${item.run.agent_id}:${item.run.agent_version}`}
               onClick={() => open({ kind: "run", ...item })}
             >
-              <Avatar name={label(item)} />
-              <span>
-                <strong>{label(item)}</strong>
-                <small>
+              <Avatar name={label(item)} small />
+              <span className="grid min-w-0 flex-1">
+                <span className="truncate font-medium">{label(item)}</span>
+                <span className="text-[11px] text-faint">
                   {item.node === data.node.id ? words.local : words.peer}
-                </small>
+                </span>
               </span>
-              <Badge
-                value={
-                  item.run.control === "PAUSED" ? "PAUSED" : item.run.phase
-                }
-              />
-            </Button>
+              <Badge value={runDisplayStatus(item.run)} />
+            </button>
           ))}
         </section>
-        <section>
-          <div className="workspace-section-heading">
-            <h3>
-              <Network size={13} />
-              {words.connections}
-            </h3>
-            <Button variant="outline" type="button" onClick={graph}>
-              Graph View
-            </Button>
-          </div>
-          <div className="workspace-mini-map">
-            <Suspense fallback={<div className="workspace-mini-graph" />}>
-              {" "}
-              <MiniTopology
-                runs={runs}
-                tasks={tasks}
-                label={label}
-                title={words.snapshot}
-              />
-            </Suspense>
-            <div>
-              <span>
-                {new Set(runs.map((item) => item.node)).size} {words.nodes}
-              </span>
-              <small>{words.snapshot}</small>
-            </div>
-          </div>
-        </section>
       </div>
-      <div className="workspace-status-bottom">
-        {error && (
-          <p role="alert" className="error">
-            {error}
-          </p>
+      <div className="grid gap-2 border-t border-border pt-4">
+        {control.error && (
+          <Alert>{control.error}</Alert>
         )}
         <Button
           variant="outline"
           type="button"
-          disabled={
-            busy ||
-            active.length === 0 ||
-            (paused && active.every(({ run }) => !resumableRun(run)))
-          }
-          onClick={() => void control()}
+          disabled={control.disabled}
+          onClick={() => void control.toggle()}
         >
-          {paused ? <Play size={13} /> : <Pause size={13} />}
-          {paused ? words.resume : words.pause}
+          {control.paused ? <Play /> : <Pause />}
+          {control.label}
         </Button>
       </div>
-    </aside>
+    </section>
   );
 }

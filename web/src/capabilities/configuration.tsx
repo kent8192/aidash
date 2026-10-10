@@ -1,3 +1,12 @@
+import { Input } from "../components/ui/input";
+import { panelClass } from "./display";
+import {
+  Alert,
+  Facts,
+  Hint,
+  Loading,
+  inlineFormClass,
+} from "../components/patterns";
 import { AgentBindings, type BindingConfiguration } from "../agent-bindings";
 import { Button } from "../components/ui/button";
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
@@ -5,7 +14,6 @@ import { useRef, useState } from "react";
 import { Field, useI18n } from "../ui";
 import { apiFetch } from "../transport";
 import { post, saveFile } from "./client";
-import "./style.css";
 export type ReferenceBinding = { reference_id: string; digest: string };
 export type CoreConfiguration = BindingConfiguration;
 export const emptyCore: CoreConfiguration = {
@@ -92,7 +100,7 @@ export function OriginalReferences({
     await query.refetch();
   };
   return (
-    <section className="core-panel">
+    <section className={panelClass}>
       <h2>{ja ? "参照資料の原本" : "Original references"}</h2>
       <p>
         {ja
@@ -106,7 +114,7 @@ export function OriginalReferences({
             : "Add PDF, Excel or text (up to 10 MiB)"
         }
       >
-        <input
+        <Input
           type="file"
           accept=".pdf,.xlsx,.txt,.md,.csv"
           disabled={busy}
@@ -175,14 +183,14 @@ export function OriginalReferences({
           }}
         />
       </Field>
-      <p className="muted">
+      <Hint>
         {ja
           ? "資料に埋め込まれた秘密情報は自動除去されません。抽出結果と利用する Agent を確認してください。"
           : "Embedded secrets are not automatically removed. Check the extraction result and the Agent receiving the reference."}
-      </p>
-      {busy && <p role="status">{ja ? "アップロード中…" : "Uploading…"}</p>}
-      {error && <p role="alert">{error}</p>}
-      {query.isError && <p role="alert">{query.error.message}</p>}
+      </Hint>
+      {busy && <Loading>{ja ? "アップロード中…" : "Uploading…"}</Loading>}
+      {error && <Alert>{error}</Alert>}
+      {query.isError && <Alert>{query.error.message}</Alert>}
       {query.hasNextPage && (
         <Button
           variant="outline"
@@ -195,16 +203,16 @@ export function OriginalReferences({
       {references.map((r) => (
         <article key={r.reference_id}>
           <h3>{r.name}</h3>
-          <p role="status">
+          <Hint role="status">
             {r.state} · {r.extraction_state}
-          </p>
-          <dl>
-            <dt>ID</dt>
-            <dd>{r.reference_id}</dd>
-            <dt>SHA-256</dt>
-            <dd>{r.digest}</dd>
-          </dl>
-          <div className="core-inline">
+          </Hint>
+          <Facts
+            items={[
+              ["ID", r.reference_id, true],
+              ["SHA-256", r.digest, true],
+            ]}
+          />
+          <div className={inlineFormClass}>
             {onAttach &&
               (attached.some((a) => a.reference_id === r.reference_id) ? (
                 <Button

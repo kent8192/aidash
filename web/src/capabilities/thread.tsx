@@ -1,3 +1,22 @@
+import { Input } from "../components/ui/input";
+import {
+  Alert,
+  Group,
+  Hint,
+  Notice,
+  Pre,
+  inlineFormClass,
+} from "../components/patterns";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "../components/ui/table";
+import { NativeSelect } from "../components/ui/native-select";
+import { Textarea } from "../components/ui/textarea";
 import { Button } from "../components/ui/button";
 import { useRef, useState } from "react";
 import {
@@ -16,10 +35,9 @@ import {
   type Operation,
 } from "./client";
 import { CapabilityApprovals } from "./approvals";
-import "./style.css";
 import { OutboundFiles } from "./outbound";
 import { SkillFiles } from "./skills";
-import { DisplayFile } from "./display";
+import { DisplayFile, panelClass } from "./display";
 import { TransferHistory } from "./transfers";
 type Session = {
   active_run_id: string | null;
@@ -70,8 +88,8 @@ function OperationCard({
       <h4>
         {operation.kind} · {value.status}
       </h4>
-      {value.session_id && <small>Python session: {value.session_id}</small>}
-      {value.output && <pre>{value.output}</pre>}
+      {value.session_id && <Hint>Python session: {value.session_id}</Hint>}
+      {value.output && <Pre>{value.output}</Pre>}
       {value.displays?.map((file) => (
         <DisplayFile
           key={file.file_id}
@@ -80,18 +98,18 @@ function OperationCard({
         />
       ))}
       {(query.error || error || value.error) && (
-        <p role="alert">
+        <Alert>
           {query.error?.message || error || value.error?.message}
-        </p>
+        </Alert>
       )}
       {value.effects_may_have_occurred && (
-        <p className="core-warning">
+        <Notice tone="warning">
           {ja
             ? "既に行われた変更や外部処理は取り消されていない可能性があります。"
             : "Changes or external effects may already have occurred."}
-        </p>
+        </Notice>
       )}
-      <div className="core-inline">
+      <div className={inlineFormClass}>
         {value.next_offset !== null && value.next_offset !== undefined && (
           <Button
             variant="outline"
@@ -135,16 +153,16 @@ function OperationCard({
         )}
       </div>
       {value.termination_confirmed && (
-        <small>
+        <Hint>
           {ja ? "プロセスの停止を確認済み" : "Process termination confirmed"}
-        </small>
+        </Hint>
       )}
       {value.writer_frozen && (
-        <small>
+        <Hint>
           {ja
             ? "Python の状態を保存して待機中"
             : "Python state retained; execution frozen"}
-        </small>
+        </Hint>
       )}
     </article>
   );
@@ -284,12 +302,12 @@ function FileOperations({
   };
   return (
     <>
-      <details className="core-panel" open>
+      <details className={panelClass} open>
         <summary>
           {ja ? "作業ファイル" : "Working files"} · {area.revision}
         </summary>
-        <div className="core-inline">
-          <select
+        <div className={inlineFormClass}>
+          <NativeSelect
             aria-label={ja ? "検索対象" : "Search scope"}
             value={scope}
             onChange={(e) => setScope(e.target.value)}
@@ -299,8 +317,8 @@ function FileOperations({
                 {v}
               </option>
             ))}
-          </select>
-          <select
+          </NativeSelect>
+          <NativeSelect
             aria-label={ja ? "検索方法" : "Search mode"}
             value={mode}
             onChange={(e) => setMode(e.target.value)}
@@ -308,8 +326,8 @@ function FileOperations({
             {["literal", "regex", "path"].map((v) => (
               <option key={v}>{v}</option>
             ))}
-          </select>
-          <input
+          </NativeSelect>
+          <Input
             aria-label={ja ? "検索語" : "Search query"}
             value={query}
             onChange={(e) => setQuery(e.target.value)}
@@ -373,19 +391,19 @@ function FileOperations({
             )}
           </div>
         )}
-        <div className="core-files">
-          <table>
-            <thead>
-              <tr>
-                <th>{ja ? "選択" : "Select"}</th>
-                <th>{ja ? "ファイル" : "File"}</th>
-                <th>{ja ? "操作" : "Actions"}</th>
-              </tr>
-            </thead>
-            <tbody>
+        <div className="max-h-[340px] overflow-auto">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>{ja ? "選択" : "Select"}</TableHead>
+                <TableHead>{ja ? "ファイル" : "File"}</TableHead>
+                <TableHead>{ja ? "操作" : "Actions"}</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
               {files.map((f) => (
-                <tr key={f.file_id}>
-                  <td>
+                <TableRow key={f.file_id}>
+                  <TableCell>
                     <input
                       aria-label={`${ja ? "共有対象" : "Share"}: ${f.path}`}
                       type="checkbox"
@@ -398,14 +416,14 @@ function FileOperations({
                         )
                       }
                     />
-                  </td>
-                  <td>
+                  </TableCell>
+                  <TableCell className="[overflow-wrap:anywhere]">
                     {f.path}
-                    <small>
+                    <Hint>
                       {f.scope} · {f.size} bytes
-                    </small>
-                  </td>
-                  <td>
+                    </Hint>
+                  </TableCell>
+                  <TableCell>
                     <Button
                       variant="outline"
                       type="button"
@@ -447,15 +465,15 @@ function FileOperations({
                         {ja ? "作業用にコピー" : "Copy to working files"}
                       </Button>
                     )}
-                  </td>
-                </tr>
+                  </TableCell>
+                </TableRow>
               ))}
-            </tbody>
-          </table>
+            </TableBody>
+          </Table>
         </div>
         {read && (
           <>
-            <pre>{read.content}</pre>
+            <Pre>{read.content}</Pre>
             {read.next_offset != null && read.file && (
               <Button
                 variant="outline"
@@ -470,12 +488,12 @@ function FileOperations({
           </>
         )}
         {selected.length > 0 && (
-          <fieldset>
-            <legend>
-              {ja ? "選択ファイルを共有" : "Share selected files"}
-            </legend>
+          <Group
+            nested
+            legend={ja ? "選択ファイルを共有" : "Share selected files"}
+          >
             <Field label={ja ? "ノード" : "Node"}>
-              <select
+              <NativeSelect
                 value={shareNode}
                 onChange={(e) => {
                   setShareNode(e.target.value);
@@ -492,10 +510,10 @@ function FileOperations({
                       {p.node_id}
                     </option>
                   ))}
-              </select>
+              </NativeSelect>
             </Field>
             {recipients.isError && (
-              <p role="alert">{recipients.error.message}</p>
+              <Alert>{recipients.error.message}</Alert>
             )}
             <Field
               label={
@@ -504,7 +522,7 @@ function FileOperations({
                   : "Recipient Agent, version and thread"
               }
             >
-              <select
+              <NativeSelect
                 value={recipient}
                 onChange={(e) => setRecipient(e.target.value)}
               >
@@ -533,7 +551,7 @@ function FileOperations({
                       {r.agent_id}@{r.agent_version} · {r.thread_id}
                     </option>
                   ))}
-              </select>
+              </NativeSelect>
             </Field>
             {recipients.hasNextPage && (
               <Button
@@ -567,14 +585,14 @@ function FileOperations({
             >
               {ja ? "この内容を送信" : "Send this snapshot"}
             </Button>
-          </fieldset>
+          </Group>
         )}
         {transfer && (
           <article>
-            <p role="status">
+            <Hint role="status">
               {ja ? "転送" : "Transfer"}:{" "}
               {transferQuery.data?.status ?? transfer.status}
-            </p>
+            </Hint>
             {(transferQuery.data?.receipt ?? transfer.receipt) ? (
               <p>
                 {ja
@@ -587,7 +605,7 @@ function FileOperations({
               </p>
             )}
             {transferQuery.isError && (
-              <p role="alert">{transferQuery.error.message}</p>
+              <Alert>{transferQuery.error.message}</Alert>
             )}
             {!transfer.receipt && shareNode !== data.node.id && (
               <Button
@@ -610,16 +628,16 @@ function FileOperations({
           </article>
         )}
       </details>
-      <details className="core-panel">
+      <details className={panelClass}>
         <summary>Shell · Python</summary>
         <Field label={ja ? "実行する言語" : "Runtime"}>
-          <select value={kind} onChange={(e) => setKind(e.target.value)}>
+          <NativeSelect value={kind} onChange={(e) => setKind(e.target.value)}>
             <option value="python">Python</option>
             <option value="shell">Shell</option>
-          </select>
+          </NativeSelect>
         </Field>
         <Field label={ja ? "コード" : "Code"}>
-          <textarea
+          <Textarea
             value={code}
             onChange={(e) => setCode(e.target.value)}
             spellCheck={false}
@@ -635,12 +653,12 @@ function FileOperations({
         </Button>
         {reset && (
           <article>
-            <p className="core-warning">
+            <Notice tone="warning">
               {ja
                 ? "Python のメモリはリセットされました。変数は復元されません。保存済みファイルを確認してから再実行してください。"
                 : "Python memory was reset. Variables were not restored. Review the saved files before running again."}
-            </p>
-            <small>{reset.reset_reason}</small>
+            </Notice>
+            <Hint>{reset.reset_reason}</Hint>
             <Button
               variant="outline"
               type="button"
@@ -653,7 +671,7 @@ function FileOperations({
             </Button>
           </article>
         )}
-        {history.isError && <p role="alert">{history.error.message}</p>}
+        {history.isError && <Alert>{history.error.message}</Alert>}
         {history.data?.pages
           .flatMap((p) => p.items)
           .map((op) => (
@@ -674,12 +692,12 @@ function FileOperations({
           </Button>
         )}
       </details>
-      <details className="core-panel">
+      <details className={panelClass}>
         <summary>
           {ja ? "パッチの確認と適用" : "Review and apply a patch"}
         </summary>
         <Field label="Patch">
-          <textarea
+          <Textarea
             value={patch}
             onChange={(e) => {
               setPatch(e.target.value);
@@ -716,15 +734,15 @@ function FileOperations({
               {ja ? "適用対象の版" : "Expected revision"}:{" "}
               {patchPreview.revision}
             </p>
-            <pre>{patch}</pre>
-            <ul>
+            <Pre>{patch}</Pre>
+            <ul className="grid gap-1 text-xs">
               {Object.entries(patchPreview.preconditions).map(
                 ([path, digest]) => (
                   <li key={path}>
                     {path}
-                    <small>
+                    <Hint>
                       {digest ?? (ja ? "新規ファイル" : "New file")}
-                    </small>
+                    </Hint>
                   </li>
                 ),
               )}
@@ -752,7 +770,7 @@ function FileOperations({
       <TransferHistory area={area.id} />
       <OutboundFiles run={run} area={area.id} revision={area.revision} />
       <CapabilityApprovals area={area.id} />
-      {error && <p role="alert">{error}</p>}
+      {error && <Alert>{error}</Alert>}
     </>
   );
 }
@@ -853,12 +871,12 @@ export function ThreadCapabilities({
   );
   if (!area && agents.length === 0 && !query.isError) return null;
   return (
-    <section className="core-panel">
+    <section className={panelClass}>
       <h3>{ja ? "Agent の作業" : "Agent work"}</h3>
-      {query.isError && <p role="alert">{query.error.message}</p>}
+      {query.isError && <Alert>{query.error.message}</Alert>}
       {
         <Field label={ja ? "実行する Agent" : "Agent to run"}>
-          <select
+          <NativeSelect
             value={effectiveAgent}
             onChange={(e) => setAgent(e.target.value)}
           >
@@ -868,12 +886,12 @@ export function ThreadCapabilities({
                 key={`${e.id}@${e.version}`}
               >{`${e.id}@${e.version}`}</option>
             ))}
-          </select>
+          </NativeSelect>
         </Field>
       }
       {(query.data?.items.length ?? 0) > 1 && (
         <Field label={ja ? "作業領域" : "Working area"}>
-          <select
+          <NativeSelect
             value={area?.id}
             onChange={(e) => setSelected(e.target.value)}
           >
@@ -882,17 +900,17 @@ export function ThreadCapabilities({
                 {a.agent_id}
               </option>
             ))}
-          </select>
+          </NativeSelect>
         </Field>
       )}
       <Field label={ja ? "次の指示" : "Next instruction"}>
-        <textarea
+        <Textarea
           disabled={busy}
           value={prompt}
           onChange={(e) => setPrompt(e.target.value)}
         />
       </Field>
-      <div className="core-inline">
+      <div className={inlineFormClass}>
         <Button
           variant="outline"
           type="button"
@@ -976,7 +994,7 @@ export function ThreadCapabilities({
           </>
         )}
       </div>
-      {session.isError && <p role="alert">{session.error.message}</p>}
+      {session.isError && <Alert>{session.error.message}</Alert>}
       {session.data && (
         <ol>
           {session.data.queue.map((r) => (
@@ -1008,7 +1026,7 @@ export function ThreadCapabilities({
       {session.data?.last_run_id &&
         !session.data?.active_run_id &&
         area?.state === "active" && (
-          <p className="core-warning">
+          <Notice tone="warning">
             {ja
               ? "作業が終了しました。ファイルは保持されています。設定で復元可能な整理を選べます。"
               : "Work has ended. Files are retained; recoverable cleanup is available in settings."}{" "}
@@ -1017,9 +1035,9 @@ export function ThreadCapabilities({
             >
               {ja ? "作業ファイルの設定" : "Working file settings"}
             </a>
-          </p>
+          </Notice>
         )}
-      {error && <p role="alert">{error}</p>}
+      {error && <Alert>{error}</Alert>}
     </section>
   );
 }
@@ -1048,21 +1066,21 @@ function ThreadDeletion({
     areas.length > 0 &&
     areas.every((a) => confirmations?.[a.id]?.revision === a.revision);
   return (
-    <details className="core-panel">
+    <details className={panelClass}>
       <summary>{ja ? "このスレッドを削除" : "Delete this thread"}</summary>
       {!loaded && (
-        <p role="status">
+        <Hint role="status">
           {ja
             ? "すべての作業領域を取得してから削除できます。"
             : "Deletion is available after all working areas have loaded."}
-        </p>
+        </Hint>
       )}
       <p>
         {ja
           ? "スレッドが消える前に、作業ファイルの扱いを選んでください。残したファイルは設定から管理できます。"
           : "Choose what happens to working files before the thread disappears. Retained files remain in settings."}
       </p>
-      <ul>
+      <ul className="grid gap-1 text-xs">
         {areas.map((a) => (
           <li key={a.id}>
             {a.agent_id} ·{" "}
@@ -1076,7 +1094,7 @@ function ThreadDeletion({
         ))}
       </ul>
       <Field label={ja ? "ファイルの扱い" : "File retention"}>
-        <select
+        <NativeSelect
           value={choice}
           onChange={(e) => {
             setChoice(e.target.value);
@@ -1090,7 +1108,7 @@ function ThreadDeletion({
           <option value="irreversible">
             {ja ? "復元できない削除" : "Irreversible deletion"}
           </option>
-        </select>
+        </NativeSelect>
       </Field>
       {choice === "irreversible" && !confirmed && areas.length > 0 ? (
         <Button
@@ -1119,7 +1137,7 @@ function ThreadDeletion({
         </Button>
       ) : (
         <>
-          <p className="core-warning">
+          <Notice tone="warning">
             {choice === "irreversible"
               ? ja
                 ? "上記の作業ファイルは復元できなくなります。"
@@ -1127,7 +1145,7 @@ function ThreadDeletion({
               : ja
                 ? "このスレッドを閉じて削除します。"
                 : "This thread will be closed and deleted."}
-          </p>
+          </Notice>
           <Button
             variant="outline"
             type="button"
@@ -1165,7 +1183,7 @@ function ThreadDeletion({
           </Button>
         </>
       )}
-      {error && <p role="alert">{error}</p>}
+      {error && <Alert>{error}</Alert>}
     </details>
   );
 }

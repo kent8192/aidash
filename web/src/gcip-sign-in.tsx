@@ -3,6 +3,8 @@ import { createClient, type GcipClientConfig } from "./gcip-sdk";
 import type { Locale } from "./ui";
 import { Button } from "./components/ui/button";
 import { Input } from "./components/ui/input";
+import { AuthCard } from "./shell/auth-card";
+import { Loading, Notice } from "./components/patterns";
 
 const copy = {
   "en-US": {
@@ -127,19 +129,27 @@ export default function GcipSignIn({
       setBusy(false);
     }
   };
+  const field = "grid gap-1.5 text-xs font-medium text-muted-foreground";
   return (
-    <main className="gcip-sign-in" aria-labelledby="sign-in-title">
-      <div>
-        <Button variant="ghost" onClick={() => setLocale("ja-JP")}>
-          日本語
+    <AuthCard
+      title={text.title}
+      titleId="sign-in-title"
+      action={(["ja-JP", "en-US"] as const).map((value) => (
+        <Button
+          key={value}
+          variant="ghost"
+          size="sm"
+          aria-pressed={locale === value}
+          className="aria-pressed:bg-raised aria-pressed:text-foreground"
+          onClick={() => setLocale(value)}
+        >
+          {value === "ja-JP" ? "日本語" : "English"}
         </Button>
-        <Button variant="ghost" onClick={() => setLocale("en-US")}>
-          English
-        </Button>
-      </div>
-      <h1 id="sign-in-title">{text.title}</h1>
+      ))}
+    >
       {!state ? (
         <form
+          className="grid gap-3"
           onSubmit={(event) => {
             event.preventDefault();
             const query = new URLSearchParams({ org });
@@ -150,7 +160,7 @@ export default function GcipSignIn({
             window.location.assign(`/auth/login?${query}`);
           }}
         >
-          <label>
+          <label className={field}>
             {text.organization}
             <Input
               required
@@ -159,29 +169,38 @@ export default function GcipSignIn({
               autoComplete="organization"
             />
           </label>
-          <Button type="submit">{text.next}</Button>
+          <Button type="submit" size="lg">
+            {text.next}
+          </Button>
         </form>
       ) : config ? (
-        <>
-          {config.providers
-            .filter((id) => id !== "password")
-            .map((id) => (
-              <Button
-                key={id}
-                disabled={busy}
-                onClick={() => void authenticate(id)}
-              >
-                {text.provider} {id === "google.com" ? "Google" : id}
-              </Button>
-            ))}
+        <div className="grid gap-4">
+          {config.providers.some((id) => id !== "password") && (
+            <div className="grid gap-1.5">
+              {config.providers
+                .filter((id) => id !== "password")
+                .map((id) => (
+                  <Button
+                    key={id}
+                    variant="outline"
+                    size="lg"
+                    disabled={busy}
+                    onClick={() => void authenticate(id)}
+                  >
+                    {text.provider} {id === "google.com" ? "Google" : id}
+                  </Button>
+                ))}
+            </div>
+          )}
           {config.providers.includes("password") && (
             <form
+              className="grid gap-3 border-t border-border pt-4 first:border-t-0 first:pt-0"
               onSubmit={(event) => {
                 event.preventDefault();
                 void authenticate();
               }}
             >
-              <label>
+              <label className={field}>
                 {text.email}
                 <Input
                   type="email"
@@ -191,7 +210,7 @@ export default function GcipSignIn({
                   onChange={(event) => setEmail(event.target.value)}
                 />
               </label>
-              <label>
+              <label className={field}>
                 {text.password}
                 <Input
                   type="password"
@@ -201,32 +220,38 @@ export default function GcipSignIn({
                   onChange={(event) => setPassword(event.target.value)}
                 />
               </label>
-              <Button type="submit" disabled={busy}>
+              <Button type="submit" size="lg" disabled={busy}>
                 {text.signIn}
               </Button>
-              {config.password_sign_up && (
+              <div className="flex flex-wrap gap-1">
+                {config.password_sign_up && (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    disabled={busy || !email || !password}
+                    onClick={() => void authenticate(undefined, "register")}
+                  >
+                    {text.register}
+                  </Button>
+                )}
                 <Button
                   type="button"
+                  variant="ghost"
+                  size="sm"
                   disabled={busy || !email || !password}
-                  onClick={() => void authenticate(undefined, "register")}
+                  onClick={() => void authenticate(undefined, "resend")}
                 >
-                  {text.register}
+                  {text.resend}
                 </Button>
-              )}
-              <Button
-                type="button"
-                disabled={busy || !email || !password}
-                onClick={() => void authenticate(undefined, "resend")}
-              >
-                {text.resend}
-              </Button>
+              </div>
             </form>
           )}
-        </>
+        </div>
       ) : (
-        !message && <p role="status">{text.loading}</p>
+        !message && <Loading>{text.loading}</Loading>
       )}
-      {message && <p role="status">{message}</p>}
-    </main>
+      {message && <Notice role="status">{message}</Notice>}
+    </AuthCard>
   );
 }
