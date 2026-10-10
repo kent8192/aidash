@@ -111,6 +111,39 @@ async fn registry_contract_bounds_tool_parallelism_and_concurrency_narrowing(
 			"{kind}"
 		);
 	}
+	// A descriptor may restate shared_read only for a provider that declares it.
+	let descriptor = |operation: &str, provider: &str, tier: &str, claim: &str| {
+		vec![
+			json!({"registry_node":f.config.node_id,"provider":provider,"operation":operation,
+			"default_alias":operation,"tier":tier,"narrow":{"concurrency":claim}}),
+		]
+	};
+	let describes =
+		async |config| contract_accepts(&pool, "aidash_descriptor_is_valid", config).await;
+	for claim in ["sequential", "shared_read"] {
+		assert!(
+			describes(descriptor("file_read", "core.files@1", "builtin", claim)).await,
+			"{claim}"
+		);
+	}
+	assert!(
+		describes(descriptor(
+			"apply_patch",
+			"core.files@1",
+			"host",
+			"sequential"
+		))
+		.await
+	);
+	assert!(
+		!describes(descriptor(
+			"apply_patch",
+			"core.files@1",
+			"host",
+			"shared_read"
+		))
+		.await
+	);
 	common::cleanup(f, &url, &schema).await;
 }
 

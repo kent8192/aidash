@@ -73,8 +73,11 @@ BEGIN
  OR NOT COALESCE(value->>'default_alias' ~ '^[A-Za-z0-9_-]{1,64}$', false)
  OR jsonb_typeof(COALESCE(value->'narrow','{}'::jsonb)) <> 'object' THEN RETURN false; END IF;
  IF COALESCE(value->'narrow','{}'::jsonb) - ARRAY['allowed_hosts','scope','limits','concurrency']::text[] <> '{}'::jsonb THEN RETURN false; END IF;
+ -- shared_read may only restate a provider's own declaration: the core reads below.
  IF COALESCE(value #> '{narrow,concurrency}','null'::jsonb) <> 'null'::jsonb
- AND NOT COALESCE(value #>> '{narrow,concurrency}' IN ('sequential','shared_read') AND jsonb_typeof(value #> '{narrow,concurrency}') = 'string',false) THEN RETURN false; END IF;
+ AND NOT COALESCE(jsonb_typeof(value #> '{narrow,concurrency}') = 'string'
+  AND (value #>> '{narrow,concurrency}' = 'sequential'
+   OR (value #>> '{narrow,concurrency}' = 'shared_read' AND value->>'operation' IN ('file_read','file_search','skill_list','skill_load'))),false) THEN RETURN false; END IF;
  expected_provider := CASE value->>'operation'
   WHEN 'workspace_read' THEN 'core.workspace@1' WHEN 'workspace_observe' THEN 'core.workspace@1'
   WHEN 'workspace_wait' THEN 'core.workspace@1' WHEN 'workspace_message' THEN 'core.workspace@1'
