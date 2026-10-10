@@ -483,17 +483,12 @@ impl DefinitionValidation {
 				.find(|capability| &capability.alias == alias)
 				.ok_or_else(|| Error::Invalid("selected Skill is not Discoverable".into()))?;
 			// Only Registry Skills can be eager.
-			let CapabilityIdentity::Registry(reference) = &capability.identity else {
+			if !matches!(capability.identity, CapabilityIdentity::Registry(_)) {
 				continue;
-			};
-			let binding = snapshot
-				.bindings
-				.iter()
-				.find(|binding| &binding.identity == reference)
-				.ok_or_else(|| Error::Invalid("selected Skill is not bound".into()))?;
+			}
 			instructions.push_str(&exposure::resident_block(
 				capability,
-				&skill_instructions(&binding.definition)?,
+				&exposure::registry_skill_body(snapshot, capability)?,
 			));
 		}
 		instructions.push_str("\nAdditional user instructions:\n");

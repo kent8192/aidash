@@ -1,5 +1,5 @@
 //! Sandbox reasoning uses explicit fixtures or confined dispatch, never a runtime Tool executor.
-use super::dispatch;
+use super::{deferred, dispatch};
 use crate::{
 	Error, Result,
 	ports::{
@@ -11,6 +11,7 @@ use crate::{
 	},
 };
 use aidash_domain::{
+	exposure::ExposureState,
 	provider::ModelRequest,
 	registry::{
 		EntityRef,
@@ -42,6 +43,16 @@ pub struct Job {
 	pub initial_conversation: Vec<Value>,
 	pub pinned_draft: Draft,
 	pub model_credential: Option<(String, Vec<u8>)>,
+	/// `deferred@1`: the session's Exposure set and the request text around
+	/// its per-turn Skill blocks and capability index. `None` under `legacy@1`.
+	pub exposure: Option<SessionExposure>,
+}
+
+#[derive(Clone)]
+pub struct SessionExposure {
+	pub prefix: String,
+	pub suffix: String,
+	pub state: ExposureState,
 }
 
 pub async fn simulate(execution: &Execution, session_id: Uuid, job: &Job) -> Result<TestOutcome> {
@@ -57,13 +68,14 @@ pub async fn simulate(execution: &Execution, session_id: Uuid, job: &Job) -> Res
 	} = job;
 	let mut request = job.request.clone();
 	let mut conversation = job.initial_conversation.clone();
+	let mut exposure = job.exposure.clone();
 	let mut calls = Vec::new();
 	let mut input_tokens = 0_u64;
 	let mut output_tokens = 0_u64;
 	let mut usage_complete = true;
 	let mut status = "blocked";
 	let mut error = None;
-	for _ in 0..limits.max_steps.min(*agent_max_steps) {
+	for step in 0..limits.max_steps.min(*agent_max_steps) {
 		let admitted_session = execution.repository.read_session(session_id).await?;
 		let still_running = admitted_session.status == "running";
 		if !still_running {
@@ -109,6 +121,10 @@ pub async fn simulate(execution: &Execution, session_id: Uuid, job: &Job) -> Res
 			}
 		}
 		authority.commit().await?;
+		let discoverable = match &exposure {
+			Some(_) => deferred::Deferred::new(&snapshot)?,
+			None => None,
+		};
 		if request.input_body().to_string().len() > limits.max_input_bytes as usize
 			|| request.estimated_total_tokens() > *context_window
 			|| input_tokens
@@ -157,24 +173,27 @@ pub async fn simulate(execution: &Execution, session_id: Uuid, job: &Job) -> Res
 					.and_then(|selected| pin.rules.iter().find(|rule| selected == &rule.tool))
 			});
 			let fixture = input.fixtures.get(&call.name);
-			let admitted = snapshot
-				.bindings
-				.iter()
-				.find(|binding| {
-					binding.alias.as_deref() == Some(&call.name)
-						&& binding.excluded_reason.is_none()
-				})
-				.ok_or(Error::Forbidden)
-				.and_then(|binding| {
-					binding
-						.narrow
-						.apply(&mut call.arguments)
-						.map_err(Error::from)
-				});
+			let binding = snapshot.bindings.iter().find(|binding| {
+				binding.alias.as_deref() == Some(&call.name) && binding.excluded_reason.is_none()
+			});
+			let admitted = binding.ok_or(Error::Forbidden).and_then(|binding| {
+				binding
+					.narrow
+					.apply(&mut call.arguments)
+					.map_err(Error::from)
+			});
+			let evaluated = match (&discoverable, exposure.as_mut(), binding, &admitted) {
+				(Some(discoverable), Some(session), Some(binding), Ok(())) => {
+					discoverable.evaluate(binding, &call, &mut session.state, step)?
+				}
+				_ => None,
+			};
 			let result = if let Err(reason) = admitted {
 				missing = true;
 				error = Some(reason.to_string());
 				json!({"id":call.id,"name":call.name,"arguments":call.arguments,"outcome":"denied","error":reason.to_string()})
+			} else if let Some(output) = evaluated {
+				json!({"id":call.id,"name":call.name,"arguments":call.arguments,"result":output,"outcome":deferred::EVALUATED})
 			} else if let Some(rule) = real_rule {
 				match dispatch::invoke(
 					&dispatch::Dispatch {
@@ -233,6 +252,13 @@ pub async fn simulate(execution: &Execution, session_id: Uuid, job: &Job) -> Res
 		request.max_output_tokens =
 			(limits.max_output_tokens as u64 - output_tokens).min(u32::MAX as u64) as u32;
 		request.context["conversation"] = json!(conversation);
+		// Load/Unload results of this response shape the next request.
+		if let (Some(discoverable), Some(session)) = (&discoverable, exposure.as_mut()) {
+			session.state.activate();
+			let (text, tools) = discoverable.request(&snapshot, &session.state)?;
+			request.instructions = format!("{}{text}{}", session.prefix, session.suffix);
+			request.tools = tools;
+		}
 	}
 	if status == "blocked" && error.is_none() {
 		error = Some("test step limit reached".into());

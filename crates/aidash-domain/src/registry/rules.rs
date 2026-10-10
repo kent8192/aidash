@@ -26,11 +26,16 @@ pub fn valid_skill_file_path(path: &str) -> bool {
 		&& !path.chars().any(char::is_control)
 }
 
-pub fn skill_instructions(entry: &Entry) -> Result<String> {
-	let mut instructions = entry.config["instructions"]
+/// A Skill's own instructions, without any file-reading guidance.
+pub fn skill_body(entry: &Entry) -> Result<&str> {
+	entry.config["instructions"]
 		.as_str()
-		.ok_or_else(|| Error::Invalid("skill requires instructions".into()))?
-		.to_owned();
+		.ok_or_else(|| Error::Invalid("skill requires instructions".into()))
+}
+
+/// Legacy resident Skill text: the body plus `skill_read` file guidance.
+pub fn skill_instructions(entry: &Entry) -> Result<String> {
+	let mut instructions = skill_body(entry)?.to_owned();
 	let files = skill_files(entry)?;
 	if !files.is_empty() {
 		instructions.push_str("\n\nRegistered Skill files are available through skill_read. Read a listed path only when needed:\n");

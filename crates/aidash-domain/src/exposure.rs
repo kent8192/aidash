@@ -266,10 +266,15 @@ pub struct ExposureState {
 	/// Aliases whose eager exposure was withdrawn. An Unload records every
 	/// alias here; only Eager bindings consult it, and a Load removes it.
 	pub unloaded_eager: BTreeSet<String>,
+	/// Load/Unload results of the current model response, in call order. Every
+	/// call of a response is checked against the Exposure set its request
+	/// advertised; these take effect with the next inference.
+	#[serde(skip_serializing_if = "Vec::is_empty")]
+	pub pending: Vec<ExposureUpdate>,
 }
 impl ExposureState {
 	pub fn is_empty(&self) -> bool {
-		self.loaded.is_empty() && self.unloaded_eager.is_empty()
+		self.loaded.is_empty() && self.unloaded_eager.is_empty() && self.pending.is_empty()
 	}
 	/// Idempotent: loading a present alias and unloading an absent one are no-ops.
 	pub fn apply(&mut self, update: &ExposureUpdate) {
@@ -291,6 +296,24 @@ impl ExposureState {
 				self.unloaded_eager.insert(alias.clone());
 			}
 		}
+	}
+	/// Record a Load/Unload result of the current response for the next request.
+	pub fn stage(&mut self, update: ExposureUpdate) {
+		self.pending.push(update);
+	}
+	/// Apply staged updates in call order: the Exposure set of the next request.
+	pub fn activate(&mut self) {
+		for update in std::mem::take(&mut self.pending) {
+			self.apply(&update);
+		}
+	}
+	/// The state the next request will advertise, including staged updates.
+	/// Discovery and Load/Unload decide against it, so calls later in a
+	/// response observe earlier Load/Unload results without exposing them.
+	pub fn effective(&self) -> Self {
+		let mut next = self.clone();
+		next.activate();
+		next
 	}
 }
 
@@ -386,8 +409,20 @@ pub fn catalog(
 		.collect::<BTreeMap<_, _>>();
 	let mut companions = BTreeMap::<&String, Vec<String>>::new();
 	let mut folded = BTreeSet::new();
+	// Mandatory support is identified by the bound operation, not its alias:
+	// `skill_asset_read` may be explicitly bound under a custom alias.
+	let mandatory_operations = REQUIRED_TOOLS
+		.iter()
+		.chain(EXPOSURE_TOOLS)
+		.chain(&[SKILL_ASSET_READ])
+		.copied()
+		.collect::<BTreeSet<_>>();
+	let mut mandatory = BTreeSet::new();
 	for (binding, alias) in &tools {
 		let descriptor: ToolDescriptor = serde_json::from_value(binding.definition.config.clone())?;
+		if mandatory_operations.contains(descriptor.operation.as_str()) {
+			mandatory.insert(*alias);
+		}
 		if let Some(lifecycle) = descriptor.lifecycle {
 			let mut found = [lifecycle.poll, lifecycle.cancel]
 				.iter()
@@ -398,12 +433,6 @@ pub fn catalog(
 			companions.insert(*alias, found);
 		}
 	}
-	let mandatory = REQUIRED_TOOLS
-		.iter()
-		.chain(EXPOSURE_TOOLS)
-		.chain(&[SKILL_ASSET_READ])
-		.copied()
-		.collect::<BTreeSet<_>>();
 	let mut result = Vec::new();
 	for (binding, alias) in &tools {
 		if folded.contains(*alias) && !companions.contains_key(alias) {
@@ -427,7 +456,7 @@ pub fn catalog(
 			companions,
 			definition_bytes,
 			detail: serde_json::to_value(spec)?,
-			mandatory: mandatory.contains(alias.as_str()),
+			mandatory: mandatory.contains(alias),
 			eager: match explicit.get(&binding.identity) {
 				Some(exposure) => *exposure == BindingExposure::Eager,
 				None => bundle.is_some_and(|(_, eager)| *eager),
@@ -440,7 +469,8 @@ pub fn catalog(
 		.filter(|binding| binding.excluded_reason.is_none() && binding.definition.kind == "skill")
 	{
 		let identity = CapabilityIdentity::Registry(binding.identity.clone());
-		let body = rules::skill_instructions(&binding.definition)?;
+		let alias = skill_alias(&binding.identity.id, &identity);
+		let body = registry_body(snapshot, &binding.definition, &alias, &binding.digest)?;
 		let files = rules::skill_files(&binding.definition)?
 			.iter()
 			.map(file_detail)
@@ -448,7 +478,7 @@ pub fn catalog(
 		let name = localized(&binding.definition.name, &binding.identity.id);
 		let description = localized(&binding.definition.description, "");
 		let mut capability = Capability {
-			alias: skill_alias(&binding.identity.id, &identity),
+			alias,
 			kind: CapabilityKind::Skill,
 			identity,
 			digest: binding.digest.clone(),
@@ -523,6 +553,58 @@ pub fn resident_block(capability: &Capability, body: &str) -> String {
 		capability.digest,
 		capability.detail["origin"].as_str().unwrap_or_default(),
 	)
+}
+
+/// The resident body of a Registry Skill capability, from the pinned snapshot.
+pub fn registry_skill_body(snapshot: &BindingSnapshot, capability: &Capability) -> Result<String> {
+	let CapabilityIdentity::Registry(reference) = &capability.identity else {
+		return Err(Error::Invalid(format!(
+			"{} is not a Registry Skill",
+			capability.alias
+		)));
+	};
+	let binding = snapshot
+		.bindings
+		.iter()
+		.find(|binding| &binding.identity == reference && binding.definition.kind == "skill")
+		.ok_or_else(|| Error::Invalid(format!("snapshot lacks Skill {}", capability.alias)))?;
+	registry_body(
+		snapshot,
+		&binding.definition,
+		&capability.alias,
+		&capability.digest,
+	)
+}
+
+/// Skill instructions plus guidance to read packaged files through the bound
+/// `skill_asset_read` tool under this capability's alias and digest. Deferred
+/// Agents never bind the legacy `skill_read` that `rules::skill_instructions` names.
+fn registry_body(
+	snapshot: &BindingSnapshot,
+	definition: &Entry,
+	alias: &str,
+	digest: &str,
+) -> Result<String> {
+	let mut body = rules::skill_body(definition)?.to_owned();
+	let files = rules::skill_files(definition)?;
+	if !files.is_empty() {
+		let tool = snapshot
+			.operation(SKILL_ASSET_READ)
+			.ok()
+			.and_then(|binding| binding.alias.as_deref())
+			.unwrap_or(SKILL_ASSET_READ);
+		body.push_str(&format!(
+			"\n\nSkill files are available through {tool} with alias {alias} and digest {digest}. Read a listed path only when needed:\n"
+		));
+		for file in files {
+			if file.encoding.as_deref() == Some("base64") {
+				body.push_str(&format!("- {} (binary; metadata only)\n", file.path));
+			} else {
+				body.push_str(&format!("- {}\n", file.path));
+			}
+		}
+	}
+	Ok(body)
 }
 
 /// The Exposure set and index of one request.

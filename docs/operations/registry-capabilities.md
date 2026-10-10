@@ -155,7 +155,9 @@ cannot name the legacy Skill tools. Under the legacy policy, `remove_default`
 cannot name `skill_asset_read`.
 
 Mandatory exposure is `workspace_read`, `human_request`, the four
-`capability_*` tools and, when bound, `skill_asset_read`. Registration measures
+`capability_*` tools and, when bound, `skill_asset_read`. It is identified by
+the bound operation, so `skill_asset_read` bound under a custom alias is still
+Mandatory. Registration measures
 Mandatory exposure, Eager tool definitions and eager Skill blocks, plus all
 three budgets in full, against the selected model window with output and context
 reserves. It also rejects any single tool definition larger than `schema_bytes`
@@ -190,10 +192,12 @@ A request's Exposure set has three parts:
 - loaded capabilities whose alias, kind, identity and digest still match the
   catalog, in load order.
 
-Only those tool definitions are sent. A call to any other alias returns a
-recoverable tool error telling the model to use `capability_load`, and nothing
-is invoked. The instructions carry each resident Skill body, eager Skills first
-and then loaded Skills in load order:
+Only those tool definitions are sent. Every call of a response is checked
+against the Exposure set of the request that produced it. A call to any other
+alias returns a recoverable tool error and nothing is invoked: it tells the
+model to use `capability_load`, or to retry after the next request when an
+earlier call of the same response loaded it. The instructions carry each
+resident Skill body, eager Skills first and then loaded Skills in load order:
 
 ```text
 Skill <alias> (<identity>; digest <digest>; origin <registry|attachment|root>):
@@ -202,7 +206,12 @@ Skill <alias> (<identity>; digest <digest>; origin <registry|attachment|root>):
 
 `<identity>` is `<registry_node>/<id>@<version>` for a Registry Skill and
 `<origin>#<skill_id>` for a direct Skill. The legacy Registry Skill instructions
-and `Pinned Skills` listing are not emitted. After the Skill blocks comes the
+and `Pinned Skills` listing are not emitted. A Registry Skill with packaged
+files ends its body with `Skill files are available through <tool> with alias
+<alias> and digest <digest>. Read a listed path only when needed:` and one
+`- <path>` line per file (`- <path> (binary; metadata only)` for base64 files),
+where `<tool>` is the bound `skill_asset_read` alias; the legacy `skill_read`
+guidance is not emitted. After the Skill blocks comes the
 index. It lists every Discoverable capability outside the Exposure set, in alias
 order, under a header naming `capability_search` and `capability_load`. Each line
 is `<alias> [tool|skill]: <first description line, at most 160 characters>`.
@@ -237,11 +246,16 @@ and change only the Run's Exposure set. Identities serialize as
 An invalid search cursor is a recoverable tool error.
 
 A successful load or unload also returns an `exposure_update`. The Executor
-applies it to `context.exposure` only for tools whose contract declares
+stages it in `context.exposure` only for tools whose contract declares
 `exposure_update`; tools never write the Run. The state is
-`{"loaded": [{alias, kind, identity, digest, step}], "unloaded_eager": [alias, …]}`.
-Applying an update is idempotent, including on replay of a completed invocation.
-A load takes effect from the next request. A loaded Skill's body is not returned
+`{"loaded": [{alias, kind, identity, digest, step}], "unloaded_eager": [alias, …], "pending": [update, …]}`,
+with `pending` omitted when empty. Staged updates are applied in call order at
+the next inference, so a load or unload takes effect from the next request and
+never changes which calls of the current response are dispatched. Discovery,
+load and unload decide against the state including staged updates: a capability
+loaded earlier in the response reports `loaded` and `already_loaded`, and
+counts against its budget. Applying an update is idempotent, including on
+replay of a completed invocation. A loaded Skill's body is not returned
 in the load result; it becomes resident in later requests. Unloading an Eager
 binding records it in `unloaded_eager`, and loading it again removes that
 record, so it counts against its budget again.
@@ -260,7 +274,10 @@ the record's `loaded` flag. `skill_asset_read` (`core.skills@1`) takes `alias`,
 `digest`, `path`, `offset?` and `max_chars?`. It reads one packaged file of a
 Registry or direct Skill named by its Skill alias and current digest. Text is
 returned in Unicode-scalar chunks capped by the `read_bytes` limit, with
-`next_offset` and `truncated`; binary files return metadata only. A stale
+`next_offset` and `truncated`; binary files return metadata only. A direct
+Skill's `SKILL.md` is its instruction body, not a packaged file: it is absent
+from `files` and reading it returns `SKILL_FILE_UNAVAILABLE`, so it becomes
+resident only through `capability_load` under `skill_bytes`. A stale
 digest returns the recoverable tool error `CAPABILITY_CHANGED` and an unknown
 path returns `SKILL_FILE_UNAVAILABLE`; neither fails the step.
 
@@ -272,11 +289,23 @@ Agent flag, Core capability or resource requirement. `skill_asset_read`
 authorization depends on the target: a Registry Skill requires its configured
 Skill and `skill.use`, and a direct Skill requires the Agent's Skills Core
 capability (see [authorization](../authorization.md#tenant-catalog-and-local-execution)).
+An alias that names no Registry Skill, on an Agent without Skill attachments or
+roots, returns the recoverable `UNKNOWN_CAPABILITY`.
 
 The four capability tools and `skill_asset_read` are exposed to remote Runs.
 Direct Skills are never Discoverable remotely; Registry Skills behave as under
 the legacy policy. Remote headroom reserves the deferred budgets as registration
 does.
+
+A Workbench test of a `deferred@1` draft carries the session's Exposure set
+across turns. Each request is selected as a Run selects it, with attachments
+Discoverable and mounted roots absent. The `capability_*` tools are evaluated
+against the pinned snapshot rather than fixtures, and calls to capabilities
+outside the request's Exposure set are answered with the same recoverable
+errors; both are recorded with the outcome `evaluated`. Load and unload results
+apply from the next turn, and a continued session resumes the Exposure set its
+evaluated results produced. Other tools still need fixtures or a real-tool
+profile.
 
 To measure both policies on the same tools against a running server, see the
 [capability exposure evaluation](../capability-exposure-evaluation.md).

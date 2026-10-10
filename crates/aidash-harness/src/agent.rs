@@ -5,10 +5,7 @@ use aidash_domain::{
 	exposure,
 	media::Selection,
 	model::ModelConfig,
-	registry::{
-		bindings::{AgentBindings, BindingSnapshot},
-		rules,
-	},
+	registry::bindings::{AgentBindings, BindingSnapshot},
 	semantic::{Failure, InputRead},
 	tool::{ResultFitting, ToolIdentity, ToolUseMode},
 	*,
@@ -245,6 +242,9 @@ impl<'a> Executor<'a> {
 				let cached_sources = run.context.source_observation.as_ref().map(|observation| observation.at(&source_boundary, &binding_digest)).transpose()?.flatten().cloned();
 				if let Some(content) = &cached_sources { self.environment.recheck_source_observation(run, content).await?; }
 				let mut source_skill_context = String::new();
+				// Load/Unload results of the previous response take effect with this
+				// request; activation is idempotent across retries of this boundary.
+				run.context.exposure.activate();
 				let exposure = match deferred_exposure(run)? {
 					Some((snapshot, budgets)) => {
 						let catalog = exposure_catalog(self.environment, run, snapshot, &tools).await?;
@@ -952,9 +952,16 @@ impl<'a> Executor<'a> {
 					return self.tool_error(run, token, &call, cursor, format!("unavailable tool {}", call.name)).await;
 				};
 				if let Some((snapshot, budgets)) = deferred_exposure(run)? {
+					// Every call is checked against the Exposure set its request
+					// advertised; Load/Unload in this response apply to the next one.
 					let catalog = exposure_catalog(self.environment, run, snapshot, &tools).await?;
 					if !exposure::select(&budgets, &catalog, &run.context.exposure)?.tools.contains(&call.name) {
-						return self.tool_error(run, token, &call, cursor, format!("capability {} is not loaded; use capability_load", call.name)).await;
+						let message = if exposure::select(&budgets, &catalog, &run.context.exposure.effective())?.tools.contains(&call.name) {
+							format!("capability {} was loaded in this response; call it after the next model request", call.name)
+						} else {
+							format!("capability {} is not loaded; use capability_load", call.name)
+						};
+						return self.tool_error(run, token, &call, cursor, message).await;
 					}
 				}
 				let contract = tool.contract();
@@ -1182,14 +1189,14 @@ impl<'a> Executor<'a> {
 				if invocation.status != "COMPLETED" {
 					store.invocation_finish(run, token, &key, &output).await?;
 				}
-				// Load/Unload results change the Exposure set with the same save
-				// that records them; replayed results apply idempotently.
+				// Load/Unload results are staged with the same save that records
+				// them and take effect with the next inference.
 				if contract.behavior.exposure_update
 					&& let Some(update) = output.get("exposure_update")
 				{
 					context
 						.exposure
-						.apply(&serde_json::from_value::<exposure::ExposureUpdate>(update.clone())?);
+						.stage(serde_json::from_value::<exposure::ExposureUpdate>(update.clone())?);
 				}
 				let event = ContextEvent::tool(call.clone(), output.clone());
 				record_message_read_for(&mut context.message_read_coverage, &contract, &event);
@@ -1541,15 +1548,8 @@ async fn resident_skills(
 				Error::Invalid(format!("selected Skill {alias} is not in the catalog"))
 			})?;
 		let body = match &capability.identity {
-			exposure::CapabilityIdentity::Registry(reference) => {
-				let binding = snapshot
-					.bindings
-					.iter()
-					.find(|binding| {
-						&binding.identity == reference && binding.definition.kind == "skill"
-					})
-					.ok_or_else(|| Error::Invalid(format!("snapshot lacks Skill {alias}")))?;
-				rules::skill_instructions(&binding.definition)?
+			exposure::CapabilityIdentity::Registry(_) => {
+				exposure::registry_skill_body(snapshot, capability)?
 			}
 			exposure::CapabilityIdentity::DirectSkill { skill_id, .. } => {
 				environment

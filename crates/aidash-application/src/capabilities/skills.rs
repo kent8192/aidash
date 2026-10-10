@@ -17,6 +17,8 @@ use aidash_domain::{
 use base64::Engine;
 use serde_json::{Value, json};
 use uuid::Uuid;
+/// The instruction body of a direct Skill, distinct from its packaged assets.
+const SKILL_BODY: &str = "SKILL.md";
 pub fn escaped_instruction_len(text: &str) -> Result<usize> {
 	Ok(serde_json::to_string(text)?.len().saturating_sub(2))
 }
@@ -428,6 +430,7 @@ pub async fn direct(scope: &mut dyn SkillScope, run: &RunMetadata) -> Result<Vec
 			files: skill
 				.files
 				.iter()
+				.filter(|file| file.path != SKILL_BODY)
 				.map(|file| json!({"path":file.path,"digest":file.digest,"size":file.size}))
 				.collect(),
 			metadata: skill.metadata,
@@ -450,7 +453,9 @@ pub async fn direct_body(
 	instructions(scope, &skill).await
 }
 
-/// Bytes of one packaged file of a pinned direct Skill.
+/// Bytes of one packaged file of a pinned direct Skill. SKILL.md is the
+/// instruction body: only `capability_load` makes it resident, under the
+/// `skill_bytes` budget, so it is never an asset.
 pub async fn direct_file(
 	scope: &mut dyn SkillScope,
 	run: &RunMetadata,
@@ -459,6 +464,9 @@ pub async fn direct_file(
 	path: &str,
 ) -> Result<Vec<u8>> {
 	aidash_domain::registry::rules::validate_path(path)?;
+	if path == SKILL_BODY {
+		return Err(Error::Invalid("SKILL_FILE_UNAVAILABLE".into()));
+	}
 	let (_, pinned) = exposure_record(scope, run)
 		.await?
 		.ok_or_else(|| Error::NotFound("skill unavailable".into()))?;
@@ -476,11 +484,12 @@ pub async fn direct_file(
 pub fn attachment_skill(attachment: &SkillAttachment) -> Result<DirectSkill> {
 	use sha2::{Digest, Sha256};
 	let metadata = validate(attachment)?;
-	let mut files = vec![(
-		"SKILL.md".to_owned(),
-		attachment.instructions.as_bytes().to_vec(),
-	)];
-	for file in &attachment.files {
+	let mut files = Vec::with_capacity(attachment.files.len());
+	for file in attachment
+		.files
+		.iter()
+		.filter(|file| file.path != SKILL_BODY)
+	{
 		let bytes = if file.encoding.as_deref() == Some("base64") {
 			base64::engine::general_purpose::STANDARD
 				.decode(&file.content)

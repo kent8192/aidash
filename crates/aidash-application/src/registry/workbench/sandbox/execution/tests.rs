@@ -389,6 +389,7 @@ fn job(model: Arc<Model>) -> Job {
 		initial_conversation: vec![json!({"role":"user","content":"original"})],
 		pinned_draft: draft(7),
 		model_credential: None,
+		exposure: None,
 	}
 }
 #[tokio::test]
@@ -454,6 +455,102 @@ async fn explicit_fixture_is_recorded_and_reauthorized_before_each_inference() {
 			"infer"
 		]
 	);
+}
+#[tokio::test]
+async fn deferred_load_results_reshape_the_next_request() {
+	// Arrange: a deferred Agent whose default workspace tools are Discoverable.
+	let mut repository = Repository::new();
+	repository.entry.config["exposure"] = json!({"version":"deferred@1"});
+	let snapshot = crate::test_support::resolve("aidash://local", &repository.entry, false, vec![]);
+	repository.state.get_mut().unwrap().session.scenario = json!({"binding_snapshot":snapshot});
+	let repository = Arc::new(repository);
+	let digest = snapshot
+		.bindings
+		.iter()
+		.find(|binding| binding.alias.as_deref() == Some("workspace_observe"))
+		.unwrap()
+		.digest
+		.clone();
+	let call = |id: &str, name: &str, arguments: Value| ToolCall {
+		id: id.into(),
+		name: name.into(),
+		arguments,
+	};
+	let respond = |tool_calls| ModelResponse {
+		text: "step".into(),
+		tool_calls,
+		input_tokens: 3,
+		output_tokens: 5,
+		usage_complete: true,
+	};
+	let model = model(
+		repository.clone(),
+		vec![
+			respond(vec![
+				call(
+					"load",
+					"capability_load",
+					json!({"alias":"workspace_observe","digest":digest}),
+				),
+				call("early", "workspace_observe", json!({})),
+			]),
+			respond(vec![]),
+		],
+	);
+	let mut job = job(model.clone());
+	job.limits.max_total_tokens = 100_000;
+	job.context_window = 100_000;
+	let state = ExposureState::default();
+	let (text, tools) = deferred::Deferred::new(&snapshot)
+		.unwrap()
+		.unwrap()
+		.request(&snapshot, &state)
+		.unwrap();
+	job.request.instructions = format!("sandbox{text}");
+	job.request.tools = tools;
+	job.exposure = Some(SessionExposure {
+		prefix: "sandbox".into(),
+		suffix: String::new(),
+		state,
+	});
+	// Act
+	let outcome = simulate(&execution(repository), session().id, &job)
+		.await
+		.unwrap();
+	// Assert: Load is evaluated natively and exposes the tool from the next request.
+	assert_eq!(outcome.status, "completed");
+	assert_eq!(outcome.error, None);
+	assert_eq!(outcome.tool_calls[0]["outcome"], deferred::EVALUATED);
+	assert_eq!(outcome.tool_calls[0]["result"]["status"], "loaded");
+	assert_eq!(outcome.tool_calls[1]["outcome"], deferred::EVALUATED);
+	assert_eq!(
+		outcome.tool_calls[1]["result"]["error"],
+		"capability workspace_observe was loaded in this response; call it after the next model request"
+	);
+	let requests = model.requests.lock().unwrap();
+	let exposes = |request: &ModelRequest| {
+		request
+			.tools
+			.iter()
+			.any(|tool| tool.name == "workspace_observe")
+	};
+	assert!(!exposes(&requests[0]));
+	assert!(exposes(&requests[1]));
+	assert!(
+		requests[0]
+			.instructions
+			.contains("workspace_observe [tool]")
+	);
+	assert!(
+		!requests[1]
+			.instructions
+			.contains("workspace_observe [tool]")
+	);
+	assert!(requests[1].instructions.starts_with("sandbox"));
+	// A continued session resumes the Exposure set it ended with.
+	let replayed = deferred::replayed(outcome.conversation.as_array().unwrap()).unwrap();
+	assert_eq!(replayed.loaded.len(), 1);
+	assert_eq!(replayed.loaded[0].alias, "workspace_observe");
 }
 #[tokio::test]
 async fn absent_fixture_blocks_without_claiming_a_tool_result() {

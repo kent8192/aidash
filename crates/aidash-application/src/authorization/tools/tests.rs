@@ -1220,6 +1220,7 @@ async fn a_direct_skill_asset_read_requires_the_core_skills_permission(
 	#[case] skills: bool,
 ) {
 	asset_snapshot(&mut repository, &run);
+	agent.skill_roots = vec!["skills".into()];
 	agent.core_capabilities.skills = skills;
 	let result = authorize(
 		&repository,
@@ -1242,6 +1243,38 @@ async fn a_direct_skill_asset_read_requires_the_core_skills_permission(
 	if !skills {
 		assert!(matches!(result, Err(Error::Forbidden)));
 	}
+}
+#[rstest]
+#[tokio::test]
+async fn an_unknown_asset_alias_without_direct_skills_reaches_the_recoverable_validator(
+	mut repository: Repository,
+	run: RunMetadata,
+	mut agent: AgentConfig,
+) {
+	// Arrange: Registry Skills only; the direct Skills capability is off.
+	asset_snapshot(&mut repository, &run);
+	agent.core_capabilities.skills = false;
+	agent.skill_attachments.clear();
+	agent.skill_roots.clear();
+	// Act
+	let result = authorize(
+		&repository,
+		&run,
+		&agent,
+		&call(
+			"skill_asset_read",
+			json!({"alias":"skill_mistyped_0000","digest":"d","path":"a"}),
+		),
+	)
+	.await;
+	// Assert: no Registry authority is consulted for a name that reaches no asset.
+	result.unwrap();
+	assert!(
+		!repository
+			.calls()
+			.iter()
+			.any(|call| call.starts_with("catalog:"))
+	);
 }
 #[rstest]
 #[case::discovery("agent_discover")]

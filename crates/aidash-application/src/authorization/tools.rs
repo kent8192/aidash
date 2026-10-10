@@ -129,7 +129,15 @@ pub async fn authorize(
 							}
 						}
 						None => {
-							if !CorePermission::Skills.permitted(&configuration.core_capabilities) {
+							// Direct Skills require the core Skills capability. Without
+							// direct Skill sources the alias names no asset, and the
+							// tool returns its recoverable UNKNOWN_CAPABILITY.
+							let direct = !configuration.skill_attachments.is_empty()
+								|| !configuration.skill_roots.is_empty();
+							if direct
+								&& !CorePermission::Skills
+									.permitted(&configuration.core_capabilities)
+							{
 								return Err(Error::Forbidden);
 							}
 						}
@@ -190,7 +198,7 @@ pub async fn authorize(
 }
 
 /// The Registry Skill a `skill_asset_read` alias names in the Run's snapshot;
-/// `None` means any other alias, which can only reach a direct Skill.
+/// `None` means any other alias: a direct Skill or nothing.
 fn asset_skill(
 	repository: &dyn AgentToolRepository,
 	call: &ToolCall,

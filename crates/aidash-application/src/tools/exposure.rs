@@ -1,6 +1,6 @@
 //! Deferred exposure tools: discovery, Load/Unload and Skill asset reads over the
 //! Run's Discoverable capabilities. They never mutate the Run; Load/Unload
-//! return an `exposure_update` that the Executor applies.
+//! return an `exposure_update` that the Executor stages for the next request.
 use super::{ToolContext, required};
 use crate::{Error, Result};
 use aidash_domain::{
@@ -47,7 +47,8 @@ pub(super) async fn invoke(name: &str, ctx: &ToolContext<'_>, input: Value) -> R
 	}
 	let specifications = ctx.operations.binding_specifications().await?;
 	let (budgets, catalog) = catalog(ctx.run, &specifications, &direct)?;
-	let state = &ctx.run.context.exposure;
+	// Earlier Load/Unload results of this response are staged, not exposed.
+	let state = &ctx.run.context.exposure.effective();
 	Ok(match name {
 		"capability_search" => exposure::search(
 			&catalog,

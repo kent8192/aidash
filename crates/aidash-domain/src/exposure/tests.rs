@@ -626,15 +626,7 @@ fn skill_aliases_are_deterministic_unique_and_valid() {
 		registry.definition_bytes,
 		escaped_len(&resident_block(
 			registry,
-			&rules::skill_instructions(
-				&snapshot
-					.bindings
-					.iter()
-					.find(|b| b.identity.id == "Data.Tool")
-					.unwrap()
-					.definition
-			)
-			.unwrap()
+			&registry_skill_body(&snapshot, registry).unwrap()
 		))
 	);
 	assert_eq!(registry.detail["files"][0]["size"], 5);
@@ -690,6 +682,118 @@ fn apply_is_idempotent() {
 	assert_eq!(
 		serde_json::from_value::<ExposureUpdate>(encoded).unwrap(),
 		load
+	);
+}
+
+#[test]
+fn staged_updates_leave_the_current_request_unchanged_until_activation() {
+	// Arrange
+	let mut run = Run::default();
+	run.mandatory().tool("lookup", "Lookup", 0);
+	let catalog = run.catalog();
+	let budgets = DeferredBudgets::default();
+	let mut state = ExposureState::default();
+	let lookup = capability(&catalog, "lookup");
+	let output = load(&budgets, &catalog, &state, "lookup", &lookup.digest, 1).unwrap();
+	// Act
+	state.stage(serde_json::from_value(output["exposure_update"].clone()).unwrap());
+	// Assert: the response's own request never gains the loaded tool.
+	assert!(!state.is_empty());
+	assert!(
+		!select(&budgets, &catalog, &state)
+			.unwrap()
+			.tools
+			.contains("lookup")
+	);
+	assert!(
+		select(&budgets, &catalog, &state.effective())
+			.unwrap()
+			.tools
+			.contains("lookup")
+	);
+	assert_eq!(
+		load(
+			&budgets,
+			&catalog,
+			&state.effective(),
+			"lookup",
+			&lookup.digest,
+			1
+		)
+		.unwrap()["status"],
+		"already_loaded"
+	);
+	let encoded: ExposureState =
+		serde_json::from_value(serde_json::to_value(&state).unwrap()).unwrap();
+	assert_eq!(encoded, state);
+	state.activate();
+	assert!(state.pending.is_empty());
+	assert!(
+		select(&budgets, &catalog, &state)
+			.unwrap()
+			.tools
+			.contains("lookup")
+	);
+	let unloaded = unload(&catalog, &state, "lookup").unwrap();
+	state.stage(serde_json::from_value(unloaded["exposure_update"].clone()).unwrap());
+	assert!(
+		select(&budgets, &catalog, &state)
+			.unwrap()
+			.tools
+			.contains("lookup")
+	);
+	state.activate();
+	assert!(
+		!select(&budgets, &catalog, &state)
+			.unwrap()
+			.tools
+			.contains("lookup")
+	);
+}
+
+#[test]
+fn renamed_skill_asset_read_stays_mandatory_and_is_named_in_skill_guidance() {
+	// Arrange: Skill support explicitly bound under a custom alias.
+	let mut run = Run::default();
+	for operation in REQUIRED_TOOLS.iter().chain(EXPOSURE_TOOLS) {
+		run.builtin(operation, BindingOrigin::Required);
+	}
+	run.bind_tool(
+		QualifiedRef::builtin(NODE, SKILL_ASSET_READ),
+		"read_asset",
+		core_descriptor(NODE, SKILL_ASSET_READ).unwrap(),
+		"Read Skill assets",
+		0,
+		BindingOrigin::SkillSupport,
+	)
+	.skill("packaged", "Packaged", "Follow the notes.");
+	let snapshot = run.snapshot();
+	// Act
+	let catalog = catalog(&snapshot, &run.specs, &[]).unwrap();
+	let selection = select(
+		&DeferredBudgets::default(),
+		&catalog,
+		&ExposureState::default(),
+	)
+	.unwrap();
+	let skill = catalog
+		.iter()
+		.find(|c| c.kind == CapabilityKind::Skill)
+		.unwrap();
+	let body = registry_skill_body(&snapshot, skill).unwrap();
+	// Assert
+	assert!(capability(&catalog, "read_asset").mandatory);
+	assert!(selection.tools.contains("read_asset"));
+	assert!(body.starts_with("Follow the notes.\n\n"));
+	assert!(body.contains(&format!(
+		"through read_asset with alias {} and digest {}",
+		skill.alias, skill.digest
+	)));
+	assert!(body.ends_with("\n- notes.md\n"));
+	assert!(!body.contains("skill_read"));
+	assert_eq!(
+		skill.definition_bytes,
+		escaped_len(&resident_block(skill, &body))
 	);
 }
 

@@ -428,7 +428,9 @@ mod exposure {
 			direct[0].body_bytes,
 			escaped_instruction_len(&text).unwrap()
 		);
-		assert_eq!(direct[0].files.len(), 2);
+		// SKILL.md is the instruction body, reserved for capability_load.
+		assert_eq!(direct[0].files.len(), 1);
+		assert_eq!(direct[0].files[0]["path"], "guide.md");
 		assert_eq!(scope.required.len(), 1);
 		assert!(scope.required[0].contains("aidash.skill_asset_read"));
 		assert!(scope.required[0].ends_with(":tool.invoke"));
@@ -448,10 +450,15 @@ mod exposure {
 				.unwrap(),
 			b"guide"
 		);
-		assert!(matches!(
-			direct_file(&mut scope, &run, skill.skill_id, &skill.digest, "other.md").await,
-			Err(Error::Invalid(code)) if code == "SKILL_FILE_UNAVAILABLE"
-		));
+		for path in ["other.md", "SKILL.md"] {
+			assert!(
+				matches!(
+					direct_file(&mut scope, &run, skill.skill_id, &skill.digest, path).await,
+					Err(Error::Invalid(code)) if code == "SKILL_FILE_UNAVAILABLE"
+				),
+				"{path}"
+			);
+		}
 		assert_eq!(scope.updates, 0);
 	}
 

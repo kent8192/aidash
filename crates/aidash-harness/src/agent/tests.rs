@@ -10,7 +10,7 @@ use aidash_domain::registry::bindings::{
 	BindingOrigin, DEFAULT_TOOLS, EXPOSURE_TOOLS, Narrowing, QualifiedRef, REQUIRED_TOOLS,
 	ResolvedBinding, ResolvedDefinition, SKILL_ASSET_READ, SKILL_TOOLS,
 };
-use aidash_domain::registry::{EntityRef, Entry};
+use aidash_domain::registry::{EntityRef, Entry, rules};
 use aidash_domain::tool::providers::core_descriptor;
 use async_trait::async_trait;
 use rstest::{fixture, rstest};
@@ -1642,6 +1642,50 @@ async fn deferred_dispatch_rejects_a_capability_that_is_not_loaded(mut fixture: 
 
 #[rstest]
 #[tokio::test]
+async fn a_load_exposes_its_capability_only_from_the_next_request(mut fixture: Fixture) {
+	// Arrange: one response loads tool_05 and then calls it.
+	deferred_agent(&mut fixture);
+	let catalog = deferred_catalog(&fixture).await;
+	*fixture.backend.0.custom["capability_load"]
+		.outputs
+		.lock()
+		.unwrap() = [load_output(&catalog, &fixture.run, "tool_05")].into();
+	respond(
+		&mut fixture.run,
+		vec![
+			call("call-0", "capability_load", json!({"alias":"tool_05"})),
+			call("call-1", "tool_05", json!({})),
+		],
+	);
+	// Act: both tool steps.
+	advance_sources(&mut fixture).await.unwrap();
+	advance_sources(&mut fixture).await.unwrap();
+	// Assert: the call is checked against its own request's Exposure set.
+	let (event, saved) = last_write(&fixture);
+	assert_eq!(event, "run.tool_recorded");
+	assert!(matches!(
+		saved.context.history.last(),
+		Some(ContextEvent::Tool { result, .. })
+			if result == &json!({"error":"capability tool_05 was loaded in this response; call it after the next model request"})
+	));
+	assert_eq!(fixture.backend.0.custom["tool_05"].invocations(), 0);
+	assert!(saved.context.exposure.loaded.is_empty());
+	assert_eq!(saved.context.exposure.pending.len(), 1);
+	// Act: the step transition, then the next inference.
+	advance_sources(&mut fixture).await.unwrap();
+	advance_sources(&mut fixture).await.unwrap();
+	// Assert
+	assert!(fixture.run.context.exposure.pending.is_empty());
+	assert_eq!(fixture.run.context.exposure.loaded.len(), 1);
+	let requests = fixture.backend.0.requests.lock().unwrap();
+	let [request] = requests.as_slice() else {
+		panic!("expected one provider request, got {}", requests.len());
+	};
+	assert!(tool_names(request).contains(&"tool_05"));
+}
+
+#[rstest]
+#[tokio::test]
 async fn loads_change_the_next_request_and_skill_bodies_stay_resident_once(mut fixture: Fixture) {
 	// Arrange: one response loads a tool, two Skills, and repeats one Skill load.
 	deferred_agent(&mut fixture);
@@ -1727,10 +1771,12 @@ async fn replayed_load_and_resumed_run_keep_the_same_exposure(mut fixture: Fixtu
 	deferred_agent(&mut fixture);
 	let catalog = deferred_catalog(&fixture).await;
 	let output = load_output(&catalog, &fixture.run, "tool_05");
+	let update =
+		serde_json::from_value::<ExposureUpdate>(output["exposure_update"].clone()).unwrap();
+	let mut staged = ExposureState::default();
+	staged.stage(update.clone());
 	let mut expected = ExposureState::default();
-	expected.apply(
-		&serde_json::from_value::<ExposureUpdate>(output["exposure_update"].clone()).unwrap(),
-	);
+	expected.apply(&update);
 	assert_eq!(
 		expected.loaded,
 		[Loaded {
@@ -1764,7 +1810,7 @@ async fn replayed_load_and_resumed_run_keep_the_same_exposure(mut fixture: Fixtu
 	assert_eq!(fixture.backend.0.custom["capability_load"].invocations(), 0);
 	let (event, saved) = last_write(&fixture);
 	assert_eq!(event, "run.tool_recorded");
-	assert_eq!(saved.context.exposure, expected);
+	assert_eq!(saved.context.exposure, staged);
 	// Act: resume from the persisted Run, then infer.
 	fixture.run = serde_json::from_slice(&serde_json::to_vec(&saved).unwrap()).unwrap();
 	advance_sources(&mut fixture).await.unwrap();
