@@ -10,7 +10,6 @@ from policy import (
     attach_release,
     build_needed,
     idle_due,
-    meaningful_request,
     preview_command,
     transition,
 )
@@ -80,11 +79,11 @@ class LifecycleTests(unittest.TestCase):
         state = self.apply({}, self.request())
         images = {
             name: f"us-central1-docker.pkg.dev/fixture/aidash/{name}@sha256:{'a' * 64}"
-            for name in ("app", "postgres", "sandbox", "observer", "nats")
+            for name in ("app", "postgres", "sandbox", "observer", "nats", "control", "edge", "caddy")
         }
         release = {"source_sha": "a" * 40, "images": images}
         self.assertTrue(attach_release(state, "test", 1, release)[1])
-        for name in ("nats",):
+        for name in ("nats", "control", "caddy"):
             for invalid in (None, f"{name}:latest"):
                 with self.subTest(name=name, image=invalid):
                     candidate = dict(images)
@@ -149,57 +148,6 @@ class LifecycleTests(unittest.TestCase):
             "/preview up $(bad)",
         ]:
             self.assertIsNone(preview_command(body))
-
-    def test_polling_and_probes_do_not_reset_idle(self):
-        for method, path in [
-            ("GET", "/api/state"),
-            ("GET", "/auth/session"),
-            ("GET", "/auth/config"),
-            ("GET", "/auth/registration"),
-            ("POST", "/auth/desktop/refresh"),
-            ("POST", "/auth/logout"),
-            ("POST", "/auth/backchannel-logout"),
-            ("POST", "/auth/activity/extra"),
-            ("GET", "/health"),
-            ("POST", "/api/runs/id/shell/poll"),
-            ("POST", "/api/runs/id/python/poll"),
-            ("GET", "/federation/v0.1/observe"),
-            ("POST", "/federation/v0.10/scoped/files/chunk"),
-            ("POST", "/federation/v0.1/discover"),
-            ("POST", "/federation/v0.1/workspace"),
-            ("POST", "/federation/v0.1/scoped/files/status"),
-            ("POST", "/federation/v0.1/scoped/execution/status"),
-            ("POST", "/federation/v0.1/scoped/execution/admissions/id/verify"),
-        ]:
-            self.assertFalse(meaningful_request(method, path, 200))
-        for method, path in [
-            ("GET", "/auth/callback"),
-            ("GET", "/auth/gcip/transaction"),
-            ("POST", "/auth/activity"),
-            ("POST", "/auth/registration"),
-            ("POST", "/auth/gcip/exchange"),
-            ("POST", "/auth/desktop/authorize"),
-            ("POST", "/api/runs/id/python"),
-            ("PATCH", "/api/tasks/id"),
-            ("POST", "/federation/v0.1/scoped/files/commit"),
-            ("POST", "/federation/v0.1/transactions/prepare"),
-        ]:
-            self.assertTrue(meaningful_request(method, path, 200))
-        self.assertFalse(meaningful_request("POST", "/api/tasks", 401))
-        self.assertFalse(meaningful_request("POST", "/auth/activity", 401))
-
-    def test_vm_and_cluster_edges_share_the_request_predicate(self):
-        root = Path(__file__).resolve().parents[1]
-
-        def predicate(path):
-            text = path.read_text()
-            start = text.index("access_by_lua_block")
-            return text[start : text.index("proxy_pass", start)]
-
-        self.assertEqual(
-            predicate(root / "runtime/nginx.conf"),
-            predicate(root / "helm/environment/files/admission.conf"),
-        )
 
     def test_unknown_or_old_observation_defers_shutdown(self):
         value = dict(

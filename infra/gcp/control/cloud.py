@@ -39,7 +39,7 @@ def bounded_timeout(seconds):
     return min(seconds, remaining)
 
 
-def run(*args, data=None, timeout=900):
+def run(*args, data=None, timeout=900, env=None):
     timeout = bounded_timeout(timeout)
     with subprocess.Popen(
         [str(arg) for arg in args],
@@ -47,6 +47,7 @@ def run(*args, data=None, timeout=900):
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         start_new_session=True,
+        env=None if env is None else dict(os.environ, **env),
     ) as process:
         try:
             output, _ = process.communicate(data, timeout=timeout)
@@ -238,6 +239,40 @@ def private_json(path, value):
         json.dump(value, file)
 
 
+NODE_POOL = re.compile(r'module\.environment\["([^"]+)"\]\.google_container_node_pool\.')
+
+
+def fence_change(change, retiring, starting):
+    """Refuse plans that destroy shared/retained resources or start a stopped Environment."""
+    kind, actions = change["type"], set(change["change"]["actions"])
+    if kind in {"google_kms_key_ring", "google_kms_crypto_key", "google_kms_crypto_key_version"} and "delete" in actions:
+        raise RuntimeError(
+            "plan would destroy signing key material; transfer draft key state to bootstrap first"
+        )
+    if kind == "google_container_cluster" and "delete" in actions:
+        raise RuntimeError("plan would delete the shared cluster")
+    if kind == "google_compute_disk" and "delete" in actions:
+        raise RuntimeError("plan would delete the retained preview TLS disk")
+    if kind != "google_container_node_pool":
+        return
+    match = NODE_POOL.match(change.get("address", ""))
+    identity = match.group(1) if match else None
+    # A replacement (e.g. Spot toggle) is part of an explicit start; a bare delete
+    # is retirement only. The shared system pool is never deleted by automation.
+    if "delete" in actions and identity not in retiring and not (
+        "create" in actions and identity in starting
+    ):
+        raise RuntimeError("plan would delete a node pool without explicit retirement")
+    if identity is None or "create" not in actions and "update" not in actions:
+        return
+    before = 0 if "create" in actions else (change["change"].get("before") or {}).get("node_count") or 0
+    after = (change["change"].get("after") or {}).get("node_count") or 0
+    if before == 0 and after > 0 and identity not in starting:
+        raise RuntimeError(
+            "plan would start an Environment node pool without a current explicit start authorization"
+        )
+
+
 class Terraform:
     def __init__(self, root, configuration):
         self.root = Path(root)
@@ -318,7 +353,6 @@ class Terraform:
             for key in (
                 "project_id",
                 "cloudflare_zone_id",
-                "release_bucket",
                 "deploy_service_account",
                 "domain",
             )
@@ -345,31 +379,7 @@ class Terraform:
                 run("terraform", f"-chdir={self.root}", "show", "-json", plan)
             )
             for change in value.get("resource_changes", []):
-                if (
-                    change["type"] in {"google_kms_key_ring", "google_kms_crypto_key", "google_kms_crypto_key_version"}
-                    and "delete" in change["change"]["actions"]
-                ):
-                    raise RuntimeError(
-                        "plan would destroy signing key material; transfer draft key state to bootstrap first"
-                    )
-                if (
-                    change["type"] == "google_compute_instance"
-                    and "create" in change["change"]["actions"]
-                ):
-                    labels = (change["change"].get("after") or {}).get("labels", {})
-                    if labels.get("environment") not in starting:
-                        raise RuntimeError(
-                            "plan would create/recreate a VM without a current explicit power authorization"
-                        )
-                if (
-                    change["type"] == "google_compute_disk"
-                    and "delete" in change["change"]["actions"]
-                ):
-                    labels = (change["change"].get("before") or {}).get("labels", {})
-                    if labels.get("environment") not in retiring:
-                        raise RuntimeError(
-                            "plan would delete a retained disk without explicit retirement"
-                        )
+                fence_change(change, retiring, starting)
             if before_apply:
                 before_apply(value)
             run(
@@ -389,3 +399,11 @@ class Terraform:
         return json.loads(
             run("terraform", f"-chdir={self.root}", "output", "-json", "environments")
         )
+
+    def shared_outputs(self):
+        """Cluster connection and preview disk; empty before the first apply."""
+        value = json.loads(run("terraform", f"-chdir={self.root}", "output", "-json"))
+        return {
+            key: (value.get(key) or {}).get("value")
+            for key in ("cluster", "preview_tls_volume_handle")
+        }
