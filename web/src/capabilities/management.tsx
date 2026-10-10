@@ -1,11 +1,21 @@
+import { Input } from "../components/ui/input";
+import { panelClass } from "./display";
+import {
+  Alert,
+  Check,
+  Group,
+  Hint,
+  Loading,
+  Notice,
+} from "../components/patterns";
+import { NativeSelect } from "../components/ui/native-select";
 import { Button } from "../components/ui/button";
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import { useInfiniteQuery, useQueryClient } from "@tanstack/react-query";
 import { apiFetch } from "../transport";
 import { Field, useI18n } from "../ui";
 import { post } from "./client";
 import { OriginalReferences } from "./configuration";
-import "./style.css";
 import { AgentCapabilities } from "./agent";
 type Managed = {
   area_id: string;
@@ -55,10 +65,10 @@ export function AreaLifecycle({ area }: { area: Managed }) {
         {area.files} {ja ? "ファイル" : "files"} ·{" "}
         {(area.bytes / 1024).toFixed(1)} KiB · {area.state}
       </p>
-      <small>
+      <Hint>
         {ja ? "スレッド" : "Thread"}: {area.thread_id} ·{" "}
         {ja ? "所有者" : "Owner"}: {area.owner}
-      </small>
+      </Hint>
       {area.recovery_expires_at && (
         <p>
           {ja ? "復元期限" : "Recover until"}:{" "}
@@ -93,7 +103,7 @@ export function AreaLifecycle({ area }: { area: Managed }) {
             {ja ? "新しいスレッドへ復元" : "Restore into a new thread"}
           </Button>
           <Field label={ja ? "復元先スレッド ID" : "Destination thread ID"}>
-            <input value={thread} onChange={(e) => setThread(e.target.value)} />
+            <Input value={thread} onChange={(e) => setThread(e.target.value)} />
           </Field>
           <Button
             variant="outline"
@@ -115,10 +125,12 @@ export function AreaLifecycle({ area }: { area: Managed }) {
         </>
       ) : null}
       {["active", "retained", "recoverable"].includes(area.state) && (
-        <fieldset>
-          <legend>{ja ? "作業ファイルの整理" : "Working file cleanup"}</legend>
+        <Group
+          nested
+          legend={ja ? "作業ファイルの整理" : "Working file cleanup"}
+        >
           <Field label={ja ? "整理方法" : "Retention choice"}>
-            <select
+            <NativeSelect
               value={choice}
               onChange={(e) => {
                 setChoice(e.target.value);
@@ -134,7 +146,7 @@ export function AreaLifecycle({ area }: { area: Managed }) {
               <option value="irreversible">
                 {ja ? "復元できない完全削除" : "Delete irreversibly"}
               </option>
-            </select>
+            </NativeSelect>
           </Field>
           {choice === "irreversible" &&
           (!confirmation || confirmation.revision !== area.revision) ? (
@@ -159,11 +171,11 @@ export function AreaLifecycle({ area }: { area: Managed }) {
           ) : (
             <>
               {choice === "irreversible" && (
-                <p className="core-warning">
+                <Notice tone="warning">
                   {ja
                     ? `「${area.agent_id}」の ${area.files} ファイルを完全に削除します。復元用のコピーも残りません。`
                     : `Permanently delete ${area.files} files for ${area.agent_id}. No recovery copy will remain.`}
-                </p>
+                </Notice>
               )}
               <Button
                 variant="outline"
@@ -190,15 +202,15 @@ export function AreaLifecycle({ area }: { area: Managed }) {
               </Button>
             </>
           )}
-        </fieldset>
+        </Group>
       )}
       {["cleaning", "cleanup_failed"].includes(area.state) && (
         <>
-          <p role="status">
+          <Hint role="status">
             {ja
               ? "削除処理を確認中です。完了するまで再利用できません。"
               : "Cleanup is being reconciled. Files remain unavailable until it completes."}
-          </p>
+          </Hint>
           {area.cleanup_operation_id && (
             <Button
               variant="outline"
@@ -215,13 +227,14 @@ export function AreaLifecycle({ area }: { area: Managed }) {
           )}
         </>
       )}
-      {error && <p role="alert">{error}</p>}
+      {error && <Alert>{error}</Alert>}
     </article>
   );
 }
 export function WorkingFileSettings({
   workspace,
 }: { workspace?: string } = {}) {
+  const headingId = useId();
   const { locale } = useI18n();
   const ja = locale === "ja-JP";
   const [allWorkspaces, setAllWorkspaces] = useState(false);
@@ -249,28 +262,26 @@ export function WorkingFileSettings({
   }, [searching, isFetching, isError, fetchNextPage]);
   return (
     <>
-      <section className="core-panel">
-        <h2>{ja ? "作業ファイル" : "Working files"}</h2>
+      <section className={panelClass} aria-labelledby={headingId}>
+        <h2 id={headingId}>{ja ? "作業ファイル" : "Working files"}</h2>
         <p>
           {ja
             ? "作業の完了やスレッドの削除だけではファイルは消えません。ここで保存、復元可能な整理、完全削除を選べます。"
             : "Files remain after work ends or a thread is deleted. Choose retention, recoverable cleanup or irreversible deletion here."}
         </p>
         {workspace && (
-          <label className="field">
-            <input
-              type="checkbox"
-              checked={allWorkspaces}
-              onChange={(event) => setAllWorkspaces(event.target.checked)}
-            />
+          <Check
+            checked={allWorkspaces}
+            onChange={(event) => setAllWorkspaces(event.target.checked)}
+          >
             {ja
               ? "すべての依頼の作業ファイルを表示"
               : "Show working files from all requests"}
-          </label>
+          </Check>
         )}
-        {query.isError && <p role="alert">{query.error.message}</p>}
+        {query.isError && <Alert>{query.error.message}</Alert>}
         {(query.isPending || (searching && !query.isError)) && (
-          <p role="status">{ja ? "読み込み中…" : "Loading…"}</p>
+          <Loading>{ja ? "読み込み中…" : "Loading…"}</Loading>
         )}
         {areas.map((area) => (
           <AreaLifecycle key={area.area_id} area={area} />

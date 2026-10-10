@@ -8,7 +8,17 @@ import {
   type GraphNode,
   type Point,
 } from "./model";
-import { Scan } from "lucide-react";
+import {
+  ArrowDown,
+  ArrowLeft,
+  ArrowRight,
+  ArrowUp,
+  Crosshair,
+  Minus,
+  Plus,
+  Scan,
+} from "lucide-react";
+import { cn } from "../lib/utils";
 import { fitGraph, fitPadding, zoomFloor } from "../graph-fit";
 import { graphViewport, svgBounds, useGraphFit } from "../graph-fit-view";
 import type { GraphCopy } from "./copy";
@@ -25,6 +35,16 @@ function localPoint(
   return Number.isFinite(point.x) && Number.isFinite(point.y)
     ? { x: point.x, y: point.y }
     : null;
+}
+function nodeShape(node: GraphNode, selected: boolean): string {
+  const runtime = node.kind === "run" || node.kind === "task";
+  return cn(
+    "fill-surface stroke-border-strong [stroke-width:1.5]",
+    node.kind === "agent" && "fill-raised stroke-brand-mark",
+    runtime && "stroke-brand-line [stroke-dasharray:4_3]",
+    !node.available && "fill-background stroke-faint [stroke-dasharray:4_3]",
+    selected && "stroke-brand-mark [stroke-width:3.5]",
+  );
 }
 const width = 800;
 const height = 460;
@@ -168,102 +188,120 @@ export function GraphCanvas({
     }));
   };
   return (
-    <div className="agent-graph-canvas">
-      <div
-        className="agent-graph-controls"
-        role="group"
-        aria-label={copy.graph}
-      >
-        <Button
-          variant="outline"
-          type="button"
-          onClick={() => zoom(1.25)}
-          aria-label={copy.zoomIn}
+    <div className="agent-graph-canvas flex flex-col gap-2">
+      <div className="flex flex-wrap items-center gap-2">
+        <p className="text-[11px] text-faint">{copy.canvasHelp}</p>
+        <div
+          className="ml-auto inline-flex items-center gap-0.5 rounded-md border border-border-strong bg-surface p-0.5"
+          role="group"
+          aria-label={copy.graph}
         >
-          +
-        </Button>
-        <Button
-          variant="outline"
-          type="button"
-          onClick={() => zoom(0.8)}
-          aria-label={copy.zoomOut}
-        >
-          −
-        </Button>
-        <Button
-          variant="outline"
-          type="button"
-          onClick={() => pan(60, 0)}
-          aria-label={copy.left}
-        >
-          ←
-        </Button>
-        <Button
-          variant="outline"
-          type="button"
-          onClick={() => pan(-60, 0)}
-          aria-label={copy.right}
-        >
-          →
-        </Button>
-        <Button
-          variant="outline"
-          type="button"
-          onClick={() => pan(0, 60)}
-          aria-label={copy.up}
-        >
-          ↑
-        </Button>
-        <Button
-          variant="outline"
-          type="button"
-          onClick={() => pan(0, -60)}
-          aria-label={copy.down}
-        >
-          ↓
-        </Button>
-        <Button
-          variant="outline"
-          type="button"
-          className="graph-fit-button"
-          aria-label={copy.fit}
-          title={
-            fit.available ? copy.fit : `${copy.fit}: ${copy.fitUnavailable}`
-          }
-          aria-describedby={fitDescription}
-          disabled={!fit.available}
-          onClick={fit.request}
-        >
-          <Scan size={16} aria-hidden="true" />
-          <span>{copy.fit}</span>
-        </Button>
-        <Button
-          variant="outline"
-          type="button"
-          onClick={() => {
-            fit.cancel();
-            needsFraming.current = false;
-            const point = positions[selectedId] ?? positions[graph.rootId];
-            setCamera((current) => ({
-              ...current,
-              x: width / 2 - point.x * current.zoom,
-              y: height / 2 - point.y * current.zoom,
-            }));
-          }}
-        >
-          {copy.focus}
-        </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="size-7"
+            type="button"
+            onClick={() => zoom(1.25)}
+            aria-label={copy.zoomIn}
+          >
+            <Plus size={14} aria-hidden="true" />
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="size-7"
+            type="button"
+            onClick={() => zoom(0.8)}
+            aria-label={copy.zoomOut}
+          >
+            <Minus size={14} aria-hidden="true" />
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="size-7"
+            type="button"
+            onClick={() => pan(60, 0)}
+            aria-label={copy.left}
+          >
+            <ArrowLeft size={14} aria-hidden="true" />
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="size-7"
+            type="button"
+            onClick={() => pan(-60, 0)}
+            aria-label={copy.right}
+          >
+            <ArrowRight size={14} aria-hidden="true" />
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="size-7"
+            type="button"
+            onClick={() => pan(0, 60)}
+            aria-label={copy.up}
+          >
+            <ArrowUp size={14} aria-hidden="true" />
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="size-7"
+            type="button"
+            onClick={() => pan(0, -60)}
+            aria-label={copy.down}
+          >
+            <ArrowDown size={14} aria-hidden="true" />
+          </Button>
+          <span aria-hidden className="mx-0.5 h-4 w-px bg-border" />
+          <Button
+            variant="ghost"
+            size="sm"
+            type="button"
+            aria-label={copy.fit}
+            title={
+              fit.available ? copy.fit : `${copy.fit}: ${copy.fitUnavailable}`
+            }
+            aria-describedby={fitDescription}
+            disabled={!fit.available}
+            onClick={fit.request}
+          >
+            <Scan size={14} aria-hidden="true" />
+            <span>{copy.fit}</span>
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            type="button"
+            onClick={() => {
+              fit.cancel();
+              needsFraming.current = false;
+              const point = positions[selectedId] ?? positions[graph.rootId];
+              setCamera((current) => ({
+                ...current,
+                x: width / 2 - point.x * current.zoom,
+                y: height / 2 - point.y * current.zoom,
+              }));
+            }}
+          >
+            <Crosshair size={14} aria-hidden="true" />
+            {copy.focus}
+          </Button>
+        </div>
       </div>
-      <span id={fitDescription} className="graph-fit-status" role="status">
+      <span id={fitDescription} className="sr-only" role="status">
         {fit.available ? "" : copy.fitUnavailable}
       </span>
-      <p className="muted">{copy.canvasHelp}</p>
       {/* The equivalent native-button relationship list is the keyboard/screen-reader interface. */}
       <svg
         ref={svg}
         viewBox={`0 0 ${width} ${height}`}
         aria-hidden="true"
         focusable="false"
+        className="canvas-grid block max-h-[65vh] min-h-[260px] w-full cursor-grab touch-none select-none rounded-lg border border-border [text-rendering:geometricPrecision] active:cursor-grabbing"
         onPointerDown={(event) => {
           if (event.button !== 0 || drag.current) return;
           needsFraming.current = false;
@@ -361,7 +399,7 @@ export function GraphCanvas({
             return (
               <g
                 key={edge.id}
-                className="agent-graph-edge"
+                className="group/edge transition-opacity duration-150 data-[muted=true]:opacity-40"
                 data-layer={edge.layer}
                 data-muted={
                   !(edge.source === selectedId || edge.target === selectedId)
@@ -370,12 +408,18 @@ export function GraphCanvas({
                 <path
                   d={curve.path}
                   fill="none"
+                  className={
+                    edge.layer === "runtime"
+                      ? "stroke-brand-mark [stroke-dasharray:6_4] [stroke-width:1.6]"
+                      : "stroke-edge-strong [stroke-width:1.6]"
+                  }
                   markerEnd={`url(#${marker})`}
                 />
                 <text
                   x={curve.label.x}
                   y={curve.label.y - 7}
                   textAnchor="middle"
+                  className="fill-muted-foreground stroke-background text-[10px] [paint-order:stroke] [stroke-linejoin:round] [stroke-width:4px]"
                 >
                   {copy.relations[edge.relation]}
                 </text>
@@ -393,7 +437,7 @@ export function GraphCanvas({
                 data-selected={node.id === selectedId}
                 data-unavailable={!node.available}
                 data-muted={!neighbors.has(node.id)}
-                className="agent-graph-node"
+                className="cursor-pointer transition-opacity duration-150 data-[muted=true]:opacity-40"
                 transform={`translate(${point.x} ${point.y})`}
               >
                 <title>
@@ -401,14 +445,29 @@ export function GraphCanvas({
                   {node.status ? ` · ${node.status}` : ""}
                   {node.available ? "" : ` · ${copy.missing}`}
                 </title>
-                <circle r={node.id === graph.rootId ? 26 : 18} />
-                <text className="agent-graph-glyph" textAnchor="middle" y="5">
+                <circle
+                  r={node.id === graph.rootId ? 26 : 18}
+                  className={nodeShape(node, node.id === selectedId)}
+                />
+                <text
+                  className="pointer-events-none fill-foreground font-mono text-[12px] font-semibold"
+                  textAnchor="middle"
+                  y="5"
+                >
                   {copy.types[node.kind].slice(0, 1)}
                 </text>
-                <text className="agent-graph-name" textAnchor="middle" y="45">
+                <text
+                  className="fill-foreground stroke-background text-[12px] font-medium [paint-order:stroke] [stroke-linejoin:round] [stroke-width:4px]"
+                  textAnchor="middle"
+                  y="45"
+                >
                   {name.length > 30 ? `${name.slice(0, 29)}…` : name}
                 </text>
-                <text className="agent-graph-kind" textAnchor="middle" y="61">
+                <text
+                  className="fill-faint text-[10px]"
+                  textAnchor="middle"
+                  y="61"
+                >
                   {copy.types[node.kind]}
                   {node.status ? ` · ${node.status}` : ""}
                 </text>

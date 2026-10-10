@@ -1,10 +1,13 @@
 import { Button } from "../components/ui/button";
+import { Badge as ToneBadge } from "../components/ui/badge";
+import { Textarea } from "../components/ui/textarea";
 import { RemoteMemoryStatus, RemoteFollowUp } from "./remote-memory";
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { RemoteExecutionStatus } from "../generated/models";
 import { apiFetch } from "../transport";
-import { Badge, useI18n } from "../ui";
+import { Alert, Facts, Hint, formClass } from "../components/patterns";
+import { Badge, Field, useI18n } from "../ui";
 
 export function RemoteExecutions({ task }: { task: string }) {
   const { locale } = useI18n();
@@ -44,158 +47,190 @@ export function RemoteExecutions({ task }: { task: string }) {
   if (status.isPending || (!status.isError && status.data?.length === 0))
     return null;
   return (
-    <section aria-label={ja ? "遠隔実行" : "Remote execution"}>
-      <h3>{ja ? "遠隔実行" : "Remote execution"}</h3>
-      {status.isError && <p role="alert">{status.error.message}</p>}
-      {error && <p role="alert">{error}</p>}
-      <Button
-        variant="outline"
-        type="button"
-        onClick={() => void status.refetch()}
-      >
-        {ja ? "状態を再読み込み" : "Refresh status"}
-      </Button>
-      {(!status.isError ? status.data : undefined)?.map(
-        ({ grant, execution, unavailable, semantic, human_requests }) => {
-          const expired =
-            Date.parse(grant.expires_at) <=
-            (clock.data ?? Number.POSITIVE_INFINITY);
-          const live = !grant.revoked && !expired;
-          const terminal =
-            execution &&
-            ["COMPLETED", "FAILED", "CANCELLED"].includes(execution.phase);
-          return (
-            <article className="detail-section" key={grant.id}>
-              <p>{grant.node_id}</p>
-              <p>
-                {grant.agent.id}@{grant.agent.version}
-              </p>
-              <dl>
-                <dt>{ja ? "許可" : "Grant"}</dt>
-                <dd>
-                  {grant.revoked
-                    ? ja
-                      ? "取り消し済み"
-                      : "Revoked"
-                    : expired
-                      ? ja
-                        ? "期限切れ"
-                        : "Expired"
-                      : ja
-                        ? "有効"
-                        : "Valid"}
-                  <code>{grant.id}</code>
-                </dd>
-                <dt>{ja ? "有効期限" : "Expires"}</dt>
-                <dd>{new Date(grant.expires_at).toLocaleString(locale)}</dd>
-                {execution && (
-                  <>
-                    <dt>{ja ? "受信・実行 ID" : "Admission / run ID"}</dt>
-                    <dd>
-                      <code>{execution.admission_id}</code>
-                    </dd>
-                    <dt>{ja ? "実行状態" : "Execution state"}</dt>
-                    <dd>
-                      <Badge value={execution.phase} />
-                      <Badge value={execution.control} />
-                    </dd>
-                  </>
+    <section
+      aria-label={ja ? "遠隔実行" : "Remote execution"}
+      className="grid min-w-0 gap-3 border-t border-border pt-4"
+    >
+      <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
+        <h3 className="text-[13px] font-semibold text-foreground">
+          {ja ? "遠隔実行" : "Remote execution"}
+        </h3>
+        <Button
+          variant="outline"
+          size="sm"
+          type="button"
+          onClick={() => void status.refetch()}
+        >
+          {ja ? "状態を再読み込み" : "Refresh status"}
+        </Button>
+      </div>
+      {status.isError && <Alert>{status.error.message}</Alert>}
+      {error && <Alert>{error}</Alert>}
+      <div className="grid min-w-0 divide-y divide-border border-y border-border">
+        {(!status.isError ? status.data : undefined)?.map(
+          ({ grant, execution, unavailable, semantic, human_requests }) => {
+            const expired =
+              Date.parse(grant.expires_at) <=
+              (clock.data ?? Number.POSITIVE_INFINITY);
+            const live = !grant.revoked && !expired;
+            const terminal =
+              execution &&
+              ["COMPLETED", "FAILED", "CANCELLED"].includes(execution.phase);
+            return (
+              <article className="grid min-w-0 gap-3 py-3" key={grant.id}>
+                <div className="grid min-w-0 gap-0.5">
+                  <p className="min-w-0 font-mono text-xs text-foreground [overflow-wrap:anywhere]">
+                    {grant.node_id}
+                  </p>
+                  <p className="min-w-0 font-mono text-xs text-muted-foreground [overflow-wrap:anywhere]">
+                    {grant.agent.id}@{grant.agent.version}
+                  </p>
+                </div>
+                <Facts
+                  items={[
+                    [
+                      ja ? "許可" : "Grant",
+                      <span className="flex min-w-0 flex-wrap items-center gap-2">
+                        <ToneBadge
+                          tone={
+                            grant.revoked || expired ? "warning" : "success"
+                          }
+                        >
+                          {grant.revoked
+                            ? ja
+                              ? "取り消し済み"
+                              : "Revoked"
+                            : expired
+                              ? ja
+                                ? "期限切れ"
+                                : "Expired"
+                              : ja
+                                ? "有効"
+                                : "Valid"}
+                        </ToneBadge>
+                        <code className="min-w-0 font-mono text-xs text-faint [overflow-wrap:anywhere]">
+                          {grant.id}
+                        </code>
+                      </span>,
+                    ],
+                    [
+                      ja ? "有効期限" : "Expires",
+                      new Date(grant.expires_at).toLocaleString(locale),
+                      true,
+                    ],
+                    ...(execution
+                      ? ([
+                          [
+                            ja ? "受信・実行 ID" : "Admission / run ID",
+                            execution.admission_id,
+                            true,
+                          ],
+                          [
+                            ja ? "実行状態" : "Execution state",
+                            <span className="flex flex-wrap items-center gap-1.5">
+                              <Badge value={execution.phase} />
+                              <Badge value={execution.control} />
+                            </span>,
+                          ],
+                        ] as const)
+                      : []),
+                  ]}
+                />
+                {live &&
+                  human_requests?.map((request) => (
+                    <RemoteHuman
+                      key={request.id}
+                      task={task}
+                      grant={grant.id}
+                      request={request}
+                    />
+                  ))}
+                {semantic && (
+                  <RemoteMemoryStatus
+                    status={semantic}
+                    provenanceUrl={`/api/tasks/${task}/remote-grants/${grant.id}/semantic`}
+                  />
                 )}
-              </dl>
-              {live &&
-                human_requests?.map((request) => (
-                  <RemoteHuman
-                    key={request.id}
+                {semantic?.reason === "invalidated" && (
+                  <RemoteFollowUp
                     task={task}
                     grant={grant.id}
-                    request={request}
+                    onCreated={() => client.invalidateQueries()}
                   />
-                ))}
-              {semantic && (
-                <RemoteMemoryStatus
-                  status={semantic}
-                  provenanceUrl={`/api/tasks/${task}/remote-grants/${grant.id}/semantic`}
-                />
-              )}
-              {semantic?.reason === "invalidated" && (
-                <RemoteFollowUp
-                  task={task}
-                  grant={grant.id}
-                  onCreated={() => client.invalidateQueries()}
-                />
-              )}
-              {unavailable && (
-                <p role="status">
-                  {ja
-                    ? "相手ノードに接続できません。再読み込みで状態を確認できます。"
-                    : "The destination is unavailable. Refresh to reconcile its durable state."}
-                </p>
-              )}
-              {execution?.error && (
-                <p role="alert">
-                  {ja
-                    ? "実行の確認が必要です。現在の権限と接続を確認してから再開してください。"
-                    : execution.error}
-                </p>
-              )}
-              {!terminal && (
-                <div className="button-row">
-                  {live && (!execution || execution.phase === "ADMITTED") && (
-                    <Button
-                      variant="outline"
-                      disabled={busy === grant.id}
-                      onClick={() => void act(grant.id, "activate")}
-                    >
-                      {ja ? "起動を再試行" : "Retry activation"}
-                    </Button>
-                  )}
-                  {execution && execution.phase !== "ADMITTED" && (
-                    <>
-                      {live &&
-                        execution.control === "PAUSED" &&
-                        semantic?.reason !== "invalidated" && (
+                )}
+                {unavailable && (
+                  <Hint role="status">
+                    {ja
+                      ? "相手ノードに接続できません。再読み込みで状態を確認できます。"
+                      : "The destination is unavailable. Refresh to reconcile its durable state."}
+                  </Hint>
+                )}
+                {execution?.error && (
+                  <Alert>
+                    {ja
+                      ? "実行の確認が必要です。現在の権限と接続を確認してから再開してください。"
+                      : execution.error}
+                  </Alert>
+                )}
+                {!terminal && (
+                  <div className="flex min-w-0 flex-wrap gap-2">
+                    {live && (!execution || execution.phase === "ADMITTED") && (
+                      <Button
+                        variant="outline"
+                        disabled={busy === grant.id}
+                        onClick={() => void act(grant.id, "activate")}
+                      >
+                        {ja ? "起動を再試行" : "Retry activation"}
+                      </Button>
+                    )}
+                    {execution && execution.phase !== "ADMITTED" && (
+                      <>
+                        {live &&
+                          execution.control === "PAUSED" &&
+                          semantic?.reason !== "invalidated" && (
+                            <Button
+                              variant="outline"
+                              disabled={busy === grant.id}
+                              onClick={() => void act(grant.id, "resume")}
+                            >
+                              {ja
+                                ? "権限を再確認して再開"
+                                : "Recheck authority and resume"}
+                            </Button>
+                          )}
+                        {execution.control === "ACTIVE" && (
                           <Button
                             variant="outline"
                             disabled={busy === grant.id}
-                            onClick={() => void act(grant.id, "resume")}
+                            onClick={() => void act(grant.id, "pause")}
                           >
-                            {ja
-                              ? "権限を再確認して再開"
-                              : "Recheck authority and resume"}
+                            {ja ? "一時停止" : "Pause"}
                           </Button>
                         )}
-                      {execution.control === "ACTIVE" && (
-                        <Button
-                          variant="outline"
-                          disabled={busy === grant.id}
-                          onClick={() => void act(grant.id, "pause")}
-                        >
-                          {ja ? "一時停止" : "Pause"}
-                        </Button>
-                      )}
-                      {execution.control !== "CANCELLED" && (
-                        <Button
-                          variant="outline"
-                          disabled={busy === grant.id}
-                          onClick={() => void act(grant.id, "cancel")}
-                        >
-                          {ja ? "実行を中止" : "Cancel execution"}
-                        </Button>
-                      )}
-                    </>
-                  )}
-                </div>
-              )}
-              {live &&
-                !terminal &&
-                execution &&
-                execution.phase !== "ADMITTED" && (
-                  <RemoteMessage task={task} grant={grant.id} />
+                        {execution.control !== "CANCELLED" && (
+                          <Button
+                            variant="destructive"
+                            disabled={busy === grant.id}
+                            onClick={() => void act(grant.id, "cancel")}
+                          >
+                            {ja ? "実行を中止" : "Cancel execution"}
+                          </Button>
+                        )}
+                      </>
+                    )}
+                  </div>
                 )}
-            </article>
-          );
-        },
-      )}
+                {live &&
+                  !terminal &&
+                  execution &&
+                  execution.phase !== "ADMITTED" && (
+                    <RemoteMessage task={task} grant={grant.id} />
+                  )}
+              </article>
+            );
+          },
+        )}
+      </div>
     </section>
   );
 }
@@ -234,38 +269,44 @@ function RemoteMessage({ task, grant }: { task: string; grant: string }) {
   }
   return (
     <form
+      className="grid min-w-0 gap-3"
       onSubmit={(event) => {
         event.preventDefault();
         void send();
       }}
     >
-      <label>
-        {ja ? "遠隔 Agent への追加指示" : "Instruction for the remote Agent"}
-        <textarea
+      <Field
+        label={
+          ja ? "遠隔 Agent への追加指示" : "Instruction for the remote Agent"
+        }
+      >
+        <Textarea
           required
           maxLength={16000}
           value={content}
           disabled={pending !== null}
           onChange={(event) => setContent(event.target.value)}
         />
-      </label>
-      {error && <p role="alert">{error}</p>}
+      </Field>
+      {error && <Alert>{error}</Alert>}
       {accepted && (
-        <p role="status">
+        <Hint role="status">
           {ja
             ? "指示の受理を確認しました。"
             : "Instruction acceptance confirmed."}
-        </p>
+        </Hint>
       )}
-      <Button variant="outline" disabled={busy || !content.trim()}>
-        {pending
-          ? ja
-            ? "同じ指示の受理を再確認"
-            : "Retry the same instruction"
-          : ja
-            ? "追加指示を送る"
-            : "Send instruction"}
-      </Button>
+      <div className="flex justify-end">
+        <Button type="submit" disabled={busy || !content.trim()}>
+          {pending
+            ? ja
+              ? "同じ指示の受理を再確認"
+              : "Retry the same instruction"
+            : ja
+              ? "追加指示を送る"
+              : "Send instruction"}
+        </Button>
+      </div>
     </form>
   );
 }
@@ -306,11 +347,13 @@ function RemoteHuman({
     }
   };
   return (
-    <section>
-      <p>{request.prompt}</p>
-      {error && <p role="alert">{error}</p>}
+    <div className="grid min-w-0 gap-3 border-l-2 border-warning pl-3">
+      <p className="whitespace-pre-wrap text-[13px] leading-relaxed text-foreground [overflow-wrap:anywhere]">
+        {request.prompt}
+      </p>
+      {error && <Alert>{error}</Alert>}
       {request.kind === "APPROVAL_REQUIRED" ? (
-        <div className="button-row">
+        <div className="flex min-w-0 flex-wrap gap-2">
           <Button
             disabled={busy}
             onClick={() => void answer({ approved: true })}
@@ -327,6 +370,7 @@ function RemoteHuman({
         </div>
       ) : (
         <form
+          className={formClass}
           onSubmit={(e) => {
             e.preventDefault();
             let value: unknown = response;
@@ -338,17 +382,20 @@ function RemoteHuman({
             void answer(value);
           }}
         >
-          <label>
-            {ja ? "応答" : "Response"}
-            <textarea
+          <Field label={ja ? "応答" : "Response"}>
+            <Textarea
               required
               value={response}
               onChange={(e) => setResponse(e.target.value)}
             />
-          </label>
-          <Button disabled={busy}>{ja ? "応答を送信" : "Send response"}</Button>
+          </Field>
+          <div className="flex justify-end">
+            <Button type="submit" disabled={busy}>
+              {ja ? "応答を送信" : "Send response"}
+            </Button>
+          </div>
         </form>
       )}
-    </section>
+    </div>
   );
 }
