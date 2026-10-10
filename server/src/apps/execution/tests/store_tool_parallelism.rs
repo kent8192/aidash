@@ -1,5 +1,5 @@
 //! The Node Tool Parallelism ceiling must fit beside the worker slots in the pool.
-use super::tool_parallelism;
+use super::{tool_parallelism, worker_pool_connections};
 use crate::Error;
 
 #[rstest::rstest]
@@ -33,4 +33,17 @@ fn tool_parallelism_rejects_invalid_or_unbacked_ceilings(
 		tool_parallelism(value, pool_connections),
 		Err(Error::Invalid(_))
 	));
+}
+
+#[rstest::rstest]
+#[case::sequential(1, 8)]
+#[case::two(2, 9)]
+#[case::four(4, 11)]
+fn worker_pool_adds_a_connection_for_each_extra_batched_call(
+	#[case] tool_parallelism: usize,
+	#[case] expected: usize,
+) {
+	// Four slots keep their outer transaction and step connection beside the
+	// batched calls that the batching slot's own step connection cannot serve.
+	assert_eq!(worker_pool_connections(tool_parallelism), expected);
 }

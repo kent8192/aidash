@@ -179,22 +179,22 @@ impl<'a> Executor<'a> {
 			.into_iter()
 			.map(|(offset, tool, input)| async move {
 				let key = &keys[offset];
+				// The slot covers every database connection of the call,
+				// including the one that records its result.
+				let _permit = match slots {
+					Some(slots) => Some(slots.acquire().await?),
+					None => None,
+				};
 				let output = match input {
 					Err(message) => json!({"error":message}),
-					Ok(input) => {
-						let _permit = match slots {
-							Some(slots) => Some(slots.acquire().await?),
-							None => None,
-						};
-						match tool.dispatch(admitted, input, key).await {
-							Ok(output) => output,
-							Err(
-								Error::Invalid(message)
-								| Error::Domain(aidash_domain::Error::Invalid(message)),
-							) => json!({"error":message}),
-							Err(error) => return Err(error),
-						}
-					}
+					Ok(input) => match tool.dispatch(admitted, input, key).await {
+						Ok(output) => output,
+						Err(
+							Error::Invalid(message)
+							| Error::Domain(aidash_domain::Error::Invalid(message)),
+						) => json!({"error":message}),
+						Err(error) => return Err(error),
+					},
 				};
 				store
 					.invocation_finish(admitted, token, key, &output)

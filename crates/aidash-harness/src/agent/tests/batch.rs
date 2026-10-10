@@ -103,7 +103,8 @@ fn read(path: &str) -> Value {
 	json!({"content": format!("contents of {path}")})
 }
 
-/// Counts one execution in flight until it returns or is dropped.
+/// Counts one execution or result recording in flight until it returns or is
+/// dropped; both hold a database connection on a Node.
 struct Flight<'a> {
 	lab: &'a Lab,
 	returned: bool,
@@ -528,18 +529,24 @@ impl ExecutionStore for Bench {
 		output: &Value,
 	) -> Result<()> {
 		assert_eq!(token, self.0.token);
-		let mut journal = self.0.journal.lock().unwrap();
-		let invocation = journal
-			.get_mut(key)
-			.expect("finished invocation was started");
-		assert_eq!(invocation.status, "STARTED", "{key} finished twice");
-		invocation.status = "COMPLETED";
-		invocation.result = Some(output.clone());
-		self.0
-			.finishes
-			.lock()
-			.unwrap()
-			.push((key.into(), output.clone()));
+		let mut flight = Flight::enter(&self.0.lab);
+		{
+			let mut journal = self.0.journal.lock().unwrap();
+			let invocation = journal
+				.get_mut(key)
+				.expect("finished invocation was started");
+			assert_eq!(invocation.status, "STARTED", "{key} finished twice");
+			invocation.status = "COMPLETED";
+			invocation.result = Some(output.clone());
+			self.0
+				.finishes
+				.lock()
+				.unwrap()
+				.push((key.into(), output.clone()));
+		}
+		// The recording connection stays busy after the row is written.
+		tokio::time::sleep(Duration::from_millis(10)).await;
+		flight.returned = true;
 		Ok(())
 	}
 	async fn reconciliation_request(
@@ -1131,7 +1138,7 @@ async fn infrastructure_error_lets_siblings_finish_and_reuses_them_later() {
 #[tokio::test]
 async fn concurrent_runs_share_the_node_ceiling_without_deadlock() {
 	// Arrange: two workers on one Node, each with a batch of two; every call
-	// holds its slot until some other call overlaps it.
+	// holds its slot until some other call overlaps it and its result is recorded.
 	let lab = Lab::rendezvous();
 	let slots = ToolSlots::new(2);
 	let (first, mut first_run) = bench(&lab, &["file_read", "file_read"], 2, Some(slots.clone()));

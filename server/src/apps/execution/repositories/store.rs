@@ -49,13 +49,20 @@ pub struct Store {
 	pub tool_slots: aidash_application::ports::execution::ToolSlots,
 }
 
-/// Data connections of each runtime worker pool.
-const WORKER_POOL_CONNECTIONS: usize = 8;
-/// Worker slots are capped at four, each holding an outer authority transaction.
+/// Worker slots are capped at four. Each holds an outer authority transaction
+/// and at most one data connection for the step it is running, including a
+/// sequential tool call.
 const MAX_WORKER_SLOTS: usize = 4;
-/// Each concurrent call holds one data connection for its inner transaction,
-/// beside the worker slots' outer transactions, so the worker pool bounds it.
-const MAX_TOOL_PARALLELISM: usize = WORKER_POOL_CONNECTIONS - MAX_WORKER_SLOTS;
+/// Data connections of each runtime worker pool without Tool Batches.
+const WORKER_POOL_CONNECTIONS: usize = 2 * MAX_WORKER_SLOTS;
+const MAX_TOOL_PARALLELISM: usize = 4;
+
+/// A slot running a Tool Batch serves one of its calls with its own step
+/// connection. Tool Slots admit at most `tool_parallelism` batched calls across
+/// the process, so the others need connections beside every other slot's step.
+fn worker_pool_connections(tool_parallelism: usize) -> usize {
+	WORKER_POOL_CONNECTIONS + tool_parallelism.max(1) - 1
+}
 
 /// The process Tool Parallelism ceiling from `AIDASH_TOOL_PARALLELISM`; a pool
 /// of `pool_connections` must leave the same headroom beside the worker slots.
@@ -281,7 +288,7 @@ impl Store {
 			.pool
 			.options()
 			.clone()
-			.max_connections(WORKER_POOL_CONNECTIONS as u32)
+			.max_connections(worker_pool_connections(self.tool_slots.ceiling()) as u32)
 			.idle_timeout(std::time::Duration::from_secs(10))
 			.connect_with(self.pool.connect_options().as_ref().clone())
 			.await?;
