@@ -180,6 +180,7 @@ async fn worker_mint_and_broker_audit_are_correlated_and_never_log_secrets() {
 			media_routes: vec![],
 			cost: json!({}),
 			projection_versions: vec![],
+			cache_mode: None,
 		},
 		Arc::new(access),
 		context,
@@ -193,6 +194,7 @@ async fn worker_mint_and_broker_audit_are_correlated_and_never_log_secrets() {
 			max_output_tokens: 10,
 			content_parts: vec![],
 			cache_scope: None,
+			cache_breakpoints: false,
 		})
 		.await
 		.unwrap_err();

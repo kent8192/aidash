@@ -35,6 +35,12 @@ pub struct ModelRequest {
 	/// request metadata and its inference digest stay byte-identical.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub cache_scope: Option<crate::projection::CacheScope>,
+	/// Mark the end of `system` and of the Ordered Stable Prefix part with
+	/// `cache_control` (ADR 0019). The volatile part is never marked. Valid for
+	/// Ordered requests only; omitted when false, so other request metadata and
+	/// inference digests keep their bytes.
+	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
+	pub cache_breakpoints: bool,
 }
 
 /// Model-visible context in the shape fixed by the Run's Projection Version.
@@ -231,6 +237,11 @@ impl ContentPart {
 	}
 }
 
+/// A five-minute provider cache breakpoint, the provider default (ADR 0019).
+fn cache_control() -> Value {
+	json!({"type":"ephemeral"})
+}
+
 impl ModelRequest {
 	fn media_tokens(parts: &[ContentPart]) -> usize {
 		parts.iter().fold(0_usize, |total, part| {
@@ -281,23 +292,43 @@ impl ModelRequest {
 	/// context is encoded as message text, including its JSON escaping. A salted
 	/// request's Tenant Cache Salt is prepended by the transport adapter only.
 	pub fn input_body(&self) -> Value {
-		self.body(self.content_parts.iter().map(ContentPart::openrouter))
+		self.body(
+			self.content_parts.iter().map(ContentPart::openrouter),
+			self.cache_breakpoints,
+		)
 	}
 
-	fn body(&self, parts: impl Iterator<Item = Value>) -> Value {
+	/// `breakpoints` marks `system` and the Ordered Stable Prefix part; it has
+	/// no effect on a Legacy context.
+	fn body(&self, parts: impl Iterator<Item = Value>, breakpoints: bool) -> Value {
 		let mut parts = parts.peekable();
 		let text = self.context.text_parts();
+		let breakpoints = breakpoints && matches!(self.context, ModelContext::Ordered(_));
 		let content = match (&self.context, parts.peek()) {
 			(ModelContext::Legacy(_), None) => Value::String(text.concat()),
 			_ => Value::Array(
 				text.into_iter()
-					.map(|text| json!({"type":"text","text":text}))
+					.enumerate()
+					.map(|(index, text)| {
+						let mut part = json!({"type":"text","text":text});
+						// The Stable Prefix part comes first; the volatile part
+						// after it changes every step and is never cached.
+						if breakpoints && index == 0 {
+							part["cache_control"] = cache_control();
+						}
+						part
+					})
 					.chain(parts)
 					.collect(),
 			),
 		};
+		let system = if breakpoints {
+			json!([{"type":"text","text":self.instructions,"cache_control":cache_control()}])
+		} else {
+			json!(self.instructions)
+		};
 		let mut body = json!({"messages":[
-			{"role":"system","content":self.instructions},
+			{"role":"system","content":system},
 			{"role":"user","content":content}]});
 		if !self.tools.is_empty() {
 			body["tools"] = Value::Array(self.tools.iter().map(|t| json!({"type":"function","function":{"name":t.name,"description":t.description,"parameters":t.parameters}})).collect());
@@ -315,7 +346,9 @@ impl ModelRequest {
 		// Base64 is a transport encoding, not text for the model tokenizer.
 		// Keep the transmitted array framing, excluding only encoded media
 		// payload bytes, and reserve a bounded media estimate.
-		let body = self.body(parts.iter().map(ContentPart::estimate_frame));
+		// Ordered estimates always count cache breakpoint framing, so whether a
+		// step carries breakpoints never changes a fitting decision (ADR 0019).
+		let body = self.body(parts.iter().map(ContentPart::estimate_frame), true);
 		let salt = if self.cache_scope.is_some() {
 			crate::projection::CACHE_SALT_LINE_RESERVE
 		} else {
@@ -330,6 +363,11 @@ impl ModelRequest {
 	}
 
 	pub fn validate(&self) -> Result<()> {
+		if self.cache_breakpoints && !matches!(self.context, ModelContext::Ordered(_)) {
+			return Err(Error::Invalid(
+				"cache breakpoints require the Ordered Projection Version".into(),
+			));
+		}
 		for part in &self.content_parts {
 			part.validate()?;
 		}
@@ -393,3 +431,5 @@ impl ModelRequest {
 
 #[cfg(test)]
 mod admission_tests;
+#[cfg(test)]
+mod cache_breakpoint_tests;

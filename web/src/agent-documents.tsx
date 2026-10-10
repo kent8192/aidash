@@ -1,4 +1,6 @@
 import { Button } from "./components/ui/button";
+import { Input } from "./components/ui/input";
+import { Alert, Disclosure, Group, Hint, Pre } from "./components/patterns";
 import { useRef, useState } from "react";
 import { Field, useI18n } from "./ui";
 import type { ReferenceDocument } from "./generated/models";
@@ -80,11 +82,10 @@ export function AgentDocuments({
   const [busy, setBusy] = useState(false);
   const sequence = useRef(0);
   return (
-    <fieldset>
-      <legend>{t("agentDocuments")}</legend>
-      <p className="muted">{t("agentDocumentsHelp")}</p>
+    <Group legend={t("agentDocuments")}>
+      <Hint>{t("agentDocumentsHelp")}</Hint>
       <Field label={t("documentUpload")}>
-        <input
+        <Input
           type="file"
           accept=".pdf,.xlsx,.txt,.md,.csv"
           multiple
@@ -122,32 +123,31 @@ export function AgentDocuments({
           }}
         />
       </Field>
-      {busy && <p role="status">{t("documentReading")}</p>}
-      {error && <p role="alert">{error}</p>}
-      {documents.map((document, index) => (
-        <div key={`${index}-${document.name}`}>
-          <details>
-            <summary>{document.name}</summary>
-            <pre
-              style={{
-                whiteSpace: "pre-wrap",
-                maxHeight: 200,
-                overflow: "auto",
-              }}
+      {busy && <Hint role="status">{t("documentReading")}</Hint>}
+      {error && <Alert>{error}</Alert>}
+      {documents.length > 0 && (
+        <ul className="grid min-w-0 gap-2">
+          {documents.map((document, index) => (
+            <li
+              key={`${index}-${document.name}`}
+              className="flex min-w-0 items-start gap-2"
             >
-              {document.text}
-            </pre>
-          </details>
-          <Button
-            variant="outline"
-            type="button"
-            disabled={busy}
-            onClick={() => change(documents.filter((_, i) => i !== index))}
-          >
-            {t("remove")} · {document.name}
-          </Button>
-        </div>
-      ))}
-    </fieldset>
+              <Disclosure summary={document.name} className="min-w-0 flex-1">
+                <Pre>{document.text}</Pre>
+              </Disclosure>
+              <Button
+                variant="ghost"
+                size="sm"
+                type="button"
+                disabled={busy}
+                onClick={() => change(documents.filter((_, i) => i !== index))}
+              >
+                {t("remove")} · {document.name}
+              </Button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </Group>
   );
 }

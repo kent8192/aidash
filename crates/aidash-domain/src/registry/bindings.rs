@@ -163,6 +163,10 @@ pub struct AgentBindings {
 	/// their digests and Binding snapshots stay byte-identical.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub projection_version: Option<crate::projection::ProjectionVersion>,
+	/// Prompt-caching opt-in pinned by every Run of this Agent (ADR 0019).
+	/// Omitted means `off` and is not serialized, like `projection_version`.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub prompt_cache: Option<crate::projection::PromptCache>,
 }
 impl AgentBindings {
 	pub fn validate(&self) -> Result<()> {

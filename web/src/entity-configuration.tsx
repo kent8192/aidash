@@ -1,4 +1,8 @@
 import { Button } from "./components/ui/button";
+import { Input } from "./components/ui/input";
+import { NativeSelect } from "./components/ui/native-select";
+import { Textarea } from "./components/ui/textarea";
+import { Alert, Check, Group, Hint, pairClass } from "./components/patterns";
 import { useQuery } from "@tanstack/react-query";
 import { discover } from "./generated/aidash";
 import { ReferenceName } from "./record-view";
@@ -94,15 +98,15 @@ function Arguments({
       fields.map((field, i) => (i === index ? { ...field, ...patch } : field)),
     );
   return (
-    <fieldset className="argument-fields">
-      <legend>{t("toolArguments")}</legend>
+    <Group nested legend={t("toolArguments")}>
       {fields.map((field, index) => (
-        <fieldset key={field.key}>
-          <legend>
-            {t("toolArgument")} {index + 1}
-          </legend>
+        <Group
+          nested
+          key={field.key}
+          legend={`${t("toolArgument")} ${index + 1}`}
+        >
           <Field label={t("toolArgumentName")}>
-            <input
+            <Input
               required
               value={field.name}
               ref={(input) => {
@@ -118,7 +122,7 @@ function Arguments({
             />
           </Field>
           <Field label={t("toolArgumentType")}>
-            <select
+            <NativeSelect
               value={field.type}
               onChange={(event) => update(index, { type: event.target.value })}
             >
@@ -134,10 +138,10 @@ function Arguments({
                   {t(`argument_${type}`)}
                 </option>
               ))}
-            </select>
+            </NativeSelect>
           </Field>
           <Field label={t("description")}>
-            <input
+            <Input
               value={field.description}
               onChange={(event) =>
                 update(index, { description: event.target.value })
@@ -146,7 +150,7 @@ function Arguments({
           </Field>
           {["string", "number", "integer", "boolean"].includes(field.type) && (
             <Field label={t("toolArgumentEnum")}>
-              <input
+              <Input
                 value={field.enumValues}
                 placeholder={t("toolArgumentEnumPlaceholder")}
                 onChange={(event) =>
@@ -157,7 +161,7 @@ function Arguments({
           )}
           {field.type === "string" && (
             <Field label={t("toolArgumentPattern")}>
-              <input
+              <Input
                 value={field.pattern}
                 onChange={(event) =>
                   update(index, { pattern: event.target.value })
@@ -166,9 +170,9 @@ function Arguments({
             </Field>
           )}
           {(field.type === "number" || field.type === "integer") && (
-            <div className="two-columns">
+            <div className={pairClass}>
               <Field label={t("toolArgumentMinimum")}>
-                <input
+                <Input
                   type="number"
                   value={field.minimum}
                   onChange={(event) =>
@@ -177,7 +181,7 @@ function Arguments({
                 />
               </Field>
               <Field label={t("toolArgumentMaximum")}>
-                <input
+                <Input
                   type="number"
                   value={field.maximum}
                   onChange={(event) =>
@@ -187,19 +191,17 @@ function Arguments({
               </Field>
             </div>
           )}
-          <label className="check">
-            <input
-              type="checkbox"
-              checked={field.required}
-              onChange={(event) =>
-                update(index, { required: event.target.checked })
-              }
-            />
+          <Check
+            checked={field.required}
+            onChange={(event) =>
+              update(index, { required: event.target.checked })
+            }
+          >
             {t("toolArgumentRequired")}
-          </label>
+          </Check>
           {field.type === "array" && (
             <Field label={t("toolItemType")}>
-              <select
+              <NativeSelect
                 value={field.items}
                 onChange={(event) =>
                   update(index, { items: event.target.value })
@@ -212,7 +214,7 @@ function Arguments({
                     </option>
                   ),
                 )}
-              </select>
+              </NativeSelect>
             </Field>
           )}
           {(field.type === "object" ||
@@ -223,17 +225,21 @@ function Arguments({
             />
           )}
           <Button
-            variant="outline"
+            variant="ghost"
+            size="sm"
             type="button"
+            className="justify-self-start"
             onClick={() => change(fields.filter((_, i) => i !== index))}
           >
             {t("toolRemoveArgument")}
           </Button>
-        </fieldset>
+        </Group>
       ))}
       <Button
         variant="outline"
+        size="sm"
         type="button"
+        className="justify-self-start"
         onClick={() =>
           change([
             ...fields,
@@ -255,7 +261,7 @@ function Arguments({
       >
         {t("toolAddArgument")}
       </Button>
-    </fieldset>
+    </Group>
   );
 }
 
@@ -392,7 +398,7 @@ export function EntityConfiguration({
               : {};
   const agentSelect = (
     <Field label={t(kind === "cluster" ? "clusterCoordinator" : "toolAgent")}>
-      <select
+      <NativeSelect
         required
         value={agent}
         onChange={(event) => setAgent(event.target.value)}
@@ -406,7 +412,7 @@ export function EntityConfiguration({
             {entityLabel(entry)}
           </option>
         ))}
-      </select>
+      </NativeSelect>
     </Field>
   );
   return (
@@ -415,7 +421,7 @@ export function EntityConfiguration({
       {(kind === "memory" || kind === "source") && (
         <>
           <Field label="Context source">
-            <select
+            <NativeSelect
               name="context_adapter"
               value={sourceAdapter}
               onChange={(e) => {
@@ -437,7 +443,7 @@ export function EntityConfiguration({
                   {a === "native_memory" ? "Native memory" : a}
                 </option>
               ))}
-            </select>
+            </NativeSelect>
           </Field>
           {sourceAdapter === "native_memory" ? (
             <MemoryRegistryFields
@@ -447,7 +453,7 @@ export function EntityConfiguration({
             />
           ) : (
             <Field label="Source settings (JSON)">
-              <textarea
+              <Textarea
                 key={sourceAdapter}
                 value={sourceValue}
                 onChange={(e) => {
@@ -480,7 +486,7 @@ export function EntityConfiguration({
             }}
           />
           <Field label={t("instructions")}>
-            <textarea
+            <Textarea
               required
               rows={6}
               value={instructions}
@@ -490,41 +496,39 @@ export function EntityConfiguration({
         </>
       )}
       {kind === "bundle" && (
-        <fieldset>
-          <legend>Bundle members</legend>
+        <Group legend="Bundle members">
           {data.registry
             .filter((e) => e.kind === "tool" || e.kind === "bundle")
             .map((entry) => {
               const key = `${entry.id}@${entry.version}`;
               return (
-                <label className="check" key={key}>
-                  <input
-                    type="checkbox"
-                    checked={members.includes(key)}
-                    disabled={members.some(
-                      (member) =>
-                        member !== key && member.startsWith(`${entry.id}@`),
-                    )}
-                    onChange={(e) =>
-                      setMembers(
-                        e.target.checked
-                          ? [...members, key]
-                          : members.filter((m) => m !== key),
-                      )
-                    }
-                  />
+                <Check
+                  key={key}
+                  checked={members.includes(key)}
+                  disabled={members.some(
+                    (member) =>
+                      member !== key && member.startsWith(`${entry.id}@`),
+                  )}
+                  onChange={(e) =>
+                    setMembers(
+                      e.target.checked
+                        ? [...members, key]
+                        : members.filter((m) => m !== key),
+                    )
+                  }
+                >
                   {entityLabel(entry)} · {entry.version}
-                </label>
+                </Check>
               );
             })}
-        </fieldset>
+        </Group>
       )}
       {kind === "cluster" && agentSelect}
-      {kind === "node" && <p className="muted">{t("nodeNoConfiguration")}</p>}
+      {kind === "node" && <Hint>{t("nodeNoConfiguration")}</Hint>}
       {kind === "tool" && (
         <>
           <Field label={t("toolTransport")}>
-            <select
+            <NativeSelect
               value={transport}
               onChange={(event) => setTransport(event.target.value)}
             >
@@ -533,10 +537,11 @@ export function EntityConfiguration({
                   {t(`toolTransport_${value}`)}
                 </option>
               ))}
-            </select>
+            </NativeSelect>
           </Field>
           <Field label="Stable alias">
-            <input
+            <Input
+              className="font-mono text-xs"
               required
               value={alias}
               pattern="[A-Za-z0-9_-]{1,64}"
@@ -546,24 +551,22 @@ export function EntityConfiguration({
           {(transport === "http" || transport === "mcp") && (
             <>
               <Field label={t("endpoint")}>
-                <input
+                <Input
                   type="url"
                   required
                   value={endpoint}
                   onChange={(event) => setEndpoint(event.target.value)}
                 />
               </Field>
-              <label className="check">
-                <input
-                  type="checkbox"
-                  checked={authenticated}
-                  onChange={(event) => setAuthenticated(event.target.checked)}
-                />
+              <Check
+                checked={authenticated}
+                onChange={(event) => setAuthenticated(event.target.checked)}
+              >
                 {t("configuredCredentials")}
-              </label>
+              </Check>
               {authenticated && (
                 <Field label={t("credentials")}>
-                  <input
+                  <Input
                     required
                     value={credentialEnv}
                     onChange={(event) => setCredentialEnv(event.target.value)}
@@ -572,7 +575,7 @@ export function EntityConfiguration({
               )}
               {transport === "mcp" && (
                 <Field label={t("toolRemoteName")}>
-                  <input
+                  <Input
                     required
                     value={toolName}
                     onChange={(event) => setToolName(event.target.value)}
@@ -580,7 +583,7 @@ export function EntityConfiguration({
                 </Field>
               )}
               <Field label={t("toolReplay")}>
-                <select
+                <NativeSelect
                   value={replay}
                   onChange={(event) => setReplay(event.target.value)}
                 >
@@ -589,11 +592,11 @@ export function EntityConfiguration({
                       {t(`toolReplay_${value}`)}
                     </option>
                   ))}
-                </select>
+                </NativeSelect>
               </Field>
               {transport === "mcp" && replay === "idempotent" && (
                 <Field label={t("toolIdempotency")}>
-                  <input
+                  <Input
                     required
                     value={idempotency}
                     onChange={(event) => setIdempotency(event.target.value)}
@@ -605,7 +608,7 @@ export function EntityConfiguration({
           {transport === "agent" && (
             <>
               <Field label={t("node")}>
-                <select
+                <NativeSelect
                   value={node}
                   onChange={(event) => {
                     setNode(event.target.value);
@@ -626,28 +629,25 @@ export function EntityConfiguration({
                         <ReferenceName id={peer.node_id} />
                       </option>
                     ))}
-                </select>
+                </NativeSelect>
               </Field>
               {node === data.node.id ? (
                 agentSelect
               ) : (
                 <>
-                  {remoteError && <p role="alert">{remoteError}</p>}
                   {remoteError && (
-                    <Button
-                      variant="outline"
-                      type="button"
-                      onClick={() => void discovery.refetch()}
-                    >
-                      {t("retry")}
-                    </Button>
+                    <Alert retry={() => void discovery.refetch()}>
+                      {remoteError}
+                    </Alert>
                   )}
                   {(manualRemote ||
                     remoteError ||
                     (!discovery.isPending && remoteAgents.length === 0)) && (
                     <Button
                       variant="outline"
+                      size="sm"
                       type="button"
+                      className="justify-self-start"
                       onClick={() => {
                         setManualRemote(!manualRemote);
                         setRemoteId("");
@@ -664,7 +664,7 @@ export function EntityConfiguration({
                   {manualRemote ? (
                     <>
                       <Field label={t("toolRemoteAgentReference")}>
-                        <input
+                        <Input
                           required
                           pattern="[a-zA-Z0-9][a-zA-Z0-9._-]{0,99}"
                           value={remoteId}
@@ -672,7 +672,7 @@ export function EntityConfiguration({
                         />
                       </Field>
                       <Field label={t("toolRemoteAgentVersion")}>
-                        <input
+                        <Input
                           required
                           value={remoteVersion}
                           onChange={(event) =>
@@ -683,7 +683,7 @@ export function EntityConfiguration({
                     </>
                   ) : (
                     <Field label={t("toolRemoteAgentId")}>
-                      <select
+                      <NativeSelect
                         required
                         value={
                           remoteAgents.some(
@@ -714,7 +714,7 @@ export function EntityConfiguration({
                             {remoteLabel(entity)}
                           </option>
                         ))}
-                      </select>
+                      </NativeSelect>
                     </Field>
                   )}
                 </>
@@ -723,7 +723,7 @@ export function EntityConfiguration({
           )}
           {transport === "agent" ? (
             <>
-              <p className="muted">{t("toolTaskArguments")}</p>
+              <Hint>{t("toolTaskArguments")}</Hint>
               <input
                 type="hidden"
                 name="schema"

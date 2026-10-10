@@ -306,12 +306,12 @@ test("subject expands only direct authorized peers and clears remote details on 
     .click();
   const inspector = page.getByRole("complementary", { name: "Node details" });
   await expect(inspector).toContainText(goal);
-  await page
-    .getByRole("banner")
-    .getByRole("searchbox")
-    .fill("unique search phrase");
+  const search = page.getByRole("searchbox", {
+    name: "Search nodes, tasks, agents, or artifacts…",
+  });
+  await search.fill("unique search phrase");
   await expect(list).toContainText("Full authorized Goal body.");
-  await page.getByRole("banner").getByRole("searchbox").fill("");
+  await search.fill("");
   await list.getByRole("button", { name: "B Task" }).click();
   await expect(inspector).not.toContainText("LOCAL-ONLY-DESCRIPTION");
   await expect(inspector).toContainText("task.started");
@@ -744,6 +744,8 @@ test("compact Japanese view replaces page windows and clears outages and forged 
     });
   });
   await page.goto("/graph");
+  // At compact widths peer controls live in the collapsible filter panel.
+  await page.getByRole("button", { name: "フィルター", exact: true }).click();
   await page.getByRole("button", { name: "ノードを展開" }).click();
   await expect(
     page.locator(".mesh-node-label").filter({ hasText: "B最初のページ" }),

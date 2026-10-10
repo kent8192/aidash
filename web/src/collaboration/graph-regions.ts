@@ -201,26 +201,27 @@ export function graphRegionPositions(
               a.id.localeCompare(b.id)
             );
           });
-        const columns = kind === "shared" ? 3 : 2;
+        const columns = kind === "shared" || members.length > 4 ? 3 : 2;
         const rows = Math.ceil(members.length / columns);
-        const dx = kind === "shared" ? 175 : 205;
+        // Spacing fits the canvas tiles (agent 176x48, resources 156x44) with hairline gaps.
+        const dx = kind === "shared" ? 180 : 200;
         members.forEach((node, index) => {
           positions[node.id] = {
             x: 270 + column * 660 + (index % columns) * dx,
-            y: y + 75 + Math.floor(index / columns) * 125,
+            y: y + 64 + Math.floor(index / columns) * 84,
           };
         });
-        height = Math.max(height, Math.max(rows, 1) * 125 + 120);
+        height = Math.max(height, Math.max(rows, 1) * 84 + 96);
       });
       y += height;
     }
-    if (row.length) y += 95;
+    if (row.length) y += 72;
   }
   graph.nodes
     .filter((node) => node.kind === "human")
     .sort((a, b) => a.id.localeCompare(b.id))
     .forEach((node, index) => {
-      positions[node.id] = { x: 80, y: 90 + index * 125 };
+      positions[node.id] = { x: 30, y: 90 + index * 84 };
     });
   return positions;
 }

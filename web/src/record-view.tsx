@@ -1,4 +1,5 @@
 import { createContext, useContext, type ReactNode } from "react";
+import { NativeSelect } from "./components/ui/native-select";
 import type { State } from "./types";
 import { JsonView, useEntityLabel, useEntityName, useI18n } from "./ui";
 import { presentRecord } from "./record-presentation";
@@ -96,7 +97,7 @@ export function PeerSelect({
   const data = useContext(DisplayState);
   const { t } = useI18n();
   return (
-    <select
+    <NativeSelect
       id={id}
       name={name}
       required
@@ -112,6 +113,6 @@ export function PeerSelect({
       {initial && !data?.peers.some((peer) => peer.node_id === initial) && (
         <option value={initial}>{t("unavailableEntity")}</option>
       )}
-    </select>
+    </NativeSelect>
   );
 }

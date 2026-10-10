@@ -4,10 +4,11 @@ export async function selectDashboardLanguage(
   page: Page,
   locale: "ja-JP" | "en-US",
 ) {
-  const accountMenu = page.locator(".account-popover");
-  await accountMenu.locator("summary").click();
+  await page
+    .getByRole("button", { name: /^(Account settings|アカウント設定)$/ })
+    .click();
   await page.getByTestId("language-selector").selectOption(locale);
-  await accountMenu.locator("summary").click();
+  await page.keyboard.press("Escape");
 }
 
 /** Keep legacy Bearer API fixtures while exercising the OIDC dashboard UI. */
