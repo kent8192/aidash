@@ -11,12 +11,7 @@ import {
 import { cn } from "../lib/utils";
 import { ReferenceName } from "../record-view";
 import { lazy, Suspense, useState } from "react";
-import {
-  Check,
-  Loading,
-  Notice,
-  ScreenHeader,
-} from "../components/patterns";
+import { Check, Loading, Notice, ScreenHeader } from "../components/patterns";
 import type { State, Discovery, Run } from "../types";
 import { Badge, useI18n, useAgentLabel } from "../ui";
 import {

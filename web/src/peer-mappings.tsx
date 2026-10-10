@@ -147,7 +147,9 @@ export function PeerMappings({
                     </span>
                     {" · "}
                     {t("revision")}{" "}
-                    <span className="font-mono tabular">{mapping.revision}</span>
+                    <span className="font-mono tabular">
+                      {mapping.revision}
+                    </span>
                   </span>
                 </div>
                 <Badge

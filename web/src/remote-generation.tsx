@@ -10,13 +10,7 @@ import { ApiError, apiFetch } from "./transport";
 import { Field, useI18n } from "./ui";
 import { Input } from "./components/ui/input";
 import { Textarea } from "./components/ui/textarea";
-import {
-  Alert,
-  Check,
-  Disclosure,
-  Facts,
-  Hint,
-} from "./components/patterns";
+import { Alert, Check, Disclosure, Facts, Hint } from "./components/patterns";
 import type { Entry } from "./types";
 import {
   HomeNativeMemoryFields,

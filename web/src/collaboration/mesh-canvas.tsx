@@ -822,11 +822,7 @@ export function MeshCanvas({
           className="block h-[92px] w-[132px]"
         />
       </button>
-      <div
-        className={floatingToolbar}
-        role="group"
-        aria-label={copy.camera}
-      >
+      <div className={floatingToolbar} role="group" aria-label={copy.camera}>
         <Button
           variant="ghost"
           size="icon"

@@ -755,7 +755,8 @@ function PolicyEditor({
           </NativeSelect>
         </Field>
       </Section>
-      <Section level={3}
+      <Section
+        level={3}
         title={t("permissions")}
         description={t("generationPermissionsHelp")}
       >
@@ -789,7 +790,8 @@ function PolicyEditor({
           />
         </Field>
       </Section>
-      <Section level={3}
+      <Section
+        level={3}
         title={t("generationCompaction")}
         description={t("generationCompactionHelp")}
       >
@@ -840,7 +842,8 @@ function PolicyEditor({
           </div>
         )}
       </Section>
-      <Section level={3}
+      <Section
+        level={3}
         title={t("generationEmbedding")}
         description={t("generationEmbeddingHelp")}
       >
@@ -891,7 +894,8 @@ function PolicyEditor({
           </div>
         )}
       </Section>
-      <Section level={3}
+      <Section
+        level={3}
         title={t("generationLimits")}
         description={t("generationBudgetHelp")}
       >
@@ -1008,7 +1012,10 @@ function RequestDetail({
   const config = request.definition.config as AgentFields;
   const pinnedRows = pinned.data
     ? ([
-        [t("generationRoles"), pinned.data.permissions.roles?.join(", ") || "-"],
+        [
+          t("generationRoles"),
+          pinned.data.permissions.roles?.join(", ") || "-",
+        ],
         [
           t("generationGroups"),
           pinned.data.permissions.groups?.join(", ") || "-",
@@ -1312,9 +1319,7 @@ export function GenerationAssignForm({
             {t("generationAssignHelp")}
           </p>
         </div>
-        {policies.isError && (
-          <Alert>{policies.error.message}</Alert>
-        )}
+        {policies.isError && <Alert>{policies.error.message}</Alert>}
         <Field label={t("generationPolicy")}>
           <NativeSelect name="policy" required defaultValue="">
             <option value="">{t("choose")}</option>

@@ -155,11 +155,7 @@ export function MeshView({
               >
                 <ReferenceName id={node} />
               </text>
-              <text
-                x={i * 300 + 64}
-                y={74}
-                className="fill-faint text-[11px]"
-              >
+              <text x={i * 300 + 64} y={74} className="fill-faint text-[11px]">
                 {nodeAgents.length} {t("agents")}
               </text>
               {nodeAgents.map((a, j) => {

@@ -133,7 +133,9 @@ test("renders mesh groups and navigates node details, tasks and the existing rel
   await expect(
     inspector.getByRole("heading", { name: "Build Prototype", exact: true }),
   ).toBeVisible();
-  await inspector.getByRole("tab", { name: "Connections", exact: true }).click();
+  await inspector
+    .getByRole("tab", { name: "Connections", exact: true })
+    .click();
   await expect(inspector.locator(".mesh-relations-list")).toContainText(
     "prerequisite for",
   );

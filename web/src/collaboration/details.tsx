@@ -6,7 +6,13 @@ import { RemoteMemoryProvenance, RemoteRunManagement } from "./remote-memory";
 import { RemoteExecutions } from "./remote-executions";
 import { ReferenceName } from "../record-view";
 import { RecordView } from "../record-view";
-import { Alert, Disclosure, Facts, Hint, formClass } from "../components/patterns";
+import {
+  Alert,
+  Disclosure,
+  Facts,
+  Hint,
+  formClass,
+} from "../components/patterns";
 import { useRef, useState } from "react";
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import {
