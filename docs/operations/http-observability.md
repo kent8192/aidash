@@ -10,19 +10,21 @@ No cluster-wide quota or automatic request retry is introduced.
 
 ## Configuration
 
-| Variable                        | Default | Meaning                                                                            |
-| ------------------------------- | ------- | ---------------------------------------------------------------------------------- |
-| `AIDASH_HTTP_TIMEOUT_SECONDS`   | `30`    | Deadline until the response headers are returned (1–3600 seconds)                  |
-| `AIDASH_HTTP_CONCURRENCY`       | `128`   | Shared in-flight response futures (1–65536)                                        |
-| `AIDASH_SSE_CONNECTIONS`        | `128`   | Active SSE response bodies (1–65536)                                               |
-| `AIDASH_AUTH_RATE_BURST`        | `30`    | `/auth/*` burst per socket peer IP; refill one request every 2 seconds             |
-| `AIDASH_API_RATE_BURST`         | `120`   | Authenticated API burst per tenant/subject, or operator; refill 10 requests/second |
-| `AIDASH_PEER_RATE_BURST`        | `240`   | Federation burst per authenticated node; refill 20 requests/second                 |
-| `AIDASH_AUTH_RATE_PERIOD_MS`    | `2000`  | Refill interval per auth request                                                   |
-| `AIDASH_AUTH_TRUSTED_PROXY_IPS` | unset   | Comma-separated exact proxy IPs allowed to provide a single `X-Real-IP`            |
-| `AIDASH_API_RATE_PERIOD_MS`     | `100`   | Refill interval per API request                                                    |
-| `AIDASH_PEER_RATE_PERIOD_MS`    | `50`    | Refill interval per federation request                                             |
-| `AIDASH_METRICS_LISTEN`         | unset   | Optional separate Prometheus listener, for example `127.0.0.1:9090`                |
+| Variable                               | Default | Meaning                                                                                                                |
+| -------------------------------------- | ------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `AIDASH_HTTP_TIMEOUT_SECONDS`          | `30`    | Deadline until the response headers are returned (1–3600 seconds)                                                      |
+| `AIDASH_HTTP_CONCURRENCY`              | `128`   | Shared in-flight response futures (1–65536)                                                                            |
+| `AIDASH_SSE_CONNECTIONS`               | `128`   | Active SSE response bodies (1–65536)                                                                                   |
+| `AIDASH_AUTH_RATE_BURST`               | `30`    | `/auth/*` burst per socket peer IP, except discovery; refill one request every 2 seconds                               |
+| `AIDASH_AUTH_DISCOVERY_RATE_BURST`     | `10`    | `POST /auth/login` and `GET /auth/login?org=` burst per client IP, separate from `/auth/*`; refill one every 6 seconds |
+| `AIDASH_API_RATE_BURST`                | `120`   | Authenticated API burst per tenant/subject, or operator; refill 10 requests/second                                     |
+| `AIDASH_PEER_RATE_BURST`               | `240`   | Federation burst per authenticated node; refill 20 requests/second                                                     |
+| `AIDASH_AUTH_RATE_PERIOD_MS`           | `2000`  | Refill interval per auth request                                                                                       |
+| `AIDASH_AUTH_DISCOVERY_RATE_PERIOD_MS` | `6000`  | Refill interval per sign-in discovery request                                                                          |
+| `AIDASH_AUTH_TRUSTED_PROXY_IPS`        | unset   | Comma-separated exact proxy IPs allowed to provide a single `X-Real-IP`                                                |
+| `AIDASH_API_RATE_PERIOD_MS`            | `100`   | Refill interval per API request                                                                                        |
+| `AIDASH_PEER_RATE_PERIOD_MS`           | `50`    | Refill interval per federation request                                                                                 |
+| `AIDASH_METRICS_LISTEN`                | unset   | Optional separate Prometheus listener, for example `127.0.0.1:9090`                                                    |
 
 Burst settings accept 1–100000; refill intervals accept 1–3600000 milliseconds.
 Invalid limits fail startup. Bootstrap injects the validated settings into the

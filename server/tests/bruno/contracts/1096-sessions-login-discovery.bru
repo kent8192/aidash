@@ -1,0 +1,27 @@
+meta {
+  name: 1096 sessions-login-discovery - Discovery without an address reveals nothing
+  type: http
+  seq: 1096
+}
+
+post {
+  url: {{base_url}}/auth/login
+  body: formUrlEncoded
+  auth: none
+}
+
+headers {
+  Accept: application/json
+  Origin: {{base_url}}
+  Content-Type: application/x-www-form-urlencoded
+}
+
+body:form-urlencoded {
+  return_to: /
+}
+
+tests {
+  test("Exact HTTP 401", function () { expect(res.getStatus()).to.equal(401); });
+  test("Stable authorization error envelope", function () { expect(res.getHeader("content-type")).to.include("application/json"); expect(res.getBody()).to.eql({error:"unauthorized"}); });
+  test("Discovery without an address reveals nothing contract", function () { expect(res.getHeader("set-cookie")).to.equal(undefined); });
+}

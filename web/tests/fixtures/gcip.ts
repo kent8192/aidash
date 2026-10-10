@@ -43,7 +43,7 @@ export async function mockGcip(
   await page.route("**/src/gcip-sdk.ts", (route) =>
     route.fulfill({
       contentType: "text/javascript",
-      body: `export function createClient(config) { window.gcipCalls ??= []; window.gcipCalls.push({kind:'create',tenant:config.tenant_id}); return { popup: async id => {window.gcipCalls.push({kind:'popup',id});return ${JSON.stringify(token)}}, password: async () => ${JSON.stringify(token)}, register: async () => { window.gcipCalls.push({kind:'register'}); return true; }, resend: async () => { window.gcipCalls.push({kind:'resend'}); return true; }, close: async () => window.gcipCalls.push({kind:'close'}) }; }`,
+      body: `export function createClient(config) { window.gcipCalls ??= []; window.gcipCalls.push({kind:'create',tenant:config.tenant_id}); return { popup: async (id, hint) => {window.gcipCalls.push({kind:'popup',id,hint});return ${JSON.stringify(token)}}, password: async () => ${JSON.stringify(token)}, register: async () => { window.gcipCalls.push({kind:'register'}); return true; }, resend: async () => { window.gcipCalls.push({kind:'resend'}); return true; }, close: async () => window.gcipCalls.push({kind:'close'}) }; }`,
     }),
   );
   await page.route("**/auth/gcip/transaction?**", (route) =>
@@ -64,6 +64,24 @@ export async function mockGcip(
     return route.fulfill({
       status: 303,
       headers: { location: "/sign-in?state=browser-bound-state" },
+      body: "",
+    });
+  });
+  await page.route("**/auth/login", (route) => {
+    const request = route.request();
+    expect(request.method()).toBe("POST");
+    const form = new URLSearchParams(request.postData() ?? "");
+    if (form.get("email")?.endsWith("@acme.test"))
+      return route.fulfill({
+        status: 303,
+        headers: { location: "/sign-in?state=browser-bound-state" },
+        body: "",
+      });
+    const query = new URLSearchParams({ error: "not_found" });
+    query.set("return_to", form.get("return_to") ?? "/");
+    return route.fulfill({
+      status: 303,
+      headers: { location: `/sign-in?${query}` },
       body: "",
     });
   });

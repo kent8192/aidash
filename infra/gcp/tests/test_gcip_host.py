@@ -62,6 +62,7 @@ class GcipHostTests(unittest.TestCase):
             self.assertFalse(any(key.startswith("AIDASH_OIDC_") for key in values))
             self.assertEqual(values["AIDASH_SECRET_FIXTURE"], "private")
             self.assertNotIn("private", path.read_text())
+            self.assertEqual(raw["dashboard"]["gcip"]["sign_in_domains"], {"acme.example": "pool-a"})
             self.assertEqual(values["AIDASH_NODE_ID"], "aidash://runtime")
 
             removed = deepcopy(OUTPUT)
@@ -72,6 +73,7 @@ class GcipHostTests(unittest.TestCase):
             self.assertEqual(settings["tenant_bindings"], {})
             self.assertEqual(settings["providers"], {})
             self.assertEqual(settings["password_sign_up"], [])
+            self.assertEqual(settings["sign_in_domains"], {})
 
     def test_no_gcip_keeps_existing_google_oidc_path(self):
         values = self.configure({"AIDASH_OIDC_CLIENT_ID": "client", "AIDASH_OIDC_CLIENT_SECRET": "secret"})
@@ -88,6 +90,7 @@ class GcipHostTests(unittest.TestCase):
             {"dashboard": {"gcip": dict(settings, project_id="another-project")}},
             {"dashboard": {"gcip": dict(settings, public_origin="https://other.invalid")}},
             {"dashboard": {"gcip": dict(settings, arbitrary="value")}},
+            {"dashboard": {"gcip": dict(settings, sign_in_domains=["acme.example"])}},
             {"dashboard": {"gcip": settings}, "AIDASH_GCIP_SETTINGS": "/override"},
         ]:
             with self.subTest(value=value), self.assertRaises(ValueError):

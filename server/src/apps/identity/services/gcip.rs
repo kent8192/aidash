@@ -2,7 +2,7 @@
 use super::oidc::{self, CSRF_COOKIE, LOGIN_COOKIE, SESSION_COOKIE};
 use crate::apps::identity::{
 	models::{DashboardLoginTransaction, DashboardSession, byte_key::ByteKey},
-	serializers::oidc::LoginQuery,
+	serializers::oidc::{LoginDiscovery, LoginQuery},
 };
 use crate::{Error, Result, federation::Federation};
 use chrono::{Duration, Utc};
@@ -34,31 +34,71 @@ struct ClientConfig<'a> {
 	password_sign_up: bool,
 }
 
+/// `GET /auth/login?org=<Tenant name>` selects the GCIP Tenant explicitly.
 pub(crate) async fn login(
 	f: &Federation,
 	headers: HeaderMap,
 	query: LoginQuery,
 ) -> Result<Response> {
 	let config = f.config.gcip.as_ref().ok_or(Error::Unauthorized)?;
-	let session_config = oidc::required_config(f)?;
 	let destination = oidc::return_path(query.return_to.as_deref())?;
 	let Some(org) = query.org.as_deref() else {
-		let query = reqwest::Url::parse_with_params(
-			"http://localhost/sign-in",
-			[("return_to", destination)],
-		)
-		.map_err(|_| Error::Invalid("invalid sign-in destination".into()))?;
-		let mut response = Response::new(StatusCode::SEE_OTHER)
-			.with_location(&format!("/sign-in?{}", query.query().unwrap_or("")));
-		oidc::no_store(&mut response);
-		return Ok(response);
+		return sign_in_page(&[("return_to", destination)]);
 	};
-	let tenant = config
+	match config
 		.tenant_bindings
 		.iter()
 		.find_map(|(pool, tenant)| (tenant == org).then_some(pool))
-		.ok_or(Error::Forbidden)?;
-	let browser = oidc::cookie_value(&headers, &oidc::cookie_name(LOGIN_COOKIE, session_config))
+	{
+		Some(pool) => begin(f, &headers, destination, pool.clone()).await,
+		None => not_found(destination),
+	}
+}
+/// `POST /auth/login` routes a verified Sign-in Domain to its GCIP Tenant.
+/// Unmapped domains and malformed addresses get the same response as an
+/// unknown Tenant name, and nothing about the address is retained.
+pub(crate) async fn discover(
+	f: &Federation,
+	headers: HeaderMap,
+	input: LoginDiscovery,
+) -> Result<Response> {
+	let config = f.config.gcip.as_ref().ok_or(Error::Unauthorized)?;
+	if headers.get(header::ORIGIN).and_then(|h| h.to_str().ok())
+		!= Some(config.public_origin.as_str())
+	{
+		return Err(Error::Forbidden);
+	}
+	let destination = oidc::return_path(input.return_to.as_deref())?;
+	match aidash_domain::identity::dashboard::routed_gcip_tenant(
+		&config.sign_in_domains,
+		&input.email,
+	) {
+		Some(pool) => begin(f, &headers, destination, pool.to_owned()).await,
+		None => not_found(destination),
+	}
+}
+/// The single response for every unknown sign-in input. It never depends on
+/// which Tenants or Sign-in Domains exist, and it creates no transaction.
+fn not_found(destination: &str) -> Result<Response> {
+	sign_in_page(&[("error", "not_found"), ("return_to", destination)])
+}
+fn sign_in_page(params: &[(&str, &str)]) -> Result<Response> {
+	let query = reqwest::Url::parse_with_params("http://localhost/sign-in", params)
+		.map_err(|_| Error::Invalid("invalid sign-in destination".into()))?;
+	let mut response = Response::new(StatusCode::SEE_OTHER)
+		.with_location(&format!("/sign-in?{}", query.query().unwrap_or("")));
+	oidc::no_store(&mut response);
+	Ok(response)
+}
+async fn begin(
+	f: &Federation,
+	headers: &HeaderMap,
+	destination: &str,
+	tenant: String,
+) -> Result<Response> {
+	let config = f.config.gcip.as_ref().ok_or(Error::Unauthorized)?;
+	let session_config = oidc::required_config(f)?;
+	let browser = oidc::cookie_value(headers, &oidc::cookie_name(LOGIN_COOKIE, session_config))
 		.map(str::to_owned)
 		.unwrap_or_else(oidc::random_secret);
 	let state = oidc::random_secret();
@@ -72,7 +112,7 @@ pub(crate) async fn login(
 		.callback_uri(format!("{}/auth/gcip/exchange", config.public_origin))
 		.expires_at(now + Duration::minutes(10))
 		.started_at(Some(now))
-		.gcip_tenant(Some(tenant.clone()))
+		.gcip_tenant(Some(tenant))
 		.finish();
 	let lease = f.store.orm_connection()?;
 	transaction.reserve(lease.handle()).await?;

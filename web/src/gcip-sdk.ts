@@ -35,15 +35,25 @@ export function createClient(config: GcipClientConfig) {
   auth.tenantId = config.tenant_id;
   let closed = false;
   return {
-    async popup(id: string) {
+    async popup(id: string, loginHint?: string) {
       const provider =
         id === "google.com"
           ? new GoogleAuthProvider()
           : id.startsWith("saml.")
             ? new SAMLAuthProvider(id)
             : new OAuthProvider(id);
+      const hint: Record<string, string> = loginHint
+        ? { login_hint: loginHint }
+        : {};
       if (id === "google.com")
-        provider.setCustomParameters({ prompt: "select_account" });
+        provider.setCustomParameters({ prompt: "select_account", ...hint });
+      // SAML providers may not accept custom parameters; set only when supported.
+      else if (
+        loginHint &&
+        typeof (provider as Partial<OAuthProvider>).setCustomParameters ===
+          "function"
+      )
+        provider.setCustomParameters(hint);
       const result = await signInWithPopup(
         auth,
         provider,
