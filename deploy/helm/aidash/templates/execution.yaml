@@ -51,7 +51,7 @@ metadata:
 apiVersion: node.k8s.io/v1
 kind: RuntimeClass
 metadata:
-  name: {{ $runtime }}
+  name: {{ $runtime | quote }}
 handler: runsc
 scheduling:
   nodeSelector:
@@ -254,7 +254,7 @@ metadata:
 rules:
   - apiGroups: [node.k8s.io]
     resources: [runtimeclasses]
-    resourceNames: [{{ $runtime }}]
+    resourceNames: [{{ $runtime | quote }}]
     verbs: [get]
 ---
 apiVersion: rbac.authorization.k8s.io/v1

@@ -115,10 +115,15 @@ class ChartsTest(unittest.TestCase):
         unguarded = dict(execution, guard={'enabled': False})
         with self.assertRaises(subprocess.CalledProcessError):
             render(self.aidash, dict(self.base, execution=unguarded, environment={'nodeSelector': {'pool': 'execution'}}))
-        # Namespace overrides that YAML reads as other scalars stay strings.
-        quoted = dict(execution, sandboxNamespace='true', trustedNamespace='null')
+        # Namespace and RuntimeClass overrides that YAML reads as other scalars stay strings.
+        quoted = dict(execution, sandboxNamespace='true', trustedNamespace='null',
+                      runtimeClass={'create': True, 'name': 'true'})
         names = render(self.aidash, dict(self.base, execution=quoted, environment={'nodeSelector': {'pool': 'execution'}}))
         self.assertEqual(sorted(value['metadata']['name'] for value in names if value['kind'] == 'Namespace'), ['null', 'true'])
+        self.assertEqual([value['metadata']['name'] for value in names if value['kind'] == 'RuntimeClass'], ['true'])
+        runtime_rule = next(rule for rule in select(names, 'ClusterRole', '-runtime')['rules']
+                            if rule['resources'] == ['runtimeclasses'])
+        self.assertEqual(runtime_rule['resourceNames'], ['true'])
         for value in names:
             if 'namespace' in value['metadata']:
                 self.assertIsInstance(value['metadata']['namespace'], str, value['kind'])
