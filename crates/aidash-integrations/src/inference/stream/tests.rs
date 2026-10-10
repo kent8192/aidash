@@ -337,6 +337,73 @@ fn ambiguous_choice_zero_is_rejected(#[case] choices: Value, #[case] expected: &
 }
 
 #[rstest::rstest]
+fn bare_cr_line_endings_match_lf(#[values(1, 7, 4096)] split: usize) {
+	// Arrange
+	let chunks = [delta(json!({"content":"Done"})), finish("stop"), usage()];
+	let lf = sse(&chunks, true);
+	let cr: Vec<u8> = String::from_utf8(lf.clone())
+		.unwrap()
+		.replace("\r\n", "\n")
+		.replace('\n', "\r")
+		.into_bytes();
+
+	// Act
+	let (from_cr, _) = assemble(&cr, split, 1_048_576);
+	let (from_lf, _) = assemble(&lf, split, 1_048_576);
+
+	// Assert
+	assert_eq!(
+		serde_json::to_value(from_cr.unwrap()).unwrap(),
+		serde_json::to_value(from_lf.unwrap()).unwrap()
+	);
+}
+
+#[rstest::rstest]
+#[case::text(delta(json!({"content":"late"})))]
+#[case::tool_call(delta(json!({"tool_calls":[{"index":0,"id":"call-1","function":{"name":"run","arguments":"{}"}}]})))]
+#[case::second_reason(finish("length"))]
+fn choice_output_after_the_finish_reason_is_rejected(#[case] late: Value) {
+	// Arrange
+	let body = sse(
+		&[
+			delta(json!({"content":"Done"})),
+			finish("stop"),
+			late,
+			usage(),
+		],
+		true,
+	);
+
+	// Act
+	let (result, _) = assemble(&body, 4096, 1_048_576);
+
+	// Assert
+	assert!(
+		matches!(result, Err(Error::External(message)) if message == "provider stream continued after its finish reason")
+	);
+}
+
+#[rstest::rstest]
+fn usage_and_empty_deltas_after_the_finish_reason_are_accepted() {
+	// Arrange
+	let body = sse(
+		&[
+			delta(json!({"content":"Done"})),
+			finish("stop"),
+			delta(json!({"content":""})),
+			usage(),
+		],
+		true,
+	);
+
+	// Act
+	let (result, _) = assemble(&body, 4096, 1_048_576);
+
+	// Assert
+	assert_eq!(result.unwrap().text, "Done");
+}
+
+#[rstest::rstest]
 fn a_sole_unindexed_choice_is_choice_zero() {
 	// Arrange
 	let body = sse(
