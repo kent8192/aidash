@@ -1,6 +1,7 @@
 import { ReferenceName } from "../record-view";
 import type { Discovery, Run, State } from "../types";
 import { useI18n } from "../ui";
+import { cn } from "../lib/utils";
 
 export function MeshView({
   data,
@@ -57,8 +58,17 @@ export function MeshView({
   );
   const arrowId = compact ? "communication-small" : "communication";
   return (
-    <div className={`mesh-canvas ${compact ? "compact" : ""}`}>
+    <div
+      className={cn(
+        "mesh-canvas flex flex-col gap-2 overflow-x-auto rounded-lg border border-border bg-background",
+        compact && "compact",
+      )}
+    >
       <svg
+        className={cn(
+          "block h-auto w-full min-w-[520px]",
+          compact ? "max-h-[260px]" : "max-h-[600px]",
+        )}
         viewBox={`0 0 ${width} ${height}`}
         role="img"
         aria-label={t("topology")}
@@ -70,7 +80,7 @@ export function MeshView({
             height="18"
             patternUnits="userSpaceOnUse"
           >
-            <circle cx="1" cy="1" r="1" fill="#dae2dd" />
+            <circle cx="1" cy="1" r="1" className="fill-[var(--grid-dot)]" />
           </pattern>
           <marker
             id={arrowId}
@@ -80,7 +90,7 @@ export function MeshView({
             refY="3"
             orient="auto"
           >
-            <path d="M0 0 L6 3 L0 6" fill="#7ba898" />
+            <path d="M0 0 L6 3 L0 6" className="fill-edge-strong" />
           </marker>
         </defs>
         <rect
@@ -91,8 +101,8 @@ export function MeshView({
         {nodeIds.length > 1 && (
           <path
             d={`M150 58 H${(nodeIds.length - 1) * 300 + 150}`}
-            stroke="#85a89b"
-            strokeWidth="2"
+            className="stroke-edge"
+            strokeWidth="1.5"
             strokeDasharray="5 5"
           />
         )}
@@ -108,8 +118,8 @@ export function MeshView({
               key={task.id}
               d={path}
               fill="none"
-              stroke="#468a70"
-              strokeWidth="1.8"
+              className="stroke-edge-strong"
+              strokeWidth="1.5"
               markerEnd={`url(#${arrowId})`}
             >
               <title>{`${task.title}: ${task.created_by} → ${task.owner} (${t(task.status)})`}</title>
@@ -125,30 +135,30 @@ export function MeshView({
                 y={25}
                 width={250}
                 height={65}
-                rx={12}
-                fill={i === 0 ? "#184e41" : "#ecf1ed"}
-                stroke="#bfd0c5"
+                rx={10}
+                className={
+                  i === 0
+                    ? "fill-raised stroke-brand-line"
+                    : "fill-surface stroke-border-strong"
+                }
               />
               <circle
                 cx={i * 300 + 48}
                 cy={56}
-                r={5}
-                fill={i === 0 ? "#bce6bd" : "#619278"}
+                r={4}
+                className={i === 0 ? "fill-brand-mark" : "fill-faint"}
               />
               <text
                 x={i * 300 + 64}
                 y={54}
-                fill={i === 0 ? "#fff" : "#285240"}
-                fontSize="13"
-                fontWeight="600"
+                className="fill-foreground font-mono text-[12px] font-medium"
               >
                 <ReferenceName id={node} />
               </text>
               <text
                 x={i * 300 + 64}
                 y={74}
-                fill={i === 0 ? "#b6d1c2" : "#76867d"}
-                fontSize="10"
+                className="fill-faint text-[11px]"
               >
                 {nodeAgents.length} {t("agents")}
               </text>
@@ -168,38 +178,34 @@ export function MeshView({
                     <path
                       d={`M${i * 300 + 55} ${j === 0 ? 90 : 125 + (j - 1) * 64} V${125 + j * 64} H${i * 300 + 78}`}
                       fill="none"
-                      stroke="#a7bdb1"
-                      strokeWidth="1.5"
+                      className="stroke-border-strong"
+                      strokeWidth="1"
                     />
                     <rect
                       x={i * 300 + 78}
                       y={104 + j * 64}
                       width={190}
                       height={46}
-                      rx={8}
-                      fill="white"
-                      stroke="#d8e2db"
+                      rx={6}
+                      className="fill-surface stroke-border-strong"
                     />
                     <circle
                       cx={i * 300 + 93}
                       cy={127 + j * 64}
                       r={4}
-                      fill={run ? "#46a374" : "#b9c5bd"}
+                      className={run ? "fill-success" : "fill-faint"}
                     />
                     <text
                       x={i * 300 + 106}
                       y={123 + j * 64}
-                      fill="#244438"
-                      fontSize="11"
-                      fontWeight="600"
+                      className="fill-foreground text-[12px] font-medium"
                     >
                       {local(a.entity.name).slice(0, 22)}
                     </text>
                     <text
                       x={i * 300 + 106}
                       y={138 + j * 64}
-                      fill="#74867a"
-                      fontSize="9"
+                      className="fill-faint font-mono text-[10px]"
                     >
                       {cluster ? (
                         <ReferenceName id={cluster} />
@@ -214,24 +220,34 @@ export function MeshView({
           );
         })}
       </svg>
-      <div className="mesh-legend">
-        <span>
-          {t("taskCommunication")} · {communications.length}
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-border px-3 py-2 text-[11px] text-faint">
+        <span className="inline-flex items-center gap-1.5">
+          <i aria-hidden className="w-4 border-t border-edge-strong" />
+          {t("taskCommunication")} ·{" "}
+          <span className="font-mono tabular">{communications.length}</span>
         </span>
-        <span>
-          <i className="legend-node" />
+        <span className="inline-flex items-center gap-1.5">
+          <i
+            aria-hidden
+            className="size-2.5 rounded-sm border border-brand-line bg-raised"
+          />
           {t("node")}
         </span>
-        <span>
-          <i className="legend-agent" />
+        <span className="inline-flex items-center gap-1.5">
+          <i
+            aria-hidden
+            className="size-2.5 rounded-sm border border-border-strong bg-surface"
+          />
           {t("agent")}
         </span>
-        <span className="muted">
-          {
-            data.tasks.filter(
-              (t) => t.owner && !t.owner.startsWith(data.node.id + "/"),
-            ).length
-          }{" "}
+        <span>
+          <span className="font-mono tabular">
+            {
+              data.tasks.filter(
+                (t) => t.owner && !t.owner.startsWith(data.node.id + "/"),
+              ).length
+            }
+          </span>{" "}
           · {t("remoteTasks")}
         </span>
       </div>

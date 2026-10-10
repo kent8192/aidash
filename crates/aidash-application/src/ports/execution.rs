@@ -33,6 +33,9 @@ pub struct ExecutionAgent {
 	/// Pinned through the Run's Binding snapshot; Legacy when the definition
 	/// names none.
 	pub projection_version: aidash_domain::projection::ProjectionVersion,
+	/// Pinned through the Run's Binding snapshot; `off` when the definition
+	/// names none (ADR 0019).
+	pub prompt_cache: aidash_domain::projection::PromptCache,
 }
 pub struct InvocationOutcome {
 	pub status: String,

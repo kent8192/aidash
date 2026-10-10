@@ -252,6 +252,41 @@ export async function setup(
   } = {},
 ) {
   let data = fixture(options.referenceLayout);
+  // The reference request verifies on a peer so the request canvas shows a federated zone.
+  const labRuns =
+    options.referenceLayout && !options.subject
+      ? data.runs.filter((run) => run.agent_id === "verifier")
+      : [];
+  data.runs = data.runs.filter((run) => !labRuns.includes(run));
+  const referenceEvents = options.referenceLayout
+    ? (
+        [
+          ["task.created", "01:30:00", data.tasks[0]],
+          ["peer.registered", "01:30:40", { node_id: "aidash://lab" }],
+          ["task.completed", "01:31:10", { task: data.tasks[0] }],
+          ["task.claimed", "01:31:40", data.tasks[1]],
+          ["run.created", "01:32:20", data.runs[0]],
+          ["tool.invoke", "01:33:10", {}],
+          ["task.completed", "01:34:00", { task: data.tasks[2] }],
+          ["artifact.created", "01:34:30", {}],
+          ["task.claimed", "01:35:00", data.tasks[3]],
+          ["task.completed", "01:36:30", { task: data.tasks[3] }],
+          ["task.claimed", "01:37:00", data.tasks[4]],
+          ["tool.invoke", "01:37:50", {}],
+          ["human_request.created", "01:38:20", {}],
+          ["tool.invoke", "01:39:30", {}],
+          ["run.invalid_state", "01:40:10", {}],
+        ] as const
+      ).map(([kind, time, payload], index) => ({
+        id: `reference-event-${index}`,
+        kind,
+        created_at: `2026-09-24T${time}Z`,
+        data: payload,
+        node_id: data.node.id,
+        sequence: index + 1,
+        workspace_id: "workspace-one",
+      }))
+    : [];
   if (options.invalidRun || options.failureDeliveryRun) {
     data.runs[0].control = "PAUSED";
     data.runs[0].context = null;
@@ -482,8 +517,11 @@ export async function setup(
     if (path === "/api/mesh")
       return route.fulfill({
         json: {
-          nodes:
-            options.remoteParticipant || options.unpairedRemoteRequest
+          nodes: [
+            ...(labRuns.length
+              ? [{ node_id: "aidash://lab", runs: labRuns, human_requests: [] }]
+              : []),
+            ...(options.remoteParticipant || options.unpairedRemoteRequest
               ? [
                   {
                     node_id: "aidash://peer",
@@ -512,7 +550,8 @@ export async function setup(
                       : [],
                   },
                 ]
-              : [],
+              : []),
+          ],
           errors: options.meshErrors
             ? [
                 {
@@ -562,7 +601,14 @@ export async function setup(
                       },
                     }
                   : entity,
-            })),
+            }))
+            .concat(
+              labRuns.length
+                ? data.registry
+                    .filter((entity) => entity.id === "verifier")
+                    .map((entity) => ({ node_id: "aidash://lab", entity }))
+                : [],
+            ),
           errors: [],
         },
       });
@@ -720,7 +766,7 @@ export async function setup(
           artifacts: data.artifacts.filter(
             (artifact) => artifact.workspace_id === workspace.id,
           ),
-          events: [],
+          events: workspace.id === "workspace-one" ? referenceEvents : [],
         },
       });
     }

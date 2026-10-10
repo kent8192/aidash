@@ -8,17 +8,20 @@ import {
   useState,
   type ReactNode,
 } from "react";
+import { Alert, Loading } from "../components/patterns";
 import { createPortal } from "react-dom";
 import { useInfiniteQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  ArrowDown,
   AtSign,
   Bold,
   Code2,
   FileText,
   Italic,
   MessageSquare,
+  MessagesSquare,
   Paperclip,
-  Send,
+  SendHorizontal,
   X,
 } from "lucide-react";
 import {
@@ -31,6 +34,7 @@ import type { ChannelAttachment, ChannelMessage } from "../generated/models";
 import { AttachmentCard } from "./attachments";
 import type { State, Discovery } from "../types";
 import { useI18n, useAgentLabel } from "../ui";
+import { cn } from "../lib/utils";
 import { collaborationCopy } from "./copy";
 import { workspaceCopy } from "./workspace-copy";
 import { senderLabel } from "./model";
@@ -42,13 +46,21 @@ import {
   type MessageSubmission,
 } from "./conversation-model";
 import { Avatar } from "./avatar";
-import "./threads.css";
 import { Textarea } from "../components/ui/textarea";
+import { Kbd } from "../components/ui/kbd";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "../components/ui/popover";
 
 type DraftFile = { key: string; file: File; uploaded?: ChannelAttachment };
 type Draft = { text: string; files: DraftFile[] };
 type Drafts = Record<string, Draft>;
 const emptyDraft: Draft = { text: "", files: [] };
+
+/** A workspace event shown inline in the channel feed as a muted system line. */
+export type SystemLine = { id: string; created_at: string; text: string };
 
 function latestMessageTop(scroll: HTMLElement, message: HTMLElement | null) {
   if (!message) return 0;
@@ -68,13 +80,20 @@ export function MessageText({ text }: { text: string }) {
         .split(/(\*\*[^*\n]+\*\*|_[^_\n]+_|`[^`\n]+`|@[\p{L}\p{N}_-]+)/gu)
         .map((part, i) =>
           part.startsWith("**") && part.endsWith("**") ? (
-            <strong key={i}>{part.slice(2, -2)}</strong>
+            <strong key={i} className="font-semibold">
+              {part.slice(2, -2)}
+            </strong>
           ) : part.startsWith("_") && part.endsWith("_") ? (
             <em key={i}>{part.slice(1, -1)}</em>
           ) : part.startsWith("`") && part.endsWith("`") ? (
-            <code key={i}>{part.slice(1, -1)}</code>
+            <code
+              key={i}
+              className="rounded-sm bg-raised px-1 py-px font-mono text-[12px]"
+            >
+              {part.slice(1, -1)}
+            </code>
           ) : part.startsWith("@") ? (
-            <span className="workspace-mention" key={i}>
+            <span className="font-medium text-brand" key={i}>
               {part}
             </span>
           ) : (
@@ -92,15 +111,16 @@ type ConversationProps = {
   title: string;
   visible: boolean;
   threadList?: boolean;
+  /** Rendered after the channel messages (pending decisions on narrow screens). */
   requests?: ReactNode;
-  progress?: ReactNode;
+  system?: SystemLine[];
   thread: string | null;
   selectThread: (id: string | null) => void;
 };
 export function ChannelConversation({
   threadContainer,
   ...props
-}: ConversationProps & { threadContainer: HTMLDivElement | null }) {
+}: ConversationProps & { threadContainer: HTMLElement | null }) {
   const [drafts, setDrafts] = useState<Drafts>({});
   const [pending] = useState(() => new Map<string, MessageSubmission>());
   const shared = { ...props, drafts, setDrafts, pending };
@@ -115,16 +135,19 @@ export function ChannelConversation({
               key={props.thread}
               {...shared}
               requests={undefined}
+              system={undefined}
               threadList={false}
             />
             {props.data.access.kind === "subject" && (
-              <ThreadCapabilities
-                key={props.thread}
-                workspace={props.workspace}
-                thread={props.thread}
-                data={props.data}
-                onDeleted={() => props.selectThread(null)}
-              />
+              <div className="max-h-[45%] shrink-0 overflow-y-auto border-t border-border px-4 py-3">
+                <ThreadCapabilities
+                  key={props.thread}
+                  workspace={props.workspace}
+                  thread={props.thread}
+                  data={props.data}
+                  onDeleted={() => props.selectThread(null)}
+                />
+              </div>
             )}
           </>,
           threadContainer,
@@ -132,6 +155,9 @@ export function ChannelConversation({
     </>
   );
 }
+
+const toolButton =
+  "size-7 text-muted-foreground hover:text-foreground [&_svg]:size-3.5";
 
 function ConversationFeed({
   workspace,
@@ -141,7 +167,7 @@ function ConversationFeed({
   discovery,
   threadList = false,
   requests,
-  progress,
+  system,
   thread,
   selectThread,
   drafts,
@@ -168,7 +194,8 @@ function ConversationFeed({
   const inFlight = useRef(false);
   const [sending, setSending] = useState(false),
     [opening, setOpening] = useState(false),
-    [uploading, setUploading] = useState(false);
+    [uploading, setUploading] = useState(false),
+    [mentioning, setMentioning] = useState(false);
   const [error, setError] = useState(""),
     [sent, setSent] = useState(false);
   const scroll = useRef<HTMLDivElement>(null),
@@ -343,49 +370,82 @@ function ConversationFeed({
     });
   }
   const busy = sending || opening || query.isPending;
+  const day = (value: string) =>
+    new Date(value).toLocaleDateString(locale, {
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    });
+  const clock = (value: string) =>
+    new Date(value).toLocaleTimeString(locale, {
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  const firstShown = messages[0]?.message.created_at;
+  const systemLines =
+    !thread && !threadList && firstShown
+      ? (system ?? []).filter((line) => line.created_at >= firstShown)
+      : [];
+  const feed = [
+    ...messages.map((entry) => ({
+      kind: "message" as const,
+      at: entry.message.created_at,
+      entry,
+    })),
+    ...systemLines.map((line) => ({
+      kind: "system" as const,
+      at: line.created_at,
+      line,
+    })),
+  ].sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
   return (
-    <div
-      hidden={!visible}
-      className={`collab-conversation-view ${thread ? "is-thread" : ""}`}
-    >
+    <div hidden={!visible} className="relative flex min-h-0 flex-1 flex-col">
       {thread ? (
-        <div className="collab-thread-heading">
-          <div>
-            <h3>{threads.thread}</h3>
-            <small># {title}</small>
+        <div className="flex h-11 shrink-0 items-center gap-2 border-b border-border px-4">
+          <MessagesSquare aria-hidden className="size-4 text-faint" />
+          <div className="grid min-w-0 flex-1">
+            <h3 className="text-[13px] font-semibold leading-tight text-foreground">
+              {threads.thread}
+            </h3>
+            <small className="truncate font-mono text-[11px] text-faint">
+              # {title}
+            </small>
           </div>
           <Button
-            variant="outline"
+            variant="ghost"
+            size="icon"
             type="button"
             disabled={sending || opening}
             aria-label={threads.back}
             onClick={() => selectThread(null)}
           >
-            <X size={18} />
+            <X />
           </Button>
         </div>
       ) : (
         threadList && (
-          <h3 className="workspace-thread-list-title">{words.threads}</h3>
+          <h3 className="shrink-0 border-b border-border px-4 py-2.5 text-xs font-semibold text-foreground">
+            {words.threads}
+          </h3>
         )
       )}
       {query.isError ? (
-        <div className="error" role="alert">
-          <p>{copy.unavailable}</p>
-          <p>{query.error.message}</p>
-          <Button
-            variant="outline"
-            type="button"
-            onClick={() => void query.refetch()}
-          >
-            {copy.retry}
-          </Button>
-        </div>
+        <Alert
+          className="m-4"
+          retry={() => void query.refetch()}
+          retryLabel={copy.retry}
+        >
+          <p className="font-medium">{copy.unavailable}</p>
+          <p className="break-words text-muted-foreground">
+            {query.error.message}
+          </p>
+        </Alert>
       ) : (
         <>
           <div
             ref={scroll}
-            className="collab-messages"
+            role="region"
+            className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-3"
             aria-label={thread ? threads.thread : copy.conversation}
             onScroll={() => {
               const element = scroll.current;
@@ -401,7 +461,9 @@ function ConversationFeed({
           >
             {query.hasNextPage && (
               <Button
-                variant="outline"
+                variant="ghost"
+                size="sm"
+                className="mx-auto mb-2 flex text-xs"
                 type="button"
                 disabled={query.isFetchingNextPage}
                 onClick={() => void loadOlder()}
@@ -409,13 +471,46 @@ function ConversationFeed({
                 {threads.older}
               </Button>
             )}
-            {query.isPending && <p role="status">{copy.processing}</p>}
-            {!query.isPending && messages.length === 0 && (
-              <p className="collab-empty">
-                {threadList ? words.noThreads : copy.noMessages}
-              </p>
+            {query.isPending && (
+              <Loading className="py-6 text-center">{copy.processing}</Loading>
             )}
-            {messages.map((entry, index) => {
+            {!query.isPending && messages.length === 0 && (
+              <div className="mx-auto mt-8 grid max-w-64 justify-items-center gap-2 text-center">
+                <span className="grid size-8 place-items-center rounded-md bg-raised text-faint">
+                  <MessageSquare aria-hidden className="size-4" />
+                </span>
+                <p className="text-[13px] font-medium text-foreground">
+                  {threadList ? words.noThreads : copy.noMessages}
+                </p>
+                {!threadList && (
+                  <p className="text-xs text-muted-foreground">{words.scope}</p>
+                )}
+              </div>
+            )}
+            {feed.map((item, index) => {
+              const previous = feed[index - 1];
+              const divider =
+                !previous || day(previous.at) !== day(item.at) ? (
+                  <div className="my-2 flex items-center gap-3 font-mono text-[11px] tabular text-faint before:h-px before:flex-1 before:bg-border after:h-px after:flex-1 after:bg-border">
+                    {day(item.at)}
+                  </div>
+                ) : null;
+              if (item.kind === "system")
+                return (
+                  <Fragment key={`system-${item.line.id}`}>
+                    {divider}
+                    <p className="my-1.5 ml-3 flex gap-2 border-l border-border py-0.5 pl-3 text-xs text-muted-foreground">
+                      <time
+                        dateTime={item.at}
+                        className="shrink-0 font-mono tabular text-faint"
+                      >
+                        {clock(item.at)}
+                      </time>
+                      <span className="min-w-0">{item.line.text}</span>
+                    </p>
+                  </Fragment>
+                );
+              const entry = item.entry;
               const message = entry.message,
                 sender = senderLabel(message.sender);
               if (sender.kind === "agent") {
@@ -434,67 +529,52 @@ function ConversationFeed({
                         },
                       );
               }
-              const date = new Date(message.created_at).toLocaleDateString(
-                locale,
-                { month: "long", day: "numeric" },
-              );
-              const previousDate =
-                index > 0
-                  ? new Date(
-                      messages[index - 1].message.created_at,
-                    ).toLocaleDateString(locale, {
-                      month: "long",
-                      day: "numeric",
-                    })
-                  : "";
+              const remote =
+                sender.kind === "agent" &&
+                !message.sender.startsWith(`${data.node.id}/`);
               return (
                 <Fragment key={message.id}>
-                  {date !== previousDate && (
-                    <div className="workspace-date-divider">
-                      <span>{date}</span>
-                    </div>
-                  )}
+                  {divider}
                   <article
-                    ref={index === messages.length - 1 ? latest : undefined}
-                    className={`collab-message ${sender.kind}`}
+                    ref={message.id === latestMessageId ? latest : undefined}
+                    className="group grid grid-cols-[24px_1fr] gap-x-2.5 rounded-md py-2"
                     id={`${thread ? "thread-" : ""}message-${message.id}`}
                   >
                     <Avatar
                       name={sender.name}
                       human={sender.kind === "human"}
+                      className="mt-0.5 size-6 text-[11px]"
                     />
-                    <div className="workspace-message-body">
-                      <div className="collab-sender">
-                        <strong>{sender.name}</strong>
-                        <span>
-                          {sender.kind === "agent" ? "AGENT" : copy.human}
+                    <div className="min-w-0">
+                      <header className="flex items-baseline gap-2">
+                        <span className="truncate text-[13px] font-semibold text-foreground">
+                          {sender.name}
                         </span>
-                        {sender.kind === "agent" && (
-                          <small>
-                            {message.sender.startsWith(`${data.node.id}/`)
-                              ? words.local
-                              : words.peer}
-                          </small>
+                        {remote && (
+                          <span className="shrink-0 rounded-sm border border-brand-line px-1 text-[10px] leading-4 text-brand">
+                            {words.peer}
+                          </span>
                         )}
+                        <span className="sr-only">
+                          {sender.kind === "agent" ? copy.agent : copy.human}
+                        </span>
                         <time
+                          className="shrink-0 font-mono text-[11px] tabular text-faint"
                           dateTime={message.created_at}
                           title={new Date(message.created_at).toLocaleString(
                             locale,
                           )}
                         >
-                          {new Date(message.created_at).toLocaleTimeString(
-                            locale,
-                            { hour: "2-digit", minute: "2-digit" },
-                          )}
+                          {clock(message.created_at)}
                         </time>
-                      </div>
-                      <p>
+                      </header>
+                      <p className="whitespace-pre-wrap break-words text-[13px] leading-relaxed text-foreground">
                         <MessageText text={message.content} />
                       </p>
                       {entry.attachments.length > 0 && (
-                        <ul className="collab-attachments">
+                        <ul className="mt-1.5 flex flex-wrap gap-1.5">
                           {entry.attachments.map((attachment) => (
-                            <li key={attachment.id}>
+                            <li key={attachment.id} className="min-w-0">
                               <AttachmentCard
                                 workspace={workspace}
                                 attachment={attachment}
@@ -504,29 +584,32 @@ function ConversationFeed({
                         </ul>
                       )}
                       {!thread && (
-                        <Button
-                          variant="outline"
-                          className="collab-thread-action"
+                        <button
+                          className={cn(
+                            "mt-1.5 inline-flex h-6 items-center gap-1.5 rounded-md border border-border px-2 text-[11px] text-muted-foreground transition-colors hover:border-border-strong hover:text-foreground disabled:opacity-50",
+                            !entry.thread_id &&
+                              "md:opacity-0 md:group-hover:opacity-100 md:focus-visible:opacity-100",
+                          )}
                           type="button"
                           disabled={sending || opening}
                           onClick={() => void openThread(entry)}
                         >
-                          <MessageSquare size={12} />
+                          <MessagesSquare aria-hidden className="size-3" />
                           {entry.thread_id ? threads.open : threads.reply}
-                        </Button>
+                        </button>
                       )}
                     </div>
                   </article>
                 </Fragment>
               );
             })}
-            {!thread && !threadList && progress}
             {!thread && !threadList && requests}
           </div>
           {!nearBottom && (
             <Button
               variant="outline"
-              className="collab-latest"
+              size="sm"
+              className="absolute bottom-[calc(var(--composer-h,9rem)+0.5rem)] left-1/2 z-10 -translate-x-1/2 rounded-full bg-popover shadow-overlay"
               type="button"
               onClick={() => {
                 follow.current = true;
@@ -534,80 +617,95 @@ function ConversationFeed({
                 scrollToLatest();
               }}
             >
+              <ArrowDown />
               {copy.newMessages}
             </Button>
           )}
-          {opening && <p role="status">{threads.opening}</p>}
+          {opening && (
+            <Loading className="px-4 pt-0 pb-1">{threads.opening}</Loading>
+          )}
+          {error && (
+            <Alert className="mx-4 mb-2">{error}</Alert>
+          )}
           {(!threadList || thread) && (
             <form
-              className="collab-composer"
+              className="shrink-0 border-t border-border p-3"
               onSubmit={(event) => {
                 event.preventDefault();
                 void send();
               }}
             >
-              <label className="sr-only" htmlFor={`channel-message-${target}`}>
-                {thread ? threads.replyMessage : copy.message}
-              </label>
-              <Textarea
-                ref={textarea}
-                id={`channel-message-${target}`}
-                value={draft.text}
-                maxLength={64000}
-                rows={2}
-                placeholder={
-                  thread
-                    ? threads.replyMessage
-                    : locale === "ja-JP"
-                      ? "やりたいことや、続けてほしいことを入力…"
-                      : "Describe what you want to do or continue…"
-                }
-                disabled={busy}
-                onChange={(event) => {
-                  const value = event.currentTarget.value;
-                  updateDraft((current) => ({ ...current, text: value }));
-                  setSent(false);
-                }}
-                onKeyDown={(event) => {
-                  if (
-                    event.key === "Enter" &&
-                    !event.shiftKey &&
-                    !event.nativeEvent.isComposing &&
-                    event.keyCode !== 229
-                  ) {
-                    event.preventDefault();
-                    void send();
+              <div className="rounded-md border border-input bg-background transition-colors focus-within:border-brand-line">
+                <label
+                  className="sr-only"
+                  htmlFor={`channel-message-${target}`}
+                >
+                  {thread ? threads.replyMessage : copy.message}
+                </label>
+                <Textarea
+                  ref={textarea}
+                  id={`channel-message-${target}`}
+                  className="min-h-16 resize-none border-0 bg-transparent shadow-none focus-visible:outline-none"
+                  value={draft.text}
+                  maxLength={64000}
+                  rows={2}
+                  placeholder={
+                    thread
+                      ? threads.replyMessage
+                      : locale === "ja-JP"
+                        ? "やりたいことや、続けてほしいことを入力…"
+                        : "Describe what you want to do or continue…"
                   }
-                }}
-              />
-              {draft.files.length > 0 && (
-                <ul className="workspace-draft-files">
-                  {draft.files.map((entry) => (
-                    <li key={entry.key}>
-                      <FileText size={14} />
-                      <span>{entry.file.name}</span>
-                      <Button
-                        variant="outline"
-                        type="button"
-                        disabled={busy}
-                        aria-label={`${words.removeAttachment}: ${entry.file.name}`}
-                        onClick={() =>
-                          updateDraft((current) => ({
-                            ...current,
-                            files: current.files.filter(
-                              (file) => file.key !== entry.key,
-                            ),
-                          }))
-                        }
+                  disabled={busy}
+                  onChange={(event) => {
+                    const value = event.currentTarget.value;
+                    updateDraft((current) => ({ ...current, text: value }));
+                    setSent(false);
+                  }}
+                  onKeyDown={(event) => {
+                    if (
+                      event.key === "Enter" &&
+                      !event.shiftKey &&
+                      !event.nativeEvent.isComposing &&
+                      event.keyCode !== 229
+                    ) {
+                      event.preventDefault();
+                      void send();
+                    }
+                  }}
+                />
+                {draft.files.length > 0 && (
+                  <ul className="flex flex-wrap gap-1.5 px-2 pb-2">
+                    {draft.files.map((entry) => (
+                      <li
+                        key={entry.key}
+                        className="inline-flex h-6 max-w-full items-center gap-1.5 rounded-sm border border-border bg-surface pl-2 text-[11px]"
                       >
-                        <X size={12} />
-                      </Button>
-                    </li>
-                  ))}
-                </ul>
-              )}
-              <div className="collab-composer-bottom">
-                <div className="workspace-formatting">
+                        <FileText aria-hidden className="size-3 text-faint" />
+                        <span className="truncate font-mono">
+                          {entry.file.name}
+                        </span>
+                        <button
+                          type="button"
+                          className="grid size-6 place-items-center text-faint hover:text-foreground disabled:opacity-50"
+                          disabled={busy}
+                          aria-label={`${words.removeAttachment}: ${entry.file.name}`}
+                          onClick={() =>
+                            updateDraft((current) => ({
+                              ...current,
+                              files: current.files.filter(
+                                (file) => file.key !== entry.key,
+                              ),
+                            }))
+                          }
+                        >
+                          <X className="size-3" />
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                <div className="flex items-center gap-0.5 border-t border-border px-1.5 py-1">
                   <input
                     ref={fileInput}
                     type="file"
@@ -621,95 +719,115 @@ function ConversationFeed({
                     }}
                   />
                   <Button
-                    variant="outline"
+                    variant="ghost"
+                    size="icon"
+                    className={toolButton}
                     type="button"
                     disabled={busy}
                     aria-label={words.attach}
                     title={words.attachmentLimit}
                     onClick={() => fileInput.current?.click()}
                   >
-                    <Paperclip size={16} />
+                    <Paperclip />
                   </Button>
+                  <Popover open={mentioning} onOpenChange={setMentioning}>
+                    <PopoverTrigger asChild>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className={toolButton}
+                        type="button"
+                        disabled={busy}
+                        aria-label={words.mention}
+                      >
+                        <AtSign />
+                      </Button>
+                    </PopoverTrigger>
+                    <PopoverContent className="grid w-64 gap-1 p-1.5">
+                      <p className="px-2 py-1 text-[11px] text-faint">
+                        {words.mentionHelp}
+                      </p>
+                      {data.registry
+                        .filter((entry) => entry.kind === "agent")
+                        .map((entry) => (
+                          <button
+                            type="button"
+                            className="flex h-8 items-center gap-2 rounded-sm px-2 text-left text-[13px] hover:bg-accent"
+                            key={`${entry.id}@${entry.version}`}
+                            onClick={() => {
+                              setMentioning(false);
+                              insert(`@${entry.id} `);
+                            }}
+                          >
+                            <Avatar
+                              name={agentLabel(data.node.id, entry)}
+                              small
+                            />
+                            <span className="truncate">
+                              {agentLabel(data.node.id, entry)}
+                            </span>
+                          </button>
+                        ))}
+                    </PopoverContent>
+                  </Popover>
+                  <span aria-hidden className="mx-1 h-4 w-px bg-border" />
                   <Button
-                    variant="outline"
+                    variant="ghost"
+                    size="icon"
+                    className={toolButton}
                     type="button"
                     disabled={busy}
                     aria-label={words.bold}
                     onClick={() => insert("**", "**")}
                   >
-                    <Bold size={14} />
+                    <Bold />
                   </Button>
                   <Button
-                    variant="outline"
+                    variant="ghost"
+                    size="icon"
+                    className={toolButton}
                     type="button"
                     disabled={busy}
                     aria-label={words.italic}
                     onClick={() => insert("_", "_")}
                   >
-                    <Italic size={14} />
+                    <Italic />
                   </Button>
                   <Button
-                    variant="outline"
+                    variant="ghost"
+                    size="icon"
+                    className={toolButton}
                     type="button"
                     disabled={busy}
                     aria-label={words.code}
                     onClick={() => insert("`", "`")}
                   >
-                    <Code2 size={15} />
+                    <Code2 />
                   </Button>
-                  <details className="workspace-mention-picker">
-                    <summary aria-label={words.mention}>
-                      <AtSign size={15} />
-                    </summary>
-                    <div>
-                      <small>{words.mentionHelp}</small>
-                      {data.registry
-                        .filter((entry) => entry.kind === "agent")
-                        .map((entry) => (
-                          <Button
-                            variant="outline"
-                            type="button"
-                            disabled={busy}
-                            key={`${entry.id}@${entry.version}`}
-                            onClick={(event) => {
-                              insert(`@${entry.id} `);
-                              event.currentTarget
-                                .closest("details")
-                                ?.removeAttribute("open");
-                            }}
-                          >
-                            {agentLabel(data.node.id, entry)}
-                          </Button>
-                        ))}
-                    </div>
-                  </details>
+                  <span className="ml-auto hidden items-center gap-1 pr-1 text-[11px] text-faint lg:flex">
+                    <Kbd>Enter</Kbd>
+                    {locale === "ja-JP" ? "で送信" : "to send"}
+                  </span>
+                  <Button
+                    size="sm"
+                    className="ml-auto lg:ml-1"
+                    aria-label={thread ? threads.sendReply : copy.send}
+                    title={words.enterHint}
+                    disabled={
+                      busy || (!draft.text.trim() && draft.files.length === 0)
+                    }
+                  >
+                    {sending ? (
+                      <span>{uploading ? words.uploading : copy.sending}</span>
+                    ) : (
+                      <SendHorizontal />
+                    )}
+                  </Button>
                 </div>
-                <Button
-                  variant="outline"
-                  className="primary"
-                  aria-label={thread ? threads.sendReply : copy.send}
-                  disabled={
-                    busy || (!draft.text.trim() && draft.files.length === 0)
-                  }
-                >
-                  <Send size={15} />
-                  {sending && (
-                    <span>{uploading ? words.uploading : copy.sending}</span>
-                  )}
-                </Button>
               </div>
             </form>
           )}
-          <div className="workspace-composer-hint">
-            <span>{words.scope}</span>
-            <span>{words.enterHint}</span>
-          </div>
         </>
-      )}
-      {error && (
-        <p className="error workspace-message-error" role="alert">
-          {error}
-        </p>
       )}
       {sent && (
         <span className="sr-only" role="status">

@@ -54,6 +54,7 @@ async fn infer_after(
 					max_output_tokens: 512,
 					content_parts: vec![],
 					cache_scope: None,
+					cache_breakpoints: false,
 				},
 				&aidash_application::ports::NoProgress,
 			),

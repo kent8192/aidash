@@ -1,4 +1,7 @@
 import { Button } from "./components/ui/button";
+import { Input } from "./components/ui/input";
+import { NativeSelect } from "./components/ui/native-select";
+import { Textarea } from "./components/ui/textarea";
 import { useContext, useState, useRef, useEffect } from "react";
 import type {
   TransactionManifest,
@@ -8,6 +11,7 @@ import type {
 import { DisplayState, ReferenceName } from "./record-view";
 import { disambiguateLabels } from "./display-labels";
 import { Field, useEntityLabel, useI18n } from "./ui";
+import { Group, Hint } from "./components/patterns";
 
 function clearResource(mutation: TransactionMutation): TransactionMutation {
   switch (mutation.kind) {
@@ -69,8 +73,9 @@ export function TransactionComposer({
   return (
     <>
       <Field label={t("transactionDeadline")}>
-        <input
+        <Input
           type="datetime-local"
+          className="font-mono tabular"
           required
           value={new Date(
             Date.parse(value.deadline) -
@@ -88,13 +93,13 @@ export function TransactionComposer({
         />
       </Field>
       {value.participants.map((participant, index) => (
-        <fieldset key={index}>
-          <legend>
-            {t("transactionParticipant")} {index + 1}
-          </legend>
+        <Group
+          key={index}
+          legend={`${t("transactionParticipant")} ${index + 1}`}
+        >
           <Field label={t("node")}>
             {!operator && index > 0 ? (
-              <input
+              <Input
                 required
                 placeholder="aidash://remote-node"
                 value={participant.node_id}
@@ -107,7 +112,7 @@ export function TransactionComposer({
                 }
               />
             ) : (
-              <select
+              <NativeSelect
                 required
                 disabled={participant.node_id === value.coordinator}
                 value={participant.node_id}
@@ -133,11 +138,11 @@ export function TransactionComposer({
                       <ReferenceName id={node} />
                     </option>
                   ))}
-              </select>
+              </NativeSelect>
             )}
           </Field>
           {participant.node_id !== data?.node.id && (
-            <p className="muted">{t("transactionRemoteReferenceHelp")}</p>
+            <Hint>{t("transactionRemoteReferenceHelp")}</Hint>
           )}
           {participant.mutations.map((mutation, mutationIndex) => {
             const setMutation = (next: TransactionMutation) =>
@@ -148,12 +153,13 @@ export function TransactionComposer({
                 ),
               });
             return (
-              <fieldset key={mutationIndex}>
-                <legend>
-                  {t("transactionOperation")} {mutationIndex + 1}
-                </legend>
+              <Group
+                key={mutationIndex}
+                nested
+                legend={`${t("transactionOperation")} ${mutationIndex + 1}`}
+              >
                 <Field label={t("transactionOperation")}>
-                  <select
+                  <NativeSelect
                     value={mutation.kind}
                     onChange={(event) => {
                       const kind = event.target.value;
@@ -211,13 +217,13 @@ export function TransactionComposer({
                           {t(`transactionOperation_${kind}`)}
                         </option>
                       ))}
-                  </select>
+                  </NativeSelect>
                 </Field>
                 {mutation.kind === "workspace_state" && (
                   <>
                     <Field label={t("workspace")}>
                       {participant.node_id === data?.node.id ? (
-                        <select
+                        <NativeSelect
                           required
                           value={mutation.workspace_id}
                           onChange={(event) =>
@@ -238,9 +244,9 @@ export function TransactionComposer({
                               {workspaceLabels.get(workspace.id)}
                             </option>
                           ))}
-                        </select>
+                        </NativeSelect>
                       ) : (
-                        <input
+                        <Input
                           required
                           value={mutation.workspace_id}
                           onChange={(event) =>
@@ -265,7 +271,7 @@ export function TransactionComposer({
                   <>
                     <Field label={t("task")}>
                       {participant.node_id === data?.node.id ? (
-                        <select
+                        <NativeSelect
                           required
                           value={mutation.task_id}
                           onChange={(event) =>
@@ -285,9 +291,9 @@ export function TransactionComposer({
                               {taskLabels.get(task.id)}
                             </option>
                           ))}
-                        </select>
+                        </NativeSelect>
                       ) : (
-                        <input
+                        <Input
                           required
                           value={mutation.task_id}
                           onChange={(event) =>
@@ -301,7 +307,7 @@ export function TransactionComposer({
                       )}
                     </Field>
                     <Field label={t("name")}>
-                      <input
+                      <Input
                         required
                         value={mutation.artifact.name}
                         onChange={(event) =>
@@ -316,7 +322,7 @@ export function TransactionComposer({
                       />
                     </Field>
                     <Field label={t("kind")}>
-                      <input
+                      <Input
                         required
                         value={mutation.artifact.kind}
                         onChange={(event) =>
@@ -346,7 +352,7 @@ export function TransactionComposer({
                   <>
                     <Field label={t("execution")}>
                       {participant.node_id === data?.node.id ? (
-                        <select
+                        <NativeSelect
                           required
                           value={mutation.run_id}
                           onChange={(event) => {
@@ -368,9 +374,9 @@ export function TransactionComposer({
                               {runLabels.get(run.id)}
                             </option>
                           ))}
-                        </select>
+                        </NativeSelect>
                       ) : (
-                        <input
+                        <Input
                           required
                           value={mutation.run_id}
                           onChange={(event) =>
@@ -385,7 +391,7 @@ export function TransactionComposer({
                     </Field>
                     {participant.node_id !== data?.node.id && (
                       <Field label={t("task")}>
-                        <input
+                        <Input
                           required
                           value={mutation.task_id}
                           onChange={(event) =>
@@ -403,7 +409,7 @@ export function TransactionComposer({
                 {mutation.kind === "registry_register" && (
                   <>
                     <Field label={t("packageEntity")}>
-                      <select
+                      <NativeSelect
                         required
                         value={
                           data?.registry.some(
@@ -432,14 +438,14 @@ export function TransactionComposer({
                             {entityLabel(entry)}
                           </option>
                         ))}
-                      </select>
+                      </NativeSelect>
                     </Field>
-                    <p className="muted">{t("transactionRegistryHelp")}</p>
+                    <Hint>{t("transactionRegistryHelp")}</Hint>
                   </>
                 )}
                 {mutation.kind !== "registry_register" && (
                   <Field label={t("revision")}>
-                    <input
+                    <Input
                       type="number"
                       required
                       min={0}
@@ -454,7 +460,9 @@ export function TransactionComposer({
                   </Field>
                 )}
                 <Button
-                  variant="outline"
+                  variant="ghost"
+                  size="sm"
+                  className="justify-self-start hover:text-destructive"
                   type="button"
                   onClick={() =>
                     update(index, {
@@ -467,49 +475,58 @@ export function TransactionComposer({
                 >
                   {t("delete")}
                 </Button>
-              </fieldset>
+              </Group>
             );
           })}
-          <Button
-            variant="outline"
-            type="button"
-            onClick={() =>
-              update(index, {
-                ...participant,
-                mutations: [
-                  ...participant.mutations,
-                  {
-                    kind: "workspace_state",
-                    workspace_id: "",
-                    expected_revision: 0,
-                    state: {},
-                  },
-                ],
-              })
-            }
-          >
-            {t("transactionAddOperation")}
-          </Button>
-          <Button
-            variant="outline"
-            type="button"
-            disabled={
-              value.participants.length === 1 ||
-              participant.node_id === value.coordinator
-            }
-            onClick={() =>
-              change({
-                ...value,
-                participants: value.participants.filter((_, i) => i !== index),
-              })
-            }
-          >
-            {t("delete")}
-          </Button>
-        </fieldset>
+          <div className="flex flex-wrap gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              type="button"
+              onClick={() =>
+                update(index, {
+                  ...participant,
+                  mutations: [
+                    ...participant.mutations,
+                    {
+                      kind: "workspace_state",
+                      workspace_id: "",
+                      expected_revision: 0,
+                      state: {},
+                    },
+                  ],
+                })
+              }
+            >
+              {t("transactionAddOperation")}
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="hover:text-destructive"
+              type="button"
+              disabled={
+                value.participants.length === 1 ||
+                participant.node_id === value.coordinator
+              }
+              onClick={() =>
+                change({
+                  ...value,
+                  participants: value.participants.filter(
+                    (_, i) => i !== index,
+                  ),
+                })
+              }
+            >
+              {t("delete")}
+            </Button>
+          </div>
+        </Group>
       ))}
       <Button
         variant="outline"
+        size="sm"
+        className="justify-self-start"
         type="button"
         disabled={
           value.participants.length >=
@@ -563,8 +580,9 @@ function JsonInput({
   }, [value]);
   return (
     <Field label={label}>
-      <textarea
+      <Textarea
         ref={input}
+        className="min-h-20 font-mono text-xs"
         required
         value={draft}
         onChange={(event) => {

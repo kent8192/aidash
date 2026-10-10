@@ -1,5 +1,18 @@
 import { coordinatorDefaults, hasInstructionalBinding } from "./agent-bindings";
 import { Button } from "./components/ui/button";
+import { Input } from "./components/ui/input";
+import { NativeSelect } from "./components/ui/native-select";
+import { Textarea } from "./components/ui/textarea";
+import {
+  Alert,
+  Check,
+  Group,
+  Hint,
+  Notice,
+  formClass,
+  multiSelectClass,
+  pairClass,
+} from "./components/patterns";
 import { MemoryRegistryFields, memoryConfiguration } from "./memory-registry";
 import { ApiError, apiFetch } from "./transport";
 import {
@@ -13,7 +26,7 @@ import {
 import { ReferenceName } from "./record-view";
 import { AgentDocuments } from "./agent-documents";
 import type { ReferenceDocument } from "./generated/models";
-import { Fragment, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { EntityConfiguration } from "./entity-configuration";
 import { OpenRouterModelPicker } from "./openrouter-model-picker";
@@ -64,6 +77,7 @@ export function GoalForm({ data, submit }: { data: State; submit: Submit }) {
   });
   return (
     <form
+      className={formClass}
       onSubmit={(e) => {
         e.preventDefault();
         void form.handleSubmit();
@@ -72,7 +86,7 @@ export function GoalForm({ data, submit }: { data: State; submit: Submit }) {
       <form.Field name="title">
         {(f) => (
           <Field label={t("title")}>
-            <input
+            <Input
               required
               value={f.state.value}
               onChange={(e) => f.handleChange(e.target.value)}
@@ -84,7 +98,7 @@ export function GoalForm({ data, submit }: { data: State; submit: Submit }) {
       <form.Field name="goal">
         {(f) => (
           <Field label={t("goal")}>
-            <textarea
+            <Textarea
               required
               value={f.state.value}
               onChange={(e) => f.handleChange(e.target.value)}
@@ -97,7 +111,7 @@ export function GoalForm({ data, submit }: { data: State; submit: Submit }) {
       <form.Field name="target">
         {(f) => (
           <Field label={t("target")}>
-            <select
+            <NativeSelect
               required
               value={f.state.value}
               onChange={(e) => f.handleChange(e.target.value)}
@@ -111,16 +125,15 @@ export function GoalForm({ data, submit }: { data: State; submit: Submit }) {
                   {entityLabel(e)} ({t(e.kind)})
                 </option>
               ))}
-            </select>
+            </NativeSelect>
           </Field>
         )}
       </form.Field>
       <form.Subscribe selector={(s) => s.isSubmitting}>
         {(pending) => (
           <Button
-            variant="outline"
             disabled={pending || targets.length === 0}
-            className="primary"
+            className="justify-self-end"
             type="submit"
           >
             {t("newGoal")}
@@ -134,6 +147,7 @@ export function WorkspaceForm({ submit }: { submit: Submit }) {
   const { t } = useI18n();
   return (
     <form
+      className={formClass}
       onSubmit={(e) => {
         e.preventDefault();
         const d = new FormData(e.currentTarget);
@@ -146,14 +160,12 @@ export function WorkspaceForm({ submit }: { submit: Submit }) {
       }}
     >
       <Field label={t("title")}>
-        <input name="title" required />
+        <Input name="title" required />
       </Field>
       <Field label={t("goal")}>
-        <textarea name="goal" rows={4} required />
+        <Textarea name="goal" rows={4} required />
       </Field>
-      <Button variant="outline" className="primary">
-        {t("create")}
-      </Button>
+      <Button className="justify-self-end">{t("create")}</Button>
     </form>
   );
 }
@@ -180,6 +192,7 @@ export function TaskForm({
   }
   return (
     <form
+      className={formClass}
       onSubmit={(e) => {
         e.preventDefault();
         const d = new FormData(e.currentTarget);
@@ -204,7 +217,7 @@ export function TaskForm({
       }}
     >
       <Field label={t("workspace")}>
-        <select
+        <NativeSelect
           name="workspace"
           required
           value={selectedWorkspace}
@@ -219,16 +232,16 @@ export function TaskForm({
               {w.title}
             </option>
           ))}
-        </select>
+        </NativeSelect>
       </Field>
       <Field label={t("title")}>
-        <input name="title" required />
+        <Input name="title" required />
       </Field>
       <Field label={t("description")}>
-        <textarea name="description" required rows={3} />
+        <Textarea name="description" required rows={3} />
       </Field>
       <Field label={t("parentTask")}>
-        <select
+        <NativeSelect
           name="parent_id"
           value={parent}
           onChange={(event) => setParent(event.target.value)}
@@ -239,10 +252,11 @@ export function TaskForm({
               {task.title}
             </option>
           ))}
-        </select>
+        </NativeSelect>
       </Field>
       <Field label={t("dependencies")}>
         <select
+          className={multiSelectClass}
           name="dependencies"
           multiple
           key={`${selectedWorkspace}:${parent}`}
@@ -257,15 +271,13 @@ export function TaskForm({
         </select>
       </Field>
       <Field label={t("requirements")}>
-        <textarea
+        <Textarea
           name="requirements"
           defaultValue={'{"capability":"web.search","language":"ja"}'}
           onChange={(e) => e.currentTarget.setCustomValidity("")}
         />
       </Field>
-      <Button variant="outline" className="primary">
-        {t("create")}
-      </Button>
+      <Button className="justify-self-end">{t("create")}</Button>
     </form>
   );
 }
@@ -316,6 +328,7 @@ export function EntityForm({
   const [readingDocuments, setReadingDocuments] = useState(false);
   return (
     <form
+      className={formClass}
       onSubmit={(e) => {
         e.preventDefault();
         setError("");
@@ -413,42 +426,49 @@ export function EntityForm({
         }
       }}
     >
-      <Field label={t("entityKind")}>
-        <select
-          value={kind}
-          onChange={(e) => {
-            setKind(e.target.value);
-            setModelName("");
-            setCustomModelName(null);
-          }}
-        >
-          {[
-            "agent",
-            "model",
-            "tool",
-            "skill",
-            "memory",
-            "source",
-            "bundle",
-            "cluster",
-            "node",
-            "compactor",
-            "embedding",
-            "memory",
-            "source",
-            "reranker",
-            "tokenizer",
-          ].map((k) => (
-            <option key={k}>{k}</option>
-          ))}
-        </select>
-      </Field>
-      <Field label={t("version")}>
-        <input name="version" required defaultValue="1.0.0" />
-      </Field>
+      <div className={pairClass}>
+        <Field label={t("entityKind")}>
+          <NativeSelect
+            value={kind}
+            onChange={(e) => {
+              setKind(e.target.value);
+              setModelName("");
+              setCustomModelName(null);
+            }}
+          >
+            {[
+              "agent",
+              "model",
+              "tool",
+              "skill",
+              "memory",
+              "source",
+              "bundle",
+              "cluster",
+              "node",
+              "compactor",
+              "embedding",
+              "memory",
+              "source",
+              "reranker",
+              "tokenizer",
+            ].map((k) => (
+              <option key={k}>{k}</option>
+            ))}
+          </NativeSelect>
+        </Field>
+        <Field label={t("version")}>
+          <Input
+            name="version"
+            required
+            defaultValue="1.0.0"
+            className="font-mono text-xs"
+          />
+        </Field>
+      </div>
       <Field label={t("name")}>
         {kind === "model" ? (
-          <input
+          <Input
             key="model-name"
             name="name_en"
             required
@@ -456,7 +476,7 @@ export function EntityForm({
             onChange={(event) => setCustomModelName(event.target.value || null)}
           />
         ) : (
-          <input
+          <Input
             key="entity-name"
             name="name_en"
             required
@@ -465,14 +485,14 @@ export function EntityForm({
         )}
       </Field>
       <Field label={t("description")}>
-        <textarea name="description_en" required />
+        <Textarea name="description_en" required className="min-h-16" />
       </Field>
-      <div className="two-columns">
+      <div className={pairClass}>
         <Field label={t("capabilities")}>
-          <input name="capabilities" placeholder="web.search, coding" />
+          <Input name="capabilities" placeholder="web.search, coding" />
         </Field>
         <Field label={t("languages")}>
-          <input
+          <Input
             name="languages"
             placeholder={t("commaSeparated")}
             defaultValue="ja, en"
@@ -480,14 +500,17 @@ export function EntityForm({
         </Field>
       </div>
       <Field label={t("tags")}>
-        <input name="tags" placeholder={t("commaSeparated")} />
+        <Input name="tags" placeholder={t("commaSeparated")} />
       </Field>
-      <Fragment key={kind}>
+      <div
+        key={kind}
+        className="grid min-w-0 gap-4 border-t border-border pt-4"
+      >
         {kind === "agent" ? (
           <>
-            <p className="muted">{t("agentHelp")}</p>
+            <Hint>{t("agentHelp")}</Hint>
             <Field label={t("model")}>
-              <select name="model" required defaultValue="">
+              <NativeSelect name="model" required defaultValue="">
                 <option value="">{t("choose")}</option>
                 {models.map((e) => (
                   <option
@@ -497,12 +520,13 @@ export function EntityForm({
                     {entityLabel(e)}
                   </option>
                 ))}
-              </select>
+              </NativeSelect>
             </Field>
-            {models.length === 0 && <p className="notice">{t("noModel")}</p>}
-
+            {models.length === 0 && (
+              <Notice tone="warning">{t("noModel")}</Notice>
+            )}
             <Field label={t("additionalInstructions")}>
-              <textarea
+              <Textarea
                 name="instructions"
                 rows={3}
                 placeholder={t("additionalInstructionsHelp")}
@@ -521,7 +545,7 @@ export function EntityForm({
               busyChange={setReadingDocuments}
             />
             <Field label={t("cluster")}>
-              <select
+              <NativeSelect
                 name="cluster"
                 value={cluster}
                 onChange={(e) => {
@@ -547,25 +571,25 @@ export function EntityForm({
                       {entityLabel(e)}
                     </option>
                   ))}
-              </select>
+              </NativeSelect>
             </Field>
           </>
         ) : kind === "model" ? (
           <>
-            <p className="muted">{t("modelHelp")}</p>
+            <Hint>{t("modelHelp")}</Hint>
             <OpenRouterModelPicker onNameChange={setModelName} />
           </>
         ) : kind === "embedding" ? (
           <>
-            <p className="muted">{t("embeddingRegistryHelp")}</p>
+            <Hint>{t("embeddingRegistryHelp")}</Hint>
             <Field label={t("provider")}>
-              <select name="embedding_provider" defaultValue="openrouter">
+              <NativeSelect name="embedding_provider" defaultValue="openrouter">
                 <option value="openrouter">OpenRouter</option>
                 <option value="openai">{t("openaiCompatible")}</option>
-              </select>
+              </NativeSelect>
             </Field>
             <Field label={t("endpoint")}>
-              <input
+              <Input
                 name="endpoint"
                 type="url"
                 required
@@ -573,39 +597,36 @@ export function EntityForm({
               />
             </Field>
             <Field label={t("modelId")}>
-              <input
+              <Input
                 name="model_id"
                 required
                 defaultValue="google/gemini-embedding-2"
               />
             </Field>
-            <Field label={t("embeddingModelVersion")}>
-              <input name="model_version" required defaultValue="1.0.0" />
-            </Field>
-            <Field label={t("embeddingDimensions")}>
-              <input
-                name="dimensions"
-                type="number"
-                required
-                min={1}
-                max={8192}
-                defaultValue={3072}
-              />
-            </Field>
-            <label className="check">
-              <input
-                type="checkbox"
-                name="embedding_credentials"
-                defaultChecked
-              />
+            <div className={pairClass}>
+              <Field label={t("embeddingModelVersion")}>
+                <Input name="model_version" required defaultValue="1.0.0" />
+              </Field>
+              <Field label={t("embeddingDimensions")}>
+                <Input
+                  name="dimensions"
+                  type="number"
+                  required
+                  min={1}
+                  max={8192}
+                  defaultValue={3072}
+                />
+              </Field>
+            </div>
+            <Check name="embedding_credentials" defaultChecked>
               {t("configuredCredentials")}
-            </label>
+            </Check>
           </>
         ) : kind === "compactor" ? (
           <>
-            <p className="muted">{t("compactorHelp")}</p>
+            <Hint>{t("compactorHelp")}</Hint>
             <Field label={t("model")}>
-              <input
+              <Input
                 name="model_id"
                 required
                 maxLength={128}
@@ -613,57 +634,54 @@ export function EntityForm({
               />
             </Field>
             <Field label={t("endpoint")}>
-              <input
+              <Input
                 name="endpoint"
                 type="url"
                 required
                 defaultValue="https://api.typesafe.ai/v1/systemone"
               />
             </Field>
-
-            <Field label={t("compactorRequestBytes")}>
-              <input
-                name="max_request_bytes"
-                type="number"
-                required
-                min={1024}
-                max={1048576}
-                defaultValue={200000}
-              />
-            </Field>
-            <Field label={t("compactorQuestions")}>
-              <input
-                name="max_questions"
-                type="number"
-                required
-                min={1}
-                max={1024}
-                defaultValue={200}
-              />
-            </Field>
-            <Field label={t("compactorResponseBytes")}>
-              <input
-                name="max_response_bytes"
-                type="number"
-                required
-                min={128}
-                max={1048576}
-                defaultValue={16000}
-              />
-            </Field>
+            <div className="grid min-w-0 gap-4 sm:grid-cols-3">
+              <Field label={t("compactorRequestBytes")}>
+                <Input
+                  name="max_request_bytes"
+                  type="number"
+                  required
+                  min={1024}
+                  max={1048576}
+                  defaultValue={200000}
+                />
+              </Field>
+              <Field label={t("compactorQuestions")}>
+                <Input
+                  name="max_questions"
+                  type="number"
+                  required
+                  min={1}
+                  max={1024}
+                  defaultValue={200}
+                />
+              </Field>
+              <Field label={t("compactorResponseBytes")}>
+                <Input
+                  name="max_response_bytes"
+                  type="number"
+                  required
+                  min={128}
+                  max={1048576}
+                  defaultValue={16000}
+                />
+              </Field>
+            </div>
           </>
         ) : ["reranker", "tokenizer"].includes(kind) ? (
           <MemoryRegistryFields kind={kind} entries={data.registry} />
         ) : (
           <EntityConfiguration kind={kind} data={data} />
         )}
-      </Fragment>
-      {error && (
-        <p role="alert" className="error">
-          {error}
-        </p>
-      )}
-      <Button variant="outline" className="primary" disabled={readingDocuments}>
+      </div>
+      {error && <Alert>{error}</Alert>}
+      <Button className="justify-self-end" disabled={readingDocuments}>
         {t("register")}
       </Button>
     </form>
@@ -673,6 +691,7 @@ export function PeerForm({ submit }: { submit: Submit }) {
   const { t } = useI18n();
   return (
     <form
+      className={formClass}
       onSubmit={(e) => {
         e.preventDefault();
         const d = new FormData(e.currentTarget);
@@ -688,10 +707,15 @@ export function PeerForm({ submit }: { submit: Submit }) {
       }}
     >
       <Field label={t("node")}>
-        <input name="node_id" placeholder="aidash://node-b" required />
+        <Input
+          name="node_id"
+          placeholder="aidash://node-b"
+          required
+          className="font-mono text-xs"
+        />
       </Field>
       <Field label={t("endpoint")}>
-        <input
+        <Input
           name="endpoint"
           type="url"
           placeholder="http://127.0.0.1:8081"
@@ -699,15 +723,14 @@ export function PeerForm({ submit }: { submit: Submit }) {
         />
       </Field>
       <Field label={t("peerCredential")}>
-        <input
+        <Input
           name="credential_env"
           placeholder="AIDASH_SECRET_NODE_B"
           required
+          className="font-mono text-xs"
         />
       </Field>
-      <Button variant="outline" className="primary">
-        {t("addPeer")}
-      </Button>
+      <Button className="justify-self-end">{t("addPeer")}</Button>
     </form>
   );
 }
@@ -764,6 +787,7 @@ export function AssignForm({
     !!scopedRemote && (inspection.isPending || inspection.isError);
   return (
     <form
+      className={formClass}
       onSubmit={(e) => {
         e.preventDefault();
         const d = new FormData(e.currentTarget);
@@ -834,9 +858,12 @@ export function AssignForm({
         }).finally(() => setGrantBusy(false));
       }}
     >
-      <fieldset disabled={grantPending || grantBusy}>
+      <fieldset
+        disabled={grantPending || grantBusy}
+        className="grid min-w-0 gap-4"
+      >
         <Field label={t("agent")}>
-          <select
+          <NativeSelect
             name="agent"
             required
             value={selected}
@@ -859,45 +886,43 @@ export function AssignForm({
                 <ReferenceName id={a.node_id} />
               </option>
             ))}
-          </select>
+          </NativeSelect>
         </Field>
         {scopedRemote && (
-          <fieldset>
-            <legend>
-              {ja ? "遠隔実行で参照する記憶" : "Memory for remote execution"}
-            </legend>
-            <label>
-              <input
-                type="checkbox"
-                checked={useMemory}
-                disabled={
-                  nativeRequired || !memoryAvailable || inspectionBlocked
-                }
-                onChange={(e) => setMemory(e.target.checked)}
-              />
+          <Group
+            nested
+            legend={
+              ja ? "遠隔実行で参照する記憶" : "Memory for remote execution"
+            }
+          >
+            <Check
+              checked={useMemory}
+              disabled={nativeRequired || !memoryAvailable || inspectionBlocked}
+              onChange={(e) => setMemory(e.target.checked)}
+            >
               {ja
                 ? "各推論の前に Home の記憶を検索する"
                 : "Require Home memory before each inference"}
-            </label>
+            </Check>
             {inspection.isPending && (
-              <p role="status">
+              <Hint role="status">
                 {ja
                   ? "実行先のメモリ要件を確認しています"
                   : "Checking memory requirements at the execution node"}
-              </p>
+              </Hint>
             )}
             {inspection.isError && (
-              <p role="alert">
+              <Alert>
                 {ja
                   ? "実行先のメモリ要件を確認できませんでした"
                   : "Could not inspect memory requirements at the execution node"}
-              </p>
+              </Alert>
             )}
             {useMemory && (
               <>
-                <label>
+                <label className="grid gap-1.5 text-xs font-medium text-muted-foreground">
                   {ja ? "Home の embedding 定義" : "Home embedding definition"}
-                  <select name="embedding" required defaultValue="">
+                  <NativeSelect name="embedding" required defaultValue="">
                     <option value="">{t("choose")}</option>
                     {data.registry
                       .filter((entry) => entry.kind === "embedding")
@@ -909,23 +934,24 @@ export function AssignForm({
                           {entry.id}@{entry.version}
                         </option>
                       ))}
-                  </select>
+                  </NativeSelect>
                 </label>
-                <label>
+                <label className="grid gap-1.5 text-xs font-medium text-muted-foreground">
                   {ja
                     ? "任意: 実行 Node の承認済み compactor"
                     : "Optional: approved compactor at the execution node"}
-                  <input
+                  <Input
                     name="compactor"
                     placeholder="compactor-id@1.0.0"
                     pattern=".+@[0-9]+\.[0-9]+\.[0-9]+.*"
+                    className="font-mono text-xs"
                   />
                 </label>
-                <p>
+                <Hint>
                   {ja
                     ? "検索結果を選択した Agent のモデルへ開示します。予算や権限が不足すると実行は一時停止します。"
                     : "Retrieval results are disclosed to the selected agent's model. Execution pauses when authority or budget is insufficient."}
-                </p>
+                </Hint>
                 <HomeNativeMemoryFields
                   key={selected}
                   workspace={task.workspace_id}
@@ -934,19 +960,18 @@ export function AssignForm({
                 />
               </>
             )}
-          </fieldset>
+          </Group>
         )}
       </fieldset>
       {grantPending && (
-        <p role="status">
+        <Notice role="status">
           {ja
             ? "同じ実行許可を再確認します。結果が確定するまで設定を変更できません。"
             : "Recheck the same execution grant. Its settings stay fixed until the outcome is confirmed."}
-        </p>
+        </Notice>
       )}
       <Button
-        variant="outline"
-        className="primary"
+        className="justify-self-end"
         disabled={grantBusy || inspectionBlocked}
       >
         {grantPending
@@ -963,6 +988,7 @@ export function PublishForm({ data, submit }: { data: State; submit: Submit }) {
   const entityLabel = useEntityLabel(data.registry);
   return (
     <form
+      className={formClass}
       onSubmit={(e) => {
         e.preventDefault();
         const d = new FormData(e.currentTarget);
@@ -986,9 +1012,9 @@ export function PublishForm({ data, submit }: { data: State; submit: Submit }) {
         );
       }}
     >
-      <p>{t("publishHelp")}</p>
+      <Hint>{t("publishHelp")}</Hint>
       <Field label={t("packageEntity")}>
-        <select name="entity" required defaultValue="">
+        <NativeSelect name="entity" required defaultValue="">
           <option value="">{t("choose")}</option>
           {data.registry
             .filter((e) => ["agent", "tool", "skill"].includes(e.kind))
@@ -1000,10 +1026,10 @@ export function PublishForm({ data, submit }: { data: State; submit: Submit }) {
                 {entityLabel(e)}
               </option>
             ))}
-        </select>
+        </NativeSelect>
       </Field>
       <Field label={t("dependencies")}>
-        <select name="dependencies" multiple>
+        <select name="dependencies" multiple className={multiSelectClass}>
           {data.registry.map((entry) => (
             <option
               key={`${entry.id}@${entry.version}`}
@@ -1015,14 +1041,12 @@ export function PublishForm({ data, submit }: { data: State; submit: Submit }) {
         </select>
       </Field>
       <Field label={t("author")}>
-        <input name="author" required />
+        <Input name="author" required />
       </Field>
       <Field label={t("permissions")}>
-        <input name="permissions" placeholder={t("commaSeparated")} />
+        <Input name="permissions" placeholder={t("commaSeparated")} />
       </Field>
-      <Button variant="outline" className="primary">
-        {t("publish")}
-      </Button>
+      <Button className="justify-self-end">{t("publish")}</Button>
     </form>
   );
 }

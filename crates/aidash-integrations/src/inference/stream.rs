@@ -34,6 +34,8 @@ pub(crate) struct StreamAssembler<'a> {
 	line: Vec<u8>,
 	/// The previous line ended in CR, so a leading LF completes that CRLF.
 	pending_cr: bool,
+	/// No line has been dispatched yet, so a leading UTF-8 BOM may still appear.
+	at_start: bool,
 	data: Option<Vec<u8>>,
 	received: usize,
 	assembled: usize,
@@ -54,6 +56,7 @@ impl<'a> StreamAssembler<'a> {
 			limit,
 			line: Vec::new(),
 			pending_cr: false,
+			at_start: true,
 			data: None,
 			received: 0,
 			assembled: 0,
@@ -162,7 +165,11 @@ impl<'a> StreamAssembler<'a> {
 		Error::External(format!("response exceeds {} bytes", self.limit))
 	}
 
-	fn field(&mut self, line: &[u8]) -> Result<bool> {
+	fn field(&mut self, mut line: &[u8]) -> Result<bool> {
+		// SSE permits one UTF-8 BOM at the start of the stream only.
+		if std::mem::take(&mut self.at_start) {
+			line = line.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(line);
+		}
 		if line.is_empty() {
 			// An empty data buffer dispatches nothing, as in the SSE specification.
 			if let Some(data) = self.data.take().filter(|data| !data.is_empty()) {

@@ -85,7 +85,11 @@ for (const locale of ["en-US", "ja-JP"] as const) {
     });
     await page.goto("/collaboration?channel=workspace-one");
     await page.getByRole("button", { name: copy.history, exact: true }).click();
-    await page.locator(".collab-channel .collab-task").click();
+    await page
+      .getByRole("dialog")
+      .getByRole("button")
+      .filter({ hasText: "Researcher" })
+      .click();
     const dialog = page.getByRole("dialog");
     const progress = dialog.locator(".inference-progress");
 
@@ -163,7 +167,11 @@ test("a pending attempt keeps streaming until its outcome after the Run ends", a
   await page
     .getByRole("button", { name: "Execution history", exact: true })
     .click();
-  await page.locator(".collab-channel .collab-task").click();
+  await page
+    .getByRole("dialog")
+    .getByRole("button")
+    .filter({ hasText: "Researcher" })
+    .click();
   const dialog = page.getByRole("dialog");
   const pending = dialog.locator(".inference-attempt.pending");
   await expect(pending.locator(".inference-text")).toHaveText("Final answer");

@@ -1,4 +1,7 @@
-import { Button } from "./components/ui/button";
+import { Input } from "./components/ui/input";
+import { NativeSelect } from "./components/ui/native-select";
+import { Textarea } from "./components/ui/textarea";
+import { Alert, Disclosure, Hint, pairClass } from "./components/patterns";
 import { useId, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { openrouterModels } from "./generated/aidash";
@@ -58,9 +61,9 @@ export function OpenRouterModelPicker({
   };
   return (
     <>
-      <div className="model-picker">
+      <div className="relative min-w-0">
         <Field label={t("modelId")}>
-          <input
+          <Input
             role="combobox"
             aria-autocomplete="list"
             aria-expanded={open}
@@ -106,14 +109,13 @@ export function OpenRouterModelPicker({
         </Field>
         {open && (
           <div
-            className="model-options"
+            className="absolute inset-x-0 top-full z-20 mt-1 grid max-h-64 overflow-y-auto rounded-lg border border-border-strong bg-popover p-1 shadow-overlay"
             role="listbox"
             id={listId}
             aria-label={t("modelId")}
           >
             {matches.map((model, index) => (
-              <Button
-                variant="outline"
+              <button
                 type="button"
                 role="option"
                 id={`${listId}-${index}`}
@@ -126,34 +128,37 @@ export function OpenRouterModelPicker({
                 }}
                 onMouseDown={(e) => e.preventDefault()}
                 onClick={() => choose(model)}
+                className="grid min-w-0 cursor-pointer gap-0.5 rounded-md px-2.5 py-1.5 text-left transition-colors duration-150 hover:bg-accent aria-selected:bg-brand-soft"
               >
-                <strong>{model.name}</strong>
-                <span>{model.id}</span>
-              </Button>
+                <span className="truncate text-[13px] font-medium text-foreground">
+                  {model.name}
+                </span>
+                <span className="truncate font-mono text-[11px] text-muted-foreground">
+                  {model.id}
+                </span>
+              </button>
             ))}
             {!catalog.isPending && !catalog.isError && matches.length === 0 && (
-              <p role="status">{t("modelNoMatches")}</p>
+              <p
+                role="status"
+                className="px-2.5 py-2 text-xs text-muted-foreground"
+              >
+                {t("modelNoMatches")}
+              </p>
             )}
           </div>
         )}
       </div>
-      {catalog.isPending && <p role="status">{t("modelLoading")}</p>}
+      {catalog.isPending && <Hint role="status">{t("modelLoading")}</Hint>}
       {catalog.isError && (
-        <div role="alert">
-          <p>{t("modelLoadError")}</p>
-          <Button
-            variant="outline"
-            type="button"
-            onClick={() => void catalog.refetch()}
-          >
-            {t("retry")}
-          </Button>
-        </div>
+        <Alert retry={() => void catalog.refetch()}>
+          {t("modelLoadError")}
+        </Alert>
       )}
-      <p className="muted">{t("modelCatalogHelp")}</p>
-      <p className="muted">{t("modelZdr")}</p>
+      <Hint>{t("modelCatalogHelp")}</Hint>
+      <Hint>{t("modelZdr")}</Hint>
       <Field label="Reasoning Effort">
-        <select
+        <NativeSelect
           name="reasoning_effort"
           key={selectedId}
           defaultValue=""
@@ -172,7 +177,7 @@ export function OpenRouterModelPicker({
               {effort}
             </option>
           ))}
-        </select>
+        </NativeSelect>
       </Field>
       <input type="hidden" name="model_id" value={selected?.id ?? ""} />
       <input
@@ -183,18 +188,19 @@ export function OpenRouterModelPicker({
       {selected?.architecture.input_modalities.some(
         (modality) => modality === "image" || modality === "audio",
       ) && (
-        <details>
-          <summary>
-            {locale === "ja-JP"
+        <Disclosure
+          summary={
+            locale === "ja-JP"
               ? "確認済みメディア経路"
-              : "Verified media routes"}
-          </summary>
-          <p className="muted">
+              : "Verified media routes"
+          }
+        >
+          <Hint>
             {locale === "ja-JP"
               ? "画像・音声を使うには、経路ごとの対応形式と確認根拠、有効期限を登録してください。期限切れや未確認の経路では送信しません。"
               : "To use image or audio input, register the formats, evidence, and expiry for each provider route. Unverified or expired routes cannot receive media."}
-          </p>
-          <textarea
+          </Hint>
+          <Textarea
             key={selectedId}
             name="media_routes"
             aria-label={
@@ -205,29 +211,34 @@ export function OpenRouterModelPicker({
             rows={5}
             defaultValue="[]"
             spellCheck={false}
+            className="font-mono text-xs"
           />
-        </details>
+        </Disclosure>
       )}
       <input
         type="hidden"
         name="endpoint"
         value="https://openrouter.ai/api/v1"
       />
-      <Field label={t("contextWindow")}>
-        <input
-          name="context_window"
-          readOnly
-          value={selected?.context_length ?? ""}
-        />
-      </Field>
-      <Field label={t("modelMaxOutputTokens")}>
-        <input
-          name="max_output_tokens"
-          type="number"
-          readOnly
-          value={selected?.top_provider?.max_completion_tokens ?? ""}
-        />
-      </Field>
+      <div className={pairClass}>
+        <Field label={t("contextWindow")}>
+          <Input
+            name="context_window"
+            readOnly
+            value={selected?.context_length ?? ""}
+            className="bg-raised font-mono text-xs"
+          />
+        </Field>
+        <Field label={t("modelMaxOutputTokens")}>
+          <Input
+            name="max_output_tokens"
+            type="number"
+            readOnly
+            value={selected?.top_provider?.max_completion_tokens ?? ""}
+            className="bg-raised font-mono text-xs"
+          />
+        </Field>
+      </div>
       <input
         type="hidden"
         name="cost"
@@ -238,10 +249,10 @@ export function OpenRouterModelPicker({
         })}
       />
       {selected && (
-        <p className="muted">
+        <Hint className="font-mono tabular">
           {t("modelPricing")} {perMillion(selected.pricing.prompt) ?? "—"} /{" "}
           {perMillion(selected.pricing.completion) ?? "—"}
-        </p>
+        </Hint>
       )}
     </>
   );

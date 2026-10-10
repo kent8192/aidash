@@ -619,6 +619,7 @@ impl Models {
 			max_output_tokens: output as u32,
 			content_parts: vec![],
 			cache_scope: None,
+			cache_breakpoints: false,
 		};
 		request.ensure_fits(config.context_window)?;
 		let charge = rate.charge(input as u64, output as u64)?;

@@ -20,6 +20,7 @@ import {
 import { toast } from "sonner";
 import { Toaster } from "./components/ui/sonner";
 import { Button } from "./components/ui/button";
+import { cn } from "./lib/utils";
 import {
   Sheet,
   SheetContent,
@@ -29,6 +30,7 @@ import {
 } from "./components/ui/sheet";
 import type { Mesh, State } from "./types";
 import type { Locale } from "./ui";
+import { Hint } from "./components/patterns";
 import {
   NoticeStore,
   type Notice,
@@ -72,6 +74,12 @@ const icons = {
   input: CircleHelp,
   completed: CheckCircle2,
   failed: TriangleAlert,
+};
+const iconTone = {
+  approval: "text-warning",
+  input: "text-warning",
+  completed: "text-success",
+  failed: "text-destructive",
 };
 function frame(
   data: State | undefined,
@@ -158,7 +166,7 @@ const NotificationContext = createContext<{
   show: () => void;
   label: string;
 } | null>(null);
-export function NotificationBell() {
+export function NotificationBell({ className }: { className?: string }) {
   const value = useContext(NotificationContext)!;
   const view = useSyncExternalStore(
     value.store.subscribe,
@@ -171,10 +179,17 @@ export function NotificationBell() {
       type="button"
       aria-label={value.label}
       onClick={value.show}
+      className={cn("relative", className)}
     >
-      <Bell size={17} />
-      {(view.pending.length > 0 || view.unread) && (
-        <span className="notification-dot" />
+      <Bell aria-hidden strokeWidth={1.75} />
+      {view.pending.length > 0 ? (
+        <span className="absolute -right-0.5 -top-0.5 grid h-[15px] min-w-[15px] place-items-center rounded-sm bg-primary px-[3px] font-mono text-[10px] font-semibold leading-none text-primary-foreground ring-2 ring-rail tabular">
+          {view.pending.length}
+        </span>
+      ) : (
+        view.unread && (
+          <span className="absolute right-1 top-1 size-1.5 rounded-full bg-brand-mark ring-2 ring-rail" />
+        )
       )}
     </Button>
   );
@@ -246,33 +261,46 @@ export function NotificationProvider({
       const currentWords = labels.current;
       toast.custom(
         () => (
-          <div className="intent-toast-card">
+          <div className="flex w-[min(380px,calc(100vw-24px))] items-start gap-1 rounded-lg border border-border-strong bg-popover p-1.5 text-popover-foreground shadow-overlay">
             <Button
               variant="ghost"
-              className="intent-toast-open"
+              className="intent-toast-open h-auto min-w-0 flex-1 items-start justify-start gap-3 whitespace-normal px-2.5 py-2 text-left text-foreground [&_svg]:size-4"
               onClick={() => {
                 if (item) visit(item);
                 else show();
               }}
             >
-              <Icon size={20} />
-              <span>
-                <strong>
+              <Icon
+                aria-hidden
+                className={cn(
+                  "mt-0.5",
+                  item ? iconTone[item.kind] : "text-brand",
+                )}
+              />
+              <span className="grid min-w-0 gap-0.5">
+                <strong className="text-[13px] font-semibold">
                   {item
                     ? currentWords[item.kind]
                     : currentWords.updates(batch.length)}
                 </strong>
-                <span>{item ? item.detail : currentWords.view}</span>
-                {item && <small>{item.workspaceTitle}</small>}
+                <span className="line-clamp-2 text-xs font-normal text-muted-foreground">
+                  {item ? item.detail : currentWords.view}
+                </span>
+                {item && (
+                  <small className="truncate font-mono text-[11px] font-normal text-faint">
+                    {item.workspaceTitle}
+                  </small>
+                )}
               </span>
             </Button>
             <Button
               variant="ghost"
               size="icon"
+              className="size-7 shrink-0"
               aria-label={currentWords.close}
               onClick={() => toast.dismiss(toastId)}
             >
-              <X size={16} />
+              <X aria-hidden />
             </Button>
           </div>
         ),
@@ -313,13 +341,18 @@ export function NotificationProvider({
           setCenterOpen(open);
         }}
       >
-        <SheetContent className="intent-notifications" closeLabel={words.close}>
-          <SheetHeader>
+        <SheetContent
+          className="intent-notifications w-[min(420px,100vw)] gap-0 overflow-y-auto p-0"
+          closeLabel={words.close}
+        >
+          <SheetHeader className="border-b border-border px-5 py-4">
             <SheetTitle>{words.notifications}</SheetTitle>
-            <SheetDescription>{words.description}</SheetDescription>
+            <SheetDescription className="text-xs">
+              {words.description}
+            </SheetDescription>
           </SheetHeader>
           {view.pending.length === 0 && recent.length === 0 && (
-            <p className="muted">{words.empty}</p>
+            <Hint className="px-5 py-6">{words.empty}</Hint>
           )}
           {[
             { title: words.pending, items: view.pending },
@@ -327,22 +360,39 @@ export function NotificationProvider({
           ].map(
             (group) =>
               group.items.length > 0 && (
-                <section key={group.title}>
-                  <h3>{group.title}</h3>
+                <section
+                  key={group.title}
+                  className="grid gap-px border-b border-border px-3 py-3 last:border-b-0"
+                >
+                  <h3 className="flex items-center justify-between px-2 pb-1.5 text-[11px] font-medium text-faint">
+                    {group.title}
+                    <span className="font-mono tabular">
+                      {group.items.length}
+                    </span>
+                  </h3>
                   {group.items.map((item) => {
                     const Icon = icons[item.kind];
                     return (
                       <Button
                         variant="ghost"
-                        className="intent-notification-row"
+                        className="intent-notification-row h-auto w-full items-start justify-start gap-3 whitespace-normal px-2 py-2 text-left text-foreground [&_svg]:size-4"
                         key={item.id}
                         onClick={() => visit(item)}
                       >
-                        <Icon size={18} />
-                        <span>
-                          <strong>{words[item.kind]}</strong>
-                          <span>{item.detail}</span>
-                          <small>{item.workspaceTitle}</small>
+                        <Icon
+                          aria-hidden
+                          className={cn("mt-0.5", iconTone[item.kind])}
+                        />
+                        <span className="grid min-w-0 gap-0.5">
+                          <strong className="text-[13px] font-medium">
+                            {words[item.kind]}
+                          </strong>
+                          <span className="line-clamp-2 text-xs font-normal text-muted-foreground">
+                            {item.detail}
+                          </span>
+                          <small className="truncate font-mono text-[11px] font-normal text-faint">
+                            {item.workspaceTitle}
+                          </small>
                         </span>
                       </Button>
                     );

@@ -97,17 +97,59 @@ export function useAgentLabel(data: State, discovery?: Discovery) {
   };
 }
 
-export function Badge({ value }: { value: string }) {
+export type StatusTone = "brand" | "success" | "warning" | "danger" | "neutral";
+const statusTones: Record<string, StatusTone> = {
+  RUNNING: "brand",
+  THINKING: "brand",
+  TOOL_CALL: "brand",
+  ACTIVE: "brand",
+  STARTED: "brand",
+  QUEUED: "brand",
+  PREPARING: "brand",
+  COMMITTING: "brand",
+  ENABLED: "brand",
+  COMPLETED: "success",
+  COMMITTED: "success",
+  APPLIED: "success",
+  PREPARED: "success",
+  RESOLVED: "success",
+  BLOCKED: "warning",
+  WAITING: "warning",
+  PAUSED: "warning",
+  APPROVAL_REQUIRED: "warning",
+  CONFIRMATION: "warning",
+  QUESTION: "warning",
+  INFORMATION_REQUEST: "warning",
+  UNCERTAIN: "warning",
+  PENDING_APPROVAL: "warning",
+  PENDING: "warning",
+  RELEASING: "warning",
+  ABORTING: "warning",
+  FAILED: "danger",
+  DENIED: "danger",
+  ABORTED: "danger",
+  ERROR: "danger",
+};
+/** Semantic tone for a server status word (TaskStatus, RunPhase, transaction and request states). */
+export function statusTone(value: string): StatusTone {
+  return statusTones[value.toUpperCase()] ?? "neutral";
+}
+/** Status word badge; `tone` overrides `statusTone` for vocabularies it does not cover. */
+export function Badge({ value, tone }: { value: string; tone?: StatusTone }) {
   const { t } = useI18n();
   return (
-    <StatusBadge variant="outline" className={`badge ${value.toLowerCase()}`}>
+    <StatusBadge
+      tone={tone ?? statusTone(value)}
+      className={`badge ${value.toLowerCase()}`}
+    >
+      <span aria-hidden className="size-1.5 rounded-full bg-current" />
       {t(value)}
     </StatusBadge>
   );
 }
 export function JsonView({ value }: { value: unknown }) {
   return (
-    <pre className="json">
+    <pre className="json max-h-96 overflow-auto rounded-md border border-border bg-background p-3 font-mono text-xs leading-relaxed text-muted-foreground">
       {typeof value === "string" ? value : JSON.stringify(value, null, 2)}
     </pre>
   );
@@ -115,10 +157,11 @@ export function JsonView({ value }: { value: unknown }) {
 export function Empty() {
   const { t } = useI18n();
   return (
-    <div className="empty">
-      <span className="empty-mark">◇</span>
-      <h3>{t("empty")}</h3>
-      <p>{t("emptyHelp")}</p>
+    <div className="empty flex flex-col items-start gap-1 rounded-lg border border-dashed border-border-strong px-4 py-6">
+      <h3 className="text-[13px] font-medium text-foreground">{t("empty")}</h3>
+      <p className="max-w-[60ch] text-xs text-muted-foreground">
+        {t("emptyHelp")}
+      </p>
     </div>
   );
 }
@@ -132,8 +175,10 @@ export function Field({
   const generatedId = useId();
   const id = children.props.id ?? generatedId;
   return (
-    <div className="field">
-      <label htmlFor={id}>{label}</label>
+    <div className="field grid gap-1.5">
+      <label htmlFor={id} className="text-xs font-medium text-muted-foreground">
+        {label}
+      </label>
       {cloneElement(children, { id })}
     </div>
   );
@@ -156,14 +201,16 @@ export function Modal({
       }}
     >
       <DialogContent
-        className="intent-dialog"
+        className="intent-dialog flex max-w-2xl flex-col overflow-hidden has-[.agent-graph]:w-[min(1120px,calc(100vw-2rem))] has-[.agent-graph]:max-w-[calc(100vw-2rem)]"
         aria-describedby={undefined}
         closeLabel={t("close")}
       >
-        <DialogHeader className="modal-heading">
+        <DialogHeader className="shrink-0">
           <DialogTitle>{title}</DialogTitle>
         </DialogHeader>
-        <div className="modal-body">{children}</div>
+        <div className="-mx-5 grid min-h-0 min-w-0 flex-1 content-start gap-4 overflow-y-auto px-5 pb-1">
+          {children}
+        </div>
       </DialogContent>
     </Dialog>
   );
@@ -178,9 +225,9 @@ export function Panel({
   children: ReactNode;
 }) {
   return (
-    <section className="panel">
-      <div className="panel-heading">
-        <h2>{title}</h2>
+    <section className="panel grid min-w-0 gap-3 border-t border-border pt-4 first:border-t-0 first:pt-0">
+      <div className="flex min-h-8 items-center justify-between gap-3">
+        <h2 className="text-[13px] font-semibold text-foreground">{title}</h2>
         {action}
       </div>
       {children}

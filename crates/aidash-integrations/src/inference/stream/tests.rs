@@ -359,6 +359,34 @@ fn bare_cr_line_endings_match_lf(#[values(1, 7, 4096)] split: usize) {
 }
 
 #[rstest::rstest]
+fn a_leading_bom_is_ignored_only_at_the_stream_start(#[values(1, 2, 7, 4096)] split: usize) {
+	// Arrange
+	let chunks = [delta(json!({"content":"Done"})), finish("stop"), usage()];
+	let plain = sse(&chunks, true);
+	// The BOM must directly precede the first `data:` field, not a comment.
+	let first = plain.strip_prefix(b": OPENROUTER PROCESSING\n\n").unwrap();
+	let mut with_bom = b"\xEF\xBB\xBF".to_vec();
+	with_bom.extend_from_slice(first);
+	let mut later = sse(&chunks[..1], false);
+	later.extend_from_slice(b"\xEF\xBB\xBFdata: ");
+	later.extend_from_slice(delta(json!({"content":"!"})).to_string().as_bytes());
+	later.extend_from_slice(b"\n\n");
+	later.extend_from_slice(&sse(&chunks[1..], true));
+
+	// Act
+	let (from_bom, _) = assemble(&with_bom, split, 1_048_576);
+	let (from_plain, _) = assemble(&plain, split, 1_048_576);
+	let (from_later, _) = assemble(&later, split, 1_048_576);
+
+	// Assert: the first event's content survives, and a later BOM is no BOM.
+	assert_eq!(
+		serde_json::to_value(from_bom.unwrap()).unwrap(),
+		serde_json::to_value(from_plain.unwrap()).unwrap()
+	);
+	assert_eq!(from_later.unwrap().text, "Done");
+}
+
+#[rstest::rstest]
 #[case::text(delta(json!({"content":"late"})))]
 #[case::tool_call(delta(json!({"tool_calls":[{"index":0,"id":"call-1","function":{"name":"run","arguments":"{}"}}]})))]
 #[case::second_reason(finish("length"))]

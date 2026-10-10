@@ -1,74 +1,267 @@
+/* Night Ops design system: graphite console (dark, default) and cool light, one lime accent. */
+/* Self-hosted faces: the desktop CSP only allows same-origin fonts. */
+@import "@fontsource/ibm-plex-sans/400.css";
+@import "@fontsource/ibm-plex-sans/500.css";
+@import "@fontsource/ibm-plex-sans/600.css";
+@import "@fontsource/ibm-plex-sans-jp/400.css";
+@import "@fontsource/ibm-plex-sans-jp/500.css";
+@import "@fontsource/ibm-plex-sans-jp/600.css";
+@import "@fontsource/ibm-plex-mono/300.css";
+@import "@fontsource/ibm-plex-mono/400.css";
+@import "@fontsource/ibm-plex-mono/500.css";
 @import "tailwindcss";
 @import "tw-animate-css";
 
 @custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+@custom-variant light (&:where([data-theme="light"], [data-theme="light"] *));
 
-:root {
-  --background: #fafafa;
-  --foreground: #18201f;
-  --card: #ffffff;
-  --card-foreground: #18201f;
-  --popover: #ffffff;
-  --popover-foreground: #18201f;
-  --primary: #c74730;
-  --primary-foreground: #ffffff;
-  --secondary: #f0f1f2;
-  --secondary-foreground: #18201f;
-  --muted: #f0f1f2;
-  --muted-foreground: #616766;
-  --accent: #fbece8;
-  --accent-foreground: #a33824;
-  --destructive: #b3342f;
-  --destructive-foreground: #ffffff;
-  --border: #e3e5e6;
-  --input: #d9dcdd;
-  --ring: #c74730;
-  --radius: 0.5rem;
-}
+/* Dark is the default; [data-theme] on <html> selects the resolved theme. */
+:root,
 [data-theme="dark"] {
   color-scheme: dark;
-  --background: #171a1c;
-  --foreground: #eef0f1;
-  --card: #202427;
-  --card-foreground: #eef0f1;
-  --popover: #202427;
-  --popover-foreground: #eef0f1;
-  --primary: #f58b74;
-  --primary-foreground: #251710;
-  --secondary: #282d30;
-  --secondary-foreground: #eef0f1;
-  --muted: #282d30;
-  --muted-foreground: #afb6ba;
-  --accent: #3a2925;
-  --accent-foreground: #f6ae9c;
-  --destructive: #f19590;
-  --destructive-foreground: #251710;
-  --border: #383e42;
-  --input: #4b5359;
-  --ring: #f58b74;
+  --background: #0d0f12;
+  --foreground: #e7e9ec;
+  --surface: #14171c;
+  --raised: #1b1f26;
+  --rail: #0d0f12;
+  --card: #14171c;
+  --card-foreground: #e7e9ec;
+  --popover: #1b1f26;
+  --popover-foreground: #e7e9ec;
+  --primary: #b5e655;
+  --primary-hover: #c4ef6e;
+  --primary-foreground: #0d0f12;
+  --brand: #b5e655;
+  --brand-soft: rgb(181 230 85 / 0.1);
+  --brand-line: rgb(181 230 85 / 0.38);
+  --brand-mark: #b5e655;
+  --secondary: #1b1f26;
+  --secondary-foreground: #e7e9ec;
+  --muted: #1b1f26;
+  --muted-foreground: #8b93a1;
+  --faint: #636b78;
+  --accent: rgb(231 233 236 / 0.06);
+  --accent-foreground: #e7e9ec;
+  --destructive: #e5675e;
+  --destructive-foreground: #0d0f12;
+  --destructive-soft: rgb(229 103 94 / 0.12);
+  --warning: #e0a54a;
+  --warning-soft: rgb(224 165 74 / 0.12);
+  --success: #6fbf8f;
+  --success-soft: rgb(111 191 143 / 0.12);
+  --neutral-soft: rgb(139 147 161 / 0.12);
+  --border: #262b33;
+  --border-strong: #323843;
+  --input: #323843;
+  --ring: #b5e655;
+  --edge: #5d6573;
+  --edge-strong: #9aa3b0;
+  --grid-dot: rgb(231 233 236 / 0.075);
+  --overlay-shadow: 0 24px 60px rgb(0 0 0 / 0.55), 0 2px 6px rgb(0 0 0 / 0.3);
+  --scrim: rgb(5 6 8 / 0.6);
+  --radius: 10px;
 }
+
+[data-theme="light"] {
+  color-scheme: light;
+  --background: #f3f5f7;
+  --foreground: #12161b;
+  --surface: #ffffff;
+  --raised: #eceff3;
+  --rail: #e9ecf0;
+  --card: #ffffff;
+  --card-foreground: #12161b;
+  --popover: #ffffff;
+  --popover-foreground: #12161b;
+  --primary: #b5e655;
+  --primary-hover: #a6dc3f;
+  --primary-foreground: #12161b;
+  --brand: #4a7309;
+  --brand-soft: rgb(122 170 20 / 0.12);
+  --brand-line: rgb(122 170 20 / 0.45);
+  --brand-mark: #6a9c12;
+  --secondary: #eceff3;
+  --secondary-foreground: #12161b;
+  --muted: #eceff3;
+  --muted-foreground: #556070;
+  --faint: #7a8494;
+  --accent: rgb(18 22 27 / 0.045);
+  --accent-foreground: #12161b;
+  --destructive: #c23a32;
+  --destructive-foreground: #ffffff;
+  --destructive-soft: rgb(194 58 50 / 0.1);
+  --warning: #9a5f0a;
+  --warning-soft: rgb(154 95 10 / 0.1);
+  --success: #267a4b;
+  --success-soft: rgb(38 122 75 / 0.1);
+  --neutral-soft: rgb(85 96 112 / 0.1);
+  --border: #dfe3e8;
+  --border-strong: #cdd3db;
+  --input: #cdd3db;
+  --ring: #6a9c12;
+  --edge: #9099a6;
+  --edge-strong: #3f4855;
+  --grid-dot: rgb(18 22 27 / 0.09);
+  --overlay-shadow:
+    0 16px 40px rgb(28 38 56 / 0.14), 0 2px 6px rgb(28 38 56 / 0.06);
+  --scrim: rgb(18 22 27 / 0.32);
+}
+
 @theme inline {
+  --font-sans:
+    "IBM Plex Sans", "IBM Plex Sans JP", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, monospace;
   --color-background: var(--background);
   --color-foreground: var(--foreground);
+  --color-surface: var(--surface);
+  --color-raised: var(--raised);
+  --color-rail: var(--rail);
   --color-card: var(--card);
   --color-card-foreground: var(--card-foreground);
   --color-popover: var(--popover);
   --color-popover-foreground: var(--popover-foreground);
   --color-primary: var(--primary);
+  --color-primary-hover: var(--primary-hover);
   --color-primary-foreground: var(--primary-foreground);
+  --color-brand: var(--brand);
+  --color-brand-soft: var(--brand-soft);
+  --color-brand-line: var(--brand-line);
+  --color-brand-mark: var(--brand-mark);
   --color-secondary: var(--secondary);
   --color-secondary-foreground: var(--secondary-foreground);
   --color-muted: var(--muted);
   --color-muted-foreground: var(--muted-foreground);
+  --color-faint: var(--faint);
   --color-accent: var(--accent);
   --color-accent-foreground: var(--accent-foreground);
   --color-destructive: var(--destructive);
   --color-destructive-foreground: var(--destructive-foreground);
+  --color-destructive-soft: var(--destructive-soft);
+  --color-warning: var(--warning);
+  --color-warning-soft: var(--warning-soft);
+  --color-success: var(--success);
+  --color-success-soft: var(--success-soft);
+  --color-neutral-soft: var(--neutral-soft);
   --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
   --color-input: var(--input);
   --color-ring: var(--ring);
-  --radius-sm: calc(var(--radius) - 4px);
-  --radius-md: calc(var(--radius) - 2px);
+  --color-edge: var(--edge);
+  --color-edge-strong: var(--edge-strong);
+  --color-scrim: var(--scrim);
+  --radius-sm: 4px;
+  --radius-md: 6px;
   --radius-lg: var(--radius);
   --radius-xl: calc(var(--radius) + 4px);
+  --shadow-overlay: var(--overlay-shadow);
+}
+
+@layer base {
+  html {
+    font-size: 16px;
+  }
+  body {
+    margin: 0;
+    background: var(--background);
+    color: var(--foreground);
+    font-family: var(--font-sans);
+    font-size: 13px;
+    line-height: 1.55;
+    font-synthesis: none;
+    -webkit-font-smoothing: antialiased;
+    word-break: auto-phrase;
+  }
+  * {
+    border-color: var(--border);
+  }
+  ::selection {
+    background: var(--brand-soft);
+  }
+  :focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
+  code,
+  kbd,
+  samp,
+  pre {
+    font-family: var(--font-mono);
+  }
+}
+
+@utility tabular {
+  font-variant-numeric: tabular-nums;
+}
+/* Canvas surfaces: faint dot grid used by graph and request canvases. */
+@utility canvas-grid {
+  background-color: var(--background);
+  background-image: radial-gradient(
+    circle at 1px 1px,
+    var(--grid-dot) 1px,
+    transparent 0
+  );
+  background-size: 22px 22px;
+}
+
+.inference-progress {
+  margin: 16px 0;
+}
+.inference-attempt {
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border);
+}
+.inference-attempt summary,
+.inference-label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+  color: var(--muted-foreground);
+}
+.inference-phase {
+  padding: 1px 8px;
+  border: 1px dashed currentColor;
+  border-radius: 999px;
+  font-weight: 600;
+}
+.inference-attempt.pending .inference-phase {
+  color: var(--foreground);
+}
+.inference-text {
+  display: block;
+  margin: 8px 0 0;
+  max-height: 320px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 13px;
+}
+.inference-attempt.pending .inference-text {
+  font-style: italic;
+}
+.inference-attempt.ended .inference-text {
+  color: var(--muted-foreground);
+  text-decoration: line-through;
+}
+.inference-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.inference-tool {
+  display: inline-flex;
+  gap: 6px;
+  padding: 2px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 12px;
+}
+.inference-gap,
+.inference-note {
+  margin: 8px 0;
+  font-size: 12px;
+  color: var(--muted-foreground);
 }

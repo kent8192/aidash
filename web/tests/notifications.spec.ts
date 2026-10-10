@@ -4,7 +4,9 @@ import { NOTICE_INTERVAL } from "../src/notifications/model";
 import { setup } from "./collaboration-fixture";
 
 async function stateAfterLoad(page: Page) {
-  await expect(page.locator(".collab-composer textarea")).toBeVisible();
+  await expect(
+    page.getByRole("textbox", { name: "Message", exact: true }),
+  ).toBeVisible();
   const data: State = await page.evaluate(() =>
     fetch("/api/state").then((response) => response.json()),
   );
@@ -181,7 +183,9 @@ test("toasts are rate limited, deduplicated and cleared with queued updates on a
       exact: true,
     })
     .selectOption("mapping:alice");
-  await expect(page.locator(".collab-composer textarea")).toBeVisible();
+  await expect(
+    page.getByRole("textbox", { name: "Message", exact: true }),
+  ).toBeVisible();
   await page.clock.runFor(60_000);
   await expect(page.locator(".intent-toast")).toHaveCount(0);
   await page
@@ -279,7 +283,9 @@ test("recent updates and throttled requests survive a temporary state outage", a
   await expect(page.getByRole("alert")).toContainText("temporary state outage");
   unavailable = false;
   await page.clock.runFor(5500);
-  await expect(page.locator(".collab-composer textarea")).toBeVisible();
+  await expect(
+    page.getByRole("textbox", { name: "Message", exact: true }),
+  ).toBeVisible();
   const now = await page.evaluate(() => Date.now());
   await page.clock.runFor(
     Math.max(0, announcedAt + NOTICE_INTERVAL - now) + 500,

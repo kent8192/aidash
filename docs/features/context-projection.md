@@ -106,6 +106,51 @@ uses, so oversized fixed content can change the budget and therefore the key.
 Every reuse is rechecked against current authority first: revoked or narrowed
 access pauses the Run, and a stale result is retrieved again once.
 
+## Explicit prompt caching
+
+Some routes cache a prompt prefix on their own. Others cache only up to a
+`cache_control` breakpoint in the request. A model version declares which
+applies with `cache_mode`:
+
+| `cache_mode`      | Meaning                                                                                      |
+| ----------------- | -------------------------------------------------------------------------------------------- |
+| `none` or omitted | No prompt caching is assumed.                                                                |
+| `automatic`       | The route caches matching prefixes without request markers.                                  |
+| `explicit`        | The route caches only up to `cache_control` breakpoints. Accepted only for `anthropic/` IDs. |
+
+An Agent version on such a model opts in with `prompt_cache` (`off`, the
+default, or `explicit`):
+
+```json
+{
+  "schema_version": 1,
+  "model": { "id": "model", "version": "1.0.0" },
+  "instructions": "Do the task.",
+  "projection_version": "ordered",
+  "prompt_cache": "explicit"
+}
+```
+
+`prompt_cache: explicit` requires `projection_version: ordered` and a model
+that declares `cache_mode: explicit` for an allowlisted ID. Registration,
+publication, installation and each inference check this pairing. An opt-in is
+never dropped silently, and no other route ever receives `cache_control`.
+
+An opted-in request carries two `{"type":"ephemeral"}` breakpoints: one on
+`system`, sent as a single text block that starts with the Tenant Cache Salt,
+and one on the Stable Prefix part. The volatile part and media parts are never
+marked. Run-message catch-up and media-deferral steps narrow or clear the
+tools, which precede the cached prefix, so they carry no breakpoints. Request
+estimates always count the breakpoint framing for `ordered`, so opting in never
+changes a fitting or compaction decision. Both fields are omitted from stored
+definitions when absent. Migration `registry/0018_prompt_cache` lets the
+registry database constraints accept them.
+
+Cache writes cost more than ordinary input (1.25× on Anthropic routes), so
+enable explicit caching for Agents whose Runs take several steps. The matched
+comparison on `anthropic/claude-haiku-5.5` is recorded in
+[the explicit-caching evidence](../operations/evidence/2026-10-10-prompt-cache-explicit/README.md).
+
 ## Operations
 
 Register `ordered` Agent versions only after every worker and receiving peer

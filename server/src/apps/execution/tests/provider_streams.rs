@@ -142,6 +142,7 @@ fn request(with_tools: bool) -> ModelRequest {
 		max_output_tokens: 512,
 		content_parts: vec![],
 		cache_scope: None,
+		cache_breakpoints: false,
 	}
 }
 
