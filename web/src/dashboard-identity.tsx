@@ -21,6 +21,7 @@ type Identity = {
   verified_email: string | null;
   display_name: string | null;
   disabled_at: string | null;
+  display_erased_at: string | null;
 };
 type Mapping = {
   id: string;
@@ -261,6 +262,17 @@ export function DashboardIdentityAdministration() {
                       .join(" · ")}
                   </span>
                 )}
+                {item.display_erased_at && (
+                  <span className="truncate text-[11px] text-faint">
+                    {english
+                      ? "Display attributes erased"
+                      : "表示属性を消去済み"}
+                    :{" "}
+                    <span className="font-mono tabular">
+                      {new Date(item.display_erased_at).toLocaleString(locale)}
+                    </span>
+                  </span>
+                )}
               </span>
               {item.disabled_at && (
                 <Button
@@ -282,6 +294,31 @@ export function DashboardIdentityAdministration() {
                   {english
                     ? "Verify and restore identity"
                     : "外部 ID を確認して復旧"}
+                </Button>
+              )}
+              {!item.display_erased_at && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={busy}
+                  onClick={() => {
+                    if (
+                      !window.confirm(
+                        english
+                          ? "Permanently erase this identity's email and display name? Later sign-ins will not record them again."
+                          : "この外部 ID のメールアドレスと表示名を完全に消去しますか？以後のサインインでも再取得しません。",
+                      )
+                    )
+                      return;
+                    void act(() =>
+                      authenticatedFetch(
+                        `/api/dashboard/identities/${item.id}/display-erasure`,
+                        { method: "POST" },
+                      ),
+                    );
+                  }}
+                >
+                  {english ? "Erase display attributes" : "表示属性を消去"}
                 </Button>
               )}
               <Button

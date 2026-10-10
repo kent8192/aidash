@@ -32,6 +32,9 @@ async fn identity_restore_accepts_host_clock_precision_at_the_orm_boundary(
 		.display_name(None)
 		.last_valid_at(None)
 		.disabled_at(Some(expected))
+		.display_observed_at(None)
+		.display_erased_at(None)
+		.display_erased_by(None)
 		.finish();
 	DashboardIdentity::objects()
 		.create_with_conn(&mut connection, &identity)

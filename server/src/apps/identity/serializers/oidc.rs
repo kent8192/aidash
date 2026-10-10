@@ -59,6 +59,9 @@ pub(crate) struct IdentityView {
 	pub(crate) verified_email: Option<String>,
 	pub(crate) display_name: Option<String>,
 	pub(crate) disabled_at: Option<DateTime<Utc>>,
+	/// Set by Display Erasure; the erased values are never retained.
+	pub(crate) display_erased_at: Option<DateTime<Utc>>,
+	pub(crate) display_erased_by: Option<String>,
 }
 
 #[derive(Deserialize, JsonSchema)]

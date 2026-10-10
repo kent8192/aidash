@@ -126,6 +126,7 @@ impl DashboardIdentity {
 						"gcip_tenant",
 						"verified_email",
 						"display_name",
+						"display_observed_at",
 					]
 					.map(Alias::new),
 				)
@@ -137,15 +138,16 @@ impl DashboardIdentity {
 					IntoValue::into_value(gcip_tenant),
 					IntoValue::into_value(sign_in.verified_email.clone()),
 					IntoValue::into_value(sign_in.display_name.clone()),
+					IntoValue::into_value(now),
 				])
 				.on_conflict(
 					OnConflict::columns(["issuer", "gcip_tenant", "subject"])
-						.update_columns(["verified_email", "display_name"])
+						.update_columns(["display_observed_at"])
 						.to_owned(),
 				)
 				.build(PostgresQueryBuilder);
 			TransactionExecutor::execute(tx, &sql, convert_values(values)).await?;
-			let identity = Self::objects()
+			let mut identity = Self::objects()
 				.filter(Self::field_issuer().eq(issuer))
 				.filter(Self::field_subject().eq(subject.clone()))
 				.filter(Self::field_gcip_tenant().eq(gcip_tenant))
@@ -153,9 +155,15 @@ impl DashboardIdentity {
 				.await?
 				.pop()
 				.ok_or_else(|| Error::NotFound("identity".into()))?;
-			// The upsert holds the same identity lock as expiry erasure. End old
-			// requests before exposing refreshed claims so a later status read or
-			// a sweeper waiting on this lock cannot erase the new sign-in's display.
+			// The upsert holds the identity lock. Display Erasure is permanent, so an
+			// erased External Identity never records Display Attributes again.
+			if identity.display_erased_at.is_none() {
+				identity.verified_email = sign_in.verified_email.clone();
+				identity.display_name = sign_in.display_name.clone();
+				Self::objects().update_with_conn(tx, &identity).await?;
+			}
+			// End old requests before exposing refreshed claims. Display retention
+			// keeps this sign-in's claims because it began after those requests.
 			DashboardRegistrationRequest::objects()
 				.filter(DashboardRegistrationRequest::field_identity_id().eq(identity.id))
 				.filter(DashboardRegistrationRequest::field_status().eq("pending"))
