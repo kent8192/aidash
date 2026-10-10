@@ -12928,10 +12928,7 @@
           ],
           "properties": {
             "batch_end": {
-              "type": [
-                "integer",
-                "null"
-              ],
+              "type": ["integer", "null"],
               "format": "uint",
               "minimum": 0
             },
@@ -22531,10 +22528,7 @@
           ],
           "properties": {
             "batch_end": {
-              "type": [
-                "integer",
-                "null"
-              ],
+              "type": ["integer", "null"],
               "format": "uint",
               "minimum": 0
             },
@@ -24059,10 +24053,7 @@
           ],
           "properties": {
             "batch_end": {
-              "type": [
-                "integer",
-                "null"
-              ],
+              "type": ["integer", "null"],
               "format": "uint",
               "minimum": 0
             },
@@ -25148,10 +25139,7 @@
           ],
           "properties": {
             "batch_end": {
-              "type": [
-                "integer",
-                "null"
-              ],
+              "type": ["integer", "null"],
               "format": "uint",
               "minimum": 0
             },
