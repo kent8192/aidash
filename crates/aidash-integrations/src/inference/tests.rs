@@ -66,9 +66,11 @@ mod cache_salt {
 	const SECRET_TWO: &str = "fixture-cache-salt-secret-two";
 
 	struct NoCredentials;
-	impl Credentials for NoCredentials {
-		fn resolve(&self, _: &str) -> Result<String> {
-			Err(Error::Invalid("fixture models have no credential".into()))
+	impl aidash_application::ports::Credentials for NoCredentials {
+		fn resolve(&self, _: &str) -> aidash_application::Result<String> {
+			Err(aidash_application::Error::Invalid(
+				"fixture models have no credential".into(),
+			))
 		}
 	}
 
@@ -122,10 +124,13 @@ mod cache_salt {
 				"cost": {}
 			}))
 			.unwrap();
-			provider(
+			salted_provider(
 				reqwest::Client::new(),
 				config,
-				Arc::new(NoCredentials),
+				Arc::new(aidash_application::provider_access::EnvironmentAccess {
+					credentials: Arc::new(NoCredentials),
+				}),
+				Default::default(),
 				keys,
 			)
 			.unwrap()

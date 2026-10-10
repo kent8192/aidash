@@ -343,7 +343,7 @@ impl MarketplaceManagement {
 		let mut tx = operator_begin(&f.store, origin).await?;
 		let result = aidash_application::marketplace::operations::adopt(
 			&mut crate::bootstrap::marketplace_operator_scope(&f.store, &mut tx, principal(&actor)),
-			&crate::bootstrap::registry_validation(),
+			&crate::bootstrap::registry_validation_for(&self.runtime.store),
 			&adoption_command(&input),
 			&f.store.node_id,
 		)
@@ -368,7 +368,7 @@ impl MarketplaceManagement {
 					&mut tx,
 					principal(&actor),
 				),
-				&crate::bootstrap::registry_validation(),
+				&crate::bootstrap::registry_validation_for(&self.runtime.store),
 				&input,
 				&self.runtime.store.node_id,
 			)
@@ -385,7 +385,7 @@ impl MarketplaceManagement {
 		operator(&actor)?;
 		let origin = browser.as_ref();
 		let mut tx = operator_begin(&self.runtime.store, origin).await?;
-		let validation = crate::bootstrap::registry_validation();
+		let validation = crate::bootstrap::registry_validation_for(&self.runtime.store);
 		let result = aidash_application::marketplace::operations::host_packages::provision(
 			&mut crate::bootstrap::marketplace_operator_scope(
 				&self.runtime.store,
@@ -438,7 +438,7 @@ impl MarketplaceManagement {
 		let mut access = begin(&f.store, subject(&actor)?, false).await?;
 		let result = aidash_application::marketplace::publication::preview(
 			&mut crate::bootstrap::marketplace_publication_scope(&f.store, &mut access),
-			&crate::bootstrap::registry_validation(),
+			&crate::bootstrap::registry_validation_for(&self.runtime.store),
 			&distribution::command(&input),
 			&f.store.node_id,
 		)

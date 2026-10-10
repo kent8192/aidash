@@ -406,10 +406,13 @@ impl ExecutionEnvironment for Environment<'_> {
 		})
 	}
 	fn provider(&self, model: ModelConfig) -> Result<Arc<dyn ModelProvider>> {
-		crate::bootstrap::model_provider(
-			self.federation.client.clone(),
+		// Carries this node's Cache Salt Keys for salted Projection Versions.
+		crate::bootstrap::admitted_model_provider(
+			&self.federation.store,
 			model,
-			self.federation.store.cache_salt.clone(),
+			Some(self.step_run.id),
+			String::new(),
+			None,
 		)
 		.map_err(Into::into)
 	}

@@ -30,6 +30,7 @@ pub fn settings_for(database_url: &str) -> ProjectSettings {
 					}),
 				)
 				.with_value("dashboard", json!({}))
+				.with_value("provider_credentials", json!({}))
 				.with_value("kubernetes", json!({}))
 				.with_value("cache_salt", json!({})),
 		)

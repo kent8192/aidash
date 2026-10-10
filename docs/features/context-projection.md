@@ -43,7 +43,7 @@ pinned model does not declare. A model that omits `projection_versions` accepts
 only `legacy`. Both fields are omitted from stored definitions when absent, so
 existing definitions, digests and Binding snapshots keep their bytes. Run
 creation checks the version again and rejects it if this node cannot render it.
-It never falls back to `legacy`. Migration `registry/0016_projection_versions`
+It never falls back to `legacy`. Migration `registry/0017_projection_versions`
 lets the registry database constraints accept both keys.
 
 ## Cache Salt Key

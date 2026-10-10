@@ -78,6 +78,10 @@ pub async fn binding<S: SemanticBindingScope + ?Sized>(
 	if index.tenant != access.binding_tenant()
 		|| !spec.enabled
 		|| (!native_enabled && !spec.auto_context)
+		// RequiredHome search has no local Run admission pin or approved BYOK
+		// maintenance authority. Reject before binding/disclosure rather than
+		// issuing a remote grant that the environment transport cannot honor.
+		|| spec.embedding.provider_credential.is_some()
 	{
 		return Err(Error::RemoteSemantic(Failure::Configuration));
 	}

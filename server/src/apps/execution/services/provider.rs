@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 /// A Legacy-only provider: salted requests are rejected without being sent.
 pub fn provider(client: reqwest::Client, config: ModelConfig) -> Result<Arc<dyn ModelProvider>> {
-	crate::bootstrap::model_provider(client, config, None)
+	crate::bootstrap::model_provider(client, config)
 }
 
 pub fn parse_openai(value: serde_json::Value) -> Result<ModelResponse> {

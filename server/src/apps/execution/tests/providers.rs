@@ -22,6 +22,7 @@ fn config(
 		model_id: "vendor/fixture-model".into(),
 		endpoint,
 		credential_env: None,
+		provider_credential: None,
 		request_timeout_secs: None,
 		reasoning_effort: None,
 		context_window: 128000,
