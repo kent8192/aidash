@@ -111,10 +111,13 @@ fn token(pool: &str, name: &str, auth_time: i64) -> String {
 	token_with_provider(pool, name, auth_time, "password")
 }
 fn token_with_provider(pool: &str, name: &str, auth_time: i64, provider: &str) -> String {
+	signed_token(pool, "person", name, auth_time, provider)
+}
+fn signed_token(pool: &str, uid: &str, name: &str, auth_time: i64, provider: &str) -> String {
 	let now = Utc::now().timestamp();
 	let mut header = Header::new(Algorithm::RS256);
 	header.kid = Some("fixture".into());
-	encode(&header, &json!({"iss":"https://securetoken.google.com/fixture-project","aud":"fixture-project","sub":"person","iat":now,"exp":now+3600,"auth_time":auth_time,"firebase":{"tenant":pool,"sign_in_provider":provider},"email_verified":true,"email":"person@example.test","name":name,"operator":true}), &EncodingKey::from_rsa_pem(include_bytes!("../../execution/tests/fixtures/oidc/signing-test-only.pem")).unwrap()).unwrap()
+	encode(&header, &json!({"iss":"https://securetoken.google.com/fixture-project","aud":"fixture-project","sub":uid,"iat":now,"exp":now+3600,"auth_time":auth_time,"firebase":{"tenant":pool,"sign_in_provider":provider},"email_verified":true,"email":format!("{uid}@example.test"),"name":name,"operator":true}), &EncodingKey::from_rsa_pem(include_bytes!("../../execution/tests/fixtures/oidc/signing-test-only.pem")).unwrap()).unwrap()
 }
 async fn transaction(app: &common::TestApplication, org: &str) -> (String, String) {
 	let response = browser()
@@ -162,12 +165,21 @@ async fn sign_in(
 	pool: &str,
 	name: &str,
 ) -> (String, String) {
+	sign_in_as(app, org, pool, "person", name).await
+}
+async fn sign_in_as(
+	app: &common::TestApplication,
+	org: &str,
+	pool: &str,
+	uid: &str,
+	name: &str,
+) -> (String, String) {
 	let (state, cookie) = transaction(app, org).await;
 	let response = exchange(
 		app,
 		&state,
 		&cookie,
-		&token(pool, name, Utc::now().timestamp()),
+		&signed_token(pool, uid, name, Utc::now().timestamp(), "password"),
 		"http://127.0.0.1:8080",
 	)
 	.await;
@@ -1222,5 +1234,449 @@ async fn expired_registration_clears_unmapped_display_attributes(
 		.await
 		.unwrap();
 	assert!(view["display_name"].is_null() && view["verified_email"].is_null());
+	common::cleanup(f, &url, &schema).await;
+}
+
+/// One signed-in browser acting through a selected context.
+struct Browser {
+	cookie: String,
+	csrf: String,
+	context: String,
+}
+impl Browser {
+	fn get(&self, app: &common::TestApplication, path: &str) -> reqwest::RequestBuilder {
+		browser()
+			.get(app.url(path))
+			.header("cookie", &self.cookie)
+			.header("x-aidash-context", &self.context)
+	}
+	fn send(
+		&self,
+		app: &common::TestApplication,
+		method: reqwest::Method,
+		path: &str,
+	) -> reqwest::RequestBuilder {
+		browser()
+			.request(method, app.url(path))
+			.header("cookie", &self.cookie)
+			.header("origin", "http://127.0.0.1:8080")
+			.header("x-aidash-csrf", &self.csrf)
+			.header("x-aidash-context", &self.context)
+	}
+}
+
+async fn register(app: &common::TestApplication, cookie: &str, csrf: &str) -> Value {
+	let response = browser()
+		.post(app.url("/auth/registration"))
+		.header("cookie", cookie)
+		.header("origin", "http://127.0.0.1:8080")
+		.header("x-aidash-csrf", csrf)
+		.send()
+		.await
+		.unwrap();
+	assert_eq!(response.status(), 200);
+	response.json().await.unwrap()
+}
+
+/// Signs in, registers and lets the operator bearer approve into `subject`.
+async fn mapped_browser(
+	app: &common::TestApplication,
+	f: &Federation,
+	(org, pool, uid): (&str, &str, &str),
+	subject: &str,
+) -> (Browser, Value) {
+	let (cookie, csrf) = sign_in_as(app, org, pool, uid, uid).await;
+	let registration = register(app, &cookie, &csrf).await;
+	let approved = browser()
+		.post(app.url(format!(
+			"/api/dashboard/registrations/{}/approve",
+			registration["id"].as_str().unwrap()
+		)))
+		.bearer_auth(&f.config.api_token)
+		.json(&json!({"tenant":org,"subject":subject}))
+		.send()
+		.await
+		.unwrap();
+	assert_eq!(approved.status(), 200);
+	let mapping: Value = approved.json().await.unwrap();
+	let context = format!("mapping:{}", mapping["id"].as_str().unwrap());
+	(
+		Browser {
+			cookie,
+			csrf,
+			context,
+		},
+		mapping,
+	)
+}
+
+/// `administrators` hold every Tenant Administrator action; only `members` is assignable.
+async fn administered_tenants(f: &Federation) {
+	for (tenant, administrator) in [("acme", "root"), ("other", "boss")] {
+		let mut subjects = serde_json::Map::new();
+		subjects.insert(
+			administrator.into(),
+			json!({"kind": "user", "groups": ["administrators"]}),
+		);
+		let policy = serde_json::from_value(json!({
+			"tenant": tenant,
+			"roles": {"admin": {}, "member": {}},
+			"groups": {
+				"administrators": {"roles": ["admin"]},
+				"members": {"roles": ["member"], "assignable": true}
+			},
+			"subjects": subjects,
+			"policies": [{
+				"id": "tenant-administrators",
+				"effect": "allow",
+				"subjects": {"groups": ["administrators"]},
+				"actions": aidash_domain::identity::tenant_administration::ACTIONS,
+				"resources": {"kinds": ["registration", "mapping", "subject"]},
+				"condition": null
+			}]
+		}))
+		.unwrap();
+		aidash_server::authorization::Authorization {
+			pool: f.store.pool.clone(),
+		}
+		.replace(tenant, 0, policy, "operator")
+		.await
+		.unwrap();
+	}
+}
+
+async fn scalar<T>(f: &Federation, sql: &str) -> T
+where
+	T: for<'r> sqlx::Decode<'r, sqlx::Postgres> + sqlx::Type<sqlx::Postgres> + Send + Unpin,
+{
+	sqlx::query_scalar(sql)
+		.fetch_one(f.store.pool.driver())
+		.await
+		.unwrap()
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn tenant_administrator_cannot_read_or_approve_across_tenants(
+	#[future(awt)]
+	#[from(test_environment)]
+	environment: Arc<TestEnvironment>,
+) {
+	let (mut f, url, schema) = common::setup(&environment).await;
+	let (_status, _admin) = configure(&mut f).await;
+	administered_tenants(&f).await;
+	let app = common::application(f.clone()).await;
+	let (admin, _) = mapped_browser(&app, &f, ("acme", "pool-a", "admin"), "root").await;
+	let (other_admin, _) = mapped_browser(&app, &f, ("other", "pool-b", "boss"), "boss").await;
+	let (cookie, csrf) = sign_in_as(&app, "other", "pool-b", "outsider", "Outsider").await;
+	let outsider = register(&app, &cookie, &csrf).await;
+	let (cookie, csrf) = sign_in_as(&app, "acme", "pool-a", "newcomer", "Newcomer").await;
+	let newcomer = register(&app, &cookie, &csrf).await;
+
+	let overview: Value = admin
+		.get(&app, "/api/tenants/acme/administration")
+		.send()
+		.await
+		.unwrap()
+		.json()
+		.await
+		.unwrap();
+	assert_eq!(
+		overview["actions"],
+		json!(aidash_domain::identity::tenant_administration::ACTIONS)
+	);
+	assert_eq!(overview["assignable_groups"], json!(["members"]));
+	let listed = admin
+		.get(&app, "/api/tenants/acme/registrations")
+		.send()
+		.await
+		.unwrap();
+	assert_eq!(listed.headers()["cache-control"], "no-store");
+	let listed: Value = listed.json().await.unwrap();
+	assert_eq!(listed.as_array().unwrap().len(), 1, "{listed}");
+	assert_eq!(listed[0]["id"], newcomer["id"]);
+	assert_eq!(listed[0]["identity"]["display_name"], "Newcomer");
+	assert_eq!(
+		listed[0]["identity"]["verified_email"],
+		"newcomer@example.test"
+	);
+
+	// Another Tenant's Registration Requests are neither readable nor approvable.
+	for path in [
+		"/api/tenants/other/registrations".to_owned(),
+		"/api/tenants/other/mappings".to_owned(),
+		"/api/tenants/other/administration".to_owned(),
+	] {
+		assert_eq!(
+			admin.get(&app, &path).send().await.unwrap().status(),
+			403,
+			"{path}"
+		);
+	}
+	let outsider_id = outsider["id"].as_str().unwrap();
+	for (path, status) in [
+		(
+			format!("/api/tenants/other/registrations/{outsider_id}/approve"),
+			403,
+		),
+		(
+			format!("/api/tenants/acme/registrations/{outsider_id}/approve"),
+			404,
+		),
+	] {
+		assert_eq!(
+			admin
+				.send(&app, reqwest::Method::POST, &path)
+				.json(&json!({"subject":"mallory","groups":["members"]}))
+				.send()
+				.await
+				.unwrap()
+				.status(),
+			status,
+			"{path}"
+		);
+	}
+	assert_eq!(
+		admin
+			.send(
+				&app,
+				reqwest::Method::POST,
+				&format!("/api/tenants/acme/registrations/{outsider_id}/reject"),
+			)
+			.send()
+			.await
+			.unwrap()
+			.status(),
+		404
+	);
+	// The other Tenant's own administrator still sees its request.
+	let theirs: Value = other_admin
+		.get(&app, "/api/tenants/other/registrations")
+		.send()
+		.await
+		.unwrap()
+		.json()
+		.await
+		.unwrap();
+	assert_eq!(theirs[0]["id"], outsider["id"]);
+	// Operators and bearer Subject Credentials are never Tenant Administrators.
+	assert_eq!(
+		browser()
+			.get(app.url("/api/tenants/acme/registrations"))
+			.bearer_auth(&f.config.api_token)
+			.send()
+			.await
+			.unwrap()
+			.status(),
+		403
+	);
+	common::cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn tenant_administrator_confers_only_assignable_groups_and_is_audited(
+	#[future(awt)]
+	#[from(test_environment)]
+	environment: Arc<TestEnvironment>,
+) {
+	let (mut f, url, schema) = common::setup(&environment).await;
+	let (_status, _admin) = configure(&mut f).await;
+	administered_tenants(&f).await;
+	let app = common::application(f.clone()).await;
+	let (admin, admin_mapping) =
+		mapped_browser(&app, &f, ("acme", "pool-a", "admin"), "root").await;
+	let (cookie, csrf) = sign_in_as(&app, "acme", "pool-a", "newcomer", "Newcomer").await;
+	let newcomer = register(&app, &cookie, &csrf).await;
+	let approve = format!(
+		"/api/tenants/acme/registrations/{}/approve",
+		newcomer["id"].as_str().unwrap()
+	);
+	for (body, status) in [
+		// An existing subject may hold authority outside Assignable Groups.
+		(json!({"subject":"root"}), 409),
+		(json!({"subject":"carol","groups":["administrators"]}), 400),
+	] {
+		assert_eq!(
+			admin
+				.send(&app, reqwest::Method::POST, &approve)
+				.json(&body)
+				.send()
+				.await
+				.unwrap()
+				.status(),
+			status,
+			"{body}"
+		);
+	}
+	let approved = admin
+		.send(&app, reqwest::Method::POST, &approve)
+		.json(&json!({"subject":"carol","groups":["members"]}))
+		.send()
+		.await
+		.unwrap();
+	assert_eq!(approved.status(), 200);
+	let carol_mapping: Value = approved.json().await.unwrap();
+	let snapshot: Value = browser()
+		.get(app.url("/api/authorization/acme"))
+		.bearer_auth(&f.config.api_token)
+		.send()
+		.await
+		.unwrap()
+		.json()
+		.await
+		.unwrap();
+	assert_eq!(
+		snapshot["bundle"]["subjects"]["carol"],
+		json!({"kind":"user","groups":["members"],"roles":[],"attributes":{},"enabled":true,"delegated_by":null})
+	);
+	let revision = snapshot["revision"].as_i64().unwrap();
+	let admin_identity = admin_mapping["identity_id"].as_str().unwrap();
+	assert_eq!(
+		scalar::<String>(
+			&f,
+			"SELECT actor FROM authorization_revisions WHERE tenant='acme' ORDER BY revision DESC LIMIT 1"
+		)
+		.await,
+		format!("oidc:{admin_identity}")
+	);
+	let carol = Browser {
+		cookie,
+		csrf,
+		context: format!("mapping:{}", carol_mapping["id"].as_str().unwrap()),
+	};
+	assert_eq!(
+		carol
+			.get(&app, "/api/session")
+			.send()
+			.await
+			.unwrap()
+			.status(),
+		200
+	);
+	// An ordinary member learns nothing about the policy, and is denied reads.
+	let overview: Value = carol
+		.get(&app, "/api/tenants/acme/administration")
+		.send()
+		.await
+		.unwrap()
+		.json()
+		.await
+		.unwrap();
+	assert_eq!(
+		overview,
+		json!({"tenant":"acme","actions":[],"assignable_groups":[],"policy_revision":null})
+	);
+	assert_eq!(
+		carol
+			.get(&app, "/api/tenants/acme/registrations")
+			.send()
+			.await
+			.unwrap()
+			.status(),
+		403
+	);
+	assert!(
+		scalar::<i64>(
+			&f,
+			"SELECT count(*) FROM authorization_decisions WHERE tenant='acme' AND subject='carol' AND action='registration.read' AND NOT (decision->>'allowed')::boolean"
+		)
+		.await >= 1,
+		"a denial survives its rolled-back transaction"
+	);
+
+	let groups = |subject: &str| format!("/api/tenants/acme/subjects/{subject}/groups");
+	assert_eq!(
+		admin
+			.send(&app, reqwest::Method::PUT, &groups("root"))
+			.json(&json!({"groups":[],"expected_policy_revision":revision}))
+			.send()
+			.await
+			.unwrap()
+			.status(),
+		403,
+		"a Tenant Administrator never changes its own subject"
+	);
+	let updated = admin
+		.send(&app, reqwest::Method::PUT, &groups("carol"))
+		.json(&json!({"groups":[],"expected_policy_revision":revision}))
+		.send()
+		.await
+		.unwrap();
+	assert_eq!(updated.status(), 200);
+	let updated: Value = updated.json().await.unwrap();
+	assert_eq!(updated["groups"], json!([]));
+	assert_eq!(updated["policy_revision"], revision + 1);
+
+	let mappings: Value = admin
+		.get(&app, "/api/tenants/acme/mappings")
+		.send()
+		.await
+		.unwrap()
+		.json()
+		.await
+		.unwrap();
+	let mapping = |id: &Value| {
+		mappings
+			.as_array()
+			.unwrap()
+			.iter()
+			.find(|row| row["id"] == *id)
+			.unwrap()
+			.clone()
+	};
+	let own = mapping(&admin_mapping["id"]);
+	let theirs = mapping(&carol_mapping["id"]);
+	let disable = |row: &Value| {
+		admin
+			.send(
+				&app,
+				reqwest::Method::POST,
+				&format!(
+					"/api/tenants/acme/mappings/{}/disable",
+					row["id"].as_str().unwrap()
+				),
+			)
+			.json(&json!({"expected_revision":row["revision"]}))
+			.send()
+	};
+	assert_eq!(disable(&own).await.unwrap().status(), 403);
+	assert_eq!(disable(&theirs).await.unwrap().status(), 204);
+	assert_eq!(
+		carol
+			.get(&app, "/api/session")
+			.send()
+			.await
+			.unwrap()
+			.status(),
+		403
+	);
+
+	let history: Vec<(String, String, Option<uuid::Uuid>, Option<uuid::Uuid>)> = sqlx::query_as(
+		"SELECT action, actor_kind, actor_identity_id, actor_mapping_id FROM dashboard_administration_history ORDER BY occurred_at, action",
+	)
+	.fetch_all(f.store.pool.driver())
+	.await
+	.unwrap();
+	let admin_identity = uuid::Uuid::parse_str(admin_identity).unwrap();
+	let admin_mapping = uuid::Uuid::parse_str(admin_mapping["id"].as_str().unwrap()).unwrap();
+	assert_eq!(
+		history,
+		vec![
+			("registration.approve".into(), "operator".into(), None, None),
+			(
+				"registration.approve".into(),
+				"tenant_administrator".into(),
+				Some(admin_identity),
+				Some(admin_mapping)
+			),
+			(
+				"mapping.disable".into(),
+				"tenant_administrator".into(),
+				Some(admin_identity),
+				Some(admin_mapping)
+			),
+		]
+	);
 	common::cleanup(f, &url, &schema).await;
 }

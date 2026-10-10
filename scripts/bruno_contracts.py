@@ -705,6 +705,35 @@ def render():
                 add(endpoint, "Credential paging rejects nonnumeric offsets", 400,
                     path=uri + "?offset=invalid", headers=OPERATOR)
             continue
+        if route["source"] == "server/src/apps/identity/views/tenant_administration.rs":
+            # Only a browser Mapping context can be a Tenant Administrator.
+            uri = path.replace("{subject}", "alice")
+            body = (
+                json.dumps({"groups": [], "expected_policy_revision": 1})
+                if method == "PUT"
+                else json.dumps({"subject": "carol", "groups": []})
+                if path.endswith("/approve")
+                else json.dumps({"expected_revision": 1})
+                if route["json"]
+                else None
+            )
+            for label, headers in [
+                ("Operator bearer is never a Tenant Administrator", OPERATOR),
+                ("Subject Credential bearer is never a Tenant Administrator", SUBJECT),
+            ]:
+                add(endpoint, label, 403, path=uri, headers=headers, body=body,
+                    immutable=method != "GET")
+            if route["json"]:
+                add(endpoint, "Malformed JSON cannot reach the use case", 400,
+                    path=uri, headers=OPERATOR, body="{", immutable=True)
+            if route["uuid_parameters"]:
+                add(endpoint, "Typed resource IDs reject invalid UUIDs", 400,
+                    path=uri.replace("{id}", "not-a-uuid"), headers=OPERATOR,
+                    body=body, immutable=method != "GET")
+            elif route["query_parameters"]:
+                add(endpoint, "Paging rejects nonnumeric offsets", 400,
+                    path=uri + "?offset=invalid", headers=OPERATOR)
+            continue
         if route["json"]:
             add(
                 endpoint,

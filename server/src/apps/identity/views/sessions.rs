@@ -187,10 +187,11 @@ pub async fn admin_operator_grants(
 )]
 pub async fn admin_disable_mapping(
 	#[inject] service: Depends<DashboardSessions>,
+	#[inject] actor: Option<BrowserOrigin>,
 	Path(id): Path<Uuid>,
 	Json(input): Json<MappingRevision>,
 ) -> ViewResult<Response> {
-	crate::http::status(service.admin_disable_mapping(id, input).await)
+	crate::http::status(service.admin_disable_mapping(actor, id, input).await)
 }
 
 #[post("/auth/logout", name = "sessions-logout", auth = "public")]

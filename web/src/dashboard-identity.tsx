@@ -1,6 +1,7 @@
 import { Button } from "./components/ui/button";
 import { Input } from "./components/ui/input";
 import { useState } from "react";
+import type { ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiFetch, authenticatedFetch } from "./transport";
 import { Panel, useI18n } from "./ui";
@@ -316,6 +317,335 @@ export function DashboardIdentityAdministration() {
           );
         })}
       </ul>
+    </Panel>
+  );
+}
+
+type TenantAdministration = {
+  tenant: string;
+  actions: string[];
+  assignable_groups: string[];
+  policy_revision: number | null;
+};
+type TenantIdentity = {
+  id: string;
+  verified_email: string | null;
+  display_name: string | null;
+};
+type TenantRegistration = {
+  id: string;
+  identity: TenantIdentity;
+  expires_at: string;
+};
+type TenantMapping = {
+  id: string;
+  identity: TenantIdentity;
+  subject: string;
+  enabled: boolean;
+  revision: number;
+  groups: string[];
+};
+
+const groupChip =
+  "inline-flex h-7 cursor-pointer items-center gap-2 rounded-md border border-border bg-surface px-2.5 font-mono text-xs text-foreground transition-colors hover:bg-raised has-[:checked]:border-brand-line has-[:checked]:bg-brand-soft";
+
+function person(identity: TenantIdentity) {
+  return (
+    [identity.display_name, identity.verified_email]
+      .filter(Boolean)
+      .join(" · ") || identity.id
+  );
+}
+
+function GroupChoice({
+  groups,
+  selected,
+  disabled,
+  change,
+}: {
+  groups: string[];
+  selected: string[];
+  disabled: boolean;
+  change: (groups: string[]) => void;
+}) {
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      {groups.map((group) => (
+        <label key={group} className={groupChip}>
+          <input
+            type="checkbox"
+            className="size-3.5 shrink-0 accent-primary"
+            disabled={disabled}
+            checked={selected.includes(group)}
+            onChange={(event) =>
+              change(
+                event.target.checked
+                  ? [...selected, group]
+                  : selected.filter((name) => name !== group),
+              )
+            }
+          />
+          {group}
+        </label>
+      ))}
+    </div>
+  );
+}
+
+/** The Access and accounts screen for a Tenant Administrator's own Tenant.
+ *  `fallback` replaces it for members who hold no administrator action. */
+export function TenantIdentityAdministration({
+  tenant,
+  fallback,
+}: {
+  tenant: string;
+  fallback: ReactNode;
+}) {
+  const { locale } = useI18n();
+  const english = locale === "en-US";
+  const client = useQueryClient();
+  const path = `/api/tenants/${encodeURIComponent(tenant)}`;
+  const [subjects, setSubjects] = useState<Record<string, string>>({});
+  const [groups, setGroups] = useState<Record<string, string[]>>({});
+  const [mappingOffset, setMappingOffset] = useState(0);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const overview = useQuery({
+    queryKey: ["tenant-administration", tenant],
+    queryFn: () => apiFetch<TenantAdministration>(`${path}/administration`),
+  });
+  const can = (action: string) =>
+    overview.data?.actions.includes(action) ?? false;
+  const registrations = useQuery({
+    queryKey: ["tenant-registrations", tenant],
+    queryFn: () => apiFetch<TenantRegistration[]>(`${path}/registrations`),
+    enabled: can("registration.read"),
+  });
+  const mappings = useQuery({
+    queryKey: ["tenant-mappings", tenant, mappingOffset],
+    queryFn: () =>
+      apiFetch<TenantMapping[]>(`${path}/mappings?offset=${mappingOffset}`),
+    enabled: can("mapping.read"),
+  });
+  const act = async (action: () => Promise<unknown>) => {
+    if (busy) return;
+    setBusy(true);
+    setError("");
+    try {
+      await action();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      await client.invalidateQueries({
+        queryKey: ["tenant-administration", tenant],
+      });
+      await client.invalidateQueries({
+        queryKey: ["tenant-registrations", tenant],
+      });
+      await client.invalidateQueries({ queryKey: ["tenant-mappings", tenant] });
+      setBusy(false);
+    }
+  };
+  if (overview.isError || overview.data?.actions.length === 0)
+    return <>{fallback}</>;
+  if (!overview.data) return null;
+  const assignable = overview.data.assignable_groups;
+  const revision = overview.data.policy_revision;
+  const row = "flex flex-wrap items-center gap-x-3 gap-y-2 py-2.5";
+  const heading = "text-[11px] font-medium text-faint";
+  const field = "grid gap-1 text-xs font-medium text-muted-foreground";
+  return (
+    <Panel
+      title={
+        english ? `Tenant administration: ${tenant}` : `テナント管理: ${tenant}`
+      }
+    >
+      <Hint>
+        {english
+          ? "Approve people from this Tenant's sign-in pool into new user subjects. You can assign only the groups an Operator marked as assignable."
+          : "このテナントのサインインプールから来た人を、新しい user subject として承認します。付与できるのは、Operator が割り当て可能にした group だけです。"}
+      </Hint>
+      {error && <Alert>{error}</Alert>}
+      {can("registration.read") && (
+        <>
+          <h3 className={heading}>
+            {english ? "Registration requests" : "登録リクエスト"}
+          </h3>
+          <ul className="divide-y divide-border border-y border-border">
+            {(registrations.data ?? []).map((request) => (
+              <li
+                key={request.id}
+                className="grid gap-3 py-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1.2fr)]"
+              >
+                <div className="grid min-w-0 content-start gap-0.5">
+                  <strong className="truncate text-[13px] font-medium">
+                    {person(request.identity)}
+                  </strong>
+                  <small className="text-[11px] text-faint">
+                    {english ? "Expires" : "期限"}:{" "}
+                    <span className="font-mono tabular">
+                      {new Date(request.expires_at).toLocaleString(locale)}
+                    </span>
+                  </small>
+                </div>
+                <div className="grid content-start gap-2">
+                  {can("registration.approve") && (
+                    <>
+                      <label className={field}>
+                        {english ? "New user subject" : "新しい user subject"}
+                        <Input
+                          value={subjects[request.id] ?? ""}
+                          onChange={(event) =>
+                            setSubjects({
+                              ...subjects,
+                              [request.id]: event.target.value,
+                            })
+                          }
+                        />
+                      </label>
+                      <GroupChoice
+                        groups={assignable}
+                        selected={groups[request.id] ?? []}
+                        disabled={busy}
+                        change={(next) =>
+                          setGroups({ ...groups, [request.id]: next })
+                        }
+                      />
+                    </>
+                  )}
+                  <div className="flex gap-2">
+                    {can("registration.approve") && (
+                      <Button
+                        size="sm"
+                        disabled={busy || !subjects[request.id]}
+                        onClick={() => {
+                          void act(() =>
+                            apiFetch(
+                              `${path}/registrations/${request.id}/approve`,
+                              {
+                                method: "POST",
+                                headers: { "content-type": "application/json" },
+                                body: JSON.stringify({
+                                  subject: subjects[request.id],
+                                  groups: groups[request.id] ?? [],
+                                }),
+                              },
+                            ),
+                          );
+                        }}
+                      >
+                        {english ? "Approve" : "承認"}
+                      </Button>
+                    )}
+                    {can("registration.reject") && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={busy}
+                        onClick={() => {
+                          void act(() =>
+                            apiFetch(
+                              `${path}/registrations/${request.id}/reject`,
+                              { method: "POST" },
+                            ),
+                          );
+                        }}
+                      >
+                        {english ? "Reject" : "却下"}
+                      </Button>
+                    )}
+                  </div>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+      {can("mapping.read") && (
+        <>
+          <h3 className={heading}>{english ? "Members" : "メンバー"}</h3>
+          <ul className="divide-y divide-border border-y border-border">
+            {(mappings.data ?? []).map((mapping) => (
+              <li className={row} key={mapping.id}>
+                <span className="grid min-w-0 flex-1 gap-0.5">
+                  <span className="truncate text-xs">
+                    {person(mapping.identity)}{" "}
+                    <span className="text-faint">→</span>{" "}
+                    <span className="font-mono">{mapping.subject}</span>
+                  </span>
+                  {!mapping.enabled && (
+                    <span className="text-[11px] text-faint">
+                      {english ? "Disabled" : "無効"}
+                    </span>
+                  )}
+                </span>
+                {can("subject.group.update") && revision !== null && (
+                  <GroupChoice
+                    groups={assignable}
+                    selected={mapping.groups}
+                    disabled={busy}
+                    change={(next) => {
+                      void act(() =>
+                        apiFetch(
+                          `${path}/subjects/${encodeURIComponent(mapping.subject)}/groups`,
+                          {
+                            method: "PUT",
+                            headers: { "content-type": "application/json" },
+                            body: JSON.stringify({
+                              groups: next,
+                              expected_policy_revision: revision,
+                            }),
+                          },
+                        ),
+                      );
+                    }}
+                  />
+                )}
+                {can("mapping.disable") && mapping.enabled && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={busy}
+                    onClick={() => {
+                      void act(() =>
+                        authenticatedFetch(
+                          `${path}/mappings/${mapping.id}/disable`,
+                          {
+                            method: "POST",
+                            headers: { "content-type": "application/json" },
+                            body: JSON.stringify({
+                              expected_revision: mapping.revision,
+                            }),
+                          },
+                        ),
+                      );
+                    }}
+                  >
+                    {english ? "Disable" : "無効化"}
+                  </Button>
+                )}
+              </li>
+            ))}
+          </ul>
+          <Pager
+            className="justify-start"
+            page={mappingOffset / MAPPING_PAGE_SIZE + 1}
+            previous={{
+              disabled: mappingOffset === 0 || mappings.isFetching,
+              go: () =>
+                setMappingOffset(
+                  Math.max(0, mappingOffset - MAPPING_PAGE_SIZE),
+                ),
+            }}
+            next={{
+              disabled:
+                (mappings.data?.length ?? 0) < MAPPING_PAGE_SIZE ||
+                mappings.isFetching,
+              go: () => setMappingOffset(mappingOffset + MAPPING_PAGE_SIZE),
+            }}
+          />
+        </>
+      )}
     </Panel>
   );
 }
