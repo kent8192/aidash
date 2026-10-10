@@ -92,6 +92,25 @@ async fn registry_contract_bounds_tool_parallelism_and_concurrency_narrowing(
 			"{invalid}"
 		);
 	}
+	// Only Tool and Bundle Bindings bind Tools whose concurrency can be lowered.
+	let binding = |kind: &str, narrow: Value| {
+		let mut config = agent(None, json!({})).remove(0);
+		config["bindings"] = json!([{"kind":kind,"target":{"registry_node":f.config.node_id,"id":kind,"version":"1.0.0"},"narrow":narrow}]);
+		vec![config]
+	};
+	for kind in ["tool", "bundle"] {
+		assert!(
+			accepts(binding(kind, json!({"concurrency":"sequential"}))).await,
+			"{kind}"
+		);
+	}
+	for kind in ["skill", "memory", "source"] {
+		assert!(accepts(binding(kind, json!({}))).await, "{kind}");
+		assert!(
+			!accepts(binding(kind, json!({"concurrency":"sequential"}))).await,
+			"{kind}"
+		);
+	}
 	common::cleanup(f, &url, &schema).await;
 }
 

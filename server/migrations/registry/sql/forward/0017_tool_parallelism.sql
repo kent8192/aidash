@@ -34,7 +34,7 @@ BEGIN
    OR jsonb_path_exists(restriction->'allowed_hosts','strict $[*] ? (@.type() != "string")') THEN RETURN false; END IF;
   END IF;
   IF COALESCE(restriction->'concurrency','null'::jsonb) <> 'null'::jsonb
-  AND NOT COALESCE(restriction->>'concurrency' IN ('sequential','shared_read') AND jsonb_typeof(restriction->'concurrency') = 'string',false) THEN RETURN false; END IF;
+  AND NOT COALESCE(item->>'kind' IN ('tool','bundle') AND restriction->>'concurrency' IN ('sequential','shared_read') AND jsonb_typeof(restriction->'concurrency') = 'string',false) THEN RETURN false; END IF;
   IF jsonb_typeof(COALESCE(restriction->'scope','{}'::jsonb)) <> 'object' OR jsonb_typeof(COALESCE(restriction->'limits','{}'::jsonb)) <> 'object' THEN RETURN false; END IF;
   FOR candidate IN SELECT v FROM jsonb_each(COALESCE(restriction->'scope','{}'::jsonb)) AS fields(k,v) LOOP
    IF jsonb_typeof(candidate) <> 'array' OR jsonb_array_length(candidate) = 0 OR jsonb_path_exists(candidate,'strict $[*] ? (@.type() != "string")') THEN RETURN false; END IF;

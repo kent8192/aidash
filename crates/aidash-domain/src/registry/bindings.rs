@@ -535,6 +535,14 @@ impl Binding {
 				"decision restrictions require a Decider Binding".into(),
 			));
 		}
+		// Only Tool and Bundle Bindings bind Tools whose concurrency can be lowered.
+		if self.narrow.concurrency.is_some()
+			&& !matches!(self.kind, BindingKind::Tool | BindingKind::Bundle)
+		{
+			return Err(Error::Invalid(
+				"concurrency restrictions require a Tool or Bundle Binding".into(),
+			));
+		}
 		if let Some(alias) = &self.alias {
 			validate_alias(alias)?;
 		}
