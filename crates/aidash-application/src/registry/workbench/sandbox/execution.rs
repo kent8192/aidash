@@ -210,7 +210,16 @@ pub async fn simulate(execution: &Execution, session_id: Uuid, job: &Job) -> Res
 				missing = true;
 				error = Some(reason.to_string());
 				json!({"id":call.id,"name":call.name,"arguments":call.arguments,"outcome":"denied","error":reason.to_string()})
-			} else if let Some(output) = evaluated {
+			} else if let Some(deferred::Evaluated::NoRoom) = evaluated {
+				// Nothing is retained: the next request could not carry it.
+				missing = true;
+				let reason = format!(
+					"test context has no room for the {} result within the configured input or model window limit",
+					call.name
+				);
+				error = Some(reason.clone());
+				json!({"id":call.id,"name":call.name,"arguments":call.arguments,"outcome":"denied","error":reason})
+			} else if let Some(deferred::Evaluated::Result(output)) = evaluated {
 				json!({"id":call.id,"name":call.name,"arguments":call.arguments,"result":output,"outcome":deferred::EVALUATED})
 			} else if let Some(rule) = real_rule {
 				match dispatch::invoke(

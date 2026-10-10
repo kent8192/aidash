@@ -552,6 +552,60 @@ async fn deferred_load_results_reshape_the_next_request() {
 	assert_eq!(replayed.loaded[0].alias, "workspace_observe");
 }
 #[tokio::test]
+async fn deferred_search_without_room_stops_instead_of_retaining_a_result() {
+	// Arrange: a deferred session whose window barely carries its first request.
+	let mut repository = Repository::new();
+	repository.entry.config["exposure"] = json!({"version":"deferred@1"});
+	let snapshot = crate::test_support::resolve("aidash://local", &repository.entry, false, vec![]);
+	repository.state.get_mut().unwrap().session.scenario = json!({"binding_snapshot":snapshot});
+	let repository = Arc::new(repository);
+	let search = ModelResponse {
+		text: "step".into(),
+		tool_calls: vec![ToolCall {
+			id: "search".into(),
+			name: "capability_search".into(),
+			arguments: json!({}),
+		}],
+		input_tokens: 3,
+		output_tokens: 5,
+		usage_complete: true,
+	};
+	let model = model(repository.clone(), vec![search]);
+	let mut job = job(model.clone());
+	job.limits.max_total_tokens = 100_000;
+	let state = ExposureState::default();
+	let (text, tools) = deferred::Deferred::new(&snapshot)
+		.unwrap()
+		.unwrap()
+		.request(&snapshot, &state)
+		.unwrap();
+	job.request.instructions = format!("sandbox{text}");
+	job.request.tools = tools;
+	job.context_window = job.request.estimated_total_tokens() + 20;
+	job.exposure = Some(SessionExposure {
+		prefix: "sandbox".into(),
+		suffix: String::new(),
+		state,
+	});
+	// Act
+	let outcome = simulate(&execution(repository), session().id, &job)
+		.await
+		.unwrap();
+	// Assert: no search envelope is retained, and no oversized request is sent.
+	assert_eq!(outcome.status, "blocked");
+	assert!(
+		outcome
+			.error
+			.as_deref()
+			.is_some_and(|error| error.contains("no room for the capability_search result")),
+		"{:?}",
+		outcome.error
+	);
+	assert_eq!(outcome.tool_calls[0]["outcome"], "denied");
+	assert!(outcome.tool_calls[0].get("result").is_none());
+	assert_eq!(model.requests.lock().unwrap().len(), 1);
+}
+#[tokio::test]
 async fn absent_fixture_blocks_without_claiming_a_tool_result() {
 	let repository = Arc::new(Repository::new());
 	let job = job(model(repository.clone(), vec![response(true)]));

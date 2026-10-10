@@ -107,6 +107,8 @@ impl Deferred {
 	/// its limits with `result` recorded and `reserve` more request bytes. A
 	/// session has no context compaction, so search pages and descriptions are
 	/// fitted before they are retained, as the Harness fits them for a Run.
+	/// When not even their smallest form fits, nothing is retained:
+	/// [`Evaluated::NoRoom`].
 	pub fn evaluate(
 		&self,
 		binding: &ResolvedBinding,
@@ -114,7 +116,7 @@ impl Deferred {
 		state: &mut ExposureState,
 		step: i32,
 		fits: &dyn Fn(&Value, usize) -> bool,
-	) -> Result<Option<Value>> {
+	) -> Result<Option<Evaluated>> {
 		let exposed = |state: &ExposureState| -> Result<bool> {
 			Ok(exposure::select(&self.budgets, &self.catalog, state)?
 				.tools
@@ -132,7 +134,7 @@ impl Deferred {
 					call.name
 				)
 			};
-			return Ok(Some(json!({ "error": message })));
+			return Ok(Some(Evaluated::Result(json!({ "error": message }))));
 		}
 		let Some(operation) = (binding.definition.kind == "tool")
 			.then(|| serde_json::from_value::<ToolDescriptor>(binding.definition.config.clone()))
@@ -170,12 +172,19 @@ impl Deferred {
 		let output = match output {
 			Ok(output) if operation == "capability_search" => {
 				let offset = crate::execution::capability_search_offset(call);
-				crate::execution::fit_capability_search_page(&output, offset, |page| fits(page, 0))
-					.unwrap_or_else(|| {
-						crate::execution::capability_search_result(&output, offset, 0)
-					})
+				match crate::execution::fit_capability_search_page(&output, offset, |page| {
+					fits(page, 0)
+				}) {
+					Some(page) => page,
+					None => return Ok(Some(Evaluated::NoRoom)),
+				}
 			}
-			Ok(output) if operation == "capability_describe" => fit_description(output, fits),
+			Ok(output) if operation == "capability_describe" => {
+				match fit_description(output, fits) {
+					Some(description) => description,
+					None => return Ok(Some(Evaluated::NoRoom)),
+				}
+			}
 			Ok(output) => output,
 			Err(
 				Error::Invalid(message) | Error::Domain(aidash_domain::Error::Invalid(message)),
@@ -187,17 +196,28 @@ impl Deferred {
 		if let Some(update) = output.get("exposure_update") {
 			state.stage(serde_json::from_value(update.clone())?);
 		}
-		Ok(Some(output))
+		Ok(Some(Evaluated::Result(output)))
 	}
+}
+
+/// A call this session answered itself.
+#[derive(Debug, PartialEq)]
+pub enum Evaluated {
+	/// The result to record with the outcome [`EVALUATED`].
+	Result(Value),
+	/// Not even the smallest result leaves the next test request within its
+	/// limits. Retaining one would only fail that request, so the session stops.
+	NoRoom,
 }
 
 /// A description is retained only when the next request also carries the
 /// definition a Load would add, since the session never compacts it away.
 /// Otherwise its detail is omitted; the digest still loads the capability.
-fn fit_description(output: Value, fits: &dyn Fn(&Value, usize) -> bool) -> Value {
+/// `None` when even that does not fit.
+fn fit_description(output: Value, fits: &dyn Fn(&Value, usize) -> bool) -> Option<Value> {
 	let reserve = output["bytes"].as_u64().unwrap_or(0) as usize;
 	if fits(&output, reserve) {
-		return output;
+		return Some(output);
 	}
 	let mut omitted = output;
 	if let Some(object) = omitted.as_object_mut() {
@@ -207,7 +227,7 @@ fn fit_description(output: Value, fits: &dyn Fn(&Value, usize) -> bool) -> Value
 	omitted["message"] = json!(
 		"This description does not fit the remaining test context together with its definition; its detail was omitted. Load the capability by digest to use it."
 	);
-	omitted
+	fits(&omitted, 0).then_some(omitted)
 }
 
 /// The Exposure set a continued session ended with: the evaluated Load/Unload

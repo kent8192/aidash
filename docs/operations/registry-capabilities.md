@@ -339,8 +339,10 @@ its leading results that leave the next test request within the session's
 input, model-window and total-token limits, as described above. A description
 is kept only if that request also has room for the definition a load would add.
 Otherwise the session omits its `detail` and sets `deferred` and a `message`,
-and the digest still loads the capability. Other tools still need fixtures or
-a real-tool profile.
+and the digest still loads the capability. When not even an empty page or the
+description without its detail fits, nothing is retained. The call is recorded
+as `denied`, and the session stops with an error instead of sending a request
+that exceeds its limits. Other tools still need fixtures or a real-tool profile.
 
 To measure both policies on the same tools against a running server, see the
 [capability exposure evaluation](../capability-exposure-evaluation.md).

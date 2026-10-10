@@ -37,6 +37,10 @@ fn exposure_tools_are_evaluated_and_staged_while_other_calls_follow_their_reques
 				&|_, _| true,
 			)
 			.unwrap()
+			.map(|evaluated| match evaluated {
+				Evaluated::Result(output) => output,
+				Evaluated::NoRoom => panic!("an unlimited session always has room"),
+			})
 	};
 	// Act / Assert: an unadvertised capability is answered, not simulated.
 	assert_eq!(
@@ -106,6 +110,10 @@ fn descriptions_and_search_pages_are_fitted_before_the_session_retains_them() {
 			.unwrap()
 			.unwrap()
 	};
+	let result = |evaluated| match evaluated {
+		Evaluated::Result(output) => output,
+		Evaluated::NoRoom => panic!("expected a retained result"),
+	};
 	let describe = |limit| {
 		evaluate(
 			"capability_describe",
@@ -113,29 +121,45 @@ fn descriptions_and_search_pages_are_fitted_before_the_session_retains_them() {
 			limit,
 		)
 	};
-	let whole = describe(usize::MAX);
+	let whole = result(describe(usize::MAX));
 	let bytes = whole["bytes"].as_u64().unwrap() as usize;
 	let needed = whole.to_string().len() + bytes;
 	// Act / Assert: a description is kept only with room for its later Load.
-	assert_eq!(describe(needed), whole);
-	let omitted = describe(needed - 1);
+	assert_eq!(result(describe(needed)), whole);
+	let omitted = result(describe(needed - 1));
 	assert!(omitted.get("detail").is_none(), "{omitted}");
 	assert_eq!(omitted["deferred"], true);
 	assert_eq!(
 		(&omitted["alias"], &omitted["digest"], &omitted["bytes"]),
 		(&whole["alias"], &whole["digest"], &whole["bytes"])
 	);
+	// Not even the omitted description fits: nothing is retained.
+	assert_eq!(describe(omitted.to_string().len() - 1), Evaluated::NoRoom);
 	// A search page keeps only its leading results that fit.
-	let page = evaluate("capability_search", json!({}), usize::MAX);
+	let page = result(evaluate("capability_search", json!({}), usize::MAX));
 	let results = page["results"].as_array().unwrap();
 	assert!(results.len() > 1);
 	let first = crate::execution::capability_search_result(&page, 0, 1);
-	let cut = evaluate("capability_search", json!({}), first.to_string().len());
+	let cut = result(evaluate(
+		"capability_search",
+		json!({}),
+		first.to_string().len(),
+	));
 	assert_eq!(cut, first);
 	assert_eq!(cut["next_cursor"], "1");
-	let empty = evaluate("capability_search", json!({}), 0);
-	assert_eq!(empty["results"], json!([]));
-	assert_eq!(empty["deferred"], true);
+	let empty = crate::execution::capability_search_result(&page, 0, 0);
+	let deferred_page = result(evaluate(
+		"capability_search",
+		json!({}),
+		empty.to_string().len(),
+	));
+	assert_eq!(deferred_page, empty);
+	assert_eq!(deferred_page["deferred"], true);
+	// Not even an empty page fits: nothing is retained.
+	assert_eq!(
+		evaluate("capability_search", json!({}), empty.to_string().len() - 1),
+		Evaluated::NoRoom
+	);
 }
 
 #[test]
