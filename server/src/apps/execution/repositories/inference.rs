@@ -18,8 +18,8 @@ use chrono::{DateTime, Utc};
 use reinhardt::db::backends::TransactionExecutor;
 use reinhardt::db::orm::{Model, execution::convert_values};
 use reinhardt::query::{
-	Alias, Expr, ExprTrait as _, Func, IntoIden, JoinType, LockBehavior, LockType, Order,
-	PostgresQueryBuilder, Query, QueryStatementBuilder, SimpleExpr,
+	Alias, Condition, Expr, ExprTrait as _, Func, IntoIden, JoinType, LockBehavior, LockType,
+	Order, PostgresQueryBuilder, Query, QueryStatementBuilder, SimpleExpr,
 };
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -31,6 +31,8 @@ pub(crate) const OUTCOME: &str = "outcome";
 
 /// Attempts pruned per maintenance pass.
 const PRUNE_BATCH: u64 = 64;
+/// Runs whose orphaned attempts are closed per maintenance pass.
+const ORPHAN_BATCH: u64 = 64;
 /// The database renders stored JSON with separators the compact encoder omits.
 const STORAGE_MARGIN: usize = 64;
 
@@ -83,6 +85,11 @@ struct PendingAttempt {
 	id: Uuid,
 }
 crate::native_record!(PendingAttempt { id });
+
+struct OrphanedRun {
+	id: Uuid,
+}
+crate::native_record!(OrphanedRun { id });
 
 struct NextSeq {
 	next: i64,
@@ -270,6 +277,51 @@ pub(crate) async fn close_pending(
 		if close(tx, node, &target, attempt.id, outcome).await? {
 			closed.push(outcome);
 		}
+	}
+	Ok(closed)
+}
+
+/// Close pending attempts of Runs without a live worker lease. Every attempt
+/// write is fenced by a live lease, which is never renewed once expired, so no
+/// worker can still finish them. The next start closes them too, but a paused
+/// Run is not scheduled, so its worker's lapse would otherwise leave them open.
+pub(crate) async fn close_orphans(
+	tx: &mut dyn TransactionExecutor,
+	node: &str,
+) -> Result<Vec<ProgressOutcome>> {
+	let attempts = Alias::new(InferenceAttempt::table_name());
+	let runs = rows::<OrphanedRun>(
+		&mut *tx,
+		Query::select()
+			.column((Alias::new("runs"), Alias::new("id")))
+			.from(Alias::new("runs"))
+			.cond_where(
+				Condition::any()
+					.add(Expr::col((Alias::new("runs"), Alias::new("lease_until"))).is_null())
+					.add(
+						Expr::col((Alias::new("runs"), Alias::new("lease_until")))
+							.lte(Expr::current_timestamp()),
+					),
+			)
+			.and_where(Expr::exists(
+				Query::select()
+					.expr(Expr::value(1_i64))
+					.from(attempts.clone())
+					.and_where(
+						Expr::col((attempts.clone(), Alias::new("run_id")))
+							.equals((Alias::new("runs"), Alias::new("id"))),
+					)
+					.and_where(Expr::col((attempts, Alias::new("outcome"))).is_null())
+					.to_owned(),
+			))
+			.limit(ORPHAN_BATCH)
+			.lock(LockType::Update)
+			.lock_behavior(LockBehavior::SkipLocked),
+	)
+	.await?;
+	let mut closed = Vec::new();
+	for run in runs {
+		closed.extend(close_pending(tx, node, run.id, None).await?);
 	}
 	Ok(closed)
 }
@@ -633,6 +685,16 @@ impl crate::store::Store {
 		if let Err(error) = result {
 			tracing::warn!(run_id = %run, %error, "stale inference attempt left for orphan closure");
 		}
+	}
+
+	/// One bounded pass closing attempts no worker can finish. Returns the
+	/// number of attempts closed.
+	pub async fn close_orphaned_inference(&self) -> Result<usize> {
+		let mut tx = native::begin(&self.pool).await?;
+		let closed = close_orphans(tx.as_mut(), &self.node_id).await?;
+		tx.commit().await?;
+		record_interruptions(&closed);
+		Ok(closed.len())
 	}
 
 	/// One bounded retention pass. Returns the number of attempts pruned.

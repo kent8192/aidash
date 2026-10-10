@@ -167,6 +167,8 @@ enum Closure {
 	StaleDiscard,
 	OrphanOnNextStart,
 	Terminal,
+	PausedThenAccepted,
+	PausedThenLeaseLapsed,
 }
 
 #[rstest::rstest]
@@ -174,6 +176,8 @@ enum Closure {
 #[case::stale_discard(Closure::StaleDiscard, "discarded", None)]
 #[case::orphan_on_next_start(Closure::OrphanOnNextStart, "interrupted", Some("lease_lost"))]
 #[case::terminal_closure(Closure::Terminal, "interrupted", Some("lease_lost"))]
+#[case::paused_then_accepted(Closure::PausedThenAccepted, "accepted", None)]
+#[case::paused_then_lease_lapsed(Closure::PausedThenLeaseLapsed, "interrupted", Some("lease_lost"))]
 #[tokio::test]
 async fn every_attempt_records_exactly_one_outcome(
 	#[case] closure: Closure,
@@ -226,6 +230,28 @@ async fn every_attempt_records_exactly_one_outcome(
 				.save_run(&failed, worker, "run.failed")
 				.await
 				.unwrap();
+		}
+		Closure::PausedThenAccepted => {
+			// A management pause lets the in-flight call finish under its lease.
+			c.f.store
+				.control(c.run.id, aidash_server::domain::RunControlAction::Pause)
+				.await
+				.unwrap();
+			assert_eq!(c.f.store.close_orphaned_inference().await.unwrap(), 0);
+			c.f.store
+				.save_run(&completed(leased), worker, "model.completed")
+				.await
+				.unwrap();
+		}
+		Closure::PausedThenLeaseLapsed => {
+			// Activation never schedules the paused Run to close the attempt.
+			c.f.store
+				.control(c.run.id, aidash_server::domain::RunControlAction::Pause)
+				.await
+				.unwrap();
+			c.f.store.release_lease(c.run.id, worker).await.unwrap();
+			assert_eq!(c.f.store.close_orphaned_inference().await.unwrap(), 1);
+			assert_eq!(c.f.store.close_orphaned_inference().await.unwrap(), 0);
 		}
 	}
 	// A late harness closure never replaces the outcome already written.

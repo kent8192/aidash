@@ -231,8 +231,9 @@ impl RuntimeTasks {
 		}
 		let retention = federation.store.clone();
 		tasks.spawn_service(runtime_task(async move {
-			// Inference progress expires minutes after its outcome; hourly
-			// workbench purges keep their cadence on the same loop.
+			// Inference progress expires minutes after its outcome, so attempts
+			// orphaned on unscheduled Runs are closed first; hourly workbench
+			// purges keep their cadence on the same loop.
 			let mut ticks = 0_u32;
 			loop {
 				if ticks.is_multiple_of(60) {
@@ -243,6 +244,16 @@ impl RuntimeTasks {
 						crate::workbench::purge_incident_evidence(&retention.pool).await
 					{
 						tracing::warn!(%error, "incident evidence retention cleanup failed");
+					}
+				}
+				for _ in 0..16 {
+					match retention.close_orphaned_inference().await {
+						Ok(closed) if closed > 0 => continue,
+						Ok(_) => break,
+						Err(error) => {
+							tracing::warn!(%error, "orphaned inference attempt closure failed");
+							break;
+						}
 					}
 				}
 				for _ in 0..16 {
