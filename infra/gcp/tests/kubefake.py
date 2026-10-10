@@ -229,7 +229,9 @@ class FakeCluster:
         status = {"failed": 1} if mode == "failed" else {"succeeded": 1}
         self.put({"kind": "Job", "metadata": {"name": name, "namespace": namespace}, "status": status})
         if mode != "failed":
-            self.results[namespace] = self.snapshot(namespace, mode)
+            # "foreign": a minute CronJob run published after this Job.
+            self.results[namespace] = dict(self.snapshot(namespace, "flags" if mode == "foreign" else mode),
+                                           observation_job="cron-1" if mode == "foreign" else name)
 
     def upgrade(self, namespace, release, chart, values):
         self.record("helm", identity(namespace), release)

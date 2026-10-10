@@ -80,6 +80,9 @@ def main():
                 *observed, json.loads(previous['data']['snapshot.json']), time.time())
         except Exception:
             snapshot = unavailable()
+        # The seal accepts only the snapshot its own Job published: a concurrent
+        # minute Job may publish later with evidence gathered before the drain.
+        snapshot['observation_job'] = os.environ.get('OBSERVATION_JOB', '')
         patch = {'metadata': {'resourceVersion': previous['metadata']['resourceVersion']},
                  'data': {'snapshot.json': json.dumps(snapshot)}}
         try:

@@ -463,7 +463,10 @@ def app_values(cluster, identity, output, release, sha, settings):
             "runtimeClass": {"create": True, "name": "aidash-gvisor-" + identity},
             "installer": {"enabled": True, "image": control},
             "guard": {"enabled": True, "image": control},
-            "runner": {"enabled": True, "image": control, "existingSecret": "app-runner"},
+            # The journal proves termination and recovers uncertain work, so it is
+            # retained like every other Environment disk and deleted only by destroy.
+            "runner": {"enabled": True, "image": control, "existingSecret": "app-runner",
+                       "journal": {"storageClassName": STORAGE_CLASS}},
         },
     }
 
@@ -565,6 +568,10 @@ def observe(cluster, identity, since):
             pass
     snapshot = activity(cluster, identity)
     if not isinstance(snapshot, dict) or not isinstance(snapshot.get("observed_at"), (int, float)):
+        return None
+    # A minute CronJob run can publish after this Job with evidence gathered
+    # before the drain; only this Job's own post-drain snapshot counts.
+    if snapshot.get("observation_job") != name:
         return None
     return snapshot if snapshot["observed_at"] >= since else None
 
@@ -775,24 +782,29 @@ def stop(cluster, identity):
 def destroy(cluster, identity):
     """Delete namespaces and their retained disks; the shared preview disk is only released."""
     names = namespaces(identity)
-    volumes = [
-        volume for volume in cluster.items("persistentvolumes")
-        if ((volume.get("spec") or {}).get("claimRef") or {}).get("namespace") in names
-    ]
+    retained = []
+    for volume in cluster.items("persistentvolumes"):
+        if ((volume.get("spec") or {}).get("claimRef") or {}).get("namespace") not in names:
+            continue
+        name = volume["metadata"]["name"]
+        if name == PREVIEW_VOLUME or volume["spec"].get("persistentVolumeReclaimPolicy") != "Retain":
+            retained.append((name, None))
+            continue
+        handle = DISK.fullmatch(volume["spec"].get("csi", {}).get("volumeHandle", ""))
+        # Refuse before anything is deleted, so a foreign disk never loses its namespace.
+        if not handle or handle.group(1) != cluster.project or handle.group(3) == PREVIEW_VOLUME:
+            raise Refused("Retained volume does not reference an Environment disk")
+        retained.append((name, handle.groups()))
     for release in ("app", "env"):
         cluster.uninstall(names[0], release)
     for namespace in names:
         cluster.delete("namespace", namespace)
-    for volume in volumes:
-        name = volume["metadata"]["name"]
+    for name, disk in retained:
         if name == PREVIEW_VOLUME:
             cluster.patch("persistentvolume", PREVIEW_VOLUME, {"spec": {"claimRef": None}})
             continue
-        if volume["spec"].get("persistentVolumeReclaimPolicy") != "Retain":
+        if disk is None:
             continue
-        handle = DISK.fullmatch(volume["spec"].get("csi", {}).get("volumeHandle", ""))
-        if not handle or handle.group(1) != cluster.project or handle.group(3) == PREVIEW_VOLUME:
-            raise Refused("Retained volume does not reference an Environment disk")
         wait_until(
             lambda name=name: not any(
                 item.get("spec", {}).get("source", {}).get("persistentVolumeName") == name
@@ -801,5 +813,5 @@ def destroy(cluster, identity):
             f"Retained volume {name} is still attached",
         )
         # The disk goes first: a retry still finds it through the remaining PV.
-        cluster.delete_disk(*handle.groups())
+        cluster.delete_disk(*disk)
         cluster.delete("persistentvolume", name)

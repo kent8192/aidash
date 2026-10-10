@@ -912,7 +912,9 @@ class ReconcileTests(unittest.TestCase):
         self.request()
         self.reconcile()
         self.request(action="resume", sha="b" * 40)
-        for mode in ["busy", "stale", "failed", "error"]:
+        # "foreign": an idle snapshot that a concurrent minute CronJob run published
+        # after the seal's own Job, from evidence gathered before the drain.
+        for mode in ["busy", "stale", "failed", "error", "foreign"]:
             with self.subTest(mode=mode):
                 self.calls.clear()
                 self.kube.script = [mode]
@@ -999,6 +1001,22 @@ class ReconcileTests(unittest.TestCase):
             self.assertLess(self.calls.index(("delete_namespace", namespace)), self.calls.index(("delete_disk", sorted(owned)[0])))
         self.assertLess(self.calls.index(("uninstall", "pr-1", "app")), self.calls.index(("delete_namespace", "aidash-pr-1")))
         self.assertLess(max(index for index, call in enumerate(self.calls) if call[0] == "delete_disk"), self.calls.index(("apply", True)))
+
+    def test_destroy_refuses_an_unmanaged_retained_volume_before_deleting_anything(self):
+        self.request("pr-1")
+        self.reconcile()
+        self.kube.put({"kind": "PersistentVolume", "metadata": {"name": "foreign"}, "spec": {
+            "claimRef": {"namespace": "aidash-pr-1", "name": "data"}, "persistentVolumeReclaimPolicy": "Retain",
+            "csi": {"volumeHandle": "projects/other-project/zones/us-central1-a/disks/data"},
+        }})
+        disks = set(self.kube.disks)
+        self.closed.add("pr-1")
+        self.calls.clear()
+        with self.assertRaises(RuntimeError):
+            self.reconcile()
+        self.assertNotEqual(self.store.state["environments"]["pr-1"]["status"], "destroyed")
+        self.assertFalse(any(call[0] in {"uninstall", "delete_namespace", "delete_disk"} for call in self.calls))
+        self.assertEqual(self.kube.disks, disks)
 
     def test_pending_build_restores_broker_presealed_healthy_release(self):
         self.config["develop_branch"] = "develop/0.1.0"

@@ -96,6 +96,8 @@ spec:
               command: [python3, -I, /opt/activity/activity.py]
               env:
                 - { name: ACTIVITY_CONFIGMAP, value: {{ $name }}-activity }
+                - name: OBSERVATION_JOB
+                  valueFrom: { fieldRef: { fieldPath: "metadata.labels['batch.kubernetes.io/job-name']" } }
                 - { name: EDGE_ACTIVITY_ENDPOINT, value: "http://{{ $name }}-activity:8089" }
                 - { name: RUNNER_ENDPOINT, value: {{ .Values.activity.runnerEndpoint | quote }} }
                 - name: AIDASH_CORE_RUNNER_TOKEN
