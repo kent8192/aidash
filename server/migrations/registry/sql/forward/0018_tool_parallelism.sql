@@ -1,11 +1,13 @@
 -- PostgreSQL function bodies have no typed migration operation. DDL only.
--- Restore the 0015 Agent Binding and descriptor contracts and the 0011 installation guard.
+-- Agent Bindings accept the Run Tool Parallelism ceiling, and Binding and
+-- descriptor restrictions accept a concurrency restriction.
 CREATE OR REPLACE FUNCTION public.aidash_agent_bindings_is_valid(value jsonb) RETURNS boolean
 LANGUAGE plpgsql IMMUTABLE STRICT AS $$
-DECLARE item jsonb; removals jsonb; edges jsonb; step_count numeric; restriction jsonb; candidate jsonb;
+DECLARE item jsonb; removals jsonb; edges jsonb; step_count numeric; parallelism numeric; restriction jsonb; candidate jsonb;
 BEGIN
  IF jsonb_typeof(value) IS DISTINCT FROM 'object'
- OR value - ARRAY['schema_version','model','instructions','bindings','remove_default','cluster','max_steps']::text[] <> '{}'::jsonb
+ OR value - ARRAY['schema_version','model','instructions','bindings','remove_default','cluster','max_steps','projection_version','tool_parallelism']::text[] <> '{}'::jsonb
+ OR NOT COALESCE(value->'projection_version','null'::jsonb) IN ('null'::jsonb,'"legacy"'::jsonb,'"ordered"'::jsonb,'"native"'::jsonb)
  OR value->'schema_version' IS DISTINCT FROM '1'::jsonb
  OR NOT COALESCE(public.aidash_qualified_ref_is_valid(value->'model' || '{"registry_node":"aidash://contract"}'::jsonb),false)
  OR jsonb_typeof(COALESCE(value->'instructions','""'::jsonb)) <> 'string' THEN RETURN false; END IF;
@@ -14,6 +16,9 @@ BEGIN
  IF jsonb_typeof(COALESCE(value->'max_steps','64'::jsonb)) <> 'number' OR NOT COALESCE(COALESCE(value->>'max_steps','64') ~ '^[0-9]+$',false) THEN RETURN false; END IF;
  step_count := COALESCE(value->>'max_steps','64')::numeric;
  IF step_count NOT BETWEEN 1 AND 1000 THEN RETURN false; END IF;
+ IF jsonb_typeof(COALESCE(value->'tool_parallelism','1'::jsonb)) <> 'number' OR NOT COALESCE(COALESCE(value->>'tool_parallelism','1') ~ '^[0-9]+$',false) THEN RETURN false; END IF;
+ parallelism := COALESCE(value->>'tool_parallelism','1')::numeric;
+ IF parallelism NOT BETWEEN 1 AND 16 THEN RETURN false; END IF;
  edges := COALESCE(value->'bindings','[]'::jsonb);
  removals := COALESCE(value->'remove_default','[]'::jsonb);
  IF jsonb_typeof(edges) <> 'array' OR jsonb_typeof(removals) <> 'array' THEN RETURN false; END IF;
@@ -23,12 +28,14 @@ BEGIN
   OR NOT COALESCE(item->>'kind' IN ('tool','bundle','skill','memory','source'),false)
   OR NOT COALESCE(public.aidash_qualified_ref_is_valid(item->'target'),false)
   OR jsonb_typeof(COALESCE(item->'narrow','{}'::jsonb)) <> 'object'
-  OR COALESCE(item->'narrow','{}'::jsonb) - ARRAY['allowed_hosts','scope','limits']::text[] <> '{}'::jsonb THEN RETURN false; END IF;
+  OR COALESCE(item->'narrow','{}'::jsonb) - ARRAY['allowed_hosts','scope','limits','concurrency']::text[] <> '{}'::jsonb THEN RETURN false; END IF;
   restriction := COALESCE(item->'narrow','{}'::jsonb);
   IF COALESCE(restriction->'allowed_hosts','null'::jsonb) <> 'null'::jsonb THEN
    IF jsonb_typeof(restriction->'allowed_hosts') <> 'array' OR jsonb_array_length(restriction->'allowed_hosts') = 0
    OR jsonb_path_exists(restriction->'allowed_hosts','strict $[*] ? (@.type() != "string")') THEN RETURN false; END IF;
   END IF;
+  IF COALESCE(restriction->'concurrency','null'::jsonb) <> 'null'::jsonb
+  AND NOT COALESCE(item->>'kind' IN ('tool','bundle') AND restriction->>'concurrency' IN ('sequential','shared_read') AND jsonb_typeof(restriction->'concurrency') = 'string',false) THEN RETURN false; END IF;
   IF jsonb_typeof(COALESCE(restriction->'scope','{}'::jsonb)) <> 'object' OR jsonb_typeof(COALESCE(restriction->'limits','{}'::jsonb)) <> 'object' THEN RETURN false; END IF;
   FOR candidate IN SELECT v FROM jsonb_each(COALESCE(restriction->'scope','{}'::jsonb)) AS fields(k,v) LOOP
    IF jsonb_typeof(candidate) <> 'array' OR jsonb_array_length(candidate) = 0 OR jsonb_path_exists(candidate,'strict $[*] ? (@.type() != "string")') THEN RETURN false; END IF;
@@ -65,7 +72,9 @@ BEGIN
  OR NOT COALESCE(value->>'registry_node' ~ '^aidash://[A-Za-z0-9-]{1,100}$', false)
  OR NOT COALESCE(value->>'default_alias' ~ '^[A-Za-z0-9_-]{1,64}$', false)
  OR jsonb_typeof(COALESCE(value->'narrow','{}'::jsonb)) <> 'object' THEN RETURN false; END IF;
- IF COALESCE(value->'narrow','{}'::jsonb) - ARRAY['allowed_hosts','scope','limits']::text[] <> '{}'::jsonb THEN RETURN false; END IF;
+ IF COALESCE(value->'narrow','{}'::jsonb) - ARRAY['allowed_hosts','scope','limits','concurrency']::text[] <> '{}'::jsonb THEN RETURN false; END IF;
+ IF COALESCE(value #> '{narrow,concurrency}','null'::jsonb) <> 'null'::jsonb
+ AND NOT COALESCE(value #>> '{narrow,concurrency}' IN ('sequential','shared_read') AND jsonb_typeof(value #> '{narrow,concurrency}') = 'string',false) THEN RETURN false; END IF;
  expected_provider := CASE value->>'operation'
   WHEN 'workspace_read' THEN 'core.workspace@1' WHEN 'workspace_observe' THEN 'core.workspace@1'
   WHEN 'workspace_wait' THEN 'core.workspace@1' WHEN 'workspace_message' THEN 'core.workspace@1'
@@ -131,7 +140,7 @@ BEGIN
     END IF;
 
     IF target_kind = 'agent' AND NOT COALESCE(
-        NEW.config - ARRAY['model','instructions','bindings','remove_default','cluster','max_steps']::text[] = '{}'::jsonb
+        NEW.config - ARRAY['model','instructions','bindings','remove_default','cluster','max_steps','tool_parallelism']::text[] = '{}'::jsonb
         AND public.aidash_agent_bindings_is_valid(target_config || NEW.config), false) THEN
         RAISE EXCEPTION 'installation override is not a valid Binding configuration'
             USING ERRCODE = '23514', CONSTRAINT = 'installations_config';

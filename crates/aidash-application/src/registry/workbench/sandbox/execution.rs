@@ -232,7 +232,10 @@ pub async fn simulate(execution: &Execution, session_id: Uuid, job: &Job) -> Res
 		}
 		request.max_output_tokens =
 			(limits.max_output_tokens as u64 - output_tokens).min(u32::MAX as u64) as u32;
-		request.context["conversation"] = json!(conversation);
+		request
+			.context
+			.legacy_mut()
+			.expect("Legacy request context")["conversation"] = json!(conversation);
 	}
 	if status == "blocked" && error.is_none() {
 		error = Some("test step limit reached".into());

@@ -47,6 +47,8 @@ pub struct Store {
 	pub(crate) recovery_cursors: std::sync::Arc<run_state::RecoveryCursors>,
 	/// The process Tool Parallelism ceiling, shared by every clone of this Store.
 	pub tool_slots: aidash_application::ports::execution::ToolSlots,
+	/// This node's Cache Salt Keys (ADR 0016); `None` admits only Legacy Runs.
+	pub cache_salt: Option<aidash_integrations::inference::CacheSaltKeys>,
 }
 
 /// Worker slots are capped at four. Each holds an outer authority transaction
@@ -194,6 +196,33 @@ impl Store {
 		Ok(())
 	}
 
+	/// The Tenant that owns a local workspace; unscoped workspaces have none.
+	pub(crate) async fn workspace_tenant(&self, workspace: Uuid) -> Result<Option<String>> {
+		crate::database::native::query_scalar(
+			&Query::select()
+				.column(Alias::new("tenant"))
+				.from(Alias::new("authorization_workspaces"))
+				.and_where(Expr::col(Alias::new("workspace_id")).eq(Expr::value(workspace)))
+				.to_string(PostgresQueryBuilder),
+		)
+		.scalar_optional(&self.pool)
+		.await
+	}
+
+	/// Run creation re-checks the Projection Version pinned by the Binding
+	/// snapshot (ADR 0015/0016): it must be implemented, declared by the
+	/// pinned model and, when salted, backed by this node's Cache Salt Key and
+	/// a Tenant to salt with. `tenant_scoped` is false for tenantless legacy
+	/// execution, whose Runs could never derive a Cache Scope. Legacy Runs are
+	/// never affected; nothing falls back to Legacy.
+	pub(crate) fn require_projection(
+		&self,
+		snapshot: &aidash_domain::registry::bindings::BindingSnapshot,
+		tenant_scoped: bool,
+	) -> Result<()> {
+		require_projection(snapshot, self.cache_salt.is_some(), tenant_scoped)
+	}
+
 	/// Share this store's existing data pool with native persistence operations.
 	pub(crate) fn database(&self) -> BackendConnection {
 		self.pool.connection()
@@ -236,6 +265,7 @@ impl Store {
 			semantic_client: crate::semantic::backend::client()?,
 			recovery_cursors: Default::default(),
 			tool_slots,
+			cache_salt: None,
 			provider_credentials: None,
 			provider_key_material_reader: None,
 			capability_issuer: None,
@@ -251,6 +281,14 @@ impl Store {
 	) -> Self {
 		self.pool = self.pool.with_dashboard_policy(policy.clone());
 		self.control_pool = self.control_pool.with_dashboard_policy(policy);
+		self
+	}
+	/// Attach this node's Cache Salt Keys for salted Run creation and inference.
+	pub fn with_cache_salt(
+		mut self,
+		keys: Option<aidash_integrations::inference::CacheSaltKeys>,
+	) -> Self {
+		self.cache_salt = keys;
 		self
 	}
 	pub(crate) fn with_memory_recovery(
@@ -301,6 +339,7 @@ impl Store {
 			semantic_client: self.semantic_client.clone(),
 			recovery_cursors: self.recovery_cursors.clone(),
 			tool_slots: self.tool_slots.clone(),
+			cache_salt: self.cache_salt.clone(),
 			provider_credentials: self.provider_credentials.clone(),
 			provider_key_material_reader: self.provider_key_material_reader.clone(),
 			capability_issuer: self.capability_issuer.clone(),
@@ -340,6 +379,7 @@ impl Store {
 			semantic_client: self.semantic_client.clone(),
 			recovery_cursors: self.recovery_cursors.clone(),
 			tool_slots: self.tool_slots.clone(),
+			cache_salt: self.cache_salt.clone(),
 			provider_credentials: self.provider_credentials.clone(),
 			provider_key_material_reader: self.provider_key_material_reader.clone(),
 			capability_issuer: self.capability_issuer.clone(),
@@ -839,6 +879,23 @@ impl Store {
 				.await?
 			};
 			snapshot.validate()?;
+			// Scoped claims run in a Tenant-owned workspace; the legacy claim
+			// path has already required a workspace without one.
+			let tenant_scoped: bool = {
+				let query_bind_1 = claimed.workspace_id;
+				crate::database::native::query_scalar(
+					&Query::select()
+						.expr(SimpleExpr::CustomWithExpr(
+							"(EXISTS(SELECT 1 FROM authorization_workspaces WHERE workspace_id = ?))"
+								.to_owned(),
+							vec![Expr::value(query_bind_1.to_owned()).into()],
+						))
+						.to_string(PostgresQueryBuilder),
+				)
+				.scalar_one(&mut **tx)
+				.await?
+			};
+			self.require_projection(&snapshot, tenant_scoped)?;
 			let context = crate::context::Context {
 				binding_snapshot: Some(Box::new(snapshot)),
 				..Default::default()
@@ -2579,6 +2636,8 @@ impl Store {
 				"offered Agent closure differs from receiver admission".into(),
 			));
 		}
+		// Legacy remote admission is tenantless (require_legacy_execution).
+		self.require_projection(&snapshot, false)?;
 		let context = crate::context::Context {
 			binding_snapshot: Some(Box::new(snapshot)),
 			..Default::default()
@@ -4504,6 +4563,51 @@ impl Store {
 		}
 		Ok(h)
 	}
+}
+
+fn require_projection(
+	snapshot: &aidash_domain::registry::bindings::BindingSnapshot,
+	cache_salt: bool,
+	tenant_scoped: bool,
+) -> Result<()> {
+	let agent = crate::registry::AgentConfig::from_snapshot(snapshot)?;
+	let version = agent.projection_version.unwrap_or_default();
+	if version.is_legacy() {
+		return Ok(());
+	}
+	if !version.is_implemented() {
+		return Err(Error::Invalid(format!(
+			"Projection Version {version} is not implemented"
+		)));
+	}
+	let model = snapshot
+		.definitions
+		.iter()
+		.find(|d| {
+			d.identity.id == agent.model.id
+				&& d.identity.version == agent.model.version
+				&& d.identity.registry_node == snapshot.agent.registry_node
+		})
+		.ok_or_else(|| Error::Invalid("pinned model is outside the Binding snapshot".into()))?;
+	let model: aidash_domain::model::ModelConfig =
+		serde_json::from_value(model.definition.config.clone())?;
+	if !model.supports_projection(version) {
+		return Err(Error::Invalid(format!(
+			"model {} does not support Projection Version {version}",
+			model.model_id
+		)));
+	}
+	if version.salted() && !cache_salt {
+		return Err(Error::Invalid(format!(
+			"this node has no Cache Salt Key for Projection Version {version}"
+		)));
+	}
+	if version.salted() && !tenant_scoped {
+		return Err(Error::Invalid(format!(
+			"Projection Version {version} requires a Tenant-owned workspace; legacy execution has none"
+		)));
+	}
+	Ok(())
 }
 
 #[cfg(test)]

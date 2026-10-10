@@ -737,6 +737,7 @@ impl ExecutionEnvironment for Bench {
 			allow_task_creation: None,
 			conversation_memory: false,
 			tool_parallelism: self.0.parallelism,
+			projection_version: Default::default(),
 		})
 	}
 	fn tool_slots(&self) -> Option<&ToolSlots> {
@@ -760,6 +761,15 @@ impl ExecutionEnvironment for Bench {
 	async fn skill_context(&self, _run: &Run) -> Result<String> {
 		unexpected("ExecutionEnvironment.skill_context")
 	}
+	async fn skill_revision(&self, _run: &Run) -> Result<Option<i64>> {
+		unexpected("ExecutionEnvironment.skill_revision")
+	}
+	async fn cache_scope(&self, _run: &Run) -> Result<aidash_domain::projection::CacheScope> {
+		unexpected("ExecutionEnvironment.cache_scope")
+	}
+	async fn retrieval_scope(&self, _run: &Run) -> Result<RetrievalScope> {
+		unexpected("ExecutionEnvironment.retrieval_scope")
+	}
 	async fn semantic_context(
 		&self,
 		_run: &Run,
@@ -767,6 +777,7 @@ impl ExecutionEnvironment for Bench {
 		_inputs: &[(InputRead, String)],
 		_budget: usize,
 		_entry: &Entry,
+		_key: Option<&RetrievalKey>,
 	) -> Result<Option<Value>> {
 		unexpected("ExecutionEnvironment.semantic_context")
 	}

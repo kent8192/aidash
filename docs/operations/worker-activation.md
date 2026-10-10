@@ -90,6 +90,15 @@ Compatible schema is retained on binary rollback. Before enabling incompatible
 future Run semantics, stop incompatible old workers; a notification is not a
 compatibility upgrade mechanism.
 
+Projection Versions are such semantics. A Run whose Agent definition selects the
+`ordered` Projection Version carries `projection_version` in its Binding snapshot,
+which workers built before #172 reject as an unknown field. Register Agent
+versions that select `ordered` only after every worker and every receiving peer
+that may execute them runs a #172 build with a Cache Salt Key configured
+(`docs/features/context-projection.md`). Legacy Runs are unaffected in mixed
+clusters. Rolling back below #172 while Ordered Runs exist stalls those Runs
+instead of rendering them differently.
+
 On shutdown, stop new pulls/claims and drain the current step. Do not clear a lease
 while an external effect might still run. Never delete the durable on shutdown.
 `activation_quarantine` stores only a digest, bounded reason, sequence, and time;
