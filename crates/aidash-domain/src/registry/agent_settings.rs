@@ -15,6 +15,7 @@ impl AgentConfig {
 			cluster: self.cluster.clone(),
 			max_steps: self.max_steps,
 			projection_version: self.projection_version,
+			prompt_cache: self.prompt_cache,
 		}
 	}
 	pub fn from_definition(input: AgentBindings) -> Self {
@@ -36,6 +37,7 @@ impl AgentConfig {
 			cluster: input.cluster,
 			max_steps: input.max_steps,
 			projection_version: input.projection_version,
+			prompt_cache: input.prompt_cache,
 			core_capabilities: Default::default(),
 			skill_attachments: vec![],
 			skill_roots: vec![],
