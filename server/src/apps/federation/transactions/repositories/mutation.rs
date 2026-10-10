@@ -1,6 +1,9 @@
 //! Native mutation primitives borrow the participant's original transaction.
 use crate::apps::{
-	execution::models::{Run, event_records},
+	execution::{
+		models::{Run, event_records},
+		repositories::inference,
+	},
 	federation::remote::models::Delegation,
 	identity::models::{AuthorizationExecution, AuthorizationRunOutput},
 	registry::repositories::NativeScope,
@@ -14,15 +17,20 @@ use aidash_application::{
 	},
 };
 use aidash_domain::{
-	Artifact, ArtifactInput, Task, Workspace as WorkspaceContract, registry::Entry,
-	run_state::RawRun,
+	Artifact, ArtifactInput, Task, Workspace as WorkspaceContract,
+	provider::progress::ProgressOutcome, registry::Entry, run_state::RawRun,
 };
 use async_trait::async_trait;
 use reinhardt::db::backends::TransactionExecutor;
 use serde_json::Value;
 use uuid::Uuid;
 
-pub(crate) struct Scope<'a>(pub(crate) &'a mut dyn TransactionExecutor);
+/// Borrows the participant transaction. Interruptions written here are recorded
+/// by the owner only after that transaction commits.
+pub(crate) struct Scope<'a>(
+	pub(crate) &'a mut dyn TransactionExecutor,
+	pub(crate) Vec<ProgressOutcome>,
+);
 
 #[async_trait]
 impl DefinitionLookup for Scope<'_> {
@@ -107,7 +115,12 @@ impl MutationScope for Scope<'_> {
 		))
 	}
 	async fn complete_run(&mut self, id: Uuid) -> Result<()> {
-		Run::complete(self.0, id).await.map_err(Into::into)
+		Run::complete(self.0, id).await?;
+		// Completion is validated as Home-local, so the Home node records markers.
+		let run = inference::target(&mut *self.0, id).await?;
+		let closed = inference::close_pending(self.0, &run.home_node, id, None).await?;
+		self.1.extend(closed);
+		Ok(())
 	}
 	async fn append_event(
 		&mut self,

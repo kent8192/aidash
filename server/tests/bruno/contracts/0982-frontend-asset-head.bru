@@ -1,11 +1,11 @@
 meta {
-  name: 0982 frontend-asset-head - Client route falls back to the SPA
+  name: 0982 frontend-asset-head - Serve the configured frontend content
   type: http
   seq: 982
 }
 
 head {
-  url: {{base_url}}/bruno-client-route
+  url: {{base_url}}/assets/probe.txt
   body: none
   auth: none
 }
@@ -16,5 +16,5 @@ headers {
 
 tests {
   test("Exact HTTP 200", function () { expect(res.getStatus()).to.equal(200); });
-  test("Client route falls back to the SPA contract", function () { expect(res.getBody()).to.equal(""); });
+  test("Serve the configured frontend content contract", function () { expect(res.getBody()).to.equal("");expect(res.getHeader("x-content-type-options")).to.equal("nosniff");bru.setVar("frontendEtag",res.getHeader("etag")); });
 }

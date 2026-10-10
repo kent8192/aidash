@@ -5,6 +5,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::time::Duration;
 
+/// Streaming applies to model configs that do not choose explicitly.
+pub const STREAMING_DEFAULT: bool = true;
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ModelConfig {
@@ -19,6 +22,14 @@ pub struct ModelConfig {
 	/// BYOK configurations are capped at the broker's 3600-second deadline.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub request_timeout_secs: Option<u32>,
+	/// Stream the provider response and publish Inference Progress. Omitted
+	/// values use the release default; `false` keeps the non-streamed path.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub streaming: Option<bool>,
+	/// Longest silence, in seconds, between streamed data chunks. Provider
+	/// comment lines do not count as data. Omitted values use 120 seconds.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub stream_stall_timeout_secs: Option<u32>,
 	#[serde(default)]
 	pub reasoning_effort: Option<ReasoningEffort>,
 	pub context_window: usize,
@@ -293,6 +304,24 @@ impl ModelConfig {
 		if self.provider_credential.is_some() && seconds > 3600 {
 			return Err(Error::Invalid(
 				"BYOK model request_timeout_secs must be at most 3600".into(),
+			));
+		}
+		Ok(Duration::from_secs(u64::from(seconds)))
+	}
+
+	/// Whether inference streams progress. The release default applies when the
+	/// immutable config omits the choice.
+	pub fn streaming(&self) -> bool {
+		self.streaming.unwrap_or(STREAMING_DEFAULT)
+	}
+
+	/// Resolve the streamed-response stall timeout. Validate at registration and
+	/// before use.
+	pub fn stream_stall_timeout(&self) -> Result<Duration> {
+		let seconds = self.stream_stall_timeout_secs.unwrap_or(120);
+		if seconds == 0 {
+			return Err(Error::Invalid(
+				"model stream_stall_timeout_secs must be greater than zero".into(),
 			));
 		}
 		Ok(Duration::from_secs(u64::from(seconds)))

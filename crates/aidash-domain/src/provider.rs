@@ -429,6 +429,8 @@ impl ModelRequest {
 	}
 }
 
+pub mod progress;
+
 #[cfg(test)]
 mod admission_tests;
 #[cfg(test)]

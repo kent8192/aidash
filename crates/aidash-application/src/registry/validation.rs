@@ -151,6 +151,7 @@ impl DefinitionValidation {
 				));
 				}
 				m.request_timeout()?;
+				m.stream_stall_timeout()?;
 				m.validate_projection_versions()?;
 				m.validate_cache_mode()?;
 				if m.provider_credential.is_some() {

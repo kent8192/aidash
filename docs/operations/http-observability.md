@@ -100,7 +100,10 @@ including a body that has never been polled. HTTP concurrency permits are releas
 when headers are returned. The response-start timeout therefore does not cut off
 an established stream. Existing 15-second heartbeats, live authorization checks,
 and `Last-Event-ID` replay behavior are preserved. Backpressure does not create
-unbounded buffered event queues.
+unbounded buffered event queues. The Run inference stream
+(`/api/runs/{run}/inference/stream`) uses the same SSE admission permit,
+heartbeat, per-frame authorization and backpressure close, so the
+`aidash_sse_*` series below also cover it.
 
 The existing four worker slots, durable leases, inference timeouts, cancellation,
 retry rules and execution budgets remain independent of HTTP admission.
@@ -139,6 +142,10 @@ Aidash additionally emits:
 - `aidash_worker_retries_total`: persisted worker retry transitions.
 - `aidash_model_response_headers_seconds`: successful HTTP transport time until model response headers, not first-token latency.
 - `aidash_model_tokens_total{direction="input|output"}`: reported usage from successfully parsed model responses.
+- `aidash_inference_first_delta_seconds`: time from the provider call to the first progress item offered by a streamed response. This is the first-token proxy.
+- `aidash_inference_accepted_seconds`: time from the provider call to the durable Accepted Response.
+- `aidash_inference_interruptions_total{reason}`: Inference Attempts closed without an Accepted Response. `reason` is `correction` for a discarded attempt, or `cancelled`, `lease_lost`, `stall`, `stream_error` or `revoked`. The harness counts the outcomes it writes; the server counts the orphaned and stale attempts it closes itself.
+- `aidash_inference_progress_coalesced_total`: progress items merged or dropped because the worker's bounded progress buffer was full. Inference never waits for progress delivery.
 
 These counters are operational observations, not billing records. Missing provider
 usage is zero; failed/unparseable provider responses are not counted as known

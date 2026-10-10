@@ -665,7 +665,7 @@ impl Models {
 		)?;
 		let response = tokio::time::timeout(
 			std::time::Duration::from_secs(u64::from(self.policy.bounds.max_call_seconds)),
-			provider.infer(request),
+			provider.infer(request, &aidash_application::ports::NoProgress),
 		)
 		.await
 		.map_err(|_| Error::SemanticUnavailable)??;

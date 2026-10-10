@@ -1,0 +1,20 @@
+meta {
+  name: 0968 health - Public contract
+  type: http
+  seq: 968
+}
+
+get {
+  url: {{base_url}}/health
+  body: none
+  auth: none
+}
+
+headers {
+  Accept: application/json
+}
+
+tests {
+  test("Exact HTTP 200", function () { expect(res.getStatus()).to.equal(200); });
+  test("Public contract contract", function () { expect(res.getHeader("content-type")).to.include("application/json");expect(res.getBody()).to.be.an("object");expect(res.getBody()).to.eql({status:"ok",node_id:bru.getEnvVar("node_id")}); });
+}

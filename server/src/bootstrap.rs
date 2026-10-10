@@ -241,16 +241,45 @@ impl RuntimeTasks {
 				}
 			}));
 		}
-		let retention = federation.store.pool.clone();
+		let retention = federation.store.clone();
 		tasks.spawn_service(runtime_task(async move {
+			// Inference progress expires minutes after its outcome, so attempts
+			// orphaned on unscheduled Runs are closed first; hourly workbench
+			// purges keep their cadence on the same loop.
+			let mut ticks = 0_u32;
 			loop {
-				if let Err(error) = crate::workbench::purge_expired(&retention).await {
-					tracing::warn!(%error, "agent test retention cleanup failed");
+				if ticks.is_multiple_of(60) {
+					if let Err(error) = crate::workbench::purge_expired(&retention.pool).await {
+						tracing::warn!(%error, "agent test retention cleanup failed");
+					}
+					if let Err(error) =
+						crate::workbench::purge_incident_evidence(&retention.pool).await
+					{
+						tracing::warn!(%error, "incident evidence retention cleanup failed");
+					}
 				}
-				if let Err(error) = crate::workbench::purge_incident_evidence(&retention).await {
-					tracing::warn!(%error, "incident evidence retention cleanup failed");
+				for _ in 0..16 {
+					match retention.close_orphaned_inference().await {
+						Ok(closed) if closed > 0 => continue,
+						Ok(_) => break,
+						Err(error) => {
+							tracing::warn!(%error, "orphaned inference attempt closure failed");
+							break;
+						}
+					}
 				}
-				tokio::time::sleep(Duration::from_secs(3600)).await;
+				for _ in 0..16 {
+					match retention.prune_inference_progress().await {
+						Ok(pruned) if pruned > 0 => continue,
+						Ok(_) => break,
+						Err(error) => {
+							tracing::warn!(%error, "inference progress retention cleanup failed");
+							break;
+						}
+					}
+				}
+				ticks = ticks.wrapping_add(1);
+				tokio::time::sleep(Duration::from_secs(60)).await;
 			}
 		}));
 		if worker_count > 0 {
@@ -1380,7 +1409,7 @@ pub(crate) fn transaction_management_repository(
 pub(crate) fn transaction_mutation_scope(
 	tx: &mut dyn reinhardt::db::backends::TransactionExecutor,
 ) -> crate::apps::federation::transactions::repositories::mutation::Scope<'_> {
-	crate::apps::federation::transactions::repositories::mutation::Scope(tx)
+	crate::apps::federation::transactions::repositories::mutation::Scope(tx, Vec::new())
 }
 
 pub(crate) fn transaction_participant(

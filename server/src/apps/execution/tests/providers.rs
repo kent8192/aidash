@@ -1,4 +1,5 @@
 use crate::provider_fixtures::{CompletionFixture, completion_server, unavailable_server};
+use aidash_application::ports::NoProgress;
 use aidash_server::{
 	provider::{ContentPart, ModelRequest, ToolSpec, provider},
 	registry::{Entry, MediaRouteEvidence, ModelConfig, validate},
@@ -24,6 +25,8 @@ fn config(
 		credential_env: None,
 		provider_credential: None,
 		request_timeout_secs: None,
+		streaming: None,
+		stream_stall_timeout_secs: None,
 		reasoning_effort: None,
 		context_window: 128000,
 		max_output_tokens: Some(65536),
@@ -143,23 +146,26 @@ async fn openrouter_enforces_zdr_and_preserves_reasoning_tools_and_usage(
 		let model = provider(client.clone(), model_config).unwrap();
 		for with_tools in [true, false] {
 			let response = model
-				.infer(ModelRequest {
-					instructions: "Follow the task".into(),
-					context: json!({"task":"Read notes"}).into(),
-					tools: if with_tools {
-						vec![ToolSpec {
-							name: "read".into(),
-							description: "Read notes".into(),
-							parameters: json!({"type":"object","properties":{"path":{"type":"string"}}}),
-						}]
-					} else {
-						vec![]
+				.infer(
+					ModelRequest {
+						instructions: "Follow the task".into(),
+						context: json!({"task":"Read notes"}).into(),
+						tools: if with_tools {
+							vec![ToolSpec {
+								name: "read".into(),
+								description: "Read notes".into(),
+								parameters: json!({"type":"object","properties":{"path":{"type":"string"}}}),
+							}]
+						} else {
+							vec![]
+						},
+						max_output_tokens,
+						content_parts: vec![],
+						cache_scope: None,
+						cache_breakpoints: false,
 					},
-					max_output_tokens,
-					content_parts: vec![],
-					cache_scope: None,
-					cache_breakpoints: false,
-				})
+					&NoProgress,
+				)
 				.await
 				.unwrap();
 			let request = fixture.received.recv().await.unwrap();
@@ -172,6 +178,8 @@ async fn openrouter_enforces_zdr_and_preserves_reasoning_tools_and_usage(
 			);
 			assert_eq!(request["max_tokens"], 65536);
 			assert!(request.get("max_completion_tokens").is_none());
+			assert_eq!(request["stream"], true);
+			assert_eq!(request["stream_options"], json!({"include_usage": true}));
 			assert_eq!(request["provider"]["zdr"], true);
 			assert_eq!(request["provider"]["require_parameters"], true);
 			if let Some(effort) = effort {
@@ -222,7 +230,7 @@ async fn openrouter_sends_cache_control_only_to_opted_in_explicit_routes(
 	explicit.cache_mode = Some(CacheMode::Explicit);
 	let model = provider(http_client.clone(), explicit).unwrap();
 
-	model.infer(ordered(true)).await.unwrap();
+	model.infer(ordered(true), &NoProgress).await.unwrap();
 	let request = fixture.received.recv().await.unwrap();
 	let ephemeral = json!({"type":"ephemeral"});
 	assert_eq!(
@@ -238,14 +246,14 @@ async fn openrouter_sends_cache_control_only_to_opted_in_explicit_routes(
 	assert_eq!(marked, [true, false]);
 	assert_eq!(request["provider"]["zdr"], true);
 
-	model.infer(ordered(false)).await.unwrap();
+	model.infer(ordered(false), &NoProgress).await.unwrap();
 	let request = fixture.received.recv().await.unwrap();
 	assert!(!request.to_string().contains("cache_control"));
 
 	let mut automatic = config("openrouter", endpoint);
 	automatic.cache_mode = Some(CacheMode::Automatic);
 	let model = provider(http_client, automatic).unwrap();
-	assert!(model.infer(ordered(true)).await.is_err());
+	assert!(model.infer(ordered(true), &NoProgress).await.is_err());
 	assert!(
 		fixture.received.try_recv().is_err(),
 		"nothing reaches the route"
@@ -285,26 +293,29 @@ async fn openrouter_sends_ordered_native_image_and_audio_parts() {
 	let image = b"\x89PNG\r\n\x1a\nimage".to_vec();
 	let audio = b"RIFF\0\0\0\0WAVEaudio".to_vec();
 	let response = model
-		.infer(ModelRequest {
-			instructions: "Inspect the media".into(),
-			context: json!({"run_message":"Describe the attachment"}).into(),
-			tools: vec![],
-			max_output_tokens: 512,
-			content_parts: vec![
-				ContentPart::Text("first attachment".into()),
-				ContentPart::Image {
-					media_type: "image/png".into(),
-					bytes: image,
-				},
-				ContentPart::Text("second attachment".into()),
-				ContentPart::Audio {
-					format: "wav".into(),
-					bytes: audio,
-				},
-			],
-			cache_scope: None,
-			cache_breakpoints: false,
-		})
+		.infer(
+			ModelRequest {
+				instructions: "Inspect the media".into(),
+				context: json!({"run_message":"Describe the attachment"}).into(),
+				tools: vec![],
+				max_output_tokens: 512,
+				content_parts: vec![
+					ContentPart::Text("first attachment".into()),
+					ContentPart::Image {
+						media_type: "image/png".into(),
+						bytes: image,
+					},
+					ContentPart::Text("second attachment".into()),
+					ContentPart::Audio {
+						format: "wav".into(),
+						bytes: audio,
+					},
+				],
+				cache_scope: None,
+				cache_breakpoints: false,
+			},
+			&NoProgress,
+		)
 		.await
 		.unwrap();
 	assert_eq!(response.text, "I saw and heard the input");
@@ -399,18 +410,21 @@ async fn media_route_lookup_obeys_the_total_inference_deadline() {
 	let model = provider(reqwest::Client::new(), model_config).unwrap();
 	let result = tokio::time::timeout(
 		Duration::from_secs(3),
-		model.infer(ModelRequest {
-			instructions: String::new(),
-			context: json!({}).into(),
-			tools: vec![],
-			max_output_tokens: 128,
-			content_parts: vec![ContentPart::Image {
-				media_type: "image/png".into(),
-				bytes: b"\x89PNG\r\n\x1a\nfixture".to_vec(),
-			}],
-			cache_scope: None,
-			cache_breakpoints: false,
-		}),
+		model.infer(
+			ModelRequest {
+				instructions: String::new(),
+				context: json!({}).into(),
+				tools: vec![],
+				max_output_tokens: 128,
+				content_parts: vec![ContentPart::Image {
+					media_type: "image/png".into(),
+					bytes: b"\x89PNG\r\n\x1a\nfixture".to_vec(),
+				}],
+				cache_scope: None,
+				cache_breakpoints: false,
+			},
+			&NoProgress,
+		),
 	)
 	.await
 	.expect("the configured inference deadline was exceeded");
@@ -490,15 +504,18 @@ async fn unavailable_zdr_endpoint_does_not_retry_without_zdr(
 	.unwrap();
 	assert!(
 		model
-			.infer(ModelRequest {
-				instructions: "test".into(),
-				context: json!({}).into(),
-				tools: vec![],
-				max_output_tokens: 512,
-				content_parts: vec![],
-				cache_scope: None,
-				cache_breakpoints: false,
-			})
+			.infer(
+				ModelRequest {
+					instructions: "test".into(),
+					context: json!({}).into(),
+					tools: vec![],
+					max_output_tokens: 512,
+					content_parts: vec![],
+					cache_scope: None,
+					cache_breakpoints: false,
+				},
+				&NoProgress,
+			)
 			.await
 			.is_err()
 	);
@@ -527,15 +544,18 @@ async fn upstream_media_rejection_keeps_its_status_and_safe_reason() {
 	let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
 	let model = provider(reqwest::Client::new(), config("openrouter", endpoint)).unwrap();
 	let error = model
-		.infer(ModelRequest {
-			instructions: "test".into(),
-			context: json!({}).into(),
-			tools: vec![],
-			max_output_tokens: 512,
-			content_parts: vec![],
-			cache_scope: None,
-			cache_breakpoints: false,
-		})
+		.infer(
+			ModelRequest {
+				instructions: "test".into(),
+				context: json!({}).into(),
+				tools: vec![],
+				max_output_tokens: 512,
+				content_parts: vec![],
+				cache_scope: None,
+				cache_breakpoints: false,
+			},
+			&NoProgress,
+		)
 		.await
 		.unwrap_err();
 	assert!(
@@ -564,15 +584,18 @@ async fn upstream_errors_cannot_echo_unrecognized_media_or_secret_data() {
 	let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
 	let model = provider(reqwest::Client::new(), config("openrouter", endpoint)).unwrap();
 	let error = model
-		.infer(ModelRequest {
-			instructions: "test".into(),
-			context: json!({}).into(),
-			tools: vec![],
-			max_output_tokens: 512,
-			content_parts: vec![],
-			cache_scope: None,
-			cache_breakpoints: false,
-		})
+		.infer(
+			ModelRequest {
+				instructions: "test".into(),
+				context: json!({}).into(),
+				tools: vec![],
+				max_output_tokens: 512,
+				content_parts: vec![],
+				cache_scope: None,
+				cache_breakpoints: false,
+			},
+			&NoProgress,
+		)
 		.await
 		.unwrap_err();
 	assert!(matches!(

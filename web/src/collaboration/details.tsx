@@ -6,7 +6,13 @@ import { RemoteMemoryProvenance, RemoteRunManagement } from "./remote-memory";
 import { RemoteExecutions } from "./remote-executions";
 import { ReferenceName } from "../record-view";
 import { RecordView } from "../record-view";
-import { Alert, Disclosure, Facts, Hint, formClass } from "../components/patterns";
+import {
+  Alert,
+  Disclosure,
+  Facts,
+  Hint,
+  formClass,
+} from "../components/patterns";
 import { useRef, useState } from "react";
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import {
@@ -56,6 +62,7 @@ import { EntityDetails } from "../entity-details";
 import { ArtifactList } from "./channel";
 import { collaborationCopy } from "./copy";
 import { workspaceCopy } from "./workspace-copy";
+import { InferenceProgress } from "./inference-progress";
 import { resumableRun } from "./workspace-model";
 import {
   runMediaAccept,
@@ -578,6 +585,10 @@ function RunPanel({
         <p className="text-xs leading-relaxed text-destructive [overflow-wrap:anywhere]">
           {run.error}
         </p>
+      )}
+      {/* The server denies subjects the stream of a foreign-home run. */}
+      {local && !managed && (
+        <InferenceProgress run={id} node={node} active={!terminal} />
       )}
       {managed && <RemoteMemoryProvenance url={`/api/runs/${id}/semantic`} />}
       {managed && <RemoteRunManagement id={id} />}

@@ -1,0 +1,21 @@
+meta {
+  name: 0970 health - Foreign origin receives the same public contract
+  type: http
+  seq: 970
+}
+
+get {
+  url: {{base_url}}/health
+  body: none
+  auth: none
+}
+
+headers {
+  Accept: application/json
+  Origin: https://untrusted.example
+}
+
+tests {
+  test("Exact HTTP 200", function () { expect(res.getStatus()).to.equal(200); });
+  test("Foreign origin receives the same public contract contract", function () { expect(res.getHeader("content-type")).to.include("application/json");expect(res.getBody()).to.be.an("object");expect(res.getBody()).to.eql({status:"ok",node_id:bru.getEnvVar("node_id")}); });
+}

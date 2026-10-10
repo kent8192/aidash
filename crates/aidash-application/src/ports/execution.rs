@@ -7,7 +7,10 @@ use crate::{
 use aidash_domain::{
 	media::Selection,
 	model::ModelConfig,
-	provider::{ContentPart, ModelRequest, ModelResponse, ToolCall, ToolSpec},
+	provider::{
+		ContentPart, ModelRequest, ModelResponse, ToolCall, ToolSpec,
+		progress::{InferenceAttemptId, InferenceProgress, ProgressOutcome},
+	},
 	registry::{EntityRef, Entry},
 	semantic::InputRead,
 	*,
@@ -46,9 +49,48 @@ pub struct HumanMediaBatch {
 pub type Tools = BTreeMap<String, Arc<dyn ExecutionTool>>;
 pub type ObservationFit<'a> = dyn Fn(usize, &Value) -> Result<bool> + Send + Sync + 'a;
 
+/// What ended an in-flight inference before its response was accepted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InferenceInterruption {
+	/// The Run's control became Cancelled.
+	Cancelled,
+	/// A Run input newer than the request's included input was accepted.
+	Superseded,
+}
+
 #[async_trait]
 pub trait ExecutionStore: Send + Sync {
+	/// Saving `model.completed` also closes the Run's pending Inference Attempt as
+	/// accepted, in the same transaction. When the stale-input check rejects the
+	/// save, the pending attempt is closed as discarded instead.
 	async fn save_run(&self, run: &Run, token: Uuid, event: &str) -> Result<()>;
+	/// Record a pending Inference Attempt and its `inference.started` marker under
+	/// the lease. Attempts still pending for this Run belong to a lost lease and are
+	/// first closed as interrupted with reason `lease_lost`.
+	async fn start_inference(
+		&self,
+		run: &Run,
+		token: Uuid,
+		attempt: InferenceAttemptId,
+	) -> Result<()>;
+	/// Append one bounded batch of Inference Progress under the lease, allocating
+	/// the Run's next `progress_seq` values in order.
+	async fn append_inference_progress(
+		&self,
+		run: &Run,
+		token: Uuid,
+		attempt: InferenceAttemptId,
+		batch: &[InferenceProgress],
+	) -> Result<()>;
+	/// Close a pending attempt without an Accepted Response and record its marker.
+	/// Closing an attempt that already has an outcome changes nothing.
+	async fn finish_inference(
+		&self,
+		run: &Run,
+		token: Uuid,
+		attempt: InferenceAttemptId,
+		outcome: ProgressOutcome,
+	) -> Result<()>;
 	/// Persist inference inputs without ending the worker's current lease. Return
 	/// the updated Run revision so the response uses the same durable boundary.
 	async fn observe_sources(&self, run: &mut Run, token: Uuid) -> Result<()> {
@@ -185,6 +227,10 @@ pub trait ExecutionAuthority: Send + Sync {
 		request: &ModelRequest,
 	) -> Result<Option<Box<dyn InferenceReservation>>>;
 	async fn suspend(&self) -> Result<()>;
+	/// While suspended for inference, briefly reacquire the authority boundary,
+	/// authorize inference again, and release it. Failure means the Run may no
+	/// longer receive or publish provider output.
+	async fn recheck_inference(&self) -> Result<()>;
 	async fn resume(&self) -> Result<()>;
 }
 #[async_trait]
@@ -238,7 +284,13 @@ pub trait ExecutionEnvironment: Send + Sync {
 	async fn reconcile_run_messages(&self, run: &Run) -> Result<()>;
 	async fn require_terminal_safe_delivery(&self, run: &Run) -> Result<()>;
 	async fn transition_terminal_run_messages(&self, run: &Run, status: TaskStatus) -> Result<()>;
-	async fn wait_for_inference_cancellation(&self, run: Uuid) -> Result<()>;
+	/// Resolve when the Run is cancelled or an input newer than
+	/// `included_input_seq` is accepted. Observation errors never resolve it.
+	async fn wait_for_inference_interruption(
+		&self,
+		run: Uuid,
+		included_input_seq: i64,
+	) -> Result<InferenceInterruption>;
 	async fn operator_human_message_media(
 		&self,
 		run: &Run,

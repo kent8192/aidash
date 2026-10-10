@@ -173,6 +173,8 @@ async fn worker_mint_and_broker_audit_are_correlated_and_never_log_secrets() {
 			credential_env: None,
 			provider_credential: Some("openrouter".into()),
 			request_timeout_secs: Some(5),
+			streaming: None,
+			stream_stall_timeout_secs: None,
 			reasoning_effort: None,
 			context_window: 32768,
 			max_output_tokens: Some(10),
@@ -187,15 +189,18 @@ async fn worker_mint_and_broker_audit_are_correlated_and_never_log_secrets() {
 	)
 	.unwrap();
 	let error = provider
-		.infer(aidash_domain::provider::ModelRequest {
-			instructions: CANARY.into(),
-			context: json!({}).into(),
-			tools: vec![],
-			max_output_tokens: 10,
-			content_parts: vec![],
-			cache_scope: None,
-			cache_breakpoints: false,
-		})
+		.infer(
+			aidash_domain::provider::ModelRequest {
+				instructions: CANARY.into(),
+				context: json!({}).into(),
+				tools: vec![],
+				max_output_tokens: 10,
+				content_parts: vec![],
+				cache_scope: None,
+				cache_breakpoints: false,
+			},
+			&aidash_application::ports::NoProgress,
+		)
 		.await
 		.unwrap_err();
 	assert!(matches!(error, Error::Invalid(_)));

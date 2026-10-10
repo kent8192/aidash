@@ -13,7 +13,10 @@ use aidash_application::{
 use aidash_domain::{
 	media::Selection,
 	model::ModelConfig,
-	provider::{ContentPart, ModelRequest, ModelResponse, ToolCall},
+	provider::{
+		ContentPart, ModelRequest, ModelResponse, ToolCall,
+		progress::{InferenceAttemptId, InferenceProgress, ProgressOutcome},
+	},
 	registry::Entry,
 	semantic::InputRead,
 	*,
@@ -33,6 +36,38 @@ impl ExecutionStore for Store {
 		Store::save_run(self, run, token, event)
 			.await
 			.map(|_| ())
+			.map_err(Into::into)
+	}
+	async fn start_inference(
+		&self,
+		run: &Run,
+		token: Uuid,
+		attempt: InferenceAttemptId,
+	) -> Result<()> {
+		Store::start_inference(self, run.id, token, attempt)
+			.await
+			.map_err(Into::into)
+	}
+	async fn append_inference_progress(
+		&self,
+		run: &Run,
+		token: Uuid,
+		attempt: InferenceAttemptId,
+		batch: &[InferenceProgress],
+	) -> Result<()> {
+		Store::append_inference_progress(self, run.id, token, attempt, batch)
+			.await
+			.map_err(Into::into)
+	}
+	async fn finish_inference(
+		&self,
+		run: &Run,
+		token: Uuid,
+		attempt: InferenceAttemptId,
+		outcome: ProgressOutcome,
+	) -> Result<()> {
+		Store::finish_inference(self, run.id, token, attempt, outcome)
+			.await
 			.map_err(Into::into)
 	}
 	async fn emit(&self, workspace: Option<Uuid>, kind: &str, data: Value) -> Result<Event> {
@@ -332,6 +367,17 @@ impl ExecutionAuthority for Authority<'_> {
 	}
 	async fn suspend(&self) -> Result<()> {
 		self.guard.suspend().await.map_err(Into::into)
+	}
+	/// Hold the authority boundary only for this check so the provider call
+	/// stays suspended, whether or not the Run may still infer.
+	async fn recheck_inference(&self) -> Result<()> {
+		let authorized = match self.guard.resume(self.federation).await {
+			Ok(()) => self.guard.inference().await,
+			Err(error) => Err(error),
+		};
+		let suspended = self.guard.suspend().await;
+		authorized?;
+		suspended.map_err(Into::into)
 	}
 	async fn resume(&self) -> Result<()> {
 		self.guard.resume(self.federation).await.map_err(Into::into)
@@ -687,10 +733,15 @@ impl ExecutionEnvironment for Environment<'_> {
 			.map_err(Into::into)
 	}
 
-	async fn wait_for_inference_cancellation(&self, run: Uuid) -> Result<()> {
-		super::super::services::runtime::wait_for_inference_cancellation(
+	async fn wait_for_inference_interruption(
+		&self,
+		run: Uuid,
+		included_input_seq: i64,
+	) -> Result<InferenceInterruption> {
+		super::super::services::runtime::wait_for_inference_interruption(
 			&self.federation.store,
 			run,
+			included_input_seq,
 		)
 		.await
 		.map_err(Into::into)

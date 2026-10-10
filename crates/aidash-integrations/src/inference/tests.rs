@@ -223,7 +223,7 @@ mod cache_salt {
 		for keys in [Some(keys()), None] {
 			upstream
 				.provider(keys)
-				.infer(request.clone())
+				.infer(request.clone(), &aidash_application::ports::NoProgress)
 				.await
 				.unwrap();
 		}
@@ -242,7 +242,7 @@ mod cache_salt {
 		let request = ordered(scope("tenant-a", 1));
 		upstream
 			.provider(Some(keys()))
-			.infer(request.clone())
+			.infer(request.clone(), &aidash_application::ports::NoProgress)
 			.await
 			.unwrap();
 		let bodies = upstream.bodies();
@@ -283,7 +283,10 @@ mod cache_salt {
 			scope("tenant-a", 2),
 			scope("tenant-a", 1),
 		] {
-			provider.infer(ordered(scope)).await.unwrap();
+			provider
+				.infer(ordered(scope), &aidash_application::ports::NoProgress)
+				.await
+				.unwrap();
 		}
 		let bodies = upstream.bodies();
 		let lines: Vec<&str> = bodies.iter().map(first_line).collect();
@@ -308,7 +311,10 @@ mod cache_salt {
 		let mut upstream = Upstream::start().await;
 		let error = upstream
 			.provider(keys)
-			.infer(ordered(scope("tenant-a", version)))
+			.infer(
+				ordered(scope("tenant-a", version)),
+				&aidash_application::ports::NoProgress,
+			)
 			.await
 			.unwrap_err();
 		assert!(matches!(error, Error::Invalid(_)), "{error:?}");
@@ -327,8 +333,17 @@ mod cache_salt {
 		};
 		let expected_line = keys().line(&scope("tenant-a", 1)).unwrap();
 		// Act
-		provider.infer(marked.clone()).await.unwrap();
-		provider.infer(ordered(scope("tenant-a", 1))).await.unwrap();
+		provider
+			.infer(marked.clone(), &aidash_application::ports::NoProgress)
+			.await
+			.unwrap();
+		provider
+			.infer(
+				ordered(scope("tenant-a", 1)),
+				&aidash_application::ports::NoProgress,
+			)
+			.await
+			.unwrap();
 		// Assert
 		let bodies = upstream.bodies();
 		let ephemeral = json!({"type":"ephemeral"});
@@ -370,7 +385,7 @@ mod cache_salt {
 		// Act
 		let error = upstream
 			.route(Some(keys()), model_id, cache_mode)
-			.infer(marked)
+			.infer(marked, &aidash_application::ports::NoProgress)
 			.await
 			.unwrap_err();
 		// Assert

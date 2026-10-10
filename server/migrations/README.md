@@ -41,8 +41,8 @@ the pinned revision incorporates
 [#6638](https://github.com/kent8192/reinhardt-web/issues/6638). The final snapshot
 records the registered model metadata. These migrations extend the original table definitions and preserve their SQL
 assets. The environment migration additionally records conditional extension
-ownership before this new native history is published. The complete native graph contains 54
-records and describes 117 models.
+ownership before this new native history is published. The complete native graph contains 57
+records and describes 119 models.
 
 The original baseline has 36 migrations for physical schema creation and eight
 `0007_model_state` snapshots. The desktop addition brings this to 37 physical
