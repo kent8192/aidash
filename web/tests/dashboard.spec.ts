@@ -1,4 +1,4 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, type Route } from "@playwright/test";
 import {
   installBearerDashboard,
   selectDashboardLanguage,
@@ -195,7 +195,7 @@ test("creates a workspace and task and receives live assignment changes", async 
   await select.selectOption(value!);
   const selectedLabel = await select.locator("option:checked").textContent();
   let reordered = false;
-  await page.route("**/api/discover", async (route) => {
+  const reorder = async (route: Route) => {
     const response = await route.fetch({
       headers: {
         ...route.request().headers(),
@@ -206,9 +206,12 @@ test("creates a workspace and task and receives live assignment changes", async 
     discovery.agents.reverse();
     reordered = true;
     await route.fulfill({ response, json: discovery });
-  });
+  };
+  await page.route("**/api/discover", reorder);
   await expect.poll(() => reordered, { timeout: 15000 }).toBe(true);
   await expect(select.locator("option:checked")).toHaveText(selectedLabel!);
+  // Discovery keeps polling; stop rewriting it so no fetch outlives the test.
+  await page.unroute("**/api/discover", reorder);
 
   await page
     .getByRole("dialog")

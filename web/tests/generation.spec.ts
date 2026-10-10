@@ -11,7 +11,8 @@ test("generation dashboard manages policy, approval, completion and retained his
   page,
   request,
 }) => {
-  test.setTimeout(90000);
+  // Each of the three assignments opens the channel's task sheet twice.
+  test.setTimeout(180000);
   let embeddingCalls = 0;
   const semanticContexts: unknown[] = [];
   let semanticRoot = "";
