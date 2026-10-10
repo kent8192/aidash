@@ -107,6 +107,22 @@ impl ExposurePolicy {
 			SKILL_TOOLS
 		}
 	}
+	/// `deferred@1` makes Skill instructions resident only through the Exposure
+	/// set and reads packaged files with `skill_asset_read`. The legacy Skill
+	/// readers return instructions directly, bypassing load state and the
+	/// `skill_bytes` budget, so they cannot be bound under it at all.
+	pub fn admit_tool(&self, descriptor: &ToolDescriptor) -> Result<()> {
+		if self.is_deferred()
+			&& descriptor.transport.is_none()
+			&& SKILL_TOOLS.contains(&descriptor.operation.as_str())
+		{
+			return Err(Error::Invalid(format!(
+				"{} cannot be bound under deferred@1; Skills load with capability_load and read files with skill_asset_read",
+				descriptor.operation
+			)));
+		}
+		Ok(())
+	}
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

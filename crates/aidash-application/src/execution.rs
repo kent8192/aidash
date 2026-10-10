@@ -396,27 +396,66 @@ pub fn workspace_read_result(
 	result
 }
 
+fn read_argument(
+	call: &aidash_domain::provider::ToolCall,
+	label: &str,
+	name: &str,
+) -> Result<Option<usize>> {
+	call.arguments
+		.get(name)
+		.map(|value| {
+			usize::try_from(value.as_u64().ok_or_else(|| {
+				Error::Invalid(format!("{label} {name} must be a nonnegative integer"))
+			})?)
+			.map_err(|_| Error::Invalid(format!("{label} {name} is too large")))
+		})
+		.transpose()
+}
+
 pub fn skill_read_range(call: &aidash_domain::provider::ToolCall) -> Result<WorkspaceReadRange> {
-	let offset = match call.arguments.get("offset") {
-		None => 0,
-		Some(value) => usize::try_from(value.as_u64().ok_or_else(|| {
-			Error::Invalid("Skill read offset must be a nonnegative integer".into())
-		})?)
-		.map_err(|_| Error::Invalid("Skill read offset is too large".into()))?,
-	};
-	let requested = match call.arguments.get("max_chars") {
-		None => 8000,
-		Some(value) => usize::try_from(value.as_u64().ok_or_else(|| {
-			Error::Invalid("Skill read max_chars must be a nonnegative integer".into())
-		})?)
-		.map_err(|_| Error::Invalid("Skill read max_chars is too large".into()))?,
-	};
+	let offset = read_argument(call, "Skill read", "offset")?.unwrap_or(0);
+	let requested = read_argument(call, "Skill read", "max_chars")?.unwrap_or(8000);
 	if requested > 16_000 {
 		return Err(Error::Invalid(
 			"Skill read max_chars must not exceed 16000".into(),
 		));
 	}
 	Ok(WorkspaceReadRange { offset, requested })
+}
+
+/// Without `max_chars` the configured read limit bounds the page, so the fitted
+/// size is clamped to the returned content instead.
+pub fn skill_asset_range(call: &aidash_domain::provider::ToolCall) -> Result<WorkspaceReadRange> {
+	Ok(WorkspaceReadRange {
+		offset: read_argument(call, "Skill asset read", "offset")?.unwrap_or(0),
+		requested: read_argument(call, "Skill asset read", "max_chars")?.unwrap_or(usize::MAX),
+	})
+}
+
+/// A `skill_asset_read` page cut to `chars` scalar values; binary metadata and
+/// pages that already fit are unchanged.
+pub fn skill_asset_result(output: &Value, chars: usize) -> Value {
+	let mut result = output.clone();
+	let Some(original) = output["content"].as_str() else {
+		return result;
+	};
+	let content: String = original.chars().take(chars).collect();
+	let taken = content.chars().count();
+	if taken == original.chars().count() {
+		return result;
+	}
+	let offset = output["offset"].as_u64().unwrap_or(0) as usize;
+	result["content"] = json!(content);
+	result["next_offset"] = json!(offset.saturating_add(taken));
+	result["truncated"] = json!(true);
+	result["budget_limited"] = json!(true);
+	if taken == 0 {
+		result["deferred"] = json!(true);
+		result["message"] = json!(
+			"No request budget remains for this Skill asset. Continue on a later turn; do not repeat this read now."
+		);
+	}
+	result
 }
 
 pub fn skill_read_result(output: &Value, chars: usize) -> Value {
@@ -470,6 +509,13 @@ pub fn deferred_skill_read(call: &aidash_domain::provider::ToolCall) -> Box<Defe
 	})
 }
 
+pub fn deferred_skill_asset_read(call: &aidash_domain::provider::ToolCall) -> Box<DeferredRead> {
+	Box::new(DeferredRead {
+		message: "Retry this skill_asset_read after reducing the retained context; its result envelope did not fit.".into(),
+		call: call.clone(),
+	})
+}
+
 pub fn deferred_workspace_observation(
 	call: &aidash_domain::provider::ToolCall,
 ) -> Box<DeferredRead> {
@@ -490,6 +536,7 @@ pub fn tool_result_plan(
 	let range = match fitting {
 		ResultFitting::WorkspaceRecord => workspace_read_range(call)?,
 		ResultFitting::SkillText => skill_read_range(call)?,
+		ResultFitting::SkillAsset => skill_asset_range(call)?,
 		ResultFitting::Observation => WorkspaceReadRange {
 			offset: call.arguments["offset"].as_u64().unwrap_or(0) as usize,
 			requested: call.arguments["limit"]
@@ -507,7 +554,8 @@ pub fn tool_result_plan(
 pub fn result_plan(pending: &ToolCallState, fitting: ResultFitting) -> &Option<ReadPlan> {
 	match fitting {
 		ResultFitting::WorkspaceRecord => &pending.workspace_read_plan,
-		ResultFitting::SkillText => &pending.skill_read_plan,
+		// Both Skill readers share one prepared slot; a plan matches only its call.
+		ResultFitting::SkillText | ResultFitting::SkillAsset => &pending.skill_read_plan,
 		ResultFitting::Observation => &pending.workspace_observation_plan,
 	}
 }
@@ -517,7 +565,7 @@ pub fn result_plan_mut(
 ) -> &mut Option<ReadPlan> {
 	match fitting {
 		ResultFitting::WorkspaceRecord => &mut pending.workspace_read_plan,
-		ResultFitting::SkillText => &mut pending.skill_read_plan,
+		ResultFitting::SkillText | ResultFitting::SkillAsset => &mut pending.skill_read_plan,
 		ResultFitting::Observation => &mut pending.workspace_observation_plan,
 	}
 }
@@ -538,6 +586,10 @@ pub fn defer_result(
 		}
 		ResultFitting::SkillText => {
 			state.deferred_skill_read = Some(deferred_skill_read(call));
+			"run.skill_read_deferred"
+		}
+		ResultFitting::SkillAsset => {
+			state.deferred_skill_read = Some(deferred_skill_asset_read(call));
 			"run.skill_read_deferred"
 		}
 		ResultFitting::Observation => {

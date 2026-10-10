@@ -61,6 +61,8 @@ struct State {
 	instructions: String,
 	/// The semantic read returns as much content as its budget allows.
 	fill_semantic_budget: bool,
+	/// Run messages carry media whose intake continues past this request.
+	human_media_pending: bool,
 }
 impl Backend {
 	fn record(&self, name: &'static str) {
@@ -171,7 +173,7 @@ impl ExecutionStore for Backend {
 	}
 	async fn run_message_has_media(&self, messages: &[Uuid]) -> Result<bool> {
 		let _ = messages;
-		Ok(false)
+		Ok(self.0.human_media_pending)
 	}
 }
 
@@ -512,8 +514,15 @@ impl ExecutionEnvironment for Backend {
 		messages: &[(i64, Uuid, usize)],
 		model: &ModelConfig,
 	) -> Result<HumanMediaBatch> {
-		let _ = (run, messages, model);
-		unexpected("ExecutionEnvironment.operator_human_message_media")
+		let _ = (run, model);
+		if !self.0.human_media_pending {
+			unexpected("ExecutionEnvironment.operator_human_message_media");
+		}
+		Ok(HumanMediaBatch {
+			parts: vec![],
+			through_seq: messages.first().map(|(seq, _, _)| *seq),
+			has_more: true,
+		})
 	}
 
 	fn node_id(&self) -> &str {
@@ -689,6 +698,7 @@ fn fixture() -> Fixture {
 		inputs: Mutex::new(vec![]),
 		instructions: "Do the task".into(),
 		fill_semantic_budget: false,
+		human_media_pending: false,
 	}));
 	Fixture { backend, run }
 }
@@ -1269,7 +1279,8 @@ fn direct_skill(fixture: &mut Fixture) {
 		.into(),
 	);
 }
-fn run_message_catch_up(fixture: &mut Fixture) {
+/// One unprocessed human run message.
+fn run_message(fixture: &mut Fixture) {
 	let id = Uuid::from_u128(0x20);
 	let content = "Also include the rollback steps.";
 	let workspace_id = fixture.run.workspace_id;
@@ -1292,10 +1303,13 @@ fn run_message_catch_up(fixture: &mut Fixture) {
 		idempotency_key: Some("input-2".into()),
 		created_at,
 	}];
+	fixture.run.observed_input_seq = 1;
+}
+fn run_message_catch_up(fixture: &mut Fixture) {
+	run_message(fixture);
 	// An earlier summary turns every unprocessed run message into catch-up.
 	fixture.run.context.run_message_summary = "The user wants a release checklist.".into();
 	fixture.run.context.run_message_summary_seq = 1;
-	fixture.run.observed_input_seq = 1;
 }
 
 /// Legacy Agents (no exposure policy) must keep sending exactly these
@@ -1964,6 +1978,86 @@ async fn deferred_run_message_catch_up_advertises_only_workspace_read(mut fixtur
 		"{:?}",
 		usage.exposed
 	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn deferred_media_intake_reports_no_tool_exposure(mut fixture: Fixture) {
+	// Arrange: an ordinary request whose human media intake continues.
+	fixture.run.state = RunState::Thinking(ThinkingState::default());
+	run_message(&mut fixture);
+	deferred_agent(&mut fixture);
+	Arc::get_mut(&mut fixture.backend.0)
+		.unwrap()
+		.human_media_pending = true;
+	// Act
+	advance_sources(&mut fixture).await.unwrap();
+	// Assert: no tools were sent, so none are measured as exposed.
+	let requests = fixture.backend.0.requests.lock().unwrap();
+	let [request] = requests.as_slice() else {
+		panic!("expected one provider request, got {}", requests.len());
+	};
+	assert!(request.instructions.contains("Media intake is continuing"));
+	assert!(request.tools.is_empty());
+	let usage = fixture.run.context.usage.clone().unwrap().exposure.unwrap();
+	assert_eq!(usage.schema_bytes, 0);
+	let tools = mandatory_tools();
+	assert!(
+		usage
+			.exposed
+			.iter()
+			.all(|(alias, _)| alias != "eager_tool" && !tools.contains(&alias.as_str())),
+		"{:?}",
+		usage.exposed
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn skill_asset_reads_fit_the_remaining_request_budget(mut fixture: Fixture) {
+	// Arrange: a large asset page against a small remaining request window.
+	deferred_agent(&mut fixture);
+	let asset = Scripted::new(
+		aidash_application::tools::builtins()
+			.remove(SKILL_ASSET_READ)
+			.unwrap()
+			.specification(),
+		SKILL_ASSET_READ,
+	);
+	let content = "z".repeat(40_000);
+	*asset.outputs.lock().unwrap() = [json!({
+		"alias": "guide", "path": "guide.md", "digest": "sha256:guide", "offset": 0,
+		"content": content, "next_offset": null, "truncated": false,
+	})]
+	.into();
+	Arc::get_mut(&mut fixture.backend.0)
+		.unwrap()
+		.custom
+		.insert(SKILL_ASSET_READ.into(), asset);
+	respond(
+		&mut fixture.run,
+		vec![call(
+			"call-0",
+			SKILL_ASSET_READ,
+			json!({"alias": "guide", "digest": "sha256:guide", "path": "guide.md"}),
+		)],
+	);
+	let window = 4_000;
+	fixture.run.state.tool_mut().unwrap().request_window = window;
+	// Act
+	advance_sources(&mut fixture).await.unwrap();
+	// Assert: the page is cut to the headroom and continues from the cut.
+	let (event, saved) = last_write(&fixture);
+	assert_eq!(event, "run.tool_recorded");
+	let Some(ContextEvent::Tool { call, result, .. }) = saved.context.history.last() else {
+		panic!("expected a tool result");
+	};
+	let page = result["content"].as_str().unwrap().len();
+	assert!(page > 0 && page < content.len(), "{page}");
+	assert_eq!(result["next_offset"], page);
+	assert_eq!(result["budget_limited"], true);
+	assert_eq!(call.arguments["max_chars"], page);
+	assert!(saved.state.tool().unwrap().request_tokens <= window);
 }
 
 /// Answers every compaction question with "drop".

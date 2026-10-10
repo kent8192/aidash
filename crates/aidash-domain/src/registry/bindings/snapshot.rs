@@ -91,6 +91,7 @@ impl BindingSnapshot {
 			}
 			if binding.kind == BindingKind::Tool {
 				let descriptor: ToolDescriptor = serde_json::from_value(entry.config.clone())?;
+				config.exposure_policy().admit_tool(&descriptor)?;
 				descriptor.declared_contract(binding.target.clone())?;
 				validate_restrictions(&descriptor.operation, &binding.narrow)?;
 				binding.narrow = descriptor.narrow.intersect(&binding.narrow)?;

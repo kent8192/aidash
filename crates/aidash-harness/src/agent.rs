@@ -488,10 +488,6 @@ impl<'a> Executor<'a> {
 					.map(|(_, tool)| tool)
 					.map(|t| t.specification())
 					.collect::<Vec<_>>();
-				// Catch-up sends only the tools it permits; usage measures those.
-				if run_message_catchup && let Some(selection) = exposure.as_mut() {
-					selection.restrict_tools(&specifications)?;
-				}
 				let selected_media = thinking.selected_media.clone();
 				let media_headroom = self.environment.run_request_headroom(run).await?;
 				let mut new_messages = Vec::new();
@@ -544,9 +540,14 @@ impl<'a> Executor<'a> {
 					}
 				}
 				let has_run_message_references = !required_run_message_reads.is_empty();
-				if media.defer_human || media.defer_selected {
+				let media_intake = media.defer_human || media.defer_selected;
+				if media_intake {
 					specifications.clear();
 					(if ordered { &mut turn_instructions } else { &mut instructions }).push_str("\nMedia intake is continuing. For this interim turn, postpone required workspace reads and the cumulative run-message summary. Preserve the user goals, constraints, and corrections in these run messages and describe the media in this request as plain text. Do not call tools or complete the task; deferred media will be provided in the next request.");
+				}
+				// Catch-up and media intake send fewer tools; usage measures those sent.
+				if (run_message_catchup || media_intake) && let Some(selection) = exposure.as_mut() {
+					selection.restrict_tools(&specifications)?;
 				}
 				let context_window = window.saturating_sub(
 					aidash_domain::provider::ModelRequest::content_parts_reservation(&media.parts),
@@ -1571,6 +1572,23 @@ async fn prepare_tool_result(
 			(
 				"max_chars",
 				size.map(|chars| (chars, skill_read_result(&output, chars))),
+			)
+		}
+		ResultFitting::SkillAsset => {
+			let output = tool.invoke(run, call.arguments.clone(), "").await?;
+			let returned = output["content"]
+				.as_str()
+				.map_or(0, |text| text.chars().count());
+			let budget = WorkspaceReadFitBudget {
+				requested: budget.requested.min(returned),
+				..budget
+			};
+			let size = fit_tool_result(context, call, "max_chars", budget, 1, |chars| {
+				skill_asset_result(&output, chars)
+			});
+			(
+				"max_chars",
+				size.map(|chars| (chars, skill_asset_result(&output, chars))),
 			)
 		}
 		ResultFitting::Observation => (

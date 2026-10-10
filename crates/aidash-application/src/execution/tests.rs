@@ -465,6 +465,29 @@ fn skill_read_can_fit_one_character_when_the_deferred_envelope_cannot_fit() {
 }
 
 #[rstest::rstest]
+fn skill_asset_pages_fit_and_continue_from_the_cut() {
+	let output = serde_json::json!({"alias":"guide","path":"guide.md","digest":"sha256:a","offset":4,"content":"界abc","next_offset":null,"truncated":false});
+	assert_eq!(super::skill_asset_result(&output, 4), output);
+	let cut = super::skill_asset_result(&output, 2);
+	assert_eq!(cut["content"], "界a");
+	assert_eq!(cut["next_offset"], 6);
+	assert_eq!(cut["truncated"], true);
+	assert_eq!(cut["budget_limited"], true);
+	assert!(cut.get("deferred").is_none());
+	assert_eq!(super::skill_asset_result(&output, 0)["deferred"], true);
+	let binary = serde_json::json!({"alias":"guide","path":"blob.bin","encoding":"binary","truncated":false});
+	assert_eq!(super::skill_asset_result(&binary, 0), binary);
+	let call = |arguments| aidash_domain::provider::ToolCall {
+		id: "asset-1".into(),
+		name: "skill_asset_read".into(),
+		arguments,
+	};
+	let range = super::skill_asset_range(&call(serde_json::json!({"offset":3}))).unwrap();
+	assert_eq!((range.offset, range.requested), (3, usize::MAX));
+	assert!(super::skill_asset_range(&call(serde_json::json!({"max_chars":-1}))).is_err());
+}
+
+#[rstest::rstest]
 
 fn workspace_read_chunks_fit_remaining_complete_request_budget() {
 	let call = aidash_domain::provider::ToolCall {
@@ -691,6 +714,7 @@ fn prepared_result_views_share_fences_and_deferral() {
 	for fitting in [
 		ResultFitting::WorkspaceRecord,
 		ResultFitting::SkillText,
+		ResultFitting::SkillAsset,
 		ResultFitting::Observation,
 	] {
 		let mut pending = ToolCallState::default();
@@ -730,7 +754,9 @@ fn prepared_result_views_share_fences_and_deferral() {
 		assert!(next.force_workspace_read_compaction);
 		let (deferred, expected_event) = match fitting {
 			ResultFitting::WorkspaceRecord => (next.deferred_workspace_read, "run.read_deferred"),
-			ResultFitting::SkillText => (next.deferred_skill_read, "run.skill_read_deferred"),
+			ResultFitting::SkillText | ResultFitting::SkillAsset => {
+				(next.deferred_skill_read, "run.skill_read_deferred")
+			}
 			ResultFitting::Observation => (
 				next.deferred_workspace_observation,
 				"run.observation_deferred",

@@ -829,6 +829,63 @@ async fn deferred_skill_sources_require_exposure_support_with_canonical_aliases(
 }
 
 #[rstest::rstest]
+#[tokio::test]
+async fn deferred_agents_reject_explicit_legacy_skill_readers_at_admission_and_recovery(
+	#[values("skill_list", "skill_load", "skill_read")] operation: &str,
+	#[values("admission", "recovery")] boundary: &str,
+) {
+	// Arrange: a legacy Agent may bind the reader explicitly.
+	let mut catalog = Catalog::new();
+	let reader = QualifiedRef::builtin(NODE, operation);
+	let mut config = agent_config();
+	config.bindings.push(Binding::tool(reader.clone()));
+	let legacy = snapshot(&mut catalog, &config, false).await.unwrap();
+	legacy.validate().unwrap();
+	config.exposure = Some(aidash_domain::exposure::ExposurePolicy::Deferred(
+		Default::default(),
+	));
+	// Act
+	let result = if boundary == "admission" {
+		snapshot(&mut catalog, &config, false)
+			.await
+			.map(|_| ())
+			.map_err(|error| error.to_string())
+	} else {
+		// A restored deferred closure rejects it even when its normalization,
+		// definitions and digests are internally consistent.
+		let mut without = config.clone();
+		without.bindings.retain(|binding| binding.target != reader);
+		let mut saved = snapshot(&mut catalog, &without, false).await.unwrap();
+		saved.validate().unwrap();
+		let root = saved
+			.definitions
+			.iter_mut()
+			.find(|definition| definition.identity == saved.agent)
+			.unwrap();
+		root.definition.config = serde_json::to_value(&config).unwrap();
+		root.definition.normalize_agent(NODE).unwrap();
+		root.digest = aidash_domain::registry::rules::digest(
+			&serde_json::to_value(&root.definition).unwrap(),
+		);
+		let (binding, definition) = (
+			legacy.bindings.iter().find(|b| b.identity == reader),
+			legacy.definitions.iter().find(|d| d.identity == reader),
+		);
+		let mut binding = binding.unwrap().clone();
+		binding.origin = BindingOrigin::Explicit;
+		saved.bindings.push(binding);
+		saved.definitions.push(definition.unwrap().clone());
+		saved.validate().map_err(|error| error.to_string())
+	};
+	// Assert
+	let error = result.expect_err("legacy Skill readers bypass deferred exposure");
+	assert!(
+		error.contains(&format!("{operation} cannot be bound under deferred@1")),
+		"{boundary}: {error}"
+	);
+}
+
+#[rstest::rstest]
 #[case::roots("skill_roots")]
 #[case::attachments("skill_attachments")]
 #[tokio::test]

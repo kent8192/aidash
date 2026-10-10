@@ -41,7 +41,9 @@ files. `capability_load` makes its instructions resident in later requests,
 within the Agent's `skill_bytes` budget. `capability_unload` removes them, and
 a Skill Binding with `"exposure": "eager"` is resident from the first request.
 Bundled files are read with `skill_asset_read`, using the Skill alias and
-digest, the file path, and optional `offset` and `max_chars`. Loading a Skill
+digest, the file path, and optional `offset` and `max_chars`. Like `skill_read`,
+a page that would not fit the remaining request budget is cut short, and its
+`next_offset` continues from the cut. Loading a Skill
 never runs its scripts or grants permissions. See
 [deferred capability exposure](../operations/registry-capabilities.md#deferred-capability-exposure).
 

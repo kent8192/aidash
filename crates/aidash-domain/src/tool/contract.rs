@@ -38,6 +38,8 @@ pub enum Continuation {
 pub enum ResultFitting {
 	WorkspaceRecord,
 	SkillText,
+	/// A `skill_asset_read` text page: `content` from `offset` to `next_offset`.
+	SkillAsset,
 	Observation,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -329,6 +331,7 @@ pub fn builtin_contract(name: &str) -> Option<ToolContract> {
 			auth.core = Some(CorePermission::Skills);
 			auth.requirements.push(ConfiguredSkill);
 			behavior.effect = ToolEffect::ReadOnly;
+			behavior.fitting = Some(ResultFitting::SkillAsset);
 			behavior.media_pending = true;
 			contract.disclosure = DisclosureBoundary::Local;
 			contract.remote_exposure = true;
@@ -541,6 +544,7 @@ mod tests {
 		assert_eq!(asset.behavior.effect, ToolEffect::ReadOnly);
 		assert_eq!(asset.disclosure, DisclosureBoundary::Local);
 		assert_eq!(asset.authorization.core, Some(CorePermission::Skills));
+		assert_eq!(asset.behavior.fitting, Some(ResultFitting::SkillAsset));
 		assert_eq!(
 			asset.authorization.requirements,
 			[AuthorizationRequirement::ConfiguredSkill]

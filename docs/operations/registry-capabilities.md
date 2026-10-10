@@ -157,8 +157,11 @@ Normalization adds `capability_search`, `capability_describe`,
 aliases; they cannot be removed. The implicit defaults replace `skill_list`,
 `skill_load` and `skill_read` with `skill_asset_read`. `remove_default` may name
 `skill_asset_read` only when no Skill Binding or Skill Source is bound, and
-cannot name the legacy Skill tools. Under the legacy policy, `remove_default`
-cannot name `skill_asset_read`.
+cannot name the legacy Skill tools. The legacy Skill tools cannot be bound
+explicitly either, alone, in a bundle or through a Tool definition: they would
+return Skill instructions without a Load or the `skill_bytes` budget, so
+registration and snapshot recovery reject them. Under the legacy policy,
+`remove_default` cannot name `skill_asset_read`.
 
 Mandatory exposure is `workspace_read`, `human_request`, the four
 `capability_*` tools and, when bound, `skill_asset_read`. It is identified by
@@ -188,7 +191,8 @@ Lifecycle companions such as `shell_poll` and `shell_cancel` are folded into
 their parent Tool and exposed with it; they are not separate capabilities. A
 companion shared by several exposed parents, such as `python_poll`, counts
 against `schema_bytes` once. A run-message catch-up request sends only the
-tools catch-up permits, and its recorded usage counts only those. A
+tools catch-up permits, and an interim media-intake request sends none; the
+recorded usage counts only the tools sent. A
 Skill's Model alias is `skill_<stem>_<hash>`. The stem is the Skill name or ID,
 lowercased, with characters outside `[a-z0-9_]` replaced by `_` and truncated to
 40 characters. The hash is the first eight hex digits of the SHA-256 of its

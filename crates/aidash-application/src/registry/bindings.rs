@@ -181,6 +181,7 @@ pub async fn resolve(
 				));
 			}
 			let descriptor: ToolDescriptor = serde_json::from_value(entry.config.clone())?;
+			config.exposure_policy().admit_tool(&descriptor)?;
 			let contract = providers.contract(&descriptor, &target)?;
 			validate_restrictions(&descriptor.operation, &effective_narrow)?;
 			effective_narrow = descriptor.narrow.intersect(&effective_narrow)?;
