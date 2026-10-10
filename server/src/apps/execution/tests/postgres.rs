@@ -208,12 +208,12 @@ async fn concurrent_claims_dependencies_and_idempotent_completion(
 #[tokio::test]
 async fn ordered_run_creation_requires_a_cache_salt_key_and_a_tenant(
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(store)]
+	_store_fixture: StoreFixture,
 ) {
 	// Arrange: a model that declares Ordered and an Agent that names it, on a
 	// node without Cache Salt Keys.
-	let (store, url, schema) = setup(&_test_environment).await;
+	let (store, url, schema) = _store_fixture.parts();
 	let registry = Registry::new(store.pool.clone(), &store.node_id).unwrap();
 	registry.register(entry("model","model",json!({"provider":"openrouter","model_id":"fixture","endpoint":"http://127.0.0.1:9999/v1","credential_env":null,"context_window":128000,"max_output_tokens":4096,"modalities":["text"],"cost":{},"projection_versions":["legacy","ordered"]}))).await.unwrap();
 	let agent = registry.register(entry("agent","research",json!({"model":{"id":"model","version":"1.0.0"},"instructions":"Research","schema_version":1,"bindings":[],"remove_default":[],"projection_version":"ordered"}))).await.unwrap();
