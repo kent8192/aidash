@@ -24,6 +24,9 @@ ref for chart files, the observer, activity collector, Runner, guard and install
 Their trust boundary is independent of any deployed fork PR source.
 
 Set `edge.hostname` and `edge.backend` (normally `<aidash-release>-backend`).
+The release name is limited to 31 characters: generated names add up to 21
+(`-environment-postgres`), and StatefulSet and CronJob names must leave 11 of
+63 characters for their controller-generated suffixes.
 The public LoadBalancer exposes only ports 80/443 and uses
 `externalTrafficPolicy: Local`, so Caddy receives the original client address.
 Caddy replaces client forwarding headers before local Nginx admission. TLS state

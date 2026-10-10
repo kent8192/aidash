@@ -1,4 +1,4 @@
-{{- $name := printf "%s-environment" .Release.Name -}}
+{{- $name := include "environment.name" . -}}
 {{- $edge := .Values.edge -}}
 {{- $hostname := required "edge.hostname is required" $edge.hostname -}}
 {{- if not (regexMatch "@sha256:[0-9a-f]{64}$" (toString $edge.admissionImage)) -}}{{ fail "edge.admissionImage must be pinned by digest: it enforces the admission gate" }}{{- end -}}

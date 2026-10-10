@@ -1,5 +1,5 @@
 {{- if .Values.activity.enabled -}}
-{{- $name := printf "%s-environment" .Release.Name -}}
+{{- $name := include "environment.name" . -}}
 {{- $secret := required "activity.existingSecret is required" .Values.activity.existingSecret -}}
 {{- if not (regexMatch "@sha256:[0-9a-f]{64}$" (toString .Values.activity.observerImage)) -}}{{ fail "activity.observerImage must be pinned by digest: it holds the database credential" }}{{- end -}}
 {{- if not (regexMatch "@sha256:[0-9a-f]{64}$" (toString .Values.activity.collectorImage)) -}}{{ fail "activity.collectorImage must be pinned by digest: it receives the Runner token and may patch the activity ConfigMap" }}{{- end -}}

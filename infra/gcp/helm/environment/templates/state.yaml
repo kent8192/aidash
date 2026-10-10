@@ -1,4 +1,4 @@
-{{- $name := printf "%s-environment" .Release.Name -}}
+{{- $name := include "environment.name" . -}}
 {{- $secret := required "postgres.existingSecret is required" .Values.postgres.existingSecret -}}
 {{- if .Values.storage.createClass }}
 ---

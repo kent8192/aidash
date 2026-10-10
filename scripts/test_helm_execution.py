@@ -246,6 +246,22 @@ class ChartsTest(unittest.TestCase):
         logs = [line.strip() for line in admission.splitlines() if line.strip().startswith('access_log')]
         self.assertEqual(logs, ['access_log off;', 'access_log off;'])
 
+    def test_environment_names_fit_kubernetes_limits(self):
+        values = {'postgres': {'existingSecret': 'db'},
+                  'edge': {'hostname': 'fixture.example', 'admissionImage': 'admission' + DIGEST},
+                  'activity': {'existingSecret': 'observer', 'observerImage': 'observer' + DIGEST,
+                               'collectorImage': 'collector' + DIGEST}}
+        objects = render(self.environment, values, 'r' * 31)
+        for value in objects:
+            name = value['metadata']['name']
+            # StatefulSets and CronJobs append 11 controller-generated characters.
+            limit = 52 if value['kind'] in ('StatefulSet', 'CronJob') else 63
+            if value['kind'] in ('Service', 'StatefulSet', 'CronJob', 'Deployment', 'ConfigMap'):
+                self.assertLessEqual(len(name), limit, (value['kind'], name))
+        self.assertEqual(len(select(objects, 'Service', '-environment-postgres')['metadata']['name']), 52)
+        with self.assertRaises(subprocess.CalledProcessError):
+            render(self.environment, values, 'r' * 32)
+
 
 class ActivityTest(unittest.TestCase):
     @classmethod
