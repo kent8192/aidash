@@ -1,4 +1,4 @@
-"""Tenant IAM reconciliation; never grants a runtime principal project-wide access."""
+"""Tenant IAM and MFA reconciliation; never grants a runtime principal project-wide access."""
 from copy import deepcopy
 import json
 import re
@@ -8,25 +8,36 @@ from cloud import run, bounded_timeout
 
 # Contains firebaseauth.users.get. Tenant-scope enforcement is a sandbox assumption.
 READ_ROLE = "roles/identityplatform.viewer"
+# Declared MFA Requirement -> the complete tenant mfaConfig GCIP must hold.
+MFA_CONFIGS = {"disabled": {"state": "DISABLED", "enabledProviders": [], "providerConfigs": []}}
+
+
+def admin_request(url, method, body=None):
+    token = run("gcloud", "auth", "print-access-token", timeout=30).decode().strip()
+    headers = {"Authorization": "Bearer " + token}
+    if body is not None:
+        headers["Content-Type"] = "application/json"
+    request = urllib.request.Request(
+        url, data=None if body is None else json.dumps(body).encode(), method=method, headers=headers,
+    )
+    with urllib.request.urlopen(request, timeout=bounded_timeout(60)) as response:
+        return json.load(response)
+
+
+def tenant_resource(project, tenant):
+    if not re.fullmatch(r"[a-z][a-z0-9-]{4,28}[a-z0-9]", project) or not re.fullmatch(r"[A-Za-z0-9_-]+", tenant):
+        raise ValueError("Invalid GCIP project or tenant")
+    return f"projects/{project}/tenants/{tenant}"
 
 
 class TenantIAM:
     def call(self, resource, method, body):
-        token = run("gcloud", "auth", "print-access-token", timeout=30).decode().strip()
-        request = urllib.request.Request(
-            f"https://identitytoolkit.googleapis.com/admin/v2/{resource}:{method}",
-            data=json.dumps(body).encode(), method="POST",
-            headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"},
-        )
-        with urllib.request.urlopen(request, timeout=bounded_timeout(60)) as response:
-            return json.load(response)
+        return admin_request(f"https://identitytoolkit.googleapis.com/admin/v2/{resource}:{method}", "POST", body)
 
     def reconcile(self, project, tenant, service_account, enabled=True):
-        if not re.fullmatch(r"[a-z][a-z0-9-]{4,28}[a-z0-9]", project) or not re.fullmatch(r"[A-Za-z0-9_-]+", tenant):
-            raise ValueError("Invalid GCIP project or tenant")
+        resource = tenant_resource(project, tenant)
         if not re.fullmatch(r"[a-zA-Z0-9_-]+@[a-z0-9-]+\.iam\.gserviceaccount\.com", service_account):
             raise ValueError("Invalid runtime service account")
-        resource = f"projects/{project}/tenants/{tenant}"
         member = "serviceAccount:" + service_account
         for _ in range(5):
             try:
@@ -68,6 +79,40 @@ class TenantIAM:
         raise RuntimeError("Tenant IAM changed repeatedly; retry reconciliation")
 
 
+def normalize_mfa(config):
+    """Effective tenant MFA settings. New tenants omit mfaConfig, which GCIP treats as disabled."""
+    config = config or {}
+    state = config.get("state") or "DISABLED"
+    return {
+        "state": "DISABLED" if state == "STATE_UNSPECIFIED" else state,
+        "enabledProviders": sorted(set(config.get("enabledProviders", [])) - {"PROVIDER_UNSPECIFIED"}),
+        # A provider config that is not enabled cannot challenge anyone.
+        "providerConfigs": sorted(
+            (provider for provider in config.get("providerConfigs", []) if provider.get("state") not in (None, "DISABLED", "MFA_STATE_UNSPECIFIED")),
+            key=lambda provider: json.dumps(provider, sort_keys=True),
+        ),
+    }
+
+
+class TenantMFA:
+    """The Google provider has no tenant MFA arguments, so the controller owns mfaConfig."""
+
+    def call(self, method, resource, body=None):
+        return admin_request(f"https://identitytoolkit.googleapis.com/v2/{resource}", method, body)
+
+    def reconcile(self, project, tenant, requirement):
+        """Enforce the declared requirement and return the corrected (drifted) fields."""
+        resource = tenant_resource(project, tenant)
+        if requirement not in MFA_CONFIGS:
+            raise ValueError("Unsupported MFA Requirement")
+        desired = MFA_CONFIGS[requirement]
+        actual = normalize_mfa(self.call("GET", resource).get("mfaConfig"))
+        drifted = sorted(field for field in desired if actual[field] != desired[field])
+        if drifted:
+            self.call("PATCH", resource + "?updateMask=mfaConfig", {"mfaConfig": deepcopy(desired)})
+        return drifted
+
+
 def reconcile_environment(output, enabled=True, api=None):
     config = (output or {}).get("gcip", {})
     tenants = config.get("tenant_ids", [])
@@ -76,3 +121,19 @@ def reconcile_environment(output, enabled=True, api=None):
     api = api or TenantIAM()
     for tenant in tenants:
         api.reconcile(config["project_id"], tenant, config["runtime_service_account"], enabled)
+
+
+def reconcile_mfa(output, api=None):
+    """Return {tenant_id: drifted fields} after enforcing every declared MFA Requirement."""
+    config = (output or {}).get("gcip", {})
+    tenants = config.get("tenant_ids", [])
+    # State written before tenant MFA existed declares nothing until its next apply.
+    if not tenants or "mfa" not in config:
+        return {}
+    api = api or TenantMFA()
+    drift = {}
+    for tenant in tenants:
+        fields = api.reconcile(config["project_id"], tenant, config["mfa"][tenant])
+        if fields:
+            drift[tenant] = fields
+    return drift

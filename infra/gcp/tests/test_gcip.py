@@ -9,7 +9,7 @@ from unittest.mock import patch
 from urllib.error import HTTPError
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "control"))
-from gcip import TenantIAM, READ_ROLE, reconcile_environment
+from gcip import TenantIAM, TenantMFA, READ_ROLE, reconcile_environment, reconcile_mfa
 import controller
 
 MEMBER = "serviceAccount:runtime@aidash-fixture.iam.gserviceaccount.com"
@@ -139,6 +139,86 @@ class TenantIAMTests(unittest.TestCase):
             "https://identitytoolkit.googleapis.com/admin/v2/projects/aidash-fixture/tenants/pool-a:getIamPolicy",
         )
         self.assertEqual(sent.get_header("Authorization"), "Bearer token")
+
+
+class FakeMFA(TenantMFA):
+    def __init__(self, tenant):
+        self.tenant = tenant
+        self.patches = []
+
+    def call(self, method, resource, body=None):
+        if method == "GET":
+            assert resource == "projects/aidash-fixture/tenants/pool-a" and body is None
+            return deepcopy(self.tenant)
+        assert method == "PATCH"
+        assert resource == "projects/aidash-fixture/tenants/pool-a?updateMask=mfaConfig"
+        self.patches.append(deepcopy(body))
+        self.tenant["mfaConfig"] = deepcopy(body["mfaConfig"])
+        return deepcopy(self.tenant)
+
+
+DISABLED = {"state": "DISABLED", "enabledProviders": [], "providerConfigs": []}
+DECLARED = dict(OUTPUT, gcip=dict(OUTPUT["gcip"], mfa={"pool-a": "disabled"}))
+
+
+class TenantMFATests(unittest.TestCase):
+    def test_new_tenant_without_mfa_config_already_holds_the_disabled_requirement(self):
+        api = FakeMFA({"name": "projects/aidash-fixture/tenants/pool-a"})
+        self.assertEqual(reconcile_mfa(DECLARED, api=api), {})
+        self.assertFalse(api.patches)
+
+    def test_enabled_factors_are_drift_and_replaced_by_the_complete_declared_config(self):
+        for actual, fields in (
+            ({"state": "ENABLED", "enabledProviders": ["PHONE_SMS"]}, ["enabledProviders", "state"]),
+            ({"state": "DISABLED", "providerConfigs": [{"state": "ENABLED", "totpProviderConfig": {"adjacentIntervals": 5}}]}, ["providerConfigs"]),
+            ({"state": "MANDATORY"}, ["state"]),
+        ):
+            with self.subTest(actual=actual):
+                api = FakeMFA({"mfaConfig": actual})
+                self.assertEqual(reconcile_mfa(DECLARED, api=api), {"pool-a": fields})
+                self.assertEqual(api.patches, [{"mfaConfig": DISABLED}])
+                self.assertEqual(reconcile_mfa(DECLARED, api=api), {})
+                self.assertEqual(len(api.patches), 1)
+
+    def test_inert_provider_configs_are_not_drift(self):
+        api = FakeMFA({"mfaConfig": {"state": "STATE_UNSPECIFIED", "enabledProviders": ["PROVIDER_UNSPECIFIED"], "providerConfigs": [{"state": "DISABLED", "totpProviderConfig": {"adjacentIntervals": 5}}]}})
+        self.assertEqual(reconcile_mfa(DECLARED, api=api), {})
+        self.assertFalse(api.patches)
+
+    def test_state_without_a_declaration_is_left_for_its_next_apply(self):
+        api = FakeMFA({"mfaConfig": {"state": "ENABLED"}})
+        self.assertEqual(reconcile_mfa(OUTPUT, api=api), {})
+        self.assertFalse(api.patches)
+
+    def test_unsupported_requirement_is_refused_before_any_write(self):
+        api = FakeMFA({"mfaConfig": {"state": "ENABLED"}})
+        output = dict(OUTPUT, gcip=dict(OUTPUT["gcip"], mfa={"pool-a": "mandatory"}))
+        with self.assertRaisesRegex(ValueError, "Unsupported MFA Requirement"):
+            reconcile_mfa(output, api=api)
+        self.assertFalse(api.patches)
+
+    def test_rest_transport_reads_and_patches_only_the_tenant_mfa_config(self):
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                pass
+
+            def read(self):
+                return b'{"mfaConfig":{"state":"ENABLED"}}'
+
+        with (
+            patch("gcip.run", return_value=b"token"),
+            patch("gcip.urllib.request.urlopen", return_value=Response()) as request,
+        ):
+            TenantMFA().reconcile("aidash-fixture", "pool-a", "disabled")
+        read, write = (call.args[0] for call in request.call_args_list)
+        base = "https://identitytoolkit.googleapis.com/v2/projects/aidash-fixture/tenants/pool-a"
+        self.assertEqual((read.get_method(), read.full_url, read.data), ("GET", base, None))
+        self.assertEqual((write.get_method(), write.full_url), ("PATCH", base + "?updateMask=mfaConfig"))
+        self.assertEqual(json.loads(write.data), {"mfaConfig": DISABLED})
+        self.assertEqual(write.get_header("Authorization"), "Bearer token")
 
 
 class RuntimeConfigTests(unittest.TestCase):
