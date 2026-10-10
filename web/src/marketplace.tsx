@@ -1,6 +1,6 @@
-import { Button } from "./components/ui/button";
 import { useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { ShieldCheck } from "lucide-react";
 import {
   marketplaceBrowse,
   marketplaceDetail,
@@ -30,10 +30,42 @@ import {
   authenticatedFetch,
   dashboardContext,
 } from "./transport";
-import { useI18n, Panel, Field } from "./ui";
+import { Badge as StatusBadge } from "./components/ui/badge";
+import { Button } from "./components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "./components/ui/dialog";
+import { Input } from "./components/ui/input";
+import { NativeSelect } from "./components/ui/native-select";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "./components/ui/table";
+import { Textarea } from "./components/ui/textarea";
+import { cn } from "./lib/utils";
+import { useI18n, Panel, Field, type StatusTone } from "./ui";
 import { RecordView } from "./record-view";
 import { marketplaceCopy } from "./marketplace-copy";
 import { HostPackages } from "./host-packages";
+import {
+  Alert,
+  Check,
+  Disclosure,
+  Facts,
+  Hint,
+  Notice,
+  Pager,
+  StateBadge,
+} from "./components/patterns";
 
 const json = (text: string): Record<string, unknown> => {
   const value: unknown = JSON.parse(text);
@@ -55,6 +87,16 @@ async function pageOf<T>(
     nextOffset: next === null ? undefined : Number(next),
   };
 }
+const subheading = "text-xs font-semibold text-foreground";
+
+type InstallState = "active" | "retained" | "revoked" | "changed" | "pending";
+const installTone: Record<InstallState, StatusTone> = {
+  active: "success",
+  retained: "neutral",
+  revoked: "danger",
+  changed: "warning",
+  pending: "warning",
+};
 function PageControls({
   offsets,
   next,
@@ -71,22 +113,19 @@ function PageControls({
   forward: string;
 }) {
   return (
-    <div className="actions">
-      <Button
-        variant="outline"
-        disabled={busy || offsets.length === 1}
-        onClick={() => setOffsets(offsets.slice(0, -1))}
-      >
-        {previous}
-      </Button>
-      <Button
-        variant="outline"
-        disabled={busy || next === undefined}
-        onClick={() => setOffsets([...offsets, next!])}
-      >
-        {forward}
-      </Button>
-    </div>
+    <Pager
+      page={offsets.length}
+      previous={{
+        disabled: busy || offsets.length === 1,
+        go: () => setOffsets(offsets.slice(0, -1)),
+        label: previous,
+      }}
+      next={{
+        disabled: busy || next === undefined,
+        go: () => setOffsets([...offsets, next!]),
+        label: forward,
+      }}
+    />
   );
 }
 export function ScopedMarketplace({ identity }: { identity: string }) {
@@ -99,6 +138,7 @@ export function ScopedMarketplace({ identity }: { identity: string }) {
   const [editing, setEditing] = useState<MarketplaceInstallationRevision>();
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
+  const [installing, setInstalling] = useState(false);
   const [denied, setDenied] = useState(false);
   const [config, setConfig] = useState("{}");
   const [bindings, setBindings] = useState("[]");
@@ -209,6 +249,7 @@ export function ScopedMarketplace({ identity }: { identity: string }) {
   // Clear protected local drafts before rendering a revoked query result.
   if (failure && !denied) {
     setDenied(true);
+    setInstalling(false);
     setSelected(undefined);
     setEditing(undefined);
     setSource("");
@@ -229,6 +270,7 @@ export function ScopedMarketplace({ identity }: { identity: string }) {
     } catch (error) {
       if (error instanceof ApiError && [401, 403].includes(error.status)) {
         setDenied(true);
+        setInstalling(false);
         setSelected(undefined);
         setEditing(undefined);
         setSource("");
@@ -249,297 +291,516 @@ export function ScopedMarketplace({ identity }: { identity: string }) {
   }
   const bindingInput = () =>
     JSON.parse(bindings) as MarketplaceDependencyBinding[];
+  const scopedState = (item: MarketplaceInstallationRevision): InstallState =>
+    item.approved && item.installation.active_revision === item.revision
+      ? "active"
+      : item.approved
+        ? "retained"
+        : item.installation.active_revision === item.revision
+          ? "revoked"
+          : item.installation.active_revision
+            ? "changed"
+            : "pending";
   if (denied)
     return (
       <Panel title={copy.packages}>
-        <p role="alert">{copy.unavailable}</p>
-        <Button
-          variant="outline"
-          onClick={() => {
+        <Alert
+          retry={() => {
             setDenied(false);
             setMessage("");
           }}
+          retryLabel={copy.retry}
         >
-          {copy.retry}
-        </Button>
+          {copy.unavailable}
+        </Alert>
       </Panel>
     );
+  const view = selected ? detail.data : undefined;
   return (
-    <div className="marketplace-scoped">
-      {message && <p role="status">{message}</p>}
-      <Panel title={copy.packages}>
-        <Field label={copy.search}>
-          <input
-            value={search}
-            onChange={(event) => {
-              setSearch(event.target.value);
-              setSelected(undefined);
-            }}
-          />
-        </Field>
-        {packages.isError && <p role="alert">{copy.unavailable}</p>}
-        {!packages.isPending && !packages.isError && !packages.data?.length && (
-          <p>{copy.empty}</p>
+    <div className="grid min-w-0 gap-6">
+      {message && (
+        <Notice role="status">{message}</Notice>
+      )}
+      <div
+        className={cn(
+          "grid min-w-0 items-start gap-6",
+          view && "xl:grid-cols-[minmax(0,1fr)_minmax(320px,380px)]",
         )}
-        <div className="cards">
-          {packages.data?.map((item) => (
-            <article className="entity-card" key={item.key}>
-              <h3>{local(item.name)}</h3>
-              <p>{local(item.description)}</p>
-              <small>
-                {item.owner_tenant} · {item.version} · {item.author}
-              </small>
-              <p>{item.capabilities.join(", ")}</p>
-              {item.actions.includes("read") ? (
+      >
+        <Panel
+          title={copy.packages}
+          action={
+            packages.data && (
+              <span className="font-mono text-[11px] text-faint tabular">
+                {packages.data.length}
+              </span>
+            )
+          }
+        >
+          <div className="max-w-sm">
+            <Field label={copy.search}>
+              <Input
+                type="search"
+                value={search}
+                onChange={(event) => {
+                  setSearch(event.target.value);
+                  setSelected(undefined);
+                }}
+              />
+            </Field>
+          </div>
+          {packages.isError && (
+            <Alert>{copy.unavailable}</Alert>
+          )}
+          {!packages.isPending &&
+            !packages.isError &&
+            !packages.data?.length && <Hint>{copy.empty}</Hint>}
+          {!!packages.data?.length && (
+            <Table>
+              <TableHeader>
+                <TableRow className="hover:bg-transparent">
+                  <TableHead>{copy.colPackage}</TableHead>
+                  <TableHead className="hidden md:table-cell">
+                    {copy.colKind}
+                  </TableHead>
+                  <TableHead className="hidden sm:table-cell">
+                    {copy.colVersion}
+                  </TableHead>
+                  <TableHead className="hidden lg:table-cell">
+                    {copy.colPublisher}
+                  </TableHead>
+                  <TableHead className="hidden lg:table-cell">
+                    {copy.colPermissions}
+                  </TableHead>
+                  <TableHead className="w-0" />
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {packages.data.map((item) => (
+                  <TableRow
+                    key={item.key}
+                    data-state={item.key === selected ? "selected" : undefined}
+                  >
+                    <TableCell className="py-2">
+                      <div className="max-w-48 truncate font-medium text-foreground sm:max-w-72">
+                        {local(item.name)}
+                      </div>
+                      <div className="max-w-48 truncate text-xs text-muted-foreground sm:max-w-72">
+                        {local(item.description)}
+                      </div>
+                    </TableCell>
+                    <TableCell className="hidden md:table-cell">
+                      <StatusBadge tone="neutral">{item.kind}</StatusBadge>
+                    </TableCell>
+                    <TableCell className="hidden font-mono text-xs sm:table-cell">
+                      {item.version}
+                    </TableCell>
+                    <TableCell className="hidden max-w-48 text-xs text-muted-foreground lg:table-cell">
+                      <div className="truncate">{item.author}</div>
+                      <div className="truncate font-mono text-[11px] text-faint">
+                        {item.owner_tenant}
+                      </div>
+                    </TableCell>
+                    <TableCell className="hidden max-w-56 text-xs lg:table-cell">
+                      <span
+                        className={cn(
+                          "line-clamp-2",
+                          item.permissions.length
+                            ? "text-foreground"
+                            : "text-faint",
+                        )}
+                      >
+                        {item.permissions.length
+                          ? item.permissions.join(", ")
+                          : copy.noPermissions}
+                      </span>
+                    </TableCell>
+                    <TableCell className="text-right">
+                      {item.actions.includes("read") ? (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => {
+                            setSelected(item.key);
+                            setAudience(undefined);
+                            setEditing(undefined);
+                            setConfig("{}");
+                            setBindings("[]");
+                          }}
+                        >
+                          {copy.details}
+                        </Button>
+                      ) : (
+                        <span className="text-xs text-faint">
+                          {copy.unavailable}
+                        </span>
+                      )}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          )}
+        </Panel>
+        {selected && view && (
+          <aside className="min-w-0 xl:border-l xl:border-border xl:pl-6">
+            <Panel
+              title={local(view.summary.name)}
+              action={
                 <Button
-                  variant="outline"
-                  onClick={() => {
-                    setSelected(item.key);
-                    setAudience(undefined);
-                    setEditing(undefined);
-                    setConfig("{}");
-                    setBindings("[]");
-                  }}
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setSelected(undefined)}
                 >
-                  {copy.details}
+                  {copy.close}
                 </Button>
-              ) : (
-                <p>{copy.unavailable}</p>
-              )}
-            </article>
-          ))}
-        </div>
-      </Panel>
-      {selected && detail.data && (
-        <Panel title={local(detail.data.summary.name)}>
-          <p>{copy.dependencies}</p>
-          <p>
-            {copy.permission}: {detail.data.manifest.permissions.join(", ")}
-          </p>
-          <details>
-            <summary>{copy.manifest}</summary>
-            <RecordView value={detail.data.manifest} />
-          </details>
-          <Field label={copy.config}>
-            <textarea
-              value={config}
-              onChange={(e) => setConfig(e.target.value)}
-            />
-          </Field>
-          <Field label={copy.bindings}>
-            <textarea
-              value={bindings}
-              onChange={(e) => setBindings(e.target.value)}
-            />
-          </Field>
-          {detail.data.summary.actions.includes("install") && (
-            <Button
-              variant="outline"
-              disabled={busy}
-              onClick={() =>
-                void run(async () => {
-                  // Fetch again at the user's mutation boundary; server authorization is final.
-                  const latest = await marketplaceDetail(selected);
-                  await marketplaceInstallScoped(selected, {
-                    digest: latest.summary.digest,
-                    config: json(config),
-                    bindings: bindingInput(),
-                    idempotency_key: crypto.randomUUID(),
-                  });
-                }, copy.installed)
               }
             >
-              {copy.install}
-            </Button>
-          )}
-          {detail.data.summary.actions.includes("share") && (
-            <>
-              <Field label={copy.tenants}>
-                <textarea
-                  value={audience ?? detail.data.audience.tenants.join("\n")}
-                  onChange={(e) => setAudience(e.target.value)}
+              <Hint>{local(view.summary.description)}</Hint>
+              <Facts
+                items={[
+                  [
+                    copy.colKind,
+                    <StatusBadge key="kind" tone="neutral">
+                      {view.summary.kind}
+                    </StatusBadge>,
+                  ],
+                  [copy.colVersion, view.summary.version, true],
+                  [
+                    copy.colPublisher,
+                    <>
+                      {view.summary.author}{" "}
+                      <span className="font-mono text-faint">
+                        {view.summary.owner_tenant}
+                      </span>
+                    </>,
+                  ],
+                  [copy.digest, view.summary.digest, true],
+                ]}
+              />
+              <div className="grid gap-1.5">
+                <h3 className={subheading}>{copy.permission}</h3>
+                <PermissionList
+                  permissions={view.manifest.permissions}
+                  empty={copy.noPermissions}
                 />
-              </Field>
-              <Button
-                variant="outline"
-                disabled={busy}
-                onClick={() =>
-                  void run(() =>
-                    marketplaceShare(selected, {
-                      expected_revision: detail.data!.audience.revision,
-                      tenants: [
-                        ...new Set([
-                          detail.data!.summary.owner_tenant,
-                          ...tenants(
-                            audience ??
-                              detail.data!.audience.tenants.join("\n"),
-                          ),
-                        ]),
-                      ],
-                    }),
-                  )
-                }
-              >
-                {copy.share}
-              </Button>
-            </>
-          )}
-          {detail.data.summary.actions.includes("consent") && (
-            <details>
-              <summary>{copy.consent}</summary>
-              <p>{copy.consentHelp}</p>
-              <Field label={copy.redistributor}>
-                <input
-                  value={redistributor}
-                  onChange={(e) => setRedistributor(e.target.value)}
-                />
-              </Field>
-              <Field label={copy.consentRevision}>
-                <input
-                  type="number"
-                  min={0}
-                  value={consentRevision}
-                  onChange={(e) =>
-                    setConsentDraft({
-                      key: consentKey,
-                      revision: Number(e.target.value),
-                      audience: consentAudience,
-                    })
-                  }
-                />
-              </Field>
-              <Field label={copy.tenants}>
-                <textarea
-                  value={consentAudience}
-                  onChange={(e) =>
-                    setConsentDraft({
-                      key: consentKey,
-                      revision: consentRevision,
-                      audience: e.target.value,
-                    })
-                  }
-                />
-              </Field>
-              <Button
-                variant="outline"
-                disabled={busy || !redistributor || !consent}
-                onClick={() =>
-                  void run(async () => {
-                    await marketplaceConsent(selected, redistributor, {
-                      expected_revision: consentRevision,
-                      tenants: tenants(consentAudience),
-                    });
-                  })
-                }
-              >
-                {copy.consent}
-              </Button>
-            </details>
-          )}
-          <Button variant="outline" onClick={() => setSelected(undefined)}>
-            {copy.close}
-          </Button>
-        </Panel>
-      )}
-      <Panel title={copy.installations}>
-        <p>{copy.pinned}</p>
-        {installs.data?.map((item) => (
-          <article className="entity-card" key={item.installation.id}>
-            <h3>{local(item.entry.name)}</h3>
-            <p>
-              {item.approved &&
-              item.installation.active_revision === item.revision
-                ? copy.active
-                : item.approved
-                  ? copy.retained
-                  : item.installation.active_revision === item.revision
-                    ? copy.revoked
-                    : item.installation.active_revision
-                      ? copy.changed
-                      : copy.pending}
-            </p>
-            <p>
-              {copy.revision}: {item.revision} · {copy.activeRevision}:{" "}
-              {item.installation.active_revision ?? "—"}
-            </p>
-            {item.installation.active_revision &&
-              item.installation.active_revision !== item.revision && (
-                <Button
-                  variant="outline"
-                  onClick={() =>
-                    void run(async () => {
-                      const active = await marketplaceInstallation(
-                        item.installation.id,
-                        { revision: item.installation.active_revision! },
-                      );
-                      setEditing(active);
-                      setConfig(JSON.stringify(active.config, null, 2));
-                      setBindings(JSON.stringify(active.bindings, null, 2));
-                    })
-                  }
-                >
-                  {copy.active}
-                </Button>
+              </div>
+              {view.summary.capabilities.length > 0 && (
+                <div className="grid gap-1.5">
+                  <h3 className={subheading}>{copy.capabilities}</h3>
+                  <div className="flex flex-wrap gap-1">
+                    {view.summary.capabilities.map((capability) => (
+                      <StatusBadge key={capability} variant="secondary">
+                        {capability}
+                      </StatusBadge>
+                    ))}
+                  </div>
+                </div>
               )}
-            {item.actions.includes("configure") && (
-              <Button
-                variant="outline"
-                onClick={() => {
-                  setEditing(item);
-                  setSelected(undefined);
-                  setConfig(JSON.stringify(item.config, null, 2));
-                  setBindings(JSON.stringify(item.bindings, null, 2));
-                }}
-              >
-                {copy.configure}
-              </Button>
-            )}
-          </article>
-        ))}
+              <Hint>{copy.dependencies}</Hint>
+              <Disclosure summary={copy.manifest}>
+                <RecordView value={view.manifest} />
+              </Disclosure>
+              {view.summary.actions.includes("install") && (
+                <div>
+                  <Button onClick={() => setInstalling(true)}>
+                    <ShieldCheck aria-hidden />
+                    {copy.reviewInstall}
+                  </Button>
+                </div>
+              )}
+              {view.summary.actions.includes("share") && (
+                <div className="grid gap-2 border-t border-border pt-3">
+                  <h3 className={subheading}>{copy.sharing}</h3>
+                  <Field label={copy.tenants}>
+                    <Textarea
+                      className="min-h-16 font-mono text-xs"
+                      value={audience ?? view.audience.tenants.join("\n")}
+                      onChange={(e) => setAudience(e.target.value)}
+                    />
+                  </Field>
+                  <div>
+                    <Button
+                      variant="outline"
+                      disabled={busy}
+                      onClick={() =>
+                        void run(() =>
+                          marketplaceShare(selected, {
+                            expected_revision: detail.data!.audience.revision,
+                            tenants: [
+                              ...new Set([
+                                detail.data!.summary.owner_tenant,
+                                ...tenants(
+                                  audience ??
+                                    detail.data!.audience.tenants.join("\n"),
+                                ),
+                              ]),
+                            ],
+                          }),
+                        )
+                      }
+                    >
+                      {copy.share}
+                    </Button>
+                  </div>
+                </div>
+              )}
+              {view.summary.actions.includes("consent") && (
+                <Disclosure
+                  className="border-t border-border pt-3"
+                  summary={copy.consent}
+                >
+                  <Hint>{copy.consentHelp}</Hint>
+                    <Field label={copy.redistributor}>
+                      <Input
+                        value={redistributor}
+                        onChange={(e) => setRedistributor(e.target.value)}
+                      />
+                    </Field>
+                    <Field label={copy.consentRevision}>
+                      <Input
+                        type="number"
+                        min={0}
+                        className="font-mono tabular"
+                        value={consentRevision}
+                        onChange={(e) =>
+                          setConsentDraft({
+                            key: consentKey,
+                            revision: Number(e.target.value),
+                            audience: consentAudience,
+                          })
+                        }
+                      />
+                    </Field>
+                    <Field label={copy.tenants}>
+                      <Textarea
+                        className="min-h-16 font-mono text-xs"
+                        value={consentAudience}
+                        onChange={(e) =>
+                          setConsentDraft({
+                            key: consentKey,
+                            revision: consentRevision,
+                            audience: e.target.value,
+                          })
+                        }
+                      />
+                    </Field>
+                    <div>
+                      <Button
+                        variant="outline"
+                        disabled={busy || !redistributor || !consent}
+                        onClick={() =>
+                          void run(async () => {
+                            await marketplaceConsent(selected, redistributor, {
+                              expected_revision: consentRevision,
+                              tenants: tenants(consentAudience),
+                            });
+                          })
+                        }
+                      >
+                        {copy.consent}
+                      </Button>
+                    </div>
+                </Disclosure>
+              )}
+            </Panel>
+            <Dialog
+              open={installing}
+              onOpenChange={(open) => {
+                if (!open && !busy) setInstalling(false);
+              }}
+            >
+              <DialogContent className="max-w-xl" closeLabel={copy.close}>
+                <DialogHeader>
+                  <DialogTitle>{copy.install}</DialogTitle>
+                  <DialogDescription className="text-xs">
+                    {copy.installHelp}
+                  </DialogDescription>
+                </DialogHeader>
+                <div className="grid gap-1 rounded-md border border-border bg-surface px-3 py-2.5">
+                  <div className="flex flex-wrap items-baseline gap-x-2">
+                    <span className="font-medium">
+                      {local(view.summary.name)}
+                    </span>
+                    <span className="font-mono text-xs text-muted-foreground">
+                      {view.summary.version}
+                    </span>
+                  </div>
+                  <div className="break-all font-mono text-[11px] text-faint">
+                    {copy.digest}: {view.summary.digest}
+                  </div>
+                </div>
+                <div className="grid gap-1.5">
+                  <h3 className={subheading}>{copy.permission}</h3>
+                  <PermissionList
+                    permissions={view.manifest.permissions}
+                    empty={copy.noPermissions}
+                  />
+                </div>
+                <Hint>{copy.dependencies}</Hint>
+                <Field label={copy.config}>
+                  <Textarea
+                    className="min-h-20 font-mono text-xs"
+                    value={config}
+                    onChange={(e) => setConfig(e.target.value)}
+                  />
+                </Field>
+                <Field label={copy.bindings}>
+                  <Textarea
+                    className="min-h-20 font-mono text-xs"
+                    value={bindings}
+                    onChange={(e) => setBindings(e.target.value)}
+                  />
+                </Field>
+                <DialogFooter>
+                  <Button
+                    variant="ghost"
+                    disabled={busy}
+                    onClick={() => setInstalling(false)}
+                  >
+                    {copy.cancel}
+                  </Button>
+                  <Button
+                    disabled={busy}
+                    onClick={() =>
+                      void run(async () => {
+                        // Fetch again at the user's mutation boundary; server authorization is final.
+                        const latest = await marketplaceDetail(selected);
+                        await marketplaceInstallScoped(selected, {
+                          digest: latest.summary.digest,
+                          config: json(config),
+                          bindings: bindingInput(),
+                          idempotency_key: crypto.randomUUID(),
+                        });
+                        setInstalling(false);
+                      }, copy.installed)
+                    }
+                  >
+                    {copy.install}
+                  </Button>
+                </DialogFooter>
+              </DialogContent>
+            </Dialog>
+          </aside>
+        )}
+      </div>
+      <Panel title={copy.installations}>
+        <Hint>{copy.pinned}</Hint>
+        {!!installs.data?.length && (
+          <ul className="divide-y divide-border border-y border-border">
+            {installs.data.map((item) => {
+              const state = scopedState(item);
+              return (
+                <li
+                  className="flex flex-wrap items-center gap-x-4 gap-y-2 py-2.5"
+                  key={item.installation.id}
+                >
+                  <div className="min-w-0 flex-1">
+                    <h3 className="truncate text-[13px] font-medium text-foreground">
+                      {local(item.entry.name)}
+                    </h3>
+                    <p className="font-mono text-[11px] text-faint tabular">
+                      {copy.revision} {item.revision} · {copy.activeRevision}{" "}
+                      {item.installation.active_revision ?? "—"}
+                    </p>
+                  </div>
+                  <StateBadge tone={installTone[state]}>
+                    {copy[state]}
+                  </StateBadge>
+                  <div className="flex flex-wrap gap-2">
+                    {item.installation.active_revision &&
+                      item.installation.active_revision !== item.revision && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() =>
+                            void run(async () => {
+                              const active = await marketplaceInstallation(
+                                item.installation.id,
+                                {
+                                  revision: item.installation.active_revision!,
+                                },
+                              );
+                              setEditing(active);
+                              setConfig(JSON.stringify(active.config, null, 2));
+                              setBindings(
+                                JSON.stringify(active.bindings, null, 2),
+                              );
+                            })
+                          }
+                        >
+                          {copy.active}
+                        </Button>
+                      )}
+                    {item.actions.includes("configure") && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => {
+                          setEditing(item);
+                          setSelected(undefined);
+                          setConfig(JSON.stringify(item.config, null, 2));
+                          setBindings(JSON.stringify(item.bindings, null, 2));
+                        }}
+                      >
+                        {copy.configure}
+                      </Button>
+                    )}
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        )}
         {editingView && (
-          <div>
-            <h3>
-              {local(editingView.entry.name)} · {copy.revision}{" "}
-              {editingView.revision}
+          <div className="grid gap-3 rounded-lg border border-border bg-surface p-4">
+            <h3 className="text-[13px] font-semibold text-foreground">
+              {local(editingView.entry.name)}{" "}
+              <span className="font-mono text-xs font-normal text-muted-foreground">
+                · {copy.revision} {editingView.revision}
+              </span>
             </h3>
             <Field label={copy.config}>
-              <textarea
+              <Textarea
+                className="min-h-24 font-mono text-xs"
                 value={config}
                 onChange={(e) => setConfig(e.target.value)}
               />
             </Field>
             <Field label={copy.bindings}>
-              <textarea
+              <Textarea
+                className="min-h-20 font-mono text-xs"
                 value={bindings}
                 onChange={(e) => setBindings(e.target.value)}
               />
             </Field>
-            {editingView.actions.includes("configure") && (
-              <Button
-                variant="outline"
-                disabled={busy}
-                onClick={() =>
-                  void run(async () => {
-                    const result = await marketplaceConfigure(
-                      editingView.installation.id,
-                      {
-                        expected_revision:
-                          editingView.installation.latest_revision,
-                        config: json(config),
-                        bindings: bindingInput(),
-                        idempotency_key: crypto.randomUUID(),
-                      },
-                    );
-                    setEditing(result);
-                  })
-                }
-              >
-                {copy.configure}
+            <div className="flex flex-wrap gap-2">
+              {editingView.actions.includes("configure") && (
+                <Button
+                  disabled={busy}
+                  onClick={() =>
+                    void run(async () => {
+                      const result = await marketplaceConfigure(
+                        editingView.installation.id,
+                        {
+                          expected_revision:
+                            editingView.installation.latest_revision,
+                          config: json(config),
+                          bindings: bindingInput(),
+                          idempotency_key: crypto.randomUUID(),
+                        },
+                      );
+                      setEditing(result);
+                    })
+                  }
+                >
+                  {copy.configure}
+                </Button>
+              )}
+              <Button variant="ghost" onClick={() => setEditing(undefined)}>
+                {copy.close}
               </Button>
-            )}
-            <Button variant="outline" onClick={() => setEditing(undefined)}>
-              {copy.close}
-            </Button>
+            </div>
           </div>
         )}
       </Panel>
@@ -547,86 +808,118 @@ export function ScopedMarketplace({ identity }: { identity: string }) {
         (sources.data.items.length > 0 ||
           sourceOffset > 0 ||
           sources.data.nextOffset !== undefined) && (
-          <Panel title={copy.publish}>
-            <p>{copy.publishHelp}</p>
-            <PageControls
-              offsets={sourceOffsets}
-              next={sources.data.nextOffset}
-              busy={busy || sources.isFetching}
-              setOffsets={(offsets) => {
-                setSourceOffsets(offsets);
-                setSource("");
-                setPackageId("");
-              }}
-              previous={copy.previous}
-              forward={copy.next}
-            />
-            <Field label={copy.source}>
-              <select
-                value={source}
-                onChange={(e) => {
-                  setSource(e.target.value);
-                  const item = sources.data?.items.find(
-                    (s) => `${s.id}@${s.version}` === e.target.value,
-                  );
-                  setPackageId(item?.id ?? "");
+          <Panel
+            title={copy.publish}
+            action={
+              <PageControls
+                offsets={sourceOffsets}
+                next={sources.data.nextOffset}
+                busy={busy || sources.isFetching}
+                setOffsets={(offsets) => {
+                  setSourceOffsets(offsets);
+                  setSource("");
+                  setPackageId("");
                 }}
-              >
-                <option value="">—</option>
-                {sources.data.items.map((item) => (
-                  <option
-                    key={`${item.id}@${item.version}`}
-                    value={`${item.id}@${item.version}`}
-                  >
-                    {local(item.name)} · {item.version}
-                  </option>
-                ))}
-              </select>
-            </Field>
-            <Field label={copy.packageId}>
-              <input
-                value={packageId}
-                onChange={(e) => setPackageId(e.target.value)}
+                previous={copy.previous}
+                forward={copy.next}
               />
-            </Field>
-            <Field label={copy.author}>
-              <input
-                value={author}
-                onChange={(e) => setAuthor(e.target.value)}
-              />
-            </Field>
+            }
+          >
+            <Hint>{copy.publishHelp}</Hint>
+            <div className="grid max-w-3xl gap-3 sm:grid-cols-3">
+              <Field label={copy.source}>
+                <NativeSelect
+                  value={source}
+                  onChange={(e) => {
+                    setSource(e.target.value);
+                    const item = sources.data?.items.find(
+                      (s) => `${s.id}@${s.version}` === e.target.value,
+                    );
+                    setPackageId(item?.id ?? "");
+                  }}
+                >
+                  <option value="">—</option>
+                  {sources.data.items.map((item) => (
+                    <option
+                      key={`${item.id}@${item.version}`}
+                      value={`${item.id}@${item.version}`}
+                    >
+                      {local(item.name)} · {item.version}
+                    </option>
+                  ))}
+                </NativeSelect>
+              </Field>
+              <Field label={copy.packageId}>
+                <Input
+                  className="font-mono"
+                  value={packageId}
+                  onChange={(e) => setPackageId(e.target.value)}
+                />
+              </Field>
+              <Field label={copy.author}>
+                <Input
+                  value={author}
+                  onChange={(e) => setAuthor(e.target.value)}
+                />
+              </Field>
+            </div>
             {canPublish.data?.allowed && (
-              <p>
+              <p className="text-xs text-muted-foreground">
                 {copy.publicationVersion}: {canPublish.data.version}
               </p>
             )}
             {canPublish.data?.allowed && (
-              <Button
-                variant="outline"
-                disabled={busy || !source || !packageId || !author}
-                onClick={() =>
-                  void run(async () => {
-                    const entry = sources.data!.items.find(
-                      (s) => `${s.id}@${s.version}` === source,
-                    )!;
-                    await marketplacePublishRegistered({
-                      source: { id: entry.id, version: entry.version },
-                      package_id: packageId,
-                      author,
-                      idempotency_key: crypto.randomUUID(),
-                    });
-                  }, copy.published)
-                }
-              >
-                {copy.publish}
-              </Button>
+              <div>
+                <Button
+                  disabled={busy || !source || !packageId || !author}
+                  onClick={() =>
+                    void run(async () => {
+                      const entry = sources.data!.items.find(
+                        (s) => `${s.id}@${s.version}` === source,
+                      )!;
+                      await marketplacePublishRegistered({
+                        source: { id: entry.id, version: entry.version },
+                        package_id: packageId,
+                        author,
+                        idempotency_key: crypto.randomUUID(),
+                      });
+                    }, copy.published)
+                  }
+                >
+                  {copy.publish}
+                </Button>
+              </div>
             )}
             {canPublish.data?.allowed === false && (
-              <p>{copy.operationUnavailable}</p>
+              <Hint>{copy.operationUnavailable}</Hint>
             )}
           </Panel>
         )}
     </div>
+  );
+}
+
+function PermissionList({
+  permissions,
+  empty,
+}: {
+  permissions: string[];
+  empty: string;
+}) {
+  return permissions.length ? (
+    <ul className="grid gap-1">
+      {permissions.map((permission) => (
+        <li
+          key={permission}
+          className="flex items-center gap-2 font-mono text-xs text-foreground"
+        >
+          <span aria-hidden className="size-1.5 rounded-full bg-warning" />
+          {permission}
+        </li>
+      ))}
+    </ul>
+  ) : (
+    <p className="text-xs text-faint">{empty}</p>
   );
 }
 
@@ -670,44 +963,60 @@ export function MarketplaceAdministration() {
       );
     }
   }
+  const adminState = (item: MarketplaceInstallationRevision): InstallState =>
+    item.approved
+      ? item.installation.active_revision === item.revision
+        ? "active"
+        : "retained"
+      : item.installation.active_revision === item.revision
+        ? "revoked"
+        : item.revision > 1
+          ? "changed"
+          : "pending";
   return (
-    <>
-      {message && <p role="status">{message}</p>}
+    <div className="grid min-w-0 gap-6">
+      {message && (
+        <Notice role="status">{message}</Notice>
+      )}
       {gate.data && (
-        <Panel title={copy.rollout}>
-          <p>{gate.data.enabled ? copy.enabled : copy.disabled}</p>
-          <label>
-            <input
-              type="checkbox"
-              checked={confirmed}
-              onChange={(e) => setConfirmed(e.target.checked)}
-            />
-            {copy.compatible}
-          </label>
-          <Button
-            variant="outline"
-            disabled={!gate.data.enabled && !confirmed}
-            onClick={() =>
-              void run(() =>
-                marketplaceSetCompatibility({
-                  enabled: !gate.data!.enabled,
-                  expected_revision: gate.data!.revision,
-                  compatible_instances_confirmed: confirmed,
-                }),
-              )
-            }
+        <Panel
+          title={copy.rollout}
+          action={
+            <StateBadge tone={gate.data.enabled ? "success" : "neutral"}>
+              {gate.data.enabled ? copy.enabled : copy.disabled}
+            </StateBadge>
+          }
+        >
+          <Check
+            checked={confirmed}
+            onChange={(e) => setConfirmed(e.target.checked)}
           >
-            {gate.data.enabled ? copy.disable : copy.enable}
-          </Button>
+            {copy.compatible}
+          </Check>
+          <div>
+            <Button
+              variant="outline"
+              disabled={!gate.data.enabled && !confirmed}
+              onClick={() =>
+                void run(() =>
+                  marketplaceSetCompatibility({
+                    enabled: !gate.data!.enabled,
+                    expected_revision: gate.data!.revision,
+                    compatible_instances_confirmed: confirmed,
+                  }),
+                )
+              }
+            >
+              {gate.data.enabled ? copy.disable : copy.enable}
+            </Button>
+          </div>
         </Panel>
       )}
       <Panel title={copy.admin}>
-        <Field label={copy.tenant}>
-          <input value={draft} onChange={(e) => setDraft(e.target.value)} />
-        </Field>
-        <Button
-          variant="outline"
-          onClick={() => {
+        <form
+          className="flex flex-wrap items-end gap-2"
+          onSubmit={(event) => {
+            event.preventDefault();
             setTenant(draft.trim());
             setRevisionOffsets([0]);
             void cache.invalidateQueries({
@@ -715,10 +1024,21 @@ export function MarketplaceAdministration() {
             });
           }}
         >
-          {copy.load}
-        </Button>
-        <p>{copy.pinned}</p>
-        {installs.isError && <p role="alert">{copy.unavailable}</p>}
+          <div className="w-full max-w-xs">
+            <Field label={copy.tenant}>
+              <Input
+                className="font-mono"
+                value={draft}
+                onChange={(e) => setDraft(e.target.value)}
+              />
+            </Field>
+          </div>
+          <Button type="submit" variant="outline">
+            {copy.load}
+          </Button>
+        </form>
+        <Hint>{copy.pinned}</Hint>
+        {installs.isError && <Alert>{copy.unavailable}</Alert>}
         {tenant && !installs.isError && (
           <HostPackages
             key={tenant}
@@ -728,6 +1048,69 @@ export function MarketplaceAdministration() {
               await cache.invalidateQueries({ queryKey: ["marketplace"] });
             }}
           />
+        )}
+        {!installs.isError && !!installs.data?.items.length && (
+          <ul className="divide-y divide-border border-y border-border">
+            {installs.data.items.map((item) => {
+              const state = adminState(item);
+              return (
+                <li
+                  className="grid gap-2 py-2.5"
+                  key={`${item.installation.id}:${item.revision}`}
+                >
+                  <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+                    <div className="min-w-0 flex-1">
+                      <h3 className="truncate text-[13px] font-medium text-foreground">
+                        {local(item.entry.name)} · {copy.revision}{" "}
+                        {item.revision}
+                      </h3>
+                      <p className="truncate font-mono text-[11px] text-faint">
+                        {item.entry.id}@{item.entry.version}
+                      </p>
+                    </div>
+                    <StateBadge tone={installTone[state]}>
+                      {copy[state]}
+                    </StateBadge>
+                    <div className="flex flex-wrap gap-2">
+                      {[true, false].map((enabled) => (
+                        <Button
+                          variant={enabled ? "outline" : "ghost"}
+                          size="sm"
+                          key={String(enabled)}
+                          disabled={!enabled && !item.approved}
+                          onClick={() =>
+                            void run(async () => {
+                              const catalog =
+                                await authorizationCatalog(tenant);
+                              const binding = catalog.find(
+                                (b) =>
+                                  b.entry_id === item.entry.id &&
+                                  b.entry_version === item.entry.version,
+                              );
+                              await marketplaceActivate(item.installation.id, {
+                                tenant,
+                                revision: item.revision,
+                                expected_activation_revision:
+                                  item.installation.activation_revision,
+                                expected_catalog_revision:
+                                  binding?.revision ?? 0,
+                                enabled,
+                              });
+                            })
+                          }
+                        >
+                          {enabled ? copy.approve : copy.revoke}
+                        </Button>
+                      ))}
+                    </div>
+                  </div>
+                  <Disclosure summary={copy.details}>
+                    <RecordView value={item.entry} />
+                  </Disclosure>
+                </li>
+              );
+            })}
+          </ul>
         )}
         {installs.data && !installs.isError && (
           <PageControls
@@ -739,93 +1122,50 @@ export function MarketplaceAdministration() {
             forward={copy.next}
           />
         )}
-        {!installs.isError &&
-          installs.data?.items.map((item) => (
-            <article
-              className="entity-card"
-              key={`${item.installation.id}:${item.revision}`}
-            >
-              <h3>
-                {local(item.entry.name)} · {copy.revision} {item.revision}
-              </h3>
-              <p>
-                {item.approved
-                  ? item.installation.active_revision === item.revision
-                    ? copy.active
-                    : copy.retained
-                  : item.installation.active_revision === item.revision
-                    ? copy.revoked
-                    : item.revision > 1
-                      ? copy.changed
-                      : copy.pending}
-              </p>
-              <details>
-                <summary>{copy.details}</summary>
-                <RecordView value={item.entry} />
-              </details>
-              {[true, false].map((enabled) => (
+        {tenant && (
+          <Disclosure
+            className="border-t border-border pt-3"
+            summary={copy.adoption}
+          >
+            <div className="grid max-w-xl gap-3">
+              <Hint>{copy.adoptionHelp}</Hint>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <Field label={copy.legacyId}>
+                  <Input
+                    className="font-mono"
+                    value={legacyId}
+                    onChange={(e) => setLegacyId(e.target.value)}
+                  />
+                </Field>
+                <Field label={copy.legacyVersion}>
+                  <Input
+                    className="font-mono"
+                    value={legacyVersion}
+                    onChange={(e) => setLegacyVersion(e.target.value)}
+                  />
+                </Field>
+              </div>
+              <div>
                 <Button
                   variant="outline"
-                  key={String(enabled)}
-                  disabled={!enabled && !item.approved}
+                  disabled={!legacyId}
                   onClick={() =>
-                    void run(async () => {
-                      const catalog = await authorizationCatalog(tenant);
-                      const binding = catalog.find(
-                        (b) =>
-                          b.entry_id === item.entry.id &&
-                          b.entry_version === item.entry.version,
-                      );
-                      await marketplaceActivate(item.installation.id, {
+                    void run(() =>
+                      marketplaceAdopt({
                         tenant,
-                        revision: item.revision,
-                        expected_activation_revision:
-                          item.installation.activation_revision,
-                        expected_catalog_revision: binding?.revision ?? 0,
-                        enabled,
-                      });
-                    })
+                        source: { id: legacyId, version: legacyVersion },
+                        idempotency_key: crypto.randomUUID(),
+                      }),
+                    )
                   }
                 >
-                  {enabled ? copy.approve : copy.revoke}
+                  {copy.adopt}
                 </Button>
-              ))}
-            </article>
-          ))}
-        {tenant && (
-          <details>
-            <summary>{copy.adoption}</summary>
-            <p>{copy.adoptionHelp}</p>
-            <Field label={copy.legacyId}>
-              <input
-                value={legacyId}
-                onChange={(e) => setLegacyId(e.target.value)}
-              />
-            </Field>
-            <Field label={copy.legacyVersion}>
-              <input
-                value={legacyVersion}
-                onChange={(e) => setLegacyVersion(e.target.value)}
-              />
-            </Field>
-            <Button
-              variant="outline"
-              disabled={!legacyId}
-              onClick={() =>
-                void run(() =>
-                  marketplaceAdopt({
-                    tenant,
-                    source: { id: legacyId, version: legacyVersion },
-                    idempotency_key: crypto.randomUUID(),
-                  }),
-                )
-              }
-            >
-              {copy.adopt}
-            </Button>
-          </details>
+              </div>
+            </div>
+          </Disclosure>
         )}
       </Panel>
-    </>
+    </div>
   );
 }

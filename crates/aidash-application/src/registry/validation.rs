@@ -152,6 +152,7 @@ impl DefinitionValidation {
 				}
 				m.request_timeout()?;
 				m.validate_projection_versions()?;
+				m.validate_cache_mode()?;
 				if m.provider_credential.is_some() {
 					aidash_domain::provider_credentials::validate_model_id(&m.model_id)?;
 				}
@@ -392,6 +393,7 @@ impl DefinitionValidation {
 		let model: ModelConfig = serde_json::from_value(model.definition.config.clone())?;
 		let version = config.projection_version.unwrap_or_default();
 		model.require_projection(version)?;
+		model.require_prompt_cache(config.prompt_cache.unwrap_or_default(), version)?;
 		let mut instructions = aidash_domain::context::agent_instructions("");
 		let mut specifications = vec![];
 		for binding in &snapshot.bindings {

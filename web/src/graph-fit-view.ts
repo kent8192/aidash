@@ -1,4 +1,3 @@
-import "./graph-fit.css";
 import {
   useCallback,
   useEffect,

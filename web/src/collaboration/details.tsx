@@ -1,8 +1,12 @@
+import { X } from "lucide-react";
 import { Button } from "../components/ui/button";
+import { Input } from "../components/ui/input";
+import { Textarea } from "../components/ui/textarea";
 import { RemoteMemoryProvenance, RemoteRunManagement } from "./remote-memory";
 import { RemoteExecutions } from "./remote-executions";
 import { ReferenceName } from "../record-view";
 import { RecordView } from "../record-view";
+import { Alert, Disclosure, Facts, Hint, formClass } from "../components/patterns";
 import { useRef, useState } from "react";
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import {
@@ -28,7 +32,15 @@ import type {
   Task,
   Workspace,
 } from "../types";
-import { Badge, Field, JsonView, Modal, useI18n, useAgentLabel } from "../ui";
+import {
+  Badge,
+  Field,
+  JsonView,
+  Modal,
+  Panel,
+  useI18n,
+  useAgentLabel,
+} from "../ui";
 import {
   AssignForm,
   EntityForm,
@@ -113,6 +125,23 @@ export function OperationsDialog({
     "publish",
     "package",
   ].includes(d.kind);
+  const taskRuns = task
+    ? [
+        ...data.runs
+          .filter(
+            (run) => run.task_id === task.id && run.home_node === data.node.id,
+          )
+          .map((run) => ({ run, node: data.node.id, remote: false })),
+        ...(mesh?.nodes ?? []).flatMap((node) =>
+          node.runs
+            .filter(
+              (run) =>
+                run.task_id === task.id && run.home_node === data.node.id,
+            )
+            .map((run) => ({ run, node: node.node_id, remote: true })),
+        ),
+      ]
+    : [];
   return (
     <Modal
       title={
@@ -140,19 +169,15 @@ export function OperationsDialog({
       }
       close={close}
     >
-      {error && (
-        <div className="error" role="alert">
-          {error}
-        </div>
-      )}
-      <fieldset disabled={busy} className="collab-dialog-fields">
+      {error && <Alert>{error}</Alert>}
+      <fieldset disabled={busy} className="m-0 grid min-w-0 gap-4 border-0 p-0">
         {administrative && !isOperator ? (
-          <p>{copy.unavailable}</p>
+          <Hint>{copy.unavailable}</Hint>
         ) : (
           <>
             {d.kind === "workspace" && (
               <>
-                <p className="muted">{copy.setupNotice}</p>
+                <Hint>{copy.setupNotice}</Hint>
                 <WorkspaceForm submit={submit} />
               </>
             )}
@@ -211,6 +236,7 @@ export function OperationsDialog({
             {d.kind === "human" &&
               (request && request.response === null ? (
                 <form
+                  className={formClass}
                   onSubmit={(event) => {
                     event.preventDefault();
                     const raw = String(
@@ -237,62 +263,85 @@ export function OperationsDialog({
                     );
                   }}
                 >
-                  <Badge value={request.kind} />
-                  <p className="human-prompt">{request.prompt}</p>
+                  <div className="grid min-w-0 justify-items-start gap-2">
+                    <Badge value={request.kind} />
+                    <p className="whitespace-pre-wrap text-[13px] leading-relaxed text-foreground [overflow-wrap:anywhere]">
+                      {request.prompt}
+                    </p>
+                  </div>
                   <Field label={t("answer")}>
-                    <textarea name="answer" rows={5} required />
+                    <Textarea name="answer" rows={5} required />
                   </Field>
-                  <Button variant="outline" className="primary">
-                    {copy.send}
-                  </Button>
+                  <div className="flex justify-end">
+                    <Button type="submit">{copy.send}</Button>
+                  </div>
                 </form>
               ) : (
-                <p role="status">{copy.unavailable}</p>
+                <Hint role="status">{copy.unavailable}</Hint>
               ))}
             {d.kind === "taskDetail" &&
               (task ? (
                 <>
-                  <h2>{task.title}</h2>
-                  <p>{task.description}</p>
-                  <Badge value={task.status} />
+                  <header className="grid min-w-0 gap-2">
+                    <div className="flex min-w-0 flex-wrap items-center gap-2">
+                      <h2 className="min-w-0 text-[15px] font-semibold text-foreground [overflow-wrap:anywhere]">
+                        {task.title}
+                      </h2>
+                      <Badge value={task.status} />
+                    </div>
+                    {task.description && (
+                      <p className="whitespace-pre-wrap text-[13px] leading-relaxed text-muted-foreground [overflow-wrap:anywhere]">
+                        {task.description}
+                      </p>
+                    )}
+                  </header>
+                  <Facts
+                    items={[
+                      [
+                        t("owner"),
+                        task.owner ? (
+                          <ReferenceName id={task.owner} />
+                        ) : (
+                          t("noAssignment")
+                        ),
+                      ],
+                      [t("revision"), task.revision, true],
+                    ]}
+                  />
+                  <div className="flex min-w-0 flex-wrap gap-2">
+                    {task.status === "OPEN" && (
+                      <>
+                        <Button
+                          type="button"
+                          onClick={() => open({ kind: "assign", task })}
+                        >
+                          {t("delegate")}
+                        </Button>
+                        {data.access.kind === "subject" && (
+                          <Button
+                            variant="outline"
+                            type="button"
+                            onClick={() => open({ kind: "generate", task })}
+                          >
+                            {t("generationAssign")}
+                          </Button>
+                        )}
+                      </>
+                    )}
+                    <Button
+                      variant="outline"
+                      type="button"
+                      onClick={() => visitChannel(task.workspace_id)}
+                    >
+                      {copy.channelLink}
+                    </Button>
+                  </div>
                   {data.access.kind === "subject" && (
                     <RemoteExecutions task={task.id} />
                   )}
-                  <dl>
-                    <dt>{t("owner")}</dt>
-                    <dd>{task.owner ?? t("noAssignment")}</dd>
-                    <dt>{t("revision")}</dt>
-                    <dd>{task.revision}</dd>
-                  </dl>
-                  <Button
-                    variant="outline"
-                    type="button"
-                    onClick={() => visitChannel(task.workspace_id)}
-                  >
-                    {copy.channelLink}
-                  </Button>
-                  {task.status === "OPEN" && (
-                    <div className="button-row">
-                      <Button
-                        variant="outline"
-                        type="button"
-                        onClick={() => open({ kind: "assign", task })}
-                      >
-                        {t("delegate")}
-                      </Button>
-                      {data.access.kind === "subject" && (
-                        <Button
-                          variant="outline"
-                          type="button"
-                          onClick={() => open({ kind: "generate", task })}
-                        >
-                          {t("generationAssign")}
-                        </Button>
-                      )}
-                    </div>
-                  )}
                   {["FAILED", "BLOCKED", "CANCELLED"].includes(task.status) && (
                     <form
+                      className="grid min-w-0 gap-3 border-t border-border pt-4"
                       onSubmit={(event) => {
                         event.preventDefault();
                         const reason = String(
@@ -307,67 +356,48 @@ export function OperationsDialog({
                       }}
                     >
                       <Field label={t("abandonReason")}>
-                        <textarea required name="reason" />
+                        <Textarea required name="reason" />
                       </Field>
-                      <Button variant="outline" className="danger">
-                        {t("abandonTask")}
-                      </Button>
-                      <p className="muted">{t("abandonHelp")}</p>
+                      <Hint>{t("abandonHelp")}</Hint>
+                      <div>
+                        <Button variant="destructive" type="submit">
+                          {t("abandonTask")}
+                        </Button>
+                      </div>
                     </form>
                   )}
-                  {data.runs
-                    .filter(
-                      (run) =>
-                        run.task_id === task.id &&
-                        run.home_node === data.node.id,
-                    )
-                    .map((run) => (
-                      <Button
-                        variant="outline"
-                        type="button"
-                        className="collab-task"
-                        key={run.id}
-                        onClick={() =>
-                          open({ kind: "run", run, node: data.node.id })
-                        }
-                      >
-                        <Badge value={run.phase} />
-                        {agentLabel(data.node.id, {
-                          id: run.agent_id,
-                          version: run.agent_version,
-                        })}
-                      </Button>
-                    ))}
-                  {(mesh?.nodes ?? []).flatMap((node) =>
-                    node.runs
-                      .filter(
-                        (run) =>
-                          run.task_id === task.id &&
-                          run.home_node === data.node.id,
-                      )
-                      .map((run) => (
-                        <Button
-                          variant="outline"
-                          type="button"
-                          className="collab-task"
-                          key={`${node.node_id}:${run.id}`}
-                          onClick={() =>
-                            open({ kind: "run", run, node: node.node_id })
-                          }
-                        >
-                          <Badge value={run.phase} />
-                          {agentLabel(node.node_id, {
-                            id: run.agent_id,
-                            version: run.agent_version,
-                          })}{" "}
-                          · <ReferenceName id={node.node_id} />
-                        </Button>
-                      )),
+                  {taskRuns.length > 0 && (
+                    <Panel title={t("execution")}>
+                      <ul className="grid min-w-0 divide-y divide-border border-y border-border">
+                        {taskRuns.map(({ run, node, remote }) => (
+                          <li key={`${remote ? node : "local"}:${run.id}`}>
+                            <button
+                              type="button"
+                              className="flex h-10 w-full min-w-0 items-center gap-2.5 px-2 text-left text-[13px] text-foreground transition-colors duration-150 hover:bg-accent focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring"
+                              onClick={() => open({ kind: "run", run, node })}
+                            >
+                              <Badge value={run.phase} />
+                              <span className="min-w-0 truncate">
+                                {agentLabel(node, {
+                                  id: run.agent_id,
+                                  version: run.agent_version,
+                                })}
+                                {remote && (
+                                  <>
+                                    {" "}
+                                    · <ReferenceName id={node} />
+                                  </>
+                                )}
+                              </span>
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                    </Panel>
                   )}
-                  <details>
-                    <summary>{t("requirements")}</summary>
+                  <Disclosure summary={t("requirements")}>
                     <JsonView value={task.requirements} />
-                  </details>
+                  </Disclosure>
                   <ArtifactList
                     artifacts={(taskSnapshot.data?.artifacts ?? []).filter(
                       (artifact) => artifact.task_id === task.id,
@@ -375,30 +405,36 @@ export function OperationsDialog({
                   />
                 </>
               ) : (
-                <p role="status">
+                <Hint role="status">
                   {taskSnapshot.isPending ? copy.processing : copy.unavailable}
-                </p>
+                </Hint>
               ))}
             {d.kind === "package" && d.package && (
               <>
-                <h2>{local(d.package.manifest.entity.name)}</h2>
-                <p>{local(d.package.manifest.entity.description)}</p>
+                <header className="grid min-w-0 gap-1">
+                  <h2 className="text-[15px] font-semibold text-foreground [overflow-wrap:anywhere]">
+                    {local(d.package.manifest.entity.name)}
+                  </h2>
+                  <p className="text-[13px] leading-relaxed text-muted-foreground [overflow-wrap:anywhere]">
+                    {local(d.package.manifest.entity.description)}
+                  </p>
+                </header>
                 <RecordView value={d.package.manifest} />
-                <Button
-                  variant="outline"
-                  type="button"
-                  className="primary"
-                  onClick={() =>
-                    void submit(() =>
-                      packageInstall(d.package!.id, d.package!.version, {
-                        digest: d.package!.digest,
-                        config: {},
-                      }),
-                    )
-                  }
-                >
-                  {t("install")}
-                </Button>
+                <div className="flex justify-end">
+                  <Button
+                    type="button"
+                    onClick={() =>
+                      void submit(() =>
+                        packageInstall(d.package!.id, d.package!.version, {
+                          digest: d.package!.digest,
+                          config: {},
+                        }),
+                      )
+                    }
+                  >
+                    {t("install")}
+                  </Button>
+                </div>
               </>
             )}
           </>
@@ -462,9 +498,9 @@ function RunPanel({
   if (!run)
     return (
       <>
-        <p role="status">
+        <Hint role="status">
           {local && query.isPending ? copy.processing : copy.unavailable}
-        </p>
+        </Hint>
         {local && data.access.kind === "subject" && (
           <RemoteRunManagement id={id} />
         )}
@@ -485,41 +521,28 @@ function RunPanel({
   const invocations = local
     ? (query.data?.pages.flatMap((page) => page.invocations) ?? [])
     : (remoteNode?.invocations.filter((value) => value.run_id === id) ?? []);
+  const managed =
+    local && run.home_node !== data.node.id && data.access.kind === "subject";
+  const controllable = !terminal && !managed;
+  const home = run.home_node === data.node.id;
   return (
     <>
-      <h2>
-        {agentLabel(node, { id: run.agent_id, version: run.agent_version })}
-      </h2>
-      <p>
-        <ReferenceName id={node} />
-      </p>
-      <Badge value={run.phase} />
-      <Badge value={run.control} />
-      {local &&
-        run.home_node !== data.node.id &&
-        data.access.kind === "subject" && (
-          <RemoteMemoryProvenance url={`/api/runs/${id}/semantic`} />
-        )}
-      {run.home_node === data.node.id && (
-        <Button
-          variant="outline"
-          type="button"
-          onClick={() => visitChannel(run.workspace_id)}
-        >
-          {copy.channelLink}
-        </Button>
-      )}
-      {local &&
-        run.home_node !== data.node.id &&
-        data.access.kind === "subject" && <RemoteRunManagement id={id} />}
-      {!terminal &&
-        !(
-          local &&
-          run.home_node !== data.node.id &&
-          data.access.kind === "subject"
-        ) && (
-          <>
-            <div className="button-row">
+      <header className="grid min-w-0 gap-1.5">
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
+          <h2 className="min-w-0 text-[15px] font-semibold text-foreground [overflow-wrap:anywhere]">
+            {agentLabel(node, { id: run.agent_id, version: run.agent_version })}
+          </h2>
+          <Badge value={run.phase} />
+          <Badge value={run.control} />
+        </div>
+        <p className="text-xs text-muted-foreground [overflow-wrap:anywhere]">
+          <ReferenceName id={node} />
+        </p>
+      </header>
+      {(controllable || home) && (
+        <div className="flex min-w-0 flex-wrap gap-2">
+          {controllable && (
+            <>
               <Button
                 variant="outline"
                 type="button"
@@ -531,244 +554,270 @@ function RunPanel({
                 {t(run.control === "PAUSED" ? "resume" : "pause")}
               </Button>
               <Button
-                variant="outline"
+                variant="destructive"
                 type="button"
-                className="danger"
                 onClick={() => control("cancel")}
               >
                 {t("cancel")}
               </Button>
-            </div>
-            <form
-              onSubmit={(event) => {
-                event.preventDefault();
-                const content = draft.trim();
-                if ((!content && files.length === 0) || sending.current) return;
-                if (
-                  files.length > 0 &&
-                  (!canAttach ||
-                    !validRunMediaRoute(
-                      files.map((entry) => entry.file),
-                      mediaInputRoutes,
-                    ))
-                ) {
-                  setFileError(fileCopy.invalidAttachment);
-                  return;
-                }
-                sending.current = true;
-                setSendingMessage(true);
-                setFileError("");
-                void (async () => {
-                  try {
-                    const attachments: string[] = [];
-                    if (files.length > 0) {
-                      const current = await runGet(id, { offset: 0 });
-                      if (
-                        !validRunMediaRoute(
-                          files.map((entry) => entry.file),
-                          current.media_input_routes,
-                        )
-                      ) {
-                        setFileError(fileCopy.invalidAttachment);
-                        return;
-                      }
-                    }
-                    for (const entry of files) {
-                      let uploaded = entry.uploaded;
-                      if (!uploaded) {
-                        setUploading(true);
-                        uploaded = (
-                          await channelAttachmentUpload(
-                            run.workspace_id,
-                            entry.file,
-                            {
-                              filename: entry.file.name,
-                              media_type:
-                                entry.file.type || "application/octet-stream",
-                              idempotency_key: entry.key,
-                            },
-                          )
-                        ).id;
-                        setFiles((current) =>
-                          current.map((file) =>
-                            file.key === entry.key
-                              ? { ...file, uploaded }
-                              : file,
-                          ),
-                        );
-                      }
-                      attachments.push(uploaded);
-                    }
-                    if (
-                      request.current?.content !== content ||
-                      JSON.stringify(request.current.attachments) !==
-                        JSON.stringify(attachments)
-                    ) {
-                      request.current = {
-                        content,
-                        attachments,
-                        key: crypto.randomUUID(),
-                      };
-                    }
-                    const idempotency_key = request.current.key;
-                    const ok = await submit(() =>
-                      local
-                        ? runMessage(id, {
-                            content,
-                            idempotency_key,
-                            attachment_ids: attachments,
-                          })
-                        : remoteAction({
-                            node_id: node,
-                            control: {
-                              run_id: id,
-                              action: "message",
-                              content,
-                              idempotency_key,
-                            },
-                          }),
-                    );
-                    if (ok) {
-                      setDraft("");
-                      setFiles([]);
-                      request.current = null;
-                    }
-                  } catch (reason) {
-                    setFileError(
-                      `${fileCopy.attachmentError} ${reason instanceof Error ? reason.message : String(reason)}`,
-                    );
-                  } finally {
-                    setUploading(false);
-                    sending.current = false;
-                    setSendingMessage(false);
-                  }
-                })();
-              }}
+            </>
+          )}
+          {home && (
+            <Button
+              variant="ghost"
+              type="button"
+              onClick={() => visitChannel(run.workspace_id)}
             >
-              <Field label={copy.message}>
-                <textarea
-                  value={draft}
-                  onChange={(event) => {
-                    if (!sending.current) setDraft(event.target.value);
-                  }}
-                  disabled={sendingMessage}
-                  required={files.length === 0}
-                  rows={3}
-                />
-              </Field>
-              {canAttach && (
-                <>
-                  <input
-                    type="file"
-                    accept={mediaAccept}
-                    multiple
-                    aria-label={fileCopy.attach}
-                    disabled={sendingMessage}
-                    onChange={(event) => {
-                      if (sending.current) return;
-                      const selected = [
-                        ...files,
-                        ...Array.from(event.target.files ?? []).map((file) => ({
-                          key: crypto.randomUUID(),
-                          file,
-                        })),
-                      ];
-                      if (
-                        validRunMediaAttachments(
-                          selected.map((item) => item.file),
-                        ) &&
-                        validRunMediaRoute(
-                          selected.map((item) => item.file),
-                          mediaInputRoutes,
-                        )
-                      ) {
-                        setFiles(selected);
-                        request.current = null;
-                        setFileError("");
-                      } else setFileError(fileCopy.invalidAttachment);
-                      event.target.value = "";
-                    }}
-                  />
-                  <p>{fileCopy.attachmentLimit}</p>
-                </>
-              )}
-              {files.length > 0 && (
-                <ul className="workspace-draft-files">
-                  {files.map((entry) => (
-                    <li key={entry.key}>
-                      {entry.file.name}
-                      <Button
-                        variant="outline"
-                        type="button"
-                        aria-label={`${fileCopy.removeAttachment}: ${entry.file.name}`}
-                        disabled={sendingMessage}
-                        onClick={() => {
-                          if (sending.current) return;
-                          setFiles((current) =>
-                            current.filter((file) => file.key !== entry.key),
-                          );
-                          request.current = null;
-                        }}
-                      >
-                        ×
-                      </Button>
-                    </li>
-                  ))}
-                </ul>
-              )}
-              {fileError && (
-                <p role="alert" className="error">
-                  {fileError}
-                </p>
-              )}
-              <Button
-                variant="outline"
-                className="primary"
-                disabled={sendingMessage || uploading}
-              >
-                {uploading ? fileCopy.uploading : copy.send}
-              </Button>
-            </form>
-          </>
-        )}
-      {run.state_error && (
-        <p role="alert" className="error">
-          {run.state_error}
+              {copy.channelLink}
+            </Button>
+          )}
+        </div>
+      )}
+      {run.state_error && <Alert>{run.state_error}</Alert>}
+      {run.error && (
+        <p className="text-xs leading-relaxed text-destructive [overflow-wrap:anywhere]">
+          {run.error}
         </p>
       )}
-      {run.error && <p className="error">{run.error}</p>}
-      <h3>{t("toolCalls")}</h3>
-      {invocations.map((call) => (
-        <details className="call-detail" key={call.idempotency_key}>
-          <summary>
-            <Badge value={call.status} />
-            {call.tool}
-          </summary>
-          <h4>{t("input")}</h4>
-          <JsonView value={call.input} />
-          <h4>{t("result")}</h4>
-          <JsonView value={call.result} />
-        </details>
-      ))}
-      {local && query.hasNextPage && (
-        <Button
-          variant="outline"
-          type="button"
-          disabled={query.isFetchingNextPage}
-          onClick={() => void query.fetchNextPage()}
+      {managed && <RemoteMemoryProvenance url={`/api/runs/${id}/semantic`} />}
+      {managed && <RemoteRunManagement id={id} />}
+      {controllable && (
+        <form
+          className="grid min-w-0 gap-3 border-t border-border pt-4"
+          onSubmit={(event) => {
+            event.preventDefault();
+            const content = draft.trim();
+            if ((!content && files.length === 0) || sending.current) return;
+            if (
+              files.length > 0 &&
+              (!canAttach ||
+                !validRunMediaRoute(
+                  files.map((entry) => entry.file),
+                  mediaInputRoutes,
+                ))
+            ) {
+              setFileError(fileCopy.invalidAttachment);
+              return;
+            }
+            sending.current = true;
+            setSendingMessage(true);
+            setFileError("");
+            void (async () => {
+              try {
+                const attachments: string[] = [];
+                if (files.length > 0) {
+                  const current = await runGet(id, { offset: 0 });
+                  if (
+                    !validRunMediaRoute(
+                      files.map((entry) => entry.file),
+                      current.media_input_routes,
+                    )
+                  ) {
+                    setFileError(fileCopy.invalidAttachment);
+                    return;
+                  }
+                }
+                for (const entry of files) {
+                  let uploaded = entry.uploaded;
+                  if (!uploaded) {
+                    setUploading(true);
+                    uploaded = (
+                      await channelAttachmentUpload(
+                        run.workspace_id,
+                        entry.file,
+                        {
+                          filename: entry.file.name,
+                          media_type:
+                            entry.file.type || "application/octet-stream",
+                          idempotency_key: entry.key,
+                        },
+                      )
+                    ).id;
+                    setFiles((current) =>
+                      current.map((file) =>
+                        file.key === entry.key ? { ...file, uploaded } : file,
+                      ),
+                    );
+                  }
+                  attachments.push(uploaded);
+                }
+                if (
+                  request.current?.content !== content ||
+                  JSON.stringify(request.current.attachments) !==
+                    JSON.stringify(attachments)
+                ) {
+                  request.current = {
+                    content,
+                    attachments,
+                    key: crypto.randomUUID(),
+                  };
+                }
+                const idempotency_key = request.current.key;
+                const ok = await submit(() =>
+                  local
+                    ? runMessage(id, {
+                        content,
+                        idempotency_key,
+                        attachment_ids: attachments,
+                      })
+                    : remoteAction({
+                        node_id: node,
+                        control: {
+                          run_id: id,
+                          action: "message",
+                          content,
+                          idempotency_key,
+                        },
+                      }),
+                );
+                if (ok) {
+                  setDraft("");
+                  setFiles([]);
+                  request.current = null;
+                }
+              } catch (reason) {
+                setFileError(
+                  `${fileCopy.attachmentError} ${reason instanceof Error ? reason.message : String(reason)}`,
+                );
+              } finally {
+                setUploading(false);
+                sending.current = false;
+                setSendingMessage(false);
+              }
+            })();
+          }}
         >
-          {t("loadMore")}
-        </Button>
+          <Field label={copy.message}>
+            <Textarea
+              value={draft}
+              onChange={(event) => {
+                if (!sending.current) setDraft(event.target.value);
+              }}
+              disabled={sendingMessage}
+              required={files.length === 0}
+              rows={3}
+            />
+          </Field>
+          {canAttach && (
+            <div className="grid min-w-0 gap-1.5">
+              <Input
+                type="file"
+                accept={mediaAccept}
+                multiple
+                aria-label={fileCopy.attach}
+                disabled={sendingMessage}
+                className="h-auto py-1.5"
+                onChange={(event) => {
+                  if (sending.current) return;
+                  const selected = [
+                    ...files,
+                    ...Array.from(event.target.files ?? []).map((file) => ({
+                      key: crypto.randomUUID(),
+                      file,
+                    })),
+                  ];
+                  if (
+                    validRunMediaAttachments(
+                      selected.map((item) => item.file),
+                    ) &&
+                    validRunMediaRoute(
+                      selected.map((item) => item.file),
+                      mediaInputRoutes,
+                    )
+                  ) {
+                    setFiles(selected);
+                    request.current = null;
+                    setFileError("");
+                  } else setFileError(fileCopy.invalidAttachment);
+                  event.target.value = "";
+                }}
+              />
+              <p className="text-[11px] text-faint">
+                {fileCopy.attachmentLimit}
+              </p>
+            </div>
+          )}
+          {files.length > 0 && (
+            <ul className="flex min-w-0 flex-wrap gap-1.5">
+              {files.map((entry) => (
+                <li
+                  key={entry.key}
+                  className="flex h-7 min-w-0 max-w-full items-center gap-1 rounded-sm border border-border bg-raised pl-2 text-xs text-foreground"
+                >
+                  <span className="min-w-0 truncate font-mono">
+                    {entry.file.name}
+                  </span>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    type="button"
+                    className="size-6"
+                    aria-label={`${fileCopy.removeAttachment}: ${entry.file.name}`}
+                    disabled={sendingMessage}
+                    onClick={() => {
+                      if (sending.current) return;
+                      setFiles((current) =>
+                        current.filter((file) => file.key !== entry.key),
+                      );
+                      request.current = null;
+                    }}
+                  >
+                    <X aria-hidden />
+                  </Button>
+                </li>
+              ))}
+            </ul>
+          )}
+          {fileError && <Alert>{fileError}</Alert>}
+          <div className="flex justify-end">
+            <Button type="submit" disabled={sendingMessage || uploading}>
+              {uploading ? fileCopy.uploading : copy.send}
+            </Button>
+          </div>
+        </form>
       )}
-      <details>
-        <summary>{t("context")}</summary>
+      <Panel title={t("toolCalls")}>
+        {invocations.length === 0 && <Hint>{t("empty")}</Hint>}
+        {invocations.map((call) => (
+          <Disclosure
+            key={call.idempotency_key}
+            summary={
+              <span className="flex min-w-0 items-center gap-2">
+                <Badge value={call.status} />
+                <span className="min-w-0 truncate font-mono text-foreground">
+                  {call.tool}
+                </span>
+              </span>
+            }
+          >
+            <h4 className="text-[11px] font-medium text-faint">{t("input")}</h4>
+            <JsonView value={call.input} />
+            <h4 className="text-[11px] font-medium text-faint">
+              {t("result")}
+            </h4>
+            <JsonView value={call.result} />
+          </Disclosure>
+        ))}
+        {local && query.hasNextPage && (
+          <div>
+            <Button
+              variant="outline"
+              type="button"
+              disabled={query.isFetchingNextPage}
+              onClick={() => void query.fetchNextPage()}
+            >
+              {t("loadMore")}
+            </Button>
+          </div>
+        )}
+      </Panel>
+      <Disclosure summary={t("context")}>
         <JsonView value={run.context} />
-      </details>
+      </Disclosure>
       {local && (
-        <details>
-          <summary>{t("memory")}</summary>
+        <Disclosure summary={t("memory")}>
           <JsonView value={query.data?.pages[0].memory ?? {}} />
-        </details>
+        </Disclosure>
       )}
     </>
   );

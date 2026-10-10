@@ -1,4 +1,7 @@
 import { Button } from "./components/ui/button";
+import { Input } from "./components/ui/input";
+import { NativeSelect } from "./components/ui/native-select";
+import { Alert, Disclosure, Group, Hint, Notice, Pre } from "./components/patterns";
 import { useRef, useState } from "react";
 import { parseDocument } from "yaml";
 import { apiFetch } from "./transport";
@@ -99,14 +102,14 @@ export function SkillImport({
   };
 
   return (
-    <fieldset>
-      <legend>{t("skillImport")}</legend>
-      <p>{t("skillImportHelp")}</p>
-      <p>
+    <Group legend={t("skillImport")}>
+      <Hint>
+        {t("skillImportHelp")}{" "}
         <a
           href="https://github.com/anthropics/skills"
           target="_blank"
           rel="noreferrer"
+          className="text-brand underline-offset-4 hover:underline"
         >
           Anthropic Skills
         </a>{" "}
@@ -115,37 +118,42 @@ export function SkillImport({
           href="https://github.com/openai/skills"
           target="_blank"
           rel="noreferrer"
+          className="text-brand underline-offset-4 hover:underline"
         >
           OpenAI Skills
         </a>
-      </p>
-      <Field label={t("skillImportUrl")}>
-        <input
-          type="url"
-          value={url}
-          placeholder="https://skills.sh/owner/repo/skill"
-          onChange={(event) => {
-            request.current += 1;
-            setBusy(false);
-            setUrl(event.target.value);
-            setChoices([]);
-            setChoice("");
-            clear();
-          }}
-        />
-      </Field>
-      <Button
-        variant="outline"
-        type="button"
-        disabled={busy || !url.trim()}
-        onClick={() => void load()}
-      >
-        {busy ? t("loading") : t("skillImportFromUrl")}
-      </Button>
+      </Hint>
+      <div className="flex min-w-0 items-end gap-2">
+        <div className="min-w-0 flex-1">
+          <Field label={t("skillImportUrl")}>
+            <Input
+              type="url"
+              value={url}
+              placeholder="https://skills.sh/owner/repo/skill"
+              onChange={(event) => {
+                request.current += 1;
+                setBusy(false);
+                setUrl(event.target.value);
+                setChoices([]);
+                setChoice("");
+                clear();
+              }}
+            />
+          </Field>
+        </div>
+        <Button
+          variant="outline"
+          type="button"
+          disabled={busy || !url.trim()}
+          onClick={() => void load()}
+        >
+          {busy ? t("loading") : t("skillImportFromUrl")}
+        </Button>
+      </div>
       {choices.length > 1 && (
         <>
           <Field label={t("skillImportChoose")}>
-            <select
+            <NativeSelect
               value={choice}
               onChange={(event) => setChoice(event.target.value)}
             >
@@ -154,11 +162,12 @@ export function SkillImport({
                   {path}
                 </option>
               ))}
-            </select>
+            </NativeSelect>
           </Field>
           <Button
             variant="outline"
             type="button"
+            className="justify-self-start"
             disabled={busy || !choice}
             onClick={() => void load(choice)}
           >
@@ -167,7 +176,7 @@ export function SkillImport({
         </>
       )}
       <Field label="SKILL.md">
-        <input
+        <Input
           type="file"
           accept=".md"
           onChange={async (event) => {
@@ -194,32 +203,35 @@ export function SkillImport({
           }}
         />
       </Field>
-      {name && <p role="status">{name}</p>}
+      {name && (
+        <Notice role="status" className="font-mono">
+          {name}
+        </Notice>
+      )}
       {source && (
-        <p>
-          <a href={source} target="_blank" rel="noreferrer">
-            {source}
-          </a>
-        </p>
+        <a
+          href={source}
+          target="_blank"
+          rel="noreferrer"
+          className="min-w-0 truncate font-mono text-xs text-brand underline-offset-4 hover:underline"
+        >
+          {source}
+        </a>
       )}
       {files.length > 0 && (
-        <details>
-          <summary>
-            {t("skillImportFiles")} ({files.length})
-          </summary>
+        <Disclosure summary={`${t("skillImportFiles")} (${files.length})`}>
           {files.map((file) => (
-            <details key={file.path}>
-              <summary>{file.path}</summary>
+            <Disclosure key={file.path} summary={file.path}>
               {file.encoding === "base64" ? (
-                <p>{t("skillImportBinary")}</p>
+                <Hint>{t("skillImportBinary")}</Hint>
               ) : (
-                <pre>{file.content}</pre>
+                <Pre>{file.content}</Pre>
               )}
-            </details>
+            </Disclosure>
           ))}
-        </details>
+        </Disclosure>
       )}
-      {error && <p role="alert">{error}</p>}
-    </fieldset>
+      {error && <Alert>{error}</Alert>}
+    </Group>
   );
 }

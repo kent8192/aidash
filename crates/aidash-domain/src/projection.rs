@@ -58,6 +58,18 @@ impl std::fmt::Display for ProjectionVersion {
 	}
 }
 
+/// An Agent definition's prompt-caching opt-in, pinned with the Run's Binding
+/// snapshot (ADR 0019). Omitted means `off`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PromptCache {
+	#[default]
+	Off,
+	/// Send `cache_control` breakpoints at the end of `system` and of the
+	/// Stable Prefix part, on a model that declares `explicit` caching.
+	Explicit,
+}
+
 /// The Cache Scope of one request: the Tenant whose keyed salt starts
 /// `system`, and the Cache Salt Key version that derives it. The salt itself
 /// is computed only by the transport adapter and never enters the request
