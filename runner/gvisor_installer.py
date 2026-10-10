@@ -106,7 +106,12 @@ def archive_files(data, checksum):
     return files
 
 
-def configure(root, runsc_root='/run/containerd/runsc'):
+def configuration(root, runsc_root='/run/containerd/runsc'):
+    """containerd files that differ from the verified registration, without writing.
+
+    Incompatible existing configuration is refused here, before anything is fenced
+    or written.
+    """
     if not runsc_root.startswith('/') or '..' in PurePosixPath(runsc_root).parts:
         raise ValueError('absolute runsc root required')
     config_path = root / 'etc/containerd/config.toml'
@@ -121,16 +126,18 @@ def configure(root, runsc_root='/run/containerd/runsc'):
                             'ConfigPath': '/etc/containerd/runsc.toml'}}
     if runtime is not None and runtime != expected:
         raise ValueError('existing runsc registration differs from verified configuration')
-    changed = write(root / 'etc/containerd/runsc.toml',
-                    (f'root = {json.dumps(runsc_root)}\n[runsc_config]\nplatform = "systrap"\n').encode())
+    files = {root / 'etc/containerd/runsc.toml':
+             (f'root = {json.dumps(runsc_root)}\n[runsc_config]\nplatform = "systrap"\n').encode()}
     if runtime is None:
         text += ('\n[plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runsc]\n'
                  'runtime_type = "io.containerd.runsc.v1"\n'
                  '[plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runsc.options]\n'
                  'TypeUrl = "io.containerd.runsc.v1.options"\n'
                  'ConfigPath = "/etc/containerd/runsc.toml"\n')
-        changed |= write(config_path, text.encode())
-    return changed
+        files[config_path] = text.encode()
+    return {path: data for path, data in files.items()
+            if path.is_symlink() or not path.is_file() or path.read_bytes() != data
+            or path.stat().st_mode & 0o777 != 0o644}
 
 
 def live_sentries(root, proc='/proc', binaries=SENTRY_BINARIES):
@@ -197,10 +204,17 @@ def install(root, version, checksum, arch, download, restart, runsc_root='/run/c
         files = archive_files(download(url), checksum)
         # Validate every destination before changing any executable.
         paths = {name: destination(root / 'usr/local/bin', name) for name in files}
+    changes = configuration(root, runsc_root)
+    # A different runsc root or registration strands live sandboxes exactly as a
+    # binary replacement does: they stay under the old root while the guard and
+    # new sandboxes use the new one. Both are fenced and drained first.
+    fenced = replaced or bool(changes)
+    if fenced:
         # The fence persists through any failure below: `installed` then
         # requires a retry, which fences, drains and replaces again.
         fence(root)
         drain(root)
+    if replaced:
         for name, data in files.items():
             # Whatever the archive order, the new shim is written fenced too.
             write(paths[name], data, 0o644 if name == SHIM else 0o755)
@@ -208,11 +222,13 @@ def install(root, version, checksum, arch, download, restart, runsc_root='/run/c
             'version': version, 'archive_sha': checksum,
             'files': {name: hashlib.sha256(data).hexdigest() for name, data in files.items()}
         }, sort_keys=True).encode())
-    if not installed(root, version, checksum, 0o644 if replaced else 0o755):
+    if not installed(root, version, checksum, 0o644 if fenced else 0o755):
         raise ValueError('pinned gVisor installation verification failed')
-    if configure(root, runsc_root):
+    for path, data in changes.items():
+        write(path, data)
+    if changes:
         restart()
-    if replaced:
+    if fenced:
         # Only now can a sandbox start: every runtime file and containerd's
         # configuration are the verified version.
         os.chmod(destination(root, SHIM_BINARY), 0o755)

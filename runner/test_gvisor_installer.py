@@ -60,15 +60,47 @@ class InstallerTest(unittest.TestCase):
 
     def test_incompatible_runtime_and_containerd_version_are_refused(self):
         config = self.root / 'etc/containerd/config.toml'
+        drain = Mock()
         for text in ('version = 3\n', 'version = 2\n[plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runsc]\nruntime_type="other"\n'):
             config.write_text(text)
             with self.assertRaises(ValueError):
-                self.install()
+                installer.install(self.root, installer.GVISOR_VERSION, self.sha, 'x86_64',
+                                  self.download, self.restart, drain=drain)
             self.assertEqual(config.read_text(), text)
-            # A runtime that containerd cannot be configured for is never unfenced.
-            shim = self.root / 'usr/local/bin' / installer.SHIM
-            self.assertEqual(shim.stat().st_mode & 0o777, 0o644)
+            # Refused before anything is fenced, drained or written.
+            self.assertFalse((self.root / 'usr/local/bin' / installer.SHIM).exists())
+        drain.assert_not_called()
         self.restart.assert_not_called()
+
+    def test_runsc_root_change_fences_and_drains_before_reconfiguring(self):
+        self.install()
+        shim = self.root / 'usr/local/bin' / installer.SHIM
+        config = self.root / 'etc/containerd/runsc.toml'
+        before = config.read_text()
+
+        def blocked(root):
+            self.assertEqual(shim.stat().st_mode & 0o777, 0o644)
+            raise RuntimeError('live gVisor sandboxes')
+
+        with self.assertRaisesRegex(RuntimeError, 'live gVisor'):
+            installer.install(self.root, installer.GVISOR_VERSION, self.sha, 'x86_64',
+                              self.download, self.restart, '/run/other', drain=blocked)
+        # Live sandboxes keep the root the guard reaches them through.
+        self.assertEqual(config.read_text(), before)
+        self.assertEqual(self.restart.call_count, 1)
+        self.assertEqual(shim.stat().st_mode & 0o777, 0o644)
+        drained = Mock()
+        installer.install(self.root, installer.GVISOR_VERSION, self.sha, 'x86_64',
+                          self.download, self.restart, '/run/other', drain=drained)
+        drained.assert_called_once()
+        self.assertIn('root = "/run/other"', config.read_text())
+        self.assertEqual(self.restart.call_count, 2)
+        self.assertEqual(shim.stat().st_mode & 0o777, 0o755)
+        # An unchanged installation neither fences nor drains.
+        unchanged = Mock()
+        installer.install(self.root, installer.GVISOR_VERSION, self.sha, 'x86_64',
+                          self.download, self.restart, '/run/other', drain=unchanged)
+        unchanged.assert_not_called()
 
     def test_shim_stays_fenced_until_every_file_and_containerd_restart_complete(self):
         shim = self.root / 'usr/local/bin' / installer.SHIM
