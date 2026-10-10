@@ -95,8 +95,8 @@ the `<release>-execution-runner:8949` endpoint. The chart's Runner profile does
 not provision the application's retained object store or change its admission
 configuration; those remain operator-provisioned state.
 
-The profile keeps guest `processes=128` (minimum 8: the admission probe lowers its
-own hard `RLIMIT_NPROC` to 8 and cannot raise it) and separate `host_tasks=512`.
+The profile keeps guest `processes=128` (16 to 4096, the application capability
+profile's range) and separate `host_tasks=512`.
 The Sentry's own host threads share that `pids.max` with the probe's
 `processes - 16` guest children, and only the 128/512 profile is verified, so
 `host_tasks` must be at least `max(4 * processes, processes + 384)`.
@@ -104,7 +104,8 @@ The Sentry's own host threads share that `pids.max` with the probe's
 node guard's limit for Python cells. `idle_seconds` is capped at 1800, the guard's
 frozen-session deadline, and `output_bytes` at 8 MiB: stdout and PNG displays each
 use that budget and are base64-encoded into one result file the guard caps at
-24 MiB. With
+24 MiB. `working_bytes` is capped at 1 GiB, the most the guard exports and the
+application profile accepts. With
 the Runner enabled the release name is limited to 46 characters so
 `<release>-execution-runner` fits a 63-character DNS label. The guard
 writes and verifies Sentry `pids.max`; `sandbox.py` enforces guest `RLIMIT_NPROC`.

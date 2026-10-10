@@ -143,10 +143,12 @@ WantedBy=multi-user.target
     run([executables["kind"], "load", "docker-image", "--name", args.name, tag])
     image = "docker.io/library/aidash-sandbox@" + digest
     run(docker + ["ctr", "-n", "k8s.io", "images", "tag", tag, image])
+    # Shared with the Rust capability runtime, whose Profile denies unknown fields:
+    # Runner-only settings such as host_tasks stay out (the Runner defaults to 512).
     profile = {
         "admission": True, "storage": str(directory / "objects"), "outbound_origins": [], "package_origins": [],
         "working_bytes": 1073741824, "retained_bytes": 10737418240, "temporary_bytes": 268435456,
-        "cpu": 2, "memory_bytes": 2147483648, "processes": 128, "host_tasks": 512,
+        "cpu": 2, "memory_bytes": 2147483648, "processes": 128,
         "operation_seconds": 120, "maximum_seconds": 600, "install_seconds": 300,
         "idle_seconds": 1800, "recovery_seconds": 604800, "grant_seconds": 3600,
         "approval_seconds": 86400, "output_bytes": 8388608, "staging_seconds": 86400,

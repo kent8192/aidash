@@ -132,9 +132,10 @@
               "minimum": 1
             },
             "processes": {
-              "description": "Guest RLIMIT_NPROC. The admission probe lowers its own hard limit to 8 (runner/probe.py fork_probe_limit) and cannot raise it, so smaller values crash-loop the Runner.",
+              "description": "Guest RLIMIT_NPROC. Matches the application capability profile's supported range of 16 to 4096, so the application and the Runner can use the same value; this is above the admission probe's own hard limit of 8 (runner/probe.py fork_probe_limit).",
               "type": "integer",
-              "minimum": 8
+              "minimum": 16,
+              "maximum": 4096
             },
             "host_tasks": {
               "description": "Sentry pids.max. The chart requires at least max(4 * processes, processes + 384), the headroom of the verified 128/512 profile: the Sentry's own host threads share this ceiling with the admission probe's processes - 16 guest children.",
@@ -142,8 +143,10 @@
               "minimum": 1
             },
             "working_bytes": {
+              "description": "Writable working quota. The node guard exports at most 1 GiB, and the application capability profile accepts at most 1 GiB.",
               "type": "integer",
-              "minimum": 1
+              "minimum": 1,
+              "maximum": 1073741824
             },
             "temporary_bytes": {
               "type": "integer",
