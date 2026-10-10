@@ -15,6 +15,11 @@ use aidash_domain::provider::{
 use serde_json::{Map, Value, json};
 use std::collections::BTreeMap;
 
+/// The whole stream may carry this many times the assembled limit. A response
+/// that fits the limit can arrive as one-token deltas, each wrapped in a few
+/// hundred bytes of chunk envelope; reasoning and unknown fields count too.
+const STREAM_ENVELOPE_FACTOR: usize = 128;
+
 #[derive(Default)]
 struct PartialCall {
 	id: Option<String>,
@@ -28,6 +33,7 @@ pub(crate) struct StreamAssembler<'a> {
 	limit: usize,
 	line: Vec<u8>,
 	data: Option<Vec<u8>>,
+	received: usize,
 	assembled: usize,
 	content: String,
 	refusal: Option<String>,
@@ -38,13 +44,15 @@ pub(crate) struct StreamAssembler<'a> {
 }
 
 impl<'a> StreamAssembler<'a> {
-	/// `limit` bounds the assembled response and any single SSE line or event.
+	/// `limit` bounds the assembled response and any single SSE line or event;
+	/// every received byte counts toward `STREAM_ENVELOPE_FACTOR` times it.
 	pub(crate) fn new(progress: &'a dyn InferenceProgressSink, limit: usize) -> Self {
 		Self {
 			progress,
 			limit,
 			line: Vec::new(),
 			data: None,
+			received: 0,
 			assembled: 0,
 			content: String::new(),
 			refusal: None,
@@ -63,6 +71,13 @@ impl<'a> StreamAssembler<'a> {
 	/// Consume one network chunk. Returns whether it carried any `data:` field,
 	/// which is the only liveness signal; comment lines never count.
 	pub(crate) fn push(&mut self, mut chunk: &[u8]) -> Result<bool> {
+		let stream_limit = self.limit.saturating_mul(STREAM_ENVELOPE_FACTOR);
+		if chunk.len() > stream_limit.saturating_sub(self.received) {
+			return Err(Error::External(format!(
+				"response stream exceeds {stream_limit} bytes"
+			)));
+		}
+		self.received += chunk.len();
 		let mut live = false;
 		while !chunk.is_empty() && !self.done {
 			let (part, end) = match chunk.iter().position(|byte| *byte == b'\n') {
@@ -185,9 +200,17 @@ impl<'a> StreamAssembler<'a> {
 			return Err(rejected(error));
 		}
 		if let Some(choices) = chunk.get("choices").and_then(Value::as_array) {
+			// A non-streamed body is read at `/choices/0`. An omitted index can
+			// only identify the sole choice of a chunk; with several, it is ambiguous.
+			let unindexed = |choice: &Value| choice.get("index").is_none_or(Value::is_null);
+			if choices.len() > 1 && choices.iter().any(unindexed) {
+				return Err(Error::External(
+					"provider stream returned ambiguous unindexed choices".into(),
+				));
+			}
 			for choice in choices
 				.iter()
-				.filter(|choice| choice.get("index").is_none_or(|index| index == 0))
+				.filter(|choice| unindexed(choice) || choice["index"] == 0)
 			{
 				self.choice(choice)?;
 			}

@@ -79,9 +79,13 @@ unchanged. Aidash assembles the complete stream, including the final
 non-streamed completion before any tool call can run. A stream that ends early,
 is truncated, refused, oversized (more than 1 MiB assembled), or reports a
 provider error fails with the same errors as the equivalent non-streamed
-response. While the stream is open, only display progress is published: text,
-and each tool call's ID, name and argument size. Argument text and provider
-reasoning are never published.
+response. Every received byte, including reasoning, unknown fields and
+keepalives, also counts toward a 128 MiB cap on the whole stream, which leaves
+room for the per-chunk envelope of one-token deltas. Like the non-streamed
+`/choices/0`, only choice `0` is assembled; a chunk with several choices that
+omit `index` is rejected as ambiguous. While the stream is open, only display
+progress is published: text, and each tool call's ID, name and argument size.
+Argument text and provider reasoning are never published.
 
 `config.stream_stall_timeout_secs` is the longest silence, in seconds, between
 streamed data events, including the wait for response headers. Provider
