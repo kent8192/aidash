@@ -86,7 +86,9 @@ impl ConcurrentCall {
 	}
 }
 
-/// Result bytes outside bounded content: identifiers, status, metadata and revisions.
+/// A fixed allowance for result bytes outside bounded content: identifiers,
+/// status and revisions. File metadata can exceed it. The planner uses it only
+/// to choose concurrency; adopted results are charged at their actual size.
 pub const RESULT_ENVELOPE_BYTES: usize = 2048;
 /// Serialized Skill metadata: bounded name, description, license, origin and identity.
 pub const SKILL_METADATA_BYTES: usize = 8704;

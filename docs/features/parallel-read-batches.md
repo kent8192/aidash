@@ -64,17 +64,21 @@ model's order and stops before the first call that:
   resource);
 - would exceed either ceiling; or
 - could not fit the request budget if every earlier call in the batch returned
-  its worst-case result.
+  its estimated worst-case result.
 
 Calls are never reordered: a write between two reads ends the batch. A batch
 needs at least two calls; otherwise the call runs alone. Batches form only in
 ordinary execution. They never form during run-message catch-up, while
 selected model media is pending, or before required message reads are done.
 
-The budget check is conservative. Each result is measured as if every bounded
-byte were a control character escaped in the request encoding. With default
-Node limits, large-window models batch reads, and small windows mostly fall
-back to sequential calls.
+The budget check only decides whether calls run together. Each call's content
+bound, plus a fixed 2 KiB result envelope, is measured as if every byte were a
+control character escaped in the request encoding. File metadata, such as a
+long Skill origin, can exceed that envelope. Adopted results are charged at
+their actual size, exactly as when the same calls run one at a time, and the
+next request is compacted to fit as usual. With default Node limits,
+large-window models batch reads, and small windows mostly fall back to
+sequential calls.
 
 ## Durability and recovery
 
