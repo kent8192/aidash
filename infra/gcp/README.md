@@ -25,8 +25,11 @@ NAT, Kubernetes 1.34 or later). Each Environment owns:
 - server and worker Google service accounts bound through Workload Identity, a
   Secret Manager runtime secret and, when enabled, GCIP tenants;
 - retained PVCs on the `aidash-retain` StorageClass (`pd-balanced`, `Retain`):
-  PostgreSQL, NATS JetStream, Runner journal, Home ledger (`memory-recovery`) and
-  capability objects (`capability-objects`).
+  PostgreSQL, NATS JetStream, Runner journal, Home ledger (`memory-recovery`, the
+  ledger in its `home/` child) and capability objects (`capability-objects`, the
+  store in its `objects/` child). A fresh disk root belongs to root, so the
+  application UID creates and restricts those children itself; the migration Job
+  mounts the ledger claim root and initializes `home/` before the writers start.
 
 A small untainted E2 system pool runs one node only while any Environment runs.
 PostgreSQL 17 with pgvector/PGroonga and NATS JetStream are single-replica
@@ -308,6 +311,14 @@ between the last idle observation and the drain can be interrupted **even
 without `force`**. Explicit `force=true` skips the observation. Neither drain
 completion nor Kubernetes eviction is termination proof; uncertain operations are
 never replayed by infrastructure.
+
+Admission is also recorded durably in the controller-owned ConfigMap
+`env-environment-admission` (`state: open|closed`), which every edge reads at
+start: closing records `closed` first, opening records `open` last, and deploys
+and stops record `closed`. A rescheduled or restarted edge (Spot preemption, node
+loss, container restart) therefore resumes serving without a controller call, and
+any partial failure leaves it closed. An Environment without live Pods is already
+sealed.
 
 The stop threshold is 60 minutes. Reconciliation is scheduled every five minutes
 and GitHub scheduling/startup can be delayed; **this is not an exact shutdown-time

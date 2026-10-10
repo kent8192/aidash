@@ -25,7 +25,9 @@ bootstrap the group. Both Deployments use `Recreate` so a replacement does not
 surge onto a second machine with a shared ReadWriteOnce claim. This profile pauses
 during replacement and disk recovery. Keep any additional affinity compatible
 with this placement. `capabilities.storage.existingClaim` is mounted at
-`/var/lib/aidash/capabilities`, the capability object store.
+`/var/lib/aidash/capabilities`; the capability object store is its `objects/`
+child, which the application creates and restricts to its own UID (a fresh
+volume root belongs to root and cannot be chmodded by the application).
 
 ## Edge, settings and network
 

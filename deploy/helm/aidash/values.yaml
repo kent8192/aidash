@@ -27,8 +27,8 @@ memoryRecovery:
   subPath: ""
 capabilities:
   storage:
-    # Retained RWO claim for capability objects, mounted at
-    # /var/lib/aidash/capabilities in server and worker. Required with the Runner.
+    # Retained RWO claim for capability objects, mounted at /var/lib/aidash/capabilities
+    # in server and worker; objects live in its objects/ child. Required with the Runner.
     existingClaim: ""
 # Socket peers (IPs or CIDRs) allowed to supply X-Real-IP, e.g. the edge Pod CIDR.
 trustedProxy:

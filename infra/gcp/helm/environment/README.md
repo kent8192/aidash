@@ -31,13 +31,19 @@ The release name is limited to 31 characters: generated names add up to 21
 The public LoadBalancer exposes only ports 80/443 and uses
 `externalTrafficPolicy: Local`, so Caddy receives the original client address.
 Caddy replaces client forwarding headers before local Nginx admission. TLS state
-is on a kept ReadWriteOnce claim. Nginx starts with admission closed; the trusted
-controller opens it only after dependencies, migrations and execution admission
-are verified. The internal activity Service exposes port 8089. NetworkPolicy
+is on a kept ReadWriteOnce claim. Nginx starts closed unless the controller-owned
+ConfigMap `<release>-environment-admission` (key `state`, mounted optionally and
+read-only at `/etc/aidash-admission`) says exactly `open`; the chart never renders
+that ConfigMap, so installs and upgrades cannot reset it, and a restarted or
+rescheduled edge restores the last desired state without a controller call. The
+trusted controller opens it only after dependencies, migrations and execution
+admission are verified. The internal activity Service exposes port 8089. NetworkPolicy
 permits that port only from the activity collector in this namespace; the
 controller seals and unseals through
 `kubectl exec deploy/env-environment-edge -c admission -- curl -fsS -X POST http://127.0.0.1:8089/admission/{close,open}`,
-which is why the trusted edge image includes `curl`.
+which is why the trusted edge image includes `curl`. It records `closed` before
+closing the live gate and `open` only after opening it, so a partial failure
+leaves a restarted edge closed.
 PostgreSQL and NATS accept only same-namespace server/worker and observer traffic.
 
 Preview TLS uses the existing `aidash-preview-tls` disk as one static `Retain`

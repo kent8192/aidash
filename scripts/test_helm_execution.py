@@ -145,9 +145,11 @@ class ChartsTest(unittest.TestCase):
             # The token the application presents is the one the Runner verifies.
             token = next(item['valueFrom'] for item in container['env'] if item['name'] == profile['runner']['token_env'])
             self.assertEqual(token, runner_token)
-            # Capability objects live on the retained claim.
+            # Capability objects live in a child of the retained claim: the store
+            # chmods its directory, which a root-owned volume root would refuse.
             mounts = {item['mountPath']: item['name'] for item in container['volumeMounts']}
-            self.assertEqual(mounts[profile['storage']], 'capabilities')
+            self.assertEqual(os.path.dirname(profile['storage']), '/var/lib/aidash/capabilities')
+            self.assertEqual(mounts[os.path.dirname(profile['storage'])], 'capabilities')
         self.assertEqual(profiles[0], profiles[1])
         profile = profiles[0]
         # Exactly the Rust `Profile` fields (deny_unknown_fields): no Runner-only host_tasks.
@@ -473,6 +475,22 @@ class ChartsTest(unittest.TestCase):
         service = select(objects, 'Service', '-edge')
         self.assertEqual(service['spec']['externalTrafficPolicy'], 'Local')
         self.assertEqual([port['port'] for port in service['spec']['ports']], [80, 443])
+        # Desired admission is controller-owned (kube.ADMISSION): mounted optionally and
+        # read-only, never rendered, so neither install nor upgrade resets it.
+        named = render(self.environment, values, 'env')
+        self.assertFalse(any(value['kind'] == 'ConfigMap' and value['metadata']['name'].endswith('-admission')
+                             for value in named))
+        pod = select(named, 'Deployment', '-edge')['spec']['template']['spec']
+        state = next(volume for volume in pod['volumes'] if volume['name'] == 'admission-state')
+        self.assertEqual(state['configMap'], {'name': 'env-environment-admission', 'optional': True})
+        admission = next(container for container in pod['containers'] if container['name'] == 'admission')
+        self.assertIn({'name': 'admission-state', 'mountPath': '/etc/aidash-admission', 'readOnly': True},
+                      admission['volumeMounts'])
+        caddy = next(container for container in pod['containers'] if container['name'] == 'caddy')
+        self.assertNotIn('admission-state', [mount['name'] for mount in caddy['volumeMounts']])
+        conf = select(named, 'ConfigMap', '-edge')['data']['admission.conf']
+        self.assertIn('io.open("/etc/aidash-admission/state", "r")', conf)
+        self.assertIn('ngx.shared.aidash_activity:set("closed", not open)', conf)
         job = select(objects, 'CronJob', '-activity')['spec']
         self.assertEqual(job['schedule'], '* * * * *')
         self.assertEqual(job['concurrencyPolicy'], 'Forbid')
@@ -630,6 +648,59 @@ class ActivityTest(unittest.TestCase):
         snapshot = json.loads(published['data']['snapshot.json'])
         self.assertTrue(snapshot['busy'])
         self.assertTrue(snapshot['observation_gap'])
+
+    def test_concurrent_publication_recombines_against_the_winner(self):
+        # The minute CronJob and the controller's seal Job race on one resourceVersion.
+        database = {'protocol': 'aidash-infra-activity/1', 'counts': {'runs': 0}, 'completed_transfers': [],
+                    'last_work_completed': 0}
+        snapshots = [('7', {'protocol': 'aidash-infra-activity/1', 'busy': True, 'observed_at': 9900}),
+                     ('8', {'protocol': 'aidash-infra-activity/1', 'busy': False, 'observed_at': 9990,
+                            'last_active': 5000, 'completed_transfers_digest': self.activity.digest([])})]
+        environment = {'KUBERNETES_SERVICE_HOST': 'api', 'KUBERNETES_SERVICE_PORT': '443',
+                       'ACTIVITY_CONFIGMAP': 'activity', 'EDGE_ACTIVITY_ENDPOINT': 'http://edge',
+                       'RUNNER_ENDPOINT': 'http://runner', 'AIDASH_CORE_RUNNER_TOKEN': 'x' * 32}
+        for conflicts, code in ((1, 409), (3, 409), (1, 500)):
+            with self.subTest(conflicts=conflicts, code=code):
+                reads, patches = [], []
+
+                def request(url, token=None, *, data=None, method=None, context=None):
+                    if method == 'PATCH':
+                        patches.append(json.loads(data))
+                        if len(patches) <= conflicts:
+                            raise self.activity.urllib.error.HTTPError(url, code, 'conflict', {}, None)
+                        return {}
+                    if url.endswith('/configmaps/activity'):
+                        version, snapshot = snapshots[min(len(reads), 1)]
+                        reads.append(version)
+                        return {'metadata': {'resourceVersion': version}, 'data': {'snapshot.json': json.dumps(snapshot)}}
+                    if url.endswith('/v1/activity'):
+                        return {'protocol': 'aidash-runner-activity/1', 'counts': {'runner': 0}}
+                    return {'inflight': 0, 'last_active': 0, 'closed': True}
+
+                with (patch.dict(os.environ, environment),
+                      patch.object(self.activity, 'request', request),
+                      patch.object(self.activity.ssl, 'create_default_context'),
+                      patch.object(self.activity.time, 'time', return_value=10000),
+                      patch.object(Path, 'read_text', return_value='value'),
+                      patch.object(Path, 'read_bytes', return_value=json.dumps(database).encode())):
+                    if conflicts == 1 and code == 409:
+                        self.activity.main()
+                    else:
+                        with self.assertRaises(self.activity.urllib.error.HTTPError):
+                            self.activity.main()
+                if code != 409:
+                    self.assertEqual(len(patches), 1)
+                    continue
+                if conflicts == 3:
+                    self.assertEqual(len(patches), self.activity.PUBLISH_ATTEMPTS)
+                    continue
+                self.assertEqual([item['metadata']['resourceVersion'] for item in patches], ['7', '8'])
+                published = json.loads(patches[-1]['data']['snapshot.json'])
+                # Combined against the winner's idle snapshot, not the stale busy one.
+                self.assertFalse(published['busy'])
+                self.assertFalse(published['observation_gap'])
+                self.assertEqual(published['last_active'], 5000)
+                self.assertEqual(published['observed_at'], 10000)
 
     def test_persisted_snapshot_keeps_a_bounded_transfer_digest(self):
         previous = {'observed_at': 9950, 'last_active': 5000, 'busy': False}

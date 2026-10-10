@@ -5,7 +5,11 @@ import os
 from pathlib import Path
 import ssl
 import time
+import urllib.error
 import urllib.request
+
+# The minute CronJob and the controller's on-demand Job may publish together.
+PUBLISH_ATTEMPTS = 3
 
 
 def digest(transfers):
@@ -47,6 +51,13 @@ def request(url, token=None, *, data=None, method=None, context=None):
         return json.load(response)
 
 
+def unavailable():
+    # Unavailable observations never authorize a stop and never emit secrets.
+    now = time.time()
+    return {'protocol': 'aidash-infra-activity/1', 'busy': True, 'observed_at': now, 'last_active': now,
+            'observation_gap': True, 'error': 'activity unavailable'}
+
+
 def main():
     account = Path('/var/run/secrets/kubernetes.io/serviceaccount')
     token = (account / 'token').read_text().strip()
@@ -56,20 +67,30 @@ def main():
     context = ssl.create_default_context(cafile=str(account / 'ca.crt'))
     previous = request(url, token, context=context)
     try:
-        database = json.loads(Path('/snapshot/database.json').read_bytes())
-        edge = request(os.environ['EDGE_ACTIVITY_ENDPOINT'] + '/activity')
-        runner = request(os.environ['RUNNER_ENDPOINT'] + '/v1/activity',
-                         os.environ['AIDASH_CORE_RUNNER_TOKEN'])
-        snapshot = combine(database, edge, runner,
-                           json.loads(previous['data']['snapshot.json']), time.time())
+        observed = (
+            json.loads(Path('/snapshot/database.json').read_bytes()),
+            request(os.environ['EDGE_ACTIVITY_ENDPOINT'] + '/activity'),
+            request(os.environ['RUNNER_ENDPOINT'] + '/v1/activity', os.environ['AIDASH_CORE_RUNNER_TOKEN']),
+        )
     except Exception:
-        # Unavailable observations never authorize a stop and never emit secrets.
-        snapshot = {'protocol': 'aidash-infra-activity/1', 'busy': True,
-                    'observed_at': time.time(), 'last_active': time.time(),
-                    'observation_gap': True, 'error': 'activity unavailable'}
-    patch = {'metadata': {'resourceVersion': previous['metadata']['resourceVersion']},
-             'data': {'snapshot.json': json.dumps(snapshot)}}
-    request(url, token, data=json.dumps(patch).encode(), method='PATCH', context=context)
+        observed = None
+    for attempt in range(PUBLISH_ATTEMPTS):
+        try:
+            snapshot = unavailable() if observed is None else combine(
+                *observed, json.loads(previous['data']['snapshot.json']), time.time())
+        except Exception:
+            snapshot = unavailable()
+        patch = {'metadata': {'resourceVersion': previous['metadata']['resourceVersion']},
+                 'data': {'snapshot.json': json.dumps(snapshot)}}
+        try:
+            request(url, token, data=json.dumps(patch).encode(), method='PATCH', context=context)
+            return
+        except urllib.error.HTTPError as error:
+            if error.code != 409 or attempt + 1 == PUBLISH_ATTEMPTS:
+                raise
+        # Another collector published first: combine against its snapshot so the
+        # gap, idle history and transfer digest stay continuous.
+        previous = request(url, token, context=context)
 
 
 if __name__ == '__main__':

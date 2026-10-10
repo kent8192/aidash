@@ -25,12 +25,20 @@ PREVIEW_VOLUME = "aidash-preview-tls"
 PREVIEW_CLAIM = "preview-tls"
 PREVIEW_SIZE = "10Gi"
 CLAIMS = {"memory-recovery": "2Gi", "capability-objects": "10Gi"}
+# The Home ledger lives in a child of its claim. A fresh disk's root belongs to
+# root, so the application UID can create the child (fsGroup grants group write)
+# but could never chmod the root itself as ledger initialization requires.
+RECOVERY_ROOT = "/var/lib/aidash/memory-recovery"
+RECOVERY_HOME = "home"
 SERVER = "deployment/app-aidash-server"
 WORKER = "deployment/app-aidash-worker"
 RUNNER = "deployment/app-execution-runner"
 EDGE = "deployment/env-environment-edge"
 STATEFULSETS = ("statefulset/env-environment-postgres", "statefulset/env-environment-nats")
 ACTIVITY = "env-environment-activity"
+# Controller-owned desired admission state, read by every edge at start. Never
+# rendered by a chart, so a Helm upgrade cannot reset it.
+ADMISSION = "env-environment-admission"
 LOAD_BALANCER = "env-environment-edge"
 WRITER_PODS = "app.kubernetes.io/instance=app,app.kubernetes.io/component in (server,worker)"
 RUNNER_PODS = "aidash.run/runner=app"
@@ -432,7 +440,11 @@ def app_values(cluster, identity, output, release, sha, settings):
         "image": {"repository": repository, "digest": digest},
         "node": {"id": "aidash://" + output["runtime_secret"], "endpoint": "https://" + output["hostname"]},
         "existingSecret": "app-runtime",
-        "memoryRecovery": {"existingClaim": "memory-recovery"},
+        "memoryRecovery": {
+            "existingClaim": "memory-recovery",
+            "directory": f"{RECOVERY_ROOT}/{RECOVERY_HOME}",
+            "subPath": RECOVERY_HOME,
+        },
         "capabilities": {"storage": {"existingClaim": "capability-objects"}},
         "frontend": {"enabled": False},
         "release": {"sourceSha": sha},
@@ -480,13 +492,29 @@ def env_values(identity, output, release):
     }
 
 
+def desired_admission(cluster, namespace, state):
+    cluster.apply({
+        "apiVersion": "v1", "kind": "ConfigMap",
+        "metadata": {"name": ADMISSION, "namespace": namespace},
+        "data": {"state": state},
+    })
+
+
 def admission(cluster, identity, action):
+    """Toggle the live edge and its durable state so that any partial failure
+    leaves a restarted edge closed: close records first, open records last."""
     if action not in {"close", "open"}:
         raise Refused("Invalid admission action")
-    cluster.exec(
-        namespace_of(identity), EDGE, "admission",
-        "curl", "-fsS", "-X", "POST", f"http://127.0.0.1:8089/admission/{action}",
-    )
+    namespace = namespace_of(identity)
+    command = ("curl", "-fsS", "-X", "POST", f"http://127.0.0.1:8089/admission/{action}")
+    if action == "close":
+        desired_admission(cluster, namespace, "closed")
+        # Without an edge Pod there is no live gate; a new one starts closed.
+        if live_pods(cluster, namespace, EDGE_PODS):
+            cluster.exec(namespace, EDGE, "admission", *command)
+    else:
+        cluster.exec(namespace, EDGE, "admission", *command)
+        desired_admission(cluster, namespace, "open")
 
 
 def wait_job(cluster, namespace, name, seconds):
@@ -568,8 +596,16 @@ def seal(cluster, identity, force=False, idle_only=False, keepalive_at=0):
     """Close admission, drain every producer, then require a fresh idle observation.
 
     The Runner, edge, dependencies and collector keep running; they are stopped
-    only after this returns True. Any doubt restores service and defers.
+    only after this returns True. Any doubt restores service and defers. A
+    namespace without live Pods (stopped, or a stop whose node pool apply
+    failed) has no producer to drain and is already sealed.
     """
+    namespace = namespace_of(identity)
+    if cluster.get("namespace", namespace) is None:
+        return True
+    if not live_pods(cluster, namespace):
+        desired_admission(cluster, namespace, "closed")
+        return True
     try:
         admission(cluster, identity, "close")
         drain(cluster, identity)
@@ -601,8 +637,7 @@ def quiesce(cluster, identity):
     namespace = namespace_of(identity)
     if cluster.get("namespace", namespace) is None:
         return True
-    if live_pods(cluster, namespace, EDGE_PODS):
-        admission(cluster, identity, "close")
+    admission(cluster, identity, "close")
     drain(cluster, identity)
     drain(cluster, identity, (RUNNER,), RUNNER_PODS)
     return True
@@ -615,6 +650,9 @@ def gate(cluster, identity):
 def deploy(cluster, identity, output, release, sha, settings):
     """Install dependencies, run migrations with writers stopped, then install the app."""
     namespace = namespace_of(identity)
+    # An edge started by this deploy stays closed until readiness opens it, even
+    # after a forced stop that skipped the seal.
+    desired_admission(cluster, namespace, "closed")
     cluster.upgrade(namespace, "env", ENV_CHART, env_values(identity, output, release))
     for target in (*STATEFULSETS, EDGE):
         cluster.scale(namespace, target, 1)
@@ -637,12 +675,24 @@ def migrate(cluster, identity, sha):
     for key in ("startupProbe", "readinessProbe", "livenessProbe", "ports"):
         container.pop(key, None)
     container.pop("args", None)
+    for mount in container.get("volumeMounts", []):
+        if mount["name"] == "memory-recovery":
+            # The claim root, not the subPath: kubelet would create a missing subPath
+            # as root, while init-if-missing creates the Home as the application UID.
+            mount.pop("subPath", None)
+            mount["mountPath"] = RECOVERY_ROOT
     container["command"] = ["/bin/sh", "-ec"]
     container["args"] = [
         'aidash migrate && aidash memory-recovery init-if-missing --directory "$AIDASH_MEMORY_RECOVERY_DIR"'
         " && aidash activation-provision"
     ]
     spec["restartPolicy"] = "Never"
+    # Never matches the backend Service or the writer drain selector. The copied
+    # template keeps the required co-location term for the shared RWO claims;
+    # with the writers at zero the Job Pod can only satisfy it by matching it.
+    labels = {"app.kubernetes.io/instance": "app", "app.kubernetes.io/component": "migration"}
+    if template.get("metadata", {}).get("labels", {}).get("aidash.run/co-located") == "true":
+        labels["aidash.run/co-located"] = "true"
     name = f"migrate-{sha[:12]}-{secrets.token_hex(3)}"
     cluster.create({
         "apiVersion": "batch/v1", "kind": "Job",
@@ -652,8 +702,7 @@ def migrate(cluster, identity, sha):
             "activeDeadlineSeconds": 900,
             "ttlSecondsAfterFinished": 3600,
             "template": {
-                # Never matches the backend Service or the writer drain selector.
-                "metadata": {"labels": {"app.kubernetes.io/instance": "app", "app.kubernetes.io/component": "migration"}},
+                "metadata": {"labels": labels},
                 "spec": spec,
             },
         },
@@ -712,6 +761,7 @@ def stop(cluster, identity):
     namespace = namespace_of(identity)
     if cluster.get("namespace", namespace) is None:
         return
+    desired_admission(cluster, namespace, "closed")
     for target in (SERVER, WORKER, RUNNER, EDGE, *STATEFULSETS):
         if exists(cluster, namespace, target):
             cluster.scale(namespace, target, 0)

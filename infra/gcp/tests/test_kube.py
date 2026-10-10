@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "control"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import kube
 from kubefake import PROJECT, FakeCluster
-from policy import Refused
+from policy import IMAGE_KINDS, Refused
 
 HANDLE = f"projects/{PROJECT}/zones/us-central1-a/disks/aidash-preview-tls"
 OUTPUT = {
@@ -167,6 +167,195 @@ class PreviewTlsTests(unittest.TestCase):
     def test_preview_volume_must_reference_the_managed_disk(self):
         with self.assertRaises(Refused):
             kube.bind_preview_tls(self.cluster, "pr-2", HANDLE.replace("aidash-preview-tls", "other"))
+
+
+class SealAndMigrationTests(unittest.TestCase):
+    def setUp(self):
+        self.calls = []
+        self.cluster = FakeCluster(self.calls)
+        for context in (patch.object(kube.time, "sleep"), patch.object(kube.time, "time", return_value=10000)):
+            context.start()
+            self.addCleanup(context.stop)
+        self.cluster.put({"kind": "Namespace", "metadata": {"name": "aidash-test"}})
+        self.cluster.put({"kind": "CronJob", "metadata": {"name": "env-environment-activity", "namespace": "aidash-test"}, "spec": {}})
+        self.cluster.put({"kind": "ConfigMap", "metadata": {"name": "env-environment-activity", "namespace": "aidash-test"}})
+
+    def workloads(self, edge, writers, dependencies=1):
+        for name, replicas in (
+            ("app-aidash-server", writers), ("app-aidash-worker", writers),
+            ("app-execution-runner", dependencies), ("env-environment-edge", edge),
+        ):
+            self.cluster.workload("deployment", "aidash-test", name, replicas)
+        for name in ("env-environment-postgres", "env-environment-nats"):
+            self.cluster.workload("statefulset", "aidash-test", name, dependencies)
+
+    def test_environment_without_live_pods_is_already_sealed(self):
+        # A stop whose node pool apply failed leaves every workload at zero; there is
+        # no edge to exec into and no producer, so sealing never restores writers.
+        self.workloads(edge=0, writers=0, dependencies=0)
+        self.assertTrue(kube.seal(self.cluster, "test"))
+        self.assertTrue(kube.seal(self.cluster, "pr-9"))
+        self.assertEqual(self.calls, [])
+        self.assertEqual(self.cluster.replicas("aidash-test", "deployment", "app-aidash-server"), 0)
+
+    def test_admission_is_closed_only_through_a_live_edge(self):
+        self.workloads(edge=0, writers=1)
+        self.assertTrue(kube.seal(self.cluster, "test"))
+        self.assertEqual(self.calls, [
+            ("scale", "test", "server", 0), ("scale", "test", "worker", 0), ("observe", "test"), ("activity", "test"),
+        ])
+        self.workloads(edge=1, writers=1)
+        self.calls.clear()
+        self.assertTrue(kube.seal(self.cluster, "test"))
+        self.assertEqual(self.calls[0], ("admission", "test", "close"))
+
+    def test_migration_pod_satisfies_the_copied_co_location_term(self):
+        # As rendered by the app chart when server and worker share the RWO claims.
+        term = {"topologyKey": "kubernetes.io/hostname", "labelSelector": {"matchLabels": {
+            "app.kubernetes.io/instance": "app", "aidash.run/co-located": "true",
+        }}}
+        for colocated in (True, False):
+            with self.subTest(colocated=colocated):
+                labels = {"app.kubernetes.io/instance": "app", "app.kubernetes.io/component": "server"}
+                affinity = {}
+                if colocated:
+                    labels["aidash.run/co-located"] = "true"
+                    affinity = {"podAffinity": {"requiredDuringSchedulingIgnoredDuringExecution": [term]}}
+                self.cluster.put({
+                    "kind": "Deployment", "metadata": {"name": "app-aidash-server", "namespace": "aidash-test"},
+                    "spec": {"replicas": 0, "template": {"metadata": {"labels": labels}, "spec": {
+                        "affinity": affinity, "containers": [{"name": "aidash", "args": ["server"]}],
+                    }}},
+                })
+                kube.migrate(self.cluster, "test", "a" * 40)
+                (key,) = [key for key in self.cluster.objects if key[0] == "job"]
+                pod = self.cluster.objects.pop(key)["spec"]["template"]
+                selected = pod["metadata"]["labels"]
+                # With the writers at zero, the Job Pod must match its own required term.
+                for required in pod["spec"]["affinity"].get("podAffinity", {}).get("requiredDuringSchedulingIgnoredDuringExecution", []):
+                    self.assertLessEqual(required["labelSelector"]["matchLabels"].items(), selected.items())
+                # Never selected by the backend Service or the writer drain.
+                self.assertEqual(selected["app.kubernetes.io/component"], "migration")
+                self.assertEqual("aidash.run/co-located" in selected, colocated)
+
+    def test_home_ledger_is_initialized_as_a_child_of_its_claim_root(self):
+        # A fresh disk's root belongs to root; ledger initialization chmods its
+        # directory, so the Home must be a child the application UID creates.
+        output = dict(OUTPUT, server_service_account="server@fixture", worker_service_account="worker@fixture")
+        release = {"images": {kind: f"registry.example/{kind}@sha256:" + "a" * 64 for kind in ("app", "control", "sandbox")}}
+        settings = {"provider": None, "gcip": None}
+        recovery = kube.app_values(self.cluster, "test", output, release, "a" * 40, settings)["memoryRecovery"]
+        self.assertEqual(recovery, {"existingClaim": "memory-recovery", "subPath": "home",
+                                    "directory": "/var/lib/aidash/memory-recovery/home"})
+        # As rendered by the app chart from these values.
+        mounts = [
+            {"name": "memory-recovery", "mountPath": recovery["directory"], "subPath": recovery["subPath"]},
+            {"name": "capabilities", "mountPath": "/var/lib/aidash/capabilities"},
+        ]
+        self.cluster.put({
+            "kind": "Deployment", "metadata": {"name": "app-aidash-server", "namespace": "aidash-test"},
+            "spec": {"replicas": 0, "template": {"metadata": {"labels": {}}, "spec": {"containers": [{
+                "name": "aidash", "args": ["server"], "volumeMounts": mounts,
+                "env": [{"name": "AIDASH_MEMORY_RECOVERY_DIR", "value": recovery["directory"]}],
+            }]}}},
+        })
+        kube.migrate(self.cluster, "test", "a" * 40)
+        (key,) = [key for key in self.cluster.objects if key[0] == "job"]
+        (container,) = self.cluster.objects.pop(key)["spec"]["template"]["spec"]["containers"]
+        # The Job mounts the claim root, so init-if-missing creates `home` itself.
+        self.assertEqual(container["volumeMounts"], [
+            {"name": "memory-recovery", "mountPath": "/var/lib/aidash/memory-recovery"},
+            {"name": "capabilities", "mountPath": "/var/lib/aidash/capabilities"},
+        ])
+        self.assertEqual(container["env"], [{"name": "AIDASH_MEMORY_RECOVERY_DIR", "value": recovery["directory"]}])
+        self.assertIn('--directory "$AIDASH_MEMORY_RECOVERY_DIR"', container["args"][0])
+
+
+class AdmissionTests(unittest.TestCase):
+    """The edge restores the controller-owned desired state when it restarts."""
+
+    def setUp(self):
+        self.calls = []
+        self.cluster = FakeCluster(self.calls)
+        self.events = []
+        apply, execute = self.cluster.apply, self.cluster.exec
+
+        def recorded_apply(manifest):
+            if manifest["metadata"]["name"] == kube.ADMISSION:
+                self.events.append(("state", manifest["data"]["state"]))
+            apply(manifest)
+
+        def recorded_exec(namespace, target, container, *command):
+            self.events.append(("edge", command[-1].rsplit("/", 1)[1]))
+            return execute(namespace, target, container, *command)
+
+        for context in (
+            patch.object(self.cluster, "apply", recorded_apply), patch.object(self.cluster, "exec", recorded_exec),
+            patch.object(kube.time, "sleep"), patch.object(kube.time, "time", return_value=10000),
+        ):
+            context.start()
+            self.addCleanup(context.stop)
+        self.cluster.put({"kind": "Namespace", "metadata": {"name": "aidash-test"}})
+        self.cluster.workload("deployment", "aidash-test", "env-environment-edge", 1)
+
+    def state(self):
+        return self.cluster.get("configmap", kube.ADMISSION, "aidash-test")["data"]["state"]
+
+    def test_close_records_first_and_open_records_last(self):
+        kube.admission(self.cluster, "test", "close")
+        kube.admission(self.cluster, "test", "open")
+        self.assertEqual(self.events, [("state", "closed"), ("edge", "close"), ("edge", "open"), ("state", "open")])
+        self.assertEqual(self.state(), "open")
+
+    def test_partial_failure_leaves_a_restarted_edge_closed(self):
+        kube.admission(self.cluster, "test", "open")
+        self.cluster.fail(("admission", "test", "close"), RuntimeError("exec unavailable"))
+        with self.assertRaisesRegex(RuntimeError, "exec unavailable"):
+            kube.admission(self.cluster, "test", "close")
+        self.assertEqual(self.state(), "closed")
+        self.cluster.fail(("admission", "test", "open"), RuntimeError("exec unavailable"))
+        with self.assertRaisesRegex(RuntimeError, "exec unavailable"):
+            kube.admission(self.cluster, "test", "open")
+        self.assertEqual(self.state(), "closed")
+
+    def test_close_without_an_edge_pod_records_the_closed_state_only(self):
+        self.cluster.workload("deployment", "aidash-test", "env-environment-edge", 0)
+        kube.admission(self.cluster, "test", "close")
+        self.assertEqual(self.events, [("state", "closed")])
+        with self.assertRaises(RuntimeError):
+            kube.admission(self.cluster, "test", "open")
+        self.assertEqual(self.state(), "closed")
+
+    def test_seal_stop_and_deploy_never_leave_an_open_state_behind(self):
+        for name in ("app-aidash-server", "app-aidash-worker", "app-execution-runner"):
+            self.cluster.workload("deployment", "aidash-test", name, 1)
+        self.cluster.put({"kind": "CronJob", "metadata": {"name": kube.ACTIVITY, "namespace": "aidash-test"}, "spec": {}})
+        self.cluster.put({"kind": "ConfigMap", "metadata": {"name": kube.ACTIVITY, "namespace": "aidash-test"}})
+        kube.admission(self.cluster, "test", "open")
+        self.events.clear()
+        self.assertTrue(kube.seal(self.cluster, "test"))
+        # Closed durably before the live gate, and both before any writer drains.
+        self.assertEqual(self.events, [("state", "closed"), ("edge", "close")])
+        self.assertLess(self.calls.index(("admission", "test", "close")), self.calls.index(("scale", "test", "server", 0)))
+        # A forced stop skips the seal; it still leaves the next edge closed.
+        kube.admission(self.cluster, "test", "open")
+        kube.stop(self.cluster, "test")
+        self.assertEqual(self.state(), "closed")
+        # A stopped Environment seals without Pods and keeps the state closed.
+        self.desired("open")
+        self.assertTrue(kube.seal(self.cluster, "test"))
+        self.assertEqual(self.state(), "closed")
+        # A deploy starts every new edge closed until readiness opens it.
+        self.desired("open")
+        release = {"images": {kind: f"registry.example/{kind}@sha256:" + "a" * 64 for kind in IMAGE_KINDS}}
+        output = dict(OUTPUT, server_service_account="server@fixture", worker_service_account="worker@fixture")
+        self.events.clear()
+        kube.deploy(self.cluster, "test", output, release, "a" * 40, {"provider": None, "gcip": None})
+        self.assertEqual(self.events, [("state", "closed")])
+        self.assertEqual(self.state(), "closed")
+
+    def desired(self, state):
+        kube.desired_admission(self.cluster, "aidash-test", state)
 
 
 if __name__ == "__main__":

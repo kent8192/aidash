@@ -20,7 +20,11 @@ guard Pods only in the dedicated trusted namespace.
 
 The lead revised the seal sequence on 2026-10-09 after the producer audit below:
 
-1. Close edge admission.
+1. Close edge admission: record `closed` in the controller-owned ConfigMap
+   `env-environment-admission`, then close the live edge (when an edge Pod is
+   live). Opening is the reverse order. Every edge reads this state at start, so a
+   restarted edge keeps the last decision and a partial failure stays closed. An
+   Environment without any live Pod has nothing to drain and is already sealed.
 2. Scale **server and worker** to zero and wait for their graceful drain to finish.
 3. Keep the Runner, edge, PostgreSQL, NATS and observer running. Obtain fresh
    database work, edge activity and authenticated Runner `/v1/activity` evidence.

@@ -61,8 +61,12 @@ spec:
           resources: {{ toYaml $edge.resources | nindent 12 }}
           volumeMounts:
             - { name: config, mountPath: /etc/nginx/conf.d/aidash.conf, subPath: admission.conf, readOnly: true }
+            - { name: admission-state, mountPath: /etc/aidash-admission, readOnly: true }
       volumes:
         - { name: config, configMap: { name: {{ $name }}-edge } }
+        # Desired admission, owned by the lifecycle controller and never rendered
+        # here, so an upgrade cannot reset it. Absent or not `open` = closed.
+        - { name: admission-state, configMap: { name: {{ $name }}-admission, optional: true } }
         - name: tls
           persistentVolumeClaim:
             claimName: {{ $edge.existingTlsClaim | default (printf "%s-tls" $name) | quote }}

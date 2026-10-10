@@ -10,8 +10,6 @@ sed "s/AIDASH_BACKEND/127.0.0.1/g" /source/admission.conf > /etc/nginx/conf.d/ai
 # Stand-in application: every request succeeds.
 printf "%s\n" "server { listen 127.0.0.1:8080; access_log off; location / { return 200 \"{}\"; } }" > /etc/nginx/conf.d/backend.conf
 nginx -t
-nginx
-trap "nginx -s quit" EXIT
 request() {
   local port=$1 method=$2 path=$3
   exec 3<>/dev/tcp/127.0.0.1/$port
@@ -19,6 +17,32 @@ request() {
   cat <&3
   exec 3<&- 3>&-
 }
+# A (re)started edge restores the controller-owned desired state: only a file
+# whose trimmed content is exactly "open" admits; missing or anything else is closed.
+start() {
+  rm -rf /etc/aidash-admission
+  if [[ "$1" != absent ]]; then mkdir /etc/aidash-admission; printf "$1" > /etc/aidash-admission/state; fi
+  nginx
+  for _ in $(seq 50); do (exec 3<>/dev/tcp/127.0.0.1/8089) 2>/dev/null && return; sleep 0.1; done
+  return 1
+}
+stop() {
+  nginx -s stop
+  while [[ -e /run/nginx.pid ]]; do sleep 0.1; done
+}
+for state in absent closed "open\\n" " open " opened OPEN ""; do
+  start "$state"
+  if [[ "$state" == "open\\n" || "$state" == " open " ]]; then
+    [[ "$(request 8089 GET /activity)" == *"\"closed\":false"* ]]
+    [[ "$(request 8088 GET /api/state)" == *"200 OK"* ]]
+  else
+    [[ "$(request 8089 GET /activity)" == *"\"closed\":true"* ]]
+    [[ "$(request 8088 GET /api/state)" == *"503 Service Temporarily Unavailable"* ]]
+  fi
+  stop
+done
+start absent
+trap "nginx -s quit" EXIT
 closed=$(request 8089 GET /activity)
 [[ "$closed" == *"\"closed\":true"* ]]
 public=$(request 8088 GET /api/state)
@@ -37,5 +61,5 @@ closed=$(request 8089 GET /activity)
 [[ "$closed" == *"\"closed\":true"* ]]
 # Requests must not grow a file in the writable layer: logs go to container streams.
 [[ -z "$(find /var/log/nginx -type f -size +0c)" ]]
-printf "%s\n" "Chart Nginx/Lua: starts closed; public admission blocked; private open/close verified; heartbeat counted, polling idle; no file logs"
+printf "%s\n" "Chart Nginx/Lua: restores only an exact open desired state, otherwise starts closed; public admission blocked; private open/close verified; heartbeat counted, polling idle; no file logs"
 '

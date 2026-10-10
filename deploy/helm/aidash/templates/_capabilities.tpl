@@ -8,6 +8,10 @@
 
 {{- define "aidash.capabilityDirectory" -}}/var/lib/aidash/capabilities{{- end -}}
 
+{{- /* Objects live in a child of the claim mount: the store chmods its directory
+to 0700, and a fresh volume root belongs to root, not the application UID. */ -}}
+{{- define "aidash.capabilityStorage" -}}{{ include "aidash.capabilityDirectory" . }}/objects{{- end -}}
+
 {{- /* The application's capability profile (Rust `Profile`, deny_unknown_fields).
 It shares the Runner's guest limits; host_tasks is Runner-only. Operation and
 install limits may not exceed maximum_seconds. */ -}}
@@ -15,7 +19,7 @@ install limits may not exceed maximum_seconds. */ -}}
 {{- $e := .Values.execution -}}
 {{- $maximum := int $e.limits.maximum_seconds -}}
 {{- $runner := dict "endpoint" (printf "http://%s-execution-runner:8949" .Release.Name) "token_env" "AIDASH_CORE_RUNNER_TOKEN" "image" $e.sandboxImage "runtime_class" (include "aidash.runtimeClassName" .) "namespace" (include "aidash.sandboxNamespace" .) -}}
-{{- $profile := dict "admission" true "storage" (include "aidash.capabilityDirectory" .) "operation_seconds" (min 120 $maximum) "install_seconds" (min 300 $maximum) "runner" $runner -}}
+{{- $profile := dict "admission" true "storage" (include "aidash.capabilityStorage" .) "operation_seconds" (min 120 $maximum) "install_seconds" (min 300 $maximum) "runner" $runner -}}
 {{- toJson (mergeOverwrite (omit (deepCopy $e.limits) "host_tasks") $profile) -}}
 {{- end -}}
 
