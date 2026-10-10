@@ -25,17 +25,17 @@ All runtime roles publish. Only `worker` and `serve` consume the shared
 retains its capacity until its leased durable step ends. Server-only processes
 never pull or acknowledge activation messages. No consumer is tied to a Pod name.
 
-| Configuration                        | Default         | Purpose                                                                                                          |
-| ------------------------------------ | --------------- | ---------------------------------------------------------------------------------------------------------------- |
-| `AIDASH_ACTIVATION_NAMESPACE`        | `default`       | Stable deployment/account namespace, combined with exact Node ID and protocol version in a SHA-256 broker scope. |
-| `AIDASH_ACTIVATION_NATS_URL`         | `node.nats_url` | Optional dedicated activation connection/role credentials. Never print this URL in diagnostics.                  |
-| `AIDASH_ACTIVATION_NATS_CREDENTIALS` | Unset           | Optional mounted NATS credentials file; takes precedence over URL credentials.                                   |
-| `AIDASH_ACTIVATION_BOOTSTRAP`        | `false`         | Explicit local-development creation of identical objects; production provisions separately.                      |
-| `AIDASH_ACTIVATION_MAX_AGE_SECONDS`  | `86400`         | Broker retention; unresolved database obligations do not expire.                                                 |
-| `AIDASH_ACTIVATION_MAX_BYTES`        | `1073741824`    | File/WorkQueue capacity with DiscardNew.                                                                         |
-| `AIDASH_ACTIVATION_REPLICAS`         | `1`             | Broker replicas, 1–5; operator must provision matching JetStream capacity.                                       |
-| `AIDASH_WORKER_SLOTS`                | `4`             | 1–4 execution slots per process, preserving the existing database pool budget. Scale replicas for more capacity. |
-| `AIDASH_TOOL_PARALLELISM`            | `1`             | 1–4 concurrent [read batch](../features/parallel-read-batches.md) calls per process; each holds one data connection. |
+| Configuration                        | Default         | Purpose                                                                                                                                                                      |
+| ------------------------------------ | --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `AIDASH_ACTIVATION_NAMESPACE`        | `default`       | Stable deployment/account namespace, combined with exact Node ID and protocol version in a SHA-256 broker scope.                                                             |
+| `AIDASH_ACTIVATION_NATS_URL`         | `node.nats_url` | Optional dedicated activation connection/role credentials. Never print this URL in diagnostics.                                                                              |
+| `AIDASH_ACTIVATION_NATS_CREDENTIALS` | Unset           | Optional mounted NATS credentials file; takes precedence over URL credentials.                                                                                               |
+| `AIDASH_ACTIVATION_BOOTSTRAP`        | `false`         | Explicit local-development creation of identical objects; production provisions separately.                                                                                  |
+| `AIDASH_ACTIVATION_MAX_AGE_SECONDS`  | `86400`         | Broker retention; unresolved database obligations do not expire.                                                                                                             |
+| `AIDASH_ACTIVATION_MAX_BYTES`        | `1073741824`    | File/WorkQueue capacity with DiscardNew.                                                                                                                                     |
+| `AIDASH_ACTIVATION_REPLICAS`         | `1`             | Broker replicas, 1–5; operator must provision matching JetStream capacity.                                                                                                   |
+| `AIDASH_WORKER_SLOTS`                | `4`             | 1–4 execution slots per process, preserving the existing database pool budget. Scale replicas for more capacity.                                                             |
+| `AIDASH_TOOL_PARALLELISM`            | `1`             | 1–4 concurrent [read batch](../features/parallel-read-batches.md) calls per process; each holds one data connection, and the worker pool adds one per call beyond the first. |
 
 The Helm chart exposes `activation.*`, `worker.slots`, and optional
 `server.existingSecret` / `worker.existingSecret`. Role secrets may contain a

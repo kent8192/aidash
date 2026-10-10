@@ -12,15 +12,17 @@ Two ceilings must both exceed one:
   It is fixed with the Run's Binding snapshot, so editing the Agent never
   changes a Run that has already started.
 - **Process ceiling**: `AIDASH_TOOL_PARALLELISM`, 1–4, default 1. All workers in
-  one server or worker process share it; each replica has its own. Each
-  concurrent call holds one database connection for its own transaction, so
-  startup rejects a ceiling that leaves no room in the database pool beside the
-  four worker slots.
+  one server or worker process share it; each replica has its own. A batched
+  call holds its share of the ceiling, and one database connection, until its
+  result is recorded. The runtime worker pool therefore adds one connection for
+  each call beyond the first, beside the connections every worker slot already
+  has. Startup rejects a ceiling that leaves no room in the database pool beside
+  the four worker slots.
 
 ```json
 {
   "schema_version": 1,
-  "model": {"id": "model", "version": "1.0.0"},
+  "model": { "id": "model", "version": "1.0.0" },
   "instructions": "Research the working files.",
   "tool_parallelism": 4
 }
@@ -35,20 +37,21 @@ waiting for more.
 A provider must declare a tool concurrency-safe. Read-only effect or replay
 safety alone does not make a tool eligible. The initial set:
 
-| Tool          | Resource claim               | Output bound                          |
-| ------------- | ---------------------------- | ------------------------------------- |
+| Tool          | Resource claim               | Output bound                             |
+| ------------- | ---------------------------- | ---------------------------------------- |
 | `file_read`   | Working Area, shared         | `max_bytes`, at most the Node read limit |
-| `file_search` | Working Area, shared         | Node search byte limit                |
-| `skill_list`  | Pinned Skills, shared        | Page size × Skill metadata            |
-| `skill_load`  | Pinned Skills, **exclusive** | Skill package limits                  |
+| `file_search` | Working Area, shared         | Node search byte limit                   |
+| `skill_list`  | Pinned Skills, shared        | Page size × Skill metadata               |
+| `skill_load`  | Pinned Skills, **exclusive** | Skill package limits                     |
 
 `file_read` with `representation: "model_input"` stays sequential, because
 selecting model media changes the next request. `skill_load` updates the Run's
 loaded-Skill markers, so two loads, or a load and a list, never share a batch.
 
-Registry configuration can only lower this declaration. A descriptor or
-Binding may set `"narrow": {"concurrency": "sequential"}`. A claim of
-`shared_read` for a tool whose provider is Sequential is rejected.
+Registry configuration can only lower this declaration. A descriptor, or a Tool
+or Bundle Binding, may set `"narrow": {"concurrency": "sequential"}`; other
+Binding kinds reject the field. A claim of `shared_read` for a tool whose
+provider is Sequential is rejected.
 
 ## How a batch forms
 
