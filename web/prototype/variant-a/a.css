@@ -1,0 +1,399 @@
+/* PROTOTYPE ONLY. Variant A "Signal Desk". Every rule is scoped under .proto-a. */
+/* Component layer so Tailwind utilities on the same element win. */
+@layer components {
+.proto-a {
+  --a-bg: #f7f8fa;
+  --a-surface: #ffffff;
+  --a-sunken: #f1f3f6;
+  --a-line: #e4e7ec;
+  --a-line-soft: #eef0f3;
+  --a-text: #0f1419;
+  --a-muted: #5b6472;
+  --a-faint: #7c8594;
+  --a-accent: #2f5bd9;
+  --a-accent-hover: #2650c4;
+  --a-accent-soft: #edf1fc;
+  --a-accent-line: #c9d5f5;
+  --a-done: #3d7a5a;
+  --a-warn: #b7791f;
+  --a-warn-soft: #fbf6ec;
+  --a-fail: #c2413b;
+  --a-r-control: 6px;
+  --a-r-overlay: 8px;
+  --a-shadow: 0 1px 2px rgb(15 30 60 / 0.06), 0 12px 32px -8px rgb(20 40 90 / 0.18), 0 0 0 1px rgb(15 30 60 / 0.07);
+  --a-sans: "Geist", "IBM Plex Sans JP", sans-serif;
+  --a-mono: "Geist Mono", "IBM Plex Sans JP", ui-monospace, monospace;
+
+  font-family: var(--a-sans);
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--a-text);
+  background: var(--a-bg);
+  font-feature-settings: "ss01", "cv11";
+  -webkit-font-smoothing: antialiased;
+  font-variant-numeric: tabular-nums;
+}
+
+.proto-a *,
+.proto-a *::before,
+.proto-a *::after {
+  box-sizing: border-box;
+}
+
+.proto-a .mono {
+  font-family: var(--a-mono);
+  font-feature-settings: normal;
+  letter-spacing: -0.01em;
+}
+.proto-a .sans {
+  font-family: var(--a-sans);
+  font-feature-settings: "ss01", "cv11";
+  letter-spacing: 0;
+}
+
+.proto-a ::selection {
+  background: var(--a-accent-soft);
+}
+
+/* Focus: one ring everywhere */
+.proto-a :where(button, a, input, textarea, [tabindex]):focus-visible {
+  outline: 2px solid var(--a-accent);
+  outline-offset: 1px;
+  border-radius: var(--a-r-control);
+}
+.proto-a :where(input, textarea):focus-visible {
+  outline: none;
+}
+
+/* Buttons */
+.proto-a .a-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 10px;
+  border-radius: var(--a-r-control);
+  border: 1px solid var(--a-line);
+  background: var(--a-surface);
+  color: var(--a-text);
+  font: 500 12px/1 var(--a-sans);
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color 120ms, border-color 120ms, color 120ms;
+}
+.proto-a .a-btn:hover {
+  background: var(--a-sunken);
+  border-color: #d5dae2;
+}
+.proto-a .a-btn:active {
+  background: #e9ecf1;
+}
+.proto-a .a-btn-primary {
+  background: var(--a-accent);
+  border-color: var(--a-accent);
+  color: #fff;
+}
+.proto-a .a-btn-primary:hover {
+  background: var(--a-accent-hover);
+  border-color: var(--a-accent-hover);
+}
+.proto-a .a-btn-primary:active {
+  background: #1f45ad;
+}
+.proto-a .a-btn-ghost {
+  border-color: transparent;
+  background: transparent;
+  color: var(--a-muted);
+}
+.proto-a .a-btn-ghost:hover {
+  color: var(--a-text);
+  background: var(--a-sunken);
+  border-color: transparent;
+}
+.proto-a .a-icon-btn {
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--a-r-control);
+  color: var(--a-muted);
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  transition: background-color 120ms, color 120ms;
+}
+.proto-a .a-icon-btn:hover {
+  background: var(--a-sunken);
+  color: var(--a-text);
+}
+
+/* Keycap */
+.proto-a .a-kbd {
+  display: inline-grid;
+  place-items: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 4px;
+  border-radius: 4px;
+  border: 1px solid var(--a-line);
+  background: var(--a-surface);
+  color: var(--a-muted);
+  font: 500 10.5px/1 var(--a-mono);
+}
+.proto-a .a-btn-primary .a-kbd {
+  border-color: rgb(255 255 255 / 0.3);
+  background: rgb(255 255 255 / 0.12);
+  color: #fff;
+}
+
+/* Top-bar tabs */
+.proto-a .a-tab {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 48px;
+  padding: 0 10px;
+  color: var(--a-muted);
+  font-weight: 500;
+  background: none;
+  border: 0;
+  cursor: pointer;
+  transition: color 120ms;
+}
+.proto-a .a-tab:hover {
+  color: var(--a-text);
+}
+.proto-a .a-tab[aria-current="page"] {
+  color: var(--a-text);
+}
+.proto-a .a-tab[aria-current="page"]::after {
+  content: "";
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  bottom: -1px;
+  height: 2px;
+  background: var(--a-accent);
+}
+.proto-a .a-tab:focus-visible {
+  outline-offset: -6px;
+}
+
+/* Section header inside panes */
+.proto-a .a-eyebrow {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--a-muted);
+}
+
+/* Rows */
+.proto-a .a-row {
+  transition: background-color 100ms;
+}
+.proto-a .a-row:hover {
+  background: #f3f5f8;
+}
+.proto-a .a-row[aria-selected="true"],
+.proto-a .a-row[aria-current="true"] {
+  background: var(--a-accent-soft);
+  box-shadow: inset 2px 0 0 var(--a-accent);
+}
+
+/* Chip (filter) */
+.proto-a .a-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 24px;
+  padding: 0 8px;
+  border-radius: var(--a-r-control);
+  border: 1px solid var(--a-line);
+  background: var(--a-surface);
+  color: var(--a-muted);
+  font: 500 12px/1 var(--a-sans);
+  cursor: pointer;
+  transition: background-color 120ms, color 120ms, border-color 120ms;
+}
+.proto-a .a-chip:hover {
+  color: var(--a-text);
+  border-color: #d5dae2;
+}
+.proto-a .a-chip[aria-pressed="true"] {
+  color: var(--a-accent);
+  border-color: var(--a-accent-line);
+  background: var(--a-accent-soft);
+}
+
+/* Segmented control */
+.proto-a .a-seg {
+  display: inline-flex;
+  padding: 2px;
+  gap: 2px;
+  border-radius: var(--a-r-control);
+  background: var(--a-sunken);
+}
+.proto-a .a-seg button {
+  white-space: nowrap;
+  height: 22px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--a-muted);
+  font: 500 12px/1 var(--a-sans);
+  cursor: pointer;
+}
+.proto-a .a-seg button:hover {
+  color: var(--a-text);
+}
+.proto-a .a-seg button[aria-pressed="true"] {
+  background: var(--a-surface);
+  color: var(--a-text);
+  box-shadow: 0 0 0 1px var(--a-line);
+}
+
+/* Overlays */
+.proto-a .a-overlay {
+  background: var(--a-surface);
+  border-radius: var(--a-r-overlay);
+  box-shadow: var(--a-shadow);
+}
+.proto-a .a-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  height: 32px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: var(--a-r-control);
+  background: none;
+  color: var(--a-text);
+  font: 400 13px/1 var(--a-sans);
+  text-align: left;
+  cursor: pointer;
+}
+.proto-a .a-menu-item:hover,
+.proto-a .a-menu-item[data-active="true"] {
+  background: var(--a-sunken);
+}
+.proto-a .a-menu-item[data-active="true"] {
+  box-shadow: inset 2px 0 0 var(--a-accent);
+}
+
+/* Live pulse: a small square */
+.proto-a .a-pulse {
+  position: relative;
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  background: currentColor;
+}
+.proto-a .a-pulse::after {
+  content: "";
+  position: absolute;
+  inset: -3px;
+  border: 1px solid currentColor;
+  opacity: 0;
+  animation: proto-a-pulse 1.8s ease-out infinite;
+}
+@keyframes proto-a-pulse {
+  0% {
+    opacity: 0.7;
+    transform: scale(0.6);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.6);
+  }
+}
+
+/* Running gantt bar shimmer edge */
+.proto-a .a-bar-live::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  right: -1px;
+  bottom: 0;
+  width: 2px;
+  background: var(--a-accent);
+  animation: proto-a-blink 1.4s ease-in-out infinite;
+}
+@keyframes proto-a-blink {
+  50% {
+    opacity: 0.25;
+  }
+}
+.proto-a .a-hatch {
+  background-image: repeating-linear-gradient(
+    -45deg,
+    rgb(183 121 31 / 0.16) 0 4px,
+    transparent 4px 8px
+  );
+}
+
+/* Scrollbars stay quiet */
+.proto-a .a-scroll {
+  overflow: auto;
+  scrollbar-width: thin;
+  scrollbar-color: #d3d8e0 transparent;
+}
+
+/* Tables */
+.proto-a .a-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  table-layout: fixed;
+}
+.proto-a .a-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  height: 30px;
+  padding: 0 10px;
+  background: var(--a-bg);
+  border-bottom: 1px solid var(--a-line);
+  color: var(--a-muted);
+  font-size: 12px;
+  font-weight: 500;
+  text-align: left;
+  white-space: nowrap;
+}
+.proto-a .a-table td {
+  height: 32px;
+  padding: 0 10px;
+  border-bottom: 1px solid var(--a-line-soft);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.proto-a .a-table tbody tr {
+  cursor: default;
+}
+.proto-a .a-table tbody tr:hover td {
+  background: #f3f5f8;
+}
+.proto-a .a-table tbody tr[aria-selected="true"] td {
+  background: var(--a-accent-soft);
+}
+.proto-a .a-table tbody tr[aria-selected="true"] td:first-child {
+  box-shadow: inset 2px 0 0 var(--a-accent);
+}
+.proto-a .a-table tbody tr.a-warn td {
+  background: var(--a-warn-soft);
+}
+
+.proto-a textarea::placeholder,
+.proto-a input::placeholder {
+  color: var(--a-faint);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .proto-a .a-pulse::after,
+  .proto-a .a-bar-live::after {
+    animation: none;
+  }
+}
+}

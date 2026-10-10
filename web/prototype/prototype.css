@@ -1,0 +1,45 @@
+/* PROTOTYPE ONLY. Each variant scopes its own tokens under .proto-a / .proto-b / .proto-c. */
+@import "tailwindcss";
+@source "./";
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+.proto-switcher {
+  position: fixed;
+  left: 50%;
+  bottom: 16px;
+  z-index: 1000;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px;
+  border-radius: 999px;
+  background: #ff2e88;
+  color: #fff;
+  font: 600 12px/1 system-ui, sans-serif;
+  box-shadow: 0 10px 30px rgb(255 46 136 / 0.35);
+}
+.proto-switcher button {
+  border: 0;
+  border-radius: 999px;
+  padding: 7px 11px;
+  background: rgb(255 255 255 / 0.16);
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.proto-switcher button[aria-pressed="true"] {
+  background: #fff;
+  color: #c3005f;
+}
+.proto-switcher .sep {
+  width: 1px;
+  height: 18px;
+  background: rgb(255 255 255 / 0.4);
+}

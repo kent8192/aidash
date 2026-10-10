@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1",
+    "prototype": "vite --host 127.0.0.1 --port 5174 --open /prototype/",
     "build": "tsc -b && vite build",
     "test": "npm run test:graph && npm run test:collaboration && playwright test",
     "test:graph": "node --experimental-strip-types --test unit/graph-fit.test.mjs unit/agent-graph.test.mjs unit/mesh-graph.test.mjs unit/graph-regions.test.mjs unit/graph-retry.test.mjs unit/graph-timeline.test.mjs",
