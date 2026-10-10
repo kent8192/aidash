@@ -46,6 +46,7 @@
 //! `pool_size = "${DB_POOL_SIZE:-10}"` resolves directly to the field's
 //! declared Rust type (e.g. `u16`) without manual parsing.
 
+use crate::apps::execution::serializers::cache_salt::CacheSaltSettings;
 use crate::apps::federation::remote::serializers::settings::NodeSettings;
 use crate::apps::identity::serializers::managed_settings::ManagedGcipSource;
 use crate::apps::identity::serializers::provider_credentials::ManagedSource;
@@ -61,7 +62,7 @@ use reinhardt::settings;
 use std::env;
 
 // Add fragments to extend settings: e.g. `#[settings(core: CoreSettings | cache: CacheSettings)]`
-#[settings(core: CoreSettings | contacts: ContactSettings | migrations: MigrationSettings | node: NodeSettings | dashboard: DashboardSettings | kubernetes: KubernetesSettings | provider_credentials: ProviderCredentialSettings)]
+#[settings(core: CoreSettings | contacts: ContactSettings | migrations: MigrationSettings | node: NodeSettings | dashboard: DashboardSettings | kubernetes: KubernetesSettings | provider_credentials: ProviderCredentialSettings | cache_salt: CacheSaltSettings)]
 pub struct ProjectSettings;
 
 /// Get settings based on environment variable
@@ -149,10 +150,12 @@ fn file_settings_builder(
                 .with_value("core", serde_json::json!({ "base_dir": base_dir, "installed_apps": super::apps::APP_LABELS }))
                 // Initialize the standard REST scaffold contact defaults.
                 .with_value("contacts", serde_json::json!({}))
-                // Initialize optional Aidash fragments without enabling OIDC or Kubernetes.
+                // Initialize optional Aidash fragments without enabling OIDC, Kubernetes
+                // or Tenant Cache Salt.
                 .with_value("dashboard", serde_json::json!({}))
                 .with_value("kubernetes", serde_json::json!({}))
                 .with_value("provider_credentials", serde_json::json!({}))
+                .with_value("cache_salt", serde_json::json!({}))
                 .with_value("migrations", serde_json::json!({})),
         )
         // Medium priority: Base TOML file
@@ -465,6 +468,59 @@ mod tests {
 		)
 		.unwrap();
 		directory
+	}
+
+	#[rstest::rstest]
+	fn cache_salt_keys_load_from_interpolated_toml() {
+		// Arrange: the documented example plus one interpolated Cache Salt Key.
+		let directory = tempfile::tempdir().unwrap();
+		let base = include_str!("../../settings/base.example.toml")
+			.replace(
+				"[core]\n",
+				"[core]\nsecret_key = 'isolated-settings-test-secret-0123456789'\n",
+			)
+			.replace(
+				"[node]\n",
+				"[node]\napi_token = 'isolated-settings-test-operator-0123456789'\n",
+			);
+		std::fs::write(
+			directory.path().join("base.toml"),
+			format!(
+				"{base}\n[cache_salt]\ncurrent = 2\n[[cache_salt.keys]]\nversion = 2\nsecret = '${{AIDASH_UNSET_CACHE_SALT_FIXTURE:-fixture-cache-salt-secret}}'\n"
+			),
+		)
+		.unwrap();
+		// Act: compose and resolve exactly as process startup does.
+		let settings = file_settings_builder("local", directory.path(), directory.path())
+			.build_pending_composed::<ProjectSettings>()
+			.unwrap()
+			.resolve()
+			.unwrap();
+		// Assert: the key is usable and nothing secret reaches Debug output.
+		let cache_salt = &settings.settings().cache_salt;
+		assert_eq!(cache_salt.keys().unwrap().unwrap().current(), 2);
+		assert!(!format!("{cache_salt:?}").contains("fixture-cache-salt-secret"));
+	}
+
+	#[rstest::rstest]
+	fn omitted_cache_salt_leaves_only_legacy_runs() {
+		let directory = tempfile::tempdir().unwrap();
+		let base = include_str!("../../settings/base.example.toml")
+			.replace(
+				"[core]\n",
+				"[core]\nsecret_key = 'isolated-settings-test-secret-0123456789'\n",
+			)
+			.replace(
+				"[node]\n",
+				"[node]\napi_token = 'isolated-settings-test-operator-0123456789'\n",
+			);
+		std::fs::write(directory.path().join("base.toml"), base).unwrap();
+		let settings = file_settings_builder("local", directory.path(), directory.path())
+			.build_pending_composed::<ProjectSettings>()
+			.unwrap()
+			.resolve()
+			.unwrap();
+		assert!(settings.settings().cache_salt.keys().unwrap().is_none());
 	}
 
 	#[rstest::rstest]

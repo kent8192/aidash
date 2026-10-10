@@ -1,4 +1,5 @@
-//! Provider timeouts survive registry HTTP requests and persisted local overrides.
+//! Provider timeouts and Projection Version declarations survive registry HTTP
+//! requests, persisted local overrides and the database constraints.
 #[path = "../../execution/tests/support/endpoint.rs"]
 mod endpoint_fixtures;
 #[path = "../../execution/tests/support/native_database.rs"]
@@ -432,4 +433,109 @@ async fn database_validates_media_route_members_for_models_and_installations(
 		assert_eq!(Installation::objects().filter(Installation::field_id().eq(id.to_owned()))
 			.get_with_db(&mut connection).await.unwrap().config.0, config);
 	}
+}
+
+fn agent_on(id: &str, model: &str, version: &str) -> Value {
+	json!({"id":id,"version":"1.0.0","kind":"agent",
+		"name":{"en":"Projection fixture"},"description":{"en":"Persistence test"},
+		"config":{"schema_version":1,"model":{"id":model,"version":"1.0.0"},
+			"instructions":"Use the pinned projection","bindings":[],"remove_default":[],
+			"projection_version":version}})
+}
+
+#[rstest]
+#[tokio::test]
+async fn projection_versions_persist_and_gate_agent_registration(
+	#[future] endpoint: EndpointFixture,
+	timeout_model: Value,
+) {
+	// Arrange
+	let app = endpoint.await;
+	let mut connection = app.database.lease.handle();
+	let mut declared = timeout_model.clone();
+	declared["id"] = json!("ordered-model");
+	declared["config"]["projection_versions"] = json!(["legacy", "ordered"]);
+	// Act
+	let created = assert_json(
+		app.operator
+			.post("/api/registry", &declared, "json")
+			.await
+			.unwrap(),
+		200,
+	);
+	assert_json(
+		app.operator
+			.post("/api/registry", &timeout_model, "json")
+			.await
+			.unwrap(),
+		200,
+	);
+	let accepted = assert_json(
+		app.operator
+			.post(
+				"/api/registry",
+				&agent_on("ordered-agent", "ordered-model", "ordered"),
+				"json",
+			)
+			.await
+			.unwrap(),
+		200,
+	);
+	let undeclared = app
+		.operator
+		.post(
+			"/api/registry",
+			&agent_on("undeclared-agent", "timeout-model", "ordered"),
+			"json",
+		)
+		.await
+		.unwrap();
+	let unimplemented = app
+		.operator
+		.post(
+			"/api/registry",
+			&agent_on("native-agent", "ordered-model", "native"),
+			"json",
+		)
+		.await
+		.unwrap();
+	// Assert
+	assert_eq!(created["config"], declared["config"]);
+	assert_eq!(accepted["config"]["projection_version"], "ordered");
+	assert_json(undeclared, 400);
+	assert_json(unimplemented, 400);
+	for (index, versions) in [json!("ordered"), json!(["v4"]), json!([1]), json!(null)]
+		.into_iter()
+		.enumerate()
+	{
+		let mut entry = timeout_model.clone();
+		entry["id"] = json!(format!("raw-projection-{index}"));
+		entry["config"]["projection_versions"] = versions;
+		let definition = Definition::build()
+			.id(entry["id"].as_str().unwrap())
+			.version("1.0.0")
+			.kind(DefinitionKind::Model)
+			.metadata(entry.into())
+			.finish();
+		assert_constraint(
+			Definition::objects()
+				.create_with_conn(&mut connection, &definition)
+				.await
+				.unwrap_err(),
+			"registry_model_config",
+		);
+	}
+	let agent = Definition::build()
+		.id("raw-projection-agent")
+		.version("1.0.0")
+		.kind(DefinitionKind::Agent)
+		.metadata(agent_on("raw-projection-agent", "ordered-model", "v4").into())
+		.finish();
+	assert_constraint(
+		Definition::objects()
+			.create_with_conn(&mut connection, &agent)
+			.await
+			.unwrap_err(),
+		"registry_agent_config",
+	);
 }

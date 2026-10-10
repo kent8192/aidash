@@ -179,6 +179,7 @@ async fn worker_mint_and_broker_audit_are_correlated_and_never_log_secrets() {
 			modalities: vec!["text".into()],
 			media_routes: vec![],
 			cost: json!({}),
+			projection_versions: vec![],
 		},
 		Arc::new(access),
 		context,
@@ -187,10 +188,11 @@ async fn worker_mint_and_broker_audit_are_correlated_and_never_log_secrets() {
 	let error = provider
 		.infer(aidash_domain::provider::ModelRequest {
 			instructions: CANARY.into(),
-			context: json!({}),
+			context: json!({}).into(),
 			tools: vec![],
 			max_output_tokens: 10,
 			content_parts: vec![],
+			cache_scope: None,
 		})
 		.await
 		.unwrap_err();

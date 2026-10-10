@@ -15,6 +15,7 @@ pub use core::*;
 pub(crate) mod remote;
 
 pub(crate) mod memory_context;
+pub use memory_context::corpus_digest;
 
 pub(crate) mod memory_administration;
 

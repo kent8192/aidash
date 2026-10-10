@@ -122,6 +122,24 @@ impl SkillHeadroom for Headroom<'_> {
 		result.map_err(Into::into)
 	}
 }
+/// Current revision of a Run's pinned Skill record. A plain read: reuse of the
+/// Skill context it keys is rechecked against current authority.
+pub(crate) async fn revision(store: &Store, run: Uuid) -> Result<Option<i64>> {
+	let revision: NativeResult<Option<i64>> = async {
+		crate::database::native::query_scalar(
+			&Query::select()
+				.column(Alias::new("revision"))
+				.from(Alias::new("core_records"))
+				.and_where(Expr::col(Alias::new("id")).eq(Expr::value(run)))
+				.and_where(Expr::col(Alias::new("kind")).eq(Expr::value("skills")))
+				.to_string(PostgresQueryBuilder),
+		)
+		.scalar_optional(&store.pool)
+		.await
+	}
+	.await;
+	revision.map_err(Into::into)
+}
 struct RunId {
 	id: Uuid,
 }

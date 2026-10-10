@@ -57,6 +57,7 @@ async fn cancellation_store(
 		node_id: "cancellation-poll-test".into(),
 		semantic_client: http_client.clone(),
 		recovery_cursors: Default::default(),
+		cache_salt: None,
 		provider_credentials: None,
 		provider_key_material_reader: None,
 		capability_issuer: None,
