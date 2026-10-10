@@ -150,6 +150,8 @@ pub fn url_patterns() -> UnifiedRouter {
 			.with_route_middleware(AccessBoundary::operator())
 			.endpoint(sessions::admin_restore_identity)
 			.with_route_middleware(AccessBoundary::operator())
+			.endpoint(sessions::admin_erase_display)
+			.with_route_middleware(AccessBoundary::operator())
 			.endpoint(sessions::admin_identities)
 			.with_route_middleware(AccessBoundary::operator())
 			.endpoint(sessions::admin_mappings)

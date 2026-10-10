@@ -12,7 +12,19 @@ OIDC-origin execution stores an immutable run origin and rechecks its underlying
 
 ### GCIP sign-in
 
-GCIP is opt-in and replaces direct Google OIDC for a Cloud deployment. A deployment selects exactly one issuer. An External Identity is keyed by issuer, GCIP Tenant ID and uid; OIDC rows use an empty GCIP Tenant ID and retain their issuer/subject identity. Emails, names and GCIP custom claims never link identities or grant authority. Verified email and display name are visible only to Operators, overwritten at sign-in, and cleared after rejection or expiry when no enabled Mapping remains.
+GCIP is opt-in and replaces direct Google OIDC for a Cloud deployment. A deployment selects exactly one issuer. An External Identity is keyed by issuer, GCIP Tenant ID and uid; OIDC rows use an empty GCIP Tenant ID and retain their issuer/subject identity. Emails, names and GCIP custom claims never link identities or grant authority.
+
+Display Attributes (verified email and display name) are stored only on the External Identity, visible only to Operators through `/api/dashboard/identities`, never logged, and overwritten at each sign-in. They are kept only while the External Identity is not disabled and has a retention basis:
+
+- an enabled Mapping;
+- an enabled operator grant;
+- an unexpired pending Registration Request;
+- a live browser or desktop session (unrevoked and within its absolute and idle limits) that started after the latest Registration Request ended (its decision, or its deadline when it expired);
+- a sign-in within the last ten minutes, after that request ended.
+
+Rejection clears them immediately when no basis remains. Otherwise, expiry, an abandoned sign-in without a request, Mapping or operator-grant disablement, and Identity Disablement are cleared by the 60-second sweep or the applicant's next `GET /auth/registration`. The sweep handles each External Identity in its own transaction under its identity lock and rechecks every basis there, so it never erases claims from a sign-in that is still starting its session. A later sign-in records the attributes again.
+
+`POST /api/dashboard/identities/{id}/display-erasure` performs an Operator's Display Erasure: it clears both attributes and records `display_erased_at` and `display_erased_by` (`oidc:<identity-id>` or `operator-bearer`), never the erased values. Display Erasure is permanent, idempotent (a repeat keeps the first trace), and later sign-ins no longer record Display Attributes for that External Identity. It retains the External Identity, its Mappings, Registration Requests and authorization decisions, none of which copy Display Attributes, so authorization history stays verifiable. Database backups keep earlier values until they expire under NFR-DATA-001.
 
 A Tenant Binding maps a GCIP Tenant ID to exactly one Aidash Tenant name. Registration approval and each request, durable execution lease and idle stream snapshot require a Mapping's Tenant to equal the bound Tenant. Removing a Binding causes Identity Disablement at the next boundary, even inside the five-minute freshness window. Installing GCIP policy reconciles every enabled Identity before request/worker admission, including those without a live session or nonterminal run. The periodic refresh repeats that reconciliation. A verified login also disables an inactive existing Identity when it observes the removed Binding, before contacting that pool's Admin API. Restoring the Binding alone does not restore authority. Restore requires an Operator and a valid current Binding; admitted work then needs an authorized manual resumption.
 

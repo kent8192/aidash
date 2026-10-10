@@ -541,9 +541,15 @@ impl DashboardSessions {
 	}
 	pub(crate) async fn registration_status(&self, headers: HeaderMap) -> Result<Response> {
 		let f = self.runtime.clone();
+		let idle_seconds = required_config(&f)?.session_idle_seconds;
 		let session = session_from_headers(&f, &headers).await?;
 		let lease = f.store.orm_connection()?;
-		DashboardIdentity::expire_registrations(lease.handle()).await?;
+		DashboardIdentity::enforce_identity_retention(
+			lease.handle(),
+			session.identity_id(),
+			idle_seconds,
+		)
+		.await?;
 		let mut connection = lease.handle();
 		let mut response = Response::ok().with_json(
 			&(DashboardRegistrationRequest::latest(&mut connection, session.identity_id())
@@ -613,8 +619,23 @@ impl DashboardSessions {
 		actor: Option<BrowserOrigin>,
 		id: Uuid,
 	) -> Result<Registration> {
+		let idle_seconds = required_config(&self.runtime)?.session_idle_seconds;
 		let lease = self.runtime.store.orm_connection()?;
-		DashboardRegistrationRequest::reject(lease.handle(), id, decision_actor(actor)).await
+		DashboardRegistrationRequest::reject(
+			lease.handle(),
+			id,
+			decision_actor(actor),
+			idle_seconds,
+		)
+		.await
+	}
+	pub(crate) async fn admin_erase_display(
+		&self,
+		actor: Option<BrowserOrigin>,
+		id: Uuid,
+	) -> Result<IdentityView> {
+		let lease = self.runtime.store.orm_connection()?;
+		DashboardIdentity::erase_display(lease.handle(), id, decision_actor(actor)).await
 	}
 	pub(crate) async fn admin_operator_grant(
 		&self,

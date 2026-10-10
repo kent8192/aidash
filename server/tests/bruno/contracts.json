@@ -26507,5 +26507,14 @@
     "json": true,
     "uuid_parameters": [],
     "query_parameters": []
+  },
+  {
+    "method": "POST",
+    "path": "/api/dashboard/identities/{id}/display-erasure",
+    "name": "sessions-admin-erase-display",
+    "source": "server/src/apps/identity/views/sessions.rs",
+    "json": false,
+    "uuid_parameters": ["id"],
+    "query_parameters": []
   }
 ]

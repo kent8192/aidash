@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "endpoint_count": 291,
+  "endpoint_count": 292,
   "requests": [
     {
       "name": "Health reports the configured node",
@@ -11856,6 +11856,42 @@
       "scenario": "OIDC deployment cannot accept a GCIP token",
       "status": 401,
       "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1094 sessions-admin-erase-display - Anonymous request is rejected",
+      "file": "contracts/1094-sessions-admin-erase-display.bru",
+      "endpoint": "POST /api/dashboard/identities/{id}/display-erasure",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1095 sessions-admin-erase-display - Typed resource IDs reject invalid UUIDs",
+      "file": "contracts/1095-sessions-admin-erase-display.bru",
+      "endpoint": "POST /api/dashboard/identities/{id}/display-erasure",
+      "scenario": "Typed resource IDs reject invalid UUIDs",
+      "status": 400,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1096 sessions-admin-erase-display - Unrecognized bearer cannot mutate state",
+      "file": "contracts/1096-sessions-admin-erase-display.bru",
+      "endpoint": "POST /api/dashboard/identities/{id}/display-erasure",
+      "scenario": "Unrecognized bearer cannot mutate state",
+      "status": 401,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
         "Exact HTTP 401",
         "Stable authorization error envelope"
       ]

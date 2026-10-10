@@ -93,7 +93,8 @@ impl Accounts for Repository {
 			aidash_application::Error::NotFound("dashboard sign-in is not configured".into())
 		})?;
 		let lease = self.0.store.orm_connection()?;
-		DashboardIdentity::expire_registrations(lease.handle()).await?;
+		DashboardIdentity::enforce_display_retention(lease.handle(), config.session_idle_seconds)
+			.await?;
 		Ok(
 			DashboardIdentity::active(lease.handle(), config.session_idle_seconds)
 				.await?

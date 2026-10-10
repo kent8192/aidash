@@ -1086,11 +1086,12 @@ async fn replacement_registration_keeps_freshly_authenticated_display_attributes
 		.json()
 		.await
 		.unwrap();
+	// A request expires no earlier than its creation, after the sign-in that made it.
 	let expire = Query::update()
 		.table(Alias::new("dashboard_registration_requests"))
 		.value_expr(
 			Alias::new("expires_at"),
-			Expr::val(Utc::now() - chrono::Duration::seconds(1)),
+			Expr::col(Alias::new("created_at")),
 		)
 		.to_string(PostgresQueryBuilder);
 	sqlx::query(&expire)
@@ -1191,7 +1192,7 @@ async fn expired_registration_clears_unmapped_display_attributes(
 		.table(Alias::new("dashboard_registration_requests"))
 		.value_expr(
 			Alias::new("expires_at"),
-			Expr::cust("clock_timestamp()-interval '1 second'"),
+			Expr::col(Alias::new("created_at")),
 		)
 		.to_string(PostgresQueryBuilder);
 	sqlx::query(&expire)
@@ -1222,5 +1223,301 @@ async fn expired_registration_clears_unmapped_display_attributes(
 		.await
 		.unwrap();
 	assert!(view["display_name"].is_null() && view["verified_email"].is_null());
+	common::cleanup(f, &url, &schema).await;
+}
+
+/// Runs exactly one periodic refresh pass, which also enforces display retention.
+async fn sweep(f: &Federation) {
+	let (stop, stopping) = tokio::sync::watch::channel(false);
+	stop.send(true).unwrap();
+	aidash_server::dashboard_auth::refresh_active(f.clone(), stopping)
+		.await
+		.unwrap();
+}
+async fn age(f: &Federation, table: &str, column: &str, interval: &str) {
+	let update = Query::update()
+		.table(Alias::new(table))
+		.value_expr(
+			Alias::new(column),
+			Expr::cust(format!("clock_timestamp()-interval '{interval}'")),
+		)
+		.to_string(PostgresQueryBuilder);
+	sqlx::query(&update)
+		.execute(f.store.pool.driver())
+		.await
+		.unwrap();
+}
+async fn operator_get(app: &common::TestApplication, f: &Federation, path: &str) -> Value {
+	let response = browser()
+		.get(app.url(path))
+		.bearer_auth(&f.config.api_token)
+		.send()
+		.await
+		.unwrap();
+	assert_eq!(response.status(), 200);
+	response.json().await.unwrap()
+}
+async fn only_identity_path(app: &common::TestApplication, f: &Federation) -> String {
+	let identities = operator_get(app, f, "/api/dashboard/identities").await;
+	let [identity] = identities.as_array().unwrap().as_slice() else {
+		panic!("expected one External Identity: {identities}");
+	};
+	format!(
+		"/api/dashboard/identities/{}",
+		identity["id"].as_str().unwrap()
+	)
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn abandoned_sign_in_keeps_display_attributes_only_while_its_session_lives(
+	#[future(awt)]
+	#[from(test_environment)]
+	environment: Arc<TestEnvironment>,
+) {
+	let (mut f, url, schema) = common::setup(&environment).await;
+	let (_status, _admin) = configure(&mut f).await;
+	let app = common::application(f.clone()).await;
+	// The applicant signs in and leaves without submitting a Registration Request.
+	sign_in(&app, "acme", "pool-a", "Abandoned").await;
+	let path = only_identity_path(&app, &f).await;
+	age(
+		&f,
+		"dashboard_identities",
+		"display_observed_at",
+		"11 minutes",
+	)
+	.await;
+	sweep(&f).await;
+	let view = operator_get(&app, &f, &path).await;
+	assert_eq!(
+		view["display_name"], "Abandoned",
+		"the live session retains them"
+	);
+	assert_eq!(view["verified_email"], "person@example.test");
+	// The idle limit is 30 minutes; the abandoned session no longer counts.
+	age(&f, "dashboard_sessions", "last_activity_at", "31 minutes").await;
+	sweep(&f).await;
+	let view = operator_get(&app, &f, &path).await;
+	assert!(view["display_name"].is_null() && view["verified_email"].is_null());
+	assert!(
+		view["display_erased_at"].is_null(),
+		"retention clearing is not a Display Erasure"
+	);
+	sign_in(&app, "acme", "pool-a", "Returned").await;
+	assert_eq!(
+		operator_get(&app, &f, &path).await["display_name"],
+		"Returned"
+	);
+	common::cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn display_sweep_rechecks_retention_after_waiting_for_a_fresh_sign_in(
+	#[future(awt)]
+	#[from(test_environment)]
+	environment: Arc<TestEnvironment>,
+) {
+	let (mut f, url, schema) = common::setup(&environment).await;
+	let (_status, _admin) = configure(&mut f).await;
+	let app = common::application(f.clone()).await;
+	let (cookie, csrf) = sign_in(&app, "acme", "pool-a", "Stale").await;
+	let submitted = browser()
+		.post(app.url("/auth/registration"))
+		.header("cookie", &cookie)
+		.header("origin", "http://127.0.0.1:8080")
+		.header("x-aidash-csrf", csrf)
+		.send()
+		.await
+		.unwrap();
+	assert_eq!(submitted.status(), 200);
+	let path = only_identity_path(&app, &f).await;
+	// Nothing retains the stale attributes: the request has expired, the sign-in
+	// is old, and its session has ended.
+	let expire = Query::update()
+		.table(Alias::new("dashboard_registration_requests"))
+		.value_expr(
+			Alias::new("expires_at"),
+			Expr::col(Alias::new("created_at")),
+		)
+		.to_string(PostgresQueryBuilder);
+	sqlx::query(&expire)
+		.execute(f.store.pool.driver())
+		.await
+		.unwrap();
+	age(
+		&f,
+		"dashboard_identities",
+		"display_observed_at",
+		"11 minutes",
+	)
+	.await;
+	age(&f, "dashboard_sessions", "revoked_at", "0 seconds").await;
+	// A fresh sign-in holds the identity lock while it records new claims.
+	let mut tx = f.store.pool.driver().begin().await.unwrap();
+	let lock = Query::select()
+		.column(Alias::new("id"))
+		.from(Alias::new("dashboard_identities"))
+		.lock(reinhardt::query::LockType::Update)
+		.to_string(PostgresQueryBuilder);
+	sqlx::query(&lock).fetch_one(&mut *tx).await.unwrap();
+	let pass = tokio::spawn({
+		let f = f.clone();
+		async move { sweep(&f).await }
+	});
+	let waiters = Query::select()
+		.expr(Expr::cust("count(*)"))
+		.from(Alias::new("pg_stat_activity"))
+		.and_where(Expr::col(Alias::new("application_name")).eq(Expr::value(&schema)))
+		.and_where(Expr::col(Alias::new("wait_event_type")).eq(Expr::value("Lock")))
+		.and_where(Expr::col(Alias::new("query")).like("%dashboard_identities%"))
+		.to_string(PostgresQueryBuilder);
+	tokio::time::timeout(std::time::Duration::from_secs(10), async {
+		while sqlx::query_scalar::<_, i64>(&waiters)
+			.fetch_one(f.store.pool.driver())
+			.await
+			.unwrap() == 0
+		{
+			tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+		}
+	})
+	.await
+	.expect("the sweep must wait for the identity lock");
+	let fresh = Query::update()
+		.table(Alias::new("dashboard_identities"))
+		.value_expr(Alias::new("display_name"), Expr::val("Fresh"))
+		.value_expr(
+			Alias::new("display_observed_at"),
+			Expr::cust("clock_timestamp()"),
+		)
+		.to_string(PostgresQueryBuilder);
+	sqlx::query(&fresh).execute(&mut *tx).await.unwrap();
+	tx.commit().await.unwrap();
+	tokio::time::timeout(std::time::Duration::from_secs(10), pass)
+		.await
+		.unwrap()
+		.unwrap();
+	let view = operator_get(&app, &f, &path).await;
+	assert_eq!(
+		view["display_name"], "Fresh",
+		"the sweep must not erase claims recorded while it waited"
+	);
+	common::cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn display_erasure_is_permanent_and_keeps_the_identity_authority(
+	#[future(awt)]
+	#[from(test_environment)]
+	environment: Arc<TestEnvironment>,
+) {
+	let (mut f, url, schema) = common::setup(&environment).await;
+	let (_status, _admin) = configure(&mut f).await;
+	let policy = serde_json::from_value(
+		json!({"tenant":"acme","subjects":{"alice":{"kind":"user"}},"policies":[]}),
+	)
+	.unwrap();
+	aidash_server::authorization::Authorization {
+		pool: f.store.pool.clone(),
+	}
+	.replace("acme", 0, policy, "operator")
+	.await
+	.unwrap();
+	let app = common::application(f.clone()).await;
+	let (cookie, csrf) = sign_in(&app, "acme", "pool-a", "Person").await;
+	let registration: Value = browser()
+		.post(app.url("/auth/registration"))
+		.header("cookie", &cookie)
+		.header("origin", "http://127.0.0.1:8080")
+		.header("x-aidash-csrf", csrf)
+		.send()
+		.await
+		.unwrap()
+		.json()
+		.await
+		.unwrap();
+	let approved = browser()
+		.post(app.url(format!(
+			"/api/dashboard/registrations/{}/approve",
+			registration["id"].as_str().unwrap()
+		)))
+		.bearer_auth(&f.config.api_token)
+		.json(&json!({"tenant":"acme","subject":"alice"}))
+		.send()
+		.await
+		.unwrap();
+	assert_eq!(approved.status(), 200);
+	let mapping: Value = approved.json().await.unwrap();
+	let selector = format!("mapping:{}", mapping["id"].as_str().unwrap());
+	let identity = registration["identity_id"].as_str().unwrap();
+	let path = format!("/api/dashboard/identities/{identity}");
+	assert_eq!(
+		operator_get(&app, &f, &path).await["display_name"],
+		"Person"
+	);
+	let erase = || {
+		browser()
+			.post(app.url(format!("{path}/display-erasure")))
+			.bearer_auth(&f.config.api_token)
+			.send()
+	};
+	let erased = erase().await.unwrap();
+	assert_eq!(erased.status(), 200);
+	let erased: Value = erased.json().await.unwrap();
+	assert!(erased["display_name"].is_null() && erased["verified_email"].is_null());
+	assert_eq!(erased["display_erased_by"], "operator-bearer");
+	assert!(erased["display_erased_at"].is_string());
+	let repeated: Value = erase().await.unwrap().json().await.unwrap();
+	assert_eq!(
+		repeated["display_erased_at"], erased["display_erased_at"],
+		"a repeated erasure keeps the first trace"
+	);
+	// Later sign-ins no longer record the attributes, yet the Mapping still decides.
+	let (cookie, _) = sign_in(&app, "acme", "pool-a", "Renamed").await;
+	assert_eq!(
+		browser()
+			.get(app.url("/api/session"))
+			.header("cookie", &cookie)
+			.header("x-aidash-context", &selector)
+			.send()
+			.await
+			.unwrap()
+			.status(),
+		200
+	);
+	sweep(&f).await;
+	let view = operator_get(&app, &f, &path).await;
+	assert!(view["display_name"].is_null() && view["verified_email"].is_null());
+	assert_eq!(view["display_erased_at"], erased["display_erased_at"]);
+	for listing in ["/api/dashboard/identities", "/api/dashboard/registrations"] {
+		let body = operator_get(&app, &f, listing).await.to_string();
+		assert!(
+			!body.contains("person@example.test") && !body.contains("Renamed"),
+			"{listing} returned erased attributes"
+		);
+	}
+	let mappings = operator_get(&app, &f, "/api/dashboard/mappings").await;
+	assert!(
+		mappings
+			.as_array()
+			.unwrap()
+			.iter()
+			.any(|row| row["id"] == mapping["id"] && row["enabled"] == true)
+	);
+	assert_eq!(
+		browser()
+			.post(app.url(format!(
+				"/api/dashboard/identities/{}/display-erasure",
+				uuid::Uuid::new_v4()
+			)))
+			.bearer_auth(&f.config.api_token)
+			.send()
+			.await
+			.unwrap()
+			.status(),
+		404
+	);
 	common::cleanup(f, &url, &schema).await;
 }

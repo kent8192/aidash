@@ -29,4 +29,12 @@ pub struct DashboardIdentity {
 	pub last_valid_at: Option<DateTime<Utc>>,
 	#[field(null = true)]
 	pub disabled_at: Option<DateTime<Utc>>,
+	/// The latest sign-in that offered Display Attributes, bounding their retention.
+	#[field(null = true)]
+	pub display_observed_at: Option<DateTime<Utc>>,
+	/// Display Erasure is permanent: later sign-ins no longer record attributes.
+	#[field(null = true)]
+	pub display_erased_at: Option<DateTime<Utc>>,
+	#[field(field_type = "text", null = true)]
+	pub display_erased_by: Option<String>,
 }
