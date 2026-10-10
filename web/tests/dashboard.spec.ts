@@ -172,7 +172,15 @@ test("creates a workspace and task and receives live assignment changes", async 
     .getByRole("button", { name: "作成", exact: true })
     .click();
   await expect(page.getByRole("dialog")).not.toBeVisible();
-  await page.locator(".intent-task-row").filter({ hasText: taskName }).click();
+  // Tasks are listed in the channel's "Tasks and results" sheet.
+  const openTasks = () =>
+    page.getByRole("button", { name: "タスクと成果物", exact: true }).click();
+  const row = page
+    .getByRole("dialog")
+    .getByRole("button")
+    .filter({ hasText: taskName });
+  await openTasks();
+  await row.click();
   await page
     .getByRole("button", { name: "担当を割り当て", exact: true })
     .click();
@@ -206,7 +214,8 @@ test("creates a workspace and task and receives live assignment changes", async 
     .getByRole("dialog")
     .getByRole("button", { name: "担当を割り当て" })
     .click();
-  const row = page.locator(".intent-task-row").filter({ hasText: taskName });
+  await expect(page.getByRole("dialog")).not.toBeVisible();
+  await openTasks();
   await expect(row).toContainText("完了", { timeout: 30000 });
 });
 
@@ -243,18 +252,19 @@ test("publishes and installs a skill through the marketplace", async ({
     .getByRole("button", { name: "パッケージを公開", exact: true })
     .click();
   await expect(dialog).not.toBeVisible();
-  await page
-    .getByRole("button")
-    .filter({
-      has: page.getByRole("heading", { name, exact: true }),
-    })
-    .click();
+  const entry = page.getByRole("button").filter({
+    has: page.getByRole("heading", { name, exact: true }),
+  });
+  await entry.click();
   await dialog
     .getByRole("button", { name: "インストール", exact: true })
     .click();
   await expect(dialog).not.toBeVisible();
+  // The row repeats its status for narrow and wide layouts; one is visible.
   await expect(
-    page.getByText("インストール済み", { exact: true }),
+    entry
+      .getByText("インストール済み", { exact: true })
+      .filter({ visible: true }),
   ).toBeVisible();
 });
 

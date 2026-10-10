@@ -21,30 +21,39 @@ async function button(text) {
   await element.waitForClickable();
   await element.click();
 }
+// The connection bar and form carry accessible names rather than CSS hooks.
+const connections = '[aria-label="Aidash connections"]';
 async function select(name) {
   // Native <option> clicks differ across embedded WebDriver implementations.
   // Dispatch the select's change event to exercise the real React/native path.
-  await browser.execute((label) => {
-    const select = document.querySelector(".desktop-connections select");
-    const option = [...select.options].find(
-      (item) => item.textContent === label,
-    );
-    if (!option) throw new Error(`Missing connection: ${label}`);
-    select.value = option.value;
-    select.dispatchEvent(new Event("change", { bubbles: true }));
-  }, name);
+  await browser.execute(
+    (bar, label) => {
+      const select = document.querySelector(
+        `${bar} select[aria-label="Connection"]`,
+      );
+      const option = [...select.options].find(
+        (item) => item.textContent === label,
+      );
+      if (!option) throw new Error(`Missing connection: ${label}`);
+      select.value = option.value;
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    },
+    connections,
+    name,
+  );
 }
 async function add(name, origin) {
   await select("Manage connections");
   await textContains("Connect to Aidash");
-  await $(".login-card input:not([type=url])").setValue(name);
-  await $(".login-card input[type=url]").setValue(origin);
+  await $("main form input:not([type=url])").setValue(name);
+  await $("main form input[type=url]").setValue(origin);
   await button("Save and connect");
 }
 async function authorize() {
   await button("Sign in with Google");
   await button("operator");
-  await textContains("Graph View");
+  // The navigation rail names its destinations through aria-label only.
+  await $('button[aria-label="Graph View"]').waitForExist();
 }
 async function invoke(command, args = {}) {
   return browser.executeAsync(
@@ -59,9 +68,7 @@ async function invoke(command, args = {}) {
   );
 }
 async function logout() {
-  await browser.execute(() => {
-    document.querySelector(".account-popover").open = true;
-  });
+  await $('button[aria-label="Account settings"]').click();
   await button("Log out on this device");
   await textContains("Sign in with Google");
 }
@@ -100,15 +107,20 @@ describe(`Native desktop ${phase} (${process.platform})`, () => {
       await $(".mesh-canvas canvas").waitForExist();
       await $(".mesh-node-label").waitForExist();
       await button("Fit entire graph");
-      const geometry = await browser.execute(() => ({
-        canvases: [...document.querySelectorAll(".mesh-canvas canvas")].map(
-          (canvas) => ({ width: canvas.width, height: canvas.height }),
-        ),
-        labels: document.querySelectorAll(".mesh-node-label").length,
-        bottom: document.querySelector(".desktop-shell").getBoundingClientRect()
-          .bottom,
-        viewport: innerHeight,
-      }));
+      const geometry = await browser.execute(
+        (bar) => ({
+          canvases: [...document.querySelectorAll(".mesh-canvas canvas")].map(
+            (canvas) => ({ width: canvas.width, height: canvas.height }),
+          ),
+          labels: document.querySelectorAll(".mesh-node-label").length,
+          // The connection bar's parent is the desktop shell around the app.
+          bottom: document
+            .querySelector(bar)
+            .parentElement.getBoundingClientRect().bottom,
+          viewport: innerHeight,
+        }),
+        connections,
+      );
       assert(
         geometry.canvases.length > 0 &&
           geometry.canvases.every(
@@ -136,7 +148,7 @@ describe(`Native desktop ${phase} (${process.platform})`, () => {
       assert(second.streams.includes(new URL(origins[1]).port));
       assert(!second.streams.includes(new URL(origins[0]).port));
       const oldStreams = (await status(0)).streams.length;
-      await select(`First — ${origins[0]}`);
+      await select(`First · ${origins[0]}`);
       await button("operator");
       await browser.waitUntil(
         async () => (await status(0)).streams.length > oldStreams,
@@ -157,7 +169,7 @@ describe(`Native desktop ${phase} (${process.platform})`, () => {
       // Let the native navigation callback run before checking both URL and UI.
       await browser.pause(300);
       assert.equal(await browser.getUrl(), before);
-      await $(".desktop-connections").waitForExist();
+      await $(connections).waitForExist();
       assert(
         (await invoke("plugin:opener|open_url", { url: origins[1] })).rejected,
       );
@@ -176,14 +188,14 @@ describe(`Native desktop ${phase} (${process.platform})`, () => {
       const first = await status(0);
       assert.equal(first.logins, 1);
       assert(first.renewals >= 1);
-      await select(`Second — ${origins[1]}`);
+      await select(`Second · ${origins[1]}`);
       await button("operator");
       const second = await status(1);
       assert.equal(second.logins, 1);
       assert(second.renewals >= 1);
       await logout();
       assert.equal((await status(1)).active, false);
-      await select(`First — ${origins[0]}`);
+      await select(`First · ${origins[0]}`);
       await button("operator");
       await logout();
       assert.equal((await status(0)).active, false);
@@ -192,7 +204,7 @@ describe(`Native desktop ${phase} (${process.platform})`, () => {
     it("stays logged out after another native process restart", async () => {
       await textContains("Sign in with Google");
       assert.deepEqual(await invoke("desktop_access"), { value: null });
-      await select(`Second — ${origins[1]}`);
+      await select(`Second · ${origins[1]}`);
       await textContains("Sign in with Google");
       assert.deepEqual(await invoke("desktop_access"), { value: null });
       for (const index of [0, 1]) {

@@ -374,7 +374,11 @@ test("generation dashboard manages policy, approval, completion and retained his
         .fill(JSON.stringify({ capability: id }));
       await dialog.getByRole("button", { name: "作成", exact: true }).click();
       await expect(dialog).toHaveCount(0, { timeout: 15000 });
-      await page.locator(".intent-task-row").filter({ hasText: title }).click();
+      // Tasks are listed in the channel's "Tasks and results" sheet.
+      await page
+        .getByRole("button", { name: "タスクと成果物", exact: true })
+        .click();
+      await dialog.getByRole("button").filter({ hasText: title }).click();
       await dialog
         .getByRole("button", { name: "ポリシーで割り当て", exact: true })
         .click();
