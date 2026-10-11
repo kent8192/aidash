@@ -98,7 +98,8 @@ impl EvidenceStore for Evidence {
 			async {
 				let mut tx = self.store.database().begin().await?;
 				ResearchAttempt::settle(tx.as_mut(), run, key, outcome, result).await?;
-				tx.commit().await
+				tx.commit().await?;
+				Ok(())
 			}
 			.await,
 		)

@@ -86,10 +86,10 @@ impl EvidenceStore for Memory {
 			return Ok(Reserved::AttemptLimit);
 		}
 		let mut spend = self.spend.lock().unwrap();
-		if let (Some(attribution), Some(budget)) = (&reservation.attribution, &reservation.budget) {
-			if *spend + attribution.price_micro_usd > budget.limit_micro_usd {
-				return Ok(Reserved::BudgetExhausted);
-			}
+		if let (Some(attribution), Some(budget)) = (&reservation.attribution, &reservation.budget)
+			&& *spend + attribution.price_micro_usd > budget.limit_micro_usd
+		{
+			return Ok(Reserved::BudgetExhausted);
 		}
 		if let Some(attribution) = &reservation.attribution {
 			*spend += attribution.price_micro_usd;
