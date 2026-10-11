@@ -1,0 +1,21 @@
+meta {
+  name: 1096 tenant-administration - Subject Credential bearer is never a Tenant Administrator
+  type: http
+  seq: 1096
+}
+
+get {
+  url: {{base_url}}/api/tenants/{{tenant}}/administration
+  body: none
+  auth: none
+}
+
+headers {
+  Accept: application/json
+  Authorization: Bearer {{contract_token}}
+}
+
+tests {
+  test("Exact HTTP 403", function () { expect(res.getStatus()).to.equal(403); });
+  test("Stable authorization error envelope", function () { expect(res.getHeader("content-type")).to.include("application/json"); expect(res.getBody()).to.eql({error:"forbidden"}); });
+}

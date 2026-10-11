@@ -27,6 +27,7 @@ export default defineConfig({
     "generation-validation.spec.ts",
     "workbench.spec.ts",
     "provider-credentials.spec.ts",
+    "tenant-administration.spec.ts",
   ],
   workers: 1,
   retries: 0,

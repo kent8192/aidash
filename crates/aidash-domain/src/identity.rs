@@ -19,3 +19,5 @@ pub mod peer_mapping;
 pub mod dashboard;
 
 pub mod desktop;
+
+pub mod tenant_administration;
