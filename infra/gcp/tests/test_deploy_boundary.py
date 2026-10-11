@@ -5,11 +5,15 @@ touches Google Cloud.
 """
 import json
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import unittest
 
+import yaml
+
 BOOTSTRAP = Path(__file__).resolve().parents[1] / "bootstrap"
+WORKFLOWS = Path(__file__).resolve().parents[3] / ".github" / "workflows"
 DEPLOY = "serviceAccount:aidash-deploy@aidash-fixture.iam.gserviceaccount.com"
 IAM_GRANTS = (
     "google_project_iam_member", "google_project_iam_binding",
@@ -160,6 +164,55 @@ class DeployBoundaryTests(unittest.TestCase):
         for policy in self.values("google_monitoring_alert_policy"):
             self.assertEqual(len(policy["notification_channels"]), 1, policy["display_name"])
             self.assertTrue(policy["alert_strategy"][0]["notification_rate_limit"][0]["period"])
+
+
+class DeployEntryPointTests(unittest.TestCase):
+    """Every job that can obtain Google credentials runs in the protected Environment."""
+
+    @staticmethod
+    def workflow(name):
+        return yaml.safe_load((WORKFLOWS / name).read_text())
+
+    @staticmethod
+    def wif_environment():
+        source = (BOOTSTRAP / "variables.tf").read_text()
+        return re.search(r'variable "deploy_environment" \{.*?default\s*=\s*"([^"]+)"', source, re.S).group(1)
+
+    def credentialed_jobs(self, workflow):
+        return {
+            name: job for name, job in workflow["jobs"].items()
+            if (job.get("permissions") or {}).get("id-token") == "write"
+            or any("google-github-actions/auth" in step.get("uses", "") for step in job.get("steps", []))
+        }
+
+    def test_every_credentialed_job_declares_the_wif_environment(self):
+        jobs = self.credentialed_jobs(self.workflow("gcp-environments.yml"))
+        self.assertEqual(sorted(jobs), ["apply", "prepare", "publish"])
+        for name, job in jobs.items():
+            self.assertEqual(job.get("environment"), self.wif_environment(), name)
+
+    def test_credentialed_jobs_request_tokens_and_uncredentialed_jobs_do_not(self):
+        for name, job in self.workflow("gcp-environments.yml")["jobs"].items():
+            wants_token = (job.get("permissions") or {}).get("id-token") == "write"
+            self.assertEqual(wants_token, name in {"prepare", "publish", "apply"}, name)
+
+    def test_infrastructure_checks_hold_no_cloud_credentials(self):
+        workflow = self.workflow("gcp-check.yml")
+        self.assertEqual(self.credentialed_jobs(workflow), {})
+        self.assertNotIn("id-token", json.dumps(workflow))
+        self.assertTrue(all("environment" not in job for job in workflow["jobs"].values()))
+
+    def test_no_other_workflow_authenticates_to_google(self):
+        for path in WORKFLOWS.glob("*.yml"):
+            if path.name == "gcp-environments.yml":
+                continue
+            self.assertNotIn("google-github-actions/auth", path.read_text(), path.name)
+
+    def test_provider_condition_names_the_environment_and_the_main_workflow(self):
+        source = (BOOTSTRAP / "main.tf").read_text()
+        self.assertIn("assertion.environment == '${var.deploy_environment}'", source)
+        self.assertIn("assertion.ref == 'refs/heads/${var.trusted_branch}'", source)
+        self.assertIn("assertion.workflow_ref == '${local.workflow_ref}'", source)
 
 
 if __name__ == "__main__":

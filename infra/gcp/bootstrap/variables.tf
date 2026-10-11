@@ -27,6 +27,16 @@ variable "trusted_branch" {
   default = "main"
 }
 
+variable "deploy_environment" {
+  type        = string
+  default     = "gcp-deploy"
+  description = "GitHub Environment that every job holding Google credentials must run in. Humans configure its protection rules in repository settings."
+  validation {
+    condition     = can(regex("^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$", var.deploy_environment))
+    error_message = "Use a plain GitHub Environment name; it is interpolated into the attribute condition."
+  }
+}
+
 variable "state_bucket_name" {
   type        = string
   description = "Globally unique private Terraform/lifecycle state bucket name."

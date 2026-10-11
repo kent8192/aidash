@@ -8,13 +8,18 @@ variables {
 run "trusted_workflow_only" {
   command = plan
   assert {
-    condition     = strcontains(google_iam_workload_identity_pool_provider.github.attribute_condition, "assertion.repository_id == '1378229915'") && strcontains(google_iam_workload_identity_pool_provider.github.attribute_condition, "gcp-environments.yml@refs/heads/main") && strcontains(google_iam_workload_identity_pool_provider.github.attribute_condition, "assertion.ref == 'refs/heads/main'")
+    condition     = strcontains(google_iam_workload_identity_pool_provider.github.attribute_condition, "assertion.repository_id == '1378229915'") && strcontains(google_iam_workload_identity_pool_provider.github.attribute_condition, "gcp-environments.yml@refs/heads/main") && strcontains(google_iam_workload_identity_pool_provider.github.attribute_condition, "assertion.ref == 'refs/heads/main'") && endswith(google_iam_workload_identity_pool_provider.github.attribute_condition, "&& assertion.environment == 'gcp-deploy'")
     error_message = "Name-only or PR-branch OIDC trust is not acceptable."
   }
   assert {
     condition     = google_storage_bucket.state.public_access_prevention == "enforced" && google_storage_bucket.state.force_destroy == false
     error_message = "State must remain private and protected from accidental destruction."
   }
+}
+run "deploy_environment_name_is_not_injectable" {
+  command = plan
+  variables { deploy_environment = "x' || true || '" }
+  expect_failures = [var.deploy_environment]
 }
 run "deploy_manages_gke_without_ssh" {
   command = plan

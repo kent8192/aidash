@@ -73,6 +73,8 @@ jobs:
   prepare:
     needs: intake
     if: needs.intake.outputs.proceed == 'true'
+    # The WIF provider only trusts jobs that run in this Environment (#151).
+    environment: gcp-deploy
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -146,6 +148,8 @@ jobs:
 
   publish:
     needs: [intake, prepare, build]
+    # The WIF provider only trusts jobs that run in this Environment (#151).
+    environment: gcp-deploy
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     permissions:
@@ -188,6 +192,8 @@ jobs:
   apply:
     needs: [intake, prepare, build, publish]
     if: always() && needs.prepare.result == 'success' && (needs.prepare.outputs.build != 'true' || needs.publish.result == 'success')
+    # The WIF provider only trusts jobs that run in this Environment (#151).
+    environment: gcp-deploy
     runs-on: ubuntu-24.04
     timeout-minutes: 55
     permissions:
