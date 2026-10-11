@@ -20,6 +20,8 @@ variable "gcip_tenants" {
     # (decimal, or 0x hex) as an IPv4 address and refuses it, so reject it here.
     condition     = length(distinct(flatten([for pool in values(var.gcip_tenants) : pool.sign_in_domains]))) == length(flatten([for pool in values(var.gcip_tenants) : pool.sign_in_domains])) && alltrue([for domain in flatten([for pool in values(var.gcip_tenants) : pool.sign_in_domains]) : length(domain) <= 253 && can(regex("^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$", domain)) && !can(regex("\\.([0-9]+|0x[0-9a-f]*)$", domain))])
     error_message = "Sign-in Domains must be lowercase ASCII DNS names (punycode for IDN) with at least two labels, not IP addresses, and each domain may route to only one pool."
+  }
+  validation {
     # Lift only after the web and desktop sign-in flows resolve and enroll second factors (#201).
     condition     = alltrue([for pool in values(var.gcip_tenants) : pool.mfa.state == "disabled"])
     error_message = "Only the disabled MFA Requirement is supported until sign-in clients handle second factors."
