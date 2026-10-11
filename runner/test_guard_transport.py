@@ -7,7 +7,7 @@ import threading
 import unittest
 from unittest.mock import Mock, patch
 
-from control import ActivityLedger, Runner
+from control import ActivityAggregate, Runner
 
 
 class GuardTransportTest(unittest.TestCase):
@@ -17,7 +17,7 @@ class GuardTransportTest(unittest.TestCase):
         self.runner = object.__new__(Runner)
         self.runner.root = Path(directory.name)
         self.runner.lock = threading.RLock()
-        self.runner.ledger = ActivityLedger()
+        self.runner.aggregate = ActivityAggregate()
         self.runner.config = {'node_guard': {'namespace': 'trusted', 'selector': 'app=guard',
                                              'command': ['python3', '-I', '/opt/aidash/node_guard.py']}}
         self.runner.command = ['kubectl', '--namespace', 'execution']

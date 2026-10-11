@@ -9,7 +9,7 @@ import uuid
 from pathlib import Path
 from unittest.mock import patch
 
-from control import TERMINAL, ActivityLedger, Runner, save
+from control import TERMINAL, ActivityAggregate, Runner, save
 
 
 def record(status, finished_at=None, **fields):
@@ -40,7 +40,7 @@ class ActivityTest(unittest.TestCase):
         self.runner = object.__new__(Runner)
         self.runner.root = self.root
         self.runner.lock = threading.RLock()
-        self.runner.ledger = ActivityLedger()
+        self.runner.aggregate = ActivityAggregate()
 
     def write(self, value):
         save(self.root / (value['operation_id'] + '.json'), value)
@@ -57,7 +57,7 @@ class ActivityTest(unittest.TestCase):
         for retained in (10, 5000):
             with self.subTest(retained=retained), tempfile.TemporaryDirectory() as directory:
                 self.root = self.runner.root = Path(directory)
-                self.runner.ledger = ActivityLedger()
+                self.runner.aggregate = ActivityAggregate()
                 for number in range(retained):
                     value = record('completed', 1000 + number, termination_confirmed=True, acknowledged=True)
                     (self.root / (value['operation_id'] + '.json')).write_text(json.dumps(value))
@@ -100,7 +100,7 @@ class ActivityTest(unittest.TestCase):
 
     def test_transitions_keep_the_aggregate_equal_to_a_full_scan(self):
         operation = self.write(record('accepted', termination_confirmed=False))
-        self.runner.ledger.track(operation, json.loads((self.root / (operation + '.json')).read_bytes()))
+        self.runner.aggregate.track(operation, json.loads((self.root / (operation + '.json')).read_bytes()))
         self.assertEqual(self.activity(), (1, 0))
         # Terminal without proof that the writer stopped is still busy.
         self.runner.update(operation, status='uncertain', finished_at=1500.5)
@@ -111,12 +111,12 @@ class ActivityTest(unittest.TestCase):
         self.runner.update(operation, acknowledged=True, request={}, stdout='', files=[], displays=[])
         self.assertEqual(self.activity(), (0, 1500.5))
         frozen = self.write(record('failed', 1400, writer_frozen=True))
-        self.runner.ledger.track(frozen, json.loads((self.root / (frozen + '.json')).read_bytes()))
+        self.runner.aggregate.track(frozen, json.loads((self.root / (frozen + '.json')).read_bytes()))
         self.assertEqual(self.activity(), (0, 1500.5))
         self.assertEqual(self.activity(), full_scan(self.root))
         # The aggregate rebuilt after a restart matches the live one.
-        restarted = ActivityLedger()
-        self.runner.ledger, live = restarted, self.runner.ledger
+        restarted = ActivityAggregate()
+        self.runner.aggregate, live = restarted, self.runner.aggregate
         self.runner.index_journal()
         self.assertEqual((restarted.unsettled, restarted.last_completed), (live.unsettled, live.last_completed))
 
@@ -145,8 +145,8 @@ class ActivityTest(unittest.TestCase):
         # Area and session files are not operations.
         save(self.root / 'area-x.json', {'epoch': 1, 'operation_id': operations[0]})
         save(self.root / 'session-x.json', {'status': 'frozen'})
-        restarted = ActivityLedger()
-        self.runner.ledger = restarted
+        restarted = ActivityAggregate()
+        self.runner.aggregate = restarted
         self.runner.index_journal()
         self.assertEqual(self.activity(), full_scan(self.root))
 

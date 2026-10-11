@@ -123,7 +123,7 @@ refer here.
   with the previous one: any change, whether a new receipt or a removed one,
   renews the idle interval, and retries or object reclamation of an existing
   receipt do not. An observation that lacks a well-formed pair (an older observer
-  that still sends the receipt list, a missing field, a non-hex digest) or whose
+  that still sends the receipt list, with or without the pair, a missing field, a non-hex digest) or whose
   file exceeds 64 KiB is treated as unavailable and published as busy. The first
   sample after upgrading from the receipt-list observer therefore sees a different
   digest and renews idle once. The `snapshot` volume is a 1 MiB `emptyDir`.
@@ -139,7 +139,7 @@ refer here.
   then keeps only the previous snapshot's `last_active`. This file does not cover
   that case: a request completed shortly before the Pod was lost can receive a
   shorter idle interval.
-- **Runner.** `/v1/activity` (`runner/control.py`) answers from an in-memory ledger
+- **Runner.** `/v1/activity` (`runner/control.py`) answers from an in-memory aggregate
   of the operations whose writer is not proven stopped plus the latest completion
   time. It is seeded by one scan of the journal at Runner start and updated each
   time an operation record is saved, so a request opens no journal file, however

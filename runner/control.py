@@ -57,7 +57,7 @@ def settled(record):
     return record['status'] in TERMINAL and bool(record.get('termination_confirmed') or record.get('writer_frozen'))
 
 
-class ActivityLedger:
+class ActivityAggregate:
     """Aggregate of the operation journal for /v1/activity.
 
     The journal keeps every operation file for the life of the volume (an
@@ -89,7 +89,7 @@ class Runner:
         self.lock = threading.RLock()
         self.active = set()
         self.admission_operation = None
-        self.ledger = ActivityLedger()
+        self.aggregate = ActivityAggregate()
         self.index_journal()
 
         identity_path = self.root / "instance"
@@ -139,10 +139,10 @@ class Runner:
                 yield path
 
     def index_journal(self):
-        """Seed the activity ledger from the retained journal. This is the only
+        """Seed the activity aggregate from the retained journal. This is the only
         full scan: it runs once at startup, never per request."""
         for path in self.operation_files():
-            self.ledger.track(path.stem, json.loads(path.read_bytes()))
+            self.aggregate.track(path.stem, json.loads(path.read_bytes()))
 
     def verify_isolation(self):
         operation = str(uuid.uuid4())
@@ -255,7 +255,7 @@ class Runner:
             record = self.get(operation)
             record.update(changes)
             save(self.path(operation), record)
-            self.ledger.track(operation, record)
+            self.aggregate.track(operation, record)
             return record
 
     def public(self, record):
@@ -343,7 +343,7 @@ class Runner:
                     record["pod_uid"] = session["pod_uid"]
                     record["container_id"] = session["container_id"]
             save(self.path(operation), record)
-            self.ledger.track(operation, record)
+            self.aggregate.track(operation, record)
             save(area_path, {"epoch": request["epoch"], "operation_id": operation})
             if not request["files"] or session:
                 self.start(operation)
@@ -870,9 +870,9 @@ class Runner:
 
     def activity(self):
         """Read-only activity; an unproven writer always prevents idle stop. It reads
-        the ledger only: no journal file is opened and the lock is held for two reads."""
+        the aggregate only: no journal file is opened and the lock is held for two reads."""
         with self.lock:
-            busy, completed = len(self.ledger.unsettled), self.ledger.last_completed
+            busy, completed = len(self.aggregate.unsettled), self.aggregate.last_completed
         return {'protocol': 'aidash-runner-activity/1', 'counts': {'runner': busy},
                 'busy': busy > 0, 'last_work_completed': completed}
 
