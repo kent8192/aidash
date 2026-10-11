@@ -34,6 +34,11 @@ regex = "1"
 
 metrics = "0.24"
 
+[features]
+# Test-only Provider Credential write port (ADR 0006). Production dependencies
+# never enable it; see scripts/check-workspace-boundaries.py.
+test-support = []
+
 [dev-dependencies]
 rstest.workspace = true
 

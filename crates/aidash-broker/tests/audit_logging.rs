@@ -151,6 +151,7 @@ async fn worker_mint_and_broker_audit_are_correlated_and_never_log_secrets() {
 			secret_resource: resource,
 			fingerprint: "fixture".into(),
 			last4: "test".into(),
+			key_digest: None,
 			state: State::Active,
 			created_at: chrono::Utc::now(),
 			rotated_at: None,

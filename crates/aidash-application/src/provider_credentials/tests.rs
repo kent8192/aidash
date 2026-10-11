@@ -1,3 +1,4 @@
+use super::testing::{KeyMaterialWritePort as _, NoExchange};
 use super::*;
 use std::collections::BTreeMap;
 use tokio::sync::{Mutex, OwnedMutexGuard};
@@ -217,6 +218,7 @@ fn service() -> (Service, Repo, FakeStore) {
 			repository: Arc::new(repo.clone()),
 			store: Arc::new(store.clone()),
 			validator: Arc::new(Validator),
+			exchange: Arc::new(NoExchange),
 			fingerprint_key: "test-fingerprint-root-key".into(),
 			max_per_tenant: 2,
 		},
@@ -916,6 +918,7 @@ async fn deleted_intent_recovers_partial_destruction_secret_deletion_and_final_c
 			repository: Arc::new(repo.clone()),
 			store: Arc::new(store.clone()),
 			validator: Arc::new(Validator),
+			exchange: Arc::new(NoExchange),
 			fingerprint_key: "test-fingerprint-root-key".into(),
 			max_per_tenant: 2,
 		};
@@ -956,4 +959,174 @@ async fn deleted_intent_recovers_partial_destruction_secret_deletion_and_final_c
 		);
 		assert_eq!(restarted.reconcile_page(None).await.unwrap().cleaned, 0);
 	}
+}
+
+/// A fake exchange that issues one key per code and rejects everything else.
+struct CodeExchange {
+	keys: std::sync::Mutex<BTreeMap<String, String>>,
+	verifier: String,
+	calls: std::sync::atomic::AtomicUsize,
+}
+impl CodeExchange {
+	fn new(codes: &[(&str, &str)]) -> Self {
+		Self {
+			keys: std::sync::Mutex::new(
+				codes
+					.iter()
+					.map(|(code, key)| (code.to_string(), key.to_string()))
+					.collect(),
+			),
+			verifier: "fixture-verifier".into(),
+			calls: Default::default(),
+		}
+	}
+}
+#[async_trait]
+impl crate::provider_authorization::Exchange for CodeExchange {
+	async fn exchange(
+		&self,
+		_: Provider,
+		code: &str,
+		verifier: &SecretString,
+	) -> Result<SecretString> {
+		self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+		if verifier.expose_secret() != self.verifier {
+			return Err(Error::Invalid("Provider Authorization was rejected".into()));
+		}
+		// Codes are single-use, as at the provider.
+		self.keys
+			.lock()
+			.unwrap()
+			.remove(code)
+			.map(SecretString::from)
+			.ok_or_else(|| Error::Invalid("Provider Authorization was rejected".into()))
+	}
+}
+fn authorizing(codes: &[(&str, &str)]) -> (Service, Repo, FakeStore, Arc<CodeExchange>) {
+	let (mut s, repo, store) = service();
+	let exchange = Arc::new(CodeExchange::new(codes));
+	s.exchange = exchange.clone();
+	(s, repo, store, exchange)
+}
+#[tokio::test]
+async fn authorization_connects_and_reconnects_with_a_deep_link_digest() {
+	let (s, repo, store, _) = authorizing(&[
+		("first-code", "sk-or-v1-first-issued-key"),
+		("second-code", "sk-or-v1-second-issued-key"),
+	]);
+	let verifier = SecretString::from("fixture-verifier");
+	let id = Uuid::now_v7();
+	let connected = s
+		.authorize(
+			"alpha",
+			Provider::Openrouter,
+			Target::Connect { id },
+			"first-code",
+			&verifier,
+			"actor",
+		)
+		.await
+		.unwrap()
+		.provider_credential;
+	assert_eq!(connected.id, id);
+	assert_eq!(connected.state, State::Active);
+	let digest = crate::provider_authorization::key_digest(&"sk-or-v1-first-issued-key".into());
+	assert_eq!(
+		connected.key_settings_url.as_deref(),
+		Some(format!("https://openrouter.ai/keys/{digest}").as_str())
+	);
+	let reconnected = s
+		.authorize(
+			"alpha",
+			Provider::Openrouter,
+			Target::Reconnect {
+				id,
+				expected_revision: connected.revision,
+			},
+			"second-code",
+			&verifier,
+			"actor",
+		)
+		.await
+		.unwrap()
+		.provider_credential;
+	assert_eq!(reconnected.id, id);
+	assert!(reconnected.rotated_at.is_some());
+	assert_ne!(reconnected.key_settings_url, connected.key_settings_url);
+	assert_eq!(store.state.lock().await[&store.resource(id)].len(), 2);
+	assert_eq!(
+		repo.0.lock().await.rows[&id].key_digest.as_deref(),
+		Some(
+			crate::provider_authorization::key_digest(&"sk-or-v1-second-issued-key".into())
+				.as_str()
+		)
+	);
+}
+#[tokio::test]
+async fn rejected_or_replayed_codes_and_wrong_verifiers_store_nothing() {
+	let (s, repo, store, _) = authorizing(&[("only-code", "sk-or-v1-issued-key")]);
+	let wrong = SecretString::from("wrong-verifier");
+	assert!(
+		s.authorize(
+			"alpha",
+			Provider::Openrouter,
+			Target::Connect { id: Uuid::now_v7() },
+			"only-code",
+			&wrong,
+			"actor",
+		)
+		.await
+		.is_err()
+	);
+	assert!(
+		s.authorize(
+			"alpha",
+			Provider::Openrouter,
+			Target::Connect { id: Uuid::now_v7() },
+			"expired-code",
+			&"fixture-verifier".into(),
+			"actor",
+		)
+		.await
+		.is_err()
+	);
+	assert!(repo.0.lock().await.rows.is_empty());
+	assert!(store.state.lock().await.is_empty());
+}
+#[tokio::test]
+async fn refusals_that_the_write_would_make_happen_before_a_key_is_issued() {
+	let (s, _, _, exchange) = authorizing(&[]);
+	create(&s, "alpha").await;
+	let existing = create(&s, "alpha").await.provider_credential;
+	let verifier = SecretString::from("fixture-verifier");
+	// Quota reached (max_per_tenant = 2).
+	assert!(matches!(
+		s.authorize(
+			"alpha",
+			Provider::Openrouter,
+			Target::Connect { id: Uuid::now_v7() },
+			"code",
+			&verifier,
+			"actor",
+		)
+		.await,
+		Err(Error::Conflict(_))
+	));
+	// Stale reconnect revision.
+	assert!(
+		s.authorize(
+			"alpha",
+			Provider::Openrouter,
+			Target::Reconnect {
+				id: existing.id,
+				expected_revision: existing.revision - 1,
+			},
+			"code",
+			&verifier,
+			"actor",
+		)
+		.await
+		.is_err()
+	);
+	assert_eq!(exchange.calls.load(std::sync::atomic::Ordering::SeqCst), 0);
 }

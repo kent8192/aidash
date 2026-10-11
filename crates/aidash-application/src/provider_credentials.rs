@@ -1,5 +1,5 @@
 //! Provider Credential lifecycle; all Key Material stays in write-only ports.
-use crate::{Error, Result};
+use crate::{Error, Result, provider_authorization::Target};
 use aidash_domain::provider_credentials::{Binding, Provider, ProviderCredential, State};
 use async_trait::async_trait;
 use chrono::{Duration, Utc};
@@ -57,6 +57,8 @@ pub struct Service {
 	pub repository: Arc<dyn Repository>,
 	pub store: Arc<dyn Store>,
 	pub validator: Arc<dyn KeyValidator>,
+	/// Provider Authorization code exchange; the only production source of Key Material.
+	pub exchange: Arc<dyn crate::provider_authorization::Exchange>,
 	pub fingerprint_key: SecretString,
 	pub max_per_tenant: usize,
 }
@@ -69,6 +71,9 @@ pub struct Metadata {
 	pub base_url: String,
 	pub fingerprint: String,
 	pub last4: String,
+	/// The provider's owner-only settings page for the issued key. Revocation
+	/// destroys only Aidash's copy, so users delete the key there.
+	pub key_settings_url: Option<String>,
 	pub state: State,
 	pub created_at: chrono::DateTime<Utc>,
 	pub rotated_at: Option<chrono::DateTime<Utc>>,
@@ -84,6 +89,10 @@ impl From<ProviderCredential> for Metadata {
 			base_url: v.base_url,
 			fingerprint: v.fingerprint,
 			last4: v.last4,
+			key_settings_url: v
+				.key_digest
+				.as_deref()
+				.map(|digest| v.provider.key_settings_url(digest)),
 			state: v.state,
 			created_at: v.created_at,
 			rotated_at: v.rotated_at,
@@ -142,12 +151,65 @@ impl Service {
 			.collect();
 		(fingerprint, last4)
 	}
-	pub async fn create(
+	/// Completes one Provider Authorization: exchanges the code for Key Material
+	/// and writes it as a new Provider Credential or, on reconnect, as a new
+	/// version. A rejected code or verifier stores nothing.
+	pub async fn authorize(
+		&self,
+		tenant: &str,
+		provider: Provider,
+		target: Target,
+		code: &str,
+		verifier: &SecretString,
+		actor: &str,
+	) -> Result<Validated> {
+		// Check what the write will check before the provider issues a key, so
+		// a predictable refusal does not leave an unused key behind.
+		let mut scope = self.repository.begin(tenant).await?;
+		match target {
+			Target::Connect { .. } => {
+				if scope.count().await? >= self.max_per_tenant {
+					return Err(Error::Conflict("Provider Credential quota reached".into()));
+				}
+			}
+			Target::Reconnect {
+				id,
+				expected_revision,
+			} => {
+				let row = scope.get(id).await?;
+				row.check_revision(expected_revision)?;
+				row.require_active()?;
+				if row.provider != provider {
+					return Err(Error::Invalid(
+						"Provider Authorization does not match the Provider Credential".into(),
+					));
+				}
+			}
+		}
+		scope.commit().await?;
+		let key = self.exchange.exchange(provider, code, verifier).await?;
+		let digest = Some(crate::provider_authorization::key_digest(&key));
+		match target {
+			Target::Connect { id } => {
+				self.write_new(tenant, id, provider, key, digest, actor)
+					.await
+			}
+			Target::Reconnect {
+				id,
+				expected_revision,
+			} => {
+				self.write_rotation(tenant, id, expected_revision, key, digest, actor)
+					.await
+			}
+		}
+	}
+	async fn write_new(
 		&self,
 		tenant: &str,
 		id: Uuid,
 		provider: Provider,
 		key: SecretString,
+		key_digest: Option<String>,
 		actor: &str,
 	) -> Result<Validated> {
 		Self::validate_key(&key)?;
@@ -166,6 +228,7 @@ impl Service {
 			pinned_version: None,
 			fingerprint,
 			last4,
+			key_digest,
 			state: State::Pending,
 			created_at: Utc::now(),
 			rotated_at: None,
@@ -217,12 +280,13 @@ impl Service {
 			warnings: validation.warnings,
 		})
 	}
-	pub async fn rotate(
+	async fn write_rotation(
 		&self,
 		tenant: &str,
 		id: Uuid,
 		expected: i64,
 		key: SecretString,
+		key_digest: Option<String>,
 		actor: &str,
 	) -> Result<Validated> {
 		Self::validate_key(&key)?;
@@ -239,6 +303,7 @@ impl Service {
 		row.pinned_version = Some(version.clone());
 		row.fingerprint = fingerprint;
 		row.last4 = last4;
+		row.key_digest = key_digest;
 		row.rotated_at = Some(Utc::now());
 		row.revision += 1;
 		scope
@@ -452,6 +517,67 @@ impl Service {
 		}
 		scope.commit().await?;
 		Ok(cleaned)
+	}
+}
+/// Test-only write port (ADR 0006). Tests and CI register Provider Credentials
+/// with fixture Key Material through it. It is compiled only into this crate's
+/// tests or with the `test-support` feature, which no production dependency
+/// enables (`scripts/check-workspace-boundaries.py` enforces this).
+#[cfg(any(test, feature = "test-support"))]
+pub mod testing {
+	use super::*;
+	#[async_trait]
+	pub trait KeyMaterialWritePort {
+		async fn create(
+			&self,
+			tenant: &str,
+			id: Uuid,
+			provider: Provider,
+			key: SecretString,
+			actor: &str,
+		) -> Result<Validated>;
+		async fn rotate(
+			&self,
+			tenant: &str,
+			id: Uuid,
+			expected: i64,
+			key: SecretString,
+			actor: &str,
+		) -> Result<Validated>;
+	}
+	#[async_trait]
+	impl KeyMaterialWritePort for Service {
+		async fn create(
+			&self,
+			tenant: &str,
+			id: Uuid,
+			provider: Provider,
+			key: SecretString,
+			actor: &str,
+		) -> Result<Validated> {
+			self.write_new(tenant, id, provider, key, None, actor).await
+		}
+		async fn rotate(
+			&self,
+			tenant: &str,
+			id: Uuid,
+			expected: i64,
+			key: SecretString,
+			actor: &str,
+		) -> Result<Validated> {
+			self.write_rotation(tenant, id, expected, key, None, actor)
+				.await
+		}
+	}
+	/// Fails every exchange; for tests that never run Provider Authorization.
+	pub struct NoExchange;
+	#[async_trait]
+	impl crate::provider_authorization::Exchange for NoExchange {
+		async fn exchange(&self, _: Provider, _: &str, _: &SecretString) -> Result<SecretString> {
+			Err(Error::Invalid(
+				"Provider Authorization is not available in this test".into(),
+			))
+		}
 	}
 }
 #[cfg(test)]

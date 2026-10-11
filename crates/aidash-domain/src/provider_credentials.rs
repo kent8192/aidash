@@ -17,6 +17,15 @@ impl Provider {
 	pub fn base_url(self) -> &'static str {
 		"https://openrouter.ai/api/v1"
 	}
+	/// The provider-hosted consent page of Provider Authorization (OAuth PKCE).
+	pub fn authorization_url(self) -> &'static str {
+		"https://openrouter.ai/auth"
+	}
+	/// The owner-only key-settings page for one issued key, addressed by
+	/// [`ProviderCredential::key_digest`].
+	pub fn key_settings_url(self, key_digest: &str) -> String {
+		format!("https://openrouter.ai/keys/{key_digest}")
+	}
 	pub fn parse(value: &str) -> Result<Self> {
 		match value {
 			"openrouter" => Ok(Self::Openrouter),
@@ -43,6 +52,12 @@ pub struct ProviderCredential {
 	pub pinned_version: Option<String>,
 	pub fingerprint: String,
 	pub last4: String,
+	/// Unkeyed SHA-256 (hex) of the current Key Material, recorded only by
+	/// Provider Authorization for the provider's key-settings deep link. This is
+	/// ADR 0006's deliberate exception to the Fingerprint's no-correlation rule:
+	/// every authorization issues a fresh random key.
+	#[serde(default)]
+	pub key_digest: Option<String>,
 	pub state: State,
 	pub created_at: DateTime<Utc>,
 	pub rotated_at: Option<DateTime<Utc>>,
