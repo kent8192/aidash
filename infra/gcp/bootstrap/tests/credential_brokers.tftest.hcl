@@ -5,6 +5,12 @@ mock_provider "google" {
       email = "automation@aidash-fixture.iam.gserviceaccount.com"
     }
   }
+  mock_resource "google_tags_tag_key" {
+    defaults = { id = "tagKeys/1001", namespaced_name = "aidash-fixture/aidash-credential-broker" }
+  }
+  mock_resource "google_tags_tag_value" {
+    defaults = { id = "tagValues/2001" }
+  }
   mock_data "google_project" { defaults = { number = "123456789012" } }
 }
 variables {
@@ -27,15 +33,17 @@ run "broker_environments" {
   override_resource {
     target = google_service_account.broker["production"]
     values = {
-      email = "aidash-production-broker@aidash-fixture.iam.gserviceaccount.com"
-      name  = "projects/aidash-fixture/serviceAccounts/aidash-production-broker@aidash-fixture.iam.gserviceaccount.com"
+      email     = "aidash-production-broker@aidash-fixture.iam.gserviceaccount.com"
+      name      = "projects/aidash-fixture/serviceAccounts/aidash-production-broker@aidash-fixture.iam.gserviceaccount.com"
+      unique_id = "10000000000000000001"
     }
   }
   override_resource {
     target = google_service_account.broker["test"]
     values = {
-      email = "aidash-test-broker@aidash-fixture.iam.gserviceaccount.com"
-      name  = "projects/aidash-fixture/serviceAccounts/aidash-test-broker@aidash-fixture.iam.gserviceaccount.com"
+      email     = "aidash-test-broker@aidash-fixture.iam.gserviceaccount.com"
+      name      = "projects/aidash-fixture/serviceAccounts/aidash-test-broker@aidash-fixture.iam.gserviceaccount.com"
+      unique_id = "10000000000000000002"
     }
   }
   override_resource {
