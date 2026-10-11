@@ -277,6 +277,9 @@ def deterministic(args):
     for planned in planned_runs:
         planned["corpus"] = corpus
     checked(["docker", "info", "--format", "{{.ServerVersion}}"])
+    if subprocess.run(["docker", "image", "inspect", POSTGRES_IMAGE], capture_output=True).returncode != 0:
+        # The PostgreSQL image carries the native extensions; build it from compose.yaml.
+        checked(["docker", "compose", "build", "postgres"], cwd=ROOT)
     binary = Path(args.binary).resolve(strict=True) if args.binary else build_manage()
     query = json.loads(checked([str(binary), "diagnostics", "evaluation"], cwd=ROOT / "server",
                                env={"PATH": os.environ["PATH"], "TOKIO_WORKER_THREADS": "2"}))["inference_usage"]
