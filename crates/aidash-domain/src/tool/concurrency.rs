@@ -152,9 +152,14 @@ pub fn core_call(operation: &str, input: &Value, ceilings: ReadCeilings) -> Opti
 		}
 		"skill_load" => {
 			SkillLoad::deserialize(input).ok()?;
-			// Loading rewrites the pinned record's loaded markers.
+			// Loading rewrites the pinned record's loaded markers, and its
+			// transaction locks the Working Area row exclusively, so it also
+			// excludes file reads of the same Run.
 			Some(ConcurrentCall {
-				claims: vec![ResourceClaim::exclusive(Resource::PinnedSkills)],
+				claims: vec![
+					ResourceClaim::exclusive(Resource::WorkingArea),
+					ResourceClaim::exclusive(Resource::PinnedSkills),
+				],
 				output_bytes: SKILL_INSTRUCTION_BYTES
 					+ SKILL_METADATA_BYTES
 					+ SKILL_PACKAGE_FILES * SKILL_INVENTORY_ENTRY_BYTES,

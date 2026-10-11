@@ -37,16 +37,17 @@ waiting for more.
 A provider must declare a tool concurrency-safe. Read-only effect or replay
 safety alone does not make a tool eligible. The initial set:
 
-| Tool          | Resource claim               | Output bound                             |
-| ------------- | ---------------------------- | ---------------------------------------- |
-| `file_read`   | Working Area, shared         | `max_bytes`, at most the Node read limit |
-| `file_search` | Working Area, shared         | Node search byte limit                   |
-| `skill_list`  | Pinned Skills, shared        | Page size × Skill metadata               |
-| `skill_load`  | Pinned Skills, **exclusive** | Skill package limits                     |
+| Tool          | Resource claim                                | Output bound                             |
+| ------------- | --------------------------------------------- | ---------------------------------------- |
+| `file_read`   | Working Area, shared                          | `max_bytes`, at most the Node read limit |
+| `file_search` | Working Area, shared                          | Node search byte limit                   |
+| `skill_list`  | Pinned Skills, shared                         | Page size × Skill metadata               |
+| `skill_load`  | Working Area and Pinned Skills, **exclusive** | Skill package limits                     |
 
 `file_read` with `representation: "model_input"` stays sequential, because
 selecting model media changes the next request. `skill_load` updates the Run's
-loaded-Skill markers, so two loads, or a load and a list, never share a batch.
+loaded-Skill markers under an exclusive Working Area lock, so a load never
+shares a batch with another load, a list, or a file read or search.
 
 Registry configuration can only lower this declaration. A descriptor, or a Tool
 or Bundle Binding, may set `"narrow": {"concurrency": "sequential"}`; other

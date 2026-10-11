@@ -125,7 +125,7 @@ fn file_reads_are_bounded_by_the_node_ceiling_and_media_stays_sequential(
 }
 
 #[test]
-fn skill_loads_exclude_other_skill_record_users_but_not_file_reads() {
+fn skill_loads_exclude_skill_record_users_and_file_reads() {
 	let load = core_call(
 		"skill_load",
 		&json!({"skill_id":"00000000-0000-0000-0000-000000000001","expected_digest":"d"}),
@@ -139,10 +139,19 @@ fn skill_loads_exclude_other_skill_record_users_but_not_file_reads() {
 		CEILINGS,
 	)
 	.unwrap();
+	let read = core_call(
+		"file_read",
+		&json!({"file_id":"00000000-0000-0000-0000-000000000001","representation":"text"}),
+		CEILINGS,
+	)
+	.unwrap();
 	assert!(load.conflicts(&load.clone()));
 	assert!(load.conflicts(&list));
 	assert!(!list.conflicts(&list.clone()));
-	assert!(!load.conflicts(&search));
+	// The load's transaction locks the Working Area row FOR UPDATE.
+	assert!(load.conflicts(&search));
+	assert!(load.conflicts(&read));
+	assert!(!list.conflicts(&search));
 	assert_eq!(list.output_bytes, 2 * SKILL_METADATA_BYTES);
 	assert_eq!(search.output_bytes, CEILINGS.search_bytes);
 }

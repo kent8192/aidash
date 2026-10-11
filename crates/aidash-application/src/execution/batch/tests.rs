@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 struct Fake {
 	contract: ToolContract,
-	claim: Option<ResourceClaim>,
+	claims: Option<Vec<ResourceClaim>>,
 	output_bytes: usize,
 }
 #[async_trait]
@@ -33,8 +33,8 @@ impl ExecutionTool for Fake {
 		unreachable!("planning never dispatches")
 	}
 	fn concurrent_call(&self, _: &Value) -> Option<ConcurrentCall> {
-		self.claim.map(|claim| ConcurrentCall {
-			claims: vec![claim],
+		self.claims.clone().map(|claims| ConcurrentCall {
+			claims,
 			output_bytes: self.output_bytes,
 		})
 	}
@@ -42,12 +42,12 @@ impl ExecutionTool for Fake {
 
 fn tools() -> Tools {
 	let mut tools = Tools::new();
-	let mut add = |name: &str, operation: &str, claim| {
+	let mut add = |name: &str, operation: &str, claims| {
 		tools.insert(
 			name.into(),
 			Arc::new(Fake {
 				contract: builtin_contract(operation).unwrap(),
-				claim,
+				claims,
 				output_bytes: 64,
 			}) as Arc<dyn ExecutionTool>,
 		);
@@ -55,28 +55,31 @@ fn tools() -> Tools {
 	add(
 		"read",
 		"file_read",
-		Some(ResourceClaim::shared(Resource::WorkingArea)),
+		Some(vec![ResourceClaim::shared(Resource::WorkingArea)]),
 	);
 	add(
 		"list",
 		"skill_list",
-		Some(ResourceClaim::shared(Resource::PinnedSkills)),
+		Some(vec![ResourceClaim::shared(Resource::PinnedSkills)]),
 	);
 	add(
 		"load",
 		"skill_load",
-		Some(ResourceClaim::exclusive(Resource::PinnedSkills)),
+		Some(vec![
+			ResourceClaim::exclusive(Resource::WorkingArea),
+			ResourceClaim::exclusive(Resource::PinnedSkills),
+		]),
 	);
 	add("media", "file_read", None);
 	add(
 		"patch",
 		"apply_patch",
-		Some(ResourceClaim::shared(Resource::WorkingArea)),
+		Some(vec![ResourceClaim::shared(Resource::WorkingArea)]),
 	);
 	add(
 		"message",
 		"workspace_read",
-		Some(ResourceClaim::shared(Resource::WorkingArea)),
+		Some(vec![ResourceClaim::shared(Resource::WorkingArea)]),
 	);
 	tools
 }
@@ -106,7 +109,8 @@ const ROOMY: BatchBudget = BatchBudget {
 #[case(&["patch", "read", "read", "read"], 1, 8, 4)]
 #[case(&["read", "patch", "read", "read"], 0, 8, 0)]
 #[case(&["read", "read", "patch", "read", "read"], 0, 8, 2)]
-#[case(&["read", "load", "list", "read"], 0, 8, 2)]
+#[case(&["read", "load", "list", "read"], 0, 8, 0)]
+#[case(&["list", "list", "load", "read"], 0, 8, 2)]
 #[case(&["load", "load"], 0, 8, 0)]
 #[case(&["read", "media", "read"], 0, 8, 0)]
 #[case(&["read", "message", "read"], 0, 8, 0)]
