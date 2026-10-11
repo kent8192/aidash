@@ -18,7 +18,7 @@ use reinhardt::db::orm::query::FieldAssignment;
 use reinhardt::db::orm::{DatabaseConnection, Model, OrmExecutor};
 use reinhardt::query::{
 	Alias, Expr, ExprTrait, LockType, OnConflict, PostgresQueryBuilder, Query,
-	QueryStatementBuilder, SimpleExpr,
+	QueryStatementBuilder,
 };
 use std::collections::BTreeSet;
 use uuid::Uuid;
@@ -322,8 +322,12 @@ impl DashboardRegistrationRequest {
 			row.decided_at = Some(now);
 			row.decision_actor = Some(actor);
 			Self::objects().update_with_conn(tx, &row).await?;
-			DashboardIdentity::clear_display_without_basis(tx, row.identity_id(), idle_seconds)
-				.await?;
+			DashboardIdentity::clear_display_without_basis(
+				tx,
+				row.identity_id(),
+				Some(idle_seconds),
+			)
+			.await?;
 			Ok(row.contract())
 		})
 		.await
@@ -338,11 +342,13 @@ impl DashboardIdentity {
 	/// [`RECENT_SIGN_IN`] retains them only when it began after the latest
 	/// Registration Request ended, so rejection and expiry still clear the
 	/// attributes the request showed, while a fresh sign-in keeps its newly
-	/// verified claims. Callers hold no other identity lock, or only this one.
+	/// verified claims. `idle_seconds` is the browser session idle limit, or
+	/// `None` when dashboard sign-in is not configured and no session is usable.
+	/// Callers hold no other identity lock, or only this one.
 	pub(crate) async fn clear_display_without_basis<E: OrmExecutor + TransactionExecutor>(
 		db: &mut E,
 		identity: Uuid,
-		idle_seconds: i64,
+		idle_seconds: Option<i64>,
 	) -> Result<()> {
 		let Some(row) = Self::objects()
 			.filter(Self::field_id().eq(identity))
@@ -374,7 +380,7 @@ impl DashboardIdentity {
 	async fn retains_display<E: OrmExecutor + TransactionExecutor>(
 		db: &mut E,
 		row: &Self,
-		idle_seconds: i64,
+		idle_seconds: Option<i64>,
 	) -> Result<bool> {
 		if DashboardMapping::objects()
 			.filter(DashboardMapping::field_identity_id().eq(row.id))
@@ -408,33 +414,22 @@ impl DashboardIdentity {
 		{
 			return Ok(true);
 		}
-		let mut live = Query::select()
-			.column(Alias::new("id"))
-			.from(Alias::new(DashboardSession::table_name()))
-			.and_where(Expr::col(Alias::new("identity_id")).eq(Expr::value(row.id)))
-			.and_where(Expr::col(Alias::new("revoked_at")).is_null())
-			.and_where(Expr::col(Alias::new("expires_at")).gt(Expr::value(now)))
-			.and_where(
-				Expr::col(Alias::new("last_activity_at")).gt(SimpleExpr::CustomWithExpr(
-					"?-make_interval(secs => coalesce(desktop_idle_seconds::double precision,?))"
-						.into(),
-					vec![
-						Expr::value(now).into(),
-						Expr::value(idle_seconds as f64).into(),
-					],
-				)),
-			)
-			.limit(1)
-			.to_owned();
-		if let Some(ended) = ended {
-			live.and_where(Expr::col(Alias::new("created_at")).gte(Expr::value(ended)));
-		}
-		let (sql, values) = live.build(PostgresQueryBuilder);
-		Ok(
-			TransactionExecutor::fetch_optional(db, &sql, convert_values(values))
-				.await?
-				.is_some(),
-		)
+		// Without dashboard sign-in no browser or desktop session is usable.
+		let Some(idle_seconds) = idle_seconds else {
+			return Ok(false);
+		};
+		Ok(DashboardSession::objects()
+			.filter(DashboardSession::field_identity_id().eq(row.id))
+			.filter(DashboardSession::field_revoked_at().is_null())
+			.filter(DashboardSession::field_expires_at().gt(now))
+			.all_with_db(db)
+			.await?
+			.into_iter()
+			.any(|session| {
+				let idle = session.desktop_idle_seconds.unwrap_or(idle_seconds);
+				after_request(session.created_at)
+					&& session.last_activity_at > now - Duration::seconds(idle)
+			}))
 	}
 
 	/// Expires overdue Registration Requests and enforces display retention.
@@ -443,10 +438,11 @@ impl DashboardIdentity {
 	/// and rechecked under that lock, so a concurrent sign-in either commits first
 	/// and is seen, or waits and overwrites the cleared attributes afterwards.
 	/// Enabled authority is rechecked there too; skipping it here only avoids
-	/// locking every mapped External Identity on each pass.
+	/// locking every mapped External Identity on each pass. `idle_seconds` follows
+	/// [`Self::clear_display_without_basis`].
 	pub(crate) async fn enforce_display_retention(
 		db: DatabaseConnection,
-		idle_seconds: i64,
+		idle_seconds: Option<i64>,
 	) -> Result<()> {
 		let candidates = db
 			.atomic(async |tx| {
@@ -505,7 +501,7 @@ impl DashboardIdentity {
 	pub(crate) async fn enforce_identity_retention(
 		db: DatabaseConnection,
 		identity: Uuid,
-		idle_seconds: i64,
+		idle_seconds: Option<i64>,
 	) -> Result<()> {
 		db.atomic(async |tx| {
 			Self::objects()

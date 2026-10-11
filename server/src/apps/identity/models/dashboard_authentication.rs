@@ -156,8 +156,9 @@ impl DashboardIdentity {
 				.pop()
 				.ok_or_else(|| Error::NotFound("identity".into()))?;
 			// The upsert holds the identity lock. Display Erasure is permanent, so an
-			// erased External Identity never records Display Attributes again.
-			if identity.display_erased_at.is_none() {
+			// erased External Identity never records Display Attributes again. A
+			// disabled one has no retention basis and its sign-in is rejected.
+			if identity.display_erased_at.is_none() && identity.disabled_at.is_none() {
 				identity.verified_email = sign_in.verified_email.clone();
 				identity.display_name = sign_in.display_name.clone();
 				Self::objects().update_with_conn(tx, &identity).await?;
@@ -338,6 +339,16 @@ impl DashboardSession {
 	) -> Result<Self> {
 		Self::objects()
 			.filter(Self::field_token_hash().eq(token_hash))
+			.all_with_db(db)
+			.await?
+			.pop()
+			.ok_or(Error::Unauthorized)
+	}
+
+	/// Rereads a session by id, which stays stable across desktop access-token rotation.
+	pub(crate) async fn find<E: OrmExecutor>(db: &mut E, id: Uuid) -> Result<Self> {
+		Self::objects()
+			.filter(Self::field_id().eq(id))
 			.all_with_db(db)
 			.await?
 			.pop()

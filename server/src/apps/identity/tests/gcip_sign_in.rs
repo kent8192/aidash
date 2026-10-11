@@ -1521,3 +1521,72 @@ async fn display_erasure_is_permanent_and_keeps_the_identity_authority(
 	);
 	common::cleanup(f, &url, &schema).await;
 }
+
+#[rstest::rstest]
+#[tokio::test]
+async fn rejected_sign_in_of_a_disabled_identity_records_no_display_attributes(
+	#[future(awt)]
+	#[from(test_environment)]
+	environment: Arc<TestEnvironment>,
+) {
+	let (mut f, url, schema) = common::setup(&environment).await;
+	let (_status, _admin) = configure(&mut f).await;
+	let app = common::application(f.clone()).await;
+	sign_in(&app, "acme", "pool-a", "Person").await;
+	let path = only_identity_path(&app, &f).await;
+	age(&f, "dashboard_identities", "disabled_at", "0 seconds").await;
+	sweep(&f).await;
+	let view = operator_get(&app, &f, &path).await;
+	assert!(view["display_name"].is_null() && view["verified_email"].is_null());
+	// The provider still verifies the person, but the local identity stays disabled.
+	let (state, cookie) = transaction(&app, "acme").await;
+	let rejected = exchange(
+		&app,
+		&state,
+		&cookie,
+		&token("pool-a", "Again", Utc::now().timestamp()),
+		"http://127.0.0.1:8080",
+	)
+	.await;
+	assert_eq!(rejected.status(), 403);
+	let view = operator_get(&app, &f, &path).await;
+	assert!(
+		view["display_name"].is_null() && view["verified_email"].is_null(),
+		"a rejected sign-in must not restore Display Attributes: {view}"
+	);
+	common::cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn display_retention_runs_after_dashboard_sign_in_is_unconfigured(
+	#[future(awt)]
+	#[from(test_environment)]
+	environment: Arc<TestEnvironment>,
+) {
+	let (mut f, url, schema) = common::setup(&environment).await;
+	let (_status, _admin) = configure(&mut f).await;
+	let app = common::application(f.clone()).await;
+	sign_in(&app, "acme", "pool-a", "Person").await;
+	let path = only_identity_path(&app, &f).await;
+	age(
+		&f,
+		"dashboard_identities",
+		"display_observed_at",
+		"11 minutes",
+	)
+	.await;
+	// The deployment restarts without its optional sign-in configuration, so the
+	// still-recent session is no longer usable and retains nothing.
+	let mut unconfigured = f.clone();
+	unconfigured.config.gcip = None;
+	let (stop, stopping) = tokio::sync::watch::channel(false);
+	stop.send(true).unwrap();
+	aidash_server::dashboard_auth::enforce_display_retention(unconfigured, stopping)
+		.await
+		.unwrap();
+	let view = operator_get(&app, &f, &path).await;
+	assert!(view["display_name"].is_null() && view["verified_email"].is_null());
+	assert!(view["display_erased_at"].is_null());
+	common::cleanup(f, &url, &schema).await;
+}
