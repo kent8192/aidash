@@ -1,0 +1,21 @@
+meta {
+  name: 0976 frontend-index-head - Stale conditional request serves current content
+  type: http
+  seq: 976
+}
+
+head {
+  url: {{base_url}}/
+  body: none
+  auth: none
+}
+
+headers {
+  Accept: application/json
+  If-None-Match: "stale"
+}
+
+tests {
+  test("Exact HTTP 200", function () { expect(res.getStatus()).to.equal(200); });
+  test("Stale conditional request serves current content contract", function () { expect(res.getBody()).to.equal(""); });
+}

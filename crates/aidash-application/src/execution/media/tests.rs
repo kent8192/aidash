@@ -49,6 +49,8 @@ fn model() -> ModelConfig {
 		credential_env: None,
 		provider_credential: None,
 		request_timeout_secs: None,
+		streaming: None,
+		stream_stall_timeout_secs: None,
 		reasoning_effort: None,
 		context_window: 128000,
 		max_output_tokens: Some(8192),
