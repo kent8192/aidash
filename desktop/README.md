@@ -121,7 +121,7 @@ npm run test:desktop --prefix web
 # Real Chromium submits the production consent page to the exact callback port:
 bash scripts/test-desktop-browser.sh
 RUSTC_WRAPPER= cargo test --manifest-path desktop/src-tauri/Cargo.toml --locked
-# Uses the existing disposable Testcontainers PostgreSQL/NATS/Qdrant fixture:
+# Uses the existing disposable Testcontainers PostgreSQL/NATS fixture:
 RUSTC_WRAPPER= RUST_MIN_STACK=8388608 \
   AIDASH_SECRET_TEST_PEER=local-peer-regression-test-token-0123456789 \
   cargo test --locked --test desktop_auth --test dashboard_oidc
@@ -134,7 +134,7 @@ through the shared transport for both accepted HTTP loopback hosts, as well as
 stale JSON/headers, authority transitions, CSRF, credential destinations,
 401 refresh, uncertain mutation outcomes and SSE cursor
 reconnection. The consent regression starts the production Axum router with a
-disposable PostgreSQL/NATS/Qdrant fixture and an existing browser session. Real
+disposable PostgreSQL/NATS fixture and an existing browser session. Real
 Chromium renders and submits the consent page, follows its redirect to each of
 two ephemeral callback ports, and confirms that other loopback ports are blocked.
 The form policy permits only the current handoff's validated callback origin,
