@@ -475,11 +475,14 @@ class ChartsTest(unittest.TestCase):
             self.assertEqual(state['persistentVolumeClaimRetentionPolicy'], {'whenDeleted': 'Retain', 'whenScaled': 'Retain'})
             self.assertEqual(state['volumeClaimTemplates'][0]['spec']['accessModes'], ['ReadWriteOnce'])
             self.assertEqual(state['volumeClaimTemplates'][0]['spec']['storageClassName'], 'aidash-retain')
-        # The controller's migration Job reaches the dependencies alongside server and worker.
-        sources = select(objects, 'NetworkPolicy', '-dependencies')['spec']['ingress'][0]['from']
-        components = next(source['podSelector']['matchExpressions'][0]['values'] for source in sources
-                          if 'matchExpressions' in source['podSelector'])
-        self.assertEqual(components, ['server', 'worker', 'migration'])
+        # The controller's migration Job reaches the dependencies alongside server and worker;
+        # the activity observer reaches only PostgreSQL, never the unauthenticated NATS port.
+        application, observer = select(objects, 'NetworkPolicy', '-dependencies')['spec']['ingress']
+        self.assertEqual(application['from'], [{'podSelector': {'matchExpressions': [
+            {'key': 'app.kubernetes.io/component', 'operator': 'In', 'values': ['server', 'worker', 'migration']}]}}])
+        self.assertEqual(application['ports'], [{'protocol': 'TCP', 'port': 5432}, {'protocol': 'TCP', 'port': 4222}])
+        self.assertEqual(observer['from'], [{'podSelector': {'matchLabels': {'aidash.run/activity': 'fixture'}}}])
+        self.assertEqual(observer['ports'], [{'protocol': 'TCP', 'port': 5432}])
         # A preview edge mounts the controller-bound shared TLS claim instead of its own.
         own = select(objects, 'PersistentVolumeClaim', '-tls')
         self.assertEqual(own['metadata']['annotations'], {'helm.sh/resource-policy': 'keep'})
@@ -535,7 +538,7 @@ class ChartsTest(unittest.TestCase):
                                                 if not isinstance(label, dict)), (value['kind'], labels))
                 policy = select(objects, 'NetworkPolicy', '-dependencies')['spec']
                 self.assertIn({'podSelector': {'matchLabels': {'aidash.run/activity': release}}},
-                              policy['ingress'][0]['from'])
+                              policy['ingress'][1]['from'])
         # A release namespace that YAML would read as a boolean stays a string too.
         objects = render(self.environment, values, namespace='true')
         binding = select(objects, 'RoleBinding', '-activity')

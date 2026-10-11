@@ -71,7 +71,12 @@ spec:
     - from:
         # The controller's one-shot migration Job runs the app image as `migration`.
         - podSelector: { matchExpressions: [{ key: app.kubernetes.io/component, operator: In, values: [server, worker, migration] }] }
-        - podSelector: { matchLabels: { aidash.run/activity: {{ .Release.Name | quote }} } }
       ports:
         - { protocol: TCP, port: 5432 }
         - { protocol: TCP, port: 4222 }
+    # The activity observer reads PostgreSQL only; unauthenticated NATS stays
+    # limited to the application, so a compromised observer cannot touch JetStream.
+    - from:
+        - podSelector: { matchLabels: { aidash.run/activity: {{ .Release.Name | quote }} } }
+      ports:
+        - { protocol: TCP, port: 5432 }
