@@ -558,6 +558,22 @@ impl ExecutionStore for Bench {
 	) -> Result<()> {
 		unexpected("ExecutionStore.reconciliation_request")
 	}
+	async fn record_usage_dispatch(
+		&self,
+		_run: &Run,
+		_token: Uuid,
+		_dispatch: &UsageDispatch,
+	) -> Result<()> {
+		unexpected("ExecutionStore.record_usage_dispatch")
+	}
+	async fn complete_usage_record(
+		&self,
+		_run: &Run,
+		_attempt: Uuid,
+		_outcome: &UsageOutcome,
+	) -> Result<()> {
+		unexpected("ExecutionStore.complete_usage_record")
+	}
 	async fn run_message_has_media(&self, _messages: &[Uuid]) -> Result<bool> {
 		Ok(false)
 	}

@@ -379,7 +379,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ("kubeconfig", "image", "postgres-image", "queries"):
         parser.add_argument("--" + name, required=True)
-    parser.add_argument("--distribution", choices=["kubernetes", "k3s"], required=True)
+    parser.add_argument("--distribution", choices=["kubernetes"], required=True)
     parser.add_argument("--phase", dest="native_phase", choices=["all", "remote", "evaluation", "learning"], default="all")
     parser.add_argument("--live-ui", action="store_true", help="Use a local Playwright browser for human review; requires installed web dependencies and Chromium")
     parser.add_argument("--keep", action="store_true")

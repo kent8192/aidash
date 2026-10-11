@@ -112,9 +112,9 @@ afterward; normal startup registers the current key. Tenants then delete revoked
 credentials and reconnect through OAuth (#158). The command is safe to rerun
 after an interrupted recovery. Plan Token recovery will be added by #159.
 
-GCP deployment renders this non-secret Store descriptor from the
-`aidash-provider-credentials` VM metadata into a read-only Reinhardt settings
-source for migrations and the server. BYOK-enabled runtime secrets must contain
+GCP deployment passes this non-secret Store descriptor to the app chart's
+`providerCredentials.settings`, which renders it as a ConfigMap read as a
+read-only Reinhardt settings source for migrations and the server. BYOK-enabled runtime secrets must contain
 the stable `AIDASH_PROVIDER_FINGERPRINT_KEY` value; a missing or short value
 blocks startup. The key is never generated or changed during deployment. When
 BYOK is omitted, the managed Store remains unset and no fingerprint is required.
