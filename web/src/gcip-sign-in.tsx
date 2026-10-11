@@ -10,6 +10,7 @@ import { Button } from "./components/ui/button";
 import { Input } from "./components/ui/input";
 import { AuthCard } from "./shell/auth-card";
 import { Loading, Notice } from "./components/patterns";
+import { clearEmailHint, EMAIL_KEY, takeEmailHint } from "./gcip-email-hint";
 
 const copy = {
   "en-US": {
@@ -30,6 +31,10 @@ const copy = {
     provider: "Continue with",
     error: "Sign-in failed. Please try again.",
     loading: "Loading sign-in…",
+    useOrganization: "Use your organization ID instead",
+    useEmail: "Use your email instead",
+    notFound:
+      "We couldn't find a sign-in for that entry. Check it, or contact your administrator.",
   },
   "ja-JP": {
     title: "Aidash にサインイン",
@@ -50,6 +55,10 @@ const copy = {
     provider: "続ける",
     error: "サインインできませんでした。もう一度お試しください。",
     loading: "サインインを準備中…",
+    useOrganization: "組織 ID で続ける",
+    useEmail: "メールアドレスで続ける",
+    notFound:
+      "サインイン先が見つかりません。入力内容を確認するか、管理者に連絡してください。",
   },
 } as const;
 type Message =
@@ -85,9 +94,13 @@ async function release(client: GcipClient | undefined) {
     await clearGcipStorage();
   }
 }
-async function federated(client: GcipClient, provider: string) {
+async function federated(
+  client: GcipClient,
+  provider: string,
+  loginHint?: string,
+) {
   try {
-    return await client.popup(provider);
+    return await client.popup(provider, loginHint);
   } catch (error) {
     const blocked =
       typeof error === "object" &&
@@ -96,7 +109,7 @@ async function federated(client: GcipClient, provider: string) {
       error.code === "auth/popup-blocked";
     if (!blocked) throw error;
     // The URL keeps the transaction state across the provider round trip.
-    return client.redirect(provider);
+    return client.redirect(provider, loginHint);
   }
 }
 export default function GcipSignIn({
@@ -107,10 +120,21 @@ export default function GcipSignIn({
   setLocale: (locale: Locale) => void;
 }) {
   const text = copy[locale];
-  const state = new URLSearchParams(window.location.search).get("state");
+  const params = new URLSearchParams(window.location.search);
+  const state = params.get("state");
+  const returnTo = params.get("return_to");
+  const notFound = params.get("error") === "not_found";
+  const [byOrg, setByOrg] = useState(false);
+  // Read during the first render so it happens before any await. Without a
+  // state, discovery failed (or never ran), so any handoff left is stale.
+  const [loginHint] = useState(() => {
+    if (state) return takeEmailHint();
+    clearEmailHint();
+    return "";
+  });
   const [config, setConfig] = useState<GcipClientConfig>();
   const [org, setOrg] = useState("");
-  const [email, setEmail] = useState("");
+  const [email, setEmail] = useState(loginHint);
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   // Store the copy key, not localized text, so the redirect recovery effect
@@ -181,7 +205,7 @@ export default function GcipSignIn({
         return;
       }
       const token = provider
-        ? await federated(client, provider)
+        ? await federated(client, provider, loginHint || undefined)
         : await client.password(email, password);
       const destination = await exchange(state, token);
       // The exchange consumed the transaction; cleanup must not block navigation.
@@ -214,31 +238,104 @@ export default function GcipSignIn({
       ))}
     >
       {!state ? (
-        <form
-          className="grid gap-3"
-          onSubmit={(event) => {
-            event.preventDefault();
-            const query = new URLSearchParams({ org });
-            const destination = new URLSearchParams(window.location.search).get(
-              "return_to",
-            );
-            if (destination) query.set("return_to", destination);
-            window.location.assign(`/auth/login?${query}`);
-          }}
-        >
-          <label className={field}>
-            {text.organization}
-            <Input
-              required
-              value={org}
-              onChange={(event) => setOrg(event.target.value)}
-              autoComplete="organization"
-            />
-          </label>
-          <Button type="submit" size="lg">
-            {text.next}
+        <div className="grid gap-3">
+          {notFound && <Notice role="alert">{text.notFound}</Notice>}
+          {byOrg ? (
+            <form
+              className="grid gap-3"
+              onSubmit={(event) => {
+                event.preventDefault();
+                clearEmailHint();
+                const query = new URLSearchParams({ org });
+                if (returnTo) query.set("return_to", returnTo);
+                window.location.assign(`/auth/login?${query}`);
+              }}
+            >
+              <label className={field}>
+                {text.organization}
+                <Input
+                  required
+                  value={org}
+                  onChange={(event) => setOrg(event.target.value)}
+                  autoComplete="organization"
+                />
+              </label>
+              <Button type="submit" size="lg">
+                {text.next}
+              </Button>
+            </form>
+          ) : (
+            <form
+              className="grid gap-3"
+              method="post"
+              action="/auth/login"
+              onSubmit={(event) => {
+                event.preventDefault();
+                if (busy) return;
+                setBusy(true);
+                setMessage(undefined);
+                const address = email.trim();
+                const body = new URLSearchParams({ email: address });
+                if (returnTo) body.set("return_to", returnTo);
+                // Follow the 303 here so the email handoff is stored only
+                // when discovery succeeded (the redirect carries a state).
+                // Errors answered directly (429, 400) never leave it behind.
+                fetch("/auth/login", {
+                  method: "POST",
+                  body,
+                  credentials: "same-origin",
+                })
+                  .then((response) => {
+                    const next = new URL(response.url);
+                    if (
+                      !response.ok ||
+                      !response.redirected ||
+                      next.origin !== window.location.origin
+                    )
+                      throw new Error("discovery failed");
+                    if (next.searchParams.has("state")) {
+                      try {
+                        sessionStorage.setItem(EMAIL_KEY, address);
+                      } catch {
+                        // Prefill is a convenience; continue without it.
+                      }
+                    }
+                    window.location.assign(next.pathname + next.search);
+                  })
+                  .catch(() => {
+                    setBusy(false);
+                    setMessage("error");
+                  });
+              }}
+            >
+              <label className={field}>
+                {text.email}
+                <Input
+                  type="email"
+                  name="email"
+                  required
+                  value={email}
+                  autoComplete="username"
+                  onChange={(event) => setEmail(event.target.value)}
+                />
+              </label>
+              {returnTo && (
+                <input type="hidden" name="return_to" value={returnTo} />
+              )}
+              <Button type="submit" size="lg" disabled={busy}>
+                {text.next}
+              </Button>
+            </form>
+          )}
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={() => setByOrg(!byOrg)}
+          >
+            {byOrg ? text.useEmail : text.useOrganization}
           </Button>
-        </form>
+        </div>
       ) : config ? (
         <div className="grid gap-4">
           {config.providers.some((id) => id !== "password") && (
