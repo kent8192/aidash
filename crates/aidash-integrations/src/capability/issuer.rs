@@ -168,6 +168,7 @@ impl TokenIssuer for CapabilityIssuer {
 				.collect(),
 			model: request.model.clone(),
 			max_output_tokens: u64::from(request.max_output_tokens),
+			cache_breakpoints: request.cache_breakpoints,
 		};
 		let bearer = aidash_capability::mint(&claims, self.signer.as_ref())
 			.await
