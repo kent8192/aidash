@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise real Kubernetes/k3s pods in a new, disposable namespace.
+"""Exercise real Kubernetes pods in a new, disposable namespace.
 
 Requires an explicit kubeconfig. Creates only task-owned namespaced resources;
 never changes the user's current context or touches an existing namespace.
@@ -22,7 +22,7 @@ def main():
     parser.add_argument("--image", default="aidash:orchestration-local")
     parser.add_argument("--frontend-image", default="aidash-frontend:orchestration-local")
     parser.add_argument("--postgres-image", default="aidash-postgres:17-pg-jsonschema-0.3.4")
-    parser.add_argument("--distribution", choices=["kubernetes", "k3s"], required=True)
+    parser.add_argument("--distribution", choices=["kubernetes"], required=True)
     parser.add_argument("--keep", action="store_true")
     parser.add_argument("--dashboard", action="store_true")
     args = parser.parse_args()

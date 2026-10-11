@@ -127,6 +127,7 @@ fn configure(f: &mut Federation, endpoint: &str) {
 		.into(),
 		providers: Default::default(),
 		password_sign_up: Default::default(),
+		auth_helper: Default::default(),
 		session_absolute_seconds: 43200,
 		session_idle_seconds: 1800,
 	});

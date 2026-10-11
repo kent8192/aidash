@@ -3213,6 +3213,8 @@ fn authenticated_runtime(
 	.boxed()
 	.shared()
 }
+#[path = "postgres/inference_usage.rs"]
+mod inference_usage;
 
 #[rstest::rstest]
 #[tokio::test]

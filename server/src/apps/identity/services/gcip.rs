@@ -134,7 +134,7 @@ pub(crate) async fn configuration(
 	let client = ClientConfig {
 		project_id: &config.project_id,
 		api_key: &config.web_api_key,
-		auth_domain: format!("{}.firebaseapp.com", config.project_id),
+		auth_domain: config.auth_domain(),
 		tenant_id: tenant,
 		providers: f
 			.config
