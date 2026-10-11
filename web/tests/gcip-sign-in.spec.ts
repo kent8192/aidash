@@ -288,6 +288,8 @@ test("state page prefills the email and passes it as a popup login hint", async 
 }) => {
   await mockGcip(page);
   await page.goto("/sign-in");
+  // The stateless page clears stale handoffs on mount; seed after it renders.
+  await expect(page.getByLabel("Email", { exact: true })).toBeVisible();
   await page.evaluate(() =>
     sessionStorage.setItem("aidash.gcip.email", "person@acme.test"),
   );
@@ -329,6 +331,10 @@ test("unknown sign-in entries show one generic message", async ({ page }) => {
   await expect(page.getByRole("alert")).toHaveText(
     "We couldn't find a sign-in for that entry. Check it, or contact your administrator.",
   );
+  // The rejected address does not outlive the failed discovery.
+  expect(
+    await page.evaluate(() => sessionStorage.getItem("aidash.gcip.email")),
+  ).toBeNull();
   // The email form still carries return_to for the retry.
   await expect(page.locator('input[name="return_to"]')).toHaveValue(
     "/settings",

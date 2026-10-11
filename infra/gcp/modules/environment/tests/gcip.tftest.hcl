@@ -57,3 +57,21 @@ run "sign_in_domain_needs_two_labels" {
   variables { gcip_tenants = { a = { tenant = "a", sign_in_domains = ["localhost"] } } }
   expect_failures = [var.gcip_tenants]
 }
+run "sign_in_domain_cannot_be_an_ipv4_literal" {
+  command = plan
+  variables { gcip_tenants = { a = { tenant = "a", sign_in_domains = ["192.0.2.1"] } } }
+  expect_failures = [var.gcip_tenants]
+}
+run "sign_in_domain_cannot_end_in_a_number" {
+  command = plan
+  variables { gcip_tenants = { a = { tenant = "a", sign_in_domains = ["acme.0x1f"] } } }
+  expect_failures = [var.gcip_tenants]
+}
+run "sign_in_domain_may_have_numeric_inner_labels" {
+  command = plan
+  variables { gcip_tenants = { a = { tenant = "a", sign_in_domains = ["192.0.2.example"] } } }
+  assert {
+    condition     = keys(output.gcip.sign_in_domains) == ["192.0.2.example"]
+    error_message = "Only the final label decides whether a host is an IP literal."
+  }
+}

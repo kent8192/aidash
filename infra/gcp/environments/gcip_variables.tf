@@ -14,8 +14,10 @@ variable "gcip_tenants" {
     error_message = "Tenant Bindings must be one-to-one; SSO pools must disable password signup and use oidc./saml. provider IDs."
   }
   validation {
-    condition     = length(distinct(flatten([for pool in values(var.gcip_tenants) : pool.sign_in_domains]))) == length(flatten([for pool in values(var.gcip_tenants) : pool.sign_in_domains])) && alltrue([for domain in flatten([for pool in values(var.gcip_tenants) : pool.sign_in_domains]) : length(domain) <= 253 && can(regex("^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$", domain))])
-    error_message = "Sign-in Domains must be lowercase ASCII DNS names (punycode for IDN) with at least two labels, and each domain may route to only one pool."
+    # The server's URL host parser reads a name whose last label is a number
+    # (decimal, or 0x hex) as an IPv4 address and refuses it, so reject it here.
+    condition     = length(distinct(flatten([for pool in values(var.gcip_tenants) : pool.sign_in_domains]))) == length(flatten([for pool in values(var.gcip_tenants) : pool.sign_in_domains])) && alltrue([for domain in flatten([for pool in values(var.gcip_tenants) : pool.sign_in_domains]) : length(domain) <= 253 && can(regex("^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$", domain)) && !can(regex("\\.([0-9]+|0x[0-9a-f]*)$", domain))])
+    error_message = "Sign-in Domains must be lowercase ASCII DNS names (punycode for IDN) with at least two labels, not IP addresses, and each domain may route to only one pool."
   }
 }
 variable "gcip_idp_secrets" {

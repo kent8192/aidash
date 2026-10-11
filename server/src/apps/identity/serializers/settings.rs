@@ -403,6 +403,16 @@ mod tests {
 		"pool-a",
 		"GCIP Sign-in Domains must be lowercase ASCII DNS names"
 	)]
+	#[case(
+		"192.0.2.1",
+		"pool-a",
+		"GCIP Sign-in Domains must be lowercase ASCII DNS names"
+	)]
+	#[case(
+		"acme.0x1f",
+		"pool-a",
+		"GCIP Sign-in Domains must be lowercase ASCII DNS names"
+	)]
 	fn gcip_rejects_noncanonical_or_unbound_sign_in_domains(
 		mut gcip_config: GcipConfig,
 		#[case] domain: &str,

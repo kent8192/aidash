@@ -89,8 +89,13 @@ export default function GcipSignIn({
   const returnTo = params.get("return_to");
   const notFound = params.get("error") === "not_found";
   const [byOrg, setByOrg] = useState(false);
-  // Read during the first render so it happens before any await.
-  const [loginHint] = useState(() => (state ? takeEmailHint() : ""));
+  // Read during the first render so it happens before any await. Without a
+  // state, discovery failed (or never ran), so any handoff left is stale.
+  const [loginHint] = useState(() => {
+    if (state) return takeEmailHint();
+    clearEmailHint();
+    return "";
+  });
   const [config, setConfig] = useState<GcipClientConfig>();
   const [org, setOrg] = useState("");
   const [email, setEmail] = useState(loginHint);
