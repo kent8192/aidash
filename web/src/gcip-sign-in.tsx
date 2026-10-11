@@ -5,6 +5,7 @@ import { Button } from "./components/ui/button";
 import { Input } from "./components/ui/input";
 import { AuthCard } from "./shell/auth-card";
 import { Loading, Notice } from "./components/patterns";
+import { clearEmailHint, EMAIL_KEY, takeEmailHint } from "./gcip-email-hint";
 
 const copy = {
   "en-US": {
@@ -55,27 +56,6 @@ const copy = {
       "サインイン先が見つかりません。入力内容を確認するか、管理者に連絡してください。",
   },
 } as const;
-const EMAIL_KEY = "aidash.gcip.email";
-// The email handoff is consumed exactly once, before any await. The module
-// keeps the taken value so a development StrictMode re-render still sees it.
-let takenEmailHint: string | undefined;
-function takeEmailHint() {
-  if (takenEmailHint !== undefined) return takenEmailHint;
-  try {
-    takenEmailHint = sessionStorage.getItem(EMAIL_KEY) ?? "";
-    sessionStorage.removeItem(EMAIL_KEY);
-  } catch {
-    takenEmailHint = "";
-  }
-  return takenEmailHint;
-}
-function clearEmailHint() {
-  try {
-    sessionStorage.removeItem(EMAIL_KEY);
-  } catch {
-    // Storage unavailable; nothing to clear.
-  }
-}
 export default function GcipSignIn({
   locale,
   setLocale,

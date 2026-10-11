@@ -79,8 +79,11 @@ import { AppShell } from "./shell/app-shell";
 import { AuthCard } from "./shell/auth-card";
 import { Alert, Loading, Notice } from "./components/patterns";
 import { authCopy, shellCopy } from "./shell/copy";
+import { takeEmailHint } from "./gcip-email-hint";
 
 const GcipSignIn = lazy(() => import("./gcip-sign-in"));
+// Move any discovery email handoff out of sessionStorage immediately.
+takeEmailHint();
 
 function SignInEntry({
   locale,
