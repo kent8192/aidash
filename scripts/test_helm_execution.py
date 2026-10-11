@@ -309,6 +309,19 @@ class ChartsTest(unittest.TestCase):
                 self.assertIsInstance(value['metadata']['namespace'], str, value['kind'])
             for subject in value.get('subjects', []):
                 self.assertIsInstance(subject['namespace'], str, value['kind'])
+        # Runner Secret selectors and the reused journal claim stay strings too.
+        names = render(self.aidash, dict(self.base, environment={'nodeSelector': {'pool': 'execution'}},
+                                         execution=dict(execution, runner=dict(execution['runner'], existingSecret='true',
+                                                                               tokenKey='null', journal={'existingClaim': 'true'}))))
+        runner_pod = select(names, 'Deployment', '-execution-runner')['spec']['template']['spec']
+        token = next(variable for variable in runner_pod['containers'][0]['env'] if variable['name'] == 'AIDASH_CORE_RUNNER_TOKEN')
+        self.assertEqual(token['valueFrom']['secretKeyRef'], {'name': 'true', 'key': 'null'})
+        journal = next(volume for volume in runner_pod['volumes'] if volume['name'] == 'journal')
+        self.assertEqual(journal['persistentVolumeClaim']['claimName'], 'true')
+        # The installer writes the version to one label and `true` to the other; one key cannot hold both.
+        with self.assertRaises(subprocess.CalledProcessError):
+            render(self.aidash, dict(self.base, environment={'nodeSelector': {'pool': 'execution'}},
+                                     execution=dict(execution, gvisor={'installedLabel': 'aidash.run/gvisor'})))
         runner = select(objects, 'Deployment', '-execution-runner')
         self.assertEqual(runner['spec']['replicas'], 1)
         self.assertEqual(runner['spec']['strategy']['type'], 'Recreate')
@@ -430,7 +443,10 @@ class ChartsTest(unittest.TestCase):
                                  ('maximum_seconds', 600, True), ('maximum_seconds', 601, False),
                                  ('idle_seconds', 1800, True), ('idle_seconds', 1801, False),
                                  ('output_bytes', 8 << 20, True), ('output_bytes', (8 << 20) + 1, False),
-                                 ('working_bytes', 1 << 30, True), ('working_bytes', (1 << 30) + 1, False)):
+                                 ('working_bytes', 1 << 30, True), ('working_bytes', (1 << 30) + 1, False),
+                                 # The application capability runtime accepts only 1..=64 CPUs and 64 MiB or more.
+                                 ('cpu', 64, True), ('cpu', 65, False),
+                                 ('memory_bytes', 64 << 20, True), ('memory_bytes', (64 << 20) - 1, False)):
             with self.subTest(limit=limit, value=value):
                 if ok:
                     accepted(limits={limit: value})
@@ -663,7 +679,9 @@ class ActivityTest(unittest.TestCase):
             with self.subTest(conflicts=conflicts, code=code):
                 reads, patches = [], []
 
-                def request(url, token=None, *, data=None, method=None, context=None):
+                # Bind this subTest's state as defaults; a closure would read the loop's latest values.
+                def request(url, token=None, *, data=None, method=None, context=None,
+                            reads=reads, patches=patches, conflicts=conflicts, code=code):
                     if method == 'PATCH':
                         patches.append(json.loads(data))
                         if len(patches) <= conflicts:

@@ -21,6 +21,7 @@
 {{- if and $e.runner.enabled (not (semverCompare ">=1.34.0-0" .Capabilities.KubeVersion.Version)) -}}{{ fail (printf "execution.runner needs Kubernetes 1.34 or later (found %s): Execution Pods set pod-level spec.resources" .Capabilities.KubeVersion.Version) }}{{- end -}}
 {{- if and $e.installer.enabled (or (ne $e.paths.runsc "/usr/local/bin/runsc") (ne $e.paths.gvisorBin "/usr/local/bin/gvisor-bin")) -}}{{ fail "execution.installer writes the verified runtime under /usr/local/bin; custom execution.paths.runsc or gvisorBin would leave the guard's mounts pointing at missing files" }}{{- end -}}
 {{- if and $e.runner.enabled (not $e.guard.enabled) -}}{{ fail "execution.runner requires execution.guard.enabled: the Runner's isolation probe applies Sentry limits and freezes writers through this release's guard DaemonSet" }}{{- end -}}
+{{- if eq (toString $e.gvisor.label) (toString $e.gvisor.installedLabel) -}}{{ fail "execution.gvisor.label and execution.gvisor.installedLabel must be different keys: the installer sets the admission label to the gVisor version and the installed label to true, and one key cannot hold both" }}{{- end -}}
 {{- /* Host runtime files are replaced atomically, so the guard sees them through
 directory mounts: a file bind mount would keep the replaced inode. */ -}}
 {{- $runtimeDir := "/run/aidash-host-runtime" -}}
@@ -323,7 +324,7 @@ spec:
           env:
             - { name: AIDASH_CAPABILITY_PROFILE, value: /etc/aidash/profile.json }
             - name: AIDASH_CORE_RUNNER_TOKEN
-              valueFrom: { secretKeyRef: { name: {{ $secret }}, key: {{ $e.runner.tokenKey }} } }
+              valueFrom: { secretKeyRef: { name: {{ $secret | quote }}, key: {{ $e.runner.tokenKey | quote }} } }
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
@@ -339,7 +340,7 @@ spec:
         - { name: profile, configMap: { name: {{ $name }}-profile } }
         - name: journal
           persistentVolumeClaim:
-            claimName: {{ $e.runner.journal.existingClaim | default (printf "%s-journal" $name) }}
+            claimName: {{ $e.runner.journal.existingClaim | default (printf "%s-journal" $name) | quote }}
 ---
 apiVersion: v1
 kind: Service

@@ -124,12 +124,15 @@
           "type": "object",
           "properties": {
             "cpu": {
+              "description": "Sandbox CPU limit. Matches the application capability profile's supported range of 1 to 64, so the application and the Runner can use the same value.",
               "type": "integer",
-              "minimum": 1
+              "minimum": 1,
+              "maximum": 64
             },
             "memory_bytes": {
+              "description": "Sandbox memory limit. The application capability profile accepts at least 64 MiB, so the application and the Runner can use the same value.",
               "type": "integer",
-              "minimum": 1
+              "minimum": 67108864
             },
             "processes": {
               "description": "Guest RLIMIT_NPROC. Matches the application capability profile's supported range of 16 to 4096, so the application and the Runner can use the same value; this is above the admission probe's own hard limit of 8 (runner/probe.py fork_probe_limit).",
