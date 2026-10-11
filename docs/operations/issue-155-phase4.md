@@ -12,9 +12,10 @@ server and worker Workload Identity principals.
 Build the charts, Runner, installer, guard, observer and activity collector from
 the trusted workflow ref and pin their images by digest. Deployed fork PR source
 must never supply privileged code or chart templates. The separate application,
-trusted DaemonSet and restricted Execution Pod namespaces are trust boundaries.
-The installer has cluster-wide Cluster Node get/patch RBAC; the Runner can exec
-guard Pods only in the dedicated trusted namespace.
+guard, installer and restricted Execution Pod namespaces are trust boundaries.
+The installer has cluster-wide Cluster Node get/patch RBAC and lives in its own
+namespace; the Runner can exec guard Pods only in the dedicated trusted
+namespace and has no rights in the installer's.
 
 ## Post-drain idle observation
 

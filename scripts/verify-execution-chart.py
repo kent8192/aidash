@@ -129,7 +129,7 @@ nodes:
             forward.terminate()
             forward.wait(timeout=10)
         if created:
-            for namespace in (args.name, args.name + '-guard', args.name + '-sandbox'):
+            for namespace in (args.name, args.name + '-guard', args.name + '-installer', args.name + '-sandbox'):
                 result = subprocess.run([str(v) for v in kube + ['-n', namespace, 'get', 'pods', '-o', 'wide']],
                                         capture_output=True)
                 (directory / (namespace + '-pods.log')).write_bytes(result.stdout + result.stderr)
@@ -138,7 +138,7 @@ nodes:
                                         capture_output=True)
                 (directory / (namespace + '-runner.log')).write_bytes(result.stdout + result.stderr)
             for role in ('guard', 'installer'):
-                result = subprocess.run([str(v) for v in kube + ['-n', args.name + '-guard', 'logs',
+                result = subprocess.run([str(v) for v in kube + ['-n', args.name + '-' + role, 'logs',
                     'daemonset/' + args.name + '-execution-' + role, '--tail=100']], capture_output=True, check=False)
                 (directory / (role + '.log')).write_bytes(result.stdout + result.stderr)
             run(['kind', 'delete', 'cluster', '--name', args.name])

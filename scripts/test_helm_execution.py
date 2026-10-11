@@ -141,6 +141,7 @@ class ChartsTest(unittest.TestCase):
     def test_application_capability_profile_matches_the_runner_it_names(self):
         execution = {'createNamespaces': True, 'sandboxImage': 'sandbox' + DIGEST,
                      'sandboxNamespace': 'aidash-pr-1-sandbox', 'trustedNamespace': 'aidash-pr-1-trusted',
+                     'installerNamespace': 'aidash-pr-1-installer',
                      'runtimeClass': {'create': True, 'name': 'aidash-gvisor-pr-1'},
                      'runner': {'enabled': True, 'existingSecret': 'app-runner', 'image': 'control' + DIGEST},
                      'guard': {'enabled': True, 'image': 'control' + DIGEST}}
@@ -186,6 +187,7 @@ class ChartsTest(unittest.TestCase):
             render(self.aidash, dict(values, capabilities={'storage': {'existingClaim': ''}}))
         # Cluster-scoped objects of same-named releases in other Environments stay distinct.
         other = dict(execution, sandboxNamespace='aidash-test-sandbox', trustedNamespace='aidash-test-trusted',
+                     installerNamespace='aidash-test-installer',
                      runtimeClass={'create': True, 'name': 'aidash-gvisor-test'}, installer={'enabled': True, 'image': 'control' + DIGEST})
         names = []
         for namespace, environment in (('aidash-pr-1', dict(execution, installer=other['installer'])), ('aidash-test', other)):
@@ -193,8 +195,8 @@ class ChartsTest(unittest.TestCase):
                               'app', namespace=namespace)
             names.append({(value['kind'], value['metadata']['name']) for value in rendered
                           if value['kind'] in ('ClusterRole', 'ClusterRoleBinding', 'RuntimeClass', 'Namespace')})
-        # Two ClusterRoles, two bindings, the RuntimeClass and two Namespaces.
-        self.assertEqual(len(names[0]), 7)
+        # Two ClusterRoles, two bindings, the RuntimeClass and three Namespaces.
+        self.assertEqual(len(names[0]), 8)
         self.assertEqual(names[0] & names[1], set())
 
     def test_managed_provider_and_gcip_settings_are_validated_and_mounted(self):
@@ -276,6 +278,24 @@ class ChartsTest(unittest.TestCase):
             self.assertTrue(pod['hostPID'])
             self.assertFalse(pod['hostNetwork'])
             self.assertEqual(pod['containers'][0]['image'], 'trusted-' + role + DIGEST)
+        # The Runner may exec into every Pod of the guard namespace. The privileged
+        # installer, which mounts the host root, must live where it has no rights.
+        installer_namespace = 'fixture-installer'
+        self.assertEqual(select(objects, 'DaemonSet', '-installer')['metadata']['namespace'], installer_namespace)
+        self.assertEqual(select(objects, 'ServiceAccount', '-installer')['metadata']['namespace'], installer_namespace)
+        self.assertEqual(select(objects, 'ClusterRoleBinding', '-installer')['subjects'][0]['namespace'], installer_namespace)
+        self.assertEqual(select(objects, 'Namespace', '-installer')['metadata']['labels']['pod-security.kubernetes.io/enforce'], 'privileged')
+        self.assertEqual(select(objects, 'DaemonSet', '-guard')['metadata']['namespace'], 'fixture-guard')
+        # Unqualified Roles belong to the release namespace ('environment').
+        bound = {value['metadata'].get('namespace', 'environment') for value in objects if value['kind'] in ('Role', 'RoleBinding')}
+        self.assertNotIn(installer_namespace, bound)
+        self.assertEqual({value['metadata']['namespace'] for value in objects
+                          if value['kind'] == 'RoleBinding' and value['metadata']['name'].endswith('-runner')},
+                         {'fixture-sandbox', 'fixture-guard'})
+        for clash in ('fixture-guard', 'fixture-sandbox', 'environment'):
+            with self.assertRaises(subprocess.CalledProcessError):
+                render(self.aidash, dict(self.base, execution=dict(execution, installerNamespace=clash),
+                                         environment={'nodeSelector': {'pool': 'execution'}}))
         guard = select(objects, 'DaemonSet', '-guard')['spec']['template']['spec']
         # The guard follows the installed label, which is never withdrawn during a
         # runtime replacement; only the RuntimeClass depends on the admission label.
@@ -309,10 +329,10 @@ class ChartsTest(unittest.TestCase):
         with self.assertRaises(subprocess.CalledProcessError):
             render(self.aidash, dict(self.base, execution=unguarded, environment={'nodeSelector': {'pool': 'execution'}}))
         # Namespace and RuntimeClass overrides that YAML reads as other scalars stay strings.
-        quoted = dict(execution, sandboxNamespace='true', trustedNamespace='null',
+        quoted = dict(execution, sandboxNamespace='true', trustedNamespace='null', installerNamespace='false',
                       runtimeClass={'create': True, 'name': 'true'})
         names = render(self.aidash, dict(self.base, execution=quoted, environment={'nodeSelector': {'pool': 'execution'}}))
-        self.assertEqual(sorted(value['metadata']['name'] for value in names if value['kind'] == 'Namespace'), ['null', 'true'])
+        self.assertEqual(sorted(value['metadata']['name'] for value in names if value['kind'] == 'Namespace'), ['false', 'null', 'true'])
         self.assertEqual([value['metadata']['name'] for value in names if value['kind'] == 'RuntimeClass'], ['true'])
         runtime_rule = next(rule for rule in select(names, 'ClusterRole', '-runtime')['rules']
                             if rule['resources'] == ['runtimeclasses'])

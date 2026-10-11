@@ -37,9 +37,9 @@ class ClusterCommandTests(unittest.TestCase):
                 self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
                 files["values"] = path.read_text()
             if args[:2] == ("kubectl", "--kubeconfig") and "get" in args and "secret" in args:
-                return json.dumps({"data": {
-                    name: base64.b64encode(f"{name}-token".encode()).decode()
-                    for name in ("database", "api", "runner")
+                return json.dumps({"metadata": {"resourceVersion": "1"}, "data": {
+                    name: base64.b64encode((f"{name}-token" if name != "observer" else "0" * 64).encode()).decode()
+                    for name in ("database", "api", "runner", "observer")
                 }}).encode()
             return b""
 
@@ -56,10 +56,11 @@ class ClusterCommandTests(unittest.TestCase):
             self.assertEqual(stat.S_IMODE((Path(directory) / "kubeconfig").stat().st_mode), 0o600)
             settings = kube.materialize(cluster, "pr-2", PROJECT, OUTPUT, dict(RUNTIME, AIDASH_SECRET_OPENAI="sk-private"))
             cluster.upgrade("aidash-pr-2", "app", kube.APP_CHART, {"gcip": {"settings": settings["gcip"]}})
+            kube.observer_role(cluster, "pr-2")
             self.assertEqual(os.listdir(directory), ["kubeconfig"])
         stdin = b"".join(data or b"" for _, data, _ in commands)
         argv = json.dumps([[str(arg) for arg in args] for args, _, _ in commands])
-        for value in ("sk-private", "client-secret", "database-token", "runner-token"):
+        for value in ("sk-private", "client-secret", "database-token", "runner-token", "0" * 64):
             self.assertNotIn(value, argv)
             self.assertNotIn(value, files["values"])
         self.assertIn(base64.b64encode(b"sk-private"), stdin)
@@ -67,6 +68,11 @@ class ClusterCommandTests(unittest.TestCase):
         applied = [json.loads(data) for args, data, _ in commands if "apply" in args]
         self.assertTrue(all("--server-side" in args for args, _, _ in commands if "apply" in args))
         self.assertEqual({item["metadata"]["name"] for item in applied}, {"app-runtime", "app-runner", "env-postgres", "env-activity"})
+        # The observer's password reaches PostgreSQL only through exec stdin.
+        execs = [(args, data) for args, data, _ in commands if "exec" in args]
+        self.assertEqual(len(execs), 1)
+        self.assertIn("-i", execs[0][0])
+        self.assertIn(b"PASSWORD '" + b"0" * 64 + b"'", execs[0][1])
 
 
 class RuntimeConfigurationTests(unittest.TestCase):
@@ -89,6 +95,45 @@ class RuntimeConfigurationTests(unittest.TestCase):
         tokens = self.cluster.secret("aidash-pr-2", "aidash-identity")
         self.assertEqual(self.cluster.secret("aidash-pr-2", "env-activity")["AIDASH_CORE_RUNNER_TOKEN"], tokens["runner"])
         self.assertEqual(self.cluster.secret("aidash-pr-2", "app-runner"), {"AIDASH_CORE_RUNNER_TOKEN": tokens["runner"]})
+
+    def test_observer_never_receives_the_application_database_login(self):
+        self.materialize(RUNTIME)
+        tokens = self.cluster.secret("aidash-pr-2", "aidash-identity")
+        self.assertEqual(set(tokens), {"database", "api", "runner", "observer"})
+        self.assertNotEqual(tokens["observer"], tokens["database"])
+        activity = self.cluster.secret("aidash-pr-2", "env-activity")
+        self.assertEqual(
+            activity["DATABASE_URL"],
+            f"postgres://aidash_observer:{tokens['observer']}@env-environment-postgres:5432/aidash_a",
+        )
+        self.assertNotIn(tokens["database"], json.dumps(activity))
+        self.assertEqual(
+            self.cluster.secret("aidash-pr-2", "app-runtime")["DATABASE_URL"],
+            f"postgres://aidash:{tokens['database']}@env-environment-postgres:5432/aidash_a",
+        )
+
+    def test_existing_identity_gains_the_observer_token_once_and_keeps_its_tokens(self):
+        existing = {name: name[0] * 64 for name in ("database", "api", "runner")}
+        manifest = kube.secret("aidash-pr-2", "aidash-identity", existing, environment=False)
+        manifest["metadata"]["resourceVersion"] = "7"
+        self.cluster.put(manifest)
+        applied = []
+        apply = self.cluster.apply
+
+        def recorded_apply(manifest):
+            applied.append(manifest)
+            apply(manifest)
+
+        with patch.object(self.cluster, "apply", recorded_apply):
+            self.materialize(RUNTIME)
+        tokens = self.cluster.secret("aidash-pr-2", "aidash-identity")
+        self.assertEqual({name: tokens[name] for name in existing}, existing)
+        self.assertRegex(tokens["observer"], "^[0-9a-f]{64}$")
+        # A concurrent addition fails on the precondition rather than being replaced.
+        identity = next(item for item in applied if item["metadata"]["name"] == "aidash-identity")
+        self.assertEqual(identity["metadata"]["resourceVersion"], "7")
+        self.materialize(RUNTIME)
+        self.assertEqual(self.cluster.secret("aidash-pr-2", "aidash-identity"), tokens)
 
     def test_gcip_is_public_chart_settings_without_oidc_defaults(self):
         gcip = {
@@ -314,9 +359,10 @@ class AdmissionTests(unittest.TestCase):
                 self.events.append(("state", manifest["data"]["state"]))
             apply(manifest)
 
-        def recorded_exec(namespace, target, container, *command):
-            self.events.append(("edge", command[-1].rsplit("/", 1)[1]))
-            return execute(namespace, target, container, *command)
+        def recorded_exec(namespace, target, container, *command, data=None):
+            if container == "admission":
+                self.events.append(("edge", command[-1].rsplit("/", 1)[1]))
+            return execute(namespace, target, container, *command, data=data)
 
         for context in (
             patch.object(self.cluster, "apply", recorded_apply), patch.object(self.cluster, "exec", recorded_exec),
@@ -382,6 +428,16 @@ class AdmissionTests(unittest.TestCase):
         kube.deploy(self.cluster, "test", output, release, "a" * 40, {"provider": None, "gcip": None})
         self.assertEqual(self.events, [("state", "closed")])
         self.assertEqual(self.state(), "closed")
+        # The observer's role is granted only after migration created its tables.
+        self.assertLess(self.calls.index(("migrate", "test")), self.calls.index(("observer_role", "test")))
+        sql = self.cluster.sql["aidash-test"]
+        password = self.cluster.secret("aidash-test", "aidash-identity")["observer"]
+        self.assertEqual(sql, kube.observer_sql(password))
+        self.assertIn("GRANT pg_read_all_stats TO aidash_observer;", sql)
+        self.assertIn("NOSUPERUSER", sql)
+        granted = next(line for line in sql.splitlines() if line.startswith("GRANT SELECT ON TABLE"))
+        self.assertEqual(granted, "GRANT SELECT ON TABLE " + ", ".join(kube.OBSERVER_TABLES) + " TO aidash_observer;")
+        self.assertNotIn("GRANT ALL", sql)
 
     def desired(self, state):
         kube.desired_admission(self.cluster, "aidash-test", state)

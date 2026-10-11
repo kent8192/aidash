@@ -60,6 +60,7 @@ class FakeCluster:
         self.failures = {}
         self.on_observe = None
         self.addresses = 0
+        self.sql = {}
 
     # Fixture controls
     def fail(self, event, error):
@@ -219,7 +220,14 @@ class FakeCluster:
         if self.key(kind, name, namespace) not in self.objects:
             raise RuntimeError("kubectl failed (exit 1); no private command output was logged")
 
-    def exec(self, namespace, target, container, *command):
+    def exec(self, namespace, target, container, *command, data=None):
+        if container == "postgres":
+            self.record("observer_role", identity(namespace))
+            postgres = self.objects.get(self.key("statefulset", "env-environment-postgres", namespace))
+            if not postgres or not postgres["spec"]["replicas"] or data is None:
+                raise RuntimeError("kubectl failed (exit 1); no private command output was logged")
+            self.sql[namespace] = data.decode()
+            return b""
         self.record("admission", identity(namespace), command[-1].rsplit("/", 1)[1])
         edge = self.objects.get(self.key("deployment", "env-environment-edge", namespace))
         if not edge or not edge["spec"]["replicas"]:
@@ -269,7 +277,7 @@ class FakeCluster:
                 )
             self.workload("deployment", namespace, "app-execution-runner", 1)
             execution = values["execution"]
-            for name in (execution["sandboxNamespace"], execution["trustedNamespace"]):
+            for name in (execution["sandboxNamespace"], execution["trustedNamespace"], execution["installerNamespace"]):
                 self.put({"kind": "Namespace", "metadata": {"name": name}})
 
     def uninstall(self, namespace, release):

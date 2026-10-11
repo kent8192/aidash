@@ -60,7 +60,9 @@ and JetStream volumes, so the chart refuses to render them unless they end in
 `@sha256:<digest>`. The shipped Caddy and NATS defaults are pinned; the locally
 built PostgreSQL, admission, observer and collector images must be supplied.
 
-`activity.existingSecret` supplies the existing read-only observer `DATABASE_URL`
+`activity.existingSecret` supplies the observer's `DATABASE_URL`, which must name
+a role limited to `SELECT` on the tables it reads plus `pg_read_all_stats`, never the
+application's login,
 and `AIDASH_CORE_RUNNER_TOKEN`. The CronJob reads database work, the private edge
 activity endpoint, and the Runner's authenticated `/v1/activity`; it gets/patches
 only `<release>-environment-activity`. The Pod disables automatic token mounting

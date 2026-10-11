@@ -18,8 +18,9 @@ All Environments share the zonal GKE Standard cluster `aidash` in
 `us-central1-a` (Dataplane V2, Workload Identity, private Cluster Nodes with Cloud
 NAT, Kubernetes 1.34 or later). Each Environment owns:
 
-- namespaces `aidash-<id>` (app), `aidash-<id>-sandbox` (Execution Pods) and
-  `aidash-<id>-trusted` (guard/installer);
+- namespaces `aidash-<id>` (app), `aidash-<id>-sandbox` (Execution Pods),
+  `aidash-<id>-trusted` (guard, which the Runner may exec into) and
+  `aidash-<id>-installer` (privileged installer; the Runner has no rights there);
 - an Ubuntu/containerd N2 node pool (`n2-standard-4` by default) labelled and
   tainted `aidash.run/environment=<id>`; nothing else schedules there;
 - server and worker Google service accounts bound through Workload Identity, a
@@ -216,9 +217,16 @@ settings, applies typed defaults and validates the sole issuer. Legacy OIDC
 settings are not exported in this mode. Removing Tenant Bindings updates the
 settings before the Environment is reopened.
 
-The controller generates private database/API/Runner keys once into the
-namespace's `aidash-identity` Secret and never regenerates them; callers cannot
-override these or the node identity through runtime JSON. Terraform creates secret
+The controller generates private database/API/Runner/observer keys once into the
+namespace's `aidash-identity` Secret and never regenerates them (a key added later
+is generated once for existing Environments); callers cannot
+override these or the node identity through runtime JSON. The activity observer
+connects as its own `aidash_observer` PostgreSQL role, never the application's
+administrative `aidash` login. After every migration (and on every settings
+reload) the controller creates or updates that role through the PostgreSQL
+container's local socket, with SQL and password on stdin: `LOGIN` only, `SELECT`
+on exactly the tables the observer queries, and `pg_read_all_stats`, without
+which `pg_stat_activity` would hide other sessions' in-flight work. Terraform creates secret
 metadata only. The controller uploads an initial secret version via stdin, reads
 the allowlisted keys (`AIDASH_OIDC_*`, `AIDASH_SECRET_*`,
 `AIDASH_PROVIDER_FINGERPRINT_KEY`) and materializes the `app-runtime` Kubernetes

@@ -4,12 +4,16 @@
 {{- $cluster := printf "%s-%s-execution" .Release.Namespace .Release.Name -}}
 {{- $sandbox := include "aidash.sandboxNamespace" . -}}
 {{- $trusted := $e.trustedNamespace | default (printf "%s-guard" .Release.Name) -}}
+{{- /* The Runner may exec into every Pod of the trusted namespace; the privileged
+installer, which mounts the host root, lives where the Runner has no rights. */ -}}
+{{- $installer := $e.installerNamespace | default (printf "%s-installer" .Release.Name) -}}
 {{- $runtime := include "aidash.runtimeClassName" . -}}
 {{- $selector := mergeOverwrite (deepCopy .Values.nodeSelector) .Values.environment.nodeSelector -}}
 {{- $tolerations := concat .Values.tolerations .Values.environment.tolerations -}}
 {{- $guardState := $e.paths.guardState | default (printf "/var/lib/aidash-node-guard/%s" .Release.Name) -}}
 {{- if eq $sandbox $trusted -}}{{ fail "Execution Pods and trusted DaemonSets require different namespaces" }}{{- end -}}
-{{- if or (eq $trusted .Release.Namespace) (eq $sandbox .Release.Namespace) -}}{{ fail "Execution and trusted namespaces must be separate from application workloads" }}{{- end -}}
+{{- if or (eq $installer $trusted) (eq $installer $sandbox) -}}{{ fail "The installer requires its own namespace: the Runner may exec into every Pod of the guard and sandbox namespaces" }}{{- end -}}
+{{- if or (eq $trusted .Release.Namespace) (eq $sandbox .Release.Namespace) (eq $installer .Release.Namespace) -}}{{ fail "Execution, trusted and installer namespaces must be separate from application workloads" }}{{- end -}}
 {{- if eq $runtime "gvisor" -}}{{ fail "Use an Aidash RuntimeClass, not the GKE Sandbox gvisor RuntimeClass" }}{{- end -}}
 {{- range $component, $values := dict "installer" $e.installer "guard" $e.guard "runner" $e.runner -}}
 {{- if and $values.enabled (not (regexMatch "@sha256:[0-9a-f]{64}$" (toString $values.image))) -}}{{ fail (printf "execution.%s.image must be pinned by digest: it runs trusted, privileged or cluster-scoped code" $component) }}{{- end -}}
@@ -38,7 +42,9 @@ directory mounts: a file bind mount would keep the replaced inode. */ -}}
 {{- $sentry := printf "%s/gvisor_sentry" $e.paths.gvisorBin -}}
 {{- if and $e.guard.enabled (not (has $sentry $e.paths.sentryBinaries)) -}}{{ fail (printf "execution.paths.sentryBinaries must include %s: the pinned runtime runs a split Sentry, and the guard kills only a PID it recognizes" $sentry) }}{{- end -}}
 {{- if $e.createNamespaces }}
-{{- range $namespace := list $sandbox $trusted }}
+{{- $created := list $sandbox $trusted -}}
+{{- if $e.installer.enabled }}{{ $created = append $created $installer }}{{ end -}}
+{{- range $namespace := $created }}
 ---
 apiVersion: v1
 kind: Namespace
@@ -70,7 +76,7 @@ apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: {{ $name }}-installer
-  namespace: {{ $trusted | quote }}
+  namespace: {{ $installer | quote }}
 ---
 # Cluster-wide node get/patch is necessary for a DaemonSet on replaceable machines.
 apiVersion: rbac.authorization.k8s.io/v1
@@ -87,14 +93,14 @@ kind: ClusterRoleBinding
 metadata:
   name: {{ $cluster }}-installer
 subjects:
-  - { kind: ServiceAccount, name: {{ $name }}-installer, namespace: {{ $trusted | quote }} }
+  - { kind: ServiceAccount, name: {{ $name }}-installer, namespace: {{ $installer | quote }} }
 roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: {{ $cluster }}-installer }
 ---
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
   name: {{ $name }}-installer
-  namespace: {{ $trusted | quote }}
+  namespace: {{ $installer | quote }}
 spec:
   selector: { matchLabels: { aidash.run/installer: {{ .Release.Name | quote }} } }
   template:

@@ -1027,7 +1027,7 @@ class ReconcileTests(unittest.TestCase):
         self.assertIsNotNone(self.kube.get("persistentvolume", "aidash-preview-tls"))
         self.assertNotIn("claimRef", self.kube.get("persistentvolume", "aidash-preview-tls")["spec"])
         self.assertEqual([volume for volume in self.kube.items("persistentvolumes") if volume["metadata"]["name"] != "aidash-preview-tls"], [])
-        for namespace in ("aidash-pr-1", "aidash-pr-1-sandbox", "aidash-pr-1-trusted"):
+        for namespace in ("aidash-pr-1", "aidash-pr-1-sandbox", "aidash-pr-1-trusted", "aidash-pr-1-installer"):
             self.assertLess(self.calls.index(("delete_namespace", namespace)), self.calls.index(("delete_disk", sorted(owned)[0])))
         self.assertLess(self.calls.index(("uninstall", "pr-1", "app")), self.calls.index(("delete_namespace", "aidash-pr-1")))
         self.assertLess(max(index for index, call in enumerate(self.calls) if call[0] == "delete_disk"), self.calls.index(("apply", True)))

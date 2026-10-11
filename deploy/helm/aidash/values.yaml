@@ -112,6 +112,9 @@ environment:
 execution:
   sandboxNamespace: ""
   trustedNamespace: ""
+  # Empty derives <release>-installer. The privileged installer never shares a
+  # namespace with the guard, whose Pods the Runner may exec into.
+  installerNamespace: ""
   createNamespaces: false
   podSecurityVersion: v1.34
   imagePullPolicy: IfNotPresent

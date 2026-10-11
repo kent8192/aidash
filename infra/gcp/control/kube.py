@@ -63,6 +63,17 @@ GCIP_KEYS = {
     "project_id", "web_api_key", "public_origin", "tenant_bindings",
     "providers", "password_sign_up", "session_absolute_seconds", "session_idle_seconds",
 }
+IDENTITY_TOKENS = ("database", "api", "runner", "observer")
+# The activity observer's own login. It reads only the tables queried by
+# infra/gcp/observer/src/main.rs, plus pg_read_all_stats: without it,
+# pg_stat_activity hides other sessions' state and in-flight work would look idle.
+OBSERVER_ROLE = "aidash_observer"
+OBSERVER_TABLES = (
+    "runs", "human_requests", "core_records", "agent_test_sessions", "generation_requests",
+    "invocations", "atomic_participants", "core_operations", "atomic_coordinators",
+)
+DATABASE = "aidash_a"
+POSTGRES = STATEFULSETS[0]
 
 
 class Cluster:
@@ -129,8 +140,12 @@ class Cluster:
             timeout=timeout + 30,
         )
 
-    def exec(self, namespace, target, container, *command):
-        return self.kubectl("exec", "--namespace", namespace, target, "-c", container, "--", *command, timeout=60)
+    def exec(self, namespace, target, container, *command, data=None):
+        # Secret input travels on stdin; exec arguments reach the API audit log.
+        stdin = ("-i",) if data is not None else ()
+        return self.kubectl(
+            "exec", "--namespace", namespace, *stdin, target, "-c", container, "--", *command, data=data, timeout=60,
+        )
 
     def job_from_cron(self, namespace, cronjob, name):
         self.kubectl("create", "job", name, f"--from=cronjob/{cronjob}", "--namespace", namespace)
@@ -173,7 +188,7 @@ def namespaces(identity):
     if not ENVIRONMENT.fullmatch(identity):
         raise Refused("Invalid environment identity")
     namespace = "aidash-" + identity
-    return namespace, namespace + "-sandbox", namespace + "-trusted"
+    return namespace, namespace + "-sandbox", namespace + "-trusted", namespace + "-installer"
 
 
 def namespace_of(identity):
@@ -230,10 +245,20 @@ def identity_tokens(cluster, namespace):
     if value is None:
         # Generated exactly once; create fails rather than replace a concurrent value.
         cluster.create(secret(namespace, "aidash-identity", {
-            name: secrets.token_hex(32) for name in ("database", "api", "runner")
+            name: secrets.token_hex(32) for name in IDENTITY_TOKENS
         }, environment=False))
         value = cluster.get("secret", "aidash-identity", namespace)
-    return {key: base64.b64decode(data).decode() for key, data in value["data"].items()}
+    tokens = {key: base64.b64decode(data).decode() for key, data in value["data"].items()}
+    missing = [name for name in IDENTITY_TOKENS if name not in tokens]
+    if missing:
+        # An Environment created before a token existed gains it once; existing
+        # tokens are kept. The resourceVersion precondition makes a concurrent
+        # addition fail instead of being replaced.
+        tokens.update({name: secrets.token_hex(32) for name in missing})
+        manifest = secret(namespace, "aidash-identity", tokens, environment=False)
+        manifest["metadata"]["resourceVersion"] = value["metadata"]["resourceVersion"]
+        cluster.apply(manifest)
+    return tokens
 
 
 def preview_attached(cluster):
@@ -393,7 +418,9 @@ def materialize(cluster, identity, project, output, runtime):
         raise Refused("Google OAuth client configuration is required")
     provider = provider_settings(output.get("provider_credentials"), external)
     tokens = identity_tokens(cluster, namespace)
-    database = f"postgres://aidash:{tokens['database']}@env-environment-postgres:5432/aidash_a"
+    database = f"postgres://aidash:{tokens['database']}@env-environment-postgres:5432/{DATABASE}"
+    # The observer never receives the application's administrative login.
+    observer = f"postgres://{OBSERVER_ROLE}:{tokens['observer']}@env-environment-postgres:5432/{DATABASE}"
     values = dict(
         external,
         DATABASE_URL=database,
@@ -406,8 +433,8 @@ def materialize(cluster, identity, project, output, runtime):
     for manifest in (
         secret(namespace, "app-runtime", values),
         secret(namespace, "app-runner", {"AIDASH_CORE_RUNNER_TOKEN": tokens["runner"]}),
-        secret(namespace, "env-postgres", {"POSTGRES_USER": "aidash", "POSTGRES_PASSWORD": tokens["database"], "POSTGRES_DB": "aidash_a"}),
-        secret(namespace, "env-activity", {"DATABASE_URL": database, "AIDASH_CORE_RUNNER_TOKEN": tokens["runner"]}),
+        secret(namespace, "env-postgres", {"POSTGRES_USER": "aidash", "POSTGRES_PASSWORD": tokens["database"], "POSTGRES_DB": DATABASE}),
+        secret(namespace, "env-activity", {"DATABASE_URL": observer, "AIDASH_CORE_RUNNER_TOKEN": tokens["runner"]}),
     ):
         cluster.apply(manifest)
     return {"gcip": gcip, "provider": provider}
@@ -428,7 +455,7 @@ def image(release, kind):
 
 
 def app_values(cluster, identity, output, release, sha, settings):
-    namespace, sandbox, trusted = namespaces(identity)
+    namespace, sandbox, trusted, installer = namespaces(identity)
     selector, tolerations = scheduling(identity)
     repository, digest = image(release, "app").split("@", 1)
     control = image(release, "control")
@@ -459,6 +486,9 @@ def app_values(cluster, identity, output, release, sha, settings):
         "execution": {
             "sandboxNamespace": sandbox,
             "trustedNamespace": trusted,
+            # The Runner may exec into guard Pods; the privileged installer is
+            # kept in a namespace where the Runner has no rights.
+            "installerNamespace": installer,
             "createNamespaces": True,
             "sandboxImage": image(release, "sandbox"),
             "runtimeClass": {"create": True, "name": "aidash-gvisor-" + identity},
@@ -678,6 +708,7 @@ def deploy(cluster, identity, output, release, sha, settings):
     cluster.scale(namespace, RUNNER, 1)
     cluster.rollout(namespace, RUNNER)
     migrate(cluster, identity, sha)
+    observer_role(cluster, identity)
     cluster.rollout(namespace, EDGE)
 
 
@@ -738,6 +769,40 @@ def migrate(cluster, identity, sha):
         raise RuntimeError("Migration Job failed; the retained database was not replaced")
 
 
+def observer_sql(password, database=DATABASE):
+    """Idempotent SQL for the observer's login: SELECT on the tables it reads and
+    pg_read_all_stats, nothing else. The tables must exist (after migration)."""
+    if not re.fullmatch(r"[0-9a-f]{64}", password):
+        raise Refused("Observer database token is invalid")
+    return "\n".join((
+        f"DO $$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '{OBSERVER_ROLE}')"
+        f" THEN CREATE ROLE {OBSERVER_ROLE}; END IF; END $$;",
+        f"ALTER ROLE {OBSERVER_ROLE} WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION"
+        f" NOBYPASSRLS INHERIT PASSWORD '{password}';",
+        f"GRANT CONNECT ON DATABASE {database} TO {OBSERVER_ROLE};",
+        f"GRANT USAGE ON SCHEMA public TO {OBSERVER_ROLE};",
+        f"GRANT SELECT ON TABLE {', '.join(OBSERVER_TABLES)} TO {OBSERVER_ROLE};",
+        f"GRANT pg_read_all_stats TO {OBSERVER_ROLE};",
+        "",
+    ))
+
+
+def observer_role(cluster, identity):
+    """Create or update the activity observer's login after migration.
+
+    A compromised observer must not be able to change retained data, so it never
+    holds the application's administrative login. The SQL, including the
+    password, travels on stdin through the PostgreSQL container's local socket.
+    """
+    namespace = namespace_of(identity)
+    sql = observer_sql(identity_tokens(cluster, namespace)["observer"])
+    cluster.exec(
+        namespace, POSTGRES, "postgres", "sh", "-ec",
+        'exec psql --no-psqlrc --quiet --single-transaction -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB"',
+        data=sql.encode(),
+    )
+
+
 def reload(cluster, identity, output, settings):
     """Apply new settings to the deployed release without changing its images."""
     namespace = namespace_of(identity)
@@ -746,11 +811,16 @@ def reload(cluster, identity, output, settings):
         providerCredentials={"settings": settings["provider"]},
         gcip={"settings": settings["gcip"]},
     )
+    # Releases installed before the installer had its own namespace carry no
+    # value for it; the chart default would be shared by every Environment.
+    values.setdefault("execution", {})["installerNamespace"] = namespaces(identity)[3]
     for role in ("server", "worker"):
         values.setdefault(role, {})["replicas"] = 0
     cluster.upgrade(namespace, "app", APP_CHART, values)
     cluster.scale(namespace, RUNNER, 1)
     cluster.rollout(namespace, RUNNER)
+    # materialize() points the activity Secret at the observer login.
+    observer_role(cluster, identity)
     start_writers(cluster, identity)
 
 

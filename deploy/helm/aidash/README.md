@@ -103,18 +103,23 @@ files. The
 installer writes the runtime only under `/usr/local/bin`, so the chart rejects a
 custom `execution.paths.runsc` or `gvisorBin` while it is enabled.
 
-The release gets three separate namespaces: the application release namespace,
-`<release>-sandbox` (Pod Security `restricted`), and `<release>-guard` (trusted
-privileged DaemonSets only). Names can be overridden but must remain distinct;
-when several Environments use the same release name, set distinct namespace and
-RuntimeClass names. The installer and runtime ClusterRoles and their bindings are
-named `<release namespace>-<release>-execution-*`, so they never collide.
-The trusted namespace must contain only the guard and installer; never schedule
-workloads from the deployed source there. Kubernetes RBAC cannot constrain exec
-to DaemonSet-generated Pod names by label, so its namespace is the boundary.
+The release gets four separate namespaces: the application release namespace,
+`<release>-sandbox` (Pod Security `restricted`), `<release>-guard` (the trusted
+privileged guard DaemonSet only) and `<release>-installer` (the privileged
+installer DaemonSet only; created only while the installer is enabled). Names can
+be overridden with `execution.sandboxNamespace`, `trustedNamespace` and
+`installerNamespace` but must remain distinct; when several Environments use the
+same release name, set distinct namespace and RuntimeClass names. The installer
+and runtime ClusterRoles and their bindings are named
+`<release namespace>-<release>-execution-*`, so they never collide.
+The trusted namespace must contain only the guard; never schedule workloads from
+the deployed source there. Kubernetes RBAC cannot constrain exec to
+DaemonSet-generated Pod names by label, so its namespace is the boundary.
 The Runner gets `get`/`list` Pods and `create` `pods/exec` there, execution and
 NetworkPolicy rights in its sandbox namespace, and `get` on its named RuntimeClass.
-It cannot read Secrets or patch Cluster Nodes. The guard has no API token.
+It has no rights in the installer namespace, so a compromised Runner cannot exec
+into the installer, which mounts the host root. It cannot read Secrets or patch
+Cluster Nodes. The guard has no API token.
 
 The Runner has one replica, `Recreate` updates, and a ReadWriteOnce journal. It
 requires Kubernetes 1.34 or later, because Execution Pods set pod-level
