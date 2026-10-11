@@ -53,8 +53,9 @@ const record = (call) => sessionStorage.setItem("fixture-calls", JSON.stringify(
 export function createClient() {
   record({ kind: "create" });
   return {
-    popup: async (id) => {
+    popup: async (id, hint) => {
       record({ kind: "popup", id });
+      if (hint) sessionStorage.setItem("fixture-login-hint", hint);
       // Lets a test act while the provider popup is still open.
       if (sessionStorage.getItem("fixture-popup-hold"))
         await new Promise((resolve) => { window.fixtureFinishPopup = resolve; });
@@ -106,6 +107,24 @@ export function createClient() {
     return route.fulfill({
       status: 303,
       headers: { location: "/sign-in?state=browser-bound-state" },
+      body: "",
+    });
+  });
+  await page.route("**/auth/login", (route) => {
+    const request = route.request();
+    expect(request.method()).toBe("POST");
+    const form = new URLSearchParams(request.postData() ?? "");
+    if (form.get("email")?.endsWith("@acme.test"))
+      return route.fulfill({
+        status: 303,
+        headers: { location: "/sign-in?state=browser-bound-state" },
+        body: "",
+      });
+    const query = new URLSearchParams({ error: "not_found" });
+    query.set("return_to", form.get("return_to") ?? "/");
+    return route.fulfill({
+      status: 303,
+      headers: { location: `/sign-in?${query}` },
       body: "",
     });
   });
