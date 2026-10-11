@@ -1,7 +1,7 @@
 meta {
-  name: 1095 sessions-login-discovery - OIDC deployment refuses foreign-origin discovery
+  name: 1124 sessions-login-discovery - Discovery without an address reveals nothing
   type: http
-  seq: 1095
+  seq: 1124
 }
 
 post {
@@ -12,16 +12,16 @@ post {
 
 headers {
   Accept: application/json
-  Origin: https://untrusted.example
+  Origin: {{base_url}}
   Content-Type: application/x-www-form-urlencoded
 }
 
 body:form-urlencoded {
-  email: alice@acme.example
+  return_to: /
 }
 
 tests {
   test("Exact HTTP 401", function () { expect(res.getStatus()).to.equal(401); });
   test("Stable authorization error envelope", function () { expect(res.getHeader("content-type")).to.include("application/json"); expect(res.getBody()).to.eql({error:"unauthorized"}); });
-  test("OIDC deployment refuses foreign-origin discovery contract", function () { expect(res.getHeader("set-cookie")).to.equal(undefined); });
+  test("Discovery without an address reveals nothing contract", function () { expect(res.getHeader("set-cookie")).to.equal(undefined); });
 }

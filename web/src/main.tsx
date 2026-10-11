@@ -225,6 +225,8 @@ function Dashboard({
     refetchInterval: 5000,
   });
   const operator = session.data?.access.kind === "operator";
+  const subjectTenant =
+    session.data?.access.kind === "subject" ? session.data.access.tenant : null;
   const mesh = useQuery({
     queryKey: ["mesh"],
     queryFn: () => getMesh(),
@@ -901,6 +903,7 @@ function Dashboard({
                       <TrustTools
                         entries={data.registry}
                         operator={operator}
+                        tenant={subjectTenant}
                         initiallyOpen={route.integration === "authorization"}
                       />
                     )
@@ -932,6 +935,7 @@ function Dashboard({
               <TrustTools
                 entries={[]}
                 operator={operator}
+                tenant={subjectTenant}
                 initiallyOpen={route.integration === "authorization"}
               />
             </div>

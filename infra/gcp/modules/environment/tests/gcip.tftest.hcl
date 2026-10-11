@@ -28,6 +28,10 @@ run "password_and_sso_tenants_are_separate" {
     condition     = length(google_identity_platform_tenant_default_supported_idp_config.google) == 1 && length(google_identity_platform_tenant_oauth_idp_config.oidc) == 1 && length(google_identity_platform_tenant_inbound_saml_config.saml) == 1
     error_message = "Each selected IdP must be configured inside its environment's tenant."
   }
+  assert {
+    condition     = var.gcip_tenants["password"].mfa.state == "disabled" && var.gcip_tenants["sso"].mfa.state == "disabled"
+    error_message = "An omitted MFA Requirement must be declared disabled."
+  }
 }
 run "sso_cannot_enable_password_signup" {
   command = plan
@@ -74,4 +78,9 @@ run "sign_in_domain_may_have_numeric_inner_labels" {
     condition     = keys(output.gcip.sign_in_domains) == ["192.0.2.example"]
     error_message = "Only the final label decides whether a host is an IP literal."
   }
+}
+run "password_pool_cannot_enable_mfa_before_clients_support_it" {
+  command = plan
+  variables { gcip_tenants = { acme = { tenant = "acme", mfa = { state = "enabled" } } } }
+  expect_failures = [var.gcip_tenants]
 }
