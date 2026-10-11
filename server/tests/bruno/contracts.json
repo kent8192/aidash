@@ -26047,6 +26047,7 @@
             "base_url",
             "fingerprint",
             "last4",
+            "key_settings_url",
             "state",
             "created_at",
             "rotated_at",
@@ -26067,6 +26068,10 @@
             "id": {
               "type": "string",
               "format": "uuid"
+            },
+            "key_settings_url": {
+              "type": ["string", "null"],
+              "description": "The provider's owner-only settings page for the issued key. Revocation\ndestroys only Aidash's copy, so users delete the key there."
             },
             "last4": {
               "type": "string"
@@ -26128,6 +26133,7 @@
             "base_url",
             "fingerprint",
             "last4",
+            "key_settings_url",
             "state",
             "created_at",
             "rotated_at",
@@ -26148,6 +26154,10 @@
             "id": {
               "type": "string",
               "format": "uuid"
+            },
+            "key_settings_url": {
+              "type": ["string", "null"],
+              "description": "The provider's owner-only settings page for the issued key. Revocation\ndestroys only Aidash's copy, so users delete the key there."
             },
             "last4": {
               "type": "string"
@@ -26209,6 +26219,7 @@
             "base_url",
             "fingerprint",
             "last4",
+            "key_settings_url",
             "state",
             "created_at",
             "rotated_at",
@@ -26229,6 +26240,10 @@
             "id": {
               "type": "string",
               "format": "uuid"
+            },
+            "key_settings_url": {
+              "type": ["string", "null"],
+              "description": "The provider's owner-only settings page for the issued key. Revocation\ndestroys only Aidash's copy, so users delete the key there."
             },
             "last4": {
               "type": "string"
@@ -26290,6 +26305,7 @@
             "base_url",
             "fingerprint",
             "last4",
+            "key_settings_url",
             "state",
             "created_at",
             "rotated_at",
@@ -26310,6 +26326,10 @@
             "id": {
               "type": "string",
               "format": "uuid"
+            },
+            "key_settings_url": {
+              "type": ["string", "null"],
+              "description": "The provider's owner-only settings page for the issued key. Revocation\ndestroys only Aidash's copy, so users delete the key there."
             },
             "last4": {
               "type": "string"
@@ -26570,5 +26590,40 @@
     "json": true,
     "uuid_parameters": [],
     "query_parameters": []
+  },
+  {
+    "method": "POST",
+    "path": "/api/tenants/{tenant}/provider-authorizations/{provider}",
+    "name": "provider-authorization-start",
+    "source": "server/src/apps/identity/views/provider_authorizations.rs",
+    "json": true,
+    "uuid_parameters": [],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/ProviderAuthorizationStarted"
+      },
+      "definitions": {
+        "ProviderAuthorizationStarted": {
+          "type": "object",
+          "required": ["authorization_url"],
+          "properties": {
+            "authorization_url": {
+              "type": "string",
+              "description": "The provider-hosted consent page; the browser navigates there."
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/auth/provider-authorizations/{provider}/callback",
+    "name": "provider-authorization-callback",
+    "source": "server/src/apps/identity/views/provider_authorizations.rs",
+    "json": false,
+    "uuid_parameters": [],
+    "query_parameters": ["code", "state"]
   }
 ]

@@ -152,10 +152,11 @@ impl ProviderAuthorizations {
 	) -> Result<Response> {
 		let f = &self.runtime;
 		let config = oidc::required_config(f)?;
-		let provider = Provider::parse(&provider)?;
+		// Unbound callbacks fail before any other input is interpreted.
 		let browser = oidc::cookie_value(&headers, &oidc::cookie_name(COOKIE, config))
 			.ok_or(Error::Unauthorized)?;
 		let state = query.state.as_deref().ok_or(Error::Unauthorized)?;
+		let provider = Provider::parse(&provider)?;
 		let lease = f.store.orm_connection()?;
 		let pending = ProviderAuthorization::consume(lease.handle(), hex_digest(state)).await?;
 		if pending.browser_hash != hex_digest(browser)
