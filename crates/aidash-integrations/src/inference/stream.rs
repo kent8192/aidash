@@ -45,6 +45,8 @@ pub(crate) struct StreamAssembler<'a> {
 	content: String,
 	refusal: Option<String>,
 	calls: BTreeMap<u64, PartialCall>,
+	/// A tool call fragment omitted its index, claiming the stream's sole call.
+	unindexed: bool,
 	finish_reason: Option<String>,
 	usage: Option<Value>,
 	done: bool,
@@ -66,6 +68,7 @@ impl<'a> StreamAssembler<'a> {
 			content: String::new(),
 			refusal: None,
 			calls: BTreeMap::new(),
+			unindexed: false,
 			finish_reason: None,
 			usage: None,
 			done: false,
@@ -288,13 +291,22 @@ impl<'a> StreamAssembler<'a> {
 		}
 		if let Some(calls) = delta.get("tool_calls").and_then(Value::as_array) {
 			// An omitted index can only identify the sole call of the stream: a
-			// delta position says nothing about which call a later delta extends.
+			// delta position says nothing about which call a later delta extends,
+			// so neither side may make the stream multi-call once one is seen.
 			let unindexed = calls.iter().any(|call| call.get("index").is_none());
-			if unindexed && (calls.len() > 1 || self.calls.keys().any(|index| *index != 0)) {
+			let later = calls.iter().any(|call| {
+				call.get("index")
+					.and_then(Value::as_u64)
+					.is_some_and(|index| index != 0)
+			});
+			if (unindexed && (calls.len() > 1 || self.calls.keys().any(|index| *index != 0)))
+				|| (self.unindexed && later)
+			{
 				return Err(Error::External(
 					"provider stream returned ambiguous unindexed tool calls".into(),
 				));
 			}
+			self.unindexed |= unindexed;
 			// Fragments of one index in a delta would merge into one call that the
 			// equivalent non-streamed response keeps as separate entries.
 			let indices = calls.iter().map(call_index).collect::<Result<Vec<_>>>()?;

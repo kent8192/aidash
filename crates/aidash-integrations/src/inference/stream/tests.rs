@@ -534,6 +534,10 @@ fn repeated_tool_call_indices_in_one_delta_are_rejected(#[case] calls: Value) {
 	]})),
 	delta(json!({"tool_calls":[{"function":{"arguments":"{}"}}]})),
 ])]
+#[case::before_another_call(vec![
+	delta(json!({"tool_calls":[{"id":"call-1","function":{"name":"read","arguments":"{}"}}]})),
+	delta(json!({"tool_calls":[{"index":1,"id":"call-2","function":{"name":"write","arguments":"{}"}}]})),
+])]
 fn unindexed_fragments_are_rejected_once_several_calls_exist(#[case] mut chunks: Vec<Value>) {
 	// Arrange
 	chunks.push(finish("tool_calls"));
