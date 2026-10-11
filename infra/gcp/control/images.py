@@ -8,6 +8,7 @@ from pathlib import Path
 import re
 import subprocess
 
+from cloud import trusted_revision
 from policy import IMAGE_KINDS
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -117,7 +118,9 @@ def main():
     else:
         config = json.loads(os.environ["AIDASH_GCP_CONFIG"])
         registry = "us-central1-docker.pkg.dev/" + config["project_id"] + "/aidash"
-        release = {"source_sha": args.sha, "images": {}}
+        # The privileged images were built from this trusted commit; the
+        # controller reuses the release only while it reconciles from the same.
+        release = {"source_sha": args.sha, "trusted_sha": trusted_revision(), "images": {}}
         for kind in KINDS:
             target = f"{registry}/{kind}:{args.sha}-{os.environ['GITHUB_RUN_ID']}-{os.environ['GITHUB_RUN_ATTEMPT']}"
             digest_file = args.directory / f"{kind}.digest"

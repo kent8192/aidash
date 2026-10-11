@@ -29,6 +29,12 @@ def operation_budget(seconds):
         DEADLINE.reset(token)
 
 
+def trusted_revision():
+    """Commit of this trusted checkout; every job of one run checks out the same."""
+    root = Path(__file__).resolve().parents[3]
+    return subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()
+
+
 def bounded_timeout(seconds):
     deadline = DEADLINE.get()
     if deadline is None:

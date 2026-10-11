@@ -19,6 +19,8 @@ from policy import IMAGE_KINDS, transition
 
 
 SHA = "a" * 40
+# The trusted commit this controller run reconciles from.
+TRUSTED = "c" * 40
 CONFIG = {"repository": "kent8192/aidash", "project_id": PROJECT}
 RUNTIME = {
     "AIDASH_OIDC_CLIENT_ID": "client",
@@ -181,6 +183,7 @@ class ReconcileTests(unittest.TestCase):
             "public_health": lambda *args: None,
             "github": self.github,
             "retire_provider_credentials": self.retire_credentials,
+            "trusted_revision": lambda: TRUSTED,
         }
         for key, value in replacements.items():
             self.context.enter_context(patch.object(controller, key, value))
@@ -232,7 +235,7 @@ class ReconcileTests(unittest.TestCase):
         self.store.state = transition(self.store.state, request, "c" * 12, 0)[0]
         entry = self.store.state["environments"][identity]
         if action not in {"stop", "destroy"}:
-            entry["release"] = {"source_sha": entry["sha"], "images": deepcopy(IMAGES)}
+            entry["release"] = {"source_sha": entry["sha"], "trusted_sha": TRUSTED, "images": deepcopy(IMAGES)}
         return entry
 
     def retire_credentials(self, config, identity):
@@ -585,7 +588,7 @@ class ReconcileTests(unittest.TestCase):
         self.reconcile()
         entry = self.store.state["environments"]["test"]
         # A running intent without a pending start (e.g. a stale retry) never starts the pool.
-        entry.update(desired="running", sha="b" * 40, release={"source_sha": "b" * 40, "images": deepcopy(IMAGES)})
+        entry.update(desired="running", sha="b" * 40, release={"source_sha": "b" * 40, "trusted_sha": TRUSTED, "images": deepcopy(IMAGES)})
         self.cloud.plans.clear()
         self.calls.clear()
         self.reconcile()
@@ -889,6 +892,31 @@ class ReconcileTests(unittest.TestCase):
         self.reconcile()
         self.assertFalse(self.cloud.managed["test"]["spot"])
         self.assertEqual(self.calls.count(("helm", "test", "app")), 2)
+
+    def test_resume_never_combines_a_release_from_another_trusted_commit(self):
+        self.request()
+        self.reconcile()
+        self.request(action="stop")
+        self.reconcile()
+        # The default branch advanced after the retained release was built.
+        self.request(action="resume")["release"]["trusted_sha"] = "e" * 40
+        self.calls.clear()
+        self.reconcile()
+        self.assertEqual(self.store.state["environments"]["test"]["status"], "awaiting_build")
+        self.assertFalse(self.deployed("test"))
+        self.assertFalse(self.cloud.managed["test"]["running"])
+        # The rebuild from this trusted commit deploys.
+        self.store.state["environments"]["test"]["release"]["trusted_sha"] = TRUSTED
+        self.reconcile()
+        self.assertEqual(self.store.state["environments"]["test"]["status"], "ready")
+        self.assertTrue(self.deployed("test"))
+        # A running Environment keeps its deployed images; it is neither
+        # redeployed with stale images nor gated while nothing needs deploying.
+        self.store.state["environments"]["test"]["release"]["trusted_sha"] = "e" * 40
+        self.calls.clear()
+        self.reconcile()
+        self.assertEqual(self.store.state["environments"]["test"]["status"], "ready")
+        self.assertFalse(self.deployed("test"))
 
     def test_active_work_defers_update_and_then_installs_latest_source(self):
         self.request("pr-1")

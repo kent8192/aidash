@@ -28,11 +28,13 @@ from cloud import (
     operation_budget,
     bounded_timeout,
     retire_provider_credentials,
+    trusted_revision,
 )
 from policy import (
     Refused,
     attach_release,
     build_needed,
+    current_release,
     eligible_base,
     idle_due,
     preview_command,
@@ -255,7 +257,7 @@ def prepare(config, store):
                 if (
                     entry
                     and (changed or entry["sequence"] == request["sequence"])
-                    and build_needed(entry)
+                    and build_needed(entry, trusted_revision())
                 ):
                     # Re-running a failed workflow keeps its run ID. Re-emit
                     # pending builds without changing the accepted generation.
@@ -647,6 +649,7 @@ def reconcile_locked(config, store, terraform, managed):
             raise
     state, _ = store.read("lifecycle/state.json")
     failures = list(gcip_failures)
+    trusted = trusted_revision()
     for identity, snapshot in sorted(
         state["environments"].items(),
         key=lambda pair: (pair[1]["desired"] == "running", pair[1]["sequence"]),
@@ -743,10 +746,13 @@ def reconcile_locked(config, store, terraform, managed):
                 restore_presealed_running_host(terraform, identity, presealed, managed)
                 continue
             previous = managed.get(identity)
+            # A retained release from another trusted commit is never deployed
+            # with this commit's charts and controller; it awaits a rebuild.
+            release = current_release(entry, trusted)
             if (
                 previous and previous["running"] and previous["published"]
                 and entry.get("provider_credentials") != output.get("provider_credentials")
-                and (identity in presealed or not entry.get("release"))
+                and (identity in presealed or not release)
             ):
                 if not sealed:
                     # Recover a prior successful apply whose controller
@@ -780,7 +786,7 @@ def reconcile_locked(config, store, terraform, managed):
             ) == generation and not entry.get("start_pending"):
                 restore_presealed_running_host(terraform, identity, presealed, managed)
                 continue
-            needs_deploy = bool(entry.get("release")) and (
+            changed = (
                 not previous
                 or not previous["running"]
                 or previous.get("release_sha") != entry["sha"]
@@ -790,6 +796,7 @@ def reconcile_locked(config, store, terraform, managed):
                 or (entry.get("force") and entry.get("start_pending"))
                 or entry.get("provider_credentials") != (output or {}).get("provider_credentials")
             )
+            needs_deploy = bool(release) and changed
             if previous and previous["running"]:
                 if entry.get("gcip_quiesced") and not (needs_deploy and entry.get("force")):
                     update_entry(store, identity, generation, status="waiting_for_gcip_refresh")
@@ -848,7 +855,9 @@ def reconcile_locked(config, store, terraform, managed):
                             )
                         restore_presealed_running_host(terraform, identity, presealed, managed)
                         continue
-                    if not entry.get("release"):
+                    # The deployed images keep running unchanged; only a needed
+                    # deployment waits for a release from this trusted commit.
+                    if not release and (changed or not entry.get("release")):
                         update_entry(
                             store, identity, generation, status="awaiting_build"
                         )
@@ -868,7 +877,7 @@ def reconcile_locked(config, store, terraform, managed):
                         provider_credentials=output.get("provider_credentials"),
                     )
                     continue
-            if not entry.get("release"):
+            if not release:
                 update_entry(store, identity, generation, status="awaiting_build")
                 restore_presealed_running_host(terraform, identity, presealed, managed)
                 continue
@@ -1010,11 +1019,12 @@ def reconcile_locked(config, store, terraform, managed):
 def finish(config, store, prepared_path, release_path):
     prepared = json.loads(Path(prepared_path).read_text())
     release = json.loads(Path(release_path).read_text())
+    trusted = trusted_revision()
     for target in prepared["targets"]:
 
         def attach(state, target=target):
             return attach_release(
-                state, target["environment"], target["generation"], release
+                state, target["environment"], target["generation"], release, trusted
             )
 
         store.mutate(attach)

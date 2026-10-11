@@ -14,6 +14,8 @@ from policy import (
     transition,
 )
 
+TRUSTED = "c" * 40
+
 
 class LifecycleTests(unittest.TestCase):
     def request(self, action="create", sequence=1, identity="test", **values):
@@ -52,7 +54,7 @@ class LifecycleTests(unittest.TestCase):
         )
         entry = state["environments"]["develop"]
         self.assertEqual((entry["desired"], entry["sha"]), ("stopped", "b" * 40))
-        self.assertFalse(build_needed(entry))
+        self.assertFalse(build_needed(entry, TRUSTED))
 
     def test_stale_rerun_cannot_undo_destroy(self):
         state = self.apply({}, self.request())
@@ -71,7 +73,7 @@ class LifecycleTests(unittest.TestCase):
     def test_old_build_cannot_attach_after_stop(self):
         state = self.apply({}, self.request())
         state = self.apply(state, self.request("stop", 2))
-        new, accepted = attach_release(state, "test", 1, {})
+        new, accepted = attach_release(state, "test", 1, {}, TRUSTED)
         self.assertFalse(accepted)
         self.assertEqual(state, new)
 
@@ -81,8 +83,8 @@ class LifecycleTests(unittest.TestCase):
             name: f"us-central1-docker.pkg.dev/fixture/aidash/{name}@sha256:{'a' * 64}"
             for name in ("app", "postgres", "sandbox", "observer", "nats", "control", "edge", "caddy")
         }
-        release = {"source_sha": "a" * 40, "images": images}
-        self.assertTrue(attach_release(state, "test", 1, release)[1])
+        release = {"source_sha": "a" * 40, "trusted_sha": TRUSTED, "images": images}
+        self.assertTrue(attach_release(state, "test", 1, release, TRUSTED)[1])
         for name in ("nats", "control", "caddy"):
             for invalid in (None, f"{name}:latest"):
                 with self.subTest(name=name, image=invalid):
@@ -93,8 +95,31 @@ class LifecycleTests(unittest.TestCase):
                         candidate[name] = invalid
                     with self.assertRaises(Refused):
                         attach_release(
-                            state, "test", 1, dict(release, images=candidate)
+                            state, "test", 1, dict(release, images=candidate), TRUSTED
                         )
+
+    def test_release_is_reused_only_by_the_trusted_commit_that_built_it(self):
+        state = self.apply({}, self.request())
+        images = {
+            name: f"us-central1-docker.pkg.dev/fixture/aidash/{name}@sha256:{'a' * 64}"
+            for name in ("app", "postgres", "sandbox", "observer", "nats", "control", "edge", "caddy")
+        }
+        release = {"source_sha": "a" * 40, "trusted_sha": TRUSTED, "images": images}
+        # A build from another trusted commit never attaches.
+        with self.assertRaises(Refused):
+            attach_release(state, "test", 1, dict(release, trusted_sha="d" * 40), TRUSTED)
+        state = attach_release(state, "test", 1, release, TRUSTED)[0]
+        self.assertFalse(build_needed(state["environments"]["test"], TRUSTED))
+        # Stop and resume the same source after the default branch advanced: the
+        # retained release is kept but rebuilt, never combined with newer charts.
+        state = self.apply(state, self.request("stop", 2))
+        state = self.apply(state, self.request("resume", 3))
+        entry = state["environments"]["test"]
+        self.assertEqual(entry["release"], release)
+        self.assertFalse(build_needed(entry, TRUSTED))
+        self.assertTrue(build_needed(entry, "d" * 40))
+        # Releases recorded before the trusted revision was tracked are rebuilt too.
+        self.assertTrue(build_needed(dict(entry, release={"source_sha": "a" * 40, "images": images}), TRUSTED))
 
     def test_preserve_manual_normal_override_on_update_and_resume(self):
         request = self.request(identity="pr-12", mode="normal")

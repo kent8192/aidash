@@ -163,17 +163,30 @@ def transition(state, request, incarnation, now):
     return result, True
 
 
-def build_needed(entry):
-    return entry["desired"] == "running" and not entry.get("release")
+def current_release(entry, trusted):
+    """The retained release, only if the reconciling trusted revision built it.
+
+    Privileged images (control, edge, observer) speak protocols with the charts
+    and controller of the same trusted commit; a release from another commit is
+    never combined with them and must be rebuilt.
+    """
+    release = entry.get("release")
+    return release if release and release.get("trusted_sha") == trusted else None
 
 
-def attach_release(state, identity, generation, release):
+def build_needed(entry, trusted):
+    return entry["desired"] == "running" and not current_release(entry, trusted)
+
+
+def attach_release(state, identity, generation, release, trusted):
     result = deepcopy(state)
     entry = result["environments"].get(identity)
     if not entry or entry["generation"] != generation or entry["desired"] != "running":
         return result, False
     if release["source_sha"] != entry["sha"]:
         raise Refused("Build source does not match current authorized intent")
+    if release.get("trusted_sha") != trusted:
+        raise Refused("Build trusted revision does not match the reconciling controller")
     if set(release["images"]) != set(IMAGE_KINDS):
         raise Refused("Release must contain exactly the supported runtime images")
     for name in IMAGE_KINDS:

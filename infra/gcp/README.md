@@ -92,14 +92,20 @@ checks out privileged code and chart templates from the repository default
 branch, pinned to the one commit its first job resolved, so every build,
 publish and apply job of a run uses the same trusted code. Source images
 (`app`, `postgres`, `sandbox`) are built from an exact SHA
-in a separate job without cloud credentials, using trusted Dockerfiles.
+in a separate job without cloud credentials, using trusted Dockerfiles. A
+`sandbox` source whose `runner/probe.py` does not emit the trusted Runner's
+admission probe protocol is refused before it is built.
 Privileged images (`observer`, `control` for the Runner/guard/installer and
 `edge`) are built only from the trusted checkout, including for fork previews.
-The `edge` admission image installs exact Nginx/Lua package versions from one
-Ubuntu archive snapshot on a digest-pinned base, so a rebuild reproduces it.
+The `edge` and `control` images install exact package versions from one Ubuntu
+or Debian archive snapshot on a digest-pinned base, so a rebuild reproduces them.
 NATS and Caddy use reviewed upstream linux/amd64 digests in `control/images.py`.
 A publisher job copies all eight image archives to digest-addressed private
-registry entries without executing them; `release.json` records each digest.
+registry entries without executing them; `release.json` records each digest and
+the trusted commit that built them. A retained release is deployed only by a
+controller running from that commit; after the default branch advances, a
+resume of the same source rebuilds it instead of mixing image and chart
+revisions, while running Environments keep their deployed images.
 Fork heads require explicit write-collaborator authorization for that exact SHA;
 a retained approval covers resuming the same SHA, never a later commit.
 Actions/comments require repository write, maintain or admin permission. No
