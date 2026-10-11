@@ -6,6 +6,7 @@ use aidash_domain::{
 	media::Selection,
 	model::ModelConfig,
 	projection::{ProjectionVersion, PromptCache},
+	provider::usage::{RequestEstimate, UsageDispatch, UsageOutcome},
 	registry::bindings::{AgentBindings, BindingSnapshot},
 	semantic::{Failure, InputRead},
 	tool::{ResultFitting, ToolIdentity, ToolUseMode},
@@ -1114,6 +1115,24 @@ impl<'a> Executor<'a> {
 				} else {
 					None
 				};
+				// Each provider call is a new Inference Attempt. Its Usage Record is
+				// durable before provider I/O and is keyed apart from the lease.
+				let attempt = Uuid::now_v7();
+				store
+					.record_usage_dispatch(
+						run,
+						token,
+						&UsageDispatch {
+							attempt,
+							lease: token,
+							response_epoch: response_epoch(run.revision, run.step),
+							model_id: agent.model.id.clone(),
+							model_version: agent.model.version.clone(),
+							projection_version: agent.projection_version.number(),
+							estimate: RequestEstimate::conservative_bytes(request_tokens),
+						},
+					)
+					.await?;
 				// Race only inference, not replay-unsafe tools or durable transitions.
 				// Release node-wide visibility and authorization row locks while the
 				// provider waits; both boundaries are reacquired before accepting output.
@@ -1130,6 +1149,19 @@ impl<'a> Executor<'a> {
 					result = model.infer(request) => result,
 				};
 				let resumed = visibility.resume().await;
+				// Cancellation, timeouts and unreadable responses leave usage unknown.
+				// A truncated or refused completion still reports its billed usage,
+				// and a typed Context Overflow is a provider rejection.
+				let outcome = match (&result, settled_usage(&result)) {
+					(_, Some(response)) => UsageOutcome::Completed(response.reported.clone()),
+					(Err(Error::ProviderRejected { .. } | Error::ContextOverflow), None) => {
+						UsageOutcome::Rejected {
+							class: "provider_rejected".into(),
+						}
+					}
+					_ => UsageOutcome::Unknown,
+				};
+				let recorded = store.complete_usage_record(run, attempt, &outcome).await;
 				if let Some(reservation) = reservation
 					&& let Some(response) = settled_usage(&result)
 				{
@@ -1144,12 +1176,15 @@ impl<'a> Executor<'a> {
 						if let Some(guard) = guard {
 							guard.resume().await?;
 						}
+						recorded?;
 						return self
 							.context_overflowed(run, token, request_tokens, &policy)
 							.await;
 					}
 					result => result?,
 				};
+				// A failed record write never hides the inference error above.
+				recorded?;
 				if let Some(guard) = guard {
 					guard.resume().await?;
 					// Authority was released during inference: a summary source
@@ -1174,6 +1209,9 @@ impl<'a> Executor<'a> {
 				if let Some(seq) = media.through_seq {
 					context.media_inferred_seq = context.media_inferred_seq.max(seq);
 				}
+				// Unreported counts are known only through the Usage Record. The
+				// durable context keeps the shape older workers' strict decoders
+				// accept, so a Run stays leasable across a rolling deployment.
 				context.usage = Some(ContextUsage {
 					input_tokens: result.input_tokens,
 					output_tokens: result.output_tokens,

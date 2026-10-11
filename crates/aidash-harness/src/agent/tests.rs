@@ -1,14 +1,17 @@
 //! Agent lifecycle and inference authority are tested without a database or HTTP.
 use super::*;
 use aidash_application::ports::{CompactionClassifier, CompactionQuestions, ModelProvider};
-use aidash_domain::context::recovery::{Attempt, Outcome, Settlement};
 use aidash_domain::capabilities::skills::SkillMetadata;
+use aidash_domain::context::recovery::{Attempt, Outcome, Settlement};
 use aidash_domain::context::sources::{RetrievalKey, RetrievalScope};
 use aidash_domain::exposure::{
 	CapabilityKind, DirectSkill, ExposureState, ExposureUpdate, Loaded, SkillOriginKind,
 };
 use aidash_domain::provider::ModelContext;
-use aidash_domain::provider::{ContentPart, ModelRequest, ModelResponse, ToolCall, ToolSpec};
+use aidash_domain::provider::{
+	ContentPart, ModelRequest, ModelResponse, ToolCall, ToolSpec,
+	usage::{EstimateConfidence, ReportedUsage, UsageDispatch, UsageOutcome},
+};
 use aidash_domain::registry::bindings::{
 	BindingOrigin, DEFAULT_TOOLS, EXPOSURE_TOOLS, Narrowing, QualifiedRef, REQUIRED_TOOLS,
 	ResolvedBinding, ResolvedDefinition, SKILL_ASSET_READ, SKILL_TOOLS,
@@ -18,7 +21,10 @@ use aidash_domain::tool::providers::core_descriptor;
 use async_trait::async_trait;
 use rstest::{fixture, rstest};
 use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{
+	Arc, Mutex,
+	atomic::{AtomicBool, Ordering},
+};
 
 #[derive(Clone)]
 struct Backend(Arc<State>);
@@ -64,6 +70,10 @@ struct State {
 	summary_reservation: bool,
 	/// The summarizer's configured `max_output_tokens`.
 	summarizer_output_tokens: u32,
+	cancel_inference: bool,
+	usage: Mutex<Vec<(UsageDispatch, Option<UsageOutcome>)>>,
+	stall_provider: AtomicBool,
+	omit_output_usage: bool,
 	tools: Vec<&'static str>,
 	skills: Vec<EntityRef>,
 	skill_context: Option<String>,
@@ -241,6 +251,42 @@ impl ExecutionStore for Backend {
 	) -> Result<()> {
 		let _ = (run, token, key, prompt);
 		unexpected("ExecutionStore.reconciliation_request")
+	}
+	async fn record_usage_dispatch(
+		&self,
+		run: &Run,
+		token: Uuid,
+		dispatch: &UsageDispatch,
+	) -> Result<()> {
+		let _ = run;
+		assert_eq!(token, self.0.token);
+		self.record("usage.dispatch");
+		let mut usage = self.0.usage.lock().unwrap();
+		for (_, outcome) in usage.iter_mut().filter(|(_, outcome)| outcome.is_none()) {
+			*outcome = Some(UsageOutcome::Unknown);
+		}
+		usage.push((dispatch.clone(), None));
+		Ok(())
+	}
+	async fn complete_usage_record(
+		&self,
+		run: &Run,
+		attempt: Uuid,
+		outcome: &UsageOutcome,
+	) -> Result<()> {
+		let _ = run;
+		self.record("usage.complete");
+		if let Some((_, recorded @ None)) = self
+			.0
+			.usage
+			.lock()
+			.unwrap()
+			.iter_mut()
+			.find(|(dispatch, _)| dispatch.attempt == attempt)
+		{
+			*recorded = Some(outcome.clone());
+		}
+		Ok(())
 	}
 	async fn run_message_has_media(&self, messages: &[Uuid]) -> Result<bool> {
 		let _ = messages;
@@ -694,6 +740,9 @@ impl ExecutionEnvironment for Backend {
 	}
 	async fn wait_for_inference_cancellation(&self, run: Uuid) -> Result<()> {
 		let _ = run;
+		if self.0.cancel_inference {
+			return Ok(());
+		}
 		std::future::pending().await
 	}
 	async fn operator_human_message_media(
@@ -819,6 +868,9 @@ impl ModelProvider for Backend {
 		request.ensure_fits(128000).unwrap();
 		self.record("provider.infer");
 		self.0.requests.lock().unwrap().push(request);
+		if self.0.stall_provider.load(Ordering::SeqCst) {
+			std::future::pending::<()>().await;
+		}
 		{
 			let mut overflows = self.0.overflows.lock().unwrap();
 			if *overflows > 0 {
@@ -846,8 +898,14 @@ impl ModelProvider for Backend {
 		Ok(ModelResponse {
 			text: "Completed task".into(),
 			input_tokens: 200,
-			output_tokens: 10,
-			usage_complete: true,
+			output_tokens: if self.0.omit_output_usage { 0 } else { 10 },
+			usage_complete: !self.0.omit_output_usage,
+			reported: ReportedUsage {
+				input_tokens: Some(200),
+				output_tokens: (!self.0.omit_output_usage).then_some(10),
+				cache_read_tokens: Some(150),
+				..Default::default()
+			},
 			..Default::default()
 		})
 	}
@@ -869,7 +927,7 @@ impl CompactionClassifier for Backend {
 #[async_trait]
 impl InferenceReservation for Backend {
 	async fn settle(self: Box<Self>, response: &ModelResponse) -> Result<()> {
-		assert!(response.usage_complete);
+		assert_eq!(response.usage_complete, !self.0.omit_output_usage);
 		self.record("reservation.settle");
 		Ok(())
 	}
@@ -952,6 +1010,10 @@ fn fixture() -> Fixture {
 		summary_reservation: false,
 		terminal: None,
 		summarizer_output_tokens: 4096,
+		cancel_inference: false,
+		usage: Mutex::new(vec![]),
+		stall_provider: AtomicBool::new(false),
+		omit_output_usage: false,
 		tools: vec![],
 		skills: vec![],
 		skill_context: None,
@@ -1179,6 +1241,7 @@ async fn inference_rechecks_authority_and_settles_usage_before_accepting_output(
 			name.starts_with("authority.")
 				|| name.starts_with("visibility.")
 				|| name.starts_with("reservation.")
+				|| name.starts_with("usage.")
 				|| *name == "provider.infer"
 				|| *name == "save"
 		})
@@ -1190,10 +1253,12 @@ async fn inference_rechecks_authority_and_settles_usage_before_accepting_output(
 			"save",
 			"authority.inference",
 			"reservation.admit",
+			"usage.dispatch",
 			"authority.suspend",
 			"visibility.suspend",
 			"provider.infer",
 			"visibility.resume",
+			"usage.complete",
 			"reservation.settle",
 			"authority.resume",
 			"save"
@@ -1204,6 +1269,149 @@ async fn inference_rechecks_authority_and_settles_usage_before_accepting_output(
 		fixture.backend.0.writes.lock().unwrap().last().unwrap().0,
 		"model.completed"
 	);
+}
+#[rstest]
+#[tokio::test]
+async fn successful_inference_completes_its_usage_record(mut fixture: Fixture) {
+	// Arrange
+	fixture.run.state = RunState::Thinking(ThinkingState::default());
+	// Act
+	advance_sources(&mut fixture).await.unwrap();
+	// Assert
+	let usage = fixture.backend.0.usage.lock().unwrap();
+	let [(dispatch, outcome)] = usage.as_slice() else {
+		panic!("one Usage Record per attempt")
+	};
+	assert_ne!(dispatch.attempt, fixture.backend.0.token);
+	assert_eq!(dispatch.lease, fixture.backend.0.token);
+	assert_eq!(
+		(dispatch.model_id.as_str(), dispatch.model_version.as_str()),
+		("model", "1.0.0")
+	);
+	assert_eq!(dispatch.projection_version, 1);
+	assert_eq!(dispatch.estimate.estimator, "bytes");
+	assert_eq!(
+		dispatch.estimate.confidence,
+		EstimateConfidence::Conservative
+	);
+	let RunState::ToolCall(state) = &fixture.run.state else {
+		panic!("inference must produce a tool-call state")
+	};
+	assert_eq!(dispatch.estimate.tokens, state.request_tokens as u64);
+	assert_eq!(dispatch.response_epoch, state.response_epoch);
+	assert_eq!(
+		*outcome,
+		Some(UsageOutcome::Completed(ReportedUsage {
+			input_tokens: Some(200),
+			output_tokens: Some(10),
+			cache_read_tokens: Some(150),
+			..Default::default()
+		}))
+	);
+}
+/// The durable context written after incomplete usage must stay readable by
+/// workers whose `ContextUsage` decoder rejects unknown fields.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+#[allow(dead_code)]
+struct PreviousContextUsage {
+	input_tokens: u64,
+	output_tokens: u64,
+	context_window: usize,
+	compactions: u32,
+}
+#[rstest]
+#[tokio::test]
+async fn incomplete_usage_keeps_the_durable_context_readable_by_older_workers(
+	mut fixture: Fixture,
+) {
+	// Arrange
+	Arc::get_mut(&mut fixture.backend.0)
+		.unwrap()
+		.omit_output_usage = true;
+	fixture.run.state = RunState::Thinking(ThinkingState::default());
+	// Act
+	advance_sources(&mut fixture).await.unwrap();
+	// Assert
+	let writes = fixture.backend.0.writes.lock().unwrap();
+	let usage = serde_json::to_value(&writes.last().unwrap().1.context).unwrap()["usage"].clone();
+	serde_json::from_value::<PreviousContextUsage>(usage)
+		.expect("older workers decode the context usage");
+	let recorded = fixture.backend.0.usage.lock().unwrap();
+	let [(_, Some(UsageOutcome::Completed(reported)))] = recorded.as_slice() else {
+		panic!("one completed Usage Record")
+	};
+	assert_eq!(reported.output_tokens, None);
+}
+#[rstest]
+#[case::cancelled(true, None, UsageOutcome::Unknown)]
+#[case::rejected(false, Some(503), UsageOutcome::Rejected { class: "provider_rejected".into() })]
+#[tokio::test]
+async fn failed_inference_records_an_outcome_without_counts(
+	mut fixture: Fixture,
+	#[case] cancel: bool,
+	#[case] status: Option<u16>,
+	#[case] expected: UsageOutcome,
+) {
+	// Arrange
+	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	state.cancel_inference = cancel;
+	state.provider_status = status;
+	fixture.run.state = RunState::Thinking(ThinkingState::default());
+	// Act
+	let result = advance_sources(&mut fixture).await;
+	// Assert
+	if cancel {
+		assert!(matches!(result, Err(Error::Conflict(_))));
+	} else {
+		assert!(matches!(result, Err(Error::ProviderRejected { .. })));
+	}
+	let usage = fixture.backend.0.usage.lock().unwrap();
+	assert_eq!(usage.len(), 1);
+	assert_eq!(usage[0].1, Some(expected));
+	assert_eq!(fixture.run.phase(), RunPhase::Thinking);
+}
+#[rstest]
+#[tokio::test]
+async fn interrupted_attempt_becomes_unknown_when_the_run_dispatches_again(mut fixture: Fixture) {
+	// Arrange: the worker stops while the provider call is in flight, as a
+	// crash or lost lease would, so the first attempt stays dispatched.
+	fixture.run.state = RunState::Thinking(ThinkingState::default());
+	fixture
+		.backend
+		.0
+		.stall_provider
+		.store(true, Ordering::SeqCst);
+	{
+		let backend = fixture.backend.clone();
+		let mut visibility = backend.clone();
+		let executor = Executor::new(&backend);
+		let interrupted = executor.advance(&mut fixture.run, backend.0.token, &mut visibility);
+		tokio::pin!(interrupted);
+		tokio::select! {
+			biased;
+			_ = &mut interrupted => panic!("the provider call must stay in flight"),
+			() = tokio::task::yield_now() => {}
+		}
+	}
+	{
+		let usage = fixture.backend.0.usage.lock().unwrap();
+		assert_eq!(usage.len(), 1);
+		assert_eq!(usage[0].1, None);
+	}
+	fixture
+		.backend
+		.0
+		.stall_provider
+		.store(false, Ordering::SeqCst);
+	// Act
+	advance_sources(&mut fixture).await.unwrap();
+	// Assert
+	let usage = fixture.backend.0.usage.lock().unwrap();
+	assert_eq!(usage.len(), 2);
+	assert_ne!(usage[0].0.attempt, usage[1].0.attempt);
+	assert_eq!(usage[0].1, Some(UsageOutcome::Unknown));
+	assert!(matches!(usage[1].1, Some(UsageOutcome::Completed(_))));
 }
 #[rstest]
 #[case::before_provider(true, false)]
@@ -3414,6 +3622,29 @@ async fn legacy_request_bytes_and_digest_match_the_base_projection(mut canonical
 		requests[0].inference_digest(),
 		include_str!("fixtures/legacy_inference_digest.txt").trim_end()
 	);
+}
+
+#[rstest]
+#[case::legacy(false, 1)]
+#[case::ordered(true, 2)]
+#[tokio::test]
+async fn usage_record_carries_the_runs_pinned_projection_version(
+	mut canonical: Fixture,
+	#[case] is_ordered: bool,
+	#[case] expected: u8,
+) {
+	// Arrange
+	if is_ordered {
+		ordered(&mut canonical);
+	}
+	// Act
+	assert!(advance_sources(&mut canonical).await.is_err());
+	// Assert
+	let usage = canonical.backend.0.usage.lock().unwrap();
+	let [(dispatch, _)] = usage.as_slice() else {
+		panic!("one Usage Record per attempt")
+	};
+	assert_eq!(dispatch.projection_version, expected);
 }
 
 #[rstest]

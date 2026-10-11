@@ -1,11 +1,11 @@
 // reinhardt-migration-source: 1
 // Reinhardt makemigrations model state for the Context Journal models only.
-// Physical PostgreSQL DDL, keys, checks and triggers are applied by 0012_context_journal.
+// Physical PostgreSQL DDL, keys, checks and triggers are applied by 0014_context_journal.
 
 use reinhardt::db::migrations::FieldType;
 use reinhardt::db::migrations::prelude::*;
 pub(super) fn migration() -> Migration {
-	Migration::new("0013_context_journal_model_state", "execution")
+	Migration::new("0015_context_journal_model_state", "execution")
 		.add_operation(Operation::CreateTable {
 			name: "context_compaction_attempts".to_string(),
 			columns: vec![
@@ -200,7 +200,7 @@ pub(super) fn migration() -> Migration {
 			interleave_in_parent: None,
 			partition: None,
 		})
-		.add_dependency("execution", "0012_context_journal")
+		.add_dependency("execution", "0014_context_journal")
 		.atomic(true)
 		.with_initial(None)
 		.state_only(true)

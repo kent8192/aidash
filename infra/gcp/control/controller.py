@@ -325,6 +325,13 @@ def provision_secret(config, output, kind):
         if not api_key:
             raise Refused("Configure the GCIP web API key from the bootstrap output")
         settings.update({key: gcip[key] for key in ("project_id", "public_origin", "tenant_bindings", "providers", "password_sign_up")})
+        # Firebase's helper is the default and needs no key. Terraform selects the
+        # public origin only in the apply that deploys a release, so the SAML ACS,
+        # this setting and the edge's helper proxy switch together.
+        if gcip.get("auth_helper", "firebase") == "firebase":
+            settings.pop("auth_helper", None)
+        else:
+            settings["auth_helper"] = gcip["auth_helper"]
         settings["web_api_key"] = api_key
     elif value.get("dashboard", {}).get("gcip"):
         # Binding removal must reach the retained server before any subsequent
@@ -941,6 +948,9 @@ def reconcile_locked(config, store, terraform, managed):
                 address=None,
                 spot=entry["spot"],
                 release_sha=entry["sha"],
+                # Switch the SAML ACS, runtime setting and edge helper proxy
+                # with the release deployment itself.
+                auth_helper="public_origin",
             )
             nodes = config.get("node_count", {}).get(entry["kind"])
             if nodes:

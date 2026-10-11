@@ -1,11 +1,11 @@
 // reinhardt-migration-source: 1
 //! Logical ORM metadata for generated Summary Stage allowances; the physical
-//! constraints and trigger are enforced by `0014_summary_allowance`.
+//! constraints and trigger are enforced by `0016_summary_allowance`.
 use reinhardt::db::migrations::prelude::*;
 pub(super) fn migration() -> Migration {
-	Migration::new("0015_summary_allowance_state", "execution")
+	Migration::new("0017_summary_allowance_state", "execution")
 		.state_only(true)
-		.add_dependency("execution", "0014_summary_allowance")
+		.add_dependency("execution", "0016_summary_allowance")
 		.add_operation(Operation::AddColumn {
 			table: "generation_budgets".to_string(),
 			column: ColumnDefinition::new("summary_call_limit", FieldType::BigInteger)

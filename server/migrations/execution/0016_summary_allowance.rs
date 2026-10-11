@@ -3,9 +3,9 @@
 //! allocation, durable per-attempt usage and the remote `summary` purpose.
 use reinhardt::db::migrations::prelude::*;
 pub(super) fn migration() -> Migration {
-	Migration::new("0014_summary_allowance", "execution")
+	Migration::new("0016_summary_allowance", "execution")
 		.database_only(true)
-		.add_dependency("execution", "0013_context_journal_model_state")
+		.add_dependency("execution", "0015_context_journal_model_state")
 		.add_operation(Operation::AddColumn {
 			table: "generation_budgets".into(),
 			column: ColumnDefinition::new("summary_call_limit", FieldType::BigInteger)

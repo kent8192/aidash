@@ -30,8 +30,12 @@ The release name is limited to 31 characters: generated names add up to 21
 63 characters for their controller-generated suffixes.
 The public LoadBalancer exposes only ports 80/443 and uses
 `externalTrafficPolicy: Local`, so Caddy receives the original client address.
-Caddy replaces client forwarding headers before local Nginx admission. TLS state
-is on a kept ReadWriteOnce claim. Nginx starts closed unless the controller-owned
+Caddy replaces client forwarding headers before local Nginx admission.
+With `edge.firebaseProject` set, Caddy also transparently proxies `/__/auth/*` and
+`/__/firebase/init.json` to `https://<project>.firebaseapp.com` ahead of admission,
+stripping `Cookie` and `Authorization` upstream and `Set-Cookie` downstream; the
+helper grants no authority, because sign-in completion stays behind admission.
+TLS state is on a kept ReadWriteOnce claim. Nginx starts closed unless the controller-owned
 ConfigMap `<release>-environment-admission` (key `state`, mounted optionally and
 read-only at `/etc/aidash-admission`) says exactly `open`; the chart never renders
 that ConfigMap, so installs and upgrades cannot reset it, and a restarted or

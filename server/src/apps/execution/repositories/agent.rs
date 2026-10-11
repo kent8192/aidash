@@ -13,7 +13,10 @@ use aidash_application::{
 use aidash_domain::{
 	media::Selection,
 	model::ModelConfig,
-	provider::{ContentPart, ModelRequest, ModelResponse, ToolCall},
+	provider::{
+		ContentPart, ModelRequest, ModelResponse, ToolCall,
+		usage::{UsageDispatch, UsageOutcome},
+	},
 	registry::Entry,
 	semantic::InputRead,
 	*,
@@ -105,6 +108,27 @@ impl ExecutionStore for Store {
 	) -> Result<()> {
 		Store::reconciliation_request(self, run, token, key, prompt)
 			.await
+			.map_err(Into::into)
+	}
+	async fn record_usage_dispatch(
+		&self,
+		run: &Run,
+		token: Uuid,
+		dispatch: &UsageDispatch,
+	) -> Result<()> {
+		Store::record_usage_dispatch(self, run, token, dispatch)
+			.await
+			.map_err(Into::into)
+	}
+	async fn complete_usage_record(
+		&self,
+		run: &Run,
+		attempt: Uuid,
+		outcome: &UsageOutcome,
+	) -> Result<()> {
+		Store::complete_usage_record(self, run, attempt, outcome)
+			.await
+			.map(|_| ())
 			.map_err(Into::into)
 	}
 	async fn run_message_has_media(&self, messages: &[Uuid]) -> Result<bool> {

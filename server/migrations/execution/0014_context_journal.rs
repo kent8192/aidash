@@ -1,13 +1,13 @@
 // reinhardt-migration-source: 1
 //! Append-only Context Journal and pre-I/O Compaction Attempts.
 //! `runs.context` remains the lossy projection; the journal keeps each original
-//! event. Physical DDL precedes the `0013_context_journal_model_state` snapshot.
+//! event. Physical DDL precedes the `0015_context_journal_model_state` snapshot.
 use reinhardt::db::migrations::prelude::*;
 
 pub(super) fn migration() -> Migration {
-	Migration::new("0012_context_journal", "execution")
+	Migration::new("0014_context_journal", "execution")
 		.database_only(true)
-		.add_dependency("execution", "0011_binding_memory_merge")
+		.add_dependency("execution", "0013_inference_usage_model_state")
 		.add_operation(Operation::RunSQL {
 			sql: include_str!("sql/forward/baseline_search_path.sql").to_owned(),
 			reverse_sql: Some(include_str!("sql/backward/baseline_search_path.sql").to_owned()),
