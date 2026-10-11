@@ -241,6 +241,150 @@ async fn pair_with_port_reservation(
 	let manifest=serde_json::from_value(json!({"id":Uuid::new_v4(),"coordinator":a.f.config.node_id,"isolation":"serializable","deadline":Utc::now()+Duration::minutes(5),"participants":[{"node_id":a.f.config.node_id,"mutations":[{"kind":"workspace_state","workspace_id":wa.id,"expected_revision":0,"state":{"value":"new-a"}}]},{"node_id":b.f.config.node_id,"mutations":[{"kind":"workspace_state","workspace_id":wb.id,"expected_revision":0,"state":{"value":"new-b"}}]}]})).unwrap();
 	(a, b, manifest, wa.id, wb.id)
 }
+// Fixture state represents a subject transaction durably admitted before the
+// cross-node submission suspension. Production operator admission creates the
+// coordinator; ORM fixture records retain its immutable subject authority.
+async fn fixture_origin(node: &Node) -> Value {
+	let credential = aidash_server::authorization::Authorization {
+		pool: node.f.store.control_pool.clone(),
+	}
+	.credentials("acme")
+	.await
+	.unwrap()
+	.into_iter()
+	.find(|credential| credential.subject == "alice")
+	.unwrap();
+	json!({"credential_id":credential.id,"tenant":credential.tenant,"subject":credential.subject})
+}
+
+fn fixture_preflight(manifest: &Manifest, origin: &Value, node: &str) -> Value {
+	let origin = aidash_domain::transactions::authority::Origin {
+		credential_id: serde_json::from_value(origin["credential_id"].clone()).unwrap(),
+		tenant: origin["tenant"].as_str().unwrap().into(),
+		subject: origin["subject"].as_str().unwrap().into(),
+	};
+	let request =
+		aidash_application::transactions::authority::request(manifest, &origin, node).unwrap();
+	json!({
+		"id":request.id,"coordinator":request.coordinator,"digest":request.digest,
+		"origin":{"credential_id":origin.credential_id,"tenant":origin.tenant,"subject":origin.subject},
+		"recipients":request.recipients,
+		"targets":request.targets.into_iter().map(|target| json!({
+			"kind":target.kind,"id":target.id,"task_id":target.task_id
+		})).collect::<Vec<_>>()
+	})
+}
+
+async fn seed_existing_scoped_transaction(
+	source: &Node,
+	manifest: &Manifest,
+	participants: &[&Node],
+) {
+	use aidash_server::apps::federation::transactions::models::{AtomicPreflights, AtomicSubjects};
+	use reinhardt::db::orm::Model;
+	assert_eq!(participants.len(), manifest.participants.len());
+	let (status, body) = source
+		.request(
+			reqwest::Method::POST,
+			"/api/transactions",
+			Some(json!(manifest)),
+		)
+		.await;
+	assert_eq!(status, 202, "operator fixture admission: {body}");
+	let origin = fixture_origin(source).await;
+	let lease =
+		DatabaseConnectionLease::register(source.f.store.control_pool.connection()).unwrap();
+	let record = AtomicSubjects::build()
+		.id(manifest.id)
+		.binding(origin.clone().into())
+		.finish();
+	AtomicSubjects::objects()
+		.create_with_conn(&mut lease.handle(), &record)
+		.await
+		.unwrap();
+	for node in participants {
+		let local = fixture_origin(node).await;
+		let binding = json!({
+			"request":fixture_preflight(manifest, &origin, &node.f.config.node_id),
+			"local":local,"subjects":[local["subject"]]
+		});
+		let lease =
+			DatabaseConnectionLease::register(node.f.store.control_pool.connection()).unwrap();
+		let record = AtomicPreflights::build()
+			.id(manifest.id)
+			.binding(binding.into())
+			.finish();
+		AtomicPreflights::objects()
+			.create_with_conn(&mut lease.handle(), &record)
+			.await
+			.unwrap();
+	}
+}
+
+async fn assert_no_transaction_state(nodes: &[&Node], id: Uuid) {
+	use aidash_server::apps::federation::transactions::models::{
+		AtomicAuthorityAttempts, AtomicCoordinator, AtomicHistory, AtomicParticipant,
+		AtomicPreflights, AtomicSubjects, AtomicVote,
+	};
+	use reinhardt::db::orm::Model;
+	for node in nodes {
+		let lease =
+			DatabaseConnectionLease::register(node.f.store.control_pool.connection()).unwrap();
+		macro_rules! empty {
+			($model:ty, $field:expr) => {
+				assert!(
+					<$model>::objects()
+						.filter($field.eq(id))
+						.all_with_db(&mut lease.handle())
+						.await
+						.unwrap()
+						.is_empty(),
+					"rejected transaction {id} persisted {} on {}",
+					stringify!($model),
+					node.f.config.node_id
+				);
+			};
+		}
+		empty!(AtomicCoordinator, AtomicCoordinator::field_id());
+		empty!(AtomicSubjects, AtomicSubjects::field_id());
+		empty!(AtomicPreflights, AtomicPreflights::field_id());
+		empty!(AtomicParticipant, AtomicParticipant::field_id());
+		empty!(AtomicVote, AtomicVote::field_transaction_id());
+		empty!(AtomicHistory, AtomicHistory::field_transaction_id());
+		empty!(
+			AtomicAuthorityAttempts,
+			AtomicAuthorityAttempts::field_transaction_id()
+		);
+	}
+}
+
+async fn peer_preflight(source: &Node, target: &Node, manifest: &Manifest) -> (u16, Value) {
+	let peer = source.f.peer(&target.f.config.node_id).await.unwrap();
+	let credential = std::env::var(&peer.credential_env).unwrap();
+	let origin = fixture_origin(source).await;
+	let response = source
+		.f
+		.client
+		.post(format!(
+			"{}/federation/v0.1/transactions/preflight",
+			target.f.config.endpoint
+		))
+		.bearer_auth(credential)
+		.header("x-aidash-node", &source.f.config.node_id)
+		.header("x-aidash-protocol", "0.2")
+		.json(&fixture_preflight(
+			manifest,
+			&origin,
+			&target.f.config.node_id,
+		))
+		.send()
+		.await
+		.unwrap();
+	let status = response.status().as_u16();
+	let body = response.json().await.unwrap();
+	(status, body)
+}
+
 async fn steps(node: &Node, id: Uuid, count: usize) {
 	for _ in 0..count {
 		coordinator::advance(&node.f, id).await.unwrap();
@@ -1321,6 +1465,13 @@ async fn mapped_transaction_admission_and_revocation(
 			.await
 			.unwrap();
 	}
+	if revocation != "disclosure" {
+		let mut participants = vec![&a, &b];
+		if let Some((c, _)) = third.as_ref() {
+			participants.push(c);
+		}
+		seed_existing_scoped_transaction(&a, &manifest, &participants).await;
+	}
 	let (status, body) = common::request(
 		&app_a,
 		&token_a,
@@ -1330,6 +1481,15 @@ async fn mapped_transaction_admission_and_revocation(
 	)
 	.await;
 	if revocation == "disclosure" {
+		// Suspension rejects the fresh scoped submission before a peer call.
+		// The peer endpoint independently retains its disclosure-policy denial.
+		let (peer_status, peer_body) = peer_preflight(&a, &b, &manifest).await;
+		assert_eq!(peer_status, 403, "{peer_body}");
+		let mut participants = vec![&a, &b];
+		if let Some((c, _)) = third.as_ref() {
+			participants.push(c);
+		}
+		assert_no_transaction_state(&participants, manifest.id).await;
 		assert_eq!(status, 403, "{body}");
 		assert!(matches!(
 			coordinator::status(&a.f, manifest.id).await,
@@ -1576,6 +1736,24 @@ async fn mapped_transaction_admission_and_revocation(
 			assert_eq!(status, 200, "{body}");
 		}
 		_ => unreachable!(),
+	}
+	// Existing scoped rows still use live source and receiver authority.
+	if revocation == "source" {
+		assert_eq!(
+			common::request(&app_a, &token_a, "GET", "/api/transactions", Value::Null)
+				.await
+				.0,
+			401
+		);
+	} else if matches!(revocation, "receiver" | "mapping") {
+		let (status, rows) =
+			common::request(&app_a, &token_a, "GET", "/api/transactions", Value::Null).await;
+		assert_eq!(status, 200, "{rows}");
+		assert_eq!(
+			rows,
+			json!([]),
+			"revoked receiver authority must hide the existing row"
+		);
 	}
 	let result = complete(&a, manifest.id).await;
 	assert_eq!(result.decision.as_deref(), Some(expected), "{result:?}");

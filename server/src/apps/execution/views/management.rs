@@ -14,6 +14,7 @@ use uuid::Uuid;
 use crate::apps::execution::serializers::management::ClaimInput;
 use crate::apps::execution::serializers::management::ControlInput;
 use crate::apps::execution::serializers::management::EventQuery;
+use crate::apps::execution::serializers::management::InferenceStreamQuery;
 use crate::apps::execution::services::management::HarnessManagement;
 use crate::apps::workspaces::serializers::management::MessageInput;
 
@@ -113,6 +114,38 @@ pub async fn stream(
 			actor,
 			browser,
 			request.headers.clone(),
+			q,
+			request.extensions.get::<crate::http::SseLeaseHandle>(),
+		)
+		.await
+	{
+		Ok(stream) => Ok(Response::ok()
+			.with_stream(stream)
+			.with_header("Content-Type", "text/event-stream")
+			.with_header("Cache-Control", "no-cache")),
+		Err(error) => Ok(error.http_response()),
+	}
+}
+
+#[get(
+	"/api/runs/{id}/inference/stream",
+	name = "run-inference-stream",
+	auth = "protected"
+)]
+pub async fn run_inference_stream(
+	#[inject] service: Depends<HarnessManagement>,
+	#[inject] actor: Actor,
+	#[inject] browser: Option<crate::dashboard_auth::BrowserOrigin>,
+	request: Request,
+	Path(id): Path<Uuid>,
+	Query(q): Query<InferenceStreamQuery>,
+) -> ViewResult<Response> {
+	match service
+		.run_inference_stream(
+			actor,
+			browser,
+			request.headers.clone(),
+			id,
 			q,
 			request.extensions.get::<crate::http::SseLeaseHandle>(),
 		)

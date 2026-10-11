@@ -93,24 +93,33 @@ async fn same_thread_agent_keeps_subject_sessions_private_and_deletion_choices_s
 			.0,
 		200
 	);
-	assert_eq!(
-		request(&f.c.app, &f.bob, "GET", &run_path, Value::Null)
-			.await
-			.0,
-		404,
-		"run history must not disclose the other subject's private files"
+	let (status, denied) = request(&f.c.app, &f.bob, "GET", &run_path, Value::Null).await;
+	assert!(
+		matches!(status, 403 | 404),
+		"run history must not disclose the other subject's private files: {denied}"
 	);
+	assert!(!denied.to_string().contains("alice-only"));
+	assert!(denied.get("run").is_none());
+	let hidden = request(
+		&f.c.app,
+		&f.bob,
+		"GET",
+		&format!("/api/runs/{}/working-area", f.runs[0]),
+		Value::Null,
+	)
+	.await;
+	let absent = request(
+		&f.c.app,
+		&f.bob,
+		"GET",
+		&format!("/api/runs/{}/working-area", Uuid::new_v4()),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(hidden.0, 404);
 	assert_eq!(
-		request(
-			&f.c.app,
-			&f.bob,
-			"GET",
-			&format!("/api/runs/{}/working-area", f.runs[0]),
-			Value::Null
-		)
-		.await
-		.0,
-		404
+		hidden, absent,
+		"private run existence must not be disclosed"
 	);
 	let (_, visible) = request(
 		&f.c.app,

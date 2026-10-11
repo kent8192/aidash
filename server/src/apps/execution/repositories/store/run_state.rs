@@ -264,7 +264,20 @@ impl Store {
 			json!({"run_id":m.id,"task_id":m.task_id,"phase":state.phase(),"delivery_error":error}),
 		)
 		.await?;
+		// The failed worker's lease expired; its attempt cannot be finished by it.
+		let closed = if state.phase().is_terminal() {
+			crate::apps::execution::repositories::inference::close_pending(
+				tx.as_mut(),
+				&self.node_id,
+				m.id,
+				None,
+			)
+			.await?
+		} else {
+			Vec::new()
+		};
 		tx.commit().await?;
+		crate::apps::execution::repositories::inference::record_interruptions(&closed);
 		Ok(())
 	}
 	pub async fn inspect_run(&self, id: Uuid) -> Result<RunInspection> {

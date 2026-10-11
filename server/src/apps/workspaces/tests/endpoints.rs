@@ -1,5 +1,6 @@
 use crate::endpoint::{EndpointFixture, assert_json, endpoint, workspace};
 use aidash_server::apps::workspaces::models::{Task, TaskDependency, Workspace};
+use http::Method;
 use reinhardt::db::orm::Model;
 use rstest::rstest;
 use serde_json::json;
@@ -65,19 +66,23 @@ async fn task_dependencies_are_projected_once_and_cycles_are_rejected_over_http(
 		200,
 	);
 	let dependent_input = json!({"title":"Dependent","description":"Wait for ancestor","dependencies":[ancestor["id"],ancestor["id"]]});
-	let body = dependent_input.to_string();
-	let headers = [("idempotency-key", "endpoint-task")];
 	// Act
 	let dependent = assert_json(
 		app.operator
-			.post_raw_with_headers(&path, body.as_bytes(), "application/json", &headers)
+			.request(Method::POST, &path)
+			.header("idempotency-key", "endpoint-task")
+			.json(&dependent_input)
+			.send()
 			.await
 			.unwrap(),
 		200,
 	);
 	let repeated = app
 		.operator
-		.post_raw_with_headers(&path, body.as_bytes(), "application/json", &headers)
+		.request(Method::POST, &path)
+		.header("idempotency-key", "endpoint-task")
+		.json(&dependent_input)
+		.send()
 		.await
 		.unwrap();
 	let cycle = app.operator.post(&path, &json!({"title":"Cycle","description":"Reject","parent_id":ancestor["id"],"dependencies":[dependent["id"]]}), "json").await.unwrap();

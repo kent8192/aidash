@@ -1,33 +1,54 @@
-import { transportGeneration } from "./transport";
+import { authenticatedFetch, transportGeneration } from "./transport";
 import { stream } from "./generated/aidash";
-const MAX_SSE_FRAME_CHARS = 64 * 1024;
+import {
+  SseParser,
+  permanentlyDenied,
+  refreshesDashboard,
+  type SseFrame,
+} from "./inference-progress";
+
 const TEXT_CHUNK_BYTES = 16 * 1024;
-export async function subscribe(
-  signal: AbortSignal,
-  onEvent: () => void,
-  onStatus: (status: "live" | "reconnecting") => void,
-) {
-  let cursor = "-1";
+
+type StreamStatus = "live" | "reconnecting";
+
+/**
+ * Read an SSE endpoint until `signal` aborts or the transport generation
+ * changes, resuming from the last frame ID after each close or error.
+ */
+async function readEventStream({
+  signal,
+  cursor,
+  open,
+  onOpen,
+  onFrame,
+  onStatus,
+  final,
+}: {
+  signal: AbortSignal;
+  /** Initial `Last-Event-ID`; `undefined` sends none. */
+  cursor?: string;
+  open: (signal: AbortSignal, cursor?: string) => Promise<Response>;
+  onOpen?: () => void;
+  onFrame: (frame: SseFrame) => void;
+  onStatus?: (status: StreamStatus) => void;
+  /** Errors after which reconnecting is pointless; the stream then ends. */
+  final?: (error: unknown) => boolean;
+}) {
   const generation = transportGeneration();
   while (!signal.aborted && generation === transportGeneration()) {
     try {
-      const response = await stream(undefined, {
-        signal,
-        headers: {
-          "Last-Event-ID": cursor,
-        },
-      });
+      const response = await open(signal, cursor);
       if (!response.ok || !response.body) throw new Error("stream unavailable");
       if (signal.aborted || generation !== transportGeneration()) {
         await response.body.cancel();
         return;
       }
-      onStatus("live");
-      onEvent();
+      onStatus?.("live");
+      onOpen?.();
       const reader = response.body.getReader();
       try {
         const decoder = new TextDecoder();
-        let buffer = "";
+        const parser = new SseParser();
         while (!signal.aborted && generation === transportGeneration()) {
           const { done, value } = await reader.read();
           if (signal.aborted || generation !== transportGeneration()) {
@@ -40,40 +61,27 @@ export async function subscribe(
             offset < value.length;
             offset += TEXT_CHUNK_BYTES
           ) {
-            buffer += decoder.decode(
-              value.subarray(offset, offset + TEXT_CHUNK_BYTES),
-              {
-                stream: true,
-              },
-            );
-            buffer = buffer.replace(/\r\n/g, "\n");
-            let end;
-            while ((end = buffer.indexOf("\n\n")) >= 0) {
-              if (end > MAX_SSE_FRAME_CHARS)
-                throw new Error("SSE frame too large");
-              const block = buffer.slice(0, end);
-              buffer = buffer.slice(end + 2);
-              const id = block
-                .split("\n")
-                .find((line) => line.startsWith("id:"))
-                ?.slice(3)
-                .trim();
-              if (id) {
-                cursor = id;
-                onEvent();
-              }
+            for (const frame of parser.push(
+              decoder.decode(
+                value.subarray(offset, offset + TEXT_CHUNK_BYTES),
+                {
+                  stream: true,
+                },
+              ),
+            )) {
+              if (frame.id) cursor = frame.id;
+              onFrame(frame);
             }
-            if (buffer.length > MAX_SSE_FRAME_CHARS)
-              throw new Error("SSE frame too large");
           }
         }
       } finally {
         await reader.cancel().catch(() => {});
         reader.releaseLock();
       }
-    } catch {
+    } catch (error) {
       if (signal.aborted || generation !== transportGeneration()) return;
-      onStatus("reconnecting");
+      if (final?.(error)) return;
+      onStatus?.("reconnecting");
       await new Promise<void>((resolve) => {
         const finish = () => {
           clearTimeout(timeout);
@@ -85,4 +93,55 @@ export async function subscribe(
       });
     }
   }
+}
+
+/**
+ * The global event stream; every ID frame except an Inference Attempt marker
+ * invalidates dashboard queries.
+ */
+export function subscribe(
+  signal: AbortSignal,
+  onEvent: () => void,
+  onStatus: (status: StreamStatus) => void,
+) {
+  return readEventStream({
+    signal,
+    cursor: "-1",
+    open: (signal, cursor) =>
+      stream(undefined, {
+        signal,
+        headers: { "Last-Event-ID": cursor ?? "-1" },
+      }),
+    onOpen: onEvent,
+    onFrame: (frame) => {
+      if (refreshesDashboard(frame)) onEvent();
+    },
+    onStatus,
+  });
+}
+
+/**
+ * A Run's Inference Progress stream, resuming after `cursor` (a progress
+ * seq). Without a cursor the server starts at the latest attempt.
+ */
+export function subscribeInference(
+  signal: AbortSignal,
+  run: string,
+  cursor: string | undefined,
+  onFrame: (frame: SseFrame) => void,
+) {
+  return readEventStream({
+    signal,
+    cursor,
+    open: (signal, cursor) =>
+      authenticatedFetch(
+        `/api/runs/${encodeURIComponent(run)}/inference/stream`,
+        {
+          signal,
+          headers: cursor === undefined ? {} : { "Last-Event-ID": cursor },
+        },
+      ),
+    onFrame,
+    final: permanentlyDenied,
+  });
 }

@@ -21,11 +21,30 @@ use reinhardt::query::{
 use uuid::Uuid;
 #[async_trait]
 impl ReadProvenanceScope for Reads<'_> {
-	async fn catalog_read(&mut self, reference: &EntityRef) -> Result<()> {
-		crate::apps::identity::services::catalog::entry(self.access, reference, "registry.read")
-			.await
-			.map(|_| ())
-			.map_err(Into::into)
+	async fn catalog_read(&mut self, run: Uuid, reference: &EntityRef) -> Result<()> {
+		match crate::apps::identity::services::catalog::entry(
+			self.access,
+			reference,
+			"registry.read",
+		)
+		.await
+		{
+			Ok(_) => Ok(()),
+			Err(error @ (crate::Error::Forbidden | crate::Error::NotFound(_))) => {
+				if crate::apps::identity::repositories::foreign_reads::retired_run_catalog_read(
+					self.access,
+					run,
+					reference,
+				)
+				.await?
+				{
+					Ok(())
+				} else {
+					Err(error.into())
+				}
+			}
+			Err(error) => Err(error.into()),
+		}
 	}
 	async fn remote_reads(&mut self, run: Uuid) -> Result<bool> {
 		self.access
@@ -351,7 +370,7 @@ impl ReadProvenanceScope for NativeReads<'_> {
 		.await
 		.map_err(Into::into)
 	}
-	async fn catalog_read(&mut self, reference: &EntityRef) -> Result<()> {
+	async fn catalog_read(&mut self, _: Uuid, reference: &EntityRef) -> Result<()> {
 		self.access
 			.catalog_entry(reference)
 			.await

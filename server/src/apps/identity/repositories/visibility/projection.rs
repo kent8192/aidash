@@ -4,6 +4,7 @@ use crate::Result as NativeResult;
 use aidash_application::{Result, ports::authorization::projection::WorkspaceProjection};
 use aidash_domain::{
 	Artifact, Event, Message, Task, Workspace, WorkspaceSnapshot, policy::Resource,
+	provider::progress::MARKER_PREFIX,
 };
 use async_trait::async_trait;
 use reinhardt::query::{
@@ -138,6 +139,8 @@ impl WorkspaceProjection for Reads<'_> {
 		.await;
 		result.map_err(Into::into)
 	}
+	/// Inference markers are display-only; skipping them here also spares each
+	/// a full Run visibility evaluation per projection.
 	async fn event_rows(
 		&mut self,
 		workspaces: &[Uuid],
@@ -155,6 +158,10 @@ impl WorkspaceProjection for Reads<'_> {
 						&self.access.identity.tenant,
 						workspaces,
 					))
+					.and_where(
+						Expr::col(Alias::new("kind"))
+							.not_like(Expr::value(format!("{MARKER_PREFIX}%"))),
+					)
 					.and_where(Expr::col(Alias::new("sequence")).lt(Expr::value(cursor)))
 					.order_by(Alias::new("sequence"), Order::Desc)
 					.limit(page_size as u64)

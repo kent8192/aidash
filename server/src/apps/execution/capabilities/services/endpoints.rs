@@ -33,8 +33,20 @@ pub(crate) async fn configure_agent(
 }
 async fn run_access(f: &Federation, actor: Actor, id: Uuid) -> Result<(Access, Run)> {
 	let mut access = access(f, actor).await?;
+	// Bind the caller to the immutable execution grant before session constraints
+	// inspect its subject chain; the visibility checks still run afterward.
+	// A caller outside the immutable grant sees the same response as a missing run.
+	let unavailable = |error| match error {
+		Error::Forbidden | Error::NotFound(_) => Error::NotFound("run unavailable".into()),
+		error => error,
+	};
+	let run = crate::apps::execution::models::Run::read_in(&mut **access.tx, id, None)
+		.await?
+		.ok_or_else(|| Error::NotFound("run unavailable".into()))?;
+	execution::inherit_run_authority(&mut access, &run)
+		.await
+		.map_err(unavailable)?;
 	let run = access.run_for_interaction(id).await?;
-	execution::inherit_run_authority(&mut access, &run).await?;
 	let config = service::settings(&mut access, &run).await?;
 	if config.core_capabilities.enabled() {
 		sessions::initialize(&f.store, &mut access, &run, &config).await?;

@@ -762,10 +762,23 @@ async fn deferred_discovery_never_reveals_foreign_unbound_or_unapproved_entries(
 		"code_interpreter",
 	];
 	d.script(|_, context| {
-		if let Some(reply) = discover(context) {
-			return reply;
-		}
 		let events = events(context);
+		// Inspect every search page before testing forged aliases. The separate
+		// first-request case covers positive descriptions and their budgets.
+		let page = events
+			.iter()
+			.rev()
+			.find(|(call, _)| {
+				call["name"] == "capability_search" && call["arguments"].get("query").is_none()
+			})
+			.map(|(_, result)| *result);
+		match page {
+			None => return Reply::Call("capability_search", json!({})),
+			Some(page) if page["next_cursor"].is_string() => {
+				return Reply::Call("capability_search", json!({"cursor":page["next_cursor"]}));
+			}
+			_ => {}
+		}
 		if !events
 			.iter()
 			.any(|(call, _)| call["arguments"]["query"] == "zebra ledger")

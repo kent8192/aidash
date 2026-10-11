@@ -909,6 +909,8 @@ async fn configure_approvals(mut c: CoreFixture) -> (CoreFixture, aidash_server:
 		"tool",
 		"installation",
 		"registry_entry",
+		"bundle",
+		"source",
 		"message",
 		"agent",
 		"model",

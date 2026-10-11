@@ -8,7 +8,7 @@ pub async fn registry_reads_visible(
 	run: Uuid,
 ) -> Result<bool> {
 	for reference in scope.registry_entries(run).await? {
-		match scope.catalog_read(&reference).await {
+		match scope.catalog_read(run, &reference).await {
 			Ok(()) => {}
 			Err(Error::Forbidden) => return Ok(false),
 			Err(error) => return Err(error),
