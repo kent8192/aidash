@@ -49,6 +49,86 @@ to override file settings with "no managed Store"; `null` renders nothing.
 GCIP keys; its `public_origin` must equal `node.endpoint`. It is rendered the same
 way for `AIDASH_GCIP_SETTINGS`. Changing either restarts server and worker.
 
+## Metadata server egress
+
+On GKE every node pool runs `GKE_METADATA`, so a Pod that reaches the metadata
+server (`169.254.169.254`) receives only its own Kubernetes ServiceAccount's
+identity and never the node's credentials. The chart still closes that path for
+Pods that have no use for it, so a compromised Pod holds no federated token
+either. `metadataServerEgress.enabled` (default `true`) renders the NetworkPolicy
+`<release>-aidash-metadata-egress`, which selects every Pod of the release
+namespace that does **not** carry the label `aidash.run/metadata-server` and
+admits all egress except `169.254.169.254/32`. Server and worker carry the label;
+nothing else does, so a new workload is blocked until someone labels it on
+purpose. With `execution.guard` or `execution.installer` enabled, the same policy
+is rendered in their namespaces (`<release>-aidash-guard-metadata-egress`,
+`<release>-aidash-installer-metadata-egress`). The companion
+[environment chart](../../../infra/gcp/helm/environment/README.md) renders its own
+policy for its Pods.
+
+NetworkPolicy egress is additive across policies, so no other policy that selects
+these Pods may grant egress. The chart's other policies are ingress-only, and
+`scripts/test_helm_execution.py` fails if one gains an egress rule. The policy
+covers IPv4 only, which is the verified GKE profile; it does not admit IPv6, so
+dual-stack clusters need a reviewed variant. No Aidash Pod uses `hostNetwork`: a
+host-network Pod bypasses NetworkPolicy and reaches the metadata server as the
+node. Every workload template sets `hostNetwork: false`, and the same test fails
+on anything else.
+
+Inventory of Pod kinds (`yes` means the Pod is on the allowlist):
+
+| Pod kind                   | Chart             | Metadata server | Why                                                                            |
+| -------------------------- | ----------------- | --------------- | ------------------------------------------------------------------------------ |
+| server                     | `aidash`          | yes             | Writes Provider Credentials to Secret Manager with its Workload Identity       |
+| worker                     | `aidash`          | yes             | Signs with Cloud KMS with its Workload Identity                                |
+| frontend (Nginx)           | `aidash`          | no              | Serves the web bundle; holds no Google identity                                |
+| Runner                     | `aidash`          | no              | Talks to the Kubernetes API with its own ServiceAccount; no IAM grants         |
+| node guard DaemonSet       | `aidash`          | no              | Local host state and `kubectl exec` from the Runner; no API token              |
+| gVisor installer DaemonSet | `aidash`          | no              | Patches Cluster Node labels through the Kubernetes API                         |
+| migration Job              | controller        | no              | One-shot Job with no Google identity                                           |
+| Execution Pod              | `aidash` (Runner) | no              | Own namespace; the Runner denies all of its ingress and egress (`aidash-deny`) |
+| PostgreSQL, NATS           | `environment`     | no              | Retained state; no IAM grants                                                  |
+| edge (Caddy and admission) | `environment`     | no              | Public traffic and Firebase helper proxy                                       |
+| activity CronJob           | `environment`     | no              | Kubernetes API and the Runner only                                             |
+
+### Verifying on GKE (needs cloud access; not run by CI)
+
+Run this against a cluster that has `GKE_METADATA` on every pool, with the chart
+installed in an Environment namespace `$NS` as release `$REL`. The probes are
+throwaway Pods that use a curl image, so they do not depend on the (minimal)
+application images. Set `$POOL` to the Environment's node pool name; add a
+matching toleration to `--overrides` if the pool is tainted.
+
+```sh
+URL=http://169.254.169.254/computeMetadata/v1/instance/service-accounts/default/email
+probe() { # probe <name> <service account> <extra label>
+  kubectl -n "$NS" run "$1" --rm -i --restart=Never --image=curlimages/curl $3 \
+    --overrides="{\"spec\":{\"serviceAccountName\":\"$2\",\"nodeSelector\":{\"cloud.google.com/gke-nodepool\":\"$POOL\"}}}" \
+    -- curl -sS -m 5 -H 'Metadata-Flavor: Google' "$URL"
+}
+
+# 1. The policy exists and selects only unlabelled Pods.
+kubectl -n "$NS" get networkpolicy "$REL-aidash-metadata-egress" -o yaml
+
+# 2. A non-allowlisted Pod times out. Expect: curl: (28) ... timed out.
+probe md-denied default ''
+
+# 3. A Pod with the allowlist label and the server's (then the worker's)
+#    ServiceAccount receives that account's Google identity.
+#    Expect an address like ad...-server@<project>.iam.gserviceaccount.com.
+probe md-server "$REL-aidash-server" '--labels=aidash.run/metadata-server=allowed'
+probe md-worker "$REL-aidash-worker" '--labels=aidash.run/metadata-server=allowed'
+
+# 4. The real server and worker are labelled, Ready, and unaffected.
+kubectl -n "$NS" get pods -l 'aidash.run/metadata-server=allowed'
+```
+
+A denied probe that answers means the CNI does not enforce egress policy (GKE
+needs Dataplane V2 or Calico network policy enabled). A probe that times out
+in step 3 means the label is missing from the Pod or a different policy selects it.
+Finish by confirming a Provider Credential write (server) and a signing request
+(worker) succeed.
+
 ## Optional execution components
 
 Enable `execution.createNamespaces`, `execution.runtimeClass.create`,

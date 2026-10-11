@@ -95,6 +95,8 @@ spec:
         app.kubernetes.io/name: aidash
         app.kubernetes.io/instance: {{ $.Release.Name }}
         app.kubernetes.io/component: {{ $role }}
+        # The only Pods the metadata-server egress policy leaves alone (see README).
+        aidash.run/metadata-server: allowed
         {{- if $colocated }}
         aidash.run/co-located: "true"
         {{- end }}

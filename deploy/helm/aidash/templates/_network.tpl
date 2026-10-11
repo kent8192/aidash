@@ -70,3 +70,34 @@ at startup, so rendering must refuse it first.
 {{- end -}}
 {{- if $valid -}}true{{- end -}}
 {{- end -}}
+{{- /*
+Egress policy for one namespace: every Pod there that lacks the
+aidash.run/metadata-server label may reach anything except the GCE/GKE metadata
+server. DoesNotExist makes the default fail closed, so a new workload is blocked
+until someone labels it on purpose. Egress rules are additive across policies, so
+no other policy that selects these Pods may grant egress; scripts/test_helm_execution.py
+asserts that. In-cluster traffic is admitted by namespaceSelector because
+NetworkPolicy implementations differ on whether ipBlock matches Pod IPs.
+Arguments: dict "name" <policy name> "namespace" <namespace or "">.
+*/ -}}
+{{- define "aidash.metadataEgressPolicy" -}}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .name }}
+  {{- with .namespace }}
+  namespace: {{ . | quote }}
+  {{- end }}
+spec:
+  podSelector:
+    matchExpressions:
+      - { key: aidash.run/metadata-server, operator: DoesNotExist }
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector: {}
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except: [169.254.169.254/32]
+{{- end -}}
