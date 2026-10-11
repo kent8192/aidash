@@ -297,6 +297,7 @@ def deterministic(args):
         nats = stack.enter_context(container(f"aidash-fte-{tag}-nats", NATS_IMAGE, (["-p", "127.0.0.1::4222"], ["-js"])))
         wait(lambda: subprocess.run(["docker", "exec", postgres, "pg_isready", "-h", "127.0.0.1", "-U", "aidash",
                                      "-d", "aidash_evaluation"], capture_output=True).returncode == 0, 120, "PostgreSQL")
+        print("evaluation: disposable PostgreSQL and NATS ready", flush=True)
         port = free_port()
         base = f"http://127.0.0.1:{port}"
         operator = secrets.token_urlsafe(32)
@@ -332,6 +333,7 @@ def deterministic(args):
             with urllib.request.urlopen(base + "/health", timeout=2) as response:
                 return response.status == 200
         wait(healthy, 180, "Aidash health")
+        print(f"evaluation: Node healthy; {len(planned_runs) * args.repeats} Runs planned", flush=True)
         api = runner.Api(http_transport(base), operator)
         experiment = runner.Experiment(api, node_id, "evaluation", prefix)
         try:
@@ -357,13 +359,16 @@ def deterministic(args):
                 observation = runner.run_task(api, experiment, planned, repeat, planned["agent_ref"], fixture,
                                               usage, args.run_timeout, approve_fixture_tools=True)
                 result = evaluation.run_result(corpus, planned, repeat, observation, "deterministic", True)
-                print(f"{result['key']}: {result['outcome']}", flush=True)
+                detail = f" ({result['error'][:200]})" if result["error"] else ""
+                print(f"{result['key']}: {result['outcome']}{detail}", flush=True)
                 return result
             with concurrent.futures.ThreadPoolExecutor(max_workers=args.parallel) as pool:
                 runs = list(pool.map(execute, jobs))
-            executed = memory_matrix_deterministic(api, experiment, corpus, memory_corpus, model_refs, fixture_url,
-                                                   args.skip_rust_evidence)
-            memory = evaluation.memory_matrix(memory_corpus, executed)
+            if not args.skip_memory:
+                print("evaluation: Runs finished; executing memory scenarios", flush=True)
+                executed = memory_matrix_deterministic(api, experiment, corpus, memory_corpus, model_refs,
+                                                       fixture_url, args.skip_rust_evidence)
+                memory = evaluation.memory_matrix(memory_corpus, executed)
         except Exception as failure:
             error = f"{type(failure).__name__}: {failure}"
         if fixture.errors:
@@ -508,6 +513,8 @@ def main(argv=None):
     deterministic_command.add_argument("--parallel", type=int, default=4,
                                        help="concurrent Runs; the Node has four worker slots")
     deterministic_command.add_argument("--binary", help="prebuilt manage executable; default builds this worktree")
+    deterministic_command.add_argument("--skip-memory", action="store_true",
+                                       help="report every memory scenario as not-run (for narrowed task runs)")
     deterministic_command.add_argument("--skip-rust-evidence", action="store_true",
                                        help="do not run deterministic-test memory scenarios")
     live_command = commands.choices["live"]

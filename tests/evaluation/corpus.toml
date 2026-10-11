@@ -21,8 +21,10 @@ max_steps = 24
 context_window = 128000
 max_output_tokens = 4096
 
+# Sized so the base request plus seven reference pages fits and plus eight does
+# not: the eighth page forces Legacy prune-only compaction in both arms.
 [models.small-window]
-context_window = 12000
+context_window = 62000
 max_output_tokens = 1024
 
 # `anthropic/` is the only explicit-cache allowlist prefix (ADR 0019).
