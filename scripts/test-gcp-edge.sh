@@ -47,6 +47,12 @@ closed=$(request 8089 GET /activity)
 [[ "$closed" == *"\"closed\":true"* ]]
 public=$(request 8088 GET /api/state)
 [[ "$public" == *"503 Service Temporarily Unavailable"* ]]
+# A Pod-network peer (here a non-loopback source) may read activity but never
+# toggle admission; only the controller exec on loopback can.
+peer() { curl -s -o /dev/null -w "%{http_code}" --interface 127.0.0.2 "$@"; }
+[[ "$(peer http://127.0.0.1:8089/activity)" == 200 ]]
+[[ "$(peer -X POST http://127.0.0.1:8089/admission/open)" == 403 ]]
+[[ "$(request 8089 GET /activity)" == *"\"closed\":true"* ]]
 request 8089 POST /admission/open >/dev/null
 opened=$(request 8089 GET /activity)
 [[ "$opened" == *"\"closed\":false"* ]]
@@ -61,5 +67,5 @@ closed=$(request 8089 GET /activity)
 [[ "$closed" == *"\"closed\":true"* ]]
 # Requests must not grow a file in the writable layer: logs go to container streams.
 [[ -z "$(find /var/log/nginx -type f -size +0c)" ]]
-printf "%s\n" "Chart Nginx/Lua: restores only an exact open desired state, otherwise starts closed; public admission blocked; private open/close verified; heartbeat counted, polling idle; no file logs"
+printf "%s\n" "Chart Nginx/Lua: restores only an exact open desired state, otherwise starts closed; public admission blocked; peers cannot toggle admission; private open/close verified; heartbeat counted, polling idle; no file logs"
 '

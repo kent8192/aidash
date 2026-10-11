@@ -94,8 +94,9 @@ spec:
   selector: { aidash.run/edge: {{ .Release.Name | quote }} }
   ports: [{ name: activity, port: 8089, targetPort: activity }]
 ---
-# The public LB exposes only Caddy. Admission control is private to the collector
-# and the trusted controller's `kubectl exec ... curl` on the Pod's loopback.
+# The public LB exposes only Caddy. The activity Pod may read port 8089's
+# /activity; admission.conf accepts /admission/{open,close} only from loopback,
+# i.e. the trusted controller's `kubectl exec ... curl` in this Pod.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
