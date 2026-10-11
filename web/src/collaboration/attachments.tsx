@@ -149,9 +149,7 @@ export function AttachmentCard({
           </button>
         )}
       </div>
-      {error && (
-        <Alert className="mt-1">{error}</Alert>
-      )}
+      {error && <Alert className="mt-1">{error}</Alert>}
       {preview && (
         <AttachmentPreview
           workspace={workspace}
