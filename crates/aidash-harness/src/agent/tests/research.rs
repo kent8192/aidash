@@ -164,3 +164,24 @@ fn research_contracts_declare_yields_and_disclosure_per_operation() {
 			.all(|contract| contract.replay_safe() && !contract.remote_exposure)
 	);
 }
+
+#[rstest]
+#[tokio::test]
+async fn text_beside_tool_calls_is_not_published_with_invalid_citations(mut fixture: Fixture) {
+	let find = Scripted::research(Operation::Find);
+	*find.outputs.lock().unwrap() = [json!({"status":"ok"})].into();
+	bind(&mut fixture, "lookup", find);
+	fixture.run.state = RunState::ToolCall(Box::new(ToolCallState {
+		response: ModelResponse {
+			text: format!("Interim [[cite:{UNKNOWN}]]"),
+			tool_calls: vec![call("call-0", "lookup", json!({}))],
+			usage_complete: true,
+			..Default::default()
+		},
+		..Default::default()
+	}));
+	advance_sources(&mut fixture).await.unwrap();
+	let calls = fixture.backend.0.calls.lock().unwrap();
+	assert!(!calls.contains(&"home.output"), "{calls:?}");
+	assert!(calls.contains(&"store.evidence"));
+}

@@ -215,7 +215,7 @@ impl ResearchAttempt {
 		let (sql, values) = Query::select()
 			.expr_as(
 				Func::coalesce(vec![
-					Func::sum(Expr::col(Alias::new("price_micro_usd")).into()).into(),
+					Func::sum(Expr::col(Alias::new("price_micro_usd")).into()),
 					Expr::value(0_i64).into(),
 				]),
 				Alias::new("spent"),
@@ -432,7 +432,7 @@ impl ResearchSnapshot {
 			)
 			.expr_as(
 				Func::coalesce(vec![
-					Func::sum(Expr::col(Alias::new("text_bytes")).into()).into(),
+					Func::sum(Expr::col(Alias::new("text_bytes")).into()),
 					Expr::value(0_i64).into(),
 				]),
 				Alias::new("bytes"),

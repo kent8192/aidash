@@ -475,3 +475,6 @@ pub async fn disclose(
 	}
 	Ok(DisclosureState::Denied)
 }
+
+#[cfg(test)]
+mod tests;

@@ -86,6 +86,43 @@ impl<'a> Executor<'a> {
 		)
 		.await
 	}
+	/// The answer's Source citations and the cited references the Run's
+	/// evidence store does not hold, when the Run binds an operation that
+	/// declares `yields: Citations`. Declared behavior, not a tool name,
+	/// selects verification.
+	async fn citation_check(
+		&self,
+		run: &Run,
+		tools: &Tools,
+		text: &str,
+	) -> Result<Option<(citations::Citations, Vec<citations::EvidenceRef>)>> {
+		if !tools
+			.values()
+			.any(|tool| tool.contract().behavior.yields(Yield::Citations))
+		{
+			return Ok(None);
+		}
+		let found = citations::citations(text);
+		if found.is_empty() {
+			return Ok(None);
+		}
+		let unknown = self
+			.environment
+			.store()
+			.unknown_evidence(run, &found.references)
+			.await?;
+		Ok(Some((found, unknown)))
+	}
+	/// Text published before the final answer is never corrected, so text
+	/// citing evidence the Run never received is not published at all.
+	async fn cites_invalid_evidence(&self, run: &Run, tools: &Tools, text: &str) -> Result<bool> {
+		Ok(self
+			.citation_check(run, tools, text)
+			.await?
+			.is_some_and(|(found, unknown)| {
+				citations::verdict(&found, &unknown, true) != citations::Verdict::Accept
+			}))
+	}
 	/// Reuse an Ordered Run's Skill context while its Skill record revision is
 	/// unchanged and its authority still holds.
 	async fn ordered_skill_context(
@@ -1067,7 +1104,11 @@ impl<'a> Executor<'a> {
 					store.save_run(run, token, "run.message_summarized").await?;
 					return Ok(());
 				}
-				if !run_message_catchup && !result.tool_calls.is_empty() && informed_response {
+				if !run_message_catchup
+					&& !result.tool_calls.is_empty()
+					&& informed_response
+					&& !self.cites_invalid_evidence(run, &tools, &result.text).await?
+				{
 					self.publish_model_text(home.as_ref(), guard, run, token, &result.text)
 						.await?;
 				}
@@ -1095,8 +1136,10 @@ impl<'a> Executor<'a> {
 						}
 						let children = home.child_summary(run.task_id).await?;
 						if children.has_pending {
-							self.publish_model_text(home.as_ref(), guard, run, token, &result.text)
-								.await?;
+							if !self.cites_invalid_evidence(run, &tools, &result.text).await? {
+								self.publish_model_text(home.as_ref(), guard, run, token, &result.text)
+									.await?;
+							}
 							let failed = children.has_failed;
 							if failed {
 								if let Some(guard) = guard {
@@ -1119,16 +1162,12 @@ impl<'a> Executor<'a> {
 							store.save_run(run, token, "run.waiting").await?;
 							return Ok(());
 						}
-						// Declared behavior, not a tool name, selects verification: a Run
-						// that binds any operation yielding citable evidence has its
-						// final answer's Source citations checked against its own store.
-						if tools
-							.values()
-							.any(|tool| tool.contract().behavior.yields(Yield::Citations))
+						// A final answer citing unknown evidence is corrected once, then
+						// withheld.
+						if let Some((found, unknown)) =
+							self.citation_check(run, &tools, &result.text).await?
 						{
-							let found = citations::citations(&result.text);
-							if !found.is_empty() {
-								let unknown = store.unknown_evidence(run, &found.references).await?;
+							{
 								let corrected = run.context.history.iter().any(|event| {
 									matches!(event, ContextEvent::CitationCorrectionRequired { .. })
 								});
