@@ -330,8 +330,7 @@ async fn catalog_approval_and_run_read_denials_cover_search_collections_and_even
 	let (f, url, schema) = setup(&_test_environment).await;
 	let app = common::application(f.clone()).await;
 	let (mut policy, token, task_id) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
-	let builtin_count = aidash_domain::registry::bindings::REQUIRED_TOOLS.len()
-		+ aidash_domain::registry::bindings::DEFAULT_TOOLS.len();
+	let builtin_count = aidash_application::registry::system::operations().count();
 	let (status, catalog) = request(&app, &token, "GET", "/api/registry", Value::Null).await;
 	assert_eq!(status, 200, "{catalog}");
 	assert_eq!(catalog.as_array().unwrap().len(), 3 + builtin_count);

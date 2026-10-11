@@ -1,6 +1,6 @@
 # Protocol and recovery contracts
 
-This document describes implemented runtime and recovery contracts. Cross-node transaction coordination, semantic vector memory, Kubernetes/k3s orchestration and scoped remote execution have implementation paths. Their complete integrated release acceptance remains open; full A2A interoperability is also open. See [transactions](transactions.md), [authorization](authorization.md) and [orchestration](orchestration.md) for their separate contracts and limits.
+This document describes implemented runtime and recovery contracts. Cross-node transaction coordination, semantic vector memory, Kubernetes orchestration and scoped remote execution have implementation paths. Their complete integrated release acceptance remains open; full A2A interoperability is also open. See [transactions](transactions.md), [authorization](authorization.md) and [orchestration](orchestration.md) for their separate contracts and limits.
 
 ## Trust and identity
 
@@ -47,7 +47,7 @@ When a CloudEvent plus its NATS headers exceeds the broker payload limit, the pu
 
 Event sequence allocation is serialized through a transaction advisory lock so commit order agrees with the SSE cursor. `/api/events/stream` honors `Last-Event-ID`; `/api/events?after=N` provides JSON replay. A disconnected or slow client can resume from the PostgreSQL event log. SSE is an observation channel, not the worker's durable queue.
 
-The workspace's home node owns task revisions and artifacts. A remote node owns its run journal and tool invocations. Ordinary federation commands operate on the home API and use stable keys. When a reply is lost, replay either returns the original result or reports a conflict for mismatched input. These ordinary commands do not form a cross-node atomic transaction. The separate [distributed transaction protocol](transactions.md) implements durable prepare/commit/abort, participant decisions and visibility barriers for admitted mutations. Its subject-scoped authorization, complete process/network failure matrix and Kubernetes/k3s release acceptance remain open in #40. External Tool and nonparticipating A2A effects cannot join an atomic manifest.
+The workspace's home node owns task revisions and artifacts. A remote node owns its run journal and tool invocations. Ordinary federation commands operate on the home API and use stable keys. When a reply is lost, replay either returns the original result or reports a conflict for mismatched input. These ordinary commands do not form a cross-node atomic transaction. The separate [distributed transaction protocol](transactions.md) implements durable prepare/commit/abort, participant decisions and visibility barriers for admitted mutations. Its subject-scoped authorization, complete process/network failure matrix and Kubernetes release acceptance remain open in #40. External Tool and nonparticipating A2A effects cannot join an atomic manifest.
 
 ## Execution and effects
 
@@ -80,6 +80,12 @@ the Run with the typed reason `context_unreducible`.
 New model registrations capture OpenRouter's advertised maximum completion
 tokens as `max_output_tokens`; model versions created before this field existed
 retain their previous output allowance until re-registered.
+
+Under a `deferred@1` [Exposure policy](operations/registry-capabilities.md#deferred-capability-exposure),
+the model-visible tool definitions are only the request's Exposure set, and the
+instructions add the resident Skill blocks and the capability index. The same
+estimate covers them; `context.usage.exposure` records their bytes per request.
+Legacy requests are measured exactly as before.
 
 The model's pinned workspace and `workspace_observe` use the same bounded view.
 Observations include goal/task previews, artifact IDs and metadata, message
@@ -279,6 +285,11 @@ Automatic semantic retrieval skips budgets too small to contain provenance.
 
 Agent registration rejects instructions, referenced skills and tool definitions
 that cannot fit the selected model window with output and context reserves.
+Under `deferred@1`, registration instead measures Mandatory exposure, Eager tool
+definitions and eager Skill blocks plus the full `metadata_bytes`,
+`schema_bytes` and `skill_bytes` budgets. It also rejects any single tool
+definition over `schema_bytes`, or any Registry or attached Skill block over
+`skill_bytes`, naming the alias and size.
 
 ### Remote run-message recovery
 

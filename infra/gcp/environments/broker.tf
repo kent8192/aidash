@@ -42,22 +42,13 @@ module "credential_broker" {
   signing_version              = each.value.signing_version
   verification_versions        = each.value.verification_versions
 }
-// Wire IAM after both modules exist: broker -> VM settings must not create a
+// Wire IAM after both modules exist: broker -> worker settings must not create a
 // reverse module dependency through the worker's service-account output.
 resource "google_kms_crypto_key_iam_member" "broker_signer" {
   for_each      = module.credential_broker
   crypto_key_id = each.value.signing_key
   role          = "roles/cloudkms.signer"
-  member        = "serviceAccount:${module.environment[each.key].runtime_service_account}"
-}
-// Preserve existing bindings when upgrading previously enabled managed brokers.
-moved {
-  from = module.credential_broker["test"].google_kms_crypto_key_iam_member.signer[0]
-  to   = google_kms_crypto_key_iam_member.broker_signer["test"]
-}
-moved {
-  from = module.credential_broker["develop"].google_kms_crypto_key_iam_member.signer[0]
-  to   = google_kms_crypto_key_iam_member.broker_signer["develop"]
+  member        = "serviceAccount:${module.environment[each.key].worker_service_account}"
 }
 output "credential_brokers" { value = { for id, broker in module.credential_broker : id => broker.worker_configuration } }
 output "managed_credential_brokers" {

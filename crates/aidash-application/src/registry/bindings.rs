@@ -45,6 +45,7 @@ pub async fn resolve(
 		agent_definition.normalize_agent(&agent.registry_node)?;
 	}
 	let normalized = agent_definition.normalized_bindings(&agent.registry_node)?;
+	let overrides = NormalizedBinding::member_overrides(&normalized);
 	let mut pending: Vec<_> = normalized
 		.into_iter()
 		.map(|normalized| Pending {
@@ -96,6 +97,7 @@ pub async fn resolve(
 			alias,
 			narrow,
 			members,
+			exposure: _,
 		} = normalized.binding;
 		let origin = normalized.origin;
 		target.validate()?;
@@ -149,6 +151,10 @@ pub async fn resolve(
 						));
 					}
 				};
+				if member_kind == BindingKind::Tool && overrides.contains(&member) {
+					// The Agent's own exposure Binding for this member takes precedence.
+					continue;
+				}
 				definitions.insert(member.clone(), definition);
 				pending.push(Pending {
 					normalized: NormalizedBinding {
@@ -158,6 +164,7 @@ pub async fn resolve(
 							alias: None,
 							narrow: narrow.clone(),
 							members: vec![],
+							exposure: None,
 						},
 						origin,
 					},
@@ -179,6 +186,7 @@ pub async fn resolve(
 				));
 			}
 			let descriptor: ToolDescriptor = serde_json::from_value(entry.config.clone())?;
+			config.exposure_policy().admit_tool(&descriptor)?;
 			let contract = providers.contract(&descriptor, &target)?;
 			validate_restrictions(&descriptor.operation, &effective_narrow)?;
 			effective_narrow = descriptor.narrow.intersect(&effective_narrow)?;
@@ -334,7 +342,16 @@ pub async fn resolve(
 		resolved.insert(target, binding);
 	}
 	if source_skill_support {
-		for operation in SKILL_TOOLS {
+		let support: Vec<&str> = if config.exposure_policy().is_deferred() {
+			EXPOSURE_TOOLS
+				.iter()
+				.copied()
+				.chain([SKILL_ASSET_READ])
+				.collect()
+		} else {
+			SKILL_TOOLS.to_vec()
+		};
+		for operation in support {
 			let identity = QualifiedRef::builtin(&agent.registry_node, operation);
 			let support = resolved.get_mut(&identity).ok_or_else(|| {
 				Error::Invalid("native Skills require all Skill support tools".into())
@@ -493,6 +510,7 @@ pub async fn resolve(
 								alias: None,
 								narrow: Default::default(),
 								members: vec![],
+								exposure: None,
 							});
 						}
 					}

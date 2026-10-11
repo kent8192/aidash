@@ -1,14 +1,12 @@
 mock_provider "google" {}
 variables {
-  project_id             = "aidash-fixture"
-  release_bucket         = "aidash-fixture-releases"
-  deploy_service_account = "deploy@aidash-fixture.iam.gserviceaccount.com"
-  environment_id         = "test"
-  hostname               = "test.aidash.run"
+  project_id           = "aidash-fixture"
+  node_service_account = "aidash-gke-nodes@aidash-fixture.iam.gserviceaccount.com"
+  cluster              = { name = "aidash", location = "us-central1-a", workload_pool = "aidash-fixture.svc.id.goog" }
+  environment_id       = "test"
+  hostname             = "test.aidash.run"
   environment = {
-    kind          = "test", incarnation = "aaaaaaaaaaaa", generation = 1, running = false, published = false, spot = false, vm_present = true,
-    machine_type  = "e2-standard-4", boot_disk_gib = 10, data_disk_gib = 20,
-    bundle_object = "bundles/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.tar.gz", bundle_sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", release_sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    kind = "test", incarnation = "aaaaaaaaaaaa", running = false, spot = false, nodes = 1, machine_type = "n2-standard-4"
   }
 }
 run "password_and_sso_tenants_are_separate" {
@@ -28,9 +26,18 @@ run "password_and_sso_tenants_are_separate" {
     condition     = length(google_identity_platform_tenant_default_supported_idp_config.google) == 1 && length(google_identity_platform_tenant_oauth_idp_config.oidc) == 1 && length(google_identity_platform_tenant_inbound_saml_config.saml) == 1
     error_message = "Each selected IdP must be configured inside its environment's tenant."
   }
+  assert {
+    condition     = var.gcip_tenants["password"].mfa.state == "disabled" && var.gcip_tenants["sso"].mfa.state == "disabled"
+    error_message = "An omitted MFA Requirement must be declared disabled."
+  }
 }
 run "sso_cannot_enable_password_signup" {
   command = plan
   variables { gcip_tenants = { company = { tenant = "company", password_sign_up = true, oidc = { "oidc.company" = { issuer = "https://issuer.example.test", client_id = "company" } } } } }
+  expect_failures = [var.gcip_tenants]
+}
+run "password_pool_cannot_enable_mfa_before_clients_support_it" {
+  command = plan
+  variables { gcip_tenants = { acme = { tenant = "acme", mfa = { state = "enabled" } } } }
   expect_failures = [var.gcip_tenants]
 }

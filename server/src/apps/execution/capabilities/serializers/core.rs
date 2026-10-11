@@ -30,21 +30,32 @@ pub struct Profile {
 	pub runner: Option<RunnerProfile>,
 }
 
+/// The application's view of the isolated Runner. Fields after `namespace` are
+/// read only by the Runner itself; a shared profile file may carry them.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, reinhardt::Validate)]
 #[serde(deny_unknown_fields)]
 pub struct RunnerProfile {
 	pub endpoint: String,
-	#[serde(default)]
-	pub node_guard: Option<Vec<String>>,
 	pub token_env: String,
 	pub image: String,
 	pub runtime_class: String,
 	pub namespace: String,
-	pub journal: PathBuf,
-	pub kubectl: PathBuf,
-	pub kubeconfig: PathBuf,
-	pub listen_host: String,
-	pub listen_port: u16,
+	#[serde(default)]
+	pub node_guard: Option<Vec<String>>,
+	#[serde(default)]
+	pub journal: Option<PathBuf>,
+	#[serde(default)]
+	pub kubectl: Option<PathBuf>,
+	#[serde(default)]
+	pub kubeconfig: Option<PathBuf>,
+	#[serde(default)]
+	pub listen_host: Option<String>,
+	#[serde(default)]
+	pub listen_port: Option<u16>,
 }
 
 pub use aidash_domain::capabilities::CoreCapabilities;
+
+#[cfg(test)]
+#[path = "../tests/serializers_core_tests.rs"]
+mod tests;

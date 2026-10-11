@@ -22,8 +22,11 @@ lint:
     - linters: [prettier]
       paths:
         - deploy/helm/**/templates/**
+        - infra/gcp/helm/**/templates/**
         # Compact JSON is the byte-exact baseline for legacy policy serialization.
         - tests/fixtures/native_memory_policy_baseline.json
+        # Compact JSON is the byte-exact baseline for legacy model requests.
+        - tests/fixtures/legacy_model_request_*.json
         # Compact JSON is the byte-exact baseline for provider request bytes.
         - crates/aidash-harness/src/agent/fixtures/*_request.json
     - linters: [ALL]
