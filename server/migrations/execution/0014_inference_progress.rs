@@ -2,9 +2,9 @@
 //! Inference Attempts and their display-only progress, stored apart from the event journal.
 use reinhardt::db::migrations::prelude::*;
 pub(super) fn migration() -> Migration {
-	Migration::new("0012_inference_progress", "execution")
+	Migration::new("0014_inference_progress", "execution")
 		.database_only(true)
-		.add_dependency("execution", "0011_binding_memory_merge")
+		.add_dependency("execution", "0013_inference_usage_model_state")
 		.add_operation(Operation::RunSQL { sql: include_str!("sql/forward/baseline_search_path.sql").into(), reverse_sql: Some(include_str!("sql/backward/baseline_search_path.sql").into()) })
 		.add_operation(Operation::CreateTable {
 			name: "inference_attempts".into(),
@@ -100,6 +100,6 @@ pub(super) fn migration() -> Migration {
 			operator_class: None,
 		})
 		// Statement trigger DDL is unsupported by the typed migration API.
-		.add_operation(Operation::RunSQL { sql: include_str!("sql/forward/0012_inference_progress.sql").into(), reverse_sql: Some(include_str!("sql/backward/0012_inference_progress.sql").into()) })
+		.add_operation(Operation::RunSQL { sql: include_str!("sql/forward/0014_inference_progress.sql").into(), reverse_sql: Some(include_str!("sql/backward/0014_inference_progress.sql").into()) })
 		.atomic(true)
 }

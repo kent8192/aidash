@@ -12,7 +12,8 @@ use aidash_domain::provider::{
 	ModelResponse,
 	progress::{InferenceProgress, MAX_PROGRESS_ITEM_BYTES},
 };
-use serde_json::{Map, Value, json};
+use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value, json, value::RawValue};
 use std::collections::BTreeMap;
 
 /// The whole stream may carry this many times the assembled limit. A response
@@ -28,6 +29,22 @@ struct PartialCall {
 	id: Option<String>,
 	name: Option<String>,
 	arguments: Option<String>,
+}
+
+/// The `usage` object of a chunk, kept as raw JSON text so its cost decimals
+/// round exactly as in a non-streamed body rather than through `f64` first.
+#[derive(Deserialize)]
+struct RawUsage<'a> {
+	#[serde(borrow)]
+	usage: Option<&'a RawValue>,
+}
+
+/// The non-streamed completion body equivalent to an assembled stream.
+#[derive(Serialize)]
+struct Completion {
+	choices: Value,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	usage: Option<Box<RawValue>>,
 }
 
 /// Incrementally parses SSE bytes and assembles one completion choice.
@@ -48,7 +65,7 @@ pub(crate) struct StreamAssembler<'a> {
 	/// A tool call fragment omitted its index, claiming the stream's sole call.
 	unindexed: bool,
 	finish_reason: Option<String>,
-	usage: Option<Value>,
+	usage: Option<Box<RawValue>>,
 	done: bool,
 }
 
@@ -159,13 +176,13 @@ impl<'a> StreamAssembler<'a> {
 				.collect();
 			message.insert("tool_calls".into(), Value::Array(calls));
 		}
-		let mut completion = json!({
-			"choices": [{"finish_reason": finish_reason, "message": message}],
-		});
-		if let Some(usage) = self.usage {
-			completion["usage"] = usage;
-		}
-		parse_openai(completion)
+		let completion = Completion {
+			choices: json!([{"finish_reason": finish_reason, "message": message}]),
+			usage: self.usage,
+		};
+		let body = serde_json::to_vec(&completion)
+			.map_err(|error| Error::External(format!("invalid response JSON: {error}")))?;
+		parse_openai(&body)
 	}
 
 	fn overflow(&self) -> Error {
@@ -242,8 +259,10 @@ impl<'a> StreamAssembler<'a> {
 				self.choice(choice)?;
 			}
 		}
-		if let Some(usage) = chunk.get("usage").filter(|usage| usage.is_object()) {
-			self.usage = Some(usage.clone());
+		if chunk.get("usage").is_some_and(Value::is_object) {
+			let raw = serde_json::from_slice::<RawUsage>(data)
+				.map_err(|error| Error::External(format!("invalid response JSON: {error}")))?;
+			self.usage = raw.usage.map(ToOwned::to_owned);
 		}
 		Ok(())
 	}

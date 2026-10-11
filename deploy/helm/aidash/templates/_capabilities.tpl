@@ -51,10 +51,11 @@ install limits may not exceed maximum_seconds. */ -}}
 {{- $s := .Values.gcip.settings -}}
 {{- if or (not (kindIs "map" $s)) (ne (keys $s | join ",") "dashboard") (not (kindIs "map" $s.dashboard)) (ne (keys $s.dashboard | join ",") "gcip") (not (kindIs "map" $s.dashboard.gcip)) -}}{{ fail "gcip.settings must select GCIP only: {dashboard: {gcip: {...}}}" }}{{- end -}}
 {{- $g := $s.dashboard.gcip -}}
-{{- $allowed := list "project_id" "web_api_key" "public_origin" "tenant_bindings" "providers" "password_sign_up" "session_absolute_seconds" "session_idle_seconds" -}}
+{{- $allowed := list "project_id" "web_api_key" "public_origin" "tenant_bindings" "providers" "password_sign_up" "auth_helper" "session_absolute_seconds" "session_idle_seconds" -}}
 {{- range $key := keys $g -}}
 {{- if not (has $key $allowed) -}}{{ fail (printf "gcip.settings.dashboard.gcip.%s is not a managed GCIP setting" $key) }}{{- end -}}
 {{- end -}}
+{{- if and (hasKey $g "auth_helper") (not (has $g.auth_helper (list "firebase" "public_origin"))) -}}{{ fail "gcip.settings auth_helper must be firebase or public_origin" }}{{- end -}}
 {{- if or (not (kindIs "string" $g.project_id)) (not $g.project_id) (not (kindIs "string" $g.web_api_key)) (not (trim $g.web_api_key)) (not (kindIs "map" $g.tenant_bindings)) -}}{{ fail "gcip.settings needs project_id, web_api_key and tenant_bindings" }}{{- end -}}
 {{- if or (not .Values.node.endpoint) (ne (toJson $g.public_origin) (toJson .Values.node.endpoint)) -}}{{ fail "gcip.settings public_origin must equal node.endpoint" }}{{- end -}}
 {{- toJson $s -}}

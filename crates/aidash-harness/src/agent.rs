@@ -7,6 +7,7 @@ use aidash_domain::{
 	model::ModelConfig,
 	projection::{ProjectionVersion, PromptCache},
 	provider::progress::{InferenceAttemptId, InterruptionReason, ProgressOutcome},
+	provider::usage::{RequestEstimate, UsageDispatch, UsageOutcome},
 	registry::bindings::{AgentBindings, BindingSnapshot},
 	semantic::{Failure, InputRead},
 	tool::{ResultFitting, ToolIdentity, ToolUseMode},
@@ -772,6 +773,25 @@ impl<'a> Executor<'a> {
 				} else {
 					None
 				};
+				// Each provider call is a new Inference Attempt. Its Usage Record is
+				// durable before provider I/O and is keyed apart from the lease; its
+				// displayed progress shares the same identifier.
+				let attempt = InferenceAttemptId::new();
+				store
+					.record_usage_dispatch(
+						run,
+						token,
+						&UsageDispatch {
+							attempt: attempt.0,
+							lease: token,
+							response_epoch: response_epoch(run.revision, run.step),
+							model_id: agent.model.id.clone(),
+							model_version: agent.model.version.clone(),
+							projection_version: agent.projection_version.number(),
+							estimate: RequestEstimate::conservative_bytes(request_tokens),
+						},
+					)
+					.await?;
 				// Race only inference, not replay-unsafe tools or durable transitions.
 				// Release node-wide visibility and authorization row locks while the
 				// provider waits; both boundaries are reacquired before accepting output.
@@ -781,7 +801,6 @@ impl<'a> Executor<'a> {
 				visibility.suspend().await?;
 				// Recording the attempt locks the Run row, which the authority scope
 				// can hold until it is suspended.
-				let attempt = InferenceAttemptId::new();
 				if let Err(error) = store.start_inference(run, token, attempt).await {
 					visibility.resume().await?;
 					return Err(error);
@@ -831,12 +850,25 @@ impl<'a> Executor<'a> {
 					return Err(error);
 				}
 				let resumed = visibility.resume().await;
+				// Cancellation, supersession, stalls and unreadable responses leave
+				// usage unknown.
+				let outcome = match &inference {
+					Inference::Response(response) => UsageOutcome::Completed(response.reported.clone()),
+					Inference::Interrupted(_, Error::ProviderRejected { .. }) => {
+						UsageOutcome::Rejected {
+							class: "provider_rejected".into(),
+						}
+					}
+					Inference::Superseded | Inference::Interrupted(..) => UsageOutcome::Unknown,
+				};
+				let recorded = store.complete_usage_record(run, attempt.0, &outcome).await;
 				let result = match inference {
 					Inference::Response(response) => response,
 					Inference::Superseded => {
 						self.close_inference(run, token, attempt, ProgressOutcome::Discarded)
 							.await?;
 						resumed?;
+						recorded?;
 						if let Some(guard) = guard {
 							guard.resume().await?;
 						}
@@ -873,6 +905,7 @@ impl<'a> Executor<'a> {
 					Inference::Interrupted(reason, error) => {
 						self.interrupt_inference(run, token, attempt, reason).await;
 						resumed?;
+						// A failed record write never hides the inference error.
 						return Err(error);
 					}
 				};
@@ -885,7 +918,7 @@ impl<'a> Executor<'a> {
 						.await;
 					return Err(error);
 				}
-				if let Err(error) = resumed {
+				if let Err(error) = resumed.and(recorded) {
 					self.interrupt_inference(run, token, attempt, InterruptionReason::StreamError)
 						.await;
 					return Err(error);
@@ -904,6 +937,9 @@ impl<'a> Executor<'a> {
 				if let Some(seq) = media.through_seq {
 					context.media_inferred_seq = context.media_inferred_seq.max(seq);
 				}
+				// Unreported counts are known only through the Usage Record. The
+				// durable context keeps the shape older workers' strict decoders
+				// accept, so a Run stays leasable across a rolling deployment.
 				context.usage = Some(ContextUsage {
 					input_tokens: result.input_tokens,
 					output_tokens: result.output_tokens,

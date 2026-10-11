@@ -338,6 +338,7 @@ fn response(tool: bool) -> ModelResponse {
 		input_tokens: 3,
 		output_tokens: 5,
 		usage_complete: true,
+		..Default::default()
 	}
 }
 fn execution(repository: Arc<Repository>) -> Execution {
@@ -485,6 +486,7 @@ async fn deferred_load_results_reshape_the_next_request() {
 		input_tokens: 3,
 		output_tokens: 5,
 		usage_complete: true,
+		..Default::default()
 	};
 	let model = model(
 		repository.clone(),
@@ -573,6 +575,7 @@ async fn deferred_search_without_room_stops_instead_of_retaining_a_result() {
 		input_tokens: 3,
 		output_tokens: 5,
 		usage_complete: true,
+		..Default::default()
 	};
 	let model = model(repository.clone(), vec![search]);
 	let mut job = job(model.clone());

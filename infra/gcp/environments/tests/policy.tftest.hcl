@@ -376,6 +376,24 @@ run "dns_address_is_ipv4" {
   expect_failures = [var.environments]
 }
 
+run "sign_in_helper_is_firebase_or_public_origin" {
+  command = plan
+  variables {
+    environments = {
+      test = {
+        kind        = "test"
+        incarnation = "aaaaaaaaaaaa"
+        generation  = 1
+        running     = false
+        published   = false
+        spot        = true
+        auth_helper = "auth.example.test"
+      }
+    }
+  }
+  expect_failures = [var.environments]
+}
+
 run "no_two_running_previews" {
   command = plan
   variables {

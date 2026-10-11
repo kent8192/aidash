@@ -3,15 +3,35 @@
 {{- $hostname := required "edge.hostname is required" $edge.hostname -}}
 {{- if not (regexMatch "@sha256:[0-9a-f]{64}$" (toString $edge.admissionImage)) -}}{{ fail "edge.admissionImage must be pinned by digest: it enforces the admission gate" }}{{- end -}}
 {{- if not (regexMatch "@sha256:[0-9a-f]{64}$" (toString $edge.caddyImage)) -}}{{ fail "edge.caddyImage must be pinned by digest: it receives all public traffic and shares the admission container's network namespace" }}{{- end -}}
+{{- if and $edge.firebaseProject (not (regexMatch "^[a-z][a-z0-9-]{4,28}[a-z0-9]$" (toString $edge.firebaseProject))) -}}{{ fail "edge.firebaseProject must be a GCP project ID" }}{{- end -}}
 ---
 apiVersion: v1
 kind: ConfigMap
 metadata:
   name: {{ $name }}-edge
 data:
+  {{- /* Firebase requires a transparent proxy, not a redirect; handler.js also reads
+  init.json from its own origin. The helper grants no authority (the exchange stays
+  behind admission), Aidash cookies and credentials never reach Google, and Google
+  cannot set cookies on this origin. */}}
   Caddyfile: |
     {{ $hostname }} {
+    {{- if $edge.firebaseProject }}
+      @firebase_helper path /__/auth/* /__/firebase/init.json
+      handle @firebase_helper {
+        reverse_proxy https://{{ $edge.firebaseProject }}.firebaseapp.com {
+          header_up Host {upstream_hostport}
+          header_up -Cookie
+          header_up -Authorization
+          header_down -Set-Cookie
+        }
+      }
+      handle {
+        reverse_proxy 127.0.0.1:8088
+      }
+    {{- else }}
       reverse_proxy 127.0.0.1:8088
+    {{- end }}
     }
   admission.conf: |
 {{ .Files.Get "files/admission.conf" | replace "AIDASH_BACKEND" $edge.backend | indent 4 }}
@@ -40,7 +60,7 @@ spec:
     metadata:
       labels: { aidash.run/edge: {{ .Release.Name | quote }} }
       annotations:
-        checksum/config: {{ printf "%s%s%s" $hostname $edge.backend (.Files.Get "files/admission.conf") | sha256sum }}
+        checksum/config: {{ printf "%s%s%s%s" $hostname $edge.backend (toString $edge.firebaseProject) (.Files.Get "files/admission.conf") | sha256sum }}
     spec:
       hostNetwork: false
       automountServiceAccountToken: false

@@ -1,4 +1,5 @@
 use super::*;
+use aidash_domain::provider::usage::ProviderCost;
 use std::sync::mpsc;
 
 struct Recorder(mpsc::Sender<InferenceProgress>);
@@ -56,7 +57,7 @@ fn assemble(
 }
 
 fn same_outcome(streamed: Result<ModelResponse>, whole: Value) {
-	match (streamed, parse_openai(whole)) {
+	match (streamed, parse_openai(whole.to_string().as_bytes())) {
 		(Ok(streamed), Ok(whole)) => assert_eq!(
 			serde_json::to_value(streamed).unwrap(),
 			serde_json::to_value(whole).unwrap()
@@ -429,6 +430,35 @@ fn usage_and_empty_deltas_after_the_finish_reason_are_accepted() {
 
 	// Assert
 	assert_eq!(result.unwrap().text, "Done");
+}
+
+/// A parsed `Value` would round the cost to the nearest `f64` before the
+/// nanocredit conversion, unlike the raw decimal of a non-streamed body.
+#[rstest::rstest]
+fn streamed_cost_keeps_the_raw_decimal(#[values(1, 7, 4096)] split: usize) {
+	// Arrange
+	let usage = r#"{"prompt_tokens":1,"completion_tokens":1,"cost":0.1234567890000000000000000001,"cost_details":{"upstream_inference_cost":1.0000000000000000000000000001e-9}}"#;
+	let mut body = sse(&[delta(json!({"content":"done"})), finish("stop")], false);
+	body.extend_from_slice(
+		format!("data: {{\"choices\":[],\"usage\":{usage}}}\n\ndata: [DONE]\n\n").as_bytes(),
+	);
+	let whole = format!(
+		r#"{{"choices":[{{"finish_reason":"stop","message":{{"content":"done"}}}}],"usage":{usage}}}"#
+	);
+
+	// Act
+	let (result, _) = assemble(&body, split, 1_048_576);
+
+	// Assert
+	let reported = result.unwrap().reported;
+	assert_eq!(
+		reported.cost,
+		Some(ProviderCost {
+			nanocredits: 123_456_790,
+			upstream_nanocredits: Some(2)
+		})
+	);
+	assert_eq!(reported, parse_openai(whole.as_bytes()).unwrap().reported);
 }
 
 #[rstest::rstest]

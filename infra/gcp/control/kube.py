@@ -61,7 +61,8 @@ RUNTIME_KEYS = {
 }
 GCIP_KEYS = {
     "project_id", "web_api_key", "public_origin", "tenant_bindings",
-    "providers", "password_sign_up", "session_absolute_seconds", "session_idle_seconds",
+    "providers", "password_sign_up", "auth_helper",
+    "session_absolute_seconds", "session_idle_seconds",
 }
 IDENTITY_TOKENS = ("database", "api", "runner", "observer")
 # The activity observer's own login. It reads only the tables queried by
@@ -394,6 +395,7 @@ def gcip_settings(project, output, dashboard):
         or not isinstance(settings.get("web_api_key"), str)
         or not settings["web_api_key"].strip()
         or not isinstance(settings.get("tenant_bindings"), dict)
+        or settings.get("auth_helper", "firebase") not in {"firebase", "public_origin"}
     ):
         raise Refused("managed GCIP configuration must match this environment")
     return {"dashboard": {"gcip": deepcopy(settings)}}
@@ -505,8 +507,9 @@ def app_values(cluster, identity, output, release, sha, settings):
     }
 
 
-def env_values(identity, output, release):
+def env_values(identity, output, release, settings):
     selector, tolerations = scheduling(identity)
+    gcip = (settings["gcip"] or {}).get("dashboard", {}).get("gcip", {})
     return {
         "nodeSelector": selector,
         "tolerations": tolerations,
@@ -519,6 +522,9 @@ def env_values(identity, output, release):
             "admissionImage": image(release, "edge"),
             "existingTlsClaim": PREVIEW_CLAIM if identity.startswith("pr-") else "",
             "loadBalancer": True,
+            # Serve Firebase's sign-in helper exactly when the server tells the
+            # browser to use this origin for it.
+            "firebaseProject": gcip["project_id"] if gcip.get("auth_helper") == "public_origin" else "",
         },
         "activity": {
             "observerImage": image(release, "observer"),
@@ -699,7 +705,7 @@ def deploy(cluster, identity, output, release, sha, settings):
     # The app release goes first with writers at zero: the edge's Nginx resolves the
     # backend Service name at start and crash-loops until that Service exists.
     cluster.upgrade(namespace, "app", APP_CHART, app_values(cluster, identity, output, release, sha, settings))
-    cluster.upgrade(namespace, "env", ENV_CHART, env_values(identity, output, release))
+    cluster.upgrade(namespace, "env", ENV_CHART, env_values(identity, output, release, settings))
     for target in (*STATEFULSETS, EDGE):
         cluster.scale(namespace, target, 1)
     cluster.patch("cronjob", ACTIVITY, {"spec": {"suspend": False}}, namespace)
