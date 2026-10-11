@@ -346,12 +346,13 @@ async fn start(fixture: &Fixture, session: &str, body: Value, browser: Option<&s
 		body,
 	)
 	.await;
-	assert_eq!(response.headers()["cache-control"], "no-store");
-	let browser =
-		cookie(&response, "aidash-provider-authorization").expect("start binds the browser");
 	let status = response.status();
+	let cache = response.headers().get("cache-control").cloned();
+	let browser = cookie(&response, "aidash-provider-authorization");
 	let bytes = to_bytes(response.into_body(), 65_536).await.unwrap();
 	assert_eq!(status, 200, "{}", String::from_utf8_lossy(&bytes));
+	assert_eq!(cache.unwrap(), "no-store");
+	let browser = browser.expect("start binds the browser");
 	let started: Value = serde_json::from_slice(&bytes).unwrap();
 	let url = reqwest::Url::parse(started["authorization_url"].as_str().unwrap()).unwrap();
 	assert_eq!(url.origin().ascii_serialization(), "https://openrouter.ai");
