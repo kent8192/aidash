@@ -58,6 +58,28 @@ pub struct Reservation {
 	pub provider: String,
 	pub destination: String,
 	pub attribution: Option<CostAttribution>,
+	/// Attempts of this operation the Run may hold, including this one.
+	pub max_attempts: u32,
+	/// The attributed account's charge limit; checked with the reservation.
+	pub budget: Option<Budget>,
+}
+
+/// Charges an account may hold since `since`, including the new attempt.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Budget {
+	pub since: DateTime<Utc>,
+	pub limit_micro_usd: u64,
+}
+
+/// The outcome of a reservation. Limits are checked atomically with it, so
+/// concurrent invocations cannot together exceed them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reserved {
+	Reserved,
+	/// The key already has an attempt.
+	Duplicate,
+	AttemptLimit,
+	BudgetExhausted,
 }
 
 /// Run-scoped Research evidence. Every read is limited to the given Run; an
@@ -69,8 +91,7 @@ pub trait EvidenceStore: Send + Sync {
 	/// Charges attributed to `account` since `since`, including dispatched
 	/// attempts whose outcome is still unknown.
 	async fn account_spend(&self, account: &str, since: DateTime<Utc>) -> Result<u64>;
-	/// Fails with `Conflict` when the key already has an attempt.
-	async fn reserve(&self, run: Uuid, reservation: &Reservation) -> Result<()>;
+	async fn reserve(&self, run: Uuid, reservation: &Reservation) -> Result<Reserved>;
 	async fn settle(
 		&self,
 		run: Uuid,

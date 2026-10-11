@@ -5,7 +5,10 @@ use super::*;
 use aidash_application::{
 	ports::{
 		execution::ExecutionStore,
-		research::{DisclosureGate, DisclosureState, EvidenceStore, Reservation, WebDisclosure},
+		research::{
+			Budget, DisclosureGate, DisclosureState, EvidenceStore, Reservation, Reserved,
+			WebDisclosure,
+		},
 	},
 	research::{Call, Research},
 };
@@ -59,6 +62,11 @@ fn reservation(key: &str, account: Option<(&str, u64)>) -> Reservation {
 			account_id: account_id.into(),
 			price_micro_usd: price,
 		}),
+		max_attempts: 3,
+		budget: account.map(|_| Budget {
+			since: chrono::Utc::now() - chrono::Duration::days(1),
+			limit_micro_usd: 10_000,
+		}),
 	}
 }
 
@@ -74,14 +82,20 @@ async fn attempts_are_reserved_once_settled_once_and_charged_to_the_operator_acc
 	let evidence = aidash_server::research::evidence_store(store.clone());
 	let since = chrono::Utc::now() - chrono::Duration::hours(1);
 
-	evidence
-		.reserve(run.id, &reservation("k1", Some(("operator", 5_000))))
-		.await
-		.unwrap();
-	assert!(matches!(
-		evidence.reserve(run.id, &reservation("k1", None)).await,
-		Err(aidash_application::Error::Conflict(_))
-	));
+	assert_eq!(
+		evidence
+			.reserve(run.id, &reservation("k1", Some(("operator", 5_000))))
+			.await
+			.unwrap(),
+		Reserved::Reserved
+	);
+	assert_eq!(
+		evidence
+			.reserve(run.id, &reservation("k1", None))
+			.await
+			.unwrap(),
+		Reserved::Duplicate
+	);
 	assert_eq!(
 		evidence.attempt(run.id, "k1").await.unwrap(),
 		Some(AttemptState::Dispatched)
@@ -113,10 +127,14 @@ async fn attempts_are_reserved_once_settled_once_and_charged_to_the_operator_acc
 		}),
 		"a settled attempt is never rewritten"
 	);
-	evidence
-		.reserve(run.id, &reservation("k2", Some(("operator", 5_000))))
-		.await
-		.unwrap();
+	assert_eq!(
+		evidence
+			.reserve(run.id, &reservation("k2", Some(("operator", 5_000))))
+			.await
+			.unwrap(),
+		Reserved::Reserved
+	);
+	// A failed attempt is never charged.
 	evidence
 		.settle(
 			run.id,
@@ -131,6 +149,27 @@ async fn attempts_are_reserved_once_settled_once_and_charged_to_the_operator_acc
 		5_000
 	);
 	assert_eq!(evidence.usage(run.id).await.unwrap().search_attempts, 2);
+	assert_eq!(
+		evidence
+			.reserve(run.id, &reservation("k3", Some(("operator", 6_000))))
+			.await
+			.unwrap(),
+		Reserved::BudgetExhausted
+	);
+	assert_eq!(
+		evidence
+			.reserve(run.id, &reservation("k4", None))
+			.await
+			.unwrap(),
+		Reserved::Reserved
+	);
+	assert_eq!(
+		evidence
+			.reserve(run.id, &reservation("k5", None))
+			.await
+			.unwrap(),
+		Reserved::AttemptLimit
+	);
 	assert_eq!(evidence.attempt(Uuid::new_v4(), "k1").await.unwrap(), None);
 	cleanup(store, &url, &schema).await;
 }

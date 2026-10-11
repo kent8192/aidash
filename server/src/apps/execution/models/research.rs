@@ -2,6 +2,7 @@
 //! Source records, Document snapshots and delivered Evidence fragments. Every
 //! read filters by Run, so another Run's identifier is simply absent.
 use crate::Result;
+use aidash_application::ports::research::{Reservation, Reserved};
 use aidash_domain::research::{
 	Operation,
 	citations::EvidenceRef,
@@ -15,13 +16,30 @@ use reinhardt::db::orm::execution::convert_values;
 use reinhardt::db::orm::{Json, Model, QueryRow};
 use reinhardt::model;
 use reinhardt::query::{
-	Alias, Expr, ExprTrait, Func, PostgresQueryBuilder, Query, QueryStatementBuilder,
+	Alias, Expr, ExprTrait, Func, IntoIden, PostgresQueryBuilder, Query, QueryStatementBuilder,
+	SimpleExpr,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
 const DISPATCHED: &str = "dispatched";
+/// Advisory lock namespace of research reservations.
+const LOCK_NAMESPACE: i64 = 71_003_237;
+
+async fn lock(tx: &mut dyn TransactionExecutor, key: &str) -> Result<()> {
+	let (sql, values) = Query::select()
+		.expr(SimpleExpr::FunctionCall(
+			"pg_advisory_xact_lock".into_iden(),
+			vec![SimpleExpr::FunctionCall(
+				"hashtextextended".into_iden(),
+				vec![Expr::value(key).into(), Expr::value(LOCK_NAMESPACE).into()],
+			)],
+		))
+		.build(PostgresQueryBuilder);
+	tx.execute(&sql, convert_values(values)).await?;
+	Ok(())
+}
 
 #[model(app_label = "execution", table_name = "research_attempts")]
 #[derive(Serialize, Deserialize)]
@@ -134,7 +152,10 @@ async fn count(
 ) -> Result<u32> {
 	let mut query = Query::select();
 	query
-		.expr_as(Func::count(Expr::col(Alias::new("id"))), Alias::new("n"))
+		.expr_as(
+			Func::count(Expr::col(Alias::new("id")).into()),
+			Alias::new("n"),
+		)
 		.from(Alias::new(table))
 		.and_where(Expr::col("run_id").eq(Expr::value(run)));
 	if let Some(operation) = operation {
@@ -193,8 +214,8 @@ impl ResearchAttempt {
 	) -> Result<u64> {
 		let (sql, values) = Query::select()
 			.expr_as(
-				Func::coalesce([
-					Func::sum(Expr::col(Alias::new("price_micro_usd"))).into(),
+				Func::coalesce(vec![
+					Func::sum(Expr::col(Alias::new("price_micro_usd")).into()).into(),
 					Expr::value(0_i64).into(),
 				]),
 				Alias::new("spent"),
@@ -213,16 +234,30 @@ impl ResearchAttempt {
 		Ok(u64::try_from(spent).unwrap_or(0))
 	}
 
-	/// `false` when the key already has an attempt.
+	/// Reserve under transaction-scoped locks of the Run and, when charged, the
+	/// account, so that concurrent invocations observe each other's attempts.
 	pub(crate) async fn reserve(
 		tx: &mut dyn TransactionExecutor,
 		run: Uuid,
-		reservation: &aidash_application::ports::research::Reservation,
-	) -> Result<bool> {
+		reservation: &Reservation,
+	) -> Result<Reserved> {
+		lock(tx, &format!("research-run:{run}")).await?;
+		if let Some(attribution) = &reservation.attribution {
+			lock(tx, &format!("research-account:{}", attribution.account_id)).await?;
+		}
 		if Self::find(tx, run, &reservation.key).await?.is_some() {
-			return Ok(false);
+			return Ok(Reserved::Duplicate);
+		}
+		if Self::count(tx, run, reservation.operation).await? >= reservation.max_attempts {
+			return Ok(Reserved::AttemptLimit);
 		}
 		let attribution = reservation.attribution.as_ref();
+		if let (Some(attribution), Some(budget)) = (attribution, &reservation.budget) {
+			let spent = Self::spend(tx, &attribution.account_id, budget.since).await?;
+			if spent.saturating_add(attribution.price_micro_usd) > budget.limit_micro_usd {
+				return Ok(Reserved::BudgetExhausted);
+			}
+		}
 		let record =
 			Self::build()
 				.id(Uuid::now_v7())
@@ -243,7 +278,7 @@ impl ResearchAttempt {
 			.insert_with_executor(tx, &record)
 			.await
 			.map_err(FrameworkError::from)?;
-		Ok(true)
+		Ok(Reserved::Reserved)
 	}
 
 	/// Settle a dispatched attempt once; a settled attempt is never rewritten.
@@ -391,10 +426,13 @@ impl ResearchSnapshot {
 	/// Snapshot count and retained text bytes of one Run.
 	pub(crate) async fn usage(tx: &mut dyn TransactionExecutor, run: Uuid) -> Result<(u32, u64)> {
 		let (sql, values) = Query::select()
-			.expr_as(Func::count(Expr::col(Alias::new("id"))), Alias::new("n"))
 			.expr_as(
-				Func::coalesce([
-					Func::sum(Expr::col(Alias::new("text_bytes"))).into(),
+				Func::count(Expr::col(Alias::new("id")).into()),
+				Alias::new("n"),
+			)
+			.expr_as(
+				Func::coalesce(vec![
+					Func::sum(Expr::col(Alias::new("text_bytes")).into()).into(),
 					Expr::value(0_i64).into(),
 				]),
 				Alias::new("bytes"),

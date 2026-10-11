@@ -2,7 +2,7 @@
 //! provider-package contract. Two different search providers run through the
 //! same host implementation without any change to it.
 use super::*;
-use crate::ports::research::{EvidenceStore, Reservation};
+use crate::ports::research::{EvidenceStore, Reservation, Reserved};
 use aidash_domain::research::{
 	account::AccountProfile,
 	citations::EvidenceRef,
@@ -71,19 +71,34 @@ impl EvidenceStore for Memory {
 	async fn account_spend(&self, _: &str, _: DateTime<Utc>) -> Result<u64> {
 		Ok(*self.spend.lock().unwrap())
 	}
-	async fn reserve(&self, run: Uuid, reservation: &Reservation) -> Result<()> {
+	async fn reserve(&self, run: Uuid, reservation: &Reservation) -> Result<Reserved> {
 		let mut attempts = self.attempts.lock().unwrap();
 		if attempts.contains_key(&(run, reservation.key.clone())) {
-			return Err(Error::Conflict("duplicate".into()));
+			return Ok(Reserved::Duplicate);
+		}
+		let held = attempts
+			.iter()
+			.filter(|((owner, _), (held, _))| {
+				*owner == run && held.operation == reservation.operation
+			})
+			.count() as u32;
+		if held >= reservation.max_attempts {
+			return Ok(Reserved::AttemptLimit);
+		}
+		let mut spend = self.spend.lock().unwrap();
+		if let (Some(attribution), Some(budget)) = (&reservation.attribution, &reservation.budget) {
+			if *spend + attribution.price_micro_usd > budget.limit_micro_usd {
+				return Ok(Reserved::BudgetExhausted);
+			}
 		}
 		if let Some(attribution) = &reservation.attribution {
-			*self.spend.lock().unwrap() += attribution.price_micro_usd;
+			*spend += attribution.price_micro_usd;
 		}
 		attempts.insert(
 			(run, reservation.key.clone()),
 			(reservation.clone(), AttemptState::Dispatched),
 		);
-		Ok(())
+		Ok(Reserved::Reserved)
 	}
 	async fn settle(
 		&self,
@@ -646,6 +661,8 @@ async fn recorded_attempts_replay_with_the_same_evidence_and_unknown_dispatch_is
 				provider: "research.brave@1".into(),
 				destination: "api.search.brave.com".into(),
 				attribution: None,
+				max_attempts: 20,
+				budget: None,
 			},
 		)
 		.await
@@ -886,4 +903,58 @@ async fn invalid_input_never_reaches_disclosure() {
 		assert_eq!(result["error"]["code"], "invalid_input", "{input}");
 	}
 	assert!(gate.requests.lock().unwrap().is_empty());
+}
+
+/// Reserves another attempt while the disclosure is being admitted, as a
+/// concurrent invocation of the same Run would.
+struct Concurrent<'a> {
+	store: &'a Memory,
+}
+
+#[async_trait]
+impl DisclosureGate for Concurrent<'_> {
+	async fn admit(&self, run: Uuid, _: &WebDisclosure) -> Result<DisclosureState> {
+		self.store
+			.reserve(
+				run,
+				&Reservation {
+					key: "concurrent".into(),
+					operation: Operation::Search,
+					provider: "research.brave@1".into(),
+					destination: "api.search.brave.com".into(),
+					attribution: None,
+					max_attempts: 1,
+					budget: None,
+				},
+			)
+			.await?;
+		Ok(DisclosureState::Permitted)
+	}
+}
+
+#[tokio::test]
+async fn a_concurrent_attempt_cannot_exceed_the_run_limit_after_the_early_check() {
+	let store = Memory::default();
+	let gate = Concurrent { store: &store };
+	let research = Research {
+		store: &store,
+		gate: &gate,
+		limits: Limits {
+			search_attempts: 1,
+			..Limits::default()
+		},
+	};
+	let provider = Search::new("brave", "api.search.brave.com");
+	let run = Uuid::new_v4();
+	let result = research
+		.search(
+			&call(run, "k1", "research.brave@1"),
+			&provider,
+			&json!({"query":"a"}),
+		)
+		.await
+		.unwrap();
+	assert_eq!(result["error"]["code"], "attempt_limit");
+	assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
+	assert_eq!(store.attempt(run, "k1").await.unwrap(), None);
 }

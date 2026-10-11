@@ -2,10 +2,10 @@
 //! package: it validates input, enforces Run limits, waits for Web disclosure
 //! approval, attributes cost, records Research evidence and bounds results.
 use crate::{
-	Error, Result,
+	Result,
 	ports::research::{
-		DisclosureGate, DisclosureState, EvidenceStore, Outbound, PageProvider, Reservation,
-		SearchProvider, WebDisclosure,
+		Budget, DisclosureGate, DisclosureState, EvidenceStore, Outbound, PageProvider,
+		Reservation, Reserved, SearchProvider, WebDisclosure,
 	},
 };
 use aidash_domain::research::{
@@ -156,17 +156,28 @@ impl Research<'_> {
 		if let Some(blocked) = self.disclose(call, operation, &outbound).await? {
 			return Ok(blocked);
 		}
-		self.reserve(
-			call,
-			Reservation {
-				key: call.key.into(),
-				operation,
-				provider: call.provider.into(),
-				destination: outbound.destination,
-				attribution: account.map(|account| account.attribution()),
-			},
-		)
-		.await?;
+		if let Some(blocked) = self
+			.reserve(
+				call,
+				Reservation {
+					key: call.key.into(),
+					operation,
+					provider: call.provider.into(),
+					destination: outbound.destination,
+					attribution: account.as_ref().map(|account| account.attribution()),
+					max_attempts: self.limits.search_attempts,
+					budget: account.as_ref().map(|account| Budget {
+						since: month_start(Utc::now()),
+						limit_micro_usd: account
+							.monthly_limit_micro_usd
+							.saturating_sub(account.monthly_base_fee_micro_usd),
+					}),
+				},
+			)
+			.await?
+		{
+			return Ok(blocked);
+		}
 		let searched_at = Utc::now();
 		let results = match provider.search(&query).await {
 			Ok(results) => results,
@@ -298,17 +309,23 @@ impl Research<'_> {
 		if let Some(blocked) = self.disclose(call, operation, &outbound).await? {
 			return Ok(blocked);
 		}
-		self.reserve(
-			call,
-			Reservation {
-				key: call.key.into(),
-				operation,
-				provider: call.provider.into(),
-				destination: outbound.destination,
-				attribution: None,
-			},
-		)
-		.await?;
+		if let Some(blocked) = self
+			.reserve(
+				call,
+				Reservation {
+					key: call.key.into(),
+					operation,
+					provider: call.provider.into(),
+					destination: outbound.destination,
+					attribution: None,
+					max_attempts: self.limits.fetch_attempts,
+					budget: None,
+				},
+			)
+			.await?
+		{
+			return Ok(blocked);
+		}
 		let page = match provider.fetch(&url).await {
 			Ok(page) => page,
 			Err(error) => return self.settle_failure(call, operation, error).await,
@@ -516,14 +533,16 @@ impl Research<'_> {
 		})
 	}
 
-	async fn reserve(&self, call: &Call<'_>, reservation: Reservation) -> Result<()> {
-		match self.store.reserve(call.run, &reservation).await {
+	/// `Some` is the result to return instead of dispatching.
+	async fn reserve(&self, call: &Call<'_>, reservation: Reservation) -> Result<Option<Value>> {
+		let operation = reservation.operation;
+		Ok(match self.store.reserve(call.run, &reservation).await? {
+			Reserved::Reserved => None,
 			// A concurrent invocation with the same key owns the attempt.
-			Err(Error::Conflict(_)) => Err(Error::Conflict(
-				"research attempt is already dispatched".into(),
-			)),
-			other => other,
-		}
+			Reserved::Duplicate => Some(failure(operation, Failure::OutcomeUnknown)),
+			Reserved::AttemptLimit => Some(failure(operation, Failure::AttemptLimit)),
+			Reserved::BudgetExhausted => Some(failure(operation, Failure::BudgetExhausted)),
+		})
 	}
 
 	async fn settle_failure(

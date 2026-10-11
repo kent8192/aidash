@@ -5,7 +5,7 @@ use crate::apps::execution::models::research::{
 use crate::store::Store;
 use aidash_application::{
 	Result,
-	ports::research::{EvidenceStore, Reservation},
+	ports::research::{EvidenceStore, Reservation, Reserved},
 };
 use aidash_domain::research::{
 	Operation,
@@ -76,16 +76,13 @@ impl EvidenceStore for Evidence {
 			.await,
 		)
 	}
-	async fn reserve(&self, run: Uuid, reservation: &Reservation) -> Result<()> {
+	async fn reserve(&self, run: Uuid, reservation: &Reservation) -> Result<Reserved> {
 		native(
 			async {
 				let mut tx = self.store.database().begin().await?;
-				if !ResearchAttempt::reserve(tx.as_mut(), run, reservation).await? {
-					return Err(crate::Error::Conflict(
-						"research attempt already exists".into(),
-					));
-				}
-				tx.commit().await
+				let reserved = ResearchAttempt::reserve(tx.as_mut(), run, reservation).await?;
+				tx.commit().await?;
+				Ok(reserved)
 			}
 			.await,
 		)

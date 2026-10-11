@@ -118,9 +118,15 @@ impl PageProvider for PageReader {
 						.get(header::LOCATION)
 						.and_then(|value| value.to_str().ok())
 						.ok_or(Failure::ProviderResponseInvalid)?;
-					url = url
+					let next = url
 						.join(location)
 						.map_err(|_| Failure::ProviderResponseInvalid)?;
+					// The Web disclosure approved one destination host. Another
+					// host needs its own request and approval.
+					if next.host_str() != url.host_str() {
+						return Err(Failure::CrossHostRedirect);
+					}
+					url = next;
 					continue;
 				}
 				if !response.status().is_success() {
@@ -218,7 +224,7 @@ pub fn extract(url: &Url, media_type: &str, bytes: &[u8]) -> Result<ExtractedPag
 /// Visible text of an HTML document: script, style and template contents are
 /// dropped, block elements end lines and character references are decoded.
 fn html_text(html: &str) -> (Option<String>, String) {
-	const SKIPPED: &[&str] = &["script", "style", "noscript", "template", "svg", "head"];
+	const SKIPPED: &[&str] = &["script", "style", "noscript", "template", "svg", "title"];
 	const BLOCKS: &[&str] = &[
 		"p",
 		"div",
@@ -245,54 +251,56 @@ fn html_text(html: &str) -> (Option<String>, String) {
 		"dt",
 		"main",
 	];
+	// ASCII lowercasing keeps byte offsets, so one copy serves every search and
+	// the scan stays linear in the document size.
+	let lower = html.to_ascii_lowercase();
 	let mut out = String::new();
 	let mut title = None;
-	let mut rest = html;
-	while let Some(start) = rest.find('<') {
-		out.push_str(&decode(&rest[..start]));
-		rest = &rest[start..];
-		if rest.starts_with("<!--") {
-			rest = rest.find("-->").map_or("", |end| &rest[end + 3..]);
+	let mut position = 0;
+	while let Some(found) = html[position..].find('<') {
+		let start = position + found;
+		out.push_str(&decode(&html[position..start]));
+		if html[start..].starts_with("<!--") {
+			position = html[start..]
+				.find("-->")
+				.map_or(html.len(), |end| start + end + 3);
 			continue;
 		}
-		let Some(end) = rest.find('>') else {
+		let Some(close) = html[start..].find('>') else {
+			position = html.len();
 			break;
 		};
-		let tag = &rest[1..end];
-		rest = &rest[end + 1..];
+		let tag = &html[start + 1..start + close];
+		position = start + close + 1;
 		let name = tag
 			.trim_start_matches('/')
 			.split(|c: char| c.is_whitespace() || c == '/')
 			.next()
 			.unwrap_or_default()
 			.to_ascii_lowercase();
-		if !tag.starts_with('/') && (name == "title" || SKIPPED.contains(&name.as_str())) {
-			let close = format!("</{name}");
-			let lower = rest.to_ascii_lowercase();
-			let end = lower.find(&close).unwrap_or(rest.len());
+		if !tag.starts_with('/') && SKIPPED.contains(&name.as_str()) {
+			let closing = format!("</{name}");
+			let end = lower[position..]
+				.find(&closing)
+				.map_or(html.len(), |end| position + end);
 			if name == "title" && title.is_none() {
 				title = Some(
-					decode(&rest[..end])
+					decode(&html[position..end])
 						.split_whitespace()
 						.collect::<Vec<_>>()
 						.join(" "),
 				);
 			}
-			// `head` may hold the title; keep scanning it for that only.
-			if name == "head" {
-				if let Some(found) = html_text(&rest[..end]).0 {
-					title.get_or_insert(found);
-				}
-			}
-			rest = &rest[end..];
-			rest = rest.find('>').map_or("", |end| &rest[end + 1..]);
+			position = html[end..]
+				.find('>')
+				.map_or(html.len(), |close| end + close + 1);
 			continue;
 		}
 		if BLOCKS.contains(&name.as_str()) {
 			out.push('\n');
 		}
 	}
-	out.push_str(&decode(rest));
+	out.push_str(&decode(&html[position..]));
 	(title.filter(|title| !title.is_empty()), out)
 }
 

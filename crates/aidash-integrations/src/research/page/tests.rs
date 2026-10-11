@@ -90,13 +90,13 @@ async fn html_pages_become_bounded_inert_lines() {
 async fn redirects_are_admitted_again_before_any_request() {
 	let address = serve(vec![http(
 		"302 Found",
-		"Location: http://127.0.0.1/internal\r\n",
+		"Location: http://example.com:8443/internal\r\n",
 		"",
 	)])
 	.await;
 	let mut reader = reader(address);
 	reader.admit = |url| {
-		if url.host_str() == Some("127.0.0.1") {
+		if url.port() == Some(8443) {
 			Err(Failure::NonPublicDestination)
 		} else {
 			Ok(())
@@ -106,6 +106,37 @@ async fn redirects_are_admitted_again_before_any_request() {
 		.fetch(&Url::parse("http://example.com/").unwrap())
 		.await;
 	assert_eq!(outcome, Err(Failure::NonPublicDestination));
+}
+
+#[rstest]
+#[tokio::test]
+async fn redirects_never_leave_the_approved_destination_host() {
+	let address = serve(vec![http(
+		"301 Moved Permanently",
+		"Location: https://elsewhere.example.net/page\r\n",
+		"",
+	)])
+	.await;
+	assert_eq!(
+		reader(address)
+			.fetch(&Url::parse("http://example.com/").unwrap())
+			.await,
+		Err(Failure::CrossHostRedirect)
+	);
+}
+
+#[rstest]
+fn extraction_is_linear_in_unclosed_skipped_elements() {
+	// Many unclosed skipped elements once made each one rescan the rest.
+	let body = "<script>".repeat(200_000) + "visible";
+	let started = std::time::Instant::now();
+	let outcome = extract(
+		&Url::parse("https://example.com/").unwrap(),
+		"text/html",
+		body.as_bytes(),
+	);
+	assert!(started.elapsed() < std::time::Duration::from_secs(5));
+	assert_eq!(outcome, Err(Failure::ExtractionFailed));
 }
 
 #[rstest]
