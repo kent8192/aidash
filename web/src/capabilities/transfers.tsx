@@ -95,9 +95,7 @@ export function TransferHistory({ area }: { area: string }) {
           {ja ? "さらに表示" : "Load more"}
         </Button>
       )}
-      {(error || query.error) && (
-        <Alert>{error || query.error?.message}</Alert>
-      )}
+      {(error || query.error) && <Alert>{error || query.error?.message}</Alert>}
     </details>
   );
 }
