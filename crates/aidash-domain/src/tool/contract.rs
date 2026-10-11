@@ -139,6 +139,26 @@ pub struct ToolBehavior {
 	/// The output's `"exposure_update"` changes the Run's Exposure set.
 	#[serde(skip_serializing_if = "std::ops::Not::not")]
 	pub exposure_update: bool,
+	/// Research contract result kinds this operation yields. A Run that binds
+	/// any `Citations` operation has its final answer's Source citations checked.
+	#[serde(skip_serializing_if = "Vec::is_empty")]
+	pub yields: Vec<Yield>,
+	/// The provider sends Run-derived content outside the Node only after a
+	/// Web disclosure approval; the operator waits on it like any approval.
+	#[serde(skip_serializing_if = "std::ops::Not::not")]
+	pub disclosure_approval: bool,
+}
+
+/// Result kinds of the host-owned research contract, declared per operation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Yield {
+	/// Source records from Web search; discovery only, never evidence.
+	Search,
+	/// A Document snapshot from Page reading.
+	Fetch,
+	/// Evidence fragments that a final answer may cite.
+	Citations,
 }
 impl ToolBehavior {
 	pub fn permits(&self, mode: ToolUseMode) -> bool {
@@ -153,6 +173,9 @@ impl ToolBehavior {
 			Some(ResultFitting::SkillText) if input.get("skill").is_none() => None,
 			other => other,
 		}
+	}
+	pub fn yields(&self, kind: Yield) -> bool {
+		self.yields.contains(&kind)
 	}
 	pub fn model_media_result(&self, input: &Value, output: &Value) -> bool {
 		self.yields_model_media
@@ -212,6 +235,8 @@ impl ToolContract {
 				media_pending: false,
 				yields_model_media: false,
 				exposure_update: false,
+				yields: vec![],
+				disclosure_approval: false,
 			},
 			disclosure,
 			remote_exposure: true,
@@ -239,6 +264,8 @@ pub fn builtin_contract(name: &str) -> Option<ToolContract> {
 			yields_model_media: false,
 			workbench_approval: false,
 			exposure_update: false,
+			yields: vec![],
+			disclosure_approval: false,
 		},
 		disclosure: DisclosureBoundary::Home,
 		remote_exposure: false,

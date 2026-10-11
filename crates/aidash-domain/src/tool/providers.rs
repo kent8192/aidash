@@ -1,8 +1,12 @@
 //! Provider-owned operation facts. Descriptors select and constrain these facts.
-use super::{ToolConfig, ToolContract, ToolIdentity, builtin_contract};
+use super::{
+	AuthorizationRequirement, Continuation, DisclosureBoundary, ToolAuthorization, ToolBehavior,
+	ToolConfig, ToolContract, ToolEffect, ToolIdentity, Yield, builtin_contract,
+};
 use crate::{
 	Error, Result,
 	registry::bindings::{Narrowing, QualifiedRef, validate_alias},
+	research::Operation as ResearchOperation,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -60,6 +64,86 @@ pub fn core_provider(operation: &str) -> Option<&'static str> {
 		"file_share" => "core.sharing@1",
 		_ => return None,
 	})
+}
+/// Node providers of the host-owned research contract and the operations each
+/// implements. Providers are interchangeable: the host behavior is selected by
+/// the research operation, so replacing one search provider with another needs
+/// no operator change.
+pub const RESEARCH_PROVIDERS: &[(&str, &[&str], ToolTier)] = &[
+	("research.brave@1", &["search"], ToolTier::Host),
+	("research.page@1", &["fetch", "find"], ToolTier::Host),
+	(
+		"research.fixture@1",
+		&["search", "fetch", "find"],
+		ToolTier::Fixture,
+	),
+];
+pub fn research_operation(
+	provider: &str,
+	operation: &str,
+) -> Option<(ResearchOperation, ToolTier)> {
+	RESEARCH_PROVIDERS
+		.iter()
+		.find(|(name, operations, _)| *name == provider && operations.contains(&operation))
+		.and_then(|(_, _, tier)| Some((ResearchOperation::parse(operation)?, *tier)))
+}
+/// The stable default Model alias of a research operation.
+pub fn research_alias(operation: ResearchOperation) -> &'static str {
+	match operation {
+		ResearchOperation::Search => "research_search",
+		ResearchOperation::Fetch => "research_fetch",
+		ResearchOperation::Find => "research_find",
+	}
+}
+pub fn research_descriptor(node: &str, provider: &str, operation: &str) -> Result<ToolDescriptor> {
+	let (research, tier) = research_operation(provider, operation)
+		.ok_or_else(|| Error::Invalid("unknown research provider operation".into()))?;
+	Ok(ToolDescriptor {
+		registry_node: node.into(),
+		provider: provider.into(),
+		operation: operation.into(),
+		default_alias: research_alias(research).into(),
+		tier,
+		narrow: Narrowing::default(),
+		transport: None,
+		lifecycle: None,
+	})
+}
+/// Declared behavior of one research operation, identical for every provider.
+pub fn research_contract(operation: ResearchOperation) -> ToolContract {
+	let (yields, disclosure) = match operation {
+		ResearchOperation::Search => (vec![Yield::Search], DisclosureBoundary::External),
+		ResearchOperation::Fetch => (
+			vec![Yield::Fetch, Yield::Citations],
+			DisclosureBoundary::External,
+		),
+		ResearchOperation::Find => (vec![Yield::Citations], DisclosureBoundary::Local),
+	};
+	ToolContract {
+		identity: ToolIdentity::Builtin(format!("research:{}", operation.as_str())),
+		authorization: ToolAuthorization {
+			flag: None,
+			core: None,
+			requirements: Vec::<AuthorizationRequirement>::new(),
+		},
+		behavior: ToolBehavior {
+			// Reading public sources leaves user resources unchanged. A repeated
+			// invocation key reuses the recorded attempt instead of dispatching.
+			effect: ToolEffect::ReadOnly,
+			fitting: None,
+			continuation: Continuation::Ordinary,
+			catch_up: false,
+			media_pending: false,
+			yields_model_media: false,
+			workbench_approval: false,
+			exposure_update: false,
+			yields,
+			disclosure_approval: operation.discloses(),
+		},
+		disclosure,
+		// Evidence is retained by the executing Node and cited from its store.
+		remote_exposure: false,
+	}
 }
 pub fn requires_runner(operation: &str) -> bool {
 	matches!(
@@ -177,6 +261,15 @@ impl ToolDescriptor {
 				contract.remote_exposure = true;
 			}
 			contract
+		} else if self.provider.starts_with("research.") {
+			let (operation, tier) = research_operation(&self.provider, &self.operation)
+				.ok_or_else(|| Error::Invalid("unknown research provider operation".into()))?;
+			if tier != self.tier || self.transport.is_some() || self.lifecycle.is_some() {
+				return Err(Error::Invalid(
+					"incompatible research provider descriptor".into(),
+				));
+			}
+			research_contract(operation)
 		} else {
 			if self.tier != ToolTier::Integration || self.lifecycle.is_some() {
 				return Err(Error::Invalid(

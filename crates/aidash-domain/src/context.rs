@@ -444,6 +444,12 @@ pub enum ContextEvent {
 		max_bytes: Option<usize>,
 		reason: Option<String>,
 	},
+	/// A final answer cited evidence this Run never received. Recorded once;
+	/// a second invalid answer is withheld.
+	CitationCorrectionRequired {
+		invalid: Vec<String>,
+		instruction: String,
+	},
 }
 
 impl ContextEvent {

@@ -37,6 +37,7 @@ impl From<serde_json::Error> for Error {
 }
 
 pub mod registry;
+pub mod research;
 pub mod tool;
 
 pub mod capabilities;
