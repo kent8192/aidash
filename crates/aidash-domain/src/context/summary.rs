@@ -135,6 +135,12 @@ pub enum Rejection {
 	UnprovenVerification(String),
 	#[error("summary dropped or changed previous verification {0}")]
 	DroppedVerification(String),
+	#[error("summary dropped or changed previous decision {0}")]
+	DroppedDecision(usize),
+	#[error("summary artifact {0} does not appear in its history")]
+	UnprovenArtifact(String),
+	#[error("summary dropped previous artifact {0} without a newer revision from its history")]
+	DroppedArtifact(String),
 	#[error("summary exceeds its {0}-token bound")]
 	Oversized(u32),
 	#[error("summary did not reduce the complete request")]
@@ -154,6 +160,9 @@ impl Rejection {
 			Self::DroppedResolution(_) => "dropped_resolution",
 			Self::UnprovenVerification(_) => "unproven_verification",
 			Self::DroppedVerification(_) => "dropped_verification",
+			Self::DroppedDecision(_) => "dropped_decision",
+			Self::UnprovenArtifact(_) => "unproven_artifact",
+			Self::DroppedArtifact(_) => "dropped_artifact",
 			Self::Oversized(_) => "oversized",
 			Self::NotReduced => "not_reduced",
 		}
@@ -247,6 +256,42 @@ impl SummaryContent {
 		{
 			return Err(Rejection::DroppedVerification(dropped.reference.clone()));
 		}
+		// Like a verification, an earlier decision left the projection with the
+		// merge that recorded it: the summary is its only model-visible record.
+		if let Some(previous) = previous
+			&& let Some(index) = previous
+				.content
+				.decisions
+				.iter()
+				.position(|decision| !content.decisions.contains(decision))
+		{
+			return Err(Rejection::DroppedDecision(index));
+		}
+		// An artifact is carried unchanged from the previous summary, or one
+		// absorbed event states its reference and any revision; the model never
+		// invents a path, ID or revision.
+		let mut updated = BTreeSet::new();
+		for artifact in &content.artifacts {
+			if artifact.reference.trim().is_empty() {
+				return Err(Rejection::InvalidItem);
+			}
+			if previous.is_some_and(|previous| previous.content.artifacts.contains(artifact)) {
+				continue;
+			}
+			if !absorbed.iter().any(|entry| states(&entry.event, artifact)) {
+				return Err(Rejection::UnprovenArtifact(artifact.reference.clone()));
+			}
+			updated.insert(artifact.reference.as_str());
+		}
+		// A previous artifact stays unless this merge's history states a newer
+		// revision of the same reference.
+		if let Some(previous) = previous
+			&& let Some(dropped) = previous.content.artifacts.iter().find(|artifact| {
+				!content.artifacts.contains(artifact)
+					&& !updated.contains(artifact.reference.as_str())
+			}) {
+			return Err(Rejection::DroppedArtifact(dropped.reference.clone()));
+		}
 		if let Some(previous) = previous {
 			// A retained item keeps its list and exact text; only an explicit
 			// resolution, which removes the item, may close it.
@@ -301,6 +346,26 @@ impl SummaryContent {
 /// recheck, always stay verbatim in the projection.
 pub fn absorbable(event: &ContextEvent) -> bool {
 	matches!(event, ContextEvent::Tool { .. })
+}
+
+/// Whether one absorbed tool event states `artifact`: its call or result
+/// contains the reference and, when one is given, the revision.
+fn states(event: &ContextEvent, artifact: &ArtifactRef) -> bool {
+	let ContextEvent::Tool { call, result } = event else {
+		return false;
+	};
+	let stated = |needle: &str| mentions(&call.arguments, needle) || mentions(result, needle);
+	stated(&artifact.reference) && (artifact.revision.is_empty() || stated(&artifact.revision))
+}
+
+fn mentions(value: &Value, needle: &str) -> bool {
+	match value {
+		Value::String(text) => text.contains(needle),
+		Value::Number(number) => number.to_string() == needle,
+		Value::Array(values) => values.iter().any(|value| mentions(value, needle)),
+		Value::Object(fields) => fields.values().any(|value| mentions(value, needle)),
+		Value::Bool(_) | Value::Null => false,
+	}
 }
 
 pub fn entries_digest(entries: &[HistoryEntry]) -> String {

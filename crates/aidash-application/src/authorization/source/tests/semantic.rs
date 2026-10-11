@@ -478,6 +478,71 @@ async fn compactor_binding_requires_the_pinned_remote_definition() {
 	assert_eq!(scope.reads, vec!["index", "entry"]);
 }
 
+/// The Home discloses `summarizer` only when the executor's own inspected
+/// Agent pins that Summary Stage model. An executor whose Agent schema predates
+/// `context_policy` cannot resolve such an Agent, so it never receives the field.
+#[rstest]
+#[tokio::test]
+async fn summarizer_is_disclosed_only_for_the_executor_inspected_summary_pin() {
+	let summarizer = EntityRef {
+		id: "model".into(),
+		version: "1.0.0".into(),
+	};
+	let mut input = request();
+	if let Request::RequiredHome {
+		summarizer: requested,
+		..
+	} = &mut input
+	{
+		*requested = Some(summarizer.clone());
+	}
+	let mut scope = BindingScope::new();
+	assert!(matches!(
+		use_case::binding(
+			&mut scope,
+			&task(),
+			"aidash://receiver",
+			&remote_inspection(),
+			&input
+		)
+		.await,
+		Err(Error::RemoteSemantic(Failure::Configuration))
+	));
+	assert!(scope.base.calls.is_empty());
+	assert!(scope.reads.is_empty());
+	let mut inspection = remote_inspection();
+	let mut agent = inspection.agent.clone();
+	agent.config["context_policy"] =
+		json!({"version":"context-recovery/1","summary":{"model":summarizer}});
+	let source = crate::test_support::entry(
+		"semantic-memory",
+		"memory",
+		json!({"schema_version":1,"source":{"adapter":"semantic_memory"}}),
+	);
+	inspection.binding_snapshot =
+		crate::test_support::resolve("aidash://receiver", &agent, true, vec![source]);
+	inspection.agent = agent;
+	let mut scope = BindingScope::new();
+	let Binding::RequiredHome {
+		summarizer: Some(pin),
+		..
+	} = use_case::binding(
+		&mut scope,
+		&task(),
+		"aidash://receiver",
+		&inspection,
+		&input,
+	)
+	.await
+	.unwrap()
+	else {
+		panic!("the pinned summarizer is disclosed")
+	};
+	assert_eq!(pin.node_id, "aidash://receiver");
+	assert_eq!(pin.entry, summarizer);
+	assert_eq!(pin.digest, "sha256:definition");
+}
+
 #[rstest]
 #[case::native(true)]
 #[case::without_native(false)]

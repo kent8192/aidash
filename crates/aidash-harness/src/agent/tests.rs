@@ -1291,6 +1291,26 @@ impl ExecutionTool for RecordReader {
 		unexpected("renamed_reader.invoke")
 	}
 }
+struct Observer;
+#[async_trait]
+impl ExecutionTool for Observer {
+	fn specification(&self) -> aidash_domain::provider::ToolSpec {
+		aidash_domain::provider::ToolSpec {
+			name: "renamed_observer".into(),
+			description: "Observe the workspace".into(),
+			parameters: json!({"type":"object","properties":{}}),
+		}
+	}
+	fn contract(&self) -> aidash_domain::tool::ToolContract {
+		aidash_domain::tool::builtin_contract("workspace_observe").unwrap()
+	}
+	fn replay_safe(&self) -> bool {
+		true
+	}
+	async fn invoke(&self, _: &Run, _: Value, _: &str) -> Result<Value> {
+		unexpected("renamed_observer.invoke")
+	}
+}
 
 #[rstest]
 fn summary_dependencies_keep_a_message_whose_read_result_jev_truncated() {
@@ -1308,10 +1328,52 @@ fn summary_dependencies_keep_a_message_whose_read_result_jev_truncated() {
 		event: ContextEvent::tool(call, json!("{\"kind\":\"message\",\"content\":\"private")),
 	}];
 
-	let dependencies = summary_dependencies(&entries, &tools);
+	let dependencies = summary_dependencies(&entries, &[], &tools);
 
 	assert!(dependencies.message_ids.contains(&id));
 	assert!(dependencies.tool_call_ids.contains("read"));
+}
+
+#[rstest]
+fn summary_dependencies_keep_messages_an_observation_page_previewed() {
+	let (shown, hidden) = (Uuid::from_u128(7), Uuid::from_u128(8));
+	let mut tools = Tools::new();
+	tools.insert("renamed_observer".into(), Arc::new(Observer));
+	let call = ToolCall {
+		id: "observe".into(),
+		name: "renamed_observer".into(),
+		arguments: json!({"offset":0,"limit":20}),
+	};
+	let page = json!({
+		"view":"workspace_observation_v1",
+		"messages":[
+			{"id":shown,"sender":"human","content_preview":"private plan"},
+			{"id":hidden,"sender":"human","content_preview":"private budget"}
+		]
+	});
+	let journaled = [context::HistoryEntry {
+		seq: 1,
+		event: ContextEvent::tool(call.clone(), page),
+	}];
+	// Jev kept only leading text: previews without their message IDs.
+	let truncated = [context::HistoryEntry {
+		seq: 1,
+		event: ContextEvent::tool(
+			call,
+			json!("{\"messages\":[{\"content_preview\":\"private plan"),
+		),
+	}];
+
+	let from_journal = summary_dependencies(&truncated, &journaled, &tools);
+	let untruncated = summary_dependencies(&journaled, &[], &tools);
+
+	for dependencies in [from_journal, untruncated] {
+		assert_eq!(
+			dependencies.message_ids,
+			[shown, hidden].into_iter().collect()
+		);
+		assert!(dependencies.tool_call_ids.contains("observe"));
+	}
 }
 
 #[rstest]

@@ -178,6 +178,19 @@ impl<'a> Executor<'a> {
 			record_stage("summary", "invalid");
 			return Err(Error::Context(ContextFailure::SummaryInvalid));
 		}
+		// Jev may have cut an absorbed result to leading text; the journal keeps
+		// the original, which names every source the absorbed text came from.
+		let originals = store.context_journal(run.id, first.seq, last.seq).await?;
+		// The candidate carries the previous summary's sources as well.
+		let mut dependencies = summary_dependencies(&plan.absorbed, &originals, tools);
+		if let Some(previous) = plan.pruned.execution_summary.as_deref() {
+			dependencies
+				.message_ids
+				.extend(previous.dependencies.message_ids.iter().copied());
+			dependencies
+				.tool_call_ids
+				.extend(previous.dependencies.tool_call_ids.iter().cloned());
+		}
 		let attempt = Attempt {
 			id: Uuid::new_v4(),
 			run_id: run.id,
@@ -293,16 +306,6 @@ impl<'a> Executor<'a> {
 				return Err(error);
 			}
 		};
-		// The candidate carries the previous summary's sources as well.
-		let mut dependencies = summary_dependencies(&plan.absorbed, tools);
-		if let Some(previous) = plan.pruned.execution_summary.as_deref() {
-			dependencies
-				.message_ids
-				.extend(previous.dependencies.message_ids.iter().copied());
-			dependencies
-				.tool_call_ids
-				.extend(previous.dependencies.tool_call_ids.iter().cloned());
-		}
 		// Authority was released during I/O: recheck the Run's ordinary inference
 		// authority, the exact summarizer and every summarized source before any
 		// candidate is adopted.
@@ -2114,22 +2117,40 @@ fn settled_usage(result: &Result<provider::ModelResponse>) -> Option<&provider::
 		Err(error) => error.terminal_usage(),
 	}
 }
-/// Sources whose current authority the summarized text depends on.
+/// Sources whose current authority the summarized text depends on. A read
+/// keys on its call; an observation page on the messages its journaled
+/// original result previews.
 fn summary_dependencies(
 	entries: &[context::HistoryEntry],
+	originals: &[context::HistoryEntry],
 	tools: &Tools,
 ) -> context::summary::SummaryDependencies {
 	let mut dependencies = context::summary::SummaryDependencies::default();
 	for entry in entries {
-		if let ContextEvent::Tool { call, .. } = &entry.event {
-			dependencies.tool_call_ids.insert(call.id.clone());
-			if let Some(id) = tools
-				.get(&call.name)
-				.and_then(|tool| message_read_target(&tool.contract(), call))
-			{
-				dependencies.message_ids.insert(id);
-			}
-		}
+		let ContextEvent::Tool { call, result } = &entry.event else {
+			continue;
+		};
+		dependencies.tool_call_ids.insert(call.id.clone());
+		let Some(contract) = tools.get(&call.name).map(|tool| tool.contract()) else {
+			continue;
+		};
+		dependencies
+			.message_ids
+			.extend(message_read_target(&contract, call));
+		let original = originals
+			.iter()
+			.find(|original| original.seq == entry.seq)
+			.and_then(|original| match &original.event {
+				ContextEvent::Tool {
+					call: journaled,
+					result,
+				} if journaled.id == call.id => Some(result),
+				_ => None,
+			})
+			.unwrap_or(result);
+		dependencies
+			.message_ids
+			.extend(observed_message_ids(&contract, original));
 	}
 	dependencies
 }

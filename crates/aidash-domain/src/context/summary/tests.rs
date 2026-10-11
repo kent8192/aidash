@@ -25,15 +25,19 @@ fn content(
 }
 
 fn tool(seq: u64) -> HistoryEntry {
+	tool_with(seq, json!({"path":"src/parser.rs"}), json!({"ok":true}))
+}
+
+fn tool_with(seq: u64, arguments: serde_json::Value, result: serde_json::Value) -> HistoryEntry {
 	HistoryEntry {
 		seq,
 		event: ContextEvent::tool(
 			ToolCall {
 				id: format!("call_{seq}"),
 				name: "file_read".into(),
-				arguments: json!({}),
+				arguments,
 			},
-			json!({"ok":true}),
+			result,
 		),
 	}
 }
@@ -333,6 +337,115 @@ fn resolutions_and_verification_need_tool_call_evidence() {
 		SummaryContent::parse(&dropped.to_string(), Some(&first), &[tool(5)], 4096),
 		Err(Rejection::DroppedVerification("call_2".into()))
 	);
+}
+
+#[test]
+fn decisions_and_artifacts_survive_later_merges() {
+	let first = adopted(&content_text(), None, &[tool(2)]);
+	let edit = |change: &dyn Fn(&mut serde_json::Value)| {
+		let mut value: serde_json::Value = serde_json::from_str(&content_text()).unwrap();
+		change(&mut value);
+		value.to_string()
+	};
+	// A dropped or rewritten decision is gone from model context for good.
+	for decisions in [json!([]), json!(["use pest"])] {
+		assert_eq!(
+			SummaryContent::parse(
+				&edit(&|value| value["decisions"] = decisions.clone()),
+				Some(&first),
+				&[tool(5)],
+				4096
+			),
+			Err(Rejection::DroppedDecision(0))
+		);
+	}
+	// New decisions are appended to the carried ones.
+	SummaryContent::parse(
+		&edit(&|value| value["decisions"] = json!(["use nom", "keep errors typed"])),
+		Some(&first),
+		&[tool(5)],
+		4096,
+	)
+	.unwrap();
+	// A previous artifact cannot be dropped or rewritten without evidence.
+	assert_eq!(
+		SummaryContent::parse(
+			&edit(&|value| value["artifacts"] = json!([])),
+			Some(&first),
+			&[tool(5)],
+			4096
+		),
+		Err(Rejection::DroppedArtifact("src/parser.rs".into()))
+	);
+	let revised = |value: &mut serde_json::Value| {
+		value["artifacts"] = json!([{"reference":"src/parser.rs","revision":"r2"}])
+	};
+	assert_eq!(
+		SummaryContent::parse(&edit(&revised), Some(&first), &[tool(5)], 4096),
+		Err(Rejection::UnprovenArtifact("src/parser.rs".into()))
+	);
+	// A newer revision stated by this merge's history replaces it.
+	let written = tool_with(
+		5,
+		json!({"path":"src/parser.rs"}),
+		json!({"written":true,"revision":"r2"}),
+	);
+	let second = adopted(&edit(&revised), Some(&first), &[written]);
+	assert_eq!(second.content.artifacts[0].revision, "r2");
+	assert_eq!(second.content.decisions, ["use nom"]);
+}
+
+#[test]
+fn new_artifacts_must_appear_in_absorbed_history() {
+	let artifacts = |artifacts: serde_json::Value| {
+		let mut value: serde_json::Value = serde_json::from_str(&content_text()).unwrap();
+		value["artifacts"] = artifacts;
+		value.to_string()
+	};
+	// An invented path, ID or revision is never adopted.
+	for (artifact, reference) in [
+		(
+			json!({"reference":"src/invented.rs","revision":""}),
+			"src/invented.rs",
+		),
+		(
+			json!({"reference":"src/parser.rs","revision":"r9"}),
+			"src/parser.rs",
+		),
+	] {
+		assert_eq!(
+			SummaryContent::parse(&artifacts(json!([artifact])), None, &[tool(2)], 4096),
+			Err(Rejection::UnprovenArtifact(reference.into()))
+		);
+	}
+	assert_eq!(
+		SummaryContent::parse(
+			&artifacts(json!([{"reference":" ","revision":""}])),
+			None,
+			&[tool(2)],
+			4096
+		),
+		Err(Rejection::InvalidItem)
+	);
+	// The reference and its revision must come from the same absorbed event.
+	let named = tool_with(2, json!({"path":"src/parser.rs"}), json!({"ok":true}));
+	let revised = tool_with(3, json!({}), json!({"artifact_id":"a-7","revision":4}));
+	let stated = artifacts(json!([{"reference":"src/parser.rs","revision":"4"}]));
+	assert_eq!(
+		SummaryContent::parse(&stated, None, &[named.clone(), revised.clone()], 4096),
+		Err(Rejection::UnprovenArtifact("src/parser.rs".into()))
+	);
+	SummaryContent::parse(
+		&artifacts(json!([{"reference":"a-7","revision":"4"}])),
+		None,
+		&[named, revised],
+		4096,
+	)
+	.unwrap();
+}
+
+fn content_text() -> String {
+	content(&[], &[], &[])
 }
 
 #[test]

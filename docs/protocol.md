@@ -158,8 +158,11 @@ in the same list and with unchanged text, unless it lists them as resolved;
 a changed or moved item is rejected, and a resolved ID must leave both active
 lists. A resolution's `resolved_by` and every new
 `verification` reference must be the exact ID of a tool call the merge absorbs;
-previous resolved and verification entries must be carried unchanged, so a
-retired ID never returns. It records the
+previous decisions, resolved and verification entries must be carried
+unchanged, so a retired ID never returns. A new artifact's reference, and its
+revision when one is given, must appear in the call or result of one absorbed
+event; a previous artifact is carried unchanged unless the merge's history
+states a newer revision of the same reference. It records the
 exact journal range, the absorbed sequence ranges (entries pruned between them
 were never absorbed), and the absorbed entries' digest, and carries the sources
 it depends on. A summary is adopted only if it validates, strictly shrinks the
@@ -174,7 +177,10 @@ RequiredHome Runs need a summarizer pin and a summary allowance: the semantic
 request's optional `summarizer` must name the Agent's pinned `summary.model`, the
 Home discloses it as the binding's `summarizer` provider, and each request is
 admitted with usage purpose `summary` against every owner's `summary` (or
-`remote.summary`) allowance. Peers without the field never receive it. The
+`remote.summary`) allowance. The Home accepts the request only when the
+executor's own inspected Agent pins that `summary.model`; an executor whose
+Agent schema predates `context_policy` cannot resolve such an Agent, so peers
+without the field never receive it. The
 Home accepts only the approved maximum charge: the pinned summarizer's context
 window plus `summary.max_tokens` capped at its output limit.
 Disclosure is checked before every request. A missing approval makes the stage unavailable,
@@ -189,7 +195,10 @@ unchanged; an interrupted attempt is marked `abandoned` by the next attempt or
 by lease recovery. If a source the summary depends on is no longer readable, the
 summary is discarded and the original journal events it absorbed return to the
 saved projection, and the step pauses for authority before Jev or the model
-receives them. A local Run rechecks message dependencies under its current authority without
+receives them. Message sources are the targets of absorbed message reads and
+the messages each absorbed `workspace_observe` page previews, taken from the
+journaled original result because Jev may have truncated the projection copy.
+A local Run rechecks message dependencies under its current authority without
 recording a read; a remote Run rechecks them through the Home's filtered record
 reads. An authority-bearing Run rechecks them again after pruning, whose Jev
 I/O releases its authority, before the summarizer or the model is called.

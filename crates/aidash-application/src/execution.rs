@@ -123,6 +123,21 @@ pub fn message_read_target(
 	call.arguments["id"].as_str()?.parse().ok()
 }
 
+/// Messages a workspace observation page previews. Jev truncation may keep
+/// only leading text that still carries previews without their IDs, so pass
+/// the journaled original result.
+pub fn observed_message_ids(contract: &ToolContract, result: &Value) -> Vec<Uuid> {
+	if contract.behavior.fitting != Some(ResultFitting::Observation) {
+		return vec![];
+	}
+	result["messages"]
+		.as_array()
+		.into_iter()
+		.flatten()
+		.filter_map(|message| message["id"].as_str()?.parse().ok())
+		.collect()
+}
+
 pub fn message_read_range_for(
 	contract: &ToolContract,
 	event: &ContextEvent,
