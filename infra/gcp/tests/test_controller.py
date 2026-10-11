@@ -736,9 +736,10 @@ class ReconcileTests(unittest.TestCase):
 
         def mfa(output):
             self.calls.append(("mfa", output["instance"]))
+            # Corrections on earlier tenants surface before a later tenant fails.
+            yield from drift.items()
             if failing:
                 raise RuntimeError("fixture MFA failure")
-            return dict(drift)
 
         with (
             patch.object(controller, "reconcile_mfa", mfa),
@@ -771,12 +772,20 @@ class ReconcileTests(unittest.TestCase):
             self.assertEqual(entry()["gcip_mfa_drift_at"], 10000)
             self.assertEqual([call for call in self.calls if call[0] != "observe"], [("mfa", "test")])
 
-            # A failed correction fences the host and retries through the GCIP refresh.
-            drift.clear()
+            # A later tenant's failure fences the host without losing an earlier
+            # tenant's correction, then retries through the GCIP refresh.
+            entry().pop("gcip_mfa_drift_at")
+            drift["pool"] = ["state"]
             failing.append(True)
-            with self.assertRaisesRegex(RuntimeError, "Reconciliation incomplete"):
+            with (
+                redirect_stdout(io.StringIO()) as stdout,
+                self.assertRaisesRegex(RuntimeError, "Reconciliation incomplete"),
+            ):
                 controller.reconcile(config, self.store)
+            self.assertIn("::warning title=GCIP MFA drift corrected::test tenant=pool fields=state", stdout.getvalue())
+            self.assertEqual(entry()["gcip_mfa_drift_at"], 10000)
             self.assertTrue(entry()["gcip_pending"])
+            drift.clear()
             failing.clear()
             self.calls.clear()
             controller.reconcile(config, self.store)

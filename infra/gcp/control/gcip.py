@@ -124,16 +124,18 @@ def reconcile_environment(output, enabled=True, api=None):
 
 
 def reconcile_mfa(output, api=None):
-    """Return {tenant_id: drifted fields} after enforcing every declared MFA Requirement."""
+    """Enforce every declared MFA Requirement, yielding (tenant_id, drifted fields) per correction.
+
+    Each correction is yielded before the next tenant is touched, so a later
+    tenant's failure cannot hide drift already overwritten on an earlier one.
+    """
     config = (output or {}).get("gcip", {})
     tenants = config.get("tenant_ids", [])
     # State written before tenant MFA existed declares nothing until its next apply.
     if not tenants or "mfa" not in config:
-        return {}
+        return
     api = api or TenantMFA()
-    drift = {}
     for tenant in tenants:
         fields = api.reconcile(config["project_id"], tenant, config["mfa"][tenant])
         if fields:
-            drift[tenant] = fields
-    return drift
+            yield tenant, fields

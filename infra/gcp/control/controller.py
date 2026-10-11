@@ -578,11 +578,9 @@ def gcip_output_revision(output):
 
 
 def reconcile_gcip_mfa(store, identity, generation, output):
-    """Enforce declared tenant MFA; record and annotate every corrected drift."""
-    drift = reconcile_mfa(output)
-    for tenant, fields in sorted(drift.items()):
+    """Enforce declared tenant MFA; annotate and record each correction before the next tenant."""
+    for tenant, fields in reconcile_mfa(output):
         print(f"::warning title=GCIP MFA drift corrected::{identity} tenant={tenant} fields={','.join(fields)}")
-    if drift:
         update_entry(store, identity, generation, gcip_mfa_drift_at=int(time.time()))
 
 
