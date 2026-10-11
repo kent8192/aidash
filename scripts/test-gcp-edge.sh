@@ -3,8 +3,9 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 image="${AIDASH_EDGE_TEST_IMAGE:-aidash155-edge-admission:local}"
-docker build -f infra/gcp/helm/environment/edge.Dockerfile -t "$image" infra/gcp/helm/environment
-docker run --rm --network none --label purpose=aidash-155-edge-check \
+# The edge image installs from an amd64-only archive snapshot, like its release build.
+docker build --platform linux/amd64 -f infra/gcp/helm/environment/edge.Dockerfile -t "$image" infra/gcp/helm/environment
+docker run --rm --platform linux/amd64 --network none --label purpose=aidash-155-edge-check \
   -v "$PWD/infra/gcp/helm/environment/files:/source:ro" "$image" bash -euc '
 sed "s/AIDASH_BACKEND/127.0.0.1/g" /source/admission.conf > /etc/nginx/conf.d/aidash.conf
 # Stand-in application: every request succeeds.

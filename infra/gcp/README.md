@@ -95,6 +95,8 @@ publish and apply job of a run uses the same trusted code. Source images
 in a separate job without cloud credentials, using trusted Dockerfiles.
 Privileged images (`observer`, `control` for the Runner/guard/installer and
 `edge`) are built only from the trusted checkout, including for fork previews.
+The `edge` admission image installs exact Nginx/Lua package versions from one
+Ubuntu archive snapshot on a digest-pinned base, so a rebuild reproduces it.
 NATS and Caddy use reviewed upstream linux/amd64 digests in `control/images.py`.
 A publisher job copies all eight image archives to digest-addressed private
 registry entries without executing them; `release.json` records each digest.
