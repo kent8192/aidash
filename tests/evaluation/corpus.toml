@@ -382,4 +382,3 @@ kind = "answer-pattern"
 answer_pattern = "(?i)summary"
 [tasks.expected]
 outcome = "unresolved"
-claimed_success = false

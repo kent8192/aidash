@@ -338,7 +338,7 @@ class FixtureTest(unittest.TestCase):
         self.assertEqual(second["choices"][0]["message"]["tool_calls"][0]["function"]["name"], "capability_load")
         _, third = chat(self.fixture, "task-3", tools=["capability_search", "capability_load", "invoice_lookup"])
         self.assertEqual(third["choices"][0]["message"]["tool_calls"][0]["function"]["name"], "invoice_lookup")
-        _, final = chat(self.fixture, "task-3", history=[{"result": {"status": "unpaid"}}])
+        _, final = chat(self.fixture, "task-3", history=[{"result": {"payment_status": "unpaid"}}])
         self.assertIn("unpaid", final["choices"][0]["message"]["content"])
 
     def test_unregistered_requests_are_fixture_faults(self):

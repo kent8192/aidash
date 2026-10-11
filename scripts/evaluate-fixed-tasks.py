@@ -15,6 +15,7 @@ Results are measurements. They approve no accuracy, cost or rollout claim, and
 conclusions are limited to the tested tasks and models. See docs/evaluation.md.
 """
 import argparse
+import concurrent.futures
 import contextlib
 import datetime
 import json
@@ -346,14 +347,20 @@ def deterministic(args):
                                                                      fixture_url)
             availability = evaluation.feature_availability(corpus, args.comparison, registration_errors)
             usage = usage_reader_for(postgres, "aidash_evaluation", password, query)
-            for repeat in range(1, args.repeats + 1):
-                for planned in planned_runs:
-                    if "agent_ref" not in planned:
-                        continue
-                    observation = runner.run_task(api, experiment, planned, repeat, planned["agent_ref"], fixture,
-                                                  usage, args.run_timeout, approve_fixture_tools=True)
-                    runs.append(evaluation.run_result(corpus, planned, repeat, observation, "deterministic", True))
-                    print(f"{runs[-1]['key']}: {runs[-1]['outcome']}", flush=True)
+            # Runs are independent (own Workspace, Task and fixture probe state), so up to
+            # --parallel of them share the Node's worker slots. Results keep plan order.
+            jobs = [(repeat, planned) for repeat in range(1, args.repeats + 1) for planned in planned_runs
+                    if "agent_ref" in planned]
+
+            def execute(job):
+                repeat, planned = job
+                observation = runner.run_task(api, experiment, planned, repeat, planned["agent_ref"], fixture,
+                                              usage, args.run_timeout, approve_fixture_tools=True)
+                result = evaluation.run_result(corpus, planned, repeat, observation, "deterministic", True)
+                print(f"{result['key']}: {result['outcome']}", flush=True)
+                return result
+            with concurrent.futures.ThreadPoolExecutor(max_workers=args.parallel) as pool:
+                runs = list(pool.map(execute, jobs))
             executed = memory_matrix_deterministic(api, experiment, corpus, memory_corpus, model_refs, fixture_url,
                                                    args.skip_rust_evidence)
             memory = evaluation.memory_matrix(memory_corpus, executed)
@@ -493,10 +500,13 @@ def main(argv=None):
         command.add_argument("--memory-corpus", type=Path, default=evaluation.EVALUATION / "memory.toml")
         command.add_argument("--task", action="append", help="limit to this task id (repeatable)")
         command.add_argument("--comparison", action="append", help="limit to this comparison id (repeatable)")
-        command.add_argument("--repeats", type=int, default=2)
+        command.add_argument("--repeats", type=int, default=1 if name == "deterministic" else 3,
+                             help="Runs per task arm (default 1 deterministic, 3 live)")
         command.add_argument("--run-timeout", type=float, default=180.0)
         command.add_argument("--output", type=Path)
     deterministic_command = commands.choices["deterministic"]
+    deterministic_command.add_argument("--parallel", type=int, default=4,
+                                       help="concurrent Runs; the Node has four worker slots")
     deterministic_command.add_argument("--binary", help="prebuilt manage executable; default builds this worktree")
     deterministic_command.add_argument("--skip-rust-evidence", action="store_true",
                                        help="do not run deterministic-test memory scenarios")
@@ -524,6 +534,8 @@ def main(argv=None):
     if not 1 <= args.repeats <= 64:
         parser.error("--repeats must be between 1 and 64")
     if args.command == "deterministic":
+        # Turn SIGTERM into a normal exit so disposable containers and the Node are removed.
+        signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
         return deterministic(args)
     try:
         return live(args)

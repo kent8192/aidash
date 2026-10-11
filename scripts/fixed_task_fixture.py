@@ -11,8 +11,8 @@ One local HTTP server plays three external parties:
 The scripted Agent is a probe, not a model: it acts only on what the harness
 actually delivered in the request. A correction that compaction removed is
 invisible to it, so a lost constraint shows up in its answer and the task's
-independent oracle catches it. Usage, cost and prompt-cache counts are
-synthetic and deterministic; they test accounting, not provider prices.
+independent oracle catches it. Usage (one token per byte), cost and prompt-cache
+counts are synthetic and deterministic; they test accounting, not provider prices.
 """
 import hashlib
 import json
@@ -21,7 +21,11 @@ import re
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-CHARS_PER_TOKEN = 4
+# One token per byte. Reported prompt tokens then never fall below Aidash's byte
+# estimate, so a calibrated estimator (ADR 0017, capped at bytes) behaves exactly
+# like the conservative one and compaction decisions stay identical across
+# repeats and arms however many Usage Records accumulate.
+CHARS_PER_TOKEN = 1
 # Synthetic nanocredits per token, Anthropic-shaped: cache reads are cheaper and
 # writes dearer than plain input. These are fixture values, not prices.
 PRICE = {"input": 100, "cache_read": 10, "cache_write": 125, "output": 500}
@@ -136,7 +140,7 @@ class Fixture:
         self.probes = {}
         self.requests = {}
         self.tool_calls = {}
-        self.jev_requests = 0
+        self.jev_requests = {}
         self.cache = set()
         self.errors = []
 
@@ -156,7 +160,8 @@ class Fixture:
                 "tool_definition_bytes": [item["tool_bytes"] for item in records],
                 "cache_breakpoints": [item["breakpoints"] for item in records],
                 "salted": [item["salted"] for item in records],
-                "overflow_rejections": sum(item["overflow"] for item in records)}
+                "overflow_rejections": sum(item["overflow"] for item in records),
+                "jev_requests": self.jev_requests.get(task_uuid, 0)}
 
     # ------------------------------------------------------------- model
     def infer(self, body):
@@ -244,15 +249,19 @@ class Fixture:
             if probe.pages < task.get("reference_pages", 0):
                 probe.pages += 1
                 return {"tool_calls": [("reference_lookup", {"page": probe.pages})]}
-            budgets = re.findall(r"BUDGET-USD=(\d+)", view)
+            # A delivered correction wins regardless of where the projection places it;
+            # otherwise the stated constraint applies. Exclusions accumulate.
+            corrected = re.findall(r"Correction:[^\n\"]*?BUDGET-USD=(\d+)", view)
+            budgets = corrected or re.findall(r"BUDGET-USD=(\d+)", view)
             excluded = sorted(set(re.findall(r"EXCLUDE-VENDOR=([A-Za-z]+)", view)))
             value = {"budget_usd": int(budgets[-1]) if budgets else None, "excluded_vendors": excluded}
             return {"content": f"```json\n{json.dumps(value)}\n```\n\nShortlist complete."}
         if behavior == "tool-selector":
             expected = task["expected_tool"]
-            status = re.search(r'"status"\s*:\s*"(\w+)"', view)
+            status = re.search(r'"payment_status"\s*:\s*"(\w+)"', view)
             if probe.called and status:
-                return {"content": f"Invoice {task['expected_arguments']['invoice_number']} is {status.group(1)}."}
+                return {"content": f"Invoice {task['expected_arguments']['invoice_number']} is {status.group(1)}. "
+                                   "Lookup complete."}
             if probe.called:
                 return {"content": "The invoice status could not be determined."}
             if expected in names:
@@ -371,10 +380,19 @@ class Fixture:
         return 200, {"object": "list", "data": data, "model": body.get("model"),
                      "usage": {"prompt_tokens": used, "total_tokens": used}}
 
+    @staticmethod
+    def strings(body):
+        output = []
+        collect_strings(body, output)
+        return output
+
     # --------------------------------------------------------------- Jev
     def jev(self, body):
+        view = "\n".join(text for text in self.strings(body))
         with self.lock:
-            self.jev_requests += 1
+            for task_uuid in self.probes:
+                if task_uuid in view:
+                    self.jev_requests[task_uuid] = self.jev_requests.get(task_uuid, 0) + 1
         questions = body.get("questions") or {}
         return 200, {"answers": {name: {"type": "noul", "noul": 0.0} for name in questions}}
 
@@ -391,7 +409,7 @@ class Fixture:
             return 200, {"page": page, "content": (correction + " " if correction else "") + filler}
         if alias == "invoice_lookup":
             return 200, {"invoice": arguments.get("invoice_number"), "amount_cents": 15500, "currency": "USD",
-                         "due_date": "2026-10-01", "status": "unpaid", "payer": "Aster Labs"}
+                         "due_date": "2026-10-01", "payment_status": "unpaid", "payer": "Aster Labs"}
         return 200, {"alias": alias, "result": "fixture"}
 
     # ------------------------------------------------------------ server

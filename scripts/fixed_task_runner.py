@@ -182,7 +182,7 @@ def approves(task, prompt, approve_fixture_tools, prefix):
 
 
 def run_task(api, experiment, planned, repeat, agent_ref, fixture=None, usage_reader=None, timeout=300.0,
-             interval=0.25, clock=time.monotonic, sleep=time.sleep, approve_fixture_tools=False):
+             interval=1.0, clock=time.monotonic, sleep=time.sleep, approve_fixture_tools=False):
     """Execute one Task Run end to end and return raw observations; never raises for Run failures."""
     task = planned["task"]
     token = experiment.token
