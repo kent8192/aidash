@@ -142,7 +142,7 @@ impl DashboardIdentity {
 				])
 				.on_conflict(
 					OnConflict::columns(["issuer", "gcip_tenant", "subject"])
-						.update_columns(["display_observed_at"])
+						.do_nothing()
 						.to_owned(),
 				)
 				.build(PostgresQueryBuilder);
@@ -151,16 +151,20 @@ impl DashboardIdentity {
 				.filter(Self::field_issuer().eq(issuer))
 				.filter(Self::field_subject().eq(subject.clone()))
 				.filter(Self::field_gcip_tenant().eq(gcip_tenant))
-				.all_with_db(tx)
-				.await?
+				.select_for_update()
+				.all_with_executor(tx)
+				.await
+				.map_err(FrameworkError::from)?
 				.pop()
 				.ok_or_else(|| Error::NotFound("identity".into()))?;
-			// The upsert holds the identity lock. Display Erasure is permanent, so an
-			// erased External Identity never records Display Attributes again. A
-			// disabled one has no retention basis and its sign-in is rejected.
+			// Under the identity lock. Display Erasure is permanent, so an erased
+			// External Identity never records Display Attributes again. A disabled
+			// one has no retention basis and its sign-in is rejected, so it neither
+			// records them nor refreshes their recent-sign-in retention.
 			if identity.display_erased_at.is_none() && identity.disabled_at.is_none() {
 				identity.verified_email = sign_in.verified_email.clone();
 				identity.display_name = sign_in.display_name.clone();
+				identity.display_observed_at = Some(now);
 				Self::objects().update_with_conn(tx, &identity).await?;
 			}
 			// End old requests before exposing refreshed claims. Display retention

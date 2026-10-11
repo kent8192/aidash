@@ -1632,3 +1632,53 @@ async fn bearer_operator_rejects_a_request_after_dashboard_sign_in_is_unconfigur
 	assert!(view["display_name"].is_null() && view["verified_email"].is_null());
 	common::cleanup(f, &url, &schema).await;
 }
+
+#[rstest::rstest]
+#[tokio::test]
+async fn rejected_sign_in_of_a_disabled_identity_does_not_extend_display_retention(
+	#[future(awt)]
+	#[from(test_environment)]
+	environment: Arc<TestEnvironment>,
+) {
+	let (mut f, url, schema) = common::setup(&environment).await;
+	let (_status, _admin) = configure(&mut f).await;
+	let app = common::application(f.clone()).await;
+	sign_in(&app, "acme", "pool-a", "Person").await;
+	let path = only_identity_path(&app, &f).await;
+	// The identity is disabled before a sweep clears its stale attributes.
+	age(
+		&f,
+		"dashboard_identities",
+		"display_observed_at",
+		"11 minutes",
+	)
+	.await;
+	age(&f, "dashboard_sessions", "revoked_at", "0 seconds").await;
+	age(&f, "dashboard_identities", "disabled_at", "0 seconds").await;
+	let (state, cookie) = transaction(&app, "acme").await;
+	let rejected = exchange(
+		&app,
+		&state,
+		&cookie,
+		&token("pool-a", "Again", Utc::now().timestamp()),
+		"http://127.0.0.1:8080",
+	)
+	.await;
+	assert_eq!(rejected.status(), 403);
+	// Restored before the next sweep, the rejected sign-in must not retain them.
+	let restore = Query::update()
+		.table(Alias::new("dashboard_identities"))
+		.value_expr(Alias::new("disabled_at"), Expr::cust("null"))
+		.to_string(PostgresQueryBuilder);
+	sqlx::query(&restore)
+		.execute(f.store.pool.driver())
+		.await
+		.unwrap();
+	sweep(&f).await;
+	let view = operator_get(&app, &f, &path).await;
+	assert!(
+		view["display_name"].is_null() && view["verified_email"].is_null(),
+		"a rejected sign-in must not become a retention basis: {view}"
+	);
+	common::cleanup(f, &url, &schema).await;
+}
