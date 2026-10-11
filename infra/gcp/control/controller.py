@@ -852,9 +852,11 @@ def reconcile(config, store):
                     reconcile_environment(output)
                     try:
                         reconcile_gcip_mfa(store, identity, generation, output)
-                    except Exception:
-                        # The next run fences this host and retries through the GCIP refresh.
-                        update_entry(store, identity, generation, gcip_pending=True)
+                    except (Exception, OperationDeadline):
+                        # The next run fences this host and retries through the GCIP refresh,
+                        # including when the check exhausted the operation budget.
+                        with operation_budget(60):
+                            update_entry(store, identity, generation, gcip_pending=True)
                         raise
                 # Close/merge cleanup is reconciled regardless of CI, builds, or fork approval.
                 if entry["kind"] == "pr" and entry["desired"] != "destroyed":
@@ -1138,6 +1140,9 @@ def reconcile(config, store):
                     power(config, output, "start")
                     fresh_boot = True
                 reconcile_environment(output)
+                # This apply may first materialize the `mfa` output, which neither
+                # GCIP digest fences: enforce it before the host reopens admission.
+                reconcile_gcip_mfa(store, identity, generation, output)
                 provision_secret(config, output, entry["kind"])
                 current_entry(store, identity, generation)
                 restart_bootstrap(config, output, fresh_boot)
