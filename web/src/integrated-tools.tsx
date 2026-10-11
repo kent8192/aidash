@@ -39,6 +39,11 @@ const DashboardIdentityAdministration = lazy(() =>
     default: m.DashboardIdentityAdministration,
   })),
 );
+const TenantIdentityAdministration = lazy(() =>
+  import("./dashboard-identity").then((m) => ({
+    default: m.TenantIdentityAdministration,
+  })),
+);
 
 export function ToolSection({
   title,
@@ -99,13 +104,22 @@ export function CreatorTools({
 export function TrustTools({
   entries,
   operator,
+  tenant,
   initiallyOpen,
 }: {
   entries: State["registry"];
   operator: boolean;
+  /** The selected Mapping's Tenant, whose Tenant Administrators manage it here. */
+  tenant: string | null;
   initiallyOpen: boolean;
 }) {
   const { locale, t } = useI18n();
+  const loading = (
+    <Loading>{locale === "ja-JP" ? "読み込み中…" : "Loading…"}</Loading>
+  );
+  const administratorsOnly = (
+    <Hint role="status">{t("administratorsOnly")}</Hint>
+  );
   return (
     <ToolSection
       title={
@@ -114,16 +128,20 @@ export function TrustTools({
       initiallyOpen={initiallyOpen}
     >
       {operator ? (
-        <Suspense
-          fallback={
-            <Loading>{locale === "ja-JP" ? "読み込み中…" : "Loading…"}</Loading>
-          }
-        >
+        <Suspense fallback={loading}>
           <DashboardIdentityAdministration />
           <AuthorizationPage entries={entries} />
         </Suspense>
+      ) : tenant ? (
+        <Suspense fallback={loading}>
+          <TenantIdentityAdministration
+            key={tenant}
+            tenant={tenant}
+            fallback={administratorsOnly}
+          />
+        </Suspense>
       ) : (
-        <Hint role="status">{t("administratorsOnly")}</Hint>
+        administratorsOnly
       )}
     </ToolSection>
   );
