@@ -27,6 +27,9 @@ variable "environments" {
     machine_type  = optional(string, "e2-standard-4")
     boot_disk_gib = optional(number, 10)
     data_disk_gib = optional(number, 20)
+    # Set to "public_origin" only with a bundle whose host proxies the sign-in
+    # helper, so the SAML ACS switches in the same apply as that bundle.
+    auth_helper = optional(string, "firebase")
   }))
   default = {}
   validation {
@@ -40,6 +43,10 @@ variable "environments" {
       e.boot_disk_gib >= 10 && e.data_disk_gib >= 20
     ])
     error_message = "Only retained nonproduction environments with immutable bundles are permitted; production and Spot develop are forbidden."
+  }
+  validation {
+    condition     = alltrue([for e in values(var.environments) : contains(["firebase", "public_origin"], e.auth_helper)])
+    error_message = "The sign-in helper is either Firebase's default domain or the environment's public origin."
   }
   validation {
     condition = alltrue([for kind in ["develop", "test", "pr"] :

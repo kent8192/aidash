@@ -178,6 +178,27 @@ run "no_production" {
   expect_failures = [var.environments]
 }
 
+run "sign_in_helper_is_firebase_or_public_origin" {
+  command = plan
+  variables {
+    environments = {
+      test = {
+        kind          = "test"
+        incarnation   = "aaaaaaaaaaaa"
+        generation    = 1
+        running       = false
+        published     = false
+        spot          = true
+        bundle_object = "bundles/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.tar.gz"
+        bundle_sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        release_sha   = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        auth_helper   = "auth.example.test"
+      }
+    }
+  }
+  expect_failures = [var.environments]
+}
+
 run "no_two_running_previews" {
   command = plan
   variables {

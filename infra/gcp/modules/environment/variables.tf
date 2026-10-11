@@ -23,6 +23,7 @@ variable "environment" {
     machine_type  = string
     boot_disk_gib = number
     data_disk_gib = number
+    auth_helper   = optional(string, "firebase")
   })
 }
 

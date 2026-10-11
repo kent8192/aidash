@@ -29,6 +29,22 @@ run "password_and_sso_tenants_are_separate" {
     error_message = "Each selected IdP must be configured inside its environment's tenant."
   }
   assert {
+    condition     = google_identity_platform_tenant_inbound_saml_config.saml["sso/saml.company"].sp_config[0].callback_uri == "https://aidash-fixture.firebaseapp.com/__/auth/handler" && output.gcip.auth_helper == "firebase"
+    error_message = "Until this environment's bundle proxies the sign-in helper, SAML must post to Firebase's helper."
+  }
+}
+run "saml_posts_to_the_proxied_helper_with_its_bundle" {
+  command = plan
+  variables {
+    environment = {
+      kind          = "test", incarnation = "aaaaaaaaaaaa", generation = 1, running = false, published = false, spot = false, vm_present = true,
+      machine_type  = "e2-standard-4", boot_disk_gib = 10, data_disk_gib = 20, auth_helper = "public_origin",
+      bundle_object = "bundles/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.tar.gz", bundle_sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", release_sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+    gcip_tenants     = { sso = { tenant = "company", password_sign_up = false, saml = { "saml.company" = { idp_entity_id = "company", sso_url = "https://sso.example.test", sp_entity_id = "aidash", certificates = ["fixture-certificate"] } } } }
+    gcip_idp_secrets = {}
+  }
+  assert {
     condition     = google_identity_platform_tenant_inbound_saml_config.saml["sso/saml.company"].sp_config[0].callback_uri == "https://test.aidash.run/__/auth/handler" && output.gcip.auth_helper == "public_origin"
     error_message = "SAML must post to this environment's proxied sign-in helper, which the runtime is told to use."
   }

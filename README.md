@@ -143,7 +143,7 @@ location ~ ^/__/(auth/|firebase/init\.json$) {
 }
 ```
 
-Then register `https://<public origin host>/__/auth/handler` as each identity provider's redirect URI (the SAML ACS URL for SAML providers). Aidash Cloud environments set `public_origin` and serve the proxy from Caddy.
+Then register `https://<public origin host>/__/auth/handler` as each identity provider's redirect URI (the SAML ACS URL for SAML providers). Aidash Cloud environments switch to `public_origin`, and their SAML ACS URL, with the deployment that installs the Caddy proxy.
 
 ### Dashboard OIDC setup
 

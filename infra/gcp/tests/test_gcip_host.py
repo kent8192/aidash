@@ -53,7 +53,7 @@ class GcipHostTests(unittest.TestCase):
             return b""
 
         with patch.object(controller, "run", side_effect=command):
-            controller.provision_secret({"project_id": "aidash-fixture"}, OUTPUT, "test", new_bundle=True)
+            controller.provision_secret({"project_id": "aidash-fixture"}, OUTPUT, "test")
             values = self.configure(raw)
             path = Path(values["AIDASH_GCIP_SETTINGS"])
             self.assertEqual(json.loads(path.read_text()), {"dashboard": raw["dashboard"]})

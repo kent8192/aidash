@@ -137,7 +137,7 @@ class ReconcileTests(unittest.TestCase):
             "power": self.power,
             "bundle": lambda *args: ("bundles/" + "b" * 64 + ".tar.gz", "b" * 64),
             "ci_success": lambda *args: None,
-            "provision_secret": lambda *args, **kwargs: None,
+            "provision_secret": lambda *args: None,
             "restart_bootstrap": lambda *args: self.calls.append(
                 ("bootstrap", args[1]["instance"], args[2])
             ),
@@ -621,7 +621,7 @@ class ReconcileTests(unittest.TestCase):
                 } if config["gcip_tenants"] else {},
             }
 
-        def provision(config, output, kind, new_bundle=False):
+        def provision(config, output, kind):
             secrets[output["instance"]] = deepcopy(output["gcip"])
 
         with (
@@ -667,6 +667,30 @@ class ReconcileTests(unittest.TestCase):
                     self.assertEqual(len(self.cloud.plans), plans)
                     self.assertFalse(secrets)
                     self.assertFalse(any(call[0] == "bootstrap" for call in self.calls))
+
+    def test_saml_helper_switches_only_with_the_deployed_bundle(self):
+        self.request("develop", source_ref="develop/0.1.0")
+        self.reconcile()
+        # Applied by a controller whose bundles predate the helper proxy.
+        del self.cloud.managed["develop"]["auth_helper"]
+        self.config["gcip_tenants"] = {"company": {"tenant": "acme"}}
+        self.calls.clear()
+        self.cloud.plans.clear()
+        self.reconcile()
+        # The refresh reloads the old bundle, so its SAML ACS stays on Firebase.
+        self.assertIn(("bootstrap", "develop", False), self.calls)
+        self.assertTrue(self.cloud.plans)
+        self.assertFalse(any("auth_helper" in managed["develop"] for managed, _ in self.cloud.plans))
+        self.request("develop", "update", sha="b" * 40, source_ref="develop/0.1.0")
+        self.cloud.plans.clear()
+        self.reconcile()
+        self.assertEqual(self.store.state["environments"]["develop"]["status"], "ready")
+        self.assertTrue(self.cloud.plans)
+        for managed, _ in self.cloud.plans:
+            self.assertEqual(
+                managed["develop"].get("auth_helper") == "public_origin",
+                managed["develop"]["release_sha"] == "b" * 40,
+            )
 
     def test_failed_gcip_refresh_stays_gated_and_retries_without_restarting_successes(self):
         self.request()
@@ -781,7 +805,7 @@ class ReconcileTests(unittest.TestCase):
             self.cloud.resource_changes = []
             self.cloud.output_changes = {}
 
-        def provision(config, output, kind, new_bundle=False):
+        def provision(config, output, kind):
             secrets[output["instance"]] = deepcopy(output["gcip"])
 
         with patch.object(self.cloud, "apply", apply), patch.object(controller, "provision_secret", provision), patch.object(controller, "reconcile_environment") as iam:
