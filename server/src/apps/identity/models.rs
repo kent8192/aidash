@@ -28,6 +28,8 @@ mod authorization_task_origins;
 pub use authorization_task_origins::AuthorizationTaskOrigin;
 mod authorization_workspaces;
 pub use authorization_workspaces::AuthorizationWorkspace;
+mod dashboard_administration_history;
+pub use dashboard_administration_history::DashboardAdministrationHistory;
 mod dashboard_execution_origins;
 pub use dashboard_execution_origins::DashboardExecutionOrigin;
 mod dashboard_identities;
@@ -46,6 +48,8 @@ mod dashboard_sessions;
 pub use dashboard_sessions::DashboardSession;
 
 mod dashboard_administration;
+mod tenant_administration;
+pub(crate) use tenant_administration::{AdministrationActor, TenantAdministrator};
 mod dashboard_authentication;
 pub mod states;
 
