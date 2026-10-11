@@ -1187,18 +1187,13 @@ impl<'a> Executor<'a> {
 				recorded?;
 				if let Some(guard) = guard {
 					guard.resume().await?;
-					// Authority was released during inference: a summary source
-					// revoked meanwhile discards the response before any of it
-					// is accepted, published or dispatched.
-					self.pause_if_summary_revoked(
-						run,
-						token,
-						Some(guard),
-						home.as_ref(),
-						&mut context,
-					)
-					.await?;
 				}
+				// Authority was released during inference, and a local Run's
+				// sources may change meanwhile too: a summary source revoked
+				// meanwhile discards the response before any of it is accepted,
+				// published or dispatched.
+				self.pause_if_summary_revoked(run, token, guard, home.as_ref(), &mut context)
+					.await?;
 				// Count only tool content that survived compaction and was present
 				// in a successful provider request, not every completed read.
 				capture_declared_coverage(&mut context, &tools, true);

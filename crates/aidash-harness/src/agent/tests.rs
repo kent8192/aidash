@@ -2254,11 +2254,18 @@ async fn a_summary_dependency_revoked_during_pruning_pauses_before_inference(mut
 	assert_eq!(fixture.backend.0.requests.lock().unwrap().len(), requests);
 }
 
+// A trusted local Run has no authority guard, yet its summary sources can
+// still be deleted while inference is in flight.
 #[rstest]
+#[case::scoped(true)]
+#[case::local(false)]
 #[tokio::test]
-async fn a_summary_dependency_revoked_during_inference_discards_the_response(mut fixture: Fixture) {
+async fn a_summary_dependency_revoked_during_inference_discards_the_response(
+	mut fixture: Fixture,
+	#[case] scoped: bool,
+) {
 	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
-	state.scoped = true;
+	state.scoped = scoped;
 	state.context_policy = Some(recovery_policy(true));
 	state.jev_retention = Some(1.0);
 	*state.summary_text.lock().unwrap() = Some(valid_summary());
@@ -2267,8 +2274,10 @@ async fn a_summary_dependency_revoked_during_inference_discards_the_response(mut
 	advance_sources(&mut fixture).await.unwrap();
 	assert!(fixture.run.context.execution_summary.is_some());
 
-	// The checks before and after pruning pass; the source is revoked while
-	// the ordinary model call is in flight with authority released.
+	// Every check before inference passes (a local Run skips the post-pruning
+	// check: it releases no authority for Jev); the source is revoked while
+	// the ordinary model call is in flight.
+	let before_inference = if scoped { 2 } else { 1 };
 	let earlier = calls(&fixture).len();
 	let checks = calls(&fixture)
 		.iter()
@@ -2276,7 +2285,7 @@ async fn a_summary_dependency_revoked_during_inference_discards_the_response(mut
 		.count();
 	Arc::get_mut(&mut fixture.backend.0)
 		.unwrap()
-		.summary_checks_before_revocation = Some(checks + 2);
+		.summary_checks_before_revocation = Some(checks + before_inference);
 	assert!(matches!(
 		advance_sources(&mut fixture).await,
 		Err(Error::Forbidden)
@@ -2292,7 +2301,7 @@ async fn a_summary_dependency_revoked_during_inference_discards_the_response(mut
 		step.iter()
 			.filter(|call| **call == "summary.dependencies")
 			.count(),
-		3,
+		before_inference + 1,
 		"{step:?}"
 	);
 	// The response is never accepted: no tool step, and the originals are
