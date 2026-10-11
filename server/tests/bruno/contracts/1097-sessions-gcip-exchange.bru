@@ -1,0 +1,25 @@
+meta {
+  name: 1097 sessions-gcip-exchange - OIDC deployment cannot accept a GCIP token
+  type: http
+  seq: 1097
+}
+
+post {
+  url: {{base_url}}/auth/gcip/exchange
+  body: text
+  auth: none
+}
+
+headers {
+  Accept: application/json
+  Content-Type: application/json
+}
+
+body:text {
+  {"state": "invalid", "id_token": "invalid"}
+}
+
+tests {
+  test("Exact HTTP 401", function () { expect(res.getStatus()).to.equal(401); });
+  test("Stable authorization error envelope", function () { expect(res.getHeader("content-type")).to.include("application/json"); expect(res.getBody()).to.eql({error:"unauthorized"}); });
+}

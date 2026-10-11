@@ -1,0 +1,25 @@
+meta {
+  name: 1002 desktop-revoke - Unknown refresh revocation remains idempotent
+  type: http
+  seq: 1002
+}
+
+post {
+  url: {{base_url}}/auth/desktop/revoke
+  body: text
+  auth: none
+}
+
+headers {
+  Accept: application/json
+  Content-Type: application/json
+}
+
+body:text {
+  {"refresh_token": "unknown"}
+}
+
+tests {
+  test("Exact HTTP 204", function () { expect(res.getStatus()).to.equal(204); });
+  test("Unknown refresh revocation remains idempotent contract", function () { expect(res.getBody()).to.equal(""); });
+}
