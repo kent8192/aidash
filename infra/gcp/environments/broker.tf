@@ -1,7 +1,9 @@
 // The Credential Broker image digest is reviewed code, not operator configuration
 // (#151): changing the broker means changing broker-image.json in a pull request.
 // Update it with the procedure in infra/gcp/README.md; null means no image has been
-// approved, so no broker can be enabled.
+// approved, so no broker can be enabled. The credential_brokers type has no image
+// attribute on purpose: a stale configuration that still sets one fails type
+// conversion, and the controller's intent comparison sees identical config and state.
 variable "broker_image_lock_file" {
   description = "Test seam for the digest lock. The controller never sets it; deployments read broker-image.json from the reviewed checkout."
   type        = string
@@ -23,7 +25,6 @@ variable "credential_brokers" {
     signing_key_id               = string
     signing_version              = optional(string, "1")
     verification_versions        = optional(set(string), ["1"])
-    image                        = optional(string)
   }))
   default = {}
   validation {
@@ -33,10 +34,6 @@ variable "credential_brokers" {
   validation {
     condition     = alltrue([for id, broker in var.credential_brokers : !broker.enabled || can(regex("^sha256:[a-f0-9]{64}$", local.broker_image_digest))])
     error_message = "Enabled brokers need an approved image digest in infra/gcp/environments/broker-image.json."
-  }
-  validation {
-    condition     = alltrue([for id, broker in var.credential_brokers : broker.image == null || broker.image == local.broker_image])
-    error_message = "The broker image comes from broker-image.json; remove image from the deployment configuration or make it identical."
   }
   validation {
     condition     = alltrue([for id, broker in var.credential_brokers : !broker.enabled || (var.byok_project_id != "" && broker.byok_project_id == var.byok_project_id)])

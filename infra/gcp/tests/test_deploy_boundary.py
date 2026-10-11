@@ -51,6 +51,9 @@ PREDEFINED_ROLES = {
 }
 
 
+ENVIRONMENTS = Path(__file__).resolve().parents[1] / "environments"
+
+
 def flattened(module):
     return module.get("resources", []) + [r for child in module.get("child_modules", []) for r in flattened(child)]
 
@@ -85,6 +88,20 @@ class DeployBoundaryTests(unittest.TestCase):
             if event.get("type") == "test_state":
                 states[event["@testrun"]] = flattened(event["test_state"]["root_module"])
         cls.resources = states["deploy_boundary"]
+        # The environments root is applied by the deploy identity itself; its grants to
+        # deploy must be classified too.
+        subprocess.run(["terraform", f"-chdir={ENVIRONMENTS}", "init", "-backend=false", "-input=false", "-no-color"], check=True, capture_output=True, timeout=300)
+        result = subprocess.run(
+            ["terraform", f"-chdir={ENVIRONMENTS}", "test", "-json", "-verbose", "-no-color", "-filter=tests/policy.tftest.hcl"],
+            check=False, capture_output=True, text=True, timeout=600,
+        )
+        if result.returncode:
+            raise AssertionError(result.stdout + result.stderr)
+        cls.environment_resources = []
+        for line in result.stdout.splitlines():
+            event = json.loads(line)
+            if event.get("type") == "test_state" and event["@testrun"] == "identities_are_separated":
+                cls.environment_resources = flattened(event["test_state"]["root_module"])
 
     def values(self, kind):
         return [r["values"] for r in self.resources if r["type"] == kind]
@@ -106,6 +123,15 @@ class DeployBoundaryTests(unittest.TestCase):
         self.assertEqual(uncovered(self.deploy_roles(), self.custom_roles(), denied), [])
         # The shared-project role the Issue names is really in play.
         self.assertIn("roles/iam.serviceAccountAdmin", self.deploy_roles())
+
+    def test_environments_root_grants_deploy_nothing_the_deny_policy_misses(self):
+        deploy = "serviceAccount:deploy@aidash-fixture.iam.gserviceaccount.com"
+        roles = sorted({
+            r["values"]["role"] for r in self.environment_resources
+            if r["type"] in IAM_GRANTS and r["values"].get("member") == deploy
+        })
+        self.assertEqual(roles, ["roles/iam.serviceAccountUser"])
+        self.assertEqual(uncovered(roles, {}, set(self.deny_rule()["denied_permissions"])), [])
 
     def test_an_uncovered_allow_binding_is_detected(self):
         denied = set(self.deny_rule()["denied_permissions"])
@@ -167,7 +193,6 @@ class DeployBoundaryTests(unittest.TestCase):
 
 
 CONTROL = Path(__file__).resolve().parents[1] / "control"
-ENVIRONMENTS = Path(__file__).resolve().parents[1] / "environments"
 DIGEST = re.compile(r"sha256:[a-f0-9]{64}")
 
 
@@ -187,8 +212,11 @@ class BrokerImageTests(unittest.TestCase):
             self.assertRegex(base, r"@sha256:[a-f0-9]{64}$")
 
     def test_deployment_configuration_cannot_override_the_lock(self):
+        # The controller passes no image and no lock-file override to Terraform, and
+        # refuses a configured image (see test_cloud.py).
         for source in CONTROL.glob("*.py"):
             self.assertNotIn("broker_image", source.read_text(), source.name)
+        self.assertIn("broker-image.json", (CONTROL / "cloud.py").read_text())
         example = json.loads((CONTROL.parent / "config.example.json").read_text())
         for broker in example["credential_brokers"].values():
             self.assertNotIn("image", broker)

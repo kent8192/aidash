@@ -311,55 +311,6 @@ run "broker_needs_an_approved_digest" {
   expect_failures = [var.credential_brokers]
 }
 
-run "broker_image_must_match_the_reviewed_digest" {
-  command = plan
-  variables {
-    environments = { test = {
-      kind        = "test"
-      incarnation = "aaaaaaaaaaaa"
-      generation  = 1
-      running     = false
-      published   = false
-      spot        = true
-    } }
-    credential_brokers = {
-      test = {
-        enabled                      = true
-        byok_project_id              = "aidash-byok-fixture"
-        secret_prefix                = "aidash-test-cred-"
-        broker_service_account_email = "aidash-test-broker@aidash-fixture.iam.gserviceaccount.com"
-        signing_key_id               = "projects/aidash-fixture/locations/us-central1/keyRings/aidash-test-capability/cryptoKeys/capability"
-        image                        = "us-central1-docker.pkg.dev/aidash-fixture/aidash/broker@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-      }
-    }
-  }
-  expect_failures = [var.credential_brokers]
-}
-
-run "broker_image_may_restate_the_reviewed_digest" {
-  command = plan
-  variables {
-    environments = { test = {
-      kind        = "test"
-      incarnation = "aaaaaaaaaaaa"
-      generation  = 1
-      running     = false
-      published   = false
-      spot        = true
-    } }
-    credential_brokers = {
-      test = {
-        enabled                      = true
-        byok_project_id              = "aidash-byok-fixture"
-        secret_prefix                = "aidash-test-cred-"
-        broker_service_account_email = "aidash-test-broker@aidash-fixture.iam.gserviceaccount.com"
-        signing_key_id               = "projects/aidash-fixture/locations/us-central1/keyRings/aidash-test-capability/cryptoKeys/capability"
-        image                        = "us-central1-docker.pkg.dev/aidash-fixture/aidash/broker@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-      }
-    }
-  }
-}
-
 run "no_production" {
   command = plan
   variables {

@@ -541,9 +541,10 @@ not prevented:
 - The broker image digest is reviewed code (`environments/broker-image.json`).
   Terraform derives `us-central1-docker.pkg.dev/<project>/aidash/broker@<digest>`
   from it and refuses an enabled broker without an approved digest or with a
-  different `image`. A broker change is therefore a digest change in a pull
+  different image. A broker change is therefore a digest change in a pull
   request to `main`. The deployment configuration (`AIDASH_GCP_CONFIG`) cannot
-  override the digest; leave `image` out of `credential_brokers`.
+  override the digest: the controller refuses a `credential_brokers.<id>.image`
+  key.
 - Credentialed jobs run in the protected `gcp-deploy` Environment (below).
 - Bootstrap-owned log alerts, sent to `security_alert_emails`, fire on a new
   revision of a broker service or a Cloud Run service/job request naming a broker
