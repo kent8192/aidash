@@ -31,6 +31,7 @@ run "bootstrap_keys" {
     state_bucket_name        = "aidash-fixture-state"
     release_bucket_name      = "aidash-fixture-releases"
     byok_broker_environments = ["test"]
+    security_alert_emails    = ["security@example.test"]
   }
   override_resource {
     target = google_service_account.broker["test"]
@@ -168,6 +169,7 @@ run "bootstrap_after_retirement_plan" {
     state_bucket_name        = "aidash-fixture-state"
     release_bucket_name      = "aidash-fixture-releases"
     byok_broker_environments = ["test"]
+    security_alert_emails    = ["security@example.test"]
   }
   assert {
     condition     = output.broker_signing_keys == run.bootstrap_keys.broker_signing_keys
