@@ -1,11 +1,16 @@
 use super::*;
-use aidash_domain::{ReadyState, RunMetadata, RunPhase, activation::Obligation, context::Context};
+use aidash_domain::{
+	ReadyState, RunMetadata, RunPhase, activation::Obligation, context::Context,
+	run_state::PersistedCapability,
+};
 use async_trait::async_trait;
 use rstest::{fixture, rstest};
 use std::sync::{
 	Arc, Mutex,
 	atomic::{AtomicBool, AtomicUsize, Ordering},
 };
+
+mod capability;
 
 #[fixture]
 fn now() -> DateTime<Utc> {
@@ -119,6 +124,9 @@ struct State {
 	repairable: AtomicBool,
 	commit_error: AtomicBool,
 	quarantine_error: AtomicBool,
+	/// What the worker leasing through this fake advertises; tests swap it to roll a fleet.
+	capabilities: Mutex<&'static [PersistedCapability]>,
+	deferred: Mutex<Vec<Option<DateTime<Utc>>>>,
 }
 impl State {
 	fn record(&self, event: impl Into<String>) {
@@ -154,6 +162,8 @@ fn repository(now: DateTime<Utc>) -> Repository {
 		repairable: AtomicBool::new(true),
 		commit_error: AtomicBool::new(false),
 		quarantine_error: AtomicBool::new(false),
+		capabilities: Mutex::new(PersistedCapability::supported()),
+		deferred: Mutex::new(vec![]),
 	}))
 }
 struct Scope {
@@ -169,6 +179,9 @@ impl Drop for Scope {
 }
 #[async_trait]
 impl SchedulingScope for Scope {
+	fn capabilities(&self) -> &[PersistedCapability] {
+		*self.state.capabilities.lock().unwrap()
+	}
 	async fn now(&mut self) -> Result<DateTime<Utc>> {
 		self.state.record("now");
 		Ok(self.state.now)
@@ -272,8 +285,9 @@ impl ClaimScope for Scope {
 		self.state.record("record_claim");
 		Ok(())
 	}
-	async fn defer(&mut self, _: Uuid, _: Option<DateTime<Utc>>) -> Result<()> {
+	async fn defer(&mut self, _: Uuid, due: Option<DateTime<Utc>>) -> Result<()> {
 		self.state.record("defer");
+		self.state.deferred.lock().unwrap().push(due);
 		Ok(())
 	}
 	async fn commit(mut self: Box<Self>) -> Result<()> {

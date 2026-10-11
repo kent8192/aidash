@@ -3,7 +3,7 @@ use crate::{Result, ports::activation::*};
 use aidash_domain::{
 	FailureTarget, Run, RunControl, RunState, WaitingState,
 	activation::{Envelope, QuarantineReason},
-	run_state::RawRun,
+	run_state::{PersistedCapability, RawRun, StateRequirements},
 };
 use chrono::{DateTime, Utc};
 use futures_util::StreamExt;
@@ -11,6 +11,20 @@ use std::time::Duration;
 use uuid::Uuid;
 
 pub const RECONCILE_BATCH_SIZE: u64 = 128;
+/// A worker that cannot load a Run's state leaves it for a capable one and looks again later.
+pub const CAPABILITY_RETRY_SECONDS: i64 = 5;
+
+/// Capabilities the Run's stored requirement needs beyond what the worker advertises.
+/// Only the envelope's requirement is read, so a state the worker cannot decode is still judged.
+fn unmet_capabilities(raw: &RawRun, supported: &[PersistedCapability]) -> Vec<String> {
+	StateRequirements::from_pending(&raw.pending)
+		.map(|requires| requires.unmet(supported))
+		.unwrap_or_default()
+}
+fn skipped_for_capability(run: Uuid, unmet: &[String]) {
+	metrics::counter!("aidash_activation_capability_skips_total").increment(1);
+	tracing::debug!(run_id=%run, missing=%unmet.join(","), "run waits for a worker with the capabilities its state needs");
+}
 
 /// Database time and locked records govern readiness, including malformed state.
 pub async fn due(
@@ -95,6 +109,11 @@ pub async fn lease(
 	for raw in rows {
 		let m = &raw.metadata;
 		*cursor = Some((m.updated_at, m.id));
+		let unmet = unmet_capabilities(&raw, scope.capabilities());
+		if !unmet.is_empty() {
+			skipped_for_capability(m.id, &unmet);
+			continue;
+		}
 		if due(scope, &raw, now, node).await?.is_none_or(|d| d > now) {
 			continue;
 		}
@@ -105,6 +124,11 @@ pub async fn lease(
 		}
 		let mut run = match raw.decode() {
 			Ok(run) => run,
+			// State written by a newer build is intact; a capable worker will load it.
+			Err(aidash_domain::Error::UnsupportedState(reason)) => {
+				skipped_for_capability(m.id, &[reason]);
+				continue;
+			}
 			Err(error) => {
 				let repair_now = scope.now().await?;
 				let state = RunState::Waiting(Box::new(WaitingState::FailureDelivery {
@@ -189,6 +213,15 @@ pub async fn claim(repository: &dyn ActivationRepository, envelope: &Envelope) -
 	}
 	let now = scope.now().await?;
 	let refreshed = scope.read_run(run.id).await?;
+	let unmet = unmet_capabilities(&refreshed, scope.capabilities());
+	if !unmet.is_empty() {
+		// Deferring to `now` would renotify this incapable worker in a tight loop.
+		skipped_for_capability(run.id, &unmet);
+		let retry = scope.now().await? + chrono::Duration::seconds(CAPABILITY_RETRY_SECONDS);
+		scope.defer(row.id, Some(retry)).await?;
+		scope.commit().await?;
+		return Ok(Handoff::Recorded);
+	}
 	let due = due(scope.as_mut(), &refreshed, now, repository.node_id()).await?;
 	scope.defer(row.id, due).await?;
 	scope.commit().await?;

@@ -3,7 +3,7 @@ use crate::Result;
 use aidash_domain::{
 	Run, RunMetadata, RunState,
 	activation::{Envelope, Obligation, QuarantineReason},
-	run_state::RawRun,
+	run_state::{PersistedCapability, RawRun},
 };
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -18,6 +18,11 @@ pub struct Approval {
 
 #[async_trait]
 pub trait SchedulingScope: Send {
+	/// The persisted-state capabilities this worker advertises when it leases.
+	/// Candidate queries and `lease` never hand it a Run that needs more.
+	fn capabilities(&self) -> &[PersistedCapability] {
+		PersistedCapability::supported()
+	}
 	async fn now(&mut self) -> Result<DateTime<Utc>>;
 	/// Oldest first, at most 128 rows, FOR UPDATE SKIP LOCKED; target is exact.
 	async fn candidates(
