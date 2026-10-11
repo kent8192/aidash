@@ -23,6 +23,9 @@ SELECTORS = {
     "app.kubernetes.io/instance=app,app.kubernetes.io/component in (server,worker)": {"app-aidash-server", "app-aidash-worker"},
     "aidash.run/runner=app": {"app-execution-runner"},
     "aidash.run/edge=env": {"env-environment-edge"},
+    # Migration Pods belong to Jobs, never to a Deployment or StatefulSet; tests
+    # model an in-flight predecessor through its Job status.
+    "app.kubernetes.io/instance=app,app.kubernetes.io/component=migration": set(),
 }
 
 

@@ -41,6 +41,7 @@ ACTIVITY = "env-environment-activity"
 ADMISSION = "env-environment-admission"
 LOAD_BALANCER = "env-environment-edge"
 WRITER_PODS = "app.kubernetes.io/instance=app,app.kubernetes.io/component in (server,worker)"
+MIGRATION = "app.kubernetes.io/instance=app,app.kubernetes.io/component=migration"
 RUNNER_PODS = "aidash.run/runner=app"
 EDGE_PODS = "aidash.run/edge=env"
 WRITER_REPLICAS = 1
@@ -702,10 +703,22 @@ def migrate(cluster, identity, sha):
     labels = {"app.kubernetes.io/instance": "app", "app.kubernetes.io/component": "migration"}
     if template.get("metadata", {}).get("labels", {}).get("aidash.run/co-located") == "true":
         labels["aidash.run/co-located"] = "true"
+    # An interrupted reconciliation can leave its Job running. A second one would
+    # mount the same RWO claims and run init-if-missing and activation
+    # provisioning concurrently, so every predecessor must finish first; a
+    # finished one, failed or not, has no Pod left that could still write.
+    wait_until(
+        lambda: not live_pods(cluster, namespace, MIGRATION) and all(
+            job.get("status", {}).get("succeeded") or job.get("status", {}).get("failed")
+            for job in cluster.items("job", namespace, MIGRATION)
+        ),
+        "A previous migration Job is still running; refusing to start another",
+        960,
+    )
     name = f"migrate-{sha[:12]}-{secrets.token_hex(3)}"
     cluster.create({
         "apiVersion": "batch/v1", "kind": "Job",
-        "metadata": {"name": name, "namespace": namespace},
+        "metadata": {"name": name, "namespace": namespace, "labels": labels},
         "spec": {
             "backoffLimit": 0,
             "activeDeadlineSeconds": 900,

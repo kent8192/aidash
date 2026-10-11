@@ -238,6 +238,35 @@ class SealAndMigrationTests(unittest.TestCase):
                 self.assertEqual(selected["app.kubernetes.io/component"], "migration")
                 self.assertEqual("aidash.run/co-located" in selected, colocated)
 
+    def test_retry_waits_for_an_in_flight_migration_job_before_starting_another(self):
+        # A reconciliation interrupted after creating its Job leaves it running.
+        self.cluster.put({
+            "kind": "Deployment", "metadata": {"name": "app-aidash-server", "namespace": "aidash-test"},
+            "spec": {"replicas": 0, "template": {"metadata": {"labels": {}}, "spec": {
+                "containers": [{"name": "aidash", "args": ["server"]}],
+            }}},
+        })
+        previous = ("job", "aidash-test", "migrate-previous")
+        self.cluster.put({"kind": "Job", "metadata": {"name": previous[2], "namespace": previous[1]}, "status": {"active": 1}})
+
+        def jobs():
+            return [key for key in self.cluster.objects if key[0] == "job"]
+
+        # Still running at the deadline: no second Job shares its RWO claims.
+        with patch.object(kube.time, "monotonic", side_effect=[0, 1000]), self.assertRaises(RuntimeError):
+            kube.migrate(self.cluster, "test", "a" * 40)
+        self.assertEqual(jobs(), [previous])
+
+        def finish(_):
+            self.assertEqual(jobs(), [previous])
+            self.cluster.objects[previous]["status"] = {"failed": 1}
+
+        with patch.object(kube.time, "sleep", side_effect=finish) as sleep:
+            kube.migrate(self.cluster, "test", "a" * 40)
+        sleep.assert_called_once()
+        (created,) = [key for key in jobs() if key != previous]
+        self.assertEqual(self.cluster.objects[created]["metadata"]["labels"]["app.kubernetes.io/component"], "migration")
+
     def test_home_ledger_is_initialized_as_a_child_of_its_claim_root(self):
         # A fresh disk's root belongs to root; ledger initialization chmods its
         # directory, so the Home must be a child the application UID creates.
