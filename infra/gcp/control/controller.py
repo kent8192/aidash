@@ -15,7 +15,7 @@ import time
 import urllib.parse
 import urllib.request
 
-from gcip import reconcile_environment
+from gcip import reconcile_environment, reconcile_mfa
 import kube
 
 from cloud import (
@@ -374,7 +374,11 @@ def verify_source(config, identity, entry):
 def gcip_revision(config):
     """Persist only a digest of shared inputs, including private IdP rotation."""
     value = {
-        "tenants": config.get("gcip_tenants", {}),
+        # MFA changes alter neither Tenant Bindings nor IdPs, so they never fence hosts.
+        "tenants": {
+            alias: {key: setting for key, setting in pool.items() if key != "mfa"}
+            for alias, pool in config.get("gcip_tenants", {}).items()
+        },
         "idp_secrets": json.loads(os.environ.get("AIDASH_GCIP_IDP_SECRETS") or "{}"),
         "web_api_key": config.get("gcip_web_api_key"),
     }
@@ -387,10 +391,17 @@ def quiesce_gcip(terraform, identity):
 
 
 def gcip_output_revision(output):
-    value = (output or {}).get("gcip", {})
+    value = {key: setting for key, setting in (output or {}).get("gcip", {}).items() if key != "mfa"}
     if not value.get("tenant_ids"):
         value = {}
     return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
+
+
+def reconcile_gcip_mfa(store, identity, generation, output):
+    """Enforce declared tenant MFA; annotate and record each correction before the next tenant."""
+    for tenant, fields in reconcile_mfa(output):
+        print(f"::warning title=GCIP MFA drift corrected::{identity} tenant={tenant} fields={','.join(fields)}")
+        update_entry(store, identity, generation, gcip_mfa_drift_at=int(time.time()))
 
 
 class GcipTerraform:
@@ -515,6 +526,8 @@ def refresh_gcip_environments(config, store, terraform, managed, revision, affec
             entry = current_entry(store, identity, generation)
             output = outputs[identity]
             reconcile_environment(output)
+            # Before any host reload/unseal: a new pool never admits undeclared MFA.
+            reconcile_gcip_mfa(store, identity, generation, output)
             runtime = provision_secret(config, output, entry["kind"])
             previous = managed[identity]
             quiesced = bool(entry.get("gcip_quiesced"))
@@ -662,6 +675,14 @@ def reconcile_locked(config, store, terraform, managed):
             output = terraform.outputs().get(identity) if managed else None
             if output and entry["desired"] != "destroyed":
                 reconcile_environment(output)
+                try:
+                    reconcile_gcip_mfa(store, identity, generation, output)
+                except (Exception, OperationDeadline):
+                    # The next run fences this host and retries through the GCIP refresh,
+                    # including when the check exhausted the operation budget.
+                    with operation_budget(60):
+                        update_entry(store, identity, generation, gcip_pending=True)
+                    raise
             # Close/merge cleanup is reconciled regardless of CI, builds, or fork approval.
             if entry["kind"] == "pr" and entry["desired"] != "destroyed":
                 pr = github(f"repos/{config['repository']}/pulls/{identity[3:]}")
@@ -937,6 +958,9 @@ def reconcile_locked(config, store, terraform, managed):
             runtime = provision_secret(config, output, entry["kind"])
             settings = kube.materialize(cluster, identity, config["project_id"], output, runtime)
             reconcile_environment(output)
+            # This apply may first materialize the `mfa` output, which neither
+            # GCIP digest fences: enforce it before the edge reopens admission.
+            reconcile_gcip_mfa(store, identity, generation, output)
             current_entry(store, identity, generation)
             kube.deploy(cluster, identity, output, entry["release"], entry["sha"], settings)
             kube.start_writers(cluster, identity)
