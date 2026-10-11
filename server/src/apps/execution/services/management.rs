@@ -12,20 +12,22 @@ use crate::{
 	federation::Federation,
 	registry::Search,
 };
+use aidash_domain::provider::progress::MARKER_PREFIX;
 use futures_util::StreamExt;
 use http::HeaderMap;
 use reinhardt::http::StreamBody;
 use reinhardt::injectable;
-use reinhardt::query::Expr;
 use reinhardt::query::PostgresQueryBuilder;
 use reinhardt::query::Query;
 use reinhardt::query::QueryStatementBuilder as _;
+use reinhardt::query::{Expr, ExprTrait as _};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
 use crate::apps::execution::serializers::management::ClaimInput;
 use crate::apps::execution::serializers::management::ControlInput;
 use crate::apps::execution::serializers::management::EventQuery;
+use crate::apps::execution::serializers::management::InferenceStreamQuery;
 use crate::apps::workspaces::serializers::management::MessageInput;
 
 use crate::apps::identity::services::http_auth::scoped;
@@ -66,6 +68,10 @@ impl HarnessManagement {
 					.column(reinhardt::query::ColumnRef::Asterisk)
 					.from(reinhardt::query::Alias::new("events"))
 					.and_where(reinhardt::query::Expr::cust("sequence < $1"))
+					.and_where(
+						Expr::col(reinhardt::query::Alias::new("kind"))
+							.not_like(Expr::value(format!("{MARKER_PREFIX}%"))),
+					)
 					.order_by(
 						reinhardt::query::Alias::new("sequence"),
 						reinhardt::query::Order::Desc,
@@ -436,7 +442,7 @@ impl HarnessManagement {
 			.and_then(|value| value.to_str().ok())
 			.and_then(|value| value.parse().ok())
 			.unwrap_or(q.after);
-		let mut stream = self
+		let stream = self
 			.event_streams
 			.open(
 				self.runtime.clone(),
@@ -450,22 +456,39 @@ impl HarnessManagement {
 				},
 			)
 			.await?;
-		Ok(Box::pin(async_stream::stream! {
-			let interval = std::time::Duration::from_secs(15);
-			let mut keepalive = tokio::time::interval_at(tokio::time::Instant::now() + interval, interval);
-			keepalive.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-			loop {
-				tokio::select! {
-					biased;
-					frame = stream.next() => match frame {
-						Some(Ok(frame)) => yield Ok(frame.into_bytes()),
-						Some(Err(error)) => match error {},
-						None => return,
-					},
-					_ = keepalive.tick() => yield Ok(bytes::Bytes::from_static(b":\n\n")),
-				}
-			}
-		}))
+		Ok(keepalive(stream))
+	}
+
+	/// Display-only Inference Progress of one Run, resumable by `progress_seq`.
+	pub(crate) async fn run_inference_stream(
+		&self,
+		actor: Actor,
+		browser: Option<crate::dashboard_auth::BrowserOrigin>,
+		headers: HeaderMap,
+		run: Uuid,
+		q: InferenceStreamQuery,
+		lease: Option<crate::http::SseLeaseHandle>,
+	) -> Result<StreamBody> {
+		let cursor = headers
+			.get("last-event-id")
+			.and_then(|value| value.to_str().ok())
+			.and_then(|value| value.parse().ok())
+			.or(q.after);
+		let stream = self
+			.event_streams
+			.open_run(
+				self.runtime.clone(),
+				crate::sse::RunStreamRequest {
+					actor,
+					browser,
+					headers,
+					run,
+					cursor,
+					lease,
+				},
+			)
+			.await?;
+		Ok(keepalive(stream))
 	}
 	pub(crate) async fn health(&self) -> Result<Value> {
 		let f = self.runtime.clone();
@@ -604,3 +627,23 @@ impl HarnessManagement {
 }
 
 use reinhardt::Response;
+
+/// Frame a connection stream with the 15 s comment keepalive used by every SSE route.
+fn keepalive<T: Send + 'static>(mut stream: crate::sse::EventStream<T>) -> StreamBody {
+	Box::pin(async_stream::stream! {
+		let interval = std::time::Duration::from_secs(15);
+		let mut keepalive = tokio::time::interval_at(tokio::time::Instant::now() + interval, interval);
+		keepalive.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+		loop {
+			tokio::select! {
+				biased;
+				frame = stream.next() => match frame {
+					Some(Ok(frame)) => yield Ok(frame.into_bytes()),
+					Some(Err(error)) => match error {},
+					None => return,
+				},
+				_ = keepalive.tick() => yield Ok(bytes::Bytes::from_static(b":\n\n")),
+			}
+		}
+	})
+}

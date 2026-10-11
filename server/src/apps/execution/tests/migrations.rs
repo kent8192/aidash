@@ -87,6 +87,22 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 		})
 		.count();
 	assert!(tables >= 117, "retain every baseline and new memory table");
+	// The repository allocates each Run's progress sequence; the physical
+	// column has no identity, so the logical state must not claim one.
+	let progress_seq = migrations
+		.iter()
+		.filter(|migration| migration.state_only)
+		.flat_map(|migration| &migration.operations)
+		.find_map(|operation| match operation {
+			reinhardt::db::migrations::Operation::CreateTable { name, columns, .. }
+				if name == "inference_progress" =>
+			{
+				columns.iter().find(|column| column.name == "seq")
+			}
+			_ => None,
+		})
+		.unwrap();
+	assert!(progress_seq.primary_key && !progress_seq.auto_increment);
 	for migration in migrations
 		.iter()
 		.filter(|migration| migration.database_only)
@@ -272,14 +288,14 @@ async fn generation_with_existing_sql_assets_preserves_history_and_dependency(
 	);
 	assert_eq!(std::fs::read(history).unwrap(), original);
 	let generated = FilesystemSource::new(fixture.directory.path().join("migrations"))
-		.get_migration("execution", "0014_policy_probe")
+		.get_migration("execution", "0016_policy_probe")
 		.await
 		.unwrap();
 	assert_eq!(
 		generated.dependencies,
 		vec![(
 			"execution".to_owned(),
-			"0013_inference_usage_model_state".to_owned()
+			"0015_inference_progress_state".to_owned()
 		)]
 	);
 	assert!(generated.operations.is_empty());
@@ -1341,7 +1357,7 @@ async fn tool_parallelism_migration_reverses_to_deferred_exposure_and_refuses_st
 	};
 	let parallel = json!({"tool_parallelism":2});
 	let deferred = json!({"exposure":{"version":"deferred@1"}});
-	// The 0020 bodies keep the 0019 deferred exposure contract beside the ceiling.
+	// The 0021 bodies keep the 0019 deferred exposure contract beside the ceiling.
 	assert!(
 		contract_accepts(
 			&pool,
@@ -1367,7 +1383,7 @@ async fn tool_parallelism_migration_reverses_to_deferred_exposure_and_refuses_st
 			.unwrap();
 	let migration = migrations
 		.into_iter()
-		.find(|m| m.app_label == "registry" && m.name == "0020_tool_parallelism")
+		.find(|m| m.app_label == "registry" && m.name == "0021_tool_parallelism")
 		.unwrap();
 	let mut executor =
 		reinhardt::db::migrations::DatabaseMigrationExecutor::new(fixture.connection.clone());
@@ -1444,7 +1460,7 @@ async fn tool_parallelism_migration_reverses_to_deferred_exposure_and_refuses_st
 	assert!(
 		error
 			.to_string()
-			.contains("registry 0020_tool_parallelism cannot be reversed"),
+			.contains("registry 0021_tool_parallelism cannot be reversed"),
 		"{error}"
 	);
 	assert!(
@@ -1455,6 +1471,125 @@ async fn tool_parallelism_migration_reverses_to_deferred_exposure_and_refuses_st
 		)
 		.await
 	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn model_streaming_migration_refuses_rollback_with_installation_overrides(
+	#[future] fresh_database: MigrationFixture,
+) {
+	use aidash_server::apps::registry::{
+		models::{Definition, Installation},
+		services::states::DefinitionKind,
+	};
+	// Arrange: a model whose streaming settings exist only in its override.
+	let fixture = fresh_database.await;
+	fixture.migrate().await;
+	let pool = fixture.connection.clone().into_postgres().unwrap();
+	let upgraded = constraint_definition(&pool, "registry_model_config").await;
+	for key in ["streaming", "stream_stall_timeout_secs", "cache_mode"] {
+		assert!(upgraded.contains(&format!("'{key}'::text")), "{upgraded}");
+	}
+	let lease = DatabaseConnectionLease::register(fixture.connection.clone()).unwrap();
+	let mut connection = lease.handle();
+	let metadata = json!({"id":"stream-model","version":"1.0.0","kind":"model",
+		"name":{"en":"Streaming fixture"},"description":{"en":"Migration test"},
+		"config":{"provider":"openrouter","model_id":"openai/model",
+			"endpoint":"http://127.0.0.1:1/v1","credential_env":null,
+			"context_window":32768,"modalities":["text"],"cost":{}}});
+	Definition::objects()
+		.create_with_conn(
+			&mut connection,
+			&Definition::build()
+				.id("stream-model")
+				.version("1.0.0")
+				.kind(DefinitionKind::Model)
+				.metadata(metadata.into())
+				.finish(),
+		)
+		.await
+		.unwrap();
+	Installation::objects()
+		.create_with_conn(
+			&mut connection,
+			&Installation::build()
+				.id("stream-model")
+				.version("1.0.0")
+				.digest("streaming-fixture")
+				.config(json!({"streaming":false}).into())
+				.finish(),
+		)
+		.await
+		.unwrap();
+	let migration =
+		FilesystemSource::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations"))
+			.all_migrations()
+			.await
+			.unwrap()
+			.into_iter()
+			.find(|m| m.app_label == "registry" && m.name == "0020_model_streaming_config")
+			.unwrap();
+	let mut executor =
+		reinhardt::db::migrations::DatabaseMigrationExecutor::new(fixture.connection.clone());
+	// Act
+	let error = executor
+		.rollback_migrations(std::slice::from_ref(&migration))
+		.await
+		.unwrap_err();
+	// Assert: the guard refuses before any DDL runs.
+	assert!(
+		error
+			.to_string()
+			.contains("registry 0020_model_streaming_config cannot be reversed"),
+		"{error}"
+	);
+	assert_eq!(
+		constraint_definition(&pool, "registry_model_config").await,
+		upgraded
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn model_streaming_migration_composes_with_deferred_exposure_guard(
+	#[future] fresh_database: MigrationFixture,
+) {
+	// Arrange
+	let fixture = fresh_database.await;
+	fixture.migrate().await;
+	let pool = fixture.connection.clone().into_postgres().unwrap();
+	let query = Query::select()
+		.expr(Expr::cust(
+			"pg_get_functiondef('public.guard_installation_config()'::regprocedure)",
+		))
+		.to_string(PostgresQueryBuilder);
+	// The later 0021_tool_parallelism appends `tool_parallelism` to this allowlist.
+	let exposure = "'remove_default','cluster','max_steps','exposure','tool_parallelism']::text[]";
+	let upgraded: String = sqlx::query_scalar(&query).fetch_one(&pool).await.unwrap();
+	assert!(upgraded.contains(exposure), "{upgraded}");
+	assert!(
+		upgraded.contains("'streaming','stream_stall_timeout_secs'"),
+		"{upgraded}"
+	);
+	let migration =
+		FilesystemSource::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations"))
+			.all_migrations()
+			.await
+			.unwrap()
+			.into_iter()
+			.find(|m| m.app_label == "registry" && m.name == "0020_model_streaming_config")
+			.unwrap();
+	let mut executor =
+		reinhardt::db::migrations::DatabaseMigrationExecutor::new(fixture.connection.clone());
+	// Act
+	executor
+		.rollback_migrations(std::slice::from_ref(&migration))
+		.await
+		.unwrap();
+	// Assert: rollback withdraws only the streaming checks, keeping 0019's guard.
+	let restored: String = sqlx::query_scalar(&query).fetch_one(&pool).await.unwrap();
+	assert!(restored.contains(exposure), "{restored}");
+	assert!(!restored.contains("stream"), "{restored}");
 }
 
 #[rstest]
@@ -1729,8 +1864,8 @@ async fn deferred_exposure_rollback_is_refused_while_an_agent_uses_exposure(
 			.unwrap()
 	};
 	let migration = registry("0019_deferred_exposure");
-	// The later 0020_tool_parallelism migration rewrites the same contracts.
-	let later = registry("0020_tool_parallelism");
+	// The later 0021_tool_parallelism migration rewrites the same contracts.
+	let later = registry("0021_tool_parallelism");
 	let mut executor =
 		reinhardt::db::migrations::DatabaseMigrationExecutor::new(fixture.connection.clone());
 	// Act / Assert: without exposure data the reverse restores the 0018 contract.

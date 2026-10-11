@@ -427,6 +427,32 @@ impl ExecutionStore for Bench {
 	async fn emit(&self, _workspace: Option<Uuid>, _kind: &str, _data: Value) -> Result<Event> {
 		unexpected("ExecutionStore.emit")
 	}
+	async fn start_inference(
+		&self,
+		_run: &Run,
+		_token: Uuid,
+		_attempt: InferenceAttemptId,
+	) -> Result<()> {
+		unexpected("ExecutionStore.start_inference")
+	}
+	async fn append_inference_progress(
+		&self,
+		_run: &Run,
+		_token: Uuid,
+		_attempt: InferenceAttemptId,
+		_batch: &[InferenceProgress],
+	) -> Result<()> {
+		unexpected("ExecutionStore.append_inference_progress")
+	}
+	async fn finish_inference(
+		&self,
+		_run: &Run,
+		_token: Uuid,
+		_attempt: InferenceAttemptId,
+		_outcome: ProgressOutcome,
+	) -> Result<()> {
+		unexpected("ExecutionStore.finish_inference")
+	}
 	async fn run_inputs(&self, _run: Uuid) -> Result<Vec<aidash_domain::run_input::RunInput>> {
 		Ok(vec![])
 	}
@@ -700,6 +726,9 @@ impl ExecutionAuthority for Bench {
 	async fn suspend(&self) -> Result<()> {
 		unexpected("ExecutionAuthority.suspend")
 	}
+	async fn recheck_inference(&self) -> Result<()> {
+		unexpected("ExecutionAuthority.recheck_inference")
+	}
 	async fn resume(&self) -> Result<()> {
 		unexpected("ExecutionAuthority.resume")
 	}
@@ -831,13 +860,19 @@ impl ExecutionEnvironment for Bench {
 	) -> Result<()> {
 		unexpected("ExecutionEnvironment.transition_terminal_run_messages")
 	}
-	async fn wait_for_inference_cancellation(&self, _run: Uuid) -> Result<()> {
+	async fn wait_for_inference_interruption(
+		&self,
+		_run: Uuid,
+		included_input_seq: i64,
+	) -> Result<InferenceInterruption> {
+		// A Tool Batch waits only for cancellation; no input supersedes it.
+		assert_eq!(included_input_seq, i64::MAX);
 		let mut cancelled = self.0.lab.cancel.subscribe();
 		cancelled
 			.wait_for(|cancelled| *cancelled)
 			.await
 			.map_err(|_| Error::Conflict("cancellation channel closed".into()))?;
-		Ok(())
+		Ok(InferenceInterruption::Cancelled)
 	}
 	async fn operator_human_message_media(
 		&self,

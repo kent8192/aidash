@@ -6,6 +6,7 @@ use aidash_domain::{
 	media::Selection,
 	model::ModelConfig,
 	projection::{ProjectionVersion, PromptCache},
+	provider::progress::{InferenceAttemptId, InterruptionReason, ProgressOutcome},
 	provider::usage::{RequestEstimate, UsageDispatch, UsageOutcome},
 	registry::bindings::{AgentBindings, BindingSnapshot},
 	semantic::{Failure, InputRead},
@@ -206,11 +207,13 @@ impl<'a> Executor<'a> {
 				Ok((offset, output))
 			});
 		// Read-only calls may be dropped on cancellation; nothing is adopted and
-		// the next step observes the cancelled Run.
+		// the next step observes the cancelled Run. A newer input never
+		// interrupts a batch, as it never interrupts a sequential call, so no
+		// accepted input sequence can supersede this wait.
 		let finished = tokio::select! {
 			biased;
-			cancelled = self.environment.wait_for_inference_cancellation(admitted.id) => {
-				cancelled?;
+			interrupted = self.environment.wait_for_inference_interruption(admitted.id, i64::MAX) => {
+				interrupted?;
 				return Err(Error::Conflict("run cancelled during tool batch".into()));
 			}
 			finished = futures_util::future::join_all(calls_in_flight) => finished,
@@ -260,6 +263,39 @@ impl<'a> Executor<'a> {
 		progress.batch_end = None;
 		store.save_run(run, token, "run.tool_recorded").await?;
 		Ok(true)
+	}
+	/// Record a non-accepted outcome of an Inference Attempt.
+	async fn close_inference(
+		&self,
+		run: &Run,
+		token: Uuid,
+		attempt: InferenceAttemptId,
+		outcome: ProgressOutcome,
+	) -> Result<()> {
+		self.environment
+			.store()
+			.finish_inference(run, token, attempt, outcome)
+			.await?;
+		metrics::counter!("aidash_inference_interruptions_total", "reason" => outcome.reason())
+			.increment(1);
+		Ok(())
+	}
+	/// Record why an attempt ended without an Accepted Response. A failed write is
+	/// only logged so the caller's error survives; a later attempt or terminal
+	/// transition closes an attempt left pending.
+	async fn interrupt_inference(
+		&self,
+		run: &Run,
+		token: Uuid,
+		attempt: InferenceAttemptId,
+		reason: InterruptionReason,
+	) {
+		if let Err(error) = self
+			.close_inference(run, token, attempt, ProgressOutcome::Interrupted(reason))
+			.await
+		{
+			tracing::warn!(run_id = %run.id, %attempt, %error, "inference outcome was not recorded; a later attempt closes it");
+		}
 	}
 	async fn publish_model_text(
 		&self,
@@ -940,14 +976,15 @@ impl<'a> Executor<'a> {
 					None
 				};
 				// Each provider call is a new Inference Attempt. Its Usage Record is
-				// durable before provider I/O and is keyed apart from the lease.
-				let attempt = Uuid::now_v7();
+				// durable before provider I/O and is keyed apart from the lease; its
+				// displayed progress shares the same identifier.
+				let attempt = InferenceAttemptId::new();
 				store
 					.record_usage_dispatch(
 						run,
 						token,
 						&UsageDispatch {
-							attempt,
+							attempt: attempt.0,
 							lease: token,
 							response_epoch: response_epoch(run.revision, run.step),
 							model_id: agent.model.id.clone(),
@@ -964,35 +1001,137 @@ impl<'a> Executor<'a> {
 					guard.suspend().await?;
 				}
 				visibility.suspend().await?;
-				let result = tokio::select! {
-					biased;
-					cancelled = self.environment.wait_for_inference_cancellation(run.id) => match cancelled {
-						Ok(()) => Err(Error::Conflict("run cancelled during inference".into())),
-						Err(error) => Err(error),
-					},
-					result = model.infer(request) => result,
-				};
-				let resumed = visibility.resume().await;
-				// Cancellation, timeouts and unreadable responses leave usage unknown.
-				let outcome = match &result {
-					Ok(response) => UsageOutcome::Completed(response.reported.clone()),
-					Err(Error::ProviderRejected { .. }) => UsageOutcome::Rejected {
-						class: "provider_rejected".into(),
-					},
-					Err(_) => UsageOutcome::Unknown,
-				};
-				let recorded = store.complete_usage_record(run, attempt, &outcome).await;
-				if let (Some(reservation), Ok(response)) = (reservation, result.as_ref()) {
-					// Provider usage is billable even when authorization changed
-					// or a transaction committed while its result was in flight.
-					reservation.settle(response).await?;
+				// Recording the attempt locks the Run row, which the authority scope
+				// can hold until it is suspended.
+				if let Err(error) = store.start_inference(run, token, attempt).await {
+					visibility.resume().await?;
+					return Err(error);
 				}
-				resumed?;
-				let result = result?;
-				// A failed record write never hides the inference error above.
-				recorded?;
-				if let Some(guard) = guard {
-					guard.resume().await?;
+				let started = tokio::time::Instant::now();
+				let progress = progress::ProgressBuffer::new(started);
+				let provider = async {
+					let infer = async {
+						let result = model.infer(request, &progress).await;
+						progress.finish();
+						result
+					};
+					// The flusher stores the remainder before the outcome is recorded.
+					tokio::join!(infer, progress.flush(store, run, token, attempt)).0
+				};
+				let recheck = async {
+					let Some(guard) = guard else {
+						return std::future::pending().await;
+					};
+					loop {
+						tokio::time::sleep(INFERENCE_RECHECK_INTERVAL).await;
+						if let Err(error) = guard.recheck_inference().await {
+							return error;
+						}
+					}
+				};
+				let inference = tokio::select! {
+					biased;
+					interrupted = self.environment.wait_for_inference_interruption(run.id, input_seq) => match interrupted {
+						Ok(InferenceInterruption::Cancelled) => Inference::Interrupted(InterruptionReason::Cancelled, Error::Conflict("run cancelled during inference".into())),
+						Ok(InferenceInterruption::Superseded) => Inference::Superseded,
+						Err(error) => Inference::Interrupted(InterruptionReason::StreamError, error),
+					},
+					error = recheck => Inference::Interrupted(InterruptionReason::Revoked, error),
+					result = provider => match result {
+						Ok(response) => Inference::Response(response),
+						Err(error @ Error::InferenceStalled) => Inference::Interrupted(InterruptionReason::Stall, error),
+						Err(error) => Inference::Interrupted(InterruptionReason::StreamError, error),
+					},
+				};
+				// A recheck dropped by another branch can stop after reacquiring the
+				// authority scope; release it before outcome writes lock the Run row.
+				if let Some(guard) = guard
+					&& let Err(error) = guard.suspend().await
+				{
+					visibility.resume().await?;
+					return Err(error);
+				}
+				let resumed = visibility.resume().await;
+				// Cancellation, supersession, stalls and unreadable responses leave
+				// usage unknown.
+				let outcome = match &inference {
+					Inference::Response(response) => UsageOutcome::Completed(response.reported.clone()),
+					Inference::Interrupted(_, Error::ProviderRejected { .. }) => {
+						UsageOutcome::Rejected {
+							class: "provider_rejected".into(),
+						}
+					}
+					Inference::Superseded | Inference::Interrupted(..) => UsageOutcome::Unknown,
+				};
+				let recorded = store.complete_usage_record(run, attempt.0, &outcome).await;
+				let result = match inference {
+					Inference::Response(response) => response,
+					Inference::Superseded => {
+						self.close_inference(run, token, attempt, ProgressOutcome::Discarded)
+							.await?;
+						resumed?;
+						recorded?;
+						if let Some(guard) = guard {
+							guard.resume().await?;
+						}
+						// Like a stored response that predates new input: keep the
+						// inference allowance and offer the same media, reads and
+						// unconsumed deferrals to the next request.
+						let pending = ToolCallState {
+							media_inferred_seq_before_response,
+							observed_input_seq_before_response,
+							inferred_selected_media: selected_media,
+							media_intake_through_seq: intake_seq,
+							required_run_message_reads,
+							..Default::default()
+						};
+						let next_pending = stale_media_pending(
+							&mut context,
+							&pending,
+							&mut run.observed_input_seq,
+						);
+						run.context = context;
+						run.state = RunState::Thinking(ThinkingState {
+							force_workspace_read_compaction: thinking
+								.force_workspace_read_compaction,
+							deferred_workspace_read: thinking.deferred_workspace_read.clone(),
+							deferred_skill_read: thinking.deferred_skill_read.clone(),
+							deferred_workspace_observation: thinking
+								.deferred_workspace_observation
+								.clone(),
+							..next_pending
+						});
+						store.save_run(run, token, "run.message_received").await?;
+						return Ok(());
+					}
+					Inference::Interrupted(reason, error) => {
+						self.interrupt_inference(run, token, attempt, reason).await;
+						resumed?;
+						// A failed record write never hides the inference error.
+						return Err(error);
+					}
+				};
+				// Provider usage is billable even when authorization changed
+				// or a transaction committed while its result was in flight.
+				if let Some(reservation) = reservation
+					&& let Err(error) = reservation.settle(&result).await
+				{
+					self.interrupt_inference(run, token, attempt, InterruptionReason::StreamError)
+						.await;
+					return Err(error);
+				}
+				if let Err(error) = resumed.and(recorded) {
+					self.interrupt_inference(run, token, attempt, InterruptionReason::StreamError)
+						.await;
+					return Err(error);
+				}
+				if let Some(guard) = guard
+					&& let Err(error) = guard.resume().await
+				{
+					// Authority changed while the provider ran; its output is never accepted.
+					self.interrupt_inference(run, token, attempt, InterruptionReason::Revoked)
+						.await;
+					return Err(error);
 				}
 				// Count only tool content that survived compaction and was present
 				// in a successful provider request, not every completed read.
@@ -1059,6 +1198,8 @@ impl<'a> Executor<'a> {
 				}));
 				run.error = None;
 				store.save_run(run, token, "model.completed").await?;
+				metrics::histogram!("aidash_inference_accepted_seconds")
+					.record(started.elapsed().as_secs_f64());
 				Ok(())
 			})
 			.await?,
@@ -1803,6 +1944,16 @@ impl<'a> Executor<'a> {
 		Ok(())
 	}
 }
+
+/// Authority is rechecked at most this often while the provider call runs.
+const INFERENCE_RECHECK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
+
+enum Inference {
+	Response(aidash_domain::provider::ModelResponse),
+	/// A newer Run input arrived; the attempt is discarded and replanned.
+	Superseded,
+	Interrupted(InterruptionReason, Error),
+}
 fn declared_message_read_range(
 	tools: &Tools,
 	event: &ContextEvent,
@@ -2144,5 +2295,6 @@ async fn compact_execution(
 	Ok(())
 }
 
+mod progress;
 #[cfg(test)]
 mod tests;

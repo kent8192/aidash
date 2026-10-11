@@ -489,7 +489,11 @@ export async function setup(
     const request = route.request();
     const url = new URL(request.url());
     const path = url.pathname;
-    if (path === "/api/events/stream") return route.abort();
+    if (
+      path === "/api/events/stream" ||
+      /^\/api\/runs\/[^/]+\/inference\/stream$/.test(path)
+    )
+      return route.abort();
     const access = options.subject
       ? { kind: "subject", tenant: "acme", subject: "alice" }
       : data.access;
@@ -802,6 +806,9 @@ export async function setup(
     },
     setRunMediaRoutes: (routes: string[][]) => {
       runMediaRoutes = routes;
+    },
+    finishRuns: () => {
+      for (const run of data.runs) run.phase = "COMPLETED";
     },
   };
 }
