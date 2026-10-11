@@ -295,6 +295,10 @@ impl InferenceReservation for Reservation {
 		let Self(reservation) = *self;
 		reservation.settle(response).await.map_err(Into::into)
 	}
+	async fn abort(self: Box<Self>) -> Result<()> {
+		let Self(reservation) = *self;
+		reservation.abort().await.map_err(Into::into)
+	}
 }
 struct Classifier(Box<dyn crate::context::jev::JevAsker>);
 #[async_trait]

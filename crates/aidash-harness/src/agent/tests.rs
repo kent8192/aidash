@@ -50,6 +50,8 @@ struct State {
 	/// When set, revocation past that threshold hits only the dependency sets
 	/// that contain this message.
 	revoked_message: Option<Uuid>,
+	/// The summary reservation holds a charge that a blocked call must release.
+	summary_reservation: bool,
 	/// The summarizer's configured `max_output_tokens`.
 	summarizer_output_tokens: u32,
 	projection: ProjectionVersion,
@@ -483,7 +485,10 @@ impl ExecutionAuthority for Backend {
 		let _ = (summarizer, window, output, request);
 		assert_eq!(token, self.0.token);
 		self.record("authority.summary_reserve");
-		Ok(None)
+		Ok(self
+			.0
+			.summary_reservation
+			.then(|| Box::new(self.clone()) as Box<dyn InferenceReservation>))
 	}
 	async fn recheck_summary(
 		&self,
@@ -786,6 +791,10 @@ impl InferenceReservation for Backend {
 		self.record("reservation.settle");
 		Ok(())
 	}
+	async fn abort(self: Box<Self>) -> Result<()> {
+		self.record("reservation.abort");
+		Ok(())
+	}
 }
 struct Fixture {
 	backend: Backend,
@@ -858,6 +867,7 @@ fn fixture() -> Fixture {
 		stale_summary_dependencies: false,
 		summary_checks_before_revocation: None,
 		revoked_message: None,
+		summary_reservation: false,
 		terminal: None,
 		summarizer_output_tokens: 4096,
 		projection: ProjectionVersion::Legacy,
@@ -1771,6 +1781,62 @@ async fn a_revoked_summary_dependency_pauses_before_jev_or_inference(mut fixture
 }
 
 #[rstest]
+#[tokio::test]
+async fn restored_originals_stay_paused_until_their_sources_are_readable(mut fixture: Fixture) {
+	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	state.context_policy = Some(recovery_policy(true));
+	state.jev_retention = Some(1.0);
+	*state.summary_text.lock().unwrap() = Some(valid_summary());
+	thinking_with_history(&mut fixture, 40);
+	advance_sources(&mut fixture).await.unwrap();
+	let dependencies = fixture
+		.run
+		.context
+		.execution_summary
+		.as_ref()
+		.unwrap()
+		.dependencies
+		.clone();
+	Arc::get_mut(&mut fixture.backend.0)
+		.unwrap()
+		.stale_summary_dependencies = true;
+	assert!(matches!(
+		advance_sources(&mut fixture).await,
+		Err(Error::Forbidden)
+	));
+	assert_eq!(
+		fixture.run.context.revoked_summary_dependencies,
+		Some(dependencies)
+	);
+
+	// A resumed step finds no summary, yet the restored originals still
+	// depend on the revoked sources: it pauses again before any provider.
+	let earlier = calls(&fixture).len();
+	let writes = events(&fixture).len();
+	let requests = fixture.backend.0.requests.lock().unwrap().len();
+	assert!(matches!(
+		advance_sources(&mut fixture).await,
+		Err(Error::Forbidden)
+	));
+	let step = &calls(&fixture)[earlier..];
+	assert!(step.contains(&"summary.dependencies"), "{step:?}");
+	for provider in ["jev.ask", "provider.infer", "summarizer.infer"] {
+		assert!(!step.contains(&provider), "{provider}: {step:?}");
+	}
+	assert_eq!(fixture.backend.0.requests.lock().unwrap().len(), requests);
+	assert_eq!(events(&fixture).len(), writes);
+
+	// Once every source is readable again, the step reaches a provider and
+	// the saved context no longer carries the guard.
+	Arc::get_mut(&mut fixture.backend.0)
+		.unwrap()
+		.stale_summary_dependencies = false;
+	advance_sources(&mut fixture).await.unwrap();
+	assert!(fixture.backend.0.requests.lock().unwrap().len() > requests);
+	assert!(fixture.run.context.revoked_summary_dependencies.is_none());
+}
+
+#[rstest]
 #[case::truncated(aidash_domain::context::recovery::Failure::OutputTruncated)]
 #[case::refused(aidash_domain::context::recovery::Failure::Refused)]
 #[tokio::test]
@@ -1896,10 +1962,10 @@ async fn a_source_revoked_while_the_summarizer_runs_is_never_adopted(mut fixture
 	state.context_policy = Some(recovery_policy(true));
 	state.jev_retention = Some(1.0);
 	*state.summary_text.lock().unwrap() = Some(valid_summary());
-	// No summary exists yet, so the checks are the one before the summarizer
-	// call and the one after it, made once authority resumes; the source is
-	// revoked in between.
-	state.summary_checks_before_revocation = Some(1);
+	// No summary exists yet, so the checks are the ones before and after the
+	// reservation and the one after the summarizer call, made once authority
+	// resumes; the source is revoked during the call.
+	state.summary_checks_before_revocation = Some(2);
 	thinking_with_history(&mut fixture, 40);
 	let before = fixture.run.context.history.clone();
 
@@ -1933,7 +1999,8 @@ async fn a_source_revoked_before_the_summarizer_call_is_never_disclosed(mut fixt
 	state.context_policy = Some(recovery_policy(true));
 	state.jev_retention = Some(1.0);
 	*state.summary_text.lock().unwrap() = Some(valid_summary());
-	// The source is already revoked when the reservation holds.
+	// The source is already revoked before the reservation: nothing is
+	// charged and nothing is disclosed.
 	state.summary_checks_before_revocation = Some(0);
 	thinking_with_history(&mut fixture, 40);
 	let before = fixture.run.context.history.clone();
@@ -1945,10 +2012,73 @@ async fn a_source_revoked_before_the_summarizer_call_is_never_disclosed(mut fixt
 
 	let calls = calls(&fixture);
 	assert!(!calls.contains(&"summarizer.infer"), "{calls:?}");
-	let position = |name| calls.iter().position(|call| *call == name).unwrap();
-	assert!(position("authority.summary_reserve") < position("summary.dependencies"));
+	assert!(!calls.contains(&"authority.summary_reserve"), "{calls:?}");
 	assert!(fixture.run.context.execution_summary.is_none());
 	assert_eq!(fixture.run.context.history, before);
+	let attempts = fixture.backend.0.attempts.lock().unwrap();
+	assert_eq!(attempts.len(), 1);
+	assert_eq!(attempts[0].1, Some(Outcome::Unauthorized));
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_source_revoked_while_the_reservation_holds_releases_it(mut fixture: Fixture) {
+	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	state.scoped = true;
+	state.summary_reservation = true;
+	state.context_policy = Some(recovery_policy(true));
+	state.jev_retention = Some(1.0);
+	*state.summary_text.lock().unwrap() = Some(valid_summary());
+	// The check before the reservation passes; the source is revoked while
+	// the reservation, which may wait on remote admission, is acquired.
+	state.summary_checks_before_revocation = Some(1);
+	thinking_with_history(&mut fixture, 40);
+	let before = fixture.run.context.history.clone();
+
+	assert!(matches!(
+		advance_sources(&mut fixture).await,
+		Err(Error::Forbidden)
+	));
+
+	let calls = calls(&fixture);
+	assert!(!calls.contains(&"summarizer.infer"), "{calls:?}");
+	assert!(!calls.contains(&"reservation.settle"), "{calls:?}");
+	let position = |name| calls.iter().position(|call| *call == name).unwrap();
+	assert!(position("authority.summary_reserve") < position("reservation.abort"));
+	assert_eq!(fixture.run.context.history, before);
+	let attempts = fixture.backend.0.attempts.lock().unwrap();
+	assert_eq!(attempts.len(), 1);
+	assert_eq!(attempts[0].1, Some(Outcome::Unauthorized));
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_trusted_local_summary_rechecks_its_sources_after_the_call(mut fixture: Fixture) {
+	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	state.context_policy = Some(recovery_policy(true));
+	state.jev_retention = Some(1.0);
+	*state.summary_text.lock().unwrap() = Some(valid_summary());
+	// No authority guard holds; the checks before the call pass and the
+	// source is deleted while the summarizer call is in flight.
+	state.summary_checks_before_revocation = Some(2);
+	thinking_with_history(&mut fixture, 40);
+	let before = fixture.run.context.history.clone();
+
+	assert!(matches!(
+		advance_sources(&mut fixture).await,
+		Err(Error::Forbidden)
+	));
+
+	let calls = calls(&fixture);
+	assert!(!calls.contains(&"authority.summary_reserve"), "{calls:?}");
+	let summarized = calls.iter().position(|call| *call == "summarizer.infer");
+	let last_check = calls
+		.iter()
+		.rposition(|call| *call == "summary.dependencies");
+	assert!(summarized.is_some() && summarized < last_check, "{calls:?}");
+	assert!(fixture.run.context.execution_summary.is_none());
+	assert_eq!(fixture.run.context.history, before);
+	assert!(!events(&fixture).contains(&"context.compacted".to_owned()));
 	let attempts = fixture.backend.0.attempts.lock().unwrap();
 	assert_eq!(attempts.len(), 1);
 	assert_eq!(attempts[0].1, Some(Outcome::Unauthorized));
@@ -1972,14 +2102,15 @@ async fn a_carried_source_revoked_while_the_summarizer_runs_is_never_readopted(
 	summary.dependencies.message_ids.insert(carried);
 	let first = summary.digest.clone();
 	thinking_with_history(&mut fixture, 40);
-	// The checks before and after pruning and before the second summarizer
-	// call pass; `carried` is revoked while that call is in flight.
+	// The checks before and after pruning and before and after the second
+	// reservation pass; `carried` is revoked while the summarizer call is in
+	// flight.
 	let checks = calls(&fixture)
 		.iter()
 		.filter(|call| **call == "summary.dependencies")
 		.count();
 	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
-	state.summary_checks_before_revocation = Some(checks + 3);
+	state.summary_checks_before_revocation = Some(checks + 4);
 	state.revoked_message = Some(carried);
 	let earlier = calls(&fixture).len();
 

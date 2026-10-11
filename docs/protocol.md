@@ -190,21 +190,27 @@ without the field never receive it. The
 Home accepts only the approved maximum charge: the pinned summarizer's context
 window plus `summary.max_tokens` capped at its output limit.
 Disclosure is checked before every request. A missing approval makes the stage unavailable,
-with no fallback. Every source the candidate depends on is rechecked once its
-reservation holds and before the request leaves the node; a revoked source
-settles the attempt as unauthorized without calling the summarizer. Adoption
+with no fallback. Every source the candidate depends on is rechecked before
+its reservation, so an already revoked source charges nothing, and again once
+the reservation holds and before the request leaves the node; a revoked source
+settles the attempt as unauthorized without calling the summarizer, and a held
+reservation is released: a local charge is refunded whole, and a dispatch the
+Home already admitted settles with unknown usage. Adoption
 saves the Run and marks the attempt adopted in one
 lease-fenced transaction, after the Run's inference authority, every
 summarizer approval above and every source the candidate depends on
 (including those carried from the previous summary) are rechecked without
 charging another call; a summarizer or source revoked during its call is
-never adopted. Malformed, empty,
+never adopted. A Run without an authority guard still rechecks every source
+after the call. Malformed, empty,
 non-reducing, unauthorized or interrupted summaries leave the saved context
 unchanged; an interrupted attempt is marked `abandoned` by the next attempt or
 by lease recovery. If a source the summary depends on is no longer readable, the
 summary is discarded and the original journal events it absorbed return to the
 saved projection, and the step pauses for authority before Jev or the model
-receives them. Message sources are the targets of absorbed message reads.
+receives them. The context keeps the discarded summary's dependencies, so
+every later step pauses the same way until each source is readable again.
+Message sources are the targets of absorbed message reads.
 A local Run rechecks message dependencies under its current authority without
 recording a read; a remote Run rechecks them through the Home's filtered record
 reads. An authority-bearing Run rechecks them again after pruning, whose Jev

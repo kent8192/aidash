@@ -201,6 +201,10 @@ pub trait ExecutionTool: Send + Sync {
 #[async_trait]
 pub trait InferenceReservation: Send {
 	async fn settle(self: Box<Self>, response: &ModelResponse) -> Result<()>;
+	/// Release a reservation whose request never left this node. A local
+	/// charge is refunded whole; a dispatch a remote Home already admitted
+	/// settles with unknown usage, since only a preparing one can abort.
+	async fn abort(self: Box<Self>) -> Result<()>;
 }
 #[async_trait]
 pub trait ExecutionAuthority: Send + Sync {

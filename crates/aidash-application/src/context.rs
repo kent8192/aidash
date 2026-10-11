@@ -237,7 +237,9 @@ pub fn summary_candidate(
 }
 
 /// Drop an Execution Summary whose sources are no longer authorized and put
-/// the original journal events it absorbed back into the projection.
+/// the original journal events it absorbed back into the projection. Its
+/// dependencies stay on the context so the restored originals remain
+/// guarded until every source is readable again.
 pub fn restore_summarized(context: &mut Context, journal: Vec<HistoryEntry>) -> Result<()> {
 	let Some(summary) = context.execution_summary.take() else {
 		return Ok(());
@@ -259,6 +261,11 @@ pub fn restore_summarized(context: &mut Context, journal: Vec<HistoryEntry>) -> 
 			"restored journal entries overlap the projection".into(),
 		));
 	}
+	let revoked = context.revoked_summary_dependencies.get_or_insert_default();
+	revoked.message_ids.extend(summary.dependencies.message_ids);
+	revoked
+		.tool_call_ids
+		.extend(summary.dependencies.tool_call_ids);
 	Ok(())
 }
 

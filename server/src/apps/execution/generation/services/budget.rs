@@ -71,4 +71,13 @@ impl InferenceReservation {
 			Self::Remote(reservation) => reservation.settle(response).await,
 		}
 	}
+	/// The request never left this node: refund a local charge whole. A remote
+	/// Home aborts only a dispatch still preparing, so an admitted one settles
+	/// with unknown usage instead of staying reserved.
+	pub(crate) async fn abort(self) -> Result<()> {
+		match self {
+			Self::Local(reservation) => reservation.abort().await.map_err(Into::into),
+			Self::Remote(reservation) => reservation.abort().await,
+		}
+	}
 }

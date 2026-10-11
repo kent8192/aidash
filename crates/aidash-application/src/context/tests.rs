@@ -929,9 +929,17 @@ async fn revoked_summary_restores_original_journal_events() {
 	let (mut adopted, _) = scenario
 		.adopt(&plan, &summary_text(&["c1"], &[], &[]), &policy)
 		.unwrap();
+	let dependencies = adopted
+		.execution_summary
+		.as_ref()
+		.unwrap()
+		.dependencies
+		.clone();
 	restore_summarized(&mut adopted, original.history.clone()).unwrap();
 	assert!(adopted.execution_summary.is_none());
 	assert_eq!(adopted.history, original.history);
+	// The restored originals stay guarded by the revoked summary's sources.
+	assert_eq!(adopted.revoked_summary_dependencies, Some(dependencies));
 }
 
 #[rstest::rstest]

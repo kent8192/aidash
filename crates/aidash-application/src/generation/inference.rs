@@ -29,27 +29,33 @@ impl Reservation {
 	/// Consuming the receipt keeps a provider response from refunding twice.
 	pub async fn settle(self, response: &ModelResponse) -> Result<()> {
 		let accounting = aidash_domain::generation::inference::accounting(self.amount, response);
-		let mut transaction = self.repository.begin().await?;
-		for request in self.requests {
-			transaction.refund(request, accounting.refund).await?;
-			if accounting.refund > 0
-				&& let Some((tenant, policy)) = transaction.released_policy(request).await?
-			{
-				transaction
-					.refund_allocated(&tenant, &policy, accounting.refund)
-					.await?;
-			}
-			transaction
-				.report(request, self.attempt, accounting.reported)
-				.await?;
-		}
-		transaction.commit().await?;
+		self.finish(accounting.refund, accounting.reported).await?;
 		if accounting.exceeded {
 			return Err(Error::External(
 				"provider usage exceeded reserved model limits".into(),
 			));
 		}
 		Ok(())
+	}
+	/// A request that never reached the provider refunds its whole charge.
+	pub async fn abort(self) -> Result<()> {
+		let amount = self.amount;
+		self.finish(amount, Some(0)).await
+	}
+	async fn finish(self, refund: i64, reported: Option<i64>) -> Result<()> {
+		let mut transaction = self.repository.begin().await?;
+		for request in self.requests {
+			transaction.refund(request, refund).await?;
+			if refund > 0
+				&& let Some((tenant, policy)) = transaction.released_policy(request).await?
+			{
+				transaction
+					.refund_allocated(&tenant, &policy, refund)
+					.await?;
+			}
+			transaction.report(request, self.attempt, reported).await?;
+		}
+		transaction.commit().await
 	}
 }
 /// Charges all local ancestors before returning a durable reservation.

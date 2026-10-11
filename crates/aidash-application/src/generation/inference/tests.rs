@@ -314,6 +314,16 @@ async fn settlement_preserves_complete_unknown_and_contract_usage(
 	assert_eq!(calls.last().unwrap(), "drop");
 }
 #[rstest]
+#[tokio::test]
+async fn an_aborted_reservation_refunds_its_whole_charge(world: World) {
+	let reservation = receipt(&world).await;
+	reservation.abort().await.unwrap();
+	assert_ledger(&world, 0, Some(0), 400 - 130, 2);
+	let calls = &world.0.lock().unwrap().calls;
+	assert!(calls.contains(&"allocation".into()));
+	assert_eq!(calls.last().unwrap(), "drop");
+}
+#[rstest]
 #[case("requests")]
 #[case("begin")]
 #[case("charge")]

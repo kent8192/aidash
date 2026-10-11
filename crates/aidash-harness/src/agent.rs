@@ -223,6 +223,27 @@ impl<'a> Executor<'a> {
 				candidate_digest: None,
 				after_tokens: after.map(|tokens| tokens as u64),
 			};
+		let attempt_id = attempt.id;
+		let unauthorized = async |run: &Run, error: Error| -> Result<()> {
+			store
+				.settle_compaction(
+					run,
+					token,
+					attempt_id,
+					&settlement(Outcome::Unauthorized, None, None),
+				)
+				.await?;
+			record_stage("summary", "unauthorized");
+			Err(error)
+		};
+		// A source that is already revoked never charges the summarizer's
+		// allowance.
+		match summary_dependencies_current(self.environment, guard, home, run, &dependencies).await
+		{
+			Ok(true) => {}
+			Ok(false) => return unauthorized(run, Error::Forbidden).await,
+			Err(error) => return unauthorized(run, error).await,
+		}
 		let reservation = match guard {
 			Some(guard) => match guard
 				.reserve_summary(
@@ -252,20 +273,16 @@ impl<'a> Executor<'a> {
 		};
 		// A request to the summarizer cannot be recalled: every source the
 		// candidate depends on must still be readable once the reservation,
-		// which may itself wait on remote admission, holds.
+		// which may itself wait on remote admission, holds. The request never
+		// leaves this node otherwise, so its reservation is released.
 		let current =
 			summary_dependencies_current(self.environment, guard, home, run, &dependencies).await;
 		if !matches!(current, Ok(true)) {
-			store
-				.settle_compaction(
-					run,
-					token,
-					attempt.id,
-					&settlement(Outcome::Unauthorized, None, None),
-				)
-				.await?;
-			record_stage("summary", "unauthorized");
-			return Err(current.err().unwrap_or(Error::Forbidden));
+			let blocked = unauthorized(run, current.err().unwrap_or(Error::Forbidden)).await;
+			if let Some(reservation) = reservation {
+				reservation.abort().await?;
+			}
+			return blocked;
 		}
 		// Like inference, release visibility and authorization locks during I/O.
 		if let Some(guard) = guard {
@@ -325,38 +342,20 @@ impl<'a> Executor<'a> {
 			}
 		};
 		// Authority was released during I/O: recheck the Run's ordinary inference
-		// authority, the exact summarizer and every summarized source before any
-		// candidate is adopted.
-		if let Some(guard) = guard
-			&& let Err(error) = async {
+		// authority and the exact summarizer when a guard holds them, and every
+		// summarized source for every Run, before any candidate is adopted.
+		let current = async {
+			if let Some(guard) = guard {
 				guard.inference().await?;
 				guard.recheck_summary(&summarizer).await?;
-				if summary_dependencies_current(
-					self.environment,
-					Some(guard),
-					home,
-					run,
-					&dependencies,
-				)
-				.await?
-				{
-					Ok(())
-				} else {
-					Err(Error::Forbidden)
-				}
 			}
-			.await
-		{
-			store
-				.settle_compaction(
-					run,
-					token,
-					attempt.id,
-					&settlement(Outcome::Unauthorized, None, None),
-				)
-				.await?;
-			record_stage("summary", "unauthorized");
-			return Err(error);
+			summary_dependencies_current(self.environment, guard, home, run, &dependencies).await
+		}
+		.await;
+		match current {
+			Ok(true) => {}
+			Ok(false) => return unauthorized(run, Error::Forbidden).await,
+			Err(error) => return unauthorized(run, error).await,
 		}
 		match summary_candidate(
 			&plan,
@@ -413,7 +412,8 @@ impl<'a> Executor<'a> {
 	}
 	/// A revoked source must not survive inside summary text. The restored
 	/// originals are saved, but the step pauses for authority before Jev, the
-	/// summarizer or the model can receive them.
+	/// summarizer or the model can receive them. Later steps pause the same way
+	/// until every source of the revoked summary is readable again.
 	async fn pause_if_summary_revoked(
 		&self,
 		run: &mut Run,
@@ -422,6 +422,12 @@ impl<'a> Executor<'a> {
 		home: &dyn ExecutionHome,
 		context: &mut Context,
 	) -> Result<()> {
+		if let Some(revoked) = &context.revoked_summary_dependencies {
+			if !summary_dependencies_current(self.environment, guard, home, run, revoked).await? {
+				return Err(Error::Forbidden);
+			}
+			context.revoked_summary_dependencies = None;
+		}
 		let Some(summary) = context.execution_summary.as_deref() else {
 			return Ok(());
 		};

@@ -49,6 +49,11 @@ pub struct Context {
 	/// Opt-in Summary Stage output; absent for prune-only Context Policies.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub execution_summary: Option<Box<summary::ExecutionSummary>>,
+	/// Sources of a revoked Execution Summary whose originals were restored
+	/// into `history`. No request carries the restored originals until every
+	/// one is readable again.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub revoked_summary_dependencies: Option<summary::SummaryDependencies>,
 	// Older run messages are summarized in bounded pages before task execution.
 	// Keep this separately from ordinary context compaction summaries.
 	pub run_message_summary: String,
@@ -83,6 +88,8 @@ struct StoredContext {
 	binding_snapshot: Option<Box<crate::registry::bindings::BindingSnapshot>>,
 	#[serde(default)]
 	execution_summary: Option<Box<summary::ExecutionSummary>>,
+	#[serde(default)]
+	revoked_summary_dependencies: Option<summary::SummaryDependencies>,
 	#[serde(default, rename = "summary")]
 	legacy_summary: Option<String>,
 	run_message_summary: String,
@@ -172,6 +179,7 @@ impl<'de> Deserialize<'de> for Context {
 			binding_snapshot: stored.binding_snapshot,
 			legacy_summary: stored.legacy_summary.unwrap_or_default(),
 			execution_summary: stored.execution_summary,
+			revoked_summary_dependencies: stored.revoked_summary_dependencies,
 			run_message_summary: stored.run_message_summary,
 			run_message_summary_seq: stored.run_message_summary_seq,
 			media_inferred_seq: stored.media_inferred_seq,
