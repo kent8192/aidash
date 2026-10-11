@@ -2,7 +2,12 @@
 -- Restore the 0019_deferred_exposure Agent Binding and descriptor contracts and
 -- withdraw `tool_parallelism` from the installation guard's Agent allowlist.
 -- Downgrading refuses stored parallelism declarations rather than leaving rows
--- that the restored contracts and pre-0021 binaries reject.
+-- that the restored contracts and pre-0021 binaries reject. It also refuses
+-- while an unfinished Run's Binding snapshot pins a shared-read core operation
+-- (file_read, file_search, skill_list, skill_load) or a concurrency
+-- restriction: a Run admitted after this migration pins a provider contract
+-- digest that encodes `concurrency`, which pre-0021 binaries reject when they
+-- resolve the Run's tools. Retry once those Runs finish or are cancelled.
 DO $$
 BEGIN
  IF EXISTS(SELECT 1 FROM registry WHERE kind = 'agent' AND (metadata->'config' ? 'tool_parallelism'
@@ -15,6 +20,12 @@ BEGIN
    OR jsonb_path_exists(config, 'strict $.bindings[*].narrow.concurrency')
    OR config #> '{narrow}' ? 'concurrency') THEN
   RAISE EXCEPTION 'registry 0021_tool_parallelism cannot be reversed: definitions, packages or installations declare tool_parallelism or narrow.concurrency';
+ END IF;
+ IF to_regclass('public.runs') IS NOT NULL AND EXISTS(SELECT 1 FROM public.runs
+   WHERE phase NOT IN ('COMPLETED', 'FAILED', 'CANCELLED')
+   AND (jsonb_path_exists(context, 'lax $.binding_snapshot.bindings[*] ? (@.definition.kind == "tool" && (exists(@.narrow.concurrency) || @.definition.config.provider starts with "core." && @.definition.config.operation like_regex "^(file_read|file_search|skill_list|skill_load)$"))')
+   OR jsonb_path_exists(context, 'lax $.binding_snapshot.foreign_agents[*].bindings[*] ? (@.definition.kind == "tool" && (exists(@.narrow.concurrency) || @.definition.config.provider starts with "core." && @.definition.config.operation like_regex "^(file_read|file_search|skill_list|skill_load)$"))'))) THEN
+  RAISE EXCEPTION 'registry 0021_tool_parallelism cannot be reversed: unfinished Runs pin shared-read tool contracts or narrow.concurrency';
  END IF;
 END
 $$;
