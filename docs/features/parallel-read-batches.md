@@ -59,6 +59,9 @@ provider is Sequential is rejected.
 The batch starts at the first call that has not run yet. It extends in the
 model's order and stops before the first call that:
 
+- was not exposed to the request that produced the response, for an Agent
+  with `deferred@1` exposure (an unloaded capability, or one loaded earlier in
+  the same response); the sequential path then records its exposure error;
 - is not concurrency-safe, or whose resource claims or output bound cannot be
   derived from its arguments;
 - conflicts with a claim already in the batch (exclusive access to the same

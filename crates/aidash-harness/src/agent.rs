@@ -1370,13 +1370,22 @@ impl<'a> Executor<'a> {
 				}
 				// Tool Batches run only in ordinary mode: no message catch-up, no
 				// pending media selection and a response informed by required reads.
-				let pending = run.state.tool()?;
-				let batch_end = match pending.batch_end {
+				let batch_end = match run.state.tool()?.batch_end {
 					Some(end) => Some(end),
 					None if !run_message_catchup
 						&& informed_response
-						&& pending_selected_media(pending).is_empty() =>
+						&& pending_selected_media(run.state.tool()?).is_empty() =>
 					{
+						// A batch covers only calls the request's Exposure set
+						// advertised, as checked below for a sequential call.
+						let exposed = match deferred_exposure(run)? {
+							Some((snapshot, budgets)) => {
+								let catalog = exposure_catalog(self.environment, run, snapshot, &tools).await?;
+								Some(exposure::select(&budgets, &catalog, &run.context.exposure)?.tools)
+							}
+							None => None,
+						};
+						let pending = run.state.tool()?;
 						let ceiling = agent
 							.tool_parallelism
 							.min(self.environment.tool_slots().map_or(1, ToolSlots::ceiling));
@@ -1387,6 +1396,7 @@ impl<'a> Executor<'a> {
 							&result.tool_calls,
 							cursor,
 							&tools,
+							exposed.as_ref(),
 							ceiling,
 							batch::BatchBudget {
 								request_tokens: pending.request_tokens,

@@ -9,6 +9,7 @@ use aidash_domain::{
 	tool::concurrency::{ConcurrentCall, RESULT_ENVELOPE_BYTES, batchable},
 };
 use serde_json::json;
+use std::collections::BTreeSet;
 
 /// The request budget a batch's worst-case results must fit, as in result fitting.
 #[derive(Clone, Copy)]
@@ -19,11 +20,15 @@ pub struct BatchBudget {
 
 /// Exclusive end of the Tool Batch that starts at `cursor`. A batch shorter
 /// than two calls is not a batch: its first call takes the sequential path.
+/// `exposed` is the Exposure set of the request that produced `calls` under
+/// `deferred@1`; a call outside it ends the batch, so the sequential path
+/// records its Exposure denial.
 pub fn plan_tool_batch(
 	context: &Context,
 	calls: &[ToolCall],
 	cursor: usize,
 	tools: &Tools,
+	exposed: Option<&BTreeSet<String>>,
 	ceiling: usize,
 	budget: BatchBudget,
 ) -> usize {
@@ -32,6 +37,9 @@ pub fn plan_tool_batch(
 	let mut tokens = budget.request_tokens;
 	for (index, call) in calls.iter().enumerate().skip(cursor) {
 		if admitted.len() >= ceiling {
+			break;
+		}
+		if exposed.is_some_and(|exposed| !exposed.contains(&call.name)) {
 			break;
 		}
 		let Some(tool) = tools.get(&call.name) else {

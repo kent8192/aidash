@@ -779,9 +779,14 @@ impl ExecutionEnvironment for Bench {
 		unexpected("ExecutionEnvironment.skill_context")
 	}
 	async fn direct_skills(&self, _run: &Run) -> Result<Vec<aidash_domain::exposure::DirectSkill>> {
-		unexpected("ExecutionEnvironment.direct_skills")
+		Ok(vec![])
 	}
-	async fn direct_skill_body(&self, _run: &Run, _skill_id: Uuid, _digest: &str) -> Result<String> {
+	async fn direct_skill_body(
+		&self,
+		_run: &Run,
+		_skill_id: Uuid,
+		_digest: &str,
+	) -> Result<String> {
 		unexpected("ExecutionEnvironment.direct_skill_body")
 	}
 	async fn skill_revision(&self, _run: &Run) -> Result<Option<i64>> {
@@ -1222,4 +1227,84 @@ async fn sequential_calls_between_reads_break_the_batch() {
 		.map(|index| (index, read(&format!("p{index}"))))
 		.collect();
 	assert_eq!(adopted(&run), expected(&results));
+}
+
+/// Bind `aliases` as Registry tools of a `deferred@1` Agent; `eager` ones are
+/// in every request's Exposure set, the rest only after a Load.
+fn deferred(run: &mut Run, aliases: &[&str], eager: &[&str]) {
+	let mut snapshot = DeferredSnapshot::default();
+	for alias in aliases {
+		snapshot.bind(
+			reference(alias),
+			"tool",
+			&format!("Fixture {alias}."),
+			json!(core_descriptor(NODE, alias).unwrap()),
+			Some(alias),
+			BindingOrigin::Explicit,
+		);
+	}
+	for alias in eager {
+		snapshot.eager("tool", alias);
+	}
+	run.context.binding_snapshot = Some(Box::new(snapshot.snapshot()));
+}
+
+#[tokio::test]
+async fn reads_loaded_in_this_response_wait_for_the_next_request() {
+	// Arrange: a Load earlier in this response staged file_search for the next
+	// request; the request that produced these calls did not advertise it.
+	let lab = Lab::echo();
+	let names = ["file_search", "file_search"];
+	let (bench, mut run) = bench(&lab, &names, 4, Some(ToolSlots::new(4)));
+	deferred(&mut run, &["file_search"], &[]);
+	let digest = run.context.binding_snapshot.as_ref().unwrap().bindings[0]
+		.digest
+		.clone();
+	run.context.exposure.stage(ExposureUpdate::Load(Loaded {
+		alias: "file_search".into(),
+		kind: CapabilityKind::Tool,
+		identity: exposure::CapabilityIdentity::Registry(reference("file_search")),
+		digest,
+		step: run.step,
+	}));
+	// Act
+	advance(&bench, &mut run).await.unwrap();
+	advance(&bench, &mut run).await.unwrap();
+	// Assert: each call records the sequential path's denial; nothing runs.
+	let denial = json!({"error": "capability file_search was loaded in this response; call it after the next model request"});
+	assert!(bench.admitted().is_empty());
+	assert!(bench.starts().is_empty());
+	assert!(lab.events("dispatch").is_empty());
+	assert!(lab.events("invoke").is_empty());
+	assert_eq!(adopted(&run), expected(&[(0, denial.clone()), (1, denial)]));
+	assert_eq!(progress(&run), (2, None));
+}
+
+#[tokio::test]
+async fn unloaded_aliases_end_the_batch_and_record_the_exposure_denial() {
+	// Arrange: file_read is eager; file_search was never loaded.
+	let lab = Lab::echo();
+	let names = ["file_read", "file_read", "file_search", "file_search"];
+	let (bench, mut run) = bench(&lab, &names, 4, Some(ToolSlots::new(4)));
+	deferred(&mut run, &["file_read", "file_search"], &["file_read"]);
+	// Act
+	for _ in 0..3 {
+		advance(&bench, &mut run).await.unwrap();
+	}
+	// Assert: only the exposed reads form a batch.
+	let denial = json!({"error": "capability file_search is not loaded; use capability_load"});
+	assert_eq!(bench.admitted(), [keys(&run, 0..2)]);
+	assert!(bench.starts().is_empty());
+	assert_eq!(lab.events("dispatch"), keys(&run, 0..2));
+	assert!(lab.events("invoke").is_empty());
+	assert_eq!(
+		adopted(&run),
+		expected(&[
+			(0, read("p0")),
+			(1, read("p1")),
+			(2, denial.clone()),
+			(3, denial),
+		])
+	);
+	assert_eq!(progress(&run), (4, None));
 }

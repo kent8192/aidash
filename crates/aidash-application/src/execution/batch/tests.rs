@@ -124,13 +124,53 @@ fn batches_are_contiguous_conflict_free_and_within_the_ceiling(
 	let expected = if end == 0 { cursor } else { end };
 	let calls = calls(names);
 	let tools = tools();
-	let planned = plan_tool_batch(&Context::default(), &calls, cursor, &tools, ceiling, ROOMY);
+	let planned = plan_tool_batch(
+		&Context::default(),
+		&calls,
+		cursor,
+		&tools,
+		None,
+		ceiling,
+		ROOMY,
+	);
 	assert_eq!(planned, expected);
 	// Planning is a pure function of the same durable inputs.
 	assert_eq!(
-		plan_tool_batch(&Context::default(), &calls, cursor, &tools, ceiling, ROOMY),
+		plan_tool_batch(
+			&Context::default(),
+			&calls,
+			cursor,
+			&tools,
+			None,
+			ceiling,
+			ROOMY
+		),
 		planned
 	);
+}
+
+#[rstest]
+#[case::every_bound_tool(None, 3)]
+#[case::all_exposed(Some(&["read", "list"][..]), 3)]
+#[case::later_call_hidden(Some(&["read"][..]), 2)]
+#[case::first_call_hidden(Some(&["list"][..]), 0)]
+fn calls_outside_the_request_exposure_set_end_the_batch(
+	#[case] exposed: Option<&[&str]>,
+	#[case] end: usize,
+) {
+	let calls = calls(&["read", "read", "list"]);
+	let exposed: Option<BTreeSet<String>> =
+		exposed.map(|aliases| aliases.iter().map(|alias| (*alias).to_owned()).collect());
+	let planned = plan_tool_batch(
+		&Context::default(),
+		&calls,
+		0,
+		&tools(),
+		exposed.as_ref(),
+		8,
+		ROOMY,
+	);
+	assert_eq!(planned, end);
 }
 
 #[test]
@@ -143,6 +183,7 @@ fn worst_case_result_encoding_must_fit_beside_later_call_reserves() {
 			&calls,
 			0,
 			&tools,
+			None,
 			8,
 			BatchBudget {
 				request_tokens,
