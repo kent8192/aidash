@@ -60,7 +60,7 @@ class GuardTransportTest(unittest.TestCase):
     def test_isolation_admission_requires_guest_capacity_and_separate_host_ceiling(self):
         self.runner.config.update(working_bytes=4096, temporary_bytes=4096, processes=128, host_tasks=512)
         self.runner.accept = Mock()
-        report = {'kernel': '4.19.0-gvisor', 'uid': 10000, 'process_limit': 128,
+        report = {'protocol': 'aidash-admission-probe/2', 'kernel': '4.19.0-gvisor', 'uid': 10000, 'process_limit': 128,
                   'physical_page_size': 4096, 'egress_denied': {'metadata': True},
                   'guest_capacity_verified': 112}
         record = {'status': 'completed', 'resource_evidence': {'host_tasks': 512, 'processes': 128}}
@@ -76,6 +76,20 @@ class GuardTransportTest(unittest.TestCase):
                 else:
                     with self.assertRaisesRegex(RuntimeError, 'does not match'):
                         self.runner.verify_isolation()
+        # A sandbox image built from a source with another probe contract (e.g. one
+        # that counted exited children) is refused, never read as evidence.
+        for protocol in (None, 'aidash-admission-probe/1'):
+            with self.subTest(protocol=protocol):
+                stale = dict(report, guest_capacity_verified=112)
+                if protocol is None:
+                    del stale['protocol']
+                else:
+                    stale['protocol'] = protocol
+                record['resource_evidence']['host_tasks'] = 512
+                record['stdout'] = base64.b64encode(json.dumps(stale).encode()).decode()
+                self.runner.get = Mock(return_value=record)
+                with self.assertRaisesRegex(RuntimeError, 'aidash-admission-probe/2'):
+                    self.runner.verify_isolation()
 
     def test_activity_keeps_pending_and_unproven_journals_busy(self):
         records = [

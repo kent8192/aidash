@@ -72,8 +72,26 @@ class AppImageTests(unittest.TestCase):
                 self.assertFalse(Path(command[-1]).is_relative_to(self.source))
 
     def test_sandbox_context_is_the_deployed_source(self):
+        (self.source / "runner").mkdir()
+        (self.source / "runner/probe.py").write_text('PROTOCOL = "aidash-admission-probe/2"\n')
         command = self.build("sandbox").call_args_list[0].args[0]
         self.assertEqual(command[-1], str(self.source / "runner"))
+
+    def test_sandbox_with_another_probe_contract_is_rejected_before_build(self):
+        # The trusted Runner refuses any other evidence contract at startup, so an
+        # older source would leave the Environment gated after a full rollout.
+        self.assertIn(f'PROBE_PROTOCOL = "{images.SANDBOX_PROBE_PROTOCOL}"',
+                      (images.ROOT / "runner/control.py").read_text())
+        (self.source / "runner").mkdir()
+        for content in (None, "report = {}\n", 'PROTOCOL = "aidash-admission-probe/1"\n'):
+            with self.subTest(content=content):
+                probe = self.source / "runner/probe.py"
+                probe.unlink(missing_ok=True)
+                if content is not None:
+                    probe.write_text(content)
+                with self.assertRaisesRegex(SystemExit, "admission probe"):
+                    self.build("sandbox")
+                self.docker.assert_not_called()
 
     def test_caddy_is_copied_from_its_reviewed_digest(self):
         docker = self.build("caddy")

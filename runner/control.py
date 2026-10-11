@@ -22,6 +22,8 @@ from urllib.parse import urlsplit, parse_qs
 import uuid
 
 TERMINAL = {"completed", "cancelled", "failed", "uncertain"}
+# The sandbox image's runner/probe.py must emit exactly this evidence contract.
+PROBE_PROTOCOL = "aidash-admission-probe/2"
 
 
 class Rejected(Exception):
@@ -115,6 +117,8 @@ class Runner:
                 if record["status"] != "completed":
                     raise RuntimeError("isolation probe failed: " + str(record.get("error")))
                 report = json.loads(base64.b64decode(record["stdout"]))
+                if report.get("protocol") != PROBE_PROTOCOL:
+                    raise RuntimeError(f"sandbox image admission probe is not {PROBE_PROTOCOL}; rebuild it from a compatible source")
                 if ("gvisor" not in report["kernel"].lower() or report["uid"] == 0
                         or report["process_limit"] != self.config["processes"]
                         or report.get('guest_capacity_verified') != max(1, self.config['processes'] - 16)

@@ -11,6 +11,10 @@ import subprocess
 import sys
 import tempfile
 
+# The trusted Runner (control.py) and the GCP image build (images.py) require
+# this exact evidence contract; bump all three together when it changes.
+PROTOCOL = "aidash-admission-probe/2"
+
 
 def simultaneous_children(target, command=('sleep', '3600')):
     """Start `target` children that stay blocked until every one has started, and
@@ -29,7 +33,7 @@ def simultaneous_children(target, command=('sleep', '3600')):
 
 
 def main():
-    report = {"kernel": platform.release(), "python": platform.python_version(), "uid": os.getuid(),
+    report = {"protocol": PROTOCOL, "kernel": platform.release(), "python": platform.python_version(), "uid": os.getuid(),
               "process_limit": resource.getrlimit(resource.RLIMIT_NPROC)[1],
               "physical_page_size": os.sysconf("SC_PAGE_SIZE")}
     report["service_account_absent"] = not Path("/var/run/secrets/kubernetes.io/serviceaccount/token").exists()

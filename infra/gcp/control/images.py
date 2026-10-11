@@ -12,6 +12,8 @@ from policy import IMAGE_KINDS
 
 ROOT = Path(__file__).resolve().parents[3]
 KINDS = IMAGE_KINDS
+# runner/control.py PROBE_PROTOCOL of this trusted checkout.
+SANDBOX_PROBE_PROTOCOL = "aidash-admission-probe/2"
 # Reviewed linux/amd64 manifests; auxiliary services follow the same archive
 # publication path as source builds and never pull mutable tags on a host.
 AUXILIARY_IMAGES = {
@@ -63,6 +65,15 @@ def main():
         ):
             raise SystemExit(
                 "Selected source does not support trusted-proxy authentication rate limits"
+            )
+        # The sandbox image runs the source's admission probe for the trusted
+        # Runner, which accepts only this evidence contract (runner/control.py).
+        probe = args.source / "runner/probe.py"
+        if args.kind == "sandbox" and (
+            not probe.is_file() or f'"{SANDBOX_PROBE_PROTOCOL}"' not in probe.read_text()
+        ):
+            raise SystemExit(
+                f"Selected source's sandbox admission probe does not speak {SANDBOX_PROBE_PROTOCOL}"
             )
         tag = f"aidash-{args.kind}:{args.sha}"
         if args.kind in AUXILIARY_IMAGES:

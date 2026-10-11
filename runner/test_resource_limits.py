@@ -6,10 +6,10 @@ from types import SimpleNamespace
 from unittest.mock import patch
 import uuid
 
-from control import Runner, Rejected
+from control import PROBE_PROTOCOL, Runner, Rejected
 from node_guard import filesystem_capacity
 import node_guard
-from probe import simultaneous_children
+from probe import PROTOCOL, simultaneous_children
 
 
 class ResourceLimitsTest(unittest.TestCase):
@@ -91,6 +91,9 @@ class ResourceLimitsTest(unittest.TestCase):
                                     terminate=lambda: None, wait=lambda: 0) for index in range(4)]
         with patch('probe.subprocess.Popen', side_effect=children):
             self.assertEqual(simultaneous_children(4), 3)
+
+    def test_probe_emits_the_protocol_the_runner_requires(self):
+        self.assertEqual(PROTOCOL, PROBE_PROTOCOL)
 
     def test_invalid_budgets_are_rejected_before_rounding(self):
         for size, page in ((0, 4096), (-1, 4096), (True, 4096), ('1', 4096),
