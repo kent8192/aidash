@@ -16,6 +16,7 @@ import {
 import { useI18n } from "./ui";
 import { Alert, Hint, Loading } from "./components/patterns";
 import type { State } from "./types";
+import type { OwnMapping } from "./dashboard-identity";
 import { useQuery } from "@tanstack/react-query";
 import { workspaceGet } from "./generated/aidash";
 import { ArtifactList } from "./collaboration/channel";
@@ -105,12 +106,15 @@ export function TrustTools({
   entries,
   operator,
   tenant,
+  ownMappings,
   initiallyOpen,
 }: {
   entries: State["registry"];
   operator: boolean;
   /** The selected Mapping's Tenant, whose Tenant Administrators manage it here. */
   tenant: string | null;
+  /** This browser's own Mappings, which a Tenant Administrator cannot manage. */
+  ownMappings: OwnMapping[];
   initiallyOpen: boolean;
 }) {
   const { locale, t } = useI18n();
@@ -137,6 +141,7 @@ export function TrustTools({
           <TenantIdentityAdministration
             key={tenant}
             tenant={tenant}
+            own={ownMappings.filter((mapping) => mapping.tenant === tenant)}
             fallback={administratorsOnly}
           />
         </Suspense>

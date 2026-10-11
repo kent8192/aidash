@@ -901,6 +901,7 @@ function Dashboard({
                         entries={data.registry}
                         operator={operator}
                         tenant={subjectTenant}
+                        ownMappings={browserSession?.mappings ?? []}
                         initiallyOpen={route.integration === "authorization"}
                       />
                     )
@@ -933,6 +934,7 @@ function Dashboard({
                 entries={[]}
                 operator={operator}
                 tenant={subjectTenant}
+                ownMappings={browserSession?.mappings ?? []}
                 initiallyOpen={route.integration === "authorization"}
               />
             </div>

@@ -345,6 +345,8 @@ type TenantMapping = {
   revision: number;
   groups: string[];
 };
+/** One of this browser's own Mappings. */
+export type OwnMapping = { id: string; tenant: string; subject: string };
 
 const groupChip =
   "inline-flex h-7 cursor-pointer items-center gap-2 rounded-md border border-border bg-surface px-2.5 font-mono text-xs text-foreground transition-colors hover:bg-raised has-[:checked]:border-brand-line has-[:checked]:bg-brand-soft";
@@ -393,12 +395,16 @@ function GroupChoice({
 }
 
 /** The Access and accounts screen for a Tenant Administrator's own Tenant.
- *  `fallback` replaces it for members who hold no administrator action. */
+ *  `fallback` replaces it for members who hold no administrator action.
+ *  `own` lists the caller's Mappings in this Tenant; the server refuses to
+ *  disable them or change their subjects' groups, so neither is offered. */
 export function TenantIdentityAdministration({
   tenant,
+  own,
   fallback,
 }: {
   tenant: string;
+  own: OwnMapping[];
   fallback: ReactNode;
 }) {
   const { locale } = useI18n();
@@ -451,6 +457,14 @@ export function TenantIdentityAdministration({
   if (!overview.data) return null;
   const assignable = overview.data.assignable_groups;
   const revision = overview.data.policy_revision;
+  const ownMappings = new Set(own.map((mapping) => mapping.id));
+  const ownSubjects = new Set(own.map((mapping) => mapping.subject));
+  // The caller's External Identity, found through its own Mappings on this page.
+  const ownIdentities = new Set(
+    (mappings.data ?? [])
+      .filter((mapping) => ownMappings.has(mapping.id))
+      .map((mapping) => mapping.identity.id),
+  );
   const row = "flex flex-wrap items-center gap-x-3 gap-y-2 py-2.5";
   const heading = "text-[11px] font-medium text-faint";
   const field = "grid gap-1 text-xs font-medium text-muted-foreground";
@@ -565,67 +579,78 @@ export function TenantIdentityAdministration({
         <>
           <h3 className={heading}>{english ? "Members" : "メンバー"}</h3>
           <ul className="divide-y divide-border border-y border-border">
-            {(mappings.data ?? []).map((mapping) => (
-              <li className={row} key={mapping.id}>
-                <span className="grid min-w-0 flex-1 gap-0.5">
-                  <span className="truncate text-xs">
-                    {person(mapping.identity)}{" "}
-                    <span className="text-faint">→</span>{" "}
-                    <span className="font-mono">{mapping.subject}</span>
-                  </span>
-                  {!mapping.enabled && (
-                    <span className="text-[11px] text-faint">
-                      {english ? "Disabled" : "無効"}
+            {(mappings.data ?? []).map((mapping) => {
+              const ownIdentity =
+                ownMappings.has(mapping.id) ||
+                ownIdentities.has(mapping.identity.id);
+              const ownSubject =
+                ownIdentity || ownSubjects.has(mapping.subject);
+              return (
+                <li className={row} key={mapping.id}>
+                  <span className="grid min-w-0 flex-1 gap-0.5">
+                    <span className="truncate text-xs">
+                      {person(mapping.identity)}{" "}
+                      <span className="text-faint">→</span>{" "}
+                      <span className="font-mono">{mapping.subject}</span>
                     </span>
-                  )}
-                </span>
-                {can("subject.group.update") && revision !== null && (
-                  <GroupChoice
-                    groups={assignable}
-                    selected={mapping.groups}
-                    disabled={busy}
-                    change={(next) => {
-                      void act(() =>
-                        apiFetch(
-                          `${path}/subjects/${encodeURIComponent(mapping.subject)}/groups`,
-                          {
-                            method: "PUT",
-                            headers: { "content-type": "application/json" },
-                            body: JSON.stringify({
-                              groups: next,
-                              expected_policy_revision: revision,
-                            }),
-                          },
-                        ),
-                      );
-                    }}
-                  />
-                )}
-                {can("mapping.disable") && mapping.enabled && (
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    disabled={busy}
-                    onClick={() => {
-                      void act(() =>
-                        authenticatedFetch(
-                          `${path}/mappings/${mapping.id}/disable`,
-                          {
-                            method: "POST",
-                            headers: { "content-type": "application/json" },
-                            body: JSON.stringify({
-                              expected_revision: mapping.revision,
-                            }),
-                          },
-                        ),
-                      );
-                    }}
-                  >
-                    {english ? "Disable" : "無効化"}
-                  </Button>
-                )}
-              </li>
-            ))}
+                    {!mapping.enabled && (
+                      <span className="text-[11px] text-faint">
+                        {english ? "Disabled" : "無効"}
+                      </span>
+                    )}
+                  </span>
+                  {can("subject.group.update") &&
+                    revision !== null &&
+                    !ownSubject && (
+                      <GroupChoice
+                        groups={assignable}
+                        selected={mapping.groups}
+                        disabled={busy}
+                        change={(next) => {
+                          void act(() =>
+                            apiFetch(
+                              `${path}/subjects/${encodeURIComponent(mapping.subject)}/groups`,
+                              {
+                                method: "PUT",
+                                headers: { "content-type": "application/json" },
+                                body: JSON.stringify({
+                                  groups: next,
+                                  expected_policy_revision: revision,
+                                }),
+                              },
+                            ),
+                          );
+                        }}
+                      />
+                    )}
+                  {can("mapping.disable") &&
+                    mapping.enabled &&
+                    !ownIdentity && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={busy}
+                        onClick={() => {
+                          void act(() =>
+                            authenticatedFetch(
+                              `${path}/mappings/${mapping.id}/disable`,
+                              {
+                                method: "POST",
+                                headers: { "content-type": "application/json" },
+                                body: JSON.stringify({
+                                  expected_revision: mapping.revision,
+                                }),
+                              },
+                            ),
+                          );
+                        }}
+                      >
+                        {english ? "Disable" : "無効化"}
+                      </Button>
+                    )}
+                </li>
+              );
+            })}
           </ul>
           <Pager
             className="justify-start"

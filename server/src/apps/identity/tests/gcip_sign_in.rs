@@ -1820,6 +1820,22 @@ async fn tenant_administrator_sees_only_the_configured_issuers_bound_identities(
 	.execute(f.store.pool.driver())
 	.await
 	.unwrap();
+	// Another GCIP Tenant's queue, larger than one statement's bind parameter
+	// limit, is never read by this Tenant's list.
+	sqlx::query(
+		"WITH identities AS (
+			INSERT INTO dashboard_identities (id, issuer, subject, gcip_tenant)
+			SELECT gen_random_uuid(), 'https://securetoken.google.com/fixture-project', 'queued-' || n, 'pool-b'
+			FROM generate_series(1, 70000) AS n
+			RETURNING id
+		)
+		INSERT INTO dashboard_registration_requests (id, identity_id, status, created_at, expires_at)
+		SELECT gen_random_uuid(), id, 'pending', clock_timestamp(), clock_timestamp() + interval '7 days'
+		FROM identities",
+	)
+	.execute(f.store.pool.driver())
+	.await
+	.unwrap();
 
 	let listed: Value = admin
 		.get(&app, "/api/tenants/acme/registrations")

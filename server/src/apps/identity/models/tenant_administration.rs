@@ -287,7 +287,8 @@ impl TenantAdministrator {
 	}
 
 	/// Pending Registration Requests from the configured issuer's bound GCIP
-	/// Tenant only.
+	/// Tenant only, other than this administrator's own. Requests from other
+	/// GCIP Tenants are excluded in SQL, so other Tenants' queues are not read.
 	pub(crate) async fn registrations(
 		&self,
 		db: DatabaseConnection,
@@ -306,6 +307,10 @@ impl TenantAdministrator {
 			let pending = DashboardRegistrationRequest::objects()
 				.filter(DashboardRegistrationRequest::field_status().eq("pending"))
 				.filter(DashboardRegistrationRequest::field_expires_at().gt(now))
+				.filter(DashboardRegistrationRequest::field_identity_id().ne(self.identity_id))
+				.filter_in_subquery("identity_id", |identities| {
+					self.visible(identities).values(&["id"])
+				})?
 				.order_by(&["-created_at", "-id"])
 				.all_with_db(tx)
 				.await?;
@@ -316,7 +321,7 @@ impl TenantAdministrator {
 				.into_iter()
 				.filter_map(|row| {
 					let identity = identities.get(&row.identity_id())?;
-					(identity.id != self.identity_id).then(|| TenantRegistration {
+					Some(TenantRegistration {
 						id: row.id,
 						identity: view(identity),
 						created_at: row.created_at,
