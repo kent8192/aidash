@@ -67,6 +67,7 @@ pub fn attach(entry: &mut Entry, node: &str, documents: &Value) -> Result<Entry>
 		alias: None,
 		narrow: Default::default(),
 		members: vec![],
+		exposure: None,
 	});
 	input.validate()?;
 	entry.config = serde_json::to_value(input)?;

@@ -2,10 +2,13 @@
 use aidash_application::{Result, ports::tools::ToolOperations};
 use aidash_domain::{
 	Artifact, ArtifactInput, HumanRequest, NewTask, Task,
+	exposure::DirectSkill,
+	provider::ToolSpec,
 	registry::{EntityRef, Search, SkillFile},
 };
 use async_trait::async_trait;
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
 use uuid::Uuid;
 pub(crate) struct Operations(pub(crate) crate::tool::ToolContext);
 #[async_trait]
@@ -155,5 +158,39 @@ impl ToolOperations for Operations {
 			.human_request(kind, prompt, key)
 			.await
 			.map_err(Into::into)
+	}
+	async fn binding_specifications(&self) -> Result<BTreeMap<String, ToolSpec>> {
+		super::bindings::Providers {
+			federation: self.0.home.federation.clone(),
+			home: self.0.home.clone(),
+		}
+		.specifications(&self.0.run)
+	}
+	async fn direct_skills(&self) -> Result<Vec<DirectSkill>> {
+		match &self.0.home.authority {
+			Some(authority) => authority
+				.direct_skills(&self.0.store, &self.0.run)
+				.await
+				.map_err(Into::into),
+			None => Ok(vec![]),
+		}
+	}
+	async fn direct_skill_file(
+		&self,
+		skill_id: Uuid,
+		digest: &str,
+		path: &str,
+	) -> Result<Option<Vec<u8>>> {
+		self.0
+			.home
+			.authority
+			.as_ref()
+			.ok_or_else(|| aidash_application::Error::NotFound("skill unavailable".into()))?
+			.direct_skill_file(&self.0.store, &self.0.run, skill_id, digest, path)
+			.await
+			.map_err(Into::into)
+	}
+	fn skill_read_bytes(&self) -> Result<usize> {
+		Ok(self.0.store.capabilities.0.limits.read_bytes)
 	}
 }
