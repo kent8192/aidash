@@ -9,7 +9,7 @@ pub(crate) mod response;
 pub use apps::execution::context;
 pub use apps::execution::repositories::store;
 pub use apps::execution::{activation, capabilities, generation};
-pub use apps::execution::{bus, openrouter, provider, runtime as harness, web_search};
+pub use apps::execution::{bus, openrouter, provider, research, runtime as harness};
 pub use apps::federation::remote::runtime as federation;
 pub use apps::federation::transactions;
 pub use apps::identity as authorization;

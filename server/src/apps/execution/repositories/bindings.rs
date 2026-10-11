@@ -66,6 +66,11 @@ impl Providers {
 		descriptor: ToolDescriptor,
 		implementations: &BTreeMap<String, Arc<dyn Tool>>,
 	) -> Result<Arc<dyn Tool>> {
+		if let Some(research) =
+			crate::apps::execution::services::research::ResearchTool::bind(&descriptor)
+		{
+			return Ok(Arc::new(research));
+		}
 		Ok(if let Some(transport) = descriptor.transport {
 			Arc::new(PluginTool {
 				entry: binding.definition.clone(),

@@ -28,6 +28,27 @@ use uuid::Uuid;
 
 #[async_trait]
 impl ExecutionStore for Store {
+	async fn unknown_evidence(
+		&self,
+		run: &Run,
+		references: &[aidash_domain::research::citations::EvidenceRef],
+	) -> Result<Vec<aidash_domain::research::citations::EvidenceRef>> {
+		use aidash_application::ports::research::EvidenceStore;
+		let delivered = super::research::Evidence {
+			store: self.clone(),
+		}
+		.fragments(run.id, references)
+		.await?;
+		Ok(references
+			.iter()
+			.filter(|reference| {
+				!delivered
+					.iter()
+					.any(|fragment| fragment.reference == **reference)
+			})
+			.copied()
+			.collect())
+	}
 	async fn observe_sources(&self, run: &mut Run, token: Uuid) -> Result<()> {
 		*run = Store::save_run(self, run, token, "run.sources_observed").await?;
 		Ok(())

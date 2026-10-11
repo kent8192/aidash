@@ -1,0 +1,248 @@
+//! Research evidence persists per Run: replayable attempts with cost
+//! attribution, Run-scoped snapshots and fragments, and citation lookup. The
+//! host research use case runs against PostgreSQL with the fixture provider.
+use super::*;
+use aidash_application::{
+	ports::{
+		execution::ExecutionStore,
+		research::{DisclosureGate, DisclosureState, EvidenceStore, Reservation, WebDisclosure},
+	},
+	research::{Call, Research},
+};
+use aidash_domain::research::{
+	Operation,
+	account::CostAttribution,
+	citations::EvidenceRef,
+	evidence::{AttemptOutcome, AttemptState, Limits},
+};
+use aidash_integrations::research::fixture::FixtureResearch;
+
+struct Permit;
+#[async_trait::async_trait]
+impl DisclosureGate for Permit {
+	async fn admit(
+		&self,
+		_: Uuid,
+		_: &WebDisclosure,
+	) -> aidash_application::Result<DisclosureState> {
+		Ok(DisclosureState::Permitted)
+	}
+}
+
+async fn agent(store: &Store) -> Entry {
+	seed(&Registry::new(store.pool.clone(), &store.node_id).unwrap()).await
+}
+
+async fn leased_run(store: &Store, agent: &Entry) -> Run {
+	let workspace = store
+		.create_workspace("Research", "Read public sources")
+		.await
+		.unwrap();
+	let task = store
+		.create_task(workspace.id, &new_task(), "human", None)
+		.await
+		.unwrap();
+	store
+		.accept_run(&task, &store.node_id, &agent.id, &agent.version)
+		.await
+		.unwrap();
+	store.lease_run(Uuid::new_v4(), 30).await.unwrap().unwrap()
+}
+
+fn reservation(key: &str, account: Option<(&str, u64)>) -> Reservation {
+	Reservation {
+		key: key.into(),
+		operation: Operation::Search,
+		provider: "research.brave@1".into(),
+		destination: "api.search.brave.com".into(),
+		attribution: account.map(|(account_id, price)| CostAttribution {
+			account_id: account_id.into(),
+			price_micro_usd: price,
+		}),
+	}
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn attempts_are_reserved_once_settled_once_and_charged_to_the_operator_account(
+	#[future(awt)]
+	#[from(test_environment)]
+	environment: Arc<TestEnvironment>,
+) {
+	let (store, url, schema) = setup(&environment).await;
+	let run = leased_run(&store, &agent(&store).await).await;
+	let evidence = aidash_server::research::evidence_store(store.clone());
+	let since = chrono::Utc::now() - chrono::Duration::hours(1);
+
+	evidence
+		.reserve(run.id, &reservation("k1", Some(("operator", 5_000))))
+		.await
+		.unwrap();
+	assert!(matches!(
+		evidence.reserve(run.id, &reservation("k1", None)).await,
+		Err(aidash_application::Error::Conflict(_))
+	));
+	assert_eq!(
+		evidence.attempt(run.id, "k1").await.unwrap(),
+		Some(AttemptState::Dispatched)
+	);
+	// Unknown outcomes are charged while dispatched.
+	assert_eq!(
+		evidence.account_spend("operator", since).await.unwrap(),
+		5_000
+	);
+	let result = json!({"status":"ok"});
+	evidence
+		.settle(run.id, "k1", AttemptOutcome::Completed, &result)
+		.await
+		.unwrap();
+	evidence
+		.settle(
+			run.id,
+			"k1",
+			AttemptOutcome::Failed,
+			&json!({"status":"error"}),
+		)
+		.await
+		.unwrap();
+	assert_eq!(
+		evidence.attempt(run.id, "k1").await.unwrap(),
+		Some(AttemptState::Settled {
+			outcome: AttemptOutcome::Completed,
+			result
+		}),
+		"a settled attempt is never rewritten"
+	);
+	evidence
+		.reserve(run.id, &reservation("k2", Some(("operator", 5_000))))
+		.await
+		.unwrap();
+	evidence
+		.settle(
+			run.id,
+			"k2",
+			AttemptOutcome::Failed,
+			&json!({"status":"error"}),
+		)
+		.await
+		.unwrap();
+	assert_eq!(
+		evidence.account_spend("operator", since).await.unwrap(),
+		5_000
+	);
+	assert_eq!(evidence.usage(run.id).await.unwrap().search_attempts, 2);
+	assert_eq!(evidence.attempt(Uuid::new_v4(), "k1").await.unwrap(), None);
+	cleanup(store, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn fixture_research_runs_the_host_contract_on_postgres_and_citations_stay_run_scoped(
+	#[future(awt)]
+	#[from(test_environment)]
+	environment: Arc<TestEnvironment>,
+) {
+	let (store, url, schema) = setup(&environment).await;
+	let agent = agent(&store).await;
+	let run = leased_run(&store, &agent).await;
+	let evidence = aidash_server::research::evidence_store(store.clone());
+	let research = Research {
+		store: &evidence,
+		gate: &Permit,
+		limits: Limits::default(),
+	};
+	let fixture = FixtureResearch::default();
+	let call = |key| Call {
+		run: run.id,
+		context_revision: 0,
+		key,
+		provider: "research.fixture@1",
+		disclosure_approval: true,
+	};
+
+	let found = research
+		.search(&call("s1"), &fixture, &json!({"query":"strasse"}))
+		.await
+		.unwrap();
+	assert_eq!(found["status"], "ok", "{found}");
+	let source = found["data"]["sources"][0]["source_id"].clone();
+	let replay = research
+		.search(&call("s1"), &fixture, &json!({"query":"strasse"}))
+		.await
+		.unwrap();
+	assert_eq!(replay, found, "replay keeps the Source record identity");
+
+	let opened = research
+		.fetch(
+			&call("f1"),
+			&fixture,
+			&json!({"source_id":source,"max_bytes":5}),
+		)
+		.await
+		.unwrap();
+	assert_eq!(opened["status"], "partial", "{opened}");
+	assert_eq!(opened["data"]["text"], "Alpha");
+	let document = opened["data"]["document_id"].clone();
+	let next = research
+		.fetch(
+			&call("f2"),
+			&fixture,
+			&json!({"document_id":document,"cursor":opened["data"]["next_cursor"],"max_bytes":24}),
+		)
+		.await
+		.unwrap();
+	assert!(
+		next["data"]["text"]
+			.as_str()
+			.unwrap()
+			.starts_with(" line\nDie Straße")
+	);
+
+	let hit = research
+		.find(
+			&call("q1"),
+			&json!({"document_id":document,"query":"STRASSE"}),
+		)
+		.await
+		.unwrap();
+	let reference: EvidenceRef = hit["data"]["matches"][0]["evidence_ref"]
+		.as_str()
+		.unwrap()
+		.parse()
+		.unwrap();
+	assert_eq!(hit["data"]["matches"][0]["pages"], json!([2]));
+
+	// Citation lookup accepts only this Run's delivered fragments.
+	let invented = EvidenceRef(Uuid::new_v4());
+	assert_eq!(
+		ExecutionStore::unknown_evidence(&store, &run, &[reference, invented])
+			.await
+			.unwrap(),
+		[invented]
+	);
+	let other = leased_run(&store, &agent).await;
+	assert_eq!(
+		ExecutionStore::unknown_evidence(&store, &other, &[reference])
+			.await
+			.unwrap(),
+		[reference]
+	);
+	let foreign = research
+		.find(
+			&Call {
+				run: other.id,
+				..call("q2")
+			},
+			&json!({"document_id":document,"query":"line"}),
+		)
+		.await
+		.unwrap();
+	assert_eq!(foreign["error"]["code"], "unknown_document");
+
+	let usage = evidence.usage(run.id).await.unwrap();
+	assert_eq!(
+		(usage.search_attempts, usage.fetch_attempts, usage.snapshots),
+		(1, 1, 1)
+	);
+	cleanup(store, &url, &schema).await;
+}

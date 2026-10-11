@@ -98,3 +98,5 @@ pub(crate) mod capability_projection;
 pub(crate) mod core_records;
 
 pub(crate) mod worker;
+
+pub(crate) mod research;

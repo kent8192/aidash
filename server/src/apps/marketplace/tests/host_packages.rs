@@ -243,3 +243,85 @@ async fn operator_host_packages_remain_pending_until_the_exact_set_is_approved(
 	drop(app);
 	common::cleanup(f, &url, &database).await;
 }
+
+#[rstest]
+#[tokio::test]
+async fn research_provider_packages_install_and_activate_like_host_packages(
+	#[future(awt)]
+	#[from(test_environment)]
+	environment: Arc<TestEnvironment>,
+) {
+	// Arrange: no Brave profile and no page reading are configured on this Node.
+	let (f, url, database) = common::setup(&environment).await;
+	let app = common::application(f.clone()).await;
+	let authorization = Authorization {
+		pool: f.store.pool.clone(),
+	};
+	let bundle: PolicyBundle =
+		serde_json::from_value(json!({"tenant":"owner","subjects":{},"policies":[]})).unwrap();
+	authorization
+		.replace("owner", 0, bundle, "operator")
+		.await
+		.unwrap();
+	assert_eq!(
+		request(
+			&app,
+			&f.config.api_token,
+			"PUT",
+			"/api/marketplace/compatibility",
+			json!({"enabled":true,"expected_revision":1,"compatible_instances_confirmed":true})
+		)
+		.await
+		.0,
+		200
+	);
+	// Act
+	let (status, pending) = request(
+		&app,
+		&f.config.api_token,
+		"POST",
+		"/api/marketplace/host-packages",
+		json!({"tenant":"owner","groups":["research_brave","research_page","research_fixture"],"idempotency_key":Uuid::new_v4()}),
+	)
+	.await;
+	// Assert: only the configured provider is staged; the others say why not.
+	assert_eq!(status, 200, "{pending}");
+	for unavailable in ["research_brave", "research_page"] {
+		assert!(
+			pending["unavailable"][unavailable]
+				.as_str()
+				.is_some_and(|reason| reason.contains("PROVIDER_UNAVAILABLE")),
+			"{pending}"
+		);
+	}
+	let installations = pending["installations"].as_array().unwrap();
+	let mut ids = installations
+		.iter()
+		.map(|row| row["entry"]["id"].as_str().unwrap().to_owned())
+		.collect::<Vec<_>>();
+	ids.sort();
+	assert_eq!(
+		ids,
+		[
+			"aidash.bundle.research_fixture",
+			"aidash.research.fixture.fetch",
+			"aidash.research.fixture.find",
+			"aidash.research.fixture.search"
+		]
+	);
+	let selection = json!({"tenant":"owner",
+		"installations":installations.iter().map(|r|json!({"installation":r["installation"]["id"],"revision":r["revision"],"digest":r["digest"],"expected_activation_revision":0})).collect::<Vec<_>>(),
+		"approvals":installations.iter().map(|r|json!({"reference":{"id":r["entry"]["id"],"version":r["entry"]["version"]},"expected_catalog_revision":0})).collect::<Vec<_>>()});
+	let (status, activated) = request(
+		&app,
+		&f.config.api_token,
+		"POST",
+		"/api/marketplace/approval-sets",
+		selection,
+	)
+	.await;
+	assert_eq!(status, 200, "{activated}");
+	assert_eq!(authorization.catalog("owner").await.unwrap().len(), 4);
+	drop(app);
+	common::cleanup(f, &url, &database).await;
+}

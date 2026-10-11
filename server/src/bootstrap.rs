@@ -532,6 +532,9 @@ impl aidash_application::ports::registry::CoreToolCatalog for NativeCoreToolCata
 		descriptor: &aidash_domain::tool::providers::ToolDescriptor,
 	) -> aidash_application::Result<()> {
 		use aidash_domain::tool::providers::{ToolTier, requires_runner};
+		if descriptor.provider.starts_with("research.") {
+			return crate::apps::execution::services::research::providers().available(descriptor);
+		}
 		if descriptor.tier != ToolTier::Host || descriptor.operation == "task_assign" {
 			return Ok(());
 		}

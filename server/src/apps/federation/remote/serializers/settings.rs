@@ -62,7 +62,13 @@ impl SettingsValidation for NodeSettings {
 			if !names.insert(name)
 				|| !aidash_application::registry::system::packages::HOST_GROUPS
 					.iter()
-					.any(|(group, _)| name == group)
+					.map(|(group, _)| group)
+					.chain(
+						aidash_application::registry::system::packages::RESEARCH_GROUPS
+							.iter()
+							.map(|(group, _)| group),
+					)
+					.any(|group| name == group)
 			{
 				return Err(ValidationError::Constraint(
 					"node.default_host_packages must contain unique known host groups".into(),
