@@ -19,7 +19,7 @@ on:
       vm_mode:
         type: choice
         options: [default, spot, normal]
-        description: "Default preserves the existing mode; new test/PR defaults to Spot"
+        description: "Node pool mode; default preserves the existing mode, new test/PR defaults to Spot"
       approved_sha:
         description: "Full reviewed head SHA required for a fork PR"
         type: string
@@ -54,11 +54,17 @@ jobs:
       contents: read
     outputs:
       proceed: ${{ steps.filter.outputs.proceed }}
+      # Every later job checks out this one default-branch commit, so the
+      # trusted images, charts and controller of a run cannot diverge if the
+      # branch advances while jobs are scheduled.
+      trusted: ${{ steps.trusted.outputs.sha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.repository.default_branch }}
           persist-credentials: false
+      - id: trusted
+        run: printf 'sha=%s\n' "$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
       - id: filter
         env:
           GH_TOKEN: ${{ github.token }}
@@ -84,7 +90,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.repository.default_branch }}
+          ref: ${{ needs.intake.outputs.trusted }}
           persist-credentials: false
       - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
         with:
@@ -101,20 +107,22 @@ jobs:
           retention-days: 1
 
   build:
-    needs: prepare
+    needs: [intake, prepare]
     if: needs.prepare.outputs.build == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
-        image: [app, postgres, sandbox, observer, nats]
+        # images.py builds app/postgres/sandbox from source; observer/control/edge
+        # only from the trusted checkout; nats/caddy are reviewed upstream digests.
+        image: [app, postgres, sandbox, observer, nats, control, edge, caddy]
     permissions:
       contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.repository.default_branch }}
+          ref: ${{ needs.intake.outputs.trusted }}
           path: trusted
           persist-credentials: false
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -137,7 +145,7 @@ jobs:
           compression-level: 1
 
   publish:
-    needs: [prepare, build]
+    needs: [intake, prepare, build]
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     permissions:
@@ -148,7 +156,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.repository.default_branch }}
+          ref: ${{ needs.intake.outputs.trusted }}
           persist-credentials: false
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
@@ -178,7 +186,7 @@ jobs:
           retention-days: 1
 
   apply:
-    needs: [prepare, build, publish]
+    needs: [intake, prepare, build, publish]
     if: always() && needs.prepare.result == 'success' && (needs.prepare.outputs.build != 'true' || needs.publish.result == 'success')
     runs-on: ubuntu-24.04
     timeout-minutes: 55
@@ -199,13 +207,18 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.repository.default_branch }}
+          ref: ${{ needs.intake.outputs.trusted }}
           persist-credentials: false
       - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
         with:
           workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
           service_account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
       - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3
+        with:
+          install_components: kubectl,gke-gcloud-auth-plugin
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v4.1.4
       - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3
         with:
           terraform_version: 1.14.8

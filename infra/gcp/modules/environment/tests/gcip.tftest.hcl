@@ -1,14 +1,12 @@
 mock_provider "google" {}
 variables {
-  project_id             = "aidash-fixture"
-  release_bucket         = "aidash-fixture-releases"
-  deploy_service_account = "deploy@aidash-fixture.iam.gserviceaccount.com"
-  environment_id         = "test"
-  hostname               = "test.aidash.run"
+  project_id           = "aidash-fixture"
+  node_service_account = "aidash-gke-nodes@aidash-fixture.iam.gserviceaccount.com"
+  cluster              = { name = "aidash", location = "us-central1-a", workload_pool = "aidash-fixture.svc.id.goog" }
+  environment_id       = "test"
+  hostname             = "test.aidash.run"
   environment = {
-    kind          = "test", incarnation = "aaaaaaaaaaaa", generation = 1, running = false, published = false, spot = false, vm_present = true,
-    machine_type  = "e2-standard-4", boot_disk_gib = 10, data_disk_gib = 20,
-    bundle_object = "bundles/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.tar.gz", bundle_sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", release_sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    kind = "test", incarnation = "aaaaaaaaaaaa", running = false, spot = false, nodes = 1, machine_type = "n2-standard-4"
   }
 }
 run "password_and_sso_tenants_are_separate" {
