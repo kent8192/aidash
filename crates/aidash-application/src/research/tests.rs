@@ -246,13 +246,10 @@ impl DisclosureGate for Gate {
 			DisclosureState::Permitted
 		} else if self.denied.lock().unwrap().contains(&digest) {
 			DisclosureState::Denied
-		} else if let Some(index) = self
-			.approved
-			.lock()
-			.unwrap()
-			.iter()
-			.position(|approved| *approved == digest)
-		{
+		} else if let Some(index) = {
+			let approved = self.approved.lock().unwrap();
+			approved.iter().position(|approved| *approved == digest)
+		} {
 			// An exact approval is consumed by the one disclosure it allows.
 			self.approved.lock().unwrap().remove(index);
 			DisclosureState::Permitted
@@ -311,7 +308,8 @@ impl SearchProvider for Search {
 					page_age: None,
 				},
 				ProviderCandidate {
-					url: "http://localhost:8080/admin".into(),
+					// Credentials in a URL are never a Source record.
+					url: "https://user:secret@example.com/admin".into(),
 					title: "Unfiltered".into(),
 					snippet: None,
 					page_age: None,
