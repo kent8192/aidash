@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "endpoint_count": 299,
+  "endpoint_count": 300,
   "requests": [
     {
       "name": "Health reports the configured node",
@@ -12316,8 +12316,44 @@
       ]
     },
     {
-      "name": "1122 sessions-login-discovery - OIDC deployment cannot route a Sign-in Domain",
-      "file": "contracts/1122-sessions-login-discovery.bru",
+      "name": "1122 sessions-admin-erase-display - Anonymous request is rejected",
+      "file": "contracts/1122-sessions-admin-erase-display.bru",
+      "endpoint": "POST /api/dashboard/identities/{id}/display-erasure",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1123 sessions-admin-erase-display - Typed resource IDs reject invalid UUIDs",
+      "file": "contracts/1123-sessions-admin-erase-display.bru",
+      "endpoint": "POST /api/dashboard/identities/{id}/display-erasure",
+      "scenario": "Typed resource IDs reject invalid UUIDs",
+      "status": 400,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1124 sessions-admin-erase-display - Unrecognized bearer cannot mutate state",
+      "file": "contracts/1124-sessions-admin-erase-display.bru",
+      "endpoint": "POST /api/dashboard/identities/{id}/display-erasure",
+      "scenario": "Unrecognized bearer cannot mutate state",
+      "status": 401,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1125 sessions-login-discovery - OIDC deployment cannot route a Sign-in Domain",
+      "file": "contracts/1125-sessions-login-discovery.bru",
       "endpoint": "POST /auth/login",
       "scenario": "OIDC deployment cannot route a Sign-in Domain",
       "status": 401,
@@ -12328,8 +12364,8 @@
       ]
     },
     {
-      "name": "1123 sessions-login-discovery - OIDC deployment refuses foreign-origin discovery",
-      "file": "contracts/1123-sessions-login-discovery.bru",
+      "name": "1126 sessions-login-discovery - OIDC deployment refuses foreign-origin discovery",
+      "file": "contracts/1126-sessions-login-discovery.bru",
       "endpoint": "POST /auth/login",
       "scenario": "OIDC deployment refuses foreign-origin discovery",
       "status": 401,
@@ -12340,8 +12376,8 @@
       ]
     },
     {
-      "name": "1124 sessions-login-discovery - Discovery without an address reveals nothing",
-      "file": "contracts/1124-sessions-login-discovery.bru",
+      "name": "1127 sessions-login-discovery - Discovery without an address reveals nothing",
+      "file": "contracts/1127-sessions-login-discovery.bru",
       "endpoint": "POST /auth/login",
       "scenario": "Discovery without an address reveals nothing",
       "status": 401,
