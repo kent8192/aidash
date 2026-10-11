@@ -197,51 +197,51 @@ export function HostPackages({
               <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
                 <Check
                   className="font-mono text-xs"
-                    disabled={busy || !catalog.isSuccess || catalog.isError}
-                    checked={
-                      review?.installations.some(
-                        (selection) =>
-                          selection.installation === item.installation.id,
-                      ) ?? false
+                  disabled={busy || !catalog.isSuccess || catalog.isError}
+                  checked={
+                    review?.installations.some(
+                      (selection) =>
+                        selection.installation === item.installation.id,
+                    ) ?? false
+                  }
+                  onChange={(event) => {
+                    const current: ApprovalSet = review ?? {
+                      tenant,
+                      installations: [],
+                      approvals: [],
+                    };
+                    const installations = current.installations.filter(
+                      (selection) =>
+                        selection.installation !== item.installation.id,
+                    );
+                    const approvals = current.approvals.filter(
+                      (selection) =>
+                        selection.reference.id !== item.entry.id ||
+                        selection.reference.version !== item.entry.version,
+                    );
+                    if (event.target.checked) {
+                      const approval = catalog.data?.find(
+                        (binding) =>
+                          binding.entry_id === item.entry.id &&
+                          binding.entry_version === item.entry.version,
+                      );
+                      installations.push({
+                        installation: item.installation.id,
+                        revision: item.revision,
+                        digest: item.digest,
+                        expected_activation_revision:
+                          item.installation.activation_revision,
+                      });
+                      approvals.push({
+                        reference: {
+                          id: item.entry.id,
+                          version: item.entry.version,
+                        },
+                        expected_catalog_revision: approval?.revision ?? 0,
+                      });
                     }
-                    onChange={(event) => {
-                      const current: ApprovalSet = review ?? {
-                        tenant,
-                        installations: [],
-                        approvals: [],
-                      };
-                      const installations = current.installations.filter(
-                        (selection) =>
-                          selection.installation !== item.installation.id,
-                      );
-                      const approvals = current.approvals.filter(
-                        (selection) =>
-                          selection.reference.id !== item.entry.id ||
-                          selection.reference.version !== item.entry.version,
-                      );
-                      if (event.target.checked) {
-                        const approval = catalog.data?.find(
-                          (binding) =>
-                            binding.entry_id === item.entry.id &&
-                            binding.entry_version === item.entry.version,
-                        );
-                        installations.push({
-                          installation: item.installation.id,
-                          revision: item.revision,
-                          digest: item.digest,
-                          expected_activation_revision:
-                            item.installation.activation_revision,
-                        });
-                        approvals.push({
-                          reference: {
-                            id: item.entry.id,
-                            version: item.entry.version,
-                          },
-                          expected_catalog_revision: approval?.revision ?? 0,
-                        });
-                      }
-                      setReview({ tenant, installations, approvals });
-                    }}
+                    setReview({ tenant, installations, approvals });
+                  }}
                 >
                   {item.entry.id}@{item.entry.version}
                 </Check>
@@ -335,9 +335,7 @@ export function HostPackages({
             : "Approve and activate selected set"}
         </Button>
       </div>
-      {message && (
-        <Notice role="status">{message}</Notice>
-      )}
+      {message && <Notice role="status">{message}</Notice>}
     </Panel>
   );
 }

@@ -421,10 +421,12 @@ export function MemoryRecord({
     <Facts
       items={Object.entries(value)
         .filter(([key]) => key !== "next")
-        .map(([key, field]): Fact => [
-          label(key),
-          <MemoryRecord key={key} value={field} units={units} />,
-        ])}
+        .map(
+          ([key, field]): Fact => [
+            label(key),
+            <MemoryRecord key={key} value={field} units={units} />,
+          ],
+        )}
     />
   );
 }
