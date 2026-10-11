@@ -1850,6 +1850,55 @@ async fn a_summary_dependency_revoked_during_pruning_pauses_before_inference(mut
 
 #[rstest]
 #[tokio::test]
+async fn a_summary_dependency_revoked_during_inference_discards_the_response(mut fixture: Fixture) {
+	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	state.scoped = true;
+	state.context_policy = Some(recovery_policy(true));
+	state.jev_retention = Some(1.0);
+	*state.summary_text.lock().unwrap() = Some(valid_summary());
+	thinking_with_history(&mut fixture, 40);
+	let originals = fixture.run.context.history.clone();
+	advance_sources(&mut fixture).await.unwrap();
+	assert!(fixture.run.context.execution_summary.is_some());
+
+	// The checks before and after pruning pass; the source is revoked while
+	// the ordinary model call is in flight with authority released.
+	let earlier = calls(&fixture).len();
+	let checks = calls(&fixture)
+		.iter()
+		.filter(|call| **call == "summary.dependencies")
+		.count();
+	Arc::get_mut(&mut fixture.backend.0)
+		.unwrap()
+		.summary_checks_before_revocation = Some(checks + 2);
+	assert!(matches!(
+		advance_sources(&mut fixture).await,
+		Err(Error::Forbidden)
+	));
+
+	let step = &calls(&fixture)[earlier..];
+	let inferred = step.iter().position(|call| *call == "provider.infer");
+	let last_check = step
+		.iter()
+		.rposition(|call| *call == "summary.dependencies");
+	assert!(inferred.is_some() && inferred < last_check, "{step:?}");
+	assert_eq!(
+		step.iter()
+			.filter(|call| **call == "summary.dependencies")
+			.count(),
+		3,
+		"{step:?}"
+	);
+	// The response is never accepted: no tool step, and the originals are
+	// restored in place of the revoked summary.
+	assert!(matches!(fixture.run.state, RunState::Thinking(_)));
+	assert_eq!(events(&fixture).last().unwrap(), "context.summary_revoked");
+	assert!(fixture.run.context.execution_summary.is_none());
+	assert_eq!(fixture.run.context.history, originals);
+}
+
+#[rstest]
+#[tokio::test]
 async fn a_source_revoked_while_the_summarizer_runs_is_never_adopted(mut fixture: Fixture) {
 	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
 	state.scoped = true;

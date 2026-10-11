@@ -393,6 +393,16 @@ fn decisions_and_artifacts_survive_later_merges() {
 	let second = adopted(&edit(&revised), Some(&first), &[written]);
 	assert_eq!(second.content.artifacts[0].revision, "r2");
 	assert_eq!(second.content.decisions, ["use nom"]);
+	// The accumulated goal is copied verbatim by every later merge.
+	assert_eq!(
+		SummaryContent::parse(
+			&edit(&|value| value["goal"] = json!("ship a different parser")),
+			Some(&second),
+			&[tool(7)],
+			4096
+		),
+		Err(Rejection::ChangedGoal)
+	);
 }
 
 #[test]
@@ -442,6 +452,29 @@ fn new_artifacts_must_appear_in_absorbed_history() {
 		4096,
 	)
 	.unwrap();
+	// Evidence is a complete value: a longer path or revision proves neither.
+	let longer = tool_with(
+		2,
+		json!({"path":"src/parser.rs.bak"}),
+		json!({"artifact_id":"a-7","revision":"r20"}),
+	);
+	for (artifact, reference) in [
+		(
+			json!({"reference":"src/parser.rs","revision":""}),
+			"src/parser.rs",
+		),
+		(json!({"reference":"a-7","revision":"r2"}), "a-7"),
+	] {
+		assert_eq!(
+			SummaryContent::parse(
+				&artifacts(json!([artifact])),
+				None,
+				std::slice::from_ref(&longer),
+				4096
+			),
+			Err(Rejection::UnprovenArtifact(reference.into()))
+		);
+	}
 }
 
 fn content_text() -> String {

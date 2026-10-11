@@ -153,6 +153,7 @@ inference request. Human answers, corrections, continuation markers and
 recheck, always stay verbatim. The summarizer receives only the
 task, the previous summary and the absorbed events, with no tools and a JSON
 schema response format. Each merge
+copies the previous goal verbatim and
 keeps the previous summary's constraints and unresolved items under their IDs,
 in the same list and with unchanged text, unless it lists them as resolved;
 a changed or moved item is rejected, and a resolved ID must leave both active
@@ -160,9 +161,10 @@ lists. A resolution's `resolved_by` and every new
 `verification` reference must be the exact ID of a tool call the merge absorbs;
 previous decisions, resolved and verification entries must be carried
 unchanged, so a retired ID never returns. A new artifact's reference, and its
-revision when one is given, must appear in the call or result of one absorbed
-event; a previous artifact is carried unchanged unless the merge's history
-states a newer revision of the same reference. It records the
+revision when one is given, must each equal a complete argument or result value
+of one absorbed event, so `src/parser.rs.bak` never proves `src/parser.rs`; a
+previous artifact is carried unchanged unless the merge's history states a
+newer revision of the same reference. It records the
 exact journal range, the absorbed sequence ranges (entries pruned between them
 were never absorbed), and the absorbed entries' digest, and carries the sources
 it depends on. A summary is adopted only if it validates, strictly shrinks the
@@ -201,7 +203,9 @@ journaled original result because Jev may have truncated the projection copy.
 A local Run rechecks message dependencies under its current authority without
 recording a read; a remote Run rechecks them through the Home's filtered record
 reads. An authority-bearing Run rechecks them again after pruning, whose Jev
-I/O releases its authority, before the summarizer or the model is called.
+I/O releases its authority, before the summarizer or the model is called, and
+after the model call, which releases it as well, before its response is
+accepted; a source revoked during that call discards the response.
 
 Provider failures are classified before recovery. An OpenRouter `400` or `413`
 whose message reports the maximum context length is a Context Overflow; a `413`

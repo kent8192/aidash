@@ -119,6 +119,8 @@ pub enum Rejection {
 	Malformed,
 	#[error("summary goal is empty")]
 	EmptyGoal,
+	#[error("summary changed the previous goal")]
+	ChangedGoal,
 	#[error("summary item IDs must be unique, non-empty and at most 64 bytes")]
 	InvalidItem,
 	#[error("summary dropped previous item {0} without resolving it")]
@@ -152,6 +154,7 @@ impl Rejection {
 		match self {
 			Self::Malformed => "malformed",
 			Self::EmptyGoal => "empty_goal",
+			Self::ChangedGoal => "changed_goal",
 			Self::InvalidItem => "invalid_item",
 			Self::DroppedItem(_) => "dropped_item",
 			Self::ChangedItem(_) => "changed_item",
@@ -182,6 +185,11 @@ impl SummaryContent {
 		let content: Self = serde_json::from_str(text.trim()).map_err(|_| Rejection::Malformed)?;
 		if content.goal.trim().is_empty() {
 			return Err(Rejection::EmptyGoal);
+		}
+		// The goal is accumulated state the absorbed events no longer show;
+		// a later merge copies it verbatim.
+		if previous.is_some_and(|previous| previous.content.goal != content.goal) {
+			return Err(Rejection::ChangedGoal);
 		}
 		let mut ids = BTreeSet::new();
 		for item in content.constraints.iter().chain(&content.unresolved) {
@@ -348,22 +356,24 @@ pub fn absorbable(event: &ContextEvent) -> bool {
 	matches!(event, ContextEvent::Tool { .. })
 }
 
-/// Whether one absorbed tool event states `artifact`: its call or result
-/// contains the reference and, when one is given, the revision.
+/// Whether one absorbed tool event states `artifact`: a complete scalar in its
+/// call arguments or result equals the reference and, when one is given,
+/// another equals the revision. A value that merely contains one, such as
+/// `src/parser.rs.bak` for `src/parser.rs`, is no evidence.
 fn states(event: &ContextEvent, artifact: &ArtifactRef) -> bool {
 	let ContextEvent::Tool { call, result } = event else {
 		return false;
 	};
-	let stated = |needle: &str| mentions(&call.arguments, needle) || mentions(result, needle);
+	let stated = |value: &str| holds(&call.arguments, value) || holds(result, value);
 	stated(&artifact.reference) && (artifact.revision.is_empty() || stated(&artifact.revision))
 }
 
-fn mentions(value: &Value, needle: &str) -> bool {
+fn holds(value: &Value, scalar: &str) -> bool {
 	match value {
-		Value::String(text) => text.contains(needle),
-		Value::Number(number) => number.to_string() == needle,
-		Value::Array(values) => values.iter().any(|value| mentions(value, needle)),
-		Value::Object(fields) => fields.values().any(|value| mentions(value, needle)),
+		Value::String(text) => text == scalar,
+		Value::Number(number) => number.to_string() == scalar,
+		Value::Array(values) => values.iter().any(|value| holds(value, scalar)),
+		Value::Object(fields) => fields.values().any(|value| holds(value, scalar)),
 		Value::Bool(_) | Value::Null => false,
 	}
 }
