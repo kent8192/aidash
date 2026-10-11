@@ -1,6 +1,6 @@
 //! Native transactions retain eligibility locks, DB time, CAS fences and repair events.
 use crate::apps::execution::{
-	models::{Run as RunRecord, inference_usage::InferenceUsage},
+	models::{InferenceUsage, Run as RunRecord},
 	repositories::store::run_state::run_unblocked,
 };
 use crate::{Error, Result};

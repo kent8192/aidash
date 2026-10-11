@@ -1,7 +1,7 @@
 //! Native execution repository preserves caller-owned transactions and lease fences.
 use crate::apps::execution::models::{
-	Event as EventRecord, HumanRequest as HumanRequestRecord, Invocation as InvocationRecord,
-	Run as RunRecord, RunInput as InputRecord, event_records, inference_usage::InferenceUsage,
+	Event as EventRecord, HumanRequest as HumanRequestRecord, InferenceUsage,
+	Invocation as InvocationRecord, Run as RunRecord, RunInput as InputRecord, event_records,
 };
 use crate::apps::execution::serializers::runs::{PeerObservation, RunDetails};
 use crate::apps::execution::services::human_interaction;

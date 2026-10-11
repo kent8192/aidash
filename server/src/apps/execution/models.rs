@@ -35,4 +35,5 @@ pub mod generation_remote_intents;
 
 pub mod generation_remote_usage;
 
-pub mod inference_usage;
+mod inference_usage;
+pub(crate) use inference_usage::InferenceUsage;
