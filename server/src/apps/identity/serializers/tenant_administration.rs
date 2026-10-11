@@ -53,6 +53,12 @@ pub(crate) struct TenantMapping {
 	pub(crate) revision: i64,
 	/// The subject's Assignable Group memberships.
 	pub(crate) groups: BTreeSet<String>,
+	/// The caller's own External Identity holds this Mapping, so the caller
+	/// cannot disable it.
+	pub(crate) own_identity: bool,
+	/// The caller acts as this subject or its External Identity was ever
+	/// mapped to it in this Tenant, so the caller cannot change its groups.
+	pub(crate) own_subject: bool,
 }
 
 #[derive(Deserialize, JsonSchema, Validate)]

@@ -6,24 +6,27 @@ const mapping = (
   id: string,
   identity: string,
   subject: string,
-  groups: string[],
+  own: { identity?: boolean; subject?: boolean; enabled?: boolean } = {},
 ) => ({
   id,
   identity: {
     id: identity,
-    verified_email: `${subject}@example.test`,
-    display_name: subject,
+    verified_email: `${identity}@example.test`,
+    display_name: identity,
   },
   subject,
-  enabled: true,
+  enabled: own.enabled ?? true,
   revision: 1,
-  groups,
+  groups: [],
+  own_identity: own.identity ?? false,
+  own_subject: own.subject ?? false,
 });
 
-test("a Tenant Administrator is not offered controls for its own Mappings", async ({
+test("a Tenant Administrator is not offered controls the server marks as its own", async ({
   page,
 }) => {
-  // The fixture session acts through `fixture-mapping` as `alice`.
+  // The fixture session acts through `fixture-mapping` as `alice`, which is
+  // on another page; only the server knows which rows here are its own.
   await installBearerDashboard(page, "fixture", {
     tenant: "alpha",
     name: "alice",
@@ -82,10 +85,21 @@ test("a Tenant Administrator is not offered controls for its own Mappings", asyn
     if (path === "/api/tenants/alpha/mappings")
       return route.fulfill({
         json: [
-          mapping("fixture-mapping", "identity-alice", "alice", []),
-          // Another subject the same External Identity is mapped to.
-          mapping("alice-ops-mapping", "identity-alice", "alice-ops", []),
-          mapping("carol-mapping", "identity-carol", "carol", ["members"]),
+          // A disabled historical Mapping of the caller's External Identity.
+          mapping("alice-old-mapping", "identity-alice", "alice-old", {
+            identity: true,
+            subject: true,
+            enabled: false,
+          }),
+          mapping("alice-ops-mapping", "identity-alice", "alice-ops", {
+            identity: true,
+            subject: true,
+          }),
+          // Another person mapped to a subject the caller acts as.
+          mapping("shared-mapping", "identity-bob", "shared", {
+            subject: true,
+          }),
+          mapping("carol-mapping", "identity-carol", "carol"),
         ],
       });
     return route.fulfill({ json: [] });
@@ -99,16 +113,16 @@ test("a Tenant Administrator is not offered controls for its own Mappings", asyn
         hasText: new RegExp(`^${subject}$`),
       }),
     });
+  const disable = (subject: string) =>
+    row(subject).getByRole("button", { name: "Disable", exact: true });
   await expect(row("carol")).toHaveCount(1);
-  await expect(
-    row("carol").getByRole("button", { name: "Disable", exact: true }),
-  ).toBeVisible();
+  await expect(disable("carol")).toBeVisible();
   await expect(row("carol").getByRole("checkbox")).toHaveCount(1);
-  for (const own of ["alice", "alice-ops"]) {
+  await expect(disable("shared")).toBeVisible();
+  await expect(row("shared").getByRole("checkbox")).toHaveCount(0);
+  for (const own of ["alice-old", "alice-ops"]) {
     await expect(row(own)).toHaveCount(1);
-    await expect(
-      row(own).getByRole("button", { name: "Disable", exact: true }),
-    ).toHaveCount(0);
+    await expect(disable(own)).toHaveCount(0);
     await expect(row(own).getByRole("checkbox")).toHaveCount(0);
   }
 });

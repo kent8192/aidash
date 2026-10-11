@@ -61,7 +61,7 @@ Subjects created and memberships changed by a Tenant Administrator advance the p
 | POST   | `/api/tenants/{tenant}/mappings/{id}/disable`      | `{"expected_revision":1}`                                                                                  |
 | PUT    | `/api/tenants/{tenant}/subjects/{subject}/groups`  | `{"groups":[],"expected_policy_revision":2}`                                                               |
 
-Responses forbid caching. In the dashboard, a Tenant Administrator who selects that Mapping sees the permitted parts of **Access and accounts**; restore, operator grants and policy editing are not shown. Its own Mappings and subjects are listed without the Disable and group controls that the server would reject.
+Responses forbid caching. In the dashboard, a Tenant Administrator who selects that Mapping sees the permitted parts of **Access and accounts**; restore, operator grants and policy editing are not shown. Each listed Mapping carries `own_identity` (the caller's External Identity holds it, so it cannot be disabled) and `own_subject` (the caller acts as, or was ever mapped to, that subject in this Tenant, so its groups cannot be changed). The dashboard omits the Disable and group controls these flags rule out.
 
 Approvals, rejections and Mapping disables by Operators and Tenant Administrators are appended to `dashboard_administration_history`. Each row records the action, the target External Identity, request, Mapping, Tenant and subject, the actor kind (`operator` or `tenant_administrator`), the acting External Identity (absent for the operator bearer token) and the Mapping a Tenant Administrator acted through. Rows are never updated.
 

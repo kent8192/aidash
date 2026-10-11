@@ -16,7 +16,7 @@ use aidash_domain::policy::{Decision, Evaluation, Resource};
 use reinhardt::db::backends::TransactionExecutor;
 use reinhardt::db::orm::{AtomicTransaction, DatabaseConnection, Model, QuerySet};
 use serde_json::{Value, json};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 
@@ -363,6 +363,7 @@ impl TenantAdministrator {
 			let identities = self
 				.identities(tx, mappings.iter().map(|row| row.identity_id()).collect())
 				.await?;
+			let own_subjects = self.own_subjects(tx).await?;
 			Ok(mappings
 				.into_iter()
 				.filter_map(|row| {
@@ -371,6 +372,8 @@ impl TenantAdministrator {
 						id: row.id,
 						identity: view(identity),
 						groups: rules::memberships(&snapshot.bundle, &row.subject),
+						own_identity: identity.id == self.identity_id,
+						own_subject: own_subjects.contains(&row.subject),
 						subject: row.subject,
 						enabled: row.enabled,
 						revision: row.revision,
@@ -379,6 +382,22 @@ impl TenantAdministrator {
 				.collect())
 		})
 		.await
+	}
+
+	/// The subject this administrator acts as and every subject its External
+	/// Identity was mapped to in this Tenant, including through disabled
+	/// Mappings. It never changes their groups.
+	async fn own_subjects(&self, tx: &mut AtomicTransaction) -> Result<BTreeSet<String>> {
+		let mut subjects: BTreeSet<String> = DashboardMapping::objects()
+			.filter(DashboardMapping::field_identity_id().eq(self.identity_id))
+			.filter(DashboardMapping::field_tenant().eq(self.tenant().to_owned()))
+			.all_with_db(tx)
+			.await?
+			.into_iter()
+			.map(|row| row.subject)
+			.collect();
+		subjects.insert(self.identity.subject.clone());
+		Ok(subjects)
 	}
 
 	/// Only External Identities this administrator `sees` are ever disclosed.
@@ -412,14 +431,7 @@ impl TenantAdministrator {
 			if snapshot.revision != input.expected_policy_revision {
 				return Err(Error::Conflict("authorization revision changed".into()));
 			}
-			let own = subject == self.identity.subject
-				|| DashboardMapping::objects()
-					.filter(DashboardMapping::field_identity_id().eq(self.identity_id))
-					.filter(DashboardMapping::field_tenant().eq(self.tenant().to_owned()))
-					.filter(DashboardMapping::field_subject().eq(subject.clone()))
-					.exists_with_db(tx)
-					.await?;
-			if own {
+			if self.own_subjects(tx).await?.contains(&subject) {
 				return Err(Error::Forbidden);
 			}
 			self.require(

@@ -1643,6 +1643,15 @@ async fn tenant_administrator_confers_only_assignable_groups_and_is_audited(
 	};
 	let own = mapping(&admin_mapping["id"]);
 	let theirs = mapping(&carol_mapping["id"]);
+	// The dashboard hides the controls the server would reject from these.
+	assert_eq!(
+		(&own["own_identity"], &own["own_subject"]),
+		(&json!(true), &json!(true))
+	);
+	assert_eq!(
+		(&theirs["own_identity"], &theirs["own_subject"]),
+		(&json!(false), &json!(false))
+	);
 	let disable = |row: &Value| {
 		admin
 			.send(
