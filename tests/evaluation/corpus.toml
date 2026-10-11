@@ -131,6 +131,15 @@ alias = "records_purge"
 description = "Permanently delete customer records matching a filter. Irreversible."
 schema = '{"type":"object","properties":{"filter":{"type":"string"}},"required":["filter"],"additionalProperties":false}'
 
+# Fixture Registry Skills. Their bodies carry facts that exist nowhere else, so
+# an answer that uses them proves the Skill body reached the model.
+[[skills]]
+id = "dunning-policy"
+name = "Invoice dunning policy"
+description = "Rules for writing payment reminder letters for overdue invoices."
+instructions = """When writing a payment reminder, state the invoice number and amount, \
+end with the reference code DUN-7Q4, and never threaten legal action."""
+
 # ---------------------------------------------------------------- code change
 [[tasks]]
 id = "code-change-hidden-regression"
@@ -309,6 +318,28 @@ answer_pattern = "(?i)unpaid"
 outcome = "success"
 claimed_success = true
 tool_selection_correct = true
+
+[[tasks]]
+id = "deferred-skill-selection"
+kind = "skill-selection"
+language = "en-US"
+title = "Payment reminder"
+prompt = """Write a short payment reminder for invoice INV-2026-0105 (155.00 USD) that \
+follows the organization's invoice dunning policy Skill."""
+model = "standard"
+comparisons = ["exposure"]
+fixture_agent = "skill-follower"
+tools = []
+skills = ["dunning-policy"]
+remove_default = ["file_search", "file_read"]
+search_query = "dunning payment reminder"
+[tasks.oracle]
+kind = "answer-pattern"
+answer_pattern = "DUN-7Q4"
+forbidden_pattern = "(?i)legal action|lawsuit|court"
+[tasks.expected]
+outcome = "success"
+claimed_success = true
 
 # ------------------------------------------------------------ escalation
 [[tasks]]

@@ -1,0 +1,449 @@
+"""Drive fixed-task Runs and memory scenarios through the authorized HTTP API (#122).
+
+Both tiers use this driver. The deterministic tier points it at a disposable
+local Node whose models are the scripted fixture provider; the live tier points
+it at an operator-chosen Node and model under its guard rails. The driver only
+observes; fixed_task_evaluation.py grades and aggregates.
+"""
+import json
+import time
+import uuid
+
+from fixed_task_evaluation import canonical_sha256, task_description, task_tools
+
+NO_HUMAN = "No human is available during this evaluation; continue without further input."
+TERMINAL = ("COMPLETED", "FAILED", "CANCELLED")
+
+
+class ApiError(RuntimeError):
+    def __init__(self, method, path, status, value):
+        super().__init__(f"{method} {path} returned HTTP {status}: {str(value)[:400]}")
+        self.status = status
+        self.value = value
+
+
+class Api:
+    """Bounded request log around a transport `call(method, path, body, token) -> (status, value)`."""
+
+    def __init__(self, call, operator_token):
+        self.call = call
+        self.operator = operator_token
+        self.log = []
+
+    def request(self, method, path, body=None, token=None, accept=(200,)):
+        begin = time.perf_counter()
+        status, value = self.call(method, path, body, token or self.operator)
+        self.log.append({"method": method, "path": path, "status": status,
+                         "round_trip_ms": round((time.perf_counter() - begin) * 1000, 3)})
+        if status not in accept:
+            raise ApiError(method, path, status, value)
+        return value
+
+    def get(self, path, token=None):
+        return self.request("GET", path, None, token)
+
+    def post(self, path, body, token=None, accept=(200,)):
+        return self.request("POST", path, body, token, accept)
+
+
+def expand(text):
+    """Corpus text macros: `@oversized:N`, `@long:N:text` and `@clip:N:source`."""
+    if text.startswith("@oversized:"):
+        size = int(text.split(":", 1)[1])
+        return ("Confirmed. Keep every constraint. " + "Attached requisition log entry. " * (size // 31 + 1))[:size]
+    if text.startswith("@long:"):
+        _, size, body = text.split(":", 2)
+        return (body + " ") + ("Detail paragraph retained for the full revision. " * (int(size) // 49 + 1))[
+            : max(0, int(size) - len(body) - 1)]
+    return text
+
+
+class Experiment:
+    """Registry entities and the subject token shared by every Run of one experiment."""
+
+    def __init__(self, api, node, tenant, prefix):
+        self.api = api
+        self.node = node
+        self.tenant = tenant
+        self.prefix = prefix
+        self.subject = "evaluator"
+        self.token = None
+        self.catalog_revision = {}
+
+    def ref(self, identifier):
+        return {"registry_node": self.node, "id": identifier, "version": "1.0.0"}
+
+    def authorize(self, agent_ids):
+        subjects = {self.subject: {"kind": "user"}}
+        for agent in agent_ids:
+            subjects[f"{self.node}/agents/{agent}@1.0.0"] = {"kind": "agent"}
+        bundle = {"tenant": self.tenant, "subjects": subjects,
+                  "policies": [{"id": "evaluation-work", "effect": "allow", "subjects": {"any": True},
+                                "actions": ["*"], "resources": {"kinds": ["*"]}}]}
+        self.api.post(f"/api/authorization/{self.tenant}", {"expected_revision": 0, "bundle": bundle})
+        self.token = self.api.post(f"/api/authorization/{self.tenant}/credentials", {"subject": self.subject})["token"]
+
+    def register(self, kind, identifier, config, schema=None, description="Fixed-task evaluation fixture",
+                 name=None):
+        entry = {"id": identifier, "version": "1.0.0", "kind": kind, "name": {"en": name or identifier},
+                 "description": {"en": description}, "capabilities": [], "tags": ["evaluation"],
+                 "languages": ["en", "ja"], "skills": [], "schema": schema if schema is not None else {},
+                 "config": config}
+        self.api.post("/api/registry", entry)
+        self.api.post(f"/api/authorization/{self.tenant}/catalog",
+                      {"entry": {"id": identifier, "version": "1.0.0"}, "expected_revision": 0, "enabled": True})
+        return {"id": identifier, "version": "1.0.0", "config_sha256": canonical_sha256(config)}
+
+
+def model_config(model, fixture_url, name):
+    config = {"provider": "openrouter", "model_id": model["model_id"], "endpoint": fixture_url + "/v1",
+              "credential_env": None, "context_window": model["context_window"],
+              "max_output_tokens": model["max_output_tokens"], "modalities": ["text"], "cost": {},
+              "projection_versions": ["legacy", "ordered"]}
+    if model.get("cache_mode"):
+        config["cache_mode"] = model["cache_mode"]
+    return config
+
+
+def fixture_model_ids(corpus, prefix):
+    """Deterministic-tier model ids. `anthropic/` is required for explicit caching (ADR 0019)."""
+    return {name: (f"anthropic/{prefix}-{name}" if spec.get("cache_mode") == "explicit" else f"fixture/{prefix}-{name}")
+            for name, spec in corpus["models"].items()}
+
+
+def tool_config(experiment, endpoint, alias):
+    return {"registry_node": experiment.node, "provider": "integration.http@1", "operation": "invoke",
+            "default_alias": alias, "tier": "integration", "narrow": {},
+            "transport": {"transport": "http", "endpoint": endpoint, "credential_env": None, "replay": "idempotent"}}
+
+
+def agent_config(corpus, task, model_ref, tool_refs, fields):
+    bindings = [{"kind": "tool", "target": ref, "alias": alias, "narrow": {}} for alias, ref in tool_refs]
+    config = {"schema_version": 1, "model": {"id": model_ref["id"], "version": model_ref["version"]},
+              "instructions": corpus["instructions"], "bindings": bindings,
+              "remove_default": task.get("remove_default", ["file_search", "file_read"]),
+              "max_steps": task.get("max_steps", corpus["max_steps"])}
+    config.update(json.loads(json.dumps(fields)))
+    return config
+
+
+def agent_id(prefix, planned):
+    task_index = planned["task"]["_index"]
+    return f"{prefix}-t{task_index:02d}-{planned['comparison']['id']}-{planned['arm']}"
+
+
+def tool_calls_from(context):
+    calls = []
+    for event in context.get("history", []):
+        if event.get("kind") != "tool":
+            continue
+        result = event.get("result")
+        error = result.get("error") if isinstance(result, dict) and isinstance(result.get("error"), str) else None
+        calls.append({"name": event["call"]["name"], "arguments": event["call"].get("arguments"), "error": error,
+                      "dispatch_rejected": bool(error) and (error.startswith("unavailable tool ") or (
+                          error.startswith("capability ") and error.endswith(
+                              ("use capability_load", "call it after the next model request"))))})
+    return calls
+
+
+def final_answer(api, token, workspace, run):
+    """The published final answer: the Run's output artifact, else its final context text."""
+    detail = api.get(f"/api/workspaces/{workspace}", token)
+    produced = [artifact for artifact in detail.get("artifacts", [])
+                if artifact.get("run_id") == run["id"] or artifact.get("task_id") == run.get("task_id")]
+    for artifact in reversed(produced):
+        content = artifact.get("content")
+        if isinstance(content, dict):
+            content = content.get("text") or content.get("content") or json.dumps(content)
+        if isinstance(content, str) and content:
+            return content
+    context = run.get("context") or {}
+    for key in ("final", "output", "result"):
+        if isinstance(context.get(key), str):
+            return context[key]
+    return None
+
+
+def run_task(api, experiment, planned, repeat, agent_ref, fixture=None, usage_reader=None, timeout=300.0,
+             interval=0.25, clock=time.monotonic, sleep=time.sleep):
+    """Execute one Task Run end to end and return raw observations; never raises for Run failures."""
+    task = planned["task"]
+    token = experiment.token
+    observation = {"run_id": None, "workspace": None, "phase": None, "error": None, "human_answers": [], "tool_calls": [],
+                   "final_answer": None, "steps": None, "compactions": None, "requests": None,
+                   "usage_records": None, "interrupted": False, "infrastructure_error": None, "wall_ms": 0.0}
+    started = clock()
+    answers = iter(task.get("human_answers", []))
+    try:
+        title = f"{experiment.prefix} {task['id']} {planned['label']} r{repeat}"
+        workspace = api.post("/api/workspaces", {"title": title, "goal": task["title"]}, token)["id"]
+        observation["workspace"] = workspace
+        created = api.post(f"/api/workspaces/{workspace}/tasks", {
+            "title": task["title"], "description": task_description(planned["corpus"], task), "requirements": {},
+            "dependencies": [], "parent_id": None}, token)
+        task_uuid = created["id"]
+        if fixture is not None:
+            fixture.register(task_uuid, task, f"{task['id']}/{planned['comparison']['id']}/{planned['arm']}/{repeat}")
+        api.post(f"/api/tasks/{task_uuid}/claim", {"revision": created.get("revision", 0),
+                                                   "agent": {"id": agent_ref["id"], "version": agent_ref["version"]}},
+                 token)
+        deadline = started + timeout
+        run_id = None
+        while run_id is None:
+            run_id = next((run["id"] for run in api.get("/api/state", token)["runs"] if run["task_id"] == task_uuid),
+                          None)
+            if run_id is None:
+                if clock() > deadline:
+                    raise RuntimeError(f"no Run appeared for Task {task_uuid}")
+                sleep(interval)
+        observation["run_id"] = run_id
+        while True:
+            run = api.get(f"/api/runs/{run_id}", token)["run"]
+            if run["phase"] in TERMINAL:
+                break
+            if clock() > deadline:
+                api.post(f"/api/runs/{run_id}/control", {"action": "cancel"}, token)
+                observation["interrupted"] = True
+                run = api.get(f"/api/runs/{run_id}", token)["run"]
+                break
+            if run["phase"] == "WAITING":
+                for request in api.get("/api/state", token)["human_requests"]:
+                    if request["run_id"] != run_id or request.get("response") is not None:
+                        continue
+                    if request["kind"] == "APPROVAL_REQUIRED":
+                        approve = task["kind"] != "escalation" and request["prompt"].startswith(
+                            "Approve this exact external tool action once?")
+                        answer = {"approved": approve}
+                    else:
+                        text = next(answers, None)
+                        answer = {"answer": expand(text) if text is not None else NO_HUMAN}
+                    api.post(f"/api/human-requests/{request['id']}/answer", answer, token)
+                    observation["human_answers"].append({"kind": request["kind"], "answer_sha256": canonical_sha256(answer),
+                                                         "approved": answer.get("approved")})
+            sleep(interval)
+        context = run.get("context") or {}
+        observation.update({"phase": run["phase"], "error": run.get("error") or run.get("state_error"),
+                            "steps": run.get("step"), "compactions": context.get("compactions"),
+                            "tool_calls": tool_calls_from(context)})
+        if run["phase"] == "COMPLETED":
+            observation["final_answer"] = final_answer(api, token, workspace, run)
+        if fixture is not None:
+            observation["requests"] = fixture.observed(task_uuid)
+        if usage_reader is not None:
+            observation["usage_records"] = usage_reader(run_id)
+    except Exception as error:  # Counted as an infrastructure failure, never dropped.
+        observation["infrastructure_error"] = f"{type(error).__name__}: {error}"
+    observation["wall_ms"] = round((clock() - started) * 1000, 3)
+    return observation
+
+
+def register_variants(experiment, corpus, planned_runs, model_refs, fixture_url):
+    """Register tools and one Agent per (task, comparison, arm). Returns variants and per-comparison errors."""
+    tools = {}
+    skills = {}
+    variants = []
+    errors = {}
+    corpus_skills = {skill["id"]: skill for skill in corpus.get("skills", [])}
+    for planned in planned_runs:
+        task = planned["task"]
+        if task["id"] not in skills:
+            skills[task["id"]] = []
+            for name in task.get("skills", []):
+                skill = corpus_skills[name]
+                identifier = f"{experiment.prefix}-t{task['_index']:02d}-skill-{name}"
+                entry = experiment.register("skill", identifier, {"instructions": skill["instructions"]},
+                                            {"type": "object"}, skill["description"], skill["name"])
+                skills[task["id"]].append(entry)
+        if task["id"] not in tools:
+            refs = []
+            for tool in task_tools(corpus, task):
+                identifier = f"{experiment.prefix}-t{task['_index']:02d}-{tool['alias']}".replace("_", "-")
+                endpoint = f"{fixture_url}/tools/{task['id']}/{tool['alias']}"
+                registration = experiment.register("tool", identifier, tool_config(experiment, endpoint, tool["alias"]),
+                                                   json.loads(tool["schema"]), tool["description"])
+                refs.append((tool["alias"], registration))
+            tools[task["id"]] = refs
+        model_ref = model_refs[planned["model"]]
+        bindings = [(alias, experiment.ref(ref["id"])) for alias, ref in tools[task["id"]]]
+        config = agent_config(corpus, task, model_ref, bindings, planned["agent_fields"])
+        config["bindings"] += [{"kind": "skill", "target": experiment.ref(ref["id"]), "narrow": {}}
+                               for ref in skills[task["id"]]]
+        identifier = agent_id(experiment.prefix, planned)
+        try:
+            agent = experiment.register("agent", identifier, config)
+        except ApiError as error:
+            errors[planned["comparison"]["id"]] = f"Agent registration rejected: {str(error)[:300]}"
+            continue
+        planned["agent_ref"] = agent
+        variants.append({"task": task["id"], "comparison": planned["comparison"]["id"], "arm": planned["arm"],
+                         "label": planned["label"], "agent": agent, "agent_fields": planned["agent_fields"],
+                         "model": model_ref, "tools": [ref for _, ref in tools[task["id"]]],
+                         "skills": skills[task["id"]]})
+    return variants, errors
+
+
+# ------------------------------------------------------------- memory
+
+
+def memory_policy(roles, variant):
+    zero = {"input_per_million": 0, "output_per_million": 0}
+    policy = {"engine": "hindsight_rust", "policy": {
+        "extraction": roles["model"], "derivation": roles["model"], "reflection": roles["model"],
+        "embedding": roles["embedding"], "reranker": roles["reranker"], "tokenizer": roles["tokenizer"],
+        "prices": {name: zero for name in ("extraction", "derivation", "reflection", "embedding", "reranker")},
+        "retention": {"unit_max_age_days": None, "candidate_days": 7, "history_days": 30, "history_versions": 16,
+                      "model_result_days": 7, "backup_days": 7, "purge_after_seconds": 60, "purge_batch": 32,
+                      "max_unit_records": 128, "max_model_operations": 1024},
+        "bounds": {"max_unit_bytes": 8192, "max_input_bytes": 8192, "max_units": 16, "max_candidates": 8,
+                   "max_entities": 8, "max_evidence": 8, "max_links": 8, "max_graph_hops": 3,
+                   "max_graph_visits": 32, "max_results": 4, "max_context_tokens": 8192, "max_model_calls": 4,
+                   "max_model_tokens": 8192, "max_cost_micros": 10000, "max_retries": 2, "max_call_seconds": 30},
+        "semantic_link_min_similarity_millionths": 700000, "learn_from_runs": False, "maintain_observations": False,
+        "refresh_mental_models": False}}
+    if variant.get("decay"):
+        policy["policy"]["decay"] = dict(variant["decay"], dormancy=None)
+    return policy
+
+
+def unit_content(text):
+    return {"text": text, "kind": "world", "learning": "fact", "verification": "unverified", "occurred": None,
+            "entities": [], "evidence": [], "links": [], "mental_model": None}
+
+
+def run_memory_scenario(api, token, workspace, provider, bank, scenario):
+    """Apply a scenario's ordered actions to one isolated bank; return checks."""
+    units = {source["id"]: str(uuid.uuid4()) for source in scenario.get("sources", [])}
+    texts = {source["id"]: expand(source["text"]) for source in scenario.get("sources", [])}
+    sent = {}
+    checks = []
+    path = f"/api/workspaces/{workspace}/memory/units/mutate"
+    for index, action in enumerate(scenario["actions"]):
+        op = action["op"]
+        name = action.get("label") or f"{index}:{op}"
+        if op == "query":
+            listed = api.post(f"/api/workspaces/{workspace}/memory/units/query", {"provider": provider, "bank": bank},
+                              token)
+            visible = {}
+            for unit in listed:
+                symbol = next((key for key, value in units.items() if value == unit["id"]), unit["id"])
+                visible[symbol] = unit["content"]["text"]
+            expected = {key: expand(value) for key, value in action["visible"].items()}
+            checks.append({"action": name, "check": "visible-set", "passed": visible == expected,
+                           "observed": sorted(visible), "expected": sorted(expected)})
+            continue
+        if op == "replay":
+            body, original_status, original = sent[action["of"]]
+        else:
+            source = action["source"]
+            text = action.get("text")
+            if text and text.startswith("@clip:"):
+                _, size, symbol = text.split(":", 2)
+                text = texts[symbol][: int(size)]
+            elif text:
+                text = expand(text)
+            if op == "add":
+                change = {"operation": "add", "id": units[source], "content": unit_content(texts[source])}
+            elif op == "correct":
+                change = {"operation": "correct", "id": units[source], "expected_revision": action["observed_revision"],
+                          "content": unit_content(text)}
+            elif op == "delete":
+                change = {"operation": "delete", "id": units[source], "expected_revision": action["observed_revision"]}
+            else:
+                raise ValueError(f"unknown memory action {op}")
+            body = {"operation_id": str(uuid.uuid4()), "provider": provider, "bank": bank, "changes": [change]}
+            original_status = original = None
+        status, value = api.call("POST", path, body, token)
+        api.log.append({"method": "POST", "path": path, "status": status, "round_trip_ms": None})
+        if op != "replay":
+            sent[name] = (body, status, value)
+        expect = action["expect"]
+        if expect == "ok":
+            passed = status == 200
+            if passed and "revision" in action:
+                revisions = [item.get("revision") for item in value] if isinstance(value, list) else []
+                passed = revisions == [action["revision"]]
+        elif expect == "rejected":
+            passed = 400 <= status < 500
+        elif expect == "identical":
+            passed = status == 200 and original_status == 200 and value == original
+        elif expect == "no-effect":
+            passed = (status == 200 and value == original) or 400 <= status < 500
+        else:
+            raise ValueError(f"unknown memory expectation {expect}")
+        checks.append({"action": name, "check": expect, "passed": passed, "status": status})
+    return checks, canonical_sha256({"sources": scenario.get("sources", []), "actions": scenario["actions"]})
+
+
+# ------------------------------------------------------------ live tier
+
+
+def run_worst_case(task, corpus, model_config, price):
+    """Worst-case nanocredits for one Run: every step fills the window and the output reservation."""
+    steps = task.get("max_steps", corpus["max_steps"])
+    per_attempt = (model_config["context_window"] * price["input_nanocredits_per_token"]
+                   + model_config["max_output_tokens"] * price["output_nanocredits_per_token"])
+    return steps * per_attempt
+
+
+def observed_provider_work(api, token, workspace, run_id, price):
+    """Every inference the Node reported for a Run, from its Workspace events.
+
+    Returns (attempts, cost). cost is None whenever any attempt's usage is
+    unknown or the event window may be incomplete; the ledger then keeps the
+    Run's full reservation charged.
+    """
+    events = api.get(f"/api/workspaces/{workspace}", token).get("events", [])
+    attempts = []
+    for event in events:
+        data = event.get("data") or {}
+        if event.get("kind") != "model.completed" or data.get("run_id") != run_id:
+            continue
+        usage = data.get("context_usage") or {}
+        attempts.append({"step": data.get("step"), "input_tokens": usage.get("input_tokens"),
+                         "output_tokens": usage.get("output_tokens"), "model": data.get("model"),
+                         "provider": data.get("provider")})
+    complete = len(events) < 100 and all(item["input_tokens"] is not None and item["output_tokens"] is not None
+                                         for item in attempts)
+    cost = None
+    if complete:
+        cost = sum(item["input_tokens"] * price["input_nanocredits_per_token"]
+                   + item["output_tokens"] * price["output_nanocredits_per_token"] for item in attempts)
+    return attempts, cost
+
+
+def live_runs(api, experiment, corpus, planned_runs, repeats, ledger, models, prices, timeout,
+              clock=time.monotonic, sleep=time.sleep):
+    """Dispatch live Runs only inside the ledger's spend and time ceilings.
+
+    Each Run is reserved at its worst case before dispatch; a refusal stops all
+    further dispatch and is recorded. Runs that fail, time out or report unknown
+    usage keep their full reservation charged.
+    """
+    from fixed_task_evaluation import GuardRefusal
+    observations = []
+    for repeat in range(1, repeats + 1):
+        for planned in planned_runs:
+            if "agent_ref" not in planned:
+                continue
+            key = f"{planned['task']['id']}/{planned['comparison']['id']}/{planned['arm']}/{repeat}"
+            model = planned["live_model"]
+            try:
+                attempt = ledger.reserve(key, run_worst_case(planned["task"], corpus, models[model], prices[model]))
+            except GuardRefusal:
+                return observations
+            remaining = max(1.0, min(timeout, ledger.deadline - clock()))
+            observation = run_task(api, experiment, planned, repeat, planned["agent_ref"], timeout=remaining,
+                                   clock=clock, sleep=sleep)
+            cost = None
+            if observation["run_id"] and observation.get("workspace"):
+                try:
+                    work, cost = observed_provider_work(api, experiment.token, observation["workspace"],
+                                                        observation["run_id"], prices[model])
+                    attempt["provider_work"] = work
+                except Exception as error:  # Unknown usage stays charged.
+                    attempt["provider_work_error"] = f"{type(error).__name__}: {error}"
+            if observation["phase"] != "COMPLETED" or observation["interrupted"]:
+                cost = None
+            ledger.settle(attempt, cost)
+            observations.append((planned, repeat, observation))
+    return observations
