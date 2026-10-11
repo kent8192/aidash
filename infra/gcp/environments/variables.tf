@@ -23,6 +23,9 @@ variable "environments" {
     nodes        = optional(number, 1)
     machine_type = optional(string, "n2-standard-4")
     release_sha  = optional(string)
+    # Set to "public_origin" only with a release deployment, so the SAML ACS
+    # switches in the same apply that installs the edge's sign-in helper proxy.
+    auth_helper = optional(string, "firebase")
   }))
   default = {}
   validation {
@@ -35,6 +38,10 @@ variable "environments" {
       (!e.published || e.running) && (e.kind != "develop" || !e.spot)
     ])
     error_message = "Only nonproduction N2 environments are permitted; production and Spot develop are forbidden."
+  }
+  validation {
+    condition     = alltrue([for e in values(var.environments) : contains(["firebase", "public_origin"], e.auth_helper)])
+    error_message = "The sign-in helper is either Firebase's default domain or the environment's public origin."
   }
   validation {
     condition = alltrue([for kind in ["develop", "test", "pr"] :

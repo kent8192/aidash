@@ -5,7 +5,10 @@ import {
   inMemoryPersistence,
   browserPopupRedirectResolver,
   signInWithPopup,
+  signInWithRedirect,
+  getRedirectResult,
   GoogleAuthProvider,
+  type AuthProvider,
   OAuthProvider,
   SAMLAuthProvider,
   signInWithEmailAndPassword,
@@ -22,34 +25,63 @@ export type GcipClientConfig = {
   providers: string[];
   password_sign_up: boolean;
 };
-export function createClient(config: GcipClientConfig) {
+export interface GcipClient {
+  popup(id: string): Promise<string>;
+  /** Navigates away; the sign-in completes in `redirectResult` on return. */
+  redirect(id: string): Promise<never>;
+  /** Null without network I/O unless this tab started a redirect. */
+  redirectResult(): Promise<string | null>;
+  password(email: string, password: string): Promise<string>;
+  register(email: string, password: string): Promise<boolean>;
+  resend(email: string, password: string): Promise<boolean>;
+  close(): Promise<void>;
+}
+// Redirect sign-in resumes in a new page, so the app name must be stable.
+const APP_NAME = "aidash-gcip";
+function federatedProvider(id: string): AuthProvider {
+  if (id === "google.com") {
+    const provider = new GoogleAuthProvider();
+    provider.setCustomParameters({ prompt: "select_account" });
+    return provider;
+  }
+  return id.startsWith("saml.")
+    ? new SAMLAuthProvider(id)
+    : new OAuthProvider(id);
+}
+export function createClient(config: GcipClientConfig): GcipClient {
   const app = initializeApp(
     {
       projectId: config.project_id,
       apiKey: config.api_key,
       authDomain: config.auth_domain,
     },
-    `aidash-${crypto.randomUUID()}`,
+    APP_NAME,
   );
   const auth = initializeAuth(app, { persistence: inMemoryPersistence });
   auth.tenantId = config.tenant_id;
   let closed = false;
   return {
     async popup(id: string) {
-      const provider =
-        id === "google.com"
-          ? new GoogleAuthProvider()
-          : id.startsWith("saml.")
-            ? new SAMLAuthProvider(id)
-            : new OAuthProvider(id);
-      if (id === "google.com")
-        provider.setCustomParameters({ prompt: "select_account" });
       const result = await signInWithPopup(
         auth,
-        provider,
+        federatedProvider(id),
         browserPopupRedirectResolver,
       );
       return result.user.getIdToken();
+    },
+    redirect(id: string): Promise<never> {
+      return signInWithRedirect(
+        auth,
+        federatedProvider(id),
+        browserPopupRedirectResolver,
+      );
+    },
+    async redirectResult() {
+      const result = await getRedirectResult(
+        auth,
+        browserPopupRedirectResolver,
+      );
+      return result ? result.user.getIdToken() : null;
     },
     async password(email: string, password: string) {
       const result = await signInWithEmailAndPassword(auth, email, password);

@@ -717,6 +717,34 @@ class ReconcileTests(unittest.TestCase):
 
         return patch.object(controller.kube, "reload", failing)
 
+    def test_saml_helper_switches_only_with_the_deployed_release(self):
+        self.request("develop", source_ref="develop/0.1.0")
+        self.reconcile()
+        # Applied by a controller whose edge did not proxy the sign-in helper.
+        del self.cloud.managed["develop"]["auth_helper"]
+        self.config["gcip_tenants"] = {"company": {"tenant": "acme"}}
+        self.calls.clear()
+        self.cloud.plans.clear()
+        self.reconcile()
+        # The refresh reloads only the running release, so its SAML ACS stays on Firebase.
+        self.assertIn(("helm", "develop", "app"), self.calls)
+        self.assertNotIn(("helm", "develop", "env"), self.calls)
+        self.assertTrue(self.cloud.plans)
+        self.assertFalse(any("auth_helper" in managed["develop"] for managed, _ in self.cloud.plans))
+        self.calls.clear()
+        self.request("develop", "update", sha="b" * 40, source_ref="develop/0.1.0")
+        self.cloud.plans.clear()
+        self.reconcile()
+        self.assertEqual(self.store.state["environments"]["develop"]["status"], "ready")
+        self.assertTrue(self.cloud.plans)
+        for managed, _ in self.cloud.plans:
+            self.assertEqual(
+                managed["develop"].get("auth_helper") == "public_origin",
+                managed["develop"]["release_sha"] == "b" * 40,
+            )
+        # The same deployment installs the edge that proxies the helper.
+        self.assertIn(("helm", "develop", "env"), self.calls)
+
     def test_failed_gcip_refresh_stays_gated_and_retries_without_restarting_successes(self):
         self.request()
         self.reconcile()

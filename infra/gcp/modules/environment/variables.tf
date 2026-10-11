@@ -21,6 +21,7 @@ variable "environment" {
     spot         = bool
     nodes        = number
     machine_type = string
+    auth_helper  = optional(string, "firebase")
   })
 }
 

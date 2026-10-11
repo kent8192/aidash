@@ -228,6 +228,10 @@ class ChartsTest(unittest.TestCase):
         names = [item['name'] for item in select(render(self.aidash, self.base), 'Deployment', '-aidash-server')
                  ['spec']['template']['spec']['containers'][0]['env']]
         self.assertFalse({'AIDASH_PROVIDER_CREDENTIAL_SETTINGS', 'AIDASH_GCIP_SETTINGS'} & set(names))
+        for helper in ('firebase', 'public_origin'):
+            selected = {'dashboard': {'gcip': dict(gcip, auth_helper=helper)}}
+            rendered = render(self.aidash, dict(values, gcip={'settings': selected}))
+            self.assertEqual(json.loads(self.mounted(rendered, 'server', 'AIDASH_GCIP_SETTINGS')), selected)
         invalid_descriptors = [
             dict(descriptor, extra=None),
             dict(descriptor, store=dict(store, kind='postgres')),
@@ -246,6 +250,7 @@ class ChartsTest(unittest.TestCase):
         invalid_gcip = [
             {'dashboard': {'gcip': dict(gcip, public_origin='https://other.aidash.run')}},
             {'dashboard': {'gcip': dict(gcip, arbitrary='value')}},
+            {'dashboard': {'gcip': dict(gcip, auth_helper='auth.example.test')}},
             {'dashboard': {'gcip': dict(gcip, web_api_key=' ')}},
             {'dashboard': {'gcip': gcip, 'oidc': {}}},
             {'dashboard': {'gcip': gcip}, 'node': {'api_token': 'override'}},
@@ -565,6 +570,36 @@ class ChartsTest(unittest.TestCase):
                 pod = value['spec']['template']['spec']
                 self.assertFalse(pod['hostNetwork'])
                 self.assertTrue(all(term.get('tolerationSeconds', 30) < 300 for term in pod['tolerations']))
+
+    def test_edge_proxies_only_the_selected_firebase_sign_in_helper_ahead_of_admission(self):
+        values = {'postgres': POSTGRES,
+            'edge': {'hostname': 'fixture.example', 'admissionImage': 'admission' + DIGEST},
+            'activity': {'existingSecret': 'observer', 'observerImage': 'observer' + DIGEST,
+                         'collectorImage': 'collector' + DIGEST}}
+
+        def edge(**selected):
+            objects = render(self.environment, dict(values, edge=dict(values['edge'], **selected)))
+            annotations = select(objects, 'Deployment', '-edge')['spec']['template']['metadata']['annotations']
+            return select(objects, 'ConfigMap', '-edge')['data']['Caddyfile'], annotations['checksum/config']
+
+        plain, plain_checksum = edge()
+        self.assertEqual(plain, 'fixture.example {\n  reverse_proxy 127.0.0.1:8088\n}\n')
+        self.assertEqual(edge(firebaseProject=''), (plain, plain_checksum))
+        proxied, proxied_checksum = edge(firebaseProject='aidash-fixture')
+        # Switching the helper restarts the edge so Caddy reads the new routes.
+        self.assertNotEqual(proxied_checksum, plain_checksum)
+        helper, application = proxied.split('  handle {\n')
+        self.assertIn('@firebase_helper path /__/auth/* /__/firebase/init.json', helper)
+        self.assertIn('handle @firebase_helper {', helper)
+        self.assertIn('reverse_proxy https://aidash-fixture.firebaseapp.com {', helper)
+        for directive in ('header_up Host {upstream_hostport}', 'header_up -Cookie',
+                          'header_up -Authorization', 'header_down -Set-Cookie'):
+            self.assertIn(directive, helper)
+        self.assertNotIn('127.0.0.1:8088', helper)
+        self.assertIn('reverse_proxy 127.0.0.1:8088', application)
+        for invalid in ('Aidash-Fixture', 'aidash-fixture.evil.example {', 'x'):
+            with self.subTest(project=invalid), self.assertRaises(subprocess.CalledProcessError):
+                edge(firebaseProject=invalid)
 
     def test_environment_labels_stay_strings_and_edge_keeps_no_file_access_log(self):
         values = {'postgres': POSTGRES,
