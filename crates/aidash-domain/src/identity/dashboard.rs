@@ -23,8 +23,66 @@ pub fn bound_tenant<'a>(
 		.map(String::as_str)
 }
 
+/// Canonical form of a Sign-in Domain: IDNA ASCII, lowercase, at least two DNS
+/// labels and no trailing dot. Returns `None` for anything else.
+pub fn sign_in_domain(raw: &str) -> Option<String> {
+	// The URL host parser percent-decodes its input, so only DNS characters
+	// (and non-ASCII for IDN) may reach it; `%61cme.com` must not become `acme.com`.
+	if raw.is_empty()
+		|| raw.len() > 253
+		|| raw.ends_with('.')
+		|| raw
+			.bytes()
+			.any(|b| b.is_ascii() && !(b.is_ascii_alphanumeric() || b == b'-' || b == b'.'))
+	{
+		return None;
+	}
+	let url::Host::Domain(domain) = url::Host::parse(raw).ok()? else {
+		return None;
+	};
+	let labels = domain.split('.').collect::<Vec<_>>();
+	(domain.len() <= 253
+		&& labels.len() >= 2
+		&& labels.iter().all(|label| {
+			(1..=63).contains(&label.len())
+				&& !label.starts_with('-')
+				&& !label.ends_with('-')
+				&& label
+					.bytes()
+					.all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+		}))
+	.then_some(domain)
+}
+
+/// A Sign-in Domain only routes sign-in to a GCIP Tenant; it grants no authority.
+/// Malformed addresses and unmapped domains are indistinguishable (`None`).
+/// The local part must be an RFC 5322 dot-atom of ASCII `atext`; quoted and
+/// internationalized local parts are not supported.
+pub fn routed_gcip_tenant<'a>(
+	sign_in_domains: &'a std::collections::BTreeMap<String, String>,
+	email: &str,
+) -> Option<&'a str> {
+	let email = email.trim();
+	if email.len() > 320 {
+		return None;
+	}
+	let (local, domain) = email.split_once('@')?;
+	let atext = |b: u8| b.is_ascii_alphanumeric() || b"!#$%&'*+/=?^_`{|}~-".contains(&b);
+	if local.len() > 64
+		|| domain.contains('@')
+		|| !local
+			.split('.')
+			.all(|atom| !atom.is_empty() && atom.bytes().all(atext))
+	{
+		return None;
+	}
+	sign_in_domains
+		.get(&sign_in_domain(domain)?)
+		.map(String::as_str)
+}
+
 /// Verified display attributes never establish authority or link identities.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct SignIn {
 	pub subject: String,
 	pub gcip_tenant: Option<String>,
@@ -33,6 +91,27 @@ pub struct SignIn {
 	pub auth_time: DateTime<Utc>,
 	pub verified_email: Option<String>,
 	pub display_name: Option<String>,
+}
+
+/// Display Attributes are personal data subject to Display Erasure, so diagnostic
+/// output reports only whether the issuer supplied them.
+impl std::fmt::Debug for SignIn {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		f.debug_struct("SignIn")
+			.field("subject", &self.subject)
+			.field("gcip_tenant", &self.gcip_tenant)
+			.field("gcip_provider", &self.gcip_provider)
+			.field("auth_time", &self.auth_time)
+			.field(
+				"verified_email",
+				&self.verified_email.as_ref().map(|_| "<redacted>"),
+			)
+			.field(
+				"display_name",
+				&self.display_name.as_ref().map(|_| "<redacted>"),
+			)
+			.finish()
+	}
 }
 
 /// Only the issuer-reported value drives session revocation; events that advance
