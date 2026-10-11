@@ -294,8 +294,8 @@ class FixtureTest(unittest.TestCase):
     def test_constraint_probe_reports_only_delivered_corrections(self):
         item = task(self.corpus, "correction-lost-in-pruned-tool-result")
         self.fixture.register("task-1", item, "k")
-        for page in range(1, 9):
-            status, payload = chat(self.fixture, "task-1", tools=["reference_lookup"])
+        for _ in range(8):
+            _, payload = chat(self.fixture, "task-1", tools=["reference_lookup"])
             self.assertEqual(payload["choices"][0]["message"]["tool_calls"][0]["function"]["name"], "reference_lookup")
         _, pruned = chat(self.fixture, "task-1", history=[{"result": "BUDGET-USD=500 EXCLUDE-VENDOR=Northwind"}])
         self.assertIn('"budget_usd": 500', pruned["choices"][0]["message"]["content"])

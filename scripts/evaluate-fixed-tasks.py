@@ -32,7 +32,6 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-import uuid
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import fixed_task_evaluation as evaluation  # noqa: E402
