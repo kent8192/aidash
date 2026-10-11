@@ -92,6 +92,8 @@ class FakeCluster:
             "observed_at": self.now - 1000 if mode == "stale" else self.now,
             "last_active": 0 if name in self.idle else self.now,
             "counts": {"database_work": 0, "runs": int(busy)},
+            # "open": a restarted edge restored a stale `open` desired state.
+            "edge_closed": mode != "open",
         }
         if mode == "error":
             value.update(busy=True, observation_gap=True, error="activity unavailable")

@@ -621,7 +621,9 @@ def seal(cluster, identity, force=False, idle_only=False, keepalive_at=0):
             return True
         since = time.time()
         snapshot = observe(cluster, identity, since)
-        idle = snapshot is not None and idle_now(snapshot)
+        # A restarted edge may restore a stale `open` desired state; only an
+        # observation proving the live gate closed may authorize the stop.
+        idle = snapshot is not None and snapshot.get("edge_closed") is True and idle_now(snapshot)
         if idle and idle_only:
             try:
                 idle = idle_due(snapshot, time.time(), keepalive_at)

@@ -914,7 +914,9 @@ class ReconcileTests(unittest.TestCase):
         self.request(action="resume", sha="b" * 40)
         # "foreign": an idle snapshot that a concurrent minute CronJob run published
         # after the seal's own Job, from evidence gathered before the drain.
-        for mode in ["busy", "stale", "failed", "error", "foreign"]:
+        # "open": an idle snapshot whose live edge gate reopened (a restarted edge
+        # read the stale `open` desired state), so new writes may be admitted.
+        for mode in ["busy", "stale", "failed", "error", "foreign", "open"]:
             with self.subTest(mode=mode):
                 self.calls.clear()
                 self.kube.script = [mode]
