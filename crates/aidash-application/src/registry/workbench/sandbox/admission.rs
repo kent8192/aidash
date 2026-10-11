@@ -1,5 +1,9 @@
 //! A sandbox request pins only authorized inputs and commits its concurrency admission before driving work.
-use super::{dispatch, execution::Job};
+use super::{
+	deferred::{self, Deferred},
+	dispatch,
+	execution::{Job, SessionExposure},
+};
 use crate::{
 	Error, Result,
 	ports::{
@@ -178,24 +182,40 @@ pub async fn admit(admission: &Admission<'_>, id: Uuid, input: TestInput) -> Res
 	} else {
 		instructions.push_str("\n\nSandbox: all tool calls are simulated from explicit fixtures. Never claim an unprovided tool result.\n");
 	}
-	for skill in &config.skills {
-		let skill = scope.effective(skill).await?;
-		instructions.push_str("\nSkill:\n");
-		instructions.push_str(&aidash_domain::registry::rules::skill_instructions(&skill)?);
-	}
-	instructions.push_str(&skill_source_context(&config, &snapshot, &input)?);
+	let (tool_specs, exposure) = if let Some(discoverable) = Deferred::new(&snapshot)? {
+		let prefix = instructions.clone();
+		// A continued session resumes the Exposure set it ended with.
+		let state = deferred::replayed(&conversation)?;
+		let (text, tools) = discoverable.request(&snapshot, &state)?;
+		instructions.push_str(&text);
+		(tools, Some((prefix, state)))
+	} else {
+		for skill in &config.skills {
+			let skill = scope.effective(skill).await?;
+			instructions.push_str("\nSkill:\n");
+			instructions.push_str(&aidash_domain::registry::rules::skill_instructions(&skill)?);
+		}
+		instructions.push_str(&skill_source_context(&config, &snapshot, &input)?);
+		let specs = snapshot
+			.bindings
+			.iter()
+			.filter(|b| b.excluded_reason.is_none())
+			.filter_map(|b| {
+				b.alias
+					.as_deref()
+					.map(|alias| crate::tools::plugin_specification(&b.definition, alias))
+			})
+			.collect();
+		(specs, None)
+	};
+	let suffix_start = instructions.len();
 	instructions.push_str("\nAdditional instructions:\n");
 	instructions.push_str(&config.instructions);
-	let tool_specs = snapshot
-		.bindings
-		.iter()
-		.filter(|b| b.excluded_reason.is_none())
-		.filter_map(|b| {
-			b.alias
-				.as_deref()
-				.map(|alias| crate::tools::plugin_specification(&b.definition, alias))
-		})
-		.collect();
+	let exposure = exposure.map(|(prefix, state)| SessionExposure {
+		prefix,
+		suffix: instructions[suffix_start..].to_owned(),
+		state,
+	});
 	let mut request = ModelRequest {
 		content_parts: Vec::new(),
 		instructions,
@@ -245,6 +265,7 @@ pub async fn admit(admission: &Admission<'_>, id: Uuid, input: TestInput) -> Res
 			initial_conversation: conversation,
 			pinned_draft: draft,
 			model_credential,
+			exposure,
 		},
 	})
 }
