@@ -221,6 +221,7 @@ impl From<aidash_domain::Error> for Error {
 		match error {
 			aidash_domain::Error::Invalid(message) => Self::Invalid(message),
 			aidash_domain::Error::Conflict(message) => Self::Conflict(message),
+			error @ aidash_domain::Error::UnsupportedState(_) => Self::Conflict(error.to_string()),
 		}
 	}
 }

@@ -57,6 +57,9 @@ impl RawRun {
 		})
 	}
 	pub fn inspect(self) -> RunInspection {
+		let lease_wait = StateRequirements::from_pending(&self.pending)
+			.ok()
+			.and_then(|requires| self.metadata.lease_wait(&requires));
 		match self.decode() {
 			Ok(run) => RunInspection {
 				state_version: StateVersion::default(),
@@ -65,6 +68,7 @@ impl RawRun {
 				recovery: Some(run.recovery),
 				context: Some(run.context),
 				state_error: None,
+				lease_wait,
 			},
 			Err(error) => {
 				// A validated failure disposition is inspectable without making its
@@ -83,6 +87,7 @@ impl RawRun {
 					recovery,
 					context: None,
 					state_error: Some(error.to_string()),
+					lease_wait,
 				}
 			}
 		}
@@ -122,6 +127,9 @@ pub struct RunInspection {
 	#[schemars(with = "Option<crate::context::InspectionContext<'static>>")]
 	pub context: Option<Context>,
 	pub state_error: Option<String>,
+	/// Set while only a worker with the listed capabilities may claim the Run.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub lease_wait: Option<LeaseWait>,
 }
 impl std::ops::Deref for RunInspection {
 	type Target = RunMetadata;
@@ -138,6 +146,7 @@ impl From<Run> for RunInspection {
 			recovery: Some(run.recovery),
 			context: Some(run.context),
 			state_error: None,
+			lease_wait: None,
 		}
 	}
 }
@@ -167,6 +176,17 @@ impl std::ops::Deref for RawRun {
 impl RunMetadata {
 	pub fn phase(&self) -> RunPhase {
 		self.phase
+	}
+	/// A runnable Run that needs capabilities is waiting for a capable worker
+	/// whenever no live lease holds it; this is not a stuck or damaged Run.
+	pub fn lease_wait(&self, requires: &StateRequirements) -> Option<LeaseWait> {
+		let held = self.lease_until.is_some_and(|until| until > Utc::now());
+		(!requires.is_empty()
+			&& !held && !self.phase.is_terminal()
+			&& self.control != RunControl::Paused)
+			.then(|| LeaseWait::CapableWorker {
+				capabilities: requires.names().to_vec(),
+			})
 	}
 }
 
