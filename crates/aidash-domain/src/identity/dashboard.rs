@@ -26,7 +26,15 @@ pub fn bound_tenant<'a>(
 /// Canonical form of a Sign-in Domain: IDNA ASCII, lowercase, at least two DNS
 /// labels and no trailing dot. Returns `None` for anything else.
 pub fn sign_in_domain(raw: &str) -> Option<String> {
-	if raw.is_empty() || raw.len() > 253 || raw.ends_with('.') {
+	// The URL host parser percent-decodes its input, so only DNS characters
+	// (and non-ASCII for IDN) may reach it; `%61cme.com` must not become `acme.com`.
+	if raw.is_empty()
+		|| raw.len() > 253
+		|| raw.ends_with('.')
+		|| raw
+			.bytes()
+			.any(|b| b.is_ascii() && !(b.is_ascii_alphanumeric() || b == b'-' || b == b'.'))
+	{
 		return None;
 	}
 	let url::Host::Domain(domain) = url::Host::parse(raw).ok()? else {

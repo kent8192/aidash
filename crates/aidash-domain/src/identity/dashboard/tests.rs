@@ -72,6 +72,10 @@ fn token_requires_a_subject_or_session(claims: Value) {
 #[case("ac_me.com", None)]
 #[case("192.0.2.1", None)]
 #[case("[::1]", None)]
+#[case("%61cme.com", None)]
+#[case("acme%2ecom", None)]
+#[case("acme.com/", None)]
+#[case("acme\\.com", None)]
 #[case("", None)]
 fn sign_in_domains_are_canonical_dns_names(#[case] raw: &str, #[case] expected: Option<&str>) {
 	assert_eq!(sign_in_domain(raw).as_deref(), expected);
@@ -96,6 +100,9 @@ fn sign_in_domains_are_canonical_dns_names(#[case] raw: &str, #[case] expected: 
 #[case("\"alice\"@acme.com", None)]
 #[case("alice(x)@acme.com", None)]
 #[case("álice@acme.com", None)]
+#[case("alice@%61cme.com", None)]
+#[case("alice@acme%2ecom", None)]
+#[case("alice@b%C3%BCcher.example", None)]
 fn email_routes_only_by_exact_sign_in_domain(#[case] email: &str, #[case] expected: Option<&str>) {
 	let domains = std::collections::BTreeMap::from([
 		("acme.com".to_owned(), "pool-a".to_owned()),

@@ -293,6 +293,8 @@ async fn sign_in_domain_routes_to_its_pool_and_unknown_inputs_are_indistinguisha
 		"email=bad+local%40acme.example&return_to=%2Fsettings",
 		"email=.alice%40acme.example&return_to=%2Fsettings",
 		"email=alice..bob%40acme.example&return_to=%2Fsettings",
+		// A literal `%61cme.example` must not percent-decode into the mapping.
+		"email=alice%40%2561cme.example&return_to=%2Fsettings",
 		"return_to=%2Fsettings",
 	] {
 		unknown.push((body, discover(&app, body, Some(ORIGIN)).await));
