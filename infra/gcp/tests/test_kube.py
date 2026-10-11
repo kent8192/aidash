@@ -144,6 +144,15 @@ class RuntimeConfigurationTests(unittest.TestCase):
         self.assertEqual(settings["gcip"], {"dashboard": {"gcip": gcip}})
         self.assertFalse(any(key.startswith("AIDASH_OIDC_") for key in self.cluster.secret("aidash-pr-2", "app-runtime")))
 
+    def test_edge_serves_the_firebase_helper_only_when_the_settings_select_it(self):
+        release = {"images": {kind: f"registry.example/{kind}@sha256:" + "a" * 64 for kind in IMAGE_KINDS}}
+        gcip = {"project_id": PROJECT, "web_api_key": "public", "public_origin": "https://pr-2.aidash.run", "tenant_bindings": {}}
+        for selected, expected in [(None, ""), ({}, ""), ({"auth_helper": "firebase"}, ""), ({"auth_helper": "public_origin"}, PROJECT)]:
+            with self.subTest(selected=selected):
+                dashboard = None if selected is None else {"gcip": dict(gcip, **selected)}
+                settings = {"provider": None, "gcip": kube.gcip_settings(PROJECT, OUTPUT, dashboard)}
+                self.assertEqual(kube.env_values("pr-2", OUTPUT, release, settings)["edge"]["firebaseProject"], expected)
+
     def test_unsupported_or_conflicting_runtime_configuration_is_refused(self):
         gcip = {"project_id": PROJECT, "web_api_key": "public", "public_origin": "https://pr-2.aidash.run", "tenant_bindings": {}}
         for runtime in [
@@ -153,6 +162,7 @@ class RuntimeConfigurationTests(unittest.TestCase):
             dict(RUNTIME, dashboard={"gcip": gcip}),
             {"dashboard": {"gcip": dict(gcip, public_origin="https://other.aidash.run")}},
             {"dashboard": {"gcip": dict(gcip, unexpected=True)}},
+            {"dashboard": {"gcip": dict(gcip, auth_helper="auth.example.test")}},
             dict(RUNTIME, AIDASH_SECRET_MULTILINE="a\nb"),
         ]:
             with self.subTest(runtime=runtime), self.assertRaises(Refused):

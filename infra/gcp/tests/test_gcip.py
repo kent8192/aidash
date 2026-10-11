@@ -18,6 +18,7 @@ OUTPUT = {
     "gcip": {
         "project_id": "aidash-fixture",
         "public_origin": "https://test.aidash.run",
+        "auth_helper": "public_origin",
         "tenant_ids": ["pool-a"],
         "runtime_service_account": MEMBER.split(":", 1)[1],
         "tenant_bindings": {"pool-a": "acme"},
@@ -285,6 +286,32 @@ class RuntimeConfigTests(unittest.TestCase):
                 json.loads(additions[0]["data"])["dashboard"]["gcip"]["web_api_key"],
                 "rotated",
             )
+
+    def test_auth_helper_follows_the_applied_release_output(self):
+        raw = {"dashboard": {"gcip": {"web_api_key": "public"}}}
+
+        def command(*args, **kwargs):
+            if "list" in args:
+                return b'[{"name":"projects/aidash-fixture/secrets/runtime/versions/1","state":"ENABLED"}]'
+            if "access" in args:
+                return json.dumps(raw).encode()
+            if "add" in args:
+                raw.clear()
+                raw.update(json.loads(kwargs["data"]))
+            return b""
+
+        firebase = deepcopy(OUTPUT)
+        firebase["gcip"]["auth_helper"] = "firebase"
+        with patch("controller.run", side_effect=command):
+            # A refresh reloads a release deployed before the edge proxied the
+            # helper; the default needs no key.
+            controller.provision_secret({"project_id": "aidash-fixture"}, firebase, "test")
+            self.assertNotIn("auth_helper", raw["dashboard"]["gcip"])
+            self.assertEqual(raw["dashboard"]["gcip"]["tenant_bindings"], {"pool-a": "acme"})
+            controller.provision_secret({"project_id": "aidash-fixture"}, OUTPUT, "test")
+            self.assertEqual(raw["dashboard"]["gcip"]["auth_helper"], "public_origin")
+            controller.provision_secret({"project_id": "aidash-fixture"}, firebase, "test")
+            self.assertNotIn("auth_helper", raw["dashboard"]["gcip"])
 
     def test_oidc_and_gcip_runtime_configuration_cannot_coexist(self):
         with patch(
