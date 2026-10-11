@@ -1,7 +1,7 @@
 locals {
   services = toset([
-    "artifactregistry.googleapis.com", "compute.googleapis.com", "iam.googleapis.com",
-    "iamcredentials.googleapis.com", "iap.googleapis.com", "oslogin.googleapis.com",
+    "artifactregistry.googleapis.com", "compute.googleapis.com", "container.googleapis.com",
+    "iam.googleapis.com", "iamcredentials.googleapis.com",
     "secretmanager.googleapis.com", "storage.googleapis.com", "sts.googleapis.com",
     "cloudresourcemanager.googleapis.com",
     "run.googleapis.com", "cloudkms.googleapis.com",
@@ -86,8 +86,7 @@ resource "google_service_account_iam_member" "github" {
 resource "google_project_iam_member" "deploy" {
   for_each = toset([
     "roles/compute.instanceAdmin.v1", "roles/compute.networkAdmin",
-    "roles/compute.securityAdmin", "roles/compute.osAdminLogin",
-    "roles/iap.tunnelResourceAccessor", "roles/iam.serviceAccountAdmin",
+    "roles/container.admin", "roles/iam.serviceAccountAdmin",
     "roles/secretmanager.admin", "roles/artifactregistry.reader",
     "roles/serviceusage.serviceUsageConsumer",
     "roles/run.admin", "roles/cloudkms.admin",
@@ -95,6 +94,18 @@ resource "google_project_iam_member" "deploy" {
   project = var.project_id
   role    = each.value
   member  = "serviceAccount:${google_service_account.automation["deploy"].email}"
+}
+
+// Environment automation grants the shared GKE node identity its node role and
+// can modify no other project-level binding.
+resource "google_project_iam_member" "deploy_node_roles" {
+  project = var.project_id
+  role    = "roles/resourcemanager.projectIamAdmin"
+  member  = "serviceAccount:${google_service_account.automation["deploy"].email}"
+  condition {
+    title      = "only-gke-node-service-account-role"
+    expression = "api.getAttribute('iam.googleapis.com/modifiedGrantsByRole', []).hasOnly(['roles/container.defaultNodeServiceAccount'])"
+  }
 }
 
 resource "google_storage_bucket_iam_member" "state" {

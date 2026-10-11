@@ -1,0 +1,7 @@
+apiVersion: v2
+name: aidash-gcp-environment
+description: Retained PostgreSQL 17, NATS JetStream, edge and activity for one GCP Environment
+type: application
+version: 0.1.0
+appVersion: 0.1.0
+kubeVersion: ">=1.34.0-0"
