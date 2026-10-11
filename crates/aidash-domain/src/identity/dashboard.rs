@@ -24,7 +24,7 @@ pub fn bound_tenant<'a>(
 }
 
 /// Verified display attributes never establish authority or link identities.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct SignIn {
 	pub subject: String,
 	pub gcip_tenant: Option<String>,
@@ -33,6 +33,27 @@ pub struct SignIn {
 	pub auth_time: DateTime<Utc>,
 	pub verified_email: Option<String>,
 	pub display_name: Option<String>,
+}
+
+/// Display Attributes are personal data subject to Display Erasure, so diagnostic
+/// output reports only whether the issuer supplied them.
+impl std::fmt::Debug for SignIn {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		f.debug_struct("SignIn")
+			.field("subject", &self.subject)
+			.field("gcip_tenant", &self.gcip_tenant)
+			.field("gcip_provider", &self.gcip_provider)
+			.field("auth_time", &self.auth_time)
+			.field(
+				"verified_email",
+				&self.verified_email.as_ref().map(|_| "<redacted>"),
+			)
+			.field(
+				"display_name",
+				&self.display_name.as_ref().map(|_| "<redacted>"),
+			)
+			.finish()
+	}
 }
 
 /// Only the issuer-reported value drives session revocation; events that advance

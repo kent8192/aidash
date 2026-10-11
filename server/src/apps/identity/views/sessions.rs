@@ -105,6 +105,19 @@ pub async fn admin_restore_identity(
 	crate::http::status(service.admin_restore_identity(id).await)
 }
 
+#[post(
+	"/api/dashboard/identities/{id}/display-erasure",
+	name = "sessions-admin-erase-display",
+	auth = "protected"
+)]
+pub async fn admin_erase_display(
+	#[inject] service: Depends<DashboardSessions>,
+	#[inject] actor: Option<BrowserOrigin>,
+	Path(id): Path<Uuid>,
+) -> ViewResult<Response> {
+	crate::http::json(service.admin_erase_display(actor, id).await)
+}
+
 #[get(
 	"/api/dashboard/identities",
 	name = "sessions-admin-identities",
