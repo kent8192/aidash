@@ -70,13 +70,13 @@ request 8089 POST /admission/close >/dev/null
 closed=$(request 8089 GET /activity)
 [[ "$closed" == *"\"closed\":true"* ]]
 # A restart of the admission container between a meaningful request and the next
-# collector sample must not lose the timestamp: the idle interval stays full.
+# collector sample must not lose the timestamp: the idle interval stays full. The
+# stamp is read from the file, so no sample happens between request and restart.
 last_active() { request 8089 GET /activity | grep -o "\"last_active\":[^,}]*"; }
-before=$(last_active)
-[[ "$before" != "\"last_active\":0" ]]
+same_stamp() { awk -v a="${1#*:}" -v b="$(cat /var/lib/aidash-activity/last_active)" "BEGIN { exit !(a + 0 == b + 0 && b > 0) }"; }
 stop
 start "open\\n"
-[[ "$(last_active)" == "$before" ]]
+same_stamp "$(last_active)"
 # The restored stamp is the persisted file, not a coincidence: a fresh emptyDir
 # (a replaced Pod) reports never active, and a later request persists again.
 stop

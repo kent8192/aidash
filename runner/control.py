@@ -126,9 +126,7 @@ class Runner:
         if self.config.get("node_guard"):
             self.verify_freeze()
         self.retire_admission_probes()
-        for path in self.root.glob("*.json"):
-            if path.name.startswith(("area-", "session-")):
-                continue
+        for path in self.operation_files():
             record = json.loads(path.read_bytes())
             if record["status"] not in TERMINAL and record["status"] != "awaiting_files":
                 self.start(record["operation_id"])
@@ -182,9 +180,7 @@ class Runner:
         its Pod is gone (graceful deletion completes only after the kubelet stops
         every container) no writer remains. A Pod that cannot be removed keeps the
         record busy: activity stays fail-closed."""
-        for path in self.root.glob("*.json"):
-            if path.name.startswith(("area-", "session-")):
-                continue
+        for path in self.operation_files():
             record = json.loads(path.read_bytes())
             if (not record.get("admission_probe") or record["status"] not in TERMINAL
                     or record.get("termination_confirmed") or record.get("writer_frozen")):

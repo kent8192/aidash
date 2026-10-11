@@ -825,6 +825,8 @@ class ActivityTest(unittest.TestCase):
         self.assertEqual(self.combine(settled, transfers=['b', 'a'])['last_active'], 5000)
         self.assertEqual(self.combine(settled, transfers=['a', 'b', 'c'])['last_active'], 10000)
         self.assertEqual(self.combine(settled, transfers=['a'])['last_active'], 10000)
+        # The pair is the renewal key: an unchanged digest with another count renews.
+        self.assertEqual(self.combine(dict(settled, completed_transfers_count=3), transfers=['a', 'b'])['last_active'], 10000)
         legacy = dict(previous, completed_transfers=['a', 'b'])
         self.assertEqual(self.combine(legacy, transfers=['b', 'a'])['last_active'], 5000)
         self.assertEqual(self.combine(legacy, transfers=['a', 'b', 'c'])['last_active'], 10000)

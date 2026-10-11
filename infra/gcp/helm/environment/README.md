@@ -119,14 +119,15 @@ refer here.
   contributions are summed (so neither a sort nor an ID list exists anywhere) and
   the sum is hashed again. Receipts have no deletion path, so the output size does
   not depend on how many exist. The observer never emits the receipt IDs.
-- **Collector.** It stores the same pair in `snapshot.json` and compares the digest
-  with the previous one: any change, whether a new receipt or a removed one,
+- **Collector.** It stores the same pair in `snapshot.json` and compares it with
+  the previous one: any change, whether a new receipt or a removed one,
   renews the idle interval, and retries or object reclamation of an existing
-  receipt do not. An observation that lacks a well-formed pair (an older observer
-  that still sends the receipt list, with or without the pair, a missing field, a non-hex digest) or whose
-  file exceeds 64 KiB is treated as unavailable and published as busy. The first
-  sample after upgrading from the receipt-list observer therefore sees a different
-  digest and renews idle once. The `snapshot` volume is a 1 MiB `emptyDir`.
+  receipt do not. The pair is the renewal key: a changed count with an unchanged
+  digest renews too. An observation that lacks a well-formed pair (an older
+  observer that still sends the receipt list, with or without the pair, a missing
+  field, a non-hex digest) or whose file exceeds 64 KiB is treated as unavailable
+  and published as busy. The first sample after upgrading from the receipt-list
+  observer therefore sees a different digest and renews idle once. The `snapshot` volume is a 1 MiB `emptyDir`.
 - **Edge.** The admission container reports `inflight`, `closed` and `last_active`,
   the time of the last successful meaningful request. `last_active` is also
   written, atomically, to `/var/lib/aidash-activity/last_active` on a 1 MiB
@@ -139,11 +140,11 @@ refer here.
   then keeps only the previous snapshot's `last_active`. This file does not cover
   that case: a request completed shortly before the Pod was lost can receive a
   shorter idle interval.
-- **Runner.** `/v1/activity` (`runner/control.py`) answers from an in-memory aggregate
-  of the operations whose writer is not proven stopped plus the latest completion
-  time. It is seeded by one scan of the journal at Runner start and updated each
-  time an operation record is saved, so a request opens no journal file, however
-  many acknowledged operations the volume retains, and holds the Runner's global
-  lock only for two reads. A corrupt record stops the Runner from starting instead
-  of reporting idle. The collector's 15-second timeout therefore cannot be
+- **Runner.** `/v1/activity` (`runner/control.py`) answers from an in-memory
+  aggregate of the operations whose writer is not proven stopped plus the latest
+  completion time. It is seeded by one scan of the journal at Runner start and
+  updated each time an operation record is saved, so a request opens no journal
+  file, however many acknowledged operations the volume retains, and holds the
+  Runner's global lock only for two reads. A corrupt record still stops the Runner
+  from starting (as the recovery scan always did) instead of reporting idle. The collector's 15-second timeout therefore cannot be
   exhausted by journal growth.

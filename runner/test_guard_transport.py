@@ -110,8 +110,9 @@ class GuardTransportTest(unittest.TestCase):
         self.assertEqual(activity['last_work_completed'], 60)
 
     def test_corrupt_journal_cannot_supply_idle_activity(self):
-        # The journal is indexed once at startup; a corrupt record stops the Runner
-        # from starting rather than letting /v1/activity report idle.
+        # The journal is indexed once at startup. As before, a corrupt record
+        # cannot be read, so the Runner does not start and activity never reports
+        # idle; the recovery loop already behaved this way, and this covers it.
         (self.runner.root / 'operation.json').write_text('{')
         with self.assertRaises(json.JSONDecodeError):
             self.runner.index_journal()

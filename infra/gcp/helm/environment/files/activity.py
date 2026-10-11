@@ -62,7 +62,9 @@ def combine(database, edge, runner, previous, now):
     # compared as its legacy list, or as no transfers when it has neither.
     count, seen = receipt_summary(database)
     before = previous.get('completed_transfers_digest') or digest(previous.get('completed_transfers', []))
-    if active or gap or previous.get('busy', True) or seen != before:
+    # The pair is the renewal key: a changed count alone also renews.
+    before_count = previous.get('completed_transfers_count', len(previous.get('completed_transfers', [])))
+    if active or gap or previous.get('busy', True) or seen != before or count != before_count:
         last = now
     return dict(database, counts=counts, busy=active or gap, observation_gap=gap,
                 observed_at=now, last_active=last, edge_closed=edge['closed'],
