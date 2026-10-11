@@ -1,6 +1,10 @@
 //! Immutable capability references, supported restrictions and Run resolution records.
 use super::{EntityRef, Entry, Projection};
-use crate::{Error, Result, configuration::validate_node_id};
+use crate::{
+	Error, Result,
+	configuration::validate_node_id,
+	exposure::{BindingExposure, ExposurePolicy},
+};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -30,6 +34,15 @@ pub const DEFAULT_TOOLS: &[&str] = &[
 ];
 pub const SKILL_TOOLS: &[&str] = &["skill_list", "skill_load", "skill_read"];
 pub const COORDINATOR_TOOLS: &[&str] = &["task_create", "task_delegate", "agent_discover"];
+/// Required under `deferred@1` only, with canonical aliases.
+pub const EXPOSURE_TOOLS: &[&str] = &[
+	"capability_search",
+	"capability_describe",
+	"capability_load",
+	"capability_unload",
+];
+/// Replaces `SKILL_TOOLS` in the `deferred@1` default set.
+pub const SKILL_ASSET_READ: &str = "skill_asset_read";
 
 /// Typed exact edges used by admission and durable snapshot validation. Foreign
 /// qualifiers are retained, including delegation targets; no local ID guessing.
@@ -158,6 +171,8 @@ pub struct AgentBindings {
 	pub cluster: Option<EntityRef>,
 	#[serde(default = "super::max_steps")]
 	pub max_steps: i32,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub exposure: Option<ExposurePolicy>,
 	/// Projection Version this Agent version's Runs render with (ADR 0015).
 	/// Omitted means Legacy and is not serialized, so existing definitions,
 	/// their digests and Binding snapshots stay byte-identical.
@@ -169,7 +184,14 @@ pub struct AgentBindings {
 	pub prompt_cache: Option<crate::projection::PromptCache>,
 }
 impl AgentBindings {
+	/// The resolved Exposure policy; absent means `legacy@1`.
+	pub fn exposure_policy(&self) -> ExposurePolicy {
+		self.exposure.unwrap_or_default()
+	}
 	pub fn validate(&self) -> Result<()> {
+		let policy = self.exposure_policy();
+		policy.validate()?;
+		let defaults = policy.default_tools();
 		if self.schema_version != BINDING_SCHEMA
 			|| !(1..=1000).contains(&self.max_steps)
 			|| self.bindings.len() > MAX_BINDINGS
@@ -181,7 +203,7 @@ impl AgentBindings {
 			|| self
 				.remove_default
 				.iter()
-				.any(|name| !DEFAULT_TOOLS.contains(&name.as_str()))
+				.any(|name| !defaults.contains(&name.as_str()))
 			|| self.remove_default.iter().collect::<BTreeSet<_>>().len()
 				!= self.remove_default.len()
 		{
@@ -199,6 +221,17 @@ impl AgentBindings {
 		let mut targets = BTreeSet::new();
 		for binding in &self.bindings {
 			binding.validate()?;
+			if binding.exposure.is_some()
+				&& (!policy.is_deferred()
+					|| !matches!(
+						binding.kind,
+						BindingKind::Tool | BindingKind::Bundle | BindingKind::Skill
+					)) {
+				return Err(Error::Invalid(
+					"Binding exposure requires the deferred@1 policy and a Tool, bundle or Skill"
+						.into(),
+				));
+			}
 			if !targets.insert(&binding.target) {
 				return Err(Error::Invalid("duplicate Binding target".into()));
 			}
@@ -207,7 +240,7 @@ impl AgentBindings {
 			&& self
 				.remove_default
 				.iter()
-				.any(|name| SKILL_TOOLS.contains(&name.as_str()))
+				.any(|name| policy.skill_support_tools().contains(&name.as_str()))
 		{
 			return Err(Error::Invalid(
 				"bound Skills require Skill support tools".into(),
@@ -220,8 +253,11 @@ impl AgentBindings {
 		crate::configuration::validate_node_id(node)?;
 		let mut result = Vec::new();
 		let has_skills = self.bindings.iter().any(|b| b.kind == BindingKind::Skill);
-		for operation in REQUIRED_TOOLS.iter().chain(DEFAULT_TOOLS) {
-			let required = REQUIRED_TOOLS.contains(operation);
+		let policy = self.exposure_policy();
+		let required_tools = policy.required_tools();
+		let support = policy.skill_support_tools();
+		for operation in required_tools.iter().chain(&policy.default_tools()) {
+			let required = required_tools.contains(operation);
 			if !required && self.remove_default.iter().any(|name| name == operation) {
 				continue;
 			}
@@ -239,7 +275,7 @@ impl AgentBindings {
 				binding: explicit.cloned().unwrap_or_else(|| Binding::tool(target)),
 				origin: if required {
 					BindingOrigin::Required
-				} else if has_skills && SKILL_TOOLS.contains(operation) {
+				} else if has_skills && support.contains(operation) {
 					BindingOrigin::SkillSupport
 				} else if explicit.is_some() {
 					BindingOrigin::Explicit
@@ -496,6 +532,9 @@ pub struct Binding {
 	/// An empty member list binds the entire bundle. IDs are unique within a bundle.
 	#[serde(default, skip_serializing_if = "Vec::is_empty")]
 	pub members: Vec<String>,
+	/// Only valid for Tools, bundles and Skills under the `deferred@1` policy.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub exposure: Option<BindingExposure>,
 }
 impl Binding {
 	pub fn tool(target: QualifiedRef) -> Self {
@@ -505,6 +544,7 @@ impl Binding {
 			alias: None,
 			narrow: Narrowing::default(),
 			members: vec![],
+			exposure: None,
 		}
 	}
 	pub fn validate(&self) -> Result<()> {
@@ -574,6 +614,18 @@ pub enum BindingOrigin {
 pub struct NormalizedBinding {
 	pub binding: Binding,
 	pub origin: BindingOrigin,
+}
+impl NormalizedBinding {
+	/// Tools whose own Binding sets an `exposure`. Such a Binding is the documented
+	/// per-member override of a bundle, so bundle expansion skips that member instead
+	/// of producing a second, conflicting Binding for the same exact capability.
+	pub fn member_overrides(bindings: &[Self]) -> BTreeSet<QualifiedRef> {
+		bindings
+			.iter()
+			.filter(|n| n.binding.kind == BindingKind::Tool && n.binding.exposure.is_some())
+			.map(|n| n.binding.target.clone())
+			.collect()
+	}
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -859,6 +911,7 @@ impl BindingSnapshot {
 				"Agent requires instructions or a bound Skill context".into(),
 			));
 		}
+		let policy = config.exposure_policy();
 		let model = QualifiedRef {
 			registry_node: self.agent.registry_node.clone(),
 			id: config.model.id,
@@ -937,7 +990,7 @@ impl BindingSnapshot {
 				}
 			}
 		}
-		for operation in REQUIRED_TOOLS {
+		for operation in policy.required_tools() {
 			let identity = QualifiedRef::builtin(&self.agent.registry_node, operation);
 			if !self.bindings.iter().any(|binding| {
 				binding.identity == identity
