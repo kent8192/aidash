@@ -350,6 +350,61 @@ class FixtureTest(unittest.TestCase):
         self.assertEqual(payload["answers"]["q2"], {"type": "noul", "noul": 0.0})
 
 
+class OfflineCalibrationTest(unittest.TestCase):
+    """Drive each short task's scripted behavior to its final answer without a Node.
+
+    Requests follow the Legacy projection shape (tests/fixtures/
+    legacy_model_request_default_tools.json): a JSON context with the Task and
+    its history. Tool calls are answered by the fixture tools, human requests by
+    the corpus answers, and approvals are denied for escalation tasks. The
+    graded result must match the task's declared calibration.
+    """
+
+    OFFLINE = ("code-change-hidden-regression", "code-change-verified-fix", "structured-data-overdue-totals",
+               "deferred-tool-selection", "approval-escalation")
+
+    def drive(self, value, item):
+        fixture = fixture_module.Fixture({"fixture/m": 128000})
+        task_uuid = "00000000-0000-0000-0000-0000000000aa"
+        fixture.register(task_uuid, item, "offline")
+        tools = ["human_request", "workspace_read"] + [tool["alias"] for tool in evaluation.task_tools(value, item)]
+        history, calls, answers = [], [], []
+        human = iter(item.get("human_answers", []))
+        for _ in range(16):
+            context = {"current": {"task": {"id": task_uuid, "description": evaluation.task_description(value, item)}},
+                       "history": history}
+            body = {"model": "fixture/m", "messages": [{"role": "system", "content": "fixture"},
+                                                       {"role": "user", "content": json.dumps(context)}],
+                    "tools": [{"type": "function", "function": {"name": name, "parameters": {}}} for name in tools]}
+            status, raw = fixture.infer(body)
+            self.assertEqual(status, 200)
+            message = json.loads(raw)["choices"][0]["message"]
+            if not message.get("tool_calls"):
+                return {"phase": "COMPLETED", "final_answer": message["content"], "tool_calls": calls,
+                        "human_answers": answers}
+            for call in message["tool_calls"]:
+                name, arguments = call["function"]["name"], json.loads(call["function"]["arguments"])
+                if name == "human_request":
+                    approval = arguments["kind"] == "APPROVAL_REQUIRED"
+                    result = {"approved": False} if approval else {"answer": runner.expand(next(human))}
+                    answers.append({"kind": arguments["kind"], "approved": False if approval else None})
+                else:
+                    result = fixture.tool(item, name, arguments)[1]
+                calls.append({"name": name, "arguments": arguments, "error": None, "dispatch_rejected": False})
+                history.append({"kind": "tool", "call": {"name": name, "arguments": arguments}, "result": result})
+        self.fail(f"{item['id']} did not finish")
+
+    def test_short_tasks_reproduce_their_declared_calibration(self):
+        value = corpus()
+        for identifier in self.OFFLINE:
+            with self.subTest(task=identifier):
+                item = task(value, identifier)
+                observed = observation(**self.drive(value, item))
+                planned = {"task": item, "comparison": {"id": "projection"}, "arm": "baseline", "label": "legacy"}
+                result = evaluation.run_result(value, planned, 1, observed, "deterministic", True)
+                self.assertEqual(evaluation.calibrate(value, [result]), [])
+
+
 class FakeNode:
     """In-memory model of the endpoints the runner uses."""
 

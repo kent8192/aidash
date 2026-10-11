@@ -32,15 +32,19 @@ It needs Docker and Cargo and nothing else: no credentials, no network beyond
    and the dirty state;
 2. starts disposable PostgreSQL (`aidash-postgres` image) and NATS containers
    named `aidash-fte-<hex>-*`, removed on exit even after a failure;
-3. starts one Node (`manage server`, workers included) with a random operator
-   token and a random Cache Salt Key, so Ordered Runs are possible;
+3. runs `manage migrate` and `manage memory-recovery init-if-missing` on a
+   private recovery directory, then starts one Node in the `serve` role (HTTP
+   plus four worker slots that consume activation) with
+   `AIDASH_ACTIVATION_BOOTSTRAP=true`, a random operator token and a random
+   Cache Salt Key, so Ordered Runs are possible;
 4. serves the scripted provider (`scripts/fixed_task_fixture.py`): the model at
    `/v1/chat/completions`, the Jev compaction classifier at `/jev` and the
    fixture tools at `/tools/{task}/{alias}`;
 5. creates a Tenant, a subject token and one Agent definition per task arm,
-   runs every task arm `--repeats` times (default 2) as Tenant-scoped Runs,
-   reads each Run's Usage Records from the disposable database, and executes the
-   memory scenarios;
+   runs every task arm `--repeats` times (default 1) as Tenant-scoped Runs,
+   up to `--parallel` (default 4) at a time, reads each Run's Usage Records from
+   the disposable database with the read-only `manage diagnostics evaluation`
+   query, and executes the memory scenarios;
 6. writes `.ignore/evaluation/deterministic-<hex>.json` (mode 0600, created
    exclusively) and prints a summary.
 
@@ -50,8 +54,16 @@ deterministic memory scenario fails. Server logs stay in
 `.ignore/evaluation/logs-<hex>/`.
 
 Useful options: `--task ID` and `--comparison ID` (repeatable) narrow the plan,
-`--binary PATH` reuses a built `manage`, and `--skip-rust-evidence` skips the
-`deterministic-test` memory scenario's `cargo test`.
+`--binary PATH` reuses a built `manage`, `--run-timeout SECONDS` (default 180)
+bounds each Run, `--skip-memory` reports every memory scenario as `not-run`,
+and `--skip-rust-evidence` skips the `deterministic-test` memory scenario's
+`cargo test`.
+
+Wall time depends heavily on host load. Long-context tasks take about twenty
+steps each (a human answer, eight reference pages and their approvals). On an
+idle workstation the whole corpus takes minutes; on a host shared with many
+concurrent builds a single step took up to 100 seconds, so raise
+`--run-timeout` there.
 
 `python3 scripts/evaluate-fixed-tasks.py validate FILE` revalidates a manifest.
 
@@ -61,9 +73,13 @@ The deterministic tier's "model" is a probe. For each request it finds the
 registered Task UUID, decodes every string the harness delivered and plays the
 task's `fixture_agent` behavior using only that content. When compaction drops
 a correction, the probe cannot see it and answers with the stale value, which
-the oracle then catches. Its token counts (4 bytes per token), synthetic
+the oracle then catches. Its token counts (one token per byte), synthetic
 prices and simulated prefix cache are deterministic; they test accounting,
-request shape and Usage Records, not provider prices. The fixture Jev
+request shape and Usage Records, not provider prices. Reporting at least one
+token per byte keeps a calibrated Request Estimate (ADR 0017, capped at the
+byte estimate) equal to the conservative one, so compaction decisions do not
+drift as Usage Records accumulate. Memory embeddings are 8-dimension hash
+vectors with no semantic similarity. The fixture Jev
 classifier marks every prunable tool result as droppable. The provider rejects
 a request larger than the model's declared window with an OpenRouter-style
 context-length error.
@@ -151,17 +167,18 @@ longer valid.
 
 ### Tasks
 
-| Task                                    | Oracle                                                                 | Deterministic calibration                                |
-| --------------------------------------- | ---------------------------------------------------------------------- | -------------------------------------------------------- |
-| `code-change-hidden-regression`         | Visible tests plus held-out `oracles/pricing_hidden.py`                | `false_completion`: claims success, fails held-out check |
-| `code-change-verified-fix`              | Same                                                                   | `success`                                                |
-| `structured-data-overdue-totals`        | Totals recomputed from `invoices.csv` by the oracle                    | `success`                                                |
-| `long-conversation-corrections`         | Budget and exclusions after corrections                                | `success` with `pruning`                                 |
-| `correction-lost-in-pruned-tool-result` | Same                                                                   | `false_completion`, retention lost, `pruning`            |
-| `terminal-context-overflow`             | Same                                                                   | `overflow_failure`, `terminal_overflow`                  |
-| `deferred-tool-selection`               | First domain tool call from the Run's history, plus the answer         | `success`, selection correct in both arms                |
-| `approval-escalation`                   | Approval requested, forbidden tool never executed, escalation reported | `policy_compliant_escalation`                            |
-| `step-limit-unresolved`                 | Answer pattern                                                         | `unresolved` at the step limit                           |
+| Task                                    | Oracle                                                                           | Deterministic calibration                                |
+| --------------------------------------- | -------------------------------------------------------------------------------- | -------------------------------------------------------- |
+| `code-change-hidden-regression`         | Visible tests plus held-out `oracles/pricing_hidden.py`                          | `false_completion`: claims success, fails held-out check |
+| `code-change-verified-fix`              | Same                                                                             | `success`                                                |
+| `structured-data-overdue-totals`        | Totals recomputed from `invoices.csv` by the oracle                              | `success`                                                |
+| `long-conversation-corrections`         | Budget and exclusions after corrections                                          | `success` with `pruning`                                 |
+| `correction-lost-in-pruned-tool-result` | Same                                                                             | `false_completion`, retention lost, `pruning`            |
+| `terminal-context-overflow`             | Same                                                                             | `overflow_failure`, `terminal_overflow`                  |
+| `deferred-tool-selection`               | First domain tool call from the Run's history, plus the answer                   | `success`, selection correct in both arms                |
+| `deferred-skill-selection`              | The answer carries a fact found only in the Skill body, and no forbidden content | `success` in both arms                                   |
+| `approval-escalation`                   | Approval requested, forbidden tool never executed, escalation reported           | `policy_compliant_escalation`                            |
+| `step-limit-unresolved`                 | Answer pattern                                                                   | `unresolved` at the step limit                           |
 
 The oracle never reads the Agent's claim. The claim is recorded separately as
 `claimed_success` so that false completions are visible.
@@ -210,7 +227,7 @@ the model registrations (config digests) and route, every arm's exact Agent,
 model and tool registrations with the Agent fields that differ, the compaction
 and Jev classifier modes, the Provider Credential and disclosure approval digest
 (live), the repeat count, the time, token and spend limits, and the
-reproducibility limitations. A live experiment always sets
+reproducibility limitations. The live tier defaults to three repeats. A live experiment always sets
 `model.mutable_alias: true`: an upstream alias can change without notice, and
 only the provider-reported identity per attempt says what served a request.
 
