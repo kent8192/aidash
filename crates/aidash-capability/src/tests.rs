@@ -19,6 +19,7 @@ fn claims() -> Claims {
 		ops: vec![Operation::Chat],
 		model: "author/model".into(),
 		max_output_tokens: 100,
+		cache_breakpoints: false,
 	}
 }
 #[tokio::test]
@@ -94,6 +95,55 @@ async fn verifies_and_rejects_each_claim_failure() {
 			expected
 		);
 	}
+}
+
+#[tokio::test]
+async fn cache_breakpoint_authority_round_trips_and_is_omitted_when_unset() {
+	let signer = InMemorySigner::new("kms/versions/1".into(), [7; 32]);
+	let mut keys = PublicKeys::default();
+	keys.insert(signer.kid().into(), signer.public_key());
+	let mut granted = claims();
+	granted.cache_breakpoints = true;
+	for (value, wire) in [(claims(), None), (granted, Some(true))] {
+		assert_eq!(
+			serde_json::to_value(&value)
+				.unwrap()
+				.get("cache_breakpoints"),
+			wire.map(serde_json::Value::Bool).as_ref(),
+			"tokens without the authority keep today's wire shape"
+		);
+		let token = mint(&value, &signer).await.unwrap();
+		let verified = keys
+			.verify(token.expose_secret(), "worker", "environment", 100)
+			.unwrap();
+		assert_eq!(verified.cache_breakpoints, wire.is_some());
+	}
+}
+
+#[tokio::test]
+async fn token_signed_before_cache_breakpoints_existed_still_verifies() {
+	let signer = InMemorySigner::new("kms/versions/1".into(), [7; 32]);
+	let mut keys = PublicKeys::default();
+	keys.insert(signer.kid().into(), signer.public_key());
+	// The payload is exactly what an older issuer signed: no `cache_breakpoints` key.
+	let mut payload = serde_json::to_value(claims()).unwrap();
+	assert!(
+		payload
+			.as_object_mut()
+			.unwrap()
+			.remove("cache_breakpoints")
+			.is_none()
+	);
+	let header = Header {
+		alg: "EdDSA".into(),
+		typ: TOKEN_TYPE.into(),
+		kid: signer.kid().into(),
+	};
+	let input = format!("{}.{}", encode(&header).unwrap(), encode(&payload).unwrap());
+	let signature = signer.sign(input.as_bytes()).await.unwrap();
+	let token = format!("{input}.{}", URL_SAFE_NO_PAD.encode(signature));
+	let verified = keys.verify(&token, "worker", "environment", 100).unwrap();
+	assert!(!verified.cache_breakpoints);
 }
 
 #[tokio::test]
