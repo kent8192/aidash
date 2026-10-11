@@ -8,8 +8,9 @@ use aidash_domain::{
 	projection::{ProjectionVersion, PromptCache},
 	provider::usage::{RequestEstimate, UsageDispatch, UsageOutcome},
 	registry::bindings::{AgentBindings, BindingSnapshot},
+	research::citations,
 	semantic::{Failure, InputRead},
-	tool::{ResultFitting, ToolIdentity, ToolUseMode},
+	tool::{ResultFitting, ToolIdentity, ToolUseMode, Yield},
 	*,
 };
 use serde_json::{Value, json};
@@ -1117,6 +1118,41 @@ impl<'a> Executor<'a> {
 
 							store.save_run(run, token, "run.waiting").await?;
 							return Ok(());
+						}
+						// Declared behavior, not a tool name, selects verification: a Run
+						// that binds any operation yielding citable evidence has its
+						// final answer's Source citations checked against its own store.
+						if tools
+							.values()
+							.any(|tool| tool.contract().behavior.yields(Yield::Citations))
+						{
+							let found = citations::citations(&result.text);
+							if !found.is_empty() {
+								let unknown = store.unknown_evidence(run, &found.references).await?;
+								let corrected = run.context.history.iter().any(|event| {
+									matches!(event, ContextEvent::CitationCorrectionRequired { .. })
+								});
+								match citations::verdict(&found, &unknown, corrected) {
+									citations::Verdict::Accept => {}
+									citations::Verdict::Correct(invalid) => {
+										let mut context = run.context.clone();
+										context.history.push(ContextEvent::CitationCorrectionRequired {
+											invalid,
+											instruction: citations::CORRECTION_INSTRUCTION.into(),
+										});
+										run.context = context;
+										run.step += 1;
+										run.state = RunState::Thinking(ThinkingState::default());
+										store
+											.save_run(run, token, "run.citation_correction_required")
+											.await?;
+										return Ok(());
+									}
+									citations::Verdict::Withhold => {
+										result.text = citations::WITHHELD_ANSWER.into();
+									}
+								}
+							}
 						}
 						let artifact = ArtifactInput {
 							kind: "text".into(),

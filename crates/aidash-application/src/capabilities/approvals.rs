@@ -23,12 +23,39 @@ fn resource(scope: &dyn ApprovalScope, origin: &str, run: Uuid) -> Resource {
 		json!({"origin":origin,"run_id":run,"action":"network.get"}),
 	)
 }
-fn ordinary(scope: &dyn ApprovalScope, target: &Resource) -> Result<bool> {
+/// Approval records of Web disclosures share the capability approval flow.
+pub const DISCLOSURE: &str = "disclosure";
+/// The policy action a Web disclosure approval authorizes.
+pub const DISCLOSE: &str = "research.disclose";
+/// Distinct approvals one exact disclosure may consume within a Run.
+const DISCLOSURE_GENERATIONS: u32 = 32;
+
+fn disclosure_resource(scope: &dyn ApprovalScope, destination: &str, run: Uuid) -> Resource {
+	scope.resource(
+		"research",
+		destination,
+		json!({"destination":destination,"run_id":run,"action":DISCLOSE}),
+	)
+}
+/// The protected target of an approval record and the action it authorizes.
+fn target_of(
+	scope: &dyn ApprovalScope,
+	record: &Record,
+	target: &str,
+	run: Uuid,
+) -> (Resource, &'static str) {
+	if record.kind == DISCLOSURE {
+		(disclosure_resource(scope, target, run), DISCLOSE)
+	} else {
+		(resource(scope, target, run), "network.get")
+	}
+}
+fn ordinary(scope: &dyn ApprovalScope, target: &Resource, action: &str) -> Result<bool> {
 	let mut all = true;
 	for subject in scope.subjects() {
 		let decision = scope
 			.bundle()
-			.evaluate(&scope.evaluation(subject, target, "network.get"));
+			.evaluate(&scope.evaluation(subject, target, action));
 		if !decision.allowed && decision.reason != "no_matching_allow" {
 			return Err(Error::Forbidden);
 		}
@@ -75,7 +102,7 @@ pub async fn visible(scope: &mut dyn ApprovalScope, record: &Record) -> Result<b
 			scope,
 			scope.principal(),
 			&record.owner,
-			&resource(scope, origin, run),
+			&target_of(scope, record, origin, run).0,
 		) {
 			return Ok(false);
 		}
@@ -104,7 +131,7 @@ pub async fn prepare(
 	}
 	let target = resource(scope, &origin, run.id);
 	scope.require(&target, "capability.request").await?;
-	let direct = ordinary(scope, &target)?;
+	let direct = ordinary(scope, &target, "network.get")?;
 	let designated = approver(scope, &target);
 	let grants = scope.grants(run.id).await?;
 	let grant = grants.into_iter().find(|g| {
@@ -169,7 +196,11 @@ pub async fn decide(
 	input: ApprovalDecision,
 ) -> Result<Value> {
 	let limits = scope.limits()?;
-	let mut record = scope.load(id, "outbound").await?;
+	let mut record = match scope.load(id, "outbound").await {
+		Err(Error::NotFound(_)) => scope.load(id, DISCLOSURE).await?,
+		other => other?,
+	};
+	let disclosure = record.kind == DISCLOSURE;
 	let digest = aidash_domain::registry::rules::digest(&json!(["approval", id, input]));
 	if let Some(result) = scope.cached(input.idempotency_key, &digest).await? {
 		return Ok(result);
@@ -177,7 +208,7 @@ pub async fn decide(
 	let run_id: Uuid = serde_json::from_value(record.data["run_id"].clone())?;
 	let run = scope.run_context(run_id).await?;
 	let origin = record.data["targets"][0].as_str().ok_or(Error::Forbidden)?;
-	let target = resource(scope, origin, run_id);
+	let (target, action) = target_of(scope, &record, origin, run_id);
 	if record.data["approver"] != scope.principal()
 		|| !eligible(scope, scope.principal(), &record.owner, &target)
 	{
@@ -193,13 +224,15 @@ pub async fn decide(
 		return Err(Error::Conflict("RUN_NOT_ACTIVE".into()));
 	}
 	let subjects = scope.replace_subjects(serde_json::from_value(record.data["subjects"].clone())?);
-	let allowed = ordinary(scope, &target);
+	let allowed = ordinary(scope, &target, action);
 	scope.replace_subjects(subjects);
 	allowed?;
-	permitted_origin(
-		record.data["url"].as_str().ok_or(Error::Forbidden)?,
-		&limits.origins,
-	)?;
+	if !disclosure {
+		permitted_origin(
+			record.data["url"].as_str().ok_or(Error::Forbidden)?,
+			&limits.origins,
+		)?;
+	}
 	match input.choice {
 		ApprovalChoice::Deny => record.state = "denied".into(),
 		ApprovalChoice::AllowOnce => {
@@ -222,7 +255,7 @@ pub async fn decide(
 			{
 				return Err(Error::Invalid("INVALID_GRANT_SCOPE".into()));
 			}
-			let grant=scope.insert(Creation {id:Uuid::new_v4(),area:record.area_id,kind:"grant",state:"active",data:json!({"run_id":run_id,"agent_id":run.agent_id,"agent_version":run.agent_version,"subjects":record.data["subjects"],"targets":targets,"actions":["network.get"],"approver":scope.principal(),"requester":record.owner,"approval_id":id}),expires:Some(expires)}).await?;
+			let grant=scope.insert(Creation {id:Uuid::new_v4(),area:record.area_id,kind:"grant",state:"active",data:json!({"run_id":run_id,"agent_id":run.agent_id,"agent_version":run.agent_version,"subjects":record.data["subjects"],"targets":targets,"actions":[action],"approver":scope.principal(),"requester":record.owner,"approval_id":id}),expires:Some(expires)}).await?;
 			scope.transfer_owner(grant.id, &record.owner).await?;
 			record.data["grant_id"] = json!(grant.id);
 			record.data["approval_mode"] = json!("allow_run");
@@ -289,7 +322,7 @@ pub async fn authorize(scope: &mut dyn ApprovalScope, record: &Record) -> Result
 	)?;
 	let target = resource(scope, &origin, id);
 	scope.require(&target, "capability.request").await?;
-	let direct = ordinary(scope, &target)?;
+	let direct = ordinary(scope, &target, "network.get")?;
 	if !direct {
 		if !eligible(
 			scope,
@@ -318,4 +351,127 @@ pub async fn authorize(scope: &mut dyn ApprovalScope, record: &Record) -> Result
 		}
 	}
 	Ok(run)
+}
+
+/// One exact Web disclosure awaiting or holding approval.
+#[derive(Debug, Clone)]
+pub struct DisclosureRequest {
+	pub digest: String,
+	pub operation: aidash_domain::research::Operation,
+	pub provider: String,
+	pub destination: String,
+	pub content: String,
+}
+
+fn disclosure_key(digest: &str, generation: u32) -> Uuid {
+	let bytes = aidash_domain::registry::rules::digest(&json!([DISCLOSURE, digest, generation]));
+	let hex = bytes.trim_start_matches("sha256:");
+	let mut id = [0u8; 16];
+	for (index, byte) in id.iter_mut().enumerate() {
+		*byte = u8::from_str_radix(&hex[index * 2..index * 2 + 2], 16).unwrap_or_default();
+	}
+	uuid::Builder::from_random_bytes(id).into_uuid()
+}
+
+/// Admit one exact Web disclosure of a Run. Policy may permit it directly or
+/// through a Run grant; otherwise a designated approver decides through the
+/// ordinary approval decision, and the Run waits on the returned approval.
+/// An approval is consumed by the one disclosure it allows; repeating the same
+/// disclosure later needs a new approval.
+pub async fn disclose(
+	scope: &mut dyn ApprovalScope,
+	run: &Run,
+	request: &DisclosureRequest,
+) -> Result<crate::ports::research::DisclosureState> {
+	use crate::ports::research::DisclosureState;
+	let limits = scope.limits()?;
+	if run.phase.is_terminal() || run.control == RunControl::Cancelled {
+		return Err(Error::Conflict("RUN_NOT_ACTIVE".into()));
+	}
+	let target = disclosure_resource(scope, &request.destination, run.id);
+	match scope.require(&target, "capability.request").await {
+		Err(Error::Forbidden) => return Ok(DisclosureState::Denied),
+		other => other?,
+	}
+	for generation in 0..DISCLOSURE_GENERATIONS {
+		let key = disclosure_key(&request.digest, generation);
+		if let Some(previous) = scope.cached(key, &request.digest).await? {
+			let id = serde_json::from_value(previous["operation_id"].clone())?;
+			let mut record = scope.load(id, DISCLOSURE).await?;
+			let expired = record.expires_at.is_some_and(|t| t <= Utc::now());
+			let state = record.state.clone();
+			match state.as_str() {
+				"consumed" => continue,
+				"approved" => {
+					record.state = "consumed".into();
+					record.data["consumed_at"] = json!(Utc::now());
+					scope.update(&mut record).await?;
+					return Ok(DisclosureState::Permitted);
+				}
+				"pending" if !expired => {
+					return Ok(DisclosureState::Pending {
+						approval_id: record.id,
+						expires_at: record.expires_at,
+					});
+				}
+				_ => return Ok(DisclosureState::Denied),
+			}
+		}
+		let direct = match ordinary(scope, &target, DISCLOSE) {
+			Err(Error::Forbidden) => return Ok(DisclosureState::Denied),
+			other => other?,
+		};
+		let grant = scope.grants(run.id).await?.into_iter().find(|g| {
+			g.data["targets"]
+				.as_array()
+				.is_some_and(|a| a.contains(&json!(request.destination)))
+				&& g.data["actions"]
+					.as_array()
+					.is_some_and(|a| a.contains(&json!(DISCLOSE)))
+				&& g.data["subjects"] == json!(scope.subjects())
+				&& eligible(
+					scope,
+					g.data["approver"].as_str().unwrap_or_default(),
+					&g.owner,
+					&target,
+				)
+		});
+		let designated = grant
+			.as_ref()
+			.and_then(|g| g.data["approver"].as_str().map(str::to_owned))
+			.or_else(|| approver(scope, &target));
+		let state = approvals::requested_state(direct, grant.is_some(), designated.is_some());
+		let id = Uuid::new_v4();
+		let data = json!({"run_id":run.id,"agent_id":run.agent_id,"agent_version":run.agent_version,"requester":scope.principal(),"credential_id":scope.credential(),"subjects":scope.subjects(),
+			"operation":request.operation,"provider":request.provider,"destination":request.destination,"content":request.content,"targets":[request.destination],"action":DISCLOSE,
+			"digest":request.digest,"policy_revision":scope.policy_revision(),"approver":designated,"grant_id":grant.map(|g|g.id),"ordinary":direct});
+		let record = scope
+			.insert(Creation {
+				id,
+				area: None,
+				kind: DISCLOSURE,
+				// A direct or granted disclosure is consumed by this call.
+				state: if state == "approved" {
+					"consumed"
+				} else {
+					state
+				},
+				data,
+				expires: Some(Utc::now() + Duration::seconds(limits.approval_seconds as i64)),
+			})
+			.await?;
+		scope
+			.cache(key, &request.digest, &json!({"operation_id":id}))
+			.await?;
+		scope.event(run.workspace_id,"capability.approval_requested",json!({"id":id,"run_id":run.id,"status":state,"targets":record.data["targets"],"approver":record.data["approver"],"action":DISCLOSE})).await?;
+		return Ok(match state {
+			"approved" => DisclosureState::Permitted,
+			"pending" => DisclosureState::Pending {
+				approval_id: id,
+				expires_at: record.expires_at,
+			},
+			_ => DisclosureState::Denied,
+		});
+	}
+	Ok(DisclosureState::Denied)
 }

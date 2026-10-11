@@ -11,6 +11,7 @@ pub mod ports;
 pub mod provider_access;
 pub mod provider_credentials;
 pub mod recovery;
+pub mod research;
 
 pub type Result<T> = std::result::Result<T, Error>;
 

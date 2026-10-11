@@ -57,6 +57,15 @@ pub trait ExecutionStore: Send + Sync {
 	async fn observe_sources(&self, run: &mut Run, token: Uuid) -> Result<()> {
 		self.save_run(run, token, "run.sources_observed").await
 	}
+	/// The cited Evidence fragments this Run's evidence store does not hold.
+	/// A store without research evidence fails closed: nothing is known.
+	async fn unknown_evidence(
+		&self,
+		_run: &Run,
+		references: &[aidash_domain::research::citations::EvidenceRef],
+	) -> Result<Vec<aidash_domain::research::citations::EvidenceRef>> {
+		Ok(references.to_vec())
+	}
 	async fn emit(&self, workspace: Option<Uuid>, kind: &str, data: Value) -> Result<Event>;
 	async fn run_inputs(&self, run: Uuid) -> Result<Vec<aidash_domain::run_input::RunInput>>;
 	async fn begin_final_completion(&self, run: &Run, token: Uuid) -> Result<bool>;

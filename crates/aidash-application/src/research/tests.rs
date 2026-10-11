@@ -1,0 +1,889 @@
+//! Acceptance cases of the unmerged Web research PR #99, ported to the
+//! provider-package contract. Two different search providers run through the
+//! same host implementation without any change to it.
+use super::*;
+use crate::ports::research::{EvidenceStore, Reservation};
+use aidash_domain::research::{
+	account::AccountProfile,
+	citations::EvidenceRef,
+	document::{ExtractedPage, Line},
+	evidence::{EvidenceFragment, RunUsage, SourceRecord},
+	search::{ProviderCandidate, ProviderResults, SourceCandidate},
+};
+use async_trait::async_trait;
+use chrono::{DateTime, Duration};
+use std::{
+	collections::BTreeMap,
+	sync::{
+		Mutex,
+		atomic::{AtomicUsize, Ordering},
+	},
+};
+
+#[derive(Default)]
+struct Memory {
+	attempts: Mutex<BTreeMap<(Uuid, String), (Reservation, AttemptState)>>,
+	sources: Mutex<Vec<SourceRecord>>,
+	snapshots: Mutex<Vec<DocumentSnapshot>>,
+	fragments: Mutex<Vec<EvidenceFragment>>,
+	spend: Mutex<u64>,
+}
+
+#[async_trait]
+impl EvidenceStore for Memory {
+	async fn attempt(&self, run: Uuid, key: &str) -> Result<Option<AttemptState>> {
+		Ok(self
+			.attempts
+			.lock()
+			.unwrap()
+			.get(&(run, key.into()))
+			.map(|(_, state)| state.clone()))
+	}
+	async fn usage(&self, run: Uuid) -> Result<RunUsage> {
+		let attempts = self.attempts.lock().unwrap();
+		let count = |operation| {
+			attempts
+				.iter()
+				.filter(|((owner, _), (reservation, _))| {
+					*owner == run && reservation.operation == operation
+				})
+				.count() as u32
+		};
+		let snapshots = self.snapshots.lock().unwrap();
+		let owned = snapshots.iter().filter(|snapshot| snapshot.run_id == run);
+		Ok(RunUsage {
+			search_attempts: count(Operation::Search),
+			fetch_attempts: count(Operation::Fetch),
+			sources: self
+				.sources
+				.lock()
+				.unwrap()
+				.iter()
+				.filter(|source| source.run_id == run)
+				.count() as u32,
+			snapshots: owned.clone().count() as u32,
+			snapshot_bytes: owned
+				.flat_map(|snapshot| &snapshot.lines)
+				.map(|line| line.text.len() as u64)
+				.sum(),
+		})
+	}
+	async fn account_spend(&self, _: &str, _: DateTime<Utc>) -> Result<u64> {
+		Ok(*self.spend.lock().unwrap())
+	}
+	async fn reserve(&self, run: Uuid, reservation: &Reservation) -> Result<()> {
+		let mut attempts = self.attempts.lock().unwrap();
+		if attempts.contains_key(&(run, reservation.key.clone())) {
+			return Err(Error::Conflict("duplicate".into()));
+		}
+		if let Some(attribution) = &reservation.attribution {
+			*self.spend.lock().unwrap() += attribution.price_micro_usd;
+		}
+		attempts.insert(
+			(run, reservation.key.clone()),
+			(reservation.clone(), AttemptState::Dispatched),
+		);
+		Ok(())
+	}
+	async fn settle(
+		&self,
+		run: Uuid,
+		key: &str,
+		outcome: AttemptOutcome,
+		result: &Value,
+	) -> Result<()> {
+		let mut attempts = self.attempts.lock().unwrap();
+		let entry = attempts.get_mut(&(run, key.into())).unwrap();
+		entry.1 = AttemptState::Settled {
+			outcome,
+			result: result.clone(),
+		};
+		Ok(())
+	}
+	async fn record_sources(
+		&self,
+		run: Uuid,
+		_: &str,
+		sources: &[SourceCandidate],
+	) -> Result<Vec<SourceRecord>> {
+		let records = sources
+			.iter()
+			.map(|source| SourceRecord {
+				id: Uuid::new_v4(),
+				run_id: run,
+				url: source.url.clone(),
+				title: source.title.clone(),
+			})
+			.collect::<Vec<_>>();
+		self.sources.lock().unwrap().extend(records.clone());
+		Ok(records)
+	}
+	async fn source(&self, run: Uuid, id: Uuid) -> Result<Option<SourceRecord>> {
+		Ok(self
+			.sources
+			.lock()
+			.unwrap()
+			.iter()
+			.find(|source| source.id == id && source.run_id == run)
+			.cloned())
+	}
+	async fn record_snapshot(
+		&self,
+		run: Uuid,
+		source: Option<Uuid>,
+		requested_url: &str,
+		page: &ExtractedPage,
+	) -> Result<DocumentSnapshot> {
+		let source_id = match source {
+			Some(source) => source,
+			None => {
+				let record = SourceRecord {
+					id: Uuid::new_v4(),
+					run_id: run,
+					url: page.url.clone(),
+					title: page.title.clone().unwrap_or_default(),
+				};
+				self.sources.lock().unwrap().push(record.clone());
+				record.id
+			}
+		};
+		let snapshot = DocumentSnapshot {
+			id: Uuid::new_v4(),
+			run_id: run,
+			source_id,
+			requested_url: requested_url.into(),
+			url: page.url.clone(),
+			title: page.title.clone(),
+			media_type: page.media_type.clone(),
+			fetched_at: page.fetched_at,
+			raw_digest: page.raw_digest.clone(),
+			text_digest: document::text_digest(&page.lines),
+			completeness: page.completeness,
+			lines: page.lines.clone(),
+		};
+		self.snapshots.lock().unwrap().push(snapshot.clone());
+		Ok(snapshot)
+	}
+	async fn snapshot(&self, run: Uuid, id: Uuid) -> Result<Option<DocumentSnapshot>> {
+		Ok(self
+			.snapshots
+			.lock()
+			.unwrap()
+			.iter()
+			.find(|snapshot| snapshot.id == id && snapshot.run_id == run)
+			.cloned())
+	}
+	async fn record_fragment(
+		&self,
+		_: Uuid,
+		document: &DocumentSnapshot,
+		passage: &Passage,
+	) -> Result<EvidenceFragment> {
+		let fragment = EvidenceFragment::new(EvidenceRef(Uuid::new_v4()), document, passage);
+		self.fragments.lock().unwrap().push(fragment.clone());
+		Ok(fragment)
+	}
+	async fn fragments(
+		&self,
+		run: Uuid,
+		references: &[EvidenceRef],
+	) -> Result<Vec<EvidenceFragment>> {
+		Ok(self
+			.fragments
+			.lock()
+			.unwrap()
+			.iter()
+			.filter(|fragment| fragment.run_id == run && references.contains(&fragment.reference))
+			.cloned()
+			.collect())
+	}
+}
+
+/// Approves only digests explicitly approved by a person; anything else waits.
+#[derive(Default)]
+struct Gate {
+	approved: Mutex<Vec<String>>,
+	denied: Mutex<Vec<String>>,
+	requests: Mutex<Vec<WebDisclosure>>,
+	permit_all: bool,
+}
+
+impl Gate {
+	fn permitting() -> Self {
+		Self {
+			permit_all: true,
+			..Self::default()
+		}
+	}
+	fn decide(&self, run: Uuid, allow: bool) {
+		let last = self.requests.lock().unwrap().last().cloned().unwrap();
+		let target = if allow { &self.approved } else { &self.denied };
+		target.lock().unwrap().push(last.digest(run));
+	}
+}
+
+#[async_trait]
+impl DisclosureGate for Gate {
+	async fn admit(&self, run: Uuid, disclosure: &WebDisclosure) -> Result<DisclosureState> {
+		self.requests.lock().unwrap().push(disclosure.clone());
+		let digest = disclosure.digest(run);
+		Ok(if self.permit_all {
+			DisclosureState::Permitted
+		} else if self.denied.lock().unwrap().contains(&digest) {
+			DisclosureState::Denied
+		} else if let Some(index) = self
+			.approved
+			.lock()
+			.unwrap()
+			.iter()
+			.position(|approved| *approved == digest)
+		{
+			// An exact approval is consumed by the one disclosure it allows.
+			self.approved.lock().unwrap().remove(index);
+			DisclosureState::Permitted
+		} else {
+			DisclosureState::Pending {
+				approval_id: Uuid::from_u128(77),
+				expires_at: Some(Utc::now() + Duration::minutes(10)),
+			}
+		})
+	}
+}
+
+/// A search provider whose candidates name it, so a swap is observable.
+struct Search {
+	name: &'static str,
+	destination: &'static str,
+	calls: AtomicUsize,
+	outcome: Option<Failure>,
+	account: Option<AccountProfile>,
+}
+
+impl Search {
+	fn new(name: &'static str, destination: &'static str) -> Self {
+		Self {
+			name,
+			destination,
+			calls: AtomicUsize::new(0),
+			outcome: None,
+			account: None,
+		}
+	}
+}
+
+#[async_trait]
+impl SearchProvider for Search {
+	fn disclosure(&self, query: &SearchQuery) -> std::result::Result<Outbound, Failure> {
+		Ok(Outbound {
+			destination: self.destination.into(),
+			content: query.query.clone(),
+		})
+	}
+	fn account(&self) -> std::result::Result<Option<AccountProfile>, Failure> {
+		Ok(self.account.clone())
+	}
+	async fn search(&self, query: &SearchQuery) -> std::result::Result<ProviderResults, Failure> {
+		self.calls.fetch_add(1, Ordering::SeqCst);
+		if let Some(failure) = self.outcome {
+			return Err(failure);
+		}
+		Ok(ProviderResults {
+			candidates: vec![
+				ProviderCandidate {
+					url: format!("https://{}.example.com/{}", self.name, query.query),
+					title: format!("{} result", self.name),
+					snippet: Some("discovery hint".into()),
+					page_age: None,
+				},
+				ProviderCandidate {
+					url: "http://localhost:8080/admin".into(),
+					title: "Unfiltered".into(),
+					snippet: None,
+					page_age: None,
+				},
+			],
+			more_results_available: false,
+		})
+	}
+}
+
+struct Pages {
+	calls: AtomicUsize,
+	lines: Vec<Line>,
+}
+
+impl Pages {
+	fn new() -> Self {
+		Self {
+			calls: AtomicUsize::new(0),
+			lines: vec![
+				Line {
+					text: "Alpha line".into(),
+					page: None,
+				},
+				Line {
+					text: "Die Straße <script>inert text</script>".into(),
+					page: Some(2),
+				},
+				Line {
+					text: "Omega line".into(),
+					page: Some(2),
+				},
+			],
+		}
+	}
+}
+
+#[async_trait]
+impl PageProvider for Pages {
+	fn admit(&self, url: &Url) -> std::result::Result<(), Failure> {
+		match url.host_str() {
+			Some("localhost" | "127.0.0.1") => Err(Failure::NonPublicDestination),
+			_ => Ok(()),
+		}
+	}
+	async fn fetch(&self, url: &Url) -> std::result::Result<ExtractedPage, Failure> {
+		self.calls.fetch_add(1, Ordering::SeqCst);
+		if url.host_str() == Some("private.example.com") {
+			// Resolves to a private address at dispatch.
+			return Err(Failure::NonPublicDestination);
+		}
+		Ok(ExtractedPage {
+			url: url.to_string(),
+			title: Some("Source".into()),
+			media_type: "text/plain".into(),
+			fetched_at: Utc::now(),
+			raw_digest: "sha256:raw".into(),
+			completeness: Completeness::Complete,
+			lines: self.lines.clone(),
+		})
+	}
+}
+
+fn call<'a>(run: Uuid, key: &'a str, provider: &'a str) -> Call<'a> {
+	Call {
+		run,
+		context_revision: 0,
+		key,
+		provider,
+		disclosure_approval: true,
+	}
+}
+
+#[tokio::test]
+async fn a_second_search_provider_replaces_the_first_through_the_same_host_contract() {
+	let (store, gate) = (Memory::default(), Gate::permitting());
+	let research = Research {
+		store: &store,
+		gate: &gate,
+		limits: Limits::default(),
+	};
+	let run = Uuid::new_v4();
+	for (key, provider, name) in [
+		(
+			"k1",
+			Search::new("brave", "api.search.brave.com"),
+			"research.brave@1",
+		),
+		(
+			"k2",
+			Search::new("fixture", "fixture.invalid"),
+			"research.fixture@1",
+		),
+	] {
+		let result = research
+			.search(&call(run, key, name), &provider, &json!({"query":"rust"}))
+			.await
+			.unwrap();
+		assert_eq!(result["status"], "ok", "{result}");
+		assert_eq!(result["data"]["provider"], name);
+		assert_eq!(result["data"]["returned_count"], 1);
+		assert_eq!(
+			result["data"]["filtered_count"], 1,
+			"the host filters every provider"
+		);
+		let source = &result["data"]["sources"][0];
+		assert_eq!(source["evidence_state"], "unread");
+		let id: Uuid = serde_json::from_value(source["source_id"].clone()).unwrap();
+		assert!(store.source(run, id).await.unwrap().is_some());
+		assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+	}
+	let destinations = gate
+		.requests
+		.lock()
+		.unwrap()
+		.iter()
+		.map(|request| request.outbound.destination.clone())
+		.collect::<Vec<_>>();
+	assert_eq!(destinations, ["api.search.brave.com", "fixture.invalid"]);
+}
+
+#[tokio::test]
+async fn disclosure_waits_then_an_exact_approval_dispatches_once_and_denial_never_dispatches() {
+	let (store, gate) = (Memory::default(), Gate::default());
+	let research = Research {
+		store: &store,
+		gate: &gate,
+		limits: Limits::default(),
+	};
+	let pages = Pages::new();
+	let run = Uuid::new_v4();
+	let input = json!({"url":"https://example.com/page"});
+	let waiting = research
+		.fetch(&call(run, "k1", "research.page@1"), &pages, &input)
+		.await
+		.unwrap();
+	assert_eq!(waiting["status"], "approval_required");
+	assert_eq!(waiting["approval_id"], json!(Uuid::from_u128(77)));
+	assert_eq!(waiting["data"]["content"], "https://example.com/page");
+	assert_eq!(pages.calls.load(Ordering::SeqCst), 0);
+	assert_eq!(store.usage(run).await.unwrap().fetch_attempts, 0);
+
+	gate.decide(run, true);
+	let opened = research
+		.fetch(&call(run, "k2", "research.page@1"), &pages, &input)
+		.await
+		.unwrap();
+	assert_eq!(opened["status"], "ok", "{opened}");
+	assert_eq!(pages.calls.load(Ordering::SeqCst), 1);
+	// The approval was consumed by the call it allowed.
+	let again = research
+		.fetch(&call(run, "k3", "research.page@1"), &pages, &input)
+		.await
+		.unwrap();
+	assert_eq!(again["status"], "approval_required");
+
+	gate.decide(run, false);
+	let denied = research
+		.fetch(&call(run, "k4", "research.page@1"), &pages, &input)
+		.await
+		.unwrap();
+	assert_eq!(denied["error"]["code"], "disclosure_denied");
+	assert_eq!(pages.calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn new_user_input_needs_a_new_approval() {
+	let (store, gate) = (Memory::default(), Gate::default());
+	let research = Research {
+		store: &store,
+		gate: &gate,
+		limits: Limits::default(),
+	};
+	let provider = Search::new("brave", "api.search.brave.com");
+	let run = Uuid::new_v4();
+	let input = json!({"query":"rust"});
+	research
+		.search(&call(run, "k1", "research.brave@1"), &provider, &input)
+		.await
+		.unwrap();
+	gate.decide(run, true);
+	let mut later = call(run, "k2", "research.brave@1");
+	later.context_revision = 1;
+	let result = research.search(&later, &provider, &input).await.unwrap();
+	assert_eq!(result["status"], "approval_required");
+	assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn approval_cannot_override_non_public_destinations() {
+	let (store, gate) = (Memory::default(), Gate::permitting());
+	let research = Research {
+		store: &store,
+		gate: &gate,
+		limits: Limits::default(),
+	};
+	let pages = Pages::new();
+	let run = Uuid::new_v4();
+	let literal = research
+		.fetch(
+			&call(run, "k1", "research.page@1"),
+			&pages,
+			&json!({"url":"http://localhost/"}),
+		)
+		.await
+		.unwrap();
+	assert_eq!(literal["error"]["code"], "non_public_destination");
+	assert!(
+		gate.requests.lock().unwrap().is_empty(),
+		"rejected before disclosure"
+	);
+	assert_eq!(store.usage(run).await.unwrap().fetch_attempts, 0);
+	let resolved = research
+		.fetch(
+			&call(run, "k2", "research.page@1"),
+			&pages,
+			&json!({"url":"https://private.example.com/"}),
+		)
+		.await
+		.unwrap();
+	assert_eq!(resolved["error"]["code"], "non_public_destination");
+	assert!(store.snapshots.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn run_limits_block_before_disclosure_or_dispatch() {
+	let (store, gate) = (Memory::default(), Gate::permitting());
+	let research = Research {
+		store: &store,
+		gate: &gate,
+		limits: Limits {
+			search_attempts: 1,
+			..Limits::default()
+		},
+	};
+	let provider = Search::new("brave", "api.search.brave.com");
+	let run = Uuid::new_v4();
+	research
+		.search(
+			&call(run, "k1", "research.brave@1"),
+			&provider,
+			&json!({"query":"a"}),
+		)
+		.await
+		.unwrap();
+	let blocked = research
+		.search(
+			&call(run, "k2", "research.brave@1"),
+			&provider,
+			&json!({"query":"b"}),
+		)
+		.await
+		.unwrap();
+	assert_eq!(blocked["error"]["code"], "attempt_limit");
+	assert_eq!(gate.requests.lock().unwrap().len(), 1);
+	assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn costs_are_attributed_to_the_search_service_account_before_dispatch() {
+	let (store, gate) = (Memory::default(), Gate::permitting());
+	let research = Research {
+		store: &store,
+		gate: &gate,
+		limits: Limits::default(),
+	};
+	let now = Utc::now();
+	let mut provider = Search::new("brave", "api.search.brave.com");
+	provider.account = Some(AccountProfile {
+		account_id: "operator-account".into(),
+		agreement_reference: "contract".into(),
+		verified_by: "operator".into(),
+		verified_at: now - Duration::days(1),
+		review_after: now + Duration::days(1),
+		storage_permitted: true,
+		query_training_prohibited: true,
+		evaluation_permitted: true,
+		retention_days: 30,
+		deletion_after_termination_days: 30,
+		credential_env: "AIDASH_SECRET_SEARCH".into(),
+		price_effective_at: now - Duration::days(1),
+		price_review_after: now + Duration::days(1),
+		request_price_micro_usd: 5_000,
+		monthly_base_fee_micro_usd: 0,
+		monthly_limit_micro_usd: 5_000,
+	});
+	let run = Uuid::new_v4();
+	let first = research
+		.search(
+			&call(run, "k1", "research.brave@1"),
+			&provider,
+			&json!({"query":"a"}),
+		)
+		.await
+		.unwrap();
+	assert_eq!(first["status"], "ok");
+	let attempts = store.attempts.lock().unwrap().clone();
+	let (reservation, _) = attempts.values().next().unwrap();
+	assert_eq!(
+		reservation.attribution.as_ref().unwrap().account_id,
+		"operator-account"
+	);
+	let exhausted = research
+		.search(
+			&call(run, "k2", "research.brave@1"),
+			&provider,
+			&json!({"query":"b"}),
+		)
+		.await
+		.unwrap();
+	assert_eq!(exhausted["error"]["code"], "budget_exhausted");
+	assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn recorded_attempts_replay_with_the_same_evidence_and_unknown_dispatch_is_never_repeated() {
+	let (store, gate) = (Memory::default(), Gate::permitting());
+	let research = Research {
+		store: &store,
+		gate: &gate,
+		limits: Limits::default(),
+	};
+	let provider = Search::new("brave", "api.search.brave.com");
+	let run = Uuid::new_v4();
+	let input = json!({"query":"rust"});
+	let first = research
+		.search(&call(run, "k1", "research.brave@1"), &provider, &input)
+		.await
+		.unwrap();
+	let replay = research
+		.search(&call(run, "k1", "research.brave@1"), &provider, &input)
+		.await
+		.unwrap();
+	assert_eq!(
+		first, replay,
+		"the recorded result keeps its Source record identity"
+	);
+	assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+
+	// A crash after dispatch leaves an attempt without an outcome.
+	store
+		.reserve(
+			run,
+			&Reservation {
+				key: "k2".into(),
+				operation: Operation::Search,
+				provider: "research.brave@1".into(),
+				destination: "api.search.brave.com".into(),
+				attribution: None,
+			},
+		)
+		.await
+		.unwrap();
+	let unknown = research
+		.search(&call(run, "k2", "research.brave@1"), &provider, &input)
+		.await
+		.unwrap();
+	assert_eq!(unknown["status"], "uncertain");
+	assert_eq!(unknown["error"]["code"], "outcome_unknown");
+	assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+
+	let mut failing = Search::new("brave", "api.search.brave.com");
+	failing.outcome = Some(Failure::Timeout);
+	let timeout = research
+		.search(&call(run, "k3", "research.brave@1"), &failing, &input)
+		.await
+		.unwrap();
+	assert_eq!(timeout["error"]["code"], "timeout");
+	assert!(matches!(
+		store.attempt(run, "k3").await.unwrap(),
+		Some(AttemptState::Settled {
+			outcome: AttemptOutcome::Unknown,
+			..
+		})
+	));
+}
+
+#[tokio::test]
+async fn snapshot_continuation_unicode_find_and_fragments_stay_run_scoped() {
+	let (store, gate) = (Memory::default(), Gate::permitting());
+	let research = Research {
+		store: &store,
+		gate: &gate,
+		limits: Limits::default(),
+	};
+	let pages = Pages::new();
+	let run = Uuid::new_v4();
+	let first = research
+		.fetch(
+			&call(run, "k1", "research.page@1"),
+			&pages,
+			&json!({"url":"https://example.com/source","max_bytes":5}),
+		)
+		.await
+		.unwrap();
+	assert_eq!(first["status"], "partial");
+	assert_eq!(first["data"]["text"], "Alpha");
+	let document = first["data"]["document_id"].clone();
+	let cursor = first["data"]["next_cursor"].clone();
+	assert!(cursor.is_string());
+
+	let next = research
+		.fetch(
+			&call(run, "k2", "research.page@1"),
+			&pages,
+			&json!({"document_id":document,"cursor":cursor,"max_bytes":24}),
+		)
+		.await
+		.unwrap();
+	assert!(
+		next["data"]["text"]
+			.as_str()
+			.unwrap()
+			.starts_with(" line\nDie Straße"),
+		"{next}"
+	);
+	assert_eq!(
+		pages.calls.load(Ordering::SeqCst),
+		1,
+		"continuation never refetches"
+	);
+
+	let found = research
+		.find(
+			&call(run, "k3", "research.page@1"),
+			&json!({"document_id":document,"query":"STRASSE"}),
+		)
+		.await
+		.unwrap();
+	assert_eq!(found["status"], "ok", "{found}");
+	let hit = &found["data"]["matches"][0];
+	assert_eq!(hit["line_start"], 2);
+	assert_eq!(hit["pages"], json!([2]));
+	assert!(hit["text"].as_str().unwrap().contains("Straße"));
+	let reference: EvidenceRef = hit["evidence_ref"].as_str().unwrap().parse().unwrap();
+	assert_eq!(store.fragments(run, &[reference]).await.unwrap().len(), 1);
+
+	// Another Run cannot address this snapshot, its fragments or its cursor.
+	let foreign = Uuid::new_v4();
+	assert!(
+		store
+			.fragments(foreign, &[reference])
+			.await
+			.unwrap()
+			.is_empty()
+	);
+	let forged = research
+		.fetch(
+			&call(foreign, "k4", "research.page@1"),
+			&pages,
+			&json!({"document_id":document,"cursor":cursor}),
+		)
+		.await
+		.unwrap();
+	assert_eq!(forged["error"]["code"], "unknown_document");
+	let wrong_cursor = research
+		.find(
+			&call(run, "k5", "research.page@1"),
+			&json!({"document_id":document,"query":"line","cursor":cursor}),
+		)
+		.await
+		.unwrap();
+	assert_eq!(wrong_cursor["error"]["code"], "invalid_cursor");
+	let unknown_source = research
+		.fetch(
+			&call(run, "k6", "research.page@1"),
+			&pages,
+			&json!({"source_id":Uuid::new_v4()}),
+		)
+		.await
+		.unwrap();
+	assert_eq!(unknown_source["error"]["code"], "unknown_source");
+	assert_eq!(pages.calls.load(Ordering::SeqCst), 1, "no hidden fetch");
+}
+
+#[tokio::test]
+async fn find_pages_matches_with_a_query_bound_cursor() {
+	let (store, gate) = (Memory::default(), Gate::permitting());
+	let research = Research {
+		store: &store,
+		gate: &gate,
+		limits: Limits::default(),
+	};
+	let pages = Pages::new();
+	let run = Uuid::new_v4();
+	let opened = research
+		.fetch(
+			&call(run, "k1", "research.page@1"),
+			&pages,
+			&json!({"url":"https://example.com/source"}),
+		)
+		.await
+		.unwrap();
+	let document = opened["data"]["document_id"].clone();
+	let first = research
+		.find(
+			&call(run, "k2", "research.page@1"),
+			&json!({"document_id":document,"query":"line","max_matches":1}),
+		)
+		.await
+		.unwrap();
+	assert_eq!(first["status"], "partial");
+	let rest = research
+		.find(
+			&call(run, "k3", "research.page@1"),
+			&json!({"document_id":document,"query":"line","max_matches":1,"cursor":first["data"]["next_cursor"]}),
+		)
+		.await
+		.unwrap();
+	assert_eq!(rest["status"], "ok");
+	assert_eq!(rest["data"]["matches"][0]["line_start"], 3);
+	let none = research
+		.find(
+			&call(run, "k4", "research.page@1"),
+			&json!({"document_id":document,"query":"absent"}),
+		)
+		.await
+		.unwrap();
+	assert_eq!(none["status"], "empty");
+}
+
+#[tokio::test]
+async fn delivered_results_fit_the_envelope_without_hidden_loss() {
+	let (store, gate) = (Memory::default(), Gate::permitting());
+	let research = Research {
+		store: &store,
+		gate: &gate,
+		limits: Limits::default(),
+	};
+	let mut pages = Pages::new();
+	// Quotes double in JSON; the delivery shrinks instead of truncating silently.
+	pages.lines = vec![
+		Line {
+			text: "\"".repeat(16 * 1024),
+			page: None,
+		};
+		3
+	];
+	let run = Uuid::new_v4();
+	let result = research
+		.fetch(
+			&call(run, "k1", "research.page@1"),
+			&pages,
+			&json!({"url":"https://example.com/quotes","max_bytes":16384}),
+		)
+		.await
+		.unwrap();
+	assert!(result.to_string().len() <= MAX_RESULT_BYTES);
+	assert_eq!(result["status"], "partial");
+	let delivered = result["data"]["text"].as_str().unwrap().len();
+	assert!(delivered > 0 && delivered < 16 * 1024);
+	let next = research
+		.fetch(
+			&call(run, "k2", "research.page@1"),
+			&pages,
+			&json!({"document_id":result["data"]["document_id"],"cursor":result["data"]["next_cursor"],"max_bytes":16384}),
+		)
+		.await
+		.unwrap();
+	assert_eq!(
+		next["data"]["line_start"], 1,
+		"the next delivery resumes exactly where the previous stopped"
+	);
+}
+
+#[tokio::test]
+async fn invalid_input_never_reaches_disclosure() {
+	let (store, gate) = (Memory::default(), Gate::default());
+	let research = Research {
+		store: &store,
+		gate: &gate,
+		limits: Limits::default(),
+	};
+	let pages = Pages::new();
+	let run = Uuid::new_v4();
+	for input in [
+		json!({}),
+		json!({"url":"https://example.com/","source_id":Uuid::new_v4()}),
+		json!({"url":"ftp://example.com/"}),
+		json!({"url":"https://example.com/","cursor":"c1.x"}),
+		json!({"url":"https://example.com/","max_bytes":0}),
+	] {
+		let result = research
+			.fetch(&call(run, "k", "research.page@1"), &pages, &input)
+			.await
+			.unwrap();
+		assert_eq!(result["error"]["code"], "invalid_input", "{input}");
+	}
+	assert!(gate.requests.lock().unwrap().is_empty());
+}

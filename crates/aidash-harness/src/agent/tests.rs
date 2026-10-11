@@ -76,6 +76,10 @@ struct State {
 	prompt_cache: aidash_domain::projection::PromptCache,
 	/// Serve an `anthropic/` model that declares explicit prompt caching.
 	explicit_cache_model: bool,
+	/// Evidence fragments the Run's evidence store holds.
+	known_evidence: Vec<aidash_domain::research::citations::EvidenceRef>,
+	/// Completed artifacts, in completion order.
+	artifacts: Mutex<Vec<Value>>,
 }
 impl Backend {
 	fn record(&self, name: &'static str) {
@@ -114,6 +118,18 @@ impl ExecutionStore for Backend {
 	async fn emit(&self, workspace: Option<Uuid>, kind: &str, data: Value) -> Result<Event> {
 		let _ = (workspace, kind, data);
 		unexpected("ExecutionStore.emit")
+	}
+	async fn unknown_evidence(
+		&self,
+		_: &Run,
+		references: &[aidash_domain::research::citations::EvidenceRef],
+	) -> Result<Vec<aidash_domain::research::citations::EvidenceRef>> {
+		self.record("store.evidence");
+		Ok(references
+			.iter()
+			.filter(|reference| !self.0.known_evidence.contains(reference))
+			.copied()
+			.collect())
 	}
 	async fn run_inputs(&self, run: Uuid) -> Result<Vec<aidash_domain::run_input::RunInput>> {
 		let _ = run;
@@ -339,8 +355,13 @@ impl ExecutionHome for Backend {
 		})
 	}
 	async fn complete(&self, key: &str, artifact: &ArtifactInput) -> Result<Task> {
-		let _ = (key, artifact);
+		let _ = key;
 		self.record("home.complete");
+		self.0
+			.artifacts
+			.lock()
+			.unwrap()
+			.push(artifact.content.clone());
 		self.0.task.lock().unwrap().status = TaskStatus::Completed;
 		Ok(self.task_value())
 	}
@@ -772,6 +793,8 @@ fn fixture() -> Fixture {
 		human_media_pending: false,
 		prompt_cache: Default::default(),
 		explicit_cache_model: false,
+		known_evidence: vec![],
+		artifacts: Mutex::new(vec![]),
 	}));
 	Fixture { backend, run }
 }
@@ -1614,6 +1637,18 @@ impl Scripted {
 	}
 	fn invocations(&self) -> usize {
 		*self.invocations.lock().unwrap()
+	}
+	fn research(operation: aidash_domain::research::Operation) -> Arc<Self> {
+		Arc::new(Self {
+			specification: ToolSpec {
+				name: aidash_domain::tool::providers::research_alias(operation).into(),
+				description: "Research fixture".into(),
+				parameters: json!({"type":"object"}),
+			},
+			contract: aidash_domain::tool::providers::research_contract(operation),
+			outputs: Mutex::new(Default::default()),
+			invocations: Mutex::new(0),
+		})
 	}
 }
 #[async_trait]
@@ -3014,3 +3049,5 @@ async fn catch_up_steps_carry_no_breakpoints() {
 		.estimated_total_tokens()
 	);
 }
+
+mod research;
