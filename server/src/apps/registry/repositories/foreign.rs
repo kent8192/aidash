@@ -2,7 +2,7 @@
 use crate::{Error, Result};
 use aidash_application::ports::federation::PeerTransport;
 use aidash_domain::{
-	federation::Peer,
+	federation::{Peer, protocol::compatible},
 	registry::bindings::{ForeignAgentSnapshot, QualifiedRef},
 };
 use reinhardt::db::{backends::TransactionExecutor, orm::OrmExecutor};
@@ -33,7 +33,9 @@ pub(crate) async fn native(
 
 async fn fetch(peer: Peer, node: &str, reference: &QualifiedRef) -> Result<ForeignAgentSnapshot> {
 	reference.validate()?;
-	if reference.registry_node == node || peer.protocol_version != crate::config::PROTOCOL_VERSION {
+	if reference.registry_node == node
+		|| !compatible(crate::config::PROTOCOL_VERSION, &peer.protocol_version)
+	{
 		return Err(Error::Forbidden);
 	}
 	let transport = aidash_integrations::federation::PeerHttp {
@@ -41,7 +43,6 @@ async fn fetch(peer: Peer, node: &str, reference: &QualifiedRef) -> Result<Forei
 			.redirect(reqwest::redirect::Policy::none())
 			.build()?,
 		node_id: node.into(),
-		protocol_version: crate::config::PROTOCOL_VERSION.into(),
 		credentials: Arc::new(crate::bootstrap::peer_credentials()),
 	};
 	let reply = transport

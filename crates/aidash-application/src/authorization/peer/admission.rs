@@ -8,7 +8,7 @@ use crate::{
 use aidash_domain::{
 	RunControl, RunMetadata, TaskStatus,
 	federation::execution::{
-		Description,
+		Described, Description,
 		admission::{
 			Activation, Admission, InspectInput, Message, MessageReceipt, RemoteExecutionControl,
 			RemoteExecutionControlState, RemoteExecutionPhase,
@@ -136,13 +136,13 @@ pub async fn receiver_lease<R: PeerAdmissionRepository>(
 	};
 	Ok((scope, description))
 }
-pub async fn lease<R: PeerAdmissionRepository>(
+/// Ask Home to describe the grant. No receiver transaction is held during this RPC.
+async fn described<R: PeerAdmissionRepository>(
 	repository: &R,
 	source: &str,
 	grant: Uuid,
-) -> Result<(R::Scope, Description)> {
-	// Home may inspect this receiver; no receiver transaction is held during this RPC.
-	let description: Description = serde_json::from_value(
+) -> Result<Described> {
+	let reply = Described::from_value(
 		repository
 			.request(
 				source,
@@ -151,6 +151,7 @@ pub async fn lease<R: PeerAdmissionRepository>(
 			)
 			.await?,
 	)?;
+	let description = &reply.description;
 	if description.source_node != source
 		|| description.target_node != repository.node_id()
 		|| description.grant_id != grant
@@ -158,7 +159,30 @@ pub async fn lease<R: PeerAdmissionRepository>(
 	{
 		return Err(Error::Forbidden);
 	};
+	Ok(reply)
+}
+pub async fn lease<R: PeerAdmissionRepository>(
+	repository: &R,
+	source: &str,
+	grant: Uuid,
+) -> Result<(R::Scope, Description)> {
+	// Home may inspect this receiver; the digest only matters to Retrieval Keys.
+	let Described { description, .. } = described(repository, source, grant).await?;
 	receiver_lease(repository, source, description).await
+}
+/// The Workspace's current semantic corpus digest, as Home reports it in the
+/// same describe reply that refreshes this Run's authority (#191). `None` when
+/// Home's protocol predates the digest or the grant carries no Home semantic
+/// access; the Retrieval Key then keeps the shape it had without it.
+pub async fn corpus_digest<R: PeerAdmissionRepository>(
+	repository: &R,
+	run: &RunMetadata,
+) -> Result<Option<String>> {
+	let grant = run_grant(repository, run).await?.ok_or(Error::Forbidden)?;
+	described(repository, &run.home_node, grant)
+		.await
+		.map(|reply| reply.corpus_digest)
+		.map_err(|error| Error::RemoteSemantic(semantic_failure(&error)))
 }
 pub async fn admit<R: PeerAdmissionRepository>(
 	repository: &R,

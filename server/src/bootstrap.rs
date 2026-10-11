@@ -495,7 +495,6 @@ pub(crate) fn peer_transport(f: &Federation) -> aidash_integrations::federation:
 	aidash_integrations::federation::PeerHttp {
 		client: f.client.clone(),
 		node_id: f.config.node_id.clone(),
-		protocol_version: crate::config::PROTOCOL_VERSION.into(),
 		credentials: Arc::new(PeerCredentials),
 	}
 }
@@ -690,7 +689,6 @@ pub(crate) fn dependency_transport(
 	aidash_integrations::federation::PeerHttp {
 		client: access.peer_client.clone(),
 		node_id: access.node_id.clone(),
-		protocol_version: crate::config::PROTOCOL_VERSION.into(),
 		credentials: Arc::new(PeerCredentials),
 	}
 }
@@ -1117,7 +1115,6 @@ pub(crate) fn native_registry_transport(
 	aidash_integrations::federation::PeerHttp {
 		client: client.clone(),
 		node_id: node.into(),
-		protocol_version: crate::config::PROTOCOL_VERSION.into(),
 		credentials: Arc::new(PeerCredentials),
 	}
 }

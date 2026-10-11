@@ -8,7 +8,7 @@ use crate::{
 };
 use aidash_domain::{
 	configuration::{same_secret, validate_endpoint, validate_node_id},
-	federation::Peer,
+	federation::{Peer, protocol::compatible},
 	registry::EntityRef,
 };
 use std::sync::Arc;
@@ -25,7 +25,7 @@ impl PeerAuthority {
 	pub async fn register(&self, peer: Peer) -> Result<Peer> {
 		validate_node_id(&peer.node_id)?;
 		validate_endpoint(&peer.endpoint)?;
-		if peer.node_id == self.node || peer.protocol_version != self.protocol {
+		if peer.node_id == self.node || !compatible(&self.protocol, &peer.protocol_version) {
 			return Err(Error::Invalid(format!(
 				"peer must be another node with protocol_version {}",
 				self.protocol
@@ -37,7 +37,7 @@ impl PeerAuthority {
 		}
 		let credential = self.credentials.resolve(&peer.credential_env)?;
 		let identity = self.identity.identity(&peer).await?;
-		if identity["id"] != peer.node_id || identity["protocol_version"] != self.protocol {
+		if identity["id"] != peer.node_id || identity["protocol_version"] != peer.protocol_version {
 			return Err(Error::Invalid(
 				"peer identity or protocol does not match".into(),
 			));

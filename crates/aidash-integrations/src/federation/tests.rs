@@ -45,7 +45,6 @@ async fn fixture() -> (Server, PeerHttp, Peer, Arc<Keys>) {
 			.build()
 			.unwrap(),
 		node_id: "aidash://local".into(),
-		protocol_version: "0.1".into(),
 		credentials: keys.clone(),
 	};
 	let peer = Peer {
