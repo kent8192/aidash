@@ -47,7 +47,10 @@ pub fn core_provider(operation: &str) -> Option<&'static str> {
 		}
 		"human_request" => "core.human@1",
 		"task_create" | "task_delegate" | "agent_discover" | "task_assign" => "core.tasks@1",
-		"skill_list" | "skill_load" | "skill_read" => "core.skills@1",
+		"skill_list" | "skill_load" | "skill_read" | "skill_asset_read" => "core.skills@1",
+		"capability_search" | "capability_describe" | "capability_load" | "capability_unload" => {
+			"core.exposure@1"
+		}
 		"file_search" | "file_read" | "apply_patch" => "core.files@1",
 		"artifact_publish" => "core.artifacts@1",
 		"memory_mutate" | "memory_recall" | "memory_reflect" => "core.memory@1",
@@ -275,8 +278,10 @@ pub fn reserved_aliases() -> BTreeSet<&'static str> {
 	crate::registry::bindings::REQUIRED_TOOLS
 		.iter()
 		.chain(crate::registry::bindings::DEFAULT_TOOLS)
+		.chain(crate::registry::bindings::EXPOSURE_TOOLS)
 		.copied()
 		.chain([
+			crate::registry::bindings::SKILL_ASSET_READ,
 			"shell",
 			"shell_poll",
 			"shell_cancel",

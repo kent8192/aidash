@@ -22,7 +22,7 @@ use aidash_domain::{
 };
 use async_trait::async_trait;
 use serde_json::Value;
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 
 pub(crate) struct Providers {
 	pub federation: Federation,
@@ -46,7 +46,27 @@ impl ProviderSet for Providers {
 		let descriptor: ToolDescriptor = serde_json::from_value(binding.definition.config.clone())?;
 		self.implementation(&descriptor)?;
 		let contract = self.contract(&descriptor, &binding.identity)?;
-		let tool: Arc<dyn Tool> = if let Some(transport) = descriptor.transport {
+		Ok(Arc::new(ProviderTool {
+			tool: self.tool(binding, descriptor, &implementations())?,
+			contract,
+			store: self.federation.store.clone(),
+			home: self.home.clone(),
+		}))
+	}
+}
+fn implementations() -> BTreeMap<String, Arc<dyn Tool>> {
+	let mut implementations = crate::tool::builtins();
+	implementations.extend(crate::capabilities::tools::implementations());
+	implementations
+}
+impl Providers {
+	fn tool(
+		&self,
+		binding: &ResolvedBinding,
+		descriptor: ToolDescriptor,
+		implementations: &BTreeMap<String, Arc<dyn Tool>>,
+	) -> Result<Arc<dyn Tool>> {
+		Ok(if let Some(transport) = descriptor.transport {
 			Arc::new(PluginTool {
 				entry: binding.definition.clone(),
 				alias: binding
@@ -57,20 +77,32 @@ impl ProviderSet for Providers {
 				client: self.federation.client.clone(),
 			})
 		} else {
-			let mut implementations = crate::tool::builtins();
-			implementations.extend(crate::capabilities::tools::implementations());
 			implementations
-				.remove(&descriptor.operation)
+				.get(&descriptor.operation)
+				.cloned()
 				.ok_or_else(|| {
 					Error::Invalid(format!("PROVIDER_UNAVAILABLE: {}", descriptor.provider))
 				})?
-		};
-		Ok(Arc::new(ProviderTool {
-			tool,
-			contract,
-			store: self.federation.store.clone(),
-			home: self.home.clone(),
-		}))
+		})
+	}
+	/// Tool specifications of a Run's aliased Bindings exactly as `bind` and
+	/// `BoundTool` advertise them, without binding authority checks.
+	pub(crate) fn specifications(&self, run: &Run) -> Result<BTreeMap<String, ToolSpec>> {
+		let snapshot = run
+			.context
+			.binding_snapshot
+			.as_ref()
+			.ok_or_else(|| Error::Invalid("Run has no admitted Binding snapshot".into()))?;
+		let implementations = implementations();
+		aidash_application::registry::bindings::execution::bound_specifications(
+			snapshot,
+			|binding, descriptor| {
+				self.implementation(&descriptor)?;
+				Ok(self
+					.tool(binding, descriptor, &implementations)?
+					.specification())
+			},
+		)
 	}
 }
 struct ProviderTool {

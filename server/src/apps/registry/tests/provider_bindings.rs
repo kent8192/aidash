@@ -1,10 +1,7 @@
 //! Native descriptor admission and immutable system seeding on disposable PostgreSQL.
 #[path = "../../execution/tests/support/native_database.rs"]
 mod native_database;
-use aidash_domain::{
-	registry::bindings::{DEFAULT_TOOLS, QualifiedRef, REQUIRED_TOOLS},
-	tool::providers::ToolDescriptor,
-};
+use aidash_domain::{registry::bindings::QualifiedRef, tool::providers::ToolDescriptor};
 use aidash_server::{
 	apps::registry::{models::Definition, services::states::DefinitionKind},
 	registry::{Entry, Registry, Search},
@@ -141,12 +138,13 @@ async fn system_seed_is_discoverable_idempotent_and_rejects_owner_mutation(
 		})
 		.await
 		.unwrap();
-	assert_eq!(listed.len(), REQUIRED_TOOLS.len() + DEFAULT_TOOLS.len());
-	for operation in REQUIRED_TOOLS.iter().chain(DEFAULT_TOOLS) {
+	let operations = aidash_application::registry::system::operations().collect::<Vec<_>>();
+	assert_eq!(listed.len(), operations.len());
+	for operation in operations {
 		let identity = QualifiedRef::builtin("aidash://node", operation);
 		let entry = registry.get(&identity.id, &identity.version).await.unwrap();
 		let descriptor: ToolDescriptor = serde_json::from_value(entry.config.clone()).unwrap();
-		assert_eq!(descriptor.operation, *operation);
+		assert_eq!(descriptor.operation, operation);
 		assert!(entry.tags.iter().any(|tag| tag == "system"));
 		assert!(registry.register(entry).await.is_err());
 	}

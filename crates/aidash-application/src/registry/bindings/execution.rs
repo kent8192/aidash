@@ -7,11 +7,11 @@ use aidash_domain::{
 	Run,
 	provider::ToolSpec,
 	registry::{bindings::*, rules::digest},
-	tool::ToolContract,
+	tool::{ToolContract, providers::ToolDescriptor},
 };
 use async_trait::async_trait;
 use serde_json::Value;
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 
 pub struct PinnedResolver {
 	pub providers: Arc<dyn ProviderSet>,
@@ -80,13 +80,7 @@ struct BoundTool {
 #[async_trait]
 impl ExecutionTool for BoundTool {
 	fn specification(&self) -> ToolSpec {
-		let mut specification = self.inner.specification();
-		specification.name = self.binding.alias.clone().expect("resolved tool alias");
-		specification.parameters = self.binding.definition.schema.clone();
-		if let Some(description) = self.binding.definition.description.get("en") {
-			specification.description = description.clone();
-		}
-		specification
+		bound_specification(&self.binding, self.inner.specification())
 	}
 	fn contract(&self) -> ToolContract {
 		self.contract.clone()
@@ -114,4 +108,39 @@ impl ExecutionTool for BoundTool {
 		self.binding.narrow.apply(&mut input)?;
 		self.inner.invoke(run, input, key).await
 	}
+}
+
+/// The model-visible specification of an aliased tool Binding over its
+/// provider's own specification. Dispatch advertises exactly this, and the
+/// deferred exposure catalog measures it, so both always agree.
+pub fn bound_specification(binding: &ResolvedBinding, mut inner: ToolSpec) -> ToolSpec {
+	if let Some(alias) = &binding.alias {
+		inner.name = alias.clone();
+	}
+	inner.parameters = binding.definition.schema.clone();
+	if let Some(description) = binding.definition.description.get("en") {
+		inner.description = description.clone();
+	}
+	inner
+}
+
+/// [`bound_specification`] of every non-excluded aliased tool Binding, by
+/// alias. `inner` yields the provider's own specification of one Binding.
+pub fn bound_specifications(
+	snapshot: &BindingSnapshot,
+	mut inner: impl FnMut(&ResolvedBinding, ToolDescriptor) -> Result<ToolSpec>,
+) -> Result<BTreeMap<String, ToolSpec>> {
+	let mut specifications = BTreeMap::new();
+	for binding in &snapshot.bindings {
+		if binding.excluded_reason.is_some() || binding.definition.kind != "tool" {
+			continue;
+		}
+		let Some(alias) = &binding.alias else {
+			continue;
+		};
+		let descriptor = serde_json::from_value(binding.definition.config.clone())?;
+		let specification = bound_specification(binding, inner(binding, descriptor)?);
+		specifications.insert(alias.clone(), specification);
+	}
+	Ok(specifications)
 }
