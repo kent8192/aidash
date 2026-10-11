@@ -21,6 +21,14 @@ impl AccountPolicy {
 			.cloned()
 			.unwrap_or_else(|| vec!["google.com".into(), "password".into()])
 	}
+	/// The one GCIP Tenant bound to `tenant`. Only a deployment with Tenant
+	/// Bindings ties Registration Requests to a Tenant.
+	pub fn bound_pool(&self, tenant: &str) -> Option<&str> {
+		self.tenant_bindings
+			.as_ref()?
+			.iter()
+			.find_map(|(pool, bound)| (bound == tenant).then_some(pool.as_str()))
+	}
 	pub fn require_sign_in_provider(&self, sign_in: &SignIn) -> Result<()> {
 		if self.tenant_bindings.is_some() {
 			let pool = sign_in

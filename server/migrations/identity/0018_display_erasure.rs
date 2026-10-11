@@ -4,7 +4,7 @@
 use reinhardt::db::migrations::FieldType;
 use reinhardt::db::migrations::prelude::*;
 pub(super) fn migration() -> Migration {
-	Migration::new("0017_display_erasure", "identity")
+	Migration::new("0018_display_erasure", "identity")
 		.add_operation(Operation::AddColumn {
 			table: "dashboard_identities".to_string(),
 			column: ColumnDefinition::new("display_erased_at", FieldType::TimestampTz)
@@ -41,7 +41,7 @@ pub(super) fn migration() -> Migration {
 				.with_domain_option(None),
 			mysql_options: None,
 		})
-		.add_dependency("identity", "0016_credential_store_state")
+		.add_dependency("identity", "0017_dashboard_administration_history")
 		.atomic(true)
 		.with_initial(None)
 		.state_only(false)

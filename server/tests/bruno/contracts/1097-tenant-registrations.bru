@@ -1,0 +1,20 @@
+meta {
+  name: 1097 tenant-registrations - Anonymous request is rejected
+  type: http
+  seq: 1097
+}
+
+get {
+  url: {{base_url}}/api/tenants/{{tenant}}/registrations
+  body: none
+  auth: none
+}
+
+headers {
+  Accept: application/json
+}
+
+tests {
+  test("Exact HTTP 401", function () { expect(res.getStatus()).to.equal(401); });
+  test("Stable authorization error envelope", function () { expect(res.getHeader("content-type")).to.include("application/json"); expect(res.getBody()).to.eql({error:"unauthorized"}); });
+}
