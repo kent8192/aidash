@@ -333,3 +333,50 @@ async fn writes_after_the_lease_is_lost_are_rejected(
 	assert_eq!(stored, 1, "only the started row was written");
 	c.finish().await;
 }
+
+#[rstest::rstest]
+#[tokio::test]
+async fn dashboard_projections_omit_inference_markers(
+	#[future(awt)]
+	#[from(test_environment)]
+	test_environment: Arc<TestEnvironment>,
+) {
+	// Arrange
+	let c = Conversation::new(&test_environment, None).await;
+	let worker = Uuid::new_v4();
+	let leased = c.lease(worker).await;
+	let attempt = c.start(worker).await;
+	c.f.store
+		.save_run(&completed(leased), worker, "model.completed")
+		.await
+		.unwrap();
+	assert_eq!(c.closures(attempt).await, (1, 1));
+	let workspace = format!("/api/workspaces/{}", c.run.workspace_id);
+	let operator = c.f.config.api_token.clone();
+
+	// Act
+	let mut projections = Vec::new();
+	for token in [&c.token, &operator] {
+		for path in ["/api/state", workspace.as_str()] {
+			let (status, body) = request(&c.app, token, "GET", path, serde_json::Value::Null).await;
+			assert_eq!(status, 200, "{path}: {body}");
+			projections.push((path.to_owned(), body));
+		}
+	}
+
+	// Assert
+	for (path, body) in projections {
+		let kinds: Vec<&str> = body["events"]
+			.as_array()
+			.unwrap_or_else(|| panic!("{path}: {body}"))
+			.iter()
+			.map(|event| event["kind"].as_str().unwrap())
+			.collect();
+		assert!(kinds.contains(&"model.completed"), "{path}: {kinds:?}");
+		assert!(
+			kinds.iter().all(|kind| !kind.starts_with("inference.")),
+			"{path}: {kinds:?}"
+		);
+	}
+	c.finish().await;
+}

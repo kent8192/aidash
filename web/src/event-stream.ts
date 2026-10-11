@@ -1,6 +1,10 @@
 import { authenticatedFetch, transportGeneration } from "./transport";
 import { stream } from "./generated/aidash";
-import { SseParser, type SseFrame } from "./inference-progress";
+import {
+  SseParser,
+  refreshesDashboard,
+  type SseFrame,
+} from "./inference-progress";
 
 type StreamStatus = "live" | "reconnecting";
 
@@ -73,7 +77,10 @@ async function readEventStream({
   }
 }
 
-/** The global event stream; every ID frame invalidates dashboard queries. */
+/**
+ * The global event stream; every ID frame except an Inference Attempt marker
+ * invalidates dashboard queries.
+ */
 export function subscribe(
   signal: AbortSignal,
   onEvent: () => void,
@@ -89,7 +96,7 @@ export function subscribe(
       }),
     onOpen: onEvent,
     onFrame: (frame) => {
-      if (frame.id) onEvent();
+      if (refreshesDashboard(frame)) onEvent();
     },
     onStatus,
   });

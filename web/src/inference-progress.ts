@@ -144,6 +144,17 @@ function parse(data: string): Record<string, unknown> | undefined {
   }
 }
 
+/**
+ * Whether a global event-stream frame changes dashboard projections.
+ * Inference Attempt markers (`inference.*` CloudEvent types) are omitted from
+ * them, so refetching on a marker only repeats the same projection.
+ */
+export function refreshesDashboard(frame: SseFrame): boolean {
+  if (!frame.id) return false;
+  const type = parse(frame.data)?.type;
+  return !(typeof type === "string" && type.startsWith("inference."));
+}
+
 const OUTCOMES: Record<string, true> = {
   pending: true,
   accepted: true,

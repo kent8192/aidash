@@ -57,3 +57,19 @@ fn outcomes_name_their_marker_and_reason() {
 		serde_json::json!({"outcome":"interrupted","reason":"lease_lost"})
 	);
 }
+
+#[test]
+fn every_marker_kind_shares_the_projection_prefix() {
+	let outcomes = [
+		ProgressOutcome::Accepted,
+		ProgressOutcome::Discarded,
+		ProgressOutcome::Interrupted(InterruptionReason::Stall),
+	];
+	for kind in outcomes
+		.map(ProgressOutcome::event_kind)
+		.into_iter()
+		.chain([STARTED_EVENT])
+	{
+		assert!(kind.starts_with(MARKER_PREFIX), "{kind}");
+	}
+}

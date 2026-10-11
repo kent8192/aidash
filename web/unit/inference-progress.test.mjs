@@ -7,6 +7,7 @@ import {
   PROGRESS_EVENT_TYPE,
   initialInferenceState,
   reduceInference,
+  refreshesDashboard,
 } from "../src/inference-progress.ts";
 
 const EVENTS = {
@@ -250,4 +251,20 @@ test("streamed text stays within the response bound", () => {
     new TextEncoder().encode(attempt.text).length,
   );
   assert.equal(attempt.text, chunk.repeat(3) + tail);
+});
+
+test("inference markers do not refresh the dashboard", () => {
+  const mesh = (type) => ({
+    id: "7",
+    event: "mesh",
+    data: JSON.stringify({ specversion: "1.0", type }),
+  });
+  assert.equal(refreshesDashboard(mesh("inference.started")), false);
+  assert.equal(refreshesDashboard(mesh("inference.accepted")), false);
+  assert.equal(refreshesDashboard(mesh("run.updated")), true);
+  assert.equal(
+    refreshesDashboard({ ...mesh("run.updated"), id: undefined }),
+    false,
+  );
+  assert.equal(refreshesDashboard({ id: "8", data: "not json" }), true);
 });

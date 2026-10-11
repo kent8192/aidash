@@ -12,14 +12,15 @@ use crate::{
 	federation::Federation,
 	registry::Search,
 };
+use aidash_domain::provider::progress::MARKER_PREFIX;
 use futures_util::StreamExt;
 use http::HeaderMap;
 use reinhardt::http::StreamBody;
 use reinhardt::injectable;
-use reinhardt::query::Expr;
 use reinhardt::query::PostgresQueryBuilder;
 use reinhardt::query::Query;
 use reinhardt::query::QueryStatementBuilder as _;
+use reinhardt::query::{Expr, ExprTrait as _};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
@@ -67,6 +68,10 @@ impl HarnessManagement {
 					.column(reinhardt::query::ColumnRef::Asterisk)
 					.from(reinhardt::query::Alias::new("events"))
 					.and_where(reinhardt::query::Expr::cust("sequence < $1"))
+					.and_where(
+						Expr::col(reinhardt::query::Alias::new("kind"))
+							.not_like(Expr::value(format!("{MARKER_PREFIX}%"))),
+					)
 					.order_by(
 						reinhardt::query::Alias::new("sequence"),
 						reinhardt::query::Order::Desc,

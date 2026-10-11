@@ -165,5 +165,9 @@ impl ProgressOutcome {
 /// Event kind recorded when an Inference Attempt starts.
 pub const STARTED_EVENT: &str = "inference.started";
 
+/// Prefix of every Inference Attempt marker kind. Markers are display-only, so
+/// dashboard projections omit them.
+pub const MARKER_PREFIX: &str = "inference.";
+
 #[cfg(test)]
 mod tests;
