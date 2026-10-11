@@ -310,6 +310,13 @@ mod tests {
 			url.ends_with("/aidash_observer_test"),
 			"use only the disposable test database"
 		);
+		// The deployed observer's own role; its grants come from
+		// infra/gcp/control/kube.py observer_sql, run here as on the cluster.
+		let role_url = std::env::var("AIDASH_OBSERVER_TEST_ROLE_URL")?;
+		assert!(
+			role_url.ends_with("/aidash_observer_test"),
+			"use only the disposable test database"
+		);
 		let database = Database::connect(&url).await?;
 		for (table, columns) in [
 			(
@@ -360,6 +367,9 @@ mod tests {
 			}
 			database.execute(DbBackend::Postgres.build(&query)).await?;
 		}
+		database
+			.execute_unprepared(&std::env::var("AIDASH_OBSERVER_TEST_ROLE_SQL")?)
+			.await?;
 		let mut insert = Query::insert();
 		insert
 			.into_table(Alias::new("runs"))
@@ -479,6 +489,38 @@ mod tests {
 				"00000000-0000-0000-0000-000000000002".into(),
 			])
 		);
+		// The role sees the same evidence, including other sessions' open
+		// transactions, which pg_stat_activity hides without pg_read_all_stats.
+		let role = observe(&role_url).await?;
+		assert_eq!(role["busy"], snapshot["busy"]);
+		assert_eq!(role["counts"], snapshot["counts"]);
+		let holder = Database::connect(&url).await?;
+		let open = holder.begin().await?;
+		open.execute_unprepared("SELECT 1").await?;
+		let role = observe(&role_url).await?;
+		assert_eq!(role["counts"]["database_work"], 1);
+		assert_eq!(role["busy"], true);
+		open.rollback().await?;
+		holder.close().await?;
+		assert_eq!(observe(&role_url).await?["busy"], false);
+		// It can neither change retained data nor read any other table.
+		let observer = Database::connect(&role_url).await?;
+		assert!(
+			observer
+				.execute_unprepared("DELETE FROM core_records")
+				.await
+				.is_err()
+		);
+		database
+			.execute_unprepared("CREATE TABLE unrelated_fixture (secret text)")
+			.await?;
+		assert!(
+			observer
+				.execute_unprepared("SELECT secret FROM unrelated_fixture")
+				.await
+				.is_err()
+		);
+		observer.close().await?;
 		let insert = Query::insert()
 			.into_table(Alias::new("core_operations"))
 			.columns([Alias::new("state")])

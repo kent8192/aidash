@@ -2,7 +2,7 @@
 
 Aidash 0.1 is a self-hosted federated agent mesh. Register an explicitly selected model and an agent, start a goal in the dashboard, and let agents claim work across independently operated nodes. Workspaces retain tasks, artifacts, messages and an ordered event log. Workers persist their execution state and recover after process termination.
 
-The current implementation includes a federated mesh, scoped remote Worker activation and Home commands, scoped authorization, policy-driven local agent generation, a recoverable cross-node transaction protocol, persistent semantic memory, Creator and Trust workbenches, and Kubernetes/k3s deployment. See [architecture](docs/architecture.md), [authorization](docs/authorization.md), [generation](docs/generation.md), [distributed transactions](docs/transactions.md), [orchestration](docs/orchestration.md), and [protocol and recovery contracts](docs/protocol.md). Source and focused test coverage for these paths do not close the full scoped federation (#38), transaction (#40), A2A (#39), or combined release acceptance gates.
+The current implementation includes a federated mesh, scoped remote Worker activation and Home commands, scoped authorization, policy-driven local agent generation, a recoverable cross-node transaction protocol, persistent semantic memory, Creator and Trust workbenches, and Kubernetes deployment. See [architecture](docs/architecture.md), [authorization](docs/authorization.md), [generation](docs/generation.md), [distributed transactions](docs/transactions.md), [orchestration](docs/orchestration.md), and [protocol and recovery contracts](docs/protocol.md). Source and focused test coverage for these paths do not close the full scoped federation (#38), transaction (#40), A2A (#39), or combined release acceptance gates.
 
 ## Cargo workspace
 
@@ -114,6 +114,7 @@ Cloud deployments can select GCIP as the sole dashboard issuer. `[dashboard.gcip
 project_id = "aidash-cloud-project"
 web_api_key = "PUBLIC_FIREBASE_WEB_API_KEY"
 public_origin = "https://develop.aidash.run"
+auth_helper = "public_origin"  # default "firebase"
 session_absolute_seconds = 43200
 session_idle_seconds = 1800
 password_sign_up = ["acme-pool-id"]
@@ -130,7 +131,22 @@ acme-pool-id = ["google.com", "password"]
 
 The GCIP Tenant ID maps one-to-one to an Aidash Tenant name. Terraform supplies these IDs, provider choices, signup settings and Sign-in Domains to the environment runtime secret. The runtime uses Application Default Credentials for tenant-scoped `accounts:lookup`; it never uses the public web API key as an administrative credential. See [GCIP infrastructure setup](infra/gcp/README.md#gcip-sign-in) and [authorization](docs/authorization.md#gcip-sign-in).
 
-The lazy `/sign-in` page asks for an email first. A form `POST /auth/login` routes a Sign-in Domain (a verified email domain, lowercase ASCII with punycode for IDN) to its GCIP Tenant. `GET /auth/login?org=acme` selects the Tenant by name instead, and the page offers that as an alternative. Either creates a browser-bound ten-minute transaction. Unknown domains, malformed addresses and unknown Tenant names receive one identical response. Sign-in Domains only route; they never grant authority. The npm Firebase Auth SDK uses memory persistence, popup federation and an email/password form; signup waits for verified email. The backend verifies signed ID tokens and live Account Status, then exchanges them for the existing opaque HttpOnly Aidash session. GCIP tokens are discarded and are never put in browser storage. Registration approval, Mappings and Operator grants remain Aidash authority.
+The lazy `/sign-in` page asks for an email first. A form `POST /auth/login` routes a Sign-in Domain (a verified email domain, lowercase ASCII with punycode for IDN) to its GCIP Tenant. `GET /auth/login?org=acme` selects the Tenant by name instead, and the page offers that as an alternative. Either creates a browser-bound ten-minute transaction. Unknown domains, malformed addresses and unknown Tenant names receive one identical response. Sign-in Domains only route; they never grant authority. The npm Firebase Auth SDK uses memory persistence, popup federation and an email/password form; signup waits for verified email. When the browser blocks the popup, federation falls back to a redirect that returns to the same transaction. The backend verifies signed ID tokens and live Account Status, then exchanges them for the existing opaque HttpOnly Aidash session. GCIP tokens are discarded and are never put in browser storage; every attempt also removes any `firebase:` storage keys and Firebase's IndexedDB store. Registration approval, Mappings and Operator grants remain Aidash authority.
+
+`auth_helper` selects the origin that serves Firebase's sign-in helper. The default, `firebase`, uses `<project_id>.firebaseapp.com` and needs no proxy, but provider consent screens show that domain and redirect sign-in fails in browsers that block third-party storage. `public_origin` uses the `public_origin` host as `authDomain`. Choose it only after the public origin transparently proxies `/__/auth/*` and `/__/firebase/init.json` to `https://<project_id>.firebaseapp.com` without forwarding Aidash cookies, for example with nginx:
+
+```nginx
+location ~ ^/__/(auth/|firebase/init\.json$) {
+  proxy_pass https://<project_id>.firebaseapp.com;
+  proxy_ssl_server_name on;
+  proxy_set_header Host <project_id>.firebaseapp.com;
+  proxy_set_header Cookie "";
+  proxy_set_header Authorization "";
+  proxy_hide_header Set-Cookie;
+}
+```
+
+Then register `https://<public origin host>/__/auth/handler` as each identity provider's redirect URI (the SAML ACS URL for SAML providers). Aidash Cloud environments switch to `public_origin`, and their SAML ACS URL, with the deployment that installs the Caddy proxy.
 
 ### Dashboard OIDC setup
 
@@ -307,7 +323,7 @@ The PostgreSQL image supplies the `pg_jsonschema` library. Native history create
 
 CI runs Trunk, Clippy, eight Rust test partitions, a separate coverage upload, Bruno API contracts, infrastructure checks, collaboration browser tests, and the PostgreSQL/NATS/Chromium acceptance suite in separate jobs. Each Cargo test target belongs to exactly one partition; the inventory is derived from locked Cargo metadata and validated before execution. Dependency caches are isolated by partition. All eight LCOV reports are required and uploaded together under the same Rust coverage flag. `CI Success` requires every CI job to succeed, including the Codecov upload. Use that check for branch protection. Rust coverage uses `cargo llvm-cov` with real PostgreSQL tests and uploads an explicit LCOV file through Codecov OIDC. Codecov measures `crates/` and `server/src/`; tests, migration plumbing and generated API files are excluded. Browser tests establish dashboard behavior and are not included in the Rust coverage percentage.
 
-Cluster recovery, transaction cluster recovery, and isolated capability runtime acceptance are available for manual execution. Run `bash scripts/test-cluster.sh kubernetes` and `bash scripts/test-cluster.sh k3s` after installing the browser dependencies; use the `transactions` or `remote-memory` profile for those recovery suites. Run `scripts/test-capability-cluster.sh` for isolated capability acceptance. These suites are outside the CI workflow and its `CI Success` prerequisites.
+Cluster recovery, transaction cluster recovery, and isolated capability runtime acceptance are available for manual execution. Run `bash scripts/test-cluster.sh kubernetes` after installing the browser dependencies; use the `transactions` or `remote-memory` profile for those recovery suites. Run `scripts/test-capability-cluster.sh` for isolated capability acceptance. These suites are outside the CI workflow and its `CI Success` prerequisites.
 
 The coverage uploader uses a pinned Codecov CLI from PyPI; see the [download outage and recovery condition](docs/operations/ci-coverage.md).
 

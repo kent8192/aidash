@@ -5,7 +5,10 @@ import {
   inMemoryPersistence,
   browserPopupRedirectResolver,
   signInWithPopup,
+  signInWithRedirect,
+  getRedirectResult,
   GoogleAuthProvider,
+  type AuthProvider,
   OAuthProvider,
   SAMLAuthProvider,
   signInWithEmailAndPassword,
@@ -22,44 +25,74 @@ export type GcipClientConfig = {
   providers: string[];
   password_sign_up: boolean;
 };
-export function createClient(config: GcipClientConfig) {
+export interface GcipClient {
+  popup(id: string, loginHint?: string): Promise<string>;
+  /** Navigates away; the sign-in completes in `redirectResult` on return. */
+  redirect(id: string, loginHint?: string): Promise<never>;
+  /** Null without network I/O unless this tab started a redirect. */
+  redirectResult(): Promise<string | null>;
+  password(email: string, password: string): Promise<string>;
+  register(email: string, password: string): Promise<boolean>;
+  resend(email: string, password: string): Promise<boolean>;
+  close(): Promise<void>;
+}
+// Redirect sign-in resumes in a new page, so the app name must be stable.
+const APP_NAME = "aidash-gcip";
+function federatedProvider(id: string, loginHint?: string): AuthProvider {
+  const hint: Record<string, string> = loginHint
+    ? { login_hint: loginHint }
+    : {};
+  if (id === "google.com") {
+    const provider = new GoogleAuthProvider();
+    provider.setCustomParameters({ prompt: "select_account", ...hint });
+    return provider;
+  }
+  const provider = id.startsWith("saml.")
+    ? new SAMLAuthProvider(id)
+    : new OAuthProvider(id);
+  // SAML providers may not accept custom parameters; set only when supported.
+  if (
+    loginHint &&
+    typeof (provider as Partial<OAuthProvider>).setCustomParameters ===
+      "function"
+  )
+    provider.setCustomParameters(hint);
+  return provider;
+}
+export function createClient(config: GcipClientConfig): GcipClient {
   const app = initializeApp(
     {
       projectId: config.project_id,
       apiKey: config.api_key,
       authDomain: config.auth_domain,
     },
-    `aidash-${crypto.randomUUID()}`,
+    APP_NAME,
   );
   const auth = initializeAuth(app, { persistence: inMemoryPersistence });
   auth.tenantId = config.tenant_id;
   let closed = false;
   return {
     async popup(id: string, loginHint?: string) {
-      const provider =
-        id === "google.com"
-          ? new GoogleAuthProvider()
-          : id.startsWith("saml.")
-            ? new SAMLAuthProvider(id)
-            : new OAuthProvider(id);
-      const hint: Record<string, string> = loginHint
-        ? { login_hint: loginHint }
-        : {};
-      if (id === "google.com")
-        provider.setCustomParameters({ prompt: "select_account", ...hint });
-      // SAML providers may not accept custom parameters; set only when supported.
-      else if (
-        loginHint &&
-        typeof (provider as Partial<OAuthProvider>).setCustomParameters ===
-          "function"
-      )
-        provider.setCustomParameters(hint);
       const result = await signInWithPopup(
         auth,
-        provider,
+        federatedProvider(id, loginHint),
         browserPopupRedirectResolver,
       );
       return result.user.getIdToken();
+    },
+    redirect(id: string, loginHint?: string): Promise<never> {
+      return signInWithRedirect(
+        auth,
+        federatedProvider(id, loginHint),
+        browserPopupRedirectResolver,
+      );
+    },
+    async redirectResult() {
+      const result = await getRedirectResult(
+        auth,
+        browserPopupRedirectResolver,
+      );
+      return result ? result.user.getIdToken() : null;
     },
     async password(email: string, password: string) {
       const result = await signInWithEmailAndPassword(auth, email, password);

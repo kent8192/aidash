@@ -85,6 +85,7 @@ async fn configure(f: &mut Federation) -> (Arc<Status>, FakeAdmin) {
 			("xn--bcher-kva.example".into(), "pool-b".into()),
 		]
 		.into(),
+		auth_helper: Default::default(),
 		session_absolute_seconds: 43200,
 		session_idle_seconds: 1800,
 	});

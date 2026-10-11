@@ -1,5 +1,10 @@
 import { useEffect, useState } from "react";
-import { createClient, type GcipClientConfig } from "./gcip-sdk";
+import {
+  createClient,
+  type GcipClient,
+  type GcipClientConfig,
+} from "./gcip-sdk";
+import { clearGcipStorage } from "./gcip-storage";
 import type { Locale } from "./ui";
 import { Button } from "./components/ui/button";
 import { Input } from "./components/ui/input";
@@ -56,6 +61,57 @@ const copy = {
       "サインイン先が見つかりません。入力内容を確認するか、管理者に連絡してください。",
   },
 } as const;
+type Message =
+  | "verification"
+  | "verificationFailed"
+  | "resendError"
+  | "verified"
+  | "error";
+// Exchange a fresh GCIP ID token for the opaque Aidash session.
+async function exchange(state: string, token: string) {
+  const response = await fetch("/auth/gcip/exchange", {
+    method: "POST",
+    credentials: "same-origin",
+    cache: "no-store",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ state, id_token: token }),
+  });
+  if (!response.ok) throw new Error();
+  const result: { return_to: string } = await response.json();
+  // The server owns the destination; keep a final same-origin path guard.
+  if (
+    !result.return_to.startsWith("/") ||
+    result.return_to.startsWith("//") ||
+    result.return_to.includes("\\")
+  )
+    throw new Error();
+  return result.return_to;
+}
+async function release(client: GcipClient | undefined) {
+  try {
+    await client?.close();
+  } finally {
+    await clearGcipStorage();
+  }
+}
+async function federated(
+  client: GcipClient,
+  provider: string,
+  loginHint?: string,
+) {
+  try {
+    return await client.popup(provider, loginHint);
+  } catch (error) {
+    const blocked =
+      typeof error === "object" &&
+      error !== null &&
+      "code" in error &&
+      error.code === "auth/popup-blocked";
+    if (!blocked) throw error;
+    // The URL keeps the transaction state across the provider round trip.
+    return client.redirect(provider, loginHint);
+  }
+}
 export default function GcipSignIn({
   locale,
   setLocale,
@@ -81,71 +137,85 @@ export default function GcipSignIn({
   const [email, setEmail] = useState(loginHint);
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
-  const [message, setMessage] = useState("");
+  // Store the copy key, not localized text, so the redirect recovery effect
+  // never depends on the locale and a language switch re-renders the notice.
+  const [message, setMessage] = useState<Message>();
   useEffect(() => {
     if (!state) return;
     const controller = new AbortController();
-    fetch(`/auth/gcip/transaction?state=${encodeURIComponent(state)}`, {
-      credentials: "same-origin",
-      cache: "no-store",
-      signal: controller.signal,
-    })
-      .then(async (response) => {
-        if (!response.ok) throw new Error();
-        return response.json() as Promise<GcipClientConfig>;
-      })
-      .then(setConfig)
-      .catch(() => {
-        if (!controller.signal.aborted) setMessage(text.error);
-      });
+    const load = async () => {
+      const response = await fetch(
+        `/auth/gcip/transaction?state=${encodeURIComponent(state)}`,
+        {
+          credentials: "same-origin",
+          cache: "no-store",
+          signal: controller.signal,
+        },
+      );
+      if (!response.ok) throw new Error();
+      const loaded = (await response.json()) as GcipClientConfig;
+      if (controller.signal.aborted) return;
+      // A redirect sign-in returns to this URL; finish it before showing the form.
+      let destination: string | undefined;
+      let failed = false;
+      const client = createClient(loaded);
+      try {
+        const token = await client.redirectResult();
+        if (token) destination = await exchange(state, token);
+      } catch {
+        failed = true;
+      } finally {
+        await release(client).catch(() => {});
+      }
+      if (destination) {
+        window.location.assign(destination);
+        return;
+      }
+      if (controller.signal.aborted) return;
+      setConfig(loaded);
+      if (failed) setMessage("error");
+    };
+    load().catch(() => {
+      if (controller.signal.aborted) return;
+      // An unusable transaction (e.g. expired on redirect return) never reaches
+      // a client; still drop any pending-redirect state Firebase left behind.
+      void clearGcipStorage().catch(() => {});
+      setMessage("error");
+    });
     return () => controller.abort();
-  }, [state, text.error]);
+  }, [state]);
   const authenticate = async (
     provider?: string,
     action: "sign-in" | "register" | "resend" = "sign-in",
   ) => {
     if (!config || !state || busy) return;
     setBusy(true);
-    setMessage("");
-    let client: ReturnType<typeof createClient> | undefined;
+    setMessage(undefined);
+    let client: GcipClient | undefined;
     try {
       client = createClient(config);
       if (action === "register") {
         const sent = await client.register(email, password);
-        setMessage(sent ? text.verification : text.verificationFailed);
+        setMessage(sent ? "verification" : "verificationFailed");
         return;
       }
       if (action === "resend") {
         const sent = await client.resend(email, password);
-        setMessage(sent ? text.verification : text.verified);
+        setMessage(sent ? "verification" : "verified");
         return;
       }
       const token = provider
-        ? await client.popup(provider, loginHint || undefined)
+        ? await federated(client, provider, loginHint || undefined)
         : await client.password(email, password);
-      const response = await fetch("/auth/gcip/exchange", {
-        method: "POST",
-        credentials: "same-origin",
-        cache: "no-store",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ state, id_token: token }),
-      });
-      if (!response.ok) throw new Error();
-      const result: { return_to: string } = await response.json();
-      // The server owns the destination; keep a final same-origin path guard.
-      if (
-        !result.return_to.startsWith("/") ||
-        result.return_to.startsWith("//") ||
-        result.return_to.includes("\\")
-      )
-        throw new Error();
-      await client.close();
-      window.location.assign(result.return_to);
+      const destination = await exchange(state, token);
+      // The exchange consumed the transaction; cleanup must not block navigation.
+      await release(client).catch(() => {});
+      window.location.assign(destination);
     } catch {
-      setMessage(action === "resend" ? text.resendError : text.error);
+      setMessage(action === "resend" ? "resendError" : "error");
     } finally {
       setPassword("");
-      await client?.close().catch(() => {});
+      await release(client).catch(() => {});
       setBusy(false);
     }
   };
@@ -203,7 +273,7 @@ export default function GcipSignIn({
                 event.preventDefault();
                 if (busy) return;
                 setBusy(true);
-                setMessage("");
+                setMessage(undefined);
                 const address = email.trim();
                 const body = new URLSearchParams({ email: address });
                 if (returnTo) body.set("return_to", returnTo);
@@ -234,7 +304,7 @@ export default function GcipSignIn({
                   })
                   .catch(() => {
                     setBusy(false);
-                    setMessage(text.error);
+                    setMessage("error");
                   });
               }}
             >
@@ -344,7 +414,7 @@ export default function GcipSignIn({
       ) : (
         !message && <Loading>{text.loading}</Loading>
       )}
-      {message && <Notice role="status">{message}</Notice>}
+      {message && <Notice role="status">{text[message]}</Notice>}
     </AuthCard>
   );
 }
