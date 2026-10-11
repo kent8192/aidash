@@ -30,5 +30,7 @@ spec:
     - to:
         - ipBlock:
             cidr: 0.0.0.0/0
-            except: [169.254.169.254/32]
+            # The metadata server and the node-local address gke-metadata-server DNATs it to
+            # (169.254.169.252:988). Dataplane V2 enforces before the DNAT; Calico enforces after it.
+            except: [169.254.169.254/32, 169.254.169.252/32]
 {{- end -}}

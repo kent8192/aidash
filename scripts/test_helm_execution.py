@@ -700,7 +700,11 @@ class ChartsTest(unittest.TestCase):
 
 class MetadataServerEgressTest(unittest.TestCase):
     """The GKE metadata server (169.254.169.254) is reachable only from server and worker."""
-    metadata = ipaddress.ip_address('169.254.169.254')
+    # The metadata server and the address gke-metadata-server DNATs it to (169.254.169.252:988):
+    # Dataplane V2 enforces policy before the DNAT, Calico after it, so both must be blocked.
+    metadata = tuple(ipaddress.ip_address(address) for address in ('169.254.169.254', '169.254.169.252'))
+    workloads = ('-aidash-server', '-aidash-worker', '-frontend', '-execution-runner', '-installer', '-guard',
+                 '-environment-postgres', '-environment-nats', '-environment-edge', '-environment-activity')
     allowlist = frozenset({'server', 'worker'})
     label = 'aidash.run/metadata-server'
     aidash = ChartsTest.aidash
@@ -768,8 +772,7 @@ class MetadataServerEgressTest(unittest.TestCase):
                 self.assertEqual(covered, not allowed)
             seen.add((kind, name))
         # Every Pod kind of both charts took part: the check cannot pass vacuously.
-        for expected in ('-aidash-server', '-aidash-worker', '-frontend', '-execution-runner', '-installer',
-                         '-guard', '-environment-postgres', '-environment-nats', '-environment-edge', '-environment-activity'):
+        for expected in self.workloads:
             self.assertTrue(any(name.endswith(expected) for _, name in seen), expected)
         self.assertEqual({name.rsplit('-aidash-', 1)[1] for _, name in seen if name.endswith(('-aidash-server', '-aidash-worker'))},
                          self.allowlist)
@@ -785,7 +788,7 @@ class MetadataServerEgressTest(unittest.TestCase):
                 self.assertNotIn('Egress', spec['policyTypes'], value['metadata']['name'])
                 continue
             self.assertEqual(spec['policyTypes'], ['Egress'])
-            reachable = False
+            reachable = set()
             for rule in spec['egress']:
                 self.assertTrue(rule.get('to'), 'a rule without "to" allows every destination')
                 for peer in rule['to']:
@@ -795,13 +798,24 @@ class MetadataServerEgressTest(unittest.TestCase):
                         continue
                     block = peer['ipBlock']
                     excepted = [ipaddress.ip_network(cidr) for cidr in block.get('except', [])]
-                    if self.metadata in ipaddress.ip_network(block['cidr']) and not any(self.metadata in n for n in excepted):
-                        reachable = True
-            self.assertFalse(reachable, value['metadata']['name'])
+                    reachable |= {str(address) for address in self.metadata
+                                  if address in ipaddress.ip_network(block['cidr']) and not any(address in n for n in excepted)}
+            self.assertEqual(reachable, set(), value['metadata']['name'])
+
+    def test_both_charts_render_the_same_policy_spec(self):
+        application, dependencies = self.everything()
+        specs = [next(value['spec'] for value in objects if value['kind'] == 'NetworkPolicy'
+                      and value['metadata']['name'].endswith('-metadata-egress') and 'namespace' not in value['metadata'])
+                 for objects in (application, dependencies)]
+        # The two charts keep separate copies of the template so each installs on its own.
+        self.assertEqual(specs[0], specs[1])
 
     def test_server_and_worker_keep_the_allowlist_label_without_the_policy(self):
         objects = render(self.aidash, dict(ChartsTest.base, metadataServerEgress={'enabled': False}))
         self.assertEqual([value for value in objects if value['kind'] == 'NetworkPolicy'], [])
+        for role in ('server', 'worker'):
+            labels = select(objects, 'Deployment', '-aidash-' + role)['spec']['template']['metadata']['labels']
+            self.assertEqual(labels[self.label], 'allowed')
         environment = render(self.environment, {
             'metadataServerEgress': {'enabled': False}, 'postgres': POSTGRES,
             'edge': {'hostname': 'fixture.example', 'admissionImage': 'admission@sha256:' + 'b' * 64},
@@ -810,14 +824,16 @@ class MetadataServerEgressTest(unittest.TestCase):
 
     def test_no_aidash_pod_uses_the_host_network(self):
         application, dependencies = self.everything()
-        count = 0
+        seen = []
         for kind, name, _, template in self.pod_templates(application + dependencies):
             with self.subTest(workload=f'{kind}/{name}'):
                 # Explicit false: a Pod on the node's network namespace bypasses every NetworkPolicy
                 # and the Workload Identity metadata server, receiving the node's identity.
                 self.assertIs(template['spec'].get('hostNetwork'), False)
-            count += 1
-        self.assertGreaterEqual(count, 10)
+            seen.append(name)
+        # Every workload of both charts was checked: the loop cannot pass vacuously.
+        for expected in self.workloads:
+            self.assertTrue(any(name.endswith(expected) for name in seen), expected)
 
     def test_selector_semantics_match_kubernetes(self):
         selector = {'matchExpressions': [{'key': self.label, 'operator': 'DoesNotExist'}]}
