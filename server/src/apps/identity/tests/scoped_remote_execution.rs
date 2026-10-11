@@ -39,6 +39,8 @@ struct ModelScript {
 	compaction_status: Arc<AtomicUsize>,
 	compaction_reservations: Arc<Mutex<Option<ReservationCheck>>>,
 	force_memory_mutate: Arc<AtomicBool>,
+	/// Tool-call responses after the first, for Runs that need several inferences.
+	extra_tool_rounds: Arc<AtomicUsize>,
 }
 
 #[derive(Clone)]
@@ -311,6 +313,7 @@ async fn scoped_pair(
 	#[default(false)] compactor: bool,
 	#[default(false)] native: bool,
 	#[default((false, false, 32))] large_native: (bool, bool, usize),
+	#[default(false)] ordered: bool,
 	#[future(awt)] test_environment: Arc<TestEnvironment>,
 ) -> Pair {
 	let (large_native_graph, large_native_journal, native_graph_visits) = large_native;
@@ -322,6 +325,19 @@ async fn scoped_pair(
 	let (mut b, bu, bschema) = setup(&test_environment).await;
 	b.config.node_id = "aidash://scoped-receiver".into();
 	b.store.node_id = b.config.node_id.clone();
+	if ordered {
+		// A node without Cache Salt Keys creates only Legacy Runs.
+		b.store = b.store.clone().with_cache_salt(Some(
+			aidash_integrations::inference::CacheSaltKeys::new(
+				&[aidash_integrations::inference::CacheSaltKey {
+					version: 1,
+					secret: "fixture-cache-salt-secret".into(),
+				}],
+				1,
+			)
+			.unwrap(),
+		));
+	}
 	let mut memory_recovery_directories = Vec::new();
 	if native {
 		for node in [&mut a, &mut b] {
@@ -346,7 +362,7 @@ async fn scoped_pair(
         if let Some(check)=check {check.before_http().await;}
         let mut calls=script.requests.lock().await;
         calls.push(input);
-        let count=calls.len(); drop(calls); script.entered.notify_one(); if script.hold.load(Ordering::Acquire) {script.release.notified().await;} let message=if count==1 && script.force_memory_mutate.load(Ordering::Acquire) {json!({"role":"assistant","content":null,"tool_calls":[{"id":"forbidden-write","type":"function","function":{"name":"memory_mutate","arguments":"{\"data\":{\"forbidden\":true}}"}}]})} else if count==1 {json!({"role":"assistant","content":null,"tool_calls":[{"id":"note","type":"function","function":{"name":"workspace_message","arguments":"{\"content\":\"Scoped remote progress\"}"}}]})} else {json!({"role":"assistant","content":"Scoped remote result"})};
+        let count=calls.len(); drop(calls); script.entered.notify_one(); if script.hold.load(Ordering::Acquire) {script.release.notified().await;} let message=if count==1 && script.force_memory_mutate.load(Ordering::Acquire) {json!({"role":"assistant","content":null,"tool_calls":[{"id":"forbidden-write","type":"function","function":{"name":"memory_mutate","arguments":"{\"data\":{\"forbidden\":true}}"}}]})} else if count<=1+script.extra_tool_rounds.load(Ordering::Acquire) {json!({"role":"assistant","content":null,"tool_calls":[{"id":if count==1 {"note".to_owned()} else {format!("note-{count}")},"type":"function","function":{"name":"workspace_message","arguments":"{\"content\":\"Scoped remote progress\"}"}}]})} else {json!({"role":"assistant","content":"Scoped remote result"})};
         Json(json!({"choices":[{"index":0,"finish_reason":if message.get("tool_calls").is_some(){"tool_calls"}else{"stop"},"message":message}],"usage":{"prompt_tokens":1,"completion_tokens":1}}))
     })).route("/systemone", post(|State(script):State<ModelScript>,Json(input):Json<Value>|async move {
 		if let Some(check)=script.compaction_reservations.lock().await.clone() {check.before_http().await;}
@@ -546,8 +562,11 @@ async fn scoped_pair(
 	} else {
 		None
 	};
+	if ordered {
+		ordered_receiver_agent(&a, &b, &aa, &ba, &mut source_policy).await;
+	}
 	let agent = generation.as_ref().map_or_else(
-		|| json!({"id":if native.is_some() { "research-native" } else { "research" },"version":"1.0.0"}),
+		|| json!({"id":if native.is_some() { "research-native" } else if ordered { "research-ordered" } else { "research" },"version":"1.0.0"}),
 		|(_, prepared)| prepared["agent"].clone(),
 	);
 	let grant = Uuid::new_v4();
@@ -612,6 +631,79 @@ async fn scoped_pair(
 		generation,
 		_memory_recovery_directories: memory_recovery_directories,
 	}
+}
+
+/// A receiver Agent on the Ordered Projection Version, approved on both nodes.
+/// It copies the receiver's `research` Agent, so it keeps the Home semantic
+/// memory binding when the fixture has one.
+async fn ordered_receiver_agent(
+	a: &Federation,
+	b: &Federation,
+	aa: &common::TestApplication,
+	ba: &common::TestApplication,
+	source_policy: &mut Value,
+) {
+	let reference = |id: &str| json!({"id":id,"version":"1.0.0"});
+	let fetch = |id: &'static str| async move {
+		let (status, mut entry) = request(
+			ba,
+			&b.config.api_token,
+			"GET",
+			&format!("/api/registry/{id}/1.0.0"),
+			Value::Null,
+		)
+		.await;
+		assert_eq!(status, 200, "{entry}");
+		// A new authored version, not a copy of server-derived normalization.
+		entry
+			.as_object_mut()
+			.unwrap()
+			.remove("binding_normalization");
+		entry
+	};
+	let mut model = fetch("model").await;
+	model["id"] = json!("ordered-model");
+	model["config"]["projection_versions"] = json!(["legacy", "ordered"]);
+	let mut agent = fetch("research").await;
+	agent["id"] = json!("research-ordered");
+	agent["config"]["model"] = reference("ordered-model");
+	agent["config"]["projection_version"] = json!("ordered");
+	for entry in [model, agent] {
+		let id = entry["id"].as_str().unwrap().to_owned();
+		let (status, body) = request(ba, &b.config.api_token, "POST", "/api/registry", entry).await;
+		assert_eq!(status, 200, "{body}");
+		let (status, body) = request(
+			ba,
+			&b.config.api_token,
+			"POST",
+			"/api/authorization/acme/catalog",
+			json!({"entry":reference(&id),"expected_revision":0,"enabled":true}),
+		)
+		.await;
+		assert_eq!(status, 200, "{body}");
+	}
+	let subject = qualified_agent(&b.config.node_id, "research-ordered", "1.0.0");
+	for (runtime, app) in [(b, ba), (a, aa)] {
+		let (_, mut policy) = request(
+			app,
+			&runtime.config.api_token,
+			"GET",
+			"/api/authorization/acme",
+			Value::Null,
+		)
+		.await;
+		policy["bundle"]["subjects"][&subject] = json!({"kind":"agent"});
+		let (status, body) = request(
+			app,
+			&runtime.config.api_token,
+			"POST",
+			"/api/authorization/acme",
+			json!({"expected_revision":policy["revision"],"bundle":policy["bundle"]}),
+		)
+		.await;
+		assert_eq!(status, 200, "{body}");
+	}
+	source_policy["subjects"][&subject] = json!({"kind":"agent"});
 }
 
 async fn native_remote_fixture(
@@ -1064,6 +1156,212 @@ async fn remote_semantic_context_reaches_actual_model_with_home_scope_and_receip
 	}
 	.unwrap();
 	assert_eq!(saved, 1);
+	p.close().await;
+}
+
+/// Semantic retrievals the receiver has stored for the Run. A reused read adds
+/// none; a fresh retrieval adds one, because its Home operation differs.
+async fn remote_retrievals(p: &Pair) -> i64 {
+	sqlx::query_scalar(
+		&Query::select()
+			.expr(Expr::cust("COUNT(*)"))
+			.from(Alias::new("semantic_remote_receipts"))
+			.and_where(Expr::col("run_id").eq(Expr::value(p.admission)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(p.b.store.pool.driver())
+	.await
+	.unwrap()
+}
+/// Step the Run until the model has received `count` requests.
+async fn step_to_model_request(p: &Pair, count: usize) {
+	for _ in 0..40 {
+		if p.requests.lock().await.len() >= count {
+			return;
+		}
+		p.step().await;
+	}
+	panic!(
+		"model request {count} never arrived: {:?}",
+		p.run().await.state
+	);
+}
+/// Write a Home semantic entry and index it, as a Home operator would.
+async fn write_home_entry(p: &Pair, expected_revision: i64, text: &str) {
+	let workspace = p.a.store.task(p.task).await.unwrap().workspace_id;
+	let (status, body) = request(
+		&p.aa,
+		&p.token,
+		"POST",
+		&format!("/api/workspaces/{workspace}/semantic/entries"),
+		json!({"key":"late","expected_revision":expected_revision,"source":{"kind":"memory","text":text},"metadata":{}}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(15);
+	loop {
+		aidash_server::semantic::worker::sweep(&p.a.store)
+			.await
+			.unwrap();
+		let pending: i64 = sqlx::query_scalar(
+			&Query::select()
+				.expr(Expr::cust("COUNT(*)"))
+				.from(Alias::new("semantic_entries"))
+				.and_where(Expr::col("workspace_id").eq(Expr::value(workspace)))
+				.and_where(Expr::col("state").ne("READY"))
+				.to_string(PostgresQueryBuilder),
+		)
+		.fetch_one(p.a.store.pool.driver())
+		.await
+		.unwrap();
+		if pending == 0 {
+			return;
+		}
+		assert!(tokio::time::Instant::now() < deadline, "indexing stalled");
+		tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+	}
+}
+async fn model_saw(p: &Pair, request: usize, text: &str) -> bool {
+	serde_json::to_string(&p.requests.lock().await[request - 1])
+		.unwrap()
+		.contains(text)
+}
+
+/// A remote Ordered Run reuses its Home retrieval while the Home corpus is
+/// unchanged and retrieves again after an entry is inserted or edited, as a
+/// local Ordered Run does. A Home registered at protocol `0.2` sends no digest,
+/// so its Runs keep the reuse they always had.
+#[rstest::rstest]
+#[case::current_protocol("0.3", true)]
+#[case::older_protocol("0.2", false)]
+#[tokio::test]
+async fn remote_ordered_run_retrieves_again_after_the_home_corpus_changes(
+	#[case] protocol: &str,
+	#[case] sees_changes: bool,
+	#[with(true, false, false, false, false, (false, false, 32), true)]
+	#[future(awt)]
+	scoped_pair: Pair,
+) {
+	// Arrange: the receiver reaches its Home at the protocol under test.
+	let p = scoped_pair;
+	sqlx::query(
+		&Query::update()
+			.table(Alias::new("peers"))
+			.value(Alias::new("protocol_version"), protocol)
+			.and_where(Expr::col("node_id").eq(Expr::value(p.a.config.node_id.as_str())))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(p.b.store.pool.driver())
+	.await
+	.unwrap();
+	p.model.extra_tool_rounds.store(3, Ordering::Release);
+
+	// Act and assert: the first inference retrieves; the second reuses it.
+	step_to_model_request(&p, 1).await;
+	assert_eq!(remote_retrievals(&p).await, 1);
+	step_to_model_request(&p, 2).await;
+	assert_eq!(remote_retrievals(&p).await, 1, "unchanged corpus is reused");
+
+	// An inserted Home entry changes what the Run should see.
+	write_home_entry(&p, 0, "Late marker: cobalt heron.").await;
+	step_to_model_request(&p, 3).await;
+	assert_eq!(model_saw(&p, 3, "cobalt heron").await, sees_changes);
+	let inserted = remote_retrievals(&p).await;
+	assert_eq!(inserted, if sees_changes { 2 } else { 1 });
+
+	// An edit does too.
+	write_home_entry(&p, 1, "Edited marker: amber lynx.").await;
+	step_to_model_request(&p, 4).await;
+	assert_eq!(model_saw(&p, 4, "amber lynx").await, sees_changes);
+	let edited = remote_retrievals(&p).await;
+	assert_eq!(edited, if sees_changes { 3 } else { 1 });
+
+	// Reuse resumes once the corpus holds still.
+	step_to_model_request(&p, 5).await;
+	assert_eq!(remote_retrievals(&p).await, edited);
+	p.close().await;
+}
+
+/// The Home reports its corpus digest only to a peer whose protocol carries it,
+/// and only for a grant that gives the receiver Home semantic access.
+#[rstest::rstest]
+#[tokio::test]
+async fn home_describe_reports_the_corpus_digest_to_current_protocol_peers_only(
+	#[with(true)]
+	#[future(awt)]
+	scoped_pair: Pair,
+) {
+	// Arrange
+	let p = scoped_pair;
+	let workspace = p.a.store.task(p.task).await.unwrap().workspace_id;
+	let describe = |protocol: &'static str| {
+		let p = &p;
+		async move {
+			let response = reqwest::Client::new()
+				.post(format!(
+					"{}/federation/v0.1/scoped/execution/grants/describe",
+					p.a.config.endpoint
+				))
+				.bearer_auth(std::env::var("AIDASH_SECRET_TEST_PEER").unwrap())
+				.header("x-aidash-node", &p.b.config.node_id)
+				.header("x-aidash-protocol", protocol)
+				.json(&json!({"grant_id":p.grant}))
+				.send()
+				.await
+				.unwrap();
+			assert_eq!(response.status(), 200);
+			response.json::<Value>().await.unwrap()
+		}
+	};
+	let expected = || async {
+		aidash_server::semantic::services::corpus_digest(&p.a.store, workspace, None)
+			.await
+			.unwrap()
+	};
+
+	// Act
+	let older = describe("0.2").await;
+	let current = describe("0.3").await;
+	let again = describe("0.3").await;
+	write_home_entry(&p, 0, "Late marker: cobalt heron.").await;
+	let changed = describe("0.3").await;
+
+	// Assert: an older peer gets exactly the Description it always did.
+	assert!(older.get("corpus_digest").is_none(), "{older}");
+	serde_json::from_value::<aidash_domain::federation::execution::Description>(older.clone())
+		.expect("a 0.2 reply must parse as a plain Description");
+	assert_eq!(current["corpus_digest"], again["corpus_digest"]);
+	assert_ne!(current["corpus_digest"], changed["corpus_digest"]);
+	assert_eq!(changed["corpus_digest"], json!(expected().await));
+	// The digest is not part of the Description a receiver pins and compares.
+	let mut without = changed.clone();
+	without.as_object_mut().unwrap().remove("corpus_digest");
+	assert_eq!(without, older);
+	p.close().await;
+}
+
+/// A grant without Home semantic access must not disclose corpus changes.
+#[rstest::rstest]
+#[tokio::test]
+async fn home_describe_omits_the_corpus_digest_without_semantic_access(
+	#[future(awt)] scoped_pair: Pair,
+) {
+	let p = scoped_pair;
+	let response = reqwest::Client::new()
+		.post(format!(
+			"{}/federation/v0.1/scoped/execution/grants/describe",
+			p.a.config.endpoint
+		))
+		.bearer_auth(std::env::var("AIDASH_SECRET_TEST_PEER").unwrap())
+		.header("x-aidash-node", &p.b.config.node_id)
+		.header("x-aidash-protocol", "0.3")
+		.json(&json!({"grant_id":p.grant}))
+		.send()
+		.await
+		.unwrap();
+	assert_eq!(response.status(), 200);
+	let body: Value = response.json().await.unwrap();
+	assert!(body.get("corpus_digest").is_none(), "{body}");
 	p.close().await;
 }
 
