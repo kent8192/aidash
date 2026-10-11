@@ -179,6 +179,13 @@ class BrokerImageTests(unittest.TestCase):
         self.assertEqual(set(lock), {"digest"})
         self.assertTrue(lock["digest"] is None or DIGEST.fullmatch(lock["digest"]))
 
+    def test_dockerfile_base_images_are_pinned_by_digest(self):
+        dockerfile = (Path(__file__).resolve().parents[3] / "crates" / "aidash-broker" / "Dockerfile").read_text()
+        bases = re.findall(r"^FROM (\S+)", dockerfile, re.M)
+        self.assertEqual(len(bases), 2)
+        for base in bases:
+            self.assertRegex(base, r"@sha256:[a-f0-9]{64}$")
+
     def test_deployment_configuration_cannot_override_the_lock(self):
         for source in CONTROL.glob("*.py"):
             self.assertNotIn("broker_image", source.read_text(), source.name)
