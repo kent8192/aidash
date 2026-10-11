@@ -41,7 +41,7 @@ ORACLE_KINDS = ("python-tests", "json-overdue-totals", "constraint-retention", "
 # Messages that identify a failed compaction or an over-window request.
 OVERFLOW_PATTERNS = (re.compile(r"(?i)compaction could not fit"), re.compile(r"(?i)context (window|length|overflow)"),
                      re.compile(r"(?i)exceeds? (the )?(model )?(context|window)"), re.compile(r"(?i)too (large|long) for"))
-SUCCESS_CLAIM = re.compile(r"(?i)\b(all tests pass|tests pass|task (is )?complete|completed|done|success|finished)\b")
+SUCCESS_CLAIM = re.compile(r"(?i)\b(all tests pass|tests pass|complete|completed|done|success|successful|finished)\b")
 NEGATED_CLAIM = re.compile(r"(?i)\b(not|cannot|can't|unable|declined|denied|escalat\w*)\b")
 EVIDENCE_LIMIT = 4096
 

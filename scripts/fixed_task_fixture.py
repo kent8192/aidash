@@ -14,6 +14,7 @@ invisible to it, so a lost constraint shows up in its answer and the task's
 independent oracle catches it. Usage, cost and prompt-cache counts are
 synthetic and deterministic; they test accounting, not provider prices.
 """
+import hashlib
 import json
 import math
 import re
@@ -355,6 +356,21 @@ class Fixture:
         value = {"as_of": "2026-10-10", "overdue": overdue}
         return f"```json\n{json.dumps(value, ensure_ascii=False)}\n```\n\nReport complete."
 
+    # --------------------------------------------------------- embeddings
+    def embed(self, body):
+        """Deterministic 8-dimension hash vectors; they carry no semantic similarity."""
+        inputs = body.get("input")
+        inputs = [inputs] if isinstance(inputs, str) else list(inputs or [])
+        data = []
+        for index, text in enumerate(inputs):
+            digest = hashlib.sha256(str(text).encode()).digest()
+            vector = [(byte - 127.5) / 127.5 for byte in digest[:8]]
+            norm = math.sqrt(sum(value * value for value in vector)) or 1.0
+            data.append({"object": "embedding", "index": index, "embedding": [value / norm for value in vector]})
+        used = sum(tokens(str(text)) for text in inputs)
+        return 200, {"object": "list", "data": data, "model": body.get("model"),
+                     "usage": {"prompt_tokens": used, "total_tokens": used}}
+
     # --------------------------------------------------------------- Jev
     def jev(self, body):
         with self.lock:
@@ -405,6 +421,8 @@ class Fixture:
                     body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
                     if self.path == "/v1/chat/completions":
                         return self.reply(*fixture.infer(body))
+                    if self.path == "/v1/embeddings":
+                        return self.reply(*fixture.embed(body))
                     if self.path == "/jev":
                         return self.reply(*fixture.jev(body))
                     match = re.fullmatch(r"/tools/([a-z0-9-]+)/([a-z_]+)", self.path)

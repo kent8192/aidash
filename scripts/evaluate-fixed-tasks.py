@@ -137,7 +137,7 @@ def build_manage():
 @contextlib.contextmanager
 def node(binary, environment, log_path):
     with open(log_path, "wb") as log:
-        child = subprocess.Popen([str(binary), "server"], cwd=ROOT, env=environment, stdout=log, stderr=log)
+        child = subprocess.Popen([str(binary), "serve"], cwd=ROOT, env=environment, stdout=log, stderr=log)
         try:
             yield child
         finally:
@@ -178,10 +178,9 @@ def memory_matrix_deterministic(api, experiment, corpus, memory_corpus, model_re
     api_scenarios = [item for item in memory_corpus["scenarios"] if item["evidence"] == "deterministic-api"]
     roles = {"model": {"id": model_refs["standard"]["id"], "version": "1.0.0"}}
     try:
-        embedding = experiment.register("embedding", f"{experiment.prefix}-embedding", {
-            "provider": "openrouter", "model_id": f"fixture/{experiment.prefix}-embedding",
-            "endpoint": fixture_url + "/v1", "credential_env": None, "dimensions": 8, "max_input_tokens": 2048,
-            "cost": {}})
+        embedding_config = {"provider": "openai", "endpoint": fixture_url + "/v1", "credential_env": None,
+                            "model": f"{experiment.prefix}-embedding", "model_version": "1", "dimensions": 8}
+        embedding = experiment.register("embedding", f"{experiment.prefix}-embedding", embedding_config)
         roles["embedding"] = {"id": embedding["id"], "version": "1.0.0"}
         for kind, identifier, config in (("reranker", "reranker", {"provider": "rrf"}),
                                          ("tokenizer", "tokenizer", {"provider": "utf8_upper_bound"})):
@@ -207,6 +206,13 @@ def memory_matrix_deterministic(api, experiment, corpus, memory_corpus, model_re
                 workspace = api.post("/api/workspaces", {"title": f"{experiment.prefix} memory {scenario['id']} "
                                                                   f"{variant['id']}", "goal": "Memory scenario"},
                                      experiment.token)["id"]
+                # Memory banks require an enabled Workspace index (operator-configured); its embeddings
+                # come from the fixture.
+                api.post(f"/api/workspaces/{workspace}/semantic/index", {"expected_revision": 0, "spec": {
+                    "embedding": embedding_config, "vector": {"provider": "postgres", "endpoint": "local",
+                                                              "credential_env": None},
+                    "enabled": True, "auto_context": False, "max_sources": 100, "max_results": 10,
+                    "max_result_tokens": 32768, "max_input_bytes": 32768}})
                 participant = api.post(f"/api/workspaces/{workspace}/memory/participants",
                                        {"agent": {"id": agent["id"], "version": "1.0.0"}}, experiment.token)
                 provider_ref = {"id": provider["id"], "version": "1.0.0"}
@@ -305,8 +311,18 @@ def deterministic(args):
             "NATS_URL": f"nats://127.0.0.1:{published_port(nats, 4222)}", "AIDASH_NODE_ID": node_id,
             "AIDASH_ENDPOINT": base, "AIDASH_LISTEN": f"127.0.0.1:{port}", "AIDASH_API_TOKEN": operator,
             "AIDASH_API_RATE_BURST": "100000", "AIDASH_WEB_DIR": str(web),
+            # This disposable Node ID owns its JetStream streams and consumers.
+            "AIDASH_ACTIVATION_BOOTSTRAP": "true",
             "AIDASH_JEV_ENDPOINT": fixture_url + "/jev", "AIDASH_SECRET_JEV": "fixture-classifier-not-a-secret",
             "NO_PROXY": "127.0.0.1,localhost", "no_proxy": "127.0.0.1,localhost"})
+        # Native memory needs its independent recovery ledger, initialized once after the
+        # schema exists and before any bank is created (docs/memory-recovery.md).
+        recovery = private / "memory-recovery"
+        environment["AIDASH_MEMORY_RECOVERY_DIR"] = str(recovery)
+        with open(log_directory / "setup.log", "wb") as setup:
+            for command in (["migrate"], ["memory-recovery", "init-if-missing", "--directory", str(recovery)]):
+                subprocess.run([str(binary), *command], cwd=ROOT, env=environment, stdout=setup, stderr=setup,
+                               check=True, timeout=300)
         child = stack.enter_context(node(binary, environment, log_directory / "server.log"))
 
         def healthy():
