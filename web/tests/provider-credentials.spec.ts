@@ -22,6 +22,10 @@ async function setup(
     rejectRevoke?: boolean;
     disabled?: boolean;
     boundOutsidePage?: boolean;
+    bound?: boolean;
+    keySettingsUrl?: string;
+    authorizations?: unknown[];
+    path?: string;
   } = {},
 ) {
   await installBearerDashboard(
@@ -36,13 +40,22 @@ async function setup(
   const access = options.subject
     ? { kind: "subject", tenant: "alpha", subject: "alice" }
     : { kind: "operator" };
-  let records: (typeof metadata)[] = [metadata];
+  let records: (typeof metadata & { key_settings_url?: string | null })[] = [
+    { ...metadata, key_settings_url: options.keySettingsUrl ?? null },
+  ];
   let binding: {
     tenant: string;
     provider: string;
     provider_credential_id: string | null;
     revision: number;
   } | null = null;
+  if (options.bound)
+    binding = {
+      tenant: "alpha",
+      provider: "openrouter",
+      provider_credential_id: id,
+      revision: 1,
+    };
   if (options.boundOutsidePage) {
     records = [{ ...metadata, id: "019c1234-5678-7123-8123-123456789def" }];
     binding = {
@@ -91,6 +104,16 @@ async function setup(
           json: { error: "Provider Credential Store is not configured" },
         });
       return route.fulfill({ json: records });
+    }
+    if (path === "/api/tenants/alpha/provider-authorizations/openrouter") {
+      expect(request.method()).toBe("POST");
+      options.authorizations?.push(request.postDataJSON());
+      return route.fulfill({
+        json: {
+          authorization_url:
+            "https://openrouter.ai/auth?callback_url=fixture&state=fixture",
+        },
+      });
     }
     if (path.endsWith("/rotate"))
       throw new Error("Public rotation must not be called");
@@ -144,7 +167,14 @@ async function setup(
     }
     return route.fulfill({ json: [] });
   });
-  await page.goto("/settings?view=providerCredentials");
+  // The provider's consent page is outside the dashboard; never contact it.
+  await page.route("https://openrouter.ai/**", (route) =>
+    route.fulfill({
+      contentType: "text/html",
+      body: "OpenRouter consent fixture",
+    }),
+  );
+  await page.goto(options.path ?? "/settings?view=providerCredentials");
   if (!options.subject) {
     await page.getByLabel("Tenant", { exact: true }).fill("alpha");
     await page.getByRole("button", { name: "Open", exact: true }).click();
@@ -296,4 +326,76 @@ test("mapped session opens the Japanese Provider Credentials page without a tena
     page.getByRole("button", { name: /追加|ローテーション/ }),
   ).toHaveCount(0);
   await expect(page.locator("input[name=tenant]")).toHaveCount(0);
+});
+test("connect starts Provider Authorization and leaves for the provider consent page", async ({
+  page,
+}) => {
+  const authorizations: unknown[] = [];
+  await setup(page, { subject: true, authorizations });
+  await expect(page.getByText("Not connected", { exact: true })).toBeVisible();
+  await page
+    .getByRole("button", { name: "Connect OpenRouter", exact: true })
+    .click();
+  await page.waitForURL(/^https:\/\/openrouter\.ai\/auth/);
+  expect(authorizations).toEqual([
+    {
+      provider_credential_id: null,
+      expected_revision: null,
+      return_to: "/settings?view=providerCredentials",
+    },
+  ]);
+});
+test("reconnect rotates the bound Provider Credential and links to its key settings", async ({
+  page,
+}) => {
+  const authorizations: unknown[] = [];
+  const keySettingsUrl = "https://openrouter.ai/keys/" + "ab".repeat(32);
+  await setup(page, {
+    subject: true,
+    bound: true,
+    keySettingsUrl,
+    authorizations,
+  });
+  await expect(page.getByText("Connected", { exact: true })).toBeVisible();
+  await expect(
+    page.getByRole("link", { name: "Manage key at OpenRouter" }).first(),
+  ).toHaveAttribute("href", keySettingsUrl);
+  await page
+    .getByRole("button", { name: "Reconnect", exact: true })
+    .first()
+    .click();
+  await page.waitForURL(/^https:\/\/openrouter\.ai\/auth/);
+  expect(authorizations).toEqual([
+    {
+      provider_credential_id: id,
+      expected_revision: metadata.revision,
+      return_to: "/settings?view=providerCredentials",
+    },
+  ]);
+});
+test("the callback outcome is reported once and removed from the address", async ({
+  page,
+}) => {
+  await setup(page, {
+    subject: true,
+    path: "/settings?view=providerCredentials&provider_authorization=failed",
+  });
+  await expect(page.getByRole("status")).toContainText(
+    "OpenRouter authorization failed. Nothing was stored",
+  );
+  expect(new URL(page.url()).searchParams.get("provider_authorization")).toBe(
+    null,
+  );
+});
+test("revocation asks the user to delete the key at OpenRouter", async ({
+  page,
+}) => {
+  const keySettingsUrl = "https://openrouter.ai/keys/" + "cd".repeat(32);
+  await setup(page, { subject: true, keySettingsUrl });
+  await page.getByRole("button", { name: "Revoke", exact: true }).click();
+  const notice = page.getByRole("status");
+  await expect(notice).toContainText("The key stays valid at OpenRouter");
+  await expect(
+    notice.getByRole("link", { name: "Manage key at OpenRouter" }),
+  ).toHaveAttribute("href", keySettingsUrl);
 });

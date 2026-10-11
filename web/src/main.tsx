@@ -987,6 +987,20 @@ const sectionRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/$section",
 });
+// Provider Authorization reports its outcome once in the callback redirect;
+// keep it past search validation for the Provider connections section.
+const providerAuthorizationOutcome = new URLSearchParams(
+  window.location.search,
+).get("provider_authorization");
+if (providerAuthorizationOutcome) {
+  sessionStorage.setItem(
+    "aidash-provider-authorization",
+    providerAuthorizationOutcome,
+  );
+  const url = new URL(window.location.href);
+  url.searchParams.delete("provider_authorization");
+  window.history.replaceState(window.history.state, "", url);
+}
 const router = createRouter({
   routeTree: rootRoute.addChildren([indexRoute, sectionRoute]),
   parseSearch: parseQuery,

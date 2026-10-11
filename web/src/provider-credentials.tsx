@@ -31,12 +31,9 @@ type Outcome = (typeof outcomes)[number];
 
 /** Reads and clears the callback's `provider_authorization` outcome. */
 function takeOutcome(): Outcome | null {
-  const url = new URL(window.location.href);
-  const value = url.searchParams.get("provider_authorization");
-  if (!value) return null;
-  url.searchParams.delete("provider_authorization");
-  window.history.replaceState(window.history.state, "", url);
-  return (outcomes as readonly string[]).includes(value)
+  const value = sessionStorage.getItem("aidash-provider-authorization");
+  sessionStorage.removeItem("aidash-provider-authorization");
+  return value && (outcomes as readonly string[]).includes(value)
     ? (value as Outcome)
     : null;
 }
