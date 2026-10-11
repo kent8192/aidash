@@ -62,7 +62,7 @@ RUNTIME_KEYS = {
 }
 GCIP_KEYS = {
     "project_id", "web_api_key", "public_origin", "tenant_bindings",
-    "providers", "password_sign_up", "auth_helper",
+    "providers", "password_sign_up", "auth_helper", "sign_in_domains",
     "session_absolute_seconds", "session_idle_seconds",
 }
 IDENTITY_TOKENS = ("database", "api", "runner", "observer")
@@ -396,6 +396,7 @@ def gcip_settings(project, output, dashboard):
         or not isinstance(settings.get("web_api_key"), str)
         or not settings["web_api_key"].strip()
         or not isinstance(settings.get("tenant_bindings"), dict)
+        or not isinstance(settings.get("sign_in_domains", {}), dict)
         or settings.get("auth_helper", "firebase") not in {"firebase", "public_origin"}
     ):
         raise Refused("managed GCIP configuration must match this environment")

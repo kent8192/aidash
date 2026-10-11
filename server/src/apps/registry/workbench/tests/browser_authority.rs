@@ -40,6 +40,9 @@ async fn browser_workbench(
 		.display_name(None)
 		.last_valid_at(Some(now))
 		.disabled_at(None)
+		.display_observed_at(None)
+		.display_erased_at(None)
+		.display_erased_by(None)
 		.finish();
 	DashboardIdentity::objects()
 		.create_with_conn(&mut db, &identity)

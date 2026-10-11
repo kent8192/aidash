@@ -3,7 +3,8 @@
 use super::tenant_administration::AdministrationEvent;
 use super::{
 	AdministrationActor, AuthorizationBundle, AuthorizationCredential, DashboardIdentity,
-	DashboardMapping, DashboardOperatorGrant, DashboardRegistrationRequest, TenantAdministrator,
+	DashboardMapping, DashboardOperatorGrant, DashboardRegistrationRequest, DashboardSession,
+	TenantAdministrator,
 };
 use crate::apps::identity::serializers::oidc::{
 	AdminMapping, AdminOperatorGrant, Approval, ApprovedMapping, IdentityView, Registration,
@@ -17,7 +18,7 @@ use reinhardt::core::exception::Error as FrameworkError;
 use reinhardt::db::backends::TransactionExecutor;
 use reinhardt::db::orm::execution::convert_values;
 use reinhardt::db::orm::query::FieldAssignment;
-use reinhardt::db::orm::{AtomicTransaction, DatabaseConnection, Model, OrmExecutor};
+use reinhardt::db::orm::{DatabaseConnection, Model, OrmExecutor};
 use reinhardt::query::{
 	Alias, Expr, ExprTrait, LockType, OnConflict, PostgresQueryBuilder, Query,
 	QueryStatementBuilder,
@@ -26,7 +27,12 @@ use serde_json::json;
 use std::collections::BTreeSet;
 use uuid::Uuid;
 
-pub(super) async fn database_time(tx: &mut AtomicTransaction) -> Result<DateTime<Utc>> {
+/// A sign-in retains its Display Attributes while its session is being started.
+const RECENT_SIGN_IN: Duration = Duration::minutes(10);
+
+pub(super) async fn database_time<E: TransactionExecutor + ?Sized>(
+	tx: &mut E,
+) -> Result<DateTime<Utc>> {
 	let (sql, values) = Query::select()
 		.expr_as(Expr::cust("clock_timestamp()"), Alias::new("now"))
 		.build(PostgresQueryBuilder);
@@ -368,6 +374,7 @@ impl DashboardRegistrationRequest {
 		db: DatabaseConnection,
 		id: Uuid,
 		actor: &AdministrationActor,
+		idle_seconds: Option<i64>,
 	) -> Result<Registration> {
 		db.atomic(async |tx| {
 			let administrator = actor.tenant_administrator();
@@ -414,7 +421,8 @@ impl DashboardRegistrationRequest {
 			row.decided_at = Some(now);
 			row.decision_actor = Some(actor.decision_actor());
 			Self::objects().update_with_conn(tx, &row).await?;
-			DashboardIdentity::clear_display_if_unmapped(tx, row.identity_id()).await?;
+			DashboardIdentity::clear_display_without_basis(tx, row.identity_id(), idle_seconds)
+				.await?;
 			actor
 				.record(
 					tx,
@@ -448,66 +456,223 @@ pub(super) fn visible_to(
 }
 
 impl DashboardIdentity {
-	pub(crate) async fn clear_display_if_unmapped<E: OrmExecutor + TransactionExecutor>(
+	/// Clears Display Attributes once the External Identity has no retention basis.
+	///
+	/// Authority (an enabled Mapping or operator grant) or an unexpired pending
+	/// Registration Request retains them. A live session or a sign-in within
+	/// [`RECENT_SIGN_IN`] retains them only when it began after the latest
+	/// Registration Request ended, so rejection and expiry still clear the
+	/// attributes the request showed, while a fresh sign-in keeps its newly
+	/// verified claims. `idle_seconds` is the browser session idle limit, or
+	/// `None` when dashboard sign-in is not configured: then no session is usable
+	/// or still starting, so neither sessions nor recent sign-ins retain them.
+	/// Callers hold no other identity lock, or only this one.
+	pub(crate) async fn clear_display_without_basis<E: OrmExecutor + TransactionExecutor>(
 		db: &mut E,
 		identity: Uuid,
+		idle_seconds: Option<i64>,
 	) -> Result<()> {
-		Self::objects()
+		let Some(row) = Self::objects()
 			.filter(Self::field_id().eq(identity))
 			.select_for_update()
 			.all_with_executor(db)
 			.await
-			.map_err(FrameworkError::from)?;
-		if !DashboardMapping::objects()
-			.filter(DashboardMapping::field_identity_id().eq(identity))
+			.map_err(FrameworkError::from)?
+			.pop()
+		else {
+			return Ok(());
+		};
+		if row.verified_email.is_none() && row.display_name.is_none() {
+			return Ok(());
+		}
+		if row.disabled_at.is_none() && Self::retains_display(db, &row, idle_seconds).await? {
+			return Ok(());
+		}
+		let assignments: Vec<FieldAssignment> = vec![
+			(Self::field_verified_email(), None::<String>).into(),
+			(Self::field_display_name(), None::<String>).into(),
+		];
+		Self::objects()
+			.filter(Self::field_id().eq(identity))
+			.update_fields_with_conn(db, assignments)
+			.await?;
+		Ok(())
+	}
+
+	async fn retains_display<E: OrmExecutor + TransactionExecutor>(
+		db: &mut E,
+		row: &Self,
+		idle_seconds: Option<i64>,
+	) -> Result<bool> {
+		if DashboardMapping::objects()
+			.filter(DashboardMapping::field_identity_id().eq(row.id))
 			.filter(DashboardMapping::field_enabled().eq(true))
+			.exists_with_db(db)
+			.await? || DashboardOperatorGrant::objects()
+			.filter(DashboardOperatorGrant::field_identity_id().eq(row.id))
+			.filter(DashboardOperatorGrant::field_enabled().eq(true))
 			.exists_with_db(db)
 			.await?
 		{
-			let assignments: Vec<FieldAssignment> = vec![
-				(Self::field_verified_email(), None::<String>).into(),
-				(Self::field_display_name(), None::<String>).into(),
-			];
-			Self::objects()
-				.filter(Self::field_id().eq(identity))
-				.update_fields_with_conn(db, assignments)
-				.await?;
+			return Ok(true);
+		}
+		let now = database_time(db).await?;
+		let latest = DashboardRegistrationRequest::latest(db, row.id).await?;
+		if latest
+			.as_ref()
+			.is_some_and(|request| request.status == "pending" && request.expires_at > now)
+		{
+			return Ok(true);
+		}
+		// A request ends at its decision, or at its deadline when it expired.
+		let ended = latest.map(|request| match request.status.as_str() {
+			"pending" | "expired" => request.expires_at,
+			_ => request.decided_at.unwrap_or(request.created_at),
+		});
+		let after_request = |at: DateTime<Utc>| ended.is_none_or(|ended| at >= ended);
+		// Without dashboard sign-in no session is usable, and none can still be starting.
+		let Some(idle_seconds) = idle_seconds else {
+			return Ok(false);
+		};
+		if row
+			.display_observed_at
+			.is_some_and(|observed| observed > now - RECENT_SIGN_IN && after_request(observed))
+		{
+			return Ok(true);
+		}
+		Ok(DashboardSession::objects()
+			.filter(DashboardSession::field_identity_id().eq(row.id))
+			.filter(DashboardSession::field_revoked_at().is_null())
+			.filter(DashboardSession::field_expires_at().gt(now))
+			.all_with_db(db)
+			.await?
+			.into_iter()
+			.any(|session| {
+				let idle = session.desktop_idle_seconds.unwrap_or(idle_seconds);
+				after_request(session.created_at)
+					&& session.last_activity_at > now - Duration::seconds(idle)
+			}))
+	}
+
+	/// Expires overdue Registration Requests and enforces display retention.
+	///
+	/// Each External Identity is handled in its own transaction, locked in id order,
+	/// and rechecked under that lock, so a concurrent sign-in either commits first
+	/// and is seen, or waits and overwrites the cleared attributes afterwards.
+	/// Enabled authority is rechecked there too; skipping it here only avoids
+	/// locking every mapped External Identity on each pass. `idle_seconds` follows
+	/// [`Self::clear_display_without_basis`].
+	pub(crate) async fn enforce_display_retention(
+		db: DatabaseConnection,
+		idle_seconds: Option<i64>,
+	) -> Result<()> {
+		let candidates = db
+			.atomic(async |tx| {
+				let now = database_time(tx).await?;
+				let mut authorized: BTreeSet<Uuid> = DashboardMapping::objects()
+					.filter(DashboardMapping::field_enabled().eq(true))
+					.all_with_db(tx)
+					.await?
+					.into_iter()
+					.map(|row| row.identity_id)
+					.collect();
+				authorized.extend(
+					DashboardOperatorGrant::objects()
+						.filter(DashboardOperatorGrant::field_enabled().eq(true))
+						.all_with_db(tx)
+						.await?
+						.into_iter()
+						.map(|row| row.identity_id()),
+				);
+				let mut ids = BTreeSet::new();
+				for shown in [
+					Self::field_verified_email().is_not_null(),
+					Self::field_display_name().is_not_null(),
+				] {
+					ids.extend(
+						Self::objects()
+							.filter(shown)
+							.all_with_db(tx)
+							.await?
+							.into_iter()
+							.filter(|row| {
+								row.disabled_at.is_some() || !authorized.contains(&row.id)
+							})
+							.map(|row| row.id),
+					);
+				}
+				ids.extend(
+					DashboardRegistrationRequest::objects()
+						.filter(DashboardRegistrationRequest::field_status().eq("pending"))
+						.filter(DashboardRegistrationRequest::field_expires_at().lte(now))
+						.all_with_db(tx)
+						.await?
+						.into_iter()
+						.map(|row| row.identity_id()),
+				);
+				Ok::<_, Error>(ids)
+			})
+			.await?;
+		for identity in candidates {
+			Self::enforce_identity_retention(db, identity, idle_seconds).await?;
 		}
 		Ok(())
 	}
-	pub(crate) async fn expire_registrations(db: DatabaseConnection) -> Result<()> {
+
+	/// Applies [`Self::enforce_display_retention`] to one External Identity.
+	pub(crate) async fn enforce_identity_retention(
+		db: DatabaseConnection,
+		identity: Uuid,
+		idle_seconds: Option<i64>,
+	) -> Result<()> {
 		db.atomic(async |tx| {
+			Self::objects()
+				.filter(Self::field_id().eq(identity))
+				.select_for_update()
+				.all_with_executor(tx)
+				.await
+				.map_err(FrameworkError::from)?;
 			let now = database_time(tx).await?;
-			let expired = DashboardRegistrationRequest::objects()
+			DashboardRegistrationRequest::objects()
+				.filter(DashboardRegistrationRequest::field_identity_id().eq(identity))
 				.filter(DashboardRegistrationRequest::field_status().eq("pending"))
 				.filter(DashboardRegistrationRequest::field_expires_at().lte(now))
-				.all_with_db(tx)
+				.update_fields_with_conn(
+					tx,
+					[(
+						DashboardRegistrationRequest::field_status(),
+						"expired".to_owned(),
+					)],
+				)
 				.await?;
-			for candidate in expired {
-				Self::objects()
-					.filter(Self::field_id().eq(candidate.identity_id()))
-					.select_for_update()
-					.all_with_executor(tx)
-					.await
-					.map_err(FrameworkError::from)?;
-				let Some(mut row) = DashboardRegistrationRequest::objects()
-					.filter(DashboardRegistrationRequest::field_id().eq(candidate.id))
-					.filter(DashboardRegistrationRequest::field_status().eq("pending"))
-					.select_for_update()
-					.all_with_executor(tx)
-					.await
-					.map_err(FrameworkError::from)?
-					.pop()
-				else {
-					continue;
-				};
-				row.status = "expired".into();
-				DashboardRegistrationRequest::objects()
-					.update_with_conn(tx, &row)
-					.await?;
-				Self::clear_display_if_unmapped(tx, row.identity_id()).await?;
+			Self::clear_display_without_basis(tx, identity, idle_seconds).await
+		})
+		.await
+	}
+
+	/// Performs an Operator's Display Erasure, keeping the first erasure's trace.
+	pub(crate) async fn erase_display(
+		db: DatabaseConnection,
+		id: Uuid,
+		actor: String,
+	) -> Result<IdentityView> {
+		db.atomic(async |tx| {
+			let mut row = Self::objects()
+				.filter(Self::field_id().eq(id))
+				.select_for_update()
+				.all_with_executor(tx)
+				.await
+				.map_err(FrameworkError::from)?
+				.pop()
+				.ok_or_else(|| Error::NotFound("identity".into()))?;
+			if row.display_erased_at.is_none() {
+				row.display_erased_at = Some(database_time(tx).await?);
+				row.display_erased_by = Some(actor);
 			}
-			Ok(())
+			row.verified_email = None;
+			row.display_name = None;
+			Self::objects().update_with_conn(tx, &row).await?;
+			Ok(row.contract())
 		})
 		.await
 	}
@@ -520,6 +685,8 @@ impl DashboardIdentity {
 			verified_email: self.verified_email,
 			display_name: self.display_name,
 			disabled_at: self.disabled_at,
+			display_erased_at: self.display_erased_at,
+			display_erased_by: self.display_erased_by,
 		}
 	}
 
