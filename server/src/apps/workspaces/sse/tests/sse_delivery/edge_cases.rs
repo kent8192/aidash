@@ -533,10 +533,37 @@ async fn browser_invalidation_closes_idle_and_unpolled_buffered_streams(
 	}
 	.unwrap();
 	// Retain both bodies unpolled past the independent browser/authority check.
-	// Closing must reclaim both admissions before either body is dropped.
+	// Closed streams keep their connection admissions until the transport drops
+	// the response bodies, even if no further body polling occurs.
 	until(|| fixture.service.snapshot().registered_scopes == 0).await;
 	assert_eq!(fixture.service.snapshot().event_queries, reads);
 	assert_eq!(fixture.service.snapshot().backpressure_disconnects, 0);
+	let blocked = fixture
+		.app
+		.clone()
+		.oneshot(
+			Request::get("/api/events/stream?after=-1")
+				.header(
+					"authorization",
+					format!("Bearer {}", fixture.f.config.api_token),
+				)
+				.body(Body::empty())
+				.unwrap(),
+		)
+		.await
+		.unwrap();
+	assert_eq!(blocked.status(), 503);
+	drop(blocked);
+	for response in responses {
+		let body = tokio::time::timeout(
+			Duration::from_secs(1),
+			axum::body::to_bytes(response.into_body(), 1024),
+		)
+		.await
+		.unwrap()
+		.unwrap();
+		assert!(!String::from_utf8_lossy(&body).contains("event: mesh"));
+	}
 	let operator = fixture
 		.app
 		.clone()
@@ -551,21 +578,7 @@ async fn browser_invalidation_closes_idle_and_unpolled_buffered_streams(
 		)
 		.await
 		.unwrap();
-	assert_eq!(
-		operator.status(),
-		200,
-		"both stale browser admissions are released"
-	);
-	for response in responses {
-		let body = tokio::time::timeout(
-			Duration::from_secs(1),
-			axum::body::to_bytes(response.into_body(), 1024),
-		)
-		.await
-		.unwrap()
-		.unwrap();
-		assert!(!String::from_utf8_lossy(&body).contains("event: mesh"));
-	}
+	assert_eq!(operator.status(), 200);
 	drop(operator);
 	fixture.finish().await;
 }

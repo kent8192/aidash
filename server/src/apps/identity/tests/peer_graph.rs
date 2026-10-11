@@ -537,6 +537,8 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 	policy["policies"].as_array_mut().unwrap().push(json!({
 		"id":"deny-workspace-graph","effect":"deny","subjects":{"any":true},
 		"actions":["workspace.read"],"resources":{"kinds":["workspace"]},
+		"condition":{"op":"eq","left":{"source":"resource","path":"/source_tenant"},
+			"right":{"source":"literal","value":"source-tenant"}},
 	}));
 	let (status, written) = request(
 		&app,

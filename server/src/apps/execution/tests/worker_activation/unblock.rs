@@ -243,7 +243,7 @@ async fn approval_notifications_target_only_the_bound_run(
 	for (id, kind, data) in [
 		(Uuid::new_v4(), "file", json!({"run_id":"not-a-run"})),
 		(Uuid::new_v4(), "grant", json!({"run_id":target})),
-		(approval, "approval", json!({"run_id":target})),
+		(approval, "outbound", json!({"run_id":target})),
 	] {
 		sqlx::query(
 			&Query::insert()

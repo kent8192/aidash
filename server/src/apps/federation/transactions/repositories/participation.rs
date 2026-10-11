@@ -20,7 +20,11 @@ use aidash_domain::transactions::{
 	coordination::{LocalStatus, ParticipantPhase},
 };
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
+use reinhardt::core::exception::Error as FrameworkError;
+use reinhardt::db::orm::execution::convert_values;
 use reinhardt::db::{backends::TransactionExecutor, orm::DatabaseConnectionLease};
+use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query, QueryStatementBuilder};
 use uuid::Uuid;
 
 enum Transaction {
@@ -58,6 +62,21 @@ fn status(row: AtomicParticipant) -> LocalStatus {
 
 #[async_trait]
 impl ParticipantScope for Scope {
+	async fn now(&mut self) -> Result<DateTime<Utc>> {
+		let (sql, values) = Query::select()
+			.expr_as(Expr::current_timestamp(), Alias::new("now"))
+			.build(PostgresQueryBuilder);
+		let row = self
+			.transaction
+			.executor()
+			.fetch_one(&sql, convert_values(values))
+			.await
+			.map_err(Error::from)?;
+		row.get("now")
+			.map_err(FrameworkError::from)
+			.map_err(Error::from)
+			.map_err(Into::into)
+	}
 	async fn lock(&mut self, id: Uuid) -> Result<Option<LocalStatus>> {
 		AtomicParticipant::lock(self.transaction.executor(), id)
 			.await

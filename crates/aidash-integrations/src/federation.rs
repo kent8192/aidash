@@ -6,6 +6,7 @@ use aidash_application::{
 		federation::{PeerReply, PeerTransport},
 	},
 };
+use aidash_domain::configuration::validate_peer_endpoint;
 use aidash_domain::federation::Peer;
 use async_trait::async_trait;
 use serde_json::Value;
@@ -34,6 +35,7 @@ impl PeerHttp {
 		path: &str,
 		body: Option<&Value>,
 	) -> Result<reqwest::Response> {
+		validate_peer_endpoint(&peer.endpoint)?;
 		// Composite authority operations make further bounded peer calls. Native
 		// retrieval also executes separately bounded provider attempts before its
 		// receipt is finalized; the outer request must allow those calls to finish.

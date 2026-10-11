@@ -205,6 +205,42 @@ test("SSE reconnect sends Last-Event-ID and a new authority starts without the o
   expect(result).toEqual(["-1", "41", "-1"]);
 });
 
+test("SSE closes a delimiter-free frame before retaining unbounded text", async ({
+  page,
+}) => {
+  const result = await page.evaluate(async () => {
+    const { subscribe } = await import("/src/event-stream.ts");
+    const signal = new AbortController();
+    const statuses = [];
+    let cancelled = false;
+    window.fetch = async () =>
+      new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode("x".repeat(65 * 1024)));
+          },
+          cancel() {
+            cancelled = true;
+          },
+        }),
+        { headers: { "content-type": "text/event-stream" } },
+      );
+    await subscribe(
+      signal.signal,
+      () => {},
+      (status) => {
+        statuses.push(status);
+        if (status === "reconnecting") signal.abort();
+      },
+    );
+    return { statuses, cancelled };
+  });
+  expect(result).toEqual({
+    statuses: ["live", "reconnecting"],
+    cancelled: true,
+  });
+});
+
 test("a revoked access token refreshes once and mutations are never retried after network failure", async ({
   page,
 }) => {

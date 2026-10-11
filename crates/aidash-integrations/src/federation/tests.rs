@@ -84,6 +84,17 @@ async fn federation_headers_payload_and_credential_rotation_are_preserved() {
 		json!({"id":"aidash://remote","protocol_version":"0.1"})
 	);
 }
+
+#[rstest]
+#[tokio::test]
+async fn stored_plaintext_network_peer_cannot_receive_bearer_credentials() {
+	let (_server, client, mut peer, _keys) = fixture().await;
+	peer.endpoint = "http://peer.example.test".into();
+	assert!(matches!(
+		client.send(&peer, "GET", "/observe", None).await,
+		Err(Error::Domain(aidash_domain::Error::Invalid(_)))
+	));
+}
 #[rstest]
 #[case(503, true, false)]
 #[case(409, false, true)]

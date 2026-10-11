@@ -9,6 +9,7 @@ use crate::{
 	transactions::gate::ReadLease,
 };
 use async_trait::async_trait;
+use http::Method;
 use http::header::{AUTHORIZATION, CACHE_CONTROL};
 use reinhardt::http::{Handler, Middleware, ViewResult};
 use reinhardt::{Injectable, InjectionContext, Request, Response};
@@ -141,12 +142,43 @@ impl Middleware for AccessBoundary {
 				return Ok(Response::new(reinhardt::StatusCode::TOO_MANY_REQUESTS)
 					.with_header("Retry-After", "1"));
 			}
+			let browser = request.extensions.get::<dashboard_auth::BrowserOrigin>();
+			let self_identity_write = browser.as_ref().is_some_and(|origin| {
+				request
+					.uri
+					.path()
+					.strip_prefix("/api/dashboard/identities/")
+					.and_then(|path| {
+						path.strip_suffix("/operator-grant")
+							.or_else(|| path.strip_suffix("/restore"))
+					})
+					.and_then(|id| uuid::Uuid::parse_str(id).ok())
+					== Some(origin.identity_id)
+			});
+			if self_identity_write && request.method != Method::GET {
+				return Err(Error::Forbidden);
+			}
+			let mut operator_lease = if matches!(actor, Some(Actor::Operator))
+				&& request.method != Method::GET
+				&& request.method != Method::HEAD
+				&& request.method != Method::OPTIONS
+				&& let Some(origin) = browser
+			{
+				let mut lease = crate::database::native::begin(&runtime.store.pool).await?;
+				origin.require_operator(&mut lease, true).await?;
+				Some(lease)
+			} else {
+				None
+			};
 			let _visibility = if self.visibility {
 				Some(ReadLease::begin(&runtime.store).await?)
 			} else {
 				None
 			};
 			let mut response = next.handle(request).await?;
+			if let Some(lease) = operator_lease.take() {
+				lease.commit().await?;
+			}
 			if matches!(
 				self.requirement,
 				Requirement::Authenticated | Requirement::Operator

@@ -235,6 +235,15 @@ impl DashboardRegistrationRequest {
 				&input.tenant,
 			)?;
 			if let Some(administrator) = administrator {
+				if !snapshot.bundle.subjects.contains_key(&input.subject)
+					&& DashboardMapping::objects()
+						.filter(DashboardMapping::field_tenant().eq(input.tenant.clone()))
+						.filter(DashboardMapping::field_subject().eq(input.subject.clone()))
+						.exists_with_db(tx)
+						.await?
+				{
+					return Err(Error::Conflict("subject was previously assigned".into()));
+				}
 				let previously_mapped = DashboardMapping::objects()
 					.filter(DashboardMapping::field_identity_id().eq(identity.id))
 					.filter(DashboardMapping::field_tenant().eq(input.tenant.clone()))

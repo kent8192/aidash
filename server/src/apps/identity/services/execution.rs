@@ -220,9 +220,29 @@ impl WorkerAuthority {
 		reflect: bool,
 	) -> Result<crate::semantic::native_memory::Outcome> {
 		let mut outer = self.access.lock().await;
-		let mut lease = crate::semantic::service::Lease::Inherited(&mut outer);
-		crate::semantic::native_memory::run_recall(store, &mut lease, run, key, query, reflect)
-			.await
+		if outer.tx.is_active() {
+			outer.suspend().await?;
+		}
+		let mut access = access_for_run(store, &run.metadata(), true)
+			.await?
+			.ok_or(Error::Forbidden)?;
+		if !access.run_visible(run.metadata()).await? {
+			return Err(Error::RemoteSemantic(
+				crate::semantic::remote::Failure::Invalidated,
+			));
+		}
+		let mut lease = crate::semantic::service::Lease::Scoped(Box::new(access));
+		let result =
+			crate::semantic::native_memory::run_recall(store, &mut lease, run, key, query, reflect)
+				.await;
+		let result = lease.finish(result).await;
+		refresh_access_for_run(&mut outer, store, run).await?;
+		if !outer.run_visible(run.metadata()).await? {
+			return Err(Error::RemoteSemantic(
+				crate::semantic::remote::Failure::Invalidated,
+			));
+		}
+		result
 	}
 
 	pub async fn assign(

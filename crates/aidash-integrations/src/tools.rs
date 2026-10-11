@@ -26,11 +26,34 @@ pub struct HttpTools {
 impl ToolTransport for HttpTools {
 	async fn invoke(&self, configuration: &ToolConfig, input: Value, key: &str) -> Result<Value> {
 		match configuration {
-			ToolConfig::Native { operation, .. } if operation == "http_get" => {
-				let url = reqwest::Url::parse(required(&input, "url")?)
-					.map_err(|_| Error::Invalid("invalid URL".into()))?;
-				let response = self
-					.client
+			ToolConfig::Native {
+				operation,
+				allowed_hosts,
+			} if operation == "http_get" => {
+				let url = aidash_application::tools::validate_native_http_url(
+					required(&input, "url")?,
+					allowed_hosts,
+				)?;
+				let host = url.host_str().ok_or(Error::Forbidden)?;
+				let addresses: Vec<std::net::SocketAddr> = tokio::net::lookup_host((host, 443))
+					.await
+					.map_err(|error| Error::Port(Box::new(error)))?
+					.collect();
+				if addresses.is_empty()
+					|| addresses.len() > 32
+					|| addresses.iter().any(|address| {
+						!aidash_domain::capabilities::outbound::public_ip(address.ip())
+					}) {
+					return Err(Error::Forbidden);
+				}
+				let client = reqwest::Client::builder()
+					.no_proxy()
+					.redirect(reqwest::redirect::Policy::none())
+					.timeout(std::time::Duration::from_secs(10))
+					.resolve_to_addrs(host, &addresses)
+					.build()
+					.map_err(crate::http_error)?;
+				let response = client
 					.get(url.clone())
 					.send()
 					.await

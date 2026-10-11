@@ -51,13 +51,37 @@ impl Participant {
 		Ok(())
 	}
 
+	async fn expire_reserved(
+		scope: &mut dyn ParticipantScope,
+		manifest: &Manifest,
+		existing: &LocalStatus,
+	) -> Result<Option<LocalStatus>> {
+		if existing.phase != "RESERVED" || manifest.deadline > scope.now().await? {
+			return Ok(None);
+		}
+		if scope.gate_exclusive().await? != Some(manifest.id) {
+			return Err(Error::Conflict(
+				"participant lost its visibility barrier".into(),
+			));
+		}
+		scope.release_gate(false).await?;
+		Ok(Some(
+			scope
+				.transition(manifest.id, ParticipantPhase::Aborted)
+				.await?,
+		))
+	}
+
 	pub async fn reserve(&self, caller: &str, manifest: &Manifest) -> Result<LocalStatus> {
 		self.sender(caller, manifest)?;
 		// Existing durable admission remains an obligation after live grant revocation.
 		let mut scope = self.repository.begin().await?;
 		if let Some(existing) = scope.lock(manifest.id).await? {
 			Self::check(&existing, manifest)?;
-			return scope.finish(Ok(existing)).await;
+			let row = Self::expire_reserved(scope.as_mut(), manifest, &existing)
+				.await?
+				.unwrap_or(existing);
+			return scope.finish(Ok(row)).await;
 		}
 		scope.rollback().await?;
 		if let Some(mut scope) = self.repository.admission(caller, manifest).await? {
@@ -92,7 +116,18 @@ impl Participant {
 	) -> Result<LocalStatus> {
 		if let Some(existing) = scope.lock(manifest.id).await? {
 			Self::check(&existing, manifest)?;
-			return Ok(existing);
+			return Ok(Self::expire_reserved(scope, manifest, &existing)
+				.await?
+				.unwrap_or(existing));
+		}
+		let remaining = manifest
+			.deadline
+			.signed_duration_since(scope.now().await?)
+			.num_seconds();
+		if !(1..=3600).contains(&remaining) {
+			return Err(Error::Invalid(
+				"new participant deadline must be within the next hour".into(),
+			));
 		}
 		if caller != self.repository.node_id() && !scope.trusted(caller).await? {
 			return Err(Error::Forbidden);
@@ -114,6 +149,9 @@ impl Participant {
 			.await?
 			.ok_or_else(|| Error::Conflict("participant was not reserved".into()))?;
 		Self::check(&existing, manifest)?;
+		if let Some(aborted) = Self::expire_reserved(scope.as_mut(), manifest, &existing).await? {
+			return scope.finish(Ok(aborted)).await;
+		}
 		if existing.phase != "RESERVED" {
 			return scope.finish(Ok(existing)).await;
 		}
@@ -231,6 +269,20 @@ impl Participant {
 		let mut completed = 0;
 		for row in pending.rows() {
 			let manifest: Manifest = serde_json::from_value(row.manifest.clone())?;
+			if row.phase == "RESERVED" {
+				let mut scope = self.repository.begin().await?;
+				if let Some(existing) = scope.lock(manifest.id).await? {
+					Self::check(&existing, &manifest)?;
+					if let Some(aborted) =
+						Self::expire_reserved(scope.as_mut(), &manifest, &existing).await?
+					{
+						scope.finish(Ok(aborted)).await?;
+						completed += 1;
+						continue;
+					}
+				}
+				scope.rollback().await?;
+			}
 			// Only a durable coordinator decision can advance a participant's outcome.
 			match self.coordinator.decision(&manifest).await {
 				Ok(proof) if proof.decision.is_some() => {

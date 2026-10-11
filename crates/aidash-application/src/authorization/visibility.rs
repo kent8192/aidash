@@ -23,6 +23,9 @@ pub async fn local_base_visible(
 	scope: &mut dyn LocalRunVisibilityScope,
 	run: &RunMetadata,
 ) -> Result<bool> {
+	if !scope.core_area_visible(run.id).await? {
+		return Ok(false);
+	}
 	if let Some(allowed) = scope.cached(run) {
 		return if allowed {
 			scope.human_reads(run.workspace_id, run.id).await

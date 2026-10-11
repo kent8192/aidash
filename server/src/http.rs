@@ -254,6 +254,7 @@ use async_trait::async_trait;
 use http::{HeaderMap, HeaderName, HeaderValue, header};
 use reinhardt::core::exception::Error as FrameworkError;
 use reinhardt::http::{ExceptionHandler, Handler, Middleware};
+use reinhardt::server::{AdmittedRequest, PreBodyAdmitted, RequestAdmission, RequestHead};
 use reinhardt::{InjectionContext, Request, injectable};
 use std::{
 	collections::HashMap,
@@ -264,6 +265,8 @@ use std::{
 use tokio::sync::Semaphore;
 
 pub const BODY_LIMIT: usize = 1024 * 1024;
+const MAX_RATE_BUCKETS: usize = 16_384;
+const PRUNE_INTERVAL: usize = 1024;
 #[derive(Clone, Debug)]
 pub(crate) struct AuthenticatedPeer(pub String);
 #[derive(Clone)]
@@ -271,7 +274,17 @@ pub struct Protection {
 	settings: Settings,
 	permits: Arc<Semaphore>,
 	sse: SseSlots,
-	buckets: Arc<Mutex<HashMap<String, (f64, Instant)>>>,
+	buckets: Arc<Mutex<RateBuckets>>,
+}
+struct RateBucket {
+	tokens: f64,
+	updated: Instant,
+	expires_after: Duration,
+}
+#[derive(Default)]
+struct RateBuckets {
+	entries: HashMap<String, RateBucket>,
+	admissions: usize,
 }
 impl Protection {
 	pub fn new(settings: Settings) -> Self {
@@ -279,25 +292,35 @@ impl Protection {
 			permits: Arc::new(Semaphore::new(settings.concurrency)),
 			sse: SseSlots(Arc::new(Semaphore::new(settings.sse_connections))),
 			settings,
-			buckets: Arc::new(Mutex::new(HashMap::new())),
+			buckets: Arc::new(Mutex::new(RateBuckets::default())),
 		}
 	}
 	fn admit(&self, key: String, burst: u32, period: Duration) -> bool {
 		let now = Instant::now();
 		let mut buckets = self.buckets.lock().expect("HTTP admission");
-		if buckets.len() >= 1024 {
-			buckets.retain(|_, (_, updated)| {
-				now.duration_since(*updated) < period.saturating_mul(burst)
-			});
+		buckets.admissions = buckets.admissions.wrapping_add(1);
+		if buckets.admissions.is_multiple_of(PRUNE_INTERVAL) {
+			buckets
+				.entries
+				.retain(|_, bucket| now.duration_since(bucket.updated) < bucket.expires_after);
 		}
-		let entry = buckets.entry(key).or_insert((f64::from(burst), now));
-		entry.0 = (entry.0 + now.duration_since(entry.1).as_secs_f64() / period.as_secs_f64())
-			.min(f64::from(burst));
-		entry.1 = now;
-		if entry.0 < 1.0 {
+		if !buckets.entries.contains_key(&key) && buckets.entries.len() >= MAX_RATE_BUCKETS {
 			return false;
 		}
-		entry.0 -= 1.0;
+		let entry = buckets.entries.entry(key).or_insert(RateBucket {
+			tokens: f64::from(burst),
+			updated: now,
+			expires_after: period.saturating_mul(burst),
+		});
+		entry.tokens = (entry.tokens
+			+ now.duration_since(entry.updated).as_secs_f64() / period.as_secs_f64())
+		.min(f64::from(burst));
+		entry.updated = now;
+		entry.expires_after = period.saturating_mul(burst);
+		if entry.tokens < 1.0 {
+			return false;
+		}
+		entry.tokens -= 1.0;
 		true
 	}
 	pub(crate) fn authenticated(
@@ -339,6 +362,27 @@ impl Protection {
 			}
 		}
 		Some(peer)
+	}
+}
+#[async_trait]
+impl RequestAdmission for Protection {
+	async fn admit(&self, head: RequestHead<'_>) -> std::result::Result<AdmittedRequest, Response> {
+		let path = head.uri.path();
+		let limit = if path.contains("/chunks") || path.contains("/scoped/files/") {
+			6 * 1024 * 1024
+		} else {
+			BODY_LIMIT
+		};
+		let permit = self
+			.permits
+			.clone()
+			.try_acquire_owned()
+			.map_err(|_| rejection(StatusCode::SERVICE_UNAVAILABLE, "server overloaded"))?;
+		Ok(AdmittedRequest::new(
+			limit as u64,
+			self.settings.timeout,
+			permit,
+		))
 	}
 }
 #[injectable(scope = "singleton")]
@@ -428,7 +472,12 @@ impl Middleware for Gateway {
 			}) {
 			rejection(StatusCode::TOO_MANY_REQUESTS, "rate limit exceeded")
 		} else {
-			match protection.permits.clone().try_acquire_owned() {
+			let permit = if request.extensions.get::<PreBodyAdmitted>().is_some() {
+				Ok(None)
+			} else {
+				protection.permits.clone().try_acquire_owned().map(Some)
+			};
+			match permit {
 				Err(_) => rejection(StatusCode::SERVICE_UNAVAILABLE, "server overloaded"),
 				Ok(permit) => {
 					let lease = if sse {

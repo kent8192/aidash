@@ -1,5 +1,7 @@
 import { transportGeneration } from "./transport";
 import { stream } from "./generated/aidash";
+const MAX_SSE_FRAME_CHARS = 64 * 1024;
+const TEXT_CHUNK_BYTES = 16 * 1024;
 export async function subscribe(
   signal: AbortSignal,
   onEvent: () => void,
@@ -33,22 +35,36 @@ export async function subscribe(
             return;
           }
           if (done) throw new Error("stream closed");
-          buffer += decoder
-            .decode(value, { stream: true })
-            .replace(/\r\n/g, "\n");
-          let end;
-          while ((end = buffer.indexOf("\n\n")) >= 0) {
-            const block = buffer.slice(0, end);
-            buffer = buffer.slice(end + 2);
-            const id = block
-              .split("\n")
-              .find((line) => line.startsWith("id:"))
-              ?.slice(3)
-              .trim();
-            if (id) {
-              cursor = id;
-              onEvent();
+          for (
+            let offset = 0;
+            offset < value.length;
+            offset += TEXT_CHUNK_BYTES
+          ) {
+            buffer += decoder.decode(
+              value.subarray(offset, offset + TEXT_CHUNK_BYTES),
+              {
+                stream: true,
+              },
+            );
+            buffer = buffer.replace(/\r\n/g, "\n");
+            let end;
+            while ((end = buffer.indexOf("\n\n")) >= 0) {
+              if (end > MAX_SSE_FRAME_CHARS)
+                throw new Error("SSE frame too large");
+              const block = buffer.slice(0, end);
+              buffer = buffer.slice(end + 2);
+              const id = block
+                .split("\n")
+                .find((line) => line.startsWith("id:"))
+                ?.slice(3)
+                .trim();
+              if (id) {
+                cursor = id;
+                onEvent();
+              }
             }
+            if (buffer.length > MAX_SSE_FRAME_CHARS)
+              throw new Error("SSE frame too large");
           }
         }
       } finally {

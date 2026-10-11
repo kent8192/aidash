@@ -1,6 +1,9 @@
 //! Current viewer checks precede original credential authority, without importing producer caches.
 use crate::{Error, Result, ports::authorization::source::reads::SourceReadScope};
-use aidash_domain::{federation::execution::Inspection, semantic::remote::Binding};
+use aidash_domain::{
+	federation::execution::Inspection, registry::AgentConfig, semantic::remote::Binding,
+};
+use serde_json::json;
 use uuid::Uuid;
 pub async fn visible<S: SourceReadScope + ?Sized>(
 	scope: &mut S,
@@ -31,6 +34,17 @@ pub async fn visible<S: SourceReadScope + ?Sized>(
 		let mut producer = scope.producer(&grant).await?;
 		let inspection: Inspection = serde_json::from_value(grant.inspection)?;
 		super::authorize(producer.as_mut(), &task, node, &inspection).await?;
+		let binding: Binding = serde_json::from_value(grant.semantic)?;
+		if let Binding::RequiredHome { compactor, .. } = binding {
+			let agent = AgentConfig::from_snapshot(&inspection.binding_snapshot)?;
+			let mut workspace = producer.source_workspace(task.workspace_id).await?;
+			workspace.attributes["remote_node"] = json!(node);
+			workspace.attributes["inference_model"] = json!(agent.model);
+			workspace.attributes["compactor"] = json!(compactor.map(|provider| provider.entry));
+			producer
+				.source_require(&workspace, "semantic.disclose")
+				.await?;
+		}
 		producer.producer_semantic_sources(id).await?;
 	}
 	scope.record_admission(node, id, admission)?;

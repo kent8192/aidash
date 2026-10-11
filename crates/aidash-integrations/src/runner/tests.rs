@@ -1,9 +1,10 @@
 use super::*;
 use axum::{
 	Json, Router,
+	body::Body,
 	extract::Path,
 	http::{HeaderMap, StatusCode},
-	response::IntoResponse,
+	response::{IntoResponse, Response},
 	routing::{get, post},
 };
 use rstest::rstest;
@@ -66,6 +67,10 @@ async fn fixture() -> (Server, RunnerHttp, Arc<Keys>) {
 		.route(
 			"/v1/operations/invalid-json",
 			get(|| async { (StatusCode::NOT_FOUND, "not-json") }),
+		)
+		.route(
+			"/oversize",
+			get(|| async { Response::new(Body::from(vec![b' '; MAX_RUNNER_RESPONSE_BYTES + 1])) }),
 		);
 	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
 	let endpoint = format!("http://{}/", listener.local_addr().unwrap());
@@ -144,6 +149,15 @@ async fn invalid_json_does_not_masquerade_as_an_absent_operation() {
 			.request("GET", "/v1/operations/invalid-json", None)
 			.await,
 		Err(Error::External(_))
+	));
+}
+#[rstest]
+#[tokio::test]
+async fn oversized_runner_response_is_rejected_before_json_decoding() {
+	let (_server, client, _keys) = fixture().await;
+	assert!(matches!(
+		client.request("GET", "/oversize", None).await,
+		Err(Error::External(message)) if message.contains("response exceeds 33554432 bytes")
 	));
 }
 #[rstest]

@@ -1,7 +1,83 @@
-use super::{Protection, ProxyNetwork, Settings, mark_sensitive_headers, private_response};
+use super::{
+	MAX_RATE_BUCKETS, PRUNE_INTERVAL, Protection, ProxyNetwork, Settings, mark_sensitive_headers,
+	private_response,
+};
 use http::{HeaderValue, header};
+use reinhardt::server::{RequestAdmission, RequestHead};
 use reinhardt::{Request, Response};
 use rstest::rstest;
+use std::time::{Duration, Instant};
+
+#[test]
+fn rate_buckets_remain_bounded_without_scanning_on_every_admission() {
+	let protection = Protection::new(Settings::default());
+	for id in 0..MAX_RATE_BUCKETS {
+		assert!(protection.admit(format!("auth:{id}"), 2, Duration::from_secs(60)));
+	}
+	assert!(!protection.admit("auth:overflow".into(), 2, Duration::from_secs(60)));
+	assert!(protection.admit("auth:0".into(), 2, Duration::from_secs(60)));
+	{
+		let mut buckets = protection.buckets.lock().unwrap();
+		assert_eq!(buckets.entries.len(), MAX_RATE_BUCKETS);
+		for bucket in buckets.entries.values_mut() {
+			bucket.updated = Instant::now() - Duration::from_secs(121);
+		}
+		buckets.admissions = PRUNE_INTERVAL - 1;
+	}
+	assert!(protection.admit("auth:new".into(), 2, Duration::from_secs(60)));
+	assert_eq!(protection.buckets.lock().unwrap().entries.len(), 1);
+}
+
+#[tokio::test]
+async fn body_admission_owns_the_request_slot_and_uses_route_limits() {
+	let protection = Protection::new(Settings {
+		concurrency: 1,
+		..Default::default()
+	});
+	let method = http::Method::POST;
+	let headers = http::HeaderMap::new();
+	let uri = "/api/workspaces/scoped/files/file/chunks".parse().unwrap();
+	let admitted = RequestAdmission::admit(
+		&protection,
+		RequestHead {
+			method: &method,
+			uri: &uri,
+			headers: &headers,
+			remote_addr: None,
+		},
+	)
+	.await
+	.unwrap();
+	assert_eq!(admitted.max_body_size, 6 * 1024 * 1024);
+	let denied = RequestAdmission::admit(
+		&protection,
+		RequestHead {
+			method: &method,
+			uri: &uri,
+			headers: &headers,
+			remote_addr: None,
+		},
+	)
+	.await;
+	assert_eq!(
+		denied.err().unwrap().status,
+		http::StatusCode::SERVICE_UNAVAILABLE
+	);
+	drop(admitted);
+	let ordinary = "/api/tasks".parse().unwrap();
+	let admitted = RequestAdmission::admit(
+		&protection,
+		RequestHead {
+			method: &method,
+			uri: &ordinary,
+			headers: &headers,
+			remote_addr: None,
+		},
+	)
+	.await
+	.unwrap();
+	assert_eq!(admitted.max_body_size, super::BODY_LIMIT as u64);
+}
 
 #[rstest]
 #[case(true)]

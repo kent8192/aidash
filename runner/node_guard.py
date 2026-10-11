@@ -20,6 +20,8 @@ import time
 import uuid
 
 ROOT = Path(os.environ.get('AIDASH_GUARD_STATE', '/var/lib/aidash-node-guard'))
+LEGACY_ROOT = Path(os.environ['AIDASH_GUARD_LEGACY_STATE']) if os.environ.get('AIDASH_GUARD_LEGACY_STATE') else None
+MIGRATION_WARNED = set()
 RUNTIME = os.environ.get('AIDASH_RUNSC_ROOT', '/run/containerd/runsc/k8s.io')
 RUNSC_BINARY = os.environ.get('AIDASH_RUNSC_BINARY', '/usr/local/bin/runsc')
 CTR_BINARY = os.environ.get('AIDASH_CTR_BINARY', '/usr/bin/ctr')
@@ -331,11 +333,35 @@ def handle(request):
         return {'files': files}
 
 
+def migrate_legacy():
+    if LEGACY_ROOT is None or LEGACY_ROOT == ROOT or not LEGACY_ROOT.is_dir():
+        return
+    with (LEGACY_ROOT / 'migration.lock').open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        for path in LEGACY_ROOT.glob('*.json'):
+            try:
+                record = json.loads(path.read_bytes())
+                # validate checks the live container, Pod UID, image and this
+                # release's sandbox namespace before adopting an old deadline.
+                validate(record)
+                target = ROOT / path.name
+                if target.exists():
+                    continue
+                save(target, record)
+                path.unlink()
+                MIGRATION_WARNED.discard(path)
+            except Exception as error:
+                if path not in MIGRATION_WARNED:
+                    print(type(error).__name__ + ': legacy guard state not yet migrated', file=sys.stderr, flush=True)
+                    MIGRATION_WARNED.add(path)
+
+
 def watch():
     ROOT.mkdir(mode=0o700, parents=True, exist_ok=True)
     with (ROOT / 'watch.lock').open('a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         while True:
+            migrate_legacy()
             for path in ROOT.glob('*.json'):
                 try:
                     record = json.loads(path.read_bytes())

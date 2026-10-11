@@ -28,6 +28,7 @@ fn run() -> RunMetadata {
 
 struct Scope {
 	cache: Option<bool>,
+	core_area_visible: bool,
 	frontier: bool,
 	missing_task: bool,
 	task_visible: bool,
@@ -46,6 +47,7 @@ struct Scope {
 fn scope() -> Scope {
 	Scope {
 		cache: None,
+		core_area_visible: true,
 		frontier: false,
 		missing_task: false,
 		task_visible: true,
@@ -75,6 +77,9 @@ impl Scope {
 
 #[async_trait]
 impl LocalRunVisibilityScope for Scope {
+	async fn core_area_visible(&mut self, _: Uuid) -> Result<bool> {
+		Ok(self.core_area_visible)
+	}
 	fn cached(&self, _: &RunMetadata) -> Option<bool> {
 		if self.frontier { None } else { self.cache }
 	}
@@ -246,6 +251,18 @@ async fn cached_base_decisions_never_cache_live_human_membership(
 	scope.humans = humans;
 	assert!(!base_visible(&mut scope, &run).await.unwrap());
 	assert_eq!(scope.calls, calls);
+}
+
+#[rstest]
+#[tokio::test]
+async fn cached_run_is_hidden_after_core_file_authority_is_revoked(
+	run: RunMetadata,
+	mut scope: Scope,
+) {
+	scope.cache = Some(true);
+	scope.core_area_visible = false;
+	assert!(!run_visible(&mut scope, &run).await.unwrap());
+	assert!(scope.calls.is_empty());
 }
 
 #[rstest]
