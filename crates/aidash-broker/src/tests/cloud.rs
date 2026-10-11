@@ -1,6 +1,7 @@
 //! Acceptance through the real Cloud ProviderAccess, issuer, HTTP broker and fakes.
 use super::*;
 use aidash_application::{
+	ports::NoProgress,
 	provider_access::{
 		Context, EnvironmentAccess, Inference, MaintenancePurpose, Operation as CallOperation,
 		ProviderAccess, Source as AccessSource, TenantAccess,
@@ -254,6 +255,10 @@ impl Cloud {
 			credential_env: None,
 			provider_credential: Some("openrouter".into()),
 			request_timeout_secs: Some(5),
+			// The fake upstream holds a stream open for the broker's own stream
+			// tests; these cases cover the access path of a whole completion.
+			streaming: Some(false),
+			stream_stall_timeout_secs: None,
 			reasoning_effort: None,
 			context_window: 32768,
 			max_output_tokens: Some(10),
@@ -322,7 +327,10 @@ async fn cloud_chat_accepts_the_full_raw_media_allowance_after_base64_encoding()
 	));
 	let size = request.input_body().to_string().len();
 	assert!(size > REQUEST_LIMIT && size < CHAT_REQUEST_LIMIT);
-	assert_eq!(provider.infer(request).await.unwrap().text, "ok");
+	assert_eq!(
+		provider.infer(request, &NoProgress).await.unwrap().text,
+		"ok"
+	);
 	assert_eq!(c.broker_calls.load(Ordering::SeqCst), 3);
 	assert!(
 		c.fixture
@@ -346,14 +354,24 @@ async fn transient_signing_failure_is_external_and_recovers_before_any_broker_ca
 	)
 	.unwrap();
 	c.signer.unavailable.store(true, Ordering::SeqCst);
-	let error = provider.infer(Cloud::request()).await.unwrap_err();
+	let error = provider
+		.infer(Cloud::request(), &NoProgress)
+		.await
+		.unwrap_err();
 	assert!(matches!(error, aidash_application::Error::External(_)));
 	assert_eq!(error.to_string(), "Capability Token signing unavailable");
 	assert_eq!(c.signer.claims.lock().unwrap().len(), 1);
 	assert_eq!(c.broker_calls.load(Ordering::SeqCst), 0);
 	assert_eq!(c.fixture.source.reads.load(Ordering::SeqCst), 0);
 	c.signer.unavailable.store(false, Ordering::SeqCst);
-	assert_eq!(provider.infer(Cloud::request()).await.unwrap().text, "ok");
+	assert_eq!(
+		provider
+			.infer(Cloud::request(), &NoProgress)
+			.await
+			.unwrap()
+			.text,
+		"ok"
+	);
 	assert_eq!(c.signer.claims.lock().unwrap().len(), 2);
 	assert_eq!(c.broker_calls.load(Ordering::SeqCst), 1);
 }
@@ -369,7 +387,14 @@ async fn cloud_mint_routes_chat_media_discovery_embeddings_and_early_streaming()
 		c.context.clone(),
 	)
 	.unwrap();
-	assert_eq!(provider.infer(Cloud::request()).await.unwrap().text, "ok");
+	assert_eq!(
+		provider
+			.infer(Cloud::request(), &NoProgress)
+			.await
+			.unwrap()
+			.text,
+		"ok"
+	);
 	let mut config = c.config();
 	config.media_routes = vec![aidash_domain::model::MediaRouteEvidence {
 		tag: "vendor/route".into(),
@@ -392,7 +417,10 @@ async fn cloud_mint_routes_chat_media_discovery_embeddings_and_early_streaming()
 			media_type: "image/png".into(),
 			bytes: b"\x89PNG\r\n\x1a\n".to_vec(),
 		});
-	assert_eq!(provider.infer(request).await.unwrap().text, "ok");
+	assert_eq!(
+		provider.infer(request, &NoProgress).await.unwrap().text,
+		"ok"
+	);
 	let embedding = aidash_integrations::semantic::embed(
 		c.access.as_ref(),
 		&c.context,
@@ -604,7 +632,7 @@ async fn expired_capability_is_non_retryable_without_remint_or_key_read() {
 	.unwrap();
 	let mut request = Cloud::request();
 	request.instructions = CANARY.into();
-	let error = provider.infer(request).await.unwrap_err();
+	let error = provider.infer(request, &NoProgress).await.unwrap_err();
 	assert!(matches!(error, aidash_application::Error::Invalid(_)));
 	assert!(error.to_string().contains("capability_expired"));
 	assert!(!error.to_string().contains(CANARY));
@@ -640,7 +668,14 @@ async fn runless_memory_inference_mints_exact_purposes_and_rebinds_per_call() {
 			context,
 		)
 		.unwrap();
-		assert_eq!(provider.infer(Cloud::request()).await.unwrap().text, "ok");
+		assert_eq!(
+			provider
+				.infer(Cloud::request(), &NoProgress)
+				.await
+				.unwrap()
+				.text,
+			"ok"
+		);
 		let claim = c.signer.claims.lock().unwrap().last().unwrap().clone();
 		assert_eq!(
 			serde_json::to_value(claim.sub).unwrap(),
@@ -698,9 +733,23 @@ async fn self_hosted_env_stays_direct_and_resolves_the_key_on_every_call() {
 		Context::default(),
 	)
 	.unwrap();
-	assert_eq!(provider.infer(Cloud::request()).await.unwrap().text, "ok");
+	assert_eq!(
+		provider
+			.infer(Cloud::request(), &NoProgress)
+			.await
+			.unwrap()
+			.text,
+		"ok"
+	);
 	*c.env.0.lock().unwrap() = "changed-env-key".into();
-	assert_eq!(provider.infer(Cloud::request()).await.unwrap().text, "ok");
+	assert_eq!(
+		provider
+			.infer(Cloud::request(), &NoProgress)
+			.await
+			.unwrap()
+			.text,
+		"ok"
+	);
 	assert_eq!(
 		*c.fixture.provider.bearer.lock().unwrap(),
 		vec![format!("Bearer {CANARY}"), "Bearer changed-env-key".into()]

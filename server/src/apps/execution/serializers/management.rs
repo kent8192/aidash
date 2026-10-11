@@ -19,3 +19,9 @@ pub(crate) struct EventQuery {
 	pub(crate) after: i64,
 	pub(crate) workspace_id: Option<Uuid>,
 }
+/// Resume after this `progress_seq`; `Last-Event-ID` takes precedence. Without
+/// a cursor the stream starts at the Run's latest Inference Attempt.
+#[derive(Default, Deserialize, JsonSchema)]
+pub(crate) struct InferenceStreamQuery {
+	pub(crate) after: Option<i64>,
+}

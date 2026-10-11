@@ -139,6 +139,7 @@ class RuntimeConfigurationTests(unittest.TestCase):
         gcip = {
             "project_id": PROJECT, "web_api_key": "public", "public_origin": "https://pr-2.aidash.run",
             "tenant_bindings": {"pool": "acme"}, "providers": {}, "password_sign_up": [],
+            "sign_in_domains": {"acme.example": "pool"},
         }
         settings = self.materialize({"dashboard": {"gcip": gcip}})
         self.assertEqual(settings["gcip"], {"dashboard": {"gcip": gcip}})
@@ -163,6 +164,7 @@ class RuntimeConfigurationTests(unittest.TestCase):
             {"dashboard": {"gcip": dict(gcip, public_origin="https://other.aidash.run")}},
             {"dashboard": {"gcip": dict(gcip, unexpected=True)}},
             {"dashboard": {"gcip": dict(gcip, auth_helper="auth.example.test")}},
+            {"dashboard": {"gcip": dict(gcip, sign_in_domains=["acme.example"])}},
             dict(RUNTIME, AIDASH_SECRET_MULTILINE="a\nb"),
         ]:
             with self.subTest(runtime=runtime), self.assertRaises(Refused):
