@@ -55,6 +55,9 @@ export function createClient() {
   return {
     popup: async (id) => {
       record({ kind: "popup", id });
+      // Lets a test act while the provider popup is still open.
+      if (sessionStorage.getItem("fixture-popup-hold"))
+        await new Promise((resolve) => { window.fixtureFinishPopup = resolve; });
       const code = sessionStorage.getItem("fixture-popup-error");
       if (code) throw Object.assign(new Error(code), { code });
       return token;
@@ -76,7 +79,11 @@ export function createClient() {
     password: async () => token,
     register: async () => { record({ kind: "register" }); return true; },
     resend: async () => { record({ kind: "resend" }); return true; },
-    close: async () => record({ kind: "close" }),
+    close: async () => {
+      record({ kind: "close" });
+      // Mimics storage access denied while signing out or deleting the app.
+      if (sessionStorage.getItem("fixture-close-error")) throw new Error("storage denied");
+    },
   };
 }`,
     }),

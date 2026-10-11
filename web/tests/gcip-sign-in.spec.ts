@@ -113,6 +113,94 @@ test("a failed redirect exchange keeps the form and clears Firebase state", asyn
   await expectNoFirebaseResidue(page, token);
 });
 
+test("an expired transaction on redirect return clears Firebase state", async ({
+  page,
+}) => {
+  const token = await mockGcip(page);
+  await page.route("**/auth/gcip/transaction?**", (route) =>
+    route.fulfill({ status: 410, body: "" }),
+  );
+  await page.addInitScript(() => {
+    sessionStorage.setItem(
+      "firebase:pendingRedirect:public-key:aidash-gcip",
+      "true",
+    );
+    indexedDB.open("firebaseLocalStorageDb").onsuccess = (event) =>
+      (event.target as IDBOpenDBRequest).result.close();
+  });
+  await page.goto("/sign-in?state=browser-bound-state");
+  await expect(page.getByRole("status")).toContainText("Sign-in failed");
+  expect(await calls(page)).toEqual([]);
+  await expect
+    .poll(
+      async () =>
+        await page.evaluate(async () =>
+          (await indexedDB.databases()).map((database) => database.name),
+        ),
+    )
+    .not.toContain("firebaseLocalStorageDb");
+  await expectNoFirebaseResidue(page, token);
+});
+
+test("changing language during a popup keeps the active client", async ({
+  page,
+}) => {
+  await mockGcip(page);
+  await page.addInitScript(() =>
+    sessionStorage.setItem("fixture-popup-hold", "true"),
+  );
+  await page.route("**/signed-in", (route) =>
+    route.fulfill({ body: "Signed in" }),
+  );
+  let transactions = 0;
+  page.on("request", (request) => {
+    if (new URL(request.url()).pathname === "/auth/gcip/transaction")
+      transactions++;
+  });
+  await page.goto("/sign-in?state=browser-bound-state");
+  await page
+    .getByRole("button", { name: "Continue with Google", exact: true })
+    .click();
+  await expect.poll(() => calls(page)).toContain("popup:google.com");
+  const loaded = transactions;
+  await page.getByRole("button", { name: "日本語", exact: true }).click();
+  await expect(
+    page.getByRole("heading", { name: "Aidash にサインイン" }),
+  ).toBeVisible();
+  // No redirect recovery reran, so nothing released the in-flight client.
+  expect(transactions).toBe(loaded);
+  expect(await calls(page)).toEqual([
+    "create",
+    "redirectResult",
+    "close",
+    "create",
+    "popup:google.com",
+  ]);
+  await page.evaluate(() =>
+    (
+      window as unknown as { fixtureFinishPopup: () => void }
+    ).fixtureFinishPopup(),
+  );
+  await expect(page).toHaveURL(/\/signed-in$/);
+});
+
+test("a cleanup failure after a successful exchange still navigates", async ({
+  page,
+}) => {
+  await mockGcip(page);
+  await page.addInitScript(() =>
+    sessionStorage.setItem("fixture-close-error", "true"),
+  );
+  await page.route("**/signed-in", (route) =>
+    route.fulfill({ body: "Signed in" }),
+  );
+  await page.goto("/sign-in?state=browser-bound-state");
+  await page
+    .getByRole("button", { name: "Continue with Google", exact: true })
+    .click();
+  await expect(page).toHaveURL(/\/signed-in$/);
+});
+
 for (const provider of ["oidc.company", "saml.company"])
   test(`popup supports ${provider}`, async ({ page }) => {
     await mockGcip(page);

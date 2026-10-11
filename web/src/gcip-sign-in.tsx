@@ -52,6 +52,12 @@ const copy = {
     loading: "サインインを準備中…",
   },
 } as const;
+type Message =
+  | "verification"
+  | "verificationFailed"
+  | "resendError"
+  | "verified"
+  | "error";
 // Exchange a fresh GCIP ID token for the opaque Aidash session.
 async function exchange(state: string, token: string) {
   const response = await fetch("/auth/gcip/exchange", {
@@ -107,7 +113,9 @@ export default function GcipSignIn({
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
-  const [message, setMessage] = useState("");
+  // Store the copy key, not localized text, so the redirect recovery effect
+  // never depends on the locale and a language switch re-renders the notice.
+  const [message, setMessage] = useState<Message>();
   useEffect(() => {
     if (!state) return;
     const controller = new AbortController();
@@ -141,41 +149,46 @@ export default function GcipSignIn({
       }
       if (controller.signal.aborted) return;
       setConfig(loaded);
-      if (failed) setMessage(text.error);
+      if (failed) setMessage("error");
     };
     load().catch(() => {
-      if (!controller.signal.aborted) setMessage(text.error);
+      if (controller.signal.aborted) return;
+      // An unusable transaction (e.g. expired on redirect return) never reaches
+      // a client; still drop any pending-redirect state Firebase left behind.
+      void clearGcipStorage().catch(() => {});
+      setMessage("error");
     });
     return () => controller.abort();
-  }, [state, text.error]);
+  }, [state]);
   const authenticate = async (
     provider?: string,
     action: "sign-in" | "register" | "resend" = "sign-in",
   ) => {
     if (!config || !state || busy) return;
     setBusy(true);
-    setMessage("");
+    setMessage(undefined);
     let client: GcipClient | undefined;
     try {
       client = createClient(config);
       if (action === "register") {
         const sent = await client.register(email, password);
-        setMessage(sent ? text.verification : text.verificationFailed);
+        setMessage(sent ? "verification" : "verificationFailed");
         return;
       }
       if (action === "resend") {
         const sent = await client.resend(email, password);
-        setMessage(sent ? text.verification : text.verified);
+        setMessage(sent ? "verification" : "verified");
         return;
       }
       const token = provider
         ? await federated(client, provider)
         : await client.password(email, password);
       const destination = await exchange(state, token);
-      await release(client);
+      // The exchange consumed the transaction; cleanup must not block navigation.
+      await release(client).catch(() => {});
       window.location.assign(destination);
     } catch {
-      setMessage(action === "resend" ? text.resendError : text.error);
+      setMessage(action === "resend" ? "resendError" : "error");
     } finally {
       setPassword("");
       await release(client).catch(() => {});
@@ -304,7 +317,7 @@ export default function GcipSignIn({
       ) : (
         !message && <Loading>{text.loading}</Loading>
       )}
-      {message && <Notice role="status">{message}</Notice>}
+      {message && <Notice role="status">{text[message]}</Notice>}
     </AuthCard>
   );
 }
