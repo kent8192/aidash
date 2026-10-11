@@ -30,13 +30,20 @@ SENSITIVE = {
     "iam.serviceAccounts.signJwt": "iam.googleapis.com/serviceAccounts.signJwt",
     "iam.serviceAccounts.implicitDelegation": "iam.googleapis.com/serviceAccounts.implicitDelegation",
     "iam.serviceAccountKeys.create": "iam.googleapis.com/serviceAccountKeys.create",
+    "iam.serviceAccounts.delete": "iam.googleapis.com/serviceAccounts.delete",
+    "iam.serviceAccounts.undelete": "iam.googleapis.com/serviceAccounts.undelete",
+    "iam.serviceAccounts.disable": "iam.googleapis.com/serviceAccounts.disable",
+    "iam.serviceAccounts.getOpenIdToken": "iam.googleapis.com/serviceAccounts.getOpenIdToken",
 }
 # Every predefined role the deploy identity may hold, with the sensitive permissions it
 # carries. A role missing here fails the test: whoever adds it must decide whether it
 # can reach a broker account (for example roles/iam.serviceAccountTokenCreator or
 # roles/iam.serviceAccountKeyAdmin would) and extend the deny policy first.
 PREDEFINED_ROLES = {
-    "roles/iam.serviceAccountAdmin": {"iam.serviceAccounts.setIamPolicy"},
+    "roles/iam.serviceAccountAdmin": {
+        "iam.serviceAccounts.setIamPolicy", "iam.serviceAccounts.delete",
+        "iam.serviceAccounts.undelete", "iam.serviceAccounts.disable",
+    },
     # actAs only; deliberately not denied (Cloud Run needs it, residual path 2).
     "roles/iam.serviceAccountUser": set(),
     "roles/compute.instanceAdmin.v1": set(), "roles/compute.networkAdmin": set(),
@@ -135,7 +142,10 @@ class DeployBoundaryTests(unittest.TestCase):
 
     def test_an_uncovered_allow_binding_is_detected(self):
         denied = set(self.deny_rule()["denied_permissions"])
-        self.assertEqual(uncovered(["roles/iam.serviceAccountAdmin"], {}, set()), ["iam.serviceAccounts.setIamPolicy"])
+        self.assertEqual(
+            uncovered(["roles/iam.serviceAccountAdmin"], {}, set()),
+            ["iam.serviceAccounts.delete", "iam.serviceAccounts.disable", "iam.serviceAccounts.setIamPolicy", "iam.serviceAccounts.undelete"],
+        )
         # A custom role smuggling a token permission is not covered by a policy that omits it.
         custom = {"projects/p/roles/x": ["iam.serviceAccounts.getAccessToken"]}
         self.assertEqual(uncovered(["projects/p/roles/x"], custom, denied - {SENSITIVE["iam.serviceAccounts.getAccessToken"]}), ["iam.serviceAccounts.getAccessToken"])
@@ -179,7 +189,18 @@ class DeployBoundaryTests(unittest.TestCase):
     def test_alerts_cover_revisions_iam_changes_and_non_broker_key_material_reads(self):
         filters = self.alert_filters()
         revision = filters["Credential Broker: new Cloud Run revision"]
-        self.assertEqual(len(revision), 2)
+        self.assertEqual(len(revision), 4)
+        self.assertIn("protoPayload.request.service.template.serviceAccount", revision[1])
+        self.assertIn("compute.googleapis.com", revision[2])
+        self.assertIn("instances.setServiceAccount", revision[2])
+        self.assertIn("container.googleapis.com", revision[3])
+        self.assertIn("CreateNodePool", revision[3])
+        for runs_as_broker in revision[1:]:
+            self.assertIn('"aidash-test-broker@aidash-fixture.iam.gserviceaccount.com"', runs_as_broker)
+        byok = filters["BYOK project: audit configuration or IAM changed"]
+        self.assertIn("auditConfigDeltas", byok[0])
+        self.assertIn("NOT protoPayload.authenticationInfo.principalEmail=\"aidash-deploy@aidash-fixture.iam.gserviceaccount.com\"", byok[1])
+        self.assertTrue(all("projects/aidash-byok-fixture/logs/cloudaudit.googleapis.com%2Factivity" in f for f in byok))
         self.assertIn('("aidash-production-credential-broker" OR "aidash-test-credential-broker")', revision[0])
         iam = filters["Credential Broker: IAM policy changed"]
         self.assertIn("Services.SetIamPolicy", iam[0])

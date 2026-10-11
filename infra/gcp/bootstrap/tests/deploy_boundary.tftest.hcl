@@ -76,8 +76,8 @@ run "deploy_boundary" {
     error_message = "Only the deploy service account is denied."
   }
   assert {
-    condition     = toset(google_iam_deny_policy.deploy_broker_boundary[0].rules[0].deny_rule[0].denied_permissions) == toset(["iam.googleapis.com/serviceAccounts.setIamPolicy", "iam.googleapis.com/serviceAccounts.getAccessToken", "iam.googleapis.com/serviceAccounts.signBlob", "iam.googleapis.com/serviceAccounts.signJwt", "iam.googleapis.com/serviceAccounts.implicitDelegation", "iam.googleapis.com/serviceAccountKeys.create"])
-    error_message = "The deny covers exactly the impersonation and key-creation permissions of #151."
+    condition     = toset(google_iam_deny_policy.deploy_broker_boundary[0].rules[0].deny_rule[0].denied_permissions) == toset(["iam.googleapis.com/serviceAccounts.setIamPolicy", "iam.googleapis.com/serviceAccounts.getAccessToken", "iam.googleapis.com/serviceAccounts.signBlob", "iam.googleapis.com/serviceAccounts.signJwt", "iam.googleapis.com/serviceAccounts.implicitDelegation", "iam.googleapis.com/serviceAccountKeys.create", "iam.googleapis.com/serviceAccounts.delete", "iam.googleapis.com/serviceAccounts.undelete", "iam.googleapis.com/serviceAccounts.disable", "iam.googleapis.com/serviceAccounts.getOpenIdToken"])
+    error_message = "The deny covers exactly the impersonation, key-creation, deletion and OpenID-token permissions of #151."
   }
   assert {
     condition     = google_iam_deny_policy.deploy_broker_boundary[0].rules[0].deny_rule[0].denial_condition[0].expression == "resource.matchTag('aidash-fixture/aidash-credential-broker', 'broker')" && google_iam_deny_policy.deploy_broker_boundary[0].rules[0].deny_rule[0].exception_principals == null
@@ -108,7 +108,15 @@ run "deploy_boundary" {
     error_message = "Alert on IAM policy changes of broker services and accounts."
   }
   assert {
-    condition     = alltrue([for p in [google_monitoring_alert_policy.broker_revision[0], google_monitoring_alert_policy.broker_iam_policy[0], google_monitoring_alert_policy.byok_key_material_read[0]] : length(p.notification_channels) == 1 && p.alert_strategy[0].notification_rate_limit[0].period == "300s"])
+    condition     = strcontains(google_monitoring_alert_policy.broker_revision[0].conditions[2].condition_matched_log[0].filter, "compute.googleapis.com") && strcontains(google_monitoring_alert_policy.broker_revision[0].conditions[2].condition_matched_log[0].filter, "instances.setServiceAccount") && strcontains(google_monitoring_alert_policy.broker_revision[0].conditions[3].condition_matched_log[0].filter, "container.googleapis.com") && strcontains(google_monitoring_alert_policy.broker_revision[0].conditions[3].condition_matched_log[0].filter, "CreateNodePool")
+    error_message = "A Compute instance or GKE node pool that runs as a broker account must alert."
+  }
+  assert {
+    condition     = google_monitoring_alert_policy.byok_project_iam[0].project == "aidash-byok-fixture" && strcontains(google_monitoring_alert_policy.byok_project_iam[0].conditions[0].condition_matched_log[0].filter, "auditConfigDeltas") && strcontains(google_monitoring_alert_policy.byok_project_iam[0].conditions[1].condition_matched_log[0].filter, "NOT protoPayload.authenticationInfo.principalEmail=\"aidash-deploy@aidash-fixture.iam.gserviceaccount.com\"")
+    error_message = "Audit-config changes and non-deploy IAM changes in the BYOK project must alert."
+  }
+  assert {
+    condition     = alltrue([for p in [google_monitoring_alert_policy.broker_revision[0], google_monitoring_alert_policy.broker_iam_policy[0], google_monitoring_alert_policy.byok_key_material_read[0], google_monitoring_alert_policy.byok_project_iam[0]] : length(p.notification_channels) == 1 && p.alert_strategy[0].notification_rate_limit[0].period == "300s"])
     error_message = "Log-match alerts need a rate limit and a recipient."
   }
 }

@@ -12,6 +12,9 @@ locals {
   quoted_emails   = join(" OR ", [for email in local.broker_account_emails : "\"${email}\""])
   quoted_ids      = join(" OR ", [for id in local.broker_account_ids : "\"${id}\""])
   cloud_run_audit = "protoPayload.serviceName=\"run.googleapis.com\""
+  // Structured service-account fields of Cloud Run v2/v1 service and job requests; the
+  // substring match on the whole request stays as the fallback for shapes not listed.
+  cloud_run_runs_as_broker = "(protoPayload.request.service.template.serviceAccount=(${local.quoted_emails}) OR protoPayload.request.template.serviceAccount=(${local.quoted_emails}) OR protoPayload.request.job.template.template.serviceAccount=(${local.quoted_emails}) OR protoPayload.request.service.spec.template.spec.serviceAccountName=(${local.quoted_emails}) OR protoPayload.request.spec.template.spec.serviceAccountName=(${local.quoted_emails}) OR protoPayload.request:(${local.quoted_emails}))"
 }
 
 resource "google_project_service" "alerting" {
@@ -57,7 +60,19 @@ resource "google_monitoring_alert_policy" "broker_revision" {
   conditions {
     display_name = "Cloud Run workload deployed as a broker account"
     condition_matched_log {
-      filter = "${local.cloud_run_audit} AND protoPayload.methodName:(\"Services.CreateService\" OR \"Services.UpdateService\" OR \"Services.ReplaceService\" OR \"Jobs.CreateJob\" OR \"Jobs.UpdateJob\" OR \"Jobs.ReplaceJob\") AND protoPayload.request:(${local.quoted_emails})"
+      filter = "${local.cloud_run_audit} AND protoPayload.methodName:(\"Services.CreateService\" OR \"Services.UpdateService\" OR \"Services.ReplaceService\" OR \"Jobs.CreateJob\" OR \"Jobs.UpdateJob\" OR \"Jobs.ReplaceJob\") AND ${local.cloud_run_runs_as_broker}"
+    }
+  }
+  conditions {
+    display_name = "Compute instance created or re-identified as a broker account"
+    condition_matched_log {
+      filter = "protoPayload.serviceName=\"compute.googleapis.com\" AND protoPayload.methodName:(\"instances.insert\" OR \"instances.bulkInsert\" OR \"instances.setServiceAccount\" OR \"instanceTemplates.insert\") AND protoPayload.request:(${local.quoted_emails})"
+    }
+  }
+  conditions {
+    display_name = "GKE cluster or node pool created or updated with a broker account"
+    condition_matched_log {
+      filter = "protoPayload.serviceName=\"container.googleapis.com\" AND protoPayload.methodName:(\"CreateCluster\" OR \"UpdateCluster\" OR \"CreateNodePool\" OR \"UpdateNodePool\" OR \"SetNodePoolManagement\") AND protoPayload.request:(${local.quoted_emails})"
     }
   }
   alert_strategy {
@@ -66,7 +81,7 @@ resource "google_monitoring_alert_policy" "broker_revision" {
   }
   documentation {
     mime_type = "text/markdown"
-    content   = "A Credential Broker revision changed outside human review. Compare the image digest with `infra/gcp/environments/broker-image.json` and the deploy workflow run that made the change."
+    content   = "A Credential Broker revision changed, or another workload (Cloud Run, Compute, GKE) was created to run as a broker account, outside human review. Compare the image digest with `infra/gcp/environments/broker-image.json` and the deploy workflow run that made the change."
   }
   depends_on = [google_project_service.alerting]
 }
@@ -125,6 +140,43 @@ resource "google_monitoring_alert_policy" "byok_key_material_read" {
   documentation {
     mime_type = "text/markdown"
     content   = "Key Material was read, or a read was attempted, by a principal that is not a Credential Broker account."
+  }
+  depends_on = [google_project_service.alerting]
+}
+
+// The deploy identity may change BYOK project IAM under a modifiedGrantsByRole
+// condition. If that attribute ignores audit configs, deploy could drop DATA_READ
+// logging and blind the Key Material alert, so (a) any audit-config change and (b)
+// any IAM change by someone other than the deploy identity alert from the Admin
+// Activity log, which cannot be turned off. Deploy's own binding-only changes (runtime
+// role grants for each Environment) stay quiet. Whether modifiedGrantsByRole covers
+// audit configs is a #152 check.
+resource "google_monitoring_alert_policy" "byok_project_iam" {
+  count                 = local.broker_boundary ? 1 : 0
+  project               = var.byok_project_id
+  display_name          = "BYOK project: audit configuration or IAM changed"
+  combiner              = "OR"
+  severity              = "CRITICAL"
+  notification_channels = [for channel in google_monitoring_notification_channel.byok : channel.id]
+  conditions {
+    display_name = "Audit configuration changed"
+    condition_matched_log {
+      filter = "logName=\"projects/${var.byok_project_id}/logs/cloudaudit.googleapis.com%2Factivity\" AND protoPayload.serviceName=\"cloudresourcemanager.googleapis.com\" AND protoPayload.methodName=\"SetIamPolicy\" AND protoPayload.serviceData.policyDelta.auditConfigDeltas:*"
+    }
+  }
+  conditions {
+    display_name = "Project IAM set by a principal other than the deploy identity"
+    condition_matched_log {
+      filter = "logName=\"projects/${var.byok_project_id}/logs/cloudaudit.googleapis.com%2Factivity\" AND protoPayload.serviceName=\"cloudresourcemanager.googleapis.com\" AND protoPayload.methodName=\"SetIamPolicy\" AND NOT protoPayload.authenticationInfo.principalEmail=\"${google_service_account.automation["deploy"].email}\""
+    }
+  }
+  alert_strategy {
+    notification_rate_limit { period = "300s" }
+    auto_close = "604800s"
+  }
+  documentation {
+    mime_type = "text/markdown"
+    content   = "The BYOK project's audit configuration or IAM policy changed outside the deploy identity's routine runtime-role grants. Check that DATA_READ audit logging for Secret Manager is still on."
   }
   depends_on = [google_project_service.alerting]
 }

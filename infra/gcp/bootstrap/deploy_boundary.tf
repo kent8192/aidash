@@ -11,6 +11,12 @@ locals {
     "iam.googleapis.com/serviceAccounts.signJwt",
     "iam.googleapis.com/serviceAccounts.implicitDelegation",
     "iam.googleapis.com/serviceAccountKeys.create",
+    // Bootstrap owns these accounts; deploy never needs to delete, restore, disable
+    // them or mint an OpenID token as one.
+    "iam.googleapis.com/serviceAccounts.delete",
+    "iam.googleapis.com/serviceAccounts.undelete",
+    "iam.googleapis.com/serviceAccounts.disable",
+    "iam.googleapis.com/serviceAccounts.getOpenIdToken",
   ]
 }
 
@@ -41,7 +47,7 @@ resource "google_iam_deny_policy" "deploy_broker_boundary" {
   name         = "aidash-deploy-broker-boundary"
   display_name = "Deploy identity cannot impersonate Credential Broker accounts"
   rules {
-    description = "Block path 1: no policy changes, tokens, signatures or keys for tagged broker accounts."
+    description = "Block path 1: no policy changes, tokens, signatures, keys, deletion or disabling for tagged broker accounts."
     deny_rule {
       denied_principals  = ["principal://iam.googleapis.com/projects/-/serviceAccounts/${google_service_account.automation["deploy"].email}"]
       denied_permissions = local.broker_denied_permissions
