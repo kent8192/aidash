@@ -94,3 +94,93 @@ async fn targeted_claim_never_acquires_an_older_neighbor(
 		.unwrap();
 	assert_eq!(target.revision, i64::from(eligible));
 }
+
+#[rstest]
+#[tokio::test]
+async fn leasing_skips_runs_whose_stored_requirement_exceeds_the_worker(
+	#[future] database: DatabaseFixture,
+	run: Record,
+) {
+	use crate::domain::run_state::PersistedCapability;
+	// Arrange: one Run in the legacy format and one reserved for tool_batch_state workers.
+	let database = database.await;
+	let store = Store::from_pool(
+		database.connection.into_postgres().unwrap(),
+		"aidash://capability-lease-test".into(),
+	)
+	.await
+	.unwrap();
+	let mut db = database.lease.handle();
+	let legacy = Record {
+		updated_at: Utc::now() - Duration::minutes(2),
+		..run.clone()
+	};
+	let mut pending = run_fixtures::pending(RunState::Ready(ReadyState {}), Default::default());
+	pending["requires"] = serde_json::json!(["tool_batch_state"]);
+	let reserved = Record {
+		id: Uuid::new_v4(),
+		task_id: Uuid::new_v4(),
+		updated_at: Utc::now() - Duration::minutes(1),
+		pending: pending.into(),
+		..run
+	};
+	for record in [&legacy, &reserved] {
+		Record::objects()
+			.create_with_conn(&mut db, record)
+			.await
+			.unwrap();
+	}
+	let old_worker: &'static [PersistedCapability] = &[];
+
+	// Act: an old worker scans the queue and then tries to claim the reserved Run.
+	let mut tx = store.database().begin().await.unwrap();
+	let mut scope = crate::bootstrap::activation_scheduling_scope(tx.as_mut());
+	scope.capabilities = old_worker;
+	let visible: Vec<Uuid> =
+		aidash_application::ports::activation::SchedulingScope::candidates(&mut scope, None, None)
+			.await
+			.unwrap()
+			.into_iter()
+			.map(|raw| raw.id)
+			.collect();
+	let claimed = aidash_application::activation::lease(
+		&mut scope,
+		Uuid::new_v4(),
+		30,
+		Some(reserved.id),
+		&store.node_id,
+		&mut None,
+	)
+	.await
+	.unwrap();
+	tx.commit().await.unwrap();
+
+	// Assert: it sees only the legacy Run and leaves the reserved one untouched.
+	assert_eq!(visible, [legacy.id]);
+	assert!(claimed.is_none());
+	let untouched = Record::objects()
+		.filter(Record::field_id().eq(reserved.id))
+		.get_with_db(&mut db)
+		.await
+		.unwrap();
+	assert_eq!(untouched.revision, 0);
+	assert_eq!(untouched.lease_owner, None);
+	assert_eq!(untouched.phase, RunPhase::Ready);
+
+	// Act: a current worker (production capabilities) claims it right away.
+	let mut tx = store.database().begin().await.unwrap();
+	let resumed = Store::lease_run_in(
+		tx.as_mut(),
+		Uuid::new_v4(),
+		30,
+		Some(reserved.id),
+		&store.node_id,
+		&mut None,
+	)
+	.await
+	.unwrap();
+	tx.commit().await.unwrap();
+
+	// Assert
+	assert_eq!(resumed.unwrap().id, reserved.id);
+}

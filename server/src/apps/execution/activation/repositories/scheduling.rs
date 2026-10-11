@@ -5,7 +5,10 @@ use crate::apps::execution::{
 };
 use crate::{Error, Result};
 use aidash_application::ports::activation::{Approval, RecoveryCursor, SchedulingScope};
-use aidash_domain::{Run, RunMetadata, RunState, TaskStatus, run_state::RawRun};
+use aidash_domain::{
+	Run, RunMetadata, RunState, TaskStatus,
+	run_state::{PersistedCapability, RawRun},
+};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use reinhardt::core::exception::Error as FrameworkError;
@@ -33,6 +36,8 @@ impl Executor for &mut dyn TransactionExecutor {
 }
 pub(crate) struct Scope<E> {
 	pub tx: E,
+	/// What the leasing worker advertises; production passes `PersistedCapability::supported()`.
+	pub capabilities: &'static [PersistedCapability],
 }
 
 pub(crate) fn raw(row: Row) -> Result<RawRun> {
@@ -56,8 +61,22 @@ fn approval(row: Row) -> Result<Approval> {
 	})
 }
 
+/// Excludes Runs whose stored requirement (see `StateRequirements`) is not a subset of
+/// the worker's capabilities. Reads the envelope's `requires` only, so the state is not decoded.
+fn requirements_covered(capabilities: &[PersistedCapability]) -> SimpleExpr {
+	let names: Vec<&str> = capabilities.iter().map(|c| c.name()).collect();
+	Expr::cust_with_values(
+		"COALESCE(pending -> 'requires', '[]'::jsonb) <@ CAST(CAST(? AS text) AS jsonb)",
+		[reinhardt::query::Value::from(json!(names).to_string())],
+	)
+	.into()
+}
+
 #[async_trait]
 impl<E: Executor> SchedulingScope for Scope<E> {
+	fn capabilities(&self) -> &[PersistedCapability] {
+		self.capabilities
+	}
 	async fn now(&mut self) -> aidash_application::Result<DateTime<Utc>> {
 		let (sql, values) = Query::select()
 			.expr_as(Expr::current_timestamp(), Alias::new("now"))
@@ -90,6 +109,7 @@ impl<E: Executor> SchedulingScope for Scope<E> {
 					.add(Expr::col("lease_until").lte(Expr::current_timestamp())),
 			)
 			.and_where(run_unblocked())
+			.and_where(requirements_covered(self.capabilities))
 			.order_by(Alias::new("updated_at"), Order::Asc)
 			.order_by(Alias::new("id"), Order::Asc)
 			.limit(128)

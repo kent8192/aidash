@@ -98,6 +98,48 @@ that may execute them runs a #172 build with a Cache Salt Key configured
 clusters. Rolling back below #172 while Ordered Runs exist stalls those Runs
 instead of rendering them differently.
 
+### Persisted-state capabilities
+
+Persisted Run state that older workers cannot decode (new `deny_unknown_fields`
+fields, new wait reasons) is gated at lease time instead of relying on operators
+to stop old workers first. Each build advertises the `PersistedCapability` values it
+can load (`PersistedCapability::supported()`); the state a Run persists derives
+which of them it needs, and `encode` stores that as a `requires` array in the
+`pending` envelope beside the state. The key is omitted when empty, so Runs that need
+nothing keep the legacy bytes and stay claimable by every worker.
+
+- Run leasing (`candidates`, hence notification claims, recovery scans and startup
+  recovery) excludes Runs whose `requires` is not covered by the worker's
+  capabilities, using the envelope only; the state is not decoded. Such a Run is not
+  stuck, repaired or failed, and burns no recovery attempt. Inspection reports
+  `lease_wait: {"reason":"capable_worker","capabilities":[...]}` while no live lease holds
+  it, `aidash_activation_capability_skips_total` counts skips, and a notification that
+  reaches an incapable worker is deferred five seconds. The Run is claimed by the next
+  recovery scan (at most five seconds) or redelivery of a capable worker.
+- Decoding recomputes the requirement from the state; a stored requirement that falls
+  short of it is a corrupt Run. A stored requirement larger than the derived one is
+  accepted (it only keeps old workers away) and is dropped on the next save.
+- A `deny_unknown_fields` or unknown-variant failure while decoding is reported as
+  `UnsupportedState` (a capability mismatch), never as `Invalid`. Leasing leaves such a
+  Run for a newer worker instead of repairing it into failure delivery.
+
+To add a capability when a change adds persisted state that older workers reject:
+
+1. Add a variant to `PersistedCapability` (`crates/aidash-domain/src/run_state/capability.rs`)
+   with its `name()` and list it in `ALL`.
+2. Declare it where the state is derived: `ToolCallState::required_capabilities` (or add the
+   equivalent for another state type and reach it from `RunState::tool_states`). Derive it
+   only from the new field being present, so state written before the change keeps its
+   requirement and stays loadable by old workers.
+3. Add a rollout test: an old worker (`capabilities: &[]`) never claims the Run, a capable
+   one does.
+
+The gate only protects against workers built with it. Workers older than the build that
+introduced the gate (#198) cannot honor `requires`, so finish rolling out that build to
+every worker before any build that writes a capability-requiring state (for example Tool
+Batch admission, #119) runs anywhere. Rolling back below the gate build while such Runs exist
+stalls or fails them exactly as the Projection Version note above describes.
+
 On shutdown, stop new pulls/claims and drain the current step. Do not clear a lease
 while an external effect might still run. Never delete the durable on shutdown.
 `activation_quarantine` stores only a digest, bounded reason, sequence, and time;
