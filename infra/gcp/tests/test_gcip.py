@@ -191,6 +191,33 @@ class RuntimeConfigTests(unittest.TestCase):
                 "rotated",
             )
 
+    def test_auth_helper_is_written_only_for_bundles_that_accept_it(self):
+        raw = {"dashboard": {"gcip": {"web_api_key": "public"}}}
+
+        def command(*args, **kwargs):
+            if "list" in args:
+                return b'[{"name":"projects/aidash-fixture/secrets/runtime/versions/1","state":"ENABLED"}]'
+            if "access" in args:
+                return json.dumps(raw).encode()
+            if "add" in args:
+                raw.clear()
+                raw.update(json.loads(kwargs["data"]))
+            return b""
+
+        with patch("controller.run", side_effect=command):
+            # A refresh reloads the running bundle, whose pre-auth_helper host.py
+            # rejects unknown managed GCIP keys.
+            controller.provision_secret({"project_id": "aidash-fixture"}, OUTPUT, "test")
+            self.assertNotIn("auth_helper", raw["dashboard"]["gcip"])
+            self.assertEqual(raw["dashboard"]["gcip"]["tenant_bindings"], {"pool-a": "acme"})
+            controller.provision_secret(
+                {"project_id": "aidash-fixture"}, OUTPUT, "test", new_bundle=True
+            )
+            self.assertEqual(raw["dashboard"]["gcip"]["auth_helper"], "public_origin")
+            # Later refreshes reload a bundle that already accepted the key.
+            controller.provision_secret({"project_id": "aidash-fixture"}, OUTPUT, "test")
+            self.assertEqual(raw["dashboard"]["gcip"]["auth_helper"], "public_origin")
+
     def test_oidc_and_gcip_runtime_configuration_cannot_coexist(self):
         with patch(
             "controller.run",

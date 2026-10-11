@@ -398,7 +398,7 @@ def instance_status(config, output):
     return value[0]["status"] if value else "MISSING"
 
 
-def provision_secret(config, output, kind):
+def provision_secret(config, output, kind, new_bundle=False):
     secret = output["runtime_secret"]
     all_versions = json.loads(run("gcloud", "secrets", "versions", "list", secret,
         "--project", config["project_id"], "--format=json(name,state)"))
@@ -424,7 +424,13 @@ def provision_secret(config, output, kind):
         api_key = config.get("gcip_web_api_key") or settings.get("web_api_key")
         if not api_key:
             raise Refused("Configure the GCIP web API key from the bootstrap output")
-        settings.update({key: gcip[key] for key in ("project_id", "public_origin", "auth_helper", "tenant_bindings", "providers", "password_sign_up")})
+        keys = ["project_id", "public_origin", "tenant_bindings", "providers", "password_sign_up"]
+        # host.py from bundles built before auth_helper rejects the key, and a
+        # GCIP refresh reloads the existing bundle. Only a deployment installs
+        # this controller's host.py; afterwards refreshes keep the accepted key.
+        if new_bundle or "auth_helper" in settings:
+            keys.append("auth_helper")
+        settings.update({key: gcip[key] for key in keys})
         settings["web_api_key"] = api_key
     elif value.get("dashboard", {}).get("gcip"):
         # Binding removal must reach the retained server before any subsequent
@@ -1119,7 +1125,7 @@ def reconcile(config, store):
                     power(config, output, "start")
                     fresh_boot = True
                 reconcile_environment(output)
-                provision_secret(config, output, entry["kind"])
+                provision_secret(config, output, entry["kind"], new_bundle=True)
                 current_entry(store, identity, generation)
                 restart_bootstrap(config, output, fresh_boot)
                 for attempt in range(24):

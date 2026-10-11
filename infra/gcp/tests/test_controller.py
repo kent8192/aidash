@@ -137,7 +137,7 @@ class ReconcileTests(unittest.TestCase):
             "power": self.power,
             "bundle": lambda *args: ("bundles/" + "b" * 64 + ".tar.gz", "b" * 64),
             "ci_success": lambda *args: None,
-            "provision_secret": lambda *args: None,
+            "provision_secret": lambda *args, **kwargs: None,
             "restart_bootstrap": lambda *args: self.calls.append(
                 ("bootstrap", args[1]["instance"], args[2])
             ),
@@ -621,7 +621,7 @@ class ReconcileTests(unittest.TestCase):
                 } if config["gcip_tenants"] else {},
             }
 
-        def provision(config, output, kind):
+        def provision(config, output, kind, new_bundle=False):
             secrets[output["instance"]] = deepcopy(output["gcip"])
 
         with (
@@ -781,7 +781,7 @@ class ReconcileTests(unittest.TestCase):
             self.cloud.resource_changes = []
             self.cloud.output_changes = {}
 
-        def provision(config, output, kind):
+        def provision(config, output, kind, new_bundle=False):
             secrets[output["instance"]] = deepcopy(output["gcip"])
 
         with patch.object(self.cloud, "apply", apply), patch.object(controller, "provision_secret", provision), patch.object(controller, "reconcile_environment") as iam:
