@@ -1569,15 +1569,9 @@ async fn display_retention_runs_after_dashboard_sign_in_is_unconfigured(
 	let app = common::application(f.clone()).await;
 	sign_in(&app, "acme", "pool-a", "Person").await;
 	let path = only_identity_path(&app, &f).await;
-	age(
-		&f,
-		"dashboard_identities",
-		"display_observed_at",
-		"11 minutes",
-	)
-	.await;
-	// The deployment restarts without its optional sign-in configuration, so the
-	// still-recent session is no longer usable and retains nothing.
+	// The deployment restarts without its optional sign-in configuration. Neither
+	// the still-live session nor the sign-in from moments ago retains anything,
+	// because no session is usable or can still finish starting.
 	let mut unconfigured = f.clone();
 	unconfigured.config.gcip = None;
 	let (stop, stopping) = tokio::sync::watch::channel(false);
@@ -1588,5 +1582,53 @@ async fn display_retention_runs_after_dashboard_sign_in_is_unconfigured(
 	let view = operator_get(&app, &f, &path).await;
 	assert!(view["display_name"].is_null() && view["verified_email"].is_null());
 	assert!(view["display_erased_at"].is_null());
+	common::cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn bearer_operator_rejects_a_request_after_dashboard_sign_in_is_unconfigured(
+	#[future(awt)]
+	#[from(test_environment)]
+	environment: Arc<TestEnvironment>,
+) {
+	let (mut f, url, schema) = common::setup(&environment).await;
+	let (_status, _admin) = configure(&mut f).await;
+	let app = common::application(f.clone()).await;
+	let (cookie, csrf) = sign_in(&app, "acme", "pool-a", "Person").await;
+	let registration: Value = browser()
+		.post(app.url("/auth/registration"))
+		.header("cookie", &cookie)
+		.header("origin", "http://127.0.0.1:8080")
+		.header("x-aidash-csrf", csrf)
+		.send()
+		.await
+		.unwrap()
+		.json()
+		.await
+		.unwrap();
+	let mut unconfigured = f.clone();
+	unconfigured.config.gcip = None;
+	let restarted = common::application(unconfigured.clone()).await;
+	let rejected = browser()
+		.post(restarted.url(format!(
+			"/api/dashboard/registrations/{}/reject",
+			registration["id"].as_str().unwrap()
+		)))
+		.bearer_auth(&f.config.api_token)
+		.send()
+		.await
+		.unwrap();
+	assert_eq!(rejected.status(), 200);
+	let rejected: Value = rejected.json().await.unwrap();
+	assert_eq!(rejected["status"], "rejected");
+	let identity = registration["identity_id"].as_str().unwrap();
+	let view = operator_get(
+		&restarted,
+		&unconfigured,
+		&format!("/api/dashboard/identities/{identity}"),
+	)
+	.await;
+	assert!(view["display_name"].is_null() && view["verified_email"].is_null());
 	common::cleanup(f, &url, &schema).await;
 }

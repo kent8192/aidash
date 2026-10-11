@@ -174,8 +174,8 @@ pub async fn refresh_active(
 /// Enforces display retention while dashboard sign-in is not configured.
 ///
 /// [`refresh_active`] enforces it on each pass when sign-in is configured.
-/// Without sign-in no session is usable, so only authority or a pending
-/// Registration Request retains Display Attributes.
+/// Without sign-in no session is usable or still starting, so only authority
+/// or a pending Registration Request retains Display Attributes.
 pub async fn enforce_display_retention(
 	f: Federation,
 	mut stopping: tokio::sync::watch::Receiver<bool>,
@@ -650,7 +650,12 @@ impl DashboardSessions {
 		actor: Option<BrowserOrigin>,
 		id: Uuid,
 	) -> Result<Registration> {
-		let idle_seconds = required_config(&self.runtime)?.session_idle_seconds;
+		// Bearer Operators may reject requests left from a removed sign-in configuration.
+		let idle_seconds = self
+			.runtime
+			.config
+			.dashboard_session()
+			.map(|config| config.session_idle_seconds);
 		let lease = self.runtime.store.orm_connection()?;
 		DashboardRegistrationRequest::reject(
 			lease.handle(),

@@ -293,7 +293,7 @@ impl DashboardRegistrationRequest {
 		db: DatabaseConnection,
 		id: Uuid,
 		actor: String,
-		idle_seconds: i64,
+		idle_seconds: Option<i64>,
 	) -> Result<Registration> {
 		db.atomic(async |tx| {
 			let preliminary = Self::objects()
@@ -322,12 +322,8 @@ impl DashboardRegistrationRequest {
 			row.decided_at = Some(now);
 			row.decision_actor = Some(actor);
 			Self::objects().update_with_conn(tx, &row).await?;
-			DashboardIdentity::clear_display_without_basis(
-				tx,
-				row.identity_id(),
-				Some(idle_seconds),
-			)
-			.await?;
+			DashboardIdentity::clear_display_without_basis(tx, row.identity_id(), idle_seconds)
+				.await?;
 			Ok(row.contract())
 		})
 		.await
@@ -343,7 +339,8 @@ impl DashboardIdentity {
 	/// Registration Request ended, so rejection and expiry still clear the
 	/// attributes the request showed, while a fresh sign-in keeps its newly
 	/// verified claims. `idle_seconds` is the browser session idle limit, or
-	/// `None` when dashboard sign-in is not configured and no session is usable.
+	/// `None` when dashboard sign-in is not configured: then no session is usable
+	/// or still starting, so neither sessions nor recent sign-ins retain them.
 	/// Callers hold no other identity lock, or only this one.
 	pub(crate) async fn clear_display_without_basis<E: OrmExecutor + TransactionExecutor>(
 		db: &mut E,
@@ -408,16 +405,16 @@ impl DashboardIdentity {
 			_ => request.decided_at.unwrap_or(request.created_at),
 		});
 		let after_request = |at: DateTime<Utc>| ended.is_none_or(|ended| at >= ended);
+		// Without dashboard sign-in no session is usable, and none can still be starting.
+		let Some(idle_seconds) = idle_seconds else {
+			return Ok(false);
+		};
 		if row
 			.display_observed_at
 			.is_some_and(|observed| observed > now - RECENT_SIGN_IN && after_request(observed))
 		{
 			return Ok(true);
 		}
-		// Without dashboard sign-in no browser or desktop session is usable.
-		let Some(idle_seconds) = idle_seconds else {
-			return Ok(false);
-		};
 		Ok(DashboardSession::objects()
 			.filter(DashboardSession::field_identity_id().eq(row.id))
 			.filter(DashboardSession::field_revoked_at().is_null())
