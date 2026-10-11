@@ -651,7 +651,12 @@ function Dashboard({
                 </div>
               )}
             <div className="flex flex-wrap gap-1 border-t border-border pt-3">
-              <Button variant="ghost" size="sm" type="button" onClick={disconnect}>
+              <Button
+                variant="ghost"
+                size="sm"
+                type="button"
+                onClick={disconnect}
+              >
                 {auth.currentDevice}
               </Button>
               <Button
@@ -779,9 +784,7 @@ function Dashboard({
               operator &&
               (mesh.isError || (remote?.errors.length ?? 0) > 0))) && (
             <div className="grid shrink-0 gap-2 border-b border-border px-4 py-3 md:px-6">
-              {error && !selection && (
-                <Alert>{error}</Alert>
-              )}
+              {error && !selection && <Alert>{error}</Alert>}
               {state.isError && (
                 <Alert
                   retry={() => void state.refetch()}
