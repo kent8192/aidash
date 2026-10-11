@@ -295,6 +295,46 @@ async fn production_router_enforces_auth_validation_rate_and_sse_resume(
 	common::cleanup(federation, &url, &schema).await;
 }
 
+#[rstest::rstest]
+#[tokio::test]
+async fn without_gcip_an_org_query_does_not_open_a_second_login_budget(
+	#[future(awt)]
+	#[from(common::test_environment)]
+	environment: Arc<common::TestEnvironment>,
+) {
+	let (federation, url, schema) = common::setup(&environment).await;
+	assert!(federation.config.gcip.is_none());
+	let app = common::application_with_settings(
+		federation.clone(),
+		Settings {
+			auth_burst: 1,
+			auth_period: Duration::from_secs(60),
+			auth_discovery_burst: 100,
+			..Default::default()
+		},
+	)
+	.await;
+	let login = |uri: &str| {
+		Request::builder()
+			.uri(uri)
+			.extension(axum::extract::ConnectInfo(
+				"127.0.0.1:1".parse::<std::net::SocketAddr>().unwrap(),
+			))
+			.body(Body::empty())
+			.unwrap()
+	};
+	for (uri, limited) in [
+		("/auth/login", false),
+		("/auth/login?org=acme", true),
+		("/auth/login?%6Frg=acme", true),
+	] {
+		let status = app.clone().oneshot(login(uri)).await.unwrap().status();
+		assert_eq!(status == 429, limited, "{uri}: {status}");
+	}
+	drop(app);
+	common::cleanup(federation, &url, &schema).await;
+}
+
 #[tokio::test]
 async fn native_json_fixture_reports_malformed_responses() {
 	use reinhardt::{Response, get};

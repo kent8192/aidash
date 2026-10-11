@@ -22,6 +22,9 @@ test("GCIP browser sign-in returns through the existing desktop consent and loop
       }),
     );
     await page.goto(`/sign-in?return_to=${encodeURIComponent(consent)}`);
+    await page
+      .getByRole("button", { name: "Use your organization ID instead" })
+      .click();
     await page.getByLabel("Organization").fill("acme");
     const login = page.waitForRequest("**/auth/login?**");
     await page.getByRole("button", { name: "Continue", exact: true }).click();
