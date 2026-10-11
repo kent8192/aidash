@@ -777,11 +777,7 @@ export function Graph({
             <span className="w-56 max-w-full">{perspective}</span>
           </div>
           <div className="min-h-0 flex-1">
-            <Suspense
-              fallback={
-                <Loading className="p-4">…</Loading>
-              }
-            >
+            <Suspense fallback={<Loading className="p-4">…</Loading>}>
               <Neighborhood
                 data={data}
                 channel={channel}
@@ -873,11 +869,7 @@ export function Graph({
                   </div>
                 </>
               ) : (
-                <Suspense
-                  fallback={
-                    <Loading className="p-4">…</Loading>
-                  }
-                >
+                <Suspense fallback={<Loading className="p-4">…</Loading>}>
                   <MeshCanvas
                     graph={graph}
                     mode={graphMode}
@@ -1055,10 +1047,7 @@ export function Graph({
                             />
                             {targetTenant.length > 0 &&
                               !validGraphTenant(targetTenant) && (
-                                <span
-                                  role="alert"
-                                  className="text-destructive"
-                                >
+                                <span role="alert" className="text-destructive">
                                   {copy.peerInvalidTenant}
                                 </span>
                               )}
@@ -1161,9 +1150,7 @@ export function Graph({
                           >
                             {value}
                           </strong>
-                          <span className="text-[11px] text-faint">
-                            {name}
-                          </span>
+                          <span className="text-[11px] text-faint">{name}</span>
                         </div>
                       ))}
                     </div>,

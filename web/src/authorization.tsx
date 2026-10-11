@@ -225,7 +225,9 @@ function TenantAuthorization({
           )}
         </p>
         {!admissions.isError && (admissions.data?.length ?? 0) > 0 && (
-          <Notice tone="warning" role="status">{t("transactionRevocationPending")}</Notice>
+          <Notice tone="warning" role="status">
+            {t("transactionRevocationPending")}
+          </Notice>
         )}
         {error && !modal && <Alert>{error}</Alert>}
         {snapshot.isPending && <Loading />}
@@ -298,9 +300,7 @@ function TenantAuthorization({
             }
           >
             <Hint>{t("authCredentialsHelp")}</Hint>
-            {credentials.isError && (
-              <Alert>{credentials.error.message}</Alert>
-            )}
+            {credentials.isError && <Alert>{credentials.error.message}</Alert>}
             {credentials.isPending && <Loading />}
             {!credentials.isError && credentials.data?.length === 0 && (
               <Empty />
