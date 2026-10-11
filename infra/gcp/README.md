@@ -89,7 +89,7 @@ overrides persist across updates.
 
 WIF trusts numeric repository/owner IDs, only
 `.github/workflows/gcp-environments.yml` on `refs/heads/main`, and only jobs that
-run in the `gcp-deploy` GitHub Environment (see
+run in the `gcp-deploy` or `gcp-deploy-release` GitHub Environment (see
 [Deploy pipeline boundary](#deploy-pipeline-boundary)). The workflow
 checks out privileged code and chart templates from the repository default
 branch, pinned to the one commit its first job resolved, so every build,
@@ -545,7 +545,8 @@ not prevented:
   request to `main`. The deployment configuration (`AIDASH_GCP_CONFIG`) cannot
   override the digest: the controller refuses a `credential_brokers.<id>.image`
   key.
-- Credentialed jobs run in the protected `gcp-deploy` Environment (below).
+- Credentialed jobs run in protected GitHub Environments; runs that build and
+  publish images need the reviewed `gcp-deploy-release` (below).
 - Bootstrap-owned log alerts, sent to `security_alert_emails`, fire on a new
   revision of a broker service or a Cloud Run service/job request naming a broker
   account, on any IAM policy change of a broker service or broker service account,
@@ -563,43 +564,58 @@ cannot reach is deferred, for Enterprise or for growth in key count. Building th
 broker in the trusted pipeline, so its digest lands in `release.json` like the
 other images, is also deferred; today the broker image is built by an operator.
 
-#### Protected deploy Environment
+#### Protected deploy Environments
 
-`prepare`, `publish` and `apply` declare `environment: gcp-deploy`, and the WIF
-provider condition requires `assertion.environment == 'gcp-deploy'` next to the
-repository IDs, the trusted workflow and `refs/heads/main`
-(`deploy_environment` in bootstrap changes the name; change the workflow with it).
-GitHub only emits the `environment` claim for jobs that declare an Environment, so
-a job on an unprotected ref or without the Environment cannot obtain credentials.
-The `intake` and `build` jobs and `gcp-check.yml` hold no cloud credentials and
-need no Environment.
+Two GitHub Environments split unattended operation from releases:
+
+| Environment          | Jobs that use it                                                                                                                                                                | Protection (repository settings)                         |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------- |
+| `gcp-deploy`         | `prepare` (records durable intent); `apply` when the run builds nothing (5-minute `schedule`, `workflow_run` updates, `/preview` comments, stop/destroy/resume of a pinned SHA) | deployment branches: `main` only; **no** reviewers       |
+| `gcp-deploy-release` | `publish`; `apply` when `needs.prepare.outputs.build == 'true'` (new source images)                                                                                             | deployment branches: `main` only; **required reviewers** |
+
+`apply` picks its Environment with
+`${{ needs.prepare.outputs.build == 'true' && 'gcp-deploy-release' || 'gcp-deploy' }}`;
+`prepare` runs before that output exists, so it always uses `gcp-deploy`. The WIF
+provider condition requires `assertion.environment in ['gcp-deploy',
+'gcp-deploy-release']` next to the repository IDs, the trusted workflow and
+`refs/heads/main` (`deploy_environment` and `release_environment` in bootstrap
+rename them; change the workflow with them). GitHub only emits the `environment`
+claim for jobs that declare an Environment, so a job on an unprotected ref or
+without one of the two cannot obtain credentials. The `intake` and `build` jobs and
+`gcp-check.yml` hold no cloud credentials and need no Environment.
+
+What the reviewer gate covers: every run that builds or publishes new images, and
+therefore any unreviewed source reaching a registry or a cluster. What it does not:
+a no-build `apply` still deploys Terraform from the trusted `main` checkout, so the
+broker digest and IAM changes are gated by review of the pull request to `main`, not
+by an Environment approval. The one reviewed approval per release covers two jobs
+(`publish`, then `apply`).
 
 #### Human steps
 
 1. **Merge this change to `main` first.** The workflow change is harmless before
    WIF requires it; applying the new attribute condition first would lock out the
    current workflow.
-2. **Create the GitHub Environment** (Settings, Environments, New environment)
-   named exactly `gcp-deploy`:
-   - Deployment branches and tags: **Selected branches and tags**, add `main` only.
-   - Required reviewers: see the open decision below. Enable **Prevent
-     self-review**, and disable **Allow administrators to bypass configured
-     protection rules**.
+2. **Create two GitHub Environments** (Settings, Environments, New environment),
+   with exactly these names and settings:
+   - `gcp-deploy`: Deployment branches and tags: **Selected branches and tags**,
+     add `main` only. **No** required reviewers (the five-minute reconcile must run
+     unattended). Disable **Allow administrators to bypass configured protection
+     rules**.
+   - `gcp-deploy-release`: Deployment branches and tags: **Selected branches and
+     tags**, add `main` only. **Required reviewers**: add the people allowed to
+     release new images, enable **Prevent self-review**, and disable **Allow
+     administrators to bypass configured protection rules**.
    - Add no Environment secrets or variables; repository ones keep working.
 3. **Apply bootstrap** with the new inputs in `bootstrap/terraform.tfvars`:
    `security_alert_emails` (required once `byok_broker_environments` is set) and,
-   only to rename it, `deploy_environment`. The operator needs deny-policy
+   only to rename them, `deploy_environment` and `release_environment`. The operator needs deny-policy
    (`roles/iam.denyAdmin`), tag administration (`roles/resourcemanager.tagAdmin`
    plus tag user on the service accounts), alert-policy and notification-channel
    administration and Service Usage on both projects. Review the plan: it adds the
    tag key and value, one tag binding per broker account, the deny policy, three
    alert policies, email channels, the `actAs` grants and the new WIF condition.
 4. **Approve and record a broker image digest** (below) before enabling a broker.
-
-Open decision: required reviewers on `gcp-deploy` also gate the five-minute
-`schedule` reconcile, `workflow_run` updates and `/preview` comments, because every
-run needs a `gcp-deploy` approval for each of its three credentialed jobs. See the
-pull request for the options.
 
 #### Updating the broker image digest
 
@@ -651,7 +667,8 @@ aidash-deploy-broker-boundary --attachment-point=cloudresourcemanager.googleapis
    on runtime accounts.
 3. **Unprotected refs.** Run the workflow from a feature branch, and from `main`
    with a job lacking `environment:`; neither may obtain credentials. A job in
-   `gcp-deploy` on `main` must. Log the OIDC claims (`environment`, `ref`,
+   `gcp-deploy` or `gcp-deploy-release` on `main` must, and a build run's `apply`
+   must wait for the `gcp-deploy-release` reviewer. Log the OIDC claims (`environment`, `ref`,
    `workflow_ref`) of each.
 4. **Alerts fire.** Deploy a new broker revision; set a broker service IAM policy
    and a broker account policy as a human; call `AccessSecretVersion` on a BYOK

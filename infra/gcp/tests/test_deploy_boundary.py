@@ -157,6 +157,11 @@ class DeployBoundaryTests(unittest.TestCase):
         rule = self.deny_rule()
         self.assertEqual(rule["denied_principals"], ["principal://iam.googleapis.com/projects/-/serviceAccounts/aidash-deploy@aidash-fixture.iam.gserviceaccount.com"])
         self.assertFalse(rule.get("exception_principals"))
+        # No wildcard or set principal: only the one deploy service account is denied.
+        self.assertNotRegex(rule["denied_principals"][0], r"[*]|principalSet|allUsers|allAuthenticatedUsers")
+        self.assertEqual(len(rule["denied_principals"]), 1)
+        # The selector is one exact tag match; nothing can widen it with || or negate it.
+        self.assertRegex(rule["denial_condition"][0]["expression"], r"^resource\.matchTag\('[^']+', '[^']+'\)$")
         self.assertEqual(rule["denial_condition"][0]["expression"], "resource.matchTag('aidash-fixture/aidash-credential-broker', 'broker')")
         bindings = self.values("google_tags_tag_binding")
         self.assertEqual(len(bindings), 2)
@@ -252,9 +257,22 @@ class DeployEntryPointTests(unittest.TestCase):
         return yaml.safe_load((WORKFLOWS / name).read_text())
 
     @staticmethod
-    def wif_environment():
+    def wif_environments():
         source = (BOOTSTRAP / "variables.tf").read_text()
-        return re.search(r'variable "deploy_environment" \{.*?default\s*=\s*"([^"]+)"', source, re.S).group(1)
+        return tuple(
+            re.search(rf'variable "{name}" \{{.*?default\s*=\s*"([^"]+)"', source, re.S).group(1)
+            for name in ("deploy_environment", "release_environment")
+        )
+
+    @staticmethod
+    def selected_environment(job, build):
+        """Evaluate a job's `environment:` for a run that does (not) build images."""
+        value = job["environment"]
+        expression = re.fullmatch(r"\$\{\{ needs\.prepare\.outputs\.build == 'true' && '([^']+)' \|\| '([^']+)' \}\}", value)
+        if expression:
+            return expression.group(1) if build else expression.group(2)
+        assert "${{" not in value, value
+        return value
 
     def credentialed_jobs(self, workflow):
         return {
@@ -263,11 +281,26 @@ class DeployEntryPointTests(unittest.TestCase):
             or any("google-github-actions/auth" in step.get("uses", "") for step in job.get("steps", []))
         }
 
-    def test_every_credentialed_job_declares_the_wif_environment(self):
+    def test_credentialed_jobs_pick_the_release_environment_only_for_builds(self):
+        unattended, release = self.wif_environments()
+        self.assertEqual((unattended, release), ("gcp-deploy", "gcp-deploy-release"))
         jobs = self.credentialed_jobs(self.workflow("gcp-environments.yml"))
         self.assertEqual(sorted(jobs), ["apply", "prepare", "publish"])
-        for name, job in jobs.items():
-            self.assertEqual(job.get("environment"), self.wif_environment(), name)
+        for build in (True, False):
+            selected = {name: self.selected_environment(job, build) for name, job in jobs.items()}
+            # prepare decides whether to build and only records durable intent.
+            self.assertEqual(selected["prepare"], unattended)
+            # Publishing runs only for builds (the build/publish jobs are skipped otherwise).
+            self.assertEqual(selected["publish"], release)
+            self.assertEqual(selected["apply"], release if build else unattended, build)
+        # Only the two names the WIF provider accepts can ever be selected.
+        names = {self.selected_environment(job, build) for job in jobs.values() for build in (True, False)}
+        self.assertEqual(names, {unattended, release})
+
+    def test_publish_and_build_only_run_for_builds(self):
+        workflow = self.workflow("gcp-environments.yml")
+        self.assertEqual(workflow["jobs"]["build"]["if"], "needs.prepare.outputs.build == 'true'")
+        self.assertIn("build", workflow["jobs"]["publish"]["needs"])
 
     def test_credentialed_jobs_request_tokens_and_uncredentialed_jobs_do_not(self):
         for name, job in self.workflow("gcp-environments.yml")["jobs"].items():
@@ -288,7 +321,7 @@ class DeployEntryPointTests(unittest.TestCase):
 
     def test_provider_condition_names_the_environment_and_the_main_workflow(self):
         source = (BOOTSTRAP / "main.tf").read_text()
-        self.assertIn("assertion.environment == '${var.deploy_environment}'", source)
+        self.assertIn("assertion.environment in ['${var.deploy_environment}', '${var.release_environment}']", source)
         self.assertIn("assertion.ref == 'refs/heads/${var.trusted_branch}'", source)
         self.assertIn("assertion.workflow_ref == '${local.workflow_ref}'", source)
 

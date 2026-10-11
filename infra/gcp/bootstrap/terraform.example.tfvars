@@ -6,5 +6,6 @@ release_bucket_name = "your-aidash-project-releases"
 byok_broker_environments = [] # e.g. ["production", "test"]
 # Required once byok_broker_environments is set (#151): who receives Credential Broker alerts.
 security_alert_emails = [] # e.g. ["security@example.com"]
-# GitHub Environment every credentialed workflow job must run in; protect it in repository settings.
-# deploy_environment = "gcp-deploy"
+# GitHub Environments every credentialed workflow job must run in; protect them in repository settings.
+# deploy_environment  = "gcp-deploy"         # unattended no-build runs; main-only branch policy
+# release_environment = "gcp-deploy-release" # build/publish runs; required reviewers

@@ -30,10 +30,20 @@ variable "trusted_branch" {
 variable "deploy_environment" {
   type        = string
   default     = "gcp-deploy"
-  description = "GitHub Environment that every job holding Google credentials must run in. Humans configure its protection rules in repository settings."
+  description = "GitHub Environment for unattended, no-build workflow runs (scheduled reconcile, CI updates). Restrict it to the trusted branch; humans configure it in repository settings."
   validation {
     condition     = can(regex("^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$", var.deploy_environment))
     error_message = "Use a plain GitHub Environment name; it is interpolated into the attribute condition."
+  }
+}
+
+variable "release_environment" {
+  type        = string
+  default     = "gcp-deploy-release"
+  description = "GitHub Environment for runs that build and publish new images. Humans give it required reviewers in repository settings."
+  validation {
+    condition     = can(regex("^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$", var.release_environment)) && var.release_environment != var.deploy_environment
+    error_message = "Use a plain GitHub Environment name that differs from deploy_environment; it is interpolated into the attribute condition."
   }
 }
 
