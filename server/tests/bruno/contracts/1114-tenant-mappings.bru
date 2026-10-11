@@ -1,18 +1,18 @@
 meta {
-  name: 1096 tenant-administration - Subject Credential bearer is never a Tenant Administrator
+  name: 1114 tenant-mappings - Operator bearer is never a Tenant Administrator
   type: http
-  seq: 1096
+  seq: 1114
 }
 
 get {
-  url: {{base_url}}/api/tenants/{{tenant}}/administration
+  url: {{base_url}}/api/tenants/{{tenant}}/mappings
   body: none
   auth: none
 }
 
 headers {
   Accept: application/json
-  Authorization: Bearer {{contract_token}}
+  Authorization: Bearer {{operator_token}}
 }
 
 tests {

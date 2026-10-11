@@ -1,11 +1,11 @@
 meta {
-  name: 1118 tenant-subject-groups - Anonymous request is rejected
+  name: 1109 tenant-registration-reject - Anonymous request is rejected
   type: http
-  seq: 1118
+  seq: 1109
 }
 
-put {
-  url: {{base_url}}/api/tenants/{{tenant}}/subjects/__bruno_missing__/groups
+post {
+  url: {{base_url}}/api/tenants/{{tenant}}/registrations/11111111-1111-4111-8111-111111111111/reject
   body: none
   auth: none
 }

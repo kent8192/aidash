@@ -44,6 +44,8 @@ struct Fixture {
 	identity: Uuid,
 	browser: Uuid,
 	outage: Arc<AtomicBool>,
+	/// Delays the next provider status response, letting concurrent work commit first.
+	slow_status: Arc<AtomicBool>,
 	server: tokio::task::JoinHandle<()>,
 }
 impl Drop for Fixture {
@@ -73,6 +75,8 @@ impl Fixture {
 				.unwrap();
 		let outage = Arc::new(AtomicBool::new(false));
 		let unavailable = outage.clone();
+		let slow_status = Arc::new(AtomicBool::new(false));
+		let slow = slow_status.clone();
 		let provider = Router::new()
 			.route(
 				"/issuer/.well-known/openid-configuration",
@@ -96,7 +100,11 @@ impl Fixture {
 				"/issuer/admin/users/desktop-review-user",
 				get(move || {
 					let unavailable = unavailable.clone();
+					let slow = slow.clone();
 					async move {
+						if slow.swap(false, Ordering::SeqCst) {
+							tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+						}
 						let status = if unavailable.load(Ordering::SeqCst) {
 							StatusCode::SERVICE_UNAVAILABLE
 						} else {
@@ -175,6 +183,7 @@ impl Fixture {
 			identity,
 			browser,
 			outage,
+			slow_status,
 			server,
 		}
 	}
@@ -356,17 +365,21 @@ async fn desktop_authentication_bursts_complete_with_one_pool_connection(
 		inputs = vec![input; 30];
 	}
 	if stale_identity {
+		// Older than the five-minute freshness window, within the 15-minute limit:
+		// every request revalidates with the provider before its transaction.
 		let update = Query::update()
 			.table(Alias::new("dashboard_identities"))
 			.value_expr(
 				Alias::new("last_valid_at"),
-				Expr::cust("clock_timestamp()-interval '2 minutes'"),
+				Expr::cust("clock_timestamp()-interval '6 minutes'"),
 			)
 			.to_string(PostgresQueryBuilder);
 		sqlx::query(&update)
 			.execute(fixture.f.store.pool.driver())
 			.await
 			.unwrap();
+		// One slow revalidation finishes after concurrent requests have committed.
+		fixture.slow_status.store(true, Ordering::SeqCst);
 	}
 	// Retain schema initialization but make any nested pool acquisition fail.
 	let pool = fixture

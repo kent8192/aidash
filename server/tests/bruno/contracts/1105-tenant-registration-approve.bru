@@ -1,7 +1,7 @@
 meta {
-  name: 1102 tenant-registration-approve - Subject Credential bearer is never a Tenant Administrator
+  name: 1105 tenant-registration-approve - Operator bearer is never a Tenant Administrator
   type: http
-  seq: 1102
+  seq: 1105
 }
 
 post {
@@ -12,7 +12,7 @@ post {
 
 headers {
   Accept: application/json
-  Authorization: Bearer {{contract_token}}
+  Authorization: Bearer {{operator_token}}
   Content-Type: application/json
 }
 

@@ -1,23 +1,23 @@
 meta {
-  name: 1119 tenant-subject-groups - Operator bearer is never a Tenant Administrator
+  name: 1106 tenant-registration-approve - Subject Credential bearer is never a Tenant Administrator
   type: http
-  seq: 1119
+  seq: 1106
 }
 
-put {
-  url: {{base_url}}/api/tenants/{{tenant}}/subjects/alice/groups
+post {
+  url: {{base_url}}/api/tenants/{{tenant}}/registrations/11111111-1111-4111-8111-111111111111/approve
   body: text
   auth: none
 }
 
 headers {
   Accept: application/json
-  Authorization: Bearer {{operator_token}}
+  Authorization: Bearer {{contract_token}}
   Content-Type: application/json
 }
 
 body:text {
-  {"groups": [], "expected_policy_revision": 1}
+  {"subject": "carol", "groups": []}
 }
 
 script:pre-request {

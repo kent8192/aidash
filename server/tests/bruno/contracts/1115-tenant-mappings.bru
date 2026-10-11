@@ -1,7 +1,7 @@
 meta {
-  name: 1110 tenant-mappings - Operator bearer is never a Tenant Administrator
+  name: 1115 tenant-mappings - Subject Credential bearer is never a Tenant Administrator
   type: http
-  seq: 1110
+  seq: 1115
 }
 
 get {
@@ -12,7 +12,7 @@ get {
 
 headers {
   Accept: application/json
-  Authorization: Bearer {{operator_token}}
+  Authorization: Bearer {{contract_token}}
 }
 
 tests {

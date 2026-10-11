@@ -171,6 +171,36 @@ pub async fn refresh_active(
 	.map_err(Into::into)
 }
 
+/// Enforces display retention while dashboard sign-in is not configured.
+///
+/// [`refresh_active`] enforces it on each pass when sign-in is configured.
+/// Without sign-in no session is usable or still starting, so only authority
+/// or a pending Registration Request retains Display Attributes.
+pub async fn enforce_display_retention(
+	f: Federation,
+	mut stopping: tokio::sync::watch::Receiver<bool>,
+) -> Result<()> {
+	loop {
+		let idle_seconds = f
+			.config
+			.dashboard_session()
+			.map(|config| config.session_idle_seconds);
+		let pass = match f.store.orm_connection() {
+			Ok(lease) => DashboardIdentity::enforce_display_retention(lease.handle(), idle_seconds)
+				.await
+				.err(),
+			Err(error) => Some(error),
+		};
+		if let Some(error) = pass {
+			tracing::warn!(%error, "display retention pass failed; retrying after interval");
+		}
+		tokio::select! {
+			_ = tokio::time::sleep(std::time::Duration::from_secs(60)) => {},
+			_ = stopping.changed() => if *stopping.borrow() { return Ok(()); },
+		}
+	}
+}
+
 pub type BrowserSession = DashboardSession;
 
 async fn session_record_from_headers(
@@ -217,8 +247,9 @@ pub(crate) async fn validate_session_identity(
 	let lease = f.store.orm_connection()?;
 	let identity = DashboardIdentity::find(&mut lease.handle(), session.identity_id()).await?;
 	account_valid(f, identity).await?;
-	let current =
-		DashboardSession::from_token(&mut lease.handle(), session.token_hash.clone()).await?;
+	// Revalidation may revoke the session. Reread it by id: a concurrent desktop
+	// refresh rotates its access-token hash, which is not a revocation.
+	let current = DashboardSession::find(&mut lease.handle(), session.id).await?;
 	if current.revoked_at.is_some() {
 		return Err(Error::Unauthorized);
 	}
@@ -547,9 +578,15 @@ impl DashboardSessions {
 	}
 	pub(crate) async fn registration_status(&self, headers: HeaderMap) -> Result<Response> {
 		let f = self.runtime.clone();
+		let idle_seconds = required_config(&f)?.session_idle_seconds;
 		let session = session_from_headers(&f, &headers).await?;
 		let lease = f.store.orm_connection()?;
-		DashboardIdentity::expire_registrations(lease.handle()).await?;
+		DashboardIdentity::enforce_identity_retention(
+			lease.handle(),
+			session.identity_id(),
+			Some(idle_seconds),
+		)
+		.await?;
 		let mut connection = lease.handle();
 		let mut response = Response::ok().with_json(
 			&(DashboardRegistrationRequest::latest(&mut connection, session.identity_id())
@@ -620,8 +657,29 @@ impl DashboardSessions {
 		actor: Option<BrowserOrigin>,
 		id: Uuid,
 	) -> Result<Registration> {
+		// Bearer Operators may reject requests left from a removed sign-in configuration.
+		let idle_seconds = self
+			.runtime
+			.config
+			.dashboard_session()
+			.map(|config| config.session_idle_seconds);
 		let lease = self.runtime.store.orm_connection()?;
-		DashboardRegistrationRequest::reject(lease.handle(), id, &operator_actor(actor)).await
+		DashboardRegistrationRequest::reject(
+			lease.handle(),
+			id,
+			&operator_actor(actor),
+			idle_seconds,
+		)
+		.await
+	}
+	pub(crate) async fn admin_erase_display(
+		&self,
+		actor: Option<BrowserOrigin>,
+		id: Uuid,
+	) -> Result<IdentityView> {
+		let lease = self.runtime.store.orm_connection()?;
+		DashboardIdentity::erase_display(lease.handle(), id, operator_actor(actor).decision_actor())
+			.await
 	}
 	pub(crate) async fn admin_operator_grant(
 		&self,
