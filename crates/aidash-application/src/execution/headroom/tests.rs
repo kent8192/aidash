@@ -34,6 +34,7 @@ struct Scope {
 	private_sources: usize,
 	document_error: bool,
 	pinned: usize,
+	deferred: bool,
 }
 #[fixture]
 fn scope() -> Scope {
@@ -44,6 +45,7 @@ fn scope() -> Scope {
 		private_sources: 1,
 		document_error: false,
 		pinned: usize::MAX,
+		deferred: false,
 	}
 }
 #[fixture]
@@ -82,6 +84,9 @@ impl Definitions for Scope {
 		let mut root = crate::test_support::agent("agent");
 		if !self.skills {
 			root.config["remove_default"] = json!(["skill_list", "skill_load", "skill_read"]);
+		}
+		if self.deferred {
+			root.config["exposure"] = json!({"version":"deferred@1"});
 		}
 		let mut extras = vec![];
 		if self.knowledge {
@@ -146,6 +151,20 @@ async fn disabled_skills_skip_pinned_contents_and_cap_corrections(
 ) {
 	scope.skills = false;
 	assert_eq!(message_limit(&scope, &run).await.unwrap(), 16_384);
+	assert_eq!(
+		*scope.trace.lock().unwrap(),
+		["snapshot", "documents", "contracts"]
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn deferred_runs_do_not_subtract_the_pinned_skill_reserve(
+	mut scope: Scope,
+	run: RunMetadata,
+) {
+	scope.deferred = true;
+	assert!(request(&scope, &run).await.unwrap() > 0);
 	assert_eq!(
 		*scope.trace.lock().unwrap(),
 		["snapshot", "documents", "contracts"]
