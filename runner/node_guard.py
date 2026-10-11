@@ -19,8 +19,13 @@ import sys
 import time
 import uuid
 
-ROOT = Path('/var/lib/aidash-node-guard')
-RUNTIME = '/run/containerd/runsc/k8s.io'
+ROOT = Path(os.environ.get('AIDASH_GUARD_STATE', '/var/lib/aidash-node-guard'))
+RUNTIME = os.environ.get('AIDASH_RUNSC_ROOT', '/run/containerd/runsc/k8s.io')
+RUNSC_BINARY = os.environ.get('AIDASH_RUNSC_BINARY', '/usr/local/bin/runsc')
+CTR_BINARY = os.environ.get('AIDASH_CTR_BINARY', '/usr/bin/ctr')
+CGROUP_ROOT = Path(os.environ.get('AIDASH_CGROUP_ROOT', '/sys/fs/cgroup'))
+SENTRY_BINARIES = tuple(json.loads(os.environ.get('AIDASH_SENTRY_BINARIES',
+    '["/usr/local/bin/runsc", "/usr/local/bin/gvisor-bin/gvisor_sentry"]')))
 NAMESPACE = os.environ.get('AIDASH_SANDBOX_NAMESPACE', 'aidash-sandbox')
 
 
@@ -49,9 +54,9 @@ def validate(request):
     area = str(uuid.UUID(request['area_id']))
     if not re.fullmatch('[0-9a-f]{64}', cid) or type(request['epoch']) is not int or request['epoch'] < 1:
         raise ValueError('invalid execution identity')
-    info = json.loads(command('ctr', '-n', 'k8s.io', 'containers', 'info', cid))
+    info = json.loads(command(CTR_BINARY, '-n', 'k8s.io', 'containers', 'info', cid))
     labels = info['Labels']
-    state = json.loads(command('runsc', '--root=' + RUNTIME, 'state', cid))
+    state = json.loads(command(RUNSC_BINARY, '--root=' + RUNTIME, 'state', cid))
     if (info['Runtime']['Name'] != 'io.containerd.runsc.v1'
             or labels.get('io.kubernetes.pod.namespace') != NAMESPACE
             or labels.get('io.kubernetes.pod.uid') != pod
@@ -99,8 +104,7 @@ def kill_sandbox(state):
     fd = os.pidfd_open(pid)
     try:
         executable = f'/proc/{pid}/exe'
-        binaries = ('/usr/local/bin/runsc', '/usr/local/bin/gvisor-bin/gvisor_sentry')
-        if not any(os.path.exists(p) and os.path.samefile(executable, p) for p in binaries):
+        if not any(os.path.exists(p) and os.path.samefile(executable, p) for p in SENTRY_BINARIES):
             raise ValueError('sandbox process identity changed')
         signal.pidfd_send_signal(fd, signal.SIGKILL)
         poll = select.poll()
@@ -142,6 +146,14 @@ def filesystem_capacity(size, page_size):
     return ((size + page_size - 1) // page_size) * page_size
 
 
+def sentry_cgroup(pid):
+    group = Path('/proc') / str(pid) / 'cgroup'
+    hierarchy = next(line[3:] for line in group.read_text().splitlines() if line.startswith('0::'))
+    if '..' in Path(hierarchy).parts:
+        raise ValueError('invalid Sentry cgroup path')
+    return CGROUP_ROOT / hierarchy.lstrip('/')
+
+
 def handle(request):
     # Serialize validation with the watchdog. Its exact-bound pidfd tombstone
     # proves termination even when runsc has already removed its state. Only
@@ -172,16 +184,20 @@ def handle(request):
             raise ValueError('stale execution epoch')
         op = request['action']
         if op == 'limits':
-            group = Path('/proc') / str(state['pid']) / 'cgroup'
-            hierarchy = next(line[3:] for line in group.read_text().splitlines() if line.startswith('0::'))
-            root = Path('/sys/fs/cgroup')
-            current = root / hierarchy.lstrip('/')
+            root = CGROUP_ROOT
+            current = sentry_cgroup(state['pid'])
+            host_tasks = request['host_tasks']
+            if type(host_tasks) is not int or host_tasks <= 0:
+                raise ValueError('positive host task ceiling required')
             # The gVisor Sentry uses the Pod sandbox cgroup, which can retain
             # unlimited swap even when application containers have NoSwap.
             # Set this exact verified Sentry boundary before releasing code.
             (current / 'memory.swap.max').write_text('0')
+            (current / 'pids.max').write_text(str(host_tasks))
             if (current / 'memory.swap.max').read_text().strip() != '0':
                 raise ValueError('swap must be disabled at the Sentry boundary')
+            if (current / 'pids.max').read_text().strip() != str(host_tasks):
+                raise ValueError('host task ceiling must match at the Sentry boundary')
             cpus, memory, processes = [], [], []
             while current.is_relative_to(root):
                 cpu = (current / 'cpu.max').read_text().split() if (current / 'cpu.max').exists() else ['max']
@@ -199,7 +215,7 @@ def handle(request):
             for name in ('work', 'temp'):
                 fs = os.statvfs(volume(pod, name))
                 disk[name] = fs.f_blocks * fs.f_frsize
-            result = {'cpu':min(cpus), 'memory_bytes':min(memory), 'processes':min(processes),
+            result = {'cpu':min(cpus), 'memory_bytes':min(memory), 'host_tasks':min(processes),
                       'working_bytes':disk['work'], 'temporary_bytes':disk['temp']}
             expected = {k: request[k] for k in result}
             page_size = os.sysconf('SC_PAGE_SIZE')
@@ -209,13 +225,16 @@ def handle(request):
                 raise ValueError('observed cgroup/filesystem limits differ from execution profile: ' + str(result))
             save(path, binding(request, state, frozen=False, deadline=None))
             result['swap_bytes'] = 0
+            # The guest ceiling is enforced by sandbox.py's RLIMIT_NPROC,
+            # independently checked by the immutable admission probe.
+            result['processes'] = request['processes']
             return result
         if op == 'status':
             return {'status': state['status'], 'termination_confirmed':state['status']=='stopped'}
         if op == 'freeze':
             if state['status'] == 'running':
-                command('runsc', '--root=' + RUNTIME, 'pause', cid)
-            state = json.loads(command('runsc', '--root=' + RUNTIME, 'state', cid))
+                command(RUNSC_BINARY, '--root=' + RUNTIME, 'pause', cid)
+            state = json.loads(command(RUNSC_BINARY, '--root=' + RUNTIME, 'state', cid))
             if state['status'] not in ('paused', 'stopped'):
                 raise RuntimeError('writer freeze unconfirmed')
             save(path, binding(request, state, frozen=True, deadline=time.time()+min(request.get('idle_seconds',1800),1800)))
@@ -256,7 +275,7 @@ def handle(request):
             save(path, binding(request, state, frozen=False, deadline=deadline))
             save(target, cell, owner=10000)
             if state['status'] == 'paused':
-                command('runsc', '--root=' + RUNTIME, 'resume', cid)
+                command(RUNSC_BINARY, '--root=' + RUNTIME, 'resume', cid)
             return {'accepted': True}
         if op == 'cell_status':
             if state['status'] == 'stopped':

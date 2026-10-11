@@ -9,6 +9,6 @@ pub fn provider(client: reqwest::Client, config: ModelConfig) -> Result<Arc<dyn 
 	crate::bootstrap::model_provider(client, config)
 }
 
-pub fn parse_openai(value: serde_json::Value) -> Result<ModelResponse> {
-	aidash_integrations::inference::parse_openai(value).map_err(Into::into)
+pub fn parse_openai(body: &[u8]) -> Result<ModelResponse> {
+	aidash_integrations::inference::parse_openai(body).map_err(Into::into)
 }
