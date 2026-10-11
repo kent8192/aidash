@@ -2,6 +2,7 @@ import { authenticatedFetch, transportGeneration } from "./transport";
 import { stream } from "./generated/aidash";
 import {
   SseParser,
+  permanentlyDenied,
   refreshesDashboard,
   type SseFrame,
 } from "./inference-progress";
@@ -19,6 +20,7 @@ async function readEventStream({
   onOpen,
   onFrame,
   onStatus,
+  final,
 }: {
   signal: AbortSignal;
   /** Initial `Last-Event-ID`; `undefined` sends none. */
@@ -27,6 +29,8 @@ async function readEventStream({
   onOpen?: () => void;
   onFrame: (frame: SseFrame) => void;
   onStatus?: (status: StreamStatus) => void;
+  /** Errors after which reconnecting is pointless; the stream then ends. */
+  final?: (error: unknown) => boolean;
 }) {
   const generation = transportGeneration();
   while (!signal.aborted && generation === transportGeneration()) {
@@ -61,8 +65,9 @@ async function readEventStream({
         await reader.cancel().catch(() => {});
         reader.releaseLock();
       }
-    } catch {
+    } catch (error) {
       if (signal.aborted || generation !== transportGeneration()) return;
+      if (final?.(error)) return;
       onStatus?.("reconnecting");
       await new Promise<void>((resolve) => {
         const finish = () => {
@@ -124,5 +129,6 @@ export function subscribeInference(
         },
       ),
     onFrame,
+    final: permanentlyDenied,
   });
 }

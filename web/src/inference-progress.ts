@@ -155,6 +155,20 @@ export function refreshesDashboard(frame: SseFrame): boolean {
   return !(typeof type === "string" && type.startsWith("inference."));
 }
 
+/**
+ * Whether a failed Run stream request was refused for good: the server
+ * answered 403 (`run.read` revoked) or 404 (Run gone), so reconnecting would
+ * only repeat the refusal. Transport errors and other statuses stay retryable.
+ */
+export function permanentlyDenied(error: unknown): boolean {
+  if (typeof error !== "object" || error === null) return false;
+  const { responseReceived, status } = error as {
+    responseReceived?: unknown;
+    status?: unknown;
+  };
+  return responseReceived === true && (status === 403 || status === 404);
+}
+
 const OUTCOMES: Record<string, true> = {
   pending: true,
   accepted: true,

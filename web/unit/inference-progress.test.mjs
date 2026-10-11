@@ -8,6 +8,7 @@ import {
   initialInferenceState,
   reduceInference,
   refreshesDashboard,
+  permanentlyDenied,
 } from "../src/inference-progress.ts";
 
 const EVENTS = {
@@ -267,4 +268,15 @@ test("inference markers do not refresh the dashboard", () => {
     false,
   );
   assert.equal(refreshesDashboard({ id: "8", data: "not json" }), true);
+});
+
+test("only refused Run stream responses stop reconnecting", () => {
+  const refused = (status, responseReceived = true) =>
+    Object.assign(new Error("refused"), { status, responseReceived });
+  assert.equal(permanentlyDenied(refused(403)), true);
+  assert.equal(permanentlyDenied(refused(404)), true);
+  assert.equal(permanentlyDenied(refused(503)), false);
+  assert.equal(permanentlyDenied(refused(403, false)), false);
+  assert.equal(permanentlyDenied(new Error("stream closed")), false);
+  assert.equal(permanentlyDenied(undefined), false);
 });
