@@ -263,9 +263,7 @@ function SemanticWorkspace({
     (entries.isError ? [] : entries.data)
       ?.map((entry) => entry.agent)
       .filter((agent): agent is string => !!agent) ?? [];
-  const dialogAlert = error && (
-    <Alert>{describe(error)}</Alert>
-  );
+  const dialogAlert = error && <Alert>{describe(error)}</Alert>;
   return (
     <>
       {(error || failures.length > 0) && (
@@ -902,9 +900,7 @@ function EntryForm({
           defaultValue={JSON.stringify(entry?.metadata ?? {}, null, 2)}
         />
       </Field>
-      {metadataError && (
-        <Alert>{metadataError}</Alert>
-      )}
+      {metadataError && <Alert>{metadataError}</Alert>}
       <div className="flex justify-end">
         <Button disabled={busy}>{t("save")}</Button>
       </div>

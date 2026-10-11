@@ -98,9 +98,7 @@ function OperationCard({
         />
       ))}
       {(query.error || error || value.error) && (
-        <Alert>
-          {query.error?.message || error || value.error?.message}
-        </Alert>
+        <Alert>{query.error?.message || error || value.error?.message}</Alert>
       )}
       {value.effects_may_have_occurred && (
         <Notice tone="warning">
@@ -512,9 +510,7 @@ function FileOperations({
                   ))}
               </NativeSelect>
             </Field>
-            {recipients.isError && (
-              <Alert>{recipients.error.message}</Alert>
-            )}
+            {recipients.isError && <Alert>{recipients.error.message}</Alert>}
             <Field
               label={
                 ja
@@ -740,9 +736,7 @@ function FileOperations({
                 ([path, digest]) => (
                   <li key={path}>
                     {path}
-                    <Hint>
-                      {digest ?? (ja ? "新規ファイル" : "New file")}
-                    </Hint>
+                    <Hint>{digest ?? (ja ? "新規ファイル" : "New file")}</Hint>
                   </li>
                 ),
               )}

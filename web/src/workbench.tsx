@@ -39,11 +39,7 @@ import { Field, JsonView, useI18n } from "./ui";
 import type { State } from "./types";
 import { cn } from "./lib/utils";
 import { TrustOverview } from "./trust-overview";
-import {
-  TrustAudit,
-  TrustCertifications,
-  TrustSummary,
-} from "./trust-details";
+import { TrustAudit, TrustCertifications, TrustSummary } from "./trust-details";
 import {
   Alert,
   bodyClass,
@@ -1458,13 +1454,20 @@ export function Workbench({
             [
               [ja ? "ステップ" : "Steps", testLimits.max_steps],
               [ja ? "秒" : "Seconds", testLimits.max_duration_secs],
-              [ja ? "出力token" : "Output tokens", testLimits.max_output_tokens],
+              [
+                ja ? "出力token" : "Output tokens",
+                testLimits.max_output_tokens,
+              ],
               [ja ? "累計token" : "Total tokens", testLimits.max_total_tokens],
               [ja ? "同時実行" : "Concurrent", testLimits.max_concurrent],
               [ja ? "保存日数" : "Days retained", testLimits.payload_days],
             ] as const
           ).map(([name, value]) => (
-            <Metric key={name} label={name} value={value.toLocaleString(locale)} />
+            <Metric
+              key={name}
+              label={name}
+              value={value.toLocaleString(locale)}
+            />
           ))}
         </MetricRow>
       )}
@@ -1516,26 +1519,24 @@ export function Workbench({
       {testMode === "simulated" && (
         <Disclosure
           summary={
-            ja
-              ? "明示的な模擬ツール応答"
-              : "Explicit simulated tool responses"
+            ja ? "明示的な模擬ツール応答" : "Explicit simulated tool responses"
           }
         >
-            <Field
-              label={
-                ja
-                  ? "模擬ツール応答（名前 → status / response のJSON）"
-                  : "Simulated tool fixtures (name → status / response JSON)"
-              }
-            >
-              <Textarea
-                rows={3}
-                spellCheck={false}
-                className="font-mono text-xs"
-                value={fixtures}
-                onChange={(event) => setFixtures(event.target.value)}
-              />
-            </Field>
+          <Field
+            label={
+              ja
+                ? "模擬ツール応答（名前 → status / response のJSON）"
+                : "Simulated tool fixtures (name → status / response JSON)"
+            }
+          >
+            <Textarea
+              rows={3}
+              spellCheck={false}
+              className="font-mono text-xs"
+              value={fixtures}
+              onChange={(event) => setFixtures(event.target.value)}
+            />
+          </Field>
         </Disclosure>
       )}
     </Section>
@@ -1780,9 +1781,7 @@ export function Workbench({
             )}
           />
         ) : (
-          <Hint>
-            {latestSession ? "—" : ja ? "未実行" : "No run yet"}
-          </Hint>
+          <Hint>{latestSession ? "—" : ja ? "未実行" : "No run yet"}</Hint>
         )}
       </InspectorSection>
       <InspectorSection title={t.testHistory}>
@@ -2100,8 +2099,7 @@ export function Workbench({
     !dirty &&
     testSessions.some(
       (session) =>
-        session.revision === current.revision &&
-        session.status === "completed",
+        session.revision === current.revision && session.status === "completed",
     );
   const creatorInspector = current && (
     <Inspector label={ja ? "下書きの状態" : "Draft status"}>
@@ -2369,7 +2367,10 @@ export function Workbench({
                           </span>
                         </TableHead>
                         {[registeredValue, draftValue].map((value, index) => (
-                          <TableCell key={index} className="h-auto py-2 align-top">
+                          <TableCell
+                            key={index}
+                            className="h-auto py-2 align-top"
+                          >
                             <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words font-mono text-xs text-foreground">
                               {formatComparison(value)}
                             </pre>
@@ -2460,7 +2461,9 @@ export function Workbench({
                     ]
                   : []),
                 [
-                  ja ? "保存済み下書きとの差分" : "Differences from saved draft",
+                  ja
+                    ? "保存済み下書きとの差分"
+                    : "Differences from saved draft",
                   versionDifferences(
                     current.entry,
                     selectedRegisteredVersion.entry,
@@ -2725,9 +2728,7 @@ export function Workbench({
               >
                 <option value="all">{ja ? "すべて" : "All"}</option>
                 <option value="open">{ja ? "未解決" : "Open"}</option>
-                <option value="resolved">
-                  {ja ? "解決済み" : "Resolved"}
-                </option>
+                <option value="resolved">{ja ? "解決済み" : "Resolved"}</option>
                 <option value="archived">
                   {ja ? "アーカイブ" : "Archived"}
                 </option>
@@ -2914,37 +2915,35 @@ export function Workbench({
             className="sm:col-span-2"
             summary={ja ? "証拠（任意）" : "Evidence (optional)"}
           >
-              <Field
-                label={
-                  ja ? "証拠の名前（任意）" : "Evidence title (optional)"
-                }
-              >
-                <Input
-                  value={evidenceTitle}
-                  onChange={(event) => setEvidenceTitle(event.target.value)}
-                />
-              </Field>
-              <Field
-                label={
-                  ja
-                    ? "証拠の固定コピー（任意）"
-                    : "Fixed evidence copy (optional)"
-                }
-              >
-                <Textarea
-                  rows={3}
-                  value={evidenceContent}
-                  onChange={(event) => setEvidenceContent(event.target.value)}
-                />
-              </Field>
-              {Boolean(evidenceTitle.trim()) !==
-                Boolean(evidenceContent.trim()) && (
-                <Hint role="status" className="text-warning">
-                  {ja
-                    ? "証拠を添付する場合は、名前と本文の両方を入力してください。"
-                    : "Enter both an evidence title and content to attach evidence."}
-                </Hint>
-              )}
+            <Field
+              label={ja ? "証拠の名前（任意）" : "Evidence title (optional)"}
+            >
+              <Input
+                value={evidenceTitle}
+                onChange={(event) => setEvidenceTitle(event.target.value)}
+              />
+            </Field>
+            <Field
+              label={
+                ja
+                  ? "証拠の固定コピー（任意）"
+                  : "Fixed evidence copy (optional)"
+              }
+            >
+              <Textarea
+                rows={3}
+                value={evidenceContent}
+                onChange={(event) => setEvidenceContent(event.target.value)}
+              />
+            </Field>
+            {Boolean(evidenceTitle.trim()) !==
+              Boolean(evidenceContent.trim()) && (
+              <Hint role="status" className="text-warning">
+                {ja
+                  ? "証拠を添付する場合は、名前と本文の両方を入力してください。"
+                  : "Enter both an evidence title and content to attach evidence."}
+              </Hint>
+            )}
           </Disclosure>
         </div>
         <div>
@@ -2989,7 +2988,9 @@ export function Workbench({
               />
             </Field>
             <Field
-              label={ja ? "ワークスペースID（任意）" : "Workspace ID (optional)"}
+              label={
+                ja ? "ワークスペースID（任意）" : "Workspace ID (optional)"
+              }
             >
               <Input
                 value={policyWorkspace}
@@ -3008,10 +3009,7 @@ export function Workbench({
           </div>
         </Section>
         <Section title={ja ? "判定の概要" : "Decision summary"}>
-          <MetricRow
-            columns={4}
-            label={ja ? "判定の概要" : "Decision summary"}
-          >
+          <MetricRow columns={4} label={ja ? "判定の概要" : "Decision summary"}>
             <Metric
               label={ja ? "許可" : "Allowed"}
               tone="success"
@@ -3041,7 +3039,8 @@ export function Workbench({
                 {permissionContext.tenant} / {permissionContext.subject} /{" "}
                 {permissionContext.workspace_id ||
                   (ja ? "ワークスペース未指定" : "No workspace selected")}{" "}
-                · {new Date(permissionContext.observed_at).toLocaleString(locale)}
+                ·{" "}
+                {new Date(permissionContext.observed_at).toLocaleString(locale)}
               </p>
               <Hint>
                 {ja ? "宣言した能力" : "Declared capabilities"}:{" "}

@@ -116,9 +116,7 @@ export function TrustTools({
       {operator ? (
         <Suspense
           fallback={
-            <Loading>
-              {locale === "ja-JP" ? "読み込み中…" : "Loading…"}
-            </Loading>
+            <Loading>{locale === "ja-JP" ? "読み込み中…" : "Loading…"}</Loading>
           }
         >
           <DashboardIdentityAdministration />
@@ -181,36 +179,36 @@ export function ConversationTools({
           </SheetDescription>
         </SheetHeader>
         <div className="grid min-h-0 flex-1 content-start gap-4 overflow-y-auto px-4 py-3">
-        <Suspense
-          fallback={<Loading>{ja ? "読み込み中…" : "Loading…"}</Loading>}
-        >
-          {view === "files" && workspace && (
-            <RequestFiles workspace={workspace} />
+          <Suspense
+            fallback={<Loading>{ja ? "読み込み中…" : "Loading…"}</Loading>}
+          >
+            {view === "files" && workspace && (
+              <RequestFiles workspace={workspace} />
+            )}
+            {view === "files" &&
+              (operator ? (
+                <Hint role="status">
+                  {ja
+                    ? "作業ファイルを管理するには、利用者アカウントで接続してください。"
+                    : "Connect with a user account to manage working files."}
+                </Hint>
+              ) : (
+                <WorkingFileSettings workspace={workspace} />
+              ))}
+            {view === "progress" && (
+              <>
+                {stateError && <Alert>{stateError}</Alert>}
+                <TransactionsPage nodeId={nodeId} operator={operator} />
+              </>
+            )}
+          </Suspense>
+          {!data && view === "files" && (
+            <Hint role="status">
+              {ja
+                ? "依頼の情報を読み込めません。"
+                : "Request information is unavailable."}
+            </Hint>
           )}
-          {view === "files" &&
-            (operator ? (
-              <Hint role="status">
-                {ja
-                  ? "作業ファイルを管理するには、利用者アカウントで接続してください。"
-                  : "Connect with a user account to manage working files."}
-              </Hint>
-            ) : (
-              <WorkingFileSettings workspace={workspace} />
-            ))}
-          {view === "progress" && (
-            <>
-              {stateError && <Alert>{stateError}</Alert>}
-              <TransactionsPage nodeId={nodeId} operator={operator} />
-            </>
-          )}
-        </Suspense>
-        {!data && view === "files" && (
-          <Hint role="status">
-            {ja
-              ? "依頼の情報を読み込めません。"
-              : "Request information is unavailable."}
-          </Hint>
-        )}
         </div>
       </SheetContent>
     </Sheet>

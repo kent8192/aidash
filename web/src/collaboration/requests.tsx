@@ -164,9 +164,7 @@ export function ChannelRequests({
           </button>
         );
       })}
-      {error && (
-        <Alert>{error}</Alert>
-      )}
+      {error && <Alert>{error}</Alert>}
     </section>
   );
 }
