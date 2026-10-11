@@ -31,3 +31,5 @@ pub mod state_management;
 pub mod desktop;
 
 pub mod provider_credentials;
+
+pub mod tenant_administration;

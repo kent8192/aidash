@@ -762,6 +762,12 @@ impl ExecutionEnvironment for Bench {
 	async fn skill_context(&self, _run: &Run) -> Result<String> {
 		unexpected("ExecutionEnvironment.skill_context")
 	}
+	async fn direct_skills(&self, _run: &Run) -> Result<Vec<aidash_domain::exposure::DirectSkill>> {
+		unexpected("ExecutionEnvironment.direct_skills")
+	}
+	async fn direct_skill_body(&self, _run: &Run, _skill_id: Uuid, _digest: &str) -> Result<String> {
+		unexpected("ExecutionEnvironment.direct_skill_body")
+	}
 	async fn skill_revision(&self, _run: &Run) -> Result<Option<i64>> {
 		unexpected("ExecutionEnvironment.skill_revision")
 	}

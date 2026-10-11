@@ -4,6 +4,7 @@ pub mod context;
 pub mod decision;
 pub mod deployment;
 pub mod entities;
+pub mod exposure;
 pub mod identity;
 pub mod media;
 pub mod memory;

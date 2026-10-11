@@ -34,6 +34,9 @@ impl AgentToolRepository for AgentTools<'_> {
 	fn is_remote(&self) -> bool {
 		self.remote.is_some()
 	}
+	fn binding_snapshot(&self) -> Option<&aidash_domain::registry::bindings::BindingSnapshot> {
+		self.run.context.binding_snapshot.as_deref()
+	}
 	async fn lease(&self) -> Result<Box<dyn AgentToolScope + '_>> {
 		Ok(Box::new(Scope {
 			remote: self.remote,

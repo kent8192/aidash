@@ -38,6 +38,14 @@ pub enum Continuation {
 pub enum ResultFitting {
 	WorkspaceRecord,
 	SkillText,
+	/// A `skill_asset_read` text page: `content` from `offset` to `next_offset`.
+	SkillAsset,
+	/// A `capability_describe` result, useful only complete: recorded whole
+	/// when it fits the remaining request budget, otherwise deferred.
+	CapabilityDescription,
+	/// A `capability_search` page, cut to its leading results that fit the
+	/// remaining request budget; `next_cursor` resumes after the last kept one.
+	CapabilitySearch,
 	Observation,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -131,6 +139,9 @@ pub struct ToolBehavior {
 	/// Omitted while Sequential so contracts pinned before this field keep their digest.
 	#[serde(skip_serializing_if = "Concurrency::is_sequential")]
 	pub concurrency: Concurrency,
+	/// The output's `"exposure_update"` changes the Run's Exposure set.
+	#[serde(skip_serializing_if = "std::ops::Not::not")]
+	pub exposure_update: bool,
 }
 impl ToolBehavior {
 	pub fn permits(&self, mode: ToolUseMode) -> bool {
@@ -220,6 +231,7 @@ impl ToolContract {
 				media_pending: false,
 				yields_model_media: false,
 				concurrency: Concurrency::Sequential,
+				exposure_update: false,
 			},
 			disclosure,
 			remote_exposure: true,
@@ -247,6 +259,7 @@ pub fn builtin_contract(name: &str) -> Option<ToolContract> {
 			yields_model_media: false,
 			workbench_approval: false,
 			concurrency: Concurrency::Sequential,
+			exposure_update: false,
 		},
 		disclosure: DisclosureBoundary::Home,
 		remote_exposure: false,
@@ -339,6 +352,31 @@ pub fn builtin_contract(name: &str) -> Option<ToolContract> {
 			behavior.effect = ToolEffect::ReadOnly;
 			behavior.fitting = Some(ResultFitting::SkillText);
 			behavior.media_pending = true;
+			contract.remote_exposure = true;
+		}
+		"skill_asset_read" => {
+			auth.core = Some(CorePermission::Skills);
+			auth.requirements.push(ConfiguredSkill);
+			behavior.effect = ToolEffect::ReadOnly;
+			behavior.fitting = Some(ResultFitting::SkillAsset);
+			behavior.media_pending = true;
+			contract.disclosure = DisclosureBoundary::Local;
+			contract.remote_exposure = true;
+		}
+		"capability_search" | "capability_describe" => {
+			behavior.effect = ToolEffect::ReadOnly;
+			behavior.media_pending = true;
+			contract.disclosure = DisclosureBoundary::Local;
+			behavior.fitting = Some(if name == "capability_describe" {
+				ResultFitting::CapabilityDescription
+			} else {
+				ResultFitting::CapabilitySearch
+			});
+			contract.remote_exposure = true;
+		}
+		"capability_load" | "capability_unload" => {
+			behavior.exposure_update = true;
+			contract.disclosure = DisclosureBoundary::Local;
 			contract.remote_exposure = true;
 		}
 		"skill_list" | "skill_load" => {
@@ -454,6 +492,11 @@ mod tests {
 			"apply_patch",
 			"file_share",
 			"outbound_get",
+			"capability_search",
+			"capability_describe",
+			"capability_load",
+			"capability_unload",
+			"skill_asset_read",
 		];
 		let selected = |predicate: fn(&ToolContract) -> bool| {
 			names
@@ -471,7 +514,12 @@ mod tests {
 				"workspace_read",
 				"workspace_observe",
 				"workspace_wait",
-				"skill_read"
+				"skill_read",
+				"capability_search",
+				"capability_describe",
+				"capability_load",
+				"capability_unload",
+				"skill_asset_read"
 			]
 		);
 		assert_eq!(
@@ -486,7 +534,10 @@ mod tests {
 				"skill_read",
 				"skill_list",
 				"file_read",
-				"file_search"
+				"file_search",
+				"capability_search",
+				"capability_describe",
+				"skill_asset_read"
 			]
 		);
 		assert!(
@@ -499,6 +550,116 @@ mod tests {
 			builtin_contract("outbound_get").unwrap().disclosure,
 			DisclosureBoundary::External
 		);
+		assert_eq!(
+			selected(|c| c.behavior.exposure_update),
+			["capability_load", "capability_unload"]
+		);
+		for name in [
+			"capability_search",
+			"capability_describe",
+			"capability_load",
+			"capability_unload",
+		] {
+			let contract = builtin_contract(name).unwrap();
+			assert_eq!(contract.disclosure, DisclosureBoundary::Local);
+			assert_eq!(contract.authorization.flag, None);
+			assert_eq!(contract.authorization.core, None);
+			assert!(contract.authorization.requirements.is_empty());
+			assert_eq!(
+				contract.behavior.effect,
+				if contract.behavior.exposure_update {
+					ToolEffect::Idempotent
+				} else {
+					ToolEffect::ReadOnly
+				}
+			);
+		}
+		assert_eq!(
+			selected(|c| c.behavior.fitting == Some(ResultFitting::CapabilityDescription)),
+			["capability_describe"]
+		);
+		assert_eq!(
+			selected(|c| c.behavior.fitting == Some(ResultFitting::CapabilitySearch)),
+			["capability_search"]
+		);
+		let asset = builtin_contract("skill_asset_read").unwrap();
+		assert_eq!(asset.behavior.effect, ToolEffect::ReadOnly);
+		assert_eq!(asset.disclosure, DisclosureBoundary::Local);
+		assert_eq!(asset.authorization.core, Some(CorePermission::Skills));
+		assert_eq!(asset.behavior.fitting, Some(ResultFitting::SkillAsset));
+		assert_eq!(
+			asset.authorization.requirements,
+			[AuthorizationRequirement::ConfiguredSkill]
+		);
+	}
+	#[test]
+	fn existing_builtin_contracts_serialize_without_exposure_fields() {
+		// Every pinned `provider_contract_digest` hashes this exact behavior shape.
+		let legacy_keys = [
+			"effect",
+			"fitting",
+			"continuation",
+			"catch_up",
+			"media_pending",
+			"yields_model_media",
+			"workbench_approval",
+		];
+		for name in [
+			"task_create",
+			"task_assign",
+			"task_delegate",
+			"artifact_publish",
+			"workspace_message",
+			"memory_mutate",
+			"memory_recall",
+			"memory_reflect",
+			"human_request",
+			"agent_discover",
+			"workspace_read",
+			"workspace_observe",
+			"workspace_wait",
+			"skill_read",
+			"skill_list",
+			"skill_load",
+			"file_read",
+			"file_search",
+			"shell",
+			"shell_poll",
+			"shell_cancel",
+			"code_interpreter",
+			"python_install",
+			"python_poll",
+			"python_cancel",
+			"apply_patch",
+			"file_share",
+			"outbound_get",
+		] {
+			let contract = builtin_contract(name).unwrap();
+			let encoded = serde_json::to_string(&contract).unwrap();
+			assert!(!encoded.contains("exposure_update"), "{name}");
+			let behavior = &encoded[encoded.find(r#""behavior":{"#).unwrap()..];
+			let behavior = &behavior[..behavior.find('}').unwrap()];
+			let keys = legacy_keys
+				.iter()
+				.map(|key| behavior.find(&format!(r#""{key}":"#)).unwrap())
+				.collect::<Vec<_>>();
+			assert!(keys.windows(2).all(|pair| pair[0] < pair[1]), "{name}");
+			// Shared-read builtins also encode their concurrency; `pinned` keeps
+			// Runs admitted before that declaration on their Sequential digest.
+			let concurrent = usize::from(!contract.behavior.concurrency.is_sequential());
+			assert_eq!(
+				behavior.contains(r#""concurrency":"shared_read""#),
+				concurrent == 1,
+				"{name}"
+			);
+			assert_eq!(
+				behavior.matches("\":").count(),
+				legacy_keys.len() + 1 + concurrent,
+				"{name}"
+			);
+		}
+		let encoded = serde_json::to_value(builtin_contract("capability_load").unwrap()).unwrap();
+		assert_eq!(encoded["behavior"]["exposure_update"], true);
 	}
 	#[test]
 	fn registry_effects_and_approval_are_independent() {
