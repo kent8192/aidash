@@ -13,8 +13,9 @@ actions:
   disabled:
     - trunk-announce
     - trunk-check-pre-push
-    - trunk-fmt-pre-commit
   enabled:
+    # Formats staged files on every commit; Trunk installs the Git hook itself.
+    - trunk-fmt-pre-commit
     - trunk-upgrade-available
 lint:
   ignore:
