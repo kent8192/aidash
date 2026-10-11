@@ -136,9 +136,7 @@ export function HomeNativeMemoryFields({
             name="native_memory"
             value={chosen ? JSON.stringify(chosen.request) : ""}
           />
-          {query.isError && (
-            <Alert>{query.error.message}</Alert>
-          )}
+          {query.isError && <Alert>{query.error.message}</Alert>}
           {!query.isPending && !choices.length && (
             <Notice tone="warning" role="status">
               {ja

@@ -135,9 +135,7 @@ export function SkillFiles({ run }: { run: string }) {
           )}
         </div>
       )}
-      {(error || query.error) && (
-        <Alert>{error || query.error?.message}</Alert>
-      )}
+      {(error || query.error) && <Alert>{error || query.error?.message}</Alert>}
     </details>
   );
 }
