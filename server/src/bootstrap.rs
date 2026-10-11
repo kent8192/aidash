@@ -229,6 +229,13 @@ impl RuntimeTasks {
 				federation.clone(),
 				receiver.clone(),
 			)));
+		} else {
+			tasks.spawn_service(runtime_task(
+				crate::dashboard_auth::enforce_display_retention(
+					federation.clone(),
+					receiver.clone(),
+				),
+			));
 		}
 		if event_streams.is_some() {
 			let deliveries = federation.clone();
