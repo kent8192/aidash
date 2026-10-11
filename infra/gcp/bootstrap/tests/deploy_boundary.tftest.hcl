@@ -14,10 +14,11 @@ mock_provider "google" {
   mock_data "google_project" { defaults = { number = "123456789012" } }
 }
 variables {
-  project_id          = "aidash-fixture"
-  byok_project_id     = "aidash-byok-fixture"
-  state_bucket_name   = "aidash-fixture-state"
-  release_bucket_name = "aidash-fixture-releases"
+  project_id            = "aidash-fixture"
+  byok_project_id       = "aidash-byok-fixture"
+  state_bucket_name     = "aidash-fixture-state"
+  release_bucket_name   = "aidash-fixture-releases"
+  security_alert_emails = ["security@example.test"]
 }
 run "deploy_boundary" {
   command   = apply
@@ -90,6 +91,39 @@ run "deploy_boundary" {
     condition     = keys(google_tags_tag_binding.broker) == ["production", "test"] && google_tags_tag_binding.broker["production"].parent == "//iam.googleapis.com/projects/aidash-fixture/serviceAccounts/100000000000000000001" && google_tags_tag_binding.broker["test"].parent == "//iam.googleapis.com/projects/aidash-fixture/serviceAccounts/100000000000000000002" && alltrue([for b in google_tags_tag_binding.broker : b.tag_value == "tagValues/2001"])
     error_message = "Every broker service account carries the broker tag, and nothing else does."
   }
+  assert {
+    condition     = google_monitoring_alert_policy.byok_key_material_read[0].project == "aidash-byok-fixture" && alltrue([for p in [google_monitoring_alert_policy.broker_revision[0], google_monitoring_alert_policy.broker_iam_policy[0]] : p.project == "aidash-fixture"])
+    error_message = "Each alert policy lives in the project that writes its audit log."
+  }
+  assert {
+    condition     = strcontains(google_monitoring_alert_policy.byok_key_material_read[0].conditions[0].condition_matched_log[0].filter, "AccessSecretVersion") && strcontains(google_monitoring_alert_policy.byok_key_material_read[0].conditions[0].condition_matched_log[0].filter, "NOT protoPayload.authenticationInfo.principalEmail=(\"aidash-production-broker@aidash-fixture.iam.gserviceaccount.com\" OR \"aidash-test-broker@aidash-fixture.iam.gserviceaccount.com\")") && strcontains(google_monitoring_alert_policy.byok_key_material_read[0].conditions[0].condition_matched_log[0].filter, "projects/aidash-byok-fixture/logs/cloudaudit.googleapis.com%2Fdata_access")
+    error_message = "Alert on every Key Material read except by the exact broker accounts."
+  }
+  assert {
+    condition     = strcontains(google_monitoring_alert_policy.broker_revision[0].conditions[0].condition_matched_log[0].filter, "(\"aidash-production-credential-broker\" OR \"aidash-test-credential-broker\")") && strcontains(google_monitoring_alert_policy.broker_revision[0].conditions[0].condition_matched_log[0].filter, "Services.UpdateService")
+    error_message = "Alert on every revision of each broker service."
+  }
+  assert {
+    condition     = strcontains(google_monitoring_alert_policy.broker_iam_policy[0].conditions[0].condition_matched_log[0].filter, "Services.SetIamPolicy") && strcontains(google_monitoring_alert_policy.broker_iam_policy[0].conditions[1].condition_matched_log[0].filter, "google.iam.admin.v1.SetIAMPolicy") && strcontains(google_monitoring_alert_policy.broker_iam_policy[0].conditions[1].condition_matched_log[0].filter, "100000000000000000001")
+    error_message = "Alert on IAM policy changes of broker services and accounts."
+  }
+  assert {
+    condition     = alltrue([for p in [google_monitoring_alert_policy.broker_revision[0], google_monitoring_alert_policy.broker_iam_policy[0], google_monitoring_alert_policy.byok_key_material_read[0]] : length(p.notification_channels) == 1 && p.alert_strategy[0].notification_rate_limit[0].period == "300s"])
+    error_message = "Log-match alerts need a rate limit and a recipient."
+  }
+}
+run "alerts_need_a_recipient" {
+  command = plan
+  variables {
+    byok_broker_environments = ["test"]
+    security_alert_emails    = []
+  }
+  expect_failures = [var.security_alert_emails]
+}
+run "alerts_reject_malformed_recipient" {
+  command = plan
+  variables { security_alert_emails = ["not-an-email"] }
+  expect_failures = [var.security_alert_emails]
 }
 run "no_boundary_without_brokers" {
   command = plan

@@ -135,6 +135,32 @@ class DeployBoundaryTests(unittest.TestCase):
         for role in self.deploy_roles():
             self.assertNotRegex(role, r"resourcemanager\.tag|iam\.deny|roles/owner|roles/editor|monitoring|logging")
 
+    def alert_filters(self):
+        return {
+            policy["display_name"]: [c["condition_matched_log"][0]["filter"] for c in policy["conditions"]]
+            for policy in self.values("google_monitoring_alert_policy")
+        }
+
+    def test_alerts_cover_revisions_iam_changes_and_non_broker_key_material_reads(self):
+        filters = self.alert_filters()
+        revision = filters["Credential Broker: new Cloud Run revision"]
+        self.assertEqual(len(revision), 2)
+        self.assertIn('("aidash-production-credential-broker" OR "aidash-test-credential-broker")', revision[0])
+        iam = filters["Credential Broker: IAM policy changed"]
+        self.assertIn("Services.SetIamPolicy", iam[0])
+        self.assertIn("google.iam.admin.v1.SetIAMPolicy", iam[1])
+        read = filters["Provider Credential Key Material read by a non-broker principal"]
+        self.assertEqual(len(read), 1)
+        self.assertIn("AccessSecretVersion", read[0])
+        for email in ("aidash-production-broker", "aidash-test-broker"):
+            self.assertIn(f'"{email}@aidash-fixture.iam.gserviceaccount.com"', read[0])
+        self.assertEqual(read[0].count("principalEmail"), 1)
+
+    def test_alert_policies_notify_and_rate_limit(self):
+        for policy in self.values("google_monitoring_alert_policy"):
+            self.assertEqual(len(policy["notification_channels"]), 1, policy["display_name"])
+            self.assertTrue(policy["alert_strategy"][0]["notification_rate_limit"][0]["period"])
+
 
 if __name__ == "__main__":
     unittest.main()
