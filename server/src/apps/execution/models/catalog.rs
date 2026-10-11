@@ -1,6 +1,7 @@
 //! Native execution and event reads for the application's public projections.
 use super::{Event, Run, RunInput};
 use crate::{Error, Result};
+use aidash_domain::provider::progress::MARKER_PREFIX;
 use reinhardt::db::orm::execution::convert_values;
 use reinhardt::db::orm::{Model, OrmExecutor};
 use reinhardt::query::{
@@ -49,9 +50,12 @@ impl Event {
 			.await?)
 	}
 
+	/// Recent journal events for a workspace snapshot, without the display-only
+	/// Inference Attempt markers.
 	pub(crate) async fn recent<E: OrmExecutor>(db: &mut E, workspace: Uuid) -> Result<Vec<Self>> {
 		let mut events = Self::objects()
 			.filter(Self::field_workspace_id().eq(Some(workspace)))
+			.filter(Self::field_kind().starts_with(MARKER_PREFIX).not())
 			.order_by(&["-sequence"])
 			.limit(100)
 			.all_with_db(db)

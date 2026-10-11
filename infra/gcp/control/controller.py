@@ -325,6 +325,7 @@ def provision_secret(config, output, kind):
         if not api_key:
             raise Refused("Configure the GCIP web API key from the bootstrap output")
         settings.update({key: gcip[key] for key in ("project_id", "public_origin", "tenant_bindings", "providers", "password_sign_up")})
+        settings["sign_in_domains"] = gcip.get("sign_in_domains", {})
         # Firebase's helper is the default and needs no key. Terraform selects the
         # public origin only in the apply that deploys a release, so the SAML ACS,
         # this setting and the edge's helper proxy switch together.
@@ -336,7 +337,7 @@ def provision_secret(config, output, kind):
     elif value.get("dashboard", {}).get("gcip"):
         # Binding removal must reach the retained server before any subsequent
         # boundary; disabling infrastructure cannot leave an old pool admitted.
-        value["dashboard"]["gcip"].update(tenant_bindings={}, providers={}, password_sign_up=[])
+        value["dashboard"]["gcip"].update(tenant_bindings={}, providers={}, password_sign_up=[], sign_in_domains={})
     encoded = json.dumps(value, sort_keys=True)
     # Keep latest enabled after a rollback, even when the selected configuration
     # is unchanged, so every reader of "latest" sees the managed version.

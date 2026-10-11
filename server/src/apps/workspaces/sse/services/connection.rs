@@ -10,6 +10,7 @@ use futures_util::{Stream, StreamExt, stream::BoxStream};
 use http::{HeaderMap, Method};
 use std::{
 	convert::Infallible,
+	future::Future,
 	pin::Pin,
 	task::{Context as TaskContext, Poll},
 };
@@ -18,6 +19,9 @@ use tokio::{
 	task::JoinHandle,
 	time::{Instant, MissedTickBehavior},
 };
+
+#[path = "inference.rs"]
+pub(crate) mod inference;
 
 const AUTH_INTERVAL: Duration = Duration::from_millis(250);
 const BROWSER_INTERVAL: Duration = Duration::from_secs(5);
@@ -44,14 +48,23 @@ impl Closed {
 	}
 }
 
-struct Control {
+struct Control<T = Event> {
 	closed: watch::Sender<Option<Closed>>,
 	pending: watch::Sender<Option<Instant>>,
-	buffer: Mutex<Option<Page>>,
+	buffer: Mutex<Option<Page<T>>>,
 	gate_wait: Mutex<Option<GateWait>>,
 	lease: Option<crate::http::SseLeaseHandle>,
 }
-impl Control {
+impl<T> Control<T> {
+	fn new(lease: Option<crate::http::SseLeaseHandle>) -> Self {
+		Self {
+			closed: watch::channel(None).0,
+			pending: watch::channel(None).0,
+			buffer: Mutex::new(None),
+			gate_wait: Mutex::new(None),
+			lease,
+		}
+	}
 	fn close(&self, reason: Closed) {
 		let changed = self.closed.send_if_modified(|value| {
 			if value.is_some() {
@@ -85,14 +98,49 @@ impl Control {
 			state.take();
 		}
 	}
+	/// Hand one nonempty page to the body and wait until it is consumed.
+	/// Returns false when the connection ended.
+	async fn deliver(&self, items: Vec<T>, sender: &mpsc::Sender<()>) -> bool {
+		let (consumed, receipt) = oneshot::channel();
+		{
+			let mut buffer = self.buffer.lock().expect("SSE pending page");
+			if self.closed.borrow().is_some() {
+				return false;
+			}
+			metrics::gauge!("aidash_sse_pending_pages").increment(1.0);
+			metrics::gauge!("aidash_sse_pending_events").increment(items.len() as f64);
+			*buffer = Some(Page {
+				events: items.into(),
+				consumed,
+			});
+		}
+		self.progress(true);
+		sender.send(()).await.is_ok() && receipt.await.is_ok()
+	}
 }
 
-struct Tasks {
-	control: Arc<Control>,
+/// What a stream connection checks while it is open and before each frame.
+#[async_trait::async_trait]
+trait Watch<T: Send + Sync + 'static>: Clone + Send + Sync + 'static {
+	fn service(&self) -> &Service;
+	/// Unlocked current authority, checked every `AUTH_INTERVAL`.
+	async fn idle_authority(&self) -> Result<()>;
+	/// Browser session and slower resource checks, every `BROWSER_INTERVAL`.
+	async fn periodic_authority(&self) -> std::result::Result<(), Closed>;
+	/// Authorize and render one item under a live visibility lease.
+	async fn frame(
+		&self,
+		item: &T,
+		control: &Control<T>,
+	) -> std::result::Result<Option<Frame>, Closed>;
+}
+
+struct Tasks<T = Event> {
+	control: Arc<Control<T>>,
 	reader: JoinHandle<()>,
 	monitor: JoinHandle<()>,
 }
-impl Drop for Tasks {
+impl<T> Drop for Tasks<T> {
 	fn drop(&mut self) {
 		self.control.close(Closed::Disconnected);
 		self.reader.abort();
@@ -102,12 +150,12 @@ impl Drop for Tasks {
 
 /// The task guard exists before the body is ever polled, so an unread response
 /// still cancels its reader, authority monitor and registration on Drop.
-pub struct EventStream {
+pub struct EventStream<T = Event> {
 	inner: BoxStream<'static, std::result::Result<Frame, Infallible>>,
-	tasks: Tasks,
+	tasks: Tasks<T>,
 	ended: bool,
 }
-impl Stream for EventStream {
+impl<T> Stream for EventStream<T> {
 	type Item = std::result::Result<Frame, Infallible>;
 	fn poll_next(mut self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<Option<Self::Item>> {
 		if self.ended {
@@ -178,6 +226,23 @@ impl Context {
 		}
 		Ok(())
 	}
+}
+
+#[async_trait::async_trait]
+impl Watch<Event> for Context {
+	fn service(&self) -> &Service {
+		&self.service
+	}
+	async fn idle_authority(&self) -> Result<()> {
+		self.authority(false).await
+	}
+	async fn periodic_authority(&self) -> std::result::Result<(), Closed> {
+		if self.browser_authorized().await {
+			Ok(())
+		} else {
+			Err(Closed::Browser)
+		}
+	}
 	async fn frame(
 		&self,
 		event: &Event,
@@ -235,8 +300,8 @@ impl Context {
 	}
 }
 
-struct Page {
-	events: std::collections::VecDeque<Event>,
+struct Page<T = Event> {
+	events: std::collections::VecDeque<T>,
 	consumed: oneshot::Sender<()>,
 }
 
@@ -289,90 +354,105 @@ impl Service {
 			.scalar_one(&context.f.store.pool)
 			.await?;
 		}
-		let control = Arc::new(Control {
-			closed: watch::channel(None).0,
-			pending: watch::channel(None).0,
-			buffer: Mutex::new(None),
-			gate_wait: Mutex::new(None),
-			lease,
-		});
-		let (sender, mut pages) = mpsc::channel::<()>(1);
-		let reader_context = context.clone();
-		let reader_control = control.clone();
-		let reader = tokio::spawn(async move {
-			let mut closed = reader_control.closed.subscribe();
-			tokio::select! {
-				biased;
-				_ = closed.wait_for(|state| state.is_some()) => {},
-				result = read(reader_context, reader_control.clone(), observation, cursor, sender) => {
-					if result.is_err() { reader_control.close(Closed::Database); }
-				}
-			}
-		});
-		let monitor_context = context.clone();
-		let monitor_control = control.clone();
-		let monitor = tokio::spawn(async move {
-			monitor(monitor_context, monitor_control).await;
-		});
-		let body_control = control.clone();
-		let stream = async_stream::stream! {
-			let mut closed = body_control.closed.subscribe();
-			loop {
-				tokio::select! {
-					biased;
-					_ = closed.wait_for(|state| state.is_some()) => return,
-					page = pages.recv() => if page.is_none() { return; },
-				};
-				loop {
-					let (event, consumed) = {
-						let mut buffer = body_control.buffer.lock().expect("SSE pending page");
-						let Some(page) = buffer.as_mut() else { break; };
-						let event = page.events.pop_front().expect("nonempty pending page");
-						metrics::gauge!("aidash_sse_pending_events").decrement(1.0);
-						let consumed = page.events.is_empty().then(|| buffer.take().expect("pending page").consumed);
-						if consumed.is_some() { metrics::gauge!("aidash_sse_pending_pages").decrement(1.0); }
-						(event, consumed)
-					};
-					let last = consumed.is_some();
-					// Database/visibility waits are server work, not a slow reader.
-					body_control.progress(false);
-					let frame = tokio::select! {
-						biased;
-						_ = closed.wait_for(|state| state.is_some()) => return,
-						frame = context.frame(&event, &body_control) => frame,
-					};
-					let frame = match frame {
-						Ok(frame) => frame,
-						Err(reason) => {
-							body_control.close(reason);
-							return;
-						}
-					};
-					body_control.progress(!last);
-					if let Some(frame) = frame {
-						drop(event);
-						// No await between the last frame's final check and handoff.
-						if let Some(consumed) = consumed { let _ = consumed.send(()); }
-						context.service.inner.counts.frames.fetch_add(1, Ordering::Relaxed);
-						metrics::counter!("aidash_sse_frames_total").increment(1);
-						yield Ok(frame);
-					} else if let Some(consumed) = consumed {
-						let _ = consumed.send(());
-					}
-					if last { break; }
-				}
+		let control = Arc::new(Control::new(lease));
+		let (sender, pages) = mpsc::channel::<()>(1);
+		let reader = read(
+			context.clone(),
+			control.clone(),
+			observation,
+			cursor,
+			sender,
+		);
+		Ok(stream(context, control, reader, pages))
+	}
+}
+
+/// Run the reader and authority monitor beside a body that authorizes each
+/// frame immediately before handing it to the response.
+fn stream<T, C>(
+	context: C,
+	control: Arc<Control<T>>,
+	reader: impl Future<Output = Result<()>> + Send + 'static,
+	mut pages: mpsc::Receiver<()>,
+) -> EventStream<T>
+where
+	T: Send + Sync + 'static,
+	C: Watch<T>,
+{
+	let reader_control = control.clone();
+	let reader = tokio::spawn(async move {
+		let mut closed = reader_control.closed.subscribe();
+		tokio::select! {
+			biased;
+			_ = closed.wait_for(|state| state.is_some()) => {},
+			result = reader => {
+				if result.is_err() { reader_control.close(Closed::Database); }
 			}
 		}
-		.boxed();
-		Ok(EventStream {
-			inner: stream,
-			tasks: Tasks {
-				control,
-				reader,
-				monitor,
-			},
-			ended: false,
-		})
+	});
+	let monitor_context = context.clone();
+	let monitor_control = control.clone();
+	let monitor = tokio::spawn(async move {
+		monitor(monitor_context, monitor_control).await;
+	});
+	let body_control = control.clone();
+	let stream = async_stream::stream! {
+		let mut closed = body_control.closed.subscribe();
+		loop {
+			tokio::select! {
+				biased;
+				_ = closed.wait_for(|state| state.is_some()) => return,
+				page = pages.recv() => if page.is_none() { return; },
+			};
+			loop {
+				let (event, consumed) = {
+					let mut buffer = body_control.buffer.lock().expect("SSE pending page");
+					let Some(page) = buffer.as_mut() else { break; };
+					let event = page.events.pop_front().expect("nonempty pending page");
+					metrics::gauge!("aidash_sse_pending_events").decrement(1.0);
+					let consumed = page.events.is_empty().then(|| buffer.take().expect("pending page").consumed);
+					if consumed.is_some() { metrics::gauge!("aidash_sse_pending_pages").decrement(1.0); }
+					(event, consumed)
+				};
+				let last = consumed.is_some();
+				// Database/visibility waits are server work, not a slow reader.
+				body_control.progress(false);
+				let frame = tokio::select! {
+					biased;
+					_ = closed.wait_for(|state| state.is_some()) => return,
+					frame = context.frame(&event, &body_control) => frame,
+				};
+				let frame = match frame {
+					Ok(frame) => frame,
+					Err(reason) => {
+						body_control.close(reason);
+						return;
+					}
+				};
+				body_control.progress(!last);
+				if let Some(frame) = frame {
+					drop(event);
+					// No await between the last frame's final check and handoff.
+					if let Some(consumed) = consumed { let _ = consumed.send(()); }
+					context.service().inner.counts.frames.fetch_add(1, Ordering::Relaxed);
+					metrics::counter!("aidash_sse_frames_total").increment(1);
+					yield Ok(frame);
+				} else if let Some(consumed) = consumed {
+					let _ = consumed.send(());
+				}
+				if last { break; }
+			}
+		}
+	}
+	.boxed();
+	EventStream {
+		inner: stream,
+		tasks: Tasks {
+			control,
+			reader,
+			monitor,
+		},
+		ended: false,
 	}
 }
 
@@ -426,24 +506,8 @@ async fn read(
 		if Instant::now() >= deadline {
 			deadline = Instant::now() + interval;
 		}
-		if !events.is_empty() {
-			let (consumed, receipt) = oneshot::channel();
-			{
-				let mut buffer = control.buffer.lock().expect("SSE pending page");
-				if control.closed.borrow().is_some() {
-					return Ok(());
-				}
-				metrics::gauge!("aidash_sse_pending_pages").increment(1.0);
-				metrics::gauge!("aidash_sse_pending_events").increment(events.len() as f64);
-				*buffer = Some(Page {
-					events: events.into(),
-					consumed,
-				});
-			}
-			control.progress(true);
-			if sender.send(()).await.is_err() || receipt.await.is_err() {
-				return Ok(());
-			}
+		if !events.is_empty() && !control.deliver(events, &sender).await {
+			return Ok(());
 		}
 		cursor = scanned;
 		if more {
@@ -462,9 +526,9 @@ async fn read(
 	}
 }
 
-async fn monitor(context: Context, control: Arc<Control>) {
+async fn monitor<T: Send + Sync + 'static, C: Watch<T>>(context: C, control: Arc<Control<T>>) {
 	let mut closed = control.closed.subscribe();
-	let mut stopping = context.service.inner.stopping.subscribe();
+	let mut stopping = context.service().inner.stopping.subscribe();
 	// Independent futures keep a stalled authority query from extending the
 	// output deadline, and keep an idle/unpolled body from skipping revocation.
 	tokio::select! {
@@ -472,14 +536,14 @@ async fn monitor(context: Context, control: Arc<Control>) {
 		_ = closed.wait_for(|state| state.is_some()) => {},
 		_ = crate::lifecycle::stopped(&mut stopping) => control.close(Closed::Shutdown),
 		reason = authority_monitor(&context) => control.close(reason),
-		_ = output_monitor(&context, &control) => {
-			context.service.inner.counts.backpressure.fetch_add(1, Ordering::Relaxed);
+		_ = output_monitor(context.service(), &control) => {
+			context.service().inner.counts.backpressure.fetch_add(1, Ordering::Relaxed);
 			control.close(Closed::Backpressure);
 		},
 	}
 }
 
-async fn authority_monitor(context: &Context) -> Closed {
+async fn authority_monitor<T: Send + Sync + 'static, C: Watch<T>>(context: &C) -> Closed {
 	let mut ticks = tokio::time::interval(AUTH_INTERVAL);
 	ticks.set_missed_tick_behavior(MissedTickBehavior::Skip);
 	let mut browser_deadline = Instant::now() + BROWSER_INTERVAL;
@@ -488,11 +552,11 @@ async fn authority_monitor(context: &Context) -> Closed {
 		let browser = Instant::now() >= browser_deadline;
 		let check = async {
 			context
-				.authority(false)
+				.idle_authority()
 				.await
 				.map_err(|_| Closed::Authority)?;
-			if browser && !context.browser_authorized().await {
-				return Err(Closed::Browser);
+			if browser {
+				context.periodic_authority().await?;
 			}
 			Ok(())
 		};
@@ -507,11 +571,11 @@ async fn authority_monitor(context: &Context) -> Closed {
 	}
 }
 
-async fn output_monitor(context: &Context, control: &Control) {
+async fn output_monitor<T>(service: &Service, control: &Control<T>) {
 	let mut pending = control.pending.subscribe();
 	loop {
 		let deadline = (*pending.borrow_and_update())
-			.map(|progress| progress + context.service.inner.settings.backpressure_timeout);
+			.map(|progress| progress + service.inner.settings.backpressure_timeout);
 		tokio::select! {
 			biased;
 			_ = pending.changed() => {},

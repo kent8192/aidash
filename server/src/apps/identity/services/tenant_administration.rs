@@ -125,11 +125,17 @@ impl TenantAdministrations {
 		id: Uuid,
 	) -> Result<Registration> {
 		let administrator = self.administrator(actor, origin, &tenant).await?;
+		let idle_seconds = self
+			.runtime
+			.config
+			.dashboard_session()
+			.map(|config| config.session_idle_seconds);
 		let lease = self.runtime.store.orm_connection()?;
 		let result = DashboardRegistrationRequest::reject(
 			lease.handle(),
 			id,
 			&AdministrationActor::TenantAdministrator(administrator.clone()),
+			idle_seconds,
 		)
 		.await;
 		self.finish(&administrator, result).await

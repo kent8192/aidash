@@ -21,21 +21,40 @@ fn worker_lease(id: Uuid, worker: Uuid) -> Condition {
 }
 
 impl RunInput {
-	pub(crate) async fn newer_than(
-		tx: &mut dyn TransactionExecutor,
-		run: Uuid,
-		sequence: i64,
-	) -> Result<bool> {
+	fn newer_query(run: Uuid, sequence: i64) -> (String, reinhardt::query::Values) {
 		let newer = Query::select()
 			.expr(Expr::value(1_i64))
 			.from(Alias::new(Self::table_name()))
 			.and_where(Expr::col("run_id").eq(Expr::value(run)))
 			.and_where(Expr::col("seq").gt(Expr::value(sequence)))
 			.to_owned();
-		let (sql, values) = Query::select()
+		Query::select()
 			.expr_as(Expr::exists(newer), Alias::new("stale"))
-			.build(PostgresQueryBuilder);
+			.build(PostgresQueryBuilder)
+	}
+
+	pub(crate) async fn newer_than(
+		tx: &mut dyn TransactionExecutor,
+		run: Uuid,
+		sequence: i64,
+	) -> Result<bool> {
+		let (sql, values) = Self::newer_query(run, sequence);
 		Ok(tx
+			.fetch_one(&sql, convert_values(values))
+			.await?
+			.get("stale")
+			.map_err(FrameworkError::from)?)
+	}
+
+	/// Read committed inputs in one autocommit statement, so polling during
+	/// inference never holds a transaction open.
+	pub(crate) async fn newer_committed<E: OrmExecutor>(
+		db: &mut E,
+		run: Uuid,
+		sequence: i64,
+	) -> Result<bool> {
+		let (sql, values) = Self::newer_query(run, sequence);
+		Ok(db
 			.fetch_one(&sql, convert_values(values))
 			.await?
 			.get("stale")
