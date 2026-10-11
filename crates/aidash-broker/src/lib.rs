@@ -334,7 +334,7 @@ fn body_policy(body: &[u8], claims: &Claims, op: Operation) -> Result<(), Failur
 		return Err(Failure::ClaimViolation);
 	}
 	if op == Operation::Chat {
-		policy::chat_input(&value)?;
+		policy::chat_input(&value, claims.cache_breakpoints)?;
 	}
 	Ok(())
 }

@@ -2,15 +2,20 @@
 use aidash_capability::Failure;
 use aidash_domain::provider::{ContentPart, ModelRequest};
 use base64::{Engine, engine::general_purpose::STANDARD};
-use serde_json::Value;
+use serde_json::{Value, json};
 
-fn has_cache_control(value: &Value) -> bool {
+/// Provider limit on explicit prompt-cache breakpoints per request.
+const MAX_CACHE_BREAKPOINTS: usize = 4;
+
+/// Counts every `cache_control` key at any depth, whatever its value.
+fn count_cache_control(value: &Value) -> usize {
 	match value {
-		Value::Object(fields) => {
-			fields.contains_key("cache_control") || fields.values().any(has_cache_control)
-		}
-		Value::Array(values) => values.iter().any(has_cache_control),
-		_ => false,
+		Value::Object(fields) => fields
+			.iter()
+			.map(|(key, field)| usize::from(key == "cache_control") + count_cache_control(field))
+			.sum(),
+		Value::Array(values) => values.iter().map(count_cache_control).sum(),
+		_ => 0,
 	}
 }
 
@@ -53,11 +58,26 @@ fn media(part: &Value) -> Result<ContentPart, Failure> {
 	ContentPart::from_media(mime, bytes).map_err(|_| Failure::ClaimViolation)
 }
 
-pub(crate) fn chat_input(value: &Value) -> Result<(), Failure> {
+/// `cache_breakpoints` is the signed authority for explicit prompt-cache writes. Only
+/// exactly `{"type":"ephemeral"}` on a `messages[*].content[*]` text part is allowed,
+/// at most four times; every other `cache_control` key is rejected.
+pub(crate) fn chat_input(value: &Value, cache_breakpoints: bool) -> Result<(), Failure> {
+	// Each admitted breakpoint is counted below; any `cache_control` key left over
+	// sits somewhere else (tools, message level, non-text part, nested) and is rejected.
 	// JSON parsing bounds nesting; inspect keys, not ordinary message text.
-	if has_cache_control(value) {
+	let mut breakpoints = 0;
+	chat_messages(value, cache_breakpoints, &mut breakpoints)?;
+	if count_cache_control(value) != breakpoints {
 		return Err(Failure::ClaimViolation);
 	}
+	Ok(())
+}
+
+fn chat_messages(
+	value: &Value,
+	cache_breakpoints: bool,
+	breakpoints: &mut usize,
+) -> Result<(), Failure> {
 	let Some(messages) = value.get("messages") else {
 		return Ok(());
 	};
@@ -71,6 +91,15 @@ pub(crate) fn chat_input(value: &Value) -> Result<(), Failure> {
 					if part.get("type").and_then(Value::as_str) == Some("text") {
 						if part.get("text").and_then(Value::as_str).is_none() {
 							return Err(Failure::ClaimViolation);
+						}
+						if let Some(control) = part.get("cache_control") {
+							*breakpoints += 1;
+							if !cache_breakpoints
+								|| *breakpoints > MAX_CACHE_BREAKPOINTS
+								|| control != &json!({"type": "ephemeral"})
+							{
+								return Err(Failure::ClaimViolation);
+							}
 						}
 						continue;
 					}
