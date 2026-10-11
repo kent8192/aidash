@@ -1,0 +1,19 @@
+meta {
+  name: 0985 frontend-asset-head - Missing asset does not fall back to the SPA
+  type: http
+  seq: 985
+}
+
+head {
+  url: {{base_url}}/assets/missing.txt
+  body: none
+  auth: none
+}
+
+headers {
+  Accept: application/json
+}
+
+tests {
+  test("Exact HTTP 404", function () { expect(res.getStatus()).to.equal(404); });
+}

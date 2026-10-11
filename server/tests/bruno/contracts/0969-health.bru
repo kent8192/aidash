@@ -1,0 +1,21 @@
+meta {
+  name: 0969 health - Untrusted bearer does not restrict public reads
+  type: http
+  seq: 969
+}
+
+get {
+  url: {{base_url}}/health
+  body: none
+  auth: none
+}
+
+headers {
+  Accept: application/json
+  Authorization: Bearer invalid
+}
+
+tests {
+  test("Exact HTTP 200", function () { expect(res.getStatus()).to.equal(200); });
+  test("Untrusted bearer does not restrict public reads contract", function () { expect(res.getHeader("content-type")).to.include("application/json");expect(res.getBody()).to.be.an("object");expect(res.getBody()).to.eql({status:"ok",node_id:bru.getEnvVar("node_id")}); });
+}

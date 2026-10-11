@@ -53,6 +53,9 @@ pub struct Settings {
 	pub sse_connections: usize,
 	pub auth_burst: u32,
 	pub auth_period: Duration,
+	/// `/auth/login` discovery budget, separate from the general `/auth/*` one.
+	pub auth_discovery_burst: u32,
+	pub auth_discovery_period: Duration,
 	/// Socket peers (exact IPs or CIDR networks) allowed to supply a sanitized, single X-Real-IP.
 	pub auth_trusted_proxy_ips: Vec<ProxyNetwork>,
 	pub actor_burst: u32,
@@ -68,6 +71,8 @@ impl Default for Settings {
 			sse_connections: 128,
 			auth_burst: 30,
 			auth_period: Duration::from_secs(2),
+			auth_discovery_burst: 10,
+			auth_discovery_period: Duration::from_secs(6),
 			auth_trusted_proxy_ips: Vec::new(),
 			actor_burst: 120,
 			actor_period: Duration::from_millis(100),
@@ -170,6 +175,11 @@ impl Settings {
 				defaults.auth_period.as_millis() as u64,
 				3600000,
 			)?),
+			auth_discovery_period: Duration::from_millis(value(
+				"AIDASH_AUTH_DISCOVERY_RATE_PERIOD_MS",
+				defaults.auth_discovery_period.as_millis() as u64,
+				3600000,
+			)?),
 			actor_period: Duration::from_millis(value(
 				"AIDASH_API_RATE_PERIOD_MS",
 				defaults.actor_period.as_millis() as u64,
@@ -196,6 +206,11 @@ impl Settings {
 				65536,
 			)? as usize,
 			auth_burst: value("AIDASH_AUTH_RATE_BURST", defaults.auth_burst as u64, 100000)? as u32,
+			auth_discovery_burst: value(
+				"AIDASH_AUTH_DISCOVERY_RATE_BURST",
+				defaults.auth_discovery_burst as u64,
+				100000,
+			)? as u32,
 			actor_burst: value("AIDASH_API_RATE_BURST", defaults.actor_burst as u64, 100000)?
 				as u32,
 			peer_burst: value("AIDASH_PEER_RATE_BURST", defaults.peer_burst as u64, 100000)? as u32,
@@ -409,7 +424,8 @@ impl Middleware for Gateway {
 		let private = (path.starts_with("/api") && path != "/api/openapi.json")
 			|| path.starts_with("/federation")
 			|| path.starts_with("/auth/");
-		let sse = path == "/api/events/stream";
+		let sse = path == "/api/events/stream"
+			|| (path.starts_with("/api/runs/") && path.ends_with("/inference/stream"));
 		let limit = if path.contains("/chunks") || path.contains("/scoped/files/") {
 			6 * 1024 * 1024
 		} else {
@@ -420,11 +436,27 @@ impl Middleware for Gateway {
 				.with_body(b"request body too large".to_vec())
 		} else if path.starts_with("/auth/")
 			&& protection.auth_ip(&request).is_some_and(|ip| {
-				!protection.admit(
-					format!("auth:{ip}"),
-					protection.settings.auth_burst,
-					protection.settings.auth_period,
-				)
+				// Sign-in discovery (a Tenant name or Sign-in Domain lookup) has
+				// its own budget, so probing cannot exhaust ordinary sign-in.
+				// OIDC deployments have no discovery, so every `/auth/*` request
+				// there shares one budget whatever its query says.
+				let gcip = context
+					.get_singleton::<crate::federation::Federation>()
+					.is_some_and(|f| f.config.gcip.is_some());
+				let (key, burst, period) = if gcip && discovery(&request) {
+					(
+						format!("auth-discovery:{ip}"),
+						protection.settings.auth_discovery_burst,
+						protection.settings.auth_discovery_period,
+					)
+				} else {
+					(
+						format!("auth:{ip}"),
+						protection.settings.auth_burst,
+						protection.settings.auth_period,
+					)
+				};
+				!protection.admit(key, burst, period)
 			}) {
 			rejection(StatusCode::TOO_MANY_REQUESTS, "rate limit exceeded")
 		} else {
@@ -491,6 +523,16 @@ impl Middleware for Gateway {
 		};
 		Ok(observation.finish(private_response(response, &id, private), &id))
 	}
+}
+/// With GCIP, `POST /auth/login` and `GET /auth/login?org=` resolve user input
+/// to a Tenant. Query keys are decoded so encoding `org` cannot dodge the budget.
+fn discovery(request: &Request) -> bool {
+	request.uri.path() == "/auth/login"
+		&& (request.method == http::Method::POST
+			|| request.uri.query().is_some_and(|query| {
+				reqwest::Url::parse(&format!("http://localhost/?{query}"))
+					.is_ok_and(|url| url.query_pairs().any(|(key, _)| key == "org"))
+			}))
 }
 fn private_response(mut response: Response, id: &str, private: bool) -> Response {
 	response.headers.insert(

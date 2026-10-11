@@ -1,6 +1,6 @@
 //! OpenRouter inference transport implementing the application port.
 use crate::{Error, Result};
-use aidash_application::ports::ModelProvider;
+use aidash_application::ports::{InferenceProgressSink, ModelProvider};
 use aidash_application::provider_access::{Context, Inference, Operation, ProviderAccess, Source};
 use aidash_domain::{
 	model::ModelConfig,
@@ -209,6 +209,7 @@ pub fn salted_provider(
 	match config.provider.as_str() {
 		"openrouter" => {
 			config.request_timeout()?;
+			config.stream_stall_timeout()?;
 			Ok(Arc::new(OpenRouterProvider {
 				client,
 				config,
@@ -223,8 +224,14 @@ pub fn salted_provider(
 
 #[async_trait]
 impl ModelProvider for OpenRouterProvider {
-	async fn infer(&self, request: ModelRequest) -> Result<ModelResponse> {
+	async fn infer(
+		&self,
+		request: ModelRequest,
+		progress: &dyn InferenceProgressSink,
+	) -> Result<ModelResponse> {
 		let deadline = self.config.request_timeout()?;
+		let streaming = self.config.streaming();
+		let stall = self.config.stream_stall_timeout()?;
 		tokio::time::timeout(deadline, async {
 			request.validate()?;
 			// Unsupported routes never receive `cache_control` (ADR 0019).
@@ -299,6 +306,10 @@ impl ModelProvider for OpenRouterProvider {
 			if let Some(effort) = self.config.reasoning_effort {
 				body["reasoning"] = json!({"effort": effort});
 			}
+			if streaming {
+				body["stream"] = json!(true);
+				body["stream_options"] = json!({"include_usage": true});
+			}
 			let access = self
 				.access
 				.resolve(
@@ -324,7 +335,15 @@ impl ModelProvider for OpenRouterProvider {
 				call = call.bearer_auth(access.bearer.expose_secret());
 			}
 			let started = std::time::Instant::now();
-			let response = call.send().await.map_err(crate::http_error)?;
+			let response = if streaming {
+				// Response headers are the first sign of life of a streamed call.
+				tokio::time::timeout(stall, call.send())
+					.await
+					.map_err(|_| Error::InferenceStalled)?
+			} else {
+				call.send().await
+			}
+			.map_err(crate::http_error)?;
 			metrics::histogram!("aidash_model_response_headers_seconds")
 				.record(started.elapsed().as_secs_f64());
 			if !response.status().is_success() {
@@ -334,7 +353,11 @@ impl ModelProvider for OpenRouterProvider {
 				)
 				.await);
 			}
-			let result = parse_openai(&crate::response::bytes(response, 1_048_576).await?)?;
+			let result = if streaming {
+				read_stream(response, progress, stall).await?
+			} else {
+				parse_openai(&crate::response::bytes(response, MAX_RESPONSE_BYTES).await?)?
+			};
 			// Unknown usage is absent, never a zero sample.
 			for (direction, tokens) in [
 				("input", result.reported.input_tokens),
@@ -352,6 +375,46 @@ impl ModelProvider for OpenRouterProvider {
 		.await
 		.map_err(|_| Error::External("model inference timed out".into()))?
 	}
+}
+
+/// Largest accepted completion, whether received whole or assembled from a stream.
+const MAX_RESPONSE_BYTES: usize = 1_048_576;
+
+/// Read a streamed completion until `[DONE]`. Only data events reset the stall
+/// timer; provider keepalive comments do not. Endpoints that ignore `stream`
+/// and answer with a whole JSON completion are parsed as a non-streamed
+/// response, without progress.
+async fn read_stream(
+	mut response: reqwest::Response,
+	progress: &dyn InferenceProgressSink,
+	stall: std::time::Duration,
+) -> Result<ModelResponse> {
+	match stream::media_type(&response) {
+		stream::MediaType::EventStream => {}
+		stream::MediaType::Json => {
+			return parse_openai(&crate::response::bytes(response, MAX_RESPONSE_BYTES).await?);
+		}
+		stream::MediaType::Other => {
+			return Err(Error::External(
+				"provider answered a streamed request with an unsupported content type".into(),
+			));
+		}
+	}
+	let mut assembler = stream::StreamAssembler::new(progress, MAX_RESPONSE_BYTES);
+	let mut last_data = tokio::time::Instant::now();
+	while !assembler.done() {
+		let chunk = tokio::time::timeout_at(last_data + stall, response.chunk())
+			.await
+			.map_err(|_| Error::InferenceStalled)?
+			.map_err(crate::http_error)?;
+		let Some(chunk) = chunk else {
+			break;
+		};
+		if assembler.push(&chunk)? {
+			last_data = tokio::time::Instant::now();
+		}
+	}
+	assembler.finish()
 }
 
 pub(crate) fn safe_upstream_reason(detail: &str) -> String {
@@ -484,6 +547,8 @@ fn validate_response(r: &ModelResponse) -> Result<()> {
 	}
 	Ok(())
 }
+
+mod stream;
 
 #[cfg(test)]
 mod tests;
