@@ -89,7 +89,9 @@ overrides persist across updates.
 WIF trusts numeric repository/owner IDs and only
 `.github/workflows/gcp-environments.yml` on `refs/heads/main`. The workflow
 checks out privileged code and chart templates from the repository default
-branch. Source images (`app`, `postgres`, `sandbox`) are built from an exact SHA
+branch, pinned to the one commit its first job resolved, so every build,
+publish and apply job of a run uses the same trusted code. Source images
+(`app`, `postgres`, `sandbox`) are built from an exact SHA
 in a separate job without cloud credentials, using trusted Dockerfiles.
 Privileged images (`observer`, `control` for the Runner/guard/installer and
 `edge`) are built only from the trusted checkout, including for fork previews.
