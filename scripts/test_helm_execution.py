@@ -1,7 +1,9 @@
 """Chart contract tests for scheduling, privileges and retained single writers."""
 import importlib.util
+import ipaddress
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import tempfile
@@ -106,7 +108,9 @@ class ChartsTest(unittest.TestCase):
         self.assertIn({'podSelector': {'matchLabels': {'app.kubernetes.io/instance': 'app', 'app.kubernetes.io/component': 'frontend'}}},
                       policy['ingress'][0]['from'])
         defaults = render(self.aidash, self.base, 'app')
-        self.assertFalse(any(value['kind'] == 'NetworkPolicy' for value in defaults))
+        # Only the metadata-server egress policy is on by default; backend ingress is opt-in.
+        self.assertEqual([value['metadata']['name'] for value in defaults if value['kind'] == 'NetworkPolicy'],
+                         ['app-aidash-metadata-egress'])
         self.assertEqual(select(defaults, 'Deployment', '-aidash-server')['spec']['template']['spec']['containers'][0]['image'], 'aidash:0.1.0')
         self.assertNotIn('annotations', select(defaults, 'Deployment', '-aidash-server')['metadata'])
         self.assertEqual(select(defaults, 'Deployment', '-frontend')['spec']['replicas'], 1)
@@ -692,6 +696,135 @@ class ChartsTest(unittest.TestCase):
                                         env=dict(os.environ, PATH=f'{root / "bin"}:{os.environ["PATH"]}'))
                 self.assertEqual(result.returncode, 0)
                 self.assertEqual((root / 'snapshot/database.json').exists(), published)
+
+
+class MetadataServerEgressTest(unittest.TestCase):
+    """The GKE metadata server (169.254.169.254) is reachable only from server and worker."""
+    metadata = ipaddress.ip_address('169.254.169.254')
+    allowlist = frozenset({'server', 'worker'})
+    label = 'aidash.run/metadata-server'
+    aidash = ChartsTest.aidash
+    environment = ChartsTest.environment
+
+    @staticmethod
+    def pod_templates(objects, namespace='environment'):
+        """Yields (kind, name, namespace, pod template) for every workload that creates Pods."""
+        for value in objects:
+            spec = value.get('spec', {})
+            if value['kind'] in ('Deployment', 'StatefulSet', 'DaemonSet', 'Job', 'ReplicaSet'):
+                template = spec['template']
+            elif value['kind'] == 'CronJob':
+                template = spec['jobTemplate']['spec']['template']
+            elif value['kind'] == 'Pod':
+                template = value
+            else:
+                continue
+            yield value['kind'], value['metadata']['name'], value['metadata'].get('namespace', namespace), template
+
+    @staticmethod
+    def selects(selector, labels):
+        """Kubernetes label selector semantics, including that NotIn/DoesNotExist match absent keys."""
+        if any(labels.get(key) != value for key, value in selector.get('matchLabels', {}).items()):
+            return False
+        for expression in selector.get('matchExpressions', []):
+            key, operator, values = expression['key'], expression['operator'], expression.get('values', [])
+            present = key in labels
+            if not {'In': present and labels[key] in values, 'NotIn': not present or labels[key] not in values,
+                    'Exists': present, 'DoesNotExist': not present}[operator]:
+                return False
+        return True
+
+    def everything(self):
+        digest = '@sha256:' + 'b' * 64
+        execution = {'createNamespaces': True, 'sandboxImage': 'sandbox' + digest, 'runtimeClass': {'create': True},
+                     'runner': {'enabled': True, 'existingSecret': 'runner', 'image': 'runner' + digest},
+                     'guard': {'enabled': True, 'image': 'guard' + digest},
+                     'installer': {'enabled': True, 'image': 'installer' + digest}}
+        application = render(self.aidash, dict(ChartsTest.base, execution=execution,
+                                               memoryRecovery={'existingClaim': 'ledger'},
+                                               environment={'nodeSelector': {'pool': 'execution'}}))
+        dependencies = render(self.environment, {
+            'postgres': POSTGRES, 'edge': {'hostname': 'fixture.example', 'admissionImage': 'admission' + digest},
+            'activity': {'existingSecret': 'observer', 'observerImage': 'observer' + digest,
+                         'collectorImage': 'collector' + digest}})
+        return application, dependencies
+
+    def test_policy_selects_every_workload_except_server_and_worker(self):
+        application, dependencies = self.everything()
+        objects = application + dependencies
+        policies = [(value['metadata'].get('namespace', 'environment'), value['spec'])
+                    for value in objects if value['kind'] == 'NetworkPolicy' and 'metadata-egress' in value['metadata']['name']]
+        # One in the release namespace per chart, plus the guard and installer namespaces.
+        self.assertEqual(sorted(namespace for namespace, _ in policies),
+                         ['environment', 'environment', 'fixture-guard', 'fixture-installer'])
+        seen = set()
+        for kind, name, namespace, template in self.pod_templates(objects):
+            labels = template['metadata'].get('labels', {})
+            covered = any(policy_namespace == namespace and self.selects(spec['podSelector'], labels)
+                          for policy_namespace, spec in policies)
+            # The allowlist is named by workload, not read back from the labels under test.
+            allowed = kind == 'Deployment' and re.search(r'-aidash-(server|worker)$', name) is not None
+            with self.subTest(workload=f'{kind}/{name}'):
+                self.assertEqual(covered, not allowed)
+            seen.add((kind, name))
+        # Every Pod kind of both charts took part: the check cannot pass vacuously.
+        for expected in ('-aidash-server', '-aidash-worker', '-frontend', '-execution-runner', '-installer',
+                         '-guard', '-environment-postgres', '-environment-nats', '-environment-edge', '-environment-activity'):
+            self.assertTrue(any(name.endswith(expected) for _, name in seen), expected)
+        self.assertEqual({name.rsplit('-aidash-', 1)[1] for _, name in seen if name.endswith(('-aidash-server', '-aidash-worker'))},
+                         self.allowlist)
+
+    def test_policy_denies_only_the_metadata_server_and_nothing_else_grants_egress(self):
+        application, dependencies = self.everything()
+        for value in application + dependencies:
+            if value['kind'] != 'NetworkPolicy':
+                continue
+            spec = value['spec']
+            if 'metadata-egress' not in value['metadata']['name']:
+                # Egress rules are additive: any other policy allowing egress would re-open the address.
+                self.assertNotIn('Egress', spec['policyTypes'], value['metadata']['name'])
+                continue
+            self.assertEqual(spec['policyTypes'], ['Egress'])
+            reachable = False
+            for rule in spec['egress']:
+                self.assertTrue(rule.get('to'), 'a rule without "to" allows every destination')
+                for peer in rule['to']:
+                    if 'ipBlock' not in peer:
+                        # Pod selectors only name in-cluster Pods, never the metadata server.
+                        self.assertEqual(peer, {'namespaceSelector': {}})
+                        continue
+                    block = peer['ipBlock']
+                    excepted = [ipaddress.ip_network(cidr) for cidr in block.get('except', [])]
+                    if self.metadata in ipaddress.ip_network(block['cidr']) and not any(self.metadata in n for n in excepted):
+                        reachable = True
+            self.assertFalse(reachable, value['metadata']['name'])
+
+    def test_server_and_worker_keep_the_allowlist_label_without_the_policy(self):
+        objects = render(self.aidash, dict(ChartsTest.base, metadataServerEgress={'enabled': False}))
+        self.assertEqual([value for value in objects if value['kind'] == 'NetworkPolicy'], [])
+        environment = render(self.environment, {
+            'metadataServerEgress': {'enabled': False}, 'postgres': POSTGRES,
+            'edge': {'hostname': 'fixture.example', 'admissionImage': 'admission@sha256:' + 'b' * 64},
+            'activity': {'enabled': False}})
+        self.assertFalse(any('metadata-egress' in value['metadata']['name'] for value in environment))
+
+    def test_no_aidash_pod_uses_the_host_network(self):
+        application, dependencies = self.everything()
+        count = 0
+        for kind, name, _, template in self.pod_templates(application + dependencies):
+            with self.subTest(workload=f'{kind}/{name}'):
+                # Explicit false: a Pod on the node's network namespace bypasses every NetworkPolicy
+                # and the Workload Identity metadata server, receiving the node's identity.
+                self.assertIs(template['spec'].get('hostNetwork'), False)
+            count += 1
+        self.assertGreaterEqual(count, 10)
+
+    def test_selector_semantics_match_kubernetes(self):
+        selector = {'matchExpressions': [{'key': self.label, 'operator': 'DoesNotExist'}]}
+        self.assertTrue(self.selects(selector, {}))
+        self.assertTrue(self.selects(selector, {'app.kubernetes.io/component': 'edge'}))
+        self.assertFalse(self.selects(selector, {self.label: 'allowed'}))
+        self.assertFalse(self.selects(selector, {self.label: ''}))
 
 
 class ActivityTest(unittest.TestCase):
