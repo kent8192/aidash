@@ -98,6 +98,28 @@ class GuardTransportTest(unittest.TestCase):
         with self.assertRaises(json.JSONDecodeError):
             self.runner.activity()
 
+    def test_failed_admission_probe_stops_counting_once_its_pod_is_gone(self):
+        # A probe that failed before dispatch (e.g. scheduling) is terminal `uncertain`.
+        probe = {'operation_id': '1e0c5bd2-3f6a-4f5f-9b55-3c4f3ad3c0aa', 'status': 'uncertain',
+                 'termination_confirmed': False, 'admission_probe': True}
+        # Ordinary work cannot claim the probe's internal marker through its digest.
+        work = {'operation_id': '2f1d6ce3-4a7b-4060-8c66-4d5a4be4d1bb', 'status': 'uncertain',
+                'termination_confirmed': False, 'digest': 'immutable-admission-probe/3'}
+        for record in (probe, work):
+            (self.runner.root / (record['operation_id'] + '.json')).write_text(json.dumps(record))
+        self.runner.kube = Mock()
+        # While its Pod survives deletion, the probe stays busy (fail closed).
+        self.runner.pod.return_value = {'metadata': {'uid': 'uid'}}
+        self.runner.retire_admission_probes()
+        self.assertEqual(self.runner.activity()['counts'], {'runner': 2})
+        self.assertEqual([call.args[0][:3] for call in self.runner.kube.call_args_list],
+                         [['delete', 'pod', 'operation-' + probe['operation_id']]])
+        self.runner.pod.return_value = None
+        self.runner.retire_admission_probes()
+        self.assertEqual(self.runner.activity()['counts'], {'runner': 1})
+        self.assertTrue(self.runner.get(probe['operation_id'])['termination_confirmed'])
+        self.assertFalse(self.runner.get(work['operation_id'])['termination_confirmed'])
+
 
 class NamespaceTest(unittest.TestCase):
     def construct(self, namespace):

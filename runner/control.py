@@ -94,6 +94,7 @@ class Runner:
         self.verify_isolation()
         if self.config.get("node_guard"):
             self.verify_freeze()
+        self.retire_admission_probes()
         for path in self.root.glob("*.json"):
             if path.name.startswith(("area-", "session-")):
                 continue
@@ -106,7 +107,7 @@ class Runner:
         self.admission_operation = operation
         self.accept({"operation_id": operation, "area_id": str(uuid.uuid4()), "epoch": 1,
                      "digest": "immutable-admission-probe/3", "kind": "shell", "code": f"python -I /opt/aidash/probe.py {self.config['working_bytes']} {self.config['temporary_bytes']}",
-                     "seconds": 30, "files": []})
+                     "seconds": 30, "files": []}, admission_probe=True)
         deadline = time.monotonic() + 150
         while time.monotonic() < deadline:
             record = self.get(operation)
@@ -129,6 +130,26 @@ class Runner:
                 return
             time.sleep(0.2)
         raise RuntimeError("isolation probe did not finish")
+
+    def retire_admission_probes(self):
+        """A startup probe that failed before termination was confirmed stays
+        terminal `uncertain`, and activity would count it as busy forever. It runs
+        only the Runner's own probe in a private area, so once Kubernetes confirms
+        its Pod is gone (graceful deletion completes only after the kubelet stops
+        every container) no writer remains. A Pod that cannot be removed keeps the
+        record busy: activity stays fail-closed."""
+        for path in self.root.glob("*.json"):
+            if path.name.startswith(("area-", "session-")):
+                continue
+            record = json.loads(path.read_bytes())
+            if (not record.get("admission_probe") or record["status"] not in TERMINAL
+                    or record.get("termination_confirmed") or record.get("writer_frozen")):
+                continue
+            operation = record["operation_id"]
+            self.kube(["delete", "pod", self.pod_name(operation), "--ignore-not-found", "--wait=true", "--timeout=60s"],
+                      timeout=70, check=False)
+            if self.pod(operation) is None:
+                self.update(operation, termination_confirmed=True)
 
     def verify_freeze(self):
         operation = str(uuid.uuid4())
@@ -195,7 +216,7 @@ class Runner:
     def public(self, record):
         return {k: v for k, v in record.items() if k not in ("request", "pod_uid")}
 
-    def accept(self, request):
+    def accept(self, request, admission_probe=False):
         if set(request) - {"session_id"} != {"operation_id", "area_id", "epoch", "digest", "kind", "code", "seconds", "files"}:
             raise Rejected(400, "invalid runner contract")
         operation, area = identity(request["operation_id"]), identity(request["area_id"])
@@ -267,6 +288,9 @@ class Runner:
                       "request": request, "created_at": time.time(), "cancel_requested": False,
                       "termination_confirmed": False, "stdout": "", "truncated": False,
                       "files": [], "error": None, "executed": False}
+            # Only verify_isolation sets this; no request field can claim it.
+            if admission_probe:
+                record["admission_probe"] = True
             if request["kind"] == "python":
                 record["session_id"] = sid
                 if session:
