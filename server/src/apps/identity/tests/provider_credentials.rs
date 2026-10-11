@@ -1466,6 +1466,7 @@ async fn postgres_store_service_lifecycle_resolves_pins_and_never_leaks_canary(
 		}),
 		store: store.clone(),
 		validator: Arc::new(Validator),
+		exchange: Arc::new(CodeIsKey),
 		fingerprint_key: "fingerprint-test-key-at-least-32-bytes".into(),
 		max_per_tenant: 20,
 	};
@@ -2184,6 +2185,7 @@ fn real_service(
 		}),
 		store,
 		validator: Arc::new(Validator),
+		exchange: Arc::new(CodeIsKey),
 		fingerprint_key: "fingerprint-root-at-least-32-bytes-157".into(),
 		max_per_tenant: 20,
 	}
@@ -2716,6 +2718,7 @@ async fn native_cleanup_inventory_is_bounded_ordered_and_includes_revocations(
 					},
 					fingerprint: "0123456789abcdef".into(),
 					last4: "test".into(),
+					key_digest: None,
 					state,
 					created_at: chrono::Utc::now(),
 					rotated_at: None,

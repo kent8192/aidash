@@ -23,7 +23,9 @@ use axum::{
 };
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use common::{TestEnvironment, test_environment};
-use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query, QueryStatementBuilder};
+use reinhardt::query::{
+	Alias, Expr, ExprTrait, PostgresQueryBuilder, Query, QueryStatementBuilder,
+};
 use secrecy::{ExposeSecret, SecretString};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -481,12 +483,18 @@ async fn connect_and_reconnect_write_only_through_oauth_and_never_disclose_keys(
 	// Key Material never reaches PostgreSQL in any table.
 	let mut dump = String::new();
 	for table in ["provider_authorizations", "provider_credentials", "events"] {
-		let text: String = sqlx::query_scalar(&format!(
-			"SELECT coalesce(string_agg(t::text, ''), '') FROM {table} t"
-		))
-		.fetch_one(fixture.f.store.pool.driver())
-		.await
-		.unwrap();
+		let query = Query::select()
+			.expr_as(
+				Expr::col(Alias::new("record")).cast_as(Alias::new("text")),
+				Alias::new("document"),
+			)
+			.from_as(Alias::new(table), Alias::new("record"))
+			.to_string(PostgresQueryBuilder);
+		let text: Vec<String> = sqlx::query_scalar(&query)
+			.fetch_all(fixture.f.store.pool.driver())
+			.await
+			.unwrap();
+		let text = text.concat();
 		dump.push_str(&text);
 	}
 	let rotated_digest: String = Sha256::digest(rotated_key.as_bytes())
@@ -592,12 +600,17 @@ async fn replayed_cross_session_and_expired_states_and_rejected_codes_store_noth
 	// Expired pending authorization at the host.
 	let started = start(&fixture, "browser-a", json!({}), None).await;
 	let (code, _) = fixture.provider.consent(&started.challenge, false);
-	sqlx::query(
-		"UPDATE provider_authorizations SET expires_at = clock_timestamp() - interval '1 second'",
-	)
-	.execute(fixture.f.store.pool.driver())
-	.await
-	.unwrap();
+	let expire = Query::update()
+		.table(Alias::new("provider_authorizations"))
+		.value_expr(
+			Alias::new("expires_at"),
+			Expr::cust("clock_timestamp()-interval '1 second'"),
+		)
+		.to_string(PostgresQueryBuilder);
+	sqlx::query(&expire)
+		.execute(fixture.f.store.pool.driver())
+		.await
+		.unwrap();
 	let response = callback(
 		&fixture,
 		"browser-a",
