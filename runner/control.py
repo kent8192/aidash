@@ -52,6 +52,33 @@ def identity(value):
     return parsed
 
 
+def settled(record):
+    """No writer can still be running: terminal, with termination proven or frozen."""
+    return record['status'] in TERMINAL and bool(record.get('termination_confirmed') or record.get('writer_frozen'))
+
+
+class ActivityLedger:
+    """Aggregate of the operation journal for /v1/activity.
+
+    The journal keeps every operation file for the life of the volume (an
+    acknowledgement clears the payload, never the file), so deriving activity from
+    the files costs more with each operation ever run. This keeps only the IDs of
+    unsettled operations and the latest completion time, updated whenever a record
+    is saved, so a read is independent of how many operations are retained.
+    Callers serialize updates with the Runner's lock."""
+
+    def __init__(self):
+        self.unsettled = set()
+        self.last_completed = 0
+
+    def track(self, operation, record):
+        if settled(record):
+            self.unsettled.discard(operation)
+        else:
+            self.unsettled.add(operation)
+        self.last_completed = max(self.last_completed, record.get('finished_at', 0))
+
+
 class Runner:
     def __init__(self, config):
         self.config = config
@@ -62,6 +89,8 @@ class Runner:
         self.lock = threading.RLock()
         self.active = set()
         self.admission_operation = None
+        self.ledger = ActivityLedger()
+        self.index_journal()
 
         identity_path = self.root / "instance"
         if not identity_path.exists():
@@ -103,6 +132,17 @@ class Runner:
             record = json.loads(path.read_bytes())
             if record["status"] not in TERMINAL and record["status"] != "awaiting_files":
                 self.start(record["operation_id"])
+
+    def operation_files(self):
+        for path in self.root.glob("*.json"):
+            if not path.name.startswith(("area-", "session-")):
+                yield path
+
+    def index_journal(self):
+        """Seed the activity ledger from the retained journal. This is the only
+        full scan: it runs once at startup, never per request."""
+        for path in self.operation_files():
+            self.ledger.track(path.stem, json.loads(path.read_bytes()))
 
     def verify_isolation(self):
         operation = str(uuid.uuid4())
@@ -215,6 +255,7 @@ class Runner:
             record = self.get(operation)
             record.update(changes)
             save(self.path(operation), record)
+            self.ledger.track(operation, record)
             return record
 
     def public(self, record):
@@ -302,6 +343,7 @@ class Runner:
                     record["pod_uid"] = session["pod_uid"]
                     record["container_id"] = session["container_id"]
             save(self.path(operation), record)
+            self.ledger.track(operation, record)
             save(area_path, {"epoch": request["epoch"], "operation_id": operation})
             if not request["files"] or session:
                 self.start(operation)
@@ -827,19 +869,12 @@ class Runner:
         return self.public(record)
 
     def activity(self):
-        """Read-only activity; an unproven writer always prevents idle stop."""
+        """Read-only activity; an unproven writer always prevents idle stop. It reads
+        the ledger only: no journal file is opened and the lock is held for two reads."""
         with self.lock:
-            busy, completed = 0, 0
-            for path in self.root.glob('*.json'):
-                if path.name.startswith(('area-', 'session-')):
-                    continue
-                record = json.loads(path.read_bytes())
-                if record['status'] not in TERMINAL or not (
-                        record.get('termination_confirmed') or record.get('writer_frozen')):
-                    busy += 1
-                completed = max(completed, record.get('finished_at', 0))
-            return {'protocol': 'aidash-runner-activity/1', 'counts': {'runner': busy},
-                    'busy': busy > 0, 'last_work_completed': completed}
+            busy, completed = len(self.ledger.unsettled), self.ledger.last_completed
+        return {'protocol': 'aidash-runner-activity/1', 'counts': {'runner': busy},
+                'busy': busy > 0, 'last_work_completed': completed}
 
 
 class Handler(BaseHTTPRequestHandler):

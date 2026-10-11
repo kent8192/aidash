@@ -139,3 +139,11 @@ refer here.
   then keeps only the previous snapshot's `last_active`. This file does not cover
   that case: a request completed shortly before the Pod was lost can receive a
   shorter idle interval.
+- **Runner.** `/v1/activity` (`runner/control.py`) answers from an in-memory ledger
+  of the operations whose writer is not proven stopped plus the latest completion
+  time. It is seeded by one scan of the journal at Runner start and updated each
+  time an operation record is saved, so a request opens no journal file, however
+  many acknowledged operations the volume retains, and holds the Runner's global
+  lock only for two reads. A corrupt record stops the Runner from starting instead
+  of reporting idle. The collector's 15-second timeout therefore cannot be
+  exhausted by journal growth.
