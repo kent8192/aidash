@@ -19,8 +19,9 @@ mock_provider "google" {
 }
 mock_provider "cloudflare" {}
 variables {
-  project_id      = "aidash-fixture"
-  byok_project_id = "aidash-byok-fixture"
+  project_id             = "aidash-fixture"
+  byok_project_id        = "aidash-byok-fixture"
+  broker_image_lock_file = "tests/fixtures/broker-image.json"
 }
 
 run "bootstrap_keys" {
@@ -67,7 +68,6 @@ run "environment_enabled" {
       secret_prefix                = "aidash-test-cred-"
       broker_service_account_email = run.bootstrap_keys.broker_service_accounts["test"]
       signing_key_id               = run.bootstrap_keys.broker_signing_keys["test"]
-      image                        = "broker@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     } }
   }
   assert {

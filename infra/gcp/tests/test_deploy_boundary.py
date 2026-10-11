@@ -166,6 +166,49 @@ class DeployBoundaryTests(unittest.TestCase):
             self.assertTrue(policy["alert_strategy"][0]["notification_rate_limit"][0]["period"])
 
 
+CONTROL = Path(__file__).resolve().parents[1] / "control"
+ENVIRONMENTS = Path(__file__).resolve().parents[1] / "environments"
+DIGEST = re.compile(r"sha256:[a-f0-9]{64}")
+
+
+class BrokerImageTests(unittest.TestCase):
+    """The broker image digest is reviewed code, so a broker change shows in a diff."""
+
+    def test_lock_file_holds_only_an_approved_digest_or_nothing(self):
+        lock = json.loads((ENVIRONMENTS / "broker-image.json").read_text())
+        self.assertEqual(set(lock), {"digest"})
+        self.assertTrue(lock["digest"] is None or DIGEST.fullmatch(lock["digest"]))
+
+    def test_deployment_configuration_cannot_override_the_lock(self):
+        for source in CONTROL.glob("*.py"):
+            self.assertNotIn("broker_image", source.read_text(), source.name)
+        example = json.loads((CONTROL.parent / "config.example.json").read_text())
+        for broker in example["credential_brokers"].values():
+            self.assertNotIn("image", broker)
+
+    @unittest.skipUnless(shutil.which("terraform"), "terraform is required")
+    def test_service_runs_the_locked_digest_from_the_private_registry(self):
+        subprocess.run(["terraform", f"-chdir={ENVIRONMENTS}", "init", "-backend=false", "-input=false", "-no-color"], check=True, capture_output=True, timeout=300)
+        result = subprocess.run(
+            ["terraform", f"-chdir={ENVIRONMENTS}", "test", "-json", "-verbose", "-no-color", "-filter=tests/key_lifecycle.tftest.hcl"],
+            check=False, capture_output=True, text=True, timeout=600,
+        )
+        if result.returncode:
+            raise AssertionError(result.stdout + result.stderr)
+        fixture = json.loads((ENVIRONMENTS / "tests" / "fixtures" / "broker-image.json").read_text())["digest"]
+        images = []
+        for line in result.stdout.splitlines():
+            event = json.loads(line)
+            if event.get("type") == "test_state" and event["@testrun"] == "environment_enabled":
+                images += [
+                    container["image"]
+                    for resource in flattened(event["test_state"]["root_module"])
+                    if resource["type"] == "google_cloud_run_v2_service"
+                    for container in resource["values"]["template"][0]["containers"]
+                ]
+        self.assertEqual(images, [f"us-central1-docker.pkg.dev/aidash-fixture/aidash/broker@{fixture}"])
+
+
 class DeployEntryPointTests(unittest.TestCase):
     """Every job that can obtain Google credentials runs in the protected Environment."""
 

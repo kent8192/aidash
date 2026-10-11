@@ -159,3 +159,23 @@ run "cross_environment_signing_key_forbidden" {
   }
   expect_failures = [var.signing_key_id]
 }
+run "mutable_tag_forbidden" {
+  command = plan
+  variables { image = "us-central1-docker.pkg.dev/aidash-fixture/aidash/broker:latest" }
+  expect_failures = [var.image]
+}
+run "foreign_registry_forbidden" {
+  command = plan
+  variables { image = "docker.io/library/broker@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }
+  expect_failures = [var.image]
+}
+run "other_project_registry_forbidden" {
+  command = plan
+  variables { image = "us-central1-docker.pkg.dev/someone-else/aidash/broker@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }
+  expect_failures = [var.image]
+}
+run "other_repository_forbidden" {
+  command = plan
+  variables { image = "us-central1-docker.pkg.dev/aidash-fixture/aidash/app@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }
+  expect_failures = [var.image]
+}
