@@ -74,12 +74,13 @@ and projects that ServiceAccount token only into the collector, so the
 database-facing observer cannot publish a snapshot. The persisted `snapshot.json` uses the
 existing `aidash-infra-activity/1` contract. Failed observations cannot authorize
 stop. A gap longer than 120 seconds is busy and starts a full new idle interval;
-new transfer receipts and actual work completions also renew it. Receipt IDs only
-accumulate, so the snapshot keeps their SHA-256 digest and count rather than the
-set, staying far below the ConfigMap size limit; any change renews the interval.
-A failed observer writes no database evidence but does not fail the Pod, so the
-collector still publishes a fresh busy snapshot; a Pod that never publishes leaves
-an old snapshot that the controller must reject as stale.
+new transfer receipts and actual work completions also renew it. A failed observer
+writes no database evidence but does not fail the Pod, so the collector still
+publishes a fresh busy snapshot; a Pod that never publishes leaves an old snapshot
+that the controller must reject as stale.
+
+The observation sources and their bounds are specified in
+[Activity observation contract](#activity-observation-contract) below.
 
 The Phase 4 idle seal closes admission and gracefully drains **both server and
 worker**. Keep the Runner, edge, database and observer running for the fresh
@@ -102,3 +103,27 @@ helm template env infra/gcp/helm/environment --namespace aidash-develop -f image
   --set edge.backend=app-backend --set activity.existingSecret=env-activity \
   --set activity.runnerEndpoint=http://app-execution-runner:8949
 ```
+
+## Activity observation contract
+
+Three sources feed one snapshot, and each is bounded so that a long-lived
+Environment cannot make the observation fail closed forever. The observer
+(`infra/gcp/observer/src/main.rs`) and the collector (`files/activity.py`) both
+refer here.
+
+- **Observer (database).** Besides the busy `counts` and `last_work_completed`, it
+  reports durable completed-transfer receipts only as
+  `completed_transfers_count` (an integer) and `completed_transfers_digest` (64
+  lowercase hex characters). The query computes both in constant memory: every
+  receipt contributes the first 64 bits of the SHA-256 of its ID, the
+  contributions are summed (so neither a sort nor an ID list exists anywhere) and
+  the sum is hashed again. Receipts have no deletion path, so the output size does
+  not depend on how many exist. The observer never emits the receipt IDs.
+- **Collector.** It stores the same pair in `snapshot.json` and compares the digest
+  with the previous one: any change, whether a new receipt or a removed one,
+  renews the idle interval, and retries or object reclamation of an existing
+  receipt do not. An observation that lacks a well-formed pair (an older observer
+  that still sends the receipt list, a missing field, a non-hex digest) or whose
+  file exceeds 64 KiB is treated as unavailable and published as busy. The first
+  sample after upgrading from the receipt-list observer therefore sees a different
+  digest and renews idle once. The `snapshot` volume is a 1 MiB `emptyDir`.

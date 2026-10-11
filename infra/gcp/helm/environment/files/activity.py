@@ -1,8 +1,13 @@
-"""Read-only Environment observation; publish one fail-closed snapshot."""
+"""Read-only Environment observation; publish one fail-closed snapshot.
+
+The observer and edge contract is documented in "Activity observation contract"
+in infra/gcp/helm/environment/README.md.
+"""
 import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import ssl
 import time
 import urllib.error
@@ -10,10 +15,30 @@ import urllib.request
 
 # The minute CronJob and the controller's on-demand Job may publish together.
 PUBLISH_ATTEMPTS = 3
+# The observer's output is a fixed-size summary of a few hundred bytes. Anything
+# larger is not that contract, whatever it contains, so it is never trusted.
+MAX_OBSERVATION_BYTES = 64 * 1024
 
 
 def digest(transfers):
+    # Only a previous snapshot written before the observer summarized receipts
+    # carries a receipt list.
     return hashlib.sha256('\n'.join(sorted(transfers)).encode()).hexdigest()
+
+
+def read_observation(path):
+    data = path.read_bytes()
+    if len(data) > MAX_OBSERVATION_BYTES:
+        raise ValueError('oversized database observation')
+    return json.loads(data)
+
+
+def receipt_summary(database):
+    """The observer's fixed-size receipt summary; anything else is unavailable."""
+    count, seen = database.get('completed_transfers_count'), database.get('completed_transfers_digest')
+    if type(count) is not int or count < 0 or not isinstance(seen, str) or not re.fullmatch(r'[0-9a-f]{64}', seen):
+        raise ValueError('invalid receipt summary')
+    return count, seen
 
 
 def combine(database, edge, runner, previous, now):
@@ -27,19 +52,18 @@ def combine(database, edge, runner, previous, now):
     active = any(value for key, value in counts.items() if key != 'database_work')
     last = max(previous.get('last_active', now), edge['last_active'],
                database.get('last_work_completed', 0), runner.get('last_work_completed', 0))
-    # Receipt IDs are durable and only accumulate, while a ConfigMap is capped near
-    # 1 MiB. Persist a fixed-size digest, never the set. Any change renews idle, so
-    # the post-transfer interval is never shortened. A snapshot without a digest is
+    # Receipts are durable and only accumulate, while a ConfigMap is capped near
+    # 1 MiB. The observer sends a fixed-size count and digest and this persists
+    # the same pair, never the set. Any change renews idle, so the post-transfer
+    # interval is never shortened. A previous snapshot without a digest is
     # compared as its legacy list, or as no transfers when it has neither.
-    transfers = database['completed_transfers']
-    seen = digest(transfers)
+    count, seen = receipt_summary(database)
     before = previous.get('completed_transfers_digest') or digest(previous.get('completed_transfers', []))
     if active or gap or previous.get('busy', True) or seen != before:
         last = now
-    snapshot = {key: value for key, value in database.items() if key != 'completed_transfers'}
-    return dict(snapshot, counts=counts, busy=active or gap, observation_gap=gap,
+    return dict(database, counts=counts, busy=active or gap, observation_gap=gap,
                 observed_at=now, last_active=last, edge_closed=edge['closed'],
-                completed_transfers_digest=seen, completed_transfers_count=len(transfers))
+                completed_transfers_digest=seen, completed_transfers_count=count)
 
 
 def request(url, token=None, *, data=None, method=None, context=None):
@@ -68,7 +92,7 @@ def main():
     previous = request(url, token, context=context)
     try:
         observed = (
-            json.loads(Path('/snapshot/database.json').read_bytes()),
+            read_observation(Path('/snapshot/database.json')),
             request(os.environ['EDGE_ACTIVITY_ENDPOINT'] + '/activity'),
             request(os.environ['RUNNER_ENDPOINT'] + '/v1/activity', os.environ['AIDASH_CORE_RUNNER_TOKEN']),
         )

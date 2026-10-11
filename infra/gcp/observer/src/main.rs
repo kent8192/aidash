@@ -2,7 +2,7 @@
 use sea_orm::{
 	AccessMode, ConnectOptions, ConnectionTrait, Database, DatabaseTransaction, DbBackend,
 	IsolationLevel, TransactionTrait,
-	sea_query::{Alias, Asterisk, Condition, Expr, Func, Query, SimpleExpr},
+	sea_query::{Alias, Asterisk, Condition, Expr, ExprTrait, Func, Query, SimpleExpr},
 };
 use serde_json::{Value, json};
 use std::{
@@ -52,6 +52,62 @@ async fn waiting_ids(
 		ids.insert(row.try_get("", "id")?);
 	}
 	Ok(ids)
+}
+
+/// Count and fingerprint the durable completed-transfer receipts in constant
+/// memory, however many accumulate. Each receipt contributes the first 64 bits of
+/// the SHA-256 of its ID; the contributions are summed (order-free, so there is no
+/// sort and no buffered ID list) and the sum is hashed again into a fixed
+/// 64-character hex digest. Adding or removing a receipt changes the digest;
+/// retries and object reclamation do not.
+async fn receipt_summary(tx: &DatabaseTransaction) -> Result<(i64, String), Error> {
+	let utf8 = |expr: SimpleExpr| {
+		Func::cust(Alias::new("convert_to")).args([expr, Expr::val("UTF8").into()])
+	};
+	let id_text: SimpleExpr = Expr::col(Alias::new("id")).cast_as(Alias::new("text"));
+	let id_prefix = Func::cust(Alias::new("substr")).args([
+		Func::cust(Alias::new("sha256")).arg(utf8(id_text)).into(),
+		Expr::val(1).into(),
+		Expr::val(8).into(),
+	]);
+	let id_fold: SimpleExpr = Func::cust(Alias::new("concat"))
+		.args([
+			Expr::val("x").into(),
+			Func::cust(Alias::new("encode"))
+				.args([id_prefix.into(), Expr::val("hex").into()])
+				.into(),
+		])
+		.cast_as(Alias::new("bit(64)"))
+		.cast_as(Alias::new("bigint"));
+	let fold = Func::coalesce([Func::sum(id_fold).into(), Expr::val(0).into()])
+		.cast_as(Alias::new("text"));
+	let digest = Func::cust(Alias::new("encode")).args([
+		Func::cust(Alias::new("sha256")).arg(utf8(fold)).into(),
+		Expr::val("hex").into(),
+	]);
+	let query = Query::select()
+		.expr_as(Func::count(Expr::col(Asterisk)), Alias::new("total"))
+		.expr_as(digest, Alias::new("digest"))
+		.from(Alias::new("core_records"))
+		.cond_where(
+			Condition::any()
+				.add(
+					Expr::col(Alias::new("kind"))
+						.eq("transfer_out")
+						.and(Expr::col(Alias::new("state")).eq("delivered")),
+				)
+				.add(
+					Expr::col(Alias::new("kind"))
+						.eq("transfer_in")
+						.and(Expr::col(Alias::new("state")).eq("committed")),
+				),
+		)
+		.to_owned();
+	let row = tx
+		.query_one(DbBackend::Postgres.build(&query))
+		.await?
+		.ok_or("missing receipt summary")?;
+	Ok((row.try_get("", "total")?, row.try_get("", "digest")?))
 }
 
 async fn observe(database_url: &str) -> Result<Value, Error> {
@@ -242,31 +298,23 @@ async fn observe(database_url: &str) -> Result<Value, Error> {
 		last_work_completed =
 			last_work_completed.max(row.try_get::<Option<f64>>("", "completed")?.unwrap_or(0.0));
 	}
-	// core_records has no completion timestamp. Return durable receipt IDs so
-	// the host can start a full idle interval when a completion is first seen,
-	// even if the transfer began and finished between observations. Retries and
-	// object reclamation do not turn an existing receipt into new activity.
-	let completed_transfers = waiting_ids(
-		&tx,
-		"core_records",
-		Condition::any()
-			.add(
-				Expr::col(Alias::new("kind"))
-					.eq("transfer_out")
-					.and(Expr::col(Alias::new("state")).eq("delivered")),
-			)
-			.add(
-				Expr::col(Alias::new("kind"))
-					.eq("transfer_in")
-					.and(Expr::col(Alias::new("state")).eq("committed")),
-			)
-			.into(),
-	)
-	.await?;
+	// core_records has no completion timestamp. Summarize the durable receipts
+	// so the collector can start a full idle interval when a completion is
+	// first seen, even if the transfer began and finished between
+	// observations. Retries and object reclamation do not turn an existing
+	// receipt into new activity. Receipts have no deletion path, so only a
+	// fixed-size summary leaves the database; see "Activity observation
+	// contract" in infra/gcp/helm/environment/README.md.
+	let (completed_transfers_count, completed_transfers_digest) = receipt_summary(&tx).await?;
 	tx.rollback().await?;
-	Ok(
-		json!({"protocol":"aidash-infra-activity/1", "busy":busy.values().any(|n| *n > 0), "counts":busy, "last_work_completed":last_work_completed, "completed_transfers":completed_transfers}),
-	)
+	Ok(json!({
+		"protocol": "aidash-infra-activity/1",
+		"busy": busy.values().any(|n| *n > 0),
+		"counts": busy,
+		"last_work_completed": last_work_completed,
+		"completed_transfers_count": completed_transfers_count,
+		"completed_transfers_digest": completed_transfers_digest,
+	}))
 }
 
 #[tokio::main]
@@ -482,12 +530,49 @@ mod tests {
 		}
 		let snapshot = observe(&url).await?;
 		assert_eq!(snapshot["busy"], false);
+		assert_eq!(snapshot["completed_transfers_count"], 2);
+		let small = snapshot["completed_transfers_digest"]
+			.as_str()
+			.unwrap()
+			.to_owned();
+		assert!(small.len() == 64 && small.bytes().all(|b| b.is_ascii_hexdigit()));
+		assert!(snapshot.get("completed_transfers").is_none());
+		// Receipts only accumulate: a very large set must still produce a
+		// fixed-size observation that a new receipt visibly changes.
+		database
+			.execute_unprepared(
+				"INSERT INTO core_records (id, kind, state) \
+				 SELECT gen_random_uuid(), 'transfer_out', 'delivered' FROM generate_series(1, 50000)",
+			)
+			.await?;
+		let large = observe(&url).await?;
+		assert_eq!(large["completed_transfers_count"], 50_002);
+		assert_ne!(large["completed_transfers_digest"], small);
+		let bytes = serde_json::to_string(&large)?.len();
+		assert!(
+			bytes < 1024,
+			"observation grew with the receipt set: {bytes} bytes"
+		);
 		assert_eq!(
-			serde_json::from_value::<HashSet<String>>(snapshot["completed_transfers"].clone())?,
-			HashSet::from([
-				"00000000-0000-0000-0000-000000000001".into(),
-				"00000000-0000-0000-0000-000000000002".into(),
-			])
+			observe(&url).await?["completed_transfers_digest"],
+			large["completed_transfers_digest"],
+			"an unchanged set must keep its digest"
+		);
+		let insert = Query::insert()
+			.into_table(Alias::new("core_records"))
+			.columns(["id", "kind", "state"].map(Alias::new))
+			.values([
+				Expr::val("00000000-0000-0000-0000-000000000005").cast_as(Alias::new("uuid")),
+				Expr::val("transfer_in").into(),
+				Expr::val("committed").into(),
+			])?
+			.to_owned();
+		database.execute(DbBackend::Postgres.build(&insert)).await?;
+		let renewed = observe(&url).await?;
+		assert_eq!(renewed["completed_transfers_count"], 50_003);
+		assert_ne!(
+			renewed["completed_transfers_digest"], large["completed_transfers_digest"],
+			"a new receipt must change the digest so idle is renewed"
 		);
 		// The role sees the same evidence, including other sessions' open
 		// transactions, which pg_stat_activity hides without pg_read_all_stats.
