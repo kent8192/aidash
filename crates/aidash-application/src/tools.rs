@@ -270,6 +270,11 @@ impl Builtin {
 					.await?;
 				Ok(json!({"human_request_id":request.id}))
 			}
+			"capability_search"
+			| "capability_describe"
+			| "capability_load"
+			| "capability_unload"
+			| "skill_asset_read" => exposure::invoke(self.name, ctx, input).await,
 			_ => Err(Error::Invalid("unknown tool".into())),
 		}
 	}
@@ -381,6 +386,41 @@ pub fn builtins() -> BTreeMap<String, Builtin> {
 			description: "Ask the human for input and wait for a response. Approval requests do not grant permission until answered.",
 			schema: json!({"type":"object","required":["kind","prompt"],"properties":{"kind":{"enum":["QUESTION","APPROVAL_REQUIRED","CONFIRMATION","INFORMATION_REQUEST"]},"prompt":string},"additionalProperties":false}),
 		},
+		Builtin {
+			name: "capability_search",
+			contract: aidash_domain::tool::builtin_contract("capability_search")
+				.expect("declared builtin"),
+			description: "Search this agent's Discoverable capabilities (tools and Skills) by keywords; an empty query lists all. Results give each alias, kind, summary, digest and whether it is loaded. Continue with next_cursor when truncated.",
+			schema: json!({"type":"object","properties":{"query":string,"cursor":string},"additionalProperties":false}),
+		},
+		Builtin {
+			name: "capability_describe",
+			contract: aidash_domain::tool::builtin_contract("capability_describe")
+				.expect("declared builtin"),
+			description: "Describe one Discoverable capability by alias: its exact identity and digest, the full tool definition or Skill file inventory, and the bytes it uses of its exposure budget.",
+			schema: json!({"type":"object","required":["alias"],"properties":{"alias":string},"additionalProperties":false}),
+		},
+		Builtin {
+			name: "capability_load",
+			contract: aidash_domain::tool::builtin_contract("capability_load")
+				.expect("declared builtin"),
+			description: "Load a Discoverable capability by alias and digest. A loaded tool can be called and loaded Skill instructions appear from the next request. Loading never evicts anything; when the budget is exceeded, unload a capability first.",
+			schema: json!({"type":"object","required":["alias","digest"],"properties":{"alias":string,"digest":string},"additionalProperties":false}),
+		},
+		Builtin {
+			name: "capability_unload",
+			contract: aidash_domain::tool::builtin_contract("capability_unload")
+				.expect("declared builtin"),
+			description: "Unload a loaded or eager capability by alias to free its exposure budget from the next request. Mandatory capabilities cannot be unloaded.",
+			schema: json!({"type":"object","required":["alias"],"properties":{"alias":string},"additionalProperties":false}),
+		},
+		Builtin {
+			name: "skill_asset_read",
+			contract: aidash_domain::tool::builtin_contract("skill_asset_read")
+				.expect("declared builtin"),
+			description: "Read a file packaged with a Skill by its capability alias, digest and relative path. Continue from next_offset when present. Binary files return metadata only.",
+			schema: json!({"type":"object","required":["alias","digest","path"],"properties":{"alias":string,"digest":string,"path":string,"offset":{"type":"integer","minimum":0},"max_chars":{"type":"integer","minimum":1}},"additionalProperties":false}),
+		},
 	];
 	entries
 		.into_iter()
@@ -388,5 +428,6 @@ pub fn builtins() -> BTreeMap<String, Builtin> {
 		.collect()
 }
 
+pub mod exposure;
 #[cfg(test)]
 mod tests;

@@ -78,6 +78,34 @@ _Avoid_: Latest configuration, permanent execution grant
 The name by which a model addresses a bound Tool. An alias is distinct from the Tool's identity and authority.
 _Avoid_: Tool identity, catalog resource
 
+**Exposure policy**:
+The versioned rule, fixed with a Run's Binding snapshot, that decides which bound capabilities and Skill bodies a model request carries. An Agent definition that names none uses the legacy policy, which exposes every bound capability.
+_Avoid_: Tool selection, prompt policy
+
+**Discoverable capability**:
+A capability in a Run's Binding snapshot that current authority still permits the Run's model to find and describe. Being discoverable does not place its definition in a model request.
+_Avoid_: Eligible binding, available tool
+
+**Exposure set**:
+The capability definitions and Skill bodies carried by one model request. Only a capability in the Exposure set can be invoked by its Model alias.
+_Avoid_: Active tools, visible tools, tool list
+
+**Load**:
+A Run's model bringing a Discoverable capability into the Exposure set of its later requests. Loading never installs a package, widens authority, or changes the Binding snapshot.
+_Avoid_: Activate, enable, install
+
+**Unload**:
+A Run's model removing a loaded capability or Skill body from the Exposure set of its later requests. Mandatory exposure cannot be unloaded.
+_Avoid_: Deactivate, disable, evict
+
+**Mandatory exposure**:
+The capabilities a deferred Exposure policy always carries: the Required Bindings and the means to find, describe, load and unload capabilities. An Agent definition whose Mandatory exposure cannot fit its model is rejected rather than run with less.
+_Avoid_: Core tools, always-on tools, mandatory envelope
+
+**Eager binding**:
+A Binding its Agent definition places in the Exposure set from a Run's first request under a deferred Exposure policy. Eagerness affects only exposure, never authority.
+_Avoid_: Pinned tool, preloaded tool
+
 **Tool bundle**:
 A versioned group of separately declared Tool operations distributed and bound together. A bundle is distinct from an executable operation.
 _Avoid_: Multi-operation invocation, execution grant

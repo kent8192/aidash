@@ -92,6 +92,7 @@ fn explicit_source_does_not_implicitly_grant_memory_read_or_write() {
 		alias: None,
 		narrow: Narrowing::default(),
 		members: vec![],
+		exposure: None,
 	});
 	let normalized = agent.normalize("aidash://node-a").unwrap();
 	assert_eq!(
@@ -163,6 +164,158 @@ fn bundle_member_ids_are_unique_across_versions_and_nodes() {
 	}
 	.validate()
 	.unwrap();
+}
+
+fn deferred() -> AgentBindings {
+	let mut agent = agent();
+	agent.exposure = Some(ExposurePolicy::Deferred(Default::default()));
+	agent
+}
+fn skill_binding() -> Binding {
+	Binding {
+		kind: BindingKind::Skill,
+		..Binding::tool(QualifiedRef {
+			registry_node: "aidash://node-a".into(),
+			id: "skill".into(),
+			version: "1.0.0".into(),
+		})
+	}
+}
+fn targets(normalized: &[NormalizedBinding]) -> BTreeSet<String> {
+	normalized
+		.iter()
+		.map(|b| b.binding.target.id.trim_start_matches("aidash.").to_owned())
+		.collect()
+}
+
+#[test]
+fn deferred_normalization_swaps_skill_tools_for_exposure_tools() {
+	let legacy = agent().normalize("aidash://node-a").unwrap();
+	let mut legacy_policy = agent();
+	legacy_policy.exposure = Some(ExposurePolicy::Legacy);
+	assert_eq!(legacy_policy.normalize("aidash://node-a").unwrap(), legacy);
+	let normalized = deferred().normalize("aidash://node-a").unwrap();
+	let (legacy_targets, deferred_targets) = (targets(&legacy), targets(&normalized));
+	assert_eq!(
+		deferred_targets
+			.difference(&legacy_targets)
+			.map(String::as_str)
+			.collect::<BTreeSet<_>>(),
+		EXPOSURE_TOOLS
+			.iter()
+			.copied()
+			.chain([SKILL_ASSET_READ])
+			.collect()
+	);
+	assert_eq!(
+		legacy_targets
+			.difference(&deferred_targets)
+			.map(String::as_str)
+			.collect::<BTreeSet<_>>(),
+		SKILL_TOOLS.iter().copied().collect()
+	);
+	for binding in &normalized {
+		let operation = binding.binding.target.id.trim_start_matches("aidash.");
+		let required = REQUIRED_TOOLS.contains(&operation) || EXPOSURE_TOOLS.contains(&operation);
+		assert_eq!(
+			binding.origin == BindingOrigin::Required,
+			required,
+			"{operation}"
+		);
+	}
+	let mut removed = deferred();
+	removed.remove_default.push(EXPOSURE_TOOLS[0].into());
+	assert!(removed.normalize("aidash://node-a").is_err());
+	let mut removed = deferred();
+	removed.remove_default.push("skill_read".into());
+	assert!(removed.validate().is_err());
+	let mut removed = deferred();
+	removed.remove_default.push(SKILL_ASSET_READ.into());
+	assert!(!targets(&removed.normalize("aidash://node-a").unwrap()).contains(SKILL_ASSET_READ));
+	let mut removed = agent();
+	removed.remove_default.push(SKILL_ASSET_READ.into());
+	assert!(removed.validate().is_err());
+}
+
+#[test]
+fn deferred_skills_require_skill_asset_read_as_support() {
+	let mut agent = deferred();
+	agent.bindings.push(skill_binding());
+	let support = agent
+		.normalize("aidash://node-a")
+		.unwrap()
+		.into_iter()
+		.filter(|b| b.origin == BindingOrigin::SkillSupport)
+		.map(|b| b.binding.target.id)
+		.collect::<Vec<_>>();
+	assert_eq!(support, [format!("aidash.{SKILL_ASSET_READ}")]);
+	agent.remove_default.push(SKILL_ASSET_READ.into());
+	assert!(agent.normalize("aidash://node-a").is_err());
+}
+
+#[test]
+fn binding_exposure_requires_deferred_policy_and_exposable_kind() {
+	let mut eager = skill_binding();
+	eager.exposure = Some(BindingExposure::Eager);
+	let mut agent = deferred();
+	agent.bindings.push(eager.clone());
+	agent.validate().unwrap();
+	agent.exposure = Some(ExposurePolicy::Legacy);
+	assert!(agent.validate().is_err());
+	agent.exposure = None;
+	assert!(agent.validate().is_err());
+	let mut agent = deferred();
+	agent.bindings.push(Binding {
+		kind: BindingKind::Memory,
+		..eager
+	});
+	assert!(agent.validate().is_err());
+	let mut agent = deferred();
+	agent.exposure = Some(ExposurePolicy::Deferred(crate::exposure::DeferredBudgets {
+		metadata_bytes: 100,
+		..Default::default()
+	}));
+	assert!(agent.validate().is_err());
+}
+
+#[test]
+fn legacy_agent_json_round_trips_byte_identically() {
+	let input = json!({
+		"schema_version": 1,
+		"model": {"id": "model", "version": "1.0.0"},
+		"instructions": "Work on the Task.",
+		"bindings": [{
+			"kind": "tool",
+			"target": {"registry_node": "aidash://node-a", "id": "aidash.file_read", "version": "1.0.0"},
+			"alias": "read",
+			"narrow": {}
+		}],
+		"remove_default": ["memory_mutate"],
+		"cluster": null,
+		"max_steps": 9
+	});
+	let parsed: AgentBindings = serde_json::from_value(input.clone()).unwrap();
+	assert_eq!(parsed.exposure, None);
+	let encoded = serde_json::to_string(&parsed).unwrap();
+	assert!(!encoded.contains("exposure"));
+	let reparsed: AgentBindings = serde_json::from_str(&encoded).unwrap();
+	assert_eq!(serde_json::to_string(&reparsed).unwrap(), encoded);
+	let normalized = serde_json::to_string(&parsed.normalize("aidash://node-a").unwrap()).unwrap();
+	assert!(!normalized.contains("exposure"));
+	let config: crate::registry::AgentConfig = serde_json::from_value(input.clone()).unwrap();
+	assert_eq!(serde_json::to_string(&config).unwrap(), encoded);
+	assert_eq!(config.exposure_policy(), ExposurePolicy::Legacy);
+
+	let mut deferred = input;
+	deferred["exposure"] = json!({"version": "deferred@1", "skill_bytes": 2048});
+	let config: crate::registry::AgentConfig = serde_json::from_value(deferred).unwrap();
+	assert_eq!(
+		config.exposure_policy().budgets().unwrap().skill_bytes,
+		2048
+	);
+	assert!(config.permits_builtin("capability_load"));
+	assert!(config.permits_builtin(SKILL_ASSET_READ));
+	assert!(!config.permits_builtin("skill_read"));
 }
 
 #[test]

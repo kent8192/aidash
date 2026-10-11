@@ -38,6 +38,7 @@ struct Repository {
 	failure: Option<&'static str>,
 	pause: bool,
 	skill_source: Option<Value>,
+	deferred: bool,
 }
 impl Repository {
 	fn new() -> Self {
@@ -46,6 +47,7 @@ impl Repository {
 			failure: None,
 			pause: false,
 			skill_source: None,
+			deferred: false,
 		}
 	}
 	fn agent(&self) -> Entry {
@@ -63,6 +65,22 @@ impl Repository {
 					.filter(|name| !aidash_domain::registry::bindings::SKILL_TOOLS.contains(name))
 					.collect::<Vec<_>>()
 			);
+		}
+		if self.deferred {
+			let policy = aidash_domain::exposure::ExposurePolicy::Deferred(Default::default());
+			entry.config["exposure"] = json!(policy);
+			entry.config["remove_default"] = json!(
+				policy
+					.default_tools()
+					.into_iter()
+					.filter(|name| self.skill_source.is_none()
+						|| *name != aidash_domain::registry::bindings::SKILL_ASSET_READ)
+					.collect::<Vec<_>>()
+			);
+			let bindings = entry.config["bindings"].as_array_mut().unwrap();
+			if self.skill_source.is_none() {
+				bindings[0]["exposure"] = json!("eager");
+			}
 		}
 		entry
 	}
@@ -801,4 +819,56 @@ async fn unresolved_mounted_skill_context_cannot_produce_behavioral_evidence() {
 		matches!(admit(&repository.admission(), draft().id, input()).await, Err(Error::Invalid(message)) if message.contains("Skill Sources require"))
 	);
 	assert!(!repository.state.lock().unwrap().committed);
+}
+
+#[rstest]
+#[case::tools(false)]
+#[case::attachment(true)]
+#[tokio::test]
+async fn deferred_agents_simulate_the_selected_first_request(#[case] attachment: bool) {
+	let mut repository = Repository::new();
+	repository.deferred = true;
+	let instructions = "---\nname: fixture-skill\ndescription: skill source fixture\n---\nAlways inspect the selected workspace.";
+	if attachment {
+		let attachment = aidash_domain::capabilities::skills::imported(
+			"fixture".into(),
+			instructions.into(),
+			vec![],
+		)
+		.unwrap();
+		repository.skill_source = Some(
+			json!({"schema_version":1,"source":{"adapter":"skill_attachments","attachments":[attachment]}}),
+		);
+	}
+	let admitted = admit(&repository.admission(), draft().id, input())
+		.await
+		.unwrap();
+	let request = &admitted.job.request;
+	let names = request
+		.tools
+		.iter()
+		.map(|tool| tool.name.as_str())
+		.collect::<std::collections::BTreeSet<_>>();
+	for mandatory in aidash_domain::registry::bindings::REQUIRED_TOOLS
+		.iter()
+		.chain(aidash_domain::registry::bindings::EXPOSURE_TOOLS)
+	{
+		assert!(names.contains(mandatory), "{mandatory}");
+	}
+	assert!(request.instructions.contains("capability_search"));
+	if attachment {
+		assert!(names.contains(aidash_domain::registry::bindings::SKILL_ASSET_READ));
+		// A direct Skill is Discoverable: indexed, never resident until loaded.
+		assert!(request.instructions.contains("skill_fixture_skill_"));
+		assert!(
+			!request
+				.instructions
+				.contains("Always inspect the selected workspace.")
+		);
+	} else {
+		assert!(names.contains("plugin_0"));
+		assert!(!names.contains("plugin_1") && !names.contains("plugin_2"));
+		assert!(request.instructions.contains("plugin_1 [tool]"));
+	}
+	assert!(repository.state.lock().unwrap().committed);
 }
