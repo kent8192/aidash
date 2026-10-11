@@ -19,6 +19,15 @@ pub(crate) struct LoginQuery {
 	pub(crate) org: Option<String>,
 }
 
+/// Email-domain discovery input. The address is only parsed for its domain and
+/// is never stored or logged.
+#[derive(Deserialize, JsonSchema)]
+pub(crate) struct LoginDiscovery {
+	#[serde(default)]
+	pub(crate) email: String,
+	pub(crate) return_to: Option<String>,
+}
+
 #[derive(Deserialize, JsonSchema)]
 pub(crate) struct CallbackQuery {
 	pub(crate) state: String,

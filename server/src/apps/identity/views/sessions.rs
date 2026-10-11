@@ -1,8 +1,8 @@
 //! Native HTTP endpoints.
 use crate::apps::identity::oidc::{BrowserOrigin, DashboardSessions};
 use crate::apps::identity::serializers::oidc::{
-	AdminIdentityPage, AdminMappingPage, Approval, BackchannelLogout, CallbackQuery, LoginQuery,
-	MappingRevision, OperatorGrantInput,
+	AdminIdentityPage, AdminMappingPage, Approval, BackchannelLogout, CallbackQuery,
+	LoginDiscovery, LoginQuery, MappingRevision, OperatorGrantInput,
 };
 use crate::http::json::Json;
 use reinhardt::Depends;
@@ -27,6 +27,18 @@ pub async fn login(
 	Query(query): Query<LoginQuery>,
 ) -> ViewResult<Response> {
 	crate::http::response(service.login(request.headers, query).await)
+}
+
+#[post("/auth/login", name = "sessions-login-discovery", auth = "public")]
+pub async fn login_discovery(
+	#[inject] service: Depends<DashboardSessions>,
+	request: Request,
+	Form(input): Form<LoginDiscovery>,
+) -> ViewResult<Response> {
+	crate::http::response(
+		crate::apps::identity::services::gcip::discover(&service.runtime, request.headers, input)
+			.await,
+	)
 }
 
 #[get("/auth/callback", name = "sessions-callback", auth = "public")]
