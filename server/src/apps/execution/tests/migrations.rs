@@ -73,7 +73,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		20
+		21
 	);
 	let tables = migrations
 		.iter()
@@ -556,7 +556,7 @@ async fn preserved_baseline_does_not_generate_table_recreation(
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		20
+		21
 	);
 }
 
@@ -1362,7 +1362,9 @@ async fn tool_parallelism_migration_reverses_to_deferred_exposure_and_refuses_st
 		contract_accepts(
 			&pool,
 			"aidash_agent_bindings_is_valid",
-			vec![agent(json!({"tool_parallelism":2,"exposure":{"version":"deferred@1"}}))]
+			vec![agent(
+				json!({"tool_parallelism":2,"exposure":{"version":"deferred@1"}})
+			)]
 		)
 		.await
 	);
@@ -1438,6 +1440,70 @@ async fn tool_parallelism_migration_reverses_to_deferred_exposure_and_refuses_st
 		)
 		.await
 		.unwrap();
+	// A missing optional restriction on an earlier Binding must not hide a
+	// later concurrency declaration. No Tool Parallelism ceiling is present,
+	// so these rollbacks exercise the nested restriction guard itself.
+	for concurrency in [None, Some("sequential"), Some("shared_read")] {
+		let id = format!("binding-{}", concurrency.unwrap_or("unrestricted"));
+		let target =
+			|id: &str| json!({"registry_node":"aidash://migration","id":id,"version":"1.0.0"});
+		let mut config = agent(json!({"bindings":[
+			{"kind":"tool","target":target("first"),"alias":"first"},
+			{"kind":"tool","target":target("second"),"alias":"second","narrow":{}},
+			{"kind":"tool","target":target("third"),"alias":"third"}
+		]}));
+		if let Some(concurrency) = concurrency {
+			config["bindings"][2]["narrow"] = json!({"concurrency":concurrency});
+		}
+		let metadata = json!({"id":id,"version":"1.0.0","kind":"agent",
+			"name":{"en":"Binding guard"},"description":{"en":"Migration test"},
+			"config":config});
+		Definition::objects()
+			.create_with_conn(
+				&mut connection,
+				&Definition::build()
+					.id(id.clone())
+					.version("1.0.0")
+					.kind(DefinitionKind::Agent)
+					.metadata(metadata.into())
+					.finish(),
+			)
+			.await
+			.unwrap();
+		let result = executor
+			.rollback_migrations(std::slice::from_ref(&migration))
+			.await;
+		if concurrency.is_some() {
+			let error = result.unwrap_err();
+			assert!(
+				error.to_string().contains(
+					"definitions, packages or installations declare tool_parallelism or narrow.concurrency"
+				),
+				"{error}"
+			);
+			assert!(
+				contract_accepts(
+					&pool,
+					"aidash_agent_bindings_is_valid",
+					vec![agent(parallel.clone())]
+				)
+				.await,
+				"the denied rollback must retain the upgraded contract"
+			);
+		} else {
+			result.unwrap();
+			executor
+				.apply_migrations(std::slice::from_ref(&migration))
+				.await
+				.unwrap();
+		}
+		Definition::objects()
+			.filter(Definition::field_id().eq(id))
+			.delete_with_conn(&mut connection)
+			.await
+			.unwrap();
+	}
+
 	let metadata = json!({"id":"parallel","version":"1.0.0","kind":"agent",
 		"name":{"en":"Parallel"},"description":{"en":"Migration test"},"config":agent(parallel.clone())});
 	Definition::objects()

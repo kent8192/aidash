@@ -11,13 +11,13 @@
 DO $$
 BEGIN
  IF EXISTS(SELECT 1 FROM registry WHERE kind = 'agent' AND (metadata->'config' ? 'tool_parallelism'
-   OR jsonb_path_exists(metadata->'config', 'strict $.bindings[*].narrow.concurrency')))
+   OR jsonb_path_exists(metadata->'config', 'lax $.bindings[*].narrow.concurrency')))
  OR EXISTS(SELECT 1 FROM registry WHERE kind = 'tool' AND metadata #> '{config,narrow}' ? 'concurrency')
  OR EXISTS(SELECT 1 FROM packages WHERE manifest #> '{entity,config}' ? 'tool_parallelism'
-   OR jsonb_path_exists(manifest #> '{entity,config}', 'strict $.bindings[*].narrow.concurrency')
+   OR jsonb_path_exists(manifest #> '{entity,config}', 'lax $.bindings[*].narrow.concurrency')
    OR manifest #> '{entity,config,narrow}' ? 'concurrency')
  OR EXISTS(SELECT 1 FROM installations WHERE config ? 'tool_parallelism'
-   OR jsonb_path_exists(config, 'strict $.bindings[*].narrow.concurrency')
+   OR jsonb_path_exists(config, 'lax $.bindings[*].narrow.concurrency')
    OR config #> '{narrow}' ? 'concurrency') THEN
   RAISE EXCEPTION 'registry 0021_tool_parallelism cannot be reversed: definitions, packages or installations declare tool_parallelism or narrow.concurrency';
  END IF;
