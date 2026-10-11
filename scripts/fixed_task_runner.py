@@ -25,19 +25,30 @@ class ApiError(RuntimeError):
 class Api:
     """Bounded request log around a transport `call(method, path, body, token) -> (status, value)`."""
 
-    def __init__(self, call, operator_token):
+    # Gateway and availability failures of a loaded Node. Only reads are retried
+    # blindly; a write is retried by its caller after checking its effect.
+    TRANSIENT = (502, 503, 504)
+
+    def __init__(self, call, operator_token, retries=4, backoff=2.0, sleep=time.sleep):
         self.call = call
         self.operator = operator_token
         self.log = []
+        self.retries = retries
+        self.backoff = backoff
+        self.sleep = sleep
 
     def request(self, method, path, body=None, token=None, accept=(200,)):
-        begin = time.perf_counter()
-        status, value = self.call(method, path, body, token or self.operator)
-        self.log.append({"method": method, "path": path, "status": status,
-                         "round_trip_ms": round((time.perf_counter() - begin) * 1000, 3)})
-        if status not in accept:
-            raise ApiError(method, path, status, value)
-        return value
+        attempts = self.retries + 1 if method == "GET" else 1
+        for attempt in range(attempts):
+            begin = time.perf_counter()
+            status, value = self.call(method, path, body, token or self.operator)
+            self.log.append({"method": method, "path": path, "status": status,
+                             "round_trip_ms": round((time.perf_counter() - begin) * 1000, 3)})
+            if status in accept:
+                return value
+            if status not in self.TRANSIENT or attempt + 1 == attempts:
+                raise ApiError(method, path, status, value)
+            self.sleep(self.backoff * (attempt + 1))
 
     def get(self, path, token=None):
         return self.request("GET", path, None, token)
@@ -201,10 +212,20 @@ def run_task(api, experiment, planned, repeat, agent_ref, fixture=None, usage_re
         task_uuid = created["id"]
         if fixture is not None:
             fixture.register(task_uuid, task, f"{task['id']}/{planned['comparison']['id']}/{planned['arm']}/{repeat}")
-        api.post(f"/api/tasks/{task_uuid}/claim", {"revision": created.get("revision", 0),
-                                                   "agent": {"id": agent_ref["id"], "version": agent_ref["version"]}},
-                 token)
+        claim = {"revision": created.get("revision", 0),
+                 "agent": {"id": agent_ref["id"], "version": agent_ref["version"]}}
         deadline = started + timeout
+        for attempt in range(api.retries + 1):
+            try:
+                api.post(f"/api/tasks/{task_uuid}/claim", claim, token)
+                break
+            except ApiError as error:
+                # A timed-out claim may still have committed: retry only when no Run exists.
+                if error.status not in Api.TRANSIENT or attempt == api.retries:
+                    raise
+                sleep(api.backoff * (attempt + 1))
+                if any(run["task_id"] == task_uuid for run in api.get("/api/state", token)["runs"]):
+                    break
         run_id = None
         while run_id is None:
             run_id = next((run["id"] for run in api.get("/api/state", token)["runs"] if run["task_id"] == task_uuid),

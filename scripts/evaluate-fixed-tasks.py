@@ -43,6 +43,9 @@ ROOT = evaluation.ROOT
 POSTGRES_IMAGE = "aidash-postgres:17-pg-jsonschema-0.3.4"
 NATS_IMAGE = "nats:2.12-alpine"
 DEFAULT_OUTPUT = ROOT / ".ignore/evaluation"
+# Emergency cleanups for SIGTERM, which may arrive while worker threads block the
+# main thread: remove owned containers and stop the owned Node, then exit.
+CLEANUP = []
 DETERMINISTIC_LIMITATIONS = [
     "The deterministic tier's Agent is a scripted probe; outcomes measure what the harness delivered to it, "
     "not model quality.",
@@ -64,7 +67,7 @@ def now():
     return datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
 
-def http_transport(base, timeout=60):
+def http_transport(base, timeout=180):
     def call(method, path, body, token):
         request = urllib.request.Request(base.rstrip("/") + path, method=method,
                                          data=None if body is None else json.dumps(body).encode(),
@@ -100,6 +103,7 @@ def container(name, image, arguments, environment=None):
     for key, value in (environment or {}).items():
         command += ["-e", f"{key}={value}"]
     checked(command + arguments[0] + [image] + arguments[1])
+    CLEANUP.append(lambda: subprocess.run(["docker", "rm", "-f", name], capture_output=True))
     try:
         yield name
     finally:
@@ -139,6 +143,7 @@ def build_manage():
 def node(binary, environment, log_path):
     with open(log_path, "wb") as log:
         child = subprocess.Popen([str(binary), "serve"], cwd=ROOT, env=environment, stdout=log, stderr=log)
+        CLEANUP.insert(0, child.kill)
         try:
             yield child
         finally:
@@ -313,6 +318,8 @@ def deterministic(args):
             "NATS_URL": f"nats://127.0.0.1:{published_port(nats, 4222)}", "AIDASH_NODE_ID": node_id,
             "AIDASH_ENDPOINT": base, "AIDASH_LISTEN": f"127.0.0.1:{port}", "AIDASH_API_TOKEN": operator,
             "AIDASH_API_RATE_BURST": "100000", "AIDASH_WEB_DIR": str(web),
+            # A loaded host can exceed the default request deadline on reads that poll Runs.
+            "AIDASH_HTTP_TIMEOUT_SECONDS": "120",
             # This disposable Node ID owns its JetStream streams and consumers.
             "AIDASH_ACTIVATION_BOOTSTRAP": "true",
             "AIDASH_JEV_ENDPOINT": fixture_url + "/jev", "AIDASH_SECRET_JEV": "fixture-classifier-not-a-secret",
@@ -496,6 +503,17 @@ def validate_command(args):
     return 0
 
 
+def terminate(*_):
+    """SIGTERM: stop the owned Node and remove owned containers before exiting."""
+    for cleanup in CLEANUP:
+        try:
+            cleanup()
+        except Exception:  # Best effort; every remaining cleanup still runs.
+            pass
+    print("evaluation: terminated; owned containers and Node removed", file=sys.stderr, flush=True)
+    os._exit(143)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -541,8 +559,7 @@ def main(argv=None):
     if not 1 <= args.repeats <= 64:
         parser.error("--repeats must be between 1 and 64")
     if args.command == "deterministic":
-        # Turn SIGTERM into a normal exit so disposable containers and the Node are removed.
-        signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
+        signal.signal(signal.SIGTERM, terminate)
         return deterministic(args)
     try:
         return live(args)
