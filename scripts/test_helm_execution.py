@@ -115,6 +115,19 @@ class ChartsTest(unittest.TestCase):
             with self.subTest(values=invalid), self.assertRaises(subprocess.CalledProcessError):
                 render(self.aidash, dict(self.base, **invalid))
 
+    def test_trusted_proxies_are_rendered_only_when_the_server_accepts_them(self):
+        # As server/src/http.rs ProxyNetwork parses AIDASH_AUTH_TRUSTED_PROXY_IPS at startup.
+        accepted = ['10.4.0.0/14', '127.0.0.1', '0.0.0.0/0', '::1', '::/0', 'fe80::/10', '2001:DB8::/32',
+                    '::ffff:1.2.3.0/120', '1:2:3:4:5::1.2.3.4', '1:2:3:4:5:6:7:8/128', 'ffff:fffe::/31']
+        objects = render(self.aidash, dict(self.base, trustedProxy={'cidrs': accepted}))
+        container = select(objects, 'Deployment', '-aidash-server')['spec']['template']['spec']['containers'][0]
+        proxies = next(variable['value'] for variable in container['env'] if variable['name'] == 'AIDASH_AUTH_TRUSTED_PROXY_IPS')
+        self.assertEqual(proxies, ','.join(accepted))
+        for invalid in ('10.0.0.1/24', '10.0.0.1/33', '999.0.0.1', '010.0.0.1', '10.0.0.0/', 'fe80::1/10',
+                        '1:2:3:4:5:6:7::8', '1::2::3', '1.2.3.4::', '::ffff:1.2.3.4/120', '1::/15', '1:2:3:4:5:6:7:8/129'):
+            with self.subTest(proxy=invalid), self.assertRaises(subprocess.CalledProcessError):
+                render(self.aidash, dict(self.base, trustedProxy={'cidrs': [invalid]}))
+
     @staticmethod
     def mounted(objects, role, variable):
         """Content of the file an env variable names, through the Pod's mounts."""

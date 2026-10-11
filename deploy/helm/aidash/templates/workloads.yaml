@@ -21,6 +21,9 @@
 {{- with .Values.release.sourceSha -}}
 {{- if not (regexMatch "^[0-9a-f]{40}$" (toString .)) -}}{{ fail "release.sourceSha must be a 40-character lowercase commit SHA" }}{{- end -}}
 {{- end -}}
+{{- range .Values.trustedProxy.cidrs -}}
+{{- if not (include "aidash.proxyNetwork" .) -}}{{ fail (printf "trustedProxy.cidrs entry %s must be an IP address or a network without host bits: the server refuses anything else at startup" .) }}{{- end -}}
+{{- end -}}
 {{- $image := printf "%s:%s" .Values.image.repository .Values.image.tag -}}
 {{- with .Values.image.digest -}}{{- $image = printf "%s@%s" $.Values.image.repository . -}}{{- end -}}
 {{- $runner := .Values.execution.runner -}}
