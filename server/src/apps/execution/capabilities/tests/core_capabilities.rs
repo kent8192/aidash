@@ -1746,3 +1746,5 @@ fn provider_endpoint(
 ) -> EndpointFuture {
 	async move { provider.await.url.clone() }.boxed().shared()
 }
+#[path = "core_capabilities/deferred_exposure.rs"]
+mod deferred_exposure_tests;

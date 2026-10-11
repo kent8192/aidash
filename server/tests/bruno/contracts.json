@@ -26507,5 +26507,68 @@
     "json": true,
     "uuid_parameters": [],
     "query_parameters": []
+  },
+  {
+    "method": "GET",
+    "path": "/api/tenants/{tenant}/administration",
+    "name": "tenant-administration",
+    "source": "server/src/apps/identity/views/tenant_administration.rs",
+    "json": false,
+    "uuid_parameters": [],
+    "query_parameters": []
+  },
+  {
+    "method": "GET",
+    "path": "/api/tenants/{tenant}/registrations",
+    "name": "tenant-registrations",
+    "source": "server/src/apps/identity/views/tenant_administration.rs",
+    "json": false,
+    "uuid_parameters": [],
+    "query_parameters": []
+  },
+  {
+    "method": "POST",
+    "path": "/api/tenants/{tenant}/registrations/{id}/approve",
+    "name": "tenant-registration-approve",
+    "source": "server/src/apps/identity/views/tenant_administration.rs",
+    "json": true,
+    "uuid_parameters": ["id"],
+    "query_parameters": []
+  },
+  {
+    "method": "POST",
+    "path": "/api/tenants/{tenant}/registrations/{id}/reject",
+    "name": "tenant-registration-reject",
+    "source": "server/src/apps/identity/views/tenant_administration.rs",
+    "json": false,
+    "uuid_parameters": ["id"],
+    "query_parameters": []
+  },
+  {
+    "method": "GET",
+    "path": "/api/tenants/{tenant}/mappings",
+    "name": "tenant-mappings",
+    "source": "server/src/apps/identity/views/tenant_administration.rs",
+    "json": false,
+    "uuid_parameters": [],
+    "query_parameters": ["offset"]
+  },
+  {
+    "method": "POST",
+    "path": "/api/tenants/{tenant}/mappings/{id}/disable",
+    "name": "tenant-mapping-disable",
+    "source": "server/src/apps/identity/views/tenant_administration.rs",
+    "json": true,
+    "uuid_parameters": ["id"],
+    "query_parameters": []
+  },
+  {
+    "method": "PUT",
+    "path": "/api/tenants/{tenant}/subjects/{subject}/groups",
+    "name": "tenant-subject-groups",
+    "source": "server/src/apps/identity/views/tenant_administration.rs",
+    "json": true,
+    "uuid_parameters": [],
+    "query_parameters": []
   }
 ]

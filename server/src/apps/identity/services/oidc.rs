@@ -323,11 +323,17 @@ pub async fn actor_from_headers(
 	))
 }
 
-fn decision_actor(actor: Option<BrowserOrigin>) -> String {
-	actor.map_or_else(
-		|| "operator-bearer".to_owned(),
-		|origin| format!("oidc:{}", origin.identity_id),
-	)
+/// `/api/dashboard` routes admit only Operators: the bearer token or a browser
+/// session holding an operator grant.
+fn operator_actor(
+	origin: Option<BrowserOrigin>,
+) -> crate::apps::identity::models::AdministrationActor {
+	use crate::apps::identity::models::AdministrationActor;
+	origin.map_or(AdministrationActor::OperatorBearer, |origin| {
+		AdministrationActor::Operator {
+			identity: origin.identity_id,
+		}
+	})
 }
 
 impl Registration {
@@ -602,7 +608,8 @@ impl DashboardSessions {
 			lease.handle(),
 			id,
 			input,
-			decision_actor(actor),
+			Default::default(),
+			&operator_actor(actor),
 			digest(&random_secret()),
 			self.runtime.config.dashboard_policy(),
 		)
@@ -614,7 +621,7 @@ impl DashboardSessions {
 		id: Uuid,
 	) -> Result<Registration> {
 		let lease = self.runtime.store.orm_connection()?;
-		DashboardRegistrationRequest::reject(lease.handle(), id, decision_actor(actor)).await
+		DashboardRegistrationRequest::reject(lease.handle(), id, &operator_actor(actor)).await
 	}
 	pub(crate) async fn admin_operator_grant(
 		&self,
@@ -637,12 +644,19 @@ impl DashboardSessions {
 	}
 	pub(crate) async fn admin_disable_mapping(
 		&self,
+		actor: Option<BrowserOrigin>,
 		id: Uuid,
 		input: MappingRevision,
 	) -> Result<http::StatusCode> {
 		validate(&input)?;
 		let lease = self.runtime.store.orm_connection()?;
-		DashboardMapping::disable(lease.handle(), id, input.expected_revision).await?;
+		DashboardMapping::disable(
+			lease.handle(),
+			id,
+			input.expected_revision,
+			&operator_actor(actor),
+		)
+		.await?;
 		Ok(http::StatusCode::NO_CONTENT)
 	}
 	pub(crate) async fn logout(&self, headers: HeaderMap) -> Result<Response> {
