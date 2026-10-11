@@ -335,7 +335,7 @@ def deterministic(args):
                     if "agent_ref" not in planned:
                         continue
                     observation = runner.run_task(api, experiment, planned, repeat, planned["agent_ref"], fixture,
-                                                  usage, args.run_timeout)
+                                                  usage, args.run_timeout, approve_fixture_tools=True)
                     runs.append(evaluation.run_result(corpus, planned, repeat, observation, "deterministic", True))
                     print(f"{runs[-1]['key']}: {runs[-1]['outcome']}", flush=True)
             executed = memory_matrix_deterministic(api, experiment, corpus, memory_corpus, model_refs, fixture_url,

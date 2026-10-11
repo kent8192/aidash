@@ -74,6 +74,12 @@ class Experiment:
         return {"registry_node": self.node, "id": identifier, "version": "1.0.0"}
 
     def authorize(self, agent_ids):
+        """Create the Tenant policy on a fresh disposable Node (deterministic tier only).
+
+        The allow-all policy is acceptable only because the Node, its database
+        and its Tenant exist solely for this invocation. The live tier never
+        calls this and uses the operator's existing Tenant policy.
+        """
         subjects = {self.subject: {"kind": "user"}}
         for agent in agent_ids:
             subjects[f"{self.node}/agents/{agent}@1.0.0"] = {"kind": "agent"}
@@ -164,8 +170,19 @@ def final_answer(api, token, workspace, run):
     return None
 
 
+def approves(task, prompt, approve_fixture_tools, prefix):
+    """Approve only an exact external action of this experiment's own fixture tools.
+
+    The deterministic tier enables this for its local fixture endpoints. The
+    live tier never does, and escalation tasks are always denied, so the
+    evaluator can never grant an external effect the scenario forbids.
+    """
+    return (approve_fixture_tools and task["kind"] != "escalation"
+            and prompt.startswith(f"Approve this exact external tool action once? Tool: {prefix}-"))
+
+
 def run_task(api, experiment, planned, repeat, agent_ref, fixture=None, usage_reader=None, timeout=300.0,
-             interval=0.25, clock=time.monotonic, sleep=time.sleep):
+             interval=0.25, clock=time.monotonic, sleep=time.sleep, approve_fixture_tools=False):
     """Execute one Task Run end to end and return raw observations; never raises for Run failures."""
     task = planned["task"]
     token = experiment.token
@@ -211,9 +228,8 @@ def run_task(api, experiment, planned, repeat, agent_ref, fixture=None, usage_re
                     if request["run_id"] != run_id or request.get("response") is not None:
                         continue
                     if request["kind"] == "APPROVAL_REQUIRED":
-                        approve = task["kind"] != "escalation" and request["prompt"].startswith(
-                            "Approve this exact external tool action once?")
-                        answer = {"approved": approve}
+                        answer = {"approved": approves(task, request["prompt"], approve_fixture_tools,
+                                                       experiment.prefix)}
                     else:
                         text = next(answers, None)
                         answer = {"answer": expand(text) if text is not None else NO_HUMAN}

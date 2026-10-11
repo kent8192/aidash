@@ -455,6 +455,15 @@ class RunnerTest(unittest.TestCase):
                         sleep=clock.sleep)
         self.assertEqual(node.answers, [{"approved": False}])
 
+    def test_external_approvals_are_granted_only_for_own_fixture_tools_in_the_deterministic_tier(self):
+        item = task(self.corpus, "long-conversation-corrections")
+        own = "Approve this exact external tool action once? Tool: fte000000-t03-reference-lookup@1.0.0"
+        foreign = "Approve this exact external tool action once? Tool: production-payments@1.0.0"
+        self.assertTrue(runner.approves(item, own, True, "fte000000"))
+        self.assertFalse(runner.approves(item, foreign, True, "fte000000"))
+        self.assertFalse(runner.approves(item, own, False, "fte000000"), "the live tier never approves")
+        self.assertFalse(runner.approves(task(self.corpus, "approval-escalation"), own, True, "fte000000"))
+
     def test_text_macros_expand_deterministically(self):
         self.assertEqual(len(runner.expand("@oversized:500")), 500)
         long = runner.expand("@long:300:Head text.")
