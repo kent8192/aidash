@@ -120,6 +120,10 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 cfg_aliases = "0.2"
 
 [dev-dependencies]
+# Test-only Provider Credential write port and fake-provider constructors
+# (ADR 0006). Never enable these features in [dependencies].
+aidash-application = { workspace = true, features = ["test-support"] }
+aidash-integrations = { workspace = true, features = ["test-support"] }
 jsonwebtoken = { version = "11.1", default-features = false, features = [
   "aws_lc_rs",
   "use_pem",
@@ -152,6 +156,10 @@ path = "src/apps/execution/tests/commands.rs"
 [[test]]
 name = "dashboard_oidc"
 path = "src/apps/identity/tests/dashboard_oidc.rs"
+
+[[test]]
+name = "provider_authorizations"
+path = "src/apps/identity/tests/provider_authorizations.rs"
 
 [[test]]
 name = "endpoints"

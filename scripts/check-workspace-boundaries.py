@@ -65,6 +65,19 @@ def violations(metadata, root):
             if forbidden_layer or name == "reqwest" or name.startswith(("reinhardt", "axum", "sqlx", "sea-orm")):
                 errors.append("forbidden production dependency: " + " -> ".join(path))
             pending.extend((dependency, [*path, packages[dependency]["name"]]) for dependency in graph.get(package, []))
+    # ADR 0006: the test-only Provider Credential write port and fake-provider
+    # constructors exist only behind `test-support`. Production builds use normal
+    # and build dependencies alone, so none of them may enable it.
+    for name, member in members.items():
+        package = packages[member]
+        for dependency in package["dependencies"]:
+            if dependency["kind"] != "dev" and dependency["name"] in members \
+                    and "test-support" in dependency["features"]:
+                errors.append(f"production dependency enables test-support: {name} -> {dependency['name']}")
+        for feature, enabled in package["features"].items():
+            if any(value == "test-support" and feature == "default" or value.endswith("/test-support")
+                   for value in enabled):
+                errors.append(f"feature {name}/{feature} must not enable test-support")
     for directory in (root / "crates", root / "server"):
         for path in directory.rglob("mod.rs"):
             if "target" not in path.parts:
@@ -78,7 +91,7 @@ def main():
     if errors:
         print("\n".join(errors), file=sys.stderr)
         return 1
-    print("Rust 2024 workspace, production dependency boundaries, module names, and single migration ownership are valid.")
+    print("Rust 2024 workspace, production dependency boundaries, test-only features, module names, and single migration ownership are valid.")
     return 0
 
 

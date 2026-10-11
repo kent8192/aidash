@@ -106,6 +106,36 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 		views::provider_credentials::update_binding,
 		&["String", "String"],
 	)?;
+	{
+		use super::provider_authorizations as pa;
+		contracts.request::<_, pa::Start>(document, views::provider_authorizations::start)?;
+		contracts.response::<_, pa::Started>(
+			document,
+			views::provider_authorizations::start,
+			200,
+			"application/json",
+		)?;
+		contracts.path(
+			document,
+			views::provider_authorizations::start,
+			&["String", "String"],
+		)?;
+		contracts
+			.query::<_, pa::CallbackQuery>(document, views::provider_authorizations::callback)?;
+		contracts.path(
+			document,
+			views::provider_authorizations::callback,
+			&["String"],
+		)?;
+		contracts.empty(document, views::provider_authorizations::callback, 303)?;
+		contracts.response_header::<_, String>(
+			document,
+			views::provider_authorizations::callback,
+			303,
+			"Location",
+			"Dashboard return path with the provider_authorization outcome",
+		)?;
+	}
 
 	contracts.response::<_, desktop::Started>(
 		document,

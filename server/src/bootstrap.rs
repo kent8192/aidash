@@ -2198,7 +2198,12 @@ pub async fn configure_provider_credentials(
 			),
 			store: adapter,
 			validator: Arc::new(
-				aidash_integrations::provider_credentials::OpenRouterKeyValidator { client },
+				aidash_integrations::provider_credentials::OpenRouterKeyValidator {
+					client: client.clone(),
+				},
+			),
+			exchange: Arc::new(
+				aidash_integrations::provider_authorization::OpenRouterAuthorization::new(client),
 			),
 			fingerprint_key,
 			max_per_tenant: settings.max_per_tenant,

@@ -5,7 +5,10 @@ mod endpoint_fixtures;
 mod native_database;
 use aidash_application::{
 	Result,
-	provider_credentials::{KeyValidator, Service, Store, Validation},
+	provider_authorization::Target,
+	provider_credentials::{
+		KeyValidator, Service, Store, Validation, testing::KeyMaterialWritePort as _,
+	},
 };
 use aidash_domain::provider_credentials::Provider;
 use aidash_server::apps::identity::repositories::provider_credentials::NativeRepository;
@@ -96,6 +99,14 @@ impl Store for FakeStore {
 	async fn delete(&self, resource: &str) -> Result<()> {
 		self.secrets.lock().unwrap().remove(resource);
 		Ok(())
+	}
+}
+/// The fake provider issues each authorization code's own text as Key Material.
+struct CodeIsKey;
+#[async_trait]
+impl aidash_application::provider_authorization::Exchange for CodeIsKey {
+	async fn exchange(&self, _: Provider, code: &str, _: &SecretString) -> Result<SecretString> {
+		Ok(code.to_owned().into())
 	}
 }
 struct Validator;
@@ -191,6 +202,7 @@ async fn credential_list_paginates_authorized_rows_beyond_the_first_page(
 		}),
 		store: Arc::new(FakeStore::default()),
 		validator: Arc::new(Validator),
+		exchange: Arc::new(CodeIsKey),
 		fingerprint_key: "test-fingerprint-key-that-is-at-least-32-bytes".into(),
 		max_per_tenant: ids.len(),
 	});
@@ -208,6 +220,7 @@ async fn credential_list_paginates_authorized_rows_beyond_the_first_page(
 				pinned_version: Some(format!("fake/{id}/versions/1")),
 				fingerprint: "0123456789abcdef".into(),
 				last4: "test".into(),
+				key_digest: None,
 				state: State::Active,
 				created_at: created_at + chrono::Duration::milliseconds(index as i64),
 				rotated_at: None,
@@ -340,6 +353,7 @@ async fn lifecycle_api_uses_live_tenant_policy_and_never_persists_or_returns_key
 		}),
 		store: Arc::new(FakeStore::default()),
 		validator: Arc::new(Validator),
+		exchange: Arc::new(CodeIsKey),
 		fingerprint_key: "test-fingerprint-key-that-is-at-least-32-bytes".into(),
 		max_per_tenant: 2,
 	});
@@ -375,11 +389,13 @@ async fn lifecycle_api_uses_live_tenant_policy_and_never_persists_or_returns_key
 	empty.commit().await.unwrap();
 	let created = serde_json::to_value(
 		management
-			.create(
+			.complete_authorization(
 				aidash_server::authorization::identity::Actor::Operator,
 				"alpha".into(),
 				Provider::Openrouter,
-				canary.into(),
+				Target::Connect { id: Uuid::now_v7() },
+				canary,
+				&"verifier".into(),
 			)
 			.await
 			.unwrap(),
@@ -456,11 +472,13 @@ async fn lifecycle_api_uses_live_tenant_policy_and_never_persists_or_returns_key
 	assert!(!disclosed.to_string().contains(canary));
 	let second = serde_json::to_value(
 		management
-			.create(
+			.complete_authorization(
 				aidash_server::authorization::identity::Actor::Operator,
 				"alpha".into(),
 				Provider::Openrouter,
-				canary.into(),
+				Target::Connect { id: Uuid::now_v7() },
+				canary,
+				&"verifier".into(),
 			)
 			.await
 			.unwrap(),
@@ -469,11 +487,13 @@ async fn lifecycle_api_uses_live_tenant_policy_and_never_persists_or_returns_key
 	assert!(!second.to_string().contains(canary));
 	assert!(matches!(
 		management
-			.create(
+			.complete_authorization(
 				aidash_server::authorization::identity::Actor::Operator,
 				"alpha".into(),
 				Provider::Openrouter,
-				canary.into(),
+				Target::Connect { id: Uuid::now_v7() },
+				canary,
+				&"verifier".into(),
 			)
 			.await,
 		Err(aidash_server::Error::Conflict(_))
@@ -514,12 +534,16 @@ async fn lifecycle_api_uses_live_tenant_policy_and_never_persists_or_returns_key
 	assert_eq!(response.status_code(), 409);
 	let rotated = serde_json::to_value(
 		management
-			.rotate(
+			.complete_authorization(
 				aidash_server::authorization::identity::Actor::Operator,
 				"alpha".into(),
-				Uuid::parse_str(id).unwrap(),
-				revision,
-				canary.into(),
+				Provider::Openrouter,
+				Target::Reconnect {
+					id: Uuid::parse_str(id).unwrap(),
+					expected_revision: revision,
+				},
+				canary,
+				&"verifier".into(),
 			)
 			.await
 			.unwrap(),
@@ -703,6 +727,7 @@ async fn workspace_embedding_credential_is_pinned_with_environment_model_admissi
 		}),
 		store: Arc::new(FakeStore::default()),
 		validator: Arc::new(Validator),
+		exchange: Arc::new(CodeIsKey),
 		fingerprint_key: "test-fingerprint-key-that-is-at-least-32-bytes".into(),
 		max_per_tenant: 20,
 	});
@@ -914,6 +939,7 @@ async fn admission_pins_local_tenant_id_and_reloads_state_without_environment_fa
 		}),
 		store: Arc::new(FakeStore::default()),
 		validator: Arc::new(Validator),
+		exchange: Arc::new(CodeIsKey),
 		fingerprint_key: "test-fingerprint-key-that-is-at-least-32-bytes".into(),
 		max_per_tenant: 20,
 	});
@@ -2786,6 +2812,7 @@ async fn subject_mutations_return_committed_results_when_decision_audit_fails(
 		}),
 		store: store.clone(),
 		validator: Arc::new(Validator),
+		exchange: Arc::new(CodeIsKey),
 		fingerprint_key: "test-fingerprint-key-that-is-at-least-32-bytes".into(),
 		max_per_tenant: 2,
 	});
@@ -2813,11 +2840,13 @@ async fn subject_mutations_return_committed_results_when_decision_audit_fails(
 	tx.execute(&statement, vec![]).await.unwrap();
 	tx.commit().await.unwrap();
 	let created = management
-		.create(
+		.complete_authorization(
 			actor.clone(),
 			"alpha".into(),
 			Provider::Openrouter,
-			"valid-provider-key-1234".into(),
+			Target::Connect { id: Uuid::now_v7() },
+			"valid-provider-key-1234",
+			&"verifier".into(),
 		)
 		.await
 		.unwrap()
@@ -2825,12 +2854,16 @@ async fn subject_mutations_return_committed_results_when_decision_audit_fails(
 	let id = created.id;
 	assert_eq!(created.revision, 2);
 	let rotated = management
-		.rotate(
+		.complete_authorization(
 			actor,
 			"alpha".into(),
-			id,
-			created.revision,
-			"rotated-provider-key-5678".into(),
+			Provider::Openrouter,
+			Target::Reconnect {
+				id,
+				expected_revision: created.revision,
+			},
+			"rotated-provider-key-5678",
+			&"verifier".into(),
 		)
 		.await
 		.unwrap()
@@ -3012,6 +3045,7 @@ async fn failed_subject_creates_preserve_the_operation_error_and_durable_allow_a
 			}),
 			store: store.clone(),
 			validator,
+			exchange: Arc::new(CodeIsKey),
 			fingerprint_key: "test-fingerprint-key-that-is-at-least-32-bytes".into(),
 			max_per_tenant: 20,
 		});
@@ -3020,11 +3054,13 @@ async fn failed_subject_creates_preserve_the_operation_error_and_durable_allow_a
 		let management = Management { runtime };
 		let canary = "failed-create-key-material-canary-9a72";
 		let error = management
-			.create(
+			.complete_authorization(
 				actor.clone(),
 				"alpha".into(),
 				Provider::Openrouter,
-				canary.into(),
+				Target::Connect { id: Uuid::now_v7() },
+				canary,
+				&"verifier".into(),
 			)
 			.await
 			.unwrap_err();

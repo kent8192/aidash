@@ -5,7 +5,10 @@ use crate::{
 	authorization::{access::NativeAccess, identity::Actor},
 	federation::Federation,
 };
-use aidash_application::provider_credentials::{Metadata, Service, Validated};
+use aidash_application::{
+	provider_authorization::Target,
+	provider_credentials::{Metadata, Service, Validated},
+};
 use aidash_domain::{
 	policy::{Evaluation, Resource},
 	provider_credentials::{Binding, Provider},
@@ -150,34 +153,123 @@ impl Management {
 			Actor::Subject(identity) => &identity.subject,
 		}
 	}
-	/// Internal Provider Authorization write path; never registered as an HTTP endpoint.
-	pub async fn create(
+	fn authorization_verb(target: Target) -> &'static str {
+		match target {
+			Target::Connect { .. } => "create",
+			Target::Reconnect { .. } => "rotate",
+		}
+	}
+	/// Checks, before the browser leaves for consent, that the actor may write
+	/// the target Provider Credential. The callback decides again.
+	pub async fn permit_authorization(
+		&self,
+		actor: &Actor,
+		tenant: &str,
+		provider: Provider,
+		target: Target,
+	) -> Result<()> {
+		let service = self.service()?;
+		self.tenant(actor, tenant)?;
+		if let Target::Reconnect { id, .. } = target {
+			let mut scope = service.repository.begin(tenant).await?;
+			let row = scope.get(id).await?;
+			scope.commit().await?;
+			if row.provider != provider {
+				return Err(Error::Invalid(
+					"Provider Authorization does not match the Provider Credential".into(),
+				));
+			}
+		}
+		self.authorize(
+			actor,
+			tenant,
+			&target.id().to_string(),
+			provider,
+			"provider_credential",
+			Self::authorization_verb(target),
+		)
+		.await?
+		.finish(Ok(()))
+		.await
+	}
+	/// The Provider Authorization write path: exchanges the code under a live
+	/// `provider_credential.create` or `.rotate` decision. This service never
+	/// sees Key Material; it flows from the exchange port into the Store.
+	pub async fn complete_authorization(
 		&self,
 		actor: Actor,
 		tenant: String,
 		provider: Provider,
-		key_material: SecretString,
+		target: Target,
+		code: &str,
+		verifier: &SecretString,
 	) -> Result<Validated> {
 		let service = self.service()?;
-		let id = Uuid::now_v7();
 		let authority = self
 			.authorize(
 				&actor,
 				&tenant,
-				&id.to_string(),
+				&target.id().to_string(),
 				provider,
 				"provider_credential",
-				"create",
+				Self::authorization_verb(target),
 			)
 			.await?;
 		authority
 			.finish_operation(
 				service
-					.create(&tenant, id, provider, key_material, Self::actor(&actor))
+					.authorize(
+						&tenant,
+						provider,
+						target,
+						code,
+						verifier,
+						Self::actor(&actor),
+					)
 					.await
 					.map_err(Into::into),
 			)
 			.await
+	}
+	/// A first connection serves the Tenant's Runs right away when no Provider
+	/// Credential is bound yet and the actor may update the binding.
+	pub(crate) async fn bind_if_unbound(
+		&self,
+		actor: Actor,
+		tenant: String,
+		provider: Provider,
+		id: Uuid,
+	) {
+		let current = async {
+			let service = self.service()?;
+			let mut scope = service.repository.begin(&tenant).await?;
+			let bindings = scope.bindings().await?;
+			scope.commit().await?;
+			Ok::<_, Error>(bindings.into_iter().find(|b| b.provider == provider))
+		}
+		.await;
+		let expected_revision = match current {
+			Ok(Some(binding)) if binding.provider_credential_id.is_some() => return,
+			Ok(binding) => binding.map_or(0, |b| b.revision),
+			Err(_) => return,
+		};
+		let result = self
+			.bind(
+				actor,
+				tenant,
+				provider.id().into(),
+				BindingUpdate {
+					expected_revision,
+					provider_credential_id: Some(id),
+				},
+			)
+			.await;
+		if result.is_err() {
+			tracing::warn!(
+				provider = provider.id(),
+				"connected Provider Credential was left unbound"
+			);
+		}
 	}
 	pub async fn list(&self, actor: Actor, tenant: String, page: Page) -> Result<Vec<Metadata>> {
 		let service = self.service()?;
@@ -264,45 +356,6 @@ impl Management {
 		.await?
 		.finish(Ok(row.into()))
 		.await
-	}
-	/// Internal Provider Authorization reconnect path; accepts no HTTP serializer.
-	pub async fn rotate(
-		&self,
-		actor: Actor,
-		tenant: String,
-		id: Uuid,
-		expected_revision: i64,
-		key_material: SecretString,
-	) -> Result<Validated> {
-		let service = self.service()?;
-		self.tenant(&actor, &tenant)?;
-		let mut scope = service.repository.begin(&tenant).await?;
-		let row = scope.get(id).await?;
-		scope.commit().await?;
-		let authority = self
-			.authorize(
-				&actor,
-				&tenant,
-				&id.to_string(),
-				row.provider,
-				"provider_credential",
-				"rotate",
-			)
-			.await?;
-		authority
-			.finish_operation(
-				service
-					.rotate(
-						&tenant,
-						id,
-						expected_revision,
-						key_material,
-						Self::actor(&actor),
-					)
-					.await
-					.map_err(Into::into),
-			)
-			.await
 	}
 	pub async fn control(
 		&self,

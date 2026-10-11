@@ -66,6 +66,37 @@ class WorkspaceBoundaryTests(unittest.TestCase):
             errors,
         )
 
+    def test_test_support_features_stay_out_of_production_dependencies(self):
+        server = next(package for package in self.metadata["packages"]
+                      if package["name"] == "aidash-server")
+        dev = [dependency for dependency in server["dependencies"]
+               if dependency["name"] == "aidash-application" and dependency["kind"] == "dev"]
+        self.assertTrue(dev and "test-support" in dev[0]["features"],
+                        "server tests use the test-only write port")
+        for kind in (None, "build"):
+            with self.subTest(kind=kind):
+                metadata = copy.deepcopy(self.metadata)
+                package = next(package for package in metadata["packages"]
+                               if package["name"] == "aidash-server")
+                package["dependencies"].append({
+                    "name": "aidash-application", "kind": kind, "features": ["test-support"],
+                })
+                self.assertIn(
+                    "production dependency enables test-support: aidash-server -> aidash-application",
+                    BOUNDARIES.violations(metadata, ROOT),
+                )
+        for feature, values in (("default", ["test-support"]),
+                                ("fixtures", ["aidash-integrations/test-support"])):
+            with self.subTest(feature=feature):
+                metadata = copy.deepcopy(self.metadata)
+                package = next(package for package in metadata["packages"]
+                               if package["name"] == "aidash-server")
+                package["features"][feature] = values
+                self.assertIn(
+                    f"feature aidash-server/{feature} must not enable test-support",
+                    BOUNDARIES.violations(metadata, ROOT),
+                )
+
 
 if __name__ == "__main__":
     unittest.main()
