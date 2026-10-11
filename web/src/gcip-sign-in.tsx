@@ -219,12 +219,43 @@ export default function GcipSignIn({
               className="grid gap-3"
               method="post"
               action="/auth/login"
-              onSubmit={() => {
-                try {
-                  sessionStorage.setItem(EMAIL_KEY, email.trim());
-                } catch {
-                  // Prefill is a convenience; continue without it.
-                }
+              onSubmit={(event) => {
+                event.preventDefault();
+                if (busy) return;
+                setBusy(true);
+                setMessage("");
+                const address = email.trim();
+                const body = new URLSearchParams({ email: address });
+                if (returnTo) body.set("return_to", returnTo);
+                // Follow the 303 here so the email handoff is stored only
+                // when discovery succeeded (the redirect carries a state).
+                // Errors answered directly (429, 400) never leave it behind.
+                fetch("/auth/login", {
+                  method: "POST",
+                  body,
+                  credentials: "same-origin",
+                })
+                  .then((response) => {
+                    const next = new URL(response.url);
+                    if (
+                      !response.ok ||
+                      !response.redirected ||
+                      next.origin !== window.location.origin
+                    )
+                      throw new Error("discovery failed");
+                    if (next.searchParams.has("state")) {
+                      try {
+                        sessionStorage.setItem(EMAIL_KEY, address);
+                      } catch {
+                        // Prefill is a convenience; continue without it.
+                      }
+                    }
+                    window.location.assign(next.pathname + next.search);
+                  })
+                  .catch(() => {
+                    setBusy(false);
+                    setMessage(text.error);
+                  });
               }}
             >
               <label className={field}>
@@ -241,7 +272,7 @@ export default function GcipSignIn({
               {returnTo && (
                 <input type="hidden" name="return_to" value={returnTo} />
               )}
-              <Button type="submit" size="lg">
+              <Button type="submit" size="lg" disabled={busy}>
                 {text.next}
               </Button>
             </form>

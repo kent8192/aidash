@@ -87,6 +87,15 @@ fn sign_in_domains_are_canonical_dns_names(#[case] raw: &str, #[case] expected: 
 #[case("@acme.com", None)]
 #[case("a@b@acme.com", None)]
 #[case("alice@", None)]
+#[case("o'neil+tag@acme.com", Some("pool-a"))]
+#[case("first.last@acme.com", Some("pool-a"))]
+#[case("bad local@acme.com", None)]
+#[case(".alice@acme.com", None)]
+#[case("alice.@acme.com", None)]
+#[case("alice..bob@acme.com", None)]
+#[case("\"alice\"@acme.com", None)]
+#[case("alice(x)@acme.com", None)]
+#[case("álice@acme.com", None)]
 fn email_routes_only_by_exact_sign_in_domain(#[case] email: &str, #[case] expected: Option<&str>) {
 	let domains = std::collections::BTreeMap::from([
 		("acme.com".to_owned(), "pool-a".to_owned()),

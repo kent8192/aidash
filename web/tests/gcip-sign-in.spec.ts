@@ -254,16 +254,20 @@ test("email discovery posts the form and hands the email to the state page once"
   // Park the redirect on a static page to observe the handoff before the
   // state page consumes it.
   await page.route("**/auth/login", (route) =>
-    route.fulfill({ status: 303, headers: { location: "/held" }, body: "" }),
+    route.fulfill({
+      status: 303,
+      headers: { location: "/held?state=browser-bound-state" },
+      body: "",
+    }),
   );
-  await page.route("**/held", (route) =>
+  await page.route("**/held?**", (route) =>
     route.fulfill({ contentType: "text/html", body: "<p>held</p>" }),
   );
   await page.getByRole("button", { name: "Continue", exact: true }).click();
   const form = new URLSearchParams((await login).postData() ?? "");
   expect(form.get("email")).toBe("person@acme.test");
   expect(form.get("return_to")).toBe("/settings");
-  await expect(page).toHaveURL(/\/held$/);
+  await expect(page).toHaveURL(/\/held\?state=browser-bound-state$/);
   expect(
     await page.evaluate(() => sessionStorage.getItem("aidash.gcip.email")),
   ).toBe("person@acme.test");
@@ -281,6 +285,30 @@ test("email discovery posts the form and hands the email to the state page once"
     .getByRole("button", { name: "Continue with oidc.company", exact: true })
     .click();
   await expect(page).toHaveURL(/\/signed-in$/);
+});
+
+test("discovery errors answered directly never store the email handoff", async ({
+  page,
+}) => {
+  await mockGcip(page);
+  await page.goto("/sign-in?return_to=%2Fsettings");
+  // e.g. the gateway's discovery budget is exhausted.
+  await page.route("**/auth/login", (route) =>
+    route.fulfill({ status: 429, body: "rate limit exceeded" }),
+  );
+  await page.getByLabel("Email", { exact: true }).fill("person@acme.test");
+  await page.getByRole("button", { name: "Continue", exact: true }).click();
+  await expect(page.getByRole("status")).toHaveText(
+    "Sign-in failed. Please try again.",
+  );
+  await expect(page).toHaveURL(/\/sign-in\?return_to=%2Fsettings$/);
+  expect(
+    await page.evaluate(() => sessionStorage.getItem("aidash.gcip.email")),
+  ).toBeNull();
+  // The form recovers for a retry.
+  await expect(
+    page.getByRole("button", { name: "Continue", exact: true }),
+  ).toBeEnabled();
 });
 
 test("state page prefills the email and passes it as a popup login hint", async ({

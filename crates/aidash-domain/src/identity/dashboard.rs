@@ -48,6 +48,8 @@ pub fn sign_in_domain(raw: &str) -> Option<String> {
 
 /// A Sign-in Domain only routes sign-in to a GCIP Tenant; it grants no authority.
 /// Malformed addresses and unmapped domains are indistinguishable (`None`).
+/// The local part must be an RFC 5322 dot-atom of ASCII `atext`; quoted and
+/// internationalized local parts are not supported.
 pub fn routed_gcip_tenant<'a>(
 	sign_in_domains: &'a std::collections::BTreeMap<String, String>,
 	email: &str,
@@ -57,7 +59,13 @@ pub fn routed_gcip_tenant<'a>(
 		return None;
 	}
 	let (local, domain) = email.split_once('@')?;
-	if local.is_empty() || local.len() > 64 || domain.contains('@') {
+	let atext = |b: u8| b.is_ascii_alphanumeric() || b"!#$%&'*+/=?^_`{|}~-".contains(&b);
+	if local.len() > 64
+		|| domain.contains('@')
+		|| !local
+			.split('.')
+			.all(|atom| !atom.is_empty() && atom.bytes().all(atext))
+	{
 		return None;
 	}
 	sign_in_domains

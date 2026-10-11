@@ -289,6 +289,10 @@ async fn sign_in_domain_routes_to_its_pool_and_unknown_inputs_are_indistinguisha
 		"email=alice%40eng.acme.example&return_to=%2Fsettings",
 		"email=not-an-email&return_to=%2Fsettings",
 		"email=%40acme.example&return_to=%2Fsettings",
+		// Mapped domains do not rescue a malformed mailbox.
+		"email=bad+local%40acme.example&return_to=%2Fsettings",
+		"email=.alice%40acme.example&return_to=%2Fsettings",
+		"email=alice..bob%40acme.example&return_to=%2Fsettings",
 		"return_to=%2Fsettings",
 	] {
 		unknown.push((body, discover(&app, body, Some(ORIGIN)).await));
