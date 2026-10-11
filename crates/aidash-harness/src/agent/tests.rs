@@ -1328,52 +1328,43 @@ fn summary_dependencies_keep_a_message_whose_read_result_jev_truncated() {
 		event: ContextEvent::tool(call, json!("{\"kind\":\"message\",\"content\":\"private")),
 	}];
 
-	let dependencies = summary_dependencies(&entries, &[], &tools);
+	let dependencies = summary_dependencies(&entries, &tools);
 
 	assert!(dependencies.message_ids.contains(&id));
 	assert!(dependencies.tool_call_ids.contains("read"));
 }
 
 #[rstest]
-fn summary_dependencies_keep_messages_an_observation_page_previewed() {
-	let (shown, hidden) = (Uuid::from_u128(7), Uuid::from_u128(8));
+fn only_message_reads_among_workspace_records_are_summarizable() {
 	let mut tools = Tools::new();
+	tools.insert("renamed_reader".into(), Arc::new(RecordReader));
 	tools.insert("renamed_observer".into(), Arc::new(Observer));
-	let call = ToolCall {
-		id: "observe".into(),
-		name: "renamed_observer".into(),
-		arguments: json!({"offset":0,"limit":20}),
+	let event = |name: &str, arguments: Value| {
+		ContextEvent::tool(
+			ToolCall {
+				id: "call".into(),
+				name: name.into(),
+				arguments,
+			},
+			json!({"view":"workspace_observation_v1"}),
+		)
 	};
-	let page = json!({
-		"view":"workspace_observation_v1",
-		"messages":[
-			{"id":shown,"sender":"human","content_preview":"private plan"},
-			{"id":hidden,"sender":"human","content_preview":"private budget"}
-		]
-	});
-	let journaled = [context::HistoryEntry {
-		seq: 1,
-		event: ContextEvent::tool(call.clone(), page),
-	}];
-	// Jev kept only leading text: previews without their message IDs.
-	let truncated = [context::HistoryEntry {
-		seq: 1,
-		event: ContextEvent::tool(
-			call,
-			json!("{\"messages\":[{\"content_preview\":\"private plan"),
-		),
-	}];
-
-	let from_journal = summary_dependencies(&truncated, &journaled, &tools);
-	let untruncated = summary_dependencies(&journaled, &[], &tools);
-
-	for dependencies in [from_journal, untruncated] {
-		assert_eq!(
-			dependencies.message_ids,
-			[shown, hidden].into_iter().collect()
+	let message = json!({"kind":"message","id":Uuid::from_u128(7)});
+	assert!(summarizable(&event("renamed_reader", message), &tools));
+	// Each of these records is filtered on its own, and a summary rechecks
+	// only message sources, so the events stay verbatim.
+	for kind in ["task", "artifact", "event", "workspace"] {
+		let record = json!({"kind":kind,"id":Uuid::from_u128(8)});
+		assert!(
+			!summarizable(&event("renamed_reader", record), &tools),
+			"{kind}"
 		);
-		assert!(dependencies.tool_call_ids.contains("observe"));
 	}
+	assert!(!summarizable(
+		&event("renamed_observer", json!({"offset":0,"limit":20})),
+		&tools
+	));
+	assert!(summarizable(&event("read", json!({"path":"a"})), &tools));
 }
 
 #[rstest]
@@ -1905,9 +1896,10 @@ async fn a_source_revoked_while_the_summarizer_runs_is_never_adopted(mut fixture
 	state.context_policy = Some(recovery_policy(true));
 	state.jev_retention = Some(1.0);
 	*state.summary_text.lock().unwrap() = Some(valid_summary());
-	// No summary exists yet, so the only check is the one after the
-	// summarizer call, made once authority resumes; the source is revoked.
-	state.summary_checks_before_revocation = Some(0);
+	// No summary exists yet, so the checks are the one before the summarizer
+	// call and the one after it, made once authority resumes; the source is
+	// revoked in between.
+	state.summary_checks_before_revocation = Some(1);
 	thinking_with_history(&mut fixture, 40);
 	let before = fixture.run.context.history.clone();
 
@@ -1925,9 +1917,41 @@ async fn a_source_revoked_while_the_summarizer_runs_is_never_adopted(mut fixture
 		assert_eq!(attempts[0].1, Some(Outcome::Unauthorized));
 	}
 	let calls = calls(&fixture);
-	let position = |name| calls.iter().position(|call| *call == name).unwrap();
-	assert!(position("summarizer.infer") < position("summary.dependencies"));
+	let summarized = calls.iter().position(|call| *call == "summarizer.infer");
+	let last_check = calls
+		.iter()
+		.rposition(|call| *call == "summary.dependencies");
+	assert!(summarized.is_some() && summarized < last_check, "{calls:?}");
 	assert!(!calls.contains(&"provider.infer"));
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_source_revoked_before_the_summarizer_call_is_never_disclosed(mut fixture: Fixture) {
+	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	state.scoped = true;
+	state.context_policy = Some(recovery_policy(true));
+	state.jev_retention = Some(1.0);
+	*state.summary_text.lock().unwrap() = Some(valid_summary());
+	// The source is already revoked when the reservation holds.
+	state.summary_checks_before_revocation = Some(0);
+	thinking_with_history(&mut fixture, 40);
+	let before = fixture.run.context.history.clone();
+
+	assert!(matches!(
+		advance_sources(&mut fixture).await,
+		Err(Error::Forbidden)
+	));
+
+	let calls = calls(&fixture);
+	assert!(!calls.contains(&"summarizer.infer"), "{calls:?}");
+	let position = |name| calls.iter().position(|call| *call == name).unwrap();
+	assert!(position("authority.summary_reserve") < position("summary.dependencies"));
+	assert!(fixture.run.context.execution_summary.is_none());
+	assert_eq!(fixture.run.context.history, before);
+	let attempts = fixture.backend.0.attempts.lock().unwrap();
+	assert_eq!(attempts.len(), 1);
+	assert_eq!(attempts[0].1, Some(Outcome::Unauthorized));
 }
 
 #[rstest]
@@ -1948,14 +1972,14 @@ async fn a_carried_source_revoked_while_the_summarizer_runs_is_never_readopted(
 	summary.dependencies.message_ids.insert(carried);
 	let first = summary.digest.clone();
 	thinking_with_history(&mut fixture, 40);
-	// The checks before and after pruning pass; `carried` is revoked while
-	// the second summarizer call is in flight.
+	// The checks before and after pruning and before the second summarizer
+	// call pass; `carried` is revoked while that call is in flight.
 	let checks = calls(&fixture)
 		.iter()
 		.filter(|call| **call == "summary.dependencies")
 		.count();
 	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
-	state.summary_checks_before_revocation = Some(checks + 2);
+	state.summary_checks_before_revocation = Some(checks + 3);
 	state.revoked_message = Some(carried);
 	let earlier = calls(&fixture).len();
 

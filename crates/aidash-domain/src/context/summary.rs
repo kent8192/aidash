@@ -4,7 +4,7 @@ use crate::registry::EntityRef;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 pub const SUMMARY_VERSION: u8 = 1;
 const MAX_ITEM_ID: usize = 64;
@@ -135,6 +135,8 @@ pub enum Rejection {
 	DroppedResolution(String),
 	#[error("summary verification {0} names no tool call from its history")]
 	UnprovenVerification(String),
+	#[error("summary verification {0} states an outcome its tool result does not")]
+	UnprovenOutcome(String),
 	#[error("summary dropped or changed previous verification {0}")]
 	DroppedVerification(String),
 	#[error("summary dropped or changed previous decision {0}")]
@@ -162,6 +164,7 @@ impl Rejection {
 			Self::ResolvedItemActive(_) => "resolved_item_active",
 			Self::DroppedResolution(_) => "dropped_resolution",
 			Self::UnprovenVerification(_) => "unproven_verification",
+			Self::UnprovenOutcome(_) => "unproven_outcome",
 			Self::DroppedVerification(_) => "dropped_verification",
 			Self::DroppedDecision(_) => "dropped_decision",
 			Self::UnprovenArtifact(_) => "unproven_artifact",
@@ -202,10 +205,10 @@ impl SummaryContent {
 			}
 		}
 		// Only tool calls this merge absorbs are evidence; model text never is.
-		let evidence: BTreeSet<&str> = absorbed
+		let evidence: BTreeMap<&str, &Value> = absorbed
 			.iter()
 			.filter_map(|entry| match &entry.event {
-				ContextEvent::Tool { call, .. } => Some(call.id.as_str()),
+				ContextEvent::Tool { call, result } => Some((call.id.as_str(), result)),
 				_ => None,
 			})
 			.collect();
@@ -215,7 +218,7 @@ impl SummaryContent {
 			.map(|item| {
 				if item.resolved_by.trim().is_empty() {
 					Err(Rejection::InvalidItem)
-				} else if !evidence.contains(item.resolved_by.as_str())
+				} else if !evidence.contains_key(item.resolved_by.as_str())
 					&& !previous.is_some_and(|previous| previous.content.resolved.contains(item))
 				{
 					// A carried resolution was proven when it was merged.
@@ -241,16 +244,22 @@ impl SummaryContent {
 		}) {
 			return Err(Rejection::DroppedResolution(dropped.id.clone()));
 		}
-		// A verification names an absorbed tool call, or is carried unchanged
-		// from the previous summary, which validated it when it was merged.
+		// A verification names an absorbed tool call and quotes a complete value
+		// of its result as the outcome, or is carried unchanged from the
+		// previous summary, which validated it when it was merged. A model claim
+		// such as "tests passed" is never an outcome by itself.
 		for verification in &content.verification {
-			if !evidence.contains(verification.reference.as_str())
-				&& !previous
-					.is_some_and(|previous| previous.content.verification.contains(verification))
+			if previous.is_some_and(|previous| previous.content.verification.contains(verification))
 			{
+				continue;
+			}
+			let Some(result) = evidence.get(verification.reference.as_str()) else {
 				return Err(Rejection::UnprovenVerification(
 					verification.reference.clone(),
 				));
+			};
+			if !holds(result, &verification.outcome) {
+				return Err(Rejection::UnprovenOutcome(verification.reference.clone()));
 			}
 		}
 		// The checked events left the projection with the earlier merge, so a
@@ -289,7 +298,11 @@ impl SummaryContent {
 			if !absorbed.iter().any(|entry| states(&entry.event, artifact)) {
 				return Err(Rejection::UnprovenArtifact(artifact.reference.clone()));
 			}
-			updated.insert(artifact.reference.as_str());
+			// Only a stated revision supersedes; a bare mention keeps the
+			// previous revision.
+			if !artifact.revision.is_empty() {
+				updated.insert(artifact.reference.as_str());
+			}
 		}
 		// A previous artifact stays unless this merge's history states a newer
 		// revision of the same reference.

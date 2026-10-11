@@ -25,7 +25,12 @@ fn content(
 }
 
 fn tool(seq: u64) -> HistoryEntry {
-	tool_with(seq, json!({"path":"src/parser.rs"}), json!({"ok":true}))
+	tool_with(seq, json!({"path":"src/parser.rs"}), passed())
+}
+
+/// A result whose complete `status` value is the fixture's verification outcome.
+fn passed() -> serde_json::Value {
+	json!({"ok":true,"status":"cargo test passed"})
 }
 
 fn tool_with(seq: u64, arguments: serde_json::Value, result: serde_json::Value) -> HistoryEntry {
@@ -301,6 +306,29 @@ fn resolutions_and_verification_need_tool_call_evidence() {
 		SummaryContent::parse(&invented, None, &[tool(2)], 4096),
 		Err(Rejection::UnprovenVerification("call_999".into()))
 	);
+	// The outcome is a complete value of the referenced result, never a claim
+	// the result does not state, and never another call's result.
+	for (absorbed, outcome) in [
+		(
+			tool_with(2, json!({"path":"src/parser.rs"}), json!({"ok":true})),
+			"cargo test passed",
+		),
+		(
+			tool_with(
+				2,
+				json!({"path":"src/parser.rs"}),
+				json!({"status":"cargo test failed"}),
+			),
+			"cargo test passed",
+		),
+		(tool(2), "cargo test"),
+	] {
+		let claimed = content(&[], &[], &[]).replace("cargo test passed", outcome);
+		assert_eq!(
+			SummaryContent::parse(&claimed, None, &[absorbed, tool(3)], 4096),
+			Err(Rejection::UnprovenOutcome("call_2".into()))
+		);
+	}
 	// A previous verification is carried only unchanged.
 	let rewritten = content(
 		&[("c1", "never touch main")],
@@ -438,7 +466,7 @@ fn new_artifacts_must_appear_in_absorbed_history() {
 		Err(Rejection::InvalidItem)
 	);
 	// The reference and its revision must come from the same absorbed event.
-	let named = tool_with(2, json!({"path":"src/parser.rs"}), json!({"ok":true}));
+	let named = tool_with(2, json!({"path":"src/parser.rs"}), passed());
 	let revised = tool_with(3, json!({}), json!({"artifact_id":"a-7","revision":4}));
 	let stated = artifacts(json!([{"reference":"src/parser.rs","revision":"4"}]));
 	assert_eq!(
@@ -456,7 +484,7 @@ fn new_artifacts_must_appear_in_absorbed_history() {
 	let longer = tool_with(
 		2,
 		json!({"path":"src/parser.rs.bak"}),
-		json!({"artifact_id":"a-7","revision":"r20"}),
+		json!({"artifact_id":"a-7","revision":"r20","status":"cargo test passed"}),
 	);
 	for (artifact, reference) in [
 		(
@@ -475,6 +503,30 @@ fn new_artifacts_must_appear_in_absorbed_history() {
 			Err(Rejection::UnprovenArtifact(reference.into()))
 		);
 	}
+}
+
+#[test]
+fn a_bare_mention_never_drops_a_known_revision() {
+	let revised = tool_with(
+		2,
+		json!({"path":"src/parser.rs"}),
+		json!({"revision":"r1","status":"cargo test passed"}),
+	);
+	let mut first: serde_json::Value = serde_json::from_str(&content_text()).unwrap();
+	first["artifacts"] = json!([{"reference":"src/parser.rs","revision":"r1"}]);
+	let first = adopted(&first.to_string(), None, &[revised]);
+	// History that mentions the path without a revision states no newer one.
+	assert_eq!(
+		SummaryContent::parse(&content_text(), Some(&first), &[tool(5)], 4096),
+		Err(Rejection::DroppedArtifact("src/parser.rs".into()))
+	);
+	// Listing the bare mention beside the carried revision is still allowed.
+	let mut both: serde_json::Value = serde_json::from_str(&content_text()).unwrap();
+	both["artifacts"] = json!([
+		{"reference":"src/parser.rs","revision":"r1"},
+		{"reference":"src/parser.rs","revision":""}
+	]);
+	SummaryContent::parse(&both.to_string(), Some(&first), &[tool(5)], 4096).unwrap();
 }
 
 fn content_text() -> String {

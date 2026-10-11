@@ -123,7 +123,7 @@ impl<'a> Executor<'a> {
 		visibility: &mut dyn ExecutionVisibility,
 		home: &dyn ExecutionHome,
 		fitting: &aidash_application::context::Fitting<'_>,
-		plan: aidash_application::context::SummaryPlan,
+		mut plan: aidash_application::context::SummaryPlan,
 		tools: &Tools,
 	) -> Result<()> {
 		use aidash_application::context::{
@@ -141,6 +141,10 @@ impl<'a> Executor<'a> {
 		) else {
 			return Err(unavailable());
 		};
+		// Workspace records other than messages are filtered one by one, and a
+		// summary rechecks only message sources: they stay verbatim instead.
+		plan.absorbed
+			.retain(|entry| summarizable(&entry.event, tools));
 		let (Some(first), Some(last)) = (plan.absorbed.first(), plan.absorbed.last()) else {
 			return Err(Error::Context(ContextFailure::ContextUnreducible));
 		};
@@ -178,11 +182,8 @@ impl<'a> Executor<'a> {
 			record_stage("summary", "invalid");
 			return Err(Error::Context(ContextFailure::SummaryInvalid));
 		}
-		// Jev may have cut an absorbed result to leading text; the journal keeps
-		// the original, which names every source the absorbed text came from.
-		let originals = store.context_journal(run.id, first.seq, last.seq).await?;
 		// The candidate carries the previous summary's sources as well.
-		let mut dependencies = summary_dependencies(&plan.absorbed, &originals, tools);
+		let mut dependencies = summary_dependencies(&plan.absorbed, tools);
 		if let Some(previous) = plan.pruned.execution_summary.as_deref() {
 			dependencies
 				.message_ids
@@ -249,6 +250,23 @@ impl<'a> Executor<'a> {
 			},
 			None => None,
 		};
+		// A request to the summarizer cannot be recalled: every source the
+		// candidate depends on must still be readable once the reservation,
+		// which may itself wait on remote admission, holds.
+		let current =
+			summary_dependencies_current(self.environment, guard, home, run, &dependencies).await;
+		if !matches!(current, Ok(true)) {
+			store
+				.settle_compaction(
+					run,
+					token,
+					attempt.id,
+					&settlement(Outcome::Unauthorized, None, None),
+				)
+				.await?;
+			record_stage("summary", "unauthorized");
+			return Err(current.err().unwrap_or(Error::Forbidden));
+		}
 		// Like inference, release visibility and authorization locks during I/O.
 		if let Some(guard) = guard {
 			guard.suspend().await?;
@@ -2128,40 +2146,39 @@ fn settled_usage(result: &Result<provider::ModelResponse>) -> Option<&provider::
 		Err(error) => error.terminal_usage(),
 	}
 }
-/// Sources whose current authority the summarized text depends on. A read
-/// keys on its call; an observation page on the messages its journaled
-/// original result previews.
+/// Whether the Summary Stage may absorb `event`. A message read is tracked
+/// and rechecked by its target. Other workspace records, and observation
+/// pages that preview tasks, artifacts, events and messages together, are
+/// visible record by record, which a summary cannot recheck.
+fn summarizable(event: &ContextEvent, tools: &Tools) -> bool {
+	let ContextEvent::Tool { call, .. } = event else {
+		return false;
+	};
+	let Some(contract) = tools.get(&call.name).map(|tool| tool.contract()) else {
+		return true;
+	};
+	match contract.behavior.fitting {
+		Some(ResultFitting::Observation) => false,
+		Some(ResultFitting::WorkspaceRecord) => message_read_target(&contract, call).is_some(),
+		_ => true,
+	}
+}
+/// Sources whose current authority the summarized text depends on.
 fn summary_dependencies(
 	entries: &[context::HistoryEntry],
-	originals: &[context::HistoryEntry],
 	tools: &Tools,
 ) -> context::summary::SummaryDependencies {
 	let mut dependencies = context::summary::SummaryDependencies::default();
 	for entry in entries {
-		let ContextEvent::Tool { call, result } = &entry.event else {
-			continue;
-		};
-		dependencies.tool_call_ids.insert(call.id.clone());
-		let Some(contract) = tools.get(&call.name).map(|tool| tool.contract()) else {
-			continue;
-		};
-		dependencies
-			.message_ids
-			.extend(message_read_target(&contract, call));
-		let original = originals
-			.iter()
-			.find(|original| original.seq == entry.seq)
-			.and_then(|original| match &original.event {
-				ContextEvent::Tool {
-					call: journaled,
-					result,
-				} if journaled.id == call.id => Some(result),
-				_ => None,
-			})
-			.unwrap_or(result);
-		dependencies
-			.message_ids
-			.extend(observed_message_ids(&contract, original));
+		if let ContextEvent::Tool { call, .. } = &entry.event {
+			dependencies.tool_call_ids.insert(call.id.clone());
+			if let Some(id) = tools
+				.get(&call.name)
+				.and_then(|tool| message_read_target(&tool.contract(), call))
+			{
+				dependencies.message_ids.insert(id);
+			}
+		}
 	}
 	dependencies
 }

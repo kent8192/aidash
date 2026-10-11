@@ -150,7 +150,9 @@ events into the structured Execution Summary. It absorbs only `tool` events
 that are older than the protected tail and were already part of an accepted
 inference request. Human answers, corrections, continuation markers and
 `model_media_observation` events, whose source messages a summary could not
-recheck, always stay verbatim. The summarizer receives only the
+recheck, always stay verbatim. So do `workspace_observe` pages and workspace
+record reads other than message reads, whose records are visible one by one
+while a summary rechecks only message sources. The summarizer receives only the
 task, the previous summary and the absorbed events, with no tools and a JSON
 schema response format. Each merge
 copies the previous goal verbatim and
@@ -158,13 +160,15 @@ keeps the previous summary's constraints and unresolved items under their IDs,
 in the same list and with unchanged text, unless it lists them as resolved;
 a changed or moved item is rejected, and a resolved ID must leave both active
 lists. A resolution's `resolved_by` and every new
-`verification` reference must be the exact ID of a tool call the merge absorbs;
+`verification` reference must be the exact ID of a tool call the merge absorbs,
+and a new verification's outcome must equal a complete value of that call's
+result, so a claim the result does not state is rejected;
 previous decisions, resolved and verification entries must be carried
 unchanged, so a retired ID never returns. A new artifact's reference, and its
 revision when one is given, must each equal a complete argument or result value
 of one absorbed event, so `src/parser.rs.bak` never proves `src/parser.rs`; a
 previous artifact is carried unchanged unless the merge's history states a
-newer revision of the same reference. It records the
+newer, non-empty revision of the same reference. It records the
 exact journal range, the absorbed sequence ranges (entries pruned between them
 were never absorbed), and the absorbed entries' digest, and carries the sources
 it depends on. A summary is adopted only if it validates, strictly shrinks the
@@ -186,7 +190,10 @@ without the field never receive it. The
 Home accepts only the approved maximum charge: the pinned summarizer's context
 window plus `summary.max_tokens` capped at its output limit.
 Disclosure is checked before every request. A missing approval makes the stage unavailable,
-with no fallback. Adoption saves the Run and marks the attempt adopted in one
+with no fallback. Every source the candidate depends on is rechecked once its
+reservation holds and before the request leaves the node; a revoked source
+settles the attempt as unauthorized without calling the summarizer. Adoption
+saves the Run and marks the attempt adopted in one
 lease-fenced transaction, after the Run's inference authority, every
 summarizer approval above and every source the candidate depends on
 (including those carried from the previous summary) are rechecked without
@@ -197,9 +204,7 @@ unchanged; an interrupted attempt is marked `abandoned` by the next attempt or
 by lease recovery. If a source the summary depends on is no longer readable, the
 summary is discarded and the original journal events it absorbed return to the
 saved projection, and the step pauses for authority before Jev or the model
-receives them. Message sources are the targets of absorbed message reads and
-the messages each absorbed `workspace_observe` page previews, taken from the
-journaled original result because Jev may have truncated the projection copy.
+receives them. Message sources are the targets of absorbed message reads.
 A local Run rechecks message dependencies under its current authority without
 recording a read; a remote Run rechecks them through the Home's filtered record
 reads. An authority-bearing Run rechecks them again after pruning, whose Jev
