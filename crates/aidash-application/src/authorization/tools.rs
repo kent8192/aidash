@@ -2,9 +2,16 @@
 use crate::{Error, Result, ports::authorization::tools::AgentToolRepository};
 use aidash_domain::{
 	RunMetadata,
+	exposure::{self, CapabilityIdentity},
 	provider::ToolCall,
-	registry::{AgentConfig, EntityRef},
-	tool::{AuthorizationRequirement, ResourceTarget, ToolConfig, ToolContract, ToolIdentity},
+	registry::{
+		AgentConfig, EntityRef,
+		bindings::{QualifiedRef, SKILL_ASSET_READ},
+	},
+	tool::{
+		AuthorizationRequirement, CorePermission, ResourceTarget, ToolConfig, ToolContract,
+		ToolIdentity,
+	},
 };
 use serde_json::json;
 use std::collections::BTreeMap;
@@ -55,6 +62,7 @@ pub async fn authorize(
 	}
 	let mut scope = repository.lease().await?;
 	let current;
+	let mut operation = None;
 	let authorization = match &contract.identity {
 		ToolIdentity::Descriptor(reference) => {
 			let entry = scope.catalog(&reference.local(), "tool.invoke").await?;
@@ -64,6 +72,7 @@ pub async fn authorize(
 			if current != *contract {
 				return Err(Error::Conflict("admitted provider contract changed".into()));
 			}
+			operation = Some(descriptor.operation);
 			&current.authorization
 		}
 		ToolIdentity::Registry(reference) => {
@@ -78,14 +87,19 @@ pub async fn authorize(
 		ToolIdentity::Builtin(grant) => {
 			let resource = scope.resource("tool", grant, json!({}));
 			scope.require(&resource, "tool.invoke").await?;
+			operation = grant.strip_prefix("builtin:").map(str::to_owned);
 			&contract.authorization
 		}
 	};
-	let legacy_skill = authorization
+	let configured_skill = authorization
 		.requirements
-		.contains(&AuthorizationRequirement::ConfiguredSkill)
-		&& call.arguments.get("skill_id").is_none();
+		.contains(&AuthorizationRequirement::ConfiguredSkill);
+	// Skill asset reads name a Discoverable capability alias; authority follows
+	// the identity kind behind it.
+	let asset_read = configured_skill && operation.as_deref() == Some(SKILL_ASSET_READ);
+	let legacy_skill = configured_skill && !asset_read && call.arguments.get("skill_id").is_none();
 	if !legacy_skill
+		&& !asset_read
 		&& authorization
 			.core
 			.is_some_and(|permission| !permission.permitted(&configuration.core_capabilities))
@@ -104,6 +118,32 @@ pub async fn authorize(
 				scope.require(&resource, "task.create").await?;
 			}
 			AuthorizationRequirement::ConfiguredSkill => {
+				if asset_read {
+					match asset_skill(repository, call)? {
+						Some(reference) => {
+							let reference = reference.local();
+							if !configuration.skills.contains(&reference)
+								|| scope.catalog(&reference, "skill.use").await?.kind != "skill"
+							{
+								return Err(Error::Forbidden);
+							}
+						}
+						None => {
+							// Direct Skills require the core Skills capability. Without
+							// direct Skill sources the alias names no asset, and the
+							// tool returns its recoverable UNKNOWN_CAPABILITY.
+							let direct = !configuration.skill_attachments.is_empty()
+								|| !configuration.skill_roots.is_empty();
+							if direct
+								&& !CorePermission::Skills
+									.permitted(&configuration.core_capabilities)
+							{
+								return Err(Error::Forbidden);
+							}
+						}
+					}
+					continue;
+				}
 				if !legacy_skill {
 					continue;
 				}
@@ -155,6 +195,27 @@ pub async fn authorize(
 		}
 	}
 	Ok(())
+}
+
+/// The Registry Skill a `skill_asset_read` alias names in the Run's snapshot;
+/// `None` means any other alias: a direct Skill or nothing.
+fn asset_skill(
+	repository: &dyn AgentToolRepository,
+	call: &ToolCall,
+) -> Result<Option<QualifiedRef>> {
+	let alias = call.arguments["alias"]
+		.as_str()
+		.ok_or_else(|| Error::Invalid("alias must be a string".into()))?;
+	let snapshot = repository
+		.binding_snapshot()
+		.ok_or_else(|| Error::Invalid("Run has no admitted Binding snapshot".into()))?;
+	Ok(exposure::catalog(snapshot, &BTreeMap::new(), &[])?
+		.into_iter()
+		.find(|capability| capability.alias == alias)
+		.and_then(|capability| match capability.identity {
+			CapabilityIdentity::Registry(reference) => Some(reference),
+			CapabilityIdentity::DirectSkill { .. } => None,
+		}))
 }
 
 /// Apply removals immediately so a later adapter failure retains earlier filtering.
