@@ -63,7 +63,7 @@ impl Port {
 	fn local() -> Self {
 		Self {
 			remote: false,
-			binding: Binding::Disabled {},
+			binding: Binding::Disabled { summarizer: None },
 			approved: true,
 			kind: "model",
 			calls: Mutex::new(vec![]),
@@ -154,7 +154,7 @@ async fn a_changed_or_non_model_definition_is_unavailable() {
 
 #[tokio::test]
 async fn remote_required_home_without_a_summarizer_pin_is_unavailable() {
-	for binding in [Binding::Disabled {}, required_home(None)] {
+	for binding in [Binding::Disabled { summarizer: None }, required_home(None)] {
 		let port = Port::remote(binding);
 		assert!(unavailable(authorize(&port, &summarizer(), 64).await));
 		assert_eq!(port.calls(), ["refresh", "binding"]);

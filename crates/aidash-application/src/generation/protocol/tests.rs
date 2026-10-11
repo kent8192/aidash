@@ -818,7 +818,7 @@ async fn missing_semantic_readiness_preserves_pending_and_rolls_back(world: Worl
 #[rstest]
 #[tokio::test]
 async fn disabled_semantics_skip_only_the_ready_query(world: World) {
-	world.0.lock().unwrap().description.semantic = Binding::Disabled {};
+	world.0.lock().unwrap().description.semantic = Binding::Disabled { summarizer: None };
 	assert!(
 		verify(&world, &world, &world, "aidash://home", world.input())
 			.await

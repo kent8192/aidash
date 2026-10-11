@@ -254,7 +254,7 @@ async fn native_memory_cannot_be_silently_disabled_or_mapped_by_name(#[case] req
 	let input = if required {
 		request()
 	} else {
-		Request::Disabled {}
+		Request::Disabled { summarizer: None }
 	};
 	assert!(matches!(
 		use_case::binding(
@@ -282,11 +282,11 @@ async fn disabled_binding_does_not_read_or_disclose_home_state() {
 			&task(),
 			"aidash://receiver",
 			&remote_inspection(),
-			&Request::Disabled {}
+			&Request::Disabled { summarizer: None }
 		)
 		.await
 		.unwrap(),
-		Binding::Disabled {}
+		Binding::Disabled { summarizer: None }
 	);
 	assert!(scope.base.calls.is_empty());
 	assert!(scope.reads.is_empty());
@@ -541,6 +541,93 @@ async fn summarizer_is_disclosed_only_for_the_executor_inspected_summary_pin() {
 	assert_eq!(pin.node_id, "aidash://receiver");
 	assert_eq!(pin.entry, summarizer);
 	assert_eq!(pin.digest, "sha256:definition");
+}
+
+/// A remote Agent whose Context Policy pins a summarizer needs no Home
+/// semantic retrieval: a disabled binding carries only that pin once the remote
+/// execution and the summarizer's disclosure are authorized, and never reads
+/// the Home index, embedding provider or lineage.
+#[rstest]
+#[tokio::test]
+async fn a_summarizer_pin_needs_no_home_semantic_retrieval() {
+	let summarizer = EntityRef {
+		id: "model".into(),
+		version: "1.0.0".into(),
+	};
+	let summary_only = |policy: Value| {
+		let mut inspection = remote_inspection();
+		let mut agent = inspection.agent.clone();
+		agent.config["bindings"] = json!([]);
+		agent.config["context_policy"] = policy;
+		inspection.binding_snapshot =
+			crate::test_support::resolve("aidash://receiver", &agent, true, vec![]);
+		inspection.agent = agent;
+		inspection.semantic_memory = 0;
+		inspection
+	};
+	let inspection =
+		summary_only(json!({"version":"context-recovery/1","summary":{"model":summarizer}}));
+	let request = Request::Disabled {
+		summarizer: Some(summarizer.clone()),
+	};
+	let mut scope = BindingScope::new();
+	let Binding::Disabled { summarizer: Some(pin) } = use_case::binding(
+		&mut scope,
+		&task(),
+		"aidash://receiver",
+		&inspection,
+		&request,
+	)
+	.await
+	.unwrap()
+	else {
+		panic!("the pinned summarizer is disclosed without semantic retrieval")
+	};
+	assert_eq!(pin.node_id, "aidash://receiver");
+	assert_eq!(pin.entry, summarizer);
+	assert_eq!(pin.digest, "sha256:definition");
+	assert!(scope.reads.is_empty(), "{:?}", scope.reads);
+	let actions: Vec<_> = scope
+		.base
+		.calls
+		.iter()
+		.map(|(action, ..)| action.as_str())
+		.collect();
+	assert!(!actions.contains(&"semantic.search"), "{actions:?}");
+	let (action, resource, _) = scope.base.calls.last().unwrap();
+	assert_eq!(action, "semantic.disclose");
+	assert_eq!(resource.attributes["summarizer"], json!(summarizer));
+
+	// The summarizer's disclosure is still required.
+	let mut scope = BindingScope::new();
+	scope.base.denied = Some("semantic.disclose");
+	assert!(matches!(
+		use_case::binding(
+			&mut scope,
+			&task(),
+			"aidash://receiver",
+			&inspection,
+			&request
+		)
+		.await,
+		Err(Error::Forbidden)
+	));
+
+	// A summarizer the executor's Agent does not pin is never disclosed.
+	let mut scope = BindingScope::new();
+	assert!(matches!(
+		use_case::binding(
+			&mut scope,
+			&task(),
+			"aidash://receiver",
+			&summary_only(json!({"version":"context-recovery/1"})),
+			&request
+		)
+		.await,
+		Err(Error::RemoteSemantic(Failure::Configuration))
+	));
+	assert!(scope.base.calls.is_empty());
+	assert!(scope.reads.is_empty());
 }
 
 #[rstest]

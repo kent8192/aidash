@@ -263,7 +263,7 @@ async fn disabled_summary_does_not_touch_the_journal() {
 	let status = load(
 		&repository,
 		Uuid::from_u128(22),
-		&Binding::Disabled {},
+		&Binding::Disabled { summarizer: None },
 		Some(Failure::Authority),
 	)
 	.await

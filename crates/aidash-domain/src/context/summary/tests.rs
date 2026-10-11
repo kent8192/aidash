@@ -300,21 +300,25 @@ fn resolutions_and_verification_need_tool_call_evidence() {
 			Err(Rejection::UnprovenResolution("u1".into()))
 		);
 	}
-	// A failed call is never resolution evidence, even though it is absorbed.
-	let failed = tool_with(
-		5,
-		json!({"path":"src/parser.rs"}),
+	// A failed call is never resolution evidence, even though it is absorbed:
+	// a top-level `error`, or the MCP adapter's `is_error`/`isError` flag.
+	for result in [
 		json!({"error":"denied"}),
-	);
-	assert_eq!(
-		SummaryContent::parse(
-			&content(&[("c1", "never touch main")], &[], &[("u1", "call_5")]),
-			Some(&first),
-			&[failed],
-			4096
-		),
-		Err(Rejection::UnprovenResolution("u1".into()))
-	);
+		json!({"is_error":true,"content":[{"type":"text","text":"fixed"}]}),
+		json!({"isError":true,"content":[{"type":"text","text":"fixed"}]}),
+	] {
+		let failed = tool_with(5, json!({"path":"src/parser.rs"}), result.clone());
+		assert_eq!(
+			SummaryContent::parse(
+				&content(&[("c1", "never touch main")], &[], &[("u1", "call_5")]),
+				Some(&first),
+				&[failed],
+				4096
+			),
+			Err(Rejection::UnprovenResolution("u1".into())),
+			"{result}"
+		);
+	}
 	assert!(
 		SummaryContent::parse(
 			&content(&[("c1", "never touch main")], &[], &[("u1", "call_5")]),
@@ -527,6 +531,35 @@ fn new_artifacts_must_appear_in_absorbed_history() {
 			Err(Rejection::UnprovenArtifact(reference.into()))
 		);
 	}
+	// A failed call names the artifact it tried to produce, yet produced nothing.
+	let verified = tool_with(2, json!({}), passed());
+	let attempted = |result: serde_json::Value| {
+		tool_with(3, json!({"path":"src/parser.rs","revision":"r3"}), result)
+	};
+	let stated = artifacts(json!([{"reference":"src/parser.rs","revision":"r3"}]));
+	for result in [
+		json!({"error":"permission denied","path":"src/parser.rs"}),
+		json!({"is_error":true,"content":[{"type":"text","text":"denied"}]}),
+		json!({"isError":true,"content":[{"type":"text","text":"denied"}]}),
+	] {
+		assert_eq!(
+			SummaryContent::parse(
+				&stated,
+				None,
+				&[verified.clone(), attempted(result.clone())],
+				4096
+			),
+			Err(Rejection::UnprovenArtifact("src/parser.rs".into())),
+			"{result}"
+		);
+	}
+	SummaryContent::parse(
+		&stated,
+		None,
+		&[verified, attempted(json!({"ok":true}))],
+		4096,
+	)
+	.unwrap();
 }
 
 #[test]

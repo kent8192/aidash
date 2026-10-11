@@ -218,13 +218,13 @@ impl SummaryContent {
 			.map(|item| {
 				if item.resolved_by.trim().is_empty() {
 					Err(Rejection::InvalidItem)
-				} else if !evidence
+				} else if evidence
 					.get(item.resolved_by.as_str())
-					.is_some_and(|result| !failed_result(result))
+					.is_none_or(|result| failed_result(result))
 					&& !previous.is_some_and(|previous| previous.content.resolved.contains(item))
 				{
 					// A carried resolution was proven when it was merged; a
-					// failed call (an `error` result) proves nothing.
+					// failed call proves nothing.
 					Err(Rejection::UnprovenResolution(item.id.clone()))
 				} else {
 					Ok(item.id.as_str())
@@ -372,19 +372,26 @@ pub fn absorbable(event: &ContextEvent) -> bool {
 	matches!(event, ContextEvent::Tool { .. })
 }
 
-/// A tool result carrying a non-null top-level `error` reports a failed call.
+/// A failed tool call: its result carries a non-null top-level `error`, or the
+/// MCP `is_error`/`isError` flag the compactor and decision views also honor.
 fn failed_result(result: &Value) -> bool {
 	result.get("error").is_some_and(|error| !error.is_null())
+		|| result.get("is_error") == Some(&Value::Bool(true))
+		|| result.get("isError") == Some(&Value::Bool(true))
 }
 
 /// Whether one absorbed tool event states `artifact`: a complete scalar in its
 /// call arguments or result equals the reference and, when one is given,
 /// another equals the revision. A value that merely contains one, such as
-/// `src/parser.rs.bak` for `src/parser.rs`, is no evidence.
+/// `src/parser.rs.bak` for `src/parser.rs`, is no evidence, and a failed call
+/// produced nothing even though its arguments name the artifact.
 fn states(event: &ContextEvent, artifact: &ArtifactRef) -> bool {
 	let ContextEvent::Tool { call, result } = event else {
 		return false;
 	};
+	if failed_result(result) {
+		return false;
+	}
 	let stated = |value: &str| holds(&call.arguments, value) || holds(result, value);
 	stated(&artifact.reference) && (artifact.revision.is_empty() || stated(&artifact.revision))
 }

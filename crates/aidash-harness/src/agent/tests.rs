@@ -1,6 +1,8 @@
 //! Agent lifecycle and inference authority are tested without a database or HTTP.
 use super::*;
-use aidash_application::ports::{CompactionClassifier, CompactionQuestions, ModelProvider};
+use aidash_application::ports::{
+	CompactionClassifier, CompactionQuestions, InferenceProgressSink, ModelProvider,
+};
 use aidash_domain::capabilities::skills::SkillMetadata;
 use aidash_domain::context::recovery::{Attempt, Outcome, Settlement};
 use aidash_domain::context::sources::{RetrievalKey, RetrievalScope};
@@ -8,6 +10,9 @@ use aidash_domain::exposure::{
 	CapabilityKind, DirectSkill, ExposureState, ExposureUpdate, Loaded, SkillOriginKind,
 };
 use aidash_domain::provider::ModelContext;
+use aidash_domain::provider::progress::{
+	FLUSH_INTERVAL, InferenceProgress, MAX_PENDING_BYTES, MAX_PROGRESS_ITEM_BYTES,
+};
 use aidash_domain::provider::{
 	ContentPart, ModelRequest, ModelResponse, ToolCall, ToolSpec,
 	usage::{EstimateConfidence, ReportedUsage, UsageDispatch, UsageOutcome},
@@ -17,14 +22,27 @@ use aidash_domain::registry::bindings::{
 	ResolvedBinding, ResolvedDefinition, SKILL_ASSET_READ, SKILL_TOOLS,
 };
 use aidash_domain::registry::{EntityRef, Entry, rules};
+use aidash_domain::run_input::RunInput;
 use aidash_domain::tool::providers::core_descriptor;
 use async_trait::async_trait;
 use rstest::{fixture, rstest};
-use std::collections::BTreeMap;
-use std::sync::{
-	Arc, Mutex,
-	atomic::{AtomicBool, Ordering},
-};
+use std::collections::{BTreeMap, VecDeque};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+/// One scripted action of the fake provider during a single inference.
+enum Step {
+	Offer(InferenceProgress),
+	Sleep(Duration),
+	/// Accept a new Run input, as an operator correction would.
+	Input(&'static str),
+	Interrupt(InferenceInterruption),
+	Fail(Error),
+}
+fn text(value: &str) -> Step {
+	Step::Offer(InferenceProgress::Text { text: value.into() })
+}
 
 #[derive(Clone)]
 struct Backend(Arc<State>);
@@ -47,7 +65,7 @@ struct State {
 	human: Mutex<Option<HumanRequest>>,
 	/// In-memory Context Journal keyed by Run, with the same append rule as Postgres.
 	journal: Mutex<Vec<(Uuid, aidash_domain::context::HistoryEntry)>>,
-	attempts: Mutex<Vec<(Attempt, Option<Outcome>)>>,
+	compaction_attempts: Mutex<Vec<(Attempt, Option<Outcome>)>>,
 	context_policy: Option<aidash_domain::context::policy::ContextPolicy>,
 	/// Ordinary inference requests answered with a provider Context Overflow.
 	overflows: Mutex<u32>,
@@ -70,6 +88,15 @@ struct State {
 	summary_reservation: bool,
 	/// The summarizer's configured `max_output_tokens`.
 	summarizer_output_tokens: u32,
+	/// Provider scripts consumed one per inference; an empty queue answers at once.
+	scripts: Mutex<VecDeque<Vec<Step>>>,
+	attempts: Mutex<Vec<(InferenceAttemptId, Vec<ProgressOutcome>)>>,
+	progress: Mutex<Vec<(InferenceAttemptId, Vec<InferenceProgress>)>>,
+	interruption: tokio::sync::watch::Sender<Option<InferenceInterruption>>,
+	deny_recheck: bool,
+	fail_append: bool,
+	/// Appends never complete, as when another transaction holds the Run row.
+	block_append: bool,
 	cancel_inference: bool,
 	usage: Mutex<Vec<(UsageDispatch, Option<UsageOutcome>)>>,
 	stall_provider: AtomicBool,
@@ -107,6 +134,47 @@ impl Backend {
 	fn record(&self, name: &'static str) {
 		self.0.calls.lock().unwrap().push(name);
 	}
+	fn script(&self, steps: Vec<Step>) {
+		self.0.scripts.lock().unwrap().push_back(steps);
+	}
+	fn outcomes(&self) -> Vec<Vec<ProgressOutcome>> {
+		let attempts = self.0.attempts.lock().unwrap();
+		attempts
+			.iter()
+			.map(|(_, outcomes)| outcomes.clone())
+			.collect()
+	}
+	fn progress_text(&self) -> String {
+		let progress = self.0.progress.lock().unwrap();
+		progress
+			.iter()
+			.flat_map(|(_, batch)| batch)
+			.filter_map(|item| match item {
+				InferenceProgress::Text { text } => Some(text.as_str()),
+				InferenceProgress::ToolCall { .. } => None,
+			})
+			.collect()
+	}
+	fn calls(&self) -> Vec<&'static str> {
+		self.0.calls.lock().unwrap().clone()
+	}
+	fn events(&self) -> Vec<String> {
+		let writes = self.0.writes.lock().unwrap();
+		writes.iter().map(|(event, _)| event.clone()).collect()
+	}
+	fn add_input(&self, content: &str) {
+		let mut inputs = self.0.inputs.lock().unwrap();
+		let id = Uuid::new_v4();
+		let seq = inputs.len() as i64 + 1;
+		inputs.push(RunInput {
+			seq,
+			sender: "human".into(),
+			content: content.into(),
+			idempotency_key: id.to_string(),
+			message_id: Some(id),
+			reference_only: false,
+		});
+	}
 	fn task_value(&self) -> Task {
 		self.0.task.lock().unwrap().clone()
 	}
@@ -138,7 +206,7 @@ impl Backend {
 			.unwrap_or(0);
 		let appended: Vec<_> = run.context.unjournaled(head).cloned().collect();
 		if let Some((attempt, settlement)) = adopt {
-			let mut attempts = self.0.attempts.lock().unwrap();
+			let mut attempts = self.0.compaction_attempts.lock().unwrap();
 			let open = attempts
 				.iter_mut()
 				.find(|(a, outcome)| a.id == attempt && a.run_id == run.id && outcome.is_none())
@@ -172,7 +240,76 @@ fn unexpected(operation: &str) -> ! {
 impl ExecutionStore for Backend {
 	async fn save_run(&self, run: &Run, token: Uuid, event: &str) -> Result<()> {
 		assert_eq!(token, self.0.token);
+		if event == "model.completed" {
+			// The store closes the pending attempt as accepted in the same transaction.
+			let mut attempts = self.0.attempts.lock().unwrap();
+			if let Some((_, outcomes)) = attempts.iter_mut().rfind(|(_, o)| o.is_empty()) {
+				outcomes.push(ProgressOutcome::Accepted);
+			}
+		}
 		self.persist(run, event, None)
+	}
+	async fn start_inference(
+		&self,
+		run: &Run,
+		token: Uuid,
+		attempt: InferenceAttemptId,
+	) -> Result<()> {
+		let _ = run;
+		assert_eq!(token, self.0.token);
+		self.record("inference.start");
+		self.0.attempts.lock().unwrap().push((attempt, vec![]));
+		Ok(())
+	}
+	async fn append_inference_progress(
+		&self,
+		run: &Run,
+		token: Uuid,
+		attempt: InferenceAttemptId,
+		batch: &[InferenceProgress],
+	) -> Result<()> {
+		let _ = run;
+		assert_eq!(token, self.0.token);
+		self.record("inference.append");
+		assert!(
+			self.0
+				.attempts
+				.lock()
+				.unwrap()
+				.iter()
+				.any(|(id, outcomes)| *id == attempt && outcomes.is_empty()),
+			"progress is appended only to the pending attempt"
+		);
+		if self.0.fail_append {
+			return Err(Error::External("progress store unavailable".into()));
+		}
+		if self.0.block_append {
+			return std::future::pending().await;
+		}
+		self.0
+			.progress
+			.lock()
+			.unwrap()
+			.push((attempt, batch.to_vec()));
+		Ok(())
+	}
+	async fn finish_inference(
+		&self,
+		run: &Run,
+		token: Uuid,
+		attempt: InferenceAttemptId,
+		outcome: ProgressOutcome,
+	) -> Result<()> {
+		let _ = run;
+		assert_eq!(token, self.0.token);
+		self.record("inference.finish");
+		let mut attempts = self.0.attempts.lock().unwrap();
+		let (_, outcomes) = attempts
+			.iter_mut()
+			.find(|(id, _)| *id == attempt)
+			.expect("finished attempt was started");
+		outcomes.push(outcome);
+		Ok(())
 	}
 	async fn emit(&self, workspace: Option<Uuid>, kind: &str, data: Value) -> Result<Event> {
 		let _ = (workspace, kind, data);
@@ -331,7 +468,7 @@ impl ExecutionStore for Backend {
 		assert_eq!(token, self.0.token);
 		assert_eq!(attempt.run_id, run.id);
 		self.record("compaction.begin");
-		let mut attempts = self.0.attempts.lock().unwrap();
+		let mut attempts = self.0.compaction_attempts.lock().unwrap();
 		for (_, outcome) in attempts.iter_mut().filter(|(a, _)| a.run_id == run.id) {
 			outcome.get_or_insert(Outcome::Abandoned);
 		}
@@ -359,7 +496,7 @@ impl ExecutionStore for Backend {
 		self.record("compaction.settle");
 		if let Some((_, outcome)) = self
 			.0
-			.attempts
+			.compaction_attempts
 			.lock()
 			.unwrap()
 			.iter_mut()
@@ -614,6 +751,14 @@ impl ExecutionAuthority for Backend {
 			Ok(())
 		}
 	}
+	async fn recheck_inference(&self) -> Result<()> {
+		self.record("authority.recheck");
+		if self.0.deny_recheck {
+			Err(Error::Forbidden)
+		} else {
+			Ok(())
+		}
+	}
 	fn is_remote(&self) -> bool {
 		false
 	}
@@ -738,12 +883,23 @@ impl ExecutionEnvironment for Backend {
 		let _ = (run, status);
 		unexpected("ExecutionEnvironment.transition_terminal_run_messages")
 	}
-	async fn wait_for_inference_cancellation(&self, run: Uuid) -> Result<()> {
-		let _ = run;
+	async fn wait_for_inference_interruption(
+		&self,
+		run: Uuid,
+		included_input_seq: i64,
+	) -> Result<InferenceInterruption> {
+		let _ = (run, included_input_seq);
 		if self.0.cancel_inference {
-			return Ok(());
+			return Ok(InferenceInterruption::Cancelled);
 		}
-		std::future::pending().await
+		let mut signal = self.0.interruption.subscribe();
+		let interruption = signal
+			.wait_for(Option::is_some)
+			.await
+			.map(|value| value.expect("signalled interruption"))
+			.expect("interruption sender lives with the backend");
+		self.0.interruption.send_replace(None);
+		Ok(interruption)
 	}
 	async fn operator_human_message_media(
 		&self,
@@ -844,7 +1000,11 @@ impl ExecutionVisibility for Backend {
 
 #[async_trait]
 impl ModelProvider for Backend {
-	async fn infer(&self, request: ModelRequest) -> Result<ModelResponse> {
+	async fn infer(
+		&self,
+		request: ModelRequest,
+		progress: &dyn InferenceProgressSink,
+	) -> Result<ModelResponse> {
 		if request.response_format.is_some() {
 			request.ensure_fits(1_000_000).unwrap();
 			assert!(request.tools.is_empty());
@@ -895,6 +1055,25 @@ impl ModelProvider for Backend {
 				reason: "Fixture rejection".into(),
 			});
 		}
+		let script = self
+			.0
+			.scripts
+			.lock()
+			.unwrap()
+			.pop_front()
+			.unwrap_or_default();
+		for step in script {
+			match step {
+				Step::Offer(item) => progress.offer(item),
+				Step::Sleep(duration) => tokio::time::sleep(duration).await,
+				Step::Input(content) => self.add_input(content),
+				Step::Interrupt(interruption) => {
+					self.0.interruption.send_replace(Some(interruption));
+				}
+				Step::Fail(error) => return Err(error),
+			}
+		}
+		self.record("provider.response");
 		Ok(ModelResponse {
 			text: "Completed task".into(),
 			input_tokens: 200,
@@ -998,7 +1177,7 @@ fn fixture() -> Fixture {
 		remote_home: false,
 		human: Mutex::new(None),
 		journal: Mutex::new(vec![]),
-		attempts: Mutex::new(vec![]),
+		compaction_attempts: Mutex::new(vec![]),
 		context_policy: None,
 		overflows: Mutex::new(0),
 		jev_retention: None,
@@ -1010,6 +1189,13 @@ fn fixture() -> Fixture {
 		summary_reservation: false,
 		terminal: None,
 		summarizer_output_tokens: 4096,
+		scripts: Mutex::new(VecDeque::new()),
+		attempts: Mutex::new(vec![]),
+		progress: Mutex::new(vec![]),
+		interruption: tokio::sync::watch::channel(None).0,
+		deny_recheck: false,
+		fail_append: false,
+		block_append: false,
 		cancel_inference: false,
 		usage: Mutex::new(vec![]),
 		stall_provider: AtomicBool::new(false),
@@ -1241,6 +1427,7 @@ async fn inference_rechecks_authority_and_settles_usage_before_accepting_output(
 			name.starts_with("authority.")
 				|| name.starts_with("visibility.")
 				|| name.starts_with("reservation.")
+				|| name.starts_with("inference.")
 				|| name.starts_with("usage.")
 				|| *name == "provider.infer"
 				|| *name == "save"
@@ -1256,7 +1443,9 @@ async fn inference_rechecks_authority_and_settles_usage_before_accepting_output(
 			"usage.dispatch",
 			"authority.suspend",
 			"visibility.suspend",
+			"inference.start",
 			"provider.infer",
+			"authority.suspend",
 			"visibility.resume",
 			"usage.complete",
 			"reservation.settle",
@@ -1453,6 +1642,16 @@ async fn rejected_authority_never_accepts_or_persists_provider_output(
 	let calls = fixture.backend.0.calls.lock().unwrap();
 	assert_eq!(calls.contains(&"provider.infer"), resumed);
 	assert_eq!(calls.contains(&"reservation.settle"), resumed);
+	drop(calls);
+	// Output rejected after the provider call closes its attempt as revoked.
+	let expected = if resumed {
+		vec![vec![ProgressOutcome::Interrupted(
+			InterruptionReason::Revoked,
+		)]]
+	} else {
+		vec![]
+	};
+	assert_eq!(fixture.backend.outcomes(), expected);
 }
 #[rstest]
 #[tokio::test]
@@ -1969,7 +2168,7 @@ async fn summary_stage_fits_history_that_pruning_cannot_and_keeps_the_journal(
 		ContextEvent::Human { .. }
 	));
 	{
-		let attempts = fixture.backend.0.attempts.lock().unwrap();
+		let attempts = fixture.backend.0.compaction_attempts.lock().unwrap();
 		assert_eq!(attempts.len(), 1);
 		assert_eq!(attempts[0].1, Some(Outcome::Adopted));
 	}
@@ -2020,7 +2219,7 @@ async fn invalid_summary_leaves_the_saved_context_unchanged(mut fixture: Fixture
 	assert!(fixture.run.context.execution_summary.is_none());
 	assert!(!events(&fixture).contains(&"context.compacted".to_owned()));
 	assert_eq!(
-		fixture.backend.0.attempts.lock().unwrap()[0].1,
+		fixture.backend.0.compaction_attempts.lock().unwrap()[0].1,
 		Some(Outcome::Invalid)
 	);
 }
@@ -2038,7 +2237,7 @@ async fn summary_stage_is_unavailable_without_a_policy_model(mut fixture: Fixtur
 			aidash_domain::context::recovery::Failure::ContextUnreducible
 		))
 	));
-	assert!(fixture.backend.0.attempts.lock().unwrap().is_empty());
+	assert!(fixture.backend.0.compaction_attempts.lock().unwrap().is_empty());
 	assert!(
 		!fixture
 			.backend
@@ -2080,7 +2279,7 @@ async fn a_summarizer_revoked_during_its_call_is_never_adopted(mut fixture: Fixt
 	assert!(fixture.run.context.execution_summary.is_none());
 	assert!(!events(&fixture).contains(&"context.compacted".to_owned()));
 	assert_eq!(
-		fixture.backend.0.attempts.lock().unwrap()[0].1,
+		fixture.backend.0.compaction_attempts.lock().unwrap()[0].1,
 		Some(Outcome::Unauthorized)
 	);
 	let calls = calls(&fixture);
@@ -2209,11 +2408,18 @@ async fn a_terminal_completion_settles_its_reservation_and_pauses(
 	assert!(matches!(fixture.run.state, RunState::Thinking(_)));
 }
 
+// A trusted local Run releases no authority for Jev, yet its summary sources
+// can still be deleted while pruning is in flight.
 #[rstest]
+#[case::scoped(true)]
+#[case::local(false)]
 #[tokio::test]
-async fn a_summary_dependency_revoked_during_pruning_pauses_before_inference(mut fixture: Fixture) {
+async fn a_summary_dependency_revoked_during_pruning_pauses_before_inference(
+	mut fixture: Fixture,
+	#[case] scoped: bool,
+) {
 	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
-	state.scoped = true;
+	state.scoped = scoped;
 	state.context_policy = Some(recovery_policy(true));
 	state.jev_retention = Some(1.0);
 	*state.summary_text.lock().unwrap() = Some(valid_summary());
@@ -2223,7 +2429,7 @@ async fn a_summary_dependency_revoked_during_pruning_pauses_before_inference(mut
 	assert!(fixture.run.context.execution_summary.is_some());
 
 	// The check before pruning passes; the source is revoked before the
-	// check that follows it, while authority was released for Jev.
+	// check that follows it.
 	let earlier = calls(&fixture).len();
 	let checks = calls(&fixture)
 		.iter()
@@ -2274,10 +2480,9 @@ async fn a_summary_dependency_revoked_during_inference_discards_the_response(
 	advance_sources(&mut fixture).await.unwrap();
 	assert!(fixture.run.context.execution_summary.is_some());
 
-	// Every check before inference passes (a local Run skips the post-pruning
-	// check: it releases no authority for Jev); the source is revoked while
-	// the ordinary model call is in flight.
-	let before_inference = if scoped { 2 } else { 1 };
+	// Every check before inference, before and after pruning, passes; the
+	// source is revoked while the ordinary model call is in flight.
+	let before_inference = 2;
 	let earlier = calls(&fixture).len();
 	let checks = calls(&fixture)
 		.iter()
@@ -2336,7 +2541,7 @@ async fn a_source_revoked_while_the_summarizer_runs_is_never_adopted(mut fixture
 	assert_eq!(fixture.run.context.history, before);
 	assert!(!events(&fixture).contains(&"context.compacted".to_owned()));
 	{
-		let attempts = fixture.backend.0.attempts.lock().unwrap();
+		let attempts = fixture.backend.0.compaction_attempts.lock().unwrap();
 		assert_eq!(attempts.len(), 1);
 		assert_eq!(attempts[0].1, Some(Outcome::Unauthorized));
 	}
@@ -2373,7 +2578,7 @@ async fn a_source_revoked_before_the_summarizer_call_is_never_disclosed(mut fixt
 	assert!(!calls.contains(&"authority.summary_reserve"), "{calls:?}");
 	assert!(fixture.run.context.execution_summary.is_none());
 	assert_eq!(fixture.run.context.history, before);
-	let attempts = fixture.backend.0.attempts.lock().unwrap();
+	let attempts = fixture.backend.0.compaction_attempts.lock().unwrap();
 	assert_eq!(attempts.len(), 1);
 	assert_eq!(attempts[0].1, Some(Outcome::Unauthorized));
 }
@@ -2404,7 +2609,7 @@ async fn a_source_revoked_while_the_reservation_holds_releases_it(mut fixture: F
 	let position = |name| calls.iter().position(|call| *call == name).unwrap();
 	assert!(position("authority.summary_reserve") < position("reservation.abort"));
 	assert_eq!(fixture.run.context.history, before);
-	let attempts = fixture.backend.0.attempts.lock().unwrap();
+	let attempts = fixture.backend.0.compaction_attempts.lock().unwrap();
 	assert_eq!(attempts.len(), 1);
 	assert_eq!(attempts[0].1, Some(Outcome::Unauthorized));
 }
@@ -2437,7 +2642,7 @@ async fn a_trusted_local_summary_rechecks_its_sources_after_the_call(mut fixture
 	assert!(fixture.run.context.execution_summary.is_none());
 	assert_eq!(fixture.run.context.history, before);
 	assert!(!events(&fixture).contains(&"context.compacted".to_owned()));
-	let attempts = fixture.backend.0.attempts.lock().unwrap();
+	let attempts = fixture.backend.0.compaction_attempts.lock().unwrap();
 	assert_eq!(attempts.len(), 1);
 	assert_eq!(attempts[0].1, Some(Outcome::Unauthorized));
 }
@@ -2489,7 +2694,7 @@ async fn a_carried_source_revoked_while_the_summarizer_runs_is_never_readopted(
 			.digest,
 		first
 	);
-	let attempts = fixture.backend.0.attempts.lock().unwrap();
+	let attempts = fixture.backend.0.compaction_attempts.lock().unwrap();
 	assert_eq!(attempts.last().unwrap().1, Some(Outcome::Unauthorized));
 }
 
@@ -2560,6 +2765,350 @@ fn fixture_with(configure: impl FnOnce(&mut State)) -> Fixture {
 	let mut fixture = fixture();
 	configure(Arc::get_mut(&mut fixture.backend.0).unwrap());
 	fixture
+}
+
+/// Counts metric updates made on the test thread; histograms count recordings.
+#[derive(Default)]
+struct Metrics(Mutex<BTreeMap<String, Arc<Count>>>);
+#[derive(Default)]
+struct Count(AtomicU64);
+impl metrics::CounterFn for Count {
+	fn increment(&self, value: u64) {
+		self.0.fetch_add(value, Ordering::Relaxed);
+	}
+	fn absolute(&self, value: u64) {
+		self.0.fetch_max(value, Ordering::Relaxed);
+	}
+}
+impl metrics::HistogramFn for Count {
+	fn record(&self, _: f64) {
+		self.0.fetch_add(1, Ordering::Relaxed);
+	}
+}
+impl Metrics {
+	fn handle(&self, key: &metrics::Key) -> Arc<Count> {
+		let mut name = key.name().to_owned();
+		for label in key.labels() {
+			name.push_str(&format!("{{{}={}}}", label.key(), label.value()));
+		}
+		self.0.lock().unwrap().entry(name).or_default().clone()
+	}
+	fn get(&self, name: &str) -> u64 {
+		let counts = self.0.lock().unwrap();
+		counts
+			.get(name)
+			.map_or(0, |count| count.0.load(Ordering::Relaxed))
+	}
+}
+impl metrics::Recorder for Metrics {
+	fn describe_counter(
+		&self,
+		_: metrics::KeyName,
+		_: Option<metrics::Unit>,
+		_: metrics::SharedString,
+	) {
+	}
+	fn describe_gauge(
+		&self,
+		_: metrics::KeyName,
+		_: Option<metrics::Unit>,
+		_: metrics::SharedString,
+	) {
+	}
+	fn describe_histogram(
+		&self,
+		_: metrics::KeyName,
+		_: Option<metrics::Unit>,
+		_: metrics::SharedString,
+	) {
+	}
+	fn register_counter(&self, key: &metrics::Key, _: &metrics::Metadata<'_>) -> metrics::Counter {
+		metrics::Counter::from_arc(self.handle(key))
+	}
+	fn register_gauge(&self, _: &metrics::Key, _: &metrics::Metadata<'_>) -> metrics::Gauge {
+		metrics::Gauge::noop()
+	}
+	fn register_histogram(
+		&self,
+		key: &metrics::Key,
+		_: &metrics::Metadata<'_>,
+	) -> metrics::Histogram {
+		metrics::Histogram::from_arc(self.handle(key))
+	}
+}
+
+fn thinking(mut fixture: Fixture) -> Fixture {
+	Arc::get_mut(&mut fixture.backend.0).unwrap().scoped = true;
+	fixture.run.state = RunState::Thinking(ThinkingState::default());
+	fixture
+}
+fn position(calls: &[&str], name: &str) -> usize {
+	calls
+		.iter()
+		.position(|call| *call == name)
+		.unwrap_or_else(|| panic!("{name} was not called"))
+}
+
+#[rstest]
+#[tokio::test(start_paused = true)]
+async fn streamed_progress_is_stored_before_the_response_is_accepted(fixture: Fixture) {
+	// Arrange
+	let metrics = Metrics::default();
+	let _recorder = metrics::set_default_local_recorder(&metrics);
+	let mut fixture = thinking(fixture);
+	fixture.backend.script(vec![
+		text("Completed "),
+		Step::Sleep(FLUSH_INTERVAL * 2),
+		text("task"),
+	]);
+	// Act
+	advance_sources(&mut fixture).await.unwrap();
+	// Assert
+	let calls = fixture.backend.calls();
+	assert!(position(&calls, "inference.append") < position(&calls, "provider.response"));
+	assert!(position(&calls, "inference.start") < position(&calls, "provider.infer"));
+	assert!(calls.contains(&"reservation.settle"));
+	let response = &fixture.run.state.tool().unwrap().response;
+	assert_eq!(fixture.backend.progress_text(), response.text);
+	assert_eq!(fixture.backend.outcomes(), [[ProgressOutcome::Accepted]]);
+	assert_eq!(fixture.backend.events().last().unwrap(), "model.completed");
+	assert_eq!(metrics.get("aidash_inference_first_delta_seconds"), 1);
+	assert_eq!(metrics.get("aidash_inference_accepted_seconds"), 1);
+}
+
+#[rstest]
+#[tokio::test(start_paused = true)]
+async fn cancellation_mid_stream_interrupts_without_settling_or_tool_state(fixture: Fixture) {
+	// Arrange
+	let metrics = Metrics::default();
+	let _recorder = metrics::set_default_local_recorder(&metrics);
+	let mut fixture = thinking(fixture);
+	fixture.backend.script(vec![
+		text("Partial"),
+		Step::Sleep(FLUSH_INTERVAL * 2),
+		Step::Interrupt(InferenceInterruption::Cancelled),
+		Step::Sleep(Duration::from_secs(60)),
+	]);
+	// Act
+	let result = advance_sources(&mut fixture).await;
+	// Assert
+	assert!(matches!(result, Err(Error::Conflict(_))));
+	assert_eq!(fixture.backend.progress_text(), "Partial");
+	assert_eq!(
+		fixture.backend.outcomes(),
+		[[ProgressOutcome::Interrupted(InterruptionReason::Cancelled)]]
+	);
+	let calls = fixture.backend.calls();
+	assert!(!calls.contains(&"reservation.settle"));
+	assert!(!calls.contains(&"provider.response"));
+	assert_eq!(fixture.run.phase(), RunPhase::Thinking);
+	assert!(
+		!fixture
+			.backend
+			.events()
+			.contains(&"model.completed".to_owned())
+	);
+	assert_eq!(
+		metrics.get("aidash_inference_interruptions_total{reason=cancelled}"),
+		1
+	);
+}
+
+#[rstest]
+#[tokio::test(start_paused = true)]
+async fn new_input_mid_stream_discards_the_attempt_and_replans_with_it(fixture: Fixture) {
+	// Arrange
+	let metrics = Metrics::default();
+	let _recorder = metrics::set_default_local_recorder(&metrics);
+	let mut fixture = thinking(fixture);
+	fixture.backend.script(vec![
+		Step::Offer(InferenceProgress::ToolCall {
+			index: 0,
+			id: Some("call-1".into()),
+			name: Some("workspace_write".into()),
+			argument_bytes: 12,
+		}),
+		Step::Sleep(FLUSH_INTERVAL * 2),
+		Step::Input("Use the revised plan"),
+		Step::Interrupt(InferenceInterruption::Superseded),
+		Step::Sleep(Duration::from_secs(60)),
+	]);
+	// Act
+	advance_sources(&mut fixture).await.unwrap();
+	// Assert
+	assert_eq!(fixture.run.phase(), RunPhase::Thinking);
+	assert_eq!(fixture.run.step, 0);
+	assert_eq!(
+		fixture.backend.events().last().unwrap(),
+		"run.message_received"
+	);
+	assert_eq!(fixture.backend.outcomes(), [[ProgressOutcome::Discarded]]);
+	let calls = fixture.backend.calls();
+	assert!(!calls.contains(&"reservation.settle"));
+	assert!(!calls.contains(&"provider.response"));
+	assert!(
+		!fixture
+			.backend
+			.events()
+			.contains(&"model.completed".to_owned())
+	);
+	assert_eq!(
+		metrics.get("aidash_inference_interruptions_total{reason=correction}"),
+		1
+	);
+
+	// Act: the next step plans again and includes the new input.
+	advance_sources(&mut fixture).await.unwrap();
+	// Assert
+	let requests = fixture.backend.0.requests.lock().unwrap();
+	assert!(!format!("{:?}", requests[0]).contains("Use the revised plan"));
+	assert!(format!("{:?}", requests[1]).contains("Use the revised plan"));
+	drop(requests);
+	assert_eq!(fixture.run.phase(), RunPhase::ToolCall);
+	assert_eq!(
+		fixture.backend.outcomes(),
+		[[ProgressOutcome::Discarded], [ProgressOutcome::Accepted]]
+	);
+}
+
+#[rstest]
+#[tokio::test(start_paused = true)]
+async fn revoked_authority_mid_stream_interrupts_and_stops_progress(fixture: Fixture) {
+	// Arrange
+	let metrics = Metrics::default();
+	let _recorder = metrics::set_default_local_recorder(&metrics);
+	let mut fixture = thinking(fixture);
+	Arc::get_mut(&mut fixture.backend.0).unwrap().deny_recheck = true;
+	fixture.backend.script(
+		(0..50)
+			.flat_map(|_| [text("chunk "), Step::Sleep(Duration::from_millis(100))])
+			.collect(),
+	);
+	// Act
+	let result = advance_sources(&mut fixture).await;
+	// Assert
+	assert!(matches!(result, Err(Error::Forbidden)));
+	assert_eq!(
+		fixture.backend.outcomes(),
+		[[ProgressOutcome::Interrupted(InterruptionReason::Revoked)]]
+	);
+	let calls = fixture.backend.calls();
+	let recheck = position(&calls, "authority.recheck");
+	assert!(calls[..recheck].contains(&"inference.append"));
+	assert!(!calls[recheck..].contains(&"inference.append"));
+	assert!(!calls.contains(&"reservation.settle"));
+	assert!(!calls.contains(&"provider.response"));
+	assert_eq!(fixture.run.phase(), RunPhase::Thinking);
+	assert_eq!(
+		metrics.get("aidash_inference_interruptions_total{reason=revoked}"),
+		1
+	);
+}
+
+#[rstest]
+#[case::stall(Error::InferenceStalled, InterruptionReason::Stall)]
+#[case::stream_error(Error::External("connection reset".into()), InterruptionReason::StreamError)]
+#[tokio::test(start_paused = true)]
+async fn failed_streams_store_their_progress_then_interrupt(
+	fixture: Fixture,
+	#[case] error: Error,
+	#[case] reason: InterruptionReason,
+) {
+	// Arrange
+	let mut fixture = thinking(fixture);
+	let expected = std::mem::discriminant(&error);
+	fixture
+		.backend
+		.script(vec![text("Partial"), Step::Fail(error)]);
+	// Act
+	let result = advance_sources(&mut fixture).await;
+	// Assert
+	assert_eq!(std::mem::discriminant(&result.unwrap_err()), expected);
+	assert_eq!(fixture.backend.progress_text(), "Partial");
+	let calls = fixture.backend.calls();
+	assert!(position(&calls, "inference.append") < position(&calls, "inference.finish"));
+	assert!(!calls.contains(&"reservation.settle"));
+	assert_eq!(
+		fixture.backend.outcomes(),
+		[[ProgressOutcome::Interrupted(reason)]]
+	);
+	assert_eq!(fixture.run.phase(), RunPhase::Thinking);
+}
+
+#[rstest]
+#[tokio::test(start_paused = true)]
+async fn flooding_progress_stays_bounded_and_counts_drops(fixture: Fixture) {
+	// Arrange
+	let metrics = Metrics::default();
+	let _recorder = metrics::set_default_local_recorder(&metrics);
+	let mut fixture = thinking(fixture);
+	let escaped = "\"".repeat(20 * 1024);
+	let chunk = "x".repeat(1024);
+	let mut script = vec![text(&escaped)];
+	script.extend((0..1024).map(|_| text(&chunk)));
+	fixture.backend.script(script);
+	// Act
+	advance_sources(&mut fixture).await.unwrap();
+	// Assert
+	assert_eq!(fixture.backend.progress_text().len(), MAX_PENDING_BYTES);
+	let accepted_chunks = (MAX_PENDING_BYTES - escaped.len()) / chunk.len();
+	assert_eq!(
+		metrics.get("aidash_inference_progress_coalesced_total"),
+		(1024 - accepted_chunks) as u64
+	);
+	let progress = fixture.backend.0.progress.lock().unwrap();
+	assert!(
+		progress
+			.iter()
+			.flat_map(|(_, batch)| batch)
+			.all(|item| serde_json::to_vec(item).unwrap().len() <= MAX_PROGRESS_ITEM_BYTES)
+	);
+	drop(progress);
+	assert_eq!(fixture.backend.outcomes(), [[ProgressOutcome::Accepted]]);
+}
+
+#[rstest]
+#[tokio::test(start_paused = true)]
+async fn failed_progress_append_stops_display_but_not_inference(fixture: Fixture) {
+	// Arrange
+	let mut fixture = thinking(fixture);
+	Arc::get_mut(&mut fixture.backend.0).unwrap().fail_append = true;
+	fixture.backend.script(vec![
+		text("Completed "),
+		Step::Sleep(FLUSH_INTERVAL * 2),
+		text("task"),
+		Step::Sleep(FLUSH_INTERVAL * 2),
+	]);
+	// Act
+	advance_sources(&mut fixture).await.unwrap();
+	// Assert
+	let calls = fixture.backend.calls();
+	assert_eq!(
+		calls
+			.iter()
+			.filter(|call| **call == "inference.append")
+			.count(),
+		1
+	);
+	assert_eq!(fixture.run.phase(), RunPhase::ToolCall);
+	assert_eq!(fixture.backend.outcomes(), [[ProgressOutcome::Accepted]]);
+}
+
+#[rstest]
+#[tokio::test(start_paused = true)]
+async fn a_blocked_progress_append_cannot_hold_a_completed_response(fixture: Fixture) {
+	// Arrange
+	let mut fixture = thinking(fixture);
+	Arc::get_mut(&mut fixture.backend.0).unwrap().block_append = true;
+	fixture.backend.script(vec![text("Completed task")]);
+	let started = tokio::time::Instant::now();
+	// Act
+	advance_sources(&mut fixture).await.unwrap();
+	// Assert: the response is accepted once the bounded append expires.
+	assert!(started.elapsed() <= progress::APPEND_TIMEOUT + FLUSH_INTERVAL);
+	assert_eq!(fixture.run.phase(), RunPhase::ToolCall);
+	assert_eq!(fixture.backend.outcomes(), [[ProgressOutcome::Accepted]]);
+	assert!(fixture.backend.progress_text().is_empty());
 }
 
 fn default_tools() -> Vec<&'static str> {

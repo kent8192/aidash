@@ -321,6 +321,7 @@ fn events(context: &Value) -> Vec<(&Value, &Value)> {
 		.as_array()
 		.into_iter()
 		.flatten()
+		.map(|entry| entry.get("event").unwrap_or(entry))
 		.filter(|event| event["kind"] == "tool")
 		.map(|event| (&event["call"], &event["result"]))
 		.collect()

@@ -550,7 +550,7 @@ impl Guard {
 		if let Some(federation) = &self.remote {
 			let description = super::peer::semantic::admission(federation, &self.run).await?;
 			let (index_revision, participant_revision) = match &description.semantic {
-				aidash_domain::semantic::remote::Binding::Disabled {} => (None, None),
+				aidash_domain::semantic::remote::Binding::Disabled { .. } => (None, None),
 				aidash_domain::semantic::remote::Binding::RequiredHome {
 					index_revision,
 					native,

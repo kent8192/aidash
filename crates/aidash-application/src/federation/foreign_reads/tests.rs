@@ -226,7 +226,7 @@ fn scope(run: RunMetadata) -> Scope {
 			compactor: None,
 		},
 		expires_at: now + chrono::Duration::minutes(10),
-		semantic: Binding::Disabled {},
+		semantic: Binding::Disabled { summarizer: None },
 	};
 	let bundle: PolicyBundle = serde_json::from_value(json!({"tenant":"acme","subjects":{
         "root":{"kind":"user"},"aidash://local/agents/a@1.0.0":{"kind":"agent"}}}))

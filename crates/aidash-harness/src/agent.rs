@@ -6,6 +6,7 @@ use aidash_domain::{
 	media::Selection,
 	model::ModelConfig,
 	projection::{ProjectionVersion, PromptCache},
+	provider::progress::{InferenceAttemptId, InterruptionReason, ProgressOutcome},
 	provider::usage::{RequestEstimate, UsageDispatch, UsageOutcome},
 	registry::bindings::{AgentBindings, BindingSnapshot},
 	semantic::{Failure, InputRead},
@@ -60,6 +61,39 @@ impl<'a> Executor<'a> {
 				.await?;
 		}
 		self.tool_error(run, token, call, cursor, message).await
+	}
+	/// Record a non-accepted outcome of an Inference Attempt.
+	async fn close_inference(
+		&self,
+		run: &Run,
+		token: Uuid,
+		attempt: InferenceAttemptId,
+		outcome: ProgressOutcome,
+	) -> Result<()> {
+		self.environment
+			.store()
+			.finish_inference(run, token, attempt, outcome)
+			.await?;
+		metrics::counter!("aidash_inference_interruptions_total", "reason" => outcome.reason())
+			.increment(1);
+		Ok(())
+	}
+	/// Record why an attempt ended without an Accepted Response. A failed write is
+	/// only logged so the caller's error survives; a later attempt or terminal
+	/// transition closes an attempt left pending.
+	async fn interrupt_inference(
+		&self,
+		run: &Run,
+		token: Uuid,
+		attempt: InferenceAttemptId,
+		reason: InterruptionReason,
+	) {
+		if let Err(error) = self
+			.close_inference(run, token, attempt, ProgressOutcome::Interrupted(reason))
+			.await
+		{
+			tracing::warn!(run_id = %run.id, %attempt, %error, "inference outcome was not recorded; a later attempt closes it");
+		}
 	}
 	async fn publish_model_text(
 		&self,
@@ -292,13 +326,15 @@ impl<'a> Executor<'a> {
 			guard.suspend().await?;
 		}
 		visibility.suspend().await?;
+		// Only cancellation interrupts a summary: no input sequence is newer
+		// than `i64::MAX`, and new input does not change the summarized range.
 		let result = tokio::select! {
 			biased;
-			cancelled = self.environment.wait_for_inference_cancellation(run.id) => match cancelled {
-				Ok(()) => Err(Error::Conflict("run cancelled during context summary".into())),
+			interrupted = self.environment.wait_for_inference_interruption(run.id, i64::MAX) => match interrupted {
+				Ok(_) => Err(Error::Conflict("run cancelled during context summary".into())),
 				Err(error) => Err(error),
 			},
-			result = provider.infer(request) => result,
+			result = provider.infer(request, &aidash_application::ports::NoProgress) => result,
 		};
 		let resumed = visibility.resume().await;
 		if let Some(reservation) = reservation
@@ -1077,11 +1113,10 @@ impl<'a> Executor<'a> {
                 let compactor = self.environment.compactor()?;
                 let fitting = aidash_application::context::Fitting { budget: &budget, pinned: &pinned, policy: &policy };
                 let compaction = compact_execution(&mut context, compactor.as_ref(), &fitting).await.map_err(|error| remote_budget(guard, error))?;
-                // Pruning may release authority for Jev I/O; a source revoked
-                // meanwhile must reach neither the summarizer nor the model.
-                if guard.is_some() {
-                    self.pause_if_summary_revoked(run, token, guard, home.as_ref(), &mut context).await?;
-                }
+                // Pruning may release authority for Jev I/O, and a local Run's
+                // sources may change during it too; a source revoked meanwhile
+                // must reach neither the summarizer nor the model.
+                self.pause_if_summary_revoked(run, token, guard, home.as_ref(), &mut context).await?;
                 match compaction {
                     aidash_application::context::Compaction::Fits => {}
                     aidash_application::context::Compaction::NeedsSummary(plan) => {
@@ -1116,14 +1151,15 @@ impl<'a> Executor<'a> {
 					None
 				};
 				// Each provider call is a new Inference Attempt. Its Usage Record is
-				// durable before provider I/O and is keyed apart from the lease.
-				let attempt = Uuid::now_v7();
+				// durable before provider I/O and is keyed apart from the lease; its
+				// displayed progress shares the same identifier.
+				let attempt = InferenceAttemptId::new();
 				store
 					.record_usage_dispatch(
 						run,
 						token,
 						&UsageDispatch {
-							attempt,
+							attempt: attempt.0,
 							lease: token,
 							response_epoch: response_epoch(run.revision, run.step),
 							model_id: agent.model.id.clone(),
@@ -1140,60 +1176,171 @@ impl<'a> Executor<'a> {
 					guard.suspend().await?;
 				}
 				visibility.suspend().await?;
-				let result = tokio::select! {
-					biased;
-					cancelled = self.environment.wait_for_inference_cancellation(run.id) => match cancelled {
-						Ok(()) => Err(Error::Conflict("run cancelled during inference".into())),
-						Err(error) => Err(error),
-					},
-					result = model.infer(request) => result,
+				// Recording the attempt locks the Run row, which the authority scope
+				// can hold until it is suspended.
+				if let Err(error) = store.start_inference(run, token, attempt).await {
+					visibility.resume().await?;
+					return Err(error);
+				}
+				let started = tokio::time::Instant::now();
+				let progress = progress::ProgressBuffer::new(started);
+				let provider = async {
+					let infer = async {
+						let result = model.infer(request, &progress).await;
+						progress.finish();
+						result
+					};
+					// The flusher stores the remainder before the outcome is recorded.
+					tokio::join!(infer, progress.flush(store, run, token, attempt)).0
 				};
-				let resumed = visibility.resume().await;
-				// Cancellation, timeouts and unreadable responses leave usage unknown.
-				// A truncated or refused completion still reports its billed usage,
-				// and a typed Context Overflow is a provider rejection.
-				let outcome = match (&result, settled_usage(&result)) {
-					(_, Some(response)) => UsageOutcome::Completed(response.reported.clone()),
-					(Err(Error::ProviderRejected { .. } | Error::ContextOverflow), None) => {
-						UsageOutcome::Rejected {
-							class: "provider_rejected".into(),
+				let recheck = async {
+					let Some(guard) = guard else {
+						return std::future::pending().await;
+					};
+					loop {
+						tokio::time::sleep(INFERENCE_RECHECK_INTERVAL).await;
+						if let Err(error) = guard.recheck_inference().await {
+							return error;
 						}
 					}
-					_ => UsageOutcome::Unknown,
 				};
-				let recorded = store.complete_usage_record(run, attempt, &outcome).await;
-				if let Some(reservation) = reservation
-					&& let Some(response) = settled_usage(&result)
+				let inference = tokio::select! {
+					biased;
+					interrupted = self.environment.wait_for_inference_interruption(run.id, input_seq) => match interrupted {
+						Ok(InferenceInterruption::Cancelled) => Inference::Interrupted(InterruptionReason::Cancelled, Error::Conflict("run cancelled during inference".into())),
+						Ok(InferenceInterruption::Superseded) => Inference::Superseded,
+						Err(error) => Inference::Interrupted(InterruptionReason::StreamError, error),
+					},
+					error = recheck => Inference::Interrupted(InterruptionReason::Revoked, error),
+					result = provider => match result {
+						Ok(response) => Inference::Response(response),
+						Err(error @ Error::InferenceStalled) => Inference::Interrupted(InterruptionReason::Stall, error),
+						Err(error) => Inference::Interrupted(InterruptionReason::StreamError, error),
+					},
+				};
+				// A recheck dropped by another branch can stop after reacquiring the
+				// authority scope; release it before outcome writes lock the Run row.
+				if let Some(guard) = guard
+					&& let Err(error) = guard.suspend().await
 				{
-					// Provider usage is billable even when authorization changed
-					// or a transaction committed while its result was in flight.
-					reservation.settle(response).await?;
+					visibility.resume().await?;
+					return Err(error);
 				}
-				let result = result.map_err(Error::settled);
-				resumed?;
-				let result = match result {
-					Err(Error::ContextOverflow) => {
+				let resumed = visibility.resume().await;
+				// Cancellation, supersession, stalls and unreadable responses leave
+				// usage unknown. A truncated or refused completion still reports its
+				// billed usage, and a typed Context Overflow is a provider rejection.
+				let outcome = match &inference {
+					Inference::Response(response) => UsageOutcome::Completed(response.reported.clone()),
+					Inference::Interrupted(_, error) => match error.terminal_usage() {
+						Some(response) => UsageOutcome::Completed(response.reported.clone()),
+						None if matches!(error, Error::ProviderRejected { .. } | Error::ContextOverflow) => {
+							UsageOutcome::Rejected {
+								class: "provider_rejected".into(),
+							}
+						}
+						None => UsageOutcome::Unknown,
+					},
+					Inference::Superseded => UsageOutcome::Unknown,
+				};
+				let recorded = store.complete_usage_record(run, attempt.0, &outcome).await;
+				let result = match inference {
+					Inference::Response(response) => response,
+					Inference::Superseded => {
+						self.close_inference(run, token, attempt, ProgressOutcome::Discarded)
+							.await?;
+						resumed?;
+						recorded?;
 						if let Some(guard) = guard {
 							guard.resume().await?;
 						}
-						recorded?;
-						return self
-							.context_overflowed(run, token, request_tokens, &policy)
-							.await;
+						// Like a stored response that predates new input: keep the
+						// inference allowance and offer the same media, reads and
+						// unconsumed deferrals to the next request.
+						let pending = ToolCallState {
+							media_inferred_seq_before_response,
+							observed_input_seq_before_response,
+							inferred_selected_media: selected_media,
+							media_intake_through_seq: intake_seq,
+							required_run_message_reads,
+							..Default::default()
+						};
+						let next_pending = stale_media_pending(
+							&mut context,
+							&pending,
+							&mut run.observed_input_seq,
+						);
+						run.context = context;
+						run.state = RunState::Thinking(ThinkingState {
+							force_workspace_read_compaction: thinking
+								.force_workspace_read_compaction,
+							deferred_workspace_read: thinking.deferred_workspace_read.clone(),
+							deferred_skill_read: thinking.deferred_skill_read.clone(),
+							deferred_workspace_observation: thinking
+								.deferred_workspace_observation
+								.clone(),
+							..next_pending
+						});
+						store.save_run(run, token, "run.message_received").await?;
+						return Ok(());
 					}
-					result => result?,
+					Inference::Interrupted(reason, error) => {
+						self.interrupt_inference(run, token, attempt, reason).await;
+						// A truncated or refused completion is billed even though its
+						// output is never dispatched.
+						if let Some(reservation) = reservation
+							&& let Some(response) = error.terminal_usage()
+						{
+							reservation.settle(response).await?;
+						}
+						resumed?;
+						if matches!(error, Error::ContextOverflow) {
+							if let Some(guard) = guard {
+								guard.resume().await?;
+							}
+							recorded?;
+							return self
+								.context_overflowed(run, token, request_tokens, &policy)
+								.await;
+						}
+						// A failed record write never hides the inference error.
+						return Err(error.settled());
+					}
 				};
-				// A failed record write never hides the inference error above.
-				recorded?;
-				if let Some(guard) = guard {
-					guard.resume().await?;
+				// Provider usage is billable even when authorization changed
+				// or a transaction committed while its result was in flight.
+				if let Some(reservation) = reservation
+					&& let Err(error) = reservation.settle(&result).await
+				{
+					self.interrupt_inference(run, token, attempt, InterruptionReason::StreamError)
+						.await;
+					return Err(error);
+				}
+				if let Err(error) = resumed.and(recorded) {
+					self.interrupt_inference(run, token, attempt, InterruptionReason::StreamError)
+						.await;
+					return Err(error);
+				}
+				if let Some(guard) = guard
+					&& let Err(error) = guard.resume().await
+				{
+					// Authority changed while the provider ran; its output is never accepted.
+					self.interrupt_inference(run, token, attempt, InterruptionReason::Revoked)
+						.await;
+					return Err(error);
 				}
 				// Authority was released during inference, and a local Run's
 				// sources may change meanwhile too: a summary source revoked
 				// meanwhile discards the response before any of it is accepted,
 				// published or dispatched.
-				self.pause_if_summary_revoked(run, token, guard, home.as_ref(), &mut context)
-					.await?;
+				if let Err(error) = self
+					.pause_if_summary_revoked(run, token, guard, home.as_ref(), &mut context)
+					.await
+				{
+					self.interrupt_inference(run, token, attempt, InterruptionReason::Revoked)
+						.await;
+					return Err(error);
+				}
 				// Count only tool content that survived compaction and was present
 				// in a successful provider request, not every completed read.
 				capture_declared_coverage(&mut context, &tools, true);
@@ -1262,6 +1409,8 @@ impl<'a> Executor<'a> {
 				}));
 				run.error = None;
 				store.save_run(run, token, "model.completed").await?;
+				metrics::histogram!("aidash_inference_accepted_seconds")
+					.record(started.elapsed().as_secs_f64());
 				Ok(())
 			})
 			.await?,
@@ -1950,6 +2099,16 @@ impl<'a> Executor<'a> {
 		Ok(())
 	}
 }
+
+/// Authority is rechecked at most this often while the provider call runs.
+const INFERENCE_RECHECK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
+
+enum Inference {
+	Response(aidash_domain::provider::ModelResponse),
+	/// A newer Run input arrived; the attempt is discarded and replanned.
+	Superseded,
+	Interrupted(InterruptionReason, Error),
+}
 fn declared_message_read_range(
 	tools: &Tools,
 	event: &ContextEvent,
@@ -2374,5 +2533,6 @@ fn summary_dependencies(
 	dependencies
 }
 
+mod progress;
 #[cfg(test)]
 mod tests;

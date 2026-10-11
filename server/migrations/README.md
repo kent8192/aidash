@@ -41,8 +41,8 @@ the pinned revision incorporates
 [#6638](https://github.com/kent8192/reinhardt-web/issues/6638). The final snapshot
 records the registered model metadata. These migrations extend the original table definitions and preserve their SQL
 assets. The environment migration additionally records conditional extension
-ownership before this new native history is published. The complete native graph contains 54
-records and describes 117 models.
+ownership before this new native history is published. The complete native graph contains 57
+records and describes 119 models.
 
 The original baseline has 36 migrations for physical schema creation and eight
 `0007_model_state` snapshots. The desktop addition brings this to 37 physical
@@ -252,9 +252,11 @@ Binding and native memory histories converge in `registry/0015_binding_memory_me
 
 `registry/0019_deferred_exposure` admits the Agent `exposure` key (`legacy@1` or `deferred@1` with its byte budgets), Binding `exposure` (`eager` or `deferred`) under `deferred@1`, and the `core.exposure@1` and `skill_asset_read` builtin descriptors. It builds on the `registry/0018_prompt_cache` Agent contract, keeping its `projection_version` and `prompt_cache` keys, and adds `exposure` to the current installation guard's Agent override allowlist read from `pg_get_functiondef`; the edit raises if its anchor is missing. Rollback restores the `0018_prompt_cache` function bodies and withdraws the override. Function bodies and catalog-driven edits have no typed Reinhardt operation, so they live in SQL assets.
 
+`registry/0020_model_streaming_config` admits the model `streaming` and `stream_stall_timeout_secs` keys. It edits the current `registry_model_config` allowlist read from `pg_get_constraintdef` and the model section of the current installation guard read from `pg_get_functiondef`, so earlier additions such as `cache_mode` and the `registry/0019_deferred_exposure` Agent `exposure` override survive; each edit raises if its anchor is missing. The separate `registry_model_streaming` constraint validates the types. Rollback refuses while any model Definition, Package or installation override uses the keys, then withdraws exactly those edits. Catalog-driven edits have no typed Reinhardt operation, so they live in SQL assets.
+
 `execution/0012_inference_usage` creates the per-attempt Usage Record table with typed operations, including its Run reference, outcome and count checks, `created_at` default and `(run_id, outcome)` lookup index. The generated state-only checkpoint `execution/0013_inference_usage_model_state` removes those from the ORM snapshot without dropping them physically. `projection_version` is `integer` because the pinned ORM model macro has no Rust mapping for `smallint`.
 
-`execution/0014_context_journal` follows `execution/0013_inference_usage_model_state`
+`execution/0016_context_journal` follows `execution/0015_inference_progress_state`
 and creates the append-only `run_context_events`
 Context Journal and `context_compaction_attempts` with typed operations: composite
 `(run_id, seq)` key, cascading Run references, origin/stage/outcome CHECKs, a
@@ -262,7 +264,7 @@ Context Journal and `context_compaction_attempts` with typed operations: composi
 attempt per Run. Only the two `atomic_write_guard` statement triggers use
 `RunSQL`, because the typed API cannot express trigger DDL. Like the desktop
 schema, this physical migration is database-only and precedes its state-only
-model snapshot `execution/0015_context_journal_model_state`. `runs.context`
+model snapshot `execution/0017_context_journal_model_state`. `runs.context`
 remains the lossy projection; stored projections written before the journal are
 upgraded when decoded, and their first save, or the worker before their first
 pruning or summary, journals those events as `imported`.

@@ -297,7 +297,11 @@ struct Model {
 }
 #[async_trait]
 impl ModelProvider for Model {
-	async fn infer(&self, request: ModelRequest) -> Result<ModelResponse> {
+	async fn infer(
+		&self,
+		request: ModelRequest,
+		_: &dyn crate::ports::InferenceProgressSink,
+	) -> Result<ModelResponse> {
 		{
 			let mut s = self.repository.state.lock().unwrap();
 			assert!(!s.active);

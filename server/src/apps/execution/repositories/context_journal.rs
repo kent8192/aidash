@@ -304,7 +304,8 @@ impl Store {
 		.await?;
 		let through = through
 			.ok_or_else(|| Error::Conflict("compaction attempt is no longer open".into()))?;
-		self.save_run_in(&mut tx, run, worker, "context.compacted")
+		let (_, closed) = self
+			.save_run_in(&mut tx, run, worker, "context.compacted")
 			.await?;
 		if signed(head(&mut tx, run.id).await?)? < through {
 			return Err(Error::Conflict(
@@ -316,6 +317,8 @@ impl Store {
 				"compaction attempt is no longer open".into(),
 			));
 		}
-		tx.commit().await
+		tx.commit().await?;
+		super::inference::record_interruptions(&closed);
+		Ok(())
 	}
 }
