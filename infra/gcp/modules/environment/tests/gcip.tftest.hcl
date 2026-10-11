@@ -32,6 +32,10 @@ run "password_and_sso_tenants_are_separate" {
     condition     = google_identity_platform_tenant_inbound_saml_config.saml["sso/saml.company"].sp_config[0].callback_uri == "https://aidash-fixture.firebaseapp.com/__/auth/handler" && output.gcip.auth_helper == "firebase"
     error_message = "Until this environment's bundle proxies the sign-in helper, SAML must post to Firebase's helper."
   }
+  assert {
+    condition     = var.gcip_tenants["password"].mfa.state == "disabled" && var.gcip_tenants["sso"].mfa.state == "disabled"
+    error_message = "An omitted MFA Requirement must be declared disabled."
+  }
 }
 run "saml_posts_to_the_proxied_helper_with_its_bundle" {
   command = plan
@@ -52,5 +56,10 @@ run "saml_posts_to_the_proxied_helper_with_its_bundle" {
 run "sso_cannot_enable_password_signup" {
   command = plan
   variables { gcip_tenants = { company = { tenant = "company", password_sign_up = true, oidc = { "oidc.company" = { issuer = "https://issuer.example.test", client_id = "company" } } } } }
+  expect_failures = [var.gcip_tenants]
+}
+run "password_pool_cannot_enable_mfa_before_clients_support_it" {
+  command = plan
+  variables { gcip_tenants = { acme = { tenant = "acme", mfa = { state = "enabled" } } } }
   expect_failures = [var.gcip_tenants]
 }

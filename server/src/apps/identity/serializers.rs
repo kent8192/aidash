@@ -38,3 +38,5 @@ pub mod remote_execution_commands;
 pub(crate) mod desktop;
 
 pub mod provider_credentials;
+
+pub(crate) mod tenant_administration;
