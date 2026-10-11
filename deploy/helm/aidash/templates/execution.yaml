@@ -349,4 +349,25 @@ metadata:
 spec:
   selector: { aidash.run/runner: {{ .Release.Name | quote }} }
   ports: [{ name: http, port: 8949, targetPort: http }]
+---
+# The Runner reads its bearer token only after accepting a connection, so
+# unauthenticated peers elsewhere in a shared cluster must not reach it at all:
+# only this release's application and the listed same-namespace callers may.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $name }}-runner
+spec:
+  podSelector: { matchLabels: { aidash.run/runner: {{ .Release.Name | quote }} } }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        # A migration Job runs the application image as `migration`.
+        - podSelector:
+            matchLabels: { app.kubernetes.io/instance: {{ .Release.Name | quote }} }
+            matchExpressions: [{ key: app.kubernetes.io/component, operator: In, values: [server, worker, migration] }]
+        {{- range $e.runner.ingress.podSelectors }}
+        - podSelector: { matchLabels: {{ toJson . }} }
+        {{- end }}
+      ports: [{ protocol: TCP, port: 8949 }]
 {{- end }}

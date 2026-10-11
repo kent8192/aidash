@@ -466,7 +466,10 @@ def app_values(cluster, identity, output, release, sha, settings):
             "guard": {"enabled": True, "image": control},
             # The journal proves termination and recovers uncertain work, so it is
             # retained like every other Environment disk and deleted only by destroy.
+            # The activity collector reads /v1/activity; nothing else outside the
+            # application may connect to the Runner.
             "runner": {"enabled": True, "image": control, "existingSecret": "app-runner",
+                       "ingress": {"podSelectors": [{"aidash.run/activity": "env"}]},
                        "journal": {"storageClassName": STORAGE_CLASS}},
         },
     }

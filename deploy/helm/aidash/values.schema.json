@@ -93,6 +93,20 @@
             "image": {
               "type": "string",
               "minLength": 1
+            },
+            "ingress": {
+              "type": "object",
+              "properties": {
+                "podSelectors": {
+                  "description": "Additional same-namespace Pod label sets that may connect to the Runner.",
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "minProperties": 1,
+                    "additionalProperties": { "type": "string" }
+                  }
+                }
+              }
             }
           }
         },

@@ -153,6 +153,10 @@ execution:
     image: aidash-runner:0.1.0
     existingSecret: ""
     tokenKey: AIDASH_CORE_RUNNER_TOKEN
+    # A NetworkPolicy admits Runner :8949 only from this release's server,
+    # worker and migration Pods plus these same-namespace Pod label sets.
+    ingress:
+      podSelectors: []
     journal:
       existingClaim: ""
       storageClassName: ""

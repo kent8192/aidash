@@ -330,6 +330,20 @@ class ChartsTest(unittest.TestCase):
         self.assertEqual(profile['processes'], 128)
         self.assertEqual(profile['host_tasks'], 512)
         self.assertNotIn('kubeconfig', profile['runner'])
+        # Only this release's application reaches the Runner; other Environments
+        # in a shared cluster cannot hold its unauthenticated connections.
+        policy = select(objects, 'NetworkPolicy', '-execution-runner')['spec']
+        self.assertEqual(policy['podSelector'], runner['spec']['selector'])
+        (rule,) = policy['ingress']
+        self.assertEqual(rule, {'from': [{'podSelector': {
+            'matchLabels': {'app.kubernetes.io/instance': 'fixture'},
+            'matchExpressions': [{'key': 'app.kubernetes.io/component', 'operator': 'In',
+                                  'values': ['server', 'worker', 'migration']}]}}],
+            'ports': [{'protocol': 'TCP', 'port': 8949}]})
+        collector = dict(execution, runner=dict(execution['runner'], ingress={'podSelectors': [{'aidash.run/activity': 'env'}]}))
+        policy = select(render(self.aidash, dict(self.base, execution=collector, environment={'nodeSelector': {'pool': 'execution'}})),
+                        'NetworkPolicy', '-execution-runner')['spec']
+        self.assertEqual(policy['ingress'][0]['from'][1:], [{'podSelector': {'matchLabels': {'aidash.run/activity': 'env'}}}])
 
     def test_installer_needs_a_selector_guard_state_is_per_release_and_process_floor(self):
         execution = {'createNamespaces': True, 'sandboxImage': 'sandbox@sha256:' + 'a' * 64,
