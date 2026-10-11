@@ -349,9 +349,11 @@ To measure both policies on the same tools against a running server, see the
 
 ## Home protocol and Human continuations
 
-Peer execution requires protocol `0.2`; the `/v0.1/` URL namespace remains a path
-name and does not negotiate an old contract. Both Nodes verify the exact protocol
-header and Provider contracts. Remote mandatory workspace and Human operations
+Peer execution requires protocol `0.2` or later; the `/v0.1/` URL namespace remains
+a path name and does not negotiate an old contract. Both Nodes verify that the
+protocol header is a version they accept, and the Provider contracts. Protocol
+`0.3` additionally lets a remote Ordered Run see changes to the Home's semantic
+corpus (see [context projection](../features/context-projection.md)). Remote mandatory workspace and Human operations
 use Home authority under the exact task, grant, admission and Run. Unsupported
 remote defaults have persisted placement exclusions; explicit incompatible
 Bindings fail admission.
@@ -417,7 +419,7 @@ current permissions are rechecked at every test step.
    uncertain effects with the existing software before replacing it.
 2. Preserve historical definitions, grants, receipts, execution journals, private
    references and working objects. Apply the additive Home Human journal migration.
-3. Deploy the Binding contract and peer protocol `0.2` across the fleet. Verify
+3. Deploy the Binding contract and peer protocol `0.2` or later across the fleet. Verify
    seeded system definitions and the deployment's admitted isolation profile.
 4. Register fresh descriptors, explicit context definitions and Binding-only
    Agent versions. Prepare Host groups; review and approve their exact pending
