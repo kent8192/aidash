@@ -36,7 +36,10 @@ def read_observation(path):
 def receipt_summary(database):
     """The observer's fixed-size receipt summary; anything else is unavailable."""
     count, seen = database.get('completed_transfers_count'), database.get('completed_transfers_digest')
-    if type(count) is not int or count < 0 or not isinstance(seen, str) or not re.fullmatch(r'[0-9a-f]{64}', seen):
+    # The summary replaces the receipt list; an observer that still sends one is
+    # not the bounded contract and its list must never reach the ConfigMap.
+    valid = type(count) is int and count >= 0 and isinstance(seen, str) and re.fullmatch(r'[0-9a-f]{64}', seen)
+    if 'completed_transfers' in database or not valid:
         raise ValueError('invalid receipt summary')
     return count, seen
 

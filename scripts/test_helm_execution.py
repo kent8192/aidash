@@ -848,6 +848,7 @@ class ActivityTest(unittest.TestCase):
         self.activity.combine(valid, edge, runner, previous, 10000)
         legacy = dict(valid, completed_transfers=['a'])
         for name, database in (
+                ('receipt list beside a summary', legacy),
                 ('receipt list without a summary', {key: value for key, value in legacy.items() if not key.startswith('completed_transfers_')}),
                 ('missing digest', {key: value for key, value in valid.items() if key != 'completed_transfers_digest'}),
                 ('missing count', {key: value for key, value in valid.items() if key != 'completed_transfers_count'}),
