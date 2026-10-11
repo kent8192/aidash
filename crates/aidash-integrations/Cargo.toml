@@ -33,6 +33,7 @@ reqwest = { version = "0.13", default-features = false, features = [
 async-nats = "0.46"
 futures-util.workspace = true
 percent-encoding = "2"
+url = "2"
 
 rmcp = { version = "=1.2.0", default-features = false, features = [
   "client",
