@@ -62,8 +62,11 @@ async fn description_lease_mode(
 /// The corpus a remote Run's semantic read draws from: the Workspace's live
 /// entries and, for native memory, the Home participant's banks. Read from
 /// the grant's own Workspace after the live-grant checks above, and only when
-/// the grant carries Home semantic access, so a receiver learns nothing about
-/// a corpus it may not read.
+/// the grant carries Home semantic access.
+///
+/// The digest covers every live entry of the Workspace, as it does for a local
+/// Run, so it also moves when an entry the executor may not retrieve changes.
+/// The receiver learns only that the Workspace corpus changed, never content.
 async fn corpus_digest(store: &Store, description: &Description) -> Result<Option<String>> {
 	if description.semantic.disabled() {
 		return Ok(None);
