@@ -578,7 +578,7 @@
   "transactionCheckRevocation": "失効状況を確認",
   "transactionRevocationPending": "失効後の新しい予約は拒否されます。失効前に送信した予約の結果を確認中です。確認が完了するまで失効処理中として扱います。",
   "providerCredentials": "プロバイダ認証情報",
-  "providerCredentialsHelp": "選択した Tenant のプロバイダ認証情報のメタデータと紐付けを管理します。Run の受け付け前に、有効なプロバイダ認証情報を OpenRouter に紐付けてください。",
+  "providerCredentialsHelp": "OpenRouter の同意ページで接続すると、この Tenant にプロバイダ認証情報が作成されます。Aidash がキー自体を表示したり入力を受け付けたりすることはありません。Run の受け付け前に、有効なプロバイダ認証情報を OpenRouter に紐付けてください。",
   "providerCredentialsDisabled": "このノードにはプロバイダ認証情報 Store が設定されていません。",
   "providerCredentialBindings": "プロバイダ認証情報の紐付け",
   "providerCredentialCurrentBinding": "現在のプロバイダ認証情報の紐付け",
@@ -596,5 +596,17 @@
   "next": "次へ",
   "submit": "送信",
   "revoke": "失効",
-  "operationFailed": "操作に失敗しました"
+  "operationFailed": "操作に失敗しました",
+  "providerConnections": "プロバイダ接続",
+  "providerConnectionsHelp": "OpenRouter の同意ページで承認すると、この Tenant 用のキーが発行されます。Aidash はキーを表示せずに保存します。再接続すると新しいキーが発行され、プロバイダ認証情報がローテーションされます。",
+  "providerConnectionConnected": "接続済み",
+  "providerConnectionNotConnected": "未接続",
+  "providerConnectionConnect": "OpenRouter に接続",
+  "providerConnectionReconnect": "再接続",
+  "providerConnectionOutcome_connected": "OpenRouter に接続しました。",
+  "providerConnectionOutcome_reconnected": "新しいキーで OpenRouter に再接続しました。",
+  "providerConnectionOutcome_denied": "OpenRouter での承認が拒否されました。何も保存されていません。",
+  "providerConnectionOutcome_failed": "OpenRouter での承認に失敗しました。何も保存されていません。もう一度お試しください。",
+  "providerKeySettings": "OpenRouter でキーを管理",
+  "providerCredentialRevokedNotice": "Aidash 側のキーのコピーを削除しました。OpenRouter で削除するまで、キーは OpenRouter 上で有効なままです。"
 }

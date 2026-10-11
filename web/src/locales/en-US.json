@@ -578,7 +578,7 @@
   "transactionCheckRevocation": "Check revocation",
   "transactionRevocationPending": "New admissions are denied after revocation. Some previously issued admission attempts still need a durable result; revocation remains pending until they are reconciled.",
   "providerCredentials": "Provider credentials",
-  "providerCredentialsHelp": "Manage Provider Credential metadata and bindings for the selected tenant. Bind an active Provider Credential to OpenRouter before admitting runs.",
+  "providerCredentialsHelp": "Connect OpenRouter through its consent page to give this tenant a Provider Credential. Aidash never shows or accepts the key itself. Bind an active Provider Credential to OpenRouter before admitting runs.",
   "providerCredentialsDisabled": "Provider Credential Store is not configured on this node.",
   "providerCredentialBindings": "Provider Credential bindings",
   "providerCredentialCurrentBinding": "Current Provider Credential binding",
@@ -596,5 +596,17 @@
   "next": "Next",
   "submit": "Submit",
   "revoke": "Revoke",
-  "operationFailed": "Operation failed"
+  "operationFailed": "Operation failed",
+  "providerConnections": "Provider connections",
+  "providerConnectionsHelp": "OpenRouter issues a key to this tenant after you approve on its consent page. Aidash stores the key without showing it. Reconnecting issues a new key and rotates the Provider Credential.",
+  "providerConnectionConnected": "Connected",
+  "providerConnectionNotConnected": "Not connected",
+  "providerConnectionConnect": "Connect OpenRouter",
+  "providerConnectionReconnect": "Reconnect",
+  "providerConnectionOutcome_connected": "OpenRouter is connected.",
+  "providerConnectionOutcome_reconnected": "OpenRouter was reconnected with a new key.",
+  "providerConnectionOutcome_denied": "OpenRouter authorization was declined. Nothing was stored.",
+  "providerConnectionOutcome_failed": "OpenRouter authorization failed. Nothing was stored; try again.",
+  "providerKeySettings": "Manage key at OpenRouter",
+  "providerCredentialRevokedNotice": "Aidash deleted its copy of the key. The key stays valid at OpenRouter until you delete it there."
 }

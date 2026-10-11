@@ -23,7 +23,30 @@ import {
   providerCredentialDelete,
   providerCredentialBindingList,
   providerCredentialBindingUpdate,
+  providerAuthorizationStart,
 } from "./generated/aidash";
+
+const outcomes = ["connected", "reconnected", "denied", "failed"] as const;
+type Outcome = (typeof outcomes)[number];
+
+/** Reads and clears the callback's `provider_authorization` outcome. */
+function takeOutcome(): Outcome | null {
+  const url = new URL(window.location.href);
+  const value = url.searchParams.get("provider_authorization");
+  if (!value) return null;
+  url.searchParams.delete("provider_authorization");
+  window.history.replaceState(window.history.state, "", url);
+  return (outcomes as readonly string[]).includes(value)
+    ? (value as Outcome)
+    : null;
+}
+
+/** The dashboard path the callback returns to, without a stale outcome. */
+function returnPath(): string {
+  const url = new URL(window.location.href);
+  url.searchParams.delete("provider_authorization");
+  return url.pathname + url.search;
+}
 
 const stateTones: Record<string, StatusTone> = {
   active: "success",
@@ -77,6 +100,8 @@ function TenantProviderCredentials({ tenant }: { tenant: string }) {
   const [offset, setOffset] = useState(0);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [outcome] = useState(takeOutcome);
+  const [revokedLink, setRevokedLink] = useState<string | null>(null);
   const rows = useQuery({
     queryKey: ["provider-credentials", tenant, offset],
     queryFn: () => providerCredentialList(path, { offset, limit: 50 }),
@@ -124,13 +149,101 @@ function TenantProviderCredentials({ tenant }: { tenant: string }) {
       setBusy(false);
     }
   };
+  // Provider Authorization: the browser leaves for OpenRouter's consent page
+  // and returns through the server's callback; no key passes through here.
+  const authorize = (target?: { id: string; revision: number }) =>
+    act(async () => {
+      const started = await providerAuthorizationStart(path, "openrouter", {
+        provider_credential_id: target?.id ?? null,
+        expected_revision: target?.revision ?? null,
+        return_to: returnPath(),
+      });
+      window.location.assign(started.authorization_url);
+    });
   const disabled = rows.error instanceof ApiError && rows.error.status === 404;
+  const connected = choices.find(
+    (row) => row.id === boundId && row.state === "active",
+  );
   return disabled ? (
     <Notice role="status">{t("providerCredentialsDisabled")}</Notice>
   ) : (
     <>
       {error && <Alert>{error}</Alert>}
       {rows.error && !disabled && <Alert>{rows.error.message}</Alert>}
+      {outcome && (
+        <Notice
+          role="status"
+          tone={
+            outcome === "connected" || outcome === "reconnected"
+              ? "info"
+              : "warning"
+          }
+        >
+          {t(`providerConnectionOutcome_${outcome}`)}
+        </Notice>
+      )}
+      {revokedLink && (
+        <Notice role="status" tone="warning">
+          {t("providerCredentialRevokedNotice")}{" "}
+          <a
+            className="underline"
+            href={revokedLink}
+            target="_blank"
+            rel="noreferrer noopener"
+          >
+            {t("providerKeySettings")}
+          </a>
+        </Notice>
+      )}
+      <Panel title={t("providerConnections")}>
+        <p className="text-xs text-muted-foreground">
+          {t("providerConnectionsHelp")}
+        </p>
+        <div className="flex min-w-0 flex-wrap items-center justify-between gap-3 rounded-md border border-border bg-surface px-3 py-2">
+          <div className="flex min-w-0 items-center gap-2">
+            <span className="font-medium">OpenRouter</span>
+            <StatusBadge tone={connected ? "success" : "neutral"}>
+              {connected
+                ? t("providerConnectionConnected")
+                : t("providerConnectionNotConnected")}
+            </StatusBadge>
+            {connected && (
+              <span className="font-mono text-xs text-muted-foreground">
+                {connected.last4} · {connected.fingerprint}
+              </span>
+            )}
+          </div>
+          <div className="flex gap-1.5">
+            {connected?.key_settings_url && (
+              <Button variant="ghost" size="sm" asChild>
+                <a
+                  href={connected.key_settings_url}
+                  target="_blank"
+                  rel="noreferrer noopener"
+                >
+                  {t("providerKeySettings")}
+                </a>
+              </Button>
+            )}
+            <Button
+              size="sm"
+              variant={connected ? "outline" : "default"}
+              disabled={busy || !bindings.data}
+              onClick={() =>
+                void authorize(
+                  connected
+                    ? { id: connected.id, revision: connected.revision }
+                    : undefined,
+                )
+              }
+            >
+              {connected
+                ? t("providerConnectionReconnect")
+                : t("providerConnectionConnect")}
+            </Button>
+          </div>
+        </div>
+      </Panel>
       <Panel title={t("providerCredentialBindings")}>
         <div className="w-full max-w-md">
           <Field label="OpenRouter">
@@ -219,17 +332,48 @@ function TenantProviderCredentials({ tenant }: { tenant: string }) {
                     </TableCell>
                     <TableCell>
                       <div className="flex justify-end gap-1.5">
+                        {row.key_settings_url && row.state !== "deleted" && (
+                          <Button variant="ghost" size="sm" asChild>
+                            <a
+                              href={row.key_settings_url}
+                              target="_blank"
+                              rel="noreferrer noopener"
+                            >
+                              {t("providerKeySettings")}
+                            </a>
+                          </Button>
+                        )}
                         {row.state === "active" && (
                           <Button
                             variant="outline"
                             size="sm"
                             disabled={busy}
                             onClick={() =>
-                              void act(() =>
-                                providerCredentialRevoke(path, row.id, {
-                                  expected_revision: row.revision,
-                                }),
-                              )
+                              void authorize({
+                                id: row.id,
+                                revision: row.revision,
+                              })
+                            }
+                          >
+                            {t("providerConnectionReconnect")}
+                          </Button>
+                        )}
+                        {row.state === "active" && (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            disabled={busy}
+                            onClick={() =>
+                              void act(async () => {
+                                const revoked = await providerCredentialRevoke(
+                                  path,
+                                  row.id,
+                                  { expected_revision: row.revision },
+                                );
+                                setRevokedLink(
+                                  revoked.key_settings_url ?? null,
+                                );
+                              })
                             }
                           >
                             {t("revoke")}
