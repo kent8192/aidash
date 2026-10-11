@@ -11,75 +11,88 @@ import subprocess
 import sys
 import tempfile
 
-report = {"kernel": platform.release(), "python": platform.python_version(), "uid": os.getuid(),
-          "process_limit": resource.getrlimit(resource.RLIMIT_NPROC)[1],
-          "physical_page_size": os.sysconf("SC_PAGE_SIZE")}
-report["service_account_absent"] = not Path("/var/run/secrets/kubernetes.io/serviceaccount/token").exists()
-report["host_sockets_absent"] = not any(Path(path).exists() for path in (
-    "/var/run/docker.sock", "/run/containerd/containerd.sock", "/run/podman/podman.sock"))
-try:
-    Path("/etc/aidash-probe").write_text("must fail")
-    report["root_read_only"] = False
-except OSError:
-    report["root_read_only"] = True
-report["egress_denied"] = {}
-for address, port in (("1.1.1.1", 443), ("169.254.169.254", 80)):
+
+def simultaneous_children(target, command=('sleep', '3600')):
+    """Start `target` children that stay blocked until every one has started, and
+    count only those still running then: a child that exited during a slow spawn
+    loop would let sequential creation pass for simultaneous capacity."""
+    children = []
     try:
-        with socket.create_connection((address, port), timeout=2):
-            report["egress_denied"][address] = False
+        for _ in range(target):
+            children.append(subprocess.Popen(list(command)))
+        return sum(child.poll() is None for child in children)
+    finally:
+        for child in children:
+            child.terminate()
+        for child in children:
+            child.wait()
+
+
+def main():
+    report = {"kernel": platform.release(), "python": platform.python_version(), "uid": os.getuid(),
+              "process_limit": resource.getrlimit(resource.RLIMIT_NPROC)[1],
+              "physical_page_size": os.sysconf("SC_PAGE_SIZE")}
+    report["service_account_absent"] = not Path("/var/run/secrets/kubernetes.io/serviceaccount/token").exists()
+    report["host_sockets_absent"] = not any(Path(path).exists() for path in (
+        "/var/run/docker.sock", "/run/containerd/containerd.sock", "/run/podman/podman.sock"))
+    try:
+        Path("/etc/aidash-probe").write_text("must fail")
+        report["root_read_only"] = False
     except OSError:
-        report["egress_denied"][address] = True
-report["environment"] = sorted(os.environ)
-report['disk_enforced'] = {}
-for root, budget in [('/work', int(sys.argv[1])), ('/tmp', int(sys.argv[2]))]:
-    with tempfile.TemporaryFile(dir=root) as file:
+        report["root_read_only"] = True
+    report["egress_denied"] = {}
+    for address, port in (("1.1.1.1", 443), ("169.254.169.254", 80)):
         try:
-            os.posix_fallocate(file.fileno(), 0, budget + 4096)
-            report['disk_enforced'][root] = False
-        except OSError as error:
-            report['disk_enforced'][root] = error.errno == errno.ENOSPC
-# Verify fork works before lowering this probe's inherited hard limit. Exhausting
-# the host task ceiling also consumes the Sentry's host threads and can kill
-# the verifier itself. The trusted guard independently checks host_tasks at
-# pids.max; this bounded probe exercises the separate guest process ceiling.
-subprocess.run(['true'], check=True)
-# Leave room for the guest's collector/control processes while proving the host
-# ceiling no longer cuts the default 128-process guest off at about 40. Exact
-# pids.max is independently checked by the guard before this code is released.
-report['guest_capacity_target'] = max(1, report['process_limit'] - 16)
-capacity = []
-try:
-    for _ in range(report['guest_capacity_target']):
-        capacity.append(subprocess.Popen(['sleep', '10']))
-finally:
-    for process in capacity:
-        process.terminate()
-    for process in capacity:
-        process.wait()
-report['guest_capacity_verified'] = len(capacity)
-report['fork_probe_limit'] = 8
-resource.setrlimit(resource.RLIMIT_NPROC, (report['fork_probe_limit'], report['fork_probe_limit']))
-processes = []
-try:
-    for _ in range(report['fork_probe_limit'] + 1):
-        processes.append(subprocess.Popen(['sleep','10']))
-    report['fork_denied'] = False
-except OSError as error:
-    report['fork_denied'] = error.errno == errno.EAGAIN and len(processes) <= report['fork_probe_limit']
-    report['fork_error'] = errno.errorcode.get(error.errno, str(error.errno))
-finally:
-    for process in processes:
-        process.terminate()
-    for process in processes:
-        process.wait()
-report['children_before_limit'] = len(processes)
-report['base_packages'] = {}
-for name in ('ipykernel','numpy','pandas','matplotlib','openpyxl','pypdf'):
-    report['base_packages'][name] = importlib.metadata.version(name)
-assert all(report['disk_enforced'].values()), report
-assert report['fork_denied'], report
-print(json.dumps(report, sort_keys=True))
-assert "gvisor" in report["kernel"].lower()
-assert report["uid"] != 0
-assert report["service_account_absent"] and report["host_sockets_absent"] and report["root_read_only"]
-assert all(report["egress_denied"].values())
+            with socket.create_connection((address, port), timeout=2):
+                report["egress_denied"][address] = False
+        except OSError:
+            report["egress_denied"][address] = True
+    report["environment"] = sorted(os.environ)
+    report['disk_enforced'] = {}
+    for root, budget in [('/work', int(sys.argv[1])), ('/tmp', int(sys.argv[2]))]:
+        with tempfile.TemporaryFile(dir=root) as file:
+            try:
+                os.posix_fallocate(file.fileno(), 0, budget + 4096)
+                report['disk_enforced'][root] = False
+            except OSError as error:
+                report['disk_enforced'][root] = error.errno == errno.ENOSPC
+    # Verify fork works before lowering this probe's inherited hard limit. Exhausting
+    # the host task ceiling also consumes the Sentry's host threads and can kill
+    # the verifier itself. The trusted guard independently checks host_tasks at
+    # pids.max; this bounded probe exercises the separate guest process ceiling.
+    subprocess.run(['true'], check=True)
+    # Leave room for the guest's collector/control processes while proving the host
+    # ceiling no longer cuts the default 128-process guest off at about 40. Exact
+    # pids.max is independently checked by the guard before this code is released.
+    report['guest_capacity_target'] = max(1, report['process_limit'] - 16)
+    report['guest_capacity_verified'] = simultaneous_children(report['guest_capacity_target'])
+    report['fork_probe_limit'] = 8
+    resource.setrlimit(resource.RLIMIT_NPROC, (report['fork_probe_limit'], report['fork_probe_limit']))
+    processes = []
+    try:
+        for _ in range(report['fork_probe_limit'] + 1):
+            processes.append(subprocess.Popen(['sleep','10']))
+        report['fork_denied'] = False
+    except OSError as error:
+        report['fork_denied'] = error.errno == errno.EAGAIN and len(processes) <= report['fork_probe_limit']
+        report['fork_error'] = errno.errorcode.get(error.errno, str(error.errno))
+    finally:
+        for process in processes:
+            process.terminate()
+        for process in processes:
+            process.wait()
+    report['children_before_limit'] = len(processes)
+    report['base_packages'] = {}
+    for name in ('ipykernel','numpy','pandas','matplotlib','openpyxl','pypdf'):
+        report['base_packages'][name] = importlib.metadata.version(name)
+    assert all(report['disk_enforced'].values()), report
+    assert report['fork_denied'], report
+    print(json.dumps(report, sort_keys=True))
+    assert "gvisor" in report["kernel"].lower()
+    assert report["uid"] != 0
+    assert report["service_account_absent"] and report["host_sockets_absent"] and report["root_read_only"]
+    assert all(report["egress_denied"].values())
+
+
+if __name__ == '__main__':
+    main()

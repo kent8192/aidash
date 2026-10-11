@@ -9,6 +9,7 @@ import uuid
 from control import Runner, Rejected
 from node_guard import filesystem_capacity
 import node_guard
+from probe import simultaneous_children
 
 
 class ResourceLimitsTest(unittest.TestCase):
@@ -80,6 +81,16 @@ class ResourceLimitsTest(unittest.TestCase):
                                      (1073717187, 4096, 1073717248)):
             with self.subTest(size=size, page=page):
                 self.assertEqual(filesystem_capacity(size, page), expected)
+
+    def test_capacity_probe_counts_only_children_alive_together(self):
+        # Blocked children all count, and every one is reaped afterwards.
+        self.assertEqual(simultaneous_children(4), 4)
+        # A child that exited during a slow spawn loop never passes sequential
+        # creation off as simultaneous capacity.
+        children = [SimpleNamespace(poll=lambda exited=index == 0: 0 if exited else None,
+                                    terminate=lambda: None, wait=lambda: 0) for index in range(4)]
+        with patch('probe.subprocess.Popen', side_effect=children):
+            self.assertEqual(simultaneous_children(4), 3)
 
     def test_invalid_budgets_are_rejected_before_rounding(self):
         for size, page in ((0, 4096), (-1, 4096), (True, 4096), ('1', 4096),
