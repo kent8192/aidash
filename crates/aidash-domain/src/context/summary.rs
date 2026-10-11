@@ -218,10 +218,13 @@ impl SummaryContent {
 			.map(|item| {
 				if item.resolved_by.trim().is_empty() {
 					Err(Rejection::InvalidItem)
-				} else if !evidence.contains_key(item.resolved_by.as_str())
+				} else if !evidence
+					.get(item.resolved_by.as_str())
+					.is_some_and(|result| !failed_result(result))
 					&& !previous.is_some_and(|previous| previous.content.resolved.contains(item))
 				{
-					// A carried resolution was proven when it was merged.
+					// A carried resolution was proven when it was merged; a
+					// failed call (an `error` result) proves nothing.
 					Err(Rejection::UnprovenResolution(item.id.clone()))
 				} else {
 					Ok(item.id.as_str())
@@ -367,6 +370,11 @@ impl SummaryContent {
 /// recheck, always stay verbatim in the projection.
 pub fn absorbable(event: &ContextEvent) -> bool {
 	matches!(event, ContextEvent::Tool { .. })
+}
+
+/// A tool result carrying a non-null top-level `error` reports a failed call.
+fn failed_result(result: &Value) -> bool {
+	result.get("error").is_some_and(|error| !error.is_null())
 }
 
 /// Whether one absorbed tool event states `artifact`: a complete scalar in its

@@ -300,6 +300,30 @@ fn resolutions_and_verification_need_tool_call_evidence() {
 			Err(Rejection::UnprovenResolution("u1".into()))
 		);
 	}
+	// A failed call is never resolution evidence, even though it is absorbed.
+	let failed = tool_with(
+		5,
+		json!({"path":"src/parser.rs"}),
+		json!({"error":"denied"}),
+	);
+	assert_eq!(
+		SummaryContent::parse(
+			&content(&[("c1", "never touch main")], &[], &[("u1", "call_5")]),
+			Some(&first),
+			&[failed],
+			4096
+		),
+		Err(Rejection::UnprovenResolution("u1".into()))
+	);
+	assert!(
+		SummaryContent::parse(
+			&content(&[("c1", "never touch main")], &[], &[("u1", "call_5")]),
+			Some(&first),
+			&[tool(5)],
+			4096
+		)
+		.is_ok()
+	);
 	// An invented verification reference is never adopted.
 	let invented = content(&[], &[], &[]).replace("call_2", "call_999");
 	assert_eq!(
