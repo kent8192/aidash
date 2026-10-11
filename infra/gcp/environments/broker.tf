@@ -36,7 +36,6 @@ module "credential_broker" {
   environment_kind             = var.environments[each.key].kind
   secret_prefix                = each.value.secret_prefix
   image                        = each.value.image
-  deploy_service_account       = var.deploy_service_account
   broker_service_account_email = each.value.broker_service_account_email
   signing_key_id               = each.value.signing_key_id
   signing_version              = each.value.signing_version

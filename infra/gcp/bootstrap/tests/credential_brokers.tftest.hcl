@@ -26,11 +26,17 @@ run "broker_environments" {
   }
   override_resource {
     target = google_service_account.broker["production"]
-    values = { email = "aidash-production-broker@aidash-fixture.iam.gserviceaccount.com" }
+    values = {
+      email = "aidash-production-broker@aidash-fixture.iam.gserviceaccount.com"
+      name  = "projects/aidash-fixture/serviceAccounts/aidash-production-broker@aidash-fixture.iam.gserviceaccount.com"
+    }
   }
   override_resource {
     target = google_service_account.broker["test"]
-    values = { email = "aidash-test-broker@aidash-fixture.iam.gserviceaccount.com" }
+    values = {
+      email = "aidash-test-broker@aidash-fixture.iam.gserviceaccount.com"
+      name  = "projects/aidash-fixture/serviceAccounts/aidash-test-broker@aidash-fixture.iam.gserviceaccount.com"
+    }
   }
   override_resource {
     target = google_kms_key_ring.capability["production"]
@@ -53,6 +59,10 @@ run "broker_environments" {
     error_message = "Only dedicated broker SAs may receive prefix-conditioned BYOK read access."
   }
   assert {
+    condition     = keys(google_service_account_iam_member.deploy_act_as_broker) == ["production", "test"] && alltrue([for id, grant in google_service_account_iam_member.deploy_act_as_broker : grant.role == "roles/iam.serviceAccountUser" && grant.member == "serviceAccount:aidash-deploy@aidash-fixture.iam.gserviceaccount.com" && grant.service_account_id == google_service_account.broker[id].name])
+    error_message = "Bootstrap, not deploy automation, grants deploy actAs on each broker SA."
+  }
+  assert {
     condition     = output.broker_service_accounts == { production = "aidash-production-broker@aidash-fixture.iam.gserviceaccount.com", test = "aidash-test-broker@aidash-fixture.iam.gserviceaccount.com" }
     error_message = "Export the per-environment broker identities for deployment."
   }
@@ -68,7 +78,7 @@ run "broker_environments" {
 run "brokers_opt_in_only" {
   command = apply
   assert {
-    condition     = length(google_service_account.broker) == 0 && length(google_project_iam_member.byok_broker_read) == 0 && length(google_kms_crypto_key.capability) == 0 && length(google_kms_crypto_key_iam_member.deploy_capability_public_key) == 0
+    condition     = length(google_service_account.broker) == 0 && length(google_service_account_iam_member.deploy_act_as_broker) == 0 && length(google_project_iam_member.byok_broker_read) == 0 && length(google_kms_crypto_key.capability) == 0 && length(google_kms_crypto_key_iam_member.deploy_capability_public_key) == 0
     error_message = "No broker identity or read grant without explicit opt-in."
   }
 }

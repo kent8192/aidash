@@ -44,7 +44,6 @@ variable "bind_runtime_signer" {
   type        = bool
   default     = true
 }
-variable "deploy_service_account" { type = string }
 variable "broker_service_account_email" {
   description = "broker_service_accounts[environment_id] from human-run bootstrap; #137 owns the SA and BYOK read grant."
   type        = string

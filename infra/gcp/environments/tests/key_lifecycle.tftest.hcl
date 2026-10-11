@@ -34,7 +34,10 @@ run "bootstrap_keys" {
   }
   override_resource {
     target = google_service_account.broker["test"]
-    values = { email = "aidash-test-broker@aidash-fixture.iam.gserviceaccount.com" }
+    values = {
+      email = "aidash-test-broker@aidash-fixture.iam.gserviceaccount.com"
+      name  = "projects/aidash-fixture/serviceAccounts/aidash-test-broker@aidash-fixture.iam.gserviceaccount.com"
+    }
   }
   assert {
     condition     = output.broker_signing_keys["test"] == "projects/aidash-fixture/locations/us-central1/keyRings/aidash-test-capability/cryptoKeys/capability"
