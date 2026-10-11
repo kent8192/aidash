@@ -395,9 +395,7 @@ for (const [viewport, locale] of [
     await expect(instructions).toHaveValue("Summarize with citations");
     expect(draft.revision).toBe(2);
     if (viewport.width === 1280) {
-      await page
-        .getByRole("tab", { name: "Test", exact: true })
-        .click();
+      await page.getByRole("tab", { name: "Test", exact: true }).click();
       await page.getByLabel("Tool mode").selectOption("real");
       await page.getByLabel("Test connection profile").selectOption("sandbox");
       await page.getByPlaceholder("Test message…").fill("First turn");
@@ -426,9 +424,7 @@ for (const [viewport, locale] of [
         .click();
       await expect.poll(() => postedTests.length).toBe(3);
       expect(postedTests[2].continue_from).toBeNull();
-      await page
-        .getByRole("tab", { name: "Overview", exact: true })
-        .click();
+      await page.getByRole("tab", { name: "Overview", exact: true }).click();
       await expect(page.locator(".wb-layout.overview")).toBeVisible();
     }
     const widths = await page.evaluate(() => ({
@@ -618,9 +614,7 @@ for (const status of [
         return route.fulfill({ json: session });
       },
     );
-    await page
-      .getByRole("tab", { name: "Test", exact: true })
-      .click();
+    await page.getByRole("tab", { name: "Test", exact: true }).click();
     await page.getByLabel("Tool mode").selectOption("simulated");
     const input = page.getByPlaceholder("Test message…");
     const send = page
@@ -660,12 +654,10 @@ test("Creator renders object-valued Tool conversation content", async ({
     route.fulfill({ json: [session] }),
   );
   await page.reload();
-  await page
-    .getByRole("tab", { name: "Test", exact: true })
-    .click();
-  await expect(page.getByRole("log").locator('[data-role="tool"]')).toContainText(
-    '"title": "Tool result"',
-  );
+  await page.getByRole("tab", { name: "Test", exact: true }).click();
+  await expect(
+    page.getByRole("log").locator('[data-role="tool"]'),
+  ).toContainText('"title": "Tool result"');
   await expect(page.getByPlaceholder("Test message…")).toBeVisible();
 });
 
@@ -746,9 +738,7 @@ for (const change of ["add", "replace", "remove", "unchanged", "cluster"]) {
         }),
     );
     await page.reload();
-    await page
-      .getByRole("tab", { name: "Versions", exact: true })
-      .click();
+    await page.getByRole("tab", { name: "Versions", exact: true }).click();
     const differences = page
       .getByRole("region", { name: "Version details" })
       .locator("div")
@@ -1038,8 +1028,7 @@ test("Creator preserves unsaved edits across all five tabs and invalidates valid
       await expect(
         page.getByText("Register your first version to view history"),
       ).toBeVisible();
-    if (name === "Register in Registry")
-      await expect(register).toBeEnabled();
+    if (name === "Register in Registry") await expect(register).toBeEnabled();
   }
   await expect(page.getByLabel("Additional instructions")).toHaveValue(
     "Keep these instructions while reviewing the draft",
@@ -1061,9 +1050,7 @@ test("Creator preserves unsaved edits across all five tabs and invalidates valid
   await expect(register).toBeEnabled();
   await expect(
     page.getByRole("region", { name: "Technical validation" }),
-  ).toContainText(
-    "This draft has not been validated.",
-  );
+  ).toContainText("This draft has not been validated.");
   expect(registered).toEqual([]);
   await page
     .locator(".wb-actions")
@@ -1090,9 +1077,7 @@ for (const width of [1280, 900, 640, 600, 541, 390]) {
       "Register in Registry",
       "Overview",
     ]) {
-      await page
-        .getByRole("tab", { name, exact: true })
-        .click();
+      await page.getByRole("tab", { name, exact: true }).click();
       const dimensions = await page.evaluate(() => ({
         width: document.documentElement.scrollWidth,
         viewport: window.innerWidth,
