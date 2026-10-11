@@ -4,7 +4,13 @@ import { Input } from "./components/ui/input";
 import { NativeSelect } from "./components/ui/native-select";
 import type { Entry } from "./types";
 import { Field, useEntityLabel, useI18n } from "./ui";
-import { Check, Disclosure, Group, Hint, pairClass } from "./components/patterns";
+import {
+  Check,
+  Disclosure,
+  Group,
+  Hint,
+  pairClass,
+} from "./components/patterns";
 
 const reference = (value: string) => {
   const at = value.lastIndexOf("@");
@@ -427,7 +433,9 @@ export function MemoryRegistryFields({
             </div>
           ))}
       </Group>
-      <Disclosure summary={ja ? "処理・保存の上限" : "Operation and storage limits"}>
+      <Disclosure
+        summary={ja ? "処理・保存の上限" : "Operation and storage limits"}
+      >
         <div className={pairClass}>
           {Object.entries({ ...bounds, ...retention }).map(([key, value]) => (
             <Field key={key} label={boundLabels[key][ja ? 1 : 0]}>
