@@ -559,7 +559,14 @@ class ChartsTest(unittest.TestCase):
                       admission['volumeMounts'])
         caddy = next(container for container in pod['containers'] if container['name'] == 'caddy')
         self.assertNotIn('admission-state', [mount['name'] for mount in caddy['volumeMounts']])
+        # The last meaningful request survives an admission-container restart on a small
+        # emptyDir that only the admission container (not Caddy) can write.
+        persisted = next(volume for volume in pod['volumes'] if volume['name'] == 'activity-state')
+        self.assertEqual(persisted['emptyDir'], {'sizeLimit': '1Mi'})
+        self.assertIn({'name': 'activity-state', 'mountPath': '/var/lib/aidash-activity'}, admission['volumeMounts'])
+        self.assertNotIn('activity-state', [mount['name'] for mount in caddy['volumeMounts']])
         conf = select(named, 'ConfigMap', '-edge')['data']['admission.conf']
+        self.assertEqual(conf.count('/var/lib/aidash-activity/last_active'), 2)
         self.assertIn('io.open("/etc/aidash-admission/state", "r")', conf)
         self.assertIn('ngx.shared.aidash_activity:set("closed", not open)', conf)
         job = select(objects, 'CronJob', '-activity')['spec']

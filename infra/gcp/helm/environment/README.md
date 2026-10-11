@@ -127,3 +127,15 @@ refer here.
   file exceeds 64 KiB is treated as unavailable and published as busy. The first
   sample after upgrading from the receipt-list observer therefore sees a different
   digest and renews idle once. The `snapshot` volume is a 1 MiB `emptyDir`.
+- **Edge.** The admission container reports `inflight`, `closed` and `last_active`,
+  the time of the last successful meaningful request. `last_active` is also
+  written, atomically, to `/var/lib/aidash-activity/last_active` on a 1 MiB
+  `emptyDir` mounted only into that container, and reloaded at start. A restart of
+  the admission container between a request and the collector's next once-a-minute
+  sample therefore still reports that request instead of `0`, so its full idle
+  interval is honored. A missing, unreadable or malformed file means never active,
+  and a stamp in the future is clamped to now. The `emptyDir` lives as long as the
+  Pod: a replaced Pod (node loss, preemption) starts without it, and the collector
+  then keeps only the previous snapshot's `last_active`. This file does not cover
+  that case: a request completed shortly before the Pod was lost can receive a
+  shorter idle interval.
