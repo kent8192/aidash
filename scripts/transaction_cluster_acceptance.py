@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Real transaction acceptance in a disposable Kubernetes or k3s namespace.
+"""Real transaction acceptance in a disposable Kubernetes namespace.
 
 Requires an explicit kubeconfig and image. Reports are append-only per run and
 include failed cases. This driver never changes the current kubectl context.
@@ -238,8 +238,6 @@ class Cluster:
         self.kube("create", "namespace", self.namespace)
         self.created = True
         version = json.loads(self.kube("version", "-o", "json").stdout)["serverVersion"]["gitVersion"]
-        if ("k3s" in version) != (self.args.distribution == "k3s"):
-            raise AssertionError(f"Distribution label disagrees with server version {version}")
         source = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
         dirty = bool(subprocess.check_output(["git", "status", "--porcelain"], cwd=ROOT, text=True))
         identity = source_identity()
@@ -507,7 +505,7 @@ class Cluster:
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--kubeconfig", required=True)
-    parser.add_argument("--distribution", choices=["kubernetes", "k3s"], required=True)
+    parser.add_argument("--distribution", choices=["kubernetes"], required=True)
     parser.add_argument("--image", required=True)
     parser.add_argument("--queries", required=True, help="JSON emitted by the Reinhardt Query diagnostics acceptance command")
     parser.add_argument("--postgres-image", default="aidash-postgres:17-pg-jsonschema-0.3.4")

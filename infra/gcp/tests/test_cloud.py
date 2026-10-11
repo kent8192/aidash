@@ -274,7 +274,7 @@ class PlanTests(unittest.TestCase):
                 terraform.apply({})
             self.assertTrue(any("apply" in call.args for call in run.call_args_list))
 
-    def apply(self, resource_type, actions, **authorization):
+    def apply(self, resource_type, actions, address=None, before=None, after=None, **authorization):
         with TemporaryDirectory() as directory:
             terraform = Terraform.__new__(Terraform)
             terraform.root = Path(directory)
@@ -283,7 +283,6 @@ class PlanTests(unittest.TestCase):
                     "project_id",
                     "byok_project_id",
                     "cloudflare_zone_id",
-                    "release_bucket",
                     "deploy_service_account",
                     "domain",
                 ),
@@ -292,12 +291,9 @@ class PlanTests(unittest.TestCase):
             plan = {
                 "resource_changes": [
                     {
+                        "address": address or f"{resource_type}.fixture",
                         "type": resource_type,
-                        "change": {
-                            "actions": actions,
-                            "before": {"labels": {"environment": "test"}},
-                            "after": {"labels": {"environment": "test"}},
-                        },
+                        "change": {"actions": actions, "before": before, "after": after},
                     }
                 ]
             }
@@ -316,14 +312,39 @@ class PlanTests(unittest.TestCase):
                 any("apply" in call.args for call in command.call_args_list)
             )
 
-    def test_refresh_cannot_recreate_a_vm_deleted_after_preflight(self):
-        with self.assertRaisesRegex(RuntimeError, "power authorization"):
-            self.apply("google_compute_instance", ["create"])
-        with self.assertRaises(RuntimeError):
-            self.apply(
-                "google_compute_instance", ["delete", "create"], starting={"pr-1"}
-            )
-        self.apply("google_compute_instance", ["create"], starting={"test"})
+    def pool(self, actions, before, after, identity="test", **authorization):
+        address = (
+            f'module.environment["{identity}"].google_container_node_pool.environment'
+            if identity else "google_container_node_pool.system"
+        )
+        self.apply(
+            "google_container_node_pool", actions, address,
+            None if before is None else {"node_count": before},
+            None if after is None else {"node_count": after},
+            **authorization,
+        )
+
+    def test_refresh_cannot_start_a_node_pool_without_a_start_authorization(self):
+        for actions, before in [(["update"], 0), (["create"], None), (["delete", "create"], 0)]:
+            with self.subTest(actions=actions):
+                with self.assertRaisesRegex(RuntimeError, "start authorization"):
+                    self.pool(actions, before, 1, starting={"pr-1"}, retiring={"test"})
+                self.pool(actions, before, 1, starting={"test"})
+        # Scaling down, staying stopped and the shared system pool need no start authorization.
+        self.pool(["update"], 1, 0)
+        self.pool(["create"], None, 0)
+        self.pool(["update"], 0, 1, identity=None)
+
+    def test_node_pool_deletion_requires_retirement_of_its_owner(self):
+        with self.assertRaisesRegex(RuntimeError, "explicit retirement"):
+            self.pool(["delete"], 1, None, retiring={"pr-1"})
+        with self.assertRaisesRegex(RuntimeError, "explicit retirement"):
+            self.pool(["delete", "create"], 1, 1, retiring={"pr-1"})
+        with self.assertRaisesRegex(RuntimeError, "explicit retirement"):
+            self.pool(["delete"], 1, None, identity=None, retiring={"test"})
+        self.pool(["delete"], 0, None, retiring={"test"})
+        # A replacement (Spot toggle) is part of an explicit start.
+        self.pool(["delete", "create"], 1, 1, starting={"test"})
 
     def test_plan_fence_runs_before_apply_and_can_abort_it(self):
         seen = []
@@ -338,14 +359,18 @@ class PlanTests(unittest.TestCase):
 
     def test_unconfigured_workflow_secret_is_an_empty_gcip_input(self):
         with patch.dict(os.environ, {"AIDASH_GCIP_IDP_SECRETS": ""}):
-            self.apply("google_compute_instance", ["no-op"])
+            self.apply("google_container_node_pool", ["no-op"])
 
-    def test_disk_replacement_requires_explicit_retirement_for_that_owner(self):
-        with self.assertRaisesRegex(RuntimeError, "retained disk"):
-            self.apply("google_compute_disk", ["delete", "create"])
-        with self.assertRaises(RuntimeError):
-            self.apply("google_compute_disk", ["delete"], retiring={"pr-1"})
-        self.apply("google_compute_disk", ["delete"], retiring={"test"})
+    def test_shared_cluster_and_preview_disk_are_never_deleted(self):
+        for kind, message in [
+            ("google_container_cluster", "shared cluster"),
+            ("google_compute_disk", "preview TLS disk"),
+        ]:
+            for actions in [["delete"], ["delete", "create"], ["create", "delete"]]:
+                with self.subTest(kind=kind, actions=actions):
+                    with self.assertRaisesRegex(RuntimeError, message):
+                        self.apply(kind, actions, retiring={"test"}, starting={"test"})
+            self.apply(kind, ["update"])
 
     def test_environment_automation_never_destroys_signing_keys_or_versions(self):
         for kind in ["google_kms_key_ring", "google_kms_crypto_key", "google_kms_crypto_key_version"]:

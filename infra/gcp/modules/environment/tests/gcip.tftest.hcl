@@ -1,14 +1,12 @@
 mock_provider "google" {}
 variables {
-  project_id             = "aidash-fixture"
-  release_bucket         = "aidash-fixture-releases"
-  deploy_service_account = "deploy@aidash-fixture.iam.gserviceaccount.com"
-  environment_id         = "test"
-  hostname               = "test.aidash.run"
+  project_id           = "aidash-fixture"
+  node_service_account = "aidash-gke-nodes@aidash-fixture.iam.gserviceaccount.com"
+  cluster              = { name = "aidash", location = "us-central1-a", workload_pool = "aidash-fixture.svc.id.goog" }
+  environment_id       = "test"
+  hostname             = "test.aidash.run"
   environment = {
-    kind          = "test", incarnation = "aaaaaaaaaaaa", generation = 1, running = false, published = false, spot = false, vm_present = true,
-    machine_type  = "e2-standard-4", boot_disk_gib = 10, data_disk_gib = 20,
-    bundle_object = "bundles/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.tar.gz", bundle_sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", release_sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    kind = "test", incarnation = "aaaaaaaaaaaa", running = false, spot = false, nodes = 1, machine_type = "n2-standard-4"
   }
 }
 run "password_and_sso_tenants_are_separate" {
@@ -30,20 +28,18 @@ run "password_and_sso_tenants_are_separate" {
   }
   assert {
     condition     = google_identity_platform_tenant_inbound_saml_config.saml["sso/saml.company"].sp_config[0].callback_uri == "https://aidash-fixture.firebaseapp.com/__/auth/handler" && output.gcip.auth_helper == "firebase"
-    error_message = "Until this environment's bundle proxies the sign-in helper, SAML must post to Firebase's helper."
+    error_message = "Until a release deployment selects the edge's helper proxy, SAML must post to Firebase's helper."
   }
   assert {
     condition     = var.gcip_tenants["password"].mfa.state == "disabled" && var.gcip_tenants["sso"].mfa.state == "disabled"
     error_message = "An omitted MFA Requirement must be declared disabled."
   }
 }
-run "saml_posts_to_the_proxied_helper_with_its_bundle" {
+run "saml_posts_to_the_proxied_helper_with_its_release" {
   command = plan
   variables {
     environment = {
-      kind          = "test", incarnation = "aaaaaaaaaaaa", generation = 1, running = false, published = false, spot = false, vm_present = true,
-      machine_type  = "e2-standard-4", boot_disk_gib = 10, data_disk_gib = 20, auth_helper = "public_origin",
-      bundle_object = "bundles/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.tar.gz", bundle_sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", release_sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      kind = "test", incarnation = "aaaaaaaaaaaa", running = false, spot = false, nodes = 1, machine_type = "n2-standard-4", auth_helper = "public_origin"
     }
     gcip_tenants     = { sso = { tenant = "company", password_sign_up = false, saml = { "saml.company" = { idp_entity_id = "company", sso_url = "https://sso.example.test", sp_entity_id = "aidash", certificates = ["fixture-certificate"] } } } }
     gcip_idp_secrets = {}

@@ -57,7 +57,7 @@ Configure and explicitly trust peers on both nodes before submitting. Scoped par
 
 Delegated task completion must include the corresponding execution finalization on its recorded execution node; execution finalization must include completion on the recorded home node. Preparation invokes only the same SQL mutation code used at commit. Ordinary tool calls, provider requests and nonparticipating A2A side effects cannot be embedded in a manifest.
 
-Run `scripts/test-transactions.sh` for protocol, subject and real-process regressions. It selects this checkout's executable explicitly so another worktree's shared Cargo target cannot change the tested runtime. Run `scripts/test-cluster.sh kubernetes transactions` and `scripts/test-cluster.sh k3s transactions` for disposable cluster acceptance. The separate `platform` profile retains the ordinary orchestration journey.
+Run `scripts/test-transactions.sh` for protocol, subject and real-process regressions. It selects this checkout's executable explicitly so another worktree's shared Cargo target cannot change the tested runtime. Run `scripts/test-cluster.sh kubernetes transactions` for disposable cluster acceptance. The separate `platform` profile retains the ordinary orchestration journey.
 
 ## Evidence inventory
 

@@ -12,6 +12,9 @@ MODULE = Path(__file__).resolve().parents[1] / "modules" / "credential-broker"
 class CredentialBrokerTerraformTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        def flattened(module):
+            return module.get("resources", []) + [r for child in module.get("child_modules", []) for r in flattened(child)]
+
         def mocked(root, test_filter=None):
             subprocess.run(["terraform", f"-chdir={root}", "init", "-backend=false", "-input=false", "-no-color"], check=True, capture_output=True, timeout=120)
             command = ["terraform", f"-chdir={root}", "test", "-json", "-verbose", "-no-color"]
@@ -24,7 +27,7 @@ class CredentialBrokerTerraformTests(unittest.TestCase):
             for line in result.stdout.splitlines():
                 event = json.loads(line)
                 if event.get("type") == "test_state":
-                    states[event["@testrun"]] = event["test_state"]["root_module"].get("resources", [])
+                    states[event["@testrun"]] = flattened(event["test_state"]["root_module"])
                 elif event.get("type") == "test_plan":
                     plans[event["@testrun"]] = event["test_plan"].get("resource_changes", [])
             if not states:
@@ -33,7 +36,21 @@ class CredentialBrokerTerraformTests(unittest.TestCase):
         cls.states, _ = mocked(MODULE)
         cls.bootstrap_states, _ = mocked(MODULE.parents[1] / "bootstrap")
         cls.lifecycle_states, cls.lifecycle_plans = mocked(MODULE.parents[1] / "environments", "tests/key_lifecycle.tftest.hcl")
+        cls.environment_states, _ = mocked(MODULE.parents[1] / "environments", "tests/policy.tftest.hcl")
 
+    def test_node_identity_holds_only_telemetry_and_image_pull(self):
+        resources = self.environment_states["identities_are_separated"]
+        grants = [r["values"] for r in resources if r["type"].endswith(("_iam_member", "_iam_binding"))]
+        nodes = "serviceAccount:aidash-gke-nodes@aidash-fixture.iam.gserviceaccount.com"
+        self.assertEqual(sorted(g["role"] for g in grants if g["member"] == nodes), [
+            "roles/artifactregistry.reader", "roles/container.defaultNodeServiceAccount",
+        ])
+        workloads = sorted((g["role"], g["member"]) for g in grants if g["member"].startswith(("serviceAccount:server@", "serviceAccount:worker@")))
+        self.assertEqual(workloads, [
+            ("projects/aidash-byok-fixture/roles/aidashByokCreate", "serviceAccount:server@aidash-fixture.iam.gserviceaccount.com"),
+            ("projects/aidash-byok-fixture/roles/aidashByokManage", "serviceAccount:server@aidash-fixture.iam.gserviceaccount.com"),
+            ("roles/cloudkms.signer", "serviceAccount:worker@aidash-fixture.iam.gserviceaccount.com"),
+        ])
 
     def resources(self, run, kind):
         return [r["values"] for r in self.states[run] if r["type"] == kind]

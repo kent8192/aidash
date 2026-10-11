@@ -287,7 +287,7 @@ class RuntimeConfigTests(unittest.TestCase):
                 "rotated",
             )
 
-    def test_auth_helper_follows_the_applied_bundle_output(self):
+    def test_auth_helper_follows_the_applied_release_output(self):
         raw = {"dashboard": {"gcip": {"web_api_key": "public"}}}
 
         def command(*args, **kwargs):
@@ -303,8 +303,8 @@ class RuntimeConfigTests(unittest.TestCase):
         firebase = deepcopy(OUTPUT)
         firebase["gcip"]["auth_helper"] = "firebase"
         with patch("controller.run", side_effect=command):
-            # A refresh reloads a bundle applied before the helper proxy; its
-            # host.py rejects unknown managed GCIP keys.
+            # A refresh reloads a release deployed before the edge proxied the
+            # helper; the default needs no key.
             controller.provision_secret({"project_id": "aidash-fixture"}, firebase, "test")
             self.assertNotIn("auth_helper", raw["dashboard"]["gcip"])
             self.assertEqual(raw["dashboard"]["gcip"]["tenant_bindings"], {"pool-a": "acme"})
@@ -384,7 +384,7 @@ class RuntimeConfigTests(unittest.TestCase):
         )
 
         # A disabled latest must be replaced even if its enabled predecessor
-        # already has the desired bindings; the VM cannot list secret versions.
+        # already has the desired bindings; readers of "latest" must see it.
         raw.clear()
         raw.update(published[0])
         published.clear()

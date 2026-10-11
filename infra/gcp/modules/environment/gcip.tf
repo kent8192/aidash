@@ -51,8 +51,8 @@ resource "google_identity_platform_tenant_inbound_saml_config" "saml" {
   }
   sp_config {
     sp_entity_id = each.value.sp_entity_id
-    # The public origin proxies the Firebase sign-in helper (see host.py caddyfile)
-    # only once this environment's bundle does; until then the helper stays on Firebase.
+    # The edge proxies the Firebase sign-in helper from the public origin only once
+    # a release deployment selects it; until then the helper stays on Firebase.
     callback_uri = var.environment.auth_helper == "public_origin" ? "https://${var.hostname}/__/auth/handler" : "https://${var.project_id}.firebaseapp.com/__/auth/handler"
   }
 }
@@ -61,7 +61,7 @@ output "gcip" {
     project_id              = var.project_id
     public_origin           = "https://${var.hostname}"
     auth_helper             = var.environment.auth_helper
-    runtime_service_account = google_service_account.runtime.email
+    runtime_service_account = google_service_account.workload["server"].email
     tenant_ids              = [for pool in google_identity_platform_tenant.aidash : pool.name]
     tenant_bindings         = { for alias, pool in google_identity_platform_tenant.aidash : pool.name => var.gcip_tenants[alias].tenant }
     providers               = { for alias, pool in google_identity_platform_tenant.aidash : pool.name => concat(var.gcip_tenants[alias].password_sign_up ? ["password"] : [], var.gcip_tenants[alias].google_client_id != null ? ["google.com"] : [], keys(var.gcip_tenants[alias].oidc), keys(var.gcip_tenants[alias].saml)) }
