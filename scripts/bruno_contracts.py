@@ -510,6 +510,24 @@ def render():
                     checks += 'expect(res.getBody().openapi).to.match(/^3\\./);expect(res.getBody().paths["/api/workspaces"]).to.have.property("post");expect(JSON.stringify(res.getBody())).not.to.include(bru.getEnvVar("operator_token"));'
                 add(endpoint, label, 200, headers=headers, checks=checks)
             continue
+        if path == "/auth/login" and method == "POST":
+            # Sign-in Domain discovery exists only for GCIP deployments. Bruno
+            # URL-encodes these typed form fields itself.
+            for label, body, headers in [
+                ("OIDC deployment cannot route a Sign-in Domain", "email=alice@acme.example&return_to=/", {"Origin": "{{base_url}}"}),
+                ("OIDC deployment refuses foreign-origin discovery", "email=alice@acme.example", {"Origin": "https://untrusted.example"}),
+                ("Discovery without an address reveals nothing", "return_to=/", {"Origin": "{{base_url}}"}),
+            ]:
+                add(
+                    endpoint,
+                    label,
+                    401,
+                    headers=headers,
+                    body=body,
+                    media="application/x-www-form-urlencoded",
+                    checks='expect(res.getHeader("set-cookie")).to.equal(undefined);',
+                )
+            continue
         if path == "/auth/login":
             for destination in (
                 "https%3A%2F%2Funtrusted.example",

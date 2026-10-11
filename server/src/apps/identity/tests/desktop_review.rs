@@ -45,6 +45,8 @@ struct Fixture {
 	identity: Uuid,
 	browser: Uuid,
 	outage: Arc<AtomicBool>,
+	/// Delays the next provider status response, letting concurrent work commit first.
+	slow_status: Arc<AtomicBool>,
 	server: upstream_fixtures::FixedServerGuard,
 	app: common::TestApplication,
 }
@@ -216,17 +218,21 @@ async fn desktop_authentication_bursts_complete_with_one_pool_connection(
 		inputs = vec![input; 30];
 	}
 	if stale_identity {
+		// Older than the five-minute freshness window, within the 15-minute limit:
+		// every request revalidates with the provider before its transaction.
 		let update = Query::update()
 			.table(Alias::new("dashboard_identities"))
 			.value_expr(
 				Alias::new("last_valid_at"),
-				Expr::cust("clock_timestamp()-interval '2 minutes'"),
+				Expr::cust("clock_timestamp()-interval '6 minutes'"),
 			)
 			.to_string(PostgresQueryBuilder);
 		sqlx::query(&update)
 			.execute(fixture.f.store.pool.driver())
 			.await
 			.unwrap();
+		// One slow revalidation finishes after concurrent requests have committed.
+		fixture.slow_status.store(true, Ordering::SeqCst);
 	}
 	// Retain schema initialization but make any nested pool acquisition fail.
 	let pool = fixture
@@ -640,9 +646,14 @@ fn review_outage() -> Arc<AtomicBool> {
 	Arc::new(AtomicBool::new(false))
 }
 #[rstest::fixture]
+fn review_slow_status() -> Arc<AtomicBool> {
+	Arc::new(AtomicBool::new(false))
+}
+#[rstest::fixture]
 fn review_router(
 	#[from(upstream_fixtures::fixed_listener)] listener: upstream_fixtures::ListenerFuture,
 	#[from(review_outage)] outage: Arc<AtomicBool>,
+	#[from(review_slow_status)] slow_status: Arc<AtomicBool>,
 ) -> upstream_fixtures::RouterFuture {
 	async move {
 		let issuer = format!("http://{}/issuer", listener.await.local_addr().unwrap());
@@ -663,6 +674,7 @@ fn review_router(
 				.unwrap();
 
 		let unavailable = outage.clone();
+		let slow = slow_status.clone();
 		let provider = reinhardt::test::stub::StubRouter::new()
 			.route(
 				"/issuer/.well-known/openid-configuration",
@@ -694,7 +706,11 @@ fn review_router(
 				http::Method::GET,
 				reply(move |_request: reinhardt::Request| {
 					let unavailable = unavailable.clone();
+					let slow = slow.clone();
 					async move {
+						if slow.swap(false, Ordering::SeqCst) {
+							tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+						}
 						let status = if unavailable.load(Ordering::SeqCst) {
 							StatusCode::SERVICE_UNAVAILABLE
 						} else {
@@ -794,9 +810,10 @@ fn review_runtime(
 async fn review_fixture(
 	#[from(review_ids)] _state: ReviewIds,
 	#[from(review_outage)] outage: Arc<AtomicBool>,
+	#[from(review_slow_status)] slow_status: Arc<AtomicBool>,
 	#[from(upstream_fixtures::fixed_listener)] _listener: upstream_fixtures::ListenerFuture,
 	#[from(review_router)]
-	#[with(_listener.clone(),outage.clone())]
+	#[with(_listener.clone(),outage.clone(),slow_status.clone())]
 	_router: upstream_fixtures::RouterFuture,
 	#[from(review_runtime)]
 	#[with(_listener.clone(),_state.identity,_state.browser)]
@@ -820,6 +837,7 @@ async fn review_fixture(
 		identity,
 		browser,
 		outage,
+		slow_status,
 		server,
 		app: application.application,
 	}

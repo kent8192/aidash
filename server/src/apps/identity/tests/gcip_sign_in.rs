@@ -127,6 +127,11 @@ fn configure(f: &mut Federation, endpoint: &str) {
 		.into(),
 		providers: Default::default(),
 		password_sign_up: Default::default(),
+		sign_in_domains: [
+			("acme.example".into(), "pool-a".into()),
+			("xn--bcher-kva.example".into(), "pool-b".into()),
+		]
+		.into(),
 		auth_helper: Default::default(),
 		session_absolute_seconds: 43200,
 		session_idle_seconds: 1800,
@@ -252,6 +257,202 @@ async fn sign_in_as(
 		.unwrap()
 		.to_owned();
 	(session, csrf)
+}
+async fn discover(
+	app: &common::TestApplication,
+	body: &'static str,
+	origin: Option<&str>,
+) -> reqwest::Response {
+	let mut request = browser()
+		.post(app.url("/auth/login"))
+		.header("content-type", "application/x-www-form-urlencoded")
+		.body(body);
+	if let Some(origin) = origin {
+		request = request.header("origin", origin);
+	}
+	request.send().await.unwrap()
+}
+async fn pending_transactions(f: &Federation) -> i64 {
+	let query = Query::select()
+		.expr(Expr::cust("count(*)"))
+		.from(Alias::new("dashboard_login_transactions"))
+		.to_string(PostgresQueryBuilder);
+	sqlx::query_scalar(&query)
+		.fetch_one(f.store.pool.driver())
+		.await
+		.unwrap()
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn sign_in_domain_routes_to_its_pool_and_unknown_inputs_are_indistinguishable(
+	#[future(awt)]
+	#[from(gcip_runtime)]
+	gcip: GcipFixture,
+) {
+	let GcipFixture {
+		runtime, _admin, ..
+	} = gcip;
+	let (f, url, schema) = runtime.parts();
+	let app = common::application_with_settings(
+		f.clone(),
+		aidash_server::http::Settings {
+			auth_discovery_burst: 1000,
+			..Default::default()
+		},
+	)
+	.await;
+	const ORIGIN: &str = "http://127.0.0.1:8080";
+	for (body, pool) in [
+		("email=Alice%40ACME.example&return_to=%2Fsettings", "pool-a"),
+		(
+			"email=bob%40B%C3%9CCHER.example&return_to=%2Fsettings",
+			"pool-b",
+		),
+	] {
+		let response = discover(&app, body, Some(ORIGIN)).await;
+		assert_eq!(response.status(), 303, "{body}");
+		assert_eq!(response.headers()["cache-control"], "no-store");
+		let location = response.headers()["location"].to_str().unwrap();
+		let state = location.strip_prefix("/sign-in?state=").unwrap().to_owned();
+		let cookie = response.headers()["set-cookie"]
+			.to_str()
+			.unwrap()
+			.split(';')
+			.next()
+			.unwrap()
+			.to_owned();
+		let client: Value = browser()
+			.get(app.url(format!("/auth/gcip/transaction?state={state}")))
+			.header("cookie", &cookie)
+			.send()
+			.await
+			.unwrap()
+			.json()
+			.await
+			.unwrap();
+		assert_eq!(client["tenant_id"], pool);
+		assert!(!client.to_string().contains("acme"), "{client}");
+		let exchanged = exchange(
+			&app,
+			&state,
+			&cookie,
+			&token(pool, "Person", Utc::now().timestamp()),
+			ORIGIN,
+		)
+		.await;
+		assert_eq!(exchanged.status(), 200);
+	}
+	let before = pending_transactions(&f).await;
+	let mut unknown = Vec::new();
+	for body in [
+		"email=alice%40unmapped.example&return_to=%2Fsettings",
+		"email=alice%40eng.acme.example&return_to=%2Fsettings",
+		"email=not-an-email&return_to=%2Fsettings",
+		"email=%40acme.example&return_to=%2Fsettings",
+		// Mapped domains do not rescue a malformed mailbox.
+		"email=bad+local%40acme.example&return_to=%2Fsettings",
+		"email=.alice%40acme.example&return_to=%2Fsettings",
+		"email=alice..bob%40acme.example&return_to=%2Fsettings",
+		// A literal `%61cme.example` must not percent-decode into the mapping.
+		"email=alice%40%2561cme.example&return_to=%2Fsettings",
+		"return_to=%2Fsettings",
+	] {
+		unknown.push((body, discover(&app, body, Some(ORIGIN)).await));
+	}
+	for org in ["missing", "ACME", "pool-a"] {
+		unknown.push((
+			org,
+			browser()
+				.get(app.url(format!("/auth/login?org={org}&return_to=%2Fsettings")))
+				.send()
+				.await
+				.unwrap(),
+		));
+	}
+	let mut bodies = Vec::new();
+	for (input, response) in unknown {
+		assert_eq!(response.status(), 303, "{input}");
+		assert_eq!(
+			response.headers()["location"],
+			"/sign-in?error=not_found&return_to=%2Fsettings",
+			"{input}"
+		);
+		assert_eq!(response.headers()["cache-control"], "no-store", "{input}");
+		assert!(!response.headers().contains_key("set-cookie"), "{input}");
+		bodies.push(response.bytes().await.unwrap());
+	}
+	assert!(bodies.windows(2).all(|pair| pair[0] == pair[1]));
+	assert_eq!(pending_transactions(&f).await, before);
+	// Discovery is a browser form; a foreign or missing Origin is refused
+	// before any routing decision, for mapped and unmapped domains alike.
+	for origin in [None, Some("https://attacker.example")] {
+		for body in [
+			"email=alice%40acme.example",
+			"email=alice%40unmapped.example",
+		] {
+			assert_eq!(discover(&app, body, origin).await.status(), 403);
+		}
+	}
+	common::cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn discovery_has_its_own_rate_budget(
+	#[future(awt)]
+	#[from(gcip_runtime)]
+	gcip: GcipFixture,
+) {
+	let GcipFixture {
+		runtime, _admin, ..
+	} = gcip;
+	let (f, url, schema) = runtime.parts();
+	let app = common::application_with_settings(
+		f.clone(),
+		aidash_server::http::Settings {
+			auth_discovery_burst: 2,
+			auth_discovery_period: std::time::Duration::from_secs(600),
+			..Default::default()
+		},
+	)
+	.await;
+	let origin = Some("http://127.0.0.1:8080");
+	assert_eq!(
+		discover(&app, "email=a%40unmapped.example", origin)
+			.await
+			.status(),
+		303
+	);
+	assert_eq!(
+		discover(&app, "email=a%40acme.example", origin)
+			.await
+			.status(),
+		303
+	);
+	for limited in [
+		discover(&app, "email=a%40unmapped.example", origin).await,
+		discover(&app, "email=a%40acme.example", origin).await,
+		browser()
+			.get(app.url("/auth/login?org=acme"))
+			.send()
+			.await
+			.unwrap(),
+		// Encoding the key must not move a lookup into the general budget.
+		browser()
+			.get(app.url("/auth/login?%6Frg=acme"))
+			.send()
+			.await
+			.unwrap(),
+	] {
+		assert_eq!(limited.status(), 429);
+	}
+	// Exhausted discovery leaves ordinary sign-in endpoints available.
+	for path in ["/auth/config", "/auth/login?return_to=%2Fsettings"] {
+		let response = browser().get(app.url(path)).send().await.unwrap();
+		assert_ne!(response.status(), 429, "{path}");
+	}
+	common::cleanup(f, &url, &schema).await;
 }
 
 #[rstest::rstest]
@@ -864,12 +1065,10 @@ async fn removed_binding_login_disables_an_inactive_identity_and_its_existing_au
 		.await
 		.unwrap();
 	let (state, cookie) = transaction(&app, "acme").await;
-	f.config
-		.gcip
-		.as_mut()
-		.unwrap()
-		.tenant_bindings
-		.remove("pool-a");
+	// Terraform removes a pool's Binding and its Sign-in Domains together.
+	let gcip = f.config.gcip.as_mut().unwrap();
+	gcip.tenant_bindings.remove("pool-a");
+	gcip.sign_in_domains.retain(|_, pool| pool != "pool-a");
 	f.store = f
 		.store
 		.clone()
@@ -1169,11 +1368,12 @@ async fn replacement_registration_keeps_freshly_authenticated_display_attributes
 		.json()
 		.await
 		.unwrap();
+	// A request expires no earlier than its creation, after the sign-in that made it.
 	let expire = Query::update()
 		.table(Alias::new("dashboard_registration_requests"))
 		.value_expr(
 			Alias::new("expires_at"),
-			Expr::val(Utc::now() - chrono::Duration::seconds(1)),
+			Expr::col(Alias::new("created_at")),
 		)
 		.to_string(PostgresQueryBuilder);
 	sqlx::query(&expire)
@@ -1276,7 +1476,7 @@ async fn expired_registration_clears_unmapped_display_attributes(
 		.table(Alias::new("dashboard_registration_requests"))
 		.value_expr(
 			Alias::new("expires_at"),
-			Expr::cust("clock_timestamp()-interval '1 second'"),
+			Expr::col(Alias::new("created_at")),
 		)
 		.to_string(PostgresQueryBuilder);
 	sqlx::query(&expire)
@@ -1307,6 +1507,477 @@ async fn expired_registration_clears_unmapped_display_attributes(
 		.await
 		.unwrap();
 	assert!(view["display_name"].is_null() && view["verified_email"].is_null());
+	common::cleanup(f, &url, &schema).await;
+}
+
+/// Runs exactly one periodic refresh pass, which also enforces display retention.
+async fn sweep(f: &Federation) {
+	let (stop, stopping) = tokio::sync::watch::channel(false);
+	stop.send(true).unwrap();
+	aidash_server::dashboard_auth::refresh_active(f.clone(), stopping)
+		.await
+		.unwrap();
+}
+async fn age(f: &Federation, table: &str, column: &str, interval: &str) {
+	let update = Query::update()
+		.table(Alias::new(table))
+		.value_expr(
+			Alias::new(column),
+			Expr::cust(format!("clock_timestamp()-interval '{interval}'")),
+		)
+		.to_string(PostgresQueryBuilder);
+	sqlx::query(&update)
+		.execute(f.store.pool.driver())
+		.await
+		.unwrap();
+}
+async fn operator_get(app: &common::TestApplication, f: &Federation, path: &str) -> Value {
+	let response = browser()
+		.get(app.url(path))
+		.bearer_auth(&f.config.api_token)
+		.send()
+		.await
+		.unwrap();
+	assert_eq!(response.status(), 200);
+	response.json().await.unwrap()
+}
+async fn only_identity_path(app: &common::TestApplication, f: &Federation) -> String {
+	let identities = operator_get(app, f, "/api/dashboard/identities").await;
+	let [identity] = identities.as_array().unwrap().as_slice() else {
+		panic!("expected one External Identity: {identities}");
+	};
+	format!(
+		"/api/dashboard/identities/{}",
+		identity["id"].as_str().unwrap()
+	)
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn abandoned_sign_in_keeps_display_attributes_only_while_its_session_lives(
+	#[future(awt)]
+	#[from(gcip_runtime)]
+	gcip: GcipFixture,
+) {
+	let GcipFixture {
+		runtime, _admin, ..
+	} = gcip;
+	let (f, url, schema) = runtime.parts();
+	let app = common::application(f.clone()).await;
+	// The applicant signs in and leaves without submitting a Registration Request.
+	sign_in(&app, "acme", "pool-a", "Abandoned").await;
+	let path = only_identity_path(&app, &f).await;
+	age(
+		&f,
+		"dashboard_identities",
+		"display_observed_at",
+		"11 minutes",
+	)
+	.await;
+	sweep(&f).await;
+	let view = operator_get(&app, &f, &path).await;
+	assert_eq!(
+		view["display_name"], "Abandoned",
+		"the live session retains them"
+	);
+	assert_eq!(view["verified_email"], "person@example.test");
+	// The idle limit is 30 minutes; the abandoned session no longer counts.
+	age(&f, "dashboard_sessions", "last_activity_at", "31 minutes").await;
+	sweep(&f).await;
+	let view = operator_get(&app, &f, &path).await;
+	assert!(view["display_name"].is_null() && view["verified_email"].is_null());
+	assert!(
+		view["display_erased_at"].is_null(),
+		"retention clearing is not a Display Erasure"
+	);
+	sign_in(&app, "acme", "pool-a", "Returned").await;
+	assert_eq!(
+		operator_get(&app, &f, &path).await["display_name"],
+		"Returned"
+	);
+	common::cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn display_sweep_rechecks_retention_after_waiting_for_a_fresh_sign_in(
+	#[future(awt)]
+	#[from(gcip_runtime)]
+	gcip: GcipFixture,
+) {
+	let GcipFixture {
+		runtime, _admin, ..
+	} = gcip;
+	let (f, url, schema) = runtime.parts();
+	let app = common::application(f.clone()).await;
+	let (cookie, csrf) = sign_in(&app, "acme", "pool-a", "Stale").await;
+	let submitted = browser()
+		.post(app.url("/auth/registration"))
+		.header("cookie", &cookie)
+		.header("origin", "http://127.0.0.1:8080")
+		.header("x-aidash-csrf", csrf)
+		.send()
+		.await
+		.unwrap();
+	assert_eq!(submitted.status(), 200);
+	let path = only_identity_path(&app, &f).await;
+	// Nothing retains the stale attributes: the request has expired, the sign-in
+	// is old, and its session has ended.
+	let expire = Query::update()
+		.table(Alias::new("dashboard_registration_requests"))
+		.value_expr(
+			Alias::new("expires_at"),
+			Expr::col(Alias::new("created_at")),
+		)
+		.to_string(PostgresQueryBuilder);
+	sqlx::query(&expire)
+		.execute(f.store.pool.driver())
+		.await
+		.unwrap();
+	age(
+		&f,
+		"dashboard_identities",
+		"display_observed_at",
+		"11 minutes",
+	)
+	.await;
+	age(&f, "dashboard_sessions", "revoked_at", "0 seconds").await;
+	// A fresh sign-in holds the identity lock while it records new claims.
+	let mut tx = f.store.pool.driver().begin().await.unwrap();
+	let lock = Query::select()
+		.column(Alias::new("id"))
+		.from(Alias::new("dashboard_identities"))
+		.lock(reinhardt::query::LockType::Update)
+		.to_string(PostgresQueryBuilder);
+	sqlx::query(&lock).fetch_one(&mut *tx).await.unwrap();
+	let pass = tokio::spawn({
+		let f = f.clone();
+		async move { sweep(&f).await }
+	});
+	let waiters = Query::select()
+		.expr(Expr::cust("count(*)"))
+		.from(Alias::new("pg_stat_activity"))
+		.and_where(Expr::col(Alias::new("application_name")).eq(Expr::value(&schema)))
+		.and_where(Expr::col(Alias::new("wait_event_type")).eq(Expr::value("Lock")))
+		.and_where(Expr::col(Alias::new("query")).like("%dashboard_identities%"))
+		.to_string(PostgresQueryBuilder);
+	tokio::time::timeout(std::time::Duration::from_secs(10), async {
+		while sqlx::query_scalar::<_, i64>(&waiters)
+			.fetch_one(f.store.pool.driver())
+			.await
+			.unwrap() == 0
+		{
+			tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+		}
+	})
+	.await
+	.expect("the sweep must wait for the identity lock");
+	let fresh = Query::update()
+		.table(Alias::new("dashboard_identities"))
+		.value_expr(Alias::new("display_name"), Expr::val("Fresh"))
+		.value_expr(
+			Alias::new("display_observed_at"),
+			Expr::cust("clock_timestamp()"),
+		)
+		.to_string(PostgresQueryBuilder);
+	sqlx::query(&fresh).execute(&mut *tx).await.unwrap();
+	tx.commit().await.unwrap();
+	tokio::time::timeout(std::time::Duration::from_secs(10), pass)
+		.await
+		.unwrap()
+		.unwrap();
+	let view = operator_get(&app, &f, &path).await;
+	assert_eq!(
+		view["display_name"], "Fresh",
+		"the sweep must not erase claims recorded while it waited"
+	);
+	common::cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn display_erasure_is_permanent_and_keeps_the_identity_authority(
+	#[future(awt)]
+	#[from(gcip_runtime)]
+	gcip: GcipFixture,
+) {
+	let GcipFixture {
+		runtime, _admin, ..
+	} = gcip;
+	let (f, url, schema) = runtime.parts();
+	let policy = serde_json::from_value(
+		json!({"tenant":"acme","subjects":{"alice":{"kind":"user"}},"policies":[]}),
+	)
+	.unwrap();
+	aidash_server::authorization::Authorization {
+		pool: f.store.pool.clone(),
+	}
+	.replace("acme", 0, policy, "operator")
+	.await
+	.unwrap();
+	let app = common::application(f.clone()).await;
+	let (cookie, csrf) = sign_in(&app, "acme", "pool-a", "Person").await;
+	let registration: Value = browser()
+		.post(app.url("/auth/registration"))
+		.header("cookie", &cookie)
+		.header("origin", "http://127.0.0.1:8080")
+		.header("x-aidash-csrf", csrf)
+		.send()
+		.await
+		.unwrap()
+		.json()
+		.await
+		.unwrap();
+	let approved = browser()
+		.post(app.url(format!(
+			"/api/dashboard/registrations/{}/approve",
+			registration["id"].as_str().unwrap()
+		)))
+		.bearer_auth(&f.config.api_token)
+		.json(&json!({"tenant":"acme","subject":"alice"}))
+		.send()
+		.await
+		.unwrap();
+	assert_eq!(approved.status(), 200);
+	let mapping: Value = approved.json().await.unwrap();
+	let selector = format!("mapping:{}", mapping["id"].as_str().unwrap());
+	let identity = registration["identity_id"].as_str().unwrap();
+	let path = format!("/api/dashboard/identities/{identity}");
+	assert_eq!(
+		operator_get(&app, &f, &path).await["display_name"],
+		"Person"
+	);
+	let erase = || {
+		browser()
+			.post(app.url(format!("{path}/display-erasure")))
+			.bearer_auth(&f.config.api_token)
+			.send()
+	};
+	let erased = erase().await.unwrap();
+	assert_eq!(erased.status(), 200);
+	let erased: Value = erased.json().await.unwrap();
+	assert!(erased["display_name"].is_null() && erased["verified_email"].is_null());
+	assert_eq!(erased["display_erased_by"], "operator-bearer");
+	assert!(erased["display_erased_at"].is_string());
+	let repeated: Value = erase().await.unwrap().json().await.unwrap();
+	assert_eq!(
+		repeated["display_erased_at"], erased["display_erased_at"],
+		"a repeated erasure keeps the first trace"
+	);
+	// Later sign-ins no longer record the attributes, yet the Mapping still decides.
+	let (cookie, _) = sign_in(&app, "acme", "pool-a", "Renamed").await;
+	assert_eq!(
+		browser()
+			.get(app.url("/api/session"))
+			.header("cookie", &cookie)
+			.header("x-aidash-context", &selector)
+			.send()
+			.await
+			.unwrap()
+			.status(),
+		200
+	);
+	sweep(&f).await;
+	let view = operator_get(&app, &f, &path).await;
+	assert!(view["display_name"].is_null() && view["verified_email"].is_null());
+	assert_eq!(view["display_erased_at"], erased["display_erased_at"]);
+	for listing in ["/api/dashboard/identities", "/api/dashboard/registrations"] {
+		let body = operator_get(&app, &f, listing).await.to_string();
+		assert!(
+			!body.contains("person@example.test") && !body.contains("Renamed"),
+			"{listing} returned erased attributes"
+		);
+	}
+	let mappings = operator_get(&app, &f, "/api/dashboard/mappings").await;
+	assert!(
+		mappings
+			.as_array()
+			.unwrap()
+			.iter()
+			.any(|row| row["id"] == mapping["id"] && row["enabled"] == true)
+	);
+	assert_eq!(
+		browser()
+			.post(app.url(format!(
+				"/api/dashboard/identities/{}/display-erasure",
+				uuid::Uuid::new_v4()
+			)))
+			.bearer_auth(&f.config.api_token)
+			.send()
+			.await
+			.unwrap()
+			.status(),
+		404
+	);
+	common::cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn rejected_sign_in_of_a_disabled_identity_records_no_display_attributes(
+	#[future(awt)]
+	#[from(gcip_runtime)]
+	gcip: GcipFixture,
+) {
+	let GcipFixture {
+		runtime, _admin, ..
+	} = gcip;
+	let (f, url, schema) = runtime.parts();
+	let app = common::application(f.clone()).await;
+	sign_in(&app, "acme", "pool-a", "Person").await;
+	let path = only_identity_path(&app, &f).await;
+	age(&f, "dashboard_identities", "disabled_at", "0 seconds").await;
+	sweep(&f).await;
+	let view = operator_get(&app, &f, &path).await;
+	assert!(view["display_name"].is_null() && view["verified_email"].is_null());
+	// The provider still verifies the person, but the local identity stays disabled.
+	let (state, cookie) = transaction(&app, "acme").await;
+	let rejected = exchange(
+		&app,
+		&state,
+		&cookie,
+		&token("pool-a", "Again", Utc::now().timestamp()),
+		"http://127.0.0.1:8080",
+	)
+	.await;
+	assert_eq!(rejected.status(), 403);
+	let view = operator_get(&app, &f, &path).await;
+	assert!(
+		view["display_name"].is_null() && view["verified_email"].is_null(),
+		"a rejected sign-in must not restore Display Attributes: {view}"
+	);
+	common::cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn display_retention_runs_after_dashboard_sign_in_is_unconfigured(
+	#[future(awt)]
+	#[from(gcip_runtime)]
+	gcip: GcipFixture,
+) {
+	let GcipFixture {
+		runtime, _admin, ..
+	} = gcip;
+	let (f, url, schema) = runtime.parts();
+	let app = common::application(f.clone()).await;
+	sign_in(&app, "acme", "pool-a", "Person").await;
+	let path = only_identity_path(&app, &f).await;
+	// The deployment restarts without its optional sign-in configuration. Neither
+	// the still-live session nor the sign-in from moments ago retains anything,
+	// because no session is usable or can still finish starting.
+	let mut unconfigured = f.clone();
+	unconfigured.config.gcip = None;
+	let (stop, stopping) = tokio::sync::watch::channel(false);
+	stop.send(true).unwrap();
+	aidash_server::dashboard_auth::enforce_display_retention(unconfigured, stopping)
+		.await
+		.unwrap();
+	let view = operator_get(&app, &f, &path).await;
+	assert!(view["display_name"].is_null() && view["verified_email"].is_null());
+	assert!(view["display_erased_at"].is_null());
+	common::cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn bearer_operator_rejects_a_request_after_dashboard_sign_in_is_unconfigured(
+	#[future(awt)]
+	#[from(gcip_runtime)]
+	gcip: GcipFixture,
+) {
+	let GcipFixture {
+		runtime, _admin, ..
+	} = gcip;
+	let (f, url, schema) = runtime.parts();
+	let app = common::application(f.clone()).await;
+	let (cookie, csrf) = sign_in(&app, "acme", "pool-a", "Person").await;
+	let registration: Value = browser()
+		.post(app.url("/auth/registration"))
+		.header("cookie", &cookie)
+		.header("origin", "http://127.0.0.1:8080")
+		.header("x-aidash-csrf", csrf)
+		.send()
+		.await
+		.unwrap()
+		.json()
+		.await
+		.unwrap();
+	let mut unconfigured = f.clone();
+	unconfigured.config.gcip = None;
+	let restarted = common::application(unconfigured.clone()).await;
+	let rejected = browser()
+		.post(restarted.url(format!(
+			"/api/dashboard/registrations/{}/reject",
+			registration["id"].as_str().unwrap()
+		)))
+		.bearer_auth(&f.config.api_token)
+		.send()
+		.await
+		.unwrap();
+	assert_eq!(rejected.status(), 200);
+	let rejected: Value = rejected.json().await.unwrap();
+	assert_eq!(rejected["status"], "rejected");
+	let identity = registration["identity_id"].as_str().unwrap();
+	let view = operator_get(
+		&restarted,
+		&unconfigured,
+		&format!("/api/dashboard/identities/{identity}"),
+	)
+	.await;
+	assert!(view["display_name"].is_null() && view["verified_email"].is_null());
+	common::cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn rejected_sign_in_of_a_disabled_identity_does_not_extend_display_retention(
+	#[future(awt)]
+	#[from(gcip_runtime)]
+	gcip: GcipFixture,
+) {
+	let GcipFixture {
+		runtime, _admin, ..
+	} = gcip;
+	let (f, url, schema) = runtime.parts();
+	let app = common::application(f.clone()).await;
+	sign_in(&app, "acme", "pool-a", "Person").await;
+	let path = only_identity_path(&app, &f).await;
+	// The identity is disabled before a sweep clears its stale attributes.
+	age(
+		&f,
+		"dashboard_identities",
+		"display_observed_at",
+		"11 minutes",
+	)
+	.await;
+	age(&f, "dashboard_sessions", "revoked_at", "0 seconds").await;
+	age(&f, "dashboard_identities", "disabled_at", "0 seconds").await;
+	let (state, cookie) = transaction(&app, "acme").await;
+	let rejected = exchange(
+		&app,
+		&state,
+		&cookie,
+		&token("pool-a", "Again", Utc::now().timestamp()),
+		"http://127.0.0.1:8080",
+	)
+	.await;
+	assert_eq!(rejected.status(), 403);
+	// Restored before the next sweep, the rejected sign-in must not retain them.
+	let restore = Query::update()
+		.table(Alias::new("dashboard_identities"))
+		.value_expr(Alias::new("disabled_at"), Expr::cust("null"))
+		.to_string(PostgresQueryBuilder);
+	sqlx::query(&restore)
+		.execute(f.store.pool.driver())
+		.await
+		.unwrap();
+	sweep(&f).await;
+	let view = operator_get(&app, &f, &path).await;
+	assert!(
+		view["display_name"].is_null() && view["verified_email"].is_null(),
+		"a rejected sign-in must not become a retention basis: {view}"
+	);
 	common::cleanup(f, &url, &schema).await;
 }
 

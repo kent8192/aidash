@@ -39,6 +39,10 @@ pub enum Error {
 	External(String),
 	#[error("OpenRouter returned {status}: {reason}")]
 	ProviderRejected { status: u16, reason: String },
+	/// A streamed provider response stopped producing data. Retryable like a
+	/// provider transport timeout.
+	#[error("model provider stream stalled")]
+	InferenceStalled,
 	#[error("{0}")]
 	Database(#[from] sqlx::Error),
 	#[error("{0}")]
@@ -241,6 +245,7 @@ impl From<aidash_application::Error> for Error {
 			ApplicationError::ProviderRejected { status, reason } => {
 				Self::ProviderRejected { status, reason }
 			}
+			ApplicationError::InferenceStalled => Self::InferenceStalled,
 			ApplicationError::TransactionPending => Self::TransactionPending,
 			ApplicationError::Port(error) => match error.downcast::<Self>() {
 				Ok(error) => *error,
@@ -264,6 +269,7 @@ impl From<Error> for aidash_application::Error {
 			Error::SemanticUnavailable => Self::SemanticUnavailable,
 			Error::IdentityStatusUnavailable => Self::IdentityStatusUnavailable,
 			Error::TransactionPending => Self::TransactionPending,
+			Error::InferenceStalled => Self::InferenceStalled,
 			error => Self::Port(Box::new(error)),
 		}
 	}

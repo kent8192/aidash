@@ -297,6 +297,38 @@ async fn production_router_enforces_auth_validation_rate_and_sse_resume(
 	drop(limited_app);
 	common::cleanup(federation, &url, &schema).await;
 }
+
+#[rstest::rstest]
+#[tokio::test]
+async fn without_gcip_an_org_query_does_not_open_a_second_login_budget(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+	#[from(discovery_settings)] _settings: Settings,
+	#[future(awt)]
+	#[from(common::native_application)]
+	#[with(_settings.clone(), aidash_server::sse::Service::new(aidash_server::sse::Settings::default()), Arc::new(|router| router), runtime.clone())]
+	fixture: common::ApplicationFixture,
+) {
+	let (federation, url, schema) = runtime.await.parts();
+	assert!(federation.config.gcip.is_none());
+	let app = fixture.application;
+	let login = |uri: &str| {
+		Request::builder()
+			.uri(uri)
+			.extension("127.0.0.1:1".parse::<std::net::SocketAddr>().unwrap())
+			.body(Bytes::new())
+			.unwrap()
+	};
+	for (uri, limited) in [
+		("/auth/login", false),
+		("/auth/login?org=acme", true),
+		("/auth/login?%6Frg=acme", true),
+	] {
+		let status = app.clone().native_oneshot(login(uri)).await.unwrap().status;
+		assert_eq!(status == 429, limited, "{uri}: {status}");
+	}
+	drop(app);
+	common::cleanup(federation, &url, &schema).await;
+}
 struct MalformedJson;
 
 #[async_trait::async_trait]
@@ -320,6 +352,15 @@ async fn json_test_helper_does_not_hide_malformed_responses(
 	common::request(&app, "fixture", "GET", "/broken", serde_json::Value::Null).await;
 }
 
+#[rstest::fixture]
+fn discovery_settings() -> Settings {
+	Settings {
+		auth_burst: 1,
+		auth_period: Duration::from_secs(60),
+		auth_discovery_burst: 100,
+		..Default::default()
+	}
+}
 #[rstest::fixture]
 fn auth_settings() -> Settings {
 	Settings {

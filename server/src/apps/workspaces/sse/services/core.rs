@@ -18,6 +18,7 @@ use uuid::Uuid;
 
 pub use connection::EventStream;
 pub(crate) use connection::StreamRequest;
+pub(crate) use connection::inference::RunStreamRequest;
 
 #[derive(Clone, Debug)]
 pub struct Settings {
