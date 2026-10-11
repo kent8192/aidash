@@ -1,0 +1,177 @@
+# Memory evaluation corpus for #122's memory matrix. See docs/evaluation.md.
+#
+# Every row of the Issue's matrix has at least one scenario. `evidence` says how
+# this branch can observe it:
+#   deterministic-api      ordered actions through the authorized native memory
+#                          HTTP API; no model call. Run once per memory variant
+#                          in an isolated Workspace and participant bank.
+#   deterministic-test     an existing deterministic test command.
+#   feature-not-available  the behavior belongs to an Issue that has not landed.
+#   requires-live-tier     only a live model or embedding can show it; the
+#                          ground truth below is the live tier's input.
+# Neither of the last two is ever reported as passing.
+#
+# Source ids are symbolic. Each variant maps them to fresh unit UUIDs, so no
+# variant can read or overwrite another variant's units.
+version = "memory-corpus-v1"
+matrix = [
+  "paraphrase-and-relationships",
+  "names-identifiers-near-duplicates",
+  "corrected-superseded-conflicting",
+  "irrelevant-and-empty",
+  "large-memory-clipped-previews",
+  "concurrent-writers-replays",
+  "revocation-deletion",
+  "consumed-shared-memory-updates",
+  "explicit-versus-inferred",
+  "optional-retrieval-optimizations",
+]
+
+# Memory policy variants. Both keep identical authority, bounds and roles; only
+# the opt-in `decay` parameters differ (#140). Mandatory checks are never relaxed.
+[[variants]]
+id = "baseline-policy"
+[[variants]]
+id = "decay-policy"
+decay = { half_life_days = 30, prior_floor_millionths = 100000 }
+
+# --------------------------------------------------------------------------
+[[scenarios]]
+id = "japanese-paraphrase-recall"
+matrix_row = "paraphrase-and-relationships"
+issue = "#110"
+evidence = "requires-live-tier"
+observation = "Relevant source recall and downstream answer support for Japanese paraphrases without shared keywords. Needs a real embedding and model; deterministic hash embeddings would measure keyword coincidence only."
+sources = [
+  { id = "rail", scope = "participant", text = "愛子は長距離の移動には新幹線を選ぶ。" },
+  { id = "car", scope = "participant", text = "Aiko never drives to client meetings." },
+]
+queries = [{ text = "Aikoが出張で好む交通手段は？", relevant = ["rail"], k = 4 }]
+
+[[scenarios]]
+id = "exact-identifier-near-duplicates"
+matrix_row = "names-identifiers-near-duplicates"
+issue = "#110"
+evidence = "deterministic-api"
+observation = "Exact-source selection: a correction addressed to one identifier changes only that unit, never its near-duplicate neighbor. Ranked retrieval among neighbors is a live-tier measurement."
+sources = [
+  { id = "inv-0105", scope = "participant", text = "Invoice INV-2026-0105 for Aster Labs is unpaid." },
+  { id = "inv-0150", scope = "participant", text = "Invoice INV-2026-0150 for Aster Lab is unpaid." },
+]
+actions = [
+  { op = "add", source = "inv-0105", expect = "ok", revision = 1 },
+  { op = "add", source = "inv-0150", expect = "ok", revision = 1 },
+  { op = "correct", source = "inv-0105", observed_revision = 1, text = "Invoice INV-2026-0105 for Aster Labs was paid on 2026-10-09.", expect = "ok", revision = 2 },
+  { op = "query", visible = { inv-0105 = "Invoice INV-2026-0105 for Aster Labs was paid on 2026-10-09.", inv-0150 = "Invoice INV-2026-0150 for Aster Lab is unpaid." } },
+]
+
+[[scenarios]]
+id = "corrected-superseded-knowledge"
+matrix_row = "corrected-superseded-conflicting"
+issue = "#125"
+evidence = "deterministic-api"
+observation = "The current supported claim replaces the superseded one, and a conflicting write based on the superseded revision is rejected instead of silently flattening the conflict."
+sources = [
+  { id = "budget", scope = "participant", text = "The Q4 procurement budget is 500 USD." },
+]
+actions = [
+  { op = "add", source = "budget", expect = "ok", revision = 1 },
+  { op = "correct", source = "budget", observed_revision = 1, text = "Correction: the Q4 procurement budget is 300 USD.", expect = "ok", revision = 2 },
+  { op = "correct", source = "budget", observed_revision = 1, text = "The Q4 procurement budget is 450 USD.", expect = "rejected" },
+  { op = "query", visible = { budget = "Correction: the Q4 procurement budget is 300 USD." } },
+]
+
+[[scenarios]]
+id = "empty-authorized-set"
+matrix_row = "irrelevant-and-empty"
+issue = "#110"
+evidence = "deterministic-api"
+observation = "A genuinely empty authorized bank returns an empty result, not an error and not another bank's units. Unnecessary injection and useful abstention under recall need the live tier."
+sources = []
+actions = [{ op = "query", visible = {} }]
+
+[[scenarios]]
+id = "clipped-preview-replacement"
+matrix_row = "large-memory-clipped-previews"
+issue = "#125"
+evidence = "deterministic-api"
+observation = "A writer holding only a clipped preview of an older revision cannot replace the unit: the stale replacement precondition fails and the unseen full text survives."
+sources = [
+  { id = "runbook", scope = "participant", text = "@long:6000:Runbook step list. Step 1 isolate the node. Step 2 drain traffic. Final step: verify the rollback check before announcing success." },
+]
+actions = [
+  { op = "add", source = "runbook", expect = "ok", revision = 1 },
+  { op = "correct", source = "runbook", observed_revision = 1, text = "@long:6000:Runbook step list, revised. Step 1 isolate the node. Step 2 drain traffic. Final step: verify the rollback check before announcing success.", expect = "ok", revision = 2 },
+  { op = "correct", source = "runbook", observed_revision = 1, text = "@clip:200:runbook", expect = "rejected" },
+  { op = "query", visible = { runbook = "@long:6000:Runbook step list, revised. Step 1 isolate the node. Step 2 drain traffic. Final step: verify the rollback check before announcing success." } },
+]
+
+[[scenarios]]
+id = "concurrent-writers-and-replays"
+matrix_row = "concurrent-writers-replays"
+issue = "#125"
+evidence = "deterministic-api"
+observation = "Of two writers that observed the same revision only one succeeds; replaying a committed mutation has no second effect; a deleted unit is not resurrected by a replayed or late write."
+sources = [
+  { id = "owner", scope = "participant", text = "The billing integration owner is Mika." },
+]
+actions = [
+  { op = "add", source = "owner", expect = "ok", revision = 1, label = "first-add" },
+  { op = "correct", source = "owner", observed_revision = 1, text = "The billing integration owner is Ren.", expect = "ok", revision = 2, label = "writer-a" },
+  { op = "correct", source = "owner", observed_revision = 1, text = "The billing integration owner is Sora.", expect = "rejected" },
+  { op = "replay", of = "writer-a", expect = "identical" },
+  { op = "query", visible = { owner = "The billing integration owner is Ren." } },
+  { op = "delete", source = "owner", observed_revision = 2, expect = "ok" },
+  { op = "replay", of = "writer-a", expect = "no-effect" },
+  { op = "replay", of = "first-add", expect = "no-effect" },
+  { op = "correct", source = "owner", observed_revision = 2, text = "The billing integration owner is Kai.", expect = "rejected" },
+  { op = "query", visible = {} },
+]
+
+[[scenarios]]
+id = "deletion-after-retrieval"
+matrix_row = "revocation-deletion"
+issue = "#125"
+evidence = "deterministic-api"
+observation = "After deletion the unit is absent from every later read. Revocation of source authority before inference is covered by the harness test source_revocation_stops_recovered_observations_before_inference; caches, summaries and required-Home execution after revocation need #127."
+sources = [
+  { id = "secret-plan", scope = "participant", text = "The acquisition code name is Ochre Falcon." },
+]
+actions = [
+  { op = "add", source = "secret-plan", expect = "ok", revision = 1 },
+  { op = "query", visible = { secret-plan = "The acquisition code name is Ochre Falcon." } },
+  { op = "delete", source = "secret-plan", observed_revision = 1, expect = "ok" },
+  { op = "query", visible = {} },
+]
+
+[[scenarios]]
+id = "shared-memory-update-during-run"
+matrix_row = "consumed-shared-memory-updates"
+issue = "#127"
+evidence = "feature-not-available"
+observation = "Pause/invalidation impact, bounded recovery and completion without stale-use shortcuts when consumed shared memory changes during a long Run. #127 defines the change contract; today's behavior is fail-closed."
+
+[[scenarios]]
+id = "explicit-operations-versus-candidates"
+matrix_row = "explicit-versus-inferred"
+issue = "#118"
+evidence = "feature-not-available"
+observation = "Correct routing of explicit user save/correct/delete versus inferred candidates in the review inbox. Explicit unit mutations exist (see the deterministic-api scenarios); the provenance-bound review inbox is #118."
+
+[[scenarios]]
+id = "decay-paired-ranking"
+matrix_row = "optional-retrieval-optimizations"
+issue = "#140"
+evidence = "deterministic-test"
+observation = "Matched decay on/off keeps relevant support ranked above recent noise; authority, revisions and candidate limits are identical across arms (tests/fixtures/native_memory_evaluation.toml decay_cases)."
+command = [
+  "cargo",
+  "test",
+  "--locked",
+  "-p",
+  "aidash-domain",
+  "--lib",
+  "memory::tests::fixed_clock_decay_evaluation",
+  "--",
+  "--exact",
+]
