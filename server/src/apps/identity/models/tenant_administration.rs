@@ -14,7 +14,7 @@ use aidash_application::ports::authorization::dashboard::AccountPolicy;
 use aidash_domain::identity::tenant_administration as rules;
 use aidash_domain::policy::{Decision, Evaluation, Resource};
 use reinhardt::db::backends::TransactionExecutor;
-use reinhardt::db::orm::{AtomicTransaction, DatabaseConnection, Model};
+use reinhardt::db::orm::{AtomicTransaction, DatabaseConnection, Model, QuerySet};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
@@ -135,9 +135,18 @@ impl TenantAdministrator {
 		&self.identity.tenant
 	}
 
-	/// The GCIP Tenant whose External Identities this Tenant may approve.
-	pub(crate) fn pool(&self) -> &str {
-		&self.pool
+	/// Whether `identity` belongs to the configured issuer's GCIP Tenant bound
+	/// to this Tenant, the only External Identities it may see or approve.
+	/// Identities left by a previous issuer or Tenant Binding stay hidden.
+	pub(crate) fn sees(&self, identity: &DashboardIdentity) -> bool {
+		identity.issuer == self.policy.issuer && identity.gcip_tenant == self.pool
+	}
+
+	/// Narrows `identities` to the ones this administrator `sees`, in SQL.
+	fn visible(&self, identities: QuerySet<DashboardIdentity>) -> QuerySet<DashboardIdentity> {
+		identities
+			.filter(DashboardIdentity::field_issuer().eq(self.policy.issuer.clone()))
+			.filter(DashboardIdentity::field_gcip_tenant().eq(self.pool.clone()))
 	}
 
 	pub(crate) fn policy(&self) -> &AccountPolicy {
@@ -277,7 +286,8 @@ impl TenantAdministrator {
 		.await
 	}
 
-	/// Pending Registration Requests from the bound GCIP Tenant only.
+	/// Pending Registration Requests from the configured issuer's bound GCIP
+	/// Tenant only.
 	pub(crate) async fn registrations(
 		&self,
 		db: DatabaseConnection,
@@ -319,6 +329,7 @@ impl TenantAdministrator {
 	}
 
 	/// This Tenant's Mappings with each subject's Assignable Group memberships.
+	/// Mappings of hidden identities are excluded before paging.
 	pub(crate) async fn mappings(
 		&self,
 		db: DatabaseConnection,
@@ -336,6 +347,9 @@ impl TenantAdministrator {
 			.await?;
 			let mappings = DashboardMapping::objects()
 				.filter(DashboardMapping::field_tenant().eq(self.tenant().to_owned()))
+				.filter_in_subquery("identity_id", |identities| {
+					self.visible(identities).values(&["id"])
+				})?
 				.order_by(&["subject", "id"])
 				.limit(200)
 				.offset(offset as usize)
@@ -362,7 +376,7 @@ impl TenantAdministrator {
 		.await
 	}
 
-	/// Only External Identities of the bound GCIP Tenant are ever disclosed.
+	/// Only External Identities this administrator `sees` are ever disclosed.
 	async fn identities(
 		&self,
 		tx: &mut AtomicTransaction,
@@ -371,9 +385,8 @@ impl TenantAdministrator {
 		if ids.is_empty() {
 			return Ok(BTreeMap::new());
 		}
-		Ok(DashboardIdentity::objects()
-			.filter(DashboardIdentity::field_id().is_in(ids))
-			.filter(DashboardIdentity::field_gcip_tenant().eq(self.pool().to_owned()))
+		Ok(self
+			.visible(DashboardIdentity::objects().filter(DashboardIdentity::field_id().is_in(ids)))
 			.all_with_db(tx)
 			.await?
 			.into_iter()

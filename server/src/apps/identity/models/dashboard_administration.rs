@@ -163,7 +163,11 @@ impl DashboardRegistrationRequest {
 						snapshot,
 						tenant_administration::REGISTRATION_APPROVE,
 						&id.to_string(),
-						json!({"identity_id": candidate.id, "subject": input.subject}),
+						json!({
+							"identity_id": candidate.id,
+							"subject": input.subject,
+							"groups": groups,
+						}),
 					)
 					.await?;
 			}
@@ -421,13 +425,14 @@ impl DashboardRegistrationRequest {
 	}
 }
 
-/// A Tenant Administrator sees only Registration Requests from the GCIP Tenant
-/// bound to its Tenant, and never acts on its own External Identity.
+/// A Tenant Administrator sees only Registration Requests from the configured
+/// issuer's GCIP Tenant bound to its Tenant, and never acts on its own External
+/// Identity.
 pub(super) fn visible_to(
 	administrator: &TenantAdministrator,
 	identity: &DashboardIdentity,
 ) -> Result<()> {
-	if identity.gcip_tenant != administrator.pool() || identity.id == administrator.identity_id {
+	if !administrator.sees(identity) || identity.id == administrator.identity_id {
 		return Err(Error::NotFound("registration".into()));
 	}
 	Ok(())
@@ -596,7 +601,11 @@ impl DashboardMapping {
 	) -> Result<()> {
 		db.atomic(async |tx| {
 			if let Some(administrator) = actor.tenant_administrator() {
-				let snapshot = administrator.lock(tx, false).await?;
+				// Each administrator holds a shared lock on its own credential, so
+				// two administrators disabling each other's Mappings would deadlock
+				// on the target credential below. The exclusive policy lock
+				// serializes them before any credential lock is taken.
+				let snapshot = administrator.lock(tx, true).await?;
 				let target = Self::find(tx, id)
 					.await?
 					.filter(|mapping| mapping.tenant == administrator.tenant())
