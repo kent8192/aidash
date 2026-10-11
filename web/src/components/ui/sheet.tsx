@@ -86,10 +86,7 @@ const SheetHeader = ({
   ...props
 }: React.HTMLAttributes<HTMLDivElement>) => (
   <div
-    className={cn(
-      "flex flex-col gap-1 pr-8 text-left",
-      className,
-    )}
+    className={cn("flex flex-col gap-1 pr-8 text-left", className)}
     {...props}
   />
 );
