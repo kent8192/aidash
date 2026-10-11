@@ -539,10 +539,13 @@ mod cache_salt {
 		.unwrap();
 		// Act
 		provider
-			.infer(ModelRequest {
-				cache_breakpoints: breakpoints,
-				..ordered(scope("tenant-a", 1))
-			})
+			.infer(
+				ModelRequest {
+					cache_breakpoints: breakpoints,
+					..ordered(scope("tenant-a", 1))
+				},
+				&aidash_application::ports::NoProgress,
+			)
 			.await
 			.unwrap();
 		// Assert
