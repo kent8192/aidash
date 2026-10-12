@@ -98,6 +98,13 @@ of the final answer against the Run's own fragments:
    and the Task completes with: "Research evidence could not be verified. The
    answer was withheld because its citations were unavailable or invalid."
 
+The correction is allowed once per user input: an answer to later user input
+gets its own correction. Text published beside tool calls, or while subtasks
+are pending, is never corrected, so it is not published when it cites unknown
+evidence. When inference progress streaming is enabled, such a Run streams
+tool-call progress but not tentative answer text, so unverified citations never
+reach the progress stream; the verified final answer is published as usual.
+
 A Run that binds only `search` has no citable evidence, so its answers are not
 checked; search snippets are never evidence.
 
@@ -120,7 +127,10 @@ all; without it the disclosure is denied.
   `disclosure` content in `GET /api/capabilities/approvals` and decides with
   `POST /api/capabilities/approvals/{id}/decide`.
 - After approval the Run resumes, and the model repeats the identical call. An
-  `allow_once` approval is consumed by that one disclosure.
+  `allow_once` approval is consumed by that one disclosure, only once its
+  attempt is reserved; a call that is not dispatched leaves it usable.
+- An "allow for this Run" grant covers later disclosures to the same
+  destination only until new user input arrives.
 - Denial, expiry or an explicit policy deny returns `disclosure_denied`; the
   provider is never called.
 - A Run without local worker authority (for example, a remote Run) has no
@@ -132,7 +142,8 @@ requires a new approval. Approval never overrides destination checks: page
 providers refuse non-public names and addresses, including addresses a public
 name resolves to at dispatch. A page is read only from the approved destination
 host: a redirect to another host returns `cross_host_redirect` instead of being
-followed, and a same-host redirect is checked again before any request.
+followed, a redirect from https to http returns `insecure_redirect`, and a
+same-host redirect is checked again before any request.
 
 ## Cost attribution and limits
 
