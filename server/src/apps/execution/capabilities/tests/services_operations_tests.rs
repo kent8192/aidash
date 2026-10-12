@@ -13,7 +13,7 @@ fn file(scope: FileScope, path: &str) -> FileEntry {
 	}
 }
 
-#[test]
+#[rstest::rstest]
 fn rejects_duplicate_mounted_paths_within_a_scope() {
 	assert!(has_input_path_collision(&[
 		file(FileScope::References, "_skills/one/SKILL.md"),
@@ -25,7 +25,7 @@ fn rejects_duplicate_mounted_paths_within_a_scope() {
 	]));
 }
 
-#[test]
+#[rstest::rstest]
 fn accepts_runner_page_rounding_for_working_limits() {
 	assert_eq!(rounded_working_bytes(4097, 4096), Some(8192));
 	assert_eq!(rounded_working_bytes(0, 4096), Some(4096));

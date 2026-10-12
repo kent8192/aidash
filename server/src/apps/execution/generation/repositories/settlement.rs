@@ -242,10 +242,10 @@ impl GenerationSettlementScope for NativeSettlementScope<'_> {
 			)
 			.and_where(Expr::cust("tenant=$1 AND id=$2 AND allocated_tokens >= $3"));
 		if release_call && let Some((_, limit)) = counter(purpose) {
-			let allocation = if limit == "embedding_call_limit" {
-				"allocated_embedding_calls"
-			} else {
-				"allocated_compaction_calls"
+			let allocation = match limit {
+				"embedding_call_limit" => "allocated_embedding_calls",
+				"summary_call_limit" => "allocated_summary_calls",
+				_ => "allocated_compaction_calls",
 			};
 			q.value_expr(
 				Alias::new(allocation),
@@ -338,6 +338,7 @@ pub(crate) fn counter(purpose: Purpose) -> Option<(&'static str, &'static str)> 
 	match purpose {
 		Purpose::Embedding => Some(("embedding_calls", "embedding_call_limit")),
 		Purpose::Compaction => Some(("compaction_calls", "compaction_call_limit")),
+		Purpose::Summary => Some(("summary_calls", "summary_call_limit")),
 		Purpose::Inference | Purpose::Memory => None,
 	}
 }

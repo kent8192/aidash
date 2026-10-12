@@ -14,16 +14,19 @@ use aidash_server::{
 	domain::{Run, RunState, TerminalState},
 	error::Error,
 	federation::Federation,
+	sse,
 };
-use common::{TestEnvironment, bootstrap, cleanup, request, setup, test_environment};
+use common::{bootstrap, cleanup, request};
 use reinhardt::query::{
 	Alias, Expr, ExprTrait as _, PostgresQueryBuilder, Query, QueryStatementBuilder as _,
 };
 use serde_json::json;
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 use uuid::Uuid;
 
 struct Conversation {
+	// Retain the disposable runtime and native transport for the scenario.
+	_owner: common::ApplicationFixture,
 	f: Federation,
 	url: String,
 	schema: String,
@@ -32,44 +35,49 @@ struct Conversation {
 	run: Run,
 }
 
-impl Conversation {
-	async fn new(
-		environment: &TestEnvironment,
-		service: Option<aidash_server::sse::Service>,
-	) -> Self {
-		let (f, url, schema) = setup(environment).await;
-		let app = match service {
-			Some(service) => {
-				common::application_with_event_streams(
-					f.clone(),
-					aidash_server::http::Settings::default(),
-					service,
-				)
-				.await
-			}
-			None => common::application(f.clone()).await,
-		};
-		let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
-		let (status, created) = request(
-			&app,
-			&token,
-			"POST",
-			"/api/conversations",
-			json!({"title":"Inference progress","goal":"Reply","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"}),
-		)
-		.await;
-		assert_eq!(status, 200, "{created}");
-		let run = f.store.runs().await.unwrap().remove(0);
-		Self {
-			f,
-			url,
-			schema,
-			app,
-			token,
-			run,
-		}
-	}
+/// Event delivery for Run streams; the backpressure window varies per scenario.
+#[rstest::fixture]
+fn progress_service(#[default(Duration::from_secs(30))] backpressure: Duration) -> sse::Service {
+	sse::Service::new(sse::Settings {
+		reconcile_interval: Duration::from_millis(250),
+		backpressure_timeout: backpressure,
+	})
+}
 
+/// A bootstrapped agent conversation whose single Run awaits a worker.
+#[rstest::fixture]
+async fn conversation(
+	#[default(sse::Service::new(sse::Settings::default()))] _service: sse::Service,
+	#[from(common::native_application)]
+	#[with(aidash_server::http::Settings::default(), _service.clone(), Arc::new(|router| router))]
+	application: common::ApplicationFuture,
+) -> Conversation {
+	let owner = application.await;
+	let (f, url, schema) = owner.runtime.parts();
+	let app = owner.application.clone();
+	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let (status, created) = request(
+		&app,
+		&token,
+		"POST",
+		"/api/conversations",
+		json!({"title":"Inference progress","goal":"Reply","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{created}");
+	let run = f.store.runs().await.unwrap().remove(0);
+	Conversation {
+		_owner: owner,
+		f,
+		url,
+		schema,
+		app,
+		token,
+		run,
+	}
+}
+
+impl Conversation {
 	async fn lease(&self, worker: Uuid) -> Run {
 		let leased = self.f.store.lease_run(worker, 30).await.unwrap().unwrap();
 		assert_eq!(leased.id, self.run.id);
@@ -184,11 +192,10 @@ async fn every_attempt_records_exactly_one_outcome(
 	#[case] outcome: &str,
 	#[case] reason: Option<&str>,
 	#[future(awt)]
-	#[from(test_environment)]
-	test_environment: Arc<TestEnvironment>,
+	#[from(conversation)]
+	c: Conversation,
 ) {
 	// Arrange
-	let c = Conversation::new(&test_environment, None).await;
 	let worker = Uuid::new_v4();
 	let leased = c.lease(worker).await;
 	let attempt = c.start(worker).await;
@@ -279,11 +286,10 @@ async fn every_attempt_records_exactly_one_outcome(
 #[tokio::test]
 async fn writes_after_the_lease_is_lost_are_rejected(
 	#[future(awt)]
-	#[from(test_environment)]
-	test_environment: Arc<TestEnvironment>,
+	#[from(conversation)]
+	c: Conversation,
 ) {
 	// Arrange
-	let c = Conversation::new(&test_environment, None).await;
 	let worker = Uuid::new_v4();
 	c.lease(worker).await;
 	let attempt = c.start(worker).await;
@@ -338,11 +344,10 @@ async fn writes_after_the_lease_is_lost_are_rejected(
 #[tokio::test]
 async fn dashboard_projections_omit_inference_markers(
 	#[future(awt)]
-	#[from(test_environment)]
-	test_environment: Arc<TestEnvironment>,
+	#[from(conversation)]
+	c: Conversation,
 ) {
 	// Arrange
-	let c = Conversation::new(&test_environment, None).await;
 	let worker = Uuid::new_v4();
 	let leased = c.lease(worker).await;
 	let attempt = c.start(worker).await;

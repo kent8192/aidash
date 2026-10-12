@@ -27,6 +27,8 @@ pub(crate) mod embedding;
 
 pub(crate) mod compaction;
 
+pub(crate) mod summary;
+
 pub(crate) mod protocol;
 
 pub(crate) mod foreign;

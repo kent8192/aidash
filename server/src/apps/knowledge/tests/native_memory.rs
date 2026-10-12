@@ -1,4 +1,6 @@
 //! Real PostgreSQL tests: unit concurrency, provenance fences and native vector scopes.
+#[path = "../../execution/tests/support/upstream.rs"]
+mod upstream;
 use crate::native_database::{DatabaseFixture, database};
 use aidash_application::ports::VectorIndex;
 use aidash_domain::{memory::*, registry::EntityRef};
@@ -9,13 +11,19 @@ use aidash_server::{
 	authorization::identity::Actor,
 	store::Store,
 };
+use reinhardt::ServerRouter as Router;
 use reinhardt::query::types::IntoIden;
 use reinhardt::{
 	db::orm::Model,
 	query::{Alias, Expr, ExprTrait, PostgresQueryBuilder, Query, QueryStatementBuilder},
 };
-use rstest::rstest;
+use rstest::{fixture, rstest};
 use serde_json::json;
+use std::sync::{
+	Arc, Mutex,
+	atomic::{AtomicBool, AtomicUsize},
+};
+use upstream::reply;
 use uuid::Uuid;
 #[path = "native_memory/admission.rs"]
 mod admission;
@@ -377,17 +385,21 @@ async fn memory_restore_withholds_removed_primary_messages_and_prunes_expired_ar
 async fn memory_restore_process_sigkill_keeps_the_external_gate_closed_until_validation(
 	#[future] database: DatabaseFixture,
 	bounds: Bounds,
+
+	#[future(awt)]
+	#[from(
+		memory_restore_process_sigkill_keeps_the_external_gate_closed_until_validation_provider
+	)]
+	fixture: MemoryRestoreProcessSigkillKeepsTheExternalGateClosedUntilValidationProvider,
+	#[from(reinhardt::test::fixtures::temp_dir)] deployment: tempfile::TempDir,
 ) {
+	let server = fixture.server;
+
 	use aidash_server::{database::native, semantic::services::memory_recovery as recovery};
-	use axum::{Json, Router, routing::post};
+
 	use std::os::unix::process::ExitStatusExt;
-	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-	let endpoint = format!("http://{}/v1", listener.local_addr().unwrap());
-	let server = tokio::spawn(async move {
-		axum::serve(listener, Router::new().route("/v1/embeddings", post(|Json(input): Json<serde_json::Value>| async move {
-			Json(json!({"model":input["model"],"data":[{"index":0,"embedding":[1.,0.1,0.]}],"usage":{"prompt_tokens":1}}))
-		}))).await.unwrap();
-	});
+
+	let endpoint = format!("{}/v1", server.url);
 	let database = database.await;
 	let (store, _, workspace) = setup_endpoint(&database, bounds, &endpoint).await;
 	let participant = memory::create_participant(
@@ -426,7 +438,7 @@ async fn memory_restore_process_sigkill_keeps_the_external_gate_closed_until_val
 		.open(directory.join("ledger.lock"))
 		.unwrap();
 	boundary.lock().unwrap();
-	let deployment = tempfile::tempdir().unwrap();
+	// Act: restore the admitted archive with a fixture-owned process directory.
 	let log_path = deployment.path().join("interrupted-memory-restore.log");
 	let mut command = recovery_deployment::deployment_command(&database.url, deployment.path());
 	command
@@ -550,7 +562,7 @@ async fn memory_restore_process_sigkill_keeps_the_external_gate_closed_until_val
 			.unwrap(),
 		admitted
 	);
-	server.abort();
+	drop(server);
 }
 
 #[path = "native_memory/fixture.rs"]
@@ -821,16 +833,16 @@ async fn old_memory_archive_cannot_revive_deleted_corrected_or_dependent_bodies(
 async fn memory_restore_rebuilds_missing_vectors_and_checks_open_epoch_reads(
 	#[future] database: DatabaseFixture,
 	bounds: Bounds,
+
+	#[future(awt)]
+	#[from(memory_restore_rebuilds_missing_vectors_and_checks_open_epoch_reads_provider)]
+	fixture: MemoryRestoreRebuildsMissingVectorsAndChecksOpenEpochReadsProvider,
 ) {
+	let server = fixture.server;
+
 	use aidash_server::{database::native, semantic::services::memory_recovery as recovery};
-	use axum::{Json, Router, routing::post};
-	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-	let endpoint = format!("http://{}/v1", listener.local_addr().unwrap());
-	let server = tokio::spawn(async move {
-		axum::serve(listener, Router::new().route("/v1/embeddings", post(|Json(input): Json<serde_json::Value>| async move {
-			Json(json!({"model":input["model"],"data":[{"index":0,"embedding":[1.,0.1,0.]}],"usage":{"prompt_tokens":1}}))
-		}))).await.unwrap();
-	});
+
+	let endpoint = format!("{}/v1", server.url);
 	let database = database.await;
 	let (store, _, workspace) = setup_endpoint(&database, bounds, &endpoint).await;
 	let bank = memory::create_participant(
@@ -927,7 +939,7 @@ async fn memory_restore_rebuilds_missing_vectors_and_checks_open_epoch_reads(
 		panic!("restored native index must be searchable")
 	};
 	assert_eq!(units, original);
-	server.abort();
+	drop(server);
 }
 
 #[rstest]
@@ -1275,34 +1287,17 @@ async fn crash_recovery_preserves_japanese_search_and_purge_erases_shared_quotes
 async fn extracted_causal_batch_is_atomic_and_replays_stable_admitted_identities(
 	#[future] database: DatabaseFixture,
 	bounds: Bounds,
+
+	#[future(awt)]
+	#[from(extracted_causal_batch_is_atomic_and_replays_stable_admitted_identities_provider)]
+	fixture: ExtractedCausalBatchIsAtomicAndReplaysStableAdmittedIdentitiesProvider,
 ) {
-	use axum::{Json, Router, routing::post};
-	use std::sync::{
-		Arc,
-		atomic::{AtomicUsize, Ordering},
-	};
-	let calls = Arc::new(AtomicUsize::new(0));
-	let served = calls.clone();
-	let app = Router::new().route("/v1/chat/completions", post(move |Json(input): Json<serde_json::Value>| {
-		let served = served.clone();
-		async move {
-			served.fetch_add(1, Ordering::SeqCst);
-			let context: serde_json::Value = serde_json::from_str(input["messages"][1]["content"].as_str().unwrap()).unwrap();
-			assert_eq!(context["mode"], "retain");
-			let evidence: Vec<Evidence> = serde_json::from_value(context["evidence"].clone()).unwrap();
-			let mut rain = content("大雨が降った。 Heavy rain fell.");
-			rain.evidence = evidence.clone();
-			let mut delay = content("雨で列車が遅れた。 Rain delayed the train.");
-			delay.evidence = evidence;
-			let output = extraction::Extraction { facts: vec![rain, delay], causal: vec![extraction::CausalRelation { cause: 0, effect: 1, weight: 0.9 }] };
-			Json(json!({"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":serde_json::to_string(&output).unwrap()}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}))
-		}
-	}));
-	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-	let endpoint = format!("http://{}/v1", listener.local_addr().unwrap());
-	let server = tokio::spawn(async move {
-		axum::serve(listener, app).await.unwrap();
-	});
+	let calls = fixture.state.calls;
+	let server = fixture.server;
+
+	use std::sync::atomic::Ordering;
+
+	let endpoint = format!("{}/v1", server.url);
 	let database = database.await;
 	let (store, _, workspace) = setup_endpoint(&database, bounds, &endpoint).await;
 	let bank = memory::create_participant(
@@ -1432,7 +1427,7 @@ async fn extracted_causal_batch_is_atomic_and_replays_stable_admitted_identities
 			.revision,
 		seed.revision
 	);
-	server.abort();
+	drop(server);
 }
 
 #[rstest]
@@ -1760,23 +1755,17 @@ async fn pgvector_filters_scope_and_preserves_immutable_point_generations(
 async fn four_arm_recall_is_native_bounded_and_model_calls_are_memoized(
 	#[future] database: DatabaseFixture,
 	bounds: Bounds,
+
+	#[future(awt)]
+	#[from(four_arm_recall_is_native_bounded_and_model_calls_are_memoized_provider)]
+	fixture: FourArmRecallIsNativeBoundedAndModelCallsAreMemoizedProvider,
 ) {
-	use axum::{Json, Router, routing::post};
-	use std::sync::{
-		Arc,
-		atomic::{AtomicUsize, Ordering},
-	};
-	let calls = Arc::new(AtomicUsize::new(0));
-	let served = calls.clone();
-	let app = Router::new().route("/v1/embeddings",post(move |Json(input):Json<serde_json::Value>| {
-        let served = served.clone();
-        async move { served.fetch_add(1,Ordering::SeqCst); Json(json!({"model":input["model"],"data":[{"index":0,"embedding":[1.0,0.1,0.0]}],"usage":{"prompt_tokens":1,"total_tokens":1}})) }
-    }));
-	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-	let endpoint = format!("http://{}/v1", listener.local_addr().unwrap());
-	let server = tokio::spawn(async move {
-		axum::serve(listener, app).await.unwrap();
-	});
+	let calls = fixture.state.calls;
+	let server = fixture.server;
+
+	use std::sync::atomic::Ordering;
+
+	let endpoint = format!("{}/v1", server.url);
 	let database = database.await;
 	let (store, registry, workspace) = setup_endpoint(&database, bounds, &endpoint).await;
 	let participant = memory::create_participant(
@@ -1962,7 +1951,7 @@ async fn four_arm_recall_is_native_bounded_and_model_calls_are_memoized(
 			.unwrap()
 			.is_empty()
 	);
-	server.abort();
+	drop(server);
 }
 
 #[rstest]
@@ -1979,58 +1968,33 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 	#[case] journal_bound: bool,
 	#[case] learning_enabled: bool,
 	#[case] delivery: &str,
+
+	#[future(awt)]
+	#[from(
+		home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own_correction_provider
+	)]
+	#[with(delivery == "reflection")]
+	fixture: HomeRunReadsSurviveReindexButTheWriterIsInvalidatedByItsOwnCorrectionProvider,
+	runtime_controls: RuntimeControls,
 ) {
+	let id = fixture.state.id;
+	let reflect = fixture.state.reflect;
+	let captured = fixture.state.captured;
+	let provider = fixture.server;
+
 	if journal_bound {
 		bounds.max_graph_visits = if learning_enabled { 9 } else { 2 };
 		bounds.max_results = 2;
 	}
 	use aidash_domain::{NewTask, qualified_agent};
 	use aidash_server::{authorization::Authorization, config::Config, federation::Federation};
-	use axum::{Json, Router, routing::post};
-	use std::sync::Arc;
-	let id = Uuid::now_v7();
-	let reflect = delivery == "reflection";
+
 	let reflection_id = Uuid::now_v7();
 	if reflect {
 		bounds.max_results = 1;
 	}
-	let captured = Arc::new(std::sync::Mutex::new(Vec::<serde_json::Value>::new()));
-	let received = captured.clone();
-	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-	let endpoint = format!("http://{}/v1", listener.local_addr().unwrap());
-	let provider = tokio::spawn(async move {
-		let model = post(move |Json(input): Json<serde_json::Value>| {
-			let received = received.clone();
-			async move {
-				let context: serde_json::Value =
-					serde_json::from_str(input["messages"][1]["content"].as_str().unwrap())
-						.unwrap();
-				let mut calls = received.lock().unwrap();
-				calls.push(context);
-				let (name, arguments) = if calls.len() == 1 {
-					(
-						if reflect {
-							"memory_reflect"
-						} else {
-							"memory_recall"
-						},
-						json!({"text":if reflect {"Reflection-only ancestor"} else {"東京 subway"},"time":null,"kinds":[],"max_tokens":8192}),
-					)
-				} else {
-					(
-						"memory_mutate",
-						json!({"changes":[Change::Correct { id, expected_revision: 1, content: content("歩いて移動する。 Walk instead.") }]}),
-					)
-				};
-				Json(
-					json!({"choices":[{"index":0,"finish_reason":"tool_calls","message":{"role":"assistant","content":null,"tool_calls":[{"id":format!("native-{}",calls.len()),"type":"function","function":{"name":name,"arguments":serde_json::to_string(&arguments).unwrap()}}]}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}),
-				)
-			}
-		});
-		axum::serve(listener, Router::new().route("/v1/chat/completions",model).route("/v1/embeddings", post(|Json(input): Json<serde_json::Value>| async move {
-            Json(json!({"model":input["model"],"data":[{"index":0,"embedding":[1.,0.1,0.]}],"usage":{"prompt_tokens":1}}))
-        }))).await.unwrap();
-	});
+
+	let endpoint = format!("{}/v1", provider.url);
 	let database = database.await;
 	let (store, registry, workspace) = setup_endpoint_flags(
 		&database,
@@ -2250,8 +2214,8 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 			gcip: None,
 		},
 		store,
-		client: reqwest::Client::new(),
-		notify: Arc::new(tokio::sync::Notify::new()),
+		client: runtime_controls.client,
+		notify: runtime_controls.notify,
 	};
 	aidash_server::authorization::execution::claim(
 		&f,
@@ -2313,7 +2277,7 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 			);
 		}
 
-		provider.abort();
+		drop(provider);
 		return;
 	}
 	if reflect {
@@ -2342,7 +2306,7 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 			reads.len() == 1 && reads[0].try_get::<Uuid>("unit_id").unwrap() == id,
 			"failed reflection must discard its new roots and retain successful inference reads"
 		);
-		provider.abort();
+		drop(provider);
 		return;
 	}
 	let run_error = f.store.run(run.id).await.unwrap().error;
@@ -2402,7 +2366,7 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 			"rejected recall rolls back all added journal dependencies"
 		);
 		assert_eq!(reads[0].try_get::<Uuid>("unit_id").unwrap(), id);
-		provider.abort();
+		drop(provider);
 		return;
 	}
 	let latest = "最新の入力: 地下鉄の料金も確認してください。";
@@ -2505,7 +2469,7 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 		current[0].revision, 2,
 		"the unit mutation committed before invalidating its caller"
 	);
-	provider.abort();
+	drop(provider);
 }
 
 #[rstest]
@@ -2518,29 +2482,17 @@ async fn durable_derived_jobs_refresh_questions_and_never_revive_deleted_sources
 	#[future] database: DatabaseFixture,
 	bounds: Bounds,
 	#[case] queued_state: &str,
+
+	#[future(awt)]
+	#[from(durable_derived_jobs_refresh_questions_and_never_revive_deleted_sources_provider)]
+	fixture: DurableDerivedJobsRefreshQuestionsAndNeverReviveDeletedSourcesProvider,
 ) {
-	use axum::{Json, Router, routing::post};
-	use std::sync::{
-		Arc,
-		atomic::{AtomicUsize, Ordering},
-	};
-	let calls = Arc::new(AtomicUsize::new(0));
-	let served = calls.clone();
-	let app=Router::new().route("/v1/chat/completions",post(move |Json(input):Json<serde_json::Value>| {let calls=served.clone();async move {
-  calls.fetch_add(1,Ordering::SeqCst);
-  let context:serde_json::Value=serde_json::from_str(input["messages"][1]["content"].as_str().unwrap()).unwrap();
-  let units:Vec<Unit>=serde_json::from_value(context["units"].clone()).unwrap();
-  let mut result=content(&format!("根拠: {}",units[0].content.text));
-  result.kind=serde_json::from_value(context["kind"].clone()).unwrap();
-  result.mental_model=serde_json::from_value(context["mental_model"].clone()).unwrap();
-  result.evidence=units.iter().map(Unit::evidence).collect();
-  Json(json!({"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":serde_json::to_string(&result).unwrap()}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}))
- }})).route("/v1/embeddings",post(|Json(input):Json<serde_json::Value>|async move {Json(json!({"model":input["model"],"data":[{"index":0,"embedding":[1.,0.1,0.]}],"usage":{"prompt_tokens":1}}))}));
-	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-	let endpoint = format!("http://{}/v1", listener.local_addr().unwrap());
-	let server = tokio::spawn(async move {
-		axum::serve(listener, app).await.unwrap();
-	});
+	let calls = fixture.state.calls;
+	let server = fixture.server;
+
+	use std::sync::atomic::Ordering;
+
+	let endpoint = format!("{}/v1", server.url);
 	let database = database.await;
 	let (store, _, workspace) =
 		setup_endpoint_flags(&database, bounds, &endpoint, (false, true, true)).await;
@@ -2788,7 +2740,7 @@ async fn durable_derived_jobs_refresh_questions_and_never_revive_deleted_sources
 		jobs.items.iter().find(|j| j.id == job).unwrap().state,
 		"complete"
 	);
-	server.abort();
+	drop(server);
 }
 
 #[rstest]
@@ -2801,37 +2753,21 @@ async fn learning_rejects_uncertain_effects_and_reads_complete_canonical_results
 	mut bounds: Bounds,
 	#[case] backpressure: bool,
 	#[case] recovery: bool,
+
+	#[future(awt)]
+	#[from(learning_rejects_uncertain_effects_and_reads_complete_canonical_results_provider)]
+	fixture: LearningRejectsUncertainEffectsAndReadsCompleteCanonicalResultsProvider,
 ) {
+	let captured = fixture.state.captured;
+	let server = fixture.server;
+
 	if backpressure {
 		bounds.max_candidates = 2;
 		bounds.max_results = 2;
 	}
 	use aidash_server::database::native;
-	use axum::{Json, Router, routing::post};
-	use std::sync::{Arc, Mutex};
-	let captured = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
-	let capture = captured.clone();
-	let app = Router::new().route("/v1/chat/completions", post(move |Json(input): Json<serde_json::Value>| {
-        let capture = capture.clone();
-        async move {
-            let input: serde_json::Value = serde_json::from_str(input["messages"][1]["content"].as_str().unwrap()).unwrap();
-            let mut result = content("Learned from a complete journal. 完全な記録からの候補。");
-            result.kind = Kind::Experience;
-            result.evidence = serde_json::from_value(input["evidence"].clone()).unwrap();
-            let mut pending = result.clone();
-            pending.learning = Learning::Procedure;
-            pending.text = "Pending procedure from the same journal / 同じ記録に基づく未承認の手順".into();
-            capture.lock().unwrap().push(input);
-            Json(json!({"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":serde_json::to_string(&json!({"facts":[result,pending],"causal":[]})).unwrap()}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}))
-        }
-    })).route("/v1/embeddings", post(|Json(input): Json<serde_json::Value>| async move {
-        Json(json!({"model":input["model"],"data":[{"index":0,"embedding":[1.,0.1,0.]}],"usage":{"prompt_tokens":1}}))
-    }));
-	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-	let endpoint = format!("http://{}/v1", listener.local_addr().unwrap());
-	let server = tokio::spawn(async move {
-		axum::serve(listener, app).await.unwrap();
-	});
+
+	let endpoint = format!("{}/v1", server.url);
 	let database = database.await;
 	// This fixture includes complete journal bodies and the structured extraction
 	// schema. Admission still fails explicitly if their whole request exceeds
@@ -3328,7 +3264,7 @@ async fn learning_rejects_uncertain_effects_and_reads_complete_canonical_results
 			text.is_empty(),
 			"revoked origin body is cleared before serving resumes"
 		);
-		server.abort();
+		drop(server);
 		return;
 	}
 	memory::mutate(
@@ -3416,7 +3352,7 @@ async fn learning_rejects_uncertain_effects_and_reads_complete_canonical_results
 		memory::operate(&store, &actor, reused).await,
 		Err(aidash_server::Error::Conflict(_))
 	));
-	server.abort();
+	drop(server);
 }
 
 #[rstest]
@@ -3427,38 +3363,18 @@ async fn observation_consolidation_keeps_conflicts_and_recomputes_surviving_evid
 	#[future] database: DatabaseFixture,
 	bounds: Bounds,
 	#[case] with_entities: bool,
+
+	#[future(awt)]
+	#[from(observation_consolidation_keeps_conflicts_and_recomputes_surviving_evidence_provider)]
+	fixture: ObservationConsolidationKeepsConflictsAndRecomputesSurvivingEvidenceProvider,
 ) {
-	use axum::{Json, Router, routing::post};
-	use std::sync::{
-		Arc, Mutex,
-		atomic::{AtomicBool, Ordering},
-	};
-	let requests = Arc::new(Mutex::new(Vec::<Vec<Unit>>::new()));
-	let capture = requests.clone();
-	let supported = Arc::new(AtomicBool::new(false));
-	let claim = supported.clone();
-	let app=Router::new().route("/v1/chat/completions",post(move |Json(input):Json<serde_json::Value>| {
-        let capture=capture.clone(); let claim=claim.clone(); async move {
-            let input:serde_json::Value=serde_json::from_str(input["messages"][1]["content"].as_str().unwrap()).unwrap();
-            if input.get("mandatory").is_some() {
-                let mandatory:Vec<Unit>=serde_json::from_value(input["mandatory"].clone()).unwrap();
-                let candidates:Vec<Unit>=serde_json::from_value(input["candidates"].clone()).unwrap();
-                let selected:Vec<Evidence>=mandatory.iter().chain(&candidates).map(Unit::evidence).collect();
-                return Json(json!({"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":serde_json::to_string(&selected).unwrap()}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}));
-            }
-            let units:Vec<Unit>=serde_json::from_value(input["units"].clone()).unwrap();
-            let mut result=content(&units.iter().map(|unit|unit.content.text.clone()).collect::<Vec<_>>().join("\n"));
-            result.kind=Kind::Observation; result.evidence=units.iter().map(Unit::evidence).collect();
-            if claim.load(Ordering::SeqCst) {result.verification=Verification::Supported;}
-            capture.lock().unwrap().push(units);
-            Json(json!({"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":serde_json::to_string(&result).unwrap()}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}))
-        }
-    })).route("/v1/embeddings",post(|Json(input):Json<serde_json::Value>|async move {Json(json!({"model":input["model"],"data":[{"index":0,"embedding":[1.,0.1,0.]}],"usage":{"prompt_tokens":1}}))}));
-	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-	let endpoint = format!("http://{}/v1", listener.local_addr().unwrap());
-	let server = tokio::spawn(async move {
-		axum::serve(listener, app).await.unwrap();
-	});
+	let requests = fixture.state.requests;
+	let supported = fixture.state.supported;
+	let server = fixture.server;
+
+	use std::sync::atomic::Ordering;
+
+	let endpoint = format!("{}/v1", server.url);
 	let database = database.await;
 	let (store, _, workspace) =
 		setup_endpoint_flags(&database, bounds, &endpoint, (false, true, false)).await;
@@ -3639,7 +3555,7 @@ async fn observation_consolidation_keeps_conflicts_and_recomputes_surviving_evid
 		count,
 		"completed repair jobs do not repeat synthesis"
 	);
-	server.abort();
+	drop(server);
 }
 
 #[rstest]
@@ -3834,5 +3750,423 @@ async fn participant_memory_requires_an_enabled_provider_initially_and_after_upg
 			matches!(recall, Err(aidash_server::Error::Conflict(_))),
 			"disabled participants cannot call model roles"
 		);
+	}
+}
+
+#[fixture]
+fn memory_restore_process_sigkill_keeps_the_external_gate_closed_until_validation_router()
+-> std::sync::Arc<Router> {
+	std::sync::Arc::new(reinhardt::test::stub::StubRouter::new()
+.route("/v1/embeddings", http::Method::POST, reply(|request: reinhardt::Request| {let input = request.json::<serde_json::Value>().unwrap();async move {
+			reinhardt::Response::ok().with_json(&json!({"model":input["model"],"data":[{"index":0,"embedding":[1.,0.1,0.]}],"usage":{"prompt_tokens":1}})).unwrap()
+		}})).into_server_router())
+}
+struct MemoryRestoreProcessSigkillKeepsTheExternalGateClosedUntilValidationProvider {
+	server: reinhardt::test::fixtures::server::TestServerGuard,
+}
+#[fixture]
+async fn memory_restore_process_sigkill_keeps_the_external_gate_closed_until_validation_provider(
+	#[from(memory_restore_process_sigkill_keeps_the_external_gate_closed_until_validation_router)]
+	_router: std::sync::Arc<Router>,
+	#[future(awt)]
+	#[from(upstream::upstream)]
+	#[with(_router.clone())]
+	server: reinhardt::test::fixtures::server::TestServerGuard,
+) -> MemoryRestoreProcessSigkillKeepsTheExternalGateClosedUntilValidationProvider {
+	MemoryRestoreProcessSigkillKeepsTheExternalGateClosedUntilValidationProvider { server }
+}
+
+#[fixture]
+fn memory_restore_rebuilds_missing_vectors_and_checks_open_epoch_reads_router()
+-> std::sync::Arc<Router> {
+	std::sync::Arc::new(reinhardt::test::stub::StubRouter::new()
+.route("/v1/embeddings", http::Method::POST, reply(|request: reinhardt::Request| {let input = request.json::<serde_json::Value>().unwrap();async move {
+			reinhardt::Response::ok().with_json(&json!({"model":input["model"],"data":[{"index":0,"embedding":[1.,0.1,0.]}],"usage":{"prompt_tokens":1}})).unwrap()
+		}})).into_server_router())
+}
+struct MemoryRestoreRebuildsMissingVectorsAndChecksOpenEpochReadsProvider {
+	server: reinhardt::test::fixtures::server::TestServerGuard,
+}
+#[fixture]
+async fn memory_restore_rebuilds_missing_vectors_and_checks_open_epoch_reads_provider(
+	#[from(memory_restore_rebuilds_missing_vectors_and_checks_open_epoch_reads_router)]
+	_router: std::sync::Arc<Router>,
+	#[future(awt)]
+	#[from(upstream::upstream)]
+	#[with(_router.clone())]
+	server: reinhardt::test::fixtures::server::TestServerGuard,
+) -> MemoryRestoreRebuildsMissingVectorsAndChecksOpenEpochReadsProvider {
+	MemoryRestoreRebuildsMissingVectorsAndChecksOpenEpochReadsProvider { server }
+}
+
+#[derive(Clone)]
+struct ExtractedCausalBatchIsAtomicAndReplaysStableAdmittedIdentitiesState {
+	calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+#[fixture]
+fn extracted_causal_batch_is_atomic_and_replays_stable_admitted_identities_state()
+-> ExtractedCausalBatchIsAtomicAndReplaysStableAdmittedIdentitiesState {
+	ExtractedCausalBatchIsAtomicAndReplaysStableAdmittedIdentitiesState {
+		calls: Arc::new(AtomicUsize::new(0)),
+	}
+}
+#[fixture]
+fn extracted_causal_batch_is_atomic_and_replays_stable_admitted_identities_router(
+	#[from(extracted_causal_batch_is_atomic_and_replays_stable_admitted_identities_state)]
+	state: ExtractedCausalBatchIsAtomicAndReplaysStableAdmittedIdentitiesState,
+) -> std::sync::Arc<Router> {
+	use std::sync::atomic::Ordering;
+	let calls = state.calls.clone();
+	let served = calls.clone();
+	std::sync::Arc::new(reinhardt::test::stub::StubRouter::new()
+.route("/v1/chat/completions", http::Method::POST, reply(move |request: reinhardt::Request| {let input = request.json::<serde_json::Value>().unwrap();
+		let served = served.clone();
+		async move {
+			served.fetch_add(1, Ordering::SeqCst);
+			let context: serde_json::Value = serde_json::from_str(input["messages"][1]["content"].as_str().unwrap()).unwrap();
+			assert_eq!(context["mode"], "retain");
+			let evidence: Vec<Evidence> = serde_json::from_value(context["evidence"].clone()).unwrap();
+			let mut rain = content("大雨が降った。 Heavy rain fell.");
+			rain.evidence = evidence.clone();
+			let mut delay = content("雨で列車が遅れた。 Rain delayed the train.");
+			delay.evidence = evidence;
+			let output = extraction::Extraction { facts: vec![rain, delay], causal: vec![extraction::CausalRelation { cause: 0, effect: 1, weight: 0.9 }] };
+			reinhardt::Response::ok().with_json(&json!({"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":serde_json::to_string(&output).unwrap()}}],"usage":{"prompt_tokens":1,"completion_tokens":1}})).unwrap()
+		}
+	})).into_server_router())
+}
+struct ExtractedCausalBatchIsAtomicAndReplaysStableAdmittedIdentitiesProvider {
+	state: ExtractedCausalBatchIsAtomicAndReplaysStableAdmittedIdentitiesState,
+	server: reinhardt::test::fixtures::server::TestServerGuard,
+}
+#[fixture]
+async fn extracted_causal_batch_is_atomic_and_replays_stable_admitted_identities_provider(
+	#[from(extracted_causal_batch_is_atomic_and_replays_stable_admitted_identities_state)]
+	state: ExtractedCausalBatchIsAtomicAndReplaysStableAdmittedIdentitiesState,
+	#[from(extracted_causal_batch_is_atomic_and_replays_stable_admitted_identities_router)]
+	#[with(state.clone())]
+	_router: std::sync::Arc<Router>,
+	#[future(awt)]
+	#[from(upstream::upstream)]
+	#[with(_router.clone())]
+	server: reinhardt::test::fixtures::server::TestServerGuard,
+) -> ExtractedCausalBatchIsAtomicAndReplaysStableAdmittedIdentitiesProvider {
+	ExtractedCausalBatchIsAtomicAndReplaysStableAdmittedIdentitiesProvider { state, server }
+}
+
+#[derive(Clone)]
+struct FourArmRecallIsNativeBoundedAndModelCallsAreMemoizedState {
+	calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+#[fixture]
+fn four_arm_recall_is_native_bounded_and_model_calls_are_memoized_state()
+-> FourArmRecallIsNativeBoundedAndModelCallsAreMemoizedState {
+	FourArmRecallIsNativeBoundedAndModelCallsAreMemoizedState {
+		calls: Arc::new(AtomicUsize::new(0)),
+	}
+}
+#[fixture]
+fn four_arm_recall_is_native_bounded_and_model_calls_are_memoized_router(
+	#[from(four_arm_recall_is_native_bounded_and_model_calls_are_memoized_state)]
+	state: FourArmRecallIsNativeBoundedAndModelCallsAreMemoizedState,
+) -> std::sync::Arc<Router> {
+	use std::sync::atomic::Ordering;
+	let calls = state.calls.clone();
+	let served = calls.clone();
+	std::sync::Arc::new(reinhardt::test::stub::StubRouter::new()
+.route("/v1/embeddings", http::Method::POST, reply(move |request: reinhardt::Request| {let input = request.json::<serde_json::Value>().unwrap();
+        let served = served.clone();
+        async move { served.fetch_add(1,Ordering::SeqCst); reinhardt::Response::ok().with_json(&json!({"model":input["model"],"data":[{"index":0,"embedding":[1.0,0.1,0.0]}],"usage":{"prompt_tokens":1,"total_tokens":1}})).unwrap() }
+    })).into_server_router())
+}
+struct FourArmRecallIsNativeBoundedAndModelCallsAreMemoizedProvider {
+	state: FourArmRecallIsNativeBoundedAndModelCallsAreMemoizedState,
+	server: reinhardt::test::fixtures::server::TestServerGuard,
+}
+#[fixture]
+async fn four_arm_recall_is_native_bounded_and_model_calls_are_memoized_provider(
+	#[from(four_arm_recall_is_native_bounded_and_model_calls_are_memoized_state)]
+	state: FourArmRecallIsNativeBoundedAndModelCallsAreMemoizedState,
+	#[from(four_arm_recall_is_native_bounded_and_model_calls_are_memoized_router)]
+	#[with(state.clone())]
+	_router: std::sync::Arc<Router>,
+	#[future(awt)]
+	#[from(upstream::upstream)]
+	#[with(_router.clone())]
+	server: reinhardt::test::fixtures::server::TestServerGuard,
+) -> FourArmRecallIsNativeBoundedAndModelCallsAreMemoizedProvider {
+	FourArmRecallIsNativeBoundedAndModelCallsAreMemoizedProvider { state, server }
+}
+
+#[derive(Clone)]
+struct HomeRunReadsSurviveReindexButTheWriterIsInvalidatedByItsOwnCorrectionState {
+	id: Uuid,
+	reflect: bool,
+	captured: std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
+}
+#[fixture]
+fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own_correction_state(
+	#[default(false)] reflect: bool,
+) -> HomeRunReadsSurviveReindexButTheWriterIsInvalidatedByItsOwnCorrectionState {
+	HomeRunReadsSurviveReindexButTheWriterIsInvalidatedByItsOwnCorrectionState {
+		id: Uuid::now_v7(),
+		reflect,
+		captured: Arc::new(std::sync::Mutex::new(Vec::<serde_json::Value>::new())),
+	}
+}
+#[fixture]
+fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own_correction_router(
+	#[from(
+		home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own_correction_state
+	)]
+	state: HomeRunReadsSurviveReindexButTheWriterIsInvalidatedByItsOwnCorrectionState,
+) -> std::sync::Arc<Router> {
+	let id = state.id;
+	let reflect = state.reflect;
+	let captured = state.captured.clone();
+	let received = captured.clone();
+	std::sync::Arc::new({
+		let model = reply(move |request: reinhardt::Request| {
+			let input = request.json::<serde_json::Value>().unwrap();
+			let received = received.clone();
+			async move {
+				let context: serde_json::Value =
+					serde_json::from_str(input["messages"][1]["content"].as_str().unwrap())
+						.unwrap();
+				let mut calls = received.lock().unwrap();
+				calls.push(context);
+				let (name, arguments) = if calls.len() == 1 {
+					(
+						if reflect {
+							"memory_reflect"
+						} else {
+							"memory_recall"
+						},
+						json!({"text":if reflect {"Reflection-only ancestor"} else {"東京 subway"},"time":null,"kinds":[],"max_tokens":8192}),
+					)
+				} else {
+					(
+						"memory_mutate",
+						json!({"changes":[Change::Correct { id, expected_revision: 1, content: content("歩いて移動する。 Walk instead.") }]}),
+					)
+				};
+				reinhardt::Response::ok().with_json(&json!({"choices":[{"index":0,"finish_reason":"tool_calls","message":{"role":"assistant","content":null,"tool_calls":[{"id":format!("native-{}",calls.len()),"type":"function","function":{"name":name,"arguments":serde_json::to_string(&arguments).unwrap()}}]}}],"usage":{"prompt_tokens":1,"completion_tokens":1}})).unwrap()
+			}
+		});
+		reinhardt::test::stub::StubRouter::new().route("/v1/chat/completions", http::Method::POST, model).route("/v1/embeddings", http::Method::POST, reply( |request: reinhardt::Request| {let input = request.json::<serde_json::Value>().unwrap();async move {
+            reinhardt::Response::ok().with_json(&json!({"model":input["model"],"data":[{"index":0,"embedding":[1.,0.1,0.]}],"usage":{"prompt_tokens":1}})).unwrap()
+        }})).into_server_router()
+	})
+}
+struct HomeRunReadsSurviveReindexButTheWriterIsInvalidatedByItsOwnCorrectionProvider {
+	state: HomeRunReadsSurviveReindexButTheWriterIsInvalidatedByItsOwnCorrectionState,
+	server: reinhardt::test::fixtures::server::TestServerGuard,
+}
+#[fixture]
+async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own_correction_provider(
+	#[default(false)] _reflect: bool,
+	#[from(
+		home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own_correction_state
+	)]
+	#[with(_reflect)]
+	state: HomeRunReadsSurviveReindexButTheWriterIsInvalidatedByItsOwnCorrectionState,
+	#[from(
+		home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own_correction_router
+	)]
+	#[with(state.clone())]
+	_router: std::sync::Arc<Router>,
+	#[future(awt)]
+	#[from(upstream::upstream)]
+	#[with(_router.clone())]
+	server: reinhardt::test::fixtures::server::TestServerGuard,
+) -> HomeRunReadsSurviveReindexButTheWriterIsInvalidatedByItsOwnCorrectionProvider {
+	HomeRunReadsSurviveReindexButTheWriterIsInvalidatedByItsOwnCorrectionProvider { state, server }
+}
+
+#[derive(Clone)]
+struct DurableDerivedJobsRefreshQuestionsAndNeverReviveDeletedSourcesState {
+	calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+#[fixture]
+fn durable_derived_jobs_refresh_questions_and_never_revive_deleted_sources_state()
+-> DurableDerivedJobsRefreshQuestionsAndNeverReviveDeletedSourcesState {
+	DurableDerivedJobsRefreshQuestionsAndNeverReviveDeletedSourcesState {
+		calls: Arc::new(AtomicUsize::new(0)),
+	}
+}
+#[fixture]
+fn durable_derived_jobs_refresh_questions_and_never_revive_deleted_sources_router(
+	#[from(durable_derived_jobs_refresh_questions_and_never_revive_deleted_sources_state)]
+	state: DurableDerivedJobsRefreshQuestionsAndNeverReviveDeletedSourcesState,
+) -> std::sync::Arc<Router> {
+	use std::sync::atomic::Ordering;
+	let calls = state.calls.clone();
+	let served = calls.clone();
+	std::sync::Arc::new(reinhardt::test::stub::StubRouter::new()
+.route("/v1/chat/completions", http::Method::POST, reply(move |request: reinhardt::Request| {let input = request.json::<serde_json::Value>().unwrap();let calls=served.clone();async move {
+  calls.fetch_add(1,Ordering::SeqCst);
+  let context:serde_json::Value=serde_json::from_str(input["messages"][1]["content"].as_str().unwrap()).unwrap();
+  let units:Vec<Unit>=serde_json::from_value(context["units"].clone()).unwrap();
+  let mut result=content(&format!("根拠: {}",units[0].content.text));
+  result.kind=serde_json::from_value(context["kind"].clone()).unwrap();
+  result.mental_model=serde_json::from_value(context["mental_model"].clone()).unwrap();
+  result.evidence=units.iter().map(Unit::evidence).collect();
+  reinhardt::Response::ok().with_json(&json!({"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":serde_json::to_string(&result).unwrap()}}],"usage":{"prompt_tokens":1,"completion_tokens":1}})).unwrap()
+ }}))
+.route("/v1/embeddings", http::Method::POST, reply(|request: reinhardt::Request| {let input = request.json::<serde_json::Value>().unwrap();async move {reinhardt::Response::ok().with_json(&json!({"model":input["model"],"data":[{"index":0,"embedding":[1.,0.1,0.]}],"usage":{"prompt_tokens":1}})).unwrap()}})).into_server_router())
+}
+struct DurableDerivedJobsRefreshQuestionsAndNeverReviveDeletedSourcesProvider {
+	state: DurableDerivedJobsRefreshQuestionsAndNeverReviveDeletedSourcesState,
+	server: reinhardt::test::fixtures::server::TestServerGuard,
+}
+#[fixture]
+async fn durable_derived_jobs_refresh_questions_and_never_revive_deleted_sources_provider(
+	#[from(durable_derived_jobs_refresh_questions_and_never_revive_deleted_sources_state)]
+	state: DurableDerivedJobsRefreshQuestionsAndNeverReviveDeletedSourcesState,
+	#[from(durable_derived_jobs_refresh_questions_and_never_revive_deleted_sources_router)]
+	#[with(state.clone())]
+	_router: std::sync::Arc<Router>,
+	#[future(awt)]
+	#[from(upstream::upstream)]
+	#[with(_router.clone())]
+	server: reinhardt::test::fixtures::server::TestServerGuard,
+) -> DurableDerivedJobsRefreshQuestionsAndNeverReviveDeletedSourcesProvider {
+	DurableDerivedJobsRefreshQuestionsAndNeverReviveDeletedSourcesProvider { state, server }
+}
+
+#[derive(Clone)]
+struct LearningRejectsUncertainEffectsAndReadsCompleteCanonicalResultsState {
+	captured: std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
+}
+#[fixture]
+fn learning_rejects_uncertain_effects_and_reads_complete_canonical_results_state()
+-> LearningRejectsUncertainEffectsAndReadsCompleteCanonicalResultsState {
+	LearningRejectsUncertainEffectsAndReadsCompleteCanonicalResultsState {
+		captured: Arc::new(Mutex::new(Vec::<serde_json::Value>::new())),
+	}
+}
+#[fixture]
+fn learning_rejects_uncertain_effects_and_reads_complete_canonical_results_router(
+	#[from(learning_rejects_uncertain_effects_and_reads_complete_canonical_results_state)]
+	state: LearningRejectsUncertainEffectsAndReadsCompleteCanonicalResultsState,
+) -> std::sync::Arc<Router> {
+	let captured = state.captured.clone();
+	let capture = captured.clone();
+	std::sync::Arc::new(reinhardt::test::stub::StubRouter::new()
+.route("/v1/chat/completions", http::Method::POST, reply(move |request: reinhardt::Request| {let input = request.json::<serde_json::Value>().unwrap();
+        let capture = capture.clone();
+        async move {
+            let input: serde_json::Value = serde_json::from_str(input["messages"][1]["content"].as_str().unwrap()).unwrap();
+            let mut result = content("Learned from a complete journal. 完全な記録からの候補。");
+            result.kind = Kind::Experience;
+            result.evidence = serde_json::from_value(input["evidence"].clone()).unwrap();
+            let mut pending = result.clone();
+            pending.learning = Learning::Procedure;
+            pending.text = "Pending procedure from the same journal / 同じ記録に基づく未承認の手順".into();
+            capture.lock().unwrap().push(input);
+            reinhardt::Response::ok().with_json(&json!({"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":serde_json::to_string(&json!({"facts":[result,pending],"causal":[]})).unwrap()}}],"usage":{"prompt_tokens":1,"completion_tokens":1}})).unwrap()
+        }
+    }))
+.route("/v1/embeddings", http::Method::POST, reply(|request: reinhardt::Request| {let input = request.json::<serde_json::Value>().unwrap();async move {
+        reinhardt::Response::ok().with_json(&json!({"model":input["model"],"data":[{"index":0,"embedding":[1.,0.1,0.]}],"usage":{"prompt_tokens":1}})).unwrap()
+    }})).into_server_router())
+}
+struct LearningRejectsUncertainEffectsAndReadsCompleteCanonicalResultsProvider {
+	state: LearningRejectsUncertainEffectsAndReadsCompleteCanonicalResultsState,
+	server: reinhardt::test::fixtures::server::TestServerGuard,
+}
+#[fixture]
+async fn learning_rejects_uncertain_effects_and_reads_complete_canonical_results_provider(
+	#[from(learning_rejects_uncertain_effects_and_reads_complete_canonical_results_state)]
+	state: LearningRejectsUncertainEffectsAndReadsCompleteCanonicalResultsState,
+	#[from(learning_rejects_uncertain_effects_and_reads_complete_canonical_results_router)]
+	#[with(state.clone())]
+	_router: std::sync::Arc<Router>,
+	#[future(awt)]
+	#[from(upstream::upstream)]
+	#[with(_router.clone())]
+	server: reinhardt::test::fixtures::server::TestServerGuard,
+) -> LearningRejectsUncertainEffectsAndReadsCompleteCanonicalResultsProvider {
+	LearningRejectsUncertainEffectsAndReadsCompleteCanonicalResultsProvider { state, server }
+}
+
+#[derive(Clone)]
+struct ObservationConsolidationKeepsConflictsAndRecomputesSurvivingEvidenceState {
+	requests: std::sync::Arc<std::sync::Mutex<Vec<Vec<Unit>>>>,
+	supported: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+#[fixture]
+fn observation_consolidation_keeps_conflicts_and_recomputes_surviving_evidence_state()
+-> ObservationConsolidationKeepsConflictsAndRecomputesSurvivingEvidenceState {
+	ObservationConsolidationKeepsConflictsAndRecomputesSurvivingEvidenceState {
+		requests: Arc::new(Mutex::new(Vec::<Vec<Unit>>::new())),
+		supported: Arc::new(AtomicBool::new(false)),
+	}
+}
+#[fixture]
+fn observation_consolidation_keeps_conflicts_and_recomputes_surviving_evidence_router(
+	#[from(observation_consolidation_keeps_conflicts_and_recomputes_surviving_evidence_state)]
+	state: ObservationConsolidationKeepsConflictsAndRecomputesSurvivingEvidenceState,
+) -> std::sync::Arc<Router> {
+	use std::sync::atomic::Ordering;
+	let requests = state.requests.clone();
+	let supported = state.supported.clone();
+	let capture = requests.clone();
+	let claim = supported.clone();
+	std::sync::Arc::new(reinhardt::test::stub::StubRouter::new()
+.route("/v1/chat/completions", http::Method::POST, reply(move |request: reinhardt::Request| {let input = request.json::<serde_json::Value>().unwrap();
+        let capture=capture.clone(); let claim=claim.clone(); async move {
+            let input:serde_json::Value=serde_json::from_str(input["messages"][1]["content"].as_str().unwrap()).unwrap();
+            if input.get("mandatory").is_some() {
+                let mandatory:Vec<Unit>=serde_json::from_value(input["mandatory"].clone()).unwrap();
+                let candidates:Vec<Unit>=serde_json::from_value(input["candidates"].clone()).unwrap();
+                let selected:Vec<Evidence>=mandatory.iter().chain(&candidates).map(Unit::evidence).collect();
+                return reinhardt::Response::ok().with_json(&json!({"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":serde_json::to_string(&selected).unwrap()}}],"usage":{"prompt_tokens":1,"completion_tokens":1}})).unwrap();
+            }
+            let units:Vec<Unit>=serde_json::from_value(input["units"].clone()).unwrap();
+            let mut result=content(&units.iter().map(|unit|unit.content.text.clone()).collect::<Vec<_>>().join("\n"));
+            result.kind=Kind::Observation; result.evidence=units.iter().map(Unit::evidence).collect();
+            if claim.load(Ordering::SeqCst) {result.verification=Verification::Supported;}
+            capture.lock().unwrap().push(units);
+            reinhardt::Response::ok().with_json(&json!({"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":serde_json::to_string(&result).unwrap()}}],"usage":{"prompt_tokens":1,"completion_tokens":1}})).unwrap()
+        }
+    }))
+.route("/v1/embeddings", http::Method::POST, reply(|request: reinhardt::Request| {let input = request.json::<serde_json::Value>().unwrap();async move {reinhardt::Response::ok().with_json(&json!({"model":input["model"],"data":[{"index":0,"embedding":[1.,0.1,0.]}],"usage":{"prompt_tokens":1}})).unwrap()}})).into_server_router())
+}
+struct ObservationConsolidationKeepsConflictsAndRecomputesSurvivingEvidenceProvider {
+	state: ObservationConsolidationKeepsConflictsAndRecomputesSurvivingEvidenceState,
+	server: reinhardt::test::fixtures::server::TestServerGuard,
+}
+#[fixture]
+async fn observation_consolidation_keeps_conflicts_and_recomputes_surviving_evidence_provider(
+	#[from(observation_consolidation_keeps_conflicts_and_recomputes_surviving_evidence_state)]
+	state: ObservationConsolidationKeepsConflictsAndRecomputesSurvivingEvidenceState,
+	#[from(observation_consolidation_keeps_conflicts_and_recomputes_surviving_evidence_router)]
+	#[with(state.clone())]
+	_router: std::sync::Arc<Router>,
+	#[future(awt)]
+	#[from(upstream::upstream)]
+	#[with(_router.clone())]
+	server: reinhardt::test::fixtures::server::TestServerGuard,
+) -> ObservationConsolidationKeepsConflictsAndRecomputesSurvivingEvidenceProvider {
+	ObservationConsolidationKeepsConflictsAndRecomputesSurvivingEvidenceProvider { state, server }
+}
+
+struct RuntimeControls {
+	client: reqwest::Client,
+	notify: std::sync::Arc<tokio::sync::Notify>,
+}
+#[fixture]
+fn runtime_notification() -> std::sync::Arc<tokio::sync::Notify> {
+	std::sync::Arc::new(tokio::sync::Notify::new())
+}
+#[fixture]
+fn runtime_controls(
+	#[from(reinhardt::test::fixtures::http_client)] client: reqwest::Client,
+	runtime_notification: std::sync::Arc<tokio::sync::Notify>,
+) -> RuntimeControls {
+	RuntimeControls {
+		client,
+		notify: runtime_notification,
 	}
 }

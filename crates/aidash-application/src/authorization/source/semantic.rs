@@ -1,4 +1,5 @@
 //! Required Home retrieval binds current disclosure authority and exact provider/index definitions.
+//! A Summary Stage pin binds the same way, with or without Home retrieval.
 use crate::{Error, Result, ports::authorization::source::semantic::SemanticBindingScope};
 use aidash_domain::{
 	Task,
@@ -9,7 +10,7 @@ use aidash_domain::{
 		remote::{Binding, Provider, Request, VERSION},
 	},
 };
-use serde_json::{json, to_value};
+use serde_json::{Value, json, to_value};
 pub fn requirements(
 	inspection: &Inspection,
 ) -> Result<aidash_domain::federation::execution::AgentMemoryRequirements> {
@@ -33,16 +34,37 @@ pub async fn binding<S: SemanticBindingScope + ?Sized>(
 ) -> Result<Binding> {
 	let agent = AgentConfig::from_snapshot(&inspection.binding_snapshot)?;
 	let native_enabled = requirements(inspection)?.native_required;
-	let Request::RequiredHome {
-		embedding,
-		compactor,
-		native,
-	} = request
-	else {
-		if native_enabled {
-			return Err(Error::RemoteSemantic(Failure::Configuration));
+	let (embedding, compactor, native, summarizer) = match request {
+		Request::Disabled { summarizer } => {
+			if native_enabled {
+				return Err(Error::RemoteSemantic(Failure::Configuration));
+			}
+			let Some(reference) = summarizer else {
+				return Ok(Binding::Disabled { summarizer: None });
+			};
+			// A Summary Stage needs no Home index, embedding or semantic
+			// search: only the remote execution and the pinned summarizer's
+			// disclosure are authorized.
+			let summarizer = summarizer_pin(&agent, inspection, node, reference)?;
+			super::authorize(access, task, node, inspection).await?;
+			let mut workspace = access.source_workspace(task.workspace_id).await?;
+			workspace.attributes["remote_node"] = json!(node);
+			workspace.attributes["inference_model"] = json!(agent.model);
+			workspace.attributes["compactor"] = Value::Null;
+			workspace.attributes["summarizer"] = json!(summarizer.entry);
+			access
+				.source_require(&workspace, "semantic.disclose")
+				.await?;
+			return Ok(Binding::Disabled {
+				summarizer: Some(Box::new(summarizer)),
+			});
 		}
-		return Ok(Binding::Disabled {});
+		Request::RequiredHome {
+			embedding,
+			compactor,
+			native,
+			summarizer,
+		} => (embedding, compactor, native, summarizer),
 	};
 	if native_enabled != native.is_some() {
 		return Err(Error::RemoteSemantic(Failure::Configuration));
@@ -54,11 +76,16 @@ pub async fn binding<S: SemanticBindingScope + ?Sized>(
 	if !agent.semantic_memory && !agent.workspace_context {
 		return Err(Error::RemoteSemantic(Failure::Configuration));
 	}
+	let summarizer = summarizer
+		.as_ref()
+		.map(|reference| summarizer_pin(&agent, inspection, node, reference))
+		.transpose()?;
 	super::authorize(access, task, node, inspection).await?;
 	let mut workspace = access.source_workspace(task.workspace_id).await?;
 	workspace.attributes["remote_node"] = json!(node);
 	workspace.attributes["inference_model"] = json!(agent.model);
 	workspace.attributes["compactor"] = json!(compactor);
+	workspace.attributes["summarizer"] = json!(summarizer.as_ref().map(|p| &p.entry));
 	access.source_require(&workspace, "semantic.search").await?;
 	// Disclosure is independently selectable in policy; local read/search is
 	// not permission to send text to the execution node and its providers.
@@ -150,5 +177,37 @@ pub async fn binding<S: SemanticBindingScope + ?Sized>(
 			configuration_digest: digest(&entry.config),
 		}),
 		compactor: compactor.map(Box::new),
+		summarizer: summarizer.map(Box::new),
+	})
+}
+
+/// Only the exact summarizer pinned by the Agent's Context Policy may be
+/// disclosed; its definition is part of the admitted Binding closure.
+fn summarizer_pin(
+	agent: &AgentConfig,
+	inspection: &Inspection,
+	node: &str,
+	reference: &aidash_domain::registry::EntityRef,
+) -> Result<Provider> {
+	let pinned = match agent.context_policy.as_ref() {
+		Some(aidash_domain::context::policy::ContextPolicy::RecoveryV1 {
+			summary: Some(summary),
+			..
+		}) => Some(&summary.model),
+		_ => None,
+	};
+	if pinned != Some(reference) {
+		return Err(Error::RemoteSemantic(Failure::Configuration));
+	}
+	let definition = inspection
+		.definitions
+		.iter()
+		.find(|d| d.kind == "model" && &d.entry == reference)
+		.ok_or(Error::RemoteSemantic(Failure::Configuration))?;
+	Ok(Provider {
+		node_id: node.to_owned(),
+		entry: reference.clone(),
+		digest: definition.digest.clone(),
+		configuration_digest: digest(&definition.metadata.config),
 	})
 }

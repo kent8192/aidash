@@ -1,9 +1,12 @@
-//! Provider Authorization through the production router against a fake
-//! OpenRouter that enforces PKCE, single-use codes and code expiry.
+//! Provider Authorization through the production router and PostgreSQL. The
+//! in-process fake OpenRouter enforces PKCE, single-use codes and code expiry;
+//! the HTTP adapter itself is exercised against a fake endpoint in
+//! `aidash-integrations`.
 #[path = "../../execution/tests/support/legacy.rs"]
 mod common;
 use aidash_application::{
-	Result,
+	Error, Result,
+	provider_authorization::Exchange,
 	provider_credentials::{KeyValidator, Service, Store, Validation},
 };
 use aidash_domain::provider_credentials::Provider;
@@ -14,18 +17,10 @@ use aidash_server::{
 	federation::Federation,
 };
 use async_trait::async_trait;
-use axum::{
-	Json, Router,
-	body::{Body, to_bytes},
-	http::{Request, StatusCode},
-	response::Response,
-	routing::post,
-};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
-use common::{TestEnvironment, test_environment};
-use reinhardt::query::{
-	Alias, Expr, ExprTrait, PostgresQueryBuilder, Query, QueryStatementBuilder,
-};
+use futures_util::FutureExt;
+use reinhardt::query::{Alias, Expr, ExprTrait, PostgresQueryBuilder, Query, QueryStatementBuilder};
+use reinhardt::test::TestResponse;
 use secrecy::{ExposeSecret, SecretString};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -33,7 +28,6 @@ use std::{
 	collections::BTreeMap,
 	sync::{Arc, Mutex},
 };
-use tower::ServiceExt;
 use uuid::Uuid;
 
 const ORIGIN: &str = "http://127.0.0.1:8080";
@@ -57,36 +51,26 @@ impl FakeOpenRouter {
 			.insert(code.clone(), (challenge.into(), expired, key.clone()));
 		(code, key)
 	}
-	fn router(&self) -> Router {
-		let codes = self.codes.clone();
-		Router::new().route(
-			"/auth/keys",
-			post(move |Json(body): Json<Value>| {
-				let codes = codes.clone();
-				async move {
-					let code = body["code"].as_str().unwrap_or_default();
-					let verifier = body["code_verifier"].as_str().unwrap_or_default();
-					assert_eq!(body["code_challenge_method"], "S256");
-					// Codes are single-use whether or not the exchange succeeds.
-					let Some((challenge, expired, key)) = codes.lock().unwrap().remove(code) else {
-						return (StatusCode::FORBIDDEN, Json(json!({"error":"invalid code"})));
-					};
-					if expired {
-						return (StatusCode::FORBIDDEN, Json(json!({"error":"expired"})));
-					}
-					if URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes())) != challenge {
-						return (
-							StatusCode::FORBIDDEN,
-							Json(json!({"error":"invalid verifier"})),
-						);
-					}
-					(
-						StatusCode::OK,
-						Json(json!({"key": key, "user_id": "fixture"})),
-					)
-				}
-			}),
-		)
+}
+#[async_trait]
+impl Exchange for FakeOpenRouter {
+	async fn exchange(
+		&self,
+		_: Provider,
+		code: &str,
+		verifier: &SecretString,
+	) -> Result<SecretString> {
+		let rejected = || Error::Invalid("Provider Authorization was rejected".into());
+		// Codes are single-use whether or not the exchange succeeds.
+		let (challenge, expired, key) =
+			self.codes.lock().unwrap().remove(code).ok_or_else(rejected)?;
+		if expired
+			|| URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.expose_secret().as_bytes()))
+				!= challenge
+		{
+			return Err(rejected());
+		}
+		Ok(key.into())
 	}
 }
 
@@ -114,14 +98,11 @@ impl Store for MemoryStore {
 		Ok(format!("{resource}/versions/{}", entry.len()))
 	}
 	async fn versions(&self, resource: &str) -> Result<Vec<String>> {
-		Ok((1..=self
-			.versions
-			.lock()
-			.unwrap()
-			.get(resource)
-			.map_or(0, Vec::len))
-			.map(|n| format!("{resource}/versions/{n}"))
-			.collect())
+		Ok(
+			(1..=self.versions.lock().unwrap().get(resource).map_or(0, Vec::len))
+				.map(|n| format!("{resource}/versions/{n}"))
+				.collect(),
+		)
 	}
 	async fn disable(&self, _: &str) -> Result<()> {
 		Ok(())
@@ -142,21 +123,15 @@ impl KeyValidator for Validator {
 	}
 }
 
-struct ProviderServer(tokio::task::JoinHandle<()>);
-impl Drop for ProviderServer {
-	fn drop(&mut self) {
-		self.0.abort();
-	}
-}
-
-struct Fixture {
-	f: Federation,
-	app: Router,
+/// The fake provider and Store the test observes; shared with the runtime.
+#[derive(Clone, Default)]
+struct Parts {
 	provider: FakeOpenRouter,
 	store: Arc<MemoryStore>,
-	_server: ProviderServer,
-	url: String,
-	schema: String,
+}
+#[rstest::fixture]
+fn parts() -> Parts {
+	Parts::default()
 }
 
 async fn insert_session(f: &Federation, identity: Uuid, token: &str, csrf: &str) {
@@ -192,117 +167,130 @@ async fn insert_session(f: &Federation, identity: Uuid, token: &str, csrf: &str)
 		.unwrap();
 }
 
-async fn setup(environment: &TestEnvironment) -> Fixture {
-	let (mut f, url, schema) = common::setup(environment).await;
-	f.config.oidc = Some(OidcConfig {
-		issuer: "https://accounts.google.com".into(),
-		client_id: "fixture".into(),
-		client_secret: "server-only-fixture".into(),
-		public_origin: ORIGIN.into(),
-		keycloak_admin_url: String::new(),
-		status_client_id: String::new(),
-		status_client_secret: String::new(),
-		session_absolute_seconds: 43_200,
-		session_idle_seconds: 1_800,
-	});
-	let identity = Uuid::new_v4();
-	for query in [
-		Query::insert()
-			.into_table(Alias::new("dashboard_identities"))
-			.columns(["id", "issuer", "subject", "last_valid_at"].map(Alias::new))
-			.from_subquery(
-				Query::select()
-					.expr(Expr::val(identity))
-					.expr(Expr::val("https://accounts.google.com"))
-					.expr(Expr::val("provider-authorization-fixture"))
-					.expr(Expr::cust("clock_timestamp()"))
-					.to_owned(),
-			)
-			.to_string(PostgresQueryBuilder),
-		Query::insert()
-			.into_table(Alias::new("dashboard_operator_grants"))
-			.columns([Alias::new("identity_id")])
-			.from_subquery(Query::select().expr(Expr::val(identity)).to_owned())
-			.to_string(PostgresQueryBuilder),
-	] {
-		sqlx::query(&query)
-			.execute(f.store.pool.driver())
-			.await
-			.unwrap();
+/// A browser identity with an Operator grant and two dashboard sessions, and
+/// a Provider Credential Store whose exchange is the fake OpenRouter.
+#[rstest::fixture]
+fn authorization_runtime(
+	#[default(Parts::default())] parts: Parts,
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) -> common::RuntimeFuture {
+	async move {
+		let mut owner = runtime.await;
+		let f = &mut owner.federation;
+		f.config.oidc = Some(OidcConfig {
+			issuer: "https://accounts.google.com".into(),
+			client_id: "fixture".into(),
+			client_secret: "server-only-fixture".into(),
+			public_origin: ORIGIN.into(),
+			keycloak_admin_url: String::new(),
+			status_client_id: String::new(),
+			status_client_secret: String::new(),
+			session_absolute_seconds: 43_200,
+			session_idle_seconds: 1_800,
+		});
+		let identity = Uuid::new_v4();
+		for query in [
+			Query::insert()
+				.into_table(Alias::new("dashboard_identities"))
+				.columns(["id", "issuer", "subject", "last_valid_at"].map(Alias::new))
+				.from_subquery(
+					Query::select()
+						.expr(Expr::val(identity))
+						.expr(Expr::val("https://accounts.google.com"))
+						.expr(Expr::val("provider-authorization-fixture"))
+						.expr(Expr::cust("clock_timestamp()"))
+						.to_owned(),
+				)
+				.to_string(PostgresQueryBuilder),
+			Query::insert()
+				.into_table(Alias::new("dashboard_operator_grants"))
+				.columns([Alias::new("identity_id")])
+				.from_subquery(Query::select().expr(Expr::val(identity)).to_owned())
+				.to_string(PostgresQueryBuilder),
+		] {
+			sqlx::query(&query)
+				.execute(f.store.pool.driver())
+				.await
+				.unwrap();
+		}
+		insert_session(f, identity, "browser-a", "csrf-a").await;
+		insert_session(f, identity, "browser-b", "csrf-b").await;
+		let policy: PolicyBundle = serde_json::from_value(json!({
+			"tenant":"alpha","subjects":{"alice":{"kind":"user"}},"policies":[]
+		}))
+		.unwrap();
+		Authorization {
+			pool: f.store.pool.clone(),
+		}
+		.replace("alpha", 0, policy, "operator")
+		.await
+		.unwrap();
+		f.store.provider_credentials = Some(Arc::new(Service {
+			repository: Arc::new(NativeRepository {
+				pool: f.store.control_pool.clone(),
+				node: f.store.node_id.clone(),
+			}),
+			store: parts.store.clone(),
+			validator: Arc::new(Validator),
+			exchange: Arc::new(parts.provider.clone()),
+			fingerprint_key: "test-fingerprint-key-that-is-at-least-32-bytes".into(),
+			max_per_tenant: 5,
+		}));
+		owner
 	}
-	insert_session(&f, identity, "browser-a", "csrf-a").await;
-	insert_session(&f, identity, "browser-b", "csrf-b").await;
-	let policy: PolicyBundle = serde_json::from_value(json!({
-		"tenant":"alpha","subjects":{"alice":{"kind":"user"}},"policies":[]
-	}))
-	.unwrap();
-	Authorization {
-		pool: f.store.pool.clone(),
-	}
-	.replace("alpha", 0, policy, "operator")
-	.await
-	.unwrap();
-	let provider = FakeOpenRouter::default();
-	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-	let base = format!("http://{}", listener.local_addr().unwrap());
-	let router = provider.router();
-	let server = ProviderServer(tokio::spawn(async move {
-		axum::serve(listener, router).await.unwrap();
-	}));
-	let store = Arc::new(MemoryStore::default());
-	f.store.provider_credentials = Some(Arc::new(Service {
-		repository: Arc::new(NativeRepository {
-			pool: f.store.control_pool.clone(),
-			node: f.store.node_id.clone(),
-		}),
-		store: store.clone(),
-		validator: Arc::new(Validator),
-		exchange: Arc::new(
-			aidash_integrations::provider_authorization::OpenRouterAuthorization::at(
-				reqwest::Client::new(),
-				base,
-			),
-		),
-		fingerprint_key: "test-fingerprint-key-that-is-at-least-32-bytes".into(),
-		max_per_tenant: 5,
-	}));
-	let app = common::application_with_settings(
-		f.clone(),
-		aidash_server::http::Settings {
-			auth_burst: 10000,
-			..Default::default()
-		},
-	)
-	.await
-	.test_transport();
-	Fixture {
-		f,
-		app,
-		provider,
-		store,
-		_server: server,
-		url,
-		schema,
+	.boxed()
+	.shared()
+}
+#[rstest::fixture]
+fn authorization_application(
+	#[default(Parts::default())] _parts: Parts,
+	#[from(authorization_runtime)]
+	#[with(_parts.clone())]
+	_runtime: common::RuntimeFuture,
+	#[from(common::direct_application)]
+	#[with(aidash_server::http::Settings { auth_burst: 10000, ..Default::default() }, aidash_server::sse::Service::new(Default::default()), std::sync::Arc::new(|r| r), _runtime.clone())]
+	application: common::ApplicationFuture,
+) -> common::ApplicationFuture {
+	application
+}
+
+struct Fixture {
+	f: Federation,
+	app: common::TestApplication,
+	provider: FakeOpenRouter,
+	store: Arc<MemoryStore>,
+	url: String,
+	schema: String,
+}
+impl Fixture {
+	fn new(application: common::ApplicationFixture, parts: Parts) -> Self {
+		let (f, url, schema) = application.runtime.parts();
+		Self {
+			f,
+			app: application.application,
+			provider: parts.provider,
+			store: parts.store,
+			url,
+			schema,
+		}
 	}
 }
 
 async fn send(
-	app: &Router,
+	app: &common::TestApplication,
 	method: &str,
 	path: &str,
 	headers: &[(&str, &str)],
 	body: Value,
-) -> Response {
-	let mut request = Request::builder().method(method).uri(path);
-	for (name, value) in headers {
-		request = request.header(*name, *value);
-	}
-	app.clone()
-		.oneshot(request.body(Body::from(body.to_string())).unwrap())
-		.await
-		.unwrap()
+) -> TestResponse {
+	let body = if body.is_null() {
+		Vec::new()
+	} else {
+		body.to_string().into_bytes()
+	};
+	common::http_response(app, method, path, headers, &body).await
 }
-fn cookie(response: &Response, name: &str) -> Option<String> {
+fn cookie(response: &TestResponse, name: &str) -> Option<String> {
 	response
 		.headers()
 		.get_all("set-cookie")
@@ -331,7 +319,7 @@ async fn start_request(
 	context: &str,
 	body: Value,
 	browser: Option<&str>,
-) -> Response {
+) -> TestResponse {
 	let csrf = if session == "browser-a" {
 		"csrf-a"
 	} else {
@@ -366,14 +354,12 @@ async fn start_as(
 	browser: Option<&str>,
 ) -> Started {
 	let response = start_request(fixture, session, context, body, browser).await;
-	let status = response.status();
-	let cache = response.headers().get("cache-control").cloned();
-	let browser = cookie(&response, "aidash-provider-authorization");
-	let bytes = to_bytes(response.into_body(), 65_536).await.unwrap();
-	assert_eq!(status, 200, "{}", String::from_utf8_lossy(&bytes));
-	assert_eq!(cache.unwrap(), "no-store");
-	let browser = browser.expect("start binds the browser");
-	let started: Value = serde_json::from_slice(&bytes).unwrap();
+	let bytes = response.body();
+	assert_eq!(response.status(), 200, "{}", String::from_utf8_lossy(bytes));
+	assert_eq!(response.headers()["cache-control"], "no-store");
+	let browser =
+		cookie(&response, "aidash-provider-authorization").expect("start binds the browser");
+	let started: Value = serde_json::from_slice(bytes).unwrap();
 	let url = reqwest::Url::parse(started["authorization_url"].as_str().unwrap()).unwrap();
 	assert_eq!(url.origin().ascii_serialization(), "https://openrouter.ai");
 	let query: BTreeMap<_, _> = url.query_pairs().into_owned().collect();
@@ -386,7 +372,7 @@ async fn start_as(
 		challenge: query["code_challenge"].clone(),
 	}
 }
-async fn callback(fixture: &Fixture, session: &str, browser: &str, query: &str) -> Response {
+async fn callback(fixture: &Fixture, session: &str, browser: &str, query: &str) -> TestResponse {
 	send(
 		&fixture.app,
 		"GET",
@@ -399,20 +385,20 @@ async fn callback(fixture: &Fixture, session: &str, browser: &str, query: &str) 
 	)
 	.await
 }
-fn location(response: &Response) -> &str {
+fn location(response: &TestResponse) -> &str {
 	response.headers()["location"].to_str().unwrap()
 }
 async fn credentials(fixture: &Fixture) -> Vec<Value> {
-	let response = send(
+	let (status, rows) = common::request(
 		&fixture.app,
+		&fixture.f.config.api_token,
 		"GET",
 		"/api/tenants/alpha/provider-credentials",
-		&[("authorization", "Bearer operator-execution-fixture")],
 		Value::Null,
 	)
 	.await;
-	let bytes = to_bytes(response.into_body(), 1 << 20).await.unwrap();
-	serde_json::from_slice(&bytes).unwrap()
+	assert_eq!(status, 200, "{rows}");
+	serde_json::from_value(rows).unwrap()
 }
 fn stored_versions(fixture: &Fixture) -> usize {
 	fixture
@@ -428,11 +414,13 @@ fn stored_versions(fixture: &Fixture) -> usize {
 #[rstest::rstest]
 #[tokio::test]
 async fn connect_and_reconnect_write_only_through_oauth_and_never_disclose_keys(
+	#[from(parts)] parts: Parts,
 	#[future(awt)]
-	#[from(test_environment)]
-	environment: Arc<TestEnvironment>,
+	#[from(authorization_application)]
+	#[with(parts.clone())]
+	application: common::ApplicationFixture,
 ) {
-	let fixture = setup(&environment).await;
+	let fixture = Fixture::new(application, parts);
 	let started = start(&fixture, "browser-a", json!({}), None).await;
 	let (code, key) = fixture.provider.consent(&started.challenge, false);
 	let response = callback(
@@ -469,12 +457,12 @@ async fn connect_and_reconnect_write_only_through_oauth_and_never_disclose_keys(
 		&fixture.app,
 		"GET",
 		"/api/tenants/alpha/provider-credential-bindings/openrouter",
-		&[("authorization", "Bearer operator-execution-fixture")],
+		&[("authorization", &format!("Bearer {}", fixture.f.config.api_token))],
 		Value::Null,
 	)
 	.await;
 	let binding: Value =
-		serde_json::from_slice(&to_bytes(binding.into_body(), 65_536).await.unwrap()).unwrap();
+		serde_json::from_slice(binding.body()).unwrap();
 	assert_eq!(binding["provider_credential_id"], row["id"]);
 
 	// Reconnect rotates the same record to a newly issued key.
@@ -530,11 +518,13 @@ async fn connect_and_reconnect_write_only_through_oauth_and_never_disclose_keys(
 #[rstest::rstest]
 #[tokio::test]
 async fn replayed_cross_session_and_expired_states_and_rejected_codes_store_nothing(
+	#[from(parts)] parts: Parts,
 	#[future(awt)]
-	#[from(test_environment)]
-	environment: Arc<TestEnvironment>,
+	#[from(authorization_application)]
+	#[with(parts.clone())]
+	application: common::ApplicationFixture,
 ) {
-	let fixture = setup(&environment).await;
+	let fixture = Fixture::new(application, parts);
 
 	// Cross-session: the state belongs to session A, the callback carries B.
 	let started = start(&fixture, "browser-a", json!({}), None).await;
@@ -667,11 +657,13 @@ async fn replayed_cross_session_and_expired_states_and_rejected_codes_store_noth
 #[rstest::rstest]
 #[tokio::test]
 async fn only_browser_sessions_start_and_return_paths_stay_local(
+	#[from(parts)] parts: Parts,
 	#[future(awt)]
-	#[from(test_environment)]
-	environment: Arc<TestEnvironment>,
+	#[from(authorization_application)]
+	#[with(parts.clone())]
+	application: common::ApplicationFixture,
 ) {
-	let fixture = setup(&environment).await;
+	let fixture = Fixture::new(application, parts);
 	// The operator bearer has no browser to bind.
 	let response = send(
 		&fixture.app,
@@ -679,7 +671,7 @@ async fn only_browser_sessions_start_and_return_paths_stay_local(
 		"/api/tenants/alpha/provider-authorizations/openrouter",
 		&[
 			("content-type", "application/json"),
-			("authorization", "Bearer operator-execution-fixture"),
+			("authorization", &format!("Bearer {}", fixture.f.config.api_token)),
 		],
 		json!({}),
 	)
@@ -736,11 +728,13 @@ async fn pending_authorizations(fixture: &Fixture) -> i64 {
 #[rstest::rstest]
 #[tokio::test]
 async fn mapped_subjects_need_the_provider_credential_management_permission(
+	#[from(parts)] parts: Parts,
 	#[future(awt)]
-	#[from(test_environment)]
-	environment: Arc<TestEnvironment>,
+	#[from(authorization_application)]
+	#[with(parts.clone())]
+	application: common::ApplicationFixture,
 ) {
-	let fixture = setup(&environment).await;
+	let fixture = Fixture::new(application, parts);
 	// Map the browser identity to Tenant subject alice through the normal
 	// registration and Operator approval.
 	let registration = send(
@@ -756,7 +750,7 @@ async fn mapped_subjects_need_the_provider_credential_management_permission(
 	)
 	.await;
 	let registration: Value =
-		serde_json::from_slice(&to_bytes(registration.into_body(), 65_536).await.unwrap()).unwrap();
+		serde_json::from_slice(registration.body()).unwrap();
 	let mapping = send(
 		&fixture.app,
 		"POST",
@@ -766,14 +760,14 @@ async fn mapped_subjects_need_the_provider_credential_management_permission(
 		),
 		&[
 			("content-type", "application/json"),
-			("authorization", "Bearer operator-execution-fixture"),
+			("authorization", &format!("Bearer {}", fixture.f.config.api_token)),
 		],
 		json!({"tenant":"alpha","subject":"alice"}),
 	)
 	.await;
 	let status = mapping.status();
 	let mapping: Value =
-		serde_json::from_slice(&to_bytes(mapping.into_body(), 65_536).await.unwrap()).unwrap();
+		serde_json::from_slice(mapping.body()).unwrap();
 	assert_eq!(status, 200, "{mapping}");
 	let context = format!("mapping:{}", mapping["id"].as_str().unwrap());
 

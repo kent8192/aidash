@@ -1,6 +1,8 @@
 //! A Home whose workspace embedding uses the Tenant's OpenRouter Provider
 //! Credential (ADR 0006). The fake issuer stands in for the Credential Broker:
-//! it records each mint and routes calls to the local embedding fixture.
+//! it records each mint and routes calls to the local embedding fixture. It
+//! returns no bearer because the shared fixture rejects any Authorization
+//! header; bearer delivery is covered by the broker and integration suites.
 use aidash_application::{
 	Result,
 	provider_access::{Access, Context, TokenIssuer},
@@ -21,7 +23,6 @@ use std::{
 };
 use uuid::Uuid;
 
-pub const BEARER: &str = "fixture-capability";
 
 #[derive(Default)]
 struct MemoryStore(Mutex<BTreeMap<String, usize>>);
@@ -75,7 +76,7 @@ impl TokenIssuer for EndpointIssuer {
 		self.mints.lock().unwrap().push((context.clone(), row.id));
 		Ok(Access {
 			endpoint: self.endpoint.lock().unwrap().clone(),
-			bearer: BEARER.to_owned().into(),
+			bearer: String::new().into(),
 		})
 	}
 }
