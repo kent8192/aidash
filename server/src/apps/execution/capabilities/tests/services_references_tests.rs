@@ -3,7 +3,7 @@ use super::next_receipt_cursor;
 use serde_json::json;
 use uuid::Uuid;
 
-#[test]
+#[rstest::rstest]
 fn receipt_batches_advance_past_failed_rows_and_restart_after_the_end() {
 	let first = Uuid::from_u128(1);
 	let second = Uuid::from_u128(2);

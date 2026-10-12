@@ -2,7 +2,7 @@
 use super::*;
 use serde_json::json;
 
-#[test]
+#[rstest::rstest]
 fn management_schema_has_typed_results_and_distinct_recipient_contracts() {
 	let api = serde_json::to_value(crate::config::openapi::openapi().unwrap()).unwrap();
 	let schemas = &api["components"]["schemas"];

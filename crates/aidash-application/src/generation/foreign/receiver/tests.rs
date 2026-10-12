@@ -106,6 +106,7 @@ fn repository() -> Repository {
 		allocated_tokens: 0,
 		allocated_compaction_calls: 0,
 		allocated_embedding_calls: 0,
+		allocated_summary_calls: 0,
 	};
 	Repository(Arc::new(Mutex::new(World {
 		intent,
