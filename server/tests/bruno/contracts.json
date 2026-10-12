@@ -13684,6 +13684,31 @@
                 }
               },
               "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "description": "The accepted response that opens a Model Turn, recorded only for Runs on the Native Projection Version: its text and the IDs of its tool calls in the model's order. Each executed call's `Tool` event follows and carries the call itself. Reasoning output is never recorded.",
+              "required": ["kind", "epoch", "text", "calls"],
+              "properties": {
+                "calls": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "epoch": {
+                  "type": "integer",
+                  "format": "int64"
+                },
+                "kind": {
+                  "type": "string",
+                  "enum": ["assistant"]
+                },
+                "text": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false
             }
           ]
         },
@@ -24298,6 +24323,31 @@
                 }
               },
               "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "description": "The accepted response that opens a Model Turn, recorded only for Runs on the Native Projection Version: its text and the IDs of its tool calls in the model's order. Each executed call's `Tool` event follows and carries the call itself. Reasoning output is never recorded.",
+              "required": ["kind", "epoch", "text", "calls"],
+              "properties": {
+                "calls": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "epoch": {
+                  "type": "integer",
+                  "format": "int64"
+                },
+                "kind": {
+                  "type": "string",
+                  "enum": ["assistant"]
+                },
+                "text": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false
             }
           ]
         },
@@ -26469,6 +26519,31 @@
                 }
               },
               "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "description": "The accepted response that opens a Model Turn, recorded only for Runs on the Native Projection Version: its text and the IDs of its tool calls in the model's order. Each executed call's `Tool` event follows and carries the call itself. Reasoning output is never recorded.",
+              "required": ["kind", "epoch", "text", "calls"],
+              "properties": {
+                "calls": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "epoch": {
+                  "type": "integer",
+                  "format": "int64"
+                },
+                "kind": {
+                  "type": "string",
+                  "enum": ["assistant"]
+                },
+                "text": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false
             }
           ]
         },
@@ -28395,6 +28470,31 @@
                 "through_seq": {
                   "type": "integer",
                   "format": "int64"
+                }
+              },
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "description": "The accepted response that opens a Model Turn, recorded only for Runs on the Native Projection Version: its text and the IDs of its tool calls in the model's order. Each executed call's `Tool` event follows and carries the call itself. Reasoning output is never recorded.",
+              "required": ["kind", "epoch", "text", "calls"],
+              "properties": {
+                "calls": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "epoch": {
+                  "type": "integer",
+                  "format": "int64"
+                },
+                "kind": {
+                  "type": "string",
+                  "enum": ["assistant"]
+                },
+                "text": {
+                  "type": "string"
                 }
               },
               "additionalProperties": false
