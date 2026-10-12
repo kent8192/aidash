@@ -16,6 +16,16 @@ use aidash_domain::{
 use serde_json::{Value, json};
 use uuid::Uuid;
 
+/// The calls of one response that a Tool Batch may cover, starting at the cursor.
+struct BatchStep<'a> {
+	home: &'a dyn ExecutionHome,
+	guard: Option<&'a dyn ExecutionAuthority>,
+	tools: &'a Tools,
+	calls: &'a [aidash_domain::provider::ToolCall],
+	cursor: usize,
+	end: usize,
+}
+
 pub struct Executor<'a> {
 	environment: &'a dyn ExecutionEnvironment,
 }
@@ -34,7 +44,7 @@ impl<'a> Executor<'a> {
 		let mut context = run.context.clone();
 		let event = ContextEvent::tool(call.clone(), json!({"error":message}));
 		let growth = context::tool_event_growth(&context, &event);
-		context.history.push(event);
+		context.push(event);
 		run.state.tool_mut()?.request_tokens =
 			run.state.tool()?.request_tokens.saturating_add(growth);
 		run.context = context.clone();
@@ -61,6 +71,198 @@ impl<'a> Executor<'a> {
 				.await?;
 		}
 		self.tool_error(run, token, call, cursor, message).await
+	}
+	/// Execute the Tool Batch `[cursor, end)` and adopt its results in call
+	/// order. Returns `false`, having persisted nothing, when authority checks
+	/// shrink a fresh plan below two calls; the cursor call then runs alone.
+	async fn execute_batch(&self, run: &mut Run, token: Uuid, step: BatchStep<'_>) -> Result<bool> {
+		let BatchStep {
+			home,
+			guard,
+			tools,
+			calls,
+			cursor,
+			mut end,
+		} = step;
+		let store = self.environment.store();
+		let resumed = run.state.tool()?.batch_end.is_some();
+		if end <= cursor || end > calls.len() {
+			return Err(Error::Conflict(
+				"Tool Batch exceeds its model response".into(),
+			));
+		}
+		let tool = |call: &aidash_domain::provider::ToolCall| {
+			tools.get(&call.name).cloned().ok_or_else(|| {
+				Error::Conflict(format!("batched tool {} is unavailable", call.name))
+			})
+		};
+		// Current authority precedes the journal, as on the sequential path. A
+		// resumed batch is already journaled: a revoked call records its denial.
+		let mut denied = vec![None; end - cursor];
+		if let Some(guard) = guard {
+			for index in cursor..end {
+				let call = &calls[index];
+				match guard.tool(call, &tool(call)?.contract()).await {
+					Ok(()) => {}
+					Err(
+						Error::Invalid(message)
+						| Error::Domain(aidash_domain::Error::Invalid(message)),
+					) => {
+						if !resumed {
+							end = index;
+							break;
+						}
+						denied[index - cursor] = Some(message);
+					}
+					Err(error) => return Err(error),
+				}
+			}
+		}
+		if end - cursor < 2 {
+			return Ok(false);
+		}
+		denied.truncate(end - cursor);
+		let response_epoch = run.state.tool()?.response_epoch;
+		let keys: Vec<String> = (cursor..end)
+			.map(|index| format!("{}:{response_epoch}:{index}", run.id))
+			.collect();
+		run.state.tool_mut()?.batch_end = Some(end);
+		let journal: Vec<BatchInvocation<'_>> = (cursor..end)
+			.map(|index| BatchInvocation {
+				key: &keys[index - cursor],
+				name: &calls[index].name,
+				input: &calls[index].arguments,
+			})
+			.collect();
+		let outcomes = store.invocation_start_batch(run, token, &journal).await?;
+		if outcomes.len() != end - cursor {
+			return Err(Error::Conflict("Tool Batch admission lost a call".into()));
+		}
+		let mut outputs: Vec<Option<Value>> = vec![None; end - cursor];
+		let mut dispatch = Vec::new();
+		// Admit every call before dispatching any, so checks that need the Run's
+		// authority scope exclusively never wait behind a sibling's execution.
+		for (offset, outcome) in outcomes.into_iter().enumerate() {
+			let call = &calls[cursor + offset];
+			let denial = denied[offset].take();
+			match outcome.status.as_str() {
+				// As on the sequential path, a revoked call's journaled result
+				// never crosses into the Context Journal.
+				"COMPLETED" => {
+					let result = outcome.result.ok_or_else(|| {
+						Error::Conflict("completed invocation has no result".into())
+					})?;
+					outputs[offset] =
+						Some(denial.map_or(result, |message| json!({"error":message})));
+					continue;
+				}
+				"STARTED" => {}
+				_ => {
+					return Err(Error::Conflict(
+						"batched invocation is not replay-safe".into(),
+					));
+				}
+			}
+			let tool = tool(call)?;
+			let input = match denial {
+				Some(message) => Err(message),
+				None => match tool.admit(run, call.arguments.clone()).await {
+					Ok(input) => Ok(input),
+					Err(
+						Error::Invalid(message)
+						| Error::Domain(aidash_domain::Error::Invalid(message)),
+					) => Err(message),
+					Err(error) => return Err(error),
+				},
+			};
+			dispatch.push((offset, tool, input));
+		}
+		let slots = self.environment.tool_slots();
+		let admitted: &Run = run;
+		let keys = &keys;
+		let calls_in_flight = dispatch
+			.into_iter()
+			.map(|(offset, tool, input)| async move {
+				let key = &keys[offset];
+				// The slot covers every database connection of the call,
+				// including the one that records its result.
+				let _permit = match slots {
+					Some(slots) => Some(slots.acquire().await?),
+					None => None,
+				};
+				let output = match input {
+					Err(message) => json!({"error":message}),
+					Ok(input) => match tool.dispatch(admitted, input, key).await {
+						Ok(output) => output,
+						Err(
+							Error::Invalid(message)
+							| Error::Domain(aidash_domain::Error::Invalid(message)),
+						) => json!({"error":message}),
+						Err(error) => return Err(error),
+					},
+				};
+				store
+					.invocation_finish(admitted, token, key, &output)
+					.await?;
+				Ok((offset, output))
+			});
+		// Read-only calls may be dropped on cancellation; nothing is adopted and
+		// the next step observes the cancelled Run. A newer input never
+		// interrupts a batch, as it never interrupts a sequential call, so no
+		// accepted input sequence can supersede this wait.
+		let finished = tokio::select! {
+			biased;
+			interrupted = self.environment.wait_for_inference_interruption(admitted.id, i64::MAX) => {
+				interrupted?;
+				return Err(Error::Conflict("run cancelled during tool batch".into()));
+			}
+			finished = futures_util::future::join_all(calls_in_flight) => finished,
+		};
+		// Every call has finished or failed; report the first failure in call order.
+		for result in finished {
+			let (offset, output) = result?;
+			outputs[offset] = Some(output);
+		}
+		let mut context = run.context.clone();
+		capture_declared_coverage(&mut context, tools, false);
+		for (offset, output) in outputs.into_iter().enumerate() {
+			let call = &calls[cursor + offset];
+			let output =
+				output.ok_or_else(|| Error::Conflict("batched call has no result".into()))?;
+			let contract = tool(call)?.contract();
+			if contract
+				.behavior
+				.model_media_result(&call.arguments, &output)
+				|| !matches!(
+					FrameworkResult::decode(&contract, &output)?,
+					FrameworkResult::Ordinary
+				) {
+				return Err(Error::Conflict(
+					"batched call produced a continuation or model media".into(),
+				));
+			}
+			let event = ContextEvent::tool(call.clone(), output.clone());
+			record_message_read_for(&mut context.message_read_coverage, &contract, &event);
+			let growth = context::tool_event_growth(&context, &event);
+			context.push(event);
+			let progress = run.state.tool_mut()?;
+			progress.request_tokens = progress.request_tokens.saturating_add(growth);
+			home.report(
+				&format!("{}:tool", keys[offset]),
+				"remote.tool.completed",
+				json!({"run_id":run.id,"call":call,"result":output}),
+			)
+			.await?;
+		}
+		run.context = context;
+		let progress = run.state.tool_mut()?;
+		progress.workspace_read_plan = None;
+		progress.skill_read_plan = None;
+		progress.workspace_observation_plan = None;
+		progress.cursor = end;
+		progress.batch_end = None;
+		store.save_run(run, token, "run.tool_recorded").await?;
+		Ok(true)
 	}
 	/// Record a non-accepted outcome of an Inference Attempt.
 	async fn close_inference(
@@ -118,6 +320,373 @@ impl<'a> Executor<'a> {
 			text,
 		)
 		.await
+	}
+	/// Record a provider-proven Context Overflow and re-enter Thinking with a
+	/// smaller effective window, or pause once the bounded allowance is spent
+	/// or the retried request did not shrink. Only recovery state is saved.
+	async fn context_overflowed(
+		&self,
+		run: &mut Run,
+		token: Uuid,
+		request_tokens: usize,
+		policy: &context::policy::Effective,
+	) -> Result<()> {
+		let mut recovery = run.context.recovery;
+		if !recovery.overflowed(
+			request_tokens as u64,
+			policy.overflow_retries,
+			policy.overflow_shrink_permille,
+		) {
+			metrics::counter!("aidash_context_overflow_total", "outcome" => "exhausted")
+				.increment(1);
+			return Err(Error::Context(
+				context::recovery::Failure::OverflowRetriesExhausted,
+			));
+		}
+		metrics::counter!("aidash_context_overflow_total", "outcome" => "retried").increment(1);
+		run.context.recovery = recovery;
+		self.environment
+			.store()
+			.save_run(run, token, "run.context_overflow")
+			.await
+	}
+	/// Run one Summary Stage merge. Adoption saves the Run atomically and keeps
+	/// it Thinking so the next step fits from durable state; every other
+	/// outcome settles the attempt and leaves the saved projection unchanged.
+	#[allow(clippy::too_many_arguments)]
+	async fn summarize(
+		&self,
+		run: &mut Run,
+		token: Uuid,
+		guard: Option<&dyn ExecutionAuthority>,
+		visibility: &mut dyn ExecutionVisibility,
+		home: &dyn ExecutionHome,
+		fitting: &aidash_application::context::Fitting<'_>,
+		mut plan: aidash_application::context::SummaryPlan,
+		tools: &Tools,
+	) -> Result<()> {
+		use aidash_application::context::{
+			record_stage, record_tokens, summary_candidate, summary_request,
+		};
+		use context::recovery::{Attempt, Failure as ContextFailure, Outcome, Settlement, Stage};
+		let store = self.environment.store();
+		let unavailable = || {
+			record_stage("summary", "unavailable");
+			Error::Context(ContextFailure::SummaryUnavailable)
+		};
+		let (Some(summary), Some(max_tokens)) = (
+			fitting.policy.summary.as_ref(),
+			fitting.policy.summary_tokens(fitting.budget.window),
+		) else {
+			return Err(unavailable());
+		};
+		// Workspace records other than messages are filtered one by one, and a
+		// summary rechecks only message sources: they stay verbatim instead.
+		plan.absorbed
+			.retain(|entry| summarizable(&entry.event, tools));
+		let (Some(first), Some(last)) = (plan.absorbed.first(), plan.absorbed.last()) else {
+			return Err(Error::Context(ContextFailure::ContextUnreducible));
+		};
+		// Only the summarizer pinned in the Run's admission closure may run.
+		let entry = match self
+			.environment
+			.catalog()
+			.get_for_run(run, &summary.model.id, &summary.model.version)
+			.await
+		{
+			Ok(entry) if entry.kind == "model" => entry,
+			Ok(_) | Err(Error::NotFound(_) | Error::Invalid(_)) => return Err(unavailable()),
+			Err(error) => return Err(error),
+		};
+		let summarizer = context::summary::SummaryProvider {
+			model: summary.model.clone(),
+			definition_digest: aidash_domain::registry::rules::digest(&serde_json::to_value(
+				&entry,
+			)?),
+		};
+		let model_cfg: ModelConfig = serde_json::from_value(entry.config)?;
+		let summary_window = model_cfg.context_window;
+		// The policy bound never exceeds what the pinned summarizer may emit.
+		// The reservation charges that bound before the window cap, which a
+		// remote Home can derive from the pinned definitions and verify.
+		let reserved_output = summary.max_tokens.min(model_cfg.output_token_limit());
+		let max_tokens = max_tokens.min(reserved_output);
+		let provider = self
+			.environment
+			.provider(model_cfg)
+			.map_err(|_| unavailable())?;
+		let request = summary_request(&plan, fitting.pinned, max_tokens);
+		if request.ensure_fits(summary_window).is_err() {
+			// The summarizer cannot read the absorbed history; never split it silently.
+			record_stage("summary", "invalid");
+			return Err(Error::Context(ContextFailure::SummaryInvalid));
+		}
+		// The candidate carries the previous summary's sources as well.
+		let mut dependencies = summary_dependencies(&plan.absorbed, tools);
+		if let Some(previous) = plan.pruned.execution_summary.as_deref() {
+			dependencies
+				.message_ids
+				.extend(previous.dependencies.message_ids.iter().copied());
+			dependencies
+				.tool_call_ids
+				.extend(previous.dependencies.tool_call_ids.iter().cloned());
+		}
+		let attempt = Attempt {
+			id: Uuid::new_v4(),
+			run_id: run.id,
+			stage: Stage::Summary,
+			policy_version: fitting.policy.version.into(),
+			provider: format!(
+				"{}@{}#{}",
+				summary.model.id, summary.model.version, summarizer.definition_digest
+			),
+			source_from_seq: first.seq,
+			source_through_seq: last.seq,
+			base_revision: run.revision,
+			observed_input_seq: run.observed_input_seq,
+			before_tokens: plan.before_tokens as u64,
+		};
+		if let Err(error) = store
+			.begin_compaction(run, token, &attempt, summary.call_budget)
+			.await
+		{
+			if matches!(error, Error::Context(_)) {
+				record_stage("summary", "unavailable");
+			}
+			return Err(error);
+		}
+		let settlement =
+			|outcome: Outcome, reason: Option<&str>, after: Option<usize>| Settlement {
+				outcome,
+				reason: reason.map(str::to_owned),
+				candidate_digest: None,
+				after_tokens: after.map(|tokens| tokens as u64),
+			};
+		let attempt_id = attempt.id;
+		let unauthorized = async |run: &Run, error: Error| -> Result<()> {
+			store
+				.settle_compaction(
+					run,
+					token,
+					attempt_id,
+					&settlement(Outcome::Unauthorized, None, None),
+				)
+				.await?;
+			record_stage("summary", "unauthorized");
+			Err(error)
+		};
+		// A source that is already revoked never charges the summarizer's
+		// allowance.
+		match summary_dependencies_current(self.environment, guard, home, run, &dependencies).await
+		{
+			Ok(true) => {}
+			Ok(false) => return unauthorized(run, Error::Forbidden).await,
+			Err(error) => return unauthorized(run, error).await,
+		}
+		let reservation = match guard {
+			Some(guard) => match guard
+				.reserve_summary(
+					token,
+					&summarizer,
+					summary_window,
+					reserved_output,
+					&request,
+				)
+				.await
+			{
+				Ok(reservation) => reservation,
+				Err(error) => {
+					let outcome = if matches!(error, Error::Forbidden | Error::Unauthorized) {
+						Outcome::Unauthorized
+					} else {
+						Outcome::Unavailable
+					};
+					store
+						.settle_compaction(run, token, attempt.id, &settlement(outcome, None, None))
+						.await?;
+					record_stage("summary", outcome.label());
+					return Err(error);
+				}
+			},
+			None => None,
+		};
+		// A request to the summarizer cannot be recalled: every source the
+		// candidate depends on must still be readable once the reservation,
+		// which may itself wait on remote admission, holds. The request never
+		// leaves this node otherwise, so its reservation is released.
+		let current =
+			summary_dependencies_current(self.environment, guard, home, run, &dependencies).await;
+		if !matches!(current, Ok(true)) {
+			let blocked = unauthorized(run, current.err().unwrap_or(Error::Forbidden)).await;
+			if let Some(reservation) = reservation {
+				reservation.abort().await?;
+			}
+			return blocked;
+		}
+		// Like inference, release visibility and authorization locks during I/O.
+		if let Some(guard) = guard {
+			guard.suspend().await?;
+		}
+		visibility.suspend().await?;
+		// Only cancellation interrupts a summary: no input sequence is newer
+		// than `i64::MAX`, and new input does not change the summarized range.
+		let result = tokio::select! {
+			biased;
+			interrupted = self.environment.wait_for_inference_interruption(run.id, i64::MAX) => match interrupted {
+				Ok(_) => Err(Error::Conflict("run cancelled during context summary".into())),
+				Err(error) => Err(error),
+			},
+			result = provider.infer(request, &aidash_application::ports::NoProgress) => result,
+		};
+		let resumed = visibility.resume().await;
+		if let Some(reservation) = reservation
+			&& let Some(response) = settled_usage(&result)
+		{
+			reservation.settle(response).await?;
+		}
+		let result = result.map_err(Error::settled);
+		resumed?;
+		if let Some(guard) = guard {
+			guard.resume().await?;
+		}
+		let response = match result {
+			Ok(response) => response,
+			// An overflowing, truncated or refused summary is never adopted, and
+			// it does not recurse into another compaction.
+			Err(error @ (Error::ContextOverflow | Error::Context(_))) => {
+				let reason = match &error {
+					Error::Context(failure) => failure.label(),
+					_ => "context_overflow",
+				};
+				store
+					.settle_compaction(
+						run,
+						token,
+						attempt.id,
+						&settlement(Outcome::Invalid, Some(reason), None),
+					)
+					.await?;
+				record_stage("summary", "invalid");
+				return Err(Error::Context(ContextFailure::SummaryInvalid));
+			}
+			Err(error) => {
+				store
+					.settle_compaction(
+						run,
+						token,
+						attempt.id,
+						&settlement(Outcome::Unavailable, None, None),
+					)
+					.await?;
+				record_stage("summary", "unavailable");
+				return Err(error);
+			}
+		};
+		// Authority was released during I/O: recheck the Run's ordinary inference
+		// authority and the exact summarizer when a guard holds them, and every
+		// summarized source for every Run, before any candidate is adopted.
+		let current = async {
+			if let Some(guard) = guard {
+				guard.inference().await?;
+				guard.recheck_summary(&summarizer).await?;
+			}
+			summary_dependencies_current(self.environment, guard, home, run, &dependencies).await
+		}
+		.await;
+		match current {
+			Ok(true) => {}
+			Ok(false) => return unauthorized(run, Error::Forbidden).await,
+			Err(error) => return unauthorized(run, error).await,
+		}
+		match summary_candidate(
+			&plan,
+			&response.text,
+			dependencies,
+			summarizer,
+			max_tokens,
+			fitting,
+		) {
+			Ok((candidate, after)) => {
+				let mut adopted = settlement(Outcome::Adopted, None, Some(after));
+				adopted.candidate_digest = candidate
+					.execution_summary
+					.as_ref()
+					.map(|summary| summary.digest.clone());
+				let previous = std::mem::replace(&mut run.context, candidate);
+				if let Err(error) = store
+					.adopt_compaction(run, token, attempt.id, &adopted)
+					.await
+				{
+					run.context = previous;
+					return Err(error);
+				}
+				record_stage("summary", "applied");
+				record_tokens("summary", plan.before_tokens, after);
+				Ok(())
+			}
+			Err(unadopted) => {
+				store
+					.settle_compaction(
+						run,
+						token,
+						attempt.id,
+						&settlement(
+							unadopted.outcome,
+							unadopted
+								.rejection
+								.as_ref()
+								.map(|rejection| rejection.label()),
+							unadopted.after_tokens,
+						),
+					)
+					.await?;
+				record_stage("summary", unadopted.outcome.label());
+				Err(Error::Context(
+					if unadopted.outcome == Outcome::Insufficient {
+						ContextFailure::ContextUnreducible
+					} else {
+						ContextFailure::SummaryInvalid
+					},
+				))
+			}
+		}
+	}
+	/// A revoked source must not survive inside summary text. The restored
+	/// originals are saved, but the step pauses for authority before Jev, the
+	/// summarizer or the model can receive them. Later steps pause the same way
+	/// until every source of the revoked summary is readable again.
+	async fn pause_if_summary_revoked(
+		&self,
+		run: &mut Run,
+		token: Uuid,
+		guard: Option<&dyn ExecutionAuthority>,
+		home: &dyn ExecutionHome,
+		context: &mut Context,
+	) -> Result<()> {
+		if let Some(revoked) = &context.revoked_summary_dependencies {
+			if !summary_dependencies_current(self.environment, guard, home, run, revoked).await? {
+				return Err(Error::Forbidden);
+			}
+			context.revoked_summary_dependencies = None;
+		}
+		let Some(summary) = context.execution_summary.as_deref() else {
+			return Ok(());
+		};
+		if summary_dependencies_current(self.environment, guard, home, run, &summary.dependencies)
+			.await?
+		{
+			return Ok(());
+		}
+		let (from, through) = (summary.source.from_seq, summary.source.through_seq);
+		let store = self.environment.store();
+		let journal = store.context_journal(run.id, from, through).await?;
+		aidash_application::context::restore_summarized(context, journal)?;
+		aidash_application::context::record_stage("summary", "revoked");
+		run.context = context.clone();
+		store
+			.save_run(run, token, "context.summary_revoked")
+			.await?;
+		Err(Error::Forbidden)
 	}
 	/// Reuse an Ordered Run's Skill context while its Skill record revision is
 	/// unchanged and its authority still holds.
@@ -368,7 +937,9 @@ impl<'a> Executor<'a> {
 				// silently or send breakpoints to another route (ADR 0019).
 				model_cfg.require_prompt_cache(agent.prompt_cache, agent.projection_version)?;
 				let explicit_cache = agent.prompt_cache == PromptCache::Explicit;
-				let window = model_cfg.context_window;
+				// A proven provider overflow shrinks the effective window for the Run.
+				let window = run.context.recovery.effective_window(model_cfg.context_window);
+				let policy = context::policy::Effective::of(agent.context_policy.as_ref());
 				let output_limit = model_cfg.output_token_limit();
 				let model = self.environment.provider(model_cfg.clone())?;
 				let tools = self.environment.binding_resolver().tools(run).await?;
@@ -610,7 +1181,8 @@ impl<'a> Executor<'a> {
 					&specifications,
 					&fixed_context,
 					&projection,
-				)?;
+				)
+				.map_err(|_| unreducible(guard))?;
 				let mut budget = context::RequestBudget {
 					window: context_window,
 					instructions: &instructions,
@@ -683,13 +1255,13 @@ impl<'a> Executor<'a> {
 				if !turn_instructions.is_empty() {
 					pinned["turn_instructions"] = json!(turn_instructions);
 				}
-				if let Err(error) = snapshot_fit
+				if snapshot_fit.is_err()
 					&& budget
 						.request(&Context::default(), &pinned)
 						.estimated_total_tokens()
 						> budget.window
 				{
-					return Err(error.into());
+					return Err(unreducible(guard));
 				}
 				// Legacy gives semantic memory half the remaining headroom. Ordered
 				// keeps a Run-fixed budget (part of the Retrieval Key) so steps reuse
@@ -734,13 +1306,25 @@ impl<'a> Executor<'a> {
                     store.observe_sources(run, token).await?;
                 }
                 }
+                self.pause_if_summary_revoked(run, token, guard, home.as_ref(), &mut context).await?;
+                // History imported from a pre-journal Run may never have been
+                // saved; journal it whole before pruning or a summary drops any.
+                if run.context.journal.imported_through > run.context.journal.inferred_through {
+                    store.journal_context(run, token).await?;
+                }
                 let compactor = self.environment.compactor()?;
-                compact_execution(&mut context, compactor.as_ref(), &budget, &pinned)
-                    .await.map_err(|error| {
-                        if guard.is_some_and(|guard| guard.is_remote()) && is_invalid(&error) {
-                            Error::RemoteSemantic(Failure::ContextBudget)
-                        } else { error }
-                    })?;
+                let fitting = aidash_application::context::Fitting { budget: &budget, pinned: &pinned, policy: &policy };
+                let compaction = compact_execution(&mut context, compactor.as_ref(), &fitting).await.map_err(|error| remote_budget(guard, error))?;
+                // Pruning may release authority for Jev I/O, and a local Run's
+                // sources may change during it too; a source revoked meanwhile
+                // must reach neither the summarizer nor the model.
+                self.pause_if_summary_revoked(run, token, guard, home.as_ref(), &mut context).await?;
+                match compaction {
+                    aidash_application::context::Compaction::Fits => {}
+                    aidash_application::context::Compaction::NeedsSummary(plan) => {
+                        return Box::pin(self.summarize(run, token, guard, visibility, home.as_ref(), &fitting, *plan, &tools)).await.map_err(|error| remote_budget(guard, error));
+                    }
+                }
 
 				if let Some(guard) = guard {
 					guard.inference().await?;
@@ -754,15 +1338,10 @@ impl<'a> Executor<'a> {
 					&& !run_message_catchup
 					&& !media.defer_human
 					&& !media.defer_selected;
-				request.ensure_fits(window).map_err(Error::from).map_err(
-					|error| {
-						if guard.is_some_and(|guard| guard.is_remote()) {
-							Error::RemoteSemantic(Failure::ContextBudget)
-						} else {
-							error
-						}
-					},
-				)?;
+				request.disable_provider_transforms = !policy.is_legacy();
+				request
+					.ensure_fits(window)
+					.map_err(|_| unreducible(guard))?;
 				let request_tokens = request.estimated_total_tokens();
 				let media_inferred_seq_before_response = context.media_inferred_seq;
 				let observed_input_seq_before_response = run.observed_input_seq;
@@ -851,15 +1430,20 @@ impl<'a> Executor<'a> {
 				}
 				let resumed = visibility.resume().await;
 				// Cancellation, supersession, stalls and unreadable responses leave
-				// usage unknown.
+				// usage unknown. A truncated or refused completion still reports its
+				// billed usage, and a typed Context Overflow is a provider rejection.
 				let outcome = match &inference {
 					Inference::Response(response) => UsageOutcome::Completed(response.reported.clone()),
-					Inference::Interrupted(_, Error::ProviderRejected { .. }) => {
-						UsageOutcome::Rejected {
-							class: "provider_rejected".into(),
+					Inference::Interrupted(_, error) => match error.terminal_usage() {
+						Some(response) => UsageOutcome::Completed(response.reported.clone()),
+						None if matches!(error, Error::ProviderRejected { .. } | Error::ContextOverflow) => {
+							UsageOutcome::Rejected {
+								class: "provider_rejected".into(),
+							}
 						}
-					}
-					Inference::Superseded | Inference::Interrupted(..) => UsageOutcome::Unknown,
+						None => UsageOutcome::Unknown,
+					},
+					Inference::Superseded => UsageOutcome::Unknown,
 				};
 				let recorded = store.complete_usage_record(run, attempt.0, &outcome).await;
 				let result = match inference {
@@ -904,9 +1488,25 @@ impl<'a> Executor<'a> {
 					}
 					Inference::Interrupted(reason, error) => {
 						self.interrupt_inference(run, token, attempt, reason).await;
+						// A truncated or refused completion is billed even though its
+						// output is never dispatched.
+						if let Some(reservation) = reservation
+							&& let Some(response) = error.terminal_usage()
+						{
+							reservation.settle(response).await?;
+						}
 						resumed?;
+						if matches!(error, Error::ContextOverflow) {
+							if let Some(guard) = guard {
+								guard.resume().await?;
+							}
+							recorded?;
+							return self
+								.context_overflowed(run, token, request_tokens, &policy)
+								.await;
+						}
 						// A failed record write never hides the inference error.
-						return Err(error);
+						return Err(error.settled());
 					}
 				};
 				// Provider usage is billable even when authorization changed
@@ -931,9 +1531,25 @@ impl<'a> Executor<'a> {
 						.await;
 					return Err(error);
 				}
+				// Authority was released during inference, and a local Run's
+				// sources may change meanwhile too: a summary source revoked
+				// meanwhile discards the response before any of it is accepted,
+				// published or dispatched.
+				if let Err(error) = self
+					.pause_if_summary_revoked(run, token, guard, home.as_ref(), &mut context)
+					.await
+				{
+					self.interrupt_inference(run, token, attempt, InterruptionReason::Revoked)
+						.await;
+					return Err(error);
+				}
 				// Count only tool content that survived compaction and was present
 				// in a successful provider request, not every completed read.
 				capture_declared_coverage(&mut context, &tools, true);
+				// Everything in this request reached an accepted inference, so the
+				// Summary Stage may later absorb it without hiding unread content.
+				context.journal.inferred_through = context.journal.head;
+				context.recovery.inference_accepted();
 				if let Some(seq) = media.through_seq {
 					context.media_inferred_seq = context.media_inferred_seq.max(seq);
 				}
@@ -992,6 +1608,7 @@ impl<'a> Executor<'a> {
 					skill_read_plan: None,
 					workspace_observation_plan: None,
 					workbench_approval_result: None,
+					batch_end: None,
 				}));
 				run.error = None;
 				store.save_run(run, token, "model.completed").await?;
@@ -1104,7 +1721,7 @@ impl<'a> Executor<'a> {
 					&& let Some(call) = result.tool_calls.get(cursor)
 					&& !tools.get(&call.name).is_some_and(|tool| is_required_message_read_for(&tool.contract(), call, &required_reads, &context))
 				{
-					context.history.push(ContextEvent::RunMessageReadRequired {
+					context.push(ContextEvent::RunMessageReadRequired {
 						message_ids: required_reads.clone(),
 					});
 
@@ -1121,7 +1738,7 @@ impl<'a> Executor<'a> {
 					return Ok(());
 				}
 				if cursor >= result.tool_calls.len() && !informed_response {
-					context.history.push(ContextEvent::RunMessageReadRequired {
+					context.push(ContextEvent::RunMessageReadRequired {
 						message_ids: required_reads.clone(),
 					});
 
@@ -1140,13 +1757,11 @@ impl<'a> Executor<'a> {
 				if cursor >= result.tool_calls.len() && run_message_catchup {
 					let summary = result.text.trim().to_owned();
 					if summary.is_empty() {
-						context
-							.history
-							.push(ContextEvent::RunMessageSummaryRequired {
-								through_seq: run.state.tool()?.run_message_summary_end_seq,
-								max_bytes: None,
-								reason: None,
-							});
+						context.push(ContextEvent::RunMessageSummaryRequired {
+							through_seq: run.state.tool()?.run_message_summary_end_seq,
+							max_bytes: None,
+							reason: None,
+						});
 
 						run.step += 1;
 						run.state = RunState::Thinking(stale_media_pending(
@@ -1162,13 +1777,11 @@ impl<'a> Executor<'a> {
 					}
 					let summary_limit = run.state.tool()?.run_message_summary_limit;
 					if summary.len() > summary_limit {
-						context
-							.history
-							.push(ContextEvent::RunMessageSummaryRequired {
-								through_seq: run.state.tool()?.run_message_summary_end_seq,
-								max_bytes: Some(summary_limit),
-								reason: Some("summary exceeded the complete-summary limit".into()),
-							});
+						context.push(ContextEvent::RunMessageSummaryRequired {
+							through_seq: run.state.tool()?.run_message_summary_end_seq,
+							max_bytes: Some(summary_limit),
+							reason: Some("summary exceeded the complete-summary limit".into()),
+						});
 
 						run.step += 1;
 						run.state = RunState::Thinking(stale_media_pending(
@@ -1188,8 +1801,8 @@ impl<'a> Executor<'a> {
 						.iter()
 						.copied()
 						.collect::<std::collections::BTreeSet<_>>();
-					context.history.retain(|event| {
-						declared_message_read_range(&tools, event)
+					context.history.retain(|entry| {
+						declared_message_read_range(&tools, &entry.event)
 							.is_none_or(|(id, _, _, _)| !summarized_ids.contains(&id))
 					});
 					for id in &required_reads {
@@ -1305,6 +1918,58 @@ impl<'a> Executor<'a> {
 						store.save_run(run, token, "run.thinking").await?;
 					}
 					return Ok(());
+				}
+				// Tool Batches run only in ordinary mode: no message catch-up, no
+				// pending media selection and a response informed by required reads.
+				let batch_end = match run.state.tool()?.batch_end {
+					Some(end) => Some(end),
+					None if !run_message_catchup
+						&& informed_response
+						&& pending_selected_media(run.state.tool()?).is_empty() =>
+					{
+						// A batch covers only calls the request's Exposure set
+						// advertised, as checked below for a sequential call.
+						let exposed = match deferred_exposure(run)? {
+							Some((snapshot, budgets)) => {
+								let catalog = exposure_catalog(self.environment, run, snapshot, &tools).await?;
+								Some(exposure::select(&budgets, &catalog, &run.context.exposure)?.tools)
+							}
+							None => None,
+						};
+						let pending = run.state.tool()?;
+						let ceiling = agent
+							.tool_parallelism
+							.min(self.environment.tool_slots().map_or(1, ToolSlots::ceiling));
+						let mut context = run.context.clone();
+						capture_declared_coverage(&mut context, &tools, false);
+						let end = batch::plan_tool_batch(
+							&context,
+							&result.tool_calls,
+							cursor,
+							&tools,
+							exposed.as_ref(),
+							ceiling,
+							batch::BatchBudget {
+								request_tokens: pending.request_tokens,
+								request_window: pending.request_window,
+							},
+						);
+						(end > cursor).then_some(end)
+					}
+					None => None,
+				};
+				if let Some(end) = batch_end {
+					let step = BatchStep {
+						home: home.as_ref(),
+						guard,
+						tools: &tools,
+						calls: &result.tool_calls,
+						cursor,
+						end,
+					};
+					if self.execute_batch(run, token, step).await? {
+						return Ok(());
+					}
 				}
 				let mut context = run.context.clone();
 				capture_declared_coverage(&mut context, &tools, false);
@@ -1562,7 +2227,7 @@ impl<'a> Executor<'a> {
 				let event = ContextEvent::tool(call.clone(), output.clone());
 				record_message_read_for(&mut context.message_read_coverage, &contract, &event);
 				let growth = context::tool_event_growth(&context, &event);
-				context.history.push(event);
+				context.push(event);
 				run.state.tool_mut()?.request_tokens =
 					run.state.tool()?.request_tokens.saturating_add(growth);
 				run.context = context.clone();
@@ -1658,7 +2323,7 @@ impl<'a> Executor<'a> {
 						_ => {}
 					}
 					if !matches!(waiting, WaitingState::Reconciliation { .. }) {
-						run.context.history.push(ContextEvent::Human {
+						run.context.push(ContextEvent::Human {
 							request: h.prompt,
 							request_kind: h.kind,
 							response,
@@ -1709,16 +2374,16 @@ fn declared_message_read_range(
 	message_read_range_for(&tools.get(&call.name)?.contract(), event)
 }
 fn capture_declared_coverage(context: &mut Context, tools: &Tools, inference: bool) {
-	for event in context.history.clone() {
-		if let ContextEvent::Tool { call, .. } = &event
+	let coverage = if inference {
+		&mut context.message_inference_coverage
+	} else {
+		&mut context.message_read_coverage
+	};
+	for entry in &context.history {
+		if let ContextEvent::Tool { call, .. } = &entry.event
 			&& let Some(tool) = tools.get(&call.name)
 		{
-			let coverage = if inference {
-				&mut context.message_inference_coverage
-			} else {
-				&mut context.message_read_coverage
-			};
-			record_message_read_for(coverage, &tool.contract(), &event);
+			record_message_read_for(coverage, &tool.contract(), &entry.event);
 		}
 	}
 }
@@ -1907,12 +2572,25 @@ enum PreparedResult {
 		result: Value,
 	},
 }
-fn is_invalid(error: &Error) -> bool {
-	matches!(
-		error,
-		Error::Invalid(_) | Error::Domain(aidash_domain::Error::Invalid(_))
+/// Mandatory context that cannot fit pauses with a typed reason. Remote
+/// executors keep reporting the established semantic context-budget pause.
+fn unreducible(guard: Option<&dyn ExecutionAuthority>) -> Error {
+	remote_budget(
+		guard,
+		Error::Context(context::recovery::Failure::ContextUnreducible),
 	)
 }
+fn remote_budget(guard: Option<&dyn ExecutionAuthority>, error: Error) -> Error {
+	match error {
+		Error::Context(context::recovery::Failure::ContextUnreducible)
+			if guard.is_some_and(|guard| guard.is_remote()) =>
+		{
+			Error::RemoteSemantic(Failure::ContextBudget)
+		}
+		error => error,
+	}
+}
+
 /// The pinned snapshot and budgets of a `deferred@1` Run, read from its
 /// Agent definition; `None` under `legacy@1` or without a Binding snapshot.
 fn deferred_exposure(run: &Run) -> Result<Option<(&BindingSnapshot, exposure::DeferredBudgets)>> {
@@ -2029,15 +2707,85 @@ impl OrderedSemantic {
 async fn compact_execution(
 	context: &mut Context,
 	classifier: &dyn aidash_application::ports::CompactionClassifier,
-	budget: &context::RequestBudget<'_>,
-	pinned: &Value,
-) -> Result<()> {
+	fitting: &aidash_application::context::Fitting<'_>,
+) -> Result<aidash_application::context::Compaction> {
 	// Compaction replaces history only; the Exposure set is carried unchanged.
 	let mut candidate = context.clone();
 	context::observation::normalize_history(&mut candidate.history);
-	aidash_application::context::compact(&mut candidate, classifier, budget, pinned).await?;
-	*context = candidate;
-	Ok(())
+	let compaction =
+		aidash_application::context::compact(&mut candidate, classifier, fitting).await?;
+	if matches!(compaction, aidash_application::context::Compaction::Fits) {
+		*context = candidate;
+	}
+	Ok(compaction)
+}
+/// Local Runs recheck summary sources under worker authority without
+/// recording reads. A remote executor asks its Home through the same
+/// filtered record path that admitted the original reads.
+async fn summary_dependencies_current(
+	environment: &dyn ExecutionEnvironment,
+	guard: Option<&dyn ExecutionAuthority>,
+	home: &dyn ExecutionHome,
+	run: &Run,
+	dependencies: &context::summary::SummaryDependencies,
+) -> Result<bool> {
+	if !guard.is_some_and(|guard| guard.is_remote()) {
+		return environment
+			.summary_dependencies_current(run, dependencies)
+			.await;
+	}
+	for id in &dependencies.message_ids {
+		match home.read_record("message", &id.to_string()).await {
+			Ok(_) => {}
+			Err(Error::NotFound(_) | Error::Forbidden | Error::Unauthorized) => return Ok(false),
+			Err(error) => return Err(error),
+		}
+	}
+	Ok(true)
+}
+/// Usage that settles an inference reservation: an accepted response, or a
+/// truncated or refused one whose output is never dispatched.
+fn settled_usage(result: &Result<provider::ModelResponse>) -> Option<&provider::ModelResponse> {
+	match result {
+		Ok(response) => Some(response),
+		Err(error) => error.terminal_usage(),
+	}
+}
+/// Whether the Summary Stage may absorb `event`. A message read is tracked
+/// and rechecked by its target. Other workspace records, and observation
+/// pages that preview tasks, artifacts, events and messages together, are
+/// visible record by record, which a summary cannot recheck.
+fn summarizable(event: &ContextEvent, tools: &Tools) -> bool {
+	let ContextEvent::Tool { call, .. } = event else {
+		return false;
+	};
+	let Some(contract) = tools.get(&call.name).map(|tool| tool.contract()) else {
+		return true;
+	};
+	match contract.behavior.fitting {
+		Some(ResultFitting::Observation) => false,
+		Some(ResultFitting::WorkspaceRecord) => message_read_target(&contract, call).is_some(),
+		_ => true,
+	}
+}
+/// Sources whose current authority the summarized text depends on.
+fn summary_dependencies(
+	entries: &[context::HistoryEntry],
+	tools: &Tools,
+) -> context::summary::SummaryDependencies {
+	let mut dependencies = context::summary::SummaryDependencies::default();
+	for entry in entries {
+		if let ContextEvent::Tool { call, .. } = &entry.event {
+			dependencies.tool_call_ids.insert(call.id.clone());
+			if let Some(id) = tools
+				.get(&call.name)
+				.and_then(|tool| message_read_target(&tool.contract(), call))
+			{
+				dependencies.message_ids.insert(id);
+			}
+		}
+	}
+	dependencies
 }
 
 mod progress;

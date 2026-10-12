@@ -4,7 +4,7 @@ use aidash_domain::{
 	Task,
 	federation::Delegation,
 	generation::{
-		policy::Policy,
+		policy::{Allowances, Policy},
 		requests::{Assignment, Request},
 	},
 	policy::{PolicyBundle, Resource},
@@ -44,19 +44,8 @@ pub trait GenerationCreationScope: Send {
 	async fn previous_depth(&mut self) -> Result<Option<i32>>;
 	async fn active(&mut self, policy_id: &str) -> Result<i64>;
 	async fn insert(&mut self, creation: &Creation<'_>) -> Result<Request>;
-	async fn allocate(
-		&mut self,
-		policy: &Policy,
-		compaction_calls: i64,
-		embedding_calls: i64,
-	) -> Result<()>;
-	async fn budget(
-		&mut self,
-		id: Uuid,
-		policy: &Policy,
-		compaction_calls: i64,
-		embedding_calls: i64,
-	) -> Result<()>;
+	async fn allocate(&mut self, policy: &Policy, allowances: &Allowances) -> Result<()>;
+	async fn budget(&mut self, id: Uuid, policy: &Policy, allowances: &Allowances) -> Result<()>;
 	async fn history(&mut self, id: Uuid, status: &str, reason: &str) -> Result<()>;
 	async fn event(&mut self, workspace: Uuid, kind: &str, data: Value) -> Result<()>;
 	async fn visible(&mut self, job: &Request) -> Result<bool>;

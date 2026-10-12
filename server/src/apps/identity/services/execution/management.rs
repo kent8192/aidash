@@ -18,6 +18,8 @@ pub struct RunManagement {
 	pub phase: RunPhase,
 	pub control: RunControl,
 	pub semantic_reason: Option<crate::semantic::remote::Failure>,
+	/// Typed context-recovery pause reason; cleared on resume.
+	pub context_reason: Option<aidash_domain::context::recovery::Failure>,
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub memory_cleanup:
 		Option<crate::apps::knowledge::repositories::receiver_caches::CleanupStatus>,
@@ -29,6 +31,7 @@ impl From<RunInspection> for RunManagement {
 			phase: run.phase,
 			control: run.control,
 			semantic_reason: run.recovery.as_ref().and_then(|r| r.semantic_reason),
+			context_reason: run.recovery.as_ref().and_then(|r| r.context_reason),
 			memory_cleanup: None,
 		}
 	}

@@ -145,6 +145,10 @@ name = "commands"
 path = "src/apps/execution/tests/commands.rs"
 
 [[test]]
+name = "context_journal"
+path = "src/apps/execution/tests/context_journal.rs"
+
+[[test]]
 name = "dashboard_oidc"
 path = "src/apps/identity/tests/dashboard_oidc.rs"
 
@@ -283,6 +287,10 @@ path = "src/apps/execution/tests/startup_suite.rs"
 [[test]]
 name = "streaming"
 path = "src/apps/execution/tests/streaming.rs"
+
+[[test]]
+name = "tool_batches"
+path = "src/apps/execution/tests/tool_batches.rs"
 
 [[test]]
 name = "transaction_protocol"
