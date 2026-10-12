@@ -86,6 +86,16 @@ start "open\\n"
 request 8088 POST /auth/activity >/dev/null
 before=$(last_active)
 [[ "$before" != "\"last_active\":0" ]]
+# Workers are separate processes: a burst of counted requests across them leaves
+# the persisted stamp equal to the reported one and never behind an earlier stamp.
+[[ "$(grep -c "^processor" /proc/cpuinfo)" -gt 1 ]] || printf "%s\n" "warning: one CPU, the burst runs in one worker" >&2
+curl -sf --parallel --parallel-max 32 -X POST $(printf "http://127.0.0.1:8088/auth/activity %.0s" $(seq 200)) >/dev/null
+after=$(last_active)
+same_stamp "$after"
+awk -v a="${after#*:}" -v b="${before#*:}" "BEGIN { exit !(a + 0 >= b + 0) }"
+stop
+start "open\\n"
+same_stamp "$(last_active)"
 stop
 printf "garbage" > /var/lib/aidash-activity/last_active
 start "open\\n"

@@ -115,10 +115,12 @@ refer here.
   reports durable completed-transfer receipts only as
   `completed_transfers_count` (an integer) and `completed_transfers_digest` (64
   lowercase hex characters). The query computes both in constant memory: every
-  receipt contributes the first 64 bits of the SHA-256 of its ID, the
-  contributions are summed (so neither a sort nor an ID list exists anywhere) and
-  the sum is hashed again. Receipts have no deletion path, so the output size does
-  not depend on how many exist. The observer never emits the receipt IDs.
+  receipt contributes PostgreSQL's native 64-bit `uuid_hash_extended` of its ID,
+  the contributions are summed (so neither a sort nor an ID list exists anywhere)
+  and the sum is hashed with SHA-256. Receipts have no deletion path, so the
+  output size does not depend on how many exist. The per-receipt work is one
+  native hash, so the summary scan costs about as much as the observer's other
+  predicate scans of `core_records`. The observer never emits the receipt IDs.
 - **Collector.** It stores the same pair in `snapshot.json` and compares it with
   the previous one: any change, whether a new receipt or a removed one,
   renews the idle interval, and retries or object reclamation of an existing
@@ -131,7 +133,9 @@ refer here.
 - **Edge.** The admission container reports `inflight`, `closed` and `last_active`,
   the time of the last successful meaningful request. `last_active` is also
   written, atomically, to `/var/lib/aidash-activity/last_active` on a 1 MiB
-  `emptyDir` mounted only into that container, and reloaded at start. A restart of
+  `emptyDir` mounted only into that container, and reloaded at start. Nginx workers
+  queue their stamps and one worker at a time folds them into `last_active` and
+  the file, so neither moves backwards when workers race. A restart of
   the admission container between a request and the collector's next once-a-minute
   sample therefore still reports that request instead of `0`, so its full idle
   interval is honored. A missing, unreadable or malformed file means never active,
@@ -142,9 +146,10 @@ refer here.
   shorter idle interval.
 - **Runner.** `/v1/activity` (`runner/control.py`) answers from an in-memory
   aggregate of the operations whose writer is not proven stopped plus the latest
-  completion time. It is seeded by one scan of the journal at Runner start and
-  updated each time an operation record is saved, so a request opens no journal
-  file, however many acknowledged operations the volume retains, and holds the
-  Runner's global lock only for two reads. A corrupt record still stops the Runner
-  from starting (as the recovery scan always did) instead of reporting idle. The collector's 15-second timeout therefore cannot be
+  completion time. It is seeded by the Runner's existing startup recovery scan
+  (no additional pass over the journal) and updated each time an operation record
+  is saved, so a request opens no journal file, however many acknowledged
+  operations the volume retains, and holds the Runner's global lock only for two
+  reads. A corrupt record still stops the Runner from starting (as the recovery
+  scan always did) instead of reporting idle. The collector's 15-second timeout therefore cannot be
   exhausted by journal growth.

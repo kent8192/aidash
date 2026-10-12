@@ -566,7 +566,10 @@ class ChartsTest(unittest.TestCase):
         self.assertIn({'name': 'activity-state', 'mountPath': '/var/lib/aidash-activity'}, admission['volumeMounts'])
         self.assertNotIn('activity-state', [mount['name'] for mount in caddy['volumeMounts']])
         conf = select(named, 'ConfigMap', '-edge')['data']['admission.conf']
-        self.assertEqual(conf.count('/var/lib/aidash-activity/last_active'), 2)
+        # One stamp file, restored at start and replaced only by the serialized fold.
+        self.assertEqual(conf.count('/var/lib/aidash-activity/last_active'), 1)
+        self.assertEqual(conf.count('require("aidash_activity").persist()'), 2)
+        self.assertEqual(conf.count('os.rename('), 1)
         self.assertIn('io.open("/etc/aidash-admission/state", "r")', conf)
         self.assertIn('ngx.shared.aidash_activity:set("closed", not open)', conf)
         job = select(objects, 'CronJob', '-activity')['spec']

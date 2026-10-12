@@ -90,7 +90,9 @@ spec:
         - { name: admission-state, configMap: { name: {{ $name }}-admission, optional: true } }
         # Last meaningful request, kept across restarts of the admission container
         # (not of the Pod) so a restart before the collector's next sample cannot
-        # shorten the idle interval. One small file, so the limit is tiny.
+        # shorten the idle interval. One small file, so the limit is tiny. The
+        # kubelet creates every emptyDir with mode 0777, so the unprivileged
+        # (www-data) Nginx workers can write it without an fsGroup.
         - { name: activity-state, emptyDir: { sizeLimit: 1Mi } }
         - name: tls
           persistentVolumeClaim:
