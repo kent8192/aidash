@@ -62,6 +62,15 @@ impl Reservation {
 		)
 		.await
 	}
+	/// An admitted dispatch cannot abort; settle it with unknown usage.
+	pub(crate) async fn abort(self) -> Result<()> {
+		dispatch::finish(
+			&self.f,
+			&self.input,
+			super::Finalization::Settled { reported: None },
+		)
+		.await
+	}
 }
 
 /// The caller has suspended its Access before entering this function.

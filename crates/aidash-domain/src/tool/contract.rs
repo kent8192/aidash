@@ -1,5 +1,5 @@
 //! Runtime tool declarations. Names are assigned here; consumers evaluate attributes.
-use super::ToolConfig;
+use super::{Concurrency, ToolConfig};
 use crate::{
 	capabilities::CoreCapabilities,
 	registry::{AgentConfig, EntityRef},
@@ -136,6 +136,9 @@ pub struct ToolBehavior {
 	pub media_pending: bool,
 	pub yields_model_media: bool,
 	pub workbench_approval: bool,
+	/// Omitted while Sequential so contracts pinned before this field keep their digest.
+	#[serde(skip_serializing_if = "Concurrency::is_sequential")]
+	pub concurrency: Concurrency,
 	/// The output's `"exposure_update"` changes the Run's Exposure set.
 	#[serde(skip_serializing_if = "std::ops::Not::not")]
 	pub exposure_update: bool,
@@ -172,6 +175,22 @@ pub struct ToolContract {
 impl ToolContract {
 	pub fn replay_safe(&self) -> bool {
 		self.behavior.effect != ToolEffect::Unsafe
+	}
+	/// The digest that pins this provider contract into a Run's Binding snapshot.
+	pub fn digest(&self) -> crate::Result<String> {
+		Ok(crate::registry::rules::digest(&serde_json::to_value(self)?))
+	}
+	/// The contract a Run pinned under `digest`, if any. A Run admitted before
+	/// its provider declared Concurrency safety keeps that operation Sequential.
+	pub fn pinned(mut self, digest: &str) -> crate::Result<Option<Self>> {
+		if self.digest()? == digest {
+			return Ok(Some(self));
+		}
+		if self.behavior.concurrency.is_sequential() {
+			return Ok(None);
+		}
+		self.behavior.concurrency = Concurrency::Sequential;
+		Ok((self.digest()? == digest).then_some(self))
 	}
 	pub fn registry(reference: EntityRef, config: &ToolConfig) -> Self {
 		let (effect, approval, disclosure) = match config {
@@ -211,6 +230,7 @@ impl ToolContract {
 				catch_up: false,
 				media_pending: false,
 				yields_model_media: false,
+				concurrency: Concurrency::Sequential,
 				exposure_update: false,
 			},
 			disclosure,
@@ -238,6 +258,7 @@ pub fn builtin_contract(name: &str) -> Option<ToolContract> {
 			media_pending: false,
 			yields_model_media: false,
 			workbench_approval: false,
+			concurrency: Concurrency::Sequential,
 			exposure_update: false,
 		},
 		disclosure: DisclosureBoundary::Home,
@@ -362,6 +383,7 @@ pub fn builtin_contract(name: &str) -> Option<ToolContract> {
 			auth.core = Some(CorePermission::Skills);
 			behavior.effect = ToolEffect::ReadOnly;
 			behavior.media_pending = name == "skill_list";
+			behavior.concurrency = Concurrency::SharedRead;
 			contract.disclosure = DisclosureBoundary::Local;
 		}
 		"file_read" | "file_search" => {
@@ -369,6 +391,7 @@ pub fn builtin_contract(name: &str) -> Option<ToolContract> {
 			behavior.effect = ToolEffect::ReadOnly;
 			behavior.media_pending = true;
 			behavior.yields_model_media = name == "file_read";
+			behavior.concurrency = Concurrency::SharedRead;
 			contract.disclosure = DisclosureBoundary::Local;
 		}
 		"shell" | "shell_poll" | "shell_cancel" => {
@@ -611,7 +634,8 @@ mod tests {
 			"file_share",
 			"outbound_get",
 		] {
-			let encoded = serde_json::to_string(&builtin_contract(name).unwrap()).unwrap();
+			let contract = builtin_contract(name).unwrap();
+			let encoded = serde_json::to_string(&contract).unwrap();
 			assert!(!encoded.contains("exposure_update"), "{name}");
 			let behavior = &encoded[encoded.find(r#""behavior":{"#).unwrap()..];
 			let behavior = &behavior[..behavior.find('}').unwrap()];
@@ -620,9 +644,17 @@ mod tests {
 				.map(|key| behavior.find(&format!(r#""{key}":"#)).unwrap())
 				.collect::<Vec<_>>();
 			assert!(keys.windows(2).all(|pair| pair[0] < pair[1]), "{name}");
+			// Shared-read builtins also encode their concurrency; `pinned` keeps
+			// Runs admitted before that declaration on their Sequential digest.
+			let concurrent = usize::from(!contract.behavior.concurrency.is_sequential());
+			assert_eq!(
+				behavior.contains(r#""concurrency":"shared_read""#),
+				concurrent == 1,
+				"{name}"
+			);
 			assert_eq!(
 				behavior.matches("\":").count(),
-				legacy_keys.len() + 1,
+				legacy_keys.len() + 1 + concurrent,
 				"{name}"
 			);
 		}
