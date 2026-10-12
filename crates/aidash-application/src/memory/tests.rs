@@ -1127,7 +1127,7 @@ struct DiversityUnit {
 	text: String,
 	label: String,
 	score: f64,
-	vector: [f32; 2],
+	vector: Vec<f32>,
 }
 
 /// The frozen en/ja near-duplicate fixture through the real recall path, once without
@@ -1181,7 +1181,16 @@ async fn near_duplicate_fixture_reports_useful_recall_and_delivered_tokens_with_
 			"the budget must fit exactly two Units"
 		);
 		let scores: Vec<_> = case.units.iter().map(|row| (row.id, row.score)).collect();
-		let vectors: Vec<_> = case.units.iter().map(|row| (row.id, row.vector)).collect();
+		let vectors: Vec<_> =
+			case.units
+				.iter()
+				.map(|row| {
+					let vector: [f32; 2] = row.vector.clone().try_into().unwrap_or_else(|_| {
+						panic!("{}: fixture vectors are two-dimensional", case.id)
+					});
+					(row.id, vector)
+				})
+				.collect();
 		let mut measured = vec![];
 		for lambda in [None, Some(case.lambda_millionths)] {
 			let (order, _) =

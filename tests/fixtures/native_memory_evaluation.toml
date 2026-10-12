@@ -123,28 +123,28 @@ id = 1
 text = "Aiko works at the Tokyo office."
 label = "employer"
 score = 1.0
-vector = [1.0, 0.02, 0.0]
+vector = [1.0, 0.02]
 
 [[diversity_cases.units]]
 id = 2
 text = "Aiko is employed at the Tokyo office."
 label = "employer"
 score = 0.95
-vector = [0.99, 0.03, 0.0]
+vector = [0.99, 0.03]
 
 [[diversity_cases.units]]
 id = 3
 text = "The Tokyo office is where Aiko works."
 label = "employer"
 score = 0.9
-vector = [0.98, 0.04, 0.0]
+vector = [0.98, 0.04]
 
 [[diversity_cases.units]]
 id = 4
 text = "Aiko's manager is Ren."
 label = "manager"
 score = 0.8
-vector = [0.05, 1.0, 0.0]
+vector = [0.05, 1.0]
 
 [[diversity_cases]]
 id = "japanese-near-duplicate-employer"
@@ -160,25 +160,25 @@ id = 1
 text = "愛子は東京オフィスで働いている。"
 label = "employer"
 score = 1.0
-vector = [1.0, 0.02, 0.0]
+vector = [1.0, 0.02]
 
 [[diversity_cases.units]]
 id = 2
 text = "愛子は東京オフィスに勤務している。"
 label = "employer"
 score = 0.95
-vector = [0.99, 0.03, 0.0]
+vector = [0.99, 0.03]
 
 [[diversity_cases.units]]
 id = 3
 text = "東京オフィスが愛子の職場である。"
 label = "employer"
 score = 0.9
-vector = [0.98, 0.04, 0.0]
+vector = [0.98, 0.04]
 
 [[diversity_cases.units]]
 id = 4
 text = "愛子の上司は蓮である。"
 label = "manager"
 score = 0.8
-vector = [0.05, 1.0, 0.0]
+vector = [0.05, 1.0]
