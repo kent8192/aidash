@@ -85,11 +85,14 @@ async fn native_frontend_serves_assets_shell_routes_head_and_conditional_request
 		Some(SCRIPT.len().to_string().as_str())
 	);
 	assert_eq!(head.header("etag"), script.header("etag"));
-	client
-		.set_header("If-None-Match", script.header("etag").unwrap())
-		.await
-		.unwrap();
-	let cached = client.get("/assets/app.js").await.unwrap();
+	let cached = async {
+		let client = &(client);
+		let mut request = client.request(http::Method::GET, "/assets/app.js");
+		request = request.header("If-None-Match", script.header("etag").unwrap());
+		request.send().await
+	}
+	.await
+	.unwrap();
 	assert_eq!(cached.status_code(), 304);
 	assert!(cached.body().is_empty());
 }

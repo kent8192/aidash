@@ -1,8 +1,9 @@
 //! OpenRouter inference transport implementing the application port.
 use crate::{Error, Result};
-use aidash_application::ports::ModelProvider;
+use aidash_application::ports::{InferenceProgressSink, ModelProvider};
 use aidash_application::provider_access::{Context, Inference, Operation, ProviderAccess, Source};
 use aidash_domain::{
+	context::recovery::Failure,
 	model::ModelConfig,
 	provider::{
 		ContentPart, ModelRequest, ModelResponse, ToolCall,
@@ -209,6 +210,7 @@ pub fn salted_provider(
 	match config.provider.as_str() {
 		"openrouter" => {
 			config.request_timeout()?;
+			config.stream_stall_timeout()?;
 			Ok(Arc::new(OpenRouterProvider {
 				client,
 				config,
@@ -223,8 +225,14 @@ pub fn salted_provider(
 
 #[async_trait]
 impl ModelProvider for OpenRouterProvider {
-	async fn infer(&self, request: ModelRequest) -> Result<ModelResponse> {
+	async fn infer(
+		&self,
+		request: ModelRequest,
+		progress: &dyn InferenceProgressSink,
+	) -> Result<ModelResponse> {
 		let deadline = self.config.request_timeout()?;
+		let streaming = self.config.streaming();
+		let stall = self.config.stream_stall_timeout()?;
 		tokio::time::timeout(deadline, async {
 			request.validate()?;
 			// Unsupported routes never receive `cache_control` (ADR 0019).
@@ -276,28 +284,10 @@ impl ModelProvider for OpenRouterProvider {
 				}
 			}
 			let media_routes = self.verified_media_routes(&request).await?;
-			let mut body = request.input_body();
-			if let Some(salt) = salt {
-				// With a cache breakpoint, `system` is one marked text block; the
-				// salt starts its text, so cached prefixes stay per Tenant.
-				let system = match &mut body["messages"][0]["content"] {
-					Value::Array(blocks) => &mut blocks[0]["text"],
-					text => text,
-				};
-				let salted = format!("{salt}{}", system.as_str().unwrap_or_default());
-				*system = Value::String(salted);
-			}
-			body["model"] = json!(self.config.model_id);
-			body["max_tokens"] = json!(request.max_output_tokens);
-			// Enforce ZDR on every call, including existing registered models. Never
-			// retry against non-ZDR endpoints if no eligible provider is available.
-			body["provider"] = if media_routes.is_empty() {
-				json!({"zdr": true, "require_parameters": true})
-			} else {
-				json!({"zdr": true, "require_parameters": true, "only": media_routes, "allow_fallbacks": true})
-			};
-			if let Some(effort) = self.config.reasoning_effort {
-				body["reasoning"] = json!({"effort": effort});
+			let mut body = request_body(&self.config, &request, media_routes, salt.as_deref());
+			if streaming {
+				body["stream"] = json!(true);
+				body["stream_options"] = json!({"include_usage": true});
 			}
 			let access = self
 				.access
@@ -324,34 +314,169 @@ impl ModelProvider for OpenRouterProvider {
 				call = call.bearer_auth(access.bearer.expose_secret());
 			}
 			let started = std::time::Instant::now();
-			let response = call.send().await.map_err(crate::http_error)?;
+			let response = if streaming {
+				// Response headers are the first sign of life of a streamed call.
+				tokio::time::timeout(stall, call.send())
+					.await
+					.map_err(|_| Error::InferenceStalled)?
+			} else {
+				call.send().await
+			}
+			.map_err(crate::http_error)?;
 			metrics::histogram!("aidash_model_response_headers_seconds")
 				.record(started.elapsed().as_secs_f64());
 			if !response.status().is_success() {
-				return Err(crate::response::provider_rejection(
-					response,
+				let status = response.status().as_u16();
+				let body = crate::response::json::<Value>(response, 16_384).await.ok();
+				return Err(rejection(
+					status,
+					body.as_ref(),
 					self.config.provider_credential.is_some(),
-				)
-				.await);
+				));
 			}
-			let result = parse_openai(&crate::response::bytes(response, 1_048_576).await?)?;
-			// Unknown usage is absent, never a zero sample.
-			for (direction, tokens) in [
-				("input", result.reported.input_tokens),
-				("output", result.reported.output_tokens),
-				("input_cached_read", result.reported.cache_read_tokens),
-				("input_cached_write", result.reported.cache_write_tokens),
-			] {
-				if let Some(tokens) = tokens {
-					metrics::counter!("aidash_model_tokens_total", "direction" => direction)
-						.increment(tokens);
+			let result = if streaming {
+				read_stream(response, progress, stall).await
+			} else {
+				parse_openai(&crate::response::bytes(response, MAX_RESPONSE_BYTES).await?)
+			};
+			// Unknown usage is absent, never a zero sample; a truncated or
+			// refused completion is still billed.
+			if let Some(usage) = billed_usage(&result) {
+				for (direction, tokens) in [
+					("input", usage.reported.input_tokens),
+					("output", usage.reported.output_tokens),
+					("input_cached_read", usage.reported.cache_read_tokens),
+					("input_cached_write", usage.reported.cache_write_tokens),
+				] {
+					if let Some(tokens) = tokens {
+						metrics::counter!("aidash_model_tokens_total", "direction" => direction)
+							.increment(tokens);
+					}
 				}
 			}
-			Ok(result)
+			result
 		})
 		.await
 		.map_err(|_| Error::External("model inference timed out".into()))?
 	}
+}
+
+/// Usage the provider billed: an accepted completion, or a truncated or
+/// refused one whose output is discarded but whose tokens were still spent.
+fn billed_usage(result: &Result<ModelResponse>) -> Option<&ModelResponse> {
+	match result {
+		Ok(response) => Some(response),
+		Err(error) => error.terminal_usage(),
+	}
+}
+
+/// The OpenRouter chat body. A request from an Agent with a Context Policy
+/// sends `transforms: []`, disabling OpenRouter's middle-out compression so
+/// only that policy reduces context; prune-only requests keep their body.
+/// A salted request's Tenant Cache Salt line starts `system`; it never enters
+/// request metadata or accounting.
+fn request_body(
+	config: &ModelConfig,
+	request: &ModelRequest,
+	media_routes: Vec<String>,
+	salt: Option<&str>,
+) -> Value {
+	let mut body = request.input_body();
+	if let Some(salt) = salt {
+		// With a cache breakpoint, `system` is one marked text block; the
+		// salt starts its text, so cached prefixes stay per Tenant.
+		let system = match &mut body["messages"][0]["content"] {
+			Value::Array(blocks) => &mut blocks[0]["text"],
+			text => text,
+		};
+		let salted = format!("{salt}{}", system.as_str().unwrap_or_default());
+		*system = Value::String(salted);
+	}
+	body["model"] = json!(config.model_id);
+	body["max_tokens"] = json!(request.max_output_tokens);
+	if request.disable_provider_transforms {
+		body["transforms"] = json!([]);
+	}
+	// Enforce ZDR on every call, including existing registered models. Never
+	// retry against non-ZDR endpoints if no eligible provider is available.
+	body["provider"] = if media_routes.is_empty() {
+		json!({"zdr": true, "require_parameters": true})
+	} else {
+		json!({"zdr": true, "require_parameters": true, "only": media_routes, "allow_fallbacks": true})
+	};
+	if let Some(effort) = config.reasoning_effort {
+		body["reasoning"] = json!({"effort": effort});
+	}
+	body
+}
+
+/// Classifies a non-2xx chat reply. The upstream body is never exposed.
+/// Only a body that reports a context-length limit proves an overflow; a bare
+/// `413` can also be a media payload limit, which compaction cannot fix.
+fn rejection(status: u16, body: Option<&Value>, byok: bool) -> Error {
+	if matches!(status, 400 | 413) && body.is_some_and(context_overflow) {
+		return Error::ContextOverflow;
+	}
+	crate::response::rejection(status, body, byok)
+}
+
+/// Provider-proven Context Overflow, as reported by OpenRouter ("This endpoint's
+/// maximum context length is N tokens...") or relayed upstream wording.
+fn context_overflow(body: &Value) -> bool {
+	const PATTERNS: [&str; 5] = [
+		"maximum context length",
+		"context_length_exceeded",
+		"context length exceeded",
+		"prompt is too long",
+		"exceeds the context window",
+	];
+	["/error/code", "/error/message", "/error/metadata/raw"]
+		.iter()
+		.filter_map(|pointer| body.pointer(pointer).and_then(Value::as_str))
+		.any(|text| {
+			let text = text.to_ascii_lowercase();
+			PATTERNS.iter().any(|pattern| text.contains(pattern))
+		})
+}
+
+/// Largest accepted completion, whether received whole or assembled from a stream.
+const MAX_RESPONSE_BYTES: usize = 1_048_576;
+
+/// Read a streamed completion until `[DONE]`. Only data events reset the stall
+/// timer; provider keepalive comments do not. Endpoints that ignore `stream`
+/// and answer with a whole JSON completion are parsed as a non-streamed
+/// response, without progress.
+async fn read_stream(
+	mut response: reqwest::Response,
+	progress: &dyn InferenceProgressSink,
+	stall: std::time::Duration,
+) -> Result<ModelResponse> {
+	match stream::media_type(&response) {
+		stream::MediaType::EventStream => {}
+		stream::MediaType::Json => {
+			return parse_openai(&crate::response::bytes(response, MAX_RESPONSE_BYTES).await?);
+		}
+		stream::MediaType::Other => {
+			return Err(Error::External(
+				"provider answered a streamed request with an unsupported content type".into(),
+			));
+		}
+	}
+	let mut assembler = stream::StreamAssembler::new(progress, MAX_RESPONSE_BYTES);
+	let mut last_data = tokio::time::Instant::now();
+	while !assembler.done() {
+		let chunk = tokio::time::timeout_at(last_data + stall, response.chunk())
+			.await
+			.map_err(|_| Error::InferenceStalled)?
+			.map_err(crate::http_error)?;
+		let Some(chunk) = chunk else {
+			break;
+		};
+		if assembler.push(&chunk)? {
+			last_data = tokio::time::Instant::now();
+		}
+	}
+	assembler.finish()
 }
 
 pub(crate) fn safe_upstream_reason(detail: &str) -> String {
@@ -405,19 +530,7 @@ pub fn parse_openai(body: &[u8]) -> Result<ModelResponse> {
 	let choice = value
 		.pointer("/choices/0")
 		.ok_or_else(|| Error::External("provider returned no completion choice".into()))?;
-	if !matches!(
-		choice["finish_reason"].as_str(),
-		Some("stop" | "tool_calls")
-	) {
-		return Err(Error::External(
-			"provider output was truncated or refused".into(),
-		));
-	}
 	let message = &choice["message"];
-	if !message["refusal"].is_null() {
-		return Err(Error::External("provider refused the request".into()));
-	}
-	let content = message["content"].as_str().unwrap_or_default();
 	let count = |pointer: &str| value.pointer(pointer).and_then(Value::as_u64);
 	let reported = ReportedUsage {
 		input_tokens: count("/usage/prompt_tokens"),
@@ -427,17 +540,37 @@ pub fn parse_openai(body: &[u8]) -> Result<ModelResponse> {
 		reasoning_tokens: count("/usage/completion_tokens_details/reasoning_tokens"),
 		cost: provider_cost(body),
 	};
+	let usage = ModelResponse {
+		usage_complete: reported.input_tokens.is_some() && reported.output_tokens.is_some(),
+		input_tokens: reported.input_tokens.unwrap_or(0),
+		output_tokens: reported.output_tokens.unwrap_or(0),
+		reported,
+		..Default::default()
+	};
+	// Truncated or refused output is never acted on, so no tool call escapes;
+	// only its usage is kept, to settle the call's reservation.
+	let terminal = |failure| Err(Error::TerminalResponse(failure, Box::new(usage.clone())));
+	if !message["refusal"].is_null() {
+		return terminal(Failure::Refused);
+	}
+	match choice["finish_reason"].as_str() {
+		Some("stop" | "tool_calls") => {}
+		Some("length") => return terminal(Failure::OutputTruncated),
+		Some("content_filter") => return terminal(Failure::Refused),
+		_ => {
+			return Err(Error::External(
+				"provider returned an unexpected finish reason".into(),
+			));
+		}
+	}
+	let content = message["content"].as_str().unwrap_or_default();
 	let mut result = ModelResponse {
 		text: if content.trim().is_empty() {
 			String::new()
 		} else {
 			content.to_owned()
 		},
-		usage_complete: reported.input_tokens.is_some() && reported.output_tokens.is_some(),
-		input_tokens: reported.input_tokens.unwrap_or(0),
-		output_tokens: reported.output_tokens.unwrap_or(0),
-		reported,
-		..Default::default()
+		..usage
 	};
 	if let Some(calls) = message["tool_calls"].as_array() {
 		for call in calls {
@@ -484,6 +617,8 @@ fn validate_response(r: &ModelResponse) -> Result<()> {
 	}
 	Ok(())
 }
+
+mod stream;
 
 #[cfg(test)]
 mod tests;

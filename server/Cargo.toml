@@ -38,8 +38,6 @@ aidash-integrations.workspace = true
 reinhardt = { workspace = true, features = [
   "api-only",
   "uuid",
-  # Work around facade gating until reinhardt-web#6635 exposes middleware-cors.
-  "middleware",
   "middleware-cors",
   "database",
   "db-postgres",
@@ -124,9 +122,6 @@ jsonwebtoken = { version = "11.1", default-features = false, features = [
   "aws_lc_rs",
   "use_pem",
 ] }
-tower = { version = "0.5", features = ["util"] }
-axum-test = "18.7"
-axum = { version = "0.8", features = ["json", "query", "macros"] }
 reinhardt = { workspace = true, features = ["test", "testcontainers"] }
 rstest = "0.26.1"
 tempfile = "3"
@@ -148,6 +143,10 @@ path = "src/apps/registry/workbench/tests/agent_workbenches.rs"
 [[test]]
 name = "commands"
 path = "src/apps/execution/tests/commands.rs"
+
+[[test]]
+name = "context_journal"
+path = "src/apps/execution/tests/context_journal.rs"
 
 [[test]]
 name = "dashboard_oidc"
@@ -184,6 +183,10 @@ path = "src/apps/execution/generation/tests/generation_semantic.rs"
 [[test]]
 name = "inference_cancellation"
 path = "src/apps/execution/tests/inference_cancellation.rs"
+
+[[test]]
+name = "inference_progress"
+path = "src/apps/execution/tests/inference_progress.rs"
 
 [[test]]
 name = "interaction_authorization"
@@ -284,6 +287,10 @@ path = "src/apps/execution/tests/startup_suite.rs"
 [[test]]
 name = "streaming"
 path = "src/apps/execution/tests/streaming.rs"
+
+[[test]]
+name = "tool_batches"
+path = "src/apps/execution/tests/tool_batches.rs"
 
 [[test]]
 name = "transaction_protocol"

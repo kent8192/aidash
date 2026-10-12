@@ -14,7 +14,6 @@ variables {
   environment_kind             = "production"
   secret_prefix                = "aidash-production-cred-"
   runtime_service_account      = "runtime@aidash-fixture.iam.gserviceaccount.com"
-  deploy_service_account       = "deploy@aidash-fixture.iam.gserviceaccount.com"
   broker_service_account_email = "aidash-production-broker@aidash-fixture.iam.gserviceaccount.com"
   signing_key_id               = "projects/aidash-fixture/locations/us-central1/keyRings/aidash-production-capability/cryptoKeys/capability"
   image                        = "us-central1-docker.pkg.dev/aidash-fixture/aidash/broker@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
@@ -51,10 +50,6 @@ run "production" {
     condition     = google_cloud_run_v2_service.broker[0].template[0].max_instance_request_concurrency == 4 && google_cloud_run_v2_service.broker[0].template[0].containers[0].resources[0].limits["memory"] == "1Gi"
     error_message = "Media buffering requires bounded per-instance concurrency and explicit memory."
   }
-  assert {
-    condition     = google_service_account_iam_member.deploy[0].service_account_id == "projects/${var.project_id}/serviceAccounts/${var.broker_service_account_email}" && google_service_account_iam_member.deploy[0].role == "roles/iam.serviceAccountUser" && google_service_account_iam_member.deploy[0].member == "serviceAccount:${var.deploy_service_account}"
-    error_message = "Deploy automation may act as the supplied application-project SA."
-  }
 }
 run "staging" {
   command = apply
@@ -90,7 +85,7 @@ run "minimum_platform_timeout" {
 run "disabled" {
   command = apply
   assert {
-    condition     = length(google_cloud_run_v2_service.broker) == 0 && length(google_service_account_iam_member.deploy) == 0
+    condition     = length(google_cloud_run_v2_service.broker) == 0
     error_message = "Without Provider Credentials there must be no broker resources."
   }
 }
@@ -103,7 +98,7 @@ run "pr" {
     broker_service_account_email = "aidash-pr-137-broker@aidash-fixture.iam.gserviceaccount.com"
   }
   assert {
-    condition     = length(google_cloud_run_v2_service.broker) == 0 && length(google_service_account_iam_member.deploy) == 0
+    condition     = length(google_cloud_run_v2_service.broker) == 0
     error_message = "PR previews must have no broker or Key Material accessor."
   }
 }
@@ -163,4 +158,24 @@ run "cross_environment_signing_key_forbidden" {
     signing_key_id = "projects/aidash-fixture/locations/us-central1/keyRings/aidash-test-capability/cryptoKeys/capability"
   }
   expect_failures = [var.signing_key_id]
+}
+run "mutable_tag_forbidden" {
+  command = plan
+  variables { image = "us-central1-docker.pkg.dev/aidash-fixture/aidash/broker:latest" }
+  expect_failures = [var.image]
+}
+run "foreign_registry_forbidden" {
+  command = plan
+  variables { image = "docker.io/library/broker@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }
+  expect_failures = [var.image]
+}
+run "other_project_registry_forbidden" {
+  command = plan
+  variables { image = "us-central1-docker.pkg.dev/someone-else/aidash/broker@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }
+  expect_failures = [var.image]
+}
+run "other_repository_forbidden" {
+  command = plan
+  variables { image = "us-central1-docker.pkg.dev/aidash-fixture/aidash/app@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }
+  expect_failures = [var.image]
 }

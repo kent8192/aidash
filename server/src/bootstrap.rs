@@ -248,16 +248,45 @@ impl RuntimeTasks {
 				}
 			}));
 		}
-		let retention = federation.store.pool.clone();
+		let retention = federation.store.clone();
 		tasks.spawn_service(runtime_task(async move {
+			// Inference progress expires minutes after its outcome, so attempts
+			// orphaned on unscheduled Runs are closed first; hourly workbench
+			// purges keep their cadence on the same loop.
+			let mut ticks = 0_u32;
 			loop {
-				if let Err(error) = crate::workbench::purge_expired(&retention).await {
-					tracing::warn!(%error, "agent test retention cleanup failed");
+				if ticks.is_multiple_of(60) {
+					if let Err(error) = crate::workbench::purge_expired(&retention.pool).await {
+						tracing::warn!(%error, "agent test retention cleanup failed");
+					}
+					if let Err(error) =
+						crate::workbench::purge_incident_evidence(&retention.pool).await
+					{
+						tracing::warn!(%error, "incident evidence retention cleanup failed");
+					}
 				}
-				if let Err(error) = crate::workbench::purge_incident_evidence(&retention).await {
-					tracing::warn!(%error, "incident evidence retention cleanup failed");
+				for _ in 0..16 {
+					match retention.close_orphaned_inference().await {
+						Ok(closed) if closed > 0 => continue,
+						Ok(_) => break,
+						Err(error) => {
+							tracing::warn!(%error, "orphaned inference attempt closure failed");
+							break;
+						}
+					}
 				}
-				tokio::time::sleep(Duration::from_secs(3600)).await;
+				for _ in 0..16 {
+					match retention.prune_inference_progress().await {
+						Ok(pruned) if pruned > 0 => continue,
+						Ok(_) => break,
+						Err(error) => {
+							tracing::warn!(%error, "inference progress retention cleanup failed");
+							break;
+						}
+					}
+				}
+				ticks = ticks.wrapping_add(1);
+				tokio::time::sleep(Duration::from_secs(60)).await;
 			}
 		}));
 		if worker_count > 0 {
@@ -906,6 +935,13 @@ pub(crate) fn generation_compaction_repository(
 		store: store.clone(),
 	}
 }
+pub(crate) fn generation_summary_repository(
+	store: &Store,
+) -> crate::apps::execution::generation::repositories::summary::NativeSummaryRepository {
+	crate::apps::execution::generation::repositories::summary::NativeSummaryRepository {
+		store: store.clone(),
+	}
+}
 pub(crate) struct ApprovedCompactionProvider;
 impl aidash_application::ports::generation::compaction::GenerationCompactionProvider
 	for ApprovedCompactionProvider
@@ -1176,7 +1212,7 @@ pub(crate) fn operator_media_repository(
 pub(crate) fn selected_media<'a>(
 	store: &'a Store,
 	run: &'a aidash_domain::Run,
-	access: Arc<tokio::sync::Mutex<crate::authorization::access::Access>>,
+	access: Arc<tokio::sync::RwLock<crate::authorization::access::Access>>,
 ) -> crate::apps::workspaces::repositories::media::SelectedMedia<'a> {
 	crate::apps::workspaces::repositories::media::SelectedMedia::new(store, run, access)
 }
@@ -1184,7 +1220,7 @@ pub(crate) fn selected_media<'a>(
 /// Current builtin and plugin authority borrows the same worker Access object.
 pub(crate) fn agent_tool_repository<'a>(
 	remote: Option<&'a Federation>,
-	access: &'a Arc<tokio::sync::Mutex<crate::authorization::access::Access>>,
+	access: &'a Arc<tokio::sync::RwLock<crate::authorization::access::Access>>,
 	run: &'a crate::domain::Run,
 ) -> crate::apps::identity::repositories::tools::AgentTools<'a> {
 	crate::apps::identity::repositories::tools::AgentTools {
@@ -1228,7 +1264,7 @@ pub(crate) fn run_details_repository<'a>(
 pub(crate) fn run_semantic_repository<'a>(
 	store: &'a Store,
 	remote: Option<&'a Federation>,
-	access: &'a Arc<tokio::sync::Mutex<crate::authorization::access::Access>>,
+	access: &'a Arc<tokio::sync::RwLock<crate::authorization::access::Access>>,
 	run: &'a crate::domain::Run,
 	agent: &'a crate::registry::AgentConfig,
 ) -> crate::apps::identity::repositories::execution::semantic::ContextRepository<'a> {
@@ -1264,7 +1300,7 @@ pub(crate) fn inference_approval_scope<'a>(
 pub(crate) fn worker_resume_repository<'a>(
 	federation: &'a Federation,
 	remote: Option<&'a Federation>,
-	access: &'a Arc<tokio::sync::Mutex<crate::authorization::access::Access>>,
+	access: &'a Arc<tokio::sync::RwLock<crate::authorization::access::Access>>,
 	run: &'a crate::domain::Run,
 	agent: &'a crate::registry::AgentConfig,
 ) -> crate::apps::identity::repositories::execution::resume::Resume<'a> {
@@ -1281,7 +1317,7 @@ pub(crate) fn worker_resume_repository<'a>(
 pub(crate) fn inference_admission_repository<'a>(
 	store: &'a Store,
 	remote: Option<&'a Federation>,
-	access: &'a Arc<tokio::sync::Mutex<crate::authorization::access::Access>>,
+	access: &'a Arc<tokio::sync::RwLock<crate::authorization::access::Access>>,
 	run: &'a crate::domain::Run,
 ) -> crate::apps::identity::repositories::execution::admission::Admissions<'a> {
 	crate::apps::identity::repositories::execution::admission::Admissions {
@@ -1289,6 +1325,24 @@ pub(crate) fn inference_admission_repository<'a>(
 		remote,
 		access,
 		run,
+		purpose: crate::generation::remote::Purpose::Inference,
+	}
+}
+
+/// Summary Stage admission charges model tokens locally and the `summary`
+/// purpose (with its call allowance) at the Home.
+pub(crate) fn summary_admission_repository<'a>(
+	store: &'a Store,
+	remote: Option<&'a Federation>,
+	access: &'a Arc<tokio::sync::RwLock<crate::authorization::access::Access>>,
+	run: &'a crate::domain::Run,
+) -> crate::apps::identity::repositories::execution::admission::Admissions<'a> {
+	crate::apps::identity::repositories::execution::admission::Admissions {
+		store,
+		remote,
+		access,
+		run,
+		purpose: crate::generation::remote::Purpose::Summary,
 	}
 }
 
@@ -1387,7 +1441,7 @@ pub(crate) fn transaction_management_repository(
 pub(crate) fn transaction_mutation_scope(
 	tx: &mut dyn reinhardt::db::backends::TransactionExecutor,
 ) -> crate::apps::federation::transactions::repositories::mutation::Scope<'_> {
-	crate::apps::federation::transactions::repositories::mutation::Scope(tx)
+	crate::apps::federation::transactions::repositories::mutation::Scope(tx, Vec::new())
 }
 
 pub(crate) fn transaction_participant(

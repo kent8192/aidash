@@ -89,6 +89,7 @@ pub fn validate_override_keys(kind: &str, overrides: &Value) -> Result<()> {
 			"remove_default",
 			"cluster",
 			"max_steps",
+			"tool_parallelism",
 			"exposure",
 		],
 		"model" => &[
@@ -102,6 +103,8 @@ pub fn validate_override_keys(kind: &str, overrides: &Value) -> Result<()> {
 			"modalities",
 			"cost",
 			"request_timeout_secs",
+			"streaming",
+			"stream_stall_timeout_secs",
 		],
 		"cluster" => &["coordinator"],
 		"bundle" | "memory" | "source" => &[],

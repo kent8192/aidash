@@ -1,6 +1,8 @@
 //! Persistent records owned by the harness app.
 mod catalog;
 mod completion;
+pub(crate) mod context_journal;
+pub(crate) mod inference;
 mod inspection;
 mod invocation_records;
 mod run_progress;

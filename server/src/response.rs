@@ -26,36 +26,54 @@ pub(crate) async fn json<T: DeserializeOwned>(
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use axum::{Router, body::Body, routing::get};
+	use bytes::Bytes;
+	use reinhardt::http::ViewResult;
+	use reinhardt::test::fixtures::server::TestServerGuard;
+	use reinhardt::test::fixtures::{http_client, test_server_guard};
+	use reinhardt::{Response, ServerRouter, get};
+	use rstest::{fixture, rstest};
 
-	#[rstest::rstest]
+	#[get("/large")]
+	async fn large() -> ViewResult<Response> {
+		Ok(
+			Response::ok().with_stream(futures_util::stream::iter((0..8).map(|_| {
+				Ok::<_, Box<dyn std::error::Error + Send + Sync>>(Bytes::from(vec![b' '; 64]))
+			}))),
+		)
+	}
+	#[get("/invalid")]
+	async fn invalid() -> ViewResult<Response> {
+		Ok(Response::ok().with_body("not json"))
+	}
+	#[get("/valid")]
+	async fn valid() -> ViewResult<Response> {
+		Ok(Response::ok().with_body("{}"))
+	}
+	#[fixture]
+	fn bounded_router() -> ServerRouter {
+		ServerRouter::new()
+			.endpoint(large)
+			.endpoint(invalid)
+			.endpoint(valid)
+	}
+	#[rstest]
 	#[tokio::test]
-	async fn rejects_oversized_chunked_bodies_and_malformed_json() {
-		let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-		let url = format!("http://{}", listener.local_addr().unwrap());
-		let server = tokio::spawn(async move {
-			axum::serve(
-				listener,
-				Router::new()
-					.route(
-						"/large",
-						get(|| async {
-							Body::from_stream(futures_util::stream::iter(
-								(0..8).map(|_| Ok::<_, std::io::Error>(vec![b' '; 64])),
-							))
-						}),
-					)
-					.route("/invalid", get(|| async { "not json" }))
-					.route("/valid", get(|| async { "{}" })),
-			)
-			.await
-			.unwrap();
-		});
-		let client = reqwest::Client::new();
+	async fn rejects_oversized_chunked_bodies_and_malformed_json(
+		#[future]
+		#[from(test_server_guard)]
+		#[with(bounded_router::default())]
+		bounded_responses: TestServerGuard,
+		http_client: reqwest::Client,
+	) {
+		let server = bounded_responses.await;
 		for path in ["large", "invalid"] {
 			assert!(matches!(
 				json::<serde_json::Value>(
-					client.get(format!("{url}/{path}")).send().await.unwrap(),
+					http_client
+						.get(format!("{}/{path}", server.url))
+						.send()
+						.await
+						.unwrap(),
 					128
 				)
 				.await,
@@ -63,11 +81,17 @@ mod tests {
 			));
 		}
 		assert_eq!(
-			json::<serde_json::Value>(client.get(format!("{url}/valid")).send().await.unwrap(), 2)
-				.await
-				.unwrap(),
+			json::<serde_json::Value>(
+				http_client
+					.get(format!("{}/valid", server.url))
+					.send()
+					.await
+					.unwrap(),
+				2
+			)
+			.await
+			.unwrap(),
 			serde_json::json!({})
 		);
-		server.abort();
 	}
 }

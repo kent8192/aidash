@@ -24,31 +24,46 @@ fn transient_provider_statuses_keep_the_worker_retry_path() {
 #[rstest::rstest]
 #[tokio::test(start_paused = true)]
 
-async fn inference_cancellation_poll_errors_do_not_signal_cancellation() {
+async fn inference_interruption_poll_errors_do_not_signal_interruption(
+	// Arrange: every control and input observation fails.
+	#[future(awt)] interruption_store: crate::store::Store,
+) {
+	// Act
+	let interruption =
+		super::wait_for_inference_interruption(&interruption_store, uuid::Uuid::new_v4(), 0);
+	tokio::pin!(interruption);
+	// Assert
+	for _ in 0..3 {
+		assert!(
+			tokio::time::timeout(std::time::Duration::from_millis(250), &mut interruption)
+				.await
+				.is_err(),
+			"a failed control or input read must not interrupt the in-flight inference"
+		);
+	}
+}
+
+#[rstest::fixture]
+async fn interruption_store(
+	#[from(reinhardt::test::fixtures::http_client)] http_client: reqwest::Client,
+) -> crate::store::Store {
+	// An intentionally closed pool preserves the control and input read failures under test.
+	// A live test_database fixture would change that failure contract.
 	let pool = sqlx::postgres::PgPoolOptions::new()
 		.connect_lazy("postgres://localhost/unused")
 		.unwrap();
 	pool.close().await;
-	let store = crate::store::Store {
+	crate::store::Store {
 		capabilities: crate::capabilities::Runtime::new(Default::default()).unwrap(),
 		pool: pool.clone().into(),
 		control_pool: pool.into(),
-		node_id: "cancellation-poll-test".into(),
-		semantic_client: reqwest::Client::new(),
+		node_id: "interruption-poll-test".into(),
+		semantic_client: http_client.clone(),
 		recovery_cursors: Default::default(),
+		tool_slots: aidash_application::ports::execution::ToolSlots::new(1),
 		cache_salt: None,
 		provider_credentials: None,
 		provider_key_material_reader: None,
 		capability_issuer: None,
-	};
-	let cancellation = super::wait_for_inference_cancellation(&store, uuid::Uuid::new_v4());
-	tokio::pin!(cancellation);
-	for _ in 0..3 {
-		assert!(
-			tokio::time::timeout(std::time::Duration::from_millis(250), &mut cancellation)
-				.await
-				.is_err(),
-			"a failed control read must not interrupt the in-flight inference"
-		);
 	}
 }

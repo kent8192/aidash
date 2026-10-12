@@ -297,7 +297,11 @@ struct Model {
 }
 #[async_trait]
 impl ModelProvider for Model {
-	async fn infer(&self, request: ModelRequest) -> Result<ModelResponse> {
+	async fn infer(
+		&self,
+		request: ModelRequest,
+		_: &dyn crate::ports::InferenceProgressSink,
+	) -> Result<ModelResponse> {
 		{
 			let mut s = self.repository.state.lock().unwrap();
 			assert!(!s.active);
@@ -385,9 +389,11 @@ fn job(model: Arc<Model>) -> Job {
 			context: json!({"test_message":"original"}).into(),
 			tools: vec![],
 			max_output_tokens: 128,
+			response_format: None,
 			content_parts: vec![],
 			cache_scope: None,
 			cache_breakpoints: false,
+			disable_provider_transforms: false,
 		},
 		initial_conversation: vec![json!({"role":"user","content":"original"})],
 		pinned_draft: draft(7),

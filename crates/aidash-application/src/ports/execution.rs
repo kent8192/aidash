@@ -9,6 +9,7 @@ use aidash_domain::{
 	model::ModelConfig,
 	provider::{
 		ContentPart, ModelRequest, ModelResponse, ToolCall, ToolSpec,
+		progress::{InferenceAttemptId, InferenceProgress, ProgressOutcome},
 		usage::{UsageDispatch, UsageOutcome},
 	},
 	registry::{EntityRef, Entry},
@@ -30,6 +31,10 @@ pub struct ExecutionAgent {
 	pub max_steps: i32,
 	pub allow_task_creation: Option<bool>,
 	pub conversation_memory: bool,
+	/// Opt-in Context Policy from the immutable Agent version.
+	pub context_policy: Option<aidash_domain::context::policy::ContextPolicy>,
+	/// The Run Tool Parallelism ceiling pinned with the Binding snapshot.
+	pub tool_parallelism: usize,
 	/// Pinned through the Run's Binding snapshot; Legacy when the definition
 	/// names none.
 	pub projection_version: aidash_domain::projection::ProjectionVersion,
@@ -41,6 +46,39 @@ pub struct InvocationOutcome {
 	pub status: String,
 	pub result: Option<Value>,
 }
+/// One call journaled by Tool Batch admission.
+pub struct BatchInvocation<'a> {
+	pub key: &'a str,
+	pub name: &'a str,
+	pub input: &'a Value,
+}
+/// The process's Tool Parallelism ceiling, shared by every worker in the process.
+/// Each executing call of any Run holds one permit.
+#[derive(Clone)]
+pub struct ToolSlots {
+	ceiling: usize,
+	permits: Arc<tokio::sync::Semaphore>,
+}
+impl ToolSlots {
+	pub fn new(ceiling: usize) -> Self {
+		let ceiling = ceiling.max(1);
+		Self {
+			ceiling,
+			permits: Arc::new(tokio::sync::Semaphore::new(ceiling)),
+		}
+	}
+	pub fn ceiling(&self) -> usize {
+		self.ceiling
+	}
+	/// Wait in FIFO order. A call never holds a permit while waiting for another.
+	pub async fn acquire(&self) -> Result<tokio::sync::OwnedSemaphorePermit> {
+		self.permits
+			.clone()
+			.acquire_owned()
+			.await
+			.map_err(|_| crate::Error::Conflict("tool slots closed".into()))
+	}
+}
 pub struct HumanMediaBatch {
 	pub parts: Vec<ContentPart>,
 	pub through_seq: Option<i64>,
@@ -49,9 +87,48 @@ pub struct HumanMediaBatch {
 pub type Tools = BTreeMap<String, Arc<dyn ExecutionTool>>;
 pub type ObservationFit<'a> = dyn Fn(usize, &Value) -> Result<bool> + Send + Sync + 'a;
 
+/// What ended an in-flight inference before its response was accepted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InferenceInterruption {
+	/// The Run's control became Cancelled.
+	Cancelled,
+	/// A Run input newer than the request's included input was accepted.
+	Superseded,
+}
+
 #[async_trait]
 pub trait ExecutionStore: Send + Sync {
+	/// Saving `model.completed` also closes the Run's pending Inference Attempt as
+	/// accepted, in the same transaction. When the stale-input check rejects the
+	/// save, the pending attempt is closed as discarded instead.
 	async fn save_run(&self, run: &Run, token: Uuid, event: &str) -> Result<()>;
+	/// Record a pending Inference Attempt and its `inference.started` marker under
+	/// the lease. Attempts still pending for this Run belong to a lost lease and are
+	/// first closed as interrupted with reason `lease_lost`.
+	async fn start_inference(
+		&self,
+		run: &Run,
+		token: Uuid,
+		attempt: InferenceAttemptId,
+	) -> Result<()>;
+	/// Append one bounded batch of Inference Progress under the lease, allocating
+	/// the Run's next `progress_seq` values in order.
+	async fn append_inference_progress(
+		&self,
+		run: &Run,
+		token: Uuid,
+		attempt: InferenceAttemptId,
+		batch: &[InferenceProgress],
+	) -> Result<()>;
+	/// Close a pending attempt without an Accepted Response and record its marker.
+	/// Closing an attempt that already has an outcome changes nothing.
+	async fn finish_inference(
+		&self,
+		run: &Run,
+		token: Uuid,
+		attempt: InferenceAttemptId,
+		outcome: ProgressOutcome,
+	) -> Result<()>;
 	/// Persist inference inputs without ending the worker's current lease. Return
 	/// the updated Run revision so the response uses the same durable boundary.
 	async fn observe_sources(&self, run: &mut Run, token: Uuid) -> Result<()> {
@@ -78,6 +155,16 @@ pub trait ExecutionStore: Send + Sync {
 		input: &Value,
 		replay_safe: bool,
 	) -> Result<InvocationOutcome>;
+	/// Admit a Tool Batch atomically: persist the Run (whose ToolCall state
+	/// records the batch end) and journal every call as STARTED under the
+	/// worker lease and the stale-input check, before any call is dispatched.
+	/// Batched calls are replay-safe; existing rows are returned unchanged.
+	async fn invocation_start_batch(
+		&self,
+		run: &Run,
+		token: Uuid,
+		calls: &[BatchInvocation<'_>],
+	) -> Result<Vec<InvocationOutcome>>;
 	async fn invocation_finish(
 		&self,
 		run: &Run,
@@ -110,6 +197,46 @@ pub trait ExecutionStore: Send + Sync {
 		outcome: &UsageOutcome,
 	) -> Result<()>;
 	async fn run_message_has_media(&self, messages: &[Uuid]) -> Result<bool>;
+	/// Original Context Journal entries with `from <= seq <= through`, in order.
+	async fn context_journal(
+		&self,
+		run: Uuid,
+		from: u64,
+		through: u64,
+	) -> Result<Vec<aidash_domain::context::HistoryEntry>>;
+	/// Journal every saved projection entry the Context Journal lacks, fenced
+	/// by the lease and without saving the Run. A projection imported from a
+	/// pre-journal Run is journaled whole here before any lossy compaction.
+	async fn journal_context(&self, run: &Run, token: Uuid) -> Result<()>;
+	/// Record a Compaction Attempt before provider I/O, fenced by the lease.
+	/// Unsettled earlier attempts of the Run become `abandoned` in the same
+	/// transaction. Returns `Error::Context(SummaryUnavailable)` once the Run
+	/// already has `call_budget` attempts of the same stage.
+	async fn begin_compaction(
+		&self,
+		run: &Run,
+		token: Uuid,
+		attempt: &aidash_domain::context::recovery::Attempt,
+		call_budget: u32,
+	) -> Result<()>;
+	/// Settle an attempt that leaves the saved Context Projection unchanged.
+	async fn settle_compaction(
+		&self,
+		run: &Run,
+		token: Uuid,
+		attempt: Uuid,
+		settlement: &aidash_domain::context::recovery::Settlement,
+	) -> Result<()>;
+	/// Save `run`, whose context carries the adopted projection, and mark the
+	/// attempt adopted in one lease-fenced transaction. Returns `Conflict` when
+	/// the attempt is no longer open or the journal lacks its source range.
+	async fn adopt_compaction(
+		&self,
+		run: &Run,
+		token: Uuid,
+		attempt: Uuid,
+		settlement: &aidash_domain::context::recovery::Settlement,
+	) -> Result<()>;
 }
 #[async_trait]
 pub trait ExecutionCatalog: Send + Sync {
@@ -175,10 +302,34 @@ pub trait ExecutionTool: Send + Sync {
 	fn contract(&self) -> aidash_domain::tool::ToolContract;
 	fn replay_safe(&self) -> bool;
 	async fn invoke(&self, run: &Run, input: Value, key: &str) -> Result<Value>;
+	/// Resource Claims and output bound derived by trusted provider code from
+	/// validated arguments. `None` keeps the call on the sequential path.
+	fn concurrent_call(
+		&self,
+		_input: &Value,
+	) -> Option<aidash_domain::tool::concurrency::ConcurrentCall> {
+		None
+	}
+	/// Dispatch-time checks that `invoke` performs before execution. A Tool Batch
+	/// admits every call before dispatching any of them, while it holds the
+	/// Run's authority scope, so checks never wait behind a sibling's execution.
+	async fn admit(&self, _run: &Run, input: Value) -> Result<Value> {
+		Ok(input)
+	}
+	/// Execute an input returned by `admit`.
+	async fn dispatch(&self, run: &Run, admitted: Value, key: &str) -> Result<Value> {
+		self.invoke(run, admitted, key).await
+	}
 }
 #[async_trait]
 pub trait InferenceReservation: Send {
 	async fn settle(self: Box<Self>, response: &ModelResponse) -> Result<()>;
+	/// Release a reservation the provider never charged: its request never
+	/// left this node, or the provider proved a Context Overflow before any
+	/// usage. A local charge is refunded whole; a dispatch a remote Home
+	/// already admitted settles with unknown usage, since only a preparing
+	/// one can abort.
+	async fn abort(self: Box<Self>) -> Result<()>;
 }
 #[async_trait]
 pub trait ExecutionAuthority: Send + Sync {
@@ -204,7 +355,31 @@ pub trait ExecutionAuthority: Send + Sync {
 		output: u32,
 		request: &ModelRequest,
 	) -> Result<Option<Box<dyn InferenceReservation>>>;
+	/// Authorize one Summary Stage request for the exact pinned summarizer and
+	/// charge its allowance before I/O: catalog approval, remote RequiredHome
+	/// summarizer pin and disclosure, and every generated ancestor's summary
+	/// allowance. Returns `Error::Context(SummaryUnavailable)` when any approval
+	/// is missing; it never substitutes another provider.
+	async fn reserve_summary(
+		&self,
+		token: Uuid,
+		summarizer: &aidash_domain::context::summary::SummaryProvider,
+		window: usize,
+		output: u32,
+		request: &ModelRequest,
+	) -> Result<Option<Box<dyn InferenceReservation>>>;
+	/// Repeat `reserve_summary`'s approval checks for the exact summarizer,
+	/// without charging another call, after authority is resumed and before a
+	/// Summary Stage candidate is adopted.
+	async fn recheck_summary(
+		&self,
+		summarizer: &aidash_domain::context::summary::SummaryProvider,
+	) -> Result<()>;
 	async fn suspend(&self) -> Result<()>;
+	/// While suspended for inference, briefly reacquire the authority boundary,
+	/// authorize inference again, and release it. Failure means the Run may no
+	/// longer receive or publish provider output.
+	async fn recheck_inference(&self) -> Result<()>;
 	async fn resume(&self) -> Result<()>;
 }
 #[async_trait]
@@ -223,6 +398,10 @@ pub trait ExecutionEnvironment: Send + Sync {
 	fn authority(&self) -> Option<&dyn ExecutionAuthority>;
 	fn home(&self, run: &Run) -> Box<dyn ExecutionHome>;
 	fn agent(&self, entry: &Entry) -> Result<ExecutionAgent>;
+	/// The process's Tool Parallelism ceiling. `None` keeps every call sequential.
+	fn tool_slots(&self) -> Option<&ToolSlots> {
+		None
+	}
 	fn provider(&self, model: ModelConfig) -> Result<Arc<dyn ModelProvider>>;
 	fn compactor(&self) -> Result<Box<dyn CompactionClassifier>>;
 	fn binding_resolver(&self) -> &dyn super::bindings::BindingResolver;
@@ -264,13 +443,26 @@ pub trait ExecutionEnvironment: Send + Sync {
 	async fn reconcile_run_messages(&self, run: &Run) -> Result<()>;
 	async fn require_terminal_safe_delivery(&self, run: &Run) -> Result<()>;
 	async fn transition_terminal_run_messages(&self, run: &Run, status: TaskStatus) -> Result<()>;
-	async fn wait_for_inference_cancellation(&self, run: Uuid) -> Result<()>;
+	/// Resolve when the Run is cancelled or an input newer than
+	/// `included_input_seq` is accepted. Observation errors never resolve it.
+	async fn wait_for_inference_interruption(
+		&self,
+		run: Uuid,
+		included_input_seq: i64,
+	) -> Result<InferenceInterruption>;
 	async fn operator_human_message_media(
 		&self,
 		run: &Run,
 		messages: &[(i64, Uuid, usize)],
 		model: &ModelConfig,
 	) -> Result<HumanMediaBatch>;
+	/// Whether every source an adopted Execution Summary depends on is still
+	/// readable by the Run under current authority.
+	async fn summary_dependencies_current(
+		&self,
+		run: &Run,
+		dependencies: &aidash_domain::context::summary::SummaryDependencies,
+	) -> Result<bool>;
 }
 
 pub mod media;
@@ -278,6 +470,8 @@ pub mod media;
 pub mod cancellation;
 
 pub mod admission;
+
+pub mod summary;
 
 pub mod terminal;
 pub mod worker;

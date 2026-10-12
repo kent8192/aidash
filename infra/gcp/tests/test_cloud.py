@@ -193,7 +193,7 @@ class AppliedProviderProjectTests(unittest.TestCase):
 class PlanTests(unittest.TestCase):
     def test_persisted_broker_intent_detects_rotation_disable_and_legacy_state(self):
         terraform = Terraform.__new__(Terraform)
-        broker = {"image": "digest", "enabled": True}
+        broker = {"signing_key_id": "key", "enabled": True}
         terraform.configuration = {
             "credential_brokers": {"test": broker, "retired": broker}
         }
@@ -203,7 +203,7 @@ class PlanTests(unittest.TestCase):
         store.read.return_value = (state, "1")
         self.assertFalse(terraform.broker_configuration_changed(store, environments))
         terraform.configuration["credential_brokers"]["test"] = dict(
-            broker, image="new-digest"
+            broker, signing_key_id="new-key"
         )
         self.assertTrue(terraform.broker_configuration_changed(store, environments))
         terraform.configuration["credential_brokers"] = {}
@@ -212,9 +212,9 @@ class PlanTests(unittest.TestCase):
         self.assertFalse(terraform.broker_configuration_changed(store, environments))
         del state["outputs"]["managed_credential_brokers"]
         self.assertTrue(terraform.broker_configuration_changed(store, environments))
-        terraform.configuration["credential_brokers"] = {"test": {"image": "digest"}}
+        terraform.configuration["credential_brokers"] = {"test": {"signing_key_id": "key"}}
         state["outputs"]["managed_credential_brokers"] = {
-            "value": {"test": {"image": "digest", "enabled": False}}
+            "value": {"test": {"signing_key_id": "key", "enabled": False}}
         }
         self.assertFalse(terraform.broker_configuration_changed(store, environments))
 
@@ -225,7 +225,7 @@ class PlanTests(unittest.TestCase):
             terraform.configuration = dict.fromkeys(
                 ("project_id", "byok_project_id", "cloudflare_zone_id", "release_bucket", "deploy_service_account", "domain"), "fixture"
             )
-            broker = {"enabled": True, "byok_project_id": "byok", "secret_prefix": "aidash-test-cred-", "broker_service_account_email": "aidash-test-broker@fixture.iam.gserviceaccount.com", "image": "digest"}
+            broker = {"enabled": True, "byok_project_id": "byok", "secret_prefix": "aidash-test-cred-", "broker_service_account_email": "aidash-test-broker@fixture.iam.gserviceaccount.com"}
             terraform.configuration["credential_brokers"] = {"test": broker, "retired": broker}
             variables = []
 
@@ -238,15 +238,33 @@ class PlanTests(unittest.TestCase):
                 terraform.apply({"test": {"kind": "test"}})
             self.assertEqual(variables[0]["credential_brokers"], {"test": dict(broker, signing_version="1", verification_versions=["1"])})
 
+    def test_broker_image_is_refused_and_omitted_intent_does_not_drift(self):
+        terraform = Terraform.__new__(Terraform)
+        broker = {
+            "enabled": True, "byok_project_id": "byok", "secret_prefix": "aidash-test-cred-",
+            "broker_service_account_email": "aidash-test-broker@fixture.iam.gserviceaccount.com",
+            "signing_key_id": "key",
+        }
+        terraform.configuration = {"credential_brokers": {"test": broker}}
+        # Terraform emits its intent (the credential_brokers variable) without an image.
+        store = Mock()
+        store.read.return_value = ({"outputs": {"managed_credential_brokers": {"value": {"test": dict(
+            broker, signing_version="1", verification_versions=["1"]
+        )}}}}, "1")
+        self.assertFalse(terraform.broker_configuration_changed(store, {"test": {}}))
+        terraform.configuration["credential_brokers"]["test"] = dict(broker, image="registry/broker@sha256:" + "a" * 64)
+        with self.assertRaisesRegex(RuntimeError, "broker-image.json"):
+            terraform.broker_configuration_changed(store, {"test": {}})
+
     def test_persisted_version_sets_and_defaults_do_not_cause_repeated_apply(self):
         terraform = Terraform.__new__(Terraform)
         terraform.configuration = {"credential_brokers": {"test": {
-            "enabled": True, "image": "digest", "signing_version": "2",
+            "enabled": True, "signing_key_id": "key", "signing_version": "2",
             "verification_versions": ["2", "1", "2"],
         }}}
         store = Mock()
         store.read.return_value = ({"outputs": {"managed_credential_brokers": {"value": {"test": {
-            "enabled": True, "image": "digest", "signing_version": "2",
+            "enabled": True, "signing_key_id": "key", "signing_version": "2",
             "verification_versions": ["1", "2"],
         }}}}}, "1")
         self.assertFalse(terraform.broker_configuration_changed(store, {"test": {}}))

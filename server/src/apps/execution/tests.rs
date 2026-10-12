@@ -4,6 +4,7 @@
 //! Execute an individual target with `cargo test -p aidash-server --test <target>`.
 //!
 //! - `commands`
+//! - `context_journal`
 //! - `endpoints`
 //! - `event_bus`
 //! - `framework_regressions`
@@ -20,6 +21,7 @@
 //! - `run_message_finalization`
 //! - `startup`
 //! - `streaming`
+//! - `tool_batches`
 //! - `core_capabilities`
 //! - `http_protection`
 //! - `multimodal_run`

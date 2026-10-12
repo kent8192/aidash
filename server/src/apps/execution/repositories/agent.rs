@@ -15,6 +15,7 @@ use aidash_domain::{
 	model::ModelConfig,
 	provider::{
 		ContentPart, ModelRequest, ModelResponse, ToolCall,
+		progress::{InferenceAttemptId, InferenceProgress, ProgressOutcome},
 		usage::{UsageDispatch, UsageOutcome},
 	},
 	registry::Entry,
@@ -36,6 +37,38 @@ impl ExecutionStore for Store {
 		Store::save_run(self, run, token, event)
 			.await
 			.map(|_| ())
+			.map_err(Into::into)
+	}
+	async fn start_inference(
+		&self,
+		run: &Run,
+		token: Uuid,
+		attempt: InferenceAttemptId,
+	) -> Result<()> {
+		Store::start_inference(self, run.id, token, attempt)
+			.await
+			.map_err(Into::into)
+	}
+	async fn append_inference_progress(
+		&self,
+		run: &Run,
+		token: Uuid,
+		attempt: InferenceAttemptId,
+		batch: &[InferenceProgress],
+	) -> Result<()> {
+		Store::append_inference_progress(self, run.id, token, attempt, batch)
+			.await
+			.map_err(Into::into)
+	}
+	async fn finish_inference(
+		&self,
+		run: &Run,
+		token: Uuid,
+		attempt: InferenceAttemptId,
+		outcome: ProgressOutcome,
+	) -> Result<()> {
+		Store::finish_inference(self, run.id, token, attempt, outcome)
+			.await
 			.map_err(Into::into)
 	}
 	async fn emit(&self, workspace: Option<Uuid>, kind: &str, data: Value) -> Result<Event> {
@@ -88,6 +121,25 @@ impl ExecutionStore for Store {
 			result: result.result,
 		})
 	}
+	async fn invocation_start_batch(
+		&self,
+		run: &Run,
+		token: Uuid,
+		calls: &[BatchInvocation<'_>],
+	) -> Result<Vec<InvocationOutcome>> {
+		let calls: Vec<_> = calls
+			.iter()
+			.map(|call| (call.key, call.name, call.input))
+			.collect();
+		Ok(Store::invocation_start_batch(self, run, token, &calls)
+			.await?
+			.into_iter()
+			.map(|invocation| InvocationOutcome {
+				status: invocation.status,
+				result: invocation.result,
+			})
+			.collect())
+	}
 	async fn invocation_finish(
 		&self,
 		run: &Run,
@@ -133,6 +185,54 @@ impl ExecutionStore for Store {
 	}
 	async fn run_message_has_media(&self, messages: &[Uuid]) -> Result<bool> {
 		Store::run_message_has_media(self, messages)
+			.await
+			.map_err(Into::into)
+	}
+	async fn context_journal(
+		&self,
+		run: Uuid,
+		from: u64,
+		through: u64,
+	) -> Result<Vec<aidash_domain::context::HistoryEntry>> {
+		Store::context_journal(self, run, from, through)
+			.await
+			.map_err(Into::into)
+	}
+	async fn journal_context(&self, run: &Run, token: Uuid) -> Result<()> {
+		Store::journal_context(self, run, token)
+			.await
+			.map_err(Into::into)
+	}
+	async fn begin_compaction(
+		&self,
+		run: &Run,
+		token: Uuid,
+		attempt: &aidash_domain::context::recovery::Attempt,
+		call_budget: u32,
+	) -> Result<()> {
+		Store::begin_compaction(self, run, token, attempt, call_budget)
+			.await
+			.map_err(Into::into)
+	}
+	async fn settle_compaction(
+		&self,
+		run: &Run,
+		token: Uuid,
+		attempt: Uuid,
+		settlement: &aidash_domain::context::recovery::Settlement,
+	) -> Result<()> {
+		Store::settle_compaction(self, run, token, attempt, settlement)
+			.await
+			.map_err(Into::into)
+	}
+	async fn adopt_compaction(
+		&self,
+		run: &Run,
+		token: Uuid,
+		attempt: Uuid,
+		settlement: &aidash_domain::context::recovery::Settlement,
+	) -> Result<()> {
+		Store::adopt_compaction(self, run, token, attempt, settlement)
 			.await
 			.map_err(Into::into)
 	}
@@ -271,6 +371,10 @@ impl InferenceReservation for Reservation {
 		let Self(reservation) = *self;
 		reservation.settle(response).await.map_err(Into::into)
 	}
+	async fn abort(self: Box<Self>) -> Result<()> {
+		let Self(reservation) = *self;
+		reservation.abort().await.map_err(Into::into)
+	}
 }
 struct Classifier(Box<dyn crate::context::jev::JevAsker>);
 #[async_trait]
@@ -354,8 +458,46 @@ impl ExecutionAuthority for Authority<'_> {
 			})
 			.map_err(Into::into)
 	}
+	async fn reserve_summary(
+		&self,
+		token: Uuid,
+		summarizer: &aidash_domain::context::summary::SummaryProvider,
+		window: usize,
+		output: u32,
+		request: &ModelRequest,
+	) -> Result<Option<Box<dyn InferenceReservation>>> {
+		self.guard
+			.reserve_summary(self.federation, token, summarizer, window, output, request)
+			.await
+			.map(|value| {
+				value.map(|reservation| {
+					Box::new(Reservation(reservation)) as Box<dyn InferenceReservation>
+				})
+			})
+			.map_err(Into::into)
+	}
+	async fn recheck_summary(
+		&self,
+		summarizer: &aidash_domain::context::summary::SummaryProvider,
+	) -> Result<()> {
+		self.guard
+			.recheck_summary(self.federation, summarizer)
+			.await
+			.map_err(Into::into)
+	}
 	async fn suspend(&self) -> Result<()> {
 		self.guard.suspend().await.map_err(Into::into)
+	}
+	/// Hold the authority boundary only for this check so the provider call
+	/// stays suspended, whether or not the Run may still infer.
+	async fn recheck_inference(&self) -> Result<()> {
+		let authorized = match self.guard.resume(self.federation).await {
+			Ok(()) => self.guard.inference().await,
+			Err(error) => Err(error),
+		};
+		let suspended = self.guard.suspend().await;
+		authorized?;
+		suspended.map_err(Into::into)
 	}
 	async fn resume(&self) -> Result<()> {
 		self.guard.resume(self.federation).await.map_err(Into::into)
@@ -426,9 +568,14 @@ impl ExecutionEnvironment for Environment<'_> {
 			max_steps: config.max_steps,
 			allow_task_creation: config.allow_task_creation,
 			conversation_memory: config.conversation_memory,
+			context_policy: config.context_policy,
+			tool_parallelism: usize::from(config.tool_parallelism),
 			projection_version: config.projection_version.unwrap_or_default(),
 			prompt_cache: config.prompt_cache.unwrap_or_default(),
 		})
+	}
+	fn tool_slots(&self) -> Option<&ToolSlots> {
+		Some(&self.federation.store.tool_slots)
 	}
 	fn provider(&self, model: ModelConfig) -> Result<Arc<dyn ModelProvider>> {
 		// Carries this node's Cache Salt Keys for salted Projection Versions.
@@ -733,10 +880,15 @@ impl ExecutionEnvironment for Environment<'_> {
 			.map_err(Into::into)
 	}
 
-	async fn wait_for_inference_cancellation(&self, run: Uuid) -> Result<()> {
-		super::super::services::runtime::wait_for_inference_cancellation(
+	async fn wait_for_inference_interruption(
+		&self,
+		run: Uuid,
+		included_input_seq: i64,
+	) -> Result<InferenceInterruption> {
+		super::super::services::runtime::wait_for_inference_interruption(
 			&self.federation.store,
 			run,
+			included_input_seq,
 		)
 		.await
 		.map_err(Into::into)
@@ -755,6 +907,40 @@ impl ExecutionEnvironment for Environment<'_> {
 		)
 		.await
 		.map_err(Into::into)
+	}
+	async fn summary_dependencies_current(
+		&self,
+		run: &Run,
+		dependencies: &aidash_domain::context::summary::SummaryDependencies,
+	) -> Result<bool> {
+		if dependencies.message_ids.is_empty() {
+			return Ok(true);
+		}
+		if let Some(authority) = &self.authority {
+			if run.id != self.step_run.id {
+				return Err(aidash_application::Error::Forbidden);
+			}
+			return authority
+				.guard
+				.messages_readable(&dependencies.message_ids)
+				.await
+				.map_err(Into::into);
+		}
+		// Trusted local execution has no worker policy: a dependency is current
+		// while the message still exists in the Run's Workspace.
+		for id in &dependencies.message_ids {
+			match self
+				.federation
+				.store
+				.workspace_record(run.workspace_id, "message", *id)
+				.await
+			{
+				Ok(_) => {}
+				Err(crate::Error::NotFound(_) | crate::Error::Forbidden) => return Ok(false),
+				Err(error) => return Err(error.into()),
+			}
+		}
+		Ok(true)
 	}
 }
 

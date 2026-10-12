@@ -1,12 +1,18 @@
 //! Agent lifecycle and inference authority are tested without a database or HTTP.
 use super::*;
-use aidash_application::ports::{CompactionClassifier, CompactionQuestions, ModelProvider};
+use aidash_application::ports::{
+	CompactionClassifier, CompactionQuestions, InferenceProgressSink, ModelProvider,
+};
 use aidash_domain::capabilities::skills::SkillMetadata;
+use aidash_domain::context::recovery::{Attempt, Outcome, Settlement};
 use aidash_domain::context::sources::{RetrievalKey, RetrievalScope};
 use aidash_domain::exposure::{
 	CapabilityKind, DirectSkill, ExposureState, ExposureUpdate, Loaded, SkillOriginKind,
 };
 use aidash_domain::provider::ModelContext;
+use aidash_domain::provider::progress::{
+	FLUSH_INTERVAL, InferenceProgress, MAX_PENDING_BYTES, MAX_PROGRESS_ITEM_BYTES,
+};
 use aidash_domain::provider::{
 	ContentPart, ModelRequest, ModelResponse, ToolCall, ToolSpec,
 	usage::{EstimateConfidence, ReportedUsage, UsageDispatch, UsageOutcome},
@@ -16,14 +22,27 @@ use aidash_domain::registry::bindings::{
 	ResolvedBinding, ResolvedDefinition, SKILL_ASSET_READ, SKILL_TOOLS,
 };
 use aidash_domain::registry::{EntityRef, Entry, rules};
+use aidash_domain::run_input::RunInput;
 use aidash_domain::tool::providers::core_descriptor;
 use async_trait::async_trait;
 use rstest::{fixture, rstest};
-use std::collections::BTreeMap;
-use std::sync::{
-	Arc, Mutex,
-	atomic::{AtomicBool, Ordering},
-};
+use std::collections::{BTreeMap, VecDeque};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+/// One scripted action of the fake provider during a single inference.
+enum Step {
+	Offer(InferenceProgress),
+	Sleep(Duration),
+	/// Accept a new Run input, as an operator correction would.
+	Input(&'static str),
+	Interrupt(InferenceInterruption),
+	Fail(Error),
+}
+fn text(value: &str) -> Step {
+	Step::Offer(InferenceProgress::Text { text: value.into() })
+}
 
 #[derive(Clone)]
 struct Backend(Arc<State>);
@@ -44,6 +63,40 @@ struct State {
 	dependency_status: Option<TaskStatus>,
 	remote_home: bool,
 	human: Mutex<Option<HumanRequest>>,
+	/// In-memory Context Journal keyed by Run, with the same append rule as Postgres.
+	journal: Mutex<Vec<(Uuid, aidash_domain::context::HistoryEntry)>>,
+	compaction_attempts: Mutex<Vec<(Attempt, Option<Outcome>)>>,
+	context_policy: Option<aidash_domain::context::policy::ContextPolicy>,
+	/// Ordinary inference requests answered with a provider Context Overflow.
+	overflows: Mutex<u32>,
+	/// Jev answers every retention question with this probability; `None`
+	/// makes compaction unexpected.
+	jev_retention: Option<f64>,
+	summary_text: Mutex<Option<String>>,
+	/// The summarizer is approved at reservation but revoked during its call.
+	revoke_summarizer: bool,
+	/// A source an adopted Execution Summary depends on is no longer readable.
+	stale_summary_dependencies: bool,
+	/// Ordinary inference ends with this truncated or refused completion.
+	terminal: Option<aidash_domain::context::recovery::Failure>,
+	/// Summary dependency checks that pass before the sources are revoked.
+	summary_checks_before_revocation: Option<usize>,
+	/// When set, revocation past that threshold hits only the dependency sets
+	/// that contain this message.
+	revoked_message: Option<Uuid>,
+	/// The summary reservation holds a charge that a blocked call must release.
+	summary_reservation: bool,
+	/// The summarizer's configured `max_output_tokens`.
+	summarizer_output_tokens: u32,
+	/// Provider scripts consumed one per inference; an empty queue answers at once.
+	scripts: Mutex<VecDeque<Vec<Step>>>,
+	attempts: Mutex<Vec<(InferenceAttemptId, Vec<ProgressOutcome>)>>,
+	progress: Mutex<Vec<(InferenceAttemptId, Vec<InferenceProgress>)>>,
+	interruption: tokio::sync::watch::Sender<Option<InferenceInterruption>>,
+	deny_recheck: bool,
+	fail_append: bool,
+	/// Appends never complete, as when another transaction holds the Run row.
+	block_append: bool,
 	cancel_inference: bool,
 	usage: Mutex<Vec<(UsageDispatch, Option<UsageOutcome>)>>,
 	stall_provider: AtomicBool,
@@ -81,18 +134,102 @@ impl Backend {
 	fn record(&self, name: &'static str) {
 		self.0.calls.lock().unwrap().push(name);
 	}
+	fn script(&self, steps: Vec<Step>) {
+		self.0.scripts.lock().unwrap().push_back(steps);
+	}
+	fn outcomes(&self) -> Vec<Vec<ProgressOutcome>> {
+		let attempts = self.0.attempts.lock().unwrap();
+		attempts
+			.iter()
+			.map(|(_, outcomes)| outcomes.clone())
+			.collect()
+	}
+	fn progress_text(&self) -> String {
+		let progress = self.0.progress.lock().unwrap();
+		progress
+			.iter()
+			.flat_map(|(_, batch)| batch)
+			.filter_map(|item| match item {
+				InferenceProgress::Text { text } => Some(text.as_str()),
+				InferenceProgress::ToolCall { .. } => None,
+			})
+			.collect()
+	}
+	fn calls(&self) -> Vec<&'static str> {
+		self.0.calls.lock().unwrap().clone()
+	}
+	fn events(&self) -> Vec<String> {
+		let writes = self.0.writes.lock().unwrap();
+		writes.iter().map(|(event, _)| event.clone()).collect()
+	}
+	fn add_input(&self, content: &str) {
+		let mut inputs = self.0.inputs.lock().unwrap();
+		let id = Uuid::new_v4();
+		let seq = inputs.len() as i64 + 1;
+		inputs.push(RunInput {
+			seq,
+			sender: "human".into(),
+			content: content.into(),
+			idempotency_key: id.to_string(),
+			message_id: Some(id),
+			reference_only: false,
+		});
+	}
 	fn task_value(&self) -> Task {
 		self.0.task.lock().unwrap().clone()
 	}
 	fn entry(&self, id: &str) -> Entry {
+		// The summarizer has a larger window so it can read absorbed history.
+		let (kind, window, output) = if id == "summarizer" {
+			("model", 1_000_000, self.0.summarizer_output_tokens)
+		} else {
+			("agent", 128_000, 4096)
+		};
 		let mut config = json!({
-			"provider":"openrouter","model_id":"fixture","endpoint":"http://fixture.invalid/v1","credential_env":null,"context_window":128000,"max_output_tokens":4096,"modalities":["text"],"cost":{}
+			"provider":"openrouter","model_id":"fixture","endpoint":"http://fixture.invalid/v1","credential_env":null,"context_window":window,"max_output_tokens":output,"modalities":["text"],"cost":{}
 		});
 		if self.0.explicit_cache_model {
 			config["model_id"] = json!("anthropic/fixture");
 			config["cache_mode"] = json!("explicit");
 		}
-		serde_json::from_value(json!({"id":id,"version":"1.0.0","kind":"agent","name":{"en":id},"description":{"en":"Fixture"},"config":config})).unwrap()
+		serde_json::from_value(json!({"id":id,"version":"1.0.0","kind":kind,"name":{"en":id},"description":{"en":"Fixture"},"config":config})).unwrap()
+	}
+	/// Journal the projection's new entries; an adoption also requires its open
+	/// attempt and the attempt's source range, all-or-nothing like the store.
+	fn persist(&self, run: &Run, event: &str, adopt: Option<(Uuid, &Settlement)>) -> Result<()> {
+		let mut journal = self.0.journal.lock().unwrap();
+		let head = journal
+			.iter()
+			.filter(|(id, _)| *id == run.id)
+			.map(|(_, entry)| entry.seq)
+			.max()
+			.unwrap_or(0);
+		let appended: Vec<_> = run.context.unjournaled(head).cloned().collect();
+		if let Some((attempt, settlement)) = adopt {
+			let mut attempts = self.0.compaction_attempts.lock().unwrap();
+			let open = attempts
+				.iter_mut()
+				.find(|(a, outcome)| a.id == attempt && a.run_id == run.id && outcome.is_none())
+				.ok_or_else(|| {
+					aidash_application::Error::Conflict(
+						"compaction attempt is no longer open".into(),
+					)
+				})?;
+			if appended.last().map_or(head, |entry| entry.seq) < open.0.source_through_seq {
+				return Err(aidash_application::Error::Conflict(
+					"context journal lacks the compacted source range".into(),
+				));
+			}
+			open.1 = Some(settlement.outcome);
+		}
+		journal.extend(appended.into_iter().map(|entry| (run.id, entry)));
+		self.record("save");
+		self.0
+			.writes
+			.lock()
+			.unwrap()
+			.push((event.to_owned(), run.clone()));
+		Ok(())
 	}
 }
 fn unexpected(operation: &str) -> ! {
@@ -103,12 +240,75 @@ fn unexpected(operation: &str) -> ! {
 impl ExecutionStore for Backend {
 	async fn save_run(&self, run: &Run, token: Uuid, event: &str) -> Result<()> {
 		assert_eq!(token, self.0.token);
-		self.record("save");
+		if event == "model.completed" {
+			// The store closes the pending attempt as accepted in the same transaction.
+			let mut attempts = self.0.attempts.lock().unwrap();
+			if let Some((_, outcomes)) = attempts.iter_mut().rfind(|(_, o)| o.is_empty()) {
+				outcomes.push(ProgressOutcome::Accepted);
+			}
+		}
+		self.persist(run, event, None)
+	}
+	async fn start_inference(
+		&self,
+		run: &Run,
+		token: Uuid,
+		attempt: InferenceAttemptId,
+	) -> Result<()> {
+		let _ = run;
+		assert_eq!(token, self.0.token);
+		self.record("inference.start");
+		self.0.attempts.lock().unwrap().push((attempt, vec![]));
+		Ok(())
+	}
+	async fn append_inference_progress(
+		&self,
+		run: &Run,
+		token: Uuid,
+		attempt: InferenceAttemptId,
+		batch: &[InferenceProgress],
+	) -> Result<()> {
+		let _ = run;
+		assert_eq!(token, self.0.token);
+		self.record("inference.append");
+		assert!(
+			self.0
+				.attempts
+				.lock()
+				.unwrap()
+				.iter()
+				.any(|(id, outcomes)| *id == attempt && outcomes.is_empty()),
+			"progress is appended only to the pending attempt"
+		);
+		if self.0.fail_append {
+			return Err(Error::External("progress store unavailable".into()));
+		}
+		if self.0.block_append {
+			return std::future::pending().await;
+		}
 		self.0
-			.writes
+			.progress
 			.lock()
 			.unwrap()
-			.push((event.to_owned(), run.clone()));
+			.push((attempt, batch.to_vec()));
+		Ok(())
+	}
+	async fn finish_inference(
+		&self,
+		run: &Run,
+		token: Uuid,
+		attempt: InferenceAttemptId,
+		outcome: ProgressOutcome,
+	) -> Result<()> {
+		let _ = run;
+		assert_eq!(token, self.0.token);
+		self.record("inference.finish");
+		let mut attempts = self.0.attempts.lock().unwrap();
+		let (_, outcomes) = attempts
+			.iter_mut()
+			.find(|(id, _)| *id == attempt)
+			.expect("finished attempt was started");
+		outcomes.push(outcome);
 		Ok(())
 	}
 	async fn emit(&self, workspace: Option<Uuid>, kind: &str, data: Value) -> Result<Event> {
@@ -161,6 +361,15 @@ impl ExecutionStore for Backend {
 			.or_insert_with(|| ("STARTED".into(), None))
 			.clone();
 		Ok(InvocationOutcome { status, result })
+	}
+	async fn invocation_start_batch(
+		&self,
+		run: &Run,
+		token: Uuid,
+		calls: &[BatchInvocation<'_>],
+	) -> Result<Vec<InvocationOutcome>> {
+		let _ = (run, token, calls);
+		unexpected("ExecutionStore.invocation_start_batch")
 	}
 	async fn invocation_finish(
 		&self,
@@ -228,6 +437,94 @@ impl ExecutionStore for Backend {
 	async fn run_message_has_media(&self, messages: &[Uuid]) -> Result<bool> {
 		let _ = messages;
 		Ok(self.0.human_media_pending)
+	}
+	async fn journal_context(&self, run: &Run, token: Uuid) -> Result<()> {
+		assert_eq!(token, self.0.token);
+		self.record("journal");
+		let mut journal = self.0.journal.lock().unwrap();
+		let head = journal
+			.iter()
+			.filter(|(id, _)| *id == run.id)
+			.map(|(_, entry)| entry.seq)
+			.max()
+			.unwrap_or(0);
+		let appended: Vec<_> = run.context.unjournaled(head).cloned().collect();
+		journal.extend(appended.into_iter().map(|entry| (run.id, entry)));
+		Ok(())
+	}
+	async fn context_journal(
+		&self,
+		run: Uuid,
+		from: u64,
+		through: u64,
+	) -> Result<Vec<aidash_domain::context::HistoryEntry>> {
+		let journal = self.0.journal.lock().unwrap();
+		let mut entries: Vec<_> = journal
+			.iter()
+			.filter(|(id, entry)| *id == run && (from..=through).contains(&entry.seq))
+			.map(|(_, entry)| entry.clone())
+			.collect();
+		entries.sort_by_key(|entry| entry.seq);
+		Ok(entries)
+	}
+	async fn begin_compaction(
+		&self,
+		run: &Run,
+		token: Uuid,
+		attempt: &Attempt,
+		call_budget: u32,
+	) -> Result<()> {
+		assert_eq!(token, self.0.token);
+		assert_eq!(attempt.run_id, run.id);
+		self.record("compaction.begin");
+		let mut attempts = self.0.compaction_attempts.lock().unwrap();
+		for (_, outcome) in attempts.iter_mut().filter(|(a, _)| a.run_id == run.id) {
+			outcome.get_or_insert(Outcome::Abandoned);
+		}
+		let spent = attempts
+			.iter()
+			.filter(|(a, _)| a.run_id == run.id && a.stage == attempt.stage)
+			.count();
+		if spent >= call_budget as usize {
+			return Err(aidash_application::Error::Context(
+				aidash_domain::context::recovery::Failure::SummaryUnavailable,
+			));
+		}
+		attempts.push((attempt.clone(), None));
+		Ok(())
+	}
+	async fn settle_compaction(
+		&self,
+		run: &Run,
+		token: Uuid,
+		attempt: Uuid,
+		settlement: &Settlement,
+	) -> Result<()> {
+		assert_eq!(token, self.0.token);
+		assert_ne!(settlement.outcome, Outcome::Adopted);
+		self.record("compaction.settle");
+		if let Some((_, outcome)) = self
+			.0
+			.compaction_attempts
+			.lock()
+			.unwrap()
+			.iter_mut()
+			.find(|(a, outcome)| a.id == attempt && a.run_id == run.id && outcome.is_none())
+		{
+			*outcome = Some(settlement.outcome);
+		}
+		Ok(())
+	}
+	async fn adopt_compaction(
+		&self,
+		run: &Run,
+		token: Uuid,
+		attempt: Uuid,
+		settlement: &Settlement,
+	) -> Result<()> {
+		assert_eq!(token, self.0.token);
+		assert_eq!(settlement.outcome, Outcome::Adopted);
+		self.persist(run, "context.compacted", Some((attempt, settlement)))
 	}
 }
 
@@ -422,6 +719,35 @@ impl ExecutionAuthority for Backend {
 		self.record("reservation.admit");
 		Ok(Some(Box::new(self.clone())))
 	}
+	async fn reserve_summary(
+		&self,
+		token: Uuid,
+		summarizer: &aidash_domain::context::summary::SummaryProvider,
+		window: usize,
+		output: u32,
+		request: &ModelRequest,
+	) -> Result<Option<Box<dyn InferenceReservation>>> {
+		let _ = (summarizer, window, output, request);
+		assert_eq!(token, self.0.token);
+		self.record("authority.summary_reserve");
+		Ok(self
+			.0
+			.summary_reservation
+			.then(|| Box::new(self.clone()) as Box<dyn InferenceReservation>))
+	}
+	async fn recheck_summary(
+		&self,
+		summarizer: &aidash_domain::context::summary::SummaryProvider,
+	) -> Result<()> {
+		assert_eq!(summarizer.model.id, "summarizer");
+		self.record("authority.summary_recheck");
+		if self.0.revoke_summarizer {
+			return Err(Error::Context(
+				aidash_domain::context::recovery::Failure::SummaryUnavailable,
+			));
+		}
+		Ok(())
+	}
 	async fn suspend(&self) -> Result<()> {
 		self.record("authority.suspend");
 		Ok(())
@@ -429,6 +755,14 @@ impl ExecutionAuthority for Backend {
 	async fn resume(&self) -> Result<()> {
 		self.record("authority.resume");
 		if self.0.deny_resume {
+			Err(Error::Forbidden)
+		} else {
+			Ok(())
+		}
+	}
+	async fn recheck_inference(&self) -> Result<()> {
+		self.record("authority.recheck");
+		if self.0.deny_recheck {
 			Err(Error::Forbidden)
 		} else {
 			Ok(())
@@ -558,12 +892,23 @@ impl ExecutionEnvironment for Backend {
 		let _ = (run, status);
 		unexpected("ExecutionEnvironment.transition_terminal_run_messages")
 	}
-	async fn wait_for_inference_cancellation(&self, run: Uuid) -> Result<()> {
-		let _ = run;
+	async fn wait_for_inference_interruption(
+		&self,
+		run: Uuid,
+		included_input_seq: i64,
+	) -> Result<InferenceInterruption> {
+		let _ = (run, included_input_seq);
 		if self.0.cancel_inference {
-			return Ok(());
+			return Ok(InferenceInterruption::Cancelled);
 		}
-		std::future::pending().await
+		let mut signal = self.0.interruption.subscribe();
+		let interruption = signal
+			.wait_for(Option::is_some)
+			.await
+			.map(|value| value.expect("signalled interruption"))
+			.expect("interruption sender lives with the backend");
+		self.0.interruption.send_replace(None);
+		Ok(interruption)
 	}
 	async fn operator_human_message_media(
 		&self,
@@ -610,6 +955,8 @@ impl ExecutionEnvironment for Backend {
 			max_steps: 64,
 			allow_task_creation: None,
 			conversation_memory: self.0.conversation_memory,
+			context_policy: self.0.context_policy.clone(),
+			tool_parallelism: 1,
 			projection_version: self.0.projection,
 			prompt_cache: self.0.prompt_cache,
 		})
@@ -619,6 +966,33 @@ impl ExecutionEnvironment for Backend {
 	}
 	fn compactor(&self) -> Result<Box<dyn CompactionClassifier>> {
 		Ok(Box::new(self.clone()))
+	}
+	async fn summary_dependencies_current(
+		&self,
+		run: &Run,
+		dependencies: &aidash_domain::context::summary::SummaryDependencies,
+	) -> Result<bool> {
+		let _ = run;
+		self.record("summary.dependencies");
+		let checks = self
+			.0
+			.calls
+			.lock()
+			.unwrap()
+			.iter()
+			.filter(|call| **call == "summary.dependencies")
+			.count();
+		// Past the threshold, revocation hits every set, or only the sets that
+		// depend on `revoked_message` when one is named.
+		let revoked = self
+			.0
+			.summary_checks_before_revocation
+			.is_some_and(|current| checks > current)
+			&& self
+				.0
+				.revoked_message
+				.is_none_or(|id| dependencies.message_ids.contains(&id));
+		Ok(!self.0.stale_summary_dependencies && !revoked)
 	}
 }
 
@@ -636,12 +1010,54 @@ impl ExecutionVisibility for Backend {
 
 #[async_trait]
 impl ModelProvider for Backend {
-	async fn infer(&self, request: ModelRequest) -> Result<ModelResponse> {
+	async fn infer(
+		&self,
+		request: ModelRequest,
+		progress: &dyn InferenceProgressSink,
+	) -> Result<ModelResponse> {
+		if request.response_format.is_some() {
+			request.ensure_fits(1_000_000).unwrap();
+			assert!(request.tools.is_empty());
+			self.record("summarizer.infer");
+			self.0.requests.lock().unwrap().push(request);
+			let text = self
+				.0
+				.summary_text
+				.lock()
+				.unwrap()
+				.clone()
+				.expect("summary fixture");
+			return Ok(ModelResponse {
+				text,
+				input_tokens: 100,
+				output_tokens: 50,
+				usage_complete: true,
+				..Default::default()
+			});
+		}
 		request.ensure_fits(128000).unwrap();
 		self.record("provider.infer");
 		self.0.requests.lock().unwrap().push(request);
 		if self.0.stall_provider.load(Ordering::SeqCst) {
 			std::future::pending::<()>().await;
+		}
+		{
+			let mut overflows = self.0.overflows.lock().unwrap();
+			if *overflows > 0 {
+				*overflows -= 1;
+				return Err(Error::ContextOverflow);
+			}
+		}
+		if let Some(failure) = self.0.terminal {
+			return Err(Error::TerminalResponse(
+				failure,
+				Box::new(ModelResponse {
+					input_tokens: 200,
+					output_tokens: 4096,
+					usage_complete: true,
+					..Default::default()
+				}),
+			));
 		}
 		if let Some(status) = self.0.provider_status {
 			return Err(Error::ProviderRejected {
@@ -649,6 +1065,25 @@ impl ModelProvider for Backend {
 				reason: "Fixture rejection".into(),
 			});
 		}
+		let script = self
+			.0
+			.scripts
+			.lock()
+			.unwrap()
+			.pop_front()
+			.unwrap_or_default();
+		for step in script {
+			match step {
+				Step::Offer(item) => progress.offer(item),
+				Step::Sleep(duration) => tokio::time::sleep(duration).await,
+				Step::Input(content) => self.add_input(content),
+				Step::Interrupt(interruption) => {
+					self.0.interruption.send_replace(Some(interruption));
+				}
+				Step::Fail(error) => return Err(error),
+			}
+		}
+		self.record("provider.response");
 		Ok(ModelResponse {
 			text: "Completed task".into(),
 			input_tokens: 200,
@@ -666,8 +1101,16 @@ impl ModelProvider for Backend {
 }
 #[async_trait]
 impl CompactionClassifier for Backend {
-	async fn ask(&self, _state: &Value, _questions: &CompactionQuestions) -> Result<Value> {
-		unexpected("compaction")
+	async fn ask(&self, _state: &Value, questions: &CompactionQuestions) -> Result<Value> {
+		let Some(retention) = self.0.jev_retention else {
+			unexpected("compaction")
+		};
+		self.record("jev.ask");
+		let answers: serde_json::Map<_, _> = questions
+			.keys()
+			.map(|key| (key.clone(), json!({"noul":retention})))
+			.collect();
+		Ok(json!({"answers":answers}))
 	}
 }
 #[async_trait]
@@ -675,6 +1118,10 @@ impl InferenceReservation for Backend {
 	async fn settle(self: Box<Self>, response: &ModelResponse) -> Result<()> {
 		assert_eq!(response.usage_complete, !self.0.omit_output_usage);
 		self.record("reservation.settle");
+		Ok(())
+	}
+	async fn abort(self: Box<Self>) -> Result<()> {
+		self.record("reservation.abort");
 		Ok(())
 	}
 }
@@ -739,6 +1186,26 @@ fn fixture() -> Fixture {
 		dependency_status: None,
 		remote_home: false,
 		human: Mutex::new(None),
+		journal: Mutex::new(vec![]),
+		compaction_attempts: Mutex::new(vec![]),
+		context_policy: None,
+		overflows: Mutex::new(0),
+		jev_retention: None,
+		summary_text: Mutex::new(None),
+		revoke_summarizer: false,
+		stale_summary_dependencies: false,
+		summary_checks_before_revocation: None,
+		revoked_message: None,
+		summary_reservation: false,
+		terminal: None,
+		summarizer_output_tokens: 4096,
+		scripts: Mutex::new(VecDeque::new()),
+		attempts: Mutex::new(vec![]),
+		progress: Mutex::new(vec![]),
+		interruption: tokio::sync::watch::channel(None).0,
+		deny_recheck: false,
+		fail_append: false,
+		block_append: false,
 		cancel_inference: false,
 		usage: Mutex::new(vec![]),
 		stall_provider: AtomicBool::new(false),
@@ -970,6 +1437,7 @@ async fn inference_rechecks_authority_and_settles_usage_before_accepting_output(
 			name.starts_with("authority.")
 				|| name.starts_with("visibility.")
 				|| name.starts_with("reservation.")
+				|| name.starts_with("inference.")
 				|| name.starts_with("usage.")
 				|| *name == "provider.infer"
 				|| *name == "save"
@@ -985,7 +1453,9 @@ async fn inference_rechecks_authority_and_settles_usage_before_accepting_output(
 			"usage.dispatch",
 			"authority.suspend",
 			"visibility.suspend",
+			"inference.start",
 			"provider.infer",
+			"authority.suspend",
 			"visibility.resume",
 			"usage.complete",
 			"reservation.settle",
@@ -1182,6 +1652,16 @@ async fn rejected_authority_never_accepts_or_persists_provider_output(
 	let calls = fixture.backend.0.calls.lock().unwrap();
 	assert_eq!(calls.contains(&"provider.infer"), resumed);
 	assert_eq!(calls.contains(&"reservation.settle"), resumed);
+	drop(calls);
+	// Output rejected after the provider call closes its attempt as revoked.
+	let expected = if resumed {
+		vec![vec![ProgressOutcome::Interrupted(
+			InterruptionReason::Revoked,
+		)]]
+	} else {
+		vec![]
+	};
+	assert_eq!(fixture.backend.outcomes(), expected);
 }
 #[rstest]
 #[tokio::test]
@@ -1359,6 +1839,101 @@ impl ExecutionTool for SkillList {
 		unexpected("skill_list.invoke")
 	}
 }
+struct RecordReader;
+#[async_trait]
+impl ExecutionTool for RecordReader {
+	fn specification(&self) -> aidash_domain::provider::ToolSpec {
+		aidash_domain::provider::ToolSpec {
+			name: "renamed_reader".into(),
+			description: "Read workspace records".into(),
+			parameters: json!({"type":"object","properties":{}}),
+		}
+	}
+	fn contract(&self) -> aidash_domain::tool::ToolContract {
+		aidash_domain::tool::builtin_contract("workspace_read").unwrap()
+	}
+	fn replay_safe(&self) -> bool {
+		true
+	}
+	async fn invoke(&self, _: &Run, _: Value, _: &str) -> Result<Value> {
+		unexpected("renamed_reader.invoke")
+	}
+}
+struct Observer;
+#[async_trait]
+impl ExecutionTool for Observer {
+	fn specification(&self) -> aidash_domain::provider::ToolSpec {
+		aidash_domain::provider::ToolSpec {
+			name: "renamed_observer".into(),
+			description: "Observe the workspace".into(),
+			parameters: json!({"type":"object","properties":{}}),
+		}
+	}
+	fn contract(&self) -> aidash_domain::tool::ToolContract {
+		aidash_domain::tool::builtin_contract("workspace_observe").unwrap()
+	}
+	fn replay_safe(&self) -> bool {
+		true
+	}
+	async fn invoke(&self, _: &Run, _: Value, _: &str) -> Result<Value> {
+		unexpected("renamed_observer.invoke")
+	}
+}
+
+#[rstest]
+fn summary_dependencies_keep_a_message_whose_read_result_jev_truncated() {
+	let id = Uuid::from_u128(7);
+	let mut tools = Tools::new();
+	tools.insert("renamed_reader".into(), Arc::new(RecordReader));
+	let call = ToolCall {
+		id: "read".into(),
+		name: "renamed_reader".into(),
+		arguments: json!({"kind":"message", "id":id, "offset":0}),
+	};
+	// Jev keeps the leading text of an old result as a plain string.
+	let entries = [context::HistoryEntry {
+		seq: 1,
+		event: ContextEvent::tool(call, json!("{\"kind\":\"message\",\"content\":\"private")),
+	}];
+
+	let dependencies = summary_dependencies(&entries, &tools);
+
+	assert!(dependencies.message_ids.contains(&id));
+	assert!(dependencies.tool_call_ids.contains("read"));
+}
+
+#[rstest]
+fn only_message_reads_among_workspace_records_are_summarizable() {
+	let mut tools = Tools::new();
+	tools.insert("renamed_reader".into(), Arc::new(RecordReader));
+	tools.insert("renamed_observer".into(), Arc::new(Observer));
+	let event = |name: &str, arguments: Value| {
+		ContextEvent::tool(
+			ToolCall {
+				id: "call".into(),
+				name: name.into(),
+				arguments,
+			},
+			json!({"view":"workspace_observation_v1"}),
+		)
+	};
+	let message = json!({"kind":"message","id":Uuid::from_u128(7)});
+	assert!(summarizable(&event("renamed_reader", message), &tools));
+	// Each of these records is filtered on its own, and a summary rechecks
+	// only message sources, so the events stay verbatim.
+	for kind in ["task", "artifact", "event", "workspace"] {
+		let record = json!({"kind":kind,"id":Uuid::from_u128(8)});
+		assert!(
+			!summarizable(&event("renamed_reader", record), &tools),
+			"{kind}"
+		);
+	}
+	assert!(!summarizable(
+		&event("renamed_observer", json!({"offset":0,"limit":20})),
+		&tools
+	));
+	assert!(summarizable(&event("read", json!({"path":"a"})), &tools));
+}
 
 #[rstest]
 #[tokio::test]
@@ -1461,6 +2036,1176 @@ async fn advance_sources(fixture: &mut Fixture) -> Result<()> {
 	Executor::new(&backend)
 		.advance(&mut fixture.run, backend.0.token, &mut backend.clone())
 		.await
+}
+
+fn recovery_policy(summary: bool) -> aidash_domain::context::policy::ContextPolicy {
+	let mut policy = json!({"version":"context-recovery/1"});
+	if summary {
+		policy["summary"] = json!({"model":{"id":"summarizer","version":"1.0.0"}});
+	}
+	serde_json::from_value(policy).unwrap()
+}
+
+fn thinking_with_history(fixture: &mut Fixture, old: usize) {
+	fixture.run.state = RunState::Thinking(ThinkingState::default());
+	fixture.run.context.push(ContextEvent::Human {
+		request: "Never deploy on Fridays".into(),
+		request_kind: "INFORMATION_REQUEST".into(),
+		response: json!("acknowledged"),
+	});
+	for i in 0..old {
+		fixture.run.context.push(ContextEvent::tool(
+			ToolCall {
+				id: format!("old-{i}"),
+				name: "read".into(),
+				arguments: json!({"path":format!("old-{i}")}),
+			},
+			json!("x".repeat(4000)),
+		));
+	}
+	for i in 0..6 {
+		fixture.run.context.push(ContextEvent::tool(
+			ToolCall {
+				id: format!("recent-{i}"),
+				name: "read".into(),
+				arguments: json!({}),
+			},
+			json!("recent"),
+		));
+	}
+	// Everything above already reached an accepted inference.
+	fixture.run.context.journal.inferred_through = fixture.run.context.journal.head;
+}
+
+fn events(fixture: &Fixture) -> Vec<String> {
+	fixture
+		.backend
+		.0
+		.writes
+		.lock()
+		.unwrap()
+		.iter()
+		.map(|(event, _)| event.clone())
+		.collect()
+}
+
+#[rstest]
+#[tokio::test]
+async fn provider_overflow_retries_with_a_smaller_window_without_dispatching(mut fixture: Fixture) {
+	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	state.context_policy = Some(recovery_policy(false));
+	*state.overflows.lock().unwrap() = 2;
+	fixture.run.state = RunState::Thinking(ThinkingState::default());
+	advance_sources(&mut fixture).await.unwrap();
+	// The overflow saved only recovery state; no response or tool call exists.
+	assert!(matches!(fixture.run.state, RunState::Thinking(_)));
+	assert_eq!(fixture.run.context.recovery.window_permille, 750);
+	assert_eq!(fixture.run.context.recovery.overflow_attempts, 1);
+	assert_eq!(events(&fixture).last().unwrap(), "run.context_overflow");
+	// The retried request did not shrink, so recovery pauses instead of looping.
+	assert!(matches!(
+		advance_sources(&mut fixture).await,
+		Err(Error::Context(
+			aidash_domain::context::recovery::Failure::OverflowRetriesExhausted
+		))
+	));
+	let requests = fixture.backend.0.requests.lock().unwrap();
+	assert_eq!(requests.len(), 2);
+	// Only the Context Policy reduces context, never OpenRouter transforms.
+	assert!(
+		requests
+			.iter()
+			.all(|request| request.disable_provider_transforms)
+	);
+	drop(requests);
+	assert!(matches!(fixture.run.state, RunState::Thinking(_)));
+}
+
+#[rstest]
+#[tokio::test]
+async fn provider_overflow_releases_its_reservation_before_the_reduced_retry(mut fixture: Fixture) {
+	// Arrange
+	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	state.scoped = true;
+	state.context_policy = Some(recovery_policy(false));
+	*state.overflows.lock().unwrap() = 1;
+	fixture.run.state = RunState::Thinking(ThinkingState::default());
+	// Act
+	advance_sources(&mut fixture).await.unwrap();
+	// Assert: the rejected attempt's charge is released before the retry
+	// state is saved, and its Usage Record stays a provider rejection.
+	assert_eq!(events(&fixture).last().unwrap(), "run.context_overflow");
+	let overflowed = calls(&fixture);
+	assert!(position(&overflowed, "provider.infer") < position(&overflowed, "reservation.abort"));
+	assert!(!overflowed.contains(&"reservation.settle"));
+	assert_eq!(
+		fixture.backend.0.usage.lock().unwrap()[0].1,
+		Some(UsageOutcome::Rejected {
+			class: "provider_rejected".into()
+		})
+	);
+	// The reduced retry reserves once more and settles its own response.
+	advance_sources(&mut fixture).await.unwrap();
+	let calls = calls(&fixture);
+	let count = |name| calls.iter().filter(|call| **call == name).count();
+	assert_eq!(count("reservation.admit"), 2);
+	assert_eq!(count("reservation.abort"), 1);
+	assert_eq!(count("reservation.settle"), 1);
+	assert!(matches!(fixture.run.state, RunState::ToolCall(_)));
+}
+
+#[rstest]
+#[tokio::test]
+async fn legacy_versions_and_unrelated_rejections_never_compact_and_retry(mut fixture: Fixture) {
+	*fixture.backend.0.overflows.lock().unwrap() = 1;
+	fixture.run.state = RunState::Thinking(ThinkingState::default());
+	assert!(matches!(
+		advance_sources(&mut fixture).await,
+		Err(Error::Context(
+			aidash_domain::context::recovery::Failure::OverflowRetriesExhausted
+		))
+	));
+	assert!(fixture.run.context.recovery.is_initial());
+	// A prune-only Agent keeps the provider's default transforms.
+	assert!(!fixture.backend.0.requests.lock().unwrap()[0].disable_provider_transforms);
+
+	let mut rejected = fixture_with(|state| {
+		state.context_policy = Some(recovery_policy(false));
+		state.provider_status = Some(400);
+	});
+	rejected.run.state = RunState::Thinking(ThinkingState::default());
+	assert!(matches!(
+		advance_sources(&mut rejected).await,
+		Err(Error::ProviderRejected { status: 400, .. })
+	));
+	assert!(rejected.run.context.recovery.is_initial());
+	assert!(!events(&rejected).contains(&"run.context_overflow".to_owned()));
+}
+
+#[rstest]
+#[tokio::test]
+async fn summary_stage_fits_history_that_pruning_cannot_and_keeps_the_journal(
+	mut fixture: Fixture,
+) {
+	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	state.context_policy = Some(recovery_policy(true));
+	state.jev_retention = Some(1.0);
+	*state.summary_text.lock().unwrap() = Some(
+		json!({"goal":"Fixture task","constraints":[{"id":"c1","text":"Never deploy on Fridays"}],"decisions":[],"unresolved":[{"id":"u1","text":"finish reading"}],"resolved":[],"artifacts":[],"verification":[]})
+			.to_string(),
+	);
+	thinking_with_history(&mut fixture, 40);
+	let originals = fixture.run.context.history.clone();
+
+	// Step 1: Jev keeps everything, so the Summary Stage merges old history.
+	advance_sources(&mut fixture).await.unwrap();
+	assert_eq!(events(&fixture).last().unwrap(), "context.compacted");
+	let summary = fixture.run.context.execution_summary.as_ref().unwrap();
+	assert_eq!(
+		(summary.source.from_seq, summary.source.through_seq),
+		(2, 41)
+	);
+	assert_eq!(fixture.run.context.history.len(), 7);
+	assert!(matches!(
+		fixture.run.context.history[0].event,
+		ContextEvent::Human { .. }
+	));
+	{
+		let attempts = fixture.backend.0.compaction_attempts.lock().unwrap();
+		assert_eq!(attempts.len(), 1);
+		assert_eq!(attempts[0].1, Some(Outcome::Adopted));
+	}
+	// The authoritative journal still holds every original event.
+	let journal = fixture
+		.backend
+		.context_journal(fixture.run.id, 1, u64::MAX >> 1)
+		.await
+		.unwrap();
+	assert_eq!(journal, originals);
+
+	// Step 2: the adopted projection fits and inference proceeds.
+	advance_sources(&mut fixture).await.unwrap();
+	assert!(matches!(fixture.run.state, RunState::ToolCall(_)));
+	let request = fixture
+		.backend
+		.0
+		.requests
+		.lock()
+		.unwrap()
+		.last()
+		.unwrap()
+		.clone();
+	assert!(request.response_format.is_none());
+	let ModelContext::Legacy(context) = &request.context else {
+		panic!("expected a Legacy request");
+	};
+	assert_eq!(context["summary"]["constraints"][0]["id"], "c1");
+	assert!(!context.to_string().contains("old-0"));
+}
+
+#[rstest]
+#[tokio::test]
+async fn invalid_summary_leaves_the_saved_context_unchanged(mut fixture: Fixture) {
+	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	state.context_policy = Some(recovery_policy(true));
+	state.jev_retention = Some(1.0);
+	*state.summary_text.lock().unwrap() = Some("not json".into());
+	thinking_with_history(&mut fixture, 40);
+	let before = fixture.run.context.history.clone();
+	assert!(matches!(
+		advance_sources(&mut fixture).await,
+		Err(Error::Context(
+			aidash_domain::context::recovery::Failure::SummaryInvalid
+		))
+	));
+	assert_eq!(fixture.run.context.history, before);
+	assert!(fixture.run.context.execution_summary.is_none());
+	assert!(!events(&fixture).contains(&"context.compacted".to_owned()));
+	assert_eq!(
+		fixture.backend.0.compaction_attempts.lock().unwrap()[0].1,
+		Some(Outcome::Invalid)
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn summary_stage_is_unavailable_without_a_policy_model(mut fixture: Fixture) {
+	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	state.context_policy = Some(recovery_policy(false));
+	state.jev_retention = Some(1.0);
+	thinking_with_history(&mut fixture, 40);
+	assert!(matches!(
+		advance_sources(&mut fixture).await,
+		Err(Error::Context(
+			aidash_domain::context::recovery::Failure::ContextUnreducible
+		))
+	));
+	assert!(
+		fixture
+			.backend
+			.0
+			.compaction_attempts
+			.lock()
+			.unwrap()
+			.is_empty()
+	);
+	assert!(
+		!fixture
+			.backend
+			.0
+			.calls
+			.lock()
+			.unwrap()
+			.contains(&"summarizer.infer")
+	);
+}
+
+fn valid_summary() -> String {
+	json!({"goal":"Fixture task","constraints":[{"id":"c1","text":"Never deploy on Fridays"}],"decisions":[],"unresolved":[{"id":"u1","text":"finish reading"}],"resolved":[],"artifacts":[],"verification":[]})
+		.to_string()
+}
+
+fn calls(fixture: &Fixture) -> Vec<&'static str> {
+	fixture.backend.0.calls.lock().unwrap().clone()
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_summarizer_revoked_during_its_call_is_never_adopted(mut fixture: Fixture) {
+	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	state.scoped = true;
+	state.revoke_summarizer = true;
+	state.context_policy = Some(recovery_policy(true));
+	state.jev_retention = Some(1.0);
+	*state.summary_text.lock().unwrap() = Some(valid_summary());
+	thinking_with_history(&mut fixture, 40);
+	let before = fixture.run.context.history.clone();
+	assert!(matches!(
+		advance_sources(&mut fixture).await,
+		Err(Error::Context(
+			aidash_domain::context::recovery::Failure::SummaryUnavailable
+		))
+	));
+	assert_eq!(fixture.run.context.history, before);
+	assert!(fixture.run.context.execution_summary.is_none());
+	assert!(!events(&fixture).contains(&"context.compacted".to_owned()));
+	assert_eq!(
+		fixture.backend.0.compaction_attempts.lock().unwrap()[0].1,
+		Some(Outcome::Unauthorized)
+	);
+	let calls = calls(&fixture);
+	let position = |name| calls.iter().position(|call| *call == name).unwrap();
+	assert!(position("summarizer.infer") < position("authority.summary_recheck"));
+	assert_eq!(
+		calls
+			.iter()
+			.filter(|call| **call == "authority.summary_reserve")
+			.count(),
+		1,
+		"the recheck charges no second call"
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_revoked_summary_dependency_pauses_before_jev_or_inference(mut fixture: Fixture) {
+	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	state.context_policy = Some(recovery_policy(true));
+	state.jev_retention = Some(1.0);
+	*state.summary_text.lock().unwrap() = Some(valid_summary());
+	thinking_with_history(&mut fixture, 40);
+	let originals = fixture.run.context.history.clone();
+	advance_sources(&mut fixture).await.unwrap();
+	assert!(fixture.run.context.execution_summary.is_some());
+
+	Arc::get_mut(&mut fixture.backend.0)
+		.unwrap()
+		.stale_summary_dependencies = true;
+	let earlier = calls(&fixture).len();
+	let requests = fixture.backend.0.requests.lock().unwrap().len();
+	assert!(matches!(
+		advance_sources(&mut fixture).await,
+		Err(Error::Forbidden)
+	));
+	// The restoration is saved under the step's lease; the step then pauses
+	// for authority before Jev or the model can read the restored originals.
+	assert_eq!(events(&fixture).last().unwrap(), "context.summary_revoked");
+	assert!(fixture.run.context.execution_summary.is_none());
+	assert_eq!(fixture.run.context.history, originals);
+	let step = &calls(&fixture)[earlier..];
+	for provider in ["jev.ask", "provider.infer", "summarizer.infer"] {
+		assert!(!step.contains(&provider), "{provider}: {step:?}");
+	}
+	assert_eq!(fixture.backend.0.requests.lock().unwrap().len(), requests);
+}
+
+#[rstest]
+#[tokio::test]
+async fn restored_originals_stay_paused_until_their_sources_are_readable(mut fixture: Fixture) {
+	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	state.context_policy = Some(recovery_policy(true));
+	state.jev_retention = Some(1.0);
+	*state.summary_text.lock().unwrap() = Some(valid_summary());
+	thinking_with_history(&mut fixture, 40);
+	advance_sources(&mut fixture).await.unwrap();
+	let dependencies = fixture
+		.run
+		.context
+		.execution_summary
+		.as_ref()
+		.unwrap()
+		.dependencies
+		.clone();
+	Arc::get_mut(&mut fixture.backend.0)
+		.unwrap()
+		.stale_summary_dependencies = true;
+	assert!(matches!(
+		advance_sources(&mut fixture).await,
+		Err(Error::Forbidden)
+	));
+	assert_eq!(
+		fixture.run.context.revoked_summary_dependencies,
+		Some(dependencies)
+	);
+
+	// A resumed step finds no summary, yet the restored originals still
+	// depend on the revoked sources: it pauses again before any provider.
+	let earlier = calls(&fixture).len();
+	let writes = events(&fixture).len();
+	let requests = fixture.backend.0.requests.lock().unwrap().len();
+	assert!(matches!(
+		advance_sources(&mut fixture).await,
+		Err(Error::Forbidden)
+	));
+	let step = &calls(&fixture)[earlier..];
+	assert!(step.contains(&"summary.dependencies"), "{step:?}");
+	for provider in ["jev.ask", "provider.infer", "summarizer.infer"] {
+		assert!(!step.contains(&provider), "{provider}: {step:?}");
+	}
+	assert_eq!(fixture.backend.0.requests.lock().unwrap().len(), requests);
+	assert_eq!(events(&fixture).len(), writes);
+
+	// Once every source is readable again, the step reaches a provider and
+	// the saved context no longer carries the guard.
+	Arc::get_mut(&mut fixture.backend.0)
+		.unwrap()
+		.stale_summary_dependencies = false;
+	advance_sources(&mut fixture).await.unwrap();
+	assert!(fixture.backend.0.requests.lock().unwrap().len() > requests);
+	assert!(fixture.run.context.revoked_summary_dependencies.is_none());
+}
+
+#[rstest]
+#[case::truncated(aidash_domain::context::recovery::Failure::OutputTruncated)]
+#[case::refused(aidash_domain::context::recovery::Failure::Refused)]
+#[tokio::test]
+async fn a_terminal_completion_settles_its_reservation_and_pauses(
+	mut fixture: Fixture,
+	#[case] failure: aidash_domain::context::recovery::Failure,
+) {
+	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	state.scoped = true;
+	state.terminal = Some(failure);
+	fixture.run.state = RunState::Thinking(ThinkingState::default());
+	assert!(matches!(
+		advance_sources(&mut fixture).await,
+		Err(Error::Context(actual)) if actual == failure
+	));
+	let calls = calls(&fixture);
+	let position = |name| calls.iter().position(|call| *call == name).unwrap();
+	// The reported usage settles the reservation instead of keeping the
+	// whole window charged; no tool call or response is accepted.
+	assert!(position("provider.infer") < position("reservation.settle"));
+	assert!(matches!(fixture.run.state, RunState::Thinking(_)));
+}
+
+// A trusted local Run releases no authority for Jev, yet its summary sources
+// can still be deleted while pruning is in flight.
+#[rstest]
+#[case::scoped(true)]
+#[case::local(false)]
+#[tokio::test]
+async fn a_summary_dependency_revoked_during_pruning_pauses_before_inference(
+	mut fixture: Fixture,
+	#[case] scoped: bool,
+) {
+	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	state.scoped = scoped;
+	state.context_policy = Some(recovery_policy(true));
+	state.jev_retention = Some(1.0);
+	*state.summary_text.lock().unwrap() = Some(valid_summary());
+	thinking_with_history(&mut fixture, 40);
+	let originals = fixture.run.context.history.clone();
+	advance_sources(&mut fixture).await.unwrap();
+	assert!(fixture.run.context.execution_summary.is_some());
+
+	// The check before pruning passes; the source is revoked before the
+	// check that follows it.
+	let earlier = calls(&fixture).len();
+	let checks = calls(&fixture)
+		.iter()
+		.filter(|call| **call == "summary.dependencies")
+		.count();
+	Arc::get_mut(&mut fixture.backend.0)
+		.unwrap()
+		.summary_checks_before_revocation = Some(checks + 1);
+	let requests = fixture.backend.0.requests.lock().unwrap().len();
+	assert!(matches!(
+		advance_sources(&mut fixture).await,
+		Err(Error::Forbidden)
+	));
+	assert_eq!(events(&fixture).last().unwrap(), "context.summary_revoked");
+	assert!(fixture.run.context.execution_summary.is_none());
+	assert_eq!(fixture.run.context.history, originals);
+	let step = &calls(&fixture)[earlier..];
+	assert_eq!(
+		step.iter()
+			.filter(|call| **call == "summary.dependencies")
+			.count(),
+		2,
+		"{step:?}"
+	);
+	for provider in ["provider.infer", "summarizer.infer"] {
+		assert!(!step.contains(&provider), "{provider}: {step:?}");
+	}
+	assert_eq!(fixture.backend.0.requests.lock().unwrap().len(), requests);
+}
+
+// A trusted local Run has no authority guard, yet its summary sources can
+// still be deleted while inference is in flight.
+#[rstest]
+#[case::scoped(true)]
+#[case::local(false)]
+#[tokio::test]
+async fn a_summary_dependency_revoked_during_inference_discards_the_response(
+	mut fixture: Fixture,
+	#[case] scoped: bool,
+) {
+	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	state.scoped = scoped;
+	state.context_policy = Some(recovery_policy(true));
+	state.jev_retention = Some(1.0);
+	*state.summary_text.lock().unwrap() = Some(valid_summary());
+	thinking_with_history(&mut fixture, 40);
+	let originals = fixture.run.context.history.clone();
+	advance_sources(&mut fixture).await.unwrap();
+	assert!(fixture.run.context.execution_summary.is_some());
+
+	// Every check before inference, before and after pruning, passes; the
+	// source is revoked while the ordinary model call is in flight.
+	let before_inference = 2;
+	let earlier = calls(&fixture).len();
+	let checks = calls(&fixture)
+		.iter()
+		.filter(|call| **call == "summary.dependencies")
+		.count();
+	Arc::get_mut(&mut fixture.backend.0)
+		.unwrap()
+		.summary_checks_before_revocation = Some(checks + before_inference);
+	// The streamed text depends on the summary and is never stored.
+	fixture.backend.script(vec![text("Completed task")]);
+	assert!(matches!(
+		advance_sources(&mut fixture).await,
+		Err(Error::Forbidden)
+	));
+	assert!(fixture.backend.progress_text().is_empty());
+	assert!(!calls(&fixture).contains(&"inference.append"));
+	assert_eq!(
+		fixture.backend.outcomes().last().unwrap(),
+		&[ProgressOutcome::Interrupted(InterruptionReason::Revoked)]
+	);
+
+	let step = &calls(&fixture)[earlier..];
+	let inferred = step.iter().position(|call| *call == "provider.infer");
+	let last_check = step
+		.iter()
+		.rposition(|call| *call == "summary.dependencies");
+	assert!(inferred.is_some() && inferred < last_check, "{step:?}");
+	assert_eq!(
+		step.iter()
+			.filter(|call| **call == "summary.dependencies")
+			.count(),
+		before_inference + 1,
+		"{step:?}"
+	);
+	// The response is never accepted: no tool step, and the originals are
+	// restored in place of the revoked summary.
+	assert!(matches!(fixture.run.state, RunState::Thinking(_)));
+	assert_eq!(events(&fixture).last().unwrap(), "context.summary_revoked");
+	assert!(fixture.run.context.execution_summary.is_none());
+	assert_eq!(fixture.run.context.history, originals);
+}
+
+#[rstest]
+#[case::scoped(true)]
+#[case::local(false)]
+#[tokio::test]
+async fn summary_derived_progress_is_stored_only_once_its_sources_are_rechecked(
+	mut fixture: Fixture,
+	#[case] scoped: bool,
+) {
+	// Arrange
+	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	state.scoped = scoped;
+	state.context_policy = Some(recovery_policy(true));
+	state.jev_retention = Some(1.0);
+	*state.summary_text.lock().unwrap() = Some(valid_summary());
+	thinking_with_history(&mut fixture, 40);
+	advance_sources(&mut fixture).await.unwrap();
+	assert!(fixture.run.context.execution_summary.is_some());
+	let earlier = calls(&fixture).len();
+	fixture.backend.script(vec![text("Completed task")]);
+	// Act
+	advance_sources(&mut fixture).await.unwrap();
+	// Assert: nothing is stored while the provider streams; the held text is
+	// stored after the post-response recheck, before acceptance.
+	let step = &calls(&fixture)[earlier..];
+	let last_check = step
+		.iter()
+		.rposition(|call| *call == "summary.dependencies")
+		.unwrap();
+	assert!(position(step, "provider.response") < last_check, "{step:?}");
+	assert!(last_check < position(step, "inference.append"), "{step:?}");
+	assert_eq!(fixture.backend.progress_text(), "Completed task");
+	assert_eq!(
+		fixture.backend.outcomes().last().unwrap(),
+		&[ProgressOutcome::Accepted]
+	);
+	assert_eq!(fixture.backend.events().last().unwrap(), "model.completed");
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_source_revoked_while_the_summarizer_runs_is_never_adopted(mut fixture: Fixture) {
+	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	state.scoped = true;
+	state.context_policy = Some(recovery_policy(true));
+	state.jev_retention = Some(1.0);
+	*state.summary_text.lock().unwrap() = Some(valid_summary());
+	// No summary exists yet, so the checks are the ones before and after the
+	// reservation and the one after the summarizer call, made once authority
+	// resumes; the source is revoked during the call.
+	state.summary_checks_before_revocation = Some(2);
+	thinking_with_history(&mut fixture, 40);
+	let before = fixture.run.context.history.clone();
+
+	assert!(matches!(
+		advance_sources(&mut fixture).await,
+		Err(Error::Forbidden)
+	));
+
+	assert!(fixture.run.context.execution_summary.is_none());
+	assert_eq!(fixture.run.context.history, before);
+	assert!(!events(&fixture).contains(&"context.compacted".to_owned()));
+	{
+		let attempts = fixture.backend.0.compaction_attempts.lock().unwrap();
+		assert_eq!(attempts.len(), 1);
+		assert_eq!(attempts[0].1, Some(Outcome::Unauthorized));
+	}
+	let calls = calls(&fixture);
+	let summarized = calls.iter().position(|call| *call == "summarizer.infer");
+	let last_check = calls
+		.iter()
+		.rposition(|call| *call == "summary.dependencies");
+	assert!(summarized.is_some() && summarized < last_check, "{calls:?}");
+	assert!(!calls.contains(&"provider.infer"));
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_source_revoked_before_the_summarizer_call_is_never_disclosed(mut fixture: Fixture) {
+	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	state.scoped = true;
+	state.context_policy = Some(recovery_policy(true));
+	state.jev_retention = Some(1.0);
+	*state.summary_text.lock().unwrap() = Some(valid_summary());
+	// The source is already revoked before the reservation: nothing is
+	// charged and nothing is disclosed.
+	state.summary_checks_before_revocation = Some(0);
+	thinking_with_history(&mut fixture, 40);
+	let before = fixture.run.context.history.clone();
+
+	assert!(matches!(
+		advance_sources(&mut fixture).await,
+		Err(Error::Forbidden)
+	));
+
+	let calls = calls(&fixture);
+	assert!(!calls.contains(&"summarizer.infer"), "{calls:?}");
+	assert!(!calls.contains(&"authority.summary_reserve"), "{calls:?}");
+	assert!(fixture.run.context.execution_summary.is_none());
+	assert_eq!(fixture.run.context.history, before);
+	let attempts = fixture.backend.0.compaction_attempts.lock().unwrap();
+	assert_eq!(attempts.len(), 1);
+	assert_eq!(attempts[0].1, Some(Outcome::Unauthorized));
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_source_revoked_while_the_reservation_holds_releases_it(mut fixture: Fixture) {
+	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	state.scoped = true;
+	state.summary_reservation = true;
+	state.context_policy = Some(recovery_policy(true));
+	state.jev_retention = Some(1.0);
+	*state.summary_text.lock().unwrap() = Some(valid_summary());
+	// The check before the reservation passes; the source is revoked while
+	// the reservation, which may wait on remote admission, is acquired.
+	state.summary_checks_before_revocation = Some(1);
+	thinking_with_history(&mut fixture, 40);
+	let before = fixture.run.context.history.clone();
+
+	assert!(matches!(
+		advance_sources(&mut fixture).await,
+		Err(Error::Forbidden)
+	));
+
+	let calls = calls(&fixture);
+	assert!(!calls.contains(&"summarizer.infer"), "{calls:?}");
+	assert!(!calls.contains(&"reservation.settle"), "{calls:?}");
+	let position = |name| calls.iter().position(|call| *call == name).unwrap();
+	assert!(position("authority.summary_reserve") < position("reservation.abort"));
+	assert_eq!(fixture.run.context.history, before);
+	let attempts = fixture.backend.0.compaction_attempts.lock().unwrap();
+	assert_eq!(attempts.len(), 1);
+	assert_eq!(attempts[0].1, Some(Outcome::Unauthorized));
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_trusted_local_summary_rechecks_its_sources_after_the_call(mut fixture: Fixture) {
+	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	state.context_policy = Some(recovery_policy(true));
+	state.jev_retention = Some(1.0);
+	*state.summary_text.lock().unwrap() = Some(valid_summary());
+	// No authority guard holds; the checks before the call pass and the
+	// source is deleted while the summarizer call is in flight.
+	state.summary_checks_before_revocation = Some(2);
+	thinking_with_history(&mut fixture, 40);
+	let before = fixture.run.context.history.clone();
+
+	assert!(matches!(
+		advance_sources(&mut fixture).await,
+		Err(Error::Forbidden)
+	));
+
+	let calls = calls(&fixture);
+	assert!(!calls.contains(&"authority.summary_reserve"), "{calls:?}");
+	let summarized = calls.iter().position(|call| *call == "summarizer.infer");
+	let last_check = calls
+		.iter()
+		.rposition(|call| *call == "summary.dependencies");
+	assert!(summarized.is_some() && summarized < last_check, "{calls:?}");
+	assert!(fixture.run.context.execution_summary.is_none());
+	assert_eq!(fixture.run.context.history, before);
+	assert!(!events(&fixture).contains(&"context.compacted".to_owned()));
+	let attempts = fixture.backend.0.compaction_attempts.lock().unwrap();
+	assert_eq!(attempts.len(), 1);
+	assert_eq!(attempts[0].1, Some(Outcome::Unauthorized));
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_carried_source_revoked_while_the_summarizer_runs_is_never_readopted(
+	mut fixture: Fixture,
+) {
+	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	state.scoped = true;
+	state.context_policy = Some(recovery_policy(true));
+	state.jev_retention = Some(1.0);
+	*state.summary_text.lock().unwrap() = Some(valid_summary());
+	thinking_with_history(&mut fixture, 40);
+	advance_sources(&mut fixture).await.unwrap();
+	// The first summary read message `carried`; the next merge absorbs none.
+	let carried = Uuid::from_u128(9);
+	let summary = fixture.run.context.execution_summary.as_mut().unwrap();
+	summary.dependencies.message_ids.insert(carried);
+	let first = summary.digest.clone();
+	thinking_with_history(&mut fixture, 40);
+	// The checks before and after pruning and before and after the second
+	// reservation pass; `carried` is revoked while the summarizer call is in
+	// flight.
+	let checks = calls(&fixture)
+		.iter()
+		.filter(|call| **call == "summary.dependencies")
+		.count();
+	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	state.summary_checks_before_revocation = Some(checks + 4);
+	state.revoked_message = Some(carried);
+	let earlier = calls(&fixture).len();
+
+	assert!(matches!(
+		advance_sources(&mut fixture).await,
+		Err(Error::Forbidden)
+	));
+
+	let step = &calls(&fixture)[earlier..];
+	assert!(step.contains(&"summarizer.infer"), "{step:?}");
+	assert_eq!(
+		fixture
+			.run
+			.context
+			.execution_summary
+			.as_ref()
+			.unwrap()
+			.digest,
+		first
+	);
+	let attempts = fixture.backend.0.compaction_attempts.lock().unwrap();
+	assert_eq!(attempts.last().unwrap().1, Some(Outcome::Unauthorized));
+}
+
+#[rstest]
+#[tokio::test]
+async fn imported_history_is_journaled_whole_before_pruning(mut fixture: Fixture) {
+	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	state.context_policy = Some(recovery_policy(false));
+	state.jev_retention = Some(0.0);
+	thinking_with_history(&mut fixture, 40);
+	// A pre-journal Run stores bare events and no cursor; loading imports them.
+	let mut stored = serde_json::to_value(&fixture.run.context).unwrap();
+	stored["history"] = json!(fixture.run.context.events().collect::<Vec<_>>());
+	stored.as_object_mut().unwrap().remove("journal");
+	fixture.run.context = serde_json::from_value(stored).unwrap();
+	let originals = fixture.run.context.history.clone();
+	assert_eq!(
+		fixture.run.context.journal.imported_through,
+		originals.len() as u64
+	);
+	// A cached source observation means no save precedes compaction.
+	fixture.run.context.source_observation = Some(
+		aidash_domain::context::sources::SourceObservation::new(
+			"0:0:0".into(),
+			aidash_domain::registry::rules::digest(&json!("null")),
+			json!({"memory":null,"skill_context":"","semantic_memory":null}),
+		)
+		.unwrap(),
+	);
+	advance_sources(&mut fixture).await.unwrap();
+	assert!(!events(&fixture).contains(&"run.sources_observed".to_owned()));
+	assert!(
+		fixture.run.context.history.len() < originals.len(),
+		"Jev pruned the saved projection"
+	);
+	let journal = fixture
+		.backend
+		.context_journal(fixture.run.id, 1, u64::MAX >> 1)
+		.await
+		.unwrap();
+	assert_eq!(journal, originals);
+	let calls = calls(&fixture);
+	let position = |name| calls.iter().position(|call| *call == name).unwrap();
+	assert!(position("journal") < position("jev.ask"));
+}
+
+#[rstest]
+#[tokio::test]
+async fn summary_output_is_capped_at_the_summarizer_limit(mut fixture: Fixture) {
+	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	state.context_policy = Some(recovery_policy(true));
+	state.jev_retention = Some(1.0);
+	state.summarizer_output_tokens = 1024;
+	*state.summary_text.lock().unwrap() = Some(valid_summary());
+	thinking_with_history(&mut fixture, 40);
+	advance_sources(&mut fixture).await.unwrap();
+	assert_eq!(events(&fixture).last().unwrap(), "context.compacted");
+	let requests = fixture.backend.0.requests.lock().unwrap();
+	let summary = requests
+		.iter()
+		.find(|request| request.response_format.is_some())
+		.unwrap();
+	// The policy default (4096) is clamped to the pinned summarizer's limit.
+	assert_eq!(summary.max_output_tokens, 1024);
+}
+
+fn fixture_with(configure: impl FnOnce(&mut State)) -> Fixture {
+	let mut fixture = fixture();
+	configure(Arc::get_mut(&mut fixture.backend.0).unwrap());
+	fixture
+}
+
+/// Counts metric updates made on the test thread; histograms count recordings.
+#[derive(Default)]
+struct Metrics(Mutex<BTreeMap<String, Arc<Count>>>);
+#[derive(Default)]
+struct Count(AtomicU64);
+impl metrics::CounterFn for Count {
+	fn increment(&self, value: u64) {
+		self.0.fetch_add(value, Ordering::Relaxed);
+	}
+	fn absolute(&self, value: u64) {
+		self.0.fetch_max(value, Ordering::Relaxed);
+	}
+}
+impl metrics::HistogramFn for Count {
+	fn record(&self, _: f64) {
+		self.0.fetch_add(1, Ordering::Relaxed);
+	}
+}
+impl Metrics {
+	fn handle(&self, key: &metrics::Key) -> Arc<Count> {
+		let mut name = key.name().to_owned();
+		for label in key.labels() {
+			name.push_str(&format!("{{{}={}}}", label.key(), label.value()));
+		}
+		self.0.lock().unwrap().entry(name).or_default().clone()
+	}
+	fn get(&self, name: &str) -> u64 {
+		let counts = self.0.lock().unwrap();
+		counts
+			.get(name)
+			.map_or(0, |count| count.0.load(Ordering::Relaxed))
+	}
+}
+impl metrics::Recorder for Metrics {
+	fn describe_counter(
+		&self,
+		_: metrics::KeyName,
+		_: Option<metrics::Unit>,
+		_: metrics::SharedString,
+	) {
+	}
+	fn describe_gauge(
+		&self,
+		_: metrics::KeyName,
+		_: Option<metrics::Unit>,
+		_: metrics::SharedString,
+	) {
+	}
+	fn describe_histogram(
+		&self,
+		_: metrics::KeyName,
+		_: Option<metrics::Unit>,
+		_: metrics::SharedString,
+	) {
+	}
+	fn register_counter(&self, key: &metrics::Key, _: &metrics::Metadata<'_>) -> metrics::Counter {
+		metrics::Counter::from_arc(self.handle(key))
+	}
+	fn register_gauge(&self, _: &metrics::Key, _: &metrics::Metadata<'_>) -> metrics::Gauge {
+		metrics::Gauge::noop()
+	}
+	fn register_histogram(
+		&self,
+		key: &metrics::Key,
+		_: &metrics::Metadata<'_>,
+	) -> metrics::Histogram {
+		metrics::Histogram::from_arc(self.handle(key))
+	}
+}
+
+fn thinking(mut fixture: Fixture) -> Fixture {
+	Arc::get_mut(&mut fixture.backend.0).unwrap().scoped = true;
+	fixture.run.state = RunState::Thinking(ThinkingState::default());
+	fixture
+}
+fn position(calls: &[&str], name: &str) -> usize {
+	calls
+		.iter()
+		.position(|call| *call == name)
+		.unwrap_or_else(|| panic!("{name} was not called"))
+}
+
+#[rstest]
+#[tokio::test(start_paused = true)]
+async fn streamed_progress_is_stored_before_the_response_is_accepted(fixture: Fixture) {
+	// Arrange
+	let metrics = Metrics::default();
+	let _recorder = metrics::set_default_local_recorder(&metrics);
+	let mut fixture = thinking(fixture);
+	fixture.backend.script(vec![
+		text("Completed "),
+		Step::Sleep(FLUSH_INTERVAL * 2),
+		text("task"),
+	]);
+	// Act
+	advance_sources(&mut fixture).await.unwrap();
+	// Assert
+	let calls = fixture.backend.calls();
+	assert!(position(&calls, "inference.append") < position(&calls, "provider.response"));
+	assert!(position(&calls, "inference.start") < position(&calls, "provider.infer"));
+	assert!(calls.contains(&"reservation.settle"));
+	let response = &fixture.run.state.tool().unwrap().response;
+	assert_eq!(fixture.backend.progress_text(), response.text);
+	assert_eq!(fixture.backend.outcomes(), [[ProgressOutcome::Accepted]]);
+	assert_eq!(fixture.backend.events().last().unwrap(), "model.completed");
+	assert_eq!(metrics.get("aidash_inference_first_delta_seconds"), 1);
+	assert_eq!(metrics.get("aidash_inference_accepted_seconds"), 1);
+}
+
+#[rstest]
+#[tokio::test(start_paused = true)]
+async fn cancellation_mid_stream_interrupts_without_settling_or_tool_state(fixture: Fixture) {
+	// Arrange
+	let metrics = Metrics::default();
+	let _recorder = metrics::set_default_local_recorder(&metrics);
+	let mut fixture = thinking(fixture);
+	fixture.backend.script(vec![
+		text("Partial"),
+		Step::Sleep(FLUSH_INTERVAL * 2),
+		Step::Interrupt(InferenceInterruption::Cancelled),
+		Step::Sleep(Duration::from_secs(60)),
+	]);
+	// Act
+	let result = advance_sources(&mut fixture).await;
+	// Assert
+	assert!(matches!(result, Err(Error::Conflict(_))));
+	assert_eq!(fixture.backend.progress_text(), "Partial");
+	assert_eq!(
+		fixture.backend.outcomes(),
+		[[ProgressOutcome::Interrupted(InterruptionReason::Cancelled)]]
+	);
+	let calls = fixture.backend.calls();
+	assert!(!calls.contains(&"reservation.settle"));
+	assert!(!calls.contains(&"provider.response"));
+	assert_eq!(fixture.run.phase(), RunPhase::Thinking);
+	assert!(
+		!fixture
+			.backend
+			.events()
+			.contains(&"model.completed".to_owned())
+	);
+	assert_eq!(
+		metrics.get("aidash_inference_interruptions_total{reason=cancelled}"),
+		1
+	);
+}
+
+#[rstest]
+#[tokio::test(start_paused = true)]
+async fn new_input_mid_stream_discards_the_attempt_and_replans_with_it(fixture: Fixture) {
+	// Arrange
+	let metrics = Metrics::default();
+	let _recorder = metrics::set_default_local_recorder(&metrics);
+	let mut fixture = thinking(fixture);
+	fixture.backend.script(vec![
+		Step::Offer(InferenceProgress::ToolCall {
+			index: 0,
+			id: Some("call-1".into()),
+			name: Some("workspace_write".into()),
+			argument_bytes: 12,
+		}),
+		Step::Sleep(FLUSH_INTERVAL * 2),
+		Step::Input("Use the revised plan"),
+		Step::Interrupt(InferenceInterruption::Superseded),
+		Step::Sleep(Duration::from_secs(60)),
+	]);
+	// Act
+	advance_sources(&mut fixture).await.unwrap();
+	// Assert
+	assert_eq!(fixture.run.phase(), RunPhase::Thinking);
+	assert_eq!(fixture.run.step, 0);
+	assert_eq!(
+		fixture.backend.events().last().unwrap(),
+		"run.message_received"
+	);
+	assert_eq!(fixture.backend.outcomes(), [[ProgressOutcome::Discarded]]);
+	let calls = fixture.backend.calls();
+	assert!(!calls.contains(&"reservation.settle"));
+	assert!(!calls.contains(&"provider.response"));
+	assert!(
+		!fixture
+			.backend
+			.events()
+			.contains(&"model.completed".to_owned())
+	);
+	assert_eq!(
+		metrics.get("aidash_inference_interruptions_total{reason=correction}"),
+		1
+	);
+
+	// Act: the next step plans again and includes the new input.
+	advance_sources(&mut fixture).await.unwrap();
+	// Assert
+	let requests = fixture.backend.0.requests.lock().unwrap();
+	assert!(!format!("{:?}", requests[0]).contains("Use the revised plan"));
+	assert!(format!("{:?}", requests[1]).contains("Use the revised plan"));
+	drop(requests);
+	assert_eq!(fixture.run.phase(), RunPhase::ToolCall);
+	assert_eq!(
+		fixture.backend.outcomes(),
+		[[ProgressOutcome::Discarded], [ProgressOutcome::Accepted]]
+	);
+}
+
+#[rstest]
+#[tokio::test(start_paused = true)]
+async fn revoked_authority_mid_stream_interrupts_and_stops_progress(fixture: Fixture) {
+	// Arrange
+	let metrics = Metrics::default();
+	let _recorder = metrics::set_default_local_recorder(&metrics);
+	let mut fixture = thinking(fixture);
+	Arc::get_mut(&mut fixture.backend.0).unwrap().deny_recheck = true;
+	fixture.backend.script(
+		(0..50)
+			.flat_map(|_| [text("chunk "), Step::Sleep(Duration::from_millis(100))])
+			.collect(),
+	);
+	// Act
+	let result = advance_sources(&mut fixture).await;
+	// Assert
+	assert!(matches!(result, Err(Error::Forbidden)));
+	assert_eq!(
+		fixture.backend.outcomes(),
+		[[ProgressOutcome::Interrupted(InterruptionReason::Revoked)]]
+	);
+	let calls = fixture.backend.calls();
+	let recheck = position(&calls, "authority.recheck");
+	assert!(calls[..recheck].contains(&"inference.append"));
+	assert!(!calls[recheck..].contains(&"inference.append"));
+	assert!(!calls.contains(&"reservation.settle"));
+	assert!(!calls.contains(&"provider.response"));
+	assert_eq!(fixture.run.phase(), RunPhase::Thinking);
+	assert_eq!(
+		metrics.get("aidash_inference_interruptions_total{reason=revoked}"),
+		1
+	);
+}
+
+#[rstest]
+#[case::stall(Error::InferenceStalled, InterruptionReason::Stall)]
+#[case::stream_error(Error::External("connection reset".into()), InterruptionReason::StreamError)]
+#[tokio::test(start_paused = true)]
+async fn failed_streams_store_their_progress_then_interrupt(
+	fixture: Fixture,
+	#[case] error: Error,
+	#[case] reason: InterruptionReason,
+) {
+	// Arrange
+	let mut fixture = thinking(fixture);
+	let expected = std::mem::discriminant(&error);
+	fixture
+		.backend
+		.script(vec![text("Partial"), Step::Fail(error)]);
+	// Act
+	let result = advance_sources(&mut fixture).await;
+	// Assert
+	assert_eq!(std::mem::discriminant(&result.unwrap_err()), expected);
+	assert_eq!(fixture.backend.progress_text(), "Partial");
+	let calls = fixture.backend.calls();
+	assert!(position(&calls, "inference.append") < position(&calls, "inference.finish"));
+	assert!(!calls.contains(&"reservation.settle"));
+	assert_eq!(
+		fixture.backend.outcomes(),
+		[[ProgressOutcome::Interrupted(reason)]]
+	);
+	assert_eq!(fixture.run.phase(), RunPhase::Thinking);
+}
+
+#[rstest]
+#[tokio::test(start_paused = true)]
+async fn flooding_progress_stays_bounded_and_counts_drops(fixture: Fixture) {
+	// Arrange
+	let metrics = Metrics::default();
+	let _recorder = metrics::set_default_local_recorder(&metrics);
+	let mut fixture = thinking(fixture);
+	let escaped = "\"".repeat(20 * 1024);
+	let chunk = "x".repeat(1024);
+	let mut script = vec![text(&escaped)];
+	script.extend((0..1024).map(|_| text(&chunk)));
+	fixture.backend.script(script);
+	// Act
+	advance_sources(&mut fixture).await.unwrap();
+	// Assert
+	assert_eq!(fixture.backend.progress_text().len(), MAX_PENDING_BYTES);
+	let accepted_chunks = (MAX_PENDING_BYTES - escaped.len()) / chunk.len();
+	assert_eq!(
+		metrics.get("aidash_inference_progress_coalesced_total"),
+		(1024 - accepted_chunks) as u64
+	);
+	let progress = fixture.backend.0.progress.lock().unwrap();
+	assert!(
+		progress
+			.iter()
+			.flat_map(|(_, batch)| batch)
+			.all(|item| serde_json::to_vec(item).unwrap().len() <= MAX_PROGRESS_ITEM_BYTES)
+	);
+	drop(progress);
+	assert_eq!(fixture.backend.outcomes(), [[ProgressOutcome::Accepted]]);
+}
+
+#[rstest]
+#[tokio::test(start_paused = true)]
+async fn failed_progress_append_stops_display_but_not_inference(fixture: Fixture) {
+	// Arrange
+	let mut fixture = thinking(fixture);
+	Arc::get_mut(&mut fixture.backend.0).unwrap().fail_append = true;
+	fixture.backend.script(vec![
+		text("Completed "),
+		Step::Sleep(FLUSH_INTERVAL * 2),
+		text("task"),
+		Step::Sleep(FLUSH_INTERVAL * 2),
+	]);
+	// Act
+	advance_sources(&mut fixture).await.unwrap();
+	// Assert
+	let calls = fixture.backend.calls();
+	assert_eq!(
+		calls
+			.iter()
+			.filter(|call| **call == "inference.append")
+			.count(),
+		1
+	);
+	assert_eq!(fixture.run.phase(), RunPhase::ToolCall);
+	assert_eq!(fixture.backend.outcomes(), [[ProgressOutcome::Accepted]]);
+}
+
+#[rstest]
+#[tokio::test(start_paused = true)]
+async fn a_blocked_progress_append_cannot_hold_a_completed_response(fixture: Fixture) {
+	// Arrange
+	let mut fixture = thinking(fixture);
+	Arc::get_mut(&mut fixture.backend.0).unwrap().block_append = true;
+	fixture.backend.script(vec![text("Completed task")]);
+	let started = tokio::time::Instant::now();
+	// Act
+	advance_sources(&mut fixture).await.unwrap();
+	// Assert: the response is accepted once the bounded append expires.
+	assert!(started.elapsed() <= progress::APPEND_TIMEOUT + FLUSH_INTERVAL);
+	assert_eq!(fixture.run.phase(), RunPhase::ToolCall);
+	assert_eq!(fixture.backend.outcomes(), [[ProgressOutcome::Accepted]]);
+	assert!(fixture.backend.progress_text().is_empty());
 }
 
 fn default_tools() -> Vec<&'static str> {
@@ -1967,7 +3712,7 @@ async fn deferred_dispatch_rejects_a_capability_that_is_not_loaded(mut fixture: 
 	let (event, saved) = last_write(&fixture);
 	assert_eq!(event, "run.tool_recorded");
 	assert!(matches!(
-		saved.context.history.last(),
+		saved.context.events().last(),
 		Some(ContextEvent::Tool { result, .. })
 			if result == &json!({"error":"capability tool_03 is not loaded; use capability_load"})
 	));
@@ -2008,7 +3753,7 @@ async fn a_load_exposes_its_capability_only_from_the_next_request(mut fixture: F
 	let (event, saved) = last_write(&fixture);
 	assert_eq!(event, "run.tool_recorded");
 	assert!(matches!(
-		saved.context.history.last(),
+		saved.context.events().last(),
 		Some(ContextEvent::Tool { result, .. })
 			if result == &json!({"error":"capability tool_05 was loaded in this response; call it after the next model request"})
 	));
@@ -2272,7 +4017,7 @@ async fn capability_descriptions_are_recorded_whole_or_deferred(
 		assert!(saved.context.history.is_empty());
 	} else {
 		assert!(matches!(
-			saved.context.history.last(),
+			saved.context.events().last(),
 			Some(ContextEvent::Tool { call, result, .. })
 				if call == &request && result == &description
 		));
@@ -2329,7 +4074,7 @@ async fn capability_search_pages_fit_the_remaining_request_budget(
 		return;
 	}
 	assert_eq!(event, "run.tool_recorded");
-	let Some(ContextEvent::Tool { call, result, .. }) = saved.context.history.last() else {
+	let Some(ContextEvent::Tool { call, result, .. }) = saved.context.events().last() else {
 		panic!("expected a tool result");
 	};
 	assert_eq!(call, &request);
@@ -2383,7 +4128,7 @@ async fn skill_asset_reads_fit_the_remaining_request_budget(mut fixture: Fixture
 	// Assert: the page is cut to the headroom and continues from the cut.
 	let (event, saved) = last_write(&fixture);
 	assert_eq!(event, "run.tool_recorded");
-	let Some(ContextEvent::Tool { call, result, .. }) = saved.context.history.last() else {
+	let Some(ContextEvent::Tool { call, result, .. }) = saved.context.events().last() else {
 		panic!("expected a tool result");
 	};
 	let page = result["content"].as_str().unwrap().len();
@@ -2423,11 +4168,12 @@ async fn compaction_leaves_the_exposure_set_intact() {
 		alias: "eager_tool".into(),
 	});
 	for index in 0..24 {
-		context.history.push(ContextEvent::tool(
+		context.push(ContextEvent::tool(
 			call(&format!("call-{index}"), "tool_05", json!({})),
 			json!({"text": "z".repeat(4_000)}),
 		));
 	}
+	context.journal.inferred_through = context.journal.head;
 	let exposure = context.exposure.clone();
 	let pinned = json!({});
 	let tools = [];
@@ -2439,16 +4185,27 @@ async fn compaction_leaves_the_exposure_set_intact() {
 		projection: &context::RequestProjection::Legacy,
 	};
 	budget.window = budget.request(&context, &pinned).estimated_total_tokens() / 2;
+	let policy = context::policy::Effective::of(None);
+	let fitting = aidash_application::context::Fitting {
+		budget: &budget,
+		pinned: &pinned,
+		policy: &policy,
+	};
 	// Act
-	compact_execution(&mut context, &DropAll, &budget, &pinned)
+	let compaction = compact_execution(&mut context, &DropAll, &fitting)
 		.await
 		.unwrap();
 	// Assert
+	assert!(matches!(
+		compaction,
+		aidash_application::context::Compaction::Fits
+	));
 	assert_eq!(context.compactions, 1);
 	assert!(context.history.len() < 24);
 	assert_eq!(context.exposure, exposure);
 }
 
+mod batch;
 /// Fixed identities so request bytes can be compared with checked-in fixtures.
 #[fixture]
 fn canonical(mut fixture: Fixture) -> Fixture {
@@ -2466,7 +4223,7 @@ fn canonical(mut fixture: Fixture) -> Fixture {
 	// one inference boundary that leaves the Run in Thinking.
 	state.provider_status = Some(503);
 	fixture.run.state = RunState::Thinking(ThinkingState::default());
-	fixture.run.context.history.push(history_event(1));
+	fixture.run.context.push(history_event(1));
 	fixture
 }
 
@@ -2553,7 +4310,7 @@ async fn consecutive_ordered_steps_extend_the_stable_prefix(mut canonical: Fixtu
 	Arc::get_mut(&mut canonical.backend.0).unwrap().skill_tool = true;
 	assert!(advance_sources(&mut canonical).await.is_err());
 	canonical.run.step += 1;
-	canonical.run.context.history.push(history_event(2));
+	canonical.run.context.push(history_event(2));
 	assert!(advance_sources(&mut canonical).await.is_err());
 
 	let requests = canonical.backend.0.requests.lock().unwrap();
@@ -2769,10 +4526,10 @@ fn ordered_estimate_counts_the_complete_request_near_the_window(#[case] events: 
 		"agent_state":{"phase":"thinking","step":3},
 		"semantic_memory":{"fact":"observed"},
 	});
-	let context = Context {
-		history: (1..=events).map(history_event).collect(),
-		..Context::default()
-	};
+	let mut context = Context::default();
+	for n in 1..=events {
+		context.push(history_event(n));
+	}
 	let request = |projection| {
 		context::RequestBudget {
 			window: 128_000,
@@ -2803,7 +4560,7 @@ fn ordered_estimate_counts_the_complete_request_near_the_window(#[case] events: 
 	// compaction threshold at the same history size as Legacy, offset only by
 	// fixed framing and the salt reserve.
 	let mut grown = context.clone();
-	grown.history.push(history_event(events + 1));
+	grown.push(history_event(events + 1));
 	let growth = |projection| {
 		let budget = context::RequestBudget {
 			window: 128_000,
