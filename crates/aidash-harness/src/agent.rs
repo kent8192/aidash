@@ -558,6 +558,9 @@ impl<'a> Executor<'a> {
 				if let Some(deferred_observation) = &thinking.deferred_workspace_observation {
 					pinned["deferred_workspace_observation"] = json!(deferred_observation);
 				}
+				let withhold_answer_text = tools
+					.values()
+					.any(|tool| tool.contract().behavior.yields(Yield::Citations));
 				let mut specifications = tools
 					.iter()
 					.filter(|(alias, _)| exposure.as_ref().is_none_or(|selection| selection.tools.contains(*alias)))
@@ -844,7 +847,8 @@ impl<'a> Executor<'a> {
 					return Err(error);
 				}
 				let started = tokio::time::Instant::now();
-				let progress = progress::ProgressBuffer::new(started);
+				let progress =
+					progress::ProgressBuffer::withholding_text(started, withhold_answer_text);
 				let provider = async {
 					let infer = async {
 						let result = model.infer(request, &progress).await;
