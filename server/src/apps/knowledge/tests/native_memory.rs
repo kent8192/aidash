@@ -19,6 +19,8 @@ use serde_json::json;
 use uuid::Uuid;
 #[path = "native_memory/admission.rs"]
 mod admission;
+#[path = "native_memory/change_matrix.rs"]
+mod change_matrix;
 #[path = "native_memory/decay.rs"]
 mod decay;
 #[path = "native_memory/policy_bounds.rs"]
