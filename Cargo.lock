@@ -172,6 +172,7 @@ dependencies = [
  "aidash-domain",
  "async-trait",
  "chrono",
+ "futures-util",
  "metrics",
  "rstest",
  "serde",

@@ -14,17 +14,17 @@ use aidash_application::{
 };
 use async_trait::async_trait;
 use std::{sync::Arc, time::Duration};
-use tokio::sync::{Mutex, OwnedMutexGuard};
+use tokio::sync::{OwnedRwLockWriteGuard, RwLock};
 pub(crate) struct Resume<'a> {
 	pub(crate) federation: &'a Federation,
 	pub(crate) remote: Option<&'a Federation>,
-	pub(crate) access: &'a Arc<Mutex<Access>>,
+	pub(crate) access: &'a Arc<RwLock<Access>>,
 	pub(crate) run: &'a Run,
 	pub(crate) agent: &'a AgentConfig,
 }
 struct Scope<'a> {
 	federation: &'a Federation,
-	access: OwnedMutexGuard<Access>,
+	access: OwnedRwLockWriteGuard<Access>,
 	run: &'a Run,
 	agent: &'a AgentConfig,
 }
@@ -44,7 +44,7 @@ impl WorkerResumeRepository for Resume<'_> {
 	async fn lease(&self) -> Result<Box<dyn WorkerResumeScope + '_>> {
 		Ok(Box::new(Scope {
 			federation: self.federation,
-			access: self.access.clone().lock_owned().await,
+			access: self.access.clone().write_owned().await,
 			run: self.run,
 			agent: self.agent,
 		}))
