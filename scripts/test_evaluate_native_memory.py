@@ -25,7 +25,7 @@ class Home:
 
     def __init__(self, fixture):
         self.labels = {case["text"]: case["labels"] for case in fixture["cases"]}
-        self.banks, self.extracted, self.operations, self.groups = 0, {}, {}, {}
+        self.banks, self.extracted, self.operations, self.groups, self.admitted = 0, {}, {}, {}, []
 
     def __call__(self, path, body):
         if path.endswith("/memory/participants"):
@@ -37,6 +37,7 @@ class Home:
             units = [{"id": change["id"], "revision": 1, "content": change["content"]} for change in body["changes"]]
             if len(units) > 1:
                 self.groups[body["bank"]["participant"]] = units
+                self.admitted.append((body["provider"]["id"], [unit["id"] for unit in units]))
             return 200, units
         if path.endswith("/memory/units/query"):
             return 200, []
@@ -103,6 +104,21 @@ class EvaluateNativeMemoryTest(unittest.TestCase):
                 self.assertLessEqual(case["metrics"]["delivered_tokens"], case["metrics"]["budget_tokens"])
         for total in comparison["by_language"].values():
             self.assertEqual((total["useful_recall_without"], total["useful_recall_with"]), (0.5, 1))
+            self.assertEqual((total["delivered_units_without"], total["delivered_units_with"]),
+                             (2 * total["cases"], 2 * total["cases"]))
+            self.assertGreater(total["delivered_tokens_with"], 0)
+
+    def test_paired_arms_admit_ids_with_the_same_relative_order_so_score_ties_break_identically(self):
+        fixture = __import__("tomllib").loads((ROOT / "tests/fixtures/native_memory_evaluation.toml").read_text())
+        home = Home(fixture)
+        MODULE.evaluate(home, "workspace", AGENT, PROVIDER, {"kind": "test"},
+                        diversity={"agent": DIVERSE_AGENT, "provider": DIVERSE_PROVIDER, "profile": {"kind": "diverse"}})
+        arms = {provider: [ids for owner, ids in home.admitted if owner == provider] for provider in ("memory", "memory-diverse")}
+        self.assertEqual(len(arms["memory"]), len(fixture["diversity_cases"]))
+        self.assertEqual(len(arms["memory-diverse"]), len(fixture["diversity_cases"]))
+        for ids in (*arms["memory"], *arms["memory-diverse"]):
+            self.assertEqual(ids, sorted(ids), "Unit IDs must ascend in fixture order in every arm")
+            self.assertEqual(len(set(ids)), len(ids))
 
     def test_pairing_rejects_arms_that_evaluated_different_cases(self):
         row = {"id": "a", "language": "en-US", "metrics": {"useful_recall": 1, "delivered_units": 1, "delivered_tokens": 1}}

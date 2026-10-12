@@ -41,10 +41,10 @@ def compare_diversification(baseline, diversified):
                         for name in ("useful_recall", "delivered_units", "delivered_tokens")}})
     languages = {}
     for row in rows:
-        total = languages.setdefault(row["language"], {"cases": 0, "useful_recall_without": 0.0, "useful_recall_with": 0.0,
-                                                       "delivered_tokens_without": 0, "delivered_tokens_with": 0})
+        total = languages.setdefault(row["language"], {"cases": 0, **{name + suffix: 0 for suffix in ("_without", "_with")
+                                                       for name in ("useful_recall", "delivered_units", "delivered_tokens")}})
         total["cases"] += 1
-        for name in ("useful_recall_without", "useful_recall_with", "delivered_tokens_without", "delivered_tokens_with"):
+        for name in total.keys() - {"cases"}:
             total[name] += row[name]
     for total in languages.values():
         for name in ("useful_recall_without", "useful_recall_with"):
@@ -110,7 +110,8 @@ def evaluate(call, workspace, agent, provider, profile, fixture=None, report=Non
         for case in labels["diversity_cases"]:
             state["phase"] = case["id"] + ":admission"
             bank = api(f"/api/workspaces/{workspace}/memory/participants", {"agent": agent})["bank"]
-            identities = [str(uuid.uuid4()) for _ in case["units"]]
+            # Production breaks equal scores by Unit ID; ascending IDs in fixture order give both arms the same ties.
+            identities = sorted(str(uuid.uuid4()) for _ in case["units"])
             changes = [{"operation": "add", "id": identity, "content": {
                 "text": row["text"], "kind": "world", "learning": "fact", "verification": "unverified",
                 "occurred": None, "entities": [], "evidence": [], "links": []}}
