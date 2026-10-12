@@ -385,6 +385,12 @@ export default function GcipSignIn({
           ? await client.resolveSecondFactor(code)
           : await client.finishEnrollment(code);
     } catch (error) {
+      // A challenge answered with an enrollment intent continues to enrollment.
+      if (step === "challenge" && stepOf(error) === "enroll") {
+        hold(client, error);
+        setBusy(false);
+        return;
+      }
       const failure = codeErrorOf(error);
       setCode("");
       setBusy(false);

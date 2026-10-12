@@ -41,7 +41,11 @@ export type GcipClientConfig = {
   mfa_mandatory: boolean;
 };
 export type GcipClientOptions = {
-  /** Lead a user with no second factor through TOTP enrollment (account settings). */
+  /**
+   * Lead the user through TOTP enrollment (account settings): one with no
+   * second factor after the first factor, one who holds a factor after its
+   * challenge.
+   */
   enroll?: boolean;
 };
 export type TotpEnrollment = { secret: string; uri: string };
@@ -58,7 +62,10 @@ export interface GcipClient {
   /** Null without network I/O unless this tab started a redirect. */
   redirectResult(): Promise<string | null>;
   password(email: string, password: string): Promise<string>;
-  /** Answers a pending SECOND_FACTOR_REQUIRED challenge with a TOTP code. */
+  /**
+   * Answers a pending SECOND_FACTOR_REQUIRED challenge with a TOTP code. With
+   * the `enroll` option it then rejects with ENROLLMENT_REQUIRED instead.
+   */
   resolveSecondFactor(code: string): Promise<string>;
   /** Starts TOTP enrollment for a pending ENROLLMENT_REQUIRED sign-in. */
   startEnrollment(): Promise<TotpEnrollment>;
@@ -175,6 +182,12 @@ export function createClient(
         TotpMultiFactorGenerator.assertionForSignIn(hint.uid, code),
       );
       challenge = undefined;
+      // Settings asked to set up an authenticator: a user who already holds a
+      // factor proved it here, and now adds the new one before signing in.
+      if (options.enroll) {
+        enrolling = { user: result.user };
+        throw coded(ENROLLMENT_REQUIRED);
+      }
       return result.user.getIdToken();
     },
     async startEnrollment() {

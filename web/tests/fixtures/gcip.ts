@@ -93,7 +93,8 @@ export function createClient(config, options = {}) {
       return token;
     },
     password: async () => { owed(options); return token; },
-    resolveSecondFactor: async (code) => { record({ kind: "resolve", id: code }); verdict(code); return token; },
+    // Like the adapter: an enrollment intent continues past a resolved challenge.
+    resolveSecondFactor: async (code) => { record({ kind: "resolve", id: code }); verdict(code); if (options.enroll) throw Object.assign(new Error("enroll"), { code: "aidash/enrollment-required" }); return token; },
     startEnrollment: async () => {
       record({ kind: "startEnrollment" });
       return { secret: "JBSWY3DPEHPK3PXP", uri: "otpauth://totp/Aidash:person@example.test?secret=JBSWY3DPEHPK3PXP&issuer=Aidash" };

@@ -831,6 +831,48 @@ test("an optional enrollment started from settings does not claim the tenant req
   ).toBeNull();
 });
 
+test("a settings enrollment for a user who already holds a factor continues after the challenge", async ({
+  page,
+}) => {
+  const exchanges = exchangesOf(page);
+  await mockGcip(page);
+  await page.addInitScript(() => {
+    sessionStorage.setItem("fixture-second-factor", "challenge");
+    if (sessionStorage.getItem("fixture-seeded")) return;
+    sessionStorage.setItem("fixture-seeded", "true");
+    sessionStorage.setItem("aidash.gcip.enroll", String(Date.now()));
+  });
+  await page.route("**/signed-in", (route) =>
+    route.fulfill({ contentType: "text/html", body: "<h1>Signed in</h1>" }),
+  );
+  await page.goto("/sign-in?state=browser-bound-state");
+  await page
+    .getByRole("button", { name: "Continue with Google", exact: true })
+    .click();
+  await expect(
+    page.getByRole("heading", { name: "Two-step verification" }),
+  ).toBeVisible();
+  await page.getByLabel("Verification code").fill("123456");
+  await page.getByRole("button", { name: "Verify", exact: true }).click();
+  // The requested setup follows the answered challenge instead of signing in.
+  await expect(
+    page.getByRole("heading", { name: "Set up two-step verification" }),
+  ).toBeVisible();
+  await expect(page.getByTestId("totp-secret")).toHaveText("JBSWY3DPEHPK3PXP");
+  await expect(page.getByLabel("Verification code")).toHaveValue("");
+  expect(exchanges).toEqual([]);
+  await page.getByLabel("Verification code").fill("654321");
+  await page.getByRole("button", { name: "Verify", exact: true }).click();
+  await expect(page).toHaveURL(/\/signed-in$/);
+  expect(exchanges).toEqual(["browser-bound-state"]);
+  expect((await calls(page)).slice(-4)).toEqual([
+    "resolve:123456",
+    "startEnrollment",
+    "enroll:654321",
+    "close",
+  ]);
+});
+
 test("an enrollment intent without a transaction is stale and dropped", async ({
   page,
 }) => {
@@ -1026,6 +1068,31 @@ test("the SDK adapter enrolls a TOTP factor for a mandatory tenant before the ex
     sessionInfo: "enrollment-session",
     verificationCode: "123456",
   });
+});
+
+test("the SDK adapter enrolls a new factor after the challenge when settings asked for it", async ({
+  page,
+}) => {
+  const { requests, exchanges } = await realSdk(page, { enrolled: true });
+  await page.addInitScript(() => {
+    if (sessionStorage.getItem("fixture-seeded")) return;
+    sessionStorage.setItem("fixture-seeded", "true");
+    sessionStorage.setItem("aidash.gcip.enroll", String(Date.now()));
+  });
+  await signInWithPassword(page);
+  await page.getByLabel("Verification code").fill("123456");
+  await page.getByRole("button", { name: "Verify", exact: true }).click();
+  await expect(page.getByTestId("totp-secret")).toHaveText("JBSWY3DPEHPK3PXP");
+  expect(exchanges).toEqual([]);
+  await page.getByLabel("Verification code").fill("123456");
+  await page.getByRole("button", { name: "Verify", exact: true }).click();
+  await expect(page).toHaveURL(/\/signed-in$/);
+  expect(exchanges).toEqual(["browser-bound-state"]);
+  const paths = requests.map(({ path }) => path.split("/").pop());
+  expect(paths.indexOf("mfaSignIn:finalize")).toBeLessThan(
+    paths.indexOf("mfaEnrollment:start"),
+  );
+  expect(paths).toContain("mfaEnrollment:finalize");
 });
 
 test("the SDK adapter signs a tenant without a mandatory requirement straight in", async ({
