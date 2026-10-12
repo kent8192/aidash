@@ -284,9 +284,14 @@ impl MemoryScope for Scope<'_, '_> {
 
 	async fn vectors(
 		&mut self,
-		_bank: &Bank,
+		bank: &Bank,
 		units: &[Unit],
 	) -> aidash_application::Result<std::collections::BTreeMap<Uuid, Vec<f32>>> {
+		// Callers pass units from the authorized snapshot; still refuse any unit
+		// outside the bank this scope was authorized for.
+		if bank != &self.models.bank || units.iter().any(|unit| unit.bank != *bank) {
+			return Err(aidash_application::Error::Forbidden);
+		}
 		let embedding: EmbeddingConfig = serde_json::from_value(
 			self.models
 				.role(&self.models.policy.embedding, "embedding")?
