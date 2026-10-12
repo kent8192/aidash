@@ -641,19 +641,23 @@ fn review_identity() -> Uuid {
 fn review_browser() -> Uuid {
 	Uuid::new_v4()
 }
-#[rstest::fixture]
-fn review_outage() -> Arc<AtomicBool> {
-	Arc::new(AtomicBool::new(false))
+/// Provider fault switches the router reads and the scenarios flip.
+#[derive(Clone)]
+struct ReviewSignals {
+	outage: Arc<AtomicBool>,
+	slow_status: Arc<AtomicBool>,
 }
 #[rstest::fixture]
-fn review_slow_status() -> Arc<AtomicBool> {
-	Arc::new(AtomicBool::new(false))
+fn review_signals() -> ReviewSignals {
+	ReviewSignals {
+		outage: Arc::new(AtomicBool::new(false)),
+		slow_status: Arc::new(AtomicBool::new(false)),
+	}
 }
 #[rstest::fixture]
 fn review_router(
 	#[from(upstream_fixtures::fixed_listener)] listener: upstream_fixtures::ListenerFuture,
-	#[from(review_outage)] outage: Arc<AtomicBool>,
-	#[from(review_slow_status)] slow_status: Arc<AtomicBool>,
+	#[from(review_signals)] signals: ReviewSignals,
 ) -> upstream_fixtures::RouterFuture {
 	async move {
 		let issuer = format!("http://{}/issuer", listener.await.local_addr().unwrap());
@@ -673,8 +677,8 @@ fn review_router(
 			serde_json::to_value(CoreJsonWebKeySet::new(vec![signing.as_verification_key()]))
 				.unwrap();
 
-		let unavailable = outage.clone();
-		let slow = slow_status.clone();
+		let unavailable = signals.outage.clone();
+		let slow = signals.slow_status.clone();
 		let provider = reinhardt::test::stub::StubRouter::new()
 			.route(
 				"/issuer/.well-known/openid-configuration",
@@ -809,11 +813,10 @@ fn review_runtime(
 #[rstest::fixture]
 async fn review_fixture(
 	#[from(review_ids)] _state: ReviewIds,
-	#[from(review_outage)] outage: Arc<AtomicBool>,
-	#[from(review_slow_status)] slow_status: Arc<AtomicBool>,
+	#[from(review_signals)] signals: ReviewSignals,
 	#[from(upstream_fixtures::fixed_listener)] _listener: upstream_fixtures::ListenerFuture,
 	#[from(review_router)]
-	#[with(_listener.clone(),outage.clone(),slow_status.clone())]
+	#[with(_listener.clone(),signals.clone())]
 	_router: upstream_fixtures::RouterFuture,
 	#[from(review_runtime)]
 	#[with(_listener.clone(),_state.identity,_state.browser)]
@@ -836,8 +839,8 @@ async fn review_fixture(
 		schema,
 		identity,
 		browser,
-		outage,
-		slow_status,
+		outage: signals.outage,
+		slow_status: signals.slow_status,
 		server,
 		app: application.application,
 	}

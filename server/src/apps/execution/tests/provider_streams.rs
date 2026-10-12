@@ -34,6 +34,12 @@ impl Completions {
 	fn received(&self) -> mpsc::UnboundedReceiver<Value> {
 		self.received.lock().unwrap().take().unwrap()
 	}
+	/// Log one provider request. Routes call this on the whole log, so their
+	/// closures own the receiver too and sending succeeds even when a test
+	/// never reads the log.
+	fn record(&self, request: Value) {
+		self.sender.send(request).unwrap();
+	}
 }
 
 #[fixture]
@@ -52,7 +58,6 @@ fn stream_router(
 	#[default(json!({}))] whole: Value,
 	completions: Completions,
 ) -> Arc<ServerRouter> {
-	let sender = completions.sender;
 	Arc::new(
 		reinhardt::test::stub::StubRouter::new()
 			.route(
@@ -60,24 +65,18 @@ fn stream_router(
 				http::Method::POST,
 				reply(move |request: reinhardt::Request| {
 					let body = request.json::<Value>().unwrap();
-					let sender = sender.clone();
+					completions.record(body.clone());
 					let steps = steps.clone();
 					let whole = whole.clone();
-					async move { scripted(sender, steps, whole, body) }
+					async move { scripted(steps, whole, body) }
 				}),
 			)
 			.into_server_router(),
 	)
 }
 
-fn scripted(
-	sender: mpsc::UnboundedSender<Value>,
-	steps: Vec<Step>,
-	whole: Value,
-	body: Value,
-) -> Response {
+fn scripted(steps: Vec<Step>, whole: Value, body: Value) -> Response {
 	let streaming = body["stream"] == true;
-	sender.send(body).unwrap();
 	if !streaming {
 		return Response::ok().with_json(&whole).unwrap();
 	}
@@ -103,14 +102,13 @@ fn whole_router(
 	#[default(String::new())] body: String,
 	completions: Completions,
 ) -> Arc<ServerRouter> {
-	let sender = completions.sender;
 	Arc::new(
 		reinhardt::test::stub::StubRouter::new()
 			.route(
 				"/chat/completions",
 				http::Method::POST,
 				reply(move |request: reinhardt::Request| {
-					sender.send(request.json::<Value>().unwrap()).unwrap();
+					completions.record(request.json::<Value>().unwrap());
 					let body = body.clone();
 					async move {
 						Response::ok()
