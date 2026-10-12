@@ -34,7 +34,7 @@ def latencies(requests):
 def compare_diversification(baseline, diversified):
     """Pair each case without and with diversification; both arms use the same frozen cases."""
     rows = []
-    for plain, diverse in zip(baseline, diversified):
+    for plain, diverse in zip(baseline, diversified, strict=True):
         assert plain["id"] == diverse["id"], "paired arms must evaluate the same case"
         rows.append({"id": plain["id"], "language": plain["language"],
                      **{name + suffix: arm["metrics"][name] for suffix, arm in (("_without", plain), ("_with", diverse))
@@ -53,8 +53,9 @@ def compare_diversification(baseline, diversified):
 
 
 def evaluate(call, workspace, agent, provider, profile, fixture=None, report=None, diversity=None):
-    """Evaluate the frozen labels; `diversity` optionally repeats them on an Agent whose memory policy is identical
-    except for `diversity_lambda_millionths`, as {"agent", "provider", "profile"} references, and adds a paired comparison."""
+    """Evaluate the frozen labels. `diversity` ({"agent", "provider", "profile"}) names an Agent whose memory policy is
+    identical except for `diversity_lambda_millionths`; the fixture's near-duplicate `diversity_cases` then run on both
+    Agents under a two-Unit budget and the report gains a paired `diversification.comparison`."""
     fixture = fixture or ROOT / "tests/fixtures/native_memory_evaluation.toml"
     raw = fixture.read_bytes()
     labels = tomllib.loads(raw.decode())
@@ -63,13 +64,13 @@ def evaluate(call, workspace, agent, provider, profile, fixture=None, report=Non
               "profile": profile, "grade": "fixed-regex-contract-labels", "production_quality_approved": False,
               "numeric_service_targets_approved": False, "cases": [], "requests": []})
 
-    def run_arm(agent, provider, cases, requests):
-        phase = "initialization"
+    def helpers(provider, requests):
+        state = {"phase": "initialization"}
 
         def api(path, body=None):
             begin = time.perf_counter()
             status, value = call(path, body)
-            requests.append({"phase": phase, "path": path, "status": status,
+            requests.append({"phase": state["phase"], "path": path, "status": status,
                              "round_trip_ms": (time.perf_counter() - begin) * 1000})
             if status != 200:
                 raise RuntimeError(f"evaluation request {path} returned HTTP {status}")
@@ -89,8 +90,52 @@ def evaluate(call, workspace, agent, provider, profile, fixture=None, report=Non
                     return rows
             raise RuntimeError("evaluation usage exceeds its finite page budget")
 
+        return state, api, operate, usage
+
+    def await_index(api, state, case, identities):
+        state["phase"] = case["id"] + ":indexing"
+        deadline = time.monotonic() + 90
+        while True:
+            entries = api(f"/api/workspaces/{workspace}/semantic/entries")
+            states = {entry["id"]: entry["state"] for entry in entries if entry["id"] in identities}
+            if len(states) == len(identities) and all(value == "READY" for value in states.values()):
+                return
+            if any(value in ("ERROR", "REVOKED") for value in states.values()) or time.monotonic() > deadline:
+                raise RuntimeError(f"evaluation index did not become ready: {states}")
+            time.sleep(0.25)
+
+    def run_near_duplicates(agent, provider, cases, requests):
+        """Admit each near-duplicate group as separate Units and recall under a budget that fits exactly two of them."""
+        state, api, operate, _ = helpers(provider, requests)
+        for case in labels["diversity_cases"]:
+            state["phase"] = case["id"] + ":admission"
+            bank = api(f"/api/workspaces/{workspace}/memory/participants", {"agent": agent})["bank"]
+            identities = [str(uuid.uuid4()) for _ in case["units"]]
+            changes = [{"operation": "add", "id": identity, "content": {
+                "text": row["text"], "kind": "world", "learning": "fact", "verification": "unverified",
+                "occurred": None, "entities": [], "evidence": [], "links": []}}
+                for identity, row in zip(identities, case["units"], strict=True)]
+            admitted = api(f"/api/workspaces/{workspace}/memory/units/mutate", {
+                "operation_id": str(uuid.uuid4()), "provider": provider, "bank": bank, "changes": changes})
+            await_index(api, state, case, identities)
+            # The pinned utf8_upper_bound tokenizer charges the envelope bytes; size the budget from the live Units.
+            budget = max(delivered_tokens({"status": "ready", "units": [first, second]})
+                         for index, first in enumerate(admitted) for second in admitted[index + 1:])
+            state["phase"] = case["id"] + ":recall"
+            recalled = operate(bank, {"action": "recall", "query": {"text": case["query"], "time": None,
+                                      "kinds": ["world"], "max_tokens": budget}})["value"]
+            label_of = {identity: row["label"] for identity, row in zip(identities, case["units"], strict=True)}
+            covered = {label_of[unit["id"]] for unit in recalled.get("units", []) if unit["id"] in label_of}
+            cases.append({"id": case["id"], "language": case["language"], "bank": bank, "raw_recall": recalled,
+                          "metrics": {"expected_labels": len(case["labels"]), "budget_tokens": budget,
+                                      "useful_recall": len(covered) / len(case["labels"]),
+                                      "delivered_units": len(recalled.get("units", [])),
+                                      "delivered_tokens": delivered_tokens(recalled)}})
+
+    def run_arm(agent, provider, cases, requests):
+        state, api, operate, usage = helpers(provider, requests)
         for case in labels["cases"]:
-            phase = case["id"] + ":admission"
+            state["phase"] = case["id"] + ":admission"
             participant = api(f"/api/workspaces/{workspace}/memory/participants", {"agent": agent})
             bank = participant["bank"]
             source = str(uuid.uuid4())
@@ -100,7 +145,7 @@ def evaluate(call, workspace, agent, provider, profile, fixture=None, report=Non
             admission = api(mutation_path, {"operation_id": str(uuid.uuid4()), "provider": provider, "bank": bank,
                             "changes": [{"operation": "add", "id": source, "content": content}]})[0]
             evidence = {"kind": "unit", "bank": bank, "id": source, "revision": admission["revision"]}
-            phase = case["id"] + ":extraction"
+            state["phase"] = case["id"] + ":extraction"
             operation_id = str(uuid.uuid4())
             action = {"action": "retain", "text": case["text"], "evidence": [evidence]}
             extracted = operate(bank, action, operation_id)["value"]
@@ -117,7 +162,7 @@ def evaluate(call, workspace, agent, provider, profile, fixture=None, report=Non
             predicted = [unit["id"] for unit in extracted]
             supported = [unit["id"] for unit in extracted if evidence in unit["content"]["evidence"]]
             recognized = {identity for values in matched.values() for identity in values}
-            phase = case["id"] + ":indexing"
+            state["phase"] = case["id"] + ":indexing"
             deadline = time.monotonic() + 90
             while True:
                 entries = api(f"/api/workspaces/{workspace}/semantic/entries")
@@ -127,18 +172,18 @@ def evaluate(call, workspace, agent, provider, profile, fixture=None, report=Non
                 if any(state in ("ERROR", "REVOKED") for state in states.values()) or time.monotonic() > deadline:
                     raise RuntimeError(f"evaluation index did not become ready: {states}")
                 time.sleep(0.25)
-            phase = case["id"] + ":recall"
+            state["phase"] = case["id"] + ":recall"
             recalled = operate(bank, {"action": "recall", "query": {"text": case["query"], "time": None,
                                   "kinds": ["world", "experience"], "max_tokens": 16384}})["value"]
             recall_ids = {unit["id"] for unit in recalled.get("units", [])}
             recalled_labels = [name for name, identities in matched.items() if recall_ids.intersection(identities)]
-            phase = case["id"] + ":correction"
+            state["phase"] = case["id"] + ":correction"
             corrected = {**content, "text": "The source was withdrawn for correction / 訂正のため元資料を撤回。"}
             api(mutation_path, {"operation_id": str(uuid.uuid4()), "provider": provider, "bank": bank,
                 "changes": [{"operation": "correct", "id": source, "expected_revision": admission["revision"], "content": corrected}]})
             visible = api(f"/api/workspaces/{workspace}/memory/units/query", {"provider": provider, "bank": bank})
             still_visible = {unit["id"] for unit in visible}.intersection(predicted)
-            phase = case["id"] + ":usage"
+            state["phase"] = case["id"] + ":usage"
             charged = usage(bank)
             item = {"id": case["id"], "language": case["language"], "bank": bank, "source": admission,
                     "raw_extraction": extracted, "labels": matched, "raw_recall": recalled, "charged_operations": charged,
@@ -158,10 +203,13 @@ def evaluate(call, workspace, agent, provider, profile, fixture=None, report=Non
     run_arm(agent, provider, report["cases"], report["requests"])
     report["latency"] = latencies(report["requests"])
     if diversity is not None:
-        paired = report["diversification"] = {"profile": diversity["profile"], "cases": [], "requests": []}
-        run_arm(diversity["agent"], diversity["provider"], paired["cases"], paired["requests"])
-        paired["latency"] = latencies(paired["requests"])
-        paired["comparison"] = compare_diversification(report["cases"], paired["cases"])
+        if not labels.get("diversity_cases"):
+            raise RuntimeError("the fixture has no near-duplicate diversity_cases to compare")
+        paired = report["diversification"] = {"profile": diversity["profile"], "grade": "fixed-near-duplicate-groups",
+            "baseline_cases": [], "baseline_requests": [], "cases": [], "requests": []}
+        run_near_duplicates(agent, provider, paired["baseline_cases"], paired["baseline_requests"])
+        run_near_duplicates(diversity["agent"], diversity["provider"], paired["cases"], paired["requests"])
+        paired["comparison"] = compare_diversification(paired["baseline_cases"], paired["cases"])
     return report
 
 

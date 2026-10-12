@@ -99,10 +99,12 @@ over the already authorized candidates. Relevance is the reranker score divided 
 top score (shifted by the minimum when a score is negative); `max_sim` is the largest
 non-negative cosine between the current embedding generation's stored vectors, so no
 extra embedding call is made. Ties use the Unit ID. A derived Unit (Observation, mental
-model) and the exact revisions it cites are structurally redundant: the summary and its
-sources are deferred behind every unrelated candidate and are co-delivered only when the
-budget leaves room. A candidate without a current vector keeps competing on relevance and
-is logged (`memory diversification skipped candidates without a current embedding`); it is
+model) and the exact revisions it cites are structurally redundant: they count as maximally
+similar (1.0) inside the same MMR step, so λ still decides whether a highly relevant source may
+follow its summary, while a reasonably relevant unrelated Unit takes the slot first. Exact ties
+use the baseline retention-then-Unit-ID order. A candidate without a current vector keeps
+competing on relevance and is logged at debug level
+(`memory diversification skipped candidates without a current embedding`); it is
 never dropped. Diversification only reorders or drops authorized candidates. Without the
 field the serialized policy and recall results are byte-identical to the baseline
 (`tests/fixtures/native_memory_policy_baseline.json`); changing it is a new policy version.
@@ -127,10 +129,11 @@ result for production models.
 
 The live runner measures the same two quantities against real Homes. Register a second memory
 policy that is identical except for `diversity_lambda_millionths`, an Agent bound to it, and pass
-all four `--diversity-*` options. The runner then repeats every frozen case on that Agent and adds
-`diversification.comparison` (per case and per language `useful_recall`, `delivered_units` and
-`delivered_tokens` without and with diversification). Every case also reports `delivered_units`
-and `delivered_tokens` without the paired arm.
+all four `--diversity-*` options. The runner then admits each fixture group (`diversity_cases`) as
+separate Units on both Agents, sizes a delivery budget that fits exactly two of the live Units, recalls,
+and adds `diversification.comparison` (per case and per language `useful_recall`, `delivered_units` and
+`delivered_tokens` without and with diversification). Live embeddings and relevance replace the fixture's
+fixed vectors and scores. The generic labelled cases also report `delivered_units` and `delivered_tokens`.
 
 ```sh
 python3 scripts/evaluate-native-memory.py ... \

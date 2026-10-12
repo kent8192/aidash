@@ -21,24 +21,28 @@ def sample(pattern):
 
 
 class Home:
-    """Minimal in-memory Home: extracts one Unit per label and recalls `limit` of them per provider."""
+    """Minimal in-memory Home: extracts one Unit per label; a diversifying provider recalls the distinct near-duplicate."""
 
-    def __init__(self, fixture, limit_by_provider):
+    def __init__(self, fixture):
         self.labels = {case["text"]: case["labels"] for case in fixture["cases"]}
-        self.limit = limit_by_provider
-        self.banks, self.extracted, self.operations = 0, {}, {}
+        self.banks, self.extracted, self.operations, self.groups = 0, {}, {}, {}
 
     def __call__(self, path, body):
         if path.endswith("/memory/participants"):
             self.banks += 1
             return 200, {"bank": {"participant": self.banks}}
         if path.endswith("/memory/units/mutate"):
-            change = body["changes"][0]
-            return 200, [{"revision": 1}] if change["operation"] == "add" else []
+            if body["changes"][0]["operation"] != "add":
+                return 200, []
+            units = [{"id": change["id"], "revision": 1, "content": change["content"]} for change in body["changes"]]
+            if len(units) > 1:
+                self.groups[body["bank"]["participant"]] = units
+            return 200, units
         if path.endswith("/memory/units/query"):
             return 200, []
         if path.endswith("/semantic/entries"):
-            return 200, [{"id": unit["id"], "state": "READY"} for units in self.extracted.values() for unit in units]
+            ready = [unit for units in (*self.extracted.values(), *self.groups.values()) for unit in units]
+            return 200, [{"id": unit["id"], "state": "READY"} for unit in ready]
         action = body["action"]
         bank = body["bank"]["participant"]
         if action["action"] == "retain":
@@ -54,7 +58,12 @@ class Home:
                     for operation, owner in self.operations.items() if owner == bank]
             return 200, {"value": {"items": rows, "next": None}}
         if action["action"] == "recall":
-            units = self.extracted[bank][: self.limit[body["provider"]["id"]]]
+            if bank in self.groups:
+                group = self.groups[bank]
+                diverse = body["provider"]["id"] == "memory-diverse"
+                units = [group[0], group[3]] if diverse else group[:2]
+            else:
+                units = self.extracted[bank]
             return 200, {"value": {"status": "ready", "units": units}}
         raise AssertionError(action)
 
@@ -62,7 +71,7 @@ class Home:
 class EvaluateNativeMemoryTest(unittest.TestCase):
     def evaluate(self, **options):
         fixture = __import__("tomllib").loads((ROOT / "tests/fixtures/native_memory_evaluation.toml").read_text())
-        home = Home(fixture, {"memory": 4, "memory-diverse": 2})
+        home = Home(fixture)
         return MODULE.evaluate(home, "workspace", AGENT, PROVIDER, {"kind": "test"}, **options)
 
     def test_baseline_report_keeps_its_shape_and_gains_delivery_metrics(self):
@@ -76,28 +85,31 @@ class EvaluateNativeMemoryTest(unittest.TestCase):
             envelope = {"status": "ready", "units": case["raw_recall"]["units"]}
             self.assertEqual(metrics["delivered_tokens"], len(json.dumps(envelope, ensure_ascii=False, separators=(",", ":")).encode()))
 
-    def test_paired_arm_reports_recall_and_delivered_tokens_with_and_without_diversity_per_language(self):
+    def test_paired_arm_runs_the_near_duplicate_groups_and_reports_recall_and_tokens_per_language(self):
         report = self.evaluate(diversity={"agent": DIVERSE_AGENT, "provider": DIVERSE_PROVIDER, "profile": {"kind": "diverse"}})
         paired = report["diversification"]
         self.assertEqual(paired["profile"], {"kind": "diverse"})
-        self.assertEqual(len(paired["cases"]), len(report["cases"]))
-        self.assertTrue(all(row["path"] for row in paired["requests"]))
+        self.assertEqual([case["id"] for case in paired["cases"]], [case["id"] for case in paired["baseline_cases"]])
+        self.assertEqual({case["language"] for case in paired["cases"]}, {"en-US", "ja-JP"})
+        self.assertEqual(len(report["cases"]), 2, "the generic labelled cases run once, on the baseline Agent")
         comparison = paired["comparison"]
         self.assertEqual(sorted(comparison["by_language"]), ["en-US", "ja-JP"])
         for row in comparison["cases"]:
-            self.assertEqual(row["delivered_units_without"], 4)
-            self.assertEqual(row["delivered_units_with"], 2)
-            self.assertEqual(row["useful_recall_without"], 1)
-            self.assertEqual(row["useful_recall_with"], 0.5)
-            self.assertLess(row["delivered_tokens_with"], row["delivered_tokens_without"])
+            self.assertEqual((row["useful_recall_without"], row["useful_recall_with"]), (0.5, 1))
+            self.assertEqual((row["delivered_units_without"], row["delivered_units_with"]), (2, 2))
+            self.assertGreater(row["delivered_tokens_with"], 0)
+        for arm in (paired["baseline_cases"], paired["cases"]):
+            for case in arm:
+                self.assertLessEqual(case["metrics"]["delivered_tokens"], case["metrics"]["budget_tokens"])
         for total in comparison["by_language"].values():
-            self.assertEqual((total["useful_recall_without"], total["useful_recall_with"]), (1, 0.5))
-            self.assertLess(total["delivered_tokens_with"], total["delivered_tokens_without"])
+            self.assertEqual((total["useful_recall_without"], total["useful_recall_with"]), (0.5, 1))
 
     def test_pairing_rejects_arms_that_evaluated_different_cases(self):
         row = {"id": "a", "language": "en-US", "metrics": {"useful_recall": 1, "delivered_units": 1, "delivered_tokens": 1}}
         with self.assertRaises(AssertionError):
             MODULE.compare_diversification([row], [{**row, "id": "b"}])
+        with self.assertRaises(ValueError):
+            MODULE.compare_diversification([row, row], [row])
 
 
 if __name__ == "__main__":
