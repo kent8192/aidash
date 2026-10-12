@@ -470,7 +470,10 @@ fn native_thinking_over_the_window(fixture: &mut Fixture) {
 	for (prefix, count, size) in [("old", 40, 4000), ("recent", 6, 10)] {
 		for i in 0..count {
 			let id = format!("{prefix}-{i}");
-			fixture.run.context.push(turn_event(i, &[id.clone()]));
+			fixture
+				.run
+				.context
+				.push(turn_event(i, std::slice::from_ref(&id)));
 			fixture.run.context.push(result(
 				&id,
 				"read",
