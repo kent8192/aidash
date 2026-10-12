@@ -73,7 +73,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		21
+		23
 	);
 	let tables = migrations
 		.iter()
@@ -288,14 +288,14 @@ async fn generation_with_existing_sql_assets_preserves_history_and_dependency(
 	);
 	assert_eq!(std::fs::read(history).unwrap(), original);
 	let generated = FilesystemSource::new(fixture.directory.path().join("migrations"))
-		.get_migration("execution", "0016_policy_probe")
+		.get_migration("execution", "0020_policy_probe")
 		.await
 		.unwrap();
 	assert_eq!(
 		generated.dependencies,
 		vec![(
 			"execution".to_owned(),
-			"0015_inference_progress_state".to_owned()
+			"0019_summary_allowance_state".to_owned()
 		)]
 	);
 	assert!(generated.operations.is_empty());
@@ -556,7 +556,7 @@ async fn preserved_baseline_does_not_generate_table_recreation(
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		21
+		23
 	);
 }
 
@@ -1536,6 +1536,185 @@ async fn tool_parallelism_migration_reverses_to_deferred_exposure_and_refuses_st
 			vec![agent(parallel)]
 		)
 		.await
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn context_policy_migration_validates_policies_and_refuses_rollback_while_stored(
+	#[future] fresh_database: MigrationFixture,
+) {
+	use aidash_server::apps::registry::{models::Definition, services::states::DefinitionKind};
+	// Arrange
+	let fixture = fresh_database.await;
+	fixture.migrate().await;
+	let pool = fixture.connection.clone().into_postgres().unwrap();
+	let agent = |policy: serde_json::Value| {
+		json!({"schema_version":1,"model":{"id":"model","version":"1.0.0"},"instructions":"Work",
+			"tool_parallelism":2,"exposure":{"version":"deferred@1"},"context_policy":policy})
+	};
+	let summarized = json!({"version":"context-recovery/1","preserve_recent":8,
+		"overflow_retries":4,"overflow_shrink":0.5,
+		"summary":{"model":{"id":"model","version":"1.0.0"},"max_tokens":256,"call_budget":64}});
+	// Assert: the contract mirrors ContextPolicy::validate, beside the 0021 keys.
+	for valid in [
+		summarized.clone(),
+		json!({"version":"context-recovery/1"}),
+		json!({"version":"context-recovery/1","overflow_retries":0,"overflow_shrink":0.9,"summary":null}),
+		json!(null),
+	] {
+		assert!(
+			contract_accepts(
+				&pool,
+				"aidash_agent_bindings_is_valid",
+				vec![agent(valid.clone())]
+			)
+			.await,
+			"{valid}"
+		);
+	}
+	let summary = |field: serde_json::Value| {
+		let mut policy = summarized.clone();
+		policy["summary"]
+			.as_object_mut()
+			.unwrap()
+			.extend(field.as_object().unwrap().clone());
+		policy
+	};
+	for invalid in [
+		json!("context-recovery/1"),
+		json!({"version":"context-recovery/2"}),
+		json!({"preserve_recent":8}),
+		json!({"version":"context-recovery/1","unknown":true}),
+		json!({"version":"context-recovery/1","preserve_recent":5}),
+		json!({"version":"context-recovery/1","preserve_recent":1001}),
+		json!({"version":"context-recovery/1","preserve_recent":6.5}),
+		json!({"version":"context-recovery/1","preserve_recent":null}),
+		json!({"version":"context-recovery/1","overflow_retries":5}),
+		json!({"version":"context-recovery/1","overflow_shrink":0.95}),
+		json!({"version":"context-recovery/1","overflow_shrink":0.4}),
+		json!({"version":"context-recovery/1","overflow_shrink":"0.75"}),
+		json!({"version":"context-recovery/1","summary":{"max_tokens":256}}),
+		summary(json!({"max_tokens":255})),
+		summary(json!({"max_tokens":4097})),
+		summary(json!({"call_budget":0})),
+		summary(json!({"call_budget":65})),
+		summary(json!({"model":{"id":"","version":"1.0.0"}})),
+		summary(json!({"fallback":true})),
+	] {
+		assert!(
+			!contract_accepts(
+				&pool,
+				"aidash_agent_bindings_is_valid",
+				vec![agent(invalid.clone())]
+			)
+			.await,
+			"{invalid}"
+		);
+	}
+	let migration =
+		FilesystemSource::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations"))
+			.all_migrations()
+			.await
+			.unwrap()
+			.into_iter()
+			.find(|m| m.app_label == "registry" && m.name == "0022_context_policy")
+			.unwrap();
+	let mut executor =
+		reinhardt::db::migrations::DatabaseMigrationExecutor::new(fixture.connection.clone());
+	// Act / Assert: without stored policies the reverse restores the 0021 contract.
+	executor
+		.rollback_migrations(std::slice::from_ref(&migration))
+		.await
+		.unwrap();
+	let mut plain = agent(json!(null));
+	plain.as_object_mut().unwrap().remove("context_policy");
+	assert!(contract_accepts(&pool, "aidash_agent_bindings_is_valid", vec![plain]).await);
+	assert!(
+		!contract_accepts(
+			&pool,
+			"aidash_agent_bindings_is_valid",
+			vec![agent(summarized.clone())]
+		)
+		.await
+	);
+	executor
+		.apply_migrations(std::slice::from_ref(&migration))
+		.await
+		.unwrap();
+	// Arrange: the registry write path admits a valid policy and rejects an invalid one.
+	let lease = DatabaseConnectionLease::register(fixture.connection.clone()).unwrap();
+	let mut connection = lease.handle();
+	let model = json!({"id":"model","version":"1.0.0","kind":"model",
+		"name":{"en":"Context fixture"},"description":{"en":"Migration test"},
+		"config":{"provider":"openrouter","model_id":"anthropic/model",
+			"endpoint":"http://127.0.0.1:1/v1","credential_env":null,
+			"context_window":32768,"max_output_tokens":4096,
+			"modalities":["text"],"cost":{}}});
+	Definition::objects()
+		.create_with_conn(
+			&mut connection,
+			&Definition::build()
+				.id("model")
+				.version("1.0.0")
+				.kind(DefinitionKind::Model)
+				.metadata(model.into())
+				.finish(),
+		)
+		.await
+		.unwrap();
+	let definition = |id: &str, policy: serde_json::Value| {
+		Definition::build()
+			.id(id)
+			.version("1.0.0")
+			.kind(DefinitionKind::Agent)
+			.metadata(
+				json!({"id":id,"version":"1.0.0","kind":"agent",
+					"name":{"en":"Context policy"},"description":{"en":"Migration test"},
+					"config":agent(policy)})
+				.into(),
+			)
+			.finish()
+	};
+	assert!(
+		Definition::objects()
+			.create_with_conn(
+				&mut connection,
+				&definition(
+					"unbounded",
+					json!({"version":"context-recovery/1","overflow_retries":5})
+				),
+			)
+			.await
+			.is_err(),
+		"the database contract must reject an invalid Context Policy"
+	);
+	Definition::objects()
+		.create_with_conn(
+			&mut connection,
+			&definition("recovering", summarized.clone()),
+		)
+		.await
+		.unwrap();
+	// Act / Assert: the stored policy refuses the rollback before any DDL runs.
+	let error = executor
+		.rollback_migrations(std::slice::from_ref(&migration))
+		.await
+		.unwrap_err();
+	assert!(
+		error.to_string().contains(
+			"registry 0022_context_policy cannot be reversed: definitions, packages or installations declare context_policy"
+		),
+		"{error}"
+	);
+	assert!(
+		contract_accepts(
+			&pool,
+			"aidash_agent_bindings_is_valid",
+			vec![agent(summarized)]
+		)
+		.await,
+		"the denied rollback must retain the upgraded contract"
 	);
 }
 

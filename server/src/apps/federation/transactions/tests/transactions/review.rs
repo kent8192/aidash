@@ -12,12 +12,12 @@ fn manifest(node: &str, workspace: Uuid) -> Value {
 #[tokio::test]
 async fn abort_honors_manifest_attribute_denies(
 	#[future(awt)]
-	#[from(test_environment)]
-	environment: std::sync::Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
 	#[case] attribute: &str,
 ) {
-	let (f, url, schema) = setup(&environment).await;
-	let app = common::application(f.clone()).await;
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
 	let (mut policy, token, task) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let workspace = f.store.task(task).await.unwrap().workspace_id;
 	let manifest = manifest(&f.config.node_id, workspace);
@@ -75,11 +75,11 @@ async fn abort_honors_manifest_attribute_denies(
 #[tokio::test]
 async fn authorization_submission_and_abort_work_with_one_control_connection(
 	#[future(awt)]
-	#[from(test_environment)]
-	environment: std::sync::Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
 ) {
-	let (mut f, url, schema) = setup(&environment).await;
-	let app = common::application(f.clone()).await;
+	let (mut f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
 	let (_, token, task) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let workspace = f.store.task(task).await.unwrap().workspace_id;
 	let old_pool = f.store.control_pool.clone();
@@ -169,19 +169,12 @@ async fn audit_count(f: &aidash_server::federation::Federation) -> i64 {
 #[tokio::test]
 async fn transaction_visibility_scans_past_hidden_rows_without_poll_audits(
 	#[future(awt)]
-	#[from(test_environment)]
-	environment: std::sync::Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	#[with(aidash_server::http::Settings{auth_burst:1000,actor_burst:1000,..Default::default()})]
+	fixture: common::ApplicationFixture,
 ) {
-	let (f, url, schema) = setup(&environment).await;
-	let app = common::application_with_settings(
-		f.clone(),
-		aidash_server::http::Settings {
-			auth_burst: 1000,
-			actor_burst: 1000,
-			..Default::default()
-		},
-	)
-	.await;
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
 	let (mut policy, token, task) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let workspace = f.store.task(task).await.unwrap().workspace_id;
 	let oldest = manifest(&f.config.node_id, workspace);
@@ -230,11 +223,11 @@ async fn transaction_visibility_scans_past_hidden_rows_without_poll_audits(
 #[tokio::test]
 async fn peer_mapping_writes_work_with_one_control_connection(
 	#[future(awt)]
-	#[from(test_environment)]
-	environment: std::sync::Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
 ) {
-	let (mut f, url, schema) = setup(&environment).await;
-	let app = common::application(f.clone()).await;
+	let (mut f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
 	bootstrap(&f, &app, "http://localhost:1").await;
 	let (status, credential) = request(
 		&app,
@@ -299,11 +292,11 @@ async fn peer_mapping_writes_work_with_one_control_connection(
 #[tokio::test]
 async fn subject_transaction_errors_do_not_reveal_other_owners(
 	#[future(awt)]
-	#[from(test_environment)]
-	environment: std::sync::Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
 ) {
-	let (f, url, schema) = setup(&environment).await;
-	let app = common::application(f.clone()).await;
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
 	let (_, token, task) = bootstrap(&f, &app, "http://localhost:1").await;
 	let workspace = f.store.task(task).await.unwrap().workspace_id;
 	let own = manifest(&f.config.node_id, workspace);

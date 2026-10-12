@@ -11,7 +11,7 @@ async fn lowered_content_fixture(#[future] capability_fixture: CoreFixture) -> C
 	profile.limits.reference_bytes = 32;
 	profile.limits.share_file_bytes = 16;
 	c.f.store.capabilities = Runtime::new(profile).unwrap();
-	c.app = common::application(c.f.clone()).await;
+	c.app.context.set_singleton(c.f.clone());
 	c
 }
 

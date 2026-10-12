@@ -20,7 +20,6 @@ use chrono::{Duration, Utc};
 use endpoint::EndpointFixture;
 use execution_fixtures::{ExecutionFixture, execution};
 use reinhardt::db::orm::Model;
-use reinhardt::test::fixtures::api_client_from_url;
 use rstest::{fixture, rstest};
 use serde_json::{Value, json};
 use std::future::Future;
@@ -57,14 +56,32 @@ async fn request(
 	path: &str,
 	value: Value,
 ) -> (u16, Value) {
-	let client = api_client_from_url(&app.server.url);
-	client
-		.set_header("Authorization", &format!("Bearer {token}"))
-		.await
-		.unwrap();
+	let authorization = format!("Bearer {token}");
+	let headers = [("Authorization", authorization.as_str())];
 	let response = match method {
-		"GET" => client.get(path).await.unwrap(),
-		"POST" => client.post(path, &value, "json").await.unwrap(),
+		"GET" => async {
+			let client = &(app.anonymous);
+			let mut request = client.request(http::Method::GET, path);
+			for (name, value) in &headers {
+				request = request.header(*name, *value);
+			}
+			request.send().await
+		}
+		.await
+		.unwrap(),
+		"POST" => async {
+			let client = &(app.anonymous);
+			let mut request = client
+				.request(http::Method::POST, path)
+				.body(bytes::Bytes::copy_from_slice(value.to_string().as_bytes()))
+				.header(http::header::CONTENT_TYPE, "application/json");
+			for (name, value) in &headers {
+				request = request.header(*name, *value);
+			}
+			request.send().await
+		}
+		.await
+		.unwrap(),
 		_ => panic!("unsupported fixture request method: {method}"),
 	};
 	(response.status_code(), response.json_value().unwrap())
@@ -77,22 +94,28 @@ async fn discover(
 	tenant: &str,
 	subject: &str,
 ) -> (u16, Value) {
-	let client = api_client_from_url(&app.server.url);
-	for (name, value) in [
-		("Authorization", format!("Bearer {token}")),
-		("x-aidash-node", node.into()),
-		("x-aidash-protocol", "0.2".into()),
-	] {
-		client.set_header(name, &value).await.unwrap();
+	let authorization = format!("Bearer {token}");
+	let response = async {
+		let client = &(app.anonymous);
+		let mut request = client
+			.request(http::Method::POST, "/federation/v0.1/scoped/discover")
+			.body(bytes::Bytes::copy_from_slice(
+				json!({"tenant":tenant,"subject":subject,"search":{}})
+					.to_string()
+					.as_bytes(),
+			))
+			.header(http::header::CONTENT_TYPE, "application/json");
+		for (name, value) in &[
+			("Authorization", authorization.as_str()),
+			("x-aidash-node", node),
+			("x-aidash-protocol", "0.2"),
+		] {
+			request = request.header(*name, *value);
+		}
+		request.send().await
 	}
-	let response = client
-		.post(
-			"/federation/v0.1/scoped/discover",
-			&json!({"tenant":tenant,"subject":subject,"search":{}}),
-			"json",
-		)
-		.await
-		.unwrap();
+	.await
+	.unwrap();
 	(response.status_code(), response.json_value().unwrap())
 }
 
