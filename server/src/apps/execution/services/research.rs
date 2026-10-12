@@ -33,12 +33,14 @@ use uuid::Uuid;
 pub const BRAVE_PROFILE_ENV: &str = "AIDASH_RESEARCH_BRAVE_PROFILE";
 /// `enabled` admits the public page reading provider.
 pub const PAGE_READING_ENV: &str = "AIDASH_RESEARCH_PAGE_READING";
+/// `enabled` admits the deterministic fixture provider (tests and evaluation).
+pub const FIXTURE_ENV: &str = "AIDASH_RESEARCH_FIXTURE";
 
 /// Research providers this Node implements, read once from its environment.
 pub struct Providers {
 	brave: std::result::Result<Arc<BraveSearch>, String>,
 	pages: Option<Arc<PageReader>>,
-	fixture: Arc<FixtureResearch>,
+	fixture: Option<Arc<FixtureResearch>>,
 	pub limits: Limits,
 }
 
@@ -48,7 +50,8 @@ impl Providers {
 			brave: brave_from_env(),
 			pages: (std::env::var(PAGE_READING_ENV).as_deref() == Ok("enabled"))
 				.then(|| Arc::new(PageReader::default())),
-			fixture: Arc::new(FixtureResearch::default()),
+			fixture: (std::env::var(FIXTURE_ENV).as_deref() == Ok("enabled"))
+				.then(|| Arc::new(FixtureResearch::default())),
 			limits: Limits::default(),
 		}
 	}
@@ -70,6 +73,9 @@ impl Providers {
 			"research.page@1" if self.pages.is_none() => {
 				Err(unavailable(&format!("requires {PAGE_READING_ENV}=enabled")))
 			}
+			"research.fixture@1" if self.fixture.is_none() => {
+				Err(unavailable(&format!("requires {FIXTURE_ENV}=enabled")))
+			}
 			"research.page@1" | "research.fixture@1" => Ok(()),
 			_ => Err(unavailable("is not a research provider")),
 		}
@@ -82,7 +88,11 @@ impl Providers {
 				.clone()
 				.map(|brave| brave as Arc<dyn SearchProvider>)
 				.map_err(|_| unavailable(provider)),
-			"research.fixture@1" => Ok(self.fixture.clone()),
+			"research.fixture@1" => self
+				.fixture
+				.clone()
+				.map(|fixture| fixture as Arc<dyn SearchProvider>)
+				.ok_or_else(|| unavailable(provider)),
 			_ => Err(unavailable(provider)),
 		}
 	}
@@ -94,7 +104,11 @@ impl Providers {
 				.clone()
 				.map(|pages| pages as Arc<dyn PageProvider>)
 				.ok_or_else(|| unavailable(provider)),
-			"research.fixture@1" => Ok(self.fixture.clone()),
+			"research.fixture@1" => self
+				.fixture
+				.clone()
+				.map(|fixture| fixture as Arc<dyn PageProvider>)
+				.ok_or_else(|| unavailable(provider)),
 			_ => Err(unavailable(provider)),
 		}
 	}
@@ -171,9 +185,19 @@ impl DisclosureGate for Gate<'_> {
 			provider: disclosure.provider.clone(),
 			destination: disclosure.outbound.destination.clone(),
 			content: disclosure.outbound.content.clone(),
+			context_revision: disclosure.context_revision,
 		};
 		authority
 			.web_disclosure(&self.context.store, &self.context.run, &request)
+			.await
+			.map_err(Into::into)
+	}
+	async fn consume(&self, _: Uuid, approval_id: Uuid) -> aidash_application::Result<bool> {
+		let Some(authority) = &self.context.home.authority else {
+			return Ok(false);
+		};
+		authority
+			.consume_web_disclosure(&self.context.store, &self.context.run, approval_id)
 			.await
 			.map_err(Into::into)
 	}

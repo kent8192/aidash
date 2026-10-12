@@ -657,6 +657,23 @@ mod tests {
 		assert_eq!(encoded["behavior"]["exposure_update"], true);
 	}
 	#[test]
+	fn research_attributes_leave_admitted_builtin_digests_unchanged() {
+		// Admitted Runs pin `provider_contract_digest` over these bytes; the
+		// research `yields` and `disclosure_approval` attributes are omitted
+		// when empty, so existing contracts keep their digests.
+		let contract = builtin_contract("workspace_read").unwrap();
+		assert_eq!(
+			serde_json::to_string(&contract.behavior).unwrap(),
+			r#"{"effect":"ReadOnly","fitting":"WorkspaceRecord","continuation":"Ordinary","catch_up":true,"media_pending":true,"yields_model_media":false,"workbench_approval":false}"#
+		);
+		assert_eq!(
+			crate::registry::rules::digest(&serde_json::to_value(&contract).unwrap()),
+			PINNED_WORKSPACE_READ_DIGEST
+		);
+	}
+	const PINNED_WORKSPACE_READ_DIGEST: &str =
+		"sha256:db828953f52fd78d391555cb3bd65a846349e57dc02e015e2ec032544995c271";
+	#[test]
 	fn registry_effects_and_approval_are_independent() {
 		let reference = EntityRef {
 			id: "tool".into(),

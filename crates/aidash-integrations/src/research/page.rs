@@ -50,6 +50,9 @@ impl Resolver for PublicDns {
 pub struct PageReader {
 	resolver: Box<dyn Resolver>,
 	admit: fn(&Url) -> Result<(), Failure>,
+	/// Deadline of one whole read, redirects and body included.
+	timeout: Duration,
+	max_raw_bytes: usize,
 }
 
 impl Default for PageReader {
@@ -57,6 +60,8 @@ impl Default for PageReader {
 		Self {
 			resolver: Box::new(PublicDns),
 			admit: admit_public_url,
+			timeout: TIMEOUT,
+			max_raw_bytes: MAX_RAW_BYTES,
 		}
 	}
 }
@@ -76,7 +81,7 @@ impl PageReader {
 				" page-reading"
 			))
 			.redirect(reqwest::redirect::Policy::none())
-			.timeout(TIMEOUT)
+			.timeout(self.timeout)
 			.connect_timeout(Duration::from_secs(5))
 			.resolve_to_addrs(host, &addresses)
 			.build()
@@ -118,14 +123,7 @@ impl PageProvider for PageReader {
 						.get(header::LOCATION)
 						.and_then(|value| value.to_str().ok())
 						.ok_or(Failure::ProviderResponseInvalid)?;
-					let next = url
-						.join(location)
-						.map_err(|_| Failure::ProviderResponseInvalid)?;
-					// The Web disclosure approved one destination host. Another
-					// host needs its own request and approval.
-					if next.host_str() != url.host_str() {
-						return Err(Failure::CrossHostRedirect);
-					}
+					let next = redirect_target(&url, location)?;
 					url = next;
 					continue;
 				}
@@ -156,7 +154,7 @@ impl PageProvider for PageReader {
 					.await
 					.map_err(|_| Failure::ResponseStreamError)?
 				{
-					if bytes.len().saturating_add(chunk.len()) > MAX_RAW_BYTES {
+					if bytes.len().saturating_add(chunk.len()) > self.max_raw_bytes {
 						return Err(Failure::ResponseTooLarge);
 					}
 					bytes.extend_from_slice(&chunk);
@@ -165,10 +163,26 @@ impl PageProvider for PageReader {
 			}
 			Err(Failure::ProviderRequestRejected)
 		};
-		tokio::time::timeout(TIMEOUT, operation)
+		tokio::time::timeout(self.timeout, operation)
 			.await
 			.unwrap_or(Err(Failure::Timeout))
 	}
+}
+
+/// The next address of a redirect. The Web disclosure approved one destination
+/// host, so another host needs its own request and approval; an encrypted read
+/// is never downgraded.
+pub fn redirect_target(current: &Url, location: &str) -> Result<Url, Failure> {
+	let next = current
+		.join(location)
+		.map_err(|_| Failure::ProviderResponseInvalid)?;
+	if next.host_str() != current.host_str() {
+		return Err(Failure::CrossHostRedirect);
+	}
+	if current.scheme() == "https" && next.scheme() != "https" {
+		return Err(Failure::InsecureRedirect);
+	}
+	Ok(next)
 }
 
 /// Turn a retrieved body into bounded snapshot lines.

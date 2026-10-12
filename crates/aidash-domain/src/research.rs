@@ -75,6 +75,8 @@ pub enum Failure {
 	ExtractionFailed,
 	/// A page redirected to another host than the approved destination.
 	CrossHostRedirect,
+	/// A page redirected from https to an unencrypted address.
+	InsecureRedirect,
 	Timeout,
 	TransportError,
 	ResponseStreamError,
@@ -105,6 +107,7 @@ impl Failure {
 			Self::UnsupportedMedia => "unsupported_media",
 			Self::ExtractionFailed => "extraction_failed",
 			Self::CrossHostRedirect => "cross_host_redirect",
+			Self::InsecureRedirect => "insecure_redirect",
 			Self::Timeout => "timeout",
 			Self::TransportError => "transport_error",
 			Self::ResponseStreamError => "response_stream_error",
@@ -135,6 +138,7 @@ impl Failure {
 			Self::CrossHostRedirect => {
 				"The page redirected to another host; request that address in a new call."
 			}
+			Self::InsecureRedirect => "The page redirected from https to an unencrypted address.",
 			Self::Timeout => "The deadline expired; the provider outcome is unknown.",
 			Self::TransportError => "The transport failed; the provider outcome is unknown.",
 			Self::ResponseStreamError => {

@@ -30,6 +30,9 @@ impl DisclosureGate for Permit {
 	) -> aidash_application::Result<DisclosureState> {
 		Ok(DisclosureState::Permitted)
 	}
+	async fn consume(&self, _: Uuid, _: Uuid) -> aidash_application::Result<bool> {
+		Ok(true)
+	}
 }
 
 async fn agent(store: &Store) -> Entry {
@@ -62,7 +65,10 @@ fn reservation(key: &str, account: Option<(&str, u64)>) -> Reservation {
 			account_id: account_id.into(),
 			price_micro_usd: price,
 		}),
-		max_attempts: 3,
+		limits: Limits {
+			search_attempts: 3,
+			..Limits::default()
+		},
 		budget: account.map(|_| Budget {
 			since: chrono::Utc::now() - chrono::Duration::days(1),
 			limit_micro_usd: 10_000,
@@ -110,15 +116,17 @@ async fn attempts_are_reserved_once_settled_once_and_charged_to_the_operator_acc
 		.settle(run.id, "k1", AttemptOutcome::Completed, &result)
 		.await
 		.unwrap();
-	evidence
-		.settle(
-			run.id,
-			"k1",
-			AttemptOutcome::Failed,
-			&json!({"status":"error"}),
-		)
-		.await
-		.unwrap();
+	assert!(matches!(
+		evidence
+			.settle(
+				run.id,
+				"k1",
+				AttemptOutcome::Failed,
+				&json!({"status":"error"}),
+			)
+			.await,
+		Err(aidash_application::Error::Conflict(_))
+	));
 	assert_eq!(
 		evidence.attempt(run.id, "k1").await.unwrap(),
 		Some(AttemptState::Settled {

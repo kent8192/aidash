@@ -148,11 +148,11 @@ page reads, 100 Source records, 50 snapshots and 8 MiB of snapshot text.
 
 ## Providers
 
-| Provider             | Tier      | Availability                                                                        |
-| -------------------- | --------- | ----------------------------------------------------------------------------------- |
-| `research.brave@1`   | `host`    | `AIDASH_RESEARCH_BRAVE_PROFILE` names a valid account profile and its secret is set |
-| `research.page@1`    | `host`    | `AIDASH_RESEARCH_PAGE_READING=enabled`                                              |
-| `research.fixture@1` | `fixture` | Always; a deterministic in-memory corpus that sends nothing outside the Node        |
+| Provider             | Tier      | Availability                                                                                                                      |
+| -------------------- | --------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `research.brave@1`   | `host`    | `AIDASH_RESEARCH_BRAVE_PROFILE` names a valid account profile and its secret is set                                               |
+| `research.page@1`    | `host`    | `AIDASH_RESEARCH_PAGE_READING=enabled`                                                                                            |
+| `research.fixture@1` | `fixture` | `AIDASH_RESEARCH_FIXTURE=enabled`; a deterministic in-memory corpus that sends nothing outside the Node, for tests and evaluation |
 
 The Brave key is a **tool secret**: the profile's `credential_env` names an
 `AIDASH_SECRET_*` environment variable. It is not a Provider Credential.

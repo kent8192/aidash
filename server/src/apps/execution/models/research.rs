@@ -27,7 +27,8 @@ const DISPATCHED: &str = "dispatched";
 /// Advisory lock namespace of research reservations.
 const LOCK_NAMESPACE: i64 = 71_003_237;
 
-async fn lock(tx: &mut dyn TransactionExecutor, key: &str) -> Result<()> {
+/// A transaction-scoped advisory lock serializing research writes of `key`.
+pub(crate) async fn lock(tx: &mut dyn TransactionExecutor, key: &str) -> Result<()> {
 	let (sql, values) = Query::select()
 		.expr(SimpleExpr::FunctionCall(
 			"pg_advisory_xact_lock".into_iden(),
@@ -248,8 +249,25 @@ impl ResearchAttempt {
 		if Self::find(tx, run, &reservation.key).await?.is_some() {
 			return Ok(Reserved::Duplicate);
 		}
-		if Self::count(tx, run, reservation.operation).await? >= reservation.max_attempts {
+		let limits = &reservation.limits;
+		let maximum = match reservation.operation {
+			Operation::Search => limits.search_attempts,
+			Operation::Fetch | Operation::Find => limits.fetch_attempts,
+		};
+		if Self::count(tx, run, reservation.operation).await? >= maximum {
 			return Ok(Reserved::AttemptLimit);
+		}
+		match reservation.operation {
+			Operation::Search if ResearchSource::count(tx, run).await? >= limits.sources => {
+				return Ok(Reserved::SourceLimit);
+			}
+			Operation::Fetch => {
+				let (snapshots, bytes) = ResearchSnapshot::usage(tx, run).await?;
+				if snapshots >= limits.snapshots || bytes >= limits.snapshot_bytes {
+					return Ok(Reserved::SnapshotLimit);
+				}
+			}
+			_ => {}
 		}
 		let attribution = reservation.attribution.as_ref();
 		if let (Some(attribution), Some(budget)) = (attribution, &reservation.budget) {

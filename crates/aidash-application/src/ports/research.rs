@@ -8,7 +8,8 @@ use aidash_domain::research::{
 	citations::EvidenceRef,
 	document::{ExtractedPage, Passage},
 	evidence::{
-		AttemptOutcome, AttemptState, DocumentSnapshot, EvidenceFragment, RunUsage, SourceRecord,
+		AttemptOutcome, AttemptState, DocumentSnapshot, EvidenceFragment, Limits, RunUsage,
+		SourceRecord,
 	},
 	search::{ProviderResults, SearchQuery, SourceCandidate},
 };
@@ -58,8 +59,10 @@ pub struct Reservation {
 	pub provider: String,
 	pub destination: String,
 	pub attribution: Option<CostAttribution>,
-	/// Attempts of this operation the Run may hold, including this one.
-	pub max_attempts: u32,
+	/// The Run's research limits. Attempts of this operation, and the Run's
+	/// Source records (search) or Document snapshots (fetch), are checked
+	/// under the same lock as the reservation.
+	pub limits: Limits,
 	/// The attributed account's charge limit; checked with the reservation.
 	pub budget: Option<Budget>,
 }
@@ -79,6 +82,8 @@ pub enum Reserved {
 	/// The key already has an attempt.
 	Duplicate,
 	AttemptLimit,
+	SourceLimit,
+	SnapshotLimit,
 	BudgetExhausted,
 }
 
@@ -92,6 +97,8 @@ pub trait EvidenceStore: Send + Sync {
 	/// attempts whose outcome is still unknown.
 	async fn account_spend(&self, account: &str, since: DateTime<Utc>) -> Result<u64>;
 	async fn reserve(&self, run: Uuid, reservation: &Reservation) -> Result<Reserved>;
+	/// Settles a dispatched attempt exactly once; settling a missing or
+	/// already settled attempt is a `Conflict`.
 	async fn settle(
 		&self,
 		run: Uuid,
@@ -105,17 +112,20 @@ pub trait EvidenceStore: Send + Sync {
 		run: Uuid,
 		key: &str,
 		sources: &[SourceCandidate],
+		max_sources: u32,
 	) -> Result<Vec<SourceRecord>>;
 	async fn source(&self, run: Uuid, id: Uuid) -> Result<Option<SourceRecord>>;
 	/// A new Document snapshot; `source` is created when the page was supplied
-	/// by address rather than a Source record.
+	/// by address rather than a Source record. `None` when the snapshot would
+	/// exceed the Run's snapshot limits, checked under the Run's lock.
 	async fn record_snapshot(
 		&self,
 		run: Uuid,
 		source: Option<Uuid>,
 		requested_url: &str,
 		page: &ExtractedPage,
-	) -> Result<DocumentSnapshot>;
+		limits: &Limits,
+	) -> Result<Option<DocumentSnapshot>>;
 	async fn snapshot(&self, run: Uuid, id: Uuid) -> Result<Option<DocumentSnapshot>>;
 	async fn record_fragment(
 		&self,
@@ -158,8 +168,13 @@ impl WebDisclosure {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DisclosureState {
-	/// Policy permits the disclosure, or an approval for it was consumed.
+	/// Policy or a Run grant permits the disclosure.
 	Permitted,
+	/// A person approved this exact disclosure once. The approval is consumed
+	/// only after the attempt is reserved, by [`DisclosureGate::consume`].
+	Approved {
+		approval_id: Uuid,
+	},
 	/// An eligible person must decide first. The operator waits on this approval.
 	Pending {
 		approval_id: Uuid,
@@ -172,4 +187,7 @@ pub enum DisclosureState {
 #[async_trait]
 pub trait DisclosureGate: Send + Sync {
 	async fn admit(&self, run: Uuid, disclosure: &WebDisclosure) -> Result<DisclosureState>;
+	/// Consume a one-time approval. `false` when it was already consumed or is
+	/// no longer approved; the disclosure must then not be sent.
+	async fn consume(&self, run: Uuid, approval_id: Uuid) -> Result<bool>;
 }

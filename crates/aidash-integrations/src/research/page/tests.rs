@@ -51,6 +51,7 @@ fn reader(address: SocketAddr) -> PageReader {
 	PageReader {
 		resolver: Box::new(Loopback(address)),
 		admit: |_| Ok(()),
+		..PageReader::default()
 	}
 }
 
@@ -144,7 +145,7 @@ fn extraction_is_linear_in_unclosed_skipped_elements() {
 async fn names_resolving_to_private_addresses_are_refused_before_connecting() {
 	let reader = PageReader {
 		resolver: Box::new(Rebinding),
-		admit: admit_public_url,
+		..PageReader::default()
 	};
 	assert_eq!(
 		reader
@@ -201,4 +202,88 @@ fn oversized_text_is_marked_incomplete() {
 			.all(|line| line.text.len() <= MAX_LINE_BYTES)
 	);
 	assert!(page.validate().is_ok());
+}
+
+#[rstest]
+#[case("https://example.com/a", "/b", Ok("https://example.com/b"))]
+#[case(
+	"http://example.com/a",
+	"https://example.com/b",
+	Ok("https://example.com/b")
+)]
+#[case(
+	"http://example.com/a",
+	"http://example.com/b",
+	Ok("http://example.com/b")
+)]
+#[case(
+	"https://example.com/a",
+	"http://example.com/b",
+	Err(Failure::InsecureRedirect)
+)]
+#[case(
+	"https://example.com/a",
+	"https://elsewhere.example.net/",
+	Err(Failure::CrossHostRedirect)
+)]
+fn redirects_stay_on_the_approved_host_without_downgrading(
+	#[case] current: &str,
+	#[case] location: &str,
+	#[case] expected: Result<&str, Failure>,
+) {
+	assert_eq!(
+		redirect_target(&Url::parse(current).unwrap(), location).map(String::from),
+		expected.map(String::from)
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn the_production_resolver_refuses_names_of_non_public_addresses() {
+	for host in ["localhost", "127.0.0.1", "::1"] {
+		assert_eq!(
+			PublicDns.resolve(host, 80).await,
+			Err(Failure::NonPublicDestination),
+			"{host}"
+		);
+	}
+}
+
+#[rstest]
+#[tokio::test]
+async fn responses_beyond_the_size_cap_are_refused() {
+	let body = "x".repeat(MAX_RAW_BYTES + 1);
+	let address = serve(vec![http("200 OK", "Content-Type: text/plain\r\n", &body)]).await;
+	assert_eq!(
+		reader(address)
+			.fetch(&Url::parse("http://example.com/").unwrap())
+			.await,
+		Err(Failure::ResponseTooLarge)
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_whole_read_is_bounded_by_its_deadline() {
+	// Accept the connection and never answer.
+	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+	let address = listener.local_addr().unwrap();
+	let silent = tokio::spawn(async move {
+		let (socket, _) = listener.accept().await.unwrap();
+		tokio::time::sleep(Duration::from_secs(30)).await;
+		drop(socket);
+	});
+	let reader = PageReader {
+		timeout: Duration::from_millis(300),
+		..reader(address)
+	};
+	let started = std::time::Instant::now();
+	assert_eq!(
+		reader
+			.fetch(&Url::parse("http://example.com/").unwrap())
+			.await,
+		Err(Failure::Timeout)
+	);
+	assert!(started.elapsed() < Duration::from_secs(5));
+	silent.abort();
 }

@@ -1307,8 +1307,10 @@ impl<'a> Executor<'a> {
 							self.citation_check(run, &tools, &result.text).await?
 						{
 							{
+								// One correction per user input: a later turn's answer
+								// gets its own correction.
 								let corrected = run.context.history.iter().any(|event| {
-									matches!(event, ContextEvent::CitationCorrectionRequired { .. })
+									matches!(event, ContextEvent::CitationCorrectionRequired { through_seq, .. } if *through_seq == run.observed_input_seq)
 								});
 								match citations::verdict(&found, &unknown, corrected) {
 									citations::Verdict::Accept => {}
@@ -1317,6 +1319,7 @@ impl<'a> Executor<'a> {
 										context.history.push(ContextEvent::CitationCorrectionRequired {
 											invalid,
 											instruction: citations::CORRECTION_INSTRUCTION.into(),
+											through_seq: run.observed_input_seq,
 										});
 										run.context = context;
 										run.step += 1;

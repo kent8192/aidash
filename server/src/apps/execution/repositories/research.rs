@@ -1,6 +1,6 @@
 //! PostgreSQL Research evidence for the host-owned research use cases.
 use crate::apps::execution::models::research::{
-	ResearchAttempt, ResearchFragment, ResearchSnapshot, ResearchSource,
+	ResearchAttempt, ResearchFragment, ResearchSnapshot, ResearchSource, lock,
 };
 use crate::store::Store;
 use aidash_application::{
@@ -12,7 +12,8 @@ use aidash_domain::research::{
 	citations::EvidenceRef,
 	document::{ExtractedPage, Passage, text_digest},
 	evidence::{
-		AttemptOutcome, AttemptState, DocumentSnapshot, EvidenceFragment, RunUsage, SourceRecord,
+		AttemptOutcome, AttemptState, DocumentSnapshot, EvidenceFragment, Limits, RunUsage,
+		SourceRecord,
 	},
 	search::SourceCandidate,
 };
@@ -97,7 +98,11 @@ impl EvidenceStore for Evidence {
 		native(
 			async {
 				let mut tx = self.store.database().begin().await?;
-				ResearchAttempt::settle(tx.as_mut(), run, key, outcome, result).await?;
+				if !ResearchAttempt::settle(tx.as_mut(), run, key, outcome, result).await? {
+					return Err(crate::Error::Conflict(
+						"research attempt is not dispatched".into(),
+					));
+				}
 				tx.commit().await?;
 				Ok(())
 			}
@@ -109,12 +114,16 @@ impl EvidenceStore for Evidence {
 		run: Uuid,
 		_: &str,
 		sources: &[SourceCandidate],
+		max_sources: u32,
 	) -> Result<Vec<SourceRecord>> {
 		native(
 			async {
 				let mut tx = self.store.database().begin().await?;
-				let mut records = Vec::with_capacity(sources.len());
-				for source in sources {
+				lock(tx.as_mut(), &format!("research-run:{run}")).await?;
+				let held = ResearchSource::count(tx.as_mut(), run).await?;
+				let room = max_sources.saturating_sub(held) as usize;
+				let mut records = Vec::with_capacity(sources.len().min(room));
+				for source in sources.iter().take(room) {
 					records.push(
 						ResearchSource::record(tx.as_mut(), run, &source.url, &source.title)
 							.await?,
@@ -143,10 +152,23 @@ impl EvidenceStore for Evidence {
 		source: Option<Uuid>,
 		requested_url: &str,
 		page: &ExtractedPage,
-	) -> Result<DocumentSnapshot> {
+		limits: &Limits,
+	) -> Result<Option<DocumentSnapshot>> {
 		native(
 			async {
 				let mut tx = self.store.database().begin().await?;
+				lock(tx.as_mut(), &format!("research-run:{run}")).await?;
+				let (snapshots, held) = ResearchSnapshot::usage(tx.as_mut(), run).await?;
+				let bytes = page
+					.lines
+					.iter()
+					.map(|line| line.text.len() as u64)
+					.sum::<u64>();
+				if snapshots >= limits.snapshots
+					|| held.saturating_add(bytes) > limits.snapshot_bytes
+				{
+					return Ok(None);
+				}
 				let source_id = match source {
 					Some(id) => {
 						ResearchSource::get(tx.as_mut(), run, id)
@@ -181,7 +203,7 @@ impl EvidenceStore for Evidence {
 				};
 				ResearchSnapshot::record(tx.as_mut(), &snapshot).await?;
 				tx.commit().await?;
-				Ok(snapshot)
+				Ok(Some(snapshot))
 			}
 			.await,
 		)

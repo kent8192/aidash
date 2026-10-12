@@ -1,4 +1,4 @@
--- Restore the 0019_deferred_exposure descriptor contract (unchanged by 0020).
+-- Restore the descriptor contract this migration replaced: the registry/0019_deferred_exposure body.
 CREATE OR REPLACE FUNCTION public.aidash_descriptor_is_valid(value jsonb) RETURNS boolean
 LANGUAGE plpgsql IMMUTABLE STRICT AS $$
 DECLARE expected_provider text; expected_tier text; start_operation boolean;

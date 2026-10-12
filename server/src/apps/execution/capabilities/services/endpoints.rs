@@ -556,7 +556,7 @@ pub(crate) async fn approval_list(
 			if !super::approvals::visible(&mut access, &row).await? { continue; }
             let run:Uuid=serde_json::from_value(row.data["run_id"].clone())?;
             // Designated approvers see only the scoped card, never Run output.
-            items.push(json!({"id":row.id,"kind":row.kind,"run_id":run,"area_id":row.area_id,"state":if row.state=="pending"&&row.expires_at.is_some_and(|t|t<chrono::Utc::now()){"expired"}else{&row.state},"revision":row.revision,"requester":row.owner,"approver":row.data["approver"],"targets":row.data["targets"],"action":row.data["action"].as_str().or_else(||row.data["actions"][0].as_str()).unwrap_or("network.get"),"expires_at":row.expires_at,"grant_id":row.data["grant_id"],"disclosure":row.data["content"]}));
+            items.push(json!({"id":row.id,"kind":row.kind,"run_id":run,"area_id":row.area_id,"state":if row.state=="pending"&&row.expires_at.is_some_and(|t|t<chrono::Utc::now()){"expired"}else{&row.state},"revision":row.revision,"requester":row.owner,"approver":row.data["approver"],"targets":row.data["targets"],"action":row.data["action"].as_str().or_else(||row.data["actions"][0].as_str()).unwrap_or("network.get"),"expires_at":row.expires_at,"grant_id":row.data["grant_id"],"disclosure":if row.kind=="disclosure"{row.data["content"].clone()}else{serde_json::Value::Null}}));
         }
         Ok(json!({"items":items,"next_cursor":next_cursor}))
     }.await;

@@ -153,9 +153,10 @@ impl Research<'_> {
 			Ok(outbound) => outbound,
 			Err(error) => return Ok(failure(operation, error)),
 		};
-		if let Some(blocked) = self.disclose(call, operation, &outbound).await? {
-			return Ok(blocked);
-		}
+		let approval = match self.disclose(call, operation, &outbound).await? {
+			Ok(approval) => approval,
+			Err(blocked) => return Ok(blocked),
+		};
 		if let Some(blocked) = self
 			.reserve(
 				call,
@@ -165,7 +166,7 @@ impl Research<'_> {
 					provider: call.provider.into(),
 					destination: outbound.destination,
 					attribution: account.as_ref().map(|account| account.attribution()),
-					max_attempts: self.limits.search_attempts,
+					limits: self.limits,
 					budget: account.as_ref().map(|account| Budget {
 						since: month_start(Utc::now()),
 						limit_micro_usd: account
@@ -178,21 +179,24 @@ impl Research<'_> {
 		{
 			return Ok(blocked);
 		}
+		if let Some(blocked) = self.consume(call, operation, approval).await? {
+			return Ok(blocked);
+		}
 		let searched_at = Utc::now();
 		let results = match provider.search(&query).await {
 			Ok(results) => results,
 			Err(error) => return self.settle_failure(call, operation, error).await,
 		};
 		let mut page = query.normalize(results);
-		let room = (self.limits.sources - usage.sources) as usize;
-		if page.sources.len() > room {
-			page.sources.truncate(room);
-			page.truncated = true;
-		}
+		// The store keeps the Run within its Source record limit under its lock.
 		let records = self
 			.store
-			.record_sources(call.run, call.key, &page.sources)
+			.record_sources(call.run, call.key, &page.sources, self.limits.sources)
 			.await?;
+		if records.len() < page.sources.len() {
+			page.sources.truncate(records.len());
+			page.truncated = true;
+		}
 		let mut sources = page
 			.sources
 			.iter()
@@ -306,9 +310,10 @@ impl Research<'_> {
 			destination: host,
 			content: url.to_string(),
 		};
-		if let Some(blocked) = self.disclose(call, operation, &outbound).await? {
-			return Ok(blocked);
-		}
+		let approval = match self.disclose(call, operation, &outbound).await? {
+			Ok(approval) => approval,
+			Err(blocked) => return Ok(blocked),
+		};
 		if let Some(blocked) = self
 			.reserve(
 				call,
@@ -318,12 +323,15 @@ impl Research<'_> {
 					provider: call.provider.into(),
 					destination: outbound.destination,
 					attribution: None,
-					max_attempts: self.limits.fetch_attempts,
+					limits: self.limits,
 					budget: None,
 				},
 			)
 			.await?
 		{
+			return Ok(blocked);
+		}
+		if let Some(blocked) = self.consume(call, operation, approval).await? {
 			return Ok(blocked);
 		}
 		let page = match provider.fetch(&url).await {
@@ -335,22 +343,18 @@ impl Research<'_> {
 				.settle_failure(call, operation, Failure::ProviderResponseInvalid)
 				.await;
 		}
-		let bytes = page
-			.lines
-			.iter()
-			.map(|line| line.text.len() as u64)
-			.sum::<u64>();
-		if usage.snapshot_bytes.saturating_add(bytes) > self.limits.snapshot_bytes {
+		// The store checks the snapshot limits under the Run's lock.
+		let Some(snapshot) = self
+			.store
+			.record_snapshot(call.run, source, url.as_str(), &page, &self.limits)
+			.await?
+		else {
 			let result = failure(operation, Failure::SnapshotLimit);
 			self.store
 				.settle(call.run, call.key, AttemptOutcome::Completed, &result)
 				.await?;
 			return Ok(result);
-		}
-		let snapshot = self
-			.store
-			.record_snapshot(call.run, source, url.as_str(), &page)
-			.await?;
+		};
 		let result = self
 			.deliver(call, &snapshot, Position::default(), max_bytes)
 			.await?;
@@ -495,15 +499,16 @@ impl Research<'_> {
 		})
 	}
 
-	/// `Some` is the result to return instead of dispatching.
+	/// `Err` is the result to return instead of dispatching; `Ok` carries a
+	/// one-time approval to consume once the attempt is reserved.
 	async fn disclose(
 		&self,
 		call: &Call<'_>,
 		operation: Operation,
 		outbound: &Outbound,
-	) -> Result<Option<Value>> {
+	) -> Result<std::result::Result<Option<Uuid>, Value>> {
 		if !call.disclosure_approval {
-			return Ok(None);
+			return Ok(Ok(None));
 		}
 		let disclosure = WebDisclosure {
 			operation,
@@ -512,11 +517,12 @@ impl Research<'_> {
 			context_revision: call.context_revision,
 		};
 		Ok(match self.gate.admit(call.run, &disclosure).await? {
-			DisclosureState::Permitted => None,
+			DisclosureState::Permitted => Ok(None),
+			DisclosureState::Approved { approval_id } => Ok(Some(approval_id)),
 			DisclosureState::Pending {
 				approval_id,
 				expires_at,
-			} => Some(json!({
+			} => Err(json!({
 				"version": 1,
 				"operation": operation.as_str(),
 				"status": "approval_required",
@@ -529,8 +535,27 @@ impl Research<'_> {
 					"request_digest": disclosure.digest(call.run),
 				},
 			})),
-			DisclosureState::Denied => Some(failure(operation, Failure::DisclosureDenied)),
+			DisclosureState::Denied => Err(failure(operation, Failure::DisclosureDenied)),
 		})
+	}
+
+	/// Consume a one-time approval after the reservation. A lost race settles
+	/// the reserved attempt without sending anything.
+	async fn consume(
+		&self,
+		call: &Call<'_>,
+		operation: Operation,
+		approval: Option<Uuid>,
+	) -> Result<Option<Value>> {
+		let Some(approval) = approval else {
+			return Ok(None);
+		};
+		if self.gate.consume(call.run, approval).await? {
+			return Ok(None);
+		}
+		self.settle_failure(call, operation, Failure::DisclosureDenied)
+			.await
+			.map(Some)
 	}
 
 	/// `Some` is the result to return instead of dispatching.
@@ -541,6 +566,8 @@ impl Research<'_> {
 			// A concurrent invocation with the same key owns the attempt.
 			Reserved::Duplicate => Some(failure(operation, Failure::OutcomeUnknown)),
 			Reserved::AttemptLimit => Some(failure(operation, Failure::AttemptLimit)),
+			Reserved::SourceLimit => Some(failure(operation, Failure::SourceLimit)),
+			Reserved::SnapshotLimit => Some(failure(operation, Failure::SnapshotLimit)),
 			Reserved::BudgetExhausted => Some(failure(operation, Failure::BudgetExhausted)),
 		})
 	}

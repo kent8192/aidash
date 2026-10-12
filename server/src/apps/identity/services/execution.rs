@@ -203,6 +203,29 @@ impl WorkerAuthority {
 		access.finish(result).await
 	}
 
+	/// Consume a one-time Web disclosure approval of `run` after its attempt
+	/// is reserved.
+	pub async fn consume_web_disclosure(
+		&self,
+		store: &Store,
+		run: &Run,
+		approval: Uuid,
+	) -> Result<bool> {
+		let outer = self.access.lock().await;
+		let mut access = Access::under_lease(&outer).await?;
+		let result = {
+			let mut scope = crate::bootstrap::approval_scope(Some(store), &mut access, None);
+			aidash_application::capabilities::approvals::consume_disclosure(
+				&mut scope,
+				&run.metadata(),
+				approval,
+			)
+			.await
+			.map_err(Error::from)
+		};
+		access.finish(result).await
+	}
+
 	pub async fn memory_mutate(
 		&self,
 		store: &Store,

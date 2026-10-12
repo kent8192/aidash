@@ -203,6 +203,7 @@ fn request() -> DisclosureRequest {
 		provider: "research.brave@1".into(),
 		destination: "api.search.brave.com".into(),
 		content: "rust release".into(),
+		context_revision: 0,
 	}
 }
 
@@ -256,9 +257,21 @@ async fn an_allow_once_approval_admits_exactly_one_disclosure() {
 		.await
 		.unwrap();
 	assert_eq!(decided["state"], "approved");
+	// The approval stays usable until the attempt is reserved and consumes it.
 	assert_eq!(
 		disclose(&mut scope, &run, &request()).await.unwrap(),
-		DisclosureState::Permitted
+		DisclosureState::Approved { approval_id }
+	);
+	assert_eq!(scope.records[&approval_id].state, "approved");
+	assert!(
+		consume_disclosure(&mut scope, &run, approval_id)
+			.await
+			.unwrap()
+	);
+	assert!(
+		!consume_disclosure(&mut scope, &run, approval_id)
+			.await
+			.unwrap()
 	);
 	assert_eq!(scope.records[&approval_id].state, "consumed");
 	// The approval was consumed: the same disclosure needs a new approval.
@@ -389,4 +402,58 @@ async fn a_disclosure_run_grant_is_visible_to_its_approver_as_a_research_resourc
 	scope.principal = "bob".into();
 	// Bob may approve research resources only; an outbound target would hide it.
 	assert!(visible(&mut scope, &record).await.unwrap());
+}
+
+#[tokio::test]
+async fn a_run_grant_does_not_cover_disclosures_after_new_user_input() {
+	let mut scope = scope(Value::Null);
+	let run = scope.run.clone();
+	let DisclosureState::Pending { approval_id, .. } =
+		disclose(&mut scope, &run, &request()).await.unwrap()
+	else {
+		panic!("pending");
+	};
+	decide_as_bob(&mut scope, approval_id, ApprovalChoice::AllowRun)
+		.await
+		.unwrap();
+	let mut later = request();
+	later.digest = "sha256:after-new-input".into();
+	later.content = "a query after new user input".into();
+	later.context_revision = 1;
+	assert!(matches!(
+		disclose(&mut scope, &run, &later).await.unwrap(),
+		DisclosureState::Pending { .. }
+	));
+}
+
+#[tokio::test]
+async fn only_the_requesting_run_can_consume_its_approval() {
+	let mut scope = scope(Value::Null);
+	let run = scope.run.clone();
+	let DisclosureState::Pending { approval_id, .. } =
+		disclose(&mut scope, &run, &request()).await.unwrap()
+	else {
+		panic!("pending");
+	};
+	assert!(
+		!consume_disclosure(&mut scope, &run, approval_id)
+			.await
+			.unwrap(),
+		"still pending"
+	);
+	decide_as_bob(&mut scope, approval_id, ApprovalChoice::AllowOnce)
+		.await
+		.unwrap();
+	let mut other = run.clone();
+	other.id = Uuid::from_u128(9);
+	assert!(
+		!consume_disclosure(&mut scope, &other, approval_id)
+			.await
+			.unwrap()
+	);
+	assert!(
+		consume_disclosure(&mut scope, &run, approval_id)
+			.await
+			.unwrap()
+	);
 }

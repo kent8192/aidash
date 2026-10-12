@@ -261,7 +261,7 @@ pub async fn decide(
 			{
 				return Err(Error::Invalid("INVALID_GRANT_SCOPE".into()));
 			}
-			let grant=scope.insert(Creation {id:Uuid::new_v4(),area:record.area_id,kind:"grant",state:"active",data:json!({"run_id":run_id,"agent_id":run.agent_id,"agent_version":run.agent_version,"subjects":record.data["subjects"],"targets":targets,"actions":[action],"approver":scope.principal(),"requester":record.owner,"approval_id":id}),expires:Some(expires)}).await?;
+			let grant=scope.insert(Creation {id:Uuid::new_v4(),area:record.area_id,kind:"grant",state:"active",data:json!({"run_id":run_id,"agent_id":run.agent_id,"agent_version":run.agent_version,"subjects":record.data["subjects"],"targets":targets,"actions":[action],"approver":scope.principal(),"requester":record.owner,"approval_id":id,"context_revision":record.data["context_revision"]}),expires:Some(expires)}).await?;
 			scope.transfer_owner(grant.id, &record.owner).await?;
 			record.data["grant_id"] = json!(grant.id);
 			record.data["approval_mode"] = json!("allow_run");
@@ -367,6 +367,9 @@ pub struct DisclosureRequest {
 	pub provider: String,
 	pub destination: String,
 	pub content: String,
+	/// The Run's observed input sequence. Approvals and Run grants cover only
+	/// disclosures made before new user input.
+	pub context_revision: i64,
 }
 
 fn disclosure_key(digest: &str, generation: u32) -> Uuid {
@@ -403,16 +406,16 @@ pub async fn disclose(
 		let key = disclosure_key(&request.digest, generation);
 		if let Some(previous) = scope.cached(key, &request.digest).await? {
 			let id = serde_json::from_value(previous["operation_id"].clone())?;
-			let mut record = scope.load(id, DISCLOSURE).await?;
+			let record = scope.load(id, DISCLOSURE).await?;
 			let expired = record.expires_at.is_some_and(|t| t <= Utc::now());
 			let state = record.state.clone();
 			match state.as_str() {
 				"consumed" => continue,
+				// Consumed only once the attempt is reserved; see consume_disclosure.
 				"approved" => {
-					record.state = "consumed".into();
-					record.data["consumed_at"] = json!(Utc::now());
-					scope.update(&mut record).await?;
-					return Ok(DisclosureState::Permitted);
+					return Ok(DisclosureState::Approved {
+						approval_id: record.id,
+					});
 				}
 				"pending" if !expired => {
 					return Ok(DisclosureState::Pending {
@@ -435,6 +438,8 @@ pub async fn disclose(
 					.as_array()
 					.is_some_and(|a| a.contains(&json!(DISCLOSE)))
 				&& g.data["subjects"] == json!(scope.subjects())
+				// New user input needs a new decision, as for one-time approvals.
+				&& g.data["context_revision"] == json!(request.context_revision)
 				&& eligible(
 					scope,
 					g.data["approver"].as_str().unwrap_or_default(),
@@ -449,7 +454,7 @@ pub async fn disclose(
 		let state = approvals::requested_state(direct, grant.is_some(), designated.is_some());
 		let id = Uuid::new_v4();
 		let data = json!({"run_id":run.id,"agent_id":run.agent_id,"agent_version":run.agent_version,"requester":scope.principal(),"credential_id":scope.credential(),"subjects":scope.subjects(),
-			"operation":request.operation,"provider":request.provider,"destination":request.destination,"content":request.content,"targets":[request.destination],"action":DISCLOSE,
+			"operation":request.operation,"provider":request.provider,"destination":request.destination,"content":request.content,"context_revision":request.context_revision,"targets":[request.destination],"action":DISCLOSE,
 			"digest":request.digest,"policy_revision":scope.policy_revision(),"approver":designated,"grant_id":grant.map(|g|g.id),"ordinary":direct});
 		let record = scope
 			.insert(Creation {
@@ -480,6 +485,29 @@ pub async fn disclose(
 		});
 	}
 	Ok(DisclosureState::Denied)
+}
+
+/// Consume a one-time Web disclosure approval of `run`, owned by the current
+/// principal. `false` when it is no longer an unconsumed approval.
+pub async fn consume_disclosure(
+	scope: &mut dyn ApprovalScope,
+	run: &Run,
+	id: Uuid,
+) -> Result<bool> {
+	let mut record = match scope.load(id, DISCLOSURE).await {
+		Err(Error::NotFound(_)) => return Ok(false),
+		other => other?,
+	};
+	if record.owner != scope.principal()
+		|| record.data["run_id"] != json!(run.id)
+		|| record.state != "approved"
+	{
+		return Ok(false);
+	}
+	record.state = "consumed".into();
+	record.data["consumed_at"] = json!(Utc::now());
+	scope.update(&mut record).await?;
+	Ok(true)
 }
 
 #[cfg(test)]

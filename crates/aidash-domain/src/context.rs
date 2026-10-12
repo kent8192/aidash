@@ -444,11 +444,13 @@ pub enum ContextEvent {
 		max_bytes: Option<usize>,
 		reason: Option<String>,
 	},
-	/// A final answer cited evidence this Run never received. Recorded once;
-	/// a second invalid answer is withheld.
+	/// A final answer cited evidence this Run never received. Recorded once
+	/// per user input (`through_seq` is the Run's observed input sequence); a
+	/// second invalid answer to the same input is withheld.
 	CitationCorrectionRequired {
 		invalid: Vec<String>,
 		instruction: String,
+		through_seq: i64,
 	},
 }
 

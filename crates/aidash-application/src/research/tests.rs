@@ -82,7 +82,11 @@ impl EvidenceStore for Memory {
 				*owner == run && held.operation == reservation.operation
 			})
 			.count() as u32;
-		if held >= reservation.max_attempts {
+		let maximum = match reservation.operation {
+			Operation::Search => reservation.limits.search_attempts,
+			_ => reservation.limits.fetch_attempts,
+		};
+		if held >= maximum {
 			return Ok(Reserved::AttemptLimit);
 		}
 		let mut spend = self.spend.lock().unwrap();
@@ -108,21 +112,35 @@ impl EvidenceStore for Memory {
 		result: &Value,
 	) -> Result<()> {
 		let mut attempts = self.attempts.lock().unwrap();
-		let entry = attempts.get_mut(&(run, key.into())).unwrap();
-		entry.1 = AttemptState::Settled {
-			outcome,
-			result: result.clone(),
-		};
-		Ok(())
+		match attempts.get_mut(&(run, key.into())) {
+			Some(entry) if entry.1 == AttemptState::Dispatched => {
+				entry.1 = AttemptState::Settled {
+					outcome,
+					result: result.clone(),
+				};
+				Ok(())
+			}
+			_ => Err(crate::Error::Conflict("attempt is not dispatched".into())),
+		}
 	}
 	async fn record_sources(
 		&self,
 		run: Uuid,
 		_: &str,
 		sources: &[SourceCandidate],
+		max_sources: u32,
 	) -> Result<Vec<SourceRecord>> {
+		let held = self
+			.sources
+			.lock()
+			.unwrap()
+			.iter()
+			.filter(|source| source.run_id == run)
+			.count();
+		let room = (max_sources as usize).saturating_sub(held);
 		let records = sources
 			.iter()
+			.take(room)
 			.map(|source| SourceRecord {
 				id: Uuid::new_v4(),
 				run_id: run,
@@ -148,7 +166,19 @@ impl EvidenceStore for Memory {
 		source: Option<Uuid>,
 		requested_url: &str,
 		page: &ExtractedPage,
-	) -> Result<DocumentSnapshot> {
+		limits: &Limits,
+	) -> Result<Option<DocumentSnapshot>> {
+		let usage = self.usage(run).await?;
+		let bytes = page
+			.lines
+			.iter()
+			.map(|line| line.text.len() as u64)
+			.sum::<u64>();
+		if usage.snapshots >= limits.snapshots
+			|| usage.snapshot_bytes.saturating_add(bytes) > limits.snapshot_bytes
+		{
+			return Ok(None);
+		}
 		let source_id = match source {
 			Some(source) => source,
 			None => {
@@ -177,7 +207,7 @@ impl EvidenceStore for Memory {
 			lines: page.lines.clone(),
 		};
 		self.snapshots.lock().unwrap().push(snapshot.clone());
-		Ok(snapshot)
+		Ok(Some(snapshot))
 	}
 	async fn snapshot(&self, run: Uuid, id: Uuid) -> Result<Option<DocumentSnapshot>> {
 		Ok(self
@@ -217,7 +247,8 @@ impl EvidenceStore for Memory {
 /// Approves only digests explicitly approved by a person; anything else waits.
 #[derive(Default)]
 struct Gate {
-	approved: Mutex<Vec<String>>,
+	/// Approvals by ID and the digest each one approves.
+	approved: Mutex<BTreeMap<Uuid, String>>,
 	denied: Mutex<Vec<String>>,
 	requests: Mutex<Vec<WebDisclosure>>,
 	permit_all: bool,
@@ -232,8 +263,14 @@ impl Gate {
 	}
 	fn decide(&self, run: Uuid, allow: bool) {
 		let last = self.requests.lock().unwrap().last().cloned().unwrap();
-		let target = if allow { &self.approved } else { &self.denied };
-		target.lock().unwrap().push(last.digest(run));
+		if allow {
+			self.approved
+				.lock()
+				.unwrap()
+				.insert(Uuid::new_v4(), last.digest(run));
+		} else {
+			self.denied.lock().unwrap().push(last.digest(run));
+		}
 	}
 }
 
@@ -246,19 +283,24 @@ impl DisclosureGate for Gate {
 			DisclosureState::Permitted
 		} else if self.denied.lock().unwrap().contains(&digest) {
 			DisclosureState::Denied
-		} else if let Some(index) = {
-			let approved = self.approved.lock().unwrap();
-			approved.iter().position(|approved| *approved == digest)
-		} {
-			// An exact approval is consumed by the one disclosure it allows.
-			self.approved.lock().unwrap().remove(index);
-			DisclosureState::Permitted
+		} else if let Some(approval_id) = self
+			.approved
+			.lock()
+			.unwrap()
+			.iter()
+			.find_map(|(id, approved)| (*approved == digest).then_some(*id))
+		{
+			DisclosureState::Approved { approval_id }
 		} else {
 			DisclosureState::Pending {
 				approval_id: Uuid::from_u128(77),
 				expires_at: Some(Utc::now() + Duration::minutes(10)),
 			}
 		})
+	}
+	async fn consume(&self, _: Uuid, approval_id: Uuid) -> Result<bool> {
+		// An exact approval is consumed by the one disclosure it allows.
+		Ok(self.approved.lock().unwrap().remove(&approval_id).is_some())
 	}
 }
 
@@ -659,7 +701,7 @@ async fn recorded_attempts_replay_with_the_same_evidence_and_unknown_dispatch_is
 				provider: "research.brave@1".into(),
 				destination: "api.search.brave.com".into(),
 				attribution: None,
-				max_attempts: 20,
+				limits: Limits::default(),
 				budget: None,
 			},
 		)
@@ -921,12 +963,18 @@ impl DisclosureGate for Concurrent<'_> {
 					provider: "research.brave@1".into(),
 					destination: "api.search.brave.com".into(),
 					attribution: None,
-					max_attempts: 1,
+					limits: Limits {
+						search_attempts: 1,
+						..Limits::default()
+					},
 					budget: None,
 				},
 			)
 			.await?;
 		Ok(DisclosureState::Permitted)
+	}
+	async fn consume(&self, _: Uuid, _: Uuid) -> Result<bool> {
+		Ok(true)
 	}
 }
 
@@ -955,4 +1003,131 @@ async fn a_concurrent_attempt_cannot_exceed_the_run_limit_after_the_early_check(
 	assert_eq!(result["error"]["code"], "attempt_limit");
 	assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
 	assert_eq!(store.attempt(run, "k1").await.unwrap(), None);
+}
+
+/// Approves once, then lets a concurrent invocation take the Run's last
+/// attempt before the reservation.
+struct RacedApproval<'a> {
+	store: &'a Memory,
+	consumed: AtomicUsize,
+}
+
+#[async_trait]
+impl DisclosureGate for RacedApproval<'_> {
+	async fn admit(&self, run: Uuid, _: &WebDisclosure) -> Result<DisclosureState> {
+		Concurrent { store: self.store }
+			.admit(
+				run,
+				&WebDisclosure {
+					operation: Operation::Search,
+					provider: "research.brave@1".into(),
+					outbound: Outbound {
+						destination: "api.search.brave.com".into(),
+						content: "other".into(),
+					},
+					context_revision: 0,
+				},
+			)
+			.await?;
+		Ok(DisclosureState::Approved {
+			approval_id: Uuid::from_u128(5),
+		})
+	}
+	async fn consume(&self, _: Uuid, _: Uuid) -> Result<bool> {
+		self.consumed.fetch_add(1, Ordering::SeqCst);
+		Ok(true)
+	}
+}
+
+#[tokio::test]
+async fn an_approval_is_consumed_only_after_the_attempt_is_reserved() {
+	let store = Memory::default();
+	let gate = RacedApproval {
+		store: &store,
+		consumed: AtomicUsize::new(0),
+	};
+	let research = Research {
+		store: &store,
+		gate: &gate,
+		limits: Limits {
+			search_attempts: 1,
+			..Limits::default()
+		},
+	};
+	let provider = Search::new("brave", "api.search.brave.com");
+	let run = Uuid::new_v4();
+	let blocked = research
+		.search(
+			&call(run, "k1", "research.brave@1"),
+			&provider,
+			&json!({"query":"a"}),
+		)
+		.await
+		.unwrap();
+	assert_eq!(blocked["error"]["code"], "attempt_limit");
+	assert_eq!(
+		gate.consumed.load(Ordering::SeqCst),
+		0,
+		"the approval stays usable"
+	);
+
+	// With room, the reservation succeeds and then consumes the approval.
+	let roomy = Research {
+		store: &store,
+		gate: &gate,
+		limits: Limits::default(),
+	};
+	let result = roomy
+		.search(
+			&call(run, "k2", "research.brave@1"),
+			&provider,
+			&json!({"query":"b"}),
+		)
+		.await
+		.unwrap();
+	assert_eq!(result["status"], "ok", "{result}");
+	assert_eq!(gate.consumed.load(Ordering::SeqCst), 1);
+}
+
+/// An approval another invocation already consumed never dispatches.
+struct Spent;
+#[async_trait]
+impl DisclosureGate for Spent {
+	async fn admit(&self, _: Uuid, _: &WebDisclosure) -> Result<DisclosureState> {
+		Ok(DisclosureState::Approved {
+			approval_id: Uuid::from_u128(6),
+		})
+	}
+	async fn consume(&self, _: Uuid, _: Uuid) -> Result<bool> {
+		Ok(false)
+	}
+}
+
+#[tokio::test]
+async fn a_spent_approval_settles_the_reserved_attempt_without_dispatch() {
+	let store = Memory::default();
+	let research = Research {
+		store: &store,
+		gate: &Spent,
+		limits: Limits::default(),
+	};
+	let provider = Search::new("brave", "api.search.brave.com");
+	let run = Uuid::new_v4();
+	let result = research
+		.search(
+			&call(run, "k1", "research.brave@1"),
+			&provider,
+			&json!({"query":"a"}),
+		)
+		.await
+		.unwrap();
+	assert_eq!(result["error"]["code"], "disclosure_denied");
+	assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
+	assert!(matches!(
+		store.attempt(run, "k1").await.unwrap(),
+		Some(AttemptState::Settled {
+			outcome: AttemptOutcome::Failed,
+			..
+		})
+	));
 }

@@ -72,7 +72,7 @@ async fn invalid_citations_get_one_correction_and_never_publish_a_fabricated_ref
 	assert_eq!(saved.phase(), RunPhase::Thinking);
 	assert!(matches!(
 		saved.context.history.last(),
-		Some(ContextEvent::CitationCorrectionRequired { invalid, instruction })
+		Some(ContextEvent::CitationCorrectionRequired { invalid, instruction, .. })
 			if *invalid == [UNKNOWN.to_string()]
 				&& instruction == citations::CORRECTION_INSTRUCTION
 	));
@@ -184,4 +184,19 @@ async fn text_beside_tool_calls_is_not_published_with_invalid_citations(mut fixt
 	let calls = fixture.backend.0.calls.lock().unwrap();
 	assert!(!calls.contains(&"home.output"), "{calls:?}");
 	assert!(calls.contains(&"store.evidence"));
+}
+
+#[rstest]
+#[tokio::test]
+async fn each_user_input_gets_its_own_correction(mut fixture: Fixture) {
+	bind(&mut fixture, "lookup", Scripted::research(Operation::Find));
+	answer(&mut fixture.run, format!("Claim [[cite:{UNKNOWN}]]."));
+	advance_sources(&mut fixture).await.unwrap();
+	assert_eq!(last_write(&fixture).0, "run.citation_correction_required");
+	// New user input arrives; the next invalid answer is corrected again.
+	fixture.run.observed_input_seq += 1;
+	answer(&mut fixture.run, format!("Again [[cite:{UNKNOWN}]]."));
+	advance_sources(&mut fixture).await.unwrap();
+	assert_eq!(last_write(&fixture).0, "run.citation_correction_required");
+	assert!(fixture.backend.0.artifacts.lock().unwrap().is_empty());
 }
