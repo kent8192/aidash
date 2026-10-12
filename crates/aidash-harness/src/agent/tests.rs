@@ -2123,6 +2123,39 @@ async fn provider_overflow_retries_with_a_smaller_window_without_dispatching(mut
 
 #[rstest]
 #[tokio::test]
+async fn provider_overflow_releases_its_reservation_before_the_reduced_retry(mut fixture: Fixture) {
+	// Arrange
+	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	state.scoped = true;
+	state.context_policy = Some(recovery_policy(false));
+	*state.overflows.lock().unwrap() = 1;
+	fixture.run.state = RunState::Thinking(ThinkingState::default());
+	// Act
+	advance_sources(&mut fixture).await.unwrap();
+	// Assert: the rejected attempt's charge is released before the retry
+	// state is saved, and its Usage Record stays a provider rejection.
+	assert_eq!(events(&fixture).last().unwrap(), "run.context_overflow");
+	let overflowed = calls(&fixture);
+	assert!(position(&overflowed, "provider.infer") < position(&overflowed, "reservation.abort"));
+	assert!(!overflowed.contains(&"reservation.settle"));
+	assert_eq!(
+		fixture.backend.0.usage.lock().unwrap()[0].1,
+		Some(UsageOutcome::Rejected {
+			class: "provider_rejected".into()
+		})
+	);
+	// The reduced retry reserves once more and settles its own response.
+	advance_sources(&mut fixture).await.unwrap();
+	let calls = calls(&fixture);
+	let count = |name| calls.iter().filter(|call| **call == name).count();
+	assert_eq!(count("reservation.admit"), 2);
+	assert_eq!(count("reservation.abort"), 1);
+	assert_eq!(count("reservation.settle"), 1);
+	assert!(matches!(fixture.run.state, RunState::ToolCall(_)));
+}
+
+#[rstest]
+#[tokio::test]
 async fn legacy_versions_and_unrelated_rejections_never_compact_and_retry(mut fixture: Fixture) {
 	*fixture.backend.0.overflows.lock().unwrap() = 1;
 	fixture.run.state = RunState::Thinking(ThinkingState::default());
@@ -2247,7 +2280,15 @@ async fn summary_stage_is_unavailable_without_a_policy_model(mut fixture: Fixtur
 			aidash_domain::context::recovery::Failure::ContextUnreducible
 		))
 	));
-	assert!(fixture.backend.0.compaction_attempts.lock().unwrap().is_empty());
+	assert!(
+		fixture
+			.backend
+			.0
+			.compaction_attempts
+			.lock()
+			.unwrap()
+			.is_empty()
+	);
 	assert!(
 		!fixture
 			.backend

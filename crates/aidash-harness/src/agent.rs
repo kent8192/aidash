@@ -1489,11 +1489,17 @@ impl<'a> Executor<'a> {
 					Inference::Interrupted(reason, error) => {
 						self.interrupt_inference(run, token, attempt, reason).await;
 						// A truncated or refused completion is billed even though its
-						// output is never dispatched.
-						if let Some(reservation) = reservation
-							&& let Some(response) = error.terminal_usage()
-						{
-							reservation.settle(response).await?;
+						// output is never dispatched. A provider-proven Context
+						// Overflow was rejected before any usage: release its whole
+						// charge, so the reduced retry does not reserve on top of it.
+						if let Some(reservation) = reservation {
+							match error.terminal_usage() {
+								Some(response) => reservation.settle(response).await?,
+								None if matches!(error, Error::ContextOverflow) => {
+									reservation.abort().await?
+								}
+								None => {}
+							}
 						}
 						resumed?;
 						if matches!(error, Error::ContextOverflow) {
