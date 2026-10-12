@@ -14,11 +14,11 @@ use aidash_domain::{
 		dispatch::Input,
 		remote::{Reserved, Usage},
 	},
-	semantic::remote::Operation,
+	semantic::remote::{Operation, reuse::CitedOperation},
 };
 use async_trait::async_trait;
 use reinhardt::query::QueryStatementBuilder as _;
-use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query, SimpleExpr};
+use reinhardt::query::{Alias, Expr, ExprTrait as _, PostgresQueryBuilder, Query, SimpleExpr};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
@@ -62,6 +62,33 @@ impl GenerationProtocolRepository for NativeProtocolRepository {
                 .to_string(PostgresQueryBuilder)).scalar_one(&self.store.pool).await?
 		};
 		Ok(ready)
+	}
+	async fn semantic_operation(&self, id: Uuid) -> Result<Option<CitedOperation>> {
+		const COLUMNS: [&str; 5] = ["admission_id", "grant_id", "state", "step", "corpus_digest"];
+		let row = crate::database::native::query_as::<(Uuid, Uuid, String, i32, Option<String>)>(
+			&Query::select()
+				.columns(["admission_id", "grant_id", "state"].map(Alias::new))
+				.expr_as(
+					Expr::cust("(binding->'operation'->'boundary'->>'step')::integer"),
+					Alias::new("step"),
+				)
+				.column(Alias::new("corpus_digest"))
+				.from(Alias::new("semantic_remote_operations"))
+				.and_where(Expr::col(Alias::new("id")).eq(Expr::value(id)))
+				.to_string(PostgresQueryBuilder),
+		)
+		.columns(&COLUMNS)
+		.fetch_optional(&self.store.pool)
+		.await?;
+		Ok(row.map(
+			|(admission_id, grant_id, state, step, corpus_digest)| CitedOperation {
+				admission_id,
+				grant_id,
+				ready: state == "READY",
+				step,
+				corpus_digest,
+			},
+		))
 	}
 }
 
@@ -119,6 +146,16 @@ impl GenerationProtocolLease for Lease {
 				.await?
 				.map(|bound| bound.admission_id),
 		)
+	}
+	async fn semantic_sources_current(&mut self, grant: Uuid) -> Result<()> {
+		let access = &mut self.reservation.access;
+		if !crate::authorization::remote::live(access, grant).await? {
+			return Err(aidash_application::Error::Forbidden);
+		}
+		access
+			.remote_semantic_sources(grant)
+			.await
+			.map_err(Into::into)
 	}
 	async fn finish_verification(self: Box<Self>, result: Result<bool>) -> Result<bool> {
 		self.reservation
@@ -188,6 +225,14 @@ impl GenerationProtocolAuthority for NativeProtocolAuthority {
 		crate::authorization::peer::semantic::verify_in(&self.federation, description, operation)
 			.await
 			.map_err(Into::into)
+	}
+	async fn corpus_digest(&self, description: &Description) -> Result<String> {
+		crate::semantic::services::memory_context::remote_corpus_digest(
+			&self.federation.store,
+			description,
+		)
+		.await
+		.map_err(Into::into)
 	}
 	async fn verify_peer(&self, source: &str, input: &Input) -> Result<bool> {
 		crate::authorization::peer::authority_request(

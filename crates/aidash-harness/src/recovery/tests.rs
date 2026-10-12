@@ -278,3 +278,77 @@ async fn a_new_lease_owner_prevents_any_recovery_write(repository: Repository, n
 		RunState::Thinking(_)
 	));
 }
+#[rstest]
+#[tokio::test]
+async fn a_stale_reused_retrieval_is_dropped_and_retrieved_again(
+	repository: Repository,
+	now: DateTime<Utc>,
+) {
+	// Arrange: the Run reused a cached retrieval the Home no longer vouches for.
+	repository
+		.run
+		.lock()
+		.unwrap()
+		.as_mut()
+		.unwrap()
+		.context
+		.source_observation = Some(
+		aidash_domain::context::sources::SourceObservation::new(
+			"retrieval-key".into(),
+			"bindings".into(),
+			serde_json::json!({"memory":null,"semantic_memory":{}}),
+		)
+		.unwrap(),
+	);
+	// Act
+	let retry = recover(
+		&repository,
+		repository.token,
+		ExecutionFailure::Semantic(SemanticFailure::Stale),
+		now,
+	)
+	.await
+	.unwrap();
+	// Assert: the next attempt finds no cache, so it retrieves once more.
+	assert!(!retry);
+	assert_eq!(
+		*repository.writes.lock().unwrap(),
+		[Write::Save("run.semantic_retrying".into())]
+	);
+	let run = repository.run.lock().unwrap();
+	let run = run.as_ref().unwrap();
+	assert!(run.context.source_observation.is_none());
+	assert_eq!(run.recovery.semantic_reason, Some(SemanticFailure::Stale));
+	let retry = run.recovery.retry.as_ref().unwrap();
+	assert_eq!(
+		(retry.count, retry.at),
+		(1, now + chrono::Duration::seconds(1))
+	);
+}
+#[rstest]
+#[tokio::test]
+async fn repeated_stale_retrievals_pause_after_the_bounded_retries(
+	repository: Repository,
+	now: DateTime<Utc>,
+) {
+	repository
+		.run
+		.lock()
+		.unwrap()
+		.as_mut()
+		.unwrap()
+		.recovery
+		.retry = Some(RetryState { count: 5, at: now });
+	recover(
+		&repository,
+		repository.token,
+		ExecutionFailure::Semantic(SemanticFailure::Stale),
+		now,
+	)
+	.await
+	.unwrap();
+	assert_eq!(
+		*repository.writes.lock().unwrap(),
+		[Write::Semantic(SemanticFailure::RetriesExhausted)]
+	);
+}

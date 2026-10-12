@@ -42,6 +42,16 @@ impl SourceObservation {
 		}
 		Ok((self.boundary == boundary && self.binding_digest == bindings).then_some(&self.content))
 	}
+	/// The Home semantic operation whose receipt a remote Run's observation
+	/// holds. A retrieval-reuse step cites it to the Home (ADR 0020).
+	pub fn semantic_operation(&self) -> Option<Uuid> {
+		self.content
+			.get("semantic_memory")?
+			.get("operation_id")?
+			.as_str()?
+			.parse()
+			.ok()
+	}
 	/// The cached Skill context for this Skill record revision and binding graph.
 	pub fn skill_at(&self, revision: i64, bindings: &str) -> Result<Option<&str>> {
 		let Some(skill) = &self.skill else {
@@ -191,6 +201,24 @@ mod tests {
 			encoded.as_object().unwrap().keys().collect::<Vec<_>>(),
 			["binding_digest", "boundary", "content", "digest"]
 		);
+	}
+	#[test]
+	fn a_remote_observation_names_the_operation_of_its_receipt() {
+		let operation = Uuid::from_u128(5);
+		let remote = SourceObservation::new(
+			"key".into(),
+			"bindings".into(),
+			json!({"memory":null,"semantic_memory":{"operation_id":operation,"sources":[]}}),
+		)
+		.unwrap();
+		assert_eq!(remote.semantic_operation(), Some(operation));
+		let local = SourceObservation::new(
+			"key".into(),
+			"bindings".into(),
+			json!({"memory":null,"semantic_memory":{"workspace":null,"memory":null}}),
+		)
+		.unwrap();
+		assert_eq!(local.semantic_operation(), None);
 	}
 	#[test]
 	fn skill_context_is_reused_only_at_the_same_record_revision_and_bindings() {

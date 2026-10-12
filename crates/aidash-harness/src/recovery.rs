@@ -23,7 +23,19 @@ pub async fn recover(
 		.map_or(0, |retry| retry.count)
 		+ 1;
 	if let ExecutionFailure::Semantic(reason) = failure {
-		if reason == SemanticFailure::Pending || (reason.transient() && attempts <= 5) {
+		if reason == SemanticFailure::Stale && attempts <= 5 {
+			// The Home refused a reused retrieval whose corpus changed (ADR
+			// 0020). Drop the cached Source observation so the retry retrieves
+			// once more, under a READY operation of its own step.
+			current.context.source_observation = None;
+			current.recovery.semantic_reason = Some(reason);
+			current.recovery.retry = Some(RetryState {
+				count: attempts,
+				at: now + chrono::Duration::seconds(1),
+			});
+			current.error = Some(reason.to_string());
+			store.save(&current, token, "run.semantic_retrying").await?;
+		} else if reason == SemanticFailure::Pending || (reason.transient() && attempts <= 5) {
 			let delay = if reason == SemanticFailure::Pending {
 				1
 			} else {
@@ -41,7 +53,7 @@ pub async fn recover(
 			current.error = Some(reason.to_string());
 			store.save(&current, token, "run.semantic_retrying").await?;
 		} else {
-			let reason = if reason.transient() {
+			let reason = if reason.transient() || reason == SemanticFailure::Stale {
 				SemanticFailure::RetriesExhausted
 			} else {
 				reason

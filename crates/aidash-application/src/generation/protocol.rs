@@ -4,7 +4,9 @@ use crate::{
 	generation::{dispatch, settlement},
 	ports::generation::{
 		dispatch::{GenerationDispatchRepository, GenerationDispatchSettlement},
-		protocol::{GenerationProtocolAuthority, GenerationProtocolRepository},
+		protocol::{
+			GenerationProtocolAuthority, GenerationProtocolLease, GenerationProtocolRepository,
+		},
 		settlement::GenerationSettlementRepository,
 	},
 };
@@ -12,15 +14,18 @@ use aidash_domain::{
 	Run,
 	federation::execution::Description,
 	generation::{
-		dispatch::{FinalizeInput, Input},
+		dispatch::{FinalizeInput, Input, StepBoundary},
 		remote::{Finalization, Purpose, Reserved, Usage, verify_receipts},
 	},
 	semantic::{
 		Failure,
-		remote::{Binding, Operation},
+		remote::{
+			Binding, Operation,
+			reuse::{CitedOperation, Refusal},
+		},
 	},
 };
-use serde_json::{Value, json};
+use serde_json::json;
 use uuid::Uuid;
 
 fn exact_provider(description: &Description, usage: &Usage) -> Result<()> {
@@ -118,9 +123,55 @@ fn exact_provider(description: &Description, usage: &Usage) -> Result<()> {
 	Ok(())
 }
 
+fn refused(refusal: Refusal) -> Error {
+	match refusal {
+		Refusal::Foreign => Error::Forbidden,
+		Refusal::Stale => Error::RemoteSemantic(Failure::Stale),
+	}
+}
+
+/// A cited operation from this node's journal; an unknown one is foreign.
+async fn cited(repository: &dyn GenerationProtocolRepository, id: Uuid) -> Result<CitedOperation> {
+	repository
+		.semantic_operation(id)
+		.await?
+		.ok_or(Error::Forbidden)
+}
+
+/// The Home accepts a remote Ordered reuse step's citation only if every
+/// condition holds; each failure is fail-closed (ADR 0020):
+/// - the cited operation belongs to the same Run and grant, is READY, and its
+///   step is not after the step being admitted (`Forbidden`);
+/// - the grant is still live (`Forbidden`) and no source it consumed changed
+///   or was revoked (`Invalidated`, the existing follow-up Task path);
+/// - the Workspace corpus digest equals the one recorded before the cited
+///   retrieval (`Stale`: the Run retrieves again).
+///
+/// The Home sees only the step the executing peer claims; that peer's own
+/// `verify` pins it to the Run's actual step before the Home admits usage.
+async fn accept_reuse(
+	authority: &dyn GenerationProtocolAuthority,
+	repository: &dyn GenerationProtocolRepository,
+	lease: &mut dyn GenerationProtocolLease,
+	usage: &Usage,
+	boundary: StepBoundary,
+	operation: Uuid,
+) -> Result<()> {
+	let operation = cited(repository, operation).await?;
+	operation
+		.authorizes(usage.admission_id, usage.grant_id, boundary.step)
+		.map_err(refused)?;
+	// Checked before the digest: editing a consumed source also changes the
+	// corpus, and that edit must reach the follow-up Task path, not a retry.
+	lease.semantic_sources_current(usage.grant_id).await?;
+	let current = authority.corpus_digest(lease.description()).await?;
+	operation.current(&current).map_err(refused)
+}
+
 /// The adapter authenticates the peer before passing its node identity here.
 pub async fn reserve(
 	authority: &dyn GenerationProtocolAuthority,
+	repository: &dyn GenerationProtocolRepository,
 	source: &str,
 	input: Input,
 ) -> Result<Vec<Reserved>> {
@@ -158,6 +209,19 @@ pub async fn reserve(
 			{
 				return Err(Error::Forbidden);
 			}
+			let boundary: StepBoundary =
+				serde_json::from_value(input.boundary.clone()).map_err(|_| Error::Forbidden)?;
+			if let Some(operation) = boundary.reuses {
+				accept_reuse(
+					authority,
+					repository,
+					lease.as_mut(),
+					&input.usage,
+					boundary,
+					operation,
+				)
+				.await?;
+			}
 			if !authority.verify_peer(source, &input).await? {
 				return Err(Error::Forbidden);
 			}
@@ -188,18 +252,26 @@ pub async fn verify(
 		exact_provider(&description, &input.usage)?;
 		let record = dispatch::bound(dispatch_repository, &input).await?;
 		let run = repository.run(input.usage.admission_id).await?;
-		if record.peer_node != source
-			|| record.state != "PREPARING"
-			|| input.boundary.get("step").and_then(Value::as_i64) != Some(run.step as i64)
-		{
+		let boundary: StepBoundary =
+			serde_json::from_value(input.boundary.clone()).map_err(|_| Error::Forbidden)?;
+		if record.peer_node != source || record.state != "PREPARING" || boundary.step != run.step {
 			return Err(Error::Forbidden);
 		}
-		if !description.semantic.disabled()
-			&& !repository
-				.semantic_ready(run.id, input.usage.grant_id, run.step)
+		if description.semantic.disabled() {
+			return Ok(true);
+		}
+		match boundary.reuses {
+			// A retrieval-reuse step: the record bound above shows that this node
+			// cited the operation itself; its journal must hold it READY for this
+			// Run and grant at or before the Run's actual step.
+			Some(operation) => cited(repository, operation)
 				.await?
-		{
-			return Err(Error::RemoteSemantic(Failure::Pending));
+				.authorizes(run.id, input.usage.grant_id, run.step)
+				.map_err(refused)?,
+			None if repository
+				.semantic_ready(run.id, input.usage.grant_id, run.step)
+				.await? => {}
+			None => return Err(Error::RemoteSemantic(Failure::Pending)),
 		}
 		Ok(true)
 	}
@@ -268,6 +340,23 @@ pub async fn admit(
 		},
 		Purpose::Embedding | Purpose::Memory => return Err(Error::Forbidden),
 	};
+	// A step without a READY retrieval of its own reuses an earlier one
+	// (ADR 0020) and cites the operation whose receipt it carries.
+	let reuses = if description.semantic.disabled()
+		|| repository
+			.semantic_ready(run.id, description.grant_id, run.step)
+			.await?
+	{
+		None
+	} else {
+		repository
+			.run(run.id)
+			.await?
+			.context
+			.source_observation
+			.as_ref()
+			.and_then(|observation| observation.semantic_operation())
+	};
 	let input = Input {
 		usage: Usage {
 			operation_id: request.attempt,
@@ -280,7 +369,10 @@ pub async fn admit(
 			input_digest: request.input_digest,
 			reserved_tokens: request.amount,
 		},
-		boundary: json!({"step":run.step}),
+		boundary: json!(StepBoundary {
+			step: run.step,
+			reuses,
+		}),
 	};
 	dispatch::prepare(dispatch_repository, &input, &run.home_node).await?;
 	let result: Result<()> = async {

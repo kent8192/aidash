@@ -445,7 +445,8 @@ impl JournalScope for JournalLease {
 		self.pending = receipt.memory.clone();
 		Ok(())
 	}
-	async fn complete_operation(&mut self, receipt: &Receipt) -> Result<()> {
+	async fn complete_operation(&mut self, receipt: &Receipt, corpus_digest: &str) -> Result<()> {
+		assert_eq!(corpus_digest, "home-corpus");
 		self.trace.lock().unwrap().push("complete");
 		let r = &mut self.working;
 		r.state = "READY".into();
@@ -618,6 +619,11 @@ impl SemanticSearchRepository for Repository {
 	}
 	async fn receiver_reservations(&self, _: &str, _: &Input) -> Result<Vec<Reserved>> {
 		panic!("empty candidates must not reserve provider usage")
+	}
+	async fn corpus_digest(&self, description: &Description) -> Result<String> {
+		assert_eq!(description.grant_id, operation().grant_id);
+		self.trace.lock().unwrap().push("corpus");
+		Ok("home-corpus".into())
 	}
 }
 #[async_trait]
@@ -981,6 +987,9 @@ async fn empty_candidates_complete_one_attempt_without_provider_effects_and_reac
 			"worker",
 			"receiver",
 			"journal",
+			// Read before the candidates and recorded with the receipt: a corpus
+			// change in between leaves an older digest, so reuse fails closed.
+			"corpus",
 			"candidates",
 			"journal",
 			"claim",

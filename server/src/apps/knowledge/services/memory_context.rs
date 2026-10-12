@@ -303,6 +303,21 @@ pub(crate) async fn source_revisions(store: &Store, run: &Run) -> Result<SourceR
 	})
 }
 
+/// The Home corpus a remote Run's semantic read draws from: the grant's
+/// Workspace and, with native memory, the Home participant's banks. The Home
+/// records it on every remote retrieval and compares it before admitting a
+/// step that reuses that retrieval (ADR 0020).
+pub(crate) async fn remote_corpus_digest(
+	store: &Store,
+	description: &aidash_domain::federation::execution::Description,
+) -> Result<String> {
+	let participant = description
+		.semantic
+		.native()
+		.and_then(|native| native.participant.bank.participant);
+	corpus_digest(store, description.task.workspace_id, participant).await
+}
+
 /// Digest of the content a Run's semantic read draws from: the Workspace's
 /// live semantic entries and, for a memory participant, its own and the
 /// Workspace-shared memory banks. `semantic_indexes.revision` changes only

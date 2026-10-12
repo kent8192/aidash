@@ -39,6 +39,8 @@ struct ModelScript {
 	compaction_status: Arc<AtomicUsize>,
 	compaction_reservations: Arc<Mutex<Option<ReservationCheck>>>,
 	force_memory_mutate: Arc<AtomicBool>,
+	/// Tool-call responses after the first, for Runs that need several inferences.
+	extra_tool_rounds: Arc<AtomicUsize>,
 }
 
 #[derive(Clone)]
@@ -311,6 +313,7 @@ async fn scoped_pair(
 	#[default(false)] compactor: bool,
 	#[default(false)] native: bool,
 	#[default((false, false, 32))] large_native: (bool, bool, usize),
+	#[default(false)] ordered: bool,
 	#[future(awt)] test_environment: Arc<TestEnvironment>,
 ) -> Pair {
 	let (large_native_graph, large_native_journal, native_graph_visits) = large_native;
@@ -322,6 +325,19 @@ async fn scoped_pair(
 	let (mut b, bu, bschema) = setup(&test_environment).await;
 	b.config.node_id = "aidash://scoped-receiver".into();
 	b.store.node_id = b.config.node_id.clone();
+	if ordered {
+		// A node without Cache Salt Keys creates only Legacy Runs.
+		b.store = b.store.clone().with_cache_salt(Some(
+			aidash_integrations::inference::CacheSaltKeys::new(
+				&[aidash_integrations::inference::CacheSaltKey {
+					version: 1,
+					secret: "fixture-cache-salt-secret".into(),
+				}],
+				1,
+			)
+			.unwrap(),
+		));
+	}
 	let mut memory_recovery_directories = Vec::new();
 	if native {
 		for node in [&mut a, &mut b] {
@@ -346,7 +362,7 @@ async fn scoped_pair(
         if let Some(check)=check {check.before_http().await;}
         let mut calls=script.requests.lock().await;
         calls.push(input);
-        let count=calls.len(); drop(calls); script.entered.notify_one(); if script.hold.load(Ordering::Acquire) {script.release.notified().await;} let message=if count==1 && script.force_memory_mutate.load(Ordering::Acquire) {json!({"role":"assistant","content":null,"tool_calls":[{"id":"forbidden-write","type":"function","function":{"name":"memory_mutate","arguments":"{\"data\":{\"forbidden\":true}}"}}]})} else if count==1 {json!({"role":"assistant","content":null,"tool_calls":[{"id":"note","type":"function","function":{"name":"workspace_message","arguments":"{\"content\":\"Scoped remote progress\"}"}}]})} else {json!({"role":"assistant","content":"Scoped remote result"})};
+        let count=calls.len(); drop(calls); script.entered.notify_one(); if script.hold.load(Ordering::Acquire) {script.release.notified().await;} let message=if count==1 && script.force_memory_mutate.load(Ordering::Acquire) {json!({"role":"assistant","content":null,"tool_calls":[{"id":"forbidden-write","type":"function","function":{"name":"memory_mutate","arguments":"{\"data\":{\"forbidden\":true}}"}}]})} else if count<=1+script.extra_tool_rounds.load(Ordering::Acquire) {json!({"role":"assistant","content":null,"tool_calls":[{"id":if count==1 {"note".to_owned()} else {format!("note-{count}")},"type":"function","function":{"name":"workspace_message","arguments":"{\"content\":\"Scoped remote progress\"}"}}]})} else {json!({"role":"assistant","content":"Scoped remote result"})};
         Json(json!({"choices":[{"index":0,"finish_reason":if message.get("tool_calls").is_some(){"tool_calls"}else{"stop"},"message":message}],"usage":{"prompt_tokens":1,"completion_tokens":1}}))
     })).route("/systemone", post(|State(script):State<ModelScript>,Json(input):Json<Value>|async move {
 		if let Some(check)=script.compaction_reservations.lock().await.clone() {check.before_http().await;}
@@ -546,8 +562,11 @@ async fn scoped_pair(
 	} else {
 		None
 	};
+	if ordered {
+		ordered_receiver_agent(&a, &b, &aa, &ba, &mut source_policy).await;
+	}
 	let agent = generation.as_ref().map_or_else(
-		|| json!({"id":if native.is_some() { "research-native" } else { "research" },"version":"1.0.0"}),
+		|| json!({"id":if native.is_some() { "research-native" } else if ordered { "research-ordered" } else { "research" },"version":"1.0.0"}),
 		|(_, prepared)| prepared["agent"].clone(),
 	);
 	let grant = Uuid::new_v4();
@@ -612,6 +631,79 @@ async fn scoped_pair(
 		generation,
 		_memory_recovery_directories: memory_recovery_directories,
 	}
+}
+
+/// A receiver Agent on the Ordered Projection Version, approved on both nodes.
+/// It copies the receiver's `research` Agent, so it keeps the Home semantic
+/// memory binding when the fixture has one.
+async fn ordered_receiver_agent(
+	a: &Federation,
+	b: &Federation,
+	aa: &common::TestApplication,
+	ba: &common::TestApplication,
+	source_policy: &mut Value,
+) {
+	let reference = |id: &str| json!({"id":id,"version":"1.0.0"});
+	let fetch = |id: &'static str| async move {
+		let (status, mut entry) = request(
+			ba,
+			&b.config.api_token,
+			"GET",
+			&format!("/api/registry/{id}/1.0.0"),
+			Value::Null,
+		)
+		.await;
+		assert_eq!(status, 200, "{entry}");
+		// A new authored version, not a copy of server-derived normalization.
+		entry
+			.as_object_mut()
+			.unwrap()
+			.remove("binding_normalization");
+		entry
+	};
+	let mut model = fetch("model").await;
+	model["id"] = json!("ordered-model");
+	model["config"]["projection_versions"] = json!(["legacy", "ordered"]);
+	let mut agent = fetch("research").await;
+	agent["id"] = json!("research-ordered");
+	agent["config"]["model"] = reference("ordered-model");
+	agent["config"]["projection_version"] = json!("ordered");
+	for entry in [model, agent] {
+		let id = entry["id"].as_str().unwrap().to_owned();
+		let (status, body) = request(ba, &b.config.api_token, "POST", "/api/registry", entry).await;
+		assert_eq!(status, 200, "{body}");
+		let (status, body) = request(
+			ba,
+			&b.config.api_token,
+			"POST",
+			"/api/authorization/acme/catalog",
+			json!({"entry":reference(&id),"expected_revision":0,"enabled":true}),
+		)
+		.await;
+		assert_eq!(status, 200, "{body}");
+	}
+	let subject = qualified_agent(&b.config.node_id, "research-ordered", "1.0.0");
+	for (runtime, app) in [(b, ba), (a, aa)] {
+		let (_, mut policy) = request(
+			app,
+			&runtime.config.api_token,
+			"GET",
+			"/api/authorization/acme",
+			Value::Null,
+		)
+		.await;
+		policy["bundle"]["subjects"][&subject] = json!({"kind":"agent"});
+		let (status, body) = request(
+			app,
+			&runtime.config.api_token,
+			"POST",
+			"/api/authorization/acme",
+			json!({"expected_revision":policy["revision"],"bundle":policy["bundle"]}),
+		)
+		.await;
+		assert_eq!(status, 200, "{body}");
+	}
+	source_policy["subjects"][&subject] = json!({"kind":"agent"});
 }
 
 async fn native_remote_fixture(
@@ -1064,6 +1156,252 @@ async fn remote_semantic_context_reaches_actual_model_with_home_scope_and_receip
 	}
 	.unwrap();
 	assert_eq!(saved, 1);
+	p.close().await;
+}
+
+/// Semantic retrievals the receiver has stored for the Run. A reused read adds
+/// none; a fresh retrieval adds one, because its Home operation differs.
+async fn remote_retrievals(p: &Pair) -> i64 {
+	sqlx::query_scalar(
+		&Query::select()
+			.expr(Expr::cust("COUNT(*)"))
+			.from(Alias::new("semantic_remote_receipts"))
+			.and_where(Expr::col("run_id").eq(Expr::value(p.admission)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(p.b.store.pool.driver())
+	.await
+	.unwrap()
+}
+/// Step the Run until the model has received `count` requests.
+async fn step_to_model_request(p: &Pair, count: usize) {
+	for _ in 0..40 {
+		if p.requests.lock().await.len() >= count {
+			return;
+		}
+		p.step().await;
+	}
+	panic!(
+		"model request {count} never arrived: {:?}",
+		p.run().await.state
+	);
+}
+/// Write a Home semantic entry and index it, as a Home operator would.
+async fn write_home_entry(p: &Pair, key: &str, expected_revision: i64, text: &str) {
+	let workspace = p.a.store.task(p.task).await.unwrap().workspace_id;
+	let (status, body) = request(
+		&p.aa,
+		&p.token,
+		"POST",
+		&format!("/api/workspaces/{workspace}/semantic/entries"),
+		json!({"key":key,"expected_revision":expected_revision,"source":{"kind":"memory","text":text},"metadata":{}}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(15);
+	loop {
+		aidash_server::semantic::worker::sweep(&p.a.store)
+			.await
+			.unwrap();
+		let pending: i64 = sqlx::query_scalar(
+			&Query::select()
+				.expr(Expr::cust("COUNT(*)"))
+				.from(Alias::new("semantic_entries"))
+				.and_where(Expr::col("workspace_id").eq(Expr::value(workspace)))
+				.and_where(Expr::col("state").ne("READY"))
+				.to_string(PostgresQueryBuilder),
+		)
+		.fetch_one(p.a.store.pool.driver())
+		.await
+		.unwrap();
+		if pending == 0 {
+			return;
+		}
+		assert!(tokio::time::Instant::now() < deadline, "indexing stalled");
+		tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+	}
+}
+async fn model_saw(p: &Pair, request: usize, text: &str) -> bool {
+	serde_json::to_string(&p.requests.lock().await[request - 1])
+		.unwrap()
+		.contains(text)
+}
+
+/// Step until the Run pauses, within a bound; returns the pausing Run.
+async fn step_until_paused(p: &Pair) -> aidash_server::domain::Run {
+	for _ in 0..5 {
+		let run = p.run().await;
+		if run.control.as_str() == "PAUSED" {
+			return run;
+		}
+		p.step().await;
+	}
+	let run = p.run().await;
+	assert_eq!(
+		run.control.as_str(),
+		"PAUSED",
+		"{:?} {:?}",
+		run.state,
+		run.error
+	);
+	run
+}
+/// The Home journal's corpus digests for the Run's semantic operations.
+async fn home_corpus_digests(p: &Pair) -> Vec<Option<String>> {
+	sqlx::query_scalar(
+		&Query::select()
+			.column(Alias::new("corpus_digest"))
+			.from(Alias::new("semantic_remote_operations"))
+			.and_where(Expr::col("admission_id").eq(Expr::value(p.admission)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_all(p.a.store.pool.driver())
+	.await
+	.unwrap()
+}
+
+/// A remote Ordered Run with an unchanged Home corpus retrieves once. Each
+/// later step cites that retrieval's operation, and the Home admits it (#222).
+#[rstest::rstest]
+#[tokio::test]
+async fn remote_ordered_run_reuses_one_retrieval_across_steps(
+	#[with(true, false, false, false, false, (false, false, 32), true)]
+	#[future(awt)]
+	scoped_pair: Pair,
+) {
+	let p = scoped_pair;
+	p.model.extra_tool_rounds.store(3, Ordering::Release);
+	step_to_model_request(&p, 1).await;
+	assert_eq!(remote_retrievals(&p).await, 1);
+	let recorded = home_corpus_digests(&p).await;
+	assert_eq!(recorded.len(), 1);
+	assert!(
+		recorded[0].is_some(),
+		"the Home records the corpus it retrieved from"
+	);
+	step_to_model_request(&p, 2).await;
+	step_to_model_request(&p, 3).await;
+	assert_eq!(
+		remote_retrievals(&p).await,
+		1,
+		"an unchanged corpus is reused"
+	);
+	assert!(model_saw(&p, 3, "ochre falcon").await);
+	p.close().await;
+}
+
+/// An insert changes the Home corpus but no consumed source. The Home refuses
+/// the stale reuse, and the Run retrieves once more instead of pausing.
+#[rstest::rstest]
+#[tokio::test]
+async fn remote_ordered_run_retrieves_again_when_the_home_corpus_changed(
+	#[with(true, false, false, false, false, (false, false, 32), true)]
+	#[future(awt)]
+	scoped_pair: Pair,
+) {
+	let p = scoped_pair;
+	p.model.extra_tool_rounds.store(3, Ordering::Release);
+	step_to_model_request(&p, 1).await;
+	write_home_entry(&p, "late", 0, "Late Home marker: amber heron.").await;
+	step_to_model_request(&p, 2).await;
+	assert_eq!(
+		remote_retrievals(&p).await,
+		2,
+		"a changed corpus is retrieved again"
+	);
+	assert!(!model_saw(&p, 1, "amber heron").await);
+	assert!(model_saw(&p, 2, "amber heron").await);
+	assert_eq!(p.run().await.control.as_str(), "ACTIVE");
+	step_to_model_request(&p, 3).await;
+	assert_eq!(
+		remote_retrievals(&p).await,
+		2,
+		"the new retrieval is reused"
+	);
+	p.close().await;
+}
+
+/// Revoking the grant or editing a source the Run consumed stops a reuse step
+/// before inference, through the existing pause and invalidation paths.
+#[rstest::rstest]
+#[case::grant_revoked("revoked", None)]
+#[case::consumed_source_edited("edited", Some("invalidated"))]
+#[tokio::test]
+async fn remote_ordered_reuse_stops_after_revocation_or_a_consumed_source_edit(
+	#[case] fault: &str,
+	#[case] reason: Option<&str>,
+	#[with(true, false, false, false, false, (false, false, 32), true)]
+	#[future(awt)]
+	scoped_pair: Pair,
+) {
+	let p = scoped_pair;
+	p.model.extra_tool_rounds.store(3, Ordering::Release);
+	step_to_model_request(&p, 1).await;
+	if fault == "revoked" {
+		let (status, body) = request(
+			&p.aa,
+			&p.token,
+			"POST",
+			&format!("/api/tasks/{}/remote-grants/{}/revoke", p.task, p.grant),
+			json!({}),
+		)
+		.await;
+		assert_eq!(status, 200, "{body}");
+	} else {
+		write_home_entry(&p, "shared", 1, "Edited archive marker: slate owl.").await;
+	}
+	let run = step_until_paused(&p).await;
+	assert_eq!(
+		run.recovery
+			.semantic_reason
+			.map(|reason| serde_json::to_value(reason).unwrap()),
+		reason.map(|reason| json!(reason)),
+		"{:?}",
+		run.error
+	);
+	assert_eq!(p.requests.lock().await.len(), 1);
+	assert_eq!(remote_retrievals(&p).await, 1);
+	p.close().await;
+}
+
+/// The Home refuses a citation of an operation it did not retrieve for this
+/// Run and grant at or before the current step, and of one that is not READY.
+#[rstest::rstest]
+#[case::another_run("admission_id", "gen_random_uuid()")]
+#[case::another_grant("grant_id", "gen_random_uuid()")]
+#[case::not_ready("state", "'PENDING'")]
+#[case::future_step(
+	"binding",
+	"jsonb_set(binding,'{operation,boundary,step}','999'::jsonb)"
+)]
+#[tokio::test]
+async fn the_home_refuses_a_foreign_reused_operation(
+	#[case] column: &str,
+	#[case] value: &str,
+	#[with(true, false, false, false, false, (false, false, 32), true)]
+	#[future(awt)]
+	scoped_pair: Pair,
+) {
+	let p = scoped_pair;
+	p.model.extra_tool_rounds.store(3, Ordering::Release);
+	step_to_model_request(&p, 1).await;
+	// Rewrite only the Home's record of the cited operation; the receiver still
+	// holds and cites its own READY copy.
+	let tampered = sqlx::query(
+		&Query::update()
+			.table(Alias::new("semantic_remote_operations"))
+			.value_expr(Alias::new(column), Expr::cust(value))
+			.and_where(Expr::col("admission_id").eq(Expr::value(p.admission)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(p.a.store.pool.driver())
+	.await
+	.unwrap();
+	assert_eq!(tampered.rows_affected(), 1);
+	let run = step_until_paused(&p).await;
+	assert_eq!(run.recovery.semantic_reason, None, "{:?}", run.error);
+	assert_eq!(p.requests.lock().await.len(), 1);
+	assert_eq!(remote_retrievals(&p).await, 1);
 	p.close().await;
 }
 

@@ -102,6 +102,14 @@ impl SemanticSearchRepository for Repository<'_> {
 		.await
 		.map_err(Into::into)
 	}
+	async fn corpus_digest(&self, description: &Description) -> Result<String> {
+		crate::semantic::services::memory_context::remote_corpus_digest(
+			&self.runtime.store,
+			description,
+		)
+		.await
+		.map_err(Into::into)
+	}
 }
 #[async_trait]
 impl SemanticSearchScope for Scope {

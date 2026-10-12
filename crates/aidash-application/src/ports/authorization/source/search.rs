@@ -88,4 +88,7 @@ pub trait SemanticSearchRepository: Send + Sync {
 	/// Preserve the current peer check and typed bounded response under the same source lease.
 	async fn verify_operation(&self, node: &str, operation: &Operation) -> Result<bool>;
 	async fn receiver_reservations(&self, node: &str, input: &Input) -> Result<Vec<Reserved>>;
+	/// The current corpus digest of the Description's Workspace and, with
+	/// native memory, of the Home participant's banks.
+	async fn corpus_digest(&self, description: &Description) -> Result<String>;
 }

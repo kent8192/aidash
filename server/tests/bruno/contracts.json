@@ -66,7 +66,8 @@
             "allowance",
             "unavailable",
             "retries_exhausted",
-            "pending"
+            "pending",
+            "stale"
           ]
         }
       }
@@ -139,7 +140,8 @@
             "allowance",
             "unavailable",
             "retries_exhausted",
-            "pending"
+            "pending",
+            "stale"
           ]
         }
       }
@@ -620,7 +622,8 @@
             "allowance",
             "unavailable",
             "retries_exhausted",
-            "pending"
+            "pending",
+            "stale"
           ]
         }
       }
@@ -713,7 +716,8 @@
             "allowance",
             "unavailable",
             "retries_exhausted",
-            "pending"
+            "pending",
+            "stale"
           ]
         }
       }
@@ -846,7 +850,8 @@
             "allowance",
             "unavailable",
             "retries_exhausted",
-            "pending"
+            "pending",
+            "stale"
           ]
         }
       }
@@ -972,7 +977,8 @@
             "allowance",
             "unavailable",
             "retries_exhausted",
-            "pending"
+            "pending",
+            "stale"
           ]
         }
       }
@@ -1093,7 +1099,8 @@
             "allowance",
             "unavailable",
             "retries_exhausted",
-            "pending"
+            "pending",
+            "stale"
           ]
         },
         "Prepared": {
@@ -1419,7 +1426,8 @@
             "allowance",
             "unavailable",
             "retries_exhausted",
-            "pending"
+            "pending",
+            "stale"
           ]
         }
       }
@@ -12696,7 +12704,8 @@
             "allowance",
             "unavailable",
             "retries_exhausted",
-            "pending"
+            "pending",
+            "stale"
           ]
         },
         "RunState": {
@@ -22291,7 +22300,8 @@
             "allowance",
             "unavailable",
             "retries_exhausted",
-            "pending"
+            "pending",
+            "stale"
           ]
         },
         "RunState": {
@@ -23811,7 +23821,8 @@
             "allowance",
             "unavailable",
             "retries_exhausted",
-            "pending"
+            "pending",
+            "stale"
           ]
         },
         "RunState": {
@@ -24892,7 +24903,8 @@
             "allowance",
             "unavailable",
             "retries_exhausted",
-            "pending"
+            "pending",
+            "stale"
           ]
         },
         "RunState": {
