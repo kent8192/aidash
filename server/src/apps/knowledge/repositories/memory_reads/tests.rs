@@ -1,6 +1,7 @@
 //! Issue #127: a failed Run read journal reports its exact cause, so a source
 //! change is never reported as lost authority and lost authority never as a
 //! source change.
+use super::super::fixture::*;
 use super::*;
 use crate::apps::execution::test_database::{DatabaseFixture, database};
 use crate::apps::knowledge::services::native_memory as memory;
@@ -9,10 +10,6 @@ use crate::store::Store;
 use aidash_domain::memory::*;
 use rstest::rstest;
 use serde_json::json;
-#[allow(dead_code)] // Shared fixture includes helpers used only by the integration binary.
-#[path = "../../tests/native_memory/fixture.rs"]
-mod fixture;
-use fixture::*;
 
 /// A Run of Agent `a` that read revision 1 of `unit`, and a Subject allowed
 /// everything by policy revision 1.

@@ -306,22 +306,24 @@ async fn impact_lists_visible_dependents_before_and_after_a_change(
 ) {
 	use aidash_domain::memory::impact::ImpactQuery;
 	use aidash_server::apps::knowledge::services::memory_impact::impact;
-	use axum::{Json, Router, routing::post};
 	// Arrange: the derivation role answers with an Observation of its input.
-	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-	let endpoint = format!("http://{}/v1", listener.local_addr().unwrap());
-	let app = Router::new().route("/v1/chat/completions", post(|Json(input): Json<serde_json::Value>| async move {
-		let context: serde_json::Value = serde_json::from_str(input["messages"][1]["content"].as_str().unwrap()).unwrap();
-		let units: Vec<Unit> = serde_json::from_value(context["units"].clone()).unwrap();
-		let mut output = content("Rollouts happen early in the week.");
-		output.kind = serde_json::from_value(context["kind"].clone()).unwrap();
-		output.mental_model = serde_json::from_value(context["mental_model"].clone()).unwrap();
-		output.evidence = units.iter().map(Unit::evidence).collect();
-		Json(json!({"choices":[{"finish_reason":"stop","message":{"content":serde_json::to_string(&output).unwrap()}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}))
-	}));
-	let server = tokio::spawn(async move {
-		axum::serve(listener, app).await.unwrap();
-	});
+	let router = reinhardt::test::stub::StubRouter::new()
+		.route("/v1/chat/completions", http::Method::POST, |request| async move {
+			let input = request.json::<serde_json::Value>().unwrap();
+			let context: serde_json::Value =
+				serde_json::from_str(input["messages"][1]["content"].as_str().unwrap()).unwrap();
+			let units: Vec<Unit> = serde_json::from_value(context["units"].clone()).unwrap();
+			let mut output = content("Rollouts happen early in the week.");
+			output.kind = serde_json::from_value(context["kind"].clone()).unwrap();
+			output.mental_model = serde_json::from_value(context["mental_model"].clone()).unwrap();
+			output.evidence = units.iter().map(Unit::evidence).collect();
+			Ok(reinhardt::Response::ok()
+				.with_json(&json!({"choices":[{"finish_reason":"stop","message":{"content":serde_json::to_string(&output).unwrap()}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}))
+				.unwrap())
+		})
+		.into_server_router();
+	let server = reinhardt::test::fixtures::test_server_guard(router).await;
+	let endpoint = format!("{}/v1", server.url);
 	let database = database.await;
 	let (store, _, workspace) = setup_endpoint(&database, bounds, &endpoint).await;
 	let bank = memory::create_participant(
@@ -471,5 +473,92 @@ async fn impact_lists_visible_dependents_before_and_after_a_change(
 		hidden.complete,
 		"a hidden Run within the scan bound leaves no trace, not even an incomplete flag"
 	);
-	server.abort();
+	drop(server);
+}
+
+/// Impact inspection cannot probe identities outside the authorized Bank: a
+/// Unit of another Bank answers exactly like an unknown ID, with no readers.
+#[rstest]
+#[tokio::test]
+async fn impact_answers_a_foreign_unit_like_an_unknown_id(
+	#[future] database: DatabaseFixture,
+	bounds: Bounds,
+) {
+	use aidash_domain::memory::impact::ImpactQuery;
+	use aidash_server::apps::knowledge::services::memory_impact::impact;
+	// Arrange
+	let database = database.await;
+	let (store, _, workspace) = setup(&database, bounds).await;
+	let bank = memory::create_participant(
+		&store,
+		&Actor::Operator,
+		workspace,
+		memory::CreateParticipant {
+			agent: reference("a"),
+		},
+	)
+	.await
+	.unwrap()
+	.bank;
+	let foreign = memory::mutate(
+		&store,
+		&Actor::Operator,
+		mutation(
+			&bank,
+			Change::Add {
+				id: Uuid::now_v7(),
+				content: content("Belongs to the participant Bank only."),
+			},
+		),
+	)
+	.await
+	.unwrap()
+	.remove(0);
+	let (scope, _) = recorded_run(&store, &bank, &[foreign.id]).await;
+	let actor = Actor::Subject(scope.identity.clone());
+	memory::operate(
+		&store,
+		&Actor::Operator,
+		memory::Operation {
+			operation_id: Uuid::now_v7(),
+			provider: reference("p"),
+			bank: Bank {
+				participant: None,
+				..bank.clone()
+			},
+			action: memory::Action::ConfigureBank {
+				expected_revision: 0,
+			},
+		},
+	)
+	.await
+	.unwrap();
+	let shared = Bank {
+		participant: None,
+		..bank
+	};
+	let unknown = Uuid::now_v7();
+
+	// Act
+	let view = impact(
+		&store,
+		&actor,
+		ImpactQuery {
+			provider: reference("p"),
+			bank: shared,
+			units: vec![foreign.id, unknown],
+		},
+	)
+	.await
+	.unwrap();
+
+	// Assert
+	for unit in &view.units {
+		assert_eq!(unit.readable_revision, None);
+		assert!(unit.runs.is_empty() && unit.derived.is_empty());
+	}
+	assert_eq!(
+		serde_json::to_value(&view.units[0]).unwrap()["runs"],
+		serde_json::to_value(&view.units[1]).unwrap()["runs"]
+	);
 }

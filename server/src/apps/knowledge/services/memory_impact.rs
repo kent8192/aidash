@@ -25,15 +25,21 @@ pub async fn impact(store: &Store, actor: &Actor, input: ImpactQuery) -> Result<
 		let mut complete = true;
 		let mut units = Vec::with_capacity(input.units.len());
 		for id in &input.units {
-			let unit = units::load(&mut lease, *id, false).await?;
-			// A Unit of another Bank is not disclosed through this Bank's view.
-			if unit.as_ref().is_some_and(|unit| unit.bank != input.bank) {
-				return Err(Error::Forbidden);
-			}
-			let readable_revision = unit
-				.as_ref()
-				.filter(|unit| unit.visible())
-				.map(|unit| unit.revision);
+			// A Unit of another Bank answers exactly like an unknown ID, so the
+			// view cannot probe identities outside the authorized Bank.
+			let Some(unit) = units::load(&mut lease, *id, false)
+				.await?
+				.filter(|unit| unit.bank == input.bank)
+			else {
+				units.push(UnitImpact {
+					id: *id,
+					readable_revision: None,
+					runs: vec![],
+					derived: vec![],
+				});
+				continue;
+			};
+			let readable_revision = unit.visible().then_some(unit.revision);
 			let (runs, runs_complete) =
 				runs(store, &mut lease, *id, readable_revision, limits).await?;
 			let (derived, derived_complete) =

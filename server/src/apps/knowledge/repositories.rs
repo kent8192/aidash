@@ -6,6 +6,13 @@ pub(crate) mod discard;
 pub(crate) mod indexing;
 pub(crate) mod memory_decay;
 pub(crate) mod memory_graph;
+#[cfg(test)]
+use crate::apps::execution::test_database::DatabaseFixture;
+/// One copy of the native-memory fixture for every repository test module.
+#[cfg(test)]
+#[allow(dead_code)] // Shared fixture includes helpers used only by the integration binary.
+#[path = "tests/native_memory/fixture.rs"]
+mod fixture;
 pub(crate) mod memory_impact;
 pub(crate) mod memory_reads;
 pub(crate) mod memory_receipts;

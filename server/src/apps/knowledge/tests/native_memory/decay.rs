@@ -671,19 +671,14 @@ async fn dormancy_pages_resume_fixed_clock_and_exempt_pinned_preference_and_proc
 #[rstest]
 #[tokio::test]
 async fn dormancy_and_reactivation_keep_existing_run_dependencies_valid(
+	#[future] decay_embedding_provider: reinhardt::test::fixtures::TestServerGuard,
 	#[future] database: DatabaseFixture,
 	bounds: Bounds,
 ) {
 	// Arrange
 	let database = database.await;
-	use axum::{Json, Router, routing::post};
-	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-	let endpoint = format!("http://{}/v1", listener.local_addr().unwrap());
-	let model = tokio::spawn(async move {
-		axum::serve(listener, Router::new().route("/v1/embeddings", post(|Json(input): Json<serde_json::Value>| async move {
-			Json(json!({"model":input["model"],"data":[{"index":0,"embedding":[1.,0.1,0.]}],"usage":{"prompt_tokens":1}}))
-		}))).await.unwrap();
-	});
+	let model = decay_embedding_provider.await;
+	let endpoint = format!("{}/v1", model.url);
 	let (store, _, workspace) = setup_endpoint_decay(
 		&database,
 		bounds,
@@ -734,5 +729,5 @@ async fn dormancy_and_reactivation_keep_existing_run_dependencies_valid(
 		"reactivation keeps the same Unit revision"
 	);
 	assert!(super::policy_bounds::run_visible(&scope, &store, run).await);
-	model.abort();
+	drop(model);
 }

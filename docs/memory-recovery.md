@@ -242,6 +242,9 @@ is `fenced` once its revision is no longer readable.
   and the pinned `max_graph_visits` for derived content. `complete` is `false`
   when a bound stopped a scan; because hidden records also consume the scan,
   the flag is the only signal they can affect.
+- A Unit of another Bank answers exactly like an unknown ID (`null`, no Runs,
+  no derived Units), so the view cannot probe identities outside the Bank
+  (`impact_answers_a_foreign_unit_like_an_unknown_id`).
 - Runs on other Nodes are not listed; the Home's remote status reports their
   `semantic.recovery`.
 - The view is neither a lock nor a promise. Every mutation rechecks revisions
