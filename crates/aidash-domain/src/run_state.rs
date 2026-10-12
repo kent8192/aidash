@@ -99,6 +99,10 @@ pub struct ToolCallState {
 	pub skill_read_plan: Option<ReadPlan>,
 	pub workspace_observation_plan: Option<ReadPlan>,
 	pub workbench_approval_result: Option<ApprovalDecision>,
+	/// End of the admitted Tool Batch `[cursor, batch_end)`. Present only from
+	/// batch admission until adoption, so a restart resumes exactly those calls.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub batch_end: Option<usize>,
 }
 impl ToolCallState {
 	pub fn selected_media(&self) -> Vec<Selection> {
@@ -334,6 +338,9 @@ impl RunState {
 pub struct RecoveryState {
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub semantic_reason: Option<crate::semantic::Failure>,
+	/// Typed context-recovery reason for a paused Run; cleared on resume.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub context_reason: Option<crate::context::recovery::Failure>,
 	pub retry: Option<RetryState>,
 	pub lease_recovered: bool,
 }

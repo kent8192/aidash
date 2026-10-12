@@ -243,6 +243,31 @@ fn invalid_streams_fail_like_non_streamed_responses(
 }
 
 #[rstest::rstest]
+#[case::context_length(400, "maximum context length exceeded", true)]
+#[case::context_code(400, "context_length_exceeded", true)]
+#[case::context_payload(413, "prompt is too long", true)]
+#[case::media_payload(413, "Audio exceeds the duration limit", false)]
+#[case::unproven(400, "invalid request", false)]
+fn streamed_rejections_require_context_evidence_for_recovery(
+	#[case] status: u16,
+	#[case] message: &str,
+	#[case] overflow: bool,
+) {
+	// Arrange: a valid stream can still end in a provider rejection.
+	let error = json!({"error": {"code": status, "message": message}});
+	// Act: classify the provider's terminal error without leaking its body.
+	let (result, _) = assemble(&sse(&[error], true), 4096, 1_048_576);
+	// Assert: transport size alone never proves context exhaustion.
+	if overflow {
+		assert!(matches!(result, Err(Error::ContextOverflow)));
+	} else {
+		assert!(
+			matches!(result, Err(Error::ProviderRejected { status: actual, .. }) if actual == status)
+		);
+	}
+}
+
+#[rstest::rstest]
 fn mid_stream_errors_are_sanitized_provider_rejections() {
 	// Arrange
 	let error = json!({"error":{"code":503,"message":"token=private upstream failure"},

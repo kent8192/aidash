@@ -142,6 +142,10 @@ pub struct Activation {
 	pub error: Option<String>,
 	#[serde(default)]
 	pub semantic_reason: Option<Failure>,
+	/// Typed context-recovery pause reason. Omitted when absent, so peers
+	/// without the field keep their exact wire shape.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub context_reason: Option<crate::context::recovery::Failure>,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
