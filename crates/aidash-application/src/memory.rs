@@ -589,8 +589,15 @@ impl Engine<'_> {
 		});
 		let scores = match self.policy.diversity_lambda_millionths {
 			Some(lambda) if scores.len() > 1 => {
-				self.diversify(scope, bank, &candidates, scores, lambda)
-					.await?
+				self.diversify(
+					scope,
+					bank,
+					&candidates,
+					scores,
+					self.policy.decay.as_ref().map(|_| &retention),
+					lambda,
+				)
+				.await?
 			}
 			_ => scores,
 		};
@@ -631,6 +638,7 @@ impl Engine<'_> {
 		bank: &Bank,
 		candidates: &[Unit],
 		scores: Vec<(Uuid, f64)>,
+		retention: Option<&BTreeMap<Uuid, f64>>,
 		lambda_millionths: u32,
 	) -> Result<Vec<(Uuid, f64)>> {
 		let vectors = scope.vectors(bank, candidates).await?;
@@ -645,11 +653,12 @@ impl Engine<'_> {
 			&ranked,
 			&vectors,
 			&recall::related(candidates),
+			retention,
 			lambda_millionths,
 			self.policy.bounds.max_results,
 		)?;
 		if !diversified.skipped.is_empty() {
-			tracing::warn!(
+			tracing::debug!(
 				skipped = diversified.skipped.len(),
 				ids = ?diversified.skipped,
 				"memory diversification skipped candidates without a current embedding"

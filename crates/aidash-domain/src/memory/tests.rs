@@ -997,14 +997,23 @@ fn diversification_prefers_a_distinct_unit_over_paraphrases() {
 		(3, [0.98, 0.02]),
 		(4, [0., 1.]),
 	]);
-	let result = recall::diversify(&ranked, &vectors, &recall::Related::new(), LAMBDA, 4).unwrap();
+	let result =
+		recall::diversify(&ranked, &vectors, &recall::Related::new(), None, LAMBDA, 4).unwrap();
 	assert_eq!(order(&result), [1, 4, 2, 3]);
 	assert!(result.skipped.is_empty());
-	let two = recall::diversify(&ranked, &vectors, &recall::Related::new(), LAMBDA, 2).unwrap();
+	let two =
+		recall::diversify(&ranked, &vectors, &recall::Related::new(), None, LAMBDA, 2).unwrap();
 	assert_eq!(order(&two), [1, 4]);
 	// λ = 1 is pure relevance: the baseline order survives.
-	let relevance =
-		recall::diversify(&ranked, &vectors, &recall::Related::new(), 1_000_000, 4).unwrap();
+	let relevance = recall::diversify(
+		&ranked,
+		&vectors,
+		&recall::Related::new(),
+		None,
+		1_000_000,
+		4,
+	)
+	.unwrap();
 	assert_eq!(order(&relevance), [1, 2, 3, 4]);
 }
 
@@ -1013,9 +1022,17 @@ fn diversification_is_deterministic_and_stays_inside_the_candidates() {
 	let vectors = vectors(&[(1, [1., 0.]), (2, [1., 0.]), (3, [0., 1.]), (9, [1., 1.])]);
 	let forward = [hit(1, 0.5), hit(2, 0.5), hit(3, 0.5)];
 	let backward = [hit(3, 0.5), hit(2, 0.5), hit(1, 0.5)];
-	let first = recall::diversify(&forward, &vectors, &recall::Related::new(), LAMBDA, 3).unwrap();
-	let second =
-		recall::diversify(&backward, &vectors, &recall::Related::new(), LAMBDA, 3).unwrap();
+	let first =
+		recall::diversify(&forward, &vectors, &recall::Related::new(), None, LAMBDA, 3).unwrap();
+	let second = recall::diversify(
+		&backward,
+		&vectors,
+		&recall::Related::new(),
+		None,
+		LAMBDA,
+		3,
+	)
+	.unwrap();
 	assert_eq!(first, second);
 	assert_eq!(order(&first), [1, 3, 2], "ties use the lowest Unit ID");
 	// A vector for an ID outside the candidates (9) never adds a result.
@@ -1033,7 +1050,7 @@ fn diversification_is_deterministic_and_stays_inside_the_candidates() {
 			.all(|hit| candidates.contains(&hit.id))
 	);
 	assert!(
-		recall::diversify(&forward, &vectors, &recall::Related::new(), LAMBDA, 0)
+		recall::diversify(&forward, &vectors, &recall::Related::new(), None, LAMBDA, 0)
 			.unwrap()
 			.selected
 			.is_empty()
@@ -1045,13 +1062,15 @@ fn a_candidate_without_a_current_vector_is_kept_by_relevance_and_recorded() {
 	let ranked = [hit(1, 1.0), hit(2, 0.9), hit(3, 0.8)];
 	// 2 has no vector: it is neither dropped nor penalized, only reported.
 	let vectors = vectors(&[(1, [1., 0.]), (3, [1., 0.])]);
-	let result = recall::diversify(&ranked, &vectors, &recall::Related::new(), LAMBDA, 3).unwrap();
+	let result =
+		recall::diversify(&ranked, &vectors, &recall::Related::new(), None, LAMBDA, 3).unwrap();
 	assert_eq!(order(&result), [1, 2, 3]);
 	assert_eq!(result.skipped, [Uuid::from_u128(2)]);
 	let none = recall::diversify(
 		&ranked,
 		&BTreeMap::new(),
 		&recall::Related::new(),
+		None,
 		LAMBDA,
 		3,
 	)
@@ -1061,7 +1080,7 @@ fn a_candidate_without_a_current_vector_is_kept_by_relevance_and_recorded() {
 }
 
 #[test]
-fn an_observation_and_its_sources_are_deferred_behind_unrelated_candidates() {
+fn an_observation_and_its_sources_count_as_maximally_similar_so_lambda_still_decides() {
 	let mut observation = unit(10);
 	observation.content.kind = Kind::Observation;
 	observation.content.evidence = [1, 2]
@@ -1100,22 +1119,38 @@ fn an_observation_and_its_sources_are_deferred_behind_unrelated_candidates() {
 		!related.contains_key(&Uuid::from_u128(11)) && !related.contains_key(&Uuid::from_u128(4)),
 		"a citation of another revision is not redundancy"
 	);
-	// The Observation and both sources outrank the unrelated Unit by relevance.
-	let ranked = [hit(10, 1.0), hit(1, 0.9), hit(2, 0.8), hit(3, 0.1)];
 	let vectors = vectors(&[
 		(10, [1., 0.]),
 		(1, [0.6, 0.8]),
 		(2, [0.8, 0.6]),
 		(3, [0., 1.]),
 	]);
-	let two = recall::diversify(&ranked, &vectors, &related, LAMBDA, 2).unwrap();
+	// A reasonably relevant unrelated Unit takes the second slot from the summary's sources.
+	let ranked = [hit(10, 1.0), hit(1, 0.9), hit(2, 0.8), hit(3, 0.5)];
+	let two = recall::diversify(&ranked, &vectors, &related, None, LAMBDA, 2).unwrap();
 	assert_eq!(order(&two), [10, 3], "the unrelated Unit is not excluded");
-	let all = recall::diversify(&ranked, &vectors, &related, LAMBDA, 4).unwrap();
+	let all = recall::diversify(&ranked, &vectors, &related, None, LAMBDA, 4).unwrap();
 	assert_eq!(
 		order(&all),
 		[10, 3, 1, 2],
 		"sources are still delivered when the budget allows"
 	);
+	// A near-zero-relevance Unit cannot push out a highly relevant source: λ still governs.
+	let weak = [hit(10, 1.0), hit(1, 0.9), hit(2, 0.8), hit(3, 0.05)];
+	let two = recall::diversify(&weak, &vectors, &related, None, LAMBDA, 2).unwrap();
+	assert_eq!(order(&two), [10, 1]);
+}
+
+#[test]
+fn exact_ties_follow_retention_before_unit_id() {
+	let ranked = [hit(1, 0.5), hit(2, 0.5)];
+	let vectors = vectors(&[(1, [1., 0.]), (2, [0., 1.])]);
+	let related = recall::Related::new();
+	let plain = recall::diversify(&ranked, &vectors, &related, None, LAMBDA, 2).unwrap();
+	assert_eq!(order(&plain), [1, 2]);
+	let retention = BTreeMap::from([(Uuid::from_u128(1), 0.2), (Uuid::from_u128(2), 0.9)]);
+	let kept = recall::diversify(&ranked, &vectors, &related, Some(&retention), LAMBDA, 2).unwrap();
+	assert_eq!(order(&kept), [2, 1]);
 }
 
 #[test]
@@ -1124,20 +1159,30 @@ fn diversification_rejects_invalid_inputs() {
 	let related = recall::Related::new();
 	let good = vectors(&[(1, [1., 0.]), (2, [0., 1.])]);
 	for lambda in [0, 1_000_001] {
-		assert!(recall::diversify(&ranked, &good, &related, lambda, 2).is_err());
+		assert!(recall::diversify(&ranked, &good, &related, None, lambda, 2).is_err());
 	}
-	assert!(recall::diversify(&[hit(1, 1.0), hit(1, 0.5)], &good, &related, LAMBDA, 2).is_err());
-	assert!(recall::diversify(&[hit(1, f64::NAN)], &good, &related, LAMBDA, 1).is_err());
+	assert!(
+		recall::diversify(
+			&[hit(1, 1.0), hit(1, 0.5)],
+			&good,
+			&related,
+			None,
+			LAMBDA,
+			2
+		)
+		.is_err()
+	);
+	assert!(recall::diversify(&[hit(1, f64::NAN)], &good, &related, None, LAMBDA, 1).is_err());
 	for bad in [[0., 0.], [f32::NAN, 1.], [f32::INFINITY, 1.]] {
 		let vectors = vectors(&[(1, [1., 0.]), (2, bad)]);
-		assert!(recall::diversify(&ranked, &vectors, &related, LAMBDA, 2).is_err());
+		assert!(recall::diversify(&ranked, &vectors, &related, None, LAMBDA, 2).is_err());
 	}
 	let mut mixed = good.clone();
 	mixed.insert(Uuid::from_u128(2), vec![1.]);
-	assert!(recall::diversify(&ranked, &mixed, &related, LAMBDA, 2).is_err());
+	assert!(recall::diversify(&ranked, &mixed, &related, None, LAMBDA, 2).is_err());
 	// Extreme finite scores cannot overflow the relevance span.
 	let extreme = [hit(1, f64::MAX), hit(2, f64::MIN)];
-	let result = recall::diversify(&extreme, &good, &related, LAMBDA, 2).unwrap();
+	let result = recall::diversify(&extreme, &good, &related, None, LAMBDA, 2).unwrap();
 	assert_eq!(order(&result), [1, 2]);
 }
 

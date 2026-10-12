@@ -134,14 +134,16 @@ pub struct Diversified {
 ///
 /// Each step picks `argmax λ·relevance − (1−λ)·max_sim(selected)`, where relevance is
 /// the input score scaled to [0, 1] and `max_sim` is the largest non-negative cosine
-/// to a selected candidate. A candidate structurally `related` to a selected one is
-/// deferred behind every unrelated candidate, so a derived summary and its sources are
-/// only co-selected when nothing else remains. Ties use the stable Unit ID. This only
+/// to a selected candidate. A candidate structurally `related` to a selected one (a
+/// derived summary and its cited sources) counts as maximally similar (1.0), so λ still
+/// decides whether a highly relevant source may follow its summary. Exact ties follow
+/// `compare`: retention when `retention` is given, then the stable Unit ID. This only
 /// reorders or drops the given candidates; it never introduces an ID.
 pub fn diversify(
 	ranked: &[Ranked],
 	vectors: &BTreeMap<Uuid, Vec<f32>>,
 	related: &Related,
+	retention: Option<&BTreeMap<Uuid, f64>>,
 	lambda_millionths: u32,
 	limit: usize,
 ) -> Result<Diversified> {
@@ -198,20 +200,18 @@ pub fn diversify(
 		.collect();
 	let mut remaining: Vec<usize> = (0..ranked.len()).collect();
 	let mut max_sim = vec![0.0_f64; ranked.len()];
-	let mut blocked = vec![false; ranked.len()];
 	let mut selected = Vec::new();
 	while selected.len() < limit && !remaining.is_empty() {
-		let open = remaining.iter().any(|index| !blocked[*index]);
 		let best = remaining
 			.iter()
 			.copied()
-			.filter(|index| !open || !blocked[*index])
 			.max_by(|a, b| {
 				let value =
 					|index: usize| lambda * relevance[index] - (1. - lambda) * max_sim[index];
-				value(*a)
-					.total_cmp(&value(*b))
-					.then(ranked[*b].id.cmp(&ranked[*a].id))
+				// Exact ties follow the baseline order: retention (when decay is on), then Unit ID.
+				value(*a).total_cmp(&value(*b)).then_with(|| {
+					compare(ranked[*a].id, 0., ranked[*b].id, 0., retention).reverse()
+				})
 			})
 			.expect("remaining is not empty");
 		remaining.retain(|index| *index != best);
@@ -221,7 +221,6 @@ pub fn diversify(
 				.get(&chosen.id)
 				.is_some_and(|peers| peers.contains(&ranked[index].id))
 			{
-				blocked[index] = true;
 				max_sim[index] = 1.;
 			}
 			if let (Some(left), Some(right), Some(left_norm), Some(right_norm)) =
