@@ -839,8 +839,9 @@ impl MemoryScope for DiverseScope {
 		Ok(())
 	}
 }
-/// Reranks by a fixed table and prices every delivered Unit at ten tokens.
-struct ScoredModels(BTreeMap<Uuid, f64>);
+/// Reranks by a fixed table. Prices a delivery at ten tokens per Unit, or, when `exact`,
+/// at the UTF-8 bytes of the envelope (the pinned `utf8_upper_bound` tokenizer).
+struct ScoredModels(BTreeMap<Uuid, f64>, bool);
 #[async_trait]
 impl MemoryModels for ScoredModels {
 	fn reranker_uses_model(&self, _: &EntityRef) -> Result<bool> {
@@ -904,7 +905,11 @@ impl MemoryModels for ScoredModels {
 		Err(Error::Forbidden)
 	}
 	async fn tokens(&self, _: &EntityRef, envelope: &str) -> Result<usize> {
-		Ok(10 * envelope.matches("\"learned_at\"").count())
+		Ok(if self.1 {
+			envelope.len()
+		} else {
+			10 * envelope.matches("\"learned_at\"").count()
+		})
 	}
 }
 fn numbered(id: u128, text: &str) -> Unit {
@@ -921,6 +926,16 @@ async fn recalled(
 	vectors: &[(u128, [f32; 2])],
 	tokens: usize,
 ) -> (Vec<u128>, DiverseScope) {
+	recalled_priced(lambda, units, scores, vectors, tokens, false).await
+}
+async fn recalled_priced(
+	lambda: Option<u32>,
+	units: Vec<Unit>,
+	scores: &[(u128, f64)],
+	vectors: &[(u128, [f32; 2])],
+	tokens: usize,
+	exact: bool,
+) -> (Vec<u128>, DiverseScope) {
 	let mut p = policy();
 	p.diversity_lambda_millionths = lambda;
 	let models = ScoredModels(
@@ -928,6 +943,7 @@ async fn recalled(
 			.iter()
 			.map(|(id, score)| (Uuid::from_u128(*id), *score))
 			.collect(),
+		exact,
 	);
 	let engine = Engine {
 		provider: &p.extraction,
@@ -1089,4 +1105,119 @@ async fn candidates_without_a_current_vector_keep_relevance_order_instead_of_fai
 	.await;
 	assert_eq!(order.len(), 4);
 	assert!(order.contains(&2));
+}
+
+#[derive(serde::Deserialize)]
+struct DiversityEvaluation {
+	diversity_cases: Vec<DiversityCase>,
+}
+#[derive(serde::Deserialize)]
+struct DiversityCase {
+	id: String,
+	language: String,
+	lambda_millionths: u32,
+	labels: Vec<String>,
+	expected_useful_recall_without: f64,
+	expected_useful_recall_with: f64,
+	units: Vec<DiversityUnit>,
+}
+#[derive(serde::Deserialize)]
+struct DiversityUnit {
+	id: u128,
+	text: String,
+	label: String,
+	score: f64,
+	vector: [f32; 2],
+}
+
+/// The frozen en/ja near-duplicate fixture through the real recall path, once without
+/// and once with the pinned lambda, under a delivery budget that fits exactly two Units.
+#[tokio::test]
+async fn near_duplicate_fixture_reports_useful_recall_and_delivered_tokens_with_and_without_diversity()
+ {
+	let fixture: DiversityEvaluation = toml::from_str(include_str!(
+		"../../../../tests/fixtures/native_memory_evaluation.toml"
+	))
+	.unwrap();
+	assert_eq!(
+		fixture
+			.diversity_cases
+			.iter()
+			.map(|case| case.language.as_str())
+			.collect::<Vec<_>>(),
+		["en-US", "ja-JP"]
+	);
+	for case in fixture.diversity_cases {
+		let units: Vec<_> = case
+			.units
+			.iter()
+			.map(|row| {
+				let mut unit = numbered(row.id, &row.text);
+				// Fixed timestamps keep the serialized envelope, and so its size, stable.
+				unit.learned_at = chrono::DateTime::UNIX_EPOCH;
+				unit.updated_at = chrono::DateTime::UNIX_EPOCH;
+				unit
+			})
+			.collect();
+		let envelope = |subset: &[&Unit]| {
+			serde_json::to_string(&Recall::Ready {
+				units: subset.iter().map(|unit| (*unit).clone()).collect(),
+			})
+			.unwrap()
+			.len()
+		};
+		let mut largest_pair = 0;
+		let mut smallest_triple = usize::MAX;
+		for (first, a) in units.iter().enumerate() {
+			for (second, b) in units.iter().enumerate().skip(first + 1) {
+				largest_pair = largest_pair.max(envelope(&[a, b]));
+				for c in units.iter().skip(second + 1) {
+					smallest_triple = smallest_triple.min(envelope(&[a, b, c]));
+				}
+			}
+		}
+		assert!(
+			largest_pair < smallest_triple,
+			"the budget must fit exactly two Units"
+		);
+		let scores: Vec<_> = case.units.iter().map(|row| (row.id, row.score)).collect();
+		let vectors: Vec<_> = case.units.iter().map(|row| (row.id, row.vector)).collect();
+		let mut measured = vec![];
+		for lambda in [None, Some(case.lambda_millionths)] {
+			let (order, _) =
+				recalled_priced(lambda, units.clone(), &scores, &vectors, largest_pair, true).await;
+			let delivered: Vec<&Unit> = order
+				.iter()
+				.map(|id| units.iter().find(|unit| unit.id.as_u128() == *id).unwrap())
+				.collect();
+			let useful =
+				case.labels
+					.iter()
+					.filter(|label| {
+						order.iter().any(|id| {
+							case.units
+								.iter()
+								.any(|row| row.id == *id && &row.label == *label)
+						})
+					})
+					.count() as f64 / case.labels.len() as f64;
+			let tokens = envelope(&delivered);
+			assert!(tokens <= largest_pair, "{}", case.id);
+			measured.push((useful, tokens));
+		}
+		println!(
+			"{} {}: useful recall {} -> {}, delivered tokens {} -> {}",
+			case.id, case.language, measured[0].0, measured[1].0, measured[0].1, measured[1].1
+		);
+		assert_eq!(
+			measured[0].0, case.expected_useful_recall_without,
+			"{}",
+			case.id
+		);
+		assert_eq!(
+			measured[1].0, case.expected_useful_recall_with,
+			"{}",
+			case.id
+		);
+	}
 }

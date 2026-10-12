@@ -36,5 +36,6 @@ metrics = "0.24"
 
 [dev-dependencies]
 rstest.workspace = true
+toml = "1.1"
 
 tokio = { workspace = true, features = ["test-util"] }
