@@ -25,8 +25,11 @@ Aidash outperforms another harness.
 python3 scripts/evaluate-fixed-tasks.py deterministic
 ```
 
-It needs Docker and Cargo and nothing else: no credentials, no network beyond
-`127.0.0.1`, no paid calls. It
+It needs Docker and Cargo and nothing else: no credentials and no paid calls.
+Every Run, the scripted provider and the Node stay on `127.0.0.1`; the only
+other network use is the tooling's own, namely pulling the NATS image and
+building the PostgreSQL image from `compose.yaml` when they are missing, and
+Cargo fetching crates for the first build. It
 
 1. builds this worktree's `manage` binary and records its SHA-256, the commit
    and the dirty state;
@@ -49,8 +52,13 @@ It needs Docker and Cargo and nothing else: no credentials, no network beyond
    exclusively) and prints a summary.
 
 The command exits non-zero when the manifest is invalid, when any Run differs
-from its task's declared calibration (`[tasks.expected]`), or when a
-deterministic memory scenario fails. Server logs stay in
+from its task's declared calibration (`[tasks.expected]`), when a
+deterministic memory scenario fails, or when the Node rejects the Agent
+definition of an arm the corpus marks available. The last would otherwise turn
+a harness regression into a quiet `feature-not-available`; pass
+`--allow-unavailable-arms` only for a baseline Node that predates the feature
+(the #102 baseline). The manifest is written in every case, including after an
+error or Ctrl-C, with the failure in its `error` field. Server logs stay in
 `.ignore/evaluation/logs-<hex>/`.
 
 Useful options: `--task ID` and `--comparison ID` (repeatable) narrow the plan,
@@ -97,6 +105,10 @@ python3 scripts/evaluate-fixed-tasks.py live \
   --server-revision DEPLOYED_SOURCE_FINGERPRINT
 ```
 
+`--server-revision` is required and must be 7 to 64 lowercase hexadecimal
+characters (a git commit or a SHA-256): a live manifest has no local build, so
+this is the only identification of the tested source.
+
 Before it registers anything or starts a Run, the live tier refuses unless:
 
 - both bearer tokens are set (operator for Registry writes, Tenant subject for
@@ -106,12 +118,22 @@ Before it registers anything or starts a Run, the live tier refuses unless:
 - the disclosure approval document names an approver, approval and expiry
   times, the exact corpus SHA-256, exactly the mapped models, a disclosure
   statement, a maximum spend at least the requested ceiling, and positive
-  per-token prices for each model;
+  per-token prices for each model. Every field is type-checked. Times are ISO
+  8601 with a UTC offset (`Z` or `+09:00`) and are compared as instants, not
+  strings; the approval must already be in effect (`approved_at` not in the
+  future), expire after it was approved, and not have expired;
+- every mapped model configuration has a positive `context_window` and
+  `max_output_tokens` and a `model_id`;
 - a positive spend ceiling and wall-time limit are given;
-- code-execution oracles are explicitly allowed with
-  `--allow-oracle-code-execution` when a selected task has one. Those oracles
-  run model-written code in a temporary directory with `python3 -I`, a minimal
-  environment and a timeout; that is not a sandbox.
+- no selected task uses a `python-tests` oracle. **The live tier never runs
+  model-written code.** Those oracles execute the answer on the evaluator host,
+  and nothing there isolates them: a stripped environment does not hide the
+  parent's tokens (`ps eww $PPID` on macOS, `/proc/<ppid>/environ` on Linux),
+  the child has network access, and a model-written module can exit 0 on its
+  own (`os._exit(0)`) so that the held-out tests appear to pass. They need a
+  container runner (`--network none`, no host environment, no parent process
+  visibility), which is a deferred follow-up. Select other tasks with `--task`.
+  The deterministic tier still runs them, because its answers are scripted.
 
 ```json
 {
@@ -134,18 +156,34 @@ Before it registers anything or starts a Run, the live tier refuses unless:
 During the run, `SpendLedger` reserves each Run's worst case (max steps × the
 full context window and output reservation at the approved prices) before
 dispatch and refuses any Run that would cross the ceiling or the wall-time
-limit; the refusal is recorded in `spend.refusal` and the command exits 3. After
-a Run, the reservation is replaced by the cost computed from the Node's
-`model.completed` events only when the Run completed and every attempt's usage
-is known. Failed, interrupted and unknown-usage Runs stay charged at their full
-reservation, and every observed attempt is recorded in `spend.attempts`.
+limit; the refusal is recorded in `spend.refusal` and the command exits 3.
+Planned Runs that were never dispatched are listed in `skipped_runs` with the
+reason, so none is silently dropped.
+
+Every dispatched Run, completed or not, stays charged at its **full
+reservation** as uncertain. `model.completed` events are emitted only for
+accepted attempts, so interrupted and retried attempts inside a Run would
+otherwise be uncharged and release headroom under the hard ceiling. The
+accepted attempts the Node reported are kept in
+`spend.attempts[].provider_work` for information only (step and token counts).
+Pricing Runs from Usage Records waits for an HTTP read endpoint for them.
+
+The live manifest records `model.reported_identities: null`: neither Usage
+Records (unreadable over HTTP) nor `model.completed` events carry the
+provider-reported model or route, so the manifest cannot say what served a
+request. `model.route` is only the connected Provider Credential's catalog
+provider. After any failure past the guard rails, including Ctrl-C, the
+manifest is still written with the error, the ledger and every finished Run;
+the exit code is 130 for an interrupt, 1 for an error and 3 for a ceiling
+refusal.
 
 Live answers are restricted content: the manifest keeps their digests and the
 verifier results, not the text. Fixture tools point at an unroutable endpoint
 and their approvals are denied, so a live Run never causes an external tool
-effect. Usage Records have no HTTP read endpoint, so live usage comes from
-Workspace events (at most the latest 100). The live tier has been exercised
-only against in-memory fakes; it has never been run against a provider.
+effect. Usage Records have no HTTP read endpoint, so live token counts come from
+Workspace events (at most the latest 100) and do not price anything. The live
+tier has been exercised only against in-memory fakes; it has never been run
+against a provider.
 
 ## Corpus
 
@@ -197,9 +235,13 @@ version and Workspaces.
 
 `completion-gate` (#112), `context-recovery` (#113, the Summary Stage that
 distinguishes summary recovery from pruning), `repository-rules` (#117),
-`parallel-read-tools` (#119), `streaming` (#120) and `acp-adapter` (#121) are
-reported as `feature-not-available`. So is any comparison whose Agent
-definition the Node rejects at registration; the rejection is the `detail`.
+`parallel-read-tools` (#119) and `acp-adapter` (#121) are reported as
+`feature-not-available`. `streaming` (#120) is on this branch but has no
+comparison yet (the scripted provider does not stream), so it is reported as
+`not-measured`: available, with nothing measured. A comparison whose Agent
+definition the Node rejects at registration is an error and fails the command;
+only with `--allow-unavailable-arms` is it reported as `feature-not-available`
+with the rejection as its `detail`.
 
 ### Adding a task
 
@@ -219,7 +261,9 @@ definition the Node rejects at registration; the rejection is the `detail`.
 The result manifest (`tests/evaluation/schema/result.schema.json`) embeds the
 experiment manifest (`experiment.schema.json`) and is validated against both
 before it is written, together with cross-field rules: every planned Run is
-present and every aggregate accounts for every attempted Run.
+present or listed in `skipped_runs`, and every aggregate accounts for every
+attempted Run. A manifest that fails validation is still written, annotated in
+its `error` field, because it may be the only record of paid work.
 
 The experiment records the Aidash commit, dirty state and diff digest, the
 binary SHA-256, the corpus and memory corpus snapshots, the evaluator identity,
@@ -229,7 +273,8 @@ and Jev classifier modes, the Provider Credential and disclosure approval digest
 (live), the repeat count, the time, token and spend limits, and the
 reproducibility limitations. The live tier defaults to three repeats. A live experiment always sets
 `model.mutable_alias: true`: an upstream alias can change without notice, and
-only the provider-reported identity per attempt says what served a request.
+this tier cannot read the provider-reported identity (see above), so a live
+manifest cannot show what served a request.
 
 Each `runs[]` entry has one `outcome`:
 
@@ -284,7 +329,13 @@ actions and expected corrections. Its `evidence` is one of:
 - `requires-live-tier`: retrieval quality for Japanese paraphrases, which a
   deterministic embedding cannot show.
 
-The last two are reported with their status, never as passing. The matrix
+The last two are reported with their status, never as passing. A
+`deterministic-api` scenario marked `coverage = "partial"` observes only the
+storage-safety half of its row, so its passing checks are reported as
+`partial`: `exact-identifier-near-duplicates` shows that a correction changes
+only the addressed unit but not ranked retrieval among near-duplicates, and
+`empty-authorized-set` shows an empty authorized bank but not abstention under
+recall. The matrix
 reports storage safety separately from retrieval quality, extraction and answer
 utility; this branch measures only the first deterministically.
 
@@ -294,6 +345,10 @@ utility; this branch measures only the first deterministically.
   quality.
 - Synthetic token counts, prices and cache hits.
 - Summary recovery cannot be observed until #113 lands.
-- Live usage is read from Workspace events, capped at the latest 100.
+- Live token counts come from Workspace events, capped at the latest 100; live
+  spend is enforced from full per-Run reservations, not measured cost, and the
+  provider-reported model identity is not recorded.
+- The live tier cannot grade `python-tests` tasks until a container runner
+  exists.
 - The memory matrix's retrieval-quality rows need the live tier and an
   approved embedding model.
