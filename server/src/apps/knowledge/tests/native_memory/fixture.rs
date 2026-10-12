@@ -119,13 +119,12 @@ pub(super) async fn setup_endpoint_decay(
 		(
 			"model",
 			"m",
-			json!({"provider":"openrouter","model_id":"fixture","endpoint":endpoint,"credential_env":null,
-			"context_window":32768,"max_output_tokens":8192,"modalities":["text"],"cost":{}}),
+			json!({"provider":"openrouter","model_id":"fixture","endpoint":endpoint,"context_window":32768,"max_output_tokens":8192,"modalities":["text"],"cost":{}}),
 		),
 		(
 			"embedding",
 			"e",
-			json!({"provider":"openai","endpoint":endpoint,"credential_env":null,"model":"fixture","model_version":"1.0.0","dimensions":3}),
+			json!({"provider":"openai","endpoint":endpoint,"model":"fixture","model_version":"1.0.0","dimensions":3}),
 		),
 		("reranker", "r", json!({"provider":"rrf"})),
 		("tokenizer", "t", json!({"provider":"utf8_upper_bound"})),
@@ -228,7 +227,7 @@ pub(super) async fn setup_endpoint_decay(
 		aidash_server::semantic::ConfigureIndex {
 			expected_revision: 0,
 			spec: aidash_server::semantic::IndexSpec {
-				embedding: serde_json::from_value(json!({"provider":"openai","endpoint":endpoint,"credential_env":null,"model":"fixture","model_version":"1.0.0","dimensions":3})).unwrap(),
+				embedding: serde_json::from_value(json!({"provider":"openai","endpoint":endpoint,"model":"fixture","model_version":"1.0.0","dimensions":3})).unwrap(),
 				vector: aidash_domain::semantic::VectorConfig { provider: "postgres".into(), endpoint: "local".into(), credential_env: None },
 				enabled: true, auto_context: false, max_sources: 64, max_results: 4,
 				max_result_tokens: 8192, max_input_bytes: 16384,

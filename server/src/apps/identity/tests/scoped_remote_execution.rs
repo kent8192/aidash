@@ -936,7 +936,7 @@ async fn semantic_fixture(
         Json(json!({"model":body["model"],"data":[{"index":0,"embedding":[1.0,0.0,0.0]}],"usage":{"prompt_tokens":1,"total_tokens":1}})).into_response()
 	})).with_state((requests.clone(), failing.clone(),reservations.clone(),response.clone()));
 	let server = tokio::spawn(async move { axum::serve(listener, embedding_app).await.unwrap() });
-	let embedding = json!({"provider":"openai","endpoint":endpoint,"credential_env":null,"model":"home-vector","model_version":"1","dimensions":3});
+	let embedding = json!({"provider":"openai","endpoint":endpoint,"model":"home-vector","model_version":"1","dimensions":3});
 	let (status, body) = request(app, &a.config.api_token, "POST", "/api/registry", json!({"id":"home-embedding","version":"1.0.0","kind":"embedding","name":{"en":"Home embedding"},"description":{"en":"Deterministic semantic fixture"},"config":embedding})).await;
 	assert_eq!(status, 200, "{body}");
 	let (status, body) = request(

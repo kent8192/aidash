@@ -154,7 +154,7 @@ impl Backend {
 	}
 	fn entry(&self, id: &str) -> Entry {
 		let mut config = json!({
-			"provider":"openrouter","model_id":"fixture","endpoint":"http://fixture.invalid/v1","credential_env":null,"context_window":128000,"max_output_tokens":4096,"modalities":["text"],"cost":{}
+			"provider":"openrouter","model_id":"fixture","endpoint":"http://fixture.invalid/v1","context_window":128000,"max_output_tokens":4096,"modalities":["text"],"cost":{}
 		});
 		if self.0.explicit_cache_model {
 			config["model_id"] = json!("anthropic/fixture");

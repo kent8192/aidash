@@ -40,7 +40,7 @@ fn entry(kind: &str, id: &str, config: serde_json::Value) -> Entry {
 }
 async fn seed(registry: &Registry) -> Entry {
 	registry.seed_system().await.unwrap();
-	registry.register(entry("model","model",json!({"provider":"openrouter","model_id":"fixture","endpoint":"http://127.0.0.1:9999/v1","credential_env":null,"context_window":128000,"max_output_tokens":4096,"modalities":["text"],"cost":{}}))).await.unwrap();
+	registry.register(entry("model","model",json!({"provider":"openrouter","model_id":"fixture","endpoint":"http://127.0.0.1:9999/v1","context_window":128000,"max_output_tokens":4096,"modalities":["text"],"cost":{}}))).await.unwrap();
 	registry.register(entry("agent","research",json!({"model":{"id":"model","version":"1.0.0"},"instructions":"Research","schema_version":1,"bindings":[],"remove_default":[]}))).await.unwrap()
 }
 fn new_task() -> NewTask {
@@ -179,7 +179,7 @@ async fn ordered_run_creation_requires_a_cache_salt_key_and_a_tenant(
 	// node without Cache Salt Keys.
 	let (store, url, schema) = setup(&_test_environment).await;
 	let registry = Registry::new(store.pool.clone(), &store.node_id).unwrap();
-	registry.register(entry("model","model",json!({"provider":"openrouter","model_id":"fixture","endpoint":"http://127.0.0.1:9999/v1","credential_env":null,"context_window":128000,"max_output_tokens":4096,"modalities":["text"],"cost":{},"projection_versions":["legacy","ordered"]}))).await.unwrap();
+	registry.register(entry("model","model",json!({"provider":"openrouter","model_id":"fixture","endpoint":"http://127.0.0.1:9999/v1","context_window":128000,"max_output_tokens":4096,"modalities":["text"],"cost":{},"projection_versions":["legacy","ordered"]}))).await.unwrap();
 	let agent = registry.register(entry("agent","research",json!({"model":{"id":"model","version":"1.0.0"},"instructions":"Research","schema_version":1,"bindings":[],"remove_default":[],"projection_version":"ordered"}))).await.unwrap();
 	let workspace = store
 		.create_workspace("Research", "Compare frameworks")
@@ -1441,7 +1441,7 @@ async fn integration_failures_reach_the_agent_without_replay_or_schema_escape(
 		}));
 	let server = tokio::spawn(async move { axum::serve(listener, server).await.unwrap() });
 	let federation = federation_for(&store);
-	federation.registry.register(entry("model", "web-model", json!({"provider":"openrouter","model_id":"fixture","endpoint":format!("{endpoint}/v1"),"credential_env":null,"context_window":128000,"max_output_tokens":4096,"modalities":["text"],"cost":{}}))).await.unwrap();
+	federation.registry.register(entry("model", "web-model", json!({"provider":"openrouter","model_id":"fixture","endpoint":format!("{endpoint}/v1"),"context_window":128000,"max_output_tokens":4096,"modalities":["text"],"cost":{}}))).await.unwrap();
 	federation
 		.registry
 		.register({ let mut tool = entry(

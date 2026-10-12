@@ -41,8 +41,7 @@ fn config(
 fn model_configuration_uses_the_catalog_limit_and_preserves_legacy_records() {
 	let selected: ModelConfig = serde_json::from_value(json!({
 		"provider":"openrouter", "model_id":"google/gemini-3.8-flash",
-		"endpoint":"https://openrouter.ai/api/v1", "credential_env":null,
-		"context_window":1048576, "max_output_tokens":65536,
+		"endpoint":"https://openrouter.ai/api/v1", "context_window":1048576, "max_output_tokens":65536,
 		"modalities":["text"], "cost":{}
 	}))
 	.unwrap();
@@ -50,8 +49,7 @@ fn model_configuration_uses_the_catalog_limit_and_preserves_legacy_records() {
 
 	let legacy: ModelConfig = serde_json::from_value(json!({
 		"provider":"openrouter", "model_id":"vendor/legacy",
-		"endpoint":"https://openrouter.ai/api/v1", "credential_env":null,
-		"context_window":128000, "modalities":["text"], "cost":{}
+		"endpoint":"https://openrouter.ai/api/v1", "context_window":128000, "modalities":["text"], "cost":{}
 	}))
 	.unwrap();
 	assert_eq!(legacy.output_token_limit(), 4096);

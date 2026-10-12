@@ -25,7 +25,7 @@ fn pending(value: serde_json::Value) -> aidash_domain::ToolCallState {
 fn media_model() -> aidash_domain::model::ModelConfig {
 	serde_json::from_value(json!({
 		"provider":"openrouter", "model_id":"fixture", "endpoint":"https://example.com",
-		"credential_env":null, "context_window":128000, "max_output_tokens":4096,
+		"context_window":128000, "max_output_tokens":4096,
 		"modalities":["text","image","audio"], "cost":{},
 		"media_routes":[
 			{"tag":"fixture/png", "formats":["image/png", "wav"],

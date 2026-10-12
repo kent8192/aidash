@@ -154,8 +154,7 @@ async fn generated_agent_budget_includes_the_models_full_output_limit(
 		"capabilities":[],"languages":["en"],"tags":[],"skills":[],
 		"schema":{"type":"object"},
 		"config":{"provider":"openrouter","model_id":"google/gemini-3.8-flash",
-			"endpoint":"https://openrouter.ai/api/v1","credential_env":null,
-			"context_window":1048576,"max_output_tokens":65536,
+			"endpoint":"https://openrouter.ai/api/v1","context_window":1048576,"max_output_tokens":65536,
 			"modalities":["text"],"cost":{}}
 	});
 	let (status, body) = request(&app, &f.config.api_token, "POST", "/api/registry", model).await;

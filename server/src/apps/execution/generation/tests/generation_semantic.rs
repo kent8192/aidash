@@ -176,7 +176,7 @@ impl Fixture {
 		template["id"] = json!("semantic-template");
 		template["capabilities"] = json!(["semantic.research"]);
 		{
-			let (status, response) = request(&app, &f.config.api_token, "POST", "/api/registry", json!({"id":"embedding","version":"1.0.0","kind":"embedding","name":{"en":"Approved embedding"},"description":{"en":"Local embedding fixture"},"config":{"provider":"openai","endpoint":format!("{endpoint}/v1"),"credential_env":null,"model":"fixture-embedding","model_version":"1","dimensions":3}})).await;
+			let (status, response) = request(&app, &f.config.api_token, "POST", "/api/registry", json!({"id":"embedding","version":"1.0.0","kind":"embedding","name":{"en":"Approved embedding"},"description":{"en":"Local embedding fixture"},"config":{"provider":"openai","endpoint":format!("{endpoint}/v1"),"model":"fixture-embedding","model_version":"1","dimensions":3}})).await;
 			assert_eq!(status, 200, "{response}");
 			assert_eq!(
 				request(
@@ -244,7 +244,7 @@ impl Fixture {
 		)
 		.await;
 		assert_eq!(status, 200, "{response}");
-		let (status, index) = request(&app,&f.config.api_token,"POST",&format!("/api/workspaces/{workspace}/semantic/index"),json!({"expected_revision":0,"spec":{"embedding":{"provider":"openai","endpoint":format!("{endpoint}/v1"),"credential_env":null,"model":"fixture-embedding","model_version":"1","dimensions":3},"vector":{"provider":"postgres","endpoint":"local","credential_env":null},"enabled":true,"auto_context":true,"max_sources":64,"max_results":10,"max_result_tokens":4096,"max_input_bytes":8192}})).await;
+		let (status, index) = request(&app,&f.config.api_token,"POST",&format!("/api/workspaces/{workspace}/semantic/index"),json!({"expected_revision":0,"spec":{"embedding":{"provider":"openai","endpoint":format!("{endpoint}/v1"),"model":"fixture-embedding","model_version":"1","dimensions":3},"vector":{"provider":"postgres","endpoint":"local","credential_env":null},"enabled":true,"auto_context":true,"max_sources":64,"max_results":10,"max_result_tokens":4096,"max_input_bytes":8192}})).await;
 		assert_eq!(status, 200, "{index}");
 
 		if maintenance {

@@ -143,7 +143,7 @@ pub async fn register_fixture_agent(fixture: &EndpointFixture, id: &str) {
 		(
 			"model",
 			model.as_str(),
-			json!({"provider":"openrouter","model_id":"fixture","endpoint":"http://127.0.0.1:1/v1","credential_env":null,"context_window":128000,"max_output_tokens":4096,"modalities":["text"],"cost":{}}),
+			json!({"provider":"openrouter","model_id":"fixture","endpoint":"http://127.0.0.1:1/v1","context_window":128000,"max_output_tokens":4096,"modalities":["text"],"cost":{}}),
 		),
 		(
 			"agent",

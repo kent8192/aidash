@@ -65,7 +65,7 @@ async fn malformed_rows_fail_without_effect_replay_and_healthy_work_continues(
 			axum::Json(json!({"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":"Done"}}],"usage":{"prompt_tokens":100,"completion_tokens":1}}))
 		}}))).await.unwrap();
 	});
-	f.registry.register(entry("model","model",json!({"provider":"openrouter","model_id":"fixture","endpoint":endpoint,"credential_env":null,"context_window":128000,"max_output_tokens":4096,"modalities":["text"],"cost":{}}))).await.unwrap();
+	f.registry.register(entry("model","model",json!({"provider":"openrouter","model_id":"fixture","endpoint":endpoint,"context_window":128000,"max_output_tokens":4096,"modalities":["text"],"cost":{}}))).await.unwrap();
 	let agent = f
 		.registry
 		.register(entry(

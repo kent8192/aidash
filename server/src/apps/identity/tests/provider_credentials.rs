@@ -730,7 +730,7 @@ async fn workspace_embedding_credential_is_pinned_with_environment_model_admissi
 		(
 			"model",
 			"environment-agent-fixture-model",
-			json!({"provider":"openrouter","model_id":"fixture","endpoint":"http://127.0.0.1:1/v1","credential_env":null,"context_window":128000,"max_output_tokens":4096,"modalities":["text"],"cost":{}}),
+			json!({"provider":"openrouter","model_id":"fixture","endpoint":"http://127.0.0.1:1/v1","context_window":128000,"max_output_tokens":4096,"modalities":["text"],"cost":{}}),
 		),
 		(
 			"agent",
@@ -793,7 +793,7 @@ async fn workspace_embedding_credential_is_pinned_with_environment_model_admissi
 	let index = SemanticIndexe::build()
 		.workspace_id(workspace.id).tenant("beta").revision(1)
 		.spec(Json(json!({
-			"embedding":{"provider":"openrouter","endpoint":"https://openrouter.ai/api/v1","credential_env":null,"provider_credential":"openrouter","model":"fixture","model_version":"1","dimensions":3},
+			"embedding":{"provider":"openrouter","endpoint":"https://openrouter.ai/api/v1","provider_credential":"openrouter","model":"fixture","model_version":"1","dimensions":3},
 			"vector":{"provider":"postgres","endpoint":"local","credential_env":null},
 			"enabled":true,"auto_context":true,"max_sources":64,"max_results":10,"max_result_tokens":4096,"max_input_bytes":8192
 		})))
@@ -936,7 +936,7 @@ async fn admission_pins_local_tenant_id_and_reloads_state_without_environment_fa
 		fingerprint_key: "test-fingerprint-key-that-is-at-least-32-bytes".into(),
 		max_per_tenant: 20,
 	});
-	let model: aidash_server::registry::Entry = serde_json::from_value(json!({"id":"tenant-model","version":"1.0.0","kind":"model","name":{"en":"Tenant model"},"description":{"en":"Tenant model"},"config":{"provider":"openrouter","model_id":"test/model","endpoint":"https://openrouter.ai/api/v1","credential_env":null,"provider_credential":"openrouter","context_window":128000,"max_output_tokens":1024,"modalities":["text"],"cost":{}}})).unwrap();
+	let model: aidash_server::registry::Entry = serde_json::from_value(json!({"id":"tenant-model","version":"1.0.0","kind":"model","name":{"en":"Tenant model"},"description":{"en":"Tenant model"},"config":{"provider":"openrouter","model_id":"test/model","endpoint":"https://openrouter.ai/api/v1","provider_credential":"openrouter","context_window":128000,"max_output_tokens":1024,"modalities":["text"],"cost":{}}})).unwrap();
 	assert!(
 		f.runtime
 			.registry

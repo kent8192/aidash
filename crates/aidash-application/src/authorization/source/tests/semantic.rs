@@ -24,7 +24,7 @@ struct BindingScope {
 }
 impl BindingScope {
 	fn new() -> Self {
-		let embedding = json!({"provider":"openai","endpoint":"https://embedding.invalid","credential_env":"EMBEDDING","model":"embed","model_version":"1","dimensions":3});
+		let embedding = json!({"provider":"openai","endpoint":"https://embedding.invalid","model":"embed","model_version":"1","dimensions":3});
 		let spec:IndexingSpec=serde_json::from_value(json!({"embedding":embedding,"vector":{"provider":"postgres","endpoint":"local","credential_env":null},"enabled":true,"auto_context":true,"max_sources":100,"max_results":4,"max_result_tokens":1024,"max_input_bytes":32768})).unwrap();
 		let mut entry = entry("embedding");
 		entry.config = embedding;
@@ -503,9 +503,10 @@ async fn remote_home_binding_rejects_tenant_embedding_before_provider_or_dispatc
 	let mut scope = BindingScope::new();
 	scope.spec.embedding = serde_json::from_value(json!({
 		"provider":"openrouter", "endpoint":"https://openrouter.ai/api/v1",
-		"credential_env":null, "provider_credential":if tenant_source { Some("openrouter") } else { None },
+		"provider_credential":if tenant_source { Some("openrouter") } else { None },
 		"model":"embed", "model_version":"1", "dimensions":3
-	})).unwrap();
+	}))
+	.unwrap();
 	scope.entry.config = serde_json::to_value(&scope.spec.embedding).unwrap();
 	scope.index.spec = serde_json::to_value(&scope.spec).unwrap();
 	let result = use_case::binding(

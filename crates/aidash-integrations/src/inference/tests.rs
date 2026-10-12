@@ -239,7 +239,6 @@ mod cache_salt {
 				"provider": "openrouter",
 				"model_id": model_id,
 				"endpoint": self.endpoint,
-				"credential_env": null,
 				"context_window": 100_000,
 				"modalities": ["text"],
 				"cost": {}

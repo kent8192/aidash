@@ -1218,8 +1218,7 @@ async fn prompt_cache_migration_admits_new_keys_and_reverses(
 		let metadata = json!({"id":id,"version":"1.0.0","kind":"model",
 			"name":{"en":"Prompt cache fixture"},"description":{"en":"Migration test"},
 			"config":{"provider":"openrouter","model_id":"anthropic/model",
-				"endpoint":"http://127.0.0.1:1/v1","credential_env":null,
-				"context_window":32768,"max_output_tokens":4096,
+				"endpoint":"http://127.0.0.1:1/v1","context_window":32768,"max_output_tokens":4096,
 				"modalities":["text"],"cost":{},
 				"projection_versions":["legacy","ordered"],"cache_mode":cache_mode}});
 		Definition::build()
@@ -1359,8 +1358,7 @@ async fn model_streaming_migration_refuses_rollback_with_installation_overrides(
 	let metadata = json!({"id":"stream-model","version":"1.0.0","kind":"model",
 		"name":{"en":"Streaming fixture"},"description":{"en":"Migration test"},
 		"config":{"provider":"openrouter","model_id":"openai/model",
-			"endpoint":"http://127.0.0.1:1/v1","credential_env":null,
-			"context_window":32768,"modalities":["text"],"cost":{}}});
+			"endpoint":"http://127.0.0.1:1/v1","context_window":32768,"modalities":["text"],"cost":{}}});
 	Definition::objects()
 		.create_with_conn(
 			&mut connection,
@@ -1753,8 +1751,7 @@ async fn deferred_exposure_rollback_is_refused_while_an_agent_uses_exposure(
 	let model = json!({"id":"exposure-model","version":"1.0.0","kind":"model",
 		"name":{"en":"Exposure fixture"},"description":{"en":"Migration test"},
 		"config":{"provider":"openrouter","model_id":"anthropic/model",
-			"endpoint":"http://127.0.0.1:1/v1","credential_env":null,
-			"context_window":32768,"max_output_tokens":4096,
+			"endpoint":"http://127.0.0.1:1/v1","context_window":32768,"max_output_tokens":4096,
 			"modalities":["text"],"cost":{},
 			"projection_versions":["legacy","ordered"],"cache_mode":"none"}});
 	let agent = json!({"id":"exposure-agent","version":"1.0.0","kind":"agent",
