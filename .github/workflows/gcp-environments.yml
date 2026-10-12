@@ -73,6 +73,10 @@ jobs:
   prepare:
     needs: intake
     if: needs.intake.outputs.proceed == 'true'
+    # prepare decides whether this run builds, so it cannot choose by that output;
+    # it only reads durable intent. The WIF provider only trusts the two named
+    # Environments (#151).
+    environment: gcp-deploy
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -146,6 +150,8 @@ jobs:
 
   publish:
     needs: [intake, prepare, build]
+    # Publishing new images always needs the reviewed Environment.
+    environment: gcp-deploy-release
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     permissions:
@@ -188,6 +194,9 @@ jobs:
   apply:
     needs: [intake, prepare, build, publish]
     if: always() && needs.prepare.result == 'success' && (needs.prepare.outputs.build != 'true' || needs.publish.result == 'success')
+    # Applying a run that built new images needs the reviewed Environment; a
+    # no-build reconcile (schedule, CI update) stays unattended.
+    environment: ${{ needs.prepare.outputs.build == 'true' && 'gcp-deploy-release' || 'gcp-deploy' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 55
     permissions:

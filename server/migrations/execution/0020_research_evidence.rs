@@ -3,8 +3,8 @@
 // service operator, Source records, Document snapshots and Evidence fragments.
 use reinhardt::db::migrations::prelude::*;
 pub(super) fn migration() -> Migration {
-	Migration::new("0016_research_evidence", "execution")
-        .add_dependency("execution", "0015_inference_progress_state")
+	Migration::new("0020_research_evidence", "execution")
+        .add_dependency("execution", "0019_summary_allowance_state")
         .add_operation(Operation::CreateTable {
             name: "research_attempts".into(),
             columns: vec![

@@ -1,8 +1,8 @@
 //! Unit tests for services::core.
 use super::*;
+#[rstest::rstest]
 #[tokio::test]
-async fn wakeup_survives_read_to_wait_gap_and_scopes_are_reclaimed() {
-	let service = Service::new(Settings::default());
+async fn wakeup_survives_read_to_wait_gap_and_scopes_are_reclaimed(service: Service) {
 	let workspace = Uuid::new_v4();
 	let mut selected = service.register(Some(workspace));
 	let mut all = service.register(None);
@@ -48,4 +48,9 @@ fn settings_reject_disabled_or_unbounded_recovery() {
 		Settings::from_values(|_| None).unwrap().reconcile_interval,
 		Duration::from_secs(5)
 	);
+}
+
+#[rstest::fixture]
+fn service() -> Service {
+	Service::new(Settings::default())
 }

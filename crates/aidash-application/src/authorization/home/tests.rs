@@ -81,7 +81,7 @@ fn grant(required: bool) -> Grant {
 	let binding: Binding = if required {
 		serde_json::from_value(json!({"mode":"required_home","home_lineage":[],"execution_lineage":[],"version":1,"index_revision":1,"index_digest":"index","embedding":{"node_id":"aidash://home","entry":{"id":"embedding","version":"1"},"digest":"digest","configuration_digest":"config"}})).unwrap()
 	} else {
-		Binding::Disabled {}
+		Binding::Disabled { summarizer: None }
 	};
 	Grant {
 		id: Uuid::from_u128(4),
@@ -109,7 +109,7 @@ fn description() -> Description {
 		task: task(),
 		inspection: serde_json::from_value::<Inspection>(grant(false).inspection).unwrap(),
 		expires_at: grant(false).expires_at,
-		semantic: Binding::Disabled {},
+		semantic: Binding::Disabled { summarizer: None },
 	}
 }
 fn activation() -> Value {

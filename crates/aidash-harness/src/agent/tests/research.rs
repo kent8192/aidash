@@ -71,7 +71,7 @@ async fn invalid_citations_get_one_correction_and_never_publish_a_fabricated_ref
 	assert_eq!(event, "run.citation_correction_required");
 	assert_eq!(saved.phase(), RunPhase::Thinking);
 	assert!(matches!(
-		saved.context.history.last(),
+		saved.context.events().last(),
 		Some(ContextEvent::CitationCorrectionRequired { invalid, instruction, .. })
 			if *invalid == [UNKNOWN.to_string()]
 				&& instruction == citations::CORRECTION_INSTRUCTION

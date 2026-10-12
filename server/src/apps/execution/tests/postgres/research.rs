@@ -80,10 +80,10 @@ fn reservation(key: &str, account: Option<(&str, u64)>) -> Reservation {
 #[tokio::test]
 async fn attempts_are_reserved_once_settled_once_and_charged_to_the_operator_account(
 	#[future(awt)]
-	#[from(test_environment)]
-	environment: Arc<TestEnvironment>,
+	#[from(store)]
+	_store_fixture: StoreFixture,
 ) {
-	let (store, url, schema) = setup(&environment).await;
+	let (store, url, schema) = _store_fixture.parts();
 	let run = leased_run(&store, &agent(&store).await).await;
 	let evidence = aidash_server::research::evidence_store(store.clone());
 	let since = chrono::Utc::now() - chrono::Duration::hours(1);
@@ -186,10 +186,10 @@ async fn attempts_are_reserved_once_settled_once_and_charged_to_the_operator_acc
 #[tokio::test]
 async fn fixture_research_runs_the_host_contract_on_postgres_and_citations_stay_run_scoped(
 	#[future(awt)]
-	#[from(test_environment)]
-	environment: Arc<TestEnvironment>,
+	#[from(store)]
+	_store_fixture: StoreFixture,
 ) {
-	let (store, url, schema) = setup(&environment).await;
+	let (store, url, schema) = _store_fixture.parts();
 	let agent = agent(&store).await;
 	let run = leased_run(&store, &agent).await;
 	let evidence = aidash_server::research::evidence_store(store.clone());
@@ -298,12 +298,12 @@ async fn fixture_research_runs_the_host_contract_on_postgres_and_citations_stay_
 #[tokio::test]
 async fn the_search_credential_never_reaches_results_or_evidence(
 	#[future(awt)]
-	#[from(test_environment)]
-	environment: Arc<TestEnvironment>,
+	#[from(store)]
+	_store_fixture: StoreFixture,
 ) {
 	use tokio::io::{AsyncReadExt, AsyncWriteExt};
 	const KEY: &str = "sentinel-brave-tool-secret";
-	let (store, url, schema) = setup(&environment).await;
+	let (store, url, schema) = _store_fixture.parts();
 	let run = leased_run(&store, &agent(&store).await).await;
 	// A Brave-compatible endpoint that requires the key and returns one result.
 	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

@@ -6,46 +6,69 @@ use aidash_server::{
 	domain::{Run, RunPhase, RunState, WaitingState},
 	harness::Harness,
 };
-use axum::{Json, Router, routing::post};
+use reinhardt::ServerRouter as Router;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use upstream_fixtures::reply;
 
 const VERSION: &str = "3.0.0";
 const QUERY: &str = "strasse line";
 
 struct Research {
 	c: CoreFixture,
-	server: tokio::task::JoinHandle<()>,
+	_provider: Arc<reinhardt::test::fixtures::server::TestServerGuard>,
 	requests: Arc<AtomicUsize>,
 }
 
+#[rstest::fixture]
+fn research_requests() -> Arc<AtomicUsize> {
+	Arc::new(AtomicUsize::new(0))
+}
 /// Every model request calls `research_search` with the same query.
-async fn research_fixture(env: Arc<TestEnvironment>) -> Research {
-	let requests = Arc::new(AtomicUsize::new(0));
-	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-	let endpoint = format!("http://{}", listener.local_addr().unwrap());
-	let counter = requests.clone();
-	let router = Router::new().route(
-		"/v1/chat/completions",
-		post(move |Json(_body): Json<Value>| {
-			let counter = counter.clone();
-			async move {
-				let count = counter.fetch_add(1, Ordering::SeqCst) + 1;
-				Json(json!({
-					"choices":[{"index":0,"finish_reason":"tool_calls","message":{
-						"role":"assistant","content":null,
-						"tool_calls":[{"id":format!("search-{count}"),"type":"function","function":{
-							"name":"research_search","arguments":json!({"query":QUERY}).to_string()
-						}}]
-					}}],
-					"usage":{"prompt_tokens":1,"completion_tokens":1}
-				}))
-			}
-		}),
-	);
-	let server = tokio::spawn(async move {
-		axum::serve(listener, router).await.unwrap();
-	});
-	let mut c = build_core_fixture_at(env, "aidash://research", &endpoint).await;
+#[rstest::fixture]
+fn research_router(#[from(research_requests)] requests: Arc<AtomicUsize>) -> Arc<Router> {
+	let provider = reinhardt::test::stub::StubRouter::new()
+		.route(
+			"/v1/chat/completions",
+			http::Method::POST,
+			reply(move |_: reinhardt::Request| {
+				let counter = requests.clone();
+				async move {
+					let count = counter.fetch_add(1, Ordering::SeqCst) + 1;
+					reinhardt::Response::ok()
+						.with_json(&json!({
+							"choices":[{"index":0,"finish_reason":"tool_calls","message":{
+								"role":"assistant","content":null,
+								"tool_calls":[{"id":format!("search-{count}"),"type":"function","function":{
+									"name":"research_search","arguments":json!({"query":QUERY}).to_string()
+								}}]
+							}}],
+							"usage":{"prompt_tokens":1,"completion_tokens":1}
+						}))
+						.unwrap()
+				}
+			}),
+		)
+		.into_server_router();
+	Arc::new(provider)
+}
+
+#[rstest::fixture]
+async fn research_fixture(
+	#[from(research_requests)] requests: Arc<AtomicUsize>,
+	#[from(research_router)]
+	#[with(requests.clone())]
+	_router: Arc<Router>,
+	#[from(upstream_fixtures::provider_transport)]
+	#[with(_router.clone())]
+	provider: upstream_fixtures::UpstreamFuture,
+	#[from(provider_endpoint)]
+	#[with(provider.clone())]
+	_endpoint: EndpointFuture,
+	#[from(capability_fixture)]
+	#[with("aidash://research",_endpoint.clone())]
+	core: CoreFuture,
+) -> Research {
+	let mut c = core.await;
 	c.policy["subjects"]
 		[aidash_server::domain::qualified_agent(&c.f.config.node_id, "research", VERSION)] =
 		json!({"kind":"agent"});
@@ -103,7 +126,7 @@ async fn research_fixture(env: Arc<TestEnvironment>) -> Research {
 	}
 	Research {
 		c,
-		server,
+		_provider: provider.await,
 		requests,
 	}
 }
@@ -213,8 +236,7 @@ impl Research {
 			.unwrap()
 	}
 	async fn close(self) {
-		self.server.abort();
-		let _ = self.server.await;
+		drop(self._provider);
 		self.c.close().await;
 	}
 }
@@ -222,10 +244,10 @@ impl Research {
 #[rstest::rstest]
 #[tokio::test]
 async fn web_disclosure_waits_for_an_exact_approval_that_one_dispatch_consumes(
-	#[future] test_environment: Arc<TestEnvironment>,
+	#[future] research_fixture: Research,
 ) {
 	// Arrange
-	let mut r = research_fixture(test_environment.await).await;
+	let mut r = research_fixture.await;
 	let run = r.delegate().await;
 	r.require_disclosure_approval().await;
 
@@ -276,8 +298,9 @@ async fn web_disclosure_waits_for_an_exact_approval_that_one_dispatch_consumes(
 	assert_ne!(second, first);
 	assert_eq!(r.attempts(run.id).await, 1, "exactly one dispatch");
 	let run = r.c.f.store.run(run.id).await.unwrap();
-	let history = serde_json::to_value(&run.context).unwrap()["history"].clone();
-	let statuses = history
+	let events = run.context.events().collect::<Vec<_>>();
+	let statuses = serde_json::to_value(events)
+		.unwrap()
 		.as_array()
 		.unwrap()
 		.iter()

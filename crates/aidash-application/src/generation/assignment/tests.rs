@@ -96,6 +96,7 @@ impl Scope {
 				allocated_tokens: 0,
 				allocated_compaction_calls: 0,
 				allocated_embedding_calls: 0,
+				allocated_summary_calls: 0,
 			},
 			chain: vec!["alice".into()],
 			bundle: serde_json::from_value(json!({"tenant":"tenant"})).unwrap(),
@@ -287,13 +288,14 @@ impl GenerationCreationScope for Scope {
 	async fn allocate(
 		&mut self,
 		policy: &Policy,
-		compaction_calls: i64,
-		embedding_calls: i64,
+		allowances: &aidash_domain::generation::policy::Allowances,
 	) -> Result<()> {
 		self.point("allocate").await?;
 		self.effects.push(format!(
-			"allocate:{}:{compaction_calls}:{embedding_calls}",
-			policy.spec.limits.tokens_per_agent
+			"allocate:{}:{}:{}",
+			policy.spec.limits.tokens_per_agent,
+			allowances.compaction_calls,
+			allowances.embedding_calls
 		));
 		Ok(())
 	}
@@ -301,13 +303,14 @@ impl GenerationCreationScope for Scope {
 		&mut self,
 		id: Uuid,
 		_policy: &Policy,
-		compaction_calls: i64,
-		embedding_calls: i64,
+		allowances: &aidash_domain::generation::policy::Allowances,
 	) -> Result<()> {
 		assert_eq!(id, Uuid::from_u128(1));
 		self.point("budget").await?;
-		self.effects
-			.push(format!("budget:{compaction_calls}:{embedding_calls}"));
+		self.effects.push(format!(
+			"budget:{}:{}",
+			allowances.compaction_calls, allowances.embedding_calls
+		));
 		Ok(())
 	}
 	async fn history(&mut self, id: Uuid, status: &str, reason: &str) -> Result<()> {
