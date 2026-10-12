@@ -29,11 +29,14 @@ pub(crate) fn capability_failure(status: u16, body: Option<&serde_json::Value>) 
 pub(crate) async fn provider_rejection(response: reqwest::Response, byok: bool) -> Error {
 	let status = response.status().as_u16();
 	let body = json::<serde_json::Value>(response, 16_384).await.ok();
-	if byok && let Some(error) = capability_failure(status, body.as_ref()) {
+	rejection(status, body.as_ref(), byok)
+}
+/// Classifies a decoded non-2xx reply without exposing the upstream body.
+pub(crate) fn rejection(status: u16, body: Option<&serde_json::Value>, byok: bool) -> Error {
+	if byok && let Some(error) = capability_failure(status, body) {
 		return error;
 	}
 	let detail = body
-		.as_ref()
 		.and_then(|body| body.pointer("/error/message"))
 		.and_then(serde_json::Value::as_str)
 		.unwrap_or_default();

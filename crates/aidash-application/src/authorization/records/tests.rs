@@ -529,3 +529,28 @@ async fn child_summary_errors_preserve_their_opaque_identity(
 	assert_eq!(scope.calls.last(), Some(&fail));
 	assert!(scope.task_reads.is_empty());
 }
+
+#[rstest]
+#[case("readable")]
+#[case("denied")]
+#[case("missing")]
+#[case("hidden")]
+#[tokio::test]
+async fn summary_dependencies_recheck_messages_without_tracking(
+	mut scope: Scope,
+	#[case] state: &str,
+) {
+	match state {
+		"denied" => scope.required = false,
+		"missing" => scope.found = false,
+		"hidden" => scope.visible = false,
+		_ => {}
+	}
+	let workspace = scope.workspace.id;
+	let readable = messages_readable(&mut scope, workspace, [Uuid::from_u128(13)])
+		.await
+		.unwrap();
+	assert_eq!(readable, state == "readable");
+	assert!(scope.tracked.is_empty(), "a recheck records no new read");
+	assert!(!scope.calls.contains(&"track"));
+}

@@ -449,6 +449,9 @@ fn rejected(error: &Value) -> Error {
 		.and_then(|code| u16::try_from(code).ok())
 		.filter(|code| (400..=599).contains(code))
 		.unwrap_or(502);
+	if matches!(status, 400 | 413) && super::context_overflow(&json!({"error": error})) {
+		return Error::ContextOverflow;
+	}
 	let detail = error
 		.get("message")
 		.and_then(Value::as_str)

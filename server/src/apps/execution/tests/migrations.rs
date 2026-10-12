@@ -73,7 +73,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		20
+		23
 	);
 	let tables = migrations
 		.iter()
@@ -288,14 +288,14 @@ async fn generation_with_existing_sql_assets_preserves_history_and_dependency(
 	);
 	assert_eq!(std::fs::read(history).unwrap(), original);
 	let generated = FilesystemSource::new(fixture.directory.path().join("migrations"))
-		.get_migration("execution", "0016_policy_probe")
+		.get_migration("execution", "0020_policy_probe")
 		.await
 		.unwrap();
 	assert_eq!(
 		generated.dependencies,
 		vec![(
 			"execution".to_owned(),
-			"0015_inference_progress_state".to_owned()
+			"0019_summary_allowance_state".to_owned()
 		)]
 	);
 	assert!(generated.operations.is_empty());
@@ -556,7 +556,7 @@ async fn preserved_baseline_does_not_generate_table_recreation(
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		20
+		23
 	);
 }
 
@@ -1339,6 +1339,387 @@ async fn prompt_cache_migration_admits_new_keys_and_reverses(
 
 #[rstest]
 #[tokio::test]
+async fn tool_parallelism_migration_reverses_to_deferred_exposure_and_refuses_stored_fields(
+	#[future] fresh_database: MigrationFixture,
+) {
+	use aidash_server::apps::registry::{models::Definition, services::states::DefinitionKind};
+	// Arrange
+	let fixture = fresh_database.await;
+	fixture.migrate().await;
+	let pool = fixture.connection.clone().into_postgres().unwrap();
+	let agent = |extra: serde_json::Value| {
+		let mut config = json!({"schema_version":1,"model":{"id":"model","version":"1.0.0"},"instructions":"Work","projection_version":"ordered","prompt_cache":"explicit"});
+		config
+			.as_object_mut()
+			.unwrap()
+			.extend(extra.as_object().unwrap().clone());
+		config
+	};
+	let parallel = json!({"tool_parallelism":2});
+	let deferred = json!({"exposure":{"version":"deferred@1"}});
+	// The 0021 bodies keep the 0019 deferred exposure contract beside the ceiling.
+	assert!(
+		contract_accepts(
+			&pool,
+			"aidash_agent_bindings_is_valid",
+			vec![agent(
+				json!({"tool_parallelism":2,"exposure":{"version":"deferred@1"}})
+			)]
+		)
+		.await
+	);
+	let query = Query::select()
+		.expr(Expr::cust(
+			"pg_get_functiondef('public.guard_installation_config()'::regprocedure)",
+		))
+		.to_string(PostgresQueryBuilder);
+	let upgraded: String = sqlx::query_scalar(&query).fetch_one(&pool).await.unwrap();
+	assert!(
+		upgraded.contains("'cluster','max_steps','exposure','tool_parallelism']::text[]"),
+		"{upgraded}"
+	);
+	let migrations =
+		FilesystemSource::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations"))
+			.all_migrations()
+			.await
+			.unwrap();
+	let migration = migrations
+		.into_iter()
+		.find(|m| m.app_label == "registry" && m.name == "0021_tool_parallelism")
+		.unwrap();
+	let mut executor =
+		reinhardt::db::migrations::DatabaseMigrationExecutor::new(fixture.connection.clone());
+	// Act: reverse with no stored parallelism fields.
+	executor
+		.rollback_migrations(std::slice::from_ref(&migration))
+		.await
+		.unwrap();
+	// Assert: the 0019_deferred_exposure Agent contract and guard are restored.
+	assert!(
+		contract_accepts(
+			&pool,
+			"aidash_agent_bindings_is_valid",
+			vec![agent(deferred)]
+		)
+		.await
+	);
+	assert!(
+		!contract_accepts(
+			&pool,
+			"aidash_agent_bindings_is_valid",
+			vec![agent(parallel.clone())]
+		)
+		.await
+	);
+	let restored: String = sqlx::query_scalar(&query).fetch_one(&pool).await.unwrap();
+	assert_eq!(restored, upgraded.replace(",'tool_parallelism'", ""));
+	executor
+		.apply_migrations(std::slice::from_ref(&migration))
+		.await
+		.unwrap();
+	let reapplied: String = sqlx::query_scalar(&query).fetch_one(&pool).await.unwrap();
+	assert_eq!(reapplied, upgraded);
+	// Arrange: a registered Agent declaring a Tool Parallelism ceiling.
+	let lease = DatabaseConnectionLease::register(fixture.connection.clone()).unwrap();
+	let mut connection = lease.handle();
+	let model = json!({"id":"model","version":"1.0.0","kind":"model",
+		"name":{"en":"Parallel fixture"},"description":{"en":"Migration test"},
+		"config":{"provider":"openrouter","model_id":"anthropic/model",
+			"endpoint":"http://127.0.0.1:1/v1","credential_env":null,
+			"context_window":32768,"max_output_tokens":4096,
+			"modalities":["text"],"cost":{}}});
+	Definition::objects()
+		.create_with_conn(
+			&mut connection,
+			&Definition::build()
+				.id("model")
+				.version("1.0.0")
+				.kind(DefinitionKind::Model)
+				.metadata(model.into())
+				.finish(),
+		)
+		.await
+		.unwrap();
+	// A missing optional restriction on an earlier Binding must not hide a
+	// later concurrency declaration. No Tool Parallelism ceiling is present,
+	// so these rollbacks exercise the nested restriction guard itself.
+	for concurrency in [None, Some("sequential"), Some("shared_read")] {
+		let id = format!("binding-{}", concurrency.unwrap_or("unrestricted"));
+		let target =
+			|id: &str| json!({"registry_node":"aidash://migration","id":id,"version":"1.0.0"});
+		let mut config = agent(json!({"bindings":[
+			{"kind":"tool","target":target("first"),"alias":"first"},
+			{"kind":"tool","target":target("second"),"alias":"second","narrow":{}},
+			{"kind":"tool","target":target("third"),"alias":"third"}
+		]}));
+		if let Some(concurrency) = concurrency {
+			config["bindings"][2]["narrow"] = json!({"concurrency":concurrency});
+		}
+		let metadata = json!({"id":id,"version":"1.0.0","kind":"agent",
+			"name":{"en":"Binding guard"},"description":{"en":"Migration test"},
+			"config":config});
+		Definition::objects()
+			.create_with_conn(
+				&mut connection,
+				&Definition::build()
+					.id(id.clone())
+					.version("1.0.0")
+					.kind(DefinitionKind::Agent)
+					.metadata(metadata.into())
+					.finish(),
+			)
+			.await
+			.unwrap();
+		let result = executor
+			.rollback_migrations(std::slice::from_ref(&migration))
+			.await;
+		if concurrency.is_some() {
+			let error = result.unwrap_err();
+			assert!(
+				error.to_string().contains(
+					"definitions, packages or installations declare tool_parallelism or narrow.concurrency"
+				),
+				"{error}"
+			);
+			assert!(
+				contract_accepts(
+					&pool,
+					"aidash_agent_bindings_is_valid",
+					vec![agent(parallel.clone())]
+				)
+				.await,
+				"the denied rollback must retain the upgraded contract"
+			);
+		} else {
+			result.unwrap();
+			executor
+				.apply_migrations(std::slice::from_ref(&migration))
+				.await
+				.unwrap();
+		}
+		Definition::objects()
+			.filter(Definition::field_id().eq(id))
+			.delete_with_conn(&mut connection)
+			.await
+			.unwrap();
+	}
+
+	let metadata = json!({"id":"parallel","version":"1.0.0","kind":"agent",
+		"name":{"en":"Parallel"},"description":{"en":"Migration test"},"config":agent(parallel.clone())});
+	Definition::objects()
+		.create_with_conn(
+			&mut connection,
+			&Definition::build()
+				.id("parallel")
+				.version("1.0.0")
+				.kind(DefinitionKind::Agent)
+				.metadata(metadata.into())
+				.finish(),
+		)
+		.await
+		.unwrap();
+	// Act / Assert: the stored field refuses the rollback before any DDL runs.
+	let error = executor
+		.rollback_migrations(std::slice::from_ref(&migration))
+		.await
+		.unwrap_err();
+	assert!(
+		error
+			.to_string()
+			.contains("registry 0021_tool_parallelism cannot be reversed"),
+		"{error}"
+	);
+	assert!(
+		contract_accepts(
+			&pool,
+			"aidash_agent_bindings_is_valid",
+			vec![agent(parallel)]
+		)
+		.await
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn context_policy_migration_validates_policies_and_refuses_rollback_while_stored(
+	#[future] fresh_database: MigrationFixture,
+) {
+	use aidash_server::apps::registry::{models::Definition, services::states::DefinitionKind};
+	// Arrange
+	let fixture = fresh_database.await;
+	fixture.migrate().await;
+	let pool = fixture.connection.clone().into_postgres().unwrap();
+	let agent = |policy: serde_json::Value| {
+		json!({"schema_version":1,"model":{"id":"model","version":"1.0.0"},"instructions":"Work",
+			"tool_parallelism":2,"exposure":{"version":"deferred@1"},"context_policy":policy})
+	};
+	let summarized = json!({"version":"context-recovery/1","preserve_recent":8,
+		"overflow_retries":4,"overflow_shrink":0.5,
+		"summary":{"model":{"id":"model","version":"1.0.0"},"max_tokens":256,"call_budget":64}});
+	// Assert: the contract mirrors ContextPolicy::validate, beside the 0021 keys.
+	for valid in [
+		summarized.clone(),
+		json!({"version":"context-recovery/1"}),
+		json!({"version":"context-recovery/1","overflow_retries":0,"overflow_shrink":0.9,"summary":null}),
+		json!(null),
+	] {
+		assert!(
+			contract_accepts(
+				&pool,
+				"aidash_agent_bindings_is_valid",
+				vec![agent(valid.clone())]
+			)
+			.await,
+			"{valid}"
+		);
+	}
+	let summary = |field: serde_json::Value| {
+		let mut policy = summarized.clone();
+		policy["summary"]
+			.as_object_mut()
+			.unwrap()
+			.extend(field.as_object().unwrap().clone());
+		policy
+	};
+	for invalid in [
+		json!("context-recovery/1"),
+		json!({"version":"context-recovery/2"}),
+		json!({"preserve_recent":8}),
+		json!({"version":"context-recovery/1","unknown":true}),
+		json!({"version":"context-recovery/1","preserve_recent":5}),
+		json!({"version":"context-recovery/1","preserve_recent":1001}),
+		json!({"version":"context-recovery/1","preserve_recent":6.5}),
+		json!({"version":"context-recovery/1","preserve_recent":null}),
+		json!({"version":"context-recovery/1","overflow_retries":5}),
+		json!({"version":"context-recovery/1","overflow_shrink":0.95}),
+		json!({"version":"context-recovery/1","overflow_shrink":0.4}),
+		json!({"version":"context-recovery/1","overflow_shrink":"0.75"}),
+		json!({"version":"context-recovery/1","summary":{"max_tokens":256}}),
+		summary(json!({"max_tokens":255})),
+		summary(json!({"max_tokens":4097})),
+		summary(json!({"call_budget":0})),
+		summary(json!({"call_budget":65})),
+		summary(json!({"model":{"id":"","version":"1.0.0"}})),
+		summary(json!({"fallback":true})),
+	] {
+		assert!(
+			!contract_accepts(
+				&pool,
+				"aidash_agent_bindings_is_valid",
+				vec![agent(invalid.clone())]
+			)
+			.await,
+			"{invalid}"
+		);
+	}
+	let migration =
+		FilesystemSource::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations"))
+			.all_migrations()
+			.await
+			.unwrap()
+			.into_iter()
+			.find(|m| m.app_label == "registry" && m.name == "0022_context_policy")
+			.unwrap();
+	let mut executor =
+		reinhardt::db::migrations::DatabaseMigrationExecutor::new(fixture.connection.clone());
+	// Act / Assert: without stored policies the reverse restores the 0021 contract.
+	executor
+		.rollback_migrations(std::slice::from_ref(&migration))
+		.await
+		.unwrap();
+	let mut plain = agent(json!(null));
+	plain.as_object_mut().unwrap().remove("context_policy");
+	assert!(contract_accepts(&pool, "aidash_agent_bindings_is_valid", vec![plain]).await);
+	assert!(
+		!contract_accepts(
+			&pool,
+			"aidash_agent_bindings_is_valid",
+			vec![agent(summarized.clone())]
+		)
+		.await
+	);
+	executor
+		.apply_migrations(std::slice::from_ref(&migration))
+		.await
+		.unwrap();
+	// Arrange: the registry write path admits a valid policy and rejects an invalid one.
+	let lease = DatabaseConnectionLease::register(fixture.connection.clone()).unwrap();
+	let mut connection = lease.handle();
+	let model = json!({"id":"model","version":"1.0.0","kind":"model",
+		"name":{"en":"Context fixture"},"description":{"en":"Migration test"},
+		"config":{"provider":"openrouter","model_id":"anthropic/model",
+			"endpoint":"http://127.0.0.1:1/v1","credential_env":null,
+			"context_window":32768,"max_output_tokens":4096,
+			"modalities":["text"],"cost":{}}});
+	Definition::objects()
+		.create_with_conn(
+			&mut connection,
+			&Definition::build()
+				.id("model")
+				.version("1.0.0")
+				.kind(DefinitionKind::Model)
+				.metadata(model.into())
+				.finish(),
+		)
+		.await
+		.unwrap();
+	let definition = |id: &str, policy: serde_json::Value| {
+		Definition::build()
+			.id(id)
+			.version("1.0.0")
+			.kind(DefinitionKind::Agent)
+			.metadata(
+				json!({"id":id,"version":"1.0.0","kind":"agent",
+					"name":{"en":"Context policy"},"description":{"en":"Migration test"},
+					"config":agent(policy)})
+				.into(),
+			)
+			.finish()
+	};
+	assert!(
+		Definition::objects()
+			.create_with_conn(
+				&mut connection,
+				&definition(
+					"unbounded",
+					json!({"version":"context-recovery/1","overflow_retries":5})
+				),
+			)
+			.await
+			.is_err(),
+		"the database contract must reject an invalid Context Policy"
+	);
+	Definition::objects()
+		.create_with_conn(
+			&mut connection,
+			&definition("recovering", summarized.clone()),
+		)
+		.await
+		.unwrap();
+	// Act / Assert: the stored policy refuses the rollback before any DDL runs.
+	let error = executor
+		.rollback_migrations(std::slice::from_ref(&migration))
+		.await
+		.unwrap_err();
+	assert!(
+		error.to_string().contains(
+			"registry 0022_context_policy cannot be reversed: definitions, packages or installations declare context_policy"
+		),
+		"{error}"
+	);
+	assert!(
+		contract_accepts(
+			&pool,
+			"aidash_agent_bindings_is_valid",
+			vec![agent(summarized)]
+		)
+		.await,
+		"the denied rollback must retain the upgraded contract"
+	);
+}
+
+#[rstest]
+#[tokio::test]
 async fn model_streaming_migration_refuses_rollback_with_installation_overrides(
 	#[future] fresh_database: MigrationFixture,
 ) {
@@ -1427,7 +1808,8 @@ async fn model_streaming_migration_composes_with_deferred_exposure_guard(
 			"pg_get_functiondef('public.guard_installation_config()'::regprocedure)",
 		))
 		.to_string(PostgresQueryBuilder);
-	let exposure = "'remove_default','cluster','max_steps','exposure']::text[]";
+	// The later 0021_tool_parallelism appends `tool_parallelism` to this allowlist.
+	let exposure = "'remove_default','cluster','max_steps','exposure','tool_parallelism']::text[]";
 	let upgraded: String = sqlx::query_scalar(&query).fetch_one(&pool).await.unwrap();
 	assert!(upgraded.contains(exposure), "{upgraded}");
 	assert!(
@@ -1694,7 +2076,9 @@ async fn deferred_exposure_lets_agent_installations_override_exposure(
 		.to_string(PostgresQueryBuilder);
 	let guard: String = sqlx::query_scalar(&query).fetch_one(&pool).await.unwrap();
 	assert!(
-		guard.contains("'remove_default','cluster','max_steps','exposure']::text[]"),
+		guard.contains(
+			"'remove_default','cluster','max_steps','exposure','tool_parallelism']::text[]"
+		),
 		"{guard}"
 	);
 	assert_eq!(guard.matches("'exposure'").count(), 1, "{guard}");
@@ -1712,17 +2096,28 @@ async fn deferred_exposure_rollback_is_refused_while_an_agent_uses_exposure(
 	let pool = fixture.connection.clone().into_postgres().unwrap();
 	let deferred = json!({"schema_version":1,"model":{"id":"exposure-model","version":"1.0.0"},
 		"instructions":"Assist.","exposure":{"version":"deferred@1"}});
-	let migration =
+	let migrations =
 		FilesystemSource::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations"))
 			.all_migrations()
 			.await
-			.unwrap()
-			.into_iter()
-			.find(|m| m.app_label == "registry" && m.name == "0019_deferred_exposure")
 			.unwrap();
+	let registry = |name: &str| {
+		migrations
+			.iter()
+			.find(|m| m.app_label == "registry" && m.name == name)
+			.cloned()
+			.unwrap()
+	};
+	let migration = registry("0019_deferred_exposure");
+	// The later 0021_tool_parallelism migration rewrites the same contracts.
+	let later = registry("0021_tool_parallelism");
 	let mut executor =
 		reinhardt::db::migrations::DatabaseMigrationExecutor::new(fixture.connection.clone());
 	// Act / Assert: without exposure data the reverse restores the 0018 contract.
+	executor
+		.rollback_migrations(std::slice::from_ref(&later))
+		.await
+		.unwrap();
 	executor
 		.rollback_migrations(std::slice::from_ref(&migration))
 		.await
@@ -1737,6 +2132,10 @@ async fn deferred_exposure_rollback_is_refused_while_an_agent_uses_exposure(
 	);
 	executor
 		.apply_migrations(std::slice::from_ref(&migration))
+		.await
+		.unwrap();
+	executor
+		.apply_migrations(std::slice::from_ref(&later))
 		.await
 		.unwrap();
 	assert!(
@@ -1776,6 +2175,10 @@ async fn deferred_exposure_rollback_is_refused_while_an_agent_uses_exposure(
 			.unwrap();
 	}
 	// Act
+	executor
+		.rollback_migrations(std::slice::from_ref(&later))
+		.await
+		.unwrap();
 	let error = executor
 		.rollback_migrations(std::slice::from_ref(&migration))
 		.await

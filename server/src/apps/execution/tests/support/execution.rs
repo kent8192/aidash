@@ -1,19 +1,21 @@
 //! Approved local execution through the application's native HTTP routes.
-use crate::endpoint::{EndpointFixture, assert_json, endpoint};
+use crate::endpoint::{
+	ClientFuture, EndpointFixture, EndpointFuture, anonymous_client, assert_json, endpoint,
+};
 use crate::provider_fixtures::{CompletionFixture, final_server};
 use aidash_server::domain::qualified_agent;
 use reinhardt::test::APIClient;
-use reinhardt::test::fixtures::api_client_from_url;
 use rstest::fixture;
 use serde_json::{Value, json};
 use std::future::Future;
+use std::sync::Arc;
 use uuid::Uuid;
 
 #[allow(dead_code)] // Suites exercise different parts of this shared admitted execution.
 pub struct ExecutionFixture {
 	pub app: EndpointFixture,
 	pub provider: CompletionFixture,
-	pub subject: APIClient,
+	pub subject: Arc<APIClient>,
 	pub subject_token: String,
 	pub policy: Value,
 	pub task: Uuid,
@@ -22,9 +24,10 @@ pub struct ExecutionFixture {
 #[fixture]
 pub fn execution(
 	#[default("aidash://endpoint-test")] node_id: &'static str,
-	#[future]
-	#[with(node_id)]
-	endpoint: EndpointFixture,
+	#[with(node_id)] endpoint: EndpointFuture,
+	#[from(anonymous_client)]
+	#[with(endpoint.clone())]
+	subject_client: ClientFuture,
 	#[future] final_server: CompletionFixture,
 ) -> impl Future<Output = ExecutionFixture> {
 	let endpoint = Box::pin(endpoint);
@@ -97,7 +100,7 @@ pub fn execution(
 				.unwrap(),
 			200,
 		);
-		let subject = api_client_from_url(&app.server.url);
+		let subject = subject_client.await;
 		let subject_token = credential["token"].as_str().unwrap().to_owned();
 		subject
 			.set_header("Authorization", &format!("Bearer {subject_token}"))
