@@ -37,7 +37,12 @@ impl PeerAuthority {
 		}
 		let credential = self.credentials.resolve(&peer.credential_env)?;
 		let identity = self.identity.identity(&peer).await?;
-		if identity["id"] != peer.node_id || identity["protocol_version"] != peer.protocol_version {
+		// Requests carry the registered version, so the peer's advertised
+		// version must accept it; a newer peer still serves an older registration.
+		let serves_registered = identity["protocol_version"]
+			.as_str()
+			.is_some_and(|advertised| compatible(advertised, &peer.protocol_version));
+		if identity["id"] != peer.node_id || !serves_registered {
 			return Err(Error::Invalid(
 				"peer identity or protocol does not match".into(),
 			));
