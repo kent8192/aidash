@@ -116,7 +116,7 @@ async fn same_thread_agent_keeps_subject_sessions_private_and_deletion_choices_s
 		Value::Null,
 	)
 	.await;
-	assert_eq!(hidden.0, 404);
+	assert_eq!(hidden.0, 403);
 	assert_eq!(
 		hidden, absent,
 		"private run existence must not be disclosed"

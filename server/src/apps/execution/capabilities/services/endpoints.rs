@@ -35,14 +35,15 @@ async fn run_access(f: &Federation, actor: Actor, id: Uuid) -> Result<(Access, R
 	let mut access = access(f, actor).await?;
 	// Bind the caller to the immutable execution grant before session constraints
 	// inspect its subject chain; the visibility checks still run afterward.
-	// A caller outside the immutable grant sees the same response as a missing run.
+	// Authority is checked before existence is disclosed: a missing run and a run
+	// outside the caller's immutable grant both answer with the same 403.
 	let unavailable = |error| match error {
-		Error::Forbidden | Error::NotFound(_) => Error::NotFound("run unavailable".into()),
+		Error::Forbidden | Error::NotFound(_) => Error::Forbidden,
 		error => error,
 	};
 	let run = crate::apps::execution::models::Run::read_in(&mut **access.tx, id, None)
 		.await?
-		.ok_or_else(|| Error::NotFound("run unavailable".into()))?;
+		.ok_or(Error::Forbidden)?;
 	execution::inherit_run_authority(&mut access, &run)
 		.await
 		.map_err(unavailable)?;
