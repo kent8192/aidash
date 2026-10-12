@@ -227,6 +227,7 @@ class PlanTests(unittest.TestCase):
             )
             broker = {"enabled": True, "byok_project_id": "byok", "secret_prefix": "aidash-test-cred-", "broker_service_account_email": "aidash-test-broker@fixture.iam.gserviceaccount.com", "image": "digest"}
             terraform.configuration["credential_brokers"] = {"test": broker, "retired": broker}
+            terraform.configuration["gke_backup_enabled"] = True
             variables = []
 
             def command(*args, **kwargs):
@@ -237,6 +238,7 @@ class PlanTests(unittest.TestCase):
             with patch("cloud.run", side_effect=command):
                 terraform.apply({"test": {"kind": "test"}})
             self.assertEqual(variables[0]["credential_brokers"], {"test": dict(broker, signing_version="1", verification_versions=["1"])})
+            self.assertTrue(variables[0]["gke_backup_enabled"])
 
     def test_persisted_version_sets_and_defaults_do_not_cause_repeated_apply(self):
         terraform = Terraform.__new__(Terraform)

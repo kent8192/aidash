@@ -356,4 +356,4 @@ def install_tls(config, cluster, identity, output):
     data = json.loads(run("gcloud", "secrets", "versions", "access", "latest", "--secret", secret,
                           "--project", config["project_id"]))
     import kube
-    kube.install_preview_tls(cluster, identity, data["certificate_pem"], data["private_key_pem"])
+    return kube.install_preview_tls(cluster, identity, data["certificate_pem"], data["private_key_pem"])

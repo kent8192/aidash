@@ -12,16 +12,21 @@ Complete these steps in order. The Cloudflare sending domain already reports
 **Configured**; its API credential and incoming forwarding aliases still need
 operator setup and delivery verification.
 
-| Step | Required work                                                                                                                                                                                                                                                                                                                                                                          | Completion evidence                                                                                                                                    |
-| ---- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| 1    | Keep all three enablement variables false. Publish the reviewed controller/workflows to protected `main` and default `develop/0.1.0`; synchronize main back into develop before the first release candidate.                                                                                                                                                                           | Both protected branches contain the implementation and the candidate includes current main history.                                                    |
-| 2    | Protect `main` and `develop/0.1.0`; create the four GitHub Environments with the branch restrictions below. Require production reviewers and prevent self approval. Create/install the repository-scoped release App, configure its client ID/private key and matching bot login, and require CI plus the App-owned **Staging deployment** check.                                      | Reviewed branch rules, required check integration and Environment protection rules.                                                                    |
-| 3    | Provision separate nonproduction/production GCP bootstrap stacks with billing, APIs, private remote state/release/notification buckets, runtime identities and exact WIF restrictions. Configure the production staging-evidence/image read grants. Fill both example JSON configs and install the listed GitHub variables and Environment runtime secrets.                            | Reviewed Terraform plans, isolated bootstrap outputs and denied cross-tier/unauthorized WIF requests.                                                  |
-| 4    | Configure the existing Cloudflare DNS zone token. Issue `*.preview.aidash.run` with DNS-01, put the PEM certificate/key JSON in the configured nonproduction Secret Manager secret and arrange renewal. Configure GCIP tenants and fixed Firebase-helper OAuth/SSO callbacks, with separate production clients.                                                                        | Valid wildcard certificate/key, exact callback registrations and successful authenticated access.                                                      |
-| 5    | In `deployment-notifications`, set `CLOUDFLARE_ACCOUNT_ID` and an **Email Sending: Edit** token as `CLOUDFLARE_EMAIL_SENDING_TOKEN`. Configure Email Routing for the three stg/prod/test aliases and verify their private forwarding destination.                                                                                                                                      | Existing SPF/DKIM/DMARC reviewed, sender accepted and each alias reaches the intended inbox.                                                           |
-| 6    | During a supervised nonproduction window, enable `GCP_ENVIRONMENTS_ENABLED`, `GCP_DEPLOYMENT_NOTIFICATIONS_ENABLED` and config `release_flow_enabled`. Trigger official CI for the current develop head and an authorized `/preview up`; verify the staging/release gate, random hosts, sign-in, Host/CSRF boundaries, fork rejection, stop/resume/retirement and mail retry behavior. | Exact source/image proof, ready App check, stable/rotated host behavior and actual stg/test notifications; no real secrets or URLs in public evidence. |
-| 7    | Complete production IAM denial evidence, backup/isolated restore drill, RPO/RTO and retention decisions, monitoring, maintenance and migration recovery procedures.                                                                                                                                                                                                                    | Approved live readiness evidence, including the single-zone data/availability limits below.                                                            |
-| 8    | Enable `GCP_PRODUCTION_ENABLED` for the reviewed production rollout. Human-merge the validated release PR, approve the production Environment and verify main CI, original digest promotion, HTTPS/sign-in and the production notification/forwarding path.                                                                                                                            | Running production source/digests and actual production mail arrival; retain evidence privately.                                                       |
+Use [delivery setup automation](../../infra/delivery/README.md) for the commands,
+private input templates and existing-resource adoption. These tools cover the
+Terraform and credential handoff portions below; acceptance and approvals remain
+explicit operator actions.
+
+| Step | Automated setup                                                                                                                                                                                                                     | Operator completion evidence                                                                                                                                   |
+| ---- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1    | Four workflow enablement variables remain false                                                                                                                                                                                     | Review/merge the privileged code into main and default develop; synchronize main history into develop                                                          |
+| 2    | Five protected Environments, exact branch policies, additive CI/App checks; release App manifest and protected key handoff                                                                                                          | Owner Create/Install consent for only Aidash; live reviewer/branch protections; enable the App staging check only after bootstrap main merge                   |
+| 3    | Dedicated production project on the same billing account, two isolated bootstrap stacks, private state/release/notification buckets, exact WIF and staging read grants; public config composition and protected secret installation | Supply separate runtime/IdP credentials and public GCIP pool definitions; verify cross-tier and unauthorized WIF denial                                        |
+| 4    | TLS/ACME Secret metadata, dedicated renewal identity and daily DNS-01 certificate workflow; refresh running preview edges                                                                                                           | Fill the scoped DNS token and ACME contact; verify wildcard issuance and external OAuth/SSO callbacks with authenticated access                                |
+| 5    | Discover configured Sending domain and verified destination, apply three Email Routing aliases and optional guarded Routing DNS; install the separate Sending token                                                                 | Fill account/token/private destination locally; verify that stg/prod/test mail reaches the intended inbox                                                      |
+| 6    | Exact-CI staging and release automation, explicit `/preview up`, independent mail retry                                                                                                                                             | Supervised nonproduction acceptance: random host lifetime, sign-in, Host/CSRF boundaries, fork rejection, stop/resume/retirement and actual stg/test mail      |
+| 7    | Prepare Backup for GKE agent; after live cluster exists, apply daily volume/Secret backups and production uptime/capacity/restart/backup-failure alerts; inspect backup freshness/configuration                                     | Isolated restore drill including the independent Home ledger, approved RPO/RTO and maintenance/migration recovery; configuration does not prove recovery       |
+| 8    | Exact main CI, original staged digest promotion and fixed production notification                                                                                                                                                   | Explicitly enable production after readiness, human-merge the validated release PR, approve the Environment, verify HTTPS/sign-in/digests and actual prod mail |
 
 After each production release, merge main back into develop through review.
 For PR environments, use the explicit comment commands below. Inspect failed
@@ -132,6 +137,7 @@ repository variables so credential-free intake can validate them:
 | `production`               | `main` only               | Isolated production deployment; configure required reviewers and prevent self approval |
 | `release-automation`       | Exact `automation_branch` | Release GitHub App private key; no source builds or application runtime                |
 | `deployment-notifications` | Exact `automation_branch` | Mail delivery with no application execution or deployment permissions                  |
+| `certificate-renewal`      | Exact `automation_branch` | Scoped DNS-01 and TLS/ACME Secret versions; no application deployment                  |
 
 Require protected `main` and `develop/x.y.z`, reviewed changes, and the CI checks.
 Require **Staging deployment** on release PRs specifically from the release App,
@@ -150,10 +156,14 @@ is never passed to source builds, runtime Pods or receipts.
 | `deployment-notifications` Environment            | `CLOUDFLARE_ACCOUNT_ID`                                                                                                                                             | `CLOUDFLARE_EMAIL_SENDING_TOKEN`                                                                                                     |
 | Repository variable / `release-automation` secret | `RELEASE_APP_CLIENT_ID`                                                                                                                                             | `RELEASE_APP_PRIVATE_KEY`                                                                                                            |
 
-Use repository settings or file/stdin input to configure secret values. Do not
-place them in shell arguments, `.tfvars`, Git history, workflow artifacts or chat.
-Leave `GCP_ENVIRONMENTS_ENABLED`, `GCP_PRODUCTION_ENABLED` and
-`GCP_DEPLOYMENT_NOTIFICATIONS_ENABLED` false during account setup, then enable
+Use the private input/CLI helper to configure Environment secret values through
+stdin. Keep payloads out of shell arguments, Terraform-managed GitHub resources,
+Git history, workflow artifacts and chat. The Cloudflare bootstrap token is an
+ephemeral Terraform input in a private ignored file; its forwarding destination
+is sensitive state and requires a restricted backend. Leave
+`GCP_ENVIRONMENTS_ENABLED`, `GCP_PRODUCTION_ENABLED`,
+`GCP_DEPLOYMENT_NOTIFICATIONS_ENABLED` and `GCP_CERTIFICATE_RENEWAL_ENABLED` false
+during account setup, then enable
 them only in the supervised sequence above. The release-flow config must also
 explicitly enable `release_flow_enabled`.
 
@@ -170,18 +180,28 @@ fixed hostname safely for stop/destroy plans. Their next verified deployment,
 including resume/up, migrates to a random token; unrelated legacy environments
 do not block another deployment or teardown. Do not manually inject or reuse tokens.
 
-Prepare a wildcard certificate for `*.preview.aidash.run` through a trusted
-DNS-01 process. Manually provision Secret Manager metadata and a version in the
-nonproduction application project, named by config `preview_tls_secret`
-(for example, `aidash-preview-wildcard-tls`). The version is JSON containing
-`certificate_pem` (full PEM chain) and `private_key_pem`; its values never enter
-Terraform state. The trusted deployment identity reads this secret through its
-existing Secret Manager permissions. No bootstrap resource or new accessor
-variable is required. The controller checks certificate validity,
-the exact wildcard SAN and matching private key, then mounts it only in the
-trusted edge. Renew it by publishing a new secret version. Random hosts disable
-per-host ACME issuance, which would disclose concrete hostnames through
-certificate transparency logs.
+Bootstrap Terraform creates metadata for `aidash-preview-wildcard-tls` and
+`aidash-preview-acme-state`, plus a dedicated `aidash-tls-renewer` identity and
+exact certificate-workflow WIF provider. Only this identity can read/list/add
+versions of these two Secrets; it receives no application deployment capability.
+PEM and ACME account private-key versions never enter Terraform state.
+
+[Deployment preview certificate](../../.github/workflows/deployment-certificate.yml)
+uses the official digest-pinned Certbot DNS plugin for `*.preview.aidash.run`.
+Configure `GCP_TLS_RENEWAL_WORKLOAD_IDENTITY_PROVIDER`,
+`GCP_TLS_RENEWAL_SERVICE_ACCOUNT`, `AIDASH_ACME_EMAIL` and the protected
+`certificate-renewal:CLOUDFLARE_CERTIFICATE_DNS_TOKEN` through setup automation.
+After privileged code/account inputs are installed, explicitly enable
+`GCP_CERTIFICATE_RENEWAL_ENABLED` and dispatch the first issuance on the execution
+branch. The daily schedule renews certificates within 30 days of expiry. Verify
+the first successful certificate version before enabling random preview deploys.
+
+The trusted controller validates the wildcard SAN, validity and matching key,
+then mounts the PEM only in the edge. Normal reconcile also refreshes quiet
+running previews and waits for the changed edge rollout/public health, without
+redeploying app code or reissuing outcome mail. Unchanged certificates do not
+restart the edge. Random hosts disable per-host ACME issuance, so concrete
+hostnames are not disclosed through certificate transparency logs.
 
 Random hosts require managed GCIP tenant bindings and `auth_helper: firebase`.
 Configure OAuth callbacks on the fixed `<project>.firebaseapp.com` helper,
@@ -221,9 +241,10 @@ and [service availability](https://developers.cloudflare.com/email-service/).
 
 Create an account-scoped token with **Email Sending: Edit** and store it only as
 `CLOUDFLARE_EMAIL_SENDING_TOKEN` in `deployment-notifications`; set
-`CLOUDFLARE_ACCOUNT_ID` there as a variable. These account/token inputs still
-need to be supplied for activation; no real sending credentials were added to
-this worktree. Keep the DNS token separate.
+`CLOUDFLARE_ACCOUNT_ID` there as a variable. These account/token inputs are supplied later in private tfvars as requested.
+[Cloudflare setup](../../infra/delivery/cloudflare/README.md) documents the exact
+issuance permissions and adopts the existing configured registration. Keep the
+DNS token separate.
 Configure incoming Email Routing for the three aliases and verify the owner's
 private forwarding destination in Cloudflare. The forwarding destination never
 belongs in the repository, deployment config, receipts or public logs. Validate

@@ -1,4 +1,14 @@
 variable "project_id" { type = string }
+variable "gke_backup_enabled" {
+  description = "Install the production Backup for GKE agent after the bootstrap API preparation, independently of second-phase backup plan creation."
+  type        = bool
+  default     = false
+  validation {
+    condition     = !var.gke_backup_enabled || var.deployment_tier == "production"
+    error_message = "Backup for GKE agent activation is limited to isolated production."
+  }
+}
+
 variable "deployment_tier" {
   description = "A production stack owns only production and uses its own project/backend."
   type        = string

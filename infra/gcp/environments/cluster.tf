@@ -112,6 +112,7 @@ resource "google_container_cluster" "aidash" {
   master_authorized_networks_config { gcp_public_cidrs_access_enabled = false }
   addons_config {
     gce_persistent_disk_csi_driver_config { enabled = true }
+    gke_backup_agent_config { enabled = var.gke_backup_enabled }
   }
   // The transient default pool is deleted after creation; keep it off the
   // Compute default service account.

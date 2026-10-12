@@ -377,6 +377,7 @@ class Terraform:
             nonproduction_state_bucket=self.configuration.get("nonproduction_state_bucket", ""),
             production_hostname=urllib.parse.urlsplit(self.configuration.get("production_origin", "https://aidash.run")).hostname,
             staging_project_id=self.configuration.get("staging_project_id", ""),
+            gke_backup_enabled=self.configuration.get("gke_backup_enabled", False),
         )
         variables["environments"] = environments
         variables["gcip_tenants"] = self.configuration.get("gcip_tenants", {})

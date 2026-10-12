@@ -293,11 +293,15 @@ class WildcardTlsTests(unittest.TestCase):
         key = (self.directory / "preview.key").read_text()
         kube.install_preview_tls(cluster, "develop", certificate, key)
         first = cluster.get("deployment", "env-environment-edge", "aidash-develop")["spec"]["template"]["metadata"]["annotations"]
+        with patch.object(cluster, "patch", wraps=cluster.patch) as restart, patch.object(cluster, "rollout", wraps=cluster.rollout) as readiness:
+            self.assertFalse(kube.install_preview_tls(cluster, "develop", certificate, key))
+        restart.assert_not_called()
+        readiness.assert_called_once_with("aidash-develop", kube.EDGE)
         rotated = subprocess.check_output([
             "openssl", "x509", "-in", str(self.directory / "preview.crt"),
             "-signkey", str(self.directory / "preview.key"), "-set_serial", "2", "-days", "2",
         ], stderr=subprocess.DEVNULL).decode()
-        kube.install_preview_tls(cluster, "develop", rotated, key)
+        self.assertTrue(kube.install_preview_tls(cluster, "develop", rotated, key))
         spec = cluster.get("deployment", "env-environment-edge", "aidash-develop")["spec"]
         self.assertNotEqual(spec["template"]["metadata"]["annotations"], first)
         self.assertNotIn(key, json.dumps(spec))

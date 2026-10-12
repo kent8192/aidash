@@ -330,10 +330,20 @@ def install_preview_tls(cluster, identity, certificate_pem, private_key_pem):
     # Caddy reads the mounted certificate at startup. A changed certificate must
     # roll the edge even when its routing values and release digest are unchanged.
     kind, name = EDGE.split("/", 1)
-    if cluster.get(kind, name, namespace):
-        cluster.patch(kind, name, {"spec": {"template": {"metadata": {"annotations": {
-            "aidash.run/preview-tls-sha256": hashlib.sha256(certificate_pem.encode()).hexdigest(),
-        }}}}}, namespace)
+    edge = cluster.get(kind, name, namespace)
+    if edge:
+        digest = hashlib.sha256(certificate_pem.encode()).hexdigest()
+        annotations = edge.get("spec", {}).get("template", {}).get("metadata", {}).get("annotations", {})
+        changed = annotations.get("aidash.run/preview-tls-sha256") != digest
+        if changed:
+            cluster.patch(kind, name, {"spec": {"template": {"metadata": {"annotations": {
+                "aidash.run/preview-tls-sha256": digest,
+            }}}}}, namespace)
+        # A prior reconcile may have timed out after patching. Wait again for
+        # that rollout without creating another restart or deploying app code.
+        cluster.rollout(namespace, EDGE)
+        return changed
+    return False
 
 
 def bind_preview_tls(cluster, identity, volume_handle):

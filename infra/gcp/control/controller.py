@@ -990,6 +990,12 @@ def reconcile_locked(config, store, terraform, managed):
                             )
                         restore_presealed_running_host(terraform, identity, presealed, managed)
                         continue
+                    # Renewal also reaches quiet, already-running previews.
+                    # This touches only the trusted edge certificate and never
+                    # changes the app release, migrations or outcome receipt.
+                    current_entry(store, identity, generation)
+                    if delivery.install_tls(config, cluster, identity, output):
+                        public_health(output)
                     # The deployed images keep running unchanged; only a needed
                     # deployment waits for a release from this trusted commit.
                     if not release and (changed or not entry.get("release")):
