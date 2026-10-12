@@ -587,6 +587,13 @@ impl Engine<'_> {
 				self.policy.decay.as_ref().map(|_| &retention),
 			)
 		});
+		let scores = match self.policy.diversity_lambda_millionths {
+			Some(lambda) if scores.len() > 1 => {
+				self.diversify(scope, bank, &candidates, scores, lambda)
+					.await?
+			}
+			_ => scores,
+		};
 		let mut selected = Vec::new();
 		for (id, _) in scores.into_iter().take(self.policy.bounds.max_results) {
 			let mut proposed = selected.clone();
@@ -613,6 +620,46 @@ impl Engine<'_> {
 			.deliver(bank, &snapshot.authority_revision, &evidence)
 			.await?;
 		Ok(Recall::Ready { units: selected })
+	}
+
+	/// Reorder the reranked, already authorized candidates by Maximal Marginal Relevance
+	/// before token packing. It only reorders or drops those candidates; a candidate
+	/// without a current vector keeps competing on relevance and is reported, never dropped.
+	async fn diversify(
+		&self,
+		scope: &mut dyn MemoryScope,
+		bank: &Bank,
+		candidates: &[Unit],
+		scores: Vec<(Uuid, f64)>,
+		lambda_millionths: u32,
+	) -> Result<Vec<(Uuid, f64)>> {
+		let vectors = scope.vectors(bank, candidates).await?;
+		let ranked: Vec<_> = scores
+			.iter()
+			.map(|(id, score)| recall::Ranked {
+				id: *id,
+				score: *score,
+			})
+			.collect();
+		let diversified = recall::diversify(
+			&ranked,
+			&vectors,
+			&recall::related(candidates),
+			lambda_millionths,
+			self.policy.bounds.max_results,
+		)?;
+		if !diversified.skipped.is_empty() {
+			tracing::warn!(
+				skipped = diversified.skipped.len(),
+				ids = ?diversified.skipped,
+				"memory diversification skipped candidates without a current embedding"
+			);
+		}
+		Ok(diversified
+			.selected
+			.into_iter()
+			.map(|hit| (hit.id, hit.score))
+			.collect())
 	}
 
 	/// Reflection is explicitly invoked and reads admitted, currently authorized memory only.

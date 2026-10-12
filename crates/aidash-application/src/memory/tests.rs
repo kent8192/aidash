@@ -752,3 +752,341 @@ async fn inclusive_recall_uses_one_atomic_snapshot_instead_of_two_retention_read
 	assert_eq!(scope.inclusive_reads, 1);
 	assert!(scope.delivered);
 }
+
+/// Scope over a fixed snapshot with caller-chosen retrieval order and vectors.
+struct DiverseScope {
+	units: Vec<Unit>,
+	vectors: BTreeMap<Uuid, Vec<f32>>,
+	vector_reads: usize,
+	delivered: Vec<Uuid>,
+}
+#[async_trait]
+impl MemoryScope for DiverseScope {
+	async fn authorize(&mut self, _: &Bank, _: &EntityRef, _: &str) -> Result<()> {
+		Ok(())
+	}
+	async fn snapshot(&mut self, _: &Bank, _: usize) -> Result<Snapshot> {
+		Ok(Snapshot {
+			units: self.units.clone(),
+			graph: vec![],
+			authority_revision: "1".into(),
+		})
+	}
+	async fn vectors(&mut self, _: &Bank, units: &[Unit]) -> Result<BTreeMap<Uuid, Vec<f32>>> {
+		self.vector_reads += 1;
+		assert!(
+			units
+				.iter()
+				.all(|u| self.units.iter().any(|k| k.id == u.id))
+		);
+		Ok(self.vectors.clone())
+	}
+	async fn current(&mut self, _: &Bank, _: &[Evidence]) -> Result<()> {
+		Ok(())
+	}
+	async fn mutate(&mut self, _: &Mutation, _: &Bounds) -> Result<Vec<Unit>> {
+		Err(Error::Forbidden)
+	}
+	async fn propose(
+		&mut self,
+		_: &Bank,
+		_: &Evidence,
+		_: &[Content],
+		_: &Bounds,
+	) -> Result<Vec<Candidate>> {
+		Err(Error::Forbidden)
+	}
+	async fn review(
+		&mut self,
+		_: Uuid,
+		_: i64,
+		_: Option<&Mutation>,
+		_: &Bounds,
+	) -> Result<Option<Unit>> {
+		Err(Error::Forbidden)
+	}
+	async fn publish(&mut self, _: &Evidence, _: &Mutation, _: &Bounds) -> Result<Vec<Unit>> {
+		Err(Error::Forbidden)
+	}
+	async fn semantic(
+		&mut self,
+		_: &Bank,
+		_: &EntityRef,
+		_: &str,
+		allowed: &[Uuid],
+		_: usize,
+		_: Allowance,
+	) -> Result<Produced<Vec<Uuid>>> {
+		Ok(Produced {
+			output: allowed.to_vec(),
+			usage: Usage {
+				tokens: 1,
+				cost_micros: 1,
+			},
+		})
+	}
+	async fn keyword(&mut self, _: &Bank, _: &str, _: &[Uuid], _: usize) -> Result<Vec<Uuid>> {
+		Ok(vec![])
+	}
+	async fn deliver(&mut self, _: &Bank, _: &str, evidence: &[Evidence]) -> Result<()> {
+		self.delivered = evidence
+			.iter()
+			.map(|e| match e {
+				Evidence::Unit { id, .. } => *id,
+				_ => unreachable!("recall delivers Unit roots"),
+			})
+			.collect();
+		Ok(())
+	}
+}
+/// Reranks by a fixed table and prices every delivered Unit at ten tokens.
+struct ScoredModels(BTreeMap<Uuid, f64>);
+#[async_trait]
+impl MemoryModels for ScoredModels {
+	fn reranker_uses_model(&self, _: &EntityRef) -> Result<bool> {
+		Ok(false)
+	}
+	async fn consolidate(
+		&self,
+		_: &EntityRef,
+		_: &[Unit],
+		_: &[Unit],
+		_: &Bounds,
+		_: Allowance,
+	) -> Result<Produced<Vec<Evidence>>> {
+		Err(Error::Forbidden)
+	}
+	async fn extract(
+		&self,
+		_: &EntityRef,
+		_: &str,
+		_: &[Evidence],
+		_: extraction::Mode,
+		_: &Bounds,
+		_: Allowance,
+	) -> Result<Produced<extraction::Extraction>> {
+		Err(Error::Forbidden)
+	}
+	async fn derive(
+		&self,
+		_: &EntityRef,
+		_: Kind,
+		_: Option<&MentalModel>,
+		_: &[Unit],
+		_: &Bounds,
+		_: Allowance,
+	) -> Result<Produced<Content>> {
+		Err(Error::Forbidden)
+	}
+	async fn rerank(
+		&self,
+		_: &EntityRef,
+		_: &str,
+		units: &[Unit],
+		_: Allowance,
+	) -> Result<Produced<Vec<(Uuid, f64)>>> {
+		Ok(Produced {
+			output: units.iter().map(|u| (u.id, self.0[&u.id])).collect(),
+			usage: Usage {
+				tokens: 0,
+				cost_micros: 0,
+			},
+		})
+	}
+	async fn reflect(
+		&self,
+		_: &EntityRef,
+		_: &str,
+		_: &[Unit],
+		_: &Bounds,
+		_: Allowance,
+	) -> Result<Produced<ReflectStep>> {
+		Err(Error::Forbidden)
+	}
+	async fn tokens(&self, _: &EntityRef, envelope: &str) -> Result<usize> {
+		Ok(10 * envelope.matches("\"learned_at\"").count())
+	}
+}
+fn numbered(id: u128, text: &str) -> Unit {
+	let mut unit = unit();
+	unit.id = Uuid::from_u128(id);
+	unit.content.text = text.into();
+	unit
+}
+/// Run recall over `units` and return the delivered Unit numbers in delivery order.
+async fn recalled(
+	lambda: Option<u32>,
+	units: Vec<Unit>,
+	scores: &[(u128, f64)],
+	vectors: &[(u128, [f32; 2])],
+	tokens: usize,
+) -> (Vec<u128>, DiverseScope) {
+	let mut p = policy();
+	p.diversity_lambda_millionths = lambda;
+	let models = ScoredModels(
+		scores
+			.iter()
+			.map(|(id, score)| (Uuid::from_u128(*id), *score))
+			.collect(),
+	);
+	let engine = Engine {
+		provider: &p.extraction,
+		policy: &p,
+		models: &models,
+	};
+	let mut scope = DiverseScope {
+		units,
+		vectors: vectors
+			.iter()
+			.map(|(id, v)| (Uuid::from_u128(*id), v.to_vec()))
+			.collect(),
+		vector_reads: 0,
+		delivered: vec![],
+	};
+	let result = engine
+		.recall(&mut scope, &unit().bank, &query(tokens))
+		.await
+		.unwrap();
+	let Recall::Ready { units } = result else {
+		panic!("expected delivered units, got {result:?}");
+	};
+	let order: Vec<_> = units.iter().map(|u| u.id.as_u128()).collect();
+	assert_eq!(
+		scope
+			.delivered
+			.iter()
+			.map(|id| id.as_u128())
+			.collect::<Vec<_>>(),
+		order
+	);
+	(order, scope)
+}
+const PARAPHRASES: [(u128, f64); 4] = [(1, 1.0), (2, 0.95), (3, 0.9), (4, 0.8)];
+const PARAPHRASE_VECTORS: [(u128, [f32; 2]); 4] = [
+	(1, [1., 0.]),
+	(2, [0.99, 0.01]),
+	(3, [0.98, 0.02]),
+	(4, [0., 1.]),
+];
+fn paraphrase_units() -> Vec<Unit> {
+	vec![
+		numbered(1, "Alice works in Tokyo"),
+		numbered(2, "Alice is employed in Tokyo"),
+		numbered(3, "Tokyo is where Alice works"),
+		numbered(4, "Alice's manager is Bob"),
+	]
+}
+
+#[tokio::test]
+async fn diversity_delivers_the_distinct_unit_when_the_budget_fits_two() {
+	let run = |lambda| {
+		recalled(
+			lambda,
+			paraphrase_units(),
+			&PARAPHRASES,
+			&PARAPHRASE_VECTORS,
+			20,
+		)
+	};
+	let (without, untouched) = run(None).await;
+	assert_eq!(
+		without,
+		[1, 2],
+		"relevance order spends the budget on paraphrases"
+	);
+	assert_eq!(
+		untouched.vector_reads, 0,
+		"an unset policy never reads vectors"
+	);
+	let (with, _) = run(Some(700_000)).await;
+	assert_eq!(with, [1, 4]);
+	assert_eq!(run(Some(700_000)).await.0, with, "recall is deterministic");
+}
+
+#[tokio::test]
+async fn diversity_never_adds_an_id_outside_the_authorized_candidates() {
+	// The adapter returns a vector for an unauthorized Unit; it must not surface.
+	let mut vectors = PARAPHRASE_VECTORS.to_vec();
+	vectors.push((99, [0., 1.]));
+	let (order, _) = recalled(
+		Some(700_000),
+		paraphrase_units(),
+		&PARAPHRASES,
+		&vectors,
+		4096,
+	)
+	.await;
+	assert_eq!(order, [1, 4, 2, 3]);
+	assert!(!order.contains(&99));
+}
+
+#[tokio::test]
+async fn equal_scores_and_similarities_order_by_unit_id() {
+	let scores = [(1, 0.5), (2, 0.5), (3, 0.5)];
+	let vectors = [(1, [1., 0.]), (2, [1., 0.]), (3, [0., 1.])];
+	let mut shuffled = vec![numbered(3, "c"), numbered(1, "a"), numbered(2, "b")];
+	let (first, _) = recalled(Some(700_000), shuffled.clone(), &scores, &vectors, 4096).await;
+	shuffled.reverse();
+	let (second, _) = recalled(Some(700_000), shuffled, &scores, &vectors, 4096).await;
+	assert_eq!(first, [1, 3, 2]);
+	assert_eq!(first, second);
+}
+
+#[tokio::test]
+async fn an_observation_and_its_support_do_not_displace_a_non_redundant_unit() {
+	let mut observation = numbered(10, "Alice works in Tokyo (summary)");
+	observation.content.kind = Kind::Observation;
+	observation.content.evidence = [1, 2]
+		.map(|id| Evidence::Unit {
+			bank: observation.bank.clone(),
+			id: Uuid::from_u128(id),
+			revision: 1,
+		})
+		.to_vec();
+	let units = vec![
+		observation,
+		numbered(1, "Alice works in Tokyo"),
+		numbered(2, "Alice is employed in Tokyo"),
+		numbered(3, "Alice's manager is Bob"),
+	];
+	let scores = [(10, 1.0), (1, 0.9), (2, 0.8), (3, 0.5)];
+	let vectors = [
+		(10, [1., 0.]),
+		(1, [0.6, 0.8]),
+		(2, [0.8, 0.6]),
+		(3, [0., 1.]),
+	];
+	let (baseline, _) = recalled(None, units.clone(), &scores, &vectors, 20).await;
+	assert_eq!(baseline, [10, 1]);
+	let (two, _) = recalled(Some(700_000), units.clone(), &scores, &vectors, 20).await;
+	assert_eq!(
+		two,
+		[10, 3],
+		"the summary and its sources are not co-delivered"
+	);
+	let (all, _) = recalled(Some(700_000), units, &scores, &vectors, 4096).await;
+	assert_eq!(all, [10, 3, 1, 2], "sources follow when the budget allows");
+}
+
+#[tokio::test]
+async fn candidates_without_a_current_vector_keep_relevance_order_instead_of_failing() {
+	let (order, scope) = recalled(Some(700_000), paraphrase_units(), &PARAPHRASES, &[], 4096).await;
+	assert_eq!(order, [1, 2, 3, 4]);
+	assert_eq!(scope.vector_reads, 1);
+	// A partial generation: only Unit 2 lacks a vector, so it is kept, not dropped.
+	let partial: Vec<_> = PARAPHRASE_VECTORS
+		.iter()
+		.copied()
+		.filter(|(id, _)| *id != 2)
+		.collect();
+	let (order, _) = recalled(
+		Some(700_000),
+		paraphrase_units(),
+		&PARAPHRASES,
+		&partial,
+		4096,
+	)
+	.await;
+	assert_eq!(order.len(), 4);
+	assert!(order.contains(&2));
+}
