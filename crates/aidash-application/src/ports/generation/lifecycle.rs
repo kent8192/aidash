@@ -1,7 +1,10 @@
 //! Lifecycle scopes retain budget, authority, retirement, history and outbox atomicity.
 use crate::{Result, authorization::Snapshot};
 use aidash_domain::{
-	generation::requests::{Control, Request},
+	generation::{
+		policy::Allowances,
+		requests::{Control, Request},
+	},
 	identity::Principal,
 };
 use async_trait::async_trait;
@@ -12,13 +15,13 @@ use uuid::Uuid;
 pub trait GenerationLifecycleScope: Send {
 	fn node_id(&self) -> &str;
 	fn now(&self) -> DateTime<Utc>;
-	async fn unused(&mut self, job: &Request) -> Result<(i64, i64, i64)>;
+	/// Remaining tokens and remaining per-purpose call allowances.
+	async fn unused(&mut self, job: &Request) -> Result<(i64, Allowances)>;
 	async fn release_policy(
 		&mut self,
 		job: &Request,
 		unused: i64,
-		unused_calls: i64,
-		unused_embeddings: i64,
+		unused_calls: &Allowances,
 	) -> Result<()>;
 	async fn mark_quota_released(&mut self, job: &Request) -> Result<()>;
 	async fn cancel_runs(&mut self, job: &Request) -> Result<()>;
