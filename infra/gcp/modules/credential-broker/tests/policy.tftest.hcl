@@ -9,6 +9,7 @@ mock_provider "google" {
 }
 variables {
   project_id                   = "aidash-fixture"
+  deployment_tier              = "production"
   byok_project_id              = "aidash-byok-fixture"
   environment_id               = "production"
   environment_kind             = "production"
@@ -59,6 +60,7 @@ run "production" {
 run "staging" {
   command = apply
   variables {
+    deployment_tier              = "nonproduction"
     enabled                      = true
     environment_id               = "test"
     environment_kind             = "test"
@@ -163,4 +165,13 @@ run "cross_environment_signing_key_forbidden" {
     signing_key_id = "projects/aidash-fixture/locations/us-central1/keyRings/aidash-test-capability/cryptoKeys/capability"
   }
   expect_failures = [var.signing_key_id]
+}
+
+run "production_broker_cannot_use_nonproduction_tier" {
+  command = plan
+  variables {
+    deployment_tier = "nonproduction"
+    enabled         = true
+  }
+  expect_failures = [var.enabled]
 }

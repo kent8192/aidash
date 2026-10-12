@@ -1,6 +1,12 @@
 {{- $name := include "environment.name" . -}}
 {{- $edge := .Values.edge -}}
 {{- $hostname := required "edge.hostname is required" $edge.hostname -}}
+{{- if not (regexMatch "^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$" $hostname) -}}{{ fail "edge.hostname must be one exact DNS hostname" }}{{- end -}}
+{{- $preview := hasSuffix ".preview.aidash.run" $hostname -}}
+{{- if and $preview (not (regexMatch "^[a-f0-9]{32}\\.preview\\.aidash\\.run$" $hostname)) -}}{{ fail "preview hostname must contain exactly 32 lowercase hexadecimal characters" }}{{- end -}}
+{{- if and $preview (not $edge.tlsSecret) -}}{{ fail "random preview hosts require a controller-provisioned wildcard TLS Secret" }}{{- end -}}
+{{- if and $edge.tlsSecret (or (not $preview) $edge.existingTlsClaim $edge.firebaseProject) -}}{{ fail "preview TLS Secret requires a random host, no TLS disk and the fixed Firebase auth helper" }}{{- end -}}
+{{- if and $edge.tlsSecret (not (regexMatch "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$" $edge.tlsSecret)) -}}{{ fail "edge.tlsSecret must be a Kubernetes Secret name" }}{{- end -}}
 {{- if not (regexMatch "@sha256:[0-9a-f]{64}$" (toString $edge.admissionImage)) -}}{{ fail "edge.admissionImage must be pinned by digest: it enforces the admission gate" }}{{- end -}}
 {{- if not (regexMatch "@sha256:[0-9a-f]{64}$" (toString $edge.caddyImage)) -}}{{ fail "edge.caddyImage must be pinned by digest: it receives all public traffic and shares the admission container's network namespace" }}{{- end -}}
 {{- if and $edge.firebaseProject (not (regexMatch "^[a-z][a-z0-9-]{4,28}[a-z0-9]$" (toString $edge.firebaseProject))) -}}{{ fail "edge.firebaseProject must be a GCP project ID" }}{{- end -}}
@@ -15,7 +21,18 @@ data:
   behind admission), Aidash cookies and credentials never reach Google, and Google
   cannot set cookies on this origin. */}}
   Caddyfile: |
+    {
+      {{- if $edge.tlsSecret }}
+      auto_https off
+      {{- else }}
+      auto_https disable_redirects
+      {{- end }}
+    }
     {{ $hostname }} {
+      {{- if $edge.tlsSecret }}
+      tls /etc/aidash-preview-tls/tls.crt /etc/aidash-preview-tls/tls.key
+      {{- end }}
+      header >Referrer-Policy no-referrer
     {{- if $edge.firebaseProject }}
       @firebase_helper path /__/auth/* /__/firebase/init.json
       handle @firebase_helper {
@@ -33,9 +50,19 @@ data:
       reverse_proxy 127.0.0.1:8088
     {{- end }}
     }
+    :443 {
+      header >Referrer-Policy no-referrer
+      respond 404
+    }
+    :80 {
+      header >Referrer-Policy no-referrer
+      @origin host {{ $hostname }}
+      redir @origin https://{{ $hostname }}{uri} 308
+      respond 404
+    }
   admission.conf: |
 {{ .Files.Get "files/admission.conf" | replace "AIDASH_BACKEND" $edge.backend | indent 4 }}
-{{- if not $edge.existingTlsClaim }}
+{{- if not (or $edge.existingTlsClaim $edge.tlsSecret) }}
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
@@ -60,7 +87,7 @@ spec:
     metadata:
       labels: { aidash.run/edge: {{ .Release.Name | quote }} }
       annotations:
-        checksum/config: {{ printf "%s%s%s%s" $hostname $edge.backend (toString $edge.firebaseProject) (.Files.Get "files/admission.conf") | sha256sum }}
+        checksum/config: {{ printf "%s%s%s%s%s" $hostname $edge.backend (toString $edge.firebaseProject) (toString $edge.tlsSecret) (.Files.Get "files/admission.conf") | sha256sum }}
     spec:
       hostNetwork: false
       automountServiceAccountToken: false
@@ -73,7 +100,11 @@ spec:
           resources: {{ toYaml $edge.resources | nindent 12 }}
           volumeMounts:
             - { name: config, mountPath: /etc/caddy/Caddyfile, subPath: Caddyfile, readOnly: true }
+            {{- if $edge.tlsSecret }}
+            - { name: preview-tls, mountPath: /etc/aidash-preview-tls, readOnly: true }
+            {{- else }}
             - { name: tls, mountPath: /data }
+            {{- end }}
         - name: admission
           image: {{ $edge.admissionImage | quote }}
           ports: [{ name: activity, containerPort: 8089 }]
@@ -87,9 +118,16 @@ spec:
         # Desired admission, owned by the lifecycle controller and never rendered
         # here, so an upgrade cannot reset it. Absent or not `open` = closed.
         - { name: admission-state, configMap: { name: {{ $name }}-admission, optional: true } }
+        {{- if $edge.tlsSecret }}
+        - name: preview-tls
+          secret:
+            secretName: {{ $edge.tlsSecret | quote }}
+            defaultMode: 0400
+        {{- else }}
         - name: tls
           persistentVolumeClaim:
             claimName: {{ $edge.existingTlsClaim | default (printf "%s-tls" $name) | quote }}
+        {{- end }}
 {{- if $edge.loadBalancer }}
 ---
 apiVersion: v1

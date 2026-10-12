@@ -22,9 +22,47 @@ variable "repository_owner_id" {
   default = "51869472"
 }
 
-variable "trusted_branch" {
+variable "automation_branch" {
+  description = "Protected branch containing the nonproduction controller and notification workflow. Exact ref only."
+  type        = string
+  default     = "develop/0.1.0"
+  validation {
+    condition     = can(regex("^[A-Za-z0-9][A-Za-z0-9._/-]*$", var.automation_branch)) && !strcontains(var.automation_branch, "..") && !endswith(var.automation_branch, "/")
+    error_message = "Use one explicit protected automation branch without glob characters."
+  }
+}
+variable "deployment_tier" {
   type    = string
-  default = "main"
+  default = "nonproduction"
+  validation {
+    condition     = contains(["nonproduction", "production"], var.deployment_tier)
+    error_message = "Deployment tier must be nonproduction or production."
+  }
+}
+variable "nonproduction_project_id" {
+  description = "Production bootstrap must name the nonproduction project to prove separation."
+  type        = string
+  default     = ""
+  validation {
+    condition     = var.deployment_tier != "production" || (can(regex("^[a-z][a-z0-9-]{4,28}[a-z0-9]$", var.nonproduction_project_id)) && var.project_id != var.nonproduction_project_id)
+    error_message = "Production requires an explicit project distinct from nonproduction."
+  }
+}
+variable "nonproduction_state_bucket" {
+  type    = string
+  default = ""
+  validation {
+    condition     = var.deployment_tier != "production" || (var.nonproduction_state_bucket != "" && var.state_bucket_name != var.nonproduction_state_bucket)
+    error_message = "Production requires an explicit state bucket distinct from nonproduction."
+  }
+}
+variable "notification_bucket_name" {
+  description = "Dedicated private receipt/notification delivery bucket; never Terraform state or application secrets."
+  type        = string
+  validation {
+    condition     = var.notification_bucket_name != "" && var.notification_bucket_name != var.state_bucket_name && var.notification_bucket_name != var.release_bucket_name
+    error_message = "Notifications require their own dedicated bucket, separate from Terraform state and release bundles."
+  }
 }
 
 variable "state_bucket_name" {
@@ -55,6 +93,10 @@ variable "byok_broker_environments" {
     error_message = "Broker environments must use canonical IDs of at most 16 characters and exclude PR previews."
   }
   validation {
+    condition     = var.deployment_tier == "production" ? alltrue([for id in var.byok_broker_environments : id == "production"]) : !contains(var.byok_broker_environments, "production")
+    error_message = "Only isolated production bootstrap may create the production broker, and it cannot create nonproduction brokers."
+  }
+  validation {
     condition     = alltrue([for left in var.byok_broker_environments : alltrue([for right in var.byok_broker_environments : left == right || !startswith("aidash-${right}-cred-", "aidash-${left}-cred-")])])
     error_message = "Broker environment credential prefixes must not overlap."
   }
@@ -66,5 +108,15 @@ variable "broker_signing_region" {
   validation {
     condition     = var.broker_signing_region == "us-central1"
     error_message = "Broker signing region must be us-central1 to match the managed environments root."
+  }
+}
+
+variable "staging_release_bucket" {
+  description = "Nonproduction release bucket containing sanitized staging promotion evidence; production GETs only deployments/develop/."
+  type        = string
+  default     = ""
+  validation {
+    condition     = var.deployment_tier == "production" ? (var.staging_release_bucket != "" && var.staging_release_bucket != var.release_bucket_name && var.staging_release_bucket != var.state_bucket_name && var.staging_release_bucket != var.notification_bucket_name) : var.staging_release_bucket == ""
+    error_message = "Only production may read the distinct staging release bucket."
   }
 }

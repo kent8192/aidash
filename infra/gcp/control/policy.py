@@ -4,7 +4,7 @@ from copy import deepcopy
 import re
 
 SHA = re.compile(r"[0-9a-f]{40}")
-ENVIRONMENT = re.compile(r"(?:develop|test|pr-[1-9][0-9]*)")
+ENVIRONMENT = re.compile(r"(?:develop|test|pr-[1-9][0-9]*|production)")
 DEVELOP = re.compile(r"develop/[0-9]+\.[0-9]+\.[0-9]+")
 IMAGE_KINDS = ("app", "postgres", "sandbox", "observer", "nats", "control", "edge", "caddy")
 PREVIEW = re.compile(
@@ -30,10 +30,13 @@ def eligible_base(branch):
     return branch == "main" or bool(DEVELOP.fullmatch(branch))
 
 
-def validate_request(request):
-    if not ENVIRONMENT.fullmatch(request["environment"]):
+def validate_request(request, production=False):
+    if request["environment"] == "production":
+        if not production or request["action"] not in {"up", "resume", "update"} or request.get("force") or request.get("mode") == "spot":
+            raise Refused("Production permits only verified releases on normal capacity")
+    elif production or not ENVIRONMENT.fullmatch(request["environment"]):
         raise Refused(
-            "Only develop, test, or pr-N environments exist; production is deferred"
+            "Environment does not belong to the isolated deployment tier"
         )
     if request["action"] not in {"create", "up", "resume", "stop", "destroy", "update"}:
         raise Refused("Unknown lifecycle action")
@@ -51,13 +54,13 @@ def validate_request(request):
         raise Refused("Fork deployment requires an explicit approval of this exact SHA")
 
 
-def transition(state, request, incarnation, now):
+def transition(state, request, incarnation, now, hostname_token="", production=False):
     """Accept intent under the lifecycle lock, before building a release.
 
     Sequence is a trusted GitHub run ID, not an issue-comment field. Tombstones
     retain it so old reruns cannot resurrect a retired environment.
     """
-    validate_request(request)
+    validate_request(request, production=production)
     result = deepcopy(state)
     envs = result.setdefault("environments", {})
     identity = request["environment"]
@@ -108,13 +111,24 @@ def transition(state, request, incarnation, now):
             "kind": kind,
             "incarnation": incarnation,
             "desired": "stopped",
-            "spot": kind != "develop",
+            "spot": kind not in {"develop", "production"},
             "applied": None,
             "release": None,
             "status": "absent",
             "published": False,
         }
     )
+    if kind in {"develop", "pr"} and not entry.get("hostname_token") and hostname_token:
+        if not re.fullmatch(r"[a-f0-9]{32}", hostname_token):
+            raise Refused("Invalid controller-generated hostname token")
+        entry["hostname_token"] = hostname_token
+    entry.pop("outcome_at", None)
+    entry.pop("outcome_run_id", None)
+    entry.pop("outcome_trusted_sha", None)
+    entry.pop("outcome_published", None)
+    entry.pop("staging_publication_run_id", None)
+    entry.pop("staging_verified_at", None)
+    entry.pop("staging_publication_pending", None)
     entry.update(
         sequence=sequence,
         generation=(previous or {}).get("generation", 0) + 1,
@@ -137,6 +151,9 @@ def transition(state, request, incarnation, now):
                 for key in ("sha", "source_ref", "source_repo", "fork", "approved_sha")
             }
         )
+        for key in ("main_sha", "release_pr", "ci_run_id", "last_comment_at"):
+            if key in request:
+                entry[key] = request[key]
         if action != "update":
             entry["desired"] = "running"
             entry["start_pending"] = True

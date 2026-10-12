@@ -8,5 +8,17 @@
   "domain": "aidash.run",
   "repository": "kent8192/aidash",
   "develop_branch": "develop/0.1.0",
-  "node_count": { "develop": 1, "test": 1, "pr": 1 }
+  "node_count": {
+    "develop": 1,
+    "test": 1,
+    "pr": 1
+  },
+  "deployment_tier": "nonproduction",
+  "automation_branch": "develop/0.1.0",
+  "trusted_branch": "main",
+  "notification_bucket": "your-aidash-project-notifications",
+  "notification_service_account": "aidash-notification-reader@your-aidash-project.iam.gserviceaccount.com",
+  "release_flow_enabled": true,
+  "release_app_bot_login": "your-release-app[bot]",
+  "preview_tls_secret": "aidash-preview-wildcard-tls"
 }

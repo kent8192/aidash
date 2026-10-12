@@ -1,4 +1,12 @@
 variable "project_id" { type = string }
+variable "deployment_tier" {
+  type    = string
+  default = "nonproduction"
+  validation {
+    condition     = contains(["nonproduction", "production"], var.deployment_tier)
+    error_message = "Deployment tier must be nonproduction or production."
+  }
+}
 variable "byok_project_id" {
   type = string
   validation {
@@ -20,6 +28,10 @@ variable "enabled" {
   validation {
     condition     = !var.enabled || var.environment_kind != "pr"
     error_message = "PR preview environments must never deploy a Credential Broker."
+  }
+  validation {
+    condition     = !var.enabled || (var.deployment_tier == "production" ? var.environment_id == "production" && var.environment_kind == "production" : var.environment_id != "production" && var.environment_kind != "production")
+    error_message = "Production brokers require the dedicated production deployment tier."
   }
 }
 variable "secret_prefix" {

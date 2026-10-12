@@ -35,7 +35,10 @@ With `edge.firebaseProject` set, Caddy also transparently proxies `/__/auth/*` a
 `/__/firebase/init.json` to `https://<project>.firebaseapp.com` ahead of admission,
 stripping `Cookie` and `Authorization` upstream and `Set-Cookie` downstream; the
 helper grants no authority, because sign-in completion stays behind admission.
-TLS state is on a kept ReadWriteOnce claim. Nginx starts closed unless the controller-owned
+Every edge response sets `Referrer-Policy: no-referrer` after the backend response,
+including HTTP redirects and unknown-host refusals. Caddy routes only the exact
+configured hostname, rejecting all other HTTP Host values.
+Fixed-host TLS state is on a kept ReadWriteOnce claim. Nginx starts closed unless the controller-owned
 ConfigMap `<release>-environment-admission` (key `state`, mounted optionally and
 read-only at `/etc/aidash-admission`) says exactly `open`; the chart never renders
 that ConfigMap, so installs and upgrades cannot reset it, and a restarted or
@@ -50,7 +53,29 @@ closing the live gate and `open` only after opening it, so a partial failure
 leaves a restarted edge closed.
 PostgreSQL and NATS accept only same-namespace server/worker and observer traffic.
 
-Preview TLS uses the existing `aidash-preview-tls` disk as one static `Retain`
+Random staging/PR hostnames are exactly 32 lowercase hexadecimal characters under
+`preview.aidash.run`. Set `edge.tlsSecret: aidash-preview-tls`; the controller
+validates a currently valid certificate whose sole DNS SAN is
+`*.preview.aidash.run`, verifies its private key, and applies a `kubernetes.io/tls`
+Secret with `tls.crt` and `tls.key`. Only Caddy mounts that Secret, read-only; the
+admission container, application and source build never receive it. The Secret
+Manager configuration is `preview_tls_secret` pointing to JSON with
+`certificate_pem` (full PEM chain) and `private_key_pem`. Provision and renew that
+wildcard through a trusted DNS-01 process, then publish a new secret version; the
+controller reloads the edge when its certificate changes. Random hosts disable
+automatic HTTPS issuance entirely, preventing per-host ACME certificates from
+publishing their random names. Their TLS Secret replaces the TLS PVC.
+
+Random hosts require managed GCIP tenant bindings and `auth_helper: firebase`;
+the IdP callback stays on `<project>.firebaseapp.com`, and the lifecycle
+controller adds/removes only the concrete preview hostname in Identity Platform
+`authorizedDomains` via the [project config API](https://docs.cloud.google.com/identity-platform/docs/reference/rest/v2/projects/updateConfig).
+The API has no etag, so all writers of that field must coordinate through the
+controller lifecycle lock. Terraform must preserve controller-managed authorized
+domains instead of replacing the list. Fixed hosts retain their configured
+authentication mode; random hosts reject direct OIDC and `public_origin` helpers.
+
+Legacy fixed-name PR TLS uses the existing `aidash-preview-tls` disk as one static `Retain`
 PersistentVolume. The controller owns that PV and its `preview-tls` claim, and
 rebinds it to the next active pr-N namespace only after the previous edge has no
 Pods and no VolumeAttachment for it. Set `edge.existingTlsClaim: preview-tls`

@@ -10,6 +10,40 @@ from cloud import run, bounded_timeout
 READ_ROLE = "roles/identityplatform.viewer"
 # Declared MFA Requirement -> the complete tenant mfaConfig GCIP must hold.
 MFA_CONFIGS = {"disabled": {"state": "DISABLED", "enabledProviders": [], "providerConfigs": []}}
+PREVIEW_HOST = re.compile(r"[a-f0-9]{32}\.preview\.aidash\.run")
+
+
+def ensure_authorized_domain(output, enabled=True, api=None):
+    """Manage one exact preview origin while holding the controller lifecycle lock.
+
+    Identity Platform's Config has no etag. The shared controller lock serializes
+    our read/modify/write operations; unrelated domains are read on each call and
+    only authorizedDomains is patched. Operators must use that same lock when
+    changing this field. Fixed environments remain Terraform-managed.
+    """
+    hostname = (output or {}).get("hostname", "")
+    if not hostname.endswith(".preview.aidash.run"):
+        return
+    if not PREVIEW_HOST.fullmatch(hostname):
+        raise ValueError("Preview authentication requires one exact random hostname")
+    config = output.get("gcip") or {}
+    project = config.get("project_id", "")
+    if (
+        not re.fullmatch(r"[a-z][a-z0-9-]{4,28}[a-z0-9]", project)
+        or not config.get("tenant_ids")
+        or config.get("auth_helper", "firebase") != "firebase"
+    ):
+        raise ValueError("Random preview authentication requires managed GCIP with the fixed Firebase helper")
+    request = api or admin_request
+    resource = f"https://identitytoolkit.googleapis.com/admin/v2/projects/{project}/config"
+    actual = request(resource, "GET")
+    domains = actual.get("authorizedDomains", [])
+    if not isinstance(domains, list) or any(not isinstance(domain, str) for domain in domains):
+        raise ValueError("Identity Platform returned invalid authorized domains")
+    if (hostname in domains) == enabled:
+        return
+    desired = domains + [hostname] if enabled else [domain for domain in domains if domain != hostname]
+    request(resource + "?updateMask=authorizedDomains", "PATCH", {"authorizedDomains": desired})
 
 
 def admin_request(url, method, body=None):

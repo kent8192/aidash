@@ -1,0 +1,59 @@
+name: Release PR
+on:
+  workflow_run:
+    workflows: [CI, GCP environments]
+    types: [completed]
+
+permissions:
+  contents: read
+
+# Serialize candidate replacement and staging acknowledgement. A dropped older
+# pending run is safe: every write revalidates the latest protected source SHA.
+concurrency:
+  group: release-pr-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: >-
+      vars.GCP_ENVIRONMENTS_ENABLED == 'true' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_repository.full_name == github.repository &&
+      (github.event.workflow_run.name == 'GCP environments' ||
+       (github.event.workflow_run.event == 'push' &&
+        startsWith(github.event.workflow_run.head_branch, 'develop/')))
+    runs-on: ubuntu-24.04
+    environment: release-automation
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      # Privileged orchestration always comes from protected main. Never check
+      # out source_sha, the release branch, or downloaded artifact code here.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          persist-credentials: false
+      - id: app
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          # Owner is omitted so the token is restricted to this repository.
+          permission-actions: read
+          permission-contents: write
+          permission-pull-requests: write
+          permission-checks: write
+      - name: Create the immutable candidate or acknowledge trusted staging
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          RELEASE_APP_BOT_LOGIN: ${{ steps.app.outputs.app-slug }}[bot]
+          AIDASH_GCP_CONFIG: ${{ vars.AIDASH_GCP_CONFIG }}
+          COMPLETED_WORKFLOW: ${{ github.event.workflow_run.name }}
+        run: |
+          if [ "$COMPLETED_WORKFLOW" = 'CI' ]; then
+            python3 infra/gcp/control/releases.py candidate
+          else
+            python3 infra/gcp/control/releases.py staging
+          fi

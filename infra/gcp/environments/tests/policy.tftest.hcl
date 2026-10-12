@@ -63,7 +63,7 @@ run "empty_runs_no_node_or_dns" {
 run "identities_are_separated" {
   command = apply
   override_resource {
-    target = google_service_account.nodes
+    target = google_service_account.nodes[0]
     values = {
       name  = "projects/aidash-fixture/serviceAccounts/aidash-gke-nodes@aidash-fixture.iam.gserviceaccount.com"
       email = "aidash-gke-nodes@aidash-fixture.iam.gserviceaccount.com"
@@ -141,11 +141,11 @@ run "identities_are_separated" {
   }
   assert {
     condition = (
-      google_service_account_iam_member.nodes_deploy.service_account_id == google_service_account.nodes.name &&
+      google_service_account_iam_member.nodes_deploy.service_account_id == google_service_account.nodes[0].name &&
       google_service_account_iam_member.nodes_deploy.role == "roles/iam.serviceAccountUser" &&
       google_service_account_iam_member.nodes_deploy.member == "serviceAccount:${var.deploy_service_account}" &&
-      google_container_cluster.aidash.node_config[0].service_account == google_service_account.nodes.email &&
-      google_container_node_pool.system.node_config[0].service_account == google_service_account.nodes.email
+      google_container_cluster.aidash.node_config[0].service_account == google_service_account.nodes[0].email &&
+      google_container_node_pool.system.node_config[0].service_account == google_service_account.nodes[0].email
     )
     error_message = "Deploy must act as the node identity to create node pools; no pool uses the Compute default identity."
   }
@@ -178,21 +178,23 @@ run "dns_requires_published_running_address" {
         address     = "203.0.113.10"
       }
       pr-7 = {
-        kind        = "pr"
-        incarnation = "bbbbbbbbbbbb"
-        generation  = 1
-        running     = true
-        published   = true
-        spot        = true
+        kind           = "pr"
+        hostname_token = "00000000000000000000000000000001"
+        incarnation    = "bbbbbbbbbbbb"
+        generation     = 1
+        running        = true
+        published      = true
+        spot           = true
       }
       develop = {
-        kind        = "develop"
-        incarnation = "cccccccccccc"
-        generation  = 1
-        running     = false
-        published   = false
-        spot        = false
-        address     = "203.0.113.11"
+        kind           = "develop"
+        hostname_token = "00000000000000000000000000000002"
+        incarnation    = "cccccccccccc"
+        generation     = 1
+        running        = false
+        published      = false
+        spot           = false
+        address        = "203.0.113.11"
       }
     }
   }
@@ -241,12 +243,13 @@ run "no_broker_in_preview" {
   variables {
     environments = {
       pr-137 = {
-        kind        = "pr"
-        incarnation = "aaaaaaaaaaaa"
-        generation  = 1
-        running     = false
-        published   = false
-        spot        = true
+        kind           = "pr"
+        hostname_token = "00000000000000000000000000000003"
+        incarnation    = "aaaaaaaaaaaa"
+        generation     = 1
+        running        = false
+        published      = false
+        spot           = true
       }
     }
     credential_brokers = {
@@ -310,12 +313,13 @@ run "no_spot_develop" {
   variables {
     environments = {
       develop = {
-        kind        = "develop"
-        incarnation = "aaaaaaaaaaaa"
-        generation  = 1
-        running     = true
-        published   = false
-        spot        = true
+        kind           = "develop"
+        hostname_token = "00000000000000000000000000000004"
+        incarnation    = "aaaaaaaaaaaa"
+        generation     = 1
+        running        = true
+        published      = false
+        spot           = true
       }
     }
   }
@@ -398,12 +402,182 @@ run "no_two_running_previews" {
   command = plan
   variables {
     environments = { for id in ["pr-1", "pr-2"] : id => {
-      kind        = "pr"
+      kind           = "pr"
+      hostname_token = substr(sha256(id), 0, 32)
+      incarnation    = "aaaaaaaaaaaa"
+      generation     = 1
+      running        = true
+      published      = false
+      spot           = true
+    } }
+  }
+  expect_failures = [var.environments]
+}
+
+run "random_preview_hostnames_follow_incarnation_tokens" {
+  command = plan
+  variables {
+    environments = {
+      develop = {
+        kind           = "develop"
+        hostname_token = "0123456789abcdef0123456789abcdef"
+        incarnation    = "aaaaaaaaaaaa"
+        generation     = 1
+        running        = true
+        published      = true
+        spot           = false
+        address        = "203.0.113.20"
+      }
+      pr-7 = {
+        kind           = "pr"
+        hostname_token = "abcdef0123456789abcdef0123456789"
+        incarnation    = "bbbbbbbbbbbb"
+        generation     = 1
+        running        = true
+        published      = true
+        spot           = true
+        address        = "203.0.113.21"
+      }
+    }
+  }
+  assert {
+    condition = (
+      cloudflare_dns_record.environment["develop"].name == "0123456789abcdef0123456789abcdef.preview.aidash.run" &&
+      cloudflare_dns_record.environment["pr-7"].name == "abcdef0123456789abcdef0123456789.preview.aidash.run" &&
+      output.environments.develop.gcip.public_origin == "https://0123456789abcdef0123456789abcdef.preview.aidash.run" &&
+      output.managed_configuration.develop.hostname_token == "0123456789abcdef0123456789abcdef"
+    )
+    error_message = "Staging and PR DNS/auth origins must use their explicit persisted random host tokens."
+  }
+}
+run "random_preview_token_required" {
+  command = plan
+  variables {
+    environments = { develop = {
+      kind        = "develop"
       incarnation = "aaaaaaaaaaaa"
       generation  = 1
       running     = true
       published   = false
-      spot        = true
+      spot        = false
+    } }
+  }
+  expect_failures = [var.environments]
+}
+run "preview_tokens_cannot_alias_another_environment" {
+  command = plan
+  variables {
+    environments = { for id in ["pr-7", "pr-8"] : id => {
+      kind           = "pr"
+      hostname_token = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      incarnation    = "aaaaaaaaaaaa"
+      generation     = 1
+      running        = false
+      published      = false
+      spot           = true
+    } }
+  }
+  expect_failures = [var.environments]
+}
+
+run "legacy_stopped_environment_reconciles" {
+  command   = apply
+  state_key = "legacy-host-upgrade"
+  variables {
+    environments = {
+      develop = {
+        kind            = "develop"
+        legacy_hostname = true
+        incarnation     = "aaaaaaaaaaaa"
+        generation      = 1
+        running         = false
+        published       = false
+        spot            = false
+      }
+      pr-7 = {
+        kind            = "pr"
+        legacy_hostname = true
+        incarnation     = "bbbbbbbbbbbb"
+        generation      = 1
+        running         = false
+        published       = false
+        spot            = true
+      }
+    }
+  }
+  assert {
+    condition = (
+      output.environments["develop"].hostname == "develop.aidash.run" &&
+      output.environments["pr-7"].hostname == "preview.aidash.run" &&
+      output.managed_configuration["develop"].legacy_hostname &&
+      output.managed_configuration["pr-7"].hostname_token == null &&
+      google_container_node_pool.system.node_count == 0 &&
+      length(cloudflare_dns_record.environment) == 0
+    )
+    error_message = "Trusted legacy-state recovery must preserve stopped environments without inventing new hosts or starting nodes."
+  }
+}
+run "legacy_stopped_environment_destroy_plan" {
+  command   = plan
+  state_key = "legacy-host-upgrade"
+  variables { environments = {} }
+  assert {
+    condition     = length(module.environment) == 0 && length(output.environments) == 0 && google_container_node_pool.system.node_count == 0
+    error_message = "Legacy environments must still have an executable retirement plan after the controller upgrade."
+  }
+}
+run "legacy_staging_promotes_to_random_host" {
+  command   = plan
+  state_key = "legacy-host-upgrade"
+  variables {
+    environments = { develop = {
+      kind           = "develop"
+      hostname_token = "0123456789abcdef0123456789abcdef"
+      incarnation    = "aaaaaaaaaaaa"
+      generation     = 2
+      running        = true
+      published      = true
+      spot           = false
+      address        = "203.0.113.20"
+    } }
+  }
+  assert {
+    condition = (
+      !output.managed_configuration["develop"].legacy_hostname &&
+      output.environments["develop"].hostname == "0123456789abcdef0123456789abcdef.preview.aidash.run" &&
+      output.environments["develop"].node_pool == "aidash-develop-aaaaaaaaaaaa" &&
+      cloudflare_dns_record.environment["develop"].name == "0123456789abcdef0123456789abcdef.preview.aidash.run"
+    )
+    error_message = "A new deployment replaces legacy host intent with its random token while retaining the environment incarnation."
+  }
+}
+run "legacy_flag_cannot_override_a_random_token" {
+  command = plan
+  variables {
+    environments = { develop = {
+      kind            = "develop"
+      legacy_hostname = true
+      hostname_token  = "0123456789abcdef0123456789abcdef"
+      incarnation     = "aaaaaaaaaaaa"
+      generation      = 1
+      running         = false
+      published       = false
+      spot            = false
+    } }
+  }
+  expect_failures = [var.environments]
+}
+run "fixed_test_environment_cannot_use_legacy_flag" {
+  command = plan
+  variables {
+    environments = { test = {
+      kind            = "test"
+      legacy_hostname = true
+      incarnation     = "aaaaaaaaaaaa"
+      generation      = 1
+      running         = false
+      published       = false
+      spot            = true
     } }
   }
   expect_failures = [var.environments]

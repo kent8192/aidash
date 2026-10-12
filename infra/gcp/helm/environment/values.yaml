@@ -44,6 +44,10 @@ edge:
   tlsSize: 2Gi
   # Preview only: the controller-bound claim of the shared static TLS PV.
   existingTlsClaim: ""
+  # Random preview hosts: trusted controller installs a kubernetes.io/tls Secret
+  # containing only the *.preview.aidash.run wildcard, mounted only by Caddy.
+  # This disables per-host ACME and replaces the persisted TLS claim.
+  tlsSecret: ""
   loadBalancer: true
   # GCIP project whose Firebase sign-in helper (/__/auth/*, /__/firebase/init.json)
   # Caddy proxies from the public origin, ahead of admission; empty proxies none.

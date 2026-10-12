@@ -23,10 +23,15 @@ resource "google_identity_platform_config" "aidash" {
   multi_tenant { allow_tenants = true }
   client {}
   authorized_domains = sort(distinct(concat(["${var.project_id}.firebaseapp.com"], flatten([
-    for domain in var.environment_domains : [for environment in ["develop", "preview", "test"] : "${environment}.${domain}"]
+    for domain in var.environment_domains : var.deployment_tier == "production" ? [domain] : ["test.${domain}"]
   ]))))
   depends_on = [google_project_service.gcip]
-  lifecycle { prevent_destroy = true }
+  lifecycle {
+    prevent_destroy = true
+    // Exact random preview domains are registered/retired by the trusted
+    // controller. Bootstrap must not erase live registration on re-apply.
+    ignore_changes = [authorized_domains]
+  }
 }
 # The trusted controller creates/configures tenants and reconciles their IAM.
 # Runtime principals receive a read role on tenant resources through REST only.

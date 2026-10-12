@@ -583,7 +583,9 @@ class ChartsTest(unittest.TestCase):
             return select(objects, 'ConfigMap', '-edge')['data']['Caddyfile'], annotations['checksum/config']
 
         plain, plain_checksum = edge()
-        self.assertEqual(plain, 'fixture.example {\n  reverse_proxy 127.0.0.1:8088\n}\n')
+        self.assertIn('fixture.example {\n  header >Referrer-Policy no-referrer\n  reverse_proxy 127.0.0.1:8088\n}', plain)
+        self.assertIn('@origin host fixture.example', plain)
+        self.assertIn('respond 404', plain)
         self.assertEqual(edge(firebaseProject=''), (plain, plain_checksum))
         proxied, proxied_checksum = edge(firebaseProject='aidash-fixture')
         # Switching the helper restarts the edge so Caddy reads the new routes.

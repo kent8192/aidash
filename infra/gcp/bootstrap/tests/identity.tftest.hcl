@@ -1,15 +1,27 @@
-mock_provider "google" {}
+mock_provider "google" {
+  mock_resource "google_service_account" {
+    defaults = {
+      name  = "projects/aidash-fixture/serviceAccounts/fixture@aidash-fixture.iam.gserviceaccount.com"
+      email = "fixture@aidash-fixture.iam.gserviceaccount.com"
+    }
+  }
+}
 variables {
-  project_id          = "aidash-fixture"
-  byok_project_id     = "aidash-byok-fixture"
-  state_bucket_name   = "aidash-fixture-state"
-  release_bucket_name = "aidash-fixture-releases"
+  project_id               = "aidash-fixture"
+  byok_project_id          = "aidash-byok-fixture"
+  state_bucket_name        = "aidash-fixture-state"
+  release_bucket_name      = "aidash-fixture-releases"
+  notification_bucket_name = "aidash-fixture-notifications"
 }
 run "trusted_workflow_only" {
   command = plan
   assert {
-    condition     = strcontains(google_iam_workload_identity_pool_provider.github.attribute_condition, "assertion.repository_id == '1378229915'") && strcontains(google_iam_workload_identity_pool_provider.github.attribute_condition, "gcp-environments.yml@refs/heads/main") && strcontains(google_iam_workload_identity_pool_provider.github.attribute_condition, "assertion.ref == 'refs/heads/main'")
+    condition     = strcontains(google_iam_workload_identity_pool_provider.github.attribute_condition, "assertion.repository_id == '1378229915'") && strcontains(google_iam_workload_identity_pool_provider.github.attribute_condition, "gcp-environments.yml@refs/heads/develop/0.1.0") && strcontains(google_iam_workload_identity_pool_provider.github.attribute_condition, "assertion.ref == 'refs/heads/develop/0.1.0'")
     error_message = "Name-only or PR-branch OIDC trust is not acceptable."
+  }
+  assert {
+    condition     = strcontains(google_iam_workload_identity_pool_provider.github.attribute_condition, "assertion.repository_owner_id == '51869472'") && strcontains(google_iam_workload_identity_pool_provider.github.attribute_condition, "assertion.environment == 'nonproduction'") && strcontains(google_iam_workload_identity_pool_provider.github.attribute_condition, "deployment-notifications.yml@refs/heads/develop/0.1.0") && strcontains(google_iam_workload_identity_pool_provider.github.attribute_condition, "assertion.environment == 'deployment-notifications'")
+    error_message = "Deploy and notifier identities require exact protected workflow refs and GitHub environments."
   }
   assert {
     condition     = google_storage_bucket.state.public_access_prevention == "enforced" && google_storage_bucket.state.force_destroy == false
@@ -34,4 +46,98 @@ run "deploy_manages_gke_without_ssh" {
     )
     error_message = "Deploy may grant project roles only for the GKE node identity."
   }
+}
+
+run "notification_identity_cannot_deploy_or_read_state" {
+  command = apply
+  override_resource {
+    target = google_service_account.automation["notification-reader"]
+    values = {
+      email = "aidash-notification-reader@aidash-fixture.iam.gserviceaccount.com"
+      name  = "projects/aidash-fixture/serviceAccounts/aidash-notification-reader@aidash-fixture.iam.gserviceaccount.com"
+    }
+  }
+  override_resource {
+    target = google_service_account.automation["deploy"]
+    values = {
+      email = "aidash-deploy@aidash-fixture.iam.gserviceaccount.com"
+      name  = "projects/aidash-fixture/serviceAccounts/aidash-deploy@aidash-fixture.iam.gserviceaccount.com"
+    }
+  }
+  override_resource {
+    target = google_iam_workload_identity_pool.github
+    values = { name = "projects/123456789012/locations/global/workloadIdentityPools/aidash-github" }
+  }
+  assert {
+    condition = (
+      endswith(google_service_account_iam_member.github["notification-reader"].member, "/attribute.workflow_role/notification-reader") &&
+      endswith(google_service_account_iam_member.github["deploy"].member, "/attribute.workflow_role/deploy") &&
+      google_service_account_iam_member.github["deploy"].member != google_service_account_iam_member.github["notification-reader"].member &&
+      alltrue([for grant in google_project_iam_member.deploy : grant.member != "serviceAccount:aidash-notification-reader@aidash-fixture.iam.gserviceaccount.com"])
+    )
+    error_message = "Notification assertions must not impersonate deploy/publish or receive project admin roles."
+  }
+  assert {
+    condition = (
+      google_storage_bucket.notifications.name != google_storage_bucket.state.name &&
+      google_storage_bucket.notifications.name != google_storage_bucket.releases.name &&
+      google_storage_bucket.notifications.public_access_prevention == "enforced" &&
+      google_storage_bucket_iam_member.notification_reader.bucket == google_storage_bucket.notifications.name &&
+      google_storage_bucket_iam_member.notification_reader.role == "roles/storage.objectViewer" &&
+      google_storage_bucket_iam_member.notification_delivery.condition[0].expression == "resource.name.startsWith('projects/_/buckets/aidash-fixture-notifications/objects/notification-delivery/')" &&
+      google_storage_bucket_iam_member.notification_receipt_writer.condition[0].expression == "resource.name.startsWith('projects/_/buckets/aidash-fixture-notifications/objects/notifications/')" &&
+      google_storage_bucket_iam_member.state.member == "serviceAccount:aidash-deploy@aidash-fixture.iam.gserviceaccount.com"
+    )
+    error_message = "Notification data must live outside secret-bearing state with claims confined to their prefix."
+  }
+}
+run "production_workflow_is_main_only" {
+  command = plan
+  variables {
+    deployment_tier            = "production"
+    staging_release_bucket     = "aidash-nonproduction-releases"
+    nonproduction_project_id   = "aidash-nonproduction-fixture"
+    nonproduction_state_bucket = "aidash-nonproduction-state"
+    byok_broker_environments   = ["production"]
+  }
+  assert {
+    condition = (
+      strcontains(google_iam_workload_identity_pool_provider.github.attribute_condition, "gcp-production.yml@refs/heads/main") &&
+      strcontains(google_iam_workload_identity_pool_provider.github.attribute_condition, "assertion.ref == 'refs/heads/main'") &&
+      strcontains(google_iam_workload_identity_pool_provider.github.attribute_condition, "assertion.environment == 'production'") &&
+      !strcontains(google_iam_workload_identity_pool_provider.github.attribute_condition, "gcp-environments.yml") &&
+      keys(google_service_account.broker) == ["production"] &&
+      google_service_account.production_nodes[0].account_id == "aidash-gke-nodes" &&
+      google_artifact_registry_repository_iam_member.production_nodes_staging[0].project == "aidash-nonproduction-fixture" &&
+      google_artifact_registry_repository_iam_member.production_nodes_staging[0].role == "roles/artifactregistry.reader" &&
+      google_storage_bucket_iam_member.staging_promotion_reader[0].role == "roles/storage.objectViewer" &&
+      google_storage_bucket_iam_member.staging_promotion_reader[0].condition[0].expression == "resource.name.startsWith('projects/_/buckets/aidash-nonproduction-releases/objects/deployments/develop/')"
+    )
+    error_message = "Only the approved main production workflow may deploy the isolated production project."
+  }
+}
+run "production_broker_cannot_live_in_nonproduction" {
+  command = plan
+  variables { byok_broker_environments = ["production"] }
+  expect_failures = [var.byok_broker_environments]
+}
+run "production_project_cannot_equal_nonproduction" {
+  command = plan
+  variables {
+    deployment_tier            = "production"
+    staging_release_bucket     = "aidash-nonproduction-releases"
+    nonproduction_project_id   = "aidash-fixture"
+    nonproduction_state_bucket = "aidash-nonproduction-state"
+  }
+  expect_failures = [var.nonproduction_project_id]
+}
+run "production_state_cannot_equal_nonproduction" {
+  command = plan
+  variables {
+    deployment_tier            = "production"
+    staging_release_bucket     = "aidash-nonproduction-releases"
+    nonproduction_project_id   = "aidash-nonproduction-fixture"
+    nonproduction_state_bucket = "aidash-fixture-state"
+  }
+  expect_failures = [var.nonproduction_state_bucket]
 }

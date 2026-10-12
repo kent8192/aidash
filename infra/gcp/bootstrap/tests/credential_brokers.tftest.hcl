@@ -8,15 +8,16 @@ mock_provider "google" {
   mock_data "google_project" { defaults = { number = "123456789012" } }
 }
 variables {
-  project_id          = "aidash-fixture"
-  byok_project_id     = "aidash-byok-fixture"
-  state_bucket_name   = "aidash-fixture-state"
-  release_bucket_name = "aidash-fixture-releases"
+  project_id               = "aidash-fixture"
+  byok_project_id          = "aidash-byok-fixture"
+  state_bucket_name        = "aidash-fixture-state"
+  release_bucket_name      = "aidash-fixture-releases"
+  notification_bucket_name = "aidash-fixture-notifications"
 }
 run "broker_environments" {
   command   = apply
   state_key = "broker-environments"
-  variables { byok_broker_environments = ["production", "test"] }
+  variables { byok_broker_environments = ["develop", "test"] }
   override_resource {
     target = google_service_account.automation["deploy"]
     values = {
@@ -25,20 +26,20 @@ run "broker_environments" {
     }
   }
   override_resource {
-    target = google_service_account.broker["production"]
-    values = { email = "aidash-production-broker@aidash-fixture.iam.gserviceaccount.com" }
+    target = google_service_account.broker["develop"]
+    values = { email = "aidash-develop-broker@aidash-fixture.iam.gserviceaccount.com" }
   }
   override_resource {
     target = google_service_account.broker["test"]
     values = { email = "aidash-test-broker@aidash-fixture.iam.gserviceaccount.com" }
   }
   override_resource {
-    target = google_kms_key_ring.capability["production"]
-    values = { id = "projects/aidash-fixture/locations/us-central1/keyRings/aidash-production-capability" }
+    target = google_kms_key_ring.capability["develop"]
+    values = { id = "projects/aidash-fixture/locations/us-central1/keyRings/aidash-develop-capability" }
   }
   override_resource {
-    target = google_kms_crypto_key.capability["production"]
-    values = { id = "projects/aidash-fixture/locations/us-central1/keyRings/aidash-production-capability/cryptoKeys/capability" }
+    target = google_kms_crypto_key.capability["develop"]
+    values = { id = "projects/aidash-fixture/locations/us-central1/keyRings/aidash-develop-capability/cryptoKeys/capability" }
   }
   override_resource {
     target = google_kms_key_ring.capability["test"]
@@ -53,15 +54,15 @@ run "broker_environments" {
     error_message = "Only dedicated broker SAs may receive prefix-conditioned BYOK read access."
   }
   assert {
-    condition     = output.broker_service_accounts == { production = "aidash-production-broker@aidash-fixture.iam.gserviceaccount.com", test = "aidash-test-broker@aidash-fixture.iam.gserviceaccount.com" }
+    condition     = output.broker_service_accounts == { develop = "aidash-develop-broker@aidash-fixture.iam.gserviceaccount.com", test = "aidash-test-broker@aidash-fixture.iam.gserviceaccount.com" }
     error_message = "Export the per-environment broker identities for deployment."
   }
   assert {
-    condition     = alltrue([for id, key in google_kms_crypto_key.capability : key.purpose == "ASYMMETRIC_SIGN" && key.name == "capability" && key.key_ring == google_kms_key_ring.capability[id].id && key.version_template[0].algorithm == "EC_SIGN_ED25519" && google_kms_key_ring.capability[id].name == "aidash-${id}-capability" && google_kms_key_ring.capability[id].project == var.project_id]) && keys(output.broker_signing_keys) == ["production", "test"]
+    condition     = alltrue([for id, key in google_kms_crypto_key.capability : key.purpose == "ASYMMETRIC_SIGN" && key.name == "capability" && key.key_ring == google_kms_key_ring.capability[id].id && key.version_template[0].algorithm == "EC_SIGN_ED25519" && google_kms_key_ring.capability[id].name == "aidash-${id}-capability" && google_kms_key_ring.capability[id].project == var.project_id]) && keys(output.broker_signing_keys) == ["develop", "test"]
     error_message = "Bootstrap alone owns and exports the permanent per-environment Ed25519 signing keys."
   }
   assert {
-    condition     = keys(google_kms_crypto_key_iam_member.deploy_capability_public_key) == ["production", "test"] && alltrue([for id, grant in google_kms_crypto_key_iam_member.deploy_capability_public_key : grant.crypto_key_id == google_kms_crypto_key.capability[id].id && grant.role == "roles/cloudkms.publicKeyViewer" && grant.member == "serviceAccount:aidash-deploy@aidash-fixture.iam.gserviceaccount.com"])
+    condition     = keys(google_kms_crypto_key_iam_member.deploy_capability_public_key) == ["develop", "test"] && alltrue([for id, grant in google_kms_crypto_key_iam_member.deploy_capability_public_key : grant.crypto_key_id == google_kms_crypto_key.capability[id].id && grant.role == "roles/cloudkms.publicKeyViewer" && grant.member == "serviceAccount:aidash-deploy@aidash-fixture.iam.gserviceaccount.com"])
     error_message = "Bootstrap grants deploy only key-scoped public-key reads on each permanent signing key."
   }
 }
@@ -108,7 +109,7 @@ run "overlapping_credential_prefixes_forbidden" {
 }
 run "distinct_credential_prefixes_with_shared_id_prefix" {
   command = plan
-  variables { byok_broker_environments = ["prod", "production"] }
+  variables { byok_broker_environments = ["development", "develop"] }
   assert {
     condition     = length(google_service_account.broker) == 2
     error_message = "Only credential-prefix overlap is forbidden; a shared ID prefix is safe."
@@ -121,4 +122,43 @@ run "unsupported_broker_signing_region_forbidden" {
     broker_signing_region    = "us-west1"
   }
   expect_failures = [var.broker_signing_region]
+}
+
+run "production_broker_bootstrap" {
+  command   = apply
+  state_key = "production-broker-bootstrap"
+  variables {
+    deployment_tier            = "production"
+    nonproduction_project_id   = "aidash-nonproduction-fixture"
+    nonproduction_state_bucket = "aidash-nonproduction-state"
+    staging_release_bucket     = "aidash-nonproduction-releases"
+    byok_broker_environments   = ["production"]
+  }
+  override_resource {
+    target = google_service_account.automation["deploy"]
+    values = {
+      email = "aidash-deploy@aidash-fixture.iam.gserviceaccount.com"
+      name  = "projects/aidash-fixture/serviceAccounts/aidash-deploy@aidash-fixture.iam.gserviceaccount.com"
+    }
+  }
+  override_resource {
+    target = google_service_account.broker["production"]
+    values = { email = "aidash-production-broker@aidash-fixture.iam.gserviceaccount.com" }
+  }
+  override_resource {
+    target = google_kms_key_ring.capability["production"]
+    values = { id = "projects/aidash-fixture/locations/us-central1/keyRings/aidash-production-capability" }
+  }
+  override_resource {
+    target = google_kms_crypto_key.capability["production"]
+    values = { id = "projects/aidash-fixture/locations/us-central1/keyRings/aidash-production-capability/cryptoKeys/capability" }
+  }
+  assert {
+    condition = (
+      keys(output.broker_service_accounts) == ["production"] &&
+      output.broker_signing_keys["production"] == "projects/aidash-fixture/locations/us-central1/keyRings/aidash-production-capability/cryptoKeys/capability" &&
+      google_project_iam_member.byok_broker_read["production"].condition[0].expression == "resource.name.startsWith(\"projects/123456789012/secrets/aidash-production-cred-\")"
+    )
+    error_message = "Production bootstrap owns only its dedicated broker identity and stable key with a production-only Provider Credential prefix."
+  }
 }
