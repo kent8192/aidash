@@ -212,7 +212,8 @@ def consistency_errors(result):
     if len(keys) != len(set(keys)):
         errors.append("$.runs: duplicate run keys")
     expected = len(result["experiment"]["variants"]) * result["experiment"]["repeat_count"]
-    skipped = result["skipped_runs"]
+    # Manifests written before `skipped_runs` existed have none to list.
+    skipped = result.get("skipped_runs", [])
     if set(keys) & {item["key"] for item in skipped}:
         errors.append("$.skipped_runs: a Run is both recorded and skipped")
     if result["error"] is None and len(runs) + len(skipped) != expected:
@@ -813,9 +814,11 @@ def check_live_models(models):
 class SpendLedger:
     """Hard spend and time ceiling for live provider work.
 
-    Every attempt is reserved at its worst case before dispatch. Settlement
-    replaces the reservation with the provider-reported cost; an attempt whose
-    cost is unknown stays charged at its full reservation (ADR 0018).
+    Every attempt is reserved at its worst case before dispatch. The live tier
+    settles every attempt as uncertain, so it stays charged at its full
+    reservation until Usage Records can be read over HTTP (ADR 0018). The
+    worst case covers one provider attempt per step; harness retries of a
+    failed attempt are not reserved separately.
     """
 
     def __init__(self, ceiling, wall_seconds, clock):

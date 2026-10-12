@@ -774,6 +774,20 @@ class LiveGuardTest(unittest.TestCase):
             with contextlib.redirect_stderr(io.StringIO()):
                 cli.main(["live", "--base-url", "http://node.invalid", "--tenant", "acme"])
 
+    def test_live_refuses_an_existing_output_before_any_work(self):
+        value = corpus()
+        # Match the args() ceiling so every earlier guard passes and only the output check refuses.
+        approval = self.approval(value, max_spend_nanocredits=1_000_000_000)
+        call, registered = self.live_node()
+        with tempfile.TemporaryDirectory() as directory, mock.patch.dict(os.environ, self.ENV):
+            existing = Path(directory) / "live.json"
+            existing.write_text("{}")
+            args = self.args()
+            args.output = existing
+            with self.assertRaisesRegex(evaluation.GuardRefusal, "already exists"):
+                cli.live(args, read_json=lambda _: approval, transport=call, wall_now=lambda: self.NOW)
+        self.assertEqual(registered, [], "no Registry write may precede the guard rails")
+
     def test_live_refuses_code_execution_oracles_unconditionally(self):
         value = corpus()
         approval = self.approval(value, max_spend_nanocredits=10_000_000_000)

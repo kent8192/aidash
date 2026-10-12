@@ -508,6 +508,10 @@ def live(args, read_json=None, transport=None, clock=time.monotonic, sleep=time.
     evaluation.require_live_authorization(credential, approval, corpus["_snapshot"]["sha256"], models,
                                           args.max_spend_nanocredits, args.max_wall_seconds, wall_now())
     evaluation.check_live_models(models)
+    # The manifest is written exclusively after paid work; an existing path would lose it.
+    if args.output and Path(args.output).exists():
+        raise evaluation.GuardRefusal(f"--output {args.output} already exists; the live manifest is written "
+                                      "exclusively and would be lost after provider work")
     planned_runs = [planned for planned in evaluation.plan(corpus, args.task, args.comparison)
                     if planned["model"] in mapping]
     if not planned_runs:
