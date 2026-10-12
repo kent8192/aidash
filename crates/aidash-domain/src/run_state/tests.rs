@@ -242,19 +242,19 @@ fn a_tool_batch_end_requires_the_tool_batch_capability() {
 	assert!(StateRequirements::of(&plain).is_empty());
 }
 #[rstest::rstest]
-fn a_requirement_that_falls_short_is_read_and_rewritten() {
-	// Arrange: a Tool Batch persisted by a build after #119 but before this gate,
-	// so its envelope carries no requirement.
+fn a_requirement_that_falls_short_is_invalid() {
+	// Arrange: a Tool Batch whose envelope does not declare `tool_batch_state`,
+	// so a worker without that capability could lease it.
 	let mut data = tool_data();
 	data["batch_end"] = json!(1);
 
 	// Act
-	let (state, recovery) = decode(RunPhase::ToolCall, envelope(data.clone())).unwrap();
+	let error = decode(RunPhase::ToolCall, envelope(data)).unwrap_err();
 
-	// Assert: it is not treated as damage, and the next save adds the requirement.
-	assert_eq!(
-		encode(&state, &recovery).unwrap(),
-		requiring(&["tool_batch_state"], data)
+	// Assert
+	assert!(
+		matches!(&error, Error::Invalid(message) if message.contains("does not cover")),
+		"{error:?}"
 	);
 }
 #[rstest::rstest]
