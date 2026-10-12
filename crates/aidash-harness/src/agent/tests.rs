@@ -2542,10 +2542,18 @@ async fn a_summary_dependency_revoked_during_inference_discards_the_response(
 	Arc::get_mut(&mut fixture.backend.0)
 		.unwrap()
 		.summary_checks_before_revocation = Some(checks + before_inference);
+	// The streamed text depends on the summary and is never stored.
+	fixture.backend.script(vec![text("Completed task")]);
 	assert!(matches!(
 		advance_sources(&mut fixture).await,
 		Err(Error::Forbidden)
 	));
+	assert!(fixture.backend.progress_text().is_empty());
+	assert!(!calls(&fixture).contains(&"inference.append"));
+	assert_eq!(
+		fixture.backend.outcomes().last().unwrap(),
+		&[ProgressOutcome::Interrupted(InterruptionReason::Revoked)]
+	);
 
 	let step = &calls(&fixture)[earlier..];
 	let inferred = step.iter().position(|call| *call == "provider.infer");
@@ -2566,6 +2574,44 @@ async fn a_summary_dependency_revoked_during_inference_discards_the_response(
 	assert_eq!(events(&fixture).last().unwrap(), "context.summary_revoked");
 	assert!(fixture.run.context.execution_summary.is_none());
 	assert_eq!(fixture.run.context.history, originals);
+}
+
+#[rstest]
+#[case::scoped(true)]
+#[case::local(false)]
+#[tokio::test]
+async fn summary_derived_progress_is_stored_only_once_its_sources_are_rechecked(
+	mut fixture: Fixture,
+	#[case] scoped: bool,
+) {
+	// Arrange
+	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	state.scoped = scoped;
+	state.context_policy = Some(recovery_policy(true));
+	state.jev_retention = Some(1.0);
+	*state.summary_text.lock().unwrap() = Some(valid_summary());
+	thinking_with_history(&mut fixture, 40);
+	advance_sources(&mut fixture).await.unwrap();
+	assert!(fixture.run.context.execution_summary.is_some());
+	let earlier = calls(&fixture).len();
+	fixture.backend.script(vec![text("Completed task")]);
+	// Act
+	advance_sources(&mut fixture).await.unwrap();
+	// Assert: nothing is stored while the provider streams; the held text is
+	// stored after the post-response recheck, before acceptance.
+	let step = &calls(&fixture)[earlier..];
+	let last_check = step
+		.iter()
+		.rposition(|call| *call == "summary.dependencies")
+		.unwrap();
+	assert!(position(step, "provider.response") < last_check, "{step:?}");
+	assert!(last_check < position(step, "inference.append"), "{step:?}");
+	assert_eq!(fixture.backend.progress_text(), "Completed task");
+	assert_eq!(
+		fixture.backend.outcomes().last().unwrap(),
+		&[ProgressOutcome::Accepted]
+	);
+	assert_eq!(fixture.backend.events().last().unwrap(), "model.completed");
 }
 
 #[rstest]
