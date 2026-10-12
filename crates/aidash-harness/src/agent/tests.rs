@@ -2123,6 +2123,39 @@ async fn provider_overflow_retries_with_a_smaller_window_without_dispatching(mut
 
 #[rstest]
 #[tokio::test]
+async fn provider_overflow_releases_its_reservation_before_the_reduced_retry(mut fixture: Fixture) {
+	// Arrange
+	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	state.scoped = true;
+	state.context_policy = Some(recovery_policy(false));
+	*state.overflows.lock().unwrap() = 1;
+	fixture.run.state = RunState::Thinking(ThinkingState::default());
+	// Act
+	advance_sources(&mut fixture).await.unwrap();
+	// Assert: the rejected attempt's charge is released before the retry
+	// state is saved, and its Usage Record stays a provider rejection.
+	assert_eq!(events(&fixture).last().unwrap(), "run.context_overflow");
+	let overflowed = calls(&fixture);
+	assert!(position(&overflowed, "provider.infer") < position(&overflowed, "reservation.abort"));
+	assert!(!overflowed.contains(&"reservation.settle"));
+	assert_eq!(
+		fixture.backend.0.usage.lock().unwrap()[0].1,
+		Some(UsageOutcome::Rejected {
+			class: "provider_rejected".into()
+		})
+	);
+	// The reduced retry reserves once more and settles its own response.
+	advance_sources(&mut fixture).await.unwrap();
+	let calls = calls(&fixture);
+	let count = |name| calls.iter().filter(|call| **call == name).count();
+	assert_eq!(count("reservation.admit"), 2);
+	assert_eq!(count("reservation.abort"), 1);
+	assert_eq!(count("reservation.settle"), 1);
+	assert!(matches!(fixture.run.state, RunState::ToolCall(_)));
+}
+
+#[rstest]
+#[tokio::test]
 async fn legacy_versions_and_unrelated_rejections_never_compact_and_retry(mut fixture: Fixture) {
 	*fixture.backend.0.overflows.lock().unwrap() = 1;
 	fixture.run.state = RunState::Thinking(ThinkingState::default());
@@ -2247,7 +2280,15 @@ async fn summary_stage_is_unavailable_without_a_policy_model(mut fixture: Fixtur
 			aidash_domain::context::recovery::Failure::ContextUnreducible
 		))
 	));
-	assert!(fixture.backend.0.compaction_attempts.lock().unwrap().is_empty());
+	assert!(
+		fixture
+			.backend
+			.0
+			.compaction_attempts
+			.lock()
+			.unwrap()
+			.is_empty()
+	);
 	assert!(
 		!fixture
 			.backend
@@ -2501,10 +2542,18 @@ async fn a_summary_dependency_revoked_during_inference_discards_the_response(
 	Arc::get_mut(&mut fixture.backend.0)
 		.unwrap()
 		.summary_checks_before_revocation = Some(checks + before_inference);
+	// The streamed text depends on the summary and is never stored.
+	fixture.backend.script(vec![text("Completed task")]);
 	assert!(matches!(
 		advance_sources(&mut fixture).await,
 		Err(Error::Forbidden)
 	));
+	assert!(fixture.backend.progress_text().is_empty());
+	assert!(!calls(&fixture).contains(&"inference.append"));
+	assert_eq!(
+		fixture.backend.outcomes().last().unwrap(),
+		&[ProgressOutcome::Interrupted(InterruptionReason::Revoked)]
+	);
 
 	let step = &calls(&fixture)[earlier..];
 	let inferred = step.iter().position(|call| *call == "provider.infer");
@@ -2525,6 +2574,44 @@ async fn a_summary_dependency_revoked_during_inference_discards_the_response(
 	assert_eq!(events(&fixture).last().unwrap(), "context.summary_revoked");
 	assert!(fixture.run.context.execution_summary.is_none());
 	assert_eq!(fixture.run.context.history, originals);
+}
+
+#[rstest]
+#[case::scoped(true)]
+#[case::local(false)]
+#[tokio::test]
+async fn summary_derived_progress_is_stored_only_once_its_sources_are_rechecked(
+	mut fixture: Fixture,
+	#[case] scoped: bool,
+) {
+	// Arrange
+	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	state.scoped = scoped;
+	state.context_policy = Some(recovery_policy(true));
+	state.jev_retention = Some(1.0);
+	*state.summary_text.lock().unwrap() = Some(valid_summary());
+	thinking_with_history(&mut fixture, 40);
+	advance_sources(&mut fixture).await.unwrap();
+	assert!(fixture.run.context.execution_summary.is_some());
+	let earlier = calls(&fixture).len();
+	fixture.backend.script(vec![text("Completed task")]);
+	// Act
+	advance_sources(&mut fixture).await.unwrap();
+	// Assert: nothing is stored while the provider streams; the held text is
+	// stored after the post-response recheck, before acceptance.
+	let step = &calls(&fixture)[earlier..];
+	let last_check = step
+		.iter()
+		.rposition(|call| *call == "summary.dependencies")
+		.unwrap();
+	assert!(position(step, "provider.response") < last_check, "{step:?}");
+	assert!(last_check < position(step, "inference.append"), "{step:?}");
+	assert_eq!(fixture.backend.progress_text(), "Completed task");
+	assert_eq!(
+		fixture.backend.outcomes().last().unwrap(),
+		&[ProgressOutcome::Accepted]
+	);
+	assert_eq!(fixture.backend.events().last().unwrap(), "model.completed");
 }
 
 #[rstest]

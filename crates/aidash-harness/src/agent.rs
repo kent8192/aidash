@@ -1386,14 +1386,23 @@ impl<'a> Executor<'a> {
 				}
 				let started = tokio::time::Instant::now();
 				let progress = progress::ProgressBuffer::new(started);
+				// Summary text may depend on a source revoked while the provider
+				// runs, and stored progress is served live and on replay. Such a
+				// Run's progress is held until the sources are rechecked after
+				// the response; every other Run streams it as it arrives.
+				let withhold_progress = context.execution_summary.is_some();
 				let provider = async {
 					let infer = async {
 						let result = model.infer(request, &progress).await;
 						progress.finish();
 						result
 					};
-					// The flusher stores the remainder before the outcome is recorded.
-					tokio::join!(infer, progress.flush(store, run, token, attempt)).0
+					if withhold_progress {
+						infer.await
+					} else {
+						// The flusher stores the remainder before the outcome is recorded.
+						tokio::join!(infer, progress.flush(store, run, token, attempt)).0
+					}
 				};
 				let recheck = async {
 					let Some(guard) = guard else {
@@ -1489,11 +1498,17 @@ impl<'a> Executor<'a> {
 					Inference::Interrupted(reason, error) => {
 						self.interrupt_inference(run, token, attempt, reason).await;
 						// A truncated or refused completion is billed even though its
-						// output is never dispatched.
-						if let Some(reservation) = reservation
-							&& let Some(response) = error.terminal_usage()
-						{
-							reservation.settle(response).await?;
+						// output is never dispatched. A provider-proven Context
+						// Overflow was rejected before any usage: release its whole
+						// charge, so the reduced retry does not reserve on top of it.
+						if let Some(reservation) = reservation {
+							match error.terminal_usage() {
+								Some(response) => reservation.settle(response).await?,
+								None if matches!(error, Error::ContextOverflow) => {
+									reservation.abort().await?
+								}
+								None => {}
+							}
 						}
 						resumed?;
 						if matches!(error, Error::ContextOverflow) {
@@ -1542,6 +1557,10 @@ impl<'a> Executor<'a> {
 					self.interrupt_inference(run, token, attempt, InterruptionReason::Revoked)
 						.await;
 					return Err(error);
+				}
+				// Withheld progress reaches readers only once its sources hold.
+				if withhold_progress {
+					progress.flush(store, run, token, attempt).await;
 				}
 				// Count only tool content that survived compaction and was present
 				// in a successful provider request, not every completed read.
