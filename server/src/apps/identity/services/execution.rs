@@ -574,17 +574,9 @@ impl Guard {
 				),
 			};
 			// The Home's corpus is not observable here: its digest arrives with the
-			// refresh that also rechecks authority, and is absent from a Home whose
-			// protocol predates it or that grants no semantic access.
-			let corpus_digest = if description.semantic.disabled() {
-				None
-			} else {
-				// Home may call back into this receiver while it describes the grant,
-				// so no receiver transaction may be open. Every later use of the
-				// authority starts with its own refresh.
-				self.suspend().await?;
-				super::peer::admission::corpus_digest(federation, &self.run.metadata()).await?
-			};
+			// describe reply that refreshed this worker's authority, and is absent
+			// from a Home whose protocol predates it or that grants no semantic access.
+			let corpus_digest = self.access.read().await.home_corpus_digest.clone();
 			return Ok(aidash_domain::context::sources::RetrievalScope {
 				tenant: description.source_tenant,
 				subject: description.source_subject,

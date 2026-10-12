@@ -439,6 +439,9 @@ impl PeerAdmissionScope for Owned {
 		};
 		self.access.worker()
 	}
+	fn corpus_digest(&mut self, digest: Option<String>) {
+		self.access.home_corpus_digest = digest
+	}
 	async fn activation_record(&mut self, id: Uuid) -> Result<Option<State>> {
 		let result: NativeResult<Option<State>> = async {
 			let access = &mut *self.access;

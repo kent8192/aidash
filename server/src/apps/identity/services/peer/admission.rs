@@ -169,13 +169,6 @@ pub(crate) async fn worker_lease(
 	}
 	result
 }
-/// The Home's current corpus digest for a remote Run's Workspace, from the same
-/// describe reply that refreshes its authority.
-pub(crate) async fn corpus_digest(f: &Federation, run: &RunMetadata) -> Result<Option<String>> {
-	app::corpus_digest(&crate::bootstrap::peer_admission_repository(f), run)
-		.await
-		.map_err(Into::into)
-}
 pub(crate) async fn leaf_lease(
 	f: &Federation,
 	source: &str,

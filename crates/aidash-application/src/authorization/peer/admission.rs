@@ -161,28 +161,30 @@ async fn described<R: PeerAdmissionRepository>(
 	};
 	Ok(reply)
 }
+/// Lease the receiver authority Home describes, keeping the Workspace corpus
+/// digest the same reply reports (#191). `None` when Home's protocol predates
+/// the digest or the grant carries no Home semantic access.
+async fn described_lease<R: PeerAdmissionRepository>(
+	repository: &R,
+	source: &str,
+	grant: Uuid,
+) -> Result<(R::Scope, Description, Option<String>)> {
+	// Home may inspect this receiver while it describes the grant.
+	let Described {
+		description,
+		corpus_digest,
+	} = described(repository, source, grant).await?;
+	let (scope, description) = receiver_lease(repository, source, description).await?;
+	Ok((scope, description, corpus_digest))
+}
 pub async fn lease<R: PeerAdmissionRepository>(
 	repository: &R,
 	source: &str,
 	grant: Uuid,
 ) -> Result<(R::Scope, Description)> {
-	// Home may inspect this receiver; the digest only matters to Retrieval Keys.
-	let Described { description, .. } = described(repository, source, grant).await?;
-	receiver_lease(repository, source, description).await
-}
-/// The Workspace's current semantic corpus digest, as Home reports it in the
-/// same describe reply that refreshes this Run's authority (#191). `None` when
-/// Home's protocol predates the digest or the grant carries no Home semantic
-/// access; the Retrieval Key then keeps the shape it had without it.
-pub async fn corpus_digest<R: PeerAdmissionRepository>(
-	repository: &R,
-	run: &RunMetadata,
-) -> Result<Option<String>> {
-	let grant = run_grant(repository, run).await?.ok_or(Error::Forbidden)?;
-	described(repository, &run.home_node, grant)
-		.await
-		.map(|reply| reply.corpus_digest)
-		.map_err(|error| Error::RemoteSemantic(semantic_failure(&error)))
+	// The digest only matters to a worker's Retrieval Key.
+	let (scope, description, _) = described_lease(repository, source, grant).await?;
+	Ok((scope, description))
 }
 pub async fn admit<R: PeerAdmissionRepository>(
 	repository: &R,
@@ -249,18 +251,19 @@ pub async fn worker_lease<R: PeerAdmissionRepository>(
 	let Some(grant) = run_grant(repository, run).await? else {
 		return Ok(None);
 	};
-	let (mut scope, description) = match lease(repository, &run.home_node, grant).await {
-		Ok(value) => value,
-		Err(error) => {
-			let description: Description =
-				serde_json::from_value(repository.description(run.id).await?)?;
-			return Err(if description.semantic.disabled() {
-				error
-			} else {
-				Error::RemoteSemantic(semantic_failure(&error))
-			});
-		}
-	};
+	let (mut scope, description, corpus_digest) =
+		match described_lease(repository, &run.home_node, grant).await {
+			Ok(value) => value,
+			Err(error) => {
+				let description: Description =
+					serde_json::from_value(repository.description(run.id).await?)?;
+				return Err(if description.semantic.disabled() {
+					error
+				} else {
+					Error::RemoteSemantic(semantic_failure(&error))
+				});
+			}
+		};
 	let result = async {
 		let record = scope.required_record(run.id).await?;
 		if !record.matches(&scope.identity(), scope.subjects(), &description)? {
@@ -269,6 +272,7 @@ pub async fn worker_lease<R: PeerAdmissionRepository>(
 		scope.require_active(&description, run.id).await?;
 		let agent = AgentConfig::from_snapshot(&description.inspection.binding_snapshot)?;
 		scope.worker(true);
+		scope.corpus_digest(corpus_digest);
 		Ok(agent)
 	}
 	.await;
