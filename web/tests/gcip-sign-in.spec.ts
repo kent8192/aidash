@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Page, type Route } from "@playwright/test";
 import { mockGcip } from "./fixtures/gcip";
 
 test("organization selection and popup exchange keep GCIP tokens out of browser storage", async ({
@@ -856,5 +856,186 @@ test("second-factor copy follows the selected language", async ({ page }) => {
   await page.getByRole("button", { name: "確認", exact: true }).click();
   await expect(page.getByRole("alert")).toContainText(
     "コードが正しくありません",
+  );
+});
+
+// Drives the real SDK adapter against fixture Firebase HTTP responses, so the
+// resolver, TOTP assertions and enrollment calls are the SDK's own.
+async function realSdk(
+  page: Page,
+  {
+    mfaMandatory = false,
+    enrolled = false,
+  }: { mfaMandatory?: boolean; enrolled?: boolean },
+) {
+  const token = await mockGcip(page, "/signed-in", true, mfaMandatory);
+  await page.unroute("**/src/gcip-sdk.ts");
+  const requests: { path: string; body: Record<string, unknown> }[] = [];
+  const headers = {
+    "access-control-allow-origin": "*",
+    "access-control-allow-methods": "POST, OPTIONS",
+    "access-control-allow-headers": "*",
+  };
+  const credential = {
+    localId: "person",
+    email: "person@example.test",
+    idToken: token,
+    refreshToken: "fixture-refresh-token",
+    expiresIn: "3600",
+  };
+  const handle = async (route: Route) => {
+    if (route.request().method() === "OPTIONS")
+      return route.fulfill({ status: 204, headers });
+    const path = new URL(route.request().url()).pathname;
+    const body = route.request().postDataJSON() ?? {};
+    requests.push({ path, body });
+    if (path.endsWith("accounts:signInWithPassword"))
+      return route.fulfill({
+        headers,
+        json: enrolled
+          ? {
+              mfaPendingCredential: "pending-credential",
+              mfaInfo: [
+                {
+                  mfaEnrollmentId: "enrollment-1",
+                  displayName: "Authenticator app",
+                  totpInfo: {},
+                },
+              ],
+            }
+          : credential,
+      });
+    if (path.endsWith("mfaSignIn:finalize"))
+      return body.totpVerificationInfo.verificationCode === "123456"
+        ? route.fulfill({ headers, json: credential })
+        : route.fulfill({
+            headers,
+            status: 400,
+            json: { error: { message: "INVALID_CODE" } },
+          });
+    if (path.endsWith("accounts:lookup"))
+      return route.fulfill({
+        headers,
+        json: {
+          users: [
+            {
+              localId: "person",
+              email: "person@example.test",
+              emailVerified: true,
+              tenantId: "pool-a",
+              providerUserInfo: [
+                { providerId: "password", rawId: "person@example.test" },
+              ],
+            },
+          ],
+        },
+      });
+    if (path.endsWith("mfaEnrollment:start"))
+      return route.fulfill({
+        headers,
+        json: {
+          totpSessionInfo: {
+            sharedSecretKey: "JBSWY3DPEHPK3PXP",
+            verificationCodeLength: 6,
+            hashingAlgorithm: "SHA1",
+            periodSec: 30,
+            sessionInfo: "enrollment-session",
+            finalizeEnrollmentTime: "2099-01-01T00:00:00Z",
+          },
+        },
+      });
+    if (path.endsWith("mfaEnrollment:finalize"))
+      return route.fulfill({ headers, json: credential });
+    if (path.endsWith("/token"))
+      return route.fulfill({
+        headers,
+        json: {
+          access_token: token,
+          id_token: token,
+          refresh_token: "fixture-refresh-token",
+          expires_in: "3600",
+          user_id: "person",
+        },
+      });
+    throw new Error(`Unexpected Firebase request: ${path}`);
+  };
+  await page.route("https://identitytoolkit.googleapis.com/**", handle);
+  await page.route("https://securetoken.googleapis.com/**", handle);
+  await page.route("**/signed-in", (route) =>
+    route.fulfill({ contentType: "text/html", body: "<h1>Signed in</h1>" }),
+  );
+  return { requests, exchanges: exchangesOf(page) };
+}
+const signInWithPassword = async (page: Page) => {
+  await page.goto("/sign-in?state=browser-bound-state");
+  await page.getByLabel("Email", { exact: true }).fill("person@example.test");
+  await page.getByLabel("Password", { exact: true }).fill("fixture-password");
+  await page.getByRole("button", { name: "Sign in", exact: true }).click();
+};
+
+test("the SDK adapter turns GCIP's multi-factor error into a TOTP challenge", async ({
+  page,
+}) => {
+  const { requests, exchanges } = await realSdk(page, { enrolled: true });
+  await signInWithPassword(page);
+  await page.getByLabel("Verification code").fill("654321");
+  await page.getByRole("button", { name: "Verify", exact: true }).click();
+  await expect(page.getByRole("alert")).toContainText("not correct");
+  expect(exchanges).toEqual([]);
+  await page.getByLabel("Verification code").fill("123456");
+  await page.getByRole("button", { name: "Verify", exact: true }).click();
+  await expect(page).toHaveURL(/\/signed-in$/);
+  expect(exchanges).toEqual(["browser-bound-state"]);
+  const finalized = requests.filter(({ path }) =>
+    path.endsWith("mfaSignIn:finalize"),
+  );
+  expect(finalized.map(({ body }) => body)).toEqual([
+    {
+      mfaPendingCredential: "pending-credential",
+      mfaEnrollmentId: "enrollment-1",
+      totpVerificationInfo: { verificationCode: "654321" },
+      tenantId: "pool-a",
+    },
+    {
+      mfaPendingCredential: "pending-credential",
+      mfaEnrollmentId: "enrollment-1",
+      totpVerificationInfo: { verificationCode: "123456" },
+      tenantId: "pool-a",
+    },
+  ]);
+});
+
+test("the SDK adapter enrolls a TOTP factor for a mandatory tenant before the exchange", async ({
+  page,
+}) => {
+  const { requests, exchanges } = await realSdk(page, { mfaMandatory: true });
+  await signInWithPassword(page);
+  await expect(page.getByTestId("totp-secret")).toHaveText("JBSWY3DPEHPK3PXP");
+  await expect(
+    page.getByRole("link", { name: "Open in authenticator app" }),
+  ).toHaveAttribute("href", /^otpauth:\/\/totp\/.*secret=JBSWY3DPEHPK3PXP/);
+  expect(exchanges).toEqual([]);
+  await page.getByLabel("Verification code").fill("123456");
+  await page.getByRole("button", { name: "Verify", exact: true }).click();
+  await expect(page).toHaveURL(/\/signed-in$/);
+  expect(exchanges).toEqual(["browser-bound-state"]);
+  const finalized = requests.find(({ path }) =>
+    path.endsWith("mfaEnrollment:finalize"),
+  );
+  expect(finalized?.body.totpVerificationInfo).toEqual({
+    sessionInfo: "enrollment-session",
+    verificationCode: "123456",
+  });
+});
+
+test("the SDK adapter signs a tenant without a mandatory requirement straight in", async ({
+  page,
+}) => {
+  const { requests, exchanges } = await realSdk(page, {});
+  await signInWithPassword(page);
+  await expect(page).toHaveURL(/\/signed-in$/);
+  expect(exchanges).toEqual(["browser-bound-state"]);
+  expect(requests.map(({ path }) => path)).not.toContainEqual(
+    expect.stringContaining("mfa"),
   );
 });
