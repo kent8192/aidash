@@ -69,6 +69,16 @@ impl BraveSearch {
 		})
 	}
 
+	/// The complete request body sent to Brave. It is also the disclosed
+	/// content, so an approval covers every outbound value, not only the query.
+	fn request(&self, query: &SearchQuery) -> Result<Value, Failure> {
+		let outbound = outbound_query(query);
+		if !aidash_domain::research::search::valid_query(&outbound) {
+			return Err(Failure::InvalidInput);
+		}
+		Ok(self.body(query, &outbound))
+	}
+
 	fn body(&self, query: &SearchQuery, outbound: &str) -> Value {
 		let mut body = json!({
 			"q": outbound,
@@ -178,13 +188,9 @@ pub fn status_failure(status: StatusCode) -> Failure {
 #[async_trait]
 impl SearchProvider for BraveSearch {
 	fn disclosure(&self, query: &SearchQuery) -> Result<Outbound, Failure> {
-		let content = outbound_query(query);
-		if !aidash_domain::research::search::valid_query(&content) {
-			return Err(Failure::InvalidInput);
-		}
 		Ok(Outbound {
 			destination: self.endpoint.host_str().unwrap_or_default().into(),
-			content,
+			content: self.request(query)?.to_string(),
 		})
 	}
 	fn account(&self) -> Result<Option<AccountProfile>, Failure> {
@@ -194,7 +200,7 @@ impl SearchProvider for BraveSearch {
 		Ok(Some(self.profile.clone()))
 	}
 	async fn search(&self, query: &SearchQuery) -> Result<ProviderResults, Failure> {
-		let body = self.body(query, &outbound_query(query));
+		let body = self.request(query)?;
 		let operation = async {
 			let mut response = match self
 				.client

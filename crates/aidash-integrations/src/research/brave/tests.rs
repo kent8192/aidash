@@ -40,11 +40,13 @@ fn maps_filters_without_relaxing_them(profile: AccountProfile) {
 	}));
 	let outbound = brave.disclosure(&query).unwrap();
 	assert_eq!(outbound.destination, "api.search.brave.com");
+	// The disclosed content is the exact request body sent to Brave.
+	let body: Value = serde_json::from_str(&outbound.content).unwrap();
 	assert_eq!(
-		outbound.content,
+		body["q"],
 		"Rust release (site:rust-lang.org OR site:doc.rust-lang.org) NOT site:example.net"
 	);
-	let body = brave.body(&query, &outbound.content);
+	assert_eq!(body, brave.request(&query).unwrap());
 	assert_eq!(body["search_lang"], "ja");
 	assert_eq!(body["freshness"], "pm");
 	assert_eq!(body["spellcheck"], false);
@@ -55,6 +57,26 @@ fn maps_filters_without_relaxing_them(profile: AccountProfile) {
 		brave.body(&range, "x")["freshness"],
 		"2026-09-01to2026-09-25"
 	);
+}
+
+#[rstest]
+fn every_outbound_filter_is_part_of_the_disclosure(profile: AccountProfile) {
+	let brave = BraveSearch::new(profile, "token").unwrap();
+	let base = json!({"query":"Rust release"});
+	let disclosed = |input: Value| brave.disclosure(&query(input)).unwrap().content;
+	let original = disclosed(base.clone());
+	// An approval for one request cannot cover the same query with other filters.
+	for (key, value) in [
+		("country", json!("JP")),
+		("language", json!("ja")),
+		("count", json!(3)),
+		("page", json!(2)),
+		("freshness", json!("week")),
+	] {
+		let mut changed = base.clone();
+		changed[key] = value;
+		assert_ne!(disclosed(changed), original, "{key}");
+	}
 }
 
 #[rstest]

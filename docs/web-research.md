@@ -137,7 +137,10 @@ all; without it the disclosure is denied.
   approval flow, so every disclosure is denied, as for `outbound_get`.
 
 The approval is bound to a digest of the Run, operation, provider, destination,
-exact content and the Run's observed input sequence. New user input therefore
+exact content and the Run's observed input sequence. The content is the
+complete outbound request: Brave discloses the JSON body it sends, so country,
+language, count, page and freshness are approved with the query, and a page
+read discloses its URL. New user input therefore
 requires a new approval. Approval never overrides destination checks: page
 providers refuse non-public names and addresses, including addresses a public
 name resolves to at dispatch. A page is read only from the approved destination
