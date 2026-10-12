@@ -166,6 +166,31 @@ fn bundle_member_ids_are_unique_across_versions_and_nodes() {
 	.unwrap();
 }
 
+#[rstest::rstest]
+#[case::tool(BindingKind::Tool, true)]
+#[case::bundle(BindingKind::Bundle, true)]
+#[case::skill(BindingKind::Skill, false)]
+#[case::memory(BindingKind::Memory, false)]
+#[case::source(BindingKind::Source, false)]
+#[case::decider(BindingKind::Decider, false)]
+fn concurrency_narrowing_requires_a_tool_or_bundle_binding(
+	#[case] kind: BindingKind,
+	#[case] accepted: bool,
+) {
+	// Arrange: a Binding of each kind, valid without the restriction.
+	let mut binding = Binding::tool(QualifiedRef {
+		registry_node: "aidash://node-a".into(),
+		id: "target".into(),
+		version: "1.0.0".into(),
+	});
+	binding.kind = kind;
+	binding.validate().unwrap();
+	// Act
+	binding.narrow = serde_json::from_value(json!({"concurrency":"sequential"})).unwrap();
+	// Assert: only Bindings that bind Tools may lower their concurrency.
+	assert_eq!(binding.validate().is_ok(), accepted);
+}
+
 fn deferred() -> AgentBindings {
 	let mut agent = agent();
 	agent.exposure = Some(ExposurePolicy::Deferred(Default::default()));

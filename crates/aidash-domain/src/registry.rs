@@ -139,6 +139,7 @@ pub struct AgentConfig {
 	pub cluster: Option<EntityRef>,
 	pub max_steps: i32,
 	pub context_policy: Option<crate::context::policy::ContextPolicy>,
+	pub tool_parallelism: u8,
 	/// Absent means `legacy@1`; see [`AgentConfig::exposure_policy`].
 	pub exposure: Option<crate::exposure::ExposurePolicy>,
 	/// As written in the definition; `None` renders as Legacy.

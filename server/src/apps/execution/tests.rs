@@ -21,6 +21,7 @@
 //! - `run_message_finalization`
 //! - `startup`
 //! - `streaming`
+//! - `tool_batches`
 //! - `core_capabilities`
 //! - `http_protection`
 //! - `multimodal_run`

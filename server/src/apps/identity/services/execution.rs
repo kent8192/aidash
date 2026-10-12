@@ -11,7 +11,7 @@ use crate::{
 };
 use serde_json::{Value, json};
 use std::sync::Arc;
-use tokio::sync::Mutex;
+use tokio::sync::RwLock;
 use uuid::Uuid;
 
 async fn grant(store: &Store, run: &crate::domain::RunMetadata) -> Result<Option<Grant>> {
@@ -142,10 +142,15 @@ pub(crate) async fn delegate_in(
 
 #[derive(Clone)]
 pub(crate) struct WorkerAuthority {
-	access: Arc<Mutex<Access>>,
+	access: Arc<RwLock<Access>>,
 }
 
 impl WorkerAuthority {
+	/// Concurrent core tool calls of one Run share the outer authority lease.
+	/// Each call runs in its own inner transaction while the outer transaction
+	/// keeps the authorization locks, so revocation waits until every concurrent
+	/// call ends. Exclusive users take the write lock. A `shared_read` call
+	/// loads its Working Area with a shared row lock so batched reads overlap.
 	pub async fn core_tool(
 		&self,
 		store: &Store,
@@ -153,9 +158,11 @@ impl WorkerAuthority {
 		name: &str,
 		input: Value,
 		key: &str,
+		shared_read: bool,
 	) -> Result<Value> {
-		let outer = self.access.lock().await;
+		let outer = self.access.read().await;
 		let mut access = Access::under_lease(&outer).await?;
+		access.shared_area = shared_read;
 		let result =
 			crate::capabilities::service::invoke(store, &mut access, run, name, input, key).await;
 		match access.finish(result).await {
@@ -187,7 +194,7 @@ impl WorkerAuthority {
 		key: &str,
 		changes: &[aidash_domain::memory::Change],
 	) -> Result<Vec<aidash_domain::memory::Unit>> {
-		let mut outer = self.access.lock().await;
+		let mut outer = self.access.write().await;
 		if outer.tx.is_active() {
 			outer.suspend().await?;
 		}
@@ -219,7 +226,7 @@ impl WorkerAuthority {
 		query: aidash_domain::memory::RecallQuery,
 		reflect: bool,
 	) -> Result<crate::semantic::native_memory::Outcome> {
-		let mut outer = self.access.lock().await;
+		let mut outer = self.access.write().await;
 		let mut lease = crate::semantic::service::Lease::Inherited(&mut outer);
 		crate::semantic::native_memory::run_recall(store, &mut lease, run, key, query, reflect)
 			.await
@@ -233,7 +240,7 @@ impl WorkerAuthority {
 		policy: &str,
 		reason: &str,
 	) -> Result<crate::generation::Assignment> {
-		let mut lease = self.access.lock().await;
+		let mut lease = self.access.write().await;
 		// Read potential references under the outer lease before opening the mutation transaction.
 		catalog::list_in(&mut lease, &Search::default()).await?;
 		let mut access = Access::under_lease(&lease).await?;
@@ -256,7 +263,7 @@ impl WorkerAuthority {
 		key: &str,
 		input: &NewTask,
 	) -> Result<Task> {
-		let lease = self.access.lock().await;
+		let lease = self.access.write().await;
 		let mut access = Access::under_lease(&lease).await?;
 		let result = aidash_application::authorization::worker_tasks::create_task(
 			&mut crate::bootstrap::worker_task_scope(f, &mut access),
@@ -270,7 +277,11 @@ impl WorkerAuthority {
 	}
 
 	pub async fn snapshot(&self, workspace: Uuid) -> Result<WorkspaceSnapshot> {
-		self.access.lock().await.workspace_snapshot(workspace).await
+		self.access
+			.write()
+			.await
+			.workspace_snapshot(workspace)
+			.await
 	}
 
 	pub async fn workspace_observation(
@@ -280,7 +291,7 @@ impl WorkerAuthority {
 		limit: usize,
 	) -> Result<Value> {
 		self.access
-			.lock()
+			.write()
 			.await
 			.workspace_observation(workspace, offset, limit)
 			.await
@@ -297,14 +308,14 @@ impl WorkerAuthority {
 		F: FnMut(usize, &Value) -> Result<bool>,
 	{
 		self.access
-			.lock()
+			.write()
 			.await
 			.workspace_observation_fitted(workspace, offset, limit, fits)
 			.await
 	}
 
 	pub async fn skill_context(&self, store: &Store, run: &Run) -> Result<String> {
-		let mut access = self.access.lock().await;
+		let mut access = self.access.write().await;
 		crate::capabilities::skills::context(store, &mut access, run).await
 	}
 	pub async fn direct_skills(
@@ -312,7 +323,7 @@ impl WorkerAuthority {
 		store: &Store,
 		run: &Run,
 	) -> Result<Vec<aidash_domain::exposure::DirectSkill>> {
-		let mut access = self.access.lock().await;
+		let mut access = self.access.write().await;
 		crate::capabilities::skills::direct(store, &mut access, run).await
 	}
 	pub async fn direct_skill_body(
@@ -322,7 +333,7 @@ impl WorkerAuthority {
 		skill_id: Uuid,
 		digest: &str,
 	) -> Result<String> {
-		let mut access = self.access.lock().await;
+		let mut access = self.access.write().await;
 		crate::capabilities::skills::direct_body(store, &mut access, run, skill_id, digest).await
 	}
 	pub async fn direct_skill_file(
@@ -333,13 +344,13 @@ impl WorkerAuthority {
 		digest: &str,
 		path: &str,
 	) -> Result<Option<Vec<u8>>> {
-		let mut access = self.access.lock().await;
+		let mut access = self.access.write().await;
 		crate::capabilities::skills::direct_file(store, &mut access, run, skill_id, digest, path)
 			.await
 	}
 	pub async fn workspace_record(&self, workspace: Uuid, kind: &str, id: Uuid) -> Result<Value> {
 		self.access
-			.lock()
+			.write()
 			.await
 			.workspace_record(workspace, kind, id)
 			.await
@@ -351,7 +362,7 @@ impl WorkerAuthority {
 		parent: Uuid,
 	) -> Result<ChildTaskSummary> {
 		self.access
-			.lock()
+			.write()
 			.await
 			.workspace_children(workspace, parent)
 			.await
@@ -365,7 +376,7 @@ impl WorkerAuthority {
 		node: &str,
 		agent: &EntityRef,
 	) -> Result<Delegation> {
-		let lease = self.access.lock().await;
+		let lease = self.access.write().await;
 		let mut access = Access::under_lease(&lease).await?;
 		let result = aidash_application::authorization::worker_tasks::delegate(
 			&mut crate::bootstrap::worker_task_scope(f, &mut access),
@@ -379,7 +390,7 @@ impl WorkerAuthority {
 		access.finish(result).await
 	}
 	pub async fn discover(&self, f: &Federation, search: &Search) -> Result<Discovery> {
-		let mut access = self.access.lock().await;
+		let mut access = self.access.write().await;
 		super::peer::discovery::discover_in(f, &mut access, search).await
 	}
 }
@@ -404,7 +415,7 @@ pub(crate) use aidash_application::ports::execution::HumanMediaBatch;
 
 pub(crate) struct Guard {
 	remote: Option<Federation>,
-	access: Arc<Mutex<Access>>,
+	access: Arc<RwLock<Access>>,
 	run: Run,
 	agent: AgentConfig,
 }
@@ -426,7 +437,7 @@ pub(in crate::apps::identity) async fn authorize_guard(
 
 struct SnapshotAuthority {
 	remote: Option<Federation>,
-	access: Arc<Mutex<Access>>,
+	access: Arc<RwLock<Access>>,
 	run: Run,
 }
 #[async_trait::async_trait]
@@ -451,7 +462,7 @@ impl aidash_application::ports::bindings::BindingAuthority for SnapshotAuthority
 		if run.id != self.run.id {
 			return Err(aidash_application::Error::Forbidden);
 		}
-		let mut access = self.access.lock().await;
+		let mut access = self.access.write().await;
 		if binding.identity.registry_node != access.node_id {
 			return Err(aidash_application::Error::Forbidden);
 		}
@@ -489,13 +500,13 @@ impl Guard {
 		.await?;
 		Ok(entry.map(|entry| Self {
 			remote: entry.remote.then(|| f.clone()),
-			access: Arc::new(Mutex::new(entry.scope)),
+			access: Arc::new(RwLock::new(entry.scope)),
 			run: run.clone(),
 			agent: entry.agent,
 		}))
 	}
 	pub async fn suspend(&self) -> Result<()> {
-		let mut access = self.access.lock().await;
+		let mut access = self.access.write().await;
 		if access.tx.is_active() {
 			access.suspend().await?;
 		}
@@ -524,7 +535,7 @@ impl Guard {
 	/// The executing node's local Tenant of this worker: for a remote Run, the
 	/// receiver's mapped Tenant, never the Home node's.
 	pub(crate) async fn tenant(&self) -> String {
-		self.access.lock().await.identity.tenant.clone()
+		self.access.write().await.identity.tenant.clone()
 	}
 	async fn refresh_remote(&self) -> Result<()> {
 		aidash_application::authorization::tools::refresh(&crate::bootstrap::agent_tool_repository(
@@ -574,7 +585,7 @@ impl Guard {
 			});
 		}
 		let (tenant, subject, authorization_revision) = {
-			let access = self.access.lock().await;
+			let access = self.access.write().await;
 			(
 				access.identity.tenant.clone(),
 				access.identity.subject.clone(),
@@ -625,7 +636,7 @@ impl Guard {
 		let reserved =
 			serde_json::to_vec(&serde_json::json!({"workspace":semantic,"memory":null}))?.len();
 		let available = budget.saturating_sub(reserved);
-		let mut access = self.access.lock().await;
+		let mut access = self.access.write().await;
 		let memory = crate::semantic::services::memory_context::retrieve(
 			store,
 			&mut crate::semantic::service::Lease::Inherited(&mut access),
@@ -699,7 +710,7 @@ impl Guard {
 				)
 				.await?;
 			} else {
-				let mut access = self.access.lock().await;
+				let mut access = self.access.write().await;
 				let mut lease = crate::semantic::service::Lease::Inherited(&mut access);
 				crate::semantic::services::memory_context::recheck(
 					store, &mut lease, &self.run, semantic,
@@ -834,7 +845,7 @@ impl Guard {
 		if self.remote.is_some() {
 			return Ok(false);
 		}
-		let mut access = self.access.lock().await;
+		let mut access = self.access.write().await;
 		aidash_application::authorization::records::messages_readable(
 			&mut crate::bootstrap::run_visibility_scope(&mut access),
 			self.run.workspace_id,
@@ -846,7 +857,7 @@ impl Guard {
 
 	pub async fn inference(&self) -> Result<()> {
 		self.refresh_remote().await?;
-		let mut access = self.access.lock().await;
+		let mut access = self.access.write().await;
 		self.authorize_inference_with(&mut access).await
 	}
 
@@ -870,7 +881,7 @@ impl Guard {
 		messages: &[(i64, Uuid, usize)],
 		model: &crate::registry::ModelConfig,
 	) -> Result<HumanMediaBatch> {
-		let mut access = self.access.lock().await;
+		let mut access = self.access.write().await;
 		aidash_application::execution::media::authorized(
 			&mut crate::bootstrap::scoped_media(&mut access),
 			self.run.workspace_id,
@@ -940,7 +951,7 @@ impl aidash_application::ports::execution::summary::SummaryAuthorization for Sum
 	) -> aidash_application::Result<aidash_domain::semantic::remote::Binding> {
 		use aidash_application::ports::generation::compaction::remote::RemoteCompactionAuthority as _;
 		let remote = self.guard.remote.as_ref().ok_or(Error::Forbidden)?;
-		let mut access = self.guard.access.lock().await;
+		let mut access = self.guard.access.write().await;
 		let mut scope = crate::bootstrap::generation_remote_compaction_scope(&mut access, remote);
 		// Reacquire the Home's current lease before reading its disclosed pins.
 		scope.suspend().await?;
@@ -956,7 +967,7 @@ impl aidash_application::ports::execution::summary::SummaryAuthorization for Sum
 		model: &EntityRef,
 		action: &str,
 	) -> aidash_application::Result<crate::registry::Entry> {
-		let mut access = self.guard.access.lock().await;
+		let mut access = self.guard.access.write().await;
 		catalog::entry(&mut access, model, action)
 			.await
 			.map_err(Into::into)
@@ -966,7 +977,7 @@ impl aidash_application::ports::execution::summary::SummaryAuthorization for Sum
 		summarizer: &aidash_domain::context::summary::SummaryProvider,
 		request_bytes: i64,
 	) -> aidash_application::Result<()> {
-		let mut access = self.guard.access.lock().await;
+		let mut access = self.guard.access.write().await;
 		aidash_application::generation::summary::reserve(
 			&mut crate::bootstrap::generation_compaction_authority_scope(&mut access),
 			&crate::bootstrap::generation_summary_repository(&self.f.store),
@@ -981,7 +992,7 @@ impl aidash_application::ports::execution::summary::SummaryAuthorization for Sum
 		&self,
 		summarizer: &aidash_domain::context::summary::SummaryProvider,
 	) -> aidash_application::Result<()> {
-		let mut access = self.guard.access.lock().await;
+		let mut access = self.guard.access.write().await;
 		aidash_application::generation::summary::recheck(
 			&mut crate::bootstrap::generation_compaction_authority_scope(&mut access),
 			&self.f.store.node_id,
@@ -1062,7 +1073,7 @@ pub(crate) async fn cancel_if_scoped(store: &Store, run: &Run, token: Uuid) -> R
 }
 
 pub(crate) struct DeliveryGuard {
-	access: Arc<Mutex<Access>>,
+	access: Arc<RwLock<Access>>,
 	remote: bool,
 }
 
@@ -1074,7 +1085,7 @@ impl DeliveryGuard {
 		)
 		.await?;
 		Ok(entry.map(|entry| Self {
-			access: Arc::new(Mutex::new(entry.scope)),
+			access: Arc::new(RwLock::new(entry.scope)),
 			remote: entry.remote,
 		}))
 	}

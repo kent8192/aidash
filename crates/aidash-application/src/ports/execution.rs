@@ -33,6 +33,8 @@ pub struct ExecutionAgent {
 	pub conversation_memory: bool,
 	/// Opt-in Context Policy from the immutable Agent version.
 	pub context_policy: Option<aidash_domain::context::policy::ContextPolicy>,
+	/// The Run Tool Parallelism ceiling pinned with the Binding snapshot.
+	pub tool_parallelism: usize,
 	/// Pinned through the Run's Binding snapshot; Legacy when the definition
 	/// names none.
 	pub projection_version: aidash_domain::projection::ProjectionVersion,
@@ -43,6 +45,39 @@ pub struct ExecutionAgent {
 pub struct InvocationOutcome {
 	pub status: String,
 	pub result: Option<Value>,
+}
+/// One call journaled by Tool Batch admission.
+pub struct BatchInvocation<'a> {
+	pub key: &'a str,
+	pub name: &'a str,
+	pub input: &'a Value,
+}
+/// The process's Tool Parallelism ceiling, shared by every worker in the process.
+/// Each executing call of any Run holds one permit.
+#[derive(Clone)]
+pub struct ToolSlots {
+	ceiling: usize,
+	permits: Arc<tokio::sync::Semaphore>,
+}
+impl ToolSlots {
+	pub fn new(ceiling: usize) -> Self {
+		let ceiling = ceiling.max(1);
+		Self {
+			ceiling,
+			permits: Arc::new(tokio::sync::Semaphore::new(ceiling)),
+		}
+	}
+	pub fn ceiling(&self) -> usize {
+		self.ceiling
+	}
+	/// Wait in FIFO order. A call never holds a permit while waiting for another.
+	pub async fn acquire(&self) -> Result<tokio::sync::OwnedSemaphorePermit> {
+		self.permits
+			.clone()
+			.acquire_owned()
+			.await
+			.map_err(|_| crate::Error::Conflict("tool slots closed".into()))
+	}
 }
 pub struct HumanMediaBatch {
 	pub parts: Vec<ContentPart>,
@@ -120,6 +155,16 @@ pub trait ExecutionStore: Send + Sync {
 		input: &Value,
 		replay_safe: bool,
 	) -> Result<InvocationOutcome>;
+	/// Admit a Tool Batch atomically: persist the Run (whose ToolCall state
+	/// records the batch end) and journal every call as STARTED under the
+	/// worker lease and the stale-input check, before any call is dispatched.
+	/// Batched calls are replay-safe; existing rows are returned unchanged.
+	async fn invocation_start_batch(
+		&self,
+		run: &Run,
+		token: Uuid,
+		calls: &[BatchInvocation<'_>],
+	) -> Result<Vec<InvocationOutcome>>;
 	async fn invocation_finish(
 		&self,
 		run: &Run,
@@ -257,6 +302,24 @@ pub trait ExecutionTool: Send + Sync {
 	fn contract(&self) -> aidash_domain::tool::ToolContract;
 	fn replay_safe(&self) -> bool;
 	async fn invoke(&self, run: &Run, input: Value, key: &str) -> Result<Value>;
+	/// Resource Claims and output bound derived by trusted provider code from
+	/// validated arguments. `None` keeps the call on the sequential path.
+	fn concurrent_call(
+		&self,
+		_input: &Value,
+	) -> Option<aidash_domain::tool::concurrency::ConcurrentCall> {
+		None
+	}
+	/// Dispatch-time checks that `invoke` performs before execution. A Tool Batch
+	/// admits every call before dispatching any of them, while it holds the
+	/// Run's authority scope, so checks never wait behind a sibling's execution.
+	async fn admit(&self, _run: &Run, input: Value) -> Result<Value> {
+		Ok(input)
+	}
+	/// Execute an input returned by `admit`.
+	async fn dispatch(&self, run: &Run, admitted: Value, key: &str) -> Result<Value> {
+		self.invoke(run, admitted, key).await
+	}
 }
 #[async_trait]
 pub trait InferenceReservation: Send {
@@ -333,6 +396,10 @@ pub trait ExecutionEnvironment: Send + Sync {
 	fn authority(&self) -> Option<&dyn ExecutionAuthority>;
 	fn home(&self, run: &Run) -> Box<dyn ExecutionHome>;
 	fn agent(&self, entry: &Entry) -> Result<ExecutionAgent>;
+	/// The process's Tool Parallelism ceiling. `None` keeps every call sequential.
+	fn tool_slots(&self) -> Option<&ToolSlots> {
+		None
+	}
 	fn provider(&self, model: ModelConfig) -> Result<Arc<dyn ModelProvider>>;
 	fn compactor(&self) -> Result<Box<dyn CompactionClassifier>>;
 	fn binding_resolver(&self) -> &dyn super::bindings::BindingResolver;
