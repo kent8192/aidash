@@ -6,6 +6,7 @@ pub(crate) mod discard;
 pub(crate) mod indexing;
 pub(crate) mod memory_decay;
 pub(crate) mod memory_graph;
+pub(crate) mod memory_impact;
 pub(crate) mod memory_reads;
 pub(crate) mod memory_receipts;
 pub(crate) mod memory_scope;

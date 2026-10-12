@@ -25887,6 +25887,16 @@
   },
   {
     "method": "POST",
+    "path": "/api/workspaces/{workspace}/memory/units/impact",
+    "name": "memory-impact",
+    "source": "server/src/apps/knowledge/views/memory.rs",
+    "json": true,
+    "uuid_parameters": ["workspace"],
+    "query_parameters": [],
+    "response": null
+  },
+  {
+    "method": "POST",
     "path": "/api/workspaces/{workspace}/memory/participants",
     "name": "memory-participant",
     "source": "server/src/apps/knowledge/views/memory.rs",

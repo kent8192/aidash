@@ -205,7 +205,9 @@ Run as `semantic.recovery`.
 - `wait`: the Run retries on its own schedule.
 - `retry_unchanged_binding`: an authorized manual resume. It passes only if
   every pinned revision and current authority still hold; otherwise the Run
-  pauses again at its next boundary.
+  pauses again at its next boundary. The resume endpoint still accepts an
+  `invalidated` Run, which then pauses again with the generic authority pause
+  and no inference.
 - `create_follow_up_task`: a new Task with instructions the requester supplies.
   For a remote Run, the Home's follow-up endpoint creates it without parent or
   dependency links; for a local Run, create an ordinary Task.
@@ -218,3 +220,31 @@ never reported as a source change
 (`server/src/apps/knowledge/repositories/memory_reads/tests.rs`). "Obtain fresh context and re-evaluate" is
 not offered to a paused Run: an Ordered Run re-retrieves once only when a
 reused retrieval goes stale before it is sent (ADR 0020).
+
+## Impact inspection
+
+`POST /api/workspaces/{workspace}/memory/units/impact` takes the provider, the
+Bank and up to the pinned `max_candidates` Unit IDs, and needs `memory.read` on
+that Bank. For each Unit it returns the revision a Run may still read
+(`readable_revision`, `null` once the Unit is deleted, withdrawn or retired), the
+Runs that read it and the live derived Units that depend on it. The same view
+serves as the preview before a change and as the post-change view: a Run read
+is `fenced` once its revision is no longer readable.
+
+- The view is content-free: identities, revisions, kinds, phase and control,
+  never Unit text, subjects or Run content. The memory page shows it under
+  each Unit as "Dependent Runs and derived memory".
+- A Run is listed only if its base disclosure holds for the requester (task
+  visibility, `run.read` and `memory.read` on its participant). A derived Unit
+  is listed only with `memory.read` on its Bank. Traversal continues through
+  hidden Units, but nothing hidden is listed or counted.
+- Bounds: at most 64 visible Runs per Unit from at most 256 Run read records,
+  and the pinned `max_graph_visits` for derived content. `complete` is `false`
+  when a bound stopped a scan; because hidden records also consume the scan,
+  the flag is the only signal they can affect.
+- Runs on other Nodes are not listed; the Home's remote status reports their
+  `semantic.recovery`.
+- The view is neither a lock nor a promise. Every mutation rechecks revisions
+  and authority when it commits.
+
+The test is `impact_lists_visible_dependents_before_and_after_a_change`.

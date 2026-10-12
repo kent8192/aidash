@@ -293,3 +293,183 @@ async fn another_reader(store: &Store, workspace: Uuid, run: Uuid) -> Uuid {
 	tx.commit().await.unwrap();
 	reader
 }
+
+/// Impact inspection is one content-free view: before a change it lists the
+/// visible Runs that would be fenced and the derived Units that depend on the
+/// Unit; after the change the same Runs are reported as fenced. A Run the
+/// requester cannot see is neither listed nor counted.
+#[rstest]
+#[tokio::test]
+async fn impact_lists_visible_dependents_before_and_after_a_change(
+	#[future] database: DatabaseFixture,
+	bounds: Bounds,
+) {
+	use aidash_domain::memory::impact::ImpactQuery;
+	use aidash_server::apps::knowledge::services::memory_impact::impact;
+	use axum::{Json, Router, routing::post};
+	// Arrange: the derivation role answers with an Observation of its input.
+	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+	let endpoint = format!("http://{}/v1", listener.local_addr().unwrap());
+	let app = Router::new().route("/v1/chat/completions", post(|Json(input): Json<serde_json::Value>| async move {
+		let context: serde_json::Value = serde_json::from_str(input["messages"][1]["content"].as_str().unwrap()).unwrap();
+		let units: Vec<Unit> = serde_json::from_value(context["units"].clone()).unwrap();
+		let mut output = content("Rollouts happen early in the week.");
+		output.kind = serde_json::from_value(context["kind"].clone()).unwrap();
+		output.mental_model = serde_json::from_value(context["mental_model"].clone()).unwrap();
+		output.evidence = units.iter().map(Unit::evidence).collect();
+		Json(json!({"choices":[{"finish_reason":"stop","message":{"content":serde_json::to_string(&output).unwrap()}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}))
+	}));
+	let server = tokio::spawn(async move {
+		axum::serve(listener, app).await.unwrap();
+	});
+	let database = database.await;
+	let (store, _, workspace) = setup_endpoint(&database, bounds, &endpoint).await;
+	let bank = memory::create_participant(
+		&store,
+		&Actor::Operator,
+		workspace,
+		memory::CreateParticipant {
+			agent: reference("a"),
+		},
+	)
+	.await
+	.unwrap()
+	.bank;
+	let source = memory::mutate(
+		&store,
+		&Actor::Operator,
+		mutation(
+			&bank,
+			Change::Add {
+				id: Uuid::now_v7(),
+				content: content("Secret rollout window: Tuesday."),
+			},
+		),
+	)
+	.await
+	.unwrap()
+	.remove(0);
+	let mut draft = content("Rollouts happen early in the week.");
+	draft.kind = Kind::Observation;
+	draft.evidence = vec![source.evidence()];
+	let derivation = mutation(
+		&bank,
+		Change::Add {
+			id: Uuid::now_v7(),
+			content: draft,
+		},
+	);
+	let memory::Outcome::Units(derived) = memory::operate(
+		&store,
+		&Actor::Operator,
+		memory::Operation {
+			operation_id: derivation.operation_id,
+			provider: reference("p"),
+			bank: bank.clone(),
+			action: memory::Action::Derive {
+				kind: Kind::Observation,
+				sources: vec![source.evidence()],
+				mutation: derivation,
+			},
+		},
+	)
+	.await
+	.unwrap() else {
+		panic!("derived unit");
+	};
+	let (scope, run) = recorded_run(&store, &bank, &[source.id]).await;
+	let actor = Actor::Subject(scope.identity.clone());
+	let query = ImpactQuery {
+		provider: reference("p"),
+		bank: bank.clone(),
+		units: vec![source.id],
+	};
+
+	// Act: preview
+	let before = impact(&store, &actor, query.clone()).await.unwrap();
+
+	// Assert
+	assert!(before.complete);
+	assert_eq!(before.units[0].readable_revision, Some(1));
+	assert_eq!(
+		before.units[0]
+			.runs
+			.iter()
+			.map(|run| (run.id, run.read_revision, run.fenced))
+			.collect::<Vec<_>>(),
+		vec![(run, 1, false)],
+		"the reader would be fenced by a change but is not yet"
+	);
+	assert_eq!(
+		before.units[0]
+			.derived
+			.iter()
+			.map(|unit| unit.id)
+			.collect::<Vec<_>>(),
+		vec![derived[0].id]
+	);
+	assert!(
+		!serde_json::to_string(&before).unwrap().contains("rollout"),
+		"the view carries no memory content"
+	);
+
+	// Act: change, then the post-change view
+	memory::mutate(
+		&store,
+		&Actor::Operator,
+		mutation(
+			&bank,
+			Change::Correct {
+				id: source.id,
+				expected_revision: 1,
+				content: content("Secret rollout window: Thursday."),
+			},
+		),
+	)
+	.await
+	.unwrap();
+	let after = impact(&store, &actor, query.clone()).await.unwrap();
+
+	// Assert
+	assert_eq!(after.units[0].readable_revision, Some(2));
+	assert_eq!(
+		after.units[0]
+			.runs
+			.iter()
+			.map(|run| (run.id, run.read_revision, run.fenced))
+			.collect::<Vec<_>>(),
+		vec![(run, 1, true)],
+		"the post-change view reports the reader as fenced"
+	);
+	assert!(
+		after.units[0].derived.is_empty(),
+		"the derived Unit retired with its source revision: {:?}",
+		after.units[0].derived
+	);
+
+	// Act: the requester loses sight of the Run
+	aidash_server::authorization::Authorization {
+		pool: store.pool.clone(),
+	}
+	.replace(
+		"acme",
+		2,
+		serde_json::from_value(json!({"tenant":"acme","subjects":{"alice":{"kind":"user"}},"policies":[
+			{"id":"read","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}},
+			{"id":"hide-runs","effect":"deny","subjects":{"any":true},"actions":["run.read"],"resources":{"kinds":["*"]}}
+		]}))
+		.unwrap(),
+		"operator",
+	)
+	.await
+	.unwrap();
+	let hidden = impact(&store, &actor, query).await.unwrap();
+
+	// Assert
+	assert!(hidden.units[0].runs.is_empty());
+	assert!(
+		hidden.complete,
+		"a hidden Run within the scan bound leaves no trace, not even an incomplete flag"
+	);
+	server.abort();
+}

@@ -11,6 +11,7 @@ pub mod consolidation;
 pub mod decay;
 pub mod extraction;
 pub mod graph;
+pub mod impact;
 pub mod recall;
 pub mod recovery;
 
