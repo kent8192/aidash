@@ -10,7 +10,7 @@ from cloud import run, bounded_timeout
 READ_ROLE = "roles/identityplatform.viewer"
 MFA_STATES = ("disabled", "enabled", "mandatory")
 # GCIP accepts 0-10 adjacent 30-second steps around the current TOTP code.
-TOTP_ADJACENT_INTERVALS = range(0, 11)
+TOTP_ADJACENT_INTERVALS = range(11)
 
 
 def declared_mfa_config(declared):
