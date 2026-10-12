@@ -61,6 +61,7 @@ impl ProgressBuffer {
 
 	/// Store pending progress every `FLUSH_INTERVAL`, or sooner once
 	/// `FLUSH_BYTES` are pending, until the remainder after `finish` is stored.
+	/// Called only after `finish`, it stores withheld progress in one pass.
 	/// A failed or timed-out append ends progress for this attempt; inference
 	/// continues.
 	pub(super) async fn flush(

@@ -8,12 +8,38 @@ variables {
 run "trusted_workflow_only" {
   command = plan
   assert {
-    condition     = strcontains(google_iam_workload_identity_pool_provider.github.attribute_condition, "assertion.repository_id == '1378229915'") && strcontains(google_iam_workload_identity_pool_provider.github.attribute_condition, "gcp-environments.yml@refs/heads/main") && strcontains(google_iam_workload_identity_pool_provider.github.attribute_condition, "assertion.ref == 'refs/heads/main'")
+    condition     = strcontains(google_iam_workload_identity_pool_provider.github.attribute_condition, "assertion.repository_id == '1378229915'") && strcontains(google_iam_workload_identity_pool_provider.github.attribute_condition, "gcp-environments.yml@refs/heads/main") && strcontains(google_iam_workload_identity_pool_provider.github.attribute_condition, "assertion.ref == 'refs/heads/main'") && endswith(google_iam_workload_identity_pool_provider.github.attribute_condition, "&& assertion.environment in ['gcp-deploy', 'gcp-deploy-release']")
     error_message = "Name-only or PR-branch OIDC trust is not acceptable."
   }
   assert {
     condition     = google_storage_bucket.state.public_access_prevention == "enforced" && google_storage_bucket.state.force_destroy == false
     error_message = "State must remain private and protected from accidental destruction."
+  }
+}
+run "environment_names_are_not_injectable" {
+  command = plan
+  variables { deploy_environment = "x' || true || '" }
+  expect_failures = [var.deploy_environment]
+}
+run "release_environment_name_is_not_injectable" {
+  command = plan
+  variables { release_environment = "x' || true || '" }
+  expect_failures = [var.release_environment]
+}
+run "environments_must_differ" {
+  command = plan
+  variables { release_environment = "gcp-deploy" }
+  expect_failures = [var.release_environment]
+}
+run "renamed_environments_replace_both_names" {
+  command = plan
+  variables {
+    deploy_environment  = "unattended"
+    release_environment = "reviewed"
+  }
+  assert {
+    condition     = endswith(google_iam_workload_identity_pool_provider.github.attribute_condition, "&& assertion.environment in ['unattended', 'reviewed']") && !strcontains(google_iam_workload_identity_pool_provider.github.attribute_condition, "gcp-deploy")
+    error_message = "The condition lists exactly the two configured Environments."
   }
 }
 run "deploy_manages_gke_without_ssh" {

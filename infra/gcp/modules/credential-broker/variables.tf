@@ -44,7 +44,6 @@ variable "bind_runtime_signer" {
   type        = bool
   default     = true
 }
-variable "deploy_service_account" { type = string }
 variable "broker_service_account_email" {
   description = "broker_service_accounts[environment_id] from human-run bootstrap; #137 owns the SA and BYOK read grant."
   type        = string
@@ -56,8 +55,8 @@ variable "broker_service_account_email" {
 variable "image" {
   type = string
   validation {
-    condition     = can(regex("@sha256:[a-f0-9]{64}$", var.image))
-    error_message = "The broker image must be pinned by digest."
+    condition     = can(regex("^us-central1-docker\\.pkg\\.dev/${var.project_id}/aidash/broker@sha256:[a-f0-9]{64}$", var.image))
+    error_message = "The broker image must be this project's private Artifact Registry aidash/broker image pinned by digest."
   }
 }
 variable "region" {

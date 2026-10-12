@@ -158,6 +158,8 @@ fn usage_value() -> Usage {
 		compaction_calls: 2,
 		embedding_calls: 4,
 		embedding_call_limit: 20,
+		summary_calls: 0,
+		summary_call_limit: 0,
 	}
 }
 #[async_trait]

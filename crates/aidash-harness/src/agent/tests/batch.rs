@@ -385,8 +385,7 @@ fn keys(run: &Run, indexes: impl IntoIterator<Item = usize>) -> Vec<String> {
 /// The adopted Context Journal: call ids and results, in history order.
 fn adopted(run: &Run) -> Vec<(String, Value)> {
 	run.context
-		.history
-		.iter()
+		.events()
 		.filter_map(|event| match event {
 			ContextEvent::Tool { call, result } => Some((call.id.clone(), result.clone())),
 			_ => None,
@@ -603,6 +602,44 @@ impl ExecutionStore for Bench {
 	async fn run_message_has_media(&self, _messages: &[Uuid]) -> Result<bool> {
 		Ok(false)
 	}
+	async fn context_journal(
+		&self,
+		_run: Uuid,
+		_from: u64,
+		_through: u64,
+	) -> Result<Vec<aidash_domain::context::HistoryEntry>> {
+		unexpected("ExecutionStore.context_journal")
+	}
+	async fn journal_context(&self, _run: &Run, _token: Uuid) -> Result<()> {
+		unexpected("ExecutionStore.journal_context")
+	}
+	async fn begin_compaction(
+		&self,
+		_run: &Run,
+		_token: Uuid,
+		_attempt: &aidash_domain::context::recovery::Attempt,
+		_call_budget: u32,
+	) -> Result<()> {
+		unexpected("ExecutionStore.begin_compaction")
+	}
+	async fn settle_compaction(
+		&self,
+		_run: &Run,
+		_token: Uuid,
+		_attempt: Uuid,
+		_settlement: &aidash_domain::context::recovery::Settlement,
+	) -> Result<()> {
+		unexpected("ExecutionStore.settle_compaction")
+	}
+	async fn adopt_compaction(
+		&self,
+		_run: &Run,
+		_token: Uuid,
+		_attempt: Uuid,
+		_settlement: &aidash_domain::context::recovery::Settlement,
+	) -> Result<()> {
+		unexpected("ExecutionStore.adopt_compaction")
+	}
 }
 
 #[async_trait]
@@ -732,6 +769,22 @@ impl ExecutionAuthority for Bench {
 	async fn resume(&self) -> Result<()> {
 		unexpected("ExecutionAuthority.resume")
 	}
+	async fn reserve_summary(
+		&self,
+		_token: Uuid,
+		_summarizer: &aidash_domain::context::summary::SummaryProvider,
+		_window: usize,
+		_output: u32,
+		_request: &ModelRequest,
+	) -> Result<Option<Box<dyn InferenceReservation>>> {
+		unexpected("ExecutionAuthority.reserve_summary")
+	}
+	async fn recheck_summary(
+		&self,
+		_summarizer: &aidash_domain::context::summary::SummaryProvider,
+	) -> Result<()> {
+		unexpected("ExecutionAuthority.recheck_summary")
+	}
 }
 
 #[async_trait]
@@ -781,6 +834,7 @@ impl ExecutionEnvironment for Bench {
 			max_steps: 64,
 			allow_task_creation: None,
 			conversation_memory: false,
+			context_policy: None,
 			tool_parallelism: self.0.parallelism,
 			projection_version: Default::default(),
 			prompt_cache: Default::default(),
@@ -881,6 +935,13 @@ impl ExecutionEnvironment for Bench {
 		_model: &ModelConfig,
 	) -> Result<HumanMediaBatch> {
 		unexpected("ExecutionEnvironment.operator_human_message_media")
+	}
+	async fn summary_dependencies_current(
+		&self,
+		_run: &Run,
+		_dependencies: &aidash_domain::context::summary::SummaryDependencies,
+	) -> Result<bool> {
+		unexpected("ExecutionEnvironment.summary_dependencies_current")
 	}
 }
 
@@ -986,8 +1047,7 @@ async fn out_of_order_finishes_are_adopted_in_call_order() {
 	let calls = &run.state.tool().unwrap().response.tool_calls;
 	let history_calls: Vec<_> = run
 		.context
-		.history
-		.iter()
+		.events()
 		.filter_map(|event| match event {
 			ContextEvent::Tool { call, .. } => Some(call.clone()),
 			_ => None,

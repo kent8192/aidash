@@ -1,10 +1,14 @@
 //! Failure classifications shared by worker ports and native adapters.
-use aidash_domain::semantic::Failure as SemanticFailure;
+use aidash_domain::{
+	context::recovery::Failure as ContextFailure, semantic::Failure as SemanticFailure,
+};
 
 /// Adapter classification retains transport details outside the use case.
 #[derive(Debug)]
 pub enum ExecutionFailure {
 	Semantic(SemanticFailure),
+	/// A typed context-recovery outcome. It pauses the Run; never a transport retry.
+	Context(ContextFailure),
 	Authority {
 		identity_unavailable: bool,
 	},
@@ -36,6 +40,7 @@ impl ExecutionFailure {
 	pub fn message(&self) -> String {
 		match self {
 			Self::Semantic(reason) => reason.to_string(),
+			Self::Context(reason) => reason.to_string(),
 			Self::Authority {
 				identity_unavailable: true,
 			} => "external identity status is unavailable".into(),

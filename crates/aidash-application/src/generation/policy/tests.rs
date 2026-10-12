@@ -54,6 +54,7 @@ fn policy(id: &str, revision: i64, spec: Spec) -> Policy {
 		allocated_tokens: 10000,
 		allocated_compaction_calls: 3,
 		allocated_embedding_calls: 4,
+		allocated_summary_calls: 0,
 	}
 }
 

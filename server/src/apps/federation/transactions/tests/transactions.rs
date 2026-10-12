@@ -5,7 +5,6 @@ mod review;
 
 use chrono::{Duration, Utc};
 use common::*;
-use common::{TestEnvironment, test_environment};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
@@ -15,14 +14,14 @@ use uuid::Uuid;
 #[tokio::test]
 async fn paired_subject_completion_preserves_the_stored_execution_chain(
 	#[future(awt)]
-	#[from(test_environment)]
-	environment: std::sync::Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
 	#[case] denied: bool,
 ) {
 	use aidash_server::transactions::{Manifest, coordinator, participant};
 	use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
-	let (f, url, schema) = setup(&environment).await;
-	let app = common::application(f.clone()).await;
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
 	let (mut policy, token, task_id) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let (status, body) = request(
 		&app,
@@ -130,15 +129,15 @@ async fn paired_subject_completion_preserves_the_stored_execution_chain(
 #[tokio::test]
 async fn subject_transaction_admission_preserves_only_accepted_obligations(
 	#[future(awt)]
-	#[from(test_environment)]
-	environment: std::sync::Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
 	#[case] steps_before_revocation: usize,
 	#[case] decision: &str,
 	#[case] revision: i64,
 ) {
 	use aidash_server::transactions::{Manifest, coordinator};
-	let (f, url, schema) = setup(&environment).await;
-	let app = common::application(f.clone()).await;
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
 	let (_, subject, task) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let workspace = f.store.task(task).await.unwrap().workspace_id;
 	let manifest: Manifest = serde_json::from_value(json!({
@@ -219,12 +218,12 @@ async fn subject_transaction_admission_preserves_only_accepted_obligations(
 #[tokio::test]
 async fn atomic_submission_validates_the_entire_manifest_before_creating_work(
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
 ) {
 	use aidash_server::{Error, transactions::coordinator};
-	let (f, url, schema) = setup(&_test_environment).await;
-	let app = common::application(f.clone()).await;
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
 	let (_, subject, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let (session_status, session) =
 		request(&app, &subject, "GET", "/api/session", Value::Null).await;
@@ -289,15 +288,21 @@ async fn atomic_submission_validates_the_entire_manifest_before_creating_work(
 		.unwrap()
 		.push(json!({"kind":"external_tool","endpoint":"http://127.0.0.1:9/effect"}));
 	// Native Json extraction rejects unknown mutations before transaction admission.
-	let client = app.client();
-	client
-		.set_header("Authorization", &format!("Bearer {}", f.config.api_token))
-		.await
-		.unwrap();
-	let rejected = client
-		.post("/api/transactions", &external, "json")
-		.await
-		.unwrap();
+	let authorization = format!("Bearer {}", f.config.api_token);
+	// reinhardt-web#6672: do not mix shared default and per-request credentials.
+	let rejected = async {
+		let client = &(app.client());
+		let mut request = client
+			.request(http::Method::POST, "/api/transactions")
+			.body(bytes::Bytes::copy_from_slice(
+				external.to_string().as_bytes(),
+			))
+			.header(http::header::CONTENT_TYPE, "application/json");
+		request = request.header("Authorization", authorization.as_str());
+		request.send().await
+	}
+	.await
+	.unwrap();
 	assert_eq!(rejected.status_code(), 422, "{}", rejected.text());
 	assert_eq!(rejected.content_type(), Some("text/plain; charset=utf-8"));
 	assert!(
@@ -327,12 +332,12 @@ async fn atomic_submission_validates_the_entire_manifest_before_creating_work(
 #[tokio::test]
 async fn subject_transaction_requires_all_authority_before_persisting_a_manifest(
 	#[future(awt)]
-	#[from(test_environment)]
-	environment: std::sync::Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
 	#[case] denied: &str,
 ) {
-	let (f, url, schema) = setup(&environment).await;
-	let app = common::application(f.clone()).await;
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
 	let (mut policy, token, task) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	policy["policies"].as_array_mut().unwrap().push(json!({"id":"deny-transaction", "effect":"deny","subjects":{"any":true},"actions":[denied],"resources":{"kinds":["*"]}}));
 	let auth = aidash_server::authorization::Authorization {
@@ -365,12 +370,12 @@ async fn subject_transaction_requires_all_authority_before_persisting_a_manifest
 #[tokio::test]
 async fn busy_subject_submission_preserves_exact_id_retry_and_current_read_authority(
 	#[future(awt)]
-	#[from(test_environment)]
-	environment: std::sync::Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
 ) {
 	use aidash_server::transactions::coordinator;
-	let (f, url, schema) = setup(&environment).await;
-	let app = common::application(f.clone()).await;
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
 	let (mut policy, token, task) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let workspace = f.store.task(task).await.unwrap().workspace_id;
 	let id = Uuid::new_v4();
@@ -462,12 +467,12 @@ async fn busy_subject_submission_preserves_exact_id_retry_and_current_read_autho
 #[tokio::test]
 async fn authority_control_does_not_unlock_ordinary_mutations(
 	#[future(awt)]
-	#[from(test_environment)]
-	environment: std::sync::Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
 ) {
 	use aidash_server::transactions::{Manifest, coordinator};
-	let (f, url, schema) = setup(&environment).await;
-	let app = common::application(f.clone()).await;
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
 	let (_, token, task) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let workspace = f.store.task(task).await.unwrap().workspace_id;
 	let manifest:Manifest=serde_json::from_value(json!({"id":Uuid::new_v4(),"coordinator":f.config.node_id,"isolation":"serializable","deadline":Utc::now()+Duration::minutes(5),

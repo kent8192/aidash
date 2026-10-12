@@ -27,6 +27,26 @@ variable "trusted_branch" {
   default = "main"
 }
 
+variable "deploy_environment" {
+  type        = string
+  default     = "gcp-deploy"
+  description = "GitHub Environment for unattended, no-build workflow runs (scheduled reconcile, CI updates). Restrict it to the trusted branch; humans configure it in repository settings."
+  validation {
+    condition     = can(regex("^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$", var.deploy_environment))
+    error_message = "Use a plain GitHub Environment name; it is interpolated into the attribute condition."
+  }
+}
+
+variable "release_environment" {
+  type        = string
+  default     = "gcp-deploy-release"
+  description = "GitHub Environment for runs that build and publish new images. Humans give it required reviewers in repository settings."
+  validation {
+    condition     = can(regex("^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$", var.release_environment)) && var.release_environment != var.deploy_environment
+    error_message = "Use a plain GitHub Environment name that differs from deploy_environment; it is interpolated into the attribute condition."
+  }
+}
+
 variable "state_bucket_name" {
   type        = string
   description = "Globally unique private Terraform/lifecycle state bucket name."
@@ -66,5 +86,18 @@ variable "broker_signing_region" {
   validation {
     condition     = var.broker_signing_region == "us-central1"
     error_message = "Broker signing region must be us-central1 to match the managed environments root."
+  }
+}
+variable "security_alert_emails" {
+  description = "Recipients of Credential Broker misuse alerts (#151). Required once any broker environment is configured."
+  type        = set(string)
+  default     = []
+  validation {
+    condition     = alltrue([for email in var.security_alert_emails : can(regex("^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$", email))])
+    error_message = "Use plain email addresses."
+  }
+  validation {
+    condition     = var.byok_project_id == "" || length(var.byok_broker_environments) == 0 || length(var.security_alert_emails) > 0
+    error_message = "Credential Broker alerts need at least one recipient; a silent alert policy detects nothing."
   }
 }
