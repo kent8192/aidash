@@ -161,8 +161,8 @@ impl ModelConfig {
 	}
 
 	/// An Agent may opt in to explicit prompt caching only with the Ordered
-	/// Projection Version on a model that accepts cache breakpoints. Callers
-	/// never drop an opt-in silently (ADR 0019).
+	/// or a later Projection Version on a model that accepts cache
+	/// breakpoints. Callers never drop an opt-in silently (ADR 0019).
 	pub fn require_prompt_cache(
 		&self,
 		prompt_cache: crate::projection::PromptCache,
@@ -178,9 +178,9 @@ impl ModelConfig {
 				EXPLICIT_CACHE_PREFIXES.join(", ")
 			)));
 		}
-		if version != crate::projection::ProjectionVersion::Ordered {
+		if version.is_legacy() {
 			return Err(Error::Invalid(
-				"Agent prompt_cache explicit requires projection_version ordered".into(),
+				"Agent prompt_cache explicit requires projection_version ordered or native".into(),
 			));
 		}
 		Ok(())

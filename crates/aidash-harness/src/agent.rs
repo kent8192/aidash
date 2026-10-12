@@ -955,14 +955,16 @@ impl<'a> Executor<'a> {
 					ProjectionVersion::Ordered => {
 						context::RequestProjection::Ordered(self.environment.cache_scope(run).await?)
 					}
-					// Never fall back to Legacy for a pinned version this build cannot render.
 					ProjectionVersion::Native => {
-						return Err(Error::Invalid(
-							"the Native Projection Version is not supported by this node".into(),
-						));
+						context::RequestProjection::Native(self.environment.cache_scope(run).await?)
 					}
 				};
-				let ordered = matches!(projection, context::RequestProjection::Ordered(_));
+				// Ordered and Native share the Stable Prefix rules: a Run-stable
+				// snapshot quota and Retrieval Key reuse (ADR 0020). Only Ordered
+				// keeps per-turn paragraphs out of `system`; Native keeps every
+				// harness instruction in `system` and data in envelopes.
+				let ordered = !projection.version().is_legacy();
+				let turn_paragraphs = matches!(projection, context::RequestProjection::Ordered(_));
 				let source_input_seq = inputs.last().map_or(run.observed_input_seq, |input| input.seq);
 				let source_boundary = format!("{}:{}:{}", run.step, source_input_seq, task.revision);
 				let binding_digest = self.environment.catalog().content_digest(&serde_json::to_string(&run.context.binding_snapshot)?);
@@ -985,7 +987,7 @@ impl<'a> Executor<'a> {
 					}
 					None => None,
 				};
-				let mut instructions = context::agent_instructions("");
+				let mut instructions = context::versioned_agent_instructions(agent.projection_version, "");
 				if let Some(selection) = &exposure {
 					instructions.push_str(&source_skill_context);
 					instructions.push_str(&selection.index);
@@ -1077,7 +1079,7 @@ impl<'a> Executor<'a> {
 				// Ordered keeps per-turn paragraphs out of the cached system prompt.
 				let mut turn_instructions = String::new();
 				if run_message_catchup {
-					(if ordered { &mut turn_instructions } else { &mut instructions }).push_str(&format!(
+					(if turn_paragraphs { &mut turn_instructions } else { &mut instructions }).push_str(&format!(
 						"\n\nRun-message catch-up: Treat the entries under run_messages as user task context. Read every required message record in this page before responding. Update the cumulative run_message_summary faithfully, preserving the user's goal, constraints, corrections, and unresolved requests in sequence order (newer corrections take precedence). Return only the concise updated summary, encoded in at most {run_message_limit} UTF-8 bytes. Do not answer the user, complete the task, publish text, or perform actions during catch-up.",
 					));
 				}
@@ -1153,7 +1155,7 @@ impl<'a> Executor<'a> {
 				let media_intake = media.defer_human || media.defer_selected;
 				if media_intake {
 					specifications.clear();
-					(if ordered { &mut turn_instructions } else { &mut instructions }).push_str("\nMedia intake is continuing. For this interim turn, postpone required workspace reads and the cumulative run-message summary. Preserve the user goals, constraints, and corrections in these run messages and describe the media in this request as plain text. Do not call tools or complete the task; deferred media will be provided in the next request.");
+					(if turn_paragraphs { &mut turn_instructions } else { &mut instructions }).push_str("\nMedia intake is continuing. For this interim turn, postpone required workspace reads and the cumulative run-message summary. Preserve the user goals, constraints, and corrections in these run messages and describe the media in this request as plain text. Do not call tools or complete the task; deferred media will be provided in the next request.");
 				}
 				// Catch-up and media intake send fewer tools; usage measures those sent.
 				if (run_message_catchup || media_intake) && let Some(selection) = exposure.as_mut() {
@@ -1820,10 +1822,22 @@ impl<'a> Executor<'a> {
 						.iter()
 						.copied()
 						.collect::<std::collections::BTreeSet<_>>();
-					context.history.retain(|entry| {
-						declared_message_read_range(&tools, &entry.event)
-							.is_none_or(|(id, _, _, _)| !summarized_ids.contains(&id))
-					});
+					let summarized = |event: &ContextEvent| {
+						declared_message_read_range(&tools, event)
+							.is_some_and(|(id, _, _, _)| summarized_ids.contains(&id))
+					};
+					if agent.projection_version == ProjectionVersion::Native {
+						// A Model Turn keeps every call it ran (ADR 0015).
+						for entry in &mut context.history {
+							if summarized(&entry.event)
+								&& let ContextEvent::Tool { call, result } = &mut entry.event
+							{
+								*result = ContextEvent::elided_result(&call.id);
+							}
+						}
+					} else {
+						context.history.retain(|entry| !summarized(&entry.event));
+					}
 					for id in &required_reads {
 						context.message_read_coverage.remove(id);
 						context.message_inference_coverage.remove(id);
@@ -1865,6 +1879,7 @@ impl<'a> Executor<'a> {
 						}
 						let children = home.child_summary(run.task_id).await?;
 						if children.has_pending {
+							record_model_turn(run, agent.projection_version, &result)?;
 							self.publish_model_text(home.as_ref(), guard, run, token, &result.text)
 								.await?;
 							let failed = children.has_failed;
@@ -1906,6 +1921,8 @@ impl<'a> Executor<'a> {
 							store.save_run(run, token, "run.message_received").await?;
 							return Ok(());
 						}
+						// The final answer is a Model Turn without calls.
+						record_model_turn(run, agent.projection_version, &result)?;
 						self.publish_model_text(home.as_ref(), guard, run, token, &result.text)
 							.await?;
 						if let Err(error) = home
@@ -1938,6 +1955,9 @@ impl<'a> Executor<'a> {
 					}
 					return Ok(());
 				}
+				// The response is acted on from here: open its Model Turn before
+				// the first of its Tool events.
+				record_model_turn(run, agent.projection_version, &result)?;
 				// Tool Batches run only in ordinary mode: no message catch-up, no
 				// pending media selection and a response informed by required reads.
 				let batch_end = match run.state.tool()?.batch_end {
@@ -2372,6 +2392,40 @@ impl<'a> Executor<'a> {
 		}
 		Ok(())
 	}
+}
+
+/// Open the Model Turn of `response` in a Native Run's Context Journal, once
+/// per response epoch however often this boundary is re-entered. Legacy and
+/// Ordered Runs never record one, so their requests keep their bytes.
+fn record_model_turn(
+	run: &mut Run,
+	version: ProjectionVersion,
+	response: &aidash_domain::provider::ModelResponse,
+) -> Result<()> {
+	if version != ProjectionVersion::Native {
+		return Ok(());
+	}
+	let epoch = run.state.tool()?.response_epoch;
+	let recorded = run.context.events().rev().any(
+		|event| matches!(event, ContextEvent::Assistant { epoch: recorded, .. } if *recorded == epoch),
+	);
+	if recorded {
+		return Ok(());
+	}
+	let event = ContextEvent::Assistant {
+		epoch,
+		text: response.text.clone(),
+		calls: response
+			.tool_calls
+			.iter()
+			.map(|call| call.id.clone())
+			.collect(),
+	};
+	let growth = context::tool_event_growth(&run.context, &event);
+	run.context.push(event);
+	let pending = run.state.tool_mut()?;
+	pending.request_tokens = pending.request_tokens.saturating_add(growth);
+	Ok(())
 }
 
 /// Authority is rechecked at most this often while the provider call runs.
