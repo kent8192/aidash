@@ -2,22 +2,22 @@
 #[path = "../../execution/tests/support/legacy.rs"]
 mod common;
 use aidash_server::authorization::{Authorization, policy::PolicyBundle};
-use common::{TestEnvironment, request, test_environment};
+use common::request;
+use futures_util::FutureExt;
 use rstest::rstest;
 use serde_json::json;
-use std::sync::Arc;
+
 use uuid::Uuid;
 
 #[rstest]
 #[tokio::test]
 async fn configured_host_defaults_are_pending_only_for_atomic_new_tenant_creation(
 	#[future(awt)]
-	#[from(test_environment)]
-	environment: Arc<TestEnvironment>,
+	#[from(host_defaults_application)]
+	application_fixture: common::ApplicationFixture,
 ) {
-	let (mut f, url, database) = common::setup(&environment).await;
-	f.config.default_host_packages = vec!["task_assign".into(), "shell".into()];
-	let app = common::application(f.clone()).await;
+	let (f, url, database) = application_fixture.runtime.parts();
+	let app = application_fixture.application.clone();
 	let authorization = Authorization {
 		pool: f.store.pool.clone(),
 	};
@@ -94,6 +94,7 @@ async fn configured_host_defaults_are_pending_only_for_atomic_new_tenant_creatio
 	assert!(updated.get("pending_host_packages").is_none());
 	// A subsequent application instance performs no tenant provisioning.
 	drop(app);
+	// Act: restart after the committed tenant provisioning changes.
 	let restarted = common::application(f.clone()).await;
 	assert!(authorization.catalog("new-owner").await.unwrap().is_empty());
 	use reinhardt::query::{Alias, PostgresQueryBuilder, Query, QueryStatementBuilder as _};
@@ -122,11 +123,11 @@ async fn configured_host_defaults_are_pending_only_for_atomic_new_tenant_creatio
 #[tokio::test]
 async fn operator_host_packages_remain_pending_until_the_exact_set_is_approved(
 	#[future(awt)]
-	#[from(test_environment)]
-	environment: Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	application_fixture: common::ApplicationFixture,
 ) {
-	let (f, url, database) = common::setup(&environment).await;
-	let app = common::application(f.clone()).await;
+	let (f, url, database) = application_fixture.runtime.parts();
+	let app = application_fixture.application.clone();
 	let authorization = Authorization {
 		pool: f.store.pool.clone(),
 	};
@@ -242,4 +243,27 @@ async fn operator_host_packages_remain_pending_until_the_exact_set_is_approved(
 	);
 	drop(app);
 	common::cleanup(f, &url, &database).await;
+}
+
+#[rstest::fixture]
+fn host_defaults_runtime(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) -> common::RuntimeFuture {
+	async move {
+		let mut r = runtime.await;
+		r.federation.config.default_host_packages = vec!["task_assign".into(), "shell".into()];
+		r
+	}
+	.boxed()
+	.shared()
+}
+#[rstest::fixture]
+fn host_defaults_application(
+	#[from(host_defaults_runtime)] runtime: common::RuntimeFuture,
+	#[from(common::native_application)]
+	#[with(Default::default(),aidash_server::sse::Service::new(Default::default()),std::sync::Arc::new(|r|r),runtime.clone())]
+	application: common::ApplicationFuture,
+) -> common::ApplicationFuture {
+	drop(runtime);
+	application
 }

@@ -12,11 +12,14 @@ use uuid::Uuid;
 #[rstest]
 #[tokio::test]
 async fn atomic_submission_validates_the_entire_manifest_before_creating_work(
-	#[future] endpoint: EndpointFixture,
+	endpoint: crate::endpoint::EndpointFuture,
+	#[from(crate::endpoint::anonymous_client)]
+	#[with(endpoint.clone())]
+	_credential_client_0: crate::endpoint::ClientFuture,
 ) {
 	// Arrange
 	let app = endpoint.await;
-	let subject = subject(&app, "alice").await;
+	let subject = subject(&app, "alice", _credential_client_0.await).await;
 	let created = workspace(&app.operator, "Atomic validation").await;
 	let id = Uuid::new_v4();
 	let manifest = json!({"id":id,"coordinator":app.runtime.config.node_id,"isolation":"serializable",

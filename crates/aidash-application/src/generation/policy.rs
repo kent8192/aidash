@@ -89,6 +89,7 @@ pub fn validate(
 		remote.validate()?;
 		if (spec.embedding.is_some() && remote.embedding.is_some())
 			|| (spec.compaction.is_some() && remote.compaction.is_some())
+			|| (spec.summary.is_some() && remote.summary.is_some())
 		{
 			return Err(Error::Invalid(
 				"select one owning node for each generation provider allowance".into(),
@@ -112,6 +113,12 @@ pub fn validate(
 			|| !(1..=c.call_budget).contains(&c.calls_per_agent)
 	}) {
 		return Err(Error::Invalid("invalid embedding call limits".into()));
+	}
+	if spec.summary.as_ref().is_some_and(|c| {
+		!(1..=1_000_000).contains(&c.call_budget)
+			|| !(1..=c.call_budget).contains(&c.calls_per_agent)
+	}) {
+		return Err(Error::Invalid("invalid summary call limits".into()));
 	}
 	let limits = &spec.limits;
 	if !(1..=512).contains(&limits.max_agents)
@@ -224,7 +231,9 @@ async fn write_in(
 				spec.embedding
 					.iter()
 					.map(|c| (c.provider.clone(), "embedding")),
-			) {
+			)
+			.chain(spec.summary.iter().map(|c| (c.provider.clone(), "model")))
+		{
 			let metadata = scope.approved(tenant, &reference).await?;
 			let entry: aidash_domain::registry::Entry =
 				serde_json::from_value(metadata.ok_or_else(|| {

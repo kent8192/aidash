@@ -210,7 +210,8 @@ export function MeshInspector({
         run.context?.history && [
           copy.toolCalls,
           number.format(
-            run.context.history.filter((entry) => entry.kind === "tool").length,
+            run.context.history.filter((entry) => entry.event.kind === "tool")
+              .length,
           ),
         ],
       ].filter(Boolean) as [string, string][])
