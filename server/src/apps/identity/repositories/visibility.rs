@@ -1,5 +1,5 @@
 //! Read adapters preserve the original query trees and the caller's live authority.
-use crate::apps::execution::capabilities::{serializers::contracts::Area, services::sessions};
+use crate::apps::execution::capabilities::services::sessions;
 use crate::apps::execution::generation::repositories::contracts::RequestAccess;
 use crate::{
 	Result as NativeResult,
@@ -23,39 +23,6 @@ use reinhardt::query::{
 };
 use serde_json::Value;
 use uuid::Uuid;
-
-async fn core_area_visible(access: &mut Access, run: Uuid) -> NativeResult<bool> {
-	let area_id: Option<Uuid> = crate::database::native::query_scalar(
-		&Query::select()
-			.column(Alias::new("area_id"))
-			.from(Alias::new("core_runs"))
-			.and_where(Expr::col(Alias::new("run_id")).eq(Expr::value(run)))
-			.to_string(PostgresQueryBuilder),
-	)
-	.scalar_optional(&mut **access.tx)
-	.await?;
-	let Some(area_id) = area_id else {
-		return Ok(true);
-	};
-	let area: Option<Area> = crate::database::native::query_as(
-		&Query::select()
-			.column(Asterisk)
-			.from(Alias::new("core_areas"))
-			.and_where(Expr::col(Alias::new("id")).eq(Expr::value(area_id)))
-			.and_where(Expr::col(Alias::new("tenant")).eq(Expr::value(&access.identity.tenant)))
-			.to_string(PostgresQueryBuilder),
-	)
-	.fetch_optional(&mut **access.tx)
-	.await?;
-	let Some(area) = area else {
-		return Ok(false);
-	};
-	match sessions::authorize(access, &area, "file.read").await {
-		Ok(()) => Ok(true),
-		Err(crate::Error::Forbidden | crate::Error::NotFound(_)) => Ok(false),
-		Err(error) => Err(error),
-	}
-}
 
 pub(crate) struct Reads<'a> {
 	pub access: &'a mut Access,
@@ -109,7 +76,7 @@ impl LocalRunVisibilityScope for Reads<'_> {
 			.map_err(Into::into)
 	}
 	async fn core_area_visible(&mut self, run: Uuid) -> Result<bool> {
-		core_area_visible(self.access, run)
+		sessions::run_area_readable(self.access, run)
 			.await
 			.map_err(Into::into)
 	}
@@ -269,7 +236,7 @@ impl LocalRunVisibilityScope for NativeReads<'_> {
 			.map_err(Into::into)
 	}
 	async fn core_area_visible(&mut self, run: Uuid) -> Result<bool> {
-		core_area_visible(self.access, run)
+		sessions::run_area_readable(self.access, run)
 			.await
 			.map_err(Into::into)
 	}
