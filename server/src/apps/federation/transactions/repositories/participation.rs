@@ -71,8 +71,10 @@ fn status(row: AtomicParticipant) -> LocalStatus {
 #[async_trait]
 impl ParticipantScope for Scope {
 	async fn now(&mut self) -> Result<DateTime<Utc>> {
+		// Deadline checks run after participant and gate locks may have waited, so they
+		// read the wall clock rather than the transaction's fixed start time.
 		let (sql, values) = Query::select()
-			.expr_as(Expr::current_timestamp(), Alias::new("now"))
+			.expr_as(Expr::cust("CLOCK_TIMESTAMP()"), Alias::new("now"))
 			.build(PostgresQueryBuilder);
 		let row = self
 			.transaction
