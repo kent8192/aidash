@@ -151,6 +151,7 @@ impl Middleware for AccessBoundary {
 					.and_then(|path| {
 						path.strip_suffix("/operator-grant")
 							.or_else(|| path.strip_suffix("/restore"))
+							.or_else(|| path.strip_suffix("/display-erasure"))
 					})
 					.and_then(|id| uuid::Uuid::parse_str(id).ok())
 					== Some(origin.identity_id)

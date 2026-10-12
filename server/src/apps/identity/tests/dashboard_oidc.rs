@@ -894,6 +894,24 @@ async fn unmapped_identity_stays_denied_until_operator_approves_existing_user(
 		.0,
 		403
 	);
+	// The boundary holds a shared lock on the operator's own identity until the
+	// mutation commits, so self Display Erasure must be refused rather than stall.
+	let self_erasure = tokio::time::timeout(
+		std::time::Duration::from_secs(20),
+		call(
+			&app,
+			"POST",
+			&format!("/api/dashboard/identities/{identity_id}/display-erasure"),
+			true,
+			true,
+			Some("operator"),
+			false,
+			Value::Null,
+		),
+	)
+	.await
+	.expect("self display erasure must not wait on the boundary's identity lock");
+	assert_eq!(self_erasure.0, 403, "{}", self_erasure.1);
 	let stream_response = app
 		.streaming_http
 		.clone()
