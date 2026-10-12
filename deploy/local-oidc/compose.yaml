@@ -1,0 +1,28 @@
+services:
+  keycloak:
+    profiles: [dev, oidc]
+  oidc-loopback:
+    profiles: [dev, oidc]
+    image: node:24.12.0-bookworm-slim
+    entrypoint: [node, /oidc-loopback.cjs]
+    command: []
+    network_mode: service:backend
+    depends_on:
+      backend:
+        condition: service_started
+      keycloak:
+        condition: service_started
+    volumes:
+      - ./deploy/local-oidc/loopback.cjs:/oidc-loopback.cjs:ro
+    restart: unless-stopped
+    healthcheck:
+      test:
+        [
+          CMD,
+          node,
+          -e,
+          "const s=require('node:net').connect(18099,'127.0.0.1',()=>{s.end();process.exit(0)});s.on('error',()=>process.exit(1));setTimeout(()=>process.exit(1),2000)",
+        ]
+      interval: 2s
+      timeout: 3s
+      retries: 30
