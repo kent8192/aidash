@@ -105,7 +105,10 @@
         "ceiling_nanocredits": { "type": "integer", "minimum": 1 },
         "committed_nanocredits": { "type": "integer", "minimum": 0 },
         "uncertain_attempts": { "type": "integer", "minimum": 0 },
-        "attempts": { "type": "array", "items": { "type": "object" } },
+        "attempts": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/spend_attempt" }
+        },
         "refusal": { "type": ["string", "null"] }
       }
     },
@@ -152,6 +155,33 @@
         "median": { "type": ["number", "null"] },
         "max": { "type": ["number", "null"] },
         "total": { "type": ["number", "null"] }
+      }
+    },
+    "spend_attempt": {
+      "description": "One live Run's reservation. `charged` is what the ledger counts against the ceiling: the full reservation unless a reported cost settled it.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["key", "reserved", "charged", "reported", "state"],
+      "properties": {
+        "key": { "type": "string" },
+        "reserved": { "type": "integer", "minimum": 1 },
+        "charged": { "type": "integer", "minimum": 0 },
+        "reported": { "type": ["integer", "null"], "minimum": 0 },
+        "state": { "enum": ["reserved", "uncertain", "settled"] },
+        "provider_work": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["step", "input_tokens", "output_tokens"],
+            "properties": {
+              "step": { "type": ["integer", "null"] },
+              "input_tokens": { "type": ["integer", "null"] },
+              "output_tokens": { "type": ["integer", "null"] }
+            }
+          }
+        },
+        "provider_work_error": { "type": "string" }
       }
     },
     "run": {

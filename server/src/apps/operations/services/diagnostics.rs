@@ -59,13 +59,14 @@ mod tests {
 	}
 
 	#[test]
-	fn evaluation_usage_query_selects_one_runs_records_without_lease_tokens() {
+	fn evaluation_usage_query_is_parameterless_and_excludes_lease_tokens() {
 		// Act
 		let query = super::evaluation::inference_usage();
 		// Assert
 		assert!(query.starts_with("SELECT row_to_json(\"e\")"), "{query}");
 		assert!(query.contains("FROM \"inference_usage\""), "{query}");
-		assert!(query.contains("run_id = :'run'::uuid"), "{query}");
+		assert!(!query.contains("WHERE"), "{query}");
+		assert!(!query.contains(":'"), "{query}");
 		assert!(
 			query.contains("ORDER BY \"created_at\" ASC, \"attempt_id\" ASC"),
 			"{query}"

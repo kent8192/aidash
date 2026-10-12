@@ -1,8 +1,9 @@
 //! Read-only Reinhardt Query diagnostics for the fixed-task evaluator (#122).
 //!
 //! Usage Records have no HTTP read endpoint. The deterministic evaluation tier
-//! owns a disposable database and reads one Run's records with this query,
-//! binding the Run with `psql -v run=<uuid>`. No prompt text is selected.
+//! owns a disposable database and reads its Usage Records with this query,
+//! then selects one Run's records by `run_id` itself, so the query has no
+//! parameter. No prompt text is selected.
 use reinhardt::query::{
 	Alias, Expr, IntoIden, Order, PostgresQueryBuilder, Query, QueryStatementBuilder, SimpleExpr,
 };
@@ -37,7 +38,6 @@ pub(super) fn inference_usage() -> String {
 	let mut row = Query::select();
 	row.columns(USAGE_COLUMNS.iter().map(|name| Alias::new(*name)))
 		.from(Alias::new("inference_usage"))
-		.and_where(Expr::cust("run_id = :'run'::uuid"))
 		.order_by(Alias::new("created_at"), Order::Asc)
 		.order_by(Alias::new("attempt_id"), Order::Asc);
 	Query::select()

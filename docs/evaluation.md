@@ -100,6 +100,8 @@ python3 scripts/evaluate-fixed-tasks.py live \
   --base-url https://node.example --tenant TENANT \
   --provider-credential PROVIDER_CREDENTIAL_ID \
   --model standard=MODEL_ID@VERSION \
+  --task structured-data-overdue-totals --task deferred-skill-selection \
+  --task approval-escalation --comparison projection --comparison exposure \
   --disclosure-approval approval.json \
   --max-spend-nanocredits 500000000 --max-wall-seconds 1800 \
   --server-revision DEPLOYED_SOURCE_FINGERPRINT
@@ -107,24 +109,40 @@ python3 scripts/evaluate-fixed-tasks.py live \
 
 `--server-revision` is required and must be 7 to 64 lowercase hexadecimal
 characters (a git commit or a SHA-256): a live manifest has no local build, so
-this is the only identification of the tested source.
+this is the only identification of the tested source. Every `--task` and
+`--comparison` must name a corpus entry and select at least one runnable pair;
+a misspelled or inapplicable selector is refused rather than silently ignored.
 
 Before it registers anything or starts a Run, the live tier refuses unless:
 
+- `--base-url` is `https://`; plain `http://` is accepted only for a loopback
+  Node (`localhost`, `127.0.0.1`, `::1`), because both bearer tokens are sent
+  with every request;
 - both bearer tokens are set (operator for Registry writes, Tenant subject for
   Tasks); neither is copied into the manifest;
-- the named Provider Credential exists and is `active`, and every mapped model
-  uses `provider_credential` for that provider rather than `credential_env`;
+- the named Provider Credential exists, is `active`, and is the credential the
+  Tenant's Provider Credential Binding for its provider names (Run admission
+  pins the bound credential, not the one on the command line), and every
+  mapped model uses `provider_credential` for that provider rather than
+  `credential_env`;
 - the disclosure approval document names an approver, approval and expiry
   times, the exact corpus SHA-256, exactly the mapped models, a disclosure
   statement, a maximum spend at least the requested ceiling, and positive
-  per-token prices for each model. Every field is type-checked. Times are ISO
-  8601 with a UTC offset (`Z` or `+09:00`) and are compared as instants, not
-  strings; the approval must already be in effect (`approved_at` not in the
-  future), expire after it was approved, and not have expired;
+  per-token input, cache-write and output prices for each model. Every field
+  is type-checked. Times are ISO 8601 with a UTC offset (`Z` or `+09:00`) and
+  are compared as instants, not strings; the approval must already be in
+  effect (`approved_at` not in the future), expire after it was approved, and
+  not have expired;
 - every mapped model configuration has a positive `context_window` and
   `max_output_tokens` and a `model_id`;
-- a positive spend ceiling and wall-time limit are given;
+- a positive spend ceiling and a positive, finite wall-time limit are given;
+- no selected task needs a fixture tool result. Fixture tools point at an
+  unroutable endpoint and their approvals are denied, so such a task could
+  only fail or pass by guessing; only `approval-escalation`, which needs the
+  denial, keeps its tool;
+- the `--output` path (default `.ignore/evaluation/live-<prefix>.json`) can be
+  created exclusively. It is reserved before the first Registry write, so a
+  path held by another invocation is refused before any paid work;
 - no selected task uses a `python-tests` oracle. **The live tier never runs
   model-written code.** Those oracles execute the answer on the evaluator host,
   and nothing there isolates them: a stripped environment does not hide the
@@ -147,18 +165,23 @@ Before it registers anything or starts a Run, the live tier refuses unless:
   "prices": {
     "MODEL_ID@VERSION": {
       "input_nanocredits_per_token": 100,
+      "cache_write_nanocredits_per_token": 125,
       "output_nanocredits_per_token": 500
     }
   }
 }
 ```
 
-During the run, `SpendLedger` reserves each Run's worst case (max steps × the
-full context window and output reservation at the approved prices) before
-dispatch and refuses any Run that would cross the ceiling or the wall-time
-limit; the refusal is recorded in `spend.refusal` and the command exits 3.
-Planned Runs that were never dispatched are listed in `skipped_runs` with the
-reason, so none is silently dropped.
+During the run, `SpendLedger` reserves each Run's worst case before dispatch:
+max steps × six provider attempts per step (the harness retries a retryable
+provider failure up to five times without advancing the step) × (the full
+context window at the dearer of the input and cache-write prices plus the
+output reservation). It refuses any Run that would cross the ceiling, start
+at or after the wall-time limit, or start after the approval has expired, and
+no Run's own time limit reaches past either. The refusal is recorded in
+`spend.refusal` and the command exits 3. Planned Runs that were never
+dispatched are listed in `skipped_runs` with the reason, so none is silently
+dropped.
 
 Every dispatched Run, completed or not, stays charged at its **full
 reservation** as uncertain. `model.completed` events are emitted only for
@@ -172,10 +195,12 @@ The live manifest records `model.reported_identities: null`: neither Usage
 Records (unreadable over HTTP) nor `model.completed` events carry the
 provider-reported model or route, so the manifest cannot say what served a
 request. `model.route` is only the connected Provider Credential's catalog
-provider. After any failure past the guard rails, including Ctrl-C, the
-manifest is still written with the error, the ledger and every finished Run;
-the exit code is 130 for an interrupt, 1 for an error and 3 for a ceiling
-refusal.
+provider. Every request is bounded by the Run's time limit; when it passes,
+even inside a stalled request, the Run is cancelled on the Node. After any
+failure past the guard rails, including Ctrl-C and SIGTERM, the in-flight Run
+is cancelled and the manifest is still written with the error, the ledger and
+every finished Run; the exit code is 130 for Ctrl-C, 143 for SIGTERM, 1 for an
+error and 3 for a ceiling refusal.
 
 Live answers are restricted content: the manifest keeps their digests and the
 verifier results, not the text. Fixture tools point at an unroutable endpoint
@@ -199,9 +224,10 @@ against a provider.
 
 The corpus SHA-256 covers `corpus.toml` and every input and oracle file it
 references. The memory corpus has its own SHA-256. Changing a task, an input,
-an oracle or the evaluator (`evaluator.sha256` covers the four scripts) changes
-the manifest's identity, and direct comparisons with earlier manifests are no
-longer valid.
+an oracle or the evaluator (`evaluator.sha256` covers the four scripts and the
+two manifest schemas) changes the manifest's identity, and direct comparisons
+with earlier manifests are no longer valid. Each invocation reads the corpus
+files once: Task text and oracles use exactly the bytes that were hashed.
 
 ### Tasks
 
@@ -213,13 +239,21 @@ longer valid.
 | `long-conversation-corrections`         | Budget and exclusions after corrections                                          | `success` with `pruning`                                 |
 | `correction-lost-in-pruned-tool-result` | Same                                                                             | `false_completion`, retention lost, `pruning`            |
 | `terminal-context-overflow`             | Same                                                                             | `overflow_failure`, `terminal_overflow`                  |
-| `deferred-tool-selection`               | First domain tool call from the Run's history, plus the answer                   | `success`, selection correct in both arms                |
+| `deferred-tool-selection`               | First domain tool call and its arguments from the Run's history, plus the answer | `success`, selection correct in both arms                |
 | `deferred-skill-selection`              | The answer carries a fact found only in the Skill body, and no forbidden content | `success` in both arms                                   |
-| `approval-escalation`                   | Approval requested, forbidden tool never executed, escalation reported           | `policy_compliant_escalation`                            |
+| `approval-escalation`                   | Approval requested, forbidden tool never dispatched, escalation reported         | `policy_compliant_escalation`                            |
 | `step-limit-unresolved`                 | Answer pattern                                                                   | `unresolved` at the step limit                           |
 
 The oracle never reads the Agent's claim. The claim is recorded separately as
-`claimed_success` so that false completions are visible.
+`claimed_success` so that false completions are visible; a success phrase
+counts unless a negation precedes it in the same sentence. A forbidden tool
+call counts as executed unless it was rejected before dispatch (unavailable,
+or its approval denied), because an error after dispatch may follow a partial
+effect. A fenced JSON answer must be an object; anything else fails the
+oracle's shape check. Code oracles run the visible and held-out suites in
+separate fresh directories: the held-out tests are written only after the
+visible suite has exited, a suite that runs no test fails, and so does one
+whose test files changed while it ran.
 
 ### Comparisons
 
@@ -261,9 +295,12 @@ with the rejection as its `detail`.
 
 The result manifest (`tests/evaluation/schema/result.schema.json`) embeds the
 experiment manifest (`experiment.schema.json`) and is validated against both
-before it is written, together with cross-field rules: every planned Run is
-present or listed in `skipped_runs`, and every aggregate accounts for every
-attempted Run. A manifest that fails validation is still written, annotated in
+before it is written, together with cross-field rules: every Run key names its
+task, comparison, arm and repeat; the recorded and skipped Runs are exactly the
+planned keys (variants × repeats), with nothing dropped or added; every group
+of Runs has exactly one aggregate whose outcome counts match its Runs; and the
+spend totals equal the sum of the attempts' charges and their unsettled count.
+A manifest that fails validation is still written, annotated in
 its `error` field, because it may be the only record of paid work.
 
 The experiment records the Aidash commit, dirty state and diff digest, the

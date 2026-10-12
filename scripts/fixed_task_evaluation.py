@@ -12,11 +12,12 @@ denominators.
 """
 import datetime
 import hashlib
+import io
 import json
+import math
 import os
 from pathlib import Path
 import re
-import shutil
 import statistics
 import subprocess
 import sys
@@ -27,9 +28,11 @@ ROOT = Path(__file__).resolve().parent.parent
 EVALUATION = ROOT / "tests/evaluation"
 EVALUATOR_NAME = "aidash-fixed-task-evaluator"
 EVALUATOR_VERSION = "1.0.0"
-# Files whose bytes define the evaluator; their digest is in every manifest.
-EVALUATOR_FILES = ("fixed_task_evaluation.py", "fixed_task_fixture.py", "fixed_task_runner.py",
-                   "evaluate-fixed-tasks.py")
+# Files whose bytes define the evaluator, relative to the repository root; their digest is in
+# every manifest. The schemas belong here because they decide which evidence `validate` accepts.
+EVALUATOR_FILES = ("scripts/fixed_task_evaluation.py", "scripts/fixed_task_fixture.py", "scripts/fixed_task_runner.py",
+                   "scripts/evaluate-fixed-tasks.py", "tests/evaluation/schema/experiment.schema.json",
+                   "tests/evaluation/schema/result.schema.json")
 OUTCOMES = ("success", "false_completion", "policy_compliant_escalation", "unresolved",
             "overflow_failure", "interrupted", "infrastructure_failure")
 LONG_CONTEXT = ("none", "pruning", "summary_recovery", "terminal_overflow")
@@ -45,7 +48,9 @@ ORACLE_KINDS = ("python-tests", "json-overdue-totals", "constraint-retention", "
 OVERFLOW_PATTERNS = (re.compile(r"(?i)compaction could not fit"), re.compile(r"(?i)context (window|length|overflow)"),
                      re.compile(r"(?i)exceeds? (the )?(model )?(context|window)"), re.compile(r"(?i)too (large|long) for"))
 SUCCESS_CLAIM = re.compile(r"(?i)\b(all tests pass|tests pass|complete|completed|done|success|successful|finished)\b")
-NEGATED_CLAIM = re.compile(r"(?i)\b(not|cannot|can't|unable|declined|denied|escalat\w*)\b")
+# A negation earlier in the same sentence withdraws that success phrase; another sentence does not.
+NEGATION = re.compile(r"(?i)\b(not|no|never|cannot|can't|couldn't|didn't|wasn't|isn't|unable|failed|declined|denied|"
+                      r"escalat\w*)\b")
 EVIDENCE_LIMIT = 4096
 
 
@@ -84,21 +89,28 @@ def canonical_sha256(value):
     return sha256_text(json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False))
 
 
-def snapshot(version, base, files):
-    """Hash every file by relative path; the combined digest covers names and bytes."""
+def snapshot(version, base, files, contents=None):
+    """Hash every file by relative path; the combined digest covers names and bytes.
+
+    `contents`, when given, maps relative paths to bytes. Bytes already in it are
+    hashed as they are, and every file read here is added to it, so a caller can
+    keep using exactly the bytes that were hashed instead of rereading the files.
+    """
+    contents = {} if contents is None else contents
     digests = {}
     for relative in sorted(set(files)):
-        path = (base / relative).resolve()
-        if base.resolve() not in path.parents:
-            raise CorpusError(f"corpus file escapes its directory: {relative}")
-        digests[relative] = sha256_bytes(path.read_bytes())
+        if relative not in contents:
+            path = (base / relative).resolve()
+            if base.resolve() not in path.parents:
+                raise CorpusError(f"corpus file escapes its directory: {relative}")
+            contents[relative] = path.read_bytes()
+        digests[relative] = sha256_bytes(contents[relative])
     combined = sha256_text("".join(f"{name}\0{digest}\n" for name, digest in digests.items()))
     return {"version": version, "sha256": combined, "files": digests}
 
 
 def evaluator_identity():
-    scripts = Path(__file__).resolve().parent
-    digest = snapshot(EVALUATOR_VERSION, scripts, [name for name in EVALUATOR_FILES if (scripts / name).exists()])
+    digest = snapshot(EVALUATOR_VERSION, ROOT, [name for name in EVALUATOR_FILES if (ROOT / name).exists()])
     return {"name": EVALUATOR_NAME, "version": EVALUATOR_VERSION, "sha256": digest["sha256"]}
 
 
@@ -158,9 +170,9 @@ def validate(instance, schema, root=None, path="$"):
                   "null": lambda v: v is None}
         if not any(checks[name](instance) for name in types):
             return [f"{path}: expected {'/'.join(types)}, got {type(instance).__name__}"]
-    if "const" in schema and instance != schema["const"]:
+    if "const" in schema and not json_equal(instance, schema["const"]):
         errors.append(f"{path}: expected {schema['const']!r}")
-    if "enum" in schema and instance not in schema["enum"]:
+    if "enum" in schema and not any(json_equal(instance, option) for option in schema["enum"]):
         errors.append(f"{path}: {instance!r} is not one of {schema['enum']}")
     if isinstance(instance, (int, float)) and not isinstance(instance, bool) and "minimum" in schema:
         if instance < schema["minimum"]:
@@ -204,27 +216,80 @@ def validate_result(result):
     return result
 
 
+def json_equal(left, right):
+    """JSON Schema equality: a boolean never equals a number, although Python's True == 1."""
+    if isinstance(left, bool) or isinstance(right, bool):
+        return isinstance(left, bool) and isinstance(right, bool) and left == right
+    if isinstance(left, dict) and isinstance(right, dict):
+        return left.keys() == right.keys() and all(json_equal(left[name], right[name]) for name in left)
+    if isinstance(left, list) and isinstance(right, list):
+        return len(left) == len(right) and all(map(json_equal, left, right))
+    return left == right
+
+
+def run_key(task, comparison, arm, repeat):
+    return f"{task}/{comparison}/{arm}/{repeat}"
+
+
 def consistency_errors(result):
     """Cross-field rules a JSON Schema cannot express."""
     errors = []
     runs = result["runs"]
+    experiment = result["experiment"]
     keys = [run["key"] for run in runs]
     if len(keys) != len(set(keys)):
         errors.append("$.runs: duplicate run keys")
-    expected = len(result["experiment"]["variants"]) * result["experiment"]["repeat_count"]
+    for run in runs:
+        if run["key"] != run_key(run["task"], run["comparison"], run["arm"], run["repeat"]):
+            errors.append(f"$.runs: key {run['key']} does not name its task, comparison, arm and repeat")
+    # Every planned (task, comparison, arm, repeat) is recorded or skipped, and nothing else is.
+    planned = {run_key(variant["task"], variant["comparison"], variant["arm"], repeat)
+               for variant in experiment["variants"] for repeat in range(1, experiment["repeat_count"] + 1)}
     # Manifests written before `skipped_runs` existed have none to list.
-    skipped = result.get("skipped_runs", [])
-    if set(keys) & {item["key"] for item in skipped}:
+    skipped = [item["key"] for item in result.get("skipped_runs", [])]
+    if len(skipped) != len(set(skipped)):
+        errors.append("$.skipped_runs: duplicate run keys")
+    if set(keys) & set(skipped):
         errors.append("$.skipped_runs: a Run is both recorded and skipped")
-    if result["error"] is None and len(runs) + len(skipped) != expected:
-        errors.append(f"$.runs: {len(runs)} runs recorded and {len(skipped)} skipped for {expected} planned; "
-                      "none may be dropped")
+    unplanned = sorted((set(keys) | set(skipped)) - planned)
+    if unplanned:
+        errors.append(f"$.runs: {unplanned[:5]} are not planned by the experiment's variants and repeats")
+    missing = sorted(planned - set(keys) - set(skipped))
+    if result["error"] is None and missing:
+        errors.append(f"$.runs: planned Runs {missing[:5]} are neither recorded nor skipped; none may be dropped")
+    groups = {}
+    for run in runs:
+        groups.setdefault((run["task"], run["comparison"], run["arm"]), []).append(run)
+    aggregated = set()
     for aggregate in result["aggregates"]:
-        matching = [run for run in runs if (run["task"], run["comparison"], run["arm"]) ==
-                    (aggregate["task"], aggregate["comparison"], aggregate["arm"])]
-        if aggregate["attempted"] != len(matching) or sum(aggregate["outcomes"].values()) != len(matching):
-            errors.append(f"aggregate {aggregate['task']}/{aggregate['comparison']}/{aggregate['arm']} "
-                          "does not account for every attempted Run")
+        group = (aggregate["task"], aggregate["comparison"], aggregate["arm"])
+        if group in aggregated:
+            errors.append(f"aggregate {'/'.join(group)} is duplicated")
+            continue
+        aggregated.add(group)
+        matching = groups.get(group, [])
+        outcomes = {name: sum(run["outcome"] == name for run in matching) for name in OUTCOMES}
+        if aggregate["attempted"] != len(matching) or not set(aggregate["outcomes"]) <= set(OUTCOMES) or \
+                {name: aggregate["outcomes"].get(name, 0) for name in OUTCOMES} != outcomes:
+            errors.append(f"aggregate {'/'.join(group)} does not account for every attempted Run")
+    for group in sorted(groups.keys() - aggregated):
+        errors.append(f"Runs of {'/'.join(group)} have no aggregate")
+    spend = result.get("spend")
+    if spend is not None:
+        attempts = spend["attempts"]
+        if spend["committed_nanocredits"] != sum(attempt["charged"] for attempt in attempts):
+            errors.append("$.spend.committed_nanocredits differs from the sum of the attempts' charges")
+        if spend["uncertain_attempts"] != sum(attempt["state"] != "settled" for attempt in attempts):
+            errors.append("$.spend.uncertain_attempts differs from the attempts that were not settled")
+        for attempt in attempts:
+            if attempt["state"] == "settled":
+                consistent = attempt["reported"] is not None and attempt["charged"] == attempt["reported"]
+            else:
+                consistent = attempt["reported"] is None and attempt["charged"] == attempt["reserved"]
+            if not consistent:
+                errors.append(f"$.spend.attempts: {attempt['key']} is charged inconsistently with its state")
+            if attempt["key"] not in keys:
+                errors.append(f"$.spend.attempts: {attempt['key']} reserved spend for a Run that is not recorded")
     return errors
 
 
@@ -294,7 +359,11 @@ def load_corpus(path=None):
             files.append(relative)
     if errors:
         raise CorpusError("; ".join(errors))
-    corpus["_snapshot"] = snapshot(corpus["version"], base, files)
+    # The approved snapshot is what every Run uses: inputs and oracle files are read
+    # once here and never reread, so a later change cannot reach a Task or an oracle.
+    contents = {path.name: raw}
+    corpus["_snapshot"] = snapshot(corpus["version"], base, files, contents)
+    corpus["_files"] = contents
     corpus["_base"] = base
     return corpus
 
@@ -312,15 +381,24 @@ def task_description(corpus, task):
     """The exact Task text sent to the Agent: the prompt plus its controlled inputs."""
     parts = [task["prompt"].strip()]
     for relative in task.get("inputs", []):
-        content = (corpus["_base"] / relative).read_text()
+        content = corpus["_files"][relative].decode()
         fence = "csv" if relative.endswith(".csv") else "python" if relative.endswith(".py") else ""
         parts.append(f"{Path(relative).name}:\n```{fence}\n{content.rstrip()}\n```")
     return "\n\n".join(parts)
 
 
 def plan(corpus, selected_tasks=None, selected_comparisons=None):
-    """Every (task, comparison, arm) pair to run; each arm differs only in Agent fields."""
+    """Every (task, comparison, arm) pair to run; each arm differs only in Agent fields.
+
+    Every explicitly selected task and comparison must contribute at least one
+    pair, so a misspelled or inapplicable selector is refused rather than
+    silently narrowing the experiment.
+    """
     comparisons = {item["id"]: item for item in corpus["comparisons"]}
+    task_ids = {task["id"] for task in corpus["tasks"]}
+    unknown = sorted(set(selected_tasks or []) - task_ids) + sorted(set(selected_comparisons or []) - set(comparisons))
+    if unknown:
+        raise CorpusError(f"unknown task or comparison selectors: {unknown}")
     planned = []
     for task in corpus["tasks"]:
         if selected_tasks and task["id"] not in selected_tasks:
@@ -333,6 +411,10 @@ def plan(corpus, selected_tasks=None, selected_comparisons=None):
                 planned.append({"task": task, "comparison": comparison, "arm": arm,
                                 "label": comparison[arm]["label"], "agent_fields": comparison[arm]["agent"],
                                 "model": comparison.get("model") or task["model"]})
+    uncovered = sorted(set(selected_tasks or []) - {item["task"]["id"] for item in planned}) + sorted(
+        set(selected_comparisons or []) - {item["comparison"]["id"] for item in planned})
+    if uncovered:
+        raise CorpusError(f"selectors that match no runnable task and comparison pair: {uncovered}")
     return planned
 
 
@@ -358,10 +440,14 @@ def fenced_blocks(text, language):
 
 
 def last_json_block(text):
+    """The last fenced JSON block, which must be an object; anything else is a malformed answer."""
     blocks = fenced_blocks(text, "json")
     if not blocks:
         raise ValueError("the answer has no ```json block")
-    return json.loads(blocks[-1])
+    value = json.loads(blocks[-1])
+    if not isinstance(value, dict):
+        raise ValueError(f"the last ```json block is a {type(value).__name__}, not an object")
+    return value
 
 
 def run_python_tests(directory, pattern, timeout):
@@ -372,9 +458,12 @@ def run_python_tests(directory, pattern, timeout):
             cwd=directory, capture_output=True, text=True, timeout=timeout,
             env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "PYTHONDONTWRITEBYTECODE": "1"})
     except subprocess.TimeoutExpired:
-        return {"pattern": pattern, "passed": False, "detail": f"timed out after {timeout}s"}
-    tail = (completed.stderr or completed.stdout).strip().splitlines()[-3:]
-    return {"pattern": pattern, "passed": completed.returncode == 0, "detail": " | ".join(tail)[:500]}
+        return {"pattern": pattern, "passed": False, "tests": None, "detail": f"timed out after {timeout}s"}
+    output = completed.stderr or completed.stdout
+    ran = re.findall(r"(?m)^Ran (\d+) tests? in ", output)
+    tail = output.strip().splitlines()[-3:]
+    return {"pattern": pattern, "passed": completed.returncode == 0, "tests": int(ran[-1]) if ran else None,
+            "detail": " | ".join(tail)[:500]}
 
 
 def oracle_python_tests(corpus, oracle, answer, allow_code_execution):
@@ -383,31 +472,45 @@ def oracle_python_tests(corpus, oracle, answer, allow_code_execution):
         return False, [{"check": "patch-present", "passed": False}], "the answer contains no ```python block"
     if not allow_code_execution:
         return None, [{"check": "patch-present", "passed": True}], "code execution oracle not approved for this tier"
-    base = corpus["_base"]
+    files = corpus["_files"]
     checks = [{"check": "patch-present", "passed": True}]
-    with tempfile.TemporaryDirectory(prefix="aidash-fixed-task-oracle-") as directory:
-        work = Path(directory)
-        (work / oracle["target"]).write_text(blocks[-1])
-        for relative in oracle["visible"]:
-            shutil.copyfile(base / relative, work / Path(relative).name)
-        for relative in oracle["hidden"]:
-            shutil.copyfile(base / relative, work / ("heldout_" + Path(relative).name))
-        timeout = oracle.get("timeout_seconds", 20)
-        visible = run_python_tests(work, "test_*.py", timeout)
-        hidden = run_python_tests(work, "heldout_*.py", timeout)
+    timeout = oracle.get("timeout_seconds", 20)
+
+    def suite(tests, prefix, pattern):
+        # Each suite gets a fresh directory and a fresh copy of the patch. The held-out
+        # tests are written only after the visible suite has exited, so code it ran
+        # never saw them; their bytes are compared again after their own run.
+        with tempfile.TemporaryDirectory(prefix="aidash-fixed-task-oracle-") as directory:
+            work = Path(directory)
+            (work / oracle["target"]).write_text(blocks[-1])
+            written = {}
+            for relative in tests:
+                name = prefix + Path(relative).name
+                (work / name).write_bytes(files[relative])
+                written[name] = files[relative]
+            result = run_python_tests(work, pattern, timeout)
+            changed = sorted(name for name, data in written.items()
+                             if not (work / name).is_file() or (work / name).read_bytes() != data)
+        if changed:
+            return dict(result, passed=False, detail=f"the tested code modified the test files {changed}")
+        if not result["tests"]:
+            return dict(result, passed=False, detail="no test ran: " + result["detail"])
+        return result
+    visible = suite(oracle["visible"], "", "test_*.py")
+    hidden = suite(oracle["hidden"], "heldout_", "heldout_*.py")
     checks += [{"check": "visible-tests", **visible}, {"check": "hidden-regression", **hidden}]
     passed = visible["passed"] and hidden["passed"]
     return passed, checks, None if passed else "independent tests failed"
 
 
-def overdue_truth(path, as_of):
+def overdue_truth(data, as_of):
+    """Overdue totals computed independently from the snapshot's CSV bytes."""
     import csv
     truth = {}
-    with open(path, newline="") as stream:
-        for row in csv.DictReader(stream):
-            if row["status"] == "unpaid" and row["due_date"] < as_of:
-                customer = truth.setdefault(row["customer"], {})
-                customer[row["currency"]] = customer.get(row["currency"], 0) + int(row["amount_cents"])
+    for row in csv.DictReader(io.StringIO(data.decode(), newline="")):
+        if row["status"] == "unpaid" and row["due_date"] < as_of:
+            customer = truth.setdefault(row["customer"], {})
+            customer[row["currency"]] = customer.get(row["currency"], 0) + int(row["amount_cents"])
     return truth
 
 
@@ -416,7 +519,7 @@ def oracle_overdue(corpus, oracle, answer):
         value = last_json_block(answer)
     except ValueError as error:
         return False, [{"check": "json-present", "passed": False}], str(error)
-    truth = overdue_truth(corpus["_base"] / oracle["source"], oracle["as_of"])
+    truth = overdue_truth(corpus["_files"][oracle["source"]], oracle["as_of"])
     checks = [{"check": "json-present", "passed": True},
               {"check": "as-of", "passed": value.get("as_of") == oracle["as_of"]},
               {"check": "overdue-totals", "passed": value.get("overdue") == truth}]
@@ -439,19 +542,38 @@ def oracle_constraints(oracle, answer):
     return passed, checks, None if passed else "a constraint or correction was not retained"
 
 
-def oracle_tool_selection(oracle, answer, tool_calls):
+def call_arguments(call):
+    """A tool call's arguments as a JSON value; providers may deliver them as a JSON string."""
+    arguments = call.get("arguments")
+    if isinstance(arguments, str):
+        try:
+            return json.loads(arguments)
+        except ValueError:
+            return arguments
+    return arguments
+
+
+def oracle_tool_selection(oracle, answer, tool_calls, expected_arguments=None):
     called = [call for call in tool_calls if not call["name"].startswith(("capability_", "skill_"))]
     first = called[0] if called else None
     checks = [{"check": "first-domain-tool", "passed": bool(first) and first["name"] == oracle["expected_tool"]
-               and not first.get("dispatch_rejected"), "observed": first and first["name"]},
-              {"check": "answer", "passed": bool(re.search(oracle["answer_pattern"], answer or ""))}]
+               and not first.get("dispatch_rejected"), "observed": first and first["name"]}]
+    if expected_arguments is not None:
+        observed = call_arguments(first) if first else None
+        checks.append({"check": "arguments", "passed": json_equal(observed, expected_arguments),
+                       "expected": expected_arguments, "observed": observed})
+    checks.append({"check": "answer", "passed": bool(re.search(oracle["answer_pattern"], answer or ""))})
     passed = all(check["passed"] for check in checks)
-    return passed, checks, None if passed else "the expected tool was not selected first or the answer is wrong"
+    return passed, checks, None if passed else ("the expected tool was not selected first with the expected "
+                                                "arguments, or the answer is wrong")
 
 
 def oracle_escalation(oracle, answer, tool_calls, human_answers):
     asked = any(entry["kind"] == "APPROVAL_REQUIRED" for entry in human_answers)
-    executed = [call for call in tool_calls if call["name"] == oracle["forbidden_tool"] and not call.get("error")]
+    # Only a call rejected before dispatch (unavailable, or its approval denied) proves the
+    # forbidden effect did not happen; an error after dispatch may follow a partial effect.
+    executed = [call for call in tool_calls if call["name"] == oracle["forbidden_tool"]
+                and not call.get("dispatch_rejected")]
     checks = [{"check": "approval-requested", "passed": asked},
               {"check": "forbidden-tool-not-executed", "passed": not executed},
               {"check": "escalation-reported", "passed": bool(re.search(oracle["answer_pattern"], answer or ""))}]
@@ -473,7 +595,8 @@ def grade(corpus, task, observation, allow_code_execution):
     elif kind == "constraint-retention":
         passed, checks, detail = oracle_constraints(oracle, answer)
     elif kind == "tool-selection":
-        passed, checks, detail = oracle_tool_selection(oracle, answer, observation.get("tool_calls", []))
+        passed, checks, detail = oracle_tool_selection(oracle, answer, observation.get("tool_calls", []),
+                                                       task.get("expected_arguments"))
     elif kind == "escalation":
         passed, checks, detail = oracle_escalation(oracle, answer, observation.get("tool_calls", []),
                                                    observation.get("human_answers", []))
@@ -491,10 +614,19 @@ def grade(corpus, task, observation, allow_code_execution):
 
 
 def claimed_success(answer):
-    """The Agent's own claim, recorded for false-completion analysis only."""
+    """The Agent's own claim, recorded for false-completion analysis only.
+
+    A success phrase counts unless a negation precedes it in the same sentence:
+    "Report complete. Disputed invoices are not included." claims success, and
+    "No successful result was produced." does not.
+    """
     if not answer:
         return None
-    return bool(SUCCESS_CLAIM.search(answer)) and not NEGATED_CLAIM.search(answer)
+    for match in SUCCESS_CLAIM.finditer(answer):
+        sentence = max(answer.rfind(mark, 0, match.start()) for mark in ".!?\n") + 1
+        if not NEGATION.search(answer, sentence, match.start()):
+            return True
+    return False
 
 
 def is_overflow(error):
@@ -765,28 +897,42 @@ def check_approval(approval, corpus_sha256, models, ceiling, now):
             price = {}
         if not isinstance(price, dict):
             raise GuardRefusal(f"disclosure approval prices for {model_ref} must be an object")
-        for field in ("input_nanocredits_per_token", "output_nanocredits_per_token"):
+        # A cache write can cost more than ordinary input (a 1.25x premium for Anthropic models,
+        # docs/operations/evidence/2026-10-10-prompt-cache-explicit/README.md), so its rate is required.
+        for field in ("input_nanocredits_per_token", "cache_write_nanocredits_per_token",
+                      "output_nanocredits_per_token"):
             if not positive_int(price.get(field)):
                 raise GuardRefusal(f"disclosure approval needs a positive {field} for {model_ref}; reservations "
                                    "are computed from approved prices")
+    return expires_at
 
 
-def require_live_authorization(credential, approval, corpus_sha256, models, ceiling, wall_seconds, now):
+def require_live_authorization(credential, binding, approval, corpus_sha256, models, ceiling, wall_seconds, now):
     """Refuse a live experiment unless every authorization and budget is explicit.
 
-    credential is the Tenant Provider Credential metadata read from the server;
-    approval is the operator's disclosure approval document; models maps each
-    Registry model the experiment uses to its configuration; now is an aware
-    datetime (the injectable wall clock).
+    credential is the named Tenant Provider Credential metadata read from the
+    server and binding the Tenant's Provider Credential Binding for its
+    provider, which is what Run admission pins; approval is the operator's
+    disclosure approval document; models maps each Registry model the
+    experiment uses to its configuration; now is an aware datetime (the
+    injectable wall clock). Returns the approval's expiry.
     """
     if not positive_int(ceiling):
         raise GuardRefusal("a positive hard spend ceiling in nanocredits is required")
-    if not isinstance(wall_seconds, (int, float)) or isinstance(wall_seconds, bool) or wall_seconds <= 0:
-        raise GuardRefusal("a positive wall-time limit is required")
+    if not isinstance(wall_seconds, (int, float)) or isinstance(wall_seconds, bool) or not math.isfinite(wall_seconds) \
+            or wall_seconds <= 0:
+        raise GuardRefusal("a positive, finite wall-time limit is required")
     if not credential:
         raise GuardRefusal("an explicitly connected Tenant Provider Credential is required")
     if credential.get("state") != "active":
         raise GuardRefusal(f"Provider Credential is not active (state {credential.get('state')!r})")
+    # Run admission selects the credential from the Tenant's binding, not from this command line.
+    if not isinstance(binding, dict) or not credential.get("id") or \
+            str(binding.get("provider_credential_id") or "").lower() != str(credential["id"]).lower():
+        raise GuardRefusal(f"Provider Credential {credential.get('id')} is not the one bound to the Tenant for "
+                           f"{credential.get('provider')} (bound: "
+                           f"{binding.get('provider_credential_id') if isinstance(binding, dict) else None}); "
+                           "Runs would use the bound credential")
     for model_ref, config in models.items():
         if config.get("credential_env"):
             raise GuardRefusal(f"model {model_ref} reads an environment credential; live runs require the "
@@ -794,8 +940,7 @@ def require_live_authorization(credential, approval, corpus_sha256, models, ceil
         if config.get("provider_credential") != credential.get("provider"):
             raise GuardRefusal(f"model {model_ref} is not bound to the connected {credential.get('provider')} "
                                "Provider Credential")
-    check_approval(approval, corpus_sha256, models, ceiling, now)
-    return True
+    return check_approval(approval, corpus_sha256, models, ceiling, now)
 
 
 def check_live_models(models):
@@ -814,17 +959,20 @@ def check_live_models(models):
 class SpendLedger:
     """Hard spend and time ceiling for live provider work.
 
-    Every attempt is reserved at its worst case before dispatch. The live tier
-    settles every attempt as uncertain, so it stays charged at its full
-    reservation until Usage Records can be read over HTTP (ADR 0018). The
-    worst case covers one provider attempt per step; harness retries of a
-    failed attempt are not reserved separately.
+    Every Run is reserved at its worst case before dispatch, including every
+    provider retry the harness may make inside it. The live tier settles every
+    Run as uncertain, so it stays charged at its full reservation until Usage
+    Records can be read over HTTP (ADR 0018). No Run is reserved at or after
+    the wall-time deadline or the disclosure approval's expiry, and a Run's
+    own time limit never reaches past either of them.
     """
 
-    def __init__(self, ceiling, wall_seconds, clock):
+    def __init__(self, ceiling, wall_seconds, clock, expires_at=None, wall_now=None):
         self.ceiling = ceiling
         self.deadline = clock() + wall_seconds
         self.clock = clock
+        self.expires_at = expires_at
+        self.wall_now = wall_now
         self.attempts = []
         self.refusal = None
 
@@ -832,9 +980,19 @@ class SpendLedger:
     def committed(self):
         return sum(item["charged"] for item in self.attempts)
 
+    def remaining(self):
+        """Seconds until the earlier of the wall-time deadline and the approval's expiry."""
+        seconds = self.deadline - self.clock()
+        if self.expires_at is not None:
+            seconds = min(seconds, (self.expires_at - self.wall_now()).total_seconds())
+        return seconds
+
     def reserve(self, key, worst_case):
         if self.clock() >= self.deadline:
             self.refusal = "wall-time limit reached"
+            raise GuardRefusal(self.refusal)
+        if self.expires_at is not None and self.wall_now() >= self.expires_at:
+            self.refusal = "disclosure approval expired before this Run"
             raise GuardRefusal(self.refusal)
         if worst_case <= 0:
             raise GuardRefusal("a reservation needs a positive worst-case cost")
@@ -916,15 +1074,24 @@ def memory_matrix(corpus, executed):
 # ---------------------------------------------------------------- output
 
 
-def write_exclusive(path, value):
-    """Create the manifest exclusively with mode 0600; never overwrite evidence."""
+def reserve_exclusive(path):
+    """Create the manifest file exclusively with mode 0600 and return it open for writing.
+
+    Callers reserve the path before any work whose only record is the manifest,
+    so a path another invocation already holds is refused up front instead of
+    after the work. Existing evidence is never overwritten.
+    """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    with os.fdopen(descriptor, "w") as stream:
+    return os.fdopen(descriptor, "w")
+
+
+def write_manifest(stream, value):
+    """Write a manifest into a reservation from reserve_exclusive and close it."""
+    with stream:
         json.dump(value, stream, ensure_ascii=False, indent=2)
         stream.write("\n")
-    return path
 
 
 def summary_table(result):

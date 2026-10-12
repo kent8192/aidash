@@ -5,6 +5,7 @@ local Node whose models are the scripted fixture provider; the live tier points
 it at an operator-chosen Node and model under its guard rails. The driver only
 observes; fixed_task_evaluation.py grades and aggregates.
 """
+import copy
 import json
 import time
 import uuid
@@ -13,6 +14,13 @@ from fixed_task_evaluation import canonical_sha256, task_description, task_tools
 
 NO_HUMAN = "No human is available during this evaluation; continue without further input."
 TERMINAL = ("COMPLETED", "FAILED", "CANCELLED")
+# Seconds a cancellation may take after the Run's own deadline has passed.
+CANCEL_GRACE = 30.0
+# The harness retries a retryable provider failure up to five times without advancing
+# the step (crates/aidash-harness/src/recovery.rs), so one step can make six attempts.
+PROVIDER_ATTEMPTS_PER_STEP = 6
+# The tool result the harness records when a workbench approval was denied: the call never ran.
+APPROVAL_DENIED = "external write approval was denied or expired"
 
 
 class ApiError(RuntimeError):
@@ -22,33 +30,61 @@ class ApiError(RuntimeError):
         self.value = value
 
 
+class DeadlineExceeded(RuntimeError):
+    """A request could not finish before its caller's deadline."""
+
+
 class Api:
-    """Bounded request log around a transport `call(method, path, body, token) -> (status, value)`."""
+    """Bounded request log around a transport `call(method, path, body, token, timeout) -> (status, value)`.
+
+    With a deadline (see `until`), every request's timeout, every retry and
+    every backoff ends by it, so a stalled request cannot outlive the caller's
+    time limit.
+    """
 
     # Gateway and availability failures of a loaded Node. Only reads are retried
     # blindly; a write is retried by its caller after checking its effect.
     TRANSIENT = (502, 503, 504)
 
-    def __init__(self, call, operator_token, retries=4, backoff=2.0, sleep=time.sleep):
+    def __init__(self, call, operator_token, retries=4, backoff=2.0, sleep=time.sleep, request_timeout=180.0,
+                 clock=time.monotonic):
         self.call = call
         self.operator = operator_token
         self.log = []
         self.retries = retries
         self.backoff = backoff
         self.sleep = sleep
+        self.request_timeout = request_timeout
+        self.clock = clock
+        self.deadline = None
+
+    def until(self, deadline, clock=None, sleep=None):
+        """A view of this Api, sharing its log, whose requests all end by `deadline` on `clock`."""
+        bounded = copy.copy(self)
+        bounded.deadline = deadline
+        bounded.clock = clock or self.clock
+        bounded.sleep = sleep or self.sleep
+        return bounded
 
     def request(self, method, path, body=None, token=None, accept=(200,)):
         attempts = self.retries + 1 if method == "GET" else 1
         for attempt in range(attempts):
+            timeout = self.request_timeout
+            if self.deadline is not None:
+                timeout = min(timeout, self.deadline - self.clock())
+                if timeout <= 0:
+                    raise DeadlineExceeded(f"{method} {path}: the deadline passed before the request")
             begin = time.perf_counter()
-            status, value = self.call(method, path, body, token or self.operator)
+            status, value = self.call(method, path, body, token or self.operator, timeout)
             self.log.append({"method": method, "path": path, "status": status,
                              "round_trip_ms": round((time.perf_counter() - begin) * 1000, 3)})
             if status in accept:
                 return value
-            if status not in self.TRANSIENT or attempt + 1 == attempts:
+            delay = self.backoff * (attempt + 1)
+            if status not in self.TRANSIENT or attempt + 1 == attempts or (
+                    self.deadline is not None and self.clock() + delay >= self.deadline):
                 raise ApiError(method, path, status, value)
-            self.sleep(self.backoff * (attempt + 1))
+            self.sleep(delay)
 
     def get(self, path, token=None):
         return self.request("GET", path, None, token)
@@ -156,9 +192,10 @@ def tool_calls_from(context):
             continue
         result = event.get("result")
         error = result.get("error") if isinstance(result, dict) and isinstance(result.get("error"), str) else None
+        # Rejected before dispatch: the tool never ran. Any other error may follow a partial effect.
         calls.append({"name": event["call"]["name"], "arguments": event["call"].get("arguments"), "error": error,
-                      "dispatch_rejected": bool(error) and (error.startswith("unavailable tool ") or (
-                          error.startswith("capability ") and error.endswith(
+                      "dispatch_rejected": bool(error) and (error == APPROVAL_DENIED or error.startswith(
+                          "unavailable tool ") or (error.startswith("capability ") and error.endswith(
                               ("use capability_load", "call it after the next model request"))))})
     return calls
 
@@ -198,82 +235,130 @@ def blank_observation():
             "usage_records": None, "interrupted": False, "infrastructure_error": None, "wall_ms": 0.0}
 
 
+def stop_run(api, token, task_uuid, run_id, clock, sleep):
+    """Cancel a Run the evaluator stops waiting for; return its latest state, or None without one.
+
+    It runs after the Run's own deadline, so its requests get CANCEL_GRACE of their own.
+    """
+    if task_uuid is None:
+        return None
+    grace = api.until(clock() + CANCEL_GRACE, clock, sleep)
+    if run_id is None:
+        run_id = next((run["id"] for run in grace.get("/api/state", token)["runs"] if run["task_id"] == task_uuid),
+                      None)
+        if run_id is None:
+            return None
+    run = grace.get(f"/api/runs/{run_id}", token)["run"]
+    if run["phase"] in TERMINAL:
+        return run
+    grace.post(f"/api/runs/{run_id}/control", {"action": "cancel"}, token)
+    return grace.get(f"/api/runs/{run_id}", token)["run"]
+
+
 def run_task(api, experiment, planned, repeat, agent_ref, fixture=None, usage_reader=None, timeout=300.0,
-             interval=1.0, clock=time.monotonic, sleep=time.sleep, approve_fixture_tools=False):
-    """Execute one Task Run end to end and return raw observations; never raises for Run failures."""
+             interval=1.0, clock=time.monotonic, sleep=time.sleep, approve_fixture_tools=False, observation=None):
+    """Execute one Task Run end to end and return raw observations; never raises for Run failures.
+
+    Every request ends by the Run's deadline. When the deadline passes, even
+    inside a stalled request, and when an interrupt (Ctrl-C, SIGTERM) unwinds
+    through here, the Run is cancelled first, so it cannot keep doing provider
+    work after the evaluator stops waiting for it; an interrupt is then
+    re-raised. `observation`, when given, is filled in place, so a caller
+    still holds the Run's record after an interrupt.
+    """
     task = planned["task"]
     token = experiment.token
-    observation = blank_observation()
+    observation = blank_observation() if observation is None else observation
     started = clock()
+    deadline = started + timeout
+    bounded = api.until(deadline, clock, sleep)
     answers = iter(task.get("human_answers", []))
+    task_uuid = None
     try:
-        title = f"{experiment.prefix} {task['id']} {planned['label']} r{repeat}"
-        workspace = api.post("/api/workspaces", {"title": title, "goal": task["title"]}, token)["id"]
-        observation["workspace"] = workspace
-        created = api.post(f"/api/workspaces/{workspace}/tasks", {
-            "title": task["title"], "description": task_description(planned["corpus"], task), "requirements": {},
-            "dependencies": [], "parent_id": None}, token)
-        task_uuid = created["id"]
-        if fixture is not None:
-            fixture.register(task_uuid, task, f"{task['id']}/{planned['comparison']['id']}/{planned['arm']}/{repeat}")
-        claim = {"revision": created.get("revision", 0),
-                 "agent": {"id": agent_ref["id"], "version": agent_ref["version"]}}
-        deadline = started + timeout
-        for attempt in range(api.retries + 1):
-            try:
-                api.post(f"/api/tasks/{task_uuid}/claim", claim, token)
-                break
-            except ApiError as error:
-                # A timed-out claim may still have committed: retry only when no Run exists.
-                if error.status not in Api.TRANSIENT or attempt == api.retries:
-                    raise
-                sleep(api.backoff * (attempt + 1))
-                if any(run["task_id"] == task_uuid for run in api.get("/api/state", token)["runs"]):
+        try:
+            title = f"{experiment.prefix} {task['id']} {planned['label']} r{repeat}"
+            workspace = bounded.post("/api/workspaces", {"title": title, "goal": task["title"]}, token)["id"]
+            observation["workspace"] = workspace
+            created = bounded.post(f"/api/workspaces/{workspace}/tasks", {
+                "title": task["title"], "description": task_description(planned["corpus"], task), "requirements": {},
+                "dependencies": [], "parent_id": None}, token)
+            task_uuid = created["id"]
+            if fixture is not None:
+                fixture.register(task_uuid, task, f"{task['id']}/{planned['comparison']['id']}/{planned['arm']}/{repeat}")
+            claim = {"revision": created.get("revision", 0),
+                     "agent": {"id": agent_ref["id"], "version": agent_ref["version"]}}
+            for attempt in range(api.retries + 1):
+                try:
+                    bounded.post(f"/api/tasks/{task_uuid}/claim", claim, token)
                     break
-        run_id = None
-        while run_id is None:
-            run_id = next((run["id"] for run in api.get("/api/state", token)["runs"] if run["task_id"] == task_uuid),
-                          None)
-            if run_id is None:
+                except ApiError as error:
+                    # A timed-out claim may still have committed: retry only when no Run exists.
+                    if error.status not in Api.TRANSIENT or attempt == api.retries:
+                        raise
+                    sleep(api.backoff * (attempt + 1))
+                    if any(run["task_id"] == task_uuid for run in bounded.get("/api/state", token)["runs"]):
+                        break
+            run_id = None
+            while run_id is None:
+                run_id = next((run["id"] for run in bounded.get("/api/state", token)["runs"]
+                               if run["task_id"] == task_uuid), None)
+                if run_id is None:
+                    if clock() > deadline:
+                        raise RuntimeError(f"no Run appeared for Task {task_uuid}")
+                    sleep(interval)
+            observation["run_id"] = run_id
+            while True:
+                run = bounded.get(f"/api/runs/{run_id}", token)["run"]
+                if run["phase"] in TERMINAL:
+                    break
                 if clock() > deadline:
-                    raise RuntimeError(f"no Run appeared for Task {task_uuid}")
+                    raise DeadlineExceeded(f"Run {run_id} passed its {timeout}s time limit")
+                if run["phase"] == "WAITING":
+                    for request in bounded.get("/api/state", token)["human_requests"]:
+                        if request["run_id"] != run_id or request.get("response") is not None:
+                            continue
+                        if request["kind"] == "APPROVAL_REQUIRED":
+                            answer = {"approved": approves(task, request["prompt"], approve_fixture_tools,
+                                                           experiment.prefix)}
+                        else:
+                            text = next(answers, None)
+                            answer = {"answer": expand(text) if text is not None else NO_HUMAN}
+                        bounded.post(f"/api/human-requests/{request['id']}/answer", answer, token)
+                        observation["human_answers"].append({"kind": request["kind"],
+                                                             "answer_sha256": canonical_sha256(answer),
+                                                             "approved": answer.get("approved")})
                 sleep(interval)
-        observation["run_id"] = run_id
-        while True:
-            run = api.get(f"/api/runs/{run_id}", token)["run"]
-            if run["phase"] in TERMINAL:
-                break
-            if clock() > deadline:
-                api.post(f"/api/runs/{run_id}/control", {"action": "cancel"}, token)
-                observation["interrupted"] = True
-                run = api.get(f"/api/runs/{run_id}", token)["run"]
-                break
-            if run["phase"] == "WAITING":
-                for request in api.get("/api/state", token)["human_requests"]:
-                    if request["run_id"] != run_id or request.get("response") is not None:
-                        continue
-                    if request["kind"] == "APPROVAL_REQUIRED":
-                        answer = {"approved": approves(task, request["prompt"], approve_fixture_tools,
-                                                       experiment.prefix)}
-                    else:
-                        text = next(answers, None)
-                        answer = {"answer": expand(text) if text is not None else NO_HUMAN}
-                    api.post(f"/api/human-requests/{request['id']}/answer", answer, token)
-                    observation["human_answers"].append({"kind": request["kind"], "answer_sha256": canonical_sha256(answer),
-                                                         "approved": answer.get("approved")})
-            sleep(interval)
+        except Exception as error:
+            # Past the deadline, whether a poll noticed it or a request stalled into it.
+            if not isinstance(error, DeadlineExceeded) and clock() < deadline:
+                raise
+            run = stop_run(api, token, task_uuid, observation["run_id"], clock, sleep)
+            if run is None:
+                raise
+            observation.update({"run_id": run["id"], "interrupted": True})
+        # The Run is finished or cancelled: reading its outcome may take a grace period past the deadline.
+        reader = api.until(max(deadline, clock() + CANCEL_GRACE), clock, sleep)
         context = run.get("context") or {}
         observation.update({"phase": run["phase"], "error": run.get("error") or run.get("state_error"),
                             "steps": run.get("step"), "compactions": context.get("compactions"),
                             "tool_calls": tool_calls_from(context)})
         if run["phase"] == "COMPLETED":
-            observation["final_answer"] = final_answer(api, token, workspace, run)
+            observation["final_answer"] = final_answer(reader, token, observation["workspace"], run)
         if fixture is not None:
             observation["requests"] = fixture.observed(task_uuid)
         if usage_reader is not None:
-            observation["usage_records"] = usage_reader(run_id)
+            observation["usage_records"] = usage_reader(observation["run_id"])
     except Exception as error:  # Counted as an infrastructure failure, never dropped.
         observation["infrastructure_error"] = f"{type(error).__name__}: {error}"
+    except BaseException:  # Ctrl-C or SIGTERM: stop the Run, keep its record, then unwind.
+        observation["interrupted"] = True
+        try:
+            stop_run(api, token, task_uuid, observation["run_id"], clock, sleep)
+        except Exception as error:
+            observation["infrastructure_error"] = f"cancellation after the interrupt failed: {type(error).__name__}: " \
+                                                  f"{error}"
+        observation["wall_ms"] = round((clock() - started) * 1000, 3)
+        raise
     observation["wall_ms"] = round((clock() - started) * 1000, 3)
     return observation
 
@@ -284,7 +369,8 @@ def register_variants(experiment, corpus, planned_runs, model_refs, fixture_url)
     The errors are Agent registrations the Node rejected for arms the corpus
     marks available. Callers decide whether that is a failure; the deterministic
     command treats it as one unless explicitly told the arm is expected to be
-    rejected.
+    rejected. A comparison is run paired or not at all: when any of its arms is
+    rejected, none of its arms stays runnable or is listed as a variant.
     """
     tools = {}
     skills = {}
@@ -326,6 +412,11 @@ def register_variants(experiment, corpus, planned_runs, model_refs, fixture_url)
                          "label": planned["label"], "agent": agent, "agent_fields": planned["agent_fields"],
                          "model": model_ref, "tools": [ref for _, ref in tools[task["id"]]],
                          "skills": skills[task["id"]]})
+    if errors:
+        for planned in planned_runs:
+            if planned["comparison"]["id"] in errors:
+                planned.pop("agent_ref", None)
+        variants = [variant for variant in variants if variant["comparison"] not in errors]
     return variants, errors
 
 
@@ -399,7 +490,7 @@ def run_memory_scenario(api, token, workspace, provider, bank, scenario):
                 raise ValueError(f"unknown memory action {op}")
             body = {"operation_id": str(uuid.uuid4()), "provider": provider, "bank": bank, "changes": [change]}
             original_status = original = None
-        status, value = api.call("POST", path, body, token)
+        status, value = api.call("POST", path, body, token, api.request_timeout)
         api.log.append({"method": "POST", "path": path, "status": status, "round_trip_ms": None})
         if op != "replay":
             sent[name] = (body, status, value)
@@ -425,11 +516,17 @@ def run_memory_scenario(api, token, workspace, provider, bank, scenario):
 
 
 def run_worst_case(task, corpus, model_config, price):
-    """Worst-case nanocredits for one Run: every step fills the window and the output reservation."""
+    """Worst-case nanocredits for one Run.
+
+    Every provider attempt of every step, including each harness retry,
+    fills the context window at the dearer of the input and cache-write rates
+    and spends the whole output reservation.
+    """
     steps = task.get("max_steps", corpus["max_steps"])
-    per_attempt = (model_config["context_window"] * price["input_nanocredits_per_token"]
+    prompt_rate = max(price["input_nanocredits_per_token"], price["cache_write_nanocredits_per_token"])
+    per_attempt = (model_config["context_window"] * prompt_rate
                    + model_config["max_output_tokens"] * price["output_nanocredits_per_token"])
-    return steps * per_attempt
+    return steps * PROVIDER_ATTEMPTS_PER_STEP * per_attempt
 
 
 def observed_provider_work(api, token, workspace, run_id):
@@ -485,10 +582,11 @@ def live_runs(api, experiment, corpus, planned_runs, repeats, ledger, models, pr
                 refusal = f"not dispatched after refusal: {error}"
                 skipped.append((key, refusal))
                 continue
+            observation = blank_observation()
             try:
-                remaining = max(1.0, min(timeout, ledger.deadline - clock()))
-                observation = run_task(api, experiment, planned, repeat, planned["agent_ref"], timeout=remaining,
-                                       clock=clock, sleep=sleep)
+                # A Run's time limit never reaches past the wall-time deadline or the approval's expiry.
+                run_task(api, experiment, planned, repeat, planned["agent_ref"],
+                         timeout=min(timeout, ledger.remaining()), clock=clock, sleep=sleep, observation=observation)
                 if observation["run_id"] and observation.get("workspace"):
                     try:
                         attempt["provider_work"] = observed_provider_work(api, experiment.token,
@@ -496,10 +594,10 @@ def live_runs(api, experiment, corpus, planned_runs, repeats, ledger, models, pr
                                                                           observation["run_id"])
                     except Exception as error:  # Informational only; the reservation stays charged.
                         attempt["provider_work_error"] = f"{type(error).__name__}: {error}"
-                observations.append((planned, repeat, observation))
-            except BaseException:  # Ctrl-C and the like: the in-flight Run is counted, never dropped.
-                observations.append((planned, repeat, dict(blank_observation(), interrupted=True)))
+            except BaseException:  # Ctrl-C, SIGTERM and the like: the in-flight Run is counted, never dropped.
+                observation["interrupted"] = True
                 raise
             finally:
+                observations.append((planned, repeat, observation))
                 ledger.settle(attempt, None)
     return skipped

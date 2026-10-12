@@ -18,6 +18,7 @@ import argparse
 import concurrent.futures
 import contextlib
 import datetime
+import ipaddress
 import json
 import os
 from pathlib import Path
@@ -50,7 +51,7 @@ CLEANUP = []
 DETERMINISTIC_LIMITATIONS = [
     "The deterministic tier's Agent is a scripted probe; outcomes measure what the harness delivered to it, "
     "not model quality.",
-    "Token counts, cost and prompt-cache hits are synthetic fixture values (4 bytes per token, fixture prices, "
+    "Token counts, cost and prompt-cache hits are synthetic fixture values (one token per byte, fixture prices, "
     "a simulated prefix cache); they test accounting and request shape, not provider prices.",
     "The Jev compaction classifier is a fixture that drops every prunable tool result.",
     "Summary recovery (#113) and the other feature-not-available comparisons are reported, not measured.",
@@ -61,10 +62,11 @@ LIVE_LIMITATIONS = [
     "Workspace events do not carry the identity. model.route is only the connected Provider Credential's "
     "catalog provider.",
     "Live outputs are restricted content: the manifest keeps digests and verifier results, not answers.",
-    "Spend is enforced from conservative per-Run worst-case reservations. Until Usage Records can be read over "
-    "HTTP, every dispatched Run stays charged at its full reservation as uncertain, because interrupted and "
-    "retried attempts emit no model.completed event; spend.attempts[].provider_work lists the accepted attempts "
-    "the Node reported, for information only.",
+    "Spend is enforced from conservative per-Run worst-case reservations that cover every harness retry of every "
+    "step at the dearer of the input and cache-write prices. Until Usage Records can be read over HTTP, every "
+    "dispatched Run stays charged at its full reservation as uncertain, because interrupted and retried attempts "
+    "emit no model.completed event; spend.attempts[].provider_work lists the accepted attempts the Node reported, "
+    "for information only.",
     "Code-execution oracles (python-tests) are not run in the live tier; they need a container runner "
     "(--network none, no host environment, no parent process visibility).",
 ]
@@ -79,8 +81,35 @@ def timestamp(moment):
     return moment.astimezone(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
 
-def http_transport(base, timeout=180):
-    def call(method, path, body, token):
+class Terminated(BaseException):
+    """SIGTERM during a live run, raised so the run unwinds through cancellation and finalization."""
+
+
+def raise_terminated(*_):
+    # One unwind only: a second SIGTERM must not interrupt writing the manifest.
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    raise Terminated()
+
+
+def require_https(base_url):
+    """Bearer tokens travel only over HTTPS, or plain HTTP to a loopback test or development Node."""
+    parsed = urllib.parse.urlsplit(base_url)
+    if parsed.scheme == "https" and parsed.hostname:
+        return
+    if parsed.scheme == "http" and parsed.hostname:
+        if parsed.hostname == "localhost":
+            return
+        try:
+            if ipaddress.ip_address(parsed.hostname).is_loopback:
+                return
+        except ValueError:
+            pass
+    raise evaluation.GuardRefusal(f"--base-url must be https:// (plain http:// only for a loopback Node), got "
+                                  f"{base_url!r}; the operator and Tenant subject tokens would travel unencrypted")
+
+
+def http_transport(base):
+    def call(method, path, body, token, timeout):
         request = urllib.request.Request(base.rstrip("/") + path, method=method,
                                          data=None if body is None else json.dumps(body).encode(),
                                          headers={"Authorization": f"Bearer {token}",
@@ -186,19 +215,22 @@ def settings_directory(private, cache_salt):
 
 
 def usage_reader_for(postgres, database, password, query):
+    """Read one Run's Usage Records from the disposable database.
+
+    The query selects every record of this invocation's own database, so it
+    needs no SQL parameter; the Run is selected here by its identifier.
+    """
     def read(run_id):
-        if not re.fullmatch(r"[0-9a-f-]{36}", run_id):
-            raise ValueError("invalid Run id")
         try:
             output = checked(["docker", "exec", "-i", "-e", f"PGPASSWORD={password}", postgres, "psql", "-U", "aidash",
-                              "-d", database, "-tA", "-v", "ON_ERROR_STOP=1", "-v", f"run={run_id}"],
-                             input=query + ";\n")
+                              "-d", database, "-tA", "-v", "ON_ERROR_STOP=1"], input=query + ";\n")
         except subprocess.CalledProcessError as error:
             # The message lands in runs[].error: keep the exit status and a redacted stderr tail only.
             tail = " | ".join((error.stderr or "").strip().splitlines()[-3:])
             raise RuntimeError("usage record read failed (exit "
                                f"{error.returncode}): {evaluation.redact_secrets(tail, password)[:300]}") from None
-        return [json.loads(line) for line in output.splitlines() if line.strip()]
+        records = (json.loads(line) for line in output.splitlines() if line.strip())
+        return [record for record in records if record["run_id"] == run_id]
     return read
 
 
@@ -296,8 +328,8 @@ def assemble(corpus, experiment, runs, availability, memory, calibrate, spend, l
     return result
 
 
-def finalize(result, output):
-    """Validate and write a manifest. The record is written even when validation fails.
+def finalize(result, reservation):
+    """Validate a manifest and write it into its reservation. The record is written even when validation fails.
 
     A manifest that fails validation is annotated in its `error` field rather
     than discarded: it may be the only record of paid work. Returns the
@@ -310,7 +342,7 @@ def finalize(result, output):
         failure = invalid
         summary = str(invalid).splitlines()[1:3]
         result["error"] = "; ".join(filter(None, [result["error"], "manifest failed validation: " + " | ".join(summary)]))
-    evaluation.write_exclusive(output, result)
+    evaluation.write_manifest(reservation, result)
     return failure
 
 
@@ -340,6 +372,11 @@ def deterministic(args):
     prefix = "fte" + tag[:6]
     password = secrets.token_urlsafe(24)
     output = Path(args.output) if args.output else DEFAULT_OUTPUT / f"deterministic-{tag}.json"
+    try:
+        reservation = evaluation.reserve_exclusive(output)
+    except FileExistsError:
+        print(f"error: --output {output} already exists; manifests are never overwritten", file=sys.stderr)
+        return 2
     log_directory = DEFAULT_OUTPUT / f"logs-{tag}"
     log_directory.mkdir(parents=True, mode=0o700, exist_ok=True)
     model_ids = runner.fixture_model_ids(corpus, prefix)
@@ -452,7 +489,7 @@ def deterministic(args):
                                            args.repeats, limits, DETERMINISTIC_LIMITATIONS)
     result = assemble(corpus, experiment_value, runs, availability, memory, True, None,
                       DETERMINISTIC_LIMITATIONS, error)
-    invalid = finalize(result, output)
+    invalid = finalize(result, reservation)
     error = result["error"]
     print(evaluation.summary_table(result))
     print(f"Result manifest: {output}")
@@ -498,20 +535,25 @@ def live(args, read_json=None, transport=None, clock=time.monotonic, sleep=time.
         mapping[name] = reference
     if not mapping:
         raise evaluation.GuardRefusal("at least one --model mapping is required")
+    require_https(args.base_url)
     api = runner.Api(transport or http_transport(args.base_url), operator)
     credential = api.get(f"/api/tenants/{args.tenant}/provider-credentials/{args.provider_credential}")
+    binding = None
+    if isinstance(credential, dict) and credential.get("provider"):
+        try:
+            binding = api.get(f"/api/tenants/{args.tenant}/provider-credential-bindings/{credential['provider']}")
+        except runner.ApiError as missing:
+            if missing.status != 404:
+                raise
     models = {}
     for reference in sorted(set(mapping.values())):
         identifier, _, version = reference.partition("@")
         models[reference] = api.get(f"/api/registry/{identifier}/{version}")["config"]
     approval = read_json(args.disclosure_approval) if args.disclosure_approval else None
-    evaluation.require_live_authorization(credential, approval, corpus["_snapshot"]["sha256"], models,
-                                          args.max_spend_nanocredits, args.max_wall_seconds, wall_now())
+    expires_at = evaluation.require_live_authorization(credential, binding, approval, corpus["_snapshot"]["sha256"],
+                                                       models, args.max_spend_nanocredits, args.max_wall_seconds,
+                                                       wall_now())
     evaluation.check_live_models(models)
-    # The manifest is written exclusively after paid work; an existing path would lose it.
-    if args.output and Path(args.output).exists():
-        raise evaluation.GuardRefusal(f"--output {args.output} already exists; the live manifest is written "
-                                      "exclusively and would be lost after provider work")
     planned_runs = [planned for planned in evaluation.plan(corpus, args.task, args.comparison)
                     if planned["model"] in mapping]
     if not planned_runs:
@@ -522,14 +564,29 @@ def live(args, read_json=None, transport=None, clock=time.monotonic, sleep=time.
             "environment does not hide the parent's tokens (ps eww, /proc/<ppid>/environ) or the network, and a "
             "test process can exit 0 on its own. They need a container runner (--network none, no host "
             "environment, no parent process visibility). Select tasks without them with --task")
-    ledger = evaluation.SpendLedger(args.max_spend_nanocredits, args.max_wall_seconds, clock)
+    # Fixture tools point at an unroutable endpoint and their approvals are denied, so a task that
+    # needs a tool result could only fail or pass by guessing. Escalation tasks need the denial.
+    tool_tasks = sorted({p["task"]["id"] for p in planned_runs
+                         if p["task"]["kind"] != "escalation" and evaluation.task_tools(corpus, p["task"])})
+    if tool_tasks:
+        raise evaluation.GuardRefusal(
+            f"tasks {tool_tasks} need fixture tool results, which the live tier never provides: fixture tools "
+            "point at an unroutable endpoint and their approvals are denied. Select other tasks with --task")
+    ledger = evaluation.SpendLedger(args.max_spend_nanocredits, args.max_wall_seconds, clock, expires_at, wall_now)
     created_at = timestamp(wall_now())
     prefix = "fte" + secrets.token_hex(3)
+    # Reserved before any Registry write or Run: the manifest may be the only record of paid work.
+    output = Path(args.output) if args.output else DEFAULT_OUTPUT / f"live-{prefix}.json"
+    try:
+        reservation = evaluation.reserve_exclusive(output)
+    except FileExistsError:
+        raise evaluation.GuardRefusal(f"--output {output} already exists; live manifests are never "
+                                      "overwritten") from None
     model_refs = {name: {"id": reference.partition("@")[0], "version": reference.partition("@")[2],
                          "config_sha256": evaluation.canonical_sha256(models[reference]),
                          "model_id": models[reference]["model_id"]} for name, reference in mapping.items()}
     variants, registration_errors, observations, skipped, error = [], {}, [], [], None
-    interrupted = False
+    stopped = None
     try:
         identity = api.get("/.well-known/aidash")
         experiment = runner.Experiment(api, identity["id"], args.tenant, prefix)
@@ -537,8 +594,8 @@ def live(args, read_json=None, transport=None, clock=time.monotonic, sleep=time.
         for planned in planned_runs:
             planned["corpus"] = corpus
             planned["live_model"] = mapping[planned["model"]]
-        # Fixture tools point at an unroutable endpoint; their approvals are denied
-        # by default, so a live Run never reaches an external tool effect.
+        # Fixture tools point at an unroutable endpoint and their approvals are denied, so a
+        # live Run never reaches an external tool effect.
         variants, registration_errors = runner.register_variants(experiment, corpus, planned_runs, model_refs,
                                                                  args.tool_endpoint)
         if registration_errors and not args.allow_unavailable_arms:
@@ -546,17 +603,20 @@ def live(args, read_json=None, transport=None, clock=time.monotonic, sleep=time.
         else:
             skipped = runner.live_runs(api, experiment, corpus, planned_runs, args.repeats, ledger, models,
                                        approval["prices"], args.run_timeout, observations, clock, sleep)
-    except KeyboardInterrupt:
-        interrupted = True
-        error = "interrupted by the operator (KeyboardInterrupt)"
+    except (KeyboardInterrupt, Terminated) as stop:
+        stopped = stop
+        error = f"interrupted by the operator ({type(stop).__name__})"
     except Exception as failure:  # Recorded; the ledger and any finished Runs are still written.
         error = f"{type(failure).__name__}: {failure}"
-    recorded = {f"{planned['task']['id']}/{planned['comparison']['id']}/{planned['arm']}/{repeat}"
+    if signal.getsignal(signal.SIGTERM) is raise_terminated:
+        # Finalization is short and writes the only record of paid work: let nothing interrupt it.
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    recorded = {evaluation.run_key(planned["task"]["id"], planned["comparison"]["id"], planned["arm"], repeat)
                 for planned, repeat, _ in observations}
     listed = {key for key, _ in skipped}
     reason = "not dispatched: " + (error or "live dispatch stopped")
     skipped += [(key, reason) for key in (
-        f"{planned['task']['id']}/{planned['comparison']['id']}/{planned['arm']}/{repeat}"
+        evaluation.run_key(planned["task"]["id"], planned["comparison"]["id"], planned["arm"], repeat)
         for repeat in range(1, args.repeats + 1) for planned in planned_runs if "agent_ref" in planned)
         if key not in recorded and key not in listed]
     runs = []
@@ -582,14 +642,13 @@ def live(args, read_json=None, transport=None, clock=time.monotonic, sleep=time.
     memory = evaluation.memory_matrix(memory_corpus, {})
     result = assemble(corpus, experiment_value, runs, availability, memory, False, ledger.summary(),
                       LIVE_LIMITATIONS, error, skipped)
-    output = Path(args.output) if args.output else DEFAULT_OUTPUT / f"live-{prefix}.json"
-    invalid = finalize(result, output)
+    invalid = finalize(result, reservation)
     print(evaluation.summary_table(result))
     print(f"Result manifest: {output}")
     if result["error"]:
         print("error: " + result["error"], file=sys.stderr)
-    if interrupted:
-        return 130
+    if stopped is not None:
+        return 143 if isinstance(stopped, Terminated) else 130
     if result["error"] or invalid:
         return 1
     return 0 if ledger.refusal is None else 3
@@ -661,13 +720,15 @@ def main(argv=None):
         return validate_command(args)
     if not 1 <= args.repeats <= 64:
         parser.error("--repeats must be between 1 and 64")
-    if args.command == "deterministic":
-        signal.signal(signal.SIGTERM, terminate)
-        return deterministic(args)
     try:
+        if args.command == "deterministic":
+            signal.signal(signal.SIGTERM, terminate)
+            return deterministic(args)
+        # A live Run must be cancelled and the manifest written: unwind instead of exiting.
+        signal.signal(signal.SIGTERM, raise_terminated)
         return live(args)
-    except evaluation.GuardRefusal as refusal:
-        print(f"live evaluation refused: {refusal}", file=sys.stderr)
+    except (evaluation.GuardRefusal, evaluation.CorpusError) as refusal:
+        print(f"{args.command} evaluation refused: {refusal}", file=sys.stderr)
         return 2
 
 
