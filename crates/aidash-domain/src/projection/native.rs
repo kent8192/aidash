@@ -30,6 +30,11 @@ pub enum Source {
 	ExecutionSummary,
 	Tool,
 	ModelMediaObservation,
+	/// The question a Human answer replies to. It may quote model or tool
+	/// output, so only the answer itself is unwrapped.
+	HumanRequest,
+	/// This step's volatile content.
+	Step,
 }
 
 /// The provenance envelope around every piece of data-derived content in a
@@ -63,18 +68,26 @@ impl Envelope {
 	pub fn text(&self) -> String {
 		serde_json::to_string(self).expect("serializable provenance envelope")
 	}
+
+	/// Envelope text around content that is already canonical JSON text, kept
+	/// byte for byte so its key order survives.
+	fn raw_text(source: Source, provenance: Value, content: &str) -> String {
+		let head = Self::data(source, provenance, None, Value::Null).text();
+		let head = head
+			.strip_suffix("null}")
+			.expect("content is the last envelope field");
+		format!("{head}{content}}}")
+	}
 }
 
 /// One history message of a Native request.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum NativeMessage {
-	/// A Human answer, sent as a user message without an envelope.
-	Human {
-		request_kind: String,
-		request: String,
-		response: Value,
-	},
+	/// A Human answer, sent as a user message. The answer is the only
+	/// non-system instruction channel and is not wrapped; the request it
+	/// replies to is.
+	Human { request: Envelope, response: Value },
 	/// Data-derived history that is not a tool result, sent as an enveloped
 	/// user message.
 	Data { envelope: Envelope },
@@ -100,8 +113,8 @@ pub struct NativeContext {
 	/// after `system`. They are part of the Stable Prefix.
 	pub attachments: Vec<Envelope>,
 	pub history: Vec<NativeMessage>,
-	/// Canonical JSON of this step's volatile content, sent as the trailing
-	/// user message. It is never stored in history.
+	/// Canonical JSON of this step's volatile content, sent enveloped as the
+	/// trailing user message. It is never stored in history.
 	pub volatile: String,
 }
 
@@ -204,8 +217,12 @@ fn single(entry: &HistoryEntry, history: &mut Vec<NativeMessage>, markers: &mut 
 			request_kind,
 			response,
 		} => history.push(NativeMessage::Human {
-			request_kind: request_kind.clone(),
-			request: request.clone(),
+			request: Envelope::data(
+				Source::HumanRequest,
+				json!({"request_kind": request_kind}),
+				Some(entry.seq),
+				Value::String(request.clone()),
+			),
 			response: response.clone(),
 		}),
 		ContextEvent::ModelMediaObservation {
@@ -276,6 +293,88 @@ fn attachments(context: &Context, pinned: &Value) -> Vec<Envelope> {
 		));
 	}
 	attachments
+}
+
+impl NativeContext {
+	/// Canonical chat messages after `system`: the attachment message, the
+	/// history, then the volatile message with this step's media parts.
+	/// `breakpoint` marks the end of the Stable Prefix, the last history
+	/// message or, without history, the last attachment (ADR 0019); the
+	/// volatile message is never marked.
+	pub(crate) fn chat_messages(
+		&self,
+		media: impl Iterator<Item = Value>,
+		breakpoint: bool,
+	) -> Vec<Value> {
+		let mut messages = Vec::with_capacity(self.history.len() + 2);
+		if !self.attachments.is_empty() {
+			let parts = self
+				.attachments
+				.iter()
+				.map(|envelope| json!({"type": "text", "text": envelope.text()}))
+				.collect();
+			messages.push(json!({"role": "user", "content": Value::Array(parts)}));
+		}
+		messages.extend(self.history.iter().map(NativeMessage::chat));
+		if breakpoint && let Some(last) = messages.last_mut() {
+			let part = match &mut last["content"] {
+				Value::Array(parts) => parts.last_mut(),
+				content @ Value::String(_) => {
+					*content = json!([{"type": "text", "text": content.take()}]);
+					content.as_array_mut().and_then(|parts| parts.last_mut())
+				}
+				_ => None,
+			};
+			if let Some(part) = part {
+				part["cache_control"] = crate::provider::cache_control();
+			}
+		}
+		let volatile =
+			Envelope::raw_text(Source::Step, json!({"scope": "request"}), &self.volatile);
+		let mut media = media.peekable();
+		let content = if media.peek().is_none() {
+			Value::String(volatile)
+		} else {
+			Value::Array(
+				std::iter::once(json!({"type": "text", "text": volatile}))
+					.chain(media)
+					.collect(),
+			)
+		};
+		messages.push(json!({"role": "user", "content": content}));
+		messages
+	}
+}
+
+impl NativeMessage {
+	fn chat(&self) -> Value {
+		match self {
+			Self::Human { request, response } => json!({"role": "user", "content": format!(
+				r#"{{"in_reply_to":{},"response":{response}}}"#,
+				request.text()
+			)}),
+			Self::Data { envelope } => json!({"role": "user", "content": envelope.text()}),
+			Self::Assistant { text, tool_calls } => {
+				let mut message = json!({"role": "assistant", "content": text});
+				if !tool_calls.is_empty() {
+					message["tool_calls"] = tool_calls
+						.iter()
+						.map(|call| {
+							json!({"id": call.id, "type": "function", "function": {
+								"name": call.name,
+								"arguments": call.arguments.to_string(),
+							}})
+						})
+						.collect();
+				}
+				message
+			}
+			Self::Tool {
+				tool_call_id,
+				envelope,
+			} => json!({"role": "tool", "tool_call_id": tool_call_id, "content": envelope.text()}),
+		}
+	}
 }
 
 /// The invariant every Native request keeps: each assistant message with

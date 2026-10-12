@@ -61,7 +61,10 @@ pub struct ModelRequest {
 pub enum ModelContext {
 	/// Ordered: two text parts, the Stable Prefix part first.
 	Ordered(OrderedContext),
-	/// Legacy: one JSON value sent as a single text message.
+	/// Native: attachments, model-native Model Turns and a volatile message.
+	Native(crate::projection::native::NativeContext),
+	/// Legacy: one JSON value sent as a single text message. It must stay
+	/// the last untagged variant, since any value decodes as Legacy.
 	Legacy(Value),
 }
 
@@ -81,11 +84,26 @@ impl ModelContext {
 	pub fn legacy_mut(&mut self) -> Option<&mut Value> {
 		match self {
 			Self::Legacy(value) => Some(value),
-			Self::Ordered(_) => None,
+			Self::Ordered(_) | Self::Native(_) => None,
 		}
 	}
 
-	/// Leading text parts of the user message, in send order.
+	/// The Projection Version this context was rendered under.
+	pub fn projection_version(&self) -> crate::projection::ProjectionVersion {
+		match self {
+			Self::Legacy(_) => crate::projection::ProjectionVersion::Legacy,
+			Self::Ordered(_) => crate::projection::ProjectionVersion::Ordered,
+			Self::Native(_) => crate::projection::ProjectionVersion::Native,
+		}
+	}
+
+	/// Whether this context may carry cache breakpoints (ADR 0019).
+	fn caches(&self) -> bool {
+		matches!(self, Self::Ordered(_) | Self::Native(_))
+	}
+
+	/// Leading text parts of the single user message of a Legacy or Ordered
+	/// context, in send order. A Native context has no single user message.
 	fn text_parts(&self) -> Vec<std::borrow::Cow<'_, str>> {
 		match self {
 			Self::Legacy(value) => vec![value.to_string().into()],
@@ -93,6 +111,7 @@ impl ModelContext {
 				ordered.stable.as_str().into(),
 				ordered.volatile.as_str().into(),
 			],
+			Self::Native(_) => vec![],
 		}
 	}
 }
@@ -254,7 +273,7 @@ impl ContentPart {
 }
 
 /// A five-minute provider cache breakpoint, the provider default (ADR 0019).
-fn cache_control() -> Value {
+pub(crate) fn cache_control() -> Value {
 	json!({"type":"ephemeral"})
 }
 
@@ -314,13 +333,41 @@ impl ModelRequest {
 		)
 	}
 
-	/// `breakpoints` marks `system` and the Ordered Stable Prefix part; it has
+	/// `breakpoints` marks `system` and the end of the Stable Prefix: the
+	/// Ordered Stable Prefix part or the last Native history message. It has
 	/// no effect on a Legacy context.
 	fn body(&self, parts: impl Iterator<Item = Value>, breakpoints: bool) -> Value {
+		let breakpoints = breakpoints && self.context.caches();
+		let system = if breakpoints {
+			json!([{"type":"text","text":self.instructions,"cache_control":cache_control()}])
+		} else {
+			json!(self.instructions)
+		};
+		let mut messages = vec![json!({"role":"system","content":system})];
+		match &self.context {
+			ModelContext::Native(native) => {
+				messages.extend(native.chat_messages(parts, breakpoints));
+			}
+			ModelContext::Legacy(_) | ModelContext::Ordered(_) => {
+				messages
+					.push(json!({"role":"user","content":self.user_content(parts, breakpoints)}));
+			}
+		}
+		let mut body = json!({ "messages": messages });
+		if !self.tools.is_empty() {
+			body["tools"] = Value::Array(self.tools.iter().map(|t| json!({"type":"function","function":{"name":t.name,"description":t.description,"parameters":t.parameters}})).collect());
+		}
+		if let Some(format) = &self.response_format {
+			body["response_format"] = format.clone();
+		}
+		body
+	}
+
+	/// The single user message of a Legacy or Ordered context.
+	fn user_content(&self, parts: impl Iterator<Item = Value>, breakpoints: bool) -> Value {
 		let mut parts = parts.peekable();
 		let text = self.context.text_parts();
-		let breakpoints = breakpoints && matches!(self.context, ModelContext::Ordered(_));
-		let content = match (&self.context, parts.peek()) {
+		match (&self.context, parts.peek()) {
 			(ModelContext::Legacy(_), None) => Value::String(text.concat()),
 			_ => Value::Array(
 				text.into_iter()
@@ -337,22 +384,7 @@ impl ModelRequest {
 					.chain(parts)
 					.collect(),
 			),
-		};
-		let system = if breakpoints {
-			json!([{"type":"text","text":self.instructions,"cache_control":cache_control()}])
-		} else {
-			json!(self.instructions)
-		};
-		let mut body = json!({"messages":[
-			{"role":"system","content":system},
-			{"role":"user","content":content}]});
-		if !self.tools.is_empty() {
-			body["tools"] = Value::Array(self.tools.iter().map(|t| json!({"type":"function","function":{"name":t.name,"description":t.description,"parameters":t.parameters}})).collect());
 		}
-		if let Some(format) = &self.response_format {
-			body["response_format"] = format.clone();
-		}
-		body
 	}
 
 	/// Conservative UTF-8 byte estimate, not a provider tokenizer. Reserve
@@ -382,10 +414,13 @@ impl ModelRequest {
 	}
 
 	pub fn validate(&self) -> Result<()> {
-		if self.cache_breakpoints && !matches!(self.context, ModelContext::Ordered(_)) {
+		if self.cache_breakpoints && !self.context.caches() {
 			return Err(Error::Invalid(
-				"cache breakpoints require the Ordered Projection Version".into(),
+				"cache breakpoints require the Ordered or Native Projection Version".into(),
 			));
+		}
+		if let ModelContext::Native(native) = &self.context {
+			crate::projection::native::check_model_turns(&native.history)?;
 		}
 		for part in &self.content_parts {
 			part.validate()?;

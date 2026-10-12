@@ -391,7 +391,8 @@ mod cache_salt {
 				"credential_env": null,
 				"context_window": 100_000,
 				"modalities": ["text"],
-				"cost": {}
+				"cost": {},
+				"projection_versions": ["legacy", "ordered", "native"]
 			});
 			if let Some(mode) = cache_mode {
 				config["cache_mode"] = json!(mode);
@@ -463,6 +464,32 @@ mod cache_salt {
 				stable: r#"{"identity":"fixture"}"#.into(),
 				volatile: r#"{"workspace":{}}"#.into(),
 			}),
+			cache_scope: Some(scope),
+			..legacy()
+		}
+	}
+
+	/// A Native request with one complete Model Turn.
+	fn native(scope: CacheScope) -> ModelRequest {
+		let mut context = aidash_domain::context::Context::default();
+		context.push(aidash_domain::context::ContextEvent::Assistant {
+			epoch: 1,
+			text: String::new(),
+			calls: vec!["call-1".into()],
+		});
+		context.push(aidash_domain::context::ContextEvent::tool(
+			aidash_domain::provider::ToolCall {
+				id: "call-1".into(),
+				name: "workspace_read".into(),
+				arguments: json!({"kind":"task"}),
+			},
+			json!({"title":"Task"}),
+		));
+		ModelRequest {
+			context: ModelContext::Native(aidash_domain::projection::native::native_context(
+				&context,
+				&json!({"identity":"fixture","workspace":{}}),
+			)),
 			cache_scope: Some(scope),
 			..legacy()
 		}
@@ -698,5 +725,97 @@ mod cache_salt {
 			.collect();
 		let error = CacheSaltKeys::new(&keys, current).unwrap_err();
 		assert!(!format!("{error:?}").contains(SECRET_ONE));
+	}
+
+	#[rstest::rstest]
+	#[tokio::test]
+	async fn native_requests_keep_the_salt_breakpoints_and_zdr() {
+		// Arrange
+		let mut upstream = Upstream::start().await;
+		let provider = upstream.route(Some(keys()), "anthropic/claude-fixture", Some("explicit"));
+		let marked = ModelRequest {
+			cache_breakpoints: true,
+			..native(scope("tenant-a", 1))
+		};
+		let expected_line = keys().line(&scope("tenant-a", 1)).unwrap();
+		// Act
+		provider
+			.infer(marked.clone(), &aidash_application::ports::NoProgress)
+			.await
+			.unwrap();
+		// Assert
+		let bodies = upstream.bodies();
+		let body = &bodies[0];
+		let ephemeral = json!({"type":"ephemeral"});
+		assert_eq!(
+			body["messages"][0]["content"],
+			json!([{"type":"text","text":format!("{expected_line}Shared instructions"),"cache_control":ephemeral}])
+		);
+		let messages = body["messages"].as_array().unwrap();
+		let roles: Vec<&str> = messages
+			.iter()
+			.map(|m| m["role"].as_str().unwrap())
+			.collect();
+		assert_eq!(roles, ["system", "user", "assistant", "tool", "user"]);
+		assert_eq!(messages[2]["tool_calls"][0]["id"], "call-1");
+		assert_eq!(messages[3]["tool_call_id"], "call-1");
+		assert_eq!(messages[3]["content"][0]["cache_control"], ephemeral);
+		assert_eq!(body.to_string().matches("cache_control").count(), 2);
+		assert_eq!(
+			messages[1..],
+			marked.input_body()["messages"].as_array().unwrap()[1..]
+		);
+		assert_eq!(body["provider"]["zdr"], true);
+	}
+
+	#[rstest::rstest]
+	#[case::undeclared(json!(["legacy", "ordered"]))]
+	#[case::legacy_only(json!(null))]
+	#[tokio::test]
+	async fn a_forced_unsupported_projection_fails_typed_before_any_request(
+		#[case] versions: Value,
+	) {
+		// Arrange
+		let mut upstream = Upstream::start().await;
+		let mut config = json!({
+			"provider": "openrouter",
+			"model_id": "fixture",
+			"endpoint": upstream.endpoint,
+			"credential_env": null,
+			"context_window": 100_000,
+			"modalities": ["text"],
+			"cost": {}
+		});
+		if !versions.is_null() {
+			config["projection_versions"] = versions;
+		}
+		let provider = salted_provider(
+			reqwest::Client::new(),
+			serde_json::from_value(config).unwrap(),
+			Arc::new(aidash_application::provider_access::EnvironmentAccess {
+				credentials: Arc::new(NoCredentials),
+			}),
+			Default::default(),
+			Some(keys()),
+		)
+		.unwrap();
+		// Act
+		let error = provider
+			.infer(
+				native(scope("tenant-a", 1)),
+				&aidash_application::ports::NoProgress,
+			)
+			.await
+			.unwrap_err();
+		// Assert
+		assert!(
+			matches!(
+				&error,
+				Error::UnsupportedProjection { model, version }
+					if model == "fixture" && *version == aidash_domain::projection::ProjectionVersion::Native
+			),
+			"{error:?}"
+		);
+		assert!(upstream.bodies().is_empty());
 	}
 }

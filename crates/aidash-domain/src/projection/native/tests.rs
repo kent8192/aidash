@@ -256,3 +256,114 @@ fn the_invariant_rejects_partial_turns_and_orphan_results() {
 	}];
 	assert!(check_model_turns(&orphan).is_err());
 }
+
+fn request(native: NativeContext, breakpoints: bool) -> crate::provider::ModelRequest {
+	crate::provider::ModelRequest {
+		instructions: "Do the task".into(),
+		context: crate::provider::ModelContext::Native(native),
+		max_output_tokens: 100,
+		cache_breakpoints: breakpoints,
+		..Default::default()
+	}
+}
+
+#[test]
+fn chat_rendering_pairs_tool_messages_and_wraps_the_step() {
+	// Arrange
+	let context = context(vec![
+		assistant(1, "Reading.", &["a", "b"]),
+		tool("a"),
+		human("yes"),
+		tool("b"),
+	]);
+	let native = native_context(
+		&context,
+		&json!({"task": {"id": "t", "revision": 1}, "agent_state": {"step": 1}}),
+	);
+	// Act
+	let body = request(native, false).input_body();
+	// Assert
+	let messages = body["messages"].as_array().unwrap();
+	let roles = messages
+		.iter()
+		.map(|message| message["role"].as_str().unwrap())
+		.collect::<Vec<_>>();
+	assert_eq!(
+		roles,
+		[
+			"system",
+			"user",
+			"assistant",
+			"tool",
+			"tool",
+			"user",
+			"user"
+		]
+	);
+	assert_eq!(messages[2]["tool_calls"][1]["id"], "b");
+	assert_eq!(
+		messages[2]["tool_calls"][0]["function"]["arguments"],
+		r#"{"id":"a","kind":"task"}"#
+	);
+	assert_eq!(messages[3]["tool_call_id"], "a");
+	assert_eq!(messages[4]["tool_call_id"], "b");
+	assert_eq!(
+		messages[5]["content"],
+		r#"{"in_reply_to":{"source":"human_request","provenance":{"request_kind":"APPROVAL_REQUIRED"},"revision":3,"trust":"data","content":"Approve?"},"response":{"approved":true,"note":"yes"}}"#
+	);
+	assert_eq!(
+		messages[6]["content"],
+		r#"{"source":"step","provenance":{"scope":"request"},"revision":null,"trust":"data","content":{"agent_state":{"step":1}}}"#
+	);
+	assert!(body.to_string().find("cache_control").is_none());
+}
+
+#[test]
+fn breakpoints_mark_system_and_the_last_history_message_only() {
+	// Arrange
+	let context = context(vec![assistant(1, "", &["a"]), tool("a")]);
+	let native = native_context(&context, &json!({"task": {"id": "t"}}));
+	// Act
+	let body = request(native, true).input_body();
+	// Assert
+	let messages = body["messages"].as_array().unwrap();
+	assert_eq!(
+		messages[0]["content"][0]["cache_control"]["type"],
+		"ephemeral"
+	);
+	assert!(messages[1]["content"][0].get("cache_control").is_none());
+	assert_eq!(messages[3]["role"], "tool");
+	assert_eq!(
+		messages[3]["content"][0]["cache_control"]["type"],
+		"ephemeral"
+	);
+	assert!(
+		messages[4]["content"].is_string(),
+		"the step is never marked"
+	);
+	assert_eq!(body.to_string().matches("cache_control").count(), 2);
+}
+
+#[test]
+fn without_history_the_breakpoint_ends_the_attachments() {
+	let native = native_context(&Context::default(), &json!({"task": {"id": "t"}}));
+	let body = request(native, true).input_body();
+	assert_eq!(
+		body["messages"][1]["content"][0]["cache_control"]["type"],
+		"ephemeral"
+	);
+	assert_eq!(body.to_string().matches("cache_control").count(), 2);
+}
+
+#[test]
+fn a_partial_turn_is_rejected_before_any_request_is_sent() {
+	let native = NativeContext {
+		attachments: vec![],
+		history: vec![NativeMessage::Assistant {
+			text: None,
+			tool_calls: vec![call("a")],
+		}],
+		volatile: "{}".into(),
+	};
+	assert!(request(native, false).validate().is_err());
+}
