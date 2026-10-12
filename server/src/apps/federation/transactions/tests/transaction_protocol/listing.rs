@@ -1,20 +1,20 @@
 use super::*;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::Ordering;
 
 #[rstest::rstest]
 #[tokio::test]
 async fn listing_checks_peers_concurrently_and_preserves_order_and_denials(
-	#[future(awt)]
-	#[from(test_environment)]
-	environment: Arc<TestEnvironment>,
+	#[future(awt)] pair: Pair,
+
+	fault_signals: FaultSignals,
 ) {
 	use aidash_server::authorization::{
 		Authorization,
 		peer::{PeerMappingInput, write},
 	};
-	let (a, mut b, mut manifest, _, _) = pair(&environment).await;
-	let app_a = common::application(a.f.clone()).await;
-	let app_b = common::application(b.f.clone()).await;
+	let (a, mut b, mut manifest, _, _) = pair;
+	let app_a = a.application.clone();
+	let app_b = b.application.clone();
 	let (_, token, task_a) = common::bootstrap(&a.f, &app_a, "http://localhost:1").await;
 	let (_, _, task_b) = common::bootstrap(&b.f, &app_b, "http://localhost:1").await;
 	let auth = Authorization {
@@ -65,24 +65,24 @@ async fn listing_checks_peers_concurrently_and_preserves_order_and_denials(
 	}
 	expected.reverse();
 	b.stop().await;
-	let active = Arc::new(AtomicUsize::new(0));
-	let peak = Arc::new(AtomicUsize::new(0));
+	let active = fault_signals.active;
+	let peak = fault_signals.peak;
 	let observed = peak.clone();
 	// Delay actual peer authorization responses, without replacing its decision.
-	let app = common::application(b.f.clone())
-		.await
-		.test_transport()
-		.layer(axum::middleware::from_fn(
-			move |request: axum::extract::Request, next: axum::middleware::Next| {
+	let app = aidash_server::routes()
+		.into_server()
+		.with_di_context(b.application.context.clone())
+		.with_middleware(ClosureMiddleware(
+			move |request: reinhardt::Request, next: Arc<dyn reinhardt::Handler>| {
 				let active = active.clone();
 				let peak = observed.clone();
 				async move {
-					let check = request.uri().path() == "/federation/v0.1/transactions/access";
+					let check = request.uri.path() == "/federation/v0.1/transactions/access";
 					if check {
 						peak.fetch_max(active.fetch_add(1, Ordering::SeqCst) + 1, Ordering::SeqCst);
 						tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 					}
-					let response = next.run(request).await;
+					let response = next.handle(request).await.unwrap();
 					if check {
 						active.fetch_sub(1, Ordering::SeqCst);
 					}
@@ -90,10 +90,7 @@ async fn listing_checks_peers_concurrently_and_preserves_order_and_denials(
 				}
 			},
 		));
-	let listener = tokio::net::TcpListener::bind(b.listen).await.unwrap();
-	b.server = Some(tokio::spawn(async move {
-		axum::serve(listener, app).await.unwrap()
-	}));
+	b.serve(Arc::new(app)).await;
 	let (status, rows) =
 		common::request(&app_a, &token, "GET", "/api/transactions", Value::Null).await;
 	assert_eq!(status, 200, "{rows}");

@@ -120,3 +120,17 @@ variable "staging_release_bucket" {
     error_message = "Only production may read the distinct staging release bucket."
   }
 }
+
+variable "security_alert_emails" {
+  description = "Recipients of Credential Broker misuse alerts (#151). Required once any broker environment is configured."
+  type        = set(string)
+  default     = []
+  validation {
+    condition     = alltrue([for email in var.security_alert_emails : can(regex("^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$", email))])
+    error_message = "Use plain email addresses."
+  }
+  validation {
+    condition     = var.byok_project_id == "" || length(var.byok_broker_environments) == 0 || length(var.security_alert_emails) > 0
+    error_message = "Credential Broker alerts need at least one recipient; a silent alert policy detects nothing."
+  }
+}

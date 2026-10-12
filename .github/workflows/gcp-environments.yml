@@ -91,6 +91,8 @@ jobs:
   prepare:
     needs: intake
     if: needs.intake.outputs.proceed == 'true'
+    # Every credentialed job runs in the protected `nonproduction` Environment;
+    # the WIF provider trusts no other Environment for this workflow (#151).
     runs-on: ubuntu-24.04
     environment: nonproduction
     timeout-minutes: 10

@@ -17,14 +17,9 @@ data "google_project" "byok" {
   count      = local.enabled ? 1 : 0
   project_id = var.byok_project_id
 }
-// Human-run bootstrap owns the broker SA and its BYOK read binding. Environment
-// automation cannot grant BYOK read access; it only acts as the supplied SA.
-resource "google_service_account_iam_member" "deploy" {
-  count              = local.enabled ? 1 : 0
-  service_account_id = "projects/${var.project_id}/serviceAccounts/${var.broker_service_account_email}"
-  role               = "roles/iam.serviceAccountUser"
-  member             = "serviceAccount:${var.deploy_service_account}"
-}
+// Human-run bootstrap owns the broker SA, its BYOK read binding and the deploy
+// identity's actAs grant. Environment automation holds an IAM deny on the broker
+// SA's setIamPolicy (#151), so this module must not bind anything on it.
 resource "google_kms_crypto_key_iam_member" "signer" {
   count         = local.enabled && var.bind_runtime_signer ? 1 : 0
   crypto_key_id = var.signing_key_id
@@ -76,7 +71,6 @@ resource "google_cloud_run_v2_service" "broker" {
       }
     }
   }
-  depends_on = [google_service_account_iam_member.deploy]
 }
 output "worker_configuration" {
   value = local.enabled ? {

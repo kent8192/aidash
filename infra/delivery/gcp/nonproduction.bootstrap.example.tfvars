@@ -8,6 +8,7 @@ notification_bucket_name = "your-aidash-project-notifications"
 gcip_enabled             = true
 preview_tls_secret_id    = "aidash-preview-wildcard-tls"
 byok_broker_environments = ["develop", "test"]
+security_alert_emails    = ["security@example.com"] # Credential Broker misuse alerts (#151)
 delivery_configuration = {
   cloudflare_zone_id    = "00000000000000000000000000000000"
   release_app_bot_login = "your-release-app[bot]"

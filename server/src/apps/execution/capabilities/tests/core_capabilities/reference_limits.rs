@@ -13,7 +13,7 @@ fn bounded_reference_fixture(
 		let mut profile = (*c.f.store.capabilities.0).clone();
 		profile.limits.reference_text_bytes = 64;
 		c.f.store.capabilities = Runtime::new(profile).unwrap();
-		c.app = common::application(c.f.clone()).await;
+		c.app.context.set_singleton(c.f.clone());
 		c
 	}
 }
@@ -21,14 +21,12 @@ fn bounded_reference_fixture(
 #[rstest::rstest]
 #[tokio::test]
 async fn reference_configuration_enforces_aggregate_and_lowered_limits_without_rewriting_versions(
-	#[future] bounded_reference_fixture: CoreFixture,
+	#[future]
+	#[from(running_bounded_reference_fixture)]
+	bounded_reference_fixture: (CoreFixture, CapabilityWorker),
 ) {
-	let mut c = Box::pin(bounded_reference_fixture).await;
-	let (stop, rx) = tokio::sync::watch::channel(false);
-	let worker = tokio::spawn(aidash_server::capabilities::operations::run(
-		c.f.store.clone(),
-		rx,
-	));
+	let (mut c, worker) = Box::pin(bounded_reference_fixture).await;
+	let stop = worker.stop.clone();
 	let mut bindings = vec![];
 	for index in 0..3 {
 		let bytes = "東京".repeat(if index == 2 { 20 } else { 5 }).into_bytes();
@@ -92,7 +90,7 @@ async fn reference_configuration_enforces_aggregate_and_lowered_limits_without_r
 	profile.limits.reference_text_bytes = 65536;
 	profile.limits.reference_files = 1;
 	c.f.store.capabilities = Runtime::new(profile).unwrap();
-	c.app = common::application(c.f.clone()).await;
+	c.app.context.set_singleton(c.f.clone());
 	assert_eq!(
 		request(&c.app, &c.token, "POST", path, input.clone())
 			.await
@@ -166,6 +164,7 @@ async fn isolated_extraction_reports_limits_without_losing_authorized_original(
 	#[future] runtime_fixture: CoreFixture,
 	#[case] kind: &str,
 	#[with(kind)] extraction_case: ExtractionCase,
+	#[from(worker_control)] control_1: WorkerControl,
 ) {
 	let c = Box::pin(runtime_fixture).await;
 	let ExtractionCase { bytes, expected } = extraction_case;
@@ -195,7 +194,8 @@ async fn isolated_extraction_reports_limits_without_losing_authorized_original(
 	)
 	.await;
 	assert_eq!(status, 200, "{committed}");
-	let (stop, rx) = tokio::sync::watch::channel(false);
+	let WorkerControl { stop, receiver: rx } = control_1;
+	// Act: start extraction after committing this case-specific uploaded PDF.
 	let worker = tokio::spawn(aidash_server::capabilities::operations::run(
 		c.f.store.clone(),
 		rx,
@@ -235,6 +235,22 @@ async fn isolated_extraction_reports_limits_without_losing_authorized_original(
 	stop.send(true).unwrap();
 	worker.await.unwrap().unwrap();
 	c.close().await;
+}
+
+#[rstest::fixture]
+async fn running_bounded_reference_fixture(
+	#[future] bounded_reference_fixture: CoreFixture,
+	worker_control: WorkerControl,
+) -> (CoreFixture, CapabilityWorker) {
+	let c = Box::pin(bounded_reference_fixture).await;
+	let worker = CapabilityWorker {
+		stop: worker_control.stop,
+		handle: tokio::spawn(aidash_server::capabilities::operations::run(
+			c.f.store.clone(),
+			worker_control.receiver,
+		)),
+	};
+	(c, worker)
 }
 
 pub(super) async fn register_reference_source(

@@ -19,8 +19,9 @@ mock_provider "google" {
 }
 mock_provider "cloudflare" {}
 variables {
-  project_id      = "aidash-fixture"
-  byok_project_id = "aidash-byok-fixture"
+  project_id             = "aidash-fixture"
+  byok_project_id        = "aidash-byok-fixture"
+  broker_image_lock_file = "tests/fixtures/broker-image.json"
 }
 
 run "bootstrap_keys" {
@@ -32,10 +33,14 @@ run "bootstrap_keys" {
     release_bucket_name      = "aidash-fixture-releases"
     notification_bucket_name = "aidash-fixture-notifications"
     byok_broker_environments = ["test"]
+    security_alert_emails    = ["security@example.test"]
   }
   override_resource {
     target = google_service_account.broker["test"]
-    values = { email = "aidash-test-broker@aidash-fixture.iam.gserviceaccount.com" }
+    values = {
+      email = "aidash-test-broker@aidash-fixture.iam.gserviceaccount.com"
+      name  = "projects/aidash-fixture/serviceAccounts/aidash-test-broker@aidash-fixture.iam.gserviceaccount.com"
+    }
   }
   assert {
     condition     = output.broker_signing_keys["test"] == "projects/aidash-fixture/locations/us-central1/keyRings/aidash-test-capability/cryptoKeys/capability"
@@ -64,7 +69,6 @@ run "environment_enabled" {
       secret_prefix                = "aidash-test-cred-"
       broker_service_account_email = run.bootstrap_keys.broker_service_accounts["test"]
       signing_key_id               = run.bootstrap_keys.broker_signing_keys["test"]
-      image                        = "broker@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     } }
   }
   assert {
@@ -167,6 +171,7 @@ run "bootstrap_after_retirement_plan" {
     release_bucket_name      = "aidash-fixture-releases"
     notification_bucket_name = "aidash-fixture-notifications"
     byok_broker_environments = ["test"]
+    security_alert_emails    = ["security@example.test"]
   }
   assert {
     condition     = output.broker_signing_keys == run.bootstrap_keys.broker_signing_keys

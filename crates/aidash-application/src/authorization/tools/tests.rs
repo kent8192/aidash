@@ -77,6 +77,52 @@ async fn renamed_registry_alias_uses_exact_reference(
 
 #[rstest]
 #[tokio::test]
+async fn descriptor_authorization_accepts_only_lowered_concurrency(
+	mut repository: Repository,
+	run: RunMetadata,
+	agent: AgentConfig,
+) {
+	use aidash_domain::{
+		registry::bindings::QualifiedRef,
+		tool::{Concurrency, DisclosureBoundary, providers::core_descriptor},
+	};
+	// Arrange: a shared-read core descriptor, narrowed to Sequential as a
+	// Binding restriction or a Run pinned before the declaration leaves it.
+	let node = "aidash://local";
+	let identity = QualifiedRef {
+		registry_node: node.into(),
+		id: repository.catalog.id.clone(),
+		version: repository.catalog.version.clone(),
+	};
+	let read = core_descriptor(node, "file_read").unwrap();
+	repository.catalog.config = serde_json::to_value(&read).unwrap();
+	let mut contract = read.declared_contract(identity.clone()).unwrap();
+	assert_eq!(contract.behavior.concurrency, Concurrency::SharedRead);
+	contract.behavior.concurrency = Concurrency::Sequential;
+	let input = call("file_read", json!({"path":"notes.txt"}));
+	// Act / Assert: the lowered contract is the admitted provider contract.
+	super::authorize(&repository, &run, &agent, &input, &contract)
+		.await
+		.unwrap();
+	// Any other difference is still a changed contract.
+	contract.disclosure = DisclosureBoundary::Home;
+	assert!(matches!(
+		super::authorize(&repository, &run, &agent, &input, &contract).await,
+		Err(Error::Conflict(_))
+	));
+	// Narrowing never raises a Sequential provider's declaration.
+	let sequential = core_descriptor(node, "workspace_read").unwrap();
+	repository.catalog.config = serde_json::to_value(&sequential).unwrap();
+	let mut raised = sequential.declared_contract(identity).unwrap();
+	raised.behavior.concurrency = Concurrency::SharedRead;
+	assert!(matches!(
+		super::authorize(&repository, &run, &agent, &input, &raised).await,
+		Err(Error::Conflict(_))
+	));
+}
+
+#[rstest]
+#[tokio::test]
 async fn remote_visibility_uses_contracts_after_aliases_change(
 	mut repository: Repository,
 	agent: AgentConfig,

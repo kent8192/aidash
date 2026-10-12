@@ -28,6 +28,11 @@ run "trusted_workflow_only" {
     error_message = "State must remain private and protected from accidental destruction."
   }
 }
+run "automation_branch_is_not_injectable" {
+  command = plan
+  variables { automation_branch = "x' || true || '" }
+  expect_failures = [var.automation_branch]
+}
 run "deploy_manages_gke_without_ssh" {
   command = plan
   assert {

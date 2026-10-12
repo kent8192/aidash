@@ -107,9 +107,9 @@ pub fn chunk_record(
 
 /// Upgrade replayed legacy observations in the working context only. Human
 /// records, other tool results and the durable invocation journal stay intact.
-pub fn normalize_history(history: &mut [super::ContextEvent]) {
-	for event in history {
-		if let super::ContextEvent::Tool { call, result } = event
+pub fn normalize_history(history: &mut [super::HistoryEntry]) {
+	for entry in history {
+		if let super::ContextEvent::Tool { call, result } = &mut entry.event
 			&& call.name == "workspace_observe"
 			&& result["view"] != "workspace_observation_v1"
 			&& let Ok(snapshot) = serde_json::from_value::<WorkspaceSnapshot>(result.clone())

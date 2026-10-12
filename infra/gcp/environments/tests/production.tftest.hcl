@@ -60,13 +60,13 @@ run "isolated_regional_production" {
 run "production_broker_uses_production_identity" {
   command = plan
   variables {
+    broker_image_lock_file = "tests/fixtures/broker-image.json"
     credential_brokers = { production = {
       enabled                      = true
       byok_project_id              = "aidash-production-byok-fixture"
       secret_prefix                = "aidash-production-cred-"
       broker_service_account_email = "aidash-production-broker@aidash-production-fixture.iam.gserviceaccount.com"
       signing_key_id               = "projects/aidash-production-fixture/locations/us-central1/keyRings/aidash-production-capability/cryptoKeys/capability"
-      image                        = "broker@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     } }
   }
   assert {

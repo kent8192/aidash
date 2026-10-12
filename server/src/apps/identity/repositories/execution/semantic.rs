@@ -15,17 +15,17 @@ use aidash_domain::semantic::{InputRead, results::SearchResult};
 use async_trait::async_trait;
 use serde_json::Value;
 use std::sync::Arc;
-use tokio::sync::{Mutex, OwnedMutexGuard};
+use tokio::sync::{OwnedRwLockWriteGuard, RwLock};
 pub(crate) struct ContextRepository<'a> {
 	pub(crate) store: &'a Store,
 	pub(crate) remote: Option<&'a Federation>,
-	pub(crate) access: &'a Arc<Mutex<Access>>,
+	pub(crate) access: &'a Arc<RwLock<Access>>,
 	pub(crate) run: &'a Run,
 	pub(crate) agent: &'a AgentConfig,
 }
 struct Scope<'a> {
 	store: &'a Store,
-	access: OwnedMutexGuard<Access>,
+	access: OwnedRwLockWriteGuard<Access>,
 	run: &'a Run,
 	agent: &'a AgentConfig,
 }
@@ -36,7 +36,7 @@ impl RunSemanticRepository for ContextRepository<'_> {
 	}
 	async fn suspend(&self) -> Result<()> {
 		let result: NativeResult<()> = async {
-			let mut access = self.access.lock().await;
+			let mut access = self.access.write().await;
 			if access.tx.is_active() {
 				access.suspend().await?;
 			}
@@ -70,7 +70,7 @@ impl RunSemanticRepository for ContextRepository<'_> {
 	async fn local_scope(&self) -> Result<Box<dyn RunSemanticScope + '_>> {
 		Ok(Box::new(Scope {
 			store: self.store,
-			access: self.access.clone().lock_owned().await,
+			access: self.access.clone().write_owned().await,
 			run: self.run,
 			agent: self.agent,
 		}))

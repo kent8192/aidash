@@ -12,6 +12,7 @@ variables {
   state_bucket_name        = "aidash-fixture-state"
   release_bucket_name      = "aidash-fixture-releases"
   notification_bucket_name = "aidash-fixture-notifications"
+  security_alert_emails    = ["security@example.test"]
 }
 // Production uses a separate project/state; never destroy protected nonproduction secrets.
 run "production_workflow_is_main_only" {

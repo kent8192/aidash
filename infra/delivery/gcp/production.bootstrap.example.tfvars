@@ -10,6 +10,7 @@ nonproduction_state_bucket = "your-aidash-project-tfstate"
 staging_release_bucket     = "your-aidash-project-releases"
 gcip_enabled               = true
 byok_broker_environments   = ["production"]
+security_alert_emails      = ["security@example.com"] # Credential Broker misuse alerts (#151)
 delivery_configuration = {
   cloudflare_zone_id    = "00000000000000000000000000000000"
   release_app_bot_login = "your-release-app[bot]"

@@ -28,9 +28,11 @@ fn request() -> ModelRequest {
 		context: json!({"text":"東京"}).into(),
 		tools: vec![],
 		max_output_tokens: 4096,
+		response_format: None,
 		content_parts: vec![],
 		cache_scope: None,
 		cache_breakpoints: false,
+		disable_provider_transforms: false,
 	}
 }
 fn attempt() -> Uuid {

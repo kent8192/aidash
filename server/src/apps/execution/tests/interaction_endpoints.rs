@@ -157,7 +157,13 @@ async fn control_rotates_credentials_atomically_and_cancellation_remains_termina
 #[rstest]
 #[tokio::test]
 async fn human_answers_replay_once_and_enforce_live_read_and_write_authority(
-	#[future] execution: ExecutionFixture,
+	#[from(crate::endpoint::endpoint)] _endpoint: crate::endpoint::EndpointFuture,
+	#[future]
+	#[with("aidash://endpoint-test", _endpoint.clone())]
+	execution: ExecutionFixture,
+	#[from(crate::endpoint::anonymous_client)]
+	#[with(_endpoint.clone())]
+	_credential_client_0: crate::endpoint::ClientFuture,
 ) {
 	// Arrange a durable human request in a scoped execution.
 	let execution = Box::pin(execution).await;
@@ -184,7 +190,7 @@ async fn human_answers_replay_once_and_enforce_live_read_and_write_authority(
 			.is_err()
 	);
 	let url = format!("/api/human-requests/{}/answer", request.id);
-	let foreign = subject(app, "outsider").await;
+	let foreign = subject(app, "outsider", _credential_client_0.await).await;
 	assert_json(
 		foreign
 			.post(&url, &json!({"destination":"private"}), "json")

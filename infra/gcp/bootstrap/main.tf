@@ -78,7 +78,10 @@ resource "google_iam_workload_identity_pool_provider" "github" {
     "attribute.workflow_role" = "assertion.environment == 'deployment-notifications' ? 'notification-reader' : 'deploy'"
   }
   # Numeric identities prevent repository/owner name reuse. A PR workflow or
-  # manually selected feature-branch workflow cannot obtain this identity.
+  # manually selected feature-branch workflow cannot obtain this identity. The
+  # environment claim exists only when the job declares a GitHub Environment, so
+  # the protection rules of the tier's Environment (#151) gate every credentialed
+  # job: an exact-branch policy on each, reviewers on production.
   attribute_condition = "assertion.repository_id == '${var.repository_id}' && assertion.repository_owner_id == '${var.repository_owner_id}' && ((${local.deploy_assertion}) || (${local.notification_assertion}))"
   oidc { issuer_uri = "https://token.actions.githubusercontent.com" }
 }

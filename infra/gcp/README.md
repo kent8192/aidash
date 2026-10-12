@@ -93,7 +93,8 @@ overrides persist across updates.
   real PostgreSQL queries, the edge admission container check and Helm rendering.
 
 WIF trusts numeric repository/owner IDs and exact workflow, execution branch
-and GitHub Environment claims. Nonproduction automation executes on the
+and GitHub Environment claims (see
+[Deploy pipeline boundary](#deploy-pipeline-boundary)). Nonproduction automation executes on the
 protected configured `automation_branch`; production cloud jobs execute the
 production workflow on `main`. Both check out privileged code and charts from
 protected `main`, pinned to the one commit the first job resolved, so every build,
@@ -512,16 +513,211 @@ environment set to preserve immutable KMS names. See the
 [broker deployment guide](../../crates/aidash-broker/README.md) for the input
 contract and operator-only import steps for any pre-merge draft deployment.
 
-The existing deployment identity has shared-project
-`roles/iam.serviceAccountAdmin`, allowing it to change the IAM policy of any
-broker service account placed there and grant itself impersonation permission.
-An identity allowed to redeploy a future broker can also execute broker code
-that reads Key Material. The BYOK role-grant restriction does not close these paths.
-The deploy pipeline remains part of the v1 trust root. The human-run IAM deny
-policy to block broker impersonation and deployment entry-point hardening are
-tracked in [#151](https://github.com/kent8192/aidash/issues/151). A separate
-credential enclave is deferred. The existing shared-project deploy grant is
-retained here; no read identity is attached to it by this change.
+### Deploy pipeline boundary
+
+The deploy pipeline (GitHub Actions through Workload Identity Federation, acting as
+the `aidash-deploy` service account) remains part of the v1 trust root for Key
+Material (ADR 0005, decided 2026-10-09, #151). Two escalation paths exist; the first
+is closed in code, the second is hardened and detected but accepted.
+
+**Path 1, impersonation, is blocked.** The deploy service account holds
+`roles/iam.serviceAccountAdmin` in the shared project, which includes
+`iam.serviceAccounts.setIamPolicy`. Human-run bootstrap (`bootstrap/deploy_boundary.tf`)
+tags every Credential Broker service account with `<project>/aidash-credential-broker=broker`
+and attaches the project deny policy `aidash-deploy-broker-boundary`. For the deploy
+service account, on resources carrying that tag, it denies:
+
+| Permission (deny-policy name)                           | Why                                |
+| ------------------------------------------------------- | ---------------------------------- |
+| `iam.googleapis.com/serviceAccounts.setIamPolicy`       | grant itself token creation        |
+| `iam.googleapis.com/serviceAccounts.getAccessToken`     | mint a broker access token         |
+| `iam.googleapis.com/serviceAccounts.signBlob`           | sign as the broker                 |
+| `iam.googleapis.com/serviceAccounts.signJwt`            | sign as the broker                 |
+| `iam.googleapis.com/serviceAccounts.implicitDelegation` | use the broker in a delegate chain |
+| `iam.googleapis.com/serviceAccountKeys.create`          | create a broker key                |
+| `iam.googleapis.com/serviceAccounts.delete`             | delete, then restore, a broker     |
+| `iam.googleapis.com/serviceAccounts.undelete`           | restore a deleted broker account   |
+| `iam.googleapis.com/serviceAccounts.disable`            | disable a broker account           |
+| `iam.googleapis.com/serviceAccounts.getOpenIdToken`     | mint an OpenID token as the broker |
+
+Every other service account keeps working: the deploy identity still administers
+the runtime and node accounts. `iam.serviceAccounts.actAs` stays allowed because
+Cloud Run needs it to run the broker; bootstrap grants it
+(`roles/iam.serviceAccountUser` on each broker account), because the environments
+root can no longer bind anything on those accounts. The deploy identity holds no
+tag, deny-policy, monitoring or logging role, so it cannot untag a broker account,
+edit the policy or change alert policies. Turning off the Secret Manager audit
+configuration in the BYOK project is a separate route, covered by the BYOK project
+IAM alert below. `tests/test_deploy_boundary.py` classifies every
+role bound to the deploy identity and fails when a role carries one of these
+permissions without being covered by the deny policy, or when a new role has not
+been classified.
+
+**Path 2, broker redeploy, is the accepted residual risk.** The deploy identity can
+`actAs` the broker account and holds `roles/run.admin`, so it can ship a modified
+broker image, or any other Cloud Run service or job, Compute instance or GKE node
+pool that runs as that account, and read Key Material as the broker. It is hardened and detected,
+not prevented:
+
+- The broker image digest is reviewed code (`environments/broker-image.json`).
+  Terraform derives `us-central1-docker.pkg.dev/<project>/aidash/broker@<digest>`
+  from it and refuses an enabled broker without an approved digest or with a
+  different image. A broker change is therefore a digest change in a pull
+  request to `main`. The deployment configuration (`AIDASH_GCP_CONFIG`) cannot
+  override the digest: the controller refuses a `credential_brokers.<id>.image`
+  key.
+- Credentialed jobs run in protected GitHub Environments named by the WIF
+  condition; production deployments need the reviewed `production` (below).
+- Bootstrap-owned log alerts, sent to `security_alert_emails`, fire on:
+  - a new revision of a broker service, and on a Cloud Run service or job, Compute
+    instance (`insert`, `bulkInsert`, `setServiceAccount`, templates) or GKE cluster
+    or node pool create/update whose request names a broker account;
+  - any IAM policy change of a broker service or broker service account;
+  - `AccessSecretVersion` of BYOK secrets by any principal other than the broker
+    accounts. That is the only DATA_READ method of Secret Manager; `GetSecret`,
+    `GetSecretVersion` and `ListSecrets` are ADMIN_READ, which the BYOK audit
+    configuration does not enable, so the server's and deploy's routine metadata
+    reads produce no entries to alert on;
+  - any audit-config change to the BYOK project, and any project IAM change there
+    by a principal other than the deploy identity (Admin Activity log, which cannot
+    be turned off). The deploy identity's `setIamPolicy` there is limited by
+    `modifiedGrantsByRole.hasOnly(...)`; whether that attribute also constrains
+    `auditConfigs` is unverified (a #152 check), so a deploy change that drops
+    `DATA_READ` and carries an audit-config delta alerts, but deploy's binding-only
+    runtime-role changes stay quiet.
+
+Alerts cannot tell a malicious workload that runs as a broker account from the
+real broker: its reads come from an excluded principal, so only the revision and
+deployment alerts detect it. They only cover the services listed above; any other
+service that can run as a broker account (for example Cloud Functions or Batch) is
+not alerted on. The deny policy covers deletion and disabling of broker accounts.
+
+**Deferred.** A separately deployed credential enclave that the deploy identity
+cannot reach is deferred, for Enterprise or for growth in key count. Building the
+broker in the trusted pipeline, so its digest lands in `release.json` like the
+other images, is also deferred; today the broker image is built by an operator.
+
+#### Protected deploy Environments
+
+Each WIF-trusted workflow runs its credentialed jobs in exactly one GitHub
+Environment, and the bootstrap provider condition names that Environment next to
+the repository IDs, the exact workflow ref and the execution branch:
+
+| Workflow                       | Credentialed jobs             | Environment                | Execution branch          | Protection                                          |
+| ------------------------------ | ----------------------------- | -------------------------- | ------------------------- | --------------------------------------------------- |
+| `gcp-environments.yml`         | `prepare`, `publish`, `apply` | `nonproduction`            | exact `automation_branch` | exact-branch policy                                 |
+| `gcp-production.yml`           | `prepare`, `apply`            | `production`               | `main`                    | `main` only; **required reviewers**, no self-review |
+| `deployment-notifications.yml` | `nonproduction`, `production` | `deployment-notifications` | exact `automation_branch` | exact-branch policy; separate reader identity       |
+| `deployment-certificate.yml`   | `renew`                       | `certificate-renewal`      | exact `automation_branch` | exact-branch policy; separate renewal identity      |
+
+A nonproduction bootstrap trusts only the `nonproduction` deploy assertion and a
+production bootstrap only the `production` one, so neither tier's workflow can
+obtain the other tier's identity. GitHub only emits the `environment` claim for
+jobs that declare an Environment, so a job on an unprotected ref or without its
+Environment cannot obtain credentials. The `intake` and `build` jobs and
+`gcp-check.yml` hold no cloud credentials and need no Environment.
+`infra/delivery/github` creates these Environments and their branch policies.
+
+What the production reviewer gate covers: every production deployment, which only
+promotes the staged, already validated image bundle. Nonproduction builds and
+deploys CI-approved commits without an Environment approval; all of its runs use
+privileged code from the protected `main` checkout, so the broker digest and IAM
+changes are gated by review of the pull request to `main`.
+
+#### Human steps
+
+1. **Merge this change to `main` first.** The workflow change is harmless before
+   WIF requires it; applying the new attribute condition first would lock out the
+   current workflow.
+2. **Create the protected GitHub Environments** with `infra/delivery/github` (see
+   `docs/operations/release-deployment.md`); it disables administrator bypass on
+   each.
+3. **Apply bootstrap** with the new inputs in `bootstrap/terraform.tfvars`:
+   `security_alert_emails` (required once `byok_broker_environments` is set). The operator needs deny-policy
+   (`roles/iam.denyAdmin`), tag administration (`roles/resourcemanager.tagAdmin`
+   plus tag user on the service accounts), alert-policy and notification-channel
+   administration and Service Usage on both projects. Review the plan: it adds the
+   tag key and value, one tag binding per broker account, the deny policy, three
+   alert policies, email channels, the `actAs` grants and the new WIF condition.
+4. **Approve and record a broker image digest** (below) before enabling a broker.
+5. _Only if a broker is already live from an earlier draft:_ let the environments
+   root from this commit apply before bootstrap applies the deny policy. It removes
+   the old `google_service_account_iam_member.deploy` binding on the broker account
+   (bootstrap owns that grant now); after the deny exists, that removal would call
+   the denied `setIamPolicy` and fail. No broker has been applied at the time of
+   writing.
+
+#### Updating the broker image digest
+
+1. Build from the reviewed commit: `docker buildx build --platform linux/amd64
+--provenance=false --sbom=false -f crates/aidash-broker/Dockerfile -t
+us-central1-docker.pkg.dev/<project>/aidash/broker:<sha> --push .`
+2. Read the manifest digest: `docker buildx imagetools inspect
+us-central1-docker.pkg.dev/<project>/aidash/broker:<sha>`.
+3. Put it in `infra/gcp/environments/broker-image.json` (`{"digest": "sha256:..."}`)
+   in a pull request; reviewers verify it against the reviewed commit.
+4. After merge, the next apply deploys that digest. Never set `image` in
+   `AIDASH_GCP_CONFIG`.
+
+The Dockerfile pins its base images by digest, but the build is not bit-for-bit
+reproducible: `apt-get update` and Cargo cache mounts are not pinned. A reviewer can
+rebuild and compare behavior, not the digest. The registry also accepts pushes from
+the deploy identity; only the digest in `main` is ever deployed, and a revision
+deployed outside Terraform triggers the revision alert.
+
+#### Evidence still required from #152 (sandbox)
+
+Nothing in this change was applied to a cloud project. Local tests prove the
+Terraform shape against a mocked provider only. The Issue's acceptance criteria
+need these results from a disposable sandbox project with a copy of the bootstrap
+(commands are examples; run as the deploy service account unless stated):
+
+1. **Deny support.** Google lists all ten permissions as supported in
+   [deny policies](https://docs.cloud.google.com/iam/docs/deny-permissions-support),
+   but confirm in the sandbox: `gcloud iam policies get
+aidash-deploy-broker-boundary --attachment-point=cloudresourcemanager.googleapis.com/projects/<project> --kind=denypolicies`,
+   then for the broker account `B` run
+   `gcloud iam service-accounts add-iam-policy-binding B --member=... --role=roles/iam.serviceAccountTokenCreator`,
+   `gcloud auth print-access-token --impersonate-service-account=B`,
+   `gcloud iam service-accounts sign-blob`, `sign-jwt`, `keys create`, and an
+   impersonation chain that lists `B` as an intermediate delegate
+   (`implicitDelegation`). Each must fail with a deny-policy `PERMISSION_DENIED`.
+   Repeat for `serviceAccounts.delete`, `undelete`, `disable` and
+   `getOpenIdToken`. Record any permission that is not denied.
+2. **Tag targeting.** Confirm service accounts accept the tag binding
+   (`gcloud resource-manager tags bindings list --location=global
+--parent=//iam.googleapis.com/projects/<project>/serviceAccounts/<unique-id>`) and that the
+   deny applies only to tagged accounts: the same `setIamPolicy` succeeds on an
+   untagged control account (Workload Identity binding for a runtime account must
+   keep working), fails on `B`, and succeeds on `B` again after a human removes the
+   tag binding. If service accounts cannot carry tags or `resource.matchTag` does
+   not match them, the fallbacks are a project-wide deny without a condition of
+   the five impersonation and key permissions (the deploy identity needs none of
+   them anywhere), plus a separate decision for `setIamPolicy`, which it does need
+   on runtime accounts. Also prove the deploy identity cannot detach the tag
+   binding (`gcloud resource-manager tags bindings delete`), and that deleting and
+   undeleting a broker account does not restore access: the tag binding, the deny
+   and the `actAs` grant must all still apply afterwards (or deletion stays
+   denied).
+   Also check that `modifiedGrantsByRole.hasOnly(...)` on the BYOK project
+   rejects an `auditConfigs`-only `setIamPolicy` by the deploy identity; if it
+   passes, the Key Material alert can be blinded and the BYOK project IAM alert
+   is the only defence.
+3. **Unprotected refs.** Run the workflow from a feature branch, and from the
+   execution branch with a job lacking `environment:`; neither may obtain
+   credentials. A nonproduction job in `nonproduction` on `automation_branch` must,
+   a nonproduction job must not obtain the production identity, and a production
+   `apply` must wait for the `production` reviewer. Log the OIDC claims
+   (`environment`, `ref`, `workflow_ref`) of each.
+4. **Alerts fire.** Deploy a new broker revision; set a broker service IAM policy
+   and a broker account policy as a human; call `AccessSecretVersion` on a BYOK
+   secret as a non-broker identity (a denied attempt counts). Confirm each
+   reaches `security_alert_emails`, and that the broker's own reads do not. Verify
+   the audit method names, the broker account's `resourceName` shape (email versus
+   unique ID), that the structured and substring `protoPayload.request` matches fire for
+   a Cloud Run service or job, a Compute instance and a GKE node pool created
+   with a broker service account, that the `data_access` log exists, and that
+   removing the BYOK audit configuration raises the BYOK project IAM alert.
 
 ## GCIP sign-in
 
