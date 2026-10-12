@@ -112,6 +112,21 @@ Re-run `cargo make dev` to rebuild after source changes. The example credentials
 and localhost bindings are for local development. Configure unique credentials
 and an HTTPS endpoint for a deployed node.
 
+For an existing local Keycloak realm, add this Compose override to `.env`,
+replacing an older `.ignore/local-oidc/compose.yaml` entry if present:
+
+```dotenv
+COMPOSE_FILE=compose.yaml:deploy/local-oidc/compose.yaml
+```
+
+Run `cargo make dev` to start Keycloak and its loopback relay with the development
+stack. The relay makes `http://127.0.0.1:18099` reachable inside the backend's
+network namespace, so the browser and backend can use the same realm issuer.
+Configure the realm and client, and set the legacy Keycloak connection values
+described in [Dashboard OIDC setup](#dashboard-oidc-setup). The relay uses the
+official Node.js image independently of the frontend build, including on the
+first start or with a custom `COMPOSE_PROJECT_NAME`.
+
 The [authorization API](docs/authorization.md) issues revocable subject tokens for tenant-scoped workspaces, approved Registry discovery, local agent execution and event streams. Workers recheck the root and delegated agents at every durable boundary. The dashboard signs in with Google and requires an explicit mapping to an existing user subject or a separate operator grant. Its selected authority is local to each tab. Existing API Bearer credentials remain available. Operators use **Access policies / アクセス制御** to edit role/attribute policies, simulate decisions, approve registration requests, manage mappings and operator grants, and issue or revoke subject credentials. Scoped remote federation remains under implementation.
 
 ### Aidash Cloud GCIP sign-in
