@@ -3,16 +3,16 @@ use super::*;
 #[rstest::rstest]
 #[tokio::test]
 async fn independent_database_tiers_converge_after_partial_partition(
-	#[future(awt)]
-	#[from(common::isolated_test_environment)]
-	environment: Arc<TestEnvironment>,
 	#[values(3, 16)] count: usize,
 	#[values(false, true)] abort: bool,
+	#[future(awt)]
+	#[from(tier_nodes)]
+	#[with(count)]
+	tier_nodes: Vec<Node>,
 ) {
-	let mut nodes = Vec::new();
+	let mut nodes = tier_nodes;
 	let mut workspaces = Vec::new();
-	for index in 0..count {
-		let node = Node::new(&environment, &format!("tier-{index:02}")).await;
+	for node in &nodes {
 		workspaces.push(
 			node.f
 				.store
@@ -21,7 +21,6 @@ async fn independent_database_tiers_converge_after_partial_partition(
 				.unwrap()
 				.id,
 		);
-		nodes.push(node);
 	}
 	for index in 1..count {
 		for (local, remote) in [(&nodes[0], &nodes[index]), (&nodes[index], &nodes[0])] {
@@ -107,4 +106,47 @@ async fn independent_database_tiers_converge_after_partial_partition(
 	for node in nodes {
 		node.cleanup().await;
 	}
+}
+
+#[fixture]
+fn tier_group(
+	#[default(0)] _offset: usize,
+	#[from(common::isolated_test_environment)] _environment: EnvironmentFuture,
+	#[from(node)]
+	#[with(&format!("tier-{_offset:02}"),_environment.clone())]
+	a: BoxFuture<'static, Node>,
+	#[from(node)]
+	#[with(&format!("tier-{:02}",_offset+1),_environment.clone())]
+	b: BoxFuture<'static, Node>,
+	#[from(node)]
+	#[with(&format!("tier-{:02}",_offset+2),_environment.clone())]
+	c: BoxFuture<'static, Node>,
+	#[from(node)]
+	#[with(&format!("tier-{:02}",_offset+3),_environment.clone())]
+	d: BoxFuture<'static, Node>,
+) -> Vec<BoxFuture<'static, Node>> {
+	vec![a, b, c, d]
+}
+#[fixture]
+async fn tier_nodes(
+	#[default(3)] count: usize,
+	#[from(common::isolated_test_environment)] _environment: EnvironmentFuture,
+	#[from(tier_group)]
+	#[with(0,_environment.clone())]
+	a: Vec<BoxFuture<'static, Node>>,
+	#[from(tier_group)]
+	#[with(4,_environment.clone())]
+	b: Vec<BoxFuture<'static, Node>>,
+	#[from(tier_group)]
+	#[with(8,_environment.clone())]
+	c: Vec<BoxFuture<'static, Node>>,
+	#[from(tier_group)]
+	#[with(12,_environment.clone())]
+	d: Vec<BoxFuture<'static, Node>>,
+) -> Vec<Node> {
+	let mut nodes = Vec::new();
+	for node in a.into_iter().chain(b).chain(c).chain(d).take(count) {
+		nodes.push(node.await);
+	}
+	nodes
 }

@@ -38,6 +38,14 @@ impl ExecutionRecoveryStore for Scope {
 	) -> Result<()> {
 		panic!("admission must not recover a run")
 	}
+	async fn pause_context(
+		&self,
+		_: &Run,
+		_: Uuid,
+		_: aidash_domain::context::recovery::Failure,
+	) -> Result<()> {
+		panic!("admission must not recover a run")
+	}
 }
 #[async_trait]
 impl WorkerStep for Scope {

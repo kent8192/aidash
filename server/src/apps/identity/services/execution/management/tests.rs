@@ -40,7 +40,7 @@ fn inspection(
 				count: 1,
 				at: chrono::Utc::now(),
 			}),
-			lease_recovered: false,
+			..Default::default()
 		}),
 		context: None,
 		state_error: None,

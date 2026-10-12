@@ -2,7 +2,7 @@
 use crate::ports::decision::*;
 use crate::{Error, Result};
 use aidash_domain::{
-	context::{Context, ContextEvent, RequestBudget},
+	context::{Context, ContextEvent, HistoryEntry, RequestBudget},
 	decision::*,
 	registry::rules::digest,
 };
@@ -289,20 +289,20 @@ impl DecisionGate<'_> {
 			selected.insert(option.history_index, choice);
 			evidence.branches.insert(option.id.clone(), choice);
 		}
-		candidate.history = context.history.iter().enumerate().filter_map(|(index, event)| {
+		candidate.history = context.history.iter().enumerate().filter_map(|(index, entry)| {
             match selected.get(&index).copied().unwrap_or(Branch::Keep) {
-                Branch::Keep => Some(event.clone()),
+                Branch::Keep => Some(entry.clone()),
                 Branch::Drop => { evidence.fit.dropped += 1; None },
                 Branch::TruncateResult => {
-                    let ContextEvent::Tool { call, result } = event else { return Some(event.clone()); };
+                    let ContextEvent::Tool { call, result } = &entry.event else { return Some(entry.clone()); };
                     evidence.fit.truncated += 1;
                     let text = result.as_str().map(str::to_owned).unwrap_or_else(||result.to_string());
                     let length = text.chars().count();
-                    if length <= 420 { evidence.fit.truncated -= 1; return Some(event.clone()); }
+                    if length <= 420 { evidence.fit.truncated -= 1; return Some(entry.clone()); }
                     // The 300-character prefix is the historical action rule, not a
                     // classification-state/evidence limit. It stays in inference only.
                     let head: String = text.chars().take(300).collect();
-                    Some(ContextEvent::Tool { call: call.clone(), result: json!(format!("{head}\n[decision compaction truncated {} chars of this tool result; full result remains in the execution journal]",length-300)) })
+                    Some(HistoryEntry { seq: entry.seq, event: ContextEvent::Tool { call: call.clone(), result: json!(format!("{head}\n[decision compaction truncated {} chars of this tool result; full result remains in the execution journal]",length-300)) } })
                 }
             }
         }).collect();

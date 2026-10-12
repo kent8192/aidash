@@ -22,6 +22,8 @@ pub struct RunManagement {
 	/// can still be recovered; absent for a cancelled or finished Run.
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub semantic_recovery: Option<aidash_domain::semantic::recovery::Recovery>,
+	/// Typed context-recovery pause reason; cleared on resume.
+	pub context_reason: Option<aidash_domain::context::recovery::Failure>,
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub memory_cleanup:
 		Option<crate::apps::knowledge::repositories::receiver_caches::CleanupStatus>,
@@ -39,6 +41,7 @@ impl From<RunInspection> for RunManagement {
 					aidash_domain::semantic::recovery::Recovery::new(cause, r.retry.is_some())
 				})
 			}),
+			context_reason: run.recovery.as_ref().and_then(|r| r.context_reason),
 			memory_cleanup: None,
 		}
 	}

@@ -123,6 +123,7 @@ fn world() -> World {
 			index_digest: digest(&json!({})),
 			embedding: Box::new(provider.clone()),
 			compactor: Some(Box::new(provider)),
+			summarizer: None,
 		},
 	};
 	World(Arc::new(Mutex::new(State {
