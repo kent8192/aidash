@@ -430,6 +430,26 @@ pub fn ordered_context(context: &Context, pinned: &Value) -> crate::provider::Or
 		// Last, so earlier events stay a byte prefix while the history grows.
 		history: Vec<&'a ContextEvent>,
 	}
+	let empty = serde_json::Map::new();
+	let fields = pinned.as_object().unwrap_or(&empty);
+	let stable = Stable {
+		identity: fields.get("identity"),
+		task: fields.get("task"),
+		reference_documents: fields.get("reference_documents"),
+		run_message_summary: &context.run_message_summary,
+		summary: context.summary_projection(),
+		history: context.events().collect(),
+	};
+	crate::provider::OrderedContext {
+		// Serializing borrowed JSON values and derived structs cannot fail.
+		stable: serde_json::to_string(&stable).expect("serializable Ordered stable part"),
+		volatile: volatile_part(pinned, None),
+	}
+}
+
+/// The per-step part shared by Ordered and Native: the volatile pinned keys
+/// in send order, then unlisted keys alphabetically, then `extra`.
+pub(crate) fn volatile_part(pinned: &Value, extra: Option<(&str, &Value)>) -> String {
 	struct Volatile<'a>(Vec<(&'a str, &'a Value)>);
 	impl Serialize for Volatile<'_> {
 		fn serialize<S: serde::Serializer>(
@@ -446,14 +466,6 @@ pub fn ordered_context(context: &Context, pinned: &Value) -> crate::provider::Or
 	}
 	let empty = serde_json::Map::new();
 	let fields = pinned.as_object().unwrap_or(&empty);
-	let stable = Stable {
-		identity: fields.get("identity"),
-		task: fields.get("task"),
-		reference_documents: fields.get("reference_documents"),
-		run_message_summary: &context.run_message_summary,
-		summary: context.summary_projection(),
-		history: context.events().collect(),
-	};
 	let mut volatile = ORDERED_VOLATILE_KEYS
 		.iter()
 		.filter_map(|key| fields.get(*key).map(|value| (*key, value)))
@@ -463,12 +475,8 @@ pub fn ordered_context(context: &Context, pinned: &Value) -> crate::provider::Or
 			&& !ORDERED_VOLATILE_KEYS.contains(&key.as_str()))
 		.then_some((key.as_str(), value))
 	}));
-	crate::provider::OrderedContext {
-		// Serializing borrowed JSON values and derived structs cannot fail.
-		stable: serde_json::to_string(&stable).expect("serializable Ordered stable part"),
-		volatile: serde_json::to_string(&Volatile(volatile))
-			.expect("serializable Ordered volatile part"),
-	}
+	volatile.extend(extra);
+	serde_json::to_string(&Volatile(volatile)).expect("serializable volatile part")
 }
 
 /// Byte quota for the Stable Prefix snapshot fields of an Ordered request. It
@@ -655,11 +663,26 @@ pub enum ContextEvent {
 		max_bytes: Option<usize>,
 		reason: Option<String>,
 	},
+	/// The accepted response that opens a Model Turn, recorded only for Runs
+	/// on the Native Projection Version: its text and the IDs of its tool
+	/// calls in the model's order. Each executed call's `Tool` event follows
+	/// and carries the call itself. Reasoning output is never recorded.
+	Assistant {
+		epoch: i64,
+		text: String,
+		calls: Vec<String>,
+	},
 }
 
 impl ContextEvent {
 	pub fn tool(call: crate::provider::ToolCall, result: Value) -> Self {
 		Self::Tool { call, result }
+	}
+
+	/// A Native tool result removed by compaction. It keeps its call, so the
+	/// rendered Model Turn still pairs the same `tool_call_id` (ADR 0015).
+	pub fn elided_result(call_id: &str) -> Value {
+		json!({"elided": true, "invocation": call_id})
 	}
 }
 

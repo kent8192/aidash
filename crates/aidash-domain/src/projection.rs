@@ -3,6 +3,8 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+pub mod native;
+
 /// Named by an Agent definition and fixed for a Run through its Binding
 /// snapshot. Each value is a complete, frozen rendering.
 #[derive(
