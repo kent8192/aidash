@@ -51,6 +51,7 @@ async fn publisher_checks_use_local_worker_facts_and_restore_the_reader_environm
 			.into(),
 		read_run: None,
 		read_grant: None,
+		shared_area: false,
 		environment: environment.clone(),
 	};
 	let resource = access.resource("memory", "bank", json!({}));

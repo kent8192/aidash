@@ -315,6 +315,15 @@ impl ExecutionStore for Backend {
 			.clone();
 		Ok(InvocationOutcome { status, result })
 	}
+	async fn invocation_start_batch(
+		&self,
+		run: &Run,
+		token: Uuid,
+		calls: &[BatchInvocation<'_>],
+	) -> Result<Vec<InvocationOutcome>> {
+		let _ = (run, token, calls);
+		unexpected("ExecutionStore.invocation_start_batch")
+	}
 	async fn invocation_finish(
 		&self,
 		run: &Run,
@@ -787,6 +796,7 @@ impl ExecutionEnvironment for Backend {
 			max_steps: 64,
 			allow_task_creation: None,
 			conversation_memory: self.0.conversation_memory,
+			tool_parallelism: 1,
 			projection_version: self.0.projection,
 			prompt_cache: self.0.prompt_cache,
 		})
@@ -3027,6 +3037,7 @@ async fn compaction_leaves_the_exposure_set_intact() {
 	assert_eq!(context.exposure, exposure);
 }
 
+mod batch;
 /// Fixed identities so request bytes can be compared with checked-in fixtures.
 #[fixture]
 fn canonical(mut fixture: Fixture) -> Fixture {

@@ -1,4 +1,4 @@
--- Restore the descriptor contract this migration replaced: the registry/0019_deferred_exposure body.
+-- Restore the descriptor contract this migration replaced: the registry/0021_tool_parallelism body.
 CREATE OR REPLACE FUNCTION public.aidash_descriptor_is_valid(value jsonb) RETURNS boolean
 LANGUAGE plpgsql IMMUTABLE STRICT AS $$
 DECLARE expected_provider text; expected_tier text; start_operation boolean;
@@ -7,7 +7,12 @@ BEGIN
  OR NOT COALESCE(value->>'registry_node' ~ '^aidash://[A-Za-z0-9-]{1,100}$', false)
  OR NOT COALESCE(value->>'default_alias' ~ '^[A-Za-z0-9_-]{1,64}$', false)
  OR jsonb_typeof(COALESCE(value->'narrow','{}'::jsonb)) <> 'object' THEN RETURN false; END IF;
- IF COALESCE(value->'narrow','{}'::jsonb) - ARRAY['allowed_hosts','scope','limits']::text[] <> '{}'::jsonb THEN RETURN false; END IF;
+ IF COALESCE(value->'narrow','{}'::jsonb) - ARRAY['allowed_hosts','scope','limits','concurrency']::text[] <> '{}'::jsonb THEN RETURN false; END IF;
+ -- shared_read may only restate a provider's own declaration: the core reads below.
+ IF COALESCE(value #> '{narrow,concurrency}','null'::jsonb) <> 'null'::jsonb
+ AND NOT COALESCE(jsonb_typeof(value #> '{narrow,concurrency}') = 'string'
+  AND (value #>> '{narrow,concurrency}' = 'sequential'
+   OR (value #>> '{narrow,concurrency}' = 'shared_read' AND value->>'operation' IN ('file_read','file_search','skill_list','skill_load'))),false) THEN RETURN false; END IF;
  expected_provider := CASE value->>'operation'
   WHEN 'capability_search' THEN 'core.exposure@1' WHEN 'capability_describe' THEN 'core.exposure@1'
   WHEN 'capability_load' THEN 'core.exposure@1' WHEN 'capability_unload' THEN 'core.exposure@1'
