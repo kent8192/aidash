@@ -1089,14 +1089,20 @@ async fn step_to_model_request(p: &Pair, count: usize) {
 	);
 }
 /// Write a Home semantic entry and index it, as a Home operator would.
-async fn write_home_entry(p: &Pair, expected_revision: i64, text: &str) {
+async fn write_home_entry(
+	p: &Pair,
+	key: &str,
+	agent: Option<String>,
+	expected_revision: i64,
+	text: &str,
+) {
 	let workspace = p.a.store.task(p.task).await.unwrap().workspace_id;
 	let (status, body) = request(
 		&p.aa,
 		&p.token,
 		"POST",
 		&format!("/api/workspaces/{workspace}/semantic/entries"),
-		json!({"key":"late","expected_revision":expected_revision,"source":{"kind":"memory","text":text},"metadata":{}}),
+		json!({"key":key,"expected_revision":expected_revision,"source":{"kind":"memory","text":text},"agent":agent,"metadata":{}}),
 	)
 	.await;
 	assert_eq!(status, 200, "{body}");
@@ -1133,6 +1139,10 @@ async fn model_saw(p: &Pair, request: usize, text: &str) -> bool {
 /// unchanged and retrieves again after an entry is inserted or edited, as a
 /// local Ordered Run does. A Home registered at protocol `0.2` sends no digest,
 /// so its Runs keep the reuse they always had.
+///
+/// The edited entry is one this executor never received: editing a disclosed
+/// source invalidates the Run instead (see
+/// `consumed_home_semantic_revision_blocks_next_remote_inference`).
 #[rstest::rstest]
 #[case::current_protocol("0.3", true)]
 #[case::older_protocol("0.2", false)]
@@ -1165,16 +1175,24 @@ async fn remote_ordered_run_retrieves_again_after_the_home_corpus_changes(
 	assert_eq!(remote_retrievals(&p).await, 1, "unchanged corpus is reused");
 
 	// An inserted Home entry changes what the Run should see.
-	write_home_entry(&p, 0, "Late marker: cobalt heron.").await;
+	write_home_entry(&p, "late", None, 0, "Late marker: cobalt heron.").await;
 	step_to_model_request(&p, 3).await;
 	assert_eq!(model_saw(&p, 3, "cobalt heron").await, sees_changes);
 	let inserted = remote_retrievals(&p).await;
 	assert_eq!(inserted, if sees_changes { 2 } else { 1 });
 
-	// An edit does too.
-	write_home_entry(&p, 1, "Edited marker: amber lynx.").await;
+	// An edit does too, even of an entry this executor may not retrieve, and
+	// the fresh retrieval still withholds it.
+	write_home_entry(
+		&p,
+		"other-node",
+		Some(qualified_agent(&p.a.config.node_id, "research", "1.0.0")),
+		1,
+		"DO NOT DISCLOSE: edited marker amber lynx.",
+	)
+	.await;
 	step_to_model_request(&p, 4).await;
-	assert_eq!(model_saw(&p, 4, "amber lynx").await, sees_changes);
+	assert!(!model_saw(&p, 4, "amber lynx").await);
 	let edited = remote_retrievals(&p).await;
 	assert_eq!(edited, if sees_changes { 3 } else { 1 });
 
@@ -1225,7 +1243,7 @@ async fn home_describe_reports_the_corpus_digest_to_current_protocol_peers_only(
 	let older = describe("0.2").await;
 	let current = describe("0.3").await;
 	let again = describe("0.3").await;
-	write_home_entry(&p, 0, "Late marker: cobalt heron.").await;
+	write_home_entry(&p, "late", None, 0, "Late marker: cobalt heron.").await;
 	let changed = describe("0.3").await;
 
 	// Assert: an older peer gets exactly the Description it always did.
