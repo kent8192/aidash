@@ -7,7 +7,7 @@ import threading
 import unittest
 import uuid
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from control import TERMINAL, ActivityAggregate, Runner, save
 
@@ -41,6 +41,7 @@ class ActivityTest(unittest.TestCase):
         self.runner.root = self.root
         self.runner.lock = threading.RLock()
         self.runner.aggregate = ActivityAggregate()
+        self.runner.start = Mock()
 
     def write(self, value):
         save(self.root / (value['operation_id'] + '.json'), value)
@@ -62,7 +63,7 @@ class ActivityTest(unittest.TestCase):
                     value = record('completed', 1000 + number, termination_confirmed=True, acknowledged=True)
                     (self.root / (value['operation_id'] + '.json')).write_text(json.dumps(value))
                 self.write(record('running'))
-                self.runner.index_journal()
+                self.runner.recover()
                 original = (Path.glob, Path.read_bytes, Path.open, os.scandir, os.listdir)
                 calls.clear()
 
@@ -83,7 +84,7 @@ class ActivityTest(unittest.TestCase):
     def test_the_global_lock_is_never_held_across_a_journal_scan(self):
         for number in range(50):
             self.write(record('completed', number, termination_confirmed=True))
-        self.runner.index_journal()
+        self.runner.recover()
         held = []
 
         def scan(*_, **__):
@@ -95,8 +96,36 @@ class ActivityTest(unittest.TestCase):
         self.assertEqual(held, [])
         # Starting the Runner is the only full scan, and it needs no lock either.
         with patch.object(Path, 'glob', scan):
-            self.runner.index_journal()
+            self.runner.recover()
         self.assertEqual(held, [False])
+
+    def test_startup_seeds_the_aggregate_in_the_recovery_scan(self):
+        # Startup already lists and parses the journal once to resume interrupted
+        # work; seeding the aggregate must reuse that scan, not add another.
+        values = [record('running'), record('awaiting_files'), record('accepted'),
+                  record('uncertain', 900), record('completed', 1000, termination_confirmed=True)]
+        for value in values:
+            self.write(value)
+        save(self.root / 'area-x.json', {'epoch': 1, 'operation_id': values[0]['operation_id']})
+        listings, parsed = [], []
+        glob, read_bytes = Path.glob, Path.read_bytes
+
+        def listed(path, pattern):
+            listings.append(pattern)
+            return glob(path, pattern)
+
+        def read(path):
+            parsed.append(path.stem)
+            return read_bytes(path)
+
+        with patch.object(Path, 'glob', listed), patch.object(Path, 'read_bytes', read):
+            self.runner.recover()
+        self.assertEqual(listings, ['*.json'])
+        self.assertCountEqual(parsed, [value['operation_id'] for value in values])
+        self.assertEqual(self.activity(), full_scan(self.root))
+        # Interrupted work resumes; files still awaiting upload and terminal work do not.
+        self.assertCountEqual([call.args[0] for call in self.runner.start.call_args_list],
+                              [values[0]['operation_id'], values[2]['operation_id']])
 
     def test_transitions_keep_the_aggregate_equal_to_a_full_scan(self):
         operation = self.write(record('accepted', termination_confirmed=False))
@@ -117,7 +146,7 @@ class ActivityTest(unittest.TestCase):
         # The aggregate rebuilt after a restart matches the live one.
         restarted = ActivityAggregate()
         self.runner.aggregate, live = restarted, self.runner.aggregate
-        self.runner.index_journal()
+        self.runner.recover()
         self.assertEqual((restarted.unsettled, restarted.last_completed), (live.unsettled, live.last_completed))
 
     def test_aggregate_matches_the_full_scan_for_any_sequence_of_states(self):
@@ -127,7 +156,7 @@ class ActivityTest(unittest.TestCase):
         operations = []
         for _ in range(60):
             operations.append(self.write(record(generator.choice(statuses))))
-        self.runner.index_journal()
+        self.runner.recover()
         for step in range(400):
             operation = generator.choice(operations)
             changes = {'status': generator.choice(statuses)}
@@ -147,7 +176,7 @@ class ActivityTest(unittest.TestCase):
         save(self.root / 'session-x.json', {'status': 'frozen'})
         restarted = ActivityAggregate()
         self.runner.aggregate = restarted
-        self.runner.index_journal()
+        self.runner.recover()
         self.assertEqual(self.activity(), full_scan(self.root))
 
 

@@ -18,6 +18,7 @@ class GuardTransportTest(unittest.TestCase):
         self.runner.root = Path(directory.name)
         self.runner.lock = threading.RLock()
         self.runner.aggregate = ActivityAggregate()
+        self.runner.start = Mock()
         self.runner.config = {'node_guard': {'namespace': 'trusted', 'selector': 'app=guard',
                                              'command': ['python3', '-I', '/opt/aidash/node_guard.py']}}
         self.runner.command = ['kubectl', '--namespace', 'execution']
@@ -100,22 +101,22 @@ class GuardTransportTest(unittest.TestCase):
             {'status': 'cancelled', 'termination_confirmed': True, 'finished_at': 60},
         ]
         for index, record in enumerate(records):
-            (self.runner.root / f'{index}.json').write_text(json.dumps(record))
+            (self.runner.root / f'{index}.json').write_text(json.dumps(dict(record, operation_id=str(index))))
         for name in ('area-fixture', 'session-fixture'):
             (self.runner.root / (name + '.json')).write_text('{}')
-        self.runner.index_journal()
+        self.runner.recover()
         activity = self.runner.activity()
         self.assertEqual(activity['counts'], {'runner': 3})
         self.assertTrue(activity['busy'])
         self.assertEqual(activity['last_work_completed'], 60)
 
     def test_corrupt_journal_cannot_supply_idle_activity(self):
-        # The journal is indexed once at startup. As before, a corrupt record
-        # cannot be read, so the Runner does not start and activity never reports
-        # idle; the recovery loop already behaved this way, and this covers it.
+        # The journal is indexed once, by the startup recovery scan. As before, a
+        # corrupt record cannot be read, so the Runner does not start and activity
+        # never reports idle.
         (self.runner.root / 'operation.json').write_text('{')
         with self.assertRaises(json.JSONDecodeError):
-            self.runner.index_journal()
+            self.runner.recover()
 
     def test_failed_admission_probe_stops_counting_once_its_pod_is_gone(self):
         # A probe that failed before dispatch (e.g. scheduling) is terminal `uncertain`.
@@ -126,7 +127,7 @@ class GuardTransportTest(unittest.TestCase):
                 'termination_confirmed': False, 'digest': 'immutable-admission-probe/3'}
         for record in (probe, work):
             (self.runner.root / (record['operation_id'] + '.json')).write_text(json.dumps(record))
-        self.runner.index_journal()
+        self.runner.recover()
         self.runner.kube = Mock()
         # While its Pod survives deletion, the probe stays busy (fail closed).
         self.runner.pod.return_value = {'metadata': {'uid': 'uid'}}

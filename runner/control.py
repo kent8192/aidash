@@ -89,8 +89,9 @@ class Runner:
         self.lock = threading.RLock()
         self.active = set()
         self.admission_operation = None
+        # Seeded by recover(), the final startup scan; until then only the
+        # operations saved during startup are tracked, and nothing serves it yet.
         self.aggregate = ActivityAggregate()
-        self.index_journal()
 
         identity_path = self.root / "instance"
         if not identity_path.exists():
@@ -126,21 +127,23 @@ class Runner:
         if self.config.get("node_guard"):
             self.verify_freeze()
         self.retire_admission_probes()
-        for path in self.operation_files():
-            record = json.loads(path.read_bytes())
-            if record["status"] not in TERMINAL and record["status"] != "awaiting_files":
-                self.start(record["operation_id"])
+        self.recover()
 
     def operation_files(self):
         for path in self.root.glob("*.json"):
             if not path.name.startswith(("area-", "session-")):
                 yield path
 
-    def index_journal(self):
-        """Seed the activity aggregate from the retained journal. This is the only
-        full scan: it runs once at startup, never per request."""
+    def recover(self):
+        """Seed the activity aggregate and resume interrupted work in one journal
+        scan at startup, never per request. Each record is tracked before its work
+        restarts, so no later update of it can be overwritten by this read."""
         for path in self.operation_files():
-            self.aggregate.track(path.stem, json.loads(path.read_bytes()))
+            record = json.loads(path.read_bytes())
+            with self.lock:
+                self.aggregate.track(path.stem, record)
+            if record["status"] not in TERMINAL and record["status"] != "awaiting_files":
+                self.start(record["operation_id"])
 
     def verify_isolation(self):
         operation = str(uuid.uuid4())
