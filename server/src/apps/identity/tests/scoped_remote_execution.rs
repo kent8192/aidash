@@ -1324,7 +1324,7 @@ async fn remote_ordered_run_retrieves_again_when_the_home_corpus_changed(
 /// Revoking the grant or editing a source the Run consumed stops a reuse step
 /// before inference, through the existing pause and invalidation paths.
 #[rstest::rstest]
-#[case::grant_revoked("revoked", None)]
+#[case::grant_revoked("revoked", Some("authority"))]
 #[case::consumed_source_edited("edited", Some("invalidated"))]
 #[tokio::test]
 async fn remote_ordered_reuse_stops_after_revocation_or_a_consumed_source_edit(
