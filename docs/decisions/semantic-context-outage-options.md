@@ -1,10 +1,10 @@
 # Semantic context when the embedding provider or vector backend is unavailable
 
-Investigation for [#154](https://github.com/kent8192/aidash/issues/154), prepared against `develop/0.1.0` at `13a6f144`. The behavior below is pinned by regression tests added with this document; no runtime behavior changes. The decision itself belongs to the user, and the recommendation at the end is the one to accept or reject.
+Investigation for [#154](https://github.com/kent8192/aidash/issues/154), prepared against `develop/0.1.0` at `13a6f144`. The behavior below is pinned by regression tests added with this document; no runtime behavior changes. The recommendation below was adopted on 2026-10-12 and is [recorded on #154](https://github.com/kent8192/aidash/issues/154#issuecomment-6120720336); section 6 states the decision and section 5 links the filed follow-ups.
 
-## Recommendation in one paragraph
+## Decision in one paragraph
 
-Take **option 1 (degrade with an explicit marker), narrowed**: only optional workspace semantic context of a **local** Run may degrade, only after a bounded transient retry, only when the Registry-declared context source opts in, and only with a typed, journaled, visible marker. Everything else stays fail-closed: required-Home remote semantic context, every authorization, credential-binding and provider-contract failure, native memory banks, and every source that is not explicitly marked optional. **Independently of the option chosen**, a local Run must stop failing hard on an outage: today it ends `Failed` after one attempt while a required-Home Run retries and pauses with a typed reason. Options 2 and 3 are not recommended now (option 2 is impossible under #158, option 3 hinges on an undecided Provider Catalog question and costs an operational dependency); option 4 is the right stance for the contexts that must fail closed.
+Adopted: **option 1 (degrade with an explicit marker), narrowed**: only optional workspace semantic context of a **local** Run may degrade, only after a bounded transient retry, only when the Registry-declared context source opts in, and only with a typed, journaled, visible marker. Everything else stays fail-closed: required-Home remote semantic context, every authorization, credential-binding and provider-contract failure, native memory banks, and every source that is not explicitly marked optional. **Independently of the option chosen**, a local Run must stop failing hard on an outage: today it ends `Failed` after one attempt while a required-Home Run retries and pauses with a typed reason. Options 2 and 3 are not taken now (option 2 is impossible under #158, option 3 hinges on an undecided Provider Catalog question and costs an operational dependency); option 4 is the right stance for the contexts that must fail closed.
 
 ## 1. What happens today
 
@@ -24,7 +24,7 @@ Evidence:
 
 ### Why the two paths differ
 
-Every embedding failure is reduced to `SemanticUnavailable` (`aidash-application/src/semantic/embedding.rs`) and a missing vector point to the same error (`retrieval.rs`). The server's `classify_failure` (`server/src/apps/execution/repositories/worker.rs`) maps only the remote `RemoteSemantic(reason)` to `ExecutionFailure::Semantic`, which `aidash-harness/src/recovery.rs` retries and then pauses. A local `SemanticUnavailable` falls into the `_ => Other` arm, is not retryable, and is delivered as a terminal failure. The collapse also hides the cause: for an environment-keyed provider, `embedding::invoke` turns **every** provider error into `SemanticUnavailable`, so a rejected key (HTTP 401–403, remote `Configuration`) and a response-contract violation (`ProviderContract`) are indistinguishable from an outage on the local path. The difference is an accident of error mapping rather than a decided policy: the Issue's expectation ("an outage stops every step") understates it, because a local Run is not stopped but destroyed, and its Task with it.
+Every embedding failure is reduced to `SemanticUnavailable` (`aidash-application/src/semantic/embedding.rs`) and a missing vector point to the same error (`retrieval.rs`). The server's `classify_failure` (`server/src/apps/execution/repositories/worker.rs`) maps only the remote `RemoteSemantic(reason)` to `ExecutionFailure::Semantic`, which `aidash-harness/src/recovery.rs` retries and then pauses. A local `SemanticUnavailable` falls into the `_ => Other` arm, is not retryable, and is delivered as a terminal failure. The collapse also hides the cause: `SemanticClient` (`aidash-integrations/src/semantic.rs`) reports an ordinary upstream HTTP 401–403 as `RemoteSemantic(Configuration)` and a malformed or mismatched answer as `RemoteSemantic(ProviderContract)`, and `embedding::invoke` turns **every** provider error into `SemanticUnavailable`. The only exception is a Tenant-backed provider whose failure the Credential Broker recognizes as a capability failure (`Invalid`, `NotFound`, `Forbidden`, `Conflict`); those are preserved. So a rejected key and a response-contract violation are indistinguishable from an outage on the local path. The difference is an accident of error mapping rather than a decided policy: the Issue's expectation ("an outage stops every step") understates it, because a local Run is not stopped but destroyed, and its Task with it.
 
 ### Scope of the exposure
 
@@ -42,12 +42,13 @@ Every embedding failure is reduced to `SemanticUnavailable` (`aidash-application
 
 A policy should degrade only on the first class.
 
-| Class                      | Examples                                                                                            | Today                                                                          | Should degrade?                                     |
-| -------------------------- | --------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ | --------------------------------------------------- |
-| Outage                     | HTTP 408/429/5xx, refused connection, timeout, missing vector points                                | Local: terminal failure. Remote: retry, then typed pause.                      | Only for optional local context, after retry        |
-| Authorization and binding  | Revoked or missing Provider Credential, Tenant mismatch, Forbidden, provider answers 401–403        | Admission rejection or `Authority` pause                                       | **No.** Silent continuation would hide a revocation |
-| Provider contract          | Wrong model, wrong dimensions, oversized or malformed body (`provider_contract`)                    | Remote: typed pause. Local: terminal failure, indistinguishable from an outage | **No.** The provider is misbehaving, not absent     |
-| Disclosure and consistency | `Invalidated` sources, `Authority`, `Configuration`, `ContextBudget`, generated-lineage `Allowance` | Typed pause                                                                    | **No**                                              |
+| Class                      | Examples                                                                                            | Today                                                                                           | Should degrade?                                     |
+| -------------------------- | --------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- | --------------------------------------------------- |
+| Outage                     | HTTP 408/429/5xx, refused connection, timeout, missing vector points                                | Local: terminal failure. Remote: retry, then typed pause.                                       | Only for optional local context, after retry        |
+| Authorization and binding  | Revoked or missing Provider Credential, Tenant mismatch, a Credential Broker capability failure     | Admission rejection or `Authority` pause                                                        | **No.** Silent continuation would hide a revocation |
+| Upstream key rejection     | Provider answers 401–403 without a recognized capability failure (`RemoteSemantic(Configuration)`)  | Collapsed into `SemanticUnavailable`. Local: terminal failure, indistinguishable from an outage | **No.** A rejected key is not an outage             |
+| Provider contract          | Wrong model, wrong dimensions, oversized or malformed body (`provider_contract`)                    | Remote: typed pause. Local: terminal failure, indistinguishable from an outage                  | **No.** The provider is misbehaving, not absent     |
+| Disclosure and consistency | `Invalidated` sources, `Authority`, `Configuration`, `ContextBudget`, generated-lineage `Allowance` | Typed pause                                                                                     | **No**                                              |
 
 ## 3. Options against the criteria
 
@@ -75,13 +76,13 @@ Choose option 1, narrowed as follows.
 
 ### What may degrade and what must fail closed
 
-| Context                                                                                      | On outage                                                                                                                         |
-| -------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
-| Optional workspace semantic context of a local Run (`auto_context`, Registry source opts in) | Retry like a required-Home Run (5 attempts with backoff). If still unavailable, **degrade**: continue with a marker.              |
-| Same context without the opt-in (default)                                                    | Typed transient pause (`retries_exhausted`, manual resume), the behavior a required-Home Run already has. Not a terminal failure. |
-| Required-Home remote semantic context                                                        | Unchanged: typed retry then pause. Never degrades, because receipts and dependency journals are part of the disclosure contract.  |
-| Native memory banks and any source declared required                                         | Fail closed with a typed pause.                                                                                                   |
-| Authorization, binding, provider-contract, invalidation, budget and allowance failures       | Fail closed, as today.                                                                                                            |
+| Context                                                                                      | On outage                                                                                                                                                 |
+| -------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Optional workspace semantic context of a local Run (`auto_context`, Registry source opts in) | Retry like a required-Home Run: five retries after delays of 2, 4, 8, 16 and 32 s. If the sixth attempt still fails, **degrade**: continue with a marker. |
+| Same context without the opt-in (default)                                                    | Typed transient pause (`retries_exhausted`, manual resume), the behavior a required-Home Run already has. Not a terminal failure.                         |
+| Required-Home remote semantic context                                                        | Unchanged: typed retry then pause. Never degrades, because receipts and dependency journals are part of the disclosure contract.                          |
+| Native memory banks and any source declared required                                         | Fail closed with a typed pause.                                                                                                                           |
+| Authorization, binding, provider-contract, invalidation, budget and allowance failures       | Fail closed, as today.                                                                                                                                    |
 
 ### The marker
 
@@ -105,7 +106,9 @@ The memory bank already returns `{"status": "disabled" | "no_space"}` where it c
 - **Option 3**: moves the single point of failure into the deployment and depends on an undecided Catalog rule; revisit once the Catalog question is answered and only if degradation proves unacceptable for real workloads.
 - **Option 4 alone**: leaves the inconsistent local/remote behavior and destroys a Task over a transient provider outage.
 
-## 5. Follow-up Issues (not filed)
+## 5. Follow-up Issues
+
+Filed after the decision: item 1 → [#233](https://github.com/kent8192/aidash/issues/233); items 2–5 → [#234](https://github.com/kent8192/aidash/issues/234); item 6 is handled inside [#158](https://github.com/kent8192/aidash/issues/158) ([PR #219](https://github.com/kent8192/aidash/pull/219)); item 7 → [#235](https://github.com/kent8192/aidash/issues/235); item 8 → [#236](https://github.com/kent8192/aidash/issues/236).
 
 1. **`fix(execution): treat a local SemanticUnavailable as a typed transient semantic failure`**. Map `SemanticUnavailable` to `ExecutionFailure::Semantic(Unavailable)` so local Runs retry and pause like required-Home Runs. Stop `embedding::invoke` from collapsing key rejection (401–403) and `ProviderContract` into `SemanticUnavailable`, so only a real outage is transient and the other classes keep their typed pauses. Updates the four local regression tests added here, which currently pin the terminal failure.
 2. **`feat(registry): declare on_unavailable (pause | degrade) on context sources`**. Descriptor field, validation, binding-snapshot freezing and migration of existing sources to `pause`; part of the #110 descriptor work.
@@ -116,8 +119,8 @@ The memory bank already returns `{"status": "disabled" | "no_space"}` where it c
 7. **`decision: does a keyless in-deployment embedding model need a Provider Catalog entry?`**. Gate for option 3; no implementation until answered.
 8. **`test: Ordered Run keeps working through a mid-Run embedding outage while its Retrieval Key holds`**. Pins the reading in section 1 that is currently derived from code and ADR 0020.
 
-## 6. Decisions needed from the user
+## 6. Decision (2026-10-12)
 
-- Accept option 1 as narrowed, or choose another option.
-- Whether `degrade` stays opt-in per source (recommended) or becomes the default for optional workspace context.
-- Whether the local path should retry five times before degrading (recommended, same as required-Home) or degrade at once.
+- Option 1, narrowed as in section 4, is adopted.
+- `degrade` stays opt-in per source: `on_unavailable: pause | degrade`, default `pause`.
+- The local path retries like required-Home before degrading: five retries, six failed attempts in total.
