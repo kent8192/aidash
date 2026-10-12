@@ -61,7 +61,7 @@ pub async fn authorize(
 		return Err(Error::Forbidden);
 	}
 	let mut scope = repository.lease().await?;
-	let current;
+	let mut current;
 	let mut operation = None;
 	let authorization = match &contract.identity {
 		ToolIdentity::Descriptor(reference) => {
@@ -69,6 +69,12 @@ pub async fn authorize(
 			let descriptor: aidash_domain::tool::providers::ToolDescriptor =
 				serde_json::from_value(entry.config)?;
 			current = descriptor.declared_contract(reference.clone())?;
+			// Registry narrowing (or a Run pinned before the provider declared
+			// it) may only lower Concurrency; every other attribute must match.
+			current.behavior.concurrency = current
+				.behavior
+				.concurrency
+				.narrowed(Some(contract.behavior.concurrency));
 			if current != *contract {
 				return Err(Error::Conflict("admitted provider contract changed".into()));
 			}

@@ -11,6 +11,7 @@ Use `POST /api/generation/{tenant}/policies/{id}` with `expected_revision` (zero
 - `limits`: `max_agents`, `max_concurrent`, `max_depth`, `token_budget`, `tokens_per_agent` and `lifetime_seconds`.
 - Optional `compaction`: an approved `provider` reference, `calls_per_agent` and total `call_budget`. Omitting it forbids external compaction for that generated definition.
 - Optional `embedding`: an approved embedding `provider` reference, `calls_per_agent` and total `call_budget`. Omitting it forbids embedding calls under that generated authority.
+- Optional `summary`: an approved `model` `provider` reference for the Context Recovery Summary Stage, `calls_per_agent` and total `call_budget`. Omitting it forbids Summary Stage calls under that generated authority.
 
 All referenced components must already be approved in that tenant's catalog. The model must be selected explicitly; generation does not route between models. Policies and immutable revisions are stored alongside their actor and quota counters. A request pins its definition and permission specification to the policy revision; later changes affect new requests. Disabling the policy prevents further activation and generated execution at the next authority boundary. An unchanged policy can still be disabled after one of its components is revoked; re-enabling or changing its definition requires all current approvals again.
 
@@ -76,6 +77,37 @@ The request pins this contract to its immutable policy revision. Each generation
 Input bytes and question counts are checked before reservation. The worker then atomically commits one call and an attempt record for every generated ancestor before network I/O. The ledger retains provider/version, run, byte count and question count, without storing the request history or credential. Concurrent batches cannot overspend a call limit. Failed, uncertain and crashed attempts stay charged, and retries reserve new attempts. System One probability responses do not report trustworthy model-token usage, so this is a separate call budget, not a fabricated token refund or monetary limit. Main inference reserves its tokens after successful compaction and rechecks lifetime before its own HTTP request.
 
 No configured compaction permission is needed when the context already fits. Generated chains never fall back to the node's environment-selected Jev provider. Ordinary agents outside a generated chain retain that provider selection, with bounded 1 MiB request/response payloads and at most 1024 questions per request.
+
+## Approved Summary Stage model
+
+An Agent whose `context_policy` (`context-recovery/1`) names `summary.model` pins that
+exact model version in its admitted Binding snapshot; a reference to a non-`model`
+entry fails admission. On an ordinary Run, each Summary Stage request requires the
+current tenant catalog approval of that exact version, `registry.read` and
+`model.infer`, and an unchanged definition digest. Its tokens are reserved like
+agent inference.
+
+Inside a generated chain, every generated ancestor must also approve the same
+exact model:
+
+```json
+{
+  "summary": {
+    "provider": { "id": "approved-summarizer", "version": "1.0.0" },
+    "calls_per_agent": 4,
+    "call_budget": 40
+  }
+}
+```
+
+Allocation and release follow the compaction rules. Before network I/O, the worker
+atomically commits one summary call and one `generation_summary_usage` attempt
+(provider/version, definition digest, run and request bytes) for every ancestor;
+the model tokens are charged to the shared token budget. Failed, uncertain and
+crashed attempts stay charged. A missing or different approval, an exhausted
+allowance or a denied catalog check pauses the Run with `SummaryUnavailable`; no
+other provider or environment credential is ever substituted. `remote.summary`
+uses the `remote.compaction` shape for summarizers owned by another Node.
 
 ## Approved embeddings
 
@@ -145,8 +177,8 @@ Each policy can additionally approve providers owned by another Node through `re
 
 Digests are `sha256:` plus the SHA-256 of the recursively key-sorted, compact UTF-8
 JSON of the complete stored Registry definition and its `config`, respectively.
-Read the stored definition, including default fields. `remote.compaction` uses the
-same provider/call-limit shape as `remote.embedding`. Local provider approvals
+Read the stored definition, including default fields. `remote.compaction` and
+`remote.summary` use the same provider/call-limit shape as `remote.embedding`. Local provider approvals
 continue to use `embedding`, `compaction` and the policy's model references. For a
 generated A ancestor with a generated B executor, A approves B's inference and any
 B compactor, while B approves A's embedding. The generation policy editor exposes

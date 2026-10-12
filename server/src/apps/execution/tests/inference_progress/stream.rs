@@ -2,17 +2,17 @@
 use super::{Conversation, common};
 use aidash_domain::provider::progress::{InterruptionReason, ProgressOutcome};
 use aidash_server::sse;
-use axum::{body::Body, http::Request};
-use common::{TestEnvironment, request, test_environment};
+use common::request;
 use futures_util::{StreamExt, stream::BoxStream};
+use http::Request;
 use reinhardt::query::{
 	Alias, Expr, ExprTrait as _, PostgresQueryBuilder, Query, QueryStatementBuilder as _,
 };
 use serde_json::{Value, json};
-use std::{sync::Arc, time::Duration};
+use std::time::Duration;
 use uuid::Uuid;
 
-type Frames = BoxStream<'static, Result<axum::body::Bytes, axum::Error>>;
+type Frames = BoxStream<'static, Result<bytes::Bytes, Box<dyn std::error::Error + Send + Sync>>>;
 
 /// One parsed SSE frame: `event`, optional `id` and JSON `data`.
 #[derive(Debug)]
@@ -36,7 +36,7 @@ impl Stream {
 		run: Uuid,
 		after: Option<i64>,
 		header: Option<i64>,
-	) -> axum::response::Response {
+	) -> reinhardt::Response {
 		let mut path = format!("/api/runs/{run}/inference/stream");
 		if let Some(after) = after {
 			path.push_str(&format!("?after={after}"));
@@ -45,8 +45,9 @@ impl Stream {
 		if let Some(header) = header {
 			request = request.header("last-event-id", header.to_string());
 		}
+		// Direct dispatch retains the unpolled response producer for backpressure Acts.
 		app.clone()
-			.oneshot(request.body(Body::empty()).unwrap())
+			.native_oneshot(request.body(bytes::Bytes::new()).unwrap())
 			.await
 			.unwrap()
 	}
@@ -59,10 +60,10 @@ impl Stream {
 		after: Option<i64>,
 		header: Option<i64>,
 	) -> Self {
-		let response = Self::request(app, token, run, after, header).await;
-		assert_eq!(response.status(), 200);
+		let mut response = Self::request(app, token, run, after, header).await;
+		assert_eq!(response.status, 200);
 		Self {
-			body: response.into_body().into_data_stream().boxed(),
+			body: response.take_stream_body().unwrap().boxed(),
 			buffer: String::new(),
 		}
 	}
@@ -113,17 +114,22 @@ struct Fixture {
 	service: sse::Service,
 }
 
-impl Fixture {
-	async fn new(environment: &TestEnvironment, backpressure: Duration) -> Self {
-		let service = sse::Service::new(sse::Settings {
-			reconcile_interval: Duration::from_millis(250),
-			backpressure_timeout: backpressure,
-		});
-		let c = Conversation::new(environment, Some(service.clone())).await;
-		Self { c, service }
-	}
+#[rstest::fixture]
+async fn stream_fixture(
+	#[default(Duration::from_secs(30))] _backpressure: Duration,
+	#[from(super::progress_service)]
+	#[with(_backpressure)]
+	service: sse::Service,
+	#[future(awt)]
+	#[from(super::conversation)]
+	#[with(service.clone())]
+	c: Conversation,
+) -> Fixture {
+	Fixture { c, service }
+}
 
-	async fn open(&self, after: Option<i64>, header: Option<i64>) -> axum::response::Response {
+impl Fixture {
+	async fn open(&self, after: Option<i64>, header: Option<i64>) -> reinhardt::Response {
 		Stream::request(&self.c.app, &self.c.token, self.c.run.id, after, header).await
 	}
 
@@ -160,11 +166,10 @@ async fn replay_resumes_after_the_cursor_without_duplicates(
 	#[case] after: Option<i64>,
 	#[case] header: Option<i64>,
 	#[future(awt)]
-	#[from(test_environment)]
-	test_environment: Arc<TestEnvironment>,
+	#[from(stream_fixture)]
+	fixture: Fixture,
 ) {
 	// Arrange
-	let fixture = Fixture::new(&test_environment, Duration::from_secs(30)).await;
 	let c = &fixture.c;
 	let worker = Uuid::new_v4();
 	c.lease(worker).await;
@@ -214,11 +219,10 @@ async fn replay_resumes_after_the_cursor_without_duplicates(
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn without_a_cursor_the_stream_starts_at_the_latest_attempt(
 	#[future(awt)]
-	#[from(test_environment)]
-	test_environment: Arc<TestEnvironment>,
+	#[from(stream_fixture)]
+	fixture: Fixture,
 ) {
 	// Arrange
-	let fixture = Fixture::new(&test_environment, Duration::from_secs(30)).await;
 	let c = &fixture.c;
 	let worker = Uuid::new_v4();
 	c.lease(worker).await;
@@ -251,11 +255,10 @@ async fn without_a_cursor_the_stream_starts_at_the_latest_attempt(
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_gap_replaces_pruned_rows_and_outcomes_are_still_delivered(
 	#[future(awt)]
-	#[from(test_environment)]
-	test_environment: Arc<TestEnvironment>,
+	#[from(stream_fixture)]
+	fixture: Fixture,
 ) {
 	// Arrange
-	let fixture = Fixture::new(&test_environment, Duration::from_secs(30)).await;
 	let c = &fixture.c;
 	let worker = Uuid::new_v4();
 	c.lease(worker).await;
@@ -323,11 +326,10 @@ async fn revocation_closes_the_stream_and_denies_reconnect(
 	#[case] revocation: Revocation,
 	#[case] reconnect: u16,
 	#[future(awt)]
-	#[from(test_environment)]
-	test_environment: Arc<TestEnvironment>,
+	#[from(stream_fixture)]
+	fixture: Fixture,
 ) {
 	// Arrange
-	let fixture = Fixture::new(&test_environment, Duration::from_secs(30)).await;
 	let c = &fixture.c;
 	let worker = Uuid::new_v4();
 	c.lease(worker).await;
@@ -393,7 +395,7 @@ async fn revocation_closes_the_stream_and_denies_reconnect(
 		closing.iter().all(|frame| frame.id.is_none()),
 		"no progress after revocation: {closing:?}"
 	);
-	assert_eq!(fixture.open(None, None).await.status(), reconnect);
+	assert_eq!(fixture.open(None, None).await.status, reconnect);
 	fixture.finish().await;
 }
 
@@ -401,11 +403,11 @@ async fn revocation_closes_the_stream_and_denies_reconnect(
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_unread_stream_is_closed_by_backpressure(
 	#[future(awt)]
-	#[from(test_environment)]
-	test_environment: Arc<TestEnvironment>,
+	#[from(stream_fixture)]
+	#[with(Duration::from_secs(1))]
+	fixture: Fixture,
 ) {
 	// Arrange
-	let fixture = Fixture::new(&test_environment, Duration::from_secs(1)).await;
 	let c = &fixture.c;
 	let worker = Uuid::new_v4();
 	c.lease(worker).await;
@@ -417,7 +419,7 @@ async fn an_unread_stream_is_closed_by_backpressure(
 
 	// Act
 	let response = fixture.open(None, None).await;
-	assert_eq!(response.status(), 200); // Intentionally never poll the body.
+	assert_eq!(response.status, 200); // Intentionally never poll the body.
 
 	// Assert
 	until(|| {

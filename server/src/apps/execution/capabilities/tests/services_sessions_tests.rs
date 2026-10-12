@@ -1,7 +1,7 @@
 //! Unit tests for services::sessions.
 use super::received_scope_matches;
 
-#[test]
+#[rstest::rstest]
 fn received_scope_allows_delegation_ancestors_and_checks_both_endpoints() {
 	assert!(received_scope_matches(
 		&[

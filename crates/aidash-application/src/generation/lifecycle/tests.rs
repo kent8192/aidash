@@ -192,19 +192,36 @@ impl GenerationLifecycleScope for Scope {
 	fn now(&self) -> DateTime<Utc> {
 		self.state.lock().unwrap().now
 	}
-	async fn unused(&mut self, _job: &Request) -> Result<(i64, i64, i64)> {
+	async fn unused(
+		&mut self,
+		_job: &Request,
+	) -> Result<(i64, aidash_domain::generation::policy::Allowances)> {
 		self.point("unused").await?;
-		Ok((70, 8, 13))
+		Ok((
+			70,
+			aidash_domain::generation::policy::Allowances {
+				compaction_calls: 8,
+				embedding_calls: 13,
+				summary_calls: 5,
+			},
+		))
 	}
 	async fn release_policy(
 		&mut self,
 		_job: &Request,
 		unused: i64,
-		unused_calls: i64,
-		unused_embeddings: i64,
+		unused_calls: &aidash_domain::generation::policy::Allowances,
 	) -> Result<()> {
 		self.point("release").await?;
-		assert_eq!((unused, unused_calls, unused_embeddings), (70, 8, 13));
+		assert_eq!(
+			(
+				unused,
+				unused_calls.compaction_calls,
+				unused_calls.embedding_calls,
+				unused_calls.summary_calls
+			),
+			(70, 8, 13, 5)
+		);
 		self.effects.push("quota.release".into());
 		Ok(())
 	}

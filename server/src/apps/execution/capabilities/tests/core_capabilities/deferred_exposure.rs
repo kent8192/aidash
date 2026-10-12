@@ -6,9 +6,10 @@ use aidash_server::{
 	domain::{Run, RunControl, RunPhase},
 	harness::Harness,
 };
-use axum::{Json, Router, http::StatusCode, response::IntoResponse, routing::post};
+use reinhardt::ServerRouter as Router;
 use std::collections::BTreeSet;
 use tokio::sync::Mutex;
+use upstream_fixtures::reply;
 
 const DEFERRED: &str = "2.0.0";
 const LEGACY: &str = "2.0.1";
@@ -40,7 +41,7 @@ type Script = Box<dyn FnMut(&Value, &Value) -> Reply + Send>;
 
 struct Deferred {
 	c: CoreFixture,
-	server: tokio::task::JoinHandle<()>,
+	_provider: Arc<reinhardt::test::fixtures::server::TestServerGuard>,
 	requests: Arc<Mutex<Vec<Value>>>,
 	script: Arc<Mutex<Script>>,
 	/// 1-based request numbers the provider rejects with a retryable 503.
@@ -48,61 +49,97 @@ struct Deferred {
 }
 
 #[rstest::fixture]
-async fn deferred_fixture(#[future] test_environment: Arc<TestEnvironment>) -> Deferred {
-	let env = test_environment.await;
-	let requests = Arc::new(Mutex::new(Vec::<Value>::new()));
-	let script: Arc<Mutex<Script>> = Arc::new(Mutex::new(Box::new(|_: &Value, _: &Value| {
+fn deferred_requests() -> Arc<Mutex<Vec<Value>>> {
+	Arc::new(Mutex::new(Vec::new()))
+}
+#[rstest::fixture]
+fn deferred_script() -> Arc<Mutex<Script>> {
+	Arc::new(Mutex::new(Box::new(|_: &Value, _: &Value| {
 		Reply::Text("No script.")
-	})));
-	let unavailable = Arc::new(Mutex::new(BTreeSet::new()));
-	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-	let endpoint = format!("http://{}", listener.local_addr().unwrap());
-	let (capture, scripted, failing) = (requests.clone(), script.clone(), unavailable.clone());
-	let router = Router::new().route(
-		"/v1/chat/completions",
-		post(move |Json(body): Json<Value>| {
-			let (capture, scripted, failing) = (capture.clone(), scripted.clone(), failing.clone());
-			async move {
-				let context: Value =
-					serde_json::from_str(body["messages"][1]["content"].as_str().unwrap()).unwrap();
-				let count = {
-					let mut requests = capture.lock().await;
-					requests.push(body.clone());
-					requests.len()
-				};
-				if failing.lock().await.contains(&count) {
-					return (
-						StatusCode::SERVICE_UNAVAILABLE,
-						Json(json!({"error":{"message":"provider temporarily unavailable"}})),
-					)
-						.into_response();
-				}
-				let reply = {
-					let mut script = scripted.lock().await;
-					(*script)(&body, &context)
-				};
-				let message = match reply {
-					Reply::Call(name, arguments) => {
-						json!({"role":"assistant","content":null,"tool_calls":[{"id":format!("deferred-{count}"),"type":"function","function":{"name":name,"arguments":arguments.to_string()}}]})
+	})))
+}
+#[rstest::fixture]
+fn deferred_unavailable() -> Arc<Mutex<BTreeSet<usize>>> {
+	Arc::new(Mutex::new(BTreeSet::new()))
+}
+/// Scripted provider: records every request, fails scheduled ones with a
+/// retryable 503 and otherwise answers with the current script's reply.
+#[rstest::fixture]
+fn deferred_router(
+	#[from(deferred_requests)] requests: Arc<Mutex<Vec<Value>>>,
+	#[from(deferred_script)] script: Arc<Mutex<Script>>,
+	#[from(deferred_unavailable)] unavailable: Arc<Mutex<BTreeSet<usize>>>,
+) -> Arc<Router> {
+	let provider = reinhardt::test::stub::StubRouter::new()
+		.route(
+			"/v1/chat/completions",
+			http::Method::POST,
+			reply(move |request: reinhardt::Request| {
+				let body = request.json::<Value>().unwrap();
+				let (capture, scripted, failing) =
+					(requests.clone(), script.clone(), unavailable.clone());
+				async move {
+					let context: Value =
+						serde_json::from_str(body["messages"][1]["content"].as_str().unwrap())
+							.unwrap();
+					let count = {
+						let mut requests = capture.lock().await;
+						requests.push(body.clone());
+						requests.len()
+					};
+					if failing.lock().await.contains(&count) {
+						return reinhardt::Response::new(http::StatusCode::SERVICE_UNAVAILABLE)
+							.with_json(
+								&json!({"error":{"message":"provider temporarily unavailable"}}),
+							)
+							.unwrap();
 					}
-					Reply::Text(text) => json!({"role":"assistant","content":text}),
-				};
-				let finish = if message.get("tool_calls").is_some() {
-					"tool_calls"
-				} else {
-					"stop"
-				};
-				Json(
-					json!({"choices":[{"index":0,"finish_reason":finish,"message":message}],"usage":{"prompt_tokens":1,"completion_tokens":1}}),
-				)
-				.into_response()
-			}
-		}),
-	);
-	let server = tokio::spawn(async move {
-		axum::serve(listener, router).await.unwrap();
-	});
-	let mut c = build_core_fixture_at(env, "aidash://deferred", &endpoint).await;
+					let reply = {
+						let mut script = scripted.lock().await;
+						(*script)(&body, &context)
+					};
+					let message = match reply {
+						Reply::Call(name, arguments) => {
+							json!({"role":"assistant","content":null,"tool_calls":[{"id":format!("deferred-{count}"),"type":"function","function":{"name":name,"arguments":arguments.to_string()}}]})
+						}
+						Reply::Text(text) => json!({"role":"assistant","content":text}),
+					};
+					let finish = if message.get("tool_calls").is_some() {
+						"tool_calls"
+					} else {
+						"stop"
+					};
+					reinhardt::Response::ok()
+						.with_json(
+							&json!({"choices":[{"index":0,"finish_reason":finish,"message":message}],"usage":{"prompt_tokens":1,"completion_tokens":1}}),
+						)
+						.unwrap()
+				}
+			}),
+		)
+		.into_server_router();
+	Arc::new(provider)
+}
+
+#[rstest::fixture]
+async fn deferred_fixture(
+	#[from(deferred_requests)] requests: Arc<Mutex<Vec<Value>>>,
+	#[from(deferred_script)] script: Arc<Mutex<Script>>,
+	#[from(deferred_unavailable)] unavailable: Arc<Mutex<BTreeSet<usize>>>,
+	#[from(deferred_router)]
+	#[with(requests.clone(),script.clone(),unavailable.clone())]
+	_router: Arc<Router>,
+	#[from(upstream_fixtures::provider_transport)]
+	#[with(_router.clone())]
+	provider: upstream_fixtures::UpstreamFuture,
+	#[from(provider_endpoint)]
+	#[with(provider.clone())]
+	_endpoint: EndpointFuture,
+	#[from(capability_fixture)]
+	#[with("aidash://deferred",_endpoint.clone())]
+	core: CoreFuture,
+) -> Deferred {
+	let mut c = core.await;
 	let atlas = format!(
 		"{ATLAS_BODY} {}",
 		"Map every dependency before the release. ".repeat(36)
@@ -143,7 +180,7 @@ async fn deferred_fixture(#[future] test_environment: Arc<TestEnvironment>) -> D
 	assert_eq!(status, 200, "{result}");
 	Deferred {
 		c,
-		server,
+		_provider: provider.await,
 		requests,
 		script,
 		unavailable,
@@ -273,8 +310,7 @@ impl Deferred {
 		}
 	}
 	async fn close(self) {
-		self.server.abort();
-		let _ = self.server.await;
+		drop(self._provider);
 		self.c.close().await;
 	}
 }
@@ -321,6 +357,7 @@ fn events(context: &Value) -> Vec<(&Value, &Value)> {
 		.as_array()
 		.into_iter()
 		.flatten()
+		.map(|entry| entry.get("event").unwrap_or(entry))
 		.filter(|event| event["kind"] == "tool")
 		.map(|event| (&event["call"], &event["result"]))
 		.collect()
