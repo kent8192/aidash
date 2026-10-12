@@ -26,6 +26,8 @@ struct State {
 	record: Option<Record>,
 	binding: Option<Uuid>,
 	ready: bool,
+	/// The READY operation an Ordered Run may reuse at a later step.
+	reused: Option<Uuid>,
 	peer_verified: bool,
 	worker_available: bool,
 	bad_receipts: bool,
@@ -200,6 +202,7 @@ fn world() -> World {
 		input,
 		record: Some(record),
 		ready: true,
+		reused: None,
 		peer_verified: true,
 		worker_available: true,
 		bad_receipts: false,
@@ -399,14 +402,20 @@ impl GenerationProtocolRepository for World {
 		assert_eq!(admission, state.run.id);
 		Ok(state.run.clone())
 	}
-	async fn semantic_ready(&self, admission: Uuid, grant: Uuid, step: i32) -> Result<bool> {
+	async fn semantic_ready(
+		&self,
+		admission: Uuid,
+		grant: Uuid,
+		step: i32,
+		pinned: Option<Uuid>,
+	) -> Result<bool> {
 		self.point("semantic.ready").await?;
 		let state = self.0.lock().unwrap();
 		assert_eq!(
 			(admission, grant, step),
 			(state.run.id, state.description.grant_id, state.run.step)
 		);
-		Ok(state.ready)
+		Ok(state.ready || (pinned.is_some() && pinned == state.reused))
 	}
 }
 struct Preparation {
@@ -814,6 +823,41 @@ async fn missing_semantic_readiness_preserves_pending_and_rolls_back(world: Worl
 	));
 	let state = world.0.lock().unwrap();
 	assert_eq!((state.active, state.denials, state.rollbacks), (0, 0, 1));
+}
+/// An Ordered step that reuses its semantic read starts no operation of its
+/// own; the READY operation its source observation pins admits its inference,
+/// and no other operation does (#191).
+#[rstest]
+#[case::pinned(Uuid::from_u128(901), true)]
+#[case::other(Uuid::from_u128(902), false)]
+#[tokio::test]
+async fn a_reused_semantic_read_admits_inference_only_through_its_pinned_operation(
+	world: World,
+	#[case] pinned: Uuid,
+	#[case] admitted: bool,
+) {
+	{
+		let mut state = world.0.lock().unwrap();
+		state.ready = false;
+		state.reused = Some(Uuid::from_u128(901));
+		state.run.context.source_observation = Some(
+			aidash_domain::context::sources::SourceObservation::new(
+				"boundary".into(),
+				"bindings".into(),
+				json!({"memory":null,"semantic_memory":{"operation_id":pinned}}),
+			)
+			.unwrap(),
+		);
+	}
+	let result = verify(&world, &world, &world, "aidash://home", world.input()).await;
+	if admitted {
+		assert!(result.unwrap());
+	} else {
+		assert!(matches!(
+			result,
+			Err(Error::RemoteSemantic(Failure::Pending))
+		));
+	}
 }
 #[rstest]
 #[tokio::test]

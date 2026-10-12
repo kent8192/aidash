@@ -111,7 +111,11 @@ until another component changes. The budget never exceeds half of the request's
 remaining headroom, the same share `legacy` uses, so oversized fixed content can
 change the budget and therefore the key.
 Every reuse is rechecked against current authority first: revoked or narrowed
-access pauses the Run, and a stale result is retrieved again once.
+access pauses the Run, and a stale result is retrieved again once. A remote
+step that reuses a retrieval sends no new Home query; its inference is admitted
+by the Home operation whose receipt the Run still pins. Editing or deleting a
+Home entry a remote Run has already received pauses that Run as invalidated
+rather than triggering another retrieval.
 
 ## Explicit prompt caching
 

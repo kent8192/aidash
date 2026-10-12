@@ -227,7 +227,12 @@ pub async fn verify(
 		}
 		if !description.semantic.disabled()
 			&& !repository
-				.semantic_ready(run.id, input.usage.grant_id, run.step)
+				.semantic_ready(
+					run.id,
+					input.usage.grant_id,
+					run.step,
+					pinned_semantic_operation(&run),
+				)
 				.await?
 		{
 			return Err(Error::RemoteSemantic(Failure::Pending));
@@ -236,6 +241,20 @@ pub async fn verify(
 	}
 	.await;
 	lease.finish_verification(result).await
+}
+/// The Home operation whose receipt the Run's source observation pins. An
+/// Ordered step that reuses its semantic read starts no new operation, so this
+/// READY operation is the one that step's inference carries (#191).
+fn pinned_semantic_operation(run: &Run) -> Option<Uuid> {
+	run.context
+		.source_observation
+		.as_ref()?
+		.content
+		.get("semantic_memory")?
+		.get("operation_id")?
+		.as_str()?
+		.parse()
+		.ok()
 }
 
 pub async fn finalize(

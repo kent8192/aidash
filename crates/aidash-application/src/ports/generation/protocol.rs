@@ -53,6 +53,14 @@ pub trait GenerationProtocolRepository: Send + Sync {
 	/// Match both the admission ID and the Run's pinned Home node.
 	async fn description(&self, run: Uuid, home: &str) -> Result<Description>;
 	async fn run(&self, admission: Uuid) -> Result<Run>;
-	/// Preserve the existing admission, grant, READY state and exact step predicate.
-	async fn semantic_ready(&self, admission: Uuid, grant: Uuid, step: i32) -> Result<bool>;
+	/// Preserve the existing admission and grant predicate: a READY operation
+	/// either bound to this exact step or, when `pinned` is set, the operation
+	/// whose receipt an Ordered Run reuses at this step.
+	async fn semantic_ready(
+		&self,
+		admission: Uuid,
+		grant: Uuid,
+		step: i32,
+		pinned: Option<Uuid>,
+	) -> Result<bool>;
 }
