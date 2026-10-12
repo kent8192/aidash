@@ -413,7 +413,7 @@ def deterministic(args):
     return 0
 
 
-def live(args, read_json=None, transport=None, clock=time.monotonic, sleep=time.sleep):
+def live(args, read_json=None, transport=None, clock=time.monotonic, sleep=time.sleep, wall_now=now):
     """Opt-in live tier. Every refusal happens before any registration, Run or provider work."""
     corpus = evaluation.load_corpus(args.corpus)
     memory_corpus = evaluation.load_memory_corpus(args.memory_corpus)
@@ -443,7 +443,7 @@ def live(args, read_json=None, transport=None, clock=time.monotonic, sleep=time.
         models[reference] = api.get(f"/api/registry/{identifier}/{version}")["config"]
     approval = read_json(args.disclosure_approval) if args.disclosure_approval else None
     evaluation.require_live_authorization(credential, approval, corpus["_snapshot"]["sha256"], models,
-                                          args.max_spend_nanocredits, args.max_wall_seconds, now())
+                                          args.max_spend_nanocredits, args.max_wall_seconds, wall_now())
     planned_runs = [planned for planned in evaluation.plan(corpus, args.task, args.comparison)
                     if planned["model"] in mapping]
     if not args.allow_oracle_code_execution and any(p["task"]["oracle"]["kind"] == "python-tests" for p in planned_runs):

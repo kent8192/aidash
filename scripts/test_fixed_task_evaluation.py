@@ -697,7 +697,10 @@ class LiveGuardTest(unittest.TestCase):
             try:
                 args = self.args(**{"--max-spend-nanocredits": "50000"})
                 args.output = output
-                status = cli.live(args, read_json=lambda _: approval, transport=call, clock=clock, sleep=clock.sleep)
+                # The approval's expiry is checked against wall time, not the budget clock; pin it so the
+                # fixture's fixed expiry does not lapse as the calendar moves on.
+                status = cli.live(args, read_json=lambda _: approval, transport=call, clock=clock,
+                                  sleep=clock.sleep, wall_now=lambda: self.NOW)
             finally:
                 os.environ.pop("AIDASH_EVALUATION_TOKEN", None)
                 os.environ.pop("AIDASH_EVALUATION_SUBJECT_TOKEN", None)
