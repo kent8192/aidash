@@ -107,28 +107,32 @@ async fn recalled(database: &DatabaseFixture, endpoint: &str, lambda: Option<u32
 	units.into_iter().map(|unit| unit.content.text).collect()
 }
 
+#[rstest::fixture]
+async fn diversity_embedding_provider() -> reinhardt::test::fixtures::TestServerGuard {
+	let router = reinhardt::test::stub::StubRouter::new()
+		.route("/v1/embeddings", http::Method::POST, |request| async move {
+			let input = request.json::<serde_json::Value>().unwrap();
+			let text = input["input"].as_str().unwrap_or_default().to_owned();
+			Ok(reinhardt::Response::ok()
+				.with_json(&json!({"model":input["model"],"data":[{"index":0,"embedding":embedding(&text)}],"usage":{"prompt_tokens":1,"total_tokens":1}}))
+				.unwrap())
+		})
+		.into_server_router();
+	reinhardt::test::fixtures::test_server_guard(router).await
+}
+
 #[rstest]
 #[case::unset_policy_keeps_relevance_order(None, false)]
 #[case::pinned_lambda_delivers_the_distinct_unit(Some(700_000), true)]
 #[tokio::test]
 async fn diversity_uses_current_vectors_to_replace_a_paraphrase_with_the_distinct_unit(
+	#[future] diversity_embedding_provider: reinhardt::test::fixtures::TestServerGuard,
 	#[future] database: DatabaseFixture,
 	#[case] lambda: Option<u32>,
 	#[case] distinct_delivered: bool,
 ) {
-	use axum::{Json, Router, routing::post};
-	let app = Router::new().route(
-		"/v1/embeddings",
-		post(|Json(input): Json<serde_json::Value>| async move {
-			let text = input["input"].as_str().unwrap_or_default().to_owned();
-			Json(json!({"model":input["model"],"data":[{"index":0,"embedding":embedding(&text)}],"usage":{"prompt_tokens":1,"total_tokens":1}}))
-		}),
-	);
-	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-	let endpoint = format!("http://{}/v1", listener.local_addr().unwrap());
-	let server = tokio::spawn(async move {
-		axum::serve(listener, app).await.unwrap();
-	});
+	let model = diversity_embedding_provider.await;
+	let endpoint = format!("{}/v1", model.url);
 	let database = database.await;
 	let delivered = recalled(&database, &endpoint, lambda).await;
 	assert_eq!(delivered.len(), 2, "{delivered:?}");
@@ -137,5 +141,4 @@ async fn diversity_uses_current_vectors_to_replace_a_paraphrase_with_the_distinc
 		.filter(|text| text.contains("manager"))
 		.count();
 	assert_eq!(distinct, usize::from(distinct_delivered), "{delivered:?}");
-	server.abort();
 }
