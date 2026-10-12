@@ -55,34 +55,22 @@ async fn waiting_ids(
 }
 
 /// Count and fingerprint the durable completed-transfer receipts in constant
-/// memory, however many accumulate. Each receipt contributes the first 64 bits of
-/// the SHA-256 of its ID; the contributions are summed (order-free, so there is no
-/// sort and no buffered ID list) and the sum is hashed again into a fixed
-/// 64-character hex digest. Adding or removing a receipt changes the digest;
-/// retries and object reclamation do not.
+/// memory, however many accumulate. Each receipt contributes PostgreSQL's native
+/// 64-bit `uuid_hash_extended` of its ID; the contributions are summed (order-free,
+/// so there is no sort and no buffered ID list) and the sum is hashed with SHA-256
+/// into a fixed 64-character hex digest. Adding or removing a receipt changes the
+/// digest; retries and object reclamation do not. The per-receipt work is one
+/// native hash, so the summary costs no more than the other predicate scans of
+/// `core_records` in this observation, instead of a SHA-256 per receipt.
 async fn receipt_summary(tx: &DatabaseTransaction) -> Result<(i64, String), Error> {
-	let utf8 = |expr: SimpleExpr| {
-		Func::cust(Alias::new("convert_to")).args([expr, Expr::val("UTF8").into()])
-	};
-	let id_text: SimpleExpr = Expr::col(Alias::new("id")).cast_as(Alias::new("text"));
-	let id_prefix = Func::cust(Alias::new("substr")).args([
-		Func::cust(Alias::new("sha256")).arg(utf8(id_text)).into(),
-		Expr::val(1).into(),
-		Expr::val(8).into(),
-	]);
-	let id_fold: SimpleExpr = Func::cust(Alias::new("concat"))
-		.args([
-			Expr::val("x").into(),
-			Func::cust(Alias::new("encode"))
-				.args([id_prefix.into(), Expr::val("hex").into()])
-				.into(),
-		])
-		.cast_as(Alias::new("bit(64)"))
-		.cast_as(Alias::new("bigint"));
+	let id_fold = Func::cust(Alias::new("uuid_hash_extended"))
+		.args([Expr::col(Alias::new("id")).into(), Expr::val(0_i64).into()]);
 	let fold = Func::coalesce([Func::sum(id_fold).into(), Expr::val(0).into()])
 		.cast_as(Alias::new("text"));
 	let digest = Func::cust(Alias::new("encode")).args([
-		Func::cust(Alias::new("sha256")).arg(utf8(fold)).into(),
+		Func::cust(Alias::new("sha256"))
+			.arg(Func::cust(Alias::new("convert_to")).args([fold, Expr::val("UTF8").into()]))
+			.into(),
 		Expr::val("hex").into(),
 	]);
 	let query = Query::select()
