@@ -15,6 +15,7 @@ fn policy() -> Policy {
 		tokenizer: model,
 		semantic_link_min_similarity_millionths: 700_000,
 		decay: None,
+		diversity_lambda_millionths: None,
 		retention: Retention {
 			unit_max_age_days: None,
 			candidate_days: 7,
