@@ -4,6 +4,7 @@ use crate::apps::execution::serializers::human_requests::HumanRequest;
 use crate::apps::execution::serializers::management::ClaimInput;
 use crate::apps::execution::serializers::management::ControlInput;
 use crate::apps::execution::serializers::management::EventQuery;
+use crate::apps::execution::serializers::management::InferenceStreamQuery;
 use crate::apps::execution::serializers::openrouter::CatalogModel;
 use crate::apps::execution::serializers::runs::RunDetails;
 use crate::apps::execution::serializers::state::StateResponse;
@@ -85,5 +86,14 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 		"text/event-stream",
 	)?;
 	contracts.query::<_, EventQuery>(document, views::management::stream)?;
+	contracts.response::<_, String>(
+		document,
+		views::management::run_inference_stream,
+		200,
+		"text/event-stream",
+	)?;
+	contracts
+		.query::<_, InferenceStreamQuery>(document, views::management::run_inference_stream)?;
+	contracts.path(document, views::management::run_inference_stream, &["Uuid"])?;
 	Ok(())
 }

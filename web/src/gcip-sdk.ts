@@ -26,9 +26,9 @@ export type GcipClientConfig = {
   password_sign_up: boolean;
 };
 export interface GcipClient {
-  popup(id: string): Promise<string>;
+  popup(id: string, loginHint?: string): Promise<string>;
   /** Navigates away; the sign-in completes in `redirectResult` on return. */
-  redirect(id: string): Promise<never>;
+  redirect(id: string, loginHint?: string): Promise<never>;
   /** Null without network I/O unless this tab started a redirect. */
   redirectResult(): Promise<string | null>;
   password(email: string, password: string): Promise<string>;
@@ -38,15 +38,26 @@ export interface GcipClient {
 }
 // Redirect sign-in resumes in a new page, so the app name must be stable.
 const APP_NAME = "aidash-gcip";
-function federatedProvider(id: string): AuthProvider {
+function federatedProvider(id: string, loginHint?: string): AuthProvider {
+  const hint: Record<string, string> = loginHint
+    ? { login_hint: loginHint }
+    : {};
   if (id === "google.com") {
     const provider = new GoogleAuthProvider();
-    provider.setCustomParameters({ prompt: "select_account" });
+    provider.setCustomParameters({ prompt: "select_account", ...hint });
     return provider;
   }
-  return id.startsWith("saml.")
+  const provider = id.startsWith("saml.")
     ? new SAMLAuthProvider(id)
     : new OAuthProvider(id);
+  // SAML providers may not accept custom parameters; set only when supported.
+  if (
+    loginHint &&
+    typeof (provider as Partial<OAuthProvider>).setCustomParameters ===
+      "function"
+  )
+    provider.setCustomParameters(hint);
+  return provider;
 }
 export function createClient(config: GcipClientConfig): GcipClient {
   const app = initializeApp(
@@ -61,18 +72,18 @@ export function createClient(config: GcipClientConfig): GcipClient {
   auth.tenantId = config.tenant_id;
   let closed = false;
   return {
-    async popup(id: string) {
+    async popup(id: string, loginHint?: string) {
       const result = await signInWithPopup(
         auth,
-        federatedProvider(id),
+        federatedProvider(id, loginHint),
         browserPopupRedirectResolver,
       );
       return result.user.getIdToken();
     },
-    redirect(id: string): Promise<never> {
+    redirect(id: string, loginHint?: string): Promise<never> {
       return signInWithRedirect(
         auth,
-        federatedProvider(id),
+        federatedProvider(id, loginHint),
         browserPopupRedirectResolver,
       );
     },

@@ -126,6 +126,7 @@ impl DashboardIdentity {
 						"gcip_tenant",
 						"verified_email",
 						"display_name",
+						"display_observed_at",
 					]
 					.map(Alias::new),
 				)
@@ -137,25 +138,37 @@ impl DashboardIdentity {
 					IntoValue::into_value(gcip_tenant),
 					IntoValue::into_value(sign_in.verified_email.clone()),
 					IntoValue::into_value(sign_in.display_name.clone()),
+					IntoValue::into_value(now),
 				])
 				.on_conflict(
 					OnConflict::columns(["issuer", "gcip_tenant", "subject"])
-						.update_columns(["verified_email", "display_name"])
+						.do_nothing()
 						.to_owned(),
 				)
 				.build(PostgresQueryBuilder);
 			TransactionExecutor::execute(tx, &sql, convert_values(values)).await?;
-			let identity = Self::objects()
+			let mut identity = Self::objects()
 				.filter(Self::field_issuer().eq(issuer))
 				.filter(Self::field_subject().eq(subject.clone()))
 				.filter(Self::field_gcip_tenant().eq(gcip_tenant))
-				.all_with_db(tx)
-				.await?
+				.select_for_update()
+				.all_with_executor(tx)
+				.await
+				.map_err(FrameworkError::from)?
 				.pop()
 				.ok_or_else(|| Error::NotFound("identity".into()))?;
-			// The upsert holds the same identity lock as expiry erasure. End old
-			// requests before exposing refreshed claims so a later status read or
-			// a sweeper waiting on this lock cannot erase the new sign-in's display.
+			// Under the identity lock. Display Erasure is permanent, so an erased
+			// External Identity never records Display Attributes again. A disabled
+			// one has no retention basis and its sign-in is rejected, so it neither
+			// records them nor refreshes their recent-sign-in retention.
+			if identity.display_erased_at.is_none() && identity.disabled_at.is_none() {
+				identity.verified_email = sign_in.verified_email.clone();
+				identity.display_name = sign_in.display_name.clone();
+				identity.display_observed_at = Some(now);
+				Self::objects().update_with_conn(tx, &identity).await?;
+			}
+			// End old requests before exposing refreshed claims. Display retention
+			// keeps this sign-in's claims because it began after those requests.
 			DashboardRegistrationRequest::objects()
 				.filter(DashboardRegistrationRequest::field_identity_id().eq(identity.id))
 				.filter(DashboardRegistrationRequest::field_status().eq("pending"))
@@ -330,6 +343,16 @@ impl DashboardSession {
 	) -> Result<Self> {
 		Self::objects()
 			.filter(Self::field_token_hash().eq(token_hash))
+			.all_with_db(db)
+			.await?
+			.pop()
+			.ok_or(Error::Unauthorized)
+	}
+
+	/// Rereads a session by id, which stays stable across desktop access-token rotation.
+	pub(crate) async fn find<E: OrmExecutor>(db: &mut E, id: Uuid) -> Result<Self> {
+		Self::objects()
+			.filter(Self::field_id().eq(id))
 			.all_with_db(db)
 			.await?
 			.pop()
