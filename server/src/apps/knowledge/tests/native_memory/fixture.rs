@@ -101,6 +101,26 @@ pub(super) async fn setup_endpoint_decay(
 	unit_max_age_days: Option<u32>,
 	decay: Option<Decay>,
 ) -> (Store, Registry, Uuid) {
+	setup_endpoint_policy(
+		database,
+		bounds,
+		endpoint,
+		flags,
+		unit_max_age_days,
+		decay,
+		None,
+	)
+	.await
+}
+pub(super) async fn setup_endpoint_policy(
+	database: &DatabaseFixture,
+	bounds: Bounds,
+	endpoint: &str,
+	flags: (bool, bool, bool),
+	unit_max_age_days: Option<u32>,
+	decay: Option<Decay>,
+	diversity_lambda_millionths: Option<u32>,
+) -> (Store, Registry, Uuid) {
 	let store = Store::from_pool(
 		database.connection.clone().into_postgres().unwrap(),
 		"aidash://native-memory".into(),
@@ -143,7 +163,7 @@ pub(super) async fn setup_endpoint_decay(
 					tokenizer: reference("t"),
 					semantic_link_min_similarity_millionths: 700_000,
 					decay,
-					diversity_lambda_millionths: None,
+					diversity_lambda_millionths,
 					retention: Retention {
 						unit_max_age_days,
 						candidate_days: 7,
