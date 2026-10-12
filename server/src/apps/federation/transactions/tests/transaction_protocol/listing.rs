@@ -1,5 +1,5 @@
 use super::*;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[rstest::rstest]
 #[tokio::test]
