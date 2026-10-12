@@ -336,3 +336,228 @@ async fn usage_records_carry_the_stable_prefix_cache_identity_of_salted_runs(
 	assert_ne!(identities[1], identities[2], "instructions changed");
 	assert!(!identities[0].as_deref().unwrap().contains("tenant-a"));
 }
+
+fn native_scope() -> context::RequestProjection {
+	context::RequestProjection::Native(aidash_domain::projection::CacheScope {
+		tenant: "tenant-a".into(),
+		key_version: 1,
+	})
+}
+
+/// `turns` Model Turns of two calls each.
+fn recorded_turns(turns: u32) -> Context {
+	let mut context = Context::default();
+	for turn in 0..turns {
+		let ids = [format!("call-{turn}-a"), format!("call-{turn}-b")];
+		context.push(turn_event(i64::from(turn), &ids));
+		for id in &ids {
+			context.push(result(
+				id,
+				"workspace_read",
+				json!({"kind":"task"}),
+				json!({"title":"Task","body":"b".repeat(200)}),
+			));
+		}
+	}
+	context
+}
+
+fn turn_event(epoch: i64, ids: &[String]) -> ContextEvent {
+	ContextEvent::Assistant {
+		epoch,
+		text: "Reading.".into(),
+		calls: ids.to_vec(),
+	}
+}
+
+#[rstest]
+#[case::single_turn(1)]
+#[case::long_history(64)]
+fn native_estimate_counts_the_complete_request_near_the_window(#[case] turns: u32) {
+	// Arrange
+	let scope = native_scope();
+	let tools = vec![aidash_domain::provider::ToolSpec {
+		name: "workspace_read".into(),
+		description: "Read a record".into(),
+		parameters: json!({"type":"object","properties":{"kind":{"type":"string"}}}),
+	}];
+	let pinned = json!({
+		"identity":{"node_id":"aidash://fixture","agent_id":"agent","agent_version":"1.0.0"},
+		"task":{"title":"Task","description":"x".repeat(4096)},
+		"workspace":{"workspace_id":Uuid::nil()},
+		"agent_state":{"phase":"thinking","step":3},
+		"semantic_memory":{"fact":"observed"},
+	});
+	let context = recorded_turns(turns);
+	let budget = |window| context::RequestBudget {
+		window,
+		instructions: "Do the task",
+		tools: &tools,
+		max_output_tokens: 4096,
+		projection: &scope,
+	};
+	// Act
+	let request = budget(128_000).request(&context, &pinned);
+	let estimate = request.estimated_total_tokens();
+	// Assert: every message, the tool schemas, the salt line, the breakpoint
+	// framing, the output reservation and the framing reserve.
+	let mut marked = request.clone();
+	marked.cache_breakpoints = true;
+	assert_eq!(marked.estimated_total_tokens(), estimate);
+	assert_eq!(
+		estimate,
+		marked.input_body().to_string().len()
+			+ aidash_domain::projection::CACHE_SALT_LINE_RESERVE
+			+ 4096 + 1024
+	);
+	assert!(marked.input_body()["tools"].is_array());
+	// The final fitting decision uses the same complete estimate, so a
+	// request one unit over the window is refused.
+	assert!(request.ensure_fits(estimate).is_ok());
+	assert!(request.ensure_fits(estimate - 1).is_err());
+	assert_eq!(budget(estimate).remaining(&context, &pinned), 0);
+	// Media parts add their framing and allowance to the same estimate.
+	let image = aidash_domain::provider::ContentPart::from_media(
+		"image/png",
+		b"\x89PNG\r\n\x1a\nfixture".to_vec(),
+	)
+	.unwrap();
+	assert!(
+		request.estimated_total_tokens_with_parts(std::slice::from_ref(&image)) > estimate + 4096
+	);
+	// The next Model Turn grows the request by exactly the recorded growth of
+	// its events, which batch planning and result fitting add up.
+	let ids = [format!("call-{turns}-a")];
+	let mut grown = context.clone();
+	let mut growth = 0;
+	for event in [
+		turn_event(i64::from(turns), &ids),
+		result(
+			&ids[0],
+			"workspace_read",
+			json!({"kind":"task"}),
+			json!({"title":"Task"}),
+		),
+	] {
+		growth += context::tool_event_growth(&grown, &event);
+		grown.push(event);
+	}
+	assert_eq!(
+		budget(128_000)
+			.request(&grown, &pinned)
+			.estimated_total_tokens()
+			- estimate,
+		growth
+	);
+	assert!(
+		budget(estimate)
+			.request(&grown, &pinned)
+			.ensure_fits(estimate)
+			.is_err()
+	);
+}
+
+/// A Native Run over its window: a Human answer, 40 old Model Turns with
+/// large results and 6 recent ones, all already inferred.
+fn native_thinking_over_the_window(fixture: &mut Fixture) {
+	native(fixture);
+	fixture.run.state = RunState::Thinking(ThinkingState::default());
+	fixture.run.context.push(ContextEvent::Human {
+		request: "Any constraints?".into(),
+		request_kind: "INFORMATION_REQUEST".into(),
+		response: json!("Never deploy on Fridays"),
+	});
+	for (prefix, count, size) in [("old", 40, 4000), ("recent", 6, 10)] {
+		for i in 0..count {
+			let id = format!("{prefix}-{i}");
+			fixture.run.context.push(turn_event(i, &[id.clone()]));
+			fixture.run.context.push(result(
+				&id,
+				"read",
+				json!({"path": id}),
+				json!("x".repeat(size)),
+			));
+		}
+	}
+	fixture.run.context.journal.inferred_through = fixture.run.context.journal.head;
+}
+
+fn last_request(fixture: &Fixture) -> ModelRequest {
+	fixture
+		.backend
+		.0
+		.requests
+		.lock()
+		.unwrap()
+		.last()
+		.unwrap()
+		.clone()
+}
+
+#[rstest]
+#[tokio::test]
+async fn an_oversized_native_run_elides_old_results_and_keeps_every_turn_whole(
+	mut fixture: Fixture,
+) {
+	// Arrange: Jev drops every old result.
+	native_thinking_over_the_window(&mut fixture);
+	Arc::get_mut(&mut fixture.backend.0).unwrap().jev_retention = Some(0.0);
+	// Act
+	advance_sources(&mut fixture).await.unwrap();
+	// Assert
+	let request = last_request(&fixture);
+	assert!(request.ensure_fits(128_000).is_ok());
+	let native = native_context(&request);
+	check_model_turns(&native.history).unwrap();
+	let tool_messages = native
+		.history
+		.iter()
+		.filter_map(|message| match message {
+			NativeMessage::Tool {
+				tool_call_id,
+				envelope,
+			} => Some((tool_call_id.as_str(), &envelope.content)),
+			_ => None,
+		})
+		.collect::<Vec<_>>();
+	assert_eq!(tool_messages.len(), 46);
+	for (id, content) in tool_messages {
+		if id.starts_with("old-") && id != "old-0" {
+			assert_eq!(content, &ContextEvent::elided_result(id));
+		} else {
+			assert!(content.is_string(), "{id} is protected");
+		}
+	}
+}
+
+#[rstest]
+#[tokio::test]
+async fn the_native_summary_stage_absorbs_whole_turns_before_inference(mut fixture: Fixture) {
+	// Arrange: Jev keeps everything, so only the Summary Stage can fit.
+	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	state.context_policy = Some(recovery_policy(true));
+	state.jev_retention = Some(1.0);
+	*state.summary_text.lock().unwrap() = Some(
+		json!({"goal":"Fixture task","constraints":[{"id":"c1","text":"Never deploy on Fridays"}],"decisions":[],"unresolved":[],"resolved":[],"artifacts":[],"verification":[]})
+			.to_string(),
+	);
+	native_thinking_over_the_window(&mut fixture);
+	// Act
+	advance_sources(&mut fixture).await.unwrap();
+	assert_eq!(events(&fixture).last().unwrap(), "context.compacted");
+	advance_sources(&mut fixture).await.unwrap();
+	// Assert: the Human answer and the six recent turns stay verbatim.
+	let summary = fixture.run.context.execution_summary.as_ref().unwrap();
+	assert_eq!(summary.source.through_seq, 81);
+	assert_eq!(fixture.run.context.history.len(), 13);
+	let request = last_request(&fixture);
+	assert!(request.response_format.is_none());
+	let native = native_context(&request);
+	check_model_turns(&native.history).unwrap();
+	assert!(
+		native.attachments.iter().any(|envelope| envelope.source
+			== aidash_domain::projection::native::Source::ExecutionSummary)
+	);
+	assert!(!request.input_body().to_string().contains("old-0"));
+	assert!(matches!(native.history[0], NativeMessage::Human { .. }));
+}
