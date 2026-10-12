@@ -10,9 +10,15 @@ the only production write path.
 The v1 Provider Catalog contains `openrouter`, with base URL
 `https://openrouter.ai/api/v1`.
 Registry model and embedding configurations use `provider_credential =
-"openrouter"`, mutually exclusive with `credential_env`; they never contain a
-Provider Credential ID. The removal of operator `credential_env` keys and the
-mandatory Store requirement for self-hosted nodes belong to #158's migration.
+"openrouter"` or call their endpoint without a key; they never contain a
+Provider Credential ID or an environment key reference. `credential_env` was
+removed from model and embedding configurations in #158: `provider_access`
+has no environment source, and the `registry_model_provider_keys` and
+`semantic_embedding_provider_keys` constraints reject the field in PostgreSQL.
+Every model-provider key therefore comes from a Provider Credential Store, on
+Cloud and self-hosted nodes alike. Peer, tool, sandbox, runner and vector
+store references keep their `AIDASH_SECRET_*` configuration; compactors move to
+OpenRouter with Jev (see the #158 PR).
 
 Choose a Provider Credential Store in server settings. Without
 `[provider_credentials.store]`, Provider Credentials and Plan Connections are
@@ -231,11 +237,12 @@ without blocking later Tenants. It never lists Secret Manager secrets.
 
 Admission records a local-only Provider Credential ID per Run and provider.
 This includes the enabled workspace semantic index's embedding provider, even
-when the Agent's Model uses an environment source. Missing embedding bindings
+when the Agent's Model is keyless. Missing embedding bindings
 therefore reject admission before the Run is committed. RequiredHome remote
 semantic bindings reject Tenant-backed workspace embeddings before binding or
 dispatch: this path has no approved local Run pin or BYOK maintenance authority.
-Environment-backed remote embeddings remain supported.
+Keyless remote embeddings remain supported; Tenant-backed RequiredHome remote
+embeddings are a follow-up.
 Calls check that record's current active state and current version pin; changing
 a binding cannot retarget admitted Runs. Receiving federation admission uses
 the mapped local Tenant. PostgreSQL resolves the current pinned version through
@@ -250,7 +257,7 @@ retrieval purpose in the access context. Run calls keep their admission pins.
 Both paths check current metadata before access. PostgreSQL reads the pinned
 version; Cloud issues a broker capability token.
 
-Workbench tests currently support environment-backed Models only. A Model using
+Workbench tests currently support keyless Models only. A Model using
 Tenant Provider Credentials is rejected before a sandbox session is admitted;
 Workbench has no Run or memory-maintenance authority for Tenant provider access.
 
