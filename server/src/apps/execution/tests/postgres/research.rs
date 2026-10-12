@@ -13,10 +13,12 @@ use aidash_application::{
 	research::{Call, Research},
 };
 use aidash_domain::research::{
-	Operation,
+	Failure, Operation,
 	account::CostAttribution,
 	citations::EvidenceRef,
+	document::{Completeness, ExtractedPage, Line},
 	evidence::{AttemptOutcome, AttemptState, Limits},
+	search::SourceCandidate,
 };
 use aidash_integrations::research::fixture::FixtureResearch;
 
@@ -392,5 +394,63 @@ async fn the_search_credential_never_reaches_results_or_evidence(
 			"{table}: {rows:?}"
 		);
 	}
+	cleanup(store, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn a_page_read_by_address_cannot_exceed_the_source_limit_under_the_run_lock(
+	#[future(awt)]
+	#[from(store)]
+	_store_fixture: StoreFixture,
+) {
+	let (store, url, schema) = _store_fixture.parts();
+	let run = leased_run(&store, &agent(&store).await).await;
+	let evidence = aidash_server::research::evidence_store(store.clone());
+	let limits = Limits {
+		sources: 1,
+		..Limits::default()
+	};
+	let candidate = SourceCandidate {
+		url: "https://example.com/searched".into(),
+		title: "Searched".into(),
+		snippet: String::new(),
+		rank: 1,
+		page_age: None,
+		truncated: false,
+	};
+	let searched = evidence
+		.record_sources(run.id, "s1", &[candidate], limits.sources)
+		.await
+		.unwrap();
+	let page = ExtractedPage {
+		url: "https://example.com/elsewhere".into(),
+		title: Some("Elsewhere".into()),
+		media_type: "text/plain".into(),
+		fetched_at: chrono::Utc::now(),
+		raw_digest: "sha256:raw".into(),
+		completeness: Completeness::Complete,
+		lines: vec![Line {
+			text: "Alpha".into(),
+			page: None,
+		}],
+	};
+	// A new address would be a second Source record.
+	assert_eq!(
+		evidence
+			.record_snapshot(run.id, None, &page.url, &page, &limits)
+			.await
+			.unwrap()
+			.map(|snapshot| snapshot.id),
+		Err(Failure::SourceLimit)
+	);
+	assert_eq!(evidence.usage(run.id).await.unwrap().sources, 1);
+	// An existing Source record can still be read.
+	let snapshot = evidence
+		.record_snapshot(run.id, Some(searched[0].id), &page.url, &page, &limits)
+		.await
+		.unwrap()
+		.unwrap();
+	assert_eq!(snapshot.source_id, searched[0].id);
 	cleanup(store, &url, &schema).await;
 }

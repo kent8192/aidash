@@ -167,7 +167,7 @@ impl EvidenceStore for Memory {
 		requested_url: &str,
 		page: &ExtractedPage,
 		limits: &Limits,
-	) -> Result<Option<DocumentSnapshot>> {
+	) -> Result<std::result::Result<DocumentSnapshot, Failure>> {
 		let usage = self.usage(run).await?;
 		let bytes = page
 			.lines
@@ -177,11 +177,14 @@ impl EvidenceStore for Memory {
 		if usage.snapshots >= limits.snapshots
 			|| usage.snapshot_bytes.saturating_add(bytes) > limits.snapshot_bytes
 		{
-			return Ok(None);
+			return Ok(Err(Failure::SnapshotLimit));
 		}
 		let source_id = match source {
 			Some(source) => source,
 			None => {
+				if usage.sources >= limits.sources {
+					return Ok(Err(Failure::SourceLimit));
+				}
 				let record = SourceRecord {
 					id: Uuid::new_v4(),
 					run_id: run,
@@ -207,7 +210,7 @@ impl EvidenceStore for Memory {
 			lines: page.lines.clone(),
 		};
 		self.snapshots.lock().unwrap().push(snapshot.clone());
-		Ok(Some(snapshot))
+		Ok(Ok(snapshot))
 	}
 	async fn snapshot(&self, run: Uuid, id: Uuid) -> Result<Option<DocumentSnapshot>> {
 		Ok(self
@@ -608,6 +611,112 @@ async fn run_limits_block_before_disclosure_or_dispatch() {
 	assert_eq!(blocked["error"]["code"], "attempt_limit");
 	assert_eq!(gate.requests.lock().unwrap().len(), 1);
 	assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn direct_url_fetches_count_against_the_source_limit() {
+	let (store, gate) = (Memory::default(), Gate::permitting());
+	let research = Research {
+		store: &store,
+		gate: &gate,
+		limits: Limits {
+			sources: 1,
+			..Limits::default()
+		},
+	};
+	let (provider, pages) = (Search::new("brave", "api.search.brave.com"), Pages::new());
+	let run = Uuid::new_v4();
+	let searched = research
+		.search(
+			&call(run, "k1", "research.brave@1"),
+			&provider,
+			&json!({"query":"a"}),
+		)
+		.await
+		.unwrap();
+	let source = searched["data"]["sources"][0]["source_id"].clone();
+	// Search filled the Run's Source records; a new address is refused
+	// before disclosure or dispatch.
+	let blocked = research
+		.fetch(
+			&call(run, "k2", "research.page@1"),
+			&pages,
+			&json!({"url":"https://example.com/elsewhere"}),
+		)
+		.await
+		.unwrap();
+	assert_eq!(blocked["error"]["code"], "source_limit");
+	assert_eq!(gate.requests.lock().unwrap().len(), 1);
+	assert_eq!(pages.calls.load(Ordering::SeqCst), 0);
+	// Reading an existing Source record creates none.
+	let read = research
+		.fetch(
+			&call(run, "k3", "research.page@1"),
+			&pages,
+			&json!({"source_id":source}),
+		)
+		.await
+		.unwrap();
+	assert_eq!(read["status"], "ok", "{read}");
+	assert_eq!(store.sources.lock().unwrap().len(), 1);
+}
+
+/// Records a Source while the disclosure is being admitted, as a concurrent
+/// search of the same Run would.
+struct ConcurrentSource<'a> {
+	store: &'a Memory,
+}
+
+#[async_trait]
+impl DisclosureGate for ConcurrentSource<'_> {
+	async fn admit(&self, run: Uuid, _: &WebDisclosure) -> Result<DisclosureState> {
+		let candidate = SourceCandidate {
+			url: "https://example.com/concurrent".into(),
+			title: "Concurrent".into(),
+			snippet: String::new(),
+			rank: 1,
+			page_age: None,
+			truncated: false,
+		};
+		self.store
+			.record_sources(run, "concurrent", &[candidate], 1)
+			.await?;
+		Ok(DisclosureState::Permitted)
+	}
+	async fn consume(&self, _: Uuid, _: Uuid) -> Result<bool> {
+		Ok(true)
+	}
+}
+
+#[tokio::test]
+async fn a_concurrent_source_cannot_exceed_the_source_limit_after_the_early_check() {
+	let store = Memory::default();
+	let gate = ConcurrentSource { store: &store };
+	let research = Research {
+		store: &store,
+		gate: &gate,
+		limits: Limits {
+			sources: 1,
+			..Limits::default()
+		},
+	};
+	let pages = Pages::new();
+	let run = Uuid::new_v4();
+	let result = research
+		.fetch(
+			&call(run, "k1", "research.page@1"),
+			&pages,
+			&json!({"url":"https://example.com/source"}),
+		)
+		.await
+		.unwrap();
+	assert_eq!(result["error"]["code"], "source_limit");
+	assert_eq!(store.sources.lock().unwrap().len(), 1);
+	assert!(store.snapshots.lock().unwrap().is_empty());
+	assert!(matches!(
+		store.attempt(run, "k1").await.unwrap(),
+		Some(AttemptState::Settled { .. })
+	));
 }
 
 #[tokio::test]

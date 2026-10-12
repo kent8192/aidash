@@ -155,7 +155,9 @@ checks the terms are current and that one more request fits the month's limit
 the account and price; failed attempts that were never sent are not charged.
 
 Per-Run limits block a request before disclosure or dispatch: 20 searches, 50
-page reads, 100 Source records, 50 snapshots and 8 MiB of snapshot text.
+page reads, 100 Source records, 50 snapshots and 8 MiB of snapshot text. A page
+read by URL creates a Source record, so it counts against the Source record
+limit; reading an existing Source record does not.
 
 ## Providers
 

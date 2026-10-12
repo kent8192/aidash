@@ -8,7 +8,7 @@ use aidash_application::{
 	ports::research::{EvidenceStore, Reservation, Reserved},
 };
 use aidash_domain::research::{
-	Operation,
+	Failure, Operation,
 	citations::EvidenceRef,
 	document::{ExtractedPage, Passage, text_digest},
 	evidence::{
@@ -153,7 +153,7 @@ impl EvidenceStore for Evidence {
 		requested_url: &str,
 		page: &ExtractedPage,
 		limits: &Limits,
-	) -> Result<Option<DocumentSnapshot>> {
+	) -> Result<std::result::Result<DocumentSnapshot, Failure>> {
 		native(
 			async {
 				let mut tx = self.store.database().begin().await?;
@@ -167,7 +167,7 @@ impl EvidenceStore for Evidence {
 				if snapshots >= limits.snapshots
 					|| held.saturating_add(bytes) > limits.snapshot_bytes
 				{
-					return Ok(None);
+					return Ok(Err(Failure::SnapshotLimit));
 				}
 				let source_id = match source {
 					Some(id) => {
@@ -177,6 +177,9 @@ impl EvidenceStore for Evidence {
 							.id
 					}
 					None => {
+						if ResearchSource::count(tx.as_mut(), run).await? >= limits.sources {
+							return Ok(Err(Failure::SourceLimit));
+						}
 						ResearchSource::record(
 							tx.as_mut(),
 							run,
@@ -203,7 +206,7 @@ impl EvidenceStore for Evidence {
 				};
 				ResearchSnapshot::record(tx.as_mut(), &snapshot).await?;
 				tx.commit().await?;
-				Ok(Some(snapshot))
+				Ok(Ok(snapshot))
 			}
 			.await,
 		)

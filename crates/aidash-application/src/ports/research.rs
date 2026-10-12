@@ -116,8 +116,10 @@ pub trait EvidenceStore: Send + Sync {
 	) -> Result<Vec<SourceRecord>>;
 	async fn source(&self, run: Uuid, id: Uuid) -> Result<Option<SourceRecord>>;
 	/// A new Document snapshot; `source` is created when the page was supplied
-	/// by address rather than a Source record. `None` when the snapshot would
-	/// exceed the Run's snapshot limits, checked under the Run's lock.
+	/// by address rather than a Source record. Under the Run's lock, the
+	/// snapshot is refused with `SnapshotLimit` when it would exceed the Run's
+	/// snapshot limits, and with `SourceLimit` when the Source record it would
+	/// create exceeds the Run's Source record limit.
 	async fn record_snapshot(
 		&self,
 		run: Uuid,
@@ -125,7 +127,7 @@ pub trait EvidenceStore: Send + Sync {
 		requested_url: &str,
 		page: &ExtractedPage,
 		limits: &Limits,
-	) -> Result<Option<DocumentSnapshot>>;
+	) -> Result<std::result::Result<DocumentSnapshot, Failure>>;
 	async fn snapshot(&self, run: Uuid, id: Uuid) -> Result<Option<DocumentSnapshot>>;
 	async fn record_fragment(
 		&self,

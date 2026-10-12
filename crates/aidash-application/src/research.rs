@@ -306,6 +306,10 @@ impl Research<'_> {
 		{
 			return Ok(failure(operation, Failure::SnapshotLimit));
 		}
+		// A page fetched by address becomes a new Source record.
+		if source.is_none() && usage.sources >= self.limits.sources {
+			return Ok(failure(operation, Failure::SourceLimit));
+		}
 		let outbound = Outbound {
 			destination: host,
 			content: url.to_string(),
@@ -343,17 +347,21 @@ impl Research<'_> {
 				.settle_failure(call, operation, Failure::ProviderResponseInvalid)
 				.await;
 		}
-		// The store checks the snapshot limits under the Run's lock.
-		let Some(snapshot) = self
+		// The store checks the snapshot and Source record limits under the
+		// Run's lock.
+		let snapshot = match self
 			.store
 			.record_snapshot(call.run, source, url.as_str(), &page, &self.limits)
 			.await?
-		else {
-			let result = failure(operation, Failure::SnapshotLimit);
-			self.store
-				.settle(call.run, call.key, AttemptOutcome::Completed, &result)
-				.await?;
-			return Ok(result);
+		{
+			Ok(snapshot) => snapshot,
+			Err(limit) => {
+				let result = failure(operation, limit);
+				self.store
+					.settle(call.run, call.key, AttemptOutcome::Completed, &result)
+					.await?;
+				return Ok(result);
+			}
 		};
 		let result = self
 			.deliver(call, &snapshot, Position::default(), max_bytes)
