@@ -75,7 +75,8 @@ def inspect_bundle(bundle):
 def current_bundle(config, secret_id=None):
     """Read newest enabled payload and whether the latest alias can access it."""
     secret_id = secret_id or config["preview_tls_secret"]
-    versions = json.loads(run("gcloud", "secrets", "versions", "list", "--secret", secret_id,
+    # `versions list` takes the secret as its required positional SECRET argument.
+    versions = json.loads(run("gcloud", "secrets", "versions", "list", secret_id,
                               "--project", config["project_id"], "--format=json(name,state)", timeout=60))
     if not isinstance(versions, list) or any(not re.fullmatch(r"projects/[^/]+/secrets/" + re.escape(secret_id) + r"/versions/[1-9][0-9]*", version.get("name", ""))
                                              for version in versions):

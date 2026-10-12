@@ -58,6 +58,9 @@ class SecretManager:
         secret = args[args.index("--secret") + 1] if "--secret" in args else args[4]
         bundle = self.bundle if secret == CONFIG["preview_tls_secret"] else self.account_state
         if "list" in args:
+            # `gcloud secrets versions list` requires a positional SECRET and has no --secret flag.
+            if args[1:4] != ("secrets", "versions", "list") or "--secret" in args or args[4].startswith("-"):
+                raise AssertionError("gcloud secrets versions list requires the positional SECRET")
             versions = [] if bundle is None else [{"name": f"projects/123/secrets/{secret}/versions/1", "state": "ENABLED"}]
             if self.revoked_latest and secret == CONFIG["preview_tls_secret"]:
                 versions.append({"name": "projects/123/secrets/aidash-preview-wildcard-tls/versions/2", "state": "DISABLED"})
