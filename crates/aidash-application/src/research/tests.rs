@@ -1131,3 +1131,66 @@ async fn a_spent_approval_settles_the_reserved_attempt_without_dispatch() {
 		})
 	));
 }
+
+/// A page provider whose every read ends with one recorded failure.
+struct Failing {
+	failure: Failure,
+	calls: AtomicUsize,
+}
+
+#[async_trait]
+impl PageProvider for Failing {
+	fn admit(&self, _: &Url) -> std::result::Result<(), Failure> {
+		Ok(())
+	}
+	async fn fetch(&self, _: &Url) -> std::result::Result<ExtractedPage, Failure> {
+		self.calls.fetch_add(1, Ordering::SeqCst);
+		Err(self.failure)
+	}
+}
+
+/// Ported from PR #99 `recovered_redirect_and_long_retry_receipts_do_not_repeat_the_old_request`:
+/// a recorded cross-host redirect or rate-limit outcome is final for its
+/// invocation and is replayed, never sent again. Another host needs its own call
+/// and its own Web disclosure approval.
+#[rstest::rstest]
+#[case::redirect(Failure::CrossHostRedirect, "cross_host_redirect")]
+#[case::long_retry(Failure::RateLimited, "rate_limited")]
+#[tokio::test]
+async fn recorded_redirect_and_retry_outcomes_never_repeat_the_old_request(
+	#[case] outcome: Failure,
+	#[case] code: &str,
+) {
+	let (store, gate) = (Memory::default(), Gate::permitting());
+	let research = Research {
+		store: &store,
+		gate: &gate,
+		limits: Limits::default(),
+	};
+	let pages = Failing {
+		failure: outcome,
+		calls: AtomicUsize::new(0),
+	};
+	let run = Uuid::new_v4();
+	let input = json!({"url":"https://example.com/"});
+	let first = research
+		.fetch(&call(run, "k1", "research.page@1"), &pages, &input)
+		.await
+		.unwrap();
+	assert_eq!(first["error"]["code"], code);
+	let replay = research
+		.fetch(&call(run, "k1", "research.page@1"), &pages, &input)
+		.await
+		.unwrap();
+	assert_eq!(replay, first);
+	assert_eq!(
+		pages.calls.load(Ordering::SeqCst),
+		1,
+		"the old request is not repeated"
+	);
+	assert_eq!(
+		gate.requests.lock().unwrap().len(),
+		1,
+		"no second disclosure"
+	);
+}

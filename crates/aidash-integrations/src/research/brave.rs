@@ -35,7 +35,12 @@ impl BraveSearch {
 		)
 	}
 
-	fn with_endpoint(profile: AccountProfile, token: &str, endpoint: Url) -> crate::Result<Self> {
+	/// A Brave-compatible endpoint other than the public API, for fixtures.
+	pub fn with_endpoint(
+		profile: AccountProfile,
+		token: &str,
+		endpoint: Url,
+	) -> crate::Result<Self> {
 		if token.trim().is_empty() {
 			return Err(crate::Error::Invalid(
 				"search credential is not configured".into(),

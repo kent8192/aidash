@@ -293,3 +293,104 @@ async fn fixture_research_runs_the_host_contract_on_postgres_and_citations_stay_
 	);
 	cleanup(store, &url, &schema).await;
 }
+
+#[rstest::rstest]
+#[tokio::test]
+async fn the_search_credential_never_reaches_results_or_evidence(
+	#[future(awt)]
+	#[from(test_environment)]
+	environment: Arc<TestEnvironment>,
+) {
+	use tokio::io::{AsyncReadExt, AsyncWriteExt};
+	const KEY: &str = "sentinel-brave-tool-secret";
+	let (store, url, schema) = setup(&environment).await;
+	let run = leased_run(&store, &agent(&store).await).await;
+	// A Brave-compatible endpoint that requires the key and returns one result.
+	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+	let endpoint = format!(
+		"http://{}/res/v1/web/search",
+		listener.local_addr().unwrap()
+	);
+	let server = tokio::spawn(async move {
+		let (mut socket, _) = listener.accept().await.unwrap();
+		let mut request = Vec::new();
+		let mut buffer = [0u8; 4096];
+		while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+			let read = socket.read(&mut buffer).await.unwrap();
+			request.extend_from_slice(&buffer[..read]);
+		}
+		assert!(String::from_utf8_lossy(&request).contains(KEY));
+		let body = json!({"type":"search","web":{"results":[{"url":"https://example.com/a","title":"Example","description":"hint"}]}}).to_string();
+		let response = format!(
+			"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+			body.len()
+		);
+		socket.write_all(response.as_bytes()).await.unwrap();
+	});
+	let now = chrono::Utc::now();
+	let profile = aidash_domain::research::account::AccountProfile {
+		account_id: "operator".into(),
+		agreement_reference: "contract".into(),
+		verified_by: "operator".into(),
+		verified_at: now - chrono::Duration::days(1),
+		review_after: now + chrono::Duration::days(1),
+		storage_permitted: true,
+		query_training_prohibited: true,
+		evaluation_permitted: true,
+		retention_days: 30,
+		deletion_after_termination_days: 30,
+		credential_env: "AIDASH_SECRET_BRAVE_SEARCH".into(),
+		price_effective_at: now - chrono::Duration::days(1),
+		price_review_after: now + chrono::Duration::days(1),
+		request_price_micro_usd: 5_000,
+		monthly_base_fee_micro_usd: 0,
+		monthly_limit_micro_usd: 1_000_000,
+	};
+	let brave = aidash_integrations::research::brave::BraveSearch::with_endpoint(
+		profile,
+		KEY,
+		reqwest::Url::parse(&endpoint).unwrap(),
+	)
+	.unwrap();
+	let evidence = aidash_server::research::evidence_store(store.clone());
+	let research = Research {
+		store: &evidence,
+		gate: &Permit,
+		limits: Limits::default(),
+	};
+	let result = research
+		.search(
+			&Call {
+				run: run.id,
+				context_revision: 0,
+				key: "brave-1",
+				provider: "research.brave@1",
+				disclosure_approval: true,
+			},
+			&brave,
+			&json!({"query":"rust"}),
+		)
+		.await
+		.unwrap();
+	server.await.unwrap();
+	assert_eq!(result["status"], "ok", "{result}");
+	assert!(!result.to_string().contains(KEY));
+	for table in ["research_attempts", "research_sources"] {
+		use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
+		let sql = Query::select()
+			.expr(Expr::cust("row_to_json(t)::text"))
+			.from_as(Alias::new(table), Alias::new("t"))
+			.and_where(Expr::col(Alias::new("run_id")).eq(Expr::value(run.id)))
+			.to_string(PostgresQueryBuilder);
+		let rows: Vec<String> = sqlx::query_scalar(&sql)
+			.fetch_all(store.pool.driver())
+			.await
+			.unwrap();
+		assert!(!rows.is_empty(), "{table}");
+		assert!(
+			rows.iter().all(|row| !row.contains(KEY)),
+			"{table}: {rows:?}"
+		);
+	}
+	cleanup(store, &url, &schema).await;
+}
