@@ -787,7 +787,7 @@ class ReconcileTests(unittest.TestCase):
             "project_id": "aidash-fixture",
             "tenant_ids": ["pool"],
             "tenant_bindings": {"pool": "acme"},
-            "mfa": {"pool": "disabled"},
+            "mfa": {"pool": {"state": "disabled", "totp_adjacent_intervals": 5}},
         }
 
         def entry():
@@ -878,7 +878,7 @@ class ReconcileTests(unittest.TestCase):
 
         def apply(managed, **kwargs):
             original(managed, **kwargs)
-            self.cloud.gcip["mfa"] = {"pool": "disabled"}
+            self.cloud.gcip["mfa"] = {"pool": {"state": "disabled", "totp_adjacent_intervals": 5}}
 
         with (
             patch.object(controller, "reconcile_mfa", mfa),

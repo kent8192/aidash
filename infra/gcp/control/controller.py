@@ -326,6 +326,10 @@ def provision_secret(config, output, kind):
             raise Refused("Configure the GCIP web API key from the bootstrap output")
         settings.update({key: gcip[key] for key in ("project_id", "public_origin", "tenant_bindings", "providers", "password_sign_up")})
         settings["sign_in_domains"] = gcip.get("sign_in_domains", {})
+        # A sign-in hint only: GCIP enforces the Requirement and Aidash never reads
+        # second-factor claims as authority. The page uses it to lead a user with no
+        # factor through enrollment. State written before MFA existed lists none.
+        settings["mfa_mandatory"] = sorted(tenant for tenant, declared in gcip.get("mfa", {}).items() if declared["state"] == "mandatory")
         # Firebase's helper is the default and needs no key. Terraform selects the
         # public origin only in the apply that deploys a release, so the SAML ACS,
         # this setting and the edge's helper proxy switch together.
@@ -337,7 +341,7 @@ def provision_secret(config, output, kind):
     elif value.get("dashboard", {}).get("gcip"):
         # Binding removal must reach the retained server before any subsequent
         # boundary; disabling infrastructure cannot leave an old pool admitted.
-        value["dashboard"]["gcip"].update(tenant_bindings={}, providers={}, password_sign_up=[], sign_in_domains={})
+        value["dashboard"]["gcip"].update(tenant_bindings={}, providers={}, password_sign_up=[], sign_in_domains={}, mfa_mandatory=[])
     encoded = json.dumps(value, sort_keys=True)
     # Keep latest enabled after a rollback, even when the selected configuration
     # is unchanged, so every reader of "latest" sees the managed version.
