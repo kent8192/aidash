@@ -69,7 +69,7 @@ pub fn plan_tool_batch(
 			break;
 		}
 		tokens = tokens.saturating_add(growth);
-		probe.history.push(event);
+		probe.push(event);
 		admitted.push(concurrent);
 	}
 	if admitted.len() < 2 {

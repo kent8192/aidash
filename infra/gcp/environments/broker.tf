@@ -1,3 +1,20 @@
+// The Credential Broker image digest is reviewed code, not operator configuration
+// (#151): changing the broker means changing broker-image.json in a pull request.
+// Update it with the procedure in infra/gcp/README.md; null means no image has been
+// approved, so no broker can be enabled. The credential_brokers type has no image
+// attribute on purpose: a stale configuration that still sets one fails type
+// conversion, and the controller's intent comparison sees identical config and state.
+variable "broker_image_lock_file" {
+  description = "Test seam for the digest lock. The controller never sets it; deployments read broker-image.json from the reviewed checkout."
+  type        = string
+  default     = null
+}
+locals {
+  broker_image_digest = try(jsondecode(file(coalesce(var.broker_image_lock_file, "${path.module}/broker-image.json"))).digest, null)
+  // Artifact Registry is fixed to us-central1 by bootstrap; deploy publishes images there.
+  broker_image = local.broker_image_digest == null ? null : "us-central1-docker.pkg.dev/${var.project_id}/aidash/broker@${local.broker_image_digest}"
+}
+
 variable "credential_brokers" {
   description = "Explicit opt-in only for environments with a Provider Credential Store. Never populate for PR previews."
   type = map(object({
@@ -8,12 +25,15 @@ variable "credential_brokers" {
     signing_key_id               = string
     signing_version              = optional(string, "1")
     verification_versions        = optional(set(string), ["1"])
-    image                        = string
   }))
   default = {}
   validation {
     condition     = alltrue([for id, broker in var.credential_brokers : !broker.enabled || try(var.environments[id].kind != "pr", false)])
     error_message = "Enabled brokers require an existing non-PR environment."
+  }
+  validation {
+    condition     = alltrue([for id, broker in var.credential_brokers : !broker.enabled || can(regex("^sha256:[a-f0-9]{64}$", local.broker_image_digest))])
+    error_message = "Enabled brokers need an approved image digest in infra/gcp/environments/broker-image.json."
   }
   validation {
     condition     = alltrue([for id, broker in var.credential_brokers : !broker.enabled || (var.byok_project_id != "" && broker.byok_project_id == var.byok_project_id)])
@@ -35,8 +55,7 @@ module "credential_broker" {
   environment_id               = each.key
   environment_kind             = var.environments[each.key].kind
   secret_prefix                = each.value.secret_prefix
-  image                        = each.value.image
-  deploy_service_account       = var.deploy_service_account
+  image                        = local.broker_image
   broker_service_account_email = each.value.broker_service_account_email
   signing_key_id               = each.value.signing_key_id
   signing_version              = each.value.signing_version

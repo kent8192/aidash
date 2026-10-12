@@ -26,6 +26,7 @@ fn binding() -> Binding {
 			configuration_digest: "configuration-digest".into(),
 		}),
 		compactor: None,
+		summarizer: None,
 	}
 }
 #[fixture]
@@ -142,7 +143,7 @@ fn disabled_and_unstarted_bindings_keep_their_original_initial_state(
 ) {
 	record.receipt = Some(Value::Null);
 	let disabled = project(
-		&Binding::Disabled {},
+		&Binding::Disabled { summarizer: None },
 		Some(Failure::Authority),
 		Some(record),
 	)

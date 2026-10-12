@@ -3,6 +3,7 @@ use super::*;
 #[tokio::test]
 async fn approved_wheel_installs_offline_with_hashes_and_explicit_memory_reset(
 	#[future] runtime_fixture: CoreFixture,
+	#[from(worker_control)] control_1: WorkerControl,
 ) {
 	use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
 	let mut c = Box::pin(runtime_fixture).await;
@@ -10,9 +11,10 @@ async fn approved_wheel_installs_offline_with_hashes_and_explicit_memory_reset(
 	profile.outbound_origins = vec!["https://files.pythonhosted.org".into()];
 	profile.package_origins = profile.outbound_origins.clone();
 	c.f.store.capabilities = Runtime::new(profile).unwrap();
-	c.app = common::application(c.f.clone()).await;
+	c.app.context.set_singleton(c.f.clone());
 	let run = admit(&c).await;
-	let (stop, rx) = tokio::sync::watch::channel(false);
+	let WorkerControl { stop, receiver: rx } = control_1;
+	// Act: start package reconciliation after publishing the changed package origins.
 	let worker = tokio::spawn(aidash_server::capabilities::operations::run(
 		c.f.store.clone(),
 		rx,
@@ -49,7 +51,7 @@ async fn approved_wheel_installs_offline_with_hashes_and_explicit_memory_reset(
 	profile.package_origins.clear();
 	let allowed = c.f.store.capabilities.clone();
 	c.f.store.capabilities = Runtime::new(profile).unwrap();
-	c.app = common::application(c.f.clone()).await;
+	c.app.context.set_singleton(c.f.clone());
 	assert_eq!(
 		request(&c.app, &c.token, "POST", &path, install.clone())
 			.await
@@ -57,7 +59,7 @@ async fn approved_wheel_installs_offline_with_hashes_and_explicit_memory_reset(
 		403
 	);
 	c.f.store.capabilities = allowed;
-	c.app = common::application(c.f.clone()).await;
+	c.app.context.set_singleton(c.f.clone());
 	let mut corrupt = install.clone();
 	corrupt["wheels"][0]["sha256"] = json!("0".repeat(64));
 	assert_eq!(
@@ -206,16 +208,13 @@ async fn approved_wheel_installs_offline_with_hashes_and_explicit_memory_reset(
 #[rstest::rstest]
 #[tokio::test]
 async fn package_overlay_publication_survives_process_death_before_swap_and_during_cleanup(
-	#[future] runtime_fixture: CoreFixture,
+	#[future]
+	#[from(running_runtime)]
+	runtime_fixture: (CoreFixture, aidash_server::domain::Run, CapabilityWorker),
 ) {
 	use base64::{Engine, engine::general_purpose::STANDARD};
-	let c = Box::pin(runtime_fixture).await;
-	let run = admit(&c).await;
-	let (stop, rx) = tokio::sync::watch::channel(false);
-	let worker = tokio::spawn(aidash_server::capabilities::operations::run(
-		c.f.store.clone(),
-		rx,
-	));
+	let (c, run, worker) = Box::pin(runtime_fixture).await;
+	let stop = worker.stop.clone();
 	let script = STANDARD.encode(include_str!(concat!(
 		env!("CARGO_MANIFEST_DIR"),
 		"/src/apps/execution/tests/fixtures/overlay-crash.py"
