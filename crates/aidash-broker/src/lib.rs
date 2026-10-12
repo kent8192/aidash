@@ -270,7 +270,7 @@ fn body_policy(body: &[u8], claims: &Claims, op: Operation) -> Result<(), Failur
 			Err(Failure::ClaimViolation)
 		};
 	}
-	let value: Value = serde_json::from_slice(body).map_err(|_| Failure::ClaimViolation)?;
+	let value = policy::parse(body)?;
 	// A capability authorizes one model; OpenRouter's models adds fallback models.
 	if value.get("model").and_then(Value::as_str) != Some(&claims.model)
 		|| value.get("models").is_some()

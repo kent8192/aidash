@@ -180,12 +180,15 @@ impl Fixture {
 		}
 	}
 	async fn request(&self, claims: &Claims, method: &str, uri: &str, body: Value) -> Response {
-		let token = mint(claims, &self.signer).await.unwrap();
 		let body = if body.is_null() {
 			Body::empty()
 		} else {
 			Body::from(body.to_string())
 		};
+		self.request_body(claims, method, uri, body).await
+	}
+	async fn request_body(&self, claims: &Claims, method: &str, uri: &str, body: Body) -> Response {
+		let token = mint(claims, &self.signer).await.unwrap();
 		self.broker
 			.clone()
 			.router()
@@ -749,6 +752,52 @@ async fn chat_rejects_breakpoints_beyond_four_or_outside_message_text_parts() {
 	for (name, body) in cases {
 		let response = f
 			.request(&granted, "POST", "/api/v1/chat/completions", body)
+			.await;
+		assert_eq!(response.status(), 403, "{name}");
+		assert_eq!(
+			json_body(response).await["error"]["code"],
+			"capability_claim_violation",
+			"{name}"
+		);
+		assert_eq!(f.source.reads.load(Ordering::SeqCst), 0, "{name}");
+		assert_eq!(f.provider.calls.load(Ordering::SeqCst), 0, "{name}");
+	}
+}
+
+#[tokio::test]
+async fn chat_rejects_duplicate_object_members_before_key_lookup() {
+	let f = Fixture::new().await;
+	let mut granted = f.claims();
+	granted.cache_breakpoints = true;
+	let provider = r#""provider":{"zdr":true,"require_parameters":true}"#;
+	let cases = [
+		(
+			"first cache_control is unauthorized",
+			format!(
+				r#"{{"model":"author/model","max_tokens":10,{provider},"messages":[{{"role":"user","content":[{{"type":"text","text":"x","cache_control":{{"type":"persistent"}},"cache_control":{{"type":"ephemeral"}}}}]}}]}}"#
+			),
+		),
+		(
+			"escaped duplicate cache_control",
+			format!(
+				r#"{{"model":"author/model","max_tokens":10,{provider},"messages":[{{"role":"user","content":[{{"type":"text","text":"x","cache\u005fcontrol":{{"type":"ephemeral","ttl":"1h"}},"cache_control":{{"type":"ephemeral"}}}}]}}]}}"#
+			),
+		),
+		(
+			"first model is unauthorized",
+			format!(
+				r#"{{"model":"other/model","model":"author/model","max_tokens":10,{provider}}}"#
+			),
+		),
+	];
+	for (name, body) in cases {
+		let response = f
+			.request_body(
+				&granted,
+				"POST",
+				"/api/v1/chat/completions",
+				Body::from(body),
+			)
 			.await;
 		assert_eq!(response.status(), 403, "{name}");
 		assert_eq!(

@@ -121,6 +121,11 @@ root or anything nested), any other value (a different `type`, a `ttl`, extra
 keys, `null`) and a fifth breakpoint are `403 capability_claim_violation`.
 Tokens without the claim keep their previous wire shape, and a broker that
 predates the claim reads them unchanged.
+Chat and embeddings bodies that repeat an object member name at any depth,
+including through escapes such as `cache\u005fcontrol`, are
+`403 capability_claim_violation` before Key Material lookup. Admission inspects
+a parsed value but the broker relays the original bytes, so a duplicate could
+otherwise hide an unauthorized first member from these checks.
 Message content supports text, inline base64 image data URLs and base64
 `input_audio`. Remote URLs and unsupported media content types are rejected
 before Key Material lookup. MIME/format and file signatures use the domain's
