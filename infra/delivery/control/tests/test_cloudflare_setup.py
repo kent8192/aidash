@@ -288,6 +288,58 @@ class TokenHandoffTests(unittest.TestCase):
             api.call.assert_not_called()
 
 
+class InventoryPaginationTests(unittest.TestCase):
+    PATH = f"accounts/{ACCOUNT}/email/routing/addresses"
+
+    @staticmethod
+    def page(items, total, per_page=50):
+        return {"success": True, "result": items, "result_info": {"total_count": total, "per_page": per_page, "count": len(items)}}
+
+    def api(self, *pages):
+        api = CloudflareAPI("bootstrap_token_private_value")
+        api.call = Mock(side_effect=list(pages))
+        return api
+
+    def test_every_page_is_read_before_adoption(self):
+        first = [{"id": f"{index:032x}"} for index in range(50)]
+        second = [{"id": f"{index:032x}"} for index in range(50, 60)]
+        api = self.api(self.page(first, 60), self.page(second, 60))
+        self.assertEqual(api.inventory(self.PATH), first + second)
+        self.assertEqual(
+            [call.args for call in api.call.call_args_list],
+            [("GET", self.PATH), ("GET", self.PATH + "?page=2&per_page=50")],
+        )
+
+    def test_existing_query_is_kept_and_its_page_size_replaced(self):
+        path = f"zones/{ZONE}/dns_records?name=aidash.run&per_page=100"
+        api = self.api(self.page([{"id": "1"}], 2, 1), self.page([{"id": "2"}], 2, 1))
+        self.assertEqual(len(api.inventory(path)), 2)
+        self.assertEqual(api.call.call_args_list[1].args[1], f"zones/{ZONE}/dns_records?name=aidash.run&per_page=1&page=2")
+
+    def test_single_page_without_result_info_is_complete(self):
+        api = self.api({"success": True, "result": [{"id": "1"}]})
+        self.assertEqual(api.inventory(self.PATH), [{"id": "1"}])
+        api.call.assert_called_once()
+
+    def test_repeated_empty_oversized_or_unpageable_inventories_are_refused(self):
+        item = {"id": "1"}
+        for pages in (
+            # A page that repeats an earlier one did not advance.
+            (self.page([item], 2, 1), self.page([item], 2, 1)),
+            # An empty page before total_count is reached.
+            (self.page([item], 2, 1), self.page([], 2, 1)),
+            # More items than the reported total.
+            (self.page([item, {"id": "2"}], 1),),
+            # Incomplete with no usable page size to continue.
+            (self.page([item], 3, 0),),
+        ):
+            with self.subTest(pages=pages), self.assertRaises(SetupError):
+                self.api(*pages).inventory(self.PATH)
+        endless = [self.page([{"id": str(index)}], 1000, 1) for index in range(3)]
+        with self.assertRaisesRegex(SetupError, "page limit"):
+            self.api(*endless).inventory(self.PATH, max_pages=3)
+
+
 class SecretTransportTests(unittest.TestCase):
     def test_provider_tls_certificate_verification_and_redirect_rejection(self):
         api = CloudflareAPI("bootstrap_token_private_value")

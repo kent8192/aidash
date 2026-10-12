@@ -117,16 +117,42 @@ class CloudflareAPI:
                 "Cloudflare operation failed; no private provider output was logged."
             ) from None
 
-    def inventory(self, path):
-        value = self.call("GET", path)
-        result = value.get("result")
-        if not isinstance(result, list) or (value.get("result_info") or {}).get(
-            "total_count", len(result)
-        ) > len(result):
-            raise SetupError(
-                "Cloudflare inventory is incomplete; refuse partial adoption."
-            )
-        return result
+    def inventory(self, path, max_pages=20):
+        """Read every page of a Cloudflare list; refuse a partial or inconsistent one."""
+        base, _, query = path.partition("?")
+        parameters = dict(urllib.parse.parse_qsl(query))
+        items, seen, page_path = [], set(), path
+        for page in range(1, max_pages + 1):
+            value = self.call("GET", page_path)
+            result, info = value.get("result"), value.get("result_info") or {}
+            if not isinstance(result, list) or not isinstance(info, dict):
+                raise SetupError(
+                    "Cloudflare inventory is incomplete; refuse partial adoption."
+                )
+            for item in result:
+                key = json.dumps(item, sort_keys=True)
+                if key in seen:
+                    raise SetupError(
+                        "Cloudflare inventory did not advance; refuse partial adoption."
+                    )
+                seen.add(key)
+            items.extend(result)
+            total = info.get("total_count", len(items))
+            if not isinstance(total, int) or isinstance(total, bool) or total < len(items):
+                raise SetupError(
+                    "Cloudflare inventory is inconsistent; refuse partial adoption."
+                )
+            if total == len(items):
+                return items
+            per_page = info.get("per_page")
+            if not result or not isinstance(per_page, int) or isinstance(per_page, bool) or per_page < 1:
+                raise SetupError(
+                    "Cloudflare inventory is incomplete; refuse partial adoption."
+                )
+            # Endpoints such as Email Routing addresses/rules cap per_page at 50.
+            parameters.update(page=str(page + 1), per_page=str(per_page))
+            page_path = base + "?" + urllib.parse.urlencode(parameters)
+        raise SetupError("Cloudflare inventory exceeded its protected page limit.")
 
 
 def check_routing_dns(records, proposed):
