@@ -51,6 +51,52 @@ fn http_and_mcp_publisher_claims_do_not_manufacture_replay_guarantees() {
 	}
 }
 #[test]
+fn descriptors_can_lower_but_never_raise_provider_concurrency() {
+	use crate::tool::Concurrency;
+	let declared = |operation: &str, claim| {
+		let mut descriptor = core_descriptor("aidash://node-a", operation).unwrap();
+		descriptor.narrow.concurrency = claim;
+		descriptor.declared_contract(QualifiedRef::builtin("aidash://node-a", operation))
+	};
+	assert_eq!(
+		declared("file_read", Some(Concurrency::SharedRead))
+			.unwrap()
+			.behavior
+			.concurrency,
+		Concurrency::SharedRead
+	);
+	assert!(declared("file_read", Some(Concurrency::Sequential)).is_ok());
+	for operation in ["apply_patch", "skill_read", "shell", "outbound_get"] {
+		assert!(declared(operation, Some(Concurrency::Sequential)).is_ok());
+		assert!(declared(operation, Some(Concurrency::SharedRead)).is_err());
+	}
+	let mut http = serde_json::to_value(ToolDescriptor {
+		registry_node: "aidash://node-a".into(),
+		provider: "integration.http@1".into(),
+		operation: "invoke".into(),
+		default_alias: "lookup".into(),
+		tier: ToolTier::Integration,
+		narrow: Narrowing::default(),
+		lifecycle: None,
+		transport: Some(ToolConfig::Http {
+			endpoint: "https://example.invalid".into(),
+			credential_env: None,
+			replay: "read_only".into(),
+		}),
+	})
+	.unwrap();
+	http["narrow"]["concurrency"] = json!("shared_read");
+	let http: ToolDescriptor = serde_json::from_value(http).unwrap();
+	assert!(
+		http.declared_contract(QualifiedRef {
+			registry_node: "aidash://node-a".into(),
+			id: "lookup".into(),
+			version: "1.0.0".into(),
+		})
+		.is_err()
+	);
+}
+#[test]
 fn only_implicit_defaults_can_be_excluded_remotely() {
 	let descriptor = core_descriptor("aidash://node-a", "memory_mutate").unwrap();
 	let contract = descriptor
