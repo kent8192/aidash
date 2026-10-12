@@ -1,10 +1,7 @@
-use http::Method;
-use reinhardt::test::fixtures::http_client;
 #[path = "../../../execution/tests/support/legacy.rs"]
 mod common;
 use aidash_server::{domain::qualified_agent, federation::Peer};
 use common::*;
-use common::{TestEnvironment, test_environment};
 use serde_json::{Value, json};
 use uuid::Uuid;
 async fn verify(app: &common::TestApplication, node: &str, grant: Uuid) -> (u16, Value) {
@@ -16,45 +13,52 @@ async fn grant_request(
 	grant: Uuid,
 	operation: &str,
 ) -> (u16, Value) {
-	let token = std::env::var("AIDASH_SECRET_TEST_PEER").unwrap();
-	let response = http_client()
-		.request(
-			Method::POST,
-			app.url(format!(
-				"/federation/v0.1/scoped/execution/grants/{operation}"
-			)),
-		)
-		.header("authorization", format!("Bearer {token}"))
-		.header("x-aidash-node", node)
-		.header("x-aidash-protocol", "0.2")
-		.header("content-type", "application/json")
-		.body(json!({"grant_id":grant}).to_string())
-		.send()
-		.await
-		.unwrap();
-	let status = response.status().as_u16();
-	let bytes = response.bytes().await.unwrap();
+	let authorization = format!(
+		"Bearer {}",
+		std::env::var("AIDASH_SECRET_TEST_PEER").unwrap()
+	);
+	let response = async {
+		let client = &(app.client());
+		let mut request = client
+			.request(
+				http::Method::POST,
+				&format!("/federation/v0.1/scoped/execution/grants/{operation}"),
+			)
+			.body(bytes::Bytes::copy_from_slice(
+				json!({"grant_id":grant}).to_string().as_bytes(),
+			))
+			.header(http::header::CONTENT_TYPE, "application/json");
+		for (name, value) in &[
+			("authorization", authorization.as_str()),
+			("x-aidash-node", node),
+			("x-aidash-protocol", "0.2"),
+		] {
+			request = request.header(*name, *value);
+		}
+		request.send().await
+	}
+	.await
+	.unwrap();
 	(
-		status,
-		serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+		response.status_code(),
+		serde_json::from_slice(response.body()).unwrap_or(Value::Null),
 	)
 }
 #[rstest::rstest]
 #[tokio::test]
 async fn durable_grants_bind_both_nodes_and_revalidate_after_restarts_and_revocation(
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(common::native_peer)]
+	first: common::PeerFixture,
+	#[future(awt)]
+	#[from(common::native_peer)]
+	#[with("aidash://grant-host")]
+	second: common::PeerFixture,
 ) {
-	let (a, au, aschema) = setup(&_test_environment).await;
-	let (mut b, bu, bschema) = setup(&_test_environment).await;
-	b.config.node_id = "aidash://grant-host".into();
-	b.store.node_id = b.config.node_id.clone();
-	b.registry =
-		aidash_server::registry::Registry::new(b.store.pool.clone(), &b.config.node_id).unwrap();
-
-	let aa = common::application(a.clone()).await;
-	let ba = common::peer_application(&mut b).await;
+	let (a, au, aschema) = first.runtime.parts();
+	let (b, bu, bschema) = second.runtime.parts();
+	let aa = first.application;
+	let ba = second.application;
 	let (mut policy, token, task) = bootstrap(&a, &aa, "http://localhost:1").await;
 	bootstrap(&b, &ba, "http://localhost:1").await;
 	let executor = qualified_agent(&b.config.node_id, "research", "1.0.0");
@@ -151,6 +155,7 @@ async fn durable_grants_bind_both_nodes_and_revalidate_after_restarts_and_revoca
 	)
 	.await
 	.unwrap();
+	// Act: rebuild the application after replacing the durable store connection.
 	let fresh_app = common::application(fresh.clone()).await;
 	assert_eq!(verify(&fresh_app, &b.config.node_id, id).await.0, 200);
 	let mut different = input.clone();

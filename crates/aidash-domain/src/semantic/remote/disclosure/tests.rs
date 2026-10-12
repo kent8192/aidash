@@ -19,7 +19,7 @@ fn receipt(matches: usize) -> Receipt {
 		grant_id: Uuid::from_u128(3),
 		admission_id: Uuid::from_u128(4),
 		executor: "aidash://receiver/agent@1".into(),
-		binding: Binding::Disabled {},
+		binding: Binding::Disabled { summarizer: None },
 		retrieved_at: Utc.timestamp_opt(0, 0).unwrap(),
 		query_truncated: false,
 		candidate_digest: "candidates".into(),
@@ -153,6 +153,7 @@ fn mixed_receipt_preserves_ordinary_provenance_before_trimming_native_units(
 		index_digest: "index".into(),
 		embedding: Box::new(provider.clone()),
 		compactor: None,
+		summarizer: None,
 		native: Some(Box::new(NativeBinding {
 			selection: NativeRequest {
 				participant: bank.participant.unwrap(),

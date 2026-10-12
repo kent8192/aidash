@@ -89,6 +89,7 @@ pub fn validate_override_keys(kind: &str, overrides: &Value) -> Result<()> {
 			"remove_default",
 			"cluster",
 			"max_steps",
+			"tool_parallelism",
 			"exposure",
 		],
 		"model" => &[

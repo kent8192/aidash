@@ -933,6 +933,13 @@ pub(crate) fn generation_compaction_repository(
 		store: store.clone(),
 	}
 }
+pub(crate) fn generation_summary_repository(
+	store: &Store,
+) -> crate::apps::execution::generation::repositories::summary::NativeSummaryRepository {
+	crate::apps::execution::generation::repositories::summary::NativeSummaryRepository {
+		store: store.clone(),
+	}
+}
 pub(crate) struct ApprovedCompactionProvider;
 impl aidash_application::ports::generation::compaction::GenerationCompactionProvider
 	for ApprovedCompactionProvider
@@ -1202,7 +1209,7 @@ pub(crate) fn operator_media_repository(
 pub(crate) fn selected_media<'a>(
 	store: &'a Store,
 	run: &'a aidash_domain::Run,
-	access: Arc<tokio::sync::Mutex<crate::authorization::access::Access>>,
+	access: Arc<tokio::sync::RwLock<crate::authorization::access::Access>>,
 ) -> crate::apps::workspaces::repositories::media::SelectedMedia<'a> {
 	crate::apps::workspaces::repositories::media::SelectedMedia::new(store, run, access)
 }
@@ -1210,7 +1217,7 @@ pub(crate) fn selected_media<'a>(
 /// Current builtin and plugin authority borrows the same worker Access object.
 pub(crate) fn agent_tool_repository<'a>(
 	remote: Option<&'a Federation>,
-	access: &'a Arc<tokio::sync::Mutex<crate::authorization::access::Access>>,
+	access: &'a Arc<tokio::sync::RwLock<crate::authorization::access::Access>>,
 	run: &'a crate::domain::Run,
 ) -> crate::apps::identity::repositories::tools::AgentTools<'a> {
 	crate::apps::identity::repositories::tools::AgentTools {
@@ -1254,7 +1261,7 @@ pub(crate) fn run_details_repository<'a>(
 pub(crate) fn run_semantic_repository<'a>(
 	store: &'a Store,
 	remote: Option<&'a Federation>,
-	access: &'a Arc<tokio::sync::Mutex<crate::authorization::access::Access>>,
+	access: &'a Arc<tokio::sync::RwLock<crate::authorization::access::Access>>,
 	run: &'a crate::domain::Run,
 	agent: &'a crate::registry::AgentConfig,
 ) -> crate::apps::identity::repositories::execution::semantic::ContextRepository<'a> {
@@ -1290,7 +1297,7 @@ pub(crate) fn inference_approval_scope<'a>(
 pub(crate) fn worker_resume_repository<'a>(
 	federation: &'a Federation,
 	remote: Option<&'a Federation>,
-	access: &'a Arc<tokio::sync::Mutex<crate::authorization::access::Access>>,
+	access: &'a Arc<tokio::sync::RwLock<crate::authorization::access::Access>>,
 	run: &'a crate::domain::Run,
 	agent: &'a crate::registry::AgentConfig,
 ) -> crate::apps::identity::repositories::execution::resume::Resume<'a> {
@@ -1307,7 +1314,7 @@ pub(crate) fn worker_resume_repository<'a>(
 pub(crate) fn inference_admission_repository<'a>(
 	store: &'a Store,
 	remote: Option<&'a Federation>,
-	access: &'a Arc<tokio::sync::Mutex<crate::authorization::access::Access>>,
+	access: &'a Arc<tokio::sync::RwLock<crate::authorization::access::Access>>,
 	run: &'a crate::domain::Run,
 ) -> crate::apps::identity::repositories::execution::admission::Admissions<'a> {
 	crate::apps::identity::repositories::execution::admission::Admissions {
@@ -1315,6 +1322,24 @@ pub(crate) fn inference_admission_repository<'a>(
 		remote,
 		access,
 		run,
+		purpose: crate::generation::remote::Purpose::Inference,
+	}
+}
+
+/// Summary Stage admission charges model tokens locally and the `summary`
+/// purpose (with its call allowance) at the Home.
+pub(crate) fn summary_admission_repository<'a>(
+	store: &'a Store,
+	remote: Option<&'a Federation>,
+	access: &'a Arc<tokio::sync::RwLock<crate::authorization::access::Access>>,
+	run: &'a crate::domain::Run,
+) -> crate::apps::identity::repositories::execution::admission::Admissions<'a> {
+	crate::apps::identity::repositories::execution::admission::Admissions {
+		store,
+		remote,
+		access,
+		run,
+		purpose: crate::generation::remote::Purpose::Summary,
 	}
 }
 
