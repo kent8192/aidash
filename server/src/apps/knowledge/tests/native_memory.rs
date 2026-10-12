@@ -2507,6 +2507,38 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 		current[0].revision, 2,
 		"the unit mutation committed before invalidating its caller"
 	);
+	// Issue #127: the writer stops at its next boundary with the exact cause,
+	// distinct from an authority pause, and only a follow-up Task is offered.
+	for _ in 0..4 {
+		tokio::time::timeout(std::time::Duration::from_secs(15), worker.worker_once())
+			.await
+			.expect("an invalidated writer must not spin")
+			.unwrap();
+		if f.store.run(run.id).await.unwrap().control.as_str() == "PAUSED" {
+			break;
+		}
+	}
+	let stopped = f.store.run(run.id).await.unwrap();
+	assert_eq!(stopped.control.as_str(), "PAUSED", "{:?}", stopped.error);
+	assert_eq!(
+		stopped.recovery.semantic_reason,
+		Some(aidash_domain::semantic::Failure::Invalidated),
+		"a consumed Unit correction is not reported as lost authority: {:?}",
+		stopped.error
+	);
+	assert_eq!(
+		aidash_domain::semantic::recovery::Recovery::new(
+			aidash_domain::semantic::Failure::Invalidated,
+			stopped.recovery.retry.is_some()
+		)
+		.actions,
+		vec![aidash_domain::semantic::recovery::Action::CreateFollowUpTask]
+	);
+	assert_eq!(
+		captured.lock().unwrap().len(),
+		2,
+		"no inference after the writer's own correction"
+	);
 	provider.abort();
 }
 

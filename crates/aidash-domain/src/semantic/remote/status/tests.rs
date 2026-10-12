@@ -134,6 +134,16 @@ fn current_failure_prevents_receipt_decoding_or_disclosure(
 	assert_eq!(view.result_count, None);
 	assert_eq!(view.retrieved_at, None);
 	assert!(!view.truncated);
+	assert_eq!(
+		view.recovery,
+		Some(crate::semantic::recovery::Recovery::new(reason, retry))
+	);
+}
+#[rstest]
+fn a_ready_view_offers_no_recovery(binding: Binding, record: Record) {
+	let view = project(&binding, None, Some(record)).unwrap();
+	assert_eq!(view.recovery, None);
+	assert!(json!(view).get("recovery").is_none());
 }
 #[rstest]
 fn disabled_and_unstarted_bindings_keep_their_original_initial_state(
