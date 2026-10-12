@@ -5,20 +5,17 @@ use super::{
 	stream::{Frame, Stream, until},
 };
 use aidash_server::{domain::qualified_agent, federation::Federation, harness::Harness, sse};
-use axum::{
-	Json, Router,
-	body::Body,
-	http::header,
-	response::{IntoResponse, Response},
-	routing::post,
-};
-use common::{TestEnvironment, bootstrap, cleanup, request, setup, test_environment};
+use common::upstream_fixtures::{reply, upstream};
+use common::{bootstrap, cleanup, request};
+use futures_util::FutureExt;
 use reinhardt::query::{
 	Alias, Expr, ExprTrait as _, PostgresQueryBuilder, Query, QueryStatementBuilder as _,
 };
+use reinhardt::test::fixtures::server::TestServerGuard;
+use reinhardt::{Response, ServerRouter};
+use rstest::fixture;
 use serde_json::{Value, json};
 use std::{
-	convert::Infallible,
 	sync::{Arc, Mutex},
 	time::Duration,
 };
@@ -35,54 +32,96 @@ struct Provider {
 	/// The provider request body, sent once the worker reaches the provider.
 	entered: oneshot::Receiver<Value>,
 	release: Option<oneshot::Sender<()>>,
-	server: tokio::task::JoinHandle<()>,
-}
-
-impl Drop for Provider {
-	fn drop(&mut self) {
-		self.server.abort();
-	}
+	_server: TestServerGuard,
 }
 
 type Gates = (oneshot::Sender<Value>, oneshot::Receiver<()>);
 
-impl Provider {
-	async fn start() -> Self {
-		let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-		let endpoint = format!("http://{}", listener.local_addr().unwrap());
-		let (entered_tx, entered) = oneshot::channel();
-		let (release, released) = oneshot::channel();
-		let gates = Arc::new(Mutex::new(Some((entered_tx, released))));
-		let app = Router::new().route(
-			"/v1/chat/completions",
-			post(move |Json(body): Json<Value>| {
-				let gates = gates
-					.lock()
-					.unwrap()
-					.take()
-					.expect("exactly one provider call");
-				async move { reply(body, gates) }
-			}),
-		);
-		let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-		Self {
-			endpoint,
-			entered,
-			release: Some(release),
-			server,
-		}
+/// Provider-side gates and the test-side ends that observe and release them.
+#[derive(Clone)]
+struct ProviderSignals {
+	gates: Arc<Mutex<Option<Gates>>>,
+	entered: Arc<Mutex<Option<oneshot::Receiver<Value>>>>,
+	release: Arc<Mutex<Option<oneshot::Sender<()>>>>,
+}
+
+#[fixture]
+fn provider_signals() -> ProviderSignals {
+	let (entered_tx, entered) = oneshot::channel();
+	let (release, released) = oneshot::channel();
+	ProviderSignals {
+		gates: Arc::new(Mutex::new(Some((entered_tx, released)))),
+		entered: Arc::new(Mutex::new(Some(entered))),
+		release: Arc::new(Mutex::new(Some(release))),
 	}
 }
 
-fn chunk(value: Value) -> Result<bytes::Bytes, Infallible> {
+#[fixture]
+fn provider_router(provider_signals: ProviderSignals) -> Arc<ServerRouter> {
+	let gates = provider_signals.gates;
+	Arc::new(
+		reinhardt::test::stub::StubRouter::new()
+			.route(
+				"/v1/chat/completions",
+				http::Method::POST,
+				reply(move |request: reinhardt::Request| {
+					let body = request.json::<Value>().unwrap();
+					let gates = gates
+						.lock()
+						.unwrap()
+						.take()
+						.expect("exactly one provider call");
+					async move { streamed_reply(body, gates) }
+				}),
+			)
+			.into_server_router(),
+	)
+}
+
+#[fixture]
+async fn provider(
+	provider_signals: ProviderSignals,
+	#[from(provider_router)]
+	#[with(provider_signals.clone())]
+	_router: Arc<ServerRouter>,
+	#[future(awt)]
+	#[from(upstream)]
+	#[with(_router.clone())]
+	server: TestServerGuard,
+) -> Provider {
+	Provider {
+		endpoint: server.url.clone(),
+		entered: provider_signals.entered.lock().unwrap().take().unwrap(),
+		release: provider_signals.release.lock().unwrap().take(),
+		_server: server,
+	}
+}
+
+#[fixture]
+fn long_lease_runtime(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) -> common::RuntimeFuture {
+	async move {
+		let mut runtime = runtime.await;
+		// Inference must not wait for or race a lease heartbeat.
+		runtime.federation.config.lease_seconds = 300;
+		runtime
+	}
+	.boxed()
+	.shared()
+}
+
+type Chunk = Result<bytes::Bytes, Box<dyn std::error::Error + Send + Sync>>;
+
+fn chunk(value: Value) -> Chunk {
 	Ok(bytes::Bytes::from(format!("data: {value}\n\n")))
 }
 
-fn delta(delta: Value) -> Result<bytes::Bytes, Infallible> {
+fn delta(delta: Value) -> Chunk {
 	chunk(json!({"choices":[{"index":0,"delta":delta,"finish_reason":null}]}))
 }
 
-fn reply(body: Value, (entered, released): Gates) -> Response {
+fn streamed_reply(body: Value, (entered, released): Gates) -> Response {
 	entered.send(body).unwrap();
 	let stream = async_stream::stream! {
 		yield delta(json!({"role":"assistant"}));
@@ -95,11 +134,9 @@ fn reply(body: Value, (entered, released): Gates) -> Response {
 		}));
 		yield Ok(bytes::Bytes::from_static(b"data: [DONE]\n\n"));
 	};
-	(
-		[(header::CONTENT_TYPE, "text/event-stream")],
-		Body::from_stream(stream),
-	)
-		.into_response()
+	Response::ok()
+		.with_stream(stream)
+		.with_header("Content-Type", "text/event-stream")
 }
 
 /// Admit `research@1.0.1`, whose model `model@1.0.1` streams its replies, as
@@ -154,25 +191,18 @@ fn is_accepted(frame: &Frame) -> bool {
 #[rstest::rstest]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_streamed_reply_is_shown_live_and_accepted_once(
+	#[from(super::progress_service)] service: sse::Service,
+	#[from(long_lease_runtime)] _runtime: common::RuntimeFuture,
 	#[future(awt)]
-	#[from(test_environment)]
-	test_environment: Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	#[with(aidash_server::http::Settings::default(), service.clone(), Arc::new(|router| router), _runtime.clone())]
+	fixture: common::ApplicationFixture,
+	#[future(awt)] provider: Provider,
 ) {
 	// Arrange
-	let (mut f, url, schema) = setup(&test_environment).await;
-	// Inference must not wait for or race a lease heartbeat.
-	f.config.lease_seconds = 300;
-	let service = sse::Service::new(sse::Settings {
-		reconcile_interval: Duration::from_millis(250),
-		backpressure_timeout: Duration::from_secs(30),
-	});
-	let app = common::application_with_event_streams(
-		f.clone(),
-		aidash_server::http::Settings::default(),
-		service.clone(),
-	)
-	.await;
-	let mut provider = Provider::start().await;
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application.clone();
+	let mut provider = provider;
 	let (policy, token, task_id) = bootstrap(&f, &app, &provider.endpoint).await;
 	admit_streaming_agent(&f, &app, policy).await;
 	let (status, claimed) = request(

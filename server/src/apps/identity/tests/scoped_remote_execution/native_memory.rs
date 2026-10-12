@@ -679,22 +679,24 @@ async fn native_remote_run_reads_use_the_pinned_provenance_limit_above_1024(
 	.unwrap();
 	// Exercise the Home peer verifier directly: a deliberate >1024-visit DAG
 	// isolates the policy boundary from the receiver's ten-second transport cap.
-	let response = reqwest::Client::new()
-		.post(format!(
-			"{}/federation/v0.1/scoped/dependencies/verify",
-			p.a.config.endpoint
-		))
-		.timeout(deadline)
-		.bearer_auth(std::env::var("AIDASH_SECRET_TEST_PEER").unwrap())
-		.header("x-aidash-node", &p.b.config.node_id)
-		.header("x-aidash-protocol", "0.2")
-		.json(&json!({"tenant":"acme","subject":"alice","reference":{
-			"kind":"grant","node_id":p.a.config.node_id,"execution_node":p.b.config.node_id,
-			"grant_id":p.grant,"admission_id":p.admission,
-		}}))
-		.send()
-		.await
-		.unwrap();
+	let response =
+		p.a.client
+			.clone()
+			.post(format!(
+				"{}/federation/v0.1/scoped/dependencies/verify",
+				p.a.config.endpoint
+			))
+			.timeout(deadline)
+			.bearer_auth(std::env::var("AIDASH_SECRET_TEST_PEER").unwrap())
+			.header("x-aidash-node", &p.b.config.node_id)
+			.header("x-aidash-protocol", "0.2")
+			.json(&json!({"tenant":"acme","subject":"alice","reference":{
+				"kind":"grant","node_id":p.a.config.node_id,"execution_node":p.b.config.node_id,
+				"grant_id":p.grant,"admission_id":p.admission,
+			}}))
+			.send()
+			.await
+			.unwrap();
 	let status = response.status();
 	let body: Value = response.json().await.unwrap();
 	assert_eq!(status.as_u16(), 200, "{body}");
@@ -788,7 +790,8 @@ async fn native_remote_journal_validates_admitted_reads_above_1024_and_checks_la
 		"the policy admits more dependencies than the old fixed ceiling"
 	);
 	let verify = || {
-		reqwest::Client::new()
+		p.a.client
+			.clone()
 			.post(format!(
 				"{}/federation/v0.1/scoped/dependencies/verify",
 				p.a.config.endpoint

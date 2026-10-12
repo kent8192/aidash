@@ -38,8 +38,6 @@ aidash-integrations.workspace = true
 reinhardt = { workspace = true, features = [
   "api-only",
   "uuid",
-  # Work around facade gating until reinhardt-web#6635 exposes middleware-cors.
-  "middleware",
   "middleware-cors",
   "database",
   "db-postgres",
@@ -124,9 +122,6 @@ jsonwebtoken = { version = "11.1", default-features = false, features = [
   "aws_lc_rs",
   "use_pem",
 ] }
-tower = { version = "0.5", features = ["util"] }
-axum-test = "18.7"
-axum = { version = "0.8", features = ["json", "query", "macros"] }
 reinhardt = { workspace = true, features = ["test", "testcontainers"] }
 rstest = "0.26.1"
 tempfile = "3"

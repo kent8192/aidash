@@ -1,4 +1,4 @@
-use crate::endpoint::{EndpointFixture, assert_json, endpoint, subject};
+use crate::endpoint::{assert_json, endpoint, subject};
 use rstest::rstest;
 use serde_json::json;
 use uuid::Uuid;
@@ -6,11 +6,14 @@ use uuid::Uuid;
 #[rstest]
 #[tokio::test]
 async fn remote_control_checks_operator_and_peer_before_external_io(
-	#[future] endpoint: EndpointFixture,
+	endpoint: crate::endpoint::EndpointFuture,
+	#[from(crate::endpoint::anonymous_client)]
+	#[with(endpoint.clone())]
+	_credential_client_0: crate::endpoint::ClientFuture,
 ) {
 	// Arrange
 	let app = endpoint.await;
-	let alice = subject(&app, "alice").await;
+	let alice = subject(&app, "alice", _credential_client_0.await).await;
 	let command = json!({"node_id":"aidash://missing-peer","control":{"run_id":Uuid::new_v4(),"action":"pause"}});
 	// Act
 	let anonymous = app

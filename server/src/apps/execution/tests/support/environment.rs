@@ -1,12 +1,13 @@
 #[path = "postgres.rs"]
 pub(super) mod postgres;
-use postgres::postgres_container;
-use reinhardt::test::testcontainers::{
-	ContainerAsync, GenericImage, ImageExt,
-	core::{ContainerPort, WaitFor},
-	runners::AsyncRunner,
+use futures_util::{
+	FutureExt,
+	future::{BoxFuture, Shared},
 };
-use std::future::Future;
+use postgres::{PostgresFuture, postgres_container};
+use reinhardt::test::fixtures::nats_container as native_nats_container;
+use reinhardt::test::testcontainers::{ContainerAsync, GenericImage};
+pub type EnvironmentFuture = Shared<BoxFuture<'static, Arc<TestEnvironment>>>;
 use std::{
 	sync::{Arc, LazyLock, Weak},
 	time::Duration,
@@ -26,6 +27,7 @@ pub struct TestEnvironment {
 	_postgres: ContainerAsync<GenericImage>,
 	_nats: ContainerAsync<GenericImage>,
 	pub database_url: String,
+	#[allow(dead_code)] // NATS-only command targets do not consume the application broker URL.
 	pub nats_url: String,
 }
 
@@ -51,64 +53,56 @@ impl TestEnvironment {
 		.await;
 		ready.expect("restarted PostgreSQL must accept connections");
 	}
-	fn start() -> impl Future<Output = Self> {
-		let postgres = Box::pin(postgres_container());
-		async move {
-			let (postgres, pool, _, database_url) = postgres.await;
-			pool.close().await;
-			let nats = GenericImage::new("nats", "2.12-alpine")
-				.with_exposed_port(ContainerPort::Tcp(4222))
-				.with_wait_for(WaitFor::message_on_stderr("Server is ready"))
-				.with_cmd(["-js"])
-				.start()
-				.await
-				.expect("start disposable NATS");
-			let nats_url = format!(
-				"nats://{}:{}",
-				nats.get_host().await.unwrap(),
-				nats.get_host_port_ipv4(4222).await.unwrap()
-			);
-			wait_for_nats(&nats_url).await;
-
-			Self {
-				_postgres: postgres,
-				_nats: nats,
-				database_url,
-				nats_url,
-			}
-		}
-	}
 }
 
-async fn wait_for_nats(url: &str) {
-	for _ in 0..120 {
-		if let Ok(Ok(client)) =
-			tokio::time::timeout(Duration::from_secs(1), async_nats::connect(url)).await
-			&& client.flush().await.is_ok()
-		{
-			return;
-		}
-		tokio::time::sleep(Duration::from_millis(250)).await;
-	}
-	panic!("NATS test container did not accept connections");
+/// Adapt the native Send JetStream fixture to the shared environment tuple.
+pub type NatsFuture = BoxFuture<'static, (ContainerAsync<GenericImage>, String)>;
+#[rstest::fixture]
+pub fn nats_container(
+	#[from(native_nats_container)] native_nats: impl std::future::Future<
+		Output = (ContainerAsync<GenericImage>, u16, String),
+	> + Send
+	+ 'static,
+) -> NatsFuture {
+	// reinhardt-web#6705 fixes the native future Send contract tracked in #6702.
+	Box::pin(async move {
+		let (nats, _port, nats_url) = native_nats.await;
+		(nats, nats_url)
+	})
 }
 
 #[rstest::fixture]
-pub fn isolated_test_environment() -> impl Future<Output = Arc<TestEnvironment>> {
-	let environment = Box::pin(TestEnvironment::start());
-	async move { Arc::new(environment.await) }
+pub fn isolated_test_environment(
+	postgres_container: PostgresFuture,
+	nats_container: NatsFuture,
+) -> EnvironmentFuture {
+	async move {
+		let (postgres, pool, _, database_url) = postgres_container.await;
+		pool.close().await;
+		let (nats, nats_url) = nats_container.await;
+		Arc::new(TestEnvironment {
+			_postgres: postgres,
+			_nats: nats,
+			database_url,
+			nats_url,
+		})
+	}
+	.boxed()
+	.shared()
 }
 
 #[rstest::fixture]
-pub fn test_environment() -> impl Future<Output = Arc<TestEnvironment>> {
-	let environment = Box::pin(TestEnvironment::start());
+pub fn test_environment(isolated_test_environment: EnvironmentFuture) -> EnvironmentFuture {
+	let environment = Box::pin(isolated_test_environment);
 	async move {
 		let mut cached = TEST_ENVIRONMENT.lock().await;
 		if let Some(environment) = cached.upgrade() {
 			return environment;
 		}
-		let environment = Arc::new(environment.await);
+		let environment = environment.await;
 		*cached = Arc::downgrade(&environment);
 		environment
 	}
+	.boxed()
+	.shared()
 }

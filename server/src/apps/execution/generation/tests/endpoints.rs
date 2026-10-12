@@ -1,4 +1,4 @@
-use crate::endpoint::{EndpointFixture, assert_json, endpoint, subject};
+use crate::endpoint::{assert_json, endpoint, subject};
 use crate::execution_fixtures::{ExecutionFixture, execution};
 use aidash_server::apps::execution::generation::models::{GenerationBudget, GenerationUsage};
 use aidash_server::generation::provision;
@@ -9,10 +9,15 @@ use serde_json::json;
 
 #[rstest]
 #[tokio::test]
-async fn generation_reads_apply_tenant_authorization(#[future] endpoint: EndpointFixture) {
+async fn generation_reads_apply_tenant_authorization(
+	endpoint: crate::endpoint::EndpointFuture,
+	#[from(crate::endpoint::anonymous_client)]
+	#[with(endpoint.clone())]
+	_credential_client_0: crate::endpoint::ClientFuture,
+) {
 	// Arrange
 	let app = endpoint.await;
-	let alice = subject(&app, "alice").await;
+	let alice = subject(&app, "alice", _credential_client_0.await).await;
 	// Act
 	let own = alice
 		.get("/api/generation/endpoint/policies")

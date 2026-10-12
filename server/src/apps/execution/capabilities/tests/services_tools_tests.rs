@@ -1,6 +1,6 @@
 //! Unit tests for services::tools.
 use super::*;
-#[test]
+#[rstest::rstest]
 fn output_envelope_schema_accepts_the_serialized_wire_contract() {
 	use crate::capabilities::contracts::*;
 	let envelope = Envelope {
@@ -28,7 +28,7 @@ fn output_envelope_schema_accepts_the_serialized_wire_contract() {
 		.unwrap_or_else(|e| panic!("{e}: {schema}"));
 	assert!(serde_json::from_value::<Envelope>(wire).is_ok());
 }
-#[test]
+#[rstest::rstest]
 fn executable_contracts_are_derived_and_disabled_by_default() {
 	let mut tools = BTreeMap::new();
 	add(&mut tools, &CoreCapabilities::default());
