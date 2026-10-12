@@ -367,3 +367,20 @@ fn a_partial_turn_is_rejected_before_any_request_is_sent() {
 	};
 	assert!(request(native, false).validate().is_err());
 }
+
+#[test]
+fn model_turns_group_each_assistant_event_with_its_own_results() {
+	let context = context(vec![
+		human("start"),
+		assistant(1, "", &["a", "b"]),
+		tool("a"),
+		human("ok"),
+		tool("b"),
+		tool("a"),
+		assistant(2, "Done.", &[]),
+	]);
+	assert_eq!(
+		model_turns(&context.history),
+		[None, Some(0), Some(0), None, Some(0), None, Some(1)]
+	);
+}

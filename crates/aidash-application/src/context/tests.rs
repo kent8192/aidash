@@ -6,6 +6,8 @@ use aidash_domain::provider;
 use async_trait::async_trait;
 use std::sync::Mutex;
 
+mod native;
+
 struct FakeJev {
 	answer: fn(&str) -> Value,
 	seen: Mutex<Vec<(Value, Questions)>>,

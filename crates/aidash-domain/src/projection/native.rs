@@ -200,6 +200,36 @@ pub fn native_context(context: &Context, pinned: &Value) -> NativeContext {
 	}
 }
 
+/// The Model Turn each history entry belongs to, by ordinal from the oldest:
+/// an `Assistant` event and the `Tool` events of its calls up to the next
+/// one, grouped exactly as `native_context` renders them. Other entries
+/// belong to none. Compaction prunes, retains and summarizes by these units.
+pub fn model_turns(history: &[HistoryEntry]) -> Vec<Option<usize>> {
+	let mut turns = Vec::with_capacity(history.len());
+	let mut current: Option<(usize, &[String], Vec<&str>)> = None;
+	let mut next = 0;
+	for entry in history {
+		match &entry.event {
+			ContextEvent::Assistant { calls, .. } => {
+				current = Some((next, calls, Vec::new()));
+				turns.push(Some(next));
+				next += 1;
+			}
+			ContextEvent::Tool { call, .. } => match &mut current {
+				Some((turn, calls, seen))
+					if calls.contains(&call.id) && !seen.contains(&call.id.as_str()) =>
+				{
+					seen.push(call.id.as_str());
+					turns.push(Some(*turn));
+				}
+				_ => turns.push(None),
+			},
+			_ => turns.push(None),
+		}
+	}
+	turns
+}
+
 fn tool_envelope(seq: u64, call: &ToolCall, content: Value) -> Envelope {
 	Envelope::data(
 		Source::Tool,

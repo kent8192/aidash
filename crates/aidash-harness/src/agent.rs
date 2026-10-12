@@ -382,8 +382,14 @@ impl<'a> Executor<'a> {
 		};
 		// Workspace records other than messages are filtered one by one, and a
 		// summary rechecks only message sources: they stay verbatim instead.
-		plan.absorbed
-			.retain(|entry| summarizable(&entry.event, tools));
+		if fitting.native() {
+			aidash_application::context::retain_summarizable_turns(&mut plan.absorbed, |event| {
+				summarizable(event, tools)
+			});
+		} else {
+			plan.absorbed
+				.retain(|entry| summarizable(&entry.event, tools));
+		}
 		let (Some(first), Some(last)) = (plan.absorbed.first(), plan.absorbed.last()) else {
 			return Err(Error::Context(ContextFailure::ContextUnreducible));
 		};
