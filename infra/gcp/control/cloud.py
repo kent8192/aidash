@@ -322,9 +322,18 @@ class Terraform:
 
     def broker_configuration(self, environments):
         # Match Terraform's optional defaults and set ordering in persisted intent.
+        brokers = self.configuration.get("credential_brokers", {})
+        for key, value in brokers.items():
+            # Terraform drops the unknown attribute from its intent output, so a
+            # stale image would re-apply on every tick; refuse it instead (#151).
+            if "image" in value:
+                raise RuntimeError(
+                    f"credential_brokers.{key}.image is not configurable: the broker image "
+                    "digest comes from infra/gcp/environments/broker-image.json"
+                )
         return {
             key: self.normalized_broker(value)
-            for key, value in self.configuration.get("credential_brokers", {}).items()
+            for key, value in brokers.items()
             if key in environments
         }
 

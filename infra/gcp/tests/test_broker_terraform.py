@@ -66,10 +66,9 @@ class CredentialBrokerTerraformTests(unittest.TestCase):
             account = f"aidash-{environment}-broker@aidash-fixture.iam.gserviceaccount.com"
             service, = self.resources(run, "google_cloud_run_v2_service")
             self.assertEqual(service["template"][0]["service_account"], account)
-            deploy, = self.resources(run, "google_service_account_iam_member")
-            self.assertEqual(deploy["service_account_id"], f"projects/aidash-fixture/serviceAccounts/{account}")
-            self.assertEqual(deploy["role"], "roles/iam.serviceAccountUser")
-            self.assertEqual(deploy["member"], "serviceAccount:deploy@aidash-fixture.iam.gserviceaccount.com")
+            # The deploy identity holds an IAM deny on the broker SA's setIamPolicy, so
+            # bootstrap alone binds anything on it (including the deploy actAs grant).
+            self.assertFalse(self.resources(run, "google_service_account_iam_member"))
 
     def test_bootstrap_broker_bindings_are_the_only_byok_payload_accessors(self):
         resources = self.bootstrap_states["broker_environments"]
