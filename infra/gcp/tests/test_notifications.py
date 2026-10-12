@@ -124,7 +124,7 @@ class ReceiptBoundaryTests(unittest.TestCase):
             with self.subTest(identity=identity):
                 payload = message(receipt(identity, hostname=hostname), config)
                 self.assertEqual(payload["from"], "deployment.noreply@aidash.run")
-                self.assertEqual(payload["to"], recipient)
+                self.assertEqual(payload["to"], [recipient])
                 self.assertIn("URL: https://" + hostname, payload["text"])
                 self.assertIn(
                     "https://github.com/kent8192/aidash/actions/runs/1234",
@@ -190,6 +190,11 @@ class CloudflareTransportTests(unittest.TestCase):
     ):
         changes = [
             {"to": "attacker@example.com"},
+            # Cloudflare's API takes an array; a bare address is not the fixed shape.
+            {"to": "stg.deployment@aidash.run"},
+            {"to": ["attacker@example.com"]},
+            {"to": ["stg.deployment@aidash.run", "attacker@example.com"]},
+            {"to": []},
             {"from": "attacker@example.com"},
             {"bcc": "attacker@example.com"},
             {"subject": "status\r\nBcc: attacker@example.com"},
@@ -228,7 +233,7 @@ class CloudflareTransportTests(unittest.TestCase):
                 self.assertEqual(request.get_method(), "POST")
                 self.assertEqual(sender.opener.open.call_args.kwargs["timeout"], 30)
                 payload = json.loads(request.data)
-                self.assertEqual(payload["to"], "stg.deployment@aidash.run")
+                self.assertEqual(payload["to"], ["stg.deployment@aidash.run"])
                 self.assertEqual(payload["headers"]["X-Aidash-Event-ID"], "a" * 64)
                 self.assertNotIn("Message-ID", payload["headers"])
                 handler = next(

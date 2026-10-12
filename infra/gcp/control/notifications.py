@@ -184,7 +184,8 @@ def message(receipt, configuration):
         lines.append(f"Image {kind}: {reference}")
     return {
         "from": SENDER,
-        "to": recipient,
+        # Cloudflare Email Sending defines `to` as an array of addresses.
+        "to": [recipient],
         "subject": f"[Aidash {label}] {status} ({receipt['source_sha'][:12]})",
         "text": "\n".join(lines) + "\n",
         "headers": {
@@ -225,7 +226,13 @@ class CloudflareSender:
             "headers",
         }:
             raise Refused("invalid deployment mail fields")
-        if payload["from"] != SENDER or payload["to"] not in RECIPIENTS.values():
+        recipients = payload["to"]
+        if (
+            payload["from"] != SENDER
+            or not isinstance(recipients, list)
+            or len(recipients) != 1
+            or recipients[0] not in RECIPIENTS.values()
+        ):
             raise Refused("deployment mail requires the fixed sender and recipient")
         if not matches(
             r"\[Aidash (?:staging|production|test|pr-[1-9][0-9]{0,9})\] deployment (?:complete|failed) \([a-f0-9]{12}\)",
@@ -280,7 +287,7 @@ class CloudflareSender:
             or not isinstance(value.get("result"), dict)
         ):
             raise SendFailure(True)
-        result, recipient = value["result"], payload["to"]
+        result, recipient = value["result"], recipients[0]
         groups = {}
         for field in (
             "delivered",
