@@ -98,10 +98,10 @@ class CorpusTest(unittest.TestCase):
     def test_unavailable_features_are_reported_never_omitted(self):
         rows = evaluation.feature_availability(corpus(), None, {"exposure": "rejected"})
         status = {row["comparison"]: row["status"] for row in rows}
-        for name in ("completion-gate", "context-recovery", "repository-rules", "parallel-read-tools",
-                     "acp-adapter", "exposure"):
+        for name in ("completion-gate", "repository-rules", "acp-adapter", "exposure"):
             self.assertEqual(status[name], "feature-not-available")
-        self.assertEqual(status["streaming"], "not-measured", "#120 is on this branch but nothing measures it")
+        for name in ("context-recovery", "parallel-read-tools", "streaming"):
+            self.assertEqual(status[name], "not-measured", f"{name} is on this branch but nothing measures it")
         self.assertEqual(status["projection"], "available")
 
     def test_task_description_embeds_inputs_but_never_held_out_checks(self):

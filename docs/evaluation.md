@@ -233,12 +233,13 @@ version and Workspaces.
 | `prompt-cache` | Ordered → Ordered with `prompt_cache: explicit`     | #142  |
 | `exposure`     | Legacy exposure → `exposure: {version: deferred@1}` | #115  |
 
-`completion-gate` (#112), `context-recovery` (#113, the Summary Stage that
-distinguishes summary recovery from pruning), `repository-rules` (#117),
-`parallel-read-tools` (#119) and `acp-adapter` (#121) are reported as
-`feature-not-available`. `streaming` (#120) is on this branch but has no
-comparison yet (the scripted provider does not stream), so it is reported as
-`not-measured`: available, with nothing measured. A comparison whose Agent
+`completion-gate` (#112), `repository-rules` (#117) and `acp-adapter` (#121)
+are reported as `feature-not-available`. `context-recovery` (#113, the Summary
+Stage that distinguishes summary recovery from pruning), `parallel-read-tools`
+(#119) and `streaming` (#120) are on this branch but have no comparison yet
+(no task overflows a Context Policy, and the scripted provider does not
+stream), so they are reported as `not-measured`: available, with nothing
+measured. A comparison whose Agent
 definition the Node rejects at registration is an error and fails the command;
 only with `--allow-unavailable-arms` is it reported as `feature-not-available`
 with the rejection as its `detail`.
@@ -344,7 +345,8 @@ utility; this branch measures only the first deterministically.
 - One scripted probe per task; the deterministic tier says nothing about model
   quality.
 - Synthetic token counts, prices and cache hits.
-- Summary recovery cannot be observed until #113 lands.
+- Summary recovery (#113) and parallel read tools (#119) are on this branch
+  but not compared yet; both are reported as `not-measured`.
 - Live token counts come from Workspace events, capped at the latest 100; live
   spend is enforced from full per-Run reservations, not measured cost, and the
   provider-reported model identity is not recorded.

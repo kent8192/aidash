@@ -70,8 +70,8 @@ description = "Run completion gated on fresh, revision-bound verification eviden
 [[comparisons]]
 id = "context-recovery"
 issue = "#113"
-status = "feature-not-available"
-description = "Staged pruning plus the Summary Stage under a Context Policy; differentiates summary recovery from pruning."
+status = "not-measured"
+description = "Staged pruning plus the Summary Stage under a Context Policy is on this branch (#192), but no paired comparison overflows a Context Policy yet; nothing is measured."
 
 [[comparisons]]
 id = "repository-rules"
@@ -82,8 +82,8 @@ description = "Hierarchical repository rules loaded just in time."
 [[comparisons]]
 id = "parallel-read-tools"
 issue = "#119"
-status = "feature-not-available"
-description = "Independent read tools in bounded Tool Batches."
+status = "not-measured"
+description = "Independent read tools in bounded Tool Batches are on this branch (#187), but no paired comparison exists yet; nothing is measured."
 
 [[comparisons]]
 id = "streaming"
