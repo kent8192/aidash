@@ -54,7 +54,7 @@ pub struct InferenceUsage {
 	pub estimator_version: i32,
 	#[field(field_type = "text")]
 	pub estimate_confidence: String,
-	/// Reserved for the stable-prefix cache identity (#172).
+	/// The Stable Prefix cache identity of a salted request; NULL for Legacy.
 	#[field(field_type = "text", null = true)]
 	pub cache_identity: Option<String>,
 	#[field(field_type = "text")]
@@ -100,7 +100,7 @@ impl InferenceUsage {
 			.estimator(dispatch.estimate.estimator.clone())
 			.estimator_version(i32::try_from(dispatch.estimate.version).unwrap_or(i32::MAX))
 			.estimate_confidence(dispatch.estimate.confidence.as_str().to_owned())
-			.cache_identity(None)
+			.cache_identity(dispatch.cache_identity.clone())
 			.outcome(DISPATCHED.to_owned())
 			.rejection_class(None)
 			.completed_at(None)

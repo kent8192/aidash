@@ -1376,6 +1376,7 @@ impl<'a> Executor<'a> {
 							model_version: agent.model.version.clone(),
 							projection_version: agent.projection_version.number(),
 							estimate: RequestEstimate::conservative_bytes(request_tokens),
+							cache_identity: request.cache_identity(),
 						},
 					)
 					.await?;

@@ -461,6 +461,22 @@ impl ModelRequest {
 }
 
 impl ModelRequest {
+	/// Identity of the fixed head of a salted request's Stable Prefix: its
+	/// Projection Version, Cache Salt Key version, `system` and tool
+	/// definitions. It changes exactly when a provider can no longer reuse a
+	/// cached prefix from its start, such as a Load or Unload, a resident
+	/// Skill body or new instructions (ADR 0016), and holds neither the salt
+	/// nor any prompt text. `None` for an unsalted request.
+	pub fn cache_identity(&self) -> Option<String> {
+		let scope = self.cache_scope.as_ref()?;
+		Some(crate::registry::rules::digest(&json!({
+			"projection_version": self.context.projection_version(),
+			"key_version": scope.key_version,
+			"instructions": self.instructions,
+			"tools": self.tools,
+		})))
+	}
+
 	/// Bind the exact request metadata and ordered media hashes without persisting media bytes.
 	pub fn inference_digest(&self) -> String {
 		use sha2::{Digest, Sha256};

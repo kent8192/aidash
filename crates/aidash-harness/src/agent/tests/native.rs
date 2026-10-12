@@ -301,3 +301,38 @@ async fn native_usage_records_carry_projection_version_three(mut canonical: Fixt
 	};
 	assert_eq!(dispatch.projection_version, 3);
 }
+
+#[rstest]
+#[case::legacy(ProjectionVersion::Legacy)]
+#[case::ordered(ProjectionVersion::Ordered)]
+#[case::native(ProjectionVersion::Native)]
+#[tokio::test]
+async fn usage_records_carry_the_stable_prefix_cache_identity_of_salted_runs(
+	mut canonical: Fixture,
+	#[case] projection: ProjectionVersion,
+) {
+	// Arrange
+	Arc::get_mut(&mut canonical.backend.0).unwrap().projection = projection;
+	// Act: two steps with the same instructions and tools, then new instructions.
+	assert!(advance_sources(&mut canonical).await.is_err());
+	canonical.run.step += 1;
+	assert!(advance_sources(&mut canonical).await.is_err());
+	Arc::get_mut(&mut canonical.backend.0).unwrap().instructions = "Do it differently".into();
+	assert!(advance_sources(&mut canonical).await.is_err());
+	// Assert
+	let usage = canonical.backend.0.usage.lock().unwrap();
+	let identities = usage
+		.iter()
+		.map(|(dispatch, _)| dispatch.cache_identity.clone())
+		.collect::<Vec<_>>();
+	if projection.is_legacy() {
+		assert_eq!(identities, [None, None, None]);
+		return;
+	}
+	let requests = canonical.backend.0.requests.lock().unwrap();
+	assert_eq!(identities[0], requests[0].cache_identity());
+	assert!(identities[0].is_some());
+	assert_eq!(identities[0], identities[1], "the same Stable Prefix head");
+	assert_ne!(identities[1], identities[2], "instructions changed");
+	assert!(!identities[0].as_deref().unwrap().contains("tenant-a"));
+}
