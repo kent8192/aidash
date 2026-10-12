@@ -11,6 +11,10 @@
 #                          ground truth below is the live tier's input.
 # Neither of the last two is ever reported as passing.
 #
+# `coverage = "partial"` marks a deterministic scenario that observes only the
+# storage-safety half of its matrix row (the `observation` names what is left
+# to the live tier). Its checks passing is reported as `partial`, never `passed`.
+#
 # Source ids are symbolic. Each variant maps them to fresh unit UUIDs, so no
 # variant can read or overwrite another variant's units.
 version = "memory-corpus-v1"
@@ -54,6 +58,7 @@ matrix_row = "names-identifiers-near-duplicates"
 issue = "#110"
 evidence = "deterministic-api"
 observation = "Exact-source selection: a correction addressed to one identifier changes only that unit, never its near-duplicate neighbor. Ranked retrieval among neighbors is a live-tier measurement."
+coverage = "partial"
 sources = [
   { id = "inv-0105", scope = "participant", text = "Invoice INV-2026-0105 for Aster Labs is unpaid." },
   { id = "inv-0150", scope = "participant", text = "Invoice INV-2026-0150 for Aster Lab is unpaid." },
@@ -87,6 +92,7 @@ matrix_row = "irrelevant-and-empty"
 issue = "#110"
 evidence = "deterministic-api"
 observation = "A genuinely empty authorized bank returns an empty result, not an error and not another bank's units. Unnecessary injection and useful abstention under recall need the live tier."
+coverage = "partial"
 sources = []
 actions = [{ op = "query", visible = {} }]
 

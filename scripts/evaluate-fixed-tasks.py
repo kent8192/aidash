@@ -42,6 +42,8 @@ ROOT = evaluation.ROOT
 POSTGRES_IMAGE = "aidash-postgres:17-pg-jsonschema-0.3.4"
 NATS_IMAGE = "nats:2.12-alpine"
 DEFAULT_OUTPUT = ROOT / ".ignore/evaluation"
+# A deployed source fingerprint: a git commit (abbreviated or full) or a SHA-256, lowercase hexadecimal.
+SERVER_REVISION = re.compile(r"[0-9a-f]{7,64}")
 # Emergency cleanups for SIGTERM, which may arrive while worker threads block the
 # main thread: remove owned containers and stop the owned Node, then exit.
 CLEANUP = []
@@ -54,16 +56,27 @@ DETERMINISTIC_LIMITATIONS = [
     "Summary recovery (#113) and the other feature-not-available comparisons are reported, not measured.",
 ]
 LIVE_LIMITATIONS = [
-    "Provider model aliases and routes can change upstream without notice; the provider-reported identity "
-    "recorded per Usage Record is the only evidence of what served a request.",
+    "Provider model aliases and routes can change upstream without notice. This tier records no provider-reported "
+    "model or route identity (model.reported_identities is null): Usage Records have no HTTP read endpoint and "
+    "Workspace events do not carry the identity. model.route is only the connected Provider Credential's "
+    "catalog provider.",
     "Live outputs are restricted content: the manifest keeps digests and verifier results, not answers.",
-    "Spend is enforced from conservative per-attempt reservations; an attempt with unknown cost stays charged "
-    "at its full reservation.",
+    "Spend is enforced from conservative per-Run worst-case reservations. Until Usage Records can be read over "
+    "HTTP, every dispatched Run stays charged at its full reservation as uncertain, because interrupted and "
+    "retried attempts emit no model.completed event; spend.attempts[].provider_work lists the accepted attempts "
+    "the Node reported, for information only.",
+    "Code-execution oracles (python-tests) are not run in the live tier; they need a container runner "
+    "(--network none, no host environment, no parent process visibility).",
 ]
 
 
-def now():
-    return datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+def utc_now():
+    """The evaluator's wall clock: an aware UTC datetime. Injectable in live()."""
+    return datetime.datetime.now(datetime.UTC)
+
+
+def timestamp(moment):
+    return moment.astimezone(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
 
 def http_transport(base, timeout=180):
@@ -86,7 +99,12 @@ def http_transport(base, timeout=180):
 
 
 def checked(command, **kwargs):
-    return subprocess.run(command, check=True, capture_output=True, text=True, **kwargs).stdout
+    """Run a command; a failure never carries database passwords from its arguments."""
+    try:
+        return subprocess.run(command, check=True, capture_output=True, text=True, **kwargs).stdout
+    except subprocess.CalledProcessError as error:
+        raise subprocess.CalledProcessError(error.returncode, [evaluation.redact_secrets(part) for part in command],
+                                            error.stdout, error.stderr) from None
 
 
 def free_port():
@@ -171,8 +189,15 @@ def usage_reader_for(postgres, database, password, query):
     def read(run_id):
         if not re.fullmatch(r"[0-9a-f-]{36}", run_id):
             raise ValueError("invalid Run id")
-        output = checked(["docker", "exec", "-i", "-e", f"PGPASSWORD={password}", postgres, "psql", "-U", "aidash",
-                          "-d", database, "-tA", "-v", "ON_ERROR_STOP=1", "-v", f"run={run_id}"], input=query + ";\n")
+        try:
+            output = checked(["docker", "exec", "-i", "-e", f"PGPASSWORD={password}", postgres, "psql", "-U", "aidash",
+                              "-d", database, "-tA", "-v", "ON_ERROR_STOP=1", "-v", f"run={run_id}"],
+                             input=query + ";\n")
+        except subprocess.CalledProcessError as error:
+            # The message lands in runs[].error: keep the exit status and a redacted stderr tail only.
+            tail = " | ".join((error.stderr or "").strip().splitlines()[-3:])
+            raise RuntimeError("usage record read failed (exit "
+                               f"{error.returncode}): {evaluation.redact_secrets(tail, password)[:300]}") from None
         return [json.loads(line) for line in output.splitlines() if line.strip()]
     return read
 
@@ -247,14 +272,17 @@ def memory_matrix_deterministic(api, experiment, corpus, memory_corpus, model_re
     return executed
 
 
-def experiment_manifest(tier, corpus, memory_corpus, source, model, harness, variants, repeats, limits, limitations):
-    return {"schema_version": 1, "experiment_id": "fte-" + secrets.token_hex(6), "tier": tier, "created_at": now(),
+def experiment_manifest(tier, corpus, memory_corpus, source, model, harness, variants, repeats, limits, limitations,
+                        created_at=None):
+    return {"schema_version": 1, "experiment_id": "fte-" + secrets.token_hex(6), "tier": tier,
+            "created_at": created_at or timestamp(utc_now()),
             "aidash": source, "corpus": corpus["_snapshot"], "memory_corpus": memory_corpus["_snapshot"],
             "evaluator": evaluation.evaluator_identity(), "model": model, "harness": harness, "variants": variants,
             "repeat_count": repeats, "limits": limits, "reproducibility_limitations": limitations}
 
 
-def assemble(corpus, experiment, runs, availability, memory, calibrate, spend, limitations, error):
+def assemble(corpus, experiment, runs, availability, memory, calibrate, spend, limitations, error,
+             skipped_runs=()):
     aggregates = evaluation.aggregate(runs) if runs else []
     result = {"schema_version": 1, "grade": "measurement-only",
               "approvals": {"accuracy_claim": False, "cost_claim": False, "production_quality": False,
@@ -263,8 +291,33 @@ def assemble(corpus, experiment, runs, availability, memory, calibrate, spend, l
               "aggregates": aggregates, "comparisons": evaluation.compare(corpus, aggregates, runs),
               "feature_availability": availability, "memory_matrix": memory,
               "calibration": {"applied": calibrate, "failures": evaluation.calibrate(corpus, runs) if calibrate else []},
-              "spend": spend, "limitations": limitations, "error": error}
+              "spend": spend, "skipped_runs": [{"key": key, "reason": reason} for key, reason in skipped_runs],
+              "limitations": limitations, "error": error}
     return result
+
+
+def finalize(result, output):
+    """Validate and write a manifest. The record is written even when validation fails.
+
+    A manifest that fails validation is annotated in its `error` field rather
+    than discarded: it may be the only record of paid work. Returns the
+    validation failure, or None.
+    """
+    failure = None
+    try:
+        evaluation.validate_result(result)
+    except evaluation.CorpusError as invalid:
+        failure = invalid
+        summary = str(invalid).splitlines()[1:3]
+        result["error"] = "; ".join(filter(None, [result["error"], "manifest failed validation: " + " | ".join(summary)]))
+    evaluation.write_exclusive(output, result)
+    return failure
+
+
+def unavailable_arms_error(registration_errors):
+    detail = "; ".join(f"{name}: {reason}" for name, reason in sorted(registration_errors.items()))
+    return ("the Node rejected Agent definitions for comparisons the corpus marks available (" + detail +
+            "); pass --allow-unavailable-arms only when the tested Node is expected to lack the feature")
 
 
 def deterministic(args):
@@ -295,6 +348,7 @@ def deterministic(args):
     fixture_url = f"http://127.0.0.1:{server.server_port}"
     runs, variants, availability, memory, error = [], [], evaluation.feature_availability(corpus, args.comparison), None, None
     memory = evaluation.memory_matrix(memory_corpus, {})
+    model_refs = {}
     started = time.monotonic()
     with tempfile.TemporaryDirectory(prefix="aidash-fixed-task-") as private_path, contextlib.ExitStack() as stack:
         private = Path(private_path)
@@ -349,7 +403,6 @@ def deterministic(args):
             agent_ids = [runner.agent_id(prefix, planned) for planned in planned_runs]
             agent_ids += [f"{prefix}-memory-agent-{variant['id']}" for variant in memory_corpus["variants"]]
             experiment.authorize(agent_ids)
-            model_refs = {}
             for name, spec in corpus["models"].items():
                 config = runner.model_config(dict(spec, model_id=model_ids[name]), fixture_url, name)
                 model_refs[name] = dict(experiment.register("model", f"{prefix}-model-{name}", config),
@@ -357,6 +410,9 @@ def deterministic(args):
             variants, registration_errors = runner.register_variants(experiment, corpus, planned_runs, model_refs,
                                                                      fixture_url)
             availability = evaluation.feature_availability(corpus, args.comparison, registration_errors)
+            if registration_errors and not args.allow_unavailable_arms:
+                # An arm the corpus marks available was rejected: a harness regression, not an absent feature.
+                error = unavailable_arms_error(registration_errors)
             usage = usage_reader_for(postgres, "aidash_evaluation", password, query)
             # Runs are independent (own Workspace, Task and fixture probe state), so up to
             # --parallel of them share the Node's worker slots. Results keep plan order.
@@ -378,12 +434,12 @@ def deterministic(args):
                 executed = memory_matrix_deterministic(api, experiment, corpus, memory_corpus, model_refs,
                                                        fixture_url, args.skip_rust_evidence)
                 memory = evaluation.memory_matrix(memory_corpus, executed)
-        except Exception as failure:
-            error = f"{type(failure).__name__}: {failure}"
+        except (Exception, KeyboardInterrupt) as failure:
+            error = (error + "; " if error else "") + f"{type(failure).__name__}: {failure}"
         if fixture.errors:
             error = (error + "; " if error else "") + "fixture faults: " + "; ".join(fixture.errors[:5])
     server.shutdown()
-    model = {"kind": "scripted-fixture", "registrations": {name: ref for name, ref in locals().get("model_refs", {}).items()},
+    model = {"kind": "scripted-fixture", "registrations": dict(model_refs),
              "reported_identities": sorted(model_ids.values()), "route": "local scripted fixture", "mutable_alias": False}
     harness = {"compaction": "legacy prune-only Context Policy with fixture Jev classifier", "cache_salt": True,
                "provider_credential": None, "disclosure_approval": None, "jev_classifier": "fixture: drop all prunable"}
@@ -396,13 +452,13 @@ def deterministic(args):
                                            args.repeats, limits, DETERMINISTIC_LIMITATIONS)
     result = assemble(corpus, experiment_value, runs, availability, memory, True, None,
                       DETERMINISTIC_LIMITATIONS, error)
-    evaluation.validate_result(result)
-    evaluation.write_exclusive(output, result)
+    invalid = finalize(result, output)
+    error = result["error"]
     print(evaluation.summary_table(result))
     print(f"Result manifest: {output}")
     failures = result["calibration"]["failures"]
     memory_failures = [item["id"] for item in result["memory_matrix"]["scenarios"] if item["status"] in ("failed", "error")]
-    if error or failures or memory_failures:
+    if error or failures or memory_failures or invalid:
         for line in failures:
             print("calibration: " + line, file=sys.stderr)
         for line in memory_failures:
@@ -413,8 +469,12 @@ def deterministic(args):
     return 0
 
 
-def live(args, read_json=None, transport=None, clock=time.monotonic, sleep=time.sleep, wall_now=now):
-    """Opt-in live tier. Every refusal happens before any registration, Run or provider work."""
+def live(args, read_json=None, transport=None, clock=time.monotonic, sleep=time.sleep, wall_now=utc_now):
+    """Opt-in live tier. Every refusal happens before any registration, Run or provider work.
+
+    After the guard rails pass, the manifest is always written, including after
+    an error or an interrupt: it may be the only record of paid work.
+    """
     corpus = evaluation.load_corpus(args.corpus)
     memory_corpus = evaluation.load_memory_corpus(args.memory_corpus)
     for index, task in enumerate(corpus["tasks"]):
@@ -425,6 +485,9 @@ def live(args, read_json=None, transport=None, clock=time.monotonic, sleep=time.
     if not operator or not subject:
         raise evaluation.GuardRefusal(f"{args.token_env} (operator) and {args.subject_token_env} (Tenant subject) "
                                       "must both be set")
+    if not args.server_revision or not SERVER_REVISION.fullmatch(args.server_revision):
+        raise evaluation.GuardRefusal("--server-revision must be the evaluated Node's source fingerprint: 7 to 64 "
+                                      "lowercase hexadecimal characters (a git commit or a SHA-256)")
     if not args.provider_credential:
         raise evaluation.GuardRefusal("an explicitly connected Tenant Provider Credential is required")
     mapping = {}
@@ -444,57 +507,87 @@ def live(args, read_json=None, transport=None, clock=time.monotonic, sleep=time.
     approval = read_json(args.disclosure_approval) if args.disclosure_approval else None
     evaluation.require_live_authorization(credential, approval, corpus["_snapshot"]["sha256"], models,
                                           args.max_spend_nanocredits, args.max_wall_seconds, wall_now())
+    evaluation.check_live_models(models)
     planned_runs = [planned for planned in evaluation.plan(corpus, args.task, args.comparison)
                     if planned["model"] in mapping]
-    if not args.allow_oracle_code_execution and any(p["task"]["oracle"]["kind"] == "python-tests" for p in planned_runs):
-        raise evaluation.GuardRefusal("code-execution oracles run model-written code locally; pass "
-                                      "--allow-oracle-code-execution or select tasks without them")
     if not planned_runs:
         raise evaluation.GuardRefusal("no planned Run uses a mapped model")
+    if any(p["task"]["oracle"]["kind"] == "python-tests" for p in planned_runs):
+        raise evaluation.GuardRefusal(
+            "python-tests oracles run model-written code and are refused in the live tier: stripping the "
+            "environment does not hide the parent's tokens (ps eww, /proc/<ppid>/environ) or the network, and a "
+            "test process can exit 0 on its own. They need a container runner (--network none, no host "
+            "environment, no parent process visibility). Select tasks without them with --task")
     ledger = evaluation.SpendLedger(args.max_spend_nanocredits, args.max_wall_seconds, clock)
-    identity = api.get("/.well-known/aidash")
+    created_at = timestamp(wall_now())
     prefix = "fte" + secrets.token_hex(3)
-    experiment = runner.Experiment(api, identity["id"], args.tenant, prefix)
-    experiment.token = subject
-    model_refs = {}
-    for name, reference in mapping.items():
-        identifier, _, version = reference.partition("@")
-        model_refs[name] = {"id": identifier, "version": version, "config_sha256":
-                            evaluation.canonical_sha256(models[reference]), "model_id": models[reference]["model_id"]}
-    for planned in planned_runs:
-        planned["corpus"] = corpus
-        planned["live_model"] = mapping[planned["model"]]
-    # Fixture tools point at an unroutable endpoint; their approvals are denied by
-    # default, so a live Run never reaches an external tool effect.
-    variants, registration_errors = runner.register_variants(experiment, corpus, planned_runs, model_refs,
-                                                             args.tool_endpoint)
-    prices = approval["prices"]
-    results = runner.live_runs(api, experiment, corpus, planned_runs, args.repeats, ledger, models, prices,
-                               args.run_timeout, clock, sleep)
-    runs = [evaluation.run_result(corpus, planned, repeat, observation, "live", args.allow_oracle_code_execution)
-            for planned, repeat, observation in results]
+    model_refs = {name: {"id": reference.partition("@")[0], "version": reference.partition("@")[2],
+                         "config_sha256": evaluation.canonical_sha256(models[reference]),
+                         "model_id": models[reference]["model_id"]} for name, reference in mapping.items()}
+    variants, registration_errors, observations, skipped, error = [], {}, [], [], None
+    interrupted = False
+    try:
+        identity = api.get("/.well-known/aidash")
+        experiment = runner.Experiment(api, identity["id"], args.tenant, prefix)
+        experiment.token = subject
+        for planned in planned_runs:
+            planned["corpus"] = corpus
+            planned["live_model"] = mapping[planned["model"]]
+        # Fixture tools point at an unroutable endpoint; their approvals are denied
+        # by default, so a live Run never reaches an external tool effect.
+        variants, registration_errors = runner.register_variants(experiment, corpus, planned_runs, model_refs,
+                                                                 args.tool_endpoint)
+        if registration_errors and not args.allow_unavailable_arms:
+            error = unavailable_arms_error(registration_errors)
+        else:
+            skipped = runner.live_runs(api, experiment, corpus, planned_runs, args.repeats, ledger, models,
+                                       approval["prices"], args.run_timeout, observations, clock, sleep)
+    except KeyboardInterrupt:
+        interrupted = True
+        error = "interrupted by the operator (KeyboardInterrupt)"
+    except Exception as failure:  # Recorded; the ledger and any finished Runs are still written.
+        error = f"{type(failure).__name__}: {failure}"
+    recorded = {f"{planned['task']['id']}/{planned['comparison']['id']}/{planned['arm']}/{repeat}"
+                for planned, repeat, _ in observations}
+    listed = {key for key, _ in skipped}
+    reason = "not dispatched: " + (error or "live dispatch stopped")
+    skipped += [(key, reason) for key in (
+        f"{planned['task']['id']}/{planned['comparison']['id']}/{planned['arm']}/{repeat}"
+        for repeat in range(1, args.repeats + 1) for planned in planned_runs if "agent_ref" in planned)
+        if key not in recorded and key not in listed]
+    runs = []
+    for planned, repeat, observation in observations:
+        try:
+            runs.append(evaluation.run_result(corpus, planned, repeat, observation, "live", False))
+        except Exception as failure:  # A grading fault must not discard the record of paid work.
+            error = (error + "; " if error else "") + f"grading failed for run {repeat} of " \
+                f"{planned['task']['id']}: {type(failure).__name__}: {failure}"
     source = evaluation.source_identity(server_revision=args.server_revision)
     source.update({"commit": None, "dirty": None, "dirty_diff_sha256": None})
-    model = {"kind": "live-provider", "registrations": model_refs,
-             "reported_identities": sorted({str(work.get("model")) for attempt in ledger.attempts
-                                            for work in attempt.get("provider_work", []) if work.get("model")}),
-             "route": credential.get("provider"), "mutable_alias": True}
+    # Neither Usage Records nor model.completed events expose the provider-reported identity (I-5).
+    model = {"kind": "live-provider", "registrations": model_refs, "reported_identities": None,
+             "route": f"configured credential provider: {credential.get('provider')}", "mutable_alias": True}
     harness = {"compaction": "server-configured", "cache_salt": True, "provider_credential": args.provider_credential,
                "disclosure_approval": evaluation.canonical_sha256(approval), "jev_classifier": "server-configured"}
     limits = {"run_timeout_seconds": args.run_timeout, "wall_seconds": args.max_wall_seconds,
               "max_output_tokens": max(config["max_output_tokens"] for config in models.values()),
               "spend_ceiling_nanocredits": args.max_spend_nanocredits}
     experiment_value = experiment_manifest("live", corpus, memory_corpus, source, model, harness, variants,
-                                           args.repeats, limits, LIVE_LIMITATIONS)
+                                           args.repeats, limits, LIVE_LIMITATIONS, created_at)
     availability = evaluation.feature_availability(corpus, args.comparison, registration_errors)
     memory = evaluation.memory_matrix(memory_corpus, {})
     result = assemble(corpus, experiment_value, runs, availability, memory, False, ledger.summary(),
-                      LIVE_LIMITATIONS, None)
-    evaluation.validate_result(result)
+                      LIVE_LIMITATIONS, error, skipped)
     output = Path(args.output) if args.output else DEFAULT_OUTPUT / f"live-{prefix}.json"
-    evaluation.write_exclusive(output, result)
+    invalid = finalize(result, output)
     print(evaluation.summary_table(result))
     print(f"Result manifest: {output}")
+    if result["error"]:
+        print("error: " + result["error"], file=sys.stderr)
+    if interrupted:
+        return 130
+    if result["error"] or invalid:
+        return 1
     return 0 if ledger.refusal is None else 3
 
 
@@ -529,6 +622,9 @@ def main(argv=None):
                              help="Runs per task arm (default 1 deterministic, 3 live)")
         command.add_argument("--run-timeout", type=float, default=180.0)
         command.add_argument("--output", type=Path)
+        command.add_argument("--allow-unavailable-arms", action="store_true",
+                             help="treat an Agent definition the Node rejects for an available comparison as "
+                                  "feature-not-available instead of failing (for a baseline Node that predates it)")
     deterministic_command = commands.choices["deterministic"]
     deterministic_command.add_argument("--parallel", type=int, default=4,
                                        help="concurrent Runs; the Node has four worker slots")
@@ -543,7 +639,9 @@ def main(argv=None):
     live_command.add_argument("--token-env", default="AIDASH_EVALUATION_TOKEN", help="operator bearer token variable")
     live_command.add_argument("--subject-token-env", default="AIDASH_EVALUATION_SUBJECT_TOKEN",
                               help="Tenant subject bearer token variable used to create and run Tasks")
-    live_command.add_argument("--server-revision", help="deployed source fingerprint of the evaluated Node")
+    live_command.add_argument("--server-revision", required=True,
+                              help="deployed source fingerprint of the evaluated Node: 7 to 64 lowercase "
+                                   "hexadecimal characters (a git commit or SHA-256)")
     live_command.add_argument("--tool-endpoint", default="http://127.0.0.1:9/aidash-fixed-task-evaluation",
                               help="endpoint declared by fixture tools; approvals for them are denied")
     live_command.add_argument("--provider-credential", help="connected Tenant Provider Credential ID")
@@ -552,7 +650,6 @@ def main(argv=None):
     live_command.add_argument("--disclosure-approval", type=Path)
     live_command.add_argument("--max-spend-nanocredits", type=int)
     live_command.add_argument("--max-wall-seconds", type=float)
-    live_command.add_argument("--allow-oracle-code-execution", action="store_true")
     validate_parser = commands.add_parser("validate")
     validate_parser.add_argument("manifest", type=Path)
     args = parser.parse_args(argv)

@@ -192,14 +192,18 @@ def approves(task, prompt, approve_fixture_tools, prefix):
             and prompt.startswith(f"Approve this exact external tool action once? Tool: {prefix}-"))
 
 
+def blank_observation():
+    return {"run_id": None, "workspace": None, "phase": None, "error": None, "human_answers": [], "tool_calls": [],
+            "final_answer": None, "steps": None, "compactions": None, "requests": None,
+            "usage_records": None, "interrupted": False, "infrastructure_error": None, "wall_ms": 0.0}
+
+
 def run_task(api, experiment, planned, repeat, agent_ref, fixture=None, usage_reader=None, timeout=300.0,
              interval=1.0, clock=time.monotonic, sleep=time.sleep, approve_fixture_tools=False):
     """Execute one Task Run end to end and return raw observations; never raises for Run failures."""
     task = planned["task"]
     token = experiment.token
-    observation = {"run_id": None, "workspace": None, "phase": None, "error": None, "human_answers": [], "tool_calls": [],
-                   "final_answer": None, "steps": None, "compactions": None, "requests": None,
-                   "usage_records": None, "interrupted": False, "infrastructure_error": None, "wall_ms": 0.0}
+    observation = blank_observation()
     started = clock()
     answers = iter(task.get("human_answers", []))
     try:
@@ -275,7 +279,13 @@ def run_task(api, experiment, planned, repeat, agent_ref, fixture=None, usage_re
 
 
 def register_variants(experiment, corpus, planned_runs, model_refs, fixture_url):
-    """Register tools and one Agent per (task, comparison, arm). Returns variants and per-comparison errors."""
+    """Register tools and one Agent per (task, comparison, arm). Returns variants and per-comparison errors.
+
+    The errors are Agent registrations the Node rejected for arms the corpus
+    marks available. Callers decide whether that is a failure; the deterministic
+    command treats it as one unless explicitly told the arm is expected to be
+    rejected.
+    """
     tools = {}
     skills = {}
     variants = []
@@ -422,12 +432,13 @@ def run_worst_case(task, corpus, model_config, price):
     return steps * per_attempt
 
 
-def observed_provider_work(api, token, workspace, run_id, price):
-    """Every inference the Node reported for a Run, from its Workspace events.
+def observed_provider_work(api, token, workspace, run_id):
+    """Accepted inference attempts the Node reported for a Run, from its Workspace events.
 
-    Returns (attempts, cost). cost is None whenever any attempt's usage is
-    unknown or the event window may be incomplete; the ledger then keeps the
-    Run's full reservation charged.
+    Informational only. `model.completed` is emitted for accepted attempts, so
+    interrupted or retried attempts do not appear, and its payload carries no
+    provider-reported model or route. The ledger therefore never prices a Run
+    from this list.
     """
     events = api.get(f"/api/workspaces/{workspace}", token).get("events", [])
     attempts = []
@@ -437,50 +448,58 @@ def observed_provider_work(api, token, workspace, run_id, price):
             continue
         usage = data.get("context_usage") or {}
         attempts.append({"step": data.get("step"), "input_tokens": usage.get("input_tokens"),
-                         "output_tokens": usage.get("output_tokens"), "model": data.get("model"),
-                         "provider": data.get("provider")})
-    complete = len(events) < 100 and all(item["input_tokens"] is not None and item["output_tokens"] is not None
-                                         for item in attempts)
-    cost = None
-    if complete:
-        cost = sum(item["input_tokens"] * price["input_nanocredits_per_token"]
-                   + item["output_tokens"] * price["output_nanocredits_per_token"] for item in attempts)
-    return attempts, cost
+                         "output_tokens": usage.get("output_tokens")})
+    return attempts
 
 
-def live_runs(api, experiment, corpus, planned_runs, repeats, ledger, models, prices, timeout,
+def live_runs(api, experiment, corpus, planned_runs, repeats, ledger, models, prices, timeout, observations,
               clock=time.monotonic, sleep=time.sleep):
     """Dispatch live Runs only inside the ledger's spend and time ceilings.
 
     Each Run is reserved at its worst case before dispatch; a refusal stops all
-    further dispatch and is recorded. Runs that fail, time out or report unknown
-    usage keep their full reservation charged.
+    further dispatch. Every Run, completed or not, stays charged at its full
+    reservation as uncertain: Usage Records have no HTTP read endpoint yet, and
+    the Workspace events omit interrupted and retried attempts, so no observed
+    cost may release headroom under the hard ceiling.
+
+    Appends each finished (planned, repeat, observation) to `observations`,
+    which the caller owns so that an exception or interrupt cannot lose the
+    record of work already dispatched. Returns the (key, reason) of every Run
+    that was planned but never dispatched.
     """
     from fixed_task_evaluation import GuardRefusal
-    observations = []
+    skipped = []
+    refusal = None
     for repeat in range(1, repeats + 1):
         for planned in planned_runs:
             if "agent_ref" not in planned:
                 continue
             key = f"{planned['task']['id']}/{planned['comparison']['id']}/{planned['arm']}/{repeat}"
+            if refusal is not None:
+                skipped.append((key, refusal))
+                continue
             model = planned["live_model"]
             try:
                 attempt = ledger.reserve(key, run_worst_case(planned["task"], corpus, models[model], prices[model]))
-            except GuardRefusal:
-                return observations
-            remaining = max(1.0, min(timeout, ledger.deadline - clock()))
-            observation = run_task(api, experiment, planned, repeat, planned["agent_ref"], timeout=remaining,
-                                   clock=clock, sleep=sleep)
-            cost = None
-            if observation["run_id"] and observation.get("workspace"):
-                try:
-                    work, cost = observed_provider_work(api, experiment.token, observation["workspace"],
-                                                        observation["run_id"], prices[model])
-                    attempt["provider_work"] = work
-                except Exception as error:  # Unknown usage stays charged.
-                    attempt["provider_work_error"] = f"{type(error).__name__}: {error}"
-            if observation["phase"] != "COMPLETED" or observation["interrupted"]:
-                cost = None
-            ledger.settle(attempt, cost)
-            observations.append((planned, repeat, observation))
-    return observations
+            except GuardRefusal as error:
+                refusal = f"not dispatched after refusal: {error}"
+                skipped.append((key, refusal))
+                continue
+            try:
+                remaining = max(1.0, min(timeout, ledger.deadline - clock()))
+                observation = run_task(api, experiment, planned, repeat, planned["agent_ref"], timeout=remaining,
+                                       clock=clock, sleep=sleep)
+                if observation["run_id"] and observation.get("workspace"):
+                    try:
+                        attempt["provider_work"] = observed_provider_work(api, experiment.token,
+                                                                          observation["workspace"],
+                                                                          observation["run_id"])
+                    except Exception as error:  # Informational only; the reservation stays charged.
+                        attempt["provider_work_error"] = f"{type(error).__name__}: {error}"
+                observations.append((planned, repeat, observation))
+            except BaseException:  # Ctrl-C and the like: the in-flight Run is counted, never dropped.
+                observations.append((planned, repeat, dict(blank_observation(), interrupted=True)))
+                raise
+            finally:
+                ledger.settle(attempt, None)
+    return skipped

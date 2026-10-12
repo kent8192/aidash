@@ -3,15 +3,20 @@
 These run without Docker, credentials or network: every Node interaction goes
 through an in-memory fake of the HTTP API.
 """
+import contextlib
+import datetime
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
 import shutil
 import stat
+import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import fixed_task_evaluation as evaluation  # noqa: E402
@@ -94,8 +99,9 @@ class CorpusTest(unittest.TestCase):
         rows = evaluation.feature_availability(corpus(), None, {"exposure": "rejected"})
         status = {row["comparison"]: row["status"] for row in rows}
         for name in ("completion-gate", "context-recovery", "repository-rules", "parallel-read-tools",
-                     "streaming", "acp-adapter", "exposure"):
+                     "acp-adapter", "exposure"):
             self.assertEqual(status[name], "feature-not-available")
+        self.assertEqual(status["streaming"], "not-measured", "#120 is on this branch but nothing measures it")
         self.assertEqual(status["projection"], "available")
 
     def test_task_description_embeds_inputs_but_never_held_out_checks(self):
@@ -542,6 +548,21 @@ class MemoryTest(unittest.TestCase):
         self.assertEqual(status["corrected-superseded-knowledge"], "not-run")
         self.assertNotIn("passed", matrix["summary"])
 
+    def test_scenarios_that_observe_only_storage_safety_report_partial_not_passed(self):
+        memory = evaluation.load_memory_corpus()
+        passed = {item["id"]: {"status": "passed", "variants": [], "checks": [], "detail": None}
+                  for item in memory["scenarios"] if item["evidence"] == "deterministic-api"}
+        matrix = evaluation.memory_matrix(memory, passed)
+        status = {item["id"]: item["status"] for item in matrix["scenarios"]}
+        self.assertEqual({key for key, value in status.items() if value == "partial"},
+                         {"exact-identifier-near-duplicates", "empty-authorized-set"})
+        self.assertEqual(status["clipped-preview-replacement"], "passed")
+        detail = next(item["detail"] for item in matrix["scenarios"] if item["id"] == "empty-authorized-set")
+        self.assertIn("live tier", detail)
+        # A failure is never softened to partial.
+        failed = {key: dict(value, status="failed") for key, value in passed.items()}
+        self.assertNotIn("partial", evaluation.memory_matrix(memory, failed)["summary"])
+
     def test_scenario_actions_detect_a_silent_stale_replacement(self):
         memory = evaluation.load_memory_corpus()
         scenario = next(item for item in memory["scenarios"] if item["id"] == "clipped-preview-replacement")
@@ -566,7 +587,8 @@ class MemoryTest(unittest.TestCase):
 
 
 class LiveGuardTest(unittest.TestCase):
-    NOW = "2026-10-11T00:00:00.000000Z"
+    NOW = datetime.datetime(2026, 10, 11, tzinfo=datetime.UTC)
+    ENV = {"AIDASH_EVALUATION_TOKEN": "operator", "AIDASH_EVALUATION_SUBJECT_TOKEN": "subject"}
 
     def approval(self, value, **overrides):
         approval = {"approver": "operator", "approved_at": "2026-10-10T00:00:00Z",
@@ -598,6 +620,43 @@ class LiveGuardTest(unittest.TestCase):
                 with self.assertRaises(evaluation.GuardRefusal):
                     evaluation.require_live_authorization(**dict(good, **override))
 
+    def test_approval_times_are_compared_as_instants_and_fields_are_type_checked(self):
+        value = corpus()
+        credential = {"state": "active", "provider": "openrouter"}
+        models = {"live@1.0.0": {"provider_credential": "openrouter", "credential_env": None}}
+        good = dict(credential=credential, corpus_sha256=value["_snapshot"]["sha256"], models=models,
+                    ceiling=1_000_000, wall_seconds=60, now=self.NOW)
+
+        def authorize(**overrides):
+            return evaluation.require_live_authorization(approval=self.approval(value, **overrides), **good)
+        # +09:00 renders 2026-10-11T08:59 as a "later" string than 2026-10-11T00:00Z, but it is the same instant
+        # as 2026-10-10T23:59Z: still before NOW, so the approval has expired.
+        with self.assertRaisesRegex(evaluation.GuardRefusal, "expired"):
+            authorize(expires_at="2026-10-11T08:59:00+09:00")
+        self.assertTrue(authorize(expires_at="2026-10-11T09:01:00+09:00"))
+        self.assertTrue(authorize(expires_at="2026-10-12T00:00:00.500000Z"))
+        refusals = [
+            ("dated in the future", dict(approved_at="2026-10-11T00:00:01Z")),
+            ("dated in the future", dict(approved_at="2026-10-11T09:00:01+09:00")),
+            ("at or after its expiry", dict(approved_at="2026-10-12T00:00:00Z")),
+            ("needs a UTC offset", dict(expires_at="2026-10-12T00:00:00")),
+            ("not an ISO 8601", dict(expires_at="tomorrow")),
+            ("expires_at must be an ISO 8601 string", dict(expires_at=20261012)),
+            ("approved_at must be an ISO 8601 string", dict(approved_at=None)),
+            ("models must be a list", dict(models="live@1.0.0")),
+            ("max_spend_nanocredits must be a positive integer", dict(max_spend_nanocredits="10000000")),
+            ("max_spend_nanocredits must be a positive integer", dict(max_spend_nanocredits=True)),
+            ("approver must be a non-empty string", dict(approver=["operator"])),
+            ("prices must be an object", dict(prices=[])),
+            ("prices for live@1.0.0 must be an object", dict(prices={"live@1.0.0": 5})),
+        ]
+        for pattern, override in refusals:
+            with self.subTest(pattern, override=override):
+                with self.assertRaisesRegex(evaluation.GuardRefusal, pattern):
+                    authorize(**override)
+        with self.assertRaisesRegex(evaluation.GuardRefusal, "aware datetime"):
+            evaluation.require_live_authorization(approval=self.approval(value), **dict(good, now="2026-10-11"))
+
     def test_ledger_refuses_before_exceeding_the_ceiling_and_keeps_uncertain_charges(self):
         clock = Clock()
         ledger = evaluation.SpendLedger(100, 10, clock)
@@ -619,7 +678,8 @@ class LiveGuardTest(unittest.TestCase):
         values = ["live", "--base-url", "http://node.invalid", "--tenant", "acme", "--provider-credential", "pc-1",
                   "--model", "standard=live@1.0.0", "--disclosure-approval", "approval.json",
                   "--max-spend-nanocredits", "1000000000", "--max-wall-seconds", "60", "--task",
-                  "structured-data-overdue-totals", "--comparison", "projection", "--repeats", "1"]
+                  "structured-data-overdue-totals", "--comparison", "projection", "--repeats", "1",
+                  "--server-revision", "0123abc"]
         for key, value in overrides.items():
             index = values.index(key)
             if value is None:
@@ -631,29 +691,29 @@ class LiveGuardTest(unittest.TestCase):
         def fake_live(args, **_):
             captured["args"] = args
             return 0
-        original = cli.live
-        cli.live = fake_live
-        try:
+        with mock.patch.object(cli, "live", fake_live):
             cli.main(values)
-        finally:
-            cli.live = original
         return captured["args"]
 
-    def live_node(self, credential_state="active", phase="COMPLETED"):
+    def live_node(self, credential_state="active", phase="COMPLETED", model_config=None, reject_agents=False):
         node = FakeNode([phase])
         registered = []
+        config = {"provider_credential": "openrouter", "credential_env": None, "model_id": "vendor/model",
+                  "context_window": 1000, "max_output_tokens": 100}
+        config.update(model_config or {})
+        config = {key: value for key, value in config.items() if value is not ...}
 
         def call(method, path, body, token):
             if path.startswith("/api/tenants/acme/provider-credentials/"):
                 return 200, {"state": credential_state, "provider": "openrouter"}
             if path == "/api/registry/live/1.0.0":
-                return 200, {"config": {"provider_credential": "openrouter", "credential_env": None,
-                                        "model_id": "vendor/model", "context_window": 1000,
-                                        "max_output_tokens": 100}}
+                return 200, {"config": config}
             if path == "/.well-known/aidash":
                 return 200, {"id": "aidash://live"}
             if path == "/api/registry" or path.endswith("/catalog"):
                 registered.append(path)
+                if reject_agents and body and body.get("kind") == "agent":
+                    return 400, {"error": "unsupported field"}
                 return 200, {}
             return node.call(method, path, body, token)
         return call, registered
@@ -662,12 +722,11 @@ class LiveGuardTest(unittest.TestCase):
         value = corpus()
         approval = self.approval(value, models=["live@1.0.0"])
         call, registered = self.live_node()
-        os.environ.pop("AIDASH_EVALUATION_TOKEN", None)
-        with self.assertRaisesRegex(evaluation.GuardRefusal, "must both be set"):
-            cli.live(self.args(), read_json=lambda _: approval, transport=call)
-        os.environ["AIDASH_EVALUATION_TOKEN"] = "operator"
-        os.environ["AIDASH_EVALUATION_SUBJECT_TOKEN"] = "subject"
-        try:
+        with mock.patch.dict(os.environ, self.ENV):
+            os.environ.pop("AIDASH_EVALUATION_TOKEN")
+            with self.assertRaisesRegex(evaluation.GuardRefusal, "must both be set"):
+                cli.live(self.args(), read_json=lambda _: approval, transport=call)
+        with mock.patch.dict(os.environ, self.ENV):
             with self.assertRaisesRegex(evaluation.GuardRefusal, "Provider Credential is required"):
                 cli.live(self.args(**{"--provider-credential": None}), read_json=lambda _: approval, transport=call)
             with self.assertRaisesRegex(evaluation.GuardRefusal, "disclosure approval document is required"):
@@ -679,43 +738,192 @@ class LiveGuardTest(unittest.TestCase):
             with self.assertRaisesRegex(evaluation.GuardRefusal, "not active"):
                 cli.live(self.args(), read_json=lambda _: approval, transport=revoked)
             self.assertEqual(registered, [], "no Registry write may precede the guard rails")
-        finally:
-            os.environ.pop("AIDASH_EVALUATION_TOKEN", None)
-            os.environ.pop("AIDASH_EVALUATION_SUBJECT_TOKEN", None)
+
+    def test_live_refuses_expired_future_offset_and_mistyped_approvals_before_any_work(self):
+        value = corpus()
+        call, registered = self.live_node()
+        cases = {
+            "expired": dict(expires_at="2026-10-11T08:59:00+09:00"),
+            "future": dict(approved_at="2026-10-11T00:00:01+00:00"),
+            "needs a UTC offset": dict(expires_at="2026-10-12T00:00:00"),
+            "ISO 8601 string": dict(expires_at=1_788_000_000),
+            "positive integer": dict(max_spend_nanocredits="1000000000"),
+        }
+        with mock.patch.dict(os.environ, self.ENV):
+            for pattern, override in cases.items():
+                with self.subTest(pattern):
+                    approval = self.approval(value, **{"max_spend_nanocredits": 10_000_000_000, **override})
+                    with self.assertRaisesRegex(evaluation.GuardRefusal, pattern):
+                        cli.live(self.args(), read_json=lambda _, approval=approval: approval, transport=call,
+                                 wall_now=lambda: self.NOW)
+        self.assertEqual(registered, [])
+
+    def test_live_requires_a_well_formed_server_revision(self):
+        value = corpus()
+        approval = self.approval(value)
+        call, registered = self.live_node()
+        with mock.patch.dict(os.environ, self.ENV):
+            for bad in ("", "main", "ABCDEF1", "abc12", "g" * 40, "a" * 65):
+                with self.subTest(bad):
+                    args = self.args()
+                    args.server_revision = bad
+                    with self.assertRaisesRegex(evaluation.GuardRefusal, "server-revision"):
+                        cli.live(args, read_json=lambda _: approval, transport=call, wall_now=lambda: self.NOW)
+        self.assertEqual(registered, [])
+        with self.assertRaises(SystemExit):
+            with contextlib.redirect_stderr(io.StringIO()):
+                cli.main(["live", "--base-url", "http://node.invalid", "--tenant", "acme"])
+
+    def test_live_refuses_code_execution_oracles_unconditionally(self):
+        value = corpus()
+        approval = self.approval(value, max_spend_nanocredits=10_000_000_000)
+        call, registered = self.live_node()
+        with mock.patch.dict(os.environ, self.ENV):
+            args = self.args(**{"--task": "code-change-hidden-regression"})
+            with self.assertRaisesRegex(evaluation.GuardRefusal, "container runner.*--network none"):
+                cli.live(args, read_json=lambda _: approval, transport=call, wall_now=lambda: self.NOW)
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+            cli.main(["live", "--allow-oracle-code-execution"])
+        self.assertEqual(registered, [], "the refusal precedes every Registry write")
+        # Defense in depth: even a caller that allows execution never grades live answers by running them.
+        item = task(value, "code-change-hidden-regression")
+        planned = {"task": item, "comparison": {"id": "projection"}, "arm": "baseline", "label": "legacy"}
+        answer = f"```python\n{fixture_module.PRICING_VISIBLE_ONLY}```\nAll tests pass."
+        with mock.patch.object(evaluation, "run_python_tests", side_effect=AssertionError("executed")):
+            result = evaluation.run_result(value, planned, 1, observation(final_answer=answer), "live", True)
+        self.assertIsNone(result["oracle"]["passed"])
+
+    def test_live_validates_every_model_field_before_any_registry_write(self):
+        value = corpus()
+        approval = self.approval(value, max_spend_nanocredits=10_000_000_000)
+        with mock.patch.dict(os.environ, self.ENV):
+            for field in ("max_output_tokens", "context_window", "model_id"):
+                with self.subTest(field):
+                    call, registered = self.live_node(model_config={field: ...})
+                    with self.assertRaisesRegex(evaluation.GuardRefusal, field):
+                        cli.live(self.args(), read_json=lambda _: approval, transport=call, wall_now=lambda: self.NOW)
+                    self.assertEqual(registered, [])
+
+    def run_live(self, call, ceiling="50000", extra=None, allow_unavailable_arms=False, **kwargs):
+        value = corpus()
+        approval = self.approval(value, max_spend_nanocredits=int(ceiling))
+        clock = Clock()
+        with mock.patch.dict(os.environ, self.ENV), tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "live.json"
+            args = self.args(**{"--max-spend-nanocredits": ceiling, **(extra or {})})
+            args.output = output
+            args.allow_unavailable_arms = allow_unavailable_arms
+            # The approval's expiry is checked against the injected wall clock, not the budget clock.
+            try:
+                status = cli.live(args, read_json=lambda _: approval, transport=call, clock=clock,
+                                  sleep=clock.sleep, wall_now=lambda: self.NOW, **kwargs)
+            except BaseException as raised:
+                status = raised
+            return status, json.loads(output.read_text()) if output.exists() else None
 
     def test_live_stops_dispatch_at_the_ceiling_and_records_every_attempt(self):
-        value = corpus()
-        # A failed Run keeps its whole reservation charged, because its usage is uncertain.
-        call, _ = self.live_node(phase="FAILED")
-        clock = Clock()
         # One Run's worst case is 24 steps * (1000 * 1 + 100 * 5) = 36000 nanocredits.
-        approval = self.approval(value, max_spend_nanocredits=50_000)
-        os.environ["AIDASH_EVALUATION_TOKEN"] = "operator"
-        os.environ["AIDASH_EVALUATION_SUBJECT_TOKEN"] = "subject"
-        with tempfile.TemporaryDirectory() as directory:
-            output = Path(directory) / "live.json"
-            try:
-                args = self.args(**{"--max-spend-nanocredits": "50000"})
-                args.output = output
-                # The approval's expiry is checked against wall time, not the budget clock; pin it so the
-                # fixture's fixed expiry does not lapse as the calendar moves on.
-                status = cli.live(args, read_json=lambda _: approval, transport=call, clock=clock,
-                                  sleep=clock.sleep, wall_now=lambda: self.NOW)
-            finally:
-                os.environ.pop("AIDASH_EVALUATION_TOKEN", None)
-                os.environ.pop("AIDASH_EVALUATION_SUBJECT_TOKEN", None)
-            result = json.loads(output.read_text())
-        self.assertEqual(status, 3)
-        self.assertEqual(len(result["runs"]), 1, "the second arm must not be dispatched past the ceiling")
-        spend = result["spend"]
-        self.assertEqual(len(spend["attempts"]), 1)
-        self.assertEqual(spend["attempts"][0]["provider_work"][0]["input_tokens"], 10)
-        self.assertEqual(spend["committed_nanocredits"], 36000)
-        self.assertEqual(spend["uncertain_attempts"], 1)
-        self.assertIn("exceed the ceiling", spend["refusal"])
-        self.assertEqual(result["runs"][0]["evidence"]["content_class"], "restricted-live")
-        self.assertIsNone(result["runs"][0]["evidence"]["final_answer"])
-        self.assertFalse(result["calibration"]["applied"])
+        for phase in ("FAILED", "COMPLETED"):
+            with self.subTest(phase):
+                call, _ = self.live_node(phase=phase)
+                status, result = self.run_live(call)
+                self.assertEqual(status, 3)
+                self.assertEqual(len(result["runs"]), 1, "the second arm must not be dispatched past the ceiling")
+                spend = result["spend"]
+                self.assertEqual(len(spend["attempts"]), 1)
+                self.assertEqual(spend["attempts"][0]["provider_work"][0]["input_tokens"], 10)
+                # Even a completed Run keeps its whole reservation: its usage is not readable over HTTP.
+                self.assertEqual(spend["committed_nanocredits"], 36000)
+                self.assertEqual(spend["uncertain_attempts"], 1)
+                self.assertIn("exceed the ceiling", spend["refusal"])
+                self.assertEqual(result["runs"][0]["evidence"]["content_class"], "restricted-live")
+                self.assertIsNone(result["runs"][0]["evidence"]["final_answer"])
+                self.assertFalse(result["calibration"]["applied"])
+                self.assertEqual([item["key"] for item in result["skipped_runs"]],
+                                 ["structured-data-overdue-totals/projection/candidate/1"])
+                self.assertIn("exceed the ceiling", result["skipped_runs"][0]["reason"])
+                self.assertIsNone(result["experiment"]["model"]["reported_identities"])
+                self.assertIn("null", result["limitations"][0])
+                self.assertEqual(result["experiment"]["aidash"]["server_revision"], "0123abc")
+                self.assertEqual(result["experiment"]["created_at"], "2026-10-11T00:00:00.000000Z")
+
+    def test_no_dropped_runs_rule_applies_when_spend_is_set(self):
+        call, _ = self.live_node()
+        _, result = self.run_live(call)
+        evaluation.validate_result(result)
+        result["skipped_runs"] = []
+        with self.assertRaisesRegex(evaluation.CorpusError, "none may be dropped"):
+            evaluation.validate_result(result)
+
+    def test_live_writes_the_manifest_after_an_error_or_interrupt(self):
+        def check(status, result, expected_status, label):
+            self.assertEqual(status, expected_status)
+            self.assertIsNotNone(result, "the record of paid work must be written")
+            self.assertIn(label, result["error"])
+            self.assertEqual([item["state"] for item in result["spend"]["attempts"]], ["uncertain"],
+                             "the dispatched Run stays charged in full")
+            listed = [item["key"] for item in result["runs"]] + [item["key"] for item in result["skipped_runs"]]
+            self.assertEqual(len(listed), 2, "every planned Run is a Run or a skipped Run")
+            self.assertEqual(len(set(listed)), 2)
+        # Ctrl-C while a Run is in flight: the Run is recorded as interrupted, the rest as skipped.
+        call, _ = self.live_node()
+
+        def interrupting(method, path, body, token):
+            if path == "/api/state":
+                raise KeyboardInterrupt
+            return call(method, path, body, token)
+        status, result = self.run_live(interrupting, ceiling="500000")
+        check(status, result, 130, "KeyboardInterrupt")
+        self.assertEqual([item["outcome"] for item in result["runs"]], ["interrupted"])
+        # An unexpected fault after dispatch began.
+        call, _ = self.live_node()
+        with mock.patch.object(runner, "run_task", side_effect=RuntimeError("node went away")):
+            status, result = self.run_live(call, ceiling="500000")
+        check(status, result, 1, "RuntimeError: node went away")
+        self.assertEqual(result["runs"][0]["outcome"], "interrupted")
+        self.assertTrue(all("not dispatched" in item["reason"] for item in result["skipped_runs"]))
+
+    def test_a_rejected_available_arm_fails_unless_explicitly_allowed(self):
+        call, _ = self.live_node(reject_agents=True)
+        status, result = self.run_live(call, ceiling="500000")
+        self.assertEqual(status, 1)
+        self.assertIn("rejected Agent definitions", result["error"])
+        self.assertIn("--allow-unavailable-arms", result["error"])
+        self.assertEqual(result["spend"]["attempts"], [], "no provider work after a rejected arm")
+        self.assertEqual(result["feature_availability"][0]["status"], "feature-not-available")
+        self.assertFalse(self.args().allow_unavailable_arms, "the downgrade is opt-in")
+
+    def test_allow_unavailable_arms_reports_the_comparison_as_not_available(self):
+        call, _ = self.live_node(reject_agents=True)
+        status, result = self.run_live(call, ceiling="500000", allow_unavailable_arms=True)
+        self.assertEqual(status, 0)
+        self.assertIsNone(result["error"])
+        self.assertEqual(result["feature_availability"][0]["status"], "feature-not-available")
+        self.assertEqual(result["runs"], [])
+
+    def test_unavailable_arms_error_names_the_comparison(self):
+        message = cli.unavailable_arms_error({"exposure": "Agent registration rejected: HTTP 400"})
+        self.assertIn("exposure", message)
+        self.assertIn("--allow-unavailable-arms", message)
+
+
+class RedactionTest(unittest.TestCase):
+    def test_database_passwords_never_reach_error_messages(self):
+        text = ("Command '['docker', 'exec', '-e', 'PGPASSWORD=s3cr3t-value', 'pg']' failed; "
+                "postgres://aidash:s3cr3t-value@127.0.0.1:5432/db; connection string: host=x password=s3cr3t-value")
+        redacted = evaluation.redact_secrets(text, "s3cr3t-value")
+        self.assertNotIn("s3cr3t-value", redacted)
+        self.assertIn("PGPASSWORD=[redacted]", redacted)
+
+    def test_a_failed_database_read_reports_a_redacted_message(self):
+        error = subprocess.CalledProcessError(2, ["docker", "exec", "-e", "PGPASSWORD=pw-12345"],
+                                              stderr="psql: error: password=pw-12345 rejected\n")
+        with mock.patch.object(cli.subprocess, "run", side_effect=error):
+            read = cli.usage_reader_for("pg", "db", "pw-12345", "select 1")
+            with self.assertRaises(RuntimeError) as raised:
+                read("00000000-0000-0000-0000-000000000000")
+        self.assertNotIn("pw-12345", str(raised.exception))
+        self.assertIn("exit 2", str(raised.exception))
 
 
 if __name__ == "__main__":

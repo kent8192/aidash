@@ -82,7 +82,8 @@
           "additionalProperties": { "$ref": "#/$defs/registration" }
         },
         "reported_identities": {
-          "type": "array",
+          "description": "Provider-reported model identities, or null when the tier cannot read them (the live tier today).",
+          "type": ["array", "null"],
           "items": { "type": "string" }
         },
         "route": { "type": ["string", "null"] },

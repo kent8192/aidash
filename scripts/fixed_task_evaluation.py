@@ -10,6 +10,7 @@ An Agent's own success claim is recorded but never used as the oracle. Every
 attempted Run is reported; failed, overflowing and interrupted Runs stay in the
 denominators.
 """
+import datetime
 import hashlib
 import json
 import os
@@ -36,6 +37,8 @@ TERMINAL_PHASES = ("COMPLETED", "FAILED", "CANCELLED")
 CONCLUSION_SCOPE = ("Conclusions are limited to the tested tasks, fixture or model configuration and "
                     "repeat counts recorded in this manifest. They are not a general quality, cost or "
                     "superiority claim and approve no default rollout.")
+# Comparison statuses that have no runnable arms: the feature is absent, or present but not yet measured.
+UNRUNNABLE_STATUSES = ("feature-not-available", "not-measured")
 ORACLE_KINDS = ("python-tests", "json-overdue-totals", "constraint-retention", "tool-selection",
                 "escalation", "answer-pattern")
 # Messages that identify a failed compaction or an over-window request.
@@ -48,6 +51,21 @@ EVIDENCE_LIMIT = 4096
 
 class CorpusError(ValueError):
     """The corpus or a manifest violates its declared contract."""
+
+
+# ---------------------------------------------------------------- redaction
+
+SECRET_ASSIGNMENT = re.compile(r"(?i)\b(pgpassword|postgres_password|password)\s*[=:]\s*[^\s'\"&;,]+")
+DSN_PASSWORD = re.compile(r"(?i)\b(postgres(?:ql)?://[^:/\s@]+:)[^@\s]+@")
+
+
+def redact_secrets(text, *literals):
+    """Remove database passwords (PGPASSWORD=..., password=..., DSN userinfo) from a message."""
+    text = DSN_PASSWORD.sub(r"\1[redacted]@", SECRET_ASSIGNMENT.sub(r"\1=[redacted]", str(text)))
+    for literal in literals:
+        if literal:
+            text = text.replace(literal, "[redacted]")
+    return text
 
 
 # ------------------------------------------------------------------ hashing
@@ -194,8 +212,12 @@ def consistency_errors(result):
     if len(keys) != len(set(keys)):
         errors.append("$.runs: duplicate run keys")
     expected = len(result["experiment"]["variants"]) * result["experiment"]["repeat_count"]
-    if result["error"] is None and result["spend"] is None and len(runs) != expected:
-        errors.append(f"$.runs: {len(runs)} runs recorded for {expected} planned; none may be dropped")
+    skipped = result["skipped_runs"]
+    if set(keys) & {item["key"] for item in skipped}:
+        errors.append("$.skipped_runs: a Run is both recorded and skipped")
+    if result["error"] is None and len(runs) + len(skipped) != expected:
+        errors.append(f"$.runs: {len(runs)} runs recorded and {len(skipped)} skipped for {expected} planned; "
+                      "none may be dropped")
     for aggregate in result["aggregates"]:
         matching = [run for run in runs if (run["task"], run["comparison"], run["arm"]) ==
                     (aggregate["task"], aggregate["comparison"], aggregate["arm"])]
@@ -223,9 +245,11 @@ def load_corpus(path=None):
     if len(comparisons) != len(corpus["comparisons"]):
         errors.append("duplicate comparison ids")
     for item in corpus["comparisons"]:
-        if item.get("status", "available") not in ("available", "feature-not-available"):
+        if item.get("status", "available") not in ("available", *UNRUNNABLE_STATUSES):
             errors.append(f"comparison {item['id']} has an unknown status")
-        if item.get("status") != "feature-not-available":
+        if item.get("status") in UNRUNNABLE_STATUSES and not item.get("description"):
+            errors.append(f"comparison {item['id']} needs a description that says why it has no arms")
+        if item.get("status") not in UNRUNNABLE_STATUSES:
             for arm in ("baseline", "candidate"):
                 if not isinstance(item.get(arm), dict) or "label" not in item[arm] or "agent" not in item[arm]:
                     errors.append(f"comparison {item['id']} needs a {arm} label and agent fields")
@@ -248,7 +272,7 @@ def load_corpus(path=None):
         for comparison in task.get("comparisons", []):
             if comparison not in comparisons:
                 errors.append(f"task {tid} names unknown comparison {comparison}")
-            elif comparisons[comparison].get("status") == "feature-not-available":
+            elif comparisons[comparison].get("status") in UNRUNNABLE_STATUSES:
                 errors.append(f"task {tid} selects unavailable comparison {comparison}")
         for skill in task.get("skills", []):
             if skill not in skills:
@@ -533,7 +557,8 @@ def summarize_usage(records):
 
 def run_result(corpus, planned, repeat, observation, tier, allow_code_execution):
     task = planned["task"]
-    oracle = grade(corpus, task, observation, allow_code_execution)
+    # Model-written code never runs on the evaluator host in the live tier, whatever the caller allows.
+    oracle = grade(corpus, task, observation, allow_code_execution and tier != "live")
     outcome = classify(task, observation, oracle)
     answer = observation.get("final_answer")
     tool_calls = observation.get("tool_calls", [])
@@ -680,16 +705,82 @@ class GuardRefusal(RuntimeError):
     """The live tier refuses to start or to dispatch more provider work."""
 
 
+def parse_timestamp(value, field):
+    """Parse an ISO 8601 timestamp into an aware datetime; anything else is a refusal."""
+    if not isinstance(value, str):
+        raise GuardRefusal(f"disclosure approval {field} must be an ISO 8601 string")
+    try:
+        parsed = datetime.datetime.fromisoformat(value)
+    except ValueError:
+        raise GuardRefusal(f"disclosure approval {field} is not an ISO 8601 timestamp: {value!r}") from None
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise GuardRefusal(f"disclosure approval {field} needs a UTC offset (for example Z or +09:00)")
+    return parsed
+
+
+def positive_int(value):
+    return isinstance(value, int) and not isinstance(value, bool) and value > 0
+
+
+def check_approval(approval, corpus_sha256, models, ceiling, now):
+    """Type-check and time-check the operator's disclosure approval; every failure is a GuardRefusal."""
+    if not isinstance(approval, dict) or not approval:
+        raise GuardRefusal("a disclosure approval document is required")
+    for field in ("approver", "approved_at", "expires_at", "corpus_sha256", "models", "max_spend_nanocredits",
+                  "disclosure"):
+        if field not in approval:
+            raise GuardRefusal(f"disclosure approval is missing {field}")
+    for field in ("approver", "corpus_sha256", "disclosure"):
+        if not isinstance(approval[field], str) or not approval[field].strip():
+            raise GuardRefusal(f"disclosure approval {field} must be a non-empty string")
+    if not isinstance(approval["models"], list) or not all(isinstance(item, str) for item in approval["models"]):
+        raise GuardRefusal("disclosure approval models must be a list of strings")
+    if not positive_int(approval["max_spend_nanocredits"]):
+        raise GuardRefusal("disclosure approval max_spend_nanocredits must be a positive integer")
+    approved_at = parse_timestamp(approval["approved_at"], "approved_at")
+    expires_at = parse_timestamp(approval["expires_at"], "expires_at")
+    if not isinstance(now, datetime.datetime) or now.tzinfo is None:
+        raise GuardRefusal("the evaluator's wall clock must be an aware datetime")
+    if approved_at >= expires_at:
+        raise GuardRefusal("disclosure approval was approved at or after its expiry")
+    if approved_at > now:
+        raise GuardRefusal("disclosure approval is dated in the future")
+    if expires_at <= now:
+        raise GuardRefusal("disclosure approval has expired")
+    if approval["corpus_sha256"] != corpus_sha256:
+        raise GuardRefusal("disclosure approval names a different corpus snapshot")
+    if sorted(approval["models"]) != sorted(models):
+        raise GuardRefusal("disclosure approval does not cover exactly the experiment's models")
+    if ceiling > approval["max_spend_nanocredits"]:
+        raise GuardRefusal("spend ceiling exceeds the approved maximum")
+    prices = approval.get("prices")
+    if prices is None:
+        prices = {}
+    if not isinstance(prices, dict):
+        raise GuardRefusal("disclosure approval prices must be an object keyed by model")
+    for model_ref in models:
+        price = prices.get(model_ref)
+        if price is None:
+            price = {}
+        if not isinstance(price, dict):
+            raise GuardRefusal(f"disclosure approval prices for {model_ref} must be an object")
+        for field in ("input_nanocredits_per_token", "output_nanocredits_per_token"):
+            if not positive_int(price.get(field)):
+                raise GuardRefusal(f"disclosure approval needs a positive {field} for {model_ref}; reservations "
+                                   "are computed from approved prices")
+
+
 def require_live_authorization(credential, approval, corpus_sha256, models, ceiling, wall_seconds, now):
     """Refuse a live experiment unless every authorization and budget is explicit.
 
     credential is the Tenant Provider Credential metadata read from the server;
     approval is the operator's disclosure approval document; models maps each
-    Registry model the experiment uses to its configuration.
+    Registry model the experiment uses to its configuration; now is an aware
+    datetime (the injectable wall clock).
     """
-    if not isinstance(ceiling, int) or isinstance(ceiling, bool) or ceiling <= 0:
+    if not positive_int(ceiling):
         raise GuardRefusal("a positive hard spend ceiling in nanocredits is required")
-    if not isinstance(wall_seconds, (int, float)) or wall_seconds <= 0:
+    if not isinstance(wall_seconds, (int, float)) or isinstance(wall_seconds, bool) or wall_seconds <= 0:
         raise GuardRefusal("a positive wall-time limit is required")
     if not credential:
         raise GuardRefusal("an explicitly connected Tenant Provider Credential is required")
@@ -702,29 +793,21 @@ def require_live_authorization(credential, approval, corpus_sha256, models, ceil
         if config.get("provider_credential") != credential.get("provider"):
             raise GuardRefusal(f"model {model_ref} is not bound to the connected {credential.get('provider')} "
                                "Provider Credential")
-    if not approval:
-        raise GuardRefusal("a disclosure approval document is required")
-    for field in ("approver", "approved_at", "expires_at", "corpus_sha256", "models", "max_spend_nanocredits",
-                  "disclosure"):
-        if field not in approval:
-            raise GuardRefusal(f"disclosure approval is missing {field}")
-    if approval["corpus_sha256"] != corpus_sha256:
-        raise GuardRefusal("disclosure approval names a different corpus snapshot")
-    if sorted(approval["models"]) != sorted(models):
-        raise GuardRefusal("disclosure approval does not cover exactly the experiment's models")
-    if approval["expires_at"] <= now:
-        raise GuardRefusal("disclosure approval has expired")
-    if ceiling > approval["max_spend_nanocredits"]:
-        raise GuardRefusal("spend ceiling exceeds the approved maximum")
-    prices = approval.get("prices") or {}
-    for model_ref in models:
-        price = prices.get(model_ref) or {}
-        for field in ("input_nanocredits_per_token", "output_nanocredits_per_token"):
-            value = price.get(field)
-            if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
-                raise GuardRefusal(f"disclosure approval needs a positive {field} for {model_ref}; reservations "
-                                   "are computed from approved prices")
+    check_approval(approval, corpus_sha256, models, ceiling, now)
     return True
+
+
+def check_live_models(models):
+    """Validate every field the live tier reads from a model configuration, before any Registry write."""
+    for model_ref, config in models.items():
+        if not isinstance(config, dict):
+            raise GuardRefusal(f"model {model_ref} has no configuration object")
+        for field in ("context_window", "max_output_tokens"):
+            if not positive_int(config.get(field)):
+                raise GuardRefusal(f"model {model_ref} needs a positive integer {field}; spend reservations "
+                                   "are computed from it")
+        if not isinstance(config.get("model_id"), str) or not config["model_id"]:
+            raise GuardRefusal(f"model {model_ref} needs a model_id")
 
 
 class SpendLedger:
@@ -793,6 +876,8 @@ def load_memory_corpus(path=None):
                 errors.append(f"memory scenario {scenario.get('id')} is missing {key}")
         if scenario.get("evidence") == "deterministic-api" and not scenario.get("actions"):
             errors.append(f"memory scenario {scenario.get('id')} declares no ordered actions")
+        if scenario.get("coverage", "full") not in ("full", "partial"):
+            errors.append(f"memory scenario {scenario.get('id')} has unknown coverage")
         if scenario.get("evidence") == "deterministic-test" and not scenario.get("command"):
             errors.append(f"memory scenario {scenario.get('id')} declares no test command")
     rows = {scenario.get("matrix_row") for scenario in corpus.get("scenarios", [])}
@@ -815,6 +900,9 @@ def memory_matrix(corpus, executed):
         else:
             entry = executed.get(scenario["id"]) or {"status": "not-run", "variants": [], "checks": [],
                                                      "detail": "not executed in this invocation"}
+            if entry["status"] == "passed" and scenario.get("coverage") == "partial":
+                # Only the storage-safety half of the row is observed; never report the whole row as passing.
+                entry = dict(entry, status="partial", detail=scenario["observation"])
         scenarios.append({"id": scenario["id"], "issue": scenario["issue"], "evidence": evidence, **entry})
     summary = {}
     for item in scenarios:
@@ -847,4 +935,8 @@ def summary_table(result):
     unavailable = [row["comparison"] + " (" + row["issue"] + ")" for row in result["feature_availability"]
                    if row["status"] == "feature-not-available"]
     lines.append("feature-not-available: " + ", ".join(unavailable))
+    unmeasured = [row["comparison"] + " (" + row["issue"] + ")" for row in result["feature_availability"]
+                  if row["status"] == "not-measured"]
+    if unmeasured:
+        lines.append("available, not measured: " + ", ".join(unmeasured))
     return "\n".join(lines)

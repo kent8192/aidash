@@ -58,8 +58,9 @@ description = "Legacy versus deferred@1 Exposure policy."
 baseline = { label = "legacy-exposure", agent = {} }
 candidate = { label = "deferred", agent = { exposure = { version = "deferred@1" } } }
 
-# Comparisons whose harness feature is not on this branch. They are reported
-# as `feature-not-available`, never as passing and never silently omitted.
+# Comparisons without runnable arms. `feature-not-available`: the harness feature
+# is not on this branch. `not-measured`: the feature exists but this corpus has no
+# comparison for it yet. Both are reported, never as passing and never omitted.
 [[comparisons]]
 id = "completion-gate"
 issue = "#112"
@@ -87,8 +88,8 @@ description = "Independent read tools in bounded Tool Batches."
 [[comparisons]]
 id = "streaming"
 issue = "#120"
-status = "feature-not-available"
-description = "Streamed Inference Progress."
+status = "not-measured"
+description = "Streamed Inference Progress is on this branch (#193), but the scripted fixture provider does not stream and no paired streaming comparison exists yet; nothing is measured."
 
 [[comparisons]]
 id = "acp-adapter"
