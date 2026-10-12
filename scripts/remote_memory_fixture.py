@@ -5,7 +5,7 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 LOCK = threading.Condition()
-STATE = {"hold_embedding": False, "hold_inference": False, "embedding_key": "fixture-embedding-initial", "requests": [], "errors": []}
+STATE = {"hold_embedding": False, "hold_inference": False, "requests": [], "errors": []}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -26,7 +26,6 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         with LOCK:
             value = json.loads(json.dumps(STATE))
-            value.pop("embedding_key")
         self.reply(200, value)
 
     def do_POST(self):
@@ -36,17 +35,17 @@ class Handler(BaseHTTPRequestHandler):
                 for key in ("hold_embedding", "hold_inference"):
                     if key in body:
                         STATE[key] = bool(body[key])
-                if "embedding_key" in body:
-                    STATE["embedding_key"] = body["embedding_key"]
                 LOCK.notify_all()
             return self.reply(200, {"ok": True})
         try:
             if self.path == "/v1/embeddings":
                 with LOCK:
-                    if self.headers.get("Authorization") != "Bearer " + STATE["embedding_key"]:
+                    # A keyless embedding endpoint (ADR 0006): no environment
+                    # key exists, so no caller credential may arrive here.
+                    if self.headers.get("Authorization"):
                         STATE["requests"].append({"kind": "embedding_rejected"})
-                        return self.reply(401, {"error": "fixture credential rejected"})
-                    STATE["requests"].append({"kind": "embedding", "credential_verified": True, "body": body})
+                        return self.reply(401, {"error": "unexpected credential for a keyless endpoint"})
+                    STATE["requests"].append({"kind": "embedding", "keyless": True, "body": body})
                     LOCK.wait_for(lambda: not STATE["hold_embedding"], timeout=300)
                 return self.reply(200, {"model": body["model"], "data": [{"index": 0, "embedding": [1.0, 0.0, 0.0]}],
                                         "usage": {"prompt_tokens": 1, "total_tokens": 1}})

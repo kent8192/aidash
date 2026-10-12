@@ -63,17 +63,6 @@ class NativeMemory(RemoteMemory):
         for node in range(count):
             self.kube("exec", f"deployment/tx-{node}-server", "--", "aidash", "memory-recovery", "init", "--directory", "/var/lib/aidash/memory-recovery")
 
-    def providers(self):
-        super().providers()
-        # Both Nodes validate the six role definitions at registration. The
-        # Receiver has the same synthetic credential, though required-Home
-        # retrieval sends actual embedding requests only from the Home.
-        for role in ("server", "worker"):
-            self.kube("set", "env", f"deployment/tx-1-{role}", "AIDASH_SECRET_TEST_REMOTE_EMBEDDING=fixture-embedding-initial")
-        self.rollout("tx-1-server")
-        self.ready(1)
-        self.peers_ready()
-
     def save(self):
         # Capture content-free ledger diagnostics before the disposable cluster
         # disappears. Never include bodies, credentials or archive payloads.
@@ -99,7 +88,7 @@ class NativeMemory(RemoteMemory):
         zero = {"input_per_million": 0, "output_per_million": 0}
         def reference(name):
             return {"id": name, "version": "1.0.0"}
-        self.embedding = {"provider": "openai", "endpoint": "http://provider:8080/v1", "credential_env": "AIDASH_SECRET_TEST_REMOTE_EMBEDDING", "model": "home-vector", "model_version": "1", "dimensions": 3}
+        self.embedding = {"provider": "openai", "endpoint": "http://provider:8080/v1", "model": "home-vector", "model_version": "1", "dimensions": 3}
         self.memory = reference("native-memory")
         self.learning_memory = reference("native-learning-memory")
         policy = {"engine": "hindsight_rust", "policy": {
