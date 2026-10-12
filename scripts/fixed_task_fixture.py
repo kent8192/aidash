@@ -358,7 +358,7 @@ class Fixture:
         header = lines[0].split(",")
         overdue = {}
         for line in lines[1:]:
-            row = dict(zip(header, line.split(",")))
+            row = dict(zip(header, line.split(","), strict=False))
             if row["status"] == "unpaid" and row["due_date"] < "2026-10-10":
                 customer = overdue.setdefault(row["customer"], {})
                 customer[row["currency"]] = customer.get(row["currency"], 0) + int(row["amount_cents"])
