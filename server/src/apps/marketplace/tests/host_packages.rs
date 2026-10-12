@@ -295,18 +295,27 @@ async fn research_provider_packages_install_and_activate_like_host_packages(
 		);
 	}
 	let installations = pending["installations"].as_array().unwrap();
-	let mut ids = installations
+	// Installation assigns new entry IDs; the descriptors identify the provider.
+	let mut staged = installations
 		.iter()
-		.map(|row| row["entry"]["id"].as_str().unwrap().to_owned())
+		.map(|row| {
+			let entry = &row["entry"];
+			format!(
+				"{} {} {}",
+				entry["kind"].as_str().unwrap(),
+				entry["config"]["provider"].as_str().unwrap_or("-"),
+				entry["config"]["operation"].as_str().unwrap_or("-")
+			)
+		})
 		.collect::<Vec<_>>();
-	ids.sort();
+	staged.sort();
 	assert_eq!(
-		ids,
+		staged,
 		[
-			"aidash.bundle.research_fixture",
-			"aidash.research.fixture.fetch",
-			"aidash.research.fixture.find",
-			"aidash.research.fixture.search"
+			"bundle - -",
+			"tool research.fixture@1 fetch",
+			"tool research.fixture@1 find",
+			"tool research.fixture@1 search"
 		]
 	);
 	let selection = json!({"tenant":"owner",
