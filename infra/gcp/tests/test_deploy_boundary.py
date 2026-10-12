@@ -1,0 +1,351 @@
+"""#151: the deploy identity cannot reach the Credential Broker identity.
+
+Terraform state comes exclusively from the mock Google provider; nothing here
+touches Google Cloud.
+"""
+import json
+from pathlib import Path
+import re
+import shutil
+import subprocess
+import unittest
+
+import yaml
+
+BOOTSTRAP = Path(__file__).resolve().parents[1] / "bootstrap"
+WORKFLOWS = Path(__file__).resolve().parents[3] / ".github" / "workflows"
+DEPLOY = "serviceAccount:aidash-deploy@aidash-fixture.iam.gserviceaccount.com"
+IAM_GRANTS = (
+    "google_project_iam_member", "google_project_iam_binding",
+    "google_service_account_iam_member", "google_service_account_iam_binding",
+    "google_storage_bucket_iam_member", "google_artifact_registry_repository_iam_member",
+    "google_kms_crypto_key_iam_member",
+)
+# IAM v1 names of the permissions #151 forbids on broker accounts, and the deny-policy
+# names that must cover each of them.
+SENSITIVE = {
+    "iam.serviceAccounts.setIamPolicy": "iam.googleapis.com/serviceAccounts.setIamPolicy",
+    "iam.serviceAccounts.getAccessToken": "iam.googleapis.com/serviceAccounts.getAccessToken",
+    "iam.serviceAccounts.signBlob": "iam.googleapis.com/serviceAccounts.signBlob",
+    "iam.serviceAccounts.signJwt": "iam.googleapis.com/serviceAccounts.signJwt",
+    "iam.serviceAccounts.implicitDelegation": "iam.googleapis.com/serviceAccounts.implicitDelegation",
+    "iam.serviceAccountKeys.create": "iam.googleapis.com/serviceAccountKeys.create",
+    "iam.serviceAccounts.delete": "iam.googleapis.com/serviceAccounts.delete",
+    "iam.serviceAccounts.undelete": "iam.googleapis.com/serviceAccounts.undelete",
+    "iam.serviceAccounts.disable": "iam.googleapis.com/serviceAccounts.disable",
+    "iam.serviceAccounts.getOpenIdToken": "iam.googleapis.com/serviceAccounts.getOpenIdToken",
+}
+# Every predefined role the deploy identity may hold, with the sensitive permissions it
+# carries. A role missing here fails the test: whoever adds it must decide whether it
+# can reach a broker account (for example roles/iam.serviceAccountTokenCreator or
+# roles/iam.serviceAccountKeyAdmin would) and extend the deny policy first.
+PREDEFINED_ROLES = {
+    "roles/iam.serviceAccountAdmin": {
+        "iam.serviceAccounts.setIamPolicy", "iam.serviceAccounts.delete",
+        "iam.serviceAccounts.undelete", "iam.serviceAccounts.disable",
+    },
+    # actAs only; deliberately not denied (Cloud Run needs it, residual path 2).
+    "roles/iam.serviceAccountUser": set(),
+    "roles/compute.instanceAdmin.v1": set(), "roles/compute.networkAdmin": set(),
+    "roles/container.admin": set(), "roles/secretmanager.admin": set(),
+    "roles/artifactregistry.reader": set(), "roles/artifactregistry.writer": set(),
+    "roles/artifactregistry.admin": set(), "roles/serviceusage.serviceUsageConsumer": set(),
+    "roles/run.admin": set(), "roles/cloudkms.admin": set(), "roles/cloudkms.publicKeyViewer": set(),
+    # Project IAM administration is limited by a modifiedGrantsByRole condition to the
+    # GKE node role, which carries no impersonation permission.
+    "roles/resourcemanager.projectIamAdmin": set(),
+    "roles/storage.objectAdmin": set(), "roles/storage.admin": set(),
+}
+
+
+ENVIRONMENTS = Path(__file__).resolve().parents[1] / "environments"
+
+
+def flattened(module):
+    return module.get("resources", []) + [r for child in module.get("child_modules", []) for r in flattened(child)]
+
+
+def uncovered(roles, custom_roles, denied):
+    """Return sensitive permissions deploy holds through `roles` that `denied` misses."""
+    held = set()
+    for role in roles:
+        if role in PREDEFINED_ROLES:
+            held |= PREDEFINED_ROLES[role]
+        elif role in custom_roles:
+            held |= set(custom_roles[role]) & set(SENSITIVE)
+        else:
+            raise AssertionError(f"Classify {role}: can it reach a Credential Broker account?")
+    return sorted(permission for permission in held if SENSITIVE[permission] not in denied)
+
+
+@unittest.skipUnless(shutil.which("terraform"), "terraform is required")
+class DeployBoundaryTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        subprocess.run(["terraform", f"-chdir={BOOTSTRAP}", "init", "-backend=false", "-input=false", "-no-color"], check=True, capture_output=True, timeout=300)
+        result = subprocess.run(
+            ["terraform", f"-chdir={BOOTSTRAP}", "test", "-json", "-verbose", "-no-color", "-filter=tests/deploy_boundary.tftest.hcl"],
+            capture_output=True, text=True, timeout=600,
+        )
+        if result.returncode:
+            raise AssertionError(result.stdout + result.stderr)
+        states = {}
+        for line in result.stdout.splitlines():
+            event = json.loads(line)
+            if event.get("type") == "test_state":
+                states[event["@testrun"]] = flattened(event["test_state"]["root_module"])
+        cls.resources = states["deploy_boundary"]
+        # The environments root is applied by the deploy identity itself; its grants to
+        # deploy must be classified too.
+        subprocess.run(["terraform", f"-chdir={ENVIRONMENTS}", "init", "-backend=false", "-input=false", "-no-color"], check=True, capture_output=True, timeout=300)
+        result = subprocess.run(
+            ["terraform", f"-chdir={ENVIRONMENTS}", "test", "-json", "-verbose", "-no-color", "-filter=tests/policy.tftest.hcl"],
+            check=False, capture_output=True, text=True, timeout=600,
+        )
+        if result.returncode:
+            raise AssertionError(result.stdout + result.stderr)
+        cls.environment_resources = []
+        for line in result.stdout.splitlines():
+            event = json.loads(line)
+            if event.get("type") == "test_state" and event["@testrun"] == "identities_are_separated":
+                cls.environment_resources = flattened(event["test_state"]["root_module"])
+
+    def values(self, kind):
+        return [r["values"] for r in self.resources if r["type"] == kind]
+
+    def deny_rule(self):
+        policy, = self.values("google_iam_deny_policy")
+        rule, = policy["rules"][0]["deny_rule"]
+        return rule
+
+    def deploy_roles(self):
+        return sorted({g["role"] for kind in IAM_GRANTS for g in self.values(kind) if g.get("member") == DEPLOY})
+
+    def custom_roles(self):
+        return {r["name"]: r["permissions"] for r in self.values("google_project_iam_custom_role")}
+
+    def test_deny_policy_covers_every_sensitive_permission_deploy_holds(self):
+        denied = set(self.deny_rule()["denied_permissions"])
+        self.assertEqual(denied, set(SENSITIVE.values()))
+        self.assertEqual(uncovered(self.deploy_roles(), self.custom_roles(), denied), [])
+        # The shared-project role the Issue names is really in play.
+        self.assertIn("roles/iam.serviceAccountAdmin", self.deploy_roles())
+
+    def test_environments_root_grants_deploy_nothing_the_deny_policy_misses(self):
+        deploy = "serviceAccount:deploy@aidash-fixture.iam.gserviceaccount.com"
+        roles = sorted({
+            r["values"]["role"] for r in self.environment_resources
+            if r["type"] in IAM_GRANTS and r["values"].get("member") == deploy
+        })
+        self.assertEqual(roles, ["roles/iam.serviceAccountUser"])
+        self.assertEqual(uncovered(roles, {}, set(self.deny_rule()["denied_permissions"])), [])
+
+    def test_an_uncovered_allow_binding_is_detected(self):
+        denied = set(self.deny_rule()["denied_permissions"])
+        self.assertEqual(
+            uncovered(["roles/iam.serviceAccountAdmin"], {}, set()),
+            ["iam.serviceAccounts.delete", "iam.serviceAccounts.disable", "iam.serviceAccounts.setIamPolicy", "iam.serviceAccounts.undelete"],
+        )
+        # A custom role smuggling a token permission is not covered by a policy that omits it.
+        custom = {"projects/p/roles/x": ["iam.serviceAccounts.getAccessToken"]}
+        self.assertEqual(uncovered(["projects/p/roles/x"], custom, denied - {SENSITIVE["iam.serviceAccounts.getAccessToken"]}), ["iam.serviceAccounts.getAccessToken"])
+        with self.assertRaises(AssertionError):
+            uncovered(["roles/iam.serviceAccountTokenCreator"], {}, denied)
+
+    def test_deploy_holds_no_custom_role_with_a_sensitive_permission(self):
+        for role, permissions in self.custom_roles().items():
+            self.assertFalse(set(permissions) & set(SENSITIVE), role)
+
+    def test_only_actas_is_granted_to_deploy_on_broker_accounts(self):
+        brokers = {a["name"] for a in self.values("google_service_account") if a["account_id"].endswith("-broker")}
+        self.assertEqual(len(brokers), 2)
+        grants = [g for g in self.values("google_service_account_iam_member") if g["service_account_id"] in brokers]
+        self.assertEqual(sorted(g["service_account_id"] for g in grants), sorted(brokers))
+        self.assertTrue(all(g["role"] == "roles/iam.serviceAccountUser" and g["member"] == DEPLOY for g in grants))
+
+    def test_deny_targets_only_the_deploy_identity_and_tagged_accounts(self):
+        rule = self.deny_rule()
+        self.assertEqual(rule["denied_principals"], ["principal://iam.googleapis.com/projects/-/serviceAccounts/aidash-deploy@aidash-fixture.iam.gserviceaccount.com"])
+        self.assertFalse(rule.get("exception_principals"))
+        # No wildcard or set principal: only the one deploy service account is denied.
+        self.assertNotRegex(rule["denied_principals"][0], r"[*]|principalSet|allUsers|allAuthenticatedUsers")
+        self.assertEqual(len(rule["denied_principals"]), 1)
+        # The selector is one exact tag match; nothing can widen it with || or negate it.
+        self.assertRegex(rule["denial_condition"][0]["expression"], r"^resource\.matchTag\('[^']+', '[^']+'\)$")
+        self.assertEqual(rule["denial_condition"][0]["expression"], "resource.matchTag('aidash-fixture/aidash-credential-broker', 'broker')")
+        bindings = self.values("google_tags_tag_binding")
+        self.assertEqual(len(bindings), 2)
+
+    def test_deploy_holds_no_tag_or_deny_administration(self):
+        for role in self.deploy_roles():
+            self.assertNotRegex(role, r"resourcemanager\.tag|iam\.deny|roles/owner|roles/editor|monitoring|logging")
+
+    def alert_filters(self):
+        return {
+            policy["display_name"]: [c["condition_matched_log"][0]["filter"] for c in policy["conditions"]]
+            for policy in self.values("google_monitoring_alert_policy")
+        }
+
+    def test_alerts_cover_revisions_iam_changes_and_non_broker_key_material_reads(self):
+        filters = self.alert_filters()
+        revision = filters["Credential Broker: new Cloud Run revision"]
+        self.assertEqual(len(revision), 4)
+        self.assertIn("protoPayload.request.service.template.serviceAccount", revision[1])
+        self.assertIn("compute.googleapis.com", revision[2])
+        self.assertIn("instances.setServiceAccount", revision[2])
+        self.assertIn("container.googleapis.com", revision[3])
+        self.assertIn("CreateNodePool", revision[3])
+        for runs_as_broker in revision[1:]:
+            self.assertIn('"aidash-test-broker@aidash-fixture.iam.gserviceaccount.com"', runs_as_broker)
+        byok = filters["BYOK project: audit configuration or IAM changed"]
+        self.assertIn("auditConfigDeltas", byok[0])
+        self.assertIn("NOT protoPayload.authenticationInfo.principalEmail=\"aidash-deploy@aidash-fixture.iam.gserviceaccount.com\"", byok[1])
+        self.assertTrue(all("projects/aidash-byok-fixture/logs/cloudaudit.googleapis.com%2Factivity" in f for f in byok))
+        self.assertIn('("aidash-production-credential-broker" OR "aidash-test-credential-broker")', revision[0])
+        iam = filters["Credential Broker: IAM policy changed"]
+        self.assertIn("Services.SetIamPolicy", iam[0])
+        self.assertIn("google.iam.admin.v1.SetIAMPolicy", iam[1])
+        read = filters["Provider Credential Key Material read by a non-broker principal"]
+        self.assertEqual(len(read), 1)
+        self.assertIn("AccessSecretVersion", read[0])
+        for email in ("aidash-production-broker", "aidash-test-broker"):
+            self.assertIn(f'"{email}@aidash-fixture.iam.gserviceaccount.com"', read[0])
+        self.assertEqual(read[0].count("principalEmail"), 1)
+
+    def test_alert_policies_notify_and_rate_limit(self):
+        for policy in self.values("google_monitoring_alert_policy"):
+            self.assertEqual(len(policy["notification_channels"]), 1, policy["display_name"])
+            self.assertTrue(policy["alert_strategy"][0]["notification_rate_limit"][0]["period"])
+
+
+CONTROL = Path(__file__).resolve().parents[1] / "control"
+DIGEST = re.compile(r"sha256:[a-f0-9]{64}")
+
+
+class BrokerImageTests(unittest.TestCase):
+    """The broker image digest is reviewed code, so a broker change shows in a diff."""
+
+    def test_lock_file_holds_only_an_approved_digest_or_nothing(self):
+        lock = json.loads((ENVIRONMENTS / "broker-image.json").read_text())
+        self.assertEqual(set(lock), {"digest"})
+        self.assertTrue(lock["digest"] is None or DIGEST.fullmatch(lock["digest"]))
+
+    def test_dockerfile_base_images_are_pinned_by_digest(self):
+        dockerfile = (Path(__file__).resolve().parents[3] / "crates" / "aidash-broker" / "Dockerfile").read_text()
+        bases = re.findall(r"^FROM (\S+)", dockerfile, re.M)
+        self.assertEqual(len(bases), 2)
+        for base in bases:
+            self.assertRegex(base, r"@sha256:[a-f0-9]{64}$")
+
+    def test_deployment_configuration_cannot_override_the_lock(self):
+        # The controller passes no image and no lock-file override to Terraform, and
+        # refuses a configured image (see test_cloud.py).
+        for source in CONTROL.glob("*.py"):
+            self.assertNotIn("broker_image", source.read_text(), source.name)
+        self.assertIn("broker-image.json", (CONTROL / "cloud.py").read_text())
+        example = json.loads((CONTROL.parent / "config.example.json").read_text())
+        for broker in example["credential_brokers"].values():
+            self.assertNotIn("image", broker)
+
+    @unittest.skipUnless(shutil.which("terraform"), "terraform is required")
+    def test_service_runs_the_locked_digest_from_the_private_registry(self):
+        subprocess.run(["terraform", f"-chdir={ENVIRONMENTS}", "init", "-backend=false", "-input=false", "-no-color"], check=True, capture_output=True, timeout=300)
+        result = subprocess.run(
+            ["terraform", f"-chdir={ENVIRONMENTS}", "test", "-json", "-verbose", "-no-color", "-filter=tests/key_lifecycle.tftest.hcl"],
+            check=False, capture_output=True, text=True, timeout=600,
+        )
+        if result.returncode:
+            raise AssertionError(result.stdout + result.stderr)
+        fixture = json.loads((ENVIRONMENTS / "tests" / "fixtures" / "broker-image.json").read_text())["digest"]
+        images = []
+        for line in result.stdout.splitlines():
+            event = json.loads(line)
+            if event.get("type") == "test_state" and event["@testrun"] == "environment_enabled":
+                images += [
+                    container["image"]
+                    for resource in flattened(event["test_state"]["root_module"])
+                    if resource["type"] == "google_cloud_run_v2_service"
+                    for container in resource["values"]["template"][0]["containers"]
+                ]
+        self.assertEqual(images, [f"us-central1-docker.pkg.dev/aidash-fixture/aidash/broker@{fixture}"])
+
+
+class DeployEntryPointTests(unittest.TestCase):
+    """Every job that can obtain Google credentials runs in the protected Environment."""
+
+    @staticmethod
+    def workflow(name):
+        return yaml.safe_load((WORKFLOWS / name).read_text())
+
+    @staticmethod
+    def wif_environments():
+        source = (BOOTSTRAP / "variables.tf").read_text()
+        return tuple(
+            re.search(rf'variable "{name}" \{{.*?default\s*=\s*"([^"]+)"', source, re.S).group(1)
+            for name in ("deploy_environment", "release_environment")
+        )
+
+    @staticmethod
+    def selected_environment(job, build):
+        """Evaluate a job's `environment:` for a run that does (not) build images."""
+        value = job["environment"]
+        expression = re.fullmatch(r"\$\{\{ needs\.prepare\.outputs\.build == 'true' && '([^']+)' \|\| '([^']+)' \}\}", value)
+        if expression:
+            return expression.group(1) if build else expression.group(2)
+        assert "${{" not in value, value
+        return value
+
+    def credentialed_jobs(self, workflow):
+        return {
+            name: job for name, job in workflow["jobs"].items()
+            if (job.get("permissions") or {}).get("id-token") == "write"
+            or any("google-github-actions/auth" in step.get("uses", "") for step in job.get("steps", []))
+        }
+
+    def test_credentialed_jobs_pick_the_release_environment_only_for_builds(self):
+        unattended, release = self.wif_environments()
+        self.assertEqual((unattended, release), ("gcp-deploy", "gcp-deploy-release"))
+        jobs = self.credentialed_jobs(self.workflow("gcp-environments.yml"))
+        self.assertEqual(sorted(jobs), ["apply", "prepare", "publish"])
+        for build in (True, False):
+            selected = {name: self.selected_environment(job, build) for name, job in jobs.items()}
+            # prepare decides whether to build and only records durable intent.
+            self.assertEqual(selected["prepare"], unattended)
+            # Publishing runs only for builds (the build/publish jobs are skipped otherwise).
+            self.assertEqual(selected["publish"], release)
+            self.assertEqual(selected["apply"], release if build else unattended, build)
+        # Only the two names the WIF provider accepts can ever be selected.
+        names = {self.selected_environment(job, build) for job in jobs.values() for build in (True, False)}
+        self.assertEqual(names, {unattended, release})
+
+    def test_publish_and_build_only_run_for_builds(self):
+        workflow = self.workflow("gcp-environments.yml")
+        self.assertEqual(workflow["jobs"]["build"]["if"], "needs.prepare.outputs.build == 'true'")
+        self.assertIn("build", workflow["jobs"]["publish"]["needs"])
+
+    def test_credentialed_jobs_request_tokens_and_uncredentialed_jobs_do_not(self):
+        for name, job in self.workflow("gcp-environments.yml")["jobs"].items():
+            wants_token = (job.get("permissions") or {}).get("id-token") == "write"
+            self.assertEqual(wants_token, name in {"prepare", "publish", "apply"}, name)
+
+    def test_infrastructure_checks_hold_no_cloud_credentials(self):
+        workflow = self.workflow("gcp-check.yml")
+        self.assertEqual(self.credentialed_jobs(workflow), {})
+        self.assertNotIn("id-token", json.dumps(workflow))
+        self.assertTrue(all("environment" not in job for job in workflow["jobs"].values()))
+
+    def test_no_other_workflow_authenticates_to_google(self):
+        for path in WORKFLOWS.glob("*.yml"):
+            if path.name == "gcp-environments.yml":
+                continue
+            self.assertNotIn("google-github-actions/auth", path.read_text(), path.name)
+
+    def test_provider_condition_names_the_environment_and_the_main_workflow(self):
+        source = (BOOTSTRAP / "main.tf").read_text()
+        self.assertIn("assertion.environment in ['${var.deploy_environment}', '${var.release_environment}']", source)
+        self.assertIn("assertion.ref == 'refs/heads/${var.trusted_branch}'", source)
+        self.assertIn("assertion.workflow_ref == '${local.workflow_ref}'", source)
+
+
+if __name__ == "__main__":
+    unittest.main()

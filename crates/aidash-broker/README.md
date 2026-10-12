@@ -190,8 +190,10 @@ In the environment
 controller's `credential_brokers[environment_id]` configuration, set
 `broker_service_account_email` and `signing_key_id` to the corresponding
 bootstrap map entries before
-enabling the broker. Cloud Run uses that account; deploy automation gets
-`roles/iam.serviceAccountUser` on it in the application project. The VM runtime
+enabling the broker, and leave `image` out: the digest comes from the reviewed
+`infra/gcp/environments/broker-image.json`. Cloud Run uses that account; human-run
+bootstrap grants deploy automation `roles/iam.serviceAccountUser` on it in the
+application project, because an IAM deny policy stops deploy changing its policy. The VM runtime
 holds only `roles/cloudkms.signer` on the signing key and no broker role. Public
 keys come from Terraform's KMS version data sources; the broker never calls KMS
 at runtime. Module tests prove it cannot create a second BYOK read grant;
@@ -252,10 +254,12 @@ automation or Cloud mutation runs as part of this implementation.
 The deploy pipeline is an accepted trust root (ADR 0005). Its shared-project
 `roles/iam.serviceAccountAdmin` and ability to redeploy broker code mean the
 bootstrap split alone cannot protect Key Material from a compromised pipeline.
-IAM deny policy and GitHub/WIF entry-point hardening are tracked in
-[#151](https://github.com/kent8192/aidash/issues/151); sandbox verification is
-[#152](https://github.com/kent8192/aidash/issues/152). These follow-ups are
-separate from this implementation. No Cloud infrastructure has been applied.
+Issue [#151](https://github.com/kent8192/aidash/issues/151) adds an IAM deny
+policy for the impersonation path, a digest-pinned broker image, a protected
+deploy Environment and alerts; see "Deploy pipeline boundary" in
+[`infra/gcp/README.md`](../../infra/gcp/README.md). Broker redeploy stays an
+accepted residual risk. Sandbox verification is
+[#152](https://github.com/kent8192/aidash/issues/152). No Cloud infrastructure has been applied.
 
 Workers configure `[provider_credentials.broker]` with the module's
 `worker_configuration` (`endpoint`, `issuer`, `audience`, `kid`). Its audience
