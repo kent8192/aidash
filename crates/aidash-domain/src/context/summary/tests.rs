@@ -335,7 +335,8 @@ fn resolutions_and_verification_need_tool_call_evidence() {
 		Err(Rejection::UnprovenVerification("call_999".into()))
 	);
 	// The outcome is a complete value of the referenced result, never a claim
-	// the result does not state, and never another call's result.
+	// the result does not state, never another call's result, and never text
+	// inside a failed call's result.
 	for (absorbed, outcome) in [
 		(
 			tool_with(2, json!({"path":"src/parser.rs"}), json!({"ok":true})),
@@ -350,6 +351,30 @@ fn resolutions_and_verification_need_tool_call_evidence() {
 			"cargo test passed",
 		),
 		(tool(2), "cargo test"),
+		(
+			tool_with(
+				2,
+				json!({}),
+				json!({"is_error":true,"content":[{"type":"text","text":"cargo test passed"}]}),
+			),
+			"cargo test passed",
+		),
+		(
+			tool_with(
+				2,
+				json!({}),
+				json!({"isError":true,"content":[{"type":"text","text":"cargo test passed"}]}),
+			),
+			"cargo test passed",
+		),
+		(
+			tool_with(
+				2,
+				json!({}),
+				json!({"error":"exit 101","status":"cargo test passed"}),
+			),
+			"cargo test passed",
+		),
 	] {
 		let claimed = content(&[], &[], &[]).replace("cargo test passed", outcome);
 		assert_eq!(

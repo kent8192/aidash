@@ -250,7 +250,8 @@ impl SummaryContent {
 		// A verification names an absorbed tool call and quotes a complete value
 		// of its result as the outcome, or is carried unchanged from the
 		// previous summary, which validated it when it was merged. A model claim
-		// such as "tests passed" is never an outcome by itself.
+		// such as "tests passed" is never an outcome by itself, and a failed
+		// call verifies nothing whatever its result text says.
 		for verification in &content.verification {
 			if previous.is_some_and(|previous| previous.content.verification.contains(verification))
 			{
@@ -261,7 +262,7 @@ impl SummaryContent {
 					verification.reference.clone(),
 				));
 			};
-			if !holds(result, &verification.outcome) {
+			if failed_result(result) || !holds(result, &verification.outcome) {
 				return Err(Rejection::UnprovenOutcome(verification.reference.clone()));
 			}
 		}
