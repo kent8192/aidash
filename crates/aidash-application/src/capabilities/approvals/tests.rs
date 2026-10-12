@@ -326,6 +326,28 @@ async fn policy_can_permit_or_forbid_a_disclosure_without_approval() {
 }
 
 #[tokio::test]
+async fn permitted_repetitions_of_one_disclosure_are_never_exhausted() {
+	let mut permitted = scope(
+		json!({"id":"disclose","effect":"allow","subjects":{"ids":["alice"]},"actions":["research.disclose"],"resources":{"kinds":["research"]}}),
+	);
+	let run = permitted.run.clone();
+	// More repetitions than any default Run attempt limit admits.
+	for _ in 0..100 {
+		assert_eq!(
+			disclose(&mut permitted, &run, &request()).await.unwrap(),
+			DisclosureState::Permitted
+		);
+	}
+	assert_eq!(permitted.records.len(), 100);
+	assert!(
+		permitted
+			.records
+			.values()
+			.all(|record| record.state == "consumed")
+	);
+}
+
+#[tokio::test]
 async fn without_request_permission_or_an_approver_nothing_is_disclosed() {
 	let mut unrequested: Fake = scope(Value::Null);
 	unrequested

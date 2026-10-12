@@ -27,8 +27,6 @@ fn resource(scope: &dyn ApprovalScope, origin: &str, run: Uuid) -> Resource {
 pub const DISCLOSURE: &str = "disclosure";
 /// The policy action a Web disclosure approval authorizes.
 pub const DISCLOSE: &str = "research.disclose";
-/// Distinct approvals one exact disclosure may consume within a Run.
-const DISCLOSURE_GENERATIONS: u32 = 32;
 
 fn disclosure_resource(scope: &dyn ApprovalScope, destination: &str, run: Uuid) -> Resource {
 	scope.resource(
@@ -382,6 +380,37 @@ fn disclosure_key(digest: &str, generation: u32) -> Uuid {
 	uuid::Builder::from_random_bytes(id).into_uuid()
 }
 
+/// The newest recorded generation of one exact disclosure and its cache entry.
+/// Generations are recorded in order, and a new one is recorded only once every
+/// earlier one is consumed, so the newest alone decides admission. Exponential
+/// then binary search keeps the lookups logarithmic in the generations used.
+async fn newest_disclosure(
+	scope: &mut dyn ApprovalScope,
+	digest: &str,
+) -> Result<Option<(u32, Value)>> {
+	let Some(mut newest) = scope.cached(disclosure_key(digest, 0), digest).await? else {
+		return Ok(None);
+	};
+	// `low` is recorded; `high` is not, or is past the last representable one.
+	let (mut low, mut high) = (0u32, 1u32);
+	while let Some(entry) = scope.cached(disclosure_key(digest, high), digest).await? {
+		(low, newest) = (high, entry);
+		let Some(next) = high.checked_mul(2) else {
+			high = u32::MAX;
+			break;
+		};
+		high = next;
+	}
+	while high - low > 1 {
+		let middle = low + (high - low) / 2;
+		match scope.cached(disclosure_key(digest, middle), digest).await? {
+			Some(entry) => (low, newest) = (middle, entry),
+			None => high = middle,
+		}
+	}
+	Ok(Some((low, newest)))
+}
+
 /// Admit one exact Web disclosure of a Run. Policy may permit it directly or
 /// through a Run grant; otherwise a designated approver decides through the
 /// ordinary approval decision, and the Run waits on the returned approval.
@@ -402,15 +431,17 @@ pub async fn disclose(
 		Err(Error::Forbidden) => return Ok(DisclosureState::Denied),
 		other => other?,
 	}
-	for generation in 0..DISCLOSURE_GENERATIONS {
-		let key = disclosure_key(&request.digest, generation);
-		if let Some(previous) = scope.cached(key, &request.digest).await? {
+	let generation = match newest_disclosure(scope, &request.digest).await? {
+		None => 0,
+		Some((generation, previous)) => {
 			let id = serde_json::from_value(previous["operation_id"].clone())?;
 			let record = scope.load(id, DISCLOSURE).await?;
 			let expired = record.expires_at.is_some_and(|t| t <= Utc::now());
-			let state = record.state.clone();
-			match state.as_str() {
-				"consumed" => continue,
+			match record.state.as_str() {
+				// Every otherwise-admissible repetition gets its own generation.
+				"consumed" => generation
+					.checked_add(1)
+					.ok_or_else(|| Error::Conflict("DISCLOSURE_GENERATIONS_EXHAUSTED".into()))?,
 				// Consumed only once the attempt is reserved; see consume_disclosure.
 				"approved" => {
 					return Ok(DisclosureState::Approved {
@@ -426,65 +457,68 @@ pub async fn disclose(
 				_ => return Ok(DisclosureState::Denied),
 			}
 		}
-		let direct = match ordinary(scope, &target, DISCLOSE) {
-			Err(Error::Forbidden) => return Ok(DisclosureState::Denied),
-			other => other?,
-		};
-		let grant = scope.grants(run.id).await?.into_iter().find(|g| {
-			g.data["targets"]
+	};
+	let direct = match ordinary(scope, &target, DISCLOSE) {
+		Err(Error::Forbidden) => return Ok(DisclosureState::Denied),
+		other => other?,
+	};
+	let grant = scope.grants(run.id).await?.into_iter().find(|g| {
+		g.data["targets"]
+			.as_array()
+			.is_some_and(|a| a.contains(&json!(request.destination)))
+			&& g.data["actions"]
 				.as_array()
-				.is_some_and(|a| a.contains(&json!(request.destination)))
-				&& g.data["actions"]
-					.as_array()
-					.is_some_and(|a| a.contains(&json!(DISCLOSE)))
-				&& g.data["subjects"] == json!(scope.subjects())
-				// New user input needs a new decision, as for one-time approvals.
-				&& g.data["context_revision"] == json!(request.context_revision)
-				&& eligible(
-					scope,
-					g.data["approver"].as_str().unwrap_or_default(),
-					&g.owner,
-					&target,
-				)
-		});
-		let designated = grant
-			.as_ref()
-			.and_then(|g| g.data["approver"].as_str().map(str::to_owned))
-			.or_else(|| approver(scope, &target));
-		let state = approvals::requested_state(direct, grant.is_some(), designated.is_some());
-		let id = Uuid::new_v4();
-		let data = json!({"run_id":run.id,"agent_id":run.agent_id,"agent_version":run.agent_version,"requester":scope.principal(),"credential_id":scope.credential(),"subjects":scope.subjects(),
-			"operation":request.operation,"provider":request.provider,"destination":request.destination,"content":request.content,"context_revision":request.context_revision,"targets":[request.destination],"action":DISCLOSE,
-			"digest":request.digest,"policy_revision":scope.policy_revision(),"approver":designated,"grant_id":grant.map(|g|g.id),"ordinary":direct});
-		let record = scope
-			.insert(Creation {
-				id,
-				area: None,
-				kind: DISCLOSURE,
-				// A direct or granted disclosure is consumed by this call.
-				state: if state == "approved" {
-					"consumed"
-				} else {
-					state
-				},
-				data,
-				expires: Some(Utc::now() + Duration::seconds(limits.approval_seconds as i64)),
-			})
-			.await?;
-		scope
-			.cache(key, &request.digest, &json!({"operation_id":id}))
-			.await?;
-		scope.event(run.workspace_id,"capability.approval_requested",json!({"id":id,"run_id":run.id,"status":state,"targets":record.data["targets"],"approver":record.data["approver"],"action":DISCLOSE})).await?;
-		return Ok(match state {
-			"approved" => DisclosureState::Permitted,
-			"pending" => DisclosureState::Pending {
-				approval_id: id,
-				expires_at: record.expires_at,
+				.is_some_and(|a| a.contains(&json!(DISCLOSE)))
+			&& g.data["subjects"] == json!(scope.subjects())
+			// New user input needs a new decision, as for one-time approvals.
+			&& g.data["context_revision"] == json!(request.context_revision)
+			&& eligible(
+				scope,
+				g.data["approver"].as_str().unwrap_or_default(),
+				&g.owner,
+				&target,
+			)
+	});
+	let designated = grant
+		.as_ref()
+		.and_then(|g| g.data["approver"].as_str().map(str::to_owned))
+		.or_else(|| approver(scope, &target));
+	let state = approvals::requested_state(direct, grant.is_some(), designated.is_some());
+	let id = Uuid::new_v4();
+	let data = json!({"run_id":run.id,"agent_id":run.agent_id,"agent_version":run.agent_version,"requester":scope.principal(),"credential_id":scope.credential(),"subjects":scope.subjects(),
+		"operation":request.operation,"provider":request.provider,"destination":request.destination,"content":request.content,"context_revision":request.context_revision,"targets":[request.destination],"action":DISCLOSE,
+		"digest":request.digest,"policy_revision":scope.policy_revision(),"approver":designated,"grant_id":grant.map(|g|g.id),"ordinary":direct});
+	let record = scope
+		.insert(Creation {
+			id,
+			area: None,
+			kind: DISCLOSURE,
+			// A direct or granted disclosure is consumed by this call.
+			state: if state == "approved" {
+				"consumed"
+			} else {
+				state
 			},
-			_ => DisclosureState::Denied,
-		});
-	}
-	Ok(DisclosureState::Denied)
+			data,
+			expires: Some(Utc::now() + Duration::seconds(limits.approval_seconds as i64)),
+		})
+		.await?;
+	scope
+		.cache(
+			disclosure_key(&request.digest, generation),
+			&request.digest,
+			&json!({"operation_id":id}),
+		)
+		.await?;
+	scope.event(run.workspace_id,"capability.approval_requested",json!({"id":id,"run_id":run.id,"status":state,"targets":record.data["targets"],"approver":record.data["approver"],"action":DISCLOSE})).await?;
+	Ok(match state {
+		"approved" => DisclosureState::Permitted,
+		"pending" => DisclosureState::Pending {
+			approval_id: id,
+			expires_at: record.expires_at,
+		},
+		_ => DisclosureState::Denied,
+	})
 }
 
 /// Consume a one-time Web disclosure approval of `run`, owned by the current
