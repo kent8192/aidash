@@ -171,6 +171,32 @@ definitions and eager Skill blocks plus the full `metadata_bytes`,
 definition over `schema_bytes`, or any Registry or attached Skill block over
 `skill_bytes`, naming the alias and size.
 
+### Remote semantic reuse
+
+The executing peer reserves every remote inference and compaction at the Home
+through `POST /scoped/usage/reserve`; the Home calls back the peer's
+`POST /scoped/usage/verify` before it charges anything. Both carry a `boundary`
+of `{"step":n}`, and the peer's verify requires a READY semantic operation of
+its own for that step. An `ordered` Run reuses one retrieval across steps
+(ADR 0020), so a reuse step instead sends `{"step":n,"reuses":"<operation ID>"}`,
+naming the operation whose receipt it reuses. The boundary is bound in the
+peer's durable dispatch record, so the Home cannot substitute it in the
+callback. The two nodes check the citation against their own journals:
+
+- the executing peer: the operation is READY for this Run and grant, from a
+  step no later than the Run's actual step;
+- the Home: the same against its journal for the step the peer claims, the
+  grant is still live (`403`), no consumed source changed or was revoked
+  (`409`, reason `invalidated`, the same conditions under which
+  `grants/describe` answers 409), and the Workspace corpus digest equals the
+  one it recorded before that retrieval (`409`, reason `stale`).
+
+A `stale` answer makes the Run drop its cached retrieval and retrieve again
+after one second, up to five times in a row. Peers that predate the field
+interoperate: an older executing peer sends no citation, so its reuse steps
+stay pending as before; an older Home ignores the citation, still checks the
+live grant and consumed sources while leasing it, but not the corpus digest.
+
 ### Remote run-message recovery
 
 A remote input is reserved at home before admission to the executor ledger.
