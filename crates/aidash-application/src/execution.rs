@@ -108,6 +108,21 @@ pub fn message_read_range(event: &ContextEvent) -> Option<(Uuid, usize, usize, u
 	message_read_range_for(&contract, event)
 }
 
+/// Message a workspace-record read targets. Summary dependencies key on the
+/// call because Jev truncation may replace the structured result with its
+/// leading text, which still carries message content.
+pub fn message_read_target(
+	contract: &ToolContract,
+	call: &aidash_domain::provider::ToolCall,
+) -> Option<Uuid> {
+	if contract.behavior.fitting != Some(ResultFitting::WorkspaceRecord)
+		|| call.arguments["kind"] != "message"
+	{
+		return None;
+	}
+	call.arguments["id"].as_str()?.parse().ok()
+}
+
 pub fn message_read_range_for(
 	contract: &ToolContract,
 	event: &ContextEvent,
@@ -188,14 +203,14 @@ pub fn record_message_read(context: &mut Context, event: &ContextEvent) {
 }
 
 pub fn capture_message_read_coverage(context: &mut Context) {
-	for event in context.history.clone() {
-		record_message_read(context, &event);
+	for entry in &context.history {
+		record_message_read_in(&mut context.message_read_coverage, &entry.event);
 	}
 }
 
 pub fn capture_message_inference_coverage(context: &mut Context) {
-	for event in context.history.clone() {
-		record_message_read_in(&mut context.message_inference_coverage, &event);
+	for entry in &context.history {
+		record_message_read_in(&mut context.message_inference_coverage, &entry.event);
 	}
 }
 
@@ -780,9 +795,11 @@ pub fn media_request_headroom(
 		context: json!({}).into(),
 		tools: Vec::new(),
 		max_output_tokens: 0,
+		response_format: None,
 		content_parts: Vec::new(),
 		cache_scope: None,
 		cache_breakpoints: false,
+		disable_provider_transforms: false,
 	};
 	request
 		.ensure_fits_with_parts(headroom, parts)
@@ -805,9 +822,11 @@ pub fn encoded_run_message_reservation(messages: &[Value]) -> usize {
 			.into(),
 			tools: Vec::new(),
 			max_output_tokens: 0,
+			response_format: None,
 			content_parts: Vec::new(),
 			cache_scope: None,
 			cache_breakpoints: false,
+			disable_provider_transforms: false,
 		}
 		.estimated_total_tokens()
 	};
@@ -833,9 +852,11 @@ pub fn check_model_media_headroom(
 		context: json!({}).into(),
 		tools: Vec::new(),
 		max_output_tokens: 0,
+		response_format: None,
 		content_parts: parts,
 		cache_scope: None,
 		cache_breakpoints: false,
+		disable_provider_transforms: false,
 	};
 	request.validate()?;
 	if !model.has_current_media_route_for_parts(&request.content_parts) {
@@ -869,7 +890,7 @@ pub fn record_media_observation(
 			truncated: end < source.len(),
 		};
 		if event.encoded_len() <= budget {
-			context.history.push(event);
+			context.push(event);
 			break;
 		}
 		end -= 1;
@@ -880,7 +901,7 @@ pub fn record_media_observation(
 	let mut used = 0_usize;
 	let mut remove = Vec::new();
 	for index in (0..context.history.len()).rev() {
-		let event = &context.history[index];
+		let event = &context.history[index].event;
 		if matches!(event, ContextEvent::ModelMediaObservation { .. }) {
 			let bytes = event.to_string().len();
 			if used.saturating_add(bytes) > budget {
@@ -979,6 +1000,8 @@ pub mod semantic_context;
 pub mod cancellation;
 
 pub mod admission;
+
+pub mod summary;
 
 pub mod headroom;
 

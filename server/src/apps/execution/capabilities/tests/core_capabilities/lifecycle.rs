@@ -56,6 +56,7 @@ async fn wait_for_blocked_connection(pool: &sqlx::PgPool, blocker: i32) -> i32 {
 #[tokio::test]
 async fn interrupted_patch_keeps_old_manifest_and_reclaims_only_abandoned_objects(
 	#[future] capability_fixture: CoreFixture,
+	#[from(worker_control)] control_1: WorkerControl,
 ) {
 	use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
 	let c = Box::pin(capability_fixture).await;
@@ -169,7 +170,8 @@ async fn interrupted_patch_keeps_old_manifest_and_reclaims_only_abandoned_object
 	)
 	.await
 	.unwrap();
-	let (stop, rx) = tokio::sync::watch::channel(false);
+	let WorkerControl { stop, receiver: rx } = control_1;
+	// Act: collect abandoned bytes while the test holds the allocating transaction lock.
 	let worker = tokio::spawn(aidash_server::capabilities::operations::run(
 		c.f.store.clone(),
 		rx,
@@ -679,13 +681,14 @@ async fn short_staging(#[future] capability_fixture: CoreFixture) -> CoreFixture
 	let mut profile = (*c.f.store.capabilities.0).clone();
 	profile.staging_seconds = 1;
 	c.f.store.capabilities = Runtime::new(profile).unwrap();
-	c.app = common::application(c.f.clone()).await;
+	c.app.context.set_singleton(c.f.clone());
 	c
 }
 #[rstest::rstest]
 #[tokio::test]
 async fn expired_upload_releases_only_its_owned_staging_bytes(
 	#[future] short_staging: CoreFixture,
+	#[from(worker_control)] control_1: WorkerControl,
 ) {
 	use base64::Engine;
 	use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
@@ -716,7 +719,8 @@ async fn expired_upload_releases_only_its_owned_staging_bytes(
 	.unwrap();
 	let object_path = c.root.join(object.simple().to_string());
 	assert!(object_path.exists());
-	let (stop, rx) = tokio::sync::watch::channel(false);
+	let WorkerControl { stop, receiver: rx } = control_1;
+	// Act: collect only after the incomplete upload has written its staging bytes.
 	let worker = tokio::spawn(aidash_server::capabilities::operations::run(
 		c.f.store.clone(),
 		rx,
@@ -785,6 +789,7 @@ async fn cleanup_fault_fixture(#[future] capability_fixture: CoreFixture) -> (Co
 #[tokio::test]
 async fn failed_snapshot_preserves_active_files_and_interrupted_delete_is_reconcilable(
 	#[future] cleanup_fault_fixture: (CoreFixture, Value),
+	#[from(worker_control)] control_1: WorkerControl,
 ) {
 	use reinhardt::query::{Alias, Expr, IntoIden, PostgresQueryBuilder, Query, SimpleExpr};
 	let (c, area) = Box::pin(cleanup_fault_fixture).await;
@@ -852,7 +857,8 @@ async fn failed_snapshot_preserves_active_files_and_interrupted_delete_is_reconc
 	.fetch_one(&mut *barrier)
 	.await
 	.unwrap();
-	let (stop, rx) = tokio::sync::watch::channel(false);
+	let WorkerControl { stop, receiver: rx } = control_1;
+	// Act: reconcile cleanup after installing and locking the failure barrier.
 	let worker = tokio::spawn(aidash_server::capabilities::operations::run(
 		c.f.store.clone(),
 		rx,

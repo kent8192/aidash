@@ -256,4 +256,19 @@ Binding and native memory histories converge in `registry/0015_binding_memory_me
 
 `registry/0021_tool_parallelism` (after `registry/0020_model_streaming_config`) replaces the Agent Binding and descriptor contract functions. They now accept the Agent `tool_parallelism` ceiling (1–16) and a descriptor, Tool Binding or Bundle Binding `narrow.concurrency` restriction (`sequential` or `shared_read`), and keep the `projection_version`, `prompt_cache` and `exposure` fields of `registry/0019_deferred_exposure`. It adds `tool_parallelism` to the current installation guard's Agent override allowlist read from `pg_get_functiondef`; the edit raises if its anchor is missing, and leaves the `0020_model_streaming_config` model section intact. Existing rows are unchanged; the reverse migration refuses to run while any Definition, Package or installation declares `tool_parallelism` or `narrow.concurrency`, or while an unfinished Run's Binding snapshot pins a shared-read core operation (`file_read`, `file_search`, `skill_list`, `skill_load`) or a concurrency restriction, because those provider contract digests encode `concurrency` and earlier binaries reject them. It then restores the `0019_deferred_exposure` Agent Binding and descriptor bodies and withdraws the override.
 
+`registry/0022_context_policy` (after `registry/0021_tool_parallelism`) replaces the Agent Binding contract function so it accepts the Agent `context_policy` key with the constraints of `ContextPolicy::validate`: version `context-recovery/1`, `preserve_recent` 6–1000, `overflow_retries` 0–4, `overflow_shrink` 0.5–0.9, and an optional `summary` naming an exact model reference with `max_tokens` 256–4096 and `call_budget` 1–64; unknown keys are rejected. It keeps the 0021 body otherwise, including `tool_parallelism`, `exposure`, `prompt_cache` and `projection_version`. Context Policy is not an installation override, so the installation guard is unchanged. Existing rows are unchanged; the reverse migration refuses to run while any Definition, Package or installation declares `context_policy`, or while an unfinished Run's Binding snapshot pins an Agent definition declaring one, and otherwise restores the `0021_tool_parallelism` body. The function body has no typed Reinhardt operation, so it lives in SQL assets.
+
 `execution/0012_inference_usage` creates the per-attempt Usage Record table with typed operations, including its Run reference, outcome and count checks, `created_at` default and `(run_id, outcome)` lookup index. The generated state-only checkpoint `execution/0013_inference_usage_model_state` removes those from the ORM snapshot without dropping them physically. `projection_version` is `integer` because the pinned ORM model macro has no Rust mapping for `smallint`.
+
+`execution/0016_context_journal` follows `execution/0015_inference_progress_state`
+and creates the append-only `run_context_events`
+Context Journal and `context_compaction_attempts` with typed operations: composite
+`(run_id, seq)` key, cascading Run references, origin/stage/outcome CHECKs, a
+`(run_id, stage)` lookup index and a partial unique index allowing one unsettled
+attempt per Run. Only the two `atomic_write_guard` statement triggers use
+`RunSQL`, because the typed API cannot express trigger DDL. Like the desktop
+schema, this physical migration is database-only and precedes its state-only
+model snapshot `execution/0017_context_journal_model_state`. `runs.context`
+remains the lossy projection; stored projections written before the journal are
+upgraded when decoded, and their first save, or the worker before their first
+pruning or summary, journals those events as `imported`.

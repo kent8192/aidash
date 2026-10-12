@@ -14,21 +14,17 @@ fn tools() -> Vec<ToolSpec> {
 }
 
 fn request(projection: RequestProjection, events: u32) -> ModelRequest {
-	let context = Context {
-		history: (1..=events)
-			.map(|n| {
-				ContextEvent::tool(
-					ToolCall {
-						id: format!("call-{n}"),
-						name: "workspace_read".into(),
-						arguments: json!({"kind":"task"}),
-					},
-					json!({"read":n}),
-				)
-			})
-			.collect(),
-		..Context::default()
-	};
+	let mut context = Context::default();
+	for n in 1..=events {
+		context.push(ContextEvent::tool(
+			ToolCall {
+				id: format!("call-{n}"),
+				name: "workspace_read".into(),
+				arguments: json!({"kind":"task"}),
+			},
+			json!({"read":n}),
+		));
+	}
 	let pinned = json!({"identity":{"agent_id":"agent"},"task":{"title":"Task"},"agent_state":{"step":events}});
 	RequestBudget {
 		window: usize::MAX,

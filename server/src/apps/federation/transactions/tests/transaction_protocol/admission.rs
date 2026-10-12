@@ -3,10 +3,8 @@ use aidash_server::authorization::{
 	Authorization,
 	peer::{PeerMappingInput, write},
 };
-use axum::{Router, extract::Request, middleware::Next};
 use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
 use std::time::Duration as StdDuration;
-use tokio::sync::Semaphore;
 
 struct ScopedPair {
 	a: Node,
@@ -44,10 +42,11 @@ async fn map_subject(source: &Node, target: &Node) {
 	.unwrap();
 }
 
-async fn scoped_pair(environment: &TestEnvironment) -> ScopedPair {
-	let (a, b, mut manifest, _, _) = pair(environment).await;
-	let app_a = common::application(a.f.clone()).await;
-	let app_b = common::application(b.f.clone()).await;
+#[fixture]
+async fn scoped_pair(#[future(awt)] pair: Pair) -> ScopedPair {
+	let (a, b, mut manifest, _, _) = pair;
+	let app_a = a.application.clone();
+	let app_b = b.application.clone();
 	let (_, token_a, task_a) = common::bootstrap(&a.f, &app_a, "http://localhost:1").await;
 	let (_, token_b, task_b) = common::bootstrap(&b.f, &app_b, "http://localhost:1").await;
 	map_subject(&a, &b).await;
@@ -77,20 +76,15 @@ async fn scoped_pair(environment: &TestEnvironment) -> ScopedPair {
 	}
 }
 
-async fn serve(node: &mut Node, app: Router) {
-	node.stop().await;
-	let listener = tokio::net::TcpListener::bind(node.listen).await.unwrap();
-	node.server = Some(tokio::spawn(async move {
-		axum::serve(listener, app).await.unwrap()
-	}));
+async fn serve(node: &mut Node, app: reinhardt::ServerRouter) {
+	// Act: install the fault at the participant stable origin after domain admission setup.
+	node.serve(Arc::new(app)).await;
 }
 
 #[rstest::rstest]
 #[tokio::test]
 async fn invalid_deadline_does_not_bind_remote_preflight(
-	#[future(awt)]
-	#[from(test_environment)]
-	environment: Arc<TestEnvironment>,
+	#[future(awt)] scoped_pair: ScopedPair,
 	#[values(-60, 7200)] seconds: i64,
 ) {
 	let ScopedPair {
@@ -100,7 +94,7 @@ async fn invalid_deadline_does_not_bind_remote_preflight(
 		token_a,
 		mut manifest,
 		..
-	} = scoped_pair(&environment).await;
+	} = scoped_pair;
 	manifest.deadline = Utc::now() + Duration::seconds(seconds);
 	let (status, body) = common::request(
 		&app_a,
@@ -153,9 +147,7 @@ async fn invalid_deadline_does_not_bind_remote_preflight(
 #[rstest::rstest]
 #[tokio::test]
 async fn deadline_expiring_during_preflight_has_a_recoverable_coordinator(
-	#[future(awt)]
-	#[from(test_environment)]
-	environment: Arc<TestEnvironment>,
+	#[future(awt)] scoped_pair: ScopedPair,
 ) {
 	let ScopedPair {
 		a,
@@ -164,19 +156,19 @@ async fn deadline_expiring_during_preflight_has_a_recoverable_coordinator(
 		token_a,
 		mut manifest,
 		..
-	} = scoped_pair(&environment).await;
+	} = scoped_pair;
 	manifest.deadline = Utc::now() + Duration::seconds(3);
 	let deadline = manifest.deadline;
-	let app = common::application(b.f.clone())
-		.await
-		.test_transport()
-		.layer(axum::middleware::from_fn(
-			move |request: Request, next: Next| async move {
-				if request.uri().path() == "/federation/v0.1/transactions/preflight" {
+	let app = aidash_server::routes()
+		.into_server()
+		.with_di_context(b.application.context.clone())
+		.with_middleware(ClosureMiddleware(
+			move |request: reinhardt::Request, next: Arc<dyn reinhardt::Handler>| async move {
+				if request.uri.path() == "/federation/v0.1/transactions/preflight" {
 					let remaining = (deadline - Utc::now()).to_std().unwrap_or_default();
 					tokio::time::sleep(remaining + StdDuration::from_millis(50)).await;
 				}
-				next.run(request).await
+				next.handle(request).await.unwrap()
 			},
 		));
 	serve(&mut b, app).await;
@@ -213,11 +205,7 @@ async fn deadline_expiring_during_preflight_has_a_recoverable_coordinator(
 
 #[rstest::rstest]
 #[tokio::test]
-async fn unavailable_peer_hides_only_its_rows(
-	#[future(awt)]
-	#[from(test_environment)]
-	environment: Arc<TestEnvironment>,
-) {
+async fn unavailable_peer_hides_only_its_rows(#[future(awt)] scoped_pair: ScopedPair) {
 	let ScopedPair {
 		a,
 		mut b,
@@ -225,7 +213,7 @@ async fn unavailable_peer_hides_only_its_rows(
 		token_a,
 		mut manifest,
 		..
-	} = scoped_pair(&environment).await;
+	} = scoped_pair;
 	let (status, body) = common::request(
 		&app_a,
 		&token_a,
@@ -273,9 +261,9 @@ async fn unavailable_peer_hides_only_its_rows(
 #[rstest::rstest]
 #[tokio::test]
 async fn bidirectional_submissions_reserve_inbound_control_capacity(
-	#[future(awt)]
-	#[from(test_environment)]
-	environment: Arc<TestEnvironment>,
+	#[future(awt)] scoped_pair: ScopedPair,
+
+	fault_signals: FaultSignals,
 ) {
 	let ScopedPair {
 		mut a,
@@ -285,25 +273,25 @@ async fn bidirectional_submissions_reserve_inbound_control_capacity(
 		token_a,
 		token_b,
 		manifest,
-	} = scoped_pair(&environment).await;
-	let gate = Arc::new(Semaphore::new(0));
-	let arrived = Arc::new(AtomicUsize::new(0));
+	} = scoped_pair;
+	let gate = fault_signals.gate;
+	let arrived = fault_signals.active;
 	for node in [&mut a, &mut b] {
 		let gate = gate.clone();
 		let arrived = arrived.clone();
-		let app = common::application(node.f.clone())
-			.await
-			.test_transport()
-			.layer(axum::middleware::from_fn(
-				move |request: Request, next: Next| {
+		let app = aidash_server::routes()
+			.into_server()
+			.with_di_context(node.application.context.clone())
+			.with_middleware(ClosureMiddleware(
+				move |request: reinhardt::Request, next: Arc<dyn reinhardt::Handler>| {
 					let gate = gate.clone();
 					let arrived = arrived.clone();
 					async move {
-						if request.uri().path() == "/federation/v0.1/transactions/preflight" {
+						if request.uri.path() == "/federation/v0.1/transactions/preflight" {
 							arrived.fetch_add(1, Ordering::SeqCst);
 							gate.acquire().await.unwrap().forget();
 						}
-						next.run(request).await
+						next.handle(request).await.unwrap()
 					}
 				},
 			));
@@ -362,9 +350,14 @@ async fn bidirectional_submissions_reserve_inbound_control_capacity(
 #[rstest::rstest]
 #[tokio::test]
 async fn independent_preflights_run_concurrently(
+	#[future(awt)] scoped_pair: ScopedPair,
+
 	#[future(awt)]
-	#[from(test_environment)]
-	environment: Arc<TestEnvironment>,
+	#[from(node)]
+	#[with("preflight-c")]
+	third: Node,
+
+	fault_signals: FaultSignals,
 ) {
 	let ScopedPair {
 		a,
@@ -373,8 +366,8 @@ async fn independent_preflights_run_concurrently(
 		token_a,
 		mut manifest,
 		..
-	} = scoped_pair(&environment).await;
-	let mut c = Node::new(&environment, "preflight-c").await;
+	} = scoped_pair;
+	let mut c = third;
 	for (local, remote) in [(&a, &c), (&c, &a)] {
 		local
 			.f
@@ -399,12 +392,7 @@ async fn independent_preflights_run_concurrently(
 			200
 		);
 	}
-	let (_, _, task) = common::bootstrap(
-		&c.f,
-		&common::application(c.f.clone()).await,
-		"http://localhost:1",
-	)
-	.await;
+	let (_, _, task) = common::bootstrap(&c.f, &c.application, "http://localhost:1").await;
 	map_subject(&a, &c).await;
 	let workspace = c.f.store.task(task).await.unwrap().workspace_id;
 	let mut third = manifest.participants[0].clone();
@@ -415,20 +403,20 @@ async fn independent_preflights_run_concurrently(
 		state: json!({}),
 	}];
 	manifest.participants.push(third);
-	let barrier = Arc::new(tokio::sync::Barrier::new(2));
+	let barrier = fault_signals.barrier;
 	for node in [&mut b, &mut c] {
 		let barrier = barrier.clone();
-		let app = common::application(node.f.clone())
-			.await
-			.test_transport()
-			.layer(axum::middleware::from_fn(
-				move |request: Request, next: Next| {
+		let app = aidash_server::routes()
+			.into_server()
+			.with_di_context(node.application.context.clone())
+			.with_middleware(ClosureMiddleware(
+				move |request: reinhardt::Request, next: Arc<dyn reinhardt::Handler>| {
 					let barrier = barrier.clone();
 					async move {
-						if request.uri().path() == "/federation/v0.1/transactions/preflight" {
+						if request.uri.path() == "/federation/v0.1/transactions/preflight" {
 							barrier.wait().await;
 						}
-						next.run(request).await
+						next.handle(request).await.unwrap()
 					}
 				},
 			));

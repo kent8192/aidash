@@ -44,8 +44,15 @@ The React dashboard remains in
 `web/` and uses the existing URL, JSON, authentication, and SSE contracts.
 
 Reinhardt is pinned to development revision
-`a068ecbdc03ff01653f80c9c4ab36e15a27f2bd7` in the manifests and lockfile. The initial
-project and app scaffolds were generated with the Reinhardt CLI.
+`19928e83b46c130a3a40320e5c9b71aa9f84e322` in the manifests and lockfile. The initial
+project and app scaffolds were generated with the Reinhardt CLI. Server tests use
+its composable guard, method-aware stub router, configurable PostgreSQL fixture,
+and request builder with per-request headers and redirect policy. The PostgreSQL
+17 extension image remains project-specific. Shared JetStream setup uses the native
+Send fixture after reinhardt-web#6705 fixes #6702. Native ORM timestamp bindings
+include the #6703 repair from #6704; both issues remain open until closed by the
+maintainer because their fixes merged into the development branch. Streaming
+clients retain no total timeout while reinhardt-web#6689 remains open.
 
 ## Run locally
 
@@ -261,7 +268,9 @@ MCP and Agent integrations use `integration.mcp@1` and `integration.agent@1` wit
 
 Context compaction uses a Rust reimplementation of [fast-jev-compaction](https://github.com/tamaratran/fast-jev-compaction), with a separate TypeSafe Jev connection. Set `AIDASH_SECRET_JEV` to your TypeSafe API key on each worker (or combined `serve` process). Optional `AIDASH_JEV_ENDPOINT` and `AIDASH_JEV_MODEL` default to `https://api.typesafe.ai/v1/systemone` and `jev-latest`. Jev is contacted only when the model's context budget is exceeded and old tool pairs can be pruned; those requests send a fitted history view to TypeSafe and use that account's credits.
 
-Jev decides whether to keep each old tool call and its full result. Aidash keeps both, keeps the call with a shortened result, or removes the pair. It preserves the first and latest six history events, all human/non-tool events, and any legacy summary. Optional task/workspace/memory snapshot material is separately bounded to the model window with an explicit truncation marker. Workspace observations contain paged summaries and record IDs; agents use `workspace_read` for full details. Legacy observation results are converted to this view on replay, while durable audit records remain unchanged. It creates no new summaries and never silently falls back to summarization. Missing credentials, invalid decisions or insufficient reduction fail the step without changing its saved context. See the [compaction contract](docs/protocol.md#context-compaction) for input fitting and request limits. Protocol tests use a local Jev fixture; live service access and decision quality are not established by those tests.
+Jev decides whether to keep each old tool call and its full result. Aidash keeps both, keeps the call with a shortened result, or removes the pair. It preserves the first and latest six history events and all human/non-tool events. Optional task/workspace/memory snapshot material is separately bounded to the model window with an explicit truncation marker. Workspace observations contain paged summaries and record IDs; agents use `workspace_read` for full details. Legacy observation results are converted to this view on replay, while durable audit records remain unchanged. Every original history event stays in the Run's Context Journal, whatever the model-visible history keeps. Without a `context_policy`, an Agent never summarizes history. A Jev transport failure or invalid decision fails the step, and insufficient reduction pauses the Run with `context_unreducible`; neither changes the saved context. See the [compaction contract](docs/protocol.md#context-compaction) for input fitting and request limits. Protocol tests use a local Jev fixture; live service access and decision quality are not established by those tests.
+
+An Agent version can opt into `"context_policy": {"version": "context-recovery/1", ...}`. Under this policy, a Jev failure pauses the Run with `prune_unavailable`. If pruning cannot fit the request, an explicitly approved summarizer model can merge older tool history into a structured Execution Summary; the summarizer has no fallback. A provider-reported Context Overflow re-runs this pipeline a bounded number of times with a smaller effective window. Output truncation and refusals pause the Run with a typed reason, and their tool calls are never dispatched. See [context recovery](docs/protocol.md#context-recovery) for the fields, approval and adoption rules, and metrics.
 
 ## Generated API client
 

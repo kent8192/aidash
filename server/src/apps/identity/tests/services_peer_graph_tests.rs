@@ -1,7 +1,7 @@
 //! Unit tests for services::peer::graph.
 use super::*;
 
-#[test]
+#[rstest::rstest]
 fn rejects_multihop_graph_requests() {
 	let options = GraphOptions {
 		scope_workspace: None,
@@ -17,7 +17,7 @@ fn rejects_multihop_graph_requests() {
 	assert!(options.validate().is_err());
 }
 
-#[test]
+#[rstest::rstest]
 fn source_rejects_cross_node_and_dangling_projection() {
 	let input = GraphExpandInput {
 		node_id: "aidash://b".into(),
