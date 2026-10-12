@@ -53,7 +53,8 @@ impl ToolCallState {
 	/// The one place a change that adds fields older workers reject declares the
 	/// capability those fields need.
 	fn required_capabilities(&self) -> impl IntoIterator<Item = PersistedCapability> {
-		[]
+		// A persisted Tool Batch end (#119) is rejected by workers built before it.
+		self.batch_end.map(|_| PersistedCapability::ToolBatchState)
 	}
 }
 impl RunState {

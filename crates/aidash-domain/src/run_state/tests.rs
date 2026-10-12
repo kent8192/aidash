@@ -169,11 +169,11 @@ fn a_state_without_requirements_keeps_the_legacy_envelope_bytes() {
 fn fields_a_worker_does_not_know_are_a_capability_mismatch_not_a_corrupt_run() {
 	// Arrange: a newer build persisted a field this build's `deny_unknown_fields` rejects.
 	let mut data = tool_data();
-	data["batch_end"] = json!(2);
+	data["future_field"] = json!(2);
 
 	// Act
 	let undeclared = decode(RunPhase::ToolCall, envelope(data.clone())).unwrap_err();
-	let declared = decode(RunPhase::ToolCall, requiring(&["tool_batch_state"], data)).unwrap_err();
+	let declared = decode(RunPhase::ToolCall, requiring(&["future_capability"], data)).unwrap_err();
 	let future_variant =
 		decode(RunPhase::Waiting, envelope(json!({"reason":"future_wait"}))).unwrap_err();
 	let future_envelope = decode(
@@ -219,6 +219,42 @@ fn a_stored_requirement_may_exceed_what_the_state_derives() {
 		!StateRequirements::from_pending(&requiring(&["tool_batch_state"], json!({})))
 			.unwrap()
 			.covered_by(&StateRequirements::default())
+	);
+}
+#[rstest::rstest]
+fn a_tool_batch_end_requires_the_tool_batch_capability() {
+	// Arrange: a Tool Batch admitted calls up to `batch_end` (#119).
+	let mut data = tool_data();
+	data["batch_end"] = json!(1);
+
+	// Act
+	let (state, recovery) = decode(
+		RunPhase::ToolCall,
+		requiring(&["tool_batch_state"], data.clone()),
+	)
+	.unwrap();
+	let saved = encode(&state, &recovery).unwrap();
+
+	// Assert: the requirement is derived from the state and written on save.
+	assert_eq!(StateRequirements::of(&state).names(), ["tool_batch_state"]);
+	assert_eq!(saved, requiring(&["tool_batch_state"], data));
+	let (plain, _) = decode(RunPhase::ToolCall, envelope(tool_data())).unwrap();
+	assert!(StateRequirements::of(&plain).is_empty());
+}
+#[rstest::rstest]
+fn a_requirement_that_falls_short_is_read_and_rewritten() {
+	// Arrange: a Tool Batch persisted by a build after #119 but before this gate,
+	// so its envelope carries no requirement.
+	let mut data = tool_data();
+	data["batch_end"] = json!(1);
+
+	// Act
+	let (state, recovery) = decode(RunPhase::ToolCall, envelope(data.clone())).unwrap();
+
+	// Assert: it is not treated as damage, and the next save adds the requirement.
+	assert_eq!(
+		encode(&state, &recovery).unwrap(),
+		requiring(&["tool_batch_state"], data)
 	);
 }
 #[rstest::rstest]

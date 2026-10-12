@@ -416,13 +416,11 @@ pub fn decode(phase: RunPhase, pending: Value) -> Result<(RunState, RecoveryStat
 		}
 	})?;
 	state.validate()?;
-	// A stored requirement may exceed what this build derives (it only keeps older
-	// workers away), but one that falls short would let them claim unreadable state.
-	if !StateRequirements::of(&state).covered_by(&pending.requires) {
-		return Err(Error::Invalid(
-			"stored capability requirement does not cover the state".into(),
-		));
-	}
+	// A stored requirement may differ from what this build derives. One that
+	// exceeds it only keeps older workers away. One that falls short was written
+	// by a build that predates the requirement (a Tool Batch persisted after #119
+	// but before this gate); this build has just read the state, so it is not
+	// damaged, and the next save writes the derived requirement.
 	Ok((state, pending.recovery))
 }
 impl Run {
