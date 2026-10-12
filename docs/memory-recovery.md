@@ -248,3 +248,20 @@ is `fenced` once its revision is no longer readable.
   and authority when it commits.
 
 The test is `impact_lists_visible_dependents_before_and_after_a_change`.
+
+## Concurrency and restart
+
+| Scenario                            | Supported outcome                                                                                                                                             | Test                                                                                 |
+| ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| A Run corrects memory it consumed   | The correction commits; the writer stops at its next boundary with `invalidated` and makes no further inference                                               | `home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own_correction` |
+| Two concurrent writers on one Unit  | One compare-and-set winner; the loser gets a conflict, never a silent overwrite                                                                               | `concurrent_writers_on_one_unit_have_a_single_winner_and_fence_readers`              |
+| Several readers of one Unit         | Every reader of the old revision is fenced by the winning change                                                                                              | same test                                                                            |
+| Home restart after an invalidation  | The Run stays paused with the same cause and revision; no restart loop                                                                                        | `home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own_correction` |
+| Manual resume of an invalidated Run | The worker's entry check withholds the Run and pauses it again without inference; this pause reads `execution authority denied`. P: reject the resume instead | same test                                                                            |
+| Remote Execution node restart       | Not covered here; the remote semantic journal replays receipts (`remote: lost_semantic_reply_replays_receipt_without_a_second_embedding`)                     | P: an explicit Execution-node restart test                                           |
+
+Evaluation hook for #122: the fixed-task evaluator (PR #213) is not merged.
+When it is, these scenarios should report, per Run, the pause cause, the number
+of worker attempts until the pause (continuity), the time from the source
+change to the pause (latency), and whether a follow-up Task completed the
+original goal (useful completion).

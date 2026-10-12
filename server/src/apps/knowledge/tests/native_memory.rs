@@ -2539,6 +2539,52 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 		2,
 		"no inference after the writer's own correction"
 	);
+	// A Home restart neither revives nor spins the invalidated Run.
+	let restarted = database.kill_and_restart(&f.store).await;
+	let f = Federation {
+		store: restarted,
+		..f
+	};
+	let worker = aidash_server::harness::Harness {
+		federation: f.clone(),
+	};
+	for _ in 0..3 {
+		tokio::time::timeout(std::time::Duration::from_secs(15), worker.worker_once())
+			.await
+			.expect("a restarted worker must not block on an invalidated Run")
+			.unwrap();
+	}
+	let after_restart = f.store.run(run.id).await.unwrap();
+	assert_eq!(after_restart.control.as_str(), "PAUSED");
+	assert_eq!(
+		after_restart.recovery.semantic_reason,
+		Some(aidash_domain::semantic::Failure::Invalidated)
+	);
+	assert_eq!(
+		after_restart.revision, stopped.revision,
+		"no restart loop rewrites the paused Run"
+	);
+	// A manual resume is not an exemption: the worker's entry check withholds
+	// the Run's own disclosure and pauses it again without another inference.
+	// That entry check reports the generic authority pause, not `invalidated`;
+	// rejecting such a resume outright is a decision requested in Issue #127.
+	f.store
+		.control(run.id, aidash_domain::RunControlAction::Resume)
+		.await
+		.unwrap();
+	for _ in 0..4 {
+		tokio::time::timeout(std::time::Duration::from_secs(15), worker.worker_once())
+			.await
+			.expect("a resumed invalidated Run must stop, not spin")
+			.unwrap();
+		if f.store.run(run.id).await.unwrap().control.as_str() == "PAUSED" {
+			break;
+		}
+	}
+	let resumed = f.store.run(run.id).await.unwrap();
+	assert_eq!(resumed.control.as_str(), "PAUSED", "{:?}", resumed.error);
+	assert_eq!(resumed.error.as_deref(), Some("execution authority denied"));
+	assert_eq!(captured.lock().unwrap().len(), 2);
 	provider.abort();
 }
 
