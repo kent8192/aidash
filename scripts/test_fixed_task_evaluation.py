@@ -782,8 +782,12 @@ class LiveGuardTest(unittest.TestCase):
             args = self.args(**{"--task": "code-change-hidden-regression"})
             with self.assertRaisesRegex(evaluation.GuardRefusal, "container runner.*--network none"):
                 cli.live(args, read_json=lambda _: approval, transport=call, wall_now=lambda: self.NOW)
-        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
-            cli.main(["live", "--allow-oracle-code-execution"])
+        # Every other required argument is present, so only the removed flag can make the parser exit.
+        stderr = io.StringIO()
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(stderr):
+            cli.main(["live", "--base-url", "http://n", "--tenant", "acme", "--server-revision", "0123abc",
+                      "--allow-oracle-code-execution"])
+        self.assertIn("unrecognized arguments: --allow-oracle-code-execution", stderr.getvalue())
         self.assertEqual(registered, [], "the refusal precedes every Registry write")
         # Defense in depth: even a caller that allows execution never grades live answers by running them.
         item = task(value, "code-change-hidden-regression")
