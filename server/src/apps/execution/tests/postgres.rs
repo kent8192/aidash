@@ -1487,8 +1487,7 @@ async fn integration_failures_reach_the_agent_without_replay_or_schema_escape(
 	);
 	assert_eq!(
 		run.context
-			.history
-			.iter()
+			.events()
 			.filter(|event| matches!(event, aidash_server::context::ContextEvent::Tool { .. }))
 			.count(),
 		4,
@@ -2117,7 +2116,8 @@ async fn skill_reads_fit_the_pending_request_budget_before_recording(
 	.await
 	.unwrap();
 	let run = store.runs().await.unwrap().remove(0);
-	let aidash_server::context::ContextEvent::Tool { result, .. } = &run.context.history[0] else {
+	let aidash_server::context::ContextEvent::Tool { result, .. } = &run.context.history[0].event
+	else {
 		panic!("expected tool result")
 	};
 	let text = result["text"].as_str().unwrap();
@@ -2204,7 +2204,7 @@ async fn unavailable_tools_are_results_and_child_gating_advances_step(
 	.unwrap();
 	assert_eq!(json!(run.state)["data"]["cursor"], 1);
 	assert!(
-		json!(run.context)["history"][0]["result"]["error"]
+		json!(run.context)["history"][0]["event"]["result"]["error"]
 			.as_str()
 			.unwrap()
 			.contains("missing_tool")

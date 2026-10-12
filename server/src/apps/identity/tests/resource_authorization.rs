@@ -882,20 +882,19 @@ async fn cyclic_journal_dependencies_terminate_and_propagate_revocation(
 	use reinhardt::db::orm::{DatabaseConnection, Json, Model};
 
 	let mut db = *app.context.get_singleton::<DatabaseConnection>().unwrap();
-	let journal = aidash_server::context::Context {
-		history: vec![
-			aidash_server::context::ContextEvent::ModelMediaObservation {
-				text: "private journal content".into(),
-				through_seq: None,
-				truncated: false,
-			},
-		],
-		..Default::default()
-	};
+	let mut journal = aidash_server::context::Context::default();
+	journal.push(
+		aidash_server::context::ContextEvent::ModelMediaObservation {
+			text: "private journal content".into(),
+			through_seq: None,
+			truncated: false,
+		},
+	);
 	let mut updated = 0;
 	for run in f.store.runs().await.unwrap() {
 		let mut context = run.context.clone();
 		context.history = journal.history.clone();
+		context.journal = journal.journal;
 		updated += RunRecord::objects()
 			.filter(RunRecord::field_id().eq(run.id))
 			.update_fields_with_conn(

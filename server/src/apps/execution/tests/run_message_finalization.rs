@@ -1031,8 +1031,10 @@ async fn rejected_catchup_summary_consumes_the_last_step(
 			.as_array()
 			.unwrap()
 			.iter()
-			.any(|event| event["kind"] == "run_message_summary_required"
-				&& (!oversized || event["max_bytes"] == 8))
+			.any(
+				|entry| entry["event"]["kind"] == "run_message_summary_required"
+					&& (!oversized || entry["event"]["max_bytes"] == 8)
+			)
 	);
 	assert!(
 		(Harness {

@@ -401,8 +401,7 @@ async fn complete(f: &Federation, run: Uuid) -> Vec<Step> {
 
 fn tool_events(run: &Run) -> Vec<(String, String, Value)> {
 	run.context
-		.history
-		.iter()
+		.events()
 		.filter_map(|event| match event {
 			ContextEvent::Tool { call, result } => {
 				Some((call.id.clone(), call.name.clone(), result.clone()))

@@ -121,7 +121,8 @@ async fn generated_execution_reports_charged_usage_and_releases_unused_quota_ove
 	assert_eq!(
 		usage,
 		json!({"token_limit":200000,"used_tokens":19,"inference_attempts":1,
-		"compaction_call_limit":0,"compaction_calls":0,"embedding_call_limit":0,"embedding_calls":0})
+		"compaction_call_limit":0,"compaction_calls":0,"embedding_call_limit":0,"embedding_calls":0,
+		"summary_call_limit":0,"summary_calls":0})
 	);
 	let requests = assert_json(
 		fixture

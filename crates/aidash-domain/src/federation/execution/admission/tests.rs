@@ -28,7 +28,7 @@ fn binding() -> (Record, ExecutionPrincipal, Description) {
 		task,
 		inspection,
 		expires_at: Utc::now(),
-		semantic: crate::semantic::remote::Binding::Disabled {},
+		semantic: crate::semantic::remote::Binding::Disabled { summarizer: None },
 	};
 	let identity = ExecutionPrincipal {
 		tenant: "receiver-tenant".into(),
@@ -112,5 +112,37 @@ fn peer_phase_and_inactive_control_keep_the_protocol_spelling() {
 	assert_eq!(
 		serde_json::to_value(RemoteExecutionControlState::Inactive).unwrap(),
 		json!("INACTIVE")
+	);
+}
+
+#[rstest]
+fn activation_carries_a_context_pause_reason_only_when_present() {
+	let mut activation = Activation {
+		grant_id: Uuid::from_u128(1),
+		admission_id: Uuid::from_u128(2),
+		run_id: Uuid::from_u128(2),
+		phase: RemoteExecutionPhase::Thinking,
+		control: RemoteExecutionControlState::Paused,
+		error: None,
+		semantic_reason: None,
+		context_reason: None,
+	};
+	// Peers without the field keep their exact wire shape.
+	let legacy = serde_json::to_value(&activation).unwrap();
+	assert!(legacy.get("context_reason").is_none());
+	assert!(
+		serde_json::from_value::<Activation>(legacy)
+			.unwrap()
+			.context_reason
+			.is_none()
+	);
+	activation.context_reason = Some(crate::context::recovery::Failure::SummaryInvalid);
+	let paused = serde_json::to_value(&activation).unwrap();
+	assert_eq!(paused["context_reason"], json!("summary_invalid"));
+	assert_eq!(
+		serde_json::from_value::<Activation>(paused)
+			.unwrap()
+			.context_reason,
+		Some(crate::context::recovery::Failure::SummaryInvalid)
 	);
 }
