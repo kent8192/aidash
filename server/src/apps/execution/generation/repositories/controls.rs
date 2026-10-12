@@ -121,18 +121,20 @@ impl GenerationLifecycleScope for Scope {
 	fn now(&self) -> DateTime<Utc> {
 		Utc::now()
 	}
-	async fn unused(&mut self, job: &Request) -> aidash_application::Result<(i64, i64, i64)> {
+	async fn unused(
+		&mut self,
+		job: &Request,
+	) -> aidash_application::Result<(i64, aidash_domain::generation::policy::Allowances)> {
 		self.lifecycle().unused(job).await
 	}
 	async fn release_policy(
 		&mut self,
 		job: &Request,
 		unused: i64,
-		unused_calls: i64,
-		unused_embeddings: i64,
+		unused_calls: &aidash_domain::generation::policy::Allowances,
 	) -> aidash_application::Result<()> {
 		self.lifecycle()
-			.release_policy(job, unused, unused_calls, unused_embeddings)
+			.release_policy(job, unused, unused_calls)
 			.await
 	}
 	async fn mark_quota_released(&mut self, job: &Request) -> aidash_application::Result<()> {

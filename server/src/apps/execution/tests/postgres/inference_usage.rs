@@ -81,11 +81,11 @@ fn unreported(outcome: &str, rejection: Option<&str>, completed: bool) -> UsageR
 #[tokio::test]
 async fn usage_records_complete_once_and_stale_dispatches_become_unknown(
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: Arc<TestEnvironment>,
+	#[from(store)]
+	_store_fixture: StoreFixture,
 ) {
 	// Arrange
-	let (store, url, schema) = setup(&_test_environment).await;
+	let (store, url, schema) = _store_fixture.parts();
 	let registry = Registry::new(store.pool.clone(), &store.node_id).unwrap();
 	let agent = seed(&registry).await;
 	let workspace = store
@@ -243,11 +243,11 @@ async fn leased_run(store: &Store, token: Uuid) -> Run {
 #[tokio::test]
 async fn dispatch_does_not_wait_for_the_workers_own_run_references(
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: Arc<TestEnvironment>,
+	#[from(store)]
+	_store_fixture: StoreFixture,
 ) {
 	// Arrange
-	let (store, url, schema) = setup(&_test_environment).await;
+	let (store, url, schema) = _store_fixture.parts();
 	let token = Uuid::new_v4();
 	let run = leased_run(&store, token).await;
 	let mut authority = store.pool.driver().begin().await.unwrap();
@@ -289,11 +289,11 @@ async fn dispatch_does_not_wait_for_the_workers_own_run_references(
 #[tokio::test]
 async fn recovering_an_expired_lease_finalizes_its_dispatched_attempts(
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: Arc<TestEnvironment>,
+	#[from(store)]
+	_store_fixture: StoreFixture,
 ) {
 	// Arrange
-	let (store, url, schema) = setup(&_test_environment).await;
+	let (store, url, schema) = _store_fixture.parts();
 	let crashed = Uuid::new_v4();
 	let run = leased_run(&store, crashed).await;
 	let attempt = dispatch(crashed);

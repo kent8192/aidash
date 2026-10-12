@@ -1,9 +1,8 @@
 #[path = "support/legacy.rs"]
 mod common;
-use common::{TestEnvironment, test_environment};
 
 use aidash_server::{domain::NewTask, registry::Entry};
-use common::{cleanup, setup};
+use common::cleanup;
 use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query, SimpleExpr};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -29,6 +28,17 @@ async fn seed_executor(f: &aidash_server::federation::Federation) {
 		"name":{"en":"Executor"},"description":{"en":"Run codec fixture"},
 		"config":{"schema_version":1,"model":{"id":"test-model","version":"1.0.0"},"instructions":"Test persisted state","bindings":[],"remove_default":[]}
 	})).unwrap()).await.unwrap();
+}
+
+#[rstest::fixture]
+fn executor_runtime(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) -> impl std::future::Future<Output = common::RuntimeFixture> {
+	Box::pin(async move {
+		let runtime = runtime.await;
+		seed_executor(&runtime.federation).await;
+		runtime
+	})
 }
 
 async fn insert_entry(pool: &sqlx::PgPool, entry: &Value) -> Result<(), sqlx::Error> {
@@ -321,10 +331,10 @@ async fn update_run_state(
 #[tokio::test]
 async fn registry_constraints_reject_invalid_models_without_application_validation(
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(common::runtime)]
+	fixture: common::RuntimeFixture,
 ) {
-	let (f, url, schema) = setup(&_test_environment).await;
+	let (f, url, schema) = fixture.parts();
 	let good = serde_json::to_value(model()).unwrap();
 	for (field, invalid) in [
 		("provider", json!("unsupported")),
@@ -418,11 +428,10 @@ async fn registry_constraints_reject_invalid_models_without_application_validati
 #[tokio::test]
 async fn workspace_task_and_run_constraints_preserve_local_and_remote_boundaries(
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(executor_runtime)]
+	fixture: common::RuntimeFixture,
 ) {
-	let (f, url, schema) = setup(&_test_environment).await;
-	seed_executor(&f).await;
+	let (f, url, schema) = fixture.parts();
 	let workspace = f.store.create_workspace("Main", "Goal").await.unwrap();
 	let other = f.store.create_workspace("Other", "Goal").await.unwrap();
 	let input = NewTask {
@@ -658,10 +667,10 @@ async fn workspace_task_and_run_constraints_preserve_local_and_remote_boundaries
 #[tokio::test]
 async fn nonblank_constraints_match_rust_unicode_whitespace(
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(common::runtime)]
+	fixture: common::RuntimeFixture,
 ) {
-	let (f, url, schema) = setup(&_test_environment).await;
+	let (f, url, schema) = fixture.parts();
 	insert_entry(
 		f.store.pool.driver(),
 		&serde_json::to_value(model()).unwrap(),
@@ -762,10 +771,10 @@ async fn nonblank_constraints_match_rust_unicode_whitespace(
 #[tokio::test]
 async fn localized_metadata_requires_string_values_for_every_locale(
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(common::runtime)]
+	fixture: common::RuntimeFixture,
 ) {
-	let (f, url, schema) = setup(&_test_environment).await;
+	let (f, url, schema) = fixture.parts();
 	for field in ["name", "description"] {
 		for invalid in [
 			json!(7),
@@ -803,10 +812,10 @@ async fn localized_metadata_requires_string_values_for_every_locale(
 #[tokio::test]
 async fn package_identity_requires_matching_json_strings(
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(common::runtime)]
+	fixture: common::RuntimeFixture,
 ) {
-	let (f, url, schema) = setup(&_test_environment).await;
+	let (f, url, schema) = fixture.parts();
 	let mut entry = model();
 	entry.id = "1".into();
 	entry.kind = "skill".into();
@@ -907,10 +916,10 @@ async fn package_identity_requires_matching_json_strings(
 #[tokio::test]
 async fn package_agent_config_requires_all_typed_fields(
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(common::runtime)]
+	fixture: common::RuntimeFixture,
 ) {
-	let (f, url, schema) = setup(&_test_environment).await;
+	let (f, url, schema) = fixture.parts();
 	f.registry.seed_system().await.unwrap();
 	f.registry.register(model()).await.unwrap();
 	let agent: Entry = serde_json::from_value(json!({
@@ -991,10 +1000,10 @@ async fn package_agent_config_requires_all_typed_fields(
 #[tokio::test]
 async fn package_tool_config_uses_registry_validation(
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(common::runtime)]
+	fixture: common::RuntimeFixture,
 ) {
-	let (f, url, schema) = setup(&_test_environment).await;
+	let (f, url, schema) = fixture.parts();
 	let mut tool = model();
 	tool.id = "packaged-tool".into();
 	tool.kind = "tool".into();
@@ -1061,10 +1070,10 @@ async fn insert_values(
 #[tokio::test]
 async fn registry_json_shapes_remain_deserializable(
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(common::runtime)]
+	fixture: common::RuntimeFixture,
 ) {
-	let (f, url, schema) = setup(&_test_environment).await;
+	let (f, url, schema) = fixture.parts();
 	let good = serde_json::to_value(model()).unwrap();
 	for invalid_schema in [
 		json!({"type":7}),
@@ -1121,10 +1130,10 @@ async fn registry_json_shapes_remain_deserializable(
 #[tokio::test]
 async fn model_and_agent_configs_reject_unusable_shapes(
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(common::runtime)]
+	fixture: common::RuntimeFixture,
 ) {
-	let (f, url, schema) = setup(&_test_environment).await;
+	let (f, url, schema) = fixture.parts();
 	let good = serde_json::to_value(model()).unwrap();
 	for (field, value) in [
 		("unexpected", json!(true)),
@@ -1306,10 +1315,10 @@ async fn model_and_agent_configs_reject_unusable_shapes(
 #[tokio::test]
 async fn tool_configs_reject_undecodable_shapes(
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(common::runtime)]
+	fixture: common::RuntimeFixture,
 ) {
-	let (f, url, schema) = setup(&_test_environment).await;
+	let (f, url, schema) = fixture.parts();
 	let mut tool = serde_json::to_value(model()).unwrap();
 	tool["id"] = json!("tool");
 	tool["kind"] = json!("tool");
@@ -1367,10 +1376,10 @@ async fn tool_configs_reject_undecodable_shapes(
 #[tokio::test]
 async fn compactor_and_embedding_configs_reject_undecodable_shapes(
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(common::runtime)]
+	fixture: common::RuntimeFixture,
 ) {
-	let (f, url, schema) = setup(&_test_environment).await;
+	let (f, url, schema) = fixture.parts();
 	let mut entry = serde_json::to_value(model()).unwrap();
 	entry["id"] = json!("compactor");
 	entry["kind"] = json!("compactor");
@@ -1433,11 +1442,10 @@ async fn compactor_and_embedding_configs_reject_undecodable_shapes(
 #[tokio::test]
 async fn requirements_constraints_and_strict_run_codec_reject_wrong_shapes(
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(executor_runtime)]
+	fixture: common::RuntimeFixture,
 ) {
-	let (f, url, schema) = setup(&_test_environment).await;
-	seed_executor(&f).await;
+	let (f, url, schema) = fixture.parts();
 	let workspace = f.store.create_workspace("Main", "Goal").await.unwrap();
 	let task = f
 		.store
@@ -1802,10 +1810,10 @@ fn index_spec() -> Value {
 #[tokio::test]
 async fn semantic_specs_and_sources_reject_undecodable_records(
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(common::runtime)]
+	fixture: common::RuntimeFixture,
 ) {
-	let (f, url, schema) = setup(&_test_environment).await;
+	let (f, url, schema) = fixture.parts();
 	let workspace = f.store.create_workspace("Main", "Goal").await.unwrap();
 	let spec = index_spec();
 	let _: aidash_server::semantic::IndexSpec = serde_json::from_value(spec.clone()).unwrap();
@@ -2187,11 +2195,11 @@ fn dependency_error(error: sqlx::Error) {
 #[tokio::test]
 async fn concurrent_dependency_changes_cannot_race_target_deletion(
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(common::runtime)]
+	fixture: common::RuntimeFixture,
 ) {
 	use std::time::Duration;
-	let (f, url, schema) = setup(&_test_environment).await;
+	let (f, url, schema) = fixture.parts();
 	let workspace = f.store.create_workspace("Main", "Goal").await.unwrap();
 	let input = NewTask {
 		title: "Task".into(),
@@ -2266,10 +2274,10 @@ fn uuid_expr(id: uuid::Uuid) -> SimpleExpr {
 #[tokio::test]
 async fn task_parent_cycle_guard_rejects_direct_cycles(
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(common::runtime)]
+	fixture: common::RuntimeFixture,
 ) {
-	let (f, url, schema) = setup(&_test_environment).await;
+	let (f, url, schema) = fixture.parts();
 	let workspace = f.store.create_workspace("Main", "Goal").await.unwrap();
 	let input = NewTask {
 		title: "Task".into(),
@@ -2315,10 +2323,10 @@ async fn task_parent_cycle_guard_rejects_direct_cycles(
 #[tokio::test]
 async fn task_dependency_cycles_include_parent_edges(
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(common::runtime)]
+	fixture: common::RuntimeFixture,
 ) {
-	let (f, url, schema) = setup(&_test_environment).await;
+	let (f, url, schema) = fixture.parts();
 	let workspace = f.store.create_workspace("Main", "Goal").await.unwrap();
 	let input = NewTask {
 		title: "Task".into(),
@@ -2387,10 +2395,10 @@ async fn task_dependency_cycles_include_parent_edges(
 #[tokio::test]
 async fn task_cycle_checks_deduplicate_diamond_reachability(
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(common::runtime)]
+	fixture: common::RuntimeFixture,
 ) {
-	let (f, url, schema) = setup(&_test_environment).await;
+	let (f, url, schema) = fixture.parts();
 	let workspace = f.store.create_workspace("Main", "Goal").await.unwrap();
 	let input = NewTask {
 		title: "Task".into(),
@@ -2443,10 +2451,10 @@ async fn task_cycle_checks_deduplicate_diamond_reachability(
 #[tokio::test]
 async fn concurrent_parent_cycle_checks_are_serialized(
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(common::runtime)]
+	fixture: common::RuntimeFixture,
 ) {
-	let (f, url, schema) = setup(&_test_environment).await;
+	let (f, url, schema) = fixture.parts();
 	let workspace = f.store.create_workspace("Main", "Goal").await.unwrap();
 	let input = NewTask {
 		title: "Task".into(),
@@ -2502,10 +2510,10 @@ async fn concurrent_parent_cycle_checks_are_serialized(
 #[tokio::test]
 async fn cluster_and_registry_identity_constraints_match_application_bounds(
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(common::runtime)]
+	fixture: common::RuntimeFixture,
 ) {
-	let (f, url, schema) = setup(&_test_environment).await;
+	let (f, url, schema) = fixture.parts();
 	let mut cluster = serde_json::to_value(model()).unwrap();
 	cluster["id"] = json!("test-cluster");
 	cluster["kind"] = json!("cluster");
@@ -2558,10 +2566,10 @@ async fn cluster_and_registry_identity_constraints_match_application_bounds(
 #[tokio::test]
 async fn installation_constraints_validate_model_overrides(
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(common::runtime)]
+	fixture: common::RuntimeFixture,
 ) {
-	let (f, url, schema) = setup(&_test_environment).await;
+	let (f, url, schema) = fixture.parts();
 	let entry = serde_json::to_value(model()).unwrap();
 	insert_entry(f.store.pool.driver(), &entry).await.unwrap();
 	insert_values(
@@ -2608,10 +2616,10 @@ async fn installation_constraints_validate_model_overrides(
 #[tokio::test]
 async fn agent_installation_model_overrides_keep_valid_registry_references(
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(common::runtime)]
+	fixture: common::RuntimeFixture,
 ) {
-	let (f, url, schema) = setup(&_test_environment).await;
+	let (f, url, schema) = fixture.parts();
 	let mut base_model = serde_json::to_value(model()).unwrap();
 	base_model["id"] = json!("base-model");
 	insert_entry(f.store.pool.driver(), &base_model)
@@ -2690,10 +2698,10 @@ async fn agent_installation_model_overrides_keep_valid_registry_references(
 #[tokio::test]
 async fn installation_constraints_validate_effective_tool_config(
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(common::runtime)]
+	fixture: common::RuntimeFixture,
 ) {
-	let (f, url, schema) = setup(&_test_environment).await;
+	let (f, url, schema) = fixture.parts();
 	let mut tool = serde_json::to_value(model()).unwrap();
 	tool["id"] = json!("installed-tool");
 	tool["kind"] = json!("tool");
@@ -2747,10 +2755,10 @@ async fn installation_constraints_validate_effective_tool_config(
 #[tokio::test]
 async fn installation_constraints_validate_skill_overrides(
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(common::runtime)]
+	fixture: common::RuntimeFixture,
 ) {
-	let (f, url, schema) = setup(&_test_environment).await;
+	let (f, url, schema) = fixture.parts();
 	let mut skill = serde_json::to_value(model()).unwrap();
 	skill["id"] = json!("installed-skill");
 	skill["kind"] = json!("skill");
@@ -2799,10 +2807,10 @@ async fn installation_constraints_validate_skill_overrides(
 #[tokio::test]
 async fn registry_updates_revalidate_installed_tool_overrides(
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(common::runtime)]
+	fixture: common::RuntimeFixture,
 ) {
-	let (f, url, schema) = setup(&_test_environment).await;
+	let (f, url, schema) = fixture.parts();
 	let mut tool = serde_json::to_value(model()).unwrap();
 	tool["id"] = json!("changing-tool");
 	tool["kind"] = json!("tool");
@@ -2858,10 +2866,10 @@ async fn registry_updates_revalidate_installed_tool_overrides(
 #[tokio::test]
 async fn concurrent_registry_and_installation_writes_use_one_lock_order(
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(common::runtime)]
+	fixture: common::RuntimeFixture,
 ) {
-	let (f, url, schema) = setup(&_test_environment).await;
+	let (f, url, schema) = fixture.parts();
 	let mut tool = serde_json::to_value(model()).unwrap();
 	tool["id"] = json!("concurrent-tool");
 	tool["kind"] = json!("tool");
@@ -2928,10 +2936,10 @@ use reinhardt::query::{ExprTrait as _, QueryStatementBuilder as _};
 #[tokio::test]
 async fn task_dependencies_enforce_existence_ownership_and_reverse_changes(
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(common::runtime)]
+	fixture: common::RuntimeFixture,
 ) {
-	let (f, url, schema) = setup(&_test_environment).await;
+	let (f, url, schema) = fixture.parts();
 	let workspace = f.store.create_workspace("Main", "Goal").await.unwrap();
 	let other = f.store.create_workspace("Other", "Goal").await.unwrap();
 	let input = NewTask {

@@ -20,16 +20,33 @@ impl aidash_application::ports::CompactionClassifier for Classifier<'_> {
 	}
 }
 
+/// Legacy prune-only compaction for callers without a Context Policy.
 pub async fn compact(
 	context: &mut Context,
 	asker: &dyn jev::JevAsker,
 	budget: &RequestBudget<'_>,
 	pinned: &Value,
 ) -> Result<()> {
+	use aidash_application::context::{Compaction, Fitting};
 	let mut candidate = context.clone();
 	observation::normalize_history(&mut candidate.history);
-	aidash_application::context::compact(&mut candidate, &Classifier(asker), budget, pinned)
-		.await?;
+	let policy = aidash_domain::context::policy::Effective::of(None);
+	let fitting = Fitting {
+		budget,
+		pinned,
+		policy: &policy,
+	};
+	match aidash_application::context::compact(&mut candidate, &Classifier(asker), &fitting).await?
+	{
+		Compaction::Fits => {}
+		// A prune-only policy has no Summary Stage.
+		Compaction::NeedsSummary(_) => {
+			return Err(aidash_application::Error::Context(
+				aidash_domain::context::recovery::Failure::ContextUnreducible,
+			)
+			.into());
+		}
+	}
 	*context = candidate;
 	Ok(())
 }

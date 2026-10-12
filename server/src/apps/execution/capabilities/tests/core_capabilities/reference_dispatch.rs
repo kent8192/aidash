@@ -26,7 +26,7 @@ fn dispatch_fixture(
 			profile.output_bytes = 4096;
 		}
 		c.f.store.capabilities = Runtime::new(profile).unwrap();
-		c.app = common::application(c.f.clone()).await;
+		c.app.context.set_singleton(c.f.clone());
 		let bytes = "東京\t\u{0001}\n".repeat(2000).into_bytes();
 		let (status, upload) = request(&c.app, &c.token, "POST", "/api/references/uploads", json!({"idempotency_key":Uuid::new_v4(),"name":"bounded.txt","media_type":"text/plain","size":bytes.len(),"digest":aidash_server::capabilities::objects::digest(&bytes)})).await;
 		assert_eq!(status, 200, "{upload}");
@@ -125,6 +125,7 @@ async fn extraction_requires_current_runner_limits_and_respects_lower_output_bud
 	#[with(case)]
 	#[future]
 	dispatch_fixture: DispatchFixture,
+	#[from(worker_control)] control_1: WorkerControl,
 ) {
 	use super::extraction_lifecycle_tests::runner;
 	let mut f = Box::pin(dispatch_fixture).await;
@@ -152,7 +153,8 @@ async fn extraction_requires_current_runner_limits_and_respects_lower_output_bud
 		expiry.is_none(),
 		"committed reference cannot retain an upload expiry"
 	);
-	let (stop, rx) = tokio::sync::watch::channel(false);
+	let WorkerControl { stop, receiver: rx } = control_1;
+	// Act: launch extraction after checking this case-specific reference and runner limits.
 	let mut worker = tokio::spawn(aidash_server::capabilities::operations::run(
 		f.c.f.store.clone(),
 		rx,
@@ -183,7 +185,7 @@ async fn extraction_requires_current_runner_limits_and_respects_lower_output_bud
 		stop.send(true).unwrap();
 		worker.await.unwrap().unwrap();
 		f.c.f.store.capabilities = f.valid.clone();
-		f.c.app = common::application(f.c.f.clone()).await;
+		f.c.app.context.set_singleton(f.c.f.clone());
 		stop.send_replace(false);
 		worker = tokio::spawn(aidash_server::capabilities::operations::run(
 			f.c.f.store.clone(),

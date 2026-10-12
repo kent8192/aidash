@@ -216,6 +216,13 @@ pub async fn create_in(
 				.embedding
 				.iter()
 				.map(|c| (c.provider.clone(), "embedding.invoke")),
+		)
+		.chain(
+			policy
+				.spec
+				.summary
+				.iter()
+				.map(|c| (c.provider.clone(), "model.infer")),
 		) {
 		scope.catalog_entry(&reference, "registry.read").await?;
 		scope.catalog_entry(&reference, action).await?;
@@ -264,21 +271,8 @@ pub async fn create_in(
 			foreign_intent: foreign.map(serde_json::to_value).transpose()?,
 		})
 		.await?;
-	scope
-		.allocate(
-			&policy,
-			allowances.compaction_calls,
-			allowances.embedding_calls,
-		)
-		.await?;
-	scope
-		.budget(
-			id,
-			&policy,
-			allowances.compaction_calls,
-			allowances.embedding_calls,
-		)
-		.await?;
+	scope.allocate(&policy, &allowances).await?;
+	scope.budget(id, &policy, &allowances).await?;
 	scope.history(id, status, reason).await?;
 	if foreign.is_none() {
 		scope
