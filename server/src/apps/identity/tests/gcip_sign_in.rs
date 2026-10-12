@@ -80,6 +80,7 @@ async fn configure(f: &mut Federation) -> (Arc<Status>, FakeAdmin) {
 		.into(),
 		providers: Default::default(),
 		password_sign_up: Default::default(),
+		mfa_mandatory: ["pool-b".into()].into(),
 		sign_in_domains: [
 			("acme.example".into(), "pool-a".into()),
 			("xn--bcher-kva.example".into(), "pool-b".into()),
@@ -124,6 +125,14 @@ fn signed_token(pool: &str, uid: &str, name: &str, auth_time: i64, provider: &st
 	let mut header = Header::new(Algorithm::RS256);
 	header.kid = Some("fixture".into());
 	encode(&header, &json!({"iss":"https://securetoken.google.com/fixture-project","aud":"fixture-project","sub":uid,"iat":now,"exp":now+3600,"auth_time":auth_time,"firebase":{"tenant":pool,"sign_in_provider":provider},"email_verified":true,"email":format!("{uid}@example.test"),"name":name,"operator":true}), &EncodingKey::from_rsa_pem(include_bytes!("../../execution/tests/fixtures/oidc/signing-test-only.pem")).unwrap()).unwrap()
+}
+/// A token as GCIP issues it after a TOTP challenge: the first factor's provider
+/// plus `sign_in_second_factor`. Aidash never reads these claims as authority.
+fn second_factor_token(pool: &str, uid: &str, name: &str, auth_time: i64) -> String {
+	let now = Utc::now().timestamp();
+	let mut header = Header::new(Algorithm::RS256);
+	header.kid = Some("fixture".into());
+	encode(&header, &json!({"iss":"https://securetoken.google.com/fixture-project","aud":"fixture-project","sub":uid,"iat":now,"exp":now+3600,"auth_time":auth_time,"firebase":{"tenant":pool,"sign_in_provider":"password","sign_in_second_factor":"totp","second_factor_identifier":"enrollment-id"},"email_verified":true,"email":format!("{uid}@example.test"),"name":name,"operator":true}), &EncodingKey::from_rsa_pem(include_bytes!("../../execution/tests/fixtures/oidc/signing-test-only.pem")).unwrap()).unwrap()
 }
 async fn transaction(app: &common::TestApplication, org: &str) -> (String, String) {
 	let response = browser()
@@ -2615,5 +2624,67 @@ async fn tenant_administrators_disabling_each_other_are_serialized(
 	};
 	assert!(scalar::<bool>(&f, &enabled(&first_mapping)).await);
 	assert!(!scalar::<bool>(&f, &enabled(&second_mapping)).await);
+	common::cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn the_mfa_requirement_is_only_a_sign_in_hint_and_second_factor_claims_are_not_authority(
+	#[future(awt)]
+	#[from(test_environment)]
+	environment: Arc<TestEnvironment>,
+) {
+	let (mut f, url, schema) = common::setup(&environment).await;
+	let _admin = configure(&mut f).await;
+	let app = common::application(f.clone()).await;
+	// The transaction tells the sign-in page which pools must enroll a factor.
+	for (org, mandatory) in [("acme", false), ("other", true)] {
+		let (state, cookie) = transaction(&app, org).await;
+		let configuration: Value = browser()
+			.get(app.url(format!("/auth/gcip/transaction?state={state}")))
+			.header("cookie", &cookie)
+			.send()
+			.await
+			.unwrap()
+			.json()
+			.await
+			.unwrap();
+		assert_eq!(configuration["mfa_mandatory"], mandatory, "{org}");
+	}
+	// Presence or absence of the second-factor claims maps to the same authority.
+	let now = Utc::now().timestamp();
+	let mut sessions = Vec::new();
+	for token in [
+		signed_token("pool-a", "person", "Person", now, "password"),
+		second_factor_token("pool-a", "person", "Person", now),
+	] {
+		let (state, cookie) = transaction(&app, "acme").await;
+		let response = exchange(&app, &state, &cookie, &token, "http://127.0.0.1:8080").await;
+		assert_eq!(response.status(), 200);
+		let session = response
+			.headers()
+			.get_all("set-cookie")
+			.iter()
+			.next()
+			.unwrap();
+		let session = session
+			.to_str()
+			.unwrap()
+			.split(';')
+			.next()
+			.unwrap()
+			.to_owned();
+		let info = browser()
+			.get(app.url("/auth/session"))
+			.header("cookie", &session)
+			.send()
+			.await
+			.unwrap();
+		assert_eq!(info.status(), 200);
+		sessions.push(info.json::<Value>().await.unwrap());
+	}
+	assert_eq!(sessions[0]["operator"], sessions[1]["operator"]);
+	assert_eq!(sessions[0]["mappings"], sessions[1]["mappings"]);
+	assert_ne!(sessions[0]["id"], sessions[1]["id"]);
 	common::cleanup(f, &url, &schema).await;
 }
