@@ -13,8 +13,12 @@ use aidash_server::{
 	harness::Harness,
 	store::{Invocation, Store},
 };
-use axum::{Json, Router, routing::post};
-use common::{TestApplication, TestEnvironment, request, test_environment};
+use common::{
+	RuntimeFixture, TestApplication, request,
+	upstream_fixtures::{self, reply},
+};
+use reinhardt::ServerRouter as Router;
+use reinhardt::test::fixtures::server::TestServerGuard;
 use serde_json::{Value, json};
 use std::{
 	collections::VecDeque,
@@ -50,11 +54,11 @@ async fn contract_accepts(
 #[tokio::test]
 async fn registry_contract_bounds_tool_parallelism_and_concurrency_narrowing(
 	#[future(awt)]
-	#[from(test_environment)]
-	environment: Arc<TestEnvironment>,
+	#[from(common::runtime)]
+	runtime: RuntimeFixture,
 ) {
 	// Arrange: a minimal valid Agent definition binding one Tool.
-	let (f, url, schema) = common::setup(&environment).await;
+	let (f, url, schema) = runtime.parts();
 	let pool = f.store.pool.driver().clone();
 	let agent = |parallelism: Option<Value>, narrow: Value| {
 		let mut config = json!({"schema_version":1,"model":{"id":"model","version":"1.0.0"},"instructions":"Test",
@@ -147,18 +151,81 @@ async fn registry_contract_bounds_tool_parallelism_and_concurrency_narrowing(
 	common::cleanup(f, &url, &schema).await;
 }
 
-struct ProviderTask(tokio::task::JoinHandle<()>);
-impl Drop for ProviderTask {
-	fn drop(&mut self) {
-		self.0.abort();
+type Responses = Arc<Mutex<VecDeque<Value>>>;
+type Requests = Arc<Mutex<Vec<Value>>>;
+
+#[rstest::fixture]
+fn scripted_responses() -> Responses {
+	Arc::new(Mutex::new(VecDeque::new()))
+}
+
+#[rstest::fixture]
+fn captured_requests() -> Requests {
+	Arc::new(Mutex::new(Vec::new()))
+}
+
+/// A local model that replays scripted responses and otherwise stops.
+#[rstest::fixture]
+fn scripted_model_router(
+	scripted_responses: Responses,
+	captured_requests: Requests,
+) -> Arc<Router> {
+	Arc::new(
+		reinhardt::test::stub::StubRouter::new()
+			.route(
+				"/v1/chat/completions",
+				http::Method::POST,
+				reply(move |request: reinhardt::Request| {
+					let body = request.json::<Value>().unwrap();
+					captured_requests.lock().unwrap().push(body);
+					let message = scripted_responses.lock().unwrap().pop_front().unwrap_or_else(
+						|| json!({"role":"assistant","content":"Done"}),
+					);
+					let finish = if message.get("tool_calls").is_some() {
+						"tool_calls"
+					} else {
+						"stop"
+					};
+					async move {
+						reinhardt::Response::ok().with_json(&json!({"choices":[{"index":0,"finish_reason":finish,"message":message}],"usage":{"prompt_tokens":1,"completion_tokens":1}})).unwrap()
+					}
+				}),
+			)
+			.into_server_router(),
+	)
+}
+
+/// The scripted model's served transport with its shared script and capture.
+struct ScriptedModel {
+	server: TestServerGuard,
+	responses: Responses,
+	requests: Requests,
+}
+
+#[rstest::fixture]
+async fn scripted_model(
+	scripted_responses: Responses,
+	captured_requests: Requests,
+	#[from(scripted_model_router)]
+	#[with(scripted_responses.clone(), captured_requests.clone())]
+	_router: Arc<Router>,
+	#[future(awt)]
+	#[from(upstream_fixtures::upstream)]
+	#[with(_router.clone())]
+	server: TestServerGuard,
+) -> ScriptedModel {
+	ScriptedModel {
+		server,
+		responses: scripted_responses,
+		requests: captured_requests,
 	}
 }
 
-/// A Node whose research Agent binds the core file Tools, served by a local
-/// model that replays scripted responses and otherwise stops.
+/// A Node whose research Agent binds the core file Tools, served by the
+/// scripted local model.
 struct Batching {
-	_environment: Arc<TestEnvironment>,
-	_provider: ProviderTask,
+	_runtime: RuntimeFixture,
+	_provider: TestServerGuard,
 	f: Federation,
 	app: TestApplication,
 	token: String,
@@ -173,33 +240,19 @@ struct Batching {
 const AGENT_VERSION: &str = "1.0.1";
 
 impl Batching {
-	async fn new(environment: Arc<TestEnvironment>, parallelism: u8, slots: usize) -> Self {
-		let responses = Arc::new(Mutex::new(VecDeque::<Value>::new()));
-		let requests = Arc::new(Mutex::new(Vec::<Value>::new()));
-		let (scripted, captured) = (responses.clone(), requests.clone());
-		let provider = Router::new().route(
-			"/v1/chat/completions",
-			post(move |Json(body): Json<Value>| {
-				captured.lock().unwrap().push(body);
-				let message = scripted.lock().unwrap().pop_front().unwrap_or_else(
-					|| json!({"role":"assistant","content":"Done"}),
-				);
-				let finish = if message.get("tool_calls").is_some() {
-					"tool_calls"
-				} else {
-					"stop"
-				};
-				async move {
-					Json(json!({"choices":[{"index":0,"finish_reason":finish,"message":message}],"usage":{"prompt_tokens":1,"completion_tokens":1}}))
-				}
-			}),
-		);
-		let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-		let endpoint = format!("http://{}", listener.local_addr().unwrap());
-		let provider = ProviderTask(tokio::spawn(async move {
-			axum::serve(listener, provider).await.unwrap()
-		}));
-		let (mut f, url, schema) = common::setup(&environment).await;
+	async fn new(
+		runtime: RuntimeFixture,
+		model: ScriptedModel,
+		parallelism: u8,
+		slots: usize,
+	) -> Self {
+		let ScriptedModel {
+			server: provider,
+			responses,
+			requests,
+		} = model;
+		let endpoint = provider.url.clone();
+		let (mut f, url, schema) = runtime.parts();
 		let root = tempfile::Builder::new()
 			.prefix("aidash-tool-batches-")
 			.tempdir()
@@ -252,7 +305,7 @@ impl Batching {
 		.await;
 		assert_eq!(status, 200, "{body}");
 		Self {
-			_environment: environment,
+			_runtime: runtime,
 			_provider: provider,
 			f,
 			app,
@@ -467,11 +520,12 @@ async fn invocations(f: &Federation, run: Uuid) -> Vec<Journaled> {
 #[tokio::test]
 async fn model_response_reads_run_as_one_batch_and_are_adopted_in_call_order(
 	#[future(awt)]
-	#[from(test_environment)]
-	environment: Arc<TestEnvironment>,
+	#[from(common::runtime)]
+	runtime: RuntimeFixture,
+	#[future(awt)] scripted_model: ScriptedModel,
 ) {
 	// Arrange: Agent and Node ceilings of two, one text file in the Working Area.
-	let b = Batching::new(environment, 2, 2).await;
+	let b = Batching::new(runtime, scripted_model, 2, 2).await;
 	let run = b.delegate(b.task).await;
 	let file = b
 		.file(&run, "notes/東京.txt", &"東京の資料\n".repeat(4))
@@ -583,15 +637,16 @@ async fn model_response_reads_run_as_one_batch_and_are_adopted_in_call_order(
 #[tokio::test]
 async fn batched_reads_share_the_working_area_row(
 	#[future(awt)]
-	#[from(test_environment)]
-	environment: Arc<TestEnvironment>,
+	#[from(common::runtime)]
+	runtime: RuntimeFixture,
+	#[future(awt)] scripted_model: ScriptedModel,
 ) {
 	use reinhardt::query::{
 		Alias, Expr, ExprTrait as _, LockType, PostgresQueryBuilder, Query,
 		QueryStatementBuilder as _,
 	};
 	// Arrange: a Run positioned at a two-read model response.
-	let b = Batching::new(environment, 2, 2).await;
+	let b = Batching::new(runtime, scripted_model, 2, 2).await;
 	let run = b.delegate(b.task).await;
 	let file = b.file(&run, "notes/a.txt", "東京\n").await;
 	b.script(&[
@@ -698,11 +753,12 @@ async fn admit(
 #[tokio::test]
 async fn batch_admission_journals_every_call_with_the_run_and_replays_unchanged(
 	#[future(awt)]
-	#[from(test_environment)]
-	environment: Arc<TestEnvironment>,
+	#[from(common::runtime)]
+	runtime: RuntimeFixture,
+	#[future(awt)] scripted_model: ScriptedModel,
 ) {
 	// Arrange
-	let b = Batching::new(environment, 1, 1).await;
+	let b = Batching::new(runtime, scripted_model, 1, 1).await;
 	let (run, worker) = leased_tool_run(&b).await;
 	let (keys, inputs) = batch_calls(&run);
 	// Act
@@ -775,11 +831,12 @@ enum Rejection {
 async fn rejected_batch_admission_writes_nothing(
 	#[case] rejection: Rejection,
 	#[future(awt)]
-	#[from(test_environment)]
-	environment: Arc<TestEnvironment>,
+	#[from(common::runtime)]
+	runtime: RuntimeFixture,
+	#[future(awt)] scripted_model: ScriptedModel,
 ) {
 	// Arrange
-	let b = Batching::new(environment, 1, 1).await;
+	let b = Batching::new(runtime, scripted_model, 1, 1).await;
 	let (run, mut worker) = leased_tool_run(&b).await;
 	let (keys, inputs) = batch_calls(&run);
 	let driver = b.f.store.pool.driver();
@@ -888,8 +945,9 @@ fn tool_phase(steps: &[Step]) -> (Duration, usize) {
 #[tokio::test]
 async fn tool_parallelism_rollback_refuses_unfinished_runs_pinning_shared_read_tools(
 	#[future(awt)]
-	#[from(test_environment)]
-	environment: Arc<TestEnvironment>,
+	#[from(common::runtime)]
+	runtime: RuntimeFixture,
+	#[future(awt)] scripted_model: ScriptedModel,
 ) {
 	use reinhardt::db::{
 		backends::{DatabaseConnection, dialect::PostgresBackend},
@@ -897,7 +955,7 @@ async fn tool_parallelism_rollback_refuses_unfinished_runs_pinning_shared_read_t
 	};
 	// Arrange: a sequential Agent stores no parallelism field, yet its admitted
 	// Run pins the shared-read file tools' provider contracts.
-	let b = Batching::new(environment, 1, 1).await;
+	let b = Batching::new(runtime, scripted_model, 1, 1).await;
 	let run = b.delegate(b.task).await;
 	assert!(
 		run.context
@@ -946,12 +1004,13 @@ async fn tool_parallelism_rollback_refuses_unfinished_runs_pinning_shared_read_t
 #[ignore = "benchmark: run with -- --ignored --nocapture"]
 async fn tool_batch_latency_benchmark(
 	#[future(awt)]
-	#[from(test_environment)]
-	environment: Arc<TestEnvironment>,
+	#[from(common::runtime)]
+	runtime: RuntimeFixture,
+	#[future(awt)] scripted_model: ScriptedModel,
 ) {
 	const ITERATIONS: usize = 10;
 	const READS: usize = 4;
-	let b = Batching::new(environment, 4, 4).await;
+	let b = Batching::new(runtime, scripted_model, 4, 4).await;
 	let first = b.delegate(b.task).await;
 	complete(&b.f, first.id).await;
 	let mut sequential = b.f.clone();

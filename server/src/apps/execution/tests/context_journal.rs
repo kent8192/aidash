@@ -9,14 +9,13 @@ use aidash_domain::context::{
 };
 use aidash_server::{domain::Run, federation::Federation, store::Store};
 use common::{
-	TestApplication, TestEnvironment, bootstrap, cleanup, request, setup, test_environment,
+	ApplicationFixture, TestApplication, bootstrap, cleanup, native_application, request,
 };
 use reinhardt::query::{
 	Alias, Expr, ExprTrait as _, Order, PostgresQueryBuilder, Query, QueryStatementBuilder as _,
 	SimpleExpr,
 };
 use serde_json::{Value, json};
-use std::sync::Arc;
 use uuid::Uuid;
 
 fn event(n: u64) -> ContextEvent {
@@ -138,11 +137,11 @@ fn adopted() -> Settlement {
 #[tokio::test]
 async fn saves_journal_original_events_with_their_origin(
 	#[future(awt)]
-	#[from(test_environment)]
-	test_environment: Arc<TestEnvironment>,
+	#[from(native_application)]
+	fixture: ApplicationFixture,
 ) {
-	let (f, url, schema) = setup(&test_environment).await;
-	let app = common::application(f.clone()).await;
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application.clone();
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let (mut run, worker) = leased(&f, &app, &token).await;
 	// Arrange: two events recovered from a legacy projection, one new event.
@@ -216,11 +215,11 @@ async fn saves_journal_original_events_with_their_origin(
 #[tokio::test]
 async fn begin_compaction_abandons_open_attempts_and_enforces_the_call_budget(
 	#[future(awt)]
-	#[from(test_environment)]
-	test_environment: Arc<TestEnvironment>,
+	#[from(native_application)]
+	fixture: ApplicationFixture,
 ) {
-	let (f, url, schema) = setup(&test_environment).await;
-	let app = common::application(f.clone()).await;
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application.clone();
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let (mut run, worker) = leased(&f, &app, &token).await;
 	project(&mut run, 3, 0);
@@ -270,11 +269,11 @@ async fn begin_compaction_abandons_open_attempts_and_enforces_the_call_budget(
 #[tokio::test]
 async fn adoption_requires_an_open_attempt_and_its_journaled_range(
 	#[future(awt)]
-	#[from(test_environment)]
-	test_environment: Arc<TestEnvironment>,
+	#[from(native_application)]
+	fixture: ApplicationFixture,
 ) {
-	let (f, url, schema) = setup(&test_environment).await;
-	let app = common::application(f.clone()).await;
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application.clone();
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let (mut run, worker) = leased(&f, &app, &token).await;
 	project(&mut run, 3, 0);
