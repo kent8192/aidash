@@ -41,9 +41,10 @@ const CALLBACK: &str = "/auth/provider-authorizations/openrouter/callback";
 
 /// Issued codes by value: the S256 challenge they are bound to, whether they
 /// have expired, and the Key Material they exchange for.
+type IssuedCodes = BTreeMap<String, (String, bool, String)>;
 #[derive(Clone, Default)]
 struct FakeOpenRouter {
-	codes: Arc<Mutex<BTreeMap<String, (String, bool, String)>>>,
+	codes: Arc<Mutex<IssuedCodes>>,
 }
 impl FakeOpenRouter {
 	/// What the provider does after consent: bind a fresh code to the challenge.
@@ -321,6 +322,16 @@ struct Started {
 	challenge: String,
 }
 async fn start(fixture: &Fixture, session: &str, body: Value, browser: Option<&str>) -> Started {
+	start_as(fixture, session, "operator", body, browser).await
+}
+/// The browser request that starts an authorization under a dashboard context.
+async fn start_request(
+	fixture: &Fixture,
+	session: &str,
+	context: &str,
+	body: Value,
+	browser: Option<&str>,
+) -> Response {
 	let csrf = if session == "browser-a" {
 		"csrf-a"
 	} else {
@@ -332,7 +343,7 @@ async fn start(fixture: &Fixture, session: &str, body: Value, browser: Option<&s
 		}
 		None => format!("aidash-session={session}"),
 	};
-	let response = send(
+	send(
 		&fixture.app,
 		"POST",
 		"/api/tenants/alpha/provider-authorizations/openrouter",
@@ -341,11 +352,20 @@ async fn start(fixture: &Fixture, session: &str, body: Value, browser: Option<&s
 			("cookie", &cookies),
 			("origin", ORIGIN),
 			("x-aidash-csrf", csrf),
-			("x-aidash-context", "operator"),
+			("x-aidash-context", context),
 		],
 		body,
 	)
-	.await;
+	.await
+}
+async fn start_as(
+	fixture: &Fixture,
+	session: &str,
+	context: &str,
+	body: Value,
+	browser: Option<&str>,
+) -> Started {
+	let response = start_request(fixture, session, context, body, browser).await;
 	let status = response.status();
 	let cache = response.headers().get("cache-control").cloned();
 	let browser = cookie(&response, "aidash-provider-authorization");
@@ -699,5 +719,98 @@ async fn only_browser_sessions_start_and_return_paths_stay_local(
 		assert!(response.status().is_client_error(), "{return_to}");
 	}
 	assert_eq!(credentials(&fixture).await.len(), 0);
+	common::cleanup(fixture.f, &fixture.url, &fixture.schema).await;
+}
+
+async fn pending_authorizations(fixture: &Fixture) -> i64 {
+	let query = Query::select()
+		.expr(Expr::cust("count(*)"))
+		.from(Alias::new("provider_authorizations"))
+		.to_string(PostgresQueryBuilder);
+	sqlx::query_scalar(&query)
+		.fetch_one(fixture.f.store.pool.driver())
+		.await
+		.unwrap()
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn mapped_subjects_need_the_provider_credential_management_permission(
+	#[future(awt)]
+	#[from(test_environment)]
+	environment: Arc<TestEnvironment>,
+) {
+	let fixture = setup(&environment).await;
+	// Map the browser identity to Tenant subject alice through the normal
+	// registration and Operator approval.
+	let registration = send(
+		&fixture.app,
+		"POST",
+		"/auth/registration",
+		&[
+			("cookie", "aidash-session=browser-a"),
+			("origin", ORIGIN),
+			("x-aidash-csrf", "csrf-a"),
+		],
+		Value::Null,
+	)
+	.await;
+	let registration: Value =
+		serde_json::from_slice(&to_bytes(registration.into_body(), 65_536).await.unwrap()).unwrap();
+	let mapping = send(
+		&fixture.app,
+		"POST",
+		&format!(
+			"/api/dashboard/registrations/{}/approve",
+			registration["id"].as_str().unwrap()
+		),
+		&[
+			("content-type", "application/json"),
+			("authorization", "Bearer operator-execution-fixture"),
+		],
+		json!({"tenant":"alpha","subject":"alice"}),
+	)
+	.await;
+	let status = mapping.status();
+	let mapping: Value =
+		serde_json::from_slice(&to_bytes(mapping.into_body(), 65_536).await.unwrap()).unwrap();
+	assert_eq!(status, 200, "{mapping}");
+	let context = format!("mapping:{}", mapping["id"].as_str().unwrap());
+
+	// Without provider_credential.create the start is refused and reserves nothing.
+	let denied = start_request(&fixture, "browser-a", &context, json!({}), None).await;
+	assert_eq!(denied.status(), 403);
+	assert_eq!(pending_authorizations(&fixture).await, 0);
+
+	// With the management permission the same subject connects OpenRouter.
+	let policy: PolicyBundle = serde_json::from_value(json!({
+		"tenant":"alpha","subjects":{"alice":{"kind":"user"}},
+		"policies":[{"id":"provider-connections","effect":"allow","subjects":{"ids":["alice"]},
+			"actions":["provider_credential.create","provider_credential.read","provider_credential_binding.read","provider_credential_binding.update"],
+			"resources":{"kinds":["provider_credential","provider_credential_binding"]}}]
+	}))
+	.unwrap();
+	Authorization {
+		pool: fixture.f.store.pool.clone(),
+	}
+	.replace("alpha", 1, policy, "operator")
+	.await
+	.unwrap();
+	let started = start_as(&fixture, "browser-a", &context, json!({}), None).await;
+	let (code, _) = fixture.provider.consent(&started.challenge, false);
+	let response = callback(
+		&fixture,
+		"browser-a",
+		&started.browser,
+		&format!("state={}&code={code}", started.state),
+	)
+	.await;
+	assert_eq!(
+		location(&response),
+		"/settings?view=providerCredentials&provider_authorization=connected"
+	);
+	let rows = credentials(&fixture).await;
+	assert_eq!(rows.len(), 1);
+	assert_eq!(rows[0]["state"], "active");
 	common::cleanup(fixture.f, &fixture.url, &fixture.schema).await;
 }
