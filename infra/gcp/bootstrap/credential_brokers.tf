@@ -1,11 +1,21 @@
 // Human-run bootstrap alone creates identities with BYOK payload access.
-// The deploy pipeline is an accepted trust root; deny/WIF hardening is #151.
+// The deploy pipeline is an accepted trust root; deploy_boundary.tf (#151) denies
+// it every way of impersonating these accounts.
 resource "google_service_account" "broker" {
   for_each     = var.byok_project_id != "" ? var.byok_broker_environments : toset([])
   project      = var.project_id
   account_id   = "aidash-${each.key}-broker"
   display_name = "Aidash ${each.key} Credential Broker"
   depends_on   = [google_project_service.required]
+}
+// Cloud Run needs actAs to run the broker service as this account. The grant lives
+// here because deploy_boundary.tf denies the deploy identity setIamPolicy on it;
+// actAs itself stays allowed (broker redeploy is the accepted residual path 2).
+resource "google_service_account_iam_member" "deploy_act_as_broker" {
+  for_each           = google_service_account.broker
+  service_account_id = each.value.name
+  role               = "roles/iam.serviceAccountUser"
+  member             = "serviceAccount:${google_service_account.automation["deploy"].email}"
 }
 // Immutable signing-key names outlive automation's broker enablement and VM
 // retirement. Bootstrap owns their state; operators must retain this namespace.
