@@ -65,8 +65,16 @@ impl SemanticSearchRepository for Repository<'_> {
 	fn settlement(&self) -> &dyn GenerationDispatchSettlement {
 		&self.settlement
 	}
-	fn embedding(&self) -> &dyn EmbeddingProvider {
-		&self.transport
+	fn embedding(&self, tenant: &str) -> Box<dyn EmbeddingProvider + '_> {
+		// The Home embeds the query. A Provider Credential source resolves the
+		// Home Tenant's current binding as memory-retrieval maintenance; keyless
+		// sources fall through the same access unchanged.
+		Box::new(crate::bootstrap::admitted_semantic_transport(
+			&self.runtime.store,
+			None,
+			tenant.into(),
+			Some(aidash_application::provider_access::MaintenancePurpose::MemoryRetrieval),
+		))
 	}
 	fn vector(&self) -> &dyn VectorIndex {
 		&self.transport

@@ -81,7 +81,10 @@ pub trait SemanticSearchRepository: Send + Sync {
 	fn journal(&self) -> &dyn JournalRepository;
 	fn dispatch(&self) -> &dyn GenerationDispatchRepository;
 	fn settlement(&self) -> &dyn GenerationDispatchSettlement;
-	fn embedding(&self) -> &dyn EmbeddingProvider;
+	/// The Home's embedding provider for `tenant`'s required-Home search. A
+	/// Provider Credential source resolves through that Tenant's current binding
+	/// as memory-retrieval maintenance; the Home makes the call (ADR 0006).
+	fn embedding(&self, tenant: &str) -> Box<dyn EmbeddingProvider + '_>;
 	fn vector(&self) -> &dyn VectorIndex;
 	/// Reconstruct current original-credential authority and retain all source locks.
 	async fn description(&self, node: &str, grant: Uuid) -> Result<(Self::Scope, Description)>;

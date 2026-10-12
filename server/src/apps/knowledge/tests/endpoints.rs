@@ -127,7 +127,13 @@ async fn index_contract_validation_precedes_persistence_and_accepts_boundary_val
 			json!("http://999.999.999.999/vectors"),
 			400,
 		),
-		("/embedding/credential_env", json!("OPENAI_API_KEY"), 400),
+		// ADR 0006: embeddings cannot name an environment key at all, so the
+		// field is rejected while decoding, before validation.
+		(
+			"/embedding/credential_env",
+			json!("AIDASH_SECRET_EMBEDDING"),
+			422,
+		),
 		("/embedding/model", json!(" \t\u{2003}"), 400),
 		("/embedding/model", json!("m".repeat(257)), 400),
 		("/embedding/model_version", json!("v".repeat(129)), 400),

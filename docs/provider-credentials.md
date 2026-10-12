@@ -239,10 +239,13 @@ Admission records a local-only Provider Credential ID per Run and provider.
 This includes the enabled workspace semantic index's embedding provider, even
 when the Agent's Model is keyless. Missing embedding bindings
 therefore reject admission before the Run is committed. RequiredHome remote
-semantic bindings reject Tenant-backed workspace embeddings before binding or
-dispatch: this path has no approved local Run pin or BYOK maintenance authority.
-Keyless remote embeddings remain supported; Tenant-backed RequiredHome remote
-embeddings are a follow-up.
+semantic search accepts keyless and Tenant-backed workspace embeddings. The Home
+embeds the query itself, so a `provider_credential` source resolves the Home
+Tenant's current Provider Credential Binding as memory-retrieval maintenance,
+exactly as local Run-less retrieval does; the receiving node never receives
+Key Material or a Capability Token. Authorization is unchanged:
+`semantic.search`, `semantic.disclose`, `embedding.invoke` and `registry.read`
+on the Home, plus the receiver's reservations.
 Calls check that record's current active state and current version pin; changing
 a binding cannot retarget admitted Runs. Receiving federation admission uses
 the mapped local Tenant. PostgreSQL resolves the current pinned version through
