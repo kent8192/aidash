@@ -1,3 +1,7 @@
+// `scoped_pair` takes one positional `#[with]` switch per scenario. rstest
+// generates its accessor functions without the item's own attributes, so the
+// argument-count lint can only be allowed for this test crate.
+#![allow(clippy::too_many_arguments)]
 #[path = "../../execution/tests/support/legacy.rs"]
 mod common;
 #[path = "scoped_remote_execution/native_memory.rs"]
@@ -306,9 +310,6 @@ async fn reconnect(f: &mut Federation) {
 }
 
 #[rstest::fixture]
-// Each parameter is a per-test `#[with]` switch; grouping them would rewrite
-// every existing positional `#[with(...)]` call.
-#[allow(clippy::too_many_arguments)]
 async fn scoped_pair(
 	#[default(false)] semantic: bool,
 	#[default(false)] generated: bool,
