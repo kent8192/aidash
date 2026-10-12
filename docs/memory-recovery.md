@@ -214,6 +214,7 @@ A local Run whose memory read journal fails pauses with `invalidated` when a
 consumed Unit was corrected, withdrawn, deleted or expired, and with
 `configuration` when its memory participant or provider changed. Lost read
 authority keeps the generic authority pause of ADR 0013, so a revocation is
-never reported as a source change. "Obtain fresh context and re-evaluate" is
+never reported as a source change
+(`server/src/apps/knowledge/repositories/memory_reads/tests.rs`). "Obtain fresh context and re-evaluate" is
 not offered to a paused Run: an Ordered Run re-retrieves once only when a
 reused retrieval goes stale before it is sent (ADR 0020).

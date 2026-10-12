@@ -288,3 +288,7 @@ pub(crate) async fn invalidity(lease: &mut Lease<'_>, run_id: Uuid) -> Result<Op
 		}
 	}
 }
+
+#[cfg(test)]
+#[path = "memory_reads/tests.rs"]
+mod tests;
