@@ -2731,11 +2731,13 @@ async fn tenant_administrators_disabling_each_other_are_serialized(
 #[tokio::test]
 async fn the_mfa_requirement_is_only_a_sign_in_hint_and_second_factor_claims_are_not_authority(
 	#[future(awt)]
-	#[from(test_environment)]
-	environment: Arc<TestEnvironment>,
+	#[from(gcip_runtime)]
+	gcip: GcipFixture,
 ) {
-	let (mut f, url, schema) = common::setup(&environment).await;
-	let _admin = configure(&mut f).await;
+	let GcipFixture {
+		runtime, _admin, ..
+	} = gcip;
+	let (f, url, schema) = runtime.parts();
 	let app = common::application(f.clone()).await;
 	// The transaction tells the sign-in page which pools must enroll a factor.
 	for (org, mandatory) in [("acme", false), ("other", true)] {
