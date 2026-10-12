@@ -44,6 +44,7 @@ struct Pending {
 
 impl ProgressBuffer {
 	/// `started` is when the provider call began; first-delta latency counts from it.
+	#[cfg(test)]
 	pub(super) fn new(started: Instant) -> Self {
 		Self::withholding_text(started, false)
 	}

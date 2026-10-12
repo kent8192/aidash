@@ -195,7 +195,7 @@ impl WorkerAuthority {
 		run: &Run,
 		request: &aidash_application::capabilities::approvals::DisclosureRequest,
 	) -> Result<aidash_application::ports::research::DisclosureState> {
-		let outer = self.access.lock().await;
+		let outer = self.access.write().await;
 		let mut access = Access::under_lease(&outer).await?;
 		let result = {
 			let mut scope = crate::bootstrap::approval_scope(Some(store), &mut access, None);
@@ -218,7 +218,7 @@ impl WorkerAuthority {
 		run: &Run,
 		approval: Uuid,
 	) -> Result<bool> {
-		let outer = self.access.lock().await;
+		let outer = self.access.write().await;
 		let mut access = Access::under_lease(&outer).await?;
 		let result = {
 			let mut scope = crate::bootstrap::approval_scope(Some(store), &mut access, None);

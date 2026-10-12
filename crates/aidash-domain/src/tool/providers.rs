@@ -1,7 +1,7 @@
 //! Provider-owned operation facts. Descriptors select and constrain these facts.
 use super::{
-	AuthorizationRequirement, Continuation, DisclosureBoundary, ToolAuthorization, ToolBehavior,
-	ToolConfig, ToolContract, ToolEffect, ToolIdentity, Yield, builtin_contract,
+	AuthorizationRequirement, Concurrency, Continuation, DisclosureBoundary, ToolAuthorization,
+	ToolBehavior, ToolConfig, ToolContract, ToolEffect, ToolIdentity, Yield, builtin_contract,
 };
 use crate::{
 	Error, Result,
@@ -136,6 +136,8 @@ pub fn research_contract(operation: ResearchOperation) -> ToolContract {
 			media_pending: false,
 			yields_model_media: false,
 			workbench_approval: false,
+			// Web disclosure approval takes the worker's outer authority lease.
+			concurrency: Concurrency::Sequential,
 			exposure_update: false,
 			yields,
 			disclosure_approval: operation.discloses(),
