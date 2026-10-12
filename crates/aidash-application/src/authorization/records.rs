@@ -76,6 +76,29 @@ pub async fn record(
 	scope.track(&snapshot).await?;
 	Ok(value)
 }
+/// Recheck that every message is still readable under current authority,
+/// applying the same policy as `record` without disclosing or tracking a read.
+pub async fn messages_readable(
+	scope: &mut dyn WorkspaceRecordScope,
+	workspace_id: Uuid,
+	ids: impl IntoIterator<Item = Uuid> + Send,
+) -> Result<bool> {
+	let resource = scope.workspace(workspace_id).await?;
+	match scope.require(&resource, "workspace.read").await {
+		Ok(()) => {}
+		Err(Error::Forbidden | Error::Unauthorized) => return Ok(false),
+		Err(error) => return Err(error),
+	}
+	for id in ids {
+		let Some(message) = scope.message_record(workspace_id, id).await? else {
+			return Ok(false);
+		};
+		if !scope.message_visible(&message).await? {
+			return Ok(false);
+		}
+	}
+	Ok(true)
+}
 pub async fn children(
 	scope: &mut dyn ChildSummaryScope,
 	workspace_id: Uuid,

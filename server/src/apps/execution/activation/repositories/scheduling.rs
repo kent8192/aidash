@@ -237,6 +237,17 @@ impl<E: Executor> SchedulingScope for Scope<E> {
 		// A claim proves every earlier lease lost, so its dispatched attempts
 		// can no longer complete even if this Run never infers again.
 		InferenceUsage::abandon_superseded(self.tx.executor(), run.id, token).await?;
+		if run.recovery.lease_recovered {
+			// The previous worker's unsettled Compaction Attempt can never settle.
+			let (sql, values) =
+				crate::apps::execution::repositories::context_journal::abandon_open(run.id)
+					.build(PostgresQueryBuilder);
+			self.tx
+				.executor()
+				.execute(&sql, convert_values(values))
+				.await
+				.map_err(Error::from)?;
+		}
 		Ok(Some(raw(row)?.decode().map_err(Error::from)?))
 	}
 	async fn repair_lease(

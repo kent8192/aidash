@@ -1,3 +1,5 @@
+#[path = "support/environment.rs"]
+mod environment;
 use reinhardt::test::fixtures::temp_dir;
 use rstest::rstest;
 use serde_json::Value;
@@ -5,14 +7,16 @@ use tempfile::TempDir;
 use tokio::process::Command;
 
 #[rstest::fixture]
-async fn management_process() -> tokio::sync::SemaphorePermit<'static> {
+async fn management_process(
+	#[from(reinhardt::test::fixtures::temp_dir)] temp_dir: tempfile::TempDir,
+) -> tokio::sync::SemaphorePermit<'static> {
 	// Newly linked macOS executables can spend tens of seconds in first-launch
 	// validation. Warm both binaries once, then retain strict dispatch deadlines.
 	if cfg!(target_os = "macos") {
 		static WARMED: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
 		WARMED
 			.get_or_init(|| async {
-				let settings = tempfile::tempdir().unwrap();
+				let settings = temp_dir;
 				std::fs::write(settings.path().join("base.toml"), "invalid TOML!").unwrap();
 				for binary in [env!("CARGO_BIN_EXE_aidash"), env!("CARGO_BIN_EXE_manage")] {
 					let mut command = Command::new(binary);
@@ -174,27 +178,14 @@ async fn activation_provision_uses_composed_target_without_unrelated_runtime_set
 	temp_dir: TempDir,
 	#[case] source: &str,
 	#[case] node_id: &str,
+	#[from(environment::nats_container)] nats_container: environment::NatsFuture,
 ) {
 	use aidash_server::activation::{Broker, Settings};
-	use reinhardt::test::testcontainers::{
-		GenericImage, ImageExt,
-		core::{ContainerPort, WaitFor},
-		runners::AsyncRunner,
-	};
+
 	// Arrange: only node identity and NATS are available. Other fragments retain
 	// unresolved secrets to prove this command requests a selected settings view.
-	let container = GenericImage::new("nats", "2.12-alpine")
-		.with_exposed_port(ContainerPort::Tcp(4222))
-		.with_wait_for(WaitFor::message_on_stderr("Server is ready"))
-		.with_cmd(["-js"])
-		.start()
-		.await
-		.unwrap();
-	let url = format!(
-		"nats://{}:{}",
-		container.get_host().await.unwrap(),
-		container.get_host_port_ipv4(4222).await.unwrap()
-	);
+	let (_container, url) = nats_container.await;
+
 	let configured_url = if matches!(source, "legacy" | "composed" | "dedicated") {
 		"nats://127.0.0.1:1"
 	} else {

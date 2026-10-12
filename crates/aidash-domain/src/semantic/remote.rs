@@ -26,7 +26,12 @@ pub const VERSION: u32 = 1;
 #[serde(tag = "mode", rename_all = "snake_case", deny_unknown_fields)]
 #[schemars(rename = "RemoteSemanticRequest")]
 pub enum Request {
-	Disabled {},
+	/// No Home semantic retrieval. A remote Agent whose Context Policy pins a
+	/// Summary Stage model may still request that exact `summarizer`.
+	Disabled {
+		#[serde(default, skip_serializing_if = "Option::is_none")]
+		summarizer: Option<EntityRef>,
+	},
 	RequiredHome {
 		embedding: EntityRef,
 		/// An explicitly selected Home logical participant. Executor-local banks
@@ -35,6 +40,10 @@ pub enum Request {
 		native: Option<Box<NativeRequest>>,
 		#[serde(default, skip_serializing_if = "Option::is_none")]
 		compactor: Option<EntityRef>,
+		/// Exact Summary Stage model pinned by the Agent's Context Policy.
+		/// Omitted for peers and Agents without a Summary Stage.
+		#[serde(default, skip_serializing_if = "Option::is_none")]
+		summarizer: Option<EntityRef>,
 	},
 }
 
@@ -77,14 +86,21 @@ pub struct NativeOrigin {
 }
 impl Default for Request {
 	fn default() -> Self {
-		Self::Disabled {}
+		Self::Disabled { summarizer: None }
 	}
 }
 impl Request {
 	pub fn compactor(&self) -> Option<&EntityRef> {
 		match self {
-			Self::Disabled {} => None,
+			Self::Disabled { .. } => None,
 			Self::RequiredHome { compactor, .. } => compactor.as_ref(),
+		}
+	}
+	pub fn summarizer(&self) -> Option<&EntityRef> {
+		match self {
+			Self::Disabled { summarizer } | Self::RequiredHome { summarizer, .. } => {
+				summarizer.as_ref()
+			}
 		}
 	}
 }
@@ -105,7 +121,12 @@ pub struct Provider {
 #[serde(tag = "mode", rename_all = "snake_case", deny_unknown_fields)]
 #[schemars(rename = "RemoteSemanticBinding")]
 pub enum Binding {
-	Disabled {},
+	/// No Home semantic retrieval; it may still disclose a Summary Stage pin.
+	Disabled {
+		/// Home-disclosed Summary Stage model pin, as for `RequiredHome`.
+		#[serde(default, skip_serializing_if = "Option::is_none")]
+		summarizer: Option<Box<Provider>>,
+	},
 	RequiredHome {
 		home_lineage: Vec<crate::generation::remote::Ancestor>,
 		execution_lineage: Vec<crate::generation::remote::Ancestor>,
@@ -118,23 +139,32 @@ pub enum Binding {
 		native: Option<Box<NativeBinding>>,
 		#[serde(default, skip_serializing_if = "Option::is_none")]
 		compactor: Option<Box<Provider>>,
+		/// Home-disclosed Summary Stage model pin; absent means no Summary
+		/// Stage may run for this remote execution.
+		#[serde(default, skip_serializing_if = "Option::is_none")]
+		summarizer: Option<Box<Provider>>,
 	},
 }
 impl Default for Binding {
 	fn default() -> Self {
-		Self::Disabled {}
+		Self::Disabled { summarizer: None }
 	}
 }
 impl Binding {
+	/// Whether Home semantic retrieval is disabled. A Summary Stage pin is
+	/// independent of it.
 	pub fn disabled(&self) -> bool {
-		matches!(self, Self::Disabled {})
+		matches!(self, Self::Disabled { .. })
 	}
 	pub fn request(&self) -> Request {
 		match self {
-			Self::Disabled {} => Request::Disabled {},
+			Self::Disabled { summarizer } => Request::Disabled {
+				summarizer: summarizer.as_ref().map(|p| p.entry.clone()),
+			},
 			Self::RequiredHome {
 				embedding,
 				compactor,
+				summarizer,
 				native,
 				..
 			} => Request::RequiredHome {
@@ -143,16 +173,24 @@ impl Binding {
 					.as_ref()
 					.map(|binding| Box::new(binding.selection.clone())),
 				compactor: compactor.as_ref().map(|p| p.entry.clone()),
+				summarizer: summarizer.as_ref().map(|p| p.entry.clone()),
 			},
 		}
 	}
 }
 
 impl Binding {
+	pub fn summarizer(&self) -> Option<&Provider> {
+		match self {
+			Self::Disabled { summarizer } | Self::RequiredHome { summarizer, .. } => {
+				summarizer.as_deref()
+			}
+		}
+	}
 	pub fn native(&self) -> Option<&NativeBinding> {
 		match self {
 			Self::RequiredHome { native, .. } => native.as_deref(),
-			Self::Disabled {} => None,
+			Self::Disabled { .. } => None,
 		}
 	}
 }
@@ -301,8 +339,8 @@ mod tests {
 			serde_json::to_value(Binding::default()).unwrap(),
 			serde_json::json!({"mode":"disabled"})
 		);
-		assert_eq!(Request::default(), Request::Disabled {});
-		assert_eq!(Binding::default(), Binding::Disabled {});
+		assert_eq!(Request::default(), Request::Disabled { summarizer: None });
+		assert_eq!(Binding::default(), Binding::Disabled { summarizer: None });
 		assert!(
 			serde_json::from_value::<Request>(serde_json::json!({"mode":"required_home"})).is_err()
 		);

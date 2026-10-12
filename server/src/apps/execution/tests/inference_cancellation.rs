@@ -1,6 +1,5 @@
 #[path = "support/legacy.rs"]
 mod common;
-use common::{TestEnvironment, test_environment};
 
 use aidash_server::harness::Harness;
 use common::*;
@@ -22,14 +21,19 @@ struct StalledProvider {
 	tasks: JoinSet<()>,
 }
 
-impl StalledProvider {
-	async fn start(stall_body: bool) -> Self {
-		let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-		let endpoint = format!("http://{}", listener.local_addr().unwrap());
-		let (entered_tx, entered) = oneshot::channel();
-		let (disconnected_tx, disconnected) = oneshot::channel();
-		let mut tasks = JoinSet::new();
-		tasks.spawn(async move {
+#[fixture]
+async fn stalled_provider(
+	#[default(false)] stall_body: bool,
+	#[future(awt)] raw_listener: tokio::net::TcpListener,
+	#[from(signal)] entered_signal: Signal,
+	#[from(signal)] disconnected_signal: Signal,
+) -> StalledProvider {
+	let listener = raw_listener;
+	let endpoint = format!("http://{}", listener.local_addr().unwrap());
+	let (entered_tx, entered) = entered_signal;
+	let (disconnected_tx, disconnected) = disconnected_signal;
+	let mut tasks = JoinSet::new();
+	tasks.spawn(async move {
 			let (mut socket, _) = listener.accept().await.unwrap();
 			let mut request = Vec::new();
 			let mut buffer = [0_u8; 4096];
@@ -70,12 +74,11 @@ impl StalledProvider {
 			assert_eq!(n, 0, "cancellation must close the pending HTTP request");
 			disconnected_tx.send(()).unwrap();
 		});
-		Self {
-			endpoint,
-			entered,
-			disconnected,
-			tasks,
-		}
+	StalledProvider {
+		endpoint,
+		entered,
+		disconnected,
+		tasks,
 	}
 }
 
@@ -86,14 +89,18 @@ struct ReleasableProvider {
 	tasks: JoinSet<()>,
 }
 
-impl ReleasableProvider {
-	async fn start() -> Self {
-		let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-		let endpoint = format!("http://{}", listener.local_addr().unwrap());
-		let (entered_tx, entered) = oneshot::channel();
-		let (release, release_rx) = oneshot::channel();
-		let mut tasks = JoinSet::new();
-		tasks.spawn(async move {
+#[fixture]
+async fn releasable_provider(
+	#[future(awt)] raw_listener: tokio::net::TcpListener,
+	#[from(signal)] entered_signal: Signal,
+	#[from(signal)] release_signal: Signal,
+) -> ReleasableProvider {
+	let listener = raw_listener;
+	let endpoint = format!("http://{}", listener.local_addr().unwrap());
+	let (entered_tx, entered) = entered_signal;
+	let (release, release_rx) = release_signal;
+	let mut tasks = JoinSet::new();
+	tasks.spawn(async move {
 			let (mut socket, _) = listener.accept().await.unwrap();
 			let mut request = Vec::new();
 			let mut buffer = [0_u8; 4096];
@@ -129,24 +136,23 @@ impl ReleasableProvider {
 			);
 			socket.write_all(response.as_bytes()).await.unwrap();
 		});
-		Self {
-			endpoint,
-			entered,
-			release: Some(release),
-			tasks,
-		}
+	ReleasableProvider {
+		endpoint,
+		entered,
+		release: Some(release),
+		tasks,
 	}
 }
 
-async fn cancel_stalled_inference(environment: &TestEnvironment, scoped: bool, stall_body: bool) {
-	let (mut f, url, schema) = setup(environment).await;
-	// Cancellation must not wait for the next (100-second) lease heartbeat.
-	f.config.lease_seconds = 300;
-	let mut server = StalledProvider::start(stall_body).await;
-	let mut controller = f.clone();
-	// Separate notification objects model distinct API and worker processes.
-	controller.notify = Arc::new(Notify::new());
-	let app = common::application(controller).await;
+async fn cancel_stalled_inference(
+	fixture: common::ApplicationFixture,
+	mut server: StalledProvider,
+	scoped: bool,
+) {
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
+	// The fixture uses separate notification objects for controller and worker.
+
 	let (_, subject_token, scoped_task) = bootstrap(&f, &app, &server.endpoint).await;
 	let (token, task_id) = if scoped {
 		(subject_token, scoped_task.to_string())
@@ -256,11 +262,11 @@ async fn cancel_stalled_inference(environment: &TestEnvironment, scoped: bool, s
 #[tokio::test]
 async fn model_completion_save_cannot_overwrite_a_committed_cancellation(
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
 ) {
-	let (f, url, schema) = setup(&_test_environment).await;
-	let app = common::application(f.clone()).await;
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
 	let (_, subject_token, task_id) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let (status, claimed) = request(
 		&app,
@@ -313,13 +319,13 @@ async fn model_completion_save_cannot_overwrite_a_committed_cancellation(
 #[tokio::test]
 async fn credential_revocation_can_finish_during_inference_and_blocks_result(
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(lease_application)]
+	fixture: common::ApplicationFixture,
+	#[future(awt)] releasable_provider: ReleasableProvider,
 ) {
-	let (mut f, url, schema) = setup(&_test_environment).await;
-	f.config.lease_seconds = 300;
-	let mut server = ReleasableProvider::start().await;
-	let app = common::application(f.clone()).await;
+	let (f, url, schema) = fixture.runtime.parts();
+	let mut server = releasable_provider;
+	let app = fixture.application;
 	let (_, subject_token, task_id) = bootstrap(&f, &app, &server.endpoint).await;
 	let operator_token = f.config.api_token.clone();
 	let (status, claimed) = request(
@@ -443,13 +449,13 @@ async fn credential_revocation_can_finish_during_inference_and_blocks_result(
 #[tokio::test]
 async fn model_infer_policy_revocation_during_inference_blocks_result(
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(lease_application)]
+	fixture: common::ApplicationFixture,
+	#[future(awt)] releasable_provider: ReleasableProvider,
 ) {
-	let (mut f, url, schema) = setup(&_test_environment).await;
-	f.config.lease_seconds = 300;
-	let mut server = ReleasableProvider::start().await;
-	let app = common::application(f.clone()).await;
+	let (f, url, schema) = fixture.runtime.parts();
+	let mut server = releasable_provider;
+	let app = fixture.application;
 	let (mut policy, subject_token, task_id) = bootstrap(&f, &app, &server.endpoint).await;
 	let operator_token = f.config.api_token.clone();
 	let (status, claimed) = request(
@@ -514,13 +520,13 @@ async fn model_infer_policy_revocation_during_inference_blocks_result(
 #[tokio::test]
 async fn inference_completion_waits_for_visibility_gate_reacquisition(
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(lease_application)]
+	fixture: common::ApplicationFixture,
+	#[future(awt)] releasable_provider: ReleasableProvider,
 ) {
-	let (mut f, url, schema) = setup(&_test_environment).await;
-	f.config.lease_seconds = 300;
-	let mut server = ReleasableProvider::start().await;
-	let app = common::application(f.clone()).await;
+	let (f, url, schema) = fixture.runtime.parts();
+	let mut server = releasable_provider;
+	let app = fixture.application;
 	let (_, subject_token, task_id) = bootstrap(&f, &app, &server.endpoint).await;
 	let (status, claimed) = request(
 		&app,
@@ -600,13 +606,13 @@ async fn inference_completion_waits_for_visibility_gate_reacquisition(
 #[tokio::test]
 async fn inference_result_is_retried_after_atomic_commit_during_provider_wait(
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(lease_application)]
+	fixture: common::ApplicationFixture,
+	#[future(awt)] releasable_provider: ReleasableProvider,
 ) {
-	let (mut f, url, schema) = setup(&_test_environment).await;
-	f.config.lease_seconds = 300;
-	let mut server = ReleasableProvider::start().await;
-	let app = common::application(f.clone()).await;
+	let (f, url, schema) = fixture.runtime.parts();
+	let mut server = releasable_provider;
+	let app = fixture.application;
 	let (_, subject_token, task_id) = bootstrap(&f, &app, &server.endpoint).await;
 	let (status, claimed) = request(
 		&app,
@@ -667,20 +673,100 @@ async fn inference_result_is_retried_after_atomic_commit_during_provider_wait(
 #[tokio::test]
 async fn scoped_cancellation_aborts_inference_before_response_headers(
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(cancellation_application)]
+	fixture: common::ApplicationFixture,
+	#[future(awt)]
+	#[from(stalled_provider)]
+	#[with(false)]
+	server: StalledProvider,
 ) {
-	cancel_stalled_inference(&_test_environment, true, false).await;
+	cancel_stalled_inference(fixture, server, true).await;
 }
 
 #[rstest::rstest]
 #[tokio::test]
 async fn legacy_cancellation_aborts_inference_during_response_body(
 	#[future(awt)]
-	#[from(test_environment)]
-	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[from(cancellation_application)]
+	fixture: common::ApplicationFixture,
+	#[future(awt)]
+	#[from(stalled_provider)]
+	#[with(true)]
+	server: StalledProvider,
 ) {
-	cancel_stalled_inference(&_test_environment, false, true).await;
+	cancel_stalled_inference(fixture, server, false).await;
 }
 
 use reinhardt::query::{ExprTrait as _, QueryStatementBuilder as _};
+
+use futures_util::FutureExt;
+use rstest::fixture;
+
+type Signal = (oneshot::Sender<()>, oneshot::Receiver<()>);
+#[fixture]
+fn signal() -> Signal {
+	oneshot::channel()
+}
+#[fixture]
+async fn raw_listener() -> tokio::net::TcpListener {
+	// Incomplete HTTP headers/bodies and cancellation require the actual TCP state;
+	// a framework HTTP handler cannot expose the stalled socket's disconnect.
+	tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap()
+}
+
+#[fixture]
+fn long_lease_runtime(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) -> common::RuntimeFuture {
+	async move {
+		let mut runtime = runtime.await;
+		runtime.federation.config.lease_seconds = 300;
+		runtime
+	}
+	.boxed()
+	.shared()
+}
+#[fixture]
+fn controller_notify() -> Arc<Notify> {
+	Arc::new(Notify::new())
+}
+#[fixture]
+fn controller_runtime(
+	#[from(long_lease_runtime)] runtime: common::RuntimeFuture,
+	controller_notify: Arc<Notify>,
+) -> common::RuntimeFuture {
+	async move {
+		let mut runtime = runtime.await;
+		runtime.federation.notify = controller_notify;
+		runtime
+	}
+	.boxed()
+	.shared()
+}
+#[fixture]
+fn lease_application(
+	#[from(long_lease_runtime)] _runtime: common::RuntimeFuture,
+	#[from(common::native_application)]
+	#[with(aidash_server::http::Settings::default(), aidash_server::sse::Service::new(aidash_server::sse::Settings::default()), Arc::new(|router| router), _runtime.clone())]
+	application: common::ApplicationFuture,
+) -> common::ApplicationFuture {
+	application
+}
+#[fixture]
+fn cancellation_application(
+	#[from(long_lease_runtime)] runtime: common::RuntimeFuture,
+	#[from(controller_runtime)]
+	#[with(runtime.clone())]
+	_controller: common::RuntimeFuture,
+	#[from(common::native_application)]
+	#[with(aidash_server::http::Settings::default(), aidash_server::sse::Service::new(aidash_server::sse::Settings::default()), Arc::new(|router| router), _controller.clone())]
+	application: common::ApplicationFuture,
+) -> common::ApplicationFuture {
+	async move {
+		let mut application = application.await;
+		application.runtime = runtime.await;
+		application
+	}
+	.boxed()
+	.shared()
+}

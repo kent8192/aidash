@@ -72,6 +72,11 @@ pub async fn activate_in(
 			spec.embedding
 				.iter()
 				.map(|c| (c.provider.clone(), "embedding.invoke")),
+		)
+		.chain(
+			spec.summary
+				.iter()
+				.map(|c| (c.provider.clone(), "model.infer")),
 		) {
 		scope.catalog_entry(&reference, "registry.read").await?;
 		scope.catalog_entry(&reference, action).await?;
