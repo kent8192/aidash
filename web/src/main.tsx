@@ -133,9 +133,24 @@ type Search = { channel?: string; focus?: string; view?: string };
 type BrowserSession = {
   id: string;
   operator: boolean;
-  mappings: { id: string; tenant: string; subject: string }[];
+  mappings: {
+    id: string;
+    tenant: string;
+    subject: string;
+    personal?: boolean;
+  }[];
 };
 type Registration = { status: string; expires_at: string } | null;
+function sessionContext(session: BrowserSession, selected: string | null) {
+  if (
+    selected === "operator"
+      ? session.operator
+      : session.mappings.some((mapping) => selected === `mapping:${mapping.id}`)
+  )
+    return selected;
+  const personal = session.mappings.filter((mapping) => mapping.personal);
+  return personal.length === 1 ? `mapping:${personal[0].id}` : null;
+}
 function App() {
   const [locale, setLocale] = useState<Locale>(() =>
     localStorage.getItem("aidash-locale") === "en-US" ? "en-US" : "ja-JP",
@@ -200,6 +215,9 @@ function Dashboard({
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const busyRef = useRef(false);
+  const [registrationSubmitting, setRegistrationSubmitting] = useState(false);
+  const [registrationError, setRegistrationError] = useState("");
+  const registrationBusy = useRef(false);
   const registration = useQuery({
     queryKey: ["registration", browserSession?.id],
     queryFn: async (): Promise<Registration> => {
@@ -212,6 +230,33 @@ function Dashboard({
     enabled: browserSession !== null,
     refetchInterval: 60_000,
   });
+  const requestRegistration = async () => {
+    if (registrationBusy.current) return;
+    registrationBusy.current = true;
+    setRegistrationSubmitting(true);
+    setRegistrationError("");
+    try {
+      const response = await sessionFetch("/auth/registration", {
+        method: "POST",
+      });
+      if (!response.ok)
+        throw new Error(
+          ((await response.json()) as { error?: string }).error ??
+            "Registration failed",
+        );
+      client.setQueryData(
+        ["registration", browserSession?.id],
+        (await response.json()) as Registration,
+      );
+    } catch (reason) {
+      setRegistrationError(
+        reason instanceof Error ? reason.message : String(reason),
+      );
+    } finally {
+      registrationBusy.current = false;
+      setRegistrationSubmitting(false);
+    }
+  };
   const session = useQuery({
     queryKey: ["session"],
     queryFn: () => getSession(),
@@ -299,16 +344,10 @@ function Dashboard({
         const previousSession = sessionStorage.getItem("aidash-session-id");
         if (previousSession !== session.id) selectDashboardContext(null);
         sessionStorage.setItem("aidash-session-id", session.id);
-        const selected = dashboardContext();
-        const valid =
-          selected === "operator"
-            ? session.operator
-            : session.mappings.some(
-                (mapping) => selected === `mapping:${mapping.id}`,
-              );
+        const selected = sessionContext(session, dashboardContext());
+        selectDashboardContext(selected);
         setBrowserSession(session);
-        setContext(valid ? selected : null);
-        if (!valid) selectDashboardContext(null);
+        setContext(selected);
       } catch (reason) {
         if (!cancelled)
           setError(reason instanceof Error ? reason.message : String(reason));
@@ -327,6 +366,7 @@ function Dashboard({
     setContext(null);
     setBrowserSession(null);
     setSelection(null);
+    setRegistrationError("");
     client.clear();
   };
   const chooseContext = (selected: string) => {
@@ -404,25 +444,22 @@ function Dashboard({
         if (cancelled) return;
         if (current.id !== browserSessionId) {
           void client.cancelQueries();
-          selectDashboardContext(null);
+          const selected = sessionContext(current, null);
+          selectDashboardContext(selected);
           sessionStorage.setItem("aidash-session-id", current.id);
-          setContext(null);
+          setContext(selected);
           setSelection(null);
+          setRegistrationError("");
           client.clear();
           setBrowserSession(current);
           return;
         }
-        const selected = dashboardContext();
-        const valid =
-          selected === "operator"
-            ? current.operator
-            : current.mappings.some(
-                (mapping) => selected === `mapping:${mapping.id}`,
-              );
-        if (!valid) {
+        const previous = dashboardContext();
+        const selected = sessionContext(current, previous);
+        if (selected !== previous) {
           void client.cancelQueries();
-          selectDashboardContext(null);
-          setContext(null);
+          selectDashboardContext(selected);
+          setContext(selected);
           client.clear();
         }
         setBrowserSession(current);
@@ -555,9 +592,11 @@ function Dashboard({
                   });
                   if (!response.ok) throw new Error("Sign-in failed");
                   const current = (await response.json()) as BrowserSession;
-                  selectDashboardContext(null);
+                  const selected = sessionContext(current, null);
+                  selectDashboardContext(selected);
                   sessionStorage.setItem("aidash-session-id", current.id);
                   setBrowserSession(current);
+                  setContext(selected);
                 })
                 .catch((reason) => setError(String(reason)))
                 .finally(() => setAuthLoading(false));
@@ -604,6 +643,11 @@ function Dashboard({
             {browserSession.mappings.length === 0 &&
               !browserSession.operator && (
                 <div className="grid gap-3">
+                  {(registrationError || registration.isError) && (
+                    <Alert>
+                      {registrationError || registration.error?.message}
+                    </Alert>
+                  )}
                   <p
                     className={
                       registration.data?.status === "pending"
@@ -625,30 +669,10 @@ function Dashboard({
                   {registration.data?.status !== "pending" && (
                     <Button
                       type="button"
-                      onClick={() => {
-                        void sessionFetch("/auth/registration", {
-                          method: "POST",
-                          credentials: "same-origin",
-                        })
-                          .then(async (response) => {
-                            if (!response.ok)
-                              throw new Error(
-                                (
-                                  (await response.json()) as {
-                                    error?: string;
-                                  }
-                                ).error ?? "Registration failed",
-                              );
-                            void registration.refetch();
-                          })
-                          .catch((reason: unknown) =>
-                            setError(
-                              reason instanceof Error
-                                ? reason.message
-                                : String(reason),
-                            ),
-                          );
-                      }}
+                      disabled={
+                        registration.isPending || registrationSubmitting
+                      }
+                      onClick={() => void requestRegistration()}
                     >
                       {auth.request}
                     </Button>
@@ -776,6 +800,13 @@ function Dashboard({
             context,
             mappings: browserSession?.mappings ?? [],
             operatorAllowed: browserSession?.operator ?? false,
+            sharedAccess: {
+              status: registration.data?.status,
+              loading: registration.isPending,
+              submitting: registrationSubmitting,
+              error: registrationError || registration.error?.message,
+              request: () => void requestRegistration(),
+            },
             chooseContext,
             setLocale,
             logOut: (allDevices) => void logOut(allDevices),

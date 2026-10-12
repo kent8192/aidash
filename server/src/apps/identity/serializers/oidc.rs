@@ -39,6 +39,7 @@ pub struct MappingView {
 	pub(crate) id: Uuid,
 	pub(crate) tenant: String,
 	pub(crate) subject: String,
+	pub(crate) personal: bool,
 }
 
 #[derive(Serialize, JsonSchema)]

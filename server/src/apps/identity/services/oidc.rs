@@ -540,10 +540,23 @@ impl DashboardSessions {
 		let session = session_from_headers(&f, &headers).await?;
 		let lease = f.store.orm_connection()?;
 		let mut connection = lease.handle();
-		let mappings =
-			DashboardMapping::enabled_for_identity(&mut connection, session.identity_id()).await?;
 		let external = DashboardIdentity::find(&mut connection, session.identity_id()).await?;
 		let policy = f.config.dashboard_policy();
+		// Existing Google sessions receive the same one-time provisioning as a
+		// fresh verified callback, without changing pending shared enrollment.
+		let personal = if policy.as_ref().is_some_and(|policy| policy.google) {
+			crate::apps::identity::repositories::personal_tenant::provision(
+				lease.handle(),
+				external.id,
+			)
+			.await?;
+			Some(
+				aidash_domain::identity::personal_tenant::PersonalTenant::for_identity(external.id),
+			)
+		} else {
+			None
+		};
+		let mappings = DashboardMapping::enabled_for_identity(&mut connection, external.id).await?;
 		let mappings = mappings
 			.into_iter()
 			.filter(|mapping| {
@@ -567,6 +580,9 @@ impl DashboardSessions {
 					.into_iter()
 					.map(|row| MappingView {
 						id: row.id,
+						personal: personal
+							.as_ref()
+							.is_some_and(|personal| personal.contains(&row.tenant, &row.subject)),
 						tenant: row.tenant,
 						subject: row.subject,
 					})

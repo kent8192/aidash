@@ -16,14 +16,21 @@ export async function installBearerDashboard(
   page: Page,
   token: string,
   subject?: { tenant: string; name: string },
+  selectedContext?: string | null,
 ) {
   let currentToken = token;
   const sessionId = "fixture-browser-session";
-  const context = subject ? "mapping:fixture-mapping" : "operator";
+  const context =
+    selectedContext !== undefined
+      ? selectedContext
+      : subject
+        ? "mapping:fixture-mapping"
+        : "operator";
   await page.addInitScript(
     ({ sessionId, context }) => {
       sessionStorage.setItem("aidash-session-id", sessionId);
-      sessionStorage.setItem("aidash-context", context);
+      if (context) sessionStorage.setItem("aidash-context", context);
+      else sessionStorage.removeItem("aidash-context");
     },
     { sessionId, context },
   );

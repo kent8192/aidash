@@ -89,7 +89,14 @@ impl DashboardRegistrationRequest {
 			// A replacement request retains the latest authenticated display
 			// attributes. Expiry without resubmission is erased by the sweeper.
 			if let Some(previous) = Self::latest(tx, identity).await? {
-				let active_mapping = previous.status == "approved"
+				// Direct Google accounts retain private authority while requesting
+				// additional shared membership. Each approval remains immutable and
+				// a new request still requires explicit Operator approval.
+				let personal_account = identities.iter().any(|row| {
+					row.issuer == crate::config::GOOGLE_OIDC_ISSUER && row.gcip_tenant.is_empty()
+				});
+				let active_mapping = !personal_account
+					&& previous.status == "approved"
 					&& DashboardMapping::objects()
 						.filter(DashboardMapping::field_identity_id().eq(identity))
 						.filter(DashboardMapping::field_enabled().eq(true))
