@@ -120,21 +120,8 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 			views::provider_authorizations::start,
 			&["String", "String"],
 		)?;
-		contracts
-			.query::<_, pa::CallbackQuery>(document, views::provider_authorizations::callback)?;
-		contracts.path(
-			document,
-			views::provider_authorizations::callback,
-			&["String"],
-		)?;
-		contracts.empty(document, views::provider_authorizations::callback, 303)?;
-		contracts.response_header::<_, String>(
-			document,
-			views::provider_authorizations::callback,
-			303,
-			"Location",
-			"Dashboard return path with the provider_authorization outcome",
-		)?;
+		// The callback is a browser redirect target, like `/auth/callback`, and
+		// stays out of the API document.
 	}
 
 	contracts.response::<_, desktop::Started>(
