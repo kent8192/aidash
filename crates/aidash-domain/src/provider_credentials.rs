@@ -109,20 +109,16 @@ pub fn validate_model_id(model: &str) -> Result<()> {
 }
 
 /// Structural validation applies at every configuration write and on consumption.
-pub fn validate_source(
-	endpoint: &str,
-	provider: &str,
-	env: Option<&str>,
-	catalog: Option<&str>,
-) -> Result<()> {
+/// A configuration either names a Provider Catalog entry, whose exact provider
+/// and base URL it must use, or calls its endpoint without a key.
+pub fn validate_source(endpoint: &str, provider: &str, catalog: Option<&str>) -> Result<()> {
 	crate::configuration::validate_endpoint(endpoint)?;
-	if let Some(name) = env {
-		crate::configuration::validate_secret_reference(name)?;
-	}
 	if let Some(id) = catalog {
 		let entry = Provider::parse(id)?;
-		if env.is_some() || provider != entry.id() || endpoint != entry.base_url() {
-			return Err(Error::Invalid("provider_credential requires its exact catalog provider and base URL and excludes credential_env".into()));
+		if provider != entry.id() || endpoint != entry.base_url() {
+			return Err(Error::Invalid(
+				"provider_credential requires its exact catalog provider and base URL".into(),
+			));
 		}
 	}
 	Ok(())

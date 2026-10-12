@@ -26,13 +26,6 @@ use serde_json::{Value, json};
 use std::sync::{Arc, Mutex, OnceLock};
 use uuid::Uuid;
 
-struct NoEnvironment;
-impl aidash_application::ports::Credentials for NoEnvironment {
-	fn resolve(&self, _: &str) -> Result<String> {
-		panic!("Tenant access must not read environment keys")
-	}
-}
-
 static LOG: OnceLock<Arc<Mutex<Vec<u8>>>> = OnceLock::new();
 struct LogWriter(Arc<Mutex<Vec<u8>>>);
 impl std::io::Write for LogWriter {
@@ -1455,7 +1448,7 @@ async fn postgres_store_service_lifecycle_resolves_pins_and_never_leaks_canary(
 	#[future] endpoint: EndpointFixture,
 ) {
 	use aidash_application::provider_access::{
-		Context, EnvironmentAccess, KeyMaterialReader, ProviderAccess, Source, TenantAccess,
+		Context, KeyMaterialReader, KeylessAccess, ProviderAccess, Source, TenantAccess,
 	};
 	let f = endpoint.await;
 	let store = postgres_store(&f, &"11".repeat(32), vec![]).await;
@@ -1485,9 +1478,7 @@ async fn postgres_store_service_lifecycle_resolves_pins_and_never_leaks_canary(
 	let resource = store.resource(row.id);
 	let old = format!("{resource}/versions/1");
 	let access = TenantAccess {
-		environment: EnvironmentAccess {
-			credentials: Arc::new(NoEnvironment),
-		},
+		keyless: KeylessAccess,
 		repository: service.repository.clone(),
 		reader: Some(store.clone()),
 		issuer: None,

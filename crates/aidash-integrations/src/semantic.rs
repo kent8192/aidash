@@ -63,7 +63,7 @@ pub async fn embed(
 		.resolve(
 			&context,
 			&config.endpoint,
-			&Source::configured(&config.credential_env, &config.provider_credential),
+			&Source::configured(&config.provider_credential),
 		)
 		.await?;
 	let mut call = request(

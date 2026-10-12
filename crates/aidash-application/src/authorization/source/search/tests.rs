@@ -228,7 +228,6 @@ fn spec() -> IndexingSpec {
 		embedding: EmbeddingConfig {
 			provider: "openai".into(),
 			endpoint: "https://embedding.invalid".into(),
-			credential_env: None,
 			provider_credential: None,
 			model: "embedding".into(),
 			model_version: "1".into(),

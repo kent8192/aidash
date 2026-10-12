@@ -171,7 +171,6 @@ async fn worker_mint_and_broker_audit_are_correlated_and_never_log_secrets() {
 			provider: "openrouter".into(),
 			model_id: "author/model".into(),
 			endpoint: Provider::Openrouter.base_url().into(),
-			credential_env: None,
 			provider_credential: Some("openrouter".into()),
 			request_timeout_secs: Some(5),
 			streaming: None,

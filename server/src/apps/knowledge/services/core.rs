@@ -10,18 +10,14 @@ use crate::{Error, Result};
 use reinhardt::core::validators::Validate;
 use uuid::Uuid;
 
-/// Local credential validation is an adapter concern; provider invariants are pure.
+/// Provider-source checks need node settings; provider invariants are pure.
 pub trait EmbeddingValidation {
 	fn validate(&self) -> Result<()>;
-	fn validate_in(&self, local: bool) -> Result<()>;
 }
 impl EmbeddingValidation for EmbeddingConfig {
 	fn validate(&self) -> Result<()> {
-		self.validate_in(true)
-	}
-	fn validate_in(&self, local: bool) -> Result<()> {
 		crate::bootstrap::registry_validation()
-			.validate_embedding(self, local)
+			.validate_embedding(self)
 			.map_err(Into::into)
 	}
 }

@@ -45,11 +45,13 @@ struct ProviderState {
 }
 async fn upstream(State(state): State<Arc<ProviderState>>, request: Request) -> Response {
 	state.calls.fetch_add(1, Ordering::SeqCst);
+	// A keyless call records an empty bearer.
 	state.bearer.lock().unwrap().push(
-		request.headers()[header::AUTHORIZATION]
-			.to_str()
-			.unwrap()
-			.into(),
+		request
+			.headers()
+			.get(header::AUTHORIZATION)
+			.map(|value| value.to_str().unwrap().to_owned())
+			.unwrap_or_default(),
 	);
 	let path = request.uri().path().to_owned();
 	state.paths.lock().unwrap().push(path.clone());

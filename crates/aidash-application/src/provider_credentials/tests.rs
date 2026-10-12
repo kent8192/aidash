@@ -396,22 +396,12 @@ async fn pending_reconciliation_uses_rows_and_cleans_only_expired_pending_resour
 
 #[tokio::test]
 async fn access_uses_the_admitted_tenant_id_and_never_falls_back_to_environment() {
-	use crate::provider_access::{
-		Context, EnvironmentAccess, ProviderAccess, Source, TenantAccess,
-	};
-	struct Env;
-	impl crate::ports::Credentials for Env {
-		fn resolve(&self, _: &str) -> Result<String> {
-			panic!("Tenant access must never resolve environment Key Material")
-		}
-	}
+	use crate::provider_access::{Context, KeylessAccess, ProviderAccess, Source, TenantAccess};
 	let (s, repo, _) = service();
 	let a = create(&s, "alpha").await;
 	let b = create(&s, "beta").await;
 	let access = TenantAccess {
-		environment: EnvironmentAccess {
-			credentials: Arc::new(Env),
-		},
+		keyless: KeylessAccess,
 		repository: Arc::new(repo),
 		reader: None,
 		issuer: None,
@@ -550,21 +540,11 @@ impl crate::provider_access::KeyMaterialReader for FakeStore {
 }
 #[tokio::test]
 async fn reader_resolves_current_pin_after_metadata_checks() {
-	use crate::provider_access::{
-		Context, EnvironmentAccess, ProviderAccess, Source, TenantAccess,
-	};
-	struct Env;
-	impl crate::ports::Credentials for Env {
-		fn resolve(&self, _: &str) -> Result<String> {
-			panic!("no environment fallback")
-		}
-	}
+	use crate::provider_access::{Context, KeylessAccess, ProviderAccess, Source, TenantAccess};
 	let (s, repo, store) = service();
 	let row = create(&s, "alpha").await.provider_credential;
 	let access = TenantAccess {
-		environment: EnvironmentAccess {
-			credentials: Arc::new(Env),
-		},
+		keyless: KeylessAccess,
 		repository: Arc::new(repo),
 		reader: Some(Arc::new(store)),
 		issuer: None,
@@ -715,15 +695,7 @@ async fn reconciliation_pages_bound_work_and_reach_later_tenants_after_failures(
 
 #[tokio::test]
 async fn revocation_commit_failure_has_no_external_effect_and_committed_cleanup_is_recoverable() {
-	use crate::provider_access::{
-		Context, EnvironmentAccess, ProviderAccess, Source, TenantAccess,
-	};
-	struct Env;
-	impl crate::ports::Credentials for Env {
-		fn resolve(&self, _: &str) -> Result<String> {
-			panic!("revoked Tenant access cannot fall back to environment")
-		}
-	}
+	use crate::provider_access::{Context, KeylessAccess, ProviderAccess, Source, TenantAccess};
 	let (s, repo, store) = service();
 	let first = create(&s, "alpha").await.provider_credential;
 	let original = repo.0.lock().await.rows[&first.id].clone();
@@ -768,9 +740,7 @@ async fn revocation_commit_failure_has_no_external_effect_and_committed_cleanup_
 			.contains("cleanup-error-canary")
 	);
 	let access = TenantAccess {
-		environment: EnvironmentAccess {
-			credentials: Arc::new(Env),
-		},
+		keyless: KeylessAccess,
 		repository: Arc::new(repo.clone()),
 		reader: Some(Arc::new(store.clone())),
 		issuer: None,

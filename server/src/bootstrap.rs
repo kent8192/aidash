@@ -392,21 +392,15 @@ pub fn model_provider(
 	aidash_integrations::inference::provider(
 		client,
 		config,
-		environment_provider_access(),
+		keyless_provider_access(),
 		Default::default(),
 	)
 	.map_err(Into::into)
 }
 
-pub(crate) fn environment_provider_access()
+pub(crate) fn keyless_provider_access()
 -> Arc<dyn aidash_application::provider_access::ProviderAccess> {
-	Arc::new(aidash_application::provider_access::EnvironmentAccess {
-		credentials: Arc::new(EnvironmentCredentials),
-	})
-}
-
-pub(crate) fn environment_credentials() -> Arc<dyn aidash_application::ports::Credentials> {
-	Arc::new(EnvironmentCredentials)
+	Arc::new(aidash_application::provider_access::KeylessAccess)
 }
 
 struct EnvironmentCredentials;
@@ -465,7 +459,7 @@ pub fn semantic_transport(
 		pool: store.pool.clone(),
 		embedding: aidash_integrations::semantic::SemanticClient {
 			client: store.semantic_client.clone(),
-			access: environment_provider_access(),
+			access: keyless_provider_access(),
 			context: Default::default(),
 		},
 	}
@@ -1962,7 +1956,7 @@ impl aidash_application::ports::registry::workbench::sandbox::admission::Sandbox
 		aidash_integrations::inference::provider(
 			self.client.clone(),
 			model,
-			environment_provider_access(),
+			keyless_provider_access(),
 			Default::default(),
 		)
 	}

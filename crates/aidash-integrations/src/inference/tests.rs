@@ -185,15 +185,6 @@ mod cache_salt {
 	const SECRET_ONE: &str = "fixture-cache-salt-secret-one";
 	const SECRET_TWO: &str = "fixture-cache-salt-secret-two";
 
-	struct NoCredentials;
-	impl aidash_application::ports::Credentials for NoCredentials {
-		fn resolve(&self, _: &str) -> aidash_application::Result<String> {
-			Err(aidash_application::Error::Invalid(
-				"fixture models have no credential".into(),
-			))
-		}
-	}
-
 	struct TestServer(tokio::task::JoinHandle<()>);
 	impl Drop for TestServer {
 		fn drop(&mut self) {
@@ -260,9 +251,7 @@ mod cache_salt {
 			salted_provider(
 				reqwest::Client::new(),
 				config,
-				Arc::new(aidash_application::provider_access::EnvironmentAccess {
-					credentials: Arc::new(NoCredentials),
-				}),
+				Arc::new(aidash_application::provider_access::KeylessAccess),
 				Default::default(),
 				keys,
 			)

@@ -108,14 +108,6 @@ pub async fn admit(admission: &Admission<'_>, id: Uuid, input: TestInput) -> Res
 	let config = AgentConfig::from_snapshot(&snapshot)?;
 	let model = scope.effective(&config.model).await?;
 	let model_config: ModelConfig = serde_json::from_value(model.config)?;
-	let model_credential = model_config
-		.credential_env
-		.as_ref()
-		.map(|name| {
-			dispatch::credential_fingerprint(admission.credentials, name)
-				.map(|digest| (name.clone(), digest))
-		})
-		.transpose()?;
 	let limits = scope.limits(&draft.tenant).await?;
 	super::validate_limits(admission.repository, &limits)?;
 	let profile = if input.mode == "real" {
@@ -264,7 +256,6 @@ pub async fn admit(admission: &Admission<'_>, id: Uuid, input: TestInput) -> Res
 			request,
 			initial_conversation: conversation,
 			pinned_draft: draft,
-			model_credential,
 			exposure,
 		},
 	})

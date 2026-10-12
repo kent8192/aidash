@@ -17,7 +17,6 @@ use aidash_domain::{
 use async_trait::async_trait;
 use chrono::{TimeZone, Utc};
 use rstest::rstest;
-use sha2::Digest;
 use std::{
 	collections::{BTreeMap, VecDeque},
 	sync::Mutex,
@@ -395,7 +394,6 @@ fn job(model: Arc<Model>) -> Job {
 		},
 		initial_conversation: vec![json!({"role":"user","content":"original"})],
 		pinned_draft: draft(7),
-		model_credential: None,
 		exposure: None,
 	}
 }
@@ -691,24 +689,6 @@ async fn changed_profile_prevents_inference(#[case] failure: &'static str) {
 	));
 	assert_eq!(model.requests.lock().unwrap().len(), 0);
 	assert!(!repository.state.lock().unwrap().active);
-}
-#[tokio::test]
-async fn rotated_model_credential_prevents_authority_and_inference() {
-	let mut repository = Repository::new();
-	repository.failure = Some((0, "credential"));
-	let repository = Arc::new(repository);
-	let model = model(repository.clone(), vec![]);
-	let mut job = job(model.clone());
-	job.model_credential = Some((
-		"MODEL_TEST".into(),
-		sha2::Sha256::digest(b"fixture").to_vec(),
-	));
-	assert!(matches!(
-		simulate(&execution(repository.clone()), session().id, &job).await,
-		Err(Error::Conflict(_))
-	));
-	assert_eq!(repository.state.lock().unwrap().begun, 0);
-	assert_eq!(model.requests.lock().unwrap().len(), 0);
 }
 #[tokio::test]
 async fn stopped_session_performs_no_authority_or_inference() {
