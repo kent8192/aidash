@@ -208,7 +208,9 @@ def requests(config, event, name, state):
             if time.time() - previous.get("last_comment_at", 0) < config.get("preview_request_interval_seconds", 60):
                 raise Refused("Preview requests are rate limited; stop and destroy remain available")
             retained = [entry for entry in state.get("environments", {}).values() if entry.get("kind") == "pr" and entry.get("desired") != "destroyed"]
-            if not previous and len(retained) >= config.get("max_preview_environments", 10):
+            # A destroyed tombstone is not retained, so recreating it adds a preview.
+            new = not previous or previous.get("desired") == "destroyed"
+            if new and len(retained) >= config.get("max_preview_environments", 10):
                 raise Refused("Preview retention budget reached; retire an environment first")
         value = dict(common, environment=identity, last_comment_at=int(time.time()), **command)
         if command["action"] == "up":

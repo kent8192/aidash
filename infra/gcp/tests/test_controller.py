@@ -1643,6 +1643,29 @@ class IntakeTests(unittest.TestCase):
                             output.read_text(), f"proceed={str(allowed).lower()}\n"
                         )
 
+    def test_recreating_a_destroyed_preview_counts_against_the_retention_cap(self):
+        state = {"environments": {
+            "pr-1": {"kind": "pr", "desired": "running"},
+            "pr-2": {"kind": "pr", "desired": "destroyed", "last_comment_at": 0},
+        }}
+        config = dict(CONFIG, max_preview_environments=1)
+        event = {
+            "action": "created",
+            "comment": {"body": "/preview up", "user": {"login": "fixture"}},
+            "issue": {"number": 2, "pull_request": {"url": "https://api.github.com/repos/kent8192/aidash/pulls/2"}},
+        }
+        with (
+            patch.dict(os.environ, {"GITHUB_RUN_ID": "7"}),
+            patch.object(controller, "permission"),
+            patch.object(controller, "source", return_value={}) as source,
+        ):
+            with self.assertRaisesRegex(controller.Refused, "retention budget"):
+                controller.requests(config, event, "issue_comment", state)
+            source.assert_not_called()
+            # A retained preview may still be updated at the cap.
+            state["environments"]["pr-2"]["desired"] = "running"
+            self.assertEqual(controller.requests(config, event, "issue_comment", state)[0]["environment"], "pr-2")
+
     def test_job_setup_time_reduces_the_operation_budget(self):
         with (
             patch.dict(
