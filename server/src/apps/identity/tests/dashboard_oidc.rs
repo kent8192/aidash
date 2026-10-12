@@ -1399,10 +1399,14 @@ struct GoogleBrowser {
 	url: String,
 	database: String,
 	identity: Uuid,
+	// Retains the disposable database and its environment for the test.
+	_runtime: common::RuntimeFixture,
 }
 
-async fn google_browser(environment: &TestEnvironment) -> GoogleBrowser {
-	let (mut federation, url, database) = common::setup(environment).await;
+#[rstest::fixture]
+async fn google_browser(#[from(common::runtime)] runtime: common::RuntimeFuture) -> GoogleBrowser {
+	let runtime = runtime.await;
+	let (mut federation, url, database) = runtime.parts();
 	federation.config.oidc = Some(OidcConfig {
 		issuer: "https://accounts.google.com".into(),
 		client_id: "aidash".into(),
@@ -1475,6 +1479,7 @@ async fn google_browser(environment: &TestEnvironment) -> GoogleBrowser {
 		url,
 		database,
 		identity,
+		_runtime: runtime,
 	}
 }
 
@@ -1485,11 +1490,10 @@ async fn google_browser(environment: &TestEnvironment) -> GoogleBrowser {
 async fn google_session_provisions_private_access_without_registration(
 	#[case] with_pending: bool,
 	#[future(awt)]
-	#[from(test_environment)]
-	environment: std::sync::Arc<TestEnvironment>,
+	#[from(google_browser)]
+	fixture: GoogleBrowser,
 ) {
 	// Arrange: an existing Google browser session has no local authority.
-	let fixture = google_browser(&environment).await;
 	let shared_policy: PolicyBundle = serde_json::from_value(json!({
 		"tenant":"acme","subjects":{"alice":{"kind":"user"}},
 		"policies":[{"id":"shared-user","effect":"allow","subjects":{"ids":["alice"]},
@@ -1746,11 +1750,10 @@ async fn google_session_provisions_private_access_without_registration(
 #[tokio::test]
 async fn google_session_never_adopts_an_existing_personal_tenant(
 	#[future(awt)]
-	#[from(test_environment)]
-	environment: std::sync::Arc<TestEnvironment>,
+	#[from(google_browser)]
+	fixture: GoogleBrowser,
 ) {
 	// Arrange: an Operator already created data in the reserved tenant namespace.
-	let fixture = google_browser(&environment).await;
 	let tenant = format!("personal-{}", fixture.identity.simple());
 	let policy: PolicyBundle = serde_json::from_value(json!({
 		"tenant":tenant,"subjects":{"existing-user":{"kind":"user"}},"policies":[]
@@ -1810,11 +1813,10 @@ async fn google_session_does_not_restore_revoked_personal_authority(
 	#[case] session_status: u16,
 	#[case] access_status: u16,
 	#[future(awt)]
-	#[from(test_environment)]
-	environment: std::sync::Arc<TestEnvironment>,
+	#[from(google_browser)]
+	fixture: GoogleBrowser,
 ) {
 	// Arrange: provision real authority, then independently revoke one of its fences.
-	let fixture = google_browser(&environment).await;
 	let (status, session) = call(
 		&fixture.app,
 		"GET",
