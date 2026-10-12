@@ -71,8 +71,11 @@ resource "google_iam_workload_identity_pool_provider" "github" {
     "attribute.repository_id" = "assertion.repository_id"
   }
   # Numeric identities prevent repository/owner name reuse. A PR workflow or
-  # manually selected feature-branch workflow cannot obtain this identity.
-  attribute_condition = "assertion.repository_id == '${var.repository_id}' && assertion.repository_owner_id == '${var.repository_owner_id}' && assertion.workflow_ref == '${local.workflow_ref}' && assertion.ref == 'refs/heads/${var.trusted_branch}'"
+  # manually selected feature-branch workflow cannot obtain this identity. The
+  # environment claim exists only when the job declares a GitHub Environment, so
+  # their protection rules (#151) gate every credentialed job: reviewers sit on the
+  # release Environment, a main-only branch policy on both.
+  attribute_condition = "assertion.repository_id == '${var.repository_id}' && assertion.repository_owner_id == '${var.repository_owner_id}' && assertion.workflow_ref == '${local.workflow_ref}' && assertion.ref == 'refs/heads/${var.trusted_branch}' && assertion.environment in ['${var.deploy_environment}', '${var.release_environment}']"
   oidc { issuer_uri = "https://token.actions.githubusercontent.com" }
 }
 
