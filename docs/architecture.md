@@ -165,8 +165,10 @@ The marketplace is a self-hosted, versioned manifest repository exposed by the n
 
 ### Memory contracts
 
-Three contracts are kept apart. Each names its owning Issue, and a change to one
-does not change the others.
+Three contracts are separate ownership areas, each with its owning Issue. They share
+mechanisms: Ordered retrieval reuse from #172 serves contracts (a) and (b), and the
+mutation and recovery rules serve contracts (b) and (c). A change to a shared
+mechanism needs regression and acceptance work in every contract that uses it.
 
 - **(a) Run-context continuity and compaction.** Owned by #113 and #116. It covers how
   a Run's context survives restart and is reduced when it grows, through the Context
@@ -174,11 +176,12 @@ does not change the others.
   #172 (closed) and PR #186 (merged). This contract does not store memory.
 - **(b) Persistent source ingestion and semantic retrieval.** Owned by #110, with
   retrieval reuse from #172 and PR #186. It covers Source ingestion, the semantic
-  index on PostgreSQL with pgvector and PGroonga, and retrieval that keeps provenance,
-  scope, lifecycle and authorization (FR-MEM-001). Retrieval combines four rankings
-  (semantic, keyword, graph and temporal). A reranker is a required policy role: either
-  a registered model or the explicit `Rrf` passthrough. A provider failure is an error,
-  never a fallback to `Rrf`.
+  index on PostgreSQL with pgvector and PGroonga, and two retrieval paths that keep
+  provenance, scope, lifecycle and authorization. Workspace Source retrieval searches
+  the pgvector index (FR-MEM-001). Native memory recall is separate and ranks the
+  authorized units of a Bank with four rankings (semantic, keyword, graph and
+  temporal). A reranker is a required policy role: either a registered model or the
+  explicit `Rrf` passthrough. A provider failure is an error, never a fallback to `Rrf`.
 - **(c) Extraction, review and consolidation of reusable knowledge.** Owned by #118,
   with autonomous admission in #141 (open) and the reviewed native memory path in PR #130.
   It covers candidates from completed Runs, provenance-bound review, and promotion to
@@ -190,12 +193,14 @@ evidence behind it, is in the [traceability matrix](memory-traceability.md).
 
 ### Registry boundary
 
-Registry descriptors (#110) declare the provider identity, supported operations,
-pinning, disclosure and bindings of a capability. Private memory bodies and
-credentials are not part of a descriptor. Memory bodies stay in the authorized
-provider storage of the Home, and credentials stay in the Provider Credential Store.
-Catalog metadata never exposes either. A Binding names the exact provider version a
-Run uses; the descriptor is discoverable metadata, not the content.
+A Registry descriptor (#110) is discoverable metadata for a capability, not its
+content. For a native memory provider, the descriptor configuration holds only the
+engine and policy. Supported operations, exact-version pinning, disclosure and
+Bindings are separate Registry and admission controls (see
+[Native Memory providers](operations/registry-capabilities.md#native-memory-providers)).
+Private memory bodies and credentials are not part of a descriptor. Memory bodies
+stay in the authorized provider storage of the Home, and credentials stay in the
+Provider Credential Store. Catalog metadata never exposes either.
 
 ## Baseline implementation and verification sequence
 
