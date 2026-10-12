@@ -162,22 +162,37 @@ impl GenerationLifecycleScope for NativeLifecycle<'_> {
 	}
 
 	async fn cancel_runs(&mut self, job: &Request) -> aidash_application::Result<()> {
-		let Some(admission_id) = job.admission_id else {
-			return Ok(());
-		};
 		let tx = &mut *self.transaction;
 		let f = self.runtime;
 
-		let query_bind_1 = admission_id;
-		let query_bind_2 = job.task_id;
-		let query_bind_3 = &job.home_node;
-		let query_bind_4 = &f.config.node_id;
-		let query_bind_5 = &job.agent_id;
-		let query_bind_6 = &job.agent_version;
-		crate::database::native::query(&reinhardt::query::Query::update()
-				.table(reinhardt::query::Alias::new("runs")).value_expr(reinhardt::query::Alias::new("control"), reinhardt::query::Expr::cust("'CANCELLED'"))
-				.and_where(SimpleExpr::CustomWithExpr("(id = ? AND task_id = ? AND (home_node = ? OR (?='' AND home_node=?)) AND agent_id = ? AND agent_version = ? AND NOT phase IN ('COMPLETED', 'FAILED', 'CANCELLED'))".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into(), Expr::value(query_bind_3.to_owned()).into(), Expr::value(query_bind_3.to_owned()).into(), Expr::value(query_bind_4.to_owned()).into(), Expr::value(query_bind_5.to_owned()).into(), Expr::value(query_bind_6.to_owned()).into()]))
-				.to_string(reinhardt::query::PostgresQueryBuilder))
+		// Local generations bind their run by task and generated agent revision (the same
+		// binding local expiration uses); foreign generations additionally pin the
+		// admitted remote run.
+		let mut condition = String::from(
+			"task_id = ? AND (home_node = ? OR (?='' AND home_node=?)) AND agent_id = ? AND agent_version = ? AND NOT phase IN ('COMPLETED', 'FAILED', 'CANCELLED')",
+		);
+		let mut values: Vec<SimpleExpr> = vec![
+			Expr::value(job.task_id).into(),
+			Expr::value(job.home_node.clone()).into(),
+			Expr::value(job.home_node.clone()).into(),
+			Expr::value(f.config.node_id.clone()).into(),
+			Expr::value(job.agent_id.clone()).into(),
+			Expr::value(job.agent_version.clone()).into(),
+		];
+		if let Some(admission_id) = job.admission_id {
+			condition.push_str(" AND id = ?");
+			values.push(Expr::value(admission_id).into());
+		}
+		crate::database::native::query(
+			&reinhardt::query::Query::update()
+				.table(reinhardt::query::Alias::new("runs"))
+				.value_expr(
+					reinhardt::query::Alias::new("control"),
+					reinhardt::query::Expr::cust("'CANCELLED'"),
+				)
+				.and_where(SimpleExpr::CustomWithExpr(format!("({condition})"), values))
+				.to_string(reinhardt::query::PostgresQueryBuilder),
+		)
 		.execute(&mut **tx)
 		.await?;
 
