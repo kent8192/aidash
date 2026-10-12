@@ -44,7 +44,13 @@ fn target_of(
 	target: &str,
 	run: Uuid,
 ) -> (Resource, &'static str) {
-	if record.kind == DISCLOSURE {
+	// A Run grant from an "allow for this Run" disclosure decision names the
+	// action it covers; it protects the same research resource.
+	let granted_disclosure = record.kind == "grant"
+		&& record.data["actions"]
+			.as_array()
+			.is_some_and(|actions| actions.contains(&json!(DISCLOSE)));
+	if record.kind == DISCLOSURE || granted_disclosure {
 		(disclosure_resource(scope, target, run), DISCLOSE)
 	} else {
 		(resource(scope, target, run), "network.get")

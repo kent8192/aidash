@@ -371,3 +371,22 @@ async fn an_allow_run_grant_covers_later_disclosures_to_the_same_destination() {
 		DisclosureState::Pending { .. }
 	));
 }
+
+#[tokio::test]
+async fn a_disclosure_run_grant_is_visible_to_its_approver_as_a_research_resource() {
+	let mut scope = scope(Value::Null);
+	let run = scope.run.clone();
+	let DisclosureState::Pending { approval_id, .. } =
+		disclose(&mut scope, &run, &request()).await.unwrap()
+	else {
+		panic!("pending");
+	};
+	let decided = decide_as_bob(&mut scope, approval_id, ApprovalChoice::AllowRun)
+		.await
+		.unwrap();
+	let grant: Uuid = serde_json::from_value(decided["grant_id"].clone()).unwrap();
+	let record = scope.records[&grant].clone();
+	scope.principal = "bob".into();
+	// Bob may approve research resources only; an outbound target would hide it.
+	assert!(visible(&mut scope, &record).await.unwrap());
+}

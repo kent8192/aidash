@@ -123,12 +123,16 @@ all; without it the disclosure is denied.
   `allow_once` approval is consumed by that one disclosure.
 - Denial, expiry or an explicit policy deny returns `disclosure_denied`; the
   provider is never called.
+- A Run without local worker authority (for example, a remote Run) has no
+  approval flow, so every disclosure is denied, as for `outbound_get`.
 
 The approval is bound to a digest of the Run, operation, provider, destination,
 exact content and the Run's observed input sequence. New user input therefore
 requires a new approval. Approval never overrides destination checks: page
 providers refuse non-public names and addresses, including addresses a public
-name resolves to at dispatch, and every redirect is checked again.
+name resolves to at dispatch. A page is read only from the approved destination
+host: a redirect to another host returns `cross_host_redirect` instead of being
+followed, and a same-host redirect is checked again before any request.
 
 ## Cost attribution and limits
 
@@ -176,7 +180,7 @@ The Brave key is a **tool secret**: the profile's `credential_env` names an
 
 Providers are read once at startup; restart the Node after changing them. The
 page provider reads `text/html`, `application/xhtml+xml` and `text/plain` only,
-up to 4 MiB per response and three redirects. It strips markup, drops script,
+up to 4 MiB per response and three same-host redirects. It strips markup, drops script,
 style and template content and never executes page content. PDF and other media
 return `unsupported_media`.
 
@@ -192,7 +196,8 @@ or both ports of `aidash_application::ports::research`:
   `Failure`. It must not relax the query's filters; the host filters again.
 - `PageProvider`: `admit(url)` performs literal destination checks before any
   disclosure, and `fetch(url)` returns an `ExtractedPage` within the snapshot
-  bounds. It must resolve and pin public addresses itself and check redirects.
+  bounds. It must resolve and pin public addresses itself, check every
+  redirect and never follow one to another host than the approved destination.
 
 Register the provider and its operations in `RESEARCH_PROVIDERS`
 (`aidash-domain`), its package group in `RESEARCH_GROUPS` (`aidash-application`),
