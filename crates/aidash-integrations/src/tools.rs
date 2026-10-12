@@ -18,6 +18,23 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 mod mcp;
 
+/// Total budget for a native `http_get`, covering DNS resolution and the request.
+const NATIVE_HTTP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+async fn resolve_within<I>(
+	deadline: tokio::time::Instant,
+	lookup: impl Future<Output = std::io::Result<I>>,
+) -> Result<Vec<std::net::SocketAddr>>
+where
+	I: Iterator<Item = std::net::SocketAddr>,
+{
+	tokio::time::timeout_at(deadline, lookup)
+		.await
+		.map_err(|_| Error::External("HTTP tool DNS resolution timed out".into()))?
+		.map(Iterator::collect)
+		.map_err(|error| Error::Port(Box::new(error)))
+}
+
 pub struct HttpTools {
 	pub client: reqwest::Client,
 	pub credentials: Arc<dyn Credentials>,
@@ -35,10 +52,10 @@ impl ToolTransport for HttpTools {
 					allowed_hosts,
 				)?;
 				let host = url.host_str().ok_or(Error::Forbidden)?;
-				let addresses: Vec<std::net::SocketAddr> = tokio::net::lookup_host((host, 443))
-					.await
-					.map_err(|error| Error::Port(Box::new(error)))?
-					.collect();
+				// One deadline bounds resolution and the pinned request together.
+				let deadline = tokio::time::Instant::now() + NATIVE_HTTP_TIMEOUT;
+				let addresses =
+					resolve_within(deadline, tokio::net::lookup_host((host, 443))).await?;
 				if addresses.is_empty()
 					|| addresses.len() > 32
 					|| addresses.iter().any(|address| {
@@ -49,7 +66,7 @@ impl ToolTransport for HttpTools {
 				let client = reqwest::Client::builder()
 					.no_proxy()
 					.redirect(reqwest::redirect::Policy::none())
-					.timeout(std::time::Duration::from_secs(10))
+					.timeout(deadline.saturating_duration_since(tokio::time::Instant::now()))
 					.resolve_to_addrs(host, &addresses)
 					.build()
 					.map_err(crate::http_error)?;
