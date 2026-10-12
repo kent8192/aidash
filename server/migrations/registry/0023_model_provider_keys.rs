@@ -6,9 +6,9 @@
 use reinhardt::db::migrations::prelude::*;
 
 pub(super) fn migration() -> Migration {
-	Migration::new("0021_model_provider_keys", "registry")
+	Migration::new("0023_model_provider_keys", "registry")
 		.database_only(true)
-		.add_dependency("registry", "0020_model_streaming_config")
+		.add_dependency("registry", "0022_context_policy")
 		.add_operation(Operation::AddConstraintDefinition {
 			table: "registry".into(),
 			constraint: Constraint::Check {
