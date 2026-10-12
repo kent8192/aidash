@@ -300,6 +300,19 @@ async fn scoped_foreign_admission_cannot_fall_back_to_legacy_when_its_visibility
 }
 
 #[rstest]
+#[tokio::test]
+async fn scoped_foreign_run_is_hidden_after_core_file_authority_is_revoked(
+	mut run: RunMetadata,
+	mut scope: Scope,
+) {
+	run.home_node = "aidash://peer".into();
+	scope.admission = true;
+	scope.core_area_visible = false;
+	assert!(!run_visible(&mut scope, &run).await.unwrap());
+	assert_eq!(scope.calls, ["admission"]);
+}
+
+#[rstest]
 #[case(false)]
 #[case(true)]
 #[tokio::test]
