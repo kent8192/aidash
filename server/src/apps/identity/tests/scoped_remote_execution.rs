@@ -306,6 +306,9 @@ async fn reconnect(f: &mut Federation) {
 }
 
 #[rstest::fixture]
+// Each parameter is a per-test `#[with]` switch; grouping them would rewrite
+// every existing positional `#[with(...)]` call.
+#[allow(clippy::too_many_arguments)]
 async fn scoped_pair(
 	#[default(false)] semantic: bool,
 	#[default(false)] generated: bool,
