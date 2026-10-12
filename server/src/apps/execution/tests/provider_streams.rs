@@ -1,7 +1,7 @@
 //! Streamed OpenRouter completions against a scripted server-sent event fixture.
 use crate::provider_fixtures::upstream_fixtures::{reply, upstream};
 use aidash_application::ports::{InferenceProgressSink, ModelProvider, NoProgress};
-use aidash_domain::provider::progress::InferenceProgress;
+use aidash_domain::{context::recovery::Failure, provider::progress::InferenceProgress};
 use aidash_server::{
 	provider::{ModelRequest, ModelResponse, ToolSpec, provider},
 	registry::{Entry, ModelConfig, validate},
@@ -352,8 +352,6 @@ async fn streamed_progress_precedes_a_response_equal_to_the_non_streamed_one(
 	finish("tool_calls"),
 	done(),
 ])]
-#[case::length(vec![delta(json!({"content":"partial"})), finish("length"), done()])]
-#[case::refusal(vec![delta(json!({"refusal":"I cannot help"})), finish("stop"), done()])]
 #[tokio::test]
 async fn incomplete_or_invalid_streams_produce_no_response(
 	#[case] _steps: Vec<Step>,
@@ -373,6 +371,45 @@ async fn incomplete_or_invalid_streams_produce_no_response(
 	// Assert
 	assert!(
 		matches!(result, Err(aidash_application::Error::External(_))),
+		"{result:?}"
+	);
+}
+
+/// Truncated or refused streams end as the same typed terminal failures as
+/// non-streamed completions; their output is never acted on.
+#[rstest::rstest]
+#[case::length(
+	vec![delta(json!({"content":"partial"})), finish("length"), done()],
+	Failure::OutputTruncated,
+)]
+#[case::refusal(
+	vec![delta(json!({"refusal":"I cannot help"})), finish("stop"), done()],
+	Failure::Refused,
+)]
+#[tokio::test]
+async fn truncated_or_refused_streams_end_as_terminal_failures(
+	#[case] _steps: Vec<Step>,
+	#[case] expected: Failure,
+	#[from(stream_router)]
+	#[with(_steps.clone())]
+	_router: Arc<ServerRouter>,
+	#[future(awt)]
+	#[from(upstream)]
+	#[with(_router.clone())]
+	server: TestServerGuard,
+	model_config: ModelConfig,
+	streaming_client: reqwest::Client,
+) {
+	// Act
+	let result = infer_stream(&server, model_config, streaming_client).await;
+
+	// Assert
+	assert!(
+		matches!(
+			&result,
+			Err(aidash_application::Error::TerminalResponse(actual, response))
+				if *actual == expected && response.text.is_empty() && response.tool_calls.is_empty()
+		),
 		"{result:?}"
 	);
 }

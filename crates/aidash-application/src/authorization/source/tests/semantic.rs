@@ -571,7 +571,9 @@ async fn a_summarizer_pin_needs_no_home_semantic_retrieval() {
 		summarizer: Some(summarizer.clone()),
 	};
 	let mut scope = BindingScope::new();
-	let Binding::Disabled { summarizer: Some(pin) } = use_case::binding(
+	let Binding::Disabled {
+		summarizer: Some(pin),
+	} = use_case::binding(
 		&mut scope,
 		&task(),
 		"aidash://receiver",
