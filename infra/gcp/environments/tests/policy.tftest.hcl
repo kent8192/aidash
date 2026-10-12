@@ -18,6 +18,7 @@ variables {
   byok_project_id        = "aidash-byok-fixture"
   deploy_service_account = "deploy@aidash-fixture.iam.gserviceaccount.com"
   cloudflare_zone_id     = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  broker_image_lock_file = "tests/fixtures/broker-image.json"
 }
 
 run "empty_runs_no_node_or_dns" {
@@ -102,7 +103,6 @@ run "identities_are_separated" {
         secret_prefix                = "aidash-test-cred-"
         broker_service_account_email = "aidash-test-broker@aidash-fixture.iam.gserviceaccount.com"
         signing_key_id               = "projects/aidash-fixture/locations/us-central1/keyRings/aidash-test-capability/cryptoKeys/capability"
-        image                        = "broker@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
       }
     }
   }
@@ -256,7 +256,6 @@ run "no_broker_in_preview" {
         secret_prefix                = "aidash-pr-137-cred-"
         broker_service_account_email = "aidash-pr-137-broker@aidash-fixture.iam.gserviceaccount.com"
         signing_key_id               = "projects/aidash-fixture/locations/us-central1/keyRings/aidash-pr-137-capability/cryptoKeys/capability"
-        image                        = "broker@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
       }
     }
   }
@@ -281,7 +280,31 @@ run "broker_must_use_the_environment_store_project" {
         secret_prefix                = "aidash-test-cred-"
         broker_service_account_email = "aidash-test-broker@aidash-fixture.iam.gserviceaccount.com"
         signing_key_id               = "projects/aidash-fixture/locations/us-central1/keyRings/aidash-test-capability/cryptoKeys/capability"
-        image                        = "broker@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    }
+  }
+  expect_failures = [var.credential_brokers]
+}
+
+run "broker_needs_an_approved_digest" {
+  command = plan
+  variables {
+    broker_image_lock_file = "broker-image.json"
+    environments = { test = {
+      kind        = "test"
+      incarnation = "aaaaaaaaaaaa"
+      generation  = 1
+      running     = false
+      published   = false
+      spot        = true
+    } }
+    credential_brokers = {
+      test = {
+        enabled                      = true
+        byok_project_id              = "aidash-byok-fixture"
+        secret_prefix                = "aidash-test-cred-"
+        broker_service_account_email = "aidash-test-broker@aidash-fixture.iam.gserviceaccount.com"
+        signing_key_id               = "projects/aidash-fixture/locations/us-central1/keyRings/aidash-test-capability/cryptoKeys/capability"
       }
     }
   }
