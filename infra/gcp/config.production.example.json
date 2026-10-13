@@ -1,0 +1,26 @@
+{
+  "project_id": "your-aidash-production-project",
+  "byok_project_id": "your-aidash-production-byok-project",
+  "state_bucket": "your-aidash-production-project-tfstate",
+  "release_bucket": "your-aidash-production-project-releases",
+  "deploy_service_account": "aidash-deploy@your-aidash-production-project.iam.gserviceaccount.com",
+  "cloudflare_zone_id": "replace-with-the-existing-aidash-run-zone-id",
+  "domain": "aidash.run",
+  "repository": "kent8192/aidash",
+  "develop_branch": "develop/0.1.0",
+  "node_count": {
+    "production": 1
+  },
+  "deployment_tier": "production",
+  "automation_branch": "develop/0.1.0",
+  "trusted_branch": "main",
+  "notification_bucket": "your-aidash-production-project-notifications",
+  "notification_service_account": "aidash-notification-reader@your-aidash-production-project.iam.gserviceaccount.com",
+  "nonproduction_project_id": "your-aidash-project",
+  "nonproduction_state_bucket": "your-aidash-project-tfstate",
+  "production_origin": "https://aidash.run",
+  "release_flow_enabled": true,
+  "release_app_bot_login": "your-release-app[bot]",
+  "staging_release_bucket": "your-aidash-project-releases",
+  "staging_project_id": "your-aidash-project"
+}

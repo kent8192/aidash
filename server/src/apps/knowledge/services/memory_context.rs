@@ -419,10 +419,14 @@ pub(crate) async fn recheck(
 		)
 		.await?;
 	}
-	if observed["memory"]["banks"].is_array()
-		&& !super::super::repositories::memory_reads::visible(lease, run.id).await?
-	{
-		return Err(Error::Forbidden);
+	if observed["memory"]["banks"].is_array() {
+		// Lost authority keeps the generic authority pause (ADR 0013); any other
+		// cause pauses with its exact semantic reason, never a re-retrieval.
+		match super::super::repositories::memory_reads::invalidity(lease, run.id).await? {
+			None => {}
+			Some(crate::semantic::remote::Failure::Authority) => return Err(Error::Forbidden),
+			Some(failure) => return Err(Error::RemoteSemantic(failure)),
+		}
 	}
 	Ok(())
 }

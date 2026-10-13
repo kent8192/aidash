@@ -32,6 +32,8 @@ struct ClientConfig<'a> {
 	tenant_id: &'a str,
 	providers: Vec<String>,
 	password_sign_up: bool,
+	/// A hint for the sign-in page; GCIP enforces the MFA Requirement.
+	mfa_mandatory: bool,
 }
 
 /// `GET /auth/login?org=<Tenant name>` selects the GCIP Tenant explicitly.
@@ -182,6 +184,7 @@ pub(crate) async fn configuration(
 			.ok_or(Error::Unauthorized)?
 			.providers_for(tenant),
 		password_sign_up: config.password_sign_up.contains(tenant),
+		mfa_mandatory: config.mfa_mandatory.contains(tenant),
 	};
 	let mut response = Response::ok().with_json(&client)?;
 	oidc::no_store(&mut response);

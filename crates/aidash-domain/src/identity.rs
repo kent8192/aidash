@@ -18,6 +18,8 @@ pub mod peer_mapping;
 
 pub mod dashboard;
 
+pub mod personal_tenant;
+
 pub mod desktop;
 
 pub mod tenant_administration;

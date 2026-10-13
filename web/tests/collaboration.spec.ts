@@ -566,6 +566,7 @@ for (const locale of ["en-US", "ja-JP"] as const) {
       result_count: 2,
       truncated: false,
       retrieved_at: new Date().toISOString(),
+      recovery: null as { cause: string; actions: string[] } | null,
     };
     let denied = false;
     let followup: Record<string, unknown> | null = null;
@@ -695,9 +696,57 @@ for (const locale of ["en-US", "ja-JP"] as const) {
     await expect(panel.getByRole("status")).toContainText(
       ja ? "現在の権限" : "current authority",
     );
+    // A context budget pause authorizes only a follow-up: retrying the same
+    // request cannot change the outcome, so resume is not offered.
+    semantic.state = "paused";
+    semantic.reason = "context_budget";
+    semantic.recovery = {
+      cause: "context_budget",
+      actions: ["create_follow_up_task"],
+    };
+    execution.control = "PAUSED";
+    await panel
+      .getByRole("button", {
+        name: ja ? "状態を再読み込み" : "Refresh status",
+        exact: true,
+      })
+      .click();
+    await expect(
+      panel.getByRole("button", {
+        name: ja ? "Follow-up Task を作成" : "Create follow-up task",
+        exact: true,
+      }),
+    ).toBeVisible();
+    await expect(
+      panel.getByRole("button", {
+        name: ja ? "権限を再確認して再開" : "Recheck authority and resume",
+        exact: true,
+      }),
+    ).toHaveCount(0);
+    // An unscheduled outage authorizes the unchanged retry and a follow-up.
+    semantic.reason = "unavailable";
+    semantic.recovery = {
+      cause: "unavailable",
+      actions: ["retry_unchanged_binding", "create_follow_up_task"],
+    };
+    await panel
+      .getByRole("button", {
+        name: ja ? "状態を再読み込み" : "Refresh status",
+        exact: true,
+      })
+      .click();
+    await expect(
+      panel.getByRole("button", {
+        name: ja ? "権限を再確認して再開" : "Recheck authority and resume",
+        exact: true,
+      }),
+    ).toBeVisible();
     semantic.state = "invalidated";
     semantic.reason = "invalidated";
-    execution.control = "PAUSED";
+    semantic.recovery = {
+      cause: "invalidated",
+      actions: ["create_follow_up_task"],
+    };
     await panel
       .getByRole("button", {
         name: ja ? "状態を再読み込み" : "Refresh status",

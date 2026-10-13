@@ -664,3 +664,70 @@ async fn dormancy_pages_resume_fixed_clock_and_exempt_pinned_preference_and_proc
 	.unwrap();
 	assert_eq!(flag, serde_json::to_value(other).unwrap());
 }
+
+/// Issue #127 change matrix, usage-based archival row: dormancy and manual
+/// reactivation are ranking-only, so a Run that already consumed the Unit keeps
+/// a valid read dependency while new ordinary recall excludes the Unit.
+#[rstest]
+#[tokio::test]
+async fn dormancy_and_reactivation_keep_existing_run_dependencies_valid(
+	#[future] decay_embedding_provider: reinhardt::test::fixtures::TestServerGuard,
+	#[future] database: DatabaseFixture,
+	bounds: Bounds,
+) {
+	// Arrange
+	let database = database.await;
+	let model = decay_embedding_provider.await;
+	let endpoint = format!("{}/v1", model.url);
+	let (store, _, workspace) = setup_endpoint_decay(
+		&database,
+		bounds,
+		&endpoint,
+		(false, false, false),
+		None,
+		Some(policy()),
+	)
+	.await;
+	let bank = participant(&store, workspace).await;
+	let source = Uuid::now_v7();
+	let admitted = memory::mutate(
+		&store,
+		&Actor::Operator,
+		mutation(
+			&bank,
+			Change::Add {
+				id: source,
+				content: content("Archived but previously consumed guidance"),
+			},
+		),
+	)
+	.await
+	.unwrap();
+	let (scope, run) = super::policy_bounds::recorded_run(&store, &bank, &[source]).await;
+	sweep(&store).await;
+	assert!(super::policy_bounds::run_visible(&scope, &store, run).await);
+
+	// Act: archive by usage, then reactivate manually.
+	clock(&store, &bank, Utc::now() + Duration::days(365), None).await;
+	sweep(&store).await;
+	let archived = dormant(&store, &bank).await;
+	let still_visible_while_dormant = super::policy_bounds::run_visible(&scope, &store, run).await;
+	let memory::Outcome::Units(reactivated) =
+		operate(&store, &bank, memory::Action::Reactivate { id: source }).await
+	else {
+		panic!("units");
+	};
+
+	// Assert
+	assert_eq!(archived, admitted, "the Unit was archived by usage");
+	assert!(
+		still_visible_while_dormant,
+		"archival must not invalidate a Run that already consumed the Unit"
+	);
+	assert_eq!(
+		reactivated, admitted,
+		"reactivation keeps the same Unit revision"
+	);
+	assert!(super::policy_bounds::run_visible(&scope, &store, run).await);
+	drop(model);
+}

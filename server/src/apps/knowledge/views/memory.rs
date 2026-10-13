@@ -63,6 +63,21 @@ pub async fn mutate(
 ) -> ViewResult<Response> {
 	crate::http::json(service.mutate(actor, workspace, input).await)
 }
+/// Content-free preview and post-change view of the visible Runs and derived
+/// Units that depend on the given Units.
+#[post(
+	"/api/workspaces/{workspace}/memory/units/impact",
+	name = "memory-impact",
+	auth = "protected"
+)]
+pub async fn impact(
+	#[inject] service: Depends<NativeMemory>,
+	#[inject] actor: Actor,
+	Path(workspace): Path<Uuid>,
+	Json(input): Json<aidash_domain::memory::impact::ImpactQuery>,
+) -> ViewResult<Response> {
+	crate::http::json(service.impact(actor, workspace, input).await)
+}
 #[post(
 	"/api/workspaces/{workspace}/memory/participants",
 	name = "memory-participant",

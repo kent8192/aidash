@@ -2004,7 +2004,10 @@ pub(crate) fn activation_scheduling_scope(
 ) -> crate::apps::execution::activation::repositories::scheduling::Scope<
 	&mut dyn reinhardt::db::backends::TransactionExecutor,
 > {
-	crate::apps::execution::activation::repositories::scheduling::Scope { tx }
+	crate::apps::execution::activation::repositories::scheduling::Scope {
+		tx,
+		capabilities: aidash_domain::run_state::PersistedCapability::supported(),
+	}
 }
 
 pub(crate) fn activation_repository(

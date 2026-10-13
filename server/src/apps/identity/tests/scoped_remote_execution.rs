@@ -1856,6 +1856,61 @@ async fn semantic_retry_exhaustion_pauses_and_manual_resume_keeps_attempt_histor
 	p.close().await;
 }
 
+/// Issue #154, current contract for a required-Home Run: unlike a local Run,
+/// an unavailable Home embedding provider or vector backend is a typed, transient
+/// `unavailable` semantic failure. The step retries with a persisted delay and
+/// never reaches inference. `semantic_retry_exhaustion_pauses_and_manual_resume_
+/// keeps_attempt_history` shows the same classification for HTTP 503 through
+/// exhaustion, `retries_exhausted` and manual resume.
+#[rstest::rstest]
+#[case::provider_transport(true)]
+#[case::vector_backend(false)]
+#[tokio::test]
+async fn required_home_semantic_outage_is_a_typed_transient_failure_for_every_cause(
+	#[case] provider_gone: bool,
+	#[with(true)]
+	#[future(awt)]
+	scoped_pair: Pair,
+) {
+	let mut p = scoped_pair;
+	p.step().await;
+	if provider_gone {
+		// The Home embedding provider follows the model provider in `providers`.
+		let provider = Arc::into_inner(p.providers.remove(1))
+			.expect("the pair owns the Home embedding provider");
+		let address = provider.url.trim_start_matches("http://").to_owned();
+		drop(provider);
+		// The guard owns its listener and every accepted connection, so once the
+		// listener refuses, pooled keep-alive sockets can no longer answer either.
+		while tokio::net::TcpStream::connect(&address).await.is_ok() {
+			tokio::task::yield_now().await;
+		}
+	} else {
+		let mut connection = p.a.store.pool.begin().await.unwrap();
+		aidash_server::database::native::query(
+			&Query::delete()
+				.from_table(Alias::new("semantic_vectors"))
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(&mut *connection)
+		.await
+		.unwrap();
+		connection.commit().await.unwrap();
+	}
+	p.step().await;
+	let run = p.run().await;
+	assert_eq!(run.control.as_str(), "ACTIVE", "{run:?}");
+	assert_eq!(run.recovery.retry.as_ref().unwrap().count, 1, "{run:?}");
+	assert!(run.recovery.retry.as_ref().unwrap().at > chrono::Utc::now());
+	assert_eq!(
+		serde_json::to_value(run.recovery.semantic_reason).unwrap(),
+		"unavailable",
+		"{run:?}"
+	);
+	assert!(p.requests.lock().await.is_empty(), "no inference happened");
+	p.close().await;
+}
+
 #[rstest::rstest]
 #[tokio::test]
 async fn scoped_remote_worker_finishes_at_home_and_retries_keep_one_execution(

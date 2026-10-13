@@ -26,6 +26,10 @@ pub enum Error {
 	Invalid(String),
 	#[error("{0}")]
 	Conflict(String),
+	/// Persisted state written by a build that knows more than this one. The Run is
+	/// intact; a worker with the missing capability can load it.
+	#[error("persisted state needs a newer worker: {0}")]
+	UnsupportedState(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

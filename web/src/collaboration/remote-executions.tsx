@@ -4,11 +4,31 @@ import { Textarea } from "../components/ui/textarea";
 import { RemoteMemoryStatus, RemoteFollowUp } from "./remote-memory";
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import type { RemoteExecutionStatus } from "../generated/models";
+import type {
+  RemoteExecutionStatus,
+  RemoteSemanticStatus,
+  SemanticRecoveryAction,
+} from "../generated/models";
 import { apiFetch } from "../transport";
 import { Alert, Facts, Hint, formClass } from "../components/patterns";
 import { Badge, Field, useI18n } from "../ui";
 
+/**
+ * Whether the remote Run's typed semantic recovery authorizes `action`. Without
+ * a semantic cause, a pause is ordinary and resuming it is the only recovery. A
+ * cancelled or finished Run reports its cause without recovery; its controls
+ * are gone, and a follow-up stays available only for invalidated context.
+ */
+function offers(
+  semantic: RemoteSemanticStatus | undefined,
+  action: SemanticRecoveryAction,
+) {
+  if (semantic?.recovery) return semantic.recovery.actions.includes(action);
+  if (!semantic?.reason) return action === "retry_unchanged_binding";
+  return (
+    action === "create_follow_up_task" && semantic.reason === "invalidated"
+  );
+}
 export function RemoteExecutions({ task }: { task: string }) {
   const { locale } = useI18n();
   const ja = locale === "ja-JP";
@@ -151,7 +171,7 @@ export function RemoteExecutions({ task }: { task: string }) {
                     provenanceUrl={`/api/tasks/${task}/remote-grants/${grant.id}/semantic`}
                   />
                 )}
-                {semantic?.reason === "invalidated" && (
+                {offers(semantic, "create_follow_up_task") && (
                   <RemoteFollowUp
                     task={task}
                     grant={grant.id}
@@ -187,7 +207,7 @@ export function RemoteExecutions({ task }: { task: string }) {
                       <>
                         {live &&
                           execution.control === "PAUSED" &&
-                          semantic?.reason !== "invalidated" && (
+                          offers(semantic, "retry_unchanged_binding") && (
                             <Button
                               variant="outline"
                               disabled={busy === grant.id}

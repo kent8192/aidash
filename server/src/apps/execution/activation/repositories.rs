@@ -51,6 +51,7 @@ impl ActivationRepository for Repository {
 	}
 	async fn claim_scope(&self) -> aidash_application::Result<Box<dyn ClaimScope>> {
 		Ok(Box::new(scheduling::Scope {
+			capabilities: aidash_domain::run_state::PersistedCapability::supported(),
 			tx: self
 				.harness
 				.federation
