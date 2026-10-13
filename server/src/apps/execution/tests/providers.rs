@@ -211,6 +211,7 @@ async fn openrouter_sends_cache_control_only_to_opted_in_explicit_routes(
 ) {
 	use aidash_domain::{
 		model::CacheMode,
+		projection::ProjectionVersion,
 		provider::{ModelContext, OrderedContext},
 	};
 	let mut fixture = completion_server.await;
@@ -232,6 +233,7 @@ async fn openrouter_sends_cache_control_only_to_opted_in_explicit_routes(
 	let mut explicit = config("openrouter", endpoint.clone());
 	explicit.model_id = "anthropic/claude-fixture".into();
 	explicit.cache_mode = Some(CacheMode::Explicit);
+	explicit.projection_versions = vec![ProjectionVersion::Legacy, ProjectionVersion::Ordered];
 	let model = provider(http_client.clone(), explicit).unwrap();
 
 	model.infer(ordered(true), &NoProgress).await.unwrap();
@@ -256,6 +258,7 @@ async fn openrouter_sends_cache_control_only_to_opted_in_explicit_routes(
 
 	let mut automatic = config("openrouter", endpoint);
 	automatic.cache_mode = Some(CacheMode::Automatic);
+	automatic.projection_versions = vec![ProjectionVersion::Legacy, ProjectionVersion::Ordered];
 	let model = provider(http_client, automatic).unwrap();
 	assert!(model.infer(ordered(true), &NoProgress).await.is_err());
 	assert!(
