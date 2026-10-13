@@ -65,7 +65,7 @@ Useful options: `--task ID` and `--comparison ID` (repeatable) narrow the plan,
 `--binary PATH` uses a built `manage` (by default the command builds this
 worktree's; either way the executable is copied into a private directory
 first, and the manifest fingerprints and runs that copy), `--run-timeout SECONDS` (default 180,
-positive and finite in both tiers) bounds each Run, `--skip-memory` reports
+finite and at least 1 in both tiers) bounds each Run, `--skip-memory` reports
 every memory scenario as `not-run`, `--skip-rust-evidence` skips the
 `deterministic-test` memory scenario's `cargo test`, and `--evidence-timeout
 SECONDS` (default 1800) bounds that command; a timed-out command is killed
@@ -158,8 +158,10 @@ Before it registers anything or starts a Run, the live tier refuses unless:
   the future), expire after it was approved, and not have expired;
 - every mapped model configuration has a positive `context_window` and
   `max_output_tokens` and a `model_id`;
-- a positive spend ceiling, a positive, finite wall-time limit and a positive,
-  finite `--run-timeout` are given;
+- a positive spend ceiling, a finite wall-time limit of at least one second
+  and a finite `--run-timeout` of at least one second are given (both tiers
+  refuse a shorter `--run-timeout`: the manifest records limits in seconds of
+  at least one);
 - no selected task needs a fixture tool result. Fixture tools point at an
   unroutable endpoint and their approvals are denied, so such a task could
   only fail or pass by guessing; only `approval-escalation`, which needs the
@@ -206,7 +208,10 @@ provider failure up to five times without advancing the step) × (the full
 context window at the dearer of the input and cache-write prices plus the
 output reservation). It refuses any Run that would cross the ceiling, start
 at or after the wall-time limit, or start after the approval has expired, and
-no Run's own time limit reaches past either. The refusal is recorded in
+no Run's own time limit reaches past either. The approval's expiry is read
+against the wall clock once, when the ledger is created, and then held on the
+monotonic clock, so a later wall-clock correction can neither extend nor
+shorten it. The refusal is recorded in
 `spend.refusal` and the command exits 3. Planned Runs that were never
 dispatched are listed in `skipped_runs` with the reason, so none is silently
 dropped.
@@ -257,12 +262,17 @@ After any failure past the guard rails,
 including Ctrl-C and SIGTERM, the in-flight Run is cancelled and the manifest
 is still written with the error, the ledger and every finished Run; the exit
 code is 130 for Ctrl-C, 143 for SIGTERM, 1 for an error and 3 for a ceiling
-refusal.
+refusal. Once dispatch has ended, SIGTERM is ignored and Ctrl-C is deferred
+while the Runs are graded and the manifest is written; a deferred Ctrl-C
+still exits 130 after the manifest is written.
 
 Live answers are restricted content: the manifest keeps their digests and the
 verifier results, not the text. Tool-call arguments and every value a verifier
 check observed are kept only as `arguments_sha256` and `observed_sha256`,
-because a model can copy task data into them. Fixture tools point at an unroutable endpoint
+because a model can copy task data into them. For the same reason a tool name
+other than the Agent's own tools and the builtins is kept only as
+`name_sha256`, with the Node's error that echoes it as `error_sha256`, and
+`tool_selection` lists it as `sha256:<digest>`. Fixture tools point at an unroutable endpoint
 and their approvals are denied, so a live Run never causes an external tool
 effect. Usage Records have no HTTP read endpoint, so live token counts come from
 Workspace events (at most the latest 100) and do not price anything. The live
@@ -320,8 +330,9 @@ model; a `deferred@1` Agent must also have loaded the expected Skill, matched
 by the Registry identity in the `capability_load` result. An escalation
 passes only with a denied `APPROVAL_REQUIRED` request for the forbidden
 action: the harness's approval request for `forbidden_tool`, or a request
-whose prompt matches the oracle's `approval_pattern`. The manifest keeps that
-prompt only as `prompt_sha256`.
+whose prompt matches the oracle's `approval_pattern`. A live manifest keeps
+that prompt only as `prompt_sha256`; a deterministic one keeps the fixture
+prompt whole, so validation can regrade the oracle.
 
 ### Comparisons
 
@@ -372,29 +383,40 @@ with the rejection as its `detail`.
 
 The result manifest (`tests/evaluation/schema/result.schema.json`) embeds the
 experiment manifest (`experiment.schema.json`) and is validated against both
-before it is written, together with cross-field rules: every Run key names its
+before it is written, together with cross-field rules: the `conclusion_scope`
+is the evaluator's fixed statement; the recorded corpus and memory corpus
+snapshots (version, combined digest and every file digest) equal those of the
+corpora given to `validate`; every Run key names its
 task, comparison, arm and repeat; every variant is a corpus pair with its
 label and Agent fields, and every Run carries its pair's label, the task's
 oracle kind and the digest of the task text; the recorded and skipped Runs
 are exactly the planned keys (variants × repeats), with nothing dropped or
 added, whether or not the manifest records an error; the calibration is
 applied in the deterministic tier only and its failures are recomputed; every group
-of Runs has exactly one aggregate whose outcome counts match its Runs; every
+of Runs has exactly one aggregate whose outcome counts match its Runs, and
+every aggregate has recorded Runs; every
 aggregate's label, rates and metrics, every paired comparison and the memory
 matrix summary equal what the recorded Runs and scenarios produce; each Run's
 usage summary equals the one its Usage Records produce; each Run's outcome,
 `long_context`, `tool_selection` and `constraint_retention` are recomputed as
 `classify` chose them, from its recorded `infrastructure_error`,
 `interrupted` flag, phase, oracle and error, and its oracle result agrees
-with its checks; the feature availability rows are exactly the corpus
+with its checks; each deterministic Run's oracle is regraded from its recorded
+final answer (which must match its digest), tool calls and human answers and
+must reproduce the recorded oracle, apart from the test runner's output in a
+code suite's `detail` (a code answer is executed only when it is one of the
+fixture's own patches, so validation never runs code read from a manifest;
+live evidence keeps only digests and cannot be regraded); the feature availability rows are exactly the corpus
 comparisons, agree with it, and say `available` for every measured
 comparison; the memory matrix reports every memory corpus scenario once, in
 order, with its issue, evidence and coverage; a `passed` or `partial` memory
 scenario has only passing checks and variants, and a `failed` one has a
 failing check; no number is NaN or infinite,
 although Python's `json` module accepts them; a live manifest has a spend
-ledger and a deterministic one has none; and the spend totals equal the sum
-of the attempts' charges and their unsettled count, stay within the ceiling
+ledger and a deterministic one has none; and every spend attempt is charged
+at its full reservation with no reported cost (the live tier reads no Usage
+Record, so none is ever settled), the spend totals equal the sum of the
+attempts' charges and their count, stay within the ceiling
 the experiment declares, and include exactly one attempt per recorded Run.
 A manifest that fails validation is still written, annotated in
 its `error` field, because it may be the only record of paid work.
@@ -426,8 +448,8 @@ Runs also record `long_context` (`none`, `pruning`, `summary_recovery`,
 `terminal_overflow`), `constraint_retention`, `tool_selection`, wall time,
 steps, compactions, per-request bytes and tool-definition counts (fixture
 only), the Usage Record summary and records, the tool calls, the human answers
-(digests), and bounded evidence: input and answer digests, verifier results,
-and for fixture traces only the first 4 KiB of the answer.
+(live prompts as digests), and the evidence: input and answer digests,
+verifier results, and for fixture traces the whole answer.
 
 Usage follows ADR 0018: each token field is reported as `known` plus an
 `unknown` count, never with unknown values as zero; a Run with any unknown

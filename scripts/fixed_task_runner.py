@@ -10,7 +10,8 @@ import json
 import time
 import uuid
 
-from fixed_task_evaluation import canonical_sha256, task_description, task_tools
+from fixed_task_evaluation import (DEFAULT_TOOLS, SKILL_ASSET_READ, SKILL_TOOLS, canonical_sha256, task_description,
+                                   task_tools)
 
 NO_HUMAN = "No human is available during this evaluation; continue without further input."
 TERMINAL = ("COMPLETED", "FAILED", "CANCELLED")
@@ -23,14 +24,6 @@ PROVIDER_ATTEMPTS_PER_STEP = 6
 APPROVAL_DENIED = "external write approval was denied or expired"
 # How the harness words a workbench approval request (crates/aidash-harness/src/agent.rs).
 APPROVAL_PROMPT = "Approve this exact external tool action once? Tool: "
-# The implicit builtins an Agent gets unless `remove_default` names them, and the ones bound
-# Skills need (crates/aidash-domain/src/registry/bindings.rs, exposure.rs `default_tools` and
-# `skill_support_tools`). test_fixed_task_evaluation.py checks DEFAULT_TOOLS against the Rust list.
-DEFAULT_TOOLS = ("workspace_observe", "workspace_wait", "skill_list", "skill_load", "skill_read", "file_search",
-                 "file_read", "task_create", "task_delegate", "agent_discover", "artifact_publish",
-                 "workspace_message", "memory_mutate", "memory_recall", "memory_reflect")
-SKILL_TOOLS = ("skill_list", "skill_load", "skill_read")
-SKILL_ASSET_READ = "skill_asset_read"
 
 
 class ApiError(RuntimeError):
@@ -388,7 +381,8 @@ def run_task(api, experiment, planned, repeat, agent_ref, fixture=None, usage_re
                     # the deadline: when it would, stop now and let the deadline path cancel the Run.
                     delay = api.backoff * (attempt + 1)
                     if clock() + delay >= deadline:
-                        raise DeadlineExceeded(f"retrying the claim of Task {task_uuid} would pass the deadline")
+                        raise DeadlineExceeded(f"retrying the claim of Task {task_uuid} would pass the deadline") \
+                            from error
                     sleep(delay)
                     if any(run["task_id"] == task_uuid for run in bounded.get("/api/state", token)["runs"]):
                         break
@@ -716,7 +710,7 @@ def live_runs(api, experiment, corpus, planned_runs, repeats, ledger, models, pr
             observation = blank_observation()
             stops = []
 
-            def after_claim(bounded):
+            def after_claim(bounded, key=key, stops=stops):
                 try:
                     binding_check(bounded)
                 except GuardRefusal as error:
@@ -745,7 +739,7 @@ def live_runs(api, experiment, corpus, planned_runs, repeats, ledger, models, pr
                 raise
             finally:
                 observations.append((planned, repeat, observation))
-                ledger.settle(attempt, None)
+                ledger.settle(attempt)
             if stops:
                 raise GuardRefusal("; ".join(stops))
     return skipped

@@ -158,7 +158,7 @@
       }
     },
     "spend_attempt": {
-      "description": "One live Run's reservation. `charged` is what the ledger counts against the ceiling: the full reservation unless a reported cost settled it.",
+      "description": "One live Run's reservation. `charged` is what the ledger counts against the ceiling: always the full reservation, because the live tier reads no Usage Record and so has no `reported` cost. `uncertain` once the evaluator stopped waiting for the Run, `reserved` if it never got that far.",
       "type": "object",
       "additionalProperties": false,
       "required": ["key", "reserved", "charged", "reported", "state"],
@@ -166,8 +166,8 @@
         "key": { "type": "string" },
         "reserved": { "type": "integer", "minimum": 1 },
         "charged": { "type": "integer", "minimum": 0 },
-        "reported": { "type": ["integer", "null"], "minimum": 0 },
-        "state": { "enum": ["reserved", "uncertain", "settled"] },
+        "reported": { "type": "null" },
+        "state": { "enum": ["reserved", "uncertain"] },
         "provider_work": {
           "type": "array",
           "items": {
@@ -268,7 +268,7 @@
               "type": ["string", "null"],
               "pattern": "^[0-9a-f]{64}$"
             },
-            "final_answer": { "type": ["string", "null"], "maxLength": 4096 },
+            "final_answer": { "type": ["string", "null"] },
             "verifier": { "type": "array", "items": { "type": "object" } }
           }
         }

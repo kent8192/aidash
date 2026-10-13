@@ -680,6 +680,24 @@ def run_deterministic(args, binary_directory):
     return 0
 
 
+@contextlib.contextmanager
+def deferred_interrupts():
+    """Record SIGINT instead of raising KeyboardInterrupt; yields the list of deferred interrupts.
+
+    Only the main thread receives signals and may install handlers; elsewhere nothing is deferred.
+    """
+    interrupts = []
+    if threading.current_thread() is not threading.main_thread():
+        yield interrupts
+        return
+    previous = signal.signal(signal.SIGINT, lambda *_: interrupts.append(signal.SIGINT))
+    try:
+        yield interrupts
+    finally:
+        # None means a handler installed outside Python; the default action is the closest restore.
+        signal.signal(signal.SIGINT, signal.SIG_DFL if previous is None else previous)
+
+
 def live(args, read_json=None, transport=None, clock=time.monotonic, sleep=time.sleep, wall_now=utc_now):
     """Opt-in live tier. Every refusal happens before any registration, Run or provider work.
 
@@ -795,48 +813,53 @@ def live(args, read_json=None, transport=None, clock=time.monotonic, sleep=time.
     if signal.getsignal(signal.SIGTERM) is raise_terminated:
         # Finalization is short and writes the only record of paid work: let nothing interrupt it.
         signal.signal(signal.SIGTERM, signal.SIG_IGN)
-    runs = []
-    for planned, repeat, observation in observations:
-        try:
-            runs.append(evaluation.run_result(corpus, planned, repeat, observation, "live", False))
-        except Exception as failure:  # A grading fault must not discard the record of paid work.
-            error = (error + "; " if error else "") + f"grading failed for run {repeat} of " \
-                f"{planned['task']['id']}: {type(failure).__name__}: {failure}"
-    dispatched = {evaluation.run_key(planned["task"]["id"], planned["comparison"]["id"], planned["arm"], repeat)
-                  for planned, repeat, _ in observations}
-    graded = {run["key"] for run in runs}
-    listed = {key for key, _ in skipped}
-    # Every planned Run without a graded record is listed: undispatched, or dispatched but ungradable.
-    skipped += [(key, ("dispatched, but grading failed: " if key in dispatched else "not dispatched: ") +
-                 (error or "live dispatch stopped")) for key in (
-        evaluation.run_key(planned["task"]["id"], planned["comparison"]["id"], planned["arm"], repeat)
-        for repeat in range(1, args.repeats + 1) for planned in planned_runs if "agent_ref" in planned)
-        if key not in graded and key not in listed]
-    source = evaluation.source_identity(server_revision=args.server_revision)
-    source.update({"commit": None, "dirty": None, "dirty_diff_sha256": None})
-    # Neither Usage Records nor model.completed events expose the provider-reported identity (I-5).
-    model = {"kind": "live-provider", "registrations": model_refs, "reported_identities": None,
-             "route": f"configured credential provider: {credential.get('provider')}", "mutable_alias": True}
-    harness = {"compaction": "server-configured", "cache_salt": True, "provider_credential": args.provider_credential,
-               "disclosure_approval": evaluation.canonical_sha256(approval),
-               "jev_classifier": "excluded: the approval attests the Node has no Jev credential"}
-    limits = {"run_timeout_seconds": args.run_timeout, "wall_seconds": args.max_wall_seconds,
-              "max_output_tokens": max(config["max_output_tokens"] for config in models.values()),
-              "spend_ceiling_nanocredits": args.max_spend_nanocredits}
-    experiment_value = experiment_manifest("live", corpus, memory_corpus, source, model, harness, variants,
-                                           args.repeats, limits, LIVE_LIMITATIONS, evaluator=evaluator,
-                                           created_at=created_at)
-    availability = evaluation.feature_availability(corpus, args.comparison, registration_errors)
-    memory = evaluation.memory_matrix(memory_corpus, {})
-    result = assemble(corpus, experiment_value, runs, availability, memory, False, ledger.summary(),
-                      LIVE_LIMITATIONS, error, skipped)
-    invalid = finalize(result, reservation, corpus, memory_corpus)
+    # Ctrl-C while the Runs are graded and the manifest is written is honored only once it is written.
+    with deferred_interrupts() as late_interrupts:
+        runs = []
+        for planned, repeat, observation in observations:
+            try:
+                runs.append(evaluation.run_result(corpus, planned, repeat, observation, "live", False))
+            except Exception as failure:  # A grading fault must not discard the record of paid work.
+                error = (error + "; " if error else "") + f"grading failed for run {repeat} of " \
+                    f"{planned['task']['id']}: {type(failure).__name__}: {failure}"
+        dispatched = {evaluation.run_key(planned["task"]["id"], planned["comparison"]["id"], planned["arm"], repeat)
+                      for planned, repeat, _ in observations}
+        graded = {run["key"] for run in runs}
+        listed = {key for key, _ in skipped}
+        # Every planned Run without a graded record is listed: undispatched, or dispatched but ungradable.
+        skipped += [(key, ("dispatched, but grading failed: " if key in dispatched else "not dispatched: ") +
+                     (error or "live dispatch stopped")) for key in (
+            evaluation.run_key(planned["task"]["id"], planned["comparison"]["id"], planned["arm"], repeat)
+            for repeat in range(1, args.repeats + 1) for planned in planned_runs if "agent_ref" in planned)
+            if key not in graded and key not in listed]
+        source = evaluation.source_identity(server_revision=args.server_revision)
+        source.update({"commit": None, "dirty": None, "dirty_diff_sha256": None})
+        # Neither Usage Records nor model.completed events expose the provider-reported identity (I-5).
+        model = {"kind": "live-provider", "registrations": model_refs, "reported_identities": None,
+                 "route": f"configured credential provider: {credential.get('provider')}", "mutable_alias": True}
+        harness = {"compaction": "server-configured", "cache_salt": True,
+                   "provider_credential": args.provider_credential,
+                   "disclosure_approval": evaluation.canonical_sha256(approval),
+                   "jev_classifier": "excluded: the approval attests the Node has no Jev credential"}
+        limits = {"run_timeout_seconds": args.run_timeout, "wall_seconds": args.max_wall_seconds,
+                  "max_output_tokens": max(config["max_output_tokens"] for config in models.values()),
+                  "spend_ceiling_nanocredits": args.max_spend_nanocredits}
+        experiment_value = experiment_manifest("live", corpus, memory_corpus, source, model, harness, variants,
+                                               args.repeats, limits, LIVE_LIMITATIONS, evaluator=evaluator,
+                                               created_at=created_at)
+        availability = evaluation.feature_availability(corpus, args.comparison, registration_errors)
+        memory = evaluation.memory_matrix(memory_corpus, {})
+        result = assemble(corpus, experiment_value, runs, availability, memory, False, ledger.summary(),
+                          LIVE_LIMITATIONS, error, skipped)
+        invalid = finalize(result, reservation, corpus, memory_corpus)
     print(evaluation.summary_table(result))
     print(f"Result manifest: {output}")
     if result["error"]:
         print("error: " + result["error"], file=sys.stderr)
     if stopped is not None:
         return 143 if isinstance(stopped, Terminated) else 130
+    if late_interrupts:
+        return 130
     if result["error"] or invalid:
         return 1
     return 0 if ledger.refusal is None else 3
@@ -916,9 +939,10 @@ def main(argv=None):
         return validate_command(args)
     if not 1 <= args.repeats <= 64:
         parser.error("--repeats must be between 1 and 64")
-    # NaN would make every deadline comparison false, so a Run could poll past every limit.
-    if not math.isfinite(args.run_timeout) or args.run_timeout <= 0:
-        parser.error("--run-timeout must be a positive, finite number of seconds")
+    # NaN would make every deadline comparison false, so a Run could poll past every limit, and the
+    # manifest records limits of at least one second, so a shorter one is refused before any work.
+    if not math.isfinite(args.run_timeout) or args.run_timeout < 1:
+        parser.error("--run-timeout must be a finite number of seconds, at least 1")
     if args.command == "deterministic" and (not math.isfinite(args.evidence_timeout) or args.evidence_timeout <= 0):
         parser.error("--evidence-timeout must be a positive, finite number of seconds")
     try:

@@ -24,6 +24,8 @@ import sys
 import tempfile
 import tomllib
 
+from fixed_task_fixture import FIXTURE_PATCHES
+
 ROOT = Path(__file__).resolve().parent.parent
 EVALUATION = ROOT / "tests/evaluation"
 EVALUATOR_NAME = "aidash-fixed-task-evaluator"
@@ -45,6 +47,16 @@ UNRUNNABLE_STATUSES = ("feature-not-available", "not-measured")
 # The only Agent fields a comparison arm may set. Model, step limit, bindings and instructions
 # come from the task, so live authorization and spend reservations always price the final Agent.
 COMPARISON_AGENT_FIELDS = ("projection_version", "prompt_cache", "exposure")
+# The implicit builtins an Agent gets unless `remove_default` names them, the ones bound Skills
+# need, and the deferred@1 exposure builtins (crates/aidash-domain/src/registry/bindings.rs,
+# exposure.rs `default_tools` and `skill_support_tools`). test_fixed_task_evaluation.py checks
+# them against the Rust lists.
+DEFAULT_TOOLS = ("workspace_observe", "workspace_wait", "skill_list", "skill_load", "skill_read", "file_search",
+                 "file_read", "task_create", "task_delegate", "agent_discover", "artifact_publish",
+                 "workspace_message", "memory_mutate", "memory_recall", "memory_reflect")
+SKILL_TOOLS = ("skill_list", "skill_load", "skill_read")
+SKILL_ASSET_READ = "skill_asset_read"
+EXPOSURE_TOOLS = ("capability_search", "capability_describe", "capability_load", "capability_unload")
 ORACLE_KINDS = ("python-tests", "json-overdue-totals", "constraint-retention", "tool-selection",
                 "escalation", "answer-pattern")
 # The fields each oracle kind reads, checked when the corpus loads so that no Run is dispatched
@@ -66,7 +78,8 @@ SUCCESS_CLAIM = re.compile(r"(?i)\b(all tests pass|tests pass|complete|completed
 # A negation earlier in the same sentence withdraws that success phrase; another sentence does not.
 NEGATION = re.compile(r"(?i)\b(not|no|never|cannot|can't|couldn't|didn't|wasn't|isn't|unable|failed|declined|denied|"
                       r"escalat\w*)\b")
-EVIDENCE_LIMIT = 4096
+# The python-tests checks whose `detail` is the test runner's output, which includes its timing.
+PYTHON_SUITE_CHECKS = ("visible-tests", "hidden-regression")
 
 
 class CorpusError(ValueError):
@@ -314,6 +327,9 @@ def consistency_errors(result, corpus, memory_corpus):
     errors = []
     runs = result["runs"]
     experiment = result["experiment"]
+    # The scope statement is the manifest's limit on what its measurements may be used to claim.
+    if result["conclusion_scope"] != CONCLUSION_SCOPE:
+        errors.append("$.conclusion_scope is not the evaluator's conclusion scope")
     keys = [run["key"] for run in runs]
     if len(keys) != len(set(keys)):
         errors.append("$.runs: duplicate run keys")
@@ -331,6 +347,7 @@ def consistency_errors(result, corpus, memory_corpus):
     errors += availability_errors(result, corpus)
     errors += memory_corpus_errors(result, memory_corpus)
     errors += plan_errors(result, corpus)
+    errors += oracle_errors(result, corpus)
     # Every planned (task, comparison, arm, repeat) is recorded or skipped, and nothing else is.
     planned = {run_key(variant["task"], variant["comparison"], variant["arm"], repeat)
                for variant in experiment["variants"] for repeat in range(1, experiment["repeat_count"] + 1)}
@@ -375,7 +392,10 @@ def consistency_errors(result, corpus, memory_corpus):
             errors.append(f"aggregate {'/'.join(group)} is duplicated")
             continue
         aggregated.add(group)
-        matching = groups.get(group, [])
+        matching = groups.get(group)
+        if matching is None:
+            errors.append(f"aggregate {'/'.join(group)} has no recorded Runs")
+            continue
         outcomes = {name: sum(run["outcome"] == name for run in matching) for name in OUTCOMES}
         if recorded["attempted"] != len(matching) or not set(recorded["outcomes"]) <= set(OUTCOMES) or \
                 {name: recorded["outcomes"].get(name, 0) for name in OUTCOMES} != outcomes:
@@ -417,19 +437,17 @@ def consistency_errors(result, corpus, memory_corpus):
         attempts = spend["attempts"]
         if spend["committed_nanocredits"] != sum(attempt["charged"] for attempt in attempts):
             errors.append("$.spend.committed_nanocredits differs from the sum of the attempts' charges")
-        if spend["uncertain_attempts"] != sum(attempt["state"] != "settled" for attempt in attempts):
-            errors.append("$.spend.uncertain_attempts differs from the attempts that were not settled")
+        if spend["uncertain_attempts"] != len(attempts):
+            errors.append("$.spend.uncertain_attempts differs from the number of attempts")
         if spend["ceiling_nanocredits"] != experiment["limits"]["spend_ceiling_nanocredits"]:
             errors.append("$.spend.ceiling_nanocredits differs from the experiment's spend ceiling")
         if spend["committed_nanocredits"] > spend["ceiling_nanocredits"]:
             errors.append("$.spend.committed_nanocredits exceeds the hard spend ceiling")
         for attempt in attempts:
-            if attempt["state"] == "settled":
-                consistent = attempt["reported"] is not None and attempt["charged"] == attempt["reported"]
-            else:
-                consistent = attempt["reported"] is None and attempt["charged"] == attempt["reserved"]
-            if not consistent:
-                errors.append(f"$.spend.attempts: {attempt['key']} is charged inconsistently with its state")
+            # The live tier reads no Usage Record (the schema keeps `reported` null), so no attempt
+            # is ever charged below its reservation.
+            if attempt["charged"] != attempt["reserved"]:
+                errors.append(f"$.spend.attempts: {attempt['key']} is not charged at its full reservation")
             if attempt["key"] not in keys:
                 errors.append(f"$.spend.attempts: {attempt['key']} reserved spend for a Run that is not recorded")
         # Every dispatched Run was reserved exactly once before dispatch, so paid work cannot vanish.
@@ -448,7 +466,7 @@ def plan_errors(result, corpus):
     carry its pair's label and Agent fields, and a Run its pair's label, the
     task's oracle kind and the digest of the task text sent to the Agent.
     """
-    if result["experiment"]["corpus"]["sha256"] != corpus["_snapshot"]["sha256"]:
+    if not json_equal(result["experiment"]["corpus"], corpus["_snapshot"]):
         return []  # availability_errors reports the corpus mismatch.
     pairs = {(item["task"]["id"], item["comparison"]["id"], item["arm"]): item for item in plan(corpus)}
     errors = []
@@ -470,10 +488,69 @@ def plan_errors(result, corpus):
     return errors
 
 
+# Regraded oracles by corpus digest, task and recorded evidence: grading is a function of those,
+# and a code oracle runs its tests, so repeated validations reuse the result.
+REGRADED = {}
+
+
+def comparable_oracle(oracle):
+    """An oracle without the test runner's output in its suite checks, which includes run timings."""
+    return dict(oracle, checks=[{name: value for name, value in check.items()
+                                 if not (name == "detail" and check.get("check") in PYTHON_SUITE_CHECKS)}
+                                for check in oracle["checks"]])
+
+
+def oracle_errors(result, corpus):
+    """Deterministic Runs regraded from their recorded fixture evidence; recorded checks are never the authority.
+
+    A deterministic Run keeps its whole final answer, tool calls and human
+    answers, so the task's oracle is applied to them again and must reproduce the
+    recorded oracle. A code answer is executed only when it is one of the
+    fixture's own patches: validation never runs code read from a manifest. Live
+    evidence keeps only digests of restricted content and cannot be regraded.
+    """
+    experiment = result["experiment"]
+    if experiment["tier"] != "deterministic" or not json_equal(experiment["corpus"], corpus["_snapshot"]):
+        return []
+    tasks = {task["id"]: task for task in corpus["tasks"]}
+    variants = {(variant["task"], variant["comparison"], variant["arm"]): variant
+                for variant in experiment["variants"]}
+    errors = []
+    for run in result["runs"]:
+        task = tasks.get(run["task"])
+        variant = variants.get((run["task"], run["comparison"], run["arm"]))
+        if task is None or variant is None:
+            continue  # plan_errors and the planned-key check report it.
+        evidence = run["evidence"]
+        answer = evidence["final_answer"]
+        if evidence["final_answer_sha256"] != (None if answer is None else sha256_text(answer)):
+            errors.append(f"$.runs: {run['key']} has a final answer that differs from its digest")
+            continue
+        code = fenced_blocks(answer, "python") if task["oracle"]["kind"] == "python-tests" else []
+        if code and code[-1] not in FIXTURE_PATCHES:
+            errors.append(f"$.runs: {run['key']} answers with code that is not a fixture patch; validation never "
+                          "executes it")
+            continue
+        observation = {"final_answer": answer, "tool_calls": run["tool_calls"], "human_answers": run["human_answers"]}
+        try:
+            loads = [ref["id"] for ref in variant["skills"]] if selects_skill(task, variant) else []
+            key = (corpus["_snapshot"]["sha256"], task["id"], canonical_sha256([observation, loads]))
+            if key not in REGRADED:
+                REGRADED[key] = grade(corpus, task, observation, True, loads)
+            regraded = REGRADED[key]
+        except (KeyError, TypeError, AttributeError, ValueError) as error:
+            errors.append(f"$.runs: {run['key']} has evidence its oracle cannot regrade: {type(error).__name__}")
+            continue
+        if not json_equal(comparable_oracle(run["oracle"]), comparable_oracle(regraded)):
+            errors.append(f"$.runs: {run['key']} has an oracle result that its recorded evidence does not reproduce")
+    return errors
+
+
 def availability_errors(result, corpus):
     """Feature availability rows against the corpus, and against the comparisons the manifest measured."""
-    if result["experiment"]["corpus"]["sha256"] != corpus["_snapshot"]["sha256"]:
-        return ["$.experiment.corpus differs from the corpus given to validate; pass the corpus the experiment used"]
+    if not json_equal(result["experiment"]["corpus"], corpus["_snapshot"]):
+        return ["$.experiment.corpus differs from the snapshot of the corpus given to validate (version, digest "
+                "or file digests); pass the corpus the experiment used"]
     errors = []
     rows = result["feature_availability"]
     ids = [row["comparison"] for row in rows]
@@ -499,9 +576,9 @@ def availability_errors(result, corpus):
 
 def memory_corpus_errors(result, memory_corpus):
     """The memory matrix must report every scenario of the memory corpus, once, as the corpus declares it."""
-    if result["experiment"]["memory_corpus"]["sha256"] != memory_corpus["_snapshot"]["sha256"]:
-        return ["$.experiment.memory_corpus differs from the memory corpus given to validate; pass the one the "
-                "experiment used"]
+    if not json_equal(result["experiment"]["memory_corpus"], memory_corpus["_snapshot"]):
+        return ["$.experiment.memory_corpus differs from the snapshot of the memory corpus given to validate "
+                "(version, digest or file digests); pass the one the experiment used"]
     errors = []
     matrix = result["memory_matrix"]
     if matrix["corpus"] != memory_corpus["version"]:
@@ -510,7 +587,7 @@ def memory_corpus_errors(result, memory_corpus):
     if [scenario["id"] for scenario in matrix["scenarios"]] != [scenario["id"] for scenario in declared]:
         errors.append("$.memory_matrix.scenarios are not exactly the memory corpus scenarios, once each, in order")
         return errors
-    for recorded, scenario in zip(matrix["scenarios"], declared):
+    for recorded, scenario in zip(matrix["scenarios"], declared, strict=True):
         partial = scenario.get("coverage") == "partial"
         if recorded["issue"] != scenario["issue"] or recorded["evidence"] != scenario["evidence"] or \
                 recorded["status"] == ("passed" if partial else "partial"):
@@ -1046,51 +1123,88 @@ def deferred_exposure(agent_fields):
     return isinstance(exposure, dict) and exposure.get("version") == "deferred@1"
 
 
-def recorded_human_answers(entries):
-    """Human answers as the manifest keeps them: a request's prompt only as its digest."""
+def selects_skill(task, arm):
+    """Whether a Run of `arm` (a planned pair or a recorded variant) must load the Skill it chose.
+
+    A legacy Agent has every Registry Skill resident in its instructions, so only
+    a deferred Agent selects one, and only an observed load of the expected Skill
+    shows that it did.
+    """
+    return task["kind"] == "skill-selection" and deferred_exposure(arm["agent_fields"])
+
+
+def recorded_human_answers(entries, live):
+    """Human answers as the manifest keeps them.
+
+    A live request's prompt is restricted content, kept only as its digest. A
+    deterministic prompt is fixture text, kept whole so validation can regrade.
+    """
     recorded = []
     for entry in entries:
         entry = dict(entry)
-        prompt = entry.pop("prompt", None)
+        prompt = entry.pop("prompt", None) if live else None
         if prompt is not None:
             entry["prompt_sha256"] = sha256_text(prompt)
         recorded.append(entry)
     return recorded
 
 
+def recorded_live_call(call, known):
+    """A live tool call as the manifest keeps it.
+
+    Its arguments are kept as a digest. A name outside `known` was invented by
+    the model and may carry copied task data, so it is kept as a digest too, with
+    the Node's error, which echoes it. Known tool identifiers stay readable.
+    """
+    call = restricted(call, "arguments")
+    if call["name"] in known:
+        return call
+    call = restricted(call, "name")
+    return restricted(call, "error") if call.get("error") is not None else call
+
+
+def tool_label(call):
+    """A recorded call's name, or the digest that replaced a model-invented one."""
+    return call["name"] if "name" in call else "sha256:" + call["name_sha256"]
+
+
 def run_result(corpus, planned, repeat, observation, tier, allow_code_execution):
     task = planned["task"]
-    # A legacy Agent has every Registry Skill resident in its instructions, so only a deferred
-    # Agent selects one, and only an observed load of the expected Skill shows that it did.
-    required_loads = [ref["id"] for ref in planned["skill_refs"]] if task["kind"] == "skill-selection" and \
-        deferred_exposure(planned["agent_fields"]) else []
+    required_loads = [ref["id"] for ref in planned["skill_refs"]] if selects_skill(task, planned) else []
+    live = tier == "live"
     # Model-written code never runs on the evaluator host in the live tier, whatever the caller allows.
-    oracle = grade(corpus, task, observation, allow_code_execution and tier != "live", required_loads)
+    oracle = grade(corpus, task, observation, allow_code_execution and not live, required_loads)
     outcome = classify(task, observation, oracle)
     answer = observation.get("final_answer")
     tool_calls = observation.get("tool_calls", [])
+    recorded_calls = tool_calls
+    if live:
+        # Live outputs are restricted content: a model can copy task data into tool arguments,
+        # invented tool names or answer fields, so the manifest keeps only their digests. Grading
+        # above saw the raw values; only the Agent's own tools and the builtins stay readable.
+        known = {tool["alias"] for tool in task_tools(corpus, task)} | set(DEFAULT_TOOLS) | set(EXPOSURE_TOOLS) | \
+            {SKILL_ASSET_READ}
+        recorded_calls = [recorded_live_call(call, known) for call in tool_calls]
+        oracle = dict(oracle, checks=[restricted(check, "observed") for check in oracle["checks"]])
+    # Classified by the observed name, reported by the recorded one.
+    calls = [(call["name"], tool_label(recorded)) for call, recorded in zip(tool_calls, recorded_calls, strict=True)]
     selection = None
     if task["oracle"]["kind"] == "tool-selection":
-        domain = [call["name"] for call in tool_calls if not call["name"].startswith(("capability_", "skill_"))]
-        selection = {"expected": task["oracle"]["expected_tool"], "domain_calls": domain,
-                     "capability_calls": [call["name"] for call in tool_calls if call["name"].startswith("capability_")],
+        selection = {"expected": task["oracle"]["expected_tool"],
+                     "domain_calls": [label for name, label in calls
+                                      if not name.startswith(("capability_", "skill_"))],
+                     "capability_calls": [label for name, label in calls if name.startswith("capability_")],
                      "correct": oracle["passed"] if oracle["passed"] is not None else False}
     if task["kind"] == "skill-selection":
-        loads = [call for call in tool_calls if call["name"] in ("capability_load", "skill_load")]
         selection = {"expected": task.get("skills", []), "domain_calls": [],
-                     "capability_calls": [call["name"] for call in tool_calls if call["name"].startswith(
-                         ("capability_", "skill_"))], "load_calls": len(loads),
+                     "capability_calls": [label for name, label in calls
+                                          if name.startswith(("capability_", "skill_"))],
+                     "load_calls": sum(name in ("capability_load", "skill_load") for name, _ in calls),
                      "correct": oracle["passed"] if oracle["passed"] is not None else False}
     retention = None
     if task["oracle"]["kind"] == "constraint-retention":
         retention = None if oracle["passed"] is None else all(
             check["passed"] for check in oracle["checks"] if check["check"] in ("budget", "exclusions"))
-    live = tier == "live"
-    if live:
-        # Live outputs are restricted content: a model can copy task data into tool arguments or
-        # answer fields, so the manifest keeps only their digests. Grading above saw the raw values.
-        tool_calls = [restricted(call, "arguments") for call in tool_calls]
-        oracle = dict(oracle, checks=[restricted(check, "observed") for check in oracle["checks"]])
     return {
         "key": f"{task['id']}/{planned['comparison']['id']}/{planned['arm']}/{repeat}",
         "task": task["id"], "comparison": planned["comparison"]["id"], "arm": planned["arm"],
@@ -1104,11 +1218,13 @@ def run_result(corpus, planned, repeat, observation, tier, allow_code_execution)
         "tool_selection": selection, "wall_ms": float(observation.get("wall_ms", 0.0)),
         "steps": observation.get("steps"), "compactions": observation.get("compactions"),
         "requests": observation.get("requests"), "usage": summarize_usage(observation.get("usage_records")),
-        "tool_calls": tool_calls, "human_answers": recorded_human_answers(observation.get("human_answers", [])),
+        "tool_calls": recorded_calls,
+        "human_answers": recorded_human_answers(observation.get("human_answers", []), live),
         "evidence": {"content_class": "restricted-live" if live else "fixture-trace",
                      "input_sha256": sha256_text(task_description(corpus, task)),
                      "final_answer_sha256": sha256_text(answer) if answer is not None else None,
-                     "final_answer": None if live or answer is None else answer[:EVIDENCE_LIMIT],
+                     # A deterministic answer is kept whole: validation regrades the oracle from it.
+                     "final_answer": None if live else answer,
                      "verifier": oracle["checks"]},
     }
 
@@ -1323,9 +1439,10 @@ def require_live_authorization(credential, binding, approval, corpus_sha256, mod
     """
     if not positive_int(ceiling):
         raise GuardRefusal("a positive hard spend ceiling in nanocredits is required")
+    # The manifest schema records limits in whole seconds or more; refuse before any work instead.
     if not isinstance(wall_seconds, (int, float)) or isinstance(wall_seconds, bool) or not math.isfinite(wall_seconds) \
-            or wall_seconds <= 0:
-        raise GuardRefusal("a positive, finite wall-time limit is required")
+            or wall_seconds < 1:
+        raise GuardRefusal("a finite wall-time limit of at least one second is required")
     if not credential:
         raise GuardRefusal("an explicitly connected Tenant Provider Credential is required")
     if credential.get("state") != "active":
@@ -1374,14 +1491,18 @@ class SpendLedger:
     Records can be read over HTTP (ADR 0018). No Run is reserved at or after
     the wall-time deadline or the disclosure approval's expiry, and a Run's
     own time limit never reaches past either of them.
+
+    The approval's expiry is read against the wall clock once, here, and then
+    held as a deadline on the monotonic `clock`: a later wall-clock correction
+    can neither extend nor shorten the approval.
     """
 
     def __init__(self, ceiling, wall_seconds, clock, expires_at=None, wall_now=None):
         self.ceiling = ceiling
-        self.deadline = clock() + wall_seconds
         self.clock = clock
-        self.expires_at = expires_at
-        self.wall_now = wall_now
+        now = clock()
+        self.deadline = now + wall_seconds
+        self.approval_deadline = None if expires_at is None else now + (expires_at - wall_now()).total_seconds()
         self.attempts = []
         self.refusal = None
 
@@ -1391,16 +1512,15 @@ class SpendLedger:
 
     def remaining(self):
         """Seconds until the earlier of the wall-time deadline and the approval's expiry."""
-        seconds = self.deadline - self.clock()
-        if self.expires_at is not None:
-            seconds = min(seconds, (self.expires_at - self.wall_now()).total_seconds())
-        return seconds
+        deadline = self.deadline if self.approval_deadline is None else min(self.deadline, self.approval_deadline)
+        return deadline - self.clock()
 
     def reserve(self, key, worst_case):
-        if self.clock() >= self.deadline:
+        now = self.clock()
+        if now >= self.deadline:
             self.refusal = "wall-time limit reached"
             raise GuardRefusal(self.refusal)
-        if self.expires_at is not None and self.wall_now() >= self.expires_at:
+        if self.approval_deadline is not None and now >= self.approval_deadline:
             self.refusal = "disclosure approval expired before this Run"
             raise GuardRefusal(self.refusal)
         if worst_case <= 0:
@@ -1412,16 +1532,13 @@ class SpendLedger:
         self.attempts.append(attempt)
         return attempt
 
-    def settle(self, attempt, reported_cost):
-        if reported_cost is None:
-            attempt["state"] = "uncertain"
-        else:
-            attempt.update({"reported": reported_cost, "charged": reported_cost, "state": "settled"})
+    def settle(self, attempt):
+        """A finished Run stays charged at its full reservation: no Usage Record is read over HTTP."""
+        attempt["state"] = "uncertain"
 
     def summary(self):
         return {"ceiling_nanocredits": self.ceiling, "committed_nanocredits": self.committed,
-                "uncertain_attempts": sum(item["state"] != "settled" for item in self.attempts),
-                "attempts": self.attempts, "refusal": self.refusal}
+                "uncertain_attempts": len(self.attempts), "attempts": self.attempts, "refusal": self.refusal}
 
 
 # ------------------------------------------------------------ memory matrix

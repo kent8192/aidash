@@ -14,6 +14,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import signal
 import stat
 import subprocess
 import sys
@@ -263,6 +264,35 @@ class OracleTest(unittest.TestCase):
         self.assertEqual(recorded["human_answers"], [{"kind": "APPROVAL_REQUIRED", "approved": False, "tool": None,
                                                       "prompt_sha256": evaluation.sha256_text("May I purge?")}],
                          "a live prompt is restricted content: only its digest is kept")
+        # A deterministic prompt is fixture text, kept whole so validation can regrade the oracle.
+        recorded = evaluation.run_result(value, planned, 1, observation(
+            final_answer="Denied.", human_answers=[{"kind": "APPROVAL_REQUIRED", "approved": False,
+                                                   "prompt": "May I purge?", "tool": None}]), "deterministic", True)
+        self.assertEqual(recorded["human_answers"][0]["prompt"], "May I purge?")
+
+    def test_live_evidence_keeps_model_invented_tool_names_only_as_digests(self):
+        value = corpus()
+        item = task(value, "deferred-tool-selection")
+        invented = "lookup_ACME-SECRET-42"
+        calls = [{"name": "capability_search", "arguments": {"query": "invoice"}, "error": None,
+                  "dispatch_rejected": False},
+                 {"name": invented, "arguments": {}, "error": f"unavailable tool {invented}",
+                  "dispatch_rejected": True},
+                 {"name": "invoice_lookup", "arguments": {"invoice_number": "INV-2026-0105"}, "error": None,
+                  "dispatch_rejected": False}]
+        planned = {"task": item, "comparison": {"id": "exposure"}, "arm": "candidate", "label": "deferred",
+                   "agent_fields": {}}
+        recorded = evaluation.run_result(value, planned, 1, observation(final_answer="It is unpaid.",
+                                                                        tool_calls=calls), "live", False)
+        self.assertNotIn("ACME-SECRET-42", json.dumps(recorded))
+        self.assertEqual([call.get("name") for call in recorded["tool_calls"]],
+                         ["capability_search", None, "invoice_lookup"], "known tool identifiers stay readable")
+        self.assertEqual(recorded["tool_calls"][1]["name_sha256"], evaluation.canonical_sha256(invented))
+        self.assertEqual(recorded["tool_calls"][1]["error_sha256"],
+                         evaluation.canonical_sha256(f"unavailable tool {invented}"))
+        self.assertEqual(recorded["tool_selection"]["domain_calls"],
+                         ["sha256:" + evaluation.canonical_sha256(invented), "invoice_lookup"])
+        self.assertFalse(recorded["tool_selection"]["correct"], "grading saw the invented name first")
 
     def test_a_deferred_skill_selection_needs_an_observed_load_of_the_expected_skill(self):
         value = corpus()
@@ -812,7 +842,8 @@ class LiveGuardTest(unittest.TestCase):
         self.assertEqual(evaluation.require_live_authorization(**good),
                          datetime.datetime(2026, 10, 12, tzinfo=datetime.UTC))
         refusals = [
-            dict(ceiling=None), dict(ceiling=0), dict(wall_seconds=0), dict(wall_seconds=float("nan")),
+            dict(ceiling=None), dict(ceiling=0), dict(wall_seconds=0), dict(wall_seconds=0.5),
+            dict(wall_seconds=float("nan")),
             dict(wall_seconds=float("inf")), dict(credential=None),
             dict(credential={"id": "pc-1", "state": "revoked", "provider": "openrouter"}),
             dict(binding=None), dict(binding={"provider": "openrouter", "provider_credential_id": None}),
@@ -878,14 +909,14 @@ class LiveGuardTest(unittest.TestCase):
         clock = Clock()
         ledger = evaluation.SpendLedger(100, 10, clock)
         first = ledger.reserve("a", 60)
-        ledger.settle(first, None)
+        ledger.settle(first)
         with self.assertRaises(evaluation.GuardRefusal):
             ledger.reserve("b", 50)
-        second = ledger.reserve("c", 40)
-        ledger.settle(second, 7)
-        self.assertEqual(ledger.committed, 67)
+        ledger.reserve("c", 40)
+        self.assertEqual(ledger.committed, 100, "every Run stays charged at its full reservation")
         summary = ledger.summary()
-        self.assertEqual(summary["uncertain_attempts"], 1)
+        self.assertEqual([item["state"] for item in summary["attempts"]], ["uncertain", "reserved"])
+        self.assertEqual(summary["uncertain_attempts"], 2)
         self.assertIn("exceed the ceiling", summary["refusal"])
         clock.now = 11
         with self.assertRaisesRegex(evaluation.GuardRefusal, "wall-time"):
@@ -1134,6 +1165,21 @@ class LiveGuardTest(unittest.TestCase):
         self.assertEqual(result["runs"][0]["outcome"], "interrupted")
         self.assertTrue(all("not dispatched" in item["reason"] for item in result["skipped_runs"]))
 
+    def test_ctrl_c_while_the_manifest_is_finalized_is_honored_after_it_is_written(self):
+        call, _ = self.live_node()
+        run_result = evaluation.run_result
+
+        def interrupted(*args):
+            signal.raise_signal(signal.SIGINT)
+            return run_result(*args)
+        with mock.patch.object(evaluation, "run_result", side_effect=interrupted):
+            status, result = self.run_live(call, ceiling="500000")
+        self.assertEqual(status, 130)
+        self.assertIsNotNone(result, "the record of paid work must be written")
+        self.assertEqual(len(result["runs"]), 2, "every observed Run is graded despite the interrupt")
+        evaluation.validate_result(result)
+        self.assertIs(signal.getsignal(signal.SIGINT), signal.default_int_handler)
+
     def test_a_binding_change_around_admission_cancels_the_run_and_stops_dispatch(self):
         call, _ = self.live_node(phase="RUNNING")
         claimed, controls = [], []
@@ -1183,24 +1229,25 @@ class LiveGuardTest(unittest.TestCase):
         self.run_live(capturing)
         self.assertTrue(agents)
         for config in agents:
-            self.assertEqual(sorted(config["remove_default"]), sorted(runner.DEFAULT_TOOLS))
+            self.assertEqual(sorted(config["remove_default"]), sorted(evaluation.DEFAULT_TOOLS))
         legacy_skill = {"bindings": [{"kind": "skill"}]}
-        self.assertEqual(set(runner.DEFAULT_TOOLS) - set(runner.minimal_defaults(legacy_skill)),
-                         set(runner.SKILL_TOOLS), "bound Skills keep their support tools")
+        self.assertEqual(set(evaluation.DEFAULT_TOOLS) - set(runner.minimal_defaults(legacy_skill)),
+                         set(evaluation.SKILL_TOOLS), "bound Skills keep their support tools")
         deferred_skill = dict(legacy_skill, exposure={"version": "deferred@1"})
         removed = runner.minimal_defaults(deferred_skill)
-        self.assertNotIn(runner.SKILL_ASSET_READ, removed)
-        self.assertFalse(set(runner.SKILL_TOOLS) & set(removed), "deferred@1 has no legacy Skill defaults")
-        self.assertIn(runner.SKILL_ASSET_READ, runner.minimal_defaults({"bindings": [],
+        self.assertNotIn(evaluation.SKILL_ASSET_READ, removed)
+        self.assertFalse(set(evaluation.SKILL_TOOLS) & set(removed), "deferred@1 has no legacy Skill defaults")
+        self.assertIn(evaluation.SKILL_ASSET_READ, runner.minimal_defaults({"bindings": [],
                                                                         "exposure": {"version": "deferred@1"}}))
         self.assertTrue({"task_create", "task_delegate", "agent_discover"} <= set(removed))
 
     def test_default_tools_match_the_rust_definition(self):
         source = (evaluation.ROOT / "crates/aidash-domain/src/registry/bindings.rs").read_text()
-        for name, value in (("DEFAULT_TOOLS", runner.DEFAULT_TOOLS), ("SKILL_TOOLS", runner.SKILL_TOOLS)):
+        for name, value in (("DEFAULT_TOOLS", evaluation.DEFAULT_TOOLS), ("SKILL_TOOLS", evaluation.SKILL_TOOLS),
+                            ("EXPOSURE_TOOLS", evaluation.EXPOSURE_TOOLS)):
             body = re.search(rf"pub const {name}: &\[&str\] = &\[(.*?)\];", source, re.S).group(1)
             self.assertEqual(tuple(re.findall(r'"([a-z_]+)"', body)), value, name)
-        self.assertIn(f'pub const SKILL_ASSET_READ: &str = "{runner.SKILL_ASSET_READ}";', source)
+        self.assertIn(f'pub const SKILL_ASSET_READ: &str = "{evaluation.SKILL_ASSET_READ}";', source)
 
     def test_selectors_left_without_a_mapped_pair_are_refused(self):
         value = corpus()
@@ -1327,9 +1374,10 @@ class LiveGuardTest(unittest.TestCase):
                          ["structured-data-overdue-totals/projection/candidate/1"])
         evaluation.validate_result(result)
 
-    def test_run_timeout_must_be_positive_and_finite(self):
+    def test_run_timeout_must_be_finite_and_at_least_one_second(self):
         live = ["live", "--base-url", "https://node.invalid", "--tenant", "acme", "--server-revision", "0123abc"]
-        for value in ("nan", "inf", "0", "-5"):
+        # The manifest records limits of at least one second, so a subsecond one is refused before any work.
+        for value in ("nan", "inf", "0", "-5", "0.5"):
             for argv in (live, ["deterministic"]):
                 with self.subTest(value=value, command=argv[0]), mock.patch.object(cli, "live") as run_live, \
                         mock.patch.object(cli, "deterministic") as run_deterministic, \
@@ -1450,13 +1498,17 @@ class LiveGuardTest(unittest.TestCase):
                          24 * runner.PROVIDER_ATTEMPTS_PER_STEP * (1000 * 5 + 100 * 20))
         self.assertEqual(runner.PROVIDER_ATTEMPTS_PER_STEP, 6, "one attempt plus five harness retries")
 
-    def test_ledger_refuses_a_run_after_the_approval_expires(self):
+    def test_ledger_holds_the_approval_expiry_on_the_monotonic_clock(self):
         clock = Clock()
         wall = [self.NOW]
         ledger = evaluation.SpendLedger(1000, 600, clock, self.NOW + datetime.timedelta(seconds=30), lambda: wall[0])
         ledger.reserve("a", 10)
         self.assertEqual(ledger.remaining(), 30.0, "a Run's time limit is bounded by the approval's expiry")
-        wall[0] = self.NOW + datetime.timedelta(seconds=30)
+        # A wall clock corrected backward extends neither the approval nor a Run's time limit.
+        wall[0] = self.NOW - datetime.timedelta(hours=1)
+        clock.sleep(10)
+        self.assertEqual(ledger.remaining(), 20.0)
+        clock.sleep(20)
         with self.assertRaisesRegex(evaluation.GuardRefusal, "approval expired"):
             ledger.reserve("b", 10)
         self.assertIn("approval expired", ledger.summary()["refusal"])
@@ -1487,6 +1539,56 @@ class HardeningTest(unittest.TestCase):
         baseline["outcomes"] = {name: 0 for name in evaluation.OUTCOMES} | {"success": 2}
         with self.assertRaisesRegex(evaluation.CorpusError, "does not account"):
             evaluation.validate_result(result)
+        # An aggregate for a group with no recorded Runs would report invented measurements.
+        result = full_result(value)
+        invented = json.loads(json.dumps(result["aggregates"][0]))
+        invented.update(task="structured-data-overdue-totals", attempted=0,
+                        outcomes={name: 0 for name in evaluation.OUTCOMES})
+        result["aggregates"].append(invented)
+        with self.assertRaisesRegex(evaluation.CorpusError, "has no recorded Runs"):
+            evaluation.validate_result(result)
+
+    def test_the_conclusion_scope_and_corpus_snapshots_are_fixed(self):
+        value = corpus()
+        result = full_result(value)
+        result["conclusion_scope"] = "The ordered projection is better in general; roll it out by default."
+        with self.assertRaisesRegex(evaluation.CorpusError, "conclusion scope"):
+            evaluation.validate_result(result)
+        # The combined digest alone does not bind the recorded version and per-file digests.
+        for field, replacement in (("version", "fixed-task-corpus-v9"), ("files", {"prompt.md": "0" * 64})):
+            for corpus_field, pattern in (("corpus", "snapshot of the corpus"),
+                                          ("memory_corpus", "snapshot of the memory corpus")):
+                with self.subTest(field=field, corpus=corpus_field):
+                    result = full_result(value)
+                    result["experiment"][corpus_field][field] = replacement
+                    with self.assertRaisesRegex(evaluation.CorpusError, pattern):
+                        evaluation.validate_result(result)
+
+    def test_deterministic_oracles_are_regraded_from_the_recorded_evidence(self):
+        value = corpus()
+        # A failing Run made to pass, with checks, verifier, outcome and every summary kept consistent.
+        result = full_result(value)
+        run = result["runs"][0]
+        self.assertEqual(run["outcome"], "false_completion")
+        checks = [dict(check, passed=True) for check in run["oracle"]["checks"]]
+        run["oracle"] = dict(run["oracle"], passed=True, checks=checks, detail=None)
+        run["evidence"]["verifier"] = checks
+        run["outcome"] = "success"
+        with self.assertRaisesRegex(evaluation.CorpusError, "does not reproduce"):
+            evaluation.validate_result(rederive(result, value))
+        # The recorded answer must be the one its digest names.
+        result = full_result(value)
+        result["runs"][0]["evidence"]["final_answer"] += " "
+        with self.assertRaisesRegex(evaluation.CorpusError, "differs from its digest"):
+            evaluation.validate_result(result)
+        # Code that is not one of the fixture's patches is never executed by validation.
+        result = full_result(value)
+        answer = "```python\nimport os\nos.system('touch /tmp/aidash-regrade')\n```\nAll tests pass."
+        result["runs"][0]["evidence"].update(final_answer=answer, final_answer_sha256=evaluation.sha256_text(answer))
+        with mock.patch.object(evaluation, "run_python_tests") as executed, \
+                self.assertRaisesRegex(evaluation.CorpusError, "not a fixture patch"):
+            evaluation.validate_result(result)
+        executed.assert_not_called()
 
     def test_recorded_and_skipped_runs_must_be_exactly_the_planned_keys(self):
         value = corpus()
@@ -1517,7 +1619,11 @@ class HardeningTest(unittest.TestCase):
         cases = ((spend(attempts, committed=0), 100, "committed"),
                  (spend(attempts, uncertain=0), 100, "uncertain"),
                  (spend(attempts + [{}]), 100, "missing key"),
-                 (spend([dict(attempts[0], charged=3)] + attempts[1:]), 100, "inconsistently"),
+                 (spend([dict(attempts[0], charged=3)] + attempts[1:]), 100, "not charged at its full reservation"),
+                 # No reported cost can settle an attempt below its reservation and erase the spend.
+                 (spend([dict(item, state="settled", reported=0, charged=0) for item in attempts]), 100,
+                  r"attempts\[0\]\.(state|reported)"),
+                 (spend([dict(attempts[0], reported=10)] + attempts[1:]), 100, r"attempts\[0\]\.reported"),
                  (spend(attempts + [dict(attempts[0], key="other/projection/baseline/1")]), 100, "not recorded"),
                  # Paid work cannot disappear from the spend evidence, nor be counted twice.
                  (spend(attempts[1:]), 100, "has no spend attempt"),

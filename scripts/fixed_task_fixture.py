@@ -46,6 +46,9 @@ def discounted_total(prices_cents, coupon_cents=0, percent_off=0):
 '''
 PRICING_COMPLETE = PRICING_VISIBLE_ONLY.replace(
     "    return discounted - coupon_cents\n", "    return max(0, discounted - coupon_cents)\n")
+# Every patch the scripted Agent can answer with. Validation regrades a deterministic code
+# answer only when it is one of these, so it never executes code read from a manifest.
+FIXTURE_PATCHES = (PRICING_VISIBLE_ONLY, PRICING_COMPLETE)
 
 
 def tokens(text):
