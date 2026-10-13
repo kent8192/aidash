@@ -71,15 +71,17 @@ class CredentialBrokerTerraformTests(unittest.TestCase):
             self.assertFalse(self.resources(run, "google_service_account_iam_member"))
 
     def test_bootstrap_broker_bindings_are_the_only_byok_payload_accessors(self):
-        resources = self.bootstrap_states["broker_environments"]
-        roles = {r["values"]["name"]: r["values"] for r in resources if r["type"] == "google_project_iam_custom_role"}
-        readers = [r["values"] for r in resources if r["type"] == "google_project_iam_member" and "secretmanager.versions.access" in roles.get(r["values"]["role"], {}).get("permissions", [])]
-        self.assertEqual(len(readers), 2)
-        self.assertEqual({r["member"] for r in readers}, {f"serviceAccount:aidash-{env}-broker@aidash-fixture.iam.gserviceaccount.com" for env in ("production", "test")})
-        for grant in readers:
-            self.assertEqual(grant["project"], "aidash-byok-fixture")
-            environment = "production" if "production-broker@" in grant["member"] else "test"
-            self.assertEqual(grant["condition"][0]["expression"], f'resource.name.startsWith("projects/123456789012/secrets/aidash-{environment}-cred-")')
+        for run, environments in (("broker_environments", ("develop", "test")), ("production_broker_bootstrap", ("production",))):
+            with self.subTest(profile=run):
+                resources = self.bootstrap_states[run]
+                roles = {r["values"]["name"]: r["values"] for r in resources if r["type"] == "google_project_iam_custom_role"}
+                readers = [r["values"] for r in resources if r["type"] == "google_project_iam_member" and "secretmanager.versions.access" in roles.get(r["values"]["role"], {}).get("permissions", [])]
+                self.assertEqual(len(readers), len(environments))
+                self.assertEqual({r["member"] for r in readers}, {f"serviceAccount:aidash-{env}-broker@aidash-fixture.iam.gserviceaccount.com" for env in environments})
+                for grant in readers:
+                    self.assertEqual(grant["project"], "aidash-byok-fixture")
+                    environment = next(env for env in environments if f"aidash-{env}-broker@" in grant["member"])
+                    self.assertEqual(grant["condition"][0]["expression"], f'resource.name.startsWith("projects/123456789012/secrets/aidash-{environment}-cred-")')
         disabled = self.bootstrap_states["brokers_opt_in_only"]
         self.assertFalse([r for r in disabled if r["address"].startswith("google_service_account.broker[") or r["address"].startswith("google_project_iam_member.byok_broker_read[")])
 
@@ -97,7 +99,8 @@ class CredentialBrokerTerraformTests(unittest.TestCase):
         for run in ("production", "staging"):
             signer, = self.resources(run, "google_kms_crypto_key_iam_member")
             environment = "production" if run == "production" else "test"
-            keys = {r["values"]["id"]: r["values"] for r in self.bootstrap_states["broker_environments"] if r["type"] == "google_kms_crypto_key"}
+            bootstrap = "production_broker_bootstrap" if run == "production" else "broker_environments"
+            keys = {r["values"]["id"]: r["values"] for r in self.bootstrap_states[bootstrap] if r["type"] == "google_kms_crypto_key"}
             key = keys[signer["crypto_key_id"]]
             self.assertEqual(signer["crypto_key_id"], f"projects/aidash-fixture/locations/us-central1/keyRings/aidash-{environment}-capability/cryptoKeys/capability")
             self.assertFalse(self.resources(run, "google_kms_crypto_key"))

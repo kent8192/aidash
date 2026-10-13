@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""GitHub-authorized nonproduction lifecycle control. Infrastructure only."""
+"""GitHub-authorized, tier-isolated deployment lifecycle. Infrastructure only."""
 
 import argparse
 from copy import deepcopy
@@ -15,8 +15,9 @@ import time
 import urllib.parse
 import urllib.request
 
-from gcip import reconcile_environment, reconcile_mfa
+from gcip import reconcile_environment, reconcile_mfa, ensure_authorized_domain
 import kube
+import delivery
 
 from cloud import (
     Store,
@@ -65,6 +66,9 @@ def load_config():
         raise Refused(
             "Configure the explicit GCP project, buckets, repository, development branch, and aidash.run zone"
         )
+    delivery.validate_config(value)
+    if delivery.production(value) and (os.environ.get("GITHUB_REF") != "refs/heads/main" or os.environ.get("GITHUB_EVENT_NAME") != "workflow_dispatch"):
+        raise Refused("Production cloud operations run only from the main dispatch workflow")
     return value
 
 
@@ -87,6 +91,7 @@ def ci_success(config, sha):
         item["head_sha"] == sha
         and item["conclusion"] == "success"
         and item["status"] == "completed"
+        and (not config.get("required_ci_branch") or item.get("event") == "push" and item.get("head_branch") == config["required_ci_branch"])
         for item in value["workflow_runs"]
     ):
         raise Refused("Required CI has not succeeded for the exact source SHA")
@@ -100,6 +105,11 @@ def pull(config, number):
 
 
 def source(config, identity, ref, approved_sha=""):
+    if identity == "production":
+        if ref != "main":
+            raise Refused("Production source is always main")
+        main_sha = github(f"repos/{config['repository']}/branches/main")["commit"]["sha"]
+        return delivery.authorize_production(config, main_sha, ci_success)
     if identity.startswith("pr-"):
         pr = pull(config, identity[3:])
         sha = pr["head"]["sha"]
@@ -134,6 +144,23 @@ def source(config, identity, ref, approved_sha=""):
 def requests(config, event, name, state):
     sequence = int(os.environ["GITHUB_RUN_ID"])
     common = {"sequence": sequence}
+    if delivery.production(config):
+        if name != "workflow_dispatch" or os.environ.get("GITHUB_REF") != "refs/heads/main":
+            raise Refused("Production requires a main workflow dispatch")
+        previous = state.get("environments", {}).get("production", {})
+        expected = event.get("inputs", {}).get("main_sha")
+        retained = previous.get("main_sha") == expected and previous.get("desired") == "running"
+        retry = str(event.get("inputs", {}).get("retry_failed", "false")).lower() == "true"
+        if retained and not retry and (previous.get("status") == "failed" or previous.get("failed_deployment_generation") is not None and previous.get("failed_deployment_generation") == previous.get("generation")):
+            raise Refused("A failed production deployment requires explicit retry_failed authorization")
+        candidate = delivery.authorize_production(config, expected or "", ci_success, accepted=previous.get("release") if retained and not retry else None)
+        if event.get("inputs", {}).get("main_sha") != candidate["main_sha"]:
+            raise Refused("The dispatched main SHA was superseded")
+        if retained and not retry:
+            common["sequence"] = previous["sequence"]
+            # Freeze the accepted bundle even if staging publishes a newer index.
+            candidate.update(sha=previous["sha"], release=deepcopy(previous["release"]))
+        return [dict(common, environment="production", action="up", mode="normal", force=False, **candidate)]
     if name == "workflow_dispatch":
         permission(config, os.environ["GITHUB_ACTOR"])
         inputs = event["inputs"]
@@ -176,7 +203,16 @@ def requests(config, event, name, state):
             return []
         permission(config, event["comment"]["user"]["login"])
         identity = "pr-" + str(event["issue"]["number"])
-        value = dict(common, environment=identity, **command)
+        previous = state.get("environments", {}).get(identity, {})
+        if command["action"] == "up":
+            if time.time() - previous.get("last_comment_at", 0) < config.get("preview_request_interval_seconds", 60):
+                raise Refused("Preview requests are rate limited; stop and destroy remain available")
+            retained = [entry for entry in state.get("environments", {}).values() if entry.get("kind") == "pr" and entry.get("desired") != "destroyed"]
+            # A destroyed tombstone is not retained, so recreating it adds a preview.
+            new = not previous or previous.get("desired") == "destroyed"
+            if new and len(retained) >= config.get("max_preview_environments", 10):
+                raise Refused("Preview retention budget reached; retire an environment first")
+        value = dict(common, environment=identity, last_comment_at=int(time.time()), **command)
         if command["action"] == "up":
             previous = state.get("environments", {}).get(identity, {})
             approved = command["approved_sha"] or previous.get("approved_sha", "")
@@ -189,7 +225,13 @@ def requests(config, event, name, state):
     if completed["workflow_id"] != workflow["id"]:
         raise Refused("Unexpected CI workflow identity")
     candidates = []
+    if config.get("release_flow_enabled") and completed.get("event") == "push" and completed.get("head_branch") == config["develop_branch"]:
+        current = source(config, "develop", config["develop_branch"])
+        if current["sha"] == completed["head_sha"]:
+            candidates.append(dict(common, environment="develop", action="up", mode="normal", ci_run_id=completed["id"], **current))
     for identity, entry in state.get("environments", {}).items():
+        if identity == "develop" and candidates:
+            continue
         if entry["desired"] == "destroyed" or identity == "test" or entry.get("fork"):
             continue
         if entry["sequence"] == sequence:
@@ -230,6 +272,7 @@ def prepare(config, store):
     state = state or {"environments": {}}
     values = requests(config, event, os.environ["GITHUB_EVENT_NAME"], state)
     prepared = {"build": False, "targets": [], "sha": "", "source_repo": ""}
+    prepared["trusted_sha"] = trusted_revision()
     if values:
         # Accepting intent and executing cloud effects use the same lock. A stop
         # cannot be acknowledged while an older apply can still start a node pool.
@@ -246,18 +289,23 @@ def prepare(config, store):
 
                 def accept(current, request=request):
                     updated, changed = transition(
-                        current, request, secrets.token_hex(6), time.time()
+                        current, request, secrets.token_hex(6), time.time(),
+                        hostname_token=secrets.token_hex(16), production=delivery.production(config),
                     )
+                    if delivery.production(config) and changed:
+                        updated, _ = attach_release(updated, "production", updated["environments"]["production"]["generation"], request["release"], request["release"]["trusted_sha"])
                     return updated, (
                         changed,
                         updated["environments"].get(request["environment"]),
                     )
 
                 changed, entry = store.mutate(accept)
+                if entry and delivery.production(config):
+                    prepared.update(sha=entry["sha"], source_repo=entry["source_repo"], trusted_sha=entry["release"]["trusted_sha"])
                 if (
                     entry
                     and (changed or entry["sequence"] == request["sequence"])
-                    and build_needed(entry, trusted_revision())
+                    and build_needed(entry, prepared["trusted_sha"])
                 ):
                     # Re-running a failed workflow keeps its run ID. Re-emit
                     # pending builds without changing the accepted generation.
@@ -274,7 +322,7 @@ def prepare(config, store):
     private_json(destination, prepared)
     if os.environ.get("GITHUB_OUTPUT"):
         with open(os.environ["GITHUB_OUTPUT"], "a") as file:
-            for key in ("build", "sha", "source_repo"):
+            for key in ("build", "sha", "source_repo", "trusted_sha"):
                 file.write(
                     f"{key}={str(prepared[key]).lower() if key == 'build' else prepared[key]}\n"
                 )
@@ -284,6 +332,16 @@ def update_entry(store, identity, generation, **fields):
     def update(state):
         entry = state["environments"].get(identity)
         if entry and entry["generation"] == generation:
+            if fields.get("status") in {"ready", "failed"}:
+                if entry.get("status") != fields["status"]:
+                    entry["outcome_version"] = entry.get("outcome_version", 0) + 1
+                    for key in ("outcome_at", "outcome_run_id", "outcome_trusted_sha", "outcome_published", "staging_publication_run_id", "staging_verified_at", "staging_publication_pending"):
+                        entry.pop(key, None)
+                for key in ("outcome_at", "outcome_run_id"):
+                    if key in entry:
+                        fields[key] = entry[key]
+                fields.setdefault("outcome_at", int(time.time()))
+                fields.setdefault("outcome_run_id", str(os.environ.get("GITHUB_RUN_ID", "0")))
             entry.update(fields)
         return state, None
 
@@ -373,6 +431,20 @@ def public_health(output):
 
 
 def verify_source(config, identity, entry):
+    if identity == "production":
+        candidate = delivery.authorize_production(config, entry["main_sha"], ci_success, accepted=entry["release"])
+        if candidate["sha"] != entry["sha"]:
+            raise Refused("Production evidence changed before deployment")
+        # Keep the original accepted images when staging publishes a new index.
+        release = entry["release"]
+        delivery.valid_images(release["images"], config["staging_project_id"])
+        if release["source_sha"] != entry["sha"] or not delivery.SHA.fullmatch(release["trusted_sha"]) or github(f"repos/{config['repository']}/compare/{release['trusted_sha']}...{entry['main_sha']}").get("status") not in {"ahead", "identical"}:
+            raise Refused("The retained bundle is outside its accepted main provenance")
+        return
+    if identity == "develop" and config.get("release_flow_enabled"):
+        current = github(f"repos/{config['repository']}/branches/{urllib.parse.quote(config['develop_branch'], safe='')}")
+        if not current.get("protected") or current["commit"]["sha"] != entry["sha"]:
+            raise Refused("Staging source was superseded before deployment")
     if (
         identity.startswith("pr-")
         and pull(config, identity[3:])["head"]["sha"] != entry["sha"]
@@ -640,16 +712,50 @@ def stop_environment(store, terraform, managed, identity, generation):
 
 def reconcile(config, store):
     with store.lock():
+        state, _ = store.read("lifecycle/state.json")
+        identities = set((state or {}).get("environments", {}))
+        if delivery.production(config) and identities - {"production"} or not delivery.production(config) and "production" in identities:
+            raise Refused("The lifecycle state belongs to a different deployment tier")
         terraform = Terraform(ROOT / "infra/gcp/environments", config)
         managed = terraform.configuration_in_state(store)
         # Private kubeconfig and Helm values live only for this run.
         directory = tempfile.mkdtemp(prefix="aidash-kube-", dir=os.environ.get("RUNNER_TEMP"))
+        failure = None
         try:
+            adapter = GcipTerraform(terraform, config, store, managed, directory)
             reconcile_locked(
-                config, store, GcipTerraform(terraform, config, store, managed, directory), managed
+                config, store, adapter, managed
             )
+            validate_staging_publication(config, store, adapter)
+        except (Exception, OperationDeadline) as error:
+            failure = error
         finally:
             shutil.rmtree(directory, ignore_errors=True)
+        with operation_budget(120):
+            try:
+                delivery.flush_outcomes(config, store)
+            except Exception:
+                if failure is None:
+                    raise
+        if failure is not None:
+            raise failure
+
+
+def validate_staging_publication(config, store, terraform):
+    """Recover evidence publication by rechecking the running source, without deploying."""
+    state, _ = store.read("lifecycle/state.json")
+    entry = (state or {}).get("environments", {}).get("develop", {})
+    if not config.get("release_flow_enabled") or entry.get("status") != "ready":
+        return
+    if entry.get("outcome_published") == "ready" and delivery.staging_publication_complete(config, entry):
+        return
+    verify_source(config, "develop", entry)
+    if kube.health(terraform.cluster(), "develop") != entry["sha"]:
+        raise Refused("Staging publication requires the current running source")
+    public_health(terraform.outputs()["develop"])
+    current_entry(store, "develop", entry["generation"])
+    update_entry(store, "develop", entry["generation"],
+                 staging_publication_run_id=str(os.environ["GITHUB_RUN_ID"]), staging_verified_at=int(time.time()), staging_publication_pending=True)
 
 
 def reconcile_locked(config, store, terraform, managed):
@@ -752,6 +858,7 @@ def reconcile_locked(config, store, terraform, managed):
                     current_entry(store, identity, generation)
                     terraform.apply(managed)
                     reconcile_environment(output, enabled=False)
+                    ensure_authorized_domain(output, enabled=False)
                     if cluster is not None:
                         kube.destroy(cluster, identity)
                     del managed[identity]
@@ -853,6 +960,7 @@ def reconcile_locked(config, store, terraform, managed):
                 or previous["spot"] != entry["spot"]
                 or not entry.get("applied")
                 or entry["applied"].get("release_sha") != entry["sha"]
+                or previous.get("hostname_token") != entry.get("hostname_token")
                 or (entry.get("force") and entry.get("start_pending"))
                 or entry.get("provider_credentials") != (output or {}).get("provider_credentials")
             )
@@ -883,7 +991,7 @@ def reconcile_locked(config, store, terraform, managed):
                 elif not needs_deploy:
                     observation = kube.activity(cluster, identity)
                     try:
-                        due = observation is not None and idle_due(
+                        due = identity != "production" and observation is not None and idle_due(
                             observation, time.time(), entry.get("keepalive_at", 0)
                         )
                     except Refused:
@@ -915,6 +1023,12 @@ def reconcile_locked(config, store, terraform, managed):
                             )
                         restore_presealed_running_host(terraform, identity, presealed, managed)
                         continue
+                    # Renewal also reaches quiet, already-running previews.
+                    # This touches only the trusted edge certificate and never
+                    # changes the app release, migrations or outcome receipt.
+                    current_entry(store, identity, generation)
+                    if delivery.install_tls(config, cluster, identity, output):
+                        public_health(output)
                     # The deployed images keep running unchanged; only a needed
                     # deployment waits for a release from this trusted commit.
                     if not release and (changed or not entry.get("release")):
@@ -956,7 +1070,7 @@ def reconcile_locked(config, store, terraform, managed):
                 )
                 restore_presealed_running_host(terraform, identity, presealed, managed)
                 continue
-            if entry["kind"] == "pr" and (not previous or not previous["running"]):
+            if entry["kind"] == "pr" and not entry.get("hostname_token") and (not previous or not previous["running"]):
                 # The shared preview disk moves only after the previous
                 # preview's edge and attachment are gone.
                 cluster = terraform.cluster(required=False)
@@ -982,8 +1096,10 @@ def reconcile_locked(config, store, terraform, managed):
                 release_sha=entry["sha"],
                 # Switch the SAML ACS, runtime setting and edge helper proxy
                 # with the release deployment itself.
-                auth_helper="public_origin",
+                auth_helper="firebase" if entry.get("hostname_token") else "public_origin",
             )
+            if entry.get("hostname_token"):
+                managed[identity]["hostname_token"] = entry["hostname_token"]
             nodes = config.get("node_count", {}).get(entry["kind"])
             if nodes:
                 managed[identity]["nodes"] = nodes
@@ -995,8 +1111,10 @@ def reconcile_locked(config, store, terraform, managed):
             cluster = terraform.cluster()
             kube.prepare(
                 cluster, identity,
-                terraform.shared_outputs()["preview_tls_volume_handle"] if entry["kind"] == "pr" else None,
+                terraform.shared_outputs()["preview_tls_volume_handle"] if entry["kind"] == "pr" and not entry.get("hostname_token") else None,
             )
+            delivery.install_tls(config, cluster, identity, output)
+            ensure_authorized_domain(output)
             runtime = provision_secret(config, output, entry["kind"])
             settings = kube.materialize(cluster, identity, config["project_id"], output, runtime)
             reconcile_environment(output)
@@ -1031,9 +1149,13 @@ def reconcile_locked(config, store, terraform, managed):
                 gcip_pending=False,
                 gcip_quiesced=False,
                 provider_credentials=output.get("provider_credentials"),
+                outcome_at=int(time.time()),
+                outcome_run_id=str(os.environ.get("GITHUB_RUN_ID", "0")),
+                staging_publication_run_id=str(os.environ.get("GITHUB_RUN_ID", "0")),
+                staging_verified_at=int(time.time()),
             )
             print(
-                f"Ready: {identity} https://{output['hostname']} source={entry['sha']}"
+                f"Ready: {identity} source={entry['sha']}"
             )
         except (Exception, OperationDeadline) as error:
             with operation_budget(180):
@@ -1070,6 +1192,8 @@ def reconcile_locked(config, store, terraform, managed):
                     snapshot["generation"],
                     status="failed",
                     diagnostic=type(error).__name__,
+                    outcome_at=int(time.time()),
+                    outcome_run_id=str(os.environ.get("GITHUB_RUN_ID", "0")),
                 )
                 print(f"Deferred/failed: {identity}: {type(error).__name__}")
                 failures.append(identity)
@@ -1143,11 +1267,15 @@ def controller_budget(phase):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "phase", choices=["preflight", "prepare", "finish", "reconcile"]
+        "phase", choices=["preflight", "prepare", "finish", "reconcile", "receipt", "production-progress", "dispatch-production"]
     )
     parser.add_argument("--request")
     parser.add_argument("--release")
     args = parser.parse_args()
+    if args.phase == "dispatch-production":
+        event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text())
+        delivery.dispatch_production(json.loads(os.environ["AIDASH_GCP_CONFIG"]), event)
+        return
     if args.phase == "preflight":
         event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text())
         proceed = preflight(
@@ -1156,6 +1284,12 @@ def main():
         with open(os.environ["GITHUB_OUTPUT"], "a") as output:
             output.write(f"proceed={str(proceed).lower()}\n")
         return
+    if args.phase == "production-progress":
+        with operation_budget(60):
+            config = load_config()
+            event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text())
+            delivery.export_production_progress(config, Store(config["state_bucket"]), event.get("inputs", {}).get("main_sha"))
+        return
     with operation_budget(controller_budget(args.phase)):
         config = load_config()
         store = Store(config["state_bucket"])
@@ -1163,6 +1297,8 @@ def main():
             prepare(config, store)
         elif args.phase == "finish":
             finish(config, store, args.request, args.release)
+        elif args.phase == "receipt":
+            delivery.export_staging_receipt(config, store)
         else:
             reconcile(config, store)
 

@@ -315,6 +315,14 @@ async fn active_identity_cannot_be_restored_without_a_disabled_state(scope: Scop
 
 #[async_trait]
 impl crate::ports::authorization::dashboard::LoginAccounts for Recovery {
+	async fn provision_personal(&mut self, identity: Uuid) -> Result<()> {
+		self.0
+			.lock()
+			.unwrap()
+			.trace
+			.push(format!("personal:{identity}"));
+		Ok(())
+	}
 	async fn find(&mut self, _: &str, _: &SignIn) -> Result<Option<Account>> {
 		Ok(None)
 	}
@@ -330,6 +338,14 @@ impl crate::ports::authorization::dashboard::LoginAccounts for Recovery {
 struct ExistingLogin(Arc<Mutex<State>>);
 #[async_trait]
 impl crate::ports::authorization::dashboard::LoginAccounts for ExistingLogin {
+	async fn provision_personal(&mut self, identity: Uuid) -> Result<()> {
+		self.0
+			.lock()
+			.unwrap()
+			.trace
+			.push(format!("personal:{identity}"));
+		Ok(())
+	}
 	async fn find(&mut self, issuer: &str, sign_in: &SignIn) -> Result<Option<Account>> {
 		let mut state = self.0.lock().unwrap();
 		state.trace.push("find".into());
@@ -342,6 +358,36 @@ impl crate::ports::authorization::dashboard::LoginAccounts for ExistingLogin {
 		let mut state = self.0.lock().unwrap();
 		state.trace.push("register".into());
 		Ok(state.account.clone())
+	}
+}
+
+#[rstest]
+#[case::enabled(false)]
+#[case::disabled(true)]
+#[tokio::test]
+async fn google_login_provisions_only_enabled_accounts(mut scope: Scope, #[case] disabled: bool) {
+	scope.google = true;
+	let id = {
+		let mut state = scope.state.lock().unwrap();
+		if disabled {
+			state.account.disabled_at = Some(state.now);
+		}
+		state.account.id
+	};
+	let scope = Arc::new(scope);
+	let mut login = ExistingLogin(scope.state.clone());
+	let result = authority(scope.clone())
+		.admit_login(&mut login, &sign_in())
+		.await;
+	if disabled {
+		assert!(matches!(result, Err(Error::Forbidden)));
+		assert_eq!(scope.state.lock().unwrap().trace, ["register"]);
+	} else {
+		assert_eq!(result.unwrap().id, id);
+		assert_eq!(
+			scope.state.lock().unwrap().trace,
+			["register".to_owned(), format!("personal:{id}")]
+		);
 	}
 }
 

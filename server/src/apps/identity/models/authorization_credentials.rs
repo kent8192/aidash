@@ -62,6 +62,25 @@ impl AuthorizationCredential {
 			.collect())
 	}
 
+	/// Returns the subset of `ids` whose credentials are neither revoked nor expired.
+	pub(crate) async fn active_ids<E: OrmExecutor>(
+		db: &mut E,
+		ids: Vec<Uuid>,
+	) -> Result<std::collections::HashSet<Uuid>> {
+		if ids.is_empty() {
+			return Ok(Default::default());
+		}
+		Ok(Self::objects()
+			.filter(Self::field_id().is_in(ids))
+			.filter(Self::field_revoked_at().is_null())
+			.filter(Self::field_expires_at().gt(Utc::now()))
+			.all_with_db(db)
+			.await?
+			.into_iter()
+			.map(|row| row.id)
+			.collect())
+	}
+
 	pub(crate) async fn revoke(
 		db: DatabaseConnection,
 		tenant: &str,
