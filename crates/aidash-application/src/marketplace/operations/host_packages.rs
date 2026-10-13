@@ -95,10 +95,12 @@ pub async fn provision(
 ) -> Result<PendingHostPackages> {
 	require_operator(scope.principal())?;
 	aidash_domain::policy::identifier(&input.tenant)?;
-	if input.groups.is_empty() || input.groups.len() > 6 {
-		return Err(Error::Invalid(
-			"select one to six host package groups".into(),
-		));
+	let known = crate::registry::system::packages::HOST_GROUPS.len()
+		+ crate::registry::system::packages::RESEARCH_GROUPS.len();
+	if input.groups.is_empty() || input.groups.len() > known {
+		return Err(Error::Invalid(format!(
+			"select one to {known} host package groups"
+		)));
 	}
 	scope.load_tenant(&input.tenant).await?;
 	scope.distribution_lock(true).await?;

@@ -542,7 +542,7 @@ impl JournalScope for Scope<'_> {
 			.await
 			.map_err(Into::into)
 	}
-	async fn complete_operation(&mut self, receipt: &Receipt) -> Result<()> {
+	async fn complete_operation(&mut self, receipt: &Receipt, corpus_digest: &str) -> Result<()> {
 		let result: NativeResult<()> = async {
 			let tx = self.connection();
 			{
@@ -552,6 +552,7 @@ impl JournalScope for Scope<'_> {
 					&Query::update()
 						.table(a("semantic_remote_operations"))
 						.value(a("state"), "READY")
+						.value(a("corpus_digest"), corpus_digest)
 						.value_expr(
 							a("receipt"),
 							SimpleExpr::CustomWithExpr(

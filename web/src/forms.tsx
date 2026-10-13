@@ -353,7 +353,8 @@ export function EntityForm({
                     provider: "openrouter",
                     model_id: s("model_id"),
                     endpoint: s("endpoint"),
-                    credential_env: "AIDASH_SECRET_OPENROUTER",
+                    // Runs use the Tenant's OpenRouter Provider Credential.
+                    provider_credential: "openrouter",
                     reasoning_effort: s("reasoning_effort") || null,
                     context_window: Number(s("context_window")),
                     max_output_tokens: Number(s("max_output_tokens")),
@@ -365,11 +366,11 @@ export function EntityForm({
                   ? {
                       provider: s("embedding_provider"),
                       endpoint: s("endpoint"),
-                      credential_env: d.has("embedding_credentials")
-                        ? s("embedding_provider") === "openrouter"
-                          ? "AIDASH_SECRET_OPENROUTER"
-                          : "AIDASH_SECRET_EMBEDDING"
-                        : null,
+                      // OpenRouter uses the Tenant's Provider Credential; an
+                      // OpenAI-compatible endpoint is called without a key.
+                      ...(s("embedding_provider") === "openrouter"
+                        ? { provider_credential: "openrouter" }
+                        : {}),
                       model: s("model_id"),
                       model_version: s("model_version"),
                       dimensions: Number(s("dimensions")),
@@ -618,9 +619,6 @@ export function EntityForm({
                 />
               </Field>
             </div>
-            <Check name="embedding_credentials" defaultChecked>
-              {t("configuredCredentials")}
-            </Check>
           </>
         ) : kind === "compactor" ? (
           <>

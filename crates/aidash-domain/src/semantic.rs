@@ -36,6 +36,10 @@ pub enum Failure {
 	RetriesExhausted,
 	#[error("The semantic operation is already in progress")]
 	Pending,
+	/// A reused retrieval no longer matches the Home corpus; the Run retrieves
+	/// it again instead of pausing.
+	#[error("The reused semantic retrieval is out of date; retrieve it again")]
+	Stale,
 }
 
 impl Failure {
@@ -50,7 +54,7 @@ impl Failure {
 pub struct EmbeddingConfig {
 	pub provider: String,
 	pub endpoint: String,
-	pub credential_env: Option<String>,
+	/// As for models: a Tenant Provider Credential, or no key (ADR 0006).
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub provider_credential: Option<String>,
 	pub model: String,
@@ -95,7 +99,6 @@ impl EmbeddingConfig {
 		crate::provider_credentials::validate_source(
 			&self.endpoint,
 			&self.provider,
-			self.credential_env.as_deref(),
 			self.provider_credential.as_deref(),
 		)?;
 		if !matches!(self.provider.as_str(), "openai" | "openrouter")
@@ -155,5 +158,7 @@ impl Source {
 pub mod indexing;
 
 pub mod mutations;
+
+pub mod recovery;
 
 pub mod retrieval;

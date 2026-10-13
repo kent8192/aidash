@@ -13,24 +13,17 @@ fn model_ids_match_capability_bounds_and_catalog_paths() {
 	}
 }
 #[rstest]
-#[case("https://openrouter.ai/api/v1", "openrouter", None, true)]
-#[case("https://openrouter.ai/api/v1/", "openrouter", None, false)]
-#[case("https://attacker.test/api/v1", "openrouter", None, false)]
-#[case(
-	"https://openrouter.ai/api/v1",
-	"openrouter",
-	Some("AIDASH_SECRET_KEY"),
-	false
-)]
-#[case("https://openrouter.ai/api/v1", "other", None, false)]
-fn tenant_source_is_closed_and_excludes_environment_fallback(
+#[case("https://openrouter.ai/api/v1", "openrouter", true)]
+#[case("https://openrouter.ai/api/v1/", "openrouter", false)]
+#[case("https://attacker.test/api/v1", "openrouter", false)]
+#[case("https://openrouter.ai/api/v1", "other", false)]
+fn tenant_source_is_closed_to_the_catalog_entry(
 	#[case] endpoint: &str,
 	#[case] provider: &str,
-	#[case] env: Option<&str>,
 	#[case] valid: bool,
 ) {
 	assert_eq!(
-		validate_source(endpoint, provider, env, Some("openrouter")).is_ok(),
+		validate_source(endpoint, provider, Some("openrouter")).is_ok(),
 		valid
 	);
 }
@@ -38,13 +31,23 @@ fn tenant_source_is_closed_and_excludes_environment_fallback(
 fn catalog_id_rejects_record_ids_and_unknown_providers() {
 	assert!(Provider::parse("credential:019a0000-0000-7000-8000-000000000001").is_err());
 	assert!(Provider::parse("openai").is_err());
-	assert!(
-		validate_source(
-			"http://localhost:8000/v1",
-			"openrouter",
-			Some("AIDASH_SECRET_KEY"),
-			None
-		)
-		.is_ok()
-	);
+	// A keyless configuration may call any valid endpoint.
+	assert!(validate_source("http://localhost:8000/v1", "openrouter", None).is_ok());
+}
+#[test]
+fn model_and_embedding_configurations_reject_environment_keys() {
+	// ADR 0006: no model-provider configuration can name an environment key.
+	let model = serde_json::json!({
+		"provider":"openrouter","model_id":"vendor/model","endpoint":"https://openrouter.ai/api/v1",
+		"credential_env":"AIDASH_SECRET_OPENROUTER","context_window":1000,"modalities":["text"],"cost":{}
+	});
+	assert!(serde_json::from_value::<crate::model::ModelConfig>(model.clone()).is_err());
+	let mut keyless = model;
+	keyless.as_object_mut().unwrap().remove("credential_env");
+	assert!(serde_json::from_value::<crate::model::ModelConfig>(keyless).is_ok());
+	let embedding = serde_json::json!({
+		"provider":"openai","endpoint":"http://localhost:8000/v1","credential_env":null,
+		"model":"fixture","model_version":"1","dimensions":3
+	});
+	assert!(serde_json::from_value::<crate::semantic::EmbeddingConfig>(embedding).is_err());
 }

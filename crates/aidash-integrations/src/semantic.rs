@@ -58,12 +58,13 @@ pub async fn embed(
 		model: config.model.clone(),
 		operations: vec![Operation::Embeddings],
 		max_output_tokens: 1,
+		cache_breakpoints: false,
 	});
 	let access = access
 		.resolve(
 			&context,
 			&config.endpoint,
-			&Source::configured(&config.credential_env, &config.provider_credential),
+			&Source::configured(&config.provider_credential),
 		)
 		.await?;
 	let mut call = request(

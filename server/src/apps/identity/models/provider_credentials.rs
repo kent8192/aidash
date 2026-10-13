@@ -22,6 +22,9 @@ pub struct ProviderCredential {
 	pub fingerprint: String,
 	#[field(field_type = "text")]
 	pub last4: String,
+	/// Unkeyed SHA-256 for the provider key-settings deep link (ADR 0006).
+	#[field(field_type = "text", null = true)]
+	pub key_digest: Option<String>,
 	#[field(field_type = "text")]
 	pub state: String,
 	#[field]

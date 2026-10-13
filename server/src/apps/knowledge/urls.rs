@@ -20,6 +20,8 @@ pub fn url_patterns() -> UnifiedRouter {
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(super::views::memory::mutate)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
+			.endpoint(super::views::memory::impact)
+			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(super::views::memory::participant)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(super::views::peer::query)

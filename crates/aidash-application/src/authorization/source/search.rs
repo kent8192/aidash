@@ -71,15 +71,16 @@ pub async fn search<R: SemanticSearchRepository + ?Sized>(
 		}
 		journal::prepare(repository.journal(), &operation, &description.semantic).await?;
 		let agent = AgentConfig::from_snapshot(&description.inspection.binding_snapshot)?;
+		// Read the corpus before the candidates: a change in between leaves an
+		// older digest on the operation, so reuse fails closed into a new
+		// retrieval and never vouches for entries this search did not see. The
+		// read uses the held lease, never a second pool connection.
+		let corpus = access.corpus_digest(&description).await?;
+		// The current index decides the embedding source. A Tenant-backed source
+		// is embedded by this Home as its Tenant's memory-retrieval maintenance
+		// (ADR 0006), so a missing or revoked Provider Credential Binding fails
+		// at the embedding call, after the same authority checks as before.
 		let spec = access.index_spec(task.workspace_id).await?;
-		// The binding was checked when the grant was issued, but the index can be
-		// reconfigured afterwards. A tenant-backed embedding needs a local Run
-		// admission pin and approved maintenance authority that RequiredHome search
-		// does not have, and the environment transport would fail every call.
-		// Revalidate the current index before any claim, reservation or effect.
-		if spec.embedding.provider_credential.is_some() {
-			return Err(Error::RemoteSemantic(Failure::Configuration));
-		}
 		let transport_truncated = query.len() > 32768;
 		let (query, query_truncated) = bounded_query(&operation.query, spec.max_input_bytes);
 		let max_tokens = operation.max_tokens.min(spec.max_result_tokens);
@@ -156,7 +157,7 @@ pub async fn search<R: SemanticSearchRepository + ?Sized>(
 				dispatch::admitted(repository.dispatch(), &admission, &reservations).await?;
 				journal::dispatched(repository.journal(), &attempt, &json!(reservations)).await?;
 				let embedding = repository
-					.embedding()
+					.embedding(&description.source_tenant)
 					.embed(&spec.embedding, &input.query)
 					.await?;
 				dispatch::finish(
@@ -211,7 +212,7 @@ pub async fn search<R: SemanticSearchRepository + ?Sized>(
 					.await?;
 			}
 			receipt.fit_budget(max_tokens)?;
-			journal::complete(repository.journal(), &attempt, &receipt).await?;
+			journal::complete(repository.journal(), &attempt, &receipt, &corpus).await?;
 			Ok(receipt)
 		}
 		.await;

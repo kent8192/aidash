@@ -12,7 +12,7 @@ For example, include the following configuration when registering a model:
   "provider": "openrouter",
   "model_id": "vendor/model",
   "endpoint": "https://openrouter.ai/api/v1",
-  "credential_env": "AIDASH_SECRET_OPENROUTER",
+  "provider_credential": "openrouter",
   "request_timeout_secs": 900,
   "context_window": 32768,
   "max_output_tokens": 4096,

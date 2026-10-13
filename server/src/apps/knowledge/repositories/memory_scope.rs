@@ -282,6 +282,27 @@ impl MemoryScope for Scope<'_, '_> {
 		.map_err(Into::into)
 	}
 
+	async fn vectors(
+		&mut self,
+		bank: &Bank,
+		units: &[Unit],
+	) -> aidash_application::Result<std::collections::BTreeMap<Uuid, Vec<f32>>> {
+		// Callers pass units from the authorized snapshot; still refuse any unit
+		// outside the bank this scope was authorized for.
+		if bank != &self.models.bank || units.iter().any(|unit| unit.bank != *bank) {
+			return Err(aidash_application::Error::Forbidden);
+		}
+		let embedding: EmbeddingConfig = serde_json::from_value(
+			self.models
+				.role(&self.models.policy.embedding, "embedding")?
+				.config
+				.clone(),
+		)?;
+		super::memory_graph::current_vectors(self.lease, units, &embedding)
+			.await
+			.map_err(Into::into)
+	}
+
 	async fn reactivate_support(
 		&mut self,
 		bank: &Bank,

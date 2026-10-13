@@ -1,18 +1,22 @@
-# GCP staging and test environments
+# GCP deployment environments
 
 This provisions nonproduction GCP Environments on one shared GKE Standard
 cluster using Terraform, a trusted GitHub Actions controller, Helm and
 infrastructure-side activity observation. Application and Runner business logic
-are unchanged. No production Environment or always-running management VM is
-created; with every Environment stopped, no Cluster Node runs.
+are unchanged. Nonproduction uses one shared cluster; production uses a separately
+bootstrapped project, backend, cluster and runtime identities. See the
+[release deployment runbook](../../docs/operations/release-deployment.md) for
+the develop-to-main flow, protected environments, random hosts and notification
+setup. With every nonproduction Environment stopped, no nonproduction node runs.
+Production stays running on normal capacity.
 
 ## Environments and lifecycle
 
-| Environment | Source                                                           | Node pool       | Public origin                |
-| ----------- | ---------------------------------------------------------------- | --------------- | ---------------------------- |
-| `develop`   | Configured `develop/x.y.z`                                       | Normal          | `https://develop.aidash.run` |
-| `pr-N`      | Explicitly requested open PR targeting `main` or `develop/x.y.z` | Spot by default | `https://preview.aidash.run` |
-| `test`      | Explicit branch or full SHA, then pinned                         | Spot by default | `https://test.aidash.run`    |
+| Environment | Source                                                           | Node pool       | Public origin                         |
+| ----------- | ---------------------------------------------------------------- | --------------- | ------------------------------------- |
+| `develop`   | Configured `develop/x.y.z`                                       | Normal          | `https://<random>.preview.aidash.run` |
+| `pr-N`      | Explicitly requested open PR targeting `main` or `develop/x.y.z` | Spot by default | `https://<random>.preview.aidash.run` |
+| `test`      | Explicit branch or full SHA, then pinned                         | Spot by default | `https://test.aidash.run`             |
 
 All Environments share the zonal GKE Standard cluster `aidash` in
 `us-central1-a` (Dataplane V2, Workload Identity, private Cluster Nodes with Cloud
@@ -53,19 +57,20 @@ explicit request.
 
 Each running Environment has its own L4 passthrough LoadBalancer Service for the
 edge (ephemeral IP, `externalTrafficPolicy: Local`) and a DNS-only Cloudflare A
-record. The preview hostname keeps a separate 10 GiB `aidash-preview-tls` GCE disk
-managed by `environments/` with Terraform destruction protection. The controller
-exposes it as the static PV `aidash-preview-tls` and binds it to the active
-`aidash-pr-N/preview-tls` claim only after the previous PR's edge has no Pods and
-no VolumeAttachment for it; until then the request waits as
-`waiting_for_preview_tls`. Caddy mounts it at `/var/lib/aidash/tls`, preserving
-certificates and ACME accounts across PR replacement and retirement. Destroying a
-PR releases the claim reference and never deletes the disk. Develop/test keep TLS
-state on their own retained claims.
+record. New staging/PR incarnations receive a 128-bit random hostname beneath
+`preview.aidash.run`, stable through updates and stop/resume. The trusted edge
+uses a separately provisioned wildcard certificate from Secret Manager; its key
+is never mounted in the application or source build. Unknown Host values are
+rejected and no per-host ACME certificate is issued. Legacy fixed-host PRs retain
+the old preview TLS disk only until a verified update or retirement; new random
+hosts never bind that shared claim.
 
-Push/CI completion never creates a missing Environment or wakes a stopped one.
-An active shared develop or opted-in same-repository PR follows its current,
-CI-successful SHA. Test environments remain pinned. Updates wait for active
+With `release_flow_enabled`, successful protected-develop push CI creates or
+resumes staging automatically at that exact current SHA and creates a matching
+release PR. Other PR environments still need an explicit authorized request;
+opening a PR or completing its CI never creates or wakes a preview. Active
+opted-in same-repository PRs follow their current CI-successful SHA. Standalone
+test environments remain pinned. Updates wait for active
 work and coalesce to the latest authorized source. Explicit normal-capacity
 overrides persist across updates.
 
@@ -87,10 +92,12 @@ overrides persist across updates.
 - `tests/`, `check.sh`: provider-mocked Terraform tests, controller regressions,
   real PostgreSQL queries, the edge admission container check and Helm rendering.
 
-WIF trusts numeric repository/owner IDs and only
-`.github/workflows/gcp-environments.yml` on `refs/heads/main`. The workflow
-checks out privileged code and chart templates from the repository default
-branch, pinned to the one commit its first job resolved, so every build,
+WIF trusts numeric repository/owner IDs and exact workflow, execution branch
+and GitHub Environment claims (see
+[Deploy pipeline boundary](#deploy-pipeline-boundary)). Nonproduction automation executes on the
+protected configured `automation_branch`; production cloud jobs execute the
+production workflow on `main`. Both check out privileged code and charts from
+protected `main`, pinned to the one commit the first job resolved, so every build,
 publish and apply job of a run uses the same trusted code. Source images
 (`app`, `postgres`, `sandbox`) are built from an exact SHA
 in a separate job without cloud credentials, using trusted Dockerfiles. A
@@ -104,7 +111,9 @@ NATS and Caddy use reviewed upstream linux/amd64 digests in `control/images.py`.
 A publisher job copies all eight image archives to digest-addressed private
 registry entries without executing them; `release.json` records each digest and
 the trusted commit that built them. A retained release is deployed only by a
-controller running from that commit; after the default branch advances, a
+controller running from that commit; production promotes the complete staged
+bundle and its original controller revision after main CI, human release merge
+and Git tree equality checks; after the default branch advances, a
 resume of the same source rebuilds it instead of mixing image and chart
 revisions, while running Environments keep their deployed images.
 Fork heads require explicit write-collaborator authorization for that exact SHA;
@@ -141,12 +150,14 @@ configured. The project is never inferred from a developer's `gcloud` default.
    names. Use an operator identity allowed to enable APIs, create the bootstrap
    resources and grant their IAM roles. Authenticate Terraform using ADC, for
    example `gcloud auth application-default login`. Select `develop_branch`.
-2. Put this implementation on the repository's default branch (`main`) through
-   the normal review process. Select a deployable source containing Google OAuth,
+2. Publish the reviewed implementation to protected `main` and the configured
+   default `automation_branch` (`develop/0.1.0`) through the normal review process.
+   Privileged jobs pin the reviewed controller on `main`, independently of their
+   execution branch. Select a deployable source containing Google OAuth,
    trusted-proxy authentication rate limits, the existing runtime contract and
    successful `ci.yml` for its **exact SHA**. The app build explicitly refuses
-   sources missing either HTTP integration. `main` being the trusted automation branch does
-   not create a main production environment.
+   sources missing either HTTP integration. Enable production only after its
+   isolated account setup and acceptance checks in the release runbook pass.
 3. Copy `bootstrap/terraform.example.tfvars` to the ignored
    `bootstrap/terraform.tfvars` and fill the project/bucket IDs. Use Terraform
    1.14.8 (the workflow pin), then review and apply **only the shared foundation**:
@@ -176,11 +187,13 @@ configured. The project is never inferred from a developer's `gcloud` default.
    deliberately imported before enabling automation; do not overwrite unrelated
    A/AAAA/CNAME records. No Cloud DNS zone or static IP is used; each running Environment publishes its
    ephemeral L4 LoadBalancer IP.
-6. Configure a Google Web OAuth client with exact redirect URIs:
-   `https://develop.aidash.run/auth/callback`,
-   `https://preview.aidash.run/auth/callback`,
-   `https://test.aidash.run/auth/callback`.
-   Configure the corresponding authorized origins and consent-screen test users.
+6. Random staging/PR hosts require managed GCIP tenant bindings and the fixed
+   Firebase authentication helper. Configure exact OAuth/OIDC/SAML callbacks
+   for `https://<project>.firebaseapp.com/__/auth/handler`; the controller manages
+   the concrete preview authorized domains. Google OAuth does not accept
+   wildcard redirect URIs. Fixed test/production direct OAuth profiles use their
+   own exact `/auth/callback` URLs. Configure separate production clients and
+   consent-screen test users; never share production runtime secrets with PRs.
    Google login authenticates identity; existing Aidash registration approval,
    member mapping and workspace permissions still control access. Set up the
    initial operator/invited users using the deployed Google integration's
@@ -302,8 +315,9 @@ the `env` chart (PostgreSQL, NATS, edge, activity collector), runs a one-shot Jo
 for migrations, Home ledger initialization and activation provisioning, then
 installs the `app` chart. Readiness requires the server Deployment's
 `aidash.run/source-sha` annotation to equal the authorized SHA, complete rollouts,
-a ready Runner and the public HTTPS node identity. Only then is the edge
-LoadBalancer IP published in DNS and admission opened. A timeout leaves the
+a ready Runner and the public HTTPS node identity. The controller verifies the rollout/source, publishes the edge LoadBalancer IP
+in DNS, opens admission, then verifies public HTTPS and node identity before
+marking ready and queuing notifications. A timeout leaves the
 generation failed for operator inspection, without replaying unknown work.
 
 ## Idle stop, updates and failure recovery
@@ -341,7 +355,8 @@ loss, container restart) therefore resumes serving without a controller call, an
 any partial failure leaves it closed. An Environment without live Pods is already
 sealed.
 
-The stop threshold is 60 minutes. Reconciliation is scheduled every five minutes
+The nonproduction stop threshold is 60 minutes. Production has no idle stop,
+Spot capacity or automatic destroy path. Reconciliation is scheduled every five minutes
 and GitHub scheduling/startup can be delayed; **this is not an exact shutdown-time
 SLA**. PR-close cleanup has the same scheduling delay. If Actions is disabled or
 observation/IAM fails, an Environment can keep accruing charges; inspect failed
@@ -391,7 +406,9 @@ and IAM, Google login, SSE, DNS/TLS or a measured capacity limit. Before invitin
 users, exercise create, a real Shell/Python/file operation, long-running-work
 drain, one idle hour, stop/resume, PR replacement/close, Spot recovery and
 deletion; see the [Phase 4 handoff](../../docs/operations/issue-155-phase4.md).
-Backups and production availability are deferred.
+The new production workflow does not establish production backup/availability
+acceptance. Agree and verify the separate backup, restore, IAM, monitoring and
+recovery gates before enabling it; retained PVCs are not backups.
 
 ## Cost and external references
 
@@ -496,26 +513,224 @@ environment set to preserve immutable KMS names. See the
 [broker deployment guide](../../crates/aidash-broker/README.md) for the input
 contract and operator-only import steps for any pre-merge draft deployment.
 
-The existing deployment identity has shared-project
-`roles/iam.serviceAccountAdmin`, allowing it to change the IAM policy of any
-broker service account placed there and grant itself impersonation permission.
-An identity allowed to redeploy a future broker can also execute broker code
-that reads Key Material. The BYOK role-grant restriction does not close these paths.
-The deploy pipeline remains part of the v1 trust root. The human-run IAM deny
-policy to block broker impersonation and deployment entry-point hardening are
-tracked in [#151](https://github.com/kent8192/aidash/issues/151). A separate
-credential enclave is deferred. The existing shared-project deploy grant is
-retained here; no read identity is attached to it by this change.
+### Deploy pipeline boundary
+
+The deploy pipeline (GitHub Actions through Workload Identity Federation, acting as
+the `aidash-deploy` service account) remains part of the v1 trust root for Key
+Material (ADR 0005, decided 2026-10-09, #151). Two escalation paths exist; the first
+is closed in code, the second is hardened and detected but accepted.
+
+**Path 1, impersonation, is blocked.** The deploy service account holds
+`roles/iam.serviceAccountAdmin` in the shared project, which includes
+`iam.serviceAccounts.setIamPolicy`. Human-run bootstrap (`bootstrap/deploy_boundary.tf`)
+tags every Credential Broker service account with `<project>/aidash-credential-broker=broker`
+and attaches the project deny policy `aidash-deploy-broker-boundary`. For the deploy
+service account, on resources carrying that tag, it denies:
+
+| Permission (deny-policy name)                           | Why                                |
+| ------------------------------------------------------- | ---------------------------------- |
+| `iam.googleapis.com/serviceAccounts.setIamPolicy`       | grant itself token creation        |
+| `iam.googleapis.com/serviceAccounts.getAccessToken`     | mint a broker access token         |
+| `iam.googleapis.com/serviceAccounts.signBlob`           | sign as the broker                 |
+| `iam.googleapis.com/serviceAccounts.signJwt`            | sign as the broker                 |
+| `iam.googleapis.com/serviceAccounts.implicitDelegation` | use the broker in a delegate chain |
+| `iam.googleapis.com/serviceAccountKeys.create`          | create a broker key                |
+| `iam.googleapis.com/serviceAccounts.delete`             | delete, then restore, a broker     |
+| `iam.googleapis.com/serviceAccounts.undelete`           | restore a deleted broker account   |
+| `iam.googleapis.com/serviceAccounts.disable`            | disable a broker account           |
+| `iam.googleapis.com/serviceAccounts.getOpenIdToken`     | mint an OpenID token as the broker |
+
+Every other service account keeps working: the deploy identity still administers
+the runtime and node accounts. `iam.serviceAccounts.actAs` stays allowed because
+Cloud Run needs it to run the broker; bootstrap grants it
+(`roles/iam.serviceAccountUser` on each broker account), because the environments
+root can no longer bind anything on those accounts. The deploy identity holds no
+tag, deny-policy, monitoring or logging role, so it cannot untag a broker account,
+edit the policy or change alert policies. Turning off the Secret Manager audit
+configuration in the BYOK project is a separate route, covered by the BYOK project
+IAM alert below. `tests/test_deploy_boundary.py` classifies every
+role bound to the deploy identity and fails when a role carries one of these
+permissions without being covered by the deny policy, or when a new role has not
+been classified.
+
+**Path 2, broker redeploy, is the accepted residual risk.** The deploy identity can
+`actAs` the broker account and holds `roles/run.admin`, so it can ship a modified
+broker image, or any other Cloud Run service or job, Compute instance or GKE node
+pool that runs as that account, and read Key Material as the broker. It is hardened and detected,
+not prevented:
+
+- The broker image digest is reviewed code (`environments/broker-image.json`).
+  Terraform derives `us-central1-docker.pkg.dev/<project>/aidash/broker@<digest>`
+  from it and refuses an enabled broker without an approved digest or with a
+  different image. A broker change is therefore a digest change in a pull
+  request to `main`. The deployment configuration (`AIDASH_GCP_CONFIG`) cannot
+  override the digest: the controller refuses a `credential_brokers.<id>.image`
+  key.
+- Credentialed jobs run in protected GitHub Environments named by the WIF
+  condition; production deployments need the reviewed `production` (below).
+- Bootstrap-owned log alerts, sent to `security_alert_emails`, fire on:
+  - a new revision of a broker service, and on a Cloud Run service or job, Compute
+    instance (`insert`, `bulkInsert`, `setServiceAccount`, templates) or GKE cluster
+    or node pool create/update whose request names a broker account;
+  - any IAM policy change of a broker service or broker service account;
+  - `AccessSecretVersion` of BYOK secrets by any principal other than the broker
+    accounts. That is the only DATA_READ method of Secret Manager; `GetSecret`,
+    `GetSecretVersion` and `ListSecrets` are ADMIN_READ, which the BYOK audit
+    configuration does not enable, so the server's and deploy's routine metadata
+    reads produce no entries to alert on;
+  - any audit-config change to the BYOK project, and any project IAM change there
+    by a principal other than the deploy identity (Admin Activity log, which cannot
+    be turned off). The deploy identity's `setIamPolicy` there is limited by
+    `modifiedGrantsByRole.hasOnly(...)`; whether that attribute also constrains
+    `auditConfigs` is unverified (a #152 check), so a deploy change that drops
+    `DATA_READ` and carries an audit-config delta alerts, but deploy's binding-only
+    runtime-role changes stay quiet.
+
+Alerts cannot tell a malicious workload that runs as a broker account from the
+real broker: its reads come from an excluded principal, so only the revision and
+deployment alerts detect it. They only cover the services listed above; any other
+service that can run as a broker account (for example Cloud Functions or Batch) is
+not alerted on. The deny policy covers deletion and disabling of broker accounts.
+
+**Deferred.** A separately deployed credential enclave that the deploy identity
+cannot reach is deferred, for Enterprise or for growth in key count. Building the
+broker in the trusted pipeline, so its digest lands in `release.json` like the
+other images, is also deferred; today the broker image is built by an operator.
+
+#### Protected deploy Environments
+
+Each WIF-trusted workflow runs its credentialed jobs in exactly one GitHub
+Environment, and the bootstrap provider condition names that Environment next to
+the repository IDs, the exact workflow ref and the execution branch:
+
+| Workflow                       | Credentialed jobs             | Environment                | Execution branch          | Protection                                          |
+| ------------------------------ | ----------------------------- | -------------------------- | ------------------------- | --------------------------------------------------- |
+| `gcp-environments.yml`         | `prepare`, `publish`, `apply` | `nonproduction`            | exact `automation_branch` | exact-branch policy                                 |
+| `gcp-production.yml`           | `prepare`, `apply`            | `production`               | `main`                    | `main` only; **required reviewers**, no self-review |
+| `deployment-notifications.yml` | `nonproduction`, `production` | `deployment-notifications` | exact `automation_branch` | exact-branch policy; separate reader identity       |
+| `deployment-certificate.yml`   | `renew`                       | `certificate-renewal`      | exact `automation_branch` | exact-branch policy; separate renewal identity      |
+
+A nonproduction bootstrap trusts only the `nonproduction` deploy assertion and a
+production bootstrap only the `production` one, so neither tier's workflow can
+obtain the other tier's identity. GitHub only emits the `environment` claim for
+jobs that declare an Environment, so a job on an unprotected ref or without its
+Environment cannot obtain credentials. The `intake` and `build` jobs and
+`gcp-check.yml` hold no cloud credentials and need no Environment.
+`infra/delivery/github` creates these Environments and their branch policies.
+
+What the production reviewer gate covers: every production deployment, which only
+promotes the staged, already validated image bundle. Nonproduction builds and
+deploys CI-approved commits without an Environment approval; all of its runs use
+privileged code from the protected `main` checkout, so the broker digest and IAM
+changes are gated by review of the pull request to `main`.
+
+#### Human steps
+
+1. **Merge this change to `main` first.** The workflow change is harmless before
+   WIF requires it; applying the new attribute condition first would lock out the
+   current workflow.
+2. **Create the protected GitHub Environments** with `infra/delivery/github` (see
+   `docs/operations/release-deployment.md`); it disables administrator bypass on
+   each.
+3. **Apply bootstrap** with the new inputs in `bootstrap/terraform.tfvars`:
+   `security_alert_emails` (required once `byok_broker_environments` is set). The operator needs deny-policy
+   (`roles/iam.denyAdmin`), tag administration (`roles/resourcemanager.tagAdmin`
+   plus tag user on the service accounts), alert-policy and notification-channel
+   administration and Service Usage on both projects. Review the plan: it adds the
+   tag key and value, one tag binding per broker account, the deny policy, three
+   alert policies, email channels, the `actAs` grants and the new WIF condition.
+4. **Approve and record a broker image digest** (below) before enabling a broker.
+5. _Only if a broker is already live from an earlier draft:_ let the environments
+   root from this commit apply before bootstrap applies the deny policy. It removes
+   the old `google_service_account_iam_member.deploy` binding on the broker account
+   (bootstrap owns that grant now); after the deny exists, that removal would call
+   the denied `setIamPolicy` and fail. No broker has been applied at the time of
+   writing.
+
+#### Updating the broker image digest
+
+1. Build from the reviewed commit: `docker buildx build --platform linux/amd64
+--provenance=false --sbom=false -f crates/aidash-broker/Dockerfile -t
+us-central1-docker.pkg.dev/<project>/aidash/broker:<sha> --push .`
+2. Read the manifest digest: `docker buildx imagetools inspect
+us-central1-docker.pkg.dev/<project>/aidash/broker:<sha>`.
+3. Put it in `infra/gcp/environments/broker-image.json` (`{"digest": "sha256:..."}`)
+   in a pull request; reviewers verify it against the reviewed commit.
+4. After merge, the next apply deploys that digest. Never set `image` in
+   `AIDASH_GCP_CONFIG`.
+
+The Dockerfile pins its base images by digest, but the build is not bit-for-bit
+reproducible: `apt-get update` and Cargo cache mounts are not pinned. A reviewer can
+rebuild and compare behavior, not the digest. The registry also accepts pushes from
+the deploy identity; only the digest in `main` is ever deployed, and a revision
+deployed outside Terraform triggers the revision alert.
+
+#### Evidence still required from #152 (sandbox)
+
+Nothing in this change was applied to a cloud project. Local tests prove the
+Terraform shape against a mocked provider only. The Issue's acceptance criteria
+need these results from a disposable sandbox project with a copy of the bootstrap
+(commands are examples; run as the deploy service account unless stated):
+
+1. **Deny support.** Google lists all ten permissions as supported in
+   [deny policies](https://docs.cloud.google.com/iam/docs/deny-permissions-support),
+   but confirm in the sandbox: `gcloud iam policies get
+aidash-deploy-broker-boundary --attachment-point=cloudresourcemanager.googleapis.com/projects/<project> --kind=denypolicies`,
+   then for the broker account `B` run
+   `gcloud iam service-accounts add-iam-policy-binding B --member=... --role=roles/iam.serviceAccountTokenCreator`,
+   `gcloud auth print-access-token --impersonate-service-account=B`,
+   `gcloud iam service-accounts sign-blob`, `sign-jwt`, `keys create`, and an
+   impersonation chain that lists `B` as an intermediate delegate
+   (`implicitDelegation`). Each must fail with a deny-policy `PERMISSION_DENIED`.
+   Repeat for `serviceAccounts.delete`, `undelete`, `disable` and
+   `getOpenIdToken`. Record any permission that is not denied.
+2. **Tag targeting.** Confirm service accounts accept the tag binding
+   (`gcloud resource-manager tags bindings list --location=global
+--parent=//iam.googleapis.com/projects/<project>/serviceAccounts/<unique-id>`) and that the
+   deny applies only to tagged accounts: the same `setIamPolicy` succeeds on an
+   untagged control account (Workload Identity binding for a runtime account must
+   keep working), fails on `B`, and succeeds on `B` again after a human removes the
+   tag binding. If service accounts cannot carry tags or `resource.matchTag` does
+   not match them, the fallbacks are a project-wide deny without a condition of
+   the five impersonation and key permissions (the deploy identity needs none of
+   them anywhere), plus a separate decision for `setIamPolicy`, which it does need
+   on runtime accounts. Also prove the deploy identity cannot detach the tag
+   binding (`gcloud resource-manager tags bindings delete`), and that deleting and
+   undeleting a broker account does not restore access: the tag binding, the deny
+   and the `actAs` grant must all still apply afterwards (or deletion stays
+   denied).
+   Also check that `modifiedGrantsByRole.hasOnly(...)` on the BYOK project
+   rejects an `auditConfigs`-only `setIamPolicy` by the deploy identity; if it
+   passes, the Key Material alert can be blinded and the BYOK project IAM alert
+   is the only defence.
+3. **Unprotected refs.** Run the workflow from a feature branch, and from the
+   execution branch with a job lacking `environment:`; neither may obtain
+   credentials. A nonproduction job in `nonproduction` on `automation_branch` must,
+   a nonproduction job must not obtain the production identity, and a production
+   `apply` must wait for the `production` reviewer. Log the OIDC claims
+   (`environment`, `ref`, `workflow_ref`) of each.
+4. **Alerts fire.** Deploy a new broker revision; set a broker service IAM policy
+   and a broker account policy as a human; call `AccessSecretVersion` on a BYOK
+   secret as a non-broker identity (a denied attempt counts). Confirm each
+   reaches `security_alert_emails`, and that the broker's own reads do not. Verify
+   the audit method names, the broker account's `resourceName` shape (email versus
+   unique ID), that the structured and substring `protoPayload.request` matches fire for
+   a Cloud Run service or job, a Compute instance and a GKE node pool created
+   with a broker service account, that the `data_access` log exists, and that
+   removing the BYOK audit configuration raises the BYOK project IAM alert.
 
 ## GCIP sign-in
 
-Enable `gcip_enabled` in bootstrap and supply `environment_domains` matching the environment stacks' `domain` values. Bootstrap enables Identity Platform multi-tenancy and derives the develop, preview and test authorized callback hosts, including the project's default Firebase auth domain. Export the sensitive `gcip_web_api_key` output into the public SDK configuration field; it is not an Admin API credential.
+Enable `gcip_enabled` in bootstrap and supply `environment_domains` matching the environment stacks' fixed domains. Bootstrap enables Identity Platform multi-tenancy and initializes the Firebase helper and fixed test or production domain. The lifecycle controller manages concrete random staging/PR authorized domains. Export the sensitive `gcip_web_api_key` output into the public SDK configuration field; it is not an Admin API credential.
 
-Each environment serves Firebase's sign-in helper from its public origin. The controller sets the environment's `auth_helper = "public_origin"` in the same Terraform apply that deploys a release, so the module switches the SAML ACS URL and outputs the setting together with that deployment. The controller copies the output into the runtime secret and, from the validated GCIP settings, sets the `env` chart's `edge.firebaseProject`. An environment whose running release was deployed before this setting keeps `auth_helper = "firebase"`: its SAML ACS URL stays `https://<project>.firebaseapp.com/__/auth/handler`, a GCIP refresh that upgrades only its `app` release omits the key, and its edge proxies nothing. With `public_origin`, the edge's Caddy transparently proxies `/__/auth/*` and `/__/firebase/init.json` to `https://<project>.firebaseapp.com`, ahead of Nginx admission. It strips `Cookie` and `Authorization` from upstream requests and `Set-Cookie` from upstream responses. The helper grants no authority: `POST /auth/gcip/exchange` stays behind admission, so a draining Environment still refuses sign-in. After that deployment, the SAML ACS URL (`sp_config.callback_uri`) is `https://<hostname>/__/auth/handler` per environment. Google and OIDC redirect URIs live at the identity providers, outside Terraform. Register these exact URIs with every Google OAuth client and OIDC provider used by `gcip_tenants`, and as the ACS URL at every SAML IdP:
-`https://develop.aidash.run/__/auth/handler`,
-`https://preview.aidash.run/__/auth/handler`,
-`https://test.aidash.run/__/auth/handler`.
-Register them before rolling out a release that sets `auth_helper`. After rollout, remove the `https://<project>.firebaseapp.com/__/auth/handler` URIs. Email action links stay on `<project>.firebaseapp.com`, because Identity Platform has one action URL per project and the environments share that project.
+Fixed test/production environments can serve Firebase's sign-in helper from
+their public origin. Random staging/PR hosts retain the fixed Firebase helper
+and manage exact authorized domains; they never use wildcard OAuth callbacks. The controller sets `auth_helper = "firebase"` for random hosts and `auth_helper = "public_origin"` for fixed test/production hosts in the same Terraform apply that deploys a release. The module switches the SAML ACS URL and outputs that setting together with the deployment. The controller copies the output into the runtime secret and, for `public_origin`, sets the `env` chart's `edge.firebaseProject`. An older running release keeps its existing helper until an authorized deployment. With `public_origin`, the edge's Caddy transparently proxies `/__/auth/*` and `/__/firebase/init.json` to `https://<project>.firebaseapp.com`, ahead of Nginx admission. It strips `Cookie` and `Authorization` from upstream requests and `Set-Cookie` from upstream responses. The helper grants no authority: `POST /auth/gcip/exchange` stays behind admission, so a draining Environment still refuses sign-in. Google and OIDC redirect URIs live at the identity providers, outside Terraform. Register these exact URIs with every Google OAuth client and OIDC provider used by `gcip_tenants`, and as the ACS URL at every SAML IdP:
+
+`https://<project>.firebaseapp.com/__/auth/handler` for random staging/PR,
+`https://test.aidash.run/__/auth/handler` for test, and
+`https://<production-hostname>/__/auth/handler` for the separate production project.
+Register them before rolling out a release that sets `auth_helper`. Retain the fixed Firebase callback while random staging/PR hosts use it. Email action links stay on `<project>.firebaseapp.com`, because Identity Platform has one action URL per project.
 
 Supply `gcip_tenants` to the environment controller configuration. For example, `{"acme":{"tenant":"acme","password_sign_up":true,"google_client_id":"CLIENT_ID","sign_in_domains":["acme.example"]}}` creates a fresh pool per environment incarnation. OIDC and SAML provider maps use `oidc.*` and `saml.*` IDs; those SSO pools must disable password signup. `sign_in_domains` lists lowercase ASCII email domains (IDN as `xn--` punycode, exact match, no wildcards) that route `POST /auth/login` email discovery to that pool; a domain may appear in only one pool. It is routing only and grants no authority: membership is still decided by the pool and Tenant Binding, and removing a domain only stops routing. Staff verify domain ownership out of band, and review must reject public mail domains (for example `gmail.com`). OAuth client secrets are separate `gcip_idp_secrets` Terraform inputs, supplied by `AIDASH_GCIP_IDP_SECRETS` in the controller (the lifecycle workflow reads the repository secret `GCP_GCIP_IDP_SECRETS` as this JSON map). They are confined to private inputs and protected Terraform state. Each module outputs its GCIP Tenant IDs, runtime service-account email, Tenant Bindings, providers and password-signup list. The controller merges these settings into the environment runtime secret, preserving its other settings and refusing coexistence with OIDC.
 
@@ -527,10 +742,21 @@ The Google 7.46.1 provider has no tenant IAM resource. The approved controller a
 
 ### Tenant MFA
 
-Each pool declares its MFA Requirement as `mfa.state` in `gcip_tenants`; omitting it declares `disabled`. Only `disabled` is accepted until the web and desktop sign-in flows resolve and enroll second factors (#201), and SSO pools must stay `disabled` because their identity provider performs MFA. The Google provider has no tenant MFA arguments ([terraform-provider-google#17912](https://github.com/hashicorp/terraform-provider-google/issues/17912)), so the module only outputs each Tenant ID's declared requirement and the controller owns the tenant's `mfaConfig` through [tenants.get](https://docs.cloud.google.com/identity-platform/docs/reference/rest/v2/projects.tenants/get) and [tenants.patch](https://docs.cloud.google.com/identity-platform/docs/reference/rest/v2/projects.tenants/patch) with `updateMask=mfaConfig`. Aidash never reads second-factor claims as authority.
+Each pool declares its MFA Requirement as `mfa.state` in `gcip_tenants`: `disabled` (the default), `enabled` (users with an enrolled second factor are challenged) or `mandatory` (every user must hold a second factor). Only password and Google pools may use `enabled` or `mandatory`: GCIP applies tenant MFA to every first-factor provider except phone, anonymous and Apple Game Center, and the web sign-in page resolves a TOTP challenge and enrolls an authenticator app for either. SSO pools (OIDC or SAML) must stay `disabled` because their identity provider performs MFA. TOTP is the only second factor; SMS is not offered. `mfa.totp.adjacent_intervals` (an integer from 0 to 10, default 5, as [documented for TOTP MFA](https://firebase.google.com/docs/auth/web/totp-mfa)) is the number of adjacent 30-second steps GCIP accepts on either side of the current code to absorb clock skew; it is ignored while the Requirement is `disabled`.
 
-The controller compares the normalized `mfaConfig` (state, enabled providers and enabled provider configs; a missing config is disabled) on every scheduled reconciliation for every retained environment, running or stopped, and before a host reopens admission inside each GCIP refresh and after each deployment apply. Drift is overwritten with the complete declared config, reported as a `GCIP MFA drift corrected` workflow warning naming the environment, Tenant ID and fields, and recorded as `gcip_mfa_drift_at` on the environment entry. Each correction is reported and recorded before the next tenant is checked, so a later tenant's failure never loses it. A failed or deadline-interrupted scheduled correction sets the pending marker, so the next run fences the host and retries through the GCIP refresh; a failed deployment-time correction keeps the deployment gated. MFA declarations are excluded from both GCIP digests: changing them never fences hosts. Environments whose Terraform state predates the `mfa` output are reconciled from their next apply, before a deployment that performs it unseals the host.
+```hcl
+gcip_tenants = {
+  acme = {
+    tenant = "acme"
+    mfa    = { state = "mandatory", totp = { adjacent_intervals = 2 } }
+  }
+}
+```
+
+The Google provider has no tenant MFA arguments ([terraform-provider-google#17912](https://github.com/hashicorp/terraform-provider-google/issues/17912)), so the module only outputs each Tenant ID's declared `{state, totp_adjacent_intervals}` and the controller owns the tenant's `mfaConfig` through [tenants.get](https://docs.cloud.google.com/identity-platform/docs/reference/rest/v2/projects.tenants/get) and [tenants.patch](https://docs.cloud.google.com/identity-platform/docs/reference/rest/v2/projects.tenants/patch) with `updateMask=mfaConfig`. `enabled` and `mandatory` hold `{state: ENABLED|MANDATORY, enabledProviders: [], providerConfigs: [{state: ENABLED, totpProviderConfig: {adjacentIntervals: N}}]}`; `enabledProviders` lists SMS factors only, so TOTP is switched on through its provider config. The controller also publishes the pools declared `mandatory` to the server as the runtime setting `mfa_mandatory`, which only lets the sign-in page lead a user with no second factor through enrollment before the exchange. GCIP's documented client flow lets a user with no enrolled factor sign in with valid first-factor credentials and leaves requiring enrollment to the app; whether a `mandatory` tenant already rejects that sign-in is unconfirmed (see the live check in the PR for #201), so the sign-in page leads such a user through enrollment before the exchange and Aidash does not otherwise enforce it, because it never reads second-factor claims as authority (the verified sign-in is identical with or without `firebase.sign_in_second_factor`).
+
+The controller compares the normalized `mfaConfig` (state, enabled providers and enabled provider configs; a missing config is disabled) on every scheduled reconciliation for every retained environment, running or stopped, and before a host reopens admission inside each GCIP refresh and after each deployment apply. Drift is overwritten with the complete declared config, reported as a `GCIP MFA drift corrected` workflow warning naming the environment, Tenant ID and fields, and recorded as `gcip_mfa_drift_at` on the environment entry. Each correction is reported and recorded before the next tenant is checked, so a later tenant's failure never loses it. A failed or deadline-interrupted scheduled correction sets the pending marker, so the next run fences the host and retries through the GCIP refresh; a failed deployment-time correction keeps the deployment gated. MFA declarations are excluded from both GCIP digests: changing them never fences hosts. They have their own digest instead (`gcip_mfa_revision`, normalized to the defaults, so declaring `disabled` explicitly is no change): when it differs from the environment's recorded value, the controller runs an unfenced apply so the module output carries the new declaration, then the GCIP refresh enforces it on the tenant and republishes the `mfa_mandatory` hint, which travels in the runtime configuration beside `password_sign_up`, reloading a running host. Environments whose Terraform state predates the `mfa` output are reconciled from their next apply, before a deployment that performs it unseals the host.
 
 `roles/identityplatform.viewer` includes `firebaseauth.users.get` in the [official permission list](https://docs.cloud.google.com/iam/docs/roles-permissions/identityplatform). Its applicability and effective isolation of tenant `accounts:lookup` remain **documented assumptions awaiting a sandbox test**. Verify own-pool lookup succeeds and another environment's pool and project-root lookup fail before rollout; failure must stop rollout and return to the lead, never broaden runtime IAM. The trusted deploy principal holds Identity Platform administration to create pools and reconcile their policies. Password-change/reset behavior for `validSince` also awaits sandbox verification; the server relies only on the returned timestamp.
 
-Provider-mocked Terraform cases cover multi-tenancy, callback domains, per-pool signup, IdP resources and the MFA Requirement default and restriction. Fake REST controller tests cover grant creation, repeated reconciliation, unrelated bindings, etag retry, destruction, and tenant MFA drift correction, recording and pending retry. Rust and Playwright use signed fixtures; the Firebase Auth Emulator is not used.
+Provider-mocked Terraform cases cover multi-tenancy, callback domains, per-pool signup, IdP resources and the MFA Requirement default, TOTP window range and SSO restriction. Fake REST controller tests cover grant creation, repeated reconciliation, unrelated bindings, etag retry, destruction, and tenant MFA drift correction (including the complete `enabled`/`mandatory` TOTP config), recording and pending retry. Rust and Playwright use signed fixtures; the Firebase Auth Emulator is not used.

@@ -30,6 +30,10 @@ pub struct ApprovalCard {
 	pub action: String,
 	pub expires_at: Option<DateTime<Utc>>,
 	pub grant_id: Option<Uuid>,
+	/// For a Web disclosure approval, the exact query or page address that
+	/// would leave the Node.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub disclosure: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, schemars::JsonSchema, reinhardt::Validate)]

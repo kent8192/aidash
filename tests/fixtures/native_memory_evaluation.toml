@@ -103,3 +103,82 @@ id = 2
 learned_at = "2025-12-31T00:00:00Z"
 deliveries = 0
 pinned = false
+
+# Deterministic paired near-duplicate fixture (#139). Both variants use identical
+# authority, candidates, relevance scores and vectors; only the policy's
+# `diversity_lambda_millionths` differs. The delivery budget fits exactly two
+# Units, so three paraphrases of one fact cannot also leave room for the distinct
+# fact unless recall diversifies. No model or credential is involved.
+[[diversity_cases]]
+id = "english-near-duplicate-employer"
+language = "en-US"
+query = "Where does Aiko work and who is the manager?"
+lambda_millionths = 700000
+labels = ["employer", "manager"]
+expected_useful_recall_without = 0.5
+expected_useful_recall_with = 1.0
+
+[[diversity_cases.units]]
+id = 1
+text = "Aiko works at the Tokyo office."
+label = "employer"
+score = 1.0
+vector = [1.0, 0.02]
+
+[[diversity_cases.units]]
+id = 2
+text = "Aiko is employed at the Tokyo office."
+label = "employer"
+score = 0.95
+vector = [0.99, 0.03]
+
+[[diversity_cases.units]]
+id = 3
+text = "The Tokyo office is where Aiko works."
+label = "employer"
+score = 0.9
+vector = [0.98, 0.04]
+
+[[diversity_cases.units]]
+id = 4
+text = "Aiko's manager is Ren."
+label = "manager"
+score = 0.8
+vector = [0.05, 1.0]
+
+[[diversity_cases]]
+id = "japanese-near-duplicate-employer"
+language = "ja-JP"
+query = "愛子はどこで働いていて、上司は誰ですか。"
+lambda_millionths = 700000
+labels = ["employer", "manager"]
+expected_useful_recall_without = 0.5
+expected_useful_recall_with = 1.0
+
+[[diversity_cases.units]]
+id = 1
+text = "愛子は東京オフィスで働いている。"
+label = "employer"
+score = 1.0
+vector = [1.0, 0.02]
+
+[[diversity_cases.units]]
+id = 2
+text = "愛子は東京オフィスに勤務している。"
+label = "employer"
+score = 0.95
+vector = [0.99, 0.03]
+
+[[diversity_cases.units]]
+id = 3
+text = "東京オフィスが愛子の職場である。"
+label = "employer"
+score = 0.9
+vector = [0.98, 0.04]
+
+[[diversity_cases.units]]
+id = 4
+text = "愛子の上司は蓮である。"
+label = "manager"
+score = 0.8
+vector = [0.05, 1.0]

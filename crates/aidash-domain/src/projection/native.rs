@@ -273,7 +273,8 @@ fn single(entry: &HistoryEntry, history: &mut Vec<NativeMessage>, markers: &mut 
 			envelope: tool_envelope(entry.seq, call, json!({"call": call, "result": result})),
 		}),
 		ContextEvent::RunMessageReadRequired { .. }
-		| ContextEvent::RunMessageSummaryRequired { .. } => {
+		| ContextEvent::RunMessageSummaryRequired { .. }
+		| ContextEvent::CitationCorrectionRequired { .. } => {
 			markers.push(serde_json::to_value(&entry.event).expect("serializable marker"));
 		}
 		// Only reached for an Assistant event without a turn, which cannot happen.

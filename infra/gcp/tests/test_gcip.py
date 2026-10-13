@@ -10,6 +10,7 @@ from urllib.error import HTTPError
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "control"))
 from gcip import TenantIAM, TenantMFA, READ_ROLE, reconcile_environment, reconcile_mfa
+import gcip
 import controller
 
 MEMBER = "serviceAccount:runtime@aidash-fixture.iam.gserviceaccount.com"
@@ -160,7 +161,68 @@ class FakeMFA(TenantMFA):
 
 
 DISABLED = {"state": "DISABLED", "enabledProviders": [], "providerConfigs": []}
-DECLARED = dict(OUTPUT, gcip=dict(OUTPUT["gcip"], mfa={"pool-a": "disabled"}))
+def declare(state, intervals=5):
+    return {"state": state, "totp_adjacent_intervals": intervals}
+
+
+def totp(state, intervals=5):
+    return {
+        "state": state,
+        "enabledProviders": [],
+        "providerConfigs": [{"state": "ENABLED", "totpProviderConfig": {"adjacentIntervals": intervals}}],
+    }
+
+
+DECLARED = dict(OUTPUT, gcip=dict(OUTPUT["gcip"], mfa={"pool-a": declare("disabled")}))
+
+
+class AuthorizedDomainTests(unittest.TestCase):
+    def test_random_domain_lifecycle_preserves_existing_domains_and_other_configuration(self):
+        hostname = "0123456789abcdef" * 2 + ".preview.aidash.run"
+        output = dict(OUTPUT, hostname=hostname, gcip=dict(OUTPUT["gcip"], auth_helper="firebase"))
+        configuration = {
+            "name": "projects/aidash-fixture/config",
+            "authorizedDomains": ["aidash.run", "operator.example", "aidash-fixture.firebaseapp.com"],
+            "signIn": {"email": {"enabled": False}},
+        }
+        original = deepcopy(configuration)
+        writes = []
+
+        def request(url, method, body=None):
+            self.assertEqual(url.split("?")[0], "https://identitytoolkit.googleapis.com/admin/v2/projects/aidash-fixture/config")
+            if method == "GET":
+                self.assertIsNone(body)
+                return deepcopy(configuration)
+            self.assertEqual((method, url.split("?")[1]), ("PATCH", "updateMask=authorizedDomains"))
+            self.assertEqual(set(body), {"authorizedDomains"})
+            writes.append(deepcopy(body))
+            configuration.update(body)
+            return deepcopy(configuration)
+
+        with patch("gcip.admin_request", side_effect=request):
+            gcip.ensure_authorized_domain(output)
+            gcip.ensure_authorized_domain(output)
+            self.assertEqual(configuration["authorizedDomains"], original["authorizedDomains"] + [hostname])
+            gcip.ensure_authorized_domain(output, enabled=False)
+            gcip.ensure_authorized_domain(output, enabled=False)
+        self.assertEqual(len(writes), 2)
+        self.assertEqual(configuration, original)
+
+    def test_random_domains_require_managed_firebase_auth_and_exact_hostname(self):
+        hostname = "a" * 32 + ".preview.aidash.run"
+        invalid = [
+            {"hostname": hostname},
+            dict(OUTPUT, hostname=hostname),
+            dict(OUTPUT, hostname="*.preview.aidash.run"),
+            dict(OUTPUT, hostname="aidash.run.preview.aidash.run"),
+            dict(OUTPUT, hostname=hostname, gcip=dict(OUTPUT["gcip"], auth_helper="firebase", project_id="../other")),
+        ]
+        with patch("gcip.admin_request") as request:
+            for output in invalid:
+                with self.subTest(output=output), self.assertRaises(ValueError):
+                    gcip.ensure_authorized_domain(output)
+            gcip.ensure_authorized_domain(dict(OUTPUT, hostname="test.aidash.run"))
+        request.assert_not_called()
 
 
 class TenantMFATests(unittest.TestCase):
@@ -192,12 +254,51 @@ class TenantMFATests(unittest.TestCase):
         self.assertEqual(dict(reconcile_mfa(OUTPUT, api=api)), {})
         self.assertFalse(api.patches)
 
+    def test_enabled_and_mandatory_requirements_hold_the_complete_totp_config(self):
+        for state, intervals in (("enabled", 5), ("mandatory", 0), ("mandatory", 10)):
+            output = dict(OUTPUT, gcip=dict(OUTPUT["gcip"], mfa={"pool-a": declare(state, intervals)}))
+            with self.subTest(state=state, intervals=intervals):
+                # A new tenant has no mfaConfig: every declared field is drift.
+                api = FakeMFA({"name": "projects/aidash-fixture/tenants/pool-a"})
+                self.assertEqual(dict(reconcile_mfa(output, api=api)), {"pool-a": ["providerConfigs", "state"]})
+                self.assertEqual(api.patches, [{"mfaConfig": totp(state.upper(), intervals)}])
+                self.assertEqual(dict(reconcile_mfa(output, api=api)), {})
+                self.assertEqual(len(api.patches), 1)
+
+    def test_requirement_changes_and_factor_drift_are_corrected(self):
+        enabled = dict(OUTPUT, gcip=dict(OUTPUT["gcip"], mfa={"pool-a": declare("enabled", 3)}))
+        for actual, fields in (
+            (totp("MANDATORY", 3), ["state"]),
+            (totp("ENABLED", 5), ["providerConfigs"]),
+            ({"state": "ENABLED", "enabledProviders": ["PHONE_SMS"], "providerConfigs": totp("ENABLED", 3)["providerConfigs"]}, ["enabledProviders"]),
+            ({"state": "ENABLED", "providerConfigs": [{"state": "DISABLED", "totpProviderConfig": {"adjacentIntervals": 3}}]}, ["providerConfigs"]),
+            (dict(totp("ENABLED", 3), providerConfigs=[]), ["providerConfigs"]),
+        ):
+            with self.subTest(actual=actual):
+                api = FakeMFA({"mfaConfig": actual})
+                self.assertEqual(dict(reconcile_mfa(enabled, api=api)), {"pool-a": fields})
+                self.assertEqual(api.patches, [{"mfaConfig": totp("ENABLED", 3)}])
+        # Lowering a Requirement to disabled removes the TOTP provider config entirely.
+        api = FakeMFA({"mfaConfig": totp("MANDATORY")})
+        self.assertEqual(dict(reconcile_mfa(DECLARED, api=api)), {"pool-a": ["providerConfigs", "state"]})
+        self.assertEqual(api.patches, [{"mfaConfig": DISABLED}])
+
     def test_unsupported_requirement_is_refused_before_any_write(self):
-        api = FakeMFA({"mfaConfig": {"state": "ENABLED"}})
-        output = dict(OUTPUT, gcip=dict(OUTPUT["gcip"], mfa={"pool-a": "mandatory"}))
-        with self.assertRaisesRegex(ValueError, "Unsupported MFA Requirement"):
-            dict(reconcile_mfa(output, api=api))
-        self.assertFalse(api.patches)
+        for declared in (
+            "mandatory",
+            declare("required"),
+            declare("enabled", 11),
+            declare("enabled", -1),
+            declare("enabled", 2.5),
+            declare("enabled", True),
+            {"state": "enabled"},
+        ):
+            with self.subTest(declared=declared):
+                api = FakeMFA({"mfaConfig": {"state": "ENABLED"}})
+                output = dict(OUTPUT, gcip=dict(OUTPUT["gcip"], mfa={"pool-a": declared}))
+                with self.assertRaisesRegex(ValueError, "Unsupported MFA Requirement"):
+                    dict(reconcile_mfa(output, api=api))
+                self.assertFalse(api.patches)
 
     def test_a_later_tenant_failure_cannot_hide_an_earlier_correction(self):
         class LaterFailure(FakeMFA):
@@ -207,7 +308,7 @@ class TenantMFATests(unittest.TestCase):
                 return super().call(method, resource, body)
 
         api = LaterFailure({"mfaConfig": {"state": "ENABLED"}})
-        output = dict(OUTPUT, gcip=dict(OUTPUT["gcip"], tenant_ids=["pool-a", "pool-b"], mfa={"pool-a": "disabled", "pool-b": "disabled"}))
+        output = dict(OUTPUT, gcip=dict(OUTPUT["gcip"], tenant_ids=["pool-a", "pool-b"], mfa={"pool-a": declare("disabled"), "pool-b": declare("disabled")}))
         corrections = reconcile_mfa(output, api=api)
         # The caller records pool-a's correction before pool-b is touched.
         self.assertEqual(next(corrections), ("pool-a", ["state"]))
@@ -230,7 +331,7 @@ class TenantMFATests(unittest.TestCase):
             patch("gcip.run", return_value=b"token"),
             patch("gcip.urllib.request.urlopen", return_value=Response()) as request,
         ):
-            TenantMFA().reconcile("aidash-fixture", "pool-a", "disabled")
+            TenantMFA().reconcile("aidash-fixture", "pool-a", declare("disabled"))
         read, write = (call.args[0] for call in request.call_args_list)
         base = "https://identitytoolkit.googleapis.com/v2/projects/aidash-fixture/tenants/pool-a"
         self.assertEqual((read.get_method(), read.full_url, read.data), ("GET", base, None))
@@ -287,6 +388,33 @@ class RuntimeConfigTests(unittest.TestCase):
                 json.loads(additions[0]["data"])["dashboard"]["gcip"]["web_api_key"],
                 "rotated",
             )
+
+    def test_mandatory_pools_reach_the_runtime_as_a_sign_in_hint(self):
+        raw = {"dashboard": {"gcip": {"web_api_key": "public"}}}
+
+        def command(*args, **kwargs):
+            if "list" in args:
+                return b'[{"name":"projects/aidash-fixture/secrets/runtime/versions/1","state":"ENABLED"}]'
+            if "access" in args:
+                return json.dumps(raw).encode()
+            if "add" in args:
+                raw.clear()
+                raw.update(json.loads(kwargs["data"]))
+            return b""
+
+        def hint(mfa):
+            output = deepcopy(OUTPUT)
+            if mfa is not None:
+                output["gcip"]["mfa"] = mfa
+            controller.provision_secret({"project_id": "aidash-fixture"}, output, "test")
+            return raw["dashboard"]["gcip"]["mfa_mandatory"]
+
+        with patch("controller.run", side_effect=command):
+            # State written before tenant MFA existed lists none.
+            self.assertEqual(hint(None), [])
+            self.assertEqual(hint({"pool-a": declare("enabled")}), [])
+            self.assertEqual(hint({"pool-a": declare("mandatory")}), ["pool-a"])
+            self.assertEqual(hint({"pool-a": declare("disabled")}), [])
 
     def test_auth_helper_follows_the_applied_release_output(self):
         raw = {"dashboard": {"gcip": {"web_api_key": "public"}}}

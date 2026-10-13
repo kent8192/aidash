@@ -8,5 +8,26 @@
   "domain": "aidash.run",
   "repository": "kent8192/aidash",
   "develop_branch": "develop/0.1.0",
-  "node_count": { "develop": 1, "test": 1, "pr": 1 }
+  "credential_brokers": {
+    "test": {
+      "enabled": false,
+      "byok_project_id": "your-aidash-byok-project",
+      "secret_prefix": "aidash-test-cred-",
+      "broker_service_account_email": "aidash-test-broker@your-aidash-project.iam.gserviceaccount.com",
+      "signing_key_id": "projects/your-aidash-project/locations/us-central1/keyRings/aidash-test-capability/cryptoKeys/capability"
+    }
+  },
+  "node_count": {
+    "develop": 1,
+    "test": 1,
+    "pr": 1
+  },
+  "deployment_tier": "nonproduction",
+  "automation_branch": "develop/0.1.0",
+  "trusted_branch": "main",
+  "notification_bucket": "your-aidash-project-notifications",
+  "notification_service_account": "aidash-notification-reader@your-aidash-project.iam.gserviceaccount.com",
+  "release_flow_enabled": true,
+  "release_app_bot_login": "your-release-app[bot]",
+  "preview_tls_secret": "aidash-preview-wildcard-tls"
 }

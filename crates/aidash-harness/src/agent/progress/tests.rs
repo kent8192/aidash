@@ -51,3 +51,26 @@ fn offers_merge_until_the_pending_bound_then_drop() {
 	);
 	assert!(pending.items.len() < MAX_PENDING_BYTES / chunk.len());
 }
+
+#[rstest]
+fn citing_runs_stream_tool_progress_but_never_unverified_answer_text() {
+	// Arrange: the answer would carry a fabricated citation.
+	let buffer = ProgressBuffer::withholding_text(Instant::now(), true);
+	// Act
+	buffer.offer(InferenceProgress::Text {
+		text: "Claim [[cite:ev_00000000-0000-0000-0000-000000000000]]".into(),
+	});
+	buffer.offer(InferenceProgress::ToolCall {
+		index: 0,
+		id: Some("call-0".into()),
+		name: Some("research_find".into()),
+		argument_bytes: 12,
+	});
+	// Assert
+	let pending = buffer.pending();
+	assert_eq!(pending.items.len(), 1);
+	assert!(matches!(
+		pending.items[0],
+		InferenceProgress::ToolCall { .. }
+	));
+}

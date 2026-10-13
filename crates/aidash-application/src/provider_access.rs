@@ -1,5 +1,5 @@
 //! Per-call provider access. Key Material never crosses Registry or federation metadata.
-use crate::{Error, Result, ports::Credentials};
+use crate::{Error, Result};
 use async_trait::async_trait;
 use secrecy::SecretString;
 use std::sync::Arc;
@@ -21,6 +21,8 @@ pub struct Inference {
 	pub model: String,
 	pub operations: Vec<Operation>,
 	pub max_output_tokens: u32,
+	/// Requests the signed authority to send explicit `cache_control` breakpoints.
+	pub cache_breakpoints: bool,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Operation {
@@ -35,20 +37,22 @@ pub enum MaintenancePurpose {
 	MemoryReflection,
 	MemoryRetrieval,
 }
+/// Where a model-provider call gets its bearer. There is no environment source:
+/// model-provider keys come only from Tenant Provider Credentials (ADR 0006).
 #[derive(Debug, Clone)]
 pub enum Source {
-	Env { reference: Option<String> },
+	/// The configured endpoint is called without a key.
+	Keyless,
+	/// The Tenant's Provider Credential for this Provider Catalog entry.
 	Tenant { provider: String },
 }
 impl Source {
-	pub fn configured(env: &Option<String>, provider: &Option<String>) -> Self {
+	pub fn configured(provider: &Option<String>) -> Self {
 		match provider {
 			Some(provider) => Self::Tenant {
 				provider: provider.clone(),
 			},
-			None => Self::Env {
-				reference: env.clone(),
-			},
+			None => Self::Keyless,
 		}
 	}
 }
@@ -61,29 +65,20 @@ pub struct Access {
 pub trait ProviderAccess: Send + Sync {
 	async fn resolve(&self, context: &Context, endpoint: &str, source: &Source) -> Result<Access>;
 }
-/// Self-hosted access retains per-invocation environment resolution and optional authentication.
-pub struct EnvironmentAccess {
-	pub credentials: Arc<dyn Credentials>,
-}
+/// Access without a Provider Credential Store: keyless endpoints only.
+pub struct KeylessAccess;
 #[async_trait]
-impl ProviderAccess for EnvironmentAccess {
+impl ProviderAccess for KeylessAccess {
 	async fn resolve(&self, _: &Context, endpoint: &str, source: &Source) -> Result<Access> {
-		let Source::Env { reference } = source else {
+		let Source::Keyless = source else {
 			return Err(Error::Invalid(
 				"Provider Credential Store is not configured".into(),
 			));
 		};
 		aidash_domain::configuration::validate_endpoint(endpoint)?;
-		let key = match reference {
-			Some(name) => {
-				aidash_domain::configuration::validate_secret_reference(name)?;
-				self.credentials.resolve(name)?
-			}
-			None => String::new(),
-		};
 		Ok(Access {
 			endpoint: endpoint.into(),
-			bearer: key.into(),
+			bearer: String::new().into(),
 		})
 	}
 }
@@ -107,7 +102,7 @@ pub trait TokenIssuer: Send + Sync {
 /// Cloud mints through the Credential Broker; self-hosted PostgreSQL Stores read
 /// the pin locally. Without either, Tenant access fails closed.
 pub struct TenantAccess {
-	pub environment: EnvironmentAccess,
+	pub keyless: KeylessAccess,
 	pub repository: Arc<dyn crate::provider_credentials::Repository>,
 	pub reader: Option<Arc<dyn KeyMaterialReader>>,
 	pub issuer: Option<Arc<dyn TokenIssuer>>,
@@ -116,7 +111,7 @@ pub struct TenantAccess {
 impl ProviderAccess for TenantAccess {
 	async fn resolve(&self, context: &Context, endpoint: &str, source: &Source) -> Result<Access> {
 		let Source::Tenant { provider } = source else {
-			return self.environment.resolve(context, endpoint, source).await;
+			return self.keyless.resolve(context, endpoint, source).await;
 		};
 		let provider = aidash_domain::provider_credentials::Provider::parse(provider)?;
 		if context.tenant.is_empty()

@@ -180,6 +180,40 @@ fn only_markers_since_the_last_turn_reach_the_volatile_part() {
 }
 
 #[test]
+fn a_citation_correction_is_a_marker_until_the_corrected_answer() {
+	// Arrange
+	let correction = ContextEvent::CitationCorrectionRequired {
+		invalid: vec!["ev_unknown".into()],
+		instruction: "Correct the answer once.".into(),
+		through_seq: 3,
+	};
+	let pending = context(vec![
+		assistant(1, "", &["a"]),
+		tool("a"),
+		correction.clone(),
+	]);
+	let mut corrected = pending.clone();
+	corrected.push(assistant(2, "Corrected answer", &[]));
+	let pinned = json!({"agent_state": {"step": 3}});
+	// Act
+	let pending = native_context(&pending, &pinned);
+	let corrected = native_context(&corrected, &pinned);
+	// Assert
+	assert_eq!(shape(&pending.history), ["assistant[a]", "tool:a"]);
+	let volatile: Value = serde_json::from_str(&pending.volatile).unwrap();
+	assert_eq!(
+		volatile,
+		json!({"agent_state": {"step": 3}, "markers": [correction]})
+	);
+	assert_eq!(
+		shape(&corrected.history),
+		["assistant[a]", "tool:a", "assistant[]:Corrected answer"]
+	);
+	let volatile: Value = serde_json::from_str(&corrected.volatile).unwrap();
+	assert_eq!(volatile, pinned);
+}
+
+#[test]
 fn untrusted_tool_output_stays_enveloped_data() {
 	// Arrange
 	let mut context = context(vec![assistant(1, "", &["a"])]);

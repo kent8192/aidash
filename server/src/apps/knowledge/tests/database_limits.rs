@@ -105,7 +105,6 @@ fn spec() -> IndexSpec {
 		embedding: EmbeddingConfig {
 			provider: "openai".into(),
 			endpoint: "http://localhost:9".into(),
-			credential_env: None,
 			provider_credential: None,
 			model: "fixture".into(),
 			model_version: "1".into(),

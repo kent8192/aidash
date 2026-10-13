@@ -1,0 +1,11 @@
+invoice,customer,amount_cents,currency,due_date,status
+INV-2026-0101,Kitano Shoji,125000,JPY,2026-09-15,unpaid
+INV-2026-0102,Aster Labs,48000,USD,2026-09-30,paid
+INV-2026-0103,Kitano Shoji,30000,JPY,2026-10-20,unpaid
+INV-2026-0104,Meridian GmbH,99000,EUR,2026-08-31,unpaid
+INV-2026-0105,Aster Labs,15500,USD,2026-10-01,unpaid
+INV-2026-0106,Meridian GmbH,1000,EUR,2026-10-05,disputed
+INV-2026-0107,Kitano Shoji,77000,JPY,2026-10-09,unpaid
+INV-2026-0108,Aster Labs,22000,USD,2026-10-10,unpaid
+INV-2026-0109,Harbor & Co,5000,USD,2026-09-01,unpaid
+INV-2026-0110,Harbor & Co,7000,USD,2026-09-02,paid

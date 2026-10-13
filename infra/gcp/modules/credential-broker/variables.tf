@@ -1,4 +1,12 @@
 variable "project_id" { type = string }
+variable "deployment_tier" {
+  type    = string
+  default = "nonproduction"
+  validation {
+    condition     = contains(["nonproduction", "production"], var.deployment_tier)
+    error_message = "Deployment tier must be nonproduction or production."
+  }
+}
 variable "byok_project_id" {
   type = string
   validation {
@@ -20,6 +28,10 @@ variable "enabled" {
   validation {
     condition     = !var.enabled || var.environment_kind != "pr"
     error_message = "PR preview environments must never deploy a Credential Broker."
+  }
+  validation {
+    condition     = !var.enabled || (var.deployment_tier == "production" ? var.environment_id == "production" && var.environment_kind == "production" : var.environment_id != "production" && var.environment_kind != "production")
+    error_message = "Production brokers require the dedicated production deployment tier."
   }
 }
 variable "secret_prefix" {
@@ -44,7 +56,6 @@ variable "bind_runtime_signer" {
   type        = bool
   default     = true
 }
-variable "deploy_service_account" { type = string }
 variable "broker_service_account_email" {
   description = "broker_service_accounts[environment_id] from human-run bootstrap; #137 owns the SA and BYOK read grant."
   type        = string
@@ -56,8 +67,8 @@ variable "broker_service_account_email" {
 variable "image" {
   type = string
   validation {
-    condition     = can(regex("@sha256:[a-f0-9]{64}$", var.image))
-    error_message = "The broker image must be pinned by digest."
+    condition     = can(regex("^us-central1-docker\\.pkg\\.dev/${var.project_id}/aidash/broker@sha256:[a-f0-9]{64}$", var.image))
+    error_message = "The broker image must be this project's private Artifact Registry aidash/broker image pinned by digest."
   }
 }
 variable "region" {

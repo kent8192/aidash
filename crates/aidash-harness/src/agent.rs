@@ -9,8 +9,9 @@ use aidash_domain::{
 	provider::progress::{InferenceAttemptId, InterruptionReason, ProgressOutcome},
 	provider::usage::{RequestEstimate, UsageDispatch, UsageOutcome},
 	registry::bindings::{AgentBindings, BindingSnapshot},
+	research::citations,
 	semantic::{Failure, InputRead},
-	tool::{ResultFitting, ToolIdentity, ToolUseMode},
+	tool::{ResultFitting, ToolIdentity, ToolUseMode, Yield},
 	*,
 };
 use serde_json::{Value, json};
@@ -320,6 +321,43 @@ impl<'a> Executor<'a> {
 			text,
 		)
 		.await
+	}
+	/// The answer's Source citations and the cited references the Run's
+	/// evidence store does not hold, when the Run binds an operation that
+	/// declares `yields: Citations`. Declared behavior, not a tool name,
+	/// selects verification.
+	async fn citation_check(
+		&self,
+		run: &Run,
+		tools: &Tools,
+		text: &str,
+	) -> Result<Option<(citations::Citations, Vec<citations::EvidenceRef>)>> {
+		if !tools
+			.values()
+			.any(|tool| tool.contract().behavior.yields(Yield::Citations))
+		{
+			return Ok(None);
+		}
+		let found = citations::citations(text);
+		if found.is_empty() {
+			return Ok(None);
+		}
+		let unknown = self
+			.environment
+			.store()
+			.unknown_evidence(run, &found.references)
+			.await?;
+		Ok(Some((found, unknown)))
+	}
+	/// Text published before the final answer is never corrected, so text
+	/// citing evidence the Run never received is not published at all.
+	async fn cites_invalid_evidence(&self, run: &Run, tools: &Tools, text: &str) -> Result<bool> {
+		Ok(self
+			.citation_check(run, tools, text)
+			.await?
+			.is_some_and(|(found, unknown)| {
+				citations::verdict(&found, &unknown, true) != citations::Verdict::Accept
+			}))
 	}
 	/// Record a provider-proven Context Overflow and re-enter Thinking with a
 	/// smaller effective window, or pause once the bounded allowance is spent
@@ -1099,6 +1137,9 @@ impl<'a> Executor<'a> {
 				if let Some(deferred_observation) = &thinking.deferred_workspace_observation {
 					pinned["deferred_workspace_observation"] = json!(deferred_observation);
 				}
+				let withhold_answer_text = tools
+					.values()
+					.any(|tool| tool.contract().behavior.yields(Yield::Citations));
 				let mut specifications = tools
 					.iter()
 					.filter(|(alias, _)| exposure.as_ref().is_none_or(|selection| selection.tools.contains(*alias)))
@@ -1394,7 +1435,8 @@ impl<'a> Executor<'a> {
 					return Err(error);
 				}
 				let started = tokio::time::Instant::now();
-				let progress = progress::ProgressBuffer::new(started);
+				let progress =
+					progress::ProgressBuffer::withholding_text(started, withhold_answer_text);
 				// Summary text may depend on a source revoked while the provider
 				// runs, and stored progress is served live and on replay. Such a
 				// Run's progress is held until the sources are rechecked after
@@ -1858,7 +1900,11 @@ impl<'a> Executor<'a> {
 					store.save_run(run, token, "run.message_summarized").await?;
 					return Ok(());
 				}
-				if !run_message_catchup && !result.tool_calls.is_empty() && informed_response {
+				if !run_message_catchup
+					&& !result.tool_calls.is_empty()
+					&& informed_response
+					&& !self.cites_invalid_evidence(run, &tools, &result.text).await?
+				{
 					self.publish_model_text(home.as_ref(), guard, run, token, &result.text)
 						.await?;
 				}
@@ -1887,8 +1933,10 @@ impl<'a> Executor<'a> {
 						let children = home.child_summary(run.task_id).await?;
 						if children.has_pending {
 							record_model_turn(run, agent.projection_version, &result)?;
-							self.publish_model_text(home.as_ref(), guard, run, token, &result.text)
-								.await?;
+							if !self.cites_invalid_evidence(run, &tools, &result.text).await? {
+								self.publish_model_text(home.as_ref(), guard, run, token, &result.text)
+									.await?;
+							}
 							let failed = children.has_failed;
 							if failed {
 								if let Some(guard) = guard {
@@ -1910,6 +1958,43 @@ impl<'a> Executor<'a> {
 
 							store.save_run(run, token, "run.waiting").await?;
 							return Ok(());
+						}
+						// A final answer citing unknown evidence is corrected once, then
+						// withheld.
+						if let Some((found, unknown)) =
+							self.citation_check(run, &tools, &result.text).await?
+						{
+							{
+								// One correction per user input: a later turn's answer
+								// gets its own correction.
+								let corrected = run.context.events().any(|event| {
+									matches!(event, ContextEvent::CitationCorrectionRequired { through_seq, .. } if *through_seq == run.observed_input_seq)
+								});
+								// A correction needs another inference step; at the step
+								// limit the answer is withheld instead of failing the Run.
+								let no_step_left = run.step.saturating_add(1) >= agent.max_steps;
+								match citations::verdict(&found, &unknown, corrected || no_step_left) {
+									citations::Verdict::Accept => {}
+									citations::Verdict::Correct(invalid) => {
+										let mut context = run.context.clone();
+										context.push(ContextEvent::CitationCorrectionRequired {
+											invalid,
+											instruction: citations::CORRECTION_INSTRUCTION.into(),
+											through_seq: run.observed_input_seq,
+										});
+										run.context = context;
+										run.step += 1;
+										run.state = RunState::Thinking(ThinkingState::default());
+										store
+											.save_run(run, token, "run.citation_correction_required")
+											.await?;
+										return Ok(());
+									}
+									citations::Verdict::Withhold => {
+										result.text = citations::WITHHELD_ANSWER.into();
+									}
+								}
+							}
 						}
 						let artifact = ArtifactInput {
 							kind: "text".into(),

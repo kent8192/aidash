@@ -229,7 +229,6 @@ fn spec() -> IndexingSpec {
 		embedding: EmbeddingConfig {
 			provider: "openai".into(),
 			endpoint: "https://embedding.invalid".into(),
-			credential_env: None,
 			provider_credential: None,
 			model: "embedding".into(),
 			model_version: "1".into(),
@@ -446,7 +445,8 @@ impl JournalScope for JournalLease {
 		self.pending = receipt.memory.clone();
 		Ok(())
 	}
-	async fn complete_operation(&mut self, receipt: &Receipt) -> Result<()> {
+	async fn complete_operation(&mut self, receipt: &Receipt, corpus_digest: &str) -> Result<()> {
+		assert_eq!(corpus_digest, "home-corpus");
 		self.trace.lock().unwrap().push("complete");
 		let r = &mut self.working;
 		r.state = "READY".into();
@@ -572,8 +572,9 @@ impl SemanticSearchRepository for Repository {
 	fn settlement(&self) -> &dyn GenerationDispatchSettlement {
 		&self.effects
 	}
-	fn embedding(&self) -> &dyn EmbeddingProvider {
-		&self.effects
+	fn embedding(&self, tenant: &str) -> Box<dyn EmbeddingProvider + '_> {
+		assert_eq!(tenant, "tenant", "the Home Tenant performs the embedding");
+		Box::new(NoEffects)
 	}
 	fn vector(&self) -> &dyn VectorIndex {
 		&self.effects
@@ -668,6 +669,11 @@ impl SemanticSearchScope for Scope {
 			value.embedding.provider_credential = Some("openrouter".into());
 		}
 		Ok(value)
+	}
+	async fn corpus_digest(&mut self, description: &Description) -> Result<String> {
+		assert_eq!(description.grant_id, operation().grant_id);
+		self.trace.lock().unwrap().push("corpus");
+		Ok("home-corpus".into())
 	}
 	async fn prepare_search(
 		&mut self,
@@ -929,19 +935,20 @@ async fn current_authority_and_complete_input_boundary_precede_journal_or_provid
 }
 #[rstest]
 #[tokio::test]
-async fn an_index_reconfigured_to_a_tenant_embedding_is_rejected_before_any_claim_or_effect() {
+async fn an_index_reconfigured_to_a_tenant_embedding_keeps_the_same_authority_path() {
+	// ADR 0006: the Home embeds Tenant-backed queries itself, so a Tenant
+	// embedding follows exactly the authority and journal steps of any other.
 	let mut repo = Repository::new();
 	repo.tenant_embedding = true;
-	let result = search(&repo, "aidash://receiver", operation()).await;
-	assert!(matches!(
-		result,
-		Err(Error::RemoteSemantic(Failure::Configuration))
-	));
+	let receipt = search(&repo, "aidash://receiver", operation())
+		.await
+		.unwrap();
+	assert_eq!(receipt.operation_id, operation().id);
 	assert_eq!(repo.authority.lock().unwrap().active, 0);
 	let trace = repo.trace.lock().unwrap();
-	assert!(!trace.contains(&"candidates"));
-	assert!(!trace.contains(&"claim"));
-	assert!(trace.contains(&"finish_denied"));
+	assert!(trace.contains(&"candidates"));
+	assert!(trace.contains(&"claim"));
+	assert!(!trace.contains(&"finish_denied"));
 }
 #[rstest]
 #[case(true)]
@@ -982,6 +989,9 @@ async fn empty_candidates_complete_one_attempt_without_provider_effects_and_reac
 			"worker",
 			"receiver",
 			"journal",
+			// Read before the candidates and recorded with the receipt: a corpus
+			// change in between leaves an older digest, so reuse fails closed.
+			"corpus",
 			"candidates",
 			"journal",
 			"claim",

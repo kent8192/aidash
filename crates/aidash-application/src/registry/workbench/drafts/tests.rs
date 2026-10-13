@@ -140,7 +140,7 @@ impl DefinitionLookup for Scope {
 		}
 		if id == "model" {
 			return Ok(serde_json::from_value(
-				json!({"id":id,"version":version,"kind":"model","name":{"en":"Fixture model"},"description":{"en":"Publication model"},"config":{"provider":"openrouter","model_id":"model","endpoint":"https://openrouter.ai/api/v1","credential_env":null,"context_window":32768,"max_output_tokens":1024,"modalities":["text"],"cost":{}}}),
+				json!({"id":id,"version":version,"kind":"model","name":{"en":"Fixture model"},"description":{"en":"Publication model"},"config":{"provider":"openrouter","model_id":"model","endpoint":"https://openrouter.ai/api/v1","context_window":32768,"max_output_tokens":1024,"modalities":["text"],"cost":{}}}),
 			)?);
 		}
 		let mut entry: Entry = serde_json::from_value(self.draft.entry.clone())?;

@@ -36,7 +36,8 @@ pub(crate) fn browser_operator_allowed(method: &Method, path: &str) -> bool {
 	let path = path.strip_prefix("/api").unwrap_or(path);
 	if path.starts_with("/tenants/")
 		&& (path.contains("/provider-credentials")
-			|| path.contains("/provider-credential-bindings"))
+			|| path.contains("/provider-credential-bindings")
+			|| path.contains("/provider-authorizations/"))
 	{
 		return true;
 	}

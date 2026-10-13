@@ -8,6 +8,8 @@ pub mod identity;
 
 pub mod oidc;
 
+pub mod provider_authorizations;
+
 pub mod peer_admission;
 
 pub mod peer_execution;

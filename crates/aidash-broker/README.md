@@ -107,10 +107,25 @@ capability does not authorize a separate [pricing tier](https://openrouter.ai/do
 Embeddings require one string `input` within the existing 1 MiB request bound;
 batch arrays, token arrays, missing and malformed inputs are rejected before
 Key Material lookup, matching the application's single-vector contract.
-Any `cache_control` key, including nested message blocks and tool definitions,
-is rejected before Key Material lookup. Explicit
+A `cache_control` key is rejected before Key Material lookup unless the signed
+`cache_breakpoints` claim is set. Explicit
 [prompt-cache writes](https://openrouter.ai/docs/guides/best-practices/prompt-caching)
-have separate pricing outside the signed capability.
+are priced above ordinary input, so the worker's issuer sets the claim only for a
+Run whose Agent opted in with `prompt_cache: explicit` (ADR 0019). With the claim,
+`cache_control` is accepted only as exactly `{"type":"ephemeral"}` on a
+`messages[*].content[*]` text part, at most four times across the request. That
+covers the end of the system message and the last history part of the user
+message; a message whose `content` is a plain string cannot carry one. Any other
+location (a message, an image or audio part, `tools`, `provider`, the request
+root or anything nested), any other value (a different `type`, a `ttl`, extra
+keys, `null`) and a fifth breakpoint are `403 capability_claim_violation`.
+Tokens without the claim keep their previous wire shape, and a broker that
+predates the claim reads them unchanged.
+Chat and embeddings bodies that repeat an object member name at any depth,
+including through escapes such as `cache\u005fcontrol`, are
+`403 capability_claim_violation` before Key Material lookup. Admission inspects
+a parsed value but the broker relays the original bytes, so a duplicate could
+otherwise hide an unauthorized first member from these checks.
 Message content supports text, inline base64 image data URLs and base64
 `input_audio`. Remote URLs and unsupported media content types are rejected
 before Key Material lookup. MIME/format and file signatures use the domain's
@@ -180,8 +195,10 @@ In the environment
 controller's `credential_brokers[environment_id]` configuration, set
 `broker_service_account_email` and `signing_key_id` to the corresponding
 bootstrap map entries before
-enabling the broker. Cloud Run uses that account; deploy automation gets
-`roles/iam.serviceAccountUser` on it in the application project. The VM runtime
+enabling the broker, and leave `image` out: the digest comes from the reviewed
+`infra/gcp/environments/broker-image.json`. Cloud Run uses that account; human-run
+bootstrap grants deploy automation `roles/iam.serviceAccountUser` on it in the
+application project, because an IAM deny policy stops deploy changing its policy. The VM runtime
 holds only `roles/cloudkms.signer` on the signing key and no broker role. Public
 keys come from Terraform's KMS version data sources; the broker never calls KMS
 at runtime. Module tests prove it cannot create a second BYOK read grant;
@@ -242,10 +259,12 @@ automation or Cloud mutation runs as part of this implementation.
 The deploy pipeline is an accepted trust root (ADR 0005). Its shared-project
 `roles/iam.serviceAccountAdmin` and ability to redeploy broker code mean the
 bootstrap split alone cannot protect Key Material from a compromised pipeline.
-IAM deny policy and GitHub/WIF entry-point hardening are tracked in
-[#151](https://github.com/kent8192/aidash/issues/151); sandbox verification is
-[#152](https://github.com/kent8192/aidash/issues/152). These follow-ups are
-separate from this implementation. No Cloud infrastructure has been applied.
+Issue [#151](https://github.com/kent8192/aidash/issues/151) adds an IAM deny
+policy for the impersonation path, a digest-pinned broker image, a protected
+deploy Environment and alerts; see "Deploy pipeline boundary" in
+[`infra/gcp/README.md`](../../infra/gcp/README.md). Broker redeploy stays an
+accepted residual risk. Sandbox verification is
+[#152](https://github.com/kent8192/aidash/issues/152). No Cloud infrastructure has been applied.
 
 Workers configure `[provider_credentials.broker]` with the module's
 `worker_configuration` (`endpoint`, `issuer`, `audience`, `kid`). Its audience

@@ -1,5 +1,6 @@
 //! Read-only query documents consumed by deployment acceptance runners.
 mod acceptance;
+mod evaluation;
 mod remote_memory;
 
 use async_trait::async_trait;
@@ -15,7 +16,7 @@ impl CapabilityCommand for Diagnostics {
 			.about("Export read-only Reinhardt Query diagnostics without connecting to services")
 			.arg(
 				clap::Arg::new("profile")
-					.value_parser(["acceptance", "remote-memory"])
+					.value_parser(["acceptance", "evaluation", "remote-memory"])
 					.required(true),
 			)
 	}
@@ -29,6 +30,7 @@ impl CapabilityCommand for Diagnostics {
 	) -> CommandResult<()> {
 		let document = match matches.get_one::<String>("profile").map(String::as_str) {
 			Some("acceptance") => acceptance::document(),
+			Some("evaluation") => evaluation::document(),
 			Some("remote-memory") => remote_memory::document(),
 			_ => {
 				return Err(reinhardt::commands::CommandError::InvalidArguments(
@@ -54,5 +56,25 @@ mod tests {
 		] {
 			assert_eq!(document["pgroonga_ready"], query);
 		}
+	}
+
+	#[test]
+	fn evaluation_usage_query_is_parameterless_and_excludes_lease_tokens() {
+		// Act
+		let query = super::evaluation::inference_usage();
+		// Assert
+		assert!(query.starts_with("SELECT row_to_json(\"e\")"), "{query}");
+		assert!(query.contains("FROM \"inference_usage\""), "{query}");
+		assert!(!query.contains("WHERE"), "{query}");
+		assert!(!query.contains(":'"), "{query}");
+		assert!(
+			query.contains("ORDER BY \"created_at\" ASC, \"attempt_id\" ASC"),
+			"{query}"
+		);
+		assert!(!query.contains("lease_token"), "{query}");
+		assert_eq!(
+			super::evaluation::document()["inference_usage"],
+			serde_json::json!(query)
+		);
 	}
 }

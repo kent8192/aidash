@@ -22,6 +22,11 @@ pub(crate) struct Repository(pub(crate) Federation);
 pub(crate) struct Login(pub(crate) reinhardt::db::orm::DatabaseConnection);
 #[async_trait]
 impl aidash_application::ports::authorization::dashboard::LoginAccounts for Login {
+	async fn provision_personal(&mut self, identity: Uuid) -> Result<()> {
+		super::personal_tenant::provision(self.0, identity)
+			.await
+			.map_err(Into::into)
+	}
 	async fn find(
 		&mut self,
 		issuer: &str,

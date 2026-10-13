@@ -29,10 +29,12 @@ reqwest = { version = "0.13", default-features = false, features = [
   "json",
   "rustls",
 ] }
+encoding_rs = "0.8"
 
 async-nats = "0.46"
 futures-util.workspace = true
 percent-encoding = "2"
+url = "2"
 
 rmcp = { version = "=1.2.0", default-features = false, features = [
   "client",
@@ -52,6 +54,11 @@ jsonwebtoken = { version = "11.1", default-features = false, features = [
 ] }
 openidconnect = "4.0.1"
 gcp_auth = "0.12.7"
+
+[features]
+# Fake-provider constructors for tests (ADR 0006). Production dependencies never
+# enable it; see scripts/check-workspace-boundaries.py.
+test-support = []
 
 [dev-dependencies]
 jsonwebtoken = { version = "11.1", default-features = false, features = [

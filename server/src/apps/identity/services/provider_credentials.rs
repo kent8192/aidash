@@ -5,10 +5,13 @@ use crate::{
 	authorization::{access::NativeAccess, identity::Actor},
 	federation::Federation,
 };
-use aidash_application::provider_credentials::{Metadata, Service, Validated};
+use aidash_application::{
+	provider_authorization::Target,
+	provider_credentials::{AuthorizationFailure, Metadata, Service, Validated},
+};
 use aidash_domain::{
 	policy::{Evaluation, Resource},
-	provider_credentials::{Binding, Provider},
+	provider_credentials::{Binding, Provider, State},
 };
 use reinhardt::injectable;
 use secrecy::SecretString;
@@ -150,34 +153,144 @@ impl Management {
 			Actor::Subject(identity) => &identity.subject,
 		}
 	}
-	/// Internal Provider Authorization write path; never registered as an HTTP endpoint.
-	pub async fn create(
+	fn authorization_verb(target: Target) -> &'static str {
+		match target {
+			Target::Connect { .. } => "create",
+			Target::Reconnect { .. } => "rotate",
+		}
+	}
+	/// Checks, before the browser leaves for consent, that the actor may write
+	/// the target Provider Credential. The callback decides again.
+	pub async fn permit_authorization(
+		&self,
+		actor: &Actor,
+		tenant: &str,
+		provider: Provider,
+		target: Target,
+	) -> Result<()> {
+		let service = self.service()?;
+		self.tenant(actor, tenant)?;
+		if let Target::Reconnect { id, .. } = target {
+			let mut scope = service.repository.begin(tenant).await?;
+			let row = scope.get(id).await?;
+			scope.commit().await?;
+			if row.provider != provider {
+				return Err(Error::Invalid(
+					"Provider Authorization does not match the Provider Credential".into(),
+				));
+			}
+		}
+		self.authorize(
+			actor,
+			tenant,
+			&target.id().to_string(),
+			provider,
+			"provider_credential",
+			Self::authorization_verb(target),
+		)
+		.await?
+		.finish(Ok(()))
+		.await
+	}
+	/// The Provider Authorization write path: exchanges the code under a live
+	/// `provider_credential.create` or `.rotate` decision. This service never
+	/// sees Key Material; it flows from the exchange port into the Store.
+	pub async fn complete_authorization(
 		&self,
 		actor: Actor,
 		tenant: String,
 		provider: Provider,
-		key_material: SecretString,
-	) -> Result<Validated> {
+		target: Target,
+		code: &str,
+		verifier: &SecretString,
+	) -> std::result::Result<Validated, AuthorizationFailure<Error>> {
 		let service = self.service()?;
-		let id = Uuid::now_v7();
 		let authority = self
 			.authorize(
 				&actor,
 				&tenant,
-				&id.to_string(),
+				&target.id().to_string(),
 				provider,
 				"provider_credential",
-				"create",
+				Self::authorization_verb(target),
 			)
 			.await?;
-		authority
-			.finish_operation(
-				service
-					.create(&tenant, id, provider, key_material, Self::actor(&actor))
-					.await
-					.map_err(Into::into),
+		let (result, key_settings_url) = match service
+			.authorize(
+				&tenant,
+				provider,
+				target,
+				code,
+				verifier,
+				Self::actor(&actor),
 			)
 			.await
+		{
+			Ok(validated) => (Ok(validated), None),
+			Err(failure) => (Err(failure.error.into()), failure.key_settings_url),
+		};
+		authority
+			.finish_operation(result)
+			.await
+			.map_err(|error| AuthorizationFailure {
+				error,
+				key_settings_url,
+			})
+	}
+	/// A connection serves the Tenant's Runs right away when the provider has no
+	/// usable binding (none, or one to a revoked Provider Credential) and the
+	/// actor may update the binding. An active binding is never replaced.
+	/// Returns whether the connected Provider Credential is now bound; it is not
+	/// when another active binding won (for example a concurrent connection) or
+	/// the binding could not be updated.
+	pub(crate) async fn bind_if_unbound(
+		&self,
+		actor: Actor,
+		tenant: String,
+		provider: Provider,
+		id: Uuid,
+	) -> bool {
+		let current = async {
+			let service = self.service()?;
+			let mut scope = service.repository.begin(&tenant).await?;
+			let binding = scope
+				.bindings()
+				.await?
+				.into_iter()
+				.find(|b| b.provider == provider);
+			let usable = match binding.as_ref().and_then(|b| b.provider_credential_id) {
+				Some(bound) => scope.get(bound).await?.state == State::Active,
+				None => false,
+			};
+			scope.commit().await?;
+			Ok::<_, Error>((binding, usable))
+		}
+		.await;
+		let expected_revision = match current {
+			Ok((binding, true)) => {
+				return binding.and_then(|b| b.provider_credential_id) == Some(id);
+			}
+			Err(_) => return false,
+			Ok((binding, false)) => binding.map_or(0, |b| b.revision),
+		};
+		let result = self
+			.bind(
+				actor,
+				tenant,
+				provider.id().into(),
+				BindingUpdate {
+					expected_revision,
+					provider_credential_id: Some(id),
+				},
+			)
+			.await;
+		if result.is_err() {
+			tracing::warn!(
+				provider = provider.id(),
+				"connected Provider Credential was left unbound"
+			);
+		}
+		result.is_ok()
 	}
 	pub async fn list(&self, actor: Actor, tenant: String, page: Page) -> Result<Vec<Metadata>> {
 		let service = self.service()?;
@@ -264,45 +377,6 @@ impl Management {
 		.await?
 		.finish(Ok(row.into()))
 		.await
-	}
-	/// Internal Provider Authorization reconnect path; accepts no HTTP serializer.
-	pub async fn rotate(
-		&self,
-		actor: Actor,
-		tenant: String,
-		id: Uuid,
-		expected_revision: i64,
-		key_material: SecretString,
-	) -> Result<Validated> {
-		let service = self.service()?;
-		self.tenant(&actor, &tenant)?;
-		let mut scope = service.repository.begin(&tenant).await?;
-		let row = scope.get(id).await?;
-		scope.commit().await?;
-		let authority = self
-			.authorize(
-				&actor,
-				&tenant,
-				&id.to_string(),
-				row.provider,
-				"provider_credential",
-				"rotate",
-			)
-			.await?;
-		authority
-			.finish_operation(
-				service
-					.rotate(
-						&tenant,
-						id,
-						expected_revision,
-						key_material,
-						Self::actor(&actor),
-					)
-					.await
-					.map_err(Into::into),
-			)
-			.await
 	}
 	pub async fn control(
 		&self,

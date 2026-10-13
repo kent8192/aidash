@@ -95,7 +95,7 @@ def retire_provider_credentials(configuration, identity):
     project = configuration.get("byok_project_id", "")
     if not project:
         return 0
-    if not re.fullmatch(r"develop|test|pr-[1-9][0-9]*", identity):
+    if not re.fullmatch(r"develop|test|pr-[1-9][0-9]*|production", identity) or identity == "production" and configuration.get("deployment_tier") != "production":
         raise ValueError("invalid Provider Credential retirement environment")
     number = run(
         "gcloud", "projects", "describe", project,
@@ -318,13 +318,28 @@ class Terraform:
                 "Restore the applied BYOK project and retire all managed environments "
                 "before changing byok_project_id"
             )
-        return value or {}
+        managed = value or {}
+        for entry in managed.values():
+            if entry.get("kind") in {"develop", "pr"} and not entry.get("hostname_token"):
+                # Keep old origins usable for stop/destroy and unaffected retained data.
+                # A verified deployment replaces this map with its newly issued token.
+                entry["legacy_hostname"] = True
+        return managed
 
     def broker_configuration(self, environments):
         # Match Terraform's optional defaults and set ordering in persisted intent.
+        brokers = self.configuration.get("credential_brokers", {})
+        for key, value in brokers.items():
+            # Terraform drops the unknown attribute from its intent output, so a
+            # stale image would re-apply on every tick; refuse it instead (#151).
+            if "image" in value:
+                raise RuntimeError(
+                    f"credential_brokers.{key}.image is not configurable: the broker image "
+                    "digest comes from infra/gcp/environments/broker-image.json"
+                )
         return {
             key: self.normalized_broker(value)
-            for key, value in self.configuration.get("credential_brokers", {}).items()
+            for key, value in brokers.items()
             if key in environments
         }
 
@@ -364,6 +379,15 @@ class Terraform:
             )
         }
         variables["byok_project_id"] = self.configuration.get("byok_project_id", "")
+        variables.update(
+            deployment_tier=self.configuration.get("deployment_tier", "nonproduction"),
+            state_bucket=self.configuration.get("state_bucket", ""),
+            nonproduction_project_id=self.configuration.get("nonproduction_project_id", ""),
+            nonproduction_state_bucket=self.configuration.get("nonproduction_state_bucket", ""),
+            production_hostname=urllib.parse.urlsplit(self.configuration.get("production_origin", "https://aidash.run")).hostname,
+            staging_project_id=self.configuration.get("staging_project_id", ""),
+            gke_backup_enabled=self.configuration.get("gke_backup_enabled", False),
+        )
         variables["environments"] = environments
         variables["gcip_tenants"] = self.configuration.get("gcip_tenants", {})
         variables["gcip_idp_secrets"] = json.loads(os.environ.get("AIDASH_GCIP_IDP_SECRETS") or "{}")

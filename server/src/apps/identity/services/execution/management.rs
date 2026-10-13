@@ -18,6 +18,10 @@ pub struct RunManagement {
 	pub phase: RunPhase,
 	pub control: RunControl,
 	pub semantic_reason: Option<crate::semantic::remote::Failure>,
+	/// The exact semantic cause and its authorized next actions while the Run
+	/// can still be recovered; absent for a cancelled or finished Run.
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub semantic_recovery: Option<aidash_domain::semantic::recovery::Recovery>,
 	/// Typed context-recovery pause reason; cleared on resume.
 	pub context_reason: Option<aidash_domain::context::recovery::Failure>,
 	#[serde(skip_serializing_if = "Option::is_none")]
@@ -26,11 +30,22 @@ pub struct RunManagement {
 }
 impl From<RunInspection> for RunManagement {
 	fn from(run: RunInspection) -> Self {
+		let recoverable = run.control != RunControl::Cancelled && !run.phase.is_terminal();
 		Self {
 			id: run.id,
 			phase: run.phase,
 			control: run.control,
 			semantic_reason: run.recovery.as_ref().and_then(|r| r.semantic_reason),
+			// A paused Run is excluded from retry scheduling, so its retry only
+			// counts as scheduled while the Run is active.
+			semantic_recovery: run.recovery.as_ref().filter(|_| recoverable).and_then(|r| {
+				r.semantic_reason.map(|cause| {
+					aidash_domain::semantic::recovery::Recovery::new(
+						cause,
+						r.retry.is_some() && run.control == RunControl::Active,
+					)
+				})
+			}),
 			context_reason: run.recovery.as_ref().and_then(|r| r.context_reason),
 			memory_cleanup: None,
 		}
@@ -172,3 +187,7 @@ use reinhardt::query::QueryStatementBuilder as _;
 use reinhardt::query::ColumnRef::Asterisk;
 
 use reinhardt::query::SimpleExpr;
+
+#[cfg(test)]
+#[path = "management/tests.rs"]
+mod tests;

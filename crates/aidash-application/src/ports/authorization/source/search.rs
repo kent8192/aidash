@@ -34,6 +34,10 @@ pub trait SemanticSearchScope: Send {
 	async fn input_message(&mut self, workspace: Uuid, message: Uuid) -> Result<Message>;
 	/// Retain the shared index lock, decoding native configuration defaults.
 	async fn index_spec(&mut self, workspace: Uuid) -> Result<IndexingSpec>;
+	/// The current corpus digest of the Description's Workspace and, with
+	/// native memory, of the Home participant's banks, read through this
+	/// scope's own lease transaction.
+	async fn corpus_digest(&mut self, description: &Description) -> Result<String>;
 	async fn prepare_search(
 		&mut self,
 		workspace: Uuid,
@@ -81,7 +85,10 @@ pub trait SemanticSearchRepository: Send + Sync {
 	fn journal(&self) -> &dyn JournalRepository;
 	fn dispatch(&self) -> &dyn GenerationDispatchRepository;
 	fn settlement(&self) -> &dyn GenerationDispatchSettlement;
-	fn embedding(&self) -> &dyn EmbeddingProvider;
+	/// The Home's embedding provider for `tenant`'s required-Home search. A
+	/// Provider Credential source resolves through that Tenant's current binding
+	/// as memory-retrieval maintenance; the Home makes the call (ADR 0006).
+	fn embedding(&self, tenant: &str) -> Box<dyn EmbeddingProvider + '_>;
 	fn vector(&self) -> &dyn VectorIndex;
 	/// Reconstruct current original-credential authority and retain all source locks.
 	async fn description(&self, node: &str, grant: Uuid) -> Result<(Self::Scope, Description)>;
