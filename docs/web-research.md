@@ -44,7 +44,8 @@ not exposed to remote Runs).
 - **`fetch`** reads one page as a **Document snapshot**, given a `source_id`
   from this Run or an `http(s)` `url`. It returns the first passage, at most
   `max_bytes` (default 8 KiB, at most 16 KiB) of text, as an **Evidence
-  fragment** with an `evidence_ref`. Continue with `document_id` and the
+  fragment** with an `evidence_ref`; a budget smaller than the next character
+  still delivers that one character. Continue with `document_id` and the
   returned `next_cursor`; continuing reads the retained snapshot and never
   fetches again.
 - **`find`** returns lines of a retained snapshot that contain `query`. Matching

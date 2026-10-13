@@ -117,7 +117,9 @@ pub struct Delivery {
 }
 
 /// Deliver at most `max_bytes` of text from `from`. Lines are joined with a
-/// newline; a line is split only at a character boundary.
+/// newline; a line is split only at a character boundary. A positive budget
+/// smaller than the next character still delivers that one character, so
+/// every valid budget makes progress.
 pub fn deliver(lines: &[Line], from: Position, max_bytes: usize) -> Result<Delivery> {
 	let Position {
 		mut line,
@@ -141,7 +143,10 @@ pub fn deliver(lines: &[Line], from: Position, max_bytes: usize) -> Result<Deliv
 			end -= 1;
 		}
 		if end == offset && offset < value.len() {
-			break;
+			if !text.is_empty() {
+				break;
+			}
+			end = offset + value[offset..].chars().next().map_or(0, char::len_utf8);
 		}
 		text.push_str(&value[offset..end]);
 		line_end = line + 1;
@@ -164,7 +169,7 @@ pub fn deliver(lines: &[Line], from: Position, max_bytes: usize) -> Result<Deliv
 		}
 	}
 	if (Position { line, offset }) == from {
-		return Err(Error::Invalid("max_bytes cannot hold one character".into()));
+		return Err(Error::Invalid("max_bytes must be positive".into()));
 	}
 	Ok(Delivery {
 		passage: Passage {

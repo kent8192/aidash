@@ -43,7 +43,11 @@ fn delivery_never_splits_a_character(lines: Vec<Line>) {
 	assert_eq!(cut.passage.text, "Die Stra");
 	let next = deliver(&lines, cut.next.unwrap(), 2).unwrap();
 	assert_eq!(next.passage.text, "ß");
-	assert!(deliver(&lines, cut.next.unwrap(), 1).is_err());
+	// A budget smaller than the character still delivers it whole.
+	let tiny = deliver(&lines, cut.next.unwrap(), 1).unwrap();
+	assert_eq!(tiny.passage.text, "ß");
+	assert_eq!(tiny.next, next.next);
+	assert!(deliver(&lines, cut.next.unwrap(), 0).is_err());
 }
 
 #[rstest]

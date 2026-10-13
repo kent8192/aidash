@@ -1029,6 +1029,38 @@ async fn delivered_results_fit_the_envelope_without_hidden_loss() {
 }
 
 #[tokio::test]
+async fn a_byte_budget_smaller_than_the_next_character_still_delivers_it() {
+	let (store, gate) = (Memory::default(), Gate::permitting());
+	let research = Research {
+		store: &store,
+		gate: &gate,
+		limits: Limits::default(),
+	};
+	let mut pages = Pages::new();
+	pages.lines[0].text = "ßeta line".into();
+	let run = Uuid::new_v4();
+	let first = research
+		.fetch(
+			&call(run, "k1", "research.page@1"),
+			&pages,
+			&json!({"url":"https://example.com/sharp","max_bytes":1}),
+		)
+		.await
+		.unwrap();
+	assert_eq!(first["status"], "partial", "{first}");
+	assert_eq!(first["data"]["text"], "ß");
+	let next = research
+		.fetch(
+			&call(run, "k2", "research.page@1"),
+			&pages,
+			&json!({"document_id":first["data"]["document_id"],"cursor":first["data"]["next_cursor"],"max_bytes":3}),
+		)
+		.await
+		.unwrap();
+	assert_eq!(next["data"]["text"], "eta", "{next}");
+}
+
+#[tokio::test]
 async fn invalid_input_never_reaches_disclosure() {
 	let (store, gate) = (Memory::default(), Gate::default());
 	let research = Research {
