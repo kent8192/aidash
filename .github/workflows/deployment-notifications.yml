@@ -1,0 +1,104 @@
+name: Deployment notifications
+on:
+  workflow_run:
+    workflows: [GCP environments, GCP production]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      retry_blocked:
+        description: "Retry mail rejected permanently after repairing its protected configuration"
+        type: boolean
+        default: false
+  schedule:
+    - cron: "1-56/5 * * * *"
+
+permissions:
+  contents: read
+
+# Credential exposure is restricted by the deployment-notifications Environment
+# branch rule to the configured automation branch. The WIF policies additionally
+# bind each identity to this workflow and Environment. Cloudflare mail credentials
+# are never exposed to the lifecycle workflow or a PR build/runtime.
+jobs:
+  intake:
+    if: github.repository == 'kent8192/aidash' && vars.GCP_DEPLOYMENT_NOTIFICATIONS_ENABLED == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      trusted: ${{ steps.trusted.outputs.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/heads/main
+          persist-credentials: false
+      - name: Verify the trusted deployment trigger
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 infra/gcp/control/notifications.py preflight
+      - id: trusted
+        run: printf 'sha=%s\n' "$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+  nonproduction:
+    needs: intake
+    if: vars.GCP_ENVIRONMENTS_ENABLED == 'true'
+    runs-on: ubuntu-24.04
+    environment: deployment-notifications
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AIDASH_GCP_CONFIG: ${{ vars.AIDASH_GCP_CONFIG }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.intake.outputs.trusted }}
+          persist-credentials: false
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_NOTIFICATION_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3
+      - name: Deliver nonproduction receipts without deploying
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_EMAIL_SENDING_TOKEN: ${{ secrets.CLOUDFLARE_EMAIL_SENDING_TOKEN }}
+          RETRY_BLOCKED: ${{ github.event_name == 'workflow_dispatch' && inputs.retry_blocked }}
+        run: |
+          arguments=()
+          if [ "$RETRY_BLOCKED" = true ]; then arguments+=(--retry-blocked); fi
+          python3 infra/gcp/control/notifications.py deliver "${arguments[@]}"
+
+  production:
+    needs: intake
+    if: vars.GCP_PRODUCTION_ENABLED == 'true'
+    runs-on: ubuntu-24.04
+    environment: deployment-notifications
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AIDASH_GCP_CONFIG: ${{ vars.AIDASH_GCP_PRODUCTION_CONFIG }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.intake.outputs.trusted }}
+          persist-credentials: false
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        with:
+          workload_identity_provider: ${{ vars.GCP_PRODUCTION_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_PRODUCTION_NOTIFICATION_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3
+      - name: Deliver production receipts without deploying
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_EMAIL_SENDING_TOKEN: ${{ secrets.CLOUDFLARE_EMAIL_SENDING_TOKEN }}
+          RETRY_BLOCKED: ${{ github.event_name == 'workflow_dispatch' && inputs.retry_blocked }}
+        run: |
+          arguments=()
+          if [ "$RETRY_BLOCKED" = true ]; then arguments+=(--retry-blocked); fi
+          python3 infra/gcp/control/notifications.py deliver "${arguments[@]}"

@@ -6,7 +6,13 @@ locals {
     "cloudresourcemanager.googleapis.com",
     "run.googleapis.com", "cloudkms.googleapis.com",
   ])
-  workflow_ref = "${var.repository}/.github/workflows/gcp-environments.yml@refs/heads/${var.trusted_branch}"
+  deploy_branch             = var.deployment_tier == "production" ? "main" : var.automation_branch
+  deploy_workflow           = var.deployment_tier == "production" ? "gcp-production.yml" : "gcp-environments.yml"
+  deploy_environment        = var.deployment_tier == "production" ? "production" : "nonproduction"
+  workflow_ref              = "${var.repository}/.github/workflows/${local.deploy_workflow}@refs/heads/${local.deploy_branch}"
+  notification_workflow_ref = "${var.repository}/.github/workflows/deployment-notifications.yml@refs/heads/${var.automation_branch}"
+  deploy_assertion          = "assertion.workflow_ref == '${local.workflow_ref}' && assertion.ref == 'refs/heads/${local.deploy_branch}' && assertion.environment == '${local.deploy_environment}'"
+  notification_assertion    = "assertion.workflow_ref == '${local.notification_workflow_ref}' && assertion.ref == 'refs/heads/${var.automation_branch}' && assertion.environment == 'deployment-notifications'"
 }
 
 resource "google_project_service" "required" {
@@ -45,13 +51,13 @@ resource "google_artifact_registry_repository" "images" {
   location      = "us-central1"
   repository_id = "aidash"
   format        = "DOCKER"
-  description   = "Digest-pinned Aidash nonproduction images; never retire with a PR."
+  description   = "Digest-pinned Aidash ${var.deployment_tier} images; retained across deployments."
   lifecycle { prevent_destroy = true }
   depends_on = [google_project_service.required]
 }
 
 resource "google_service_account" "automation" {
-  for_each     = toset(["deploy", "publish"])
+  for_each     = toset(["deploy", "publish", "notification-reader"])
   account_id   = "aidash-${each.key}"
   display_name = "Aidash trusted ${each.key} workflow"
   depends_on   = [google_project_service.required]
@@ -69,13 +75,14 @@ resource "google_iam_workload_identity_pool_provider" "github" {
   attribute_mapping = {
     "google.subject"          = "assertion.sub"
     "attribute.repository_id" = "assertion.repository_id"
+    "attribute.workflow_role" = "assertion.environment == 'deployment-notifications' ? 'notification-reader' : 'deploy'"
   }
   # Numeric identities prevent repository/owner name reuse. A PR workflow or
   # manually selected feature-branch workflow cannot obtain this identity. The
   # environment claim exists only when the job declares a GitHub Environment, so
-  # their protection rules (#151) gate every credentialed job: reviewers sit on the
-  # release Environment, a main-only branch policy on both.
-  attribute_condition = "assertion.repository_id == '${var.repository_id}' && assertion.repository_owner_id == '${var.repository_owner_id}' && assertion.workflow_ref == '${local.workflow_ref}' && assertion.ref == 'refs/heads/${var.trusted_branch}' && assertion.environment in ['${var.deploy_environment}', '${var.release_environment}']"
+  # the protection rules of the tier's Environment (#151) gate every credentialed
+  # job: an exact-branch policy on each, reviewers on production.
+  attribute_condition = "assertion.repository_id == '${var.repository_id}' && assertion.repository_owner_id == '${var.repository_owner_id}' && ((${local.deploy_assertion}) || (${local.notification_assertion}))"
   oidc { issuer_uri = "https://token.actions.githubusercontent.com" }
 }
 
@@ -83,7 +90,7 @@ resource "google_service_account_iam_member" "github" {
   for_each           = google_service_account.automation
   service_account_id = each.value.name
   role               = "roles/iam.workloadIdentityUser"
-  member             = "principalSet://iam.googleapis.com/${google_iam_workload_identity_pool.github.name}/attribute.repository_id/${var.repository_id}"
+  member             = "principalSet://iam.googleapis.com/${google_iam_workload_identity_pool.github.name}/attribute.workflow_role/${each.key == "notification-reader" ? "notification-reader" : "deploy"}"
 }
 
 resource "google_project_iam_member" "deploy" {
@@ -135,4 +142,71 @@ resource "google_artifact_registry_repository_iam_member" "deploy_policy" {
   repository = google_artifact_registry_repository.images.repository_id
   role       = "roles/artifactregistry.admin"
   member     = "serviceAccount:${google_service_account.automation["deploy"].email}"
+}
+
+// The notification workflow never reads lifecycle/terraform state or application
+// secrets. Deploy creates nonsecret immutable receipts; notifier reads receipts
+// and owns only its delivery claim/ack namespace.
+resource "google_storage_bucket" "notifications" {
+  name                        = var.notification_bucket_name
+  location                    = "US-CENTRAL1"
+  uniform_bucket_level_access = true
+  public_access_prevention    = "enforced"
+  force_destroy               = false
+  lifecycle { prevent_destroy = true }
+  depends_on = [google_project_service.required]
+}
+resource "google_storage_bucket_iam_member" "notification_receipt_writer" {
+  bucket = google_storage_bucket.notifications.name
+  role   = "roles/storage.objectAdmin"
+  member = "serviceAccount:${google_service_account.automation["deploy"].email}"
+  condition {
+    title      = "only-deployment-receipts"
+    expression = "resource.name.startsWith('projects/_/buckets/${google_storage_bucket.notifications.name}/objects/notifications/')"
+  }
+}
+resource "google_storage_bucket_iam_member" "notification_reader" {
+  bucket = google_storage_bucket.notifications.name
+  role   = "roles/storage.objectViewer"
+  member = "serviceAccount:${google_service_account.automation["notification-reader"].email}"
+}
+resource "google_storage_bucket_iam_member" "notification_delivery" {
+  bucket = google_storage_bucket.notifications.name
+  role   = "roles/storage.objectAdmin"
+  member = "serviceAccount:${google_service_account.automation["notification-reader"].email}"
+  condition {
+    title      = "only-notification-delivery-claims"
+    expression = "resource.name.startsWith('projects/_/buckets/${google_storage_bucket.notifications.name}/objects/notification-delivery/')"
+  }
+}
+
+// Production promotes already-validated staging artifacts. Its deployment
+// identity can GET sanitized evidence but cannot list, replace or delete it.
+resource "google_storage_bucket_iam_member" "staging_promotion_reader" {
+  count  = var.deployment_tier == "production" ? 1 : 0
+  bucket = var.staging_release_bucket
+  role   = "roles/storage.objectViewer"
+  member = "serviceAccount:${google_service_account.automation["deploy"].email}"
+  condition {
+    title      = "only-staging-promotion-evidence"
+    expression = "resource.name.startsWith('projects/_/buckets/${var.staging_release_bucket}/objects/deployments/develop/')"
+  }
+}
+
+// Human bootstrap owns the retained production node identity and its only
+// cross-project grant. Deployment cannot modify staging-registry IAM.
+resource "google_service_account" "production_nodes" {
+  count        = var.deployment_tier == "production" ? 1 : 0
+  account_id   = "aidash-gke-nodes"
+  display_name = "Aidash production GKE nodes"
+  lifecycle { prevent_destroy = true }
+  depends_on = [google_project_service.required]
+}
+resource "google_artifact_registry_repository_iam_member" "production_nodes_staging" {
+  count      = var.deployment_tier == "production" ? 1 : 0
+  project    = var.nonproduction_project_id
+  location   = "us-central1"
+  repository = "aidash"
+  role       = "roles/artifactregistry.reader"
+  member     = "serviceAccount:${google_service_account.production_nodes[0].email}"
 }

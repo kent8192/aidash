@@ -13,6 +13,13 @@
     "sse"
   ],
   "properties": {
+    "metadataServerEgress": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
     "environment": {
       "type": "object",
       "properties": {

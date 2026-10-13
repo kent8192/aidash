@@ -156,4 +156,6 @@ pub mod indexing;
 
 pub mod mutations;
 
+pub mod recovery;
+
 pub mod retrieval;
